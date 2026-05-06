@@ -78,6 +78,7 @@ export {
 	listCoordinatorReciprocalApprovals,
 	lookupCoordinatorPeers,
 	readCoordinatorSyncConfig,
+	refreshStoredCoordinatorPeerAddresses,
 	registerCoordinatorPresence,
 } from "./coordinator-runtime.js";
 export type {

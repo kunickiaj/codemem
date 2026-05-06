@@ -6187,6 +6187,127 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("refreshes an existing multi-group peer address cache from sync status without re-pairing", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.endsWith("/v1/presence")) {
+					return new Response(JSON.stringify({ ok: true, addresses: ["http://local:7337"] }), {
+						status: 200,
+					});
+				}
+				if (url.includes("/v1/peers?group_id=team-a")) {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-fresh",
+									display_name: "Fresh Device",
+									fingerprint: "fp-fresh",
+									public_key: "peer-public-key",
+									addresses: ["http://10.0.0.5:7337"],
+									last_seen_at: new Date().toISOString(),
+									expires_at: new Date(Date.now() + 60_000).toISOString(),
+									stale: false,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.includes("/v1/peers?group_id=team-b")) {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-fresh",
+									display_name: "Fresh Device",
+									fingerprint: "fp-fresh",
+									public_key: "peer-public-key",
+									addresses: ["10.0.0.6:7337"],
+									last_seen_at: new Date().toISOString(),
+									expires_at: new Date(Date.now() + 60_000).toISOString(),
+									stale: false,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.includes("/v1/reciprocal-approvals")) {
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_enabled: true,
+					sync_coordinator_url: "https://coord-refresh.example.test",
+					sync_coordinator_groups: ["team-a", "team-b"],
+				}),
+			);
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				ensureDeviceIdentity(store.db, { keysDir });
+				store.db
+					.prepare(
+						"INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, addresses_json, last_error, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+					)
+					.run(
+						"peer-fresh",
+						"Old Name",
+						"fp-fresh",
+						JSON.stringify(["http://old.example:7337"]),
+						"all addresses failed",
+						new Date().toISOString(),
+					);
+
+				const res = await app.request("/api/sync/status?includeDiagnostics=1");
+
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as { peers?: Array<Record<string, unknown>> };
+				const peerPayload = body.peers?.find((peer) => peer.peer_device_id === "peer-fresh");
+				expect(peerPayload?.addresses).toEqual([
+					"http://old.example:7337",
+					"http://10.0.0.5:7337",
+					"http://10.0.0.6:7337",
+				]);
+				const peerRow = store.db
+					.prepare("SELECT addresses_json, last_error FROM sync_peers WHERE peer_device_id = ?")
+					.get("peer-fresh") as Record<string, unknown> | undefined;
+				expect(JSON.parse(String(peerRow?.addresses_json ?? "[]"))).toEqual([
+					"http://old.example:7337",
+					"http://10.0.0.5:7337",
+					"http://10.0.0.6:7337",
+				]);
+				expect(peerRow?.last_error).toBe("all addresses failed");
+				expect(
+					fetchMock.mock.calls.some(
+						([input, init]) =>
+							String(input).endsWith("/v1/reciprocal-approvals") && init?.method === "POST",
+					),
+				).toBe(false);
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			}
+		});
+
 		it("rejects accepting a discovered device when an existing peer is pinned to another fingerprint", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));

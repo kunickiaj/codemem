@@ -272,6 +272,78 @@ export async function lookupCoordinatorPeers(
 	return [...merged.values()];
 }
 
+function stringList(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function parseAddressCache(value: unknown): string[] {
+	if (typeof value !== "string" || value.trim().length === 0) return [];
+	try {
+		const parsed = JSON.parse(value) as unknown;
+		return stringList(parsed);
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Refresh cached transport addresses for existing, already-trusted peers from
+ * coordinator discovery results.
+ *
+ * This intentionally does not create peers or change trust/scope metadata. A
+ * discovered device can refresh a local peer only when both the device id and
+ * the pinned fingerprint match the existing row.
+ */
+export function refreshStoredCoordinatorPeerAddresses(
+	db: Database,
+	peers: Record<string, unknown>[],
+): number {
+	const discoveredAddressesByPinnedPeer = new Map<string, string[]>();
+	for (const peer of peers) {
+		const deviceId = clean(peer.device_id);
+		const fingerprint = clean(peer.fingerprint);
+		if (!deviceId || !fingerprint) continue;
+		const addresses = stringList(peer.addresses);
+		if (addresses.length === 0) continue;
+		const key = `${deviceId}:${fingerprint}`;
+		discoveredAddressesByPinnedPeer.set(
+			key,
+			mergeAddresses(discoveredAddressesByPinnedPeer.get(key) ?? [], addresses),
+		);
+	}
+	if (discoveredAddressesByPinnedPeer.size === 0) return 0;
+
+	const rows = db
+		.prepare("SELECT peer_device_id, pinned_fingerprint, addresses_json FROM sync_peers")
+		.all() as Array<{
+		peer_device_id: string | null;
+		pinned_fingerprint: string | null;
+		addresses_json: string | null;
+	}>;
+	const update = db.prepare(
+		"UPDATE sync_peers SET addresses_json = ? WHERE peer_device_id = ? AND pinned_fingerprint = ?",
+	);
+	let updated = 0;
+	const refresh = db.transaction(() => {
+		for (const row of rows) {
+			const deviceId = clean(row.peer_device_id);
+			const fingerprint = clean(row.pinned_fingerprint);
+			if (!deviceId || !fingerprint) continue;
+			const discoveredAddresses = discoveredAddressesByPinnedPeer.get(`${deviceId}:${fingerprint}`);
+			if (!discoveredAddresses?.length) continue;
+
+			const existingAddresses = mergeAddresses(parseAddressCache(row.addresses_json), []);
+			const mergedAddresses = mergeAddresses(existingAddresses, discoveredAddresses);
+			if (JSON.stringify(mergedAddresses) === JSON.stringify(existingAddresses)) continue;
+			update.run(JSON.stringify(mergedAddresses), deviceId, fingerprint);
+			updated += 1;
+		}
+	});
+	refresh.immediate();
+	return updated;
+}
+
 /**
  * Fetch the set of coordinator peer device IDs whose presence has expired.
  *
@@ -288,6 +360,7 @@ export async function fetchCoordinatorStalePeers(
 	if (!coordinatorEnabled(config)) return new Set();
 	try {
 		const peers = await lookupCoordinatorPeers({ db, dbPath }, config, { keysDir });
+		refreshStoredCoordinatorPeerAddresses(db, peers);
 		// A device may appear under multiple fingerprints (key rotation, multi-group).
 		// Only mark a device stale if ALL its entries are stale.
 		const freshDevices = new Set<string>();
@@ -472,6 +545,7 @@ export async function coordinatorStatusSnapshot(
 	}
 	try {
 		const peers = await lookupCoordinatorPeers(store, config);
+		refreshStoredCoordinatorPeerAddresses(store.db, peers);
 		let incomingApprovals: CoordinatorReciprocalApproval[] = [];
 		let outgoingApprovals: CoordinatorReciprocalApproval[] = [];
 		try {
