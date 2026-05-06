@@ -21,6 +21,11 @@ import {
 	currentAdminTargetGroup,
 	setAdminTargetGroup,
 } from "../data/target-group";
+import {
+	closeGroupScopeManagement,
+	openGroupScopeManagement,
+	renderGroupScopeManagementPanel,
+} from "./scope-management-panel";
 
 /* Inlined chevron SVG — matches the sync-tab device-row chevron so the
  * CSS `[data-state="open"]` rotation style is shared. Avoids depending
@@ -110,7 +115,7 @@ async function saveGroupPreferences(groupId: string, renderShell: () => void): P
 	try {
 		await api.saveCoordinatorGroupPreferences(groupId, payload);
 		showGlobalNotice(
-			"Group scope defaults saved. New peers enrolled through this team will use these defaults.",
+			"Group project defaults saved. New peers enrolled through this team will use these filters.",
 		);
 		closeGroupPreferences(groupId, renderShell);
 	} catch (error) {
@@ -135,7 +140,7 @@ function renderGroupPreferencesEditor(
 	const draft = coordinatorAdminState.groupPreferencesDrafts.get(groupId);
 	if (!draft) return null;
 	if (!draft.loaded) {
-		return h("div", { class: "peer-submeta" }, "Loading scope defaults…");
+		return h("div", { class: "peer-submeta" }, "Loading project defaults…");
 	}
 	const autoSeedLabelId = `coord-admin-scope-autoseed-${groupId}`;
 	const includeLabelId = `coord-admin-scope-include-${groupId}`;
@@ -144,11 +149,11 @@ function renderGroupPreferencesEditor(
 	return h(
 		Fragment,
 		null,
-		h("h4", { class: "coordinator-admin-drawer-title" }, "Scope defaults"),
+		h("h4", { class: "coordinator-admin-drawer-title" }, "Project defaults"),
 		h(
 			"div",
 			{ class: "peer-submeta" },
-			"When enabled, new peers enrolled through this team start with the project filters below. Existing peers are unchanged.",
+			"When enabled, new peers enrolled through this coordinator group start with the project filters below. Existing peers are unchanged, and these filters never grant sharing-domain access.",
 		),
 		// Master toggle first — the include/exclude chips are only meaningful
 		// when auto-seed is on, so the form reads top-down from decision
@@ -156,7 +161,7 @@ function renderGroupPreferencesEditor(
 		h(
 			"label",
 			{ class: "coordinator-admin-inline-filter" },
-			h("span", { class: "section-meta", id: autoSeedLabelId }, "Auto-seed scope on new peers"),
+			h("span", { class: "section-meta", id: autoSeedLabelId }, "Auto-seed project filters"),
 			h(RadixSwitch, {
 				"aria-labelledby": autoSeedLabelId,
 				checked: draft.auto_seed_scope,
@@ -402,6 +407,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 							group.display_name ??
 							group.group_id;
 						const scopeOpen = coordinatorAdminState.groupPreferencesOpen.has(group.group_id);
+						const domainsOpen = coordinatorAdminState.groupScopeManagementOpen.has(group.group_id);
 						return h(
 							"div",
 							{ class: "peer-card peer-card--padded", key: group.group_id },
@@ -464,7 +470,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 									"button",
 									{
 										"aria-expanded": scopeOpen,
-										"aria-controls": `coord-admin-scope-drawer-${group.group_id}`,
+										"aria-controls": `coord-admin-project-defaults-drawer-${group.group_id}`,
 										class: "settings-button coordinator-admin-scope-trigger",
 										"data-state": scopeOpen ? "open" : "closed",
 										disabled: summary.readiness !== "ready" || pending,
@@ -477,7 +483,31 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 										},
 										type: "button",
 									},
-									h("span", null, "Scope defaults"),
+									h("span", null, "Project defaults"),
+									h(
+										"span",
+										{ "aria-hidden": "true", class: "device-row-chevron" },
+										h(ChevronRightIcon, null),
+									),
+								),
+								h(
+									"button",
+									{
+										"aria-expanded": domainsOpen,
+										"aria-controls": `coord-admin-domains-drawer-${group.group_id}`,
+										class: "settings-button coordinator-admin-scope-trigger",
+										"data-state": domainsOpen ? "open" : "closed",
+										disabled: summary.readiness !== "ready" || pending,
+										onClick: () => {
+											if (domainsOpen) {
+												closeGroupScopeManagement(group.group_id, renderShell);
+											} else {
+												openGroupScopeManagement(group.group_id, renderShell);
+											}
+										},
+										type: "button",
+									},
+									h("span", null, "Sharing domains"),
 									h(
 										"span",
 										{ "aria-hidden": "true", class: "device-row-chevron" },
@@ -520,9 +550,9 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 								h(
 									Collapsible.Content,
 									{
-										"aria-label": `Scope defaults for ${draftName}`,
+										"aria-label": `Project defaults for ${draftName}`,
 										class: "coordinator-admin-group-preferences",
-										id: `coord-admin-scope-drawer-${group.group_id}`,
+										id: `coord-admin-project-defaults-drawer-${group.group_id}`,
 									},
 									scopeOpen
 										? renderGroupPreferencesEditor(
@@ -530,6 +560,33 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 												renderShell,
 												summary.readiness === "ready",
 											)
+										: null,
+								),
+							),
+							h(
+								Collapsible.Root,
+								{
+									open: domainsOpen,
+									onOpenChange: (open: boolean) => {
+										if (open) openGroupScopeManagement(group.group_id, renderShell);
+										else closeGroupScopeManagement(group.group_id, renderShell);
+									},
+								},
+								h(
+									Collapsible.Content,
+									{
+										"aria-label": `Sharing domains for ${draftName}`,
+										class:
+											"coordinator-admin-group-preferences coordinator-admin-domain-management",
+										id: `coord-admin-domains-drawer-${group.group_id}`,
+									},
+									domainsOpen
+										? renderGroupScopeManagementPanel({
+												groupId: group.group_id,
+												ready: summary.readiness === "ready",
+												renderShell,
+												summary,
+											})
 										: null,
 								),
 							),
