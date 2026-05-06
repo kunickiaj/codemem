@@ -43,6 +43,7 @@ import {
 	coordinatorUpdateScopeAction,
 	createCoordinatorReciprocalApproval,
 	DEFAULT_TIME_WINDOW_S,
+	deleteProjectScopeSettingsMapping,
 	ensureDeviceIdentity,
 	extractReplicationOps,
 	type FilterReplicationSkipped,
@@ -52,10 +53,14 @@ import {
 	getSemanticIndexDiagnostics,
 	getSyncResetState,
 	type InboundScopeRejectionPeerSummary,
+	LOCAL_DEFAULT_SCOPE_ID,
 	LOCAL_SYNC_CAPABILITY,
 	listCoordinatorJoinRequests,
 	listInboundScopeRejections,
 	listMaintenanceJobs,
+	listProjectScopeCandidates,
+	listProjectScopeSettingsMappings,
+	listSharingDomainSettingsScopes,
 	loadMemorySnapshotPageForPeer,
 	loadReplicationOpsForPeer,
 	lookupCoordinatorPeers,
@@ -75,6 +80,7 @@ import {
 	syncScopeResetRequiredPayload,
 	updatePeerAddresses,
 	upsertCoordinatorGroupPreference,
+	upsertProjectScopeSettingsMapping,
 	verifySignature,
 } from "@codemem/core";
 import { and, count, desc, eq, max, ne } from "drizzle-orm";
@@ -258,6 +264,13 @@ function optionalViewerString(body: Record<string, unknown>, key: string): strin
 	const value = body[key];
 	if (value == null) return null;
 	return String(value).trim() || null;
+}
+
+function optionalViewerStrictString(body: Record<string, unknown>, key: string): string | null {
+	const value = body[key];
+	if (value == null) return null;
+	if (typeof value !== "string") throw new Error(`${key} must be string`);
+	return value.trim() || null;
 }
 
 function optionalViewerNumber(body: Record<string, unknown>, key: string): number | null {
@@ -2192,6 +2205,51 @@ export function syncRoutes(
 			ok: true,
 			project_scope: currentProjectScope(row, readPeerProjectFilters(store, peerDeviceId)),
 		});
+	});
+
+	app.get("/api/sync/sharing-domains/settings", (c) => {
+		const store = getStore();
+		const limit = Math.max(1, queryInt(c.req.query("limit"), 250));
+		return c.json({
+			scopes: listSharingDomainSettingsScopes(store.db),
+			mappings: listProjectScopeSettingsMappings(store.db),
+			projects: listProjectScopeCandidates(store.db, { limit }),
+			local_default_scope_id: LOCAL_DEFAULT_SCOPE_ID,
+		});
+	});
+
+	app.put("/api/sync/sharing-domains/project-mappings", async (c) => {
+		const store = getStore();
+		const body = await parseViewerJsonBody(c);
+		if (!body) return c.json({ error: "invalid json" }, 400);
+		const id = optionalViewerNumber(body, "id");
+		const priority = optionalViewerNumber(body, "priority");
+		if (Number.isNaN(id)) return c.json({ error: "id must be number" }, 400);
+		if (Number.isNaN(priority)) return c.json({ error: "priority must be number" }, 400);
+		try {
+			const mapping = upsertProjectScopeSettingsMapping(store.db, {
+				id,
+				workspace_identity: optionalViewerStrictString(body, "workspace_identity"),
+				project_pattern: optionalViewerStrictString(body, "project_pattern"),
+				scope_id: optionalViewerStrictString(body, "scope_id") ?? "",
+				priority,
+				source: optionalViewerStrictString(body, "source") ?? "user",
+			});
+			return c.json({ ok: true, mapping });
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+		}
+	});
+
+	app.delete("/api/sync/sharing-domains/project-mappings/:id", (c) => {
+		const store = getStore();
+		const id = Number(c.req.param("id"));
+		try {
+			const deleted = deleteProjectScopeSettingsMapping(store.db, id);
+			return c.json({ ok: true, deleted });
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+		}
 	});
 
 	app.post("/api/sync/peers/identity", async (c) => {

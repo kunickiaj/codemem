@@ -370,6 +370,19 @@ export {
 	projectMatchesFilter,
 	resolveProject,
 } from "./project.js";
+export type {
+	ProjectScopeCandidate,
+	ProjectScopeSettingsMapping,
+	SharingDomainSettingsScope,
+	UpsertProjectScopeMappingInput,
+} from "./project-scope-settings.js";
+export {
+	deleteProjectScopeSettingsMapping,
+	listProjectScopeCandidates,
+	listProjectScopeSettingsMappings,
+	listSharingDomainSettingsScopes,
+	upsertProjectScopeSettingsMapping,
+} from "./project-scope-settings.js";
 export type { FlushRawEventsOptions } from "./raw-event-flush.js";
 export { buildSessionContext, flushRawEvents } from "./raw-event-flush.js";
 export { RawEventSweeper } from "./raw-event-sweeper.js";
