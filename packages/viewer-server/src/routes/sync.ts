@@ -1805,6 +1805,11 @@ export function syncRoutes(
 				statusPayload.daemon_detail = runtimeStatus.detail ?? daemonDetail;
 			}
 
+			const coordinatorSnapshot = await coordinatorStatusSnapshot(store, config);
+			const coordinator = traceSync("coordinator", () =>
+				redactCoordinatorStatus(coordinatorSnapshot, showDiag),
+			);
+
 			// Build peers list using deduplicated mapPeerRow
 			const peerRows = traceSync(
 				"peerRows",
@@ -1878,10 +1883,6 @@ export function syncRoutes(
 			};
 			const legacyDevices = traceSync("legacyDevices", () => store.claimableLegacyDeviceIds());
 			const sharingReview = traceSync("sharingReview", () => store.sharingReviewSummary(project));
-			const coordinatorSnapshot = await coordinatorStatusSnapshot(store, config);
-			const coordinator = traceSync("coordinator", () =>
-				redactCoordinatorStatus(coordinatorSnapshot, showDiag),
-			);
 			let joinRequests: Record<string, unknown>[] = [];
 			if (includeJoinRequests && showDiag && config.syncCoordinatorAdminSecret) {
 				try {
