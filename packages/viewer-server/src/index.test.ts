@@ -5377,6 +5377,133 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("updates local Sharing domain project mappings without granting membership", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "project domain candidate",
+					metadata: {},
+				});
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('acme-work', 'Acme Work', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+
+				const settingsRes = await app.request("/api/sync/sharing-domains/settings");
+				expect(settingsRes.status).toBe(200);
+				const settings = (await settingsRes.json()) as {
+					scopes: Array<{ scope_id: string }>;
+					projects: Array<{
+						workspace_identity: string;
+						display_project: string;
+						resolved_scope_id: string;
+					}>;
+				};
+				expect(settings.scopes.map((scope) => scope.scope_id)).toEqual(
+					expect.arrayContaining(["local-default", "acme-work"]),
+				);
+				const project = settings.projects.find((item) => item.display_project === "test-project");
+				expect(project).toMatchObject({ resolved_scope_id: "local-default" });
+
+				const malformedRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						workspace_identity: project?.workspace_identity,
+						project_pattern: project?.display_project,
+						scope_id: ["acme-work"],
+					}),
+				});
+				expect(malformedRes.status).toBe(400);
+
+				const emptyScopeRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						workspace_identity: project?.workspace_identity,
+						project_pattern: project?.display_project,
+						scope_id: "",
+					}),
+				});
+				expect(emptyScopeRes.status).toBe(400);
+
+				const invalidScopeRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						workspace_identity: project?.workspace_identity,
+						project_pattern: project?.display_project,
+						scope_id: "missing-work-domain",
+					}),
+				});
+				expect(invalidScopeRes.status).toBe(400);
+
+				const fractionalIdRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						id: 1.9,
+						workspace_identity: project?.workspace_identity,
+						project_pattern: project?.display_project,
+						scope_id: "acme-work",
+					}),
+				});
+				expect(fractionalIdRes.status).toBe(400);
+
+				const saveRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						workspace_identity: project?.workspace_identity,
+						project_pattern: project?.display_project,
+						scope_id: "acme-work",
+					}),
+				});
+				expect(saveRes.status).toBe(200);
+				const saveBody = (await saveRes.json()) as { mapping: { id: number; scope_id: string } };
+				expect(saveBody.mapping.scope_id).toBe("acme-work");
+
+				const updatedRes = await app.request("/api/sync/sharing-domains/settings");
+				const updated = (await updatedRes.json()) as {
+					projects: Array<{
+						display_project: string;
+						resolved_scope_id: string;
+						mapping_id: number;
+					}>;
+				};
+				expect(
+					updated.projects.find((item) => item.display_project === "test-project"),
+				).toMatchObject({
+					resolved_scope_id: "acme-work",
+					mapping_id: saveBody.mapping.id,
+				});
+				const memberships = store.db
+					.prepare("SELECT COUNT(*) AS n FROM scope_memberships")
+					.get() as {
+					n: number;
+				};
+				expect(memberships.n).toBe(0);
+
+				const deleteRes = await app.request(
+					`/api/sync/sharing-domains/project-mappings/${saveBody.mapping.id}`,
+					{ method: "DELETE" },
+				);
+				expect(deleteRes.status).toBe(200);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("runs sync for all peers through the compatibility sync route", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;
