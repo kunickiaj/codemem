@@ -217,6 +217,7 @@ domain grant before it can receive that domain's memories.
 - The Settings UI exposes coordinator URL, group, timeout, and presence TTL fields under the Sync tab.
 - The coordinator is self-hosted/operator-run and only helps peers discover fresh addresses; direct peer-to-peer sync remains the data path.
 - See [docs/coordinator-discovery.md](coordinator-discovery.md) for setup, config, and current limitations.
+- See [docs/anchor-peer-deployment.md](anchor-peer-deployment.md) if you want an always-on peer as a sync backstop for personal or team Sharing domains.
 - Do **not** expose the viewer itself just because the coordinator or sync protocol needs cross-network reachability; those are separate surfaces.
 
 ### Keychain (optional)

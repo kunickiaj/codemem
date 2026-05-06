@@ -234,6 +234,13 @@ feature lag — new coordinator capabilities may land in the built-in coordinato
 reference Worker immediately. When you do choose it, follow the dedicated Cloudflare runbook instead of relying on the
 older scattered example notes.
 
+## Always-on peers
+
+If you need a high-uptime sync backstop, deploy an anchor peer separately from
+the coordinator. The anchor peer is a normal codemem peer with explicit
+Sharing-domain grants and its own local SQLite database. See
+[`docs/anchor-peer-deployment.md`](anchor-peer-deployment.md).
+
 ## Current limitations
 
 - no relay/proxy transport yet
