@@ -1,10 +1,48 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { initDatabase, MemoryStore } from "@codemem/core";
+import { describe, expect, it, vi } from "vitest";
+import * as embeddings from "../../../core/src/embeddings.js";
 import {
 	forgetMemoryCommand,
 	memoryCommand,
 	rememberMemoryCommand,
 	showMemoryCommand,
 } from "./memory.js";
+
+vi.mock("../../../core/src/embeddings.js", async () => {
+	const actual = await vi.importActual<typeof import("../../../core/src/embeddings.js")>(
+		"../../../core/src/embeddings.js",
+	);
+	return {
+		...actual,
+		embedTexts: vi.fn(),
+		getEmbeddingClient: vi.fn(),
+		resolveEmbeddingModel: vi.fn(() => "test-model"),
+	};
+});
+
+function insertCoordinatorScope(store: MemoryStore, scopeId: string): void {
+	const now = "2026-01-01T00:00:00Z";
+	store.db
+		.prepare(
+			`INSERT INTO replication_scopes(
+				scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+			 ) VALUES (?, ?, 'team', 'coordinator', 1, 'active', ?, ?)`,
+		)
+		.run(scopeId, scopeId, now, now);
+}
+
+function insertHiddenOwnedMemory(store: MemoryStore): number {
+	insertCoordinatorScope(store, "unauthorized-team");
+	const sessionId = store.startSession({ cwd: process.cwd(), project: "secret-project" });
+	const memoryId = store.remember(sessionId, "discovery", "Hidden owned memory", "Hidden body");
+	store.db
+		.prepare("UPDATE memory_items SET scope_id = ? WHERE id = ?")
+		.run("unauthorized-team", memoryId);
+	return memoryId;
+}
 
 describe("memory command aliases", () => {
 	it("keeps memory subcommands available under the memory group", () => {
@@ -143,5 +181,97 @@ describe("memory command aliases", () => {
 		expect(longs).toContain("--all-projects");
 		expect(longs).toContain("--limit");
 		expect(longs).toContain("--json");
+	});
+});
+
+describe("memory command scope safety", () => {
+	it("stores vectors for manually remembered memories", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-memory-command-vector-"));
+		const dbPath = join(tmpDir, "test.sqlite");
+		initDatabase(dbPath);
+		vi.mocked(embeddings.getEmbeddingClient).mockResolvedValue({
+			model: "test-model",
+			dimensions: 384,
+			embed: vi.fn(),
+		});
+		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const originalExitCode = process.exitCode;
+		process.exitCode = undefined;
+		try {
+			await rememberMemoryCommand.parseAsync(
+				[
+					"--kind",
+					"discovery",
+					"--title",
+					"Manual vector memory",
+					"--body",
+					"Manual vector body",
+					"--db-path",
+					dbPath,
+					"--json",
+				],
+				{ from: "user" },
+			);
+
+			const output = logSpy.mock.calls.at(-1)?.[0];
+			const parsed = JSON.parse(String(output)) as { id: number };
+			expect(parsed.id).toBeGreaterThan(0);
+			expect(process.exitCode).toBeUndefined();
+
+			const verifyStore = new MemoryStore(dbPath);
+			try {
+				const row = verifyStore.db
+					.prepare("SELECT COUNT(*) AS n FROM memory_vectors WHERE memory_id = ?")
+					.get(parsed.id) as { n: number };
+				expect(row.n).toBe(1);
+			} finally {
+				verifyStore.close();
+			}
+		} finally {
+			process.exitCode = originalExitCode;
+			logSpy.mockRestore();
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not forget memories outside visible sharing domains", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-memory-command-scope-"));
+		const dbPath = join(tmpDir, "test.sqlite");
+		initDatabase(dbPath);
+		const store = new MemoryStore(dbPath);
+		const memoryId = insertHiddenOwnedMemory(store);
+		await store.flushPendingVectorWrites();
+		store.close();
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const originalExitCode = process.exitCode;
+		process.exitCode = undefined;
+		try {
+			await forgetMemoryCommand.parseAsync([String(memoryId), "--db-path", dbPath, "--json"], {
+				from: "user",
+			});
+
+			const output = logSpy.mock.calls.at(-1)?.[0];
+			expect(JSON.parse(String(output))).toMatchObject({
+				error: "not_found",
+				message: `Memory ${memoryId} not found`,
+			});
+			expect(process.exitCode).toBe(1);
+
+			const verifyStore = new MemoryStore(dbPath);
+			try {
+				const row = verifyStore.db
+					.prepare("SELECT active FROM memory_items WHERE id = ?")
+					.get(memoryId) as { active: number };
+				expect(row.active).toBe(1);
+			} finally {
+				verifyStore.close();
+			}
+		} finally {
+			process.exitCode = originalExitCode;
+			logSpy.mockRestore();
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
 	});
 });

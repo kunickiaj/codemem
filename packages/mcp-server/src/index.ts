@@ -20,12 +20,17 @@ import {
 	projectMatchesFilter,
 	resolveDbPath,
 	storeVectors,
-	toJson,
 	VERSION,
 } from "@codemem/core";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import {
+	forgetMemoryForMcp,
+	getManyForMcp,
+	getMemoryForMcp,
+	rememberMemoryForMcp,
+} from "./memory-access.js";
 import { buildFilters, resolveDefaultProject } from "./project-scope.js";
 
 // ---------------------------------------------------------------------------
@@ -46,9 +51,16 @@ const MEMORY_KINDS: Record<string, string> = {
 // Shared zod filter schema (spread into each tool that accepts filters)
 // ---------------------------------------------------------------------------
 
+const scopeFilterSchema = {
+	scope_id: z.string().optional().describe("Filter by a single sharing domain scope_id"),
+	include_scope_ids: z.array(z.string()).optional().describe("Sharing domain scope_ids to include"),
+	exclude_scope_ids: z.array(z.string()).optional().describe("Sharing domain scope_ids to exclude"),
+};
+
 const filterSchema = {
 	kind: z.string().optional().describe("Filter by memory kind"),
 	project: z.string().optional().describe("Filter by project scope (matches sessions.project)"),
+	...scopeFilterSchema,
 	visibility: z.array(z.string()).optional(),
 	include_visibility: z.array(z.string()).optional(),
 	exclude_visibility: z.array(z.string()).optional(),
@@ -82,25 +94,6 @@ function jsonContent(data: unknown) {
 /** Wrap an error message into the MCP text content envelope. */
 function errorContent(message: string) {
 	return { content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }] };
-}
-
-/** ISO timestamp. */
-function nowIso(): string {
-	return new Date().toISOString();
-}
-
-/**
- * Fetch multiple memory items by ID. Returns items in ID order, skipping
- * missing IDs. Implemented directly since MemoryStore doesn't have getMany.
- */
-function getMany(store: MemoryStore, ids: number[]): MemoryItemResponse[] {
-	if (ids.length === 0) return [];
-	const results: MemoryItemResponse[] = [];
-	for (const id of ids) {
-		const item = store.get(id);
-		if (item) results.push(item);
-	}
-	return results;
 }
 
 // ---------------------------------------------------------------------------
@@ -329,15 +322,16 @@ async function main() {
 			depth_before: z.number().int().min(0).default(3).describe("Timeline items before"),
 			depth_after: z.number().int().min(0).default(3).describe("Timeline items after"),
 			include_observations: z.boolean().default(false).describe("Include full observation details"),
-			project: z.string().optional().describe("Project scope filter"),
+			...filterSchema,
 		},
 		async (args) => {
 			try {
 				// Python: project if project is not None else default_project
 				// Explicit "" clears project scoping; only fall back to default when undefined.
-				const resolvedProject =
-					args.project !== undefined ? args.project.trim() || null : defaultProject || null;
-				const filters = resolvedProject ? { project: resolvedProject } : undefined;
+				const filterDefaultProject =
+					args.project !== undefined && !args.project.trim() ? null : defaultProject;
+				const filters = buildFilters(args, filterDefaultProject);
+				const resolvedProject = filters?.project ?? null;
 				const { ordered: orderedIds, invalid: invalidIds } = dedupeOrderedIds(args.ids);
 				const errors: Array<Record<string, unknown>> = [];
 
@@ -352,6 +346,7 @@ async function main() {
 
 				const missingNotFound: number[] = [];
 				const missingProjectMismatch: number[] = [];
+				const missingFilterMismatch: number[] = [];
 				const anchors: MemoryItemResponse[] = [];
 				const timelineItems: MemoryItemResponse[] = [];
 				const timelineSeen = new Set<number>();
@@ -381,8 +376,6 @@ async function main() {
 						continue;
 					}
 
-					anchors.push(item);
-
 					const expanded = store.timeline(
 						null,
 						memoryId,
@@ -390,6 +383,13 @@ async function main() {
 						args.depth_after,
 						filters,
 					);
+					const anchor = expanded.find((expandedItem) => expandedItem.id === memoryId);
+					if (!anchor) {
+						missingFilterMismatch.push(memoryId);
+						continue;
+					}
+
+					anchors.push(anchor);
 					for (const expandedItem of expanded) {
 						const expandedId = expandedItem.id;
 						if (expandedId <= 0 || timelineSeen.has(expandedId)) continue;
@@ -414,6 +414,14 @@ async function main() {
 						ids: missingProjectMismatch,
 					});
 				}
+				if (missingFilterMismatch.length > 0) {
+					errors.push({
+						code: "FILTER_MISMATCH",
+						field: "filters",
+						message: "some requested ids are outside the requested filters",
+						ids: missingFilterMismatch,
+					});
+				}
 
 				// Collect full observations if requested
 				let observations: MemoryItemResponse[] = [];
@@ -426,7 +434,7 @@ async function main() {
 							observationIds.push(item.id);
 						}
 					}
-					observations = getMany(store, observationIds);
+					observations = getManyForMcp(store, observationIds, filters);
 				}
 
 				return jsonContent({
@@ -435,7 +443,9 @@ async function main() {
 					observations,
 					missing_ids: orderedIds.filter(
 						(memoryId: number) =>
-							missingNotFound.includes(memoryId) || missingProjectMismatch.includes(memoryId),
+							missingNotFound.includes(memoryId) ||
+							missingProjectMismatch.includes(memoryId) ||
+							missingFilterMismatch.includes(memoryId),
 					),
 					errors,
 					metadata: {
@@ -460,10 +470,11 @@ async function main() {
 		"Fetch a single memory item by ID.",
 		{
 			memory_id: z.number().int().describe("Memory ID"),
+			...filterSchema,
 		},
 		async (args) => {
 			try {
-				const item = store.get(args.memory_id);
+				const item = getMemoryForMcp(store, args.memory_id, buildFilters(args, null));
 				if (!item) return errorContent("not_found");
 				return jsonContent(item);
 			} catch (err) {
@@ -480,10 +491,11 @@ async function main() {
 		"Fetch multiple memory items by their IDs.",
 		{
 			ids: z.array(z.number().int()).max(200).describe("Memory IDs to fetch"),
+			...filterSchema,
 		},
 		async (args) => {
 			try {
-				const items = getMany(store, args.ids);
+				const items = getManyForMcp(store, args.ids, buildFilters(args, null));
 				return jsonContent({ items });
 			} catch (err) {
 				return errorContent(err instanceof Error ? err.message : String(err));
@@ -574,39 +586,9 @@ async function main() {
 		},
 		async (args) => {
 			try {
-				// Create a transient session + memory in a transaction for atomicity.
-				// TS store doesn't have startSession/endSession yet, so
-				// we insert the session row directly. Wrapped in transaction to
-				// prevent orphaned sessions if remember() fails.
-				const result = store.db.transaction(() => {
-					const now = nowIso();
-					const user = process.env.USER ?? "unknown";
-					const cwd = process.cwd();
-					const project = args.project ?? process.env.CODEMEM_PROJECT ?? null;
-
-					const sessionInfo = store.db
-						.prepare(
-							`INSERT INTO sessions(started_at, ended_at, cwd, project, user, tool_version, metadata_json)
-							 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-						)
-						.run(now, now, cwd, project, user, "mcp-ts", toJson({ mcp: true }));
-					const sessionId = Number(sessionInfo.lastInsertRowid);
-
-					const memId = store.remember(
-						sessionId,
-						args.kind,
-						args.title,
-						args.body,
-						args.confidence,
-					);
-
-					// End the session
-					store.db
-						.prepare("UPDATE sessions SET ended_at = ?, metadata_json = ? WHERE id = ?")
-						.run(nowIso(), toJson({ mcp: true }), sessionId);
-
-					return { memId, title: args.title, body: args.body };
-				})();
+				const result = rememberMemoryForMcp(store, args, {
+					envProject: process.env.CODEMEM_PROJECT ?? null,
+				});
 
 				try {
 					await storeVectors(store.db, result.memId, result.title, result.body);
@@ -629,10 +611,13 @@ async function main() {
 		"Soft-delete a memory item. Use for incorrect or sensitive data.",
 		{
 			memory_id: z.number().int().describe("Memory ID to forget"),
+			...filterSchema,
 		},
 		async (args) => {
 			try {
-				store.forget(args.memory_id);
+				if (!forgetMemoryForMcp(store, args.memory_id, buildFilters(args, null))) {
+					return errorContent("not_found");
+				}
 				return jsonContent({ status: "ok" });
 			} catch (err) {
 				return errorContent(err instanceof Error ? err.message : String(err));
@@ -667,6 +652,9 @@ async function main() {
 					"session_id",
 					"since",
 					"project",
+					"scope_id",
+					"include_scope_ids",
+					"exclude_scope_ids",
 					"include_actor_ids",
 					"exclude_actor_ids",
 					"include_visibility",

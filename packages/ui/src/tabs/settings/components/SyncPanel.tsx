@@ -3,6 +3,7 @@ import type { SettingsPanelProps } from "../data/types";
 import { SettingsHint } from "./SettingsHint";
 import { SettingsSectionIntro } from "./SettingsSectionIntro";
 import { SettingsSwitchRow } from "./SettingsSwitchRow";
+import { SharingDomainsPanel } from "./SharingDomainsPanel";
 
 export function SyncPanel({
 	values,
@@ -113,6 +114,7 @@ export function SyncPanel({
 					/>
 				</div>
 			</div>
+			<SharingDomainsPanel />
 		</>
 	);
 }

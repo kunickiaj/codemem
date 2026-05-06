@@ -22,6 +22,9 @@ export function buildFilters(
 	for (const key of [
 		"kind",
 		"visibility",
+		"scope_id",
+		"include_scope_ids",
+		"exclude_scope_ids",
 		"include_visibility",
 		"exclude_visibility",
 		"include_workspace_ids",

@@ -48,6 +48,65 @@ describe("buildMemoryPack", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
+	function insertCoordinatorScope(scopeId: string): void {
+		const now = new Date().toISOString();
+		store.db
+			.prepare(
+				`INSERT OR REPLACE INTO replication_scopes(
+					scope_id, label, kind, authority_type, coordinator_id, group_id,
+					membership_epoch, status, created_at, updated_at
+				 ) VALUES (?, ?, 'team', 'coordinator', 'coord-test', 'group-test', 0, 'active', ?, ?)`,
+			)
+			.run(scopeId, scopeId, now, now);
+	}
+
+	function grantScopeToLocalDevice(scopeId: string): void {
+		insertCoordinatorScope(scopeId);
+		store.db
+			.prepare(
+				`INSERT OR REPLACE INTO scope_memberships(
+					scope_id, device_id, role, status, membership_epoch,
+					coordinator_id, group_id, updated_at
+				 ) VALUES (?, ?, 'member', 'active', 0, 'coord-test', 'group-test', ?)`,
+			)
+			.run(scopeId, store.deviceId, new Date().toISOString());
+	}
+
+	function insertScopedMemory(scopeId: string, title: string, bodyText: string): number {
+		const now = new Date().toISOString();
+		const info = store.db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility, scope_id)
+				 VALUES (?, 'discovery', ?, ?, 0.5, '', 1, ?, ?, '{}', 1, 'shared', ?)`,
+			)
+			.run(sessionId, title, bodyText, now, now, scopeId);
+		return Number(info.lastInsertRowid);
+	}
+
+	function semanticCandidate(
+		id: number,
+		title: string,
+		bodyText: string,
+		score: number,
+	): MemoryResult {
+		return {
+			id,
+			kind: "discovery",
+			title,
+			body_text: bodyText,
+			confidence: 0.9,
+			created_at: "2026-01-01T00:00:00.000Z",
+			updated_at: "2026-01-01T00:00:00.000Z",
+			tags_text: "",
+			score,
+			session_id: sessionId,
+			metadata: {},
+			narrative: null,
+			facts: null,
+		};
+	}
+
 	it("returns items and pack_text for matching context", () => {
 		store.remember(sessionId, "discovery", "Found database issue", "The DB was slow", 0.8);
 		store.remember(sessionId, "bugfix", "Fixed database query", "Optimized the join", 0.9);
@@ -156,6 +215,152 @@ describe("buildMemoryPack", () => {
 		expect(second.metrics.added_ids).toContain(id2);
 		expect(second.metrics.retained_ids).toContain(id1);
 		expect(typeof second.metrics.pack_token_delta).toBe("number");
+	});
+
+	it("does not use out-of-scope pack delta baselines", () => {
+		grantScopeToLocalDevice("authorized-team");
+		insertCoordinatorScope("unauthorized-team");
+		const hiddenId = insertScopedMemory(
+			"unauthorized-team",
+			"Hidden delta memory",
+			"delta scope body",
+		);
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Visible delta memory",
+			"delta scope body",
+		);
+		store.db
+			.prepare(
+				`INSERT INTO usage_events(
+					session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json
+				) VALUES (NULL, 'pack', 999, 0, 0, ?, ?)`,
+			)
+			.run(
+				"2026-01-01T00:00:00.000Z",
+				JSON.stringify({ pack_item_ids: [hiddenId], pack_tokens: 999 }),
+			);
+
+		const pack = buildMemoryPack(store, "delta", 10);
+
+		expect(pack.item_ids).toContain(visibleId);
+		expect(pack.item_ids).not.toContain(hiddenId);
+		expect(pack.metrics.pack_delta_available).toBe(false);
+		expect(pack.metrics.removed_ids).not.toContain(hiddenId);
+		expect(pack.metrics.retained_ids).not.toContain(hiddenId);
+		expect(pack.metrics.added_ids).not.toContain(hiddenId);
+	});
+
+	it("does not use itemless pack delta token baselines", () => {
+		grantScopeToLocalDevice("authorized-team");
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Visible empty-baseline memory",
+			"empty baseline body",
+		);
+		store.db
+			.prepare(
+				`INSERT INTO usage_events(
+					session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json
+				) VALUES (NULL, 'pack', 999, 0, 0, ?, ?)`,
+			)
+			.run("2026-01-01T00:00:00.000Z", JSON.stringify({ pack_item_ids: [], pack_tokens: 999 }));
+
+		const pack = buildMemoryPack(store, "empty baseline", 10);
+
+		expect(pack.item_ids).toContain(visibleId);
+		expect(pack.metrics.pack_delta_available).toBe(false);
+		expect(pack.metrics.pack_token_delta).toBe(0);
+	});
+
+	it("does not use pack delta baselines outside current scope filters", () => {
+		grantScopeToLocalDevice("scope-a");
+		grantScopeToLocalDevice("scope-b");
+		const scopeBId = insertScopedMemory("scope-b", "Scope B delta memory", "delta filter body");
+		const scopeAId = insertScopedMemory("scope-a", "Scope A delta memory", "delta filter body");
+		store.db
+			.prepare(
+				`INSERT INTO usage_events(
+					session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json
+				) VALUES (NULL, 'pack', 999, 0, 0, ?, ?)`,
+			)
+			.run(
+				"2026-01-01T00:00:00.000Z",
+				JSON.stringify({ pack_item_ids: [scopeBId], pack_tokens: 999 }),
+			);
+
+		const pack = buildMemoryPack(store, "delta filter", 10, null, { scope_id: "scope-a" });
+
+		expect(pack.item_ids).toContain(scopeAId);
+		expect(pack.item_ids).not.toContain(scopeBId);
+		expect(pack.metrics.pack_delta_available).toBe(false);
+		expect(pack.metrics.removed_ids).not.toContain(scopeBId);
+		expect(pack.metrics.retained_ids).not.toContain(scopeBId);
+	});
+
+	it("finds current-scope pack delta baselines beyond out-of-scope history", () => {
+		grantScopeToLocalDevice("scope-a");
+		grantScopeToLocalDevice("scope-b");
+		const scopeAId = insertScopedMemory("scope-a", "Scope A retained memory", "retained body");
+		const scopeBId = insertScopedMemory("scope-b", "Scope B noisy memory", "retained body");
+		const insertUsage = (ids: number[], createdAt: string, packTokens: number) => {
+			store.db
+				.prepare(
+					`INSERT INTO usage_events(
+						session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json
+					) VALUES (NULL, 'pack', ?, 0, 0, ?, ?)`,
+				)
+				.run(
+					packTokens,
+					createdAt,
+					JSON.stringify({ pack_item_ids: ids, pack_tokens: packTokens }),
+				);
+		};
+		insertUsage([scopeAId], "2026-01-01T00:00:00.000Z", 10);
+		for (let i = 0; i < 26; i += 1) {
+			insertUsage([scopeBId], `2026-01-02T00:${String(i).padStart(2, "0")}:00.000Z`, 999);
+		}
+
+		const pack = buildMemoryPack(store, "retained", 10, null, { scope_id: "scope-a" });
+
+		expect(pack.item_ids).toContain(scopeAId);
+		expect(pack.item_ids).not.toContain(scopeBId);
+		expect(pack.metrics.pack_delta_available).toBe(true);
+		expect(pack.metrics.retained_ids).toContain(scopeAId);
+		expect(pack.metrics.removed_ids).not.toContain(scopeBId);
+	});
+
+	it("bounds pack delta baseline scans when no current-scope baseline is recent", () => {
+		grantScopeToLocalDevice("scope-a");
+		grantScopeToLocalDevice("scope-b");
+		const scopeAId = insertScopedMemory("scope-a", "Scope A old retained memory", "retained body");
+		const scopeBId = insertScopedMemory("scope-b", "Scope B noisy old memory", "retained body");
+		const insertUsage = (ids: number[], createdAt: string, packTokens: number) => {
+			store.db
+				.prepare(
+					`INSERT INTO usage_events(
+						session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json
+					) VALUES (NULL, 'pack', ?, 0, 0, ?, ?)`,
+				)
+				.run(
+					packTokens,
+					createdAt,
+					JSON.stringify({ pack_item_ids: ids, pack_tokens: packTokens }),
+				);
+		};
+		insertUsage([scopeAId], "2026-01-01T00:00:00.000Z", 10);
+		for (let i = 0; i < 260; i += 1) {
+			insertUsage(
+				[scopeBId],
+				`2026-01-02T00:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z`,
+				999,
+			);
+		}
+
+		const pack = buildMemoryPack(store, "retained", 10, null, { scope_id: "scope-a" });
+
+		expect(pack.item_ids).toContain(scopeAId);
+		expect(pack.metrics.pack_delta_available).toBe(false);
 	});
 
 	it("keeps project delta baseline after many packs in other projects", () => {
@@ -339,8 +544,8 @@ describe("buildMemoryPack", () => {
 			.prepare(
 				`INSERT INTO memory_items(
 					session_id, kind, title, body_text, confidence, tags_text, active,
-					created_at, updated_at, metadata_json, rev
-				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+					created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1, 'local-default')`,
 			)
 			.run(sessionId, "Session recap", "Wrap-up of recent work", now, now);
 
@@ -409,8 +614,8 @@ describe("buildMemoryPack", () => {
 			.prepare(
 				`INSERT INTO memory_items(
 					session_id, kind, title, body_text, confidence, tags_text, active,
-					created_at, updated_at, metadata_json, rev, visibility, workspace_id, dedup_key
-				) VALUES (?, 'decision', ?, ?, ?, '', 1, ?, ?, '{}', 1, 'shared', 'shared:default', NULL)`,
+					created_at, updated_at, metadata_json, rev, visibility, workspace_id, dedup_key, scope_id
+				) VALUES (?, 'decision', ?, ?, ?, '', 1, ?, ?, '{}', 1, 'shared', 'shared:default', NULL, 'local-default')`,
 			)
 			.run(sessionId, "Tracing duplicate title", "Tracing duplicate body", 0.8, now, now);
 		const duplicateId = Number(info.lastInsertRowid);
@@ -453,8 +658,8 @@ describe("buildMemoryPack", () => {
 			.prepare(
 				`INSERT INTO memory_items(
 					session_id, kind, title, body_text, confidence, tags_text, active,
-					created_at, updated_at, metadata_json, rev, visibility, workspace_id, dedup_key
-				) VALUES (?, 'decision', ?, ?, ?, '', 1, ?, ?, '{}', 1, 'shared', 'shared:default', NULL)`,
+					created_at, updated_at, metadata_json, rev, visibility, workspace_id, dedup_key, scope_id
+				) VALUES (?, 'decision', ?, ?, ?, '', 1, ?, ?, '{}', 1, 'shared', 'shared:default', NULL, 'local-default')`,
 			)
 			.run(
 				sessionId,
@@ -573,8 +778,8 @@ describe("buildMemoryPack", () => {
 			.prepare(
 				`INSERT INTO memory_items(
 					session_id, kind, title, body_text, confidence, tags_text, active,
-					created_at, updated_at, metadata_json, rev
-				) VALUES (?, 'session_summary', ?, ?, 0.9, '', 1, ?, ?, '{}', 1)`,
+					created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'session_summary', ?, ?, 0.9, '', 1, ?, ?, '{}', 1, 'local-default')`,
 			)
 			.run(sessionId, "Budget summary", "Short summary body", now, now);
 		for (let i = 0; i < 10; i += 1) {
@@ -599,8 +804,8 @@ describe("buildMemoryPack", () => {
 			.prepare(
 				`INSERT INTO memory_items(
 					session_id, kind, title, body_text, confidence, tags_text, active,
-					created_at, updated_at, metadata_json, rev
-				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+					created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1, 'local-default')`,
 			)
 			.run(
 				sessionId,
@@ -634,9 +839,27 @@ describe("buildMemoryPack", () => {
 	});
 
 	it("keeps working-set overlaps prioritized when semantic candidates are merged", () => {
+		const overlappingId = store.remember(
+			sessionId,
+			"feature",
+			"Overlapping file",
+			"Directly related to current file",
+			0.9,
+			undefined,
+			{ files_modified: ["src/important.ts"] },
+		);
+		const nonOverlappingId = store.remember(
+			sessionId,
+			"feature",
+			"Non-overlapping file",
+			"Not tied to working set",
+			0.9,
+			undefined,
+			{ files_modified: ["src/other.ts"] },
+		);
 		const semanticResults: MemoryResult[] = [
 			{
-				id: 1,
+				id: overlappingId,
 				kind: "feature",
 				title: "Overlapping file",
 				body_text: "Directly related to current file",
@@ -651,7 +874,7 @@ describe("buildMemoryPack", () => {
 				facts: null,
 			},
 			{
-				id: 2,
+				id: nonOverlappingId,
 				kind: "feature",
 				title: "Non-overlapping file",
 				body_text: "Not tied to working set",
@@ -676,7 +899,277 @@ describe("buildMemoryPack", () => {
 			semanticResults,
 		);
 
-		expect(pack.item_ids[0]).toBe(1);
+		expect(pack.item_ids[0]).toBe(overlappingId);
+	});
+
+	it("scopes caller-provided semantic candidates before pack merge", () => {
+		grantScopeToLocalDevice("authorized-team");
+		insertCoordinatorScope("unauthorized-team");
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Visible semantic pack note",
+			"visible semantic pack body",
+		);
+		const hiddenId = insertScopedMemory(
+			"unauthorized-team",
+			"Hidden semantic pack note",
+			"hidden semantic pack body",
+		);
+		const semanticResults: MemoryResult[] = [
+			{
+				id: hiddenId,
+				kind: "discovery",
+				title: "Hidden semantic pack note",
+				body_text: "hidden semantic pack body",
+				confidence: 0.9,
+				created_at: "2026-01-01T00:00:00.000Z",
+				updated_at: "2026-01-01T00:00:00.000Z",
+				tags_text: "",
+				score: 0.99,
+				session_id: sessionId,
+				metadata: {},
+				narrative: null,
+				facts: null,
+			},
+			{
+				id: visibleId,
+				kind: "discovery",
+				title: "Visible semantic pack note",
+				body_text: "visible semantic pack body",
+				confidence: 0.9,
+				created_at: "2026-01-01T00:00:00.000Z",
+				updated_at: "2026-01-01T00:00:00.000Z",
+				tags_text: "",
+				score: 0.5,
+				session_id: sessionId,
+				metadata: {},
+				narrative: null,
+				facts: null,
+			},
+		];
+
+		const pack = buildMemoryPack(store, "zzz_nomatch_zzz", 10, null, undefined, semanticResults);
+
+		expect(pack.item_ids).toContain(visibleId);
+		expect(pack.item_ids).not.toContain(hiddenId);
+		expect(pack.pack_text).toContain("Visible semantic pack note");
+		expect(pack.pack_text).not.toContain("Hidden semantic pack note");
+		expect(pack.metrics.sources.semantic).toBe(1);
+	});
+
+	it("keeps revalidating semantic candidates after hidden candidates fill the first chunk", () => {
+		grantScopeToLocalDevice("authorized-team");
+		insertCoordinatorScope("unauthorized-team");
+		const semanticResults: MemoryResult[] = [];
+		for (let i = 0; i < 205; i += 1) {
+			const hiddenId = insertScopedMemory(
+				"unauthorized-team",
+				`Hidden semantic pack note ${i}`,
+				"hidden semantic pack body",
+			);
+			semanticResults.push(
+				semanticCandidate(
+					hiddenId,
+					`Hidden semantic pack note ${i}`,
+					"hidden semantic pack body",
+					1,
+				),
+			);
+		}
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Visible semantic pack note after hidden chunk",
+			"visible semantic pack body",
+		);
+		semanticResults.push(
+			semanticCandidate(
+				visibleId,
+				"Visible semantic pack note after hidden chunk",
+				"visible semantic pack body",
+				0.5,
+			),
+		);
+
+		const pack = buildMemoryPack(store, "zzz_nomatch_zzz", 10, null, undefined, semanticResults);
+
+		expect(pack.item_ids).toContain(visibleId);
+		expect(pack.metrics.sources.semantic).toBe(1);
+	});
+
+	it("uses database content when revalidating semantic pack candidates", () => {
+		grantScopeToLocalDevice("authorized-team");
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Database semantic pack note",
+			"database semantic body",
+		);
+		const semanticResults = [
+			semanticCandidate(visibleId, "Forged semantic pack note", "forged semantic body", 0.9),
+		];
+
+		const pack = buildMemoryPack(store, "zzz_nomatch_zzz", 10, null, undefined, semanticResults);
+
+		expect(pack.pack_text).toContain("Database semantic pack note");
+		expect(pack.pack_text).not.toContain("Forged semantic pack note");
+	});
+
+	it("uses database content when revalidating semantic trace candidates", () => {
+		grantScopeToLocalDevice("authorized-team");
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Database semantic trace note",
+			"database semantic trace body",
+		);
+		const semanticResults = [
+			semanticCandidate(visibleId, "Forged semantic trace note", "forged semantic trace body", 0.9),
+		];
+
+		const trace = buildMemoryPackTrace(
+			store,
+			"zzz_nomatch_zzz",
+			10,
+			null,
+			undefined,
+			semanticResults,
+		);
+		const candidate = trace.retrieval.candidates.find((item) => item.id === visibleId);
+
+		expect(trace.output.pack_text).toContain("Database semantic trace note");
+		expect(trace.output.pack_text).not.toContain("Forged semantic trace note");
+		expect(candidate?.title).toBe("Database semantic trace note");
+		expect(candidate?.preview).toContain("database semantic trace body");
+		expect(candidate?.preview).not.toContain("forged semantic trace body");
+	});
+
+	it("excludes hidden semantic candidates from pack trace output", () => {
+		grantScopeToLocalDevice("authorized-team");
+		insertCoordinatorScope("unauthorized-team");
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Visible semantic trace note",
+			"visible semantic trace body",
+		);
+		const hiddenId = insertScopedMemory(
+			"unauthorized-team",
+			"Hidden semantic trace note",
+			"hidden semantic trace body",
+		);
+		const semanticResults = [
+			semanticCandidate(hiddenId, "Hidden semantic trace note", "hidden semantic trace body", 0.99),
+			semanticCandidate(
+				visibleId,
+				"Visible semantic trace note",
+				"visible semantic trace body",
+				0.5,
+			),
+		];
+
+		const trace = buildMemoryPackTrace(
+			store,
+			"zzz_nomatch_zzz",
+			10,
+			null,
+			undefined,
+			semanticResults,
+		);
+		const selectedIds = Object.values(trace.assembly.sections).flat();
+
+		expect(selectedIds).toContain(visibleId);
+		expect(selectedIds).not.toContain(hiddenId);
+		expect(trace.output.pack_text).toContain("Visible semantic trace note");
+		expect(trace.output.pack_text).not.toContain("Hidden semantic trace note");
+		expect(trace.retrieval.candidates.map((candidate) => candidate.id)).not.toContain(hiddenId);
+	});
+
+	it("keeps token-budget trimming behind the pack scope gate", () => {
+		grantScopeToLocalDevice("authorized-team");
+		insertCoordinatorScope("unauthorized-team");
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Visible budget semantic note",
+			"visible budget semantic body",
+		);
+		const hiddenId = insertScopedMemory(
+			"unauthorized-team",
+			"Hidden budget semantic note",
+			"hidden budget semantic body ".repeat(20),
+		);
+		const semanticResults = [
+			semanticCandidate(
+				hiddenId,
+				"Hidden budget semantic note",
+				"hidden budget semantic body",
+				0.99,
+			),
+			semanticCandidate(
+				visibleId,
+				"Visible budget semantic note",
+				"visible budget semantic body",
+				0.5,
+			),
+		];
+
+		const pack = buildMemoryPack(store, "zzz_nomatch_zzz", 10, 20, undefined, semanticResults);
+
+		expect(pack.item_ids).toContain(visibleId);
+		expect(pack.item_ids).not.toContain(hiddenId);
+		expect(pack.pack_text).toContain("Visible budget semantic note");
+		expect(pack.pack_text).not.toContain("Hidden budget semantic note");
+	});
+
+	it("applies scope filters to working-set file-ref candidates", () => {
+		grantScopeToLocalDevice("scope-a");
+		grantScopeToLocalDevice("scope-b");
+		const scopeAId = insertScopedMemory("scope-a", "Scope A working-set note", "working set body");
+		const scopeBId = insertScopedMemory("scope-b", "Scope B working-set note", "working set body");
+		for (const id of [scopeAId, scopeBId]) {
+			store.db
+				.prepare(
+					"INSERT OR IGNORE INTO memory_file_refs(memory_id, file_path, relation) VALUES (?, ?, 'modified')",
+				)
+				.run(id, "src/shared.ts");
+		}
+
+		const filters = { scope_id: "scope-a", working_set_paths: ["src/shared.ts"] };
+		const pack = buildMemoryPack(store, "zzz_nomatch_zzz", 10, null, filters);
+		const trace = buildMemoryPackTrace(store, "zzz_nomatch_zzz", 10, null, filters);
+		const traceIds = Object.values(trace.assembly.sections).flat();
+
+		expect(pack.item_ids).toContain(scopeAId);
+		expect(pack.item_ids).not.toContain(scopeBId);
+		expect(pack.pack_text).toContain("Scope A working-set note");
+		expect(pack.pack_text).not.toContain("Scope B working-set note");
+		expect(traceIds).toContain(scopeAId);
+		expect(traceIds).not.toContain(scopeBId);
+		expect(trace.retrieval.candidates.map((candidate) => candidate.id)).not.toContain(scopeBId);
+	});
+
+	it("scopes latest summary fallback during pack assembly", () => {
+		grantScopeToLocalDevice("authorized-team");
+		insertCoordinatorScope("unauthorized-team");
+		const insertSummary = (scopeId: string, title: string, createdAt: string): number => {
+			const info = store.db
+				.prepare(
+					`INSERT INTO memory_items(
+						session_id, kind, title, body_text, confidence, tags_text, active,
+						created_at, updated_at, metadata_json, rev, visibility, scope_id
+					) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1, 'shared', ?)`,
+				)
+				.run(sessionId, title, `${title} body`, createdAt, createdAt, scopeId);
+			return Number(info.lastInsertRowid);
+		};
+		insertSummary("authorized-team", "Authorized fallback summary", "2026-01-01T00:00:00.000Z");
+		insertSummary("unauthorized-team", "Hidden fallback summary", "2026-01-03T00:00:00.000Z");
+		insertScopedMemory(
+			"authorized-team",
+			"Newest visible non-summary",
+			"visible fallback anchor body",
+		);
+
+		const pack = buildMemoryPack(store, "zzz_nomatch_zzz", 1);
+
+		expect(pack.pack_text).toContain("Authorized fallback summary");
+		expect(pack.pack_text).not.toContain("Hidden fallback summary");
 	});
 
 	it("keeps topical terms when using task mode", () => {
@@ -708,8 +1201,8 @@ describe("buildMemoryPack", () => {
 			store.db
 				.prepare(
 					`INSERT INTO memory_items(
-						session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
-					) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+						session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev, scope_id
+					) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1, 'local-default')`,
 				)
 				.run(targetSessionId, title, body, now, now);
 		};
@@ -738,8 +1231,8 @@ describe("buildMemoryPack", () => {
 		store.db
 			.prepare(
 				`INSERT INTO memory_items(
-					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
-				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1, 'local-default')`,
 			)
 			.run(sessionId, "Recent summary", "Catch-up recap for current work", now, now);
 		const decisionId = store.remember(
@@ -762,8 +1255,8 @@ describe("buildMemoryPack", () => {
 		store.db
 			.prepare(
 				`INSERT INTO memory_items(
-					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
-				) VALUES (?, 'change', ?, ?, 0.3, '', 1, ?, ?, ?, 1)`,
+					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'change', ?, ?, 0.3, '', 1, ?, ?, ?, 1, 'local-default')`,
 			)
 			.run(
 				sessionId,
@@ -793,8 +1286,8 @@ describe("buildMemoryPack", () => {
 		store.db
 			.prepare(
 				`INSERT INTO memory_items(
-					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
-				) VALUES (?, 'change', ?, ?, 0.3, '', 1, ?, ?, ?, 1)`,
+					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'change', ?, ?, 0.3, '', 1, ?, ?, ?, 1, 'local-default')`,
 			)
 			.run(
 				sessionId,
@@ -816,8 +1309,8 @@ describe("buildMemoryPack", () => {
 		store.db
 			.prepare(
 				`INSERT INTO memory_items(
-					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
-				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1, 'local-default')`,
 			)
 			.run(sessionId, "Older summary", "Still the latest available summary", older, older);
 
@@ -836,8 +1329,8 @@ describe("buildMemoryPack", () => {
 		store.db
 			.prepare(
 				`INSERT INTO memory_items(
-					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
-				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1, 'local-default')`,
 			)
 			.run(sessionId, "Recent summary", "Generic recap text", now, now);
 

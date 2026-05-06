@@ -19,6 +19,7 @@ the network boundary you care about (for example VPNs).
 - it is not a codemem-hosted public service
 - it does not automatically create or repair `sync_peers`
 - joining a coordinator group does not, by itself, create an active sync relationship
+- joining a coordinator group does not, by itself, grant access to any Sharing domain
 
 ## Config
 
@@ -86,6 +87,11 @@ codemem coordinator group-create team-alpha --db-path ~/.codemem/coordinator.sql
 codemem coordinator list-groups --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator enroll-device team-alpha <device-id> --fingerprint <fingerprint> --public-key-file ~/.codemem/keys/device.key.pub --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator list-devices team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator list-scopes team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator create-scope team-alpha acme-work --label "Acme Work" --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator list-scope-members team-alpha acme-work --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator grant-scope-member team-alpha acme-work <device-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator revoke-scope-member team-alpha acme-work <device-id> --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator rename-device team-alpha <device-id> --name "work-laptop" --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator disable-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator remove-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
@@ -112,10 +118,48 @@ Coordinator group membership and sync peer relationships are not the same thing.
 
 - **Coordinator group membership** means a device is enrolled and can participate in coordinator-backed discovery.
 - **Sync peer** means a local device has an explicit `sync_peers` relationship it will use for direct replication.
+- **Sharing-domain membership** means a device is explicitly granted access to a `scope_id` such as `acme-work`.
 
 Today, coordinator-backed discovery refreshes dialable addresses for sync, but it does not automatically create, repair,
 or remove local `sync_peers` entries. That means a same-group device can be enrolled and discoverable without becoming
 an active sync peer.
+
+The same separation applies to Sharing domains: being in `team-alpha` does not
+authorize a device to receive `acme-work`, `personal:<actor_id>`, or any other
+domain. The coordinator group is the administrative container. The Sharing
+domain grant is the data-access decision.
+
+## Sharing-domain membership and revocation
+
+Use coordinator Sharing-domain commands when a group needs explicit access
+boundaries inside the same discovery/admin group. A common setup is one group
+for `team-alpha`, with separate domains such as `acme-work`, `oss-codemem`, and
+possibly one personal domain per actor-owned device set.
+
+Minimal flow:
+
+```fish
+codemem coordinator create-scope team-alpha acme-work --label "Acme Work" --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator grant-scope-member team-alpha acme-work <device-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator list-scope-members team-alpha acme-work --db-path ~/.codemem/coordinator.sqlite
+```
+
+Operational rules:
+
+- Grants and revocations are explicit per `(group, scope_id, device_id)`.
+- Membership epochs make cached grants stale after revocation or replacement.
+- Revocation stops future sync after peers refresh membership. It does not erase
+  memories already copied to a revoked device.
+- Project include/exclude filters can only narrow data after the Sharing-domain
+  membership check passes.
+- Local-only domains and migration review domains are not valid broad sharing
+  targets.
+
+If the coordinator is unavailable, peers can still attempt direct sync using
+cached peer addresses and cached membership state. They must not treat a
+coordinator outage as permission to widen access. When membership cannot be
+verified for a scoped operation, fail closed or keep data local until the cache
+is refreshed.
 
 ## How discovery works
 
@@ -189,6 +233,13 @@ Use the Worker reference path only when you specifically want a serverless/edge 
 feature lag — new coordinator capabilities may land in the built-in coordinator first and may not be ported to the
 reference Worker immediately. When you do choose it, follow the dedicated Cloudflare runbook instead of relying on the
 older scattered example notes.
+
+## Always-on peers
+
+If you need a high-uptime sync backstop, deploy an anchor peer separately from
+the coordinator. The anchor peer is a normal codemem peer with explicit
+Sharing-domain grants and its own local SQLite database. See
+[`docs/anchor-peer-deployment.md`](anchor-peer-deployment.md).
 
 ## Current limitations
 

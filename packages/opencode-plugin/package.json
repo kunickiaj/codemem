@@ -1,6 +1,6 @@
 {
 	"name": "@codemem/opencode-plugin",
-	"version": "0.30.0-alpha.2",
+	"version": "0.30.0-alpha.3",
 	"description": "CodeMem plugin for OpenCode",
 	"type": "module",
 	"main": "./index.js",
@@ -21,7 +21,7 @@
 		"test:packed-artifact": "node ./scripts/packed-artifact-smoke.mjs"
 	},
 	"dependencies": {
-		"@opencode-ai/plugin": "1.14.33"
+		"@opencode-ai/plugin": "1.14.39"
 	},
 	"repository": {
 		"type": "git",

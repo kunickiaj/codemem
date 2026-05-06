@@ -109,20 +109,20 @@ describe("buildPackArgs", () => {
 });
 
 describe("applyInjectedContextToOutput", () => {
-  test("recomputes pack on every call and toasts once per session", async () => {
+  test("recomputes pack on every call so same-session cache hits cannot cross scopes", async () => {
     const injectionToastShown = new Set();
     const buildInjectedContext = vi
       .fn()
       .mockResolvedValueOnce({
-        text: "[codemem context]\nfirst turn",
+        text: "[codemem context]\n## Summary\n[1] (decision) Authorized scope A",
         metrics: { items: 1, pack_tokens: 42, pack_delta_available: false },
       })
       .mockResolvedValueOnce({
-        text: "[codemem context]\nsecond turn",
+        text: "[codemem context]\n## Summary\n[2] (decision) Authorized scope B",
         metrics: { items: 2, pack_tokens: 88, pack_delta_available: false },
       });
     const showToast = vi.fn().mockResolvedValue(undefined);
-    const resolveInjectQuery = vi.fn().mockReturnValue("auth fix codemem");
+    const resolveInjectQuery = vi.fn().mockReturnValue("same prompt after scope switch");
 
     const firstOutput = {};
     const firstApplied = await __testUtils.applyInjectedContextToOutput({
@@ -148,8 +148,13 @@ describe("applyInjectedContextToOutput", () => {
 
     expect(firstApplied).toBe(true);
     expect(secondApplied).toBe(true);
-    expect(firstOutput.system).toEqual(["[codemem context]\nfirst turn"]);
-    expect(secondOutput.system).toEqual(["[codemem context]\nsecond turn"]);
+    expect(firstOutput.system).toEqual([
+      "[codemem context]\n## Summary\n[1] (decision) Authorized scope A",
+    ]);
+    expect(secondOutput.system).toEqual([
+      "[codemem context]\n## Summary\n[2] (decision) Authorized scope B",
+    ]);
+    expect(secondOutput.system.join("\n")).not.toContain("Authorized scope A");
     expect(buildInjectedContext).toHaveBeenCalledTimes(2);
     expect(showToast).toHaveBeenCalledTimes(1);
   });

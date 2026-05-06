@@ -1,7 +1,7 @@
 {
   "name": "codemem",
   "description": "Persistent memory for Claude Code. Capture work across sessions and recall relevant context.",
-  "version": "0.30.0-alpha.2",
+  "version": "0.30.0-alpha.3",
   "author": {
     "name": "Adam Kunicki"
   },

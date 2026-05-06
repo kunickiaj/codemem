@@ -6,7 +6,7 @@
  * Dynamic filter queries use raw SQL since the filter builder returns SQL strings.
  */
 
-import { and, eq, inArray } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson } from "./db.js";
@@ -94,6 +94,7 @@ const DURABLE_ROLE_BONUS = 0.12;
 const GENERAL_ROLE_BONUS = 0.05;
 const EPHEMERAL_ROLE_PENALTY = 0.45;
 const EXPLICIT_RECAP_ROLE_BONUS = 0.08;
+const MAX_TIMELINE_DEPTH = 200;
 const PERSONAL_QUERY_PATTERNS = [
 	/\bwhat did i\b/i,
 	/\bmy notes\b/i,
@@ -198,6 +199,12 @@ function trustBiasMode(filters: MemoryFilters | undefined): "off" | "soft" {
 		.trim()
 		.toLowerCase();
 	return value === "soft" ? "soft" : "off";
+}
+
+function clampTimelineDepth(value: number): number {
+	if (value === Number.POSITIVE_INFINITY) return MAX_TIMELINE_DEPTH;
+	if (!Number.isFinite(value)) return 0;
+	return Math.min(Math.max(0, Math.trunc(value)), MAX_TIMELINE_DEPTH);
 }
 
 function widenSharedWhenWeakEnabled(filters: MemoryFilters | undefined): boolean {
@@ -698,6 +705,7 @@ function fetchResultsByIds(
 	const filterResult = buildFilterClausesWithContext(filters, {
 		actorId: store.actorId,
 		deviceId: store.deviceId,
+		enforceScopeVisibility: true,
 	});
 	whereClauses.push(...filterResult.clauses);
 	params.push(...filterResult.params);
@@ -995,6 +1003,7 @@ function searchOnce(
 	const filterResult = buildFilterClausesWithContext(filters, {
 		actorId: store.actorId,
 		deviceId: store.deviceId,
+		enforceScopeVisibility: true,
 	});
 	whereClauses.push(...filterResult.clauses);
 	params.push(...filterResult.params);
@@ -1102,6 +1111,8 @@ function timelineAround(
 	const anchorId = anchor.id;
 	const anchorCreatedAt = anchor.created_at;
 	const anchorSessionId = anchor.session_id;
+	const effectiveDepthBefore = clampTimelineDepth(depthBefore);
+	const effectiveDepthAfter = clampTimelineDepth(depthAfter);
 
 	if (!anchorId || !anchorCreatedAt) {
 		return [];
@@ -1110,6 +1121,7 @@ function timelineAround(
 	const filterResult = buildFilterClausesWithContext(filters, {
 		actorId: store.actorId,
 		deviceId: store.deviceId,
+		enforceScopeVisibility: true,
 	});
 	const whereParts = ["memory_items.active = 1", ...filterResult.clauses];
 	const baseParams = [...filterResult.params];
@@ -1123,6 +1135,21 @@ function timelineAround(
 	const joinClause = filterResult.joinSessions
 		? "JOIN sessions ON sessions.id = memory_items.session_id"
 		: "";
+
+	// Re-fetch anchor row to get full columns (anchor from search may be partial),
+	// but keep it behind the same scope/filter gate as the surrounding window.
+	const anchorRow = store.db
+		.prepare(
+			`SELECT memory_items.*
+			 FROM memory_items
+			 ${joinClause}
+			 WHERE ${whereClause}
+			   AND memory_items.id = ?
+			 LIMIT 1`,
+		)
+		.get(...baseParams, anchorId) as MemoryItem | undefined;
+
+	if (!anchorRow) return [];
 
 	// Before: older memories, descending (we'll reverse later)
 	const beforeRows = store.db
@@ -1138,7 +1165,13 @@ function timelineAround(
 			 ORDER BY memory_items.created_at DESC, memory_items.id DESC
 			 LIMIT ?`,
 		)
-		.all(...baseParams, anchorCreatedAt, anchorCreatedAt, anchorId, depthBefore) as MemoryItem[];
+		.all(
+			...baseParams,
+			anchorCreatedAt,
+			anchorCreatedAt,
+			anchorId,
+			effectiveDepthBefore,
+		) as MemoryItem[];
 
 	// After: newer memories, ascending
 	const afterRows = store.db
@@ -1154,21 +1187,17 @@ function timelineAround(
 			 ORDER BY memory_items.created_at ASC, memory_items.id ASC
 			 LIMIT ?`,
 		)
-		.all(...baseParams, anchorCreatedAt, anchorCreatedAt, anchorId, depthAfter) as MemoryItem[];
-
-	// Re-fetch anchor row to get full columns (anchor from search may be partial)
-	const d = getDrizzle(store.db);
-	const anchorRow = d
-		.select()
-		.from(schema.memoryItems)
-		.where(and(eq(schema.memoryItems.id, anchorId), eq(schema.memoryItems.active, 1)))
-		.get() as MemoryItem | undefined;
+		.all(
+			...baseParams,
+			anchorCreatedAt,
+			anchorCreatedAt,
+			anchorId,
+			effectiveDepthAfter,
+		) as MemoryItem[];
 
 	// Combine: reversed(before) + anchor + after
 	const rows: MemoryItem[] = [...beforeRows.reverse()];
-	if (anchorRow) {
-		rows.push(anchorRow);
-	}
+	rows.push(anchorRow);
 	rows.push(...afterRows);
 
 	return rows.map((row) => {
@@ -1285,25 +1314,28 @@ function loadItemsByIdsForExplain(
 		};
 	}
 
-	const d = getDrizzle(store.db);
-	const allRows = d
-		.select()
-		.from(schema.memoryItems)
-		.where(and(eq(schema.memoryItems.active, 1), inArray(schema.memoryItems.id, ids)))
-		.all() as MemoryItem[];
-	const allFoundIds = new Set(allRows.map((item) => item.id));
-
 	// Placeholders for the dynamic-filter raw SQL queries below
 	const placeholders = ids.map(() => "?").join(", ");
+	const scopeContext = {
+		actorId: store.actorId,
+		deviceId: store.deviceId,
+		enforceScopeVisibility: true,
+	};
+	const visibilityFilter = buildFilterClausesWithContext(null, scopeContext);
+	const visibleRows = store.db
+		.prepare(
+			`SELECT memory_items.*
+			 FROM memory_items
+			 WHERE ${["memory_items.active = 1", `memory_items.id IN (${placeholders})`, ...visibilityFilter.clauses].join(" AND ")}`,
+		)
+		.all(...ids, ...visibilityFilter.params) as MemoryItem[];
+	const visibleFoundIds = new Set(visibleRows.map((item) => item.id));
 
-	let projectScopedRows = allRows;
-	let projectScopedIds = new Set(allFoundIds);
+	let projectScopedRows = visibleRows;
+	let projectScopedIds = new Set(visibleFoundIds);
 	if (filters.project) {
 		const projectFiltersOnly: MemoryFilters = { project: filters.project };
-		const projectFilterResult = buildFilterClausesWithContext(projectFiltersOnly, {
-			actorId: store.actorId,
-			deviceId: store.deviceId,
-		});
+		const projectFilterResult = buildFilterClausesWithContext(projectFiltersOnly, scopeContext);
 		if (projectFilterResult.clauses.length > 0) {
 			const projectJoin = projectFilterResult.joinSessions
 				? "JOIN sessions ON sessions.id = memory_items.session_id"
@@ -1322,10 +1354,7 @@ function loadItemsByIdsForExplain(
 		}
 	}
 
-	const filterResult = buildFilterClausesWithContext(filters, {
-		actorId: store.actorId,
-		deviceId: store.deviceId,
-	});
+	const filterResult = buildFilterClausesWithContext(filters, scopeContext);
 	const joinClause = filterResult.joinSessions
 		? "JOIN sessions ON sessions.id = memory_items.session_id"
 		: "";
@@ -1339,9 +1368,9 @@ function loadItemsByIdsForExplain(
 		.all(...ids, ...filterResult.params) as MemoryItem[];
 	const scopedIds = new Set(scopedRows.map((item) => item.id));
 
-	const missingNotFound = ids.filter((memoryId) => !allFoundIds.has(memoryId));
+	const missingNotFound = ids.filter((memoryId) => !visibleFoundIds.has(memoryId));
 	const missingProjectMismatch = ids.filter(
-		(memoryId) => allFoundIds.has(memoryId) && !projectScopedIds.has(memoryId),
+		(memoryId) => visibleFoundIds.has(memoryId) && !projectScopedIds.has(memoryId),
 	);
 	const missingFilterMismatch = ids.filter(
 		(memoryId) => projectScopedIds.has(memoryId) && !scopedIds.has(memoryId),

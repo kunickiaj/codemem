@@ -10,11 +10,13 @@ import type {
 	CoordinatorBootstrapGrantVerification,
 	MaintenanceJobSnapshot,
 	MemoryStore,
+	ProjectScopeGuardrailWarning,
 	ReplicationOp,
 	SemanticIndexDiagnostics,
 } from "@codemem/core";
 import {
 	addSyncScopeToBoundary,
+	analyzeProjectScopeMappingChangeGuardrails,
 	applyReplicationOps,
 	buildBaseUrl,
 	cleanupNonces,
@@ -43,18 +45,24 @@ import {
 	coordinatorUpdateScopeAction,
 	createCoordinatorReciprocalApproval,
 	DEFAULT_TIME_WINDOW_S,
+	deleteProjectScopeSettingsMapping,
 	ensureDeviceIdentity,
 	extractReplicationOps,
+	type FilterReplicationSkipped,
 	filterReplicationOpsForSyncWithStatus,
 	fingerprintPublicKey,
 	getCoordinatorGroupPreference,
 	getSemanticIndexDiagnostics,
 	getSyncResetState,
 	type InboundScopeRejectionPeerSummary,
+	LOCAL_DEFAULT_SCOPE_ID,
 	LOCAL_SYNC_CAPABILITY,
 	listCoordinatorJoinRequests,
 	listInboundScopeRejections,
 	listMaintenanceJobs,
+	listProjectScopeCandidates,
+	listProjectScopeSettingsMappings,
+	listSharingDomainSettingsScopes,
 	loadMemorySnapshotPageForPeer,
 	loadReplicationOpsForPeer,
 	lookupCoordinatorPeers,
@@ -74,6 +82,7 @@ import {
 	syncScopeResetRequiredPayload,
 	updatePeerAddresses,
 	upsertCoordinatorGroupPreference,
+	upsertProjectScopeSettingsMapping,
 	verifySignature,
 } from "@codemem/core";
 import { and, count, desc, eq, max, ne } from "drizzle-orm";
@@ -95,6 +104,24 @@ type SyncRuntimeStatus = {
 		| null;
 	detail?: string | null;
 };
+
+type SafeSkippedSyncDetail = Pick<
+	FilterReplicationSkipped,
+	"reason" | "skipped_count" | "scope_id" | "project" | "visibility"
+>;
+
+function safeSkippedSyncDetail(
+	detail: FilterReplicationSkipped | null | undefined,
+): SafeSkippedSyncDetail | null {
+	if (!detail) return null;
+	return {
+		reason: detail.reason,
+		skipped_count: detail.skipped_count,
+		scope_id: detail.scope_id ?? null,
+		project: detail.project ?? null,
+		visibility: detail.visibility ?? null,
+	};
+}
 
 interface SyncProtocolRouteOptions {
 	routeRateLimit?: {
@@ -241,11 +268,53 @@ function optionalViewerString(body: Record<string, unknown>, key: string): strin
 	return String(value).trim() || null;
 }
 
+function optionalViewerStrictString(body: Record<string, unknown>, key: string): string | null {
+	const value = body[key];
+	if (value == null) return null;
+	if (typeof value !== "string") throw new Error(`${key} must be string`);
+	return value.trim() || null;
+}
+
+function optionalViewerStringList(body: Record<string, unknown>, key: string): string[] {
+	const value = body[key];
+	if (value == null) return [];
+	if (!Array.isArray(value)) throw new Error(`${key} must be an array of strings`);
+	return [
+		...new Set(
+			value
+				.map((item) => {
+					if (typeof item !== "string") throw new Error(`${key} must be an array of strings`);
+					return item.trim();
+				})
+				.filter(Boolean),
+		),
+	];
+}
+
 function optionalViewerNumber(body: Record<string, unknown>, key: string): number | null {
 	const value = body[key];
 	if (value == null || value === "") return null;
 	const number = typeof value === "number" ? value : Number(value);
 	return Number.isFinite(number) ? Math.trunc(number) : Number.NaN;
+}
+
+function optionalViewerInteger(body: Record<string, unknown>, key: string): number | null {
+	const value = body[key];
+	if (value == null || value === "") return null;
+	const number = typeof value === "number" ? value : Number(value);
+	return Number.isInteger(number) ? number : Number.NaN;
+}
+
+function missingGuardrailConfirmations(
+	warnings: ProjectScopeGuardrailWarning[],
+	confirmedTokens: string[],
+): ProjectScopeGuardrailWarning[] {
+	const confirmed = new Set(confirmedTokens);
+	return warnings.filter(
+		(warning) =>
+			warning.requires_confirmation &&
+			(!warning.confirmation_token || !confirmed.has(warning.confirmation_token)),
+	);
 }
 
 function coordinatorAdminMutationStatus(message: string): 400 | 404 | 409 | 502 {
@@ -646,6 +715,50 @@ function currentProjectScope(
 	};
 }
 
+function cleanPeerScopeText(value: unknown): string | null {
+	const text = String(value ?? "").trim();
+	return text || null;
+}
+
+function peerAuthorizedScopes(store: MemoryStore, peerDeviceId: string): Record<string, unknown>[] {
+	const deviceId = peerDeviceId.trim();
+	if (!deviceId) return [];
+	const rows = store.db
+		.prepare(
+			`SELECT
+				rs.scope_id,
+				rs.label,
+				rs.kind,
+				rs.authority_type,
+				rs.coordinator_id,
+				rs.group_id,
+				sm.role,
+				sm.membership_epoch,
+				sm.updated_at
+			 FROM scope_memberships sm
+			 JOIN replication_scopes rs ON rs.scope_id = sm.scope_id
+			 WHERE sm.device_id = ?
+			   AND sm.status = 'active'
+			   AND rs.status = 'active'
+			   AND sm.membership_epoch >= rs.membership_epoch
+			 ORDER BY CASE WHEN rs.authority_type = 'local' THEN 1 ELSE 0 END,
+			          rs.label COLLATE NOCASE,
+			          rs.scope_id`,
+		)
+		.all(deviceId) as Array<Record<string, unknown>>;
+	return rows.map((row) => ({
+		scope_id: String(row.scope_id ?? ""),
+		label: String(row.label ?? row.scope_id ?? ""),
+		kind: String(row.kind ?? "user"),
+		authority_type: String(row.authority_type ?? "local"),
+		coordinator_id: cleanPeerScopeText(row.coordinator_id),
+		group_id: cleanPeerScopeText(row.group_id),
+		role: String(row.role ?? "member"),
+		membership_epoch: Number(row.membership_epoch ?? 0),
+		updated_at: cleanPeerScopeText(row.updated_at),
+	}));
+}
+
 function ensureLocalActorRecord(store: MemoryStore): void {
 	const d = drizzle(store.db, { schema });
 	const existing = d
@@ -988,12 +1101,16 @@ function filterOpsForPeer(
 	localDeviceId: string | null,
 	ops: ReplicationOp[],
 	options: { applyScopeFilter?: boolean } = {},
-): { allowed: ReplicationOp[]; skipped: number } {
+): { allowed: ReplicationOp[]; skipped: number; skippedDetail: SafeSkippedSyncDetail | null } {
 	const [allowed, , skipped] = filterReplicationOpsForSyncWithStatus(store.db, ops, peerDeviceId, {
 		localDeviceId,
 		applyScopeFilter: options.applyScopeFilter,
 	});
-	return { allowed, skipped: skipped?.skipped_count ?? 0 };
+	return {
+		allowed,
+		skipped: skipped?.skipped_count ?? 0,
+		skippedDetail: skipped ? safeSkippedSyncDetail(skipped) : null,
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -1042,9 +1159,10 @@ function mapPeerRow(
 		last_error: showDiag ? row.last_error : null,
 		has_error: Boolean(row.last_error),
 		claimed_local_actor: Boolean(row.claimed_local_actor),
-		claimed_local_actor_scope: showDiag ? claimedLocalActorScopeStatus(store, row) : null,
+		claimed_local_actor_scope: claimedLocalActorScopeStatus(store, row),
 		actor_id: row.actor_id ?? null,
 		actor_display_name: row.actor_display_name ?? null,
+		authorized_scopes: peerAuthorizedScopes(store, peerId),
 		project_scope: {
 			...currentProjectScope(row, readPeerProjectFilters(store, String(row.peer_device_id ?? ""))),
 		},
@@ -1340,6 +1458,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				ops: filtered.allowed,
 				next_cursor: nextCursor,
 				skipped: filtered.skipped,
+				skipped_detail: filtered.skippedDetail,
 			});
 		} catch {
 			return c.json({ error: "internal_error" }, 500);
@@ -1542,6 +1661,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		return c.json({
 			...result,
 			skipped,
+			skipped_detail: filtered.skippedDetail,
 			sync_capability: LOCAL_SYNC_CAPABILITY,
 			scope_id: scopeRequest.scope_id,
 		});
@@ -1730,6 +1850,11 @@ export function syncRoutes(
 				statusPayload.daemon_detail = runtimeStatus.detail ?? daemonDetail;
 			}
 
+			const coordinatorSnapshot = await coordinatorStatusSnapshot(store, config);
+			const coordinator = traceSync("coordinator", () =>
+				redactCoordinatorStatus(coordinatorSnapshot, showDiag),
+			);
+
 			// Build peers list using deduplicated mapPeerRow
 			const peerRows = traceSync(
 				"peerRows",
@@ -1803,10 +1928,6 @@ export function syncRoutes(
 			};
 			const legacyDevices = traceSync("legacyDevices", () => store.claimableLegacyDeviceIds());
 			const sharingReview = traceSync("sharingReview", () => store.sharingReviewSummary(project));
-			const coordinatorSnapshot = await coordinatorStatusSnapshot(store, config);
-			const coordinator = traceSync("coordinator", () =>
-				redactCoordinatorStatus(coordinatorSnapshot, showDiag),
-			);
 			let joinRequests: Record<string, unknown>[] = [];
 			if (includeJoinRequests && showDiag && config.syncCoordinatorAdminSecret) {
 				try {
@@ -2107,7 +2228,12 @@ export function syncRoutes(
 		const items = [] as Array<Record<string, unknown>>;
 		for (const peerId of peerIds) {
 			const result = await runSyncPass(store.db, peerId, { scanner: store.scanner });
-			items.push({ peer_device_id: peerId, ...result });
+			items.push({
+				peer_device_id: peerId,
+				...result,
+				skippedOut: undefined,
+				skipped_out: safeSkippedSyncDetail(result.skippedOut),
+			});
 		}
 		return c.json({ items });
 	});
@@ -2162,6 +2288,93 @@ export function syncRoutes(
 			ok: true,
 			project_scope: currentProjectScope(row, readPeerProjectFilters(store, peerDeviceId)),
 		});
+	});
+
+	app.get("/api/sync/sharing-domains/settings", (c) => {
+		const store = getStore();
+		const limit = Math.max(1, queryInt(c.req.query("limit"), 250));
+		return c.json({
+			scopes: listSharingDomainSettingsScopes(store.db),
+			mappings: listProjectScopeSettingsMappings(store.db),
+			projects: listProjectScopeCandidates(store.db, { limit }),
+			local_default_scope_id: LOCAL_DEFAULT_SCOPE_ID,
+		});
+	});
+
+	app.put("/api/sync/sharing-domains/project-mappings", async (c) => {
+		const store = getStore();
+		const body = await parseViewerJsonBody(c);
+		if (!body) return c.json({ error: "invalid json" }, 400);
+		try {
+			const id = optionalViewerInteger(body, "id");
+			const priority = optionalViewerInteger(body, "priority");
+			if (Number.isNaN(id)) return c.json({ error: "id must be an integer" }, 400);
+			if (Number.isNaN(priority)) return c.json({ error: "priority must be an integer" }, 400);
+			const workspaceIdentity = optionalViewerStrictString(body, "workspace_identity");
+			const projectPattern = optionalViewerStrictString(body, "project_pattern");
+			const scopeId = optionalViewerStrictString(body, "scope_id") ?? "";
+			const source = optionalViewerStrictString(body, "source") ?? "user";
+			const confirmedGuardrailTokens = optionalViewerStringList(body, "confirmed_guardrail_tokens");
+			const mappingInput = {
+				id,
+				workspace_identity: workspaceIdentity,
+				project_pattern: projectPattern,
+				scope_id: scopeId,
+				priority,
+				source,
+			};
+			const analysis = analyzeProjectScopeMappingChangeGuardrails(store.db, mappingInput);
+			if (
+				analysis.requested_workspace_identity?.startsWith("unmapped:") &&
+				scopeId !== LOCAL_DEFAULT_SCOPE_ID
+			) {
+				return c.json(
+					{
+						error: "unmapped_project_local_only",
+						message:
+							"Unmapped projects need a stable path, git remote, or workspace id before assigning a non-local Sharing domain.",
+						guardrail_warnings: analysis.warnings,
+					},
+					400,
+				);
+			}
+			const missingConfirmations = missingGuardrailConfirmations(
+				analysis.warnings,
+				confirmedGuardrailTokens,
+			);
+			if (missingConfirmations.length > 0) {
+				const missingCodes = [...new Set(missingConfirmations.map((warning) => warning.code))];
+				const missingTokens = [
+					...new Set(missingConfirmations.map((warning) => warning.confirmation_token)),
+				].filter((token): token is string => typeof token === "string" && token.length > 0);
+				return c.json(
+					{
+						error: "guardrail_confirmation_required",
+						required_guardrails: missingCodes,
+						required_guardrail_tokens: missingTokens,
+						guardrail_warnings: analysis.warnings,
+					},
+					409,
+				);
+			}
+			const mapping = upsertProjectScopeSettingsMapping(store.db, {
+				...mappingInput,
+			});
+			return c.json({ ok: true, mapping, guardrail_warnings: analysis.warnings });
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+		}
+	});
+
+	app.delete("/api/sync/sharing-domains/project-mappings/:id", (c) => {
+		const store = getStore();
+		const id = Number(c.req.param("id"));
+		try {
+			const deleted = deleteProjectScopeSettingsMapping(store.db, id);
+			return c.json({ ok: true, deleted });
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+		}
 	});
 
 	app.post("/api/sync/peers/identity", async (c) => {

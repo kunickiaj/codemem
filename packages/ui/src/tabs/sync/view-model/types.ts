@@ -41,7 +41,19 @@ export interface UiSyncRunItem {
 	address?: string;
 	opsIn: number;
 	opsOut: number;
+	opsSkipped?: number;
+	skipped_out?: UiSyncSkippedOutDetail | null;
 	addressErrors: Array<{ address: string; error: string }>;
+}
+
+export type UiSyncSkippedOutReason = "scope_filter" | "visibility_filter" | "project_filter";
+
+export interface UiSyncSkippedOutDetail {
+	reason?: UiSyncSkippedOutReason | string;
+	skipped_count?: number;
+	project?: string | null;
+	scope_id?: string | null;
+	visibility?: string | null;
 }
 
 export interface UiSyncRunResponse {
@@ -105,12 +117,41 @@ export type PeerScopeRejectionReason =
 	| "sender_not_member"
 	| "receiver_not_member"
 	| "stale_epoch"
-	| "scope_mismatch";
+	| "scope_mismatch"
+	| "visibility_filter"
+	| "project_filter";
 
 export interface PeerScopeRejectionsSummary {
 	total?: number;
 	by_reason?: Partial<Record<PeerScopeRejectionReason, number>>;
 	last_at?: string | null;
+}
+
+export interface PeerProjectScopeLike {
+	include?: string[];
+	exclude?: string[];
+	effective_include?: string[];
+	effective_exclude?: string[];
+	inherits_global?: boolean;
+}
+
+export interface PeerAuthorizedScopeLike {
+	scope_id?: string | null;
+	label?: string | null;
+	kind?: string | null;
+	authority_type?: string | null;
+	coordinator_id?: string | null;
+	group_id?: string | null;
+	role?: string | null;
+	membership_epoch?: number | null;
+	updated_at?: string | null;
+}
+
+export interface PeerClaimedLocalActorScopeLike {
+	scope_id?: string | null;
+	authorized?: boolean;
+	state?: string | null;
+	action_required?: boolean;
 }
 
 export interface PeerLike {
@@ -123,6 +164,10 @@ export interface PeerLike {
 	status?: SyncPeerStatusLike;
 	recent_ops?: PeerRecentOps;
 	scope_rejections?: PeerScopeRejectionsSummary;
+	project_scope?: PeerProjectScopeLike;
+	authorized_scopes?: PeerAuthorizedScopeLike[];
+	claimed_local_actor?: boolean;
+	claimed_local_actor_scope?: PeerClaimedLocalActorScopeLike | null;
 }
 
 export interface DiscoveredDeviceLike {

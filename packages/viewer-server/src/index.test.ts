@@ -17,6 +17,7 @@ import {
 	insertTestSession,
 	loadPublicKey,
 	MemoryStore,
+	seedMixedScopeFixture,
 	startMaintenanceJob,
 	updateMaintenanceJob,
 	VERSION,
@@ -62,6 +63,7 @@ function insertTestMemory(
 		originDeviceId?: string | null;
 		createdAt?: string;
 		active?: boolean;
+		scopeId?: string | null;
 	},
 ): number {
 	const now = options.createdAt ?? new Date().toISOString();
@@ -71,8 +73,9 @@ function insertTestMemory(
 				session_id, kind, title, subtitle, body_text, confidence, tags_text, active,
 				created_at, updated_at, metadata_json, actor_id, actor_display_name, visibility,
 				workspace_id, workspace_kind, origin_device_id, origin_source, trust_state,
-				facts, narrative, concepts, files_read, files_modified, prompt_number, rev, import_key
-			) VALUES (?, ?, ?, NULL, ?, 0.5, '', ?, ?, ?, ?, ?, ?, 'shared', 'shared:default', 'shared', ?, ?, 'trusted', NULL, NULL, NULL, NULL, NULL, NULL, 1, ?)`,
+				facts, narrative, concepts, files_read, files_modified, prompt_number, rev, import_key,
+				scope_id
+			) VALUES (?, ?, ?, NULL, ?, 0.5, '', ?, ?, ?, ?, ?, ?, 'shared', 'shared:default', 'shared', ?, ?, 'trusted', NULL, NULL, NULL, NULL, NULL, NULL, 1, ?, ?)`,
 		)
 		.run(
 			options.sessionId,
@@ -90,6 +93,7 @@ function insertTestMemory(
 			options.originDeviceId === undefined ? "test-device-001" : options.originDeviceId,
 			String(options.metadata?.source ?? "test"),
 			`${options.kind}-${options.title}-${now}`,
+			options.scopeId ?? null,
 		);
 	return Number(result.lastInsertRowid);
 }
@@ -278,6 +282,38 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("counts only visible memory scopes in memory stats", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Visible stats memory",
+					scopeId: "authorized-team",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Hidden stats memory",
+					scopeId: "unauthorized-team",
+				});
+
+				const res = await app.request("/api/stats");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as { database: Record<string, number> };
+				expect(body.database.memory_items).toBe(1);
+				expect(body.database.active_memory_items).toBe(1);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("keeps active maintenance jobs in stable started order", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
@@ -337,6 +373,11 @@ describe("viewer-server", () => {
 				if (!store) throw new Error("store not initialized");
 				const sessionId = insertTestSession(store.db);
 				store.db.prepare("UPDATE sessions SET project = ? WHERE id = ?").run("codemem", sessionId);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Usage-visible memory",
+				});
 				store.db
 					.prepare(
 						`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
@@ -366,6 +407,79 @@ describe("viewer-server", () => {
 				cleanup();
 			}
 		});
+
+		it("removes hidden memory ids from recent pack metadata", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+				const sessionId = insertTestSession(store.db);
+				const visibleId = insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Visible pack item",
+					scopeId: "authorized-team",
+				});
+				const hiddenId = insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Hidden pack item",
+					scopeId: "unauthorized-team",
+				});
+				store.db
+					.prepare(
+						`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
+						 VALUES (?, 'pack', 123, 0, 456, ?, ?)`,
+					)
+					.run(
+						sessionId,
+						"2026-03-26T23:30:00Z",
+						JSON.stringify({
+							pack_item_ids: [visibleId, hiddenId],
+							added_ids: [visibleId, hiddenId],
+							removed_ids: [hiddenId],
+							retained_ids: [String(visibleId), String(hiddenId)],
+						}),
+					);
+				const hiddenSessionId = insertTestSession(store.db);
+				const hiddenOnlyId = insertTestMemory(store, {
+					sessionId: hiddenSessionId,
+					kind: "discovery",
+					title: "Hidden only pack item",
+					scopeId: "unauthorized-team",
+				});
+				store.db
+					.prepare(
+						`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
+						 VALUES (?, 'pack', 999, 0, 999, ?, ?)`,
+					)
+					.run(
+						hiddenSessionId,
+						"2026-03-27T23:30:00Z",
+						JSON.stringify({ pack_item_ids: [hiddenOnlyId], project: "secret-project" }),
+					);
+
+				const res = await app.request("/api/usage");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					recent_packs: Array<{ metadata_json: unknown }>;
+					totals: { count: number; tokens_read: number; tokens_saved: number };
+				};
+				expect(body.recent_packs).toHaveLength(1);
+				expect(body.totals).toMatchObject({ count: 1, tokens_read: 123, tokens_saved: 456 });
+				expect(body.recent_packs[0]?.metadata_json).toMatchObject({
+					pack_item_ids: [visibleId],
+					added_ids: [visibleId],
+					removed_ids: [],
+					retained_ids: [visibleId],
+				});
+			} finally {
+				cleanup();
+			}
+		});
 	});
 
 	describe("GET /api/sessions", () => {
@@ -376,7 +490,12 @@ describe("viewer-server", () => {
 				const _warmup = await app.request("/api/stats");
 				const store = getStore();
 				if (store) {
-					insertTestSession(store.db);
+					const sessionId = insertTestSession(store.db);
+					insertTestMemory(store, {
+						sessionId,
+						kind: "discovery",
+						title: "Visible session memory",
+					});
 				}
 				const res = await app.request("/api/sessions");
 				expect(res.status).toBe(200);
@@ -402,9 +521,156 @@ describe("viewer-server", () => {
 				cleanup();
 			}
 		});
+
+		it("only lists projects backed by visible memory scopes", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+
+				const visibleSessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET project = ? WHERE id = ?")
+					.run("visible-project", visibleSessionId);
+				insertTestMemory(store, {
+					sessionId: visibleSessionId,
+					kind: "discovery",
+					title: "Visible scoped memory",
+					scopeId: "authorized-team",
+				});
+
+				const hiddenSessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET project = ? WHERE id = ?")
+					.run("secret-project", hiddenSessionId);
+				insertTestMemory(store, {
+					sessionId: hiddenSessionId,
+					kind: "discovery",
+					title: "Hidden scoped memory",
+					scopeId: "unauthorized-team",
+				});
+
+				const projectsRes = await app.request("/api/projects");
+				expect(projectsRes.status).toBe(200);
+				const projectsBody = (await projectsRes.json()) as { projects: string[] };
+				expect(projectsBody.projects).toEqual(["visible-project"]);
+
+				const sessionsRes = await app.request("/api/sessions");
+				expect(sessionsRes.status).toBe(200);
+				const sessionsBody = (await sessionsRes.json()) as {
+					items: Array<{ id: number; project: string }>;
+				};
+				expect(sessionsBody.items.map((item) => item.id)).toEqual([visibleSessionId]);
+			} finally {
+				cleanup();
+			}
+		});
 	});
 
 	describe("memory feed routes", () => {
+		it("applies sharing-domain visibility to memory list endpoints", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+				const sessionId = insertTestSession(store.db);
+
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Visible observation",
+					scopeId: "authorized-team",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Hidden observation",
+					scopeId: "unauthorized-team",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "session_summary",
+					title: "Visible summary",
+					scopeId: "authorized-team",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "session_summary",
+					title: "Hidden summary",
+					scopeId: "unauthorized-team",
+				});
+
+				const observationsRes = await app.request("/api/observations");
+				expect(observationsRes.status).toBe(200);
+				const observations = (await observationsRes.json()) as {
+					items: Array<{ title: string }>;
+				};
+				expect(observations.items.map((item) => item.title)).toEqual(["Visible observation"]);
+
+				const summariesRes = await app.request("/api/summaries");
+				expect(summariesRes.status).toBe(200);
+				const summaries = (await summariesRes.json()) as { items: Array<{ title: string }> };
+				expect(summaries.items.map((item) => item.title)).toEqual(["Visible summary"]);
+
+				const memoryRes = await app.request("/api/memory?limit=10");
+				expect(memoryRes.status).toBe(200);
+				const memory = (await memoryRes.json()) as { items: Array<{ title: string }> };
+				expect(memory.items.map((item) => item.title).sort()).toEqual([
+					"Visible observation",
+					"Visible summary",
+				]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("keeps mixed-domain unauthorized scope rows out of viewer direct surfaces", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const fixture = seedMixedScopeFixture(store.db, store.deviceId);
+
+				const memoryRes = await app.request("/api/memory?limit=10");
+				expect(memoryRes.status).toBe(200);
+				const memory = (await memoryRes.json()) as {
+					items: Array<{ id: number; title: string }>;
+				};
+				expect(memory.items.map((item) => item.id)).toEqual(
+					expect.arrayContaining(fixture.visibleIds),
+				);
+				expect(memory.items.map((item) => item.id)).not.toContain(fixture.unauthorizedId);
+
+				const observationsRes = await app.request("/api/observations?limit=10");
+				expect(observationsRes.status).toBe(200);
+				const observations = (await observationsRes.json()) as {
+					items: Array<{ id: number; title: string }>;
+				};
+				expect(observations.items.map((item) => item.id)).toEqual(
+					expect.arrayContaining(fixture.visibleIds),
+				);
+				expect(observations.items.map((item) => item.title)).not.toContain(
+					fixture.unauthorizedTitle,
+				);
+
+				const packRes = await app.request(`/api/pack?context=${fixture.query}&limit=10`);
+				expect(packRes.status).toBe(200);
+				const pack = (await packRes.json()) as { item_ids: number[]; pack_text: string };
+				expect(pack.item_ids.some((id) => fixture.visibleIds.includes(id))).toBe(true);
+				expect(pack.item_ids).not.toContain(fixture.unauthorizedId);
+				expect(pack.pack_text).not.toContain(fixture.unauthorizedTitle);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("applies mine/theirs scope filters to observations", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
@@ -522,6 +788,54 @@ describe("viewer-server", () => {
 				expect(res.status).toBe(400);
 				const body = (await res.json()) as { error?: string };
 				expect(body.error).toContain("project");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("does not mutate memories outside visible sharing domains", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET project = ? WHERE id = ?")
+					.run("secret-project", sessionId);
+				const memoryId = insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Hidden local-owned memory",
+					scopeId: "unauthorized-team",
+				});
+
+				for (const [path, body] of [
+					["/api/memories/project", { memory_id: memoryId, project: "new-project" }],
+					["/api/memories/visibility", { memory_id: memoryId, visibility: "private" }],
+					["/api/memories/forget", { memory_id: memoryId }],
+				] as const) {
+					const res = await app.request(path, {
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+							Origin: "http://127.0.0.1:38888",
+						},
+						body: JSON.stringify(body),
+					});
+					expect(res.status).toBe(404);
+					expect(await res.json()).toEqual({ error: "memory not found" });
+				}
+
+				const row = store.db
+					.prepare(
+						`SELECT memory_items.active, memory_items.visibility, sessions.project
+						 FROM memory_items JOIN sessions ON sessions.id = memory_items.session_id
+						 WHERE memory_items.id = ?`,
+					)
+					.get(memoryId) as { active: number; visibility: string; project: string };
+				expect(row).toMatchObject({ active: 1, visibility: "shared", project: "secret-project" });
 			} finally {
 				cleanup();
 			}
@@ -849,6 +1163,97 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("excludes hidden sharing domains from session memory counts", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Visible count memory",
+					scopeId: "authorized-team",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Hidden count memory",
+					scopeId: "unauthorized-team",
+				});
+
+				const res = await app.request("/api/session");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as { memories: number; observations: number };
+				expect(body.memories).toBe(1);
+				expect(body.observations).toBe(1);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("gates prompt and artifact aggregate counts by visible memory sessions", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+
+				const seedProjectSession = (project: string, scopeId: string) => {
+					const sessionId = insertTestSession(store.db);
+					store.db.prepare("UPDATE sessions SET project = ? WHERE id = ?").run(project, sessionId);
+					insertTestMemory(store, {
+						sessionId,
+						kind: "discovery",
+						title: `${project} memory`,
+						scopeId,
+					});
+					store.db
+						.prepare(
+							`INSERT INTO user_prompts(session_id, project, prompt_text, created_at, created_at_epoch, metadata_json)
+							 VALUES (?, ?, 'prompt', ?, 0, '{}')`,
+						)
+						.run(sessionId, project, "2026-01-01T00:00:00Z");
+					store.db
+						.prepare(
+							`INSERT INTO artifacts(session_id, kind, path, content_text, content_hash, created_at, metadata_json)
+							 VALUES (?, 'note', ?, 'artifact', 'hash', ?, '{}')`,
+						)
+						.run(sessionId, `${project}.txt`, "2026-01-01T00:00:00Z");
+				};
+
+				seedProjectSession("visible-project", "authorized-team");
+				seedProjectSession("secret-project", "unauthorized-team");
+
+				const hiddenRes = await app.request("/api/session?project=secret-project");
+				expect(hiddenRes.status).toBe(200);
+				expect(await hiddenRes.json()).toMatchObject({
+					artifacts: 0,
+					memories: 0,
+					observations: 0,
+					prompts: 0,
+					total: 0,
+				});
+
+				const visibleRes = await app.request("/api/session?project=visible-project");
+				expect(visibleRes.status).toBe(200);
+				expect(await visibleRes.json()).toMatchObject({
+					artifacts: 1,
+					memories: 1,
+					observations: 1,
+					prompts: 1,
+					total: 3,
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("tolerates malformed metadata when classifying summaries", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
@@ -874,6 +1279,82 @@ describe("viewer-server", () => {
 
 				const summariesRes = await app.request("/api/summaries");
 				expect(summariesRes.status).toBe(200);
+			} finally {
+				cleanup();
+			}
+		});
+	});
+
+	describe("GET /api/artifacts", () => {
+		it("requires a visible memory in the session before returning local artifacts", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+
+				const visibleSessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId: visibleSessionId,
+					kind: "discovery",
+					title: "Visible artifact session memory",
+					scopeId: "authorized-team",
+				});
+				store.db
+					.prepare(
+						`INSERT INTO artifacts(session_id, kind, path, content_text, content_hash, created_at, metadata_json)
+						 VALUES (?, 'note', 'visible.txt', 'visible artifact', 'visible-hash', ?, '{}')`,
+					)
+					.run(visibleSessionId, "2026-01-01T00:00:00Z");
+
+				const hiddenSessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId: hiddenSessionId,
+					kind: "discovery",
+					title: "Hidden artifact session memory",
+					scopeId: "unauthorized-team",
+				});
+				store.db
+					.prepare(
+						`INSERT INTO artifacts(session_id, kind, path, content_text, content_hash, created_at, metadata_json)
+						 VALUES (?, 'note', 'hidden.txt', 'hidden artifact', 'hidden-hash', ?, '{}')`,
+					)
+					.run(hiddenSessionId, "2026-01-01T00:00:00Z");
+
+				const mixedSessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId: mixedSessionId,
+					kind: "discovery",
+					title: "Mixed visible artifact memory",
+					scopeId: "authorized-team",
+				});
+				insertTestMemory(store, {
+					sessionId: mixedSessionId,
+					kind: "discovery",
+					title: "Mixed hidden artifact memory",
+					scopeId: "unauthorized-team",
+				});
+				store.db
+					.prepare(
+						`INSERT INTO artifacts(session_id, kind, path, content_text, content_hash, created_at, metadata_json)
+						 VALUES (?, 'note', 'mixed.txt', 'mixed artifact', 'mixed-hash', ?, '{}')`,
+					)
+					.run(mixedSessionId, "2026-01-01T00:00:00Z");
+
+				const visibleRes = await app.request(`/api/artifacts?session_id=${visibleSessionId}`);
+				expect(visibleRes.status).toBe(200);
+				const visibleBody = (await visibleRes.json()) as { items: Array<{ path: string }> };
+				expect(visibleBody.items.map((item) => item.path)).toEqual(["visible.txt"]);
+
+				const hiddenRes = await app.request(`/api/artifacts?session_id=${hiddenSessionId}`);
+				expect(hiddenRes.status).toBe(404);
+				expect(await hiddenRes.json()).toEqual({ error: "session not found" });
+
+				const mixedRes = await app.request(`/api/artifacts?session_id=${mixedSessionId}`);
+				expect(mixedRes.status).toBe(404);
+				expect(await mixedRes.json()).toEqual({ error: "session not found" });
 			} finally {
 				cleanup();
 			}
@@ -1682,6 +2163,185 @@ describe("viewer-server", () => {
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body).toHaveProperty("items");
 				expect(body.redacted).toBe(true);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("surfaces authorized Sharing domains separately from project narrowing", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				const _warmup = await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO sync_peers (
+							peer_device_id, name, claimed_local_actor, projects_include_json,
+							projects_exclude_json, created_at
+						) VALUES (?, ?, 0, ?, ?, ?)`,
+					)
+					.run("peer-scope", "Peer Scope", JSON.stringify(["*"]), JSON.stringify(["private"]), now);
+				const insertScope = store.db.prepare(
+					`INSERT INTO replication_scopes(
+						scope_id, label, kind, authority_type, coordinator_id, group_id,
+						membership_epoch, status, created_at, updated_at
+					 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				);
+				insertScope.run(
+					"acme-work",
+					"Acme Work",
+					"team",
+					"coordinator",
+					"coord",
+					"team-a",
+					2,
+					"active",
+					now,
+					now,
+				);
+				insertScope.run(
+					"personal-devices",
+					"Personal Devices",
+					"personal",
+					"local",
+					null,
+					null,
+					1,
+					"active",
+					now,
+					now,
+				);
+				insertScope.run(
+					"stale-team",
+					"Stale Team",
+					"team",
+					"coordinator",
+					"coord",
+					"team-a",
+					5,
+					"active",
+					now,
+					now,
+				);
+				insertScope.run(
+					"archived-team",
+					"Archived Team",
+					"team",
+					"coordinator",
+					"coord",
+					"team-a",
+					1,
+					"archived",
+					now,
+					now,
+				);
+				const insertMembership = store.db.prepare(
+					`INSERT INTO scope_memberships(
+						scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id, updated_at
+					 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				);
+				insertMembership.run(
+					"acme-work",
+					"peer-scope",
+					"member",
+					"active",
+					2,
+					"coord",
+					"team-a",
+					now,
+				);
+				insertMembership.run(
+					"personal-devices",
+					"peer-scope",
+					"member",
+					"active",
+					1,
+					null,
+					null,
+					now,
+				);
+				insertMembership.run(
+					"stale-team",
+					"peer-scope",
+					"member",
+					"active",
+					4,
+					"coord",
+					"team-a",
+					now,
+				);
+				insertMembership.run(
+					"archived-team",
+					"peer-scope",
+					"member",
+					"active",
+					1,
+					"coord",
+					"team-a",
+					now,
+				);
+				insertMembership.run(
+					"acme-work",
+					"peer-revoked",
+					"member",
+					"active",
+					2,
+					"coord",
+					"team-a",
+					now,
+				);
+
+				const res = await app.request("/api/sync/peers");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					items: Array<{
+						authorized_scopes: Array<Record<string, unknown>>;
+						peer_device_id: string;
+						project_scope: Record<string, unknown>;
+					}>;
+				};
+				const peer = body.items.find((item) => item.peer_device_id === "peer-scope");
+				expect(peer?.project_scope).toMatchObject({
+					effective_exclude: ["private"],
+					effective_include: ["*"],
+					exclude: ["private"],
+					include: ["*"],
+					inherits_global: false,
+				});
+				expect(peer?.authorized_scopes.map((scope) => scope.scope_id)).toEqual([
+					"acme-work",
+					"personal-devices",
+				]);
+				expect(peer?.authorized_scopes[0]).toMatchObject({
+					authority_type: "coordinator",
+					coordinator_id: "coord",
+					group_id: "team-a",
+					kind: "team",
+					label: "Acme Work",
+					membership_epoch: 2,
+					role: "member",
+				});
+
+				const statusRes = await app.request("/api/sync/status");
+				expect(statusRes.status).toBe(200);
+				const statusBody = (await statusRes.json()) as {
+					peers: Array<{
+						authorized_scopes: Array<Record<string, unknown>>;
+						peer_device_id: string;
+						project_scope: Record<string, unknown>;
+					}>;
+				};
+				const statusPeer = statusBody.peers.find((item) => item.peer_device_id === "peer-scope");
+				expect(statusPeer?.authorized_scopes.map((scope) => scope.scope_id)).toEqual([
+					"acme-work",
+					"personal-devices",
+				]);
+				expect(statusPeer?.project_scope).toMatchObject({
+					effective_exclude: ["private"],
+					effective_include: ["*"],
+				});
 			} finally {
 				cleanup();
 			}
@@ -3195,6 +3855,15 @@ describe("viewer-server", () => {
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body).toMatchObject({ applied: 1, skipped: 1, rejected: 0 });
+				expect(body.skipped_detail).toMatchObject({
+					reason: "project_filter",
+					skipped_count: 1,
+					project: "blocked-project",
+				});
+				expect(body.skipped_detail).not.toHaveProperty("op_id");
+				expect(body.skipped_detail).not.toHaveProperty("entity_id");
+				expect(body.skipped_detail).not.toHaveProperty("entity_type");
+				expect(body.skipped_detail).not.toHaveProperty("created_at");
 				expect(
 					store.db
 						.prepare("SELECT title FROM memory_items WHERE import_key = ?")
@@ -4887,6 +5556,411 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("updates local Sharing domain project mappings without granting membership", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "project domain candidate",
+					metadata: {},
+				});
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('acme-work', 'Acme Work', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+
+				const settingsRes = await app.request("/api/sync/sharing-domains/settings");
+				expect(settingsRes.status).toBe(200);
+				const settings = (await settingsRes.json()) as {
+					scopes: Array<{ scope_id: string }>;
+					projects: Array<{
+						workspace_identity: string;
+						display_project: string;
+						resolved_scope_id: string;
+					}>;
+				};
+				expect(settings.scopes.map((scope) => scope.scope_id)).toEqual(
+					expect.arrayContaining(["local-default", "acme-work"]),
+				);
+				const project = settings.projects.find((item) => item.display_project === "test-project");
+				expect(project).toMatchObject({ resolved_scope_id: "local-default" });
+
+				const malformedRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						workspace_identity: project?.workspace_identity,
+						project_pattern: project?.display_project,
+						scope_id: ["acme-work"],
+					}),
+				});
+				expect(malformedRes.status).toBe(400);
+
+				const emptyScopeRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						workspace_identity: project?.workspace_identity,
+						project_pattern: project?.display_project,
+						scope_id: "",
+					}),
+				});
+				expect(emptyScopeRes.status).toBe(400);
+
+				const invalidScopeRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						workspace_identity: project?.workspace_identity,
+						project_pattern: project?.display_project,
+						scope_id: "missing-work-domain",
+					}),
+				});
+				expect(invalidScopeRes.status).toBe(400);
+
+				const fractionalIdRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						id: 1.9,
+						workspace_identity: project?.workspace_identity,
+						project_pattern: project?.display_project,
+						scope_id: "acme-work",
+					}),
+				});
+				expect(fractionalIdRes.status).toBe(400);
+
+				const saveRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						workspace_identity: project?.workspace_identity,
+						project_pattern: project?.display_project,
+						scope_id: "acme-work",
+					}),
+				});
+				expect(saveRes.status).toBe(200);
+				const saveBody = (await saveRes.json()) as { mapping: { id: number; scope_id: string } };
+				expect(saveBody.mapping.scope_id).toBe("acme-work");
+
+				const updatedRes = await app.request("/api/sync/sharing-domains/settings");
+				const updated = (await updatedRes.json()) as {
+					projects: Array<{
+						display_project: string;
+						resolved_scope_id: string;
+						mapping_id: number;
+					}>;
+				};
+				expect(
+					updated.projects.find((item) => item.display_project === "test-project"),
+				).toMatchObject({
+					resolved_scope_id: "acme-work",
+					mapping_id: saveBody.mapping.id,
+				});
+				const memberships = store.db
+					.prepare("SELECT COUNT(*) AS n FROM scope_memberships")
+					.get() as {
+					n: number;
+				};
+				expect(memberships.n).toBe(0);
+
+				const deleteRes = await app.request(
+					`/api/sync/sharing-domains/project-mappings/${saveBody.mapping.id}`,
+					{ method: "DELETE" },
+				);
+				expect(deleteRes.status).toBe(200);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("requires confirmation before saving risky Sharing domain mappings", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('acme-work', 'Acme Work', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+
+				const unconfirmedRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						project_pattern: "/Users/adam/*",
+						scope_id: "acme-work",
+					}),
+				});
+				expect(unconfirmedRes.status).toBe(409);
+				const unconfirmed = (await unconfirmedRes.json()) as {
+					error: string;
+					required_guardrails: string[];
+					required_guardrail_tokens: string[];
+					guardrail_warnings: Array<{
+						code: string;
+						confirmation_token: string;
+						requires_confirmation: boolean;
+					}>;
+				};
+				expect(unconfirmed).toMatchObject({
+					error: "guardrail_confirmation_required",
+					required_guardrails: ["broad_org_domain_pattern", "home_directory_org_domain_pattern"],
+				});
+				expect(unconfirmed.guardrail_warnings).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							code: "broad_org_domain_pattern",
+							confirmation_token: expect.stringMatching(/^psg_/),
+						}),
+						expect.objectContaining({
+							code: "home_directory_org_domain_pattern",
+							confirmation_token: expect.stringMatching(/^psg_/),
+						}),
+					]),
+				);
+				const codeOnlyRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						confirmed_guardrails: ["broad_org_domain_pattern", "home_directory_org_domain_pattern"],
+						project_pattern: "/Users/adam/*",
+						scope_id: "acme-work",
+					}),
+				});
+				expect(codeOnlyRes.status).toBe(409);
+				const staleTokenRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						confirmed_guardrail_tokens: unconfirmed.required_guardrail_tokens,
+						project_pattern: "/Users/bob/*",
+						scope_id: "acme-work",
+					}),
+				});
+				expect(staleTokenRes.status).toBe(409);
+
+				const confirmedRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						confirmed_guardrail_tokens: unconfirmed.required_guardrail_tokens,
+						project_pattern: "/Users/adam/*",
+						scope_id: "acme-work",
+					}),
+				});
+				expect(confirmedRes.status).toBe(200);
+				const confirmed = (await confirmedRes.json()) as {
+					mapping: { scope_id: string };
+					guardrail_warnings: Array<{ code: string }>;
+				};
+				expect(confirmed.mapping.scope_id).toBe("acme-work");
+				expect(confirmed.guardrail_warnings.map((warning) => warning.code)).toEqual([
+					"broad_org_domain_pattern",
+					"home_directory_org_domain_pattern",
+				]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("blocks unmapped projects from non-local Sharing domain assignment", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = new Date().toISOString();
+				const sessionResult = store.db
+					.prepare(
+						`INSERT INTO sessions(started_at, cwd, project, git_remote, git_branch, user, tool_version)
+						 VALUES (?, NULL, NULL, NULL, NULL, ?, ?)`,
+					)
+					.run(now, "test-user", "test");
+				insertTestMemory(store, {
+					sessionId: Number(sessionResult.lastInsertRowid),
+					kind: "discovery",
+					title: "unmapped project candidate",
+					metadata: {},
+				});
+				store.db
+					.prepare("UPDATE memory_items SET workspace_id = NULL WHERE title = ?")
+					.run("unmapped project candidate");
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('acme-work', 'Acme Work', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+
+				const settingsRes = await app.request("/api/sync/sharing-domains/settings");
+				const settings = (await settingsRes.json()) as {
+					projects: Array<{
+						display_project: string;
+						identity_source: string;
+						workspace_identity: string;
+					}>;
+				};
+				const project = settings.projects.find((item) => item.identity_source === "unmapped");
+				expect(project?.workspace_identity).toMatch(/^unmapped:/);
+
+				const res = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						workspace_identity: project?.workspace_identity,
+						project_pattern: project?.display_project,
+						scope_id: "acme-work",
+					}),
+				});
+				expect(res.status).toBe(400);
+				expect(await res.json()).toMatchObject({ error: "unmapped_project_local_only" });
+				const mappingResult = store.db
+					.prepare(
+						`INSERT INTO project_scope_mappings(
+							workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+						 ) VALUES (?, ?, ?, 0, 'user', ?, ?)`,
+					)
+					.run(project?.workspace_identity, project?.display_project, "local-default", now, now);
+				const byIdRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						id: Number(mappingResult.lastInsertRowid),
+						scope_id: "acme-work",
+					}),
+				});
+				expect(byIdRes.status).toBe(400);
+				expect(await byIdRes.json()).toMatchObject({ error: "unmapped_project_local_only" });
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("requires confirmation before reassigning an existing project mapping", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "reassignment candidate",
+					metadata: {},
+				});
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('acme-work', 'Acme Work', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('personal-devices', 'Personal Devices', 'personal', 'local', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('oss-codemem', 'OSS codemem', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+				const settingsRes = await app.request("/api/sync/sharing-domains/settings");
+				const settings = (await settingsRes.json()) as {
+					projects: Array<{ display_project: string; workspace_identity: string }>;
+				};
+				const project = settings.projects.find((item) => item.display_project === "test-project");
+				if (!project) throw new Error("project missing");
+				const createRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						workspace_identity: project.workspace_identity,
+						project_pattern: project.display_project,
+						scope_id: "acme-work",
+					}),
+				});
+				expect(createRes.status).toBe(200);
+				const created = (await createRes.json()) as { mapping: { id: number } };
+
+				const unconfirmedRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						id: created.mapping.id,
+						scope_id: "personal-devices",
+					}),
+				});
+				expect(unconfirmedRes.status).toBe(409);
+				const unconfirmed = (await unconfirmedRes.json()) as {
+					required_guardrails: string[];
+					required_guardrail_tokens: string[];
+				};
+				expect(unconfirmed).toMatchObject({
+					error: "guardrail_confirmation_required",
+					required_guardrails: ["scope_reassignment_old_copies"],
+				});
+				expect(unconfirmed.required_guardrail_tokens).toEqual([expect.stringMatching(/^psg_/)]);
+				store.db
+					.prepare("UPDATE project_scope_mappings SET scope_id = ? WHERE id = ?")
+					.run("oss-codemem", created.mapping.id);
+				const staleTokenRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						confirmed_guardrail_tokens: unconfirmed.required_guardrail_tokens,
+						id: created.mapping.id,
+						scope_id: "personal-devices",
+					}),
+				});
+				expect(staleTokenRes.status).toBe(409);
+				const staleTokenBody = (await staleTokenRes.json()) as {
+					required_guardrail_tokens: string[];
+				};
+				expect(staleTokenBody.required_guardrail_tokens).not.toEqual(
+					unconfirmed.required_guardrail_tokens,
+				);
+
+				const confirmedRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						confirmed_guardrail_tokens: staleTokenBody.required_guardrail_tokens,
+						id: created.mapping.id,
+						scope_id: "personal-devices",
+					}),
+				});
+				expect(confirmedRes.status).toBe(200);
+				expect(await confirmedRes.json()).toMatchObject({
+					mapping: { id: created.mapping.id, scope_id: "personal-devices" },
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("runs sync for all peers through the compatibility sync route", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;
@@ -5006,10 +6080,58 @@ describe("viewer-server", () => {
 				const now = new Date().toISOString();
 				store.db
 					.prepare(
-						`INSERT INTO sync_peers(peer_device_id, name, actor_id, claimed_local_actor, created_at)
-						 VALUES (?, ?, ?, 1, ?)`,
+						`INSERT INTO sync_peers(
+							peer_device_id, name, actor_id, claimed_local_actor, pinned_fingerprint,
+							addresses_json, last_error, created_at
+						) VALUES (?, ?, ?, 1, ?, ?, ?, ?)`,
 					)
-					.run("peer-claim", "Peer Claim", store.actorId, now);
+					.run(
+						"peer-claim",
+						"Peer Claim",
+						store.actorId,
+						"fp-claim",
+						JSON.stringify(["10.0.0.5:38899"]),
+						"raw sync error",
+						now,
+					);
+
+				const redactedRes = await app.request("/api/sync/peers");
+				expect(redactedRes.status).toBe(200);
+				const redactedBody = (await redactedRes.json()) as {
+					items: Array<{
+						addresses: unknown[];
+						claimed_local_actor_scope: Record<string, unknown> | null;
+						fingerprint: unknown;
+						last_error: unknown;
+					}>;
+					redacted: boolean;
+				};
+				expect(redactedBody.redacted).toBe(true);
+				expect(redactedBody.items[0]?.fingerprint).toBeNull();
+				expect(redactedBody.items[0]?.addresses).toEqual([]);
+				expect(redactedBody.items[0]?.last_error).toBeNull();
+				expect(redactedBody.items[0]?.claimed_local_actor_scope).toMatchObject({
+					action_required: true,
+					authorized: false,
+					scope_id: `personal:${store.actorId}`,
+					state: "not_authorized",
+				});
+
+				const statusRes = await app.request("/api/sync/status");
+				expect(statusRes.status).toBe(200);
+				const statusBody = (await statusRes.json()) as {
+					peers: Array<{
+						claimed_local_actor_scope: Record<string, unknown> | null;
+						peer_device_id: string;
+					}>;
+				};
+				const statusPeer = statusBody.peers.find((item) => item.peer_device_id === "peer-claim");
+				expect(statusPeer?.claimed_local_actor_scope).toMatchObject({
+					action_required: true,
+					authorized: false,
+					scope_id: `personal:${store.actorId}`,
+					state: "not_authorized",
+				});
 
 				const missingRes = await app.request("/api/sync/peers?includeDiagnostics=1");
 				expect(missingRes.status).toBe(200);
@@ -5282,6 +6404,127 @@ describe("viewer-server", () => {
 					"http://old.example:7337",
 					"http://10.0.0.5:7337",
 				]);
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			}
+		});
+
+		it("refreshes an existing multi-group peer address cache from sync status without re-pairing", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.endsWith("/v1/presence")) {
+					return new Response(JSON.stringify({ ok: true, addresses: ["http://local:7337"] }), {
+						status: 200,
+					});
+				}
+				if (url.includes("/v1/peers?group_id=team-a")) {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-fresh",
+									display_name: "Fresh Device",
+									fingerprint: "fp-fresh",
+									public_key: "peer-public-key",
+									addresses: ["http://10.0.0.5:7337"],
+									last_seen_at: new Date().toISOString(),
+									expires_at: new Date(Date.now() + 60_000).toISOString(),
+									stale: false,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.includes("/v1/peers?group_id=team-b")) {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-fresh",
+									display_name: "Fresh Device",
+									fingerprint: "fp-fresh",
+									public_key: "peer-public-key",
+									addresses: ["10.0.0.6:7337"],
+									last_seen_at: new Date().toISOString(),
+									expires_at: new Date(Date.now() + 60_000).toISOString(),
+									stale: false,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.includes("/v1/reciprocal-approvals")) {
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_enabled: true,
+					sync_coordinator_url: "https://coord-refresh.example.test",
+					sync_coordinator_groups: ["team-a", "team-b"],
+				}),
+			);
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				ensureDeviceIdentity(store.db, { keysDir });
+				store.db
+					.prepare(
+						"INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, addresses_json, last_error, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+					)
+					.run(
+						"peer-fresh",
+						"Old Name",
+						"fp-fresh",
+						JSON.stringify(["http://old.example:7337"]),
+						"all addresses failed",
+						new Date().toISOString(),
+					);
+
+				const res = await app.request("/api/sync/status?includeDiagnostics=1");
+
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as { peers?: Array<Record<string, unknown>> };
+				const peerPayload = body.peers?.find((peer) => peer.peer_device_id === "peer-fresh");
+				expect(peerPayload?.addresses).toEqual([
+					"http://old.example:7337",
+					"http://10.0.0.5:7337",
+					"http://10.0.0.6:7337",
+				]);
+				const peerRow = store.db
+					.prepare("SELECT addresses_json, last_error FROM sync_peers WHERE peer_device_id = ?")
+					.get("peer-fresh") as Record<string, unknown> | undefined;
+				expect(JSON.parse(String(peerRow?.addresses_json ?? "[]"))).toEqual([
+					"http://old.example:7337",
+					"http://10.0.0.5:7337",
+					"http://10.0.0.6:7337",
+				]);
+				expect(peerRow?.last_error).toBe("all addresses failed");
+				expect(
+					fetchMock.mock.calls.some(
+						([input, init]) =>
+							String(input).endsWith("/v1/reciprocal-approvals") && init?.method === "POST",
+					),
+				).toBe(false);
 			} finally {
 				cleanup();
 				globalThis.fetch = prevFetch;

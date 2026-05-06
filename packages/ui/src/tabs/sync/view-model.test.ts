@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
 	deriveCoordinatorApprovalSummary,
 	deriveDuplicatePeople,
+	derivePeerAuthorizedDomainsView,
+	derivePeerProjectNarrowingView,
 	derivePeerScopeRejectionsView,
 	derivePeerTrustSummary,
 	derivePeerUiStatus,
@@ -177,6 +179,57 @@ describe("derivePeerScopeRejectionsView", () => {
 	});
 });
 
+describe("derivePeerAuthorizedDomainsView", () => {
+	it("labels peers with no cached Sharing domain authorization", () => {
+		const view = derivePeerAuthorizedDomainsView({ authorized_scopes: [] });
+
+		expect(view.total).toBe(0);
+		expect(view.badgeLabel).toBe("No Sharing domains");
+		expect(view.isWarning).toBe(true);
+		expect(view.emptyMessage).toContain("Project filters below cannot send data by themselves");
+	});
+
+	it("formats authorized Sharing domains without exposing membership internals", () => {
+		const view = derivePeerAuthorizedDomainsView({
+			authorized_scopes: [
+				{
+					authority_type: "coordinator",
+					kind: "team",
+					label: "Acme Work",
+					role: "member",
+					scope_id: "acme-work",
+				},
+				{
+					authority_type: "local",
+					kind: "personal",
+					label: "Personal Devices",
+					role: "member",
+					scope_id: "personal-devices",
+				},
+			],
+		});
+
+		expect(view.badgeLabel).toBe("2 Sharing domains");
+		expect(view.isWarning).toBe(false);
+		expect(view.domains.map((domain) => domain.label)).toEqual(["Acme Work", "Personal Devices"]);
+		expect(view.domains[0]?.detail).toBe("team · coordinator · member role");
+	});
+});
+
+describe("derivePeerProjectNarrowingView", () => {
+	it("explains project filters as narrowing instead of grants", () => {
+		const view = derivePeerProjectNarrowingView({
+			effective_exclude: ["personal"],
+			effective_include: ["*"],
+			inherits_global: true,
+		});
+
+		expect(view.summary).toBe("Global defaults. Include filter: *; Exclude filter: personal.");
+		expect(view.note).toContain("only narrow data after Sharing domain authorization");
+		expect(view.note).toContain("never grant access to another domain");
+	});
+});
+
 describe("deriveCoordinatorApprovalSummary", () => {
 	it("flags coordinator devices that need approval on this device", () => {
 		expect(
@@ -302,6 +355,61 @@ describe("summarizeSyncRunResult", () => {
 			ok: false,
 			message:
 				"This device no longer has two-way trust with the peer. Pair it again from the other device, or remove the stale local record if it should be gone.",
+			warning: true,
+		});
+	});
+
+	it("surfaces outbound filter diagnostics without treating them as failed sync", () => {
+		expect(
+			summarizeSyncRunResult({
+				items: [
+					{
+						peer_device_id: "peer-a",
+						ok: true,
+						opsIn: 0,
+						opsOut: 0,
+						opsSkipped: 3,
+						skipped_out: { reason: "project_filter", skipped_count: 3, project: "private" },
+						addressErrors: [],
+					},
+				],
+			}),
+		).toEqual({
+			ok: true,
+			message:
+				"3 outbound ops were filtered: 3 by project filter. No payload was sent for filtered data.",
+			warning: true,
+		});
+	});
+
+	it("splits outbound filter diagnostics by reason", () => {
+		expect(
+			summarizeSyncRunResult({
+				items: [
+					{
+						peer_device_id: "peer-a",
+						ok: true,
+						opsIn: 0,
+						opsOut: 0,
+						opsSkipped: 2,
+						skipped_out: { reason: "project_filter", skipped_count: 2, project: "private" },
+						addressErrors: [],
+					},
+					{
+						peer_device_id: "peer-b",
+						ok: true,
+						opsIn: 0,
+						opsOut: 0,
+						opsSkipped: 1,
+						skipped_out: { reason: "visibility_filter", skipped_count: 1, visibility: "private" },
+						addressErrors: [],
+					},
+				],
+			}),
+		).toEqual({
+			ok: true,
+			message:
+				"3 outbound ops were filtered: 2 by project filter, 1 by visibility. No payload was sent for filtered data.",
 			warning: true,
 		});
 	});

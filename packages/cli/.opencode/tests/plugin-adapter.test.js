@@ -316,10 +316,7 @@ describe("opencode adapter event mapping", () => {
     // The CLI's bundled OpenCode plugin spawns `npx codemem@${PINNED}` when
     // no local backend is configured. Because that backend ships inside the
     // same package as this plugin, the pin must match the package version
-    // exactly — including alpha/beta/rc prereleases. The standalone
-    // @codemem/opencode-plugin handles "stay on the latest stable backend"
-    // separately; that is enforced by scripts/release-version.mjs (it skips
-    // the standalone plugin pin update on prerelease bumps), not here.
+    // exactly — including alpha/beta/rc prereleases.
     const packageJsonPath = resolve(
       fileURLToPath(new URL(".", import.meta.url)),
       "..",

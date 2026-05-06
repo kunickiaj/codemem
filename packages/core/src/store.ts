@@ -28,7 +28,7 @@ import {
 	toJson,
 	toJsonNullable,
 } from "./db.js";
-import { buildFilterClauses } from "./filters.js";
+import { buildFilterClausesWithContext, type OwnershipFilterContext } from "./filters.js";
 import { buildMemoryDedupKey, normalizeMemoryDedupTitle } from "./memory-dedup.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import {
@@ -414,6 +414,14 @@ export class MemoryStore {
 		await Promise.allSettled([...this.pendingVectorWrites]);
 	}
 
+	private scopeVisibleFilterContext(): OwnershipFilterContext {
+		return {
+			actorId: this.actorId,
+			deviceId: this.deviceId,
+			enforceScopeVisibility: true,
+		};
+	}
+
 	// get
 
 	/**
@@ -421,11 +429,14 @@ export class MemoryStore {
 	 * Returns null if not found (does not filter by active status).
 	 */
 	get(memoryId: number): MemoryItemResponse | null {
-		const row = this.d
-			.select()
-			.from(schema.memoryItems)
-			.where(eq(schema.memoryItems.id, memoryId))
-			.get() as MemoryItem | undefined;
+		const filterResult = buildFilterClausesWithContext(null, this.scopeVisibleFilterContext());
+		const whereSql = buildWhereSql(
+			["memory_items.id = ?", ...filterResult.clauses],
+			[memoryId, ...filterResult.params],
+		);
+		const row = this.d.get<MemoryItem>(
+			sql`SELECT memory_items.* FROM memory_items WHERE ${whereSql}`,
+		);
 		if (!row) return null;
 		return parseMetadata(row);
 	}
@@ -935,7 +946,7 @@ export class MemoryStore {
 	 */
 	recent(limit = 10, filters?: MemoryFilters | null, offset = 0): MemoryItemResponse[] {
 		const baseClauses = ["memory_items.active = 1"];
-		const filterResult = buildFilterClauses(filters);
+		const filterResult = buildFilterClausesWithContext(filters, this.scopeVisibleFilterContext());
 		const allClauses = [...baseClauses, ...filterResult.clauses];
 		const whereSql = buildWhereSql(allClauses, filterResult.params);
 
@@ -971,7 +982,7 @@ export class MemoryStore {
 
 		const kindPlaceholders = kindsList.map(() => "?").join(", ");
 		const baseClauses = ["memory_items.active = 1", `memory_items.kind IN (${kindPlaceholders})`];
-		const filterResult = buildFilterClauses(filters);
+		const filterResult = buildFilterClausesWithContext(filters, this.scopeVisibleFilterContext());
 		const allClauses = [...baseClauses, ...filterResult.clauses];
 		const params = [...kindsList, ...filterResult.params];
 		const whereSql = buildWhereSql(allClauses, params);
@@ -999,22 +1010,44 @@ export class MemoryStore {
 		// biome-ignore lint/suspicious/noExplicitAny: Drizzle table union type is unwieldy
 		const countRows = (tbl: any) =>
 			this.d.select({ c: sql<number>`COUNT(*)` }).from(tbl).get()?.c ?? 0;
+		const visibleFilter = buildFilterClausesWithContext(null, this.scopeVisibleFilterContext());
+		const countVisibleMemoryRows = (extraClauses: string[] = []): number => {
+			const clauses = [...extraClauses, ...visibleFilter.clauses];
+			const row = this.db
+				.prepare(`SELECT COUNT(*) AS c FROM memory_items WHERE ${clauses.join(" AND ")}`)
+				.get(...visibleFilter.params) as { c: number | null } | undefined;
+			return row?.c ?? 0;
+		};
+		const countVisibleMemorySessions = (): number => {
+			const clauses = ["memory_items.active = 1", ...visibleFilter.clauses];
+			const row = this.db
+				.prepare(
+					`SELECT COUNT(DISTINCT memory_items.session_id) AS c
+					 FROM memory_items
+					 WHERE ${clauses.join(" AND ")}`,
+				)
+				.get(...visibleFilter.params) as { c: number | null } | undefined;
+			return row?.c ?? 0;
+		};
 
-		const totalMemories = countRows(schema.memoryItems);
-		const activeMemories =
-			this.d
-				.select({ c: sql<number>`COUNT(*)` })
-				.from(schema.memoryItems)
-				.where(eq(schema.memoryItems.active, 1))
-				.get()?.c ?? 0;
-		const sessions = countRows(schema.sessions);
+		const totalMemories = countVisibleMemoryRows();
+		const activeMemories = countVisibleMemoryRows(["memory_items.active = 1"]);
+		const sessions = countVisibleMemorySessions();
 		const artifacts = countRows(schema.artifacts);
 		const rawEvents = countRows(schema.rawEvents);
 
 		let vectorCount = 0;
 		if (!isEmbeddingDisabled() && tableExists(this.db, "memory_vectors")) {
 			try {
-				const row = this.d.get<{ c: number | null }>(sql`SELECT COUNT(*) AS c FROM memory_vectors`);
+				const clauses = ["memory_items.active = 1", ...visibleFilter.clauses];
+				const row = this.db
+					.prepare(
+						`SELECT COUNT(*) AS c
+						 FROM memory_vectors
+						 JOIN memory_items ON memory_items.id = memory_vectors.memory_id
+						 WHERE ${clauses.join(" AND ")}`,
+					)
+					.get(...visibleFilter.params) as { c: number | null } | undefined;
 				vectorCount = row?.c ?? 0;
 			} catch {
 				vectorCount = 0;
@@ -1022,12 +1055,10 @@ export class MemoryStore {
 		}
 		const vectorCoverage = activeMemories > 0 ? Math.min(1, vectorCount / activeMemories) : 0;
 
-		const tagsFilled =
-			this.d
-				.select({ c: sql<number>`COUNT(*)` })
-				.from(schema.memoryItems)
-				.where(and(eq(schema.memoryItems.active, 1), sql`TRIM(tags_text) != ''`))
-				.get()?.c ?? 0;
+		const tagsFilled = countVisibleMemoryRows([
+			"memory_items.active = 1",
+			"TRIM(memory_items.tags_text) != ''",
+		]);
 		const tagsCoverage = activeMemories > 0 ? Math.min(1, tagsFilled / activeMemories) : 0;
 
 		let sizeBytes = 0;

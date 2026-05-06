@@ -4,6 +4,7 @@ import { runFleetSmokeScenario } from "../scenarios/fleet-smoke.js";
 import { runBootstrapScenario } from "../scenarios/bootstrap.js";
 import { runCoordinatorScenario } from "../scenarios/coordinator.js";
 import { runDirectSyncScenario } from "../scenarios/direct-sync.js";
+import { runSharingDomainsScenario } from "../scenarios/sharing-domains.js";
 import { runSmokeScenario } from "../scenarios/smoke.js";
 import { createScenarioContext } from "../lib/scenario-context.js";
 
@@ -14,6 +15,7 @@ const scenarios = {
 	fleetCleanup: runFleetCleanupScenario,
 	fleetReady: runFleetReadyScenario,
 	fleetSmoke: runFleetSmokeScenario,
+	sharingDomains: runSharingDomainsScenario,
 	smoke: runSmokeScenario,
 } as const;
 
@@ -31,17 +33,32 @@ interface CliOptions {
 function parseCliArgs(argv: string[]): CliOptions {
 	let scenarioName: CliOptions["scenarioName"] = "smoke";
 	let json = processRef.process.env.CODEMEM_E2E_JSON === "1";
+	let sawScenarioName = false;
 	for (const arg of argv) {
-		if (arg === "--help" || arg === "-h" || arg === "list") {
-			scenarioName = arg as CliOptions["scenarioName"];
+		if (arg === "--") {
 			continue;
 		}
 		if (arg === "--json") {
 			json = true;
 			continue;
 		}
-		if (!arg.startsWith("-")) {
+		if (arg === "--help" || arg === "-h" || arg === "list") {
+			if (sawScenarioName) {
+				throw new Error(`Unexpected extra scenario: ${arg}`);
+			}
 			scenarioName = arg as CliOptions["scenarioName"];
+			sawScenarioName = true;
+			continue;
+		}
+		if (arg.startsWith("-")) {
+			throw new Error(`Unknown option: ${arg}`);
+		}
+		if (!arg.startsWith("-")) {
+			if (sawScenarioName) {
+				throw new Error(`Unexpected extra scenario: ${arg}`);
+			}
+			scenarioName = arg as CliOptions["scenarioName"];
+			sawScenarioName = true;
 		}
 	}
 	return { scenarioName, json };

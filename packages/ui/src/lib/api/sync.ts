@@ -155,6 +155,135 @@ export interface CoordinatorGroupPreferences {
 	updated_at?: string | null;
 }
 
+export interface SharingDomainScope {
+	scope_id: string;
+	label: string;
+	kind: string;
+	authority_type: string;
+	coordinator_id?: string | null;
+	group_id?: string | null;
+	membership_epoch?: number;
+	status: string;
+	updated_at?: string | null;
+}
+
+export interface ProjectScopeMapping {
+	id: number;
+	workspace_identity: string | null;
+	project_pattern: string;
+	scope_id: string;
+	priority: number;
+	source: string;
+	created_at?: string | null;
+	updated_at?: string | null;
+	guardrail_warnings?: ProjectScopeGuardrailWarning[];
+}
+
+export type ProjectScopeGuardrailSeverity = "info" | "warning";
+
+export interface ProjectScopeGuardrailWarning {
+	code: string;
+	severity: ProjectScopeGuardrailSeverity;
+	message: string;
+	requires_confirmation: boolean;
+	scope_id?: string | null;
+	previous_scope_id?: string | null;
+	mapping_id?: number | null;
+	workspace_identity?: string | null;
+	project_pattern?: string | null;
+	related_workspace_identities?: string[];
+	related_projects?: string[];
+	confirmation_token?: string;
+}
+
+export interface ProjectScopeCandidate {
+	workspace_identity: string;
+	identity_source: string;
+	display_project: string;
+	project: string | null;
+	cwd: string | null;
+	git_remote: string | null;
+	git_branch: string | null;
+	latest_session_at: string | null;
+	resolved_scope_id: string;
+	resolution_reason: string;
+	mapping_id: number | null;
+	matched_pattern: string | null;
+	guardrail_warnings?: ProjectScopeGuardrailWarning[];
+}
+
+export interface SharingDomainSettings {
+	scopes: SharingDomainScope[];
+	mappings: ProjectScopeMapping[];
+	projects: ProjectScopeCandidate[];
+	local_default_scope_id: string;
+}
+
+export class SharingDomainGuardrailConfirmationError extends Error {
+	requiredGuardrails: string[];
+	requiredGuardrailTokens: string[];
+	guardrailWarnings: ProjectScopeGuardrailWarning[];
+
+	constructor(input: {
+		required_guardrails?: string[];
+		required_guardrail_tokens?: string[];
+		guardrail_warnings?: ProjectScopeGuardrailWarning[];
+	}) {
+		super("Sharing domain guardrail confirmation required");
+		this.name = "SharingDomainGuardrailConfirmationError";
+		this.requiredGuardrails = input.required_guardrails ?? [];
+		this.requiredGuardrailTokens = input.required_guardrail_tokens ?? [];
+		this.guardrailWarnings = input.guardrail_warnings ?? [];
+	}
+}
+
+export async function loadSharingDomainSettings(): Promise<SharingDomainSettings> {
+	return fetchJson<SharingDomainSettings>("/api/sync/sharing-domains/settings");
+}
+
+export async function saveSharingDomainProjectMapping(input: {
+	id?: number | null;
+	workspace_identity?: string | null;
+	project_pattern?: string | null;
+	scope_id: string;
+	priority?: number | null;
+	confirmed_guardrail_tokens?: string[];
+}): Promise<ProjectScopeMapping> {
+	const resp = await fetch("/api/sync/sharing-domains/project-mappings", {
+		method: "PUT",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(input),
+	});
+	const { text, payload } = await readJsonPayload<{
+		error?: string;
+		mapping?: ProjectScopeMapping;
+		required_guardrails?: string[];
+		required_guardrail_tokens?: string[];
+		guardrail_warnings?: ProjectScopeGuardrailWarning[];
+	}>(resp);
+	if (!resp.ok) {
+		if (payload?.error === "guardrail_confirmation_required") {
+			throw new SharingDomainGuardrailConfirmationError(payload);
+		}
+		throw new Error(payloadError(payload) || text || "request failed");
+	}
+	const mapping = payload?.mapping;
+	if (!mapping) throw new Error("response missing mapping");
+	return {
+		...mapping,
+		guardrail_warnings: payload.guardrail_warnings ?? mapping.guardrail_warnings,
+	};
+}
+
+export async function deleteSharingDomainProjectMapping(id: number): Promise<boolean> {
+	const resp = await fetch(`/api/sync/sharing-domains/project-mappings/${encodeURIComponent(id)}`, {
+		method: "DELETE",
+	});
+	const { text, payload } = await readJsonPayload<{ deleted?: boolean }>(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	return Boolean(payload?.deleted);
+}
+
 export async function loadCoordinatorGroupPreferences(
 	groupId: string,
 ): Promise<CoordinatorGroupPreferences> {

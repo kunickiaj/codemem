@@ -13,10 +13,15 @@ export {
 } from "./view-model/coordinator-approval";
 export { deviceNeedsFriendlyName, resolveFriendlyDeviceName } from "./view-model/device-names";
 export {
+	derivePeerAuthorizedDomainsView,
 	derivePeerDirection,
+	derivePeerProjectNarrowingView,
 	derivePeerScopeRejectionsView,
 	derivePeerTrustSummary,
 	derivePeerUiStatus,
+	type PeerAuthorizedDomainsView,
+	type PeerAuthorizedDomainViewItem,
+	type PeerProjectNarrowingView,
 	type PeerScopeRejectionsView,
 } from "./view-model/peer-status";
 export {
@@ -27,8 +32,11 @@ export { deriveSyncViewModel } from "./view-model/sync-view-model";
 export {
 	type ActorLike,
 	type DiscoveredDeviceLike,
+	type PeerAuthorizedScopeLike,
+	type PeerClaimedLocalActorScopeLike,
 	type PeerDirection,
 	type PeerLike,
+	type PeerProjectScopeLike,
 	type PeerRecentOps,
 	type PeerScopeRejectionReason,
 	type PeerScopeRejectionsSummary,

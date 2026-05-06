@@ -29,7 +29,8 @@ import {
 	backfillReplicationOps,
 	chunkOpsBySize,
 	extractReplicationOps,
-	filterReplicationOpsForSync,
+	type FilterReplicationSkipped,
+	filterReplicationOpsForSyncWithStatus,
 	getReplicationCursor,
 	hasUnsyncedSharedMemoryChanges,
 	migrateLegacyImportKeys,
@@ -78,6 +79,8 @@ export interface SyncResult {
 	address?: string;
 	opsIn: number;
 	opsOut: number;
+	opsSkipped?: number;
+	skippedOut?: FilterReplicationSkipped | null;
 	addressErrors: Array<{ address: string; error: string }>;
 	resetRequired?: SyncResetRequired;
 }
@@ -744,12 +747,11 @@ export async function syncOnce(
 
 			// -- 5. Push local ops to peer --
 			const [outboundWindow, outboundCursor] = loadLocalOpsSince(db, lastAcked, deviceId, limit);
-			const [outboundOps, filteredOutboundCursor] = filterReplicationOpsForSync(
-				db,
-				outboundWindow,
-				peerDeviceId,
-				{ localDeviceId: deviceId },
-			);
+			const [outboundOps, filteredOutboundCursor, skippedOutbound] =
+				filterReplicationOpsForSyncWithStatus(db, outboundWindow, peerDeviceId, {
+					localDeviceId: deviceId,
+				});
+			const opsSkipped = skippedOutbound?.skipped_count ?? 0;
 			const postUrl = `${baseUrl}/v1/ops`;
 			if (outboundOps.length > 0) {
 				const batches = chunkOpsBySize(outboundOps, MAX_SYNC_BODY_BYTES);
@@ -776,6 +778,8 @@ export async function syncOnce(
 				address: baseUrl,
 				opsIn: applied.applied,
 				opsOut: outboundOps.length,
+				opsSkipped,
+				skippedOut: skippedOutbound ?? null,
 				addressErrors: [],
 			};
 		} catch (err: unknown) {

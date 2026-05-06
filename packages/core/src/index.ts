@@ -5,7 +5,7 @@
  * and type definitions shared across the codemem TS backend.
  */
 
-export const VERSION = "0.30.0-alpha.2";
+export const VERSION = "0.30.0-alpha.3";
 
 export * as Api from "./api-types.js";
 export { extractApplyPatchPaths, MUTATING_TOOL_NAMES } from "./apply-patch.js";
@@ -78,6 +78,7 @@ export {
 	listCoordinatorReciprocalApprovals,
 	lookupCoordinatorPeers,
 	readCoordinatorSyncConfig,
+	refreshStoredCoordinatorPeerAddresses,
 	registerCoordinatorPresence,
 } from "./coordinator-runtime.js";
 export type {
@@ -370,6 +371,24 @@ export {
 	projectMatchesFilter,
 	resolveProject,
 } from "./project.js";
+export type {
+	ProjectScopeCandidate,
+	ProjectScopeGuardrailCode,
+	ProjectScopeGuardrailSeverity,
+	ProjectScopeGuardrailWarning,
+	ProjectScopeMappingChangeGuardrailAnalysis,
+	ProjectScopeSettingsMapping,
+	SharingDomainSettingsScope,
+	UpsertProjectScopeMappingInput,
+} from "./project-scope-settings.js";
+export {
+	analyzeProjectScopeMappingChangeGuardrails,
+	deleteProjectScopeSettingsMapping,
+	listProjectScopeCandidates,
+	listProjectScopeSettingsMappings,
+	listSharingDomainSettingsScopes,
+	upsertProjectScopeSettingsMapping,
+} from "./project-scope-settings.js";
 export type { FlushRawEventsOptions } from "./raw-event-flush.js";
 export { buildSessionContext, flushRawEvents } from "./raw-event-flush.js";
 export { RawEventSweeper } from "./raw-event-sweeper.js";
@@ -553,6 +572,7 @@ export {
 export type {
 	ApplyReplicationOpsOptions,
 	ApplyResult,
+	FilterReplicationSkipped,
 	InboundScopeRejection,
 	InboundScopeRejectionPeerSummary,
 	InboundScopeRejectionReason,
@@ -607,7 +627,8 @@ export {
 } from "./sync-scope-protocol.js";
 export { deriveTags, fileTags, normalizeTag } from "./tags.js";
 // Test utilities (exported for consumer packages like viewer-server)
-export { initTestSchema, insertTestSession } from "./test-utils.js";
+export type { MixedScopeFixture } from "./test-utils.js";
+export { initTestSchema, insertTestSession, seedMixedScopeFixture } from "./test-utils.js";
 export type {
 	Actor,
 	Artifact,
