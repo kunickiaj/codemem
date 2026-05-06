@@ -59,6 +59,7 @@ export {
 	mergeActor,
 	renameActor,
 	renamePeer,
+	SharingDomainGuardrailConfirmationError,
 	saveCoordinatorGroupPreferences,
 	saveSharingDomainProjectMapping,
 	triggerSync,
