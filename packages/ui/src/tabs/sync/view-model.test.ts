@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
 	deriveCoordinatorApprovalSummary,
 	deriveDuplicatePeople,
+	derivePeerAuthorizedDomainsView,
+	derivePeerProjectNarrowingView,
 	derivePeerScopeRejectionsView,
 	derivePeerTrustSummary,
 	derivePeerUiStatus,
@@ -174,6 +176,57 @@ describe("derivePeerScopeRejectionsView", () => {
 			scope_rejections: { total: 1, by_reason: { missing_scope: 1 } },
 		});
 		expect(view.badgeLabel).toBe("1 sync rejection");
+	});
+});
+
+describe("derivePeerAuthorizedDomainsView", () => {
+	it("labels peers with no cached Sharing domain authorization", () => {
+		const view = derivePeerAuthorizedDomainsView({ authorized_scopes: [] });
+
+		expect(view.total).toBe(0);
+		expect(view.badgeLabel).toBe("No Sharing domains");
+		expect(view.isWarning).toBe(true);
+		expect(view.emptyMessage).toContain("Project filters below cannot send data by themselves");
+	});
+
+	it("formats authorized Sharing domains without exposing membership internals", () => {
+		const view = derivePeerAuthorizedDomainsView({
+			authorized_scopes: [
+				{
+					authority_type: "coordinator",
+					kind: "team",
+					label: "Acme Work",
+					role: "member",
+					scope_id: "acme-work",
+				},
+				{
+					authority_type: "local",
+					kind: "personal",
+					label: "Personal Devices",
+					role: "member",
+					scope_id: "personal-devices",
+				},
+			],
+		});
+
+		expect(view.badgeLabel).toBe("2 Sharing domains");
+		expect(view.isWarning).toBe(false);
+		expect(view.domains.map((domain) => domain.label)).toEqual(["Acme Work", "Personal Devices"]);
+		expect(view.domains[0]?.detail).toBe("team · coordinator · member role");
+	});
+});
+
+describe("derivePeerProjectNarrowingView", () => {
+	it("explains project filters as narrowing instead of grants", () => {
+		const view = derivePeerProjectNarrowingView({
+			effective_exclude: ["personal"],
+			effective_include: ["*"],
+			inherits_global: true,
+		});
+
+		expect(view.summary).toBe("Global defaults. Include filter: *; Exclude filter: personal.");
+		expect(view.note).toContain("only narrow data after Sharing domain authorization");
+		expect(view.note).toContain("never grant access to another domain");
 	});
 });
 

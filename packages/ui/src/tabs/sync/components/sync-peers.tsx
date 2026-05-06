@@ -18,12 +18,16 @@ import {
 import { PeerScopeCollapsible } from "../peer-scope-collapsible";
 import { openSyncConfirmDialog } from "../sync-dialogs";
 import {
+	derivePeerAuthorizedDomainsView,
 	derivePeerDirection,
+	derivePeerProjectNarrowingView,
 	derivePeerScopeRejectionsView,
 	derivePeerTrustSummary,
 	derivePeerUiStatus,
+	type PeerClaimedLocalActorScopeLike,
 	type PeerDirection,
 	type PeerLike,
+	type PeerProjectScopeLike,
 	type PeerScopeRejectionsSummary,
 } from "../view-model";
 import { renderIntoSyncMount } from "./render-root";
@@ -99,19 +103,12 @@ const DIRECTION_GLYPH: Record<PeerDirection, { glyph: string; label: string } | 
 	none: null,
 };
 
-type PeerScopeLike = {
-	include?: string[];
-	exclude?: string[];
-	effective_include?: string[];
-	effective_exclude?: string[];
-	inherits_global?: boolean;
-};
-
 type SyncPeer = PeerLike & {
 	actor_display_name?: string;
 	addresses?: unknown[];
 	claimed_local_actor?: boolean;
-	project_scope?: PeerScopeLike;
+	claimed_local_actor_scope?: PeerClaimedLocalActorScopeLike | null;
+	project_scope?: PeerProjectScopeLike;
 	scope_rejections?: PeerScopeRejectionsSummary;
 	discovered_via_coordinator_id?: string | null;
 	discovered_via_group_id?: string | null;
@@ -144,6 +141,19 @@ type SyncPeersListProps = Omit<SyncPeerCardProps, "peer"> & {
 
 function listText(value: unknown): string[] {
 	return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean) : [];
+}
+
+function claimedLocalActorScopeMessage(
+	scope: PeerClaimedLocalActorScopeLike | null | undefined,
+): string {
+	const scopeId = String(scope?.scope_id || "").trim();
+	if (!scope) {
+		return "Private same-person sync is limited to an allowed personal Sharing domain; team or org domains do not carry your private memories.";
+	}
+	if (scope.authorized) {
+		return `Private same-person sync is limited to personal Sharing domain ${scopeId || "this device's personal domain"}. Team and org domains do not carry your private memories.`;
+	}
+	return `Private same-person sync is blocked until this device is granted ${scopeId || "its personal Sharing domain"}.`;
 }
 
 function ExistingElementSlot({ element }: { element: HTMLElement }) {
@@ -179,8 +189,10 @@ function SyncPeerCard({
 	const trustSummary = derivePeerTrustSummary(peer);
 	const directionHint = DIRECTION_GLYPH[derivePeerDirection(peer)];
 	const peerStatus: SyncPeerStatus = peer.status || {};
+	const authorizedDomains = derivePeerAuthorizedDomainsView(peer);
 	const scopeRejections = derivePeerScopeRejectionsView(peer);
 	const scope = peer.project_scope || {};
+	const projectNarrowing = derivePeerProjectNarrowingView(scope);
 	const includeList = listText(scope.include);
 	const excludeList = listText(scope.exclude);
 	const primaryAddress = pickPrimaryAddress(peer.addresses);
@@ -461,6 +473,12 @@ function SyncPeerCard({
 							{pendingScopeReview ? (
 								<span className="badge actor-badge">Needs scope review</span>
 							) : null}
+							<span
+								className={`badge ${authorizedDomains.isWarning ? "badge-offline" : "actor-badge"}`}
+								title="Sharing domains are the hard access boundary; project filters only narrow inside them."
+							>
+								{authorizedDomains.badgeLabel}
+							</span>
 							{scopeRejections.badgeLabel ? (
 								<span
 									className="badge badge-offline"
@@ -556,6 +574,23 @@ function SyncPeerCard({
 							].join(" · ")}
 						</div>
 
+						<div className="peer-scope-summary">Authorized Sharing domains</div>
+						<div className="peer-meta">
+							{authorizedDomains.total > 0
+								? "These Sharing domains are the hard access boundary for this device."
+								: authorizedDomains.emptyMessage}
+						</div>
+						{authorizedDomains.domains.length > 0 ? (
+							<ul className="peer-scope-chips" aria-label="Authorized Sharing domains">
+								{authorizedDomains.domains.map((domain) => (
+									<li className="peer-scope-chip" key={domain.scopeId} title={domain.detail}>
+										{domain.label}
+									</li>
+								))}
+							</ul>
+						) : null}
+						<div className="peer-meta">{projectNarrowing.note}</div>
+
 						{scopeRejections.total > 0 ? (
 							<div
 								className="peer-scope-rejections"
@@ -586,6 +621,11 @@ function SyncPeerCard({
 
 						<div className="peer-scope-summary">Who this device belongs to</div>
 						<div className="peer-meta">{assignmentSummary}</div>
+						{peer.claimed_local_actor ? (
+							<div className="peer-meta">
+								{claimedLocalActorScopeMessage(peer.claimed_local_actor_scope)}
+							</div>
+						) : null}
 						<div className="peer-actor-row">
 							<div className="sync-radix-select-host sync-actor-select-host">
 								<RadixSelect
@@ -611,10 +651,10 @@ function SyncPeerCard({
 							</button>
 						</div>
 
-						<div className="peer-scope-summary">Advanced sharing scope</div>
+						<div className="peer-scope-summary">Project filters (narrowing only)</div>
 						<div className="peer-meta">
-							Review or tighten what this device can share when you need more than the global
-							defaults.
+							{projectNarrowing.summary} Review or tighten these filters when this device should
+							receive fewer projects from its authorized Sharing domains.
 						</div>
 						<PeerScopeCollapsible
 							contentHost={scopeHost}

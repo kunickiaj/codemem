@@ -10,8 +10,10 @@ import {
 	peerErrorText,
 } from "./internal";
 import type {
+	PeerAuthorizedScopeLike,
 	PeerDirection,
 	PeerLike,
+	PeerProjectScopeLike,
 	PeerScopeRejectionReason,
 	UiPeerTrustSummary,
 	UiSyncStatus,
@@ -147,5 +149,93 @@ export function derivePeerScopeRejectionsView(peer: PeerLike): PeerScopeRejectio
 		badgeLabel,
 		reasons,
 		lastAt: summary.last_at ?? null,
+	};
+}
+
+function cleanList(values: unknown): string[] {
+	return Array.isArray(values)
+		? values.map((item) => cleanText(item)).filter((item): item is string => Boolean(item))
+		: [];
+}
+
+function shortList(values: string[], emptyLabel: string): string {
+	if (values.length === 0) return emptyLabel;
+	const visible = values.slice(0, 3).join(", ");
+	const remaining = values.length - 3;
+	return remaining > 0 ? `${visible} +${remaining.toLocaleString()} more` : visible;
+}
+
+function labelPart(value: string | null, fallback: string): string {
+	return value ? value.replaceAll("_", " ") : fallback;
+}
+
+export interface PeerAuthorizedDomainViewItem {
+	scopeId: string;
+	label: string;
+	detail: string;
+}
+
+export interface PeerAuthorizedDomainsView {
+	total: number;
+	badgeLabel: string;
+	isWarning: boolean;
+	domains: PeerAuthorizedDomainViewItem[];
+	emptyMessage: string;
+}
+
+export function derivePeerAuthorizedDomainsView(peer: PeerLike): PeerAuthorizedDomainsView {
+	const domains = (Array.isArray(peer.authorized_scopes) ? peer.authorized_scopes : [])
+		.map((scope: PeerAuthorizedScopeLike): PeerAuthorizedDomainViewItem | null => {
+			const scopeId = cleanText(scope.scope_id);
+			const label = cleanText(scope.label) ?? scopeId;
+			if (!scopeId && !label) return null;
+			const detail = [
+				labelPart(cleanText(scope.kind), "user"),
+				labelPart(cleanText(scope.authority_type), "local"),
+				`${labelPart(cleanText(scope.role), "member")} role`,
+			]
+				.filter(Boolean)
+				.join(" · ");
+			return { scopeId: scopeId || label, label: label || scopeId, detail };
+		})
+		.filter((item): item is PeerAuthorizedDomainViewItem => item != null);
+	const total = domains.length;
+	return {
+		total,
+		badgeLabel:
+			total === 1
+				? "1 Sharing domain"
+				: total > 1
+					? `${total} Sharing domains`
+					: "No Sharing domains",
+		isWarning: total === 0,
+		domains,
+		emptyMessage:
+			"No authorized Sharing domains are cached for this device. Project filters below cannot send data by themselves.",
+	};
+}
+
+export interface PeerProjectNarrowingView {
+	summary: string;
+	note: string;
+	sourceLabel: string;
+	includeLabel: string;
+	excludeLabel: string;
+}
+
+export function derivePeerProjectNarrowingView(
+	scope: PeerProjectScopeLike | null | undefined,
+): PeerProjectNarrowingView {
+	const effectiveInclude = cleanList(scope?.effective_include);
+	const effectiveExclude = cleanList(scope?.effective_exclude);
+	const sourceLabel = scope?.inherits_global ? "Global defaults" : "Device override";
+	const includeLabel = `Include filter: ${shortList(effectiveInclude, "all projects")}`;
+	const excludeLabel = `Exclude filter: ${shortList(effectiveExclude, "no exclusions")}`;
+	return {
+		sourceLabel,
+		includeLabel,
+		excludeLabel,
+		summary: `${sourceLabel}. ${includeLabel}; ${excludeLabel}.`,
+		note: "Project filters only narrow data after Sharing domain authorization; they never grant access to another domain.",
 	};
 }

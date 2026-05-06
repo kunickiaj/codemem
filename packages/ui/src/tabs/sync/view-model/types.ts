@@ -127,6 +127,33 @@ export interface PeerScopeRejectionsSummary {
 	last_at?: string | null;
 }
 
+export interface PeerProjectScopeLike {
+	include?: string[];
+	exclude?: string[];
+	effective_include?: string[];
+	effective_exclude?: string[];
+	inherits_global?: boolean;
+}
+
+export interface PeerAuthorizedScopeLike {
+	scope_id?: string | null;
+	label?: string | null;
+	kind?: string | null;
+	authority_type?: string | null;
+	coordinator_id?: string | null;
+	group_id?: string | null;
+	role?: string | null;
+	membership_epoch?: number | null;
+	updated_at?: string | null;
+}
+
+export interface PeerClaimedLocalActorScopeLike {
+	scope_id?: string | null;
+	authorized?: boolean;
+	state?: string | null;
+	action_required?: boolean;
+}
+
 export interface PeerLike {
 	peer_device_id?: string;
 	name?: string;
@@ -137,6 +164,10 @@ export interface PeerLike {
 	status?: SyncPeerStatusLike;
 	recent_ops?: PeerRecentOps;
 	scope_rejections?: PeerScopeRejectionsSummary;
+	project_scope?: PeerProjectScopeLike;
+	authorized_scopes?: PeerAuthorizedScopeLike[];
+	claimed_local_actor?: boolean;
+	claimed_local_actor_scope?: PeerClaimedLocalActorScopeLike | null;
 }
 
 export interface DiscoveredDeviceLike {
