@@ -10,11 +10,13 @@ import type {
 	CoordinatorBootstrapGrantVerification,
 	MaintenanceJobSnapshot,
 	MemoryStore,
+	ProjectScopeGuardrailWarning,
 	ReplicationOp,
 	SemanticIndexDiagnostics,
 } from "@codemem/core";
 import {
 	addSyncScopeToBoundary,
+	analyzeProjectScopeMappingChangeGuardrails,
 	applyReplicationOps,
 	buildBaseUrl,
 	cleanupNonces,
@@ -273,6 +275,22 @@ function optionalViewerStrictString(body: Record<string, unknown>, key: string):
 	return value.trim() || null;
 }
 
+function optionalViewerStringList(body: Record<string, unknown>, key: string): string[] {
+	const value = body[key];
+	if (value == null) return [];
+	if (!Array.isArray(value)) throw new Error(`${key} must be an array of strings`);
+	return [
+		...new Set(
+			value
+				.map((item) => {
+					if (typeof item !== "string") throw new Error(`${key} must be an array of strings`);
+					return item.trim();
+				})
+				.filter(Boolean),
+		),
+	];
+}
+
 function optionalViewerNumber(body: Record<string, unknown>, key: string): number | null {
 	const value = body[key];
 	if (value == null || value === "") return null;
@@ -285,6 +303,18 @@ function optionalViewerInteger(body: Record<string, unknown>, key: string): numb
 	if (value == null || value === "") return null;
 	const number = typeof value === "number" ? value : Number(value);
 	return Number.isInteger(number) ? number : Number.NaN;
+}
+
+function missingGuardrailConfirmations(
+	warnings: ProjectScopeGuardrailWarning[],
+	confirmedTokens: string[],
+): ProjectScopeGuardrailWarning[] {
+	const confirmed = new Set(confirmedTokens);
+	return warnings.filter(
+		(warning) =>
+			warning.requires_confirmation &&
+			(!warning.confirmation_token || !confirmed.has(warning.confirmation_token)),
+	);
 }
 
 function coordinatorAdminMutationStatus(message: string): 400 | 404 | 409 | 502 {
@@ -2229,20 +2259,62 @@ export function syncRoutes(
 		const store = getStore();
 		const body = await parseViewerJsonBody(c);
 		if (!body) return c.json({ error: "invalid json" }, 400);
-		const id = optionalViewerInteger(body, "id");
-		const priority = optionalViewerInteger(body, "priority");
-		if (Number.isNaN(id)) return c.json({ error: "id must be an integer" }, 400);
-		if (Number.isNaN(priority)) return c.json({ error: "priority must be an integer" }, 400);
 		try {
-			const mapping = upsertProjectScopeSettingsMapping(store.db, {
+			const id = optionalViewerInteger(body, "id");
+			const priority = optionalViewerInteger(body, "priority");
+			if (Number.isNaN(id)) return c.json({ error: "id must be an integer" }, 400);
+			if (Number.isNaN(priority)) return c.json({ error: "priority must be an integer" }, 400);
+			const workspaceIdentity = optionalViewerStrictString(body, "workspace_identity");
+			const projectPattern = optionalViewerStrictString(body, "project_pattern");
+			const scopeId = optionalViewerStrictString(body, "scope_id") ?? "";
+			const source = optionalViewerStrictString(body, "source") ?? "user";
+			const confirmedGuardrailTokens = optionalViewerStringList(body, "confirmed_guardrail_tokens");
+			const mappingInput = {
 				id,
-				workspace_identity: optionalViewerStrictString(body, "workspace_identity"),
-				project_pattern: optionalViewerStrictString(body, "project_pattern"),
-				scope_id: optionalViewerStrictString(body, "scope_id") ?? "",
+				workspace_identity: workspaceIdentity,
+				project_pattern: projectPattern,
+				scope_id: scopeId,
 				priority,
-				source: optionalViewerStrictString(body, "source") ?? "user",
+				source,
+			};
+			const analysis = analyzeProjectScopeMappingChangeGuardrails(store.db, mappingInput);
+			if (
+				analysis.requested_workspace_identity?.startsWith("unmapped:") &&
+				scopeId !== LOCAL_DEFAULT_SCOPE_ID
+			) {
+				return c.json(
+					{
+						error: "unmapped_project_local_only",
+						message:
+							"Unmapped projects need a stable path, git remote, or workspace id before assigning a non-local Sharing domain.",
+						guardrail_warnings: analysis.warnings,
+					},
+					400,
+				);
+			}
+			const missingConfirmations = missingGuardrailConfirmations(
+				analysis.warnings,
+				confirmedGuardrailTokens,
+			);
+			if (missingConfirmations.length > 0) {
+				const missingCodes = [...new Set(missingConfirmations.map((warning) => warning.code))];
+				const missingTokens = [
+					...new Set(missingConfirmations.map((warning) => warning.confirmation_token)),
+				].filter((token): token is string => typeof token === "string" && token.length > 0);
+				return c.json(
+					{
+						error: "guardrail_confirmation_required",
+						required_guardrails: missingCodes,
+						required_guardrail_tokens: missingTokens,
+						guardrail_warnings: analysis.warnings,
+					},
+					409,
+				);
+			}
+			const mapping = upsertProjectScopeSettingsMapping(store.db, {
+				...mappingInput,
 			});
-			return c.json({ ok: true, mapping });
+			return c.json({ ok: true, mapping, guardrail_warnings: analysis.warnings });
 		} catch (error) {
 			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
 		}

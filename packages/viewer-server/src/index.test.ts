@@ -5504,6 +5504,284 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("requires confirmation before saving risky Sharing domain mappings", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('acme-work', 'Acme Work', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+
+				const unconfirmedRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						project_pattern: "/Users/adam/*",
+						scope_id: "acme-work",
+					}),
+				});
+				expect(unconfirmedRes.status).toBe(409);
+				const unconfirmed = (await unconfirmedRes.json()) as {
+					error: string;
+					required_guardrails: string[];
+					required_guardrail_tokens: string[];
+					guardrail_warnings: Array<{
+						code: string;
+						confirmation_token: string;
+						requires_confirmation: boolean;
+					}>;
+				};
+				expect(unconfirmed).toMatchObject({
+					error: "guardrail_confirmation_required",
+					required_guardrails: ["broad_org_domain_pattern", "home_directory_org_domain_pattern"],
+				});
+				expect(unconfirmed.guardrail_warnings).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							code: "broad_org_domain_pattern",
+							confirmation_token: expect.stringMatching(/^psg_/),
+						}),
+						expect.objectContaining({
+							code: "home_directory_org_domain_pattern",
+							confirmation_token: expect.stringMatching(/^psg_/),
+						}),
+					]),
+				);
+				const codeOnlyRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						confirmed_guardrails: ["broad_org_domain_pattern", "home_directory_org_domain_pattern"],
+						project_pattern: "/Users/adam/*",
+						scope_id: "acme-work",
+					}),
+				});
+				expect(codeOnlyRes.status).toBe(409);
+				const staleTokenRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						confirmed_guardrail_tokens: unconfirmed.required_guardrail_tokens,
+						project_pattern: "/Users/bob/*",
+						scope_id: "acme-work",
+					}),
+				});
+				expect(staleTokenRes.status).toBe(409);
+
+				const confirmedRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						confirmed_guardrail_tokens: unconfirmed.required_guardrail_tokens,
+						project_pattern: "/Users/adam/*",
+						scope_id: "acme-work",
+					}),
+				});
+				expect(confirmedRes.status).toBe(200);
+				const confirmed = (await confirmedRes.json()) as {
+					mapping: { scope_id: string };
+					guardrail_warnings: Array<{ code: string }>;
+				};
+				expect(confirmed.mapping.scope_id).toBe("acme-work");
+				expect(confirmed.guardrail_warnings.map((warning) => warning.code)).toEqual([
+					"broad_org_domain_pattern",
+					"home_directory_org_domain_pattern",
+				]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("blocks unmapped projects from non-local Sharing domain assignment", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = new Date().toISOString();
+				const sessionResult = store.db
+					.prepare(
+						`INSERT INTO sessions(started_at, cwd, project, git_remote, git_branch, user, tool_version)
+						 VALUES (?, NULL, NULL, NULL, NULL, ?, ?)`,
+					)
+					.run(now, "test-user", "test");
+				insertTestMemory(store, {
+					sessionId: Number(sessionResult.lastInsertRowid),
+					kind: "discovery",
+					title: "unmapped project candidate",
+					metadata: {},
+				});
+				store.db
+					.prepare("UPDATE memory_items SET workspace_id = NULL WHERE title = ?")
+					.run("unmapped project candidate");
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('acme-work', 'Acme Work', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+
+				const settingsRes = await app.request("/api/sync/sharing-domains/settings");
+				const settings = (await settingsRes.json()) as {
+					projects: Array<{
+						display_project: string;
+						identity_source: string;
+						workspace_identity: string;
+					}>;
+				};
+				const project = settings.projects.find((item) => item.identity_source === "unmapped");
+				expect(project?.workspace_identity).toMatch(/^unmapped:/);
+
+				const res = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						workspace_identity: project?.workspace_identity,
+						project_pattern: project?.display_project,
+						scope_id: "acme-work",
+					}),
+				});
+				expect(res.status).toBe(400);
+				expect(await res.json()).toMatchObject({ error: "unmapped_project_local_only" });
+				const mappingResult = store.db
+					.prepare(
+						`INSERT INTO project_scope_mappings(
+							workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+						 ) VALUES (?, ?, ?, 0, 'user', ?, ?)`,
+					)
+					.run(project?.workspace_identity, project?.display_project, "local-default", now, now);
+				const byIdRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						id: Number(mappingResult.lastInsertRowid),
+						scope_id: "acme-work",
+					}),
+				});
+				expect(byIdRes.status).toBe(400);
+				expect(await byIdRes.json()).toMatchObject({ error: "unmapped_project_local_only" });
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("requires confirmation before reassigning an existing project mapping", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "reassignment candidate",
+					metadata: {},
+				});
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('acme-work', 'Acme Work', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('personal-devices', 'Personal Devices', 'personal', 'local', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('oss-codemem', 'OSS codemem', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+				const settingsRes = await app.request("/api/sync/sharing-domains/settings");
+				const settings = (await settingsRes.json()) as {
+					projects: Array<{ display_project: string; workspace_identity: string }>;
+				};
+				const project = settings.projects.find((item) => item.display_project === "test-project");
+				if (!project) throw new Error("project missing");
+				const createRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						workspace_identity: project.workspace_identity,
+						project_pattern: project.display_project,
+						scope_id: "acme-work",
+					}),
+				});
+				expect(createRes.status).toBe(200);
+				const created = (await createRes.json()) as { mapping: { id: number } };
+
+				const unconfirmedRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						id: created.mapping.id,
+						scope_id: "personal-devices",
+					}),
+				});
+				expect(unconfirmedRes.status).toBe(409);
+				const unconfirmed = (await unconfirmedRes.json()) as {
+					required_guardrails: string[];
+					required_guardrail_tokens: string[];
+				};
+				expect(unconfirmed).toMatchObject({
+					error: "guardrail_confirmation_required",
+					required_guardrails: ["scope_reassignment_old_copies"],
+				});
+				expect(unconfirmed.required_guardrail_tokens).toEqual([expect.stringMatching(/^psg_/)]);
+				store.db
+					.prepare("UPDATE project_scope_mappings SET scope_id = ? WHERE id = ?")
+					.run("oss-codemem", created.mapping.id);
+				const staleTokenRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						confirmed_guardrail_tokens: unconfirmed.required_guardrail_tokens,
+						id: created.mapping.id,
+						scope_id: "personal-devices",
+					}),
+				});
+				expect(staleTokenRes.status).toBe(409);
+				const staleTokenBody = (await staleTokenRes.json()) as {
+					required_guardrail_tokens: string[];
+				};
+				expect(staleTokenBody.required_guardrail_tokens).not.toEqual(
+					unconfirmed.required_guardrail_tokens,
+				);
+
+				const confirmedRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						confirmed_guardrail_tokens: staleTokenBody.required_guardrail_tokens,
+						id: created.mapping.id,
+						scope_id: "personal-devices",
+					}),
+				});
+				expect(confirmedRes.status).toBe(200);
+				expect(await confirmedRes.json()).toMatchObject({
+					mapping: { id: created.mapping.id, scope_id: "personal-devices" },
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("runs sync for all peers through the compatibility sync route", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;
