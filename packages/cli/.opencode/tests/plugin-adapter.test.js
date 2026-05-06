@@ -312,7 +312,11 @@ describe("opencode adapter event mapping", () => {
     expect(args).toEqual(["-y", `codemem@${__testUtils.PINNED_BACKEND_VERSION}`]);
   });
 
-  test("pinned backend version remains on the latest stable backend during alpha releases", () => {
+  test("CLI-bundled plugin pin stays in lockstep with the CLI package version", () => {
+    // The CLI's bundled OpenCode plugin spawns `npx codemem@${PINNED}` when
+    // no local backend is configured. Because that backend ships inside the
+    // same package as this plugin, the pin must match the package version
+    // exactly — including alpha/beta/rc prereleases.
     const packageJsonPath = resolve(
       fileURLToPath(new URL(".", import.meta.url)),
       "..",
@@ -322,6 +326,8 @@ describe("opencode adapter event mapping", () => {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
 
     expect(packageJson.version).toBe(__testUtils.PINNED_BACKEND_VERSION);
-    expect(__testUtils.PINNED_BACKEND_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(__testUtils.PINNED_BACKEND_VERSION).toMatch(
+      /^\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?$/,
+    );
   });
 });
