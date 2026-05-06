@@ -129,10 +129,52 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 - `codemem sync pair --accept '<payload>' --include shared-repo-1,shared-repo-2`
 - `codemem sync pair --accept '<payload>' --exclude private-repo`
 
+### Sharing domains and mixed-device safety
+
+A **Sharing domain** is the boundary that decides which devices may receive a
+memory. Internally this is stored as `scope_id`. Project filters still matter,
+but only as a narrowing rule after Sharing-domain authorization succeeds.
+
+Use separate Sharing domains for personal, work, client, and OSS data on the
+same machine:
+
+| Example project | Recommended Sharing domain | Why |
+|---|---|---|
+| `personal/finance` | Personal | Private or same-person data should only sync to your own devices. |
+| `work/acme-api` | Acme Work | Employer or team data should only sync to devices granted to that domain. |
+| `oss/codemem` | OSS codemem | Public/open-source work can be shared with OSS peers without widening work access. |
+
+Safe defaults:
+
+- Unknown projects default to local-only until you map them.
+- `Only me` keeps a memory local even if the project normally shares.
+- Private same-person sync uses a personal Sharing domain, not a broad work or
+  coordinator group grant.
+- A peer's project include/exclude list can remove memories from sync, but it
+  cannot add memories from a Sharing domain the peer is not authorized for.
+- Broad mappings or basename collisions should be reviewed before you rely on
+  them. If `codemem` exists under both work and personal paths, map the canonical
+  workspace path/remote instead of trusting the basename.
+
+For a mixed personal/work laptop, start conservatively:
+
+1. Create or select one personal Sharing domain and one work/team Sharing
+   domain in the Sync settings UI.
+2. Map each known project to the smallest correct Sharing domain.
+3. Leave unknown projects local-only until reviewed.
+4. Pair peers normally, then confirm each peer card shows the expected
+   authorized Sharing domains.
+5. Use project include/exclude filters only to narrow what an already-authorized
+   peer receives.
+
+Do not treat coordinator group membership as data access. A coordinator group can
+help discover and administer peers, but a peer still needs an explicit Sharing
+domain grant before it can receive that domain's memories.
+
 ### Claim your own devices
 
 - In the Sync panel, use `Assigned actor` to map a peer to your local actor when that machine should count as part of your identity.
-- Peers assigned to your local actor stay on the same-person continuity path, including private sync.
+- Actor assignment preserves provenance and same-person UI continuity. Private sync still requires membership in a personal Sharing domain; actor assignment is not an access grant.
 - If a machine is replaced or re-paired, use `Claim old device as mine` to reconnect older synced history to your local actor.
 
 ### Manage actors
@@ -141,8 +183,8 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 - The same section can merge a duplicate actor into another actor; this immediately moves assigned peers, while already-stamped historical memories keep their current provenance until a later follow-on flow changes them.
 - Assign each paired peer below to `Unassigned actor`, your local actor, or a named actor.
 - Assigning a peer changes how older synced memories from that peer are attributed.
-- Assigning a peer to a non-local actor keeps that peer's history shared; assigning it to your local actor keeps it personal/private.
-- Non-local actors receive memories from projects allowed by their include/exclude filters by default.
+- Assigning a peer to a non-local actor keeps that peer's history attributed to that actor; assigning it to your local actor keeps provenance tied to you.
+- Non-local peers receive memories only after Sharing-domain authorization succeeds. Their include/exclude filters can narrow that set, but cannot grant access.
 - Use `Only me` on a memory when it should stay local and not sync to non-local actors.
 - The Sync panel also shows a teammate review card with per-peer counts for memories that will share by default versus memories marked `Only me`, plus a one-click jump into `My memories` in the Feed for review.
 
@@ -235,18 +277,18 @@ The viewer's startup retries automatically with embeddings disabled if the initi
 
 **Symptom:** worker bootstrap fails with HTTP 401 / `bootstrap_grant_invalid`.
 
-The wire error is intentionally generic. Check the seed peer's server logs for the specific reason, then work through these:
+The wire error is intentionally generic. Check the peer serving the bootstrap snapshot for the specific reason, then work through these:
 
-1. **Is the coordinator reachable from the seed peer?** The seed must call the coordinator's admin API to verify the grant. If the coordinator is down or unreachable, the grant cannot be verified and bootstrap will fail. Check network connectivity and `sync_coordinator_url` config on the seed.
+1. **Is the coordinator reachable from the peer serving bootstrap?** That peer, not the worker, calls the coordinator's admin API to verify the grant. If the coordinator is down or unreachable from that peer, the grant cannot be verified and bootstrap will fail. Check network connectivity and `sync_coordinator_url` config on the serving peer.
 2. **Is the grant expired or revoked?** List active grants with `codemem coordinator list-bootstrap-grants <group>` and confirm the grant is still valid.
 3. **Does the grant's worker device match the bootstrapping device?** The `worker_device_id` on the grant must match the device ID of the worker attempting bootstrap. A mismatch (e.g., using a grant issued for a different worker) will be rejected.
 
 ## Retrieval scope
-- New memories default to the shared path for projects allowed by sync filters.
+- New memories are stamped with the Sharing domain resolved from their project mapping; unmapped projects stay local-only.
 - Owned feed items expose a visibility control so you can explicitly switch a memory between `Only me` and `Share with peers`.
-- Choosing `Only me` keeps the memory local and restores personal workspace scope; choosing `Share with peers` keeps it eligible for allowed-project sync and shared workspace scope.
+- Choosing `Only me` keeps the memory local; choosing `Share with peers` keeps it eligible only for peers authorized for the memory's Sharing domain.
 - The feed supports `All`, `Mine`, and `Theirs` scopes without splitting memories into separate databases.
-- For non-local peers, project and per-peer sync filters define the default eligible sync set, and `Only me` acts as a per-memory override.
+- For non-local peers, Sharing-domain membership is the access boundary. Project and per-peer sync filters narrow the eligible set, and `Only me` acts as a per-memory override.
 
 ## Viewer sync panel
 - The `Actors` section gives actor creation/rename one home, while peer cards keep assignment close to the peer being changed.
