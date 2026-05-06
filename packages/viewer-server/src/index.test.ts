@@ -3676,6 +3676,15 @@ describe("viewer-server", () => {
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body).toMatchObject({ applied: 1, skipped: 1, rejected: 0 });
+				expect(body.skipped_detail).toMatchObject({
+					reason: "project_filter",
+					skipped_count: 1,
+					project: "blocked-project",
+				});
+				expect(body.skipped_detail).not.toHaveProperty("op_id");
+				expect(body.skipped_detail).not.toHaveProperty("entity_id");
+				expect(body.skipped_detail).not.toHaveProperty("entity_type");
+				expect(body.skipped_detail).not.toHaveProperty("created_at");
 				expect(
 					store.db
 						.prepare("SELECT title FROM memory_items WHERE import_key = ?")

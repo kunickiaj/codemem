@@ -305,6 +305,61 @@ describe("summarizeSyncRunResult", () => {
 			warning: true,
 		});
 	});
+
+	it("surfaces outbound filter diagnostics without treating them as failed sync", () => {
+		expect(
+			summarizeSyncRunResult({
+				items: [
+					{
+						peer_device_id: "peer-a",
+						ok: true,
+						opsIn: 0,
+						opsOut: 0,
+						opsSkipped: 3,
+						skipped_out: { reason: "project_filter", skipped_count: 3, project: "private" },
+						addressErrors: [],
+					},
+				],
+			}),
+		).toEqual({
+			ok: true,
+			message:
+				"3 outbound ops were filtered: 3 by project filter. No payload was sent for filtered data.",
+			warning: true,
+		});
+	});
+
+	it("splits outbound filter diagnostics by reason", () => {
+		expect(
+			summarizeSyncRunResult({
+				items: [
+					{
+						peer_device_id: "peer-a",
+						ok: true,
+						opsIn: 0,
+						opsOut: 0,
+						opsSkipped: 2,
+						skipped_out: { reason: "project_filter", skipped_count: 2, project: "private" },
+						addressErrors: [],
+					},
+					{
+						peer_device_id: "peer-b",
+						ok: true,
+						opsIn: 0,
+						opsOut: 0,
+						opsSkipped: 1,
+						skipped_out: { reason: "visibility_filter", skipped_count: 1, visibility: "private" },
+						addressErrors: [],
+					},
+				],
+			}),
+		).toEqual({
+			ok: true,
+			message:
+				"3 outbound ops were filtered: 2 by project filter, 1 by visibility. No payload was sent for filtered data.",
+			warning: true,
+		});
+	});
 });
 
 describe("deriveDuplicatePeople", () => {

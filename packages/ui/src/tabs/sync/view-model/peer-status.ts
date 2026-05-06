@@ -107,6 +107,8 @@ const SCOPE_REJECTION_REASON_LABELS: Record<PeerScopeRejectionReason, string> = 
 	receiver_not_member: "Receiver not a scope member",
 	stale_epoch: "Stale or revoked membership",
 	scope_mismatch: "Scope mismatch",
+	visibility_filter: "Visibility filter",
+	project_filter: "Project filter",
 };
 
 export interface PeerScopeRejectionsView {

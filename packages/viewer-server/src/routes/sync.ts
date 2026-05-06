@@ -45,6 +45,7 @@ import {
 	DEFAULT_TIME_WINDOW_S,
 	ensureDeviceIdentity,
 	extractReplicationOps,
+	type FilterReplicationSkipped,
 	filterReplicationOpsForSyncWithStatus,
 	fingerprintPublicKey,
 	getCoordinatorGroupPreference,
@@ -95,6 +96,24 @@ type SyncRuntimeStatus = {
 		| null;
 	detail?: string | null;
 };
+
+type SafeSkippedSyncDetail = Pick<
+	FilterReplicationSkipped,
+	"reason" | "skipped_count" | "scope_id" | "project" | "visibility"
+>;
+
+function safeSkippedSyncDetail(
+	detail: FilterReplicationSkipped | null | undefined,
+): SafeSkippedSyncDetail | null {
+	if (!detail) return null;
+	return {
+		reason: detail.reason,
+		skipped_count: detail.skipped_count,
+		scope_id: detail.scope_id ?? null,
+		project: detail.project ?? null,
+		visibility: detail.visibility ?? null,
+	};
+}
 
 interface SyncProtocolRouteOptions {
 	routeRateLimit?: {
@@ -988,12 +1007,16 @@ function filterOpsForPeer(
 	localDeviceId: string | null,
 	ops: ReplicationOp[],
 	options: { applyScopeFilter?: boolean } = {},
-): { allowed: ReplicationOp[]; skipped: number } {
+): { allowed: ReplicationOp[]; skipped: number; skippedDetail: SafeSkippedSyncDetail | null } {
 	const [allowed, , skipped] = filterReplicationOpsForSyncWithStatus(store.db, ops, peerDeviceId, {
 		localDeviceId,
 		applyScopeFilter: options.applyScopeFilter,
 	});
-	return { allowed, skipped: skipped?.skipped_count ?? 0 };
+	return {
+		allowed,
+		skipped: skipped?.skipped_count ?? 0,
+		skippedDetail: skipped ? safeSkippedSyncDetail(skipped) : null,
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -1340,6 +1363,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				ops: filtered.allowed,
 				next_cursor: nextCursor,
 				skipped: filtered.skipped,
+				skipped_detail: filtered.skippedDetail,
 			});
 		} catch {
 			return c.json({ error: "internal_error" }, 500);
@@ -1542,6 +1566,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		return c.json({
 			...result,
 			skipped,
+			skipped_detail: filtered.skippedDetail,
 			sync_capability: LOCAL_SYNC_CAPABILITY,
 			scope_id: scopeRequest.scope_id,
 		});
@@ -2107,7 +2132,12 @@ export function syncRoutes(
 		const items = [] as Array<Record<string, unknown>>;
 		for (const peerId of peerIds) {
 			const result = await runSyncPass(store.db, peerId, { scanner: store.scanner });
-			items.push({ peer_device_id: peerId, ...result });
+			items.push({
+				peer_device_id: peerId,
+				...result,
+				skippedOut: undefined,
+				skipped_out: safeSkippedSyncDetail(result.skippedOut),
+			});
 		}
 		return c.json({ items });
 	});
