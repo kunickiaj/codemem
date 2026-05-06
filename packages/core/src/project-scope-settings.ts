@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 import { ensureScopeBackfillScopes } from "./scope-backfill.js";
 import {
@@ -30,6 +31,31 @@ export interface ProjectScopeSettingsMapping extends ScopeMapping {
 	source: string;
 	created_at: string;
 	updated_at: string;
+	guardrail_warnings: ProjectScopeGuardrailWarning[];
+}
+
+export type ProjectScopeGuardrailCode =
+	| "unknown_project_local_only"
+	| "basename_collision_review"
+	| "broad_org_domain_pattern"
+	| "home_directory_org_domain_pattern"
+	| "scope_reassignment_old_copies";
+
+export type ProjectScopeGuardrailSeverity = "info" | "warning";
+
+export interface ProjectScopeGuardrailWarning {
+	code: ProjectScopeGuardrailCode;
+	severity: ProjectScopeGuardrailSeverity;
+	message: string;
+	requires_confirmation: boolean;
+	scope_id?: string | null;
+	previous_scope_id?: string | null;
+	mapping_id?: number | null;
+	workspace_identity?: string | null;
+	project_pattern?: string | null;
+	related_workspace_identities?: string[];
+	related_projects?: string[];
+	confirmation_token?: string;
 }
 
 export interface ProjectScopeCandidate {
@@ -45,6 +71,7 @@ export interface ProjectScopeCandidate {
 	resolution_reason: ScopeResolutionReason;
 	mapping_id: number | null;
 	matched_pattern: string | null;
+	guardrail_warnings: ProjectScopeGuardrailWarning[];
 }
 
 export interface UpsertProjectScopeMappingInput {
@@ -54,6 +81,14 @@ export interface UpsertProjectScopeMappingInput {
 	scope_id: string;
 	priority?: number | null;
 	source?: string | null;
+}
+
+export interface ProjectScopeMappingChangeGuardrailAnalysis {
+	existing_mapping: ProjectScopeSettingsMapping | null;
+	requested_scope_id: string;
+	requested_workspace_identity: string | null;
+	requested_project_pattern: string | null;
+	warnings: ProjectScopeGuardrailWarning[];
 }
 
 interface ProjectScopeCandidateRow {
@@ -76,6 +111,180 @@ function normalizeWorkspaceIdentity(value: string | null | undefined): string | 
 	if (!cleaned) return null;
 	const normalized = cleaned.replaceAll("\\", "/").replace(/\/+$/, "");
 	return normalized || cleaned;
+}
+
+function scopeDisplayName(scope: SharingDomainSettingsScope | undefined, scopeId: string): string {
+	return scope?.label || scopeId;
+}
+
+function scopeLookup(
+	scopes: SharingDomainSettingsScope[],
+): Map<string, SharingDomainSettingsScope> {
+	return new Map(scopes.map((scope) => [scope.scope_id, scope]));
+}
+
+function isOrgLikeScope(scope: SharingDomainSettingsScope | undefined): boolean {
+	if (!scope || scope.scope_id === LOCAL_DEFAULT_SCOPE_ID) return false;
+	if (scope.authority_type !== "local") return true;
+	return scope.kind === "team" || scope.kind === "org" || scope.kind === "client";
+}
+
+function hasWildcard(value: string): boolean {
+	return /[*?]/.test(value);
+}
+
+function prefixBeforeWildcard(value: string): string {
+	const index = value.search(/[*?]/);
+	return (index >= 0 ? value.slice(0, index) : value).replace(/\/+$/, "");
+}
+
+function isHomeDirectoryRootPattern(pattern: string): boolean {
+	const prefix = prefixBeforeWildcard(pattern.replaceAll("\\", "/"));
+	return (
+		prefix === "~" ||
+		/^\/Users\/[^/]+$/i.test(prefix) ||
+		/^\/home\/[^/]+$/i.test(prefix) ||
+		/^\/var\/home\/[^/]+$/i.test(prefix) ||
+		/^[A-Z]:\/Users\/[^/]+$/i.test(prefix)
+	);
+}
+
+function guardrailConfirmationToken(warning: ProjectScopeGuardrailWarning): string {
+	const payload = JSON.stringify({
+		code: warning.code,
+		mapping_id: warning.mapping_id ?? null,
+		project_pattern: warning.project_pattern ?? null,
+		previous_scope_id: warning.previous_scope_id ?? null,
+		related_workspace_identities: warning.related_workspace_identities?.toSorted() ?? [],
+		scope_id: warning.scope_id ?? null,
+		workspace_identity: warning.workspace_identity ?? null,
+	});
+	return `psg_${createHash("sha256").update(payload).digest("hex").slice(0, 32)}`;
+}
+
+function withGuardrailConfirmationToken(
+	warning: ProjectScopeGuardrailWarning,
+): ProjectScopeGuardrailWarning {
+	if (!warning.requires_confirmation) return warning;
+	return { ...warning, confirmation_token: guardrailConfirmationToken(warning) };
+}
+
+function projectScopeMappingGuardrailWarnings(
+	mapping: Pick<
+		ProjectScopeSettingsMapping,
+		"id" | "workspace_identity" | "project_pattern" | "scope_id"
+	>,
+	scopesById: Map<string, SharingDomainSettingsScope>,
+): ProjectScopeGuardrailWarning[] {
+	if (mapping.workspace_identity) return [];
+	const pattern = normalizeWorkspaceIdentity(mapping.project_pattern) ?? mapping.project_pattern;
+	const scope = scopesById.get(mapping.scope_id);
+	if (!isOrgLikeScope(scope)) return [];
+	const scopeName = scopeDisplayName(scope, mapping.scope_id);
+	const warnings: ProjectScopeGuardrailWarning[] = [];
+	if (hasWildcard(pattern)) {
+		warnings.push({
+			code: "broad_org_domain_pattern",
+			severity: "warning",
+			message: `Wildcard project pattern ${pattern} can catch multiple projects. Review before attaching it to ${scopeName}.`,
+			requires_confirmation: true,
+			scope_id: mapping.scope_id,
+			mapping_id: mapping.id ?? null,
+			project_pattern: mapping.project_pattern,
+		});
+	}
+	if (isHomeDirectoryRootPattern(pattern)) {
+		warnings.push({
+			code: "home_directory_org_domain_pattern",
+			severity: "warning",
+			message: `Home-directory project pattern ${pattern} can mix personal and work projects. Review before attaching it to ${scopeName}.`,
+			requires_confirmation: true,
+			scope_id: mapping.scope_id,
+			mapping_id: mapping.id ?? null,
+			project_pattern: mapping.project_pattern,
+		});
+	}
+	return warnings.map(withGuardrailConfirmationToken);
+}
+
+function projectNameKey(project: ProjectScopeCandidate): string {
+	return (
+		clean(project.project) ??
+		clean(project.display_project) ??
+		project.workspace_identity
+	).toLowerCase();
+}
+
+function candidateCollisionMap(
+	candidates: ProjectScopeCandidate[],
+): Map<string, ProjectScopeCandidate[]> {
+	const groups = new Map<string, ProjectScopeCandidate[]>();
+	for (const candidate of candidates) {
+		const key = projectNameKey(candidate);
+		groups.set(key, [...(groups.get(key) ?? []), candidate]);
+	}
+	return groups;
+}
+
+function projectScopeCandidateGuardrailWarnings(
+	project: ProjectScopeCandidate,
+	collisions: Map<string, ProjectScopeCandidate[]>,
+): ProjectScopeGuardrailWarning[] {
+	const warnings: ProjectScopeGuardrailWarning[] = [];
+	if (project.resolution_reason === "local_default") {
+		warnings.push({
+			code: "unknown_project_local_only",
+			severity: "info",
+			message:
+				"No Sharing domain mapping matches this project, so future memories stay Local only until you assign one.",
+			requires_confirmation: false,
+			workspace_identity: project.workspace_identity,
+			scope_id: LOCAL_DEFAULT_SCOPE_ID,
+		});
+	}
+	const related = (collisions.get(projectNameKey(project)) ?? []).filter(
+		(candidate) => candidate.workspace_identity !== project.workspace_identity,
+	);
+	if (related.length > 0) {
+		warnings.push({
+			code: "basename_collision_review",
+			severity: "warning",
+			message: `Another project is also named ${project.display_project}. Review the git remote or path before assigning a non-local Sharing domain.`,
+			requires_confirmation: true,
+			workspace_identity: project.workspace_identity,
+			related_workspace_identities: related.map((candidate) => candidate.workspace_identity),
+			related_projects: related.map((candidate) => candidate.display_project),
+		});
+	}
+	return warnings.map(withGuardrailConfirmationToken);
+}
+
+function withCandidateGuardrails(candidates: ProjectScopeCandidate[]): ProjectScopeCandidate[] {
+	const collisions = candidateCollisionMap(candidates);
+	return candidates.map((candidate) => ({
+		...candidate,
+		guardrail_warnings: projectScopeCandidateGuardrailWarnings(candidate, collisions),
+	}));
+}
+
+function dedupeGuardrailWarnings(
+	warnings: ProjectScopeGuardrailWarning[],
+): ProjectScopeGuardrailWarning[] {
+	const seen = new Set<string>();
+	return warnings
+		.filter((warning) => {
+			const key = [
+				warning.code,
+				warning.scope_id ?? "",
+				warning.workspace_identity ?? "",
+				warning.project_pattern ?? "",
+				warning.related_workspace_identities?.join("|") ?? "",
+			].join("\0");
+			if (seen.has(key)) return false;
+			seen.add(key);
+			return true;
+		})
+		.map(withGuardrailConfirmationToken);
 }
 
 function assertCanonicalPattern(workspaceIdentity: string | null, projectPattern: string): void {
@@ -111,6 +320,7 @@ function rowToMapping(row: Record<string, unknown>): ProjectScopeSettingsMapping
 		source: String(row.source ?? "user"),
 		created_at: String(row.created_at ?? ""),
 		updated_at: String(row.updated_at ?? ""),
+		guardrail_warnings: [],
 	};
 }
 
@@ -129,6 +339,8 @@ export function listSharingDomainSettingsScopes(db: Database): SharingDomainSett
 }
 
 export function listProjectScopeSettingsMappings(db: Database): ProjectScopeSettingsMapping[] {
+	ensureScopeBackfillScopes(db);
+	const scopesById = scopeLookup(listSharingDomainSettingsScopes(db));
 	return db
 		.prepare(
 			`SELECT id, workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
@@ -136,7 +348,13 @@ export function listProjectScopeSettingsMappings(db: Database): ProjectScopeSett
 			 ORDER BY priority DESC, updated_at DESC, id DESC`,
 		)
 		.all()
-		.map((row) => rowToMapping(row as Record<string, unknown>));
+		.map((row) => {
+			const mapping = rowToMapping(row as Record<string, unknown>);
+			return {
+				...mapping,
+				guardrail_warnings: projectScopeMappingGuardrailWarnings(mapping, scopesById),
+			};
+		});
 }
 
 function getProjectScopeSettingsMappingById(
@@ -175,6 +393,102 @@ function assertActiveScope(db: Database, scopeId: string): void {
 		.prepare("SELECT 1 FROM replication_scopes WHERE scope_id = ? AND status = 'active' LIMIT 1")
 		.get(scopeId);
 	if (!row) throw new Error(`scope_id ${scopeId} is not an active Sharing domain`);
+}
+
+interface ProjectScopeMappingDraft {
+	existing: ProjectScopeSettingsMapping | null;
+	workspaceIdentity: string | null;
+	projectPattern: string | null;
+	scopeId: string;
+	priority: number;
+	source: string;
+}
+
+function resolveProjectScopeMappingDraft(
+	db: Database,
+	input: UpsertProjectScopeMappingInput,
+): ProjectScopeMappingDraft {
+	const id = input.id == null ? null : Number(input.id);
+	const byId = id && Number.isInteger(id) ? getProjectScopeSettingsMappingById(db, id) : null;
+	const workspaceIdentity =
+		normalizeWorkspaceIdentity(input.workspace_identity) ?? byId?.workspace_identity ?? null;
+	const byWorkspace = workspaceIdentity
+		? getProjectScopeSettingsMappingByWorkspaceIdentity(db, workspaceIdentity)
+		: null;
+	const existing = byId ?? byWorkspace;
+	const projectPattern =
+		clean(input.project_pattern) ?? existing?.project_pattern ?? workspaceIdentity;
+	const priority = input.priority == null ? (existing?.priority ?? 0) : Number(input.priority);
+	return {
+		existing,
+		workspaceIdentity,
+		projectPattern,
+		scopeId: clean(input.scope_id) ?? "",
+		priority,
+		source: clean(input.source) ?? "user",
+	};
+}
+
+export function analyzeProjectScopeMappingChangeGuardrails(
+	db: Database,
+	input: UpsertProjectScopeMappingInput,
+): ProjectScopeMappingChangeGuardrailAnalysis {
+	ensureScopeBackfillScopes(db);
+	const draft = resolveProjectScopeMappingDraft(db, input);
+	const scopes = listSharingDomainSettingsScopes(db);
+	const scopesById = scopeLookup(scopes);
+	const warnings: ProjectScopeGuardrailWarning[] = [];
+	if (draft.projectPattern && draft.scopeId) {
+		warnings.push(
+			...projectScopeMappingGuardrailWarnings(
+				{
+					id: draft.existing?.id ?? 0,
+					workspace_identity: draft.workspaceIdentity,
+					project_pattern: draft.projectPattern,
+					scope_id: draft.scopeId,
+				},
+				scopesById,
+			),
+		);
+	}
+	const candidate = draft.workspaceIdentity
+		? listProjectScopeCandidates(db).find(
+				(project) => project.workspace_identity === draft.workspaceIdentity,
+			)
+		: null;
+	const requestedScope = scopesById.get(draft.scopeId);
+	if (candidate) {
+		warnings.push(
+			...candidate.guardrail_warnings.filter(
+				(warning) => warning.code !== "basename_collision_review" || isOrgLikeScope(requestedScope),
+			),
+		);
+	}
+	if (draft.scopeId && draft.existing && draft.existing.scope_id !== draft.scopeId) {
+		const oldScope = scopeDisplayName(
+			scopesById.get(draft.existing.scope_id),
+			draft.existing.scope_id,
+		);
+		const newScope = scopeDisplayName(scopesById.get(draft.scopeId), draft.scopeId);
+		warnings.push({
+			code: "scope_reassignment_old_copies",
+			severity: "warning",
+			message: `Changing this project from ${oldScope} to ${newScope} does not recall data already copied under the old Sharing domain. Previous recipients may retain it.`,
+			requires_confirmation: true,
+			scope_id: draft.scopeId,
+			previous_scope_id: draft.existing.scope_id,
+			mapping_id: draft.existing.id,
+			workspace_identity: draft.workspaceIdentity,
+			project_pattern: draft.projectPattern,
+		});
+	}
+	return {
+		existing_mapping: draft.existing,
+		requested_scope_id: draft.scopeId,
+		requested_workspace_identity: draft.workspaceIdentity,
+		requested_project_pattern: draft.projectPattern,
+		warnings: dedupeGuardrailWarnings(warnings),
+	};
 }
 
 export function listProjectScopeCandidates(
@@ -244,13 +558,16 @@ export function listProjectScopeCandidates(
 			resolution_reason: resolution.reason,
 			mapping_id: resolution.mapping?.id ?? null,
 			matched_pattern: resolution.matchedPattern,
+			guardrail_warnings: [],
 		});
 	}
 
-	return candidates.toSorted(
-		(left, right) =>
-			left.display_project.localeCompare(right.display_project) ||
-			left.workspace_identity.localeCompare(right.workspace_identity),
+	return withCandidateGuardrails(
+		candidates.toSorted(
+			(left, right) =>
+				left.display_project.localeCompare(right.display_project) ||
+				left.workspace_identity.localeCompare(right.workspace_identity),
+		),
 	);
 }
 
@@ -259,29 +576,22 @@ export function upsertProjectScopeSettingsMapping(
 	input: UpsertProjectScopeMappingInput,
 ): ProjectScopeSettingsMapping {
 	ensureScopeBackfillScopes(db);
-	const scopeId = clean(input.scope_id);
+	const draft = resolveProjectScopeMappingDraft(db, input);
+	const scopeId = draft.scopeId;
 	if (!scopeId) throw new Error("scope_id must be a non-empty string");
 	assertActiveScope(db, scopeId);
 
-	const id = input.id == null ? null : Number(input.id);
-	const byId = id && Number.isInteger(id) ? getProjectScopeSettingsMappingById(db, id) : null;
-	const workspaceIdentity =
-		normalizeWorkspaceIdentity(input.workspace_identity) ?? byId?.workspace_identity ?? null;
-	const byWorkspace = workspaceIdentity
-		? getProjectScopeSettingsMappingByWorkspaceIdentity(db, workspaceIdentity)
-		: null;
-	const existing = byId ?? byWorkspace;
-	const projectPattern =
-		clean(input.project_pattern) ?? existing?.project_pattern ?? workspaceIdentity;
+	const { existing, workspaceIdentity } = draft;
+	const projectPattern = draft.projectPattern;
 	if (!projectPattern) throw new Error("project_pattern or workspace_identity is required");
 	assertCanonicalPattern(workspaceIdentity, projectPattern);
 
-	const priority = input.priority == null ? (existing?.priority ?? 0) : Number(input.priority);
+	const priority = draft.priority;
 	if (!Number.isFinite(priority) || !Number.isInteger(priority)) {
 		throw new Error("priority must be an integer");
 	}
 
-	const source = clean(input.source) ?? "user";
+	const source = draft.source;
 	const now = new Date().toISOString();
 	if (existing) {
 		db.prepare(

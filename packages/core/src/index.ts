@@ -372,11 +372,16 @@ export {
 } from "./project.js";
 export type {
 	ProjectScopeCandidate,
+	ProjectScopeGuardrailCode,
+	ProjectScopeGuardrailSeverity,
+	ProjectScopeGuardrailWarning,
+	ProjectScopeMappingChangeGuardrailAnalysis,
 	ProjectScopeSettingsMapping,
 	SharingDomainSettingsScope,
 	UpsertProjectScopeMappingInput,
 } from "./project-scope-settings.js";
 export {
+	analyzeProjectScopeMappingChangeGuardrails,
 	deleteProjectScopeSettingsMapping,
 	listProjectScopeCandidates,
 	listProjectScopeSettingsMappings,
