@@ -18,6 +18,7 @@ const SYNC_INCREMENTAL_TRIGGER = "sync_incremental";
 export interface VectorModelMigrationOptions {
 	batchSize?: number;
 	intervalMs?: number;
+	idleIntervalMs?: number;
 	dbPath?: string;
 	signal?: AbortSignal;
 }
@@ -572,6 +573,7 @@ export class VectorModelMigrationRunner {
 	private readonly signal?: AbortSignal;
 	private readonly batchSize: number;
 	private readonly intervalMs: number;
+	private readonly idleIntervalMs: number;
 	private active = false;
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private currentRun: Promise<void> | null = null;
@@ -582,6 +584,7 @@ export class VectorModelMigrationRunner {
 		this.signal = options.signal;
 		this.batchSize = Math.max(1, options.batchSize ?? 50);
 		this.intervalMs = Math.max(1000, options.intervalMs ?? 5000);
+		this.idleIntervalMs = Math.max(1000, options.idleIntervalMs ?? IDLE_INTERVAL_MS);
 	}
 
 	start(): void {
@@ -628,7 +631,7 @@ export class VectorModelMigrationRunner {
 				})
 				.finally(() => {
 					this.currentRun = null;
-					const next = this.lastTickWasIdle ? IDLE_INTERVAL_MS : this.intervalMs;
+					const next = this.lastTickWasIdle ? this.idleIntervalMs : this.intervalMs;
 					this.schedule(next);
 				});
 		}, delayMs);
