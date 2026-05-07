@@ -503,11 +503,59 @@ function unauthorizedPayload(reason: string, exposeReason = false): Record<strin
 	return { error: "unauthorized" };
 }
 
+const SYNC_AUTH_STORE_BUSY_REASON = "sync_auth_store_busy";
+
+type SyncAuthResult = { ok: boolean; reason: string; deviceId: string };
+
+function isSqliteBusy(err: unknown): boolean {
+	if (!err || typeof err !== "object") return false;
+	const code = "code" in err ? String((err as { code?: unknown }).code ?? "") : "";
+	const message = err instanceof Error ? err.message : "";
+	return code === "SQLITE_BUSY" || message.includes("database is locked");
+}
+
+function recordSyncAuthNonce(
+	store: MemoryStore,
+	deviceId: string,
+	nonce: string,
+	createdAt: string,
+): SyncAuthResult | null {
+	try {
+		if (!recordNonce(store.db, deviceId, nonce, createdAt)) {
+			return { ok: false, reason: "nonce_replay", deviceId };
+		}
+	} catch (err) {
+		if (isSqliteBusy(err)) {
+			return { ok: false, reason: SYNC_AUTH_STORE_BUSY_REASON, deviceId };
+		}
+		throw err;
+	}
+
+	const cutoff = new Date(Date.now() - DEFAULT_TIME_WINDOW_S * 2 * 1000).toISOString();
+	try {
+		cleanupNonces(store.db, cutoff);
+	} catch (err) {
+		if (!isSqliteBusy(err)) throw err;
+		// Nonce cleanup is best-effort. A lock here should not fail a request
+		// after its nonce was already recorded; the next request can prune.
+	}
+	return null;
+}
+
+function isSyncAuthStoreBusy(auth: SyncAuthResult): boolean {
+	return !auth.ok && auth.reason === SYNC_AUTH_STORE_BUSY_REASON;
+}
+
+function syncAuthStoreBusyResponse(c: Context) {
+	c.header("Retry-After", "1");
+	return c.json({ error: SYNC_AUTH_STORE_BUSY_REASON }, 503);
+}
+
 function authorizeSyncRequest(
 	store: MemoryStore,
 	request: { method: string; url: string; header(name: string): string | undefined },
 	body: Buffer,
-): { ok: boolean; reason: string; deviceId: string } {
+): SyncAuthResult {
 	const deviceId = (request.header("X-Opencode-Device") ?? "").trim();
 	const signature = request.header("X-Opencode-Signature") ?? "";
 	const timestamp = request.header("X-Opencode-Timestamp") ?? "";
@@ -555,12 +603,8 @@ function authorizeSyncRequest(
 	}
 
 	const createdAt = new Date().toISOString();
-	if (!recordNonce(store.db, deviceId, nonce, createdAt)) {
-		return { ok: false, reason: "nonce_replay", deviceId };
-	}
-
-	const cutoff = new Date(Date.now() - DEFAULT_TIME_WINDOW_S * 2 * 1000).toISOString();
-	cleanupNonces(store.db, cutoff);
+	const nonceResult = recordSyncAuthNonce(store, deviceId, nonce, createdAt);
+	if (nonceResult) return nonceResult;
 	return { ok: true, reason: "ok", deviceId };
 }
 
@@ -568,7 +612,7 @@ async function authorizeBootstrapGrantRequest(
 	store: MemoryStore,
 	request: { method: string; url: string; header(name: string): string | undefined },
 	body: Buffer,
-): Promise<{ ok: boolean; reason: string; deviceId: string }> {
+): Promise<SyncAuthResult> {
 	const grantId = (request.header("X-Codemem-Bootstrap-Grant") ?? "").trim();
 	const deviceId = (request.header("X-Opencode-Device") ?? "").trim();
 	const signature = request.header("X-Opencode-Signature") ?? "";
@@ -647,11 +691,8 @@ async function authorizeBootstrapGrantRequest(
 	}
 
 	const createdAt = new Date().toISOString();
-	if (!recordNonce(store.db, deviceId, nonce, createdAt)) {
-		return { ok: false, reason: "nonce_replay", deviceId };
-	}
-	const cutoff = new Date(Date.now() - DEFAULT_TIME_WINDOW_S * 2 * 1000).toISOString();
-	cleanupNonces(store.db, cutoff);
+	const nonceResult = recordSyncAuthNonce(store, deviceId, nonce, createdAt);
+	if (nonceResult) return nonceResult;
 	return { ok: true, reason: "ok", deviceId };
 }
 
@@ -1362,6 +1403,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		const store = getStore();
 		return (async () => {
 			let auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
+			if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 			let preauthChecked = false;
 			let bootstrapAttempted = false;
 			if (!auth.ok) {
@@ -1380,6 +1422,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				auth = await authorizeBootstrapGrantRequest(store, c.req, Buffer.alloc(0));
 				bootstrapAttempted = true;
 			}
+			if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 			if (!auth.ok) {
 				// Specific reasons are logged server-side; wire responses use a generic
 				// reason to prevent info-disclosure.
@@ -1419,6 +1462,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 	app.get("/v1/ops", (c) => {
 		const store = getStore();
 		const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
+		if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 		if (!auth.ok)
 			return (
 				rateLimitedResponse(c, c.req.path, false) ?? c.json(unauthorizedPayload(auth.reason), 401)
@@ -1494,6 +1538,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		const store = getStore();
 		return (async () => {
 			let auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
+			if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 			let preauthChecked = false;
 			let bootstrapAttempted = false;
 			if (!auth.ok) {
@@ -1512,6 +1557,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				auth = await authorizeBootstrapGrantRequest(store, c.req, Buffer.alloc(0));
 				bootstrapAttempted = true;
 			}
+			if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 			if (!auth.ok) {
 				// Specific reasons are logged server-side; wire responses use a generic
 				// reason to prevent info-disclosure.
@@ -1600,6 +1646,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		}
 
 		const auth = authorizeSyncRequest(store, c.req, raw);
+		if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 		if (!auth.ok)
 			return (
 				rateLimitedResponse(c, c.req.path, false) ?? c.json(unauthorizedPayload(auth.reason), 401)

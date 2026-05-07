@@ -2809,6 +2809,77 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("returns retryable busy when sync auth cannot record a nonce", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			const peers: ReturnType<typeof createAuthenticatedSyncPeer>[] = [];
+			let blocker: Database | null = null;
+			let lockReleased = false;
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const scenarios: Array<{
+					url: string;
+					method?: "GET" | "POST";
+					bodyBytes?: Buffer;
+				}> = [
+					{ url: "http://localhost/v1/status" },
+					{ url: "http://localhost/v1/ops?since=&limit=1" },
+					{
+						url: "http://localhost/v1/snapshot?generation=1&snapshot_id=snapshot-1&limit=1",
+					},
+					{
+						url: "http://localhost/v1/ops",
+						method: "POST",
+						bodyBytes: Buffer.from(JSON.stringify({ ops: [] })),
+					},
+				];
+				const signedRequests = scenarios.map((scenario) => {
+					const peer = createAuthenticatedSyncPeer(store, scenario);
+					peers.push(peer);
+					return { ...scenario, headers: peer.headers };
+				});
+				store.db.pragma("busy_timeout = 1");
+				blocker = connect(store.dbPath);
+				blocker.pragma("busy_timeout = 1");
+				blocker.exec("BEGIN IMMEDIATE");
+
+				for (const request of signedRequests) {
+					const res = await syncApp.request(request.url, {
+						method: request.method,
+						headers: request.headers,
+						body: request.bodyBytes,
+					});
+
+					expect(res.status).toBe(503);
+					expect(res.headers.get("retry-after")).toBe("1");
+					expect(await res.json()).toEqual({ error: "sync_auth_store_busy" });
+				}
+
+				blocker.exec("ROLLBACK");
+				lockReleased = true;
+				const retry = await syncApp.request(signedRequests[0].url, {
+					headers: signedRequests[0].headers,
+				});
+				expect(retry.status).toBe(200);
+				const replay = await syncApp.request(signedRequests[0].url, {
+					headers: signedRequests[0].headers,
+				});
+				expect(replay.status).toBe(401);
+			} finally {
+				if (!lockReleased) {
+					try {
+						blocker?.exec("ROLLBACK");
+					} catch {
+						// Ignore rollback errors when the lock was not acquired.
+					}
+				}
+				blocker?.close();
+				for (const peer of peers) peer.cleanup();
+				cleanup();
+			}
+		});
+
 		it("rate limits repeated sync listener requests", async () => {
 			const { syncApp, cleanup } = createTestApp({
 				syncRequestRateLimit: { unauthenticatedReadLimit: 1 },
