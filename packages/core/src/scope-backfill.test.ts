@@ -387,6 +387,44 @@ describe("scope backfill", () => {
 		expect(hasPendingScopeBackfill(db)).toBe(false);
 	});
 
+	it("keeps running progress below 100% while completion confirmation is pending", async () => {
+		const sessionId = insertSession(db, { project: "personal", cwd: "/home/me/personal" });
+		insertMemory(db, {
+			sessionId,
+			title: "Already scoped",
+			workspaceId: "personal:actor-1",
+			workspaceKind: "personal",
+			importKey: "key:stamped",
+			scopeId: LOCAL_DEFAULT_SCOPE_ID,
+		});
+		insertReplicationOp(db, "op-stamped", "key:stamped");
+
+		await expect(runScopeBackfillPass(db, { batchSize: 10 })).resolves.toBe(true);
+		let job = getMaintenanceJob(db, "scope_id_backfill");
+		expect(job?.status).toBe("running");
+		expect(job?.progress.current).toBeLessThan(job?.progress.total ?? 0);
+		expect(hasPendingScopeBackfill(db)).toBe(true);
+		expect(job?.metadata).toMatchObject({
+			processed_replication_ops: 1,
+			remaining_memories: 0,
+			remaining_replication_ops: 0,
+			exhausted_in_previous_pass: false,
+		});
+
+		await expect(runScopeBackfillPass(db, { batchSize: 10 })).resolves.toBe(true);
+		job = getMaintenanceJob(db, "scope_id_backfill");
+		expect(job?.status).toBe("running");
+		expect(job?.progress.current).toBeLessThan(job?.progress.total ?? 0);
+		expect(hasPendingScopeBackfill(db)).toBe(true);
+		expect(job?.metadata).toMatchObject({ exhausted_in_previous_pass: true });
+
+		await expect(runScopeBackfillPass(db, { batchSize: 10 })).resolves.toBe(false);
+		job = getMaintenanceJob(db, "scope_id_backfill");
+		expect(job?.status).toBe("completed");
+		expect(job?.progress.current).toBe(job?.progress.total);
+		expect(hasPendingScopeBackfill(db)).toBe(false);
+	});
+
 	it("hasPendingScopeBackfill returns quickly without joining replication_ops to memory_items", () => {
 		// Reproduces the slow-startup case: a database where the legacy
 		// pendingWorkCount path's correlated EXISTS join (replication_ops

@@ -39,12 +39,12 @@ export interface MaintenanceWorkerRuntimeOptions {
 	logger?: MaintenanceWorkerLogger;
 }
 
-type ManagedMaintenanceRunner = {
+export type ManagedMaintenanceRunner = {
 	start(): void;
 	stop(): Promise<void>;
 };
 
-type BackfillJobPlan = {
+export type BackfillJobPlan = {
 	name: string;
 	kind: string;
 	isPending: (db: MemoryStore["db"]) => boolean;
@@ -62,7 +62,7 @@ function readWorkerSyncConfig(configPath?: string | null) {
 	return readCoordinatorSyncConfig(config);
 }
 
-function createSequentialBackfillCoordinator(
+export function createSequentialBackfillCoordinator(
 	store: MemoryStore,
 	jobPlans: BackfillJobPlan[],
 	options: { signal?: AbortSignal; logger: MaintenanceWorkerLogger },
@@ -108,19 +108,6 @@ function createSequentialBackfillCoordinator(
 	const waitForCurrentJob = () => {
 		if (stopped || options.signal?.aborted || !activePlan || !activeRunner) return;
 		const job = getMaintenanceJob(store.db, activePlan.kind);
-		if (!activePlan.isPending(store.db)) {
-			const finishedPlan = activePlan;
-			const finishedRunner = activeRunner;
-			activePlan = null;
-			activeRunner = null;
-			void finishedRunner.stop().finally(() => {
-				if (!stopped && !options.signal?.aborted) {
-					options.logger.step(`${finishedPlan.name} backfill complete`);
-					startNextJob();
-				}
-			});
-			return;
-		}
 		if (job?.status === "failed") {
 			const failedPlan = activePlan;
 			const failedRunner = activeRunner;
@@ -131,6 +118,19 @@ function createSequentialBackfillCoordinator(
 					options.logger.warn(
 						`${failedPlan.name} backfill failed and will be retried on a later startup`,
 					);
+					startNextJob();
+				}
+			});
+			return;
+		}
+		if (!activePlan.isPending(store.db)) {
+			const finishedPlan = activePlan;
+			const finishedRunner = activeRunner;
+			activePlan = null;
+			activeRunner = null;
+			void finishedRunner.stop().finally(() => {
+				if (!stopped && !options.signal?.aborted) {
+					options.logger.step(`${finishedPlan.name} backfill complete`);
 					startNextJob();
 				}
 			});

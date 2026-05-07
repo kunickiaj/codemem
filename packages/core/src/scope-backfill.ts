@@ -279,9 +279,9 @@ export function hasPendingScopeBackfill(db: SqliteDatabase): boolean {
 	// runner should sweep again. Both queries hit
 	// idx_replication_ops_scope_created.
 	const unstampedCount = countAllUnstampedReplicationOps(db);
-	if (unstampedCount === 0) return false;
-
 	const job = getMaintenanceJob(db, SCOPE_BACKFILL_JOB);
+	if (job?.status === "running") return true;
+	if (unstampedCount === 0) return false;
 	if (!job || job.status !== "completed") return true;
 	const metadata = (job.metadata ?? {}) as ScopeBackfillMetadata;
 	const opWatermark = metadata.unstamped_replication_ops_at_completion;
@@ -480,6 +480,14 @@ function getExistingMetadata(db: SqliteDatabase): ScopeBackfillMetadata {
 	return (getMaintenanceJob(db, SCOPE_BACKFILL_JOB)?.metadata ?? {}) as ScopeBackfillMetadata;
 }
 
+function processedScopeBackfillItems(metadata: ScopeBackfillMetadata): number {
+	return (
+		Number(metadata.seeded_scopes ?? 0) +
+		Number(metadata.processed_memories ?? 0) +
+		Number(metadata.processed_replication_ops ?? 0)
+	);
+}
+
 export async function runScopeBackfillPass(
 	db: SqliteDatabase,
 	options: { batchSize?: number } = {},
@@ -514,11 +522,12 @@ export async function runScopeBackfillPass(
 		// commit the watermarks and finish.
 		const previouslyExhausted = Boolean(existingMetadata.exhausted_in_previous_pass);
 		if (existingJob && existingJob.status !== "completed") {
+			const processedItems = processedScopeBackfillItems(existingMetadata);
 			if (previouslyExhausted) {
 				completeMaintenanceJob(db, SCOPE_BACKFILL_JOB, {
 					message: "Sharing-domain backfill complete; future startup should be quieter",
-					progressCurrent: Number(existingMetadata.processed_memories ?? 0),
-					progressTotal: Number(existingMetadata.processed_memories ?? 0),
+					progressCurrent: processedItems,
+					progressTotal: processedItems,
 					metadata: {
 						...existingMetadata,
 						remaining_memories: 0,
@@ -531,8 +540,8 @@ export async function runScopeBackfillPass(
 			}
 			updateMaintenanceJob(db, SCOPE_BACKFILL_JOB, {
 				message: "Sharing-domain backfill quiescent — confirming on next tick",
-				progressCurrent: Number(existingMetadata.processed_memories ?? 0),
-				progressTotal: Number(existingMetadata.processed_memories ?? 0),
+				progressCurrent: processedItems,
+				progressTotal: processedItems + 1,
 				metadata: {
 					...existingMetadata,
 					remaining_memories: 0,
@@ -610,8 +619,17 @@ export async function runScopeBackfillPass(
 	// counts we already computed in this pass, so the UI gets honest progress
 	// without paying for another stampable-op scan.
 	const progressCurrent = seededScopes + processedMemories + processedReplicationOps;
+	const confirmationPending =
+		!isComplete &&
+		remainingMemory === 0 &&
+		result.remainingReplicationOps === 0 &&
+		remainingMissingScopes === 0;
 	const progressTotal = Math.max(
-		progressCurrent + remainingMemory + result.remainingReplicationOps + remainingMissingScopes,
+		progressCurrent +
+			remainingMemory +
+			result.remainingReplicationOps +
+			remainingMissingScopes +
+			(confirmationPending ? 1 : 0),
 		progressCurrent,
 	);
 	const metadata: ScopeBackfillMetadata = {
