@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "@codemem/core";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	buildForegroundRunnerArgs,
 	extractViewerPid,
@@ -13,6 +13,7 @@ import {
 	pickViewerPidCandidate,
 	prepareViewerDatabase,
 	sqliteVecFailureDiagnostics,
+	terminateTrustedViewerPid,
 } from "./serve.js";
 import {
 	resolveLegacyServeInvocation,
@@ -22,6 +23,10 @@ import {
 } from "./serve-invocation.js";
 
 describe("serve command option resolution", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
 	it("treats bare serve as a foreground start", () => {
 		const resolved = resolveLegacyServeInvocation({ host: "127.0.0.1", port: "38888" });
 		expect(resolved).toEqual({
@@ -230,5 +235,27 @@ describe("serve command option resolution", () => {
 			isLikelyViewerCommand("node /repo/packages/cli/dist/index.js serve start --foreground"),
 		).toBe(true);
 		expect(isLikelyViewerCommand("node /usr/bin/python -m http.server 38888")).toBe(false);
+	});
+
+	it("escalates trusted viewer shutdown when graceful SIGTERM stalls", async () => {
+		const signals: string[] = [];
+		let running = true;
+		const killSpy = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+			expect(pid).toBe(12345);
+			if (signal === 0) {
+				if (!running) throw new Error("not running");
+				return true;
+			}
+			signals.push(String(signal));
+			if (signal === "SIGKILL") running = false;
+			return true;
+		});
+
+		await expect(terminateTrustedViewerPid(12345, { gracefulMs: 1, forceMs: 50 })).resolves.toBe(
+			true,
+		);
+
+		expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+		expect(killSpy).toHaveBeenCalled();
 	});
 });

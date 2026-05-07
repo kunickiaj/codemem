@@ -172,6 +172,9 @@ export const memoryItems = sqliteTable(
 			table.visibility,
 			table.created_at,
 		),
+		index("idx_memory_items_scope_backfill_pending")
+			.on(table.id)
+			.where(sql`scope_id IS NULL OR scope_id = ''`),
 		index("idx_memory_items_dedup_key_active_created").on(
 			table.dedup_key,
 			table.active,
