@@ -117,6 +117,13 @@ export interface SyncSharingReviewRow {
 	shareable_count?: number;
 }
 
+export interface CachedLegacySharedReview {
+	scope_id?: string;
+	memory_count?: number;
+	has_data?: boolean;
+	last_updated_at?: string | null;
+}
+
 export interface DiscoveredDevice {
 	device_id?: string;
 	display_name?: string;
@@ -231,6 +238,7 @@ export const state = {
 	lastSyncPeers: [] as SyncPeer[],
 	pendingAcceptedSyncPeers: [] as SyncPeer[],
 	lastSyncSharingReview: [] as SyncSharingReviewRow[],
+	lastSyncLegacySharedReview: null as CachedLegacySharedReview | null,
 	lastSyncCoordinator: null as CachedSyncCoordinator | null,
 	lastCoordinatorAdminStatus: null as CachedCoordinatorAdminStatus | null,
 	coordinatorAdminTargetGroup: "",

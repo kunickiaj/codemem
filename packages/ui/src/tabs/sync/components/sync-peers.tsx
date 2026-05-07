@@ -209,6 +209,11 @@ function SyncPeerCard({
 		: "This device is not assigned to anyone yet.";
 	const lastSyncAt = String(peerStatus.last_sync_at || peerStatus.last_sync_at_utc || "");
 	const lastPingAt = String(peerStatus.last_ping_at || peerStatus.last_ping_at_utc || "");
+	const discoverySummary = peer.discovered_via_group_id
+		? `Discovery: seen through coordinator group ${peer.discovered_via_group_id}. Discovery helps find devices; Sharing-domain grants above decide data access.`
+		: peer.discovered_via_coordinator_id
+			? `Discovery: seen through coordinator ${peer.discovered_via_coordinator_id}. Discovery helps find devices; Sharing-domain grants above decide data access.`
+			: null;
 	const scopeEditorOpen = openPeerScopeEditors.has(peerId);
 	const scopeReviewRequested = consumePeerScopeReviewRequest(peerId);
 	const cardRef = useRef<HTMLDivElement | null>(null);
@@ -567,6 +572,7 @@ function SyncPeerCard({
 
 						<div className="peer-scope-summary">Device details</div>
 						<div className="peer-addresses">{addressLine}</div>
+						{discoverySummary ? <div className="peer-meta">{discoverySummary}</div> : null}
 						<div className="peer-meta">
 							{[
 								lastSyncAt ? `Sync: ${formatTimestamp(lastSyncAt)}` : "Sync: never",

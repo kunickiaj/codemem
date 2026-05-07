@@ -2179,10 +2179,19 @@ describe("viewer-server", () => {
 					.prepare(
 						`INSERT INTO sync_peers (
 							peer_device_id, name, claimed_local_actor, projects_include_json,
-							projects_exclude_json, created_at
-						) VALUES (?, ?, 0, ?, ?, ?)`,
+							projects_exclude_json, discovered_via_coordinator_id,
+							discovered_via_group_id, created_at
+						) VALUES (?, ?, 0, ?, ?, ?, ?, ?)`,
 					)
-					.run("peer-scope", "Peer Scope", JSON.stringify(["*"]), JSON.stringify(["private"]), now);
+					.run(
+						"peer-scope",
+						"Peer Scope",
+						JSON.stringify(["*"]),
+						JSON.stringify(["private"]),
+						"coord",
+						"team-a",
+						now,
+					);
 				const insertScope = store.db.prepare(
 					`INSERT INTO replication_scopes(
 						scope_id, label, kind, authority_type, coordinator_id, group_id,
@@ -2298,6 +2307,8 @@ describe("viewer-server", () => {
 				const body = (await res.json()) as {
 					items: Array<{
 						authorized_scopes: Array<Record<string, unknown>>;
+						discovered_via_coordinator_id: string | null;
+						discovered_via_group_id: string | null;
 						peer_device_id: string;
 						project_scope: Record<string, unknown>;
 					}>;
@@ -2323,12 +2334,18 @@ describe("viewer-server", () => {
 					membership_epoch: 2,
 					role: "member",
 				});
+				expect(peer).toMatchObject({
+					discovered_via_coordinator_id: "coord",
+					discovered_via_group_id: "team-a",
+				});
 
 				const statusRes = await app.request("/api/sync/status");
 				expect(statusRes.status).toBe(200);
 				const statusBody = (await statusRes.json()) as {
 					peers: Array<{
 						authorized_scopes: Array<Record<string, unknown>>;
+						discovered_via_coordinator_id: string | null;
+						discovered_via_group_id: string | null;
 						peer_device_id: string;
 						project_scope: Record<string, unknown>;
 					}>;
@@ -2341,6 +2358,58 @@ describe("viewer-server", () => {
 				expect(statusPeer?.project_scope).toMatchObject({
 					effective_exclude: ["private"],
 					effective_include: ["*"],
+				});
+				expect(statusPeer).toMatchObject({
+					discovered_via_coordinator_id: "coord",
+					discovered_via_group_id: "team-a",
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("surfaces legacy shared review summary in sync status", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				const _warmup = await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = new Date().toISOString();
+				const session = store.db
+					.prepare(
+						`INSERT INTO sessions(started_at, cwd, project, user, tool_version)
+						 VALUES (?, ?, ?, ?, ?)`,
+					)
+					.run(now, "/tmp/codemem-test", "codemem-test", "test", "test");
+				store.db
+					.prepare(
+						`INSERT INTO memory_items(
+							session_id, kind, title, body_text, created_at, updated_at,
+							visibility, workspace_id, workspace_kind, active, scope_id, metadata_json
+						 ) VALUES (?, 'discovery', ?, ?, ?, ?, 'shared', 'shared:default', 'shared', 1, ?, '{}')`,
+					)
+					.run(
+						Number(session.lastInsertRowid),
+						"Legacy shared",
+						"Legacy shared body",
+						now,
+						now,
+						"legacy-shared-review",
+					);
+
+				const res = await app.request("/api/sync/status");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					legacy_shared_review: {
+						has_data: boolean;
+						memory_count: number;
+						scope_id: string;
+					};
+				};
+				expect(body.legacy_shared_review).toMatchObject({
+					has_data: true,
+					memory_count: 1,
+					scope_id: "legacy-shared-review",
 				});
 			} finally {
 				cleanup();

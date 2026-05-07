@@ -186,6 +186,7 @@ describe("derivePeerAuthorizedDomainsView", () => {
 		expect(view.total).toBe(0);
 		expect(view.badgeLabel).toBe("No Sharing domains");
 		expect(view.isWarning).toBe(true);
+		expect(view.emptyMessage).toContain("No Sharing-domain grants exist");
 		expect(view.emptyMessage).toContain("Project filters below cannot send data by themselves");
 	});
 

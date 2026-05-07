@@ -7,8 +7,14 @@ export interface SyncSharingReviewItem {
 	shareableCount: number;
 }
 
+export interface SyncLegacySharedReviewItem {
+	memoryCount: number;
+	scopeId: string;
+}
+
 type SyncSharingReviewProps = {
 	items: SyncSharingReviewItem[];
+	legacyReview?: SyncLegacySharedReviewItem | null;
 	onReview: () => void;
 };
 
@@ -40,9 +46,28 @@ function SharingReviewRow({
 	);
 }
 
-export function SyncSharingReview({ items, onReview }: SyncSharingReviewProps) {
+function LegacySharedReviewRow({ item }: { item: SyncLegacySharedReviewItem }) {
+	return (
+		<div className="actor-row">
+			<div className="actor-details">
+				<div className="actor-title">
+					<strong>Legacy shared review</strong>
+					<span className="badge badge-offline">Needs review</span>
+				</div>
+				<div className="peer-meta">
+					{item.memoryCount.toLocaleString()} historical shared memories are in {item.scopeId}. 0.30
+					placed ambiguous older shared data there conservatively; review mappings before promoting
+					it. Remapping or revocation does not erase data already copied to peers.
+				</div>
+			</div>
+		</div>
+	);
+}
+
+export function SyncSharingReview({ items, legacyReview, onReview }: SyncSharingReviewProps) {
 	return (
 		<>
+			{legacyReview ? <LegacySharedReviewRow item={legacyReview} /> : null}
 			{items.map((item) => (
 				<SharingReviewRow
 					key={`${item.peerName}:${item.actorId}:${item.scopeLabel}`}

@@ -55,6 +55,7 @@ import {
 	getSemanticIndexDiagnostics,
 	getSyncResetState,
 	type InboundScopeRejectionPeerSummary,
+	LEGACY_SHARED_REVIEW_SCOPE_ID,
 	LOCAL_DEFAULT_SCOPE_ID,
 	LOCAL_SYNC_CAPABILITY,
 	listCoordinatorJoinRequests,
@@ -1197,6 +1198,28 @@ function recentScopeRejectionsByPeer(
 	return map;
 }
 
+function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> {
+	const row = store.db
+		.prepare(
+			`SELECT COUNT(*) AS memory_count,
+			        MAX(updated_at) AS last_updated_at
+			 FROM memory_items
+			 WHERE scope_id = ?
+			   AND active = 1
+			   AND deleted_at IS NULL`,
+		)
+		.get(LEGACY_SHARED_REVIEW_SCOPE_ID) as
+		| { memory_count: number | null; last_updated_at: string | null }
+		| undefined;
+	const memoryCount = Number(row?.memory_count ?? 0);
+	return {
+		scope_id: LEGACY_SHARED_REVIEW_SCOPE_ID,
+		memory_count: memoryCount,
+		has_data: memoryCount > 0,
+		last_updated_at: row?.last_updated_at ?? null,
+	};
+}
+
 // Aggregate ops_in / ops_out across recent successful sync_attempts per peer.
 // Window: last 24 hours. Feeds the per-peer direction glyph on the Sync tab
 // (↕ bidirectional, ↑ publishing, ↓ subscribed) off real traffic instead of
@@ -1294,7 +1317,8 @@ const PEERS_QUERY = `
 	SELECT p.peer_device_id, p.name, p.pinned_fingerprint, p.addresses_json,
 	       p.last_seen_at, p.last_sync_at, p.last_error,
 	       p.projects_include_json, p.projects_exclude_json, p.claimed_local_actor,
-	       p.actor_id, a.display_name AS actor_display_name
+	       p.actor_id, p.discovered_via_coordinator_id, p.discovered_via_group_id,
+	       a.display_name AS actor_display_name
 	FROM sync_peers AS p
 	LEFT JOIN actors AS a ON a.actor_id = p.actor_id
 	ORDER BY name, peer_device_id
@@ -1927,6 +1951,7 @@ export function syncRoutes(
 				ping: {},
 			};
 			const legacyDevices = traceSync("legacyDevices", () => store.claimableLegacyDeviceIds());
+			const legacyReview = traceSync("legacySharedReview", () => legacySharedReviewSummary(store));
 			const sharingReview = traceSync("sharingReview", () => store.sharingReviewSummary(project));
 			let joinRequests: Record<string, unknown>[] = [];
 			if (includeJoinRequests && showDiag && config.syncCoordinatorAdminSecret) {
@@ -1984,6 +2009,7 @@ export function syncRoutes(
 				peers: peersItems,
 				attempts: attemptsItems.slice(0, 5),
 				legacy_devices: legacyDevices,
+				legacy_shared_review: legacyReview,
 				sharing_review: sharingReview,
 				coordinator,
 			};

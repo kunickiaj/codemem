@@ -47,6 +47,7 @@ type SyncStatusResponseLike = {
 	coordinator?: Record<string, unknown> | null;
 	join_requests?: unknown[];
 	sharing_review?: unknown[];
+	legacy_shared_review?: Record<string, unknown> | null;
 	attempts?: unknown[];
 	legacy_devices?: unknown[];
 };
@@ -187,6 +188,10 @@ export async function loadSyncData() {
 		state.pendingAcceptedSyncPeers = pendingPeers;
 		state.lastSyncPeers = [...payloadPeers, ...pendingPeers];
 		state.lastSyncSharingReview = payload.sharing_review || [];
+		state.lastSyncLegacySharedReview =
+			payload.legacy_shared_review && typeof payload.legacy_shared_review === "object"
+				? payload.legacy_shared_review
+				: null;
 		state.lastSyncCoordinator = payload.coordinator || null;
 		state.lastCoordinatorAdminStatus =
 			coordinatorAdminStatus && typeof coordinatorAdminStatus === "object"

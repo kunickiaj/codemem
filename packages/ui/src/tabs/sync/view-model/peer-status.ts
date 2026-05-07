@@ -211,7 +211,7 @@ export function derivePeerAuthorizedDomainsView(peer: PeerLike): PeerAuthorizedD
 		isWarning: total === 0,
 		domains,
 		emptyMessage:
-			"No authorized Sharing domains are cached for this device. Project filters below cannot send data by themselves.",
+			"No Sharing-domain grants exist for this device yet. Project filters below cannot send data by themselves.",
 	};
 }
 

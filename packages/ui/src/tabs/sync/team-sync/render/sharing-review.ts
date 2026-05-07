@@ -21,17 +21,26 @@ export function renderSyncSharingReview() {
 	const meta = document.getElementById("syncSharingReviewMeta");
 	const list = document.getElementById("syncSharingReviewList") as HTMLElement | null;
 	if (!panel || !meta || !list) return;
+	const title = panel.querySelector<HTMLElement>(".settings-group-title");
 	const items = Array.isArray(state.lastSyncSharingReview) ? state.lastSyncSharingReview : [];
-	if (!items.length) {
+	const legacyRaw = state.lastSyncLegacySharedReview;
+	const legacyCount = Math.max(0, Number(legacyRaw?.memory_count ?? 0));
+	const legacyReview = legacyRaw?.has_data
+		? { memoryCount: legacyCount, scopeId: String(legacyRaw.scope_id || "legacy-shared-review") }
+		: null;
+	if (!items.length && !legacyReview) {
 		clearSyncMount(list);
 		panel.hidden = true;
 		return;
 	}
 	panel.hidden = false;
+	if (title) title.textContent = legacyReview ? "Sharing review" : "What teammates will receive";
 	const scopeLabel = state.currentProject
 		? `current project (${state.currentProject})`
 		: "all allowed projects";
-	meta.textContent = `Teammates receive memories from ${scopeLabel} by default. Use Only me on a memory when it should stay local.`;
+	meta.textContent = legacyReview
+		? `Review conservative upgrade state before promoting historical shared data. Teammates receive memories from ${scopeLabel} by default once Sharing-domain grants allow it.`
+		: `Teammates receive memories from ${scopeLabel} by default. Use Only me on a memory when it should stay local.`;
 	const reviewItems: SyncSharingReviewItem[] = items.map((item) => ({
 		actorDisplayName: String(item.actor_display_name || item.actor_id || "unknown"),
 		actorId: String(item.actor_id || "unknown"),
@@ -42,6 +51,6 @@ export function renderSyncSharingReview() {
 	}));
 	renderIntoSyncMount(
 		list,
-		h(SyncSharingReview, { items: reviewItems, onReview: openFeedSharingReview }),
+		h(SyncSharingReview, { items: reviewItems, legacyReview, onReview: openFeedSharingReview }),
 	);
 }
