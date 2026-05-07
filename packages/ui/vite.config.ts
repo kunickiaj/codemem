@@ -74,11 +74,6 @@ export default defineConfig(({ command, mode }) => {
 						formats: ["iife"],
 						fileName: () => "app.js",
 					},
-					rollupOptions: {
-						output: {
-							inlineDynamicImports: true,
-						},
-					},
 					sourcemap: mode === "development",
 					minify: false,
 				},
@@ -99,9 +94,6 @@ export default defineConfig(({ command, mode }) => {
 						},
 					]),
 		],
-		esbuild: {
-			legalComments: "none",
-		},
 		test: {
 			environment: "jsdom",
 			name: "ui",

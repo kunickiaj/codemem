@@ -1,6 +1,17 @@
 packages:
   - packages/*
 
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+  msgpackr-extract: true
+  protobufjs: false
+  sharp: true
+  workerd: true
+
+overrides:
+  better-sqlite3: 12.8.0
+
 catalog:
   "@biomejs/biome": ^2.4.14
   "@hono/node-server": ^2.0.1

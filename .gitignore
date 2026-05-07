@@ -85,6 +85,7 @@ packages/ui/index.html
 # Beads credential files
 .beads/.beads-credential-key
 .beads/push-state.json
+.beads/issues.jsonl
 
 # Beads / Dolt files (added by bd init)
 .beads-credential-key
