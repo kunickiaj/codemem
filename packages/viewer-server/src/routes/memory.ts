@@ -158,6 +158,35 @@ function countVisibleMemoryRows(store: MemoryStore, filters?: MemoryFilters | nu
 	return Number(row?.total ?? 0);
 }
 
+function summaryLikeSqlPredicate(): string {
+	return `(
+		LOWER(TRIM(COALESCE(memory_items.kind, ''))) = 'session_summary'
+		OR (
+			json_valid(COALESCE(memory_items.metadata_json, ''))
+			AND (
+				COALESCE(json_extract(memory_items.metadata_json, '$.is_summary') = 1, 0)
+				OR LOWER(TRIM(COALESCE(json_extract(memory_items.metadata_json, '$.source'), ''))) = 'observer_summary'
+			)
+		)
+	)`;
+}
+
+function countVisibleObservationRows(store: MemoryStore, filters?: MemoryFilters | null): number {
+	const filterResult = buildViewerMemoryFilters(store, filters);
+	const clauses = [
+		"memory_items.active = 1",
+		`NOT ${summaryLikeSqlPredicate()}`,
+		...filterResult.clauses,
+	];
+	const from = filterResult.joinSessions
+		? "memory_items JOIN sessions ON sessions.id = memory_items.session_id"
+		: "memory_items";
+	const row = store.db
+		.prepare(`SELECT COUNT(*) AS total FROM ${from} WHERE ${clauses.join(" AND ")}`)
+		.get(...filterResult.params) as Record<string, unknown> | undefined;
+	return Number(row?.total ?? 0);
+}
+
 function sessionAllowsArtifactAccess(store: MemoryStore, sessionId: number): boolean {
 	const visibleCount = countVisibleMemoryRows(store, { session_id: sessionId });
 	if (visibleCount === 0) return false;
@@ -423,32 +452,16 @@ export function memoryRoutes(getStore: StoreFactory) {
 			let artifacts: number;
 			let memories: number;
 			let observations: number;
-			const countObservations = (scopeProject?: string) => {
-				let offset = 0;
-				let total = 0;
-				while (true) {
-					const page = queryMemoryPage(store, {
-						limit: 200,
-						offset,
-						project: scopeProject,
-					});
-					if (page.length === 0) break;
-					total += page.filter((item) => !isSummaryLikeMemory(item)).length;
-					if (page.length < 200) break;
-					offset += page.length;
-				}
-				return total;
-			};
 			if (project) {
 				prompts = countVisiblePromptRows(store, project);
 				artifacts = countVisibleArtifactRows(store, project);
 				memories = countVisibleMemoryRows(store, { project });
-				observations = countObservations(project);
+				observations = countVisibleObservationRows(store, { project });
 			} else {
 				prompts = countVisiblePromptRows(store);
 				artifacts = countVisibleArtifactRows(store);
 				memories = countVisibleMemoryRows(store);
-				observations = countObservations();
+				observations = countVisibleObservationRows(store);
 			}
 			const total = prompts + artifacts + memories;
 			return c.json({ total, memories, artifacts, prompts, observations });

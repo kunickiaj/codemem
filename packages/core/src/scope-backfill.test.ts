@@ -270,6 +270,39 @@ describe("scope backfill", () => {
 		).toBe(LOCAL_DEFAULT_SCOPE_ID);
 	});
 
+	it("prefers import_key over numeric id when replication entity IDs are ambiguous", () => {
+		const sessionId = insertSession(db, { project: "codemem", cwd: "/tmp/codemem" });
+		insertMemory(db, {
+			sessionId,
+			title: "Import key match",
+			visibility: "shared",
+			workspaceKind: "shared",
+			workspaceId: "shared:team",
+			importKey: "2",
+			scopeId: LEGACY_SHARED_REVIEW_SCOPE_ID,
+		});
+		const numericId = insertMemory(db, {
+			sessionId,
+			title: "Numeric id match",
+			visibility: "private",
+			workspaceKind: "personal",
+			workspaceId: "personal:actor-1",
+			importKey: "key:numeric",
+			scopeId: LOCAL_DEFAULT_SCOPE_ID,
+		});
+		insertReplicationOp(db, "op-ambiguous", String(numericId));
+
+		const result = backfillScopeIds(db, { memoryLimit: 10, replicationOpLimit: 10 });
+
+		expect(numericId).toBe(2);
+		expect(result.checkedReplicationOps).toBe(1);
+		expect(result.updatedReplicationOps).toBe(1);
+		const op = db
+			.prepare("SELECT scope_id FROM replication_ops WHERE op_id = ?")
+			.get("op-ambiguous") as { scope_id: string | null };
+		expect(op.scope_id).toBe(LEGACY_SHARED_REVIEW_SCOPE_ID);
+	});
+
 	it("defers replication-op scanning while memory batches are still full", () => {
 		const sessionId = insertSession(db, { project: "personal", cwd: "/home/me/personal" });
 		insertMemory(db, {
@@ -327,7 +360,9 @@ describe("scope backfill", () => {
 			workspaceId: "personal:actor-1",
 			importKey: "key:private",
 		});
-		insertReplicationOp(db, "op-missing", "key:missing");
+		for (let index = 0; index < 10; index += 1) {
+			insertReplicationOp(db, `op-missing-${index}`, `key:missing-${index}`);
+		}
 
 		// Two-tick confirmation: the first pass stamps the memory and
 		// observes zero stampable ops, but flags the run as a candidate
@@ -339,6 +374,9 @@ describe("scope backfill", () => {
 		let job = getMaintenanceJob(db, "scope_id_backfill");
 		expect(job?.title).toBe("Backfilling Sharing domains");
 		expect(job?.message).toContain("memories and replication ops");
+		expect(job?.progress.current).toBeLessThan(job?.progress.total ?? 0);
+		expect(job?.progress.current).toBe(3);
+		expect(job?.progress.total).toBe(13);
 
 		await expect(runScopeBackfillPass(db, { batchSize: 10 })).resolves.toBe(false);
 		job = getMaintenanceJob(db, "scope_id_backfill");

@@ -112,6 +112,7 @@ interface MemoryScopeCandidateRow {
 interface ReplicationOpScopeCandidateRow {
 	op_id: string;
 	entity_id: string;
+	scope_id: string;
 }
 
 function clean(value: string | null | undefined): string | null {
@@ -331,12 +332,17 @@ function selectReplicationOpScopeCandidates(
 	limit: number,
 ): ReplicationOpScopeCandidateRow[] {
 	// Split the original `(import_key = entity_id OR CAST(id AS TEXT) = entity_id)`
-	// EXISTS into a UNION of two index-friendly INNER JOIN probes. The
+	// lookup into a UNION of two index-friendly INNER JOIN probes. The
 	// import_key branch hits idx_memory_items_import_key directly; the
 	// id branch hits the memory_items primary key after CAST. Without
 	// this split the planner sees the OR clause and degrades to a full
 	// scan of memory_items per replication_ops row, which is exactly
 	// what pegged Pi-class hardware on real-shape databases.
+	//
+	// The id branch deliberately excludes rows that also have a scoped
+	// import_key match. That preserves the old lookup precedence for
+	// ambiguous entity_ids like "123", where one memory's import_key is
+	// "123" and another memory's integer id is 123: import_key wins.
 	//
 	// Subtlety on the id branch: `mi.id = CAST(entity_id AS INTEGER)` is
 	// index-friendly but SQLite's INTEGER cast is lenient — strings like
@@ -345,22 +351,20 @@ function selectReplicationOpScopeCandidates(
 	// We pair the integer compare (for index access) with a strict
 	// text-equality check (`CAST(mi.id AS TEXT) = ro.entity_id`) that
 	// the planner only evaluates on the small post-join candidate set,
-	// preserving exact-match semantics. False positives would otherwise
-	// occupy the batch slot, then fail to stamp via lookupMemoryScopeForOp
-	// (which uses the original strict text-compare), starving real work.
+	// preserving exact-match semantics.
 	return db
 		.prepare(
-			`SELECT op_id, entity_id, created_at
+			`SELECT op_id, entity_id, scope_id, created_at
 			 FROM (
-				SELECT ro.op_id, ro.entity_id, ro.created_at
+				SELECT ro.op_id, ro.entity_id, mi.scope_id, ro.created_at
 				FROM replication_ops ro
 				INNER JOIN memory_items mi ON mi.import_key = ro.entity_id
 				WHERE ro.entity_type = 'memory_item'
 				  AND (ro.scope_id IS NULL OR ro.scope_id = '')
 				  AND mi.scope_id IS NOT NULL
 				  AND mi.scope_id != ''
-				UNION
-				SELECT ro.op_id, ro.entity_id, ro.created_at
+				UNION ALL
+				SELECT ro.op_id, ro.entity_id, mi.scope_id, ro.created_at
 				FROM replication_ops ro
 				INNER JOIN memory_items mi ON mi.id = CAST(ro.entity_id AS INTEGER)
 				WHERE ro.entity_type = 'memory_item'
@@ -368,26 +372,19 @@ function selectReplicationOpScopeCandidates(
 				  AND mi.scope_id IS NOT NULL
 				  AND mi.scope_id != ''
 				  AND CAST(mi.id AS TEXT) = ro.entity_id
+				  AND NOT EXISTS (
+					SELECT 1
+					FROM memory_items import_match
+					WHERE import_match.import_key = ro.entity_id
+					  AND import_match.scope_id IS NOT NULL
+					  AND import_match.scope_id != ''
+					LIMIT 1
+				  )
 			 )
 			 ORDER BY created_at ASC, op_id ASC
 			 LIMIT ?`,
 		)
 		.all(limit) as ReplicationOpScopeCandidateRow[];
-}
-
-function lookupMemoryScopeForOp(db: SqliteDatabase, entityId: string): string | null {
-	const row = db
-		.prepare(
-			`SELECT scope_id
-			 FROM memory_items
-			 WHERE (import_key = ? OR CAST(id AS TEXT) = ?)
-			   AND scope_id IS NOT NULL
-			   AND scope_id != ''
-			 ORDER BY CASE WHEN import_key = ? THEN 0 ELSE 1 END, id ASC
-			 LIMIT 1`,
-		)
-		.get(entityId, entityId, entityId) as { scope_id: string | null } | undefined;
-	return clean(row?.scope_id);
 }
 
 export function backfillScopeIds(
@@ -442,7 +439,7 @@ export function backfillScopeIds(
 			? []
 			: selectReplicationOpScopeCandidates(db, replicationOpLimit);
 		for (const row of opRows) {
-			const scopeId = lookupMemoryScopeForOp(db, row.entity_id);
+			const scopeId = clean(row.scope_id);
 			if (!scopeId) {
 				skippedReplicationOps += 1;
 				continue;
@@ -606,9 +603,16 @@ export async function runScopeBackfillPass(
 		remainingMemory === 0 && stampableOpsExhausted && remainingMissingScopes === 0;
 	const previouslyExhausted = Boolean(latestMetadata.exhausted_in_previous_pass);
 	const isComplete = passLooksDone && previouslyExhausted;
-	const progressCurrent = Math.max(
-		totalBefore - (remainingMemory + remainingMissingScopes + (stampableOpsExhausted ? 0 : 1)),
-		0,
+	// Keep progress tied to cumulative counters plus the latest cheap remaining
+	// proxy. `totalBefore` is recalculated on every tick from the shrinking
+	// replication-op tail; using it directly made the display sit at
+	// `N-1 / N (100%)` for most of a long-running backfill. These values reuse
+	// counts we already computed in this pass, so the UI gets honest progress
+	// without paying for another stampable-op scan.
+	const progressCurrent = seededScopes + processedMemories + processedReplicationOps;
+	const progressTotal = Math.max(
+		progressCurrent + remainingMemory + result.remainingReplicationOps + remainingMissingScopes,
+		progressCurrent,
 	);
 	const metadata: ScopeBackfillMetadata = {
 		seeded_scopes: seededScopes,
@@ -625,8 +629,8 @@ export async function runScopeBackfillPass(
 	if (isComplete) {
 		completeMaintenanceJob(db, SCOPE_BACKFILL_JOB, {
 			message: "Sharing-domain backfill complete; future startup should be quieter",
-			progressCurrent: totalBefore,
-			progressTotal: totalBefore,
+			progressCurrent: progressTotal,
+			progressTotal,
 			metadata: {
 				...metadata,
 				unstamped_replication_ops_at_completion: countAllUnstampedReplicationOps(db),
@@ -637,9 +641,9 @@ export async function runScopeBackfillPass(
 	}
 
 	updateMaintenanceJob(db, SCOPE_BACKFILL_JOB, {
-		message: `Backfilled Sharing domains for ${progressCurrent} of ${totalBefore} item(s), including memories and replication ops`,
+		message: `Backfilled Sharing domains for ${progressCurrent} of ${progressTotal} item(s), including memories and replication ops`,
 		progressCurrent,
-		progressTotal: totalBefore,
+		progressTotal,
 		metadata,
 	});
 	return true;
@@ -703,6 +707,10 @@ export class ScopeBackfillRunner {
 				this.active = false;
 			}
 		} catch (error) {
+			if (isTransientSqliteBusy(error)) {
+				console.warn("Scope backfill runner deferred because the database is busy", error);
+				return;
+			}
 			if (db) {
 				failMaintenanceJob(
 					db,
@@ -715,4 +723,14 @@ export class ScopeBackfillRunner {
 			db?.close();
 		}
 	}
+}
+
+function isTransientSqliteBusy(error: unknown): boolean {
+	const code =
+		typeof error === "object" && error != null
+			? String((error as { code?: unknown }).code ?? "")
+			: "";
+	if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") return true;
+	const message = error instanceof Error ? error.message : String(error);
+	return /database is (?:locked|busy)/i.test(message);
 }
