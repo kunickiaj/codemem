@@ -266,6 +266,29 @@ async function waitForProcessExit(pid: number, timeoutMs = 30000): Promise<boole
 	return !isProcessRunning(pid);
 }
 
+export async function terminateTrustedViewerPid(
+	pid: number,
+	timeouts: { gracefulMs?: number; forceMs?: number } = {},
+): Promise<boolean> {
+	try {
+		process.kill(pid, "SIGTERM");
+	} catch {
+		return true;
+	}
+	if (await waitForProcessExit(pid, timeouts.gracefulMs ?? 30000)) return true;
+
+	// A stuck better-sqlite3 maintenance query blocks the viewer's JS signal
+	// handler, so graceful shutdown can never run. At this point the PID has
+	// already passed the localhost + command-line trust checks; escalate so
+	// `codemem serve restart` does not require a manual kill -9.
+	try {
+		process.kill(pid, "SIGKILL");
+	} catch {
+		return true;
+	}
+	return waitForProcessExit(pid, timeouts.forceMs ?? 5000);
+}
+
 async function waitForPortRelease(host: string, port: number, timeoutMs = 10000): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
@@ -279,22 +302,13 @@ async function stopExistingViewer(
 	dbPath: string,
 	target: { host: string; port: number },
 ): Promise<{ stopped: boolean; pid: number | null }> {
-	const terminatePid = async (pid: number): Promise<boolean> => {
-		try {
-			process.kill(pid, "SIGTERM");
-			return await waitForProcessExit(pid);
-		} catch {
-			return true;
-		}
-	};
-
 	const pidPath = pidFilePath(dbPath);
 	const record = readViewerPidRecord(dbPath);
 	const viewerPidFromStats = await lookupViewerPidFromStats(target.host, target.port);
 	const listenerPid = lookupListeningPid(target.host, target.port);
 	const viewerPid = pickViewerPidCandidate(viewerPidFromStats, listenerPid);
 	if (viewerPid && isTrustedViewerPid(viewerPid, target, listenerPid)) {
-		const stopped = await terminatePid(viewerPid);
+		const stopped = await terminateTrustedViewerPid(viewerPid);
 		if (!stopped) return { stopped: false, pid: viewerPid };
 		try {
 			rmSync(pidPath);
@@ -307,7 +321,7 @@ async function stopExistingViewer(
 	if (!record) return { stopped: false, pid: null };
 
 	if (await respondsLikeCodememViewer(record)) {
-		const stopped = await terminatePid(record.pid);
+		const stopped = await terminateTrustedViewerPid(record.pid);
 		if (!stopped) return { stopped: false, pid: record.pid };
 	}
 	try {

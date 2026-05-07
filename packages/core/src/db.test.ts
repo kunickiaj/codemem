@@ -102,6 +102,7 @@ describe("connect", () => {
 		expect(columnExists(db, "memory_items", "scope_id")).toBe(true);
 		expect(columnExists(db, "replication_ops", "scope_id")).toBe(true);
 		expect(hasIndex(db, "idx_memory_items_scope_visibility_created")).toBe(true);
+		expect(hasIndex(db, "idx_memory_items_scope_backfill_pending")).toBe(true);
 		expect(hasIndex(db, "idx_replication_ops_scope_created")).toBe(true);
 		expect(hasIndex(db, "idx_replication_cursors_v2_scope")).toBe(true);
 		expect(() => assertSchemaReady(db)).not.toThrow();
@@ -861,6 +862,7 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(columnExists(db, "memory_items", "scope_id")).toBe(false);
 		expect(columnExists(db, "replication_ops", "scope_id")).toBe(false);
 		expect(hasIndex(db, "idx_memory_items_scope_visibility_created")).toBe(false);
+		expect(hasIndex(db, "idx_memory_items_scope_backfill_pending")).toBe(false);
 		expect(hasIndex(db, "idx_replication_ops_scope_created")).toBe(false);
 
 		ensureAdditiveSchemaCompatibility(db);
@@ -869,6 +871,7 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(columnExists(db, "memory_items", "scope_id")).toBe(true);
 		expect(columnExists(db, "replication_ops", "scope_id")).toBe(true);
 		expect(hasIndex(db, "idx_memory_items_scope_visibility_created")).toBe(true);
+		expect(hasIndex(db, "idx_memory_items_scope_backfill_pending")).toBe(true);
 		expect(hasIndex(db, "idx_replication_ops_scope_created")).toBe(true);
 	});
 

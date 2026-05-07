@@ -691,6 +691,13 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		} catch {
 			// Keep additive compatibility best-effort for index creation.
 		}
+		try {
+			db.exec(
+				"CREATE INDEX IF NOT EXISTS idx_memory_items_scope_backfill_pending ON memory_items(id) WHERE scope_id IS NULL OR scope_id = ''",
+			);
+		} catch {
+			// Keep additive compatibility best-effort for index creation.
+		}
 	}
 
 	if (tableExists(db, "replication_ops")) {

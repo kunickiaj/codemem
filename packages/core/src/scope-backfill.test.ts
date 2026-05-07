@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { toJson } from "./db.js";
@@ -267,6 +268,53 @@ describe("scope backfill", () => {
 				}
 			).scope_id,
 		).toBe(LOCAL_DEFAULT_SCOPE_ID);
+	});
+
+	it("defers replication-op scanning while memory batches are still full", () => {
+		const sessionId = insertSession(db, { project: "personal", cwd: "/home/me/personal" });
+		insertMemory(db, {
+			sessionId,
+			title: "Pending one",
+			visibility: "private",
+			workspaceKind: "personal",
+			workspaceId: "personal:actor-1",
+			importKey: "key:pending-one",
+		});
+		insertMemory(db, {
+			sessionId,
+			title: "Pending two",
+			visibility: "private",
+			workspaceKind: "personal",
+			workspaceId: "personal:actor-1",
+			importKey: "key:pending-two",
+		});
+		insertMemory(db, {
+			sessionId,
+			title: "Stamped",
+			workspaceKind: "personal",
+			workspaceId: "personal:actor-1",
+			importKey: "key:stamped",
+			scopeId: LOCAL_DEFAULT_SCOPE_ID,
+		});
+		insertReplicationOp(db, "op-stamped", "key:stamped");
+
+		const result = backfillScopeIds(db, { memoryLimit: 1, replicationOpLimit: 10 });
+
+		expect(result.checkedMemoryItems).toBe(1);
+		expect(result.updatedMemoryItems).toBe(1);
+		expect(result.checkedReplicationOps).toBe(0);
+		const op = db
+			.prepare("SELECT scope_id FROM replication_ops WHERE op_id = ?")
+			.get("op-stamped") as { scope_id: string | null };
+		expect(op.scope_id).toBeNull();
+	});
+
+	it("keeps scope predicates index-friendly in the hot path", () => {
+		const source = readFileSync(new URL("./scope-backfill.ts", import.meta.url), "utf8");
+
+		expect(source).not.toContain("TRIM(scope_id)");
+		expect(source).not.toContain("TRIM(mi.scope_id)");
+		expect(source).not.toContain("TRIM(ro.scope_id)");
 	});
 
 	it("runs as a maintenance pass and completes when no matching op work remains", async () => {

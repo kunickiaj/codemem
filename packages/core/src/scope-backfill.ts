@@ -195,7 +195,7 @@ function countPendingMemoryScopes(db: SqliteDatabase): number {
 		.prepare(
 			`SELECT COUNT(*) AS n
 			 FROM memory_items
-			 WHERE scope_id IS NULL OR TRIM(scope_id) = ''`,
+			 WHERE scope_id IS NULL OR scope_id = ''`,
 		)
 		.get() as { n: number } | undefined;
 	return Number(row?.n ?? 0);
@@ -210,7 +210,7 @@ function maxStampedMemoryId(db: SqliteDatabase): number {
 		.prepare(
 			`SELECT MAX(id) AS max_id
 			 FROM memory_items
-			 WHERE scope_id IS NOT NULL AND TRIM(scope_id) <> ''`,
+			 WHERE scope_id IS NOT NULL AND scope_id <> ''`,
 		)
 		.get() as { max_id: number | null } | undefined;
 	return Number(row?.max_id ?? 0);
@@ -226,7 +226,7 @@ function countAllUnstampedReplicationOps(db: SqliteDatabase): number {
 			`SELECT COUNT(*) AS n
 			 FROM replication_ops
 			 WHERE entity_type = 'memory_item'
-			   AND (scope_id IS NULL OR TRIM(scope_id) = '')`,
+			   AND (scope_id IS NULL OR scope_id = '')`,
 		)
 		.get() as { n: number } | undefined;
 	return Number(row?.n ?? 0);
@@ -260,7 +260,7 @@ export function hasPendingScopeBackfill(db: SqliteDatabase): boolean {
 		.prepare(
 			`SELECT 1
 			 FROM memory_items
-			 WHERE scope_id IS NULL OR TRIM(scope_id) = ''
+			 WHERE scope_id IS NULL OR scope_id = ''
 			 LIMIT 1`,
 		)
 		.get();
@@ -299,7 +299,7 @@ export function hasPendingScopeBackfill(db: SqliteDatabase): boolean {
 			`SELECT 1
 			 FROM memory_items
 			 WHERE id > ?
-			   AND scope_id IS NOT NULL AND TRIM(scope_id) <> ''
+			   AND scope_id IS NOT NULL AND scope_id <> ''
 			 LIMIT 1`,
 		)
 		.get(memoryWatermark);
@@ -317,11 +317,11 @@ function selectMemoryScopeCandidates(db: SqliteDatabase, limit: number): MemoryS
 				s.project,
 				s.cwd,
 				s.git_remote
-			 FROM memory_items mi
-			 LEFT JOIN sessions s ON s.id = mi.session_id
-			 WHERE mi.scope_id IS NULL OR TRIM(mi.scope_id) = ''
-			 ORDER BY mi.id ASC
-			 LIMIT ?`,
+			 FROM memory_items AS mi INDEXED BY idx_memory_items_scope_backfill_pending
+				 LEFT JOIN sessions s ON s.id = mi.session_id
+				 WHERE mi.scope_id IS NULL OR mi.scope_id = ''
+				 ORDER BY mi.id ASC
+				 LIMIT ?`,
 		)
 		.all(limit) as MemoryScopeCandidateRow[];
 }
@@ -356,17 +356,17 @@ function selectReplicationOpScopeCandidates(
 				FROM replication_ops ro
 				INNER JOIN memory_items mi ON mi.import_key = ro.entity_id
 				WHERE ro.entity_type = 'memory_item'
-				  AND (ro.scope_id IS NULL OR TRIM(ro.scope_id) = '')
+				  AND (ro.scope_id IS NULL OR ro.scope_id = '')
 				  AND mi.scope_id IS NOT NULL
-				  AND TRIM(mi.scope_id) != ''
+				  AND mi.scope_id != ''
 				UNION
 				SELECT ro.op_id, ro.entity_id, ro.created_at
 				FROM replication_ops ro
 				INNER JOIN memory_items mi ON mi.id = CAST(ro.entity_id AS INTEGER)
 				WHERE ro.entity_type = 'memory_item'
-				  AND (ro.scope_id IS NULL OR TRIM(ro.scope_id) = '')
+				  AND (ro.scope_id IS NULL OR ro.scope_id = '')
 				  AND mi.scope_id IS NOT NULL
-				  AND TRIM(mi.scope_id) != ''
+				  AND mi.scope_id != ''
 				  AND CAST(mi.id AS TEXT) = ro.entity_id
 			 )
 			 ORDER BY created_at ASC, op_id ASC
@@ -382,7 +382,7 @@ function lookupMemoryScopeForOp(db: SqliteDatabase, entityId: string): string | 
 			 FROM memory_items
 			 WHERE (import_key = ? OR CAST(id AS TEXT) = ?)
 			   AND scope_id IS NOT NULL
-			   AND TRIM(scope_id) != ''
+			   AND scope_id != ''
 			 ORDER BY CASE WHEN import_key = ? THEN 0 ELSE 1 END, id ASC
 			 LIMIT 1`,
 		)
@@ -403,13 +403,13 @@ export function backfillScopeIds(
 		`UPDATE memory_items
 		 SET scope_id = ?
 		 WHERE id = ?
-		   AND (scope_id IS NULL OR TRIM(scope_id) = '')`,
+		   AND (scope_id IS NULL OR scope_id = '')`,
 	);
 	const updateOpScope = db.prepare(
 		`UPDATE replication_ops
 		 SET scope_id = ?
 		 WHERE op_id = ?
-		   AND (scope_id IS NULL OR TRIM(scope_id) = '')`,
+		   AND (scope_id IS NULL OR scope_id = '')`,
 	);
 
 	const apply = db.transaction(() => {
@@ -431,7 +431,16 @@ export function backfillScopeIds(
 			);
 		}
 
-		const opRows = selectReplicationOpScopeCandidates(db, replicationOpLimit);
+		// Prioritize draining memory_items before scanning replication_ops. The
+		// op query has to prove whether any unstamped operation now matches a
+		// stamped memory; on real databases with many orphan ops, doing that after
+		// every memory batch can monopolize the viewer process and delay shutdown.
+		// Once a memory batch returns fewer rows than requested, memory stamping is
+		// caught up and it is worth sweeping the op tail.
+		const memoryBatchFilled = memoryRows.length >= memoryLimit;
+		const opRows = memoryBatchFilled
+			? []
+			: selectReplicationOpScopeCandidates(db, replicationOpLimit);
 		for (const row of opRows) {
 			const scopeId = lookupMemoryScopeForOp(db, row.entity_id);
 			if (!scopeId) {
@@ -664,6 +673,7 @@ export class ScopeBackfillRunner {
 			clearTimeout(this.timer);
 			this.timer = null;
 		}
+		if (this.signal?.aborted) return;
 		if (this.currentRun) await this.currentRun;
 	}
 
