@@ -15,9 +15,12 @@ import {
 } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
+import { startMaintenanceWorkerRuntime } from "../maintenance-worker-runtime.js";
 import {
+	addConfigOption,
 	addDbOption,
 	addJsonOption,
+	type ConfigOpts,
 	type DbOpts,
 	type JsonOpts,
 	resolveDbOpt,
@@ -34,6 +37,13 @@ const statusCmd = new Command("status")
 addDbOption(statusCmd);
 addJsonOption(statusCmd);
 
+const workerCmd = new Command("worker")
+	.configureHelp(helpStyle)
+	.description("Run maintenance worker plumbing");
+
+addDbOption(workerCmd);
+addConfigOption(workerCmd);
+
 statusCmd.action((opts: DbOpts & JsonOpts) => {
 	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 	try {
@@ -48,7 +58,53 @@ statusCmd.action((opts: DbOpts & JsonOpts) => {
 	}
 });
 
+export async function runMaintenanceWorkerCommand(opts: DbOpts & ConfigOpts): Promise<void> {
+	const dbPath = resolveDbPath(resolveDbOpt(opts));
+	if (opts.config) process.env.CODEMEM_CONFIG = opts.config;
+	process.env.CODEMEM_DB = dbPath;
+
+	const abort = new AbortController();
+	const runtime = startMaintenanceWorkerRuntime({
+		dbPath,
+		configPath: opts.config ?? null,
+		signal: abort.signal,
+	});
+	const keepAlive = setInterval(() => undefined, 60_000);
+	let stopping = false;
+
+	const shutdown = async () => {
+		if (stopping) return;
+		stopping = true;
+		abort.abort();
+		clearInterval(keepAlive);
+		const forceExit = setTimeout(() => {
+			process.exit(1);
+		}, 30_000);
+		try {
+			await runtime.stop();
+			process.exit(0);
+		} finally {
+			clearTimeout(forceExit);
+		}
+	};
+
+	await new Promise<void>((resolve, reject) => {
+		process.once("SIGINT", () => void shutdown().then(resolve, reject));
+		process.once("SIGTERM", () => void shutdown().then(resolve, reject));
+	});
+}
+
+workerCmd.action(async (opts: DbOpts & ConfigOpts) => {
+	try {
+		await runMaintenanceWorkerCommand(opts);
+	} catch (error) {
+		console.error(error instanceof Error ? error.message : String(error));
+		process.exitCode = 1;
+	}
+});
+
 maintenanceCmd.addCommand(statusCmd);
+maintenanceCmd.addCommand(workerCmd, { hidden: true });
 
 export const maintenanceCommand = maintenanceCmd;
 

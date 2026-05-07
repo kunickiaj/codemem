@@ -1,18 +1,23 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "@codemem/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	buildForegroundRunnerArgs,
+	buildMaintenanceWorkerArgs,
+	commandHasExactDbPath,
 	extractViewerPid,
+	isLikelyMaintenanceWorkerCommand,
 	isLikelyViewerCommand,
 	isLocalHost,
 	isLoopbackOnlyHost,
 	isSqliteVecLoadFailure,
+	maintenanceWorkerPidFilePath,
 	pickViewerPidCandidate,
 	prepareViewerDatabase,
 	sqliteVecFailureDiagnostics,
+	terminateTrustedMaintenanceWorker,
 	terminateTrustedViewerPid,
 } from "./serve.js";
 import {
@@ -155,6 +160,32 @@ describe("serve command option resolution", () => {
 		]);
 	});
 
+	it("builds maintenance worker args from the current runner", () => {
+		const args = buildMaintenanceWorkerArgs(
+			"/repo/packages/cli/src/index.ts",
+			{
+				mode: "start",
+				dbPath: "/tmp/test.sqlite",
+				configPath: "/tmp/codemem.jsonc",
+				host: "127.0.0.1",
+				port: 38991,
+				background: false,
+			},
+			["--conditions", "source"],
+		);
+		expect(args).toEqual([
+			"--conditions",
+			"source",
+			"/repo/packages/cli/src/index.ts",
+			"maintenance",
+			"worker",
+			"--db-path",
+			"/tmp/test.sqlite",
+			"--config",
+			"/tmp/codemem.jsonc",
+		]);
+	});
+
 	it("detects sqlite-vec load errors for viewer startup fallback", () => {
 		expect(isSqliteVecLoadFailure(new Error("sqlite-vec loaded but version check failed"))).toBe(
 			true,
@@ -234,7 +265,95 @@ describe("serve command option resolution", () => {
 		expect(
 			isLikelyViewerCommand("node /repo/packages/cli/dist/index.js serve start --foreground"),
 		).toBe(true);
+		expect(isLikelyViewerCommand("node /repo/packages/cli/src/index.ts serve start")).toBe(true);
 		expect(isLikelyViewerCommand("node /usr/bin/python -m http.server 38888")).toBe(false);
+	});
+
+	it("matches likely codemem maintenance worker command lines", () => {
+		expect(
+			isLikelyMaintenanceWorkerCommand(
+				"node /repo/packages/cli/src/index.ts maintenance worker --db-path /tmp/test.sqlite",
+			),
+		).toBe(true);
+		expect(
+			isLikelyMaintenanceWorkerCommand(
+				"node /repo/packages/cli/dist/index.js maintenance worker --db-path /tmp/test.sqlite",
+			),
+		).toBe(true);
+		expect(isLikelyMaintenanceWorkerCommand("node /tmp/other.js maintenance worker")).toBe(false);
+	});
+
+	it("requires exact maintenance worker db-path command ownership", () => {
+		expect(
+			commandHasExactDbPath(
+				"node /repo/packages/cli/src/index.ts maintenance worker --db-path /tmp/mem.sqlite",
+				"/tmp/mem.sqlite",
+			),
+		).toBe(true);
+		expect(
+			commandHasExactDbPath(
+				"node /repo/packages/cli/src/index.ts maintenance worker --db-path=/tmp/mem.sqlite",
+				"/tmp/mem.sqlite",
+			),
+		).toBe(true);
+		expect(
+			commandHasExactDbPath(
+				"node /repo/packages/cli/src/index.ts maintenance worker --db-path /tmp/mem.sqlite.bak",
+				"/tmp/mem.sqlite",
+			),
+		).toBe(false);
+	});
+
+	it("cleans stale maintenance worker pidfiles", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "codemem-worker-pid-"));
+		const dbPath = join(dir, "viewer.sqlite");
+		const pidPath = maintenanceWorkerPidFilePath(dbPath);
+		writeFileSync(pidPath, JSON.stringify({ pid: 999_999_999 }), "utf-8");
+		try {
+			await expect(terminateTrustedMaintenanceWorker(dbPath)).resolves.toBe(true);
+			expect(existsSync(pidPath)).toBe(false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not stop a maintenance worker pidfile for another database", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "codemem-worker-pid-"));
+		const dbPath = join(dir, "viewer.sqlite");
+		const pidPath = maintenanceWorkerPidFilePath(dbPath);
+		writeFileSync(
+			pidPath,
+			JSON.stringify({ pid: 999_999_999, dbPath: join(dir, "other.sqlite") }),
+			"utf-8",
+		);
+		try {
+			await expect(terminateTrustedMaintenanceWorker(dbPath)).resolves.toBe(false);
+			expect(existsSync(pidPath)).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses running legacy maintenance worker pidfiles without database ownership", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "codemem-worker-pid-"));
+		const dbPath = join(dir, "viewer.sqlite");
+		const pidPath = maintenanceWorkerPidFilePath(dbPath);
+		writeFileSync(pidPath, JSON.stringify({ pid: 12345 }), "utf-8");
+		const signals: string[] = [];
+		const killSpy = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+			expect(pid).toBe(12345);
+			if (signal === 0) return true;
+			signals.push(String(signal));
+			return true;
+		});
+		try {
+			await expect(terminateTrustedMaintenanceWorker(dbPath)).resolves.toBe(false);
+			expect(signals).toEqual([]);
+			expect(existsSync(pidPath)).toBe(true);
+			expect(killSpy).toHaveBeenCalled();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("escalates trusted viewer shutdown when graceful SIGTERM stalls", async () => {

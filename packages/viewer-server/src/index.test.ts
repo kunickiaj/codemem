@@ -429,6 +429,13 @@ describe("viewer-server", () => {
 					title: "Hidden pack item",
 					scopeId: "unauthorized-team",
 				});
+				const inactiveId = insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Forgotten pack item",
+					scopeId: "authorized-team",
+					active: false,
+				});
 				store.db
 					.prepare(
 						`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
@@ -438,10 +445,10 @@ describe("viewer-server", () => {
 						sessionId,
 						"2026-03-26T23:30:00Z",
 						JSON.stringify({
-							pack_item_ids: [visibleId, hiddenId],
-							added_ids: [visibleId, hiddenId],
-							removed_ids: [hiddenId],
-							retained_ids: [String(visibleId), String(hiddenId)],
+							pack_item_ids: [visibleId, hiddenId, inactiveId],
+							added_ids: [visibleId, hiddenId, inactiveId],
+							removed_ids: [hiddenId, inactiveId],
+							retained_ids: [String(visibleId), String(hiddenId), String(inactiveId)],
 						}),
 					);
 				const hiddenSessionId = insertTestSession(store.db);
@@ -475,6 +482,92 @@ describe("viewer-server", () => {
 					added_ids: [visibleId],
 					removed_ids: [],
 					retained_ids: [visibleId],
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("does not expose hidden usage rows that reference visible pack ids", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+				const visibleSessionId = insertTestSession(store.db);
+				const visibleId = insertTestMemory(store, {
+					sessionId: visibleSessionId,
+					kind: "discovery",
+					title: "Visible pack item from another session",
+					scopeId: "authorized-team",
+				});
+				const hiddenSessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId: hiddenSessionId,
+					kind: "discovery",
+					title: "Hidden session item",
+					scopeId: "unauthorized-team",
+				});
+				store.db
+					.prepare(
+						`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
+						 VALUES (?, 'pack', 999, 0, 999, ?, ?)`,
+					)
+					.run(
+						hiddenSessionId,
+						"2026-03-29T23:30:00Z",
+						JSON.stringify({ pack_item_ids: [visibleId], project: "secret-project" }),
+					);
+
+				const res = await app.request("/api/usage");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					recent_packs: unknown[];
+					totals: { count: number; tokens_read: number; tokens_saved: number };
+				};
+				expect(body.recent_packs).toHaveLength(0);
+				expect(body.totals).toMatchObject({ count: 0, tokens_read: 0, tokens_saved: 0 });
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("batches usage memory visibility instead of fetching each pack item", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				const visibleIds = Array.from({ length: 25 }, (_, idx) =>
+					insertTestMemory(store, {
+						sessionId,
+						kind: "discovery",
+						title: `Visible usage item ${idx}`,
+					}),
+				);
+				store.db
+					.prepare(
+						`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
+						 VALUES (?, 'pack', 123, 0, 456, ?, ?)`,
+					)
+					.run(
+						sessionId,
+						"2026-03-28T23:30:00Z",
+						JSON.stringify({ pack_item_ids: visibleIds, added_ids: visibleIds }),
+					);
+				const getSpy = vi.spyOn(store, "get");
+
+				const res = await app.request("/api/usage");
+
+				expect(res.status).toBe(200);
+				expect(getSpy).not.toHaveBeenCalled();
+				const body = (await res.json()) as { recent_packs: Array<{ metadata_json: unknown }> };
+				expect(body.recent_packs[0]?.metadata_json).toMatchObject({
+					pack_item_ids: visibleIds,
+					added_ids: visibleIds,
 				});
 			} finally {
 				cleanup();

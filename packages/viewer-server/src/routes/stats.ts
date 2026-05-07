@@ -44,6 +44,11 @@ type UsageRow = {
 	metadata_json: Record<string, unknown> | null;
 };
 
+type UsageVisibility = {
+	visibleMemoryIds: Set<number>;
+	visibleSessionIds: Set<number>;
+};
+
 function toUsageRow(
 	row: Record<string, unknown>,
 	metadata: Record<string, unknown> | null,
@@ -60,49 +65,117 @@ function toUsageRow(
 	};
 }
 
-function visibleMemoryIds(store: MemoryStore, value: unknown): number[] {
+function metadataMemoryIds(value: unknown): number[] {
 	if (!Array.isArray(value)) return [];
 	return value
 		.map((item) => (typeof item === "number" ? item : Number(item)))
-		.filter((item) => Number.isInteger(item) && store.get(item) != null);
+		.filter((item) => Number.isInteger(item) && item > 0);
 }
 
-function sessionHasVisibleMemory(store: MemoryStore, sessionId: number): boolean {
-	const filterResult = buildFilterClausesWithContext(
-		{ session_id: sessionId },
-		{
-			actorId: store.actorId,
-			deviceId: store.deviceId,
-			enforceScopeVisibility: true,
-		},
-	);
-	const clauses = ["memory_items.active = 1", ...filterResult.clauses];
-	const row = store.db
-		.prepare(`SELECT 1 AS found FROM memory_items WHERE ${clauses.join(" AND ")} LIMIT 1`)
-		.get(...filterResult.params) as Record<string, unknown> | undefined;
-	return row != null;
+function chunkNumbers(values: number[], chunkSize = 500): number[][] {
+	const chunks: number[][] = [];
+	for (let start = 0; start < values.length; start += chunkSize) {
+		chunks.push(values.slice(start, start + chunkSize));
+	}
+	return chunks;
 }
 
-function usageRowVisible(store: MemoryStore, row: UsageRow): boolean {
+function visibleMemoryIdSet(store: MemoryStore, memoryIds: Set<number>): Set<number> {
+	if (memoryIds.size === 0) return new Set();
+	const filterResult = buildFilterClausesWithContext(null, {
+		actorId: store.actorId,
+		deviceId: store.deviceId,
+		enforceScopeVisibility: true,
+	});
+	const visibleIds = new Set<number>();
+	for (const chunk of chunkNumbers([...memoryIds])) {
+		const placeholders = chunk.map(() => "?").join(", ");
+		const clauses = [
+			"memory_items.active = 1",
+			`memory_items.id IN (${placeholders})`,
+			...filterResult.clauses,
+		];
+		const rows = store.db
+			.prepare(`SELECT memory_items.id FROM memory_items WHERE ${clauses.join(" AND ")}`)
+			.all(...chunk, ...filterResult.params) as Array<{ id: number }>;
+		for (const row of rows) visibleIds.add(Number(row.id));
+	}
+	return visibleIds;
+}
+
+function visibleSessionIdSet(store: MemoryStore, sessionIds: Set<number>): Set<number> {
+	if (sessionIds.size === 0) return new Set();
+	const filterResult = buildFilterClausesWithContext(null, {
+		actorId: store.actorId,
+		deviceId: store.deviceId,
+		enforceScopeVisibility: true,
+	});
+	const visibleIds = new Set<number>();
+	for (const chunk of chunkNumbers([...sessionIds])) {
+		const placeholders = chunk.map(() => "?").join(", ");
+		const clauses = [
+			"memory_items.active = 1",
+			`memory_items.session_id IN (${placeholders})`,
+			...filterResult.clauses,
+		];
+		const rows = store.db
+			.prepare(
+				`SELECT DISTINCT memory_items.session_id AS session_id
+				 FROM memory_items
+				 WHERE ${clauses.join(" AND ")}`,
+			)
+			.all(...chunk, ...filterResult.params) as Array<{ session_id: number | null }>;
+		for (const row of rows) {
+			if (typeof row.session_id === "number") visibleIds.add(row.session_id);
+		}
+	}
+	return visibleIds;
+}
+
+function buildUsageVisibility(store: MemoryStore, rows: UsageRow[]): UsageVisibility {
+	const memoryIds = new Set<number>();
+	const sessionIds = new Set<number>();
+	for (const row of rows) {
+		if (typeof row.session_id === "number") sessionIds.add(row.session_id);
+		for (const key of MEMORY_ID_METADATA_KEYS) {
+			for (const memoryId of metadataMemoryIds(row.metadata_json?.[key])) {
+				memoryIds.add(memoryId);
+			}
+		}
+	}
+	return {
+		visibleMemoryIds: visibleMemoryIdSet(store, memoryIds),
+		visibleSessionIds: visibleSessionIdSet(store, sessionIds),
+	};
+}
+
+function usageRowVisible(row: UsageRow, visibility: UsageVisibility): boolean {
+	const rowSessionVisible =
+		row.session_id == null || visibility.visibleSessionIds.has(row.session_id);
 	const packItemIds = row.metadata_json?.pack_item_ids;
 	if (Array.isArray(packItemIds)) {
 		if (packItemIds.length === 0) {
-			return row.session_id != null && sessionHasVisibleMemory(store, row.session_id);
+			return row.session_id != null && visibility.visibleSessionIds.has(row.session_id);
 		}
-		return visibleMemoryIds(store, packItemIds).length > 0;
+		return (
+			rowSessionVisible &&
+			metadataMemoryIds(packItemIds).some((memoryId) => visibility.visibleMemoryIds.has(memoryId))
+		);
 	}
-	return row.session_id != null && sessionHasVisibleMemory(store, row.session_id);
+	return row.session_id != null && visibility.visibleSessionIds.has(row.session_id);
 }
 
 function sanitizePackUsageMetadata(
-	store: MemoryStore,
 	metadata: Record<string, unknown> | null,
+	visibility: UsageVisibility,
 ): Record<string, unknown> | null {
 	if (!metadata) return null;
 	const sanitized = { ...metadata };
 	for (const key of MEMORY_ID_METADATA_KEYS) {
 		if (Array.isArray(sanitized[key])) {
-			sanitized[key] = visibleMemoryIds(store, sanitized[key]);
+			sanitized[key] = metadataMemoryIds(sanitized[key]).filter((memoryId) =>
+				visibility.visibleMemoryIds.has(memoryId),
+			);
 		}
 	}
 	return sanitized;
@@ -233,22 +306,31 @@ export function statsRoutes(getStore: () => MemoryStore) {
 								 ORDER BY created_at DESC`,
 							)
 							.all() as Record<string, unknown>[]);
-				return rows
-					.map((row) => toUsageRow(row, parseMetadataJson(row.metadata_json)))
-					.filter((row) => usageRowVisible(store, row));
+				return rows.map((row) => toUsageRow(row, parseMetadataJson(row.metadata_json)));
 			};
-			const globalRows = loadUsageRows();
-			const filteredRows = projectFilter ? loadUsageRows(projectFilter) : null;
+			const loadedGlobalRows = loadUsageRows();
+			const globalVisibility = buildUsageVisibility(store, loadedGlobalRows);
+			const globalRows = loadedGlobalRows.filter((row) => usageRowVisible(row, globalVisibility));
+			const loadedFilteredRows = projectFilter ? loadUsageRows(projectFilter) : null;
+			const filteredVisibility = loadedFilteredRows
+				? buildUsageVisibility(store, loadedFilteredRows)
+				: null;
+			const filteredRows = loadedFilteredRows
+				? loadedFilteredRows.filter((row) =>
+						usageRowVisible(row, filteredVisibility ?? globalVisibility),
+					)
+				: null;
 			const eventsGlobal = summarizeUsageEvents(globalRows);
 			const totalsGlobal = totalUsageEvents(globalRows);
 			const eventsFiltered = filteredRows ? summarizeUsageEvents(filteredRows) : null;
 			const totalsFiltered = filteredRows ? totalUsageEvents(filteredRows) : null;
+			const recentVisibility = filteredVisibility ?? globalVisibility;
 			const recentPacks = (filteredRows ?? globalRows)
 				.filter((row) => row.event === "pack")
 				.slice(0, 10)
 				.map((row) => ({
 					...row,
-					metadata_json: sanitizePackUsageMetadata(store, row.metadata_json),
+					metadata_json: sanitizePackUsageMetadata(row.metadata_json, recentVisibility),
 				}));
 
 			return c.json({

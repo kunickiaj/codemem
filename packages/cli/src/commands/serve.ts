@@ -1,37 +1,19 @@
-import { spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
 import {
-	DEDUP_KEY_BACKFILL_JOB,
-	DedupKeyBackfillRunner,
-	getMaintenanceJob,
-	hasPendingDedupKeyBackfill,
-	hasPendingRefBackfill,
-	hasPendingScopeBackfill,
-	hasPendingSessionContextBackfill,
-	hasPendingSummaryDedupBackfill,
 	initDatabase,
 	isEmbeddingDisabled,
 	type MemoryStore,
 	ObserverClient,
 	RawEventSweeper,
-	REF_BACKFILL_JOB,
-	RefBackfillRunner,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
 	resolveDbPath,
 	runSyncDaemon,
-	SCOPE_BACKFILL_JOB,
-	ScopeBackfillRunner,
-	SESSION_CONTEXT_BACKFILL_JOB,
-	SessionContextBackfillRunner,
-	SUMMARY_DEDUP_BACKFILL_JOB,
-	SummaryDedupBackfillRunner,
-	SyncRetentionRunner,
-	VectorModelMigrationRunner,
 } from "@codemem/core";
 import { Command, Option } from "commander";
 import { helpStyle } from "../help-style.js";
@@ -95,7 +77,8 @@ export function isLikelyViewerCommand(command: string): boolean {
 	return (
 		lowered.includes("codemem") ||
 		lowered.includes("packages/cli/dist/index.js") ||
-		lowered.includes("/cli/dist/index.js")
+		lowered.includes("/cli/dist/index.js") ||
+		lowered.includes("packages/cli/src/index.ts")
 	);
 }
 
@@ -151,6 +134,60 @@ function isTrustedViewerPid(
 
 function pidFilePath(dbPath: string): string {
 	return join(dirname(dbPath), "viewer.pid");
+}
+
+export function maintenanceWorkerPidFilePath(dbPath: string): string {
+	return join(dirname(dbPath), "maintenance-worker.pid");
+}
+
+function readMaintenanceWorkerPidRecord(
+	dbPath: string,
+): { pid: number; dbPath: string | null } | null {
+	const pidPath = maintenanceWorkerPidFilePath(dbPath);
+	if (!existsSync(pidPath)) return null;
+	const raw = readFileSync(pidPath, "utf-8").trim();
+	try {
+		const parsed = JSON.parse(raw) as { pid?: unknown; dbPath?: unknown } | number;
+		if (typeof parsed === "number" && Number.isFinite(parsed) && parsed > 0) {
+			return { pid: Math.trunc(parsed), dbPath: null };
+		}
+		if (
+			typeof parsed === "object" &&
+			parsed !== null &&
+			typeof parsed.pid === "number" &&
+			Number.isFinite(parsed.pid) &&
+			parsed.pid > 0
+		) {
+			return {
+				pid: Math.trunc(parsed.pid),
+				dbPath: typeof parsed.dbPath === "string" ? resolveDbPath(parsed.dbPath) : null,
+			};
+		}
+	} catch {
+		const parsed = Number.parseInt(raw, 10);
+		if (Number.isFinite(parsed) && parsed > 0) return { pid: parsed, dbPath: null };
+	}
+	return null;
+}
+
+export function isLikelyMaintenanceWorkerCommand(command: string): boolean {
+	const lowered = command.toLowerCase();
+	if (!/\bmaintenance\s+worker\b/.test(lowered)) return false;
+	return (
+		lowered.includes("codemem") ||
+		lowered.includes("packages/cli/dist/index.js") ||
+		lowered.includes("/cli/dist/index.js") ||
+		lowered.includes("packages/cli/src/index.ts")
+	);
+}
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function commandHasExactDbPath(command: string, dbPath: string): boolean {
+	const escapedPath = escapeRegExp(resolveDbPath(dbPath));
+	return new RegExp(`(?:^|\\s)--db-path(?:=|\\s+)${escapedPath}(?:\\s|$)`).test(command);
 }
 
 function readViewerPidRecord(dbPath: string): ViewerPidRecord | null {
@@ -266,7 +303,7 @@ async function waitForProcessExit(pid: number, timeoutMs = 30000): Promise<boole
 	return !isProcessRunning(pid);
 }
 
-export async function terminateTrustedViewerPid(
+async function terminateProcessPid(
 	pid: number,
 	timeouts: { gracefulMs?: number; forceMs?: number } = {},
 ): Promise<boolean> {
@@ -277,16 +314,56 @@ export async function terminateTrustedViewerPid(
 	}
 	if (await waitForProcessExit(pid, timeouts.gracefulMs ?? 30000)) return true;
 
-	// A stuck better-sqlite3 maintenance query blocks the viewer's JS signal
-	// handler, so graceful shutdown can never run. At this point the PID has
-	// already passed the localhost + command-line trust checks; escalate so
-	// `codemem serve restart` does not require a manual kill -9.
+	// A stuck better-sqlite3 maintenance query blocks the target process's JS
+	// signal handler, so graceful shutdown can never run. Callers only reach
+	// this helper after command-line/pidfile trust checks; escalate so lifecycle
+	// commands do not require a manual kill -9.
 	try {
 		process.kill(pid, "SIGKILL");
 	} catch {
 		return true;
 	}
 	return waitForProcessExit(pid, timeouts.forceMs ?? 5000);
+}
+
+export async function terminateTrustedViewerPid(
+	pid: number,
+	timeouts: { gracefulMs?: number; forceMs?: number } = {},
+): Promise<boolean> {
+	return terminateProcessPid(pid, timeouts);
+}
+
+export async function terminateTrustedMaintenanceWorker(
+	dbPath: string,
+	timeouts: { gracefulMs?: number; forceMs?: number } = {},
+): Promise<boolean> {
+	const pidPath = maintenanceWorkerPidFilePath(dbPath);
+	const record = readMaintenanceWorkerPidRecord(dbPath);
+	if (!record) return true;
+	const expectedDbPath = resolveDbPath(dbPath);
+	if (record.dbPath && record.dbPath !== expectedDbPath) return false;
+	if (!isProcessRunning(record.pid)) {
+		try {
+			rmSync(pidPath);
+		} catch {
+			// ignore
+		}
+		return true;
+	}
+	const command = readProcessCommand(record.pid);
+	if (!command || !isLikelyMaintenanceWorkerCommand(command)) return false;
+	if (record.dbPath !== expectedDbPath || !commandHasExactDbPath(command, expectedDbPath)) {
+		return false;
+	}
+	const stopped = await terminateProcessPid(record.pid, timeouts);
+	if (stopped) {
+		try {
+			rmSync(pidPath);
+		} catch {
+			// ignore
+		}
+	}
+	return stopped;
 }
 
 async function waitForPortRelease(host: string, port: number, timeoutMs = 10000): Promise<boolean> {
@@ -320,9 +397,15 @@ async function stopExistingViewer(
 
 	if (!record) return { stopped: false, pid: null };
 
-	if (await respondsLikeCodememViewer(record)) {
+	const recordListenerPid = lookupListeningPid(record.host, record.port);
+	if (
+		(await respondsLikeCodememViewer(record)) &&
+		isTrustedViewerPid(record.pid, { host: record.host, port: record.port }, recordListenerPid)
+	) {
 		const stopped = await terminateTrustedViewerPid(record.pid);
 		if (!stopped) return { stopped: false, pid: record.pid };
+	} else {
+		return { stopped: false, pid: null };
 	}
 	try {
 		rmSync(pidPath);
@@ -352,6 +435,61 @@ export function buildForegroundRunnerArgs(
 		args.push("--db-path", invocation.dbPath);
 	}
 	return args;
+}
+
+export function buildMaintenanceWorkerArgs(
+	scriptPath: string,
+	invocation: ResolvedServeInvocation,
+	execArgv: string[] = process.execArgv,
+): string[] {
+	const args = [...execArgv, scriptPath, "maintenance", "worker"];
+	if (invocation.dbPath) args.push("--db-path", invocation.dbPath);
+	if (invocation.configPath) args.push("--config", invocation.configPath);
+	return args;
+}
+
+function startMaintenanceWorkerProcess(invocation: ResolvedServeInvocation): ChildProcess | null {
+	const scriptPath = process.argv[1];
+	if (!scriptPath) {
+		p.log.warn("Unable to resolve CLI entrypoint for maintenance worker launch");
+		return null;
+	}
+	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
+	const child = spawn(process.execPath, buildMaintenanceWorkerArgs(scriptPath, invocation), {
+		cwd: process.cwd(),
+		stdio: "ignore",
+		env: {
+			...process.env,
+			CODEMEM_DB: dbPath,
+			...(invocation.configPath ? { CODEMEM_CONFIG: invocation.configPath } : {}),
+		},
+	});
+	child.unref();
+	if (child.pid) {
+		writeFileSync(
+			maintenanceWorkerPidFilePath(dbPath),
+			JSON.stringify({ pid: child.pid, dbPath }),
+			"utf-8",
+		);
+		p.log.step(`Maintenance worker started (pid ${child.pid})`);
+	}
+	return child;
+}
+
+async function stopMaintenanceWorkerProcess(
+	child: ChildProcess | null,
+	dbPath: string,
+): Promise<void> {
+	if (child?.pid && isProcessRunning(child.pid)) {
+		await terminateProcessPid(child.pid, { gracefulMs: 5000, forceMs: 5000 });
+	} else {
+		await terminateTrustedMaintenanceWorker(dbPath, { gracefulMs: 5000, forceMs: 5000 });
+	}
+	try {
+		rmSync(maintenanceWorkerPidFilePath(dbPath));
+	} catch {
+		// ignore
+	}
 }
 
 export function isSqliteVecLoadFailure(error: unknown): boolean {
@@ -413,112 +551,6 @@ async function startBackgroundViewer(invocation: ResolvedServeInvocation): Promi
 	);
 }
 
-type ManagedBackfillRunner = {
-	start(): void;
-	stop(): Promise<void>;
-};
-
-type BackfillJobPlan = {
-	name: string;
-	kind: string;
-	isPending: (db: MemoryStore["db"]) => boolean;
-	createRunner: () => ManagedBackfillRunner;
-};
-
-function createSequentialBackfillCoordinator(
-	store: MemoryStore,
-	jobPlans: BackfillJobPlan[],
-	signal?: AbortSignal,
-): { start: () => void; stop: () => Promise<void> } {
-	const pollIntervalMs = 1000;
-	let activeRunner: ManagedBackfillRunner | null = null;
-	let activePlan: BackfillJobPlan | null = null;
-	let activePollTimer: ReturnType<typeof setTimeout> | null = null;
-	let nextJobIndex = 0;
-	let stopped = false;
-
-	const clearPollTimer = () => {
-		if (!activePollTimer) return;
-		clearTimeout(activePollTimer);
-		activePollTimer = null;
-	};
-
-	const schedulePoll = (fn: () => void) => {
-		clearPollTimer();
-		activePollTimer = setTimeout(fn, pollIntervalMs);
-		if (typeof activePollTimer === "object" && "unref" in activePollTimer) {
-			activePollTimer.unref();
-		}
-	};
-
-	const waitForCurrentJob = () => {
-		if (stopped || signal?.aborted || !activePlan || !activeRunner) return;
-		const job = getMaintenanceJob(store.db, activePlan.kind);
-		if (!activePlan.isPending(store.db)) {
-			const finishedPlan = activePlan;
-			const finishedRunner = activeRunner;
-			activePlan = null;
-			activeRunner = null;
-			void finishedRunner.stop().finally(() => {
-				if (!stopped && !signal?.aborted) {
-					p.log.step(`${finishedPlan.name} backfill complete`);
-					startNextJob();
-				}
-			});
-			return;
-		}
-		if (job?.status === "failed") {
-			const failedPlan = activePlan;
-			const failedRunner = activeRunner;
-			activePlan = null;
-			activeRunner = null;
-			void failedRunner.stop().finally(() => {
-				if (!stopped && !signal?.aborted) {
-					p.log.warn(`${failedPlan.name} backfill failed and will be retried on a later startup`);
-					startNextJob();
-				}
-			});
-			return;
-		}
-		schedulePoll(waitForCurrentJob);
-	};
-
-	const startNextJob = () => {
-		clearPollTimer();
-		if (stopped || signal?.aborted) return;
-		while (nextJobIndex < jobPlans.length) {
-			const plan = jobPlans[nextJobIndex++];
-			if (!plan) continue;
-			if (!plan.isPending(store.db)) continue;
-			activePlan = plan;
-			activeRunner = plan.createRunner();
-			p.log.step(`${plan.name} backfill started`);
-			activeRunner.start();
-			schedulePoll(waitForCurrentJob);
-			return;
-		}
-		p.log.step("All backfill jobs complete");
-	};
-
-	return {
-		start: () => {
-			if (stopped || signal?.aborted) return;
-			const pendingCount = jobPlans.filter((plan) => plan.isPending(store.db)).length;
-			if (pendingCount === 0) return;
-			p.log.step(`${pendingCount} backfill job(s) pending — starting sequential runners`);
-			startNextJob();
-		},
-		stop: async () => {
-			stopped = true;
-			clearPollTimer();
-			const runner = activeRunner;
-			activeRunner = null;
-			activePlan = null;
-			if (runner) await runner.stop();
-		},
-	};
-}
-
 async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
 	const { createApp, createSyncApp, closeStore, getStore } = await import("@codemem/server");
 	const { serve } = await import("@hono/node-server");
@@ -559,84 +591,17 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	sweeper.start();
 
 	const syncAbort = new AbortController();
-	const retentionAbort = new AbortController();
-	const backfillAbort = new AbortController();
 	const config = invocation.configPath
 		? readCodememConfigFileAtPath(invocation.configPath)
 		: readCodememConfigFile();
 	const syncConfig = readCoordinatorSyncConfig(config);
 	const syncEnabled = syncConfig.syncEnabled;
 	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
-	const retentionRunner = new SyncRetentionRunner({
-		dbPath,
-		signal: retentionAbort.signal,
-	});
-	// Reuses backfillAbort intentionally: "abort all backfill-style work"
-	// is the shutdown signal callers care about. If a future use case
-	// needs to stop only the vector-migration runner (e.g. embeddings
-	// disabled mid-run) without touching the backfill coordinator, split
-	// this into its own controller.
-	const vectorMigrationRunner = new VectorModelMigrationRunner({
-		dbPath,
-		signal: backfillAbort.signal,
-	});
-	const backfillCoordinator = createSequentialBackfillCoordinator(
-		store,
-		[
-			{
-				name: "Sharing-domain",
-				kind: SCOPE_BACKFILL_JOB,
-				isPending: hasPendingScopeBackfill,
-				createRunner: () =>
-					new ScopeBackfillRunner({
-						dbPath,
-						signal: backfillAbort.signal,
-					}),
-			},
-			{
-				name: "Dedup-key",
-				kind: DEDUP_KEY_BACKFILL_JOB,
-				isPending: hasPendingDedupKeyBackfill,
-				createRunner: () =>
-					new DedupKeyBackfillRunner({
-						dbPath,
-						signal: backfillAbort.signal,
-					}),
-			},
-			{
-				name: "Session-context",
-				kind: SESSION_CONTEXT_BACKFILL_JOB,
-				isPending: hasPendingSessionContextBackfill,
-				createRunner: () =>
-					new SessionContextBackfillRunner({
-						dbPath,
-						signal: backfillAbort.signal,
-					}),
-			},
-			{
-				name: "Ref",
-				kind: REF_BACKFILL_JOB,
-				isPending: hasPendingRefBackfill,
-				createRunner: () =>
-					new RefBackfillRunner({
-						dbPath,
-						signal: backfillAbort.signal,
-					}),
-			},
-			{
-				name: "Session-summary dedup",
-				kind: SUMMARY_DEDUP_BACKFILL_JOB,
-				isPending: hasPendingSummaryDedupBackfill,
-				createRunner: () =>
-					new SummaryDedupBackfillRunner({
-						dbPath,
-						deviceId: store.deviceId,
-						signal: backfillAbort.signal,
-					}),
-			},
-		],
-		backfillAbort.signal,
-	);
+	if (!(await terminateTrustedMaintenanceWorker(dbPath, { gracefulMs: 1000, forceMs: 5000 }))) {
+		p.log.warn(
+			"Existing maintenance worker is not trusted or did not stop; starting viewer anyway",
+		);
+	}
 	const syncRuntimeStatus: {
 		phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
 		detail: string | null;
@@ -653,6 +618,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	};
 	const app = createApp(appOpts);
 	const pidPath = pidFilePath(dbPath);
+	let maintenanceWorker: ChildProcess | null = null;
 
 	// Sync protocol listener — separate port, network-accessible for peers.
 	// syncServerRef is never nulled after creation so shutdown always drains it.
@@ -691,15 +657,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 			p.log.success(`Listening on http://${info.address}:${info.port}`);
 			p.log.info(`Database: ${preparedDb}`);
 			p.log.step("Raw event sweeper started");
-			if (!isEmbeddingDisabled()) {
-				vectorMigrationRunner.start();
-				p.log.step("Vector maintenance runner started");
-			}
-			backfillCoordinator.start();
-			if (syncConfig.syncRetentionEnabled) {
-				retentionRunner.start();
-				p.log.step("Retention maintenance runner started");
-			}
+			maintenanceWorker = startMaintenanceWorkerProcess(invocation);
 			if (syncEnabled) {
 				const syncStartDelayMs = 3000;
 				p.log.step(`Sync daemon will start in background (${syncStartDelayMs / 1000}s delay)`);
@@ -756,29 +714,11 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		process.exit(1);
 	});
 
-	// Periodic WAL checkpoint — keeps the WAL file bounded.
-	// Without this, long-running viewer processes accumulate a WAL that can
-	// grow to match the main DB size when concurrent readers hold it open.
-	const WAL_CHECKPOINT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
-	const walCheckpointTimer = setInterval(() => {
-		try {
-			store.db.pragma("wal_checkpoint(TRUNCATE)");
-		} catch (err) {
-			p.log.warn(`WAL checkpoint failed: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}, WAL_CHECKPOINT_INTERVAL_MS);
-	walCheckpointTimer.unref();
-
 	const shutdown = async () => {
 		p.outro("shutting down");
-		clearInterval(walCheckpointTimer);
 		syncAbort.abort();
-		retentionAbort.abort();
-		backfillAbort.abort();
+		await stopMaintenanceWorkerProcess(maintenanceWorker, dbPath);
 		await sweeper.stop();
-		await vectorMigrationRunner.stop();
-		await retentionRunner.stop();
-		await backfillCoordinator.stop();
 
 		// Drain both listeners before closing the shared store.
 		await new Promise<void>((resolve) => {
@@ -804,8 +744,20 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	// Force-exit safety net if graceful shutdown stalls for an unusually long time.
 	const forceShutdown = () => {
 		setTimeout(() => {
+			if (maintenanceWorker?.pid && isProcessRunning(maintenanceWorker.pid)) {
+				try {
+					process.kill(maintenanceWorker.pid, "SIGKILL");
+				} catch {
+					// ignore
+				}
+			}
 			try {
 				rmSync(pidPath);
+			} catch {
+				// ignore
+			}
+			try {
+				rmSync(maintenanceWorkerPidFilePath(dbPath));
 			} catch {
 				// ignore
 			}
@@ -846,8 +798,15 @@ async function runServeInvocation(invocation: ResolvedServeInvocation): Promise<
 			port: invocation.port,
 		});
 		if (result.stopped) {
+			const workerStopped = await terminateTrustedMaintenanceWorker(dbPath, {
+				gracefulMs: 5000,
+				forceMs: 5000,
+			});
 			p.intro("codemem viewer");
 			p.log.success(`Stopped viewer${result.pid ? ` (pid ${result.pid})` : ""}`);
+			if (!workerStopped) {
+				p.log.warn("Maintenance worker pidfile exists but did not match trusted worker command");
+			}
 			if (invocation.mode === "stop") {
 				p.outro("done");
 				return;
@@ -863,7 +822,14 @@ async function runServeInvocation(invocation: ResolvedServeInvocation): Promise<
 			process.exitCode = 1;
 			return;
 		} else if (invocation.mode === "stop") {
+			const workerStopped = await terminateTrustedMaintenanceWorker(dbPath, {
+				gracefulMs: 5000,
+				forceMs: 5000,
+			});
 			p.intro("codemem viewer");
+			if (!workerStopped) {
+				p.log.warn("Maintenance worker pidfile exists but did not match trusted worker command");
+			}
 			p.outro("No background viewer found");
 			return;
 		}
