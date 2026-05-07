@@ -510,7 +510,7 @@ export async function runScopeBackfillPass(
 		if (existingJob && existingJob.status !== "completed") {
 			if (previouslyExhausted) {
 				completeMaintenanceJob(db, SCOPE_BACKFILL_JOB, {
-					message: "Scope backfill complete",
+					message: "Sharing-domain backfill complete; future startup should be quieter",
 					progressCurrent: Number(existingMetadata.processed_memories ?? 0),
 					progressTotal: Number(existingMetadata.processed_memories ?? 0),
 					metadata: {
@@ -524,7 +524,7 @@ export async function runScopeBackfillPass(
 				return false;
 			}
 			updateMaintenanceJob(db, SCOPE_BACKFILL_JOB, {
-				message: "Scope backfill quiescent — confirming on next tick",
+				message: "Sharing-domain backfill quiescent — confirming on next tick",
 				progressCurrent: Number(existingMetadata.processed_memories ?? 0),
 				progressTotal: Number(existingMetadata.processed_memories ?? 0),
 				metadata: {
@@ -542,8 +542,8 @@ export async function runScopeBackfillPass(
 	if (startingFresh) {
 		startMaintenanceJob(db, {
 			kind: SCOPE_BACKFILL_JOB,
-			title: "Backfilling sharing domains",
-			message: `Backfilling ${totalBefore} legacy scope item(s)`,
+			title: "Backfilling Sharing domains",
+			message: `Backfilling ${totalBefore} legacy Sharing-domain item(s), including memories and replication ops`,
 			progressTotal: totalBefore,
 			metadata: {
 				seeded_scopes: 0,
@@ -615,7 +615,7 @@ export async function runScopeBackfillPass(
 
 	if (isComplete) {
 		completeMaintenanceJob(db, SCOPE_BACKFILL_JOB, {
-			message: "Scope backfill complete",
+			message: "Sharing-domain backfill complete; future startup should be quieter",
 			progressCurrent: totalBefore,
 			progressTotal: totalBefore,
 			metadata: {
@@ -628,7 +628,7 @@ export async function runScopeBackfillPass(
 	}
 
 	updateMaintenanceJob(db, SCOPE_BACKFILL_JOB, {
-		message: `Backfilled sharing domains for ${progressCurrent} of ${totalBefore} item(s)`,
+		message: `Backfilled Sharing domains for ${progressCurrent} of ${totalBefore} item(s), including memories and replication ops`,
 		progressCurrent,
 		progressTotal: totalBefore,
 		metadata,

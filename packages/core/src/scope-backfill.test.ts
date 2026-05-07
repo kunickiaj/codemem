@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { toJson } from "./db.js";
+import { getMaintenanceJob } from "./maintenance-jobs.js";
 import {
 	backfillScopeIds,
 	classifyLegacyMemoryScope,
@@ -287,7 +288,13 @@ describe("scope backfill", () => {
 		// between ticks is what protects against the concurrent-writer
 		// race surfaced in the #1025 review.
 		await expect(runScopeBackfillPass(db, { batchSize: 10 })).resolves.toBe(true);
+		let job = getMaintenanceJob(db, "scope_id_backfill");
+		expect(job?.title).toBe("Backfilling Sharing domains");
+		expect(job?.message).toContain("memories and replication ops");
+
 		await expect(runScopeBackfillPass(db, { batchSize: 10 })).resolves.toBe(false);
+		job = getMaintenanceJob(db, "scope_id_backfill");
+		expect(job?.message).toContain("future startup should be quieter");
 
 		const memory = db.prepare("SELECT scope_id FROM memory_items").get() as { scope_id: string };
 		expect(memory.scope_id).toBe(LOCAL_DEFAULT_SCOPE_ID);

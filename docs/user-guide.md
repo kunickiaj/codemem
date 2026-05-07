@@ -171,6 +171,24 @@ Do not treat coordinator group membership as data access. A coordinator group ca
 help discover and administer peers, but a peer still needs an explicit Sharing
 domain grant before it can receive that domain's memories.
 
+### Upgrade maintenance / Sharing-domain backfill
+
+When upgrading an existing database to 0.30, codemem may run a one-time
+Sharing-domain backfill. This stamps historical memories and sync bookkeeping
+rows with `scope_id` so future sync and retrieval can enforce the new hard
+boundary.
+
+The progress total can be larger than the visible memory count because it
+includes both `memory_items` and historical `replication_ops`. Large databases
+can be CPU-bound while this runs. That is expected upgrade work; successful
+completion should make later startups quieter.
+
+Inspect current and completed maintenance jobs with:
+
+```fish
+codemem maintenance status
+```
+
 ### Claim your own devices
 
 - In the Sync panel, use `Assigned actor` to map a peer to your local actor when that machine should count as part of your identity.

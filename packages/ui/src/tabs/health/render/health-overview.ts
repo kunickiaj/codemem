@@ -16,6 +16,8 @@ import { state } from "../../../lib/state";
 import { buildHealthCard, renderActionList, renderHealthCards, renderIcons } from "../components";
 import type { HealthAction, HealthCardInput } from "../types";
 
+const SCOPE_BACKFILL_JOB = "scope_id_backfill";
+
 export function renderHealthOverview() {
 	const healthGrid = document.getElementById("healthGrid");
 	const healthMeta = document.getElementById("healthMeta");
@@ -38,6 +40,7 @@ export function renderHealthOverview() {
 		error?: string | null;
 		progress?: { current?: number; total?: number | null; unit?: string };
 	}> = Array.isArray(stats.maintenance_jobs) ? stats.maintenance_jobs : [];
+	const scopeBackfillJob = maintenanceJobs.find((job) => job.kind === SCOPE_BACKFILL_JOB);
 	const reliability = stats.reliability || {};
 	const counts = reliability.counts || {};
 	const rates = reliability.rates || {};
@@ -193,12 +196,17 @@ export function renderHealthOverview() {
 				: `${current.toLocaleString()} ${unit}`;
 		const isFailed = job.status === "failed";
 		const isCompleted = job.status === "completed";
+		const isScopeBackfill = job.kind === SCOPE_BACKFILL_JOB;
 		const value = isFailed ? "Failed" : isCompleted ? "Complete" : progress;
 		const detail = isFailed
 			? String(job.error || "unknown error").trim()
 			: isCompleted
-				? progress
-				: undefined;
+				? isScopeBackfill
+					? `${progress} · one-time Sharing-domain upgrade finished`
+					: progress
+				: isScopeBackfill
+					? "One-time upgrade backfill; totals include memories and replication ops"
+					: undefined;
 		return buildHealthCard({
 			key: String(job.kind || job.title || "background-maintenance"),
 			label: String(job.title || job.kind || "Background maintenance"),
@@ -210,7 +218,9 @@ export function renderHealthOverview() {
 				? `Error: ${job.error || "unknown"}`
 				: isCompleted
 					? `${String(job.title || "Maintenance")} finished`
-					: `${String(job.title || "Maintenance")} in progress`,
+					: isScopeBackfill
+						? `${String(job.title || "Maintenance")} in progress; inspect with codemem maintenance status`
+						: `${String(job.title || "Maintenance")} in progress`,
 		});
 	});
 
@@ -309,6 +319,13 @@ export function renderHealthOverview() {
 		recommendations.push({
 			label: "Tag coverage is low. Preview backfill impact.",
 			command: "codemem db backfill-tags --dry-run",
+		});
+	}
+	if (scopeBackfillJob && scopeBackfillJob.status !== "completed" && recommendations.length < 3) {
+		recommendations.push({
+			label:
+				"Sharing-domain upgrade backfill is expected one-time work. Inspect progress if startup feels busy.",
+			command: "codemem maintenance status",
 		});
 	}
 	renderActionList(healthActions, recommendations);
