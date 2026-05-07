@@ -37,7 +37,7 @@
     "@biomejs/biome": "catalog:",
     "drizzle-kit": "^0.31.10",
     "husky": "^9.1.7",
-    "lint-staged": "^16.2.6",
+    "lint-staged": "^16.4.0",
     "tsx": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
