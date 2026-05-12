@@ -3,8 +3,8 @@
 import type { UiSyncViewModel } from "../tabs/sync/view-model";
 
 export type RefreshState = "idle" | "refreshing" | "paused" | "error";
-export type TabId = "feed" | "health" | "sync" | "coordinator-admin";
-export const ALL_TAB_IDS: TabId[] = ["feed", "health", "sync", "coordinator-admin"];
+export type TabId = "feed" | "health" | "projects" | "sync" | "coordinator-admin";
+export const ALL_TAB_IDS: TabId[] = ["feed", "health", "projects", "sync", "coordinator-admin"];
 
 /* ── Cached server payload shapes ─────────────────────────── */
 

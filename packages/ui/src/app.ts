@@ -27,6 +27,7 @@ import { getTheme, initThemeToggle, setTheme } from "./lib/theme";
 import { initCoordinatorAdminTab, loadCoordinatorAdminData } from "./tabs/coordinator-admin";
 import { initFeedTab, loadFeedData, updateFeedView } from "./tabs/feed";
 import { initHealthTab, loadHealthData } from "./tabs/health";
+import { initProjectsTab, loadProjectsData } from "./tabs/projects";
 import { initSettings, isSettingsOpen, loadConfigData } from "./tabs/settings";
 import {
 	initSyncTab,
@@ -341,6 +342,9 @@ async function doRefresh() {
 		if (refreshTab === "feed") {
 			promises.push(loadFeedData());
 		}
+		if (refreshTab === "projects") {
+			promises.push(loadProjectsData());
+		}
 		// Sync data is needed by both Sync tab and Health tab (health cards derive sync state)
 		if (refreshTab === "sync" || refreshTab === "health") {
 			promises.push(loadSyncData());
@@ -395,6 +399,7 @@ initTabs();
 // Tab modules
 initFeedTab();
 initHealthTab();
+initProjectsTab(() => refresh());
 initSyncTab(() => refresh());
 initCoordinatorAdminTab();
 initSettings(stopPolling, startPolling, () => refresh());

@@ -1237,6 +1237,78 @@
         box-shadow: 0 0 0 3px var(--focus-ring);
       }
 
+      .projects-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sp-3);
+        align-items: center;
+        margin: var(--sp-4) 0 var(--sp-3);
+      }
+      .projects-toolbar .feed-search { flex: 1 1 320px; }
+      .projects-toolbar select {
+        padding: var(--sp-2) var(--sp-3);
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        font-size: 13px;
+      }
+      .project-inventory-list {
+        display: grid;
+        gap: var(--sp-3);
+        margin-top: var(--sp-4);
+      }
+      .project-inventory-row {
+        padding: var(--sp-4);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-1);
+      }
+      .project-inventory-row-header {
+        display: flex;
+        justify-content: space-between;
+        gap: var(--sp-3);
+        align-items: flex-start;
+      }
+      .project-inventory-title { font-size: 15px; font-weight: 650; color: var(--text-primary); }
+      .project-inventory-domain { font-family: var(--font-mono); font-size: 12px; color: var(--accent); }
+      .project-inventory-meta, .project-inventory-signal {
+        margin-top: var(--sp-2);
+        color: var(--text-secondary);
+        font-size: 12px;
+      }
+      .project-inventory-signal { overflow-wrap: anywhere; }
+      .project-inventory-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sp-2);
+        margin-top: var(--sp-3);
+      }
+      .project-status-badge {
+        padding: 2px 8px;
+        border-radius: var(--radius-pill);
+        background: var(--surface-2);
+        color: var(--text-secondary);
+        font-size: 11px;
+        border: 1px solid var(--border);
+      }
+      .project-status-badge.needs_attention,
+      .project-status-badge.legacy_review { color: var(--accent-warm); background: var(--accent-warm-subtle); }
+      .project-status-badge.suggested { color: var(--accent); background: var(--accent-subtle); }
+      .project-inventory-details { margin-top: var(--sp-3); }
+      .project-inventory-details summary { cursor: pointer; color: var(--text-secondary); font-size: 12px; }
+      .project-detail-grid {
+        display: grid;
+        grid-template-columns: minmax(130px, max-content) 1fr;
+        gap: var(--sp-2) var(--sp-3);
+        margin-top: var(--sp-3);
+        font-size: 12px;
+      }
+      .project-detail-grid dt { color: var(--text-tertiary); }
+      .project-detail-grid dd { margin: 0; overflow-wrap: anywhere; color: var(--text-primary); }
+      .projects-pagination { margin-top: var(--sp-4); }
+
       /* 36×36 square icon buttons — theme toggle, settings gear. */
       .icon-button {
         width: 36px;
@@ -3307,6 +3379,7 @@
     <nav class="tab-bar" aria-label="Main navigation">
       <button class="tab-btn active" id="tabBtn-feed">Feed</button>
       <button class="tab-btn" id="tabBtn-health">Health</button>
+      <button class="tab-btn" id="tabBtn-projects">Projects</button>
       <button class="tab-btn" id="tabBtn-sync">Sync</button>
       <button class="tab-btn" id="tabBtn-coordinator-admin">Coordinator Admin</button>
     </nav>
@@ -3555,6 +3628,28 @@
           <h2>Current session</h2>
           <div class="section-meta" id="sessionMeta">No injections yet</div>
           <div class="grid-2" id="sessionGrid"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Tab: Projects ───────────────────────────────────── -->
+    <div class="tab-panel" id="tab-projects" hidden>
+      <div class="card" style="animation-delay: 0s">
+        <div class="section-header">
+          <div>
+            <h2>Projects</h2>
+            <div class="section-meta">Review known projects and worktrees, then verify which Sharing domain future memories use.</div>
+          </div>
+        </div>
+        <div class="projects-toolbar">
+          <input class="feed-search" id="projectsSearch" placeholder="Search project, path, git remote, or workspace id…" />
+          <select id="projectsStatusFilter" aria-label="Project status filter"></select>
+        </div>
+        <div class="section-meta" id="projectsInventoryMeta">Loading project inventory…</div>
+        <div class="project-inventory-list" id="projectsInventoryList" aria-live="polite"></div>
+        <div class="section-actions projects-pagination">
+          <button class="settings-button" id="projectsPrevPage" type="button">Previous</button>
+          <button class="settings-button" id="projectsNextPage" type="button">Next</button>
         </div>
       </div>
     </div>
