@@ -2,14 +2,14 @@
 
 **Date:** 2026-05-06  
 **Status:** scoped for implementation  
-**Related:** `2026-04-30-sharing-domain-scope-design.md`, `2026-05-06-sharing-domain-boundary-checkpoint.md`, `../anchor-peer-deployment.md`, `../coordinator-discovery.md`
+**Related:** `2026-04-30-sharing-domain-scope-design.md`, `2026-05-06-sharing-domain-boundary-checkpoint.md`, `2026-05-08-sharing-domain-guided-setup-flow.md`, `../anchor-peer-deployment.md`, `../coordinator-discovery.md`
 
 ## Decision
 
 Split Sharing-domain UX polish into two phases:
 
 1. **0.30 release-readiness UX**: make the existing safe model understandable and dogfoodable without adding a large new setup wizard.
-2. **0.31+ guided setup and upgrade review**: design and build a guided journey for fresh setup, always-on peers, and legacy review.
+2. **0.31+ Projects management, guided setup, and upgrade review**: design and build a first-class Projects surface plus guided journeys for fresh setup, always-on peers, and legacy review.
 
 The 0.30 phase must not weaken the OV4G invariants:
 
@@ -72,9 +72,32 @@ Phase 1 should set expectations in the UI/docs:
 - No ciphertext or zero-trust relay work.
 - No special anchor-peer protocol role.
 
-## Phase 2: 0.31+ guided setup and upgrade review
+## Phase 2: 0.31+ Projects management, guided setup, and upgrade review
 
-Phase 2 turns the model into a guided product flow. It can build new UI components and endpoints as needed.
+Phase 2 turns the model into a managed product workflow. It can build new UI components and endpoints as needed.
+
+### 0. Projects management surface
+
+The primary recurring management surface should be a first-class **Projects** screen, not a larger dropdown inside the Settings modal.
+
+Users need to answer:
+
+- which projects and worktrees codemem knows about;
+- which Sharing domain each one resolves to;
+- why it resolves that way;
+- which projects are local-only, unmapped, explicitly mapped, suggested, legacy-review, or suspicious;
+- how to correct a project or worktree that landed in the wrong domain.
+
+The Projects screen should include:
+
+- search across project name, cwd, git remote, branch, and workspace identity;
+- filters for all, local-only, unmapped, suggested, explicitly mapped, legacy-review, and collision/risk states;
+- sortable/paginated inventory that is not limited to the latest handful of sessions;
+- row or detail-panel metadata for canonical workspace identity, cwd, git remote, branch, current resolved domain, resolution reason, suggested domain, and mapping reason;
+- explicit remap/correction actions with the same guardrail confirmations used by Settings today;
+- links into the legacy review workflow when historical `legacy-shared-review` data is present.
+
+The domain chooser within a row/detail panel can remain a Radix Select. The problem is not the select primitive; it is that project inventory and correction are buried in Settings and backed by a recent-session candidate list. Styling the Select to look less native is polish, not the core product fix.
 
 ### 1. Fresh setup guide
 
@@ -86,6 +109,8 @@ Guide a user through device type and Sharing-domain intent:
 - always-on anchor peer.
 
 The flow should ask which domains the device should participate in and preview what will not sync.
+
+Detailed design: `2026-05-08-sharing-domain-guided-setup-flow.md`.
 
 ### 2. Suggested mappings, not folder security
 
@@ -132,4 +157,4 @@ For 0.30, a dogfooder should be able to:
 4. verify which Sharing domains each peer can receive;
 5. avoid relying on folders, coordinator groups, or project filters as security boundaries.
 
-For 0.31+, a new user should be able to complete personal/work/OSS plus optional anchor-peer setup without reading the OV4G design doc.
+For 0.31+, a user should be able to manage project/worktree Sharing-domain assignments from a Projects screen and complete personal/work/OSS plus optional anchor-peer setup without reading the OV4G design doc.
