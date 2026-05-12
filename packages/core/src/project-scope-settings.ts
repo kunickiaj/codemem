@@ -370,8 +370,8 @@ function projectScopeCandidateGuardrailWarnings(
 	if (related.length > 0) {
 		warnings.push({
 			code: "basename_collision_review",
-			severity: "warning",
-			message: `Another project is also named ${project.display_project}. Review the git remote or path before assigning a non-local Sharing domain.`,
+			severity: "info",
+			message: `Another workspace is also named ${project.display_project}. Review the git remote or path before assigning a non-local Sharing domain.`,
 			requires_confirmation: true,
 			workspace_identity: project.workspace_identity,
 			related_workspace_identities: related.map((candidate) => candidate.workspace_identity),
@@ -660,7 +660,7 @@ export function analyzeProjectScopeMappingChangeGuardrails(
 		);
 	}
 	const candidate = draft.workspaceIdentity
-		? listProjectScopeCandidates(db).find(
+		? listProjectScopeCandidates(db, { limit: null }).find(
 				(project) => project.workspace_identity === draft.workspaceIdentity,
 			)
 		: null;
@@ -701,15 +701,13 @@ export function analyzeProjectScopeMappingChangeGuardrails(
 
 export function listProjectScopeCandidates(
 	db: Database,
-	options: { limit?: number } = {},
+	options: { limit?: number | null } = {},
 ): ProjectScopeCandidate[] {
 	ensureScopeBackfillScopes(db);
-	const limit = Math.max(1, Math.min(options.limit ?? 250, 1000));
+	const limit = options.limit === null ? null : Math.max(1, Math.min(options.limit ?? 250, 1000));
 	const mappings = listProjectScopeSettingsMappings(db);
 	const scopes = listSharingDomainSettingsScopes(db);
-	const rows = db
-		.prepare(
-			`SELECT
+	const sql = `SELECT
 				s.id,
 				s.started_at,
 				s.cwd,
@@ -728,10 +726,10 @@ export function listProjectScopeCandidates(
 			 FROM sessions s
 			 WHERE COALESCE(TRIM(s.git_remote), TRIM(s.cwd), TRIM(s.project), '') <> ''
 			    OR EXISTS (SELECT 1 FROM memory_items mi_candidate WHERE mi_candidate.session_id = s.id)
-			 ORDER BY s.started_at DESC, s.id DESC
-			 LIMIT ?`,
-		)
-		.all(limit) as ProjectScopeCandidateRow[];
+			 ORDER BY s.started_at DESC, s.id DESC${limit == null ? "" : "\n\t\t\t LIMIT ?"}`;
+	const rows = (
+		limit == null ? db.prepare(sql).all() : db.prepare(sql).all(limit)
+	) as ProjectScopeCandidateRow[];
 
 	const seen = new Set<string>();
 	const candidates: ProjectScopeCandidate[] = [];

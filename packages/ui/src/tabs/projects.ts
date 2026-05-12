@@ -12,16 +12,18 @@ const STATUS_OPTIONS = [
 	["", "All statuses"],
 	["local_only", "Local only"],
 	["unmapped", "Unmapped"],
-	["suggested", "Suggested"],
+	["suggested", "Suggested assignment"],
 	["explicitly_mapped", "Explicitly mapped"],
 	["legacy_review", "Legacy review"],
-	["needs_attention", "Needs attention"],
+	["needs_attention", "Review before mapping"],
 ] as const;
 
 let refreshProjects: RefreshFn | null = null;
 let currentOffset = 0;
-const lastLimit = 50;
+const lastLimit = 25;
 let scopes: SharingDomainScope[] = [];
+const openProjectDetails = new Set<string>();
+const draftDomainSelections = new Map<string, string>();
 const pendingConfirmations = new Map<
 	string,
 	{ requiredGuardrailTokens: string[]; scopeId: string; warnings: ProjectScopeGuardrailWarning[] }
@@ -89,6 +91,7 @@ async function saveProjectMapping(
 			workspace_identity: project.workspace_identity,
 		});
 		pendingConfirmations.delete(project.workspace_identity);
+		draftDomainSelections.delete(project.workspace_identity);
 		showGlobalNotice("Project Sharing domain updated. Device access grants are unchanged.");
 		refreshProjects?.();
 	} catch (error) {
@@ -113,6 +116,7 @@ async function removeProjectMapping(project: ProjectScopeInventoryProject) {
 	try {
 		await api.deleteSharingDomainProjectMapping(project.mapping_id);
 		pendingConfirmations.delete(project.workspace_identity);
+		draftDomainSelections.delete(project.workspace_identity);
 		showGlobalNotice("Project Sharing domain mapping removed. The next fallback now applies.");
 		refreshProjects?.();
 	} catch (error) {
@@ -158,7 +162,10 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 		option.textContent = scope.label ? `${scope.label} · ${scope.scope_id}` : scope.scope_id;
 		select.appendChild(option);
 	}
-	select.value = project.suggested_scope_id ?? project.resolved_scope_id;
+	select.value =
+		draftDomainSelections.get(project.workspace_identity) ??
+		project.suggested_scope_id ??
+		project.resolved_scope_id;
 
 	const save = document.createElement("button");
 	save.className = "settings-button";
@@ -170,6 +177,7 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 	save.disabled = select.value === project.resolved_scope_id && !currentAssignable;
 	save.addEventListener("click", () => void saveProjectMapping(project, select.value));
 	select.addEventListener("change", () => {
+		draftDomainSelections.set(project.workspace_identity, select.value);
 		save.textContent = "Save domain";
 		save.disabled = false;
 	});
@@ -250,6 +258,23 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 	signal.textContent = strongestSignal(project);
 	row.appendChild(signal);
 
+	if (project.suggested_scope_id && project.suggested_scope_id !== project.resolved_scope_id) {
+		const suggestion = document.createElement("div");
+		suggestion.className = "settings-note project-suggestion-note";
+		suggestion.textContent = project.suggestion_reason
+			? `Suggestion: ${project.suggestion_reason}`
+			: `Suggestion: map this project to ${scopeLabel(project.suggested_scope_id)}.`;
+		row.appendChild(suggestion);
+	}
+
+	const warnings = project.guardrail_warnings.filter((warning) => warning.severity === "warning");
+	if (warnings.length > 0) {
+		const warningBox = document.createElement("div");
+		warningBox.className = "settings-note project-attention-note";
+		warningBox.textContent = `Needs attention: ${warnings.map((warning) => warning.message).join(" ")}`;
+		row.appendChild(warningBox);
+	}
+
 	if (project.statuses.length > 0) {
 		const badges = document.createElement("div");
 		badges.className = "project-inventory-badges";
@@ -264,6 +289,11 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 
 	const detail = document.createElement("details");
 	detail.className = "project-inventory-details";
+	detail.open = openProjectDetails.has(project.workspace_identity);
+	detail.addEventListener("toggle", () => {
+		if (detail.open) openProjectDetails.add(project.workspace_identity);
+		else openProjectDetails.delete(project.workspace_identity);
+	});
 	const summary = document.createElement("summary");
 	summary.textContent = "Identity and mapping details";
 	detail.appendChild(summary);
