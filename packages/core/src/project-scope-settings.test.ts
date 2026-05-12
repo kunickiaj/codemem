@@ -145,6 +145,7 @@ describe("project scope settings", () => {
 						expect.objectContaining({
 							code: "basename_collision_review",
 							requires_confirmation: true,
+							severity: "info",
 							related_workspace_identities: ["https://git.example.invalid/oss/api.git"],
 						}),
 					]),
@@ -155,9 +156,97 @@ describe("project scope settings", () => {
 						expect.objectContaining({
 							code: "basename_collision_review",
 							requires_confirmation: true,
+							severity: "info",
 							related_workspace_identities: ["https://git.example.invalid/exampleco/api.git"],
 						}),
 					]),
+				}),
+			]),
+		);
+	});
+
+	it("does not mark same-basename worktrees as persistent needs-attention inventory", () => {
+		insertScope(db, { scopeId: "exampleco-work", label: "ExampleCo Work" });
+		const workSession = insertSession(db, {
+			cwd: "/workspace/work/exampleco/api",
+			gitRemote: "https://git.example.invalid/exampleco/api.git",
+			project: "api",
+		});
+		insertMemory(db, workSession);
+		const ossSession = insertSession(db, {
+			cwd: "/workspace/oss/api",
+			gitRemote: "https://git.example.invalid/oss/api.git",
+			project: "api",
+		});
+		insertMemory(db, ossSession, { workspaceId: "shared:oss-api" });
+
+		const inventory = listProjectScopeInventory(db);
+		const work = inventory.projects.find(
+			(project) => project.workspace_identity === "https://git.example.invalid/exampleco/api.git",
+		);
+		if (!work) throw new Error("work project missing");
+
+		expect(work.statuses).not.toContain("needs_attention");
+		expect(work.guardrail_warnings).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					code: "basename_collision_review",
+					requires_confirmation: true,
+					severity: "info",
+				}),
+			]),
+		);
+
+		const analysis = analyzeProjectScopeMappingChangeGuardrails(db, {
+			workspace_identity: work.workspace_identity,
+			project_pattern: work.display_project,
+			scope_id: "exampleco-work",
+		});
+		expect(analysis.warnings).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					code: "basename_collision_review",
+					requires_confirmation: true,
+				}),
+			]),
+		);
+	});
+
+	it("checks basename collisions beyond the default candidate list when confirming assignments", () => {
+		insertScope(db, { scopeId: "exampleco-work", label: "ExampleCo Work" });
+		const targetSession = insertSession(db, {
+			cwd: "/workspace/work/exampleco/api",
+			gitRemote: "https://git.example.invalid/exampleco/api.git",
+			project: "api",
+		});
+		insertMemory(db, targetSession);
+		const siblingSession = insertSession(db, {
+			cwd: "/workspace/oss/api",
+			gitRemote: "https://git.example.invalid/oss/api.git",
+			project: "api",
+		});
+		insertMemory(db, siblingSession, { workspaceId: "shared:oss-api" });
+		for (let i = 0; i < 260; i++) {
+			const sessionId = insertSession(db, {
+				cwd: `/workspace/noise/project-${i}`,
+				gitRemote: `https://git.example.invalid/noise/project-${i}.git`,
+				project: `project-${i}`,
+			});
+			insertMemory(db, sessionId, { workspaceId: `shared:noise-${i}` });
+		}
+
+		const analysis = analyzeProjectScopeMappingChangeGuardrails(db, {
+			workspace_identity: "https://git.example.invalid/exampleco/api.git",
+			project_pattern: "api",
+			scope_id: "exampleco-work",
+		});
+
+		expect(analysis.warnings).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					code: "basename_collision_review",
+					requires_confirmation: true,
+					related_workspace_identities: ["https://git.example.invalid/oss/api.git"],
 				}),
 			]),
 		);

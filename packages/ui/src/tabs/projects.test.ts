@@ -105,7 +105,7 @@ describe("Projects tab", () => {
 	it("shows empty inventory without bogus pagination range", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
-			limit: 50,
+			limit: 25,
 			offset: 0,
 			projects: [],
 			total: 0,
@@ -116,6 +116,9 @@ describe("Projects tab", () => {
 
 		expect(document.getElementById("projectsInventoryMeta")?.textContent).toBe("0 projects found");
 		expect(document.body.textContent).not.toContain("showing 1-0");
+		expect(api.loadProjectScopeInventory).toHaveBeenCalledWith(
+			expect.objectContaining({ limit: 25 }),
+		);
 	});
 
 	it("does not render assignment controls for unmapped projects", async () => {
@@ -156,5 +159,80 @@ describe("Projects tab", () => {
 		expect(values).toContain("local-default");
 		expect(values).toContain("exampleco-work");
 		expect(values).not.toContain("legacy-shared-review");
+	});
+
+	it("keeps expanded project details open after refresh", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 50,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		});
+
+		await loadProjectsData();
+		const details = document.querySelector("details");
+		expect(details).not.toBeNull();
+		details?.setAttribute("open", "");
+		details?.dispatchEvent(new Event("toggle"));
+
+		await loadProjectsData();
+
+		expect(document.querySelector("details")?.open).toBe(true);
+	});
+
+	it("keeps draft domain selection after refresh", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 25,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		});
+
+		await loadProjectsData();
+		const select = document.querySelector(".project-domain-select") as HTMLSelectElement | null;
+		expect(select).not.toBeNull();
+		if (!select) throw new Error("select missing");
+		select.value = "exampleco-work";
+		select.dispatchEvent(new Event("change"));
+
+		await loadProjectsData();
+
+		expect(
+			(document.querySelector(".project-domain-select") as HTMLSelectElement | null)?.value,
+		).toBe("exampleco-work");
+	});
+
+	it("surfaces suggestions and attention warnings on the collapsed card", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 50,
+			offset: 0,
+			projects: [
+				project({
+					guardrail_warnings: [
+						{
+							code: "basename_collision_review",
+							message: "Another project is also named api.",
+							requires_confirmation: true,
+							severity: "warning",
+						},
+					],
+					statuses: ["suggested", "needs_attention"],
+					suggested_scope_id: "exampleco-work",
+					suggestion_reason:
+						"ExampleCo Work is suggested because the git remote contains exampleco.",
+				}),
+			],
+			total: 1,
+		});
+
+		await loadProjectsData();
+
+		expect(document.body.textContent).toContain("Suggestion: ExampleCo Work is suggested");
+		expect(document.body.textContent).toContain(
+			"Needs attention: Another project is also named api.",
+		);
 	});
 });
