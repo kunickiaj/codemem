@@ -77,6 +77,37 @@ export interface ProjectScopeCandidate {
 	guardrail_warnings: ProjectScopeGuardrailWarning[];
 }
 
+export type ProjectScopeInventoryStatus =
+	| "explicitly_mapped"
+	| "legacy_review"
+	| "local_only"
+	| "needs_attention"
+	| "suggested"
+	| "unmapped";
+
+export interface ProjectScopeInventoryProject extends ProjectScopeCandidate {
+	memory_count: number | null;
+	session_count: number;
+	statuses: ProjectScopeInventoryStatus[];
+}
+
+export interface ProjectScopeInventoryOptions {
+	identitySource?: string | null;
+	limit?: number;
+	offset?: number;
+	query?: string | null;
+	scopeId?: string | null;
+	status?: string | null;
+}
+
+export interface ProjectScopeInventoryResult {
+	projects: ProjectScopeInventoryProject[];
+	total: number;
+	limit: number;
+	offset: number;
+	has_more: boolean;
+}
+
 interface ProjectScopeSuggestion {
 	scopeId: string;
 	reason: string;
@@ -108,6 +139,8 @@ interface ProjectScopeCandidateRow {
 	git_remote: string | null;
 	git_branch: string | null;
 	workspace_id: string | null;
+	memory_count?: number | null;
+	session_count?: number | null;
 }
 
 function clean(value: string | null | undefined): string | null {
@@ -354,6 +387,89 @@ function withCandidateGuardrails(candidates: ProjectScopeCandidate[]): ProjectSc
 		...candidate,
 		guardrail_warnings: projectScopeCandidateGuardrailWarnings(candidate, collisions),
 	}));
+}
+
+function inventoryStatuses(project: ProjectScopeCandidate): ProjectScopeInventoryStatus[] {
+	const statuses = new Set<ProjectScopeInventoryStatus>();
+	if (project.resolved_scope_id === LOCAL_DEFAULT_SCOPE_ID) statuses.add("local_only");
+	if (project.resolved_scope_id === LEGACY_SHARED_REVIEW_SCOPE_ID) statuses.add("legacy_review");
+	if (project.identity_source === "unmapped") statuses.add("unmapped");
+	if (project.suggested_scope_id && project.suggested_scope_id !== project.resolved_scope_id) {
+		statuses.add("suggested");
+	}
+	if (project.mapping_id != null) statuses.add("explicitly_mapped");
+	if ((project.guardrail_warnings ?? []).some((warning) => warning.severity === "warning")) {
+		statuses.add("needs_attention");
+	}
+	return [...statuses].sort();
+}
+
+function projectMatchesInventoryQuery(
+	project: ProjectScopeInventoryProject,
+	query: string | null | undefined,
+): boolean {
+	const normalized = clean(query)?.toLowerCase();
+	if (!normalized) return true;
+	return [
+		project.display_project,
+		project.project,
+		project.cwd,
+		project.git_remote,
+		project.git_branch,
+		project.workspace_identity,
+		project.resolved_scope_id,
+		project.suggested_scope_id,
+	]
+		.filter((value): value is string => typeof value === "string" && value.length > 0)
+		.some((value) => value.toLowerCase().includes(normalized));
+}
+
+function buildProjectScopeCandidate(
+	row: ProjectScopeCandidateRow,
+	mappings: ProjectScopeSettingsMapping[],
+	scopes: SharingDomainSettingsScope[],
+): ProjectScopeCandidate {
+	const identity = canonicalWorkspaceIdentity({
+		gitRemote: row.git_remote,
+		gitBranch: row.git_branch,
+		cwd: row.cwd,
+		project: row.project,
+		workspaceId: row.workspace_id,
+	});
+	const resolution = resolveProjectScope({
+		gitRemote: row.git_remote,
+		gitBranch: row.git_branch,
+		cwd: row.cwd,
+		project: row.project,
+		workspaceId: row.workspace_id,
+		mappings,
+	});
+	const baseCandidate = {
+		workspace_identity: identity.value,
+		identity_source: identity.source,
+		display_project:
+			identity.displayProject ?? clean(row.project) ?? clean(row.cwd) ?? identity.value,
+		project: clean(row.project),
+		cwd: clean(row.cwd),
+		git_remote: clean(row.git_remote),
+		git_branch: clean(row.git_branch),
+		latest_session_at: row.started_at,
+		resolved_scope_id: resolution.scopeId,
+		resolution_reason: resolution.reason,
+		mapping_id: resolution.mapping?.id ?? null,
+		matched_pattern: resolution.matchedPattern,
+		suggested_scope_id: null,
+		suggestion_reason: null,
+		suggestion_signal: null,
+		guardrail_warnings: [],
+	} satisfies ProjectScopeCandidate;
+	const suggestion = suggestProjectScope(baseCandidate, scopes);
+	return {
+		...baseCandidate,
+		suggested_scope_id: suggestion?.scopeId ?? null,
+		suggestion_reason: suggestion?.reason ?? null,
+		suggestion_signal: suggestion?.signal ?? null,
+	};
 }
 
 function dedupeGuardrailWarnings(
@@ -626,40 +742,7 @@ export function listProjectScopeCandidates(
 		});
 		if (seen.has(identity.value)) continue;
 		seen.add(identity.value);
-		const resolution = resolveProjectScope({
-			gitRemote: row.git_remote,
-			gitBranch: row.git_branch,
-			cwd: row.cwd,
-			project: row.project,
-			workspaceId: row.workspace_id,
-			mappings,
-		});
-		const baseCandidate = {
-			workspace_identity: identity.value,
-			identity_source: identity.source,
-			display_project:
-				identity.displayProject ?? clean(row.project) ?? clean(row.cwd) ?? identity.value,
-			project: clean(row.project),
-			cwd: clean(row.cwd),
-			git_remote: clean(row.git_remote),
-			git_branch: clean(row.git_branch),
-			latest_session_at: row.started_at,
-			resolved_scope_id: resolution.scopeId,
-			resolution_reason: resolution.reason,
-			mapping_id: resolution.mapping?.id ?? null,
-			matched_pattern: resolution.matchedPattern,
-			suggested_scope_id: null,
-			suggestion_reason: null,
-			suggestion_signal: null,
-			guardrail_warnings: [],
-		} satisfies ProjectScopeCandidate;
-		const suggestion = suggestProjectScope(baseCandidate, scopes);
-		candidates.push({
-			...baseCandidate,
-			suggested_scope_id: suggestion?.scopeId ?? null,
-			suggestion_reason: suggestion?.reason ?? null,
-			suggestion_signal: suggestion?.signal ?? null,
-		});
+		candidates.push(buildProjectScopeCandidate(row, mappings, scopes));
 	}
 
 	return withCandidateGuardrails(
@@ -669,6 +752,127 @@ export function listProjectScopeCandidates(
 				left.workspace_identity.localeCompare(right.workspace_identity),
 		),
 	);
+}
+
+export function listProjectScopeInventory(
+	db: Database,
+	options: ProjectScopeInventoryOptions = {},
+): ProjectScopeInventoryResult {
+	ensureScopeBackfillScopes(db);
+	const limit = Math.max(1, Math.min(options.limit ?? 50, 250));
+	const offset = Math.max(0, options.offset ?? 0);
+	const mappings = listProjectScopeSettingsMappings(db);
+	const scopes = listSharingDomainSettingsScopes(db);
+	const rows = db
+		.prepare(
+			`SELECT
+				s.id,
+				MAX(s.started_at) AS started_at,
+				s.cwd,
+				s.project,
+				s.git_remote,
+				s.git_branch,
+				(
+					SELECT mi.workspace_id
+					FROM memory_items mi
+					WHERE mi.session_id = s.id
+					  AND mi.workspace_id IS NOT NULL
+					  AND TRIM(mi.workspace_id) <> ''
+					ORDER BY mi.id DESC
+					LIMIT 1
+				) AS workspace_id,
+				COUNT(DISTINCT s.id) AS session_count,
+				COUNT(mi_count.id) AS memory_count
+			 FROM sessions s
+			 LEFT JOIN memory_items mi_count ON mi_count.session_id = s.id
+			 WHERE COALESCE(TRIM(s.git_remote), TRIM(s.cwd), TRIM(s.project), '') <> ''
+			    OR mi_count.id IS NOT NULL
+			 GROUP BY s.id
+			 ORDER BY MAX(s.started_at) DESC, s.id DESC`,
+		)
+		.all() as ProjectScopeCandidateRow[];
+
+	const byIdentity = new Map<string, ProjectScopeInventoryProject>();
+	const inventory: ProjectScopeInventoryProject[] = [];
+	for (const row of rows) {
+		const candidate = buildProjectScopeCandidate(row, mappings, scopes);
+		const existing = byIdentity.get(candidate.workspace_identity);
+		if (existing) {
+			existing.memory_count = (existing.memory_count ?? 0) + Number(row.memory_count ?? 0);
+			existing.session_count += Number(row.session_count ?? 1);
+			continue;
+		}
+		const project = {
+			...candidate,
+			memory_count: Number(row.memory_count ?? 0),
+			session_count: Number(row.session_count ?? 1),
+			statuses: [],
+		};
+		byIdentity.set(candidate.workspace_identity, project);
+		inventory.push(project);
+	}
+
+	for (const mapping of mappings) {
+		if (!mapping.workspace_identity || byIdentity.has(mapping.workspace_identity)) continue;
+		const candidate: ProjectScopeCandidate = {
+			workspace_identity: mapping.workspace_identity,
+			identity_source: "workspace_id",
+			display_project: mapping.project_pattern || mapping.workspace_identity,
+			project: mapping.project_pattern || null,
+			cwd: null,
+			git_remote: null,
+			git_branch: null,
+			latest_session_at: null,
+			resolved_scope_id: mapping.scope_id,
+			resolution_reason: "exact_mapping",
+			mapping_id: mapping.id,
+			matched_pattern: null,
+			suggested_scope_id: null,
+			suggestion_reason: null,
+			suggestion_signal: null,
+			guardrail_warnings: [],
+		};
+		const project = { ...candidate, memory_count: 0, session_count: 0, statuses: [] };
+		byIdentity.set(mapping.workspace_identity, project);
+		inventory.push(project);
+	}
+
+	const withGuardrails = withCandidateGuardrails(inventory).map((project) => {
+		const original = inventory.find(
+			(item) => item.workspace_identity === project.workspace_identity,
+		);
+		return {
+			...project,
+			memory_count: original?.memory_count ?? null,
+			session_count: original?.session_count ?? 0,
+			statuses: inventoryStatuses(project),
+		};
+	});
+
+	const filtered = withGuardrails
+		.filter((project) => projectMatchesInventoryQuery(project, options.query))
+		.filter((project) => !options.scopeId || project.resolved_scope_id === options.scopeId)
+		.filter(
+			(project) => !options.identitySource || project.identity_source === options.identitySource,
+		)
+		.filter(
+			(project) => !options.status || project.statuses.some((status) => status === options.status),
+		)
+		.toSorted(
+			(left, right) =>
+				(left.latest_session_at == null ? 1 : right.latest_session_at == null ? -1 : 0) ||
+				String(right.latest_session_at ?? "").localeCompare(String(left.latest_session_at ?? "")) ||
+				left.display_project.localeCompare(right.display_project) ||
+				left.workspace_identity.localeCompare(right.workspace_identity),
+		);
+
+	return {
+		projects: filtered.slice(offset, offset + limit),
+		total: filtered.length,
+		limit,
+		offset,
+		has_more: offset + limit < filtered.length,
+	};
 }
 
 export function upsertProjectScopeSettingsMapping(

@@ -53,6 +53,7 @@ export {
 	importCoordinatorInvite,
 	loadCoordinatorGroupPreferences,
 	loadPairing,
+	loadProjectScopeInventory,
 	loadSharingDomainSettings,
 	loadSyncActors,
 	loadSyncStatus,

@@ -4,6 +4,7 @@ import { toJson } from "./db.js";
 import {
 	analyzeProjectScopeMappingChangeGuardrails,
 	listProjectScopeCandidates,
+	listProjectScopeInventory,
 	listProjectScopeSettingsMappings,
 	listSharingDomainSettingsScopes,
 	upsertProjectScopeSettingsMapping,
@@ -225,6 +226,64 @@ describe("project scope settings", () => {
 			]),
 		);
 		expect(mappingCount.n).toBe(0);
+	});
+
+	it("lists searchable project inventory after identity dedupe", () => {
+		insertScope(db, { scopeId: "exampleco-work", label: "ExampleCo Work" });
+		const olderSession = insertSession(db, {
+			cwd: "/workspace/work/exampleco/api-old",
+			gitRemote: "https://git.example.invalid/exampleco/api.git",
+			project: "api",
+		});
+		insertMemory(db, olderSession);
+		const newerSession = insertSession(db, {
+			cwd: "/workspace/work/exampleco/api",
+			gitRemote: "https://git.example.invalid/exampleco/api.git",
+			project: "api",
+		});
+		insertMemory(db, newerSession);
+		upsertProjectScopeSettingsMapping(db, {
+			workspace_identity: "https://git.example.invalid/exampleco/api.git",
+			project_pattern: "api",
+			scope_id: "exampleco-work",
+		});
+
+		const inventory = listProjectScopeInventory(db, {
+			query: "exampleco",
+			status: "explicitly_mapped",
+		});
+
+		expect(inventory).toMatchObject({ total: 1, limit: 50, offset: 0, has_more: false });
+		expect(inventory.projects).toEqual([
+			expect.objectContaining({
+				memory_count: 2,
+				resolved_scope_id: "exampleco-work",
+				session_count: 2,
+				statuses: expect.arrayContaining(["explicitly_mapped"]),
+				workspace_identity: "https://git.example.invalid/exampleco/api.git",
+			}),
+		]);
+	});
+
+	it("includes explicitly mapped projects with no recent sessions", () => {
+		insertScope(db, { scopeId: "exampleco-work", label: "ExampleCo Work" });
+		upsertProjectScopeSettingsMapping(db, {
+			workspace_identity: "workspace:retired-api",
+			project_pattern: "retired-api",
+			scope_id: "exampleco-work",
+		});
+
+		const inventory = listProjectScopeInventory(db, { query: "retired" });
+
+		expect(inventory.projects).toEqual([
+			expect.objectContaining({
+				display_project: "retired-api",
+				memory_count: 0,
+				resolved_scope_id: "exampleco-work",
+				session_count: 0,
+				workspace_identity: "workspace:retired-api",
+			}),
+		]);
 	});
 
 	it("does not guess when multiple scopes match a project signal equally", () => {
