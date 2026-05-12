@@ -2662,6 +2662,197 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("previews and applies legacy shared review reassignment explicitly", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				const _warmup = await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('oss', 'OSS', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+				grantSyncScopeToDevices(store, "oss", [store.deviceId]);
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET cwd = ?, git_remote = ?, project = ? WHERE id = ?")
+					.run(
+						"/workspace/oss/dev",
+						"https://git.example.invalid/oss/dev.git",
+						"oss-dev",
+						sessionId,
+					);
+				insertTestMemory(store, {
+					kind: "discovery",
+					scopeId: "legacy-shared-review",
+					sessionId,
+					title: "legacy local shared",
+				});
+				insertTestMemory(store, {
+					actorId: "remote-actor",
+					kind: "discovery",
+					originDeviceId: "peer-device",
+					scopeId: "legacy-shared-review",
+					sessionId,
+					title: "legacy peer shared",
+				});
+
+				const previewRes = await app.request("/api/sync/legacy-shared-review/reassign", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						scope_id: "oss",
+						workspace_identity: "https://git.example.invalid/oss/dev.git",
+					}),
+				});
+				expect(previewRes.status).toBe(409);
+				const preview = (await previewRes.json()) as {
+					error: string;
+					preview: { memory_count: number; reassignable_memory_count: number; warning: string };
+				};
+				expect(preview.error).toBe("legacy_review_confirmation_required");
+				expect(preview.preview).toMatchObject({
+					memory_count: 2,
+					reassignable_memory_count: 1,
+				});
+				expect(preview.preview.warning).toContain("does not erase data already copied");
+
+				const applyRes = await app.request("/api/sync/legacy-shared-review/reassign", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						confirmed_old_copies: true,
+						scope_id: "oss",
+						workspace_identity: "https://git.example.invalid/oss/dev.git",
+					}),
+				});
+				expect(applyRes.status).toBe(200);
+				const applied = (await applyRes.json()) as {
+					legacy_shared_review: { memory_count: number };
+					reassigned_memory_count: number;
+				};
+				expect(applied.reassigned_memory_count).toBe(1);
+				expect(applied.legacy_shared_review.memory_count).toBe(1);
+				const counts = store.db
+					.prepare("SELECT scope_id, COUNT(*) AS n FROM memory_items GROUP BY scope_id")
+					.all() as Array<{ scope_id: string; n: number }>;
+				expect(counts).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ n: 1, scope_id: "oss" }),
+						expect.objectContaining({ n: 1, scope_id: "legacy-shared-review" }),
+					]),
+				);
+				const ops = store.db
+					.prepare("SELECT op_type, scope_id FROM replication_ops ORDER BY op_id")
+					.all() as Array<{ op_type: string; scope_id: string }>;
+				expect(ops).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ op_type: "delete", scope_id: "legacy-shared-review" }),
+						expect.objectContaining({ op_type: "upsert", scope_id: "oss" }),
+					]),
+				);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects legacy shared review reassignment when the local device lacks target membership", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				const _warmup = await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('oss', 'OSS', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET git_remote = ? WHERE id = ?")
+					.run("https://git.example.invalid/oss/dev.git", sessionId);
+				insertTestMemory(store, {
+					kind: "discovery",
+					scopeId: "legacy-shared-review",
+					sessionId,
+					title: "legacy local shared",
+				});
+
+				const res = await app.request("/api/sync/legacy-shared-review/reassign", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						confirmed_old_copies: true,
+						scope_id: "oss",
+						workspace_identity: "https://git.example.invalid/oss/dev.git",
+					}),
+				});
+				expect(res.status).toBe(400);
+				const body = (await res.json()) as { error: string };
+				expect(body.error).toContain("local device is not a member");
+				const memory = store.db.prepare("SELECT scope_id FROM memory_items LIMIT 1").get() as {
+					scope_id: string;
+				};
+				expect(memory.scope_id).toBe("legacy-shared-review");
+				const ops = store.db.prepare("SELECT COUNT(*) AS n FROM replication_ops").get() as {
+					n: number;
+				};
+				expect(ops.n).toBe(0);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects local-default as a legacy shared review reassignment target", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				const _warmup = await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET git_remote = ? WHERE id = ?")
+					.run("https://git.example.invalid/oss/dev.git", sessionId);
+				insertTestMemory(store, {
+					kind: "discovery",
+					scopeId: "legacy-shared-review",
+					sessionId,
+					title: "legacy local shared",
+				});
+
+				const res = await app.request("/api/sync/legacy-shared-review/reassign", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						confirmed_old_copies: true,
+						scope_id: "local-default",
+						workspace_identity: "https://git.example.invalid/oss/dev.git",
+					}),
+				});
+
+				expect(res.status).toBe(400);
+				const body = (await res.json()) as { error: string };
+				expect(body.error).toContain("local-default is not a valid target");
+				const memory = store.db.prepare("SELECT scope_id FROM memory_items LIMIT 1").get() as {
+					scope_id: string;
+				};
+				expect(memory.scope_id).toBe("legacy-shared-review");
+				const ops = store.db.prepare("SELECT COUNT(*) AS n FROM replication_ops").get() as {
+					n: number;
+				};
+				expect(ops.n).toBe(0);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("surfaces inbound scope-rejection summary per peer", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {

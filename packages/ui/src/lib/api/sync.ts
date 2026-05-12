@@ -245,6 +245,25 @@ export interface ProjectReassignmentResult {
 	moved_memory_count: number;
 }
 
+export interface LegacySharedReviewReassignmentPreview {
+	workspace_identity: string;
+	scope_id: string;
+	target_scope_label: string;
+	memory_count: number;
+	reassignable_memory_count: number;
+	skipped_memory_count: number;
+	affected_peer_device_count: number;
+	affected_peer_device_ids: string[];
+	warning: string;
+}
+
+export interface LegacySharedReviewReassignmentResult
+	extends LegacySharedReviewReassignmentPreview {
+	ok?: boolean;
+	reassigned_memory_count: number;
+	legacy_shared_review?: Record<string, unknown> | null;
+}
+
 export interface SharingDomainSettings {
 	scopes: SharingDomainScope[];
 	mappings: ProjectScopeMapping[];
@@ -267,6 +286,16 @@ export class SharingDomainGuardrailConfirmationError extends Error {
 		this.requiredGuardrails = input.required_guardrails ?? [];
 		this.requiredGuardrailTokens = input.required_guardrail_tokens ?? [];
 		this.guardrailWarnings = input.guardrail_warnings ?? [];
+	}
+}
+
+export class LegacySharedReviewConfirmationError extends Error {
+	preview: LegacySharedReviewReassignmentPreview;
+
+	constructor(preview: LegacySharedReviewReassignmentPreview) {
+		super("Legacy shared review confirmation required");
+		this.name = "LegacySharedReviewConfirmationError";
+		this.preview = preview;
 	}
 }
 
@@ -350,6 +379,32 @@ export async function reassignProjectInventoryProject(input: {
 	);
 	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
 	if (!payload?.workspace_identity) throw new Error("response missing project reassignment");
+	return payload;
+}
+
+export async function reassignLegacySharedReviewGroup(input: {
+	workspace_identity: string;
+	scope_id: string;
+	confirmed_old_copies?: boolean;
+}): Promise<LegacySharedReviewReassignmentResult> {
+	const resp = await fetch("/api/sync/legacy-shared-review/reassign", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(input),
+	});
+	const { text, payload } = await readJsonPayload<
+		LegacySharedReviewReassignmentResult & {
+			error?: string;
+			preview?: LegacySharedReviewReassignmentPreview;
+		}
+	>(resp);
+	if (!resp.ok) {
+		if (payload?.error === "legacy_review_confirmation_required" && payload.preview) {
+			throw new LegacySharedReviewConfirmationError(payload.preview);
+		}
+		throw new Error(payloadError(payload) || text || "request failed");
+	}
+	if (!payload?.workspace_identity) throw new Error("response missing legacy review reassignment");
 	return payload;
 }
 

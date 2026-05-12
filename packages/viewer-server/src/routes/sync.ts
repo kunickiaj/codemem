@@ -1359,6 +1359,188 @@ function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> 
 	};
 }
 
+interface LegacySharedReviewReassignmentMemoryRow {
+	id: number;
+	active: number | null;
+	deleted_at: string | null;
+	scope_id: string | null;
+	project: string | null;
+	cwd: string | null;
+	git_remote: string | null;
+	git_branch: string | null;
+	workspace_id: string | null;
+	actor_id: string | null;
+	origin_device_id: string | null;
+	metadata_json: string | null;
+}
+
+interface LegacySharedReviewReassignmentPreview {
+	workspace_identity: string;
+	scope_id: string;
+	target_scope_label: string;
+	memory_count: number;
+	reassignable_memory_count: number;
+	skipped_memory_count: number;
+	affected_peer_device_count: number;
+	affected_peer_device_ids: string[];
+	warning: string;
+}
+
+function assertLocalDeviceScopeMembership(store: MemoryStore, scopeId: string): void {
+	if (scopeId === LOCAL_DEFAULT_SCOPE_ID) return;
+	const row = store.db
+		.prepare(
+			`SELECT 1
+			 FROM scope_memberships sm
+			 JOIN replication_scopes rs ON rs.scope_id = sm.scope_id
+			 WHERE sm.scope_id = ?
+			   AND sm.device_id = ?
+			   AND sm.status = 'active'
+			   AND rs.status = 'active'
+			   AND sm.membership_epoch >= rs.membership_epoch
+			 LIMIT 1`,
+		)
+		.get(scopeId, store.deviceId);
+	if (!row) throw new Error(`local device is not a member of Sharing domain ${scopeId}`);
+}
+
+function legacySharedReviewRowsForWorkspace(
+	store: MemoryStore,
+	workspaceIdentity: string,
+): LegacySharedReviewReassignmentMemoryRow[] {
+	const rows = store.db
+		.prepare(
+			`SELECT m.id,
+			        m.active,
+			        m.deleted_at,
+			        m.scope_id,
+			        s.project,
+			        s.cwd,
+			        s.git_remote,
+			        s.git_branch,
+			        m.workspace_id,
+			        m.actor_id,
+			        m.origin_device_id,
+			        m.metadata_json
+			 FROM memory_items m
+			 LEFT JOIN sessions s ON s.id = m.session_id
+			 WHERE m.scope_id = ?
+			   AND m.active = 1
+			   AND m.deleted_at IS NULL`,
+		)
+		.all(LEGACY_SHARED_REVIEW_SCOPE_ID) as LegacySharedReviewReassignmentMemoryRow[];
+	return rows.filter((row) => {
+		const identity = canonicalWorkspaceIdentity({
+			cwd: row.cwd,
+			gitBranch: row.git_branch,
+			gitRemote: row.git_remote,
+			project: row.project,
+			workspaceId: row.workspace_id,
+		});
+		return identity.value === workspaceIdentity;
+	});
+}
+
+function reassignableLegacySharedReviewRows(
+	store: MemoryStore,
+	rows: LegacySharedReviewReassignmentMemoryRow[],
+): LegacySharedReviewReassignmentMemoryRow[] {
+	const reassignableRows = rows.filter((row) =>
+		store.memoryOwnedBySelf(row as unknown as Record<string, unknown>),
+	);
+	if (reassignableRows.length === 0) {
+		throw new Error("legacy shared review group has no locally owned memories to reassign");
+	}
+	const currentRows = store.db
+		.prepare(
+			`SELECT id, scope_id, active, deleted_at
+			 FROM memory_items
+			 WHERE id IN (${reassignableRows.map(() => "?").join(",")})`,
+		)
+		.all(...reassignableRows.map((row) => row.id)) as Array<{
+		active: number | null;
+		deleted_at: string | null;
+		id: number;
+		scope_id: string | null;
+	}>;
+	const currentById = new Map(currentRows.map((row) => [Number(row.id), row]));
+	for (const row of reassignableRows) {
+		const current = currentById.get(row.id);
+		if (
+			current?.scope_id !== LEGACY_SHARED_REVIEW_SCOPE_ID ||
+			current.active !== 1 ||
+			current.deleted_at
+		) {
+			throw new Error(
+				"legacy shared review group changed before reassignment; refresh and try again",
+			);
+		}
+	}
+	return reassignableRows;
+}
+
+function legacySharedReviewReassignmentPreview(
+	store: MemoryStore,
+	input: { scopeId: string; workspaceIdentity: string },
+): LegacySharedReviewReassignmentPreview {
+	if (!input.workspaceIdentity.trim())
+		throw new Error("workspace_identity must be a non-empty string");
+	if (!input.scopeId.trim()) throw new Error("scope_id must be a non-empty string");
+	if (input.scopeId === LOCAL_DEFAULT_SCOPE_ID) {
+		throw new Error("local-default is not a valid target for legacy shared review reassignment");
+	}
+	if (input.scopeId === LEGACY_SHARED_REVIEW_SCOPE_ID) {
+		throw new Error("legacy-shared-review is a review bucket, not an assignable Sharing domain");
+	}
+	const targetScope = listSharingDomainSettingsScopes(store.db).find(
+		(scope) => scope.scope_id === input.scopeId,
+	);
+	if (!targetScope) throw new Error(`scope_id ${input.scopeId} is not an active Sharing domain`);
+	assertLocalDeviceScopeMembership(store, input.scopeId);
+	const rows = legacySharedReviewRowsForWorkspace(store, input.workspaceIdentity);
+	if (rows.length === 0) throw new Error("legacy shared review group not found");
+	const reassignableRows = reassignableLegacySharedReviewRows(store, rows);
+	const peerDeviceIds = [
+		...new Set(
+			rows
+				.map((row) => String(row.origin_device_id ?? "").trim())
+				.filter((deviceId) => deviceId && deviceId !== store.deviceId),
+		),
+	].sort();
+	return {
+		affected_peer_device_count: peerDeviceIds.length,
+		affected_peer_device_ids: peerDeviceIds.slice(0, 5),
+		memory_count: rows.length,
+		reassignable_memory_count: reassignableRows.length,
+		scope_id: input.scopeId,
+		skipped_memory_count: rows.length - reassignableRows.length,
+		target_scope_label: targetScope.label || targetScope.scope_id,
+		warning:
+			"This changes future sync authorization for reassignable local memories. It does not erase data already copied to peers under legacy-shared-review.",
+		workspace_identity: input.workspaceIdentity,
+	};
+}
+
+function reassignLegacySharedReviewGroup(
+	store: MemoryStore,
+	input: { scopeId: string; workspaceIdentity: string },
+): Record<string, unknown> {
+	const preview = legacySharedReviewReassignmentPreview(store, input);
+	const rows = reassignableLegacySharedReviewRows(
+		store,
+		legacySharedReviewRowsForWorkspace(store, input.workspaceIdentity),
+	);
+	for (const row of rows) {
+		store.reassignMemoryScope(row.id, input.scopeId);
+	}
+	return {
+		ok: true,
+		...preview,
+		reassigned_memory_count: rows.length,
+		legacy_shared_review: legacySharedReviewSummary(store),
+	};
+}
+
 // Aggregate ops_in / ops_out across recent successful sync_attempts per peer.
 // Window: last 24 hours. Feeds the per-peer direction glyph on the Sync tab
 // (↕ bidirectional, ↑ publishing, ↓ subscribed) off real traffic instead of
@@ -2500,6 +2682,40 @@ export function syncRoutes(
 				workspaceIdentity,
 			});
 			return c.json({ ok: true, ...result });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return c.json({ error: message }, message.includes("not found") ? 404 : 400);
+		}
+	});
+
+	app.post("/api/sync/legacy-shared-review/reassign", async (c) => {
+		const store = getStore();
+		const body = await parseViewerJsonBody(c);
+		if (!body) return c.json({ error: "invalid json" }, 400);
+		try {
+			const workspaceIdentity = optionalViewerStrictString(body, "workspace_identity") ?? "";
+			const scopeId = optionalViewerStrictString(body, "scope_id") ?? "";
+			const confirmedOldCopies = body.confirmed_old_copies === true;
+			const preview = legacySharedReviewReassignmentPreview(store, {
+				scopeId,
+				workspaceIdentity,
+			});
+			if (!confirmedOldCopies) {
+				return c.json(
+					{
+						error: "legacy_review_confirmation_required",
+						message: preview.warning,
+						preview,
+					},
+					409,
+				);
+			}
+			return c.json(
+				reassignLegacySharedReviewGroup(store, {
+					scopeId,
+					workspaceIdentity,
+				}),
+			);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			return c.json({ error: message }, message.includes("not found") ? 404 : 400);

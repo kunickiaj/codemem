@@ -1,3 +1,7 @@
+import { useState } from "preact/hooks";
+
+import type { LegacySharedReviewReassignmentPreview } from "../../../lib/api/sync";
+
 export interface SyncSharingReviewItem {
 	actorDisplayName: string;
 	actorId: string;
@@ -26,6 +30,11 @@ export interface SyncLegacySharedReviewGroup {
 type SyncSharingReviewProps = {
 	items: SyncSharingReviewItem[];
 	legacyReview?: SyncLegacySharedReviewItem | null;
+	onLegacyReassign?: (
+		group: SyncLegacySharedReviewGroup,
+		scopeId: string,
+		confirmedOldCopies: boolean,
+	) => Promise<LegacySharedReviewReassignmentPreview | null>;
 	onLegacyReview?: () => void;
 	onReview: () => void;
 };
@@ -60,12 +69,41 @@ function SharingReviewRow({
 
 function LegacySharedReviewRow({
 	item,
+	onReassign,
 	onReview,
 }: {
 	item: SyncLegacySharedReviewItem;
+	onReassign?: (
+		group: SyncLegacySharedReviewGroup,
+		scopeId: string,
+		confirmedOldCopies: boolean,
+	) => Promise<LegacySharedReviewReassignmentPreview | null>;
 	onReview: () => void;
 }) {
 	const groups = item.groups ?? [];
+	const [pending, setPending] = useState<Record<string, LegacySharedReviewReassignmentPreview>>({});
+	const [busyIdentity, setBusyIdentity] = useState<string | null>(null);
+	async function applyGroup(group: SyncLegacySharedReviewGroup) {
+		if (!group.suggestedScopeId || !onReassign || busyIdentity) return;
+		setBusyIdentity(group.workspaceIdentity);
+		try {
+			const preview = await onReassign(
+				group,
+				group.suggestedScopeId,
+				Boolean(pending[group.workspaceIdentity]),
+			);
+			if (preview) setPending((current) => ({ ...current, [group.workspaceIdentity]: preview }));
+			else {
+				setPending((current) => {
+					const next = { ...current };
+					delete next[group.workspaceIdentity];
+					return next;
+				});
+			}
+		} finally {
+			setBusyIdentity(null);
+		}
+	}
 	return (
 		<div className="actor-row">
 			<div className="actor-details">
@@ -92,6 +130,31 @@ function LegacySharedReviewRow({
 								{group.suggestionReason ? (
 									<span className="peer-meta">{group.suggestionReason}</span>
 								) : null}
+								{pending[group.workspaceIdentity] ? (
+									<span className="peer-meta" role="alert">
+										{pending[group.workspaceIdentity].warning} This will reassign{" "}
+										{pending[group.workspaceIdentity].reassignable_memory_count.toLocaleString()} of{" "}
+										{pending[group.workspaceIdentity].memory_count.toLocaleString()} memories
+										{pending[group.workspaceIdentity].skipped_memory_count
+											? `; ${pending[group.workspaceIdentity].skipped_memory_count.toLocaleString()} peer-owned copies will be left unchanged`
+											: ""}
+										.
+									</span>
+								) : null}
+								{group.suggestedScopeId && onReassign ? (
+									<button
+										type="button"
+										className="settings-button"
+										disabled={busyIdentity != null}
+										onClick={() => void applyGroup(group)}
+									>
+										{busyIdentity === group.workspaceIdentity
+											? "Reassigning…"
+											: pending[group.workspaceIdentity]
+												? "I understand, reassign memories"
+												: "Review suggested reassignment"}
+									</button>
+								) : null}
 							</li>
 						))}
 					</ul>
@@ -109,13 +172,18 @@ function LegacySharedReviewRow({
 export function SyncSharingReview({
 	items,
 	legacyReview,
+	onLegacyReassign,
 	onLegacyReview,
 	onReview,
 }: SyncSharingReviewProps) {
 	return (
 		<>
 			{legacyReview ? (
-				<LegacySharedReviewRow item={legacyReview} onReview={onLegacyReview ?? onReview} />
+				<LegacySharedReviewRow
+					item={legacyReview}
+					onReassign={onLegacyReassign}
+					onReview={onLegacyReview ?? onReview}
+				/>
 			) : null}
 			{items.map((item) => (
 				<SharingReviewRow

@@ -3,9 +3,16 @@
  * the "Review" CTA back to the Feed tab filtered by the current actor. */
 
 import { h } from "preact";
+import * as api from "../../../../lib/api";
+import type {
+	LegacySharedReviewReassignmentPreview,
+	LegacySharedReviewReassignmentResult,
+} from "../../../../lib/api/sync";
+import { showGlobalNotice } from "../../../../lib/notice";
 import { setFeedScopeFilter, state } from "../../../../lib/state";
 import { clearSyncMount, renderIntoSyncMount } from "../../components/render-root";
 import {
+	type SyncLegacySharedReviewGroup,
 	SyncSharingReview,
 	type SyncSharingReviewItem,
 } from "../../components/sync-sharing-review";
@@ -18,6 +25,33 @@ function openFeedSharingReview() {
 
 function openProjectsReview() {
 	window.location.hash = "projects";
+}
+
+async function reassignLegacySharedReviewGroup(
+	group: SyncLegacySharedReviewGroup,
+	scopeId: string,
+	confirmedOldCopies: boolean,
+): Promise<LegacySharedReviewReassignmentPreview | null> {
+	try {
+		const result = (await api.reassignLegacySharedReviewGroup({
+			confirmed_old_copies: confirmedOldCopies,
+			scope_id: scopeId,
+			workspace_identity: group.workspaceIdentity,
+		})) as LegacySharedReviewReassignmentResult;
+		state.lastSyncLegacySharedReview = result.legacy_shared_review ?? null;
+		showGlobalNotice(
+			`Reassigned ${result.reassigned_memory_count.toLocaleString()} legacy review memor${result.reassigned_memory_count === 1 ? "y" : "ies"} to ${result.target_scope_label}.`,
+		);
+		renderSyncSharingReview();
+		return null;
+	} catch (error) {
+		if (error instanceof api.LegacySharedReviewConfirmationError) return error.preview;
+		showGlobalNotice(
+			error instanceof Error ? error.message : "Unable to reassign legacy review memories.",
+			"warning",
+		);
+		return null;
+	}
 }
 
 export function renderSyncSharingReview() {
@@ -79,6 +113,7 @@ export function renderSyncSharingReview() {
 		h(SyncSharingReview, {
 			items: reviewItems,
 			legacyReview,
+			onLegacyReassign: reassignLegacySharedReviewGroup,
 			onLegacyReview: openProjectsReview,
 			onReview: openFeedSharingReview,
 		}),
