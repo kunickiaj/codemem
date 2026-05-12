@@ -10,6 +10,10 @@ import {
 } from "./state";
 
 describe("Viewer tab routing", () => {
+	it("orders tabs around the primary review and sync workflow", () => {
+		expect(ALL_TAB_IDS).toEqual(["feed", "projects", "sync", "health", "coordinator-admin"]);
+	});
+
 	it("recognizes Projects as a routable top-level tab", () => {
 		expect(ALL_TAB_IDS).toContain("projects");
 		expect(parseTabFromHash("#projects")).toBe("projects");
