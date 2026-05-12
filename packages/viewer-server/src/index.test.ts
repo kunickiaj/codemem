@@ -5916,6 +5916,59 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("returns confirmed setup suggestion fields in Sharing domain settings", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET cwd = ?, git_remote = ?, project = ? WHERE id = ?")
+					.run(
+						"/workspace/work/exampleco/api",
+						"https://git.example.invalid/exampleco/api.git",
+						"api",
+						sessionId,
+					);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "suggested project domain candidate",
+					metadata: {},
+				});
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('exampleco-work', 'ExampleCo Work', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+
+				const settingsRes = await app.request("/api/sync/sharing-domains/settings");
+				expect(settingsRes.status).toBe(200);
+				const settings = (await settingsRes.json()) as {
+					projects: Array<{
+						display_project: string;
+						resolved_scope_id: string;
+						suggested_scope_id: string | null;
+						suggestion_reason: string | null;
+						suggestion_signal: string | null;
+					}>;
+				};
+
+				expect(settings.projects.find((item) => item.display_project === "api")).toMatchObject({
+					resolved_scope_id: "local-default",
+					suggested_scope_id: "exampleco-work",
+					suggestion_reason: expect.stringContaining("git remote"),
+					suggestion_signal: "git_remote",
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("requires confirmation before saving risky Sharing domain mappings", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
@@ -5935,7 +5988,7 @@ describe("viewer-server", () => {
 					method: "PUT",
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({
-						project_pattern: "/Users/adam/*",
+						project_pattern: "/home/fixture-user/*",
 						scope_id: "acme-work",
 					}),
 				});
@@ -5971,7 +6024,7 @@ describe("viewer-server", () => {
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({
 						confirmed_guardrails: ["broad_org_domain_pattern", "home_directory_org_domain_pattern"],
-						project_pattern: "/Users/adam/*",
+						project_pattern: "/home/fixture-user/*",
 						scope_id: "acme-work",
 					}),
 				});
@@ -5992,7 +6045,7 @@ describe("viewer-server", () => {
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({
 						confirmed_guardrail_tokens: unconfirmed.required_guardrail_tokens,
-						project_pattern: "/Users/adam/*",
+						project_pattern: "/home/fixture-user/*",
 						scope_id: "acme-work",
 					}),
 				});
@@ -6420,19 +6473,19 @@ describe("viewer-server", () => {
 				const createRes = await app.request("/api/sync/actors", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ display_name: "Adam shadow" }),
+					body: JSON.stringify({ display_name: "Fixture shadow" }),
 				});
 				expect(createRes.status).toBe(200);
 				const created = (await createRes.json()) as { actor_id: string; display_name: string };
-				expect(created.display_name).toBe("Adam shadow");
+				expect(created.display_name).toBe("Fixture shadow");
 
 				const renameRes = await app.request("/api/sync/actors/rename", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ actor_id: created.actor_id, display_name: "Adam remote" }),
+					body: JSON.stringify({ actor_id: created.actor_id, display_name: "Fixture remote" }),
 				});
 				expect(renameRes.status).toBe(200);
-				expect((await renameRes.json()).display_name).toBe("Adam remote");
+				expect((await renameRes.json()).display_name).toBe("Fixture remote");
 
 				const localActor = store.db
 					.prepare("SELECT actor_id FROM actors WHERE is_local = 1 LIMIT 1")
@@ -7303,7 +7356,7 @@ describe("viewer-server", () => {
 			globalThis.fetch = fetchMock as typeof fetch;
 			process.env.CODEMEM_CONFIG = configPath;
 			process.env.CODEMEM_KEYS_DIR = keysDir;
-			writeFileSync(configPath, JSON.stringify({ actor_display_name: "Adam" }));
+			writeFileSync(configPath, JSON.stringify({ actor_display_name: "Fixture User" }));
 			const { app, getStore, cleanup } = createTestApp();
 			try {
 				await app.request("/api/stats");
@@ -7360,7 +7413,7 @@ describe("viewer-server", () => {
 			globalThis.fetch = fetchMock as typeof fetch;
 			process.env.CODEMEM_CONFIG = configPath;
 			process.env.CODEMEM_KEYS_DIR = keysDir;
-			writeFileSync(configPath, JSON.stringify({ actor_display_name: "Adam" }));
+			writeFileSync(configPath, JSON.stringify({ actor_display_name: "Fixture User" }));
 			const { app, getStore, cleanup } = createTestApp();
 			try {
 				await app.request("/api/stats");
@@ -7411,7 +7464,7 @@ describe("viewer-server", () => {
 			globalThis.fetch = fetchMock as typeof fetch;
 			process.env.CODEMEM_CONFIG = configPath;
 			process.env.CODEMEM_KEYS_DIR = keysDir;
-			writeFileSync(configPath, JSON.stringify({ actor_display_name: "Adam" }));
+			writeFileSync(configPath, JSON.stringify({ actor_display_name: "Fixture User" }));
 			const { app, getStore, cleanup } = createTestApp();
 			try {
 				await app.request("/api/stats");

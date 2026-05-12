@@ -28,9 +28,11 @@ function insertSession(
 		)
 		.run(
 			now,
-			input.cwd === undefined ? "/Users/adam/work/acme/api" : input.cwd,
+			input.cwd === undefined ? "/workspace/work/exampleco/api" : input.cwd,
 			input.project === undefined ? "api" : input.project,
-			input.gitRemote === undefined ? "https://example.test/acme/api.git" : input.gitRemote,
+			input.gitRemote === undefined
+				? "https://git.example.invalid/exampleco/api.git"
+				: input.gitRemote,
 			input.gitBranch === undefined ? "main" : input.gitBranch,
 			"test-user",
 			"test",
@@ -119,14 +121,14 @@ describe("project scope settings", () => {
 
 	it("warns when same-basename projects need review before assignment", () => {
 		const workSession = insertSession(db, {
-			cwd: "/Users/adam/work/acme/api",
-			gitRemote: "https://example.test/acme/api.git",
+			cwd: "/workspace/work/exampleco/api",
+			gitRemote: "https://git.example.invalid/exampleco/api.git",
 			project: "api",
 		});
 		insertMemory(db, workSession);
 		const ossSession = insertSession(db, {
-			cwd: "/Users/adam/oss/api",
-			gitRemote: "https://example.test/oss/api.git",
+			cwd: "/workspace/oss/api",
+			gitRemote: "https://git.example.invalid/oss/api.git",
 			project: "api",
 		});
 		insertMemory(db, ossSession, { workspaceId: "shared:oss-api" });
@@ -137,22 +139,22 @@ describe("project scope settings", () => {
 		expect(projects).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
-					workspace_identity: "https://example.test/acme/api.git",
+					workspace_identity: "https://git.example.invalid/exampleco/api.git",
 					guardrail_warnings: expect.arrayContaining([
 						expect.objectContaining({
 							code: "basename_collision_review",
 							requires_confirmation: true,
-							related_workspace_identities: ["https://example.test/oss/api.git"],
+							related_workspace_identities: ["https://git.example.invalid/oss/api.git"],
 						}),
 					]),
 				}),
 				expect.objectContaining({
-					workspace_identity: "https://example.test/oss/api.git",
+					workspace_identity: "https://git.example.invalid/oss/api.git",
 					guardrail_warnings: expect.arrayContaining([
 						expect.objectContaining({
 							code: "basename_collision_review",
 							requires_confirmation: true,
-							related_workspace_identities: ["https://example.test/acme/api.git"],
+							related_workspace_identities: ["https://git.example.invalid/exampleco/api.git"],
 						}),
 					]),
 				}),
@@ -160,16 +162,136 @@ describe("project scope settings", () => {
 		);
 	});
 
+	it("suggests mappings from canonical signals without saving them", () => {
+		insertScope(db, { scopeId: "exampleco-work", label: "ExampleCo Work" });
+		insertScope(db, {
+			scopeId: "personal-devices",
+			label: "Personal Devices",
+			kind: "personal",
+			authorityType: "local",
+		});
+		const workSession = insertSession(db, {
+			cwd: "/workspace/work/exampleco/api",
+			gitRemote: "https://git.example.invalid/exampleco/api.git",
+			project: "api",
+		});
+		insertMemory(db, workSession);
+		const personalSession = insertSession(db, {
+			cwd: "/workspace/personal/api",
+			gitRemote: null,
+			project: "api",
+		});
+		insertMemory(db, personalSession, { workspaceId: "personal:api" });
+
+		const projects = listProjectScopeCandidates(db);
+		const work = projects.find(
+			(project) => project.workspace_identity === "https://git.example.invalid/exampleco/api.git",
+		);
+		const personal = projects.find(
+			(project) => project.workspace_identity === "/workspace/personal/api",
+		);
+		const mappingCount = db.prepare("SELECT COUNT(*) AS n FROM project_scope_mappings").get() as {
+			n: number;
+		};
+
+		expect(work).toMatchObject({
+			identity_source: "git_remote",
+			resolved_scope_id: LOCAL_DEFAULT_SCOPE_ID,
+			resolution_reason: "local_default",
+			suggested_scope_id: "exampleco-work",
+			suggestion_signal: "git_remote",
+		});
+		expect(work?.suggestion_reason).toContain("git remote");
+		expect(personal).toMatchObject({
+			identity_source: "cwd",
+			resolved_scope_id: LOCAL_DEFAULT_SCOPE_ID,
+			suggested_scope_id: "personal-devices",
+			suggestion_signal: "cwd",
+		});
+		expect(projects).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					workspace_identity: "https://git.example.invalid/exampleco/api.git",
+					guardrail_warnings: expect.arrayContaining([
+						expect.objectContaining({ code: "basename_collision_review" }),
+					]),
+				}),
+				expect.objectContaining({
+					workspace_identity: "/workspace/personal/api",
+					guardrail_warnings: expect.arrayContaining([
+						expect.objectContaining({ code: "basename_collision_review" }),
+					]),
+				}),
+			]),
+		);
+		expect(mappingCount.n).toBe(0);
+	});
+
+	it("does not guess when multiple scopes match a project signal equally", () => {
+		insertScope(db, { scopeId: "exampleco-work", label: "ExampleCo Work" });
+		insertScope(db, { scopeId: "exampleco-client", label: "ExampleCo Client", kind: "client" });
+		const sessionId = insertSession(db, {
+			cwd: "/workspace/work/exampleco/api",
+			gitRemote: "https://git.example.invalid/exampleco/api.git",
+			project: "api",
+		});
+		insertMemory(db, sessionId);
+
+		const [project] = listProjectScopeCandidates(db);
+
+		expect(project).toMatchObject({
+			resolved_scope_id: LOCAL_DEFAULT_SCOPE_ID,
+			suggested_scope_id: null,
+			suggestion_reason: null,
+		});
+	});
+
+	it("falls back from git remote to cwd when suggesting mappings", () => {
+		insertScope(db, { scopeId: "exampleco-work", label: "ExampleCo Work" });
+		const sessionId = insertSession(db, {
+			cwd: "/workspace/work/exampleco/api",
+			gitRemote: "https://git.example.invalid/vendor/api.git",
+			project: "api",
+		});
+		insertMemory(db, sessionId);
+
+		const [project] = listProjectScopeCandidates(db);
+
+		expect(project).toMatchObject({
+			resolved_scope_id: LOCAL_DEFAULT_SCOPE_ID,
+			suggested_scope_id: "exampleco-work",
+			suggestion_signal: "cwd",
+		});
+	});
+
+	it("does not suggest org domains from generic category tokens only", () => {
+		insertScope(db, { scopeId: "exampleco-client", label: "ExampleCo Client", kind: "client" });
+		const sessionId = insertSession(db, {
+			cwd: "/workspace/client/api",
+			gitRemote: null,
+			project: "api",
+		});
+		insertMemory(db, sessionId);
+
+		const [project] = listProjectScopeCandidates(db);
+
+		expect(project).toMatchObject({
+			resolved_scope_id: LOCAL_DEFAULT_SCOPE_ID,
+			suggested_scope_id: null,
+			suggestion_reason: null,
+		});
+	});
+
 	it("does not require basename collision confirmation for local-only assignments", () => {
 		const workSession = insertSession(db, {
-			cwd: "/Users/adam/work/acme/api",
-			gitRemote: "https://example.test/acme/api.git",
+			cwd: "/workspace/work/exampleco/api",
+			gitRemote: "https://git.example.invalid/exampleco/api.git",
 			project: "api",
 		});
 		insertMemory(db, workSession);
 		const ossSession = insertSession(db, {
-			cwd: "/Users/adam/oss/api",
-			gitRemote: "https://example.test/oss/api.git",
+			cwd: "/workspace/oss/api",
+			gitRemote: "https://git.example.invalid/oss/api.git",
 			project: "api",
 		});
 		insertMemory(db, ossSession, { workspaceId: "shared:oss-api" });
@@ -257,12 +379,12 @@ describe("project scope settings", () => {
 		insertScope(db, { scopeId: "acme-oss", label: "Acme OSS" });
 
 		const first = upsertProjectScopeSettingsMapping(db, {
-			workspace_identity: "C:\\Users\\adam\\work\\acme\\api\\",
+			workspace_identity: "C:\\workspace\\work\\exampleco\\api\\",
 			project_pattern: "api",
 			scope_id: "acme-work",
 		});
 		const second = upsertProjectScopeSettingsMapping(db, {
-			workspace_identity: "C:/Users/adam/work/acme/api",
+			workspace_identity: "C:/workspace/work/exampleco/api",
 			project_pattern: "api",
 			scope_id: "acme-oss",
 		});
@@ -273,7 +395,7 @@ describe("project scope settings", () => {
 		expect(second.id).toBe(first.id);
 		expect(second).toMatchObject({
 			scope_id: "acme-oss",
-			workspace_identity: "C:/Users/adam/work/acme/api",
+			workspace_identity: "C:/workspace/work/exampleco/api",
 		});
 		expect(rows.n).toBe(1);
 	});
@@ -282,11 +404,11 @@ describe("project scope settings", () => {
 		insertScope(db, { scopeId: "acme-work", label: "Acme Work" });
 
 		const analysis = analyzeProjectScopeMappingChangeGuardrails(db, {
-			project_pattern: "/Users/adam/*",
+			project_pattern: "/home/fixture-user/*",
 			scope_id: "acme-work",
 		});
 		const mapping = upsertProjectScopeSettingsMapping(db, {
-			project_pattern: "/Users/adam/*",
+			project_pattern: "/home/fixture-user/*",
 			scope_id: "acme-work",
 		});
 		const [listed] = listProjectScopeSettingsMappings(db);
@@ -357,14 +479,14 @@ describe("project scope settings", () => {
 
 		expect(() =>
 			upsertProjectScopeSettingsMapping(db, {
-				workspace_identity: "https://example.test/acme/api.git",
+				workspace_identity: "https://git.example.invalid/exampleco/api.git",
 				project_pattern: "api",
 				scope_id: "missing-domain",
 			}),
 		).toThrow(/not an active Sharing domain/);
 		expect(() =>
 			upsertProjectScopeSettingsMapping(db, {
-				workspace_identity: "https://example.test/acme/api.git",
+				workspace_identity: "https://git.example.invalid/exampleco/api.git",
 				project_pattern: "api",
 				scope_id: "inactive-work",
 			}),

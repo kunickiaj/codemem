@@ -47,7 +47,10 @@ function scopeName(scopes: SharingDomainScope[], scopeId: string): string {
 
 function resetDrafts(settings: SharingDomainSettings): Drafts {
 	return Object.fromEntries(
-		settings.projects.map((project) => [project.workspace_identity, project.resolved_scope_id]),
+		settings.projects.map((project) => [
+			project.workspace_identity,
+			project.suggested_scope_id ?? project.resolved_scope_id,
+		]),
 	);
 }
 
@@ -62,6 +65,14 @@ function warningKey(warning: ProjectScopeGuardrailWarning, index: number): strin
 function visibleProjectWarnings(project: ProjectScopeCandidate): ProjectScopeGuardrailWarning[] {
 	return (project.guardrail_warnings ?? []).filter(
 		(warning) => warning.severity === "warning" || warning.code === "unknown_project_local_only",
+	);
+}
+
+function isUsingSuggestion(project: ProjectScopeCandidate, currentValue: string): boolean {
+	return Boolean(
+		project.suggested_scope_id &&
+			currentValue === project.suggested_scope_id &&
+			project.suggested_scope_id !== project.resolved_scope_id,
 	);
 }
 
@@ -218,6 +229,10 @@ export function SharingDomainsPanel() {
 				const unchanged = currentValue === project.resolved_scope_id;
 				const assignable = canAssignProject(project);
 				const currentScopeName = scopeName(settings.scopes, project.resolved_scope_id);
+				const usingSuggestion = isUsingSuggestion(project, currentValue);
+				const suggestedScopeName = project.suggested_scope_id
+					? scopeName(settings.scopes, project.suggested_scope_id)
+					: null;
 				const pendingConfirmation =
 					confirmation?.workspaceIdentity === project.workspace_identity ? confirmation : null;
 				const canRemoveProjectMapping =
@@ -247,6 +262,16 @@ export function SharingDomainsPanel() {
 						<div className="small">
 							Current default: {currentScopeName} · {resolutionLabel(project.resolution_reason)}
 						</div>
+						{project.suggested_scope_id && project.suggestion_reason ? (
+							<div className="settings-note" role="status">
+								<strong>Suggested mapping: {suggestedScopeName}</strong>
+								<div>{project.suggestion_reason}</div>
+								<div>
+									Folders, paths, and git remotes are hints only. Saving this mapping requires your
+									confirmation and does not grant any peer access.
+								</div>
+							</div>
+						) : null}
 						<GuardrailMessages warnings={visibleProjectWarnings(project)} />
 						{!assignable ? (
 							<div className="settings-note">
@@ -294,7 +319,11 @@ export function SharingDomainsPanel() {
 								onClick={() => void saveProject(project)}
 								type="button"
 							>
-								{saving ? "Saving…" : "Save Sharing domain"}
+								{saving
+									? "Saving…"
+									: usingSuggestion
+										? "Confirm suggested mapping"
+										: "Save Sharing domain"}
 							</button>
 							<button
 								className="settings-button"

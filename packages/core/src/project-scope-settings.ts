@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
-import { ensureScopeBackfillScopes } from "./scope-backfill.js";
+import { ensureScopeBackfillScopes, LEGACY_SHARED_REVIEW_SCOPE_ID } from "./scope-backfill.js";
 import {
 	canonicalWorkspaceIdentity,
 	LOCAL_DEFAULT_SCOPE_ID,
@@ -71,7 +71,16 @@ export interface ProjectScopeCandidate {
 	resolution_reason: ScopeResolutionReason;
 	mapping_id: number | null;
 	matched_pattern: string | null;
+	suggested_scope_id: string | null;
+	suggestion_reason: string | null;
+	suggestion_signal: WorkspaceIdentitySource | null;
 	guardrail_warnings: ProjectScopeGuardrailWarning[];
+}
+
+interface ProjectScopeSuggestion {
+	scopeId: string;
+	reason: string;
+	signal: WorkspaceIdentitySource;
 }
 
 export interface UpsertProjectScopeMappingInput {
@@ -127,6 +136,86 @@ function isOrgLikeScope(scope: SharingDomainSettingsScope | undefined): boolean 
 	if (!scope || scope.scope_id === LOCAL_DEFAULT_SCOPE_ID) return false;
 	if (scope.authority_type !== "local") return true;
 	return scope.kind === "team" || scope.kind === "org" || scope.kind === "client";
+}
+
+function tokenSet(value: string | null | undefined): Set<string> {
+	const normalized = clean(value)?.toLowerCase() ?? "";
+	return new Set(normalized.match(/[a-z0-9][a-z0-9-]{1,}/g) ?? []);
+}
+
+function scopeSuggestionTokens(scope: SharingDomainSettingsScope): {
+	generic: string[];
+	specific: string[];
+} {
+	const ignored = new Set(["domain", "sharing", "devices", "scope", "team", "org", "local"]);
+	const generic = new Set(["client", "dev", "oss", "personal", "work"]);
+	const tokens = [...tokenSet(`${scope.scope_id} ${scope.label}`)].filter(
+		(token) => !ignored.has(token),
+	);
+	return {
+		generic: tokens.filter((token) => generic.has(token)),
+		specific: tokens.filter((token) => !generic.has(token)),
+	};
+}
+
+function signalTexts(
+	project: Pick<ProjectScopeCandidate, "git_remote" | "cwd" | "workspace_identity">,
+): Array<{ signal: WorkspaceIdentitySource; text: string }> {
+	const signals: Array<{ signal: WorkspaceIdentitySource; text: string }> = [];
+	if (project.git_remote) signals.push({ signal: "git_remote", text: project.git_remote });
+	if (project.cwd) signals.push({ signal: "cwd", text: project.cwd });
+	signals.push({ signal: "workspace_id", text: project.workspace_identity });
+	return signals;
+}
+
+function suggestProjectScope(
+	project: Pick<
+		ProjectScopeCandidate,
+		"git_remote" | "cwd" | "workspace_identity" | "resolved_scope_id" | "resolution_reason"
+	>,
+	scopes: SharingDomainSettingsScope[],
+): ProjectScopeSuggestion | null {
+	if (project.resolution_reason !== "local_default") return null;
+	if (project.workspace_identity.startsWith("unmapped:")) return null;
+	for (const signal of signalTexts(project)) {
+		const signalTokens = tokenSet(signal.text);
+		const candidates = scopes
+			.filter(
+				(scope) =>
+					scope.scope_id !== LOCAL_DEFAULT_SCOPE_ID &&
+					scope.scope_id !== LEGACY_SHARED_REVIEW_SCOPE_ID &&
+					scope.status === "active",
+			)
+			.flatMap((scope) => {
+				const tokens = scopeSuggestionTokens(scope);
+				const specificMatches = tokens.specific.filter((token) => signalTokens.has(token));
+				const genericMatches = tokens.generic.filter(
+					(token) => token === "personal" && signalTokens.has(token) && scope.kind === token,
+				);
+				if (specificMatches.length === 0 && genericMatches.length === 0) return [];
+				return [
+					{
+						scope,
+						matches: [...specificMatches, ...genericMatches],
+						score: specificMatches.length * 10 + genericMatches.length,
+					},
+				];
+			})
+			.toSorted((left, right) => right.score - left.score);
+		const [best, second] = candidates;
+		if (!best) continue;
+		if (second && second.score === best.score) continue;
+		const scopeName = scopeDisplayName(best.scope, best.scope.scope_id);
+		const signalName = signal.signal === "git_remote" ? "git remote" : signal.signal;
+		return {
+			scopeId: best.scope.scope_id,
+			reason: `${scopeName} is suggested because the ${signalName} contains ${best.matches.join(
+				", ",
+			)}. Confirm before mapping; this does not grant peer access.`,
+			signal: signal.signal,
+		};
+	}
+	return null;
 }
 
 function hasWildcard(value: string): boolean {
@@ -498,6 +587,7 @@ export function listProjectScopeCandidates(
 	ensureScopeBackfillScopes(db);
 	const limit = Math.max(1, Math.min(options.limit ?? 250, 1000));
 	const mappings = listProjectScopeSettingsMappings(db);
+	const scopes = listSharingDomainSettingsScopes(db);
 	const rows = db
 		.prepare(
 			`SELECT
@@ -544,7 +634,7 @@ export function listProjectScopeCandidates(
 			workspaceId: row.workspace_id,
 			mappings,
 		});
-		candidates.push({
+		const baseCandidate = {
 			workspace_identity: identity.value,
 			identity_source: identity.source,
 			display_project:
@@ -558,7 +648,17 @@ export function listProjectScopeCandidates(
 			resolution_reason: resolution.reason,
 			mapping_id: resolution.mapping?.id ?? null,
 			matched_pattern: resolution.matchedPattern,
+			suggested_scope_id: null,
+			suggestion_reason: null,
+			suggestion_signal: null,
 			guardrail_warnings: [],
+		} satisfies ProjectScopeCandidate;
+		const suggestion = suggestProjectScope(baseCandidate, scopes);
+		candidates.push({
+			...baseCandidate,
+			suggested_scope_id: suggestion?.scopeId ?? null,
+			suggestion_reason: suggestion?.reason ?? null,
+			suggestion_signal: suggestion?.signal ?? null,
 		});
 	}
 

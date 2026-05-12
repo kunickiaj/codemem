@@ -111,10 +111,10 @@ describe("SharingDomainsPanel", () => {
 				mappings: [],
 				projects: [
 					{
-						cwd: "/work/acme/api",
+						cwd: "/workspace/work/exampleco/api",
 						display_project: "api",
 						git_branch: "main",
-						git_remote: "https://example.test/acme/api.git",
+						git_remote: "https://git.example.invalid/exampleco/api.git",
 						identity_source: "git_remote",
 						latest_session_at: "2026-05-06T00:00:00Z",
 						mapping_id: null,
@@ -122,7 +122,7 @@ describe("SharingDomainsPanel", () => {
 						project: "api",
 						resolution_reason: "local_default",
 						resolved_scope_id: "local-default",
-						workspace_identity: "https://example.test/acme/api.git",
+						workspace_identity: "https://git.example.invalid/exampleco/api.git",
 					},
 				],
 				scopes: [
@@ -147,10 +147,10 @@ describe("SharingDomainsPanel", () => {
 				mappings: [],
 				projects: [
 					{
-						cwd: "/work/acme/api",
+						cwd: "/workspace/work/exampleco/api",
 						display_project: "api",
 						git_branch: "main",
-						git_remote: "https://example.test/acme/api.git",
+						git_remote: "https://git.example.invalid/exampleco/api.git",
 						identity_source: "git_remote",
 						latest_session_at: "2026-05-06T00:00:00Z",
 						mapping_id: 42,
@@ -158,7 +158,7 @@ describe("SharingDomainsPanel", () => {
 						project: "api",
 						resolution_reason: "exact_mapping",
 						resolved_scope_id: "acme-work",
-						workspace_identity: "https://example.test/acme/api.git",
+						workspace_identity: "https://git.example.invalid/exampleco/api.git",
 					},
 				],
 				scopes: [
@@ -184,7 +184,7 @@ describe("SharingDomainsPanel", () => {
 			project_pattern: "api",
 			scope_id: "acme-work",
 			source: "user",
-			workspace_identity: "https://example.test/acme/api.git",
+			workspace_identity: "https://git.example.invalid/exampleco/api.git",
 		});
 
 		const root = renderIntoDocument(<SharingDomainsPanel />);
@@ -212,9 +212,82 @@ describe("SharingDomainsPanel", () => {
 		expect(api.saveSharingDomainProjectMapping).toHaveBeenCalledWith({
 			project_pattern: "api",
 			scope_id: "acme-work",
-			workspace_identity: "https://example.test/acme/api.git",
+			workspace_identity: "https://git.example.invalid/exampleco/api.git",
 		});
 		expect(root.textContent).toContain("Current default: Acme Work · explicit project mapping");
+	});
+
+	it("preselects suggested mappings but requires explicit confirmation to save", async () => {
+		vi.mocked(api.loadSharingDomainSettings).mockResolvedValue({
+			local_default_scope_id: "local-default",
+			mappings: [],
+			projects: [
+				{
+					cwd: "/workspace/work/exampleco/api",
+					display_project: "api",
+					git_branch: "main",
+					git_remote: "https://git.example.invalid/exampleco/api.git",
+					identity_source: "git_remote",
+					latest_session_at: "2026-05-06T00:00:00Z",
+					mapping_id: null,
+					matched_pattern: null,
+					project: "api",
+					resolution_reason: "local_default",
+					resolved_scope_id: "local-default",
+					suggested_scope_id: "exampleco-work",
+					suggestion_reason:
+						"ExampleCo Work is suggested because the git remote contains exampleco. Confirm before mapping; this does not grant peer access.",
+					suggestion_signal: "git_remote",
+					workspace_identity: "https://git.example.invalid/exampleco/api.git",
+				},
+			],
+			scopes: [
+				{
+					authority_type: "local",
+					kind: "system",
+					label: "Local only",
+					scope_id: "local-default",
+					status: "active",
+				},
+				{
+					authority_type: "coordinator",
+					kind: "team",
+					label: "ExampleCo Work",
+					scope_id: "exampleco-work",
+					status: "active",
+				},
+			],
+		});
+		vi.mocked(api.saveSharingDomainProjectMapping).mockResolvedValue({
+			id: 42,
+			priority: 0,
+			project_pattern: "api",
+			scope_id: "exampleco-work",
+			source: "user",
+			workspace_identity: "https://git.example.invalid/exampleco/api.git",
+		});
+
+		const root = renderIntoDocument(<SharingDomainsPanel />);
+		await flushEffects();
+
+		expect(root.textContent).toContain("Suggested mapping: ExampleCo Work");
+		expect(root.textContent).toContain("Folders, paths, and git remotes are hints only");
+		expect(root.querySelector("select")?.value).toBe("exampleco-work");
+		expect(api.saveSharingDomainProjectMapping).not.toHaveBeenCalled();
+
+		const saveButton = Array.from(root.querySelectorAll("button")).find(
+			(button) => button.textContent === "Confirm suggested mapping",
+		);
+		await act(async () => {
+			saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+			await Promise.resolve();
+		});
+
+		expect(api.saveSharingDomainProjectMapping).toHaveBeenCalledWith({
+			project_pattern: "api",
+			scope_id: "exampleco-work",
+			workspace_identity: "https://git.example.invalid/exampleco/api.git",
+		});
 	});
 
 	it("shows guardrail confirmation and retries save with confirmed codes", async () => {
@@ -224,10 +297,10 @@ describe("SharingDomainsPanel", () => {
 				mappings: [],
 				projects: [
 					{
-						cwd: "/work/acme/api",
+						cwd: "/workspace/work/exampleco/api",
 						display_project: "api",
 						git_branch: "main",
-						git_remote: "https://example.test/acme/api.git",
+						git_remote: "https://git.example.invalid/exampleco/api.git",
 						guardrail_warnings: [],
 						identity_source: "git_remote",
 						latest_session_at: "2026-05-06T00:00:00Z",
@@ -236,7 +309,7 @@ describe("SharingDomainsPanel", () => {
 						project: "api",
 						resolution_reason: "exact_mapping",
 						resolved_scope_id: "acme-work",
-						workspace_identity: "https://example.test/acme/api.git",
+						workspace_identity: "https://git.example.invalid/exampleco/api.git",
 					},
 				],
 				scopes: [
@@ -261,10 +334,10 @@ describe("SharingDomainsPanel", () => {
 				mappings: [],
 				projects: [
 					{
-						cwd: "/work/acme/api",
+						cwd: "/workspace/work/exampleco/api",
 						display_project: "api",
 						git_branch: "main",
-						git_remote: "https://example.test/acme/api.git",
+						git_remote: "https://git.example.invalid/exampleco/api.git",
 						guardrail_warnings: [],
 						identity_source: "git_remote",
 						latest_session_at: "2026-05-06T00:00:00Z",
@@ -273,7 +346,7 @@ describe("SharingDomainsPanel", () => {
 						project: "api",
 						resolution_reason: "exact_mapping",
 						resolved_scope_id: "personal-devices",
-						workspace_identity: "https://example.test/acme/api.git",
+						workspace_identity: "https://git.example.invalid/exampleco/api.git",
 					},
 				],
 				scopes: [
@@ -316,7 +389,7 @@ describe("SharingDomainsPanel", () => {
 				project_pattern: "api",
 				scope_id: "personal-devices",
 				source: "user",
-				workspace_identity: "https://example.test/acme/api.git",
+				workspace_identity: "https://git.example.invalid/exampleco/api.git",
 			});
 
 		const root = renderIntoDocument(<SharingDomainsPanel />);
@@ -354,7 +427,7 @@ describe("SharingDomainsPanel", () => {
 			id: 42,
 			project_pattern: "api",
 			scope_id: "personal-devices",
-			workspace_identity: "https://example.test/acme/api.git",
+			workspace_identity: "https://git.example.invalid/exampleco/api.git",
 		});
 		expect(root.textContent).toContain(
 			"Current default: Personal Devices · explicit project mapping",
@@ -376,7 +449,7 @@ describe("SharingDomainsPanel", () => {
 			],
 			projects: [
 				{
-					cwd: "/work/acme/api",
+					cwd: "/workspace/work/exampleco/api",
 					display_project: "api",
 					git_branch: null,
 					git_remote: null,
@@ -388,7 +461,7 @@ describe("SharingDomainsPanel", () => {
 					project: "api",
 					resolution_reason: "pattern_mapping",
 					resolved_scope_id: "acme-work",
-					workspace_identity: "/work/acme/api",
+					workspace_identity: "/workspace/work/exampleco/api",
 				},
 			],
 			scopes: [
@@ -414,7 +487,7 @@ describe("SharingDomainsPanel", () => {
 			project_pattern: "api",
 			scope_id: "personal-devices",
 			source: "user",
-			workspace_identity: "/work/acme/api",
+			workspace_identity: "/workspace/work/exampleco/api",
 		});
 
 		const root = renderIntoDocument(<SharingDomainsPanel />);
@@ -437,7 +510,7 @@ describe("SharingDomainsPanel", () => {
 		expect(api.saveSharingDomainProjectMapping).toHaveBeenCalledWith({
 			project_pattern: "api",
 			scope_id: "personal-devices",
-			workspace_identity: "/work/acme/api",
+			workspace_identity: "/workspace/work/exampleco/api",
 		});
 	});
 

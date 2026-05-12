@@ -209,6 +209,9 @@ export interface ProjectScopeCandidate {
 	resolution_reason: string;
 	mapping_id: number | null;
 	matched_pattern: string | null;
+	suggested_scope_id?: string | null;
+	suggestion_reason?: string | null;
+	suggestion_signal?: string | null;
 	guardrail_warnings?: ProjectScopeGuardrailWarning[];
 }
 
