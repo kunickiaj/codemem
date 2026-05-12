@@ -4,6 +4,7 @@ import {
 	deriveCoordinatorApprovalSummary,
 	deriveDuplicatePeople,
 	derivePeerAuthorizedDomainsView,
+	derivePeerGrantRoleMismatchView,
 	derivePeerProjectNarrowingView,
 	derivePeerScopeRejectionsView,
 	derivePeerTrustSummary,
@@ -214,6 +215,86 @@ describe("derivePeerAuthorizedDomainsView", () => {
 		expect(view.isWarning).toBe(false);
 		expect(view.domains.map((domain) => domain.label)).toEqual(["Acme Work", "Personal Devices"]);
 		expect(view.domains[0]?.detail).toBe("team · coordinator · member role");
+	});
+});
+
+describe("derivePeerGrantRoleMismatchView", () => {
+	it("flags coordinator-discovered peers with personal or OSS grants but no work/client-like grant", () => {
+		const view = derivePeerGrantRoleMismatchView({
+			authorized_scopes: [
+				{ label: "Personal", scope_id: "personal" },
+				{ label: "OSS", scope_id: "oss" },
+			],
+			discovered_via_group_id: "team-alpha",
+		});
+
+		expect(view.isVisible).toBe(true);
+		expect(view.badgeLabel).toBe("Review domain fit");
+		expect(view.message).toContain("personal or OSS Sharing-domain grants");
+		expect(view.message).toContain("no separate work/client-like domain grant");
+		expect(view.detail).toContain("project filters only narrow already-authorized domains");
+	});
+
+	it("does not flag peers once a separate work/client-like grant is present", () => {
+		const view = derivePeerGrantRoleMismatchView({
+			authorized_scopes: [
+				{ label: "Personal", scope_id: "personal" },
+				{ label: "Work Client", scope_id: "client-work" },
+			],
+			discovered_via_group_id: "team-alpha",
+		});
+
+		expect(view.isVisible).toBe(false);
+	});
+
+	it("counts local work scopes as valid work/client-like grants", () => {
+		const view = derivePeerGrantRoleMismatchView({
+			authorized_scopes: [
+				{ authority_type: "local", label: "Personal", scope_id: "personal" },
+				{ authority_type: "local", label: "Work Client", scope_id: "client-work" },
+			],
+			discovered_via_group_id: "team-alpha",
+		});
+
+		expect(view.isVisible).toBe(false);
+	});
+
+	it("counts explicitly work-like local scope names as valid grants", () => {
+		const view = derivePeerGrantRoleMismatchView({
+			authorized_scopes: [
+				{ authority_type: "local", label: "Personal", scope_id: "personal" },
+				{ authority_type: "local", label: "Local Work", scope_id: "local-client" },
+			],
+			discovered_via_group_id: "team-alpha",
+		});
+
+		expect(view.isVisible).toBe(false);
+	});
+
+	it("does not treat substring matches inside work domain names as personal grants", () => {
+		const view = derivePeerGrantRoleMismatchView({
+			authorized_scopes: [{ label: "Acme Work", scope_id: "acme-work" }],
+			discovered_via_group_id: "team-alpha",
+		});
+
+		expect(view.isVisible).toBe(false);
+	});
+
+	it("does not treat substring matches inside public-looking names as OSS grants", () => {
+		const view = derivePeerGrantRoleMismatchView({
+			authorized_scopes: [{ label: "Publicis Client", scope_id: "publicis-client" }],
+			discovered_via_group_id: "team-alpha",
+		});
+
+		expect(view.isVisible).toBe(false);
+	});
+
+	it("does not infer role mismatches without coordinator or group context", () => {
+		const view = derivePeerGrantRoleMismatchView({
+			authorized_scopes: [{ label: "Personal", scope_id: "personal" }],
+		});
+
+		expect(view.isVisible).toBe(false);
 	});
 });
 

@@ -183,6 +183,14 @@ export interface PeerAuthorizedDomainsView {
 	emptyMessage: string;
 }
 
+export interface PeerGrantRoleMismatchView {
+	isVisible: boolean;
+	badgeLabel: string | null;
+	title: string;
+	message: string;
+	detail: string;
+}
+
 export function derivePeerAuthorizedDomainsView(peer: PeerLike): PeerAuthorizedDomainsView {
 	const domains = (Array.isArray(peer.authorized_scopes) ? peer.authorized_scopes : [])
 		.map((scope: PeerAuthorizedScopeLike): PeerAuthorizedDomainViewItem | null => {
@@ -212,6 +220,80 @@ export function derivePeerAuthorizedDomainsView(peer: PeerLike): PeerAuthorizedD
 		domains,
 		emptyMessage:
 			"No Sharing-domain grants exist for this device yet. Project filters below cannot send data by themselves.",
+	};
+}
+
+const PERSONAL_SCOPE_WORDS = ["personal", "private", "home", "mine", "me"];
+const OSS_SCOPE_WORDS = ["oss", "open source", "opensource", "community", "public"];
+const WORK_LIKE_SCOPE_WORDS = ["work", "client"];
+const LOCAL_SCOPE_WORDS = ["local", "legacy", "review"];
+
+function scopeSearchText(scope: PeerAuthorizedScopeLike): string {
+	return [scope.scope_id, scope.label, scope.kind, scope.authority_type]
+		.map((value) => cleanText(value) ?? "")
+		.join(" ")
+		.toLowerCase();
+}
+
+function scopeIdentitySearchText(scope: PeerAuthorizedScopeLike): string {
+	return [scope.scope_id, scope.label, scope.kind]
+		.map((value) => cleanText(value) ?? "")
+		.join(" ")
+		.toLowerCase();
+}
+
+function escapeRegex(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasScopeWord(scope: PeerAuthorizedScopeLike, words: string[]): boolean {
+	const text = scopeSearchText(scope);
+	return words.some((word) => {
+		const escaped = escapeRegex(word.toLowerCase());
+		return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`).test(text);
+	});
+}
+
+function isPersonalOrOssScope(scope: PeerAuthorizedScopeLike): boolean {
+	return hasScopeWord(scope, PERSONAL_SCOPE_WORDS) || hasScopeWord(scope, OSS_SCOPE_WORDS);
+}
+
+function isLocalOrLegacyScope(scope: PeerAuthorizedScopeLike): boolean {
+	const text = scopeIdentitySearchText(scope);
+	return LOCAL_SCOPE_WORDS.some((word) => {
+		const escaped = escapeRegex(word.toLowerCase());
+		return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`).test(text);
+	});
+}
+
+function isWorkLikeScope(scope: PeerAuthorizedScopeLike): boolean {
+	return (
+		!isPersonalOrOssScope(scope) &&
+		(!isLocalOrLegacyScope(scope) || hasScopeWord(scope, WORK_LIKE_SCOPE_WORDS))
+	);
+}
+
+export function derivePeerGrantRoleMismatchView(peer: PeerLike): PeerGrantRoleMismatchView {
+	const scopes = Array.isArray(peer.authorized_scopes) ? peer.authorized_scopes : [];
+	const hasCoordinatorContext = Boolean(
+		cleanText(peer.discovered_via_group_id) || cleanText(peer.discovered_via_coordinator_id),
+	);
+	if (!hasCoordinatorContext || scopes.length === 0) {
+		return { badgeLabel: null, detail: "", isVisible: false, message: "", title: "" };
+	}
+	const hasPersonalOrOssGrant = scopes.some(isPersonalOrOssScope);
+	const hasWorkLikeGrant = scopes.some(isWorkLikeScope);
+	if (!hasPersonalOrOssGrant || hasWorkLikeGrant) {
+		return { badgeLabel: null, detail: "", isVisible: false, message: "", title: "" };
+	}
+	return {
+		badgeLabel: "Review domain fit",
+		detail:
+			"Coordinator/group context helps find the device, and project filters only narrow already-authorized domains. Neither one grants a missing work/client domain.",
+		isVisible: true,
+		message:
+			"This coordinator-discovered device has personal or OSS Sharing-domain grants, but no separate work/client-like domain grant. If this device is meant for work/client sync, add that Sharing domain explicitly before treating sync as validated.",
+		title: "Check this device's Sharing-domain role",
 	};
 }
 

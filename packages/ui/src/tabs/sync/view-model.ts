@@ -15,12 +15,14 @@ export { deviceNeedsFriendlyName, resolveFriendlyDeviceName } from "./view-model
 export {
 	derivePeerAuthorizedDomainsView,
 	derivePeerDirection,
+	derivePeerGrantRoleMismatchView,
 	derivePeerProjectNarrowingView,
 	derivePeerScopeRejectionsView,
 	derivePeerTrustSummary,
 	derivePeerUiStatus,
 	type PeerAuthorizedDomainsView,
 	type PeerAuthorizedDomainViewItem,
+	type PeerGrantRoleMismatchView,
 	type PeerProjectNarrowingView,
 	type PeerScopeRejectionsView,
 } from "./view-model/peer-status";
