@@ -19,6 +19,7 @@ import {
 	analyzeProjectScopeMappingChangeGuardrails,
 	applyReplicationOps,
 	buildBaseUrl,
+	canonicalWorkspaceIdentity,
 	cleanupNonces,
 	coordinatorArchiveGroupAction,
 	coordinatorCreateGroupAction,
@@ -1255,11 +1256,106 @@ function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> 
 		| { memory_count: number | null; last_updated_at: string | null }
 		| undefined;
 	const memoryCount = Number(row?.memory_count ?? 0);
+	const candidatesByIdentity = new Map(
+		listProjectScopeCandidates(store.db, { limit: null }).map((candidate) => [
+			candidate.workspace_identity,
+			candidate,
+		]),
+	);
+	const groupRows = store.db
+		.prepare(
+			`SELECT s.project,
+			        s.cwd,
+			        s.git_remote,
+			        s.git_branch,
+			        m.workspace_id,
+			        COUNT(*) AS memory_count,
+			        MAX(m.updated_at) AS last_updated_at
+			 FROM memory_items m
+			 LEFT JOIN sessions s ON s.id = m.session_id
+			 WHERE m.scope_id = ?
+			   AND m.active = 1
+			   AND m.deleted_at IS NULL
+			 GROUP BY s.project, s.cwd, s.git_remote, s.git_branch, m.workspace_id
+			 ORDER BY memory_count DESC, last_updated_at DESC`,
+		)
+		.all(LEGACY_SHARED_REVIEW_SCOPE_ID) as Array<{
+		project: string | null;
+		cwd: string | null;
+		git_remote: string | null;
+		git_branch: string | null;
+		workspace_id: string | null;
+		memory_count: number | null;
+		last_updated_at: string | null;
+	}>;
+	const groupsByIdentity = new Map<
+		string,
+		{
+			workspace_identity: string;
+			identity_source: string;
+			display_project: string;
+			memory_count: number;
+			last_updated_at: string | null;
+			suggested_scope_id: string | null;
+			suggestion_reason: string | null;
+		}
+	>();
+	for (const group of groupRows) {
+		const identity = canonicalWorkspaceIdentity({
+			cwd: group.cwd,
+			gitBranch: group.git_branch,
+			gitRemote: group.git_remote,
+			project: group.project,
+			workspaceId: group.workspace_id,
+		});
+		const candidate = candidatesByIdentity.get(identity.value);
+		const resolvedScope = candidate?.resolved_scope_id ?? null;
+		const suggestedScope =
+			resolvedScope &&
+			resolvedScope !== LOCAL_DEFAULT_SCOPE_ID &&
+			resolvedScope !== LEGACY_SHARED_REVIEW_SCOPE_ID
+				? resolvedScope
+				: candidate?.suggested_scope_id;
+		const existing = groupsByIdentity.get(identity.value);
+		const memoryCount = Number(group.memory_count ?? 0);
+		const lastUpdatedAt = group.last_updated_at ?? null;
+		if (existing) {
+			existing.memory_count += memoryCount;
+			if (
+				lastUpdatedAt &&
+				(!existing.last_updated_at || lastUpdatedAt > existing.last_updated_at)
+			) {
+				existing.last_updated_at = lastUpdatedAt;
+			}
+			continue;
+		}
+		groupsByIdentity.set(identity.value, {
+			workspace_identity: identity.value,
+			identity_source: identity.source,
+			display_project: identity.displayProject ?? group.project ?? group.cwd ?? identity.value,
+			memory_count: memoryCount,
+			last_updated_at: lastUpdatedAt,
+			suggested_scope_id: suggestedScope ?? null,
+			suggestion_reason: suggestedScope
+				? (candidate?.suggestion_reason ??
+					"Existing project mapping can be reviewed as a destination, but legacy data is not promoted automatically.")
+				: null,
+		});
+	}
+	const groups = [...groupsByIdentity.values()]
+		.sort(
+			(left, right) =>
+				right.memory_count - left.memory_count ||
+				(right.last_updated_at ?? "").localeCompare(left.last_updated_at ?? "") ||
+				left.workspace_identity.localeCompare(right.workspace_identity),
+		)
+		.slice(0, 20);
 	return {
 		scope_id: LEGACY_SHARED_REVIEW_SCOPE_ID,
 		memory_count: memoryCount,
 		has_data: memoryCount > 0,
 		last_updated_at: row?.last_updated_at ?? null,
+		groups,
 	};
 }
 

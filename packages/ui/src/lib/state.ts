@@ -122,6 +122,7 @@ export interface CachedLegacySharedReview {
 	memory_count?: number;
 	has_data?: boolean;
 	last_updated_at?: string | null;
+	groups?: unknown[];
 }
 
 export interface DiscoveredDevice {

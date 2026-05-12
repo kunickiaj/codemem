@@ -2488,7 +2488,7 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("surfaces legacy shared review summary in sync status", async () => {
+		it("surfaces grouped legacy shared review summary in sync status", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
 				const _warmup = await app.request("/api/stats");
@@ -2497,10 +2497,43 @@ describe("viewer-server", () => {
 				const now = new Date().toISOString();
 				const session = store.db
 					.prepare(
-						`INSERT INTO sessions(started_at, cwd, project, user, tool_version)
-						 VALUES (?, ?, ?, ?, ?)`,
+						`INSERT INTO sessions(started_at, cwd, project, git_remote, user, tool_version)
+						 VALUES (?, ?, ?, ?, ?, ?)`,
 					)
-					.run(now, "/tmp/codemem-test", "codemem-test", "test", "test");
+					.run(
+						now,
+						"/tmp/codemem-test",
+						"codemem-test",
+						"https://git.example.invalid/oss/codemem-test.git",
+						"test",
+						"test",
+					);
+				const workSession = store.db
+					.prepare(
+						`INSERT INTO sessions(started_at, cwd, project, git_remote, user, tool_version)
+						 VALUES (?, ?, ?, ?, ?, ?)`,
+					)
+					.run(
+						now,
+						"/tmp/work-client-api",
+						"work-client-api",
+						"https://git.example.invalid/exampleco/api.git",
+						"test",
+						"test",
+					);
+				const sameRepoSession = store.db
+					.prepare(
+						`INSERT INTO sessions(started_at, cwd, project, git_remote, user, tool_version)
+						 VALUES (?, ?, ?, ?, ?, ?)`,
+					)
+					.run(
+						now,
+						"/tmp/alternate-worktree",
+						"codemem-test-worktree",
+						"https://git.example.invalid/oss/codemem-test.git",
+						"test",
+						"test",
+					);
 				store.db
 					.prepare(
 						`INSERT INTO memory_items(
@@ -2516,11 +2549,90 @@ describe("viewer-server", () => {
 						now,
 						"legacy-shared-review",
 					);
+				const insertSession = store.db.prepare(
+					`INSERT INTO sessions(started_at, cwd, project, git_remote, user, tool_version)
+					 VALUES (?, ?, ?, ?, ?, ?)`,
+				);
+				const insertLegacyMemory = store.db.prepare(
+					`INSERT INTO memory_items(
+						session_id, kind, title, body_text, created_at, updated_at,
+						visibility, workspace_id, workspace_kind, active, scope_id, metadata_json
+					 ) VALUES (?, 'discovery', ?, ?, ?, ?, 'shared', 'shared:default', 'shared', 1, ?, '{}')`,
+				);
+				for (let index = 0; index < 21; index += 1) {
+					const splitSession = insertSession.run(
+						now,
+						`/tmp/codemem-test-split-${index}`,
+						`codemem-test-split-${index}`,
+						"https://git.example.invalid/oss/codemem-test.git",
+						"test",
+						"test",
+					);
+					insertLegacyMemory.run(
+						Number(splitSession.lastInsertRowid),
+						`Legacy shared split ${index}`,
+						`Legacy shared split body ${index}`,
+						now,
+						now,
+						"legacy-shared-review",
+					);
+				}
+				store.db
+					.prepare(
+						`INSERT INTO memory_items(
+							session_id, kind, title, body_text, created_at, updated_at,
+							visibility, workspace_id, workspace_kind, active, scope_id, metadata_json
+						 ) VALUES (?, 'discovery', ?, ?, ?, ?, 'shared', 'shared:default', 'shared', 1, ?, '{}')`,
+					)
+					.run(
+						Number(sameRepoSession.lastInsertRowid),
+						"Legacy shared same repo",
+						"Legacy shared same repo body",
+						now,
+						now,
+						"legacy-shared-review",
+					);
+				store.db
+					.prepare(
+						`INSERT INTO memory_items(
+							session_id, kind, title, body_text, created_at, updated_at,
+							visibility, workspace_id, workspace_kind, active, deleted_at, scope_id, metadata_json
+						 ) VALUES (?, 'discovery', ?, ?, ?, ?, 'shared', 'shared:default', 'shared', 1, ?, ?, '{}')`,
+					)
+					.run(
+						Number(session.lastInsertRowid),
+						"Deleted legacy shared",
+						"Deleted legacy shared body",
+						now,
+						now,
+						now,
+						"legacy-shared-review",
+					);
+				store.db
+					.prepare(
+						`INSERT INTO memory_items(
+							session_id, kind, title, body_text, created_at, updated_at,
+							visibility, workspace_id, workspace_kind, active, scope_id, metadata_json
+						 ) VALUES (?, 'discovery', ?, ?, ?, ?, 'shared', 'shared:default', 'shared', 1, ?, '{}')`,
+					)
+					.run(
+						Number(workSession.lastInsertRowid),
+						"Legacy shared work",
+						"Legacy shared work body",
+						now,
+						now,
+						"legacy-shared-review",
+					);
 
 				const res = await app.request("/api/sync/status");
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as {
 					legacy_shared_review: {
+						groups: Array<{
+							display_project: string;
+							memory_count: number;
+							workspace_identity: string;
+						}>;
 						has_data: boolean;
 						memory_count: number;
 						scope_id: string;
@@ -2528,9 +2640,23 @@ describe("viewer-server", () => {
 				};
 				expect(body.legacy_shared_review).toMatchObject({
 					has_data: true,
-					memory_count: 1,
+					memory_count: 24,
 					scope_id: "legacy-shared-review",
 				});
+				expect(body.legacy_shared_review.groups).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							display_project: "codemem-test",
+							memory_count: 23,
+							workspace_identity: "https://git.example.invalid/oss/codemem-test.git",
+						}),
+						expect.objectContaining({
+							display_project: "work-client-api",
+							memory_count: 1,
+							workspace_identity: "https://git.example.invalid/exampleco/api.git",
+						}),
+					]),
+				);
 			} finally {
 				cleanup();
 			}
