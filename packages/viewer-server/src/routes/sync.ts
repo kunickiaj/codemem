@@ -74,6 +74,7 @@ import {
 	parseSyncScopeRequest,
 	personalScopeGrantStatusForPeer,
 	readCoordinatorSyncConfig,
+	reassignProjectScopeInventoryProject,
 	recordNonce,
 	rejectInboundScopeFailures,
 	requestJson,
@@ -2389,6 +2390,24 @@ export function syncRoutes(
 				status: c.req.query("status"),
 			}),
 		);
+	});
+
+	app.post("/api/sync/projects/reassign-project", async (c) => {
+		const store = getStore();
+		const body = await parseViewerJsonBody(c);
+		if (!body) return c.json({ error: "invalid json" }, 400);
+		try {
+			const workspaceIdentity = optionalViewerStrictString(body, "workspace_identity") ?? "";
+			const project = optionalViewerStrictString(body, "project") ?? "";
+			const result = reassignProjectScopeInventoryProject(store.db, {
+				project,
+				workspaceIdentity,
+			});
+			return c.json({ ok: true, ...result });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return c.json({ error: message }, message.includes("not found") ? 404 : 400);
+		}
 	});
 
 	app.put("/api/sync/sharing-domains/project-mappings", async (c) => {

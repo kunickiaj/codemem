@@ -7,6 +7,7 @@ import {
 	listProjectScopeInventory,
 	listProjectScopeSettingsMappings,
 	listSharingDomainSettingsScopes,
+	reassignProjectScopeInventoryProject,
 	upsertProjectScopeSettingsMapping,
 } from "./project-scope-settings.js";
 import { LOCAL_DEFAULT_SCOPE_ID } from "./scope-resolution.js";
@@ -247,6 +248,40 @@ describe("project scope settings", () => {
 					code: "basename_collision_review",
 					requires_confirmation: true,
 					related_workspace_identities: ["https://git.example.invalid/oss/api.git"],
+				}),
+			]),
+		);
+	});
+
+	it("reassigns sessions for a stable workspace identity to the corrected project", () => {
+		const sessionId = insertSession(db, {
+			cwd: "/Users/adam/workspace/codemem/.claude/worktrees/injection",
+			gitBranch: null,
+			gitRemote: null,
+			project: "injection",
+		});
+		insertMemory(db, sessionId);
+
+		const result = reassignProjectScopeInventoryProject(db, {
+			project: "codemem",
+			workspaceIdentity: "/Users/adam/workspace/codemem/.claude/worktrees/injection",
+		});
+
+		expect(result).toMatchObject({
+			moved_memory_count: 1,
+			moved_session_count: 1,
+			previous_projects: ["injection"],
+			project: "codemem",
+		});
+		const row = db.prepare("SELECT project FROM sessions WHERE id = ?").get(sessionId) as {
+			project: string;
+		};
+		expect(row.project).toBe("codemem");
+		expect(listProjectScopeInventory(db, { query: "codemem" }).projects).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					project: "codemem",
+					workspace_identity: "/Users/adam/workspace/codemem/.claude/worktrees/injection",
 				}),
 			]),
 		);

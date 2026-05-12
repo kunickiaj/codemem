@@ -382,6 +382,7 @@ export type {
 	ProjectScopeInventoryStatus,
 	ProjectScopeMappingChangeGuardrailAnalysis,
 	ProjectScopeSettingsMapping,
+	ReassignProjectScopeInventoryProjectResult,
 	SharingDomainSettingsScope,
 	UpsertProjectScopeMappingInput,
 } from "./project-scope-settings.js";
@@ -392,6 +393,7 @@ export {
 	listProjectScopeInventory,
 	listProjectScopeSettingsMappings,
 	listSharingDomainSettingsScopes,
+	reassignProjectScopeInventoryProject,
 	upsertProjectScopeSettingsMapping,
 } from "./project-scope-settings.js";
 export type { FlushRawEventsOptions } from "./raw-event-flush.js";

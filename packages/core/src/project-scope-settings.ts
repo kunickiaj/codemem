@@ -131,6 +131,14 @@ export interface ProjectScopeMappingChangeGuardrailAnalysis {
 	warnings: ProjectScopeGuardrailWarning[];
 }
 
+export interface ReassignProjectScopeInventoryProjectResult {
+	workspace_identity: string;
+	project: string;
+	previous_projects: string[];
+	moved_session_count: number;
+	moved_memory_count: number;
+}
+
 interface ProjectScopeCandidateRow {
 	id: number;
 	started_at: string | null;
@@ -873,6 +881,72 @@ export function listProjectScopeInventory(
 		limit,
 		offset,
 		has_more: offset + limit < filtered.length,
+	};
+}
+
+export function reassignProjectScopeInventoryProject(
+	db: Database,
+	input: { workspaceIdentity: string; project: string },
+): ReassignProjectScopeInventoryProjectResult {
+	ensureScopeBackfillScopes(db);
+	const workspaceIdentity = normalizeWorkspaceIdentity(input.workspaceIdentity);
+	if (!workspaceIdentity) throw new Error("workspace_identity must be a non-empty string");
+	if (workspaceIdentity.startsWith("unmapped:")) {
+		throw new Error("unmapped projects cannot be reassigned until they have a stable identity");
+	}
+	const project = clean(input.project);
+	if (!project) throw new Error("project must be a non-empty string");
+	const rows = db
+		.prepare(
+			`SELECT
+				s.id,
+				s.started_at,
+				s.cwd,
+				s.project,
+				s.git_remote,
+				s.git_branch,
+				(
+					SELECT mi.workspace_id
+					FROM memory_items mi
+					WHERE mi.session_id = s.id
+					  AND mi.workspace_id IS NOT NULL
+					  AND TRIM(mi.workspace_id) <> ''
+					ORDER BY mi.id DESC
+					LIMIT 1
+				) AS workspace_id,
+				COUNT(mi_count.id) AS memory_count
+			 FROM sessions s
+			 LEFT JOIN memory_items mi_count ON mi_count.session_id = s.id
+			 WHERE COALESCE(TRIM(s.git_remote), TRIM(s.cwd), TRIM(s.project), '') <> ''
+			    OR mi_count.id IS NOT NULL
+			 GROUP BY s.id`,
+		)
+		.all() as ProjectScopeCandidateRow[];
+	const matched = rows.filter((row) => {
+		const identity = canonicalWorkspaceIdentity({
+			gitRemote: row.git_remote,
+			gitBranch: row.git_branch,
+			cwd: row.cwd,
+			project: row.project,
+			workspaceId: row.workspace_id,
+		});
+		return identity.value === workspaceIdentity;
+	});
+	if (matched.length === 0) throw new Error("project identity not found");
+	const previousProjects = [
+		...new Set(matched.map((row) => clean(row.project) ?? "").filter(Boolean)),
+	].sort();
+	const movedMemoryCount = matched.reduce((total, row) => total + Number(row.memory_count ?? 0), 0);
+	const update = db.prepare("UPDATE sessions SET project = ? WHERE id = ?");
+	db.transaction(() => {
+		for (const row of matched) update.run(project, row.id);
+	})();
+	return {
+		moved_memory_count: movedMemoryCount,
+		moved_session_count: matched.length,
+		previous_projects: previousProjects,
+		project,
+		workspace_identity: workspaceIdentity,
 	};
 }
 

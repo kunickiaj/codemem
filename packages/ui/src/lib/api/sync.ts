@@ -237,6 +237,14 @@ export interface ProjectScopeInventoryResult {
 	has_more: boolean;
 }
 
+export interface ProjectReassignmentResult {
+	workspace_identity: string;
+	project: string;
+	previous_projects: string[];
+	moved_session_count: number;
+	moved_memory_count: number;
+}
+
 export interface SharingDomainSettings {
 	scopes: SharingDomainScope[];
 	mappings: ProjectScopeMapping[];
@@ -326,6 +334,23 @@ export async function deleteSharingDomainProjectMapping(id: number): Promise<boo
 	const { text, payload } = await readJsonPayload<{ deleted?: boolean }>(resp);
 	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
 	return Boolean(payload?.deleted);
+}
+
+export async function reassignProjectInventoryProject(input: {
+	workspace_identity: string;
+	project: string;
+}): Promise<ProjectReassignmentResult> {
+	const resp = await fetch("/api/sync/projects/reassign-project", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(input),
+	});
+	const { text, payload } = await readJsonPayload<ProjectReassignmentResult & { error?: string }>(
+		resp,
+	);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	if (!payload?.workspace_identity) throw new Error("response missing project reassignment");
+	return payload;
 }
 
 export async function loadCoordinatorGroupPreferences(

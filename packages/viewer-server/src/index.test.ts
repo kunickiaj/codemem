@@ -6087,6 +6087,50 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("reassigns a project inventory row to the corrected project", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare(
+						"UPDATE sessions SET cwd = ?, git_remote = NULL, git_branch = NULL, project = ? WHERE id = ?",
+					)
+					.run("/Users/adam/workspace/codemem/.claude/worktrees/injection", "injection", sessionId);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "project correction candidate",
+				});
+
+				const res = await app.request("/api/sync/projects/reassign-project", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						project: "codemem",
+						workspace_identity: "/Users/adam/workspace/codemem/.claude/worktrees/injection",
+					}),
+				});
+
+				expect(res.status).toBe(200);
+				expect(await res.json()).toMatchObject({
+					moved_memory_count: 1,
+					moved_session_count: 1,
+					previous_projects: ["injection"],
+					project: "codemem",
+				});
+				const inventoryRes = await app.request("/api/sync/projects?q=codemem");
+				const inventory = (await inventoryRes.json()) as { projects: Array<{ project: string }> };
+				expect(inventory.projects).toEqual(
+					expect.arrayContaining([expect.objectContaining({ project: "codemem" })]),
+				);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("requires confirmation before saving risky Sharing domain mappings", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {

@@ -58,6 +58,7 @@ export {
 	loadSyncActors,
 	loadSyncStatus,
 	mergeActor,
+	reassignProjectInventoryProject,
 	renameActor,
 	renamePeer,
 	SharingDomainGuardrailConfirmationError,

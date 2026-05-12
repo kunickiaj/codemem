@@ -5,6 +5,7 @@ import type {
 	SharingDomainScope,
 } from "../lib/api/sync";
 import { showGlobalNotice } from "../lib/notice";
+import { openSyncInputDialog } from "./sync/sync-dialogs";
 
 type RefreshFn = () => void;
 
@@ -127,6 +128,48 @@ async function removeProjectMapping(project: ProjectScopeInventoryProject) {
 	}
 }
 
+async function reassignProject(project: ProjectScopeInventoryProject) {
+	if (project.identity_source === "unmapped") return;
+	const currentProject = String(project.project || project.display_project || "").trim();
+	let suggestions: string[] = [];
+	try {
+		suggestions = (await api.loadProjects()).filter((name) => name && name !== currentProject);
+	} catch {
+		// Non-fatal — free-text correction still works.
+	}
+	const nextProject = await openSyncInputDialog({
+		cancelLabel: "Cancel",
+		confirmLabel: "Change project",
+		description: `This will update ${project.session_count} session${project.session_count === 1 ? "" : "s"} and ${project.memory_count ?? 0} memor${project.memory_count === 1 ? "y" : "ies"} by changing the stored project. Sharing-domain assignment stays unchanged.`,
+		initialValue: currentProject,
+		placeholder: "Project name",
+		suggestions,
+		title: "Change project",
+		validate: (value) => {
+			const trimmed = value.trim();
+			if (!trimmed) return "Enter a project name.";
+			if (trimmed === currentProject) return "Already assigned to this project.";
+			return null;
+		},
+	});
+	if (nextProject == null) return;
+	try {
+		const result = await api.reassignProjectInventoryProject({
+			project: nextProject.trim(),
+			workspace_identity: project.workspace_identity,
+		});
+		showGlobalNotice(
+			`Changed project to ${result.project} for ${result.moved_session_count} session${result.moved_session_count === 1 ? "" : "s"}.`,
+		);
+		refreshProjects?.();
+	} catch (error) {
+		showGlobalNotice(
+			error instanceof Error ? error.message : "Unable to change project.",
+			"warning",
+		);
+	}
+}
+
 function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElement {
 	const actions = document.createElement("div");
 	actions.className = "project-inventory-actions";
@@ -195,7 +238,17 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 	remove.disabled = project.mapping_id == null || project.resolution_reason !== "exact_mapping";
 	remove.addEventListener("click", () => void removeProjectMapping(project));
 
-	actions.append(label, select, save, keepLocal, remove);
+	const changeProject = document.createElement("button");
+	changeProject.className = "settings-button";
+	changeProject.type = "button";
+	changeProject.textContent = "Change project…";
+	changeProject.disabled = project.session_count === 0;
+	if (changeProject.disabled) {
+		changeProject.title = "No sessions are available to reassign for this saved mapping.";
+	}
+	changeProject.addEventListener("click", () => void reassignProject(project));
+
+	actions.append(label, select, save, keepLocal, remove, changeProject);
 	const pending = pendingConfirmations.get(project.workspace_identity);
 	if (pending) {
 		const warningBox = document.createElement("div");

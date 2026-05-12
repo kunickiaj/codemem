@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/api", () => ({
 	deleteSharingDomainProjectMapping: vi.fn(),
+	loadProjects: vi.fn(),
 	loadProjectScopeInventory: vi.fn(),
 	loadSharingDomainSettings: vi.fn(),
+	reassignProjectInventoryProject: vi.fn(),
 	saveSharingDomainProjectMapping: vi.fn(),
 	SharingDomainGuardrailConfirmationError: class SharingDomainGuardrailConfirmationError extends Error {
 		requiredGuardrailTokens: string[];
@@ -21,10 +23,12 @@ vi.mock("../lib/api", () => ({
 }));
 
 vi.mock("../lib/notice", () => ({ showGlobalNotice: vi.fn() }));
+vi.mock("./sync/sync-dialogs", () => ({ openSyncInputDialog: vi.fn() }));
 
 import * as api from "../lib/api";
 import type { ProjectScopeInventoryProject } from "../lib/api/sync";
 import { initProjectsTab, loadProjectsData } from "./projects";
+import { openSyncInputDialog } from "./sync/sync-dialogs";
 
 function project(
 	overrides: Partial<ProjectScopeInventoryProject> = {},
@@ -94,6 +98,14 @@ describe("Projects tab", () => {
 					status: "active",
 				},
 			],
+		});
+		vi.mocked(api.loadProjects).mockResolvedValue(["api", "codemem"]);
+		vi.mocked(api.reassignProjectInventoryProject).mockResolvedValue({
+			moved_memory_count: 1,
+			moved_session_count: 1,
+			previous_projects: ["api"],
+			project: "codemem",
+			workspace_identity: "https://git.example.invalid/exampleco/api.git",
 		});
 	});
 
@@ -234,5 +246,64 @@ describe("Projects tab", () => {
 		expect(document.body.textContent).toContain(
 			"Needs attention: Another project is also named api.",
 		);
+	});
+
+	it("lets project rows reassign their stored project", async () => {
+		const refresh = vi.fn();
+		vi.mocked(openSyncInputDialog).mockResolvedValue("codemem");
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 25,
+			offset: 0,
+			projects: [project({ memory_count: 11, project: "injection", session_count: 1 })],
+			total: 1,
+		});
+
+		initProjectsTab(refresh);
+		await loadProjectsData();
+		const changeProject = Array.from(document.querySelectorAll("button")).find(
+			(button) => button.textContent === "Change project…",
+		) as HTMLButtonElement | undefined;
+		expect(changeProject).not.toBeUndefined();
+
+		changeProject?.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(openSyncInputDialog).toHaveBeenCalledWith(
+			expect.objectContaining({
+				description: expect.stringContaining("1 session and 11 memories"),
+				initialValue: "injection",
+				title: "Change project",
+			}),
+		);
+		expect(api.reassignProjectInventoryProject).toHaveBeenCalledWith({
+			project: "codemem",
+			workspace_identity: "https://git.example.invalid/exampleco/api.git",
+		});
+		expect(refresh).toHaveBeenCalled();
+	});
+
+	it("disables project reassignment for saved mappings with no sessions", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 25,
+			offset: 0,
+			projects: [
+				project({
+					memory_count: 0,
+					resolution_reason: "exact_mapping",
+					session_count: 0,
+				}),
+			],
+			total: 1,
+		});
+
+		await loadProjectsData();
+
+		const changeProject = Array.from(document.querySelectorAll("button")).find(
+			(button) => button.textContent === "Change project…",
+		) as HTMLButtonElement | undefined;
+		expect(changeProject?.disabled).toBe(true);
+		expect(changeProject?.title).toContain("No sessions");
 	});
 });
