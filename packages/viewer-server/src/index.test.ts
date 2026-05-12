@@ -222,6 +222,33 @@ function grantSyncScopeToDevices(store: MemoryStore, scopeId: string, deviceIds:
 // ---------------------------------------------------------------------------
 
 describe("viewer-server", () => {
+	it("serves viewer shell and app bundle with cache-safe headers", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-viewer-static-cache-"));
+		const previousStaticDir = process.env.CODEMEM_VIEWER_STATIC_DIR;
+		process.env.CODEMEM_VIEWER_STATIC_DIR = tmpDir;
+		try {
+			writeFileSync(
+				join(tmpDir, "index.html"),
+				'<!doctype html><script src="/assets/app.js"></script>',
+			);
+			writeFileSync(join(tmpDir, "app.js"), "globalThis.__codememTestApp = true;");
+			const app = createApp({
+				storeFactory: () => createTestStore().store,
+			});
+
+			const index = await app.request("/");
+			expect(index.headers.get("cache-control")).toBe("no-store");
+
+			const bundle = await app.request("/assets/app.js");
+			expect(bundle.status).toBe(200);
+			expect(bundle.headers.get("cache-control")).toBe("no-cache");
+		} finally {
+			if (previousStaticDir == null) delete process.env.CODEMEM_VIEWER_STATIC_DIR;
+			else process.env.CODEMEM_VIEWER_STATIC_DIR = previousStaticDir;
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
 	it("createApp fails with a clear build hint when viewer assets are missing", () => {
 		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-viewer-static-missing-"));
 		const previousStaticDir = process.env.CODEMEM_VIEWER_STATIC_DIR;
