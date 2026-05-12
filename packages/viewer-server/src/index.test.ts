@@ -5860,6 +5860,28 @@ describe("viewer-server", () => {
 				});
 				expect(invalidScopeRes.status).toBe(400);
 
+				const unmappedLocalRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						workspace_identity: "unmapped:abc123",
+						project_pattern: "unknown",
+						scope_id: "local-default",
+					}),
+				});
+				expect(unmappedLocalRes.status).toBe(400);
+
+				const legacyScopeRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						workspace_identity: project?.workspace_identity,
+						project_pattern: project?.display_project,
+						scope_id: "legacy-shared-review",
+					}),
+				});
+				expect(legacyScopeRes.status).toBe(400);
+
 				const fractionalIdRes = await app.request("/api/sync/sharing-domains/project-mappings", {
 					method: "PUT",
 					headers: { "Content-Type": "application/json" },

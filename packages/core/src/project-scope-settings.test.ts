@@ -286,6 +286,23 @@ describe("project scope settings", () => {
 		]);
 	});
 
+	it("rejects inert unmapped and legacy-review assignments", () => {
+		expect(() =>
+			upsertProjectScopeSettingsMapping(db, {
+				workspace_identity: "unmapped:abc123",
+				project_pattern: "unknown",
+				scope_id: LOCAL_DEFAULT_SCOPE_ID,
+			}),
+		).toThrow(/unmapped projects cannot be assigned/);
+		expect(() =>
+			upsertProjectScopeSettingsMapping(db, {
+				workspace_identity: "workspace:legacy-target",
+				project_pattern: "legacy-target",
+				scope_id: "legacy-shared-review",
+			}),
+		).toThrow(/not an assignable Sharing domain/);
+	});
+
 	it("does not guess when multiple scopes match a project signal equally", () => {
 		insertScope(db, { scopeId: "exampleco-work", label: "ExampleCo Work" });
 		insertScope(db, { scopeId: "exampleco-client", label: "ExampleCo Client", kind: "client" });

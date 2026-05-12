@@ -127,10 +127,12 @@ export function SharingDomainsPanel() {
 
 	const scopeOptions = useMemo(
 		() =>
-			(settings?.scopes ?? []).map((scope) => ({
-				value: scope.scope_id,
-				label: domainLabel(scope),
-			})),
+			(settings?.scopes ?? [])
+				.filter((scope) => scope.scope_id !== "legacy-shared-review")
+				.map((scope) => ({
+					value: scope.scope_id,
+					label: domainLabel(scope),
+				})),
 		[settings?.scopes],
 	);
 

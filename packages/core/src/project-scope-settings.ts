@@ -594,6 +594,9 @@ function getProjectScopeSettingsMappingByWorkspaceIdentity(
 }
 
 function assertActiveScope(db: Database, scopeId: string): void {
+	if (scopeId === LEGACY_SHARED_REVIEW_SCOPE_ID) {
+		throw new Error("legacy-shared-review is a review bucket, not an assignable Sharing domain");
+	}
 	const row = db
 		.prepare("SELECT 1 FROM replication_scopes WHERE scope_id = ? AND status = 'active' LIMIT 1")
 		.get(scopeId);
@@ -886,6 +889,9 @@ export function upsertProjectScopeSettingsMapping(
 	assertActiveScope(db, scopeId);
 
 	const { existing, workspaceIdentity } = draft;
+	if (workspaceIdentity?.startsWith("unmapped:")) {
+		throw new Error("unmapped projects cannot be assigned to a Sharing domain");
+	}
 	const projectPattern = draft.projectPattern;
 	if (!projectPattern) throw new Error("project_pattern or workspace_identity is required");
 	assertCanonicalPattern(workspaceIdentity, projectPattern);

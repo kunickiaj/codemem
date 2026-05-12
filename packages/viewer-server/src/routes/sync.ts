@@ -2414,15 +2414,12 @@ export function syncRoutes(
 				source,
 			};
 			const analysis = analyzeProjectScopeMappingChangeGuardrails(store.db, mappingInput);
-			if (
-				analysis.requested_workspace_identity?.startsWith("unmapped:") &&
-				scopeId !== LOCAL_DEFAULT_SCOPE_ID
-			) {
+			if (analysis.requested_workspace_identity?.startsWith("unmapped:")) {
 				return c.json(
 					{
 						error: "unmapped_project_local_only",
 						message:
-							"Unmapped projects need a stable path, git remote, or workspace id before assigning a non-local Sharing domain.",
+							"Unmapped projects need a stable path, git remote, or workspace id before assigning a Sharing domain.",
 						guardrail_warnings: analysis.warnings,
 					},
 					400,

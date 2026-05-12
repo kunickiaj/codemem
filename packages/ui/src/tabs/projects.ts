@@ -1,5 +1,10 @@
 import * as api from "../lib/api";
-import type { ProjectScopeInventoryProject } from "../lib/api/sync";
+import type {
+	ProjectScopeGuardrailWarning,
+	ProjectScopeInventoryProject,
+	SharingDomainScope,
+} from "../lib/api/sync";
+import { showGlobalNotice } from "../lib/notice";
 
 type RefreshFn = () => void;
 
@@ -16,6 +21,11 @@ const STATUS_OPTIONS = [
 let refreshProjects: RefreshFn | null = null;
 let currentOffset = 0;
 const lastLimit = 50;
+let scopes: SharingDomainScope[] = [];
+const pendingConfirmations = new Map<
+	string,
+	{ requiredGuardrailTokens: string[]; scopeId: string; warnings: ProjectScopeGuardrailWarning[] }
+>();
 
 function el<T extends HTMLElement>(id: string): T | null {
 	return document.getElementById(id) as T | null;
@@ -51,6 +61,168 @@ function strongestSignal(project: ProjectScopeInventoryProject): string {
 	return project.workspace_identity;
 }
 
+function scopeLabel(scopeId: string | null | undefined): string {
+	if (!scopeId) return "—";
+	const scope = scopes.find((item) => item.scope_id === scopeId);
+	return scope?.label ? `${scope.label} (${scope.scope_id})` : scopeId;
+}
+
+function assignableScopes(): SharingDomainScope[] {
+	return scopes.filter((scope) => scope.scope_id !== "legacy-shared-review");
+}
+
+async function saveProjectMapping(
+	project: ProjectScopeInventoryProject,
+	scopeId: string,
+	confirmedGuardrailTokens: string[] = [],
+) {
+	try {
+		await api.saveSharingDomainProjectMapping({
+			...(project.mapping_id && project.resolution_reason === "exact_mapping"
+				? { id: project.mapping_id }
+				: {}),
+			...(confirmedGuardrailTokens.length > 0
+				? { confirmed_guardrail_tokens: confirmedGuardrailTokens }
+				: {}),
+			project_pattern: project.display_project,
+			scope_id: scopeId,
+			workspace_identity: project.workspace_identity,
+		});
+		pendingConfirmations.delete(project.workspace_identity);
+		showGlobalNotice("Project Sharing domain updated. Device access grants are unchanged.");
+		refreshProjects?.();
+	} catch (error) {
+		if (error instanceof api.SharingDomainGuardrailConfirmationError) {
+			pendingConfirmations.set(project.workspace_identity, {
+				requiredGuardrailTokens: error.requiredGuardrailTokens,
+				scopeId,
+				warnings: error.guardrailWarnings,
+			});
+			refreshProjects?.();
+			return;
+		}
+		showGlobalNotice(
+			error instanceof Error ? error.message : "Unable to update project Sharing domain.",
+			"warning",
+		);
+	}
+}
+
+async function removeProjectMapping(project: ProjectScopeInventoryProject) {
+	if (project.mapping_id == null) return;
+	try {
+		await api.deleteSharingDomainProjectMapping(project.mapping_id);
+		pendingConfirmations.delete(project.workspace_identity);
+		showGlobalNotice("Project Sharing domain mapping removed. The next fallback now applies.");
+		refreshProjects?.();
+	} catch (error) {
+		showGlobalNotice(
+			error instanceof Error ? error.message : "Unable to remove project Sharing domain mapping.",
+			"warning",
+		);
+	}
+}
+
+function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElement {
+	const actions = document.createElement("div");
+	actions.className = "project-inventory-actions";
+	if (project.identity_source === "unmapped") {
+		const note = document.createElement("div");
+		note.className = "settings-note";
+		note.textContent =
+			"This project is missing a stable path, git remote, or workspace id. It stays Local only until it has a stable identity.";
+		actions.appendChild(note);
+		return actions;
+	}
+	const label = document.createElement("label");
+	label.className = "sr-only";
+	const selectId = `project-domain-${project.workspace_identity.replace(/[^a-z0-9_-]/gi, "-")}`;
+	label.htmlFor = selectId;
+	label.textContent = `Sharing domain for ${project.display_project}`;
+	const select = document.createElement("select");
+	select.id = selectId;
+	select.className = "project-domain-select";
+	const currentAssignable = assignableScopes().some(
+		(scope) => scope.scope_id === project.resolved_scope_id,
+	);
+	if (!currentAssignable && project.resolved_scope_id) {
+		const current = document.createElement("option");
+		current.value = project.resolved_scope_id;
+		current.textContent = `${scopeLabel(project.resolved_scope_id)} — not assignable`;
+		current.disabled = true;
+		select.appendChild(current);
+	}
+	for (const scope of assignableScopes()) {
+		const option = document.createElement("option");
+		option.value = scope.scope_id;
+		option.textContent = scope.label ? `${scope.label} · ${scope.scope_id}` : scope.scope_id;
+		select.appendChild(option);
+	}
+	select.value = project.suggested_scope_id ?? project.resolved_scope_id;
+
+	const save = document.createElement("button");
+	save.className = "settings-button";
+	save.type = "button";
+	save.textContent =
+		project.suggested_scope_id && select.value === project.suggested_scope_id
+			? "Confirm suggestion"
+			: "Save domain";
+	save.disabled = select.value === project.resolved_scope_id && !currentAssignable;
+	save.addEventListener("click", () => void saveProjectMapping(project, select.value));
+	select.addEventListener("change", () => {
+		save.textContent = "Save domain";
+		save.disabled = false;
+	});
+
+	const keepLocal = document.createElement("button");
+	keepLocal.className = "settings-button";
+	keepLocal.type = "button";
+	keepLocal.textContent = "Keep local-only";
+	keepLocal.addEventListener("click", () => void saveProjectMapping(project, "local-default"));
+
+	const remove = document.createElement("button");
+	remove.className = "settings-button";
+	remove.type = "button";
+	remove.textContent = "Remove mapping";
+	remove.disabled = project.mapping_id == null || project.resolution_reason !== "exact_mapping";
+	remove.addEventListener("click", () => void removeProjectMapping(project));
+
+	actions.append(label, select, save, keepLocal, remove);
+	const pending = pendingConfirmations.get(project.workspace_identity);
+	if (pending) {
+		const warningBox = document.createElement("div");
+		warningBox.className = "settings-note project-guardrail-confirmation";
+		warningBox.setAttribute("role", "alert");
+		const title = document.createElement("strong");
+		title.textContent = "Review before saving this Sharing domain.";
+		const list = document.createElement("ul");
+		for (const warning of pending.warnings) {
+			const item = document.createElement("li");
+			item.textContent = warning.message;
+			list.appendChild(item);
+		}
+		const confirm = document.createElement("button");
+		confirm.className = "settings-button";
+		confirm.type = "button";
+		confirm.textContent = "Confirm and save";
+		confirm.addEventListener(
+			"click",
+			() => void saveProjectMapping(project, pending.scopeId, pending.requiredGuardrailTokens),
+		);
+		const cancel = document.createElement("button");
+		cancel.className = "settings-button";
+		cancel.type = "button";
+		cancel.textContent = "Cancel";
+		cancel.addEventListener("click", () => {
+			pendingConfirmations.delete(project.workspace_identity);
+			refreshProjects?.();
+		});
+		warningBox.append(title, list, confirm, cancel);
+		actions.appendChild(warningBox);
+	}
+	return actions;
+}
+
 function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 	const row = document.createElement("article");
 	row.className = "project-inventory-row";
@@ -64,7 +236,7 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 
 	const domain = document.createElement("div");
 	domain.className = "project-inventory-domain";
-	domain.textContent = project.resolved_scope_id;
+	domain.textContent = scopeLabel(project.resolved_scope_id);
 	header.appendChild(domain);
 	row.appendChild(header);
 
@@ -116,6 +288,7 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 		list.append(dt, dd);
 	}
 	detail.appendChild(list);
+	detail.appendChild(renderProjectActions(project));
 	row.appendChild(detail);
 	return row;
 }
@@ -136,19 +309,26 @@ export async function loadProjectsData() {
 	if (!meta || !list) return;
 	meta.textContent = "Loading project inventory…";
 	try {
-		const result = await api.loadProjectScopeInventory({
-			limit: lastLimit,
-			offset: currentOffset,
-			q: el<HTMLInputElement>("projectsSearch")?.value.trim() || undefined,
-			status: el<HTMLSelectElement>("projectsStatusFilter")?.value || undefined,
-		});
+		const [result, settings] = await Promise.all([
+			api.loadProjectScopeInventory({
+				limit: lastLimit,
+				offset: currentOffset,
+				q: el<HTMLInputElement>("projectsSearch")?.value.trim() || undefined,
+				status: el<HTMLSelectElement>("projectsStatusFilter")?.value || undefined,
+			}),
+			api.loadSharingDomainSettings(),
+		]);
+		scopes = settings.scopes;
 		list.textContent = "";
 		if (result.projects.length === 0) {
 			renderEmpty("No projects match those filters.");
 		} else {
 			for (const project of result.projects) list.appendChild(renderProjectRow(project));
 		}
-		meta.textContent = `${result.total} project${result.total === 1 ? "" : "s"} found · showing ${result.offset + 1}-${Math.min(result.offset + result.projects.length, result.total)}`;
+		meta.textContent =
+			result.total === 0
+				? "0 projects found"
+				: `${result.total} project${result.total === 1 ? "" : "s"} found · showing ${result.offset + 1}-${Math.min(result.offset + result.projects.length, result.total)}`;
 		const prev = el<HTMLButtonElement>("projectsPrevPage");
 		const next = el<HTMLButtonElement>("projectsNextPage");
 		if (prev) prev.disabled = result.offset === 0;
