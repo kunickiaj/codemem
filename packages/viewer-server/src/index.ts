@@ -105,6 +105,11 @@ export function createApp(opts?: AppOptions) {
 	const staticRoot =
 		process.env.CODEMEM_VIEWER_STATIC_DIR ?? join(import.meta.dirname ?? ".", "../static");
 
+	app.use("/assets/*", async (c, next) => {
+		c.header("Cache-Control", "no-cache");
+		await next();
+	});
+
 	app.use(
 		"/assets/*",
 		serveStatic({
@@ -125,6 +130,7 @@ export function createApp(opts?: AppOptions) {
 		if (c.req.path.startsWith("/api/")) {
 			return c.json({ error: "not found" }, 404);
 		}
+		c.header("Cache-Control", "no-store");
 		return c.html(indexHtml);
 	});
 

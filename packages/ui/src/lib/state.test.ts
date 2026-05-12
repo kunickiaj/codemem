@@ -1,11 +1,20 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	ALL_TAB_IDS,
 	type CachedCoordinatorAdminStatus,
 	getVisibleTabs,
+	parseTabFromHash,
 	resolveAccessibleTab,
 	shouldShowCoordinatorAdminTab,
 } from "./state";
+
+describe("Viewer tab routing", () => {
+	it("recognizes Projects as a routable top-level tab", () => {
+		expect(ALL_TAB_IDS).toContain("projects");
+		expect(parseTabFromHash("#projects")).toBe("projects");
+	});
+});
 
 describe("Coordinator Admin tab gating", () => {
 	it("keeps the tab visible while admin status is still unknown", () => {
