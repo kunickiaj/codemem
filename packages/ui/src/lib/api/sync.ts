@@ -215,6 +215,28 @@ export interface ProjectScopeCandidate {
 	guardrail_warnings?: ProjectScopeGuardrailWarning[];
 }
 
+export type ProjectScopeInventoryStatus =
+	| "explicitly_mapped"
+	| "legacy_review"
+	| "local_only"
+	| "needs_attention"
+	| "suggested"
+	| "unmapped";
+
+export interface ProjectScopeInventoryProject extends ProjectScopeCandidate {
+	memory_count: number | null;
+	session_count: number;
+	statuses: ProjectScopeInventoryStatus[];
+}
+
+export interface ProjectScopeInventoryResult {
+	projects: ProjectScopeInventoryProject[];
+	total: number;
+	limit: number;
+	offset: number;
+	has_more: boolean;
+}
+
 export interface SharingDomainSettings {
 	scopes: SharingDomainScope[];
 	mappings: ProjectScopeMapping[];
@@ -242,6 +264,25 @@ export class SharingDomainGuardrailConfirmationError extends Error {
 
 export async function loadSharingDomainSettings(): Promise<SharingDomainSettings> {
 	return fetchJson<SharingDomainSettings>("/api/sync/sharing-domains/settings");
+}
+
+export async function loadProjectScopeInventory(
+	input: {
+		identity_source?: string;
+		limit?: number;
+		offset?: number;
+		q?: string;
+		scope_id?: string;
+		status?: string;
+	} = {},
+): Promise<ProjectScopeInventoryResult> {
+	const params = new URLSearchParams();
+	for (const [key, value] of Object.entries(input)) {
+		if (value == null || value === "") continue;
+		params.set(key, String(value));
+	}
+	const query = params.toString();
+	return fetchJson<ProjectScopeInventoryResult>(`/api/sync/projects${query ? `?${query}` : ""}`);
 }
 
 export async function saveSharingDomainProjectMapping(input: {

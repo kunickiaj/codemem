@@ -62,6 +62,7 @@ import {
 	listInboundScopeRejections,
 	listMaintenanceJobs,
 	listProjectScopeCandidates,
+	listProjectScopeInventory,
 	listProjectScopeSettingsMappings,
 	listSharingDomainSettingsScopes,
 	loadMemorySnapshotPageForPeer,
@@ -2372,6 +2373,22 @@ export function syncRoutes(
 			projects: listProjectScopeCandidates(store.db, { limit }),
 			local_default_scope_id: LOCAL_DEFAULT_SCOPE_ID,
 		});
+	});
+
+	app.get("/api/sync/projects", (c) => {
+		const store = getStore();
+		const limit = Math.max(1, queryInt(c.req.query("limit"), 50));
+		const offset = Math.max(0, queryInt(c.req.query("offset"), 0));
+		return c.json(
+			listProjectScopeInventory(store.db, {
+				identitySource: c.req.query("identity_source"),
+				limit,
+				offset,
+				query: c.req.query("q"),
+				scopeId: c.req.query("scope_id"),
+				status: c.req.query("status"),
+			}),
+		);
 	});
 
 	app.put("/api/sync/sharing-domains/project-mappings", async (c) => {

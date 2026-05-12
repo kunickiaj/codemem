@@ -5969,6 +5969,75 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("returns searchable project inventory for the Projects screen", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET cwd = ?, git_remote = ?, project = ? WHERE id = ?")
+					.run(
+						"/workspace/work/exampleco/api",
+						"https://git.example.invalid/exampleco/api.git",
+						"api",
+						sessionId,
+					);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "project inventory candidate",
+					metadata: {},
+				});
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('exampleco-work', 'ExampleCo Work', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+
+				const projectIdentity = "https://git.example.invalid/exampleco/api.git";
+				const saveRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						workspace_identity: projectIdentity,
+						project_pattern: "api",
+						scope_id: "exampleco-work",
+					}),
+				});
+				expect(saveRes.status).toBe(200);
+
+				const inventoryRes = await app.request(
+					"/api/sync/projects?q=exampleco&status=explicitly_mapped&limit=1",
+				);
+				expect(inventoryRes.status).toBe(200);
+				const inventory = (await inventoryRes.json()) as {
+					projects: Array<{
+						resolved_scope_id: string;
+						statuses: string[];
+						workspace_identity: string;
+					}>;
+					total: number;
+					has_more: boolean;
+				};
+
+				expect(inventory).toMatchObject({ total: 1, has_more: false });
+				expect(inventory.projects).toEqual([
+					expect.objectContaining({
+						resolved_scope_id: "exampleco-work",
+						statuses: expect.arrayContaining(["explicitly_mapped"]),
+						workspace_identity: projectIdentity,
+					}),
+				]);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("requires confirmation before saving risky Sharing domain mappings", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
