@@ -9,11 +9,11 @@ vi.mock("../lib/api", () => ({
 	saveSharingDomainProjectMapping: vi.fn(),
 	SharingDomainGuardrailConfirmationError: class SharingDomainGuardrailConfirmationError extends Error {
 		requiredGuardrailTokens: string[];
-		guardrailWarnings: Array<{ message: string }>;
+		guardrailWarnings: Array<{ code?: string; message: string }>;
 
 		constructor(input: {
 			required_guardrail_tokens?: string[];
-			guardrail_warnings?: Array<{ message: string }>;
+			guardrail_warnings?: Array<{ code?: string; message: string }>;
 		}) {
 			super("Sharing domain guardrail confirmation required");
 			this.requiredGuardrailTokens = input.required_guardrail_tokens ?? [];
@@ -214,6 +214,119 @@ describe("Projects tab", () => {
 		expect(
 			(document.querySelector(".project-domain-select") as HTMLSelectElement | null)?.value,
 		).toBe("exampleco-work");
+	});
+
+	it("explains backend guardrail confirmation as a required acknowledgement", async () => {
+		const refresh = vi.fn();
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 25,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		});
+		vi.mocked(api.saveSharingDomainProjectMapping).mockRejectedValueOnce(
+			new api.SharingDomainGuardrailConfirmationError({
+				guardrail_warnings: [
+					{
+						code: "unknown_project_local_only",
+						message:
+							"No Sharing domain mapping matches this project, so future memories stay Local only until you assign one.",
+						requires_confirmation: true,
+						severity: "warning",
+					},
+					{
+						code: "basename_collision_review",
+						message:
+							"Another workspace is also named api. Review the git remote or path before assigning a non-local Sharing domain.",
+						requires_confirmation: true,
+						severity: "warning",
+					},
+				],
+				required_guardrail_tokens: ["token-1", "token-2"],
+			}),
+		);
+
+		initProjectsTab(refresh);
+		await loadProjectsData();
+		const select = document.querySelector(".project-domain-select") as HTMLSelectElement | null;
+		if (!select) throw new Error("select missing");
+		select.value = "exampleco-work";
+		select.dispatchEvent(new Event("change"));
+		const save = Array.from(document.querySelectorAll("button")).find(
+			(button) => button.textContent === "Save domain",
+		) as HTMLButtonElement | undefined;
+		save?.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await loadProjectsData();
+
+		expect(document.body.textContent).toContain(
+			"Confirmation required before saving this Sharing domain.",
+		);
+		expect(document.body.textContent).toContain(
+			"Codemem can save this change after you acknowledge the checks below.",
+		);
+		expect(document.body.textContent).toContain("Current behavior:");
+		expect(document.body.textContent).toContain("Name collision:");
+		expect(document.body.textContent).toContain("I understand, save domain");
+		expect(document.body.textContent).not.toContain("Confirm and save");
+	});
+
+	it("clears stale guardrail confirmation when the draft domain changes", async () => {
+		const refresh = vi.fn();
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 25,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		});
+		vi.mocked(api.saveSharingDomainProjectMapping).mockRejectedValueOnce(
+			new api.SharingDomainGuardrailConfirmationError({
+				guardrail_warnings: [
+					{
+						code: "basename_collision_review",
+						message:
+							"Another workspace is also named api. Review the git remote or path before assigning a non-local Sharing domain.",
+						requires_confirmation: true,
+						severity: "warning",
+					},
+				],
+				required_guardrail_tokens: ["token-1"],
+			}),
+		);
+
+		initProjectsTab(refresh);
+		await loadProjectsData();
+		const select = document.querySelector(".project-domain-select") as HTMLSelectElement | null;
+		if (!select) throw new Error("select missing");
+		select.value = "exampleco-work";
+		select.dispatchEvent(new Event("change"));
+		const save = Array.from(document.querySelectorAll("button")).find(
+			(button) => button.textContent === "Save domain",
+		) as HTMLButtonElement | undefined;
+		save?.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await loadProjectsData();
+		expect(document.body.textContent).toContain("I understand, save domain");
+		const staleConfirm = Array.from(document.querySelectorAll("button")).find(
+			(button) => button.textContent === "I understand, save domain",
+		) as HTMLButtonElement | undefined;
+		expect(api.saveSharingDomainProjectMapping).toHaveBeenCalledTimes(1);
+
+		const nextSelect = document.querySelector(".project-domain-select") as HTMLSelectElement | null;
+		if (!nextSelect) throw new Error("select missing after refresh");
+		nextSelect.value = "local-default";
+		nextSelect.dispatchEvent(new Event("change"));
+		staleConfirm?.click();
+		expect(api.saveSharingDomainProjectMapping).toHaveBeenCalledTimes(1);
+		await loadProjectsData();
+
+		expect(document.body.textContent).not.toContain("I understand, save domain");
+		expect(document.body.textContent).not.toContain(
+			"Confirmation required before saving this Sharing domain.",
+		);
+		expect(refresh).toHaveBeenCalled();
 	});
 
 	it("surfaces suggestions and attention warnings on the collapsed card", async () => {

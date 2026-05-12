@@ -74,6 +74,22 @@ function assignableScopes(): SharingDomainScope[] {
 	return scopes.filter((scope) => scope.scope_id !== "legacy-shared-review");
 }
 
+function guardrailHeading(warning: ProjectScopeGuardrailWarning): string {
+	switch (warning.code) {
+		case "unknown_project_local_only":
+			return "Current behavior";
+		case "basename_collision_review":
+			return "Name collision";
+		case "scope_reassignment_old_copies":
+			return "Previous copies";
+		case "broad_org_domain_pattern":
+		case "home_directory_org_domain_pattern":
+			return "Broad mapping";
+		default:
+			return "Review item";
+	}
+}
+
 async function saveProjectMapping(
 	project: ProjectScopeInventoryProject,
 	scopeId: string,
@@ -221,8 +237,10 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 	save.addEventListener("click", () => void saveProjectMapping(project, select.value));
 	select.addEventListener("change", () => {
 		draftDomainSelections.set(project.workspace_identity, select.value);
+		pendingConfirmations.delete(project.workspace_identity);
 		save.textContent = "Save domain";
 		save.disabled = false;
+		refreshProjects?.();
 	});
 
 	const keepLocal = document.createElement("button");
@@ -255,21 +273,33 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 		warningBox.className = "settings-note project-guardrail-confirmation";
 		warningBox.setAttribute("role", "alert");
 		const title = document.createElement("strong");
-		title.textContent = "Review before saving this Sharing domain.";
+		title.textContent = "Confirmation required before saving this Sharing domain.";
+		const intro = document.createElement("p");
+		intro.textContent =
+			"Codemem can save this change after you acknowledge the checks below. Verify the workspace details, then confirm to complete the save.";
 		const list = document.createElement("ul");
 		for (const warning of pending.warnings) {
 			const item = document.createElement("li");
-			item.textContent = warning.message;
+			const itemTitle = document.createElement("strong");
+			itemTitle.textContent = `${guardrailHeading(warning)}: `;
+			const message = document.createElement("span");
+			message.textContent = warning.message;
+			item.append(itemTitle, message);
 			list.appendChild(item);
 		}
 		const confirm = document.createElement("button");
 		confirm.className = "settings-button";
 		confirm.type = "button";
-		confirm.textContent = "Confirm and save";
-		confirm.addEventListener(
-			"click",
-			() => void saveProjectMapping(project, pending.scopeId, pending.requiredGuardrailTokens),
-		);
+		confirm.textContent = "I understand, save domain";
+		confirm.addEventListener("click", () => {
+			const currentPending = pendingConfirmations.get(project.workspace_identity);
+			if (!currentPending || currentPending.scopeId !== select.value) return;
+			void saveProjectMapping(
+				project,
+				currentPending.scopeId,
+				currentPending.requiredGuardrailTokens,
+			);
+		});
 		const cancel = document.createElement("button");
 		cancel.className = "settings-button";
 		cancel.type = "button";
@@ -278,7 +308,7 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 			pendingConfirmations.delete(project.workspace_identity);
 			refreshProjects?.();
 		});
-		warningBox.append(title, list, confirm, cancel);
+		warningBox.append(title, intro, list, confirm, cancel);
 		actions.appendChild(warningBox);
 	}
 	return actions;
