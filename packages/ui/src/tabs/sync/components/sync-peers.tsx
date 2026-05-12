@@ -20,6 +20,7 @@ import { openSyncConfirmDialog } from "../sync-dialogs";
 import {
 	derivePeerAuthorizedDomainsView,
 	derivePeerDirection,
+	derivePeerGrantRoleMismatchView,
 	derivePeerProjectNarrowingView,
 	derivePeerScopeRejectionsView,
 	derivePeerTrustSummary,
@@ -190,6 +191,7 @@ function SyncPeerCard({
 	const directionHint = DIRECTION_GLYPH[derivePeerDirection(peer)];
 	const peerStatus: SyncPeerStatus = peer.status || {};
 	const authorizedDomains = derivePeerAuthorizedDomainsView(peer);
+	const grantRoleMismatch = derivePeerGrantRoleMismatchView(peer);
 	const scopeRejections = derivePeerScopeRejectionsView(peer);
 	const scope = peer.project_scope || {};
 	const projectNarrowing = derivePeerProjectNarrowingView(scope);
@@ -492,6 +494,14 @@ function SyncPeerCard({
 									{scopeRejections.badgeLabel}
 								</span>
 							) : null}
+							{grantRoleMismatch.badgeLabel ? (
+								<span
+									className="badge badge-offline"
+									title="Review whether explicit Sharing-domain grants match this device's intended role."
+								>
+									{grantRoleMismatch.badgeLabel}
+								</span>
+							) : null}
 							{peer.discovered_via_group_id ? (
 								<span
 									className="badge actor-badge"
@@ -594,6 +604,13 @@ function SyncPeerCard({
 									</li>
 								))}
 							</ul>
+						) : null}
+						{grantRoleMismatch.isVisible ? (
+							<div className="settings-note" role="status">
+								<strong>{grantRoleMismatch.title}</strong>
+								<div>{grantRoleMismatch.message}</div>
+								<div>{grantRoleMismatch.detail}</div>
+							</div>
 						) : null}
 						<div className="peer-meta">{projectNarrowing.note}</div>
 

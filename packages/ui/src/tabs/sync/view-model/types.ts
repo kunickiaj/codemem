@@ -157,6 +157,8 @@ export interface PeerClaimedLocalActorScopeLike {
 export interface PeerLike {
 	peer_device_id?: string;
 	name?: string;
+	discovered_via_coordinator_id?: string | null;
+	discovered_via_group_id?: string | null;
 	has_error?: boolean;
 	last_error?: string;
 	fingerprint?: string;
