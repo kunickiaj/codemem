@@ -1243,51 +1243,20 @@ function recentScopeRejectionsByPeer(
 }
 
 function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> {
-	const row = store.db
-		.prepare(
-			`SELECT COUNT(*) AS memory_count,
-			        MAX(updated_at) AS last_updated_at
-			 FROM memory_items
-			 WHERE scope_id = ?
-			   AND active = 1
-			   AND deleted_at IS NULL`,
-		)
-		.get(LEGACY_SHARED_REVIEW_SCOPE_ID) as
-		| { memory_count: number | null; last_updated_at: string | null }
-		| undefined;
-	const memoryCount = Number(row?.memory_count ?? 0);
+	const rows = legacySharedReviewRows(store);
+	const memoryCount = rows.length;
+	const lastUpdatedAt = rows.reduce<string | null>(
+		(current, row) =>
+			row.updated_at && (!current || row.updated_at > current) ? row.updated_at : current,
+		null,
+	);
+	const ownedBySelf = store.buildOwnershipPredicate();
 	const candidatesByIdentity = new Map(
 		listProjectScopeCandidates(store.db, { limit: null }).map((candidate) => [
 			candidate.workspace_identity,
 			candidate,
 		]),
 	);
-	const groupRows = store.db
-		.prepare(
-			`SELECT s.project,
-			        s.cwd,
-			        s.git_remote,
-			        s.git_branch,
-			        m.workspace_id,
-			        COUNT(*) AS memory_count,
-			        MAX(m.updated_at) AS last_updated_at
-			 FROM memory_items m
-			 LEFT JOIN sessions s ON s.id = m.session_id
-			 WHERE m.scope_id = ?
-			   AND m.active = 1
-			   AND m.deleted_at IS NULL
-			 GROUP BY s.project, s.cwd, s.git_remote, s.git_branch, m.workspace_id
-			 ORDER BY memory_count DESC, last_updated_at DESC`,
-		)
-		.all(LEGACY_SHARED_REVIEW_SCOPE_ID) as Array<{
-		project: string | null;
-		cwd: string | null;
-		git_remote: string | null;
-		git_branch: string | null;
-		workspace_id: string | null;
-		memory_count: number | null;
-		last_updated_at: string | null;
-	}>;
 	const groupsByIdentity = new Map<
 		string,
 		{
@@ -1295,18 +1264,20 @@ function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> 
 			identity_source: string;
 			display_project: string;
 			memory_count: number;
+			reassignable_memory_count: number;
+			peer_owned_memory_count: number;
 			last_updated_at: string | null;
 			suggested_scope_id: string | null;
 			suggestion_reason: string | null;
 		}
 	>();
-	for (const group of groupRows) {
+	for (const row of rows) {
 		const identity = canonicalWorkspaceIdentity({
-			cwd: group.cwd,
-			gitBranch: group.git_branch,
-			gitRemote: group.git_remote,
-			project: group.project,
-			workspaceId: group.workspace_id,
+			cwd: row.cwd,
+			gitBranch: row.git_branch,
+			gitRemote: row.git_remote,
+			project: row.project,
+			workspaceId: row.workspace_id,
 		});
 		const candidate = candidatesByIdentity.get(identity.value);
 		const resolvedScope = candidate?.resolved_scope_id ?? null;
@@ -1317,24 +1288,25 @@ function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> 
 				? resolvedScope
 				: candidate?.suggested_scope_id;
 		const existing = groupsByIdentity.get(identity.value);
-		const memoryCount = Number(group.memory_count ?? 0);
-		const lastUpdatedAt = group.last_updated_at ?? null;
+		const isOwnedBySelf = ownedBySelf(row as unknown as Record<string, unknown>);
+		const rowUpdatedAt = row.updated_at ?? null;
 		if (existing) {
-			existing.memory_count += memoryCount;
-			if (
-				lastUpdatedAt &&
-				(!existing.last_updated_at || lastUpdatedAt > existing.last_updated_at)
-			) {
-				existing.last_updated_at = lastUpdatedAt;
+			existing.memory_count += 1;
+			if (isOwnedBySelf) existing.reassignable_memory_count += 1;
+			else existing.peer_owned_memory_count += 1;
+			if (rowUpdatedAt && (!existing.last_updated_at || rowUpdatedAt > existing.last_updated_at)) {
+				existing.last_updated_at = rowUpdatedAt;
 			}
 			continue;
 		}
 		groupsByIdentity.set(identity.value, {
 			workspace_identity: identity.value,
 			identity_source: identity.source,
-			display_project: identity.displayProject ?? group.project ?? group.cwd ?? identity.value,
-			memory_count: memoryCount,
-			last_updated_at: lastUpdatedAt,
+			display_project: identity.displayProject ?? row.project ?? row.cwd ?? identity.value,
+			memory_count: 1,
+			reassignable_memory_count: isOwnedBySelf ? 1 : 0,
+			peer_owned_memory_count: isOwnedBySelf ? 0 : 1,
+			last_updated_at: rowUpdatedAt,
 			suggested_scope_id: suggestedScope ?? null,
 			suggestion_reason: suggestedScope
 				? (candidate?.suggestion_reason ??
@@ -1366,7 +1338,7 @@ function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> 
 		scope_id: LEGACY_SHARED_REVIEW_SCOPE_ID,
 		memory_count: memoryCount,
 		has_data: memoryCount > 0,
-		last_updated_at: row?.last_updated_at ?? null,
+		last_updated_at: lastUpdatedAt,
 		groups,
 		total_group_count: totalGroupCount,
 		target_scopes: targetScopes,
@@ -1377,6 +1349,7 @@ interface LegacySharedReviewReassignmentMemoryRow {
 	id: number;
 	active: number | null;
 	deleted_at: string | null;
+	updated_at: string | null;
 	scope_id: string | null;
 	project: string | null;
 	cwd: string | null;
@@ -1386,6 +1359,31 @@ interface LegacySharedReviewReassignmentMemoryRow {
 	actor_id: string | null;
 	origin_device_id: string | null;
 	metadata_json: string | null;
+}
+
+function legacySharedReviewRows(store: MemoryStore): LegacySharedReviewReassignmentMemoryRow[] {
+	return store.db
+		.prepare(
+			`SELECT m.id,
+			        m.active,
+			        m.deleted_at,
+			        m.updated_at,
+			        m.scope_id,
+			        s.project,
+			        s.cwd,
+			        s.git_remote,
+			        s.git_branch,
+			        m.workspace_id,
+			        m.actor_id,
+			        m.origin_device_id,
+			        m.metadata_json
+			 FROM memory_items m
+			 LEFT JOIN sessions s ON s.id = m.session_id
+			 WHERE m.scope_id = ?
+			   AND m.active = 1
+			   AND m.deleted_at IS NULL`,
+		)
+		.all(LEGACY_SHARED_REVIEW_SCOPE_ID) as LegacySharedReviewReassignmentMemoryRow[];
 }
 
 interface LegacySharedReviewReassignmentPreview {
@@ -1422,28 +1420,7 @@ function legacySharedReviewRowsForWorkspace(
 	store: MemoryStore,
 	workspaceIdentity: string,
 ): LegacySharedReviewReassignmentMemoryRow[] {
-	const rows = store.db
-		.prepare(
-			`SELECT m.id,
-			        m.active,
-			        m.deleted_at,
-			        m.scope_id,
-			        s.project,
-			        s.cwd,
-			        s.git_remote,
-			        s.git_branch,
-			        m.workspace_id,
-			        m.actor_id,
-			        m.origin_device_id,
-			        m.metadata_json
-			 FROM memory_items m
-			 LEFT JOIN sessions s ON s.id = m.session_id
-			 WHERE m.scope_id = ?
-			   AND m.active = 1
-			   AND m.deleted_at IS NULL`,
-		)
-		.all(LEGACY_SHARED_REVIEW_SCOPE_ID) as LegacySharedReviewReassignmentMemoryRow[];
-	return rows.filter((row) => {
+	return legacySharedReviewRows(store).filter((row) => {
 		const identity = canonicalWorkspaceIdentity({
 			cwd: row.cwd,
 			gitBranch: row.git_branch,
@@ -1463,7 +1440,9 @@ function reassignableLegacySharedReviewRows(
 		store.memoryOwnedBySelf(row as unknown as Record<string, unknown>),
 	);
 	if (reassignableRows.length === 0) {
-		throw new Error("legacy shared review group has no locally owned memories to reassign");
+		throw new Error(
+			"This legacy review group contains only peer-owned memories; this device cannot reassign them to a Sharing domain.",
+		);
 	}
 	const currentRows = store.db
 		.prepare(

@@ -73,6 +73,8 @@ export function renderSyncSharingReview() {
 								identitySource: String(raw.identity_source || "unknown"),
 								lastUpdatedAt: typeof raw.last_updated_at === "string" ? raw.last_updated_at : null,
 								memoryCount: Number(raw.memory_count || 0),
+								peerOwnedMemoryCount: Number(raw.peer_owned_memory_count || 0),
+								reassignableMemoryCount: Number(raw.reassignable_memory_count || 0),
 								suggestedScopeId:
 									typeof raw.suggested_scope_id === "string" ? raw.suggested_scope_id : null,
 								suggestionReason:

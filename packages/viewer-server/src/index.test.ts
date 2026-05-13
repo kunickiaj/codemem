@@ -2760,6 +2760,70 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("reports inbound-only legacy shared review groups without offering reassignment capacity", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				const _warmup = await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('oss', 'OSS', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+				grantSyncScopeToDevices(store, "oss", [store.deviceId]);
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
+					.run("https://git.example.invalid/oss/inbound.git", "oss-inbound", sessionId);
+				insertTestMemory(store, {
+					actorId: "remote-actor",
+					kind: "discovery",
+					originDeviceId: "peer-device",
+					scopeId: "legacy-shared-review",
+					sessionId,
+					title: "legacy peer shared",
+				});
+
+				const statusRes = await app.request("/api/sync/status");
+				expect(statusRes.status).toBe(200);
+				const status = (await statusRes.json()) as {
+					legacy_shared_review: {
+						groups: Array<{
+							memory_count: number;
+							peer_owned_memory_count: number;
+							reassignable_memory_count: number;
+							workspace_identity: string;
+						}>;
+					};
+				};
+				expect(status.legacy_shared_review.groups[0]).toMatchObject({
+					memory_count: 1,
+					peer_owned_memory_count: 1,
+					reassignable_memory_count: 0,
+					workspace_identity: "https://git.example.invalid/oss/inbound.git",
+				});
+
+				const previewRes = await app.request("/api/sync/legacy-shared-review/reassign", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						scope_id: "oss",
+						workspace_identity: "https://git.example.invalid/oss/inbound.git",
+					}),
+				});
+				expect(previewRes.status).toBe(400);
+				const body = (await previewRes.json()) as { error: string };
+				expect(body.error).toContain("peer-owned memories");
+				expect(body.error).not.toContain("no locally owned memories");
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("rejects legacy shared review reassignment when the local device lacks target membership", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {

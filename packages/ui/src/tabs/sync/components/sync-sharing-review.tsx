@@ -30,6 +30,8 @@ export interface SyncLegacySharedReviewGroup {
 	identitySource: string;
 	lastUpdatedAt: string | null;
 	memoryCount: number;
+	peerOwnedMemoryCount?: number;
+	reassignableMemoryCount?: number;
 	suggestedScopeId: string | null;
 	suggestionReason: string | null;
 	workspaceIdentity: string;
@@ -72,6 +74,10 @@ function needsProjectCleanup(group: SyncLegacySharedReviewGroup): boolean {
 		label === "unknown project" ||
 		group.identitySource === "unmapped"
 	);
+}
+
+function canReassignLegacyGroup(group: SyncLegacySharedReviewGroup): boolean {
+	return (group.reassignableMemoryCount ?? group.memoryCount) > 0;
 }
 
 function groupSearchText(group: SyncLegacySharedReviewGroup): string {
@@ -146,9 +152,12 @@ function LegacySharedReviewRow({
 	const groupCount = item.totalGroupCount ?? shownGroupCount;
 	const cleanupCount = groups.filter(needsProjectCleanup).length;
 	const suggestedCount = groups.filter(
-		(group) => group.suggestedScopeId && !needsProjectCleanup(group),
+		(group) =>
+			group.suggestedScopeId && !needsProjectCleanup(group) && canReassignLegacyGroup(group),
 	).length;
-	const selectedCount = groups.filter((group) => selectedGroups[group.workspaceIdentity]).length;
+	const selectedCount = groups.filter(
+		(group) => selectedGroups[group.workspaceIdentity] && canReassignLegacyGroup(group),
+	).length;
 	const visibleGroups = groups.filter((group) => {
 		const cleanup = needsProjectCleanup(group);
 		if (filter === "suggested" && (!group.suggestedScopeId || cleanup)) return false;
@@ -193,7 +202,11 @@ function LegacySharedReviewRow({
 	function setVisibleSelected(checked: boolean) {
 		setSelectedGroups((current) => ({
 			...current,
-			...Object.fromEntries(visibleGroups.map((group) => [group.workspaceIdentity, checked])),
+			...Object.fromEntries(
+				visibleGroups
+					.filter(canReassignLegacyGroup)
+					.map((group) => [group.workspaceIdentity, checked]),
+			),
 		}));
 	}
 	function selectSuggestedGroups() {
@@ -201,14 +214,21 @@ function LegacySharedReviewRow({
 			...current,
 			...Object.fromEntries(
 				groups
-					.filter((group) => group.suggestedScopeId && !needsProjectCleanup(group))
+					.filter(
+						(group) =>
+							group.suggestedScopeId &&
+							!needsProjectCleanup(group) &&
+							canReassignLegacyGroup(group),
+					)
 					.map((group) => [group.workspaceIdentity, true]),
 			),
 		}));
 	}
 	async function applySelectedGroups() {
 		if (!onReassign || busyIdentity || selectedCount === 0) return;
-		const selected = groups.filter((group) => selectedGroups[group.workspaceIdentity]);
+		const selected = groups.filter(
+			(group) => selectedGroups[group.workspaceIdentity] && canReassignLegacyGroup(group),
+		);
 		const allPreviewed = selected.every((group) => pending[group.workspaceIdentity]);
 		setBusyIdentity("bulk");
 		try {
@@ -319,7 +339,10 @@ function LegacySharedReviewRow({
 								? "Working…"
 								: selectedCount > 0 &&
 										groups
-											.filter((group) => selectedGroups[group.workspaceIdentity])
+											.filter(
+												(group) =>
+													selectedGroups[group.workspaceIdentity] && canReassignLegacyGroup(group),
+											)
 											.every((group) => pending[group.workspaceIdentity])
 									? `Apply ${selectedCount.toLocaleString()} selected`
 									: `Preview ${selectedCount.toLocaleString()} selected`}
@@ -341,6 +364,7 @@ function LegacySharedReviewRow({
 										aria-label={`Select ${group.displayProject}`}
 										checked={Boolean(selectedGroups[group.workspaceIdentity])}
 										className="cm-checkbox"
+										disabled={!canReassignLegacyGroup(group)}
 										onChange={(event) => toggleGroup(group, event.currentTarget.checked)}
 										type="checkbox"
 									/>
@@ -350,6 +374,21 @@ function LegacySharedReviewRow({
 											{formatIdentitySource(group.identitySource)}
 											{group.suggestedScopeId ? ` · suggested ${group.suggestedScopeId}` : ""}
 										</div>
+										{!canReassignLegacyGroup(group) ? (
+											<div className="legacy-review-cleanup-note">
+												Peer-owned only. These older memories were received from another device, so
+												this device cannot reassign them to a Sharing domain.
+											</div>
+										) : group.peerOwnedMemoryCount ? (
+											<div className="legacy-review-cleanup-note">
+												{(group.reassignableMemoryCount ?? group.memoryCount).toLocaleString()}{" "}
+												local memor
+												{(group.reassignableMemoryCount ?? group.memoryCount) === 1 ? "y" : "ies"}{" "}
+												can be reassigned; {group.peerOwnedMemoryCount.toLocaleString()} peer-owned
+												memor
+												{group.peerOwnedMemoryCount === 1 ? "y" : "ies"} will stay in review.
+											</div>
+										) : null}
 										{needsProjectCleanup(group) ? (
 											<div className="legacy-review-cleanup-note">
 												Unclear project identity. Inspect or correct the project before trusting a
@@ -376,7 +415,7 @@ function LegacySharedReviewRow({
 									.
 								</div>
 							) : null}
-							{targetScopes.length > 0 && onReassign ? (
+							{targetScopes.length > 0 && onReassign && canReassignLegacyGroup(group) ? (
 								<label className="legacy-review-target">
 									<span>Destination Sharing domain</span>
 									<select
@@ -394,7 +433,7 @@ function LegacySharedReviewRow({
 									</select>
 								</label>
 							) : null}
-							{targetScopes.length > 0 && onReassign ? (
+							{targetScopes.length > 0 && onReassign && canReassignLegacyGroup(group) ? (
 								<div className="legacy-review-actions">
 									<button
 										type="button"

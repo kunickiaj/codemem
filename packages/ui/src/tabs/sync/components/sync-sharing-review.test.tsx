@@ -316,4 +316,38 @@ describe("SyncSharingReview", () => {
 		expect(root.textContent).not.toContain("Preview 1 selected");
 		expect(root.textContent).toContain("Add or join a Sharing domain before bulk reassignment");
 	});
+
+	it("explains inbound-only legacy groups instead of offering reassignment", () => {
+		const root = renderReview(
+			<SyncSharingReview
+				items={[]}
+				legacyReview={{
+					groups: [
+						{
+							displayProject: "oss-inbound",
+							identitySource: "git_remote",
+							lastUpdatedAt: null,
+							memoryCount: 2000,
+							peerOwnedMemoryCount: 2000,
+							reassignableMemoryCount: 0,
+							suggestedScopeId: "oss",
+							suggestionReason: "Existing project mapping can be reviewed.",
+							workspaceIdentity: "https://git.example.invalid/oss/inbound.git",
+						},
+					],
+					memoryCount: 2000,
+					scopeId: "legacy-shared-review",
+					targetScopes: [{ authorityType: "coordinator", label: "OSS", scopeId: "oss" }],
+				}}
+				onLegacyReassign={vi.fn()}
+				onReview={() => {}}
+			/>,
+		);
+
+		const checkbox = root.querySelector<HTMLInputElement>('input[type="checkbox"]');
+		expect(checkbox?.disabled).toBe(true);
+		expect(root.textContent).toContain("Peer-owned only");
+		expect(root.textContent).toContain("cannot reassign them to a Sharing domain");
+		expect(root.textContent).not.toContain("Preview reassignment");
+	});
 });
