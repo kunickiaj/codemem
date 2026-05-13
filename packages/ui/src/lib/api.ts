@@ -66,6 +66,7 @@ export {
 	SharingDomainGuardrailConfirmationError,
 	saveCoordinatorGroupPreferences,
 	saveSharingDomainProjectMapping,
+	saveSharingDomainProjectMappings,
 	triggerSync,
 	updatePeerIdentity,
 	updatePeerScope,
