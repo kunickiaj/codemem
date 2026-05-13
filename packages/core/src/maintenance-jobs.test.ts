@@ -80,6 +80,39 @@ describe("maintenance jobs", () => {
 		}
 	});
 
+	it("reports completed jobs as full progress even when diagnostic counters are partial", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			startMaintenanceJob(db, {
+				kind: "memory_dedup_key_backfill",
+				title: "Backfilling dedup keys",
+				progressTotal: 5147,
+				metadata: { processed_updates: 592, skipped_rows: 263, total_backfillable: 5147 },
+			});
+
+			const done = completeMaintenanceJob(db, "memory_dedup_key_backfill", {
+				message: "Dedup-key backfill complete (263 skipped)",
+				progressCurrent: 592,
+				progressTotal: 5147,
+				metadata: { processed_updates: 592, skipped_rows: 263, total_backfillable: 5147 },
+			});
+
+			expect(done).toMatchObject({
+				status: "completed",
+				progress: { current: 5147, total: 5147, unit: "items" },
+				metadata: { processed_updates: 592, skipped_rows: 263 },
+			});
+			expect(getMaintenanceJob(db, "memory_dedup_key_backfill")?.progress).toEqual({
+				current: 5147,
+				total: 5147,
+				unit: "items",
+			});
+		} finally {
+			db.close();
+		}
+	});
+
 	it("records failure state and error text", () => {
 		const db = new Database(":memory:");
 		try {

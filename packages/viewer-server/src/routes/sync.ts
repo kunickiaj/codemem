@@ -321,6 +321,21 @@ function missingGuardrailConfirmations(
 	);
 }
 
+function parseViewerProjectMappingInput(body: Record<string, unknown>) {
+	const id = optionalViewerInteger(body, "id");
+	const priority = optionalViewerInteger(body, "priority");
+	if (Number.isNaN(id)) throw new Error("id must be an integer");
+	if (Number.isNaN(priority)) throw new Error("priority must be an integer");
+	return {
+		id,
+		workspace_identity: optionalViewerStrictString(body, "workspace_identity"),
+		project_pattern: optionalViewerStrictString(body, "project_pattern"),
+		scope_id: optionalViewerStrictString(body, "scope_id") ?? "",
+		priority,
+		source: optionalViewerStrictString(body, "source") ?? "user",
+	};
+}
+
 function coordinatorAdminMutationStatus(message: string): 400 | 404 | 409 | 502 {
 	if (
 		message.includes("scope_not_found") ||
@@ -2720,23 +2735,8 @@ export function syncRoutes(
 		const body = await parseViewerJsonBody(c);
 		if (!body) return c.json({ error: "invalid json" }, 400);
 		try {
-			const id = optionalViewerInteger(body, "id");
-			const priority = optionalViewerInteger(body, "priority");
-			if (Number.isNaN(id)) return c.json({ error: "id must be an integer" }, 400);
-			if (Number.isNaN(priority)) return c.json({ error: "priority must be an integer" }, 400);
-			const workspaceIdentity = optionalViewerStrictString(body, "workspace_identity");
-			const projectPattern = optionalViewerStrictString(body, "project_pattern");
-			const scopeId = optionalViewerStrictString(body, "scope_id") ?? "";
-			const source = optionalViewerStrictString(body, "source") ?? "user";
 			const confirmedGuardrailTokens = optionalViewerStringList(body, "confirmed_guardrail_tokens");
-			const mappingInput = {
-				id,
-				workspace_identity: workspaceIdentity,
-				project_pattern: projectPattern,
-				scope_id: scopeId,
-				priority,
-				source,
-			};
+			const mappingInput = parseViewerProjectMappingInput(body);
 			const analysis = analyzeProjectScopeMappingChangeGuardrails(store.db, mappingInput);
 			if (analysis.requested_workspace_identity?.startsWith("unmapped:")) {
 				return c.json(
@@ -2772,6 +2772,67 @@ export function syncRoutes(
 				...mappingInput,
 			});
 			return c.json({ ok: true, mapping, guardrail_warnings: analysis.warnings });
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+		}
+	});
+
+	app.put("/api/sync/sharing-domains/project-mappings/bulk", async (c) => {
+		const store = getStore();
+		const body = await parseViewerJsonBody(c);
+		if (!body) return c.json({ error: "invalid json" }, 400);
+		try {
+			const rawMappings = body.mappings;
+			if (!Array.isArray(rawMappings) || rawMappings.length === 0) {
+				return c.json({ error: "mappings must be a non-empty array" }, 400);
+			}
+			const mappingInputs = rawMappings.map((raw) => {
+				if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
+					throw new Error("each mapping must be an object");
+				}
+				return parseViewerProjectMappingInput(raw as Record<string, unknown>);
+			});
+			const analyses = mappingInputs.map((mappingInput) =>
+				analyzeProjectScopeMappingChangeGuardrails(store.db, mappingInput),
+			);
+			const unmapped = analyses.find((analysis) =>
+				analysis.requested_workspace_identity?.startsWith("unmapped:"),
+			);
+			if (unmapped) {
+				return c.json(
+					{
+						error: "unmapped_project_local_only",
+						message:
+							"Unmapped projects need a stable path, git remote, or workspace id before assigning a Sharing domain.",
+						guardrail_warnings: unmapped.warnings,
+					},
+					400,
+				);
+			}
+			const missingConfirmations = analyses.flatMap((analysis) =>
+				missingGuardrailConfirmations(analysis.warnings, []),
+			);
+			if (missingConfirmations.length > 0) {
+				const missingCodes = [...new Set(missingConfirmations.map((warning) => warning.code))];
+				const missingTokens = [
+					...new Set(missingConfirmations.map((warning) => warning.confirmation_token)),
+				].filter((token): token is string => typeof token === "string" && token.length > 0);
+				return c.json(
+					{
+						error: "guardrail_confirmation_required",
+						required_guardrails: missingCodes,
+						required_guardrail_tokens: missingTokens,
+						guardrail_warnings: analyses.flatMap((analysis) => analysis.warnings),
+					},
+					409,
+				);
+			}
+			const saveMappings = store.db.transaction(() =>
+				mappingInputs.map((mappingInput) =>
+					upsertProjectScopeSettingsMapping(store.db, mappingInput),
+				),
+			);
+			return c.json({ ok: true, mappings: saveMappings() });
 		} catch (error) {
 			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
 		}

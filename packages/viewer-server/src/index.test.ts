@@ -6607,6 +6607,50 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("rejects bulk project mappings before writing any partial updates", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('acme-work', 'Acme Work', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+
+				const res = await app.request("/api/sync/sharing-domains/project-mappings/bulk", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						mappings: [
+							{
+								project_pattern: "safe-project",
+								scope_id: "acme-work",
+								workspace_identity: "workspace:safe-project",
+							},
+							{
+								project_pattern: "/home/fixture-user/*",
+								scope_id: "acme-work",
+							},
+						],
+					}),
+				});
+
+				expect(res.status).toBe(409);
+				expect(await res.json()).toMatchObject({ error: "guardrail_confirmation_required" });
+				const saved = store.db
+					.prepare("SELECT COUNT(*) AS n FROM project_scope_mappings WHERE scope_id = ?")
+					.get("acme-work") as { n: number };
+				expect(saved.n).toBe(0);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("blocks unmapped projects from non-local Sharing domain assignment", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {

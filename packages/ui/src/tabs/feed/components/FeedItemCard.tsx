@@ -327,7 +327,7 @@ export function FeedItemCard({
 						{ label: formatDate(createdAtRaw), side: "left" },
 						h("div", { className: "small feed-age" }, relative),
 					),
-					Boolean(item.owned_by_self) && memoryId > 0
+					item.owned_by_self && memoryId > 0
 						? h(FeedItemMenu, {
 								assignProjectDisabled: movingProject,
 								disabled: deletingMemory,
@@ -363,7 +363,7 @@ export function FeedItemCard({
 								tags.map((tag, index) => h(TagChip, { key: `${String(tag)}-${index}`, tag })),
 							)
 						: null,
-					Boolean(item.owned_by_self) && memoryId > 0
+					item.owned_by_self && memoryId > 0
 						? h(
 								"div",
 								{ className: "feed-visibility-controls" },

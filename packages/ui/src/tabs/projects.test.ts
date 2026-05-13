@@ -7,6 +7,7 @@ vi.mock("../lib/api", () => ({
 	loadSharingDomainSettings: vi.fn(),
 	reassignProjectInventoryProject: vi.fn(),
 	saveSharingDomainProjectMapping: vi.fn(),
+	saveSharingDomainProjectMappings: vi.fn(),
 	SharingDomainGuardrailConfirmationError: class SharingDomainGuardrailConfirmationError extends Error {
 		requiredGuardrailTokens: string[];
 		guardrailWarnings: Array<{ code?: string; message: string }>;
@@ -126,11 +127,97 @@ describe("Projects tab", () => {
 		initProjectsTab(() => {});
 		await loadProjectsData();
 
-		expect(document.getElementById("projectsInventoryMeta")?.textContent).toBe("0 projects found");
+		expect(document.getElementById("projectsInventoryMeta")?.textContent).toBe(
+			"0 project identities found",
+		);
 		expect(document.body.textContent).not.toContain("showing 1-0");
 		expect(api.loadProjectScopeInventory).toHaveBeenCalledWith(
-			expect.objectContaining({ limit: 25 }),
+			expect.objectContaining({ limit: 250 }),
 		);
+	});
+
+	it("clusters related project identities and bulk assigns the group", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [
+				project({ cwd: "/workspace/a", memory_count: 2, session_count: 1 }),
+				project({
+					cwd: "/tmp/worktree-a",
+					memory_count: 3,
+					session_count: 2,
+					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
+				}),
+			],
+			total: 2,
+		});
+
+		await loadProjectsData();
+
+		expect(document.body.textContent).toContain("2 identities · 3 sessions · 5 memories");
+		expect(document.body.textContent).toContain("Save domain for 2 identities");
+		const select = document.querySelector(
+			".project-inventory-cluster select",
+		) as HTMLSelectElement | null;
+		if (!select) throw new Error("cluster select missing");
+		select.value = "exampleco-work";
+		const save = Array.from(document.querySelectorAll("button")).find(
+			(button) => button.textContent === "Save domain for 2 identities",
+		) as HTMLButtonElement | undefined;
+		save?.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(api.saveSharingDomainProjectMappings).toHaveBeenCalledTimes(1);
+		expect(api.saveSharingDomainProjectMappings).toHaveBeenCalledWith({
+			mappings: [
+				expect.objectContaining({
+					scope_id: "exampleco-work",
+					workspace_identity: "https://git.example.invalid/exampleco/api.git",
+				}),
+				expect.objectContaining({
+					scope_id: "exampleco-work",
+					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
+				}),
+			],
+		});
+	});
+
+	it("does not partially update cluster identities when bulk assignment fails", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [
+				project({ cwd: "/workspace/a" }),
+				project({
+					cwd: "/tmp/worktree-a",
+					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
+				}),
+			],
+			total: 2,
+		});
+		vi.mocked(api.saveSharingDomainProjectMappings).mockRejectedValueOnce(
+			new api.SharingDomainGuardrailConfirmationError({
+				guardrail_warnings: [],
+				required_guardrail_tokens: ["token-1"],
+			}),
+		);
+
+		await loadProjectsData();
+		const select = document.querySelector(
+			".project-inventory-cluster select",
+		) as HTMLSelectElement | null;
+		if (!select) throw new Error("cluster select missing");
+		select.value = "exampleco-work";
+		const save = Array.from(document.querySelectorAll("button")).find(
+			(button) => button.textContent === "Save domain for 2 identities",
+		) as HTMLButtonElement | undefined;
+		save?.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(api.saveSharingDomainProjectMappings).toHaveBeenCalledTimes(1);
+		expect(api.saveSharingDomainProjectMapping).not.toHaveBeenCalled();
 	});
 
 	it("does not render assignment controls for unmapped projects", async () => {

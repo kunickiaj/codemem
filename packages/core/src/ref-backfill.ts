@@ -100,7 +100,9 @@ export async function runRefBackfillPass(
 	const existingJob = getMaintenanceJob(db, REF_BACKFILL_JOB);
 	const existingMetadata = getExistingMetadata(db);
 	const batchSize = Math.max(1, options.batchSize ?? 50);
-	const lastCursorId = Number(existingMetadata.last_cursor_id ?? 0);
+	const startingFresh =
+		!existingJob || existingJob.status === "completed" || existingJob.status === "failed";
+	const lastCursorId = startingFresh ? 0 : Number(existingMetadata.last_cursor_id ?? 0);
 
 	const rows = db
 		.prepare(
@@ -130,10 +132,10 @@ export async function runRefBackfillPass(
 		return false;
 	}
 
-	const processedBefore = Number(existingMetadata.processed ?? 0);
+	const processedBefore = startingFresh ? 0 : Number(existingMetadata.processed ?? 0);
 	let progressTotal = Number(existingMetadata.total_backfillable ?? 0);
 
-	if (!existingJob || existingJob.status === "completed" || existingJob.status === "failed") {
+	if (startingFresh) {
 		const countRow = db
 			.prepare(
 				`SELECT COUNT(*) AS cnt FROM memory_items mi
@@ -203,7 +205,7 @@ export async function runRefBackfillPass(
 		);
 		completeMaintenanceJob(db, REF_BACKFILL_JOB, {
 			message: "Ref backfill complete",
-			progressCurrent: processedAfter,
+			progressCurrent: finalProgressTotal,
 			progressTotal: finalProgressTotal,
 			metadata: {
 				total_backfillable: finalProgressTotal,
