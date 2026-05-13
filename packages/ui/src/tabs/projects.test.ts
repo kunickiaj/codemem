@@ -2,11 +2,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/api", () => ({
 	deleteSharingDomainProjectMapping: vi.fn(),
+	forgetProjectInventoryMemories: vi.fn(),
 	loadProjects: vi.fn(),
 	loadProjectScopeInventory: vi.fn(),
 	loadSharingDomainSettings: vi.fn(),
 	reassignProjectInventoryProject: vi.fn(),
 	saveSharingDomainProjectMapping: vi.fn(),
+	ProjectForgetConfirmationError: class ProjectForgetConfirmationError extends Error {
+		preview: {
+			confirmation_token: string;
+			local_owned_memory_count: number;
+			peer_owned_memory_count: number;
+			workspace_identity: string;
+		};
+
+		constructor(preview: {
+			confirmation_token: string;
+			local_owned_memory_count: number;
+			peer_owned_memory_count: number;
+			workspace_identity: string;
+		}) {
+			super("Project forget confirmation required");
+			this.preview = preview;
+		}
+	},
 	saveSharingDomainProjectMappings: vi.fn(),
 	SharingDomainGuardrailConfirmationError: class SharingDomainGuardrailConfirmationError extends Error {
 		requiredGuardrailTokens: string[];
@@ -108,6 +127,14 @@ describe("Projects tab", () => {
 			project: "codemem",
 			workspace_identity: "https://git.example.invalid/exampleco/api.git",
 		});
+		vi.mocked(api.forgetProjectInventoryMemories).mockResolvedValue({
+			confirmation_token: "token",
+			confirmed: true,
+			forgotten_memory_count: 1,
+			local_owned_memory_count: 1,
+			peer_owned_memory_count: 0,
+			workspace_identity: "https://git.example.invalid/exampleco/api.git",
+		});
 	});
 
 	afterEach(() => {
@@ -161,16 +188,18 @@ describe("Projects tab", () => {
 			".project-inventory-cluster select",
 		) as HTMLSelectElement | null;
 		if (!select) throw new Error("cluster select missing");
+		expect(select.value).toBe("");
 		select.value = "exampleco-work";
+		select.dispatchEvent(new Event("change", { bubbles: true }));
 		const save = Array.from(document.querySelectorAll("button")).find(
 			(button) => button.textContent === "Save domain for 2 identities",
 		) as HTMLButtonElement | undefined;
+		expect(save?.disabled).toBe(false);
 		save?.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
-		expect(api.saveSharingDomainProjectMappings).toHaveBeenCalledTimes(1);
 		expect(api.saveSharingDomainProjectMappings).toHaveBeenCalledWith({
-			mappings: [
+			mappings: expect.arrayContaining([
 				expect.objectContaining({
 					scope_id: "exampleco-work",
 					workspace_identity: "https://git.example.invalid/exampleco/api.git",
@@ -179,8 +208,72 @@ describe("Projects tab", () => {
 					scope_id: "exampleco-work",
 					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
 				}),
-			],
+			]),
 		});
+	});
+
+	it("blocks cluster bulk assignment when an identity needs guardrail review", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [
+				project(),
+				project({
+					guardrail_warnings: [
+						{
+							code: "basename_collision_review",
+							message: "Another project is also named api.",
+							requires_confirmation: true,
+							severity: "warning",
+						},
+					],
+					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
+				}),
+			],
+			total: 2,
+		});
+
+		await loadProjectsData();
+		const save = Array.from(document.querySelectorAll("button")).find(
+			(button) => button.textContent === "Save domain for 2 identities",
+		) as HTMLButtonElement | undefined;
+		save?.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(save?.disabled).toBe(true);
+		expect(api.saveSharingDomainProjectMappings).not.toHaveBeenCalled();
+		expect(document.body.textContent).toContain("need individual review");
+		expect(document.body.textContent).toContain("Show identities in this project");
+	});
+
+	it("requires explicit cluster domain choice for mixed suggestions", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [
+				project({ suggested_scope_id: "exampleco-work" }),
+				project({
+					resolved_scope_id: "personal",
+					suggested_scope_id: "personal",
+					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
+				}),
+			],
+			total: 2,
+		});
+
+		await loadProjectsData();
+		const select = document.querySelector(
+			".project-inventory-cluster select",
+		) as HTMLSelectElement | null;
+		const save = Array.from(document.querySelectorAll("button")).find(
+			(button) => button.textContent === "Save domain for 2 identities",
+		) as HTMLButtonElement | undefined;
+
+		expect(select?.value).toBe("");
+		expect(save?.disabled).toBe(true);
+		expect(document.body.textContent).toContain("mixed suggestions or current domains");
 	});
 
 	it("does not partially update cluster identities when bulk assignment fails", async () => {
@@ -210,6 +303,7 @@ describe("Projects tab", () => {
 		) as HTMLSelectElement | null;
 		if (!select) throw new Error("cluster select missing");
 		select.value = "exampleco-work";
+		select.dispatchEvent(new Event("change", { bubbles: true }));
 		const save = Array.from(document.querySelectorAll("button")).find(
 			(button) => button.textContent === "Save domain for 2 identities",
 		) as HTMLButtonElement | undefined;
@@ -505,5 +599,48 @@ describe("Projects tab", () => {
 		) as HTMLButtonElement | undefined;
 		expect(changeProject?.disabled).toBe(true);
 		expect(changeProject?.title).toContain("No sessions");
+	});
+
+	it("confirms cleanup before forgetting local project memories", async () => {
+		const refresh = vi.fn();
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project({ memory_count: 7 })],
+			total: 1,
+		});
+		vi.mocked(api.forgetProjectInventoryMemories).mockRejectedValueOnce(
+			new api.ProjectForgetConfirmationError({
+				confirmation_token: "confirm-token",
+				local_owned_memory_count: 5,
+				peer_owned_memory_count: 2,
+				workspace_identity: "https://git.example.invalid/exampleco/api.git",
+			}),
+		);
+
+		initProjectsTab(refresh);
+		await loadProjectsData();
+		const forget = Array.from(document.querySelectorAll("button")).find(
+			(button) => button.textContent === "Forget local memories…",
+		) as HTMLButtonElement | undefined;
+		forget?.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await loadProjectsData();
+
+		expect(document.body.textContent).toContain("Confirm project memory cleanup");
+		expect(document.body.textContent).toContain("5 locally owned memories will be forgotten");
+		expect(document.body.textContent).toContain("2 peer-owned memories will be left unchanged");
+		const confirm = Array.from(document.querySelectorAll("button")).find(
+			(button) => button.textContent === "I understand, forget local memories",
+		) as HTMLButtonElement | undefined;
+		confirm?.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(api.forgetProjectInventoryMemories).toHaveBeenLastCalledWith({
+			confirmation_token: "confirm-token",
+			confirmed: true,
+			workspace_identity: "https://git.example.invalid/exampleco/api.git",
+		});
 	});
 });

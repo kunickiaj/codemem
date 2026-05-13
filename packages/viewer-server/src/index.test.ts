@@ -2662,6 +2662,54 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("returns all legacy shared review groups so every group has an action path", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				const _warmup = await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = new Date().toISOString();
+				const insertSession = store.db.prepare(
+					`INSERT INTO sessions(started_at, cwd, project, git_remote, user, tool_version)
+					 VALUES (?, ?, ?, ?, ?, ?)`,
+				);
+				const insertLegacyMemory = store.db.prepare(
+					`INSERT INTO memory_items(
+						session_id, kind, title, body_text, created_at, updated_at,
+						visibility, workspace_id, workspace_kind, active, scope_id, metadata_json
+					 ) VALUES (?, 'discovery', ?, ?, ?, ?, 'shared', 'shared:default', 'shared', 1, ?, '{}')`,
+				);
+				for (let index = 0; index < 25; index += 1) {
+					const session = insertSession.run(
+						now,
+						`/tmp/legacy-${index}`,
+						`legacy-${index}`,
+						`https://git.example.invalid/legacy/${index}.git`,
+						"test",
+						"test",
+					);
+					insertLegacyMemory.run(
+						Number(session.lastInsertRowid),
+						`Legacy ${index}`,
+						`Legacy body ${index}`,
+						now,
+						now,
+						"legacy-shared-review",
+					);
+				}
+
+				const res = await app.request("/api/sync/status");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					legacy_shared_review: { groups: unknown[]; total_group_count: number };
+				};
+				expect(body.legacy_shared_review.total_group_count).toBe(25);
+				expect(body.legacy_shared_review.groups).toHaveLength(25);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("previews and applies legacy shared review reassignment explicitly", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
@@ -2712,7 +2760,12 @@ describe("viewer-server", () => {
 				expect(previewRes.status).toBe(409);
 				const preview = (await previewRes.json()) as {
 					error: string;
-					preview: { memory_count: number; reassignable_memory_count: number; warning: string };
+					preview: {
+						confirmation_token: string;
+						memory_count: number;
+						reassignable_memory_count: number;
+						warning: string;
+					};
 				};
 				expect(preview.error).toBe("legacy_review_confirmation_required");
 				expect(preview.preview).toMatchObject({
@@ -2725,6 +2778,7 @@ describe("viewer-server", () => {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({
+						confirmation_token: preview.preview.confirmation_token,
 						confirmed_old_copies: true,
 						scope_id: "oss",
 						workspace_identity: "https://git.example.invalid/oss/dev.git",
@@ -2755,6 +2809,79 @@ describe("viewer-server", () => {
 						expect.objectContaining({ op_type: "upsert", scope_id: "oss" }),
 					]),
 				);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects stale legacy shared review confirmation when the group changes", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				const _warmup = await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('oss', 'OSS', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+				grantSyncScopeToDevices(store, "oss", [store.deviceId]);
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
+					.run("https://git.example.invalid/oss/dev.git", "oss-dev", sessionId);
+				insertTestMemory(store, {
+					kind: "discovery",
+					scopeId: "legacy-shared-review",
+					sessionId,
+					title: "previewed legacy shared",
+				});
+
+				const previewRes = await app.request("/api/sync/legacy-shared-review/reassign", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						scope_id: "oss",
+						workspace_identity: "https://git.example.invalid/oss/dev.git",
+					}),
+				});
+				expect(previewRes.status).toBe(409);
+				const preview = (await previewRes.json()) as {
+					preview: { confirmation_token: string };
+				};
+				insertTestMemory(store, {
+					kind: "discovery",
+					scopeId: "legacy-shared-review",
+					sessionId,
+					title: "late legacy shared",
+				});
+
+				const applyRes = await app.request("/api/sync/legacy-shared-review/reassign", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						confirmation_token: preview.preview.confirmation_token,
+						confirmed_old_copies: true,
+						scope_id: "oss",
+						workspace_identity: "https://git.example.invalid/oss/dev.git",
+					}),
+				});
+				expect(applyRes.status).toBe(400);
+				const body = (await applyRes.json()) as { error: string };
+				expect(body.error).toContain("changed before reassignment");
+				const counts = store.db
+					.prepare("SELECT scope_id, COUNT(*) AS n FROM memory_items GROUP BY scope_id")
+					.all() as Array<{ n: number; scope_id: string }>;
+				expect(counts).toEqual([
+					expect.objectContaining({ n: 2, scope_id: "legacy-shared-review" }),
+				]);
+				const ops = store.db.prepare("SELECT COUNT(*) AS n FROM replication_ops").get() as {
+					n: number;
+				};
+				expect(ops.n).toBe(0);
 			} finally {
 				cleanup();
 			}
@@ -6506,6 +6633,176 @@ describe("viewer-server", () => {
 				const inventory = (await inventoryRes.json()) as { projects: Array<{ project: string }> };
 				expect(inventory.projects).toEqual(
 					expect.arrayContaining([expect.objectContaining({ project: "codemem" })]),
+				);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("preflights bulk project mappings before writing any mappings", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES ('acme-work', 'Acme Work', 'team', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+
+				const res = await app.request("/api/sync/sharing-domains/project-mappings/bulk", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						mappings: [
+							{
+								project_pattern: "safe-api",
+								scope_id: "acme-work",
+								workspace_identity: "git:https://git.example.invalid/acme/safe-api.git",
+							},
+							{
+								project_pattern: "unknown",
+								scope_id: "acme-work",
+								workspace_identity: "unmapped:abc123",
+							},
+						],
+					}),
+				});
+				expect(res.status).toBe(400);
+				const mappings = store.db
+					.prepare("SELECT COUNT(*) AS n FROM project_scope_mappings")
+					.get() as { n: number };
+				expect(mappings.n).toBe(0);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("forgets locally owned project memories while leaving peer-owned copies", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
+					.run("https://git.example.invalid/tmp/bogus.git", "bogus", sessionId);
+				insertTestMemory(store, {
+					kind: "discovery",
+					sessionId,
+					title: "local bogus",
+				});
+				insertTestMemory(store, {
+					actorId: "remote-actor",
+					kind: "discovery",
+					originDeviceId: "peer-device",
+					sessionId,
+					title: "peer bogus",
+				});
+
+				const previewRes = await app.request("/api/sync/projects/forget", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						workspace_identity: "https://git.example.invalid/tmp/bogus.git",
+					}),
+				});
+				expect(previewRes.status).toBe(409);
+				const preview = (await previewRes.json()) as {
+					preview: { confirmation_token: string };
+				};
+				expect(preview).toMatchObject({
+					error: "project_forget_confirmation_required",
+					preview: {
+						local_owned_memory_count: 1,
+						peer_owned_memory_count: 1,
+						workspace_identity: "https://git.example.invalid/tmp/bogus.git",
+					},
+				});
+
+				const forgetRes = await app.request("/api/sync/projects/forget", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						confirmation_token: preview.preview.confirmation_token,
+						confirmed: true,
+						workspace_identity: "https://git.example.invalid/tmp/bogus.git",
+					}),
+				});
+				expect(forgetRes.status).toBe(200);
+				expect(await forgetRes.json()).toMatchObject({ forgotten_memory_count: 1 });
+				const rows = store.db
+					.prepare("SELECT title, active FROM memory_items ORDER BY title")
+					.all() as Array<{ active: number; title: string }>;
+				expect(rows).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ active: 0, title: "local bogus" }),
+						expect.objectContaining({ active: 1, title: "peer bogus" }),
+					]),
+				);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects project memory cleanup when the previewed row set changes", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
+					.run("https://git.example.invalid/tmp/bogus.git", "bogus", sessionId);
+				insertTestMemory(store, {
+					kind: "discovery",
+					sessionId,
+					title: "previewed bogus",
+				});
+
+				const previewRes = await app.request("/api/sync/projects/forget", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						workspace_identity: "https://git.example.invalid/tmp/bogus.git",
+					}),
+				});
+				expect(previewRes.status).toBe(409);
+				const preview = (await previewRes.json()) as {
+					preview: { confirmation_token: string };
+				};
+				insertTestMemory(store, {
+					kind: "discovery",
+					sessionId,
+					title: "late bogus",
+				});
+
+				const staleConfirmRes = await app.request("/api/sync/projects/forget", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						confirmation_token: preview.preview.confirmation_token,
+						confirmed: true,
+						workspace_identity: "https://git.example.invalid/tmp/bogus.git",
+					}),
+				});
+				expect(staleConfirmRes.status).toBe(400);
+				const staleConfirm = (await staleConfirmRes.json()) as { error: string };
+				expect(staleConfirm.error).toContain("changed before cleanup");
+				const rows = store.db
+					.prepare("SELECT title, active FROM memory_items ORDER BY title")
+					.all() as Array<{ active: number; title: string }>;
+				expect(rows).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ active: 1, title: "late bogus" }),
+						expect.objectContaining({ active: 1, title: "previewed bogus" }),
+					]),
 				);
 			} finally {
 				cleanup();

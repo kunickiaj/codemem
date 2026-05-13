@@ -44,6 +44,7 @@ type SyncSharingReviewProps = {
 		group: SyncLegacySharedReviewGroup,
 		scopeId: string,
 		confirmedOldCopies: boolean,
+		confirmationToken?: string,
 	) => Promise<LegacySharedReviewReassignmentPreview | null>;
 	onLegacyReview?: () => void;
 	onReview: () => void;
@@ -130,19 +131,17 @@ function LegacySharedReviewRow({
 		group: SyncLegacySharedReviewGroup,
 		scopeId: string,
 		confirmedOldCopies: boolean,
+		confirmationToken?: string,
 	) => Promise<LegacySharedReviewReassignmentPreview | null>;
 	onReview: () => void;
 }) {
 	const groups = item.groups ?? [];
 	const targetScopes = item.targetScopes ?? [];
-	const firstTargetScopeId = targetScopes[0]?.scopeId ?? null;
 	const initialSelections = Object.fromEntries(
-		groups.map((group) => [
-			group.workspaceIdentity,
-			group.suggestedScopeId ?? firstTargetScopeId ?? "",
-		]),
+		groups.map((group) => [group.workspaceIdentity, group.suggestedScopeId ?? ""]),
 	);
 	const [pending, setPending] = useState<Record<string, LegacySharedReviewReassignmentPreview>>({});
+	const [errors, setErrors] = useState<Record<string, string>>({});
 	const [selectedScopes, setSelectedScopes] = useState<Record<string, string>>(initialSelections);
 	const [selectedGroups, setSelectedGroups] = useState<Record<string, boolean>>({});
 	const [filter, setFilter] = useState("all");
@@ -155,8 +154,14 @@ function LegacySharedReviewRow({
 		(group) =>
 			group.suggestedScopeId && !needsProjectCleanup(group) && canReassignLegacyGroup(group),
 	).length;
-	const selectedCount = groups.filter(
+	const selectedReassignableCount = groups.filter(
 		(group) => selectedGroups[group.workspaceIdentity] && canReassignLegacyGroup(group),
+	).length;
+	const selectedCount = groups.filter(
+		(group) =>
+			selectedGroups[group.workspaceIdentity] &&
+			canReassignLegacyGroup(group) &&
+			Boolean(selectedScopes[group.workspaceIdentity]),
 	).length;
 	const visibleGroups = groups.filter((group) => {
 		const cleanup = needsProjectCleanup(group);
@@ -170,11 +175,17 @@ function LegacySharedReviewRow({
 		const selectedScopeId = selectedScopes[group.workspaceIdentity] || group.suggestedScopeId || "";
 		if (!selectedScopeId || !onReassign || busyIdentity) return;
 		setBusyIdentity(group.workspaceIdentity);
+		setErrors((current) => {
+			const next = { ...current };
+			delete next[group.workspaceIdentity];
+			return next;
+		});
 		try {
 			const preview = await onReassign(
 				group,
 				selectedScopeId,
 				Boolean(pending[group.workspaceIdentity]),
+				pending[group.workspaceIdentity]?.confirmation_token,
 			);
 			if (preview) setPending((current) => ({ ...current, [group.workspaceIdentity]: preview }));
 			else {
@@ -184,6 +195,12 @@ function LegacySharedReviewRow({
 					return next;
 				});
 			}
+		} catch (error) {
+			setErrors((current) => ({
+				...current,
+				[group.workspaceIdentity]:
+					error instanceof Error ? error.message : "Unable to reassign legacy review memories.",
+			}));
 		} finally {
 			setBusyIdentity(null);
 		}
@@ -191,6 +208,11 @@ function LegacySharedReviewRow({
 	function updateSelectedScope(group: SyncLegacySharedReviewGroup, scopeId: string) {
 		setSelectedScopes((current) => ({ ...current, [group.workspaceIdentity]: scopeId }));
 		setPending((current) => {
+			const next = { ...current };
+			delete next[group.workspaceIdentity];
+			return next;
+		});
+		setErrors((current) => {
 			const next = { ...current };
 			delete next[group.workspaceIdentity];
 			return next;
@@ -227,25 +249,35 @@ function LegacySharedReviewRow({
 	async function applySelectedGroups() {
 		if (!onReassign || busyIdentity || selectedCount === 0) return;
 		const selected = groups.filter(
-			(group) => selectedGroups[group.workspaceIdentity] && canReassignLegacyGroup(group),
+			(group) =>
+				selectedGroups[group.workspaceIdentity] &&
+				canReassignLegacyGroup(group) &&
+				Boolean(selectedScopes[group.workspaceIdentity]),
 		);
-		const allPreviewed = selected.every((group) => pending[group.workspaceIdentity]);
+		if (selected.every((group) => pending[group.workspaceIdentity])) return;
 		setBusyIdentity("bulk");
 		try {
 			for (const group of selected) {
+				if (pending[group.workspaceIdentity]) continue;
 				const selectedScopeId =
 					selectedScopes[group.workspaceIdentity] || group.suggestedScopeId || "";
 				if (!selectedScopeId) continue;
-				const preview = await onReassign(group, selectedScopeId, allPreviewed);
-				if (preview) {
-					setPending((current) => ({ ...current, [group.workspaceIdentity]: preview }));
-				} else if (allPreviewed) {
-					setPending((current) => {
+				try {
+					const preview = await onReassign(group, selectedScopeId, false);
+					setErrors((current) => {
 						const next = { ...current };
 						delete next[group.workspaceIdentity];
 						return next;
 					});
-					setSelectedGroups((current) => ({ ...current, [group.workspaceIdentity]: false }));
+					if (preview) {
+						setPending((current) => ({ ...current, [group.workspaceIdentity]: preview }));
+					}
+				} catch (error) {
+					setErrors((current) => ({
+						...current,
+						[group.workspaceIdentity]:
+							error instanceof Error ? error.message : "Unable to reassign legacy review memories.",
+					}));
 				}
 			}
 		} finally {
@@ -266,7 +298,7 @@ function LegacySharedReviewRow({
 						{item.memoryCount.toLocaleString()} older shared memories total; review the projects,
 						not individual memories.
 						{shownGroupCount < groupCount
-							? ` Showing the first ${shownGroupCount.toLocaleString()} projects by memory count.`
+							? ` Showing ${shownGroupCount.toLocaleString()} projects; open Projects to review the rest.`
 							: ""}
 					</div>
 					<div className="peer-meta legacy-review-warning">
@@ -331,25 +363,42 @@ function LegacySharedReviewRow({
 					{onReassign && targetScopes.length > 0 ? (
 						<button
 							className="settings-save"
-							disabled={busyIdentity != null || selectedCount === 0}
+							disabled={
+								busyIdentity != null ||
+								selectedCount === 0 ||
+								groups
+									.filter(
+										(group) =>
+											selectedGroups[group.workspaceIdentity] &&
+											canReassignLegacyGroup(group) &&
+											Boolean(selectedScopes[group.workspaceIdentity]),
+									)
+									.every((group) => pending[group.workspaceIdentity])
+							}
 							onClick={() => void applySelectedGroups()}
 							type="button"
 						>
 							{busyIdentity === "bulk"
-								? "Working…"
-								: selectedCount > 0 &&
-										groups
-											.filter(
-												(group) =>
-													selectedGroups[group.workspaceIdentity] && canReassignLegacyGroup(group),
-											)
-											.every((group) => pending[group.workspaceIdentity])
-									? `Apply ${selectedCount.toLocaleString()} selected`
-									: `Preview ${selectedCount.toLocaleString()} selected`}
+								? "Previewing…"
+								: `Preview ${selectedCount.toLocaleString()} selected`}
 						</button>
-					) : onReassign && selectedCount > 0 ? (
+					) : onReassign && selectedReassignableCount > 0 ? (
 						<span className="legacy-review-cleanup-note">
 							Add or join a Sharing domain before bulk reassignment.
+						</span>
+					) : null}
+					{selectedCount > 0 &&
+					groups
+						.filter(
+							(group) =>
+								selectedGroups[group.workspaceIdentity] &&
+								canReassignLegacyGroup(group) &&
+								Boolean(selectedScopes[group.workspaceIdentity]),
+						)
+						.every((group) => pending[group.workspaceIdentity]) ? (
+						<span className="legacy-review-cleanup-note">
+							Bulk actions only preview. Confirm each project individually to avoid partial
+							reassignment.
 						</span>
 					) : null}
 				</div>
@@ -404,6 +453,11 @@ function LegacySharedReviewRow({
 							{group.suggestionReason ? (
 								<div className="legacy-review-reason">{group.suggestionReason}</div>
 							) : null}
+							{errors[group.workspaceIdentity] ? (
+								<div className="legacy-review-confirmation" role="alert">
+									{errors[group.workspaceIdentity]}
+								</div>
+							) : null}
 							{pending[group.workspaceIdentity] ? (
 								<div className="legacy-review-confirmation" role="alert">
 									{pending[group.workspaceIdentity].warning} This will reassign{" "}
@@ -422,8 +476,9 @@ function LegacySharedReviewRow({
 										className="peer-scope-input"
 										disabled={busyIdentity != null}
 										onChange={(event) => updateSelectedScope(group, event.currentTarget.value)}
-										value={selectedScopes[group.workspaceIdentity] || group.suggestedScopeId || ""}
+										value={selectedScopes[group.workspaceIdentity] || ""}
 									>
+										<option value="">Choose domain…</option>
 										{targetScopes.map((scope) => (
 											<option key={scope.scopeId} value={scope.scopeId}>
 												{scope.label} · {scope.authorityType}
@@ -438,11 +493,13 @@ function LegacySharedReviewRow({
 									<button
 										type="button"
 										className="settings-button"
-										disabled={busyIdentity != null}
+										disabled={busyIdentity != null || !selectedScopes[group.workspaceIdentity]}
 										onClick={() => void applyGroup(group)}
 									>
 										{busyIdentity === group.workspaceIdentity
-											? "Reassigning…"
+											? pending[group.workspaceIdentity]
+												? "Reassigning…"
+												: "Previewing…"
 											: pending[group.workspaceIdentity]
 												? "I understand, reassign memories"
 												: "Preview reassignment"}

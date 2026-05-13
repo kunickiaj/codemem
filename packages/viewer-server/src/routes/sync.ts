@@ -1330,14 +1330,12 @@ function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> 
 		});
 	}
 	const totalGroupCount = groupsByIdentity.size;
-	const groups = [...groupsByIdentity.values()]
-		.sort(
-			(left, right) =>
-				right.memory_count - left.memory_count ||
-				(right.last_updated_at ?? "").localeCompare(left.last_updated_at ?? "") ||
-				left.workspace_identity.localeCompare(right.workspace_identity),
-		)
-		.slice(0, 20);
+	const groups = [...groupsByIdentity.values()].sort(
+		(left, right) =>
+			right.memory_count - left.memory_count ||
+			(right.last_updated_at ?? "").localeCompare(left.last_updated_at ?? "") ||
+			left.workspace_identity.localeCompare(right.workspace_identity),
+	);
 	const targetScopes = listSharingDomainSettingsScopes(store.db)
 		.filter(
 			(scope) =>
@@ -1362,6 +1360,7 @@ function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> 
 
 interface LegacySharedReviewReassignmentMemoryRow {
 	id: number;
+	rev: number | null;
 	active: number | null;
 	deleted_at: string | null;
 	updated_at: string | null;
@@ -1380,6 +1379,7 @@ function legacySharedReviewRows(store: MemoryStore): LegacySharedReviewReassignm
 	return store.db
 		.prepare(
 			`SELECT m.id,
+			        m.rev,
 			        m.active,
 			        m.deleted_at,
 			        m.updated_at,
@@ -1401,7 +1401,27 @@ function legacySharedReviewRows(store: MemoryStore): LegacySharedReviewReassignm
 		.all(LEGACY_SHARED_REVIEW_SCOPE_ID) as LegacySharedReviewReassignmentMemoryRow[];
 }
 
+function legacySharedReviewConfirmationToken(input: {
+	rows: LegacySharedReviewReassignmentMemoryRow[];
+	scopeId: string;
+	store: MemoryStore;
+	workspaceIdentity: string;
+}): string {
+	const ownedBySelf = input.store.buildOwnershipPredicate();
+	const payload = input.rows
+		.map((row) => {
+			const ownership = ownedBySelf(row as unknown as Record<string, unknown>) ? "local" : "peer";
+			return `${row.id}:${row.rev ?? 0}:${row.scope_id ?? ""}:${ownership}`;
+		})
+		.sort()
+		.join(",");
+	return Buffer.from(`${input.workspaceIdentity}|${input.scopeId}|${payload}`, "utf8").toString(
+		"base64url",
+	);
+}
+
 interface LegacySharedReviewReassignmentPreview {
+	confirmation_token: string;
 	workspace_identity: string;
 	scope_id: string;
 	target_scope_label: string;
@@ -1411,6 +1431,98 @@ interface LegacySharedReviewReassignmentPreview {
 	affected_peer_device_count: number;
 	affected_peer_device_ids: string[];
 	warning: string;
+}
+
+interface ProjectInventoryMemoryRow {
+	id: number;
+	rev: number | null;
+	project: string | null;
+	cwd: string | null;
+	git_remote: string | null;
+	git_branch: string | null;
+	workspace_id: string | null;
+	actor_id: string | null;
+	origin_device_id: string | null;
+	metadata_json: string | null;
+}
+
+function projectInventoryRowsForWorkspace(
+	store: MemoryStore,
+	workspaceIdentity: string,
+): ProjectInventoryMemoryRow[] {
+	const rows = store.db
+		.prepare(
+			`SELECT m.id,
+			        m.rev,
+			        s.project,
+			        s.cwd,
+			        s.git_remote,
+			        s.git_branch,
+			        m.workspace_id,
+			        m.actor_id,
+			        m.origin_device_id,
+			        m.metadata_json
+			 FROM memory_items m
+			 LEFT JOIN sessions s ON s.id = m.session_id
+			 WHERE m.active = 1
+			   AND m.deleted_at IS NULL`,
+		)
+		.all() as ProjectInventoryMemoryRow[];
+	return rows.filter((row) => {
+		const identity = canonicalWorkspaceIdentity({
+			cwd: row.cwd,
+			gitBranch: row.git_branch,
+			gitRemote: row.git_remote,
+			project: row.project,
+			workspaceId: row.workspace_id,
+		});
+		return identity.value === workspaceIdentity;
+	});
+}
+
+function projectForgetConfirmationToken(
+	store: MemoryStore,
+	rows: ProjectInventoryMemoryRow[],
+): string {
+	const ownedBySelf = store.buildOwnershipPredicate();
+	const payload = rows
+		.map((row) => {
+			const ownership = ownedBySelf(row as unknown as Record<string, unknown>) ? "local" : "peer";
+			return `${row.id}:${row.rev ?? 0}:${ownership}`;
+		})
+		.sort()
+		.join(",");
+	return Buffer.from(payload, "utf8").toString("base64url");
+}
+
+function forgetProjectInventoryLocalMemories(
+	store: MemoryStore,
+	input: { confirmationToken?: string | null; confirmed: boolean; workspaceIdentity: string },
+): Record<string, unknown> {
+	if (!input.workspaceIdentity.trim()) {
+		throw new Error("workspace_identity must be a non-empty string");
+	}
+	const rows = projectInventoryRowsForWorkspace(store, input.workspaceIdentity);
+	if (rows.length === 0) throw new Error("project identity not found");
+	const ownedBySelf = store.buildOwnershipPredicate();
+	const localRows = rows.filter((row) => ownedBySelf(row as unknown as Record<string, unknown>));
+	const confirmationToken = projectForgetConfirmationToken(store, rows);
+	const preview = {
+		confirmation_token: confirmationToken,
+		local_owned_memory_count: localRows.length,
+		peer_owned_memory_count: rows.length - localRows.length,
+		workspace_identity: input.workspaceIdentity,
+	};
+	if (!input.confirmed) {
+		return { confirmed: false, ...preview };
+	}
+	if (input.confirmationToken !== confirmationToken) {
+		throw new Error("project memories changed before cleanup; refresh and try again");
+	}
+	store.db.transaction(() => {
+		for (const row of localRows) store.forget(row.id);
+	})();
+	return { confirmed: true, forgotten_memory_count: localRows.length, ...preview };
 }
 
 function assertLocalDeviceScopeMembership(store: MemoryStore, scopeId: string): void {
@@ -1518,6 +1630,12 @@ function legacySharedReviewReassignmentPreview(
 	return {
 		affected_peer_device_count: peerDeviceIds.length,
 		affected_peer_device_ids: peerDeviceIds.slice(0, 5),
+		confirmation_token: legacySharedReviewConfirmationToken({
+			rows,
+			scopeId: input.scopeId,
+			store,
+			workspaceIdentity: input.workspaceIdentity,
+		}),
 		memory_count: rows.length,
 		reassignable_memory_count: reassignableRows.length,
 		scope_id: input.scopeId,
@@ -1531,16 +1649,21 @@ function legacySharedReviewReassignmentPreview(
 
 function reassignLegacySharedReviewGroup(
 	store: MemoryStore,
-	input: { scopeId: string; workspaceIdentity: string },
+	input: { confirmationToken?: string | null; scopeId: string; workspaceIdentity: string },
 ): Record<string, unknown> {
 	const preview = legacySharedReviewReassignmentPreview(store, input);
+	if (input.confirmationToken !== preview.confirmation_token) {
+		throw new Error(
+			"legacy shared review group changed before reassignment; refresh and try again",
+		);
+	}
 	const rows = reassignableLegacySharedReviewRows(
 		store,
 		legacySharedReviewRowsForWorkspace(store, input.workspaceIdentity),
 	);
-	for (const row of rows) {
-		store.reassignMemoryScope(row.id, input.scopeId);
-	}
+	store.db.transaction(() => {
+		for (const row of rows) store.reassignMemoryScope(row.id, input.scopeId);
+	})();
 	return {
 		ok: true,
 		...preview,
@@ -2696,6 +2819,35 @@ export function syncRoutes(
 		}
 	});
 
+	app.post("/api/sync/projects/forget", async (c) => {
+		const store = getStore();
+		const body = await parseViewerJsonBody(c);
+		if (!body) return c.json({ error: "invalid json" }, 400);
+		try {
+			const workspaceIdentity = optionalViewerStrictString(body, "workspace_identity") ?? "";
+			const confirmationToken = optionalViewerStrictString(body, "confirmation_token");
+			const confirmed = body.confirmed === true;
+			const result = forgetProjectInventoryLocalMemories(store, {
+				confirmationToken,
+				confirmed,
+				workspaceIdentity,
+			});
+			if (!confirmed) {
+				return c.json(
+					{
+						error: "project_forget_confirmation_required",
+						preview: result,
+					},
+					409,
+				);
+			}
+			return c.json({ ok: true, ...result });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return c.json({ error: message }, message.includes("not found") ? 404 : 400);
+		}
+	});
+
 	app.post("/api/sync/legacy-shared-review/reassign", async (c) => {
 		const store = getStore();
 		const body = await parseViewerJsonBody(c);
@@ -2703,6 +2855,7 @@ export function syncRoutes(
 		try {
 			const workspaceIdentity = optionalViewerStrictString(body, "workspace_identity") ?? "";
 			const scopeId = optionalViewerStrictString(body, "scope_id") ?? "";
+			const confirmationToken = optionalViewerStrictString(body, "confirmation_token");
 			const confirmedOldCopies = body.confirmed_old_copies === true;
 			const preview = legacySharedReviewReassignmentPreview(store, {
 				scopeId,
@@ -2720,6 +2873,7 @@ export function syncRoutes(
 			}
 			return c.json(
 				reassignLegacySharedReviewGroup(store, {
+					confirmationToken,
 					scopeId,
 					workspaceIdentity,
 				}),
@@ -2832,7 +2986,11 @@ export function syncRoutes(
 					upsertProjectScopeSettingsMapping(store.db, mappingInput),
 				),
 			);
-			return c.json({ ok: true, mappings: saveMappings() });
+			return c.json({
+				ok: true,
+				mappings: saveMappings(),
+				guardrail_warnings: analyses.flatMap((analysis) => analysis.warnings),
+			});
 		} catch (error) {
 			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
 		}

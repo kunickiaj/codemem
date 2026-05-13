@@ -30,6 +30,10 @@ const pendingConfirmations = new Map<
 	string,
 	{ requiredGuardrailTokens: string[]; scopeId: string; warnings: ProjectScopeGuardrailWarning[] }
 >();
+const pendingForgetConfirmations = new Map<
+	string,
+	{ confirmationToken: string; localOwnedMemoryCount: number; peerOwnedMemoryCount: number }
+>();
 
 function el<T extends HTMLElement>(id: string): T | null {
 	return document.getElementById(id) as T | null;
@@ -163,7 +167,7 @@ async function saveProjectClusterMapping(
 	} catch (error) {
 		showGlobalNotice(
 			error instanceof api.SharingDomainGuardrailConfirmationError
-				? "One identity needs review before bulk assignment. Expand the group and save that identity directly."
+				? "One or more identities in this group need review before bulk assignment. Expand the group and save those identities directly."
 				: error instanceof Error
 					? error.message
 					: "Unable to update project Sharing domains.",
@@ -183,6 +187,36 @@ async function removeProjectMapping(project: ProjectScopeInventoryProject) {
 	} catch (error) {
 		showGlobalNotice(
 			error instanceof Error ? error.message : "Unable to remove project Sharing domain mapping.",
+			"warning",
+		);
+	}
+}
+
+async function forgetProjectMemories(project: ProjectScopeInventoryProject, confirmed = false) {
+	try {
+		const pending = pendingForgetConfirmations.get(project.workspace_identity);
+		const result = await api.forgetProjectInventoryMemories({
+			...(confirmed && pending ? { confirmation_token: pending.confirmationToken } : {}),
+			confirmed,
+			workspace_identity: project.workspace_identity,
+		});
+		pendingForgetConfirmations.delete(project.workspace_identity);
+		showGlobalNotice(
+			`Forgot ${result.forgotten_memory_count.toLocaleString()} local memor${result.forgotten_memory_count === 1 ? "y" : "ies"}. ${result.peer_owned_memory_count.toLocaleString()} peer-owned memor${result.peer_owned_memory_count === 1 ? "y was" : "ies were"} left unchanged.`,
+		);
+		refreshProjects?.();
+	} catch (error) {
+		if (error instanceof api.ProjectForgetConfirmationError) {
+			pendingForgetConfirmations.set(project.workspace_identity, {
+				confirmationToken: error.preview.confirmation_token,
+				localOwnedMemoryCount: error.preview.local_owned_memory_count,
+				peerOwnedMemoryCount: error.preview.peer_owned_memory_count,
+			});
+			refreshProjects?.();
+			return;
+		}
+		showGlobalNotice(
+			error instanceof Error ? error.message : "Unable to forget project memories.",
 			"warning",
 		);
 	}
@@ -309,8 +343,14 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 		changeProject.title = "No sessions are available to reassign for this saved mapping.";
 	}
 	changeProject.addEventListener("click", () => void reassignProject(project));
+	const forget = document.createElement("button");
+	forget.className = "settings-button danger";
+	forget.type = "button";
+	forget.textContent = "Forget local memories…";
+	forget.disabled = (project.memory_count ?? 0) === 0;
+	forget.addEventListener("click", () => void forgetProjectMemories(project));
 
-	actions.append(label, select, save, keepLocal, remove, changeProject);
+	actions.append(label, select, save, keepLocal, remove, changeProject, forget);
 	const pending = pendingConfirmations.get(project.workspace_identity);
 	if (pending) {
 		const warningBox = document.createElement("div");
@@ -353,6 +393,34 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 			refreshProjects?.();
 		});
 		warningBox.append(title, intro, list, confirm, cancel);
+		actions.appendChild(warningBox);
+	}
+	const pendingForget = pendingForgetConfirmations.get(project.workspace_identity);
+	if (pendingForget) {
+		const warningBox = document.createElement("div");
+		warningBox.className = "settings-note project-guardrail-confirmation";
+		warningBox.setAttribute("role", "alert");
+		const title = document.createElement("strong");
+		title.textContent = "Confirm project memory cleanup.";
+		const intro = document.createElement("p");
+		intro.textContent = `${pendingForget.localOwnedMemoryCount.toLocaleString()} locally owned memor${pendingForget.localOwnedMemoryCount === 1 ? "y" : "ies"} will be forgotten. ${pendingForget.peerOwnedMemoryCount.toLocaleString()} peer-owned memor${pendingForget.peerOwnedMemoryCount === 1 ? "y" : "ies"} will be left unchanged.`;
+		const detail = document.createElement("p");
+		detail.textContent =
+			"Use this only to clean up wrongly attributed local project inventory; it forgets actual local memories on this device.";
+		const confirm = document.createElement("button");
+		confirm.className = "settings-button danger";
+		confirm.type = "button";
+		confirm.textContent = "I understand, forget local memories";
+		confirm.addEventListener("click", () => void forgetProjectMemories(project, true));
+		const cancel = document.createElement("button");
+		cancel.className = "settings-button";
+		cancel.type = "button";
+		cancel.textContent = "Cancel";
+		cancel.addEventListener("click", () => {
+			pendingForgetConfirmations.delete(project.workspace_identity);
+			refreshProjects?.();
+		});
+		warningBox.append(title, intro, detail, confirm, cancel);
 		actions.appendChild(warningBox);
 	}
 	return actions;
@@ -482,24 +550,45 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 
 	const actions = document.createElement("div");
 	actions.className = "project-inventory-actions";
+	const hasGuardrailWarnings = projects.some((project) => project.guardrail_warnings.length > 0);
+	const suggestedScopes = new Set(
+		projects
+			.map((project) => project.suggested_scope_id)
+			.filter((scopeId): scopeId is string => Boolean(scopeId)),
+	);
+	const resolvedScopes = new Set(projects.map((project) => project.resolved_scope_id));
 	const select = document.createElement("select");
 	select.className = "project-domain-select";
 	select.setAttribute("aria-label", `Sharing domain for ${projectClusterLabel(projects[0])} group`);
+	const placeholder = document.createElement("option");
+	placeholder.value = "";
+	placeholder.textContent = "Choose domain…";
+	select.appendChild(placeholder);
 	for (const scope of assignableScopes()) {
 		const option = document.createElement("option");
 		option.value = scope.scope_id;
 		option.textContent = scope.label ? `${scope.label} · ${scope.scope_id}` : scope.scope_id;
 		select.appendChild(option);
 	}
-	select.value =
-		projects.find((project) => project.suggested_scope_id)?.suggested_scope_id ??
-		projects[0].resolved_scope_id;
+	select.value = "";
 	const save = document.createElement("button");
 	save.className = "settings-button";
 	save.type = "button";
 	save.textContent = `Save domain for ${projects.length} identities`;
+	save.disabled = true;
 	save.addEventListener("click", () => void saveProjectClusterMapping(projects, select.value));
+	select.addEventListener("change", () => {
+		save.disabled = !select.value || hasGuardrailWarnings;
+	});
 	actions.append(select, save);
+	if (suggestedScopes.size > 1 || resolvedScopes.size > 1 || hasGuardrailWarnings) {
+		const note = document.createElement("div");
+		note.className = "settings-note project-attention-note";
+		note.textContent = hasGuardrailWarnings
+			? "One or more identities in this group need individual review before bulk assignment."
+			: "This group has mixed suggestions or current domains. Choose a domain explicitly before bulk assignment.";
+		actions.appendChild(note);
+	}
 	row.appendChild(actions);
 
 	const details = document.createElement("details");
