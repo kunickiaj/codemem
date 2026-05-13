@@ -171,7 +171,11 @@ jobs:
   release:
     name: Create GitHub Release
     needs: [publish-npm]
-    if: needs.publish-npm.result == 'success'
+    # Use always() to bypass the implicit success() check, otherwise this job
+    # is skipped on workflow_dispatch reruns where the upstream `ci` job is
+    # skipped — the implicit success() requires all transitive needs to have
+    # succeeded, not just direct ones.
+    if: always() && needs.publish-npm.result == 'success'
     runs-on: ubuntu-latest
 
     steps:
