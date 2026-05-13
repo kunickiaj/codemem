@@ -356,6 +356,37 @@ export async function saveSharingDomainProjectMapping(input: {
 	};
 }
 
+export async function saveSharingDomainProjectMappings(input: {
+	mappings: Array<{
+		id?: number | null;
+		workspace_identity?: string | null;
+		project_pattern?: string | null;
+		scope_id: string;
+		priority?: number | null;
+	}>;
+}): Promise<ProjectScopeMapping[]> {
+	const resp = await fetch("/api/sync/sharing-domains/project-mappings/bulk", {
+		method: "PUT",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(input),
+	});
+	const { text, payload } = await readJsonPayload<{
+		error?: string;
+		mappings?: ProjectScopeMapping[];
+		required_guardrails?: string[];
+		required_guardrail_tokens?: string[];
+		guardrail_warnings?: ProjectScopeGuardrailWarning[];
+	}>(resp);
+	if (!resp.ok) {
+		if (payload?.error === "guardrail_confirmation_required") {
+			throw new SharingDomainGuardrailConfirmationError(payload);
+		}
+		throw new Error(payloadError(payload) || text || "request failed");
+	}
+	if (!Array.isArray(payload?.mappings)) throw new Error("response missing mappings");
+	return payload.mappings;
+}
+
 export async function deleteSharingDomainProjectMapping(id: number): Promise<boolean> {
 	const resp = await fetch(`/api/sync/sharing-domains/project-mappings/${encodeURIComponent(id)}`, {
 		method: "DELETE",

@@ -127,7 +127,7 @@ export async function runDedupKeyBackfillPass(
 				cumulativeSkipped > 0
 					? `Dedup-key backfill complete (${cumulativeSkipped} skipped)`
 					: "Dedup-key backfill complete",
-			progressCurrent: processedAfter,
+			progressCurrent: finalProgressTotal,
 			progressTotal: finalProgressTotal,
 			metadata: {
 				total_backfillable: finalProgressTotal,

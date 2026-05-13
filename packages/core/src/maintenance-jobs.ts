@@ -113,13 +113,17 @@ function resolveMetadataJson(
 
 function toSnapshot(row: MaintenanceJobRecord | undefined): MaintenanceJobSnapshot | null {
 	if (!row) return null;
+	const progressCurrent =
+		row.status === "completed" && row.progress_total != null
+			? row.progress_total
+			: row.progress_current;
 	return {
 		kind: row.kind,
 		title: row.title,
 		status: row.status,
 		message: row.message,
 		progress: {
-			current: row.progress_current,
+			current: progressCurrent,
 			total: row.progress_total,
 			unit: row.progress_unit,
 		},
