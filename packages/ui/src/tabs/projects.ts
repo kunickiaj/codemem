@@ -21,9 +21,10 @@ const STATUS_OPTIONS = [
 
 let refreshProjects: RefreshFn | null = null;
 let currentOffset = 0;
-const lastLimit = 25;
+const lastLimit = 250;
 let scopes: SharingDomainScope[] = [];
 const openProjectDetails = new Set<string>();
+const openProjectClusters = new Set<string>();
 const draftDomainSelections = new Map<string, string>();
 const pendingConfirmations = new Map<
 	string,
@@ -62,6 +63,16 @@ function strongestSignal(project: ProjectScopeInventoryProject): string {
 	if (project.git_remote) return project.git_remote;
 	if (project.cwd) return project.cwd;
 	return project.workspace_identity;
+}
+
+function projectClusterKey(project: ProjectScopeInventoryProject): string {
+	if (project.git_remote) return `git:${project.git_remote}`;
+	if (project.project) return `project:${project.project}`;
+	return `identity:${project.workspace_identity}`;
+}
+
+function projectClusterLabel(project: ProjectScopeInventoryProject): string {
+	return project.project || project.display_project || strongestSignal(project);
 }
 
 function scopeLabel(scopeId: string | null | undefined): string {
@@ -123,6 +134,39 @@ async function saveProjectMapping(
 		}
 		showGlobalNotice(
 			error instanceof Error ? error.message : "Unable to update project Sharing domain.",
+			"warning",
+		);
+	}
+}
+
+async function saveProjectClusterMapping(
+	projects: ProjectScopeInventoryProject[],
+	scopeId: string,
+) {
+	const assignable = projects.filter((project) => project.identity_source !== "unmapped");
+	if (assignable.length === 0) return;
+	try {
+		for (const project of assignable) {
+			await api.saveSharingDomainProjectMapping({
+				...(project.mapping_id && project.resolution_reason === "exact_mapping"
+					? { id: project.mapping_id }
+					: {}),
+				project_pattern: project.display_project,
+				scope_id: scopeId,
+				workspace_identity: project.workspace_identity,
+			});
+		}
+		showGlobalNotice(
+			`Updated ${assignable.length} project identit${assignable.length === 1 ? "y" : "ies"}. Device access grants are unchanged.`,
+		);
+		refreshProjects?.();
+	} catch (error) {
+		showGlobalNotice(
+			error instanceof api.SharingDomainGuardrailConfirmationError
+				? "One identity needs review before bulk assignment. Expand the group and save that identity directly."
+				: error instanceof Error
+					? error.message
+					: "Unable to update project Sharing domains.",
 			"warning",
 		);
 	}
@@ -406,6 +450,84 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 	return row;
 }
 
+function clusterDomainLabel(projects: ProjectScopeInventoryProject[]): string {
+	const uniqueScopes = [...new Set(projects.map((project) => project.resolved_scope_id))];
+	return uniqueScopes.length === 1 ? scopeLabel(uniqueScopes[0]) : "Mixed Sharing domains";
+}
+
+function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLElement {
+	if (projects.length === 1) return renderProjectRow(projects[0]);
+	const clusterKey = projectClusterKey(projects[0]);
+	const row = document.createElement("article");
+	row.className = "project-inventory-row project-inventory-cluster";
+
+	const header = document.createElement("div");
+	header.className = "project-inventory-row-header";
+	const title = document.createElement("div");
+	title.className = "project-inventory-title";
+	title.textContent = projectClusterLabel(projects[0]);
+	header.appendChild(title);
+	const domain = document.createElement("div");
+	domain.className = "project-inventory-domain";
+	domain.textContent = clusterDomainLabel(projects);
+	header.appendChild(domain);
+	row.appendChild(header);
+
+	const memoryCount = projects.reduce((total, project) => total + (project.memory_count ?? 0), 0);
+	const sessionCount = projects.reduce((total, project) => total + project.session_count, 0);
+	const meta = document.createElement("div");
+	meta.className = "project-inventory-meta";
+	meta.textContent = `${projects.length} identities · ${sessionCount.toLocaleString()} sessions · ${memoryCount.toLocaleString()} memories`;
+	row.appendChild(meta);
+
+	const actions = document.createElement("div");
+	actions.className = "project-inventory-actions";
+	const select = document.createElement("select");
+	select.className = "project-domain-select";
+	select.setAttribute("aria-label", `Sharing domain for ${projectClusterLabel(projects[0])} group`);
+	for (const scope of assignableScopes()) {
+		const option = document.createElement("option");
+		option.value = scope.scope_id;
+		option.textContent = scope.label ? `${scope.label} · ${scope.scope_id}` : scope.scope_id;
+		select.appendChild(option);
+	}
+	select.value =
+		projects.find((project) => project.suggested_scope_id)?.suggested_scope_id ??
+		projects[0].resolved_scope_id;
+	const save = document.createElement("button");
+	save.className = "settings-button";
+	save.type = "button";
+	save.textContent = `Save domain for ${projects.length} identities`;
+	save.addEventListener("click", () => void saveProjectClusterMapping(projects, select.value));
+	actions.append(select, save);
+	row.appendChild(actions);
+
+	const details = document.createElement("details");
+	details.className = "project-inventory-details";
+	details.open = openProjectClusters.has(clusterKey);
+	details.addEventListener("toggle", () => {
+		if (details.open) openProjectClusters.add(clusterKey);
+		else openProjectClusters.delete(clusterKey);
+	});
+	const summary = document.createElement("summary");
+	summary.textContent = "Show identities in this project";
+	details.appendChild(summary);
+	for (const project of projects) details.appendChild(renderProjectRow(project));
+	row.appendChild(details);
+	return row;
+}
+
+function projectClusters(
+	projects: ProjectScopeInventoryProject[],
+): ProjectScopeInventoryProject[][] {
+	const byKey = new Map<string, ProjectScopeInventoryProject[]>();
+	for (const project of projects) {
+		const key = projectClusterKey(project);
+		byKey.set(key, [...(byKey.get(key) ?? []), project]);
+	}
+	return [...byKey.values()];
+}
+
 function renderEmpty(message: string) {
 	const list = el<HTMLDivElement>("projectsInventoryList");
 	if (!list) return;
@@ -436,12 +558,13 @@ export async function loadProjectsData() {
 		if (result.projects.length === 0) {
 			renderEmpty("No projects match those filters.");
 		} else {
-			for (const project of result.projects) list.appendChild(renderProjectRow(project));
+			for (const cluster of projectClusters(result.projects))
+				list.appendChild(renderProjectCluster(cluster));
 		}
 		meta.textContent =
 			result.total === 0
-				? "0 projects found"
-				: `${result.total} project${result.total === 1 ? "" : "s"} found · showing ${result.offset + 1}-${Math.min(result.offset + result.projects.length, result.total)}`;
+				? "0 project identities found"
+				: `${result.total} project identit${result.total === 1 ? "y" : "ies"} found · showing ${result.offset + 1}-${Math.min(result.offset + result.projects.length, result.total)}`;
 		const prev = el<HTMLButtonElement>("projectsPrevPage");
 		const next = el<HTMLButtonElement>("projectsNextPage");
 		if (prev) prev.disabled = result.offset === 0;
