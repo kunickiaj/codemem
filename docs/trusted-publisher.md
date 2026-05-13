@@ -61,9 +61,11 @@ on one package), use the `workflow_dispatch` path instead of retagging:
 1. Confirm the tag (e.g. `v0.31.1`) still points at the merged release commit.
 2. Trigger the workflow on `main` with the tag input:
    - `gh workflow run release.yml --ref main -f tag=v0.31.1`
-3. The workflow checks out the tag, skips the `CI` job (already passed for
-   the original tag push), and reruns `Publish to npm`. Already-published
-   versions are skipped, missing ones are published.
+3. The workflow validates that the input matches `v<MAJOR>.<MINOR>.<PATCH>[-PRERELEASE]`
+   and resolves it as `refs/tags/<tag>` for checkout, so a non-tag ref
+   (branch name, commit SHA, etc.) cannot be published. The `CI` job is
+   skipped (already passed for the original tag push), and `Publish to npm`
+   reruns. Already-published versions are skipped, missing ones are published.
 4. The `Create GitHub Release` job runs after publish and is also idempotent —
    it skips creation if the release already exists.
 

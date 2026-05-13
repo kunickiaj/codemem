@@ -15,7 +15,12 @@ permissions:
   contents: write
 
 env:
-  RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  # Fully-qualified ref used by actions/checkout. For workflow_dispatch we
+  # always force the ref to a tag so non-tag inputs (branches, SHAs) fail to
+  # check out instead of silently publishing untagged code.
+  RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+  # Bare tag name (e.g. v0.31.1) for dist-tag selection and Release naming.
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
   preflight-tag:
@@ -23,18 +28,47 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Validate dispatch input
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$DISPATCH_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.+-]+)?$ ]]; then
+            echo "Refusing to dispatch release for '$DISPATCH_TAG'." >&2
+            echo "Tag input must match v<MAJOR>.<MINOR>.<PATCH>[-PRERELEASE], e.g. v0.31.1 or v0.32.0-rc.1." >&2
+            exit 1
+          fi
+
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ env.RELEASE_REF }}
 
       - name: Verify tag points at merged main or release branch
+        env:
+          IS_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+          PUSH_SHA: ${{ github.sha }}
+          EXPECTED_TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            RELEASE_TAG_COMMIT="$(git rev-parse HEAD)"
+          # Confirm the checked-out HEAD is exactly the named tag's commit.
+          # actions/checkout was given refs/tags/<tag>, but we verify the local
+          # tag ref still resolves and matches HEAD as defense-in-depth.
+          HEAD_SHA="$(git rev-parse HEAD)"
+          TAG_SHA="$(git rev-parse "refs/tags/${EXPECTED_TAG}^{commit}" 2>/dev/null || true)"
+          if [[ -z "$TAG_SHA" ]]; then
+            echo "Refusing to publish: tag '${EXPECTED_TAG}' did not resolve in the checked-out repo." >&2
+            exit 1
+          fi
+          if [[ "$HEAD_SHA" != "$TAG_SHA" ]]; then
+            echo "Refusing to publish: HEAD ($HEAD_SHA) does not match refs/tags/${EXPECTED_TAG} ($TAG_SHA)." >&2
+            exit 1
+          fi
+          if [[ "$IS_DISPATCH" == "true" ]]; then
+            RELEASE_TAG_COMMIT="$HEAD_SHA"
           else
-            RELEASE_TAG_COMMIT="${{ github.sha }}"
+            RELEASE_TAG_COMMIT="$PUSH_SHA"
           fi
           export RELEASE_TAG_COMMIT
           bash scripts/release-tag-preflight.sh
@@ -88,7 +122,7 @@ jobs:
         id: dist-tag
         run: |
           set -euo pipefail
-          TAG="${{ env.RELEASE_REF }}"
+          TAG="${{ env.RELEASE_TAG }}"
           if [[ "$TAG" == *"-alpha"* ]]; then
             echo "tag=alpha" >> "$GITHUB_OUTPUT"
           elif [[ "$TAG" == *"-beta"* ]]; then
@@ -148,7 +182,7 @@ jobs:
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ env.RELEASE_REF }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
           PRERELEASE_FLAG=""
