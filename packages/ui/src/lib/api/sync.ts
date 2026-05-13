@@ -389,20 +389,20 @@ export async function saveSharingDomainProjectMapping(input: {
 	};
 }
 
-export async function saveSharingDomainProjectMappingsBulk(
-	mappings: ProjectMappingBulkInput[],
-): Promise<ProjectScopeMapping[]> {
+export async function saveSharingDomainProjectMappings(input: {
+	mappings: ProjectMappingBulkInput[];
+}): Promise<ProjectScopeMapping[]> {
 	const resp = await fetch("/api/sync/sharing-domains/project-mappings/bulk", {
-		method: "POST",
+		method: "PUT",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ mappings }),
+		body: JSON.stringify(input),
 	});
 	const { text, payload } = await readJsonPayload<{
 		error?: string;
-		guardrail_warnings?: ProjectScopeGuardrailWarning[];
 		mappings?: ProjectScopeMapping[];
 		required_guardrails?: string[];
 		required_guardrail_tokens?: string[];
+		guardrail_warnings?: ProjectScopeGuardrailWarning[];
 	}>(resp);
 	if (!resp.ok) {
 		if (payload?.error === "guardrail_confirmation_required") {
@@ -410,7 +410,8 @@ export async function saveSharingDomainProjectMappingsBulk(
 		}
 		throw new Error(payloadError(payload) || text || "request failed");
 	}
-	return payload?.mappings ?? [];
+	if (!Array.isArray(payload?.mappings)) throw new Error("response missing mappings");
+	return payload.mappings;
 }
 
 export async function deleteSharingDomainProjectMapping(id: number): Promise<boolean> {

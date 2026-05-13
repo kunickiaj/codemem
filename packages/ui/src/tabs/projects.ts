@@ -150,8 +150,8 @@ async function saveProjectClusterMapping(
 	const assignable = projects.filter((project) => project.identity_source !== "unmapped");
 	if (assignable.length === 0) return;
 	try {
-		await api.saveSharingDomainProjectMappingsBulk(
-			assignable.map((project) => ({
+		await api.saveSharingDomainProjectMappings({
+			mappings: assignable.map((project) => ({
 				...(project.mapping_id && project.resolution_reason === "exact_mapping"
 					? { id: project.mapping_id }
 					: {}),
@@ -159,7 +159,7 @@ async function saveProjectClusterMapping(
 				scope_id: scopeId,
 				workspace_identity: project.workspace_identity,
 			})),
-		);
+		});
 		showGlobalNotice(
 			`Updated ${assignable.length} project identit${assignable.length === 1 ? "y" : "ies"}. Device access grants are unchanged.`,
 		);
