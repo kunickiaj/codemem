@@ -31,9 +31,11 @@ async function reassignLegacySharedReviewGroup(
 	group: SyncLegacySharedReviewGroup,
 	scopeId: string,
 	confirmedOldCopies: boolean,
+	confirmationToken?: string,
 ): Promise<LegacySharedReviewReassignmentPreview | null> {
 	try {
 		const result = (await api.reassignLegacySharedReviewGroup({
+			...(confirmationToken ? { confirmation_token: confirmationToken } : {}),
 			confirmed_old_copies: confirmedOldCopies,
 			scope_id: scopeId,
 			workspace_identity: group.workspaceIdentity,
@@ -46,11 +48,10 @@ async function reassignLegacySharedReviewGroup(
 		return null;
 	} catch (error) {
 		if (error instanceof api.LegacySharedReviewConfirmationError) return error.preview;
-		showGlobalNotice(
-			error instanceof Error ? error.message : "Unable to reassign legacy review memories.",
-			"warning",
-		);
-		return null;
+		const message =
+			error instanceof Error ? error.message : "Unable to reassign legacy review memories.";
+		showGlobalNotice(message, "warning");
+		throw new Error(message);
 	}
 }
 

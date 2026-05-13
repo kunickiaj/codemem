@@ -245,7 +245,40 @@ export interface ProjectReassignmentResult {
 	moved_memory_count: number;
 }
 
+export interface ProjectForgetPreview {
+	confirmation_token: string;
+	confirmed?: boolean;
+	local_owned_memory_count: number;
+	peer_owned_memory_count: number;
+	workspace_identity: string;
+}
+
+type ProjectMappingBulkInput = {
+	id?: number | null;
+	priority?: number | null;
+	project_pattern?: string | null;
+	scope_id: string;
+	source?: string | null;
+	workspace_identity?: string | null;
+};
+
+export interface ProjectForgetResult extends ProjectForgetPreview {
+	forgotten_memory_count: number;
+	ok?: boolean;
+}
+
+export class ProjectForgetConfirmationError extends Error {
+	preview: ProjectForgetPreview;
+
+	constructor(preview: ProjectForgetPreview) {
+		super("Project forget confirmation required");
+		this.name = "ProjectForgetConfirmationError";
+		this.preview = preview;
+	}
+}
+
 export interface LegacySharedReviewReassignmentPreview {
+	confirmation_token: string;
 	workspace_identity: string;
 	scope_id: string;
 	target_scope_label: string;
@@ -356,6 +389,30 @@ export async function saveSharingDomainProjectMapping(input: {
 	};
 }
 
+export async function saveSharingDomainProjectMappingsBulk(
+	mappings: ProjectMappingBulkInput[],
+): Promise<ProjectScopeMapping[]> {
+	const resp = await fetch("/api/sync/sharing-domains/project-mappings/bulk", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ mappings }),
+	});
+	const { text, payload } = await readJsonPayload<{
+		error?: string;
+		guardrail_warnings?: ProjectScopeGuardrailWarning[];
+		mappings?: ProjectScopeMapping[];
+		required_guardrails?: string[];
+		required_guardrail_tokens?: string[];
+	}>(resp);
+	if (!resp.ok) {
+		if (payload?.error === "guardrail_confirmation_required") {
+			throw new SharingDomainGuardrailConfirmationError(payload);
+		}
+		throw new Error(payloadError(payload) || text || "request failed");
+	}
+	return payload?.mappings ?? [];
+}
+
 export async function deleteSharingDomainProjectMapping(id: number): Promise<boolean> {
 	const resp = await fetch(`/api/sync/sharing-domains/project-mappings/${encodeURIComponent(id)}`, {
 		method: "DELETE",
@@ -382,9 +439,33 @@ export async function reassignProjectInventoryProject(input: {
 	return payload;
 }
 
+export async function forgetProjectInventoryMemories(input: {
+	confirmation_token?: string;
+	confirmed?: boolean;
+	workspace_identity: string;
+}): Promise<ProjectForgetResult> {
+	const resp = await fetch("/api/sync/projects/forget", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(input),
+	});
+	const { text, payload } = await readJsonPayload<
+		ProjectForgetResult & { error?: string; preview?: ProjectForgetPreview }
+	>(resp);
+	if (!resp.ok) {
+		if (payload?.error === "project_forget_confirmation_required" && payload.preview) {
+			throw new ProjectForgetConfirmationError(payload.preview);
+		}
+		throw new Error(payloadError(payload) || text || "request failed");
+	}
+	if (!payload?.workspace_identity) throw new Error("response missing project forget result");
+	return payload;
+}
+
 export async function reassignLegacySharedReviewGroup(input: {
 	workspace_identity: string;
 	scope_id: string;
+	confirmation_token?: string;
 	confirmed_old_copies?: boolean;
 }): Promise<LegacySharedReviewReassignmentResult> {
 	const resp = await fetch("/api/sync/legacy-shared-review/reassign", {

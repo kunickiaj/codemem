@@ -81,6 +81,7 @@ describe("SyncSharingReview", () => {
 			.mockResolvedValueOnce({
 				affected_peer_device_count: 1,
 				affected_peer_device_ids: ["peer-a"],
+				confirmation_token: "legacy-token",
 				memory_count: 3,
 				reassignable_memory_count: 2,
 				scope_id: "oss",
@@ -130,6 +131,7 @@ describe("SyncSharingReview", () => {
 			expect.objectContaining({ workspaceIdentity: "https://git.example.invalid/oss/dev.git" }),
 			"oss",
 			false,
+			undefined,
 		);
 		expect(root.textContent).toContain("2 of 3 memories");
 		expect(root.textContent).toContain("1 peer-owned copies will be left unchanged");
@@ -146,6 +148,7 @@ describe("SyncSharingReview", () => {
 			expect.objectContaining({ workspaceIdentity: "https://git.example.invalid/oss/dev.git" }),
 			"oss",
 			true,
+			"legacy-token",
 		);
 	});
 
@@ -153,6 +156,7 @@ describe("SyncSharingReview", () => {
 		const onLegacyReassign = vi.fn().mockResolvedValueOnce({
 			affected_peer_device_count: 0,
 			affected_peer_device_ids: [],
+			confirmation_token: "legacy-token",
 			memory_count: 960,
 			reassignable_memory_count: 960,
 			scope_id: "oss",
@@ -207,13 +211,123 @@ describe("SyncSharingReview", () => {
 			expect.objectContaining({ workspaceIdentity: "workspace-id:codemem" }),
 			"oss",
 			false,
+			undefined,
 		);
+	});
+
+	it("requires an explicit destination for legacy groups without a suggestion", async () => {
+		const onLegacyReassign = vi.fn().mockResolvedValueOnce({
+			affected_peer_device_count: 0,
+			affected_peer_device_ids: [],
+			confirmation_token: "legacy-token",
+			memory_count: 10,
+			reassignable_memory_count: 10,
+			scope_id: "oss",
+			skipped_memory_count: 0,
+			target_scope_label: "OSS",
+			warning: "This changes future sync authorization.",
+			workspace_identity: "workspace-id:codemem",
+		});
+		const root = renderReview(
+			<SyncSharingReview
+				items={[]}
+				legacyReview={{
+					groups: [
+						{
+							displayProject: "codemem",
+							identitySource: "workspace_id",
+							lastUpdatedAt: null,
+							memoryCount: 10,
+							suggestedScopeId: null,
+							suggestionReason: null,
+							workspaceIdentity: "workspace-id:codemem",
+						},
+					],
+					memoryCount: 10,
+					scopeId: "legacy-shared-review",
+					targetScopes: [
+						{ authorityType: "local", label: "Personal", scopeId: "personal" },
+						{ authorityType: "coordinator", label: "OSS", scopeId: "oss" },
+					],
+				}}
+				onLegacyReassign={onLegacyReassign}
+				onReview={() => {}}
+			/>,
+		);
+
+		const select = root.querySelector("select");
+		expect(select?.value).toBe("");
+		expect(root.textContent).toContain("Choose domain…");
+		let applyButton = [...root.querySelectorAll("button")].find(
+			(button) => button.textContent === "Preview reassignment",
+		) as HTMLButtonElement | undefined;
+		expect(applyButton?.disabled).toBe(true);
+
+		act(() => {
+			if (!select) throw new Error("select missing");
+			select.value = "oss";
+			select.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		applyButton = [...root.querySelectorAll("button")].find(
+			(button) => button.textContent === "Preview reassignment",
+		) as HTMLButtonElement | undefined;
+		expect(applyButton?.disabled).toBe(false);
+		await act(async () => {
+			applyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		});
+
+		expect(onLegacyReassign).toHaveBeenCalledWith(
+			expect.objectContaining({ workspaceIdentity: "workspace-id:codemem" }),
+			"oss",
+			false,
+			undefined,
+		);
+	});
+
+	it("keeps failed legacy reassignment visible instead of clearing like success", async () => {
+		const onLegacyReassign = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("local device is not a member of Sharing domain oss"));
+		const root = renderReview(
+			<SyncSharingReview
+				items={[]}
+				legacyReview={{
+					groups: [
+						{
+							displayProject: "codemem",
+							identitySource: "git_remote",
+							lastUpdatedAt: null,
+							memoryCount: 10,
+							suggestedScopeId: "oss",
+							suggestionReason: "Existing project mapping can be reviewed.",
+							workspaceIdentity: "workspace-id:codemem",
+						},
+					],
+					memoryCount: 10,
+					scopeId: "legacy-shared-review",
+					targetScopes: [{ authorityType: "coordinator", label: "OSS", scopeId: "oss" }],
+				}}
+				onLegacyReassign={onLegacyReassign}
+				onReview={() => {}}
+			/>,
+		);
+
+		const applyButton = [...root.querySelectorAll("button")].find(
+			(button) => button.textContent === "Preview reassignment",
+		);
+		await act(async () => {
+			applyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		});
+
+		expect(root.textContent).toContain("local device is not a member");
+		expect(root.textContent).toContain("Preview reassignment");
 	});
 
 	it("filters cleanup groups and previews selected suggested groups in bulk", async () => {
 		const onLegacyReassign = vi.fn().mockResolvedValue({
 			affected_peer_device_count: 0,
 			affected_peer_device_ids: [],
+			confirmation_token: "legacy-token",
 			memory_count: 10,
 			reassignable_memory_count: 10,
 			scope_id: "oss",
@@ -281,6 +395,12 @@ describe("SyncSharingReview", () => {
 			"oss",
 			false,
 		);
+		expect(root.textContent).toContain("Bulk actions only preview");
+		expect(
+			[...root.querySelectorAll("button")].find(
+				(button) => button.textContent === "Preview 1 selected",
+			)?.disabled,
+		).toBe(true);
 	});
 
 	it("does not show bulk preview controls without a reassignment target", () => {
