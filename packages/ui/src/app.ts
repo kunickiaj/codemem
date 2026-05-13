@@ -59,9 +59,147 @@ async function loadRuntimeLabel() {
 type RefreshState = "idle" | "refreshing" | "paused" | "error";
 let lastAnnouncedRefreshState: RefreshState | null = null;
 const RECONNECT_POLL_MS = 1500;
+const LEGACY_UPGRADE_NOTICE_DISMISSED_KEY = "codemem-legacy-upgrade-notice-dismissed";
 
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnecting = false;
+let legacyUpgradeNoticeShown = false;
+let legacyUpgradeNoticePreviousFocus: HTMLElement | null = null;
+
+type LegacyUpgradeReviewSummary = {
+	groupCount: number;
+	memoryCount: number;
+};
+
+function readNonNegativeCount(value: unknown, fallback = 0): number {
+	const count = Number(value);
+	return Number.isFinite(count) ? Math.max(0, count) : fallback;
+}
+
+function readLegacyUpgradeReviewSummary(payload: unknown): LegacyUpgradeReviewSummary | null {
+	if (!payload || typeof payload !== "object") return null;
+	const review = (payload as { legacy_shared_review?: unknown }).legacy_shared_review ?? payload;
+	if (!review || typeof review !== "object") return null;
+	const raw = review as {
+		groups?: unknown;
+		has_data?: unknown;
+		memory_count?: unknown;
+		total_group_count?: unknown;
+	};
+	if (raw.has_data !== true) return null;
+	const groups = Array.isArray(raw.groups) ? raw.groups : [];
+	const groupCount = readNonNegativeCount(raw.total_group_count, groups.length);
+	const memoryCount = readNonNegativeCount(raw.memory_count);
+	if (groupCount <= 0 || memoryCount <= 0) return null;
+	return { groupCount, memoryCount };
+}
+
+function isLegacyUpgradeNoticeDismissed(): boolean {
+	try {
+		return localStorage.getItem(LEGACY_UPGRADE_NOTICE_DISMISSED_KEY) === "1";
+	} catch {
+		return false;
+	}
+}
+
+function dismissLegacyUpgradeNoticeIfRequested() {
+	const checkbox = document.getElementById("legacyUpgradeDontShow") as HTMLInputElement | null;
+	if (!checkbox?.checked) return;
+	try {
+		localStorage.setItem(LEGACY_UPGRADE_NOTICE_DISMISSED_KEY, "1");
+	} catch {}
+}
+
+function legacyUpgradeFocusableElements(): HTMLElement[] {
+	const modal = $("legacyUpgradeModal");
+	if (!modal || modal.hidden) return [];
+	return Array.from(
+		modal.querySelectorAll<HTMLElement>(
+			'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+		),
+	).filter((element) => !element.hidden && element.offsetParent !== null);
+}
+
+function focusLegacyUpgradeModal() {
+	const focusable = legacyUpgradeFocusableElements();
+	const primary = $("legacyUpgradeReviewGroups") as HTMLElement | null;
+	(primary && focusable.includes(primary) ? primary : focusable[0])?.focus();
+}
+
+function handleLegacyUpgradeModalKeydown(event: KeyboardEvent) {
+	const modal = $("legacyUpgradeModal");
+	if (!modal || modal.hidden) return;
+	if (event.key === "Escape") {
+		event.preventDefault();
+		dismissLegacyUpgradeNoticeIfRequested();
+		setLegacyUpgradeNotice(false);
+		return;
+	}
+	if (event.key !== "Tab") return;
+	const focusable = legacyUpgradeFocusableElements();
+	if (focusable.length === 0) return;
+	const first = focusable[0];
+	const last = focusable[focusable.length - 1];
+	if (event.shiftKey && document.activeElement === first) {
+		event.preventDefault();
+		last.focus();
+		return;
+	}
+	if (!event.shiftKey && document.activeElement === last) {
+		event.preventDefault();
+		first.focus();
+	}
+}
+
+function setLegacyUpgradeBackgroundInert(inert: boolean) {
+	for (const element of document.querySelectorAll<HTMLElement>(
+		"header, .tab-bar, .tab-panel, #toastRoot, #viewerReconnectOverlay, #settingsDialogMount",
+	)) {
+		if (element.id === "viewerReconnectOverlay" && element.hidden) continue;
+		element.inert = inert;
+		if (inert) element.setAttribute("aria-hidden", "true");
+		else element.removeAttribute("aria-hidden");
+	}
+}
+
+function setLegacyUpgradeNotice(open: boolean, summary?: LegacyUpgradeReviewSummary) {
+	const overlay = $("legacyUpgradeModalBackdrop");
+	const modal = $("legacyUpgradeModal");
+	const summaryEl = $("legacyUpgradeSummary");
+	if (!overlay || !modal || !summaryEl) return;
+	if (summary) {
+		summaryEl.textContent = `${summary.groupCount.toLocaleString()} older ${summary.groupCount === 1 ? "project needs" : "projects need"} a Sharing domain. They contain ${summary.memoryCount.toLocaleString()} older shared memories total; you will review the projects, not individual memories.`;
+	}
+	overlay.hidden = !open;
+	modal.hidden = !open;
+	if (open) {
+		legacyUpgradeNoticePreviousFocus = document.activeElement as HTMLElement | null;
+		document.addEventListener("keydown", handleLegacyUpgradeModalKeydown);
+		focusLegacyUpgradeModal();
+		setLegacyUpgradeBackgroundInert(true);
+		return;
+	}
+	setLegacyUpgradeBackgroundInert(false);
+	document.removeEventListener("keydown", handleLegacyUpgradeModalKeydown);
+	if (legacyUpgradeNoticePreviousFocus && document.contains(legacyUpgradeNoticePreviousFocus)) {
+		legacyUpgradeNoticePreviousFocus.focus();
+	}
+	legacyUpgradeNoticePreviousFocus = null;
+}
+
+function maybeShowLegacyUpgradeNotice(summary: LegacyUpgradeReviewSummary | null) {
+	if (!summary || legacyUpgradeNoticeShown || isLegacyUpgradeNoticeDismissed()) return;
+	legacyUpgradeNoticeShown = true;
+	setLegacyUpgradeNotice(true, summary);
+}
+
+async function checkLegacyUpgradeNotice() {
+	if (legacyUpgradeNoticeShown || isLegacyUpgradeNoticeDismissed()) return;
+	try {
+		const payload = await api.loadSyncStatus(false, "", { includeJoinRequests: false });
+		maybeShowLegacyUpgradeNotice(readLegacyUpgradeReviewSummary(payload));
+	} catch {}
+}
 
 function setReconnectOverlay(open: boolean, detail?: string) {
 	const overlay = $("viewerReconnectOverlay");
@@ -359,6 +497,7 @@ async function doRefresh() {
 		}
 
 		await Promise.all(promises);
+		maybeShowLegacyUpgradeNotice(readLegacyUpgradeReviewSummary(state.lastSyncLegacySharedReview));
 		const nextTab = resolveAccessibleTab(state.activeTab, state.lastCoordinatorAdminStatus);
 		if (nextTab !== state.activeTab) {
 			setActiveTab(nextTab);
@@ -431,8 +570,32 @@ $("viewerReconnectRetry")?.addEventListener("click", async () => {
 	if (!reconnecting) setReconnectOverlay(false);
 });
 
+$("legacyUpgradeReviewGroups")?.addEventListener("click", () => {
+	dismissLegacyUpgradeNoticeIfRequested();
+	setLegacyUpgradeNotice(false);
+	window.location.hash = "sync";
+	setTimeout(
+		() => document.getElementById("syncSharingReview")?.scrollIntoView({ block: "start" }),
+		120,
+	);
+});
+
+$("legacyUpgradeReviewProjects")?.addEventListener("click", () => {
+	dismissLegacyUpgradeNoticeIfRequested();
+	setLegacyUpgradeNotice(false);
+	window.location.hash = "projects";
+});
+
+$("legacyUpgradeNotNow")?.addEventListener("click", () => {
+	dismissLegacyUpgradeNoticeIfRequested();
+	setLegacyUpgradeNotice(false);
+});
+
 // Version label
 loadRuntimeLabel();
+
+// Upgrade notice
+checkLegacyUpgradeNotice();
 
 // Start
 refresh();

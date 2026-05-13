@@ -47,22 +47,29 @@ describe("SyncSharingReview", () => {
 					],
 					memoryCount: 3,
 					scopeId: "legacy-shared-review",
+					targetScopes: [
+						{ authorityType: "local", label: "Personal", scopeId: "personal" },
+						{ authorityType: "coordinator", label: "OSS", scopeId: "oss" },
+					],
 				}}
+				onLegacyReassign={vi.fn()}
 				onLegacyReview={onLegacyReview}
 				onReview={() => {}}
 			/>,
 		);
 
 		expect(root.textContent).toContain("Legacy shared review");
-		expect(root.textContent).toContain("3 historical shared memories");
-		expect(root.textContent).toContain("oss-dev · git_remote · suggested oss");
+		expect(root.textContent).toContain("1 older project needs a Sharing domain");
+		expect(root.textContent).toContain("3 older shared memories total");
+		expect(root.textContent).toContain("oss-dev");
+		expect(root.textContent).toContain("Matched by git remote · suggested oss");
+		expect(root.textContent).toContain("Destination Sharing domain");
+		expect(root.textContent).toContain("OSS · coordinator · suggested");
 		expect(root.textContent).toContain("legacy data is not promoted automatically");
-		expect(root.textContent).toContain(
-			"Remapping or revocation does not erase data already copied",
-		);
+		expect(root.textContent).toContain("Nothing moves automatically");
 
 		const buttons = [...root.querySelectorAll("button")];
-		const button = buttons.find((item) => item.textContent === "Review projects");
+		const button = buttons.find((item) => item.textContent === "Manage all projects");
 		expect(button).toBeTruthy();
 		button?.click();
 		expect(onLegacyReview).toHaveBeenCalledTimes(1);
@@ -101,6 +108,10 @@ describe("SyncSharingReview", () => {
 					],
 					memoryCount: 3,
 					scopeId: "legacy-shared-review",
+					targetScopes: [
+						{ authorityType: "local", label: "Personal", scopeId: "personal" },
+						{ authorityType: "coordinator", label: "OSS", scopeId: "oss" },
+					],
 				}}
 				onLegacyReassign={onLegacyReassign}
 				onReview={() => {}}
@@ -108,7 +119,7 @@ describe("SyncSharingReview", () => {
 		);
 
 		const applyButton = [...root.querySelectorAll("button")].find(
-			(button) => button.textContent === "Review suggested reassignment",
+			(button) => button.textContent === "Preview reassignment",
 		);
 		expect(applyButton).toBeTruthy();
 		await act(async () => {
@@ -136,5 +147,173 @@ describe("SyncSharingReview", () => {
 			"oss",
 			true,
 		);
+	});
+
+	it("lets users choose a non-suggested legacy destination before preview", async () => {
+		const onLegacyReassign = vi.fn().mockResolvedValueOnce({
+			affected_peer_device_count: 0,
+			affected_peer_device_ids: [],
+			memory_count: 960,
+			reassignable_memory_count: 960,
+			scope_id: "oss",
+			skipped_memory_count: 0,
+			target_scope_label: "OSS",
+			warning: "This changes future sync authorization.",
+			workspace_identity: "workspace-id:codemem",
+		});
+		const root = renderReview(
+			<SyncSharingReview
+				items={[]}
+				legacyReview={{
+					groups: [
+						{
+							displayProject: "codemem",
+							identitySource: "workspace_id",
+							lastUpdatedAt: null,
+							memoryCount: 960,
+							suggestedScopeId: "personal",
+							suggestionReason: "Existing project mapping can be reviewed.",
+							workspaceIdentity: "workspace-id:codemem",
+						},
+					],
+					memoryCount: 960,
+					scopeId: "legacy-shared-review",
+					targetScopes: [
+						{ authorityType: "local", label: "Personal", scopeId: "personal" },
+						{ authorityType: "coordinator", label: "OSS", scopeId: "oss" },
+					],
+				}}
+				onLegacyReassign={onLegacyReassign}
+				onReview={() => {}}
+			/>,
+		);
+
+		const select = root.querySelector("select");
+		expect(select?.value).toBe("personal");
+		act(() => {
+			if (!select) throw new Error("select missing");
+			select.value = "oss";
+			select.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+
+		const applyButton = [...root.querySelectorAll("button")].find(
+			(button) => button.textContent === "Preview reassignment",
+		);
+		await act(async () => {
+			applyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		});
+
+		expect(onLegacyReassign).toHaveBeenCalledWith(
+			expect.objectContaining({ workspaceIdentity: "workspace-id:codemem" }),
+			"oss",
+			false,
+		);
+	});
+
+	it("filters cleanup groups and previews selected suggested groups in bulk", async () => {
+		const onLegacyReassign = vi.fn().mockResolvedValue({
+			affected_peer_device_count: 0,
+			affected_peer_device_ids: [],
+			memory_count: 10,
+			reassignable_memory_count: 10,
+			scope_id: "oss",
+			skipped_memory_count: 0,
+			target_scope_label: "OSS",
+			warning: "This changes future sync authorization.",
+			workspace_identity: "workspace-id:codemem",
+		});
+		const root = renderReview(
+			<SyncSharingReview
+				items={[]}
+				legacyReview={{
+					groups: [
+						{
+							displayProject: "codemem",
+							identitySource: "git_remote",
+							lastUpdatedAt: null,
+							memoryCount: 10,
+							suggestedScopeId: "oss",
+							suggestionReason: "Existing project mapping can be reviewed.",
+							workspaceIdentity: "workspace-id:codemem",
+						},
+						{
+							displayProject: "fatal: not a git repository (or any parent): .git",
+							identitySource: "cwd",
+							lastUpdatedAt: null,
+							memoryCount: 122,
+							suggestedScopeId: "personal",
+							suggestionReason: "Existing project mapping can be reviewed.",
+							workspaceIdentity: "cwd:fatal",
+						},
+					],
+					memoryCount: 132,
+					scopeId: "legacy-shared-review",
+					targetScopes: [
+						{ authorityType: "local", label: "Personal", scopeId: "personal" },
+						{ authorityType: "coordinator", label: "OSS", scopeId: "oss" },
+					],
+				}}
+				onLegacyReassign={onLegacyReassign}
+				onReview={() => {}}
+			/>,
+		);
+
+		expect(root.textContent).toContain("Needs cleanup 1");
+		expect(root.textContent).toContain("Unclear project identity");
+
+		const selectSuggested = [...root.querySelectorAll("button")].find(
+			(button) => button.textContent === "Select suggested",
+		);
+		act(() => {
+			selectSuggested?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		});
+
+		const bulkPreview = [...root.querySelectorAll("button")].find(
+			(button) => button.textContent === "Preview 1 selected",
+		);
+		await act(async () => {
+			bulkPreview?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		});
+
+		expect(onLegacyReassign).toHaveBeenCalledTimes(1);
+		expect(onLegacyReassign).toHaveBeenCalledWith(
+			expect.objectContaining({ workspaceIdentity: "workspace-id:codemem" }),
+			"oss",
+			false,
+		);
+	});
+
+	it("does not show bulk preview controls without a reassignment target", () => {
+		const root = renderReview(
+			<SyncSharingReview
+				items={[]}
+				legacyReview={{
+					groups: [
+						{
+							displayProject: "codemem",
+							identitySource: "git_remote",
+							lastUpdatedAt: null,
+							memoryCount: 10,
+							suggestedScopeId: null,
+							suggestionReason: null,
+							workspaceIdentity: "workspace-id:codemem",
+						},
+					],
+					memoryCount: 10,
+					scopeId: "legacy-shared-review",
+					targetScopes: [],
+				}}
+				onLegacyReassign={vi.fn()}
+				onReview={() => {}}
+			/>,
+		);
+
+		const checkbox = root.querySelector<HTMLInputElement>('input[type="checkbox"]');
+		act(() => {
+			checkbox?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		});
+
+		expect(root.textContent).not.toContain("Preview 1 selected");
+		expect(root.textContent).toContain("Add or join a Sharing domain before bulk reassignment");
 	});
 });

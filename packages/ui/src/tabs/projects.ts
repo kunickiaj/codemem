@@ -10,13 +10,13 @@ import { openSyncInputDialog } from "./sync/sync-dialogs";
 type RefreshFn = () => void;
 
 const STATUS_OPTIONS = [
-	["", "All statuses"],
-	["local_only", "Local only"],
-	["unmapped", "Unmapped"],
-	["suggested", "Suggested assignment"],
-	["explicitly_mapped", "Explicitly mapped"],
-	["legacy_review", "Legacy review"],
-	["needs_attention", "Review before mapping"],
+	["", "All projects"],
+	["needs_attention", "Needs review"],
+	["suggested", "Has suggestion"],
+	["local_only", "Stays on this device"],
+	["explicitly_mapped", "Already assigned"],
+	["legacy_review", "Older shared data"],
+	["unmapped", "Missing project identity"],
 ] as const;
 
 let refreshProjects: RefreshFn | null = null;
@@ -41,13 +41,13 @@ function formatStatus(status: string): string {
 function formatResolution(reason: string): string {
 	switch (reason) {
 		case "exact_mapping":
-			return "explicit project mapping";
+			return "assigned to a Sharing domain";
 		case "pattern_mapping":
-			return "pattern mapping";
+			return "assigned by matching rule";
 		case "explicit_override":
-			return "explicit override";
+			return "manually assigned";
 		default:
-			return "local-only fallback";
+			return "stays on this device";
 	}
 }
 

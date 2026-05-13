@@ -1342,6 +1342,7 @@ function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> 
 				: null,
 		});
 	}
+	const totalGroupCount = groupsByIdentity.size;
 	const groups = [...groupsByIdentity.values()]
 		.sort(
 			(left, right) =>
@@ -1350,12 +1351,25 @@ function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> 
 				left.workspace_identity.localeCompare(right.workspace_identity),
 		)
 		.slice(0, 20);
+	const targetScopes = listSharingDomainSettingsScopes(store.db)
+		.filter(
+			(scope) =>
+				scope.scope_id !== LOCAL_DEFAULT_SCOPE_ID &&
+				scope.scope_id !== LEGACY_SHARED_REVIEW_SCOPE_ID,
+		)
+		.map((scope) => ({
+			authority_type: scope.authority_type,
+			label: scope.label || scope.scope_id,
+			scope_id: scope.scope_id,
+		}));
 	return {
 		scope_id: LEGACY_SHARED_REVIEW_SCOPE_ID,
 		memory_count: memoryCount,
 		has_data: memoryCount > 0,
 		last_updated_at: row?.last_updated_at ?? null,
 		groups,
+		total_group_count: totalGroupCount,
+		target_scopes: targetScopes,
 	};
 }
 

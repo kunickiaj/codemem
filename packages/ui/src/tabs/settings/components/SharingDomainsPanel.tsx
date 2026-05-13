@@ -199,15 +199,25 @@ export function SharingDomainsPanel() {
 		}
 	};
 
+	const openProjects = () => {
+		window.location.hash = "projects";
+	};
+
 	return (
 		<div className="settings-group">
-			<h3 className="settings-group-title">Sharing domains</h3>
+			<h3 className="settings-group-title">Advanced Sharing-domain mappings</h3>
 			<div className="small">
-				Map known projects to their default Sharing domain. This changes local scope resolution for
-				future writes; it does not grant any peer or coordinator member access by itself.
+				Use Projects for day-to-day project/domain review. This fallback panel exposes the same
+				mapping controls for troubleshooting and recovery.
 			</div>
 			<div className="small">
-				Unmapped and unknown projects stay on Local only until you assign a domain.
+				Saving a mapping changes local scope resolution for future writes; it does not grant any
+				peer or coordinator member access by itself.
+			</div>
+			<div className="section-actions">
+				<button className="settings-button" onClick={openProjects} type="button">
+					Open Projects review
+				</button>
 			</div>
 			{settings ? (
 				<GuardrailMessages

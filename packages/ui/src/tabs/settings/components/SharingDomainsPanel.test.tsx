@@ -190,7 +190,8 @@ describe("SharingDomainsPanel", () => {
 		const root = renderIntoDocument(<SharingDomainsPanel />);
 		await flushEffects();
 
-		expect(root.textContent).toContain("Unmapped and unknown projects stay on Local only");
+		expect(root.textContent).toContain("Use Projects for day-to-day project/domain review");
+		expect(root.textContent).toContain("Open Projects review");
 		expect(root.textContent).toContain("Current default: Local only · local-only fallback");
 
 		const select = root.querySelector("select");

@@ -85,6 +85,19 @@ export function renderSyncSharingReview() {
 					: [],
 				memoryCount: legacyCount,
 				scopeId: String(legacyRaw.scope_id || "legacy-shared-review"),
+				totalGroupCount: Number(legacyRaw.total_group_count || legacyRaw.groups?.length || 0),
+				targetScopes: Array.isArray(legacyRaw.target_scopes)
+					? legacyRaw.target_scopes
+							.map((scope) => {
+								const raw = scope as Record<string, unknown>;
+								return {
+									authorityType: String(raw.authority_type || "unknown"),
+									label: String(raw.label || raw.scope_id || "Unknown domain"),
+									scopeId: String(raw.scope_id || ""),
+								};
+							})
+							.filter((scope) => scope.scopeId)
+					: [],
 			}
 		: null;
 	if (!items.length && !legacyReview) {

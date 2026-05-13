@@ -123,6 +123,8 @@ export interface CachedLegacySharedReview {
 	has_data?: boolean;
 	last_updated_at?: string | null;
 	groups?: unknown[];
+	total_group_count?: number;
+	target_scopes?: unknown[];
 }
 
 export interface DiscoveredDevice {

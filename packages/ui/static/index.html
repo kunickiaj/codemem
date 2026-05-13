@@ -1978,6 +1978,18 @@
       .sync-action ~ .sync-action { margin-top: var(--sp-2); }
 
       .health-action-text, .sync-action-text { font-size: 13px; color: var(--text-primary); flex: 1; min-width: 0; }
+      .settings-link,
+      .sync-subview-link {
+        color: var(--accent);
+        text-decoration-color: color-mix(in srgb, var(--accent) 52%, transparent);
+        text-underline-offset: 3px;
+        transition: color 140ms ease, text-decoration-color 140ms ease;
+      }
+      .settings-link:hover,
+      .sync-subview-link:hover {
+        color: var(--accent-hover);
+        text-decoration-color: currentColor;
+      }
       .sync-section-heading {
         display: flex;
         align-items: center;
@@ -2073,6 +2085,108 @@
       .actor-details { min-width: 0; display: grid; gap: 6px; }
       .actor-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       .actor-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; justify-content: flex-end; }
+      .legacy-review-card {
+        display: grid;
+        gap: var(--sp-3);
+        padding: var(--sp-3);
+        border: 1px solid color-mix(in srgb, var(--accent-warm) 24%, var(--border));
+        border-radius: var(--radius-lg);
+        background: color-mix(in srgb, var(--accent-warm-subtle) 34%, var(--surface-1));
+      }
+      .legacy-review-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: var(--sp-3);
+      }
+      .legacy-review-summary { margin-top: 6px; max-width: 78ch; color: var(--text-secondary); }
+      .legacy-review-warning { margin-top: 4px; max-width: 78ch; }
+      .legacy-review-groups {
+        display: grid;
+        gap: var(--sp-2);
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .legacy-review-toolbar {
+        display: grid;
+        gap: var(--sp-2);
+        padding: var(--sp-2);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+      }
+      .legacy-review-filter-row,
+      .legacy-review-bulk-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sp-2);
+        align-items: center;
+      }
+      .legacy-filter.active {
+        background: var(--accent-subtle);
+        border-color: color-mix(in srgb, var(--accent) 44%, var(--border));
+        color: var(--accent);
+      }
+      .legacy-review-search { flex: 1 1 260px; min-width: min(260px, 100%); }
+      .legacy-review-group {
+        display: grid;
+        gap: var(--sp-2);
+        padding: var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-2);
+      }
+      .legacy-review-group-main {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: var(--sp-3);
+        align-items: start;
+      }
+      .legacy-review-title-wrap { display: flex; align-items: flex-start; gap: var(--sp-2); min-width: 0; }
+      .legacy-review-group-title { color: var(--text-primary); font-weight: 700; overflow-wrap: anywhere; }
+      .legacy-review-group-meta,
+      .legacy-review-reason {
+        margin-top: 2px;
+        color: var(--text-tertiary);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .legacy-review-cleanup-note {
+        margin-top: 6px;
+        color: var(--accent-warm);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .legacy-review-count {
+        justify-self: end;
+        white-space: nowrap;
+        padding: 3px 9px;
+        border-radius: var(--radius-pill);
+        background: var(--accent-neutral-subtle);
+        color: var(--text-secondary);
+        font-family: var(--font-mono);
+        font-size: 12px;
+      }
+      .legacy-review-confirmation {
+        padding: var(--sp-2) var(--sp-3);
+        border: 1px solid color-mix(in srgb, var(--accent-warm) 35%, var(--border));
+        border-radius: var(--radius-md);
+        background: var(--accent-warm-subtle);
+        color: var(--text-secondary);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      .legacy-review-target {
+        display: grid;
+        gap: 5px;
+        color: var(--text-tertiary);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .legacy-review-actions { display: flex; justify-content: flex-end; }
       .actor-name-input { min-width: 220px; }
       .actor-merge-controls { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
       .actor-merge-select { min-width: 200px; }
@@ -2614,6 +2728,22 @@
       }
       @media (max-height: 720px) { .modal { align-items: flex-start; } }
       .modal-backdrop[hidden], .modal[hidden] { display: none; }
+
+      .legacy-upgrade-modal .modal-card { width: min(620px, 100%); }
+      .legacy-upgrade-summary {
+        padding: var(--sp-3);
+        border: 1px solid color-mix(in srgb, var(--accent-warm) 28%, var(--border));
+        border-radius: var(--radius-md);
+        background: var(--accent-warm-subtle);
+        color: var(--text-secondary);
+        line-height: 1.5;
+      }
+      .legacy-upgrade-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sp-2);
+        justify-content: flex-end;
+      }
 
       .modal-card {
         width: min(520px, 100%);
@@ -3343,6 +3473,11 @@
         .feed-visibility-controls { align-items: stretch; }
         .feed-visibility-select { width: 100%; }
         .actor-actions { justify-content: flex-start; }
+        .legacy-review-header { flex-direction: column; }
+        .legacy-review-group-main { grid-template-columns: 1fr; }
+        .legacy-review-count { justify-self: start; }
+        .legacy-review-actions { justify-content: flex-start; }
+        .legacy-review-bulk-row .settings-save { width: 100%; }
       }
 
       @media (max-width: 520px) {
@@ -3418,6 +3553,49 @@
         </div>
         <div>
           <button class="settings-button" id="viewerReconnectRetry">Retry now</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="legacyUpgradeModalBackdrop" hidden></div>
+    <div
+      aria-describedby="legacyUpgradeDescription legacyUpgradeSummary"
+      aria-labelledby="legacyUpgradeTitle"
+      aria-modal="true"
+      class="modal legacy-upgrade-modal"
+      hidden
+      id="legacyUpgradeModal"
+      role="dialog"
+    >
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2 id="legacyUpgradeTitle">Choose where older shared memories belong</h2>
+        </div>
+        <div class="modal-body">
+          <div class="small" id="legacyUpgradeDescription">
+            Some memories were shared before codemem had clear Sharing domains. We kept them out
+            of normal sync until you choose which project/domain they belong to.
+          </div>
+          <div class="legacy-upgrade-summary" id="legacyUpgradeSummary"></div>
+          <div class="small">
+            You’ll review projects, not individual memories. Nothing moves automatically, and this
+            will not erase copies another device may already have received.
+          </div>
+          <label class="field-checkbox" for="legacyUpgradeDontShow">
+            <input class="cm-checkbox" id="legacyUpgradeDontShow" type="checkbox" />
+            <span>Don’t show this again</span>
+          </label>
+        </div>
+        <div class="modal-footer">
+          <div class="legacy-upgrade-actions">
+            <button class="settings-button" id="legacyUpgradeReviewProjects" type="button">
+              Manage all projects
+            </button>
+            <button class="settings-button" id="legacyUpgradeNotNow" type="button">Not now</button>
+            <button class="settings-save" id="legacyUpgradeReviewGroups" type="button">
+              Start review
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -3659,7 +3837,7 @@
         <div class="section-header">
           <div>
             <h2>Projects & Sharing domains</h2>
-            <div class="section-meta">Review project/worktree identities and choose the Sharing domain future memories use. Metadata correction stays in the Feed for now.</div>
+            <div class="section-meta">Choose which Sharing domain future memories use. “Stays on this device” means no Sharing domain is assigned yet, so it belongs in Projects review rather than Sync triage.</div>
           </div>
         </div>
         <div class="projects-toolbar">
