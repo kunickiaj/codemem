@@ -674,7 +674,16 @@ export function memoryRoutes(getStore: StoreFactory) {
 		if (!store.get(memoryId)) {
 			return c.json({ error: "memory not found" }, 404);
 		}
-		const appliesTo = typeof body.applies_to === "string" ? body.applies_to : null;
+		// applies_to is REQUIRED — treating a missing field as null silently
+		// resets the memory to the 'project' default. That's a destructive
+		// update masquerading as a no-op, so reject malformed payloads.
+		if (typeof body.applies_to !== "string" || body.applies_to.trim().length === 0) {
+			return c.json(
+				{ error: "applies_to is required and must be one of user|org|toolchain|project" },
+				400,
+			);
+		}
+		const appliesTo = body.applies_to;
 		const appliesToKey =
 			body.applies_to_key === null
 				? null

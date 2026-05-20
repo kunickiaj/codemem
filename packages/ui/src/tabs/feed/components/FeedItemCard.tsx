@@ -92,10 +92,22 @@ export function FeedItemCard({
 	const [savingVisibility, setSavingVisibility] = useState(false);
 	const [deletingMemory, setDeletingMemory] = useState(false);
 	const [movingProject, setMovingProject] = useState(false);
-	// applies_to layer: in v1 only project ↔ user is exposed in the UI.
-	// Org/toolchain require a key input and arrive in a follow-up slice.
-	const initialAppliesTo = item.applies_to === "user" ? "user" : "project";
-	const [selectedAppliesTo, setSelectedAppliesTo] = useState<"project" | "user">(initialAppliesTo);
+	// applies_to layer: in v1 only project ↔ user is editable from this UI.
+	// Org/toolchain require a key picker and arrive in a follow-up slice — but
+	// preserve the true value here so existing org/toolchain memories are not
+	// misrepresented as project-scoped, and so picking from the project/user
+	// dropdown can't silently overwrite a non-project/user assignment.
+	const itemAppliesTo: "user" | "org" | "toolchain" | "project" =
+		item.applies_to === "user" ||
+		item.applies_to === "org" ||
+		item.applies_to === "toolchain" ||
+		item.applies_to === "project"
+			? item.applies_to
+			: "project";
+	const appliesToEditable = itemAppliesTo === "user" || itemAppliesTo === "project";
+	const [selectedAppliesTo, setSelectedAppliesTo] = useState<
+		"user" | "org" | "toolchain" | "project"
+	>(itemAppliesTo);
 	const [savingAppliesTo, setSavingAppliesTo] = useState(false);
 	const summarySections = summaryObj ? renderSummarySections(summaryObj) : [];
 
@@ -119,7 +131,14 @@ export function FeedItemCard({
 	}, [visibility]);
 
 	useEffect(() => {
-		setSelectedAppliesTo(item.applies_to === "user" ? "user" : "project");
+		const next: "user" | "org" | "toolchain" | "project" =
+			item.applies_to === "user" ||
+			item.applies_to === "org" ||
+			item.applies_to === "toolchain" ||
+			item.applies_to === "project"
+				? item.applies_to
+				: "project";
+		setSelectedAppliesTo(next);
 	}, [item.applies_to]);
 
 	useEffect(() => {
@@ -443,26 +462,38 @@ export function FeedItemCard({
 									h("option", { value: "shared" }, "Share with peers"),
 								),
 								h("div", { className: "feed-visibility-note" }, visibilityNote),
-								h(
-									"select",
-									{
-										"aria-label": `Applicability scope for ${String(item.title || "memory")}`,
-										className: "feed-applies-to-select",
-										disabled: savingAppliesTo,
-										onChange: (event) => {
-											const nextValue =
-												String((event.currentTarget as HTMLSelectElement).value) === "user"
-													? "user"
-													: "project";
-											void saveAppliesTo(nextValue);
-										},
-										title:
-											"Org and toolchain layers are deferred — only project and user can be picked here.",
-										value: selectedAppliesTo,
-									},
-									h("option", { value: "project" }, "Project — this project only"),
-									h("option", { value: "user" }, "User — all your projects"),
-								),
+								appliesToEditable
+									? h(
+											"select",
+											{
+												"aria-label": `Applicability scope for ${String(item.title || "memory")}`,
+												className: "feed-applies-to-select",
+												disabled: savingAppliesTo,
+												onChange: (event) => {
+													const nextValue =
+														String((event.currentTarget as HTMLSelectElement).value) === "user"
+															? "user"
+															: "project";
+													void saveAppliesTo(nextValue);
+												},
+												title:
+													"Org and toolchain layers are managed in advanced settings (coming soon).",
+												value: selectedAppliesTo,
+											},
+											h("option", { value: "project" }, "Project — this project only"),
+											h("option", { value: "user" }, "User — all your projects"),
+										)
+									: h(
+											"div",
+											{
+												className: "feed-applies-to-readonly",
+												title:
+													"This memory is scoped to an org or toolchain. Manage these in advanced settings (coming soon).",
+											},
+											`${selectedAppliesTo === "org" ? "Org" : "Toolchain"}${
+												item.applies_to_key ? ` (${item.applies_to_key})` : ""
+											}`,
+										),
 							)
 						: null,
 				),

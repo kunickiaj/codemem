@@ -1097,6 +1097,40 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("rejects /api/memories/applies-to when applies_to is missing (400)", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				const memoryId = insertTestMemory(store, {
+					sessionId,
+					kind: "decision",
+					title: "Memory",
+				});
+
+				const res = await app.request("/api/memories/applies-to", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: JSON.stringify({ memory_id: memoryId }),
+				});
+				expect(res.status).toBe(400);
+				const body = (await res.json()) as { error?: string };
+				expect(body.error).toMatch(/applies_to/);
+				// Memory should be untouched.
+				const row = store.db
+					.prepare("SELECT applies_to FROM memory_items WHERE id = ?")
+					.get(memoryId) as { applies_to: string };
+				expect(row.applies_to).toBe("project");
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("returns 404 for a non-existent memory on /api/memories/applies-to", async () => {
 			const { app, cleanup } = createTestApp();
 			try {
