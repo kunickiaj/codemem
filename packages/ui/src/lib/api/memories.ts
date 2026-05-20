@@ -50,6 +50,27 @@ export async function moveMemoryProject(
 	return payload;
 }
 
+export async function updateMemoryApplicability(
+	memoryId: number,
+	appliesTo: "user" | "org" | "toolchain" | "project",
+	appliesToKey: string | null,
+): Promise<{ item?: { applies_to: string; applies_to_key: string | null } }> {
+	const resp = await fetch("/api/memories/applies-to", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			memory_id: memoryId,
+			applies_to: appliesTo,
+			applies_to_key: appliesToKey,
+		}),
+	});
+	const { text, payload } = await readJsonPayload<{
+		item?: { applies_to: string; applies_to_key: string | null };
+	}>(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	return payload;
+}
+
 export async function forgetMemory(memoryId: number): Promise<{ status?: string }> {
 	const resp = await fetch("/api/memories/forget", {
 		method: "POST",

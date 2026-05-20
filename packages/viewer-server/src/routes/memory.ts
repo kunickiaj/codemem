@@ -656,6 +656,42 @@ export function memoryRoutes(getStore: StoreFactory) {
 		}
 	});
 
+	// POST /api/memories/applies-to
+	app.post("/api/memories/applies-to", async (c) => {
+		const store = getStore();
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid JSON" }, 400);
+		}
+		const memoryId = parseStrictInteger(
+			typeof body.memory_id === "string" ? body.memory_id : String(body.memory_id ?? ""),
+		);
+		if (memoryId == null || memoryId <= 0) {
+			return c.json({ error: "memory_id must be int" }, 400);
+		}
+		if (!store.get(memoryId)) {
+			return c.json({ error: "memory not found" }, 404);
+		}
+		const appliesTo = typeof body.applies_to === "string" ? body.applies_to : null;
+		const appliesToKey =
+			body.applies_to_key === null
+				? null
+				: typeof body.applies_to_key === "string"
+					? body.applies_to_key
+					: undefined;
+		try {
+			const item = store.updateMemoryApplicability(memoryId, appliesTo, appliesToKey);
+			return c.json({ item });
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (msg.includes("not found")) return c.json({ error: msg }, 404);
+			if (msg.includes("not owned")) return c.json({ error: msg }, 403);
+			return c.json({ error: msg }, 400);
+		}
+	});
+
 	// POST /api/memories/forget
 	app.post("/api/memories/forget", async (c) => {
 		const store = getStore();

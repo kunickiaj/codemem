@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { and, desc, eq, gt, inArray, isNotNull, lt, lte, or, type SQL, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import { type Applicability, validateApplicability } from "./applicability.js";
 import type { Database } from "./db.js";
 import {
 	assertSchemaReady,
@@ -1196,6 +1197,97 @@ export class MemoryStore {
 					});
 				} catch {
 					// Non-fatal
+				}
+
+				const updated = this.get(memoryId);
+				if (!updated) {
+					throw new Error("memory not found after update");
+				}
+				return updated;
+			})
+			.immediate();
+	}
+
+	// updateMemoryApplicability
+
+	/**
+	 * Update the applicability of an active, locally-owned memory.
+	 * Applies strict validation: only known layers, key required for
+	 * org/toolchain and forbidden for user/project. Appends a
+	 * `applies_to_history` change-log entry (last-N debugging trail, not
+	 * an immutable audit) to metadata and emits a replication op so peers
+	 * in the same sharing domain learn about the change.
+	 *
+	 * Note: this method intentionally does NOT touch `scope_id`. Applicability
+	 * (where the rule applies) is orthogonal to the sharing domain (who can
+	 * read it). The sharing-domain wall is preserved by leaving scope_id alone;
+	 * pack composition (codemem-68ci / G1.4) filters the sticky-rules band per
+	 * scope_id so a work-domain rule with applies_to=user never bleeds into a
+	 * personal project's pack.
+	 */
+	updateMemoryApplicability(
+		memoryId: number,
+		appliesTo: string | null | undefined,
+		appliesToKey: string | null | undefined,
+	): MemoryItemResponse {
+		const normalized: Applicability = validateApplicability({
+			applies_to: appliesTo,
+			applies_to_key: appliesToKey,
+		});
+
+		return this.db
+			.transaction(() => {
+				const row = this.d
+					.select()
+					.from(schema.memoryItems)
+					.where(and(eq(schema.memoryItems.id, memoryId), eq(schema.memoryItems.active, 1)))
+					.get() as MemoryItem | undefined;
+				if (!row) {
+					throw new Error("memory not found");
+				}
+				if (!this.memoryOwnedBySelf(row)) {
+					throw new Error("memory not owned by this device");
+				}
+
+				const meta = fromJson(row.metadata_json);
+				const priorHistory = Array.isArray(meta.applies_to_history)
+					? (meta.applies_to_history as unknown[])
+					: [];
+				priorHistory.push({
+					from: row.applies_to,
+					from_key: row.applies_to_key,
+					to: normalized.applies_to,
+					key: normalized.applies_to_key,
+					at: nowIso(),
+					by: this.deviceId,
+				});
+				// Cap history to the last 20 entries to keep metadata bounded.
+				meta.applies_to_history = priorHistory.slice(-20);
+				meta.clock_device_id = this.deviceId;
+
+				const now = nowIso();
+				const rev = (row.rev ?? 0) + 1;
+
+				this.d
+					.update(schema.memoryItems)
+					.set({
+						applies_to: normalized.applies_to,
+						applies_to_key: normalized.applies_to_key,
+						updated_at: now,
+						metadata_json: toJson(meta),
+						rev,
+					})
+					.where(eq(schema.memoryItems.id, memoryId))
+					.run();
+
+				try {
+					recordReplicationOp(this.db, {
+						memoryId,
+						opType: "upsert",
+						deviceId: this.deviceId,
+					});
+				} catch {
+					// Non-fatal — same pattern as updateMemoryVisibility.
 				}
 
 				const updated = this.get(memoryId);

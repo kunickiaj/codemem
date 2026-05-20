@@ -46,6 +46,8 @@ export interface FeedItem {
 	origin_source?: string;
 	origin_device_id?: string;
 	trust_state?: string;
+	applies_to?: string;
+	applies_to_key?: string | null;
 	metadata_json?: FeedItemMetadata;
 	summary?: unknown;
 }

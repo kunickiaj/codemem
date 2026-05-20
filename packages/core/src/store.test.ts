@@ -1598,6 +1598,191 @@ describe("MemoryStore", () => {
 		});
 	});
 
+	describe("updateMemoryApplicability", () => {
+		it("changes applies_to from default 'project' to 'user' with no key", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "decision", "Use fish shell", "Body");
+
+			const updated = store.updateMemoryApplicability(memId, "user", null);
+			expect(updated.applies_to).toBe("user");
+			expect(updated.applies_to_key).toBeNull();
+		});
+
+		it("changes applies_to to 'toolchain' with a key", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "decision", "pnpm not npm", "Body");
+
+			const updated = store.updateMemoryApplicability(memId, "toolchain", "pnpm");
+			expect(updated.applies_to).toBe("toolchain");
+			expect(updated.applies_to_key).toBe("pnpm");
+		});
+
+		it("bumps rev and updates updated_at on change", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "decision", "Rule", "Body");
+
+			const before = store.get(memId);
+			const beforeRev = Number(before?.rev ?? 0);
+			const updated = store.updateMemoryApplicability(memId, "user", null);
+			expect(updated.rev).toBe(beforeRev + 1);
+			expect(updated.updated_at).not.toBe(before?.updated_at);
+		});
+
+		it("appends an applies_to_history change-log entry to metadata", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "decision", "Rule", "Body");
+
+			store.updateMemoryApplicability(memId, "user", null);
+			const after = store.get(memId);
+			const history = (after?.metadata_json as Record<string, unknown>).applies_to_history as Array<
+				Record<string, unknown>
+			>;
+			expect(Array.isArray(history)).toBe(true);
+			expect(history.length).toBe(1);
+			expect(history[0]?.from).toBe("project");
+			expect(history[0]?.from_key).toBeNull();
+			expect(history[0]?.to).toBe("user");
+			expect(history[0]?.key).toBeNull();
+			expect(history[0]?.by).toBe(store.deviceId);
+			expect(typeof history[0]?.at).toBe("string");
+		});
+
+		it("records the previous applies_to_key on layer transitions", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "decision", "Rule", "Body");
+
+			store.updateMemoryApplicability(memId, "toolchain", "pnpm");
+			store.updateMemoryApplicability(memId, "toolchain", "npm");
+			const after = store.get(memId);
+			const history = (after?.metadata_json as Record<string, unknown>).applies_to_history as Array<
+				Record<string, unknown>
+			>;
+			expect(history[1]?.from).toBe("toolchain");
+			expect(history[1]?.from_key).toBe("pnpm");
+			expect(history[1]?.to).toBe("toolchain");
+			expect(history[1]?.key).toBe("npm");
+		});
+
+		it("caps applies_to_history at 20 entries", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "decision", "Rule", "Body");
+
+			for (let i = 0; i < 25; i++) {
+				store.updateMemoryApplicability(memId, i % 2 === 0 ? "user" : "project", null);
+			}
+			const after = store.get(memId);
+			const history = (after?.metadata_json as Record<string, unknown>).applies_to_history as Array<
+				Record<string, unknown>
+			>;
+			expect(history.length).toBe(20);
+			// Sequence i=0..24 produces toggles. With cap=20 the first retained
+			// entry is from iteration i=5 (project → 'project'), preceded by
+			// i=4's resulting state (user).
+			expect(history[0]?.from).toBe("user");
+			expect(history[0]?.to).toBe("project");
+		});
+
+		it("does not mutate scope_id (sharing-domain wall preserved by omission)", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "decision", "Rule", "Body");
+			const before = store.db
+				.prepare("SELECT scope_id FROM memory_items WHERE id = ?")
+				.get(memId) as { scope_id: string | null };
+
+			store.updateMemoryApplicability(memId, "user", null);
+
+			const after = store.db
+				.prepare("SELECT scope_id FROM memory_items WHERE id = ?")
+				.get(memId) as { scope_id: string | null };
+			expect(after.scope_id).toBe(before.scope_id);
+		});
+
+		it("appends additional change-log entries on subsequent changes", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "decision", "Rule", "Body");
+
+			store.updateMemoryApplicability(memId, "user", null);
+			store.updateMemoryApplicability(memId, "toolchain", "pnpm");
+
+			const after = store.get(memId);
+			const history = (after?.metadata_json as Record<string, unknown>).applies_to_history as Array<
+				Record<string, unknown>
+			>;
+			expect(history.length).toBe(2);
+			expect(history[1]?.from).toBe("user");
+			expect(history[1]?.to).toBe("toolchain");
+			expect(history[1]?.key).toBe("pnpm");
+		});
+
+		it("emits a replication-op on change", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "decision", "Rule", "Body");
+			const before = (
+				store.db.prepare("SELECT COUNT(*) AS n FROM replication_ops").get() as { n: number }
+			).n;
+
+			store.updateMemoryApplicability(memId, "user", null);
+
+			const after = (
+				store.db.prepare("SELECT COUNT(*) AS n FROM replication_ops").get() as { n: number }
+			).n;
+			expect(after).toBeGreaterThan(before);
+		});
+
+		it("throws on invalid applies_to enum", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "decision", "Rule", "Body");
+			expect(() => store.updateMemoryApplicability(memId, "team", null)).toThrow(/applies_to/);
+		});
+
+		it("throws when applies_to_key is missing for 'org'", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "decision", "Rule", "Body");
+			expect(() => store.updateMemoryApplicability(memId, "org", null)).toThrow(/applies_to_key/);
+		});
+
+		it("throws when applies_to_key is provided for 'user'", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "decision", "Rule", "Body");
+			expect(() => store.updateMemoryApplicability(memId, "user", "leaked")).toThrow(
+				/applies_to_key/,
+			);
+		});
+
+		it("throws for non-existent memory", () => {
+			expect(() => store.updateMemoryApplicability(99999, "user", null)).toThrow(
+				/memory not found/,
+			);
+		});
+
+		it("throws for inactive memory", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "decision", "Rule", "Body");
+			store.forget(memId);
+			expect(() => store.updateMemoryApplicability(memId, "user", null)).toThrow(
+				/memory not found/,
+			);
+		});
+
+		it("throws for memory owned by another device", () => {
+			const sessionId = insertTestSession(store.db);
+			store.db
+				.prepare(
+					`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+					tags_text, active, created_at, updated_at, metadata_json,
+					origin_device_id, rev, scope_id)
+					VALUES (?, 'decision', 'Foreign', 'Body', 0.5, '', 1, ?, ?, '{}', 'other-device', 1, 'local-default')`,
+				)
+				.run(sessionId, new Date().toISOString(), new Date().toISOString());
+			const foreignId = Number(
+				(store.db.prepare("SELECT last_insert_rowid() as id").get() as { id: number }).id,
+			);
+			expect(() => store.updateMemoryApplicability(foreignId, "user", null)).toThrow(
+				/not owned by this device/,
+			);
+		});
+	});
+
 	describe("close", () => {
 		it("closes the database connection", () => {
 			const sessionId = insertTestSession(store.db);

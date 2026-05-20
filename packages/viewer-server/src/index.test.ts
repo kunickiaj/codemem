@@ -961,6 +961,160 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("updates applies_to via /api/memories/applies-to", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				const memoryId = insertTestMemory(store, {
+					sessionId,
+					kind: "decision",
+					title: "Use fish shell everywhere",
+				});
+
+				const res = await app.request("/api/memories/applies-to", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: JSON.stringify({ memory_id: memoryId, applies_to: "user", applies_to_key: null }),
+				});
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					item: { applies_to: string; applies_to_key: string | null };
+				};
+				expect(body.item.applies_to).toBe("user");
+				expect(body.item.applies_to_key).toBeNull();
+
+				const row = store.db
+					.prepare("SELECT applies_to, applies_to_key FROM memory_items WHERE id = ?")
+					.get(memoryId) as { applies_to: string; applies_to_key: string | null };
+				expect(row.applies_to).toBe("user");
+				expect(row.applies_to_key).toBeNull();
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("accepts a toolchain key on /api/memories/applies-to", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				const memoryId = insertTestMemory(store, {
+					sessionId,
+					kind: "decision",
+					title: "pnpm not npm",
+				});
+
+				const res = await app.request("/api/memories/applies-to", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: JSON.stringify({
+						memory_id: memoryId,
+						applies_to: "toolchain",
+						applies_to_key: "pnpm",
+					}),
+				});
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					item: { applies_to: string; applies_to_key: string | null };
+				};
+				expect(body.item.applies_to).toBe("toolchain");
+				expect(body.item.applies_to_key).toBe("pnpm");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects /api/memories/applies-to with an unknown applies_to (400)", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				const memoryId = insertTestMemory(store, {
+					sessionId,
+					kind: "decision",
+					title: "Memory",
+				});
+
+				const res = await app.request("/api/memories/applies-to", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: JSON.stringify({ memory_id: memoryId, applies_to: "team", applies_to_key: null }),
+				});
+				expect(res.status).toBe(400);
+				const body = (await res.json()) as { error?: string };
+				expect(body.error).toMatch(/applies_to/);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects /api/memories/applies-to without a key for toolchain (400)", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				const memoryId = insertTestMemory(store, {
+					sessionId,
+					kind: "decision",
+					title: "Memory",
+				});
+
+				const res = await app.request("/api/memories/applies-to", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: JSON.stringify({
+						memory_id: memoryId,
+						applies_to: "toolchain",
+						applies_to_key: null,
+					}),
+				});
+				expect(res.status).toBe(400);
+				const body = (await res.json()) as { error?: string };
+				expect(body.error).toMatch(/applies_to_key/);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("returns 404 for a non-existent memory on /api/memories/applies-to", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const res = await app.request("/api/memories/applies-to", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: JSON.stringify({ memory_id: 99999, applies_to: "user", applies_to_key: null }),
+				});
+				expect(res.status).toBe(404);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("forgets an owned memory via the viewer API", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {

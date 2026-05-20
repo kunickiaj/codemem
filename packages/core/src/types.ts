@@ -61,6 +61,10 @@ export interface MemoryItem {
 	deleted_at: string | null;
 	rev: number;
 	scope_id: string | null;
+	// Applicability: WHERE the rule applies (user/org/toolchain/project).
+	// See packages/core/src/applicability.ts for normalization/validation.
+	applies_to: string;
+	applies_to_key: string | null;
 }
 
 export interface Artifact {

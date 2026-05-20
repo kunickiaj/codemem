@@ -92,6 +92,11 @@ export function FeedItemCard({
 	const [savingVisibility, setSavingVisibility] = useState(false);
 	const [deletingMemory, setDeletingMemory] = useState(false);
 	const [movingProject, setMovingProject] = useState(false);
+	// applies_to layer: in v1 only project ↔ user is exposed in the UI.
+	// Org/toolchain require a key input and arrive in a follow-up slice.
+	const initialAppliesTo = item.applies_to === "user" ? "user" : "project";
+	const [selectedAppliesTo, setSelectedAppliesTo] = useState<"project" | "user">(initialAppliesTo);
+	const [savingAppliesTo, setSavingAppliesTo] = useState(false);
 	const summarySections = summaryObj ? renderSummarySections(summaryObj) : [];
 
 	useEffect(() => {
@@ -112,6 +117,10 @@ export function FeedItemCard({
 	useEffect(() => {
 		setSelectedVisibility(visibility === "shared" ? "shared" : "private");
 	}, [visibility]);
+
+	useEffect(() => {
+		setSelectedAppliesTo(item.applies_to === "user" ? "user" : "project");
+	}, [item.applies_to]);
 
 	useEffect(() => {
 		if (!isNew) return;
@@ -162,6 +171,54 @@ export function FeedItemCard({
 						bodyClassName,
 					) || h("div", { className: bodyClassName })
 			: h("div", { className: "feed-body" });
+
+	async function saveAppliesTo(next: "project" | "user") {
+		const previous = selectedAppliesTo;
+		if (next === previous) return;
+
+		// Broadening from project → user widens this rule's applicability
+		// to every project this device sees. Narrowing is safe and skips
+		// the prompt.
+		if (next === "user") {
+			const titleText = String(displayTitle || "this memory").trim();
+			const truncatedTitle =
+				titleText.length > 80 ? `${titleText.slice(0, 79).trimEnd()}…` : titleText;
+			const confirmed = await openSyncConfirmDialog({
+				autoFocusAction: "cancel",
+				title: "Apply to all your projects?",
+				description: `Promoting "${truncatedTitle}" to user scope means this rule will be injected into packs for every project on this device. You can scope it back to this project at any time.`,
+				confirmLabel: "Apply user-wide",
+				cancelLabel: "Keep project-only",
+				tone: "default",
+			});
+			if (!confirmed) {
+				return;
+			}
+		}
+
+		setSelectedAppliesTo(next);
+		setSavingAppliesTo(true);
+		try {
+			const payload = await api.updateMemoryApplicability(memoryId, next, null);
+			if (payload?.item) {
+				onReplace(payload.item as FeedItem);
+				onViewRefresh();
+			}
+			showGlobalNotice(
+				next === "user"
+					? "Rule now applies across all your projects."
+					: "Rule scoped back to this project.",
+			);
+		} catch (error) {
+			setSelectedAppliesTo(previous);
+			showGlobalNotice(
+				error instanceof Error ? error.message : "Failed to update scope.",
+				"warning",
+			);
+		} finally {
+			setSavingAppliesTo(false);
+		}
+	}
 
 	async function saveVisibility(nextVisibility: "private" | "shared") {
 		const previousVisibility = currentVisibility;
@@ -386,6 +443,26 @@ export function FeedItemCard({
 									h("option", { value: "shared" }, "Share with peers"),
 								),
 								h("div", { className: "feed-visibility-note" }, visibilityNote),
+								h(
+									"select",
+									{
+										"aria-label": `Applicability scope for ${String(item.title || "memory")}`,
+										className: "feed-applies-to-select",
+										disabled: savingAppliesTo,
+										onChange: (event) => {
+											const nextValue =
+												String((event.currentTarget as HTMLSelectElement).value) === "user"
+													? "user"
+													: "project";
+											void saveAppliesTo(nextValue);
+										},
+										title:
+											"Org and toolchain layers are deferred — only project and user can be picked here.",
+										value: selectedAppliesTo,
+									},
+									h("option", { value: "project" }, "Project — this project only"),
+									h("option", { value: "user" }, "User — all your projects"),
+								),
 							)
 						: null,
 				),

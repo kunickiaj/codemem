@@ -37,6 +37,7 @@ export {
 	loadSummariesPage,
 	moveMemoryProject,
 	tracePack,
+	updateMemoryApplicability,
 	updateMemoryVisibility,
 } from "./api/memories";
 export { loadProjects, loadRuntimeInfo, pingViewerReady } from "./api/runtime";
