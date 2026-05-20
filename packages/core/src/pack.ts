@@ -1700,19 +1700,22 @@ function buildPackArtifacts(
 		packText = sections.join("\n\n");
 	}
 
-	// Compute retrieval-only tokens BEFORE prepending the sticky band so
-	// `pack_tokens - sticky_tokens` is an exact identity, not "approximately
-	// retrieval cost plus a join artifact." Consumers that compare the
-	// retrieval cost against `token_budget` rely on the subtraction being
-	// truthful — see PackResponse.metrics.sticky_tokens JSDoc.
-	const retrievalTokens = estimateTokens(packText);
 	const stickyText = renderStickyRulesBand(stickyBand);
 	const stickyTokens = stickyText ? estimateTokens(stickyText) : 0;
 	if (stickyText) {
 		packText = packText.length > 0 ? `${stickyText}\n\n${packText}` : stickyText;
 	}
 
-	const packTokens = retrievalTokens + stickyTokens;
+	// pack_tokens is estimated on the FULL pack_text the LLM will pay
+	// for — keep it exact for that string rather than summing per-part
+	// estimates. (Summing would double-apply estimateTokens's Math.ceil
+	// rounding and drop the join cost, so the metric would diverge from
+	// what a downstream cost calculator gets from pack_text directly.)
+	// sticky_tokens is estimated on stickyText alone, so its own value is
+	// also exact; the JSDoc invariant for `pack_tokens - sticky_tokens`
+	// is documented as approximate (within a couple of tokens of rounding
+	// + join overhead).
+	const packTokens = estimateTokens(packText);
 
 	// Collect all unique rendered items across sections, but preserve relevance order.
 	// `item_ids` should still include compressed-away IDs for fetch-more behavior.
