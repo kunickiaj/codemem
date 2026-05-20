@@ -7,6 +7,9 @@ import {
 } from "./sticky-rules.js";
 import { initTestSchema } from "./test-utils.js";
 
+const TEST_DEVICE_ID = "test-device";
+const TEST_ACTOR_ID = "local:test-device";
+
 interface SeedMemoryOpts {
 	id?: number;
 	sessionId: number;
@@ -27,7 +30,7 @@ function makeStore() {
 		"2026-01-01T00:00:00Z",
 		"demo-project",
 	);
-	return { db };
+	return { db, actorId: TEST_ACTOR_ID, deviceId: TEST_DEVICE_ID };
 }
 
 function seedMemory(store: ReturnType<typeof makeStore>, opts: SeedMemoryOpts) {
@@ -52,6 +55,24 @@ function seedMemory(store: ReturnType<typeof makeStore>, opts: SeedMemoryOpts) {
 			opts.deletedAt ?? null,
 		);
 	return Number((store.db.prepare("SELECT last_insert_rowid() as id").get() as { id: number }).id);
+}
+
+function grantScope(store: ReturnType<typeof makeStore>, scopeId: string): void {
+	const now = new Date().toISOString();
+	store.db
+		.prepare(
+			`INSERT OR REPLACE INTO replication_scopes
+			(scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at)
+			VALUES (?, ?, 'team', 'coordinator', 0, 'active', ?, ?)`,
+		)
+		.run(scopeId, scopeId, now, now);
+	store.db
+		.prepare(
+			`INSERT OR REPLACE INTO scope_memberships
+			(scope_id, device_id, role, status, membership_epoch, updated_at)
+			VALUES (?, ?, 'member', 'active', 0, ?)`,
+		)
+		.run(scopeId, store.deviceId, now);
 }
 
 describe("loadStickyRulesForPack", () => {
@@ -167,7 +188,53 @@ describe("loadStickyRulesForPack", () => {
 		expect(band.user.map((m) => m.title)).toEqual(["Active"]);
 	});
 
-	it("enforces the sharing-domain filter when scopeIds is provided", () => {
+	it("hides memories from sharing domains the device cannot read", () => {
+		// Memory in a coordinator scope the device has NO membership for —
+		// must be invisible to the sticky band even though applies_to=user.
+		seedMemory(store, {
+			sessionId: 1,
+			title: "Forbidden user-scope rule",
+			appliesTo: "user",
+			scopeId: "unauthorized-team",
+		});
+		// Register the scope as a coordinator authority but skip granting
+		// membership so the visibility gate has to reject it.
+		const now = new Date().toISOString();
+		store.db
+			.prepare(
+				`INSERT INTO replication_scopes
+				(scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at)
+				VALUES (?, ?, 'team', 'coordinator', 0, 'active', ?, ?)`,
+			)
+			.run("unauthorized-team", "unauthorized-team", now, now);
+
+		const band = loadStickyRulesForPack(store);
+		expect(band.user).toEqual([]);
+	});
+
+	it("includes memories from sharing domains where the device has active membership", () => {
+		grantScope(store, "work-domain");
+		seedMemory(store, {
+			sessionId: 1,
+			title: "Work-domain rule",
+			appliesTo: "user",
+			scopeId: "work-domain",
+		});
+		seedMemory(store, {
+			sessionId: 1,
+			title: "Legacy NULL-scope rule",
+			appliesTo: "user",
+			scopeId: null,
+		});
+
+		const band = loadStickyRulesForPack(store);
+		const titles = band.user.map((m) => m.title).sort();
+		expect(titles).toEqual(["Legacy NULL-scope rule", "Work-domain rule"]);
+	});
+
+	it("enforces the scopeIds narrowing on top of the visibility gate", () => {
+		grantScope(store, "work-domain");
+		grantScope(store, "personal-domain");
 		seedMemory(store, {
 			sessionId: 1,
 			title: "Work-scope rule",
@@ -180,29 +247,9 @@ describe("loadStickyRulesForPack", () => {
 			appliesTo: "user",
 			scopeId: "personal-domain",
 		});
-		seedMemory(store, {
-			sessionId: 1,
-			title: "Legacy NULL-scope rule",
-			appliesTo: "user",
-			scopeId: null,
-		});
 
 		const band = loadStickyRulesForPack(store, { scopeIds: ["work-domain"] });
-		const titles = band.user.map((m) => m.title).sort();
-		// Work-scope + legacy NULL-scope come through; personal-scope is filtered out.
-		expect(titles).toEqual(["Legacy NULL-scope rule", "Work-scope rule"]);
-	});
-
-	it("returns no rules from another sharing domain even if applies_to=user", () => {
-		seedMemory(store, {
-			sessionId: 1,
-			title: "Other-domain rule",
-			appliesTo: "user",
-			scopeId: "other-domain",
-		});
-
-		const band = loadStickyRulesForPack(store, { scopeIds: ["work-domain"] });
-		expect(band.user).toEqual([]);
+		expect(band.user.map((m) => m.title)).toEqual(["Work-scope rule"]);
 	});
 
 	it("respects per-layer budget overrides", () => {

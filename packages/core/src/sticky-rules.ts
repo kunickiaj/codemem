@@ -3,19 +3,19 @@
  * broader than the active project so they ride along on every pack request,
  * fighting long-context attention dilution.
  *
- * Sharing-domain wall: queries inherit the same scope_id filter the rest of
- * pack composition uses, so a user-scope rule recorded in one sharing
- * domain never bleeds into packs assembled for projects in a different
- * domain.
+ * Scope-visibility wall: every layer query goes through
+ * `buildFilterClausesWithContext({ enforceScopeVisibility: true })` so the
+ * sticky band honors the same scope-membership gates as `search`/`recent`.
+ * A user-scope rule recorded in a sharing domain the current device cannot
+ * read will not appear in packs assembled for projects the device can read.
  *
  * The (applies_to, applies_to_key) composite index from G1.1 backs every
  * lookup; verify EXPLAIN QUERY PLAN if you change the WHERE shape.
  */
 
-import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/better-sqlite3";
 import { APPLIES_TO_LAYERS, type AppliesTo } from "./applicability.js";
-import * as schema from "./schema.js";
+import type { Database } from "./db.js";
+import { buildFilterClausesWithContext } from "./filters.js";
 import type { MemoryFilters, MemoryItem } from "./types.js";
 
 export interface StickyRuleBudgets {
@@ -46,8 +46,10 @@ export interface StickyRulesInputs {
 	budgets?: Partial<StickyRuleBudgets>;
 }
 
-interface StoreLike {
-	db: { prepare: (sql: string) => unknown };
+interface StickyRulesStore {
+	db: Database;
+	actorId: string;
+	deviceId: string;
 }
 
 function resolveBudgets(budgets?: Partial<StickyRuleBudgets>): StickyRuleBudgets {
@@ -63,6 +65,11 @@ function resolveBudgets(budgets?: Partial<StickyRuleBudgets>): StickyRuleBudgets
  * Mirrors the filter's scope_id list so the sharing-domain wall is preserved
  * by construction — callers cannot accidentally pull rules from a domain the
  * pack itself is filtering out.
+ *
+ * Note: this helper does NOT extract org/toolchain keys. The pack-side
+ * `MemoryFilters` shape has no field for them today; until callers thread a
+ * project-identity-derived key into the request, the org/toolchain layers
+ * stay empty by design.
  */
 export function stickyRuleInputsFromFilters(filters: MemoryFilters | undefined): StickyRulesInputs {
 	if (!filters) return {};
@@ -75,47 +82,64 @@ export function stickyRuleInputsFromFilters(filters: MemoryFilters | undefined):
 	return inputs;
 }
 
+function rowToMemoryItem(row: Record<string, unknown>): MemoryItem {
+	return row as unknown as MemoryItem;
+}
+
 /**
  * Load sticky-rule memories layered by applies_to, ordered user → org →
  * toolchain → project. Each layer is capped by its budget. Memories are
- * filtered to active + non-deleted and (when scope filtering is requested)
- * to the matching sharing domain(s).
+ * filtered to active + non-deleted, gated by scope visibility for the
+ * caller's device, and (when scope filtering is requested) narrowed to
+ * the matching sharing domain(s).
  */
 export function loadStickyRulesForPack(
-	store: StoreLike,
+	store: StickyRulesStore,
 	inputs?: StickyRulesInputs,
 ): StickyRulesBand {
 	const budgets = resolveBudgets(inputs?.budgets);
-	// biome-ignore lint/suspicious/noExplicitAny: typed via drizzle internals
-	const d = drizzle(store.db as any, { schema });
-
-	const baseWhere = and(eq(schema.memoryItems.active, 1), isNull(schema.memoryItems.deleted_at));
-
-	const scopeFilter =
-		inputs?.scopeIds && inputs.scopeIds.length > 0
-			? or(
-					inArray(schema.memoryItems.scope_id, inputs.scopeIds),
-					isNull(schema.memoryItems.scope_id),
-					eq(schema.memoryItems.scope_id, ""),
-				)
-			: undefined;
+	const ownership = {
+		actorId: store.actorId,
+		deviceId: store.deviceId,
+		enforceScopeVisibility: true,
+	};
 
 	function queryLayer(layer: AppliesTo, key: string | null | undefined, limit: number) {
 		if (limit <= 0) return [];
 		const requiresKey = layer === "org" || layer === "toolchain";
 		if (requiresKey && (key == null || key.length === 0)) return [];
-		const layerFilter = eq(schema.memoryItems.applies_to, layer);
-		const keyFilter = requiresKey
-			? eq(schema.memoryItems.applies_to_key, key as string)
-			: undefined;
-		const where = and(baseWhere, layerFilter, keyFilter, scopeFilter);
-		return d
-			.select()
-			.from(schema.memoryItems)
-			.where(where)
-			.orderBy(desc(schema.memoryItems.updated_at), desc(schema.memoryItems.id))
-			.limit(limit)
-			.all() as MemoryItem[];
+
+		// Build the scope-visibility-gated WHERE off MemoryFilters so we
+		// reuse the exact gate `search`/`recent` use. scope_id narrowing
+		// is layered on top of that gate, not in place of it.
+		const memoryFilters: MemoryFilters = {};
+		if (inputs?.scopeIds && inputs.scopeIds.length > 0) {
+			memoryFilters.include_scope_ids = inputs.scopeIds;
+		}
+		const filterResult = buildFilterClausesWithContext(memoryFilters, ownership);
+		const clauses: string[] = [
+			"memory_items.active = 1",
+			"memory_items.deleted_at IS NULL",
+			"memory_items.applies_to = ?",
+			...filterResult.clauses,
+		];
+		const params: unknown[] = [layer, ...filterResult.params];
+		if (requiresKey) {
+			clauses.push("memory_items.applies_to_key = ?");
+			params.push(key);
+		}
+		const joinClause = filterResult.joinSessions
+			? "JOIN sessions ON sessions.id = memory_items.session_id"
+			: "";
+		const sql = `SELECT memory_items.*
+			FROM memory_items
+			${joinClause}
+			WHERE ${clauses.join(" AND ")}
+			ORDER BY memory_items.updated_at DESC, memory_items.id DESC
+			LIMIT ?`;
+		params.push(limit);
+		const rows = store.db.prepare(sql).all(...params) as Record<string, unknown>[];
+		return rows.map(rowToMemoryItem);
 	}
 
 	// Project-layer is intentionally excluded from the sticky band: every
