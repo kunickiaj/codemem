@@ -1194,8 +1194,14 @@ export class MemoryStore {
 						opType: "upsert",
 						deviceId: this.deviceId,
 					});
-				} catch {
-					// Non-fatal
+				} catch (err) {
+					// Non-fatal for the visibility write itself, but surface
+					// the failure: peers won't learn about this change until
+					// the next reconciliation pass, and a silent swallow
+					// hides whatever broke the replication path.
+					console.warn(
+						`[codemem] updateMemoryVisibility: replication-op emit failed for memory ${memoryId}: ${err instanceof Error ? err.message : String(err)}`,
+					);
 				}
 
 				const updated = this.get(memoryId);
