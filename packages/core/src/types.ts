@@ -619,12 +619,22 @@ export interface PackItem {
 	compressed_ids?: number[];
 }
 
+/** Sticky-rules band injected at the top of every pack. Layered by applies_to. */
+export interface PackStickyRulesBand {
+	user: PackItem[];
+	org: PackItem[];
+	toolchain: PackItem[];
+	project: PackItem[];
+	ids: number[];
+}
+
 /** Pack response from buildMemoryPack() */
 export interface PackResponse {
 	context: string;
 	items: PackItem[];
 	item_ids: number[];
 	pack_text: string;
+	sticky_rules: PackStickyRulesBand;
 	metrics: {
 		total_items: number;
 		pack_tokens: number;

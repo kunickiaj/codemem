@@ -24,6 +24,11 @@ import { findByFile } from "./ref-queries.js";
 import type { StoreHandle } from "./search.js";
 import { rerankResults, scoreResult, search, timeline } from "./search.js";
 import {
+	loadStickyRulesForPack,
+	type StickyRulesBand,
+	stickyRuleInputsFromFilters,
+} from "./sticky-rules.js";
+import {
 	canonicalMemoryKind,
 	getSummaryMetadata,
 	isNativeSessionSummaryMemory,
@@ -31,11 +36,13 @@ import {
 } from "./summary-memory.js";
 import type {
 	MemoryFilters,
+	MemoryItem,
 	MemoryItemResponse,
 	MemoryResult,
 	PackItem,
 	PackRenderOptions,
 	PackResponse,
+	PackStickyRulesBand,
 	PackTrace,
 	PackTraceCandidate,
 	PackTraceDisposition,
@@ -79,6 +86,70 @@ const TRACE_PREVIEW_LIMIT = 160;
 // ---------------------------------------------------------------------------
 
 /** Rough token estimate: ~4 chars per token. */
+/**
+ * Render a sticky-rules band as a Markdown section to prepend to pack_text.
+ * Empty band returns the empty string so callers can `if (text) prepend(...)`
+ * without an extra empty section bracketing the pack.
+ */
+function renderStickyRulesBand(band: StickyRulesBand): string {
+	const lines: string[] = [];
+	const layerLabels: Array<[keyof Omit<StickyRulesBand, "ids">, string]> = [
+		["user", "User"],
+		["org", "Org"],
+		["toolchain", "Toolchain"],
+		["project", "Project"],
+	];
+
+	for (const [layer, label] of layerLabels) {
+		const items = band[layer];
+		if (items.length === 0) continue;
+		lines.push(`### ${label}`);
+		for (const item of items) {
+			const title = String(item.title || "").trim() || "(untitled rule)";
+			const body = String(item.body_text || "").trim();
+			lines.push(body ? `- **${title}** — ${body}` : `- **${title}**`);
+		}
+		lines.push("");
+	}
+
+	if (lines.length === 0) return "";
+	return ["## Sticky Rules", "", ...lines].join("\n").trimEnd();
+}
+
+/** Convert a MemoryItem row into the PackItem shape used in PackResponse. */
+function memoryItemToPackItem(item: MemoryItem): PackItem {
+	let metadata: Record<string, unknown> = {};
+	if (typeof item.metadata_json === "string" && item.metadata_json.length > 0) {
+		try {
+			const parsed = JSON.parse(item.metadata_json) as unknown;
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+				metadata = parsed as Record<string, unknown>;
+			}
+		} catch {
+			// Non-fatal — leave metadata empty if JSON is malformed.
+		}
+	}
+	return {
+		id: item.id,
+		kind: item.kind,
+		title: item.title,
+		body: item.body_text,
+		confidence: item.confidence,
+		tags: item.tags_text,
+		metadata,
+	};
+}
+
+function stickyBandToResponse(band: StickyRulesBand): PackStickyRulesBand {
+	return {
+		user: band.user.map(memoryItemToPackItem),
+		org: band.org.map(memoryItemToPackItem),
+		toolchain: band.toolchain.map(memoryItemToPackItem),
+		project: band.project.map(memoryItemToPackItem),
+		ids: [...band.ids],
+	};
+}
+
 export function estimateTokens(text: string): number {
 	return Math.ceil(text.length / 4);
 }
@@ -1243,6 +1314,13 @@ function buildPackArtifacts(
 	const effectiveLimit = Math.max(1, Math.trunc(limit));
 	const sanitized = sanitizeSearchQuery(context);
 	const retrievalContext = sanitized.clean_query;
+
+	// Sticky-rules band: layered by applies_to (user/org/toolchain/project).
+	// Computed before retrieval so we know which ids are already accounted for
+	// and don't double-pack them in the regular results.
+	const stickyBand = loadStickyRulesForPack(store, stickyRuleInputsFromFilters(filters));
+	const stickyIdSet = new Set(stickyBand.ids);
+
 	let fallbackUsed = false;
 	let ftsCount = 0;
 	let semanticCount = 0;
@@ -1392,6 +1470,14 @@ function buildPackArtifacts(
 		}
 	}
 
+	// Sticky-rules dedup: a user-promoted memory that also matches the query
+	// is already rendered in the band — strip it from retrieval so it doesn't
+	// appear twice in the same pack.
+	if (stickyIdSet.size > 0) {
+		results = results.filter((r) => !stickyIdSet.has(r.id));
+		retrievalResults = retrievalResults.filter((r) => !stickyIdSet.has(r.id));
+	}
+
 	// Step 2: categorize results
 
 	// Summary: prefer search match; only inject a global fallback when the user
@@ -1471,6 +1557,17 @@ function buildPackArtifacts(
 
 	// Sort observations by tag overlap with context, then by kind priority
 	observationItems = sortByTagOverlap(observationItems, context);
+
+	// Sticky-rules dedup safety net at the section boundary. Earlier we
+	// filtered `results`, but later `store.recentByKinds`/`findLatestSummaryLike`
+	// fallbacks can re-introduce a sticky memory by querying the store directly.
+	// Re-apply the filter here so a sticky memory cannot appear in both the
+	// `## Sticky Rules` band and the regular section grid of the same pack.
+	if (stickyIdSet.size > 0) {
+		summaryItems = summaryItems.filter((it) => !stickyIdSet.has(it.id));
+		timelineItems = timelineItems.filter((it) => !stickyIdSet.has(it.id));
+		observationItems = observationItems.filter((it) => !stickyIdSet.has(it.id));
+	}
 
 	// Exact dedup across all sections
 	const dedupeState: DedupeState = {
@@ -1601,6 +1698,11 @@ function buildPackArtifacts(
 			formatSection("Observations", budgetedObservations, clusterState),
 		];
 		packText = sections.join("\n\n");
+	}
+
+	const stickyText = renderStickyRulesBand(stickyBand);
+	if (stickyText) {
+		packText = packText.length > 0 ? `${stickyText}\n\n${packText}` : stickyText;
 	}
 
 	const packTokens = estimateTokens(packText);
@@ -1771,6 +1873,7 @@ function buildPackArtifacts(
 		items: allItems,
 		item_ids: allItemIds,
 		pack_text: packText,
+		sticky_rules: stickyBandToResponse(stickyBand),
 		metrics,
 	};
 

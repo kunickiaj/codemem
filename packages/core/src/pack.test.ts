@@ -1347,6 +1347,66 @@ describe("buildMemoryPack", () => {
 		expect(pack.pack_text).toContain("## Summary\n[1] (session_summary) Recent summary");
 		expect(pack.item_ids[0]).toBe(decisionId);
 	});
+
+	it("prepends a Sticky Rules section drawn from user-scope memories", () => {
+		const stickyId = store.remember(
+			sessionId,
+			"decision",
+			"Use fish shell everywhere",
+			"This user prefers fish over bash for all interactive work.",
+		);
+		store.updateMemoryApplicability(stickyId, "user", null);
+
+		const projectId = store.remember(
+			sessionId,
+			"decision",
+			"OAuth callback fix",
+			"Patched callback verification for auth flow",
+		);
+
+		const pack = buildMemoryPack(store, "oauth callback", 10);
+
+		expect(pack.pack_text.startsWith("## Sticky Rules")).toBe(true);
+		expect(pack.pack_text).toContain("### User");
+		expect(pack.pack_text).toContain("Use fish shell everywhere");
+		expect(pack.sticky_rules.user.length).toBe(1);
+		expect(pack.sticky_rules.user[0]?.id).toBe(stickyId);
+		expect(pack.sticky_rules.ids).toEqual([stickyId]);
+		// Project-scope memories still flow through retrieval, NOT the sticky band.
+		expect(pack.sticky_rules.project).toEqual([]);
+		expect(pack.item_ids).toContain(projectId);
+	});
+
+	it("returns an empty sticky_rules band when no memories have been promoted", () => {
+		store.remember(sessionId, "discovery", "Plain memory", "Body");
+
+		const pack = buildMemoryPack(store, "plain", 10);
+
+		expect(pack.sticky_rules.user).toEqual([]);
+		expect(pack.sticky_rules.org).toEqual([]);
+		expect(pack.sticky_rules.toolchain).toEqual([]);
+		expect(pack.sticky_rules.project).toEqual([]);
+		expect(pack.sticky_rules.ids).toEqual([]);
+		expect(pack.pack_text.startsWith("## Sticky Rules")).toBe(false);
+	});
+
+	it("does not double-pack a sticky memory that also matches the retrieval query", () => {
+		const stickyId = store.remember(
+			sessionId,
+			"decision",
+			"Always run gitleaks before publishing",
+			"gitleaks is the canonical pre-publish secret scan in this workspace.",
+		);
+		store.updateMemoryApplicability(stickyId, "user", null);
+
+		const pack = buildMemoryPack(store, "gitleaks", 10);
+
+		// Sticky band keeps it, retrieval section drops it: the same memory id
+		// must NOT appear in both surfaces.
+		expect(pack.sticky_rules.ids).toContain(stickyId);
+		expect(pack.item_ids).not.toContain(stickyId);
+		expect(pack.items.map((it) => it.id)).not.toContain(stickyId);
+	});
 });
 
 // ---------------------------------------------------------------------------
