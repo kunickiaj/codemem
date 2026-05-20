@@ -196,7 +196,17 @@ export function FeedItemCard({
 	) {
 		const previous = selectedAppliesTo;
 		const previousKey = item.applies_to_key ?? null;
-		if (next === previous && nextKey === previousKey) return;
+		// No-op only when the current state is already valid for the chosen
+		// layer. For org/toolchain rows that arrived without a key (malformed
+		// peer payload), re-selecting the same layer should fall through to
+		// the key-input dialog so the user can repair the row in place —
+		// otherwise they'd have to bounce through another layer just to set
+		// the required key.
+		const currentLayerNeedsKey = previous === "org" || previous === "toolchain";
+		const currentKeyMissing = previousKey == null || previousKey.length === 0;
+		const wouldBeNoop =
+			next === previous && nextKey === previousKey && !(currentLayerNeedsKey && currentKeyMissing);
+		if (wouldBeNoop) return;
 
 		const titleText = String(displayTitle || "this memory").trim();
 		const truncatedTitle =
