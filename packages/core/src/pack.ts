@@ -1700,12 +1700,19 @@ function buildPackArtifacts(
 		packText = sections.join("\n\n");
 	}
 
+	// Compute retrieval-only tokens BEFORE prepending the sticky band so
+	// `pack_tokens - sticky_tokens` is an exact identity, not "approximately
+	// retrieval cost plus a join artifact." Consumers that compare the
+	// retrieval cost against `token_budget` rely on the subtraction being
+	// truthful — see PackResponse.metrics.sticky_tokens JSDoc.
+	const retrievalTokens = estimateTokens(packText);
 	const stickyText = renderStickyRulesBand(stickyBand);
+	const stickyTokens = stickyText ? estimateTokens(stickyText) : 0;
 	if (stickyText) {
 		packText = packText.length > 0 ? `${stickyText}\n\n${packText}` : stickyText;
 	}
 
-	const packTokens = estimateTokens(packText);
+	const packTokens = retrievalTokens + stickyTokens;
 
 	// Collect all unique rendered items across sections, but preserve relevance order.
 	// `item_ids` should still include compressed-away IDs for fetch-more behavior.
@@ -1837,6 +1844,7 @@ function buildPackArtifacts(
 	const metrics = {
 		total_items: allItems.length,
 		pack_tokens: packTokens,
+		sticky_tokens: stickyTokens,
 		fallback_used: fallbackUsed,
 		fallback: fallbackLabel,
 		limit: effectiveLimit,

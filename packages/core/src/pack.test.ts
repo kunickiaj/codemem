@@ -1390,6 +1390,62 @@ describe("buildMemoryPack", () => {
 		expect(pack.pack_text.startsWith("## Sticky Rules")).toBe(false);
 	});
 
+	it("reports sticky_tokens as a non-zero subset of pack_tokens when the band has content", () => {
+		const stickyId = store.remember(
+			sessionId,
+			"decision",
+			"Always run gitleaks before publishing",
+			"gitleaks is the canonical pre-publish secret scan.",
+		);
+		store.updateMemoryApplicability(stickyId, "user", null);
+		// A separate retrieval-matching memory so pack_tokens has both sticky
+		// AND retrieval contributions.
+		store.remember(
+			sessionId,
+			"discovery",
+			"prom-query helper",
+			"PromQL parsing helper used by alerting",
+		);
+
+		const pack = buildMemoryPack(store, "prom-query", 10);
+
+		expect(pack.metrics.sticky_tokens).toBeGreaterThan(0);
+		expect(pack.metrics.pack_tokens).toBeGreaterThan(pack.metrics.sticky_tokens);
+	});
+
+	it("reports sticky_tokens=0 when no sticky-applicable memories exist", () => {
+		store.remember(sessionId, "discovery", "Plain memory", "Body");
+		const pack = buildMemoryPack(store, "plain", 10);
+		expect(pack.metrics.sticky_tokens).toBe(0);
+	});
+
+	it("keeps pack_tokens - sticky_tokens within token_budget when the band overflows", () => {
+		// Promote a memory to user-scope so the sticky band is non-empty.
+		const stickyId = store.remember(
+			sessionId,
+			"decision",
+			"Always run gitleaks before publishing",
+			"gitleaks is the canonical pre-publish secret scan.",
+		);
+		store.updateMemoryApplicability(stickyId, "user", null);
+		// Seed enough retrieval candidates that a tight budget forces trimming.
+		for (let i = 0; i < 6; i++) {
+			store.remember(
+				sessionId,
+				"discovery",
+				`prom-query case ${i}`,
+				`PromQL parsing helper variant ${i} used by alerting`,
+			);
+		}
+
+		const pack = buildMemoryPack(store, "prom-query", 10, 60);
+
+		expect(pack.metrics.sticky_tokens).toBeGreaterThan(0);
+		// Retrieval cost (pack_tokens minus sticky) must respect token_budget,
+		// even when the total pack exceeds it because sticky is non-negotiable.
+		expect(pack.metrics.pack_tokens - pack.metrics.sticky_tokens).toBeLessThanOrEqual(60);
+	});
+
 	it("does not double-pack a sticky memory that also matches the retrieval query", () => {
 		const stickyId = store.remember(
 			sessionId,

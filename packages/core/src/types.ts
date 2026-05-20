@@ -638,6 +638,13 @@ export interface PackResponse {
 	metrics: {
 		total_items: number;
 		pack_tokens: number;
+		/**
+		 * Tokens contributed by the sticky-rules band (subset of pack_tokens).
+		 * The band bypasses token_budget by design, so consumers asking
+		 * "did we honor token_budget?" should compare `pack_tokens - sticky_tokens`
+		 * against the budget — not `pack_tokens` alone.
+		 */
+		sticky_tokens: number;
 		fallback_used: boolean;
 		fallback: "recent" | null;
 		limit: number;
