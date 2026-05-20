@@ -11,6 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, gt, isNotNull, isNull, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import { normalizeApplicability } from "./applicability.js";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
 import { readCodememConfigFile } from "./observer-config.js";
@@ -119,6 +120,8 @@ interface MemoryPayload {
 	prompt_number: number | null;
 	deleted_at: string | null;
 	scope_id: string | null;
+	applies_to: string | null;
+	applies_to_key: string | null;
 	// Wire payloads use this as "sender explicitly included deleted_at" so we can
 	// distinguish a tombstone clear (`deleted_at: null`) from an omitted field.
 	// Row-derived payloads set it from current storage truth instead.
@@ -203,6 +206,8 @@ function parseMemoryPayload(op: ReplicationOp, errors: string[]): MemoryPayload 
 		prompt_number: asNumberOrNull(raw.prompt_number),
 		deleted_at: asStringOrNull(raw.deleted_at),
 		scope_id: asStringOrNull(raw.scope_id),
+		applies_to: asStringOrNull(raw.applies_to),
+		applies_to_key: asStringOrNull(raw.applies_to_key),
 		has_deleted_at: Object.hasOwn(raw, "deleted_at"),
 		rev: asNumberOrNull(raw.rev) ?? 0,
 		import_key: asStringOrNull(raw.import_key),
@@ -825,6 +830,8 @@ export function recordReplicationOp(
 			prompt_number: row.prompt_number,
 			deleted_at: row.deleted_at,
 			scope_id: scopeId,
+			applies_to: row.applies_to,
+			applies_to_key: row.applies_to_key,
 		});
 	} else {
 		payloadJson = null;
@@ -2690,6 +2697,8 @@ function buildPayloadFromMemoryRow(row: MemoryItemRow): MemoryPayload {
 		prompt_number: row.prompt_number ?? null,
 		deleted_at: row.deleted_at ?? null,
 		scope_id: row.scope_id ?? null,
+		applies_to: row.applies_to ?? null,
+		applies_to_key: row.applies_to_key ?? null,
 		has_deleted_at: row.deleted_at != null,
 		rev: row.rev ?? 0,
 		import_key: row.import_key ?? null,
@@ -2818,6 +2827,17 @@ export function applyReplicationOps(
 						const shouldQueueVectorUpsert =
 							!shouldDeleteVectors && (contentChanged || (wasInactive && becomesActive));
 
+						// Normalize applicability from the payload. Older peers omit the
+						// fields (treat as "keep existing"); newer peers with an
+						// unrecognized layer get coerced to 'project' so the CHECK
+						// constraint cannot fire on inbound traffic.
+						const incomingApplicability =
+							payload.applies_to != null
+								? normalizeApplicability({
+										applies_to: payload.applies_to,
+										applies_to_key: payload.applies_to_key,
+									})
+								: null;
 						d.update(schema.memoryItems)
 							.set({
 								kind: sql`COALESCE(${payload.kind}, ${schema.memoryItems.kind})`,
@@ -2847,6 +2867,12 @@ export function applyReplicationOps(
 								user_prompt_id: payload.user_prompt_id,
 								prompt_number: payload.prompt_number,
 								scope_id: sql`COALESCE(${opScopeId}, ${schema.memoryItems.scope_id})`,
+								applies_to: incomingApplicability
+									? incomingApplicability.applies_to
+									: sql`${schema.memoryItems.applies_to}`,
+								applies_to_key: incomingApplicability
+									? incomingApplicability.applies_to_key
+									: sql`${schema.memoryItems.applies_to_key}`,
 							})
 							.where(eq(schema.memoryItems.import_key, importKey))
 							.run();
@@ -2877,6 +2903,12 @@ export function applyReplicationOps(
 							replicatedProject,
 						);
 						const metaObj = mergePayloadMetadata(payload.metadata_json, op.clock_device_id);
+						// Normalize applicability from the payload (downgrade-safe: unknown
+						// future layers and missing fields both resolve to 'project').
+						const insertApplicability = normalizeApplicability({
+							applies_to: payload.applies_to,
+							applies_to_key: payload.applies_to_key,
+						});
 						const insertedRows = d
 							.insert(schema.memoryItems)
 							.values({
@@ -2910,6 +2942,8 @@ export function applyReplicationOps(
 								user_prompt_id: payload.user_prompt_id,
 								prompt_number: payload.prompt_number,
 								scope_id: opScopeId,
+								applies_to: insertApplicability.applies_to,
+								applies_to_key: insertApplicability.applies_to_key,
 							})
 							.returning({ id: schema.memoryItems.id })
 							.all();

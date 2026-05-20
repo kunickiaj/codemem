@@ -3357,6 +3357,167 @@ describe("replication payload round-trip parity", () => {
 		expect(applied.user_prompt_id).toBe(42);
 		expect(applied.prompt_number).toBe(7);
 	});
+
+	it("round-trips applies_to and applies_to_key through the upsert path", () => {
+		const now = new Date().toISOString();
+		db.prepare(`
+			INSERT INTO memory_items (
+				session_id, kind, title, body_text, created_at, updated_at,
+				import_key, rev, applies_to, applies_to_key
+			) VALUES (?, 'rule', 'Stick this everywhere', 'body', ?, ?, 'applies-key-user', 1, 'user', NULL)
+		`).run(sessionId, now, now);
+
+		db.prepare(`
+			INSERT INTO memory_items (
+				session_id, kind, title, body_text, created_at, updated_at,
+				import_key, rev, applies_to, applies_to_key
+			) VALUES (?, 'rule', 'Toolchain rule', 'body', ?, ?, 'applies-key-tc', 1, 'toolchain', 'pnpm')
+		`).run(sessionId, now, now);
+
+		const ops: ReplicationOp[] = [];
+		for (const key of ["applies-key-user", "applies-key-tc"] as const) {
+			const memoryId = (
+				db.prepare("SELECT id FROM memory_items WHERE import_key = ?").get(key) as {
+					id: number;
+				}
+			).id;
+			const opId = recordReplicationOp(db, {
+				memoryId,
+				opType: "upsert",
+				deviceId: "source-device",
+			});
+			const op = db.prepare("SELECT * FROM replication_ops WHERE op_id = ?").get(opId) as {
+				op_id: string;
+				payload_json: string;
+				clock_rev: number;
+				clock_updated_at: string;
+				created_at: string;
+				scope_id: string | null;
+			};
+			const payload = JSON.parse(op.payload_json) as Record<string, unknown>;
+			expect(payload.applies_to).toBe(key === "applies-key-user" ? "user" : "toolchain");
+			expect(payload.applies_to_key).toBe(key === "applies-key-user" ? null : "pnpm");
+
+			db.prepare("DELETE FROM memory_items WHERE id = ?").run(memoryId);
+			db.prepare("DELETE FROM replication_ops WHERE op_id = ?").run(op.op_id);
+			ops.push({
+				op_id: `apply-${key}`,
+				entity_type: "memory_item",
+				entity_id: key,
+				op_type: "upsert",
+				payload_json: op.payload_json,
+				clock_rev: op.clock_rev,
+				clock_updated_at: op.clock_updated_at,
+				clock_device_id: "remote-device",
+				device_id: "remote-device",
+				created_at: op.created_at,
+				scope_id: op.scope_id,
+			});
+		}
+
+		const result = applyReplicationOps(db, ops, "target-device");
+		expect(result.applied).toBe(2);
+
+		const userRow = db
+			.prepare(
+				"SELECT applies_to, applies_to_key FROM memory_items WHERE import_key = 'applies-key-user'",
+			)
+			.get() as { applies_to: string; applies_to_key: string | null };
+		expect(userRow.applies_to).toBe("user");
+		expect(userRow.applies_to_key).toBeNull();
+
+		const tcRow = db
+			.prepare(
+				"SELECT applies_to, applies_to_key FROM memory_items WHERE import_key = 'applies-key-tc'",
+			)
+			.get() as { applies_to: string; applies_to_key: string | null };
+		expect(tcRow.applies_to).toBe("toolchain");
+		expect(tcRow.applies_to_key).toBe("pnpm");
+	});
+
+	it("normalizes unknown applies_to to 'project' on apply (downgrade safety)", () => {
+		// Simulate a future-peer payload that names a layer this binary doesn't
+		// know yet. The apply path MUST normalize to 'project' rather than write
+		// the unknown value (which would fail the CHECK constraint).
+		const now = new Date().toISOString();
+		const payload = {
+			session_id: sessionId,
+			kind: "rule",
+			title: "Future-layer rule",
+			body_text: "body",
+			created_at: now,
+			updated_at: now,
+			active: 1,
+			rev: 1,
+			import_key: "applies-key-future",
+			applies_to: "team",
+			applies_to_key: "growth",
+		};
+		const op: ReplicationOp = {
+			op_id: "apply-future",
+			entity_type: "memory_item",
+			entity_id: "applies-key-future",
+			op_type: "upsert",
+			payload_json: JSON.stringify(payload),
+			clock_rev: 1,
+			clock_updated_at: now,
+			clock_device_id: "remote-device",
+			device_id: "remote-device",
+			created_at: now,
+			scope_id: null,
+		};
+
+		const result = applyReplicationOps(db, [op], "target-device");
+		expect(result.applied).toBe(1);
+
+		const row = db
+			.prepare(
+				"SELECT applies_to, applies_to_key FROM memory_items WHERE import_key = 'applies-key-future'",
+			)
+			.get() as { applies_to: string; applies_to_key: string | null };
+		expect(row.applies_to).toBe("project");
+		expect(row.applies_to_key).toBeNull();
+	});
+
+	it("defaults applies_to to 'project' on apply when the field is missing (older-peer payload)", () => {
+		const now = new Date().toISOString();
+		// A legacy payload that predates the applies_to field entirely.
+		const payload = {
+			session_id: sessionId,
+			kind: "discovery",
+			title: "Legacy memory",
+			body_text: "body",
+			created_at: now,
+			updated_at: now,
+			active: 1,
+			rev: 1,
+			import_key: "applies-key-legacy",
+		};
+		const op: ReplicationOp = {
+			op_id: "apply-legacy",
+			entity_type: "memory_item",
+			entity_id: "applies-key-legacy",
+			op_type: "upsert",
+			payload_json: JSON.stringify(payload),
+			clock_rev: 1,
+			clock_updated_at: now,
+			clock_device_id: "remote-device",
+			device_id: "remote-device",
+			created_at: now,
+			scope_id: null,
+		};
+
+		const result = applyReplicationOps(db, [op], "target-device");
+		expect(result.applied).toBe(1);
+
+		const row = db
+			.prepare(
+				"SELECT applies_to, applies_to_key FROM memory_items WHERE import_key = 'applies-key-legacy'",
+			)
+			.get() as { applies_to: string; applies_to_key: string | null };
+		expect(row.applies_to).toBe("project");
+		expect(row.applies_to_key).toBeNull();
+	});
 });
 
 // ---------------------------------------------------------------------------

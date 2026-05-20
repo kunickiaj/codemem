@@ -698,6 +698,25 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		} catch {
 			// Keep additive compatibility best-effort for index creation.
 		}
+
+		// G1.1: applicability hierarchy (user/org/toolchain/project). Distinct
+		// from scope_id (sharing domain) — answers WHERE a rule applies, not WHO
+		// can read it. CHECK constraint is the DB-layer guard against raw-SQL
+		// or older-peer writes that bypass validateApplicability().
+		addColumnIfMissing(
+			db,
+			"memory_items",
+			"applies_to",
+			"TEXT NOT NULL DEFAULT 'project' CHECK (applies_to IN ('user', 'org', 'toolchain', 'project'))",
+		);
+		addColumnIfMissing(db, "memory_items", "applies_to_key", "TEXT");
+		try {
+			db.exec(
+				"CREATE INDEX IF NOT EXISTS idx_memory_items_applies_to ON memory_items(applies_to, applies_to_key)",
+			);
+		} catch {
+			// Keep additive compatibility best-effort for index creation.
+		}
 	}
 
 	if (tableExists(db, "replication_ops")) {

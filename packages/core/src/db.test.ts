@@ -1040,3 +1040,140 @@ describe("migrateLegacyDbPath", () => {
 		expect(existsSync(target)).toBe(true);
 	});
 });
+
+describe("memory_items applies_to columns (G1.1)", () => {
+	let tmpDir: string;
+	let db: Database | undefined;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-applies-to-"));
+	});
+
+	afterEach(() => {
+		db?.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("adds applies_to (NOT NULL, default 'project') and applies_to_key (nullable) on fresh bootstrap", () => {
+		db = connect(join(tmpDir, "fresh.sqlite"));
+
+		expect(columnExists(db, "memory_items", "applies_to")).toBe(true);
+		expect(columnExists(db, "memory_items", "applies_to_key")).toBe(true);
+
+		const appliesTo = db
+			.prepare(
+				"SELECT \"notnull\" AS is_not_null, dflt_value FROM pragma_table_info('memory_items') WHERE name = 'applies_to'",
+			)
+			.get() as { is_not_null: number; dflt_value: string | null };
+		expect(appliesTo.is_not_null).toBe(1);
+		expect(appliesTo.dflt_value).toMatch(/'project'/);
+
+		const appliesToKey = db
+			.prepare(
+				"SELECT \"notnull\" AS is_not_null FROM pragma_table_info('memory_items') WHERE name = 'applies_to_key'",
+			)
+			.get() as { is_not_null: number };
+		expect(appliesToKey.is_not_null).toBe(0);
+	});
+
+	it("creates composite index idx_memory_items_applies_to on (applies_to, applies_to_key)", () => {
+		db = connect(join(tmpDir, "fresh.sqlite"));
+
+		expect(hasIndex(db, "idx_memory_items_applies_to")).toBe(true);
+
+		const cols = db
+			.prepare("SELECT name FROM pragma_index_info('idx_memory_items_applies_to') ORDER BY seqno")
+			.all() as { name: string }[];
+		expect(cols.map((c) => c.name)).toEqual(["applies_to", "applies_to_key"]);
+	});
+
+	it("is idempotent across reconnects", () => {
+		const dbPath = join(tmpDir, "idempotent.sqlite");
+		db = connect(dbPath);
+		db.close();
+		db = connect(dbPath);
+
+		expect(columnExists(db, "memory_items", "applies_to")).toBe(true);
+		expect(columnExists(db, "memory_items", "applies_to_key")).toBe(true);
+		expect(hasIndex(db, "idx_memory_items_applies_to")).toBe(true);
+	});
+
+	it("defaults inserts without applies_to to 'project' and applies_to_key to NULL", () => {
+		db = connect(join(tmpDir, "fresh.sqlite"));
+
+		db.prepare("INSERT INTO sessions (id, started_at) VALUES (?, ?)").run(
+			1,
+			"2026-01-01T00:00:00Z",
+		);
+		db.prepare(
+			"INSERT INTO memory_items (id, session_id, kind, title, body_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(1, 1, "rule", "test", "body", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
+
+		const row = db
+			.prepare("SELECT applies_to, applies_to_key FROM memory_items WHERE id = 1")
+			.get() as { applies_to: string; applies_to_key: string | null };
+		expect(row.applies_to).toBe("project");
+		expect(row.applies_to_key).toBeNull();
+	});
+
+	it("rejects raw-SQL inserts with an unknown applies_to via CHECK constraint", () => {
+		db = connect(join(tmpDir, "fresh.sqlite"));
+		db.prepare("INSERT INTO sessions (id, started_at) VALUES (?, ?)").run(
+			1,
+			"2026-01-01T00:00:00Z",
+		);
+		expect(() =>
+			db
+				.prepare(
+					"INSERT INTO memory_items (id, session_id, kind, title, body_text, created_at, updated_at, applies_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				)
+				.run(
+					1,
+					1,
+					"rule",
+					"test",
+					"body",
+					"2026-01-01T00:00:00Z",
+					"2026-01-01T00:00:00Z",
+					"global",
+				),
+		).toThrow(/CHECK constraint failed/i);
+	});
+
+	it("uses idx_memory_items_applies_to for the layered-band query", () => {
+		db = connect(join(tmpDir, "fresh.sqlite"));
+
+		// Seed enough varied rows for the planner to prefer the index over a scan.
+		db.prepare("INSERT INTO sessions (id, started_at) VALUES (?, ?)").run(
+			1,
+			"2026-01-01T00:00:00Z",
+		);
+		const insert = db.prepare(
+			"INSERT INTO memory_items (id, session_id, kind, title, body_text, created_at, updated_at, applies_to, applies_to_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		);
+		const layers = ["user", "org", "toolchain", "project"];
+		for (let i = 0; i < 100; i += 1) {
+			insert.run(
+				i + 1,
+				1,
+				"rule",
+				`m${i}`,
+				"body",
+				"2026-01-01T00:00:00Z",
+				"2026-01-01T00:00:00Z",
+				layers[i % layers.length],
+				i % 4 < 2 ? null : `k${i % 8}`,
+			);
+		}
+		db.exec("ANALYZE");
+
+		const plan = db
+			.prepare(
+				"EXPLAIN QUERY PLAN SELECT id FROM memory_items WHERE applies_to = ? AND (applies_to_key = ? OR applies_to_key IS NULL)",
+			)
+			.all("user", "default") as { detail: string }[];
+
+		const detail = plan.map((p) => p.detail).join(" | ");
+		expect(detail).toMatch(/idx_memory_items_applies_to/);
+	});
+});

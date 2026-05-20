@@ -4,6 +4,7 @@
 
 import { sql } from "drizzle-orm";
 import {
+	check,
 	index,
 	integer,
 	primaryKey,
@@ -12,6 +13,7 @@ import {
 	text,
 	uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import { APPLIES_TO_DEFAULT, APPLIES_TO_LAYERS } from "./applicability.js";
 
 export const sessions = sqliteTable("sessions", {
 	id: integer("id").primaryKey(),
@@ -163,6 +165,8 @@ export const memoryItems = sqliteTable(
 		dedup_key: text("dedup_key"),
 		import_key: text("import_key"),
 		scope_id: text("scope_id"),
+		applies_to: text("applies_to").notNull().default(APPLIES_TO_DEFAULT),
+		applies_to_key: text("applies_to_key"),
 	},
 	(table) => [
 		index("idx_memory_items_active_created").on(table.active, table.created_at),
@@ -183,6 +187,11 @@ export const memoryItems = sqliteTable(
 		uniqueIndex("idx_memory_items_same_session_dedup_unique")
 			.on(table.session_id, table.kind, table.visibility, table.workspace_id, table.dedup_key)
 			.where(sql`active = 1 AND dedup_key IS NOT NULL`),
+		index("idx_memory_items_applies_to").on(table.applies_to, table.applies_to_key),
+		check(
+			"memory_items_applies_to_valid",
+			sql.raw(`applies_to IN (${APPLIES_TO_LAYERS.map((l) => `'${l}'`).join(", ")})`),
+		),
 	],
 );
 

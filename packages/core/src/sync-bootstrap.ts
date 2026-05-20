@@ -14,6 +14,7 @@
 import { and, eq, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { ApiSyncMemorySnapshotPageResponse } from "./api-types.js";
+import { normalizeApplicability } from "./applicability.js";
 import type { Database } from "./db.js";
 import { toJson } from "./db.js";
 import * as schema from "./schema.js";
@@ -309,6 +310,10 @@ export function applyBootstrapSnapshot(
 				embeddableApplied++;
 			}
 
+			const applicability = normalizeApplicability({
+				applies_to: payload.applies_to,
+				applies_to_key: payload.applies_to_key,
+			});
 			d.insert(schema.memoryItems)
 				.values({
 					session_id: sessionId,
@@ -351,6 +356,8 @@ export function applyBootstrapSnapshot(
 						typeof payload.user_prompt_id === "number" ? payload.user_prompt_id : null,
 					prompt_number: typeof payload.prompt_number === "number" ? payload.prompt_number : null,
 					scope_id: scopeId,
+					applies_to: applicability.applies_to,
+					applies_to_key: applicability.applies_to_key,
 				})
 				.run();
 			result.applied++;
