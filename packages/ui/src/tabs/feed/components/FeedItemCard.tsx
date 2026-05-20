@@ -104,7 +104,6 @@ export function FeedItemCard({
 		item.applies_to === "project"
 			? item.applies_to
 			: "project";
-	const appliesToEditable = itemAppliesTo === "user" || itemAppliesTo === "project";
 	const [selectedAppliesTo, setSelectedAppliesTo] = useState<
 		"user" | "org" | "toolchain" | "project"
 	>(itemAppliesTo);
@@ -191,22 +190,59 @@ export function FeedItemCard({
 					) || h("div", { className: bodyClassName })
 			: h("div", { className: "feed-body" });
 
-	async function saveAppliesTo(next: "project" | "user") {
+	async function saveAppliesTo(
+		next: "user" | "org" | "toolchain" | "project",
+		nextKey: string | null = null,
+	) {
 		const previous = selectedAppliesTo;
-		if (next === previous) return;
+		const previousKey = item.applies_to_key ?? null;
+		if (next === previous && nextKey === previousKey) return;
 
-		// Broadening from project → user widens this rule's applicability
-		// to every project this device sees. Narrowing is safe and skips
-		// the prompt.
-		if (next === "user") {
-			const titleText = String(displayTitle || "this memory").trim();
-			const truncatedTitle =
-				titleText.length > 80 ? `${titleText.slice(0, 79).trimEnd()}…` : titleText;
+		const titleText = String(displayTitle || "this memory").trim();
+		const truncatedTitle =
+			titleText.length > 80 ? `${titleText.slice(0, 79).trimEnd()}…` : titleText;
+
+		// org/toolchain require a scope_key. Prompt the user for it (free-text in
+		// v1 — suggestions/picker arrive in a follow-up). Cancellation aborts.
+		let resolvedKey: string | null = nextKey;
+		if (next === "org" || next === "toolchain") {
+			const layerLabel = next === "org" ? "organization" : "toolchain";
+			const placeholder = next === "org" ? "e.g. acme, internal" : "e.g. pnpm, cargo, go";
+			const initialValue = previous === next ? (previousKey ?? "") : "";
+			const entered = await openSyncInputDialog({
+				title: `Apply to which ${layerLabel}?`,
+				description: `Promoting "${truncatedTitle}" to ${layerLabel} scope. Enter the ${layerLabel} key this rule should apply to (every project on this device that matches will see it).`,
+				initialValue,
+				placeholder,
+				confirmLabel: "Apply",
+				cancelLabel: "Cancel",
+				validate: (value) => {
+					const trimmed = value.trim();
+					if (!trimmed) return `Enter a ${layerLabel} key.`;
+					if (trimmed === previousKey && previous === next) return "Already set to this value.";
+					return null;
+				},
+			});
+			if (entered == null) return;
+			resolvedKey = entered.trim();
+			if (!resolvedKey) return;
+		}
+
+		// Broadening past project widens applicability. Confirm for any
+		// transition that crosses out of project-scope; narrowing back to
+		// project is safe.
+		if (next !== "project" && previous === "project") {
+			const layerSummary =
+				next === "user"
+					? "every project on this device"
+					: next === "org"
+						? `every project in the "${resolvedKey}" organization`
+						: `every project using the "${resolvedKey}" toolchain`;
 			const confirmed = await openSyncConfirmDialog({
 				autoFocusAction: "cancel",
-				title: "Apply to all your projects?",
-				description: `Promoting "${truncatedTitle}" to user scope means this rule will be injected into packs for every project on this device. You can scope it back to this project at any time.`,
-				confirmLabel: "Apply user-wide",
+				title: "Broaden this rule's scope?",
+				description: `Promoting "${truncatedTitle}" beyond this project means it will be injected into packs for ${layerSummary}. You can scope it back to this project at any time.`,
+				confirmLabel: "Broaden scope",
 				cancelLabel: "Keep project-only",
 				tone: "default",
 			});
@@ -218,15 +254,19 @@ export function FeedItemCard({
 		setSelectedAppliesTo(next);
 		setSavingAppliesTo(true);
 		try {
-			const payload = await api.updateMemoryApplicability(memoryId, next, null);
+			const payload = await api.updateMemoryApplicability(memoryId, next, resolvedKey);
 			if (payload?.item) {
 				onReplace(payload.item as FeedItem);
 				onViewRefresh();
 			}
 			showGlobalNotice(
-				next === "user"
-					? "Rule now applies across all your projects."
-					: "Rule scoped back to this project.",
+				next === "project"
+					? "Rule scoped back to this project."
+					: next === "user"
+						? "Rule now applies across all your projects."
+						: next === "org"
+							? `Rule now applies across every project in the ${resolvedKey} organization.`
+							: `Rule now applies across every project on the ${resolvedKey} toolchain.`,
 			);
 		} catch (error) {
 			setSelectedAppliesTo(previous);
@@ -462,38 +502,41 @@ export function FeedItemCard({
 									h("option", { value: "shared" }, "Share with peers"),
 								),
 								h("div", { className: "feed-visibility-note" }, visibilityNote),
-								appliesToEditable
-									? h(
-											"select",
-											{
-												"aria-label": `Applicability scope for ${String(item.title || "memory")}`,
-												className: "feed-applies-to-select",
-												disabled: savingAppliesTo,
-												onChange: (event) => {
-													const nextValue =
-														String((event.currentTarget as HTMLSelectElement).value) === "user"
-															? "user"
-															: "project";
-													void saveAppliesTo(nextValue);
-												},
-												title:
-													"Org and toolchain layers are managed in advanced settings (coming soon).",
-												value: selectedAppliesTo,
-											},
-											h("option", { value: "project" }, "Project — this project only"),
-											h("option", { value: "user" }, "User — all your projects"),
-										)
-									: h(
-											"div",
-											{
-												className: "feed-applies-to-readonly",
-												title:
-													"This memory is scoped to an org or toolchain. Manage these in advanced settings (coming soon).",
-											},
-											`${selectedAppliesTo === "org" ? "Org" : "Toolchain"}${
-												item.applies_to_key ? ` (${item.applies_to_key})` : ""
-											}`,
-										),
+								h(
+									"select",
+									{
+										"aria-label": `Applicability scope for ${String(item.title || "memory")}`,
+										className: "feed-applies-to-select",
+										disabled: savingAppliesTo,
+										onChange: (event) => {
+											const raw = String((event.currentTarget as HTMLSelectElement).value);
+											const nextValue: "user" | "org" | "toolchain" | "project" =
+												raw === "user" || raw === "org" || raw === "toolchain" ? raw : "project";
+											void saveAppliesTo(nextValue);
+										},
+										value: selectedAppliesTo,
+									},
+									h("option", { value: "project" }, "Project — this project only"),
+									h("option", { value: "user" }, "User — all your projects"),
+									h(
+										"option",
+										{ value: "toolchain" },
+										selectedAppliesTo === "toolchain"
+											? item.applies_to_key
+												? `Toolchain (${item.applies_to_key}) — projects on this toolchain`
+												: "Toolchain (no key) — needs a toolchain key"
+											: "Toolchain — pick a toolchain…",
+									),
+									h(
+										"option",
+										{ value: "org" },
+										selectedAppliesTo === "org"
+											? item.applies_to_key
+												? `Org (${item.applies_to_key}) — projects in this org`
+												: "Org (no key) — needs an organization key"
+											: "Org — pick an organization…",
+									),
+								),
 							)
 						: null,
 				),

@@ -67,6 +67,21 @@ describe("validateApplicability", () => {
 		const tc = validateApplicability({ applies_to: "toolchain", applies_to_key: "pnpm" });
 		expect(tc.applies_to_key).toBe("pnpm");
 	});
+
+	it("lowercases applies_to_key so casing variants converge", () => {
+		expect(
+			validateApplicability({ applies_to: "toolchain", applies_to_key: "PNPM" }).applies_to_key,
+		).toBe("pnpm");
+		expect(
+			validateApplicability({ applies_to: "toolchain", applies_to_key: "Pnpm" }).applies_to_key,
+		).toBe("pnpm");
+	});
+
+	it("collapses internal whitespace in applies_to_key", () => {
+		expect(
+			validateApplicability({ applies_to: "org", applies_to_key: "ACME   inc" }).applies_to_key,
+		).toBe("acme inc");
+	});
 });
 
 describe("normalizeApplicability (row → Applicability)", () => {

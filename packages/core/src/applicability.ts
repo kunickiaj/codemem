@@ -33,8 +33,13 @@ function normalizeLayer(value: unknown): AppliesTo | null {
 
 function normalizeKey(value: unknown): string | null {
 	if (typeof value !== "string") return null;
-	const trimmed = value.trim();
-	return trimmed.length > 0 ? trimmed : null;
+	// Trim, lowercase, and collapse internal whitespace so peers can't
+	// fragment an org/toolchain by typing "PNPM" / "pnpm" / "pnpm " as
+	// three different keys. Toolchain keys (pnpm, cargo, go, bun) are
+	// lowercase by convention; org keys are treated as identifiers in
+	// the same namespace for simplicity.
+	const normalized = value.trim().toLowerCase().replace(/\s+/g, " ");
+	return normalized.length > 0 ? normalized : null;
 }
 
 /**
