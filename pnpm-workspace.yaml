@@ -18,6 +18,7 @@ overrides:
   'jsdom>ws': 8.20.1
   'miniflare>ws': 8.20.1
   '@rollup/pluginutils@5>picomatch': 4.0.4
+  'onnx-proto>protobufjs': 7.5.8
 
 catalog:
   "@biomejs/biome": ^2.4.14
