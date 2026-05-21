@@ -242,6 +242,49 @@ describe("pack command", () => {
 		expect(JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]))).toMatchObject({ items: [] });
 	});
 
+	it("passes explicit compression mode through main pack command", async () => {
+		buildMemoryPackAsync.mockResolvedValue({
+			items: [],
+			metrics: {
+				total_items: 0,
+				pack_tokens: 0,
+				fallback_used: false,
+				sources: { fts: 0, semantic: 0, fuzzy: 0 },
+			},
+			pack_text: "",
+		});
+
+		await parsePackCommand(["continue viewer health work", "--compression-mode", "ids"]);
+
+		expect(buildMemoryPackAsync).toHaveBeenCalledWith(
+			"continue viewer health work",
+			10,
+			undefined,
+			expect.any(Object),
+			{ compressionMode: "ids" },
+		);
+	});
+
+	it("rejects invalid compression mode", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		await parsePackCommand([
+			"continue viewer health work",
+			"--json",
+			"--compression-mode",
+			"banana",
+		]);
+
+		expect(JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]))).toEqual({
+			error: "usage_error",
+			message: "compression mode must be one of: off, compact, ids",
+		});
+		expect(process.exitCode).toBe(2);
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(buildMemoryPackAsync).not.toHaveBeenCalled();
+	});
+
 	it("emits structured json errors for pack failures", async () => {
 		buildMemoryPackAsync.mockRejectedValue(new Error("pack blew up"));
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});

@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect } from "./db.js";
 import { buildMemoryPack, buildMemoryPackTrace, estimateTokens } from "./pack.js";
 import { MemoryStore } from "./store.js";
@@ -1577,7 +1577,7 @@ describe("buildMemoryPack compact mode", () => {
 		expect(pack.pack_text).toContain("## Index");
 		expect(pack.pack_text).toContain("## Detail");
 		expect(pack.pack_text).toContain("memory_get");
-		expect(pack.pack_text).toContain("memory_search");
+		expect(pack.pack_text).toContain("memory_get_observations");
 	});
 
 	it("shows index lines for all items", () => {
@@ -1761,7 +1761,26 @@ describe("buildMemoryPack compact mode", () => {
 			0.7,
 		);
 
-		const pack = buildMemoryPack(store, "thread local memory store pooling mcp server", 10, 5);
+		const unbudgeted = buildMemoryPack(
+			store,
+			"thread local memory store pooling mcp server",
+			10,
+			null,
+			undefined,
+			undefined,
+			{ compressionMode: "ids" },
+		);
+		expect(unbudgeted.items.some((item) => (item.compressed_ids?.length ?? 0) > 0)).toBe(true);
+
+		const pack = buildMemoryPack(
+			store,
+			"thread local memory store pooling mcp server",
+			10,
+			5,
+			undefined,
+			undefined,
+			{ compressionMode: "ids" },
+		);
 
 		expect(pack.items).toHaveLength(0);
 		expect(pack.item_ids).toHaveLength(0);
@@ -1792,7 +1811,17 @@ describe("buildMemoryPack compact mode", () => {
 			0.9,
 		);
 
-		const pack = buildMemoryPack(store, "remember what happened previously", 10);
+		const pack = buildMemoryPack(
+			store,
+			"remember what happened previously",
+			10,
+			null,
+			undefined,
+			undefined,
+			{
+				compressionMode: "ids",
+			},
+		);
 
 		expect(pack.item_ids).toEqual(expect.arrayContaining([summaryId, idA, idB]));
 		expect(pack.items.find((item) => item.id === idB)?.compressed_ids).toEqual([idA]);
@@ -1819,11 +1848,12 @@ describe("buildMemoryPack cluster compression", () => {
 	});
 
 	afterEach(() => {
+		vi.unstubAllEnvs();
 		store.close();
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	it("compresses related items into one representative in default mode", () => {
+	it("keeps related items self-contained in default mode", () => {
 		const idA = store.remember(
 			sessionId,
 			"discovery",
@@ -1841,7 +1871,42 @@ describe("buildMemoryPack cluster compression", () => {
 
 		const pack = buildMemoryPack(store, "sync pass orchestrator typescript", 10);
 
-		expect(pack.pack_text).toContain("(+1 related)");
+		expect(pack.pack_text).not.toContain("(+1 related)");
+		expect(pack.pack_text).toContain("Sync pass orchestrator moved from Python to TypeScript");
+		expect(pack.pack_text).toContain("Sync pass orchestrator ported to TypeScript");
+		expect(pack.item_ids).toEqual(expect.arrayContaining([idA, idB]));
+		expect(pack.items.map((item) => item.id)).toEqual(expect.arrayContaining([idA, idB]));
+	});
+
+	it("compresses related items into one representative when ids mode is requested", () => {
+		const idA = store.remember(
+			sessionId,
+			"discovery",
+			"Sync pass orchestrator ported to TypeScript",
+			"Moved the sync pass orchestrator from Python to TypeScript.",
+			0.6,
+		);
+		const idB = store.remember(
+			sessionId,
+			"feature",
+			"Sync pass orchestrator moved from Python to TypeScript",
+			"The orchestrator now coordinates sync in TypeScript.",
+			0.9,
+		);
+
+		const pack = buildMemoryPack(
+			store,
+			"sync pass orchestrator typescript",
+			10,
+			null,
+			undefined,
+			undefined,
+			{
+				compressionMode: "ids",
+			},
+		);
+
+		expect(pack.pack_text).toContain(`(+1 related: [${idA}])`);
 		expect(pack.pack_text).toContain("Sync pass orchestrator moved from Python to TypeScript");
 		expect(pack.pack_text).not.toContain("Sync pass orchestrator ported to TypeScript -");
 		expect(pack.item_ids).toEqual(expect.arrayContaining([idA, idB]));
@@ -1851,6 +1916,29 @@ describe("buildMemoryPack cluster compression", () => {
 			support_count: 2,
 			compressed_ids: [idA],
 		});
+	});
+
+	it("uses CODEMEM_PACK_COMPRESSION to select ids compression mode", () => {
+		const idA = store.remember(
+			sessionId,
+			"change",
+			"Replication retention plan updated for bounded history",
+			"Updated the retention plan.",
+			0.4,
+		);
+		store.remember(
+			sessionId,
+			"decision",
+			"Replication retention plan revised for bounded history",
+			"Revised retention plan and documented bounds.",
+			0.95,
+		);
+
+		vi.stubEnv("CODEMEM_PACK_COMPRESSION", "ids");
+		const pack = buildMemoryPack(store, "replication retention bounded history", 10);
+
+		expect(pack.pack_text).toContain(`(+1 related: [${idA}])`);
+		expect(pack.items[0]?.compressed_ids).toEqual([idA]);
 	});
 
 	it("chooses highest-confidence representative on clustered items", () => {
@@ -1869,7 +1957,17 @@ describe("buildMemoryPack cluster compression", () => {
 			0.95,
 		);
 
-		const pack = buildMemoryPack(store, "replication retention bounded history", 10);
+		const pack = buildMemoryPack(
+			store,
+			"replication retention bounded history",
+			10,
+			null,
+			undefined,
+			undefined,
+			{
+				compressionMode: "ids",
+			},
+		);
 		expect(pack.items[0]?.id).toBe(idHigh);
 		expect(pack.items[0]?.compressed_ids).toEqual([idLow]);
 	});
@@ -1925,7 +2023,8 @@ describe("buildMemoryPack cluster compression", () => {
 			},
 		);
 
-		expect(pack.pack_text).toContain("(+1 related)");
+		expect(pack.pack_text).toContain(`(+1 related: [${idA}])`);
+		expect(pack.pack_text).toContain("memory_get_observations");
 		expect(pack.item_ids).toEqual(expect.arrayContaining([idA, idB]));
 		expect(pack.items).toHaveLength(1);
 	});
@@ -1990,7 +2089,15 @@ describe("buildMemoryPack cluster compression", () => {
 			0.9,
 		);
 
-		const trace = buildMemoryPackTrace(store, "peer deletion cursor leak sync worker", 10);
+		const trace = buildMemoryPackTrace(
+			store,
+			"peer deletion cursor leak sync worker",
+			10,
+			null,
+			undefined,
+			undefined,
+			{ compressionMode: "ids" },
+		);
 
 		expect(trace.assembly.compressed_clusters).toHaveLength(1);
 		expect(trace.assembly.compressed_clusters[0]).toMatchObject({

@@ -731,4 +731,11 @@ export interface PackRenderOptions {
 	 * Ignored when compact is false. Default: 3.
 	 */
 	compactDetailCount?: number;
+	/**
+	 * Controls near-related pack compression. Default: "compact".
+	 * - "off": never compress related items
+	 * - "compact": compress related items only in compact rendering mode
+	 * - "ids": compress related items in all modes and render related IDs as a retrieval hint
+	 */
+	compressionMode?: "off" | "compact" | "ids";
 }
