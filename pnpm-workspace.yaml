@@ -11,13 +11,20 @@ allowBuilds:
 
 overrides:
   better-sqlite3: 12.8.0
+  fast-uri: 3.1.2
+  '@modelcontextprotocol/sdk>@hono/node-server': 1.19.13
+  'express-rate-limit>ip-address': 10.1.1
+  'router>path-to-regexp': 8.4.2
+  'jsdom>ws': 8.20.1
+  'miniflare>ws': 8.20.1
+  '@rollup/pluginutils@5>picomatch': 4.0.4
 
 catalog:
   "@biomejs/biome": ^2.4.14
   "@hono/node-server": ^2.0.1
   "@types/better-sqlite3": ^7.6.13
   drizzle-orm: ^0.45.2
-  hono: ^4.12.16
+  hono: ^4.12.21
   limiter: ^3.0.0
   tsx: ^4.21.0
   typescript: ^6.0.3
