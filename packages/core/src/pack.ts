@@ -105,13 +105,52 @@ function parseFacts(raw: string | null): string[] | null {
  * available. Falls back to the original single-line format when neither
  * structured field exists.
  */
-function relatedSuffix(item: MemoryResult, clusterState?: ClusterCompressionState): string {
-	const relatedCount = clusterState?.compressedByRepresentative.get(item.id)?.size ?? 0;
-	return relatedCount > 0 ? ` (+${relatedCount} related)` : "";
+type PackCompressionMode = "off" | "compact" | "ids";
+
+const PACK_COMPRESSION_MODE_ENV = "CODEMEM_PACK_COMPRESSION";
+const DEFAULT_PACK_COMPRESSION_MODE: PackCompressionMode = "compact";
+
+function parsePackCompressionMode(value: string | undefined): PackCompressionMode | null {
+	const normalized = value?.trim().toLowerCase();
+	if (!normalized) return null;
+	if (["0", "false", "none", "off", "disabled"].includes(normalized)) return "off";
+	if (["compact", "compact-only", "compact_only", "default"].includes(normalized)) return "compact";
+	if (["1", "true", "on", "ids", "all", "legacy"].includes(normalized)) return "ids";
+	return null;
 }
 
-function formatItem(item: MemoryResult, clusterState?: ClusterCompressionState): string {
-	const header = `[${item.id}] (${item.kind}) ${item.title}${relatedSuffix(item, clusterState)}`;
+function resolvePackCompressionMode(explicit?: PackCompressionMode): PackCompressionMode {
+	return (
+		explicit ??
+		parsePackCompressionMode(process.env[PACK_COMPRESSION_MODE_ENV]) ??
+		DEFAULT_PACK_COMPRESSION_MODE
+	);
+}
+
+function relatedSuffix(
+	item: MemoryResult,
+	clusterState?: ClusterCompressionState,
+	options: { includeIds?: boolean } = {},
+): string {
+	const related = clusterState?.compressedByRepresentative.get(item.id);
+	const relatedCount = related?.size ?? 0;
+	if (relatedCount === 0) return "";
+	if (!options.includeIds) return ` (+${relatedCount} related)`;
+	const ids = [...(related ?? [])]
+		.sort((a, b) => a - b)
+		.map((id) => `[${id}]`)
+		.join(", ");
+	return ` (+${relatedCount} related: ${ids})`;
+}
+
+function formatItem(
+	item: MemoryResult,
+	clusterState?: ClusterCompressionState,
+	options: { includeRelatedIds?: boolean } = {},
+): string {
+	const header = `[${item.id}] (${item.kind}) ${item.title}${relatedSuffix(item, clusterState, {
+		includeIds: options.includeRelatedIds,
+	})}`;
 	const narrative = item.narrative || null;
 	const facts = parseFacts(item.facts);
 
@@ -138,10 +177,11 @@ function formatSection(
 	header: string,
 	items: MemoryResult[],
 	clusterState?: ClusterCompressionState,
+	options: { includeRelatedIds?: boolean } = {},
 ): string {
 	const heading = `## ${header}`;
 	if (items.length === 0) return `${heading}\n`;
-	return [heading, ...items.map((item) => formatItem(item, clusterState))].join("\n");
+	return [heading, ...items.map((item) => formatItem(item, clusterState, options))].join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -149,11 +189,14 @@ function formatSection(
 // ---------------------------------------------------------------------------
 
 const DEFAULT_COMPACT_DETAIL_COUNT = 3;
-const COMPACT_FOOTER = "Use `memory_get` or `memory_search` to fetch detail for any item by [ID].";
+const COMPACT_FOOTER =
+	"Use `memory_get` for one item, or `memory_get_observations(ids=[...])` for related IDs shown in the index.";
 
 /** Single-line index entry for compact mode. */
 function formatIndexLine(item: MemoryResult, clusterState?: ClusterCompressionState): string {
-	return `[${item.id}] (${item.kind}) ${item.title}${relatedSuffix(item, clusterState)}`;
+	return `[${item.id}] (${item.kind}) ${item.title}${relatedSuffix(item, clusterState, {
+		includeIds: true,
+	})}`;
 }
 
 /**
@@ -174,7 +217,9 @@ function renderCompactPack(
 	const detailItems = items.filter((item) => detailIds.has(item.id));
 	const detailSection =
 		detailItems.length > 0
-			? `## Detail\n${detailItems.map((item) => formatItem(item, clusterState)).join("\n\n")}`
+			? `## Detail\n${detailItems
+					.map((item) => formatItem(item, clusterState, { includeRelatedIds: true }))
+					.join("\n\n")}`
 			: "## Detail\n(no items)";
 
 	return `${indexSection}\n\n${detailSection}\n\n${COMPACT_FOOTER}`;
@@ -1236,7 +1281,12 @@ function buildPackArtifacts(
 	tokenBudget: number | null = null,
 	filters?: MemoryFilters,
 	semanticResults?: MemoryResult[],
-	options: { recordUsage: boolean; compact?: boolean; compactDetailCount?: number } = {
+	options: {
+		recordUsage: boolean;
+		compact?: boolean;
+		compactDetailCount?: number;
+		compressionMode?: PackCompressionMode;
+	} = {
 		recordUsage: true,
 	},
 ): PackArtifacts {
@@ -1482,19 +1532,26 @@ function buildPackArtifacts(
 	timelineItems = collapseExactDuplicates(timelineItems, dedupeState);
 	observationItems = collapseExactDuplicates(observationItems, dedupeState);
 
+	const compact = options.compact ?? false;
+	const compactDetailCount = options.compactDetailCount ?? DEFAULT_COMPACT_DETAIL_COUNT;
+	const compressionMode = resolvePackCompressionMode(options.compressionMode);
+	const compressRelated = compressionMode === "ids" || (compressionMode === "compact" && compact);
+
 	const clusterState: ClusterCompressionState = {
 		compressedByRepresentative: new Map(),
 		representativeByCompressedId: new Map(),
 		clusters: [],
 	};
-	const compressionPoolSeen = new Set<number>();
-	const compressionPool: MemoryResult[] = [];
-	for (const item of [...summaryItems, ...timelineItems, ...observationItems]) {
-		if (compressionPoolSeen.has(item.id)) continue;
-		compressionPoolSeen.add(item.id);
-		compressionPool.push(item);
+	if (compressRelated) {
+		const compressionPoolSeen = new Set<number>();
+		const compressionPool: MemoryResult[] = [];
+		for (const item of [...summaryItems, ...timelineItems, ...observationItems]) {
+			if (compressionPoolSeen.has(item.id)) continue;
+			compressionPoolSeen.add(item.id);
+			compressionPool.push(item);
+		}
+		compressClusters(compressionPool, modeLabel, clusterState);
 	}
-	compressClusters(compressionPool, modeLabel, clusterState);
 	const compressedSectionIds = new Set(flattenCompressedIds(clusterState));
 	summaryItems = summaryItems.filter((item) => !compressedSectionIds.has(item.id));
 	timelineItems = timelineItems.filter((item) => !compressedSectionIds.has(item.id));
@@ -1506,9 +1563,6 @@ function buildPackArtifacts(
 	// Compact mode flattens all items into a single list, budgets using
 	// index-line costs for items beyond the detail count, and renders a
 	// scannable Index + Detail layout instead of Summary/Timeline/Observations.
-
-	const compact = options.compact ?? false;
-	const compactDetailCount = options.compactDetailCount ?? DEFAULT_COMPACT_DETAIL_COUNT;
 
 	let budgetedSummary: MemoryResult[];
 	let budgetedTimeline: MemoryResult[];
@@ -1535,7 +1589,8 @@ function buildPackArtifacts(
 				const indexCost = estimateTokens(formatIndexLine(item, clusterState));
 				if (detailSlots > 0) {
 					// Detail items appear in both Index and Detail — charge both.
-					const fullCost = indexCost + estimateTokens(formatItem(item, clusterState));
+					const fullCost =
+						indexCost + estimateTokens(formatItem(item, clusterState, { includeRelatedIds: true }));
 					if (tokensUsed + fullCost <= tokenBudget) {
 						tokensUsed += fullCost;
 						budgetedItems.push(item);
@@ -1569,10 +1624,11 @@ function buildPackArtifacts(
 
 		if (tokenBudget != null && tokenBudget > 0) {
 			let tokensUsed = 0;
+			const formatOptions = { includeRelatedIds: compressionMode === "ids" };
 
 			budgetedSummary = [];
 			for (const item of summaryItems) {
-				const cost = estimateTokens(formatItem(item, clusterState));
+				const cost = estimateTokens(formatItem(item, clusterState, formatOptions));
 				if (tokensUsed + cost > tokenBudget) break;
 				tokensUsed += cost;
 				budgetedSummary.push(item);
@@ -1580,7 +1636,7 @@ function buildPackArtifacts(
 
 			budgetedTimeline = [];
 			for (const item of timelineItems) {
-				const cost = estimateTokens(formatItem(item, clusterState));
+				const cost = estimateTokens(formatItem(item, clusterState, formatOptions));
 				if (tokensUsed + cost > tokenBudget) break;
 				tokensUsed += cost;
 				budgetedTimeline.push(item);
@@ -1588,7 +1644,7 @@ function buildPackArtifacts(
 
 			budgetedObservations = [];
 			for (const item of observationItems) {
-				const cost = estimateTokens(formatItem(item, clusterState));
+				const cost = estimateTokens(formatItem(item, clusterState, formatOptions));
 				if (tokensUsed + cost > tokenBudget) break;
 				tokensUsed += cost;
 				budgetedObservations.push(item);
@@ -1596,9 +1652,15 @@ function buildPackArtifacts(
 		}
 
 		const sections = [
-			formatSection("Summary", budgetedSummary, clusterState),
-			formatSection("Timeline", budgetedTimeline, clusterState),
-			formatSection("Observations", budgetedObservations, clusterState),
+			formatSection("Summary", budgetedSummary, clusterState, {
+				includeRelatedIds: compressionMode === "ids",
+			}),
+			formatSection("Timeline", budgetedTimeline, clusterState, {
+				includeRelatedIds: compressionMode === "ids",
+			}),
+			formatSection("Observations", budgetedObservations, clusterState, {
+				includeRelatedIds: compressionMode === "ids",
+			}),
 		];
 		packText = sections.join("\n\n");
 	}
@@ -1890,6 +1952,7 @@ export function buildMemoryPack(
 		recordUsage: true,
 		compact: renderOptions?.compact,
 		compactDetailCount: renderOptions?.compactDetailCount,
+		compressionMode: renderOptions?.compressionMode,
 	}).response;
 }
 
@@ -1906,6 +1969,7 @@ export function buildMemoryPackTrace(
 		recordUsage: false,
 		compact: renderOptions?.compact,
 		compactDetailCount: renderOptions?.compactDetailCount,
+		compressionMode: renderOptions?.compressionMode,
 	}).trace;
 }
 
@@ -1949,6 +2013,7 @@ export async function buildMemoryPackAsync(
 		recordUsage: true,
 		compact: renderOptions?.compact,
 		compactDetailCount: renderOptions?.compactDetailCount,
+		compressionMode: renderOptions?.compressionMode,
 	}).response;
 }
 
@@ -1976,5 +2041,6 @@ export async function buildMemoryPackTraceAsync(
 		recordUsage: false,
 		compact: renderOptions?.compact,
 		compactDetailCount: renderOptions?.compactDetailCount,
+		compressionMode: renderOptions?.compressionMode,
 	}).trace;
 }

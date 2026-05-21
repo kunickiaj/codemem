@@ -36,7 +36,11 @@ export function addPackRequestOptions(command: Command): Command {
 		.option("--project <project>", "project identifier (defaults to git repo root)")
 		.option("--all-projects", "search across all projects")
 		.option("--compact", "render a scannable index with full detail only for top N items")
-		.option("--compact-detail <n>", "items to show in full detail in compact mode (default 3)");
+		.option("--compact-detail <n>", "items to show in full detail in compact mode (default 3)")
+		.option(
+			"--compression-mode <mode>",
+			"near-related compression mode: off, compact, or ids (default: CODEMEM_PACK_COMPRESSION or compact)",
+		);
 }
 
 export function buildPackRequestOptions(
@@ -49,6 +53,7 @@ export function buildPackRequestOptions(
 		allProjects?: boolean;
 		compact?: boolean;
 		compactDetail?: string;
+		compressionMode?: string;
 	},
 	ctx: {
 		cwd?: string;
@@ -76,17 +81,27 @@ export function buildPackRequestOptions(
 	}
 
 	let renderOptions: PackRenderOptions | undefined;
-	if (opts.compact || opts.compactDetail != null) {
-		renderOptions = { compact: true };
+	if (opts.compact || opts.compactDetail != null || opts.compressionMode != null) {
+		renderOptions = {};
+		if (opts.compact || opts.compactDetail != null) renderOptions.compact = true;
 		if (opts.compactDetail != null) {
 			renderOptions.compactDetailCount = parseNonNegativeInt(
 				opts.compactDetail,
 				"compact detail count",
 			);
 		}
+		if (opts.compressionMode != null) {
+			renderOptions.compressionMode = parseCompressionMode(opts.compressionMode);
+		}
 	}
 
 	return { limit, budget, filters, renderOptions };
+}
+
+function parseCompressionMode(value: string): "off" | "compact" | "ids" {
+	const normalized = value.trim().toLowerCase();
+	if (normalized === "off" || normalized === "compact" || normalized === "ids") return normalized;
+	throw new PackUsageError("compression mode must be one of: off, compact, ids");
 }
 
 function parsePositiveInt(value: string, label: string): number {

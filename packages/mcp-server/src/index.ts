@@ -546,14 +546,24 @@ async function main() {
 				.max(50)
 				.optional()
 				.describe("Number of items to show in full detail in compact mode (default 3)"),
+			compression_mode: z
+				.enum(["off", "compact", "ids"])
+				.optional()
+				.describe(
+					"Near-related compression mode: off disables it, compact applies only to compact rendering, ids applies in all modes. Defaults to CODEMEM_PACK_COMPRESSION or compact.",
+				),
 			...filterSchema,
 		},
 		async (args) => {
 			try {
 				const filters = buildFilters(args);
 				const renderOptions =
-					args.compact || args.compact_detail_count != null
-						? { compact: args.compact ?? true, compactDetailCount: args.compact_detail_count }
+					args.compact || args.compact_detail_count != null || args.compression_mode != null
+						? {
+								compact: args.compact ?? (args.compact_detail_count != null ? true : undefined),
+								compactDetailCount: args.compact_detail_count,
+								compressionMode: args.compression_mode,
+							}
 						: undefined;
 				const result = await store.buildMemoryPackAsync(
 					args.context,
