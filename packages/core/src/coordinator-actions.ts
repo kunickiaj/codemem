@@ -31,6 +31,12 @@ import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 const VALID_INVITE_POLICIES = new Set(["auto_admit", "approval_required"]);
 const INVITE_IMPORT_TIMEOUT_S = 10;
 
+function stripTrailingSlashes(value: string): string {
+	let end = value.length;
+	while (end > 0 && value.charCodeAt(end - 1) === 47) end--;
+	return end === value.length ? value : value.slice(0, end);
+}
+
 function coordinatorRemoteTarget(config = readCodememConfigFile()): {
 	remoteUrl: string | null;
 	adminSecret: string | null;
@@ -201,7 +207,7 @@ export async function coordinatorCreateGroupAction(opts: {
 		if (!adminSecret) throw new Error("Admin secret required.");
 		const payload = await remoteRequest(
 			"POST",
-			`${remote.replace(/\/+$/, "")}/v1/admin/groups`,
+			`${stripTrailingSlashes(remote)}/v1/admin/groups`,
 			adminSecret,
 			{ group_id: groupId, display_name: opts.displayName ?? null },
 		);
@@ -239,7 +245,7 @@ export async function coordinatorRenameGroupAction(opts: {
 		try {
 			payload = await remoteRequest(
 				"POST",
-				`${remote.replace(/\/+$/, "")}/v1/admin/groups/rename`,
+				`${stripTrailingSlashes(remote)}/v1/admin/groups/rename`,
 				adminSecret,
 				{ group_id: groupId, display_name: displayName },
 			);
@@ -276,7 +282,7 @@ export async function coordinatorArchiveGroupAction(opts: {
 		try {
 			payload = await remoteRequest(
 				"POST",
-				`${remote.replace(/\/+$/, "")}/v1/admin/groups/archive`,
+				`${stripTrailingSlashes(remote)}/v1/admin/groups/archive`,
 				adminSecret,
 				{ group_id: groupId },
 			);
@@ -314,7 +320,7 @@ export async function coordinatorUnarchiveGroupAction(opts: {
 		try {
 			payload = await remoteRequest(
 				"POST",
-				`${remote.replace(/\/+$/, "")}/v1/admin/groups/unarchive`,
+				`${stripTrailingSlashes(remote)}/v1/admin/groups/unarchive`,
 				adminSecret,
 				{ group_id: groupId },
 			);
@@ -349,7 +355,7 @@ export async function coordinatorListGroupsAction(opts?: {
 		if (!adminSecret) throw new Error("Admin secret required.");
 		const payload = await remoteRequest(
 			"GET",
-			`${remote.replace(/\/+$/, "")}/v1/admin/groups${includeArchived ? "?include_archived=1" : ""}`,
+			`${stripTrailingSlashes(remote)}/v1/admin/groups${includeArchived ? "?include_archived=1" : ""}`,
 			adminSecret,
 		);
 		return Array.isArray(payload?.items)
@@ -382,7 +388,7 @@ export async function coordinatorListScopesAction(opts: {
 		if (!adminSecret) throw new Error("Admin secret required.");
 		const payload = await remoteRequest(
 			"GET",
-			`${remote.replace(/\/+$/, "")}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes${opts.includeInactive ? "?include_inactive=1" : ""}`,
+			`${stripTrailingSlashes(remote)}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes${opts.includeInactive ? "?include_inactive=1" : ""}`,
 			adminSecret,
 		);
 		return Array.isArray(payload?.items)
@@ -427,7 +433,7 @@ export async function coordinatorCreateScopeAction(opts: {
 		if (!adminSecret) throw new Error("Admin secret required.");
 		const payload = await remoteRequest(
 			"POST",
-			`${remote.replace(/\/+$/, "")}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes`,
+			`${stripTrailingSlashes(remote)}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes`,
 			adminSecret,
 			{
 				scope_id: scopeId,
@@ -494,7 +500,7 @@ export async function coordinatorUpdateScopeAction(opts: {
 		try {
 			payload = await remoteRequest(
 				"PATCH",
-				`${remote.replace(/\/+$/, "")}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}`,
+				`${stripTrailingSlashes(remote)}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}`,
 				adminSecret,
 				{
 					label: opts.label ?? undefined,
@@ -553,7 +559,7 @@ export async function coordinatorListScopeMembershipsAction(opts: {
 		if (!adminSecret) throw new Error("Admin secret required.");
 		const payload = await remoteRequest(
 			"GET",
-			`${remote.replace(/\/+$/, "")}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}/members${opts.includeRevoked ? "?include_revoked=1" : ""}`,
+			`${stripTrailingSlashes(remote)}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}/members${opts.includeRevoked ? "?include_revoked=1" : ""}`,
 			adminSecret,
 		);
 		return Array.isArray(payload?.items)
@@ -594,7 +600,7 @@ export async function coordinatorGrantScopeMembershipAction(
 		if (!adminSecret) throw new Error("Admin secret required.");
 		const payload = await remoteRequest(
 			"POST",
-			`${remote.replace(/\/+$/, "")}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}/members`,
+			`${stripTrailingSlashes(remote)}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}/members`,
 			adminSecret,
 			{
 				device_id: deviceId,
@@ -658,7 +664,7 @@ export async function coordinatorRevokeScopeMembershipAction(
 		try {
 			await remoteRequest(
 				"POST",
-				`${remote.replace(/\/+$/, "")}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}/members/${encodeURIComponent(deviceId)}/revoke`,
+				`${stripTrailingSlashes(remote)}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}/members/${encodeURIComponent(deviceId)}/revoke`,
 				adminSecret,
 				{
 					membership_epoch: opts.membershipEpoch ?? null,
@@ -737,7 +743,7 @@ export async function coordinatorListDevicesAction(opts: {
 		if (!adminSecret) throw new Error("Admin secret required.");
 		const payload = await remoteRequest(
 			"GET",
-			`${remote.replace(/\/+$/, "")}/v1/admin/devices?group_id=${encodeURIComponent(groupId)}&include_disabled=${opts.includeDisabled ? "1" : "0"}`,
+			`${stripTrailingSlashes(remote)}/v1/admin/devices?group_id=${encodeURIComponent(groupId)}&include_disabled=${opts.includeDisabled ? "1" : "0"}`,
 			adminSecret,
 		);
 		return Array.isArray(payload?.items)
@@ -776,7 +782,7 @@ export async function coordinatorRenameDeviceAction(opts: {
 		try {
 			payload = await remoteRequest(
 				"POST",
-				`${remote.replace(/\/+$/, "")}/v1/admin/devices/rename`,
+				`${stripTrailingSlashes(remote)}/v1/admin/devices/rename`,
 				adminSecret,
 				{ group_id: groupId, device_id: deviceId, display_name: displayName },
 			);
@@ -823,7 +829,7 @@ export async function coordinatorDisableDeviceAction(opts: {
 		try {
 			await remoteRequest(
 				"POST",
-				`${remote.replace(/\/+$/, "")}/v1/admin/devices/disable`,
+				`${stripTrailingSlashes(remote)}/v1/admin/devices/disable`,
 				adminSecret,
 				{ group_id: groupId, device_id: deviceId },
 			);
@@ -864,7 +870,7 @@ export async function coordinatorEnableDeviceAction(opts: {
 		try {
 			await remoteRequest(
 				"POST",
-				`${remote.replace(/\/+$/, "")}/v1/admin/devices/enable`,
+				`${stripTrailingSlashes(remote)}/v1/admin/devices/enable`,
 				adminSecret,
 				{ group_id: groupId, device_id: deviceId },
 			);
@@ -905,7 +911,7 @@ export async function coordinatorRemoveDeviceAction(opts: {
 		try {
 			await remoteRequest(
 				"POST",
-				`${remote.replace(/\/+$/, "")}/v1/admin/devices/remove`,
+				`${stripTrailingSlashes(remote)}/v1/admin/devices/remove`,
 				adminSecret,
 				{ group_id: groupId, device_id: deviceId },
 			);
@@ -948,7 +954,7 @@ export async function coordinatorCreateInviteAction(opts: {
 			throw new Error("Admin secret required to create invites via the coordinator API.");
 		const payload = await remoteRequest(
 			"POST",
-			`${remote.replace(/\/+$/, "")}/v1/admin/invites`,
+			`${stripTrailingSlashes(remote)}/v1/admin/invites`,
 			adminSecret,
 			{
 				group_id: opts.groupId,
@@ -1035,7 +1041,7 @@ export async function coordinatorImportInviteAction(opts: {
 	// trailing slashes before comparing so harmless formatting differences
 	// (e.g. `https://coord.example.com` vs. `…/`) don't reject valid same-
 	// coordinator invites.
-	const normalizeCoordinatorUrl = (value: string): string => value.trim().replace(/\/+$/, "");
+	const normalizeCoordinatorUrl = (value: string): string => stripTrailingSlashes(value.trim());
 	const existingCoordinator = normalizeCoordinatorUrl(String(config.sync_coordinator_url ?? ""));
 	const incomingCoordinator = normalizeCoordinatorUrl(coordinatorUrl);
 	if (existingCoordinator && existingCoordinator !== incomingCoordinator) {
@@ -1048,7 +1054,7 @@ export async function coordinatorImportInviteAction(opts: {
 	try {
 		[status, response] = await requestJson(
 			"POST",
-			`${coordinatorUrl.replace(/\/+$/, "")}/v1/join`,
+			`${stripTrailingSlashes(coordinatorUrl)}/v1/join`,
 			{
 				body: {
 					token: String(payload.token),
@@ -1111,7 +1117,7 @@ export async function coordinatorListJoinRequestsAction(opts: {
 		if (!adminSecret) throw new Error("Admin secret required.");
 		const payload = await remoteRequest(
 			"GET",
-			`${remote.replace(/\/+$/, "")}/v1/admin/join-requests?group_id=${encodeURIComponent(opts.groupId)}`,
+			`${stripTrailingSlashes(remote)}/v1/admin/join-requests?group_id=${encodeURIComponent(opts.groupId)}`,
 			adminSecret,
 		);
 		return Array.isArray(payload?.items)
@@ -1145,7 +1151,7 @@ export async function coordinatorReviewJoinRequestAction(opts: {
 			: "/v1/admin/join-requests/deny";
 		const payload = await remoteRequest(
 			"POST",
-			`${remote.replace(/\/+$/, "")}${endpoint}`,
+			`${stripTrailingSlashes(remote)}${endpoint}`,
 			adminSecret,
 			{
 				request_id: opts.requestId,
@@ -1181,7 +1187,7 @@ export async function coordinatorListBootstrapGrantsAction(opts: {
 		if (!adminSecret) throw new Error("Admin secret required.");
 		const payload = await remoteRequest(
 			"GET",
-			`${remote.replace(/\/+$/, "")}/v1/admin/bootstrap-grants?group_id=${encodeURIComponent(opts.groupId)}`,
+			`${stripTrailingSlashes(remote)}/v1/admin/bootstrap-grants?group_id=${encodeURIComponent(opts.groupId)}`,
 			adminSecret,
 		);
 		return Array.isArray(payload?.items)
@@ -1211,7 +1217,7 @@ export async function coordinatorRevokeBootstrapGrantAction(opts: {
 		try {
 			await remoteRequest(
 				"POST",
-				`${remote.replace(/\/+$/, "")}/v1/admin/bootstrap-grants/revoke`,
+				`${stripTrailingSlashes(remote)}/v1/admin/bootstrap-grants/revoke`,
 				adminSecret,
 				{ grant_id: opts.grantId },
 			);

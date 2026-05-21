@@ -16,8 +16,17 @@ describe("project helpers", () => {
 
 	it("uses basename-aware SQL matching for project filters", () => {
 		expect(projectClause("/Users/adam/workspace/codemem")).toEqual({
-			clause: "(sessions.project = ? OR sessions.project LIKE ? OR sessions.project LIKE ?)",
+			clause:
+				"(sessions.project = ? OR sessions.project LIKE ? ESCAPE '\\' OR sessions.project LIKE ? ESCAPE '\\')",
 			params: ["codemem", "%/codemem", "%\\codemem"],
+		});
+	});
+
+	it("escapes SQL LIKE wildcards in project filters", () => {
+		expect(projectClause("weird_%project")).toEqual({
+			clause:
+				"(sessions.project = ? OR sessions.project LIKE ? ESCAPE '\\' OR sessions.project LIKE ? ESCAPE '\\')",
+			params: ["weird_%project", "%/weird\\_\\%project", "%\\weird\\_\\%project"],
 		});
 	});
 

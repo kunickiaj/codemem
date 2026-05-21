@@ -33,6 +33,7 @@ export const statsCommand = statsCmd.action((opts: DbOpts & JsonOpts) => {
 	try {
 		const result = store.stats();
 		if (opts.json) {
+			// lgtm[js/clear-text-logging] This is intentional CLI stdout for `--json`, not an application log.
 			console.log(JSON.stringify(result, null, 2));
 			return;
 		}

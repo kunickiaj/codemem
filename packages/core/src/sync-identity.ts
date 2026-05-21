@@ -8,7 +8,7 @@
 import { execFileSync } from "node:child_process";
 import { createPrivateKey, createPublicKey, generateKeyPairSync, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
@@ -209,7 +209,7 @@ function publicKeyLooksValid(publicKey: string): boolean {
 
 function backupInvalidKeyFile(path: string, stamp: string): void {
 	if (!existsSync(path)) return;
-	const backupPath = path.replace(/([^/]+)$/, `$1.invalid-${stamp}`);
+	const backupPath = join(dirname(path), `${basename(path)}.invalid-${stamp}`);
 	renameSync(path, backupPath);
 }
 

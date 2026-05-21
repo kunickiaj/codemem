@@ -573,25 +573,78 @@ export function resolvePlaceholder(value: string): string {
 
 /** Expand `$VAR` and `${VAR}` environment variable references. */
 function expandEnvVars(value: string): string {
-	return value.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (match, braced, bare) => {
-		const name = braced ?? bare;
-		return process.env[name] ?? match;
-	});
+	let result = "";
+	for (let i = 0; i < value.length; i++) {
+		if (value[i] !== "$" || i === value.length - 1) {
+			result += value[i];
+			continue;
+		}
+		if (value[i + 1] === "{") {
+			const end = value.indexOf("}", i + 2);
+			if (end > i + 2) {
+				const name = value.slice(i + 2, end);
+				result += process.env[name] ?? value.slice(i, end + 1);
+				i = end;
+				continue;
+			}
+		}
+		const start = i + 1;
+		let end = start;
+		while (end < value.length) {
+			const code = value.charCodeAt(end);
+			const isLetter = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+			const isDigit = code >= 48 && code <= 57;
+			if (!isLetter && !isDigit && code !== 95) break;
+			end++;
+		}
+		const name = value.slice(start, end);
+		if (!name || !Number.isNaN(Number(name[0]))) {
+			result += "$";
+			continue;
+		}
+		result += process.env[name] ?? value.slice(i, end);
+		i = end - 1;
+	}
+	return result;
 }
 
 /** Expand `{file:path}` placeholders by reading the referenced file. */
 function resolveFilePlaceholder(value: string): string {
 	if (!value.includes("{file:")) return value;
-	return value.replace(/\{file:([^}]+)\}/g, (match, rawPath: string) => {
-		const trimmed = rawPath.trim();
-		if (!trimmed) return match;
-		const resolved = expandEnvVars(trimmed).replace(/^~/, codememHomeDir());
-		try {
-			return readFileSync(resolved, "utf-8").trim();
-		} catch {
-			return match;
+	let result = "";
+	let index = 0;
+	while (index < value.length) {
+		const start = value.indexOf("{file:", index);
+		if (start < 0) {
+			result += value.slice(index);
+			break;
 		}
-	});
+		const end = value.indexOf("}", start + 6);
+		if (end < 0) {
+			result += value.slice(index);
+			break;
+		}
+		result += value.slice(index, start);
+		const match = value.slice(start, end + 1);
+		const rawPath = value.slice(start + 6, end);
+		const trimmed = rawPath.trim();
+		if (!trimmed) {
+			result += match;
+			index = end + 1;
+			continue;
+		}
+		const expanded = expandEnvVars(trimmed);
+		const resolved = expanded.startsWith("~")
+			? `${codememHomeDir()}${expanded.slice(1)}`
+			: expanded;
+		try {
+			result += readFileSync(resolved, "utf-8").trim();
+		} catch {
+			result += match;
+		}
+		index = end + 1;
+	}
+	return result;
 }
 
 // ---------------------------------------------------------------------------

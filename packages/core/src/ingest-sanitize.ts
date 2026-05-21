@@ -9,9 +9,8 @@
 // Private content stripping
 // ---------------------------------------------------------------------------
 
-const PRIVATE_BLOCK_RE = /<private>.*?<\/private>/gis;
-const PRIVATE_OPEN_RE = /<private>/i;
-const PRIVATE_CLOSE_RE = /<\/private>/gi;
+const PRIVATE_OPEN = "<private>";
+const PRIVATE_CLOSE = "</private>";
 
 /**
  * Remove `<private>…</private>` blocks from text.
@@ -21,31 +20,74 @@ const PRIVATE_CLOSE_RE = /<\/private>/gi;
  */
 export function stripPrivate(text: string): string {
 	if (!text) return "";
-	// Remove matched pairs
-	let redacted = text.replace(PRIVATE_BLOCK_RE, "");
-	// Orphaned opening tag — truncate everything after it
-	const openMatch = PRIVATE_OPEN_RE.exec(redacted);
-	if (openMatch) {
-		redacted = redacted.slice(0, openMatch.index);
+	let remaining = text;
+	let lowered = remaining.toLowerCase();
+	let output = "";
+	while (remaining) {
+		const openIndex = lowered.indexOf(PRIVATE_OPEN);
+		const closeIndex = lowered.indexOf(PRIVATE_CLOSE);
+		if (openIndex < 0) {
+			if (closeIndex < 0) return output + remaining;
+			output += remaining.slice(0, closeIndex);
+			remaining = remaining.slice(closeIndex + PRIVATE_CLOSE.length);
+			lowered = remaining.toLowerCase();
+			continue;
+		}
+		if (closeIndex >= 0 && closeIndex < openIndex) {
+			output += remaining.slice(0, closeIndex);
+			remaining = remaining.slice(closeIndex + PRIVATE_CLOSE.length);
+			lowered = remaining.toLowerCase();
+			continue;
+		}
+		output += remaining.slice(0, openIndex);
+		const blockCloseIndex = lowered.indexOf(PRIVATE_CLOSE, openIndex + PRIVATE_OPEN.length);
+		if (blockCloseIndex < 0) return output;
+		remaining = remaining.slice(blockCloseIndex + PRIVATE_CLOSE.length);
+		lowered = remaining.toLowerCase();
 	}
-	// Stray closing tags
-	redacted = redacted.replace(PRIVATE_CLOSE_RE, "");
-	return redacted;
+	return output;
 }
 
 // ---------------------------------------------------------------------------
 // Sensitive field detection
 // ---------------------------------------------------------------------------
 
-const SENSITIVE_FIELD_RE =
-	/(?:^|_|-)(?:token|secret|password|passwd|api[_-]?key|authorization|private[_-]?key|cookie)(?:$|_|-)/i;
-
 const REDACTED_VALUE = "[REDACTED]";
+
+function fieldSegments(value: string): string[] {
+	const segments: string[] = [];
+	let current = "";
+	for (const ch of value) {
+		if (ch === "_" || ch === "-") {
+			const trimmed = current.trim();
+			if (trimmed) segments.push(trimmed);
+			current = "";
+		} else {
+			current += ch;
+		}
+	}
+	const trimmed = current.trim();
+	if (trimmed) segments.push(trimmed);
+	return segments;
+}
 
 export function isSensitiveFieldName(fieldName: string): boolean {
 	const normalized = fieldName.trim().toLowerCase();
 	if (!normalized) return false;
-	return SENSITIVE_FIELD_RE.test(normalized);
+	if (normalized.includes("apikey") || normalized.includes("privatekey")) return true;
+	const segments = fieldSegments(normalized);
+	if (
+		segments.some((part) =>
+			["token", "secret", "password", "passwd", "authorization", "cookie"].includes(part),
+		)
+	) {
+		return true;
+	}
+	return (
+		segments.length >= 2 &&
+		((segments.includes("api") && segments.includes("key")) ||
+			(segments.includes("private") && segments.includes("key")))
+	);
 }
 
 // ---------------------------------------------------------------------------

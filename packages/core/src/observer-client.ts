@@ -11,7 +11,7 @@
 
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { codememHomeDir } from "./home.js";
 
@@ -57,6 +57,30 @@ const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 const FETCH_TIMEOUT_MS = 60_000;
 
 const CLAUDE_SIDECAR_TIMEOUT_MS = 120_000;
+
+function stripTrailingSlashes(value: string): string {
+	let end = value.length;
+	while (end > 0 && value.charCodeAt(end - 1) === 47) end--;
+	return end === value.length ? value : value.slice(0, end);
+}
+
+function isSafeCommandName(value: string): boolean {
+	if (!value || value === "." || value === "..") return false;
+	for (let i = 0; i < value.length; i++) {
+		const code = value.charCodeAt(i);
+		const isLetter = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+		const isDigit = code >= 48 && code <= 57;
+		if (!isLetter && !isDigit && code !== 45 && code !== 46 && code !== 95) return false;
+	}
+	return true;
+}
+
+function validateSidecarExecutable(value: string): string | null {
+	const executable = value.trim();
+	if (!executable) return null;
+	if (isAbsolute(executable)) return executable;
+	return isSafeCommandName(executable) ? executable : null;
+}
 
 // Anthropic model name aliases (friendly → API id)
 const ANTHROPIC_MODEL_ALIASES: Record<string, string> = {
@@ -1399,7 +1423,7 @@ export class ObserverClient {
 
 			let url: string;
 			if (this._customBaseUrl) {
-				url = `${this._customBaseUrl.replace(/\/+$/, "")}/responses`;
+				url = `${stripTrailingSlashes(this._customBaseUrl)}/responses`;
 			} else {
 				url = "https://api.openai.com/v1/responses";
 			}
@@ -1629,7 +1653,7 @@ export class ObserverClient {
 	): Promise<string | null> {
 		let url: string;
 		if (this._customBaseUrl) {
-			url = `${this._customBaseUrl.replace(/\/+$/, "")}/${this.openaiUseResponses ? "responses" : "chat/completions"}`;
+			url = `${stripTrailingSlashes(this._customBaseUrl)}/${this.openaiUseResponses ? "responses" : "chat/completions"}`;
 		} else {
 			url = this.openaiUseResponses
 				? "https://api.openai.com/v1/responses"
@@ -1760,7 +1784,14 @@ export class ObserverClient {
 		useModel: boolean,
 	): Promise<{ output: string | null; error: string | null; reportedModel: string | null }> {
 		const cmd = this._buildSidecarCommand(prompt, useModel);
-		const executable = cmd[0] ?? "claude";
+		const executable = validateSidecarExecutable(cmd[0] ?? "claude");
+		if (!executable) {
+			return {
+				output: null,
+				error: "configured claude command is invalid",
+				reportedModel: null,
+			};
+		}
 		const args = cmd.slice(1);
 		// Clear Claude-Code session markers so the spawned `claude` process starts
 		// fresh rather than inheriting the parent harness's session identity.
@@ -1777,6 +1808,7 @@ export class ObserverClient {
 
 		const execFileAsync = promisify(execFile);
 		try {
+			// lgtm[js/command-line-injection] execFile receives a constrained executable and argv vector; no shell is used.
 			const { stdout } = await execFileAsync(executable, args, {
 				env,
 				timeout: CLAUDE_SIDECAR_TIMEOUT_MS,

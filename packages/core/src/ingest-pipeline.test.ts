@@ -17,7 +17,7 @@ import {
 } from "./ingest-events.js";
 import { isLowSignalObservation, normalizeObservation } from "./ingest-filters.js";
 import { type IngestOptions, ingest } from "./ingest-pipeline.js";
-import { stripPrivate } from "./ingest-sanitize.js";
+import { isSensitiveFieldName, stripPrivate } from "./ingest-sanitize.js";
 import {
 	buildTranscript,
 	deriveRequest,
@@ -427,6 +427,17 @@ describe("ingest-sanitize", () => {
 
 		it("is case-insensitive", () => {
 			expect(stripPrivate("a <PRIVATE>b</PRIVATE> c")).toBe("a  c");
+		});
+
+		it("removes stray closing tags before later private blocks", () => {
+			expect(stripPrivate("a </private> b <private>secret</private> c")).toBe("a  b  c");
+		});
+	});
+
+	describe("isSensitiveFieldName", () => {
+		it("detects camelCase API and private key names", () => {
+			expect(isSensitiveFieldName("apiKey")).toBe(true);
+			expect(isSensitiveFieldName("privateKey")).toBe(true);
 		});
 	});
 });

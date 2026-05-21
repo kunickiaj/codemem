@@ -205,18 +205,48 @@ export function runAuthCommand(command: string[], timeoutMs: number): string | n
 	}
 }
 
+function expandEnvVars(value: string): string {
+	let result = "";
+	for (let i = 0; i < value.length; i++) {
+		if (value[i] !== "$" || i === value.length - 1) {
+			result += value[i];
+			continue;
+		}
+		if (value[i + 1] === "{") {
+			const end = value.indexOf("}", i + 2);
+			if (end > i + 2) {
+				const name = value.slice(i + 2, end);
+				result += process.env[name] ?? value.slice(i, end + 1);
+				i = end;
+				continue;
+			}
+		}
+		const start = i + 1;
+		let end = start;
+		while (end < value.length) {
+			const code = value.charCodeAt(end);
+			const isLetter = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+			const isDigit = code >= 48 && code <= 57;
+			if (!isLetter && !isDigit && code !== 95) break;
+			end++;
+		}
+		const name = value.slice(start, end);
+		if (!name || !Number.isNaN(Number(name[0]))) {
+			result += "$";
+			continue;
+		}
+		result += process.env[name] ?? value.slice(i, end);
+		i = end - 1;
+	}
+	return result;
+}
+
 /** Read a token from a file path (supports `~` and `$ENV_VAR` expansion). */
 export function readAuthFile(filePath: string | null): string | null {
 	if (!filePath) return null;
 	// Expand ~ and $ENV_VAR
-	let resolved = filePath.replace(/^~/, codememHomeDir());
-	resolved = resolved.replace(
-		/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
-		(match, braced, bare) => {
-			const name = braced ?? bare;
-			return process.env[name] ?? match;
-		},
-	);
+	let resolved = filePath.startsWith("~") ? `${codememHomeDir()}${filePath.slice(1)}` : filePath;
+	resolved = expandEnvVars(resolved);
 	try {
 		if (!existsSync(resolved) || !statSync(resolved).isFile()) return null;
 		const token = readFileSync(resolved, "utf-8").trim();

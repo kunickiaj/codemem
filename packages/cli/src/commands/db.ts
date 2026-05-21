@@ -31,6 +31,10 @@ import {
 	resolveDbOpt,
 } from "../shared-options.js";
 
+function escapeSqlLikePattern(value: string): string {
+	return value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+}
+
 function formatBytes(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;
 	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -308,7 +312,7 @@ renameProjectCmd.action((oldName: string, newName: string, opts: DbOpts & { appl
 	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 	try {
 		const dryRun = !opts.apply;
-		const escapedOld = oldName.replace(/%/g, "\\%").replace(/_/g, "\\_");
+		const escapedOld = escapeSqlLikePattern(oldName);
 		const suffixPattern = `%/${escapedOld}`;
 		const tables = ["sessions", "raw_event_sessions"] as const;
 		const counts: Record<string, number> = {};

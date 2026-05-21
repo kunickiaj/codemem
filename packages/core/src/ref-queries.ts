@@ -44,6 +44,10 @@ export interface RefQueryResult {
 	metadata_json: string | null;
 }
 
+function escapeSqlLikePattern(value: string): string {
+	return value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+}
+
 /**
  * Find memories associated with a file path via the `memory_file_refs` index.
  *
@@ -65,7 +69,7 @@ export function findByFile(
 	const refParams: unknown[] = [];
 
 	if (isDir) {
-		const escaped = trimmed.replace(/%/g, "\\%").replace(/_/g, "\\_");
+		const escaped = escapeSqlLikePattern(trimmed);
 		refClauses.push("mfr.file_path LIKE ? ESCAPE '\\'");
 		refParams.push(`${escaped}%`);
 	} else {

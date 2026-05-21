@@ -2,10 +2,15 @@ import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 
 export function projectBasename(value: string): string {
-	const normalized = value.replaceAll("\\", "/").replace(/\/+$/, "");
+	let normalized = value.replaceAll("\\", "/");
+	while (normalized.endsWith("/")) normalized = normalized.slice(0, -1);
 	if (!normalized) return "";
 	const parts = normalized.split("/");
 	return parts[parts.length - 1] ?? "";
+}
+
+function escapeSqlLikePattern(value: string): string {
+	return value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
 }
 
 export function projectColumnClause(
@@ -16,9 +21,10 @@ export function projectColumnClause(
 	if (!trimmed) return { clause: "", params: [] };
 	const value = /[\\/]/.test(trimmed) ? projectBasename(trimmed) : trimmed;
 	if (!value) return { clause: "", params: [] };
+	const escaped = escapeSqlLikePattern(value);
 	return {
-		clause: `(${columnExpr} = ? OR ${columnExpr} LIKE ? OR ${columnExpr} LIKE ?)`,
-		params: [value, `%/${value}`, `%\\${value}`],
+		clause: `(${columnExpr} = ? OR ${columnExpr} LIKE ? ESCAPE '\\' OR ${columnExpr} LIKE ? ESCAPE '\\')`,
+		params: [value, `%/${escaped}`, `%\\${escaped}`],
 	};
 }
 

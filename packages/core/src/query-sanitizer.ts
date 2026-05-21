@@ -3,7 +3,6 @@ const MIN_QUERY_LENGTH = 10;
 const QUOTE_CHARS = new Set(["'", '"']);
 
 const SENTENCE_SPLIT_RE = /[.!?。！？\n]+/;
-const TRAILING_QUESTION_RE = /[?？]\s*["']?\s*$/;
 const INSTRUCTION_PREFIX_PATTERNS = [
 	/^you are\b/i,
 	/^output only\b/i,
@@ -69,6 +68,22 @@ function looksInstructionLike(segment: string): boolean {
 	return INSTRUCTION_PREFIX_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
+function hasTrailingQuestion(segment: string): boolean {
+	let index = segment.length - 1;
+	while (index >= 0) {
+		const ch = segment[index];
+		if (ch !== " " && ch !== "\t" && ch !== "\n" && ch !== "\r") break;
+		index--;
+	}
+	if (segment[index] === "'" || segment[index] === '"') index--;
+	while (index >= 0) {
+		const ch = segment[index];
+		if (ch !== " " && ch !== "\t" && ch !== "\n" && ch !== "\r") break;
+		index--;
+	}
+	return segment[index] === "?" || segment[index] === "？";
+}
+
 function looksContaminated(raw: string, segments: string[]): boolean {
 	if (raw.includes("<") || raw.includes(">")) return true;
 	if (looksInstructionLike(raw)) return true;
@@ -84,7 +99,24 @@ function looksContaminated(raw: string, segments: string[]): boolean {
 }
 
 function extractQuestionSentence(raw: string): string | null {
-	const fragments = raw.match(/[^.!?。！？\n]+[.!?。！？]?/g) ?? [];
+	const fragments: string[] = [];
+	let current = "";
+	for (const ch of raw) {
+		current += ch;
+		if (
+			ch === "." ||
+			ch === "!" ||
+			ch === "?" ||
+			ch === "。" ||
+			ch === "！" ||
+			ch === "？" ||
+			ch === "\n"
+		) {
+			if (current.trim()) fragments.push(current);
+			current = "";
+		}
+	}
+	if (current.trim()) fragments.push(current);
 	for (const fragment of [...fragments].reverse()) {
 		if (!fragment.includes("?") && !fragment.includes("？")) continue;
 		const candidate = trimCandidate(fragment);
@@ -136,7 +168,7 @@ export function sanitizeSearchQuery(rawQuery: string): SanitizedQuery {
 	}
 
 	for (const segment of [...segments].reverse()) {
-		if (!TRAILING_QUESTION_RE.test(segment)) continue;
+		if (!hasTrailingQuestion(segment)) continue;
 		const candidate = trimCandidate(segment);
 		if (candidate.length >= MIN_QUERY_LENGTH) {
 			reasons.push("question_segment");

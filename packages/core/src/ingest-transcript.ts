@@ -29,14 +29,60 @@ export const TRIVIAL_REQUESTS = new Set([
 	"proceed",
 ]);
 
+function stripEdgeQuotes(value: string): string {
+	let start = 0;
+	let end = value.length;
+	while (start < end && (value[start] === '"' || value[start] === "'")) start++;
+	while (end > start && (value[end - 1] === '"' || value[end - 1] === "'")) end--;
+	return value.slice(start, end);
+}
+
+function collapseWhitespace(value: string): string {
+	const parts: string[] = [];
+	let current = "";
+	for (const ch of value) {
+		if (ch === " " || ch === "\n" || ch === "\r" || ch === "\t") {
+			if (current) {
+				parts.push(current);
+				current = "";
+			}
+		} else {
+			current += ch;
+		}
+	}
+	if (current) parts.push(current);
+	return parts.join(" ");
+}
+
+function stripMarkdownSentencePrefix(value: string): string {
+	let index = 0;
+	while (index < value.length) {
+		const ch = value[index];
+		if (ch !== "#" && ch !== "*" && ch !== "-" && ch !== "." && ch !== " " && ch !== "\t") {
+			const code = value.charCodeAt(index);
+			if (code < 48 || code > 57) break;
+		}
+		index++;
+	}
+	return value.slice(index);
+}
+
+function splitFirstSentence(value: string): string {
+	for (let i = 0; i < value.length - 1; i++) {
+		const ch = value[i];
+		const next = value[i + 1];
+		if ((ch === "." || ch === "!" || ch === "?") && (next === " " || next === "\t")) {
+			return value.slice(0, i + 1);
+		}
+	}
+	return value;
+}
+
 /** Normalize request text for comparison: trim, strip quotes, collapse whitespace, lowercase. */
 export function normalizeRequestText(text: string | null): string {
 	if (!text) return "";
-	let cleaned = text
-		.trim()
-		.replace(/^["']+|["']+$/g, "")
-		.trim();
-	cleaned = cleaned.replace(/\s+/g, " ");
+	let cleaned = stripEdgeQuotes(text.trim()).trim();
+	cleaned = collapseWhitespace(cleaned);
 	return cleaned.toLowerCase();
 }
 
@@ -58,9 +104,8 @@ export function firstSentence(text: string): string {
 		.map((l) => l.trim())
 		.filter(Boolean)
 		.join(" ");
-	cleaned = cleaned.replace(/^[#*\-\d.\s]+/, "");
-	const parts = cleaned.split(/(?<=[.!?])\s+/);
-	return (parts[0] ?? cleaned).trim();
+	cleaned = stripMarkdownSentencePrefix(cleaned);
+	return splitFirstSentence(cleaned).trim();
 }
 
 /** Derive a meaningful request from summary fields when the original is trivial. */
