@@ -238,6 +238,126 @@ describe("createCoordinatorApp dependency injection", () => {
 		).toHaveProperty("status", 200);
 	});
 
+	it("rejects signed presence and peer reads for archived groups", async () => {
+		const enrollment: CoordinatorEnrollment = {
+			group_id: "g1",
+			device_id: "d1",
+			public_key: "pk1",
+			fingerprint: "fp1",
+			display_name: "Laptop",
+			enabled: 1,
+			created_at: "2026-03-28T00:00:00Z",
+		};
+		const store = createMockStore({
+			getEnrollment: vi.fn(async () => enrollment),
+			getGroup: vi.fn(async () => ({
+				group_id: "g1",
+				display_name: "Group 1",
+				archived_at: "2026-05-22T00:00:00Z",
+				created_at: "2026-03-28T00:00:00Z",
+			})),
+			upsertPresence: vi.fn(async (): Promise<CoordinatorPresenceRecord> => {
+				throw new Error("presence should not update archived groups");
+			}),
+			listGroupPeers: vi.fn(async (): Promise<CoordinatorPeerRecord[]> => {
+				throw new Error("peers should not list archived groups");
+			}),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: {
+				adminSecret: () => "test-secret",
+				now: () => "2026-03-28T00:00:00Z",
+			},
+			requestVerifier: allowRequest,
+		});
+
+		const headers = {
+			"Content-Type": "application/json",
+			"X-Opencode-Device": "d1",
+			"X-Opencode-Signature": "sig",
+			"X-Opencode-Timestamp": "2026-03-28T00:00:00Z",
+			"X-Opencode-Nonce": "nonce-1",
+		};
+		const presence = await app.request("/v1/presence", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ group_id: "g1", fingerprint: "fp1", addresses: [] }),
+		});
+		const peers = await app.request("/v1/peers?group_id=g1", {
+			headers: { ...headers, "X-Opencode-Nonce": "nonce-2" },
+		});
+
+		expect(presence.status).toBe(409);
+		expect(await presence.json()).toEqual({ error: "group_archived" });
+		expect(peers.status).toBe(409);
+		expect(await peers.json()).toEqual({ error: "group_archived" });
+		expect(store.upsertPresence).not.toHaveBeenCalled();
+		expect(store.listGroupPeers).not.toHaveBeenCalled();
+	});
+
+	it("rate limits archived-group authentication failures", async () => {
+		const enrollment: CoordinatorEnrollment = {
+			group_id: "g1",
+			device_id: "d1",
+			public_key: "pk1",
+			fingerprint: "fp1",
+			display_name: "Laptop",
+			enabled: 1,
+			created_at: "2026-03-28T00:00:00Z",
+		};
+		const store = createMockStore({
+			getEnrollment: vi.fn(async () => enrollment),
+			getGroup: vi.fn(async () => ({
+				group_id: "g1",
+				display_name: "Group 1",
+				archived_at: "2026-05-22T00:00:00Z",
+				created_at: "2026-03-28T00:00:00Z",
+			})),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: {
+				adminSecret: () => "test-secret",
+				now: () => "2026-03-28T00:00:00Z",
+			},
+			requestVerifier: allowRequest,
+			requestRateLimit: {
+				limiter: createInMemoryRequestRateLimiter(),
+				readLimit: 10,
+				unauthenticatedReadLimit: 1,
+				unauthenticatedMutationLimit: 1,
+			},
+		});
+
+		const headers = {
+			"Content-Type": "application/json",
+			"X-Opencode-Device": "d1",
+			"X-Opencode-Signature": "sig",
+			"X-Opencode-Timestamp": "2026-03-28T00:00:00Z",
+			"X-Opencode-Nonce": "nonce-1",
+		};
+		expect(
+			await app.request("/v1/presence", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({ group_id: "g1", fingerprint: "fp1", addresses: [] }),
+			}),
+		).toHaveProperty("status", 409);
+
+		const limited = await app.request("/v1/presence", {
+			method: "POST",
+			headers: { ...headers, "X-Opencode-Nonce": "nonce-2" },
+			body: JSON.stringify({ group_id: "g1", fingerprint: "fp1", addresses: [] }),
+		});
+
+		expect(limited.status).toBe(429);
+		expect(await limited.json()).toEqual({
+			error: "rate_limited",
+			retry_after_s: expect.any(Number),
+		});
+	});
+
 	it("does not rely on process env when runtime admin secret is unset", async () => {
 		const app = createCoordinatorApp({
 			storeFactory: () => createMockStore(),
@@ -320,6 +440,12 @@ describe("createCoordinatorApp dependency injection", () => {
 
 	it("lists reciprocal approvals for the authenticated device", async () => {
 		const store = createMockStore({
+			getGroup: vi.fn(async () => ({
+				group_id: "g1",
+				display_name: "Group 1",
+				archived_at: null,
+				created_at: "2026-03-28T00:00:00Z",
+			})),
 			getEnrollment: vi.fn(async () => ({
 				group_id: "g1",
 				device_id: "local-device",
@@ -386,6 +512,12 @@ describe("createCoordinatorApp dependency injection", () => {
 
 	it("creates a reciprocal approval for the authenticated device", async () => {
 		const store = createMockStore({
+			getGroup: vi.fn(async () => ({
+				group_id: "g1",
+				display_name: "Group 1",
+				archived_at: null,
+				created_at: "2026-03-28T00:00:00Z",
+			})),
 			getEnrollment: vi.fn(async (groupId: string, deviceId: string) => {
 				if (groupId !== "g1") return null;
 				if (deviceId === "local-device" || deviceId === "peer-a") {

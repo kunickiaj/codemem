@@ -74,6 +74,7 @@ import {
 	normalizeSyncCapability,
 	parseSyncScopeRequest,
 	personalScopeGrantStatusForPeer,
+	readCodememConfigFile,
 	readCoordinatorSyncConfig,
 	reassignProjectScopeInventoryProject,
 	recordNonce,
@@ -88,6 +89,7 @@ import {
 	upsertCoordinatorGroupPreference,
 	upsertProjectScopeSettingsMapping,
 	verifySignature,
+	writeCodememConfigFile,
 } from "@codemem/core";
 import { and, count, desc, eq, max, ne } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -236,6 +238,30 @@ function coordinatorAdminStatusPayload(config = readCoordinatorSyncConfig()) {
 		has_admin_secret: hasAdminSecret,
 		has_groups: hasGroups,
 	};
+}
+
+function removeConfiguredCoordinatorGroup(groupId: string): string[] {
+	const targetGroup = groupId.trim();
+	if (!targetGroup) return [];
+	const config = readCodememConfigFile();
+	const rawGroups = config.sync_coordinator_groups;
+	const groups = Array.isArray(rawGroups)
+		? rawGroups.map((group) => String(group).trim()).filter(Boolean)
+		: typeof rawGroups === "string"
+			? rawGroups
+					.split(",")
+					.map((group) => group.trim())
+					.filter(Boolean)
+			: typeof config.sync_coordinator_group === "string" && config.sync_coordinator_group.trim()
+				? [config.sync_coordinator_group.trim()]
+				: [];
+	const nextGroups = groups.filter((group) => group !== targetGroup);
+	if (nextGroups.length === groups.length) return groups;
+	config.sync_coordinator_groups = nextGroups;
+	if (nextGroups.length) config.sync_coordinator_group = nextGroups[0];
+	else delete config.sync_coordinator_group;
+	writeCodememConfigFile(config);
+	return nextGroups;
 }
 
 function coordinatorAdminUnavailable(status: ReturnType<typeof coordinatorAdminStatusPayload>): {
@@ -3461,7 +3487,14 @@ export function syncRoutes(
 				adminSecret: config.syncCoordinatorAdminSecret || null,
 			});
 			if (!group) return c.json({ error: "group_not_found_or_already_archived", status }, 404);
-			return c.json({ ok: true, group, status });
+			const groups = removeConfiguredCoordinatorGroup(groupId);
+			return c.json({
+				ok: true,
+				group,
+				status: coordinatorAdminStatusPayload(),
+				disconnected_group_id: groupId,
+				groups,
+			});
 		} catch (error) {
 			return c.json({ error: error instanceof Error ? error.message : String(error), status }, 400);
 		}

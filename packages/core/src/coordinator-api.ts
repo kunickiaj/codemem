@@ -134,6 +134,13 @@ async function authorizeRequest(
 	if (!enrollment) {
 		return { ok: false, error: "unknown_device", enrollment: null };
 	}
+	const group = await store.getGroup(opts.groupId);
+	if (!group) {
+		return { ok: false, error: "group_not_found", enrollment: null };
+	}
+	if (group.archived_at) {
+		return { ok: false, error: "group_archived", enrollment: null };
+	}
 
 	let valid: boolean;
 	try {
@@ -353,7 +360,9 @@ export function createCoordinatorApp(
 				nonce: c.req.header("X-Opencode-Nonce") ?? null,
 			});
 			if (!auth.ok || !auth.enrollment) {
-				return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: auth.error }, 401);
+				const limited = rateLimitedResponse(c, c.req.path, false);
+				if (limited) return limited;
+				return c.json({ error: auth.error }, auth.error === "group_archived" ? 409 : 401);
 			}
 			const limited = rateLimitedResponse(c, String(auth.enrollment.device_id), true);
 			if (limited) return limited;
@@ -419,7 +428,9 @@ export function createCoordinatorApp(
 				nonce: c.req.header("X-Opencode-Nonce") ?? null,
 			});
 			if (!auth.ok || !auth.enrollment) {
-				return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: auth.error }, 401);
+				const limited = rateLimitedResponse(c, c.req.path, false);
+				if (limited) return limited;
+				return c.json({ error: auth.error }, auth.error === "group_archived" ? 409 : 401);
 			}
 			const limited = rateLimitedResponse(c, String(auth.enrollment.device_id), true);
 			if (limited) return limited;

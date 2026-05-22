@@ -8572,6 +8572,7 @@ describe("viewer-server", () => {
 					JSON.stringify({
 						sync_coordinator_url: "https://coord.example.test",
 						sync_coordinator_group: "team-a",
+						sync_coordinator_groups: ["team-a", "team-b"],
 						sync_coordinator_admin_secret: "secret",
 					}),
 				);
@@ -8620,6 +8621,7 @@ describe("viewer-server", () => {
 					JSON.stringify({
 						sync_coordinator_url: "https://coord.example.test",
 						sync_coordinator_group: "team-a",
+						sync_coordinator_groups: ["team-a", "team-b"],
 						sync_coordinator_admin_secret: "secret",
 					}),
 				);
@@ -8669,6 +8671,7 @@ describe("viewer-server", () => {
 					JSON.stringify({
 						sync_coordinator_url: "https://coord.example.test",
 						sync_coordinator_group: "team-a",
+						sync_coordinator_groups: ["team-a", "team-b"],
 						sync_coordinator_admin_secret: "secret",
 					}),
 				);
@@ -8750,6 +8753,7 @@ describe("viewer-server", () => {
 					JSON.stringify({
 						sync_coordinator_url: "https://coord.example.test",
 						sync_coordinator_group: "team-a",
+						sync_coordinator_groups: ["team-a", "team-b"],
 						sync_coordinator_admin_secret: "secret",
 					}),
 				);
@@ -8772,6 +8776,15 @@ describe("viewer-server", () => {
 						method: "POST",
 					});
 					expect(archived.status).toBe(200);
+					expect(await archived.json()).toMatchObject({
+						disconnected_group_id: "team-a",
+						groups: ["team-b"],
+						status: { groups: ["team-b"], active_group: "team-b" },
+					});
+					expect(JSON.parse(readFileSync(configPath, "utf8"))).toMatchObject({
+						sync_coordinator_group: "team-b",
+						sync_coordinator_groups: ["team-b"],
+					});
 					const unarchived = await app.request("/api/coordinator/admin/groups/team-a/unarchive", {
 						method: "POST",
 					});
