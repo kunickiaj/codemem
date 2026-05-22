@@ -138,6 +138,7 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | **Config** | `codemem config` | View or update configuration |
 | | `codemem setup` | Interactive first-run setup |
 | **Plumbing** | `codemem mcp` | MCP stdio server; best-effort starts the local viewer unless `CODEMEM_VIEWER=0` or `CODEMEM_VIEWER_AUTO=0` is set |
+| | `codemem mcp http` | Local Streamable HTTP MCP server (`POST /mcp`, loopback-only by default) |
 | | `codemem claude-hook-ingest` | Claude hook event ingestion (stdin) |
 
 Run `codemem --help` for the full list. Legacy top-level aliases (`export-memories`, `import-memories`, `show`, `forget`, `remember`) still work but are hidden from help.
@@ -155,6 +156,8 @@ codemem setup --opencode-only
 This updates your OpenCode config to install the plugin and register the MCP server. Restart OpenCode to activate.
 
 The standalone `codemem-mcp-ts` binary runs the same stdio server used by `codemem mcp`. Viewer autostart is on by default for both invocation paths; set `CODEMEM_VIEWER=0` or `CODEMEM_VIEWER_AUTO=0` to disable.
+
+For local HTTP transport testing, run `codemem mcp http`. It listens on `127.0.0.1:38889` by default and exposes Streamable HTTP at `POST /mcp`; use `--host`, `--port`, and `--db-path` to override those values. Non-loopback binds are rejected unless you explicitly pass `--unsafe-public` or set `CODEMEM_MCP_HTTP_UNSAFE_PUBLIC=1`; this mode is unauthenticated, still applies loopback Host/Origin checks, and should not be exposed directly to untrusted networks.
 
 ## Configuration
 
@@ -174,6 +177,8 @@ Common overrides:
 | `CODEMEM_INJECT_CONTEXT` | `0` to disable automatic context injection |
 | `CODEMEM_VIEWER_HOST`, `CODEMEM_VIEWER_PORT` | Host/port the plugin-managed viewer should start, probe, and restart |
 | `CODEMEM_VIEWER_AUTO` | `0` to disable auto-starting the viewer |
+| `CODEMEM_MCP_HTTP_HOST`, `CODEMEM_MCP_HTTP_PORT` | Host/port for `codemem mcp http` |
+| `CODEMEM_MCP_HTTP_UNSAFE_PUBLIC` | `1`, `true`, or `yes` to allow non-loopback MCP HTTP binds |
 
 Viewer note:
 
