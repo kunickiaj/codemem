@@ -39,6 +39,7 @@ describe("mcp command", () => {
 			"--db-path",
 			"--host",
 			"--port",
+			"--public-url",
 			"--unsafe-public",
 		]);
 	});
@@ -55,6 +56,8 @@ describe("mcp command", () => {
 					"localhost",
 					"--port",
 					"39999",
+					"--public-url",
+					"https://codemem.example.test/mcp",
 					"--unsafe-public",
 				],
 				{ from: "user" },
@@ -65,6 +68,7 @@ describe("mcp command", () => {
 				dbPath: "/tmp/codemem-test.sqlite",
 				host: "localhost",
 				port: "39999",
+				publicUrl: "https://codemem.example.test/mcp",
 			});
 		} finally {
 			stderr.mockRestore();
@@ -81,6 +85,7 @@ describe("mcp command", () => {
 				dbPath: "/tmp/parent.sqlite",
 				host: undefined,
 				port: undefined,
+				publicUrl: undefined,
 			});
 		} finally {
 			stderr.mockRestore();
@@ -97,6 +102,7 @@ describe("mcp command", () => {
 				dbPath: undefined,
 				host: undefined,
 				port: undefined,
+				publicUrl: undefined,
 			});
 		} finally {
 			stderr.mockRestore();

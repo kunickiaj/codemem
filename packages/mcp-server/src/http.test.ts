@@ -86,6 +86,122 @@ describe("MCP HTTP transport", () => {
 		expect(missingResponse.status).toBe(404);
 	});
 
+	it("serves OAuth authorization server and protected resource metadata", async () => {
+		const server = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test/mcp",
+		});
+		servers.push(server);
+
+		const baseUrl = server.url.replace("/mcp", "");
+		const authorizationMetadata = await fetch(`${baseUrl}/.well-known/oauth-authorization-server`);
+		const protectedResourceMetadata = await fetch(
+			`${baseUrl}/.well-known/oauth-protected-resource/mcp`,
+		);
+
+		expect(authorizationMetadata.status).toBe(200);
+		expect(await authorizationMetadata.json()).toMatchObject({
+			issuer: "https://codemem.example.test/",
+			registration_endpoint: "https://codemem.example.test/register",
+			code_challenge_methods_supported: ["S256"],
+			token_endpoint_auth_methods_supported: ["none"],
+		});
+		expect(protectedResourceMetadata.status).toBe(200);
+		expect(await protectedResourceMetadata.json()).toEqual({
+			resource: "https://codemem.example.test/mcp",
+			authorization_servers: ["https://codemem.example.test/"],
+			bearer_methods_supported: ["header"],
+			resource_name: "codemem MCP",
+		});
+	});
+
+	it("derives default OAuth metadata from the bound HTTP host", async () => {
+		const server = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			host: "::1",
+			port: 0,
+		});
+		servers.push(server);
+
+		const response = await fetch(
+			`${server.url.replace("/mcp", "")}/.well-known/oauth-protected-resource/mcp`,
+		);
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ resource: server.url });
+	});
+
+	it("registers OAuth clients through Dynamic Client Registration", async () => {
+		const server = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test/mcp",
+		});
+		servers.push(server);
+
+		const response = await fetch(server.url.replace("/mcp", "/register"), {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				redirect_uris: ["https://claude.ai/api/mcp/auth_callback"],
+				client_name: "Claude",
+				token_endpoint_auth_method: "none",
+			}),
+		});
+		const registered = await response.json();
+
+		expect(response.status).toBe(201);
+		expect(registered).toMatchObject({
+			redirect_uris: ["https://claude.ai/api/mcp/auth_callback"],
+			client_name: "Claude",
+			token_endpoint_auth_method: "none",
+			grant_types: ["authorization_code"],
+		});
+		expect(registered.client_id).toMatch(/[0-9a-f-]{36}/);
+		expect(registered.client_secret).toBeUndefined();
+	});
+
+	it("rejects local Dynamic Client Registration from non-loopback origins", async () => {
+		const server = await startCodememMcpHttpServer({ dbPath: tempDbPath(), port: 0 });
+		servers.push(server);
+
+		const response = await fetch(server.url.replace("/mcp", "/register"), {
+			method: "POST",
+			headers: { "content-type": "application/json", origin: "http://evil.test" },
+			body: JSON.stringify({ redirect_uris: ["https://claude.ai/api/mcp/auth_callback"] }),
+		});
+
+		expect(response.status).toBe(403);
+	});
+
+	it("rejects unsupported OAuth redirect URIs", async () => {
+		const server = await startCodememMcpHttpServer({ dbPath: tempDbPath(), port: 0 });
+		servers.push(server);
+
+		const response = await fetch(server.url.replace("/mcp", "/register"), {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ redirect_uris: ["https://evil.test/callback"] }),
+		});
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({ error: "invalid_client_metadata" });
+	});
+
+	it("returns temporary OAuth flow errors for unimplemented authorize/token endpoints", async () => {
+		const server = await startCodememMcpHttpServer({ dbPath: tempDbPath(), port: 0 });
+		servers.push(server);
+
+		const authorize = await fetch(server.url.replace("/mcp", "/authorize"));
+		const token = await fetch(server.url.replace("/mcp", "/token"), { method: "POST" });
+
+		expect(authorize.status).toBe(501);
+		expect(await authorize.json()).toMatchObject({ error: "temporarily_unavailable" });
+		expect(token.status).toBe(501);
+		expect(await token.json()).toMatchObject({ error: "temporarily_unavailable" });
+	});
+
 	it("handles repeated MCP initialize requests over POST", async () => {
 		const server = await startCodememMcpHttpServer({ dbPath: tempDbPath(), port: 0 });
 		servers.push(server);

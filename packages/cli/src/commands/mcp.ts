@@ -13,6 +13,7 @@ interface McpHttpOpts extends DbOpts {
 	host?: string;
 	port?: string;
 	unsafePublic?: boolean;
+	publicUrl?: string;
 }
 
 const mcpHttpCmd = new Command("http")
@@ -20,6 +21,7 @@ const mcpHttpCmd = new Command("http")
 	.description("Start the MCP Streamable HTTP server")
 	.option("--host <host>", "HTTP host")
 	.option("--port <port>", "HTTP port")
+	.option("--public-url <url>", "public MCP URL used in OAuth metadata")
 	.option("--unsafe-public", "allow non-loopback bind without auth");
 
 addDbOption(mcpHttpCmd);
@@ -33,6 +35,7 @@ mcpHttpCmd.action(async () => {
 			host: opts.host,
 			port: opts.port,
 			allowUnsafePublic: opts.unsafePublic,
+			publicUrl: opts.publicUrl,
 		});
 		console.error(`codemem MCP HTTP server listening at ${server.url}`);
 
@@ -73,6 +76,7 @@ function isMcpHttpUsageError(message: string): boolean {
 	return (
 		message.includes("Invalid MCP HTTP host") ||
 		message.includes("Invalid MCP HTTP port") ||
+		message.includes("Invalid MCP HTTP public URL") ||
 		message.includes("Refusing unsafe MCP HTTP host")
 	);
 }

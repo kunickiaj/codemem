@@ -3,8 +3,9 @@
 /**
  * @codemem/mcp — MCP Streamable HTTP server bootstrap.
  *
- * Local-first HTTP transport for MCP clients. This intentionally exposes only
- * POST /mcp and does not implement OAuth or any other auth layer yet.
+ * Local-first HTTP transport for MCP clients. OAuth metadata and Dynamic Client
+ * Registration are exposed for remote MCP setup; bearer enforcement is added in
+ * a later slice.
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -13,6 +14,14 @@ import { pathToFileURL } from "node:url";
 import { MemoryStore, resolveDbPath } from "@codemem/core";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import {
+	createInMemoryOAuthClientsStore,
+	createMcpOAuthMetadata,
+	createMcpProtectedResourceMetadata,
+	MCP_OAUTH_PUBLIC_URL_ENV,
+	normalizeMcpPublicUrl,
+	registerMcpOAuthClient,
+} from "./oauth.js";
 import { createCodememMcpServer } from "./server.js";
 
 export const DEFAULT_MCP_HTTP_HOST = "127.0.0.1";
@@ -31,6 +40,7 @@ export interface CodememMcpHttpOptions {
 	port?: number | string;
 	dbPath?: string;
 	allowUnsafePublic?: boolean;
+	publicUrl?: string;
 }
 
 export interface CodememMcpHttpServer {
@@ -151,21 +161,76 @@ export async function startCodememMcpHttpServer(
 		options.allowUnsafePublic ?? isUnsafePublicBindAllowed(),
 	);
 	const port = parseMcpHttpPort(options.port ?? process.env.CODEMEM_MCP_HTTP_PORT);
+	const configuredPublicUrl = options.publicUrl ?? process.env[MCP_OAUTH_PUBLIC_URL_ENV];
+	if (configuredPublicUrl) normalizeMcpPublicUrl(configuredPublicUrl);
 	const store = new MemoryStore(options.dbPath ?? resolveDbPath());
+	const clientsStore = createInMemoryOAuthClientsStore();
 	const activeRequests = new Set<ActiveRequest>();
 	let closePromise: Promise<void> | null = null;
 
 	const server = createServer(async (req, res) => {
 		try {
-			if (req.url !== "/mcp") {
+			const pathname = getRequestPathname(req);
+			const publicMcpUrl = configuredPublicUrl ?? getServerUrl(server, host);
+
+			if (pathname === "/.well-known/oauth-authorization-server") {
+				if (!allowMethod(req, res, ["GET", "OPTIONS"])) return;
+				if (req.method === "OPTIONS") {
+					writeCorsNoContent(res);
+					return;
+				}
+				writeJson(res, 200, createMcpOAuthMetadata({ mcpUrl: publicMcpUrl, clientsStore }));
+				return;
+			}
+
+			if (pathname === "/.well-known/oauth-protected-resource/mcp") {
+				if (!allowMethod(req, res, ["GET", "OPTIONS"])) return;
+				if (req.method === "OPTIONS") {
+					writeCorsNoContent(res);
+					return;
+				}
+				writeJson(res, 200, createMcpProtectedResourceMetadata(publicMcpUrl));
+				return;
+			}
+
+			if (pathname === "/register") {
+				if (!allowMethod(req, res, ["POST", "OPTIONS"])) return;
+				if (req.method === "OPTIONS") {
+					writeCorsNoContent(res);
+					return;
+				}
+				if (!configuredPublicUrl && !isAllowedMcpHttpRequest(req, getBoundPort(server))) {
+					writeText(res, 403, "Forbidden");
+					return;
+				}
+				const requestBody = await readJsonBody(req).catch(() => ({
+					__codememInvalidJson: "Invalid JSON request body",
+				}));
+				if (isInvalidJsonBody(requestBody)) {
+					writeJson(res, 400, {
+						error: "invalid_client_metadata",
+						error_description: requestBody.__codememInvalidJson,
+					});
+					return;
+				}
+				const result = registerMcpOAuthClient(requestBody, clientsStore);
+				writeJson(res, result.status, result.body);
+				return;
+			}
+
+			if (pathname === "/authorize" || pathname === "/token") {
+				writeJson(res, 501, {
+					error: "temporarily_unavailable",
+					error_description: "OAuth authorize/token flow is not implemented in this slice",
+				});
+				return;
+			}
+
+			if (pathname !== "/mcp") {
 				writeText(res, 404, "Not found");
 				return;
 			}
-			if (req.method !== "POST") {
-				res.setHeader("Allow", "POST");
-				writeText(res, 405, "Method not allowed");
-				return;
-			}
+			if (!allowMethod(req, res, ["POST"])) return;
 			if (!isAllowedMcpHttpRequest(req, getBoundPort(server))) {
 				writeText(res, 403, "Forbidden");
 				return;
@@ -222,6 +287,52 @@ export async function startCodememMcpHttpServer(
 	};
 }
 
+function getRequestPathname(req: IncomingMessage): string {
+	return new URL(req.url ?? "/", "http://codemem.local").pathname;
+}
+
+function allowMethod(req: IncomingMessage, res: ServerResponse, methods: string[]): boolean {
+	if (req.method && methods.includes(req.method)) return true;
+	res.setHeader("Allow", methods.join(", "));
+	writeText(res, 405, "Method not allowed");
+	return false;
+}
+
+function writeJson(res: ServerResponse, statusCode: number, body: unknown): void {
+	res.statusCode = statusCode;
+	res.setHeader("access-control-allow-origin", "*");
+	res.setHeader("cache-control", "no-store");
+	res.setHeader("content-type", "application/json; charset=utf-8");
+	res.end(JSON.stringify(body));
+}
+
+function writeCorsNoContent(res: ServerResponse): void {
+	res.statusCode = 204;
+	res.setHeader("access-control-allow-origin", "*");
+	res.setHeader("access-control-allow-headers", "content-type");
+	res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+	res.end();
+}
+
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+	let body = "";
+	for await (const chunk of req) {
+		body += chunk;
+		if (body.length > 64 * 1024) throw new Error("OAuth registration request body is too large");
+	}
+	if (!body) return {};
+	return JSON.parse(body) as unknown;
+}
+
+function isInvalidJsonBody(body: unknown): body is { __codememInvalidJson: string } {
+	return (
+		typeof body === "object" &&
+		body !== null &&
+		"__codememInvalidJson" in body &&
+		typeof body.__codememInvalidJson === "string"
+	);
+}
+
 function isAllowedMcpHttpRequest(req: IncomingMessage, expectedPort: number): boolean {
 	return (
 		isAllowedMcpHttpRequestHost(req.headers.host, expectedPort) &&
@@ -243,6 +354,10 @@ function getBoundPort(server: Server): number {
 
 function formatHostForUrl(host: string): string {
 	return isIP(host) === 6 ? `[${host}]` : host;
+}
+
+function getServerUrl(server: Server, host: string): string {
+	return `http://${formatHostForUrl(host)}:${getBoundPort(server)}/mcp`;
 }
 
 function isEntrypoint(): boolean {
