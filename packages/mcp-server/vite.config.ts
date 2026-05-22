@@ -11,6 +11,7 @@ export default defineConfig({
 	build: {
 		lib: {
 			entry: {
+				http: "src/http.ts",
 				index: "src/index.ts",
 				stdio: "src/stdio.ts",
 			},

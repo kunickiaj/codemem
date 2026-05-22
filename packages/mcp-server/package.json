@@ -13,6 +13,11 @@
 			"types": "./dist/stdio.d.ts",
 			"source": "./src/stdio.ts",
 			"import": "./dist/stdio.js"
+		},
+		"./http": {
+			"types": "./dist/http.d.ts",
+			"source": "./src/http.ts",
+			"import": "./dist/http.js"
 		}
 	},
 	"bin": {
