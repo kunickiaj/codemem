@@ -18,8 +18,9 @@ interface PendingGuardrailConfirmation {
 }
 
 function domainLabel(scope: SharingDomainScope): string {
+	const team = scope.group_id ? `Team ${scope.group_id}` : scope.authority_type;
 	const qualifier = scope.authority_type === "local" ? "local" : scope.authority_type;
-	return `${scope.label || scope.scope_id} · ${qualifier}`;
+	return `${scope.label || scope.scope_id} · ${team || qualifier}`;
 }
 
 function projectSubtitle(project: ProjectScopeCandidate): string {
@@ -81,7 +82,7 @@ function settingsMappingWarnings(settings: SharingDomainSettings): ProjectScopeG
 }
 
 function GuardrailMessages({
-	label = "Sharing domain guardrail",
+	label = "Space assignment guardrail",
 	warnings,
 }: {
 	label?: string;
@@ -115,7 +116,7 @@ export function SharingDomainsPanel() {
 			setSettings(next);
 			setDrafts(resetDrafts(next));
 		} catch (err) {
-			setError(err instanceof Error ? err.message : "Unable to load Sharing domains");
+			setError(err instanceof Error ? err.message : "Unable to load Spaces");
 		} finally {
 			setLoading(false);
 		}
@@ -166,7 +167,7 @@ export function SharingDomainsPanel() {
 				scope_id: scopeId,
 			});
 			setConfirmation(null);
-			showGlobalNotice("Project Sharing domain updated. Device access grants are unchanged.");
+			showGlobalNotice("Project Space assignment updated. Device access grants are unchanged.");
 			await reload();
 		} catch (err) {
 			if (err instanceof api.SharingDomainGuardrailConfirmationError) {
@@ -177,7 +178,7 @@ export function SharingDomainsPanel() {
 				});
 				return;
 			}
-			setError(err instanceof Error ? err.message : "Unable to save Sharing domain mapping");
+			setError(err instanceof Error ? err.message : "Unable to save Space assignment");
 		} finally {
 			setSavingKey(null);
 		}
@@ -190,10 +191,10 @@ export function SharingDomainsPanel() {
 		try {
 			await api.deleteSharingDomainProjectMapping(project.mapping_id);
 			setConfirmation(null);
-			showGlobalNotice("Project Sharing domain mapping removed. The next fallback now applies.");
+			showGlobalNotice("Project Space assignment removed. The next fallback now applies.");
 			await reload();
 		} catch (err) {
-			setError(err instanceof Error ? err.message : "Unable to reset Sharing domain mapping");
+			setError(err instanceof Error ? err.message : "Unable to reset Space assignment");
 		} finally {
 			setSavingKey(null);
 		}
@@ -205,14 +206,14 @@ export function SharingDomainsPanel() {
 
 	return (
 		<div className="settings-group">
-			<h3 className="settings-group-title">Advanced Sharing-domain mappings</h3>
+			<h3 className="settings-group-title">Advanced Space assignments</h3>
 			<div className="small">
-				Use Projects for day-to-day project/domain review. This fallback panel exposes the same
-				mapping controls for troubleshooting and recovery.
+				Use Projects for day-to-day project/Space review. This fallback panel exposes the same
+				assignment controls for troubleshooting and recovery.
 			</div>
 			<div className="small">
-				Saving a mapping changes local scope resolution for future writes; it does not grant any
-				peer or coordinator member access by itself.
+				Saving an assignment changes local Space resolution for future writes; it does not grant any
+				device or Team member access by itself.
 			</div>
 			<div className="section-actions">
 				<button className="settings-button" onClick={openProjects} type="button">
@@ -221,11 +222,11 @@ export function SharingDomainsPanel() {
 			</div>
 			{settings ? (
 				<GuardrailMessages
-					label="Sharing domain mapping warnings"
+					label="Space assignment warnings"
 					warnings={settingsMappingWarnings(settings)}
 				/>
 			) : null}
-			{loading && !settings ? <div className="small">Loading Sharing domains…</div> : null}
+			{loading && !settings ? <div className="small">Loading Spaces…</div> : null}
 			{error ? (
 				<div className="settings-note" role="alert">
 					{error}
@@ -254,7 +255,7 @@ export function SharingDomainsPanel() {
 						<label htmlFor={fieldId}>{project.display_project}</label>
 						<div className="small">{projectSubtitle(project)}</div>
 						<RadixSelect
-							ariaLabel={`Sharing domain for ${project.display_project}`}
+							ariaLabel={`Space for ${project.display_project}`}
 							contentClassName="settings-select-content"
 							disabled={!assignable || saving || scopeOptions.length === 0}
 							id={fieldId}
@@ -266,13 +267,13 @@ export function SharingDomainsPanel() {
 								}
 							}}
 							options={scopeOptions}
-							placeholder="Choose Sharing domain"
+							placeholder="Choose Space"
 							triggerClassName="settings-select-trigger"
 							value={currentValue}
 							viewportClassName="settings-select-viewport"
 						/>
 						<div className="small">
-							Current default: {currentScopeName} · {resolutionLabel(project.resolution_reason)}
+							Current Space: {currentScopeName} · {resolutionLabel(project.resolution_reason)}
 						</div>
 						{project.suggested_scope_id && project.suggestion_reason ? (
 							<div className="settings-note" role="status">
@@ -287,13 +288,13 @@ export function SharingDomainsPanel() {
 						<GuardrailMessages warnings={visibleProjectWarnings(project)} />
 						{!assignable ? (
 							<div className="settings-note">
-								This project is missing a stable identity, so Sharing domain assignment is disabled.
-								Add a path, git remote, or workspace id first; until then it remains Local only.
+								This project is missing a stable identity, so Space assignment is disabled. Add a
+								path, git remote, or workspace id first; until then it remains Local only.
 							</div>
 						) : null}
 						{pendingConfirmation ? (
 							<div className="settings-note" role="alert">
-								<strong>Review before saving this Sharing domain.</strong>
+								<strong>Review before saving this Space assignment.</strong>
 								<ul>
 									{pendingConfirmation.warnings.map((warning, warningIndex) => (
 										<li key={warningKey(warning, warningIndex)}>{warning.message}</li>
@@ -331,11 +332,7 @@ export function SharingDomainsPanel() {
 								onClick={() => void saveProject(project)}
 								type="button"
 							>
-								{saving
-									? "Saving…"
-									: usingSuggestion
-										? "Confirm suggested mapping"
-										: "Save Sharing domain"}
+								{saving ? "Saving…" : usingSuggestion ? "Confirm suggested mapping" : "Save Space"}
 							</button>
 							<button
 								className="settings-button"

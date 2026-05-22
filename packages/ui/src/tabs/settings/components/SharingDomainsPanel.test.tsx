@@ -104,7 +104,7 @@ afterEach(() => {
 });
 
 describe("SharingDomainsPanel", () => {
-	it("shows local-only fallback and saves an explicit project Sharing domain", async () => {
+	it("shows local-only fallback and saves an explicit project Space", async () => {
 		vi.mocked(api.loadSharingDomainSettings)
 			.mockResolvedValueOnce({
 				local_default_scope_id: "local-default",
@@ -190,9 +190,9 @@ describe("SharingDomainsPanel", () => {
 		const root = renderIntoDocument(<SharingDomainsPanel />);
 		await flushEffects();
 
-		expect(root.textContent).toContain("Use Projects for day-to-day project/domain review");
+		expect(root.textContent).toContain("Use Projects for day-to-day project/Space review");
 		expect(root.textContent).toContain("Open Projects review");
-		expect(root.textContent).toContain("Current default: Local only · local-only fallback");
+		expect(root.textContent).toContain("Current Space: Local only · local-only fallback");
 
 		const select = root.querySelector("select");
 		act(() => {
@@ -202,7 +202,7 @@ describe("SharingDomainsPanel", () => {
 		});
 
 		const saveButton = Array.from(root.querySelectorAll("button")).find(
-			(button) => button.textContent === "Save Sharing domain",
+			(button) => button.textContent === "Save Space",
 		);
 		await act(async () => {
 			saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -215,7 +215,7 @@ describe("SharingDomainsPanel", () => {
 			scope_id: "acme-work",
 			workspace_identity: "https://git.example.invalid/exampleco/api.git",
 		});
-		expect(root.textContent).toContain("Current default: Acme Work · explicit project mapping");
+		expect(root.textContent).toContain("Current Space: Acme Work · explicit project mapping");
 	});
 
 	it("preselects suggested mappings but requires explicit confirmation to save", async () => {
@@ -403,7 +403,7 @@ describe("SharingDomainsPanel", () => {
 			select.dispatchEvent(new Event("change", { bubbles: true }));
 		});
 		const saveButton = Array.from(root.querySelectorAll("button")).find(
-			(button) => button.textContent === "Save Sharing domain",
+			(button) => button.textContent === "Save Space",
 		);
 		await act(async () => {
 			saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -411,7 +411,7 @@ describe("SharingDomainsPanel", () => {
 		});
 		await flushEffects();
 
-		expect(root.textContent).toContain("Review before saving this Sharing domain.");
+		expect(root.textContent).toContain("Review before saving this Space assignment.");
 		expect(root.textContent).toContain("may leave old Sharing domain copies");
 
 		const confirmButton = Array.from(root.querySelectorAll("button")).find(
@@ -431,7 +431,7 @@ describe("SharingDomainsPanel", () => {
 			workspace_identity: "https://git.example.invalid/exampleco/api.git",
 		});
 		expect(root.textContent).toContain(
-			"Current default: Personal Devices · explicit project mapping",
+			"Current Space: Personal Devices · explicit project mapping",
 		);
 	});
 
@@ -501,7 +501,7 @@ describe("SharingDomainsPanel", () => {
 			select.dispatchEvent(new Event("change", { bubbles: true }));
 		});
 		const saveButton = Array.from(root.querySelectorAll("button")).find(
-			(button) => button.textContent === "Save Sharing domain",
+			(button) => button.textContent === "Save Space",
 		);
 		await act(async () => {
 			saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -556,10 +556,10 @@ describe("SharingDomainsPanel", () => {
 		const root = renderIntoDocument(<SharingDomainsPanel />);
 		await flushEffects();
 
-		expect(root.textContent).toContain("Sharing domain assignment is disabled");
+		expect(root.textContent).toContain("Space assignment is disabled");
 		expect(root.querySelector("select")?.disabled).toBe(true);
 		const saveButton = Array.from(root.querySelectorAll("button")).find(
-			(button) => button.textContent === "Save Sharing domain",
+			(button) => button.textContent === "Save Space",
 		) as HTMLButtonElement | undefined;
 		expect(saveButton?.disabled).toBe(true);
 		expect(api.saveSharingDomainProjectMapping).not.toHaveBeenCalled();
