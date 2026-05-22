@@ -4,10 +4,12 @@ import { TextInput } from "../../../components/primitives/text-input";
 import * as api from "../../../lib/api";
 import { showGlobalNotice } from "../../../lib/notice";
 import type { CachedCoordinatorAdminDevice } from "../../../lib/state";
+import { state } from "../../../lib/state";
 import { openSyncConfirmDialog } from "../../sync/sync-dialogs";
 import {
 	type CoordinatorAdminScopeMemberView,
 	type CoordinatorAdminScopeView,
+	coordinatorAdminDevicesForGroup,
 	deriveScopeMembershipDeviceRows,
 	scopeManagementReadinessMessage,
 	scopeStatusLabel,
@@ -28,6 +30,7 @@ function emptyScopeDraft(): GroupScopeManagementDraft {
 		loading: false,
 		error: "",
 		includeInactive: false,
+		devicesLoaded: false,
 		scopes: [],
 		membersByScope: new Map<string, CoordinatorAdminScopeMemberView[]>(),
 		devices: [],
@@ -87,6 +90,7 @@ async function loadGroupScopeManagement(
 			loading: false,
 			error: "",
 			includeInactive,
+			devicesLoaded: true,
 			scopes,
 			devices,
 			membersByScope: new Map(memberEntries.filter(([scopeId]) => scopeId.length > 0)),
@@ -237,10 +241,13 @@ function renderMembershipRows(
 	renderShell: () => void,
 ) {
 	const scopeId = String(scope.scope_id || "").trim();
-	const rows = deriveScopeMembershipDeviceRows(
+	const devices = coordinatorAdminDevicesForGroup(
 		draft.devices,
-		draft.membersByScope.get(scopeId) ?? [],
+		state.lastCoordinatorAdminDevices,
+		groupId,
+		draft.devicesLoaded,
 	);
+	const rows = deriveScopeMembershipDeviceRows(devices, draft.membersByScope.get(scopeId) ?? []);
 	if (!rows.length) {
 		return h(
 			"div",

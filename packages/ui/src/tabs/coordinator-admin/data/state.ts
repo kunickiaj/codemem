@@ -31,6 +31,7 @@ export interface GroupScopeManagementDraft {
 	loading: boolean;
 	error: string;
 	includeInactive: boolean;
+	devicesLoaded: boolean;
 	scopes: CoordinatorAdminScopeView[];
 	membersByScope: Map<string, CoordinatorAdminScopeMemberView[]>;
 	devices: CachedCoordinatorAdminDevice[];

@@ -86,3 +86,14 @@ export function deriveScopeMembershipDeviceRows(
 			);
 		});
 }
+
+export function coordinatorAdminDevicesForGroup(
+	loadedDevices: CachedCoordinatorAdminDevice[],
+	cachedDevices: CachedCoordinatorAdminDevice[],
+	groupId: string,
+	devicesLoaded: boolean,
+): CachedCoordinatorAdminDevice[] {
+	const targetGroupId = String(groupId || "").trim();
+	if (devicesLoaded || loadedDevices.length > 0 || !targetGroupId) return loadedDevices;
+	return cachedDevices.filter((device) => String(device.group_id || "").trim() === targetGroupId);
+}

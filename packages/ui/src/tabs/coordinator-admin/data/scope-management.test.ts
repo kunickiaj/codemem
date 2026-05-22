@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	coordinatorAdminDevicesForGroup,
 	deriveScopeMembershipDeviceRows,
 	scopeManagementReadinessMessage,
 	scopeStatusLabel,
@@ -54,5 +55,37 @@ describe("coordinator admin scope management view helpers", () => {
 	it("formats empty or underscored scope statuses for operator copy", () => {
 		expect(scopeStatusLabel(null)).toBe("active");
 		expect(scopeStatusLabel("needs_review")).toBe("needs review");
+	});
+
+	it("falls back to cached enrolled devices for the selected group", () => {
+		expect(
+			coordinatorAdminDevicesForGroup(
+				[],
+				[
+					{ group_id: "team-a", device_id: "dev-a", display_name: "Alice", enabled: true },
+					{ group_id: "team-b", device_id: "dev-b", display_name: "Bob", enabled: true },
+				],
+				"team-a",
+				false,
+			),
+		).toEqual([{ group_id: "team-a", device_id: "dev-a", display_name: "Alice", enabled: true }]);
+
+		expect(
+			coordinatorAdminDevicesForGroup(
+				[],
+				[{ group_id: "team-a", device_id: "stale-dev", enabled: true }],
+				"team-a",
+				true,
+			),
+		).toEqual([]);
+
+		expect(
+			coordinatorAdminDevicesForGroup(
+				[{ group_id: "team-a", device_id: "fresh-dev", enabled: true }],
+				[{ group_id: "team-a", device_id: "cached-dev", enabled: true }],
+				"team-a",
+				true,
+			),
+		).toEqual([{ group_id: "team-a", device_id: "fresh-dev", enabled: true }]);
 	});
 });
