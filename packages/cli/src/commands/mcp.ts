@@ -12,7 +12,7 @@ export const mcpCommand = mcpCmd.action(async (opts: DbOpts) => {
 	const dbPath = resolveDbOpt(opts);
 	if (dbPath) process.env.CODEMEM_DB = dbPath;
 	try {
-		await import("@codemem/mcp");
+		await import("@codemem/mcp/stdio");
 	} catch (err) {
 		console.error(
 			`Failed to start MCP server: ${err instanceof Error ? err.message : String(err)}`,

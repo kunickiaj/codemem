@@ -1,8 +1,19 @@
 import { type MemoryFilters, resolveProject } from "@codemem/core";
 
+function cleanProject(value: string | null | undefined): string | null {
+	const trimmed = value?.trim();
+	return trimmed ? trimmed : null;
+}
+
 export function resolveDefaultProject(): string | null {
-	const project = process.env.CODEMEM_PROJECT?.trim();
-	return project || resolveProject(process.cwd());
+	return cleanProject(process.env.CODEMEM_PROJECT) ?? resolveProject(process.cwd());
+}
+
+export function resolveWriteProject(input: {
+	project?: string | null;
+	envProject?: string | null;
+}): string | null {
+	return cleanProject(input.project) ?? cleanProject(input.envProject) ?? null;
 }
 
 export function buildFilters(
@@ -12,8 +23,8 @@ export function buildFilters(
 	const filters: MemoryFilters = {};
 	let hasAny = false;
 
-	const explicitProject = typeof raw.project === "string" ? raw.project.trim() : undefined;
-	const resolvedProject = explicitProject || defaultProject || undefined;
+	const explicitProject = typeof raw.project === "string" ? cleanProject(raw.project) : undefined;
+	const resolvedProject = explicitProject || cleanProject(defaultProject) || undefined;
 	if (resolvedProject) {
 		filters.project = resolvedProject;
 		hasAny = true;

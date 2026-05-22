@@ -4,6 +4,7 @@ import {
 	type MemoryStore,
 	toJson,
 } from "@codemem/core";
+import { resolveWriteProject } from "./project-scope.js";
 
 export function getMemoryForMcp(
 	store: MemoryStore,
@@ -63,7 +64,10 @@ export function rememberMemoryForMcp(
 		const now = context.now?.() ?? new Date().toISOString();
 		const user = context.user ?? process.env.USER ?? "unknown";
 		const cwd = context.cwd ?? process.cwd();
-		const project = input.project ?? context.envProject ?? null;
+		const project = resolveWriteProject({
+			project: input.project,
+			envProject: context.envProject,
+		});
 
 		const sessionInfo = store.db
 			.prepare(

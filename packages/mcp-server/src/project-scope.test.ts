@@ -73,14 +73,14 @@ describe("project-scope helpers", () => {
 		});
 	});
 
-	it("supports scope-only filters for direct ID tools without default project widening", async () => {
+	it("supports explicit null default project for future all-project contexts", async () => {
 		const { buildFilters } = await import("./project-scope.js");
 		expect(buildFilters({ scope_id: "scope-a" }, null)).toEqual({
 			scope_id: "scope-a",
 		});
 	});
 
-	it("falls back to default project when env or request project is blank", async () => {
+	it("falls back to default project when env or request project is blank on read filters", async () => {
 		process.env.CODEMEM_PROJECT = "   ";
 		const { buildFilters, resolveDefaultProject } = await import("./project-scope.js");
 		expect(resolveDefaultProject()).toBe("codemem");
@@ -88,5 +88,16 @@ describe("project-scope helpers", () => {
 			kind: "change",
 			project: "repo-name",
 		});
+	});
+
+	it("resolveWriteProject never falls back to the server default project", async () => {
+		// Writes intentionally do not inherit cwd/server default. Otherwise blank
+		// inputs in stdio mode would silently stamp a project the caller did not
+		// ask for. See memory_remember in tools/items.ts.
+		const { resolveWriteProject } = await import("./project-scope.js");
+		expect(resolveWriteProject({ project: undefined, envProject: undefined })).toBeNull();
+		expect(resolveWriteProject({ project: "   ", envProject: "   " })).toBeNull();
+		expect(resolveWriteProject({ project: "explicit" })).toBe("explicit");
+		expect(resolveWriteProject({ envProject: "env-value" })).toBe("env-value");
 	});
 });

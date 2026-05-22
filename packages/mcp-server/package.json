@@ -5,20 +5,25 @@
 	"types": "./dist/index.d.ts",
 	"exports": {
 		".": {
+			"types": "./dist/index.d.ts",
 			"source": "./src/index.ts",
-			"import": "./dist/index.js",
-			"types": "./dist/index.d.ts"
+			"import": "./dist/index.js"
+		},
+		"./stdio": {
+			"types": "./dist/stdio.d.ts",
+			"source": "./src/stdio.ts",
+			"import": "./dist/stdio.js"
 		}
 	},
 	"bin": {
-		"codemem-mcp-ts": "./dist/index.js"
+		"codemem-mcp-ts": "./dist/stdio.js"
 	},
 	"files": [
 		"dist/"
 	],
 	"scripts": {
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
-		"build": "pnpm exec vite build --ssr src/index.ts --outDir dist && pnpm exec tsc --build --force",
+		"build": "pnpm exec vite build && pnpm exec tsc --build --force",
 		"typecheck": "pnpm exec tsc --noEmit"
 	},
 	"dependencies": {

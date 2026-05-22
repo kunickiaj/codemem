@@ -137,7 +137,7 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | | `codemem db raw-events-status` | Show raw-event queue status |
 | **Config** | `codemem config` | View or update configuration |
 | | `codemem setup` | Interactive first-run setup |
-| **Plumbing** | `codemem mcp` | MCP stdio server |
+| **Plumbing** | `codemem mcp` | MCP stdio server; best-effort starts the local viewer unless `CODEMEM_VIEWER=0` or `CODEMEM_VIEWER_AUTO=0` is set |
 | | `codemem claude-hook-ingest` | Claude hook event ingestion (stdin) |
 
 Run `codemem --help` for the full list. Legacy top-level aliases (`export-memories`, `import-memories`, `show`, `forget`, `remember`) still work but are hidden from help.
@@ -153,6 +153,8 @@ codemem setup --opencode-only
 ```
 
 This updates your OpenCode config to install the plugin and register the MCP server. Restart OpenCode to activate.
+
+The standalone `codemem-mcp-ts` binary runs the same stdio server used by `codemem mcp`. Viewer autostart is on by default for both invocation paths; set `CODEMEM_VIEWER=0` or `CODEMEM_VIEWER_AUTO=0` to disable.
 
 ## Configuration
 

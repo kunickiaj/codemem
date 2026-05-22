@@ -10,9 +10,12 @@ export default defineConfig({
 	},
 	build: {
 		lib: {
-			entry: "src/index.ts",
+			entry: {
+				index: "src/index.ts",
+				stdio: "src/stdio.ts",
+			},
 			formats: ["es"],
-			fileName: "index",
+			fileName: (_format, entryName) => `${entryName}.js`,
 		},
 		rollupOptions: {
 			external: [/^@codemem\//, /^node:/, /^@modelcontextprotocol\//, "zod", "better-sqlite3"],
