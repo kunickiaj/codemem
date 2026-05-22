@@ -54,6 +54,8 @@ function emptyDraft(): GroupPreferencesDraft {
 		projects_include: [],
 		projects_exclude: [],
 		auto_seed_scope: true,
+		default_space_scope_id: "",
+		auto_grant_default_space_on_join: true,
 		loaded: false,
 		saving: false,
 		error: "",
@@ -71,6 +73,8 @@ async function openGroupPreferences(groupId: string, renderShell: () => void): P
 			projects_include: Array.isArray(prefs.projects_include) ? [...prefs.projects_include] : [],
 			projects_exclude: Array.isArray(prefs.projects_exclude) ? [...prefs.projects_exclude] : [],
 			auto_seed_scope: prefs.auto_seed_scope,
+			default_space_scope_id: prefs.default_space_scope_id || "",
+			auto_grant_default_space_on_join: prefs.auto_grant_default_space_on_join !== false,
 			loaded: true,
 			saving: false,
 			error: "",
@@ -105,6 +109,8 @@ async function saveGroupPreferences(groupId: string, renderShell: () => void): P
 		projects_include: initial.projects_include.length > 0 ? [...initial.projects_include] : null,
 		projects_exclude: initial.projects_exclude.length > 0 ? [...initial.projects_exclude] : null,
 		auto_seed_scope: initial.auto_seed_scope,
+		default_space_scope_id: initial.default_space_scope_id || null,
+		auto_grant_default_space_on_join: initial.auto_grant_default_space_on_join,
 	};
 	coordinatorAdminState.groupPreferencesDrafts.set(groupId, {
 		...initial,
@@ -143,6 +149,7 @@ function renderGroupPreferencesEditor(
 		return h("div", { class: "peer-submeta" }, "Loading project defaults…");
 	}
 	const autoSeedLabelId = `coord-admin-scope-autoseed-${groupId}`;
+	const autoGrantLabelId = `coord-admin-default-space-autogrant-${groupId}`;
 	const includeLabelId = `coord-admin-scope-include-${groupId}`;
 	const excludeLabelId = `coord-admin-scope-exclude-${groupId}`;
 	const fieldsDisabled = !ready || draft.saving || !draft.auto_seed_scope;
@@ -178,6 +185,33 @@ function renderGroupPreferencesEditor(
 				thumbClassName: "coordinator-admin-switch-thumb",
 			}),
 		),
+		h(
+			"label",
+			{ class: "coordinator-admin-inline-filter" },
+			h(
+				"span",
+				{ class: "section-meta", id: autoGrantLabelId },
+				"Auto-grant default Space on join",
+			),
+			h(RadixSwitch, {
+				"aria-labelledby": autoGrantLabelId,
+				checked: draft.auto_grant_default_space_on_join,
+				className: "coordinator-admin-switch",
+				disabled: !ready || draft.saving || !draft.default_space_scope_id,
+				onCheckedChange: (checked: boolean) => {
+					const current = coordinatorAdminState.groupPreferencesDrafts.get(groupId) ?? draft;
+					coordinatorAdminState.groupPreferencesDrafts.set(groupId, {
+						...current,
+						auto_grant_default_space_on_join: checked,
+					});
+					renderShell();
+				},
+				thumbClassName: "coordinator-admin-switch-thumb",
+			}),
+		),
+		draft.default_space_scope_id
+			? h("div", { class: "peer-submeta" }, `Default Space: ${draft.default_space_scope_id}`)
+			: h("div", { class: "peer-submeta" }, "No default Space has been created yet."),
 		h(
 			"div",
 			{ class: "coordinator-admin-field" },

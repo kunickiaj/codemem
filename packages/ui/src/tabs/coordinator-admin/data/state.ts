@@ -21,6 +21,8 @@ export interface GroupPreferencesDraft {
 	projects_include: string[];
 	projects_exclude: string[];
 	auto_seed_scope: boolean;
+	default_space_scope_id: string;
+	auto_grant_default_space_on_join: boolean;
 	loaded: boolean;
 	saving: boolean;
 	error: string;

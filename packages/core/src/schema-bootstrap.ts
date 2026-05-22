@@ -120,6 +120,8 @@ CREATE TABLE IF NOT EXISTS coordinator_group_preferences (
 	projects_include_json TEXT,
 	projects_exclude_json TEXT,
 	auto_seed_scope INTEGER NOT NULL DEFAULT 1,
+	default_space_scope_id TEXT,
+	auto_grant_default_space_on_join INTEGER NOT NULL DEFAULT 0,
 	updated_at TEXT NOT NULL,
 	PRIMARY KEY (coordinator_id, group_id)
 );

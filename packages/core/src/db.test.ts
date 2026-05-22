@@ -564,6 +564,10 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(columnExists(db, "sync_peers", "discovered_via_coordinator_id")).toBe(true);
 		expect(columnExists(db, "sync_peers", "discovered_via_group_id")).toBe(true);
 		expect(tableExists(db, "coordinator_group_preferences")).toBe(true);
+		expect(columnExists(db, "coordinator_group_preferences", "default_space_scope_id")).toBe(true);
+		expect(
+			columnExists(db, "coordinator_group_preferences", "auto_grant_default_space_on_join"),
+		).toBe(true);
 
 		db.exec(
 			"INSERT INTO coordinator_group_preferences " +

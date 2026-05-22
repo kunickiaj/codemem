@@ -6606,7 +6606,7 @@ describe("viewer-server", () => {
 					.prepare(
 						"UPDATE sessions SET cwd = ?, git_remote = NULL, git_branch = NULL, project = ? WHERE id = ?",
 					)
-					.run("/Users/adam/workspace/codemem/.claude/worktrees/injection", "injection", sessionId);
+					.run("/workspace/codemem/worktrees/injection", "injection", sessionId);
 				insertTestMemory(store, {
 					sessionId,
 					kind: "discovery",
@@ -6618,7 +6618,7 @@ describe("viewer-server", () => {
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({
 						project: "codemem",
-						workspace_identity: "/Users/adam/workspace/codemem/.claude/worktrees/injection",
+						workspace_identity: "/workspace/codemem/worktrees/injection",
 					}),
 				});
 
@@ -8655,7 +8655,7 @@ describe("viewer-server", () => {
 						JSON.stringify({
 							items: [
 								{ group_id: "team-a", display_name: "Team A" },
-								{ group_id: "nerdworld", display_name: "Nerdworld" },
+								{ group_id: "team-b", display_name: "Team B" },
 							],
 						}),
 						{ status: 200 },
@@ -8683,7 +8683,7 @@ describe("viewer-server", () => {
 					expect(await res.json()).toMatchObject({
 						items: [
 							expect.objectContaining({ group_id: "team-a" }),
-							expect.objectContaining({ group_id: "nerdworld" }),
+							expect.objectContaining({ group_id: "team-b" }),
 						],
 						status: expect.objectContaining({ readiness: "ready" }),
 					});
@@ -8700,8 +8700,36 @@ describe("viewer-server", () => {
 		it("runs coordinator group lifecycle actions through the admin routes", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;
-			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+			const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
 				const url = String(input);
+				if (url.includes("/v1/admin/groups/team-a/scopes") && init?.method === "GET") {
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				if (url.endsWith("/v1/admin/groups/team-a/scopes") && init?.method === "POST") {
+					return new Response(
+						JSON.stringify({
+							scope: {
+								scope_id: "team:team-a:default",
+								group_id: "team-a",
+								label: "Team A",
+							},
+						}),
+						{ status: 201 },
+					);
+				}
+				if (url.endsWith("/v1/admin/groups/team-a/scopes/team%3Ateam-a%3Adefault/members")) {
+					return new Response(
+						JSON.stringify({
+							membership: {
+								scope_id: "team:team-a:default",
+								group_id: "team-a",
+								device_id: "local-device",
+								role: "admin",
+							},
+						}),
+						{ status: 201 },
+					);
+				}
 				if (
 					url.includes("/v1/admin/groups") &&
 					!url.includes("rename") &&
@@ -9251,6 +9279,8 @@ describe("viewer-server", () => {
 							coordinator_id: "https://coord.example.test",
 							group_id: "team-a",
 							auto_seed_scope: true,
+							default_space_scope_id: null,
+							auto_grant_default_space_on_join: false,
 							updated_at: null,
 						},
 					});
@@ -9267,6 +9297,8 @@ describe("viewer-server", () => {
 						preferences: {
 							projects_include: ["work/*"],
 							auto_seed_scope: false,
+							default_space_scope_id: null,
+							auto_grant_default_space_on_join: false,
 						},
 					});
 				} finally {

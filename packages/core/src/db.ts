@@ -852,12 +852,27 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 				projects_include_json TEXT,
 				projects_exclude_json TEXT,
 				auto_seed_scope INTEGER NOT NULL DEFAULT 1,
+				default_space_scope_id TEXT,
+				auto_grant_default_space_on_join INTEGER NOT NULL DEFAULT 0,
 				updated_at TEXT NOT NULL,
 				PRIMARY KEY (coordinator_id, group_id)
 			)
 		`);
 	} catch {
 		// Keep compatibility shim fail-open for optional additive tables.
+	}
+	for (const { name, ddl } of [
+		{ name: "default_space_scope_id", ddl: "TEXT" },
+		{ name: "auto_grant_default_space_on_join", ddl: "INTEGER NOT NULL DEFAULT 0" },
+	]) {
+		if (columnExists(db, "coordinator_group_preferences", name)) continue;
+		try {
+			db.exec(`ALTER TABLE coordinator_group_preferences ADD COLUMN ${name} ${ddl}`);
+		} catch (err) {
+			const message = err instanceof Error ? err.message.toLowerCase() : "";
+			if (message.includes("duplicate column name")) continue;
+			throw err;
+		}
 	}
 
 	if (!tableExists(db, "raw_event_flush_batches")) return;

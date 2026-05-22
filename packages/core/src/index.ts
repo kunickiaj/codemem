@@ -57,6 +57,7 @@ export type {
 	UpsertCoordinatorGroupPreferenceInput,
 } from "./coordinator-group-preferences.js";
 export {
+	defaultSpaceScopeIdForGroup,
 	deleteCoordinatorGroupPreference,
 	getCoordinatorGroupPreference,
 	listCoordinatorGroupPreferences,
