@@ -44,7 +44,7 @@ export function createCoordinatorAdminActions(
 		if (coordinatorAdminState.groupActionPendingKind) return;
 		const groupId = coordinatorAdminState.createGroupId.trim();
 		if (!groupId) {
-			showGlobalNotice("Enter a group id before creating a group.", "warning");
+			showGlobalNotice("Enter a Team id before creating a Team.", "warning");
 			return;
 		}
 		coordinatorAdminState.groupActionPendingKind = "create";
@@ -56,11 +56,11 @@ export function createCoordinatorAdminActions(
 			});
 			coordinatorAdminState.createGroupId = "";
 			coordinatorAdminState.createGroupDisplayName = "";
-			showGlobalNotice("Group created.", "success");
+			showGlobalNotice("Team created.", "success");
 			await reloadData();
 		} catch (error) {
 			showGlobalNotice(
-				error instanceof Error ? error.message : "Failed to create group.",
+				error instanceof Error ? error.message : "Failed to create Team.",
 				"warning",
 			);
 		} finally {
@@ -81,10 +81,10 @@ export function createCoordinatorAdminActions(
 				title: `${kind === "archive" ? "Archive" : "Unarchive"} ${displayName || groupId}?`,
 				description:
 					kind === "archive"
-						? "Archived groups stay visible and restorable, but they stop being operational for new invites and joins."
-						: "This group will become operational again for invites and coordinator-backed joins.",
-				confirmLabel: kind === "archive" ? "Archive group" : "Unarchive group",
-				cancelLabel: kind === "archive" ? "Keep group active" : "Keep group archived",
+						? "Archived Teams stay visible and restorable, but they stop being operational for new invites and joins."
+						: "This Team will become operational again for invites and coordinator-backed joins.",
+				confirmLabel: kind === "archive" ? "Archive Team" : "Unarchive Team",
+				cancelLabel: kind === "archive" ? "Keep Team active" : "Keep Team archived",
 				tone: "danger",
 			}))
 		) {
@@ -96,20 +96,20 @@ export function createCoordinatorAdminActions(
 		try {
 			if (kind === "rename") {
 				await api.renameCoordinatorAdminGroup(groupId, displayName);
-				showGlobalNotice("Group renamed.", "success");
+				showGlobalNotice("Team renamed.", "success");
 			}
 			if (kind === "archive") {
 				await api.archiveCoordinatorAdminGroup(groupId);
-				showGlobalNotice("Group archived.", "success");
+				showGlobalNotice("Team archived.", "success");
 			}
 			if (kind === "unarchive") {
 				await api.unarchiveCoordinatorAdminGroup(groupId);
-				showGlobalNotice("Group unarchived.", "success");
+				showGlobalNotice("Team unarchived.", "success");
 			}
 			await reloadData();
 		} catch (error) {
 			showGlobalNotice(
-				error instanceof Error ? error.message : `Failed to ${kind} group.`,
+				error instanceof Error ? error.message : `Failed to ${kind} Team.`,
 				"warning",
 			);
 		} finally {
@@ -126,7 +126,7 @@ export function createCoordinatorAdminActions(
 		const groupId = coordinatorAdminState.inviteGroup.trim() || defaultGroup;
 		const ttlHours = Number(coordinatorAdminState.inviteTtlHours);
 		if (!groupId) {
-			showGlobalNotice("Choose a coordinator group before creating an invite.", "warning");
+			showGlobalNotice("Choose a Team before creating an invite.", "warning");
 			return;
 		}
 		if (!Number.isFinite(ttlHours) || ttlHours < 1) {
@@ -165,11 +165,20 @@ export function createCoordinatorAdminActions(
 		coordinatorAdminState.joinReviewPendingAction = action;
 		renderShell();
 		try {
-			await api.reviewCoordinatorAdminJoinRequest(requestId, action);
-			showGlobalNotice(
-				action === "approve" ? "Join request approved." : "Join request denied.",
-				"success",
-			);
+			const result = (await api.reviewCoordinatorAdminJoinRequest(requestId, action)) as {
+				setup_warning?: { step?: string; error?: string } | null;
+			};
+			if (action === "approve" && result.setup_warning) {
+				showGlobalNotice(
+					"Join request approved, but default Space access needs repair.",
+					"warning",
+				);
+			} else {
+				showGlobalNotice(
+					action === "approve" ? "Join request approved." : "Join request denied.",
+					"success",
+				);
+			}
 			await reloadData();
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Failed to review join request.";

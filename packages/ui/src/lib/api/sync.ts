@@ -513,6 +513,8 @@ export async function saveCoordinatorGroupPreferences(
 		projects_include?: string[] | null;
 		projects_exclude?: string[] | null;
 		auto_seed_scope?: boolean;
+		default_space_scope_id?: string | null;
+		auto_grant_default_space_on_join?: boolean;
 	},
 ): Promise<CoordinatorGroupPreferences> {
 	const resp = await fetch(

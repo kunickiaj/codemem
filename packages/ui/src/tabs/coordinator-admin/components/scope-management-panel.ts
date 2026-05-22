@@ -102,7 +102,7 @@ async function loadGroupScopeManagement(
 			...draftFor(groupId),
 			loaded: true,
 			loading: false,
-			error: error instanceof Error ? error.message : "Failed to load sharing domains.",
+			error: error instanceof Error ? error.message : "Failed to load Spaces.",
 		});
 	}
 	renderShell();
@@ -128,7 +128,7 @@ async function createScope(groupId: string, renderShell: () => void): Promise<vo
 	const label = draft.createLabel.trim();
 	const kind = draft.createKind.trim() || "team";
 	if (!scopeId || !label) {
-		showGlobalNotice("Enter a scope id and label before creating a sharing domain.", "warning");
+		showGlobalNotice("Enter a Space id and label before creating a Space.", "warning");
 		return;
 	}
 	setDraft(groupId, {
@@ -153,14 +153,14 @@ async function createScope(groupId: string, renderShell: () => void): Promise<vo
 			actionPendingKey: "",
 			actionPendingKind: "",
 		});
-		showGlobalNotice("Sharing domain created. Grant devices explicitly before data can sync.");
+		showGlobalNotice("Space created. Grant devices explicitly before data can sync.");
 		await loadGroupScopeManagement(groupId, renderShell, latest.includeInactive);
 	} catch (error) {
 		setDraft(groupId, {
 			...draftFor(groupId),
 			actionPendingKey: "",
 			actionPendingKind: "",
-			error: error instanceof Error ? error.message : "Failed to create sharing domain.",
+			error: error instanceof Error ? error.message : "Failed to create Space.",
 		});
 		renderShell();
 	}
@@ -182,14 +182,14 @@ async function grantMember(
 			device_id: deviceId,
 			role: "member",
 		});
-		showGlobalNotice("Device granted access to the sharing domain.");
+		showGlobalNotice("Device granted access to the Space.");
 		await loadGroupScopeManagement(groupId, renderShell, draft.includeInactive);
 	} catch (error) {
 		setDraft(groupId, {
 			...draftFor(groupId),
 			actionPendingKey: "",
 			actionPendingKind: "",
-			error: error instanceof Error ? error.message : "Failed to grant scope membership.",
+			error: error instanceof Error ? error.message : "Failed to grant Space access.",
 		});
 		renderShell();
 	}
@@ -207,7 +207,7 @@ async function revokeMember(
 	const confirmed = await openSyncConfirmDialog({
 		title: `Revoke ${displayName || deviceId} from ${scope.label || scopeId}?`,
 		description:
-			"Revocation only blocks future sync for this sharing domain. Data already copied to that device can remain there.",
+			"Revocation only blocks future sync for this Space. Data already copied to that device can remain there.",
 		confirmLabel: "Revoke membership",
 		cancelLabel: "Keep membership",
 		tone: "danger",
@@ -220,14 +220,14 @@ async function revokeMember(
 	renderShell();
 	try {
 		await api.revokeCoordinatorAdminScopeMember(groupId, scopeId, deviceId);
-		showGlobalNotice("Scope membership revoked. Future sync is blocked for that device.");
+		showGlobalNotice("Space access revoked. Future sync is blocked for that device.");
 		await loadGroupScopeManagement(groupId, renderShell, draft.includeInactive);
 	} catch (error) {
 		setDraft(groupId, {
 			...draftFor(groupId),
 			actionPendingKey: "",
 			actionPendingKind: "",
-			error: error instanceof Error ? error.message : "Failed to revoke scope membership.",
+			error: error instanceof Error ? error.message : "Failed to revoke Space access.",
 		});
 		renderShell();
 	}
@@ -252,7 +252,7 @@ function renderMembershipRows(
 		return h(
 			"div",
 			{ class: "peer-submeta coordinator-admin-empty-state" },
-			"No enrolled devices in this group yet. Enroll a device before granting this sharing domain.",
+			"No enrolled devices in this Team yet. Enroll a device before granting this Space.",
 		);
 	}
 	return h(
@@ -278,7 +278,7 @@ function renderMembershipRows(
 					{ class: "coordinator-admin-scope-member-copy" },
 					h("strong", null, row.displayName),
 					h("span", null, `${statusCopy} · ${row.role} · ${epochCopy}`),
-					row.enabled ? null : h("span", null, "Device is disabled in this coordinator group."),
+					row.enabled ? null : h("span", null, "Device is disabled in this Team."),
 				),
 				h(
 					"div",
@@ -322,12 +322,12 @@ function renderScopeCard(
 	renderShell: () => void,
 ) {
 	const scopeId = String(scope.scope_id || "").trim();
-	const label = String(scope.label || scopeId || "Untitled sharing domain");
+	const label = String(scope.label || scopeId || "Untitled Space");
 	return h(
 		"div",
 		{ class: "peer-card peer-card--padded coordinator-admin-scope-card", key: scopeId || label },
 		h("div", { class: "peer-title" }, h("strong", null, label)),
-		h("div", { class: "peer-meta" }, `Scope ID: ${scopeId || "unknown"}`),
+		h("div", { class: "peer-meta" }, `Space ID: ${scopeId || "unknown"}`),
 		h(
 			"div",
 			{ class: "peer-submeta" },
@@ -336,7 +336,7 @@ function renderScopeCard(
 		h(
 			"div",
 			{ class: "peer-submeta" },
-			"Devices below are enrolled in the coordinator group; only active members can sync this sharing domain.",
+			"Devices below are enrolled in the Team; only active Space members can sync this data boundary.",
 		),
 		renderMembershipRows(groupId, scope, draft, ready, renderShell),
 	);
@@ -351,17 +351,17 @@ export function renderGroupScopeManagementPanel(deps: ScopeManagementPanelDeps) 
 		return h("div", { class: "peer-meta coordinator-admin-inline-warning" }, readinessMessage);
 	}
 	if (!draft.loaded) {
-		return h("div", { class: "peer-submeta" }, "Loading sharing domains…");
+		return h("div", { class: "peer-submeta" }, "Loading Spaces…");
 	}
 	const disabled = !ready || Boolean(draft.actionPendingKey) || draft.loading;
 	return h(
 		Fragment,
 		null,
-		h("h4", { class: "coordinator-admin-drawer-title" }, "Sharing domains"),
+		h("h4", { class: "coordinator-admin-drawer-title" }, "Spaces"),
 		h(
 			"div",
 			{ class: "peer-submeta" },
-			"Coordinator groups discover and enroll devices. Sharing domains grant data access. Granting a device here is explicit; group membership alone does not share memories.",
+			"Teams discover and enroll devices. Spaces grant data access. Granting a device here is explicit; Team membership alone does not share memories.",
 		),
 		h(
 			"label",
@@ -369,7 +369,7 @@ export function renderGroupScopeManagementPanel(deps: ScopeManagementPanelDeps) 
 			h(
 				"span",
 				{ class: "section-meta", id: `coord-admin-domain-inactive-${groupId}` },
-				"Show inactive domains",
+				"Show inactive Spaces",
 			),
 			h(RadixSwitch, {
 				"aria-labelledby": `coord-admin-domain-inactive-${groupId}`,
@@ -388,7 +388,7 @@ export function renderGroupScopeManagementPanel(deps: ScopeManagementPanelDeps) 
 			h(
 				"label",
 				{ class: "coordinator-admin-field" },
-				h("span", null, "New domain id"),
+				h("span", null, "New Space id"),
 				h(TextInput, {
 					class: "peer-scope-input",
 					disabled,
@@ -454,7 +454,7 @@ export function renderGroupScopeManagementPanel(deps: ScopeManagementPanelDeps) 
 					onClick: () => void createScope(groupId, renderShell),
 					type: "button",
 				},
-				draft.actionPendingKind === "create" ? "Creating…" : "Create sharing domain",
+				draft.actionPendingKind === "create" ? "Creating…" : "Create Space",
 			),
 			h(
 				"button",
@@ -477,7 +477,7 @@ export function renderGroupScopeManagementPanel(deps: ScopeManagementPanelDeps) 
 			: h(
 					"div",
 					{ class: "peer-meta coordinator-admin-empty-state" },
-					"No sharing domains are defined for this group yet. Create one, then grant specific devices.",
+					"No Spaces are defined for this Team yet. Create one, then grant specific devices.",
 				),
 	);
 }

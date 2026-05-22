@@ -55,7 +55,7 @@ function emptyDraft(): GroupPreferencesDraft {
 		projects_exclude: [],
 		auto_seed_scope: true,
 		default_space_scope_id: "",
-		auto_grant_default_space_on_join: true,
+		auto_grant_default_space_on_join: false,
 		loaded: false,
 		saving: false,
 		error: "",
@@ -74,7 +74,7 @@ async function openGroupPreferences(groupId: string, renderShell: () => void): P
 			projects_exclude: Array.isArray(prefs.projects_exclude) ? [...prefs.projects_exclude] : [],
 			auto_seed_scope: prefs.auto_seed_scope,
 			default_space_scope_id: prefs.default_space_scope_id || "",
-			auto_grant_default_space_on_join: prefs.auto_grant_default_space_on_join !== false,
+			auto_grant_default_space_on_join: prefs.auto_grant_default_space_on_join === true,
 			loaded: true,
 			saving: false,
 			error: "",
@@ -120,9 +120,7 @@ async function saveGroupPreferences(groupId: string, renderShell: () => void): P
 	renderShell();
 	try {
 		await api.saveCoordinatorGroupPreferences(groupId, payload);
-		showGlobalNotice(
-			"Group project defaults saved. New peers enrolled through this team will use these filters.",
-		);
+		showGlobalNotice("Team defaults saved. New devices use these filters and Space settings.");
 		closeGroupPreferences(groupId, renderShell);
 	} catch (error) {
 		// Re-read the latest draft so any keystrokes landed during the save are
@@ -156,11 +154,11 @@ function renderGroupPreferencesEditor(
 	return h(
 		Fragment,
 		null,
-		h("h4", { class: "coordinator-admin-drawer-title" }, "Project defaults"),
+		h("h4", { class: "coordinator-admin-drawer-title" }, "Team defaults"),
 		h(
 			"div",
 			{ class: "peer-submeta" },
-			"When enabled, new peers enrolled through this coordinator group start with the project filters below. Existing peers are unchanged, and these filters never grant sharing-domain access.",
+			"Project filters only narrow what future writes sync; they never grant Space access by themselves. Use the default Space toggle to control whether newly joined devices receive the Team's default Space.",
 		),
 		// Master toggle first — the include/exclude chips are only meaningful
 		// when auto-seed is on, so the form reads top-down from decision
@@ -210,7 +208,7 @@ function renderGroupPreferencesEditor(
 			}),
 		),
 		draft.default_space_scope_id
-			? h("div", { class: "peer-submeta" }, `Default Space: ${draft.default_space_scope_id}`)
+			? h("div", { class: "peer-submeta" }, "Default Space configured.")
 			: h("div", { class: "peer-submeta" }, "No default Space has been created yet."),
 		h(
 			"div",
@@ -315,22 +313,22 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 	return h(
 		RadixTabsContent,
 		{ className: "coordinator-admin-panel", value: "groups" },
-		h("h3", null, "Groups"),
+		h("h3", null, "Teams"),
 		h(
 			"p",
 			{ class: "peer-submeta" },
 			selectedGroup
 				? `Managing ${selectedGroup}${configuredGroup && configuredGroup !== selectedGroup ? ` · this node uses ${configuredGroup} for discovery` : ""}`
 				: configuredGroup
-					? `This node uses ${configuredGroup} for discovery. Select a group below to manage it.`
-					: "No group selected yet. Create one or select an existing group to manage.",
+					? `This node uses ${configuredGroup} for discovery. Select a Team below to manage it.`
+					: "No Team selected yet. Create one or select an existing Team to manage.",
 		),
 		groups.length ? h("p", { class: "peer-submeta" }, countParts.join(" · ")) : null,
 		!targetExists && selectedGroup
 			? h(
 					"div",
 					{ class: "peer-meta coordinator-admin-inline-warning" },
-					`The selected admin target group (${selectedGroup}) is configured locally but does not exist in the coordinator yet. Create it below or switch to another group once one exists.`,
+					`The selected Team (${selectedGroup}) is configured locally but does not exist in the coordinator yet. Create it below or switch to another Team once one exists.`,
 				)
 			: null,
 		h(
@@ -339,7 +337,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 			h(
 				"label",
 				{ class: "coordinator-admin-field" },
-				h("span", null, "New group id"),
+				h("span", null, "New Team id"),
 				h(TextInput, {
 					class: "peer-scope-input",
 					disabled:
@@ -391,7 +389,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 						onClick: () => createGroup(),
 						type: "button",
 					},
-					coordinatorAdminState.groupActionPendingKind === "create" ? "Creating…" : "Create group",
+					coordinatorAdminState.groupActionPendingKind === "create" ? "Creating…" : "Create Team",
 				),
 			),
 			h(
@@ -425,9 +423,9 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 					{ class: "peer-meta coordinator-admin-empty-state" },
 					summary.readiness === "ready"
 						? coordinatorAdminState.showArchivedGroups
-							? "No coordinator groups are available yet."
-							: "No active groups yet. Create one to get started."
-						: "Group browsing will appear here once setup is complete.",
+							? "No Teams are available yet."
+							: "No active Teams yet. Create one to get started."
+						: "Team browsing will appear here once setup is complete.",
 				)
 			: h(
 					"div",
@@ -446,13 +444,13 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 							"div",
 							{ class: "peer-card peer-card--padded", key: group.group_id },
 							h("div", { class: "peer-title" }, h("strong", null, draftName)),
-							h("div", { class: "peer-meta" }, `Group ID: ${group.group_id}`),
+							h("div", { class: "peer-meta" }, `Team ID: ${group.group_id}`),
 							h("div", { class: "peer-submeta" }, archived ? "Archived" : "Active"),
 							configuredGroup === group.group_id
 								? h(
 										"div",
 										{ class: "peer-submeta" },
-										"This node is configured to use this group for coordinator-backed discovery.",
+										"This node is configured to use this Team for coordinator-backed discovery.",
 									)
 								: null,
 							h(
@@ -517,7 +515,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 										},
 										type: "button",
 									},
-									h("span", null, "Project defaults"),
+									h("span", null, "Team defaults"),
 									h(
 										"span",
 										{ "aria-hidden": "true", class: "device-row-chevron" },
@@ -528,7 +526,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 									"button",
 									{
 										"aria-expanded": domainsOpen,
-										"aria-controls": `coord-admin-domains-drawer-${group.group_id}`,
+										"aria-controls": `coord-admin-spaces-drawer-${group.group_id}`,
 										class: "settings-button coordinator-admin-scope-trigger",
 										"data-state": domainsOpen ? "open" : "closed",
 										disabled: summary.readiness !== "ready" || pending,
@@ -541,7 +539,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 										},
 										type: "button",
 									},
-									h("span", null, "Sharing domains"),
+									h("span", null, "Spaces"),
 									h(
 										"span",
 										{ "aria-hidden": "true", class: "device-row-chevron" },
@@ -609,10 +607,10 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 								h(
 									Collapsible.Content,
 									{
-										"aria-label": `Sharing domains for ${draftName}`,
+										"aria-label": `Spaces for ${draftName}`,
 										class:
 											"coordinator-admin-group-preferences coordinator-admin-domain-management",
-										id: `coord-admin-domains-drawer-${group.group_id}`,
+										id: `coord-admin-spaces-drawer-${group.group_id}`,
 									},
 									domainsOpen
 										? renderGroupScopeManagementPanel({
