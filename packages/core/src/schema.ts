@@ -674,6 +674,10 @@ export const coordinatorGroupPreferences = sqliteTable(
 		projects_include_json: text("projects_include_json"),
 		projects_exclude_json: text("projects_exclude_json"),
 		auto_seed_scope: integer("auto_seed_scope").notNull().default(1),
+		default_space_scope_id: text("default_space_scope_id"),
+		auto_grant_default_space_on_join: integer("auto_grant_default_space_on_join")
+			.notNull()
+			.default(0),
 		updated_at: text("updated_at").notNull(),
 	},
 	(table) => ({

@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import {
+	defaultSpaceScopeIdForGroup,
 	deleteCoordinatorGroupPreference,
 	getCoordinatorGroupPreference,
 	listCoordinatorGroupPreferences,
@@ -36,6 +37,8 @@ describe("coordinator group preferences", () => {
 			expect(row.projects_include).toBeNull();
 			expect(row.projects_exclude).toBeNull();
 			expect(row.auto_seed_scope).toBe(true);
+			expect(row.default_space_scope_id).toBeNull();
+			expect(row.auto_grant_default_space_on_join).toBe(false);
 			expect(row.updated_at).toBeTruthy();
 		} finally {
 			db.close();
@@ -130,5 +133,31 @@ describe("coordinator group preferences", () => {
 		} finally {
 			db.close();
 		}
+	});
+
+	it("upsert preserves explicit default Space settings", () => {
+		const db = openDb();
+		try {
+			upsertCoordinatorGroupPreference(db, {
+				coordinator_id: "https://coord.example",
+				group_id: "team-a",
+				default_space_scope_id: "space-custom",
+				auto_grant_default_space_on_join: false,
+			});
+			const updated = upsertCoordinatorGroupPreference(db, {
+				coordinator_id: "https://coord.example",
+				group_id: "team-a",
+				projects_include: ["work/*"],
+			});
+			expect(updated.default_space_scope_id).toBe("space-custom");
+			expect(updated.auto_grant_default_space_on_join).toBe(false);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("derives a deterministic default Space scope id", () => {
+		expect(defaultSpaceScopeIdForGroup(" team-a ")).toBe("team:team-a:default");
+		expect(() => defaultSpaceScopeIdForGroup(" ")).toThrow(/group_id/);
 	});
 });

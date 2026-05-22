@@ -8,6 +8,8 @@ import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import type {
 	CoordinatorBootstrapGrantVerification,
+	CoordinatorScope,
+	CoordinatorScopeMembership,
 	MaintenanceJobSnapshot,
 	MemoryStore,
 	ProjectScopeGuardrailWarning,
@@ -46,6 +48,7 @@ import {
 	coordinatorUpdateScopeAction,
 	createCoordinatorReciprocalApproval,
 	DEFAULT_TIME_WINDOW_S,
+	defaultSpaceScopeIdForGroup,
 	deleteProjectScopeSettingsMapping,
 	ensureDeviceIdentity,
 	extractReplicationOps,
@@ -238,6 +241,85 @@ function coordinatorAdminStatusPayload(config = readCoordinatorSyncConfig()) {
 		has_admin_secret: hasAdminSecret,
 		has_groups: hasGroups,
 	};
+}
+
+async function ensureDefaultSpaceForTeam(opts: {
+	store: MemoryStore;
+	config: ReturnType<typeof readCoordinatorSyncConfig>;
+	groupId: string;
+	displayName: string | null;
+}): Promise<{
+	scope: CoordinatorScope | null;
+	membership: CoordinatorScopeMembership | null;
+	preferences: ReturnType<typeof upsertCoordinatorGroupPreference>;
+}> {
+	const coordinatorId = opts.config.syncCoordinatorUrl || null;
+	if (!coordinatorId) throw new Error("coordinator_not_configured");
+	const scopeId = defaultSpaceScopeIdForGroup(opts.groupId);
+	const label = opts.displayName || opts.groupId;
+	const existingScopes = await coordinatorListScopesAction({
+		groupId: opts.groupId,
+		includeInactive: false,
+		remoteUrl: opts.config.syncCoordinatorUrl || null,
+		adminSecret: opts.config.syncCoordinatorAdminSecret || null,
+	});
+	const existingScope = existingScopes.find((scope) => scope.scope_id === scopeId) ?? null;
+	const scope =
+		existingScope ??
+		(await coordinatorCreateScopeAction({
+			groupId: opts.groupId,
+			scopeId,
+			label,
+			kind: "team_default",
+			authorityType: "coordinator",
+			coordinatorId,
+			membershipEpoch: 1,
+			status: "active",
+			remoteUrl: opts.config.syncCoordinatorUrl || null,
+			adminSecret: opts.config.syncCoordinatorAdminSecret || null,
+		}));
+	const [deviceId] = ensureDeviceIdentity(opts.store.db);
+	const membership = await coordinatorGrantScopeMembershipAction({
+		groupId: opts.groupId,
+		scopeId,
+		deviceId,
+		role: "admin",
+		membershipEpoch: 1,
+		coordinatorId,
+		remoteUrl: opts.config.syncCoordinatorUrl || null,
+		adminSecret: opts.config.syncCoordinatorAdminSecret || null,
+	});
+	const preferences = upsertCoordinatorGroupPreference(opts.store.db, {
+		coordinator_id: coordinatorId,
+		group_id: opts.groupId,
+		default_space_scope_id: scopeId,
+		auto_grant_default_space_on_join: true,
+	});
+	return { scope, membership, preferences };
+}
+
+async function maybeGrantDefaultSpaceOnJoin(opts: {
+	store: MemoryStore;
+	config: ReturnType<typeof readCoordinatorSyncConfig>;
+	groupId: string;
+	deviceId: string;
+}): Promise<CoordinatorScopeMembership | null> {
+	const coordinatorId = opts.config.syncCoordinatorUrl || null;
+	if (!coordinatorId) return null;
+	const preferences = getCoordinatorGroupPreference(opts.store.db, coordinatorId, opts.groupId);
+	if (!preferences?.auto_grant_default_space_on_join) return null;
+	const scopeId = preferences.default_space_scope_id?.trim();
+	if (!scopeId) return null;
+	return await coordinatorGrantScopeMembershipAction({
+		groupId: opts.groupId,
+		scopeId,
+		deviceId: opts.deviceId,
+		role: "member",
+		membershipEpoch: 1,
+		coordinatorId,
+		remoteUrl: opts.config.syncCoordinatorUrl || null,
+		adminSecret: opts.config.syncCoordinatorAdminSecret || null,
+	});
 }
 
 function removeConfiguredCoordinatorGroup(groupId: string): string[] {
@@ -3430,7 +3512,26 @@ export function syncRoutes(
 				remoteUrl: config.syncCoordinatorUrl || null,
 				adminSecret: config.syncCoordinatorAdminSecret || null,
 			});
-			return c.json({ ok: true, group, status });
+			try {
+				const defaultSpace = await ensureDefaultSpaceForTeam({
+					store: getStore(),
+					config,
+					groupId,
+					displayName: displayName || group.display_name || null,
+				});
+				return c.json({ ok: true, group, default_space: defaultSpace, status });
+			} catch (setupError) {
+				return c.json({
+					ok: true,
+					group,
+					default_space: null,
+					setup_warning: {
+						step: "default_space",
+						error: setupError instanceof Error ? setupError.message : String(setupError),
+					},
+					status,
+				});
+			}
 		} catch (error) {
 			return c.json({ error: error instanceof Error ? error.message : String(error), status }, 400);
 		}
@@ -3829,7 +3930,28 @@ export function syncRoutes(
 				adminSecret: config.syncCoordinatorAdminSecret || null,
 			});
 			if (!result) return c.json({ error: "join request not found", status }, 404);
-			return c.json({ ok: true, request: result, status });
+			let defaultSpaceMembership = null;
+			let setupWarning = null;
+			try {
+				defaultSpaceMembership = await maybeGrantDefaultSpaceOnJoin({
+					store: getStore(),
+					config,
+					groupId: result.group_id,
+					deviceId: result.device_id,
+				});
+			} catch (grantError) {
+				setupWarning = {
+					step: "default_space_grant",
+					error: grantError instanceof Error ? grantError.message : String(grantError),
+				};
+			}
+			return c.json({
+				ok: true,
+				request: result,
+				default_space_membership: defaultSpaceMembership,
+				setup_warning: setupWarning,
+				status,
+			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			return c.json(
@@ -4176,6 +4298,8 @@ export function syncRoutes(
 				projects_include: null,
 				projects_exclude: null,
 				auto_seed_scope: true,
+				default_space_scope_id: null,
+				auto_grant_default_space_on_join: false,
 				updated_at: null,
 			},
 			status,
@@ -4208,6 +4332,23 @@ export function syncRoutes(
 			return cleaned.length === 0 ? null : cleaned;
 		};
 		const autoSeed = typeof body.auto_seed_scope === "boolean" ? body.auto_seed_scope : undefined;
+		const autoGrantDefaultSpace =
+			typeof body.auto_grant_default_space_on_join === "boolean"
+				? body.auto_grant_default_space_on_join
+				: undefined;
+		const defaultSpaceScopeId =
+			body.default_space_scope_id === undefined
+				? undefined
+				: optionalViewerString(body, "default_space_scope_id");
+		if (autoGrantDefaultSpace === true && !defaultSpaceScopeId) {
+			return c.json(
+				{
+					error: "default_space_scope_id_required_for_auto_grant",
+					status,
+				},
+				400,
+			);
+		}
 		const store = getStore();
 		try {
 			const preferences = upsertCoordinatorGroupPreference(store.db, {
@@ -4216,6 +4357,8 @@ export function syncRoutes(
 				projects_include: normalizeList(body.projects_include),
 				projects_exclude: normalizeList(body.projects_exclude),
 				auto_seed_scope: autoSeed,
+				default_space_scope_id: defaultSpaceScopeId,
+				auto_grant_default_space_on_join: autoGrantDefaultSpace,
 			});
 			return c.json({ preferences, status });
 		} catch (error) {

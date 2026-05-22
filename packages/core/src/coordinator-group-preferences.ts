@@ -3,8 +3,8 @@
  * Membership in a coordinator group is coordinator-authoritative — the client
  * fetches it via `/api/coordinator/admin/groups`. What lives locally is per-
  * group UI + enrollment preferences: the default project-scope template
- * applied when a peer is enrolled through that group, and a toggle for
- * whether to auto-seed scope from the template at all.
+ * applied when a peer is enrolled through that group, default Space identity,
+ * and toggles for whether to auto-seed project filters or default Space grants.
  *
  * Design: docs/plans/2026-04-22-multi-team-coordinator-groups-design.md.
  */
@@ -20,6 +20,8 @@ export interface CoordinatorGroupPreference {
 	projects_include: string[] | null;
 	projects_exclude: string[] | null;
 	auto_seed_scope: boolean;
+	default_space_scope_id: string | null;
+	auto_grant_default_space_on_join: boolean;
 	updated_at: string;
 }
 
@@ -29,6 +31,14 @@ export interface UpsertCoordinatorGroupPreferenceInput {
 	projects_include?: string[] | null;
 	projects_exclude?: string[] | null;
 	auto_seed_scope?: boolean;
+	default_space_scope_id?: string | null;
+	auto_grant_default_space_on_join?: boolean;
+}
+
+export function defaultSpaceScopeIdForGroup(groupId: string): string {
+	const normalized = groupId.trim();
+	if (!normalized) throw new Error("group_id must be a non-empty string");
+	return `team:${normalized}:default`;
 }
 
 function parseList(value: string | null): string[] | null {
@@ -52,6 +62,8 @@ function rowToPreference(row: {
 	projects_include_json: string | null;
 	projects_exclude_json: string | null;
 	auto_seed_scope: number;
+	default_space_scope_id?: string | null;
+	auto_grant_default_space_on_join?: number | null;
 	updated_at: string;
 }): CoordinatorGroupPreference {
 	return {
@@ -60,6 +72,11 @@ function rowToPreference(row: {
 		projects_include: parseList(row.projects_include_json),
 		projects_exclude: parseList(row.projects_exclude_json),
 		auto_seed_scope: Boolean(row.auto_seed_scope),
+		default_space_scope_id: row.default_space_scope_id ?? null,
+		auto_grant_default_space_on_join:
+			row.auto_grant_default_space_on_join == null
+				? false
+				: Boolean(row.auto_grant_default_space_on_join),
 		updated_at: row.updated_at,
 	};
 }
@@ -116,15 +133,26 @@ export function upsertCoordinatorGroupPreference(
 		input.auto_seed_scope !== undefined
 			? Boolean(input.auto_seed_scope)
 			: (existing?.auto_seed_scope ?? true);
+	const nextDefaultSpaceScopeId =
+		input.default_space_scope_id !== undefined
+			? input.default_space_scope_id?.trim() || null
+			: (existing?.default_space_scope_id ?? null);
+	const nextAutoGrantDefaultSpace =
+		input.auto_grant_default_space_on_join !== undefined
+			? Boolean(input.auto_grant_default_space_on_join)
+			: (existing?.auto_grant_default_space_on_join ?? false);
 
 	db.prepare(
 		`INSERT INTO coordinator_group_preferences
-			(coordinator_id, group_id, projects_include_json, projects_exclude_json, auto_seed_scope, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)
+			(coordinator_id, group_id, projects_include_json, projects_exclude_json, auto_seed_scope,
+			 default_space_scope_id, auto_grant_default_space_on_join, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(coordinator_id, group_id) DO UPDATE SET
 			projects_include_json = excluded.projects_include_json,
 			projects_exclude_json = excluded.projects_exclude_json,
 			auto_seed_scope = excluded.auto_seed_scope,
+			default_space_scope_id = excluded.default_space_scope_id,
+			auto_grant_default_space_on_join = excluded.auto_grant_default_space_on_join,
 			updated_at = excluded.updated_at`,
 	).run(
 		coordinatorId,
@@ -132,6 +160,8 @@ export function upsertCoordinatorGroupPreference(
 		serializeList(nextInclude ?? null),
 		serializeList(nextExclude ?? null),
 		nextAutoSeed ? 1 : 0,
+		nextDefaultSpaceScopeId,
+		nextAutoGrantDefaultSpace ? 1 : 0,
 		now,
 	);
 

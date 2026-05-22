@@ -152,6 +152,8 @@ export interface CoordinatorGroupPreferences {
 	projects_include: string[] | null;
 	projects_exclude: string[] | null;
 	auto_seed_scope: boolean;
+	default_space_scope_id?: string | null;
+	auto_grant_default_space_on_join?: boolean;
 	updated_at?: string | null;
 }
 
