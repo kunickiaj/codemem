@@ -4,6 +4,7 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { OAuthAuditEvent } from "./audit.js";
 import {
 	type CodememMcpHttpServer,
 	DEFAULT_MCP_HTTP_HOST,
@@ -19,6 +20,45 @@ import {
 import { createInMemoryOAuthAccessTokenStore } from "./oauth.js";
 
 const servers: CodememMcpHttpServer[] = [];
+
+const FORBIDDEN_AUDIT_FIELDS = new Set([
+	"access_token",
+	"refresh_token",
+	"id_token",
+	"code",
+	"code_verifier",
+	"code_challenge",
+	"client_secret",
+	"authorization",
+	"password",
+	"secret",
+	"token",
+]);
+
+function captureAuditEmitter(): {
+	emit: (event: OAuthAuditEvent) => void;
+	events: OAuthAuditEvent[];
+} {
+	const events: OAuthAuditEvent[] = [];
+	return {
+		emit: (event) => {
+			events.push(event);
+		},
+		events,
+	};
+}
+
+function assertAuditEventsAreRedacted(events: OAuthAuditEvent[]): void {
+	for (const event of events) {
+		for (const key of Object.keys(event)) {
+			expect(FORBIDDEN_AUDIT_FIELDS.has(key.toLowerCase())).toBe(false);
+		}
+		const serialized = JSON.stringify(event);
+		for (const forbidden of FORBIDDEN_AUDIT_FIELDS) {
+			expect(serialized.toLowerCase()).not.toContain(`"${forbidden}":`);
+		}
+	}
+}
 
 afterEach(async () => {
 	await Promise.all(servers.splice(0).map((server) => server.close()));
@@ -324,6 +364,67 @@ describe("MCP HTTP transport", () => {
 		});
 
 		expect(response.statusCode).toBe(200);
+	});
+
+	it("emits redacted audit events for the full OAuth + bearer flow", async () => {
+		const tokenStore = createInMemoryOAuthAccessTokenStore();
+		const issued = tokenStore.issueToken("client-audit");
+		if (!issued) throw new Error("expected access token");
+		const { emit, events } = captureAuditEmitter();
+		const server = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test/mcp",
+			oauthAccessTokenStore: tokenStore,
+			auditEmitter: emit,
+		});
+		servers.push(server);
+		const baseUrl = server.url.replace("/mcp", "");
+
+		const register = await fetch(`${baseUrl}/register`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				redirect_uris: ["https://claude.ai/api/mcp/auth_callback"],
+				token_endpoint_auth_method: "none",
+			}),
+		});
+		expect(register.status).toBe(201);
+		await fetch(`${baseUrl}/oauth/revoke`, {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({ token: "ignored-since-unknown" }),
+		});
+		const missingBearer = await fetch(server.url, {
+			method: "POST",
+			headers: {
+				accept: "application/json, text/event-stream",
+				"content-type": "application/json",
+			},
+			body: initializeBody(1),
+		});
+		expect(missingBearer.status).toBe(401);
+		const validBearer = await initialize(server.url, 2, {
+			authorization: `Bearer ${issued.token}`,
+		});
+		expect(validBearer.result?.serverInfo?.name).toBe("codemem");
+
+		const kinds = events.map((e) => e.kind);
+		expect(kinds).toContain("registration");
+		expect(kinds).toContain("revocation");
+		expect(kinds).toContain("bearer");
+
+		const registration = events.find((e) => e.kind === "registration");
+		expect(registration?.outcome).toBe("success");
+		expect(registration?.clientId).toMatch(/[0-9a-f-]{36}/);
+
+		const denied = events.find((e) => e.kind === "bearer" && e.outcome === "denied");
+		expect(denied?.reason).toBe("missing_authorization_header");
+
+		const accepted = events.find((e) => e.kind === "bearer" && e.outcome === "success");
+		expect(accepted?.clientId).toBe("client-audit");
+
+		assertAuditEventsAreRedacted(events);
 	});
 
 	it("rejects expired and revoked bearer tokens", async () => {

@@ -15,6 +15,13 @@ import { MemoryStore, resolveDbPath } from "@codemem/core";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
+	type BearerDenyReason,
+	buildOAuthAuditEvent,
+	type OAuthAuditEmitter,
+	resolveOAuthAuditEmitterFromEnv,
+	wrapAuditEmitterBestEffort,
+} from "./audit.js";
+import {
 	authorizeMcpOAuthClient,
 	createInMemoryOAuthAccessTokenStore,
 	createInMemoryOAuthAuthorizationCodeStore,
@@ -54,6 +61,7 @@ export interface CodememMcpHttpOptions {
 	allowUnsafePublic?: boolean;
 	publicUrl?: string;
 	oauthAccessTokenStore?: OAuthAccessTokenStore;
+	auditEmitter?: OAuthAuditEmitter;
 }
 
 export interface CodememMcpHttpServer {
@@ -190,6 +198,9 @@ export async function startCodememMcpHttpServer(
 	const oidcConfig = resolveOidcConfig();
 	const oidcPendingStore = createInMemoryOidcPendingAuthorizationStore();
 	const shouldRequireMcpBearer = configuredPublicMcpUrl !== undefined || oidcConfig !== undefined;
+	const auditEmit = wrapAuditEmitterBestEffort(
+		options.auditEmitter ?? resolveOAuthAuditEmitterFromEnv(),
+	);
 	const activeRequests = new Set<ActiveRequest>();
 	let closePromise: Promise<void> | null = null;
 
@@ -198,6 +209,7 @@ export async function startCodememMcpHttpServer(
 			const pathname = getRequestPathname(req);
 			const publicMcpUrl = configuredPublicMcpUrl?.href ?? getServerUrl(server, host);
 			const boundPort = getBoundPort(server);
+			const remoteAddress = req.socket.remoteAddress ?? undefined;
 
 			if (pathname === "/.well-known/oauth-authorization-server") {
 				if (!prepareHttpRoute(req, res, ["GET", "OPTIONS"])) return;
@@ -218,6 +230,13 @@ export async function startCodememMcpHttpServer(
 					__codememInvalidJson: "Invalid JSON request body",
 				}));
 				if (isInvalidJsonBody(requestBody)) {
+					auditEmit(
+						buildOAuthAuditEvent("registration", {
+							outcome: "denied",
+							reason: "invalid_json_body",
+							remoteAddress,
+						}),
+					);
 					writeJson(res, 400, {
 						error: "invalid_client_metadata",
 						error_description: requestBody.__codememInvalidJson,
@@ -225,6 +244,23 @@ export async function startCodememMcpHttpServer(
 					return;
 				}
 				const result = registerMcpOAuthClient(requestBody, clientsStore);
+				if (result.status === 201) {
+					auditEmit(
+						buildOAuthAuditEvent("registration", {
+							outcome: "success",
+							clientId: result.body.client_id,
+							remoteAddress,
+						}),
+					);
+				} else {
+					auditEmit(
+						buildOAuthAuditEvent("registration", {
+							outcome: "denied",
+							reason: result.body.error,
+							remoteAddress,
+						}),
+					);
+				}
 				writeJson(res, result.status, result.body);
 				return;
 			}
@@ -233,6 +269,7 @@ export async function startCodememMcpHttpServer(
 				if (!prepareOAuthRoute(req, res, ["GET", "OPTIONS"], boundPort, configuredPublicMcpUrl))
 					return;
 				const url = new URL(req.url ?? "/authorize", "http://codemem.local");
+				const clientIdParam = url.searchParams.get("client_id") ?? undefined;
 				const result = await beginOidcAuthorization(
 					url.searchParams,
 					clientsStore,
@@ -241,11 +278,27 @@ export async function startCodememMcpHttpServer(
 					publicMcpUrl,
 				);
 				if (result.status === 302) {
+					auditEmit(
+						buildOAuthAuditEvent("authorize", {
+							outcome: "success",
+							reason: oidcConfig ? "oidc_redirect_issued" : "code_issued",
+							clientId: clientIdParam,
+							remoteAddress,
+						}),
+					);
 					res.statusCode = result.status;
 					res.setHeader("location", result.location);
 					res.end();
 					return;
 				}
+				auditEmit(
+					buildOAuthAuditEvent("authorize", {
+						outcome: "denied",
+						reason: result.body.error,
+						clientId: clientIdParam,
+						remoteAddress,
+					}),
+				);
 				writeJson(res, result.status, result.body);
 				return;
 			}
@@ -254,6 +307,13 @@ export async function startCodememMcpHttpServer(
 				if (!prepareOAuthRoute(req, res, ["GET", "OPTIONS"], boundPort, configuredPublicMcpUrl))
 					return;
 				if (!oidcConfig) {
+					auditEmit(
+						buildOAuthAuditEvent("oidc_callback", {
+							outcome: "denied",
+							reason: "oidc_not_configured",
+							remoteAddress,
+						}),
+					);
 					writeJson(res, 400, {
 						error: "temporarily_unavailable",
 						error_description: "OIDC is not configured",
@@ -268,16 +328,40 @@ export async function startCodememMcpHttpServer(
 					publicMcpUrl,
 				);
 				if ("status" in completed) {
+					auditEmit(
+						buildOAuthAuditEvent("oidc_callback", {
+							outcome: "denied",
+							reason: completed.body.error,
+							remoteAddress,
+						}),
+					);
 					writeJson(res, completed.status, completed.body);
 					return;
 				}
+				const oauthClientId = completed.oauthParams.get("client_id") ?? undefined;
 				const result = authorizeMcpOAuthClient(completed.oauthParams, clientsStore, codeStore);
 				if (result.status === 302) {
+					auditEmit(
+						buildOAuthAuditEvent("oidc_callback", {
+							outcome: "success",
+							reason: "code_issued",
+							clientId: oauthClientId,
+							remoteAddress,
+						}),
+					);
 					res.statusCode = result.status;
 					res.setHeader("location", result.location);
 					res.end();
 					return;
 				}
+				auditEmit(
+					buildOAuthAuditEvent("oidc_callback", {
+						outcome: "denied",
+						reason: result.body.error,
+						clientId: oauthClientId,
+						remoteAddress,
+					}),
+				);
 				writeJson(res, result.status, result.body);
 				return;
 			}
@@ -286,12 +370,31 @@ export async function startCodememMcpHttpServer(
 				if (!prepareOAuthRoute(req, res, ["POST", "OPTIONS"], boundPort, configuredPublicMcpUrl))
 					return;
 				const params = await readFormBody(req).catch(() => new URLSearchParams());
+				const tokenClientId = params.get("client_id") ?? undefined;
 				const result = exchangeMcpOAuthAuthorizationCode(
 					params,
 					clientsStore,
 					codeStore,
 					tokenStore,
 				);
+				if (result.status === 200) {
+					auditEmit(
+						buildOAuthAuditEvent("token", {
+							outcome: "success",
+							clientId: tokenClientId,
+							remoteAddress,
+						}),
+					);
+				} else {
+					auditEmit(
+						buildOAuthAuditEvent("token", {
+							outcome: "denied",
+							reason: result.body.error,
+							clientId: tokenClientId,
+							remoteAddress,
+						}),
+					);
+				}
 				writeJson(res, result.status, result.body);
 				return;
 			}
@@ -301,6 +404,12 @@ export async function startCodememMcpHttpServer(
 					return;
 				const params = await readFormBody(req).catch(() => new URLSearchParams());
 				const result = revokeMcpOAuthAccessToken(params, tokenStore);
+				auditEmit(
+					buildOAuthAuditEvent("revocation", {
+						outcome: "success",
+						remoteAddress,
+					}),
+				);
 				writeJson(res, result.status, result.body);
 				return;
 			}
@@ -314,12 +423,26 @@ export async function startCodememMcpHttpServer(
 				writeText(res, 403, "Forbidden");
 				return;
 			}
-			if (
-				shouldRequireMcpBearer &&
-				!verifyMcpBearerAuthorization(req.headers.authorization, tokenStore)
-			) {
-				writeBearerUnauthorized(res);
-				return;
+			if (shouldRequireMcpBearer) {
+				const verification = verifyMcpBearerAuthorization(req.headers.authorization, tokenStore);
+				if (!verification.ok) {
+					auditEmit(
+						buildOAuthAuditEvent("bearer", {
+							outcome: "denied",
+							reason: verification.reason,
+							remoteAddress,
+						}),
+					);
+					writeBearerUnauthorized(res);
+					return;
+				}
+				auditEmit(
+					buildOAuthAuditEvent("bearer", {
+						outcome: "success",
+						clientId: verification.clientId,
+						remoteAddress,
+					}),
+				);
 			}
 
 			const mcpServer = createCodememMcpServer(store);
@@ -512,11 +635,15 @@ function isAllowedPublicRequestHost(header: string | undefined, publicMcpUrl: UR
 function verifyMcpBearerAuthorization(
 	header: string | undefined,
 	tokenStore: OAuthAccessTokenStore,
-): boolean {
-	if (!header) return false;
+): { ok: true; clientId: string } | { ok: false; reason: BearerDenyReason } {
+	if (!header) return { ok: false, reason: "missing_authorization_header" };
 	const [scheme, token, extra] = header.trim().split(/\s+/);
-	if (!scheme || !token || extra || scheme.toLowerCase() !== "bearer") return false;
-	return tokenStore.verifyToken(token) !== undefined;
+	if (!scheme || !token || extra || scheme.toLowerCase() !== "bearer") {
+		return { ok: false, reason: "malformed_authorization_header" };
+	}
+	const result = tokenStore.verifyToken(token);
+	if (!result.ok) return { ok: false, reason: result.reason };
+	return { ok: true, clientId: result.record.clientId };
 }
 
 function writeBearerUnauthorized(res: ServerResponse): void {
