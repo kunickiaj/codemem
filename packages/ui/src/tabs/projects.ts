@@ -5,6 +5,7 @@ import type {
 	SharingDomainScope,
 } from "../lib/api/sync";
 import { showGlobalNotice } from "../lib/notice";
+import { state } from "../lib/state";
 import { openSyncInputDialog } from "./sync/sync-dialogs";
 
 type RefreshFn = () => void;
@@ -46,7 +47,7 @@ function formatStatus(status: string): string {
 function formatResolution(reason: string): string {
 	switch (reason) {
 		case "exact_mapping":
-			return "assigned to a Sharing domain";
+			return "assigned to a Space";
 		case "pattern_mapping":
 			return "assigned by matching rule";
 		case "explicit_override":
@@ -79,14 +80,102 @@ function projectClusterLabel(project: ProjectScopeInventoryProject): string {
 	return project.project || project.display_project || strongestSignal(project);
 }
 
-function scopeLabel(scopeId: string | null | undefined): string {
+function teamName(groupId: string | null | undefined): string | null {
+	const normalized = String(groupId || "").trim();
+	if (!normalized) return null;
+	const group = state.lastCoordinatorAdminGroups.find(
+		(item) => String(item.group_id || "").trim() === normalized,
+	);
+	return group?.display_name || "Team details unavailable";
+}
+
+function isDefaultTeamSpace(scope: SharingDomainScope): boolean {
+	return scope.kind === "team_default";
+}
+
+function spaceName(scope: SharingDomainScope): string {
+	const label = scope.label || "Untitled Space";
+	return isDefaultTeamSpace(scope) ? `${label} (default)` : label;
+}
+
+function spaceOptionName(scope: SharingDomainScope, siblingScopes: SharingDomainScope[]): string {
+	const label = spaceName(scope);
+	const duplicateLabel = siblingScopes.some(
+		(sibling) => sibling.scope_id !== scope.scope_id && spaceName(sibling) === label,
+	);
+	return duplicateLabel ? `${label} · Space ID ${scope.scope_id}` : label;
+}
+
+function spaceOwner(scope: SharingDomainScope): string {
+	const team = teamName(scope.group_id);
+	if (team) return `Team: ${team}`;
+	if (scope.authority_type === "local") return "Local device";
+	if (scope.authority_type === "coordinator") return "Coordinator Space";
+	return `${scope.authority_type || "Other"} Space`;
+}
+
+function scopeById(scopeId: string | null | undefined): SharingDomainScope | null {
+	if (!scopeId) return null;
+	return scopes.find((item) => item.scope_id === scopeId) ?? null;
+}
+
+function scopeSummary(scopeId: string | null | undefined): string {
+	const scope = scopeById(scopeId);
 	if (!scopeId) return "—";
-	const scope = scopes.find((item) => item.scope_id === scopeId);
-	return scope?.label ? `${scope.label} (${scope.scope_id})` : scopeId;
+	return scope ? `${spaceName(scope)} · ${spaceOwner(scope)}` : "Unknown Space";
 }
 
 function assignableScopes(): SharingDomainScope[] {
 	return scopes.filter((scope) => scope.scope_id !== "legacy-shared-review");
+}
+
+function isAssignableScopeId(scopeId: string | null | undefined): boolean {
+	return assignableScopes().some((scope) => scope.scope_id === scopeId);
+}
+
+function firstSafeSelection(...scopeIds: Array<string | null | undefined>): string {
+	for (const scopeId of scopeIds) {
+		if (scopeId && isAssignableScopeId(scopeId)) return scopeId;
+	}
+	return scopeIds.find((scopeId): scopeId is string => Boolean(scopeId)) ?? "";
+}
+
+function scopeGroupLabel(scope: SharingDomainScope): string {
+	const team = teamName(scope.group_id);
+	if (team) return `Team: ${team}`;
+	if (scope.authority_type === "local") return "Local device";
+	if (scope.authority_type === "coordinator") return "Coordinator Spaces";
+	return "Other Spaces";
+}
+
+function scopeGroupKey(scope: SharingDomainScope): string {
+	if (scope.group_id) return `team:${scope.group_id}`;
+	return `${scope.authority_type || "other"}:${scope.kind || "space"}`;
+}
+
+function groupedAssignableScopes(): Array<{ label: string; scopes: SharingDomainScope[] }> {
+	const groups = new Map<string, { label: string; scopes: SharingDomainScope[] }>();
+	for (const scope of assignableScopes()) {
+		const key = scopeGroupKey(scope);
+		const label = scopeGroupLabel(scope);
+		const current = groups.get(key) ?? { label, scopes: [] };
+		groups.set(key, { label: current.label, scopes: [...current.scopes, scope] });
+	}
+	return [...groups.values()];
+}
+
+function appendAssignableScopeOptions(select: HTMLSelectElement) {
+	for (const group of groupedAssignableScopes()) {
+		const optgroup = document.createElement("optgroup");
+		optgroup.label = group.label;
+		for (const scope of group.scopes) {
+			const option = document.createElement("option");
+			option.value = scope.scope_id;
+			option.textContent = spaceOptionName(scope, group.scopes);
+			optgroup.appendChild(option);
+		}
+		select.appendChild(optgroup);
+	}
 }
 
 function guardrailHeading(warning: ProjectScopeGuardrailWarning): string {
@@ -124,7 +213,7 @@ async function saveProjectMapping(
 		});
 		pendingConfirmations.delete(project.workspace_identity);
 		draftDomainSelections.delete(project.workspace_identity);
-		showGlobalNotice("Project Sharing domain updated. Device access grants are unchanged.");
+		showGlobalNotice("Project Space assignment updated. Device access grants are unchanged.");
 		refreshProjects?.();
 	} catch (error) {
 		if (error instanceof api.SharingDomainGuardrailConfirmationError) {
@@ -137,7 +226,7 @@ async function saveProjectMapping(
 			return;
 		}
 		showGlobalNotice(
-			error instanceof Error ? error.message : "Unable to update project Sharing domain.",
+			error instanceof Error ? error.message : "Unable to update project Space.",
 			"warning",
 		);
 	}
@@ -170,7 +259,7 @@ async function saveProjectClusterMapping(
 				? "One or more identities in this group need review before bulk assignment. Expand the group and save those identities directly."
 				: error instanceof Error
 					? error.message
-					: "Unable to update project Sharing domains.",
+					: "Unable to update project Spaces.",
 			"warning",
 		);
 	}
@@ -182,11 +271,11 @@ async function removeProjectMapping(project: ProjectScopeInventoryProject) {
 		await api.deleteSharingDomainProjectMapping(project.mapping_id);
 		pendingConfirmations.delete(project.workspace_identity);
 		draftDomainSelections.delete(project.workspace_identity);
-		showGlobalNotice("Project Sharing domain mapping removed. The next fallback now applies.");
+		showGlobalNotice("Project Space assignment removed. The next fallback now applies.");
 		refreshProjects?.();
 	} catch (error) {
 		showGlobalNotice(
-			error instanceof Error ? error.message : "Unable to remove project Sharing domain mapping.",
+			error instanceof Error ? error.message : "Unable to remove project Space assignment.",
 			"warning",
 		);
 	}
@@ -234,7 +323,7 @@ async function reassignProject(project: ProjectScopeInventoryProject) {
 	const nextProject = await openSyncInputDialog({
 		cancelLabel: "Cancel",
 		confirmLabel: "Change project",
-		description: `This will update ${project.session_count} session${project.session_count === 1 ? "" : "s"} and ${project.memory_count ?? 0} memor${project.memory_count === 1 ? "y" : "ies"} by changing the stored project. Sharing-domain assignment stays unchanged.`,
+		description: `This will update ${project.session_count} session${project.session_count === 1 ? "" : "s"} and ${project.memory_count ?? 0} memor${project.memory_count === 1 ? "y" : "ies"} by changing the stored project. Space assignment stays unchanged.`,
 		initialValue: currentProject,
 		placeholder: "Project name",
 		suggestions,
@@ -279,7 +368,7 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 	label.className = "sr-only";
 	const selectId = `project-domain-${project.workspace_identity.replace(/[^a-z0-9_-]/gi, "-")}`;
 	label.htmlFor = selectId;
-	label.textContent = `Sharing domain for ${project.display_project}`;
+	label.textContent = `Space for ${project.display_project}`;
 	const select = document.createElement("select");
 	select.id = selectId;
 	select.className = "project-domain-select";
@@ -289,20 +378,16 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 	if (!currentAssignable && project.resolved_scope_id) {
 		const current = document.createElement("option");
 		current.value = project.resolved_scope_id;
-		current.textContent = `${scopeLabel(project.resolved_scope_id)} — not assignable`;
+		current.textContent = `${scopeSummary(project.resolved_scope_id)} — not assignable`;
 		current.disabled = true;
 		select.appendChild(current);
 	}
-	for (const scope of assignableScopes()) {
-		const option = document.createElement("option");
-		option.value = scope.scope_id;
-		option.textContent = scope.label ? `${scope.label} · ${scope.scope_id}` : scope.scope_id;
-		select.appendChild(option);
-	}
-	select.value =
-		draftDomainSelections.get(project.workspace_identity) ??
-		project.suggested_scope_id ??
-		project.resolved_scope_id;
+	appendAssignableScopeOptions(select);
+	select.value = firstSafeSelection(
+		draftDomainSelections.get(project.workspace_identity),
+		project.suggested_scope_id,
+		project.resolved_scope_id,
+	);
 
 	const save = document.createElement("button");
 	save.className = "settings-button";
@@ -310,14 +395,15 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 	save.textContent =
 		project.suggested_scope_id && select.value === project.suggested_scope_id
 			? "Confirm suggestion"
-			: "Save domain";
-	save.disabled = select.value === project.resolved_scope_id && !currentAssignable;
+			: "Save Space";
+	save.disabled =
+		!select.value || (select.value === project.resolved_scope_id && !currentAssignable);
 	save.addEventListener("click", () => void saveProjectMapping(project, select.value));
 	select.addEventListener("change", () => {
 		draftDomainSelections.set(project.workspace_identity, select.value);
 		pendingConfirmations.delete(project.workspace_identity);
-		save.textContent = "Save domain";
-		save.disabled = false;
+		save.textContent = "Save Space";
+		save.disabled = !select.value;
 		refreshProjects?.();
 	});
 
@@ -357,7 +443,7 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 		warningBox.className = "settings-note project-guardrail-confirmation";
 		warningBox.setAttribute("role", "alert");
 		const title = document.createElement("strong");
-		title.textContent = "Confirmation required before saving this Sharing domain.";
+		title.textContent = "Confirmation required before saving this Space.";
 		const intro = document.createElement("p");
 		intro.textContent =
 			"Codemem can save this change after you acknowledge the checks below. Verify the workspace details, then confirm to complete the save.";
@@ -374,7 +460,7 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 		const confirm = document.createElement("button");
 		confirm.className = "settings-button";
 		confirm.type = "button";
-		confirm.textContent = "I understand, save domain";
+		confirm.textContent = "I understand, save Space";
 		confirm.addEventListener("click", () => {
 			const currentPending = pendingConfirmations.get(project.workspace_identity);
 			if (!currentPending || currentPending.scopeId !== select.value) return;
@@ -439,7 +525,7 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 
 	const domain = document.createElement("div");
 	domain.className = "project-inventory-domain";
-	domain.textContent = scopeLabel(project.resolved_scope_id);
+	domain.textContent = scopeSummary(project.resolved_scope_id);
 	header.appendChild(domain);
 	row.appendChild(header);
 
@@ -458,7 +544,7 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 		suggestion.className = "settings-note project-suggestion-note";
 		suggestion.textContent = project.suggestion_reason
 			? `Suggestion: ${project.suggestion_reason}`
-			: `Suggestion: map this project to ${scopeLabel(project.suggested_scope_id)}.`;
+			: `Suggestion: assign this project to ${scopeSummary(project.suggested_scope_id)}.`;
 		row.appendChild(suggestion);
 	}
 
@@ -500,7 +586,13 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 		["CWD", project.cwd],
 		["Git remote", project.git_remote],
 		["Git branch", project.git_branch],
-		["Suggested domain", project.suggested_scope_id],
+		["Current Space", scopeSummary(project.resolved_scope_id)],
+		[
+			"Suggested Space",
+			project.suggested_scope_id ? scopeSummary(project.suggested_scope_id) : null,
+		],
+		["Advanced: current Space ID", project.resolved_scope_id],
+		["Advanced: suggested Space ID", project.suggested_scope_id],
 		["Suggestion reason", project.suggestion_reason],
 		["Sessions", project.session_count],
 		["Memories", project.memory_count ?? "count unavailable"],
@@ -520,7 +612,7 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 
 function clusterDomainLabel(projects: ProjectScopeInventoryProject[]): string {
 	const uniqueScopes = [...new Set(projects.map((project) => project.resolved_scope_id))];
-	return uniqueScopes.length === 1 ? scopeLabel(uniqueScopes[0]) : "Mixed Sharing domains";
+	return uniqueScopes.length === 1 ? scopeSummary(uniqueScopes[0]) : "Mixed Spaces";
 }
 
 function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLElement {
@@ -559,22 +651,17 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 	const resolvedScopes = new Set(projects.map((project) => project.resolved_scope_id));
 	const select = document.createElement("select");
 	select.className = "project-domain-select";
-	select.setAttribute("aria-label", `Sharing domain for ${projectClusterLabel(projects[0])} group`);
+	select.setAttribute("aria-label", `Space for ${projectClusterLabel(projects[0])} group`);
 	const placeholder = document.createElement("option");
 	placeholder.value = "";
-	placeholder.textContent = "Choose domain…";
+	placeholder.textContent = "Choose Space…";
 	select.appendChild(placeholder);
-	for (const scope of assignableScopes()) {
-		const option = document.createElement("option");
-		option.value = scope.scope_id;
-		option.textContent = scope.label ? `${scope.label} · ${scope.scope_id}` : scope.scope_id;
-		select.appendChild(option);
-	}
+	appendAssignableScopeOptions(select);
 	select.value = "";
 	const save = document.createElement("button");
 	save.className = "settings-button";
 	save.type = "button";
-	save.textContent = `Save domain for ${projects.length} identities`;
+	save.textContent = `Save Space for ${projects.length} identities`;
 	save.disabled = true;
 	save.addEventListener("click", () => void saveProjectClusterMapping(projects, select.value));
 	select.addEventListener("change", () => {
@@ -586,7 +673,7 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 		note.className = "settings-note project-attention-note";
 		note.textContent = hasGuardrailWarnings
 			? "One or more identities in this group need individual review before bulk assignment."
-			: "This group has mixed suggestions or current domains. Choose a domain explicitly before bulk assignment.";
+			: "This group has mixed suggestions or current Spaces. Choose a Space explicitly before bulk assignment.";
 		actions.appendChild(note);
 	}
 	row.appendChild(actions);

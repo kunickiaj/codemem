@@ -47,6 +47,7 @@ vi.mock("./sync/sync-dialogs", () => ({ openSyncInputDialog: vi.fn() }));
 
 import * as api from "../lib/api";
 import type { ProjectScopeInventoryProject } from "../lib/api/sync";
+import { state } from "../lib/state";
 import { initProjectsTab, loadProjectsData } from "./projects";
 import { openSyncInputDialog } from "./sync/sync-dialogs";
 
@@ -91,6 +92,9 @@ function mountProjectsDom() {
 describe("Projects tab", () => {
 	beforeEach(() => {
 		mountProjectsDom();
+		state.lastCoordinatorAdminGroups = [
+			{ archived_at: null, display_name: "ExampleCo Team", group_id: "exampleco" },
+		];
 		vi.mocked(api.loadSharingDomainSettings).mockResolvedValue({
 			local_default_scope_id: "local-default",
 			mappings: [],
@@ -112,7 +116,8 @@ describe("Projects tab", () => {
 				},
 				{
 					authority_type: "coordinator",
-					kind: "team",
+					group_id: "exampleco",
+					kind: "team_default",
 					label: "ExampleCo Work",
 					scope_id: "exampleco-work",
 					status: "active",
@@ -139,6 +144,7 @@ describe("Projects tab", () => {
 
 	afterEach(() => {
 		vi.clearAllMocks();
+		state.lastCoordinatorAdminGroups = [];
 		document.body.innerHTML = "";
 	});
 
@@ -183,7 +189,7 @@ describe("Projects tab", () => {
 		await loadProjectsData();
 
 		expect(document.body.textContent).toContain("2 identities · 3 sessions · 5 memories");
-		expect(document.body.textContent).toContain("Save domain for 2 identities");
+		expect(document.body.textContent).toContain("Save Space for 2 identities");
 		const select = document.querySelector(
 			".project-inventory-cluster select",
 		) as HTMLSelectElement | null;
@@ -192,7 +198,7 @@ describe("Projects tab", () => {
 		select.value = "exampleco-work";
 		select.dispatchEvent(new Event("change", { bubbles: true }));
 		const save = Array.from(document.querySelectorAll("button")).find(
-			(button) => button.textContent === "Save domain for 2 identities",
+			(button) => button.textContent === "Save Space for 2 identities",
 		) as HTMLButtonElement | undefined;
 		expect(save?.disabled).toBe(false);
 		save?.click();
@@ -236,7 +242,7 @@ describe("Projects tab", () => {
 
 		await loadProjectsData();
 		const save = Array.from(document.querySelectorAll("button")).find(
-			(button) => button.textContent === "Save domain for 2 identities",
+			(button) => button.textContent === "Save Space for 2 identities",
 		) as HTMLButtonElement | undefined;
 		save?.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -268,12 +274,12 @@ describe("Projects tab", () => {
 			".project-inventory-cluster select",
 		) as HTMLSelectElement | null;
 		const save = Array.from(document.querySelectorAll("button")).find(
-			(button) => button.textContent === "Save domain for 2 identities",
+			(button) => button.textContent === "Save Space for 2 identities",
 		) as HTMLButtonElement | undefined;
 
 		expect(select?.value).toBe("");
 		expect(save?.disabled).toBe(true);
-		expect(document.body.textContent).toContain("mixed suggestions or current domains");
+		expect(document.body.textContent).toContain("mixed suggestions or current Spaces");
 	});
 
 	it("does not partially update cluster identities when bulk assignment fails", async () => {
@@ -305,7 +311,7 @@ describe("Projects tab", () => {
 		select.value = "exampleco-work";
 		select.dispatchEvent(new Event("change", { bubbles: true }));
 		const save = Array.from(document.querySelectorAll("button")).find(
-			(button) => button.textContent === "Save domain for 2 identities",
+			(button) => button.textContent === "Save Space for 2 identities",
 		) as HTMLButtonElement | undefined;
 		save?.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -352,6 +358,105 @@ describe("Projects tab", () => {
 		expect(values).toContain("local-default");
 		expect(values).toContain("exampleco-work");
 		expect(values).not.toContain("legacy-shared-review");
+	});
+
+	it("groups assignable Spaces by Team", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 50,
+			offset: 0,
+			projects: [project({ resolved_scope_id: "exampleco-work" })],
+			total: 1,
+		});
+
+		await loadProjectsData();
+
+		const groups = Array.from(document.querySelectorAll("optgroup")).map((group) => ({
+			label: group.label,
+			options: Array.from(group.querySelectorAll("option")).map((option) => option.textContent),
+		}));
+		expect(groups).toEqual([
+			{ label: "Local device", options: ["Local only"] },
+			{ label: "Team: ExampleCo Team", options: ["ExampleCo Work (default)"] },
+		]);
+		expect(document.body.textContent).toContain("ExampleCo Work (default) · Team: ExampleCo Team");
+	});
+
+	it("disambiguates duplicate Space names in assignment options", async () => {
+		vi.mocked(api.loadSharingDomainSettings).mockResolvedValue({
+			local_default_scope_id: "local-default",
+			mappings: [],
+			projects: [],
+			scopes: [
+				{
+					authority_type: "local",
+					kind: "system",
+					label: "Local only",
+					scope_id: "local-default",
+					status: "active",
+				},
+				{
+					authority_type: "coordinator",
+					group_id: "exampleco",
+					kind: "team",
+					label: "Client Work",
+					scope_id: "client-work-a",
+					status: "active",
+				},
+				{
+					authority_type: "coordinator",
+					group_id: "exampleco",
+					kind: "team",
+					label: "Client Work",
+					scope_id: "client-work-b",
+					status: "active",
+				},
+			],
+		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 50,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		});
+
+		await loadProjectsData();
+
+		const teamGroupOptions = Array.from(
+			document
+				.querySelector('optgroup[label="Team: ExampleCo Team"]')
+				?.querySelectorAll("option") ?? [],
+		).map((option) => option.textContent);
+		expect(teamGroupOptions).toEqual([
+			"Client Work · Space ID client-work-a",
+			"Client Work · Space ID client-work-b",
+		]);
+	});
+
+	it("ignores stale suggested Spaces that are not assignable", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 50,
+			offset: 0,
+			projects: [project({ suggested_scope_id: "legacy-shared-review" })],
+			total: 1,
+		});
+
+		await loadProjectsData();
+
+		const select = document.querySelector(".project-domain-select") as HTMLSelectElement | null;
+		const save = Array.from(document.querySelectorAll("button")).find(
+			(button) => button.textContent === "Save Space",
+		) as HTMLButtonElement | undefined;
+		expect(select?.value).toBe("local-default");
+		expect(save?.disabled).toBe(false);
+		save?.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(api.saveSharingDomainProjectMapping).toHaveBeenCalledWith(
+			expect.objectContaining({ scope_id: "local-default" }),
+		);
 	});
 
 	it("keeps expanded project details open after refresh", async () => {
@@ -412,14 +517,14 @@ describe("Projects tab", () => {
 					{
 						code: "unknown_project_local_only",
 						message:
-							"No Sharing domain mapping matches this project, so future memories stay Local only until you assign one.",
+							"No Space assignment matches this project, so future memories stay Local only until you assign one.",
 						requires_confirmation: true,
 						severity: "warning",
 					},
 					{
 						code: "basename_collision_review",
 						message:
-							"Another workspace is also named api. Review the git remote or path before assigning a non-local Sharing domain.",
+							"Another workspace is also named api. Review the git remote or path before assigning a non-local Space.",
 						requires_confirmation: true,
 						severity: "warning",
 					},
@@ -435,21 +540,19 @@ describe("Projects tab", () => {
 		select.value = "exampleco-work";
 		select.dispatchEvent(new Event("change"));
 		const save = Array.from(document.querySelectorAll("button")).find(
-			(button) => button.textContent === "Save domain",
+			(button) => button.textContent === "Save Space",
 		) as HTMLButtonElement | undefined;
 		save?.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		await loadProjectsData();
 
-		expect(document.body.textContent).toContain(
-			"Confirmation required before saving this Sharing domain.",
-		);
+		expect(document.body.textContent).toContain("Confirmation required before saving this Space.");
 		expect(document.body.textContent).toContain(
 			"Codemem can save this change after you acknowledge the checks below.",
 		);
 		expect(document.body.textContent).toContain("Current behavior:");
 		expect(document.body.textContent).toContain("Name collision:");
-		expect(document.body.textContent).toContain("I understand, save domain");
+		expect(document.body.textContent).toContain("I understand, save Space");
 		expect(document.body.textContent).not.toContain("Confirm and save");
 	});
 
@@ -468,7 +571,7 @@ describe("Projects tab", () => {
 					{
 						code: "basename_collision_review",
 						message:
-							"Another workspace is also named api. Review the git remote or path before assigning a non-local Sharing domain.",
+							"Another workspace is also named api. Review the git remote or path before assigning a non-local Space.",
 						requires_confirmation: true,
 						severity: "warning",
 					},
@@ -484,14 +587,14 @@ describe("Projects tab", () => {
 		select.value = "exampleco-work";
 		select.dispatchEvent(new Event("change"));
 		const save = Array.from(document.querySelectorAll("button")).find(
-			(button) => button.textContent === "Save domain",
+			(button) => button.textContent === "Save Space",
 		) as HTMLButtonElement | undefined;
 		save?.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		await loadProjectsData();
-		expect(document.body.textContent).toContain("I understand, save domain");
+		expect(document.body.textContent).toContain("I understand, save Space");
 		const staleConfirm = Array.from(document.querySelectorAll("button")).find(
-			(button) => button.textContent === "I understand, save domain",
+			(button) => button.textContent === "I understand, save Space",
 		) as HTMLButtonElement | undefined;
 		expect(api.saveSharingDomainProjectMapping).toHaveBeenCalledTimes(1);
 
@@ -503,9 +606,9 @@ describe("Projects tab", () => {
 		expect(api.saveSharingDomainProjectMapping).toHaveBeenCalledTimes(1);
 		await loadProjectsData();
 
-		expect(document.body.textContent).not.toContain("I understand, save domain");
+		expect(document.body.textContent).not.toContain("I understand, save Space");
 		expect(document.body.textContent).not.toContain(
-			"Confirmation required before saving this Sharing domain.",
+			"Confirmation required before saving this Space.",
 		);
 		expect(refresh).toHaveBeenCalled();
 	});
