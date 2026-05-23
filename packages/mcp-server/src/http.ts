@@ -15,9 +15,12 @@ import { MemoryStore, resolveDbPath } from "@codemem/core";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
+	authorizeMcpOAuthClient,
+	createInMemoryOAuthAuthorizationCodeStore,
 	createInMemoryOAuthClientsStore,
 	createMcpOAuthMetadata,
 	createMcpProtectedResourceMetadata,
+	exchangeMcpOAuthAuthorizationCode,
 	MCP_OAUTH_PUBLIC_URL_ENV,
 	normalizeMcpPublicUrl,
 	registerMcpOAuthClient,
@@ -162,47 +165,36 @@ export async function startCodememMcpHttpServer(
 	);
 	const port = parseMcpHttpPort(options.port ?? process.env.CODEMEM_MCP_HTTP_PORT);
 	const configuredPublicUrl = options.publicUrl ?? process.env[MCP_OAUTH_PUBLIC_URL_ENV];
-	if (configuredPublicUrl) normalizeMcpPublicUrl(configuredPublicUrl);
+	const configuredPublicMcpUrl = configuredPublicUrl
+		? normalizeMcpPublicUrl(configuredPublicUrl)
+		: undefined;
 	const store = new MemoryStore(options.dbPath ?? resolveDbPath());
 	const clientsStore = createInMemoryOAuthClientsStore();
+	const codeStore = createInMemoryOAuthAuthorizationCodeStore();
 	const activeRequests = new Set<ActiveRequest>();
 	let closePromise: Promise<void> | null = null;
 
 	const server = createServer(async (req, res) => {
 		try {
 			const pathname = getRequestPathname(req);
-			const publicMcpUrl = configuredPublicUrl ?? getServerUrl(server, host);
+			const publicMcpUrl = configuredPublicMcpUrl?.href ?? getServerUrl(server, host);
+			const boundPort = getBoundPort(server);
 
 			if (pathname === "/.well-known/oauth-authorization-server") {
-				if (!allowMethod(req, res, ["GET", "OPTIONS"])) return;
-				if (req.method === "OPTIONS") {
-					writeCorsNoContent(res);
-					return;
-				}
+				if (!prepareHttpRoute(req, res, ["GET", "OPTIONS"])) return;
 				writeJson(res, 200, createMcpOAuthMetadata({ mcpUrl: publicMcpUrl, clientsStore }));
 				return;
 			}
 
 			if (pathname === "/.well-known/oauth-protected-resource/mcp") {
-				if (!allowMethod(req, res, ["GET", "OPTIONS"])) return;
-				if (req.method === "OPTIONS") {
-					writeCorsNoContent(res);
-					return;
-				}
+				if (!prepareHttpRoute(req, res, ["GET", "OPTIONS"])) return;
 				writeJson(res, 200, createMcpProtectedResourceMetadata(publicMcpUrl));
 				return;
 			}
 
 			if (pathname === "/register") {
-				if (!allowMethod(req, res, ["POST", "OPTIONS"])) return;
-				if (req.method === "OPTIONS") {
-					writeCorsNoContent(res);
+				if (!prepareOAuthRoute(req, res, ["POST", "OPTIONS"], boundPort, configuredPublicMcpUrl))
 					return;
-				}
-				if (!configuredPublicUrl && !isAllowedMcpHttpRequest(req, getBoundPort(server))) {
-					writeText(res, 403, "Forbidden");
-					return;
-				}
 				const requestBody = await readJsonBody(req).catch(() => ({
 					__codememInvalidJson: "Invalid JSON request body",
 				}));
@@ -218,11 +210,27 @@ export async function startCodememMcpHttpServer(
 				return;
 			}
 
-			if (pathname === "/authorize" || pathname === "/token") {
-				writeJson(res, 501, {
-					error: "temporarily_unavailable",
-					error_description: "OAuth authorize/token flow is not implemented in this slice",
-				});
+			if (pathname === "/authorize") {
+				if (!prepareOAuthRoute(req, res, ["GET", "OPTIONS"], boundPort, configuredPublicMcpUrl))
+					return;
+				const url = new URL(req.url ?? "/authorize", "http://codemem.local");
+				const result = authorizeMcpOAuthClient(url.searchParams, clientsStore, codeStore);
+				if (result.status === 302) {
+					res.statusCode = result.status;
+					res.setHeader("location", result.location);
+					res.end();
+					return;
+				}
+				writeJson(res, result.status, result.body);
+				return;
+			}
+
+			if (pathname === "/token") {
+				if (!prepareOAuthRoute(req, res, ["POST", "OPTIONS"], boundPort, configuredPublicMcpUrl))
+					return;
+				const params = await readFormBody(req).catch(() => new URLSearchParams());
+				const result = exchangeMcpOAuthAuthorizationCode(params, clientsStore, codeStore);
+				writeJson(res, result.status, result.body);
 				return;
 			}
 
@@ -298,6 +306,28 @@ function allowMethod(req: IncomingMessage, res: ServerResponse, methods: string[
 	return false;
 }
 
+function prepareHttpRoute(req: IncomingMessage, res: ServerResponse, methods: string[]): boolean {
+	if (!allowMethod(req, res, methods)) return false;
+	if (req.method === "OPTIONS") {
+		writeCorsNoContent(res);
+		return false;
+	}
+	return true;
+}
+
+function prepareOAuthRoute(
+	req: IncomingMessage,
+	res: ServerResponse,
+	methods: string[],
+	expectedPort: number,
+	publicMcpUrl: URL | undefined,
+): boolean {
+	if (!prepareHttpRoute(req, res, methods)) return false;
+	if (isAllowedOAuthHttpRequest(req, expectedPort, publicMcpUrl)) return true;
+	writeText(res, 403, "Forbidden");
+	return false;
+}
+
 function writeJson(res: ServerResponse, statusCode: number, body: unknown): void {
 	res.statusCode = statusCode;
 	res.setHeader("access-control-allow-origin", "*");
@@ -315,13 +345,26 @@ function writeCorsNoContent(res: ServerResponse): void {
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+	const body = await readRequestBody(req);
+	if (!body) return {};
+	return JSON.parse(body) as unknown;
+}
+
+async function readFormBody(req: IncomingMessage): Promise<URLSearchParams> {
+	const contentType = req.headers["content-type"] ?? "";
+	if (!contentType.toString().toLowerCase().startsWith("application/x-www-form-urlencoded")) {
+		throw new Error("OAuth token request body must be form-encoded");
+	}
+	return new URLSearchParams(await readRequestBody(req));
+}
+
+async function readRequestBody(req: IncomingMessage): Promise<string> {
 	let body = "";
 	for await (const chunk of req) {
 		body += chunk;
-		if (body.length > 64 * 1024) throw new Error("OAuth registration request body is too large");
+		if (body.length > 64 * 1024) throw new Error("OAuth request body is too large");
 	}
-	if (!body) return {};
-	return JSON.parse(body) as unknown;
+	return body;
 }
 
 function isInvalidJsonBody(body: unknown): body is { __codememInvalidJson: string } {
@@ -338,6 +381,25 @@ function isAllowedMcpHttpRequest(req: IncomingMessage, expectedPort: number): bo
 		isAllowedMcpHttpRequestHost(req.headers.host, expectedPort) &&
 		isAllowedMcpHttpRequestOrigin(req.headers.origin, expectedPort)
 	);
+}
+
+function isAllowedOAuthHttpRequest(
+	req: IncomingMessage,
+	expectedPort: number,
+	publicMcpUrl: URL | undefined,
+): boolean {
+	if (!publicMcpUrl) return isAllowedMcpHttpRequest(req, expectedPort);
+	return isAllowedPublicOrigin(req.headers.origin, publicMcpUrl);
+}
+
+function isAllowedPublicOrigin(header: string | undefined, publicMcpUrl: URL): boolean {
+	if (!header) return true;
+	try {
+		const origin = new URL(header);
+		return origin.origin === publicMcpUrl.origin;
+	} catch {
+		return false;
+	}
 }
 
 function writeText(res: ServerResponse, statusCode: number, body: string): void {

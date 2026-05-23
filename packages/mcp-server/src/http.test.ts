@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
@@ -166,13 +167,55 @@ describe("MCP HTTP transport", () => {
 		const server = await startCodememMcpHttpServer({ dbPath: tempDbPath(), port: 0 });
 		servers.push(server);
 
-		const response = await fetch(server.url.replace("/mcp", "/register"), {
+		const register = await fetch(server.url.replace("/mcp", "/register"), {
 			method: "POST",
 			headers: { "content-type": "application/json", origin: "http://evil.test" },
 			body: JSON.stringify({ redirect_uris: ["https://claude.ai/api/mcp/auth_callback"] }),
 		});
+		const authorize = await fetch(server.url.replace("/mcp", "/authorize"), {
+			headers: { origin: "http://evil.test" },
+		});
+		const token = await fetch(server.url.replace("/mcp", "/token"), {
+			method: "POST",
+			headers: {
+				"content-type": "application/x-www-form-urlencoded",
+				origin: "http://evil.test",
+			},
+		});
 
-		expect(response.status).toBe(403);
+		expect(register.status).toBe(403);
+		expect(authorize.status).toBe(403);
+		expect(token.status).toBe(403);
+	});
+
+	it("rejects hostile browser origins on OAuth endpoints when a public URL is configured", async () => {
+		const server = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test/mcp",
+		});
+		servers.push(server);
+		const baseUrl = server.url.replace("/mcp", "");
+
+		const register = await fetch(`${baseUrl}/register`, {
+			method: "POST",
+			headers: { "content-type": "application/json", origin: "http://evil.test" },
+			body: JSON.stringify({ redirect_uris: ["https://claude.ai/api/mcp/auth_callback"] }),
+		});
+		const authorize = await fetch(`${baseUrl}/authorize`, {
+			headers: { origin: "http://evil.test" },
+		});
+		const token = await fetch(`${baseUrl}/token`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/x-www-form-urlencoded",
+				origin: "http://evil.test",
+			},
+		});
+
+		expect(register.status).toBe(403);
+		expect(authorize.status).toBe(403);
+		expect(token.status).toBe(403);
 	});
 
 	it("rejects unsupported OAuth redirect URIs", async () => {
@@ -189,17 +232,52 @@ describe("MCP HTTP transport", () => {
 		expect(await response.json()).toMatchObject({ error: "invalid_client_metadata" });
 	});
 
-	it("returns temporary OAuth flow errors for unimplemented authorize/token endpoints", async () => {
-		const server = await startCodememMcpHttpServer({ dbPath: tempDbPath(), port: 0 });
+	it("runs OAuth authorize and token exchange with PKCE", async () => {
+		const server = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test/mcp",
+		});
 		servers.push(server);
+		const baseUrl = server.url.replace("/mcp", "");
+		const verifier = "d".repeat(43);
 
-		const authorize = await fetch(server.url.replace("/mcp", "/authorize"));
-		const token = await fetch(server.url.replace("/mcp", "/token"), { method: "POST" });
+		const registration = await fetch(`${baseUrl}/register`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				redirect_uris: ["https://claude.ai/api/mcp/auth_callback"],
+				token_endpoint_auth_method: "none",
+			}),
+		});
+		const client = await registration.json();
+		const authorizeUrl = new URL(`${baseUrl}/authorize`);
+		authorizeUrl.searchParams.set("client_id", client.client_id);
+		authorizeUrl.searchParams.set("redirect_uri", "https://claude.ai/api/mcp/auth_callback");
+		authorizeUrl.searchParams.set("response_type", "code");
+		authorizeUrl.searchParams.set("code_challenge_method", "S256");
+		authorizeUrl.searchParams.set("code_challenge", pkceS256(verifier));
+		authorizeUrl.searchParams.set("state", "state-123");
 
-		expect(authorize.status).toBe(501);
-		expect(await authorize.json()).toMatchObject({ error: "temporarily_unavailable" });
-		expect(token.status).toBe(501);
-		expect(await token.json()).toMatchObject({ error: "temporarily_unavailable" });
+		const authorize = await fetch(authorizeUrl, { redirect: "manual" });
+		const redirect = new URL(authorize.headers.get("location") ?? "");
+		const token = await fetch(`${baseUrl}/token`, {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				grant_type: "authorization_code",
+				client_id: client.client_id,
+				redirect_uri: "https://claude.ai/api/mcp/auth_callback",
+				code: redirect.searchParams.get("code") ?? "",
+				code_verifier: verifier,
+			}),
+		});
+
+		expect(authorize.status).toBe(302);
+		expect(redirect.origin + redirect.pathname).toBe("https://claude.ai/api/mcp/auth_callback");
+		expect(redirect.searchParams.get("state")).toBe("state-123");
+		expect(token.status).toBe(200);
+		expect(await token.json()).toMatchObject({ token_type: "Bearer", expires_in: 3600 });
 	});
 
 	it("handles repeated MCP initialize requests over POST", async () => {
@@ -311,4 +389,8 @@ async function postWithHost(
 
 function tempDbPath(): string {
 	return join(mkdtempSync(join(tmpdir(), "codemem-mcp-http-")), "mem.sqlite");
+}
+
+function pkceS256(verifier: string): string {
+	return createHash("sha256").update(verifier).digest("base64url");
 }

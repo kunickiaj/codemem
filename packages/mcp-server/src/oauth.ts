@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { OAuthServerProvider } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import { createOAuthMetadata } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -6,9 +6,12 @@ import {
 	type OAuthClientInformationFull,
 	type OAuthClientMetadata,
 	OAuthClientMetadataSchema,
+	type OAuthErrorResponse,
 	type OAuthMetadata,
 	type OAuthProtectedResourceMetadata,
 	OAuthProtectedResourceMetadataSchema,
+	type OAuthTokens,
+	OAuthTokensSchema,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 
 export const MCP_OAUTH_PUBLIC_URL_ENV = "CODEMEM_MCP_HTTP_PUBLIC_URL";
@@ -18,6 +21,11 @@ const CLAUDE_HOSTED_CALLBACK = "https://claude.ai/api/mcp/auth_callback";
 const LOCAL_CALLBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 const SUPPORTED_GRANT_TYPES = new Set(["authorization_code"]);
 const SUPPORTED_RESPONSE_TYPES = new Set(["code"]);
+const AUTHORIZATION_CODE_TTL_MS = 5 * 60 * 1000;
+const ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
+const MAX_AUTHORIZATION_CODES = 100;
+const PKCE_S256_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
+const PKCE_VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
 
 export interface McpOAuthMetadataOptions {
 	mcpUrl: string;
@@ -32,6 +40,34 @@ export interface RegisteredMcpOAuthClient {
 export interface McpOAuthRegistrationError {
 	status: 400;
 	body: { error: "invalid_client_metadata"; error_description: string };
+}
+
+export interface AuthorizationCodeRecord {
+	clientId: string;
+	redirectUri: string;
+	codeChallenge: string;
+	expiresAt: number;
+	used: boolean;
+}
+
+export interface OAuthAuthorizationCodeStore {
+	issueCode(record: Omit<AuthorizationCodeRecord, "used">, now?: number): string | undefined;
+	consumeCode(code: string): AuthorizationCodeRecord | undefined;
+}
+
+export interface McpOAuthRedirectResult {
+	status: 302;
+	location: string;
+}
+
+export interface McpOAuthErrorResult {
+	status: 400;
+	body: OAuthErrorResponse;
+}
+
+export interface McpOAuthTokenResult {
+	status: 200;
+	body: OAuthTokens;
 }
 
 export class InMemoryOAuthClientsStore implements OAuthRegisteredClientsStore {
@@ -58,8 +94,37 @@ export class InMemoryOAuthClientsStore implements OAuthRegisteredClientsStore {
 	}
 }
 
+export class InMemoryOAuthAuthorizationCodeStore implements OAuthAuthorizationCodeStore {
+	readonly #codes = new Map<string, AuthorizationCodeRecord>();
+
+	issueCode(record: Omit<AuthorizationCodeRecord, "used">, now = Date.now()): string | undefined {
+		this.#deleteExpiredCodes(now);
+		if (this.#codes.size >= MAX_AUTHORIZATION_CODES) return undefined;
+		const code = randomUUID();
+		this.#codes.set(code, { ...record, used: false });
+		return code;
+	}
+
+	consumeCode(code: string): AuthorizationCodeRecord | undefined {
+		const record = this.#codes.get(code);
+		if (!record || record.used) return undefined;
+		record.used = true;
+		return record;
+	}
+
+	#deleteExpiredCodes(now: number): void {
+		for (const [code, record] of this.#codes) {
+			if (record.expiresAt <= now) this.#codes.delete(code);
+		}
+	}
+}
+
 export function createInMemoryOAuthClientsStore(): OAuthRegisteredClientsStore {
 	return new InMemoryOAuthClientsStore();
+}
+
+export function createInMemoryOAuthAuthorizationCodeStore(): OAuthAuthorizationCodeStore {
+	return new InMemoryOAuthAuthorizationCodeStore();
 }
 
 export function createMcpOAuthMetadata(options: McpOAuthMetadataOptions): OAuthMetadata {
@@ -144,6 +209,88 @@ export function registerMcpOAuthClient(
 	return { status: 201, body: registered };
 }
 
+export function authorizeMcpOAuthClient(
+	params: URLSearchParams,
+	clientsStore: OAuthRegisteredClientsStore,
+	codeStore: OAuthAuthorizationCodeStore,
+	now = Date.now(),
+): McpOAuthRedirectResult | McpOAuthErrorResult {
+	const clientId = params.get("client_id") ?? "";
+	const redirectUri = params.get("redirect_uri") ?? "";
+	const responseType = params.get("response_type") ?? "";
+	const codeChallenge = params.get("code_challenge") ?? "";
+	const codeChallengeMethod = params.get("code_challenge_method") ?? "";
+	const state = params.get("state");
+
+	if (responseType !== "code") return invalidOAuthRequest("unsupported_response_type");
+	if (codeChallengeMethod !== "S256") {
+		return invalidOAuthRequest("invalid_request", "PKCE code_challenge_method=S256 is required");
+	}
+	if (!PKCE_S256_CHALLENGE.test(codeChallenge)) {
+		return invalidOAuthRequest("invalid_request", "Valid PKCE S256 code_challenge is required");
+	}
+
+	const client = getRegisteredClient(clientsStore, clientId);
+	if (!client) return invalidOAuthRequest("invalid_client", "Unknown OAuth client_id");
+	if (!client.redirect_uris.includes(redirectUri)) {
+		return invalidOAuthRequest("invalid_request", "redirect_uri is not registered for this client");
+	}
+
+	const code = codeStore.issueCode(
+		{
+			clientId,
+			redirectUri,
+			codeChallenge,
+			expiresAt: now + AUTHORIZATION_CODE_TTL_MS,
+		},
+		now,
+	);
+	if (!code)
+		return invalidOAuthRequest("temporarily_unavailable", "Too many active authorization codes");
+	const redirect = new URL(redirectUri);
+	redirect.searchParams.set("code", code);
+	if (state !== null) redirect.searchParams.set("state", state);
+	return { status: 302, location: redirect.href };
+}
+
+export function exchangeMcpOAuthAuthorizationCode(
+	params: URLSearchParams,
+	clientsStore: OAuthRegisteredClientsStore,
+	codeStore: OAuthAuthorizationCodeStore,
+	now = Date.now(),
+): McpOAuthTokenResult | McpOAuthErrorResult {
+	if ((params.get("grant_type") ?? "") !== "authorization_code") {
+		return invalidOAuthRequest("unsupported_grant_type", "Only authorization_code is supported");
+	}
+
+	const clientId = params.get("client_id") ?? "";
+	const code = params.get("code") ?? "";
+	const redirectUri = params.get("redirect_uri") ?? "";
+	const codeVerifier = params.get("code_verifier") ?? "";
+	const client = getRegisteredClient(clientsStore, clientId);
+	if (!client) return invalidOAuthRequest("invalid_client", "Unknown OAuth client_id");
+	if (!PKCE_VERIFIER.test(codeVerifier)) {
+		return invalidOAuthRequest("invalid_grant", "Invalid PKCE code_verifier");
+	}
+
+	const record = codeStore.consumeCode(code);
+	if (!record) return invalidOAuthRequest("invalid_grant", "Invalid or already used code");
+	if (record.expiresAt <= now) return invalidOAuthRequest("invalid_grant", "Expired code");
+	if (record.clientId !== clientId || record.redirectUri !== redirectUri) {
+		return invalidOAuthRequest("invalid_grant", "Code does not match client or redirect_uri");
+	}
+	if (pkceS256(codeVerifier) !== record.codeChallenge) {
+		return invalidOAuthRequest("invalid_grant", "PKCE verification failed");
+	}
+
+	const tokens = OAuthTokensSchema.parse({
+		access_token: randomUUID(),
+		token_type: "Bearer",
+		expires_in: ACCESS_TOKEN_TTL_SECONDS,
+	});
+	return { status: 200, body: tokens };
+}
+
 export function normalizeMcpPublicUrl(value: string): URL {
 	let url: URL;
 	try {
@@ -212,6 +359,30 @@ function invalidClientMetadata(description: string): McpOAuthRegistrationError {
 		status: 400,
 		body: { error: "invalid_client_metadata", error_description: description },
 	};
+}
+
+function invalidOAuthRequest(error: string, description?: string): McpOAuthErrorResult {
+	return {
+		status: 400,
+		body: description ? { error, error_description: description } : { error },
+	};
+}
+
+function getRegisteredClient(
+	clientsStore: OAuthRegisteredClientsStore,
+	clientId: string,
+): OAuthClientInformationFull | undefined {
+	const client = clientsStore.getClient(clientId);
+	if (client instanceof Promise) {
+		throw new Error(
+			"Asynchronous OAuth client stores are not supported by this HTTP bootstrap yet",
+		);
+	}
+	return client;
+}
+
+function pkceS256(codeVerifier: string): string {
+	return createHash("sha256").update(codeVerifier).digest("base64url");
 }
 
 function createMetadataOnlyProvider(
