@@ -123,7 +123,7 @@ describe("MCP OAuth metadata and dynamic client registration", () => {
 				},
 				clientsStore,
 			),
-		).toMatchObject({ status: 400, body: { error: "invalid_client_metadata" } });
+		).toMatchObject({ status: 201 });
 	});
 
 	it("issues authorization codes and exchanges them with PKCE S256", () => {

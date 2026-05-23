@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
+import { InvalidClientMetadataError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { OAuthServerProvider } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import { createOAuthMetadata } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import {
@@ -19,7 +20,7 @@ export const MCP_OAUTH_RESOURCE_NAME = "codemem MCP";
 
 const CLAUDE_HOSTED_CALLBACK = "https://claude.ai/api/mcp/auth_callback";
 const LOCAL_CALLBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
-const SUPPORTED_GRANT_TYPES = new Set(["authorization_code"]);
+const SUPPORTED_GRANT_TYPES = new Set(["authorization_code", "refresh_token"]);
 const SUPPORTED_RESPONSE_TYPES = new Set(["code"]);
 const AUTHORIZATION_CODE_TTL_MS = 5 * 60 * 1000;
 const ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
@@ -118,12 +119,33 @@ export class InMemoryOAuthClientsStore implements OAuthRegisteredClientsStore {
 	registerClient(
 		client: Omit<OAuthClientInformationFull, "client_id" | "client_id_issued_at">,
 	): OAuthClientInformationFull {
+		const redirectError = validateRedirectUris(client.redirect_uris);
+		if (redirectError) throw new InvalidClientMetadataError(redirectError);
+		if (client.client_secret || client.token_endpoint_auth_method !== "none") {
+			throw new InvalidClientMetadataError(
+				"Only public clients with token_endpoint_auth_method=none are supported",
+			);
+		}
+		if (client.grant_types && !isSupportedList(client.grant_types, SUPPORTED_GRANT_TYPES)) {
+			throw new InvalidClientMetadataError(
+				"Only authorization_code and refresh_token grant_types are supported",
+			);
+		}
+		if (
+			client.response_types &&
+			!isSupportedList(client.response_types, SUPPORTED_RESPONSE_TYPES)
+		) {
+			throw new InvalidClientMetadataError("Only code response_type is supported");
+		}
 		if (this.#clients.size >= 100) {
 			const oldestClientId = this.#clients.keys().next().value;
 			if (oldestClientId) this.#clients.delete(oldestClientId);
 		}
 		const registered = {
 			...client,
+			token_endpoint_auth_method: "none" as const,
+			grant_types: client.grant_types ?? ["authorization_code"],
+			response_types: client.response_types ?? ["code"],
 			client_id: randomUUID(),
 			client_id_issued_at: Math.floor(Date.now() / 1000),
 		};
@@ -294,7 +316,9 @@ export function registerMcpOAuthClient(
 		clientMetadata.grant_types &&
 		!isSupportedList(clientMetadata.grant_types, SUPPORTED_GRANT_TYPES)
 	) {
-		return invalidClientMetadata("Only authorization_code grant_type is supported in this slice");
+		return invalidClientMetadata(
+			"Only authorization_code and refresh_token grant_types are supported",
+		);
 	}
 
 	if (

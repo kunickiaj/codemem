@@ -152,13 +152,12 @@ describe("MCP HTTP transport", () => {
 			issuer: "https://codemem.example.test/",
 			registration_endpoint: "https://codemem.example.test/register",
 			code_challenge_methods_supported: ["S256"],
-			token_endpoint_auth_methods_supported: ["none"],
+			token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
 		});
 		expect(protectedResourceMetadata.status).toBe(200);
-		expect(await protectedResourceMetadata.json()).toEqual({
+		expect(await protectedResourceMetadata.json()).toMatchObject({
 			resource: "https://codemem.example.test/mcp",
 			authorization_servers: ["https://codemem.example.test/"],
-			bearer_methods_supported: ["header"],
 			resource_name: "codemem MCP",
 		});
 	});
@@ -264,6 +263,23 @@ describe("MCP HTTP transport", () => {
 		expect(token.status).toBe(403);
 	});
 
+	it("rejects public OAuth requests with non-public Host headers", async () => {
+		const server = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test/mcp",
+		});
+		servers.push(server);
+
+		const response = await postWithHost(server.url.replace("/mcp", "/register"), "evil.test");
+		const trailingSlash = await postWithHost(server.url.replace("/mcp", "/register/"), "evil.test");
+		const mcpTrailingSlash = await postWithHost(`${server.url}/`, "evil.test");
+
+		expect(response.statusCode).toBe(403);
+		expect(trailingSlash.statusCode).toBe(403);
+		expect(mcpTrailingSlash.statusCode).toBe(403);
+	});
+
 	it("rejects unsupported OAuth redirect URIs", async () => {
 		const server = await startCodememMcpHttpServer({ dbPath: tempDbPath(), port: 0 });
 		servers.push(server);
@@ -279,10 +295,12 @@ describe("MCP HTTP transport", () => {
 	});
 
 	it("fails closed at authorize when OIDC is not configured", async () => {
+		const { emit, events } = captureAuditEmitter();
 		const server = await startCodememMcpHttpServer({
 			dbPath: tempDbPath(),
 			port: 0,
 			publicUrl: "https://codemem.example.test/mcp",
+			auditEmitter: emit,
 		});
 		servers.push(server);
 		const baseUrl = server.url.replace("/mcp", "");
@@ -304,10 +322,17 @@ describe("MCP HTTP transport", () => {
 		authorizeUrl.searchParams.set("code_challenge", pkceS256("d".repeat(43)));
 		authorizeUrl.searchParams.set("state", "state-123");
 
-		const authorize = await fetch(authorizeUrl);
+		const authorize = await fetch(authorizeUrl, { redirect: "manual" });
 
-		expect(authorize.status).toBe(400);
-		expect(await authorize.json()).toMatchObject({ error: "temporarily_unavailable" });
+		expect(authorize.status).toBe(302);
+		expect(authorize.headers.get("location")).toContain("error=temporarily_unavailable");
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				kind: "authorize",
+				outcome: "denied",
+				reason: "temporarily_unavailable",
+			}),
+		);
 	});
 
 	it("requires valid bearer tokens for public MCP requests", async () => {
@@ -390,10 +415,14 @@ describe("MCP HTTP transport", () => {
 			}),
 		});
 		expect(register.status).toBe(201);
-		await fetch(`${baseUrl}/oauth/revoke`, {
+		const registeredForRevocation = await register.json();
+		await fetch(`${baseUrl}/revoke`, {
 			method: "POST",
 			headers: { "content-type": "application/x-www-form-urlencoded" },
-			body: new URLSearchParams({ token: "ignored-since-unknown" }),
+			body: new URLSearchParams({
+				client_id: registeredForRevocation.client_id,
+				token: "ignored-since-unknown",
+			}),
 		});
 		const missingBearer = await fetch(server.url, {
 			method: "POST",
@@ -429,17 +458,29 @@ describe("MCP HTTP transport", () => {
 
 	it("rejects expired and revoked bearer tokens", async () => {
 		const tokenStore = createInMemoryOAuthAccessTokenStore();
+		const clientId = "client-revoked";
+		const revocable = tokenStore.issueToken(clientId);
 		const expired = tokenStore.issueToken("client-expired", Date.now() - 60 * 60 * 1000 - 1);
-		const revocable = tokenStore.issueToken("client-revoked");
 		if (!expired || !revocable) throw new Error("expected access tokens");
+		const { emit, events } = captureAuditEmitter();
 		const server = await startCodememMcpHttpServer({
 			dbPath: tempDbPath(),
 			port: 0,
 			publicUrl: "https://codemem.example.test/mcp",
 			oauthAccessTokenStore: tokenStore,
+			auditEmitter: emit,
 		});
 		servers.push(server);
 		const baseUrl = server.url.replace("/mcp", "");
+		const registration = await fetch(`${baseUrl}/register`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				redirect_uris: ["https://claude.ai/api/mcp/auth_callback"],
+				token_endpoint_auth_method: "none",
+			}),
+		});
+		const client = await registration.json();
 
 		const expiredResponse = await fetch(server.url, {
 			method: "POST",
@@ -450,10 +491,10 @@ describe("MCP HTTP transport", () => {
 			},
 			body: initializeBody(1),
 		});
-		const revoke = await fetch(`${baseUrl}/oauth/revoke`, {
+		const revoke = await fetch(`${baseUrl}/revoke`, {
 			method: "POST",
 			headers: { "content-type": "application/x-www-form-urlencoded" },
-			body: new URLSearchParams({ token: revocable.token }),
+			body: new URLSearchParams({ client_id: client.client_id, token: revocable.token }),
 		});
 		const revokedResponse = await fetch(server.url, {
 			method: "POST",
@@ -469,6 +510,12 @@ describe("MCP HTTP transport", () => {
 		expect(revoke.status).toBe(200);
 		expect(await revoke.json()).toEqual({});
 		expect(revokedResponse.status).toBe(401);
+		expect(events).toContainEqual(
+			expect.objectContaining({ kind: "bearer", outcome: "denied", reason: "expired_token" }),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({ kind: "bearer", outcome: "denied", reason: "revoked_token" }),
+		);
 	});
 
 	it("handles repeated MCP initialize requests over POST", async () => {
