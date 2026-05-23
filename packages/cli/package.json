@@ -31,7 +31,7 @@
 		"omelette": "^0.4.17"
 	},
 	"devDependencies": {
-		"@types/node": "^25.6.0",
+		"@types/node": "^24.0.0",
 		"@types/omelette": "^0.4.5",
 		"tsx": "catalog:",
 		"typescript": "catalog:",
