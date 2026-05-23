@@ -9132,6 +9132,142 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("does not auto-grant a stale non-default Space preference on join approval", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/admin/join-requests/approve")) {
+					return new Response(
+						JSON.stringify({
+							request: {
+								request_id: "req-1",
+								status: "approved",
+								group_id: "team-a",
+								device_id: "dev-b",
+							},
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			try {
+				process.env.CODEMEM_CONFIG = configPath;
+				writeFileSync(
+					configPath,
+					JSON.stringify({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_group: "team-a",
+						sync_coordinator_admin_secret: "secret",
+					}),
+				);
+				globalThis.fetch = fetchMock as typeof fetch;
+				const { app, cleanup } = createTestApp();
+				try {
+					const saved = await app.request("/api/coordinator/admin/groups/team-a/preferences", {
+						method: "PUT",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							default_space_scope_id: "scope-private",
+							auto_grant_default_space_on_join: true,
+						}),
+					});
+					expect(saved.status).toBe(200);
+
+					const res = await app.request("/api/coordinator/admin/join-requests/req-1/approve", {
+						method: "POST",
+					});
+
+					expect(res.status).toBe(200);
+					expect(await res.json()).toMatchObject({
+						default_space_membership: null,
+						setup_warning: null,
+					});
+					expect(fetchMock).toHaveBeenCalledTimes(1);
+				} finally {
+					cleanup();
+				}
+			} finally {
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				globalThis.fetch = prevFetch;
+			}
+		});
+
+		it("does not auto-grant when the canonical default Space is missing or wrong kind", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/admin/join-requests/approve")) {
+					return new Response(
+						JSON.stringify({
+							request: {
+								request_id: "req-1",
+								status: "approved",
+								group_id: "team-a",
+								device_id: "dev-b",
+							},
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.includes("/v1/admin/groups/team-a/scopes")) {
+					return new Response(
+						JSON.stringify({
+							items: [{ scope_id: "team:team-a:default", kind: "project", status: "active" }],
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			try {
+				process.env.CODEMEM_CONFIG = configPath;
+				writeFileSync(
+					configPath,
+					JSON.stringify({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_group: "team-a",
+						sync_coordinator_admin_secret: "secret",
+					}),
+				);
+				globalThis.fetch = fetchMock as typeof fetch;
+				const { app, cleanup } = createTestApp();
+				try {
+					const saved = await app.request("/api/coordinator/admin/groups/team-a/preferences", {
+						method: "PUT",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							default_space_scope_id: "team:team-a:default",
+							auto_grant_default_space_on_join: true,
+						}),
+					});
+					expect(saved.status).toBe(200);
+
+					const res = await app.request("/api/coordinator/admin/join-requests/req-1/approve", {
+						method: "POST",
+					});
+
+					expect(res.status).toBe(200);
+					expect(await res.json()).toMatchObject({
+						default_space_membership: null,
+						setup_warning: null,
+					});
+					expect(fetchMock).toHaveBeenCalledTimes(2);
+				} finally {
+					cleanup();
+				}
+			} finally {
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				globalThis.fetch = prevFetch;
+			}
+		});
+
 		it("lists coordinator devices through the admin route", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;

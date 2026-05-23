@@ -65,7 +65,7 @@ function renderShell() {
 		summary.readiness !== "ready"
 			? summary.detail
 			: targetArchived
-				? "The selected admin target group is archived. Restore it or switch groups before creating invites."
+				? "The selected Team is archived. Restore it or switch Teams before creating invites."
 				: "";
 	if (
 		(coordinatorAdminState.activeSection === "invites" && !invitesEnabled) ||
@@ -83,26 +83,26 @@ function renderShell() {
 			h(
 				"div",
 				{ class: "card coordinator-admin-header" },
-				h("div", { class: "section-header" }, h("h2", null, "Coordinator Admin")),
+				h("div", { class: "section-header" }, h("h2", null, "Teams")),
 				h(
 					"div",
 					{ class: "coordinator-admin-summary-grid" },
 					h(
 						"div",
 						{ class: "coordinator-admin-summary-card" },
-						h("span", { class: "section-meta" }, "Admin target"),
+						h("span", { class: "section-meta" }, "Team admin target"),
 						h("strong", null, targetGroup || "None selected"),
 					),
 					h(
 						"div",
 						{ class: "coordinator-admin-summary-card" },
-						h("span", { class: "section-meta" }, "Node discovery group"),
+						h("span", { class: "section-meta" }, "Node discovery Team"),
 						h("strong", null, activeGroup || "None"),
 					),
 					h(
 						"div",
 						{ class: "coordinator-admin-summary-card" },
-						h("span", { class: "section-meta" }, "Groups"),
+						h("span", { class: "section-meta" }, "Teams"),
 						h(
 							"strong",
 							null,
@@ -112,7 +112,7 @@ function renderShell() {
 					h(
 						"div",
 						{ class: "coordinator-admin-summary-card" },
-						h("span", { class: "section-meta" }, "Selected group activity"),
+						h("span", { class: "section-meta" }, "Selected Team activity"),
 						h("strong", null, `${joinRequestCount} join requests · ${deviceCount} devices`),
 					),
 				),
@@ -140,7 +140,7 @@ function renderShell() {
 							renderShell();
 						},
 						tabs: [
-							{ value: "groups", label: "Groups", disabled: !groupsEnabled },
+							{ value: "groups", label: "Teams", disabled: !groupsEnabled },
 							{ value: "invites", label: "Invites", disabled: !invitesEnabled },
 							{ value: "join-requests", label: "Join requests", disabled: !joinRequestsEnabled },
 							{ value: "devices", label: "Devices", disabled: !devicesEnabled },
@@ -176,10 +176,10 @@ function renderShell() {
 					"div",
 					{ class: "section-meta coordinator-admin-context-line" },
 					targetArchived
-						? `Selected group ${targetGroup || "—"} is archived. Switch or restore it to enable invite operations.`
+						? `Selected Team ${targetGroup || "—"} is archived. Switch or restore it to enable invite operations.`
 						: targetGroup
 							? `Actions below apply to ${targetGroup}.`
-							: "Select a group to start managing coordinator state.",
+							: "Select a Team to start managing people, Spaces, and access.",
 				),
 			),
 		),

@@ -11,7 +11,7 @@ import { showGlobalNotice } from "../../../lib/notice";
 import { state } from "../../../lib/state";
 import { openSyncConfirmDialog } from "../../sync/sync-dialogs";
 import { coordinatorAdminState } from "./state";
-import { currentAdminTargetGroup } from "./target-group";
+import { currentAdminTargetGroup, setAdminTargetGroup } from "./target-group";
 
 export interface CoordinatorAdminActionDeps {
 	renderShell: () => void;
@@ -47,17 +47,61 @@ export function createCoordinatorAdminActions(
 			showGlobalNotice("Enter a Team id before creating a Team.", "warning");
 			return;
 		}
+		const requestedDisplayName = coordinatorAdminState.createGroupDisplayName.trim();
 		coordinatorAdminState.groupActionPendingKind = "create";
 		renderShell();
 		try {
-			await api.createCoordinatorAdminGroup({
+			const result = (await api.createCoordinatorAdminGroup({
 				group_id: groupId,
-				display_name: coordinatorAdminState.createGroupDisplayName.trim() || null,
-			});
+				display_name: requestedDisplayName || null,
+			})) as {
+				default_space?:
+					| {
+							scope?: { scope_id?: string; label?: string | null } | null;
+							preferences?: { auto_grant_default_space_on_join?: boolean } | null;
+					  }
+					| { scope_id?: string; label?: string | null }
+					| null;
+				group?: { group_id?: string; display_name?: string | null } | null;
+				setup_warning?: { step?: string; error?: string } | null;
+			};
+			const defaultSpaceContainer = result.default_space as
+				| { scope?: { scope_id?: string; label?: string | null } | null }
+				| { scope_id?: string; label?: string | null }
+				| null
+				| undefined;
+			const defaultSpace = ((defaultSpaceContainer && "scope" in defaultSpaceContainer
+				? defaultSpaceContainer.scope
+				: defaultSpaceContainer) ?? {}) as { scope_id?: string; label?: string | null };
+			const defaultSpacePreferences = (
+				defaultSpaceContainer && "preferences" in defaultSpaceContainer
+					? defaultSpaceContainer.preferences
+					: null
+			) as { auto_grant_default_space_on_join?: boolean } | null;
+			const defaultSpaceScopeId = String(defaultSpace?.scope_id || "");
 			coordinatorAdminState.createGroupId = "";
 			coordinatorAdminState.createGroupDisplayName = "";
-			showGlobalNotice("Team created.", "success");
+			coordinatorAdminState.teamSetupGuide = {
+				groupId,
+				displayName: String(result.group?.display_name || requestedDisplayName || groupId),
+				defaultSpaceScopeId,
+				defaultSpaceLabel: String(defaultSpace?.label || ""),
+				autoGrantDefaultSpaceOnJoin:
+					typeof defaultSpacePreferences?.auto_grant_default_space_on_join === "boolean"
+						? defaultSpacePreferences.auto_grant_default_space_on_join
+						: null,
+				setupWarning: result.setup_warning || null,
+			};
 			await reloadData();
+			setAdminTargetGroup(groupId);
+			await reloadData();
+			if (result.setup_warning) {
+				showGlobalNotice("Team created, but default Space setup needs repair.", "warning");
+			} else if (defaultSpaceScopeId) {
+				showGlobalNotice("Team created with a default Space.", "success");
+			} else {
+				showGlobalNotice("Team created, but default Space status is unknown.", "warning");
+			}
 		} catch (error) {
 			showGlobalNotice(
 				error instanceof Error ? error.message : "Failed to create Team.",

@@ -21,6 +21,7 @@ import {
 	currentAdminTargetGroup,
 	setAdminTargetGroup,
 } from "../data/target-group";
+import { teamCardOverview } from "../data/team-card";
 import {
 	closeGroupScopeManagement,
 	openGroupScopeManagement,
@@ -285,6 +286,117 @@ function renderGroupPreferencesEditor(
 	);
 }
 
+function renderTeamSetupGuide(renderShell: () => void): ReturnType<typeof h> {
+	const guide = coordinatorAdminState.teamSetupGuide;
+	if (!guide) return null;
+	const title = guide.displayName || guide.groupId;
+	const warningStepById: Record<string, string> = {
+		default_space: "default Space setup",
+		default_space_grant: "default Space access grant",
+	};
+	const warningStep = warningStepById[guide.setupWarning?.step || ""] || "default Space setup";
+	return h(
+		"div",
+		{ class: "peer-meta coordinator-admin-empty-state" },
+		h("h4", { class: "coordinator-admin-drawer-title" }, `Set up ${title}`),
+		h(
+			"div",
+			{ class: "peer-submeta" },
+			"A Team organizes people and devices. The default Space is the memory boundary; Team membership only grants data access when default Space auto-grant is enabled.",
+		),
+		guide.setupWarning
+			? h(
+					"div",
+					{ class: "peer-meta coordinator-admin-inline-warning" },
+					`Team created, but ${warningStep} failed. Automatic repair is not available yet; use Spaces to inspect or create access manually before inviting teammates.`,
+				)
+			: h(
+					"div",
+					{ class: "peer-submeta" },
+					guide.defaultSpaceScopeId
+						? guide.defaultSpaceLabel
+							? `Default Space ready: ${guide.defaultSpaceLabel}. New devices can receive this Space when auto-grant is enabled.`
+							: "Default Space ready. New devices can receive this Space when auto-grant is enabled."
+						: "Default Space status is unknown. Check Spaces before inviting teammates.",
+				),
+		h(
+			"ol",
+			{ class: "peer-submeta" },
+			h("li", null, "Review Team defaults and the auto-grant default Space setting."),
+			h("li", null, "Invite teammates or other devices."),
+			h("li", null, "Assign projects to Spaces from the Projects tab."),
+		),
+		h(
+			"div",
+			{ class: "peer-actions" },
+			h(
+				"button",
+				{
+					class: "settings-button",
+					onClick: () => {
+						coordinatorAdminState.groupPreferencesOpen.add(guide.groupId);
+						void openGroupPreferences(guide.groupId, renderShell);
+					},
+					type: "button",
+				},
+				"Review Team defaults",
+			),
+			h(
+				"button",
+				{
+					class: "settings-button",
+					onClick: () => {
+						openGroupScopeManagement(guide.groupId, renderShell);
+					},
+					type: "button",
+				},
+				"Check Spaces",
+			),
+			h(
+				"button",
+				{
+					class: "settings-button",
+					onClick: () => {
+						coordinatorAdminState.inviteGroup = guide.groupId;
+						coordinatorAdminState.activeSection = "invites";
+						renderShell();
+					},
+					type: "button",
+				},
+				"Invite devices",
+			),
+			h(
+				"button",
+				{
+					class: "settings-button",
+					onClick: () => {
+						window.location.hash = "projects";
+					},
+					type: "button",
+				},
+				"Assign projects",
+			),
+			h(
+				"button",
+				{
+					class: "settings-button",
+					onClick: () => {
+						coordinatorAdminState.teamSetupGuide = null;
+						renderShell();
+					},
+					type: "button",
+				},
+				"Dismiss",
+			),
+		),
+	);
+}
+
+function archiveButtonLabel(archived: boolean, pending: boolean): string {
+	if (pending) return archived ? "Restoring…" : "Archiving…";
+	return archived ? "Unarchive" : "Archive";
+}
+
 export interface GroupsPanelDeps {
 	summary: CoordinatorAdminSummary;
 	createGroup: () => void;
@@ -331,6 +443,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 					`The selected Team (${selectedGroup}) is configured locally but does not exist in the coordinator yet. Create it below or switch to another Team once one exists.`,
 				)
 			: null,
+		renderTeamSetupGuide(renderShell),
 		h(
 			"div",
 			{ class: "coordinator-admin-form-grid" },
@@ -440,17 +553,49 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 							group.group_id;
 						const scopeOpen = coordinatorAdminState.groupPreferencesOpen.has(group.group_id);
 						const domainsOpen = coordinatorAdminState.groupScopeManagementOpen.has(group.group_id);
+						const archiveActionKind = archived ? "unarchive" : "archive";
+						const archivePending =
+							pending && coordinatorAdminState.groupActionPendingKind === archiveActionKind;
+						const archiveActionLabel = archiveButtonLabel(archived, archivePending);
+						const overview = teamCardOverview({
+							groupId: group.group_id,
+							preferences: coordinatorAdminState.groupPreferencesDrafts.get(group.group_id),
+							scopeManagement: coordinatorAdminState.groupScopeManagementDrafts.get(group.group_id),
+							setupGuide: coordinatorAdminState.teamSetupGuide,
+						});
 						return h(
 							"div",
 							{ class: "peer-card peer-card--padded", key: group.group_id },
 							h("div", { class: "peer-title" }, h("strong", null, draftName)),
 							h("div", { class: "peer-meta" }, `Team ID: ${group.group_id}`),
 							h("div", { class: "peer-submeta" }, archived ? "Archived" : "Active"),
+							h(
+								"div",
+								{ class: "coordinator-admin-summary-grid" },
+								h(
+									"div",
+									{ class: "coordinator-admin-summary-card" },
+									h("span", { class: "section-meta" }, "Default Space"),
+									h("strong", null, overview.defaultSpace),
+								),
+								h(
+									"div",
+									{ class: "coordinator-admin-summary-card" },
+									h("span", { class: "section-meta" }, "Auto-grant"),
+									h("strong", null, overview.autoGrant),
+								),
+								h(
+									"div",
+									{ class: "coordinator-admin-summary-card" },
+									h("span", { class: "section-meta" }, "Spaces"),
+									h("strong", null, overview.spaces),
+								),
+							),
 							configuredGroup === group.group_id
 								? h(
 										"div",
 										{ class: "peer-submeta" },
-										"This node is configured to use this Team for coordinator-backed discovery.",
+										"This node uses this Team for coordinator-backed discovery.",
 									)
 								: null,
 							h(
@@ -539,7 +684,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 										},
 										type: "button",
 									},
-									h("span", null, "Spaces"),
+									h("span", null, "Spaces & access"),
 									h(
 										"span",
 										{ "aria-hidden": "true", class: "device-row-chevron" },
@@ -555,19 +700,11 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 											runGroup(
 												group.group_id,
 												group.display_name || group.group_id,
-												archived ? "unarchive" : "archive",
+												archiveActionKind,
 											),
 										type: "button",
 									},
-									pending &&
-										coordinatorAdminState.groupActionPendingKind ===
-											(archived ? "unarchive" : "archive")
-										? archived
-											? "Restoring…"
-											: "Archiving…"
-										: archived
-											? "Unarchive"
-											: "Archive",
+									archiveActionLabel,
 								),
 							),
 							h(

@@ -44,6 +44,15 @@ export interface GroupScopeManagementDraft {
 	actionPendingKind: ScopeManagementActionKind;
 }
 
+export interface TeamSetupGuideState {
+	groupId: string;
+	displayName: string;
+	defaultSpaceScopeId: string;
+	defaultSpaceLabel: string;
+	autoGrantDefaultSpaceOnJoin: boolean | null;
+	setupWarning: { step?: string; error?: string } | null;
+}
+
 export interface CoordinatorAdminState {
 	activeSection: AdminSection;
 	inviteGroup: string;
@@ -65,6 +74,7 @@ export interface CoordinatorAdminState {
 	groupPreferencesDrafts: Map<string, GroupPreferencesDraft>;
 	groupScopeManagementOpen: Set<string>;
 	groupScopeManagementDrafts: Map<string, GroupScopeManagementDraft>;
+	teamSetupGuide: TeamSetupGuideState | null;
 	/**
 	 * Cached list of project names from /api/projects so the scope-defaults
 	 * ProjectScopePicker can render them as clickable chips without
@@ -96,5 +106,6 @@ export const coordinatorAdminState: CoordinatorAdminState = {
 	groupPreferencesDrafts: new Map<string, GroupPreferencesDraft>(),
 	groupScopeManagementOpen: new Set<string>(),
 	groupScopeManagementDrafts: new Map<string, GroupScopeManagementDraft>(),
+	teamSetupGuide: null,
 	availableProjects: [],
 };

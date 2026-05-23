@@ -310,6 +310,15 @@ async function maybeGrantDefaultSpaceOnJoin(opts: {
 	if (!preferences?.auto_grant_default_space_on_join) return null;
 	const scopeId = preferences.default_space_scope_id?.trim();
 	if (!scopeId) return null;
+	if (scopeId !== defaultSpaceScopeIdForGroup(opts.groupId)) return null;
+	const scopes = await coordinatorListScopesAction({
+		groupId: opts.groupId,
+		includeInactive: false,
+		remoteUrl: opts.config.syncCoordinatorUrl || null,
+		adminSecret: opts.config.syncCoordinatorAdminSecret || null,
+	});
+	const defaultScope = scopes.find((scope) => scope.scope_id === scopeId) ?? null;
+	if (!defaultScope || defaultScope.kind !== "team_default") return null;
 	return await coordinatorGrantScopeMembershipAction({
 		groupId: opts.groupId,
 		scopeId,

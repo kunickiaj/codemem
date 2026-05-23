@@ -38,7 +38,7 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 			"p",
 			{ class: "peer-submeta" },
 			summary.readiness === "ready"
-				? "Generate a coordinator-backed invite from the same operator surface that will later handle join requests and device administration."
+				? "Generate an invite for the selected Team. Default Space access is controlled by that Team's auto-grant setting."
 				: "Finish setup first. Invite creation stays disabled until the local coordinator admin configuration is ready.",
 		),
 		h(
@@ -47,7 +47,7 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 			h(
 				"label",
 				{ class: "coordinator-admin-field" },
-				h("span", null, "Group"),
+				h("span", null, "Team"),
 				h(TextInput, {
 					class: "peer-scope-input",
 					disabled: summary.readiness !== "ready",
@@ -55,6 +55,7 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 						coordinatorAdminState.inviteGroup = String(
 							(event.currentTarget as HTMLInputElement).value || "",
 						);
+						renderShell();
 					},
 					placeholder: activeGroup || "team-alpha",
 					type: "text",
@@ -77,8 +78,8 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 						renderShell();
 					},
 					options: [
-						{ value: "auto_admit", label: "Auto-admit" },
-						{ value: "approval_required", label: "Approval required" },
+						{ value: "auto_admit", label: "Auto-admit to Team" },
+						{ value: "approval_required", label: "Require approval to join Team" },
 					],
 					triggerClassName: "sync-radix-select-trigger sync-actor-select",
 					value: coordinatorAdminState.invitePolicy,
@@ -118,7 +119,7 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 				},
 				coordinatorAdminState.invitePending ? "Creating…" : "Create invite",
 			),
-			effectiveGroup ? h("span", { class: "peer-submeta" }, `Using group ${effectiveGroup}`) : null,
+			effectiveGroup ? h("span", { class: "peer-submeta" }, `Using Team ${effectiveGroup}`) : null,
 		),
 		output
 			? h(
