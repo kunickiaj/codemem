@@ -567,8 +567,8 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 							"div",
 							{ class: "peer-card peer-card--padded", key: group.group_id },
 							h("div", { class: "peer-title" }, h("strong", null, draftName)),
-							h("div", { class: "peer-meta" }, `Team ID: ${group.group_id}`),
-							h("div", { class: "peer-submeta" }, archived ? "Archived" : "Active"),
+							h("div", { class: "peer-submeta" }, archived ? "Archived Team" : "Active Team"),
+							h("div", { class: "peer-meta" }, `Advanced: Team ID ${group.group_id}`),
 							h(
 								"div",
 								{ class: "coordinator-admin-summary-grid" },
@@ -629,7 +629,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 										},
 										type: "button",
 									},
-									selected ? "Managing" : "Manage",
+									selected ? "Managing" : "Manage Team",
 								),
 								h(
 									"button",

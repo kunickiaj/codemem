@@ -327,11 +327,15 @@ function renderScopeCard(
 		"div",
 		{ class: "peer-card peer-card--padded coordinator-admin-scope-card", key: scopeId || label },
 		h("div", { class: "peer-title" }, h("strong", null, label)),
-		h("div", { class: "peer-meta" }, `Space ID: ${scopeId || "unknown"}`),
 		h(
 			"div",
 			{ class: "peer-submeta" },
-			`Kind: ${scope.kind || "user"} · Status: ${scopeStatusLabel(scope.status)} · Membership epoch: ${scope.membership_epoch ?? 0}`,
+			`Status: ${scopeStatusLabel(scope.status)} · Kind: ${scope.kind || "user"}`,
+		),
+		h(
+			"div",
+			{ class: "peer-meta" },
+			`Advanced: Space ID ${scopeId || "unknown"} · Membership epoch ${scope.membership_epoch ?? 0}`,
 		),
 		h(
 			"div",
@@ -477,7 +481,7 @@ export function renderGroupScopeManagementPanel(deps: ScopeManagementPanelDeps) 
 			: h(
 					"div",
 					{ class: "peer-meta coordinator-admin-empty-state" },
-					"No Spaces are defined for this Team yet. Create one, then grant specific devices.",
+					"No Spaces are defined for this Team yet. Create a Space, then grant specific devices. Projects stay local-only until assigned to a Space.",
 				),
 	);
 }
