@@ -807,9 +807,9 @@ The product should assume mixed machines are normal. Useful guardrails:
 
 This matrix is the north-star acceptance fixture for implementation agents. If any row fails, the feature is not ready to ship. Implementation tracks reference rows in this matrix as acceptance criteria; nothing here is aspirational copy.
 
-### Fixture: "Mixed Adam" device
+### Fixture: "Mixed owner" device
 
-One mixed laptop ("Mixed Adam") with three projects and three peers, exercised end-to-end:
+One mixed laptop ("Mixed owner") with three projects and three peers, exercised end-to-end:
 
 | Project | Project pattern | Mapped scope | Default visibility |
 |---|---|---|---|
@@ -821,9 +821,9 @@ Sharing domains:
 
 | `scope_id` | Authority | Members | Notes |
 |---|---|---|---|
-| `personal` | local | Mixed Adam, personal peer | private same-actor sync allowed |
-| `acme-work` | coordinator group `acme-eng` | Mixed Adam, work peer | revocation tested mid-run |
-| `oss-codemem` | coordinator group `oss-codemem` | Mixed Adam, OSS peer | broad project include configured on OSS peer |
+| `personal` | local | Mixed owner, personal peer | private same-actor sync allowed |
+| `acme-work` | coordinator group `acme-eng` | Mixed owner, work peer | revocation tested mid-run |
+| `oss-codemem` | coordinator group `oss-codemem` | Mixed owner, OSS peer | broad project include configured on OSS peer |
 | `legacy-shared-review` | local | none | populated by migration; not eligible for sync |
 
 Peers:
@@ -841,7 +841,7 @@ Peers:
 | Sends op with `scope_id=acme-work` but is not a member of `acme-work`. | Reject before apply. | `sender_not_member` |
 | Sends op whose payload `workspace_id` says `personal` but op `scope_id` says `acme-work` (receiver does not re-resolve; payload mismatch detected). | Reject before apply. | `scope_mismatch` |
 | Sends an op_id seen a year ago after being revoked. | Reject; revoked. | `stale_epoch` |
-| Claims `claimed_local_actor` for `actor_id=adam` while presenting a device key not in `personal:adam` scope. | Reject (Phase 2: `claimed_local_actor` is no longer a bypass). | `sender_not_member` |
+| Claims `claimed_local_actor` for `actor_id=owner` while presenting a device key not in `personal:owner` scope. | Reject (Phase 2: `claimed_local_actor` is no longer a bypass). | `sender_not_member` |
 | `clock_rev=Number.MAX_SAFE_INTEGER` to force LWW domination. | Accept clock comparison logic but still gate on scope; if scope check fails, reject. | `sender_not_member` or `scope_mismatch` |
 | Sends an op for `local-default` scope. | Reject; local-only scopes never replicate. | `scope_mismatch` (per Invariant 10) |
 | Replays a snapshot for `acme-work` but local cache shows the snapshot generation has advanced. | Reject; reset required. | `boundary_mismatch` (existing) |
@@ -862,12 +862,12 @@ Peers:
 | Vector/pack/injection | sqlite-vec candidates and pack construction exclude unauthorized scopes before ranking/merging; plugin context injection cannot reintroduce filtered memories. | ov4g.5.3 |
 | MCP tools | memory_search, timeline, pack, expand, recent, remember, forget enforce scope authorization; remember resolves scope safely. | ov4g.5.4 |
 | Viewer/CLI APIs | Memory list/search/detail/stats apply the same store-level scope filters; raw events/artifacts are not newly exposed across scopes. | ov4g.5.5 |
-| Coordinator admin | Adding Mixed Adam to coordinator group `acme-eng` does not by itself grant `oss-codemem` or `personal`. Scope grants are explicit; revocations propagate to local cache. | ov4g.3.2, ov4g.3.4 |
+| Coordinator admin | Adding Mixed owner to coordinator group `acme-eng` does not by itself grant `oss-codemem` or `personal`. Scope grants are explicit; revocations propagate to local cache. | ov4g.3.2, ov4g.3.4 |
 | UI guardrails | Broad org-domain patterns warn; basename collisions require review; scope reassignment warns about already-copied data. Phase 1 surfaces show "informational only" copy. | ov4g.6.4 |
 | Legacy peer behavior | legacy-peer in Phase 2 receives nothing by default. Operator can opt in to a per-peer compatibility scope; UI marks the peer "legacy" with explanation. | ov4g.4.1, ov4g.6.2 |
 | Revocation | Revoking work-peer mid-run stops future ops to that peer within one membership-cache refresh; UI/docs state already-copied data is not erased. | ov4g.3.4 |
 | Diagnostics | Scope-related rejections produce reason codes (`missing_scope`, `sender_not_member`, `receiver_not_member`, `stale_epoch`, `scope_mismatch`, `visibility_filter`, `project_filter`) visible by peer/scope without payload exposure. | ov4g.4.5, ov4g.6.5 |
-| E2E smoke | A single test fixture (Mixed Adam + three peers + legacy-peer) exercises every row above and fails on the first leak. | ov4g.4.6, ov4g.5.6, ov4g.6.6 |
+| E2E smoke | A single test fixture (Mixed owner + three peers + legacy-peer) exercises every row above and fails on the first leak. | ov4g.4.6, ov4g.5.6, ov4g.6.6 |
 
 ### Rollout-phase acceptance
 

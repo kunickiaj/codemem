@@ -25,15 +25,15 @@ unknown projects local-only until you intentionally map them to a Sharing domain
 
 ### Personal multi-device sync
 
-Use a personal Sharing domain, for example `personal:adam`, and grant only your
-own devices to it. A home server, Pi, or small VPS can join that personal domain
+Use a personal Sharing domain, for example `personal:owner`, and grant only your
+own devices to it. A home server or small VPS can join that personal domain
 as an anchor peer if you want memories available when laptops sleep.
 
 Recommended shape:
 
-- laptop: member of `personal:adam`
-- desktop: member of `personal:adam`
-- home/Pi anchor peer: member of `personal:adam`
+- laptop: member of `personal:owner`
+- desktop: member of `personal:owner`
+- always-on anchor peer: member of `personal:owner`
 - coordinator: optional discovery plane, not a data path
 
 ### Small team VPS

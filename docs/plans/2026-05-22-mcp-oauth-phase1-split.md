@@ -42,7 +42,7 @@ Phase 1 remains a **single-user endpoint**: one self-hosted codemem instance, on
    - Helps operators debug registration, authorization, token, and bearer failures.
 
 6. `codemem-986p.17` — claude.ai remote MCP connector handshake validation
-   - Documents and validates the Pi4 + Tailscale Funnel + claude.ai custom connector path.
+   - Documents and validates the self-hosted MCP endpoint + HTTPS ingress + claude.ai custom connector path.
    - Requires authenticated `POST /mcp` smoke coverage, at least `memory_schema` or `memory_search`.
    - Runs after bearer enforcement and diagnostics exist.
 
