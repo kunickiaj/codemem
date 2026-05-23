@@ -174,8 +174,10 @@ describe("MCP OAuth metadata and dynamic client registration", () => {
 		if (token.status !== 200) throw new Error("expected token response");
 		expect(token.body).toMatchObject({ token_type: "Bearer", expires_in: 3600 });
 		expect(token.body.access_token).toMatch(/^[A-Za-z0-9_-]{43}$/);
-		expect(tokenStore.verifyToken(token.body.access_token)).toMatchObject({
-			clientId: registered.body.client_id,
+		const verification = tokenStore.verifyToken(token.body.access_token);
+		expect(verification).toMatchObject({
+			ok: true,
+			record: { clientId: registered.body.client_id },
 		});
 	});
 
@@ -558,14 +560,19 @@ describe("MCP OAuth metadata and dynamic client registration", () => {
 
 		expect(issued).toBeDefined();
 		if (!issued) throw new Error("expected access token");
-		expect(tokenStore.verifyToken(issued.token, 1_000)).toMatchObject({
-			clientId: "client-123",
-			lastUsedAt: 1_000,
-			revokedAt: null,
+		const firstVerify = tokenStore.verifyToken(issued.token, 1_000);
+		expect(firstVerify).toMatchObject({
+			ok: true,
+			record: { clientId: "client-123", lastUsedAt: 1_000, revokedAt: null },
 		});
-		expect(tokenStore.verifyToken(issued.token, 1_000)?.tokenHash).toMatch(/^[A-Za-z0-9_-]{43}$/);
-		expect(tokenStore.verifyToken(issued.token, 1_000)?.tokenHash).not.toBe(issued.token);
-		expect(tokenStore.verifyToken(issued.token, 1_000 + 60 * 60 * 1000 + 1)).toBeUndefined();
+		if (firstVerify.ok) {
+			expect(firstVerify.record.tokenHash).toMatch(/^[A-Za-z0-9_-]{43}$/);
+			expect(firstVerify.record.tokenHash).not.toBe(issued.token);
+		}
+		expect(tokenStore.verifyToken(issued.token, 1_000 + 60 * 60 * 1000 + 1)).toEqual({
+			ok: false,
+			reason: "expired_token",
+		});
 
 		const revocable = tokenStore.issueToken("client-456", 2_000);
 		if (!revocable) throw new Error("expected revocable access token");
@@ -575,7 +582,14 @@ describe("MCP OAuth metadata and dynamic client registration", () => {
 			status: 200,
 			body: {},
 		});
-		expect(tokenStore.verifyToken(revocable.token, 2_001)).toBeUndefined();
+		expect(tokenStore.verifyToken(revocable.token, 2_001)).toEqual({
+			ok: false,
+			reason: "revoked_token",
+		});
+		expect(tokenStore.verifyToken("entirely-bogus-token", 2_001)).toEqual({
+			ok: false,
+			reason: "unknown_token",
+		});
 	});
 });
 

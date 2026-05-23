@@ -69,9 +69,13 @@ export interface AccessTokenRecord {
 	revokedAt: number | null;
 }
 
+export type AccessTokenVerificationResult =
+	| { ok: true; record: AccessTokenRecord }
+	| { ok: false; reason: "unknown_token" | "expired_token" | "revoked_token" };
+
 export interface OAuthAccessTokenStore {
 	issueToken(clientId: string, now?: number): { token: string; expiresIn: number } | undefined;
-	verifyToken(token: string, now?: number): AccessTokenRecord | undefined;
+	verifyToken(token: string, now?: number): AccessTokenVerificationResult;
 	revokeToken(token: string, now?: number): boolean;
 }
 
@@ -175,15 +179,18 @@ export class InMemoryOAuthAccessTokenStore implements OAuthAccessTokenStore {
 		};
 	}
 
-	verifyToken(token: string, now = Date.now()): AccessTokenRecord | undefined {
+	verifyToken(token: string, now = Date.now()): AccessTokenVerificationResult {
 		const tokenBytes = decodeOAuthAccessToken(token);
-		if (!tokenBytes) return undefined;
+		if (!tokenBytes) return { ok: false, reason: "unknown_token" };
 		const tokenHash = signOAuthAccessTokenBytes(tokenBytes, this.#tokenHashKey);
 		const record = this.#tokensByHash.get(tokenHash);
-		if (!record || !isSameTokenHash(record.tokenHash, tokenHash)) return undefined;
-		if (record.revokedAt !== null || record.expiresAt <= now) return undefined;
+		if (!record || !isSameTokenHash(record.tokenHash, tokenHash)) {
+			return { ok: false, reason: "unknown_token" };
+		}
+		if (record.revokedAt !== null) return { ok: false, reason: "revoked_token" };
+		if (record.expiresAt <= now) return { ok: false, reason: "expired_token" };
 		record.lastUsedAt = now;
-		return { ...record };
+		return { ok: true, record: { ...record } };
 	}
 
 	revokeToken(token: string, now = Date.now()): boolean {
