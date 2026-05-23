@@ -70,6 +70,13 @@ export interface McpOAuthTokenResult {
 	body: OAuthTokens;
 }
 
+export interface PreparedMcpOAuthAuthorizationRequest {
+	clientId: string;
+	redirectUri: string;
+	codeChallenge: string;
+	state: string | null;
+}
+
 export class InMemoryOAuthClientsStore implements OAuthRegisteredClientsStore {
 	readonly #clients = new Map<string, OAuthClientInformationFull>();
 
@@ -215,6 +222,30 @@ export function authorizeMcpOAuthClient(
 	codeStore: OAuthAuthorizationCodeStore,
 	now = Date.now(),
 ): McpOAuthRedirectResult | McpOAuthErrorResult {
+	const prepared = prepareMcpOAuthAuthorizationRequest(params, clientsStore);
+	if ("status" in prepared) return prepared;
+
+	const code = codeStore.issueCode(
+		{
+			clientId: prepared.clientId,
+			redirectUri: prepared.redirectUri,
+			codeChallenge: prepared.codeChallenge,
+			expiresAt: now + AUTHORIZATION_CODE_TTL_MS,
+		},
+		now,
+	);
+	if (!code)
+		return invalidOAuthRequest("temporarily_unavailable", "Too many active authorization codes");
+	const redirect = new URL(prepared.redirectUri);
+	redirect.searchParams.set("code", code);
+	if (prepared.state !== null) redirect.searchParams.set("state", prepared.state);
+	return { status: 302, location: redirect.href };
+}
+
+export function prepareMcpOAuthAuthorizationRequest(
+	params: URLSearchParams,
+	clientsStore: OAuthRegisteredClientsStore,
+): PreparedMcpOAuthAuthorizationRequest | McpOAuthErrorResult {
 	const clientId = params.get("client_id") ?? "";
 	const redirectUri = params.get("redirect_uri") ?? "";
 	const responseType = params.get("response_type") ?? "";
@@ -236,21 +267,7 @@ export function authorizeMcpOAuthClient(
 		return invalidOAuthRequest("invalid_request", "redirect_uri is not registered for this client");
 	}
 
-	const code = codeStore.issueCode(
-		{
-			clientId,
-			redirectUri,
-			codeChallenge,
-			expiresAt: now + AUTHORIZATION_CODE_TTL_MS,
-		},
-		now,
-	);
-	if (!code)
-		return invalidOAuthRequest("temporarily_unavailable", "Too many active authorization codes");
-	const redirect = new URL(redirectUri);
-	redirect.searchParams.set("code", code);
-	if (state !== null) redirect.searchParams.set("state", state);
-	return { status: 302, location: redirect.href };
+	return { clientId, redirectUri, codeChallenge, state };
 }
 
 export function exchangeMcpOAuthAuthorizationCode(

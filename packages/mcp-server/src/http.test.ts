@@ -232,7 +232,7 @@ describe("MCP HTTP transport", () => {
 		expect(await response.json()).toMatchObject({ error: "invalid_client_metadata" });
 	});
 
-	it("runs OAuth authorize and token exchange with PKCE", async () => {
+	it("fails closed at authorize when OIDC is not configured", async () => {
 		const server = await startCodememMcpHttpServer({
 			dbPath: tempDbPath(),
 			port: 0,
@@ -240,7 +240,6 @@ describe("MCP HTTP transport", () => {
 		});
 		servers.push(server);
 		const baseUrl = server.url.replace("/mcp", "");
-		const verifier = "d".repeat(43);
 
 		const registration = await fetch(`${baseUrl}/register`, {
 			method: "POST",
@@ -256,28 +255,13 @@ describe("MCP HTTP transport", () => {
 		authorizeUrl.searchParams.set("redirect_uri", "https://claude.ai/api/mcp/auth_callback");
 		authorizeUrl.searchParams.set("response_type", "code");
 		authorizeUrl.searchParams.set("code_challenge_method", "S256");
-		authorizeUrl.searchParams.set("code_challenge", pkceS256(verifier));
+		authorizeUrl.searchParams.set("code_challenge", pkceS256("d".repeat(43)));
 		authorizeUrl.searchParams.set("state", "state-123");
 
-		const authorize = await fetch(authorizeUrl, { redirect: "manual" });
-		const redirect = new URL(authorize.headers.get("location") ?? "");
-		const token = await fetch(`${baseUrl}/token`, {
-			method: "POST",
-			headers: { "content-type": "application/x-www-form-urlencoded" },
-			body: new URLSearchParams({
-				grant_type: "authorization_code",
-				client_id: client.client_id,
-				redirect_uri: "https://claude.ai/api/mcp/auth_callback",
-				code: redirect.searchParams.get("code") ?? "",
-				code_verifier: verifier,
-			}),
-		});
+		const authorize = await fetch(authorizeUrl);
 
-		expect(authorize.status).toBe(302);
-		expect(redirect.origin + redirect.pathname).toBe("https://claude.ai/api/mcp/auth_callback");
-		expect(redirect.searchParams.get("state")).toBe("state-123");
-		expect(token.status).toBe(200);
-		expect(await token.json()).toMatchObject({ token_type: "Bearer", expires_in: 3600 });
+		expect(authorize.status).toBe(400);
+		expect(await authorize.json()).toMatchObject({ error: "temporarily_unavailable" });
 	});
 
 	it("handles repeated MCP initialize requests over POST", async () => {

@@ -25,6 +25,12 @@ import {
 	normalizeMcpPublicUrl,
 	registerMcpOAuthClient,
 } from "./oauth.js";
+import {
+	beginOidcAuthorization,
+	completeOidcAuthorization,
+	createInMemoryOidcPendingAuthorizationStore,
+	resolveOidcConfig,
+} from "./oidc.js";
 import { createCodememMcpServer } from "./server.js";
 
 export const DEFAULT_MCP_HTTP_HOST = "127.0.0.1";
@@ -171,6 +177,8 @@ export async function startCodememMcpHttpServer(
 	const store = new MemoryStore(options.dbPath ?? resolveDbPath());
 	const clientsStore = createInMemoryOAuthClientsStore();
 	const codeStore = createInMemoryOAuthAuthorizationCodeStore();
+	const oidcConfig = resolveOidcConfig();
+	const oidcPendingStore = createInMemoryOidcPendingAuthorizationStore();
 	const activeRequests = new Set<ActiveRequest>();
 	let closePromise: Promise<void> | null = null;
 
@@ -214,7 +222,45 @@ export async function startCodememMcpHttpServer(
 				if (!prepareOAuthRoute(req, res, ["GET", "OPTIONS"], boundPort, configuredPublicMcpUrl))
 					return;
 				const url = new URL(req.url ?? "/authorize", "http://codemem.local");
-				const result = authorizeMcpOAuthClient(url.searchParams, clientsStore, codeStore);
+				const result = await beginOidcAuthorization(
+					url.searchParams,
+					clientsStore,
+					oidcPendingStore,
+					oidcConfig,
+					publicMcpUrl,
+				);
+				if (result.status === 302) {
+					res.statusCode = result.status;
+					res.setHeader("location", result.location);
+					res.end();
+					return;
+				}
+				writeJson(res, result.status, result.body);
+				return;
+			}
+
+			if (pathname === "/oauth/callback") {
+				if (!prepareOAuthRoute(req, res, ["GET", "OPTIONS"], boundPort, configuredPublicMcpUrl))
+					return;
+				if (!oidcConfig) {
+					writeJson(res, 400, {
+						error: "temporarily_unavailable",
+						error_description: "OIDC is not configured",
+					});
+					return;
+				}
+				const url = new URL(req.url ?? "/oauth/callback", "http://codemem.local");
+				const completed = await completeOidcAuthorization(
+					url.searchParams,
+					oidcPendingStore,
+					oidcConfig,
+					publicMcpUrl,
+				);
+				if ("status" in completed) {
+					writeJson(res, completed.status, completed.body);
+					return;
+				}
+				const result = authorizeMcpOAuthClient(completed.oauthParams, clientsStore, codeStore);
 				if (result.status === 302) {
 					res.statusCode = result.status;
 					res.setHeader("location", result.location);
