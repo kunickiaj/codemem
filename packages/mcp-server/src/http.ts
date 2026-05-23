@@ -4,8 +4,8 @@
  * @codemem/mcp — MCP Streamable HTTP server bootstrap.
  *
  * Local-first HTTP transport for MCP clients. OAuth metadata and Dynamic Client
- * Registration are exposed for remote MCP setup; bearer enforcement is added in
- * a later slice.
+ * Registration are exposed for remote MCP setup; public MCP requests require
+ * OAuth bearer tokens.
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -16,6 +16,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
 	authorizeMcpOAuthClient,
+	createInMemoryOAuthAccessTokenStore,
 	createInMemoryOAuthAuthorizationCodeStore,
 	createInMemoryOAuthClientsStore,
 	createMcpOAuthMetadata,
@@ -23,7 +24,9 @@ import {
 	exchangeMcpOAuthAuthorizationCode,
 	MCP_OAUTH_PUBLIC_URL_ENV,
 	normalizeMcpPublicUrl,
+	type OAuthAccessTokenStore,
 	registerMcpOAuthClient,
+	revokeMcpOAuthAccessToken,
 } from "./oauth.js";
 import {
 	beginOidcAuthorization,
@@ -50,6 +53,7 @@ export interface CodememMcpHttpOptions {
 	dbPath?: string;
 	allowUnsafePublic?: boolean;
 	publicUrl?: string;
+	oauthAccessTokenStore?: OAuthAccessTokenStore;
 }
 
 export interface CodememMcpHttpServer {
@@ -124,6 +128,11 @@ export function isAllowedMcpHttpRequestOrigin(
 	}
 }
 
+export function isAllowedMcpHttpRequestRemoteAddress(address: string | undefined): boolean {
+	if (!address) return false;
+	return isLoopbackHost(address.replace(/^::ffff:/, ""));
+}
+
 function normalizeHost(host: string): string {
 	return host.replace(/^\[(.*)]$/, "$1").toLowerCase();
 }
@@ -177,8 +186,10 @@ export async function startCodememMcpHttpServer(
 	const store = new MemoryStore(options.dbPath ?? resolveDbPath());
 	const clientsStore = createInMemoryOAuthClientsStore();
 	const codeStore = createInMemoryOAuthAuthorizationCodeStore();
+	const tokenStore = options.oauthAccessTokenStore ?? createInMemoryOAuthAccessTokenStore();
 	const oidcConfig = resolveOidcConfig();
 	const oidcPendingStore = createInMemoryOidcPendingAuthorizationStore();
+	const shouldRequireMcpBearer = configuredPublicMcpUrl !== undefined || oidcConfig !== undefined;
 	const activeRequests = new Set<ActiveRequest>();
 	let closePromise: Promise<void> | null = null;
 
@@ -275,7 +286,21 @@ export async function startCodememMcpHttpServer(
 				if (!prepareOAuthRoute(req, res, ["POST", "OPTIONS"], boundPort, configuredPublicMcpUrl))
 					return;
 				const params = await readFormBody(req).catch(() => new URLSearchParams());
-				const result = exchangeMcpOAuthAuthorizationCode(params, clientsStore, codeStore);
+				const result = exchangeMcpOAuthAuthorizationCode(
+					params,
+					clientsStore,
+					codeStore,
+					tokenStore,
+				);
+				writeJson(res, result.status, result.body);
+				return;
+			}
+
+			if (pathname === "/oauth/revoke") {
+				if (!prepareOAuthRoute(req, res, ["POST", "OPTIONS"], boundPort, configuredPublicMcpUrl))
+					return;
+				const params = await readFormBody(req).catch(() => new URLSearchParams());
+				const result = revokeMcpOAuthAccessToken(params, tokenStore);
 				writeJson(res, result.status, result.body);
 				return;
 			}
@@ -285,8 +310,15 @@ export async function startCodememMcpHttpServer(
 				return;
 			}
 			if (!allowMethod(req, res, ["POST"])) return;
-			if (!isAllowedMcpHttpRequest(req, getBoundPort(server))) {
+			if (!isAllowedMcpHttpRequest(req, getBoundPort(server), configuredPublicMcpUrl)) {
 				writeText(res, 403, "Forbidden");
+				return;
+			}
+			if (
+				shouldRequireMcpBearer &&
+				!verifyMcpBearerAuthorization(req.headers.authorization, tokenStore)
+			) {
+				writeBearerUnauthorized(res);
 				return;
 			}
 
@@ -385,7 +417,7 @@ function writeJson(res: ServerResponse, statusCode: number, body: unknown): void
 function writeCorsNoContent(res: ServerResponse): void {
 	res.statusCode = 204;
 	res.setHeader("access-control-allow-origin", "*");
-	res.setHeader("access-control-allow-headers", "content-type");
+	res.setHeader("access-control-allow-headers", "authorization, content-type");
 	res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
 	res.end();
 }
@@ -422,8 +454,22 @@ function isInvalidJsonBody(body: unknown): body is { __codememInvalidJson: strin
 	);
 }
 
-function isAllowedMcpHttpRequest(req: IncomingMessage, expectedPort: number): boolean {
+function isAllowedMcpHttpRequest(
+	req: IncomingMessage,
+	expectedPort: number,
+	publicMcpUrl: URL | undefined,
+): boolean {
+	if (isAllowedLocalMcpHttpRequest(req, expectedPort)) return true;
+	if (!publicMcpUrl) return false;
 	return (
+		isAllowedPublicRequestHost(req.headers.host, publicMcpUrl) &&
+		isAllowedPublicOrigin(req.headers.origin, publicMcpUrl)
+	);
+}
+
+function isAllowedLocalMcpHttpRequest(req: IncomingMessage, expectedPort: number): boolean {
+	return (
+		isAllowedMcpHttpRequestRemoteAddress(req.socket.remoteAddress) &&
 		isAllowedMcpHttpRequestHost(req.headers.host, expectedPort) &&
 		isAllowedMcpHttpRequestOrigin(req.headers.origin, expectedPort)
 	);
@@ -434,7 +480,7 @@ function isAllowedOAuthHttpRequest(
 	expectedPort: number,
 	publicMcpUrl: URL | undefined,
 ): boolean {
-	if (!publicMcpUrl) return isAllowedMcpHttpRequest(req, expectedPort);
+	if (!publicMcpUrl) return isAllowedMcpHttpRequest(req, expectedPort, undefined);
 	return isAllowedPublicOrigin(req.headers.origin, publicMcpUrl);
 }
 
@@ -446,6 +492,36 @@ function isAllowedPublicOrigin(header: string | undefined, publicMcpUrl: URL): b
 	} catch {
 		return false;
 	}
+}
+
+function isAllowedPublicRequestHost(header: string | undefined, publicMcpUrl: URL): boolean {
+	const parsed = parseHostHeader(header);
+	if (!parsed) return false;
+	const expectedPort = publicMcpUrl.port
+		? Number(publicMcpUrl.port)
+		: publicMcpUrl.protocol === "https:"
+			? 443
+			: 80;
+	const actualPort = parsed.port ?? expectedPort;
+	return (
+		normalizeHost(parsed.host) === normalizeHost(publicMcpUrl.hostname) &&
+		actualPort === expectedPort
+	);
+}
+
+function verifyMcpBearerAuthorization(
+	header: string | undefined,
+	tokenStore: OAuthAccessTokenStore,
+): boolean {
+	if (!header) return false;
+	const [scheme, token, extra] = header.trim().split(/\s+/);
+	if (!scheme || !token || extra || scheme.toLowerCase() !== "bearer") return false;
+	return tokenStore.verifyToken(token) !== undefined;
+}
+
+function writeBearerUnauthorized(res: ServerResponse): void {
+	res.setHeader("www-authenticate", 'Bearer realm="codemem-mcp", error="invalid_token"');
+	writeText(res, 401, "Unauthorized");
 }
 
 function writeText(res: ServerResponse, statusCode: number, body: string): void {

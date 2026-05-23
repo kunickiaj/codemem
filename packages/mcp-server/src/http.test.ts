@@ -10,11 +10,13 @@ import {
 	DEFAULT_MCP_HTTP_PORT,
 	isAllowedMcpHttpRequestHost,
 	isAllowedMcpHttpRequestOrigin,
+	isAllowedMcpHttpRequestRemoteAddress,
 	isUnsafePublicBindAllowed,
 	parseMcpHttpPort,
 	startCodememMcpHttpServer,
 	validateMcpHttpHost,
 } from "./http.js";
+import { createInMemoryOAuthAccessTokenStore } from "./oauth.js";
 
 const servers: CodememMcpHttpServer[] = [];
 
@@ -54,6 +56,10 @@ describe("MCP HTTP transport", () => {
 		expect(isAllowedMcpHttpRequestOrigin("http://evil.test:38889", 38889)).toBe(false);
 		expect(isAllowedMcpHttpRequestOrigin("http://localhost:38888", 38889)).toBe(false);
 		expect(isAllowedMcpHttpRequestOrigin("http://localhost:38889/path", 38889)).toBe(false);
+
+		expect(isAllowedMcpHttpRequestRemoteAddress("127.0.0.1")).toBe(true);
+		expect(isAllowedMcpHttpRequestRemoteAddress("::ffff:127.0.0.1")).toBe(true);
+		expect(isAllowedMcpHttpRequestRemoteAddress("203.0.113.10")).toBe(false);
 	});
 
 	it("accepts loopback Host headers without an explicit port when bound to HTTP default (PR 1120 P2 regression)", () => {
@@ -264,6 +270,106 @@ describe("MCP HTTP transport", () => {
 		expect(await authorize.json()).toMatchObject({ error: "temporarily_unavailable" });
 	});
 
+	it("requires valid bearer tokens for public MCP requests", async () => {
+		const tokenStore = createInMemoryOAuthAccessTokenStore();
+		const issued = tokenStore.issueToken("client-123");
+		if (!issued) throw new Error("expected access token");
+		const server = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test/mcp",
+			oauthAccessTokenStore: tokenStore,
+		});
+		servers.push(server);
+
+		const missing = await fetch(server.url, {
+			method: "POST",
+			headers: {
+				accept: "application/json, text/event-stream",
+				"content-type": "application/json",
+			},
+			body: initializeBody(1),
+		});
+		const invalid = await fetch(server.url, {
+			method: "POST",
+			headers: {
+				accept: "application/json, text/event-stream",
+				authorization: "Bearer not-a-token",
+				"content-type": "application/json",
+			},
+			body: initializeBody(2),
+		});
+		const valid = await initialize(server.url, 3, { authorization: `Bearer ${issued.token}` });
+
+		expect(missing.status).toBe(401);
+		expect(missing.headers.get("www-authenticate")).toContain("Bearer");
+		expect(invalid.status).toBe(401);
+		expect(valid.result?.serverInfo?.name).toBe("codemem");
+	});
+
+	it("allows valid public bearer requests with the configured external Host", async () => {
+		const tokenStore = createInMemoryOAuthAccessTokenStore();
+		const issued = tokenStore.issueToken("client-public");
+		if (!issued) throw new Error("expected access token");
+		const server = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test/mcp",
+			oauthAccessTokenStore: tokenStore,
+		});
+		servers.push(server);
+
+		const response = await postWithHost(server.url, "codemem.example.test", {
+			authorization: `Bearer ${issued.token}`,
+		});
+
+		expect(response.statusCode).toBe(200);
+	});
+
+	it("rejects expired and revoked bearer tokens", async () => {
+		const tokenStore = createInMemoryOAuthAccessTokenStore();
+		const expired = tokenStore.issueToken("client-expired", Date.now() - 60 * 60 * 1000 - 1);
+		const revocable = tokenStore.issueToken("client-revoked");
+		if (!expired || !revocable) throw new Error("expected access tokens");
+		const server = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test/mcp",
+			oauthAccessTokenStore: tokenStore,
+		});
+		servers.push(server);
+		const baseUrl = server.url.replace("/mcp", "");
+
+		const expiredResponse = await fetch(server.url, {
+			method: "POST",
+			headers: {
+				accept: "application/json, text/event-stream",
+				authorization: `Bearer ${expired.token}`,
+				"content-type": "application/json",
+			},
+			body: initializeBody(1),
+		});
+		const revoke = await fetch(`${baseUrl}/oauth/revoke`, {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({ token: revocable.token }),
+		});
+		const revokedResponse = await fetch(server.url, {
+			method: "POST",
+			headers: {
+				accept: "application/json, text/event-stream",
+				authorization: `Bearer ${revocable.token}`,
+				"content-type": "application/json",
+			},
+			body: initializeBody(2),
+		});
+
+		expect(expiredResponse.status).toBe(401);
+		expect(revoke.status).toBe(200);
+		expect(await revoke.json()).toEqual({});
+		expect(revokedResponse.status).toBe(401);
+	});
+
 	it("handles repeated MCP initialize requests over POST", async () => {
 		const server = await startCodememMcpHttpServer({ dbPath: tempDbPath(), port: 0 });
 		servers.push(server);
@@ -309,12 +415,14 @@ describe("MCP HTTP transport", () => {
 async function initialize(
 	url: string,
 	id: number,
+	extraHeaders: Record<string, string> = {},
 ): Promise<{ result?: { serverInfo?: { name?: string } } }> {
 	const response = await fetch(url, {
 		method: "POST",
 		headers: {
 			accept: "application/json, text/event-stream",
 			"content-type": "application/json",
+			...extraHeaders,
 		},
 		body: initializeBody(id),
 	});
@@ -346,6 +454,7 @@ function parseSseJson(body: string): unknown {
 async function postWithHost(
 	url: string,
 	host: string,
+	extraHeaders: Record<string, string> = {},
 ): Promise<{ statusCode: number | undefined }> {
 	const target = new URL(url);
 	return await new Promise((resolve, reject) => {
@@ -359,6 +468,7 @@ async function postWithHost(
 					accept: "application/json, text/event-stream",
 					"content-type": "application/json",
 					host,
+					...extraHeaders,
 				},
 			},
 			(res) => {
