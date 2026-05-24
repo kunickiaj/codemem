@@ -4,6 +4,8 @@ vi.mock("../lib/api", () => ({
 	deleteSharingDomainProjectMapping: vi.fn(),
 	forgetProjectInventoryMemories: vi.fn(),
 	loadProjects: vi.fn(),
+	loadCoordinatorAdminGroupsFiltered: vi.fn(),
+	loadCoordinatorAdminStatus: vi.fn(),
 	loadProjectScopeInventory: vi.fn(),
 	loadSharingDomainSettings: vi.fn(),
 	reassignProjectInventoryProject: vi.fn(),
@@ -89,12 +91,25 @@ function mountProjectsDom() {
 	`;
 }
 
+async function flushAsyncWork() {
+	for (let i = 0; i < 5; i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+}
+
 describe("Projects tab", () => {
 	beforeEach(() => {
 		mountProjectsDom();
 		state.lastCoordinatorAdminGroups = [
 			{ archived_at: null, display_name: "ExampleCo Team", group_id: "exampleco" },
 		];
+		vi.mocked(api.loadCoordinatorAdminStatus).mockResolvedValue({
+			has_admin_secret: true,
+			readiness: "ready",
+		});
+		vi.mocked(api.loadCoordinatorAdminGroupsFiltered).mockResolvedValue({
+			items: [{ archived_at: null, display_name: "ExampleCo Team", group_id: "exampleco" }],
+		});
 		vi.mocked(api.loadSharingDomainSettings).mockResolvedValue({
 			local_default_scope_id: "local-default",
 			mappings: [],
@@ -167,6 +182,163 @@ describe("Projects tab", () => {
 		expect(api.loadProjectScopeInventory).toHaveBeenCalledWith(
 			expect.objectContaining({ limit: 250 }),
 		);
+	});
+
+	it("does not reload inventory while a Space select is active", async () => {
+		const refresh = vi.fn();
+		initProjectsTab(refresh);
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		});
+		await loadProjectsData();
+		await flushAsyncWork();
+		const select = document.querySelector(".project-domain-select") as HTMLSelectElement | null;
+		if (!select) throw new Error("project Space select missing");
+		select.focus();
+		vi.clearAllMocks();
+
+		await loadProjectsData();
+
+		expect(api.loadProjectScopeInventory).not.toHaveBeenCalled();
+		expect(api.loadSharingDomainSettings).not.toHaveBeenCalled();
+		expect(api.loadCoordinatorAdminGroupsFiltered).not.toHaveBeenCalled();
+		expect(document.activeElement).toBe(select);
+
+		select.blur();
+		expect(refresh).toHaveBeenCalledTimes(1);
+	});
+
+	it("replays skipped refresh when a focused cluster Space select blurs", async () => {
+		const refresh = vi.fn();
+		initProjectsTab(refresh);
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [
+				project({ cwd: "/workspace/a", memory_count: 2, session_count: 1 }),
+				project({
+					cwd: "/tmp/worktree-a",
+					memory_count: 3,
+					session_count: 2,
+					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
+				}),
+			],
+			total: 2,
+		});
+		await loadProjectsData();
+		await flushAsyncWork();
+		const select = document.querySelector(
+			".project-inventory-cluster > .project-inventory-actions .project-domain-select",
+		) as HTMLSelectElement | null;
+		if (!select) throw new Error("cluster Space select missing");
+		select.focus();
+		vi.clearAllMocks();
+
+		await loadProjectsData();
+		expect(document.body.textContent).not.toContain("Team: ExampleCo Team");
+		await flushAsyncWork();
+		expect(api.loadProjectScopeInventory).not.toHaveBeenCalled();
+
+		select.blur();
+		expect(refresh).toHaveBeenCalledTimes(1);
+	});
+
+	it("refreshes active Team names and ignores archived Teams for Space labels", async () => {
+		state.lastCoordinatorAdminGroups = [
+			{ archived_at: "2026-05-01T00:00:00Z", display_name: "Old Team", group_id: "old" },
+		];
+		vi.mocked(api.loadCoordinatorAdminGroupsFiltered).mockResolvedValue({
+			items: [
+				{ archived_at: null, display_name: "ExampleCo Team", group_id: "exampleco" },
+				{ archived_at: "2026-05-01T00:00:00Z", display_name: "Old Team", group_id: "old" },
+			],
+		});
+		vi.mocked(api.loadSharingDomainSettings).mockResolvedValue({
+			local_default_scope_id: "local-default",
+			mappings: [],
+			projects: [],
+			scopes: [
+				{
+					authority_type: "coordinator",
+					group_id: "exampleco",
+					kind: "team",
+					label: "ExampleCo Work",
+					scope_id: "exampleco-work",
+					status: "active",
+				},
+				{
+					authority_type: "coordinator",
+					group_id: "old",
+					kind: "team",
+					label: "Old Work",
+					scope_id: "old-work",
+					status: "active",
+				},
+			],
+		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [
+				project({ resolved_scope_id: "exampleco-work" }),
+				project({
+					display_project: "old-api",
+					git_remote: "https://git.example.invalid/old/api.git",
+					project: "old-api",
+					resolved_scope_id: "old-work",
+					workspace_identity: "https://git.example.invalid/old/api.git",
+				}),
+			],
+			total: 2,
+		});
+
+		await loadProjectsData();
+		expect(document.body.textContent).not.toContain("Team: ExampleCo Team");
+		await flushAsyncWork();
+
+		expect(api.loadCoordinatorAdminGroupsFiltered).toHaveBeenCalledWith(false);
+		expect(document.body.textContent).toContain("Team: ExampleCo Team");
+		expect(document.body.textContent).not.toContain("Team: Old Team");
+		expect(document.body.textContent).toContain("Team details unavailable");
+		const enabledOptionLabels = Array.from(document.querySelectorAll("option:not(:disabled)")).map(
+			(option) => option.textContent,
+		);
+		expect(enabledOptionLabels).toContain("ExampleCo Work");
+		expect(enabledOptionLabels).not.toContain("Old Work");
+	});
+
+	it("renders inventory before coordinator Team name refresh finishes", async () => {
+		let resolveStatus: (value: unknown) => void = () => {};
+		vi.mocked(api.loadCoordinatorAdminStatus).mockReturnValue(
+			new Promise((resolve) => {
+				resolveStatus = resolve;
+			}),
+		);
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project({ resolved_scope_id: "exampleco-work" })],
+			total: 1,
+		});
+
+		await loadProjectsData();
+
+		expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain(
+			"1 project identity found",
+		);
+		expect(api.loadCoordinatorAdminGroupsFiltered).not.toHaveBeenCalled();
+
+		resolveStatus({ has_admin_secret: true, readiness: "ready" });
+		await flushAsyncWork();
+
+		expect(api.loadCoordinatorAdminGroupsFiltered).toHaveBeenCalledWith(false);
 	});
 
 	it("clusters related project identities and bulk assigns the group", async () => {
@@ -600,8 +772,10 @@ describe("Projects tab", () => {
 
 		const nextSelect = document.querySelector(".project-domain-select") as HTMLSelectElement | null;
 		if (!nextSelect) throw new Error("select missing after refresh");
+		nextSelect.focus();
 		nextSelect.value = "local-default";
 		nextSelect.dispatchEvent(new Event("change"));
+		expect(document.body.textContent).not.toContain("I understand, save Space");
 		staleConfirm?.click();
 		expect(api.saveSharingDomainProjectMapping).toHaveBeenCalledTimes(1);
 		await loadProjectsData();
