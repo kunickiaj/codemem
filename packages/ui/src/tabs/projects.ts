@@ -35,6 +35,8 @@ const pendingForgetConfirmations = new Map<
 	string,
 	{ confirmationToken: string; localOwnedMemoryCount: number; peerOwnedMemoryCount: number }
 >();
+let skippedProjectRefreshForActiveSelect = false;
+let coordinatorGroupNamesCurrent = false;
 
 function el<T extends HTMLElement>(id: string): T | null {
 	return document.getElementById(id) as T | null;
@@ -84,9 +86,69 @@ function teamName(groupId: string | null | undefined): string | null {
 	const normalized = String(groupId || "").trim();
 	if (!normalized) return null;
 	const group = state.lastCoordinatorAdminGroups.find(
-		(item) => String(item.group_id || "").trim() === normalized,
+		(item) => String(item.group_id || "").trim() === normalized && !item.archived_at,
 	);
 	return group?.display_name || "Team details unavailable";
+}
+
+function knownActiveCoordinatorGroupIds(): Set<string> {
+	return new Set(
+		state.lastCoordinatorAdminGroups
+			.filter((item) => !item.archived_at)
+			.map((item) => String(item.group_id || "").trim())
+			.filter(Boolean),
+	);
+}
+
+function isFromKnownInactiveCoordinatorGroup(scope: SharingDomainScope): boolean {
+	if (!coordinatorGroupNamesCurrent || scope.authority_type !== "coordinator" || !scope.group_id) {
+		return false;
+	}
+	return !knownActiveCoordinatorGroupIds().has(String(scope.group_id).trim());
+}
+
+function isProjectSpaceSelectActive(): boolean {
+	const active = document.activeElement;
+	return active instanceof HTMLSelectElement && active.classList.contains("project-domain-select");
+}
+
+function refreshSkippedProjectDataAfterSelectBlur() {
+	if (!skippedProjectRefreshForActiveSelect) return;
+	skippedProjectRefreshForActiveSelect = false;
+	refreshProjects?.();
+}
+
+async function refreshProjectCoordinatorGroupNames(): Promise<void> {
+	try {
+		const status = await api.loadCoordinatorAdminStatus();
+		state.lastCoordinatorAdminStatus =
+			status && typeof status === "object"
+				? (status as typeof state.lastCoordinatorAdminStatus)
+				: null;
+	} catch {
+		state.lastCoordinatorAdminStatus = null;
+		state.lastCoordinatorAdminGroups = [];
+		coordinatorGroupNamesCurrent = false;
+		return;
+	}
+	if (
+		state.lastCoordinatorAdminStatus?.readiness !== "ready" ||
+		!state.lastCoordinatorAdminStatus.has_admin_secret
+	) {
+		state.lastCoordinatorAdminGroups = [];
+		coordinatorGroupNamesCurrent = false;
+		return;
+	}
+	try {
+		const payload = (await api.loadCoordinatorAdminGroupsFiltered(false)) as {
+			items?: typeof state.lastCoordinatorAdminGroups;
+		};
+		state.lastCoordinatorAdminGroups = Array.isArray(payload?.items) ? payload.items : [];
+		coordinatorGroupNamesCurrent = true;
+	} catch {
+		state.lastCoordinatorAdminGroups = [];
+		coordinatorGroupNamesCurrent = false;
+	}
 }
 
 function isDefaultTeamSpace(scope: SharingDomainScope): boolean {
@@ -126,7 +188,10 @@ function scopeSummary(scopeId: string | null | undefined): string {
 }
 
 function assignableScopes(): SharingDomainScope[] {
-	return scopes.filter((scope) => scope.scope_id !== "legacy-shared-review");
+	return scopes.filter(
+		(scope) =>
+			scope.scope_id !== "legacy-shared-review" && !isFromKnownInactiveCoordinatorGroup(scope),
+	);
 }
 
 function isAssignableScopeId(scopeId: string | null | undefined): boolean {
@@ -402,10 +467,12 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 	select.addEventListener("change", () => {
 		draftDomainSelections.set(project.workspace_identity, select.value);
 		pendingConfirmations.delete(project.workspace_identity);
+		actions.querySelector(".project-space-guardrail-confirmation")?.remove();
 		save.textContent = "Save Space";
 		save.disabled = !select.value;
 		refreshProjects?.();
 	});
+	select.addEventListener("blur", refreshSkippedProjectDataAfterSelectBlur);
 
 	const keepLocal = document.createElement("button");
 	keepLocal.className = "settings-button";
@@ -440,7 +507,8 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 	const pending = pendingConfirmations.get(project.workspace_identity);
 	if (pending) {
 		const warningBox = document.createElement("div");
-		warningBox.className = "settings-note project-guardrail-confirmation";
+		warningBox.className =
+			"settings-note project-guardrail-confirmation project-space-guardrail-confirmation";
 		warningBox.setAttribute("role", "alert");
 		const title = document.createElement("strong");
 		title.textContent = "Confirmation required before saving this Space.";
@@ -667,6 +735,7 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 	select.addEventListener("change", () => {
 		save.disabled = !select.value || hasGuardrailWarnings;
 	});
+	select.addEventListener("blur", refreshSkippedProjectDataAfterSelectBlur);
 	actions.append(select, save);
 	if (suggestedScopes.size > 1 || resolvedScopes.size > 1 || hasGuardrailWarnings) {
 		const note = document.createElement("div");
@@ -714,10 +783,53 @@ function renderEmpty(message: string) {
 	list.appendChild(empty);
 }
 
+function renderProjectInventory(result: {
+	projects: ProjectScopeInventoryProject[];
+	total: number;
+	offset: number;
+	has_more: boolean;
+}) {
+	const meta = el<HTMLDivElement>("projectsInventoryMeta");
+	const list = el<HTMLDivElement>("projectsInventoryList");
+	if (!meta || !list) return;
+	list.textContent = "";
+	if (result.projects.length === 0) {
+		renderEmpty("No projects match those filters.");
+	} else {
+		for (const cluster of projectClusters(result.projects))
+			list.appendChild(renderProjectCluster(cluster));
+	}
+	meta.textContent =
+		result.total === 0
+			? "0 project identities found"
+			: `${result.total} project identit${result.total === 1 ? "y" : "ies"} found · showing ${result.offset + 1}-${Math.min(result.offset + result.projects.length, result.total)}`;
+	const prev = el<HTMLButtonElement>("projectsPrevPage");
+	const next = el<HTMLButtonElement>("projectsNextPage");
+	if (prev) prev.disabled = result.offset === 0;
+	if (next) next.disabled = !result.has_more;
+}
+
+function refreshProjectCoordinatorGroupNamesInBackground(result: {
+	projects: ProjectScopeInventoryProject[];
+	total: number;
+	offset: number;
+	has_more: boolean;
+}) {
+	void refreshProjectCoordinatorGroupNames().then(() => {
+		if (isProjectSpaceSelectActive()) return;
+		renderProjectInventory(result);
+	});
+}
+
 export async function loadProjectsData() {
 	const meta = el<HTMLDivElement>("projectsInventoryMeta");
 	const list = el<HTMLDivElement>("projectsInventoryList");
 	if (!meta || !list) return;
+	if (isProjectSpaceSelectActive()) {
+		skippedProjectRefreshForActiveSelect = true;
+		return;
+	}
+	skippedProjectRefreshForActiveSelect = false;
 	meta.textContent = "Loading project inventory…";
 	try {
 		const [result, settings] = await Promise.all([
@@ -730,21 +842,8 @@ export async function loadProjectsData() {
 			api.loadSharingDomainSettings(),
 		]);
 		scopes = settings.scopes;
-		list.textContent = "";
-		if (result.projects.length === 0) {
-			renderEmpty("No projects match those filters.");
-		} else {
-			for (const cluster of projectClusters(result.projects))
-				list.appendChild(renderProjectCluster(cluster));
-		}
-		meta.textContent =
-			result.total === 0
-				? "0 project identities found"
-				: `${result.total} project identit${result.total === 1 ? "y" : "ies"} found · showing ${result.offset + 1}-${Math.min(result.offset + result.projects.length, result.total)}`;
-		const prev = el<HTMLButtonElement>("projectsPrevPage");
-		const next = el<HTMLButtonElement>("projectsNextPage");
-		if (prev) prev.disabled = result.offset === 0;
-		if (next) next.disabled = !result.has_more;
+		renderProjectInventory(result);
+		refreshProjectCoordinatorGroupNamesInBackground(result);
 	} catch (error) {
 		meta.textContent = "Project inventory failed to load.";
 		renderEmpty(error instanceof Error ? error.message : "Unable to load project inventory.");
