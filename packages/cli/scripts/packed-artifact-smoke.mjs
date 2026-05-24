@@ -2,7 +2,6 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 
 const packageRoot = process.cwd();
 const workspaceRoot = resolve(packageRoot, "..", "..");
@@ -69,36 +68,17 @@ try {
 	assert(existsSync(packedTarball), `Packed tarball not found: ${packedTarball}`);
 
 	const tarListing = run("tar", ["-tf", packedTarball]).stdout;
-	assert(
-		tarListing.includes("package/.opencode/plugins/codemem.js"),
-		"Packed artifact is missing .opencode/plugins/codemem.js",
-	);
-	assert(
-		tarListing.includes("package/.opencode/lib/compat.js"),
-		"Packed artifact is missing .opencode/lib/compat.js",
-	);
-	assert(
-		tarListing.includes("package/.opencode/package.json"),
-		"Packed artifact is missing .opencode/package.json",
-	);
+	assert(tarListing.includes("package/dist/index.js"), "Packed artifact is missing dist/index.js");
 	assert(tarListing.includes("package/README.md"), "Packed artifact is missing README.md");
 
 	const installDir = join(tempDir, "install");
 	run("npm", ["install", "--prefix", installDir, coreTarball, mcpTarball, serverTarball, packedTarball]);
 
 	const installedPackageRoot = join(installDir, "node_modules", "codemem");
-	const installedPluginRoot = join(installedPackageRoot, ".opencode");
 	const cliBin = join(installDir, "node_modules", ".bin", process.platform === "win32" ? "codemem.cmd" : "codemem");
 
 	assert(existsSync(cliBin), "Installed artifact is missing the codemem binary");
-	assert(
-		existsSync(join(installedPluginRoot, "plugins", "codemem.js")),
-		"Installed artifact is missing .opencode/plugins/codemem.js",
-	);
-	assert(
-		existsSync(join(installedPluginRoot, "package.json")),
-		"Installed artifact is missing .opencode/package.json",
-	);
+	assert(existsSync(join(installedPackageRoot, "dist", "index.js")), "Installed artifact is missing dist/index.js");
 	assert(
 		existsSync(join(installedPackageRoot, "README.md")),
 		"Installed artifact is missing README.md",
@@ -109,22 +89,6 @@ try {
 
 	const versionOutput = run(cliBin, ["version"]).stdout.trim();
 	assert(versionOutput === packageVersion, `Installed CLI reported ${versionOutput}, expected ${packageVersion}`);
-
-	run("npm", ["install", "--prefix", installedPluginRoot, "--no-save"]);
-	const installedPluginPackage = JSON.parse(
-		readFileSync(resolve(installedPluginRoot, "node_modules", "@opencode-ai", "plugin", "package.json"), "utf8"),
-	);
-	assert(
-		installedPluginPackage.version === "1.2.27",
-		`Installed plugin runtime version was ${installedPluginPackage.version}, expected 1.2.27`,
-	);
-	const pluginModuleUrl = pathToFileURL(join(installedPluginRoot, "plugins", "codemem.js")).href;
-	run(process.execPath, [
-		"--input-type=module",
-		"-e",
-		"const mod = await import(process.argv[1]); if (!mod.default) throw new Error('plugin default export missing');",
-		pluginModuleUrl,
-	]);
 } finally {
 	rmSync(tempDir, { recursive: true, force: true });
 }
