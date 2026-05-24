@@ -961,6 +961,226 @@ describe("ObserverClient.observe()", () => {
 		expect(result.provider).toBe("openai");
 	});
 
+	it("allows no-auth calls to explicit OpenAI-compatible base URLs", async () => {
+		let capturedUrl: string | undefined;
+		let capturedHeaders: Record<string, string> | undefined;
+
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			capturedUrl = String(input);
+			capturedHeaders = Object.fromEntries(
+				Object.entries((init?.headers as Record<string, string>) ?? {}),
+			);
+			return new Response(
+				JSON.stringify({
+					choices: [{ message: { content: "local model response" } }],
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		}) as typeof globalThis.fetch;
+
+		const client = new ObserverClient({
+			observerProvider: "lms-200",
+			observerModel: "qwopus-glm-18b-merged",
+			observerRuntime: "api_http",
+			observerApiKey: null,
+			observerBaseUrl: "http://127.0.0.1:1234/v1",
+			observerMaxChars: 12_000,
+			observerMaxTokens: 4_000,
+			observerHeaders: {},
+			observerAuthSource: "none",
+			observerAuthFile: null,
+			observerAuthCommand: [],
+			observerAuthTimeoutMs: 1500,
+			observerAuthCacheTtlS: 300,
+		});
+
+		const result = await client.observe("system", "user");
+
+		expect(capturedUrl).toBe("http://127.0.0.1:1234/v1/chat/completions");
+		expect(capturedHeaders?.authorization).toBeUndefined();
+		expect(result.raw).toBe("local model response");
+	});
+
+	it("parses OpenAI-compatible chat content blocks", async () => {
+		const observerApiKey = fixtureToken("openai-content-blocks");
+		globalThis.fetch = (async () => {
+			return new Response(
+				JSON.stringify({
+					choices: [
+						{
+							message: {
+								content: [
+									{ type: "text", text: "first" },
+									{ type: "output_text", text: " second" },
+								],
+							},
+						},
+					],
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		}) as typeof globalThis.fetch;
+
+		const client = new ObserverClient({
+			observerProvider: "openai",
+			observerModel: "gpt-5.4-mini",
+			observerRuntime: "api_http",
+			observerApiKey,
+			observerBaseUrl: null,
+			observerOpenAIUseResponses: false,
+			observerMaxChars: 12_000,
+			observerMaxTokens: 4_000,
+			observerHeaders: {},
+			observerAuthSource: "auto",
+			observerAuthFile: null,
+			observerAuthCommand: [],
+			observerAuthTimeoutMs: 1500,
+			observerAuthCacheTtlS: 300,
+			observerExplicitConfigKeys: ["observerOpenAIUseResponses"],
+		});
+
+		const result = await client.observe("system", "user");
+
+		expect(result.raw).toBe("first second");
+	});
+
+	it("allows no-auth calls to custom OpenCode provider base URLs", async () => {
+		const prevHome = process.env.HOME;
+		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-custom-no-auth-provider-test-"));
+		const configDir = join(tmpDir, ".config", "opencode");
+		mkdirSync(configDir, { recursive: true });
+		let capturedUrl: string | undefined;
+		let capturedHeaders: Record<string, string> | undefined;
+
+		writeFileSync(
+			join(configDir, "opencode.jsonc"),
+			JSON.stringify({
+				provider: {
+					work: {
+						options: {
+							baseURL: "https://gateway.example.test/v1",
+						},
+						models: {
+							fast: { id: "gateway-fast" },
+						},
+					},
+				},
+			}),
+		);
+
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			capturedUrl = String(input);
+			capturedHeaders = Object.fromEntries(
+				Object.entries((init?.headers as Record<string, string>) ?? {}),
+			);
+			return new Response(
+				JSON.stringify({
+					choices: [{ message: { content: "gateway response" } }],
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		}) as typeof globalThis.fetch;
+
+		try {
+			process.env.HOME = tmpDir;
+			const client = new ObserverClient({
+				observerProvider: "work",
+				observerModel: "work/fast",
+				observerRuntime: null,
+				observerApiKey: null,
+				observerBaseUrl: null,
+				observerMaxChars: 12_000,
+				observerMaxTokens: 4_000,
+				observerHeaders: {},
+				observerAuthSource: "none",
+				observerAuthFile: null,
+				observerAuthCommand: [],
+				observerAuthTimeoutMs: 1500,
+				observerAuthCacheTtlS: 300,
+			});
+
+			const result = await client.observe("system", "user");
+
+			expect(capturedUrl).toBe("https://gateway.example.test/v1/chat/completions");
+			expect(capturedHeaders?.authorization).toBeUndefined();
+			expect(result.model).toBe("gateway-fast");
+			expect(result.raw).toBe("gateway response");
+		} finally {
+			if (prevHome == null) delete process.env.HOME;
+			else process.env.HOME = prevHome;
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it("still requires auth for the built-in opencode provider", async () => {
+		let fetchCalls = 0;
+		globalThis.fetch = (async () => {
+			fetchCalls += 1;
+			return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+		}) as typeof globalThis.fetch;
+
+		const client = new ObserverClient({
+			observerProvider: "opencode",
+			observerModel: "opencode/gpt-5.4-mini",
+			observerRuntime: "api_http",
+			observerApiKey: null,
+			observerBaseUrl: null,
+			observerMaxChars: 12_000,
+			observerMaxTokens: 4_000,
+			observerHeaders: {},
+			observerAuthSource: "none",
+			observerAuthFile: null,
+			observerAuthCommand: [],
+			observerAuthTimeoutMs: 1500,
+			observerAuthCacheTtlS: 300,
+		});
+
+		const result = await client.observe("system", "user");
+
+		expect(result.raw).toBeNull();
+		expect(fetchCalls).toBe(0);
+	});
+
+	it("allows no-auth calls for opencode when observer_base_url is explicit", async () => {
+		let capturedUrl: string | undefined;
+		let capturedHeaders: Record<string, string> | undefined;
+
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			capturedUrl = String(input);
+			capturedHeaders = Object.fromEntries(
+				Object.entries((init?.headers as Record<string, string>) ?? {}),
+			);
+			return new Response(
+				JSON.stringify({
+					choices: [{ message: { content: "explicit opencode gateway response" } }],
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		}) as typeof globalThis.fetch;
+
+		const client = new ObserverClient({
+			observerProvider: "opencode",
+			observerModel: "opencode/gpt-5.4-mini",
+			observerRuntime: "api_http",
+			observerApiKey: null,
+			observerBaseUrl: "http://127.0.0.1:1234/v1",
+			observerMaxChars: 12_000,
+			observerMaxTokens: 4_000,
+			observerHeaders: {},
+			observerAuthSource: "none",
+			observerAuthFile: null,
+			observerAuthCommand: [],
+			observerAuthTimeoutMs: 1500,
+			observerAuthCacheTtlS: 300,
+		});
+
+		const result = await client.observe("system", "user");
+
+		expect(capturedUrl).toBe("http://127.0.0.1:1234/v1/chat/completions");
+		expect(capturedHeaders?.authorization).toBeUndefined();
+		expect(result.raw).toBe("explicit opencode gateway response");
+	});
+
 	it("dedupes authorization headers case-insensitively for custom providers", async () => {
 		const prevHome = process.env.HOME;
 		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-custom-auth-header-test-"));

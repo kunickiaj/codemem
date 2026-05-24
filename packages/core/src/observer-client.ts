@@ -787,11 +787,13 @@ function parseAnthropicResponse(body: Record<string, unknown>): string | null {
 // OpenAI helpers
 // ---------------------------------------------------------------------------
 
-function buildOpenAIHeaders(token: string): Record<string, string> {
-	return {
-		authorization: `Bearer ${token}`,
-		"content-type": "application/json",
-	};
+function buildOpenAIHeaders(token: string | null): Record<string, string> {
+	return token
+		? {
+				authorization: `Bearer ${token}`,
+				"content-type": "application/json",
+			}
+		: { "content-type": "application/json" };
 }
 
 function mergeHeadersCaseInsensitive(
@@ -917,7 +919,20 @@ function parseOpenAIResponse(body: Record<string, unknown>): string | null {
 	const message = first.message as Record<string, unknown> | undefined;
 	if (!message) return null;
 	const content = message.content;
-	return typeof content === "string" ? content : null;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return null;
+	const parts: string[] = [];
+	for (const block of content) {
+		if (typeof block !== "object" || block == null) continue;
+		const record = block as Record<string, unknown>;
+		if (
+			(record.type === "text" || record.type === "output_text") &&
+			typeof record.text === "string"
+		) {
+			parts.push(record.text);
+		}
+	}
+	return parts.length > 0 ? parts.join("") : null;
 }
 
 function parseOpenAIResponsesResponse(body: Record<string, unknown>): string | null {
@@ -1063,6 +1078,7 @@ export class ObserverClient {
 
 	private _observerHeaders: Record<string, string>;
 	private _customBaseUrl: string | null;
+	private _customBaseUrlAllowsNoAuth: boolean;
 	private readonly _apiKey: string | null;
 
 	// Claude sidecar state
@@ -1226,6 +1242,7 @@ export class ObserverClient {
 
 		const baseUrl = cfg.observerBaseUrl;
 		this._customBaseUrl = typeof baseUrl === "string" && baseUrl.trim() ? baseUrl.trim() : null;
+		this._customBaseUrlAllowsNoAuth = this._customBaseUrl != null;
 
 		// Set up auth adapter
 		this.authAdapter = new ObserverAuthAdapter({
@@ -1341,6 +1358,10 @@ export class ObserverClient {
 		this._initProvider(force);
 	}
 
+	private canCallOpenAIDirectWithoutAuth(): boolean {
+		return this._customBaseUrlAllowsNoAuth && !this._codexAccess && this.provider !== "anthropic";
+	}
+
 	/**
 	 * Call the LLM with a system prompt and user prompt, return the response.
 	 *
@@ -1408,9 +1429,9 @@ export class ObserverClient {
 		schema: Record<string, unknown>,
 	): Promise<ObserverStructuredJsonResponse> {
 		if (this.provider === "openai" && this.openaiUseResponses && !this._codexAccess) {
-			if (!this.auth.token) {
+			if (!this.auth.token && !this.canCallOpenAIDirectWithoutAuth()) {
 				this._initProvider(true);
-				if (!this.auth.token) {
+				if (!this.auth.token && !this.canCallOpenAIDirectWithoutAuth()) {
 					return {
 						raw: null,
 						parsed: null,
@@ -1427,7 +1448,7 @@ export class ObserverClient {
 			} else {
 				url = "https://api.openai.com/v1/responses";
 			}
-			const headers = buildOpenAIHeaders(this.auth.token ?? "");
+			const headers = buildOpenAIHeaders(this.auth.token);
 			const mergedHeaders = mergeHeadersCaseInsensitive(
 				headers,
 				renderObserverHeaders(this._observerHeaders, this.auth),
@@ -1535,7 +1556,10 @@ export class ObserverClient {
 				: resolveBuiltInProviderModel(this.provider, this.model);
 
 			// Persist resolved values for use in _callOpenAIDirect
-			if (baseUrl && !this._customBaseUrl) this._customBaseUrl = baseUrl;
+			if (baseUrl && !this._customBaseUrl) {
+				this._customBaseUrl = baseUrl;
+				this._customBaseUrlAllowsNoAuth = hasExplicitProviderConfig;
+			}
 			if (modelId) this.model = modelId;
 			if (providerHeaders && Object.keys(providerHeaders).length > 0) {
 				this._observerHeaders = { ...this._observerHeaders, ...providerHeaders };
@@ -1603,11 +1627,11 @@ export class ObserverClient {
 		}
 
 		// Refresh if we have no token
-		if (!this.auth.token) {
+		if (!this.auth.token && !this.canCallOpenAIDirectWithoutAuth()) {
 			this._initProvider(true);
 			if (this._codexAccess) return this._callCodexConsumer(systemPrompt, userPrompt);
 			if (this._anthropicOAuthAccess) return this._callAnthropicConsumer(systemPrompt, userPrompt);
-			if (!this.auth.token) {
+			if (!this.auth.token && !this.canCallOpenAIDirectWithoutAuth()) {
 				this._setLastError(`${capitalize(this.provider)} credentials are missing.`, "auth_missing");
 				return null;
 			}
@@ -1660,7 +1684,7 @@ export class ObserverClient {
 				: "https://api.openai.com/v1/chat/completions";
 		}
 
-		const headers = buildOpenAIHeaders(this.auth.token ?? "");
+		const headers = buildOpenAIHeaders(this.auth.token);
 		const mergedHeaders = mergeHeadersCaseInsensitive(
 			headers,
 			renderObserverHeaders(this._observerHeaders, this.auth),
