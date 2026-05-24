@@ -50,6 +50,7 @@ export interface AuthorizationCodeRecord {
 	clientId: string;
 	redirectUri: string;
 	codeChallenge: string;
+	resource?: string;
 	expiresAt: number;
 	used: boolean;
 }
@@ -62,6 +63,7 @@ export interface OAuthAuthorizationCodeStore {
 
 export interface AccessTokenRecord {
 	clientId: string;
+	resource?: string;
 	tokenHash: string;
 	issuedAt: number;
 	expiresAt: number;
@@ -74,7 +76,11 @@ export type AccessTokenVerificationResult =
 	| { ok: false; reason: "unknown_token" | "expired_token" | "revoked_token" };
 
 export interface OAuthAccessTokenStore {
-	issueToken(clientId: string, now?: number): { token: string; expiresIn: number } | undefined;
+	issueToken(
+		clientId: string,
+		now?: number,
+		resource?: string,
+	): { token: string; expiresIn: number } | undefined;
 	verifyToken(token: string, now?: number): AccessTokenVerificationResult;
 	revokeToken(token: string, now?: number): boolean;
 }
@@ -98,6 +104,7 @@ export interface PreparedMcpOAuthAuthorizationRequest {
 	clientId: string;
 	redirectUri: string;
 	codeChallenge: string;
+	resource: string | null;
 	state: string | null;
 }
 
@@ -160,13 +167,18 @@ export class InMemoryOAuthAccessTokenStore implements OAuthAccessTokenStore {
 	readonly #tokensByHash = new Map<string, AccessTokenRecord>();
 	readonly #tokenHashKey = randomBytes(32);
 
-	issueToken(clientId: string, now = Date.now()): { token: string; expiresIn: number } | undefined {
+	issueToken(
+		clientId: string,
+		now = Date.now(),
+		resource?: string,
+	): { token: string; expiresIn: number } | undefined {
 		this.#deleteInactiveTokens(now);
 		if (this.#tokensByHash.size >= MAX_ACCESS_TOKENS) return undefined;
 		const tokenBytes = randomBytes(ACCESS_TOKEN_BYTES);
 		const tokenHash = signOAuthAccessTokenBytes(tokenBytes, this.#tokenHashKey);
 		this.#tokensByHash.set(tokenHash, {
 			clientId,
+			resource,
 			tokenHash,
 			issuedAt: now,
 			expiresAt: now + ACCESS_TOKEN_TTL_SECONDS * 1000,
@@ -322,6 +334,7 @@ export function authorizeMcpOAuthClient(
 			clientId: prepared.clientId,
 			redirectUri: prepared.redirectUri,
 			codeChallenge: prepared.codeChallenge,
+			...(prepared.resource ? { resource: prepared.resource } : {}),
 			expiresAt: now + AUTHORIZATION_CODE_TTL_MS,
 		},
 		now,
@@ -343,6 +356,7 @@ export function prepareMcpOAuthAuthorizationRequest(
 	const responseType = params.get("response_type") ?? "";
 	const codeChallenge = params.get("code_challenge") ?? "";
 	const codeChallengeMethod = params.get("code_challenge_method") ?? "";
+	const resource = params.get("resource");
 	const state = params.get("state");
 
 	if (responseType !== "code") return invalidOAuthRequest("unsupported_response_type");
@@ -359,7 +373,7 @@ export function prepareMcpOAuthAuthorizationRequest(
 		return invalidOAuthRequest("invalid_request", "redirect_uri is not registered for this client");
 	}
 
-	return { clientId, redirectUri, codeChallenge, state };
+	return { clientId, redirectUri, codeChallenge, resource, state };
 }
 
 export function exchangeMcpOAuthAuthorizationCode(
@@ -377,6 +391,7 @@ export function exchangeMcpOAuthAuthorizationCode(
 	const code = params.get("code") ?? "";
 	const redirectUri = params.get("redirect_uri") ?? "";
 	const codeVerifier = params.get("code_verifier") ?? "";
+	const resource = params.get("resource");
 	const client = getRegisteredClient(clientsStore, clientId);
 	if (!client) return invalidOAuthRequest("invalid_client", "Unknown OAuth client_id");
 	if (!PKCE_VERIFIER.test(codeVerifier)) {
@@ -401,8 +416,12 @@ export function exchangeMcpOAuthAuthorizationCode(
 		codeStore.consumeCode(code);
 		return invalidOAuthRequest("invalid_grant", "PKCE verification failed");
 	}
+	if ((record.resource ?? null) !== (resource || null)) {
+		codeStore.consumeCode(code);
+		return invalidOAuthRequest("invalid_grant", "Code does not match resource");
+	}
 
-	const issued = tokenStore.issueToken(clientId, now);
+	const issued = tokenStore.issueToken(clientId, now, record.resource);
 	if (!issued) {
 		// Token-store overload is transient: leave the auth code unused so the
 		// client can retry token exchange without restarting the OAuth flow.
@@ -411,9 +430,10 @@ export function exchangeMcpOAuthAuthorizationCode(
 
 	const consumed = codeStore.consumeCode(code);
 	if (!consumed) {
+		tokenStore.revokeToken(issued.token, now);
 		// Lost a race with another request that consumed the code in the gap
 		// between peek and consume. Treat as invalid_grant rather than issuing
-		// the token, since the code is no longer single-use atomic.
+		// a duplicate usable token, since the code is no longer single-use atomic.
 		return invalidOAuthRequest("invalid_grant", "Authorization code already used");
 	}
 

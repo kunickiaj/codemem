@@ -9,6 +9,8 @@ import {
 	createMcpProtectedResourceMetadata,
 	exchangeMcpOAuthAuthorizationCode,
 	normalizeMcpPublicUrl,
+	type OAuthAccessTokenStore,
+	type OAuthAuthorizationCodeStore,
 	registerMcpOAuthClient,
 	revokeMcpOAuthAccessToken,
 } from "./oauth.js";
@@ -443,7 +445,7 @@ describe("MCP OAuth metadata and dynamic client registration", () => {
 		const codeStore = createInMemoryOAuthAuthorizationCodeStore();
 		const exhaustedTokenStore = {
 			issueToken: () => undefined,
-			verifyToken: () => undefined,
+			verifyToken: () => ({ ok: false, reason: "unknown_token" }) as const,
 			revokeToken: () => false,
 		};
 		const verifier = "j".repeat(43);
@@ -489,6 +491,128 @@ describe("MCP OAuth metadata and dynamic client registration", () => {
 		expect(
 			exchangeMcpOAuthAuthorizationCode(params, clientsStore, codeStore, workingTokenStore),
 		).toMatchObject({ status: 400, body: { error: "invalid_grant" } });
+	});
+
+	it("binds exchanged access tokens to the authorized resource", () => {
+		const clientsStore = createInMemoryOAuthClientsStore();
+		const codeStore = createInMemoryOAuthAuthorizationCodeStore();
+		const tokenStore = createInMemoryOAuthAccessTokenStore();
+		const verifier = "r".repeat(43);
+		const registered = registerMcpOAuthClient(
+			{
+				redirect_uris: ["https://claude.ai/api/mcp/auth_callback"],
+				token_endpoint_auth_method: "none",
+			},
+			clientsStore,
+		);
+		if (registered.status !== 201) throw new Error("expected successful registration");
+		const authorizeParams = new URLSearchParams({
+			client_id: registered.body.client_id,
+			redirect_uri: "https://claude.ai/api/mcp/auth_callback",
+			response_type: "code",
+			code_challenge_method: "S256",
+			code_challenge: pkceS256(verifier),
+			resource: "https://codemem.example.test/mcp",
+		});
+
+		const wrongResourceAuthorize = authorizeMcpOAuthClient(
+			authorizeParams,
+			clientsStore,
+			codeStore,
+		);
+		if (wrongResourceAuthorize.status !== 302) throw new Error("expected authorization redirect");
+		expect(
+			exchangeMcpOAuthAuthorizationCode(
+				new URLSearchParams({
+					grant_type: "authorization_code",
+					client_id: registered.body.client_id,
+					redirect_uri: "https://claude.ai/api/mcp/auth_callback",
+					code: new URL(wrongResourceAuthorize.location).searchParams.get("code") ?? "",
+					code_verifier: verifier,
+					resource: "https://other.example.test/mcp",
+				}),
+				clientsStore,
+				codeStore,
+				tokenStore,
+			),
+		).toMatchObject({ status: 400, body: { error: "invalid_grant" } });
+
+		const authorize = authorizeMcpOAuthClient(authorizeParams, clientsStore, codeStore);
+		if (authorize.status !== 302) throw new Error("expected authorization redirect");
+		const token = exchangeMcpOAuthAuthorizationCode(
+			new URLSearchParams({
+				grant_type: "authorization_code",
+				client_id: registered.body.client_id,
+				redirect_uri: "https://claude.ai/api/mcp/auth_callback",
+				code: new URL(authorize.location).searchParams.get("code") ?? "",
+				code_verifier: verifier,
+				resource: "https://codemem.example.test/mcp",
+			}),
+			clientsStore,
+			codeStore,
+			tokenStore,
+		);
+
+		expect(token.status).toBe(200);
+		if (token.status !== 200) throw new Error("expected token response");
+		expect(tokenStore.verifyToken(token.body.access_token)).toMatchObject({
+			ok: true,
+			record: { resource: "https://codemem.example.test/mcp" },
+		});
+	});
+
+	it("revokes tokens issued during an authorization-code consume race", () => {
+		const clientsStore = createInMemoryOAuthClientsStore();
+		const realTokenStore = createInMemoryOAuthAccessTokenStore();
+		const issuedTokens: string[] = [];
+		const tokenStore: OAuthAccessTokenStore = {
+			issueToken: (clientId, now, resource) => {
+				const issued = realTokenStore.issueToken(clientId, now, resource);
+				if (issued) issuedTokens.push(issued.token);
+				return issued;
+			},
+			verifyToken: (token, now) => realTokenStore.verifyToken(token, now),
+			revokeToken: (token, now) => realTokenStore.revokeToken(token, now),
+		};
+		const registered = registerMcpOAuthClient(
+			{
+				redirect_uris: ["https://claude.ai/api/mcp/auth_callback"],
+				token_endpoint_auth_method: "none",
+			},
+			clientsStore,
+		);
+		if (registered.status !== 201) throw new Error("expected successful registration");
+		const codeStore: OAuthAuthorizationCodeStore = {
+			issueCode: () => "race-code",
+			peekCode: () => ({
+				clientId: registered.body.client_id,
+				redirectUri: "https://claude.ai/api/mcp/auth_callback",
+				codeChallenge: pkceS256("s".repeat(43)),
+				expiresAt: Date.now() + 5 * 60 * 1000,
+				used: false,
+			}),
+			consumeCode: () => undefined,
+		};
+
+		expect(
+			exchangeMcpOAuthAuthorizationCode(
+				new URLSearchParams({
+					grant_type: "authorization_code",
+					client_id: registered.body.client_id,
+					redirect_uri: "https://claude.ai/api/mcp/auth_callback",
+					code: "race-code",
+					code_verifier: "s".repeat(43),
+				}),
+				clientsStore,
+				codeStore,
+				tokenStore,
+			),
+		).toMatchObject({ status: 400, body: { error: "invalid_grant" } });
+		expect(issuedTokens).toHaveLength(1);
+		expect(realTokenStore.verifyToken(issuedTokens[0] ?? "")).toMatchObject({
+			ok: false,
+			reason: "revoked_token",
+		});
 	});
 
 	it("consumes the authorization code on permanent grant failures", () => {
