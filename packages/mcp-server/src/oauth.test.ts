@@ -5,6 +5,7 @@ import {
 	createInMemoryOAuthAccessTokenStore,
 	createInMemoryOAuthAuthorizationCodeStore,
 	createInMemoryOAuthClientsStore,
+	createInMemoryOAuthRefreshTokenStore,
 	createMcpOAuthMetadata,
 	createMcpProtectedResourceMetadata,
 	exchangeMcpOAuthAuthorizationCode,
@@ -714,6 +715,68 @@ describe("MCP OAuth metadata and dynamic client registration", () => {
 			ok: false,
 			reason: "unknown_token",
 		});
+	});
+
+	it("allows refresh-token scope downscoping without expansion", () => {
+		const refreshStore = createInMemoryOAuthRefreshTokenStore();
+		const issued = refreshStore.issueGrant({
+			clientId: "client-scope",
+			scopes: ["memory:read", "memory:write"],
+		});
+		if (!issued) throw new Error("expected refresh token grant");
+
+		const downscoped = refreshStore.rotateRefreshToken("client-scope", issued.refreshToken, {
+			scopes: ["memory:read"],
+		});
+		expect(downscoped).toMatchObject({ ok: true, grant: { scopes: ["memory:read"] } });
+		if (!downscoped.ok) throw new Error("expected refresh token downscope");
+		expect(
+			refreshStore.rotateRefreshToken("client-scope", downscoped.refreshToken, {
+				scopes: ["memory:admin"],
+			}),
+		).toMatchObject({ ok: false, reason: "scope_mismatch" });
+	});
+
+	it("cleans refresh-token hash indexes when grants are revoked", () => {
+		const refreshStore = createInMemoryOAuthRefreshTokenStore();
+		const issued = refreshStore.issueGrant({ clientId: "client-revoke" });
+		if (!issued) throw new Error("expected refresh token grant");
+		const rotated = refreshStore.rotateRefreshToken("client-revoke", issued.refreshToken);
+		if (!rotated.ok) throw new Error("expected refresh token rotation");
+
+		expect(refreshStore.revokeRefreshToken(rotated.refreshToken)).toBe(issued.grant.grantId);
+		expect(refreshStore.revokeRefreshToken(rotated.refreshToken)).toBeUndefined();
+	});
+
+	it("cleans every refresh-token hash for multi-rotated grants", () => {
+		const refreshStore = createInMemoryOAuthRefreshTokenStore();
+		const issued = refreshStore.issueGrant({ clientId: "client-multi" }, 1_000);
+		if (!issued) throw new Error("expected refresh token grant");
+		const first = refreshStore.rotateRefreshToken("client-multi", issued.refreshToken, {}, 2_000);
+		if (!first.ok) throw new Error("expected first refresh token rotation");
+		const second = refreshStore.rotateRefreshToken("client-multi", first.refreshToken, {}, 3_000);
+		if (!second.ok) throw new Error("expected second refresh token rotation");
+
+		expect(refreshStore.revokeRefreshToken(second.refreshToken, 4_000)).toBe(issued.grant.grantId);
+		expect(refreshStore.revokeRefreshToken(issued.refreshToken, 4_001)).toBeUndefined();
+		expect(refreshStore.revokeRefreshToken(first.refreshToken, 4_001)).toBeUndefined();
+		expect(refreshStore.revokeRefreshToken(second.refreshToken, 4_001)).toBeUndefined();
+	});
+
+	it("cleans every refresh-token hash for expired multi-rotated grants", () => {
+		const refreshStore = createInMemoryOAuthRefreshTokenStore();
+		const issued = refreshStore.issueGrant({ clientId: "client-expire" }, 1_000);
+		if (!issued) throw new Error("expected refresh token grant");
+		const first = refreshStore.rotateRefreshToken("client-expire", issued.refreshToken, {}, 2_000);
+		if (!first.ok) throw new Error("expected first refresh token rotation");
+		const second = refreshStore.rotateRefreshToken("client-expire", first.refreshToken, {}, 3_000);
+		if (!second.ok) throw new Error("expected second refresh token rotation");
+
+		const afterRefreshTtl = 31 * 24 * 60 * 60 * 1000;
+		expect(refreshStore.issueGrant({ clientId: "client-next" }, afterRefreshTtl)).toBeDefined();
+		expect(refreshStore.revokeRefreshToken(issued.refreshToken, afterRefreshTtl)).toBeUndefined();
+		expect(refreshStore.revokeRefreshToken(first.refreshToken, afterRefreshTtl)).toBeUndefined();
+		expect(refreshStore.revokeRefreshToken(second.refreshToken, afterRefreshTtl)).toBeUndefined();
 	});
 });
 

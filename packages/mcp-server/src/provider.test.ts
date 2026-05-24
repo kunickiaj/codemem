@@ -1,3 +1,4 @@
+import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { Response } from "express";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OAuthAccessTokenStore, OAuthAuthorizationCodeStore } from "./oauth.js";
@@ -5,6 +6,7 @@ import {
 	createInMemoryOAuthAccessTokenStore,
 	createInMemoryOAuthAuthorizationCodeStore,
 	createInMemoryOAuthClientsStore,
+	createInMemoryOAuthRefreshTokenStore,
 	registerMcpOAuthClient,
 } from "./oauth.js";
 import { createInMemoryOidcPendingAuthorizationStore, type OidcConfig } from "./oidc.js";
@@ -121,9 +123,10 @@ describe("MemoryOAuthServerProvider", () => {
 
 		expect(tokens).toMatchObject({ token_type: "Bearer", expires_in: 3600 });
 		expect(tokens.access_token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		expect(tokens.refresh_token).toMatch(/^[A-Za-z0-9_-]{43}$/);
 		expect(tokenStore.verifyToken(tokens.access_token, NOW)).toMatchObject({
 			ok: true,
-			record: { clientId: client.client_id },
+			record: { clientId: client.client_id, grantId: expect.any(String) },
 		});
 		await expect(
 			provider.exchangeAuthorizationCode(client, code, undefined, REDIRECT_URI),
@@ -165,6 +168,23 @@ describe("MemoryOAuthServerProvider", () => {
 			clientId: client.client_id,
 			resource: new URL(PUBLIC_MCP_URL),
 		});
+	});
+
+	it("rejects access tokens whose bound audience does not match this resource server", async () => {
+		const clientsStore = createInMemoryOAuthClientsStore();
+		const tokenStore = createInMemoryOAuthAccessTokenStore();
+		const provider = new MemoryOAuthServerProvider({
+			clientsStore,
+			codeStore: createInMemoryOAuthAuthorizationCodeStore(),
+			tokenStore,
+			publicMcpUrl: PUBLIC_MCP_URL,
+			now: () => NOW,
+		});
+		const client = registerClient(clientsStore);
+		const issued = tokenStore.issueToken(client.client_id, NOW, "https://other.example.test/mcp");
+		if (!issued) throw new Error("expected token issuance");
+
+		await expect(provider.verifyAccessToken(issued.token)).rejects.toThrow(/audience/);
 	});
 
 	it("rejects token redemption that omits redirect_uri", async () => {
@@ -295,16 +315,167 @@ describe("MemoryOAuthServerProvider", () => {
 		await expect(provider.verifyAccessToken("not-a-token")).rejects.toThrow(/invalid/);
 	});
 
-	it("rejects refresh-token exchange until rotation support lands", async () => {
+	it("exchanges refresh tokens with dual-token rotation and preserves resource binding", async () => {
 		const clientsStore = createInMemoryOAuthClientsStore();
+		const codeStore = createInMemoryOAuthAuthorizationCodeStore();
+		const tokenStore = createInMemoryOAuthAccessTokenStore();
 		const provider = new MemoryOAuthServerProvider({
 			clientsStore,
-			codeStore: createInMemoryOAuthAuthorizationCodeStore(),
-			tokenStore: createInMemoryOAuthAccessTokenStore(),
+			codeStore,
+			tokenStore,
 			publicMcpUrl: PUBLIC_MCP_URL,
+			now: () => NOW,
+		});
+		const client = registerClient(clientsStore);
+		const initial = await provider.exchangeAuthorizationCode(
+			client,
+			issueCode(codeStore, client.client_id, PUBLIC_MCP_URL),
+			undefined,
+			REDIRECT_URI,
+			new URL(PUBLIC_MCP_URL),
+		);
+		if (!initial.refresh_token) throw new Error("expected refresh token");
+
+		const refreshed = await provider.exchangeRefreshToken(
+			client,
+			initial.refresh_token,
+			undefined,
+			new URL(PUBLIC_MCP_URL),
+		);
+
+		expect(refreshed.access_token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		expect(refreshed.refresh_token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		expect(refreshed.refresh_token).not.toBe(initial.refresh_token);
+		await expect(provider.verifyAccessToken(refreshed.access_token)).resolves.toMatchObject({
+			clientId: client.client_id,
+			resource: new URL(PUBLIC_MCP_URL),
+		});
+	});
+
+	it("accepts one retry with the previous refresh token and then treats older tokens as replay", async () => {
+		const clientsStore = createInMemoryOAuthClientsStore();
+		const codeStore = createInMemoryOAuthAuthorizationCodeStore();
+		const tokenStore = createInMemoryOAuthAccessTokenStore();
+		const provider = new MemoryOAuthServerProvider({
+			clientsStore,
+			codeStore,
+			tokenStore,
+			publicMcpUrl: PUBLIC_MCP_URL,
+			now: () => NOW,
+		});
+		const client = registerClient(clientsStore);
+		const initial = await provider.exchangeAuthorizationCode(
+			client,
+			issueCode(codeStore, client.client_id),
+			undefined,
+			REDIRECT_URI,
+		);
+		if (!initial.refresh_token) throw new Error("expected refresh token");
+		const rotated = await provider.exchangeRefreshToken(client, initial.refresh_token);
+		const retry = await provider.exchangeRefreshToken(client, initial.refresh_token);
+
+		expect(rotated.refresh_token).not.toBe(initial.refresh_token);
+		expect(retry.refresh_token).not.toBe(rotated.refresh_token);
+		await expect(
+			provider.exchangeRefreshToken(client, rotated.refresh_token ?? ""),
+		).rejects.toThrow(/replay/i);
+		await expect(provider.verifyAccessToken(rotated.access_token)).rejects.toThrow(/revoked/);
+		await expect(provider.exchangeRefreshToken(client, initial.refresh_token)).rejects.toThrow(
+			/invalid refresh token/i,
+		);
+	});
+
+	it("revokes refresh-token grants and cascades issued access tokens", async () => {
+		const clientsStore = createInMemoryOAuthClientsStore();
+		const codeStore = createInMemoryOAuthAuthorizationCodeStore();
+		const tokenStore = createInMemoryOAuthAccessTokenStore();
+		const provider = new MemoryOAuthServerProvider({
+			clientsStore,
+			codeStore,
+			tokenStore,
+			publicMcpUrl: PUBLIC_MCP_URL,
+			now: () => NOW,
+		});
+		const client = registerClient(clientsStore);
+		const initial = await provider.exchangeAuthorizationCode(
+			client,
+			issueCode(codeStore, client.client_id),
+			undefined,
+			REDIRECT_URI,
+		);
+		if (!initial.refresh_token) throw new Error("expected refresh token");
+
+		await provider.revokeToken(client, {
+			token: initial.refresh_token,
+			token_type_hint: "refresh_token",
 		});
 
-		await expect(provider.exchangeRefreshToken()).rejects.toThrow(/refresh_token grant/);
+		await expect(provider.exchangeRefreshToken(client, initial.refresh_token)).rejects.toThrow(
+			/invalid refresh token/i,
+		);
+		await expect(provider.verifyAccessToken(initial.access_token)).rejects.toThrow(/revoked/i);
+	});
+
+	it("stores refresh-token HMACs instead of plaintext token values", () => {
+		const refreshStore = createInMemoryOAuthRefreshTokenStore();
+		const issued = refreshStore.issueGrant({ clientId: "client-hash" }, NOW);
+		if (!issued) throw new Error("expected refresh grant");
+
+		expect(issued.refreshToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		expect(issued.grant.currentRefreshTokenHash).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		expect(issued.grant.currentRefreshTokenHash).not.toBe(issued.refreshToken);
+		expect(issued.grant.previousRefreshTokenHash).toBeNull();
+	});
+
+	it("rejects refresh-token client, scope, and resource mismatches as invalid grants", async () => {
+		const clientsStore = createInMemoryOAuthClientsStore();
+		const codeStore = createInMemoryOAuthAuthorizationCodeStore();
+		const provider = new MemoryOAuthServerProvider({
+			clientsStore,
+			codeStore,
+			tokenStore: createInMemoryOAuthAccessTokenStore(),
+			publicMcpUrl: PUBLIC_MCP_URL,
+			now: () => NOW,
+		});
+		const client = registerClient(clientsStore);
+		const otherClient = registerClient(clientsStore);
+		const initial = await provider.exchangeAuthorizationCode(
+			client,
+			issueCode(codeStore, client.client_id, PUBLIC_MCP_URL),
+			undefined,
+			REDIRECT_URI,
+			new URL(PUBLIC_MCP_URL),
+		);
+		if (!initial.refresh_token) throw new Error("expected refresh token");
+
+		await expect(provider.exchangeRefreshToken(otherClient, initial.refresh_token)).rejects.toThrow(
+			InvalidGrantError,
+		);
+		await expect(provider.exchangeRefreshToken(otherClient, initial.refresh_token)).rejects.toThrow(
+			/client/i,
+		);
+		await expect(
+			provider.exchangeRefreshToken(client, initial.refresh_token, ["memory:write"]),
+		).rejects.toThrow(InvalidGrantError);
+		await expect(
+			provider.exchangeRefreshToken(client, initial.refresh_token, ["memory:write"]),
+		).rejects.toThrow(/scope/i);
+		await expect(
+			provider.exchangeRefreshToken(
+				client,
+				initial.refresh_token,
+				undefined,
+				new URL("https://other.example.test/mcp"),
+			),
+		).rejects.toThrow(InvalidGrantError);
+		await expect(
+			provider.exchangeRefreshToken(
+				client,
+				initial.refresh_token,
+				undefined,
+				new URL("https://other.example.test/mcp"),
+			),
+		).rejects.toThrow(/resource/i);
 	});
 });
 

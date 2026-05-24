@@ -7,7 +7,6 @@ import {
 	InvalidTokenError,
 	ServerError,
 	TemporarilyUnavailableError,
-	UnsupportedGrantTypeError,
 	UnsupportedResponseTypeError,
 } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type {
@@ -23,7 +22,12 @@ import {
 	OAuthTokensSchema,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { Response } from "express";
-import type { OAuthAccessTokenStore, OAuthAuthorizationCodeStore } from "./oauth.js";
+import {
+	createInMemoryOAuthRefreshTokenStore,
+	type OAuthAccessTokenStore,
+	type OAuthAuthorizationCodeStore,
+	type OAuthRefreshTokenStore,
+} from "./oauth.js";
 import {
 	beginOidcAuthorization,
 	type OidcConfig,
@@ -34,6 +38,7 @@ export interface MemoryOAuthServerProviderOptions {
 	clientsStore: OAuthRegisteredClientsStore;
 	codeStore: OAuthAuthorizationCodeStore;
 	tokenStore: OAuthAccessTokenStore;
+	refreshTokenStore?: OAuthRefreshTokenStore;
 	publicMcpUrl: string;
 	oidc?: { config: OidcConfig; pendingStore: OidcPendingAuthorizationStore };
 	now?: () => number;
@@ -55,14 +60,17 @@ export interface MemoryOAuthServerProviderOptions {
  *   from `challengeForAuthorizationCode`. We do not re-verify here.
  * - `expiresAt` returned in `AuthInfo` is epoch SECONDS per the SDK's
  *   `requireBearerAuth` expectations; the underlying store records ms.
- * - Refresh-token grant is intentionally unimplemented in this slice. It is
- *   added with dual-token rotation in codemem-b20m.4.
+ * - Refresh-token grants use dual-token rotation: the current token and one
+ *   previous token are accepted to tolerate client retry races, while older
+ *   replayed tokens revoke the whole grant.
  */
 export class MemoryOAuthServerProvider implements OAuthServerProvider {
 	readonly #clientsStore: OAuthRegisteredClientsStore;
 	readonly #codeStore: OAuthAuthorizationCodeStore;
 	readonly #tokenStore: OAuthAccessTokenStore;
+	readonly #refreshTokenStore: OAuthRefreshTokenStore;
 	readonly #publicMcpUrl: string;
+	readonly #resourceServerUrl: string;
 	readonly #oidc?: { config: OidcConfig; pendingStore: OidcPendingAuthorizationStore };
 	readonly #now: () => number;
 
@@ -70,7 +78,9 @@ export class MemoryOAuthServerProvider implements OAuthServerProvider {
 		this.#clientsStore = options.clientsStore;
 		this.#codeStore = options.codeStore;
 		this.#tokenStore = options.tokenStore;
+		this.#refreshTokenStore = options.refreshTokenStore ?? createInMemoryOAuthRefreshTokenStore();
 		this.#publicMcpUrl = options.publicMcpUrl;
+		this.#resourceServerUrl = new URL(options.publicMcpUrl).href;
 		this.#oidc = options.oidc;
 		this.#now = options.now ?? Date.now;
 	}
@@ -150,16 +160,30 @@ export class MemoryOAuthServerProvider implements OAuthServerProvider {
 			throw new InvalidGrantError("Code does not match resource");
 		}
 
-		const issued = this.#tokenStore.issueToken(client.client_id, now, record.resource);
+		const grant = this.#refreshTokenStore.issueGrant(
+			{ clientId: client.client_id, resource: record.resource },
+			now,
+		);
+		if (!grant) {
+			throw new TemporarilyUnavailableError("Too many active refresh grants");
+		}
+		const issued = this.#tokenStore.issueToken(
+			client.client_id,
+			now,
+			record.resource,
+			grant.grant.grantId,
+		);
 		if (!issued) {
 			// Token-store overload is transient: leave the auth code unused so the
 			// client can retry token exchange without restarting the OAuth flow.
+			this.#refreshTokenStore.revokeGrant(grant.grant.grantId, now);
 			throw new TemporarilyUnavailableError("Too many active access tokens");
 		}
 
 		const consumed = this.#codeStore.consumeCode(authorizationCode);
 		if (!consumed) {
 			this.#tokenStore.revokeToken(issued.token, now);
+			this.#refreshTokenStore.revokeGrant(grant.grant.grantId, now);
 			// Lost a race with a concurrent exchange that consumed the code in
 			// the gap between peek and consume. Reject rather than issuing a
 			// duplicate usable token.
@@ -170,11 +194,42 @@ export class MemoryOAuthServerProvider implements OAuthServerProvider {
 			access_token: issued.token,
 			token_type: "Bearer",
 			expires_in: issued.expiresIn,
+			refresh_token: grant.refreshToken,
 		});
 	}
 
-	async exchangeRefreshToken(): Promise<OAuthTokens> {
-		throw new UnsupportedGrantTypeError("refresh_token grant is not yet supported");
+	async exchangeRefreshToken(
+		client: OAuthClientInformationFull,
+		refreshToken: string,
+		scopes?: string[],
+		resource?: URL,
+	): Promise<OAuthTokens> {
+		const now = this.#now();
+		const rotation = this.#refreshTokenStore.rotateRefreshToken(
+			client.client_id,
+			refreshToken,
+			{ scopes, ...(resource ? { resource: resource.href } : {}) },
+			now,
+		);
+		if (!rotation.ok) {
+			if (rotation.reason === "refresh_token_replay" && rotation.grantId) {
+				this.#tokenStore.revokeTokensForGrant?.(rotation.grantId, now);
+			}
+			throw new InvalidGrantError(refreshTokenErrorDescription(rotation.reason));
+		}
+		const issued = this.#tokenStore.issueToken(
+			client.client_id,
+			now,
+			rotation.grant.resource,
+			rotation.grant.grantId,
+		);
+		if (!issued) throw new TemporarilyUnavailableError("Too many active access tokens");
+		return OAuthTokensSchema.parse({
+			access_token: issued.token,
+			token_type: "Bearer",
+			expires_in: issued.expiresIn,
+			refresh_token: rotation.refreshToken,
+		});
 	}
 
 	async verifyAccessToken(token: string): Promise<AuthInfo> {
@@ -194,7 +249,12 @@ export class MemoryOAuthServerProvider implements OAuthServerProvider {
 			scopes: [],
 			expiresAt: Math.floor(result.record.expiresAt / 1000),
 		};
-		if (result.record.resource) authInfo.resource = new URL(result.record.resource);
+		if (result.record.resource) {
+			if (new URL(result.record.resource).href !== this.#resourceServerUrl) {
+				throw new InvalidTokenError("Token audience does not match this resource server");
+			}
+			authInfo.resource = new URL(result.record.resource);
+		}
 		return authInfo;
 	}
 
@@ -202,7 +262,10 @@ export class MemoryOAuthServerProvider implements OAuthServerProvider {
 		_client: OAuthClientInformationFull,
 		request: OAuthTokenRevocationRequest,
 	): Promise<void> {
-		this.#tokenStore.revokeToken(request.token, this.#now());
+		const now = this.#now();
+		this.#tokenStore.revokeToken(request.token, now);
+		const grantId = this.#refreshTokenStore.revokeRefreshToken(request.token, now);
+		if (grantId) this.#tokenStore.revokeTokensForGrant?.(grantId, now);
 	}
 }
 
@@ -237,5 +300,24 @@ function mapOAuthErrorBody(body: OAuthErrorResponse): Error {
 			return new UnsupportedResponseTypeError(description);
 		default:
 			return new ServerError(description);
+	}
+}
+
+function refreshTokenErrorDescription(reason: string): string {
+	switch (reason) {
+		case "expired_refresh_token":
+			return "Refresh token has expired";
+		case "revoked_refresh_token":
+			return "Refresh token has been revoked";
+		case "client_mismatch":
+			return "Refresh token does not match client";
+		case "scope_mismatch":
+			return "Refresh token scope cannot be expanded";
+		case "resource_mismatch":
+			return "Refresh token does not match resource";
+		case "refresh_token_replay":
+			return "Refresh token replay detected";
+		default:
+			return "Invalid refresh token";
 	}
 }
