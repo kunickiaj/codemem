@@ -26,7 +26,8 @@
     "dev": "bash scripts/dev.sh",
     "prepare": "husky",
     "release:version": "node scripts/release-version.mjs",
-    "release:preflight-tag": "bash scripts/release-tag-preflight.sh"
+    "release:preflight-tag": "bash scripts/release-tag-preflight.sh",
+    "benchmark:runtime": "node scripts/benchmark-runtime.mjs"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,json,md}": [
