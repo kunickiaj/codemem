@@ -19,7 +19,14 @@ export default defineConfig({
 			fileName: (_format, entryName) => `${entryName}.js`,
 		},
 		rollupOptions: {
-			external: [/^@codemem\//, /^node:/, /^@modelcontextprotocol\//, "zod", "better-sqlite3"],
+			external: [
+				/^@codemem\//,
+				/^node:/,
+				/^@modelcontextprotocol\//,
+				/^express(?:\/.*)?$/,
+				"zod",
+				"better-sqlite3",
+			],
 		},
 		outDir: "dist",
 		sourcemap: true,
