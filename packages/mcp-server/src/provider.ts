@@ -160,8 +160,9 @@ export class MemoryOAuthServerProvider implements OAuthServerProvider {
 			throw new InvalidGrantError("Code does not match resource");
 		}
 
+		const scopes = normalizeClientScopes(record.scopes) ?? [];
 		const grant = this.#refreshTokenStore.issueGrant(
-			{ clientId: client.client_id, resource: record.resource },
+			{ clientId: client.client_id, scopes, resource: record.resource },
 			now,
 		);
 		if (!grant) {
@@ -172,6 +173,7 @@ export class MemoryOAuthServerProvider implements OAuthServerProvider {
 			now,
 			record.resource,
 			grant.grant.grantId,
+			scopes,
 		);
 		if (!issued) {
 			// Token-store overload is transient: leave the auth code unused so the
@@ -208,7 +210,7 @@ export class MemoryOAuthServerProvider implements OAuthServerProvider {
 		const rotation = this.#refreshTokenStore.rotateRefreshToken(
 			client.client_id,
 			refreshToken,
-			{ scopes, ...(resource ? { resource: resource.href } : {}) },
+			{ scopes: normalizeClientScopes(scopes), ...(resource ? { resource: resource.href } : {}) },
 			now,
 		);
 		if (!rotation.ok) {
@@ -222,6 +224,7 @@ export class MemoryOAuthServerProvider implements OAuthServerProvider {
 			now,
 			rotation.grant.resource,
 			rotation.grant.grantId,
+			rotation.grant.scopes,
 		);
 		if (!issued) throw new TemporarilyUnavailableError("Too many active access tokens");
 		return OAuthTokensSchema.parse({
@@ -246,7 +249,7 @@ export class MemoryOAuthServerProvider implements OAuthServerProvider {
 		const authInfo: AuthInfo = {
 			token,
 			clientId: result.record.clientId,
-			scopes: [],
+			scopes: result.record.scopes,
 			expiresAt: Math.floor(result.record.expiresAt / 1000),
 		};
 		if (result.record.resource) {
@@ -320,4 +323,16 @@ function refreshTokenErrorDescription(reason: string): string {
 		default:
 			return "Invalid refresh token";
 	}
+}
+
+function normalizeClientScopes(scopes: string[] | undefined): string[] | undefined {
+	const normalized = scopes
+		?.map((scope) => scope.trim())
+		.filter(Boolean)
+		.map((scope) => {
+			if (scope === "memory:read_access") return "memory:read";
+			if (scope === "memory:write_access") return "memory:write";
+			return scope;
+		});
+	return normalized && normalized.length > 0 ? normalized : undefined;
 }

@@ -29,12 +29,13 @@ describe("MCP OAuth metadata and dynamic client registration", () => {
 			issuer: "https://codemem.example.test/",
 			authorization_endpoint: "https://codemem.example.test/authorize",
 			token_endpoint: "https://codemem.example.test/token",
-			revocation_endpoint: "https://codemem.example.test/oauth/revoke",
+			revocation_endpoint: "https://codemem.example.test/revoke",
 			registration_endpoint: "https://codemem.example.test/register",
 			response_types_supported: ["code"],
-			grant_types_supported: ["authorization_code"],
+			grant_types_supported: ["authorization_code", "refresh_token"],
 			code_challenge_methods_supported: ["S256"],
 			token_endpoint_auth_methods_supported: ["none"],
+			scopes_supported: ["memory:read", "memory:write"],
 			client_id_metadata_document_supported: false,
 		});
 	});
@@ -43,8 +44,10 @@ describe("MCP OAuth metadata and dynamic client registration", () => {
 		expect(createMcpProtectedResourceMetadata("https://codemem.example.test/mcp")).toEqual({
 			resource: "https://codemem.example.test/mcp",
 			authorization_servers: ["https://codemem.example.test/"],
+			scopes_supported: ["memory:read", "memory:write"],
 			bearer_methods_supported: ["header"],
 			resource_name: "codemem MCP",
+			resource_documentation: "https://github.com/kunickiaj/codemem#readme",
 		});
 	});
 
@@ -82,7 +85,7 @@ describe("MCP OAuth metadata and dynamic client registration", () => {
 		expect(result.body.client_id).toMatch(/[0-9a-f-]{36}/);
 		expect(result.body.client_secret).toBeUndefined();
 		expect(result.body.token_endpoint_auth_method).toBe("none");
-		expect(result.body.grant_types).toEqual(["authorization_code"]);
+		expect(result.body.grant_types).toEqual(["authorization_code", "refresh_token"]);
 		expect(result.body.response_types).toEqual(["code"]);
 		expect(clientsStore.getClient(result.body.client_id)).toEqual(result.body);
 	});
@@ -589,6 +592,7 @@ describe("MCP OAuth metadata and dynamic client registration", () => {
 				clientId: registered.body.client_id,
 				redirectUri: "https://claude.ai/api/mcp/auth_callback",
 				codeChallenge: pkceS256("s".repeat(43)),
+				scopes: [],
 				expiresAt: Date.now() + 5 * 60 * 1000,
 				used: false,
 			}),

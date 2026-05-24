@@ -12,6 +12,8 @@ export type OAuthAuditKind =
 	| "authorize"
 	| "oidc_callback"
 	| "token"
+	| "refresh"
+	| "rotation"
 	| "revocation"
 	| "bearer";
 
