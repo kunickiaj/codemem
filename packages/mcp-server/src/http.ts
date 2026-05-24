@@ -211,6 +211,10 @@ export async function startCodememMcpHttpServer(
 
 	const app = express();
 	app.disable("x-powered-by");
+	// Tailscale Funnel and similar local ingress proxies forward from loopback and
+	// add X-Forwarded-For. Trust only loopback proxy hops so SDK rate limiters can
+	// key on the real client IP without making public clients spoofable.
+	app.set("trust proxy", "loopback");
 	const server = createServer(app);
 
 	await new Promise<void>((resolve, reject) => {
@@ -341,9 +345,7 @@ export async function startCodememMcpHttpServer(
 			resourceName: MCP_OAUTH_RESOURCE_NAME,
 			scopesSupported: MCP_OAUTH_SCOPES_SUPPORTED,
 			serviceDocumentationUrl: new URL(MCP_OAUTH_SERVICE_DOCUMENTATION_URL),
-			clientRegistrationOptions: { clientSecretExpirySeconds: 0, rateLimit: false },
-			authorizationOptions: { rateLimit: false },
-			revocationOptions: { rateLimit: false },
+			clientRegistrationOptions: { clientSecretExpirySeconds: 0 },
 		}),
 	);
 

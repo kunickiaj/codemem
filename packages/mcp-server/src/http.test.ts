@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OAuthAuditEvent } from "./audit.js";
 import {
 	type CodememMcpHttpServer,
@@ -265,6 +265,39 @@ describe("MCP HTTP transport", () => {
 		expect(register.status).toBe(403);
 		expect(authorize.status).toBe(403);
 		expect(token.status).toBe(403);
+	});
+
+	it("accepts proxied OAuth token requests without rate-limit trust-proxy warnings", async () => {
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const server = await startCodememMcpHttpServer({
+				dbPath: tempDbPath(),
+				port: 0,
+				publicUrl: "https://codemem.example.test/mcp",
+			});
+			servers.push(server);
+
+			const response = await fetch(server.url.replace("/mcp", "/token"), {
+				method: "POST",
+				headers: {
+					"content-type": "application/x-www-form-urlencoded",
+					"x-forwarded-for": "203.0.113.10",
+				},
+				body: new URLSearchParams({
+					client_id: "missing-client",
+					grant_type: "refresh_token",
+					refresh_token: "missing-refresh-token",
+				}),
+			});
+
+			expect(response.status).toBe(400);
+			expect(await response.json()).toMatchObject({ error: "invalid_client" });
+			expect(consoleError).not.toHaveBeenCalledWith(
+				expect.objectContaining({ code: "ERR_ERL_UNEXPECTED_X_FORWARDED_FOR" }),
+			);
+		} finally {
+			consoleError.mockRestore();
+		}
 	});
 
 	it("rejects public OAuth requests with non-public Host headers", async () => {
