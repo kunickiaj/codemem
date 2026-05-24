@@ -1,6 +1,6 @@
 {
 	"name": "@codemem/core",
-	"version": "0.31.4",
+	"version": "0.32.0",
 	"type": "module",
 	"types": "./dist/index.d.ts",
 	"exports": {
