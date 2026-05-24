@@ -17,6 +17,8 @@ import {
 
 export const MCP_OAUTH_PUBLIC_URL_ENV = "CODEMEM_MCP_HTTP_PUBLIC_URL";
 export const MCP_OAUTH_RESOURCE_NAME = "codemem MCP";
+export const MCP_OAUTH_SCOPES_SUPPORTED = ["memory:read", "memory:write"];
+export const MCP_OAUTH_SERVICE_DOCUMENTATION_URL = "https://github.com/kunickiaj/codemem#readme";
 
 const CLAUDE_HOSTED_CALLBACK = "https://claude.ai/api/mcp/auth_callback";
 const LOCAL_CALLBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
@@ -53,6 +55,7 @@ export interface AuthorizationCodeRecord {
 	clientId: string;
 	redirectUri: string;
 	codeChallenge: string;
+	scopes: string[];
 	resource?: string;
 	expiresAt: number;
 	used: boolean;
@@ -67,6 +70,7 @@ export interface OAuthAuthorizationCodeStore {
 export interface AccessTokenRecord {
 	clientId: string;
 	grantId?: string;
+	scopes: string[];
 	resource?: string;
 	tokenHash: string;
 	issuedAt: number;
@@ -85,6 +89,7 @@ export interface OAuthAccessTokenStore {
 		now?: number,
 		resource?: string,
 		grantId?: string,
+		scopes?: string[],
 	): { token: string; expiresIn: number } | undefined;
 	verifyToken(token: string, now?: number): AccessTokenVerificationResult;
 	revokeToken(token: string, now?: number): boolean;
@@ -153,6 +158,7 @@ export interface PreparedMcpOAuthAuthorizationRequest {
 	clientId: string;
 	redirectUri: string;
 	codeChallenge: string;
+	scopes: string[];
 	resource: string | null;
 	state: string | null;
 }
@@ -192,7 +198,7 @@ export class InMemoryOAuthClientsStore implements OAuthRegisteredClientsStore {
 		const registered = {
 			...client,
 			token_endpoint_auth_method: "none" as const,
-			grant_types: client.grant_types ?? ["authorization_code"],
+			grant_types: client.grant_types ?? ["authorization_code", "refresh_token"],
 			response_types: client.response_types ?? ["code"],
 			client_id: randomUUID(),
 			client_id_issued_at: Math.floor(Date.now() / 1000),
@@ -242,6 +248,7 @@ export class InMemoryOAuthAccessTokenStore implements OAuthAccessTokenStore {
 		now = Date.now(),
 		resource?: string,
 		grantId?: string,
+		scopes: string[] = [],
 	): { token: string; expiresIn: number } | undefined {
 		this.#deleteInactiveTokens(now);
 		if (this.#tokensByHash.size >= MAX_ACCESS_TOKENS) return undefined;
@@ -250,6 +257,7 @@ export class InMemoryOAuthAccessTokenStore implements OAuthAccessTokenStore {
 		this.#tokensByHash.set(tokenHash, {
 			clientId,
 			grantId,
+			scopes: [...scopes],
 			resource,
 			tokenHash,
 			issuedAt: now,
@@ -461,9 +469,11 @@ export function createMcpOAuthMetadata(options: McpOAuthMetadataOptions): OAuthM
 		}),
 		// Phase 1 treats claude.ai and local callback clients as public clients.
 		// Do not issue or advertise client secrets until we have a concrete need.
-		grant_types_supported: ["authorization_code"],
+		grant_types_supported: ["authorization_code", "refresh_token"],
 		token_endpoint_auth_methods_supported: ["none"],
-		revocation_endpoint: new URL("/oauth/revoke", issuerUrl).href,
+		scopes_supported: MCP_OAUTH_SCOPES_SUPPORTED,
+		service_documentation: MCP_OAUTH_SERVICE_DOCUMENTATION_URL,
+		revocation_endpoint: new URL("/revoke", issuerUrl).href,
 		revocation_endpoint_auth_methods_supported: ["none"],
 		client_id_metadata_document_supported: false,
 	};
@@ -474,8 +484,10 @@ export function createMcpProtectedResourceMetadata(mcpUrl: string): OAuthProtect
 	const metadata = {
 		resource: normalizedMcpUrl.href,
 		authorization_servers: [getOriginUrl(normalizedMcpUrl).href],
+		scopes_supported: MCP_OAUTH_SCOPES_SUPPORTED,
 		bearer_methods_supported: ["header"],
 		resource_name: MCP_OAUTH_RESOURCE_NAME,
+		resource_documentation: MCP_OAUTH_SERVICE_DOCUMENTATION_URL,
 	};
 	return OAuthProtectedResourceMetadataSchema.parse(metadata);
 }
@@ -522,7 +534,7 @@ export function registerMcpOAuthClient(
 	const registered = clientsStore.registerClient({
 		...clientMetadata,
 		token_endpoint_auth_method: "none",
-		grant_types: clientMetadata.grant_types ?? ["authorization_code"],
+		grant_types: clientMetadata.grant_types ?? ["authorization_code", "refresh_token"],
 		response_types: clientMetadata.response_types ?? ["code"],
 	});
 
@@ -549,6 +561,7 @@ export function authorizeMcpOAuthClient(
 			clientId: prepared.clientId,
 			redirectUri: prepared.redirectUri,
 			codeChallenge: prepared.codeChallenge,
+			scopes: prepared.scopes,
 			...(prepared.resource ? { resource: prepared.resource } : {}),
 			expiresAt: now + AUTHORIZATION_CODE_TTL_MS,
 		},
@@ -572,6 +585,7 @@ export function prepareMcpOAuthAuthorizationRequest(
 	const codeChallenge = params.get("code_challenge") ?? "";
 	const codeChallengeMethod = params.get("code_challenge_method") ?? "";
 	const resource = params.get("resource");
+	const scopes = parseScopeList(params.get("scope"));
 	const state = params.get("state");
 
 	if (responseType !== "code") return invalidOAuthRequest("unsupported_response_type");
@@ -588,7 +602,7 @@ export function prepareMcpOAuthAuthorizationRequest(
 		return invalidOAuthRequest("invalid_request", "redirect_uri is not registered for this client");
 	}
 
-	return { clientId, redirectUri, codeChallenge, resource, state };
+	return { clientId, redirectUri, codeChallenge, scopes, resource, state };
 }
 
 export function exchangeMcpOAuthAuthorizationCode(
@@ -636,7 +650,7 @@ export function exchangeMcpOAuthAuthorizationCode(
 		return invalidOAuthRequest("invalid_grant", "Code does not match resource");
 	}
 
-	const issued = tokenStore.issueToken(clientId, now, record.resource);
+	const issued = tokenStore.issueToken(clientId, now, record.resource, undefined, record.scopes);
 	if (!issued) {
 		// Token-store overload is transient: leave the auth code unused so the
 		// client can retry token exchange without restarting the OAuth flow.
@@ -730,6 +744,15 @@ function isLoopbackUrl(url: URL): boolean {
 
 function normalizeHostname(hostname: string): string {
 	return hostname.replace(/^\[(.*)]$/, "$1").toLowerCase();
+}
+
+function parseScopeList(scope: string | null | undefined): string[] {
+	return (
+		scope
+			?.split(/\s+/)
+			.map((item) => item.trim())
+			.filter(Boolean) ?? []
+	);
 }
 
 function invalidClientMetadata(description: string): McpOAuthRegistrationError {

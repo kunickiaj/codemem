@@ -31,8 +31,12 @@ import {
 	createInMemoryOAuthAccessTokenStore,
 	createInMemoryOAuthAuthorizationCodeStore,
 	createInMemoryOAuthClientsStore,
+	createMcpOAuthMetadata,
+	createMcpProtectedResourceMetadata,
 	MCP_OAUTH_PUBLIC_URL_ENV,
 	MCP_OAUTH_RESOURCE_NAME,
+	MCP_OAUTH_SCOPES_SUPPORTED,
+	MCP_OAUTH_SERVICE_DOCUMENTATION_URL,
 	normalizeMcpPublicUrl,
 	type OAuthAccessTokenStore,
 } from "./oauth.js";
@@ -285,6 +289,7 @@ export async function startCodememMcpHttpServer(
 			clientId: completed.oauthParams.get("client_id") ?? "",
 			redirectUri: completed.oauthParams.get("redirect_uri") ?? "",
 			codeChallenge: completed.oauthParams.get("code_challenge") ?? "",
+			scopes: parseScopeList(completed.oauthParams.get("scope")),
 			...(completed.oauthParams.get("resource")
 				? { resource: completed.oauthParams.get("resource") ?? undefined }
 				: {}),
@@ -320,6 +325,13 @@ export async function startCodememMcpHttpServer(
 		res.redirect(302, redirect.href);
 	});
 
+	app.get("/.well-known/oauth-authorization-server", (_req, res) => {
+		res.status(200).json(createMcpOAuthMetadata({ mcpUrl: publicMcpUrl, clientsStore }));
+	});
+	app.get("/.well-known/oauth-protected-resource/mcp", (_req, res) => {
+		res.status(200).json(createMcpProtectedResourceMetadata(publicMcpUrl));
+	});
+
 	app.use(
 		mcpAuthRouter({
 			provider,
@@ -327,9 +339,10 @@ export async function startCodememMcpHttpServer(
 			baseUrl: issuerUrl,
 			resourceServerUrl: publicMcpUrlObject,
 			resourceName: MCP_OAUTH_RESOURCE_NAME,
+			scopesSupported: MCP_OAUTH_SCOPES_SUPPORTED,
+			serviceDocumentationUrl: new URL(MCP_OAUTH_SERVICE_DOCUMENTATION_URL),
 			clientRegistrationOptions: { clientSecretExpirySeconds: 0, rateLimit: false },
 			authorizationOptions: { rateLimit: false },
-			tokenOptions: { rateLimit: false },
 			revocationOptions: { rateLimit: false },
 		}),
 	);
@@ -497,8 +510,8 @@ function auditOAuthRouteResponses(
 	auditEmit: (event: ReturnType<typeof buildOAuthAuditEvent>) => void,
 ) {
 	return (req: Request, res: Response, next: NextFunction) => {
-		const kind = oauthAuditKindForPath(req.path);
-		if (!kind) return next();
+		const pathname = req.path;
+		if (!isAuditedOAuthPath(pathname)) return next();
 		let responseBody: unknown;
 		const originalJson = res.json.bind(res);
 		res.json = ((body: unknown) => {
@@ -506,7 +519,9 @@ function auditOAuthRouteResponses(
 			return originalJson(body);
 		}) as typeof res.json;
 		res.on("finish", () => {
-			if (req.path === "/oauth/callback") return;
+			if (pathname === "/oauth/callback") return;
+			const kind = oauthAuditKindForRequest(pathname, req);
+			if (!kind) return;
 			const error = getOAuthResponseError(res, responseBody);
 			const clientId = getRequestClientId(req, responseBody);
 			auditEmit(
@@ -520,6 +535,18 @@ function auditOAuthRouteResponses(
 		});
 		next();
 	};
+}
+
+function isAuditedOAuthPath(pathname: string): boolean {
+	return oauthAuditKindForPath(pathname) !== null;
+}
+
+function oauthAuditKindForRequest(
+	pathname: string,
+	req: Request,
+): "registration" | "authorize" | "token" | "refresh" | "revocation" | null {
+	if (pathname === "/token" && req.body?.grant_type === "refresh_token") return "refresh";
+	return oauthAuditKindForPath(pathname);
 }
 
 function oauthAuditKindForPath(
@@ -603,6 +630,15 @@ function getBearerPreflightDenyReason(
 	const verification = tokenStore.verifyToken(token);
 	if (!verification.ok) return verification.reason;
 	return null;
+}
+
+function parseScopeList(scope: string | null | undefined): string[] {
+	return (
+		scope
+			?.split(/\s+/)
+			.map((item) => item.trim())
+			.filter(Boolean) ?? []
+	);
 }
 
 function isEntrypoint(): boolean {

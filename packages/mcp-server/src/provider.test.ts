@@ -329,7 +329,7 @@ describe("MemoryOAuthServerProvider", () => {
 		const client = registerClient(clientsStore);
 		const initial = await provider.exchangeAuthorizationCode(
 			client,
-			issueCode(codeStore, client.client_id, PUBLIC_MCP_URL),
+			issueCode(codeStore, client.client_id, PUBLIC_MCP_URL, ["memory:read"]),
 			undefined,
 			REDIRECT_URI,
 			new URL(PUBLIC_MCP_URL),
@@ -441,7 +441,7 @@ describe("MemoryOAuthServerProvider", () => {
 		const otherClient = registerClient(clientsStore);
 		const initial = await provider.exchangeAuthorizationCode(
 			client,
-			issueCode(codeStore, client.client_id, PUBLIC_MCP_URL),
+			issueCode(codeStore, client.client_id, PUBLIC_MCP_URL, ["memory:read"]),
 			undefined,
 			REDIRECT_URI,
 			new URL(PUBLIC_MCP_URL),
@@ -477,6 +477,54 @@ describe("MemoryOAuthServerProvider", () => {
 			),
 		).rejects.toThrow(/resource/i);
 	});
+
+	it("treats Claude _access scopes as no-op aliases during refresh", async () => {
+		const clientsStore = createInMemoryOAuthClientsStore();
+		const codeStore = createInMemoryOAuthAuthorizationCodeStore();
+		const provider = new MemoryOAuthServerProvider({
+			clientsStore,
+			codeStore,
+			tokenStore: createInMemoryOAuthAccessTokenStore(),
+			publicMcpUrl: PUBLIC_MCP_URL,
+			now: () => NOW,
+		});
+		const client = registerClient(clientsStore);
+		const initial = await provider.exchangeAuthorizationCode(
+			client,
+			issueCode(codeStore, client.client_id, undefined, ["memory:read"]),
+			undefined,
+			REDIRECT_URI,
+		);
+		if (!initial.refresh_token) throw new Error("expected refresh token");
+
+		await expect(
+			provider.exchangeRefreshToken(client, initial.refresh_token, ["memory:read_access"]),
+		).resolves.toMatchObject({ token_type: "Bearer" });
+	});
+
+	it("normalizes Claude _access aliases before issuing refresh grants", async () => {
+		const clientsStore = createInMemoryOAuthClientsStore();
+		const codeStore = createInMemoryOAuthAuthorizationCodeStore();
+		const provider = new MemoryOAuthServerProvider({
+			clientsStore,
+			codeStore,
+			tokenStore: createInMemoryOAuthAccessTokenStore(),
+			publicMcpUrl: PUBLIC_MCP_URL,
+			now: () => NOW,
+		});
+		const client = registerClient(clientsStore);
+		const initial = await provider.exchangeAuthorizationCode(
+			client,
+			issueCode(codeStore, client.client_id, undefined, ["memory:read_access"]),
+			undefined,
+			REDIRECT_URI,
+		);
+		if (!initial.refresh_token) throw new Error("expected refresh token");
+
+		await expect(
+			provider.exchangeRefreshToken(client, initial.refresh_token, ["memory:read"]),
+		).resolves.toMatchObject({ token_type: "Bearer" });
+	});
 });
 
 function registerClient(clientsStore: ReturnType<typeof createInMemoryOAuthClientsStore>) {
@@ -492,12 +540,14 @@ function issueCode(
 	codeStore: ReturnType<typeof createInMemoryOAuthAuthorizationCodeStore>,
 	clientId: string,
 	resource?: string,
+	scopes: string[] = [],
 ): string {
 	const code = codeStore.issueCode(
 		{
 			clientId,
 			redirectUri: REDIRECT_URI,
 			codeChallenge: CODE_CHALLENGE,
+			scopes,
 			...(resource ? { resource } : {}),
 			expiresAt: NOW + 5 * 60 * 1000,
 		},
@@ -527,6 +577,7 @@ function raceLostCodeStore(clientId: string): OAuthAuthorizationCodeStore {
 			clientId,
 			redirectUri: REDIRECT_URI,
 			codeChallenge: CODE_CHALLENGE,
+			scopes: [],
 			expiresAt: NOW + 5 * 60 * 1000,
 			used: false,
 		}),

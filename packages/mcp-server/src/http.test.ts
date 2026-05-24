@@ -152,13 +152,17 @@ describe("MCP HTTP transport", () => {
 			issuer: "https://codemem.example.test/",
 			registration_endpoint: "https://codemem.example.test/register",
 			code_challenge_methods_supported: ["S256"],
-			token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
+			grant_types_supported: ["authorization_code", "refresh_token"],
+			token_endpoint_auth_methods_supported: ["none"],
+			revocation_endpoint: "https://codemem.example.test/revoke",
+			scopes_supported: ["memory:read", "memory:write"],
 		});
 		expect(protectedResourceMetadata.status).toBe(200);
 		expect(await protectedResourceMetadata.json()).toMatchObject({
 			resource: "https://codemem.example.test/mcp",
 			authorization_servers: ["https://codemem.example.test/"],
 			resource_name: "codemem MCP",
+			scopes_supported: ["memory:read", "memory:write"],
 		});
 	});
 
@@ -202,7 +206,7 @@ describe("MCP HTTP transport", () => {
 			redirect_uris: ["https://claude.ai/api/mcp/auth_callback"],
 			client_name: "Claude",
 			token_endpoint_auth_method: "none",
-			grant_types: ["authorization_code"],
+			grant_types: ["authorization_code", "refresh_token"],
 		});
 		expect(registered.client_id).toMatch(/[0-9a-f-]{36}/);
 		expect(registered.client_secret).toBeUndefined();
