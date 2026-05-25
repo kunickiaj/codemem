@@ -8022,7 +8022,7 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("returns 400 when coordinator sync is not configured", async () => {
+		it("returns 400 with coordinator_url_missing when no coordinator URL is configured", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;
 			process.env.CODEMEM_CONFIG = configPath;
@@ -8040,7 +8040,77 @@ describe("viewer-server", () => {
 				expect(res.status).toBe(400);
 				expect(await res.json()).toEqual({
 					error: "coordinator_not_configured",
-					detail: "Coordinator must be configured before accepting discovered peers.",
+					reason: "coordinator_url_missing",
+					detail: "Configure a coordinator URL before pairing with discovered peers.",
+				});
+			} finally {
+				cleanup();
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+			}
+		});
+
+		it("returns 400 with coordinator_groups_empty when URL is set but no groups", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			process.env.CODEMEM_CONFIG = configPath;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_enabled: false,
+					sync_coordinator_url: "http://localhost:7347",
+				}),
+			);
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/sync/peers/accept-discovered", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						peer_device_id: "peer-fresh",
+						fingerprint: FRESH_PEER_FINGERPRINT,
+					}),
+				});
+				expect(res.status).toBe(400);
+				expect(await res.json()).toEqual({
+					error: "coordinator_not_configured",
+					reason: "coordinator_groups_empty",
+					detail: "Join a coordinator team before pairing with discovered peers.",
+				});
+			} finally {
+				cleanup();
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+			}
+		});
+
+		it("returns 400 with sync_disabled when coordinator is fully set up but sync is off", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			process.env.CODEMEM_CONFIG = configPath;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_enabled: false,
+					sync_coordinator_url: "http://localhost:7347",
+					sync_coordinator_groups: ["test-team"],
+				}),
+			);
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/sync/peers/accept-discovered", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						peer_device_id: "peer-fresh",
+						fingerprint: FRESH_PEER_FINGERPRINT,
+					}),
+				});
+				expect(res.status).toBe(400);
+				expect(await res.json()).toEqual({
+					error: "coordinator_not_configured",
+					reason: "sync_disabled",
+					detail: "Enable sync on this device before pairing with discovered peers.",
 				});
 			} finally {
 				cleanup();
