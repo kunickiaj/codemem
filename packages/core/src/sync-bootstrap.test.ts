@@ -371,7 +371,7 @@ describe("fetchAllSnapshotPages", () => {
 				expect(String(_input)).toContain("scope_id=acme-work");
 				expect(init?.headers).toMatchObject({
 					"X-Codemem-Bootstrap-Grant": "grant-1",
-					[SYNC_CAPABILITY_HEADER]: "aware",
+					[SYNC_CAPABILITY_HEADER]: "scoped",
 					"X-Opencode-Device": deviceId,
 				});
 				return new Response(
