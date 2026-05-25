@@ -12,7 +12,9 @@ import {
 	coordinatorAdminDevicesForGroup,
 	deriveScopeMembershipDeviceRows,
 	scopeManagementReadinessMessage,
-	scopeStatusLabel,
+	spaceAccessDeviceCopy,
+	spaceCardCopy,
+	spaceRevokeMemberTitle,
 } from "../data/scope-management";
 import { coordinatorAdminState, type GroupScopeManagementDraft } from "../data/state";
 import type { CoordinatorAdminSummary } from "../data/summary";
@@ -205,7 +207,7 @@ async function revokeMember(
 	const scopeId = String(scope.scope_id || "").trim();
 	if (!scopeId) return;
 	const confirmed = await openSyncConfirmDialog({
-		title: `Revoke ${displayName || deviceId} from ${scope.label || scopeId}?`,
+		title: spaceRevokeMemberTitle(scope, displayName, deviceId),
 		description:
 			"Revocation only blocks future sync for this Space. Data already copied to that device can remain there.",
 		confirmLabel: "Revoke membership",
@@ -263,13 +265,7 @@ function renderMembershipRows(
 			const pending = draft.actionPendingKey === pendingKey;
 			const canGrant = row.enabled && row.status !== "active";
 			const canRevoke = row.status === "active";
-			const statusCopy =
-				row.status === "not_member"
-					? "Not a member"
-					: row.status === "revoked"
-						? "Revoked"
-						: "Active member";
-			const epochCopy = row.membershipEpoch == null ? "epoch —" : `epoch ${row.membershipEpoch}`;
+			const copy = spaceAccessDeviceCopy(row);
 			return h(
 				"div",
 				{ class: "coordinator-admin-scope-member-row", key: row.deviceId },
@@ -277,7 +273,8 @@ function renderMembershipRows(
 					"div",
 					{ class: "coordinator-admin-scope-member-copy" },
 					h("strong", null, row.displayName),
-					h("span", null, `${statusCopy} · ${row.role} · ${epochCopy}`),
+					h("span", null, copy.detail),
+					h("span", { class: "peer-meta" }, copy.advancedDetail),
 					row.enabled ? null : h("span", null, "Device is disabled in this Team."),
 				),
 				h(
@@ -292,7 +289,7 @@ function renderMembershipRows(
 									onClick: () => void grantMember(groupId, scopeId, row.deviceId, renderShell),
 									type: "button",
 								},
-								pending && draft.actionPendingKind === "grant" ? "Granting…" : "Grant",
+								pending && draft.actionPendingKind === "grant" ? "Granting…" : "Grant access",
 							)
 						: null,
 					canRevoke
@@ -305,7 +302,7 @@ function renderMembershipRows(
 										void revokeMember(groupId, scope, row.deviceId, row.displayName, renderShell),
 									type: "button",
 								},
-								pending && draft.actionPendingKind === "revoke" ? "Revoking…" : "Revoke",
+								pending && draft.actionPendingKind === "revoke" ? "Revoking…" : "Revoke access",
 							)
 						: null,
 				),
@@ -322,21 +319,16 @@ function renderScopeCard(
 	renderShell: () => void,
 ) {
 	const scopeId = String(scope.scope_id || "").trim();
-	const label = String(scope.label || scopeId || "Untitled Space");
+	const copy = spaceCardCopy(scope);
 	return h(
 		"div",
-		{ class: "peer-card peer-card--padded coordinator-admin-scope-card", key: scopeId || label },
-		h("div", { class: "peer-title" }, h("strong", null, label)),
-		h(
-			"div",
-			{ class: "peer-submeta" },
-			`Status: ${scopeStatusLabel(scope.status)} · Kind: ${scope.kind || "user"}`,
-		),
-		h(
-			"div",
-			{ class: "peer-meta" },
-			`Advanced: Space ID ${scopeId || "unknown"} · Membership epoch ${scope.membership_epoch ?? 0}`,
-		),
+		{
+			class: "peer-card peer-card--padded coordinator-admin-scope-card",
+			key: scopeId || copy.title,
+		},
+		h("div", { class: "peer-title" }, h("strong", null, copy.title)),
+		h("div", { class: "peer-submeta" }, copy.summary),
+		h("div", { class: "peer-meta" }, copy.advancedDetail),
 		h(
 			"div",
 			{ class: "peer-submeta" },

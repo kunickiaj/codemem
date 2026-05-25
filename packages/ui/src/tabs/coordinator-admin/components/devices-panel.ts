@@ -8,6 +8,7 @@ import { h } from "preact";
 import { RadixTabsContent } from "../../../components/primitives/radix-tabs";
 import { TextInput } from "../../../components/primitives/text-input";
 import { state } from "../../../lib/state";
+import { coordinatorAdminDeviceCardCopy } from "../data/device-card";
 import { coordinatorAdminState } from "../data/state";
 import type { CoordinatorAdminSummary } from "../data/summary";
 
@@ -34,7 +35,7 @@ export function renderDevicesPanel(deps: DevicesPanelDeps) {
 			"p",
 			{ class: "peer-submeta" },
 			summary.readiness === "ready"
-				? "Rename, disable, re-enable, or remove enrolled devices from the operator surface without confusing this with direct sync state."
+				? "Rename, disable, re-enable, or remove Team devices here. Space access is granted from Spaces below; Team membership alone does not share memories."
 				: "Finish setup first. Device administration stays disabled until coordinator admin is ready.",
 		),
 		!items.length
@@ -49,11 +50,11 @@ export function renderDevicesPanel(deps: DevicesPanelDeps) {
 					"div",
 					{ class: "peer-list" },
 					items.map((item) => {
-						const deviceId = String(item.device_id || "").trim();
-						const groupId = String(
-							item.group_id || state.lastCoordinatorAdminStatus?.active_group || "",
-						).trim();
-						const displayName = String(item.display_name || deviceId || "Unnamed device");
+						const copy = coordinatorAdminDeviceCardCopy(
+							item,
+							String(state.lastCoordinatorAdminStatus?.active_group || ""),
+						);
+						const { deviceId, displayName, teamId } = copy;
 						const pending = coordinatorAdminState.deviceActionPendingId === deviceId;
 						const draft =
 							coordinatorAdminState.deviceRenameDrafts.get(deviceId) ??
@@ -66,9 +67,8 @@ export function renderDevicesPanel(deps: DevicesPanelDeps) {
 								key: deviceId || String(item.fingerprint || "unknown"),
 							},
 							h("div", { class: "peer-title" }, h("strong", null, draft || displayName)),
-							h("div", { class: "peer-meta" }, `Device: ${deviceId || "unknown"}`),
-							groupId ? h("div", { class: "peer-submeta" }, `Group: ${groupId}`) : null,
-							h("div", { class: "peer-submeta" }, enabled ? "Enabled" : "Disabled"),
+							h("div", { class: "peer-submeta" }, copy.statusLabel),
+							h("div", { class: "peer-meta" }, copy.advancedDetail),
 							h(
 								"div",
 								{ class: "coordinator-admin-form-grid" },
@@ -98,7 +98,7 @@ export function renderDevicesPanel(deps: DevicesPanelDeps) {
 									{
 										class: "settings-button",
 										disabled: !deviceId || pending || summary.readiness !== "ready",
-										onClick: () => runDevice(deviceId, groupId, displayName, "rename"),
+										onClick: () => runDevice(deviceId, teamId, displayName, "rename"),
 										type: "button",
 									},
 									pending && coordinatorAdminState.deviceActionPendingKind === "rename"
@@ -111,7 +111,7 @@ export function renderDevicesPanel(deps: DevicesPanelDeps) {
 											{
 												class: "settings-button danger",
 												disabled: !deviceId || pending || summary.readiness !== "ready",
-												onClick: () => runDevice(deviceId, groupId, displayName, "disable"),
+												onClick: () => runDevice(deviceId, teamId, displayName, "disable"),
 												type: "button",
 											},
 											pending && coordinatorAdminState.deviceActionPendingKind === "disable"
@@ -123,7 +123,7 @@ export function renderDevicesPanel(deps: DevicesPanelDeps) {
 											{
 												class: "settings-button",
 												disabled: !deviceId || pending || summary.readiness !== "ready",
-												onClick: () => runDevice(deviceId, groupId, displayName, "enable"),
+												onClick: () => runDevice(deviceId, teamId, displayName, "enable"),
 												type: "button",
 											},
 											pending && coordinatorAdminState.deviceActionPendingKind === "enable"
@@ -135,7 +135,7 @@ export function renderDevicesPanel(deps: DevicesPanelDeps) {
 									{
 										class: "settings-button danger",
 										disabled: !deviceId || pending || summary.readiness !== "ready",
-										onClick: () => runDevice(deviceId, groupId, displayName, "remove"),
+										onClick: () => runDevice(deviceId, teamId, displayName, "remove"),
 										type: "button",
 									},
 									pending && coordinatorAdminState.deviceActionPendingKind === "remove"
