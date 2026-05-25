@@ -512,6 +512,27 @@ describe("summarizeSyncRunResult", () => {
 		});
 	});
 
+	it("keeps non-membership scoped sync incomplete failures generic", () => {
+		expect(
+			summarizeSyncRunResult({
+				items: [
+					{
+						peer_device_id: "peer-a",
+						ok: false,
+						error: "scoped sync incomplete: oss=peer scoped ops fetch failed (503: unavailable)",
+						opsIn: 2,
+						opsOut: 0,
+						addressErrors: [],
+					},
+				],
+			}),
+		).toEqual({
+			ok: false,
+			message: "scoped sync incomplete: oss=peer scoped ops fetch failed (503: unavailable)",
+			warning: true,
+		});
+	});
+
 	it("falls back to the mixed-failure summary when trust and scope failures coexist", () => {
 		expect(
 			summarizeSyncRunResult({

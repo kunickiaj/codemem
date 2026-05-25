@@ -642,6 +642,33 @@ export function setReplicationCursor(
 	}
 }
 
+export function clearReplicationCursorLastApplied(
+	db: Database,
+	peerDeviceId: string,
+	scopeId?: string | null,
+): void {
+	ensureReplicationCursorTables(db);
+	const now = new Date().toISOString();
+	const effectiveScopeId = normalizeSyncStateScopeId(scopeId);
+	drizzle(db, { schema })
+		.insert(schema.replicationCursorsV2)
+		.values({
+			peer_device_id: peerDeviceId,
+			scope_id: effectiveScopeId,
+			last_applied_cursor: null,
+			last_acked_cursor: null,
+			updated_at: now,
+		})
+		.onConflictDoUpdate({
+			target: [schema.replicationCursorsV2.peer_device_id, schema.replicationCursorsV2.scope_id],
+			set: {
+				last_applied_cursor: null,
+				updated_at: sql`excluded.updated_at`,
+			},
+		})
+		.run();
+}
+
 // Payload extraction
 
 /**

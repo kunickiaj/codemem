@@ -626,6 +626,7 @@ export {
 export { SyncRetentionRunner } from "./sync-retention-runner.js";
 export type {
 	AuthorizedScopeEntry,
+	PerPeerScopeSyncEntry,
 	SyncScopeRequest,
 	SyncScopeRequestMode,
 	SyncScopeResetReason,
@@ -633,6 +634,7 @@ export type {
 export {
 	addSyncScopeToBoundary,
 	listAuthorizedScopesForPeer,
+	listPerPeerScopeSyncState,
 	parseSyncScopeRequest,
 	SYNC_SCOPE_QUERY_PARAM,
 	scopeAuthorizationFailureReason,

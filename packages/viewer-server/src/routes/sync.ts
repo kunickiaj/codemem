@@ -57,7 +57,6 @@ import {
 	fingerprintPublicKey,
 	formatHostPort,
 	getCoordinatorGroupPreference,
-	getReplicationCursor,
 	getSemanticIndexDiagnostics,
 	getSyncResetState,
 	type InboundScopeRejectionPeerSummary,
@@ -69,6 +68,7 @@ import {
 	listCoordinatorJoinRequests,
 	listInboundScopeRejections,
 	listMaintenanceJobs,
+	listPerPeerScopeSyncState,
 	listProjectScopeCandidates,
 	listProjectScopeInventory,
 	listProjectScopeSettingsMappings,
@@ -1432,7 +1432,10 @@ function mapPeerRow(
 	const recentOps = recentOpsByPeer?.get(peerId) ?? { in: 0, out: 0 };
 	const scopeRejections = scopeRejectionsByPeer?.get(peerId);
 	const addresses = safeJsonList(row.addresses_json as string | null);
-	const perScopeSync = perPeerScopeSyncState(store, peerId, localDeviceId ?? null);
+	const perScopeSync = listPerPeerScopeSyncState(store.db, {
+		localDeviceId: localDeviceId ?? null,
+		peerDeviceId: peerId,
+	});
 	return {
 		peer_device_id: row.peer_device_id,
 		name: row.name,
@@ -1470,44 +1473,6 @@ function mapPeerRow(
 		discovered_via_group_id:
 			typeof row.discovered_via_group_id === "string" ? row.discovered_via_group_id : null,
 	};
-}
-
-/**
- * Per-peer per-Space sync state for the `/api/sync/status` payload.
- *
- * Returns one entry per scope that both the local device and the peer are
- * active members of, each carrying the scope label, authority type, and the
- * per-scope replication cursor pulled from `replication_cursors_v2`.
- * Callers can render this directly in CLI/UI to show which Spaces have
- * actually synced for a peer versus which are still pending.
- *
- * Returns an empty array when local identity is not yet initialized or when
- * there is no overlap between local and peer memberships.
- */
-function perPeerScopeSyncState(
-	store: MemoryStore,
-	peerDeviceId: string,
-	localDeviceId: string | null,
-): Array<Record<string, unknown>> {
-	const trimmedPeer = peerDeviceId.trim();
-	const trimmedLocal = localDeviceId?.trim() ?? "";
-	if (!trimmedLocal || !trimmedPeer) return [];
-	const scopes = listAuthorizedScopesForPeer(store.db, {
-		localDeviceId: trimmedLocal,
-		peerDeviceId: trimmedPeer,
-	});
-	return scopes.map((scope) => {
-		const [lastApplied, lastAcked] = getReplicationCursor(store.db, trimmedPeer, scope.scope_id);
-		return {
-			scope_id: scope.scope_id,
-			label: scope.label,
-			authority_type: scope.authority_type,
-			membership_epoch: scope.membership_epoch,
-			last_applied_cursor: lastApplied,
-			last_acked_cursor: lastAcked,
-			bootstrapped: lastApplied != null,
-		};
-	});
 }
 
 function redactSyncAttemptError(error: unknown): string | null {
@@ -2202,18 +2167,20 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		try {
 			const rawScopeId = c.req.query(SYNC_SCOPE_QUERY_PARAM);
 			const negotiated = negotiatedSyncCapability(c);
+			const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 			const scopeRequest = parseSyncScopeRequest(rawScopeId, rawScopeId !== undefined, {
 				db: store.db,
+				localDeviceId,
 				negotiatedCapability: negotiated,
 				peerDeviceId,
 			});
 			if (!scopeRequest.ok) {
 				return c.json(
 					syncScopeResetRequiredPayload(
-						getSyncResetState(store.db, rawScopeId ?? undefined),
+						getSyncResetState(store.db),
 						scopeRequest.reason,
 						LOCAL_SYNC_CAPABILITY,
-						rawScopeId?.trim() || null,
+						null,
 					),
 					409,
 				);
@@ -2228,7 +2195,6 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			const snapshotId = c.req.query("snapshot_id") ?? null;
 			const baselineCursor = c.req.query("baseline_cursor") ?? null;
 			const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 1000)) : 200;
-			const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 			const result = loadReplicationOpsForPeer(store.db, {
 				since,
 				limit,
@@ -2314,18 +2280,20 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			try {
 				const rawScopeId = c.req.query(SYNC_SCOPE_QUERY_PARAM);
 				const negotiated = negotiatedSyncCapability(c);
+				const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 				const scopeRequest = parseSyncScopeRequest(rawScopeId, rawScopeId !== undefined, {
 					db: store.db,
+					localDeviceId,
 					negotiatedCapability: negotiated,
 					peerDeviceId: auth.deviceId,
 				});
 				if (!scopeRequest.ok) {
 					return c.json(
 						syncScopeResetRequiredPayload(
-							getSyncResetState(store.db, rawScopeId ?? undefined),
+							getSyncResetState(store.db),
 							scopeRequest.reason,
 							LOCAL_SYNC_CAPABILITY,
-							rawScopeId?.trim() || null,
+							null,
 						),
 						409,
 					);
@@ -2414,19 +2382,20 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			LOCAL_SYNC_CAPABILITY,
 			normalizeSyncCapability(body.sync_capability),
 		);
-		const rawBodyScopeId = typeof body.scope_id === "string" ? body.scope_id : undefined;
+		const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 		const scopeRequest = parseSyncScopeRequest(body.scope_id, Object.hasOwn(body, "scope_id"), {
 			db: store.db,
+			localDeviceId,
 			negotiatedCapability: negotiated,
 			peerDeviceId,
 		});
 		if (!scopeRequest.ok) {
 			return c.json(
 				syncScopeResetRequiredPayload(
-					getSyncResetState(store.db, rawBodyScopeId),
+					getSyncResetState(store.db),
 					scopeRequest.reason,
 					LOCAL_SYNC_CAPABILITY,
-					rawBodyScopeId?.trim() || null,
+					null,
 				),
 				409,
 			);
@@ -2451,7 +2420,6 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				);
 			}
 		}
-		const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 		// Inbound POSTs still use legacy visibility/project filters, but must not run
 		// the outbound scope gate. Unsupported peers deliberately bypass strict inbound
 		// scope rejection during rollout, so outbound filtering would silently drop data.

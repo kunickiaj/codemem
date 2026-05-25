@@ -7,7 +7,11 @@ import {
 	getCachedScopeAuthorization,
 } from "./scope-membership-cache.js";
 import { isScopedSyncCapability, type SyncCapability } from "./sync-capability.js";
-import { DEFAULT_SYNC_SCOPE_ID, getSyncResetState } from "./sync-replication.js";
+import {
+	DEFAULT_SYNC_SCOPE_ID,
+	getReplicationCursor,
+	getSyncResetState,
+} from "./sync-replication.js";
 
 export const SYNC_SCOPE_QUERY_PARAM = "scope_id";
 
@@ -47,8 +51,9 @@ export interface SyncResetBoundaryShape {
  * responses anyway.
  *
  * Scoped callers (`negotiatedCapability === "scoped"`) may pass a scope_id.
- * The server verifies the calling peer is an active, current-epoch member of
- * the requested scope before accepting. Failed authorization maps to wire
+ * The server verifies both the local device and the calling peer are active,
+ * current-epoch members of the requested scope before accepting. Failed
+ * authorization maps to wire
  * reasons that the client can act on:
  * - `missing_scope`: scope unknown, inactive, or caller is not a member.
  * - `stale_epoch`: caller membership exists but epoch is behind authority.
@@ -62,6 +67,7 @@ export function parseSyncScopeRequest(
 	provided: boolean,
 	context?: {
 		db?: Database;
+		localDeviceId?: string | null;
 		negotiatedCapability?: SyncCapability;
 		peerDeviceId?: string | null;
 	},
@@ -84,11 +90,21 @@ export function parseSyncScopeRequest(
 	}
 
 	const db = context.db;
+	const localDeviceId = context.localDeviceId?.trim();
 	const peerDeviceId = context.peerDeviceId?.trim();
-	if (!db || !peerDeviceId) {
+	if (!db || !localDeviceId || !peerDeviceId) {
 		// Caller advertised scoped capability but the route did not thread
 		// the authentication context through. Fail closed.
 		return { ok: false, reason: "missing_scope" };
+	}
+
+	const localAuthorization = getCachedScopeAuthorization(db, {
+		deviceId: localDeviceId,
+		scopeId,
+	});
+	const localErrorReason = scopeAuthorizationFailureReason(localAuthorization);
+	if (localErrorReason) {
+		return { ok: false, reason: localErrorReason };
 	}
 
 	const authorization = getCachedScopeAuthorization(db, {
@@ -118,8 +134,6 @@ export function scopeAuthorizationFailureReason(
 		case "revoked":
 		case "scope_inactive":
 			return "scope_inactive";
-		case "scope_unknown":
-		case "not_authorized":
 		default:
 			return "missing_scope";
 	}
@@ -246,4 +260,50 @@ export function listAuthorizedScopesForPeer(
 
 	entries.sort((a, b) => a.scope_id.localeCompare(b.scope_id));
 	return entries;
+}
+
+/**
+ * Per-Space sync state for a given peer, suitable for both the CLI status
+ * display and the `/api/sync/status` / `/api/sync/peers` viewer payload.
+ *
+ * Renders the intersection of local + peer scope memberships against the
+ * per-scope cursor state stored in `replication_cursors_v2`. Consumers use
+ * this surface to show "synced / pending" per Space instead of the legacy
+ * peer-level `last_sync=ok`, which is the diagnostic gap that hid the
+ * codemem-ruu6 regression while ~18k scoped rows silently failed to
+ * replicate.
+ *
+ * Returns an empty array when local device identity has not yet been
+ * initialized or when there is no membership overlap.
+ */
+export interface PerPeerScopeSyncEntry {
+	scope_id: string;
+	label: string;
+	authority_type: string;
+	membership_epoch: number;
+	last_applied_cursor: string | null;
+	last_acked_cursor: string | null;
+	bootstrapped: boolean;
+}
+
+export function listPerPeerScopeSyncState(
+	db: Database,
+	options: { localDeviceId: string | null; peerDeviceId: string },
+): PerPeerScopeSyncEntry[] {
+	const localDeviceId = options.localDeviceId?.trim() ?? "";
+	const peerDeviceId = options.peerDeviceId.trim();
+	if (!localDeviceId || !peerDeviceId) return [];
+	const scopes = listAuthorizedScopesForPeer(db, { localDeviceId, peerDeviceId });
+	return scopes.map((scope) => {
+		const [lastApplied, lastAcked] = getReplicationCursor(db, peerDeviceId, scope.scope_id);
+		return {
+			scope_id: scope.scope_id,
+			label: scope.label,
+			authority_type: scope.authority_type,
+			membership_epoch: scope.membership_epoch,
+			last_applied_cursor: lastApplied,
+			last_acked_cursor: lastAcked,
+			bootstrapped: lastApplied != null,
+		};
+	});
 }

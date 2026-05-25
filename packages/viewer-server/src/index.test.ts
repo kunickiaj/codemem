@@ -3952,8 +3952,11 @@ describe("viewer-server", () => {
 					reset_required: true,
 					sync_capability: "scoped",
 					reason: "unsupported_scope",
-					scope_id: "acme-work",
+					scope_id: null,
 				});
+				expect(
+					store.db.prepare("SELECT 1 FROM sync_reset_state_v2 WHERE scope_id = ?").get("acme-work"),
+				).toBeUndefined();
 			} finally {
 				peer?.cleanup();
 				cleanup();
@@ -3979,7 +3982,7 @@ describe("viewer-server", () => {
 					reset_required: true,
 					sync_capability: "scoped",
 					reason: "unsupported_scope",
-					scope_id: "acme-work",
+					scope_id: null,
 				});
 			} finally {
 				peer?.cleanup();
@@ -4039,7 +4042,7 @@ describe("viewer-server", () => {
 					reset_required: true,
 					sync_capability: "scoped",
 					reason: "unsupported_scope",
-					scope_id: "acme-work",
+					scope_id: null,
 				});
 			} finally {
 				peer?.cleanup();
@@ -4072,7 +4075,7 @@ describe("viewer-server", () => {
 					reset_required: true,
 					sync_capability: "scoped",
 					reason: "unsupported_scope",
-					scope_id: "acme-work",
+					scope_id: null,
 				});
 			} finally {
 				peer?.cleanup();
@@ -4141,7 +4144,7 @@ describe("viewer-server", () => {
 					reset_required: true,
 					sync_capability: "scoped",
 					reason: "unsupported_scope",
-					scope_id: "acme-work",
+					scope_id: null,
 				});
 			} finally {
 				peer?.cleanup();

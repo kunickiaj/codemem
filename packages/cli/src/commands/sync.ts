@@ -16,10 +16,9 @@ import {
 	ensureDeviceIdentity,
 	fetchAllSnapshotPages,
 	fingerprintPublicKey,
-	getReplicationCursor,
 	getSemanticIndexDiagnostics,
 	hasUnsyncedSharedMemoryChanges,
-	listAuthorizedScopesForPeer,
+	listPerPeerScopeSyncState,
 	loadPublicKey,
 	MemoryStore,
 	mdnsEnabled,
@@ -813,37 +812,18 @@ statusCmd.action((opts: { db?: string; dbPath?: string; config?: string; json?: 
 			.all();
 		const semanticIndex = getSemanticIndexDiagnostics(store.db);
 
-		// Per-Space sync state per peer. When the local device knows what
-		// scopes both it and the peer are authorized to sync, enumerate them
-		// and pair each with the per-scope replication cursor so users can see
-		// whether each Space has actually started syncing yet. This is the
-		// surface that closes the codemem-ruu6 regression where peers showed
-		// `status=ok` while 99% of scoped data was silently missing.
+		// Per-Space sync state per peer. Uses the shared
+		// `listPerPeerScopeSyncState` helper so this surface stays byte-for-byte
+		// consistent with the viewer's /api/sync/status payload — they are the
+		// two surfaces that close the codemem-ruu6 diagnostic gap where peers
+		// showed `status=ok` while 99% of scoped data was silently missing.
 		const localDeviceId = deviceRow?.device_id ?? null;
 		const peersWithScopes = peers.map((peer) => {
 			const peerDeviceId = String(peer.peer_device_id ?? "").trim();
-			const scopes =
-				localDeviceId && peerDeviceId
-					? listAuthorizedScopesForPeer(store.db, {
-							localDeviceId,
-							peerDeviceId,
-						}).map((scope) => {
-							const [lastApplied, lastAcked] = getReplicationCursor(
-								store.db,
-								peerDeviceId,
-								scope.scope_id,
-							);
-							return {
-								scope_id: scope.scope_id,
-								label: scope.label,
-								authority_type: scope.authority_type,
-								membership_epoch: scope.membership_epoch,
-								last_applied_cursor: lastApplied,
-								last_acked_cursor: lastAcked,
-								bootstrapped: lastApplied != null,
-							};
-						})
-					: [];
+			const scopes = listPerPeerScopeSyncState(store.db, {
+				localDeviceId,
+				peerDeviceId,
+			});
 			return { peer, scopes };
 		});
 

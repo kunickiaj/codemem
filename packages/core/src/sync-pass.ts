@@ -28,6 +28,7 @@ import {
 	applyReplicationOps,
 	backfillReplicationOps,
 	chunkOpsBySize,
+	clearReplicationCursorLastApplied,
 	extractReplicationOps,
 	type FilterReplicationSkipped,
 	filterReplicationOpsForSyncWithStatus,
@@ -343,14 +344,6 @@ function loadLocalOpsSince(
 	return [rows, nextCursor];
 }
 
-/**
- * Compute a cursor string from a timestamp and op_id.
- * Currently unused — will be needed when real apply logic advances the cursor.
- */
-export function computeCursor(createdAt: string, opId: string): string {
-	return `${createdAt}|${opId}`;
-}
-
 // ---------------------------------------------------------------------------
 // Push ops
 // ---------------------------------------------------------------------------
@@ -583,6 +576,24 @@ async function syncOneScope(
 				keysDir,
 				pageSize: BOOTSTRAP_PAGE_SIZE,
 			});
+			// TOCTOU re-check: another process (CLI write, plugin, concurrent
+			// sync pass) could have created shared memories in this scope while
+			// the snapshot was downloading. applyBootstrapSnapshot wipes all
+			// shared rows for the scope before inserting the snapshot, so
+			// proceeding would clobber those writes. Mirror the same guard the
+			// default-scope auto-bootstrap path already enforces in syncOnce
+			// (see "needs_attention:shared_memories_appeared_during_bootstrap").
+			if (hasLocalRowsInScope(db, scopeId)) {
+				return {
+					scope_id: scopeId,
+					label: scope.label,
+					ok: false,
+					opsIn: 0,
+					opsOut: 0,
+					error: "needs_attention:shared_memories_appeared_during_bootstrap",
+					bootstrapped: true,
+				};
+			}
 			const bootstrapResult = applyBootstrapSnapshot(db, peerDeviceId, items, resetInfo, scanner);
 			if (!bootstrapResult.ok) {
 				return {
@@ -643,11 +654,12 @@ async function syncOneScope(
 		const [status, payload] = await requestJson("GET", url, { headers });
 
 		if (status === 409 && payload?.reset_required === true) {
-			// Per-scope reset requested. Report it; the next pass will pick a
-			// fresh bootstrap path because the cursor will be cleared by the
-			// reset boundary. We deliberately do not auto-bootstrap from here
+			// Per-scope reset requested. Clear the stale scoped cursor so the
+			// next pass picks a fresh bootstrap path instead of replaying the
+			// same invalid boundary forever. We deliberately do not auto-bootstrap from here
 			// to avoid surprising state changes mid-loop; the default-scope
 			// auto-bootstrap path remains the canonical recovery mechanism.
+			clearReplicationCursorLastApplied(db, peerDeviceId, scopeId);
 			const reason = ((): SyncResetRequired["reason"] => {
 				switch (payload.reason) {
 					case "generation_mismatch":
