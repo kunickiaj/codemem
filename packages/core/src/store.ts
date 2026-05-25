@@ -644,6 +644,15 @@ export class MemoryStore {
 			workspaceId: provenance.workspace_id,
 		});
 
+		// Denormalize the session's project name onto memory_items so that
+		// cross-device sync (which does not replicate sessions) can still
+		// surface this memory under its real project identity on peers.
+		const sessionProject = (this.d
+			.select({ project: schema.sessions.project })
+			.from(schema.sessions)
+			.where(eq(schema.sessions.id, sessionId))
+			.get()?.project ?? null) as string | null;
+
 		const existingHit = this.findExistingDuplicateMemory(
 			sessionId,
 			validKind,
@@ -698,6 +707,7 @@ export class MemoryStore {
 						dedup_key: dedupKey,
 						import_key: importKey,
 						scope_id: scopeId,
+						project: sessionProject,
 					})
 					.returning({ id: schema.memoryItems.id })
 					.all();

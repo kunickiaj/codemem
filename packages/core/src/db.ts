@@ -698,6 +698,29 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		} catch {
 			// Keep additive compatibility best-effort for index creation.
 		}
+
+		// Denormalized project column: backfill from sessions.project for legacy
+		// rows so the Projects read model can read directly from memory_items
+		// without joining through sessions (which carry device-local cwd and
+		// don't replicate). Idempotent — only backfills rows whose project is
+		// currently NULL, so re-runs are no-ops.
+		addColumnIfMissing(db, "memory_items", "project", "TEXT");
+		try {
+			db.exec(`UPDATE memory_items
+				 SET project = (
+					 SELECT s.project FROM sessions s
+					 WHERE s.id = memory_items.session_id
+				 )
+				 WHERE project IS NULL`);
+		} catch {
+			// Best-effort backfill — readers fall back to sessions.project
+			// when memory_items.project is null.
+		}
+		try {
+			db.exec("CREATE INDEX IF NOT EXISTS idx_memory_items_project ON memory_items(project)");
+		} catch {
+			// Keep additive compatibility best-effort for index creation.
+		}
 	}
 
 	if (tableExists(db, "replication_ops")) {

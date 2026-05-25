@@ -2693,6 +2693,10 @@ function buildPayloadFromMemoryRow(row: MemoryItemRow): MemoryPayload {
 		has_deleted_at: row.deleted_at != null,
 		rev: row.rev ?? 0,
 		import_key: row.import_key ?? null,
+		// Denormalized project from memory_items so the outbound payload
+		// carries it without a session join. Callers may still override with
+		// sessions.project for legacy rows whose memory_items.project is null.
+		project: row.project ?? null,
 	};
 }
 
@@ -2847,6 +2851,10 @@ export function applyReplicationOps(
 								user_prompt_id: payload.user_prompt_id,
 								prompt_number: payload.prompt_number,
 								scope_id: sql`COALESCE(${opScopeId}, ${schema.memoryItems.scope_id})`,
+								// Backfill project on existing rows when the inbound
+								// payload carries it; preserve the existing value when
+								// the sender (older code) omitted the field.
+								project: sql`COALESCE(${typeof payload.project === "string" && payload.project.trim() ? payload.project.trim() : null}, ${schema.memoryItems.project})`,
 							})
 							.where(eq(schema.memoryItems.import_key, importKey))
 							.run();
@@ -2910,6 +2918,10 @@ export function applyReplicationOps(
 								user_prompt_id: payload.user_prompt_id,
 								prompt_number: payload.prompt_number,
 								scope_id: opScopeId,
+								// Persist replicated project name so the Projects read
+								// model can surface this memory under its originating
+								// project identity without joining through sessions.
+								project: replicatedProject,
 							})
 							.returning({ id: schema.memoryItems.id })
 							.all();

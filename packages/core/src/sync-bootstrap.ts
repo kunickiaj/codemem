@@ -367,6 +367,10 @@ export function applyBootstrapSnapshot(
 						typeof payload.user_prompt_id === "number" ? payload.user_prompt_id : null,
 					prompt_number: typeof payload.prompt_number === "number" ? payload.prompt_number : null,
 					scope_id: scopeId,
+					// Persist the originating project name from the snapshot so the
+					// Projects read model can surface this memory under its real
+					// project identity on this receiver.
+					project,
 				})
 				.run();
 			result.applied++;
