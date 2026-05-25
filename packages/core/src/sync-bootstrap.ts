@@ -30,6 +30,22 @@ import type { SyncMemorySnapshotItem, SyncResetRequired } from "./types.js";
 import { queueVectorBackfillForSyncBootstrap } from "./vector-migration.js";
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/**
+ * Synthetic placeholder cwd written for sessions created during bootstrap
+ * snapshot apply. These sessions exist only to satisfy the NOT NULL FK on
+ * memory_items.session_id for inbound memories that did not originate on
+ * this device. They are not user-facing and should be filtered out of any
+ * UI that lists projects or sessions by cwd.
+ *
+ * Format: `__sync_bootstrap__:<project>` or `__sync_bootstrap__` if no
+ * project is associated.
+ */
+export const SYNC_BOOTSTRAP_CWD_PREFIX = "__sync_bootstrap__";
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -199,7 +215,7 @@ function ensureSessionForBootstrap(
 	const cached = bootstrapSessionCache.get(projectKey);
 	if (cached != null) return cached;
 
-	const cwd = project ? `__sync_bootstrap__:${project}` : "__sync_bootstrap__";
+	const cwd = project ? `${SYNC_BOOTSTRAP_CWD_PREFIX}:${project}` : SYNC_BOOTSTRAP_CWD_PREFIX;
 	const existing = d
 		.select({ id: schema.sessions.id })
 		.from(schema.sessions)

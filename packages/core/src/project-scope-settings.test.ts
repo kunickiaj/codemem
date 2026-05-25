@@ -692,4 +692,61 @@ describe("project scope settings", () => {
 			}),
 		).toThrow(/not an active Sharing domain/);
 	});
+
+	it("excludes synthetic sync-bootstrap sessions from the project inventory", () => {
+		// Real session — should appear in the inventory.
+		const realSession = insertSession(db, {
+			cwd: "/workspace/work/exampleco/api",
+			gitRemote: "https://git.example.invalid/exampleco/api.git",
+			project: "api",
+		});
+		insertMemory(db, realSession);
+
+		// Synthetic placeholder session created by sync-bootstrap.ts when
+		// inbound memories arrive from a peer. Must be hidden from the
+		// Projects tab read model.
+		const bootstrapSession = insertSession(db, {
+			cwd: "__sync_bootstrap__:codemem",
+			gitRemote: null,
+			project: "codemem",
+		});
+		insertMemory(db, bootstrapSession, { workspaceId: "shared:default" });
+
+		const bareBootstrapSession = insertSession(db, {
+			cwd: "__sync_bootstrap__",
+			gitRemote: null,
+			project: null,
+		});
+		insertMemory(db, bareBootstrapSession, { workspaceId: "shared:default" });
+
+		const inventory = listProjectScopeInventory(db);
+		const cwds = inventory.projects.map((project) => project.cwd ?? "");
+		expect(cwds).not.toContain("__sync_bootstrap__:codemem");
+		expect(cwds).not.toContain("__sync_bootstrap__");
+		// Real session is still surfaced.
+		expect(
+			inventory.projects.some(
+				(project) => project.workspace_identity === "https://git.example.invalid/exampleco/api.git",
+			),
+		).toBe(true);
+	});
+
+	it("keeps cwds that only coincidentally match the bootstrap LIKE-wildcard shape", () => {
+		// Regression: a naive `LIKE '__sync_bootstrap__%'` predicate treats
+		// each `_` as a single-character wildcard, so any 18-char cwd whose
+		// position 3-15 spell "sync" + 13 chars matching "_bootstrap" pattern
+		// would be silently dropped. Use a cwd that LIKE would wrongly
+		// exclude but a literal-prefix comparison must keep.
+		const trickySession = insertSession(db, {
+			// 18 chars total, matching the wildcard count of "__sync_bootstrap__"
+			// but with characters that don't form the literal prefix.
+			cwd: "xxsyncXbootstrapYY",
+			gitRemote: "https://git.example.invalid/team/tricky.git",
+			project: "tricky",
+		});
+		insertMemory(db, trickySession);
+
+		const inventory = listProjectScopeInventory(db);
+		expect(inventory.projects.map((project) => project.cwd ?? "")).toContain("xxsyncXbootstrapYY");
+	});
 });
