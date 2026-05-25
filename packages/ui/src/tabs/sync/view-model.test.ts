@@ -467,6 +467,82 @@ describe("summarizeSyncRunResult", () => {
 		});
 	});
 
+	it("routes scope_rejected failures to the Teams Space-access message", () => {
+		expect(
+			summarizeSyncRunResult({
+				items: [
+					{
+						peer_device_id: "peer-a",
+						ok: false,
+						error:
+							"all addresses failed | http://x: peer ops push failed (403: scope_rejected:stale_epoch)",
+						opsIn: 0,
+						opsOut: 0,
+						addressErrors: [],
+					},
+				],
+			}),
+		).toEqual({
+			ok: false,
+			message:
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review Space access for this device in Teams, then sync again.",
+			warning: true,
+		});
+	});
+
+	it("routes scoped sync incomplete failures to the Teams Space-access message", () => {
+		expect(
+			summarizeSyncRunResult({
+				items: [
+					{
+						peer_device_id: "peer-a",
+						ok: false,
+						error: "scoped sync incomplete: oss=reset_required:missing_scope",
+						opsIn: 2,
+						opsOut: 0,
+						addressErrors: [],
+					},
+				],
+			}),
+		).toEqual({
+			ok: false,
+			message:
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review Space access for this device in Teams, then sync again.",
+			warning: true,
+		});
+	});
+
+	it("falls back to the mixed-failure summary when trust and scope failures coexist", () => {
+		expect(
+			summarizeSyncRunResult({
+				items: [
+					{
+						peer_device_id: "peer-a",
+						ok: false,
+						error: "peer status failed (401: unauthorized)",
+						opsIn: 0,
+						opsOut: 0,
+						addressErrors: [],
+					},
+					{
+						peer_device_id: "peer-b",
+						ok: false,
+						error: "peer ops push failed (403: scope_rejected:stale_epoch)",
+						opsIn: 0,
+						opsOut: 0,
+						addressErrors: [],
+					},
+					{ peer_device_id: "peer-c", ok: true, opsIn: 1, opsOut: 1, addressErrors: [] },
+				],
+			}),
+		).toEqual({
+			ok: false,
+			message:
+				"2 of 3 device sync attempts failed. Open the affected device cards for the specific errors.",
+			warning: true,
+		});
+	});
+
 	it("surfaces outbound filter diagnostics without treating them as failed sync", () => {
 		expect(
 			summarizeSyncRunResult({
