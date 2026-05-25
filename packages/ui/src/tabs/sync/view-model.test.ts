@@ -181,17 +181,17 @@ describe("derivePeerScopeRejectionsView", () => {
 });
 
 describe("derivePeerAuthorizedDomainsView", () => {
-	it("labels peers with no cached Sharing domain authorization", () => {
+	it("labels peers with no cached Space access", () => {
 		const view = derivePeerAuthorizedDomainsView({ authorized_scopes: [] });
 
 		expect(view.total).toBe(0);
-		expect(view.badgeLabel).toBe("No Sharing domains");
+		expect(view.badgeLabel).toBe("No Space access");
 		expect(view.isWarning).toBe(true);
-		expect(view.emptyMessage).toContain("No Sharing-domain grants exist");
-		expect(view.emptyMessage).toContain("Project filters below cannot send data by themselves");
+		expect(view.emptyMessage).toContain("No Space access grants exist");
+		expect(view.emptyMessage).toContain("Advanced project filters cannot send data by themselves");
 	});
 
-	it("formats authorized Sharing domains without exposing membership internals", () => {
+	it("formats authorized Spaces without exposing membership internals", () => {
 		const view = derivePeerAuthorizedDomainsView({
 			authorized_scopes: [
 				{
@@ -211,10 +211,23 @@ describe("derivePeerAuthorizedDomainsView", () => {
 			],
 		});
 
-		expect(view.badgeLabel).toBe("2 Sharing domains");
+		expect(view.badgeLabel).toBe("2 Spaces");
 		expect(view.isWarning).toBe(false);
 		expect(view.domains.map((domain) => domain.label)).toEqual(["Acme Work", "Personal Devices"]);
 		expect(view.domains[0]?.detail).toBe("team · coordinator · member role");
+	});
+
+	it("does not promote raw Space ids when authorized Space labels are missing", () => {
+		const view = derivePeerAuthorizedDomainsView({
+			authorized_scopes: [
+				{ authority_type: "coordinator", role: "member", scope_id: "team-alpha-default" },
+			],
+		});
+
+		expect(view.badgeLabel).toBe("1 Space");
+		expect(view.domains[0]?.label).toBe("Untitled Space");
+		expect(view.domains[0]?.label).not.toContain("team-alpha-default");
+		expect(view.domains[0]?.detail).not.toContain("team-alpha-default");
 	});
 });
 
@@ -229,10 +242,10 @@ describe("derivePeerGrantRoleMismatchView", () => {
 		});
 
 		expect(view.isVisible).toBe(true);
-		expect(view.badgeLabel).toBe("Review domain fit");
-		expect(view.message).toContain("personal or OSS Sharing-domain grants");
-		expect(view.message).toContain("no separate work/client-like domain grant");
-		expect(view.detail).toContain("project filters only narrow already-authorized domains");
+		expect(view.badgeLabel).toBe("Review Space fit");
+		expect(view.message).toContain("personal or OSS Space access");
+		expect(view.message).toContain("no separate work/client-like Space access");
+		expect(view.detail).toContain("advanced project filters only narrow already-authorized Spaces");
 	});
 
 	it("does not flag peers once a separate work/client-like grant is present", () => {
@@ -307,8 +320,21 @@ describe("derivePeerProjectNarrowingView", () => {
 		});
 
 		expect(view.summary).toBe("Global defaults. Include filter: *; Exclude filter: personal.");
-		expect(view.note).toContain("only narrow data after Sharing domain authorization");
-		expect(view.note).toContain("never grant access to another domain");
+		expect(view.statusLabel).toBe("Advanced filters active");
+		expect(view.hasAdvancedFilters).toBe(true);
+		expect(view.note).toContain("only narrow data after Space access");
+		expect(view.note).toContain("never grant access to another Space");
+	});
+
+	it("treats all-project/no-exclusion defaults as no advanced filters", () => {
+		const view = derivePeerProjectNarrowingView({
+			effective_exclude: [],
+			effective_include: ["*"],
+			inherits_global: true,
+		});
+
+		expect(view.statusLabel).toBe("No advanced filters");
+		expect(view.hasAdvancedFilters).toBe(false);
 	});
 });
 

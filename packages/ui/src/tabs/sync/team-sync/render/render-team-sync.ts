@@ -313,7 +313,8 @@ export function renderTeamSync() {
 				"This device appears in multiple coordinator groups. Review team setup first or ask an admin to clean up the duplicate enrollment before approving it here.";
 			mode = "ambiguous";
 		} else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
-			actionMessage = `Finish this device's scope review in People & devices before you sync it.`;
+			actionMessage =
+				"Review this device's Space access and advanced rules in Teams before you sync it.";
 			mode = "scope-pending";
 		} else if (pairedPeer?.last_error) {
 			noteParts.push(`error: ${String(pairedPeer.last_error)}`);

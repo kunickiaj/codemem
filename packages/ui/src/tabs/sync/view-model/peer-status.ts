@@ -195,8 +195,9 @@ export function derivePeerAuthorizedDomainsView(peer: PeerLike): PeerAuthorizedD
 	const domains = (Array.isArray(peer.authorized_scopes) ? peer.authorized_scopes : [])
 		.map((scope: PeerAuthorizedScopeLike): PeerAuthorizedDomainViewItem | null => {
 			const scopeId = cleanText(scope.scope_id);
-			const label = cleanText(scope.label) ?? scopeId;
-			if (!scopeId && !label) return null;
+			const rawLabel = cleanText(scope.label);
+			if (!scopeId && !rawLabel) return null;
+			const label = rawLabel || "Untitled Space";
 			const detail = [
 				labelPart(cleanText(scope.kind), "user"),
 				labelPart(cleanText(scope.authority_type), "local"),
@@ -204,22 +205,17 @@ export function derivePeerAuthorizedDomainsView(peer: PeerLike): PeerAuthorizedD
 			]
 				.filter(Boolean)
 				.join(" · ");
-			return { scopeId: scopeId || label, label: label || scopeId, detail };
+			return { scopeId: scopeId || label, label, detail };
 		})
 		.filter((item): item is PeerAuthorizedDomainViewItem => item != null);
 	const total = domains.length;
 	return {
 		total,
-		badgeLabel:
-			total === 1
-				? "1 Sharing domain"
-				: total > 1
-					? `${total} Sharing domains`
-					: "No Sharing domains",
+		badgeLabel: total === 1 ? "1 Space" : total > 1 ? `${total} Spaces` : "No Space access",
 		isWarning: total === 0,
 		domains,
 		emptyMessage:
-			"No Sharing-domain grants exist for this device yet. Project filters below cannot send data by themselves.",
+			"No Space access grants exist for this device yet. Advanced project filters cannot send data by themselves.",
 	};
 }
 
@@ -287,22 +283,30 @@ export function derivePeerGrantRoleMismatchView(peer: PeerLike): PeerGrantRoleMi
 		return { badgeLabel: null, detail: "", isVisible: false, message: "", title: "" };
 	}
 	return {
-		badgeLabel: "Review domain fit",
+		badgeLabel: "Review Space fit",
 		detail:
-			"Coordinator/group context helps find the device, and project filters only narrow already-authorized domains. Neither one grants a missing work/client domain.",
+			"Team discovery helps find the device, and advanced project filters only narrow already-authorized Spaces. Neither one grants missing work/client Space access.",
 		isVisible: true,
 		message:
-			"This coordinator-discovered device has personal or OSS Sharing-domain grants, but no separate work/client-like domain grant. If this device is meant for work/client sync, add that Sharing domain explicitly before treating sync as validated.",
-		title: "Check this device's Sharing-domain role",
+			"This Team-discovered device has personal or OSS Space access, but no separate work/client-like Space access. If this device is meant for work/client sync, grant that Space explicitly before treating sync as validated.",
+		title: "Check this device's Space access",
 	};
 }
 
 export interface PeerProjectNarrowingView {
+	hasAdvancedFilters: boolean;
+	statusLabel: string;
 	summary: string;
 	note: string;
 	sourceLabel: string;
 	includeLabel: string;
 	excludeLabel: string;
+}
+
+function hasActiveProjectNarrowing(include: string[], exclude: string[]): boolean {
+	const normalizedInclude = include.map((item) => item.trim()).filter(Boolean);
+	const includeNarrows = normalizedInclude.length > 0 && !normalizedInclude.includes("*");
+	return includeNarrows || exclude.length > 0;
 }
 
 export function derivePeerProjectNarrowingView(
@@ -313,11 +317,14 @@ export function derivePeerProjectNarrowingView(
 	const sourceLabel = scope?.inherits_global ? "Global defaults" : "Device override";
 	const includeLabel = `Include filter: ${shortList(effectiveInclude, "all projects")}`;
 	const excludeLabel = `Exclude filter: ${shortList(effectiveExclude, "no exclusions")}`;
+	const hasAdvancedFilters = hasActiveProjectNarrowing(effectiveInclude, effectiveExclude);
 	return {
+		hasAdvancedFilters,
+		statusLabel: hasAdvancedFilters ? "Advanced filters active" : "No advanced filters",
 		sourceLabel,
 		includeLabel,
 		excludeLabel,
 		summary: `${sourceLabel}. ${includeLabel}; ${excludeLabel}.`,
-		note: "Project filters only narrow data after Sharing domain authorization; they never grant access to another domain.",
+		note: "Advanced filters only narrow data after Space access; they never grant access to another Space.",
 	};
 }

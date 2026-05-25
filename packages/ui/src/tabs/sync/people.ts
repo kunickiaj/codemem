@@ -9,12 +9,7 @@ import { renderSyncEmptyState } from "./components/sync-diagnostics";
 import type { SyncActionFeedback } from "./components/sync-inline-feedback";
 import { renderLegacyClaimsSlice } from "./components/sync-legacy-claims";
 import { renderSyncPeersList } from "./components/sync-peers";
-import {
-	clearPeerScopeReview,
-	hideSkeleton,
-	isPeerScopeReviewPending,
-	shouldClearStalePeersFeedback,
-} from "./helpers";
+import { hideSkeleton, isPeerScopeReviewPending, shouldClearStalePeersFeedback } from "./helpers";
 import { openSyncConfirmDialog } from "./sync-dialogs";
 import {
 	deriveVisiblePeopleActors,
@@ -149,7 +144,7 @@ export function renderSyncPeers() {
 				} else if (peerId && isPeerScopeReviewPending(peerId)) {
 					const displayName = peer?.name || (peerId ? peerId.slice(0, 8) : "unknown");
 					feedback = {
-						message: `Triggered sync for ${displayName}. Review scope in this card if you want tighter sharing rules.`,
+						message: `Triggered sync for ${displayName}. Review Space access and advanced rules in Teams if this device needs tighter sharing.`,
 						tone: "warning",
 					};
 				} else {
@@ -209,44 +204,6 @@ export function renderSyncPeers() {
 					message: friendlyError(
 						error,
 						"Failed to update device assignment. The current assignment is unchanged.",
-					),
-					tone: "warning",
-				} satisfies SyncActionFeedback;
-			}
-		},
-		onSaveScope: async (peerId, include, exclude) => {
-			try {
-				await api.updatePeerScope(peerId, include, exclude);
-				clearPeerScopeReview(peerId);
-				await _loadSyncData();
-				return {
-					message: "Device sync scope saved.",
-					tone: "success",
-				} satisfies SyncActionFeedback;
-			} catch (error) {
-				return {
-					message: friendlyError(
-						error,
-						"Failed to save device scope. The current sharing rules are still active.",
-					),
-					tone: "warning",
-				} satisfies SyncActionFeedback;
-			}
-		},
-		onResetScope: async (peerId) => {
-			try {
-				await api.updatePeerScope(peerId, null, null, true);
-				clearPeerScopeReview(peerId);
-				await _loadSyncData();
-				return {
-					message: "Device sync scope reset to global defaults.",
-					tone: "success",
-				} satisfies SyncActionFeedback;
-			} catch (error) {
-				return {
-					message: friendlyError(
-						error,
-						"Failed to reset device scope. The current sharing rules are still active.",
 					),
 					tone: "warning",
 				} satisfies SyncActionFeedback;
