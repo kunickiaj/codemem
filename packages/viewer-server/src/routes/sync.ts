@@ -57,7 +57,6 @@ import {
 	fingerprintPublicKey,
 	formatHostPort,
 	getCoordinatorGroupPreference,
-	getReplicationCursor,
 	getSemanticIndexDiagnostics,
 	getSyncResetState,
 	type InboundScopeRejectionPeerSummary,
@@ -69,6 +68,7 @@ import {
 	listCoordinatorJoinRequests,
 	listInboundScopeRejections,
 	listMaintenanceJobs,
+	listPerPeerScopeSyncState,
 	listProjectScopeCandidates,
 	listProjectScopeInventory,
 	listProjectScopeSettingsMappings,
@@ -1432,7 +1432,10 @@ function mapPeerRow(
 	const recentOps = recentOpsByPeer?.get(peerId) ?? { in: 0, out: 0 };
 	const scopeRejections = scopeRejectionsByPeer?.get(peerId);
 	const addresses = safeJsonList(row.addresses_json as string | null);
-	const perScopeSync = perPeerScopeSyncState(store, peerId, localDeviceId ?? null);
+	const perScopeSync = listPerPeerScopeSyncState(store.db, {
+		localDeviceId: localDeviceId ?? null,
+		peerDeviceId: peerId,
+	});
 	return {
 		peer_device_id: row.peer_device_id,
 		name: row.name,
@@ -1470,44 +1473,6 @@ function mapPeerRow(
 		discovered_via_group_id:
 			typeof row.discovered_via_group_id === "string" ? row.discovered_via_group_id : null,
 	};
-}
-
-/**
- * Per-peer per-Space sync state for the `/api/sync/status` payload.
- *
- * Returns one entry per scope that both the local device and the peer are
- * active members of, each carrying the scope label, authority type, and the
- * per-scope replication cursor pulled from `replication_cursors_v2`.
- * Callers can render this directly in CLI/UI to show which Spaces have
- * actually synced for a peer versus which are still pending.
- *
- * Returns an empty array when local identity is not yet initialized or when
- * there is no overlap between local and peer memberships.
- */
-function perPeerScopeSyncState(
-	store: MemoryStore,
-	peerDeviceId: string,
-	localDeviceId: string | null,
-): Array<Record<string, unknown>> {
-	const trimmedPeer = peerDeviceId.trim();
-	const trimmedLocal = localDeviceId?.trim() ?? "";
-	if (!trimmedLocal || !trimmedPeer) return [];
-	const scopes = listAuthorizedScopesForPeer(store.db, {
-		localDeviceId: trimmedLocal,
-		peerDeviceId: trimmedPeer,
-	});
-	return scopes.map((scope) => {
-		const [lastApplied, lastAcked] = getReplicationCursor(store.db, trimmedPeer, scope.scope_id);
-		return {
-			scope_id: scope.scope_id,
-			label: scope.label,
-			authority_type: scope.authority_type,
-			membership_epoch: scope.membership_epoch,
-			last_applied_cursor: lastApplied,
-			last_acked_cursor: lastAcked,
-			bootstrapped: lastApplied != null,
-		};
-	});
 }
 
 function redactSyncAttemptError(error: unknown): string | null {

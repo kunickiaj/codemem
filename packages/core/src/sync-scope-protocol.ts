@@ -7,7 +7,11 @@ import {
 	getCachedScopeAuthorization,
 } from "./scope-membership-cache.js";
 import { isScopedSyncCapability, type SyncCapability } from "./sync-capability.js";
-import { DEFAULT_SYNC_SCOPE_ID, getSyncResetState } from "./sync-replication.js";
+import {
+	DEFAULT_SYNC_SCOPE_ID,
+	getReplicationCursor,
+	getSyncResetState,
+} from "./sync-replication.js";
 
 export const SYNC_SCOPE_QUERY_PARAM = "scope_id";
 
@@ -246,4 +250,50 @@ export function listAuthorizedScopesForPeer(
 
 	entries.sort((a, b) => a.scope_id.localeCompare(b.scope_id));
 	return entries;
+}
+
+/**
+ * Per-Space sync state for a given peer, suitable for both the CLI status
+ * display and the `/api/sync/status` / `/api/sync/peers` viewer payload.
+ *
+ * Renders the intersection of local + peer scope memberships against the
+ * per-scope cursor state stored in `replication_cursors_v2`. Consumers use
+ * this surface to show "synced / pending" per Space instead of the legacy
+ * peer-level `last_sync=ok`, which is the diagnostic gap that hid the
+ * codemem-ruu6 regression while ~18k scoped rows silently failed to
+ * replicate.
+ *
+ * Returns an empty array when local device identity has not yet been
+ * initialized or when there is no membership overlap.
+ */
+export interface PerPeerScopeSyncEntry {
+	scope_id: string;
+	label: string;
+	authority_type: string;
+	membership_epoch: number;
+	last_applied_cursor: string | null;
+	last_acked_cursor: string | null;
+	bootstrapped: boolean;
+}
+
+export function listPerPeerScopeSyncState(
+	db: Database,
+	options: { localDeviceId: string | null; peerDeviceId: string },
+): PerPeerScopeSyncEntry[] {
+	const localDeviceId = options.localDeviceId?.trim() ?? "";
+	const peerDeviceId = options.peerDeviceId.trim();
+	if (!localDeviceId || !peerDeviceId) return [];
+	const scopes = listAuthorizedScopesForPeer(db, { localDeviceId, peerDeviceId });
+	return scopes.map((scope) => {
+		const [lastApplied, lastAcked] = getReplicationCursor(db, peerDeviceId, scope.scope_id);
+		return {
+			scope_id: scope.scope_id,
+			label: scope.label,
+			authority_type: scope.authority_type,
+			membership_epoch: scope.membership_epoch,
+			last_applied_cursor: lastApplied,
+			last_acked_cursor: lastAcked,
+			bootstrapped: lastApplied != null,
+		};
+	});
 }

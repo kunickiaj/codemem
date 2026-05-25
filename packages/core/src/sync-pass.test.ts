@@ -674,6 +674,133 @@ describe("syncOnce", () => {
 		]);
 	});
 
+	it("canary: bulk of source rows reach a fresh peer across multiple Spaces (ruu6.7)", async () => {
+		// Cheap regression canary for the codemem-ruu6 bug shape — source has
+		// many rows across multiple Spaces, fresh peer should receive almost
+		// all of them (modulo any in scopes the peer is not a member of). The
+		// original regression had a stark fingerprint: source had ~24k rows,
+		// receiver got exactly 295. A "did the bulk transfer?" assertion
+		// would have caught it. This test enforces that floor at a small
+		// scale so any future protocol drift that silently filters out a
+		// whole class of rows trips here, not in dogfood.
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-canary", "fp-canary", new Date().toISOString());
+		db.prepare(
+			"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+		).run("peer-canary", "2025-12-31T00:00:00Z|local-op-0", null, new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		grantScopeForSyncPass(db, "alpha", ["peer-canary", "local-device-id"]);
+		grantScopeForSyncPass(db, "beta", ["peer-canary", "local-device-id"]);
+		grantScopeForSyncPass(db, "gamma", ["peer-canary", "local-device-id"]);
+
+		const scopes = ["alpha", "beta", "gamma"] as const;
+		const itemsPerScope = 12;
+		const expectedTotal = scopes.length * itemsPerScope;
+
+		const statusResponse = {
+			fingerprint: "fp-canary",
+			protocol_version: "2",
+			sync_capability: "scoped",
+			sync_reset: {
+				generation: 1,
+				snapshot_id: "snap-default",
+				baseline_cursor: null,
+				retained_floor_cursor: null,
+			},
+			authorized_scopes: scopes.map((scope_id) => ({
+				scope_id,
+				label: scope_id,
+				authority_type: "coordinator",
+				membership_epoch: 1,
+				sync_reset: {
+					scope_id,
+					generation: 1,
+					snapshot_id: `snap-${scope_id}`,
+					baseline_cursor: `2026-01-01T00:00:00Z|baseline-${scope_id}`,
+					retained_floor_cursor: null,
+				},
+			})),
+		};
+		const defaultOpsResponse = {
+			reset_required: false,
+			generation: 1,
+			snapshot_id: "snap-default",
+			baseline_cursor: null,
+			retained_floor_cursor: null,
+			ops: [],
+			next_cursor: null,
+			skipped: 0,
+		};
+
+		const calls = [statusResponse, defaultOpsResponse] as Record<string, unknown>[];
+		for (const scope_id of scopes) {
+			calls.push({
+				scope_id,
+				generation: 1,
+				snapshot_id: `snap-${scope_id}`,
+				baseline_cursor: `2026-01-01T00:00:00Z|baseline-${scope_id}`,
+				retained_floor_cursor: null,
+				sync_capability: "scoped",
+				items: Array.from({ length: itemsPerScope }, (_, i) => ({
+					entity_id: `key:${scope_id}-${i + 1}`,
+					op_type: "upsert",
+					payload_json: JSON.stringify({
+						kind: "discovery",
+						title: `${scope_id} item ${i + 1}`,
+						body_text: `Body ${scope_id} ${i + 1}`,
+						active: 1,
+						created_at: "2026-01-01T00:00:00Z",
+						updated_at: "2026-01-01T00:00:00Z",
+						scope_id,
+						visibility: "shared",
+					}),
+					clock_rev: 1,
+					clock_updated_at: "2026-01-01T00:00:00Z",
+					clock_device_id: "peer-canary",
+				})),
+				next_page_token: null,
+				has_more: false,
+			});
+		}
+
+		const spy = vi.spyOn(syncHttpClient, "requestJson");
+		for (const call of calls) spy.mockResolvedValueOnce([200, call]);
+
+		const result = await syncOnce(db, "peer-canary", ["http://127.0.0.1:9090"]);
+
+		expect(result.ok).toBe(true);
+		// Bulk-transfer canary: count rows the peer received from the source.
+		// The original codemem-ruu6 regression failed this with a 295-row
+		// receiver against a multi-Space source. Allow zero tolerance because
+		// these are synthetic fixtures; in dogfood the bar is "within
+		// tombstone tolerance" per the protocol doc.
+		const receivedCount = (
+			db
+				.prepare(
+					"SELECT count(*) AS n FROM memory_items WHERE import_key IS NOT NULL AND scope_id IN ('alpha','beta','gamma')",
+				)
+				.get() as { n: number }
+		).n;
+		expect(receivedCount).toBe(expectedTotal);
+		// And the per-Space breakdown matches; no Space accidentally got
+		// short-changed.
+		for (const scope_id of scopes) {
+			const perScope = (
+				db
+					.prepare(
+						"SELECT count(*) AS n FROM memory_items WHERE import_key IS NOT NULL AND scope_id = ?",
+					)
+					.get(scope_id) as { n: number }
+			).n;
+			expect(perScope).toBe(itemsPerScope);
+		}
+	});
+
 	it("keeps default-scope and per-scope cursors independent after scoped incremental sync", async () => {
 		// Seeds an incremental scoped pass and asserts the per-scope cursor is
 		// advanced via `replication_cursors_v2(peer, scope_id)` while the

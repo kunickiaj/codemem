@@ -43,7 +43,7 @@ Several factors combined to mask the regression:
 - **`parseSyncScopeRequest` had a test for `unsupported_scope`.** The very behavior that broke the regression was asserted as the correct behavior, because the test was written when the comment "per-scope cursors land in later ov4g.4 slices" was current. The "later slice" never landed but the test was never revisited.
 - **`codemem sync status` had no per-Space surface.** The aggregate `last_sync=ok` per peer was indistinguishable from "all Spaces synced," so neither dogfood operators nor automated checks could tell the difference between "295 of 295 default rows synced" and "295 of 18,511 expected rows synced."
 - **Health stats counted only visible rows.** The 295 active number on the Docker peer matched the receiver's visible rows exactly, which looked plausible because the user had no expectation of a specific count. The number was correct by its own definition while still being deeply wrong relative to the source's corpus.
-- **The codemem-ov4g epic was closed as complete.** Child beads ov4g.4.1 through ov4g.4.9 were each closed individually with their own tests passing, and the parent epic was closed on that basis without a verification that the user-visible "Spaces replicate when you pair a new device" workflow worked end to end.
+- **codemem-ov4g was closed without an end-to-end verification by the bead owner (@kunickiaj).** Child beads ov4g.4.1 through ov4g.4.9 each landed with their own unit tests green, and the epic was signed off on that basis. There was no "drive `syncOnce` against a real multi-Space source, confirm the receiver gets the data" check on the way to close. The cultural pattern — assume the epic is correct because the children are green — is structurally fragile when a child explicitly leaves wire functionality unimplemented behind a comment.
 
 ## Fix shape (codemem-ruu6)
 
@@ -68,9 +68,9 @@ To prevent the same shape of regression from recurring on future protocol work:
 
 ## Validation
 
-- 2134 automated tests pass on the ruu6 stack tip.
-- `codemem sync status` on a scoped peer now lists per-Space progress with synced/pending state.
-- Manual >=10k-row dogfood verification scheduled before promoting 0.33 from alpha to stable (codemem-ruu6.8).
+- 2135 automated tests pass on the ruu6 stack tip, including a "bulk transfer canary" that asserts the receiver actually gets the source's scoped rows. The original regression had a stark fingerprint — source 24,378 / receiver 295 — and this canary catches that shape at small scale before it hits dogfood.
+- `codemem sync status` on a scoped peer now lists per-Space progress with synced/pending state. The CLI and `/api/sync/*` payloads share one helper (`listPerPeerScopeSyncState`) so the two surfaces cannot drift apart.
+- Manual >=10k-row dogfood verification is a HARD GATE on promoting 0.33 from alpha to stable. The bead codemem-ruu6.8 records that gate; stable does not ship until ruu6.8 reports green with per-scope row counts captured on source and receiver. "Scheduled" is the same hedging that let ov4g close — stable is BLOCKED, not "pending."
 
 ## References
 
