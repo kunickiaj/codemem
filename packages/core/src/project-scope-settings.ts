@@ -9,6 +9,7 @@ import {
 	type ScopeResolutionReason,
 	type WorkspaceIdentitySource,
 } from "./scope-resolution.js";
+import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap.js";
 
 export interface SharingDomainSettingsScope {
 	scope_id: string;
@@ -772,6 +773,10 @@ export function listProjectScopeInventory(
 	const offset = Math.max(0, options.offset ?? 0);
 	const mappings = listProjectScopeSettingsMappings(db);
 	const scopes = listSharingDomainSettingsScopes(db);
+	// Bootstrap sessions get a placeholder cwd (see SYNC_BOOTSTRAP_CWD_PREFIX
+	// in sync-bootstrap.ts) to satisfy the NOT NULL FK on memory_items.
+	// They represent inbound memories from peers and should not surface as
+	// distinct projects in the inventory.
 	const rows = db
 		.prepare(
 			`SELECT
@@ -794,12 +799,15 @@ export function listProjectScopeInventory(
 				COUNT(mi_count.id) AS memory_count
 			 FROM sessions s
 			 LEFT JOIN memory_items mi_count ON mi_count.session_id = s.id
-			 WHERE COALESCE(TRIM(s.git_remote), TRIM(s.cwd), TRIM(s.project), '') <> ''
-			    OR mi_count.id IS NOT NULL
+			 WHERE (
+			           COALESCE(TRIM(s.git_remote), TRIM(s.cwd), TRIM(s.project), '') <> ''
+			        OR mi_count.id IS NOT NULL
+			       )
+			   AND (s.cwd IS NULL OR s.cwd NOT LIKE ? || '%')
 			 GROUP BY s.id
 			 ORDER BY MAX(s.started_at) DESC, s.id DESC`,
 		)
-		.all() as ProjectScopeCandidateRow[];
+		.all(SYNC_BOOTSTRAP_CWD_PREFIX) as ProjectScopeCandidateRow[];
 
 	const byIdentity = new Map<string, ProjectScopeInventoryProject>();
 	const inventory: ProjectScopeInventoryProject[] = [];
