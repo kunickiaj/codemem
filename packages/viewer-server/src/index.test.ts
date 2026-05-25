@@ -7558,6 +7558,39 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("demotes stale is_local=1 rows so only the canonical local actor stays marked local", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO actors (actor_id, display_name, is_local, status, created_at, updated_at)
+						 VALUES (?, ?, 1, 'active', ?, ?)`,
+					)
+					.run("local:stale-device-uuid", "Stale Local", now, now);
+
+				const res = await app.request("/api/sync/actors");
+				expect(res.status).toBe(200);
+
+				const localActorRows = store.db
+					.prepare("SELECT actor_id, is_local FROM actors WHERE is_local = 1")
+					.all() as Array<{ actor_id: string; is_local: number }>;
+				expect(localActorRows).toHaveLength(1);
+				expect(localActorRows[0]?.actor_id).toBe(store.actorId);
+
+				const staleRow = store.db
+					.prepare("SELECT is_local FROM actors WHERE actor_id = ?")
+					.get("local:stale-device-uuid") as { is_local: number } | undefined;
+				expect(staleRow?.is_local).toBe(0);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("maps claimed_local_actor=true to the local actor id when no actor id is provided", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {

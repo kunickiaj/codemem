@@ -942,13 +942,32 @@ function peerAuthorizedScopes(store: MemoryStore, peerDeviceId: string): Record<
 
 function ensureLocalActorRecord(store: MemoryStore): void {
 	const d = drizzle(store.db, { schema });
+	const now = new Date().toISOString();
+	// Invariant: exactly one row in `actors` has is_local=1, and it is the
+	// row whose actor_id matches store.actorId. Stale is_local=1 rows can
+	// appear when a device's actor_id changes (config edit, regenerated
+	// device keys, DB copied from another machine). Demote any such rows
+	// before ensuring the canonical local row exists.
+	d.update(schema.actors)
+		.set({ is_local: 0, updated_at: now })
+		.where(and(eq(schema.actors.is_local, 1), ne(schema.actors.actor_id, store.actorId)))
+		.run();
 	const existing = d
 		.select({ actor_id: schema.actors.actor_id })
 		.from(schema.actors)
 		.where(eq(schema.actors.actor_id, store.actorId))
 		.get();
-	if (existing) return;
-	const now = new Date().toISOString();
+	if (existing) {
+		// Row already exists for the canonical local actor id; the demotion
+		// above guarantees it is the only is_local=1 row, but the row itself
+		// may have been previously set to is_local=0 (e.g. via a stale demote
+		// from an even earlier identity). Re-mark it as local idempotently.
+		d.update(schema.actors)
+			.set({ is_local: 1, updated_at: now })
+			.where(eq(schema.actors.actor_id, store.actorId))
+			.run();
+		return;
+	}
 	d.insert(schema.actors)
 		.values({
 			actor_id: store.actorId,
