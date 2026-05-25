@@ -94,16 +94,25 @@ export function summarizeSyncRunResult(payload: UiSyncRunResponse): {
 			warning: false,
 		};
 	}
-	const unauthorizedFailures = failedItems.filter(
-		(item) =>
-			cleanText(item.error).toLowerCase().includes("401") &&
-			cleanText(item.error).toLowerCase().includes("unauthorized"),
+	const unauthorizedFailures = failedItems.filter((item) =>
+		isTrustFailureError(cleanText(item.error)),
 	);
 	if (unauthorizedFailures.length === failedItems.length) {
 		return {
 			ok: false,
 			message:
 				"This device no longer has two-way trust with the peer. Pair it again from the other device, or remove the stale local record if it should be gone.",
+			warning: true,
+		};
+	}
+	const scopeFailures = failedItems.filter((item) =>
+		isScopeMembershipFailureError(cleanText(item.error)),
+	);
+	if (scopeFailures.length === failedItems.length) {
+		return {
+			ok: false,
+			message:
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review Space access for this device in Teams, then sync again.",
 			warning: true,
 		};
 	}
@@ -120,6 +129,43 @@ export function summarizeSyncRunResult(payload: UiSyncRunResponse): {
 		message: error || "Sync failed for at least one device.",
 		warning: true,
 	};
+}
+
+/**
+ * True when a sync-failure error string looks like a two-way-trust failure
+ * (401 unauthorized on the peer's /v1/status), which is the only class of
+ * failure that should trigger the "no longer has two-way trust" toast. Any
+ * other class — connectivity, scope/membership, generation mismatch — flows
+ * through the generic mixed-failure or scoped paths so users do not get
+ * pointed at re-pairing for problems that re-pairing will not fix.
+ */
+function isTrustFailureError(error: string): boolean {
+	const lower = error.toLowerCase();
+	return lower.includes("401") && lower.includes("unauthorized");
+}
+
+/**
+ * True when a sync-failure error string indicates the peer is not authorized
+ * for a Space (or is authorized at a stale epoch). These failures map to the
+ * scoped-sync protocol classes documented in
+ * docs/plans/2026-05-25-scoped-sync-protocol.md:
+ *
+ * - `403: scope_rejected` from POST /v1/ops outbound scope filter.
+ * - `409: reset_required` with `reason=missing_scope` or `stale_epoch`
+ *   from GET /v1/ops or GET /v1/snapshot.
+ * - syncOneScope's `scoped sync incomplete: ...` aggregate string.
+ *
+ * Detection is intentionally substring-based because the wire reason can
+ * arrive embedded in a longer error string from the address-fallback loop.
+ */
+function isScopeMembershipFailureError(error: string): boolean {
+	const lower = error.toLowerCase();
+	if (lower.includes("scope_rejected")) return true;
+	if (lower.includes("missing_scope")) return true;
+	if (lower.includes("stale_epoch")) return true;
+	if (lower.includes("scope_inactive")) return true;
+	if (lower.includes("scoped sync incomplete")) return true;
+	return false;
 }
 
 function outboundFilterLabel(detail: UiSyncSkippedOutDetail | null): string {
