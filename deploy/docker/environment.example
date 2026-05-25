@@ -1,0 +1,36 @@
+# Image version installed from npm. Use "latest" or pin a published version.
+CODEMEM_VERSION=latest
+
+# Container timezone.
+TZ=Etc/UTC
+
+# Viewer and MCP host ports. Compose binds both to 127.0.0.1 on the Docker host.
+CODEMEM_VIEWER_PORT=38888
+CODEMEM_MCP_PORT=38889
+
+# Peer-to-peer sync protocol. Other peers must be able to reach this address.
+# With Docker bridge mode and Tailscale on the host, advertise the NAS host's
+# Tailnet DNS name or 100.x address, not the container's bridge address.
+CODEMEM_SYNC_PORT=7337
+CODEMEM_SYNC_BIND_IP=0.0.0.0
+CODEMEM_SYNC_ADVERTISE=http://your-nas-tailnet-name:7337
+
+# Public HTTPS URL for the MCP endpoint, usually provided by Tailscale Funnel,
+# Cloudflare Tunnel, or another TLS ingress. Must include /mcp.
+CODEMEM_MCP_HTTP_PUBLIC_URL=https://your-host.example/mcp
+
+# Upstream OIDC provider used for Claude custom connector authorization.
+CODEMEM_MCP_OIDC_ISSUER_URL=https://accounts.google.com
+CODEMEM_MCP_OIDC_CLIENT_ID=replace-me
+CODEMEM_MCP_OIDC_CLIENT_SECRET=replace-me
+
+# Set at least one allowed identity. Email is usually simplest for Google OIDC.
+CODEMEM_MCP_OAUTH_ALLOWED_EMAIL=you@example.com
+# CODEMEM_MCP_OAUTH_ALLOWED_SUBJECT=
+
+# Optional observer credentials. Leave unset for a retrieval-only peer that serves
+# synced memories but does not extract new memories from raw events itself.
+# CODEMEM_OBSERVER_PROVIDER=opencode
+# CODEMEM_OBSERVER_MODEL=opencode/gpt-5.4-mini
+# CODEMEM_OBSERVER_API_KEY=replace-me
+# OPENCODE_API_KEY=replace-me

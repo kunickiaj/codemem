@@ -1,0 +1,119 @@
+services:
+  codemem-viewer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        CODEMEM_VERSION: ${CODEMEM_VERSION:-latest}
+    image: codemem:${CODEMEM_VERSION:-latest}
+    container_name: codemem-viewer
+    command:
+      [
+        "codemem",
+        "serve",
+        "start",
+        "--foreground",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "38888",
+        "--db-path",
+        "/data/mem.sqlite",
+        "--config",
+        "/config/codemem.json"
+      ]
+    environment:
+      TZ: ${TZ:-Etc/UTC}
+      CODEMEM_DB: /data/mem.sqlite
+      CODEMEM_CONFIG: /config/codemem.json
+      CODEMEM_KEYS_DIR: /keys
+      CODEMEM_SYNC_HOST: 0.0.0.0
+      CODEMEM_SYNC_PORT: ${CODEMEM_SYNC_PORT:-7337}
+      CODEMEM_SYNC_ADVERTISE: ${CODEMEM_SYNC_ADVERTISE:-}
+    ports:
+      - "127.0.0.1:${CODEMEM_VIEWER_PORT:-38888}:38888"
+      - "${CODEMEM_SYNC_BIND_IP:-0.0.0.0}:${CODEMEM_SYNC_PORT:-7337}:${CODEMEM_SYNC_PORT:-7337}"
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    volumes:
+      - codemem-data:/data
+      - codemem-config:/config
+      - codemem-keys:/keys
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "--input-type=module",
+          "-e",
+          "const res = await fetch('http://127.0.0.1:38888/'); process.exit(res.ok ? 0 : 1);"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  codemem-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        CODEMEM_VERSION: ${CODEMEM_VERSION:-latest}
+    image: codemem:${CODEMEM_VERSION:-latest}
+    container_name: codemem-mcp
+    command:
+      [
+        "codemem",
+        "mcp",
+        "http",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "38889",
+        "--db-path",
+        "/data/mem.sqlite",
+        "--public-url",
+        "${CODEMEM_MCP_HTTP_PUBLIC_URL}",
+        "--unsafe-public"
+      ]
+    environment:
+      TZ: ${TZ:-Etc/UTC}
+      CODEMEM_DB: /data/mem.sqlite
+      CODEMEM_CONFIG: /config/codemem.json
+      CODEMEM_KEYS_DIR: /keys
+      CODEMEM_MCP_HTTP_PUBLIC_URL: ${CODEMEM_MCP_HTTP_PUBLIC_URL}
+      CODEMEM_MCP_OIDC_ISSUER_URL: ${CODEMEM_MCP_OIDC_ISSUER_URL}
+      CODEMEM_MCP_OIDC_CLIENT_ID: ${CODEMEM_MCP_OIDC_CLIENT_ID}
+      CODEMEM_MCP_OIDC_CLIENT_SECRET: ${CODEMEM_MCP_OIDC_CLIENT_SECRET}
+      CODEMEM_MCP_OAUTH_ALLOWED_EMAIL: ${CODEMEM_MCP_OAUTH_ALLOWED_EMAIL:-}
+      CODEMEM_MCP_OAUTH_ALLOWED_SUBJECT: ${CODEMEM_MCP_OAUTH_ALLOWED_SUBJECT:-}
+    ports:
+      - "127.0.0.1:${CODEMEM_MCP_PORT:-38889}:38889"
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    volumes:
+      - codemem-data:/data
+      - codemem-config:/config
+      - codemem-keys:/keys
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "--input-type=module",
+          "-e",
+          "const res = await fetch('http://127.0.0.1:38889/.well-known/oauth-protected-resource/mcp'); process.exit(res.ok ? 0 : 1);"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  codemem-data:
+  codemem-config:
+  codemem-keys:
