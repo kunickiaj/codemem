@@ -907,6 +907,72 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(hasIndex(db, "idx_memory_file_refs_path")).toBe(true);
 		expect(hasIndex(db, "idx_memory_concept_refs_concept")).toBe(true);
 	});
+
+	it("adds memory_items.project column and backfills from sessions.project", () => {
+		db.exec(`
+			CREATE TABLE sessions (
+				id INTEGER PRIMARY KEY,
+				started_at TEXT NOT NULL,
+				cwd TEXT,
+				project TEXT,
+				user TEXT,
+				tool_version TEXT
+			)
+		`);
+		db.exec(`
+			CREATE TABLE memory_items (
+				id INTEGER PRIMARY KEY,
+				session_id INTEGER NOT NULL,
+				kind TEXT NOT NULL,
+				title TEXT NOT NULL,
+				body_text TEXT NOT NULL,
+				visibility TEXT,
+				workspace_id TEXT,
+				active INTEGER DEFAULT 1,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+			)
+		`);
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO sessions(started_at, cwd, project) VALUES (?, '/work/codemem', 'codemem')`,
+		).run(now);
+		db.prepare(
+			`INSERT INTO sessions(started_at, cwd, project) VALUES (?, '/work/other', NULL)`,
+		).run(now);
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at)
+			 VALUES (1, 'discovery', 'a', 'b', ?, ?)`,
+		).run(now, now);
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at)
+			 VALUES (2, 'discovery', 'a', 'b', ?, ?)`,
+		).run(now, now);
+
+		expect(columnExists(db, "memory_items", "project")).toBe(false);
+		expect(hasIndex(db, "idx_memory_items_project")).toBe(false);
+
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(columnExists(db, "memory_items", "project")).toBe(true);
+		expect(hasIndex(db, "idx_memory_items_project")).toBe(true);
+		const rows = db
+			.prepare("SELECT session_id, project FROM memory_items ORDER BY session_id")
+			.all() as Array<{ session_id: number; project: string | null }>;
+		expect(rows).toEqual([
+			{ session_id: 1, project: "codemem" },
+			{ session_id: 2, project: null },
+		]);
+
+		// Idempotent — running the migration again is a no-op for already-set
+		// project rows and does not error.
+		expect(() => ensureAdditiveSchemaCompatibility(db)).not.toThrow();
+		const rows2 = db
+			.prepare("SELECT session_id, project FROM memory_items ORDER BY session_id")
+			.all() as Array<{ session_id: number; project: string | null }>;
+		expect(rows2).toEqual(rows);
+	});
 });
 
 describe("ensurePlannerStats", () => {

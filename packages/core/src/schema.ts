@@ -163,10 +163,17 @@ export const memoryItems = sqliteTable(
 		dedup_key: text("dedup_key"),
 		import_key: text("import_key"),
 		scope_id: text("scope_id"),
+		// Denormalized project name. Carries the originating session's project
+		// across sync boundaries so cross-device memories surface under their
+		// real project identity instead of an inferred placeholder. Backfilled
+		// from sessions.project for legacy rows during migration. May be null
+		// when the originating session had no project.
+		project: text("project"),
 	},
 	(table) => [
 		index("idx_memory_items_active_created").on(table.active, table.created_at),
 		index("idx_memory_items_session").on(table.session_id),
+		index("idx_memory_items_project").on(table.project),
 		index("idx_memory_items_scope_visibility_created").on(
 			table.scope_id,
 			table.visibility,

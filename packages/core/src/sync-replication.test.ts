@@ -3292,6 +3292,14 @@ describe("replication payload round-trip parity", () => {
 
 		// Verify the payload includes all the fields we care about
 		expect(payload.project).toBe("test-project");
+		// Privacy invariant: session-level provenance that is meaningful only
+		// on the originating device must NOT leak in the wire payload.
+		// memories are portable; session context (cwd, git_remote, git_branch,
+		// started_at) is device-local by design.
+		expect(payload).not.toHaveProperty("cwd");
+		expect(payload).not.toHaveProperty("git_remote");
+		expect(payload).not.toHaveProperty("git_branch");
+		expect(payload).not.toHaveProperty("started_at");
 		expect(payload.kind).toBe("decision");
 		expect(payload.title).toBe("Round Trip Title");
 		expect(payload.subtitle).toBe("Sub");
@@ -3340,6 +3348,9 @@ describe("replication payload round-trip parity", () => {
 
 		expect(applied).toBeTruthy();
 		expect(applied.session_project).toBe("test-project");
+		// memory_items.project is denormalized at apply time so the read model
+		// can reach the originating project without a session join.
+		expect(applied.project).toBe("test-project");
 		expect(applied.kind).toBe("decision");
 		expect(applied.title).toBe("Round Trip Title");
 		expect(applied.subtitle).toBe("Sub");
