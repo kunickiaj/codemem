@@ -16,8 +16,10 @@ import {
 	ensureDeviceIdentity,
 	fetchAllSnapshotPages,
 	fingerprintPublicKey,
+	getReplicationCursor,
 	getSemanticIndexDiagnostics,
 	hasUnsyncedSharedMemoryChanges,
+	listAuthorizedScopesForPeer,
 	loadPublicKey,
 	MemoryStore,
 	mdnsEnabled,
@@ -811,6 +813,40 @@ statusCmd.action((opts: { db?: string; dbPath?: string; config?: string; json?: 
 			.all();
 		const semanticIndex = getSemanticIndexDiagnostics(store.db);
 
+		// Per-Space sync state per peer. When the local device knows what
+		// scopes both it and the peer are authorized to sync, enumerate them
+		// and pair each with the per-scope replication cursor so users can see
+		// whether each Space has actually started syncing yet. This is the
+		// surface that closes the codemem-ruu6 regression where peers showed
+		// `status=ok` while 99% of scoped data was silently missing.
+		const localDeviceId = deviceRow?.device_id ?? null;
+		const peersWithScopes = peers.map((peer) => {
+			const peerDeviceId = String(peer.peer_device_id ?? "").trim();
+			const scopes =
+				localDeviceId && peerDeviceId
+					? listAuthorizedScopesForPeer(store.db, {
+							localDeviceId,
+							peerDeviceId,
+						}).map((scope) => {
+							const [lastApplied, lastAcked] = getReplicationCursor(
+								store.db,
+								peerDeviceId,
+								scope.scope_id,
+							);
+							return {
+								scope_id: scope.scope_id,
+								label: scope.label,
+								authority_type: scope.authority_type,
+								membership_epoch: scope.membership_epoch,
+								last_applied_cursor: lastApplied,
+								last_acked_cursor: lastAcked,
+								bootstrapped: lastApplied != null,
+							};
+						})
+					: [];
+			return { peer, scopes };
+		});
+
 		if (opts.json) {
 			console.log(
 				JSON.stringify(
@@ -823,11 +859,12 @@ statusCmd.action((opts: { db?: string; dbPath?: string; config?: string; json?: 
 						device_id: deviceRow?.device_id ?? null,
 						fingerprint: deviceRow?.fingerprint ?? null,
 						coordinator_url: config.sync_coordinator_url ?? null,
-						peers: peers.map((peer) => ({
+						peers: peersWithScopes.map(({ peer, scopes }) => ({
 							device_id: peer.peer_device_id,
 							name: peer.name,
 							last_sync: peer.last_sync_at,
 							status: peer.last_error ?? "ok",
+							scopes,
 						})),
 					},
 					null,
@@ -855,11 +892,18 @@ statusCmd.action((opts: { db?: string; dbPath?: string; config?: string; json?: 
 		if (peers.length === 0) {
 			p.log.info("Peers: none");
 		} else {
-			for (const peer of peers) {
+			for (const { peer, scopes } of peersWithScopes) {
 				const label = peer.name || peer.peer_device_id;
-				p.log.message(
-					`  ${label}: last_sync=${peer.last_sync_at ?? "never"}, status=${peer.last_error ?? "ok"}`,
-				);
+				const peerHeader = `  ${label}: last_sync=${peer.last_sync_at ?? "never"}, status=${peer.last_error ?? "ok"}`;
+				if (scopes.length === 0) {
+					p.log.message(peerHeader);
+				} else {
+					const scopeLines = scopes.map((scope) => {
+						const state = scope.bootstrapped ? "synced" : "pending";
+						return `      - ${scope.label} (${scope.scope_id}): ${state}`;
+					});
+					p.log.message([peerHeader, "    Spaces:", ...scopeLines].join("\n"));
+				}
 			}
 		}
 		p.log.info(
