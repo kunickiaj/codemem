@@ -11,6 +11,7 @@ import {
 	coordinatorEnableDeviceAction,
 	coordinatorEnrollDeviceAction,
 	coordinatorGrantScopeMembershipAction,
+	coordinatorImportInviteAction,
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
 	coordinatorListScopeMembershipsAction,
@@ -20,16 +21,23 @@ import {
 	coordinatorRevokeScopeMembershipAction,
 	coordinatorUpdateScopeAction,
 } from "./coordinator-actions.js";
+import { encodeInvitePayload } from "./coordinator-invites.js";
+import { connect } from "./db.js";
+import { fingerprintPublicKey, loadPublicKey } from "./sync-identity.js";
 
 describe("coordinator local admin actions", () => {
 	let tmpDir: string;
 	let dbPath: string;
 	let prevConfigPath: string | undefined;
+	let prevDbPath: string | undefined;
+	let prevKeysDir: string | undefined;
 
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "coord-actions-test-"));
 		dbPath = join(tmpDir, "coordinator.sqlite");
 		prevConfigPath = process.env.CODEMEM_CONFIG;
+		prevDbPath = process.env.CODEMEM_DB;
+		prevKeysDir = process.env.CODEMEM_KEYS_DIR;
 		process.env.CODEMEM_CONFIG = join(tmpDir, "config.json");
 	});
 
@@ -37,6 +45,10 @@ describe("coordinator local admin actions", () => {
 		vi.unstubAllGlobals();
 		if (prevConfigPath == null) delete process.env.CODEMEM_CONFIG;
 		else process.env.CODEMEM_CONFIG = prevConfigPath;
+		if (prevDbPath == null) delete process.env.CODEMEM_DB;
+		else process.env.CODEMEM_DB = prevDbPath;
+		if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+		else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
@@ -450,6 +462,56 @@ describe("coordinator local admin actions", () => {
 			dbPath,
 		});
 		expect(invite.warnings).toEqual([]);
+	});
+
+	it("imports invites using CODEMEM_DB and CODEMEM_KEYS_DIR when flags are omitted", async () => {
+		const envDbPath = join(tmpDir, "env-mem.sqlite");
+		const envKeysDir = join(tmpDir, "env-keys");
+		process.env.CODEMEM_DB = envDbPath;
+		process.env.CODEMEM_KEYS_DIR = envKeysDir;
+		const capturedBodies: Record<string, unknown>[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_url: string, init?: RequestInit) => {
+				const body =
+					init?.body instanceof Uint8Array ? Buffer.from(init.body).toString("utf8") : "{}";
+				capturedBodies.push(JSON.parse(body) as Record<string, unknown>);
+				return new Response(JSON.stringify({ ok: true, status: "enrolled" }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				});
+			}),
+		);
+
+		const invite = encodeInvitePayload({
+			v: 1,
+			kind: "coordinator_team_invite",
+			coordinator_url: "https://coord.example.test",
+			group_id: "team-a",
+			policy: "auto_admit",
+			token: "invite-token",
+			expires_at: "2099-01-01T00:00:00.000Z",
+			team_name: "Team A",
+		});
+
+		await coordinatorImportInviteAction({ inviteValue: invite });
+
+		const publicKey = loadPublicKey(envKeysDir);
+		expect(publicKey).toBeTruthy();
+		const conn = connect(envDbPath);
+		try {
+			expect(
+				conn.prepare("SELECT COUNT(1) AS total FROM sync_device").get() as { total?: number },
+			).toMatchObject({ total: 1 });
+		} finally {
+			conn.close();
+		}
+		expect(capturedBodies).toEqual([
+			expect.objectContaining({
+				public_key: publicKey,
+				fingerprint: fingerprintPublicKey(String(publicKey)),
+			}),
+		]);
 	});
 
 	it("warns when local invite coordinator URL uses private IPv6 space", async () => {

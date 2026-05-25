@@ -88,16 +88,28 @@ export function resolveAdminTargetGroup() {
 
 export function reconcileDeviceRenameDrafts() {
 	const next = new Map<string, string>();
+	const nextServerNames = new Map<string, string>();
 	const items = Array.isArray(state.lastCoordinatorAdminDevices)
 		? state.lastCoordinatorAdminDevices
 		: [];
 	for (const item of items) {
 		const deviceId = String(item.device_id || "").trim();
 		if (!deviceId) continue;
-		next.set(deviceId, String(item.display_name || ""));
+		const serverName = String(item.display_name || "");
+		const existingDraft = coordinatorAdminState.deviceRenameDrafts.get(deviceId);
+		const previousServerName = coordinatorAdminState.deviceRenameServerNames.get(deviceId);
+		const hasDirtyDraft =
+			existingDraft !== undefined &&
+			(previousServerName === undefined || existingDraft !== previousServerName);
+		next.set(deviceId, hasDirtyDraft ? existingDraft : serverName);
+		nextServerNames.set(deviceId, serverName);
 	}
 	coordinatorAdminState.deviceRenameDrafts.clear();
 	for (const [deviceId, name] of next.entries()) {
 		coordinatorAdminState.deviceRenameDrafts.set(deviceId, name);
+	}
+	coordinatorAdminState.deviceRenameServerNames.clear();
+	for (const [deviceId, name] of nextServerNames.entries()) {
+		coordinatorAdminState.deviceRenameServerNames.set(deviceId, name);
 	}
 }

@@ -200,6 +200,7 @@ export async function loadCoordinatorAdminData() {
 		state.lastCoordinatorAdminJoinRequests = [];
 		state.lastCoordinatorAdminDevices = [];
 		coordinatorAdminState.deviceRenameDrafts.clear();
+		coordinatorAdminState.deviceRenameServerNames.clear();
 		renderShell();
 		return;
 	}
@@ -243,7 +244,6 @@ export async function loadCoordinatorAdminData() {
 			reconcileDeviceRenameDrafts();
 		} catch {
 			state.lastCoordinatorAdminDevices = [];
-			coordinatorAdminState.deviceRenameDrafts.clear();
 		}
 		try {
 			coordinatorAdminState.availableProjects = await api.loadProjects();
@@ -257,6 +257,7 @@ export async function loadCoordinatorAdminData() {
 		state.lastCoordinatorAdminJoinRequests = [];
 		state.lastCoordinatorAdminDevices = [];
 		coordinatorAdminState.deviceRenameDrafts.clear();
+		coordinatorAdminState.deviceRenameServerNames.clear();
 	}
 	renderShell();
 }

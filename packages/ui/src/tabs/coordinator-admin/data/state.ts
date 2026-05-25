@@ -70,6 +70,7 @@ export interface CoordinatorAdminState {
 	deviceActionPendingKind: DeviceActionKind;
 	groupRenameDrafts: Map<string, string>;
 	deviceRenameDrafts: Map<string, string>;
+	deviceRenameServerNames: Map<string, string>;
 	groupPreferencesOpen: Set<string>;
 	groupPreferencesDrafts: Map<string, GroupPreferencesDraft>;
 	groupScopeManagementOpen: Set<string>;
@@ -102,6 +103,7 @@ export const coordinatorAdminState: CoordinatorAdminState = {
 	deviceActionPendingKind: "",
 	groupRenameDrafts: new Map<string, string>(),
 	deviceRenameDrafts: new Map<string, string>(),
+	deviceRenameServerNames: new Map<string, string>(),
 	groupPreferencesOpen: new Set<string>(),
 	groupPreferencesDrafts: new Map<string, GroupPreferencesDraft>(),
 	groupScopeManagementOpen: new Set<string>(),
