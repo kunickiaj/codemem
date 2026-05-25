@@ -730,4 +730,23 @@ describe("project scope settings", () => {
 			),
 		).toBe(true);
 	});
+
+	it("keeps cwds that only coincidentally match the bootstrap LIKE-wildcard shape", () => {
+		// Regression: a naive `LIKE '__sync_bootstrap__%'` predicate treats
+		// each `_` as a single-character wildcard, so any 18-char cwd whose
+		// position 3-15 spell "sync" + 13 chars matching "_bootstrap" pattern
+		// would be silently dropped. Use a cwd that LIKE would wrongly
+		// exclude but a literal-prefix comparison must keep.
+		const trickySession = insertSession(db, {
+			// 18 chars total, matching the wildcard count of "__sync_bootstrap__"
+			// but with characters that don't form the literal prefix.
+			cwd: "xxsyncXbootstrapYY",
+			gitRemote: "https://git.example.invalid/team/tricky.git",
+			project: "tricky",
+		});
+		insertMemory(db, trickySession);
+
+		const inventory = listProjectScopeInventory(db);
+		expect(inventory.projects.map((project) => project.cwd ?? "")).toContain("xxsyncXbootstrapYY");
+	});
 });

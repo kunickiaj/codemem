@@ -776,7 +776,9 @@ export function listProjectScopeInventory(
 	// Bootstrap sessions get a placeholder cwd (see SYNC_BOOTSTRAP_CWD_PREFIX
 	// in sync-bootstrap.ts) to satisfy the NOT NULL FK on memory_items.
 	// They represent inbound memories from peers and should not surface as
-	// distinct projects in the inventory.
+	// distinct projects in the inventory. Match the prefix literally with
+	// substr — SQLite LIKE would treat the underscores in `__sync_bootstrap__`
+	// as wildcards and exclude unrelated cwds.
 	const rows = db
 		.prepare(
 			`SELECT
@@ -803,11 +805,11 @@ export function listProjectScopeInventory(
 			           COALESCE(TRIM(s.git_remote), TRIM(s.cwd), TRIM(s.project), '') <> ''
 			        OR mi_count.id IS NOT NULL
 			       )
-			   AND (s.cwd IS NULL OR s.cwd NOT LIKE ? || '%')
+			   AND (s.cwd IS NULL OR substr(s.cwd, 1, length(?)) <> ?)
 			 GROUP BY s.id
 			 ORDER BY MAX(s.started_at) DESC, s.id DESC`,
 		)
-		.all(SYNC_BOOTSTRAP_CWD_PREFIX) as ProjectScopeCandidateRow[];
+		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as ProjectScopeCandidateRow[];
 
 	const byIdentity = new Map<string, ProjectScopeInventoryProject>();
 	const inventory: ProjectScopeInventoryProject[] = [];
