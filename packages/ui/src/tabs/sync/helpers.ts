@@ -133,6 +133,24 @@ export function parseScopeList(value: string): string[] {
 		.filter(Boolean);
 }
 
+/* ── Peers section feedback helpers ──────────────────────── */
+
+/**
+ * Returns true when a "Removed peer X" style feedback message is stale
+ * because the related peer has reappeared in the loaded peers list (e.g.
+ * the user re-paired the same device they just removed). Used by
+ * renderSyncPeers to clear the persistent banner once the user's view
+ * of reality contradicts it.
+ */
+export function shouldClearStalePeersFeedback(
+	feedback: { relatedPeerDeviceId?: string | null } | null | undefined,
+	peers: ReadonlyArray<{ peer_device_id?: string | null } | null | undefined>,
+): boolean {
+	const id = String(feedback?.relatedPeerDeviceId ?? "").trim();
+	if (!id) return false;
+	return peers.some((peer) => String(peer?.peer_device_id ?? "").trim() === id);
+}
+
 /* ── Actor helpers ───────────────────────────────────────── */
 
 export function actorLabel(actor: SyncActor | null | undefined): string {

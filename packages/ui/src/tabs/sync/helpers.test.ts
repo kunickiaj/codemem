@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { state } from "../../lib/state";
-import { actorDisplayLabel, assignmentNote, buildActorSelectOptions } from "./helpers";
+import {
+	actorDisplayLabel,
+	assignmentNote,
+	buildActorSelectOptions,
+	shouldClearStalePeersFeedback,
+} from "./helpers";
 
 const originalActors = state.lastSyncActors;
 const originalPeers = state.lastSyncPeers;
@@ -94,5 +99,39 @@ describe("buildActorSelectOptions", () => {
 			{ value: "", label: "No person assigned" },
 			{ value: "actor-local", label: "You" },
 		]);
+	});
+});
+
+describe("shouldClearStalePeersFeedback", () => {
+	it("clears when the related peer reappears in the loaded list", () => {
+		expect(
+			shouldClearStalePeersFeedback({ relatedPeerDeviceId: "peer-rejoined" }, [
+				{ peer_device_id: "peer-rejoined" },
+			]),
+		).toBe(true);
+	});
+
+	it("does not clear when no peers match", () => {
+		expect(
+			shouldClearStalePeersFeedback({ relatedPeerDeviceId: "peer-removed" }, [
+				{ peer_device_id: "peer-other" },
+			]),
+		).toBe(false);
+	});
+
+	it("does not clear when feedback has no relatedPeerDeviceId", () => {
+		expect(shouldClearStalePeersFeedback({}, [{ peer_device_id: "peer-any" }])).toBe(false);
+	});
+
+	it("does not clear when feedback is null", () => {
+		expect(shouldClearStalePeersFeedback(null, [{ peer_device_id: "peer-any" }])).toBe(false);
+	});
+
+	it("trims whitespace before comparing peer ids", () => {
+		expect(
+			shouldClearStalePeersFeedback({ relatedPeerDeviceId: "  peer-id  " }, [
+				{ peer_device_id: "peer-id" },
+			]),
+		).toBe(true);
 	});
 });

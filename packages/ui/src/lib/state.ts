@@ -260,7 +260,15 @@ export const state = {
 	lastTeamJoin: null as CachedTeamJoin | null,
 	syncJoinFlowFeedback: null as { message: string; tone: "success" | "warning" } | null,
 	syncPeerFeedbackById: new Map<string, { message: string; tone: "success" | "warning" }>(),
-	syncPeersSectionFeedback: null as { message: string; tone: "success" | "warning" } | null,
+	syncPeersSectionFeedback: null as {
+		message: string;
+		tone: "success" | "warning";
+		// Optional peer_device_id this feedback is about (e.g. a peer just
+		// removed). When that peer reappears in state.lastSyncPeers (e.g.
+		// because the user re-paired it), the feedback is stale and should
+		// be cleared on the next render — see shouldClearStalePeersFeedback.
+		relatedPeerDeviceId?: string;
+	} | null,
 	syncJoinRequestsFeedback: null as { message: string; tone: "success" | "warning" } | null,
 	syncDiscoveredFeedback: null as { message: string; tone: "success" | "warning" } | null,
 	lastSyncAttempts: [] as unknown[],

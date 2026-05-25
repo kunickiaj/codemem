@@ -9,7 +9,12 @@ import { renderSyncEmptyState } from "./components/sync-diagnostics";
 import type { SyncActionFeedback } from "./components/sync-inline-feedback";
 import { renderLegacyClaimsSlice } from "./components/sync-legacy-claims";
 import { renderSyncPeersList } from "./components/sync-peers";
-import { clearPeerScopeReview, hideSkeleton, isPeerScopeReviewPending } from "./helpers";
+import {
+	clearPeerScopeReview,
+	hideSkeleton,
+	isPeerScopeReviewPending,
+	shouldClearStalePeersFeedback,
+} from "./helpers";
 import { openSyncConfirmDialog } from "./sync-dialogs";
 import {
 	deriveVisiblePeopleActors,
@@ -111,8 +116,16 @@ export function renderSyncPeers() {
 	if (!syncPeers) return;
 	hideSkeleton("syncPeersSkeleton");
 	const peers = state.lastSyncPeers;
+	const peersArray = Array.isArray(peers) ? peers : [];
+	// "Removed peer X" feedback survives in module state until the page
+	// reloads. Clear it once the same peer reappears in the loaded list
+	// (e.g. because the user re-paired the device they just removed) so
+	// the banner does not contradict the live device row beneath it.
+	if (shouldClearStalePeersFeedback(state.syncPeersSectionFeedback, peersArray)) {
+		state.syncPeersSectionFeedback = null;
+	}
 	renderSyncPeersList(syncPeers, {
-		peers: Array.isArray(peers) ? peers : [],
+		peers: peersArray,
 		onRename: async (peerId, nextName) => {
 			try {
 				await api.renamePeer(peerId, nextName);
@@ -164,10 +177,13 @@ export function renderSyncPeers() {
 				await api.deletePeer(peerId);
 				const feedback = {
 					message: `Removed peer ${label}.`,
-					tone: "success",
+					tone: "success" as const,
 				} satisfies SyncActionFeedback;
 				state.syncPeerFeedbackById.delete(peerId);
-				state.syncPeersSectionFeedback = feedback;
+				// Tag the section feedback with the removed peer id so a
+				// subsequent re-pair of the same device can detect and clear
+				// the stale "Removed peer X" banner on the next render.
+				state.syncPeersSectionFeedback = { ...feedback, relatedPeerDeviceId: peerId };
 				await _loadSyncData();
 				return feedback;
 			} catch (error) {
