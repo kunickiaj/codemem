@@ -191,7 +191,7 @@ export function createCoordinatorAdminActions(
 			showGlobalNotice(
 				warnings.length
 					? `Invite created. Review ${warnings.length === 1 ? "the warning" : `${warnings.length} warnings`} before sharing it.`
-					: "Invite created. Copy it from Coordinator Admin and share it with your teammate.",
+					: "Invite created. Copy it from Teams and share it with your teammate.",
 				warnings.length ? "warning" : "success",
 			);
 		} catch (error) {

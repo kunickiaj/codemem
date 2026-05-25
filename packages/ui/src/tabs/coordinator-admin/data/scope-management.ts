@@ -30,6 +30,18 @@ export interface ScopeMembershipDeviceRow {
 	updatedAt: string | null;
 }
 
+export interface SpaceCardCopy {
+	title: string;
+	summary: string;
+	advancedDetail: string;
+}
+
+export interface SpaceAccessDeviceCopy {
+	statusLabel: string;
+	detail: string;
+	advancedDetail: string;
+}
+
 export function scopeManagementReadinessMessage(summary: CoordinatorAdminSummary): string | null {
 	if (summary.readiness === "ready") return null;
 	return "Space management needs the coordinator URL, target Team, and admin secret before it can list Spaces or change memberships.";
@@ -38,6 +50,45 @@ export function scopeManagementReadinessMessage(summary: CoordinatorAdminSummary
 export function scopeStatusLabel(status: string | null | undefined): string {
 	const value = String(status || "active").trim();
 	return value ? value.replaceAll("_", " ") : "active";
+}
+
+export function spaceCardCopy(scope: CoordinatorAdminScopeView): SpaceCardCopy {
+	const title = String(scope.label || "").trim() || "Untitled Space";
+	const status = scopeStatusLabel(scope.status);
+	const kind = String(scope.kind || "user").replaceAll("_", " ");
+	const scopeId = String(scope.scope_id || "").trim() || "unknown";
+	const epoch = scope.membership_epoch == null ? "—" : String(scope.membership_epoch);
+	return {
+		title,
+		summary: `${status} Space · ${kind}`,
+		advancedDetail: `Advanced: Space ID ${scopeId} · Membership epoch ${epoch}`,
+	};
+}
+
+export function spaceAccessDeviceCopy(row: ScopeMembershipDeviceRow): SpaceAccessDeviceCopy {
+	const statusLabel: Record<ScopeMembershipStatus, string> = {
+		active: "Space access active",
+		revoked: "Space access revoked",
+		not_member: "No Space access",
+	};
+	const role = row.role.replaceAll("_", " ");
+	const detail =
+		row.status === "not_member" ? statusLabel[row.status] : `${statusLabel[row.status]} · ${role}`;
+	const epoch = row.membershipEpoch == null ? "—" : String(row.membershipEpoch);
+	return {
+		statusLabel: statusLabel[row.status],
+		detail,
+		advancedDetail: `Advanced: membership epoch ${epoch}`,
+	};
+}
+
+export function spaceRevokeMemberTitle(
+	scope: CoordinatorAdminScopeView,
+	displayName: string,
+	deviceId: string,
+): string {
+	const deviceLabel = displayName || deviceId || "this device";
+	return `Revoke ${deviceLabel} from ${spaceCardCopy(scope).title}?`;
 }
 
 export function deriveScopeMembershipDeviceRows(

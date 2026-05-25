@@ -5,6 +5,9 @@ import {
 	deriveScopeMembershipDeviceRows,
 	scopeManagementReadinessMessage,
 	scopeStatusLabel,
+	spaceAccessDeviceCopy,
+	spaceCardCopy,
+	spaceRevokeMemberTitle,
 } from "./scope-management";
 
 describe("coordinator admin scope management view helpers", () => {
@@ -55,6 +58,54 @@ describe("coordinator admin scope management view helpers", () => {
 	it("formats empty or underscored scope statuses for operator copy", () => {
 		expect(scopeStatusLabel(null)).toBe("active");
 		expect(scopeStatusLabel("needs_review")).toBe("needs review");
+	});
+
+	it("keeps raw Space ids in advanced Space card copy", () => {
+		const copy = spaceCardCopy({
+			kind: "team_default",
+			membership_epoch: 7,
+			scope_id: "team-alpha-default",
+			status: "active",
+		});
+
+		expect(copy.summary).toBe("active Space · team default");
+		expect(copy.title).toBe("Untitled Space");
+		expect(copy.title).not.toContain("team-alpha-default");
+		expect(copy.summary).not.toContain("team-alpha-default");
+		expect(copy.advancedDetail).toBe("Advanced: Space ID team-alpha-default · Membership epoch 7");
+	});
+
+	it("formats missing Space membership epochs as unknown in advanced copy", () => {
+		const copy = spaceCardCopy({ label: "Household", scope_id: "household", status: "active" });
+
+		expect(copy.title).toBe("Household");
+		expect(copy.advancedDetail).toBe("Advanced: Space ID household · Membership epoch —");
+	});
+
+	it("labels device Space access without making membership epochs primary copy", () => {
+		const copy = spaceAccessDeviceCopy({
+			deviceId: "dev-a",
+			displayName: "Alice laptop",
+			enabled: true,
+			membershipEpoch: 4,
+			role: "admin_member",
+			status: "active",
+			updatedAt: null,
+		});
+
+		expect(copy.detail).toBe("Space access active · admin member");
+		expect(copy.detail).not.toContain("epoch");
+		expect(copy.advancedDetail).toBe("Advanced: membership epoch 4");
+	});
+
+	it("uses Space card copy in revoke prompts instead of raw ids", () => {
+		expect(
+			spaceRevokeMemberTitle(
+				{ membership_epoch: 7, scope_id: "team-alpha-default", status: "active" },
+				"Alice laptop",
+				"dev-a",
+			),
+		).toBe("Revoke Alice laptop from Untitled Space?");
 	});
 
 	it("falls back to cached enrolled devices for the selected group", () => {

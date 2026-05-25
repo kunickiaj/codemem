@@ -27,7 +27,7 @@ export function renderJoinRequestsPanel(deps: JoinRequestsPanelDeps) {
 			"p",
 			{ class: "peer-submeta" },
 			summary.readiness === "ready"
-				? "Approve or deny teammate join requests from the dedicated operator surface instead of burying them in Sync."
+				? "Approve or deny devices that want to join this Team. Default Space access is handled by Team defaults and can be reviewed in Spaces."
 				: "Finish setup first. Join request review stays disabled until coordinator admin is ready.",
 		),
 		!items.length
@@ -50,7 +50,7 @@ export function renderJoinRequestsPanel(deps: JoinRequestsPanelDeps) {
 							"div",
 							{ class: "peer-card peer-card--padded", key: requestId || deviceId },
 							h("div", { class: "peer-title" }, h("strong", null, displayName)),
-							h("div", { class: "peer-meta" }, `Device: ${deviceId}`),
+							h("div", { class: "peer-meta" }, `Advanced: Device ID ${deviceId}`),
 							h(
 								"div",
 								{ class: "peer-actions" },

@@ -6,12 +6,14 @@ import { coordinatorAdminState } from "./state";
 
 const mocks = vi.hoisted(() => ({
 	createCoordinatorAdminGroup: vi.fn(),
+	createCoordinatorInvite: vi.fn(),
 	reviewCoordinatorAdminJoinRequest: vi.fn(),
 	showGlobalNotice: vi.fn(),
 }));
 
 vi.mock("../../../lib/api", () => ({
 	createCoordinatorAdminGroup: mocks.createCoordinatorAdminGroup,
+	createCoordinatorInvite: mocks.createCoordinatorInvite,
 	reviewCoordinatorAdminJoinRequest: mocks.reviewCoordinatorAdminJoinRequest,
 }));
 
@@ -26,6 +28,7 @@ vi.mock("../../sync/sync-dialogs", () => ({
 describe("coordinator admin actions", () => {
 	beforeEach(() => {
 		mocks.createCoordinatorAdminGroup.mockReset();
+		mocks.createCoordinatorInvite.mockReset();
 		mocks.reviewCoordinatorAdminJoinRequest.mockReset();
 		mocks.showGlobalNotice.mockReset();
 		state.coordinatorAdminTargetGroup = "";
@@ -36,6 +39,10 @@ describe("coordinator admin actions", () => {
 		coordinatorAdminState.createGroupId = "";
 		coordinatorAdminState.createGroupDisplayName = "";
 		coordinatorAdminState.groupActionPendingKind = "";
+		coordinatorAdminState.inviteGroup = "";
+		coordinatorAdminState.invitePending = false;
+		coordinatorAdminState.invitePolicy = "auto_admit";
+		coordinatorAdminState.inviteTtlHours = "24";
 		coordinatorAdminState.teamSetupGuide = null;
 		localStorage.clear();
 	});
@@ -118,6 +125,27 @@ describe("coordinator admin actions", () => {
 
 		expect(reloadData).toHaveBeenCalledTimes(2);
 		expect(state.coordinatorAdminTargetGroup).toBe("team-new");
+	});
+
+	it("points successful invite sharing copy at Teams", async () => {
+		mocks.createCoordinatorInvite.mockResolvedValue({ token: "invite-token", warnings: [] });
+		coordinatorAdminState.inviteGroup = "team-alpha";
+		const actions = createCoordinatorAdminActions({
+			renderShell: vi.fn(),
+			reloadData: vi.fn().mockResolvedValue(undefined),
+		});
+
+		await actions.createInviteFromAdminPanel();
+
+		expect(mocks.createCoordinatorInvite).toHaveBeenCalledWith({
+			group_id: "team-alpha",
+			policy: "auto_admit",
+			ttl_hours: 24,
+		});
+		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
+			"Invite created. Copy it from Teams and share it with your teammate.",
+			"success",
+		);
 	});
 
 	it("keeps default Space grant warnings visible after approving a join request", async () => {

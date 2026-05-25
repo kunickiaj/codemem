@@ -159,7 +159,7 @@ function renderGroupPreferencesEditor(
 		h(
 			"div",
 			{ class: "peer-submeta" },
-			"Project filters only narrow what future writes sync; they never grant Space access by themselves. Use the default Space toggle to control whether newly joined devices receive the Team's default Space.",
+			"Space access grants decide what new devices can sync. Advanced sharing rules only narrow future writes after Space access already exists.",
 		),
 		// Master toggle first — the include/exclude chips are only meaningful
 		// when auto-seed is on, so the form reads top-down from decision
@@ -167,7 +167,11 @@ function renderGroupPreferencesEditor(
 		h(
 			"label",
 			{ class: "coordinator-admin-inline-filter" },
-			h("span", { class: "section-meta", id: autoSeedLabelId }, "Auto-seed project filters"),
+			h(
+				"span",
+				{ class: "section-meta", id: autoSeedLabelId },
+				"Auto-apply advanced rules to new devices",
+			),
 			h(RadixSwitch, {
 				"aria-labelledby": autoSeedLabelId,
 				checked: draft.auto_seed_scope,
@@ -214,7 +218,7 @@ function renderGroupPreferencesEditor(
 		h(
 			"div",
 			{ class: "coordinator-admin-field" },
-			h("span", { id: includeLabelId }, "Include projects"),
+			h("span", { id: includeLabelId }, "Include template"),
 			h(ProjectScopePicker, {
 				"aria-labelledby": includeLabelId,
 				availableProjects: coordinatorAdminState.availableProjects,
@@ -234,13 +238,13 @@ function renderGroupPreferencesEditor(
 			h(
 				"span",
 				{ class: "peer-submeta" },
-				"Leave empty to allow every project. Type to search or create a new name.",
+				"Leave empty to allow every project inside the granted Space. Type to search or create a new name.",
 			),
 		),
 		h(
 			"div",
 			{ class: "coordinator-admin-field" },
-			h("span", { id: excludeLabelId }, "Exclude projects"),
+			h("span", { id: excludeLabelId }, "Exclude template"),
 			h(ProjectScopePicker, {
 				"aria-labelledby": excludeLabelId,
 				availableProjects: coordinatorAdminState.availableProjects,
