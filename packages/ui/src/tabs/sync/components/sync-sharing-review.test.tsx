@@ -59,12 +59,12 @@ describe("SyncSharingReview", () => {
 		);
 
 		expect(root.textContent).toContain("Legacy shared review");
-		expect(root.textContent).toContain("1 older project needs a Sharing domain");
+		expect(root.textContent).toContain("1 older project needs a Space");
 		expect(root.textContent).toContain("3 older shared memories total");
 		expect(root.textContent).toContain("oss-dev");
-		expect(root.textContent).toContain("Matched by git remote · suggested oss");
-		expect(root.textContent).toContain("Destination Sharing domain");
-		expect(root.textContent).toContain("OSS · coordinator · suggested");
+		expect(root.textContent).toContain("Matched by git remote · suggested OSS");
+		expect(root.textContent).toContain("Destination Space");
+		expect(root.textContent).toContain("OSS · Team Space · suggested");
 		expect(root.textContent).toContain("legacy data is not promoted automatically");
 		expect(root.textContent).toContain("Nothing moves automatically");
 
@@ -257,7 +257,7 @@ describe("SyncSharingReview", () => {
 
 		const select = root.querySelector("select");
 		expect(select?.value).toBe("");
-		expect(root.textContent).toContain("Choose domain…");
+		expect(root.textContent).toContain("Choose Space…");
 		let applyButton = [...root.querySelectorAll("button")].find(
 			(button) => button.textContent === "Preview reassignment",
 		) as HTMLButtonElement | undefined;
@@ -320,6 +320,9 @@ describe("SyncSharingReview", () => {
 		});
 
 		expect(root.textContent).toContain("local device is not a member");
+		expect(root.textContent).toContain("local device is not a member of Space OSS");
+		expect(root.textContent).not.toContain("Space oss");
+		expect(root.textContent).not.toContain("Sharing domain");
 		expect(root.textContent).toContain("Preview reassignment");
 	});
 
@@ -374,6 +377,7 @@ describe("SyncSharingReview", () => {
 
 		expect(root.textContent).toContain("Needs cleanup 1");
 		expect(root.textContent).toContain("Unclear project identity");
+		expect(root.textContent).not.toContain("fatal: not a git repository");
 
 		const selectSuggested = [...root.querySelectorAll("button")].find(
 			(button) => button.textContent === "Select suggested",
@@ -401,6 +405,55 @@ describe("SyncSharingReview", () => {
 				(button) => button.textContent === "Preview 1 selected",
 			)?.disabled,
 		).toBe(true);
+	});
+
+	it("filters legacy groups by visible suggested Space labels", () => {
+		const root = renderReview(
+			<SyncSharingReview
+				items={[]}
+				legacyReview={{
+					groups: [
+						{
+							displayProject: "platform-api",
+							identitySource: "git_remote",
+							lastUpdatedAt: null,
+							memoryCount: 10,
+							suggestedScopeId: "team-eng-01",
+							suggestionReason: null,
+							workspaceIdentity: "workspace-id:platform-api",
+						},
+						{
+							displayProject: "docs-site",
+							identitySource: "git_remote",
+							lastUpdatedAt: null,
+							memoryCount: 5,
+							suggestedScopeId: "team-docs-01",
+							suggestionReason: null,
+							workspaceIdentity: "workspace-id:docs-site",
+						},
+					],
+					memoryCount: 15,
+					scopeId: "legacy-shared-review",
+					targetScopes: [
+						{ authorityType: "coordinator", label: "Engineering", scopeId: "team-eng-01" },
+						{ authorityType: "coordinator", label: "Documentation", scopeId: "team-docs-01" },
+					],
+				}}
+				onLegacyReassign={vi.fn()}
+				onReview={() => {}}
+			/>,
+		);
+
+		const search = root.querySelector<HTMLInputElement>(".legacy-review-search");
+		act(() => {
+			if (!search) throw new Error("search missing");
+			search.value = "Engineering";
+			search.dispatchEvent(new InputEvent("input", { bubbles: true }));
+		});
+
+		expect(root.textContent).toContain("platform-api");
+		expect(root.textContent).toContain("suggested Engineering");
+		expect(root.textContent).not.toContain("docs-site");
 	});
 
 	it("does not show bulk preview controls without a reassignment target", () => {
@@ -434,7 +487,7 @@ describe("SyncSharingReview", () => {
 		});
 
 		expect(root.textContent).not.toContain("Preview 1 selected");
-		expect(root.textContent).toContain("Add or join a Sharing domain before bulk reassignment");
+		expect(root.textContent).toContain("Add or join a Space before bulk reassignment");
 	});
 
 	it("explains inbound-only legacy groups instead of offering reassignment", () => {
@@ -467,7 +520,7 @@ describe("SyncSharingReview", () => {
 		const checkbox = root.querySelector<HTMLInputElement>('input[type="checkbox"]');
 		expect(checkbox?.disabled).toBe(true);
 		expect(root.textContent).toContain("Peer-owned only");
-		expect(root.textContent).toContain("cannot reassign them to a Sharing domain");
+		expect(root.textContent).toContain("cannot reassign them to a Space");
 		expect(root.textContent).not.toContain("Preview reassignment");
 	});
 });

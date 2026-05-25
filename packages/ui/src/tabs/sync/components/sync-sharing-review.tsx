@@ -77,15 +77,74 @@ function needsProjectCleanup(group: SyncLegacySharedReviewGroup): boolean {
 	);
 }
 
+function displayProjectTitle(group: SyncLegacySharedReviewGroup): string {
+	return needsProjectCleanup(group) ? "Unclear project identity" : group.displayProject;
+}
+
 function canReassignLegacyGroup(group: SyncLegacySharedReviewGroup): boolean {
 	return (group.reassignableMemoryCount ?? group.memoryCount) > 0;
 }
 
-function groupSearchText(group: SyncLegacySharedReviewGroup): string {
+function suggestedScopeText(
+	group: SyncLegacySharedReviewGroup,
+	targetScopes: SyncLegacySharedReviewTargetScope[],
+): string {
+	if (!group.suggestedScopeId) return "";
+	const target = targetScopes.find((scope) => scope.scopeId === group.suggestedScopeId);
+	return ` · suggested ${target?.label || "Space"}`;
+}
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function targetScopeLabel(
+	scopeId: string,
+	targetScopes: SyncLegacySharedReviewTargetScope[],
+): string {
+	return targetScopes.find((scope) => scope.scopeId === scopeId)?.label || "selected Space";
+}
+
+function authorityLabel(authorityType: string): string {
+	switch (authorityType) {
+		case "coordinator":
+			return "Team Space";
+		case "local":
+			return "Local Space";
+		default:
+			return "Other Space";
+	}
+}
+
+function formatLegacyReviewError(
+	error: unknown,
+	scopeId: string,
+	targetScopes: SyncLegacySharedReviewTargetScope[],
+): string {
+	const message =
+		error instanceof Error ? error.message : "Unable to reassign legacy review memories.";
+	let result = message.replace(/sharing domain/gi, "Space");
+	if (scopeId) {
+		result = result.replace(
+			new RegExp(`\\b${escapeRegExp(scopeId)}\\b`, "g"),
+			targetScopeLabel(scopeId, targetScopes),
+		);
+	}
+	return result;
+}
+
+function groupSearchText(
+	group: SyncLegacySharedReviewGroup,
+	targetScopes: SyncLegacySharedReviewTargetScope[],
+): string {
+	const suggestedScopeLabel = group.suggestedScopeId
+		? targetScopes.find((scope) => scope.scopeId === group.suggestedScopeId)?.label
+		: "";
 	return [
 		group.displayProject,
 		group.identitySource,
 		group.suggestedScopeId ?? "",
+		suggestedScopeLabel ?? "",
 		group.suggestionReason ?? "",
 		group.workspaceIdentity,
 	]
@@ -169,7 +228,9 @@ function LegacySharedReviewRow({
 		if (filter === "cleanup" && !cleanup) return false;
 		if (filter === "no-suggestion" && (group.suggestedScopeId || cleanup)) return false;
 		if (filter === "selected" && !selectedGroups[group.workspaceIdentity]) return false;
-		return !query.trim() || groupSearchText(group).includes(query.trim().toLowerCase());
+		return (
+			!query.trim() || groupSearchText(group, targetScopes).includes(query.trim().toLowerCase())
+		);
 	});
 	async function applyGroup(group: SyncLegacySharedReviewGroup) {
 		const selectedScopeId = selectedScopes[group.workspaceIdentity] || group.suggestedScopeId || "";
@@ -198,8 +259,7 @@ function LegacySharedReviewRow({
 		} catch (error) {
 			setErrors((current) => ({
 				...current,
-				[group.workspaceIdentity]:
-					error instanceof Error ? error.message : "Unable to reassign legacy review memories.",
+				[group.workspaceIdentity]: formatLegacyReviewError(error, selectedScopeId, targetScopes),
 			}));
 		} finally {
 			setBusyIdentity(null);
@@ -275,8 +335,11 @@ function LegacySharedReviewRow({
 				} catch (error) {
 					setErrors((current) => ({
 						...current,
-						[group.workspaceIdentity]:
-							error instanceof Error ? error.message : "Unable to reassign legacy review memories.",
+						[group.workspaceIdentity]: formatLegacyReviewError(
+							error,
+							selectedScopeId,
+							targetScopes,
+						),
 					}));
 				}
 			}
@@ -294,7 +357,7 @@ function LegacySharedReviewRow({
 					</div>
 					<div className="peer-meta legacy-review-summary">
 						{groupCount.toLocaleString()} older{" "}
-						{groupCount === 1 ? "project needs" : "projects need"} a Sharing domain. They contain{" "}
+						{groupCount === 1 ? "project needs" : "projects need"} a Space. They contain{" "}
 						{item.memoryCount.toLocaleString()} older shared memories total; review the projects,
 						not individual memories.
 						{shownGroupCount < groupCount
@@ -384,7 +447,7 @@ function LegacySharedReviewRow({
 						</button>
 					) : onReassign && selectedReassignableCount > 0 ? (
 						<span className="legacy-review-cleanup-note">
-							Add or join a Sharing domain before bulk reassignment.
+							Add or join a Space before bulk reassignment.
 						</span>
 					) : null}
 					{selectedCount > 0 &&
@@ -410,7 +473,7 @@ function LegacySharedReviewRow({
 							<div className="legacy-review-group-main">
 								<div className="legacy-review-title-wrap">
 									<input
-										aria-label={`Select ${group.displayProject}`}
+										aria-label={`Select ${displayProjectTitle(group)}`}
 										checked={Boolean(selectedGroups[group.workspaceIdentity])}
 										className="cm-checkbox"
 										disabled={!canReassignLegacyGroup(group)}
@@ -418,15 +481,15 @@ function LegacySharedReviewRow({
 										type="checkbox"
 									/>
 									<div>
-										<div className="legacy-review-group-title">{group.displayProject}</div>
+										<div className="legacy-review-group-title">{displayProjectTitle(group)}</div>
 										<div className="legacy-review-group-meta">
 											{formatIdentitySource(group.identitySource)}
-											{group.suggestedScopeId ? ` · suggested ${group.suggestedScopeId}` : ""}
+											{suggestedScopeText(group, targetScopes)}
 										</div>
 										{!canReassignLegacyGroup(group) ? (
 											<div className="legacy-review-cleanup-note">
 												Peer-owned only. These older memories were received from another device, so
-												this device cannot reassign them to a Sharing domain.
+												this device cannot reassign them to a Space.
 											</div>
 										) : group.peerOwnedMemoryCount ? (
 											<div className="legacy-review-cleanup-note">
@@ -440,8 +503,8 @@ function LegacySharedReviewRow({
 										) : null}
 										{needsProjectCleanup(group) ? (
 											<div className="legacy-review-cleanup-note">
-												Unclear project identity. Inspect or correct the project before trusting a
-												domain.
+												Inspect or correct the project identity before assigning old shared data to
+												a Space.
 											</div>
 										) : null}
 									</div>
@@ -471,17 +534,17 @@ function LegacySharedReviewRow({
 							) : null}
 							{targetScopes.length > 0 && onReassign && canReassignLegacyGroup(group) ? (
 								<label className="legacy-review-target">
-									<span>Destination Sharing domain</span>
+									<span>Destination Space</span>
 									<select
 										className="peer-scope-input"
 										disabled={busyIdentity != null}
 										onChange={(event) => updateSelectedScope(group, event.currentTarget.value)}
 										value={selectedScopes[group.workspaceIdentity] || ""}
 									>
-										<option value="">Choose domain…</option>
+										<option value="">Choose Space…</option>
 										{targetScopes.map((scope) => (
 											<option key={scope.scopeId} value={scope.scopeId}>
-												{scope.label} · {scope.authorityType}
+												{scope.label} · {authorityLabel(scope.authorityType)}
 												{scope.scopeId === group.suggestedScopeId ? " · suggested" : ""}
 											</option>
 										))}
