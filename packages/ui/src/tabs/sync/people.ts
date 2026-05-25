@@ -127,9 +127,9 @@ export function renderSyncPeers() {
 		},
 		onSync: async (peer, address) => {
 			try {
-				const result = await api.triggerSync(address);
-				const summary = summarizeSyncRunResult(result);
 				const peerId = String(peer?.peer_device_id || "");
+				const result = await api.triggerSync({ address, peerDeviceId: peerId || undefined });
+				const summary = summarizeSyncRunResult(result);
 				let feedback: SyncActionFeedback | null;
 				if (!summary.ok) {
 					feedback = { message: summary.message, tone: "warning" };

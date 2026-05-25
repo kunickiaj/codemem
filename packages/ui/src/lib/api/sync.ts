@@ -6,6 +6,11 @@
 import { fetchJson, payloadError, readJsonPayload } from "./internal";
 import type { AcceptDiscoveredPeerResult, ImportInviteResult, SyncRunResponse } from "./types";
 
+type TriggerSyncTarget = {
+	address?: string;
+	peerDeviceId?: string;
+};
+
 export async function loadSyncStatus(
 	includeDiagnostics: boolean,
 	project = "",
@@ -121,15 +126,14 @@ export async function renamePeer(peerDeviceId: string, name: string): Promise<un
 
 export async function acceptDiscoveredPeer(
 	peerDeviceId: string,
-	fingerprint: string,
+	fingerprint?: string,
 ): Promise<AcceptDiscoveredPeerResult> {
+	const body: Record<string, string> = { peer_device_id: peerDeviceId };
+	if (fingerprint) body.fingerprint = fingerprint;
 	const resp = await fetch("/api/sync/peers/accept-discovered", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({
-			peer_device_id: peerDeviceId,
-			fingerprint,
-		}),
+		body: JSON.stringify(body),
 	});
 	const text = await resp.text();
 	let payload: AcceptDiscoveredPeerResult = {};
@@ -657,8 +661,12 @@ export async function claimLegacyDeviceIdentity(originDeviceId: string): Promise
 	return payload;
 }
 
-export async function triggerSync(address?: string): Promise<SyncRunResponse> {
-	const payload = address ? { address } : {};
+export async function triggerSync(target?: string | TriggerSyncTarget): Promise<SyncRunResponse> {
+	const address = typeof target === "string" ? target.trim() : target?.address?.trim();
+	const peerDeviceId = typeof target === "string" ? "" : target?.peerDeviceId?.trim();
+	const payload: Record<string, string> = {};
+	if (address) payload.address = address;
+	if (peerDeviceId) payload.peer_device_id = peerDeviceId;
 	const resp = await fetch("/api/sync/run", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
