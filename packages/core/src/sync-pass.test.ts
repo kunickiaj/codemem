@@ -151,9 +151,13 @@ describe("sync capability negotiation", () => {
 		expect(negotiateSyncCapability("aware", "enforcing")).toBe("aware");
 	});
 
-	it("does not upgrade a local aware peer from an enforcing advertisement", () => {
-		expect(LOCAL_SYNC_CAPABILITY).toBe("aware");
-		expect(negotiateSyncCapability(LOCAL_SYNC_CAPABILITY, "enforcing")).toBe("aware");
+	it("does not upgrade a local scoped peer from an enforcing advertisement", () => {
+		expect(LOCAL_SYNC_CAPABILITY).toBe("scoped");
+		expect(negotiateSyncCapability(LOCAL_SYNC_CAPABILITY, "enforcing")).toBe("enforcing");
+	});
+
+	it("downgrades scoped-to-aware sessions to aware", () => {
+		expect(negotiateSyncCapability("scoped", "aware")).toBe("aware");
 	});
 });
 
@@ -227,7 +231,7 @@ describe("syncOnce", () => {
 			)
 			.get("peer-identity-fail") as Record<string, unknown>;
 		expect(attempt).toMatchObject({
-			local_sync_capability: "aware",
+			local_sync_capability: "scoped",
 			peer_sync_capability: "unsupported",
 			negotiated_sync_capability: "unsupported",
 		});
@@ -318,10 +322,10 @@ describe("syncOnce", () => {
 			"2026-01-01T00:00:00Z|remote-op-1",
 		);
 		expect(vi.mocked(syncHttpClient.requestJson).mock.calls[0]?.[2]?.headers).toMatchObject({
-			[SYNC_CAPABILITY_HEADER]: "aware",
+			[SYNC_CAPABILITY_HEADER]: "scoped",
 		});
 		expect(vi.mocked(syncHttpClient.requestJson).mock.calls[1]?.[2]?.headers).toMatchObject({
-			[SYNC_CAPABILITY_HEADER]: "aware",
+			[SYNC_CAPABILITY_HEADER]: "scoped",
 		});
 		const attempt = db
 			.prepare(
@@ -333,9 +337,9 @@ describe("syncOnce", () => {
 			)
 			.get("peer-1") as Record<string, unknown>;
 		expect(attempt).toMatchObject({
-			local_sync_capability: "aware",
+			local_sync_capability: "scoped",
 			peer_sync_capability: "enforcing",
-			negotiated_sync_capability: "aware",
+			negotiated_sync_capability: "enforcing",
 		});
 	});
 
@@ -574,7 +578,7 @@ describe("syncOnce", () => {
 			)
 			.get("peer-legacy") as Record<string, unknown>;
 		expect(attempt).toMatchObject({
-			local_sync_capability: "aware",
+			local_sync_capability: "scoped",
 			peer_sync_capability: "unsupported",
 			negotiated_sync_capability: "unsupported",
 		});

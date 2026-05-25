@@ -60,9 +60,11 @@ import {
 	getSemanticIndexDiagnostics,
 	getSyncResetState,
 	type InboundScopeRejectionPeerSummary,
+	isScopedSyncCapability,
 	LEGACY_SHARED_REVIEW_SCOPE_ID,
 	LOCAL_DEFAULT_SCOPE_ID,
 	LOCAL_SYNC_CAPABILITY,
+	listAuthorizedScopesForPeer,
 	listCoordinatorJoinRequests,
 	listInboundScopeRejections,
 	listMaintenanceJobs,
@@ -86,6 +88,7 @@ import {
 	rejectInboundScopeFailures,
 	requestJson,
 	runSyncPass,
+	SYNC_CAPABILITY_HEADER,
 	SYNC_SCOPE_QUERY_PARAM,
 	schema,
 	summarizeInboundScopeRejections,
@@ -2020,6 +2023,22 @@ const PEERS_QUERY = `
 // ---------------------------------------------------------------------------
 
 /**
+ * Compute the negotiated sync capability for a request by combining the
+ * server's local capability with the value the caller advertised in the
+ * `X-Codemem-Sync-Capability` header. Routes use this to decide whether to
+ * honor scoped-sync wire features such as explicit `scope_id` parameters
+ * and `/v1/status` `authorized_scopes` enumeration.
+ *
+ * Unsigned headers are fine here: the server is computing what it is
+ * willing to do, not granting access. Per-scope authorization is enforced
+ * separately via the membership cache when a scope_id is actually used.
+ */
+function negotiatedSyncCapability(c: Context) {
+	const header = c.req.header(SYNC_CAPABILITY_HEADER) ?? null;
+	return negotiateSyncCapability(LOCAL_SYNC_CAPABILITY, normalizeSyncCapability(header));
+}
+
+/**
  * Peer-to-peer sync protocol routes (/v1/*).
  *
  * These are mounted on the sync listener (0.0.0.0:7337) and are
@@ -2096,13 +2115,24 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 					keysDir: syncKeysDir(),
 				});
 				const syncReset = getSyncResetState(store.db);
-				return c.json({
+				const negotiated = negotiatedSyncCapability(c);
+				const authorizedScopes = isScopedSyncCapability(negotiated)
+					? listAuthorizedScopesForPeer(store.db, {
+							localDeviceId: deviceId,
+							peerDeviceId: auth.deviceId,
+						})
+					: null;
+				const response: Record<string, unknown> = {
 					device_id: deviceId,
 					protocol_version: SYNC_PROTOCOL_VERSION,
 					fingerprint,
 					sync_reset: addSyncScopeToBoundary(syncReset, null),
 					sync_capability: LOCAL_SYNC_CAPABILITY,
-				});
+				};
+				if (authorizedScopes !== null) {
+					response.authorized_scopes = authorizedScopes;
+				}
+				return c.json(response);
 			} catch {
 				return c.json({ error: "internal_error" }, 500);
 			}
@@ -2125,13 +2155,19 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 
 		try {
 			const rawScopeId = c.req.query(SYNC_SCOPE_QUERY_PARAM);
-			const scopeRequest = parseSyncScopeRequest(rawScopeId, rawScopeId !== undefined);
+			const negotiated = negotiatedSyncCapability(c);
+			const scopeRequest = parseSyncScopeRequest(rawScopeId, rawScopeId !== undefined, {
+				db: store.db,
+				negotiatedCapability: negotiated,
+				peerDeviceId,
+			});
 			if (!scopeRequest.ok) {
 				return c.json(
 					syncScopeResetRequiredPayload(
-						getSyncResetState(store.db),
+						getSyncResetState(store.db, rawScopeId ?? undefined),
 						scopeRequest.reason,
 						LOCAL_SYNC_CAPABILITY,
+						rawScopeId?.trim() || null,
 					),
 					409,
 				);
@@ -2154,6 +2190,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				generation: Number.isFinite(generation) ? generation : null,
 				snapshotId,
 				baselineCursor,
+				scopeId: scopeRequest.mode === "scoped" ? scopeRequest.scope_id : undefined,
 			});
 			if (result.reset_required) {
 				return c.json(
@@ -2230,13 +2267,19 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 
 			try {
 				const rawScopeId = c.req.query(SYNC_SCOPE_QUERY_PARAM);
-				const scopeRequest = parseSyncScopeRequest(rawScopeId, rawScopeId !== undefined);
+				const negotiated = negotiatedSyncCapability(c);
+				const scopeRequest = parseSyncScopeRequest(rawScopeId, rawScopeId !== undefined, {
+					db: store.db,
+					negotiatedCapability: negotiated,
+					peerDeviceId: auth.deviceId,
+				});
 				if (!scopeRequest.ok) {
 					return c.json(
 						syncScopeResetRequiredPayload(
-							getSyncResetState(store.db),
+							getSyncResetState(store.db, rawScopeId ?? undefined),
 							scopeRequest.reason,
 							LOCAL_SYNC_CAPABILITY,
+							rawScopeId?.trim() || null,
 						),
 						409,
 					);
@@ -2267,6 +2310,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 					pageToken,
 					limit,
 					peerDeviceId: auth.deviceId,
+					scopeId: scopeRequest.mode === "scoped" ? scopeRequest.scope_id : undefined,
 				});
 
 				return c.json({
@@ -2320,13 +2364,23 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			return c.json({ error: "invalid_json" }, 400);
 		}
 
-		const scopeRequest = parseSyncScopeRequest(body.scope_id, Object.hasOwn(body, "scope_id"));
+		const negotiated = negotiateSyncCapability(
+			LOCAL_SYNC_CAPABILITY,
+			normalizeSyncCapability(body.sync_capability),
+		);
+		const rawBodyScopeId = typeof body.scope_id === "string" ? body.scope_id : undefined;
+		const scopeRequest = parseSyncScopeRequest(body.scope_id, Object.hasOwn(body, "scope_id"), {
+			db: store.db,
+			negotiatedCapability: negotiated,
+			peerDeviceId,
+		});
 		if (!scopeRequest.ok) {
 			return c.json(
 				syncScopeResetRequiredPayload(
-					getSyncResetState(store.db),
+					getSyncResetState(store.db, rawBodyScopeId),
 					scopeRequest.reason,
 					LOCAL_SYNC_CAPABILITY,
+					rawBodyScopeId?.trim() || null,
 				),
 				409,
 			);
@@ -2352,10 +2406,6 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			}
 		}
 		const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
-		const negotiatedCapability = negotiateSyncCapability(
-			LOCAL_SYNC_CAPABILITY,
-			normalizeSyncCapability(body.sync_capability),
-		);
 		// Inbound POSTs still use legacy visibility/project filters, but must not run
 		// the outbound scope gate. Unsupported peers deliberately bypass strict inbound
 		// scope rejection during rollout, so outbound filtering would silently drop data.
@@ -2365,7 +2415,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		// Scope validation runs against the full signed batch so bad scoped ops cannot
 		// evade fail-closed rejection by also tripping peer project filters.
 		const rejected = rejectInboundScopeFailures(store.db, normalizedOps, localDeviceId, {
-			enabled: negotiatedCapability !== "unsupported",
+			enabled: negotiated !== "unsupported",
 			peerDeviceId,
 		});
 		if (rejected) {

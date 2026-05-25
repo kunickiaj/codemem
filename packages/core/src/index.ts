@@ -519,6 +519,7 @@ export type { BootstrapOptions, BootstrapResult } from "./sync-bootstrap.js";
 export { applyBootstrapSnapshot, fetchAllSnapshotPages } from "./sync-bootstrap.js";
 export type { SyncCapability } from "./sync-capability.js";
 export {
+	isScopedSyncCapability,
 	LOCAL_SYNC_CAPABILITY,
 	negotiateSyncCapability,
 	normalizeSyncCapability,
@@ -624,14 +625,17 @@ export {
 } from "./sync-replication.js";
 export { SyncRetentionRunner } from "./sync-retention-runner.js";
 export type {
+	AuthorizedScopeEntry,
 	SyncScopeRequest,
 	SyncScopeRequestMode,
 	SyncScopeResetReason,
 } from "./sync-scope-protocol.js";
 export {
 	addSyncScopeToBoundary,
+	listAuthorizedScopesForPeer,
 	parseSyncScopeRequest,
 	SYNC_SCOPE_QUERY_PARAM,
+	scopeAuthorizationFailureReason,
 	syncScopeResetRequiredPayload,
 } from "./sync-scope-protocol.js";
 export { deriveTags, fileTags, normalizeTag } from "./tags.js";

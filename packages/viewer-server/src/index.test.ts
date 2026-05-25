@@ -3504,7 +3504,7 @@ describe("viewer-server", () => {
 					expect(res.status).toBe(200);
 					const body = (await res.json()) as Record<string, unknown>;
 					expect(body.protocol_version).toBe("2");
-					expect(body.sync_capability).toBe("aware");
+					expect(body.sync_capability).toBe("scoped");
 					expect(body.sync_reset).toMatchObject({ scope_id: null });
 				} finally {
 					peerDb.close();
@@ -3818,7 +3818,7 @@ describe("viewer-server", () => {
 					const body = (await res.json()) as Record<string, unknown>;
 					expect(body.error).toBe("reset_required");
 					expect(body.reset_required).toBe(true);
-					expect(body.sync_capability).toBe("aware");
+					expect(body.sync_capability).toBe("scoped");
 					expect(body.reason).toBe("stale_cursor");
 					expect(body.generation).toBe(7);
 					expect(body.snapshot_id).toBe("snapshot-7");
@@ -3892,7 +3892,7 @@ describe("viewer-server", () => {
 					const body = (await res.json()) as Record<string, unknown>;
 					expect(body.error).toBe("reset_required");
 					expect(body.reset_required).toBe(true);
-					expect(body.sync_capability).toBe("aware");
+					expect(body.sync_capability).toBe("scoped");
 					expect(body.reason).toBe("boundary_mismatch");
 					expect(body.generation).toBe(9);
 					expect(body.snapshot_id).toBe("snapshot-9");
@@ -3923,7 +3923,7 @@ describe("viewer-server", () => {
 				expect(body).toMatchObject({
 					error: "reset_required",
 					reset_required: true,
-					sync_capability: "aware",
+					sync_capability: "scoped",
 					reason: "missing_scope",
 					scope_id: null,
 				});
@@ -3950,9 +3950,9 @@ describe("viewer-server", () => {
 				expect(body).toMatchObject({
 					error: "reset_required",
 					reset_required: true,
-					sync_capability: "aware",
+					sync_capability: "scoped",
 					reason: "unsupported_scope",
-					scope_id: null,
+					scope_id: "acme-work",
 				});
 			} finally {
 				peer?.cleanup();
@@ -3977,9 +3977,9 @@ describe("viewer-server", () => {
 				expect(body).toMatchObject({
 					error: "reset_required",
 					reset_required: true,
-					sync_capability: "aware",
+					sync_capability: "scoped",
 					reason: "unsupported_scope",
-					scope_id: null,
+					scope_id: "acme-work",
 				});
 			} finally {
 				peer?.cleanup();
@@ -4004,7 +4004,7 @@ describe("viewer-server", () => {
 				expect(body).toMatchObject({
 					error: "reset_required",
 					reset_required: true,
-					sync_capability: "aware",
+					sync_capability: "scoped",
 					reason: "missing_scope",
 					scope_id: null,
 				});
@@ -4037,9 +4037,9 @@ describe("viewer-server", () => {
 				expect(body).toMatchObject({
 					error: "reset_required",
 					reset_required: true,
-					sync_capability: "aware",
+					sync_capability: "scoped",
 					reason: "unsupported_scope",
-					scope_id: null,
+					scope_id: "acme-work",
 				});
 			} finally {
 				peer?.cleanup();
@@ -4070,9 +4070,9 @@ describe("viewer-server", () => {
 				expect(body).toMatchObject({
 					error: "reset_required",
 					reset_required: true,
-					sync_capability: "aware",
+					sync_capability: "scoped",
 					reason: "unsupported_scope",
-					scope_id: null,
+					scope_id: "acme-work",
 				});
 			} finally {
 				peer?.cleanup();
@@ -4103,7 +4103,7 @@ describe("viewer-server", () => {
 				expect(body).toMatchObject({
 					error: "reset_required",
 					reset_required: true,
-					sync_capability: "aware",
+					sync_capability: "scoped",
 					reason: "missing_scope",
 					scope_id: null,
 				});
@@ -4139,9 +4139,9 @@ describe("viewer-server", () => {
 				expect(body).toMatchObject({
 					error: "reset_required",
 					reset_required: true,
-					sync_capability: "aware",
+					sync_capability: "scoped",
 					reason: "unsupported_scope",
-					scope_id: null,
+					scope_id: "acme-work",
 				});
 			} finally {
 				peer?.cleanup();
@@ -4198,7 +4198,7 @@ describe("viewer-server", () => {
 					expect(res.status).toBe(200);
 					const body = (await res.json()) as Record<string, unknown>;
 					expect(body.reset_required).toBe(false);
-					expect(body.sync_capability).toBe("aware");
+					expect(body.sync_capability).toBe("scoped");
 					expect(body.scope_id).toBeNull();
 					expect(body.ops).toEqual([]);
 				} finally {
@@ -4360,7 +4360,7 @@ describe("viewer-server", () => {
 					const body = (await res.json()) as Record<string, unknown>;
 					expect(body.generation).toBe(11);
 					expect(body.snapshot_id).toBe("snapshot-11");
-					expect(body.sync_capability).toBe("aware");
+					expect(body.sync_capability).toBe("scoped");
 					expect(body.scope_id).toBeNull();
 					const items = body.items as Array<Record<string, unknown>>;
 					expect(items.map((item) => item.entity_id)).toEqual(["key-a", "key-b"]);
@@ -4445,7 +4445,7 @@ describe("viewer-server", () => {
 					});
 					expect(res.status).toBe(200);
 					const body = (await res.json()) as Record<string, unknown>;
-					expect(body.sync_capability).toBe("aware");
+					expect(body.sync_capability).toBe("scoped");
 					expect(body.scope_id).toBeNull();
 				} finally {
 					peerDb.close();
@@ -4697,7 +4697,7 @@ describe("viewer-server", () => {
 
 				const now = "2026-01-01T00:00:00Z";
 				const payload = {
-					sync_capability: "aware",
+					sync_capability: "scoped",
 					ops: [
 						{
 							op_id: "blocked-delete-op",
@@ -4818,7 +4818,7 @@ describe("viewer-server", () => {
 					const url = "http://localhost/v1/ops";
 					const now = "2026-01-01T00:00:00Z";
 					const payload = {
-						sync_capability: "aware",
+						sync_capability: "scoped",
 						ops: [
 							{
 								op_id: "private-op-1",
