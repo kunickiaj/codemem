@@ -83,6 +83,45 @@ export interface SyncResult {
 	skippedOut?: FilterReplicationSkipped | null;
 	addressErrors: Array<{ address: string; error: string }>;
 	resetRequired?: SyncResetRequired;
+	/**
+	 * Per-Space sync outcomes when both peers negotiate the `scoped` sync
+	 * capability. Each entry covers a non-default scope returned by the peer's
+	 * `authorized_scopes` advertisement. Unset for legacy / `aware` peers; in
+	 * that case the top-level `opsIn` / `opsOut` describe the only sync pass
+	 * that ran (default scope).
+	 *
+	 * Top-level `opsIn` / `opsOut` aggregate the default-scope pass plus every
+	 * scoped pass, so existing callers stay correct without per-scope
+	 * awareness. A failure in a single scope sets the entry's `ok=false` but
+	 * does not block other scopes, and does not affect the default-scope
+	 * outcome. The top-level `ok` is true only when every per-scope result is
+	 * `ok`, matching the design's "all-or-nothing" report.
+	 */
+	perScopeResults?: SyncScopeResult[];
+}
+
+/**
+ * Outcome of a single per-Space sync pass within a larger `syncOnce` exchange.
+ *
+ * Lives alongside `SyncResult` rather than nested into it because each scope
+ * has its own cursor / reset state and can fail independently. Aggregating the
+ * per-scope counts into `SyncResult.opsIn` / `opsOut` preserves backward
+ * compatibility for callers that only need totals.
+ */
+export interface SyncScopeResult {
+	scope_id: string;
+	label?: string;
+	ok: boolean;
+	opsIn: number;
+	opsOut: number;
+	error?: string;
+	resetRequired?: SyncResetRequired;
+	/**
+	 * True when the pass began with an empty cursor and no local rows in the
+	 * scope, triggering a `/v1/snapshot` bootstrap. False for incremental
+	 * `/v1/ops` passes. Useful for diagnostics and UI progress reporting.
+	 */
+	bootstrapped: boolean;
 }
 
 export interface SyncPassOptions {
@@ -370,6 +409,383 @@ async function pushOps(
 }
 
 // ---------------------------------------------------------------------------
+// Per-scope sync helpers (scoped capability path)
+// ---------------------------------------------------------------------------
+
+/**
+ * Wire shape of a single entry in the `authorized_scopes` array returned by
+ * `/v1/status` when both peers negotiate the `scoped` capability.
+ */
+interface PeerAuthorizedScope {
+	scope_id: string;
+	label?: string;
+	authority_type?: string;
+	membership_epoch?: number;
+	sync_reset: {
+		scope_id: string | null;
+		generation: number;
+		snapshot_id: string;
+		baseline_cursor: string | null;
+		retained_floor_cursor: string | null;
+	};
+}
+
+/**
+ * Parse and validate a peer's `authorized_scopes` advertisement.
+ *
+ * Returns an empty array (not null) for any malformed value so the per-scope
+ * loop is a safe no-op for legacy peers that don't emit the field. Each
+ * accepted entry must carry a non-empty `scope_id` and a complete
+ * `sync_reset` boundary; partially-formed entries are dropped silently rather
+ * than failing the whole pass.
+ */
+function parseAuthorizedScopes(value: unknown): PeerAuthorizedScope[] {
+	if (!Array.isArray(value)) return [];
+	const entries: PeerAuthorizedScope[] = [];
+	for (const raw of value) {
+		if (!raw || typeof raw !== "object") continue;
+		const record = raw as Record<string, unknown>;
+		const scopeId = typeof record.scope_id === "string" ? record.scope_id.trim() : "";
+		if (!scopeId) continue;
+		const reset = record.sync_reset;
+		if (!reset || typeof reset !== "object") continue;
+		const resetRecord = reset as Record<string, unknown>;
+		const generation = Number(resetRecord.generation);
+		if (!Number.isFinite(generation)) continue;
+		const snapshotId =
+			typeof resetRecord.snapshot_id === "string" ? resetRecord.snapshot_id.trim() : "";
+		if (!snapshotId) continue;
+		entries.push({
+			scope_id: scopeId,
+			label: typeof record.label === "string" ? record.label : undefined,
+			authority_type: typeof record.authority_type === "string" ? record.authority_type : undefined,
+			membership_epoch:
+				typeof record.membership_epoch === "number" ? record.membership_epoch : undefined,
+			sync_reset: {
+				scope_id: typeof resetRecord.scope_id === "string" ? resetRecord.scope_id : null,
+				generation,
+				snapshot_id: snapshotId,
+				baseline_cursor: asOptionalCursor(resetRecord.baseline_cursor),
+				retained_floor_cursor: asOptionalCursor(resetRecord.retained_floor_cursor),
+			},
+		});
+	}
+	return entries;
+}
+
+/**
+ * True when the local DB has any memory_items belonging to the given scope.
+ * Used to decide between bootstrap (no local rows) and incremental (some local
+ * rows) on first pull for a scope. Matches the predicate
+ * `loadMemorySnapshotPageForPeer` uses for snapshot eligibility.
+ */
+function hasLocalRowsInScope(db: Database, scopeId: string): boolean {
+	const row = db
+		.prepare("SELECT 1 FROM memory_items WHERE import_key IS NOT NULL AND scope_id = ? LIMIT 1")
+		.get(scopeId) as { 1: number } | undefined;
+	return row !== undefined;
+}
+
+/**
+ * Run the per-Space iteration after a successful default-scope sync.
+ *
+ * Returns the per-scope outcomes plus the aggregate inbound op count so the
+ * caller can update its top-level `SyncResult`. Failures inside individual
+ * scopes are reported in the returned array; the function itself never
+ * throws.
+ */
+async function runScopedSync(
+	db: Database,
+	options: {
+		peerDeviceId: string;
+		baseUrl: string;
+		deviceId: string;
+		statusPayload: Record<string, unknown>;
+		keysDir?: string;
+		scanner?: SecretScanner;
+		limit: number;
+	},
+): Promise<{ results: SyncScopeResult[]; totalOpsIn: number }> {
+	const authorizedScopes = parseAuthorizedScopes(options.statusPayload.authorized_scopes);
+	if (authorizedScopes.length === 0) {
+		return { results: [], totalOpsIn: 0 };
+	}
+	const results: SyncScopeResult[] = [];
+	let totalOpsIn = 0;
+	for (const scope of authorizedScopes) {
+		const scopeResult = await syncOneScope(db, {
+			peerDeviceId: options.peerDeviceId,
+			baseUrl: options.baseUrl,
+			deviceId: options.deviceId,
+			scope,
+			keysDir: options.keysDir,
+			scanner: options.scanner,
+			limit: options.limit,
+		});
+		results.push(scopeResult);
+		if (scopeResult.ok) totalOpsIn += scopeResult.opsIn;
+	}
+	return { results, totalOpsIn };
+}
+
+/**
+ * Sync a single Sharing-domain scope with a peer. Caller is responsible for
+ * having already authenticated against the peer (via legacy default-scope
+ * sync) and having an `authorized_scopes` entry from `/v1/status`.
+ *
+ * Branches on per-scope cursor state:
+ * - `bootstrapped=true`: no cursor and no local rows in this scope → fetch
+ *   the full snapshot page-by-page via `/v1/snapshot?scope_id=X` and apply
+ *   atomically via `applyBootstrapSnapshot`.
+ * - `bootstrapped=false`: pull `/v1/ops?scope_id=X&since=<cursor>` and apply
+ *   through the normal `applyReplicationOps` path.
+ *
+ * Outbound ops are NOT pushed per-scope here. The default-scope outbound push
+ * that ran in `syncOnce` already streams ops with their per-op `scope_id`
+ * metadata intact, and the peer's outbound filter (`outboundScopeAllowed`)
+ * applies the same membership gate per row. Re-pushing per scope would be a
+ * waste; the receiver's per-scope pull on the next pass picks up anything it
+ * missed.
+ */
+async function syncOneScope(
+	db: Database,
+	options: {
+		peerDeviceId: string;
+		baseUrl: string;
+		deviceId: string;
+		scope: PeerAuthorizedScope;
+		keysDir?: string;
+		scanner?: SecretScanner;
+		limit: number;
+	},
+): Promise<SyncScopeResult> {
+	const { peerDeviceId, baseUrl, deviceId, scope, keysDir, scanner, limit } = options;
+	const scopeId = scope.scope_id;
+	const [lastApplied] = getReplicationCursor(db, peerDeviceId, scopeId);
+	const localRowsPresent = hasLocalRowsInScope(db, scopeId);
+
+	// Bootstrap when this device has never pulled the scope and has no local
+	// rows. If there ARE local rows but no cursor, fall through to incremental
+	// so the server's reset_required logic can decide whether a re-bootstrap
+	// is required without clobbering existing data.
+	if (lastApplied == null && !localRowsPresent) {
+		try {
+			const resetInfo: SyncResetRequired = {
+				scope_id: scopeId,
+				generation: scope.sync_reset.generation,
+				snapshot_id: scope.sync_reset.snapshot_id,
+				baseline_cursor: scope.sync_reset.baseline_cursor,
+				retained_floor_cursor: scope.sync_reset.retained_floor_cursor,
+				reset_required: true,
+				reason: "initial_bootstrap" as SyncResetRequired["reason"],
+			};
+			const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, {
+				keysDir,
+				pageSize: BOOTSTRAP_PAGE_SIZE,
+			});
+			const bootstrapResult = applyBootstrapSnapshot(db, peerDeviceId, items, resetInfo, scanner);
+			if (!bootstrapResult.ok) {
+				return {
+					scope_id: scopeId,
+					label: scope.label,
+					ok: false,
+					opsIn: 0,
+					opsOut: 0,
+					error: "bootstrap apply failed",
+					bootstrapped: true,
+				};
+			}
+			return {
+				scope_id: scopeId,
+				label: scope.label,
+				ok: true,
+				opsIn: bootstrapResult.applied,
+				opsOut: 0,
+				bootstrapped: true,
+			};
+		} catch (err) {
+			const detail = err instanceof Error ? err.message.trim() || err.constructor.name : "unknown";
+			return {
+				scope_id: scopeId,
+				label: scope.label,
+				ok: false,
+				opsIn: 0,
+				opsOut: 0,
+				error: `scoped bootstrap failed: ${detail}`,
+				bootstrapped: true,
+			};
+		}
+	}
+
+	// Incremental: pull /v1/ops?scope_id=X&since=<lastApplied>.
+	try {
+		const queryParams = new URLSearchParams({
+			scope_id: scopeId,
+			since: lastApplied ?? "",
+			limit: String(limit),
+			generation: String(scope.sync_reset.generation),
+			snapshot_id: scope.sync_reset.snapshot_id,
+		});
+		if (scope.sync_reset.baseline_cursor) {
+			queryParams.set("baseline_cursor", scope.sync_reset.baseline_cursor);
+		}
+		const url = `${baseUrl}/v1/ops?${queryParams.toString()}`;
+		const headers = {
+			...buildAuthHeaders({
+				deviceId,
+				method: "GET",
+				url,
+				bodyBytes: Buffer.alloc(0),
+				keysDir,
+			}),
+			...capabilityHeader(),
+		};
+		const [status, payload] = await requestJson("GET", url, { headers });
+
+		if (status === 409 && payload?.reset_required === true) {
+			// Per-scope reset requested. Report it; the next pass will pick a
+			// fresh bootstrap path because the cursor will be cleared by the
+			// reset boundary. We deliberately do not auto-bootstrap from here
+			// to avoid surprising state changes mid-loop; the default-scope
+			// auto-bootstrap path remains the canonical recovery mechanism.
+			const reason = ((): SyncResetRequired["reason"] => {
+				switch (payload.reason) {
+					case "generation_mismatch":
+					case "boundary_mismatch":
+					case "missing_scope":
+					case "unsupported_scope":
+						return payload.reason;
+					default:
+						return "stale_cursor";
+				}
+			})();
+			return {
+				scope_id: scopeId,
+				label: scope.label,
+				ok: false,
+				opsIn: 0,
+				opsOut: 0,
+				error: `reset_required:${reason}`,
+				resetRequired: {
+					reset_required: true,
+					reason,
+					scope_id: typeof payload.scope_id === "string" ? payload.scope_id : scopeId,
+					generation: Number(payload.generation ?? scope.sync_reset.generation),
+					snapshot_id: String(payload.snapshot_id ?? scope.sync_reset.snapshot_id),
+					baseline_cursor:
+						typeof payload.baseline_cursor === "string" ? payload.baseline_cursor.trim() : null,
+					retained_floor_cursor:
+						typeof payload.retained_floor_cursor === "string"
+							? payload.retained_floor_cursor.trim()
+							: null,
+				},
+				bootstrapped: false,
+			};
+		}
+
+		if (status !== 200 || payload == null) {
+			const detail = errorDetail(payload);
+			const suffix = detail ? ` (${status}: ${detail})` : ` (${status})`;
+			return {
+				scope_id: scopeId,
+				label: scope.label,
+				ok: false,
+				opsIn: 0,
+				opsOut: 0,
+				error: `peer scoped ops fetch failed${suffix}`,
+				bootstrapped: false,
+			};
+		}
+
+		if (!isValidIncrementalOpsResponse(payload)) {
+			return {
+				scope_id: scopeId,
+				label: scope.label,
+				ok: false,
+				opsIn: 0,
+				opsOut: 0,
+				error: "invalid scoped ops response",
+				bootstrapped: false,
+			};
+		}
+
+		const ops = extractReplicationOps(payload);
+		const mismatched = ops.find(
+			(op) => op.device_id !== peerDeviceId || op.clock_device_id !== peerDeviceId,
+		);
+		if (mismatched) {
+			return {
+				scope_id: scopeId,
+				label: scope.label,
+				ok: false,
+				opsIn: 0,
+				opsOut: 0,
+				error: `inbound op device mismatch:${mismatched.op_id}`,
+				bootstrapped: false,
+			};
+		}
+
+		const applied = applyReplicationOps(db, ops, deviceId, scanner, {
+			inboundScopeValidation: { peerDeviceId },
+		});
+		if (applied.rejected > 0) {
+			const reason = applied.rejections[0]?.reason ?? "scope_rejected";
+			return {
+				scope_id: scopeId,
+				label: scope.label,
+				ok: false,
+				opsIn: 0,
+				opsOut: 0,
+				error: `inbound scope rejected:${reason}`,
+				bootstrapped: false,
+			};
+		}
+
+		try {
+			queueVectorBackfillForIncrementalSync(db, applied.vectorWork);
+		} catch (queueErr) {
+			const fallback = await bestEffortMaintainVectorsForSyncFallback(db, applied.vectorWork);
+			if (fallback.errors.length > 0) {
+				return {
+					scope_id: scopeId,
+					label: scope.label,
+					ok: false,
+					opsIn: 0,
+					opsOut: 0,
+					error: `vector catch-up failed: ${queueErr instanceof Error ? queueErr.message : String(queueErr)}; fallback failed: ${fallback.errors.join("; ")}`,
+					bootstrapped: false,
+				};
+			}
+		}
+
+		const inboundCursorCandidate = asOptionalCursor(payload.next_cursor);
+		if (cursorAdvances(lastApplied, inboundCursorCandidate)) {
+			setReplicationCursor(db, peerDeviceId, { lastApplied: inboundCursorCandidate }, scopeId);
+		}
+
+		return {
+			scope_id: scopeId,
+			label: scope.label,
+			ok: true,
+			opsIn: applied.applied,
+			opsOut: 0,
+			bootstrapped: false,
+		};
+	} catch (err) {
+		const detail = err instanceof Error ? err.message.trim() || err.constructor.name : "unknown";
+		return {
+			scope_id: scopeId,
+			label: scope.label,
+			ok: false,
+			opsIn: 0,
+			opsOut: 0,
+			error: `scoped incremental failed: ${detail}`,
+			bootstrapped: false,
+		};
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Preflight
 // ---------------------------------------------------------------------------
 
@@ -541,19 +957,45 @@ export async function syncOnce(
 						if (!bootstrapResult.ok) {
 							throw new Error("initial bootstrap apply failed");
 						}
+						// Run scoped sync alongside the default-scope bootstrap so
+						// fresh peers receive every authorized Space on the FIRST
+						// sync pass, not on the second. Per-scope failures are
+						// reported per scope and downgrade the overall ok only
+						// when at least one scope fails.
+						const scopedAfterBootstrap =
+							lastCapabilityDiagnostics?.negotiated === "scoped"
+								? await runScopedSync(db, {
+										peerDeviceId,
+										baseUrl,
+										deviceId,
+										statusPayload,
+										keysDir,
+										scanner,
+										limit,
+									})
+								: { results: [], totalOpsIn: 0 };
+						const bootstrapAllOk = scopedAfterBootstrap.results.every((r) => r.ok);
 						recordPeerSuccess(db, peerDeviceId, baseUrl);
 						recordSyncAttempt(db, peerDeviceId, {
-							ok: true,
-							opsIn: bootstrapResult.applied,
+							ok: bootstrapAllOk,
+							opsIn: bootstrapResult.applied + scopedAfterBootstrap.totalOpsIn,
 							opsOut: 0,
 							capabilities: lastCapabilityDiagnostics,
+							error: bootstrapAllOk
+								? undefined
+								: `scoped sync incomplete: ${scopedAfterBootstrap.results
+										.filter((r) => !r.ok)
+										.map((r) => `${r.scope_id}=${r.error ?? "unknown"}`)
+										.join("; ")}`,
 						});
 						return {
-							ok: true,
+							ok: bootstrapAllOk,
 							address: baseUrl,
-							opsIn: bootstrapResult.applied,
+							opsIn: bootstrapResult.applied + scopedAfterBootstrap.totalOpsIn,
 							opsOut: 0,
 							addressErrors: [],
+							perScopeResults:
+								scopedAfterBootstrap.results.length > 0 ? scopedAfterBootstrap.results : undefined,
 						};
 					} catch (bootstrapErr) {
 						const msg = bootstrapErr instanceof Error ? bootstrapErr.message : String(bootstrapErr);
@@ -765,22 +1207,54 @@ export async function syncOnce(
 				lastAcked = ackCursor;
 			}
 
-			// -- 6. Record success --
+			// -- 6. Per-Space scoped sync (additive; runs after legacy default
+			//       scope succeeded so the peer is already authenticated).
+			//
+			// Only iterates when both peers advertised the `scoped` capability
+			// AND the peer's /v1/status response carried an `authorized_scopes`
+			// array. Each scope is best-effort: a failure in one Space does not
+			// abort the others or roll back the default-scope pull/push that
+			// just succeeded. Top-level `ok` is downgraded to false only if
+			// at least one scope failed.
+			const scopedAfterIncremental =
+				lastCapabilityDiagnostics?.negotiated === "scoped"
+					? await runScopedSync(db, {
+							peerDeviceId,
+							baseUrl,
+							deviceId,
+							statusPayload,
+							keysDir,
+							scanner,
+							limit,
+						})
+					: { results: [], totalOpsIn: 0 };
+
+			const allScopesOk = scopedAfterIncremental.results.every((r) => r.ok);
+
+			// -- 7. Record success --
 			recordPeerSuccess(db, peerDeviceId, baseUrl);
 			recordSyncAttempt(db, peerDeviceId, {
-				ok: true,
-				opsIn: applied.applied,
+				ok: allScopesOk,
+				opsIn: applied.applied + scopedAfterIncremental.totalOpsIn,
 				opsOut: outboundOps.length,
 				capabilities: lastCapabilityDiagnostics,
+				error: allScopesOk
+					? undefined
+					: `scoped sync incomplete: ${scopedAfterIncremental.results
+							.filter((r) => !r.ok)
+							.map((r) => `${r.scope_id}=${r.error ?? "unknown"}`)
+							.join("; ")}`,
 			});
 			return {
-				ok: true,
+				ok: allScopesOk,
 				address: baseUrl,
-				opsIn: applied.applied,
+				opsIn: applied.applied + scopedAfterIncremental.totalOpsIn,
 				opsOut: outboundOps.length,
 				opsSkipped,
 				skippedOut: skippedOutbound ?? null,
 				addressErrors: [],
+				perScopeResults:
+					scopedAfterIncremental.results.length > 0 ? scopedAfterIncremental.results : undefined,
 			};
 		} catch (err: unknown) {
 			const detail = err instanceof Error ? err.message.trim() || err.constructor.name : "unknown";

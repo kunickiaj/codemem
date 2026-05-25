@@ -343,6 +343,192 @@ describe("syncOnce", () => {
 		});
 	});
 
+	it("bootstraps every authorized scope advertised by a scoped peer", async () => {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-scoped", "fp-scoped", new Date().toISOString());
+		// Seed an existing replication cursor so the auto-bootstrap branch is
+		// skipped and syncOnce reaches the per-scope iteration via the
+		// incremental path. The fresh-peer auto-bootstrap variant is exercised
+		// separately below.
+		db.prepare(
+			"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+		).run("peer-scoped", "2025-12-31T00:00:00Z|local-op-0", null, new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		grantScopeForSyncPass(db, "acme-work", ["peer-scoped", "local-device-id"]);
+
+		const statusResponse = {
+			fingerprint: "fp-scoped",
+			protocol_version: "2",
+			sync_capability: "scoped",
+			sync_reset: {
+				generation: 1,
+				snapshot_id: "snap-default",
+				baseline_cursor: null,
+				retained_floor_cursor: null,
+			},
+			authorized_scopes: [
+				{
+					scope_id: "acme-work",
+					label: "Acme Work",
+					authority_type: "coordinator",
+					membership_epoch: 1,
+					sync_reset: {
+						scope_id: "acme-work",
+						generation: 1,
+						snapshot_id: "snap-acme-1",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+				},
+			],
+		};
+		const defaultOpsResponse = {
+			reset_required: false,
+			generation: 1,
+			snapshot_id: "snap-default",
+			baseline_cursor: null,
+			retained_floor_cursor: null,
+			ops: [],
+			next_cursor: null,
+			skipped: 0,
+		};
+		const scopedSnapshotResponse = {
+			scope_id: "acme-work",
+			generation: 1,
+			snapshot_id: "snap-acme-1",
+			baseline_cursor: null,
+			retained_floor_cursor: null,
+			sync_capability: "scoped",
+			items: [
+				{
+					entity_id: "key:acme-work-1",
+					op_type: "upsert",
+					payload_json: JSON.stringify({
+						kind: "discovery",
+						title: "Scoped memory",
+						body_text: "Scoped body",
+						active: 1,
+						created_at: "2026-01-01T00:00:00Z",
+						updated_at: "2026-01-01T00:00:00Z",
+						scope_id: "acme-work",
+						visibility: "shared",
+					}),
+					clock_rev: 1,
+					clock_updated_at: "2026-01-01T00:00:00Z",
+					clock_device_id: "peer-scoped",
+				},
+			],
+			next_page_token: null,
+			has_more: false,
+		};
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([200, statusResponse])
+			.mockResolvedValueOnce([200, defaultOpsResponse])
+			.mockResolvedValueOnce([200, scopedSnapshotResponse]);
+
+		const result = await syncOnce(db, "peer-scoped", ["http://127.0.0.1:9090"]);
+
+		if (!result.ok) {
+			throw new Error(`syncOnce failed: ${result.error ?? "unknown error"}`);
+		}
+		expect(result.ok).toBe(true);
+		expect(result.perScopeResults).toHaveLength(1);
+		expect(result.perScopeResults?.[0]).toMatchObject({
+			scope_id: "acme-work",
+			label: "Acme Work",
+			ok: true,
+			opsIn: 1,
+			bootstrapped: true,
+		});
+		// Top-level opsIn aggregates default + scoped.
+		expect(result.opsIn).toBe(1);
+
+		const scopedMemory = db
+			.prepare("SELECT title, scope_id FROM memory_items WHERE import_key = ?")
+			.get("key:acme-work-1") as { title: string; scope_id: string } | undefined;
+		expect(scopedMemory).toMatchObject({
+			title: "Scoped memory",
+			scope_id: "acme-work",
+		});
+	});
+
+	it("reports per-scope failure without rolling back default-scope sync", async () => {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-mixed", "fp-mixed", new Date().toISOString());
+		// Pre-existing cursor → skip auto-bootstrap, exercise the incremental
+		// success → per-scope failure path.
+		db.prepare(
+			"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+		).run("peer-mixed", "2025-12-31T00:00:00Z|local-op-0", null, new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+
+		const statusResponse = {
+			fingerprint: "fp-mixed",
+			protocol_version: "2",
+			sync_capability: "scoped",
+			sync_reset: {
+				generation: 1,
+				snapshot_id: "snap-default",
+				baseline_cursor: null,
+				retained_floor_cursor: null,
+			},
+			authorized_scopes: [
+				{
+					scope_id: "broken-scope",
+					label: "Broken",
+					authority_type: "coordinator",
+					membership_epoch: 1,
+					sync_reset: {
+						scope_id: "broken-scope",
+						generation: 1,
+						snapshot_id: "snap-broken-1",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+				},
+			],
+		};
+		const defaultOpsResponse = {
+			reset_required: false,
+			generation: 1,
+			snapshot_id: "snap-default",
+			baseline_cursor: null,
+			retained_floor_cursor: null,
+			ops: [],
+			next_cursor: null,
+			skipped: 0,
+		};
+		// Server rejects the snapshot fetch for the scope.
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([200, statusResponse])
+			.mockResolvedValueOnce([200, defaultOpsResponse])
+			.mockResolvedValueOnce([403, { error: "scope_rejected" }]);
+
+		const result = await syncOnce(db, "peer-mixed", ["http://127.0.0.1:9090"]);
+
+		// Top-level ok is false because one scope failed, but the default-scope
+		// pass succeeded and is observable in opsIn / opsOut and recorded
+		// sync_attempts.
+		expect(result.ok).toBe(false);
+		expect(result.perScopeResults).toHaveLength(1);
+		expect(result.perScopeResults?.[0]).toMatchObject({
+			scope_id: "broken-scope",
+			ok: false,
+			bootstrapped: true,
+		});
+		expect(result.perScopeResults?.[0]?.error).toContain("snapshot fetch failed");
+	});
+
 	it("rejects pulled ops that spoof the local device without advancing cursor", async () => {
 		db.prepare(
 			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
