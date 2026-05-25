@@ -1,3 +1,4 @@
+import { formatHostPort } from "@codemem/core";
 import { resolveDbOpt } from "../shared-options.js";
 
 export interface SyncAttemptRow {
@@ -81,13 +82,13 @@ export function collectAdvertiseAddresses(
 		return [explicitAddress];
 	}
 	if (configuredHost && configuredHost !== "0.0.0.0") {
-		return [`${configuredHost}:${port}`];
+		return [formatHostPort(configuredHost, port)];
 	}
 	const addresses = Object.values(interfaces)
 		.flatMap((entries) => entries ?? [])
 		.filter((entry) => !entry.internal)
 		.map((entry) => entry.address)
 		.filter((address) => address && address !== "127.0.0.1" && address !== "::1")
-		.map((address) => `${address}:${port}`);
+		.map((address) => formatHostPort(address, port));
 	return [...new Set(addresses)];
 }

@@ -528,11 +528,29 @@ pairCmd.action(async (opts: SyncPairOptions) => {
 				process.exitCode = 1;
 				return;
 			}
+			const existingPeer = drizzle(store.db, { schema })
+				.select({ pinned_fingerprint: schema.syncPeers.pinned_fingerprint })
+				.from(schema.syncPeers)
+				.where(eq(schema.syncPeers.peer_device_id, deviceId))
+				.get();
+			const existingFingerprint = String(existingPeer?.pinned_fingerprint ?? "").trim();
+			if (existingFingerprint && existingFingerprint !== fingerprint) {
+				const msg =
+					"Pairing payload conflicts with the existing trusted fingerprint for this device. Remove or repair the old peer before accepting this pairing payload.";
+				if (opts.json) {
+					emitJsonError("peer_conflict", msg);
+					return;
+				}
+				p.log.error(msg);
+				process.exitCode = 1;
+				return;
+			}
 
 			updatePeerAddresses(store.db, deviceId, resolvedAddresses, {
 				name: opts.name,
 				pinnedFingerprint: fingerprint,
 				publicKey,
+				replaceTrust: true,
 			});
 
 			if (opts.default) {
