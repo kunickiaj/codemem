@@ -1,5 +1,10 @@
 import { networkInterfaces } from "node:os";
-import { mergeAddresses } from "./address-utils.js";
+import {
+	formatHostPort,
+	mergeAddresses,
+	mergeAddressesPreferCandidates,
+	normalizeAddress,
+} from "./address-utils.js";
 import type { CoordinatorReciprocalApproval } from "./coordinator-store-contract.js";
 import type { Database } from "./db.js";
 import { getCodememEnvOverrides, readCodememConfigFile } from "./observer-config.js";
@@ -46,6 +51,18 @@ function parseStringList(value: unknown): string[] {
 			.filter(Boolean);
 	}
 	return [];
+}
+
+function mergeStringLists(existing: string[], candidates: string[]): string[] {
+	const merged: string[] = [];
+	const seen = new Set<string>();
+	for (const value of [...existing, ...candidates]) {
+		const cleanValue = value.trim();
+		if (!cleanValue || seen.has(cleanValue)) continue;
+		seen.add(cleanValue);
+		merged.push(cleanValue);
+	}
+	return merged;
 }
 
 export interface CoordinatorSyncConfig {
@@ -142,7 +159,7 @@ export function coordinatorEnabled(config: CoordinatorSyncConfig): boolean {
 	return Boolean(config.syncCoordinatorUrl && config.syncCoordinatorGroups.length > 0);
 }
 
-function advertisedSyncAddresses(config: CoordinatorSyncConfig): string[] {
+export function advertisedSyncAddresses(config: CoordinatorSyncConfig): string[] {
 	const advertise = config.syncAdvertise.toLowerCase();
 	if (advertise && advertise !== "auto" && advertise !== "default") {
 		return mergeAddresses(
@@ -151,17 +168,19 @@ function advertisedSyncAddresses(config: CoordinatorSyncConfig): string[] {
 				.split(",")
 				.map((item) => item.trim())
 				.filter(Boolean),
+			{ defaultHttpPort: config.syncPort },
 		);
 	}
 	if (config.syncHost && config.syncHost !== "0.0.0.0") {
-		return [`${config.syncHost}:${config.syncPort}`];
+		return [normalizeAddress(formatHostPort(config.syncHost, config.syncPort))].filter(Boolean);
 	}
 	const addresses = Object.values(networkInterfaces())
 		.flatMap((entries) => entries ?? [])
 		.filter((entry) => !entry.internal)
 		.map((entry) => entry.address)
 		.filter((address) => address && address !== "127.0.0.1" && address !== "::1")
-		.map((address) => `${address}:${config.syncPort}`);
+		.map((address) => normalizeAddress(formatHostPort(address, config.syncPort)))
+		.filter(Boolean);
 	return [...new Set(addresses)];
 }
 
@@ -237,33 +256,41 @@ export async function lookupCoordinatorPeers(
 			const device = clean(record.device_id);
 			const fingerprint = clean(record.fingerprint);
 			if (!device) continue;
+			const freshAddresses = record.stale
+				? []
+				: Array.isArray(record.addresses)
+					? record.addresses.filter((x): x is string => typeof x === "string")
+					: [];
 			const key = `${device}:${fingerprint}`;
 			const existing = merged.get(key);
 			if (!existing) {
 				merged.set(key, {
 					...record,
-					addresses: mergeAddresses(
-						[],
-						Array.isArray(record.addresses)
-							? record.addresses.filter((x): x is string => typeof x === "string")
-							: [],
-					),
+					addresses: mergeAddresses([], freshAddresses),
 					groups: [groupId],
+					fresh_groups: record.stale ? [] : [groupId],
 				});
 				continue;
 			}
 			existing.addresses = mergeAddresses(
 				(Array.isArray(existing.addresses) ? existing.addresses : []) as string[],
-				Array.isArray(record.addresses)
-					? record.addresses.filter((x): x is string => typeof x === "string")
-					: [],
+				freshAddresses,
 			);
-			existing.groups = mergeAddresses(
+			existing.groups = mergeStringLists(
 				(Array.isArray(existing.groups) ? existing.groups : []) as string[],
 				[groupId],
 			);
-			existing.stale = Boolean(existing.stale) && Boolean(record.stale);
-			if (clean(record.last_seen_at) > clean(existing.last_seen_at)) {
+			existing.fresh_groups = mergeStringLists(
+				(Array.isArray(existing.fresh_groups) ? existing.fresh_groups : []) as string[],
+				record.stale ? [] : [groupId],
+			);
+			const wasStale = Boolean(existing.stale);
+			const isStale = Boolean(record.stale);
+			existing.stale = wasStale && isStale;
+			const shouldUpdateFreshnessMetadata =
+				(!isStale && (wasStale || clean(record.last_seen_at) > clean(existing.last_seen_at))) ||
+				(isStale && wasStale && clean(record.last_seen_at) > clean(existing.last_seen_at));
+			if (shouldUpdateFreshnessMetadata) {
 				existing.last_seen_at = record.last_seen_at;
 				existing.expires_at = record.expires_at;
 			}
@@ -301,6 +328,7 @@ export function refreshStoredCoordinatorPeerAddresses(
 ): number {
 	const discoveredAddressesByPinnedPeer = new Map<string, string[]>();
 	for (const peer of peers) {
+		if (peer.stale) continue;
 		const deviceId = clean(peer.device_id);
 		const fingerprint = clean(peer.fingerprint);
 		if (!deviceId || !fingerprint) continue;
@@ -334,7 +362,10 @@ export function refreshStoredCoordinatorPeerAddresses(
 			if (!discoveredAddresses?.length) continue;
 
 			const existingAddresses = mergeAddresses(parseAddressCache(row.addresses_json), []);
-			const mergedAddresses = mergeAddresses(existingAddresses, discoveredAddresses);
+			const mergedAddresses = mergeAddressesPreferCandidates(
+				existingAddresses,
+				discoveredAddresses,
+			);
 			if (JSON.stringify(mergedAddresses) === JSON.stringify(existingAddresses)) continue;
 			update.run(JSON.stringify(mergedAddresses), deviceId, fingerprint);
 			updated += 1;
@@ -362,23 +393,34 @@ export async function fetchCoordinatorStalePeers(
 		const peers = await lookupCoordinatorPeers({ db, dbPath }, config, { keysDir });
 		refreshStoredCoordinatorPeerAddresses(db, peers);
 		// A device may appear under multiple fingerprints (key rotation, multi-group).
-		// Only mark a device stale if ALL its entries are stale.
+		// Skip device-wide only when all entries are stale, but also return pinned
+		// peer keys so an old trusted fingerprint stays fail-closed even when the
+		// same device id has a fresh replacement fingerprint.
 		const freshDevices = new Set<string>();
 		const staleDevices = new Set<string>();
+		const freshPinnedPeers = new Set<string>();
+		const stalePinnedPeers = new Set<string>();
 		for (const peer of peers) {
 			const deviceId = clean(peer.device_id);
 			if (!deviceId) continue;
+			const fingerprint = clean(peer.fingerprint);
+			const pinnedPeerKey = fingerprint ? `${deviceId}:${fingerprint}` : "";
 			if (peer.stale) {
 				staleDevices.add(deviceId);
+				if (pinnedPeerKey) stalePinnedPeers.add(pinnedPeerKey);
 			} else {
 				freshDevices.add(deviceId);
+				if (pinnedPeerKey) freshPinnedPeers.add(pinnedPeerKey);
 			}
 		}
 		// Remove any device that has at least one fresh entry
 		for (const deviceId of freshDevices) {
 			staleDevices.delete(deviceId);
 		}
-		return staleDevices;
+		for (const pinnedPeerKey of freshPinnedPeers) {
+			stalePinnedPeers.delete(pinnedPeerKey);
+		}
+		return new Set([...staleDevices, ...stalePinnedPeers]);
 	} catch {
 		// Best-effort: if coordinator lookup fails, skip the optimization.
 		return new Set();

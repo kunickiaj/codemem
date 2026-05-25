@@ -56,8 +56,7 @@ export function shouldShowCoordinatorReviewAction(input: {
 }): boolean {
 	const approvalSummary = deriveCoordinatorApprovalSummary(input);
 	const deviceId = cleanText(input.device?.device_id);
-	const fingerprint = cleanText(input.device?.fingerprint);
-	if (!deviceId || !fingerprint) return false;
+	if (!deviceId) return false;
 	if (input.device?.stale || input.hasAmbiguousCoordinatorGroup) return false;
 	if (!input.pairedLocally) return true;
 	return approvalSummary.state === "needs-your-approval";

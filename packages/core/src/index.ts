@@ -540,6 +540,7 @@ export {
 	advertiseMdns,
 	DEFAULT_SERVICE_TYPE,
 	discoverPeersViaMdns,
+	formatHostPort,
 	loadPeerAddresses,
 	mdnsAddressesForPeer,
 	mdnsEnabled,

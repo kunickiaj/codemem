@@ -58,6 +58,17 @@ export interface SyncTickResult {
 	opsOut?: number;
 }
 
+export function resolveSyncDaemonKeysDir(keysDir?: string): string | undefined {
+	const explicit = keysDir?.trim();
+	if (explicit) return explicit;
+	return process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
+}
+
+function tableColumnExists(db: Database, table: string, column: string): boolean {
+	const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>;
+	return rows.some((row) => row.name === column);
+}
+
 // ---------------------------------------------------------------------------
 // Daemon state helpers
 // ---------------------------------------------------------------------------
@@ -162,11 +173,14 @@ export async function syncDaemonTick(
 	stalePeers?: Set<string>,
 	scanner?: SecretScanner,
 ): Promise<SyncTickResult[]> {
-	const d = drizzle(db, { schema });
-	const rows = d
-		.select({ peer_device_id: schema.syncPeers.peer_device_id })
-		.from(schema.syncPeers)
-		.all();
+	const hasPinnedFingerprint = tableColumnExists(db, "sync_peers", "pinned_fingerprint");
+	const rows = db
+		.prepare(
+			hasPinnedFingerprint
+				? "SELECT peer_device_id, pinned_fingerprint FROM sync_peers"
+				: "SELECT peer_device_id, NULL AS pinned_fingerprint FROM sync_peers",
+		)
+		.all() as Array<{ peer_device_id: string; pinned_fingerprint: string | null }>;
 
 	// Skip heavy preflight work when there are no peers configured.
 	// This keeps startup and idle daemon ticks responsive on large local stores.
@@ -181,8 +195,10 @@ export async function syncDaemonTick(
 	const results: SyncTickResult[] = [];
 	for (const row of rows) {
 		const peerDeviceId = row.peer_device_id;
+		const pinnedFingerprint = String(row.pinned_fingerprint ?? "").trim();
+		const stalePeerKey = pinnedFingerprint ? `${peerDeviceId}:${pinnedFingerprint}` : "";
 
-		if (stalePeers?.has(peerDeviceId)) {
+		if (stalePeers?.has(peerDeviceId) || (stalePeerKey && stalePeers?.has(stalePeerKey))) {
 			results.push({
 				ok: false,
 				skipped: true,
@@ -229,7 +245,7 @@ export async function syncDaemonTick(
 export async function runSyncDaemon(options?: SyncDaemonOptions): Promise<void> {
 	const intervalS = options?.intervalS ?? 120;
 	const dbPath = resolveDbPath(options?.dbPath);
-	const keysDir = options?.keysDir;
+	const keysDir = resolveSyncDaemonKeysDir(options?.keysDir);
 	const signal = options?.signal;
 	const onPhaseChange = options?.onPhaseChange;
 	const scanner = options?.scanner;
@@ -303,19 +319,20 @@ export async function runTickOnce(
 	keysDir?: string,
 	scanner?: SecretScanner,
 ): Promise<void> {
+	const resolvedKeysDir = resolveSyncDaemonKeysDir(keysDir);
 	const db = connectDb(dbPath);
 	try {
 		ensureAdditiveSchemaCompatibility(db);
 		try {
-			await refreshCoordinatorPresenceForDaemon(db, dbPath, keysDir);
+			await refreshCoordinatorPresenceForDaemon(db, dbPath, resolvedKeysDir);
 		} catch {
 			// Coordinator discovery is a supplemental surface. Keep direct peer sync running
 			// even when heartbeat posting fails for this tick.
 		}
 		// Best-effort: skip peers the coordinator reports as offline.
 		// Returns empty set when coordinator is disabled or lookup fails.
-		const stalePeers = await fetchCoordinatorStalePeers(db, dbPath, keysDir);
-		const results = await syncDaemonTick(db, keysDir, stalePeers, scanner);
+		const stalePeers = await fetchCoordinatorStalePeers(db, dbPath, resolvedKeysDir);
+		const results = await syncDaemonTick(db, resolvedKeysDir, stalePeers, scanner);
 		const needsAttention = results.some((r) => !r.ok && r.error?.includes("needs_attention"));
 		if (needsAttention) {
 			setSyncDaemonPhase(db, "needs_attention");

@@ -152,6 +152,18 @@ describe("formatSyncAttempt", () => {
 		).toEqual(["192.168.1.10:7337"]);
 	});
 
+	it("brackets configured IPv6 advertise hosts", () => {
+		expect(collectAdvertiseAddresses(null, "fd00::1", 7337, {})).toEqual(["[fd00::1]:7337"]);
+	});
+
+	it("brackets IPv6 interface advertise addresses", () => {
+		expect(
+			collectAdvertiseAddresses(null, "0.0.0.0", 7337, {
+				utun0: [{ address: "fd00::2", internal: false, family: "IPv6" }],
+			}),
+		).toEqual(["[fd00::2]:7337"]);
+	});
+
 	it("registers coordinator parity subcommands", () => {
 		const coordinator = syncCommand.commands.find((command) => command.name() === "coordinator");
 		expect(coordinator).toBeDefined();

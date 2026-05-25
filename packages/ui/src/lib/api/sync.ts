@@ -121,15 +121,14 @@ export async function renamePeer(peerDeviceId: string, name: string): Promise<un
 
 export async function acceptDiscoveredPeer(
 	peerDeviceId: string,
-	fingerprint: string,
+	fingerprint?: string,
 ): Promise<AcceptDiscoveredPeerResult> {
+	const body: Record<string, string> = { peer_device_id: peerDeviceId };
+	if (fingerprint) body.fingerprint = fingerprint;
 	const resp = await fetch("/api/sync/peers/accept-discovered", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({
-			peer_device_id: peerDeviceId,
-			fingerprint,
-		}),
+		body: JSON.stringify(body),
 	});
 	const text = await resp.text();
 	let payload: AcceptDiscoveredPeerResult = {};

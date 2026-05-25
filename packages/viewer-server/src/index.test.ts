@@ -51,6 +51,11 @@ function createTestStore(): { store: MemoryStore; cleanup: () => void } {
 	};
 }
 
+const FRESH_PEER_PUBLIC_KEY = "peer-public-key";
+const FRESH_PEER_FINGERPRINT = core.fingerprintPublicKey(FRESH_PEER_PUBLIC_KEY);
+const REKEYED_PEER_PUBLIC_KEY = "peer-rekeyed-public-key";
+const REKEYED_PEER_FINGERPRINT = core.fingerprintPublicKey(REKEYED_PEER_PUBLIC_KEY);
+
 function insertTestMemory(
 	store: MemoryStore,
 	options: {
@@ -3252,7 +3257,24 @@ describe("viewer-server", () => {
 				expect(res.status).toBe(401);
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body.error).toBe("unauthorized");
+				expect(body.reason).toBeUndefined();
 			} finally {
+				cleanup();
+			}
+		});
+
+		it("exposes sync auth failure reasons only when diagnostics are explicitly enabled", async () => {
+			const previous = process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS;
+			process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS = "1";
+			const { syncApp, cleanup } = createTestApp();
+			try {
+				const res = await syncApp.request("/v1/status");
+				expect(res.status).toBe(401);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).toMatchObject({ error: "unauthorized", reason: "bootstrap_grant_invalid" });
+			} finally {
+				if (previous === undefined) delete process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS;
+				else process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS = previous;
 				cleanup();
 			}
 		});
@@ -5154,7 +5176,7 @@ describe("viewer-server", () => {
 				expect(body.device_id).toBeTruthy();
 				expect(body.fingerprint).toBeTruthy();
 				expect(body.public_key).toBeTruthy();
-				expect(body.addresses).toEqual(["127.0.0.1:7337"]);
+				expect(body.addresses).toEqual(["http://127.0.0.1:7337"]);
 			} finally {
 				cleanup();
 				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
@@ -5667,8 +5689,8 @@ describe("viewer-server", () => {
 								{
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
-									fingerprint: "fp-fresh",
-									public_key: "peer-public-key",
+									fingerprint: FRESH_PEER_FINGERPRINT,
+									public_key: FRESH_PEER_PUBLIC_KEY,
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
 									expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -5762,8 +5784,8 @@ describe("viewer-server", () => {
 								{
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
-									fingerprint: "fp-fresh",
-									public_key: "peer-public-key",
+									fingerprint: FRESH_PEER_FINGERPRINT,
+									public_key: FRESH_PEER_PUBLIC_KEY,
 									groups: ["team-a"],
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
@@ -5961,8 +5983,8 @@ describe("viewer-server", () => {
 								{
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
-									fingerprint: "fp-fresh",
-									public_key: "peer-public-key",
+									fingerprint: FRESH_PEER_FINGERPRINT,
+									public_key: FRESH_PEER_PUBLIC_KEY,
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
 									expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -6020,7 +6042,9 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/peers/accept-discovered", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ peer_device_id: "peer-fresh", fingerprint: "fp-fresh" }),
+					body: JSON.stringify({
+						peer_device_id: "peer-fresh",
+					}),
 				});
 				expect(res.status).toBe(200);
 				expect(await res.json()).toEqual({
@@ -6040,14 +6064,93 @@ describe("viewer-server", () => {
 					expect.objectContaining({
 						peer_device_id: "peer-fresh",
 						name: "Fresh Device",
-						pinned_fingerprint: "fp-fresh",
-						public_key: "peer-public-key",
+						pinned_fingerprint: FRESH_PEER_FINGERPRINT,
+						public_key: FRESH_PEER_PUBLIC_KEY,
 						last_error: null,
 					}),
 				);
 				expect(JSON.parse(String(peerRow?.addresses_json ?? "[]"))).toEqual([
 					"http://10.0.0.5:7337",
 				]);
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			}
+		});
+
+		it("rejects stale discovered coordinator devices before publishing reciprocal approval", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/peers")) {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-fresh",
+									display_name: "Stale Device",
+									fingerprint: FRESH_PEER_FINGERPRINT,
+									public_key: FRESH_PEER_PUBLIC_KEY,
+									addresses: ["http://10.0.0.5:7337"],
+									expires_at: new Date(Date.now() - 60_000).toISOString(),
+									stale: true,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_enabled: true,
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "team-a",
+				}),
+			);
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				ensureDeviceIdentity(store.db, { keysDir });
+				const res = await app.request("/api/sync/peers/accept-discovered", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						peer_device_id: "peer-fresh",
+						fingerprint: FRESH_PEER_FINGERPRINT,
+					}),
+				});
+				expect(res.status).toBe(409);
+				expect(await res.json()).toEqual({
+					error: "discovered_peer_stale",
+					detail:
+						"This discovered device's coordinator presence is stale. Wait for it to come online and refresh sync status before trusting it.",
+				});
+				expect(
+					fetchMock.mock.calls.some(([input]) =>
+						String(input).includes("/v1/reciprocal-approvals"),
+					),
+				).toBe(false);
+				expect(
+					store.db
+						.prepare("SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?")
+						.get("peer-fresh"),
+				).toBeUndefined();
 			} finally {
 				cleanup();
 				globalThis.fetch = prevFetch;
@@ -6072,8 +6175,8 @@ describe("viewer-server", () => {
 								{
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
-									fingerprint: "fp-fresh",
-									public_key: "peer-public-key",
+									fingerprint: FRESH_PEER_FINGERPRINT,
+									public_key: FRESH_PEER_PUBLIC_KEY,
 									groups: ["team-a"],
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
@@ -6111,7 +6214,10 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/peers/accept-discovered", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ peer_device_id: "peer-fresh", fingerprint: "fp-fresh" }),
+					body: JSON.stringify({
+						peer_device_id: "peer-fresh",
+						fingerprint: FRESH_PEER_FINGERPRINT,
+					}),
 				});
 				expect(res.status).toBe(502);
 				expect(await res.json()).toEqual({
@@ -6146,8 +6252,8 @@ describe("viewer-server", () => {
 								{
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
-									fingerprint: "fp-fresh",
-									public_key: "peer-public-key",
+									fingerprint: FRESH_PEER_FINGERPRINT,
+									public_key: FRESH_PEER_PUBLIC_KEY,
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
 									expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -6165,8 +6271,8 @@ describe("viewer-server", () => {
 								{
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
-									fingerprint: "fp-fresh",
-									public_key: "peer-public-key",
+									fingerprint: FRESH_PEER_FINGERPRINT,
+									public_key: FRESH_PEER_PUBLIC_KEY,
 									addresses: ["http://10.0.0.6:7337"],
 									last_seen_at: new Date().toISOString(),
 									expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -6200,7 +6306,10 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/peers/accept-discovered", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ peer_device_id: "peer-fresh", fingerprint: "fp-fresh" }),
+					body: JSON.stringify({
+						peer_device_id: "peer-fresh",
+						fingerprint: FRESH_PEER_FINGERPRINT,
+					}),
 				});
 				expect(res.status).toBe(409);
 				expect(await res.json()).toEqual({
@@ -7346,6 +7455,49 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("redacts sync attempt errors unless diagnostics are requested", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						"INSERT INTO sync_attempts(peer_device_id, started_at, finished_at, ok, ops_in, ops_out, error) VALUES (?, ?, ?, 0, 0, 0, ?)",
+					)
+					.run(
+						"peer-1",
+						now,
+						now,
+						"all addresses failed | http://10.0.0.5:7337: unauthorized:fingerprint_mismatch",
+					);
+
+				const redactedRes = await app.request("/api/sync/attempts");
+				expect(redactedRes.status).toBe(200);
+				const redactedBody = (await redactedRes.json()) as {
+					items: Array<{ error: string | null; address: string | null }>;
+					redacted: boolean;
+				};
+				expect(redactedBody.redacted).toBe(true);
+				expect(redactedBody.items[0]?.error).toBe(
+					"sync attempt failed; enable diagnostics for details",
+				);
+				expect(redactedBody.items[0]?.address).toBeNull();
+
+				const diagnosticRes = await app.request("/api/sync/attempts?includeDiagnostics=1");
+				expect(diagnosticRes.status).toBe(200);
+				const diagnosticBody = (await diagnosticRes.json()) as {
+					items: Array<{ error: string | null }>;
+					redacted: boolean;
+				};
+				expect(diagnosticBody.redacted).toBe(false);
+				expect(diagnosticBody.items[0]?.error).toContain("fingerprint_mismatch");
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("creates, renames, and merges actors through viewer routes", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
@@ -7476,8 +7628,8 @@ describe("viewer-server", () => {
 								{
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
-									fingerprint: "fp-fresh",
-									public_key: "peer-public-key",
+									fingerprint: FRESH_PEER_FINGERPRINT,
+									public_key: FRESH_PEER_PUBLIC_KEY,
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
 									expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -7539,7 +7691,7 @@ describe("viewer-server", () => {
 					.run(
 						"peer-fresh",
 						"Old Name",
-						"fp-fresh",
+						FRESH_PEER_FINGERPRINT,
 						JSON.stringify(["http://old.example:7337"]),
 						"offline",
 						new Date().toISOString(),
@@ -7547,7 +7699,10 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/peers/accept-discovered", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ peer_device_id: "peer-fresh", fingerprint: "fp-fresh" }),
+					body: JSON.stringify({
+						peer_device_id: "peer-fresh",
+						fingerprint: FRESH_PEER_FINGERPRINT,
+					}),
 				});
 				expect(res.status).toBe(200);
 				expect(await res.json()).toEqual({
@@ -7566,13 +7721,13 @@ describe("viewer-server", () => {
 				expect(peerRow).toEqual(
 					expect.objectContaining({
 						name: "Fresh Device",
-						pinned_fingerprint: "fp-fresh",
+						pinned_fingerprint: FRESH_PEER_FINGERPRINT,
 						last_error: "offline",
 					}),
 				);
 				expect(JSON.parse(String(peerRow?.addresses_json ?? "[]"))).toEqual([
-					"http://old.example:7337",
 					"http://10.0.0.5:7337",
+					"http://old.example:7337",
 				]);
 			} finally {
 				cleanup();
@@ -7603,8 +7758,8 @@ describe("viewer-server", () => {
 								{
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
-									fingerprint: "fp-fresh",
-									public_key: "peer-public-key",
+									fingerprint: FRESH_PEER_FINGERPRINT,
+									public_key: FRESH_PEER_PUBLIC_KEY,
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
 									expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -7622,8 +7777,8 @@ describe("viewer-server", () => {
 								{
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
-									fingerprint: "fp-fresh",
-									public_key: "peer-public-key",
+									fingerprint: FRESH_PEER_FINGERPRINT,
+									public_key: FRESH_PEER_PUBLIC_KEY,
 									addresses: ["10.0.0.6:7337"],
 									last_seen_at: new Date().toISOString(),
 									expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -7664,7 +7819,7 @@ describe("viewer-server", () => {
 					.run(
 						"peer-fresh",
 						"Old Name",
-						"fp-fresh",
+						FRESH_PEER_FINGERPRINT,
 						JSON.stringify(["http://old.example:7337"]),
 						"all addresses failed",
 						new Date().toISOString(),
@@ -7676,17 +7831,17 @@ describe("viewer-server", () => {
 				const body = (await res.json()) as { peers?: Array<Record<string, unknown>> };
 				const peerPayload = body.peers?.find((peer) => peer.peer_device_id === "peer-fresh");
 				expect(peerPayload?.addresses).toEqual([
-					"http://old.example:7337",
 					"http://10.0.0.5:7337",
 					"http://10.0.0.6:7337",
+					"http://old.example:7337",
 				]);
 				const peerRow = store.db
 					.prepare("SELECT addresses_json, last_error FROM sync_peers WHERE peer_device_id = ?")
 					.get("peer-fresh") as Record<string, unknown> | undefined;
 				expect(JSON.parse(String(peerRow?.addresses_json ?? "[]"))).toEqual([
-					"http://old.example:7337",
 					"http://10.0.0.5:7337",
 					"http://10.0.0.6:7337",
+					"http://old.example:7337",
 				]);
 				expect(peerRow?.last_error).toBe("all addresses failed");
 				expect(
@@ -7719,8 +7874,8 @@ describe("viewer-server", () => {
 								{
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
-									fingerprint: "fp-new",
-									public_key: "peer-public-key",
+									fingerprint: REKEYED_PEER_FINGERPRINT,
+									public_key: REKEYED_PEER_PUBLIC_KEY,
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
 									expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -7759,7 +7914,10 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/peers/accept-discovered", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ peer_device_id: "peer-fresh", fingerprint: "fp-new" }),
+					body: JSON.stringify({
+						peer_device_id: "peer-fresh",
+						fingerprint: REKEYED_PEER_FINGERPRINT,
+					}),
 				});
 				expect(res.status).toBe(409);
 				expect(await res.json()).toEqual({
@@ -7810,7 +7968,10 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/peers/accept-discovered", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ peer_device_id: "peer-fresh", fingerprint: "fp-fresh" }),
+					body: JSON.stringify({
+						peer_device_id: "peer-fresh",
+						fingerprint: FRESH_PEER_FINGERPRINT,
+					}),
 				});
 				expect(res.status).toBe(404);
 				expect(await res.json()).toEqual({
@@ -7838,7 +7999,10 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/peers/accept-discovered", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ peer_device_id: "peer-fresh", fingerprint: "fp-fresh" }),
+					body: JSON.stringify({
+						peer_device_id: "peer-fresh",
+						fingerprint: FRESH_PEER_FINGERPRINT,
+					}),
 				});
 				expect(res.status).toBe(400);
 				expect(await res.json()).toEqual({
@@ -7866,8 +8030,8 @@ describe("viewer-server", () => {
 								{
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
-									fingerprint: "fp-fresh",
-									public_key: "peer-public-key",
+									fingerprint: FRESH_PEER_FINGERPRINT,
+									public_key: FRESH_PEER_PUBLIC_KEY,
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
 									expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -7925,7 +8089,10 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/peers/accept-discovered", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ peer_device_id: "peer-fresh", fingerprint: "fp-fresh" }),
+					body: JSON.stringify({
+						peer_device_id: "peer-fresh",
+						fingerprint: FRESH_PEER_FINGERPRINT,
+					}),
 				});
 				expect(res.status).toBe(200);
 				expect(await res.json()).toEqual(
@@ -7977,7 +8144,10 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/peers/accept-discovered", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ peer_device_id: "peer-fresh", fingerprint: "fp-fresh" }),
+					body: JSON.stringify({
+						peer_device_id: "peer-fresh",
+						fingerprint: FRESH_PEER_FINGERPRINT,
+					}),
 				});
 				expect(res.status).toBe(502);
 				expect(await res.json()).toEqual({
@@ -8422,6 +8592,57 @@ describe("viewer-server", () => {
 				expect(row?.pinned_fingerprint).toBe(peerFingerprint);
 			} finally {
 				cleanup();
+			}
+		});
+
+		it("rejects a device pairing payload that conflicts with an existing trusted fingerprint", async () => {
+			const peerKeysDir = mkdtempSync(join(tmpdir(), "codemem-pair-peer-keys-"));
+			const peerDbDir = mkdtempSync(join(tmpdir(), "codemem-pair-peer-db-"));
+			const peerDbPath = join(peerDbDir, "peer.sqlite");
+			const peerDb = new Database(peerDbPath);
+			initTestSchema(peerDb);
+			const [peerDeviceId, peerFingerprint] = ensureDeviceIdentity(peerDb, {
+				keysDir: peerKeysDir,
+			});
+			const peerPublicKey = loadPublicKey(peerKeysDir) ?? "";
+			peerDb.close();
+			const pairingPayload = {
+				device_id: peerDeviceId,
+				fingerprint: peerFingerprint,
+				public_key: peerPublicKey,
+				addresses: ["http://10.10.10.10:7337"],
+			};
+			const invite = Buffer.from(JSON.stringify(pairingPayload), "utf8").toString("base64");
+
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				store.db
+					.prepare(
+						"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, public_key, addresses_json, created_at) VALUES (?, ?, ?, ?, ?)",
+					)
+					.run(peerDeviceId, "old-fingerprint", "old-public-key", "[]", new Date().toISOString());
+
+				const res = await app.request("/api/sync/invites/import", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ invite }),
+				});
+				expect(res.status).toBe(409);
+				expect(await res.json()).toMatchObject({ error: "peer_conflict" });
+				const row = store.db
+					.prepare("SELECT pinned_fingerprint, public_key FROM sync_peers WHERE peer_device_id = ?")
+					.get(peerDeviceId) as { pinned_fingerprint?: string; public_key?: string } | undefined;
+				expect(row).toMatchObject({
+					pinned_fingerprint: "old-fingerprint",
+					public_key: "old-public-key",
+				});
+			} finally {
+				cleanup();
+				rmSync(peerKeysDir, { recursive: true, force: true });
+				rmSync(peerDbDir, { recursive: true, force: true });
 			}
 		});
 

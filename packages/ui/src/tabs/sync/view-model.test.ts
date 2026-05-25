@@ -659,3 +659,14 @@ describe("deriveSyncViewModel", () => {
 		});
 	});
 });
+
+describe("shouldShowCoordinatorReviewAction", () => {
+	it("allows fresh unpaired discovered devices without a visible fingerprint", () => {
+		expect(
+			shouldShowCoordinatorReviewAction({
+				device: { device_id: "peer-1", stale: false },
+				pairedLocally: false,
+			}),
+		).toBe(true);
+	});
+});

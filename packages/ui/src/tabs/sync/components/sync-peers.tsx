@@ -106,6 +106,7 @@ const DIRECTION_GLYPH: Record<PeerDirection, { glyph: string; label: string } | 
 
 type SyncPeer = PeerLike & {
 	actor_display_name?: string;
+	address_count?: number;
 	addresses?: unknown[];
 	claimed_local_actor?: boolean;
 	claimed_local_actor_scope?: PeerClaimedLocalActorScopeLike | null;
@@ -201,11 +202,16 @@ function SyncPeerCard({
 	const peerAddresses = Array.isArray(peer.addresses)
 		? Array.from(new Set(peer.addresses.filter(Boolean).map((value) => String(value))))
 		: [];
+	const rawHiddenAddressCount = Number(peer.address_count ?? 0);
+	const hiddenAddressCount =
+		Number.isFinite(rawHiddenAddressCount) && rawHiddenAddressCount > 0 ? rawHiddenAddressCount : 0;
 	const addressLine = peerAddresses.length
 		? peerAddresses
 				.map((address) => (isSyncRedactionEnabled() ? redactAddress(address) : address))
 				.join(" · ")
-		: "No addresses";
+		: hiddenAddressCount > 0
+			? `${hiddenAddressCount} ${hiddenAddressCount === 1 ? "address" : "addresses"} hidden`
+			: "No addresses";
 	const assignmentSummary = peer.actor_display_name
 		? `This device belongs to ${peer.claimed_local_actor ? "you" : String(peer.actor_display_name)}.`
 		: "This device is not assigned to anyone yet.";
@@ -325,7 +331,6 @@ function SyncPeerCard({
 	}
 
 	async function sync() {
-		if (!primaryAddress) return;
 		if (pendingScopeReview) {
 			const proceed = await openSyncConfirmDialog({
 				title: `Sync ${displayName} before scope review?`,
@@ -527,8 +532,13 @@ function SyncPeerCard({
 						<button
 							type="button"
 							className="settings-button"
-							disabled={!primaryAddress || syncBusy}
+							disabled={syncBusy}
 							onClick={() => void sync()}
+							title={
+								primaryAddress
+									? undefined
+									: "Address details are hidden; sync will use the server's eligible peer list."
+							}
 						>
 							{syncBusy ? "Syncing…" : "Sync now"}
 						</button>

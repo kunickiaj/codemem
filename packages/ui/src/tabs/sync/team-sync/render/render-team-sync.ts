@@ -285,6 +285,11 @@ export function renderTeamSync() {
 			pairedLocally: Boolean(pairedPeer),
 		});
 		const addresses = Array.isArray(device.addresses) ? device.addresses : [];
+		const rawHiddenAddressCount = Number(device.address_count ?? 0);
+		const hiddenAddressCount =
+			Number.isFinite(rawHiddenAddressCount) && rawHiddenAddressCount > 0
+				? rawHiddenAddressCount
+				: 0;
 		const addressLabel = addresses.length
 			? addresses
 					.map((address) =>
@@ -292,7 +297,9 @@ export function renderTeamSync() {
 					)
 					.filter(Boolean)
 					.join(" · ")
-			: "No fresh addresses";
+			: hiddenAddressCount > 0
+				? `${hiddenAddressCount} ${device.stale ? "last-known" : "fresh"} ${hiddenAddressCount === 1 ? "address" : "addresses"} hidden`
+				: "No fresh addresses";
 		const noteParts = [addressLabel];
 		if (!addresses.length && displayTitle) noteParts.push(`device id: ${deviceId}`);
 		let actionMessage: string | null = null;

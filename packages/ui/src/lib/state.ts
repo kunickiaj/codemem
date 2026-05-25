@@ -133,6 +133,7 @@ export interface DiscoveredDevice {
 	fingerprint?: string;
 	groups?: string[];
 	stale?: boolean;
+	address_count?: number;
 	addresses?: string[];
 	needs_local_approval?: boolean;
 	waiting_for_peer_approval?: boolean;
