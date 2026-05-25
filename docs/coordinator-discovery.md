@@ -187,6 +187,10 @@ not accumulate as mixed `host:port` and `http://host:port` variants in local pee
 - enrollment is explicit per device/group
 - there is no username/password or codemem-operated account layer in this model
 
+For local debugging only, `CODEMEM_SYNC_AUTH_DIAGNOSTICS=1` makes direct sync `401` responses include the auth failure
+reason, such as `unknown_peer`, `peer_record_incomplete`, `fingerprint_mismatch`, or `invalid_signature`. Do not enable
+this on publicly reachable sync listeners; it is intended for trusted development or private Tailnet troubleshooting.
+
 ## Remote admin flow
 
 Built-in local coordinator management commands operate directly on the local SQLite store.

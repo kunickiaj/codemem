@@ -7,6 +7,7 @@ import { columnExists } from "./db.js";
 import {
 	getSyncDaemonPhase,
 	refreshCoordinatorPresenceForDaemon,
+	resolveSyncDaemonKeysDir,
 	runTickOnce,
 	setSyncDaemonError,
 	setSyncDaemonOk,
@@ -15,6 +16,16 @@ import {
 } from "./sync-daemon.js";
 
 import { initTestSchema } from "./test-utils.js";
+
+const ORIGINAL_KEYS_DIR = process.env.CODEMEM_KEYS_DIR;
+
+afterEach(() => {
+	if (ORIGINAL_KEYS_DIR === undefined) {
+		delete process.env.CODEMEM_KEYS_DIR;
+	} else {
+		process.env.CODEMEM_KEYS_DIR = ORIGINAL_KEYS_DIR;
+	}
+});
 
 vi.mock("./coordinator-runtime.js", () => ({
 	coordinatorEnabled: vi.fn().mockReturnValue(false),
@@ -122,6 +133,27 @@ describe("syncDaemonTick", () => {
 		expect(runSyncPass).toHaveBeenCalledWith(db, "peer-2", expect.anything());
 	});
 
+	it("skips only the matching stale pinned coordinator identity", async () => {
+		const { runSyncPass, shouldSkipOfflinePeer } = await import("./sync-pass.js");
+		vi.mocked(shouldSkipOfflinePeer).mockReturnValue(false);
+		const now = new Date().toISOString();
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-1", "old-fp", now);
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-2", "fp2", now);
+
+		const results = await syncDaemonTick(db, undefined, new Set(["peer-1:old-fp"]));
+
+		expect(results).toHaveLength(2);
+		expect(results[0].skipped).toBe(true);
+		expect(results[0].reason).toContain("coordinator presence expired");
+		expect(results[1].ok).toBe(true);
+		expect(runSyncPass).toHaveBeenCalledTimes(1);
+		expect(runSyncPass).toHaveBeenCalledWith(db, "peer-2", expect.anything());
+	});
+
 	it("syncs all peers when stalePeers set is empty", async () => {
 		const { runSyncPass, shouldSkipOfflinePeer } = await import("./sync-pass.js");
 		vi.mocked(shouldSkipOfflinePeer).mockReturnValue(false);
@@ -179,6 +211,18 @@ describe("syncDaemonTick", () => {
 			"peer-1",
 			expect.objectContaining({ scanner: fakeScanner }),
 		);
+	});
+});
+
+describe("resolveSyncDaemonKeysDir", () => {
+	it("falls back to CODEMEM_KEYS_DIR when the caller omits keysDir", () => {
+		process.env.CODEMEM_KEYS_DIR = "/container/keys";
+		expect(resolveSyncDaemonKeysDir()).toBe("/container/keys");
+	});
+
+	it("prefers the explicit daemon keysDir over CODEMEM_KEYS_DIR", () => {
+		process.env.CODEMEM_KEYS_DIR = "/container/keys";
+		expect(resolveSyncDaemonKeysDir("/explicit/keys")).toBe("/explicit/keys");
 	});
 });
 
@@ -260,6 +304,31 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 
 			await runTickOnce(dbPath);
 			expect(syncPassPreflight).toHaveBeenCalledTimes(1);
+		} finally {
+			fileDb.close();
+			rmSync(dbPath, { force: true });
+		}
+	});
+
+	it("threads CODEMEM_KEYS_DIR through one-off ticks when keysDir is omitted", async () => {
+		const { runSyncPass } = await import("./sync-pass.js");
+		process.env.CODEMEM_KEYS_DIR = "/container/keys";
+		const dbPath = join(tmpdir(), `codemem-sync-daemon-env-keys-${Date.now()}.sqlite`);
+		const fileDb = new Database(dbPath);
+		try {
+			initTestSchema(fileDb);
+			fileDb
+				.prepare(
+					"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+				)
+				.run("peer-1", "fp1", new Date().toISOString());
+
+			await runTickOnce(dbPath);
+			expect(runSyncPass).toHaveBeenCalledWith(
+				expect.any(Database),
+				"peer-1",
+				expect.objectContaining({ keysDir: "/container/keys" }),
+			);
 		} finally {
 			fileDb.close();
 			rmSync(dbPath, { force: true });

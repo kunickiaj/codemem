@@ -7676,17 +7676,17 @@ describe("viewer-server", () => {
 				const body = (await res.json()) as { peers?: Array<Record<string, unknown>> };
 				const peerPayload = body.peers?.find((peer) => peer.peer_device_id === "peer-fresh");
 				expect(peerPayload?.addresses).toEqual([
-					"http://old.example:7337",
 					"http://10.0.0.5:7337",
 					"http://10.0.0.6:7337",
+					"http://old.example:7337",
 				]);
 				const peerRow = store.db
 					.prepare("SELECT addresses_json, last_error FROM sync_peers WHERE peer_device_id = ?")
 					.get("peer-fresh") as Record<string, unknown> | undefined;
 				expect(JSON.parse(String(peerRow?.addresses_json ?? "[]"))).toEqual([
-					"http://old.example:7337",
 					"http://10.0.0.5:7337",
 					"http://10.0.0.6:7337",
+					"http://old.example:7337",
 				]);
 				expect(peerRow?.last_error).toBe("all addresses failed");
 				expect(

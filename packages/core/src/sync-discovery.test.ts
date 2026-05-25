@@ -7,11 +7,13 @@ import {
 	addressDedupeKey,
 	advertiseMdns,
 	discoverPeersViaMdns,
+	formatHostPort,
 	loadPeerAddresses,
 	mdnsAddressesForPeer,
 	mdnsEnabled,
 	mergeAddresses,
 	normalizeAddress,
+	normalizeMdnsTxtProperties,
 	recordPeerSuccess,
 	recordSyncAttempt,
 	selectDialAddresses,
@@ -58,6 +60,34 @@ describe("normalizeAddress", () => {
 	it("handles http:// prefix without port", () => {
 		expect(normalizeAddress("http://example.com")).toBe("http://example.com");
 	});
+
+	it("can infer the configured sync port for http advertised hosts", () => {
+		expect(normalizeAddress("nas.example.test", { defaultHttpPort: 7337 })).toBe(
+			"http://nas.example.test:7337",
+		);
+		expect(normalizeAddress("http://nas.example.test", { defaultHttpPort: 7337 })).toBe(
+			"http://nas.example.test:7337",
+		);
+	});
+
+	it("does not infer the sync port over an explicit default http port", () => {
+		expect(normalizeAddress("http://nas.example.test:80", { defaultHttpPort: 7337 })).toBe(
+			"http://nas.example.test",
+		);
+		expect(normalizeAddress("http://nas.example.test:080", { defaultHttpPort: 7337 })).toBe(
+			"http://nas.example.test",
+		);
+		expect(normalizeAddress("nas.example.test:80", { defaultHttpPort: 7337 })).toBe(
+			"http://nas.example.test",
+		);
+	});
+});
+
+describe("formatHostPort", () => {
+	it("brackets IPv6 literals before appending the port", () => {
+		expect(formatHostPort("fd00::1", 7337)).toBe("[fd00::1]:7337");
+		expect(normalizeAddress(formatHostPort("fd00::1", 7337))).toBe("http://[fd00::1]:7337");
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -65,8 +95,8 @@ describe("normalizeAddress", () => {
 // ---------------------------------------------------------------------------
 
 describe("addressDedupeKey", () => {
-	it("strips http scheme for host:port", () => {
-		expect(addressDedupeKey("http://192.168.1.1:9090")).toBe("192.168.1.1:9090");
+	it("keeps scheme for host:port", () => {
+		expect(addressDedupeKey("http://192.168.1.1:9090")).toBe("http://192.168.1.1:9090/");
 	});
 
 	it("returns as-is for non-URL input", () => {
@@ -77,11 +107,10 @@ describe("addressDedupeKey", () => {
 		expect(addressDedupeKey("")).toBe("");
 	});
 
-	it("returns full URL for addresses with paths", () => {
-		// Port 80 is default for http, so dedup key is just the host
-		expect(addressDedupeKey("http://host:80/path")).toBe("host");
-		// Non-default port preserves host:port
-		expect(addressDedupeKey("http://host:8080/path")).toBe("host:8080");
+	it("keeps scheme and path in the dedupe key", () => {
+		expect(addressDedupeKey("http://host:80/path")).toBe("http://host/path");
+		expect(addressDedupeKey("http://host:8080/path")).toBe("http://host:8080/path");
+		expect(addressDedupeKey("https://host:8080/path")).toBe("https://host:8080/path");
 	});
 });
 
@@ -170,6 +199,39 @@ describe("peer address storage", () => {
 		updatePeerAddresses(db, "peer-1", ["http://host:8080"]);
 		const loaded = loadPeerAddresses(db, "peer-1");
 		expect(loaded).toEqual(["http://host:8080"]);
+	});
+
+	it("fills missing trust material without replacing existing trust by default", () => {
+		updatePeerAddresses(db, "peer-1", ["host:8080"], {
+			pinnedFingerprint: "old-fp",
+			publicKey: "old-key",
+		});
+		updatePeerAddresses(db, "peer-1", ["host:8080"], {
+			pinnedFingerprint: "new-fp",
+			publicKey: "new-key",
+		});
+
+		const row = db
+			.prepare("SELECT pinned_fingerprint, public_key FROM sync_peers WHERE peer_device_id = ?")
+			.get("peer-1") as { pinned_fingerprint: string; public_key: string };
+		expect(row).toMatchObject({ pinned_fingerprint: "old-fp", public_key: "old-key" });
+	});
+
+	it("replaces stale trust material when accepting a fresh pairing payload", () => {
+		updatePeerAddresses(db, "peer-1", ["host:8080"], {
+			pinnedFingerprint: "old-fp",
+			publicKey: "old-key",
+		});
+		updatePeerAddresses(db, "peer-1", ["host:8080"], {
+			pinnedFingerprint: "new-fp",
+			publicKey: "new-key",
+			replaceTrust: true,
+		});
+
+		const row = db
+			.prepare("SELECT pinned_fingerprint, public_key FROM sync_peers WHERE peer_device_id = ?")
+			.get("peer-1") as { pinned_fingerprint: string; public_key: string };
+		expect(row).toMatchObject({ pinned_fingerprint: "new-fp", public_key: "new-key" });
 	});
 });
 
@@ -329,7 +391,7 @@ describe("mdnsAddressesForPeer", () => {
 			},
 		];
 		const addresses = mdnsAddressesForPeer("peer-1", entries);
-		expect(addresses).toEqual(["peer-host.local:9090"]);
+		expect(addresses).toEqual(["http://peer-host.local:9090"]);
 	});
 
 	it("returns empty for no matching peer", () => {
@@ -356,7 +418,28 @@ describe("mdnsAddressesForPeer", () => {
 				properties: { device_id: new TextEncoder().encode("peer-1") },
 			},
 		];
-		expect(mdnsAddressesForPeer("peer-1", entries)).toEqual(["host.local:9090"]);
+		expect(mdnsAddressesForPeer("peer-1", entries)).toEqual(["http://host.local:9090"]);
+	});
+
+	it("brackets IPv6 resolved addresses", () => {
+		const entries = [
+			{
+				host: "peer-host.local",
+				address: "fd00::1",
+				port: 9090,
+				properties: { device_id: "peer-1" },
+			},
+		];
+		expect(mdnsAddressesForPeer("peer-1", entries)).toEqual(["http://[fd00::1]:9090"]);
+	});
+
+	it("preserves binary TXT device IDs for matching", () => {
+		const deviceId = new TextEncoder().encode("peer-1");
+		const properties = normalizeMdnsTxtProperties({ device_id: deviceId });
+		expect(properties.device_id).toBe(deviceId);
+		expect(
+			mdnsAddressesForPeer("peer-1", [{ host: "host.local", port: 9090, properties }]),
+		).toEqual(["http://host.local:9090"]);
 	});
 });
 

@@ -8,7 +8,7 @@
 import { createRequire } from "node:module";
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { mergeAddresses, normalizeAddress } from "./address-utils.js";
+import { formatHostPort, mergeAddresses, normalizeAddress } from "./address-utils.js";
 import { readCoordinatorSyncConfig } from "./coordinator-runtime.js";
 import type { Database } from "./db.js";
 import * as schema from "./schema.js";
@@ -16,7 +16,12 @@ import * as schema from "./schema.js";
 const requireFromHere = createRequire(import.meta.url);
 
 // Re-export for consumers that import from sync-discovery
-export { addressDedupeKey, mergeAddresses, normalizeAddress } from "./address-utils.js";
+export {
+	addressDedupeKey,
+	formatHostPort,
+	mergeAddresses,
+	normalizeAddress,
+} from "./address-utils.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -78,6 +83,7 @@ export function updatePeerAddresses(
 		name?: string;
 		pinnedFingerprint?: string;
 		publicKey?: string;
+		replaceTrust?: boolean;
 	},
 ): string[] {
 	const merged = mergeAddresses(loadPeerAddresses(db, peerDeviceId), addresses);
@@ -100,8 +106,12 @@ export function updatePeerAddresses(
 			target: schema.syncPeers.peer_device_id,
 			set: {
 				name: sql`COALESCE(excluded.name, ${schema.syncPeers.name})`,
-				pinned_fingerprint: sql`COALESCE(excluded.pinned_fingerprint, ${schema.syncPeers.pinned_fingerprint})`,
-				public_key: sql`COALESCE(excluded.public_key, ${schema.syncPeers.public_key})`,
+				pinned_fingerprint: options?.replaceTrust
+					? sql`COALESCE(excluded.pinned_fingerprint, ${schema.syncPeers.pinned_fingerprint})`
+					: sql`COALESCE(${schema.syncPeers.pinned_fingerprint}, excluded.pinned_fingerprint)`,
+				public_key: options?.replaceTrust
+					? sql`COALESCE(excluded.public_key, ${schema.syncPeers.public_key})`
+					: sql`COALESCE(${schema.syncPeers.public_key}, excluded.public_key)`,
 				addresses_json: sql`excluded.addresses_json`,
 				last_seen_at: sql`excluded.last_seen_at`,
 			},
@@ -231,6 +241,16 @@ export interface MdnsEntry {
 	port?: number;
 	address?: Uint8Array | string;
 	properties?: Record<string, string | Uint8Array>;
+}
+
+export function normalizeMdnsTxtProperties(
+	txt: Record<string, unknown>,
+): Record<string, string | Uint8Array> {
+	const properties: Record<string, string | Uint8Array> = {};
+	for (const [key, value] of Object.entries(txt)) {
+		properties[key] = value instanceof Uint8Array ? value : String(value);
+	}
+	return properties;
 }
 
 const MDNS_SERVICE_TYPE = "codemem"; // advertises as _codemem._tcp.local.
@@ -416,18 +436,16 @@ export async function discoverPeersViaMdns(timeoutMs = 1500): Promise<MdnsEntry[
 			if (seen.has(key)) return;
 			seen.add(key);
 			const addresses = Array.isArray(svc.addresses) ? svc.addresses : [];
-			const ipv4 = addresses.find((addr) => addr && /^[\d.]+$/.test(addr));
-			const properties: Record<string, string> = {};
+			const resolvedAddress =
+				addresses.find((addr) => addr && /^[\d.]+$/.test(addr)) ??
+				addresses.find((addr) => typeof addr === "string" && addr.trim().length > 0);
 			const rawTxt = svc.txt ?? {};
-			for (const [key, value] of Object.entries(rawTxt)) {
-				properties[key] = String(value);
-			}
 			found.push({
 				name: svc.name,
 				host: (svc.host || svc.fqdn || "").replace(/\.$/, ""),
 				port: svc.port,
-				address: ipv4,
-				properties,
+				address: resolvedAddress,
+				properties: normalizeMdnsTxtProperties(rawTxt),
 			});
 		});
 		await new Promise<void>((resolve) => setTimeout(resolve, Math.max(100, timeoutMs)));
@@ -469,7 +487,8 @@ export function mdnsAddressesForPeer(peerDeviceId: string, entries: MdnsEntry[])
 		const host = entry.host ?? "";
 		const dialHost = address && !address.includes(".local") ? address : host;
 		if (dialHost && !dialHost.includes("_tcp.local") && !dialHost.includes("_udp.local")) {
-			addresses.push(`${dialHost}:${port}`);
+			const normalized = normalizeAddress(formatHostPort(dialHost, port));
+			if (normalized) addresses.push(normalized);
 		}
 	}
 	return addresses;
