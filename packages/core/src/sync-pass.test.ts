@@ -529,6 +529,151 @@ describe("syncOnce", () => {
 		expect(result.perScopeResults?.[0]?.error).toContain("snapshot fetch failed");
 	});
 
+	it("replicates a multi-Space corpus from a scoped peer to a fresh receiver (ruu6.7)", async () => {
+		// End-to-end regression test for codemem-ruu6: the receiver pairs with
+		// a scoped peer that advertises multiple Spaces; after one sync pass
+		// the receiver must hold each Space's items routed to the correct
+		// scope_id, with independent per-scope cursors. This is the automated
+		// version of the dogfood validation in the bead — manual verification
+		// against a 10k+ row corpus is documented in
+		// docs/plans/2026-05-25-scoped-sync-protocol.md.
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-multi", "fp-multi", new Date().toISOString());
+		// Seed cursor so we exercise the incremental + scoped branch rather
+		// than the auto-bootstrap branch (which is covered by the earlier
+		// scoped-bootstrap test).
+		db.prepare(
+			"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+		).run("peer-multi", "2025-12-31T00:00:00Z|local-op-0", null, new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		grantScopeForSyncPass(db, "acme-work", ["peer-multi", "local-device-id"]);
+		grantScopeForSyncPass(db, "oss-projects", ["peer-multi", "local-device-id"]);
+
+		const scopes = ["acme-work", "oss-projects"] as const;
+		const itemsPerScope = 3;
+
+		const statusResponse = {
+			fingerprint: "fp-multi",
+			protocol_version: "2",
+			sync_capability: "scoped",
+			sync_reset: {
+				generation: 1,
+				snapshot_id: "snap-default",
+				baseline_cursor: null,
+				retained_floor_cursor: null,
+			},
+			authorized_scopes: scopes.map((scope_id) => ({
+				scope_id,
+				label: scope_id,
+				authority_type: "coordinator",
+				membership_epoch: 1,
+				sync_reset: {
+					scope_id,
+					generation: 1,
+					snapshot_id: `snap-${scope_id}`,
+					// Non-null baseline so the per-scope cursor write inside
+					// applyBootstrapSnapshot exercises the assertion below.
+					baseline_cursor: `2026-01-01T00:00:00Z|baseline-${scope_id}`,
+					retained_floor_cursor: null,
+				},
+			})),
+		};
+		const defaultOpsResponse = {
+			reset_required: false,
+			generation: 1,
+			snapshot_id: "snap-default",
+			baseline_cursor: null,
+			retained_floor_cursor: null,
+			ops: [],
+			next_cursor: null,
+			skipped: 0,
+		};
+
+		const scopedSnapshots = scopes.map((scope_id) => ({
+			scope_id,
+			generation: 1,
+			snapshot_id: `snap-${scope_id}`,
+			baseline_cursor: `2026-01-01T00:00:00Z|baseline-${scope_id}`,
+			retained_floor_cursor: null,
+			sync_capability: "scoped",
+			items: Array.from({ length: itemsPerScope }, (_, i) => ({
+				entity_id: `key:${scope_id}-${i + 1}`,
+				op_type: "upsert",
+				payload_json: JSON.stringify({
+					kind: "discovery",
+					title: `${scope_id} item ${i + 1}`,
+					body_text: `Body for ${scope_id} #${i + 1}`,
+					active: 1,
+					created_at: "2026-01-01T00:00:00Z",
+					updated_at: "2026-01-01T00:00:00Z",
+					scope_id,
+					visibility: "shared",
+				}),
+				clock_rev: 1,
+				clock_updated_at: "2026-01-01T00:00:00Z",
+				clock_device_id: "peer-multi",
+			})),
+			next_page_token: null,
+			has_more: false,
+		}));
+
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([200, statusResponse])
+			.mockResolvedValueOnce([200, defaultOpsResponse])
+			.mockResolvedValueOnce([200, scopedSnapshots[0]])
+			.mockResolvedValueOnce([200, scopedSnapshots[1]]);
+
+		const result = await syncOnce(db, "peer-multi", ["http://127.0.0.1:9090"]);
+
+		if (!result.ok) {
+			throw new Error(`syncOnce failed: ${result.error ?? "unknown error"}`);
+		}
+		expect(result.ok).toBe(true);
+		// Top-level opsIn aggregates both Spaces' bootstrapped items.
+		expect(result.opsIn).toBe(itemsPerScope * scopes.length);
+		expect(result.perScopeResults).toHaveLength(scopes.length);
+		for (let idx = 0; idx < scopes.length; idx += 1) {
+			expect(result.perScopeResults?.[idx]).toMatchObject({
+				scope_id: scopes[idx],
+				ok: true,
+				opsIn: itemsPerScope,
+				bootstrapped: true,
+			});
+		}
+
+		// Per-scope DB inspection: each Space's items must land with the
+		// correct scope_id, with no cross-pollination between scopes.
+		for (const scope_id of scopes) {
+			const rows = db
+				.prepare(
+					"SELECT import_key, scope_id, title FROM memory_items WHERE scope_id = ? ORDER BY import_key",
+				)
+				.all(scope_id) as Array<{ import_key: string; scope_id: string; title: string }>;
+			expect(rows).toHaveLength(itemsPerScope);
+			for (const row of rows) {
+				expect(row.scope_id).toBe(scope_id);
+				expect(row.import_key.startsWith(`key:${scope_id}-`)).toBe(true);
+			}
+		}
+
+		// Per-scope cursors are advanced independently to each Space's
+		// baseline. The default-scope cursor stays at its pre-sync value
+		// because no default-scope ops were returned.
+		for (const scope_id of scopes) {
+			const [lastApplied] = syncReplication.getReplicationCursor(db, "peer-multi", scope_id);
+			expect(lastApplied).not.toBeNull();
+		}
+		expect(syncReplication.getReplicationCursor(db, "peer-multi")).toEqual([
+			"2025-12-31T00:00:00Z|local-op-0",
+			null,
+		]);
+	});
+
 	it("keeps default-scope and per-scope cursors independent after scoped incremental sync", async () => {
 		// Seeds an incremental scoped pass and asserts the per-scope cursor is
 		// advanced via `replication_cursors_v2(peer, scope_id)` while the
