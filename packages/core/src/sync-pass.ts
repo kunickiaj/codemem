@@ -28,6 +28,7 @@ import {
 	applyReplicationOps,
 	backfillReplicationOps,
 	chunkOpsBySize,
+	clearReplicationCursorLastApplied,
 	extractReplicationOps,
 	type FilterReplicationSkipped,
 	filterReplicationOpsForSyncWithStatus,
@@ -653,11 +654,12 @@ async function syncOneScope(
 		const [status, payload] = await requestJson("GET", url, { headers });
 
 		if (status === 409 && payload?.reset_required === true) {
-			// Per-scope reset requested. Report it; the next pass will pick a
-			// fresh bootstrap path because the cursor will be cleared by the
-			// reset boundary. We deliberately do not auto-bootstrap from here
+			// Per-scope reset requested. Clear the stale scoped cursor so the
+			// next pass picks a fresh bootstrap path instead of replaying the
+			// same invalid boundary forever. We deliberately do not auto-bootstrap from here
 			// to avoid surprising state changes mid-loop; the default-scope
 			// auto-bootstrap path remains the canonical recovery mechanism.
+			clearReplicationCursorLastApplied(db, peerDeviceId, scopeId);
 			const reason = ((): SyncResetRequired["reason"] => {
 				switch (payload.reason) {
 					case "generation_mismatch":

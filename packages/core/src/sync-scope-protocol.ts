@@ -51,8 +51,9 @@ export interface SyncResetBoundaryShape {
  * responses anyway.
  *
  * Scoped callers (`negotiatedCapability === "scoped"`) may pass a scope_id.
- * The server verifies the calling peer is an active, current-epoch member of
- * the requested scope before accepting. Failed authorization maps to wire
+ * The server verifies both the local device and the calling peer are active,
+ * current-epoch members of the requested scope before accepting. Failed
+ * authorization maps to wire
  * reasons that the client can act on:
  * - `missing_scope`: scope unknown, inactive, or caller is not a member.
  * - `stale_epoch`: caller membership exists but epoch is behind authority.
@@ -66,6 +67,7 @@ export function parseSyncScopeRequest(
 	provided: boolean,
 	context?: {
 		db?: Database;
+		localDeviceId?: string | null;
 		negotiatedCapability?: SyncCapability;
 		peerDeviceId?: string | null;
 	},
@@ -88,11 +90,21 @@ export function parseSyncScopeRequest(
 	}
 
 	const db = context.db;
+	const localDeviceId = context.localDeviceId?.trim();
 	const peerDeviceId = context.peerDeviceId?.trim();
-	if (!db || !peerDeviceId) {
+	if (!db || !localDeviceId || !peerDeviceId) {
 		// Caller advertised scoped capability but the route did not thread
 		// the authentication context through. Fail closed.
 		return { ok: false, reason: "missing_scope" };
+	}
+
+	const localAuthorization = getCachedScopeAuthorization(db, {
+		deviceId: localDeviceId,
+		scopeId,
+	});
+	const localErrorReason = scopeAuthorizationFailureReason(localAuthorization);
+	if (localErrorReason) {
+		return { ok: false, reason: localErrorReason };
 	}
 
 	const authorization = getCachedScopeAuthorization(db, {
@@ -122,8 +134,6 @@ export function scopeAuthorizationFailureReason(
 		case "revoked":
 		case "scope_inactive":
 			return "scope_inactive";
-		case "scope_unknown":
-		case "not_authorized":
 		default:
 			return "missing_scope";
 	}

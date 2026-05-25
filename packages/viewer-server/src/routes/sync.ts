@@ -2167,18 +2167,20 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		try {
 			const rawScopeId = c.req.query(SYNC_SCOPE_QUERY_PARAM);
 			const negotiated = negotiatedSyncCapability(c);
+			const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 			const scopeRequest = parseSyncScopeRequest(rawScopeId, rawScopeId !== undefined, {
 				db: store.db,
+				localDeviceId,
 				negotiatedCapability: negotiated,
 				peerDeviceId,
 			});
 			if (!scopeRequest.ok) {
 				return c.json(
 					syncScopeResetRequiredPayload(
-						getSyncResetState(store.db, rawScopeId ?? undefined),
+						getSyncResetState(store.db),
 						scopeRequest.reason,
 						LOCAL_SYNC_CAPABILITY,
-						rawScopeId?.trim() || null,
+						null,
 					),
 					409,
 				);
@@ -2193,7 +2195,6 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			const snapshotId = c.req.query("snapshot_id") ?? null;
 			const baselineCursor = c.req.query("baseline_cursor") ?? null;
 			const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 1000)) : 200;
-			const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 			const result = loadReplicationOpsForPeer(store.db, {
 				since,
 				limit,
@@ -2279,18 +2280,20 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			try {
 				const rawScopeId = c.req.query(SYNC_SCOPE_QUERY_PARAM);
 				const negotiated = negotiatedSyncCapability(c);
+				const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 				const scopeRequest = parseSyncScopeRequest(rawScopeId, rawScopeId !== undefined, {
 					db: store.db,
+					localDeviceId,
 					negotiatedCapability: negotiated,
 					peerDeviceId: auth.deviceId,
 				});
 				if (!scopeRequest.ok) {
 					return c.json(
 						syncScopeResetRequiredPayload(
-							getSyncResetState(store.db, rawScopeId ?? undefined),
+							getSyncResetState(store.db),
 							scopeRequest.reason,
 							LOCAL_SYNC_CAPABILITY,
-							rawScopeId?.trim() || null,
+							null,
 						),
 						409,
 					);
@@ -2379,19 +2382,20 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			LOCAL_SYNC_CAPABILITY,
 			normalizeSyncCapability(body.sync_capability),
 		);
-		const rawBodyScopeId = typeof body.scope_id === "string" ? body.scope_id : undefined;
+		const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 		const scopeRequest = parseSyncScopeRequest(body.scope_id, Object.hasOwn(body, "scope_id"), {
 			db: store.db,
+			localDeviceId,
 			negotiatedCapability: negotiated,
 			peerDeviceId,
 		});
 		if (!scopeRequest.ok) {
 			return c.json(
 				syncScopeResetRequiredPayload(
-					getSyncResetState(store.db, rawBodyScopeId),
+					getSyncResetState(store.db),
 					scopeRequest.reason,
 					LOCAL_SYNC_CAPABILITY,
-					rawBodyScopeId?.trim() || null,
+					null,
 				),
 				409,
 			);
@@ -2416,7 +2420,6 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				);
 			}
 		}
-		const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 		// Inbound POSTs still use legacy visibility/project filters, but must not run
 		// the outbound scope gate. Unsupported peers deliberately bypass strict inbound
 		// scope rejection during rollout, so outbound filtering would silently drop data.

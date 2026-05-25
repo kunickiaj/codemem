@@ -153,7 +153,8 @@ function isTrustFailureError(error: string): boolean {
  * - `403: scope_rejected` from POST /v1/ops outbound scope filter.
  * - `409: reset_required` with `reason=missing_scope` or `stale_epoch`
  *   from GET /v1/ops or GET /v1/snapshot.
- * - syncOneScope's `scoped sync incomplete: ...` aggregate string.
+ * - syncOneScope's aggregate string only when it includes one of those wire
+ *   reasons. Other scoped-sync failures remain generic sync failures.
  *
  * Detection is intentionally substring-based because the wire reason can
  * arrive embedded in a longer error string from the address-fallback loop.
@@ -164,7 +165,6 @@ function isScopeMembershipFailureError(error: string): boolean {
 	if (lower.includes("missing_scope")) return true;
 	if (lower.includes("stale_epoch")) return true;
 	if (lower.includes("scope_inactive")) return true;
-	if (lower.includes("scoped sync incomplete")) return true;
 	return false;
 }
 

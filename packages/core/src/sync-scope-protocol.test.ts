@@ -146,6 +146,7 @@ describe("parseSyncScopeRequest scoped path", () => {
 		grantMembership(SCOPE_ID, PEER_DEVICE);
 		const result = parseSyncScopeRequest(SCOPE_ID, true, {
 			db,
+			localDeviceId: LOCAL_DEVICE,
 			negotiatedCapability: "scoped",
 			peerDeviceId: PEER_DEVICE,
 		});
@@ -155,6 +156,7 @@ describe("parseSyncScopeRequest scoped path", () => {
 	it("rejects with missing_scope when the scope does not exist", () => {
 		const result = parseSyncScopeRequest("does-not-exist", true, {
 			db,
+			localDeviceId: LOCAL_DEVICE,
 			negotiatedCapability: "scoped",
 			peerDeviceId: PEER_DEVICE,
 		});
@@ -167,6 +169,20 @@ describe("parseSyncScopeRequest scoped path", () => {
 		// Peer not granted.
 		const result = parseSyncScopeRequest(SCOPE_ID, true, {
 			db,
+			localDeviceId: LOCAL_DEVICE,
+			negotiatedCapability: "scoped",
+			peerDeviceId: PEER_DEVICE,
+		});
+		expect(result).toEqual({ ok: false, reason: "missing_scope" });
+	});
+
+	it("rejects with missing_scope when local device is not a member", () => {
+		insertScope(SCOPE_ID);
+		grantMembership(SCOPE_ID, PEER_DEVICE);
+		// Local device not granted; peer membership alone is not enough.
+		const result = parseSyncScopeRequest(SCOPE_ID, true, {
+			db,
+			localDeviceId: LOCAL_DEVICE,
 			negotiatedCapability: "scoped",
 			peerDeviceId: PEER_DEVICE,
 		});
@@ -179,6 +195,7 @@ describe("parseSyncScopeRequest scoped path", () => {
 		grantMembership(SCOPE_ID, PEER_DEVICE, { membershipEpoch: 3 });
 		const result = parseSyncScopeRequest(SCOPE_ID, true, {
 			db,
+			localDeviceId: LOCAL_DEVICE,
 			negotiatedCapability: "scoped",
 			peerDeviceId: PEER_DEVICE,
 		});
@@ -191,6 +208,7 @@ describe("parseSyncScopeRequest scoped path", () => {
 		grantMembership(SCOPE_ID, PEER_DEVICE, { status: "revoked" });
 		const result = parseSyncScopeRequest(SCOPE_ID, true, {
 			db,
+			localDeviceId: LOCAL_DEVICE,
 			negotiatedCapability: "scoped",
 			peerDeviceId: PEER_DEVICE,
 		});
@@ -203,6 +221,7 @@ describe("parseSyncScopeRequest scoped path", () => {
 		grantMembership(SCOPE_ID, PEER_DEVICE);
 		const result = parseSyncScopeRequest(SCOPE_ID, true, {
 			db,
+			localDeviceId: LOCAL_DEVICE,
 			negotiatedCapability: "aware",
 			peerDeviceId: PEER_DEVICE,
 		});

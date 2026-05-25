@@ -666,7 +666,7 @@ describe("syncOnce", () => {
 		// because no default-scope ops were returned.
 		for (const scope_id of scopes) {
 			const [lastApplied] = syncReplication.getReplicationCursor(db, "peer-multi", scope_id);
-			expect(lastApplied).not.toBeNull();
+			expect(lastApplied).toBe(`2026-01-01T00:00:00Z|baseline-${scope_id}`);
 		}
 		expect(syncReplication.getReplicationCursor(db, "peer-multi")).toEqual([
 			"2025-12-31T00:00:00Z|local-op-0",
@@ -910,6 +910,96 @@ describe("syncOnce", () => {
 		// Per-scope cursor advanced to the scoped next_cursor.
 		expect(syncReplication.getReplicationCursor(db, "peer-cursor", "acme-work")).toEqual([
 			"2026-02-01T00:00:00Z|acme-op-1",
+			null,
+		]);
+	});
+
+	it("clears a stale per-scope cursor after scoped reset_required", async () => {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-reset", "fp-reset", new Date().toISOString());
+		syncReplication.setReplicationCursor(db, "peer-reset", {
+			lastApplied: "2025-12-31T00:00:00Z|default-baseline",
+		});
+		syncReplication.setReplicationCursor(
+			db,
+			"peer-reset",
+			{ lastApplied: "2025-12-31T00:00:00Z|stale-acme" },
+			"acme-work",
+		);
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		grantScopeForSyncPass(db, "acme-work", ["peer-reset", "local-device-id"]);
+
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([
+				200,
+				{
+					fingerprint: "fp-reset",
+					protocol_version: "2",
+					sync_capability: "scoped",
+					sync_reset: {
+						generation: 1,
+						snapshot_id: "snap-default",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+					authorized_scopes: [
+						{
+							scope_id: "acme-work",
+							label: "acme-work",
+							authority_type: "coordinator",
+							membership_epoch: 1,
+							sync_reset: {
+								scope_id: "acme-work",
+								generation: 2,
+								snapshot_id: "snap-acme-2",
+								baseline_cursor: "2026-01-01T00:00:00Z|baseline-acme",
+								retained_floor_cursor: null,
+							},
+						},
+					],
+				},
+			])
+			.mockResolvedValueOnce([
+				200,
+				{
+					reset_required: false,
+					generation: 1,
+					snapshot_id: "snap-default",
+					baseline_cursor: null,
+					retained_floor_cursor: null,
+					ops: [],
+					next_cursor: null,
+					skipped: 0,
+				},
+			])
+			.mockResolvedValueOnce([
+				409,
+				{
+					reset_required: true,
+					reason: "stale_cursor",
+					scope_id: "acme-work",
+					generation: 2,
+					snapshot_id: "snap-acme-2",
+					baseline_cursor: "2026-01-01T00:00:00Z|baseline-acme",
+					retained_floor_cursor: null,
+				},
+			]);
+
+		const result = await syncOnce(db, "peer-reset", ["http://127.0.0.1:9090"]);
+
+		expect(result.ok).toBe(false);
+		expect(result.perScopeResults?.[0]).toMatchObject({
+			scope_id: "acme-work",
+			ok: false,
+			error: "reset_required:stale_cursor",
+		});
+		expect(syncReplication.getReplicationCursor(db, "peer-reset", "acme-work")).toEqual([
+			null,
 			null,
 		]);
 	});

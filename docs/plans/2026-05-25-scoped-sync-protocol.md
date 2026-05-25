@@ -110,7 +110,7 @@ Server population rule:
   - The caller (peer-authenticated device id) has an active membership.
   - `authority_type` is `coordinator`, or the scope is a personal scope explicitly granted to the caller (`personal_scope_grants`).
 - Exclude scopes where `authority_type = 'local'` and there is no personal grant. Those are never replicated.
-- Include `local-default` only if the caller is in the legacy-default cohort (always-on backward compat).
+- Do not include `local-default` in `authorized_scopes`. Scoped-capable peers still run the legacy no-`scope_id` pass for default-scope data before iterating explicit Spaces, so listing `local-default` here would duplicate the same rows through a second path.
 - Each entry carries the scope's per-scope reset boundary (`sync_reset_state_v2` row for that scope_id).
 
 This is a single round trip. No separate `/v1/scopes` endpoint. A separate endpoint adds an extra signed request without changing behavior; folding the data into `/v1/status` is simpler and matches existing usage.
@@ -149,8 +149,8 @@ Under scoped sync:
 
 `local-default` is the implicit "everyone" bucket for unscoped memories that predate Spaces. Under scoped sync:
 
-- `/v1/status` always lists `local-default` in `authorized_scopes` if both peers are sync-paired.
-- Bootstrap for `local-default` uses the existing default-scope query path (`scope_id IS NULL OR scope_id = 'local-default'`).
+- `/v1/status` does not list `local-default` in `authorized_scopes`.
+- Bootstrap and incremental sync for `local-default` use the existing legacy no-`scope_id` query path (`scope_id IS NULL OR scope_id = 'local-default'`).
 - This preserves backward-compat behavior for the 295 default-scope rows in current dogfood DBs.
 
 ## Client behavior
@@ -161,7 +161,8 @@ Under scoped sync:
 2. If legacy peer (no `scoped_sync_v1`):
    - Same path as today: single default-scope bootstrap or incremental, no scope_id.
 3. If scoped peer:
-   - For each scope in `authorized_scopes`:
+   - Run the legacy default-scope path once with no `scope_id`.
+   - For each explicit Space in `authorized_scopes`:
      - Look up local `(peer_device_id, scope_id)` cursor in `replication_cursors_v2`.
      - If no cursor and no local scoped rows: bootstrap that scope via `/v1/snapshot?scope_id=X`.
      - Else: incremental `/v1/ops?scope_id=X&since=<cursor>&generation=G&snapshot_id=S&baseline_cursor=C`.
