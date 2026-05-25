@@ -55,6 +55,7 @@ import {
 	type FilterReplicationSkipped,
 	filterReplicationOpsForSyncWithStatus,
 	fingerprintPublicKey,
+	formatHostPort,
 	getCoordinatorGroupPreference,
 	getSemanticIndexDiagnostics,
 	getSyncResetState,
@@ -74,6 +75,7 @@ import {
 	lookupCoordinatorPeers,
 	mergeAddresses,
 	negotiateSyncCapability,
+	normalizeAddress,
 	normalizeSyncCapability,
 	parseSyncScopeRequest,
 	personalScopeGrantStatusForPeer,
@@ -278,7 +280,7 @@ async function ensureDefaultSpaceForTeam(opts: {
 			remoteUrl: opts.config.syncCoordinatorUrl || null,
 			adminSecret: opts.config.syncCoordinatorAdminSecret || null,
 		}));
-	const [deviceId] = ensureDeviceIdentity(opts.store.db);
+	const [deviceId] = ensureDeviceIdentity(opts.store.db, { keysDir: syncKeysDir() });
 	const membership = await coordinatorGrantScopeMembershipAction({
 		groupId: opts.groupId,
 		scopeId,
@@ -495,17 +497,19 @@ function pairingAdvertiseAddresses(config = readCoordinatorSyncConfig()): string
 				.split(",")
 				.map((item) => item.trim())
 				.filter(Boolean),
+			{ defaultHttpPort: config.syncPort },
 		);
 	}
 	if (config.syncHost && config.syncHost !== "0.0.0.0") {
-		return [`${config.syncHost}:${config.syncPort}`];
+		return [normalizeAddress(formatHostPort(config.syncHost, config.syncPort))].filter(Boolean);
 	}
 	const addresses = Object.values(networkInterfaces())
 		.flatMap((entries) => entries ?? [])
 		.filter((entry) => !entry.internal)
 		.map((entry) => entry.address)
 		.filter((address) => address && address !== "127.0.0.1" && address !== "::1")
-		.map((address) => `${address}:${config.syncPort}`);
+		.map((address) => normalizeAddress(formatHostPort(address, config.syncPort)))
+		.filter(Boolean);
 	return [...new Set(addresses)];
 }
 
@@ -1024,6 +1028,7 @@ function redactCoordinatorStatus(
 		? coordinator.discovered_devices.map((item) => {
 				if (!item || typeof item !== "object") return item;
 				const record = item as Record<string, unknown>;
+				const addressCount = Array.isArray(record.addresses) ? record.addresses.length : 0;
 				return {
 					device_id: record.device_id,
 					display_name: record.display_name ?? null,
@@ -1037,6 +1042,7 @@ function redactCoordinatorStatus(
 					outgoing_reciprocal_request_id: record.outgoing_reciprocal_request_id ?? null,
 					fingerprint: null,
 					addresses: [],
+					address_count: addressCount,
 				};
 			})
 		: [];
@@ -1048,7 +1054,7 @@ function redactCoordinatorStatus(
 
 interface AcceptDiscoveredPeerOptions {
 	peerDeviceId: string;
-	fingerprint: string;
+	fingerprint?: string;
 	// Optional per-peer scope override. When undefined the group's scope
 	// template is applied if auto_seed_scope is enabled; otherwise the peer
 	// is enrolled with no scope filters.
@@ -1094,17 +1100,43 @@ async function acceptDiscoveredPeer(
 		};
 	}
 	const discovered = await lookupCoordinatorPeers(store, config);
-	const match = discovered.find(
-		(peer) =>
-			String(peer.device_id ?? "").trim() === input.peerDeviceId &&
-			String(peer.fingerprint ?? "").trim() === input.fingerprint,
+	const inputFingerprint = String(input.fingerprint ?? "").trim();
+	const candidates = discovered.filter(
+		(peer) => String(peer.device_id ?? "").trim() === input.peerDeviceId,
 	);
+	const matchingCandidates = inputFingerprint
+		? candidates.filter((peer) => String(peer.fingerprint ?? "").trim() === inputFingerprint)
+		: candidates;
+	const uniqueFingerprints = new Set(
+		matchingCandidates.map((peer) => String(peer.fingerprint ?? "").trim()).filter(Boolean),
+	);
+	if (!inputFingerprint && uniqueFingerprints.size > 1) {
+		return {
+			ok: false,
+			status: 409,
+			error: "ambiguous_discovered_peer",
+			detail:
+				"That discovered device has multiple coordinator fingerprints. Enable diagnostics, refresh sync status, and choose the intended device before trusting it.",
+		};
+	}
+	const match = matchingCandidates[0];
 	if (!match) {
 		return {
 			ok: false,
 			status: 404,
 			error: "discovered_peer_not_found",
 			detail: "That discovered device is no longer available. Refresh sync status and try again.",
+		};
+	}
+	const expiresAt = String(match.expires_at ?? "").trim();
+	const expired = expiresAt ? Date.parse(expiresAt) <= Date.now() : false;
+	if (match.stale || expired) {
+		return {
+			ok: false,
+			status: 409,
+			error: "discovered_peer_stale",
+			detail:
+				"This discovered device's coordinator presence is stale. Wait for it to come online and refresh sync status before trusting it.",
 		};
 	}
 	const nextFingerprint = String(match.fingerprint ?? "").trim();
@@ -1122,9 +1154,21 @@ async function acceptDiscoveredPeer(
 				"This discovered device is missing its coordinator public key. Refresh sync status and try again.",
 		};
 	}
+	if (!nextFingerprint || fingerprintPublicKey(nextPublicKey) !== nextFingerprint) {
+		return {
+			ok: false,
+			status: 409,
+			error: "discovered_peer_fingerprint_mismatch",
+			detail:
+				"This discovered device's coordinator public key does not match its fingerprint. Refresh sync status or re-enroll the device before trusting it.",
+		};
+	}
 
 	const groupIds = Array.isArray(match.groups)
 		? match.groups.map((value) => String(value ?? "").trim()).filter(Boolean)
+		: [];
+	const freshGroupIds = Array.isArray(match.fresh_groups)
+		? match.fresh_groups.map((value) => String(value ?? "").trim()).filter(Boolean)
 		: [];
 	let groupId: string;
 	if (input.expectedGroupId) {
@@ -1135,6 +1179,15 @@ async function acceptDiscoveredPeer(
 				error: "peer_not_in_group",
 				detail:
 					"This discovered device is not visible through the specified coordinator group. Refresh sync status and try again.",
+			};
+		}
+		if (!freshGroupIds.includes(input.expectedGroupId)) {
+			return {
+				ok: false,
+				status: 409,
+				error: "discovered_peer_stale",
+				detail:
+					"This discovered device's coordinator presence is stale for the specified group. Wait for it to come online and refresh sync status before trusting it.",
 			};
 		}
 		groupId = input.expectedGroupId;
@@ -1184,7 +1237,7 @@ async function acceptDiscoveredPeer(
 			return [];
 		}
 	})();
-	const addressesJson = JSON.stringify(mergeAddresses(existingAddresses, nextAddresses));
+	const addressesJson = JSON.stringify(mergeAddresses(nextAddresses, existingAddresses));
 	await createCoordinatorReciprocalApproval(store, config, {
 		groupId,
 		requestedDeviceId: input.peerDeviceId,
@@ -1325,12 +1378,14 @@ function mapPeerRow(
 	const peerId = String(row.peer_device_id ?? "");
 	const recentOps = recentOpsByPeer?.get(peerId) ?? { in: 0, out: 0 };
 	const scopeRejections = scopeRejectionsByPeer?.get(peerId);
+	const addresses = safeJsonList(row.addresses_json as string | null);
 	return {
 		peer_device_id: row.peer_device_id,
 		name: row.name,
 		fingerprint: showDiag ? row.pinned_fingerprint : null,
 		pinned: Boolean(row.pinned_fingerprint),
-		addresses: showDiag ? safeJsonList(row.addresses_json as string | null) : [],
+		addresses: showDiag ? addresses : [],
+		address_count: addresses.length,
 		last_seen_at: row.last_seen_at,
 		last_sync_at: row.last_sync_at,
 		last_error: showDiag ? row.last_error : null,
@@ -1355,6 +1410,25 @@ function mapPeerRow(
 				: null,
 		discovered_via_group_id:
 			typeof row.discovered_via_group_id === "string" ? row.discovered_via_group_id : null,
+	};
+}
+
+function redactSyncAttemptError(error: unknown): string | null {
+	const text = String(error ?? "").trim();
+	if (!text) return null;
+	return "sync attempt failed; enable diagnostics for details";
+}
+
+function mapSyncAttemptRow(
+	row: Record<string, unknown>,
+	showDiag: boolean,
+	addresses?: string[],
+): Record<string, unknown> {
+	return {
+		...row,
+		error: showDiag ? row.error : redactSyncAttemptError(row.error),
+		status: attemptStatus(row),
+		address: showDiag && addresses?.length ? addresses[0] : null,
 	};
 }
 
@@ -1955,14 +2029,15 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				// Specific reasons are logged server-side; wire responses use a generic
 				// reason to prevent info-disclosure.
 				if (bootstrapAttempted) {
+					const grantPresent = Boolean((c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim());
 					console.warn(
-						`[sync] bootstrap grant auth failed: reason=${auth.reason} grant=${(c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim()} path=${c.req.path}`,
+						`[sync] bootstrap grant auth failed: reason=${auth.reason} grant_present=${grantPresent} path=${c.req.path}`,
 					);
 				}
 				const wireReason = bootstrapAttempted ? "bootstrap_grant_invalid" : auth.reason;
 				return (
 					(preauthChecked ? null : rateLimitedResponse(c, c.req.path, false)) ??
-					c.json(unauthorizedPayload(wireReason), 401)
+					c.json(unauthorizedPayload(wireReason, true), 401)
 				);
 			}
 			const limited = rateLimitedResponse(c, auth.deviceId, true);
@@ -1993,7 +2068,8 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 		if (!auth.ok)
 			return (
-				rateLimitedResponse(c, c.req.path, false) ?? c.json(unauthorizedPayload(auth.reason), 401)
+				rateLimitedResponse(c, c.req.path, false) ??
+				c.json(unauthorizedPayload(auth.reason, true), 401)
 			);
 		const limited = rateLimitedResponse(c, auth.deviceId, true);
 		if (limited) return limited;
@@ -2090,14 +2166,15 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				// Specific reasons are logged server-side; wire responses use a generic
 				// reason to prevent info-disclosure.
 				if (bootstrapAttempted) {
+					const grantPresent = Boolean((c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim());
 					console.warn(
-						`[sync] bootstrap grant auth failed: reason=${auth.reason} grant=${(c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim()} path=${c.req.path}`,
+						`[sync] bootstrap grant auth failed: reason=${auth.reason} grant_present=${grantPresent} path=${c.req.path}`,
 					);
 				}
 				const wireReason = bootstrapAttempted ? "bootstrap_grant_invalid" : auth.reason;
 				return (
 					(preauthChecked ? null : rateLimitedResponse(c, c.req.path, false)) ??
-					c.json(unauthorizedPayload(wireReason), 401)
+					c.json(unauthorizedPayload(wireReason, true), 401)
 				);
 			}
 			const limited = rateLimitedResponse(c, auth.deviceId, true);
@@ -2177,7 +2254,8 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 		if (!auth.ok)
 			return (
-				rateLimitedResponse(c, c.req.path, false) ?? c.json(unauthorizedPayload(auth.reason), 401)
+				rateLimitedResponse(c, c.req.path, false) ??
+				c.json(unauthorizedPayload(auth.reason, true), 401)
 			);
 		const limited = rateLimitedResponse(c, auth.deviceId, true);
 		if (limited) return limited;
@@ -2509,13 +2587,9 @@ export function syncRoutes(
 			});
 			const attemptsItems = attemptRows.map((row) => {
 				const addrs = showDiag ? peerAddressMap.get(String(row.peer_device_id ?? "")) : undefined;
-				return {
-					...row,
-					status: attemptStatus(row),
-					address: addrs?.length ? addrs[0] : null,
-				};
+				return mapSyncAttemptRow(row, showDiag, addrs);
 			});
-			const latestAttemptError = String(attemptsItems[0]?.error || "").trim();
+			const latestAttemptError = String(attemptRows[0]?.error || "").trim();
 
 			const statusBlock: Record<string, unknown> = {
 				...statusPayload,
@@ -2696,7 +2770,9 @@ export function syncRoutes(
 				.orderBy(desc(schema.syncAttempts.finished_at))
 				.limit(limit)
 				.all();
-			return c.json({ items: rows });
+			const showDiag = queryBool(c.req.query("includeDiagnostics"));
+			const items = rows.map((row) => mapSyncAttemptRow(row, showDiag));
+			return c.json({ items, redacted: !showDiag });
 		}
 	});
 
@@ -2713,39 +2789,22 @@ export function syncRoutes(
 		{
 			const config = readCoordinatorSyncConfig();
 			const d = drizzle(store.db, { schema });
-			const deviceRow = d
-				.select({
-					device_id: schema.syncDevice.device_id,
-					public_key: schema.syncDevice.public_key,
-					fingerprint: schema.syncDevice.fingerprint,
-				})
-				.from(schema.syncDevice)
-				.limit(1)
-				.get();
-
 			let deviceId: string | undefined;
 			let publicKey: string | undefined;
 			let fingerprint: string | undefined;
 
-			if (deviceRow) {
-				deviceId = String(deviceRow.device_id);
-				publicKey = String(deviceRow.public_key);
-				fingerprint = String(deviceRow.fingerprint);
-			} else {
-				// Fall back to ensureDeviceIdentity if no row exists
-				try {
-					const [id, fp] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
-					deviceId = id;
-					fingerprint = fp;
-					const newRow = d
-						.select({ public_key: schema.syncDevice.public_key })
-						.from(schema.syncDevice)
-						.where(eq(schema.syncDevice.device_id, id))
-						.get();
-					publicKey = newRow?.public_key ?? "";
-				} catch {
-					return c.json({ error: "device identity unavailable" }, 500);
-				}
+			try {
+				const [id, fp] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+				deviceId = id;
+				fingerprint = fp;
+				const row = d
+					.select({ public_key: schema.syncDevice.public_key })
+					.from(schema.syncDevice)
+					.where(eq(schema.syncDevice.device_id, id))
+					.get();
+				publicKey = row?.public_key ?? "";
+			} catch {
+				return c.json({ error: "device identity unavailable" }, 500);
 			}
 
 			if (!deviceId || !fingerprint) {
@@ -3348,9 +3407,11 @@ export function syncRoutes(
 		const peerDeviceId = String(body.peer_device_id ?? "").trim();
 		const fingerprint = String(body.fingerprint ?? "").trim();
 		if (!peerDeviceId) return c.json({ error: "peer_device_id required" }, 400);
-		if (!fingerprint) return c.json({ error: "fingerprint required" }, 400);
 		try {
-			const result = await acceptDiscoveredPeer(store, { peerDeviceId, fingerprint });
+			const result = await acceptDiscoveredPeer(store, {
+				peerDeviceId,
+				fingerprint: fingerprint || undefined,
+			});
 			if (!result.ok) {
 				return c.json(
 					{ error: result.error, detail: result.detail },
@@ -3443,9 +3504,27 @@ export function syncRoutes(
 		}
 		if (pairingResult?.kind === "pair") {
 			try {
+				const d = drizzle(store.db, { schema });
+				const existing = d
+					.select({ pinned_fingerprint: schema.syncPeers.pinned_fingerprint })
+					.from(schema.syncPeers)
+					.where(eq(schema.syncPeers.peer_device_id, pairingResult.device_id))
+					.get();
+				const existingFingerprint = String(existing?.pinned_fingerprint ?? "").trim();
+				if (existingFingerprint && existingFingerprint !== pairingResult.fingerprint) {
+					return c.json(
+						{
+							error: "peer_conflict",
+							detail:
+								"Pairing payload conflicts with the existing trusted fingerprint for this device. Remove or repair the old peer before accepting this pairing payload.",
+						},
+						409,
+					);
+				}
 				updatePeerAddresses(store.db, pairingResult.device_id, pairingResult.addresses, {
 					pinnedFingerprint: pairingResult.fingerprint,
 					publicKey: pairingResult.public_key,
+					replaceTrust: true,
 				});
 				return c.json({
 					ok: true,
@@ -4177,13 +4256,18 @@ export function syncRoutes(
 			const peerDeviceId = String(body.peer_device_id ?? "").trim();
 			const publicKey = String(body.peer_public_key ?? "").trim();
 			const name = String(body.name ?? "").trim() || null;
-			const fingerprint = String(body.fingerprint ?? "").trim() || null;
+			const requestedFingerprint = String(body.fingerprint ?? "").trim();
 			const addressesInput = Array.isArray(body.peer_addresses) ? body.peer_addresses : [];
-			const addresses = addressesInput
-				.map((item) => String(item ?? "").trim())
-				.filter((item) => item.length > 0);
+			const addresses = mergeAddresses(
+				[],
+				addressesInput.map((item) => String(item ?? "").trim()).filter((item) => item.length > 0),
+			);
 			if (!peerDeviceId || !publicKey) {
 				return c.json({ error: "peer_device_id_and_public_key_required" }, 400);
+			}
+			const fingerprint = requestedFingerprint || fingerprintPublicKey(publicKey);
+			if (fingerprintPublicKey(publicKey) !== fingerprint) {
+				return c.json({ error: "fingerprint_mismatch" }, 400);
 			}
 			const manualInclude =
 				overrideInclude && overrideInclude.length > 0 ? JSON.stringify(overrideInclude) : null;
