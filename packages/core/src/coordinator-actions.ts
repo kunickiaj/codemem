@@ -1,5 +1,3 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
 import {
 	BetterSqliteCoordinatorStore,
 	DEFAULT_COORDINATOR_DB_PATH,
@@ -22,9 +20,13 @@ import type {
 	CoordinatorScope,
 	CoordinatorScopeMembership,
 } from "./coordinator-store-contract.js";
-import { connect } from "./db.js";
+import { connect, resolveDbPath } from "./db.js";
 import { initDatabase } from "./maintenance.js";
-import { readCodememConfigFile, writeCodememConfigFile } from "./observer-config.js";
+import {
+	readCodememConfigFile,
+	readCodememConfigFileAtPath,
+	writeCodememConfigFile,
+} from "./observer-config.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 
@@ -1018,21 +1020,24 @@ export async function coordinatorImportInviteAction(opts: {
 	configPath?: string | null;
 }): Promise<Record<string, unknown>> {
 	const payload = decodeInvitePayload(extractInvitePayload(opts.inviteValue));
-	const resolvedDbPath = opts.dbPath ?? join(homedir(), ".codemem", "mem.sqlite");
+	const resolvedDbPath = resolveDbPath(opts.dbPath ?? undefined);
+	const keysDir = opts.keysDir ?? (process.env.CODEMEM_KEYS_DIR?.trim() || undefined);
 	initDatabase(resolvedDbPath);
 	const conn = connect(resolvedDbPath);
 	let deviceId = "";
 	let fingerprint = "";
 	try {
-		[deviceId, fingerprint] = ensureDeviceIdentity(conn, { keysDir: opts.keysDir ?? undefined });
+		[deviceId, fingerprint] = ensureDeviceIdentity(conn, { keysDir });
 	} finally {
 		conn.close();
 	}
-	const publicKey = loadPublicKey(opts.keysDir ?? undefined);
+	const publicKey = loadPublicKey(keysDir);
 	if (!publicKey) throw new Error("public key missing");
 	const coordinatorUrl = String(payload.coordinator_url ?? "").trim();
 	if (!coordinatorUrl) throw new Error("Invite is missing a coordinator URL.");
-	const config = readCodememConfigFile();
+	const config = opts.configPath
+		? readCodememConfigFileAtPath(opts.configPath)
+		: readCodememConfigFile();
 	const displayName = String(config.actor_display_name ?? deviceId).trim() || deviceId;
 	// V1 of multi-team assumes one coordinator hosting multiple groups.
 	// If this device is already enrolled in a different coordinator, surface
@@ -1073,7 +1078,9 @@ export async function coordinatorImportInviteAction(opts: {
 		const detail = typeof response?.error === "string" ? response.error : "unknown";
 		throw new Error(`Invite import failed (${status}): ${detail}`);
 	}
-	const nextConfig = readCodememConfigFile();
+	const nextConfig = opts.configPath
+		? readCodememConfigFileAtPath(opts.configPath)
+		: readCodememConfigFile();
 	nextConfig.sync_coordinator_url = coordinatorUrl;
 	// Append the new group to sync_coordinator_groups (dedup) instead of
 	// overwriting sync_coordinator_group. The runtime reads both the plural
