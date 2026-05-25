@@ -1091,6 +1091,22 @@ interface AcceptDiscoveredPeerOptions {
 	expectedGroupId?: string;
 }
 
+type AcceptDiscoveredPeerNotConfiguredReason =
+	| "coordinator_url_missing"
+	| "coordinator_groups_empty"
+	| "sync_disabled";
+
+function detailForNotConfiguredReason(reason: AcceptDiscoveredPeerNotConfiguredReason): string {
+	switch (reason) {
+		case "coordinator_url_missing":
+			return "Configure a coordinator URL before pairing with discovered peers.";
+		case "coordinator_groups_empty":
+			return "Join a coordinator team before pairing with discovered peers.";
+		case "sync_disabled":
+			return "Enable sync on this device before pairing with discovered peers.";
+	}
+}
+
 async function acceptDiscoveredPeer(
 	store: MemoryStore,
 	input: AcceptDiscoveredPeerOptions,
@@ -1103,19 +1119,32 @@ async function acceptDiscoveredPeer(
 			name: string | null;
 			group_id: string;
 	  }
-	| { ok: false; status: number; error: string; detail: string }
+	| {
+			ok: false;
+			status: number;
+			error: string;
+			detail: string;
+			reason?: AcceptDiscoveredPeerNotConfiguredReason;
+	  }
 > {
 	const config = readCoordinatorSyncConfig();
-	if (
-		!config.syncEnabled ||
-		!config.syncCoordinatorUrl ||
-		config.syncCoordinatorGroups.length === 0
-	) {
+	// Order: address the most foundational gap first so the detail string
+	// guides the user through setup in the correct sequence.
+	let notConfiguredReason: AcceptDiscoveredPeerNotConfiguredReason | null = null;
+	if (!config.syncCoordinatorUrl) {
+		notConfiguredReason = "coordinator_url_missing";
+	} else if (config.syncCoordinatorGroups.length === 0) {
+		notConfiguredReason = "coordinator_groups_empty";
+	} else if (!config.syncEnabled) {
+		notConfiguredReason = "sync_disabled";
+	}
+	if (notConfiguredReason) {
 		return {
 			ok: false,
 			status: 400,
 			error: "coordinator_not_configured",
-			detail: "Coordinator must be configured before accepting discovered peers.",
+			reason: notConfiguredReason,
+			detail: detailForNotConfiguredReason(notConfiguredReason),
 		};
 	}
 	const discovered = await lookupCoordinatorPeers(store, config);
@@ -3433,7 +3462,11 @@ export function syncRoutes(
 			});
 			if (!result.ok) {
 				return c.json(
-					{ error: result.error, detail: result.detail },
+					{
+						error: result.error,
+						detail: result.detail,
+						...(result.reason ? { reason: result.reason } : {}),
+					},
 					{ status: result.status as 400 | 404 | 409 },
 				);
 			}
@@ -4366,7 +4399,11 @@ export function syncRoutes(
 				return c.json(result);
 			}
 			return c.json(
-				{ error: result.error, detail: result.detail },
+				{
+					error: result.error,
+					detail: result.detail,
+					...(result.reason ? { reason: result.reason } : {}),
+				},
 				result.status as 400 | 404 | 409,
 			);
 		} catch (error) {
