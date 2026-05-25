@@ -178,6 +178,8 @@ export interface DiscoveredDeviceLike {
 	stale?: boolean;
 	fingerprint?: string;
 	groups?: string[];
+	address_count?: number;
+	addresses?: unknown[];
 	needs_local_approval?: boolean;
 	waiting_for_peer_approval?: boolean;
 }
