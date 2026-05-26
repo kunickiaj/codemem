@@ -379,88 +379,99 @@ export function renderGroupScopeManagementPanel(deps: ScopeManagementPanelDeps) 
 			}),
 		),
 		h(
-			"div",
-			{ class: "coordinator-admin-form-grid" },
-			h(
-				"label",
-				{ class: "coordinator-admin-field" },
-				h("span", null, "New Space id"),
-				h(TextInput, {
-					class: "peer-scope-input",
-					disabled,
-					onInput: (event) => {
-						const current = draftFor(groupId);
-						setDraft(groupId, {
-							...current,
-							createScopeId: String((event.currentTarget as HTMLInputElement).value || ""),
-						});
-					},
-					placeholder: "acme-work",
-					type: "text",
-					value: draft.createScopeId,
-				}),
-			),
-			h(
-				"label",
-				{ class: "coordinator-admin-field" },
-				h("span", null, "Label"),
-				h(TextInput, {
-					class: "peer-scope-input",
-					disabled,
-					onInput: (event) => {
-						const current = draftFor(groupId);
-						setDraft(groupId, {
-							...current,
-							createLabel: String((event.currentTarget as HTMLInputElement).value || ""),
-						});
-					},
-					placeholder: "Acme Work",
-					type: "text",
-					value: draft.createLabel,
-				}),
-			),
-			h(
-				"label",
-				{ class: "coordinator-admin-field" },
-				h("span", null, "Kind"),
-				h(TextInput, {
-					class: "peer-scope-input",
-					disabled,
-					onInput: (event) => {
-						const current = draftFor(groupId);
-						setDraft(groupId, {
-							...current,
-							createKind: String((event.currentTarget as HTMLInputElement).value || ""),
-						});
-					},
-					placeholder: "team",
-					type: "text",
-					value: draft.createKind,
-				}),
-			),
-		),
-		h(
-			"div",
-			{ class: "peer-actions" },
-			h(
-				"button",
-				{
-					class: "settings-button",
-					disabled,
-					onClick: () => void createScope(groupId, renderShell),
-					type: "button",
+			"form",
+			{
+				class: "coordinator-admin-form",
+				onSubmit: (event: Event) => {
+					event.preventDefault();
+					if (disabled) return;
+					void createScope(groupId, renderShell);
 				},
-				draft.actionPendingKind === "create" ? "Creating…" : "Create Space",
+			},
+			h(
+				"div",
+				{ class: "coordinator-admin-form-grid" },
+				h(
+					"label",
+					{ class: "coordinator-admin-field" },
+					h("span", null, "New Space id"),
+					h(TextInput, {
+						class: "peer-scope-input",
+						disabled,
+						onInput: (event) => {
+							const current = draftFor(groupId);
+							setDraft(groupId, {
+								...current,
+								createScopeId: String((event.currentTarget as HTMLInputElement).value || ""),
+							});
+						},
+						placeholder: "acme-work",
+						type: "text",
+						value: draft.createScopeId,
+					}),
+				),
+				h(
+					"label",
+					{ class: "coordinator-admin-field" },
+					h("span", null, "Label"),
+					h(TextInput, {
+						class: "peer-scope-input",
+						disabled,
+						onInput: (event) => {
+							const current = draftFor(groupId);
+							setDraft(groupId, {
+								...current,
+								createLabel: String((event.currentTarget as HTMLInputElement).value || ""),
+							});
+						},
+						placeholder: "Acme Work",
+						type: "text",
+						value: draft.createLabel,
+					}),
+				),
+				h(
+					"label",
+					{ class: "coordinator-admin-field" },
+					h("span", null, "Kind"),
+					h(TextInput, {
+						class: "peer-scope-input",
+						disabled,
+						onInput: (event) => {
+							const current = draftFor(groupId);
+							setDraft(groupId, {
+								...current,
+								createKind: String((event.currentTarget as HTMLInputElement).value || ""),
+							});
+						},
+						placeholder: "team",
+						type: "text",
+						value: draft.createKind,
+					}),
+				),
 			),
 			h(
-				"button",
-				{
-					class: "settings-button",
-					disabled,
-					onClick: () => void loadGroupScopeManagement(groupId, renderShell, draft.includeInactive),
-					type: "button",
-				},
-				draft.loading ? "Refreshing…" : "Refresh",
+				"div",
+				{ class: "peer-actions" },
+				h(
+					"button",
+					{
+						class: "settings-button",
+						disabled,
+						type: "submit",
+					},
+					draft.actionPendingKind === "create" ? "Creating…" : "Create Space",
+				),
+				h(
+					"button",
+					{
+						class: "settings-button",
+						disabled,
+						onClick: () =>
+							void loadGroupScopeManagement(groupId, renderShell, draft.includeInactive),
+						type: "button",
+					},
+					draft.loading ? "Refreshing…" : "Refresh",
+				),
 			),
 		),
 		draft.error ? h("div", { class: "peer-submeta coordinator-admin-error" }, draft.error) : null,

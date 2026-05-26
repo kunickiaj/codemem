@@ -30,6 +30,7 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 	const warnings = Array.isArray(state.lastTeamInvite?.warnings)
 		? state.lastTeamInvite?.warnings
 		: [];
+	const inviteDisabled = summary.readiness !== "ready" || coordinatorAdminState.invitePending;
 	return h(
 		RadixTabsContent,
 		{ className: "coordinator-admin-panel", value: "invites" },
@@ -42,84 +43,94 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 				: "Finish setup first. Invite creation stays disabled until the local coordinator admin configuration is ready.",
 		),
 		h(
-			"div",
-			{ class: "coordinator-admin-form-grid" },
-			h(
-				"label",
-				{ class: "coordinator-admin-field" },
-				h("span", null, "Team"),
-				h(TextInput, {
-					class: "peer-scope-input",
-					disabled: summary.readiness !== "ready",
-					onInput: (event) => {
-						coordinatorAdminState.inviteGroup = String(
-							(event.currentTarget as HTMLInputElement).value || "",
-						);
-						renderShell();
-					},
-					placeholder: activeGroup || "team-alpha",
-					type: "text",
-					value: coordinatorAdminState.inviteGroup,
-				}),
-			),
-			h(
-				"label",
-				{ class: "coordinator-admin-field" },
-				h("span", null, "Join policy"),
-				h(RadixSelect, {
-					ariaLabel: "Invite join policy",
-					contentClassName: "sync-radix-select-content sync-actor-select-content",
-					disabled: summary.readiness !== "ready",
-					id: "coordinatorAdminInvitePolicy",
-					itemClassName: "sync-radix-select-item",
-					onValueChange: (value) => {
-						coordinatorAdminState.invitePolicy =
-							value === "approval_required" ? "approval_required" : "auto_admit";
-						renderShell();
-					},
-					options: [
-						{ value: "auto_admit", label: "Auto-admit to Team" },
-						{ value: "approval_required", label: "Require approval to join Team" },
-					],
-					triggerClassName: "sync-radix-select-trigger sync-actor-select",
-					value: coordinatorAdminState.invitePolicy,
-					viewportClassName: "sync-radix-select-viewport",
-				}),
-			),
-			h(
-				"label",
-				{ class: "coordinator-admin-field" },
-				h("span", null, "Expires in (hours)"),
-				h(TextInput, {
-					class: "peer-scope-input",
-					disabled: summary.readiness !== "ready",
-					min: "1",
-					onInput: (event) => {
-						coordinatorAdminState.inviteTtlHours = String(
-							(event.currentTarget as HTMLInputElement).value || "",
-						);
-					},
-					type: "number",
-					value: coordinatorAdminState.inviteTtlHours,
-				}),
-			),
-		),
-		h(
-			"div",
-			{ class: "section-actions" },
-			h(
-				"button",
-				{
-					class: "settings-button",
-					disabled: summary.readiness !== "ready" || coordinatorAdminState.invitePending,
-					onClick: () => {
-						createInvite();
-					},
-					type: "button",
+			"form",
+			{
+				class: "coordinator-admin-form",
+				onSubmit: (event: Event) => {
+					event.preventDefault();
+					if (inviteDisabled) return;
+					createInvite();
 				},
-				coordinatorAdminState.invitePending ? "Creating…" : "Create invite",
+			},
+			h(
+				"div",
+				{ class: "coordinator-admin-form-grid" },
+				h(
+					"label",
+					{ class: "coordinator-admin-field" },
+					h("span", null, "Team"),
+					h(TextInput, {
+						class: "peer-scope-input",
+						disabled: summary.readiness !== "ready",
+						onInput: (event) => {
+							coordinatorAdminState.inviteGroup = String(
+								(event.currentTarget as HTMLInputElement).value || "",
+							);
+							renderShell();
+						},
+						placeholder: activeGroup || "team-alpha",
+						type: "text",
+						value: coordinatorAdminState.inviteGroup,
+					}),
+				),
+				h(
+					"label",
+					{ class: "coordinator-admin-field" },
+					h("span", null, "Join policy"),
+					h(RadixSelect, {
+						ariaLabel: "Invite join policy",
+						contentClassName: "sync-radix-select-content sync-actor-select-content",
+						disabled: summary.readiness !== "ready",
+						id: "coordinatorAdminInvitePolicy",
+						itemClassName: "sync-radix-select-item",
+						onValueChange: (value) => {
+							coordinatorAdminState.invitePolicy =
+								value === "approval_required" ? "approval_required" : "auto_admit";
+							renderShell();
+						},
+						options: [
+							{ value: "auto_admit", label: "Auto-admit to Team" },
+							{ value: "approval_required", label: "Require approval to join Team" },
+						],
+						triggerClassName: "sync-radix-select-trigger sync-actor-select",
+						value: coordinatorAdminState.invitePolicy,
+						viewportClassName: "sync-radix-select-viewport",
+					}),
+				),
+				h(
+					"label",
+					{ class: "coordinator-admin-field" },
+					h("span", null, "Expires in (hours)"),
+					h(TextInput, {
+						class: "peer-scope-input",
+						disabled: summary.readiness !== "ready",
+						min: "1",
+						onInput: (event) => {
+							coordinatorAdminState.inviteTtlHours = String(
+								(event.currentTarget as HTMLInputElement).value || "",
+							);
+						},
+						type: "number",
+						value: coordinatorAdminState.inviteTtlHours,
+					}),
+				),
 			),
-			effectiveGroup ? h("span", { class: "peer-submeta" }, `Using Team ${effectiveGroup}`) : null,
+			h(
+				"div",
+				{ class: "section-actions" },
+				h(
+					"button",
+					{
+						class: "settings-button",
+						disabled: inviteDisabled,
+						type: "submit",
+					},
+					coordinatorAdminState.invitePending ? "Creating…" : "Create invite",
+				),
+				effectiveGroup
+					? h("span", { class: "peer-submeta" }, `Using Team ${effectiveGroup}`)
+					: null,
+			),
 		),
 		output
 			? h(

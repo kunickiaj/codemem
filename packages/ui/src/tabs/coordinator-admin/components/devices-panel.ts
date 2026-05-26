@@ -60,6 +60,7 @@ export function renderDevicesPanel(deps: DevicesPanelDeps) {
 							coordinatorAdminState.deviceRenameDrafts.get(deviceId) ??
 							String(item.display_name || "");
 						const enabled = item.enabled !== false && item.enabled !== 0;
+						const actionDisabled = !deviceId || pending || summary.readiness !== "ready";
 						return h(
 							"div",
 							{
@@ -70,77 +71,87 @@ export function renderDevicesPanel(deps: DevicesPanelDeps) {
 							h("div", { class: "peer-submeta" }, copy.statusLabel),
 							h("div", { class: "peer-meta" }, copy.advancedDetail),
 							h(
-								"div",
-								{ class: "coordinator-admin-form-grid" },
+								"form",
+								{
+									class: "coordinator-admin-form",
+									onSubmit: (event: Event) => {
+										event.preventDefault();
+										if (actionDisabled) return;
+										runDevice(deviceId, teamId, displayName, "rename");
+									},
+								},
 								h(
-									"label",
-									{ class: "coordinator-admin-field" },
-									h("span", null, "Display name"),
-									h(TextInput, {
-										class: "peer-scope-input",
-										disabled: summary.readiness !== "ready" || pending,
-										onInput: (event) => {
-											coordinatorAdminState.deviceRenameDrafts.set(
-												deviceId,
-												String((event.currentTarget as HTMLInputElement).value || ""),
-											);
+									"div",
+									{ class: "coordinator-admin-form-grid" },
+									h(
+										"label",
+										{ class: "coordinator-admin-field" },
+										h("span", null, "Display name"),
+										h(TextInput, {
+											class: "peer-scope-input",
+											disabled: summary.readiness !== "ready" || pending,
+											onInput: (event) => {
+												coordinatorAdminState.deviceRenameDrafts.set(
+													deviceId,
+													String((event.currentTarget as HTMLInputElement).value || ""),
+												);
+											},
+											type: "text",
+											value: draft,
+										}),
+									),
+								),
+								h(
+									"div",
+									{ class: "peer-actions" },
+									h(
+										"button",
+										{
+											class: "settings-button",
+											disabled: actionDisabled,
+											type: "submit",
 										},
-										type: "text",
-										value: draft,
-									}),
-								),
-							),
-							h(
-								"div",
-								{ class: "peer-actions" },
-								h(
-									"button",
-									{
-										class: "settings-button",
-										disabled: !deviceId || pending || summary.readiness !== "ready",
-										onClick: () => runDevice(deviceId, teamId, displayName, "rename"),
-										type: "button",
-									},
-									pending && coordinatorAdminState.deviceActionPendingKind === "rename"
-										? "Renaming…"
-										: "Rename",
-								),
-								enabled
-									? h(
-											"button",
-											{
-												class: "settings-button danger",
-												disabled: !deviceId || pending || summary.readiness !== "ready",
-												onClick: () => runDevice(deviceId, teamId, displayName, "disable"),
-												type: "button",
-											},
-											pending && coordinatorAdminState.deviceActionPendingKind === "disable"
-												? "Disabling…"
-												: "Disable",
-										)
-									: h(
-											"button",
-											{
-												class: "settings-button",
-												disabled: !deviceId || pending || summary.readiness !== "ready",
-												onClick: () => runDevice(deviceId, teamId, displayName, "enable"),
-												type: "button",
-											},
-											pending && coordinatorAdminState.deviceActionPendingKind === "enable"
-												? "Enabling…"
-												: "Enable",
-										),
-								h(
-									"button",
-									{
-										class: "settings-button danger",
-										disabled: !deviceId || pending || summary.readiness !== "ready",
-										onClick: () => runDevice(deviceId, teamId, displayName, "remove"),
-										type: "button",
-									},
-									pending && coordinatorAdminState.deviceActionPendingKind === "remove"
-										? "Removing…"
-										: "Remove",
+										pending && coordinatorAdminState.deviceActionPendingKind === "rename"
+											? "Renaming…"
+											: "Rename",
+									),
+									enabled
+										? h(
+												"button",
+												{
+													class: "settings-button danger",
+													disabled: actionDisabled,
+													onClick: () => runDevice(deviceId, teamId, displayName, "disable"),
+													type: "button",
+												},
+												pending && coordinatorAdminState.deviceActionPendingKind === "disable"
+													? "Disabling…"
+													: "Disable",
+											)
+										: h(
+												"button",
+												{
+													class: "settings-button",
+													disabled: actionDisabled,
+													onClick: () => runDevice(deviceId, teamId, displayName, "enable"),
+													type: "button",
+												},
+												pending && coordinatorAdminState.deviceActionPendingKind === "enable"
+													? "Enabling…"
+													: "Enable",
+											),
+									h(
+										"button",
+										{
+											class: "settings-button danger",
+											disabled: actionDisabled,
+											onClick: () => runDevice(deviceId, teamId, displayName, "remove"),
+											type: "button",
+										},
+										pending && coordinatorAdminState.deviceActionPendingKind === "remove"
+											? "Removing…"
+											: "Remove",
+									),
 								),
 							),
 						);

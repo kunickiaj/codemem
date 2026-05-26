@@ -448,92 +448,102 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 				)
 			: null,
 		renderTeamSetupGuide(renderShell),
-		h(
-			"div",
-			{ class: "coordinator-admin-form-grid" },
-			h(
-				"label",
-				{ class: "coordinator-admin-field" },
-				h("span", null, "New Team id"),
-				h(TextInput, {
-					class: "peer-scope-input",
-					disabled:
-						summary.readiness !== "ready" ||
-						coordinatorAdminState.groupActionPendingKind === "create",
-					onInput: (event) => {
-						coordinatorAdminState.createGroupId = String(
-							(event.currentTarget as HTMLInputElement).value || "",
-						);
+		(() => {
+			const createGroupDisabled =
+				summary.readiness !== "ready" || coordinatorAdminState.groupActionPendingKind === "create";
+			return h(
+				"form",
+				{
+					class: "coordinator-admin-form",
+					onSubmit: (event: Event) => {
+						event.preventDefault();
+						if (createGroupDisabled) return;
+						createGroup();
 					},
-					placeholder: "team-alpha",
-					type: "text",
-					value: coordinatorAdminState.createGroupId,
-				}),
-			),
-			h(
-				"label",
-				{ class: "coordinator-admin-field" },
-				h("span", null, "Display name"),
-				h(TextInput, {
-					class: "peer-scope-input",
-					disabled:
-						summary.readiness !== "ready" ||
-						coordinatorAdminState.groupActionPendingKind === "create",
-					onInput: (event) => {
-						coordinatorAdminState.createGroupDisplayName = String(
-							(event.currentTarget as HTMLInputElement).value || "",
-						);
-					},
-					placeholder: "Team Alpha",
-					type: "text",
-					value: coordinatorAdminState.createGroupDisplayName,
-				}),
-			),
-		),
-		h(
-			"div",
-			{ class: "section-actions coordinator-admin-groups-toolbar" },
-			h(
-				"div",
-				{ class: "coordinator-admin-primary-actions" },
+				},
 				h(
-					"button",
-					{
-						class: "settings-button",
-						disabled:
-							summary.readiness !== "ready" ||
-							coordinatorAdminState.groupActionPendingKind === "create",
-						onClick: () => createGroup(),
-						type: "button",
-					},
-					coordinatorAdminState.groupActionPendingKind === "create" ? "Creating…" : "Create Team",
-				),
-			),
-			h(
-				"div",
-				{ class: "coordinator-admin-secondary-actions" },
-				h(
-					"label",
-					{ class: "coordinator-admin-inline-filter" },
+					"div",
+					{ class: "coordinator-admin-form-grid" },
 					h(
-						"span",
-						{ class: "section-meta", id: "coordinatorAdminShowArchivedLabel" },
-						"Show archived",
+						"label",
+						{ class: "coordinator-admin-field" },
+						h("span", null, "New Team id"),
+						h(TextInput, {
+							class: "peer-scope-input",
+							disabled: createGroupDisabled,
+							onInput: (event) => {
+								coordinatorAdminState.createGroupId = String(
+									(event.currentTarget as HTMLInputElement).value || "",
+								);
+							},
+							placeholder: "team-alpha",
+							type: "text",
+							value: coordinatorAdminState.createGroupId,
+						}),
 					),
-					h(RadixSwitch, {
-						"aria-labelledby": "coordinatorAdminShowArchivedLabel",
-						checked: coordinatorAdminState.showArchivedGroups,
-						className: "coordinator-admin-switch",
-						disabled: summary.readiness !== "ready",
-						onCheckedChange: (checked) => {
-							coordinatorAdminState.showArchivedGroups = checked;
-							renderShell();
-						},
-						thumbClassName: "coordinator-admin-switch-thumb",
-					}),
+					h(
+						"label",
+						{ class: "coordinator-admin-field" },
+						h("span", null, "Display name"),
+						h(TextInput, {
+							class: "peer-scope-input",
+							disabled: createGroupDisabled,
+							onInput: (event) => {
+								coordinatorAdminState.createGroupDisplayName = String(
+									(event.currentTarget as HTMLInputElement).value || "",
+								);
+							},
+							placeholder: "Team Alpha",
+							type: "text",
+							value: coordinatorAdminState.createGroupDisplayName,
+						}),
+					),
 				),
-			),
-		),
+				h(
+					"div",
+					{ class: "section-actions coordinator-admin-groups-toolbar" },
+					h(
+						"div",
+						{ class: "coordinator-admin-primary-actions" },
+						h(
+							"button",
+							{
+								class: "settings-button",
+								disabled: createGroupDisabled,
+								type: "submit",
+							},
+							coordinatorAdminState.groupActionPendingKind === "create"
+								? "Creating…"
+								: "Create Team",
+						),
+					),
+					h(
+						"div",
+						{ class: "coordinator-admin-secondary-actions" },
+						h(
+							"label",
+							{ class: "coordinator-admin-inline-filter" },
+							h(
+								"span",
+								{ class: "section-meta", id: "coordinatorAdminShowArchivedLabel" },
+								"Show archived",
+							),
+							h(RadixSwitch, {
+								"aria-labelledby": "coordinatorAdminShowArchivedLabel",
+								checked: coordinatorAdminState.showArchivedGroups,
+								className: "coordinator-admin-switch",
+								disabled: summary.readiness !== "ready",
+								onCheckedChange: (checked) => {
+									coordinatorAdminState.showArchivedGroups = checked;
+									renderShell();
+								},
+								thumbClassName: "coordinator-admin-switch-thumb",
+							}),
+						),
+					),
+				),
+			);
+		})(),
 		!visibleGroups.length
 			? h(
 					"div",
