@@ -1537,6 +1537,7 @@ function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> 
 			reassignable_memory_count: number;
 			peer_owned_memory_count: number;
 			last_updated_at: string | null;
+			memory_samples: LegacySharedReviewMemorySample[];
 			suggested_scope_id: string | null;
 			suggestion_reason: string | null;
 		}
@@ -1567,6 +1568,9 @@ function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> 
 			if (rowUpdatedAt && (!existing.last_updated_at || rowUpdatedAt > existing.last_updated_at)) {
 				existing.last_updated_at = rowUpdatedAt;
 			}
+			if (existing.memory_samples.length < LEGACY_SHARED_REVIEW_SAMPLE_LIMIT) {
+				existing.memory_samples.push(legacySharedReviewMemorySample(row, isOwnedBySelf));
+			}
 			continue;
 		}
 		groupsByIdentity.set(identity.value, {
@@ -1577,6 +1581,7 @@ function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> 
 			reassignable_memory_count: isOwnedBySelf ? 1 : 0,
 			peer_owned_memory_count: isOwnedBySelf ? 0 : 1,
 			last_updated_at: rowUpdatedAt,
+			memory_samples: [legacySharedReviewMemorySample(row, isOwnedBySelf)],
 			suggested_scope_id: suggestedScope ?? null,
 			suggestion_reason: suggestedScope
 				? (candidate?.suggestion_reason ??
@@ -1618,8 +1623,12 @@ interface LegacySharedReviewReassignmentMemoryRow {
 	rev: number | null;
 	active: number | null;
 	deleted_at: string | null;
+	created_at: string | null;
 	updated_at: string | null;
 	scope_id: string | null;
+	kind: string | null;
+	title: string | null;
+	body_text: string | null;
 	project: string | null;
 	cwd: string | null;
 	git_remote: string | null;
@@ -1630,6 +1639,46 @@ interface LegacySharedReviewReassignmentMemoryRow {
 	metadata_json: string | null;
 }
 
+const LEGACY_SHARED_REVIEW_SAMPLE_LIMIT = 3;
+const LEGACY_SHARED_REVIEW_BODY_PREVIEW_SQL_LIMIT = 360;
+
+interface LegacySharedReviewMemorySample {
+	id: number;
+	kind: string | null;
+	title: string;
+	body_preview: string | null;
+	created_at: string | null;
+	updated_at: string | null;
+	ownership: "local" | "peer";
+	project: string | null;
+	cwd: string | null;
+	git_remote: string | null;
+}
+
+function previewText(value: string | null | undefined, limit = 180): string | null {
+	const normalized = value?.replace(/\s+/g, " ").trim();
+	if (!normalized) return null;
+	return normalized.length > limit ? `${normalized.slice(0, limit - 1)}…` : normalized;
+}
+
+function legacySharedReviewMemorySample(
+	row: LegacySharedReviewReassignmentMemoryRow,
+	isOwnedBySelf: boolean,
+): LegacySharedReviewMemorySample {
+	return {
+		id: row.id,
+		kind: row.kind,
+		title: previewText(row.title, 120) ?? `Memory ${row.id}`,
+		body_preview: previewText(row.body_text),
+		created_at: row.created_at ?? null,
+		updated_at: row.updated_at ?? null,
+		ownership: isOwnedBySelf ? "local" : "peer",
+		project: row.project ?? null,
+		cwd: row.cwd ?? null,
+		git_remote: row.git_remote ?? null,
+	};
+}
+
 function legacySharedReviewRows(store: MemoryStore): LegacySharedReviewReassignmentMemoryRow[] {
 	return store.db
 		.prepare(
@@ -1637,8 +1686,12 @@ function legacySharedReviewRows(store: MemoryStore): LegacySharedReviewReassignm
 			        m.rev,
 			        m.active,
 			        m.deleted_at,
+			        m.created_at,
 			        m.updated_at,
 			        m.scope_id,
+			        m.kind,
+			        m.title,
+				        substr(m.body_text, 1, ?) AS body_text,
 			        s.project,
 			        s.cwd,
 			        s.git_remote,
@@ -1651,9 +1704,13 @@ function legacySharedReviewRows(store: MemoryStore): LegacySharedReviewReassignm
 			 LEFT JOIN sessions s ON s.id = m.session_id
 			 WHERE m.scope_id = ?
 			   AND m.active = 1
-			   AND m.deleted_at IS NULL`,
+			   AND m.deleted_at IS NULL
+			 ORDER BY COALESCE(m.updated_at, m.created_at, '') DESC, m.id DESC`,
 		)
-		.all(LEGACY_SHARED_REVIEW_SCOPE_ID) as LegacySharedReviewReassignmentMemoryRow[];
+		.all(
+			LEGACY_SHARED_REVIEW_BODY_PREVIEW_SQL_LIMIT,
+			LEGACY_SHARED_REVIEW_SCOPE_ID,
+		) as LegacySharedReviewReassignmentMemoryRow[];
 }
 
 function legacySharedReviewConfirmationToken(input: {

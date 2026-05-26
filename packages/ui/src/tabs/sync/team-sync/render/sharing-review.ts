@@ -74,6 +74,31 @@ export function renderSyncSharingReview() {
 								identitySource: String(raw.identity_source || "unknown"),
 								lastUpdatedAt: typeof raw.last_updated_at === "string" ? raw.last_updated_at : null,
 								memoryCount: Number(raw.memory_count || 0),
+								memorySamples: Array.isArray(raw.memory_samples)
+									? raw.memory_samples.map((sample) => {
+											const sampleRaw = sample as Record<string, unknown>;
+											const ownership: "local" | "peer" =
+												sampleRaw.ownership === "peer" ? "peer" : "local";
+											return {
+												bodyPreview:
+													typeof sampleRaw.body_preview === "string"
+														? sampleRaw.body_preview
+														: null,
+												createdAt:
+													typeof sampleRaw.created_at === "string" ? sampleRaw.created_at : null,
+												cwd: typeof sampleRaw.cwd === "string" ? sampleRaw.cwd : null,
+												gitRemote:
+													typeof sampleRaw.git_remote === "string" ? sampleRaw.git_remote : null,
+												id: Number(sampleRaw.id || 0),
+												kind: typeof sampleRaw.kind === "string" ? sampleRaw.kind : null,
+												ownership,
+												project: typeof sampleRaw.project === "string" ? sampleRaw.project : null,
+												title: String(sampleRaw.title || `Memory ${Number(sampleRaw.id || 0)}`),
+												updatedAt:
+													typeof sampleRaw.updated_at === "string" ? sampleRaw.updated_at : null,
+											};
+										})
+									: [],
 								peerOwnedMemoryCount: Number(raw.peer_owned_memory_count || 0),
 								reassignableMemoryCount: Number(raw.reassignable_memory_count || 0),
 								suggestedScopeId:

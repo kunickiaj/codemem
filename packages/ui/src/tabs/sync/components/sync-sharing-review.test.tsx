@@ -39,6 +39,20 @@ describe("SyncSharingReview", () => {
 							identitySource: "git_remote",
 							lastUpdatedAt: "2026-05-12T00:00:00Z",
 							memoryCount: 3,
+							memorySamples: [
+								{
+									bodyPreview: "Evidence from a legacy shared memory.",
+									createdAt: "2026-05-10T00:00:00Z",
+									cwd: "/workspace/oss/dev",
+									gitRemote: "https://git.example.invalid/oss/dev.git",
+									id: 101,
+									kind: "discovery",
+									ownership: "local",
+									project: "oss-dev",
+									title: "Legacy memory sample",
+									updatedAt: "2026-05-12T00:00:00Z",
+								},
+							],
 							suggestedScopeId: "oss",
 							suggestionReason:
 								"Existing project mapping can be reviewed as a destination, but legacy data is not promoted automatically.",
@@ -65,6 +79,11 @@ describe("SyncSharingReview", () => {
 		expect(root.textContent).toContain("Matched by git remote · suggested OSS");
 		expect(root.textContent).toContain("Destination Space");
 		expect(root.textContent).toContain("OSS · Team Space · suggested");
+		expect(root.textContent).toContain("Inspect affected memories (1 sample)");
+		expect(root.textContent).toContain("Legacy memory sample");
+		expect(root.textContent).toContain("May 12, 2026");
+		expect(root.textContent).toContain("Evidence from a legacy shared memory.");
+		expect(root.textContent).toContain("local, reassignable");
 		expect(root.textContent).toContain("legacy data is not promoted automatically");
 		expect(root.textContent).toContain("Nothing moves automatically");
 

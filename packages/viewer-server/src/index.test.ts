@@ -2586,8 +2586,8 @@ describe("viewer-server", () => {
 					.prepare(
 						`INSERT INTO memory_items(
 							session_id, kind, title, body_text, created_at, updated_at,
-							visibility, workspace_id, workspace_kind, active, scope_id, metadata_json
-						 ) VALUES (?, 'discovery', ?, ?, ?, ?, 'shared', 'shared:default', 'shared', 1, ?, '{}')`,
+							visibility, workspace_id, workspace_kind, active, origin_device_id, scope_id, metadata_json
+						 ) VALUES (?, 'discovery', ?, ?, ?, ?, 'shared', 'shared:default', 'shared', 1, ?, ?, '{}')`,
 					)
 					.run(
 						Number(sameRepoSession.lastInsertRowid),
@@ -2595,6 +2595,7 @@ describe("viewer-server", () => {
 						"Legacy shared same repo body",
 						now,
 						now,
+						store.deviceId,
 						"legacy-shared-review",
 					);
 				store.db
@@ -2635,6 +2636,11 @@ describe("viewer-server", () => {
 					legacy_shared_review: {
 						groups: Array<{
 							display_project: string;
+							memory_samples: Array<{
+								body_preview: string | null;
+								ownership: "local" | "peer";
+								title: string;
+							}>;
 							memory_count: number;
 							workspace_identity: string;
 						}>;
@@ -2648,10 +2654,33 @@ describe("viewer-server", () => {
 					memory_count: 24,
 					scope_id: "legacy-shared-review",
 				});
+				const codememGroup = body.legacy_shared_review.groups.find(
+					(group) =>
+						group.workspace_identity === "https://git.example.invalid/oss/codemem-test.git",
+				);
+				expect(codememGroup?.memory_samples).toHaveLength(3);
+				expect(
+					codememGroup?.memory_samples.every(
+						(sample) => !sample.body_preview || sample.body_preview.length <= 180,
+					),
+				).toBe(true);
+				expect(codememGroup?.memory_samples).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ ownership: "local" }),
+						expect.objectContaining({ ownership: "peer" }),
+					]),
+				);
 				expect(body.legacy_shared_review.groups).toEqual(
 					expect.arrayContaining([
 						expect.objectContaining({
-							display_project: "codemem-test",
+							display_project: "codemem-test-worktree",
+							memory_samples: expect.arrayContaining([
+								expect.objectContaining({
+									body_preview: expect.stringContaining("Legacy shared"),
+									ownership: expect.stringMatching(/^(local|peer)$/),
+									title: expect.stringContaining("Legacy shared"),
+								}),
+							]),
 							memory_count: 23,
 							workspace_identity: "https://git.example.invalid/oss/codemem-test.git",
 						}),

@@ -1978,6 +1978,34 @@
         font-size: var(--font-size-md);
         line-height: 1.45;
       }
+      .legacy-review-samples {
+        padding: var(--sp-2) var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: color-mix(in srgb, var(--surface-1) 72%, transparent);
+      }
+      .legacy-review-samples summary {
+        cursor: pointer;
+        color: var(--text-primary);
+        font-weight: var(--font-weight-semibold);
+      }
+      .legacy-review-sample-list {
+        display: grid;
+        gap: var(--sp-2);
+        margin: var(--sp-2) 0 0;
+        padding: 0;
+        list-style: none;
+      }
+      .legacy-review-sample {
+        display: grid;
+        gap: 3px;
+        padding: var(--sp-2);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--surface-1);
+      }
+      .legacy-review-sample-title { color: var(--text-primary); font-weight: var(--font-weight-semibold); }
+      .legacy-review-sample-body { color: var(--text-secondary); font-size: var(--font-size-sm); line-height: 1.45; }
       .legacy-review-target {
         display: grid;
         gap: 5px;

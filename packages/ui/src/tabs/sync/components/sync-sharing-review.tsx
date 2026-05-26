@@ -30,11 +30,25 @@ export interface SyncLegacySharedReviewGroup {
 	identitySource: string;
 	lastUpdatedAt: string | null;
 	memoryCount: number;
+	memorySamples?: SyncLegacySharedReviewMemorySample[];
 	peerOwnedMemoryCount?: number;
 	reassignableMemoryCount?: number;
 	suggestedScopeId: string | null;
 	suggestionReason: string | null;
 	workspaceIdentity: string;
+}
+
+export interface SyncLegacySharedReviewMemorySample {
+	bodyPreview: string | null;
+	createdAt: string | null;
+	cwd: string | null;
+	gitRemote: string | null;
+	id: number;
+	kind: string | null;
+	ownership: "local" | "peer";
+	project: string | null;
+	title: string;
+	updatedAt: string | null;
 }
 
 type SyncSharingReviewProps = {
@@ -114,6 +128,66 @@ function authorityLabel(authorityType: string): string {
 		default:
 			return "Other Space";
 	}
+}
+
+function formatSampleDate(value: string | null): string {
+	if (!value) return "date unavailable";
+	const date = new Date(value);
+	if (Number.isNaN(date.getTime())) return value;
+	return new Intl.DateTimeFormat("en-US", {
+		day: "numeric",
+		month: "short",
+		timeZone: "UTC",
+		year: "numeric",
+	}).format(date);
+}
+
+function sampleOrigin(sample: SyncLegacySharedReviewMemorySample): string {
+	if (sample.gitRemote) return sample.gitRemote;
+	if (sample.cwd) return sample.cwd;
+	if (sample.project) return sample.project;
+	return "source identity unavailable";
+}
+
+function LegacyMemorySamples({ group }: { group: SyncLegacySharedReviewGroup }) {
+	const samples = group.memorySamples ?? [];
+	const shownCount = samples.length;
+	return (
+		<details className="legacy-review-samples">
+			<summary>
+				Inspect affected memories
+				{shownCount ? ` (${shownCount} sample${shownCount === 1 ? "" : "s"})` : ""}
+			</summary>
+			<div className="legacy-review-cleanup-note">
+				Showing representative memories from this project group before reassignment. Local memories
+				can be reassigned; peer-owned memories stay in review on this device.
+			</div>
+			{samples.length > 0 ? (
+				<ul className="legacy-review-sample-list">
+					{samples.map((sample) => (
+						<li className="legacy-review-sample" key={sample.id}>
+							<div className="legacy-review-sample-title">{sample.title}</div>
+							<div className="legacy-review-group-meta">
+								{sample.kind || "memory"} · {formatSampleDate(sample.updatedAt ?? sample.createdAt)}{" "}
+								·{" "}
+								{sample.ownership === "local"
+									? "local, reassignable"
+									: "peer-owned, stays in review"}
+							</div>
+							{sample.bodyPreview ? (
+								<div className="legacy-review-sample-body">{sample.bodyPreview}</div>
+							) : null}
+							<div className="legacy-review-group-meta mono">{sampleOrigin(sample)}</div>
+						</li>
+					))}
+				</ul>
+			) : (
+				<div className="legacy-review-cleanup-note">
+					No samples are available for this group. Refresh Sync and try again before reassigning.
+				</div>
+			)}
+		</details>
+	);
 }
 
 function formatLegacyReviewError(
@@ -532,6 +606,7 @@ function LegacySharedReviewRow({
 									.
 								</div>
 							) : null}
+							<LegacyMemorySamples group={group} />
 							{targetScopes.length > 0 && onReassign && canReassignLegacyGroup(group) ? (
 								<label className="legacy-review-target">
 									<span>Destination Space</span>
