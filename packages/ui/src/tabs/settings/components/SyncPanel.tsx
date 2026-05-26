@@ -3,7 +3,6 @@ import type { SettingsPanelProps } from "../data/types";
 import { SettingsHint } from "./SettingsHint";
 import { SettingsSectionIntro } from "./SettingsSectionIntro";
 import { SettingsSwitchRow } from "./SettingsSwitchRow";
-import { SharingDomainsPanel } from "./SharingDomainsPanel";
 
 export function SyncPanel({
 	values,
@@ -114,36 +113,6 @@ export function SyncPanel({
 					/>
 				</div>
 			</div>
-			<AnchorPeerSetupCard />
-			<SharingDomainsPanel />
 		</>
-	);
-}
-
-function AnchorPeerSetupCard() {
-	return (
-		<section aria-labelledby="anchor-peer-setup-title" className="settings-group">
-			<h3 className="settings-group-title" id="anchor-peer-setup-title">
-				Always-on peers
-			</h3>
-			<p className="small">
-				An anchor peer is just a normal paired device that stays online. It is useful as a stable
-				sync backstop, but it is not a coordinator, relay, or special protocol role.
-			</p>
-			<ul className="small">
-				<li>Coordinator discovery helps peers find each other; it does not grant data access.</li>
-				<li>Explicit Sharing-domain grants decide what an always-on peer can receive.</li>
-				<li>Project include/exclude filters only narrow already-granted domains.</li>
-				<li>Use durable storage and backups for peers you expect to recover after restart.</li>
-			</ul>
-			<a
-				className="settings-link"
-				href="https://github.com/kunickiaj/codemem/blob/main/docs/anchor-peer-deployment.md"
-				rel="noreferrer"
-				target="_blank"
-			>
-				Read the anchor-peer deployment guide
-			</a>
-		</section>
 	);
 }

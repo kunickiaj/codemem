@@ -26,10 +26,6 @@ vi.mock("../../../components/primitives/radix-switch", () => ({
 	),
 }));
 
-vi.mock("./SharingDomainsPanel", () => ({
-	SharingDomainsPanel: () => <div data-testid="sharing-domains-panel" />,
-}));
-
 let mount: HTMLDivElement | null = null;
 
 function baseProps(): SettingsPanelProps {
@@ -107,24 +103,15 @@ afterEach(() => {
 });
 
 describe("SyncPanel", () => {
-	it("explains always-on peers without weakening Sharing-domain boundaries", () => {
+	it("keeps Settings focused on device sync configuration", () => {
 		const root = renderSyncPanel();
 
-		expect(root.textContent).toContain("An anchor peer is just a normal paired device");
-		expect(root.textContent).toContain("not a coordinator, relay, or special protocol role");
-		expect(root.textContent).toContain(
-			"Coordinator discovery helps peers find each other; it does not grant data access",
-		);
-		expect(root.textContent).toContain(
-			"Explicit Sharing-domain grants decide what an always-on peer can receive",
-		);
-		expect(root.textContent).toContain(
-			"Project include/exclude filters only narrow already-granted domains",
-		);
-
-		const link = root.querySelector<HTMLAnchorElement>(
-			'a[href="https://github.com/kunickiaj/codemem/blob/main/docs/anchor-peer-deployment.md"]',
-		);
-		expect(link?.textContent).toContain("anchor-peer deployment guide");
+		expect(root.textContent).toContain("Device Sync");
+		expect(root.textContent).toContain("Enable sync");
+		expect(root.textContent).toContain("Coordinator URL");
+		expect(root.textContent).toContain("Coordinator group");
+		expect(root.textContent).not.toContain("Always-on peers");
+		expect(root.textContent).not.toContain("Advanced Space assignments");
+		expect(root.textContent).not.toContain("Open Projects review");
 	});
 });

@@ -232,7 +232,8 @@ codemem maintenance status
 
 - Use coordinator-backed discovery when peers are reachable but their addresses change frequently or mDNS does not work across network boundaries such as VPNs.
 - Set `sync_coordinator_url` and `sync_coordinator_group` to enable it.
-- The Settings UI exposes coordinator URL, group, timeout, and presence TTL fields under the Sync tab.
+- The Settings UI exposes coordinator URL, group, timeout, and presence TTL fields under Device Sync.
+- Manage project-to-Space assignment from the Projects tab; Device Sync is only for sync configuration.
 - The coordinator is self-hosted/operator-run and only helps peers discover fresh addresses; direct peer-to-peer sync remains the data path.
 - See [docs/coordinator-discovery.md](coordinator-discovery.md) for setup, config, and current limitations.
 - See [docs/anchor-peer-deployment.md](anchor-peer-deployment.md) if you want an always-on peer as a sync backstop for personal or team Sharing domains.

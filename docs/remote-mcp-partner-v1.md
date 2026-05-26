@@ -69,7 +69,7 @@ See [coordinator-discovery.md](./coordinator-discovery.md) for cross-network set
 
 ### Create a shared Sharing domain
 
-Pick a stable, human-readable name (`shared-research`, `family-notes`, etc.). Create the domain on host A and grant it to host B's device key. The viewer UI under Settings → Device Sync exposes Sharing-domain management; the equivalent CLI lives under `codemem sync` and `codemem coordinator` (see [user-guide.md](./user-guide.md#peer-to-peer-sync)).
+Pick a stable, human-readable name (`shared-research`, `family-notes`, etc.). Create the domain on host A and grant it to host B's device key with the `codemem sync` and `codemem coordinator` CLI workflows (see [user-guide.md](./user-guide.md#peer-to-peer-sync)). Device Sync settings cover pairing and discovery configuration, not project-to-Space assignment.
 
 Both sides must grant the domain to the partner peer for bidirectional replication. A grant in only one direction yields one-way sync.
 
@@ -109,7 +109,7 @@ These constraints are deliberate: partner v1 is product-light precisely so it ca
 | Product copy implies selective partner access inside one MCP endpoint | Documentation, marketing, and connector descriptions must use the "two peered endpoints" framing. Do not advertise "one MCP, two users" in any surface. |
 | Sharing domain treated as a project filter | Sharing domains are the hard boundary; project filters narrow only. Do not document or expose a workflow that mixes them as if they were equivalent. |
 | Operator forgets to grant both directions | `codemem sync doctor` should report missing grants. Re-run after every Sharing-domain change. |
-| Partner believes revocation erases memory | This document is the canonical place to state the revocation semantic. The viewer Sharing-domain revoke action should link here. |
+| Partner believes revocation erases memory | This document is the canonical place to state the revocation semantic. Product revoke/help affordances should link here. |
 | Audit logs comingled or confused | Each host's audit log lives on that host. Treat them as two independent records; do not assume a shared timeline. |
 
 ## Operator checklist for cutover to partner v1
