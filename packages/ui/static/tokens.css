@@ -1,0 +1,156 @@
+/* ── Design Tokens ─────────────────────────────────────────────────────────
+ * Dark-first defaults. The :root rule below carries the dark palette plus
+ * every scale token (color, surface, accent, status, chrome, body bg, inputs,
+ * toggles, spacing, radii, typography, motion).
+ *
+ * Light-theme overrides live in themes.css (loaded after this file so the
+ * cascade resolves correctly: dark defaults here, light overrides next, then
+ * the per-component rules inside the inline <style> in index.html).
+ *
+ * Values come from the codemem design handoff (tokens/colors_and_type.css). */
+
+:root {
+  /* Surface — deep ink */
+  --surface-0: #0b1016;
+  --surface-1: #0f1720;
+  --surface-2: #111c27;
+  --surface-3: #172332;
+
+  /* Text — cool blue-white, never pure */
+  --text-primary:   #e7f0f7;
+  --text-secondary: #b7c5d3;
+  --text-tertiary:  #8493a3;
+  --text-inverse:   #0b1016;
+
+  /* Accents */
+  --accent:               #7ef0c2;
+  --accent-hover:         #9eff87;
+  --accent-subtle:        rgba(126, 240, 194, 0.10);
+  --accent-strong:        rgba(126, 240, 194, 0.28);
+  --accent-warm:          #ffb454;
+  --accent-warm-subtle:   rgba(255, 180, 84, 0.14);
+  --accent-cool:          #86a9ff;
+  --accent-cool-subtle:   rgba(134, 169, 255, 0.14);
+  --accent-violet:        #c79bff;
+  --accent-violet-subtle: rgba(199, 155, 255, 0.14);
+  --accent-steel:         #4dd4b4;
+  --accent-steel-subtle:  rgba(77, 212, 180, 0.14);
+  --accent-ochre:         #e2c07e;
+  --accent-ochre-subtle:  rgba(226, 192, 126, 0.14);
+  --accent-neutral:       #9ea7b7;
+  --accent-neutral-subtle: rgba(158, 167, 183, 0.14);
+
+  /* Status */
+  --status-healthy:   #7ef0c2;
+  --status-degraded:  #ffb454;
+  --status-attention: #ff7a50;
+
+  /* Chrome */
+  --border:        rgba(126, 240, 194, 0.12);
+  --border-strong: rgba(126, 240, 194, 0.28);
+  --border-hover:  rgba(126, 240, 194, 0.22);
+  --focus-ring:    rgba(126, 240, 194, 0.35);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 24px 80px rgba(0, 0, 0, 0.45);
+
+  /* Body background */
+  --grad-1: rgba(126, 240, 194, 0.08);
+  --grad-2: rgba(86, 145, 255, 0.08);
+  --grad-3: rgba(126, 240, 194, 0.04);
+  --body-start: #0b1016;
+  --body-mid:   #0d131c;
+  --body-end:   #091018;
+  --dot-color:  rgba(126, 240, 194, 0.045);
+  --grid-color: rgba(126, 240, 194, 0.045);
+
+  /* Inputs & controls */
+  --input-bg:             rgba(9, 15, 22, 0.55);
+  --control-bg:           rgba(126, 240, 194, 0.06);
+  --control-border:       rgba(126, 240, 194, 0.22);
+  --control-hover-bg:     rgba(126, 240, 194, 0.12);
+  --control-hover-border: rgba(126, 240, 194, 0.4);
+  --control-text:         var(--accent);
+
+  /* Toggles */
+  --toggle-active-bg:   var(--accent-subtle);
+  --toggle-active-text: var(--accent);
+  --toggle-hover-bg:    rgba(255, 255, 255, 0.04);
+
+  /* Spacing scale (4px base) */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+
+  /* Radii */
+  --radius-sm:   10px;
+  --radius-md:   12px;
+  --radius-lg:   16px;
+  --radius-xl:   20px;
+  --radius-2xl:  24px;
+  --radius-pill: 999px;
+
+  /* Typography */
+  --font-sans: "Geist", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Type scale — t-shirt sizes anchored at 14px body. Use these tokens
+     instead of raw px so future passes can rescale without sweeping the
+     whole file. Relative units (em/rem/inherit) are intentional and stay
+     as-is. */
+  --font-size-2xs:  10px;
+  --font-size-xs:   11px;
+  --font-size-sm:   12px;
+  --font-size-md:   13px;
+  --font-size-base: 14px;
+  --font-size-lg:   15px;
+  --font-size-xl:   16px;
+  --font-size-2xl:  18px;
+  --font-size-3xl:  20px;
+
+  /* Font weights — the only non-token weight allowed today is the
+     one-off 650 used by .project-inventory-title for an intentional
+     tighter-than-bold look. */
+  --font-weight-regular:  400;
+  --font-weight-medium:   500;
+  --font-weight-semibold: 600;
+  --font-weight-bold:     700;
+
+  /* Motion — durations and easings.
+
+     The hover/state transition tier uses a small scale
+     (instant/fast/base/medium). Named keyframe animations get
+     semantic tokens because their duration is coupled to a specific
+     timing curve and cannot be freely reshuffled. The three most
+     common timing functions (ease, ease-in-out, ease-out) are
+     tokenized; rare one-offs (linear, steps()) remain inline.
+
+     A global @media (prefers-reduced-motion: reduce) block at the
+     bottom of the inline stylesheet already collapses every
+     transition and finite animation to 0.01ms, plus the four reduce
+     blocks that null specific infinite animations. So tokenization
+     here is visually identical to current main. */
+  --duration-instant: 80ms;
+  --duration-fast:    140ms;
+  --duration-toast:   160ms;
+  --duration-base:    200ms;
+  --duration-medium:  250ms;
+  --duration-shake:   300ms;
+  --duration-fade-up: 400ms;
+  --duration-new-pulse: 420ms;
+  --duration-attention: 900ms;
+  --duration-blink:   1100ms;
+  --duration-pip:     1200ms;
+  --duration-shimmer: 1500ms;
+  --duration-pulse:   2400ms;
+
+  --ease-standard: ease;
+  --ease-in-out:   ease-in-out;
+  --ease-out:      ease-out;
+}
