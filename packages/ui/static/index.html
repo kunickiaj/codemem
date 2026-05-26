@@ -1038,6 +1038,28 @@
         gap: var(--sp-3);
         margin-top: var(--sp-4);
       }
+      .project-inventory-skeleton {
+        display: grid;
+        gap: var(--sp-3);
+        margin-top: var(--sp-4);
+      }
+      .project-inventory-skeleton-row {
+        padding: var(--sp-4);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-1);
+      }
+      .project-inventory-skeleton-line {
+        height: 12px;
+        border-radius: var(--radius-pill);
+        background: linear-gradient(90deg, var(--border) 25%, var(--surface-2) 50%, var(--border) 75%);
+        background-size: 400px 100%;
+        animation: sync-shimmer var(--duration-shimmer) var(--ease-in-out) infinite;
+        margin: var(--sp-2) 0;
+      }
+      .project-inventory-skeleton-line.title { width: 42%; height: 16px; }
+      .project-inventory-skeleton-line.meta { width: 68%; }
+      .project-inventory-skeleton-line.signal { width: 86%; }
       .project-inventory-row {
         padding: var(--sp-4);
         border: 1px solid var(--border);
@@ -3670,6 +3692,18 @@
           <select id="projectsStatusFilter" aria-label="Project status filter"></select>
         </div>
         <div class="section-meta" id="projectsInventoryMeta">Loading project inventory…</div>
+        <div class="project-inventory-skeleton" id="projectsInventorySkeleton" role="status" aria-label="Loading project inventory" aria-busy="true">
+          <div class="project-inventory-skeleton-row">
+            <div class="project-inventory-skeleton-line title"></div>
+            <div class="project-inventory-skeleton-line meta"></div>
+            <div class="project-inventory-skeleton-line signal"></div>
+          </div>
+          <div class="project-inventory-skeleton-row">
+            <div class="project-inventory-skeleton-line title"></div>
+            <div class="project-inventory-skeleton-line meta"></div>
+            <div class="project-inventory-skeleton-line signal"></div>
+          </div>
+        </div>
         <div class="project-inventory-list" id="projectsInventoryList" aria-live="polite"></div>
         <div class="section-actions projects-pagination">
           <button class="settings-button" id="projectsPrevPage" type="button">Previous</button>
