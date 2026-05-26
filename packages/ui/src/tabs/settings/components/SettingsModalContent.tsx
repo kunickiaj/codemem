@@ -1,6 +1,7 @@
 import type { ComponentChildren } from "preact";
 import { DialogCloseButton } from "../../../components/primitives/dialog-close-button";
 import { RadixTabs, RadixTabsContent } from "../../../components/primitives/radix-tabs";
+import { handlePrimaryActionKeyboard } from "../../../lib/keyboard";
 import { SETTINGS_TABS } from "../data/constants";
 import type { SettingsPanelProps, SettingsRenderState } from "../data/types";
 import { ObserverPanel } from "./ObserverPanel";
@@ -34,8 +35,18 @@ export function SettingsModalContent({
 	onAdvancedToggle,
 	observerStatusBannerSlot,
 }: SettingsModalContentProps) {
+	const saveDisabled = !settingsDirty || renderState.isSaving;
 	return (
-		<div className="modal-card">
+		// biome-ignore lint/a11y/noStaticElementInteractions: delegated keydown for primary-action handling; the actual interactive element is the Save button below, which is announced semantically. Radix Dialog handles Escape itself.
+		<div
+			className="modal-card"
+			onKeyDown={(event) =>
+				handlePrimaryActionKeyboard(event, {
+					onSubmit: onSave,
+					disabled: saveDisabled,
+				})
+			}
+		>
 			<div className="modal-header">
 				<h2 id="settingsTitle">Settings</h2>
 				<DialogCloseButton
@@ -113,7 +124,8 @@ export function SettingsModalContent({
 				</div>
 				<button
 					className="settings-save"
-					disabled={!settingsDirty || renderState.isSaving}
+					data-primary-action="true"
+					disabled={saveDisabled}
 					id="settingsSave"
 					onClick={onSave}
 					type="button"
