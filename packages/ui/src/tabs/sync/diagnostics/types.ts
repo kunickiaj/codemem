@@ -36,6 +36,7 @@ export type SyncStatusState = {
 export type SyncAttemptState = {
 	address?: string;
 	error?: string;
+	error_redacted?: boolean;
 	finished_at?: string;
 	ops_in?: number;
 	ops_out?: number;
