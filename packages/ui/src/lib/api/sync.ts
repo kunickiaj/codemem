@@ -211,6 +211,8 @@ export interface ProjectScopeCandidate {
 	git_remote: string | null;
 	git_branch: string | null;
 	latest_session_at: string | null;
+	read_only?: boolean;
+	read_only_reason?: "peer_received" | null;
 	resolved_scope_id: string;
 	resolution_reason: string;
 	mapping_id: number | null;
@@ -226,6 +228,7 @@ export type ProjectScopeInventoryStatus =
 	| "legacy_review"
 	| "local_only"
 	| "needs_attention"
+	| "received"
 	| "suggested"
 	| "unmapped";
 

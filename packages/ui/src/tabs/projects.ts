@@ -15,6 +15,7 @@ const STATUS_OPTIONS = [
 	["needs_attention", "Needs review"],
 	["suggested", "Has suggestion"],
 	["local_only", "Stays on this device"],
+	["received", "Received from peers"],
 	["explicitly_mapped", "Already assigned"],
 	["legacy_review", "Older shared data"],
 	["unmapped", "Missing project identity"],
@@ -57,6 +58,26 @@ function formatResolution(reason: string): string {
 		default:
 			return "stays on this device";
 	}
+}
+
+function isPeerReceivedProject(project: ProjectScopeInventoryProject): boolean {
+	return project.read_only === true && project.read_only_reason === "peer_received";
+}
+
+function isLocallyAssignableProject(project: ProjectScopeInventoryProject): boolean {
+	return project.identity_source !== "unmapped" && !isPeerReceivedProject(project);
+}
+
+function projectDomainLabel(project: ProjectScopeInventoryProject): string {
+	return isPeerReceivedProject(project)
+		? "Received from peers"
+		: scopeSummary(project.resolved_scope_id);
+}
+
+function projectResolutionLabel(project: ProjectScopeInventoryProject): string {
+	return isPeerReceivedProject(project)
+		? "source-owned project"
+		: formatResolution(project.resolution_reason);
 }
 
 function formatLatest(value: string | null): string {
@@ -301,7 +322,7 @@ async function saveProjectClusterMapping(
 	projects: ProjectScopeInventoryProject[],
 	scopeId: string,
 ) {
-	const assignable = projects.filter((project) => project.identity_source !== "unmapped");
+	const assignable = projects.filter(isLocallyAssignableProject);
 	if (assignable.length === 0) return;
 	try {
 		await api.saveSharingDomainProjectMappings({
@@ -421,6 +442,14 @@ async function reassignProject(project: ProjectScopeInventoryProject) {
 function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElement {
 	const actions = document.createElement("div");
 	actions.className = "project-inventory-actions";
+	if (isPeerReceivedProject(project)) {
+		const note = document.createElement("div");
+		note.className = "settings-note";
+		note.textContent =
+			"This project was received from a peer. Change its project or Space on the source device; this node keeps the received identity read-only.";
+		actions.appendChild(note);
+		return actions;
+	}
 	if (project.identity_source === "unmapped") {
 		const note = document.createElement("div");
 		note.className = "settings-note";
@@ -593,14 +622,22 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 
 	const domain = document.createElement("div");
 	domain.className = "project-inventory-domain";
-	domain.textContent = scopeSummary(project.resolved_scope_id);
+	domain.textContent = projectDomainLabel(project);
 	header.appendChild(domain);
 	row.appendChild(header);
 
 	const meta = document.createElement("div");
 	meta.className = "project-inventory-meta";
-	meta.textContent = `${formatResolution(project.resolution_reason)} · ${project.identity_source} · ${formatLatest(project.latest_session_at)}`;
+	meta.textContent = `${projectResolutionLabel(project)} · ${project.identity_source} · ${formatLatest(project.latest_session_at)}`;
 	row.appendChild(meta);
+
+	if (isPeerReceivedProject(project)) {
+		const receivedNote = document.createElement("div");
+		receivedNote.className = "settings-note";
+		receivedNote.textContent =
+			"Received memories keep the source device's project and Space assignment. Local reassignment controls are disabled here to avoid split-brain sync state.";
+		row.appendChild(receivedNote);
+	}
 
 	const signal = document.createElement("div");
 	signal.className = "project-inventory-signal mono";
@@ -616,7 +653,9 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 		row.appendChild(suggestion);
 	}
 
-	const warnings = project.guardrail_warnings.filter((warning) => warning.severity === "warning");
+	const warnings = (project.guardrail_warnings ?? []).filter(
+		(warning) => warning.severity === "warning",
+	);
 	if (warnings.length > 0) {
 		const warningBox = document.createElement("div");
 		warningBox.className = "settings-note project-attention-note";
@@ -654,7 +693,7 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 		["CWD", project.cwd],
 		["Git remote", project.git_remote],
 		["Git branch", project.git_branch],
-		["Current Space", scopeSummary(project.resolved_scope_id)],
+		["Current Space", projectDomainLabel(project)],
 		[
 			"Suggested Space",
 			project.suggested_scope_id ? scopeSummary(project.suggested_scope_id) : null,
@@ -679,8 +718,8 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 }
 
 function clusterDomainLabel(projects: ProjectScopeInventoryProject[]): string {
-	const uniqueScopes = [...new Set(projects.map((project) => project.resolved_scope_id))];
-	return uniqueScopes.length === 1 ? scopeSummary(uniqueScopes[0]) : "Mixed Spaces";
+	const uniqueLabels = [...new Set(projects.map((project) => projectDomainLabel(project)))];
+	return uniqueLabels.length === 1 ? uniqueLabels[0] : "Mixed Spaces";
 }
 
 function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLElement {
@@ -710,42 +749,58 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 
 	const actions = document.createElement("div");
 	actions.className = "project-inventory-actions";
-	const hasGuardrailWarnings = projects.some((project) => project.guardrail_warnings.length > 0);
-	const suggestedScopes = new Set(
-		projects
-			.map((project) => project.suggested_scope_id)
-			.filter((scopeId): scopeId is string => Boolean(scopeId)),
-	);
-	const resolvedScopes = new Set(projects.map((project) => project.resolved_scope_id));
-	const select = document.createElement("select");
-	select.className = "project-domain-select";
-	select.setAttribute("aria-label", `Space for ${projectClusterLabel(projects[0])} group`);
-	const placeholder = document.createElement("option");
-	placeholder.value = "";
-	placeholder.textContent = "Choose Space…";
-	select.appendChild(placeholder);
-	appendAssignableScopeOptions(select);
-	select.value = "";
-	const save = document.createElement("button");
-	save.className = "settings-button";
-	save.type = "button";
-	save.textContent = `Save Space for ${projects.length} identities`;
-	save.disabled = true;
-	save.addEventListener("click", () => void saveProjectClusterMapping(projects, select.value));
-	select.addEventListener("change", () => {
-		save.disabled = !select.value || hasGuardrailWarnings;
-	});
-	select.addEventListener("blur", refreshSkippedProjectDataAfterSelectBlur);
-	actions.append(select, save);
-	if (suggestedScopes.size > 1 || resolvedScopes.size > 1 || hasGuardrailWarnings) {
+	const assignableProjects = projects.filter(isLocallyAssignableProject);
+	if (assignableProjects.length === 0) {
 		const note = document.createElement("div");
-		note.className = "settings-note project-attention-note";
-		note.textContent = hasGuardrailWarnings
-			? "One or more identities in this group need individual review before bulk assignment."
-			: "This group has mixed suggestions or current Spaces. Choose a Space explicitly before bulk assignment.";
+		note.className = "settings-note";
+		note.textContent = projects.every(isPeerReceivedProject)
+			? "These project identities were received from peers. Change project or Space assignments on their source devices."
+			: "These project identities cannot be bulk assigned until they have stable local identities. Expand each identity for details.";
 		actions.appendChild(note);
+		row.appendChild(actions);
+	} else {
+		const hasGuardrailWarnings = assignableProjects.some(
+			(project) => (project.guardrail_warnings ?? []).length > 0,
+		);
+		const suggestedScopes = new Set(
+			assignableProjects
+				.map((project) => project.suggested_scope_id)
+				.filter((scopeId): scopeId is string => Boolean(scopeId)),
+		);
+		const resolvedScopes = new Set(assignableProjects.map((project) => project.resolved_scope_id));
+		const select = document.createElement("select");
+		select.className = "project-domain-select";
+		select.setAttribute("aria-label", `Space for ${projectClusterLabel(projects[0])} group`);
+		const placeholder = document.createElement("option");
+		placeholder.value = "";
+		placeholder.textContent = "Choose Space…";
+		select.appendChild(placeholder);
+		appendAssignableScopeOptions(select);
+		select.value = "";
+		const save = document.createElement("button");
+		save.className = "settings-button";
+		save.type = "button";
+		save.textContent = `Save Space for ${assignableProjects.length} identit${assignableProjects.length === 1 ? "y" : "ies"}`;
+		save.disabled = true;
+		save.addEventListener(
+			"click",
+			() => void saveProjectClusterMapping(assignableProjects, select.value),
+		);
+		select.addEventListener("change", () => {
+			save.disabled = !select.value || hasGuardrailWarnings;
+		});
+		select.addEventListener("blur", refreshSkippedProjectDataAfterSelectBlur);
+		actions.append(select, save);
+		if (suggestedScopes.size > 1 || resolvedScopes.size > 1 || hasGuardrailWarnings) {
+			const note = document.createElement("div");
+			note.className = "settings-note project-attention-note";
+			note.textContent = hasGuardrailWarnings
+				? "One or more identities in this group need individual review before bulk assignment."
+				: "This group has mixed suggestions or current Spaces. Choose a Space explicitly before bulk assignment.";
+			actions.appendChild(note);
+		}
+		row.appendChild(actions);
 	}
-	row.appendChild(actions);
 
 	const details = document.createElement("details");
 	details.className = "project-inventory-details";

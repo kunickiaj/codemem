@@ -45,20 +45,26 @@ function insertSession(
 function insertMemory(
 	db: InstanceType<typeof Database>,
 	sessionId: number,
-	input: { workspaceId?: string | null } = {},
+	input: {
+		originDeviceId?: string | null;
+		project?: string | null;
+		workspaceId?: string | null;
+	} = {},
 ) {
 	const now = "2026-05-06T00:00:00Z";
 	db.prepare(
 		`INSERT INTO memory_items(
 			session_id, kind, title, body_text, created_at, updated_at,
-			visibility, workspace_id, active, metadata_json
-		 ) VALUES (?, 'discovery', 'Scoped project', 'Body', ?, ?, 'shared', ?, 1, ?)`,
+			visibility, workspace_id, origin_device_id, active, metadata_json, project
+		 ) VALUES (?, 'discovery', 'Scoped project', 'Body', ?, ?, 'shared', ?, ?, 1, ?, ?)`,
 	).run(
 		sessionId,
 		now,
 		now,
 		input.workspaceId === undefined ? "shared:acme" : input.workspaceId,
+		input.originDeviceId === undefined ? null : input.originDeviceId,
 		toJson({}),
+		input.project === undefined ? null : input.project,
 	);
 }
 
@@ -693,7 +699,7 @@ describe("project scope settings", () => {
 		).toThrow(/not an active Sharing domain/);
 	});
 
-	it("excludes synthetic sync-bootstrap sessions from the project inventory", () => {
+	it("surfaces bootstrap memory projects without exposing synthetic session cwd", () => {
 		// Real session — should appear in the inventory.
 		const realSession = insertSession(db, {
 			cwd: "/workspace/work/exampleco/api",
@@ -710,7 +716,11 @@ describe("project scope settings", () => {
 			gitRemote: null,
 			project: "codemem",
 		});
-		insertMemory(db, bootstrapSession, { workspaceId: "shared:default" });
+		insertMemory(db, bootstrapSession, {
+			originDeviceId: "peer-a",
+			project: "codemem",
+			workspaceId: "shared:default",
+		});
 
 		const bareBootstrapSession = insertSession(db, {
 			cwd: "__sync_bootstrap__",
@@ -723,12 +733,283 @@ describe("project scope settings", () => {
 		const cwds = inventory.projects.map((project) => project.cwd ?? "");
 		expect(cwds).not.toContain("__sync_bootstrap__:codemem");
 		expect(cwds).not.toContain("__sync_bootstrap__");
+		expect(inventory.projects).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					cwd: null,
+					display_project: "codemem",
+					memory_count: 1,
+					project: "codemem",
+					read_only: true,
+					read_only_reason: "peer_received",
+					statuses: ["received"],
+					workspace_identity: "peer-received:peer-a:project:codemem",
+				}),
+			]),
+		);
 		// Real session is still surfaced.
 		expect(
 			inventory.projects.some(
 				(project) => project.workspace_identity === "https://git.example.invalid/exampleco/api.git",
 			),
 		).toBe(true);
+	});
+
+	it("lists project inventory when every memory arrived from sync bootstrap", () => {
+		const codememSession = insertSession(db, {
+			cwd: "__sync_bootstrap__:codemem",
+			gitRemote: null,
+			project: "codemem",
+		});
+		insertMemory(db, codememSession, {
+			originDeviceId: "peer-a",
+			project: "codemem",
+			workspaceId: "shared:default",
+		});
+
+		const backstageSession = insertSession(db, {
+			cwd: "__sync_bootstrap__:backstage",
+			gitRemote: null,
+			project: "backstage",
+		});
+		insertMemory(db, backstageSession, {
+			originDeviceId: "peer-a",
+			project: "backstage",
+			workspaceId: "shared:default",
+		});
+
+		const inventory = listProjectScopeInventory(db);
+		expect(inventory.total).toBe(2);
+		expect(inventory.projects.map((project) => project.display_project).sort()).toEqual([
+			"backstage",
+			"codemem",
+		]);
+		expect(inventory.projects.every((project) => project.cwd === null)).toBe(true);
+		expect(inventory.projects.every((project) => project.read_only)).toBe(true);
+		expect(inventory.projects.every((project) => project.session_count === 0)).toBe(true);
+		expect(inventory.projects.every((project) => project.statuses.includes("received"))).toBe(true);
+	});
+
+	it("keeps peer-received identities separate from local project-like identities", () => {
+		const localSession = insertSession(db, {
+			cwd: null,
+			gitRemote: null,
+			project: "codemem",
+		});
+		insertMemory(db, localSession, { project: "codemem", workspaceId: "project:codemem" });
+
+		const bootstrapSession = insertSession(db, {
+			cwd: "__sync_bootstrap__:codemem",
+			gitRemote: null,
+			project: "codemem",
+		});
+		insertMemory(db, bootstrapSession, {
+			originDeviceId: "peer-a",
+			project: "codemem",
+			workspaceId: "shared:default",
+		});
+
+		const inventory = listProjectScopeInventory(db);
+		const local = inventory.projects.find(
+			(project) => project.workspace_identity === "project:codemem",
+		);
+		const received = inventory.projects.find(
+			(project) => project.workspace_identity === "peer-received:peer-a:project:codemem",
+		);
+
+		expect(local).toEqual(
+			expect.objectContaining({
+				memory_count: 1,
+				read_only: false,
+				read_only_reason: null,
+				session_count: 1,
+			}),
+		);
+		expect(received).toEqual(
+			expect.objectContaining({
+				memory_count: 1,
+				read_only: true,
+				read_only_reason: "peer_received",
+				session_count: 0,
+				statuses: ["received"],
+			}),
+		);
+	});
+
+	it("keeps peer-received rows separate when local workspace ids use the reserved prefix", () => {
+		const localSession = insertSession(db, {
+			cwd: null,
+			gitRemote: null,
+			project: "codemem",
+		});
+		insertMemory(db, localSession, {
+			project: "codemem",
+			workspaceId: "peer-received:peer-a:project:codemem",
+		});
+
+		const bootstrapSession = insertSession(db, {
+			cwd: "__sync_bootstrap__:codemem",
+			gitRemote: null,
+			project: "codemem",
+		});
+		insertMemory(db, bootstrapSession, {
+			originDeviceId: "peer-a",
+			project: "codemem",
+			workspaceId: "shared:default",
+		});
+
+		const matches = listProjectScopeInventory(db).projects.filter(
+			(project) => project.workspace_identity === "peer-received:peer-a:project:codemem",
+		);
+
+		expect(matches).toHaveLength(2);
+		expect(matches).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					memory_count: 1,
+					read_only: false,
+					read_only_reason: null,
+					session_count: 1,
+				}),
+				expect.objectContaining({
+					memory_count: 1,
+					read_only: true,
+					read_only_reason: "peer_received",
+					session_count: 0,
+					statuses: ["received"],
+				}),
+			]),
+		);
+	});
+
+	it("keeps mapping-only project identities editable when received projects share a name", () => {
+		insertScope(db, { scopeId: "exampleco-work", label: "ExampleCo Work" });
+		upsertProjectScopeSettingsMapping(db, {
+			project_pattern: "codemem",
+			scope_id: "exampleco-work",
+			workspace_identity: "project:codemem",
+		});
+
+		const bootstrapSession = insertSession(db, {
+			cwd: "__sync_bootstrap__:codemem",
+			gitRemote: null,
+			project: "codemem",
+		});
+		insertMemory(db, bootstrapSession, {
+			originDeviceId: "peer-a",
+			project: "codemem",
+			workspaceId: "shared:default",
+		});
+
+		const inventory = listProjectScopeInventory(db);
+		const mappingOnly = inventory.projects.find(
+			(project) => project.workspace_identity === "project:codemem",
+		);
+		const received = inventory.projects.find(
+			(project) => project.workspace_identity === "peer-received:peer-a:project:codemem",
+		);
+
+		expect(mappingOnly).toEqual(
+			expect.objectContaining({
+				memory_count: 0,
+				read_only: false,
+				resolved_scope_id: "exampleco-work",
+				statuses: expect.arrayContaining(["explicitly_mapped"]),
+			}),
+		);
+		expect(received).toEqual(
+			expect.objectContaining({
+				memory_count: 1,
+				read_only: true,
+				statuses: ["received"],
+			}),
+		);
+	});
+
+	it("rejects direct assignment of peer-received project identities without local rows", () => {
+		insertScope(db, { scopeId: "exampleco-work", label: "ExampleCo Work" });
+
+		expect(() =>
+			upsertProjectScopeSettingsMapping(db, {
+				project_pattern: "codemem",
+				scope_id: "exampleco-work",
+				workspace_identity: "peer-received:peer-a:project:codemem",
+			}),
+		).toThrow(/peer-received projects cannot be assigned/);
+	});
+
+	it("allows assignment of reserved-prefix identities when a real local row owns them", () => {
+		insertScope(db, { scopeId: "exampleco-work", label: "ExampleCo Work" });
+		const localSession = insertSession(db, {
+			cwd: null,
+			gitRemote: null,
+			project: "codemem",
+		});
+		insertMemory(db, localSession, {
+			project: "codemem",
+			workspaceId: "peer-received:peer-a:project:codemem",
+		});
+
+		const mapping = upsertProjectScopeSettingsMapping(db, {
+			project_pattern: "codemem",
+			scope_id: "exampleco-work",
+			workspace_identity: "peer-received:peer-a:project:codemem",
+		});
+
+		expect(mapping.scope_id).toBe("exampleco-work");
+	});
+
+	it("does not let peer-received duplicates inherit local mapping semantics", () => {
+		insertScope(db, { scopeId: "exampleco-work", label: "ExampleCo Work" });
+		const localSession = insertSession(db, {
+			cwd: null,
+			gitRemote: null,
+			project: "codemem",
+		});
+		insertMemory(db, localSession, {
+			project: "codemem",
+			workspaceId: "peer-received:peer-a:project:codemem",
+		});
+		upsertProjectScopeSettingsMapping(db, {
+			project_pattern: "codemem",
+			scope_id: "exampleco-work",
+			workspace_identity: "peer-received:peer-a:project:codemem",
+		});
+
+		const bootstrapSession = insertSession(db, {
+			cwd: "__sync_bootstrap__:codemem",
+			gitRemote: null,
+			project: "codemem",
+		});
+		insertMemory(db, bootstrapSession, {
+			originDeviceId: "peer-a",
+			project: "codemem",
+			workspaceId: "shared:default",
+		});
+
+		const matches = listProjectScopeInventory(db).projects.filter(
+			(project) => project.workspace_identity === "peer-received:peer-a:project:codemem",
+		);
+		const received = matches.find((project) => project.read_only === true);
+		const mapped = listProjectScopeInventory(db, { scopeId: "exampleco-work" }).projects;
+
+		expect(received).toEqual(
+			expect.objectContaining({
+				mapping_id: null,
+				matched_pattern: null,
+				read_only: true,
+				resolution_reason: "local_default",
+				resolved_scope_id: LOCAL_DEFAULT_SCOPE_ID,
+				statuses: ["received"],
+			}),
+		);
+		expect(mapped).toHaveLength(1);
+		expect(mapped[0]).toEqual(
+			expect.objectContaining({
+				read_only: false,
+				resolved_scope_id: "exampleco-work",
+			}),
+		);
 	});
 
 	it("keeps cwds that only coincidentally match the bootstrap LIKE-wildcard shape", () => {

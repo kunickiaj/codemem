@@ -184,6 +184,39 @@ describe("Projects tab", () => {
 		);
 	});
 
+	it("renders peer-received project identities read-only", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [
+				project({
+					cwd: null,
+					display_project: "codemem",
+					git_branch: null,
+					git_remote: null,
+					identity_source: "workspace_id",
+					memory_count: 18111,
+					project: "codemem",
+					read_only: true,
+					read_only_reason: "peer_received",
+					session_count: 0,
+					statuses: ["received"],
+					workspace_identity: "peer-received:peer-a:project:codemem",
+				}),
+			],
+			total: 1,
+		});
+
+		initProjectsTab(() => {});
+		await loadProjectsData();
+
+		expect(document.body.textContent).toContain("Received from peers");
+		expect(document.body.textContent).toContain("Change its project or Space on the source device");
+		expect(document.querySelector(".project-domain-select")).toBeNull();
+		expect(document.body.textContent).not.toContain("Change project…");
+	});
+
 	it("does not reload inventory while a Space select is active", async () => {
 		const refresh = vi.fn();
 		initProjectsTab(refresh);
@@ -388,6 +421,99 @@ describe("Projects tab", () => {
 				}),
 			]),
 		});
+	});
+
+	it("excludes peer-received identities from cluster bulk assignment", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [
+				project({
+					cwd: "/workspace/a",
+					git_remote: null,
+					identity_source: "cwd",
+					memory_count: 2,
+					session_count: 1,
+					workspace_identity: "/workspace/a",
+				}),
+				project({
+					cwd: null,
+					git_branch: null,
+					git_remote: null,
+					guardrail_warnings: [
+						{
+							code: "basename_collision_review",
+							message: "Peer-received rows should not block local bulk assignment.",
+							requires_confirmation: true,
+							severity: "warning",
+						},
+					],
+					identity_source: "workspace_id",
+					memory_count: 4,
+					read_only: true,
+					read_only_reason: "peer_received",
+					session_count: 0,
+					statuses: ["received"],
+					workspace_identity: "peer-received:peer-a:project:api",
+				}),
+			],
+			total: 2,
+		});
+
+		await loadProjectsData();
+
+		expect(document.body.textContent).toContain("2 identities · 1 sessions · 6 memories");
+		expect(document.body.textContent).toContain("Save Space for 1 identity");
+		const select = document.querySelector(
+			".project-inventory-cluster select",
+		) as HTMLSelectElement | null;
+		if (!select) throw new Error("cluster select missing");
+		select.value = "exampleco-work";
+		select.dispatchEvent(new Event("change", { bubbles: true }));
+		const save = Array.from(document.querySelectorAll("button")).find(
+			(button) => button.textContent === "Save Space for 1 identity",
+		) as HTMLButtonElement | undefined;
+		expect(save?.disabled).toBe(false);
+		save?.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(api.saveSharingDomainProjectMappings).toHaveBeenCalledWith({
+			mappings: [
+				expect.objectContaining({
+					scope_id: "exampleco-work",
+					workspace_identity: "/workspace/a",
+				}),
+			],
+		});
+	});
+
+	it("does not show bulk Space controls for unmapped-only clusters", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [
+				project({
+					cwd: null,
+					git_remote: null,
+					identity_source: "unmapped",
+					workspace_identity: "unmapped:one",
+				}),
+				project({
+					cwd: null,
+					git_remote: null,
+					identity_source: "unmapped",
+					workspace_identity: "unmapped:two",
+				}),
+			],
+			total: 2,
+		});
+
+		await loadProjectsData();
+
+		expect(document.body.textContent).not.toContain("Save Space for");
+		expect(document.querySelector(".project-inventory-cluster select")).toBeNull();
 	});
 
 	it("blocks cluster bulk assignment when an identity needs guardrail review", async () => {

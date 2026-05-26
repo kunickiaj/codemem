@@ -76,6 +76,8 @@ export interface ProjectScopeCandidate {
 	suggestion_reason: string | null;
 	suggestion_signal: WorkspaceIdentitySource | null;
 	guardrail_warnings: ProjectScopeGuardrailWarning[];
+	read_only: boolean;
+	read_only_reason: "peer_received" | null;
 }
 
 export type ProjectScopeInventoryStatus =
@@ -83,6 +85,7 @@ export type ProjectScopeInventoryStatus =
 	| "legacy_review"
 	| "local_only"
 	| "needs_attention"
+	| "received"
 	| "suggested"
 	| "unmapped";
 
@@ -132,6 +135,8 @@ export interface ProjectScopeMappingChangeGuardrailAnalysis {
 	warnings: ProjectScopeGuardrailWarning[];
 }
 
+const PEER_RECEIVED_WORKSPACE_IDENTITY_PREFIX = "peer-received:";
+
 export interface ReassignProjectScopeInventoryProjectResult {
 	workspace_identity: string;
 	project: string;
@@ -142,6 +147,7 @@ export interface ReassignProjectScopeInventoryProjectResult {
 
 interface ProjectScopeCandidateRow {
 	id: number;
+	inventory_source?: "local" | "peer_received" | null;
 	started_at: string | null;
 	cwd: string | null;
 	project: string | null;
@@ -155,6 +161,31 @@ interface ProjectScopeCandidateRow {
 function clean(value: string | null | undefined): string | null {
 	const trimmed = value?.trim();
 	return trimmed ? trimmed : null;
+}
+
+function inventoryMergeKey(
+	row: ProjectScopeCandidateRow,
+	candidate: ProjectScopeCandidate,
+): string {
+	return `${row.inventory_source === "peer_received" ? "peer_received" : "local"}:${candidate.workspace_identity}`;
+}
+
+function hasLocalInventoryIdentity(db: Database, workspaceIdentity: string): boolean {
+	const row = db
+		.prepare(
+			`SELECT 1 AS one
+			 FROM sessions s
+			 JOIN memory_items mi ON mi.session_id = s.id
+			 WHERE (s.cwd IS NULL OR substr(s.cwd, 1, length(?)) <> ?)
+			   AND COALESCE(TRIM(s.git_remote), TRIM(s.cwd), '') = ''
+			   AND mi.workspace_id IS NOT NULL
+			   AND TRIM(mi.workspace_id) = ?
+			 LIMIT 1`,
+		)
+		.get(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX, workspaceIdentity) as
+		| { one: number }
+		| undefined;
+	return Boolean(row);
 }
 
 function normalizeWorkspaceIdentity(value: string | null | undefined): string | null {
@@ -362,6 +393,7 @@ function projectScopeCandidateGuardrailWarnings(
 	collisions: Map<string, ProjectScopeCandidate[]>,
 ): ProjectScopeGuardrailWarning[] {
 	const warnings: ProjectScopeGuardrailWarning[] = [];
+	if (project.read_only) return warnings;
 	if (project.resolution_reason === "local_default") {
 		warnings.push({
 			code: "unknown_project_local_only",
@@ -400,7 +432,10 @@ function withCandidateGuardrails(candidates: ProjectScopeCandidate[]): ProjectSc
 
 function inventoryStatuses(project: ProjectScopeCandidate): ProjectScopeInventoryStatus[] {
 	const statuses = new Set<ProjectScopeInventoryStatus>();
-	if (project.resolved_scope_id === LOCAL_DEFAULT_SCOPE_ID) statuses.add("local_only");
+	if (project.read_only) return ["received"];
+	if (!project.read_only && project.resolved_scope_id === LOCAL_DEFAULT_SCOPE_ID) {
+		statuses.add("local_only");
+	}
 	if (project.resolved_scope_id === LEGACY_SHARED_REVIEW_SCOPE_ID) statuses.add("legacy_review");
 	if (project.identity_source === "unmapped") statuses.add("unmapped");
 	if (project.suggested_scope_id && project.suggested_scope_id !== project.resolved_scope_id) {
@@ -467,6 +502,8 @@ function buildProjectScopeCandidate(
 		resolution_reason: resolution.reason,
 		mapping_id: resolution.mapping?.id ?? null,
 		matched_pattern: resolution.matchedPattern,
+		read_only: false,
+		read_only_reason: null,
 		suggested_scope_id: null,
 		suggestion_reason: null,
 		suggestion_signal: null,
@@ -783,6 +820,7 @@ export function listProjectScopeInventory(
 		.prepare(
 			`SELECT
 				s.id,
+				'local' AS inventory_source,
 				MAX(s.started_at) AS started_at,
 				s.cwd,
 				s.project,
@@ -810,15 +848,60 @@ export function listProjectScopeInventory(
 			 ORDER BY MAX(s.started_at) DESC, s.id DESC`,
 		)
 		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as ProjectScopeCandidateRow[];
+	const bootstrapRows = db
+		.prepare(
+			`SELECT
+				MIN(s.id) AS id,
+				'peer_received' AS inventory_source,
+				MAX(COALESCE(mi.updated_at, s.started_at)) AS started_at,
+				NULL AS cwd,
+				TRIM(mi.project) AS project,
+				NULL AS git_remote,
+				NULL AS git_branch,
+				'peer-received:' || COALESCE(NULLIF(TRIM(mi.origin_device_id), ''), 'unknown') || ':project:' || TRIM(mi.project) AS workspace_id,
+				0 AS session_count,
+				COUNT(mi.id) AS memory_count
+			 FROM memory_items mi
+			 JOIN sessions s ON s.id = mi.session_id
+			 WHERE mi.active = 1
+			   AND mi.project IS NOT NULL
+			   AND TRIM(mi.project) <> ''
+			   AND s.cwd IS NOT NULL
+			   AND substr(s.cwd, 1, length(?)) = ?
+			 GROUP BY TRIM(mi.project), workspace_id
+			 ORDER BY MAX(COALESCE(mi.updated_at, s.started_at)) DESC, TRIM(mi.project) ASC`,
+		)
+		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as ProjectScopeCandidateRow[];
 
 	const byIdentity = new Map<string, ProjectScopeInventoryProject>();
 	const inventory: ProjectScopeInventoryProject[] = [];
-	for (const row of rows) {
-		const candidate = buildProjectScopeCandidate(row, mappings, scopes);
-		const existing = byIdentity.get(candidate.workspace_identity);
+	for (const row of [...rows, ...bootstrapRows]) {
+		const readOnly = row.inventory_source === "peer_received";
+		const candidate = {
+			...buildProjectScopeCandidate(row, mappings, scopes),
+			read_only: readOnly,
+			read_only_reason: readOnly ? "peer_received" : null,
+			...(readOnly
+				? {
+						mapping_id: null,
+						matched_pattern: null,
+						resolution_reason: "local_default" as const,
+						resolved_scope_id: LOCAL_DEFAULT_SCOPE_ID,
+						suggested_scope_id: null,
+						suggestion_reason: null,
+						suggestion_signal: null,
+					}
+				: {}),
+		} satisfies ProjectScopeCandidate;
+		const key = inventoryMergeKey(row, candidate);
+		const existing = byIdentity.get(key);
 		if (existing) {
 			existing.memory_count = (existing.memory_count ?? 0) + Number(row.memory_count ?? 0);
 			existing.session_count += Number(row.session_count ?? 1);
+			if (!readOnly) {
+				existing.read_only = false;
+				existing.read_only_reason = null;
+			}
 			continue;
 		}
 		const project = {
@@ -827,12 +910,13 @@ export function listProjectScopeInventory(
 			session_count: Number(row.session_count ?? 1),
 			statuses: [],
 		};
-		byIdentity.set(candidate.workspace_identity, project);
+		byIdentity.set(key, project);
 		inventory.push(project);
 	}
 
 	for (const mapping of mappings) {
-		if (!mapping.workspace_identity || byIdentity.has(mapping.workspace_identity)) continue;
+		if (!mapping.workspace_identity || byIdentity.has(`local:${mapping.workspace_identity}`))
+			continue;
 		const candidate: ProjectScopeCandidate = {
 			workspace_identity: mapping.workspace_identity,
 			identity_source: "workspace_id",
@@ -846,20 +930,20 @@ export function listProjectScopeInventory(
 			resolution_reason: "exact_mapping",
 			mapping_id: mapping.id,
 			matched_pattern: null,
+			read_only: false,
+			read_only_reason: null,
 			suggested_scope_id: null,
 			suggestion_reason: null,
 			suggestion_signal: null,
 			guardrail_warnings: [],
 		};
 		const project = { ...candidate, memory_count: 0, session_count: 0, statuses: [] };
-		byIdentity.set(mapping.workspace_identity, project);
+		byIdentity.set(`local:${mapping.workspace_identity}`, project);
 		inventory.push(project);
 	}
 
-	const withGuardrails = withCandidateGuardrails(inventory).map((project) => {
-		const original = inventory.find(
-			(item) => item.workspace_identity === project.workspace_identity,
-		);
+	const withGuardrails = withCandidateGuardrails(inventory).map((project, index) => {
+		const original = inventory[index];
 		return {
 			...project,
 			memory_count: original?.memory_count ?? null,
@@ -973,6 +1057,12 @@ export function upsertProjectScopeSettingsMapping(
 	const { existing, workspaceIdentity } = draft;
 	if (workspaceIdentity?.startsWith("unmapped:")) {
 		throw new Error("unmapped projects cannot be assigned to a Sharing domain");
+	}
+	if (
+		workspaceIdentity?.startsWith(PEER_RECEIVED_WORKSPACE_IDENTITY_PREFIX) &&
+		!hasLocalInventoryIdentity(db, workspaceIdentity)
+	) {
+		throw new Error("peer-received projects cannot be assigned on this device");
 	}
 	const projectPattern = draft.projectPattern;
 	if (!projectPattern) throw new Error("project_pattern or workspace_identity is required");
