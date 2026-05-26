@@ -842,6 +842,10 @@ function renderEmpty(message: string) {
 	list.appendChild(empty);
 }
 
+function hideProjectInventorySkeleton() {
+	document.getElementById("projectsInventorySkeleton")?.remove();
+}
+
 function renderProjectInventory(result: {
 	projects: ProjectScopeInventoryProject[];
 	total: number;
@@ -851,6 +855,7 @@ function renderProjectInventory(result: {
 	const meta = el<HTMLDivElement>("projectsInventoryMeta");
 	const list = el<HTMLDivElement>("projectsInventoryList");
 	if (!meta || !list) return;
+	hideProjectInventorySkeleton();
 	list.textContent = "";
 	if (result.projects.length === 0) {
 		renderEmpty("No projects match those filters.");
@@ -904,6 +909,7 @@ export async function loadProjectsData() {
 		renderProjectInventory(result);
 		refreshProjectCoordinatorGroupNamesInBackground(result);
 	} catch (error) {
+		hideProjectInventorySkeleton();
 		meta.textContent = "Project inventory failed to load.";
 		renderEmpty(error instanceof Error ? error.message : "Unable to load project inventory.");
 	}

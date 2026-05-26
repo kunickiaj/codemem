@@ -9,6 +9,7 @@ vi.mock("../health", () => ({ renderHealthOverview: vi.fn() }));
 vi.mock("./diagnostics", () => ({
 	renderSyncStatus: vi.fn(),
 	renderSyncAttempts: vi.fn(),
+	renderSyncDiagnosticsUnavailable: vi.fn(),
 	renderPairing: vi.fn(),
 	initDiagnosticsEvents: vi.fn(),
 	setRenderSyncPeers: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock("./team-sync", () => ({
 vi.mock("./people", () => ({
 	renderSyncActors: vi.fn(),
 	renderSyncPeers: vi.fn(),
+	renderSyncPeopleUnavailable: vi.fn(),
 	renderLegacyDeviceClaims: vi.fn(),
 	initPeopleEvents: vi.fn(),
 	setLoadSyncData: vi.fn(),
@@ -86,7 +88,6 @@ describe("loadSyncData", () => {
 			.mockReturnValueOnce(first.promise as never)
 			.mockReturnValueOnce(second.promise as never);
 		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
-
 		const firstLoad = loadSyncData();
 		const secondLoad = loadSyncData();
 
@@ -129,7 +130,6 @@ describe("loadSyncData", () => {
 			legacy_devices: [],
 		} as never);
 		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
-
 		await loadSyncData();
 		await loadSyncData();
 
@@ -137,5 +137,17 @@ describe("loadSyncData", () => {
 		expect(api.loadSyncStatus).toHaveBeenCalledWith(false, "", {
 			includeJoinRequests: false,
 		});
+	});
+
+	it("does not request secondary sync data when status fails", async () => {
+		const api = await import("../../lib/api");
+		const { loadSyncData } = await import("./index");
+
+		vi.mocked(api.loadSyncStatus).mockRejectedValue(new Error("status unavailable"));
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+
+		await loadSyncData();
+
+		expect(api.loadSyncActors).not.toHaveBeenCalled();
 	});
 });

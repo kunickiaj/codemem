@@ -85,6 +85,7 @@ function mountProjectsDom() {
 		<input id="projectsSearch" />
 		<select id="projectsStatusFilter"></select>
 		<div id="projectsInventoryMeta"></div>
+		<div id="projectsInventorySkeleton"></div>
 		<div id="projectsInventoryList"></div>
 		<button id="projectsPrevPage"></button>
 		<button id="projectsNextPage"></button>
@@ -182,6 +183,20 @@ describe("Projects tab", () => {
 		expect(api.loadProjectScopeInventory).toHaveBeenCalledWith(
 			expect.objectContaining({ limit: 250 }),
 		);
+		expect(document.getElementById("projectsInventorySkeleton")).toBeNull();
+	});
+
+	it("removes the project inventory skeleton when loading fails", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockRejectedValue(new Error("inventory unavailable"));
+
+		initProjectsTab(() => {});
+		await loadProjectsData();
+
+		expect(document.getElementById("projectsInventorySkeleton")).toBeNull();
+		expect(document.getElementById("projectsInventoryMeta")?.textContent).toBe(
+			"Project inventory failed to load.",
+		);
+		expect(document.body.textContent).toContain("inventory unavailable");
 	});
 
 	it("renders peer-received project identities read-only", async () => {
