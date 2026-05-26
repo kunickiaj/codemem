@@ -43,6 +43,7 @@ Edit `.env` and set:
 - `CODEMEM_MCP_OIDC_CLIENT_ID`
 - `CODEMEM_MCP_OIDC_CLIENT_SECRET`
 - `CODEMEM_MCP_OAUTH_ALLOWED_EMAIL` or `CODEMEM_MCP_OAUTH_ALLOWED_SUBJECT`
+- `CODEMEM_SYNC_ADVERTISE` to the NAS Tailnet/LAN sync URL
 
 Build and start:
 
@@ -92,11 +93,13 @@ CODEMEM_SYNC_ADVERTISE=http://your-nas-tailnet-name:7337
 the NAS host, use the NAS MagicDNS name or 100.x Tailnet IP. The Compose file publishes
 host port `7337` to the viewer container because `codemem serve` owns the sync listener.
 
-After importing a team invite, enable sync inside the container and restart the services:
+The Compose example passes `CODEMEM_SYNC_ENABLED` from `environment.example` into the
+viewer container. Keep it set to `1` so sync starts automatically after the container has
+coordinator config and a trusted peer. After importing a team invite, restart the services
+so the long-running viewer process picks up the updated config:
 
 ```fish
 docker exec -it codemem-viewer codemem coordinator import-invite '<invite>'
-docker exec -it codemem-viewer codemem sync enable
 docker restart codemem-viewer codemem-mcp
 ```
 

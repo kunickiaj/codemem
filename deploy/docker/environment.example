@@ -11,6 +11,7 @@ CODEMEM_MCP_PORT=38889
 # Peer-to-peer sync protocol. Other peers must be able to reach this address.
 # With Docker bridge mode and Tailscale on the host, advertise the NAS host's
 # Tailnet DNS name or 100.x address, not the container's bridge address.
+CODEMEM_SYNC_ENABLED=1
 CODEMEM_SYNC_PORT=7337
 CODEMEM_SYNC_BIND_IP=0.0.0.0
 CODEMEM_SYNC_ADVERTISE=http://your-nas-tailnet-name:7337
