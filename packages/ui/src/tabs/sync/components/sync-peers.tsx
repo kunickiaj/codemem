@@ -149,6 +149,10 @@ function openTeamsAccessManagement(): void {
 	window.location.hash = "coordinator-admin";
 }
 
+export function canManageSpacesInTeams(status = state.lastCoordinatorAdminStatus): boolean {
+	return status?.readiness === "ready" && status.has_admin_secret === true;
+}
+
 function SyncPeerCard({ peer, onAssignActor, onRemove, onRename, onSync }: SyncPeerCardProps) {
 	const peerId = String(peer.peer_device_id || "");
 	const displayName = peer.name || (peerId ? peerId.slice(0, 8) : "unknown");
@@ -282,12 +286,14 @@ function SyncPeerCard({ peer, onAssignActor, onRemove, onRename, onSync }: SyncP
 
 	async function sync() {
 		if (pendingScopeReview) {
+			const canReviewInTeams = canManageSpacesInTeams();
 			const proceed = await openSyncConfirmDialog({
 				title: `Sync ${displayName} before advanced rule review?`,
-				description:
-					"This manual sync will use the current Space access and advanced filters until you review them in Teams.",
+				description: canReviewInTeams
+					? "This manual sync will use the current Space access and advanced filters until you review them in Teams."
+					: "This manual sync will use the current Space access and advanced filters until a coordinator or manager reviews them in Teams.",
 				confirmLabel: "Sync anyway",
-				cancelLabel: "Review in Teams first",
+				cancelLabel: canReviewInTeams ? "Review in Teams first" : "Cancel",
 			});
 			if (!proceed) return;
 		}
@@ -352,6 +358,7 @@ function SyncPeerCard({ peer, onAssignActor, onRemove, onRename, onSync }: SyncP
 	// in SyncPeerStatusLike.
 	const presenceState: PresenceState = presenceForPeer(peer);
 	const syncMetaText = lastSyncAt ? `Sync: ${formatTimestamp(lastSyncAt)}` : "Sync: never";
+	const canManageSpaces = canManageSpacesInTeams();
 
 	const toggleLabel = `${isExpanded ? "Collapse" : "Expand"} device ${displayName}`;
 	// Read module-level state directly (not the stale closure value of
@@ -498,8 +505,9 @@ function SyncPeerCard({ peer, onAssignActor, onRemove, onRename, onSync }: SyncP
 					<div className="peer-scope">
 						{scopeReviewRequested ? (
 							<div className="peer-meta">
-								Review this device&apos;s Space access and advanced rules in Teams if the defaults
-								are too broad.
+								{canManageSpaces
+									? "Review this device's Space access and advanced rules in Teams if the defaults are too broad."
+									: "A coordinator or manager can review this device's Space access and advanced rules in Teams if the defaults are too broad."}
 							</div>
 						) : pendingScopeReview ? (
 							<div className="peer-meta">
@@ -605,11 +613,21 @@ function SyncPeerCard({ peer, onAssignActor, onRemove, onRename, onSync }: SyncP
 						<div className="peer-meta">
 							{projectNarrowing.statusLabel}. {projectNarrowing.summary} {projectNarrowing.note}
 						</div>
-						<div className="peer-actions">
-							<button type="button" className="settings-button" onClick={openTeamsAccessManagement}>
-								Manage Spaces in Teams
-							</button>
-						</div>
+						{canManageSpaces ? (
+							<div className="peer-actions">
+								<button
+									type="button"
+									className="settings-button"
+									onClick={openTeamsAccessManagement}
+								>
+									Manage Spaces in Teams
+								</button>
+							</div>
+						) : (
+							<div className="peer-meta">
+								Space access is managed in Teams by a coordinator or manager.
+							</div>
+						)}
 						<SyncInlineFeedback feedback={feedback} />
 					</div>
 				</Collapsible.Content>
