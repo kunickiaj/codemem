@@ -3110,7 +3110,9 @@ export function syncRoutes(
 		try {
 			const workspaceIdentity = optionalViewerStrictString(body, "workspace_identity") ?? "";
 			const project = optionalViewerStrictString(body, "project") ?? "";
+			const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 			const result = reassignProjectScopeInventoryProject(store.db, {
+				deviceId,
 				project,
 				workspaceIdentity,
 			});

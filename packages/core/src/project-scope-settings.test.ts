@@ -266,9 +266,11 @@ describe("project scope settings", () => {
 			gitRemote: null,
 			project: "injection",
 		});
-		insertMemory(db, sessionId);
+		insertMemory(db, sessionId, { originDeviceId: "source-device", project: "injection" });
+		insertMemory(db, sessionId, { originDeviceId: "peer-device", project: "injection" });
 
 		const result = reassignProjectScopeInventoryProject(db, {
+			deviceId: "source-device",
 			project: "codemem",
 			workspaceIdentity: "/Users/adam/workspace/codemem/.claude/worktrees/injection",
 		});
@@ -283,6 +285,34 @@ describe("project scope settings", () => {
 			project: string;
 		};
 		expect(row.project).toBe("codemem");
+		const memory = db
+			.prepare(
+				"SELECT id, project, rev FROM memory_items WHERE session_id = ? AND origin_device_id = 'source-device'",
+			)
+			.get(sessionId) as { id: number; project: string; rev: number };
+		expect(memory).toMatchObject({ project: "codemem", rev: 1 });
+		const peerMemory = db
+			.prepare(
+				"SELECT project, rev FROM memory_items WHERE session_id = ? AND origin_device_id = 'peer-device'",
+			)
+			.get(sessionId) as { project: string; rev: number };
+		expect(peerMemory).toMatchObject({ project: "injection", rev: 0 });
+		const op = db
+			.prepare(
+				"SELECT clock_device_id, clock_rev, device_id, payload_json FROM replication_ops WHERE entity_id = ?",
+			)
+			.get(String(memory.id)) as {
+			clock_device_id: string;
+			clock_rev: number;
+			device_id: string;
+			payload_json: string;
+		};
+		expect(op).toMatchObject({
+			clock_device_id: "source-device",
+			clock_rev: 1,
+			device_id: "source-device",
+		});
+		expect(JSON.parse(op.payload_json)).toMatchObject({ project: "codemem" });
 		expect(listProjectScopeInventory(db, { query: "codemem" }).projects).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
@@ -291,6 +321,92 @@ describe("project scope settings", () => {
 				}),
 			]),
 		);
+	});
+
+	it("requires a current device id before reassigning a project", () => {
+		const sessionId = insertSession(db, {
+			cwd: "/Users/adam/workspace/codemem/.claude/worktrees/injection",
+			gitBranch: null,
+			gitRemote: null,
+			project: "injection",
+		});
+		insertMemory(db, sessionId, { originDeviceId: "source-device", project: "injection" });
+
+		expect(() =>
+			reassignProjectScopeInventoryProject(db, {
+				deviceId: " ",
+				project: "codemem",
+				workspaceIdentity: "/Users/adam/workspace/codemem/.claude/worktrees/injection",
+			}),
+		).toThrow("device_id must be a non-empty string");
+	});
+
+	it("reassigns local sessions without memory rows", () => {
+		const sessionId = insertSession(db, {
+			cwd: "/Users/adam/workspace/codemem/.claude/worktrees/injection",
+			gitBranch: null,
+			gitRemote: null,
+			project: "injection",
+		});
+
+		const result = reassignProjectScopeInventoryProject(db, {
+			deviceId: "source-device",
+			project: "codemem",
+			workspaceIdentity: "/Users/adam/workspace/codemem/.claude/worktrees/injection",
+		});
+
+		expect(result).toMatchObject({
+			moved_memory_count: 0,
+			moved_session_count: 1,
+			previous_projects: ["injection"],
+			project: "codemem",
+		});
+		expect(
+			(
+				db.prepare("SELECT project FROM sessions WHERE id = ?").get(sessionId) as {
+					project: string;
+				}
+			).project,
+		).toBe("codemem");
+		expect(
+			(db.prepare("SELECT COUNT(*) AS count FROM replication_ops").get() as { count: number })
+				.count,
+		).toBe(0);
+	});
+
+	it("does not reassign peer-owned-only project rows", () => {
+		const sessionId = insertSession(db, {
+			cwd: "/Users/adam/workspace/codemem/.claude/worktrees/injection",
+			gitBranch: null,
+			gitRemote: null,
+			project: "injection",
+		});
+		insertMemory(db, sessionId, { originDeviceId: "peer-device", project: "injection" });
+
+		expect(() =>
+			reassignProjectScopeInventoryProject(db, {
+				deviceId: "source-device",
+				project: "codemem",
+				workspaceIdentity: "/Users/adam/workspace/codemem/.claude/worktrees/injection",
+			}),
+		).toThrow("project identity has no source-owned memories on this device");
+		expect(
+			(
+				db.prepare("SELECT project FROM sessions WHERE id = ?").get(sessionId) as {
+					project: string;
+				}
+			).project,
+		).toBe("injection");
+		expect(
+			db.prepare("SELECT project, rev FROM memory_items WHERE session_id = ?").get(sessionId) as {
+				project: string;
+				rev: number;
+			},
+		).toMatchObject({ project: "injection", rev: 0 });
+		expect(
+			(db.prepare("SELECT COUNT(*) AS count FROM replication_ops").get() as { count: number })
+				.count,
+		).toBe(0);
 	});
 
 	it("suggests mappings from canonical signals without saving them", () => {

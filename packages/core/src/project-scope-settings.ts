@@ -10,6 +10,7 @@ import {
 	type WorkspaceIdentitySource,
 } from "./scope-resolution.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap.js";
+import { recordReplicationOp } from "./sync-replication.js";
 
 export interface SharingDomainSettingsScope {
 	scope_id: string;
@@ -980,9 +981,11 @@ export function listProjectScopeInventory(
 
 export function reassignProjectScopeInventoryProject(
 	db: Database,
-	input: { workspaceIdentity: string; project: string },
+	input: { deviceId: string; workspaceIdentity: string; project: string },
 ): ReassignProjectScopeInventoryProjectResult {
 	ensureScopeBackfillScopes(db);
+	const deviceId = clean(input.deviceId);
+	if (!deviceId) throw new Error("device_id must be a non-empty string");
 	const workspaceIdentity = normalizeWorkspaceIdentity(input.workspaceIdentity);
 	if (!workspaceIdentity) throw new Error("workspace_identity must be a non-empty string");
 	if (workspaceIdentity.startsWith("unmapped:")) {
@@ -1027,17 +1030,61 @@ export function reassignProjectScopeInventoryProject(
 		return identity.value === workspaceIdentity;
 	});
 	if (matched.length === 0) throw new Error("project identity not found");
+	const now = new Date().toISOString();
+	const sessionIds = matched.map((row) => row.id);
+	const sessionPlaceholders = sessionIds.map(() => "?").join(", ");
+	const sourceOwnedMemories = db
+		.prepare(
+			`SELECT id, session_id, project
+			 FROM memory_items
+			 WHERE session_id IN (${sessionPlaceholders})
+			   AND active = 1
+			   AND (origin_device_id IS NULL OR TRIM(origin_device_id) = '' OR origin_device_id = ?)`,
+		)
+		.all(...sessionIds, deviceId) as Array<{
+		id: number;
+		project: string | null;
+		session_id: number;
+	}>;
+	const sourceOwnedSessionIds = new Set(sourceOwnedMemories.map((memory) => memory.session_id));
+	const matchedSourceRows = matched.filter(
+		(row) => sourceOwnedSessionIds.has(row.id) || Number(row.memory_count ?? 0) === 0,
+	);
+	if (matchedSourceRows.length === 0) {
+		throw new Error("project identity has no source-owned memories on this device");
+	}
 	const previousProjects = [
-		...new Set(matched.map((row) => clean(row.project) ?? "").filter(Boolean)),
+		...new Set(matchedSourceRows.map((row) => clean(row.project) ?? "").filter(Boolean)),
 	].sort();
-	const movedMemoryCount = matched.reduce((total, row) => total + Number(row.memory_count ?? 0), 0);
+	const changedMemories = sourceOwnedMemories.filter(
+		(memory) => (clean(memory.project) ?? "") !== project,
+	);
+	const movedMemoryCount = changedMemories.length;
 	const update = db.prepare("UPDATE sessions SET project = ? WHERE id = ?");
 	db.transaction(() => {
-		for (const row of matched) update.run(project, row.id);
+		for (const row of matchedSourceRows) update.run(project, row.id);
+		if (changedMemories.length > 0) {
+			const memoryIds = changedMemories.map((memory) => Number(memory.id));
+			db.prepare(
+				`UPDATE memory_items
+				 SET project = ?, updated_at = ?, rev = COALESCE(rev, 0) + 1
+				 WHERE id IN (${memoryIds.map(() => "?").join(", ")})`,
+			).run(project, now, ...memoryIds);
+			for (const memoryId of memoryIds) {
+				recordReplicationOp(db, {
+					memoryId,
+					opType: "upsert",
+					deviceId,
+					clockDeviceId: deviceId,
+					clockUpdatedAt: now,
+					createdAt: now,
+				});
+			}
+		}
 	})();
 	return {
 		moved_memory_count: movedMemoryCount,
-		moved_session_count: matched.length,
+		moved_session_count: matchedSourceRows.length,
 		previous_projects: previousProjects,
 		project,
 		workspace_identity: workspaceIdentity,
