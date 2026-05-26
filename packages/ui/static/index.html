@@ -3509,6 +3509,34 @@
         .modal-card { padding: var(--sp-4); border-radius: var(--radius-lg); }
       }
 
+      /* ──────────────────────────────────────────────────────────────────
+         Token-aligned focus rings.
+
+         The interactive surfaces below previously relied on the browser's
+         default focus outline. They now share the same focus language as
+         the rest of the system:
+           - Buttons get a 2px var(--accent) outline with a 2px offset.
+           - Inputs and selects get an accent border + 3px var(--focus-ring)
+             halo, matching .feed-search / .project-filter / .sync-actor-select.
+         Radix-managed items (with [data-highlighted]) are intentionally not
+         touched here because their highlight state already serves as a
+         keyboard-focus indicator. */
+      .coordinator-admin-tab-trigger:focus-visible,
+      .feed-inspector-button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+      .actor-merge-select:focus,
+      .actor-name-input:focus,
+      .feed-visibility-select:focus,
+      .legacy-review-search:focus,
+      .peer-scope-input:focus,
+      .project-domain-select:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--focus-ring);
+      }
+
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after {
           animation-duration: 0.01ms !important;
