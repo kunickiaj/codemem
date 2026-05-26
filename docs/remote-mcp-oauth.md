@@ -30,7 +30,7 @@ The Phase 1 endpoint is **single-user**. One self-hosted codemem instance, one a
        │ /authorize → redirect to upstream OIDC
        │ /oauth/callback → verify OIDC ID token, gate on allowlist
        │ /token → PKCE S256 + issue bearer token
-       │ /oauth/revoke → revoke bearer token
+       │ /revoke → revoke bearer token
        │ /mcp → require valid Bearer, run MCP tools
        │
        └► reads local SQLite via @codemem/core
@@ -62,6 +62,8 @@ The viewer process and `codemem mcp http` process must run on different ports. O
 | `CODEMEM_DB` | no | SQLite database path. |
 
 When OIDC env vars or `--public-url` are present the server requires bearer tokens on `POST /mcp`. Without both, the server runs in loopback-only development mode (`localhost`/`127.0.0.1`/`::1` only, no bearer).
+
+Public mode accepts browser CORS preflight requests from `https://claude.ai` on the OAuth and MCP routes while still requiring the request `Host` header to match `CODEMEM_MCP_HTTP_PUBLIC_URL`. Other browser origins remain blocked before OAuth processing.
 
 ## Running the server
 
@@ -111,7 +113,7 @@ Plan tier note: claude.ai custom connectors require Pro / Max / Team / Enterpris
 The bearer token expires after one hour. Revoke at any time with:
 
 ```sh
-curl -X POST "https://codemem-mcp.example.net/oauth/revoke" \
+curl -X POST "https://codemem-mcp.example.net/revoke" \
   -H "content-type: application/x-www-form-urlencoded" \
   --data-urlencode "token=<bearer>"
 ```
@@ -143,6 +145,12 @@ Bearer/access-token values, authorization codes, OIDC ID tokens, and client secr
 
 To disable audit output set `CODEMEM_MCP_AUDIT=0`.
 
+Early Host/Origin guard denials happen before OAuth audit events and are always written as one JSON line to stderr so operator logs show browser preflight or proxy-host failures without logging tokens, codes, or request bodies:
+
+```json
+{"source":"codemem-mcp-http-guard","outcome":"denied","reason":"host_or_origin_mismatch","method":"OPTIONS","path":"/register","host":"codemem-mcp.example.net","origin":"https://evil.test","expectedOrigin":"https://codemem-mcp.example.net"}
+```
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Where to look |
@@ -151,7 +159,7 @@ To disable audit output set `CODEMEM_MCP_AUDIT=0`.
 | `/authorize` returns `temporarily_unavailable` | OIDC env vars not set | Audit log shows `kind=authorize outcome=denied reason=temporarily_unavailable`. Verify `CODEMEM_MCP_OIDC_*` env vars. |
 | `/oauth/callback` returns `subject_not_allowed` | OIDC identity not allowlisted | Audit log shows `kind=oidc_callback outcome=denied reason=subject_not_allowed`. Update `CODEMEM_MCP_OAUTH_ALLOWED_SUBJECT` or `CODEMEM_MCP_OAUTH_ALLOWED_EMAIL`. |
 | `POST /mcp` returns 401 | No / wrong bearer | Audit log shows `kind=bearer outcome=denied reason=...`. Re-run connector setup or check expired/revoked tokens. |
-| `POST /mcp` returns 403 with valid bearer | Host/Origin mismatch with `CODEMEM_MCP_HTTP_PUBLIC_URL` | Confirm the ingress preserves the configured public hostname. Audit log will not record this; the request is rejected before bearer verification. |
+| `POST /mcp` returns 403 with valid bearer | Host/Origin mismatch with `CODEMEM_MCP_HTTP_PUBLIC_URL` | Confirm the ingress preserves the configured public hostname. Check `codemem-mcp-http-guard` log lines; OAuth audit will not record this because the request is rejected before bearer verification. |
 | Connector hangs on registration | DCR rejected | Audit log shows `kind=registration outcome=denied reason=invalid_client_metadata`. Confirm Claude's DCR payload uses one of: `https://claude.ai/api/mcp/auth_callback` or a loopback `http://[127.0.0.1|localhost|::1]:<port>/callback` URI. |
 
 ## Validation checklist
@@ -166,7 +174,7 @@ Before announcing the connector ready, run the steps below against the live host
 - [ ] `/token` exchange with PKCE S256 returns a 43-character base64url bearer token, `token_type: "Bearer"`, `expires_in: 3600`.
 - [ ] `POST /mcp` with that bearer + `Authorization: Bearer …` returns `serverInfo.name === "codemem"` on initialize, and at least one of `memory_schema`/`memory_search` returns a successful result.
 - [ ] `POST /mcp` without the bearer returns 401 with `WWW-Authenticate: Bearer realm="codemem-mcp"`.
-- [ ] `POST /oauth/revoke` with the bearer returns 200; subsequent `/mcp` returns 401 with `reason=revoked_token` in the audit log.
+- [ ] `POST /revoke` with the bearer returns 200; subsequent `/mcp` returns 401 with `reason=revoked_token` in the audit log.
 - [ ] Audit log shows the expected `kind`/`outcome`/`reason` for each step and contains no token/code/secret material.
 
 Non-goals checked off:

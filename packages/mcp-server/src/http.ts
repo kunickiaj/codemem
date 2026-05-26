@@ -20,6 +20,7 @@ import {
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express, { type NextFunction, type Request, type Response } from "express";
+import { rateLimit } from "express-rate-limit";
 import {
 	type BearerDenyReason,
 	buildOAuthAuditEvent,
@@ -51,6 +52,12 @@ import { createCodememMcpServer } from "./server.js";
 export const DEFAULT_MCP_HTTP_HOST = "127.0.0.1";
 export const DEFAULT_MCP_HTTP_PORT = 38889;
 const HTTP_DEFAULT_PORT = 80;
+const TRUSTED_PUBLIC_BROWSER_ORIGINS = new Set(["https://claude.ai"]);
+const CORS_ALLOW_HEADERS = "authorization,content-type,mcp-session-id";
+const CORS_MAX_AGE_SECONDS = "600";
+const MAX_GUARD_LOG_FIELD_LENGTH = 256;
+const PUBLIC_MCP_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const PUBLIC_MCP_RATE_LIMIT_REQUESTS = 600;
 
 const VALID_HOSTNAME = /^[a-zA-Z0-9.-]+$/;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -237,16 +244,45 @@ export async function startCodememMcpHttpServer(
 	});
 	const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(publicMcpUrlObject);
 
+	app.use(
+		rateLimit({
+			windowMs: PUBLIC_MCP_RATE_LIMIT_WINDOW_MS,
+			limit: PUBLIC_MCP_RATE_LIMIT_REQUESTS,
+			standardHeaders: "draft-8",
+			legacyHeaders: false,
+			// Avoid express-rate-limit's default IPv6 subnet helper here: its current
+			// transitive ip-address API throws on IPv6 loopback in our Node 24 test path.
+			// This coarse limiter is defense-in-depth before the SDK OAuth limiters and
+			// the Host/Origin guard; it must never break local IPv6 metadata requests.
+			ipv6Subnet: false,
+		}),
+	);
 	app.use((req, res, next) => {
 		const boundPort = getBoundPort(server);
 		const pathname = normalizeRoutePath(req.path);
 		if (pathname === "/mcp") {
-			if (isAllowedMcpHttpRequest(req, boundPort, configuredPublicMcpUrl)) return next();
+			if (isAllowedMcpHttpRequest(req, boundPort, configuredPublicMcpUrl)) {
+				applyPublicCorsHeaders(req, res, configuredPublicMcpUrl);
+				if (req.method === "OPTIONS") {
+					res.status(204).send("");
+					return;
+				}
+				return next();
+			}
+			emitHttpGuardDeny(req, pathname, configuredPublicMcpUrl);
 			res.status(403).type("text/plain").send("Forbidden");
 			return;
 		}
 		if (isOAuthOrMetadataPath(pathname)) {
-			if (isAllowedOAuthHttpRequest(req, boundPort, configuredPublicMcpUrl)) return next();
+			if (isAllowedOAuthHttpRequest(req, boundPort, configuredPublicMcpUrl)) {
+				applyPublicCorsHeaders(req, res, configuredPublicMcpUrl);
+				if (req.method === "OPTIONS") {
+					res.status(204).send("");
+					return;
+				}
+				return next();
+			}
+			emitHttpGuardDeny(req, pathname, configuredPublicMcpUrl);
 			res.status(403).type("text/plain").send("Forbidden");
 			return;
 		}
@@ -449,10 +485,72 @@ function isAllowedPublicOrigin(header: string | undefined, publicMcpUrl: URL): b
 	if (!header) return true;
 	try {
 		const origin = new URL(header);
-		return origin.origin === publicMcpUrl.origin;
+		return (
+			origin.origin === publicMcpUrl.origin || TRUSTED_PUBLIC_BROWSER_ORIGINS.has(origin.origin)
+		);
 	} catch {
 		return false;
 	}
+}
+
+function applyPublicCorsHeaders(
+	req: IncomingMessage,
+	res: Response,
+	publicMcpUrl: URL | undefined,
+): void {
+	if (!publicMcpUrl) return;
+	const origin = getAllowedPublicCorsOrigin(req.headers.origin, publicMcpUrl);
+	if (!origin) return;
+	res.setHeader("Access-Control-Allow-Origin", origin);
+	res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+	res.setHeader(
+		"Access-Control-Allow-Headers",
+		req.headers["access-control-request-headers"] ?? CORS_ALLOW_HEADERS,
+	);
+	res.setHeader("Access-Control-Max-Age", CORS_MAX_AGE_SECONDS);
+	res.setHeader("Vary", "Origin");
+}
+
+function getAllowedPublicCorsOrigin(
+	header: string | undefined,
+	publicMcpUrl: URL,
+): string | undefined {
+	if (!header) return undefined;
+	try {
+		const origin = new URL(header).origin;
+		if (origin === publicMcpUrl.origin || TRUSTED_PUBLIC_BROWSER_ORIGINS.has(origin)) {
+			return origin;
+		}
+	} catch {
+		return undefined;
+	}
+	return undefined;
+}
+
+function emitHttpGuardDeny(
+	req: IncomingMessage,
+	pathname: string,
+	publicMcpUrl: URL | undefined,
+): void {
+	console.warn(
+		JSON.stringify({
+			source: "codemem-mcp-http-guard",
+			timestamp: new Date().toISOString(),
+			outcome: "denied",
+			reason: "host_or_origin_mismatch",
+			method: req.method,
+			path: pathname,
+			host: truncateGuardLogField(req.headers.host),
+			origin: truncateGuardLogField(req.headers.origin),
+			expectedOrigin: publicMcpUrl?.origin,
+			remoteAddress: req.socket.remoteAddress ?? undefined,
+		}),
+	);
+}
+
+function truncateGuardLogField(value: string | undefined): string | undefined {
+	if (!value || value.length <= MAX_GUARD_LOG_FIELD_LENGTH) return value;
+	return `${value.slice(0, MAX_GUARD_LOG_FIELD_LENGTH)}…`;
 }
 
 function isAllowedPublicRequestHost(header: string | undefined, publicMcpUrl: URL): boolean {
@@ -463,7 +561,8 @@ function isAllowedPublicRequestHost(header: string | undefined, publicMcpUrl: UR
 		: publicMcpUrl.protocol === "https:"
 			? 443
 			: 80;
-	const actualPort = parsed.port ?? expectedPort;
+	const impliedPort = publicMcpUrl.protocol === "https:" ? 443 : 80;
+	const actualPort = parsed.port ?? impliedPort;
 	return (
 		normalizeHost(parsed.host) === normalizeHost(publicMcpUrl.hostname) &&
 		actualPort === expectedPort

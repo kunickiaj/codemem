@@ -267,6 +267,81 @@ describe("MCP HTTP transport", () => {
 		expect(token.status).toBe(403);
 	});
 
+	it("allows Claude browser preflight requests on public OAuth and MCP routes", async () => {
+		const server = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test/mcp",
+		});
+		servers.push(server);
+		const baseUrl = server.url.replace("/mcp", "");
+
+		const register = await requestWithHost(`${baseUrl}/register`, {
+			method: "OPTIONS",
+			host: "codemem.example.test",
+			headers: {
+				origin: "https://claude.ai",
+				"access-control-request-method": "POST",
+				"access-control-request-headers": "content-type",
+			},
+		});
+		const mcp = await requestWithHost(server.url, {
+			method: "OPTIONS",
+			host: "codemem.example.test",
+			headers: {
+				origin: "https://claude.ai",
+				"access-control-request-method": "POST",
+				"access-control-request-headers": "authorization,content-type,mcp-session-id",
+			},
+		});
+
+		expect(register.statusCode).toBe(204);
+		expect(register.headers["access-control-allow-origin"]).toBe("https://claude.ai");
+		expect(register.headers["access-control-allow-headers"]).toBe("content-type");
+		expect(mcp.statusCode).toBe(204);
+		expect(mcp.headers["access-control-allow-origin"]).toBe("https://claude.ai");
+		expect(mcp.headers["access-control-allow-headers"]).toBe(
+			"authorization,content-type,mcp-session-id",
+		);
+	});
+
+	it("logs early public Host and Origin guard denials", async () => {
+		const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const server = await startCodememMcpHttpServer({
+				dbPath: tempDbPath(),
+				port: 0,
+				publicUrl: "https://codemem.example.test/mcp",
+			});
+			servers.push(server);
+
+			const response = await requestWithHost(server.url.replace("/mcp", "/register"), {
+				method: "OPTIONS",
+				host: "codemem.example.test",
+				headers: {
+					origin: "https://evil.test",
+					"access-control-request-method": "POST",
+				},
+			});
+
+			expect(response.statusCode).toBe(403);
+			expect(consoleWarn).toHaveBeenCalledTimes(1);
+			const event = JSON.parse(String(consoleWarn.mock.calls[0]?.[0])) as Record<string, unknown>;
+			expect(event).toMatchObject({
+				source: "codemem-mcp-http-guard",
+				outcome: "denied",
+				reason: "host_or_origin_mismatch",
+				method: "OPTIONS",
+				path: "/register",
+				host: "codemem.example.test",
+				origin: "https://evil.test",
+				expectedOrigin: "https://codemem.example.test",
+			});
+		} finally {
+			consoleWarn.mockRestore();
+		}
+	});
+
 	it("accepts proxied OAuth token requests without rate-limit trust-proxy warnings", async () => {
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 		try {
@@ -315,6 +390,27 @@ describe("MCP HTTP transport", () => {
 		expect(response.statusCode).toBe(403);
 		expect(trailingSlash.statusCode).toBe(403);
 		expect(mcpTrailingSlash.statusCode).toBe(403);
+	});
+
+	it("rejects bare public Host headers when the configured public URL uses a non-default port", async () => {
+		const server = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test:10000/mcp",
+		});
+		servers.push(server);
+
+		const bareHost = await postWithHost(
+			server.url.replace("/mcp", "/register"),
+			"codemem.example.test",
+		);
+		const explicitHost = await postWithHost(
+			server.url.replace("/mcp", "/register"),
+			"codemem.example.test:10000",
+		);
+
+		expect(bareHost.statusCode).toBe(403);
+		expect(explicitHost.statusCode).toBe(400);
 	});
 
 	it("rejects unsupported OAuth redirect URIs", async () => {
@@ -641,6 +737,27 @@ async function postWithHost(
 	host: string,
 	extraHeaders: Record<string, string> = {},
 ): Promise<{ statusCode: number | undefined }> {
+	const response = await requestWithHost(url, {
+		method: "POST",
+		host,
+		headers: extraHeaders,
+		body: initializeBody(1),
+	});
+	return { statusCode: response.statusCode };
+}
+
+async function requestWithHost(
+	url: string,
+	options: {
+		method: string;
+		host: string;
+		headers?: Record<string, string>;
+		body?: string;
+	},
+): Promise<{
+	statusCode: number | undefined;
+	headers: Record<string, string | string[] | undefined>;
+}> {
 	const target = new URL(url);
 	return await new Promise((resolve, reject) => {
 		const req = request(
@@ -648,21 +765,26 @@ async function postWithHost(
 				hostname: target.hostname,
 				port: target.port,
 				path: target.pathname,
-				method: "POST",
+				method: options.method,
 				headers: {
 					accept: "application/json, text/event-stream",
 					"content-type": "application/json",
-					host,
-					...extraHeaders,
+					host: options.host,
+					...options.headers,
 				},
 			},
 			(res) => {
 				res.resume();
-				res.on("end", () => resolve({ statusCode: res.statusCode }));
+				res.on("end", () =>
+					resolve({
+						statusCode: res.statusCode,
+						headers: res.headers,
+					}),
+				);
 			},
 		);
 		req.on("error", reject);
-		req.end(initializeBody(1));
+		req.end(options.body);
 	});
 }
 
