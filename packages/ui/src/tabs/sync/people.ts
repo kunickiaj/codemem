@@ -2,6 +2,7 @@
 
 import * as api from "../../lib/api";
 import { clearFieldError, friendlyError, markFieldError } from "../../lib/form";
+import { handlePrimaryActionKeyboard } from "../../lib/keyboard";
 import { showGlobalNotice } from "../../lib/notice";
 import { state } from "../../lib/state";
 import { renderSyncActorsList } from "./components/sync-actors";
@@ -275,6 +276,15 @@ export function initPeopleEvents(loadSyncData: () => Promise<void>) {
 	const syncLegacyClaimButton = document.getElementById(
 		"syncLegacyClaimButton",
 	) as HTMLButtonElement | null;
+
+	// Enter inside the create-person input triggers Create person so the
+	// user does not need to chase the button after typing the name.
+	syncActorCreateInput?.addEventListener("keydown", (event) => {
+		handlePrimaryActionKeyboard(event, {
+			onSubmit: () => syncActorCreateButton?.click(),
+			disabled: !syncActorCreateButton || syncActorCreateButton.disabled,
+		});
+	});
 
 	syncActorCreateButton?.addEventListener("click", async () => {
 		if (!syncActorCreateButton || !syncActorCreateInput) return;

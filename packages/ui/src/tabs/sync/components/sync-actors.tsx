@@ -2,6 +2,7 @@ import type { TargetedInputEvent } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { RadixSelect } from "../../../components/primitives/radix-select";
 import { TextInput } from "../../../components/primitives/text-input";
+import { handlePrimaryActionKeyboard } from "../../../lib/keyboard";
 import {
 	actorDisplayLabel,
 	actorLabel,
@@ -162,10 +163,17 @@ function SyncActorRow({
 							onInput={(event: TargetedInputEvent<HTMLInputElement>) =>
 								setName(event.currentTarget.value)
 							}
+							onKeyDown={(event: KeyboardEvent) =>
+								handlePrimaryActionKeyboard(event, {
+									onSubmit: () => void rename(),
+									disabled: renameBusy || mergeBusy || !name.trim(),
+								})
+							}
 						/>
 						<button
 							type="button"
 							className="settings-button"
+							data-primary-action="true"
 							disabled={renameBusy || mergeBusy}
 							onClick={() => void rename()}
 						>

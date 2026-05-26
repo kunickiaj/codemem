@@ -6,6 +6,7 @@
 
 import * as api from "../../../../lib/api";
 import { clearFieldError, friendlyError, markFieldError } from "../../../../lib/form";
+import { handlePrimaryActionKeyboard } from "../../../../lib/keyboard";
 import { showGlobalNotice } from "../../../../lib/notice";
 import { state } from "../../../../lib/state";
 import type { SyncActionFeedback } from "../../components/sync-inline-feedback";
@@ -89,6 +90,16 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 				syncCreateInviteButton.textContent = "Create invite";
 			}
 		}
+	});
+
+	// Cmd/Ctrl+Enter inside the invite textarea triggers Accept. Bare Enter
+	// is intentionally left alone so users can keep the textarea's native
+	// newline behavior while pasting multi-line payloads.
+	syncJoinInvite?.addEventListener("keydown", (event) => {
+		handlePrimaryActionKeyboard(event, {
+			onSubmit: () => syncJoinButton?.click(),
+			disabled: !syncJoinButton || syncJoinButton.disabled,
+		});
 	});
 
 	syncJoinButton?.addEventListener("click", async () => {
