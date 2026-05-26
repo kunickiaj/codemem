@@ -144,6 +144,17 @@
         gap: var(--sp-2);
       }
 
+      /* Diagnostic metadata cluster: runtime version + database path. Grouped
+         under one container so the responsive treatment can hide both together
+         on narrow viewports without disturbing the surrounding primary
+         controls (project filter, theme toggle, settings). */
+      .header-tertiary {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+        min-width: 0;
+      }
+
       .refresh-status {
         display: inline-flex;
         align-items: center;
@@ -3248,6 +3259,22 @@
         .legacy-review-bulk-row .settings-save { width: 100%; }
       }
 
+      @media (max-width: 720px) {
+        /* Hide diagnostic metadata (runtime version + database path) when the
+           header would otherwise wrap. Keeps brand + project filter + theme
+           + settings on a single row at common split-window widths. */
+        .header-tertiary { display: none; }
+        /* Allow the tab bar to scroll horizontally rather than wrap into two
+           rows. Scrollbar is hidden to keep the sticky chrome compact. */
+        .tab-bar {
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+          scrollbar-width: none;
+        }
+        .tab-bar::-webkit-scrollbar { display: none; }
+        .tab-btn { flex-shrink: 0; }
+      }
+
       @media (max-width: 520px) {
         header { padding: var(--sp-3) var(--sp-4); }
         .tab-bar { padding: 0 var(--sp-4); }
@@ -3312,8 +3339,10 @@
           <span class="sr-only" id="refreshAnnouncer" aria-live="polite"></span>
         </div>
         <div class="header-right">
-          <span class="runtime-label" id="runtimeLabel" hidden></span>
-          <span class="meta-line" id="metaLine"></span>
+          <div class="header-tertiary">
+            <span class="runtime-label" id="runtimeLabel" hidden></span>
+            <span class="meta-line" id="metaLine"></span>
+          </div>
           <select class="project-filter" id="projectFilter" aria-label="Project filter">
             <option value="">All Projects</option>
           </select>
