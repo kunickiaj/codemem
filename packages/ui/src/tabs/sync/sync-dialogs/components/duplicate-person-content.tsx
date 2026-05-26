@@ -8,6 +8,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { RadixRadioGroup } from "../../../../components/primitives/radix-radio-group";
 import { RadixSelect } from "../../../../components/primitives/radix-select";
+import { handlePrimaryActionKeyboard } from "../../../../lib/keyboard";
 import { resolveCurrentDialog } from "../internal";
 import type { DuplicatePersonDialogRequest } from "../types";
 
@@ -53,6 +54,24 @@ export function DuplicatePersonDialogContent({
 		value: actor.actorId,
 	}));
 
+	const mergeReady = Boolean(primary?.actorId && secondary?.actorId);
+	const submitMerge = () => {
+		if (!primary?.actorId || !secondary?.actorId) return;
+		resolveCurrentDialog({
+			action: "merge",
+			primaryActorId: primary.actorId,
+			secondaryActorId: secondary.actorId,
+		});
+	};
+	const submitMergeFromRadioKey = (event: KeyboardEvent) => {
+		const target = event.target instanceof HTMLElement ? event.target : null;
+		if (event.defaultPrevented || event.isComposing || event.key !== "Enter") return;
+		if (!target?.closest(".sync-dialog-radio-list")) return;
+		if (!mergeReady) return;
+		event.preventDefault();
+		submitMerge();
+	};
+
 	return step === "choice" ? (
 		<div className="sync-dialog-stack">
 			<ul className="sync-dialog-choice-list">
@@ -60,6 +79,7 @@ export function DuplicatePersonDialogContent({
 					<button
 						autoFocus
 						className="settings-button"
+						data-primary-action="true"
 						data-sync-primary-action="true"
 						onClick={() => setStep("merge")}
 						type="button"
@@ -88,7 +108,17 @@ export function DuplicatePersonDialogContent({
 			</ul>
 		</div>
 	) : (
-		<div className="sync-dialog-stack">
+		// biome-ignore lint/a11y/noStaticElementInteractions: delegated keydown for primary-action handling; the actual interactive element is the Combine people button below.
+		<div
+			className="sync-dialog-stack"
+			onKeyDown={(event) => {
+				submitMergeFromRadioKey(event);
+				handlePrimaryActionKeyboard(event, {
+					onSubmit: submitMerge,
+					disabled: !mergeReady,
+				});
+			}}
+		>
 			<div className="small" id={descriptionId}>
 				Choose which person should remain after combining these duplicates.
 			</div>
@@ -129,15 +159,9 @@ export function DuplicatePersonDialogContent({
 				</button>
 				<button
 					className="settings-button"
-					disabled={!primary?.actorId || !secondary?.actorId}
-					onClick={() => {
-						if (!primary?.actorId || !secondary?.actorId) return;
-						resolveCurrentDialog({
-							action: "merge",
-							primaryActorId: primary.actorId,
-							secondaryActorId: secondary.actorId,
-						});
-					}}
+					data-primary-action="true"
+					disabled={!mergeReady}
+					onClick={submitMerge}
 					type="button"
 				>
 					Combine people

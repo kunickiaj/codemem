@@ -12,6 +12,7 @@ declare const __CODEMEM_GIT_COMMIT__: string;
 import { mountToastHost } from "./components/primitives/toast";
 import * as api from "./lib/api";
 import { $, $button, $select } from "./lib/dom";
+import { handlePrimaryActionKeyboard } from "./lib/keyboard";
 import {
 	ALL_TAB_IDS,
 	getVisibleTabs,
@@ -133,6 +134,14 @@ function handleLegacyUpgradeModalKeydown(event: KeyboardEvent) {
 		event.preventDefault();
 		dismissLegacyUpgradeNoticeIfRequested();
 		setLegacyUpgradeNotice(false);
+		return;
+	}
+	if (event.key === "Enter") {
+		const primary = $("legacyUpgradeReviewGroups") as HTMLButtonElement | null;
+		handlePrimaryActionKeyboard(event, {
+			onSubmit: () => primary?.click(),
+			disabled: !primary || primary.disabled,
+		});
 		return;
 	}
 	if (event.key !== "Tab") return;
