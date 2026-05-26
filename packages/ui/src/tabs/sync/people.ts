@@ -8,7 +8,7 @@ import { renderSyncActorsList } from "./components/sync-actors";
 import { renderSyncEmptyState } from "./components/sync-diagnostics";
 import type { SyncActionFeedback } from "./components/sync-inline-feedback";
 import { renderLegacyClaimsSlice } from "./components/sync-legacy-claims";
-import { renderSyncPeersList } from "./components/sync-peers";
+import { canManageSpacesInTeams, renderSyncPeersList } from "./components/sync-peers";
 import { hideSkeleton, isPeerScopeReviewPending, shouldClearStalePeersFeedback } from "./helpers";
 import { openSyncConfirmDialog } from "./sync-dialogs";
 import {
@@ -143,8 +143,11 @@ export function renderSyncPeers() {
 					feedback = { message: summary.message, tone: "warning" };
 				} else if (peerId && isPeerScopeReviewPending(peerId)) {
 					const displayName = peer?.name || (peerId ? peerId.slice(0, 8) : "unknown");
+					const reviewGuidance = canManageSpacesInTeams()
+						? "Review Space access and advanced rules in Teams if this device needs tighter sharing."
+						: "A coordinator or manager can review Space access and advanced rules in Teams if this device needs tighter sharing.";
 					feedback = {
-						message: `Triggered sync for ${displayName}. Review Space access and advanced rules in Teams if this device needs tighter sharing.`,
+						message: `Triggered sync for ${displayName}. ${reviewGuidance}`,
 						tone: "warning",
 					};
 				} else {
