@@ -42,6 +42,9 @@ function createMockStore(
 		createGroup: vi.fn(async () => undefined),
 		getGroup: vi.fn(async (): Promise<CoordinatorGroup | null> => null),
 		listGroups: vi.fn(async (): Promise<CoordinatorGroup[]> => []),
+		renameGroup: vi.fn(async () => false),
+		archiveGroup: vi.fn(async () => false),
+		unarchiveGroup: vi.fn(async () => false),
 		enrollDevice: vi.fn(async (_: string, __: CoordinatorEnrollDeviceInput) => undefined),
 		listEnrolledDevices: vi.fn(
 			async (_: string, __?: boolean): Promise<CoordinatorEnrollment[]> => [],
@@ -124,6 +127,15 @@ function createMockStore(
 }
 
 const allowRequest: CoordinatorRequestVerifier = async () => true;
+
+function authHeaders(deviceId = "device-a", nonce = "nonce-a") {
+	return {
+		"X-Opencode-Device": deviceId,
+		"X-Opencode-Signature": "sig",
+		"X-Opencode-Timestamp": "2026-03-28T00:00:00Z",
+		"X-Opencode-Nonce": nonce,
+	};
+}
 
 describe("createCoordinatorApp dependency injection", () => {
 	it("uses injected admin secret and store factory for admin routes", async () => {
@@ -969,6 +981,128 @@ describe("createCoordinatorApp dependency injection", () => {
 		expect(invalid.status).toBe(401);
 		expect(await invalid.json()).toEqual({ error: "invalid_admin_secret" });
 		expect(store.listScopeMemberships).not.toHaveBeenCalled();
+	});
+
+	it("lets enrolled devices read non-admin Sharing domain membership snapshots", async () => {
+		const scopes: CoordinatorScope[] = [
+			{
+				scope_id: "scope-acme",
+				label: "Acme Work",
+				kind: "team",
+				authority_type: "coordinator",
+				coordinator_id: "coord-a",
+				group_id: "g1",
+				manifest_issuer_device_id: null,
+				membership_epoch: 3,
+				manifest_hash: null,
+				status: "active",
+				created_at: "2026-03-28T00:00:00Z",
+				updated_at: "2026-03-28T00:00:00Z",
+			},
+			{
+				scope_id: "scope-other",
+				label: "Other Work",
+				kind: "team",
+				authority_type: "coordinator",
+				coordinator_id: "coord-a",
+				group_id: "g1",
+				manifest_issuer_device_id: null,
+				membership_epoch: 1,
+				manifest_hash: null,
+				status: "active",
+				created_at: "2026-03-28T00:00:00Z",
+				updated_at: "2026-03-28T00:00:00Z",
+			},
+		];
+		const memberships: Record<string, CoordinatorScopeMembership[]> = {
+			"scope-acme": [
+				{
+					scope_id: "scope-acme",
+					device_id: "device-a",
+					role: "member",
+					status: "active",
+					membership_epoch: 3,
+					coordinator_id: "coord-a",
+					group_id: "g1",
+					manifest_issuer_device_id: null,
+					manifest_hash: null,
+					signed_manifest_json: null,
+					updated_at: "2026-03-28T00:00:00Z",
+				},
+				{
+					scope_id: "scope-acme",
+					device_id: "device-b",
+					role: "member",
+					status: "active",
+					membership_epoch: 3,
+					coordinator_id: "coord-a",
+					group_id: "g1",
+					manifest_issuer_device_id: null,
+					manifest_hash: null,
+					signed_manifest_json: null,
+					updated_at: "2026-03-28T00:00:00Z",
+				},
+			],
+			"scope-other": [
+				{
+					scope_id: "scope-other",
+					device_id: "device-b",
+					role: "member",
+					status: "active",
+					membership_epoch: 1,
+					coordinator_id: "coord-a",
+					group_id: "g1",
+					manifest_issuer_device_id: null,
+					manifest_hash: null,
+					signed_manifest_json: null,
+					updated_at: "2026-03-28T00:00:00Z",
+				},
+			],
+		};
+		const store = createMockStore({
+			getGroup: vi.fn(async () => ({
+				group_id: "g1",
+				display_name: "Acme",
+				archived_at: null,
+				created_at: "2026-03-28T00:00:00Z",
+			})),
+			getEnrollment: vi.fn(async () => ({
+				group_id: "g1",
+				device_id: "device-a",
+				public_key: "pk-a",
+				fingerprint: "fp-a",
+				display_name: "Device A",
+				enabled: 1,
+				created_at: "2026-03-28T00:00:00Z",
+			})),
+			listScopes: vi.fn(async () => scopes),
+			listScopeMemberships: vi.fn(async (scopeId: string) => memberships[scopeId] ?? []),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: {
+				adminSecret: () => "test-secret",
+				now: () => "2026-03-28T00:00:00Z",
+			},
+			requestVerifier: allowRequest,
+		});
+
+		const scopeRes = await app.request("/v1/scopes?group_id=g1", {
+			headers: authHeaders("device-a", "nonce-scopes"),
+		});
+		const memberRes = await app.request("/v1/scopes/scope-acme/members?group_id=g1", {
+			headers: authHeaders("device-a", "nonce-members"),
+		});
+		const otherRes = await app.request("/v1/scopes/scope-other/members?group_id=g1", {
+			headers: authHeaders("device-a", "nonce-other"),
+		});
+
+		expect(scopeRes.status).toBe(200);
+		expect(await scopeRes.json()).toEqual({ items: [scopes[0]] });
+		expect(memberRes.status).toBe(200);
+		expect(await memberRes.json()).toEqual({ items: memberships["scope-acme"] });
+		expect(otherRes.status).toBe(403);
+		expect(await otherRes.json()).toEqual({ error: "scope_not_authorized" });
 	});
 
 	it("grants devices explicitly to a Sharing domain", async () => {

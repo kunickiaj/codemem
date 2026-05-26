@@ -327,6 +327,48 @@ export function createCoordinatorApp(
 		return { scope, response: null };
 	}
 
+	async function authorizeGroupMember(store: CoordinatorStore, groupId: string, c: Context) {
+		const auth = await authorizeRequest(store, runtime, requestVerifier, {
+			method: c.req.method,
+			url: c.req.url,
+			groupId,
+			body: new Uint8Array(0),
+			deviceId: c.req.header("X-Opencode-Device") ?? null,
+			signature: c.req.header("X-Opencode-Signature") ?? null,
+			timestamp: c.req.header("X-Opencode-Timestamp") ?? null,
+			nonce: c.req.header("X-Opencode-Nonce") ?? null,
+		});
+		if (!auth.ok || !auth.enrollment) {
+			return {
+				auth,
+				response:
+					rateLimitedResponse(c, c.req.path, false) ??
+					c.json({ error: auth.error }, auth.error === "group_archived" ? 409 : 401),
+			};
+		}
+		const limited = rateLimitedResponse(c, String(auth.enrollment.device_id), true);
+		return { auth, response: limited };
+	}
+
+	function activeCurrentMembership(
+		membership: CoordinatorScopeMembership,
+		scope: CoordinatorScope,
+	): boolean {
+		return membership.status === "active" && membership.membership_epoch >= scope.membership_epoch;
+	}
+
+	async function requesterAuthorizedForScope(
+		store: CoordinatorStore,
+		scope: CoordinatorScope,
+		deviceId: string,
+	): Promise<boolean> {
+		const memberships = await store.listScopeMemberships(scope.scope_id, false);
+		return memberships.some(
+			(membership) =>
+				membership.device_id === deviceId && activeCurrentMembership(membership, scope),
+		);
+	}
+
 	// -----------------------------------------------------------------------
 	// POST /v1/presence — upsert device presence (authenticated)
 	// -----------------------------------------------------------------------
@@ -437,6 +479,64 @@ export function createCoordinatorApp(
 
 			const items = await store.listGroupPeers(groupId, String(auth.enrollment.device_id));
 			return c.json({ items });
+		} finally {
+			await store.close();
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// GET /v1/scopes — list syncable scopes for the authenticated group member
+	// -----------------------------------------------------------------------
+
+	app.get("/v1/scopes", async (c) => {
+		const groupId = (c.req.query("group_id") ?? "").trim();
+		if (!groupId) return c.json({ error: "group_id_required" }, 400);
+		const store = createStore();
+		try {
+			const { auth, response } = await authorizeGroupMember(store, groupId, c);
+			if (response) return response;
+			if (!auth.enrollment) return c.json({ error: "unknown_device" }, 401);
+			const scopes = await store.listScopes({ groupId, includeInactive: false });
+			const items: CoordinatorScope[] = [];
+			for (const scope of scopes) {
+				if (scope.status !== "active") continue;
+				if (await requesterAuthorizedForScope(store, scope, String(auth.enrollment.device_id))) {
+					items.push(scope);
+				}
+			}
+			return c.json({ items });
+		} finally {
+			await store.close();
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// GET /v1/scopes/:scope_id/members — list members of an authorized scope
+	// -----------------------------------------------------------------------
+
+	app.get("/v1/scopes/:scope_id/members", async (c) => {
+		const groupId = (c.req.query("group_id") ?? "").trim();
+		const scopeId = String(c.req.param("scope_id") ?? "").trim();
+		if (!groupId) return c.json({ error: "group_id_required" }, 400);
+		if (!scopeId) return c.json({ error: "scope_id_required" }, 400);
+		const store = createStore();
+		try {
+			const { auth, response } = await authorizeGroupMember(store, groupId, c);
+			if (response) return response;
+			if (!auth.enrollment) return c.json({ error: "unknown_device" }, 401);
+			const scopes = await store.listScopes({ groupId, includeInactive: false });
+			const scope = scopes.find((item) => item.scope_id === scopeId) ?? null;
+			if (!scope || scope.status !== "active") return c.json({ error: "scope_not_found" }, 404);
+			const memberships = await store.listScopeMemberships(scopeId, false);
+			const requesterAuthorized = memberships.some(
+				(membership) =>
+					membership.device_id === String(auth.enrollment?.device_id) &&
+					activeCurrentMembership(membership, scope),
+			);
+			if (!requesterAuthorized) return c.json({ error: "scope_not_authorized" }, 403);
+			return c.json({
+				items: memberships.filter((membership) => activeCurrentMembership(membership, scope)),
+			});
 		} finally {
 			await store.close();
 		}

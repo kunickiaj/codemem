@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
@@ -91,6 +94,53 @@ describe("scope membership cache", () => {
 				scope: expect.objectContaining({ label: "Acme Work" }),
 			}),
 		]);
+	});
+
+	it("hydrates the cache through enrolled-device coordinator endpoints without an admin secret", async () => {
+		const local = setup();
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-scope-cache-keys-"));
+		const previousFetch = globalThis.fetch;
+		try {
+			const seenUrls: string[] = [];
+			globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = String(input);
+				seenUrls.push(url);
+				expect(init?.body ?? null).toBeNull();
+				const headers = new Headers(init?.headers);
+				expect(headers.get("X-Opencode-Device")).toBeTruthy();
+				expect(headers.get("X-Opencode-Signature")).toBeTruthy();
+				expect(headers.get("X-Opencode-Timestamp")).toBeTruthy();
+				expect(headers.get("X-Opencode-Nonce")).toBeTruthy();
+				if (url.endsWith("/v1/scopes?group_id=team-a")) {
+					return new Response(JSON.stringify({ items: [scope()] }), { status: 200 });
+				}
+				if (url.endsWith("/v1/scopes/scope-acme/members?group_id=team-a")) {
+					return new Response(JSON.stringify({ items: [membership()] }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "not_found" }), { status: 404 });
+			}) as typeof fetch;
+
+			const result = await refreshScopeMembershipCache(local, {
+				groupIds: ["team-a"],
+				coordinatorId: "https://coord.example.test",
+				remoteUrl: "https://coord.example.test",
+				adminSecret: null,
+				keysDir,
+				now: new Date(now()),
+			});
+
+			expect(result).toMatchObject({ status: "refreshed" });
+			expect(seenUrls).toEqual([
+				"https://coord.example.test/v1/scopes?group_id=team-a",
+				"https://coord.example.test/v1/scopes/scope-acme/members?group_id=team-a",
+			]);
+			expect(
+				getCachedScopeAuthorization(local, { deviceId: "device-a", scopeId: "scope-acme" }),
+			).toMatchObject({ authorized: true, state: "authorized" });
+		} finally {
+			globalThis.fetch = previousFetch;
+			rmSync(keysDir, { recursive: true, force: true });
+		}
 	});
 
 	it("keeps cached authorization visible as stale when coordinator refresh fails", async () => {

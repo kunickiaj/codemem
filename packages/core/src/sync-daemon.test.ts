@@ -278,6 +278,7 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 				syncCoordinatorGroups: ["team"],
 				syncCoordinatorAdminSecret: "secret",
 			}),
+			{ keysDir: "/tmp/keys" },
 		);
 	});
 

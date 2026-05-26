@@ -15,7 +15,9 @@ import {
 	type ScopeMembershipRevocationNotice,
 	scopeMembershipEpochStatus,
 } from "./scope-membership-semantics.js";
-import { buildBaseUrl } from "./sync-http-client.js";
+import { buildAuthHeaders } from "./sync-auth.js";
+import { buildBaseUrl, requestJson } from "./sync-http-client.js";
+import { ensureDeviceIdentity } from "./sync-identity.js";
 
 export const DEFAULT_SCOPE_MEMBERSHIP_CACHE_MAX_AGE_MS = 60_000;
 
@@ -75,6 +77,9 @@ export interface RefreshScopeMembershipCacheOptions {
 	coordinatorId?: string | null;
 	remoteUrl?: string | null;
 	adminSecret?: string | null;
+	/** @deprecated The refresh database is taken from refreshScopeMembershipCache(db, opts). */
+	db?: Database;
+	keysDir?: string | null;
 	now?: Date;
 	fetchers?: ScopeMembershipCacheFetchers;
 }
@@ -155,7 +160,67 @@ export function ensureScopeMembershipCacheStateTable(db: Database): void {
 	`);
 }
 
-function defaultFetchers(opts: RefreshScopeMembershipCacheOptions): ScopeMembershipCacheFetchers {
+function coordinatorUrl(opts: RefreshScopeMembershipCacheOptions): string {
+	const remote = clean(opts.remoteUrl);
+	if (!remote) throw new Error("Coordinator URL required.");
+	return buildBaseUrl(remote);
+}
+
+function signedCoordinatorGet(
+	db: Database,
+	url: string,
+	keysDir?: string | null,
+): Promise<Record<string, unknown> | null> {
+	const [deviceId] = ensureDeviceIdentity(db, { keysDir: keysDir ?? undefined });
+	const bodyBytes = Buffer.alloc(0);
+	const headers = buildAuthHeaders({
+		deviceId,
+		method: "GET",
+		url,
+		bodyBytes,
+		keysDir: keysDir ?? undefined,
+	});
+	return requestJson("GET", url, {
+		headers,
+	}).then(([status, payload]) => {
+		if (status < 200 || status >= 300) {
+			const detail = typeof payload?.error === "string" ? payload.error : "unknown";
+			throw new Error(`Coordinator membership snapshot failed (${status}): ${detail}`);
+		}
+		return payload;
+	});
+}
+
+function payloadItems<T>(payload: Record<string, unknown> | null): T[] {
+	return Array.isArray(payload?.items)
+		? payload.items.filter((item): item is T => Boolean(item) && typeof item === "object")
+		: [];
+}
+
+function authenticatedFetchers(
+	db: Database,
+	opts: RefreshScopeMembershipCacheOptions,
+): ScopeMembershipCacheFetchers {
+	const baseUrl = coordinatorUrl(opts);
+	return {
+		listScopes: async (groupId) => {
+			const url = `${baseUrl}/v1/scopes?group_id=${encodeURIComponent(groupId)}`;
+			return payloadItems<CoordinatorScope>(await signedCoordinatorGet(db, url, opts.keysDir));
+		},
+		listMemberships: async (groupId, scopeId) => {
+			const url = `${baseUrl}/v1/scopes/${encodeURIComponent(scopeId)}/members?group_id=${encodeURIComponent(groupId)}`;
+			return payloadItems<CoordinatorScopeMembership>(
+				await signedCoordinatorGet(db, url, opts.keysDir),
+			);
+		},
+	};
+}
+
+function defaultFetchers(
+	db: Database,
+	opts: RefreshScopeMembershipCacheOptions,
+): ScopeMembershipCacheFetchers {
+	if (opts.remoteUrl && !opts.adminSecret) return authenticatedFetchers(db, opts);
 	return {
 		listScopes: (groupId) =>
 			coordinatorListScopesAction({
@@ -536,7 +601,7 @@ export async function refreshScopeMembershipCache(
 		coordinatorId,
 		groupId,
 	});
-	const fetchers = opts.fetchers ?? defaultFetchers(opts);
+	const fetchers = opts.fetchers ?? defaultFetchers(db, opts);
 	const timestamp = nowIso(opts.now);
 	const results: RefreshScopeMembershipCacheGroupResult[] = [];
 
@@ -597,9 +662,10 @@ export async function refreshScopeMembershipCache(
 export async function refreshConfiguredScopeMembershipCache(
 	db: Database,
 	config?: CoordinatorSyncConfig,
+	options?: { keysDir?: string | null },
 ): Promise<RefreshScopeMembershipCacheResult> {
 	const syncConfig = config ?? readCoordinatorSyncConfig();
-	if (!coordinatorEnabled(syncConfig) || !syncConfig.syncCoordinatorAdminSecret) {
+	if (!coordinatorEnabled(syncConfig)) {
 		return { status: "skipped", coordinatorId: null, groups: [] };
 	}
 	return refreshScopeMembershipCache(db, {
@@ -607,6 +673,7 @@ export async function refreshConfiguredScopeMembershipCache(
 		coordinatorId: authorityId(syncConfig.syncCoordinatorUrl),
 		remoteUrl: syncConfig.syncCoordinatorUrl,
 		adminSecret: syncConfig.syncCoordinatorAdminSecret,
+		keysDir: options?.keysDir ?? null,
 	});
 }
 

@@ -153,7 +153,7 @@ export async function refreshCoordinatorPresenceForDaemon(
 	const config = readCoordinatorSyncConfig();
 	if (!coordinatorEnabled(config)) return false;
 	await registerCoordinatorPresence({ db, dbPath }, config, { keysDir });
-	await refreshConfiguredScopeMembershipCache(db, config);
+	await refreshConfiguredScopeMembershipCache(db, config, { keysDir });
 	return true;
 }
 
