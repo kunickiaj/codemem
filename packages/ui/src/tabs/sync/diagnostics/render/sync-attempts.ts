@@ -20,6 +20,13 @@ import {
 } from "../helpers";
 import type { SyncAttemptState } from "../types";
 
+export function shouldShowSyncAttemptRedactionHint(
+	attempt: Pick<SyncAttemptState, "error_redacted">,
+	redact: boolean,
+): boolean {
+	return redact && attempt.error_redacted === true;
+}
+
 export function renderSyncAttempts() {
 	const syncAttempts = document.getElementById("syncAttempts");
 	if (!syncAttempts) return;
@@ -55,7 +62,7 @@ export function renderSyncAttempts() {
 			// doesn't leak private addresses.
 			const errText = String(attempt.error);
 			detailParts.push(redact ? redactIpOctets(errText) : errText);
-			if (redact && /enable diagnostics for details/i.test(errText)) {
+			if (shouldShowSyncAttemptRedactionHint(attempt, redact)) {
 				detailParts.push("Turn off Redact in Advanced diagnostics to reveal the full error.");
 			}
 		}

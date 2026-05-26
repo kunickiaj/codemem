@@ -7479,23 +7479,43 @@ describe("viewer-server", () => {
 				const redactedRes = await app.request("/api/sync/attempts");
 				expect(redactedRes.status).toBe(200);
 				const redactedBody = (await redactedRes.json()) as {
-					items: Array<{ error: string | null; address: string | null }>;
+					items: Array<{ error: string | null; error_redacted?: boolean; address: string | null }>;
 					redacted: boolean;
 				};
 				expect(redactedBody.redacted).toBe(true);
 				expect(redactedBody.items[0]?.error).toBe(
 					"sync attempt failed; enable diagnostics for details",
 				);
+				expect(redactedBody.items[0]?.error_redacted).toBe(true);
 				expect(redactedBody.items[0]?.address).toBeNull();
+
+				const redactedStatusRes = await app.request("/api/sync/status");
+				expect(redactedStatusRes.status).toBe(200);
+				const redactedStatusBody = (await redactedStatusRes.json()) as {
+					attempts: Array<{ error: string | null; error_redacted?: boolean }>;
+				};
+				expect(redactedStatusBody.attempts[0]?.error).toBe(
+					"sync attempt failed; enable diagnostics for details",
+				);
+				expect(redactedStatusBody.attempts[0]?.error_redacted).toBe(true);
 
 				const diagnosticRes = await app.request("/api/sync/attempts?includeDiagnostics=1");
 				expect(diagnosticRes.status).toBe(200);
 				const diagnosticBody = (await diagnosticRes.json()) as {
-					items: Array<{ error: string | null }>;
+					items: Array<{ error: string | null; error_redacted?: boolean }>;
 					redacted: boolean;
 				};
 				expect(diagnosticBody.redacted).toBe(false);
 				expect(diagnosticBody.items[0]?.error).toContain("fingerprint_mismatch");
+				expect(diagnosticBody.items[0]?.error_redacted).toBe(false);
+
+				const diagnosticStatusRes = await app.request("/api/sync/status?includeDiagnostics=1");
+				expect(diagnosticStatusRes.status).toBe(200);
+				const diagnosticStatusBody = (await diagnosticStatusRes.json()) as {
+					attempts: Array<{ error: string | null; error_redacted?: boolean }>;
+				};
+				expect(diagnosticStatusBody.attempts[0]?.error).toContain("fingerprint_mismatch");
+				expect(diagnosticStatusBody.attempts[0]?.error_redacted).toBe(false);
 			} finally {
 				cleanup();
 			}

@@ -1486,9 +1486,11 @@ function mapSyncAttemptRow(
 	showDiag: boolean,
 	addresses?: string[],
 ): Record<string, unknown> {
+	const redactedError = redactSyncAttemptError(row.error);
 	return {
 		...row,
-		error: showDiag ? row.error : redactSyncAttemptError(row.error),
+		error: showDiag ? row.error : redactedError,
+		error_redacted: !showDiag && redactedError != null,
 		status: attemptStatus(row),
 		address: showDiag && addresses?.length ? addresses[0] : null,
 	};
