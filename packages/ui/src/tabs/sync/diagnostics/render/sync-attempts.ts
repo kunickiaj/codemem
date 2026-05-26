@@ -55,6 +55,9 @@ export function renderSyncAttempts() {
 			// doesn't leak private addresses.
 			const errText = String(attempt.error);
 			detailParts.push(redact ? redactIpOctets(errText) : errText);
+			if (redact && /enable diagnostics for details/i.test(errText)) {
+				detailParts.push("Turn off Redact in Advanced diagnostics to reveal the full error.");
+			}
 		}
 		if (!isError && (attempt.ops_in || attempt.ops_out)) {
 			detailParts.push(`${attempt.ops_in ?? 0} in · ${attempt.ops_out ?? 0} out`);

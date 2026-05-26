@@ -198,10 +198,18 @@ function DiscoveredDeviceRow({
 						onClick={async () => {
 							setBusy("review");
 							setReviewLabel("Pairing…");
+							setFeedback({
+								message: `Pairing ${row.displayName}. Keep this page open while the device is approved and refreshed.`,
+								tone: "success",
+							});
 							try {
 								setFeedback((await onReview(row)) || null);
 								setReviewLabel(row.actionLabel || defaultReviewLabel);
 							} catch {
+								setFeedback({
+									message: `Pairing ${row.displayName} failed. Try again.`,
+									tone: "warning",
+								});
 								setReviewLabel("Retry");
 							} finally {
 								setBusy(null);
