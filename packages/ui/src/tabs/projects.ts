@@ -28,6 +28,7 @@ let scopes: SharingDomainScope[] = [];
 const openProjectDetails = new Set<string>();
 const openProjectClusters = new Set<string>();
 const draftDomainSelections = new Map<string, string>();
+const draftClusterDomainSelections = new Map<string, string>();
 const pendingConfirmations = new Map<
 	string,
 	{ requiredGuardrailTokens: string[]; scopeId: string; warnings: ProjectScopeGuardrailWarning[] }
@@ -338,6 +339,7 @@ async function saveProjectClusterMapping(
 		showGlobalNotice(
 			`Updated ${assignable.length} project identit${assignable.length === 1 ? "y" : "ies"}. Device access grants are unchanged.`,
 		);
+		draftClusterDomainSelections.delete(projectClusterKey(assignable[0]));
 		refreshProjects?.();
 	} catch (error) {
 		showGlobalNotice(
@@ -776,17 +778,19 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 		placeholder.textContent = "Choose Space…";
 		select.appendChild(placeholder);
 		appendAssignableScopeOptions(select);
-		select.value = "";
+		select.value = firstSafeSelection(draftClusterDomainSelections.get(clusterKey));
 		const save = document.createElement("button");
 		save.className = "settings-button";
 		save.type = "button";
 		save.textContent = `Save Space for ${assignableProjects.length} identit${assignableProjects.length === 1 ? "y" : "ies"}`;
-		save.disabled = true;
+		save.disabled = !select.value || hasGuardrailWarnings;
 		save.addEventListener(
 			"click",
 			() => void saveProjectClusterMapping(assignableProjects, select.value),
 		);
 		select.addEventListener("change", () => {
+			if (select.value) draftClusterDomainSelections.set(clusterKey, select.value);
+			else draftClusterDomainSelections.delete(clusterKey);
 			save.disabled = !select.value || hasGuardrailWarnings;
 		});
 		select.addEventListener("blur", refreshSkippedProjectDataAfterSelectBlur);

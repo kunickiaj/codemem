@@ -326,6 +326,12 @@ function stopPolling() {
 
 function startPolling() {
 	if (state.refreshTimer) return;
+	// Polling drives health/config updates and disconnect detection in
+	// doRefresh(), so it must run regardless of which tab is active. The
+	// Projects tab's draft-preservation lives inside loadProjectsData()
+	// itself: it short-circuits when a Space select is focused
+	// (isProjectSpaceSelectActive) and persists drafts across re-renders
+	// via the draftClusterDomainSelections / draftDomainSelections maps.
 	state.refreshTimer = setInterval(() => refresh(), 5000);
 }
 

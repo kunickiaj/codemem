@@ -281,6 +281,62 @@ describe("Projects tab", () => {
 		expect(refresh).toHaveBeenCalledTimes(1);
 	});
 
+	it("preserves a cluster Space draft across inventory re-renders until save succeeds", async () => {
+		const refresh = vi.fn();
+		initProjectsTab(refresh);
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [
+				project({ cwd: "/workspace/a", memory_count: 2, session_count: 1 }),
+				project({
+					cwd: "/tmp/worktree-a",
+					memory_count: 3,
+					session_count: 2,
+					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
+				}),
+			],
+			total: 2,
+		});
+		await loadProjectsData();
+		const select = document.querySelector(
+			".project-inventory-cluster > .project-inventory-actions .project-domain-select",
+		) as HTMLSelectElement | null;
+		if (!select) throw new Error("cluster Space select missing");
+		select.value = "exampleco-work";
+		select.dispatchEvent(new Event("change"));
+
+		await loadProjectsData();
+
+		const rerenderedSelect = document.querySelector(
+			".project-inventory-cluster > .project-inventory-actions .project-domain-select",
+		) as HTMLSelectElement | null;
+		if (!rerenderedSelect) throw new Error("cluster Space select missing after refresh");
+		expect(rerenderedSelect.value).toBe("exampleco-work");
+		const save = Array.from(document.querySelectorAll("button")).find((button) =>
+			button.textContent?.startsWith("Save Space for 2 identities"),
+		) as HTMLButtonElement | undefined;
+		expect(save).toBeDefined();
+		save?.click();
+		await flushAsyncWork();
+
+		expect(api.saveSharingDomainProjectMappings).toHaveBeenCalledWith({
+			mappings: expect.arrayContaining([
+				expect.objectContaining({
+					scope_id: "exampleco-work",
+					workspace_identity: "https://git.example.invalid/exampleco/api.git",
+				}),
+			]),
+		});
+		expect(refresh).toHaveBeenCalled();
+		await loadProjectsData();
+		const clearedSelect = document.querySelector(
+			".project-inventory-cluster > .project-inventory-actions .project-domain-select",
+		) as HTMLSelectElement | null;
+		expect(clearedSelect?.value).toBe("");
+	});
+
 	it("refreshes active Team names and ignores archived Teams for Space labels", async () => {
 		state.lastCoordinatorAdminGroups = [
 			{ archived_at: "2026-05-01T00:00:00Z", display_name: "Old Team", group_id: "old" },
