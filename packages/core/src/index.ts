@@ -589,6 +589,10 @@ export type {
 	InboundScopeRejectionRecord,
 	InboundScopeRejectionSummaryOptions,
 	ListInboundScopeRejectionsOptions,
+	ReconcileStalePeerReceivedRowsOptions,
+	ReconcileStalePeerReceivedRowsResult,
+	StalePeerReceivedRowDiagnostic,
+	StalePeerReceivedRowReason,
 } from "./sync-replication.js";
 export {
 	ACCESS_CLEANUP_OP_TYPE,
@@ -615,6 +619,7 @@ export {
 	planReplicationOpsAgePrune,
 	pruneReplicationOps,
 	pruneReplicationOpsUntilCaughtUp,
+	reconcileStalePeerReceivedRows,
 	recordAccessCleanupOp,
 	recordReplicationOp,
 	rejectInboundScopeFailures,

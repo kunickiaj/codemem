@@ -24,6 +24,7 @@ import {
 	planReplicationOpsAgePrune,
 	pruneReplicationOps,
 	pruneReplicationOpsUntilCaughtUp,
+	reconcileStalePeerReceivedRows,
 	recordAccessCleanupOp,
 	recordReplicationOp,
 	setReplicationCursor,
@@ -2345,7 +2346,7 @@ describe("applyReplicationOps", () => {
 
 	function insertReplicatedMemory(
 		input: {
-			importKey?: string;
+			importKey?: string | null;
 			originDeviceId?: string | null;
 			scopeId?: string | null;
 			title?: string;
@@ -2364,9 +2365,11 @@ describe("applyReplicationOps", () => {
 				input.title ?? "Replicated row",
 				"2026-01-01T00:00:00Z",
 				"2026-01-01T00:00:00Z",
-				input.importKey ?? "key:test-1",
-				toJson({ clock_device_id: input.originDeviceId ?? "dev-remote" }),
-				input.originDeviceId ?? "dev-remote",
+				input.importKey === undefined ? "key:test-1" : input.importKey,
+				toJson({
+					clock_device_id: input.originDeviceId === undefined ? "dev-remote" : input.originDeviceId,
+				}),
+				input.originDeviceId === undefined ? "dev-remote" : input.originDeviceId,
 				input.scopeId ?? "acme-work",
 			);
 		return Number(result.lastInsertRowid);
@@ -2706,6 +2709,125 @@ describe("applyReplicationOps", () => {
 			db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(otherScopeMemoryId),
 		).toBeDefined();
 		expect(result.vectorWork.deleteMemoryIds).toEqual([]);
+	});
+
+	it("reconciles provably stale peer-received rows without deleting receiver-owned rows", () => {
+		grantScope("acme-work", ["dev-remote"]);
+		const stalePeerMemoryId = insertReplicatedMemory({
+			importKey: "key:stale-peer",
+			originDeviceId: "dev-remote",
+			scopeId: "acme-work",
+		});
+		const localMemoryId = insertReplicatedMemory({
+			importKey: "key:local-owned",
+			originDeviceId: "dev-local",
+			scopeId: "acme-work",
+		});
+		const missingOriginMemoryId = insertReplicatedMemory({
+			importKey: "key:missing-origin",
+			originDeviceId: null,
+			scopeId: "acme-work",
+		});
+
+		const result = reconcileStalePeerReceivedRows(db, { localDeviceId: "dev-local" });
+
+		expect(result.deleted).toBe(1);
+		expect(result.deleted_memory_ids).toEqual([stalePeerMemoryId]);
+		expect(
+			db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(stalePeerMemoryId),
+		).toBeUndefined();
+		expect(db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(localMemoryId)).toBeDefined();
+		expect(
+			db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(missingOriginMemoryId),
+		).toBeDefined();
+		expect(result.ambiguous).toEqual([
+			expect.objectContaining({
+				memory_id: missingOriginMemoryId,
+				reason: "missing_origin_device",
+			}),
+		]);
+	});
+
+	it("leaves authorized and ambiguous stale-scope candidates intact with diagnostics", () => {
+		grantScope("acme-work", ["dev-local", "dev-remote"]);
+		const authorizedPeerMemoryId = insertReplicatedMemory({
+			importKey: "key:authorized-peer",
+			originDeviceId: "dev-remote",
+			scopeId: "acme-work",
+		});
+		const missingImportKeyMemoryId = insertReplicatedMemory({
+			importKey: null,
+			originDeviceId: "dev-remote",
+			scopeId: "ghost-scope",
+		});
+		const unknownScopeMemoryId = insertReplicatedMemory({
+			importKey: "key:unknown-scope",
+			originDeviceId: "dev-remote",
+			scopeId: "ghost-scope",
+		});
+
+		const result = reconcileStalePeerReceivedRows(db, { localDeviceId: "dev-local" });
+
+		expect(result.deleted).toBe(0);
+		expect(result.retained).toBeGreaterThanOrEqual(1);
+		expect(
+			db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(authorizedPeerMemoryId),
+		).toBeDefined();
+		expect(
+			db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(missingImportKeyMemoryId),
+		).toBeDefined();
+		expect(
+			db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(unknownScopeMemoryId),
+		).toBeDefined();
+		expect(result.ambiguous).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					memory_id: missingImportKeyMemoryId,
+					reason: "missing_import_key",
+				}),
+				expect.objectContaining({
+					memory_id: unknownScopeMemoryId,
+					reason: "authorization_unknown",
+				}),
+			]),
+		);
+	});
+
+	it("reconciles stale-epoch peer rows as stale retention", () => {
+		grantScope("acme-work", ["dev-remote"], { scopeEpoch: 3 });
+		grantScope("acme-work", ["dev-local"], { scopeEpoch: 3, membershipEpoch: 2 });
+		const stalePeerMemoryId = insertReplicatedMemory({
+			importKey: "key:stale-epoch-peer",
+			originDeviceId: "dev-remote",
+			scopeId: "acme-work",
+		});
+
+		const result = reconcileStalePeerReceivedRows(db, { localDeviceId: "dev-local" });
+
+		expect(result.deleted_memory_ids).toEqual([stalePeerMemoryId]);
+		expect(result.deleted).toBe(1);
+	});
+
+	it("retains pending membership peer rows as ambiguous", () => {
+		grantScope("acme-work", ["dev-local", "dev-remote"], { status: "pending" });
+		const pendingPeerMemoryId = insertReplicatedMemory({
+			importKey: "key:pending-peer",
+			originDeviceId: "dev-remote",
+			scopeId: "acme-work",
+		});
+
+		const result = reconcileStalePeerReceivedRows(db, { localDeviceId: "dev-local" });
+
+		expect(result.deleted).toBe(0);
+		expect(result.ambiguous).toEqual([
+			expect.objectContaining({
+				memory_id: pendingPeerMemoryId,
+				reason: "authorization_unknown",
+			}),
+		]);
+		expect(
+			db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(pendingPeerMemoryId),
+		).toBeDefined();
 	});
 
 	it("redacts secrets in inbound peer payloads on insert", () => {

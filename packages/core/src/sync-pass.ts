@@ -35,6 +35,7 @@ import {
 	getReplicationCursor,
 	hasUnsyncedSharedMemoryChanges,
 	migrateLegacyImportKeys,
+	reconcileStalePeerReceivedRows,
 	setReplicationCursor,
 } from "./sync-replication.js";
 import type { ReplicationOp, SyncResetRequired } from "./types.js";
@@ -753,10 +754,21 @@ async function syncOneScope(
 			};
 		}
 
+		const reconciliation = reconcileStalePeerReceivedRows(db, {
+			localDeviceId: deviceId,
+			peerDeviceId,
+		});
+		const vectorWork = {
+			upsertMemoryIds: applied.vectorWork.upsertMemoryIds,
+			deleteMemoryIds: [
+				...applied.vectorWork.deleteMemoryIds,
+				...reconciliation.deleted_memory_ids,
+			],
+		};
 		try {
-			queueVectorBackfillForIncrementalSync(db, applied.vectorWork);
+			queueVectorBackfillForIncrementalSync(db, vectorWork);
 		} catch (queueErr) {
-			const fallback = await bestEffortMaintainVectorsForSyncFallback(db, applied.vectorWork);
+			const fallback = await bestEffortMaintainVectorsForSyncFallback(db, vectorWork);
 			if (fallback.errors.length > 0) {
 				return {
 					scope_id: scopeId,
@@ -1181,10 +1193,21 @@ export async function syncOnce(
 				const firstReason = applied.rejections[0]?.reason ?? "scope_rejected";
 				throw new Error(`inbound scope rejected:${firstReason}`);
 			}
+			const reconciliation = reconcileStalePeerReceivedRows(db, {
+				localDeviceId: deviceId,
+				peerDeviceId,
+			});
+			const vectorWork = {
+				upsertMemoryIds: applied.vectorWork.upsertMemoryIds,
+				deleteMemoryIds: [
+					...applied.vectorWork.deleteMemoryIds,
+					...reconciliation.deleted_memory_ids,
+				],
+			};
 			try {
-				queueVectorBackfillForIncrementalSync(db, applied.vectorWork);
+				queueVectorBackfillForIncrementalSync(db, vectorWork);
 			} catch (queueError) {
-				const fallback = await bestEffortMaintainVectorsForSyncFallback(db, applied.vectorWork);
+				const fallback = await bestEffortMaintainVectorsForSyncFallback(db, vectorWork);
 				if (fallback.errors.length > 0) {
 					const details = fallback.errors.join("; ");
 					throw new Error(

@@ -2133,6 +2133,175 @@ export interface ReplicationVectorWork {
 	deleteMemoryIds: number[];
 }
 
+export type StalePeerReceivedRowReason =
+	| "authorization_unknown"
+	| "missing_import_key"
+	| "missing_origin_device"
+	| "missing_scope";
+
+export interface StalePeerReceivedRowDiagnostic {
+	memory_id: number;
+	import_key: string | null;
+	origin_device_id: string | null;
+	scope_id: string | null;
+	reason: StalePeerReceivedRowReason;
+}
+
+export interface ReconcileStalePeerReceivedRowsResult {
+	checked: number;
+	deleted: number;
+	deleted_memory_ids: number[];
+	retained: number;
+	ambiguous: StalePeerReceivedRowDiagnostic[];
+}
+
+export interface ReconcileStalePeerReceivedRowsOptions {
+	localDeviceId: string;
+	peerDeviceId?: string | null;
+}
+
+type StalePeerCandidateAuthState = ReturnType<typeof getCachedScopeAuthorization>["state"];
+
+function stalePeerCandidateIsDeletable(state: StalePeerCandidateAuthState): boolean {
+	return state === "revoked" || state === "scope_inactive" || state === "stale_epoch";
+}
+
+function stalePeerCandidateDiagnostic(input: {
+	importKey: string | null;
+	memoryId: number;
+	originDeviceId: string | null;
+	reason: StalePeerReceivedRowReason;
+	scopeId: string | null;
+}): StalePeerReceivedRowDiagnostic {
+	return {
+		memory_id: input.memoryId,
+		import_key: input.importKey,
+		origin_device_id: input.originDeviceId,
+		scope_id: input.scopeId,
+		reason: input.reason,
+	};
+}
+
+export function reconcileStalePeerReceivedRows(
+	db: Database,
+	options: ReconcileStalePeerReceivedRowsOptions,
+): ReconcileStalePeerReceivedRowsResult {
+	const localDeviceId = cleanText(options.localDeviceId);
+	if (!localDeviceId) throw new Error("localDeviceId must be a non-empty string");
+	const peerDeviceId = cleanText(options.peerDeviceId);
+	const rows = db
+		.prepare(
+			`SELECT id, import_key, origin_device_id, scope_id
+			 FROM memory_items
+			 WHERE active = 1
+			   AND (? IS NULL OR origin_device_id = ?)
+			 ORDER BY id`,
+		)
+		.all(peerDeviceId, peerDeviceId) as Array<{
+		id: number;
+		import_key: string | null;
+		origin_device_id: string | null;
+		scope_id: string | null;
+	}>;
+	const result: ReconcileStalePeerReceivedRowsResult = {
+		checked: rows.length,
+		deleted: 0,
+		deleted_memory_ids: [],
+		retained: 0,
+		ambiguous: [],
+	};
+	const deleteMemory = db.prepare("DELETE FROM memory_items WHERE id = ?");
+	db.transaction(() => {
+		for (const row of rows) {
+			const memoryId = Number(row.id);
+			const importKey = cleanText(row.import_key);
+			const originDeviceId = cleanText(row.origin_device_id);
+			const scopeId = cleanText(row.scope_id);
+			if (!originDeviceId) {
+				result.ambiguous.push(
+					stalePeerCandidateDiagnostic({
+						importKey,
+						memoryId,
+						originDeviceId,
+						reason: "missing_origin_device",
+						scopeId,
+					}),
+				);
+				continue;
+			}
+			if (originDeviceId === localDeviceId) {
+				result.retained += 1;
+				continue;
+			}
+			if (!scopeId || scopeId === DEFAULT_SYNC_SCOPE_ID) {
+				result.ambiguous.push(
+					stalePeerCandidateDiagnostic({
+						importKey,
+						memoryId,
+						originDeviceId,
+						reason: "missing_scope",
+						scopeId,
+					}),
+				);
+				continue;
+			}
+			if (!importKey) {
+				result.ambiguous.push(
+					stalePeerCandidateDiagnostic({
+						importKey,
+						memoryId,
+						originDeviceId,
+						reason: "missing_import_key",
+						scopeId,
+					}),
+				);
+				continue;
+			}
+			const auth = getCachedScopeAuthorization(db, { deviceId: localDeviceId, scopeId });
+			if (auth.authorized) {
+				result.retained += 1;
+				continue;
+			}
+			if (!auth.scope) {
+				result.ambiguous.push(
+					stalePeerCandidateDiagnostic({
+						importKey,
+						memoryId,
+						originDeviceId,
+						reason: "authorization_unknown",
+						scopeId,
+					}),
+				);
+				continue;
+			}
+			if (!auth.membership) {
+				clearMemoryRefs(db, memoryId);
+				deleteMemory.run(memoryId);
+				result.deleted += 1;
+				result.deleted_memory_ids.push(memoryId);
+				continue;
+			}
+			if (!stalePeerCandidateIsDeletable(auth.state)) {
+				result.ambiguous.push(
+					stalePeerCandidateDiagnostic({
+						importKey,
+						memoryId,
+						originDeviceId,
+						reason: "authorization_unknown",
+						scopeId,
+					}),
+				);
+				continue;
+			}
+			clearMemoryRefs(db, memoryId);
+			deleteMemory.run(memoryId);
+			result.deleted += 1;
+			result.deleted_memory_ids.push(memoryId);
+		}
+	})();
+	return result;
+}
+
 export type InboundScopeRejectionReason =
 	| "missing_scope"
 	| "sender_not_member"
