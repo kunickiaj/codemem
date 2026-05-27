@@ -3285,7 +3285,9 @@ export function syncRoutes(
 					409,
 				);
 			}
+			const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 			const mapping = upsertProjectScopeSettingsMapping(store.db, {
+				deviceId,
 				...mappingInput,
 			});
 			return c.json({ ok: true, mapping, guardrail_warnings: analysis.warnings });
@@ -3344,9 +3346,10 @@ export function syncRoutes(
 					409,
 				);
 			}
+			const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 			const saveMappings = store.db.transaction(() =>
 				mappingInputs.map((mappingInput) =>
-					upsertProjectScopeSettingsMapping(store.db, mappingInput),
+					upsertProjectScopeSettingsMapping(store.db, { deviceId, ...mappingInput }),
 				),
 			);
 			return c.json({

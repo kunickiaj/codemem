@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Database } from "./db.js";
+import { type Database, fromJson, toJson } from "./db.js";
 import { ensureScopeBackfillScopes, LEGACY_SHARED_REVIEW_SCOPE_ID } from "./scope-backfill.js";
 import {
 	canonicalWorkspaceIdentity,
@@ -120,6 +120,7 @@ interface ProjectScopeSuggestion {
 }
 
 export interface UpsertProjectScopeMappingInput {
+	deviceId?: string | null;
 	id?: number | null;
 	workspace_identity?: string | null;
 	project_pattern?: string | null;
@@ -651,6 +652,7 @@ function assertActiveScope(db: Database, scopeId: string): void {
 }
 
 interface ProjectScopeMappingDraft {
+	deviceId: string | null;
 	existing: ProjectScopeSettingsMapping | null;
 	workspaceIdentity: string | null;
 	projectPattern: string | null;
@@ -675,6 +677,7 @@ function resolveProjectScopeMappingDraft(
 		clean(input.project_pattern) ?? existing?.project_pattern ?? workspaceIdentity;
 	const priority = input.priority == null ? (existing?.priority ?? 0) : Number(input.priority);
 	return {
+		deviceId: clean(input.deviceId),
 		existing,
 		workspaceIdentity,
 		projectPattern,
@@ -682,6 +685,122 @@ function resolveProjectScopeMappingDraft(
 		priority,
 		source: clean(input.source) ?? "user",
 	};
+}
+
+interface SourceOwnedMemoryScopeRow {
+	id: number;
+	rev: number | null;
+	scope_id: string | null;
+	metadata_json: string | null;
+	workspace_id: string | null;
+	cwd: string | null;
+	git_branch: string | null;
+	git_remote: string | null;
+	project: string | null;
+}
+
+function sourceOwnedMemoryRowsForScopePropagation(
+	db: Database,
+	deviceId: string,
+): SourceOwnedMemoryScopeRow[] {
+	return db
+		.prepare(
+			`SELECT
+				mi.id,
+				mi.rev,
+				mi.scope_id,
+				mi.metadata_json,
+				mi.workspace_id,
+				s.cwd,
+				s.git_branch,
+				s.git_remote,
+				s.project
+			 FROM memory_items mi
+			 JOIN sessions s ON s.id = mi.session_id
+			 WHERE mi.active = 1
+			   AND (mi.origin_device_id IS NULL OR TRIM(mi.origin_device_id) = '' OR mi.origin_device_id = ?)
+			   AND (s.cwd IS NULL OR substr(s.cwd, 1, length(?)) <> ?)`,
+		)
+		.all(
+			deviceId,
+			SYNC_BOOTSTRAP_CWD_PREFIX,
+			SYNC_BOOTSTRAP_CWD_PREFIX,
+		) as SourceOwnedMemoryScopeRow[];
+}
+
+function propagateProjectScopeMappingToSourceOwnedMemories(
+	db: Database,
+	mapping: ProjectScopeSettingsMapping,
+	deviceId: string | null,
+	previousMappings?: ProjectScopeSettingsMapping[],
+): number {
+	if (!deviceId) return 0;
+	const mappings = listProjectScopeSettingsMappings(db);
+	const oldMappings = previousMappings ?? mappings;
+	const now = new Date().toISOString();
+	let moved = 0;
+	for (const row of sourceOwnedMemoryRowsForScopePropagation(db, deviceId)) {
+		const previousResolution = resolveProjectScope({
+			gitBranch: row.git_branch,
+			gitRemote: row.git_remote,
+			cwd: row.cwd,
+			project: row.project,
+			workspaceId: row.workspace_id,
+			mappings: oldMappings,
+		});
+		const resolution = resolveProjectScope({
+			gitBranch: row.git_branch,
+			gitRemote: row.git_remote,
+			cwd: row.cwd,
+			project: row.project,
+			workspaceId: row.workspace_id,
+			mappings,
+		});
+		if (previousResolution.mapping?.id !== mapping.id && resolution.mapping?.id !== mapping.id) {
+			continue;
+		}
+		const oldScopeId = clean(row.scope_id) ?? LOCAL_DEFAULT_SCOPE_ID;
+		const newScopeId = resolution.scopeId;
+		if (oldScopeId === newScopeId) continue;
+		const oldRev = Number(row.rev ?? 0);
+		const tombstoneRev = oldRev + 1;
+		const upsertRev = oldRev + 2;
+		const metadata = fromJson(row.metadata_json);
+		metadata.clock_device_id = deviceId;
+		metadata.last_project_scope_mapping = {
+			mapping_id: mapping.id,
+			old_scope_id: oldScopeId,
+			new_scope_id: newScopeId,
+			updated_at: now,
+		};
+		db.prepare(
+			`UPDATE memory_items
+			 SET scope_id = ?, updated_at = ?, metadata_json = ?, rev = ?
+			 WHERE id = ?`,
+		).run(newScopeId, now, toJson(metadata), upsertRev, row.id);
+		recordReplicationOp(db, {
+			memoryId: row.id,
+			opType: "delete",
+			deviceId,
+			scopeId: oldScopeId,
+			clockRev: tombstoneRev,
+			clockUpdatedAt: now,
+			clockDeviceId: deviceId,
+			createdAt: now,
+		});
+		recordReplicationOp(db, {
+			memoryId: row.id,
+			opType: "upsert",
+			deviceId,
+			scopeId: newScopeId,
+			clockRev: upsertRev,
+			clockUpdatedAt: now,
+			clockDeviceId: deviceId,
+			createdAt: now,
+		});
+		moved += 1;
+	}
+	return moved;
 }
 
 export function analyzeProjectScopeMappingChangeGuardrails(
@@ -1123,6 +1242,7 @@ export function upsertProjectScopeSettingsMapping(
 	const source = draft.source;
 	const now = new Date().toISOString();
 	if (existing) {
+		const previousMappings = listProjectScopeSettingsMappings(db);
 		db.prepare(
 			`UPDATE project_scope_mappings
 			 SET workspace_identity = ?, project_pattern = ?, scope_id = ?, priority = ?, source = ?, updated_at = ?
@@ -1130,6 +1250,7 @@ export function upsertProjectScopeSettingsMapping(
 		).run(workspaceIdentity, projectPattern, scopeId, priority, source, now, existing.id);
 		const saved = getProjectScopeSettingsMappingById(db, existing.id);
 		if (!saved) throw new Error("project_scope_mapping update returned no row");
+		propagateProjectScopeMappingToSourceOwnedMemories(db, saved, draft.deviceId, previousMappings);
 		return saved;
 	}
 
@@ -1142,6 +1263,7 @@ export function upsertProjectScopeSettingsMapping(
 		.run(workspaceIdentity, projectPattern, scopeId, priority, source, now, now);
 	const saved = getProjectScopeSettingsMappingById(db, Number(result.lastInsertRowid));
 	if (!saved) throw new Error("project_scope_mapping insert returned no row");
+	propagateProjectScopeMappingToSourceOwnedMemories(db, saved, draft.deviceId);
 	return saved;
 }
 

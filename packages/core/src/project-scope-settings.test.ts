@@ -48,24 +48,29 @@ function insertMemory(
 	input: {
 		originDeviceId?: string | null;
 		project?: string | null;
+		scopeId?: string | null;
 		workspaceId?: string | null;
 	} = {},
 ) {
 	const now = "2026-05-06T00:00:00Z";
-	db.prepare(
-		`INSERT INTO memory_items(
+	const result = db
+		.prepare(
+			`INSERT INTO memory_items(
 			session_id, kind, title, body_text, created_at, updated_at,
-			visibility, workspace_id, origin_device_id, active, metadata_json, project
-		 ) VALUES (?, 'discovery', 'Scoped project', 'Body', ?, ?, 'shared', ?, ?, 1, ?, ?)`,
-	).run(
-		sessionId,
-		now,
-		now,
-		input.workspaceId === undefined ? "shared:acme" : input.workspaceId,
-		input.originDeviceId === undefined ? null : input.originDeviceId,
-		toJson({}),
-		input.project === undefined ? null : input.project,
-	);
+			visibility, workspace_id, origin_device_id, active, metadata_json, project, scope_id
+		 ) VALUES (?, 'discovery', 'Scoped project', 'Body', ?, ?, 'shared', ?, ?, 1, ?, ?, ?)`,
+		)
+		.run(
+			sessionId,
+			now,
+			now,
+			input.workspaceId === undefined ? "shared:acme" : input.workspaceId,
+			input.originDeviceId === undefined ? null : input.originDeviceId,
+			toJson({}),
+			input.project === undefined ? null : input.project,
+			input.scopeId === undefined ? null : input.scopeId,
+		);
+	return Number(result.lastInsertRowid);
 }
 
 function insertScope(
@@ -694,6 +699,148 @@ describe("project scope settings", () => {
 			mapping_id: mapping.id,
 		});
 		expect(memberships.n).toBe(0);
+	});
+
+	it("propagates source-owned project Space assignments into syncable memory ops", () => {
+		insertScope(db, { scopeId: "acme-work", label: "Acme Work" });
+		const localSession = insertSession(db, {
+			cwd: "/workspace/work/exampleco/api",
+			gitRemote: "https://git.example.invalid/exampleco/api.git",
+			project: "api",
+		});
+		const localMemoryId = insertMemory(db, localSession, {
+			originDeviceId: "source-device",
+			project: "api",
+			scopeId: LOCAL_DEFAULT_SCOPE_ID,
+		});
+		const peerSession = insertSession(db, {
+			cwd: "/workspace/work/exampleco/api-peer-copy",
+			gitRemote: "https://git.example.invalid/exampleco/api.git",
+			project: "api",
+		});
+		const peerMemoryId = insertMemory(db, peerSession, {
+			originDeviceId: "peer-device",
+			project: "api",
+			scopeId: LOCAL_DEFAULT_SCOPE_ID,
+		});
+
+		const mapping = upsertProjectScopeSettingsMapping(db, {
+			deviceId: "source-device",
+			workspace_identity: "https://git.example.invalid/exampleco/api.git",
+			project_pattern: "api",
+			scope_id: "acme-work",
+		});
+
+		expect(mapping.scope_id).toBe("acme-work");
+		expect(
+			db.prepare("SELECT scope_id, rev FROM memory_items WHERE id = ?").get(localMemoryId),
+		).toMatchObject({ rev: 2, scope_id: "acme-work" });
+		expect(
+			db.prepare("SELECT scope_id, rev FROM memory_items WHERE id = ?").get(peerMemoryId),
+		).toMatchObject({ rev: 0, scope_id: LOCAL_DEFAULT_SCOPE_ID });
+		const ops = db
+			.prepare(
+				`SELECT op_type, scope_id, clock_rev, clock_device_id, payload_json
+				 FROM replication_ops
+				 WHERE entity_id = ?
+				 ORDER BY clock_rev`,
+			)
+			.all(String(localMemoryId)) as Array<{
+			clock_device_id: string;
+			clock_rev: number;
+			op_type: string;
+			payload_json: string | null;
+			scope_id: string;
+		}>;
+		expect(ops).toEqual([
+			expect.objectContaining({
+				clock_device_id: "source-device",
+				clock_rev: 1,
+				op_type: "delete",
+				scope_id: LOCAL_DEFAULT_SCOPE_ID,
+			}),
+			expect.objectContaining({
+				clock_device_id: "source-device",
+				clock_rev: 2,
+				op_type: "upsert",
+				scope_id: "acme-work",
+			}),
+		]);
+		expect(JSON.parse(ops[1]?.payload_json ?? "{}")).toMatchObject({
+			project: "api",
+			scope_id: "acme-work",
+		});
+	});
+
+	it("propagates rows that matched a project Space mapping before it was edited", () => {
+		insertScope(db, { scopeId: "acme-work", label: "Acme Work" });
+		const sessionId = insertSession(db, {
+			cwd: "/workspace/work/exampleco/api",
+			gitRemote: "https://git.example.invalid/exampleco/api.git",
+			project: "api",
+		});
+		const memoryId = insertMemory(db, sessionId, {
+			originDeviceId: "source-device",
+			project: "api",
+			scopeId: LOCAL_DEFAULT_SCOPE_ID,
+		});
+		const mapping = upsertProjectScopeSettingsMapping(db, {
+			deviceId: "source-device",
+			workspace_identity: "https://git.example.invalid/exampleco/api.git",
+			project_pattern: "api",
+			scope_id: "acme-work",
+		});
+
+		upsertProjectScopeSettingsMapping(db, {
+			deviceId: "source-device",
+			id: mapping.id,
+			workspace_identity: "https://git.example.invalid/exampleco/other.git",
+			project_pattern: "other",
+			scope_id: "acme-work",
+		});
+
+		expect(
+			db.prepare("SELECT scope_id, rev FROM memory_items WHERE id = ?").get(memoryId),
+		).toMatchObject({ rev: 4, scope_id: LOCAL_DEFAULT_SCOPE_ID });
+		const ops = db
+			.prepare(
+				`SELECT op_type, scope_id, clock_rev, clock_device_id
+				 FROM replication_ops
+				 WHERE entity_id = ?
+				 ORDER BY clock_rev`,
+			)
+			.all(String(memoryId)) as Array<{
+			clock_device_id: string;
+			clock_rev: number;
+			op_type: string;
+			scope_id: string;
+		}>;
+		expect(ops).toEqual([
+			expect.objectContaining({
+				clock_device_id: "source-device",
+				clock_rev: 1,
+				op_type: "delete",
+				scope_id: LOCAL_DEFAULT_SCOPE_ID,
+			}),
+			expect.objectContaining({
+				clock_device_id: "source-device",
+				clock_rev: 2,
+				op_type: "upsert",
+				scope_id: "acme-work",
+			}),
+			expect.objectContaining({
+				clock_device_id: "source-device",
+				clock_rev: 3,
+				op_type: "delete",
+				scope_id: "acme-work",
+			}),
+			expect.objectContaining({
+				clock_device_id: "source-device",
+				clock_rev: 4,
+				op_type: "upsert",
+				scope_id: LOCAL_DEFAULT_SCOPE_ID,
+			}),
+		]);
 	});
 
 	it("normalizes incoming workspace identities before matching existing mappings", () => {
