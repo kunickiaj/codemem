@@ -2157,8 +2157,17 @@ export interface ReconcileStalePeerReceivedRowsResult {
 
 export interface ReconcileStalePeerReceivedRowsOptions {
 	localDeviceId: string;
+	maxRows?: number | null;
 	peerDeviceId?: string | null;
 }
+
+export type DiagnoseStalePeerReceivedRowsResult = Omit<
+	ReconcileStalePeerReceivedRowsResult,
+	"deleted" | "deleted_memory_ids"
+> & {
+	would_delete: number;
+	would_delete_memory_ids: number[];
+};
 
 type StalePeerCandidateAuthState = ReturnType<typeof getCachedScopeAuthorization>["state"];
 
@@ -2186,18 +2195,45 @@ export function reconcileStalePeerReceivedRows(
 	db: Database,
 	options: ReconcileStalePeerReceivedRowsOptions,
 ): ReconcileStalePeerReceivedRowsResult {
+	return reconcileStalePeerReceivedRowsInternal(db, options, true);
+}
+
+export function diagnoseStalePeerReceivedRows(
+	db: Database,
+	options: ReconcileStalePeerReceivedRowsOptions,
+): DiagnoseStalePeerReceivedRowsResult {
+	const result = reconcileStalePeerReceivedRowsInternal(db, options, false);
+	return {
+		checked: result.checked,
+		would_delete: result.deleted,
+		would_delete_memory_ids: result.deleted_memory_ids,
+		retained: result.retained,
+		ambiguous: result.ambiguous,
+	};
+}
+
+function reconcileStalePeerReceivedRowsInternal(
+	db: Database,
+	options: ReconcileStalePeerReceivedRowsOptions,
+	deleteRows: boolean,
+): ReconcileStalePeerReceivedRowsResult {
 	const localDeviceId = cleanText(options.localDeviceId);
 	if (!localDeviceId) throw new Error("localDeviceId must be a non-empty string");
 	const peerDeviceId = cleanText(options.peerDeviceId);
+	const maxRows =
+		typeof options.maxRows === "number" && Number.isFinite(options.maxRows)
+			? Math.max(0, Math.trunc(options.maxRows))
+			: -1;
 	const rows = db
 		.prepare(
 			`SELECT id, import_key, origin_device_id, scope_id
 			 FROM memory_items
 			 WHERE active = 1
 			   AND (? IS NULL OR origin_device_id = ?)
-			 ORDER BY id`,
+			 ORDER BY id
+			 LIMIT ?`,
 		)
-		.all(peerDeviceId, peerDeviceId) as Array<{
+		.all(peerDeviceId, peerDeviceId, maxRows) as Array<{
 		id: number;
 		import_key: string | null;
 		origin_device_id: string | null;
@@ -2210,7 +2246,7 @@ export function reconcileStalePeerReceivedRows(
 		retained: 0,
 		ambiguous: [],
 	};
-	const deleteMemory = db.prepare("DELETE FROM memory_items WHERE id = ?");
+	const deleteMemory = deleteRows ? db.prepare("DELETE FROM memory_items WHERE id = ?") : null;
 	db.transaction(() => {
 		for (const row of rows) {
 			const memoryId = Number(row.id);
@@ -2275,8 +2311,10 @@ export function reconcileStalePeerReceivedRows(
 				continue;
 			}
 			if (!auth.membership) {
-				clearMemoryRefs(db, memoryId);
-				deleteMemory.run(memoryId);
+				if (deleteRows) {
+					clearMemoryRefs(db, memoryId);
+					deleteMemory?.run(memoryId);
+				}
 				result.deleted += 1;
 				result.deleted_memory_ids.push(memoryId);
 				continue;
@@ -2293,8 +2331,10 @@ export function reconcileStalePeerReceivedRows(
 				);
 				continue;
 			}
-			clearMemoryRefs(db, memoryId);
-			deleteMemory.run(memoryId);
+			if (deleteRows) {
+				clearMemoryRefs(db, memoryId);
+				deleteMemory?.run(memoryId);
+			}
 			result.deleted += 1;
 			result.deleted_memory_ids.push(memoryId);
 		}

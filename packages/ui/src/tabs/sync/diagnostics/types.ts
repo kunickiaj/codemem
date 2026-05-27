@@ -17,7 +17,26 @@ export type PingPayloadState = SyncPayloadState & {
 	last_ping_at?: string | null;
 };
 
+export type SyncCleanupDiagnostics = {
+	state?: string;
+	access_cleanup_ops?: {
+		source_authored?: number | string;
+		applied?: number | string;
+		latest_at?: string | null;
+	};
+	stale_peer_rows?: {
+		checked?: number | string;
+		diagnostic_limit?: number | string;
+		scan_skipped?: boolean;
+		would_remove?: number | string;
+		ambiguous?: number | string;
+		retained?: number | string;
+	};
+	redacted?: boolean;
+};
+
 export type SyncStatusState = {
+	cleanup_diagnostics?: SyncCleanupDiagnostics;
 	daemon_detail?: string;
 	daemon_state?: string;
 	enabled?: boolean;

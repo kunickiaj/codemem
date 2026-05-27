@@ -582,6 +582,7 @@ export {
 export type {
 	ApplyReplicationOpsOptions,
 	ApplyResult,
+	DiagnoseStalePeerReceivedRowsResult,
 	FilterReplicationSkipped,
 	InboundScopeRejection,
 	InboundScopeRejectionPeerSummary,
@@ -602,6 +603,7 @@ export {
 	chunkOpsBySize,
 	clockTuple,
 	DEFAULT_SYNC_SCOPE_ID,
+	diagnoseStalePeerReceivedRows,
 	extractReplicationOps,
 	filterReplicationOpsForSync,
 	filterReplicationOpsForSyncWithStatus,

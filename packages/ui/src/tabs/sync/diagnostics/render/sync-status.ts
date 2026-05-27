@@ -13,7 +13,27 @@ import {
 } from "../../components/sync-diagnostics";
 import { hideSkeleton, renderActionList } from "../../helpers";
 import { diagnosticsLoadingState, newestPeerPing } from "../helpers";
-import type { SyncStatusState } from "../types";
+import type { SyncCleanupDiagnostics, SyncStatusState } from "../types";
+
+function numeric(value: unknown): number {
+	const parsed = Number(value ?? 0);
+	return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function cleanupDiagnosticLabel(cleanup: SyncCleanupDiagnostics | undefined): string {
+	const state = String(cleanup?.state ?? "clear");
+	const stale = cleanup?.stale_peer_rows ?? {};
+	const ops = cleanup?.access_cleanup_ops ?? {};
+	const wouldRemove = numeric(stale.would_remove);
+	const ambiguous = numeric(stale.ambiguous);
+	const applied = numeric(ops.applied);
+	const sourceAuthored = numeric(ops.source_authored);
+	if (state === "cleanup_pending" || wouldRemove > 0) return `${wouldRemove} pending removal`;
+	if (state === "needs_review" || ambiguous > 0) return `${ambiguous} needs review`;
+	if (state === "cleanup_applied" || applied > 0) return `${applied} applied`;
+	if (state === "cleanup_announced" || sourceAuthored > 0) return `${sourceAuthored} announced`;
+	return "Clear";
+}
 
 export function renderSyncStatus() {
 	const syncStatusGrid = document.getElementById("syncStatusGrid");
@@ -42,6 +62,10 @@ export function renderSyncStatus() {
 	const daemonDetail = String(status.daemon_detail || "");
 	const daemonState = String(status.daemon_state || "unknown");
 	const retention = status.retention || {};
+	const cleanup = status.cleanup_diagnostics;
+	const cleanupStale = cleanup?.stale_peer_rows ?? {};
+	const cleanupWouldRemove = numeric(cleanupStale.would_remove);
+	const cleanupAmbiguous = numeric(cleanupStale.ambiguous);
 	const retentionEnabled = retention.enabled === true;
 	const retentionDeleted = Number(retention.last_deleted_ops || 0);
 	const retentionLastRunAt = retention.last_run_at || null;
@@ -90,6 +114,13 @@ export function renderSyncStatus() {
 				retentionLastRunAt
 					? `Retention last ran ${formatAgeShort(secondsSince(retentionLastRunAt))} ago (approx oldest-first)`
 					: "Retention enabled",
+			);
+		}
+		if (cleanupWouldRemove > 0) {
+			parts.push(`${cleanupWouldRemove.toLocaleString()} stale peer rows pending cleanup`);
+		} else if (cleanupAmbiguous > 0) {
+			parts.push(
+				`${cleanupAmbiguous.toLocaleString()} stale peer rows retained because safe cleanup could not be proven`,
 			);
 		}
 
@@ -159,6 +190,10 @@ export function renderSyncStatus() {
 		});
 	}
 
+	if (!syncDisabled && !syncNoPeers && cleanup) {
+		items.push({ label: "Cleanup", value: cleanupDiagnosticLabel(cleanup) });
+	}
+
 	renderDiagnosticsGrid(syncStatusGrid, items);
 
 	const actions: Array<{ label: string; command: string }> = [];
@@ -191,6 +226,17 @@ export function renderSyncStatus() {
 	} else if (!syncDisabled && !syncNoPeers && pending > 0) {
 		actions.push({
 			label: "Pending sync work detected. Run one pass now.",
+			command: "codemem sync once",
+		});
+	}
+	if (!syncDisabled && cleanupAmbiguous > 0) {
+		actions.push({
+			label: "Some stale peer rows were retained because cleanup was ambiguous.",
+			command: "codemem sync doctor",
+		});
+	} else if (!syncDisabled && cleanupWouldRemove > 0) {
+		actions.push({
+			label: "Stale peer rows are eligible for cleanup. Run one sync pass now.",
 			command: "codemem sync once",
 		});
 	}

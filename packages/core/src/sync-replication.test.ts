@@ -9,6 +9,7 @@ import {
 	chunkOpsBySize,
 	clockTuple,
 	DEFAULT_SYNC_SCOPE_ID,
+	diagnoseStalePeerReceivedRows,
 	extractReplicationOps,
 	filterReplicationOpsForSync,
 	filterReplicationOpsForSyncWithStatus,
@@ -2828,6 +2829,42 @@ describe("applyReplicationOps", () => {
 		expect(
 			db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(pendingPeerMemoryId),
 		).toBeDefined();
+	});
+
+	it("diagnoses stale peer-received rows without deleting them", () => {
+		grantScope("acme-work", ["dev-remote"]);
+		const stalePeerMemoryId = insertReplicatedMemory({
+			importKey: "key:diagnose-stale-peer",
+			originDeviceId: "dev-remote",
+			scopeId: "acme-work",
+		});
+
+		const result = diagnoseStalePeerReceivedRows(db, { localDeviceId: "dev-local" });
+
+		expect(result.would_delete).toBe(1);
+		expect(result.would_delete_memory_ids).toEqual([stalePeerMemoryId]);
+		expect(
+			db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(stalePeerMemoryId),
+		).toBeDefined();
+	});
+
+	it("bounds stale peer diagnostic scans", () => {
+		grantScope("acme-work", ["dev-remote"]);
+		insertReplicatedMemory({
+			importKey: "key:diagnose-stale-peer-1",
+			originDeviceId: "dev-remote",
+			scopeId: "acme-work",
+		});
+		insertReplicatedMemory({
+			importKey: "key:diagnose-stale-peer-2",
+			originDeviceId: "dev-remote",
+			scopeId: "acme-work",
+		});
+
+		const result = diagnoseStalePeerReceivedRows(db, { localDeviceId: "dev-local", maxRows: 1 });
+
+		expect(result.checked).toBe(1);
+		expect(result.would_delete).toBe(1);
 	});
 
 	it("redacts secrets in inbound peer payloads on insert", () => {

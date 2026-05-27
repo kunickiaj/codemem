@@ -17,6 +17,7 @@ import type {
 	SemanticIndexDiagnostics,
 } from "@codemem/core";
 import {
+	ACCESS_CLEANUP_OP_TYPE,
 	addSyncScopeToBoundary,
 	analyzeProjectScopeMappingChangeGuardrails,
 	applyReplicationOps,
@@ -50,6 +51,7 @@ import {
 	DEFAULT_TIME_WINDOW_S,
 	defaultSpaceScopeIdForGroup,
 	deleteProjectScopeSettingsMapping,
+	diagnoseStalePeerReceivedRows,
 	ensureDeviceIdentity,
 	extractReplicationOps,
 	type FilterReplicationSkipped,
@@ -1497,6 +1499,7 @@ function mapSyncAttemptRow(
 }
 
 const SYNC_SCOPE_REJECTION_WINDOW_SECONDS = 24 * 60 * 60;
+const CLEANUP_DIAGNOSTICS_MAX_ROWS = 250;
 
 function recentScopeRejectionsByPeer(
 	store: MemoryStore,
@@ -1510,6 +1513,67 @@ function recentScopeRejectionsByPeer(
 		map.set(id, summary);
 	}
 	return map;
+}
+
+function cleanupDiagnostics(
+	store: MemoryStore,
+	localDeviceId: string | null,
+	showDiag: boolean,
+): Record<string, unknown> {
+	const opRows = store.db
+		.prepare(
+			`SELECT
+				SUM(CASE WHEN device_id = ? THEN 1 ELSE 0 END) AS source_authored,
+				SUM(CASE WHEN device_id != ? THEN 1 ELSE 0 END) AS applied,
+				MAX(created_at) AS latest_at
+			 FROM replication_ops
+			 WHERE op_type = ?`,
+		)
+		.get(localDeviceId ?? "", localDeviceId ?? "", ACCESS_CLEANUP_OP_TYPE) as
+		| { applied: number | null; latest_at: string | null; source_authored: number | null }
+		| undefined;
+	const stale =
+		localDeviceId && showDiag
+			? diagnoseStalePeerReceivedRows(store.db, {
+					localDeviceId,
+					maxRows: CLEANUP_DIAGNOSTICS_MAX_ROWS,
+				})
+			: { ambiguous: [], checked: 0, retained: 0, would_delete: 0, would_delete_memory_ids: [] };
+	const ambiguousByReason: Record<string, number> = {};
+	for (const item of stale.ambiguous) {
+		ambiguousByReason[item.reason] = (ambiguousByReason[item.reason] ?? 0) + 1;
+	}
+	const sourceAuthored = Number(opRows?.source_authored ?? 0);
+	const applied = Number(opRows?.applied ?? 0);
+	const ambiguous = stale.ambiguous.length;
+	const state = stale.would_delete
+		? "cleanup_pending"
+		: ambiguous
+			? "needs_review"
+			: applied
+				? "cleanup_applied"
+				: sourceAuthored
+					? "cleanup_announced"
+					: "clear";
+	return {
+		state,
+		access_cleanup_ops: {
+			source_authored: sourceAuthored,
+			applied,
+			latest_at: opRows?.latest_at ?? null,
+		},
+		stale_peer_rows: {
+			checked: stale.checked,
+			diagnostic_limit: showDiag ? CLEANUP_DIAGNOSTICS_MAX_ROWS : 0,
+			scan_skipped: !showDiag || !localDeviceId,
+			would_remove: stale.would_delete,
+			ambiguous,
+			ambiguous_by_reason: ambiguousByReason,
+			retained: stale.retained,
+			items: showDiag ? stale.ambiguous.slice(0, 25) : undefined,
+		},
+		redacted: !showDiag,
+	};
 }
 
 function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> {
@@ -2678,6 +2742,11 @@ export function syncRoutes(
 					include: config.syncProjectsInclude,
 					exclude: config.syncProjectsExclude,
 				},
+				cleanup_diagnostics: cleanupDiagnostics(
+					store,
+					(deviceRow?.device_id as string | null | undefined) ?? null,
+					showDiag,
+				),
 				redacted: !showDiag,
 			};
 
