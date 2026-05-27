@@ -46,6 +46,7 @@ function insertMemory(
 	db: InstanceType<typeof Database>,
 	sessionId: number,
 	input: {
+		importKey?: string | null;
 		originDeviceId?: string | null;
 		project?: string | null;
 		scopeId?: string | null;
@@ -57,8 +58,8 @@ function insertMemory(
 		.prepare(
 			`INSERT INTO memory_items(
 			session_id, kind, title, body_text, created_at, updated_at,
-			visibility, workspace_id, origin_device_id, active, metadata_json, project, scope_id
-		 ) VALUES (?, 'discovery', 'Scoped project', 'Body', ?, ?, 'shared', ?, ?, 1, ?, ?, ?)`,
+			visibility, workspace_id, origin_device_id, active, metadata_json, project, scope_id, import_key
+		 ) VALUES (?, 'discovery', 'Scoped project', 'Body', ?, ?, 'shared', ?, ?, 1, ?, ?, ?, ?)`,
 		)
 		.run(
 			sessionId,
@@ -69,6 +70,7 @@ function insertMemory(
 			toJson({}),
 			input.project === undefined ? null : input.project,
 			input.scopeId === undefined ? null : input.scopeId,
+			input.importKey === undefined ? null : input.importKey,
 		);
 	return Number(result.lastInsertRowid);
 }
@@ -709,6 +711,7 @@ describe("project scope settings", () => {
 			project: "api",
 		});
 		const localMemoryId = insertMemory(db, localSession, {
+			importKey: "key:source-owned-api",
 			originDeviceId: "source-device",
 			project: "api",
 			scopeId: LOCAL_DEFAULT_SCOPE_ID,
@@ -743,9 +746,9 @@ describe("project scope settings", () => {
 				`SELECT op_type, scope_id, clock_rev, clock_device_id, payload_json
 				 FROM replication_ops
 				 WHERE entity_id = ?
-				 ORDER BY clock_rev`,
+				 ORDER BY clock_rev, op_type`,
 			)
-			.all(String(localMemoryId)) as Array<{
+			.all("key:source-owned-api") as Array<{
 			clock_device_id: string;
 			clock_rev: number;
 			op_type: string;
@@ -753,6 +756,12 @@ describe("project scope settings", () => {
 			scope_id: string;
 		}>;
 		expect(ops).toEqual([
+			expect.objectContaining({
+				clock_device_id: "source-device",
+				clock_rev: 1,
+				op_type: "access_cleanup",
+				scope_id: LOCAL_DEFAULT_SCOPE_ID,
+			}),
 			expect.objectContaining({
 				clock_device_id: "source-device",
 				clock_rev: 1,
@@ -766,7 +775,11 @@ describe("project scope settings", () => {
 				scope_id: "acme-work",
 			}),
 		]);
-		expect(JSON.parse(ops[1]?.payload_json ?? "{}")).toMatchObject({
+		expect(JSON.parse(ops[0]?.payload_json ?? "{}")).toMatchObject({
+			cleanup_scope_id: LOCAL_DEFAULT_SCOPE_ID,
+			reason: "project_scope_reassignment",
+		});
+		expect(JSON.parse(ops[2]?.payload_json ?? "{}")).toMatchObject({
 			project: "api",
 			scope_id: "acme-work",
 		});
@@ -780,6 +793,7 @@ describe("project scope settings", () => {
 			project: "api",
 		});
 		const memoryId = insertMemory(db, sessionId, {
+			importKey: "key:edited-api",
 			originDeviceId: "source-device",
 			project: "api",
 			scopeId: LOCAL_DEFAULT_SCOPE_ID,
@@ -804,18 +818,25 @@ describe("project scope settings", () => {
 		).toMatchObject({ rev: 4, scope_id: LOCAL_DEFAULT_SCOPE_ID });
 		const ops = db
 			.prepare(
-				`SELECT op_type, scope_id, clock_rev, clock_device_id
+				`SELECT op_type, scope_id, clock_rev, clock_device_id, payload_json
 				 FROM replication_ops
 				 WHERE entity_id = ?
-				 ORDER BY clock_rev`,
+				 ORDER BY clock_rev, op_type`,
 			)
-			.all(String(memoryId)) as Array<{
+			.all("key:edited-api") as Array<{
 			clock_device_id: string;
 			clock_rev: number;
 			op_type: string;
+			payload_json: string | null;
 			scope_id: string;
 		}>;
 		expect(ops).toEqual([
+			expect.objectContaining({
+				clock_device_id: "source-device",
+				clock_rev: 1,
+				op_type: "access_cleanup",
+				scope_id: LOCAL_DEFAULT_SCOPE_ID,
+			}),
 			expect.objectContaining({
 				clock_device_id: "source-device",
 				clock_rev: 1,
@@ -831,6 +852,12 @@ describe("project scope settings", () => {
 			expect.objectContaining({
 				clock_device_id: "source-device",
 				clock_rev: 3,
+				op_type: "access_cleanup",
+				scope_id: LOCAL_DEFAULT_SCOPE_ID,
+			}),
+			expect.objectContaining({
+				clock_device_id: "source-device",
+				clock_rev: 3,
 				op_type: "delete",
 				scope_id: "acme-work",
 			}),
@@ -841,6 +868,10 @@ describe("project scope settings", () => {
 				scope_id: LOCAL_DEFAULT_SCOPE_ID,
 			}),
 		]);
+		expect(JSON.parse(ops[3]?.payload_json ?? "{}")).toMatchObject({
+			cleanup_scope_id: "acme-work",
+			reason: "project_scope_reassignment",
+		});
 	});
 
 	it("normalizes incoming workspace identities before matching existing mappings", () => {

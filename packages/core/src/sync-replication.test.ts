@@ -24,6 +24,7 @@ import {
 	planReplicationOpsAgePrune,
 	pruneReplicationOps,
 	pruneReplicationOpsUntilCaughtUp,
+	recordAccessCleanupOp,
 	recordReplicationOp,
 	setReplicationCursor,
 	setSyncResetState,
@@ -473,6 +474,37 @@ describe("recordReplicationOp", () => {
 			.prepare("SELECT payload_json FROM replication_ops WHERE op_id = ?")
 			.get(opId) as { payload_json: string | null };
 		expect(row.payload_json).toBeNull();
+	});
+
+	it("records access cleanup ops on the default sync path", () => {
+		const opId = recordAccessCleanupOp(db, {
+			importKey: "key:cleanup",
+			deviceId: "dev-source",
+			cleanupScopeId: "acme-work",
+			clockRev: 7,
+			clockUpdatedAt: "2026-01-01T00:00:07Z",
+			targetPeerDeviceId: "dev-receiver",
+			reason: "scope_revoked",
+			opId: "cleanup-op",
+		});
+
+		expect(opId).toBe("cleanup-op");
+		const row = db.prepare("SELECT * FROM replication_ops WHERE op_id = ?").get(opId) as Record<
+			string,
+			unknown
+		>;
+		expect(row).toMatchObject({
+			clock_rev: 7,
+			device_id: "dev-source",
+			entity_id: "key:cleanup",
+			op_type: "access_cleanup",
+			scope_id: DEFAULT_SYNC_SCOPE_ID,
+		});
+		expect(JSON.parse(String(row.payload_json))).toMatchObject({
+			cleanup_scope_id: "acme-work",
+			reason: "scope_revoked",
+			target_peer_device_id: "dev-receiver",
+		});
 	});
 
 	it("falls back to memoryId as entity_id when import_key is null", () => {
@@ -2311,6 +2343,35 @@ describe("applyReplicationOps", () => {
 		return Boolean(db.prepare("SELECT 1 FROM memory_items WHERE import_key = ?").get(importKey));
 	}
 
+	function insertReplicatedMemory(
+		input: {
+			importKey?: string;
+			originDeviceId?: string | null;
+			scopeId?: string | null;
+			title?: string;
+		} = {},
+	): number {
+		const sessionId = insertTestSession(db);
+		const result = db
+			.prepare(
+				`INSERT INTO memory_items(
+					session_id, kind, title, body_text, created_at, updated_at,
+					import_key, rev, active, metadata_json, origin_device_id, scope_id
+				 ) VALUES (?, 'discovery', ?, 'Body', ?, ?, ?, 1, 1, ?, ?, ?)`,
+			)
+			.run(
+				sessionId,
+				input.title ?? "Replicated row",
+				"2026-01-01T00:00:00Z",
+				"2026-01-01T00:00:00Z",
+				input.importKey ?? "key:test-1",
+				toJson({ clock_device_id: input.originDeviceId ?? "dev-remote" }),
+				input.originDeviceId ?? "dev-remote",
+				input.scopeId ?? "acme-work",
+			);
+		return Number(result.lastInsertRowid);
+	}
+
 	it("skips ops from the local device", () => {
 		const op = makeReplicationOp({ device_id: "dev-local" });
 		const result = applyReplicationOps(db, [op], "dev-local");
@@ -2580,6 +2641,71 @@ describe("applyReplicationOps", () => {
 			.prepare("SELECT active, scope_id FROM memory_items WHERE import_key = ?")
 			.get(deleteOp.entity_id) as { active: number; scope_id: string | null };
 		expect(mem).toMatchObject({ active: 0, scope_id: "acme-work" });
+	});
+
+	it("physically deletes matching peer-received rows when access cleanup arrives", () => {
+		const memoryId = insertReplicatedMemory({
+			importKey: "key:cleanup",
+			originDeviceId: "dev-remote",
+			scopeId: "acme-work",
+		});
+		const op = makeReplicationOp({
+			op_id: "cleanup-op",
+			entity_id: "key:cleanup",
+			op_type: "access_cleanup",
+			payload_json: toJson({ cleanup_scope_id: "acme-work", reason: "scope_revoked" }),
+			clock_rev: 2,
+			clock_updated_at: "2026-01-01T00:00:01Z",
+			scope_id: DEFAULT_SYNC_SCOPE_ID,
+		});
+
+		const result = applyReplicationOps(db, [op], "dev-local");
+
+		expect(result.applied).toBe(1);
+		expect(db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(memoryId)).toBeUndefined();
+		expect(result.vectorWork.deleteMemoryIds).toEqual([memoryId]);
+		expect(
+			db.prepare("SELECT op_type, scope_id FROM replication_ops WHERE op_id = ?").get(op.op_id),
+		).toMatchObject({ op_type: "access_cleanup", scope_id: DEFAULT_SYNC_SCOPE_ID });
+	});
+
+	it("does not let access cleanup delete local or differently scoped rows", () => {
+		const localMemoryId = insertReplicatedMemory({
+			importKey: "key:local-row",
+			originDeviceId: "dev-local",
+			scopeId: "acme-work",
+			title: "Local row",
+		});
+		const otherScopeMemoryId = insertReplicatedMemory({
+			importKey: "key:other-scope",
+			originDeviceId: "dev-remote",
+			scopeId: "client-work",
+			title: "Other scope row",
+		});
+		const cleanupLocal = makeReplicationOp({
+			op_id: "cleanup-local",
+			entity_id: "key:local-row",
+			op_type: "access_cleanup",
+			payload_json: toJson({ cleanup_scope_id: "acme-work", reason: "scope_revoked" }),
+			scope_id: DEFAULT_SYNC_SCOPE_ID,
+		});
+		const cleanupOtherScope = makeReplicationOp({
+			op_id: "cleanup-other-scope",
+			entity_id: "key:other-scope",
+			op_type: "access_cleanup",
+			payload_json: toJson({ cleanup_scope_id: "acme-work", reason: "scope_revoked" }),
+			scope_id: DEFAULT_SYNC_SCOPE_ID,
+		});
+
+		const result = applyReplicationOps(db, [cleanupLocal, cleanupOtherScope], "dev-local");
+
+		expect(result.applied).toBe(0);
+		expect(result.skipped).toBe(2);
+		expect(db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(localMemoryId)).toBeDefined();
+		expect(
+			db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(otherScopeMemoryId),
+		).toBeDefined();
+		expect(result.vectorWork.deleteMemoryIds).toEqual([]);
 	});
 
 	it("redacts secrets in inbound peer payloads on insert", () => {
@@ -3286,7 +3412,11 @@ describe("replication payload round-trip parity", () => {
 
 		// Read the op back
 		const op = db.prepare("SELECT * FROM replication_ops WHERE op_id = ?").get(opId) as {
+			clock_rev: number;
+			clock_updated_at: string;
+			created_at: string;
 			payload_json: string;
+			scope_id: string | null;
 		};
 		const payload = JSON.parse(op.payload_json) as Record<string, unknown>;
 
