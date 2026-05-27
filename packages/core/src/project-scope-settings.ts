@@ -847,7 +847,7 @@ export function analyzeProjectScopeMappingChangeGuardrails(
 		warnings.push({
 			code: "scope_reassignment_old_copies",
 			severity: "warning",
-			message: `Changing this project from ${oldScope} to ${newScope} does not recall data already copied under the old Sharing domain. Previous recipients may retain it.`,
+			message: `Changing this project from ${oldScope} to ${newScope} updates future sync authorization. Online compatible peers should converge after syncing, but offline devices, backups, copied databases, malicious peers, or old versions may retain old copies.`,
 			requires_confirmation: true,
 			scope_id: draft.scopeId,
 			previous_scope_id: draft.existing.scope_id,

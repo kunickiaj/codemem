@@ -85,7 +85,7 @@ describe("SyncSharingReview", () => {
 		expect(root.textContent).toContain("Evidence from a legacy shared memory.");
 		expect(root.textContent).toContain("local, reassignable");
 		expect(root.textContent).toContain("legacy data is not promoted automatically");
-		expect(root.textContent).toContain("Nothing moves automatically");
+		expect(root.textContent).toContain("Fix peer-owned projects on their source device");
 
 		const buttons = [...root.querySelectorAll("button")];
 		const button = buttons.find((item) => item.textContent === "Manage all projects");
@@ -107,7 +107,7 @@ describe("SyncSharingReview", () => {
 				skipped_memory_count: 1,
 				target_scope_label: "OSS",
 				warning:
-					"This changes future sync authorization but does not erase data already copied to peers.",
+					"This device can reassign only locally owned memories. Peer-owned copies must be fixed on their source device. Online compatible peers should converge after syncing, but offline devices, backups, copied databases, malicious peers, or old versions may retain old copies.",
 				workspace_identity: "https://git.example.invalid/oss/dev.git",
 			})
 			.mockResolvedValueOnce(null);
@@ -154,6 +154,7 @@ describe("SyncSharingReview", () => {
 		);
 		expect(root.textContent).toContain("2 of 3 memories");
 		expect(root.textContent).toContain("1 peer-owned copies will be left unchanged");
+		expect(root.textContent).toContain("Peer-owned copies must be fixed on their source device");
 
 		const confirmButton = [...root.querySelectorAll("button")].find(
 			(button) => button.textContent === "I understand, reassign memories",
@@ -540,6 +541,7 @@ describe("SyncSharingReview", () => {
 		expect(checkbox?.disabled).toBe(true);
 		expect(root.textContent).toContain("Peer-owned only");
 		expect(root.textContent).toContain("cannot reassign them to a Space");
+		expect(root.textContent).toContain("Assign this project to a Space on the source device");
 		expect(root.textContent).not.toContain("Preview reassignment");
 	});
 });

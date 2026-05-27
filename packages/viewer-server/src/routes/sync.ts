@@ -1954,7 +1954,7 @@ function legacySharedReviewReassignmentPreview(
 		skipped_memory_count: rows.length - reassignableRows.length,
 		target_scope_label: targetScope.label || targetScope.scope_id,
 		warning:
-			"This changes future sync authorization for reassignable local memories. It does not erase data already copied to peers under legacy-shared-review.",
+			"This device can reassign only locally owned memories. Peer-owned copies must be fixed on their source device. Online compatible peers should converge after syncing, but offline devices, backups, copied databases, malicious peers, or old versions may retain old copies.",
 		workspace_identity: input.workspaceIdentity,
 	};
 }

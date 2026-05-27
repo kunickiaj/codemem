@@ -209,7 +209,7 @@ async function revokeMember(
 	const confirmed = await openSyncConfirmDialog({
 		title: spaceRevokeMemberTitle(scope, displayName, deviceId),
 		description:
-			"Revocation only blocks future sync for this Space. Data already copied to that device can remain there.",
+			"Revocation blocks future sync for this Space. It does not remove data already copied to the revoked device; offline devices, backups, copied databases, malicious peers, or old versions may retain data.",
 		confirmLabel: "Revoke membership",
 		cancelLabel: "Keep membership",
 		tone: "danger",

@@ -439,8 +439,10 @@ function LegacySharedReviewRow({
 							: ""}
 					</div>
 					<div className="peer-meta legacy-review-warning">
-						Nothing moves automatically. Reassignment changes future sync authorization; it does not
-						erase copies peers already received.
+						Fix peer-owned projects on their source device. Reassignment updates future sync
+						authorization; online compatible peers should converge after syncing, but offline
+						devices, backups, copied databases, malicious peers, or old versions may retain old
+						copies.
 					</div>
 				</div>
 				<div className="actor-actions">
@@ -563,7 +565,8 @@ function LegacySharedReviewRow({
 										{!canReassignLegacyGroup(group) ? (
 											<div className="legacy-review-cleanup-note">
 												Peer-owned only. These older memories were received from another device, so
-												this device cannot reassign them to a Space.
+												this device cannot reassign them to a Space. Assign this project to a Space
+												on the source device; after sync, this review should clear here.
 											</div>
 										) : group.peerOwnedMemoryCount ? (
 											<div className="legacy-review-cleanup-note">
