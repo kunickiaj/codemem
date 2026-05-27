@@ -1454,7 +1454,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				prevents_future_sync: true,
 				deletes_already_copied_data: false,
 				message:
-					"Revocation prevents future sync only; it does not remove data already copied to the revoked device.",
+					"Revocation blocks future sync for this Space. It does not remove data already copied to the revoked device; offline devices, backups, copied databases, malicious peers, or old versions may retain data.",
 			},
 		});
 		expect(store.revokeScopeMembership).toHaveBeenCalledWith({

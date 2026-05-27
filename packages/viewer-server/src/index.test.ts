@@ -2806,7 +2806,9 @@ describe("viewer-server", () => {
 					memory_count: 2,
 					reassignable_memory_count: 1,
 				});
-				expect(preview.preview.warning).toContain("does not erase data already copied");
+				expect(preview.preview.warning).toContain(
+					"Peer-owned copies must be fixed on their source device",
+				);
 
 				const applyRes = await app.request("/api/sync/legacy-shared-review/reassign", {
 					method: "POST",
