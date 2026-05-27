@@ -69,6 +69,7 @@ export function FeedItemCard({
 	const tagContent = tags.length ? ` · ${tags.map((t) => formatTagLabel(t)).join(", ")}` : "";
 	const fileContent = files.length ? ` · ${formatFileList(files)}` : "";
 	const memoryId = Number(item.id || 0);
+	const memoryIdLabel = memoryId > 0 ? `ID ${memoryId}` : "";
 	const [isNew, setIsNew] = useState(state.newItemKeys.has(rowKey));
 	const summaryObj = isSessionSummary
 		? getSummaryObject({ ...item, metadata_json: metadata })
@@ -343,6 +344,13 @@ export function FeedItemCard({
 				{ className: "feed-provenance" },
 				h(ProvenanceChip, { label: actor, variant: actor === "You" ? "mine" : "author" }),
 				h(ProvenanceChip, { label: visibility || "private", variant: visibility || "private" }),
+				memoryIdLabel
+					? h(
+							Tooltip,
+							{ label: `Memory database id ${memoryId}`, side: "top" },
+							h(ProvenanceChip, { label: memoryIdLabel, variant: "memory-id" }),
+						)
+					: null,
 			),
 			h(
 				"div",
