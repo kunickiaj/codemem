@@ -9,11 +9,11 @@ export async function pingViewerReady(timeoutMs = 1200): Promise<void> {
 	const controller = new AbortController();
 	const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 	try {
-		const resp = await fetch("/api/stats", {
+		const resp = await fetch("/api/runtime", {
 			cache: "no-store",
 			signal: controller.signal,
 		});
-		if (!resp.ok) throw new Error(`/api/stats: ${resp.status} ${resp.statusText}`);
+		if (!resp.ok) throw new Error(`/api/runtime: ${resp.status} ${resp.statusText}`);
 	} finally {
 		window.clearTimeout(timeoutId);
 	}
