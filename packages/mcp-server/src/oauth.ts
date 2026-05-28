@@ -1,4 +1,8 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmod } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import { InvalidClientMetadataError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { OAuthServerProvider } from "@modelcontextprotocol/sdk/server/auth/provider.js";
@@ -441,6 +445,352 @@ export class InMemoryOAuthRefreshTokenStore implements OAuthRefreshTokenStore {
 	}
 }
 
+interface OAuthStateFileData {
+	version: 1;
+	clients: OAuthClientInformationFull[];
+	accessTokens: AccessTokenRecord[];
+	refreshGrants: RefreshTokenGrantRecord[];
+	refreshHashesByGrantId: Record<string, string[]>;
+}
+
+/**
+ * JSON-backed OAuth state for remote MCP clients.
+ *
+ * Claude keeps its dynamically-registered `client_id` and refresh token across
+ * connector reconnects. If codemem only stores that state in memory, a package
+ * upgrade or MCP process restart makes Claude's next refresh look like an
+ * unknown client. This store persists client registrations, access tokens, and
+ * refresh-token grants so routine restarts do not force users through OAuth
+ * again.
+ */
+export class JsonFileOAuthStateStore
+	implements
+		OAuthRegisteredClientsStore,
+		OAuthAuthorizationCodeStore,
+		OAuthAccessTokenStore,
+		OAuthRefreshTokenStore
+{
+	readonly #path: string;
+	readonly #codes = new Map<string, AuthorizationCodeRecord>();
+	#clients = new Map<string, OAuthClientInformationFull>();
+	#tokensByHash = new Map<string, AccessTokenRecord>();
+	#grantsById = new Map<string, RefreshTokenGrantRecord>();
+	#grantIdsByRefreshHash = new Map<string, string>();
+	#refreshHashesByGrantId = new Map<string, Set<string>>();
+
+	constructor(path = getDefaultMcpOAuthStatePath()) {
+		this.#path = path;
+		this.#load();
+	}
+
+	getClient(clientId: string): OAuthClientInformationFull | undefined {
+		return this.#clients.get(clientId);
+	}
+
+	registerClient(
+		client: Omit<OAuthClientInformationFull, "client_id" | "client_id_issued_at">,
+	): OAuthClientInformationFull {
+		const redirectError = validateRedirectUris(client.redirect_uris);
+		if (redirectError) throw new InvalidClientMetadataError(redirectError);
+		if (client.client_secret || client.token_endpoint_auth_method !== "none") {
+			throw new InvalidClientMetadataError(
+				"Only public clients with token_endpoint_auth_method=none are supported",
+			);
+		}
+		if (client.grant_types && !isSupportedList(client.grant_types, SUPPORTED_GRANT_TYPES)) {
+			throw new InvalidClientMetadataError(
+				"Only authorization_code and refresh_token grant_types are supported",
+			);
+		}
+		if (
+			client.response_types &&
+			!isSupportedList(client.response_types, SUPPORTED_RESPONSE_TYPES)
+		) {
+			throw new InvalidClientMetadataError("Only code response_type is supported");
+		}
+		this.#deleteInactive(Date.now());
+		if (this.#clients.size >= 100) {
+			const oldestClientId = this.#clients.keys().next().value;
+			if (oldestClientId) this.#clients.delete(oldestClientId);
+		}
+		const registered = {
+			...client,
+			token_endpoint_auth_method: "none" as const,
+			grant_types: client.grant_types ?? ["authorization_code", "refresh_token"],
+			response_types: client.response_types ?? ["code"],
+			client_id: randomUUID(),
+			client_id_issued_at: Math.floor(Date.now() / 1000),
+		};
+		this.#clients.set(registered.client_id, registered);
+		this.#save();
+		return registered;
+	}
+
+	issueCode(record: Omit<AuthorizationCodeRecord, "used">, now = Date.now()): string | undefined {
+		this.#deleteExpiredCodes(now);
+		if (this.#codes.size >= MAX_AUTHORIZATION_CODES) return undefined;
+		const code = randomUUID();
+		this.#codes.set(code, { ...record, used: false });
+		return code;
+	}
+
+	peekCode(code: string): AuthorizationCodeRecord | undefined {
+		const record = this.#codes.get(code);
+		if (!record || record.used) return undefined;
+		return record;
+	}
+
+	consumeCode(code: string): AuthorizationCodeRecord | undefined {
+		const record = this.#codes.get(code);
+		if (!record || record.used) return undefined;
+		record.used = true;
+		return record;
+	}
+
+	issueToken(
+		clientId: string,
+		now = Date.now(),
+		resource?: string,
+		grantId?: string,
+		scopes: string[] = [],
+	): { token: string; expiresIn: number } | undefined {
+		this.#deleteInactive(now);
+		if (this.#tokensByHash.size >= MAX_ACCESS_TOKENS) return undefined;
+		const token = randomToken();
+		const tokenHash = hashOAuthTokenForStateFile(token);
+		if (!tokenHash) return undefined;
+		this.#tokensByHash.set(tokenHash, {
+			clientId,
+			grantId,
+			scopes: [...scopes],
+			resource,
+			tokenHash,
+			issuedAt: now,
+			expiresAt: now + ACCESS_TOKEN_TTL_SECONDS * 1000,
+			lastUsedAt: null,
+			revokedAt: null,
+		});
+		this.#save();
+		return { token, expiresIn: ACCESS_TOKEN_TTL_SECONDS };
+	}
+
+	verifyToken(token: string, now = Date.now()): AccessTokenVerificationResult {
+		const tokenHash = hashOAuthTokenForStateFile(token);
+		if (!tokenHash) return { ok: false, reason: "unknown_token" };
+		const record = this.#tokensByHash.get(tokenHash);
+		if (!record || !isSameTokenHash(record.tokenHash, tokenHash)) {
+			return { ok: false, reason: "unknown_token" };
+		}
+		if (record.revokedAt !== null) return { ok: false, reason: "revoked_token" };
+		if (record.expiresAt <= now) return { ok: false, reason: "expired_token" };
+		record.lastUsedAt = now;
+		return { ok: true, record: { ...record, scopes: [...record.scopes] } };
+	}
+
+	revokeToken(token: string, now = Date.now()): boolean {
+		const tokenHash = hashOAuthTokenForStateFile(token);
+		if (!tokenHash) return false;
+		const record = this.#tokensByHash.get(tokenHash);
+		if (!record || !isSameTokenHash(record.tokenHash, tokenHash)) return false;
+		if (record.revokedAt !== null) return true;
+		record.revokedAt = now;
+		this.#save();
+		return true;
+	}
+
+	revokeTokensForGrant(grantId: string, now = Date.now()): number {
+		let revoked = 0;
+		for (const record of this.#tokensByHash.values()) {
+			if (record.grantId !== grantId || record.revokedAt !== null) continue;
+			record.revokedAt = now;
+			revoked += 1;
+		}
+		if (revoked > 0) this.#save();
+		return revoked;
+	}
+
+	issueGrant(
+		record: { clientId: string; scopes?: string[]; resource?: string },
+		now = Date.now(),
+	): { grant: RefreshTokenGrantRecord; refreshToken: string; expiresIn: number } | undefined {
+		this.#deleteInactive(now);
+		if (this.#grantsById.size >= MAX_REFRESH_GRANTS) return undefined;
+		const refreshToken = randomToken();
+		const refreshTokenHash = hashOAuthTokenForStateFile(refreshToken);
+		if (!refreshTokenHash) return undefined;
+		const grant: RefreshTokenGrantRecord = {
+			grantId: randomUUID(),
+			clientId: record.clientId,
+			scopes: [...(record.scopes ?? [])],
+			resource: record.resource,
+			currentRefreshTokenHash: refreshTokenHash,
+			previousRefreshTokenHash: null,
+			issuedAt: now,
+			expiresAt: now + REFRESH_TOKEN_TTL_SECONDS * 1000,
+			rotatedAt: null,
+			revokedAt: null,
+		};
+		this.#grantsById.set(grant.grantId, grant);
+		this.#grantIdsByRefreshHash.set(refreshTokenHash, grant.grantId);
+		this.#refreshHashesByGrantId.set(grant.grantId, new Set([refreshTokenHash]));
+		this.#save();
+		return {
+			grant: { ...grant, scopes: [...grant.scopes] },
+			refreshToken,
+			expiresIn: REFRESH_TOKEN_TTL_SECONDS,
+		};
+	}
+
+	rotateRefreshToken(
+		clientId: string,
+		refreshToken: string,
+		options: { scopes?: string[]; resource?: string } = {},
+		now = Date.now(),
+	): RefreshTokenRotationResult {
+		const tokenHash = hashOAuthTokenForStateFile(refreshToken);
+		if (!tokenHash) return { ok: false, reason: "unknown_refresh_token" };
+		const grantId = this.#grantIdsByRefreshHash.get(tokenHash);
+		if (!grantId) return { ok: false, reason: "unknown_refresh_token" };
+		const grant = this.#grantsById.get(grantId);
+		if (!grant) return { ok: false, reason: "unknown_refresh_token" };
+		if (grant.revokedAt !== null) return { ok: false, reason: "revoked_refresh_token", grantId };
+		if (grant.expiresAt <= now) {
+			this.revokeGrant(grantId, now);
+			return { ok: false, reason: "expired_refresh_token", grantId };
+		}
+		if (grant.clientId !== clientId) return { ok: false, reason: "client_mismatch", grantId };
+		if (!isScopeSubset(options.scopes ?? grant.scopes, grant.scopes)) {
+			return { ok: false, reason: "scope_mismatch", grantId };
+		}
+		if ((grant.resource ?? null) !== (options.resource ?? grant.resource ?? null)) {
+			return { ok: false, reason: "resource_mismatch", grantId };
+		}
+
+		const matchesCurrent = isSameTokenHash(grant.currentRefreshTokenHash, tokenHash);
+		const matchesPrevious =
+			grant.previousRefreshTokenHash !== null &&
+			isSameTokenHash(grant.previousRefreshTokenHash, tokenHash);
+		if (!matchesCurrent && !matchesPrevious) {
+			this.revokeGrant(grantId, now);
+			return { ok: false, reason: "refresh_token_replay", grantId };
+		}
+
+		const nextRefreshToken = randomToken();
+		const nextRefreshTokenHash = hashOAuthTokenForStateFile(nextRefreshToken);
+		if (!nextRefreshTokenHash) return { ok: false, reason: "unknown_refresh_token" };
+		grant.scopes = [...(options.scopes ?? grant.scopes)];
+		grant.previousRefreshTokenHash = matchesCurrent ? grant.currentRefreshTokenHash : null;
+		grant.currentRefreshTokenHash = nextRefreshTokenHash;
+		grant.rotatedAt = now;
+		this.#grantIdsByRefreshHash.set(nextRefreshTokenHash, grantId);
+		this.#refreshHashesByGrantId.get(grantId)?.add(nextRefreshTokenHash);
+		this.#save();
+		return {
+			ok: true,
+			grant: { ...grant, scopes: [...grant.scopes] },
+			refreshToken: nextRefreshToken,
+			expiresIn: Math.max(0, Math.floor((grant.expiresAt - now) / 1000)),
+		};
+	}
+
+	revokeRefreshToken(token: string, now = Date.now()): string | undefined {
+		const tokenHash = hashOAuthTokenForStateFile(token);
+		if (!tokenHash) return undefined;
+		const grantId = this.#grantIdsByRefreshHash.get(tokenHash);
+		if (!grantId) return undefined;
+		this.revokeGrant(grantId, now);
+		return grantId;
+	}
+
+	revokeGrant(grantId: string, now = Date.now()): boolean {
+		const grant = this.#grantsById.get(grantId);
+		if (!grant) return false;
+		if (grant.revokedAt !== null) return true;
+		grant.revokedAt = now;
+		this.#deleteGrantRefreshHashIndexEntries(grant);
+		this.#save();
+		return true;
+	}
+
+	#load(): void {
+		if (!existsSync(this.#path)) return;
+		let parsed: OAuthStateFileData;
+		try {
+			parsed = JSON.parse(readFileSync(this.#path, "utf8")) as OAuthStateFileData;
+		} catch {
+			return;
+		}
+		if (parsed.version !== 1) return;
+		this.#clients = new Map(parsed.clients.map((client) => [client.client_id, client]));
+		this.#tokensByHash = new Map(parsed.accessTokens.map((record) => [record.tokenHash, record]));
+		this.#grantsById = new Map(parsed.refreshGrants.map((grant) => [grant.grantId, grant]));
+		this.#grantIdsByRefreshHash = new Map();
+		this.#refreshHashesByGrantId = new Map();
+		for (const grant of this.#grantsById.values()) {
+			const hashes = new Set(parsed.refreshHashesByGrantId[grant.grantId] ?? []);
+			hashes.add(grant.currentRefreshTokenHash);
+			if (grant.previousRefreshTokenHash) hashes.add(grant.previousRefreshTokenHash);
+			this.#refreshHashesByGrantId.set(grant.grantId, hashes);
+			for (const hash of hashes) this.#grantIdsByRefreshHash.set(hash, grant.grantId);
+		}
+		this.#deleteInactive(Date.now());
+	}
+
+	#save(): void {
+		mkdirSync(dirname(this.#path), { recursive: true, mode: 0o700 });
+		const data: OAuthStateFileData = {
+			version: 1,
+			clients: [...this.#clients.values()],
+			accessTokens: [...this.#tokensByHash.values()],
+			refreshGrants: [...this.#grantsById.values()],
+			refreshHashesByGrantId: Object.fromEntries(
+				[...this.#refreshHashesByGrantId.entries()].map(([grantId, hashes]) => [
+					grantId,
+					[...hashes],
+				]),
+			),
+		};
+		const tmpPath = `${this.#path}.${process.pid}.${Date.now()}.tmp`;
+		writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+		renameSync(tmpPath, this.#path);
+		void chmod(this.#path, 0o600).catch(() => undefined);
+	}
+
+	#deleteExpiredCodes(now: number): void {
+		for (const [code, record] of this.#codes) {
+			if (record.expiresAt <= now) this.#codes.delete(code);
+		}
+	}
+
+	#deleteInactive(now: number): void {
+		let changed = false;
+		for (const [tokenHash, record] of this.#tokensByHash) {
+			if (record.expiresAt > now && record.revokedAt === null) continue;
+			this.#tokensByHash.delete(tokenHash);
+			changed = true;
+		}
+		for (const [grantId, grant] of this.#grantsById) {
+			if (grant.expiresAt > now && grant.revokedAt === null) continue;
+			this.#grantsById.delete(grantId);
+			this.#deleteGrantRefreshHashIndexEntries(grant);
+			changed = true;
+		}
+		if (changed) this.#save();
+	}
+
+	#deleteGrantRefreshHashIndexEntries(grant: RefreshTokenGrantRecord): void {
+		const refreshHashes = this.#refreshHashesByGrantId.get(grant.grantId);
+		if (refreshHashes) {
+			for (const refreshHash of refreshHashes) this.#grantIdsByRefreshHash.delete(refreshHash);
+			this.#refreshHashesByGrantId.delete(grant.grantId);
+			return;
+		}
+		this.#grantIdsByRefreshHash.delete(grant.currentRefreshTokenHash);
+		if (grant.previousRefreshTokenHash)
+			this.#grantIdsByRefreshHash.delete(grant.previousRefreshTokenHash);
+	}
+}
+
 export function createInMemoryOAuthClientsStore(): OAuthRegisteredClientsStore {
 	return new InMemoryOAuthClientsStore();
 }
@@ -455,6 +805,14 @@ export function createInMemoryOAuthAccessTokenStore(): OAuthAccessTokenStore {
 
 export function createInMemoryOAuthRefreshTokenStore(): OAuthRefreshTokenStore {
 	return new InMemoryOAuthRefreshTokenStore();
+}
+
+export function createJsonFileOAuthStateStore(path?: string): JsonFileOAuthStateStore {
+	return new JsonFileOAuthStateStore(path);
+}
+
+export function getDefaultMcpOAuthStatePath(): string {
+	return join(process.env.HOME?.trim() || homedir(), ".codemem", "mcp-oauth-state.json");
 }
 
 export function createMcpOAuthMetadata(options: McpOAuthMetadataOptions): OAuthMetadata {
@@ -807,6 +1165,12 @@ function hashSerializedOAuthToken(serialized: string, key: Buffer): string | nul
 	const tokenBytes = decodeOAuthAccessToken(serialized);
 	if (!tokenBytes) return null;
 	return signOAuthToken(tokenBytes, key);
+}
+
+function hashOAuthTokenForStateFile(serialized: string): string | null {
+	const tokenBytes = decodeOAuthAccessToken(serialized);
+	if (!tokenBytes) return null;
+	return createHash("sha256").update(tokenBytes).digest("base64url");
 }
 
 // Compute the HMAC-SHA256 signature of the binary access-token material using

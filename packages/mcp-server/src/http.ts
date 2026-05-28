@@ -32,6 +32,7 @@ import {
 	createInMemoryOAuthAccessTokenStore,
 	createInMemoryOAuthAuthorizationCodeStore,
 	createInMemoryOAuthClientsStore,
+	createJsonFileOAuthStateStore,
 	createMcpOAuthMetadata,
 	createMcpProtectedResourceMetadata,
 	MCP_OAUTH_PUBLIC_URL_ENV,
@@ -73,6 +74,7 @@ export interface CodememMcpHttpOptions {
 	allowUnsafePublic?: boolean;
 	publicUrl?: string;
 	oauthAccessTokenStore?: OAuthAccessTokenStore;
+	oauthStatePath?: string;
 	auditEmitter?: OAuthAuditEmitter;
 }
 
@@ -204,9 +206,13 @@ export async function startCodememMcpHttpServer(
 		? normalizeMcpPublicUrl(configuredPublicUrl)
 		: undefined;
 	const store = new MemoryStore(options.dbPath ?? resolveDbPath());
-	const clientsStore = createInMemoryOAuthClientsStore();
-	const codeStore = createInMemoryOAuthAuthorizationCodeStore();
-	const tokenStore = options.oauthAccessTokenStore ?? createInMemoryOAuthAccessTokenStore();
+	const oauthStateStore = options.oauthAccessTokenStore
+		? undefined
+		: createJsonFileOAuthStateStore(options.oauthStatePath);
+	const clientsStore = oauthStateStore ?? createInMemoryOAuthClientsStore();
+	const codeStore = oauthStateStore ?? createInMemoryOAuthAuthorizationCodeStore();
+	const tokenStore =
+		options.oauthAccessTokenStore ?? oauthStateStore ?? createInMemoryOAuthAccessTokenStore();
 	const oidcConfig = resolveOidcConfig();
 	const oidcPendingStore = createInMemoryOidcPendingAuthorizationStore();
 	const shouldRequireMcpBearer = configuredPublicMcpUrl !== undefined || oidcConfig !== undefined;
@@ -240,6 +246,7 @@ export async function startCodememMcpHttpServer(
 		codeStore,
 		tokenStore,
 		publicMcpUrl,
+		...(oauthStateStore ? { refreshTokenStore: oauthStateStore } : {}),
 		...(oidcConfig ? { oidc: { config: oidcConfig, pendingStore: oidcPendingStore } } : {}),
 	});
 	const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(publicMcpUrlObject);

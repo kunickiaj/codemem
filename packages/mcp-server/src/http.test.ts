@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OAuthAuditEvent } from "./audit.js";
 import {
 	type CodememMcpHttpServer,
@@ -60,8 +60,13 @@ function assertAuditEventsAreRedacted(events: OAuthAuditEvent[]): void {
 	}
 }
 
+beforeEach(() => {
+	vi.stubEnv("HOME", mkdtempSync(join(tmpdir(), "codemem-mcp-home-")));
+});
+
 afterEach(async () => {
 	await Promise.all(servers.splice(0).map((server) => server.close()));
+	vi.unstubAllEnvs();
 });
 
 describe("MCP HTTP transport", () => {
@@ -210,6 +215,47 @@ describe("MCP HTTP transport", () => {
 		});
 		expect(registered.client_id).toMatch(/[0-9a-f-]{36}/);
 		expect(registered.client_secret).toBeUndefined();
+	});
+
+	it("keeps Dynamic Client Registration clients across HTTP server restarts", async () => {
+		const statePath = join(mkdtempSync(join(tmpdir(), "codemem-mcp-oauth-")), "state.json");
+		const firstServer = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test/mcp",
+			oauthStatePath: statePath,
+		});
+		const register = await fetch(firstServer.url.replace("/mcp", "/register"), {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				redirect_uris: ["https://claude.ai/api/mcp/auth_callback"],
+				token_endpoint_auth_method: "none",
+			}),
+		});
+		const client = await register.json();
+		await firstServer.close();
+
+		const restartedServer = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test/mcp",
+			oauthStatePath: statePath,
+		});
+		servers.push(restartedServer);
+		const refresh = await fetch(restartedServer.url.replace("/mcp", "/token"), {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				client_id: client.client_id,
+				grant_type: "refresh_token",
+				refresh_token: "missing-refresh-token",
+			}),
+		});
+
+		expect(register.status).toBe(201);
+		expect(refresh.status).toBe(400);
+		expect(await refresh.json()).toMatchObject({ error: "invalid_grant" });
 	});
 
 	it("rejects local Dynamic Client Registration from non-loopback origins", async () => {

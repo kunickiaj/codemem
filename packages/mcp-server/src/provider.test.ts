@@ -1,3 +1,7 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { Response } from "express";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +11,7 @@ import {
 	createInMemoryOAuthAuthorizationCodeStore,
 	createInMemoryOAuthClientsStore,
 	createInMemoryOAuthRefreshTokenStore,
+	createJsonFileOAuthStateStore,
 	registerMcpOAuthClient,
 } from "./oauth.js";
 import { createInMemoryOidcPendingAuthorizationStore, type OidcConfig } from "./oidc.js";
@@ -427,6 +432,68 @@ describe("MemoryOAuthServerProvider", () => {
 		expect(issued.grant.previousRefreshTokenHash).toBeNull();
 	});
 
+	it("persists registered clients and refresh grants across MCP process restarts", async () => {
+		const statePath = join(mkdtempSync(join(tmpdir(), "codemem-mcp-oauth-")), "state.json");
+		const startedAt = Date.now();
+		const firstStore = createJsonFileOAuthStateStore(statePath);
+		const firstProvider = new MemoryOAuthServerProvider({
+			clientsStore: firstStore,
+			codeStore: firstStore,
+			tokenStore: firstStore,
+			refreshTokenStore: firstStore,
+			publicMcpUrl: PUBLIC_MCP_URL,
+			now: () => startedAt,
+		});
+		const client = registerClient(firstStore);
+		const code = firstStore.issueCode(
+			{
+				clientId: client.client_id,
+				redirectUri: REDIRECT_URI,
+				codeChallenge: CODE_CHALLENGE,
+				scopes: ["memory:read"],
+				resource: PUBLIC_MCP_URL,
+				expiresAt: startedAt + 5 * 60 * 1000,
+			},
+			startedAt,
+		);
+		if (!code) throw new Error("expected authorization code issuance");
+		const initial = await firstProvider.exchangeAuthorizationCode(
+			client,
+			code,
+			undefined,
+			REDIRECT_URI,
+			new URL(PUBLIC_MCP_URL),
+		);
+		if (!initial.refresh_token) throw new Error("expected refresh token");
+
+		const restartedStore = createJsonFileOAuthStateStore(statePath);
+		const restartedProvider = new MemoryOAuthServerProvider({
+			clientsStore: restartedStore,
+			codeStore: restartedStore,
+			tokenStore: restartedStore,
+			refreshTokenStore: restartedStore,
+			publicMcpUrl: PUBLIC_MCP_URL,
+			now: () => startedAt + 1_000,
+		});
+
+		expect(restartedStore.getClient(client.client_id)).toMatchObject({
+			client_id: client.client_id,
+		});
+		const refreshed = await restartedProvider.exchangeRefreshToken(
+			client,
+			initial.refresh_token,
+			undefined,
+			new URL(PUBLIC_MCP_URL),
+		);
+		expect(refreshed.refresh_token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		await expect(
+			restartedProvider.verifyAccessToken(refreshed.access_token),
+		).resolves.toMatchObject({
+			clientId: client.client_id,
+			resource: new URL(PUBLIC_MCP_URL),
+		});
+	});
+
 	it("rejects refresh-token client, scope, and resource mismatches as invalid grants", async () => {
 		const clientsStore = createInMemoryOAuthClientsStore();
 		const codeStore = createInMemoryOAuthAuthorizationCodeStore();
@@ -527,7 +594,7 @@ describe("MemoryOAuthServerProvider", () => {
 	});
 });
 
-function registerClient(clientsStore: ReturnType<typeof createInMemoryOAuthClientsStore>) {
+function registerClient(clientsStore: OAuthRegisteredClientsStore) {
 	const registered = registerMcpOAuthClient(
 		{ redirect_uris: [REDIRECT_URI], token_endpoint_auth_method: "none" },
 		clientsStore,
@@ -537,7 +604,7 @@ function registerClient(clientsStore: ReturnType<typeof createInMemoryOAuthClien
 }
 
 function issueCode(
-	codeStore: ReturnType<typeof createInMemoryOAuthAuthorizationCodeStore>,
+	codeStore: OAuthAuthorizationCodeStore,
 	clientId: string,
 	resource?: string,
 	scopes: string[] = [],
