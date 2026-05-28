@@ -98,11 +98,62 @@ interface PresenceSnapshot {
 	nextRefreshAtMs: number;
 }
 
+interface CoordinatorStatusCacheEntry {
+	snapshot: Record<string, unknown>;
+	nextRefreshAtMs: number;
+}
+
 const coordinatorPresenceCache = new Map<string, PresenceSnapshot>();
+const coordinatorStatusCache = new Map<string, CoordinatorStatusCacheEntry>();
+const COORDINATOR_STATUS_SNAPSHOT_CACHE_MS = 5_000;
 
 function presenceCacheKey(store: PresenceStoreLike, config: CoordinatorSyncConfig): string {
 	const groups = [...config.syncCoordinatorGroups].sort().join(",");
-	return `${store.dbPath}|${config.syncCoordinatorUrl}|${groups}`;
+	return [
+		store.dbPath,
+		config.syncCoordinatorUrl,
+		groups,
+		coordinatorStatusIdentityCacheSegment(store),
+		config.syncHost,
+		config.syncPort,
+		config.syncAdvertise,
+		config.syncCoordinatorPresenceTtlS,
+	].join("|");
+}
+
+function coordinatorStatusIdentityCacheSegment(store: PresenceStoreLike): string {
+	const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || "";
+	try {
+		const row = store.db.prepare("SELECT device_id, fingerprint FROM sync_device LIMIT 1").get() as
+			| { device_id?: string | null; fingerprint?: string | null }
+			| undefined;
+		return `${keysDir}|${row?.device_id ?? ""}|${row?.fingerprint ?? ""}`;
+	} catch {
+		return keysDir;
+	}
+}
+
+function coordinatorStatusCacheKey(
+	store: PresenceStoreLike,
+	config: CoordinatorSyncConfig,
+): string {
+	return [
+		presenceCacheKey(store, config),
+		config.syncHost,
+		config.syncPort,
+		config.syncAdvertise,
+		config.syncCoordinatorPresenceTtlS,
+	].join("|");
+}
+
+function pairedPeerCount(store: PresenceStoreLike): number {
+	return Number(
+		(
+			store.db.prepare("SELECT COUNT(1) AS total FROM sync_peers").get() as
+				| { total?: number }
+				| undefined
+		)?.total ?? 0,
+	);
 }
 
 function presenceRefreshIntervalMs(config: CoordinatorSyncConfig): number {
@@ -519,19 +570,24 @@ export async function coordinatorStatusSnapshot(
 	store: MemoryStore,
 	config: CoordinatorSyncConfig,
 ): Promise<Record<string, unknown>> {
-	const pairedPeerCount = Number(
-		(
-			store.db.prepare("SELECT COUNT(1) AS total FROM sync_peers").get() as
-				| { total?: number }
-				| undefined
-		)?.total ?? 0,
-	);
+	const currentPairedPeerCount = pairedPeerCount(store);
 	if (!coordinatorEnabled(config)) {
 		return {
 			enabled: false,
 			configured: false,
 			groups: config.syncCoordinatorGroups,
-			paired_peer_count: pairedPeerCount,
+			paired_peer_count: currentPairedPeerCount,
+		};
+	}
+	const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
+	ensureDeviceIdentity(store.db, { keysDir });
+	const cacheKey = coordinatorStatusCacheKey(store, config);
+	const now = Date.now();
+	const cachedSnapshot = coordinatorStatusCache.get(cacheKey);
+	if (cachedSnapshot && now < cachedSnapshot.nextRefreshAtMs) {
+		return {
+			...structuredClone(cachedSnapshot.snapshot),
+			paired_peer_count: pairedPeerCount(store),
 		};
 	}
 	const snapshot: Record<string, unknown> = {
@@ -539,7 +595,7 @@ export async function coordinatorStatusSnapshot(
 		configured: true,
 		coordinator_url: config.syncCoordinatorUrl,
 		groups: config.syncCoordinatorGroups,
-		paired_peer_count: pairedPeerCount,
+		paired_peer_count: currentPairedPeerCount,
 		presence_status: "unknown",
 		presence_error: null,
 		advertised_addresses: [],
@@ -548,9 +604,8 @@ export async function coordinatorStatusSnapshot(
 		discovered_peer_count: 0,
 		discovered_devices: [],
 	};
-	const cacheKey = presenceCacheKey(store, config);
-	const now = Date.now();
-	const cachedPresence = coordinatorPresenceCache.get(cacheKey);
+	const presenceKey = presenceCacheKey(store, config);
+	const cachedPresence = coordinatorPresenceCache.get(presenceKey);
 	if (cachedPresence && now < cachedPresence.nextRefreshAtMs) {
 		snapshot.presence_status = cachedPresence.status;
 		snapshot.presence_error = cachedPresence.error;
@@ -565,7 +620,7 @@ export async function coordinatorStatusSnapshot(
 					: [];
 			snapshot.presence_status = "posted";
 			snapshot.advertised_addresses = advertisedAddresses;
-			coordinatorPresenceCache.set(cacheKey, {
+			coordinatorPresenceCache.set(presenceKey, {
 				status: "posted",
 				error: null,
 				advertisedAddresses,
@@ -577,7 +632,7 @@ export async function coordinatorStatusSnapshot(
 			const nextRefreshAtMs = status === "not_enrolled" ? now : now + presenceRetryIntervalMs();
 			snapshot.presence_status = status;
 			snapshot.presence_error = message;
-			coordinatorPresenceCache.set(cacheKey, {
+			coordinatorPresenceCache.set(presenceKey, {
 				status,
 				error: message,
 				advertisedAddresses: [],
@@ -628,6 +683,12 @@ export async function coordinatorStatusSnapshot(
 		}));
 	} catch (error) {
 		snapshot.lookup_error = error instanceof Error ? error.message : String(error);
+	}
+	if (snapshot.presence_status !== "not_enrolled") {
+		coordinatorStatusCache.set(cacheKey, {
+			snapshot: structuredClone(snapshot),
+			nextRefreshAtMs: Date.now() + COORDINATOR_STATUS_SNAPSHOT_CACHE_MS,
+		});
 	}
 	return snapshot;
 }

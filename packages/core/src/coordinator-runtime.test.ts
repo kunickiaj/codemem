@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,11 +6,13 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	advertisedSyncAddresses,
+	coordinatorStatusSnapshot,
 	fetchCoordinatorStalePeers,
 	lookupCoordinatorPeers,
 	readCoordinatorSyncConfig,
 	refreshStoredCoordinatorPeerAddresses,
 } from "./coordinator-runtime.js";
+import type { MemoryStore } from "./store.js";
 import { initTestSchema } from "./test-utils.js";
 
 describe("readCoordinatorSyncConfig.syncOpsLimit", () => {
@@ -169,6 +172,105 @@ describe("lookupCoordinatorPeers", () => {
 			globalThis.fetch = prevFetch;
 			db.close();
 			rmSync(keysDir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("coordinatorStatusSnapshot", () => {
+	it("reuses a short-lived coordinator snapshot instead of polling remote status on every viewer refresh", async () => {
+		const db = new Database(":memory:");
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-runtime-keys-"));
+		const alternateKeysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-runtime-keys-"));
+		const prevFetch = globalThis.fetch;
+		const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+		let fetchCount = 0;
+		let presenceFetchCount = 0;
+		let lastPresenceAddresses: unknown = null;
+		try {
+			initTestSchema(db);
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+				fetchCount += 1;
+				const url = new URL(String(input));
+				if (url.pathname === "/v1/presence") {
+					presenceFetchCount += 1;
+					const rawBody = init?.body;
+					const body = rawBody
+						? JSON.parse(Buffer.from(rawBody as ArrayBuffer).toString("utf8"))
+						: {};
+					lastPresenceAddresses = body.addresses;
+					return new Response(JSON.stringify({ addresses: ["http://local.test:7337"] }), {
+						status: 200,
+					});
+				}
+				if (url.pathname === "/v1/peers") {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-1",
+									fingerprint: "fp-1",
+									addresses: ["http://peer.test:7337"],
+									stale: false,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.pathname === "/v1/reciprocal-approvals") {
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+			}) as typeof fetch;
+
+			const config = readCoordinatorSyncConfig({
+				sync_enabled: true,
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_group: "team-a",
+			});
+			const store = {
+				db,
+				dbPath: `:memory:-${randomUUID()}`,
+			} as unknown as MemoryStore;
+
+			const first = await coordinatorStatusSnapshot(store, config);
+			const firstFetchCount = fetchCount;
+			db.prepare("INSERT INTO sync_peers(peer_device_id, created_at) VALUES (?, ?)").run(
+				"peer-1",
+				new Date().toISOString(),
+			);
+			const second = await coordinatorStatusSnapshot(store, config);
+			const secondFetchCount = fetchCount;
+			const secondPresenceFetchCount = presenceFetchCount;
+			const changedAdvertiseConfig = readCoordinatorSyncConfig({
+				sync_enabled: true,
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_group: "team-a",
+				sync_advertise: "new.example.test",
+			});
+			await coordinatorStatusSnapshot(store, changedAdvertiseConfig);
+			const changedAdvertisePresenceFetchCount = presenceFetchCount;
+			process.env.CODEMEM_KEYS_DIR = alternateKeysDir;
+			await coordinatorStatusSnapshot(store, changedAdvertiseConfig);
+
+			expect(first.discovered_peer_count).toBe(1);
+			expect(second.discovered_peer_count).toBe(1);
+			expect(second.paired_peer_count).toBe(1);
+			expect(firstFetchCount).toBeGreaterThan(0);
+			expect(secondFetchCount).toBe(firstFetchCount);
+			expect(secondPresenceFetchCount).toBe(1);
+			expect(changedAdvertisePresenceFetchCount).toBeGreaterThan(secondPresenceFetchCount);
+			expect(lastPresenceAddresses).toEqual(["http://new.example.test:7337"]);
+			expect(fetchCount).toBeGreaterThan(secondFetchCount);
+			expect(presenceFetchCount).toBeGreaterThan(changedAdvertisePresenceFetchCount);
+		} finally {
+			globalThis.fetch = prevFetch;
+			if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			db.close();
+			rmSync(keysDir, { recursive: true, force: true });
+			rmSync(alternateKeysDir, { recursive: true, force: true });
 		}
 	});
 });
