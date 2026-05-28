@@ -591,6 +591,7 @@ export type {
 	ListInboundScopeRejectionsOptions,
 } from "./sync-replication.js";
 export {
+	ACCESS_CLEANUP_OP_TYPE,
 	applyReplicationOps,
 	backfillReplicationOps,
 	bulkPruneReplicationOpsByAgeCutoff,
@@ -614,6 +615,7 @@ export {
 	planReplicationOpsAgePrune,
 	pruneReplicationOps,
 	pruneReplicationOpsUntilCaughtUp,
+	recordAccessCleanupOp,
 	recordReplicationOp,
 	rejectInboundScopeFailures,
 	replicationOpRequiresPersonalScopeAuthorization,

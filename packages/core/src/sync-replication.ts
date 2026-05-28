@@ -30,6 +30,7 @@ import type {
 } from "./types.js";
 
 export const DEFAULT_SYNC_SCOPE_ID = "local-default";
+export const ACCESS_CLEANUP_OP_TYPE = "access_cleanup";
 
 export interface SyncResetBoundary {
 	scope_id?: string | null;
@@ -126,6 +127,26 @@ interface MemoryPayload {
 	rev: number;
 	import_key: string | null;
 	project?: string | null;
+}
+
+interface AccessCleanupPayload {
+	cleanup_scope_id: string | null;
+	reason: string | null;
+	target_peer_device_id: string | null;
+}
+
+function parseAccessCleanupPayload(op: ReplicationOp): AccessCleanupPayload {
+	const payload = parsePayload(op.payload_json);
+	return {
+		cleanup_scope_id: cleanText(payload?.cleanup_scope_id ?? payload?.scope_id),
+		reason: cleanText(payload?.reason),
+		target_peer_device_id: cleanText(payload?.target_peer_device_id),
+	};
+}
+
+function accessCleanupTargetsPeer(op: ReplicationOp, peerDeviceId: string | null): boolean {
+	const targetPeerDeviceId = parseAccessCleanupPayload(op).target_peer_device_id;
+	return !targetPeerDeviceId || targetPeerDeviceId === cleanText(peerDeviceId);
 }
 
 function resolveReplicatedTextUpdate(
@@ -873,6 +894,49 @@ export function recordReplicationOp(
 		})
 		.run();
 
+	return opId;
+}
+
+export function recordAccessCleanupOp(
+	db: Database,
+	opts: {
+		importKey: string;
+		deviceId: string;
+		cleanupScopeId: string;
+		clockRev: number;
+		clockUpdatedAt: string;
+		clockDeviceId?: string;
+		createdAt?: string;
+		targetPeerDeviceId?: string | null;
+		reason?: string | null;
+		opId?: string;
+	},
+): string {
+	const d = drizzle(db, { schema });
+	const opId = opts.opId ?? randomUUID();
+	const now = opts.createdAt ?? new Date().toISOString();
+	const payload = {
+		cleanup_scope_id: opts.cleanupScopeId,
+		reason: cleanText(opts.reason) ?? "scope_access_cleanup",
+		...(cleanText(opts.targetPeerDeviceId)
+			? { target_peer_device_id: cleanText(opts.targetPeerDeviceId) }
+			: {}),
+	};
+	d.insert(schema.replicationOps)
+		.values({
+			op_id: opId,
+			entity_type: "memory_item",
+			entity_id: opts.importKey,
+			op_type: ACCESS_CLEANUP_OP_TYPE,
+			payload_json: toJson(payload),
+			clock_rev: opts.clockRev,
+			clock_updated_at: opts.clockUpdatedAt,
+			clock_device_id: opts.clockDeviceId ?? opts.deviceId,
+			device_id: opts.deviceId,
+			created_at: now,
+			scope_id: DEFAULT_SYNC_SCOPE_ID,
+		})
+		.run();
 	return opId;
 }
 
@@ -1937,6 +2001,19 @@ export function filterReplicationOpsForSyncWithStatus(
 	for (const op of ops) {
 		if (op.entity_type === "memory_item") {
 			const payload = parsePayload(op.payload_json);
+			if (op.op_type === ACCESS_CLEANUP_OP_TYPE) {
+				if (!accessCleanupTargetsPeer(op, peerDeviceId)) {
+					addSkipped(skipped, op, {
+						reason: "scope_filter",
+						scope_id: cleanText(payload?.cleanup_scope_id ?? op.scope_id),
+					});
+					nextCursor = computeCursor(op.created_at, op.op_id);
+					continue;
+				}
+				allowed.push(op);
+				nextCursor = computeCursor(op.created_at, op.op_id);
+				continue;
+			}
 			if (
 				applyScopeFilter &&
 				!outboundScopeAllowed(db, op, payload, peerDeviceId, options.localDeviceId ?? null)
@@ -2155,6 +2232,17 @@ function validateInboundScopeOp(
 	options: InboundScopeValidationOptions,
 ): InboundScopeRejection | null {
 	const peerDeviceId = cleanText(options.peerDeviceId) ?? cleanText(op.device_id);
+	if (op.op_type === ACCESS_CLEANUP_OP_TYPE) {
+		const senderDeviceId = peerDeviceId ?? cleanText(op.clock_device_id);
+		if (
+			!senderDeviceId ||
+			cleanText(op.device_id) !== senderDeviceId ||
+			cleanText(op.clock_device_id) !== senderDeviceId
+		) {
+			return inboundScopeRejection(op, "sender_not_member", peerDeviceId, null);
+		}
+		return null;
+	}
 	const senderDeviceId = peerDeviceId ?? cleanText(op.clock_device_id);
 	const receiverDeviceId = cleanText(localDeviceId);
 	const opScopeId = normalizeInboundScopeId(op.scope_id);
@@ -2769,6 +2857,30 @@ export function applyReplicationOps(
 		upsertMemoryIds.delete(memoryId);
 		deleteMemoryIds.add(memoryId);
 	};
+	const applyAccessCleanupOp = (op: ReplicationOp): boolean => {
+		const cleanup = parseAccessCleanupPayload(op);
+		if (!cleanup.cleanup_scope_id) return false;
+		const existingForCleanup = d
+			.select({
+				id: schema.memoryItems.id,
+				origin_device_id: schema.memoryItems.origin_device_id,
+				scope_id: schema.memoryItems.scope_id,
+			})
+			.from(schema.memoryItems)
+			.where(eq(schema.memoryItems.import_key, op.entity_id))
+			.limit(1)
+			.get();
+		if (!existingForCleanup) return true;
+		const sourceDeviceId = cleanText(op.clock_device_id) ?? cleanText(op.device_id);
+		const originDeviceId = cleanText(existingForCleanup.origin_device_id);
+		if (!sourceDeviceId || !originDeviceId || originDeviceId !== sourceDeviceId) return false;
+		if (originDeviceId === localDeviceId) return false;
+		if (cleanText(existingForCleanup.scope_id) !== cleanup.cleanup_scope_id) return false;
+		clearMemoryRefs(db, Number(existingForCleanup.id));
+		d.delete(schema.memoryItems).where(eq(schema.memoryItems.id, existingForCleanup.id)).run();
+		queueVectorDelete(Number(existingForCleanup.id));
+		return true;
+	};
 
 	const applyAll = db.transaction(() => {
 		for (const op of ops) {
@@ -2787,6 +2899,14 @@ export function applyReplicationOps(
 					.get();
 				if (existing) {
 					result.skipped++;
+					continue;
+				}
+
+				if (op.op_type === ACCESS_CLEANUP_OP_TYPE) {
+					const cleaned = applyAccessCleanupOp(op);
+					insertReplicationOpRow(d, op);
+					if (cleaned) result.applied++;
+					else result.skipped++;
 					continue;
 				}
 

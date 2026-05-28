@@ -10,7 +10,7 @@ import {
 	type WorkspaceIdentitySource,
 } from "./scope-resolution.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap.js";
-import { recordReplicationOp } from "./sync-replication.js";
+import { recordAccessCleanupOp, recordReplicationOp } from "./sync-replication.js";
 
 export interface SharingDomainSettingsScope {
 	scope_id: string;
@@ -689,6 +689,7 @@ function resolveProjectScopeMappingDraft(
 
 interface SourceOwnedMemoryScopeRow {
 	id: number;
+	import_key: string | null;
 	rev: number | null;
 	scope_id: string | null;
 	metadata_json: string | null;
@@ -707,6 +708,7 @@ function sourceOwnedMemoryRowsForScopePropagation(
 		.prepare(
 			`SELECT
 				mi.id,
+				mi.import_key,
 				mi.rev,
 				mi.scope_id,
 				mi.metadata_json,
@@ -788,6 +790,18 @@ function propagateProjectScopeMappingToSourceOwnedMemories(
 			clockDeviceId: deviceId,
 			createdAt: now,
 		});
+		if (row.import_key) {
+			recordAccessCleanupOp(db, {
+				importKey: row.import_key,
+				deviceId,
+				cleanupScopeId: oldScopeId,
+				clockRev: tombstoneRev,
+				clockUpdatedAt: now,
+				clockDeviceId: deviceId,
+				createdAt: now,
+				reason: "project_scope_reassignment",
+			});
+		}
 		recordReplicationOp(db, {
 			memoryId: row.id,
 			opType: "upsert",
