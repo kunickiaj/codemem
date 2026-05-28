@@ -221,6 +221,73 @@ function totalUsageEvents(rows: UsageRow[]): Record<string, unknown> {
 	);
 }
 
+type UsagePayload = Record<string, unknown>;
+
+interface UsageCacheEntry {
+	payload: UsagePayload;
+	expiresAtMs: number;
+}
+
+/**
+ * Short-lived cache for the computed /api/usage payload.
+ *
+ * The health dot polls /api/usage on every 5s refresh regardless of the
+ * active tab, and the computation scans the full usage_events table to apply
+ * scope visibility before aggregating. The resulting token totals are
+ * cumulative dashboard figures, so a few seconds of staleness is acceptable
+ * in exchange for collapsing the repeated full-table scan on the polling
+ * loop. Keyed by db path + scope identity + project filter so distinct
+ * stores/projects never share an entry.
+ */
+const usagePayloadCache = new Map<string, UsageCacheEntry>();
+const USAGE_PAYLOAD_CACHE_MS = 10_000;
+
+/**
+ * Cheap fingerprint of the state that drives scope visibility
+ * (`scope_memberships` / `replication_scopes`). Folding this into the usage
+ * cache key ensures a membership/scope status change — e.g. a revocation —
+ * invalidates any cached payload immediately instead of letting a device keep
+ * reading a scope it can no longer see for up to the TTL. These tables are
+ * small, so the aggregate is negligible next to the usage_events scan the
+ * cache exists to avoid. Fails safe: any error forces a unique value so the
+ * request bypasses the cache and recomputes visibility from scratch.
+ */
+function scopeVisibilityGeneration(store: MemoryStore): string {
+	try {
+		const row = store.db
+			.prepare(
+				`SELECT
+					(SELECT COUNT(*) FROM scope_memberships) AS m_count,
+					(SELECT COUNT(*) FROM scope_memberships WHERE status = 'active') AS m_active,
+					(SELECT COALESCE(MAX(updated_at), '') FROM scope_memberships) AS m_updated,
+					(SELECT COALESCE(MAX(membership_epoch), 0) FROM scope_memberships) AS m_epoch,
+					(SELECT COUNT(*) FROM replication_scopes) AS s_count,
+					(SELECT COUNT(*) FROM replication_scopes WHERE status = 'active') AS s_active,
+					(SELECT COALESCE(MAX(updated_at), '') FROM replication_scopes) AS s_updated`,
+			)
+			.get() as Record<string, unknown> | undefined;
+		if (!row) return "no-scope-state";
+		return [
+			row.m_count,
+			row.m_active,
+			row.m_updated,
+			row.m_epoch,
+			row.s_count,
+			row.s_active,
+			row.s_updated,
+		].join(":");
+	} catch {
+		// Fail safe: bypass the cache rather than risk serving a payload
+		// computed under stale visibility rules.
+		return `bypass-${Date.now()}-${Math.random()}`;
+	}
+}
+
+function usageCacheKey(store: MemoryStore, projectFilter: string | null): string {
+	const visibilityGeneration = scopeVisibilityGeneration(store);
+	return `${store.dbPath}|${store.actorId}|${store.deviceId}|${projectFilter ?? ""}|${visibilityGeneration}`;
+}
+
 /**
  * Create stats routes. The store factory is called per-request to get a
  * fresh connection (matching the Python viewer pattern).
@@ -285,6 +352,12 @@ export function statsRoutes(getStore: () => MemoryStore) {
 		const store = getStore();
 		{
 			const projectFilter = c.req.query("project") || null;
+			const cacheKey = usageCacheKey(store, projectFilter);
+			const nowMs = Date.now();
+			const cached = usagePayloadCache.get(cacheKey);
+			if (cached && nowMs < cached.expiresAtMs) {
+				return c.json(cached.payload);
+			}
 			const loadUsageRows = (project?: string | null): UsageRow[] => {
 				const rows = project
 					? (store.db
@@ -333,7 +406,7 @@ export function statsRoutes(getStore: () => MemoryStore) {
 					metadata_json: sanitizePackUsageMetadata(row.metadata_json, recentVisibility),
 				}));
 
-			return c.json({
+			const payload: UsagePayload = {
 				project: projectFilter,
 				events: projectFilter ? eventsFiltered : eventsGlobal,
 				totals: projectFilter ? totalsFiltered : totalsGlobal,
@@ -342,7 +415,12 @@ export function statsRoutes(getStore: () => MemoryStore) {
 				events_filtered: eventsFiltered,
 				totals_filtered: totalsFiltered,
 				recent_packs: recentPacks,
+			};
+			usagePayloadCache.set(cacheKey, {
+				payload,
+				expiresAtMs: Date.now() + USAGE_PAYLOAD_CACHE_MS,
 			});
+			return c.json(payload);
 		}
 	});
 

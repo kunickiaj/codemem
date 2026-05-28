@@ -605,6 +605,86 @@ describe("viewer-server", () => {
 				cleanup();
 			}
 		});
+
+		it("serves a cached usage payload within the short TTL window", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Cached usage memory",
+				});
+				const insertPack = (createdAt: string) =>
+					store.db
+						.prepare(
+							`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
+							 VALUES (?, 'pack', 100, 0, 200, ?, '{}')`,
+						)
+						.run(sessionId, createdAt);
+
+				insertPack("2026-03-26T23:30:00Z");
+				const first = (await (await app.request("/api/usage")).json()) as {
+					totals: { count: number };
+				};
+				expect(first.totals.count).toBe(1);
+
+				// A second pack inserted immediately should NOT change the cached
+				// response while the TTL window is still open.
+				insertPack("2026-03-26T23:31:00Z");
+				const second = (await (await app.request("/api/usage")).json()) as {
+					totals: { count: number };
+				};
+				expect(second.totals.count).toBe(1);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("busts the usage cache when scope visibility changes within the TTL", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Scoped usage memory",
+					scopeId: "authorized-team",
+				});
+				store.db
+					.prepare(
+						`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
+						 VALUES (?, 'pack', 100, 0, 200, ?, '{}')`,
+					)
+					.run(sessionId, "2026-03-26T23:30:00Z");
+
+				const beforeRevoke = (await (await app.request("/api/usage")).json()) as {
+					totals: { count: number };
+				};
+				expect(beforeRevoke.totals.count).toBe(1);
+
+				// Revoke the device's membership. Even within the TTL window the
+				// next request must recompute and hide the now-invisible scope
+				// instead of serving the cached (visible) payload.
+				store.db
+					.prepare("DELETE FROM scope_memberships WHERE scope_id = ? AND device_id = ?")
+					.run("authorized-team", store.deviceId);
+
+				const afterRevoke = (await (await app.request("/api/usage")).json()) as {
+					totals: { count: number };
+				};
+				expect(afterRevoke.totals.count).toBe(0);
+			} finally {
+				cleanup();
+			}
+		});
 	});
 
 	describe("GET /api/sessions", () => {
