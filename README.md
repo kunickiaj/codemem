@@ -70,7 +70,7 @@ npx -y codemem setup --claude-only
 
 The Claude plugin starts MCP with the TS CLI (`codemem mcp`).
 
-Claude hook ingestion is HTTP enqueue-first (`POST /api/claude-hooks`) and falls back to direct local DB enqueue via `codemem claude-hook-ingest` when the local server path is unavailable.
+Claude hook ingestion is HTTP enqueue-first (`POST /api/claude-hooks`) and falls back to direct local DB enqueue via `codemem claude-hook-ingest` when the local server path is unavailable. Experimental Codex hook ingestion follows the same shared raw-event pipeline through `POST /api/codex-hooks`, `codemem codex-hook-ingest`, and a Codex-specific fallback spool.
 
 Claude hook events share the same raw-event queue pipeline used by OpenCode. `UserPromptSubmit` runs
 capture ingest in the background and injects memory context via Claude `additionalContext` using
@@ -140,6 +140,7 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | **Plumbing** | `codemem mcp` | MCP stdio server; best-effort starts the local viewer unless `CODEMEM_VIEWER=0` or `CODEMEM_VIEWER_AUTO=0` is set |
 | | `codemem mcp http` | Local Streamable HTTP MCP server (`POST /mcp`, loopback-only by default) |
 | | `codemem claude-hook-ingest` | Claude hook event ingestion (stdin) |
+| | `codemem codex-hook-ingest` | Codex hook event ingestion (stdin, experimental) |
 
 Run `codemem --help` for the full list. Legacy top-level aliases (`export-memories`, `import-memories`, `show`, `forget`, `remember`) still work but are hidden from help.
 

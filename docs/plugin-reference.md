@@ -250,6 +250,10 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_PLUGIN_LOG_PATH` | Explicit log file path for Claude hook script logging (overrides `CODEMEM_PLUGIN_LOG` for that script). |
 | `CODEMEM_CLAUDE_HOOK_HTTP_CONNECT_TIMEOUT_S` | Claude hook HTTP enqueue connect timeout in seconds (default `1`). |
 | `CODEMEM_CLAUDE_HOOK_HTTP_MAX_TIME_S` | Claude hook HTTP enqueue total timeout in seconds (default `2`). |
+| `CODEMEM_CODEX_HOOK_HTTP_TIMEOUT_MS` | Codex hook HTTP enqueue timeout in milliseconds (default `1000`). |
+| `CODEMEM_CODEX_HOOK_LOCK_DIR` | Codex hook fallback lock path (default `~/.codemem/codex-hook-ingest.lock`). |
+| `CODEMEM_CODEX_HOOK_LOCK_TTL_S` | Seconds before a Codex hook fallback lock is treated as stale (default `120`). |
+| `CODEMEM_CODEX_HOOK_SPOOL_DIR` | Codex hook fallback spool directory (default `~/.codemem/codex-hook-spool`). |
 | `CODEMEM_INJECT_HTTP_CONNECT_TIMEOUT_S` | `UserPromptSubmit` pack injection connect timeout in seconds (default `1`). |
 | `CODEMEM_INJECT_HTTP_MAX_TIME_S` | `UserPromptSubmit` pack injection total timeout in seconds (default `2`). |
 | `CODEMEM_INJECT_HTTP_FALLBACK` | Set to `0` to disable HTTP `/api/pack` fallback for Claude prompt-time injection (default `1`). |
