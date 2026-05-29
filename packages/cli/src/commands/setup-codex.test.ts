@@ -255,10 +255,10 @@ describe("isTransientNpxBinPath", () => {
 });
 
 describe("setup command options", () => {
-	it("declares both --codex and --codex-only", () => {
+	it("declares --codex-only (consistent with --opencode-only/--claude-only) and no redundant --codex", () => {
 		const longs = setupCommand.options.map((o) => o.long);
-		expect(longs).toContain("--codex");
 		expect(longs).toContain("--codex-only");
+		expect(longs).not.toContain("--codex");
 	});
 });
 

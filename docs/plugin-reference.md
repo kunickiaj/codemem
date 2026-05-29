@@ -90,7 +90,7 @@ printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"codex-1","cwd":"/
 - sends the hook payload into capture ingest (`ingest-hook.mjs`) in the background, and
 - returns `hookSpecificOutput.additionalContext` from `codemem codex-hook-inject` for prompt-time memory injection.
 
-Prompt-time Codex injection uses local pack generation first and falls back to `/api/pack` only when local generation fails and `CODEMEM_INJECT_HTTP_FALLBACK` is enabled. It honors the same injection controls as Claude: `CODEMEM_INJECT_CONTEXT`, `CODEMEM_INJECT_LIMIT`, `CODEMEM_INJECT_TOKEN_BUDGET`, `CODEMEM_INJECT_MAX_CHARS`, and `CODEMEM_INJECT_HTTP_MAX_TIME_S`. Hook failures always emit `{"continue": true}` so Codex sessions are never blocked.
+Prompt-time Codex injection uses local pack generation first and falls back to `/api/pack` when local generation fails or returns no pack and `CODEMEM_INJECT_HTTP_FALLBACK` is enabled. The injected pack is framed as codemem reference data, not instructions, before it is returned as Codex `additionalContext`. It honors the same injection controls as Claude: `CODEMEM_INJECT_CONTEXT`, `CODEMEM_INJECT_LIMIT`, `CODEMEM_INJECT_TOKEN_BUDGET`, `CODEMEM_INJECT_MAX_CHARS`, and `CODEMEM_INJECT_HTTP_MAX_TIME_S`. Hook failures always emit `{"continue": true}` so Codex sessions are never blocked.
 
 ```bash
 printf '%s\n' '{"hook_event_name":"UserPromptSubmit","session_id":"codex-1","prompt":"what did we change","cwd":"/tmp/demo"}' | codemem codex-hook-inject
@@ -121,12 +121,12 @@ codex plugin remove codemem@codemem
 
 The plugin bundles `.mcp.json` (`npx -y codemem mcp`) and `hooks/hooks.json`. Hook scripts call `codemem` from `PATH` and fall back to `npx -y codemem@<plugin version>`, so a global CLI is optional but reduces hook latency. Validated targets: Codex CLI 0.135+ and current Desktop builds.
 
-### Plugin-free install (`codemem setup --codex`)
+### Plugin-free install (`codemem setup --codex-only`)
 
 API-key / non-subscription Codex Desktop greys out plugin installation. For that case, configure Codex directly — no marketplace, no plugin:
 
 ```bash
-npx -y codemem setup --codex   # or: codemem setup --codex (or --codex-only)
+npx -y codemem setup --codex-only   # or, with a global install: codemem setup --codex-only
 ```
 
 What it does (idempotent; honors `CODEX_HOME`; backs up existing files; `--force` to refresh):
@@ -134,7 +134,7 @@ What it does (idempotent; honors `CODEX_HOME`; backs up existing files; `--force
 - **MCP:** appends `[mcp_servers.codemem]` (`command = "npx"`, `args = ["-y", "codemem", "mcp"]`) to `<CODEX_HOME>/config.toml` if not already present. The file is never reparsed or reformatted — only appended — so comments and unrelated servers (including secrets) are preserved.
 - **Hooks:** merges `SessionStart`, `UserPromptSubmit` (ingest + inject), `PostToolUse`, and `Stop` into `<CODEX_HOME>/hooks.json`, preserving any unrelated user hooks. Hook commands resolve to a direct `codemem codex-hook-*` call when `codemem` is on `PATH`, otherwise `npx -y codemem codex-hook-*`.
 
-Hooks loaded from the user config layer require a one-time trust approval in Codex (you'll be prompted on first run; MCP recall needs no trust). `setup --codex` also runs automatically in a plain `codemem setup` when a Codex home (`~/.codex` or `$CODEX_HOME`) is detected.
+Hooks loaded from the user config layer require a one-time trust approval in Codex (you'll be prompted on first run; MCP recall needs no trust). Codex setup also runs automatically in a plain `codemem setup` when a Codex home (`~/.codex` or `$CODEX_HOME`) is detected.
 
 ### Troubleshooting
 
@@ -330,8 +330,8 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_CODEX_HOOK_SPOOL_DIR` | Codex hook fallback spool directory (default `~/.codemem/codex-hook-spool`). |
 | `CODEMEM_INJECT_HTTP_CONNECT_TIMEOUT_S` | `UserPromptSubmit` pack injection connect timeout in seconds (default `1`). |
 | `CODEMEM_INJECT_HTTP_MAX_TIME_S` | `UserPromptSubmit` pack injection total timeout in seconds (default `2`). |
-| `CODEMEM_INJECT_HTTP_FALLBACK` | Set to `0` to disable HTTP `/api/pack` fallback for Claude prompt-time injection (default `1`). |
-| `CODEMEM_INJECT_MAX_CHARS` | Max chars returned as Claude `additionalContext` (default `16000`). |
+| `CODEMEM_INJECT_HTTP_FALLBACK` | Set to `0` to disable HTTP `/api/pack` fallback for Claude/Codex prompt-time injection (default `1`). |
+| `CODEMEM_INJECT_MAX_CHARS` | Max chars returned as Claude/Codex `additionalContext` (default `16000`). |
 | `CODEMEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
 | `CODEMEM_MIN_VERSION` | Minimum required CLI version for plugin compatibility warnings (default `0.9.20`). |
 | `CODEMEM_BACKEND_UPDATE_POLICY` | Backend update behavior on compatibility mismatch: `notify` (default), `auto`, or `off`. |

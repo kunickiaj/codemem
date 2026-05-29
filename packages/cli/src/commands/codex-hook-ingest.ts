@@ -48,9 +48,16 @@ function httpTimeoutMs(): number {
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_HTTP_TIMEOUT_MS;
 }
 
-function emitStructuredError(errorCode: string, message: string): void {
-	console.log(JSON.stringify({ error: errorCode, message }));
-	process.exitCode = 1;
+// Codex parses a command hook's STDOUT as its hook-output JSON. Always emit the
+// canonical continue response there so capture never trips Codex's hook-output
+// validation, and route diagnostics/errors to STDERR (which Codex ignores).
+// Ingest is best-effort: it must never block the session, so we exit 0.
+function emitHookContinue(): void {
+	console.log(JSON.stringify({ continue: true }));
+}
+
+function logHookDiagnostic(message: string): void {
+	console.error(`[codemem] codex-hook-ingest: ${message}`);
 }
 
 function envTruthyValue(value: string | undefined): boolean {
@@ -300,17 +307,21 @@ addViewerHostOptions(codexHookCmd);
 
 export const codexHookIngestCommand = codexHookCmd.action(
 	async (opts: DbOpts & { host: string; port: string }) => {
-		if (envTruthyValue(process.env.CODEMEM_PLUGIN_IGNORE)) return;
+		if (envTruthyValue(process.env.CODEMEM_PLUGIN_IGNORE)) {
+			emitHookContinue();
+			return;
+		}
 
 		let raw: string;
 		try {
 			raw = readFileSync(0, "utf8").trim();
 		} catch {
-			emitStructuredError("read_error", "failed to read stdin");
+			logHookDiagnostic("failed to read stdin");
+			emitHookContinue();
 			return;
 		}
 		if (!raw) {
-			emitStructuredError("read_error", "empty stdin");
+			emitHookContinue();
 			return;
 		}
 
@@ -318,20 +329,23 @@ export const codexHookIngestCommand = codexHookCmd.action(
 		try {
 			const parsed = JSON.parse(raw) as unknown;
 			if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
-				emitStructuredError("parse_error", "payload must be a JSON object");
+				logHookDiagnostic("payload must be a JSON object");
+				emitHookContinue();
 				return;
 			}
 			payload = parsed as Record<string, unknown>;
 		} catch {
-			emitStructuredError("parse_error", "invalid JSON");
+			logHookDiagnostic("invalid JSON payload");
+			emitHookContinue();
 			return;
 		}
 
 		try {
 			const result = await ingestCodexHookPayload(payload, opts);
-			console.log(JSON.stringify(result));
+			logHookDiagnostic(JSON.stringify(result));
 		} catch (err) {
-			emitStructuredError("ingest_error", err instanceof Error ? err.message : String(err));
+			logHookDiagnostic(`ingest failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
+		emitHookContinue();
 	},
 );

@@ -94,7 +94,7 @@ The Codex plugin bundles its MCP config (`codemem mcp`) and hooks. Hooks call `c
 **API-key Codex Desktop (marketplace unavailable):** When plugin installation is greyed out (non-subscription / API-key Desktop), configure codemem without the plugin surface:
 
 ```text
-npx -y codemem setup --codex
+npx -y codemem setup --codex-only
 ```
 
 This merges `[mcp_servers.codemem]` into `~/.codex/config.toml` and writes `~/.codex/hooks.json` (SessionStart, UserPromptSubmit, PostToolUse, Stop) — backing up existing files and preserving unrelated entries. Restart Codex and approve the one-time prompt to trust the codemem hooks. MCP recall works immediately. If `codemem` is on your `PATH` the hooks call it directly; otherwise they fall back to `npx -y codemem`. Honors `CODEX_HOME`; re-runnable (use `--force` to refresh).

@@ -397,7 +397,7 @@ function isCodememHookGroup(group: unknown): boolean {
 
 /**
  * True if a resolved bin path is a transient npx/dlx cache bin. When setup runs
- * via `npx -y codemem setup --codex`, npx exposes this package's bin on PATH for
+ * via `npx -y codemem setup --codex-only`, npx exposes this package's bin on PATH for
  * the duration of the run, then removes it — so Codex would later fail to find a
  * bare `codemem`. Such paths must NOT count as "on PATH" for hook command baking.
  */
@@ -584,27 +584,23 @@ export const setupCommand = new Command("setup")
 	.option("--opencode-only", "only install for OpenCode")
 	.option("--claude-only", "only install for Claude Code")
 	.option("--codex-only", "only install for Codex")
-	.option("--codex", "configure Codex only (alias for --codex-only)")
 	.action(
 		(opts: {
 			force?: boolean;
 			opencodeOnly?: boolean;
 			claudeOnly?: boolean;
 			codexOnly?: boolean;
-			codex?: boolean;
 		}) => {
 			p.intro(`codemem setup v${VERSION}`);
 			const force = opts.force ?? false;
 			let ok = true;
 
-			// `--codex` is a documented alias for `--codex-only`.
-			const codexOnly = Boolean(opts.codexOnly || opts.codex);
-			const onlyFlag = Boolean(opts.opencodeOnly || opts.claudeOnly || codexOnly);
+			const onlyFlag = Boolean(opts.opencodeOnly || opts.claudeOnly || opts.codexOnly);
 
 			const doOpencode = opts.opencodeOnly || !onlyFlag;
 			const doClaude = opts.claudeOnly || !onlyFlag;
 			// With no only-flag, Codex runs only when a Codex home is detected.
-			const doCodex = codexOnly || (!onlyFlag && existsSync(codexConfigDir()));
+			const doCodex = opts.codexOnly || (!onlyFlag && existsSync(codexConfigDir()));
 
 			if (doOpencode) {
 				p.log.step("Installing OpenCode plugin...");
@@ -625,7 +621,6 @@ export const setupCommand = new Command("setup")
 				p.log.info("  - Restart Codex to load the new configuration");
 				p.log.info("  - On first run, approve the one-time prompt to trust the codemem hooks");
 				p.log.info("  - MCP recall works immediately (no trust prompt required)");
-				p.log.info("  - Disable prompt-time injection with CODEMEM_INJECT_CONTEXT=0");
 			}
 
 			if (ok) {
