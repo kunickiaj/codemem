@@ -1,12 +1,15 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	isCodexSidecarAuthError,
+	isCodexSidecarModelError,
 	isSidecarAuthError,
 	isSidecarModelError,
 	loadObserverConfig,
 	ObserverClient,
+	shouldAutoSelectCodexSidecar,
 } from "./observer-client.js";
 
 function fixtureToken(label: string): string {
@@ -1595,5 +1598,310 @@ describe("ObserverClient.observe()", () => {
 		expect(status.modelFallbackReason).toBe(
 			"configured sidecar tier model unavailable; retried with default Claude model",
 		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// codex_sidecar runtime
+// ---------------------------------------------------------------------------
+
+type CodexInvoker = (
+	systemPrompt: string,
+	userPrompt: string,
+	useModel: boolean,
+) => Promise<{ output: string | null; error: string | null; reportedModel: string | null }>;
+
+function makeCodexSidecarClient(overrides?: { model?: string | null }): ObserverClient {
+	return new ObserverClient({
+		observerProvider: "openai",
+		observerModel: overrides?.model === undefined ? "gpt-5.1-codex" : overrides.model,
+		observerRuntime: "codex_sidecar",
+		observerApiKey: null,
+		observerBaseUrl: null,
+		observerMaxChars: 12_000,
+		observerMaxTokens: 4_000,
+		observerHeaders: {},
+		observerAuthSource: "auto",
+		observerAuthFile: null,
+		observerAuthCommand: [],
+		observerAuthTimeoutMs: 1500,
+		observerAuthCacheTtlS: 300,
+	});
+}
+
+function stubCodexInvoker(client: ObserverClient, impl: CodexInvoker): void {
+	(client as unknown as { _invokeCodexSidecar: CodexInvoker })._invokeCodexSidecar = impl;
+}
+
+describe("ObserverClient.observe() — codex_sidecar", () => {
+	it("passes the selected model via -m", () => {
+		const client = makeCodexSidecarClient({ model: "gpt-5.1-codex" });
+		const command = (
+			client as unknown as {
+				_buildCodexSidecarCommand: (useModel: boolean, outputFile: string) => string[];
+			}
+		)._buildCodexSidecarCommand(true, "/tmp/out.txt");
+		expect(command).toContain("exec");
+		expect(command).toContain("-m");
+		expect(command).toContain("gpt-5.1-codex");
+		// Output capture + stdin prompt wiring.
+		expect(command).toContain("-o");
+		expect(command).toContain("/tmp/out.txt");
+		expect(command[command.length - 1]).toBe("-");
+	});
+
+	it("omits -m when useModel is false", () => {
+		const client = makeCodexSidecarClient({ model: "gpt-5.1-codex" });
+		const command = (
+			client as unknown as {
+				_buildCodexSidecarCommand: (useModel: boolean, outputFile: string) => string[];
+			}
+		)._buildCodexSidecarCommand(false, "/tmp/out.txt");
+		expect(command).not.toContain("-m");
+	});
+
+	it("skips API key init when constructed with no key", () => {
+		// Construction must not throw even though no API key is configured.
+		const client = makeCodexSidecarClient({ model: "gpt-5.1-codex" });
+		expect(client.runtime).toBe("codex_sidecar");
+		expect(client.auth.token).toBeNull();
+		expect(client.getStatus().auth.type).toBe("codex_sidecar");
+	});
+
+	it("raises ObserverAuthError when the sidecar reports an auth failure", async () => {
+		const client = makeCodexSidecarClient({ model: "gpt-5.1-codex" });
+		stubCodexInvoker(client, async () => ({
+			output: null,
+			error: "Not logged in. Please run `codex login`.",
+			reportedModel: null,
+		}));
+
+		await expect(client.observe("system", "user")).rejects.toThrow(/not logged in/i);
+		expect(client.getStatus().lastError?.code).toBe("auth_failed");
+	});
+
+	it("retries without -m and reports fallback on model-unavailable", async () => {
+		const client = makeCodexSidecarClient({ model: "gpt-5.1-codex" });
+		let calls = 0;
+		stubCodexInvoker(client, async (_system, _user, useModel) => {
+			calls++;
+			if (useModel) {
+				return { output: null, error: "unknown model: gpt-5.1-codex", reportedModel: null };
+			}
+			return { output: "codex ok", error: null, reportedModel: null };
+		});
+
+		const result = await client.observe("system", "user");
+		const status = client.getStatus();
+
+		expect(calls).toBe(2);
+		expect(result.raw).toBe("codex ok");
+		expect(status.modelFallbackApplied).toBe(true);
+		expect(status.modelFallbackReason).toBe(
+			"configured sidecar tier model unavailable; retried with default Codex model",
+		);
+		// Resolved model marker cleared since codex does not report it.
+		expect(status.actualModel).toBeNull();
+	});
+
+	describe("codex sidecar error classifiers", () => {
+		it("matches model errors from known Codex CLI phrasings", () => {
+			expect(isCodexSidecarModelError("unknown model: gpt-5.1-codex")).toBe(true);
+			expect(isCodexSidecarModelError("unsupported model foo")).toBe(true);
+			expect(isCodexSidecarModelError("invalid model name")).toBe(true);
+			expect(isCodexSidecarModelError("model not found")).toBe(true);
+			expect(isCodexSidecarModelError("that model does not exist")).toBe(true);
+		});
+
+		it("does not misclassify unrelated errors as model errors", () => {
+			expect(isCodexSidecarModelError("Not logged in")).toBe(false);
+			expect(isCodexSidecarModelError("Connection timed out")).toBe(false);
+			expect(isCodexSidecarModelError("")).toBe(false);
+		});
+
+		it("matches auth errors from known Codex CLI phrasings", () => {
+			expect(isCodexSidecarAuthError("Not logged in. Please run `codex login`.")).toBe(true);
+			expect(isCodexSidecarAuthError("Please log in to ChatGPT")).toBe(true);
+			expect(isCodexSidecarAuthError("Unauthorized")).toBe(true);
+			expect(isCodexSidecarAuthError("authentication required")).toBe(true);
+			expect(isCodexSidecarAuthError("request failed with status 401")).toBe(true);
+			expect(isCodexSidecarAuthError("request failed with status 403")).toBe(true);
+		});
+
+		it("does not misclassify unrelated errors as auth errors", () => {
+			expect(isCodexSidecarAuthError("unknown model: gpt-5.1-codex")).toBe(false);
+			expect(isCodexSidecarAuthError("Request failed with status 500")).toBe(false);
+			expect(isCodexSidecarAuthError("")).toBe(false);
+		});
+
+		it("does not false-positive on operational log noise (paths, offsets)", () => {
+			// Bare "login" substring in a path must not trip the classifier.
+			expect(isCodexSidecarAuthError("/Users/x/.codex/sessions/login.json missing")).toBe(false);
+			expect(isCodexSidecarAuthError("wrote login-state to cache")).toBe(false);
+			// Status codes must be word-anchored, not matched inside larger numbers.
+			expect(isCodexSidecarAuthError("read 40123 bytes from stream")).toBe(false);
+			expect(isCodexSidecarAuthError("offset 14031 reached")).toBe(false);
+		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// codex_sidecar real subprocess (fake `codex` via node) — locks the spawn
+// surface: env scrubbing, stdin wiring, -o capture, cleanup, redaction.
+// ---------------------------------------------------------------------------
+
+describe("ObserverClient.observe() — codex_sidecar real spawn", () => {
+	let dir: string;
+	let savedClaudeEntry: string | undefined;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "codemem-codex-fake-"));
+		savedClaudeEntry = process.env.CLAUDE_CODE_ENTRYPOINT;
+	});
+
+	afterEach(() => {
+		if (savedClaudeEntry === undefined) delete process.env.CLAUDE_CODE_ENTRYPOINT;
+		else process.env.CLAUDE_CODE_ENTRYPOINT = savedClaudeEntry;
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	function clientWithFakeCodex(scriptBody: string): ObserverClient {
+		const scriptPath = join(dir, "fake-codex.mjs");
+		writeFileSync(scriptPath, scriptBody, "utf-8");
+		return new ObserverClient({
+			observerProvider: "openai",
+			observerModel: "gpt-5.1-codex",
+			observerRuntime: "codex_sidecar",
+			observerApiKey: null,
+			observerBaseUrl: null,
+			observerMaxChars: 12_000,
+			observerMaxTokens: 4_000,
+			observerHeaders: {},
+			observerAuthSource: "auto",
+			observerAuthFile: null,
+			observerAuthCommand: [],
+			observerAuthTimeoutMs: 1500,
+			observerAuthCacheTtlS: 300,
+			codexCommand: [process.execPath, scriptPath],
+		});
+	}
+
+	function tempSidecarFileCount(): number {
+		return readdirSync(tmpdir()).filter((n) => n.startsWith("codemem-codex-sidecar-")).length;
+	}
+
+	it("scrubs CLAUDE_CODE_* env, forwards the prompt on stdin, captures -o, and cleans up", async () => {
+		process.env.CLAUDE_CODE_ENTRYPOINT = "cli";
+		const script = [
+			'import { readFileSync, writeFileSync } from "node:fs";',
+			"const argv = process.argv.slice(2);",
+			'const out = argv[argv.indexOf("-o") + 1];',
+			'let stdin = "";',
+			'process.stdin.on("data", (c) => { stdin += c; });',
+			'process.stdin.on("end", () => {',
+			"  const payload = JSON.stringify({",
+			'    claude: process.env.CLAUDE_CODE_ENTRYPOINT ?? "ABSENT",',
+			'    pluginIgnore: process.env.CODEMEM_PLUGIN_IGNORE ?? "",',
+			"    stdin,",
+			"  });",
+			"  writeFileSync(out, payload);",
+			"  process.exit(0);",
+			"});",
+		].join("\n");
+		const client = clientWithFakeCodex(script);
+		const before = tempSidecarFileCount();
+		const result = await client.observe("SYSTEM_PROMPT_MARKER", "USER_PROMPT_MARKER");
+		const parsed = JSON.parse(result.raw ?? "{}");
+		expect(parsed.claude).toBe("ABSENT");
+		expect(parsed.pluginIgnore).toBe("1");
+		expect(parsed.stdin).toContain("SYSTEM_PROMPT_MARKER");
+		expect(parsed.stdin).toContain("USER_PROMPT_MARKER");
+		// Temp output file is unlinked in finally — no leak.
+		expect(tempSidecarFileCount()).toBe(before);
+	});
+
+	it("returns null output and a redacted error on non-zero exit", async () => {
+		const warnings: string[] = [];
+		const spy = vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
+		});
+		try {
+			const script = [
+				"process.stdin.resume();",
+				'process.stdin.on("end", () => {',
+				'  process.stderr.write("boom Bearer sk-abcdefghijklmnopqrstuvwxyz failed");',
+				"  process.exit(1);",
+				"});",
+			].join("\n");
+			const client = clientWithFakeCodex(script);
+			const result = await client.observe("SYS", "USR");
+			expect(result.raw).toBeNull();
+			const joined = warnings.join("\n");
+			expect(joined).toContain("[redacted]");
+			expect(joined).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
+		} finally {
+			spy.mockRestore();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// codex_sidecar auto-selection gating
+// ---------------------------------------------------------------------------
+
+describe("shouldAutoSelectCodexSidecar", () => {
+	const base = {
+		observerRuntime: null,
+		hasAnyApiKey: false,
+		observerAuthSource: "auto" as string | null,
+		observerAuthFile: null as string | null,
+		observerAuthCommand: [] as string[] | null,
+		hasUsableOpenCodeCache: false,
+		codexAvailable: true,
+		codexAuthExists: true,
+	};
+
+	it("selects codex_sidecar when all preconditions hold", () => {
+		expect(shouldAutoSelectCodexSidecar({ ...base })).toBe(true);
+	});
+
+	it("does not override an explicit runtime", () => {
+		expect(shouldAutoSelectCodexSidecar({ ...base, observerRuntime: "api_http" })).toBe(false);
+	});
+
+	it("yields to any available API key", () => {
+		expect(shouldAutoSelectCodexSidecar({ ...base, hasAnyApiKey: true })).toBe(false);
+	});
+
+	it("respects a configured file auth source", () => {
+		expect(shouldAutoSelectCodexSidecar({ ...base, observerAuthSource: "file" })).toBe(false);
+	});
+
+	it("respects a configured command auth source", () => {
+		expect(shouldAutoSelectCodexSidecar({ ...base, observerAuthSource: "command" })).toBe(false);
+	});
+
+	it("respects an explicit auth file path", () => {
+		expect(shouldAutoSelectCodexSidecar({ ...base, observerAuthFile: "~/.tokens/obs" })).toBe(
+			false,
+		);
+	});
+
+	it("respects a configured auth command", () => {
+		expect(shouldAutoSelectCodexSidecar({ ...base, observerAuthCommand: ["op", "read"] })).toBe(
+			false,
+		);
+	});
+
+	it("yields to a usable OpenCode OAuth cache", () => {
+		expect(shouldAutoSelectCodexSidecar({ ...base, hasUsableOpenCodeCache: true })).toBe(false);
+	});
+
+	it("requires the codex CLI to be available", () => {
+		expect(shouldAutoSelectCodexSidecar({ ...base, codexAvailable: false })).toBe(false);
+	});
+
+	it("requires ~/.codex/auth.json to exist", () => {
+		expect(shouldAutoSelectCodexSidecar({ ...base, codexAuthExists: false })).toBe(false);
 	});
 });

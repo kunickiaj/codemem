@@ -9,8 +9,9 @@
  * Non-streaming responses via fetch (no SDK deps).
  */
 
-import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { codememHomeDir } from "./home.js";
@@ -48,6 +49,7 @@ import {
 
 const DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5";
 const DEFAULT_OPENAI_MODEL = "gpt-5.4-mini";
+const DEFAULT_CODEX_SIDECAR_MODEL = "gpt-5.1-codex-mini";
 
 const ANTHROPIC_MESSAGES_ENDPOINT = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -57,6 +59,8 @@ const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 const FETCH_TIMEOUT_MS = 60_000;
 
 const CLAUDE_SIDECAR_TIMEOUT_MS = 120_000;
+
+const CODEX_SIDECAR_TIMEOUT_MS = 120_000;
 
 function stripTrailingSlashes(value: string): string {
 	let end = value.length;
@@ -128,6 +132,7 @@ export interface ObserverConfig {
 	observerAuthTimeoutMs: number;
 	observerAuthCacheTtlS: number;
 	claudeCommand?: string[];
+	codexCommand?: string[];
 	observerExplicitConfigKeys?: string[];
 }
 
@@ -373,6 +378,77 @@ function coerceClaudeCommand(value: unknown): string[] | null {
 }
 
 /**
+ * Coerce a codex_command value to a string array.
+ * Accepts a string (split on whitespace) or an array of strings.
+ * Mirrors coerceClaudeCommand.
+ */
+function coerceCodexCommand(value: unknown): string[] | null {
+	return coerceClaudeCommand(value);
+}
+
+/**
+ * True when the OpenCode OAuth cache holds usable credentials for any built-in
+ * provider (openai/anthropic OAuth access, or an opencode API key). Used to
+ * gate codex_sidecar auto-defaulting so we do not shell the codex CLI when a
+ * direct API/OAuth path is already available.
+ */
+function hasUsableOpenCodeOAuthCache(): boolean {
+	const cache = loadOpenCodeOAuthCache();
+	if (Object.keys(cache).length === 0) return false;
+	const now = nowMs();
+	for (const provider of ["openai", "anthropic"]) {
+		const access = extractOAuthAccess(cache, provider);
+		if (!access) continue;
+		const expires = extractOAuthExpires(cache, provider);
+		if (expires == null || expires > now) return true;
+	}
+	return !!extractProviderApiKey(cache, "opencode");
+}
+
+/**
+ * Decide whether to auto-select the codex_sidecar runtime. Pure/testable: the
+ * caller supplies the filesystem/PATH-derived facts. Auto-selection must not
+ * override an explicit runtime, available API keys, the OpenCode OAuth cache,
+ * or an explicitly configured file/command auth source (those feed api_http and
+ * would otherwise be silently ignored once the sidecar skips provider init).
+ */
+export function shouldAutoSelectCodexSidecar(opts: {
+	observerRuntime: string | null;
+	hasAnyApiKey: boolean;
+	observerAuthSource: string | null;
+	observerAuthFile: string | null;
+	observerAuthCommand: string[] | null;
+	hasUsableOpenCodeCache: boolean;
+	codexAvailable: boolean;
+	codexAuthExists: boolean;
+}): boolean {
+	if (opts.observerRuntime) return false;
+	if (opts.hasAnyApiKey) return false;
+	const hasConfiguredAuthSource =
+		opts.observerAuthSource === "file" ||
+		opts.observerAuthSource === "command" ||
+		!!opts.observerAuthFile ||
+		(Array.isArray(opts.observerAuthCommand) && opts.observerAuthCommand.length > 0);
+	if (hasConfiguredAuthSource) return false;
+	return !opts.hasUsableOpenCodeCache && opts.codexAvailable && opts.codexAuthExists;
+}
+
+/** True when the `codex` CLI (or configured codex command) is resolvable on PATH. */
+function codexCliAvailable(command: string): boolean {
+	const executable = validateSidecarExecutable(command);
+	if (!executable) return false;
+	if (isAbsolute(executable)) return existsSync(executable);
+	try {
+		execFileSync(process.platform === "win32" ? "where" : "which", [executable], {
+			stdio: "ignore",
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Load observer config from `~/.config/codemem/config.json{c}`.
  *
  * Reads the codemem config file (not OpenCode's) and extracts observer-related
@@ -519,6 +595,10 @@ export function loadObserverConfig(): ObserverConfig {
 	const claudeCmd = coerceClaudeCommand(data.claude_command);
 	if (claudeCmd) cfg.claudeCommand = claudeCmd;
 
+	// codex_command: string or string[] → string[]
+	const codexCmd = coerceCodexCommand(data.codex_command);
+	if (codexCmd) cfg.codexCommand = codexCmd;
+
 	// Apply env var overrides (take precedence over file)
 	cfg.observerProvider = process.env.CODEMEM_OBSERVER_PROVIDER ?? cfg.observerProvider;
 	cfg.observerModel = process.env.CODEMEM_OBSERVER_MODEL ?? cfg.observerModel;
@@ -593,6 +673,9 @@ export function loadObserverConfig(): ObserverConfig {
 	const envClaudeCmd = coerceClaudeCommand(process.env.CODEMEM_CLAUDE_COMMAND);
 	if (envClaudeCmd) cfg.claudeCommand = envClaudeCmd;
 
+	const envCodexCmd = coerceCodexCommand(process.env.CODEMEM_CODEX_COMMAND);
+	if (envCodexCmd) cfg.codexCommand = envCodexCmd;
+
 	// Auto-detect Claude environment for runtime default.
 	// If running inside Claude Code (CLAUDE_CODE_ENTRYPOINT or CLAUDE_CODE_SESSION set),
 	// no explicit runtime configured, and no API key available from any provider,
@@ -609,6 +692,39 @@ export function loadObserverConfig(): ObserverConfig {
 		(process.env.CLAUDE_CODE_ENTRYPOINT || process.env.CLAUDE_CODE_SESSION)
 	) {
 		cfg.observerRuntime = "claude_sidecar";
+	}
+
+	// Auto-detect Codex / ChatGPT Pro environment for runtime default.
+	// claude_sidecar takes precedence (set above) because this gate requires
+	// `!cfg.observerRuntime`. Gating logic lives in shouldAutoSelectCodexSidecar
+	// so it stays unit-testable; we only probe the filesystem/PATH when the cheap
+	// preconditions (no runtime, no API key) already hold.
+	if (!cfg.observerRuntime && !hasAnyApiKey) {
+		const codexCommand =
+			Array.isArray(cfg.codexCommand) && cfg.codexCommand.length > 0 ? cfg.codexCommand : ["codex"];
+		const codexExecutable = codexCommand[0] ?? "codex";
+		const codexAuthPath = join(codememHomeDir(), ".codex", "auth.json");
+		const hasConfiguredAuthSource =
+			cfg.observerAuthSource === "file" ||
+			cfg.observerAuthSource === "command" ||
+			!!cfg.observerAuthFile ||
+			(Array.isArray(cfg.observerAuthCommand) && cfg.observerAuthCommand.length > 0);
+		if (
+			shouldAutoSelectCodexSidecar({
+				observerRuntime: cfg.observerRuntime,
+				hasAnyApiKey,
+				observerAuthSource: cfg.observerAuthSource,
+				observerAuthFile: cfg.observerAuthFile,
+				observerAuthCommand: cfg.observerAuthCommand,
+				// Skip the filesystem/PATH probes when a file/command auth source is
+				// configured — those feed api_http and must not be hijacked.
+				hasUsableOpenCodeCache: hasConfiguredAuthSource || hasUsableOpenCodeOAuthCache(),
+				codexAvailable: !hasConfiguredAuthSource && codexCliAvailable(codexExecutable),
+				codexAuthExists: existsSync(codexAuthPath),
+			})
+		) {
+			cfg.observerRuntime = "codex_sidecar";
+		}
 	}
 
 	cfg.observerExplicitConfigKeys = collectExplicitObserverConfigKeys(data, process.env);
@@ -684,6 +800,56 @@ export function isSidecarAuthError(message: string): boolean {
 		"setup-token",
 	];
 	return checks.some((token) => lowered.includes(token));
+}
+
+// ---------------------------------------------------------------------------
+// Codex sidecar helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect model-related errors from `codex exec` output.
+ * Mirrors the generous matching strategy of isSidecarModelError but tuned for
+ * Codex CLI phrasings (unknown/unsupported/invalid model).
+ */
+export function isCodexSidecarModelError(message: string): boolean {
+	const lowered = message.toLowerCase();
+	if (!lowered.includes("model")) return false;
+	return (
+		lowered.includes("unknown model") ||
+		lowered.includes("unsupported model") ||
+		lowered.includes("invalid model") ||
+		lowered.includes("model not found") ||
+		lowered.includes("not a valid model") ||
+		lowered.includes("does not exist") ||
+		lowered.includes("may not exist") ||
+		lowered.includes("is not supported")
+	);
+}
+
+/**
+ * Detect auth-related errors from `codex exec` output.
+ *
+ * Uses anchored phrases rather than bare substrings: codex stderr streams
+ * operational logs (paths, URLs, byte offsets) that would otherwise trip loose
+ * tokens like "login", "401", or "403" and surface a spurious auth failure.
+ */
+export function isCodexSidecarAuthError(message: string): boolean {
+	const lowered = message.toLowerCase();
+	const phrases = [
+		"not logged in",
+		"please log in",
+		"please login",
+		"run `codex login`",
+		"run codex login",
+		"unauthorized",
+		"authentication",
+		"invalid api key",
+		"expired token",
+		"token expired",
+	];
+	if (phrases.some((token) => lowered.includes(token))) return true;
+	// HTTP auth status codes, anchored so we do not match offsets like "40123".
+	return /\b(401|403)\b/.test(lowered);
 }
 
 // ---------------------------------------------------------------------------
@@ -1085,6 +1251,10 @@ export class ObserverClient {
 	private readonly _claudeCommand: string[];
 	private readonly _sidecarModel: string;
 
+	// Codex sidecar state
+	private readonly _codexCommand: string[];
+	private readonly _codexSidecarModel: string;
+
 	// OAuth consumer state
 	private _codexAccess: string | null = null;
 	private _codexAccountId: string | null = null;
@@ -1097,6 +1267,8 @@ export class ObserverClient {
 	private _lastResolvedModel: string | null = null;
 	private _sidecarModelFallbackApplied = false;
 	private _sidecarModelFallbackReason: string | null = null;
+	private _codexSidecarModelFallbackApplied = false;
+	private _codexSidecarModelFallbackReason: string | null = null;
 
 	constructor(config?: ObserverConfig) {
 		const configWasProvided = config !== undefined;
@@ -1139,7 +1311,12 @@ export class ObserverClient {
 		// Resolve runtime
 		const runtimeRaw = cfg.observerRuntime;
 		const runtime = typeof runtimeRaw === "string" ? runtimeRaw.trim().toLowerCase() : "api_http";
-		this.runtime = runtime === "claude_sidecar" ? "claude_sidecar" : "api_http";
+		this.runtime =
+			runtime === "claude_sidecar"
+				? "claude_sidecar"
+				: runtime === "codex_sidecar"
+					? "codex_sidecar"
+					: "api_http";
 
 		// Resolve model
 		if (model) {
@@ -1163,6 +1340,15 @@ export class ObserverClient {
 		if (this.runtime === "claude_sidecar") {
 			this.model = this._sidecarModel;
 			this._lastResolvedModel = this._sidecarModel;
+		}
+
+		// Codex sidecar config
+		const codexCmd = cfg.codexCommand;
+		this._codexCommand = Array.isArray(codexCmd) && codexCmd.length > 0 ? [...codexCmd] : ["codex"];
+		this._codexSidecarModel = model || DEFAULT_CODEX_SIDECAR_MODEL;
+		if (this.runtime === "codex_sidecar") {
+			this.model = this._codexSidecarModel;
+			this._lastResolvedModel = this._codexSidecarModel;
 		}
 
 		this.temperature =
@@ -1254,20 +1440,23 @@ export class ObserverClient {
 		});
 		this.auth = { token: null, authType: "none", source: "none" };
 
-		// Initialize provider client state — skip for claude_sidecar (no API key needed)
-		if (this.runtime !== "claude_sidecar") {
+		// Initialize provider client state — skip for sidecar runtimes (no API
+		// key needed; auth is delegated to the local Claude/Codex CLI).
+		const isSidecarRuntime = this.runtime === "claude_sidecar" || this.runtime === "codex_sidecar";
+		if (!isSidecarRuntime) {
 			this._initProvider(false);
 		} else if (
 			cfg.observerAuthSource === "file" ||
 			cfg.observerAuthSource === "command" ||
 			cfg.observerAuthSource === "env"
 		) {
-			// The sidecar runtime authenticates through the local Claude CLI and
-			// does not consult observer_auth_source, so flag the mismatch to avoid
-			// silently ignoring user config.
+			// The sidecar runtimes authenticate through the local CLI and do not
+			// consult observer_auth_source, so flag the mismatch to avoid silently
+			// ignoring user config.
+			const cliName = this.runtime === "codex_sidecar" ? "Codex" : "Claude";
 			console.warn(
 				`[codemem] observer_auth_source="${cfg.observerAuthSource}" is ignored when ` +
-					`observer_runtime="claude_sidecar"; the sidecar authenticates via the local Claude CLI.`,
+					`observer_runtime="${this.runtime}"; the sidecar authenticates via the local ${cliName} CLI.`,
 			);
 		}
 	}
@@ -1303,6 +1492,7 @@ export class ObserverClient {
 			observerAuthTimeoutMs: this.authTimeoutMs,
 			observerAuthCacheTtlS: this.authCacheTtlS,
 			claudeCommand: [...this._claudeCommand],
+			codexCommand: [...this._codexCommand],
 			observerExplicitConfigKeys: [...this._observerExplicitConfigKeys],
 		};
 	}
@@ -1312,6 +1502,8 @@ export class ObserverClient {
 		let method = "none";
 		if (this.runtime === "claude_sidecar") {
 			method = "claude_sidecar";
+		} else if (this.runtime === "codex_sidecar") {
+			method = "codex_sidecar";
 		} else if (this._anthropicOAuthAccess) {
 			method = "anthropic_consumer";
 		} else if (this._codexAccess) {
@@ -1327,10 +1519,10 @@ export class ObserverClient {
 				? "responses_api"
 				: this.runtime;
 
+		const isSidecarRuntime = this.runtime === "claude_sidecar" || this.runtime === "codex_sidecar";
 		const status: ObserverStatus = {
 			provider: this.provider,
-			model:
-				this.runtime === "claude_sidecar" ? (this._lastResolvedModel ?? this.model) : this.model,
+			model: isSidecarRuntime ? (this._lastResolvedModel ?? this.model) : this.model,
 			runtime,
 			auth: {
 				source: this.auth.source,
@@ -1342,6 +1534,10 @@ export class ObserverClient {
 			status.actualModel = this._lastResolvedModel;
 			status.modelFallbackApplied = this._sidecarModelFallbackApplied;
 			status.modelFallbackReason = this._sidecarModelFallbackReason;
+		} else if (this.runtime === "codex_sidecar") {
+			status.actualModel = this._lastResolvedModel;
+			status.modelFallbackApplied = this._codexSidecarModelFallbackApplied;
+			status.modelFallbackReason = this._codexSidecarModelFallbackReason;
 		}
 		if (this._lastErrorMessage) {
 			status.lastError = {
@@ -1383,6 +1579,10 @@ export class ObserverClient {
 				this._lastResolvedModel = this._sidecarModel;
 				this._sidecarModelFallbackApplied = false;
 				this._sidecarModelFallbackReason = null;
+			} else if (this.runtime === "codex_sidecar") {
+				this._lastResolvedModel = this._codexSidecarModel;
+				this._codexSidecarModelFallbackApplied = false;
+				this._codexSidecarModelFallbackReason = null;
 			}
 			const raw = await this._callOnce(clippedSystem, clippedUser);
 			if (raw) this._clearLastError();
@@ -1390,12 +1590,14 @@ export class ObserverClient {
 				raw,
 				parsed: raw ? tryParseJSON(raw) : null,
 				provider: this.provider,
-				model:
-					this.runtime === "claude_sidecar" ? (this._lastResolvedModel ?? this.model) : this.model,
+				model: this._resolvedResultModel(),
 			};
 		} catch (err) {
 			if (err instanceof ObserverAuthError) {
-				// Attempt one auth refresh + retry
+				// Attempt one auth refresh + retry. Note: for sidecar runtimes
+				// (claude_sidecar / codex_sidecar) auth is delegated to the local CLI
+				// and this.auth.token is always null, so this retry is intentionally a
+				// no-op — the error propagates and the caller backs off.
 				this.refreshAuth();
 				if (!this.auth.token) throw err;
 				try {
@@ -1405,10 +1607,7 @@ export class ObserverClient {
 						raw,
 						parsed: raw ? tryParseJSON(raw) : null,
 						provider: this.provider,
-						model:
-							this.runtime === "claude_sidecar"
-								? (this._lastResolvedModel ?? this.model)
-								: this.model,
+						model: this._resolvedResultModel(),
 					};
 				} catch {
 					throw err; // re-throw original
@@ -1416,6 +1615,14 @@ export class ObserverClient {
 			}
 			throw err;
 		}
+	}
+
+	/** Model string to report for a result, accounting for sidecar fallback. */
+	private _resolvedResultModel(): string {
+		if (this.runtime === "claude_sidecar" || this.runtime === "codex_sidecar") {
+			return this._lastResolvedModel ?? this.model;
+		}
+		return this.model;
 	}
 
 	/**
@@ -1614,6 +1821,11 @@ export class ObserverClient {
 		// Claude sidecar path — dispatches before any API-based paths
 		if (this.runtime === "claude_sidecar") {
 			return this._callSidecar(systemPrompt, userPrompt);
+		}
+
+		// Codex sidecar path — dispatches before any API-based paths
+		if (this.runtime === "codex_sidecar") {
+			return this._callCodexSidecar(systemPrompt, userPrompt);
 		}
 
 		// Codex consumer path (OpenAI OAuth)
@@ -1955,6 +2167,258 @@ export class ObserverClient {
 				);
 			}
 			console.warn(`[codemem] observer claude_sidecar call failed: ${error}`);
+			return null;
+		}
+		return output;
+	}
+
+	// -----------------------------------------------------------------------
+	// Codex sidecar (subprocess)
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Build the `codex exec` argv. The final agent message is captured via the
+	 * `-o/--output-last-message <FILE>` flag (caller supplies the tmp path) and
+	 * the prompt is read from stdin (trailing `-`).
+	 */
+	private _buildCodexSidecarCommand(useModel: boolean, outputFile: string): string[] {
+		const cmd = [
+			...this._codexCommand,
+			"exec",
+			"--ephemeral",
+			"--ignore-user-config",
+			"--skip-git-repo-check",
+			"-s",
+			"read-only",
+		];
+		if (useModel && this._codexSidecarModel) {
+			cmd.push("-m", this._codexSidecarModel);
+		}
+		cmd.push("-o", outputFile, "-");
+		return cmd;
+	}
+
+	private async _invokeCodexSidecar(
+		systemPrompt: string,
+		userPrompt: string,
+		useModel: boolean,
+	): Promise<{ output: string | null; error: string | null; reportedModel: string | null }> {
+		// Unique temp file for the captured final agent message.
+		const rand = Math.random().toString(36).slice(2, 10);
+		const outputFile = join(
+			tmpdir(),
+			`codemem-codex-sidecar-${process.pid}-${Date.now()}-${rand}.txt`,
+		);
+
+		const cmd = this._buildCodexSidecarCommand(useModel, outputFile);
+		const executable = validateSidecarExecutable(cmd[0] ?? "codex");
+		if (!executable) {
+			return {
+				output: null,
+				error: "configured codex command is invalid",
+				reportedModel: null,
+			};
+		}
+		const args = cmd.slice(1);
+
+		// The prompt is sent on stdin: system prompt, blank line, then user prompt.
+		const stdinPayload = `${systemPrompt}\n\n${userPrompt}`;
+
+		// Belt-and-suspenders against recursion: suppress codemem's own hooks and
+		// viewer side effects in the spawned process. CODEX_HOME is preserved
+		// implicitly via ...process.env so the codex CLI resolves ChatGPT/Codex
+		// auth from ~/.codex. Scrub Claude-Code session markers so a codex_sidecar
+		// run launched from inside Claude Code does not leak a stale Claude session
+		// identity into the spawned process (mirrors the claude_sidecar path).
+		const env: NodeJS.ProcessEnv = {
+			...process.env,
+			CODEMEM_PLUGIN_IGNORE: "1",
+			CODEMEM_VIEWER: "0",
+			CODEMEM_VIEWER_AUTO: "0",
+			CODEMEM_VIEWER_AUTO_STOP: "0",
+		};
+		delete env.CLAUDE_CODE_ENTRYPOINT;
+		delete env.CLAUDE_CODE_SESSION;
+		delete env.CLAUDECODE;
+
+		try {
+			const result = await this._spawnCodex(executable, args, env, stdinPayload);
+
+			// Read the captured final-message file first: the file-based output is
+			// the source of truth, so a usable result is honored even when stdout
+			// chatter tripped the buffer cap or the process was killed late.
+			let fileOutput: string | null = null;
+			if (existsSync(outputFile)) {
+				try {
+					fileOutput = readFileSync(outputFile, "utf-8").trim() || null;
+				} catch {
+					fileOutput = null;
+				}
+			}
+
+			// If we killed the process for our own limits (timeout / buffer cap)
+			// but a final-message file was still written, honor it.
+			if ((result.timedOut || result.maxBufferExceeded) && fileOutput) {
+				return { output: fileOutput, error: null, reportedModel: null };
+			}
+			if (result.timedOut) {
+				console.warn("[codemem] observer codex_sidecar timed out");
+				return { output: null, error: "codex sidecar call timed out", reportedModel: null };
+			}
+			if (result.maxBufferExceeded) {
+				console.warn("[codemem] observer codex_sidecar stdout exceeded buffer limit");
+				return {
+					output: null,
+					error: "codex sidecar output exceeded buffer limit",
+					reportedModel: null,
+				};
+			}
+
+			// A genuine non-zero exit is a failure even if a (possibly stale or
+			// partial) output file exists — surface the error rather than trust it.
+			if (result.code !== 0) {
+				const message =
+					redactText((result.stderr || "").trim()) ||
+					redactText((result.stdout || "").trim()) ||
+					`codex sidecar exited with code ${result.code}`;
+				return { output: null, error: message, reportedModel: null };
+			}
+
+			const output = fileOutput ?? ((result.stdout || "").trim() || null);
+			return { output, error: null, reportedModel: null };
+		} catch (err: unknown) {
+			const error = err as NodeJS.ErrnoException;
+			if (error.code === "ENOENT") {
+				console.warn(
+					"[codemem] observer codex_sidecar unavailable: configured codex command not found",
+				);
+				return { output: null, error: "configured codex command not found", reportedModel: null };
+			}
+			return { output: null, error: redactText(String(err)), reportedModel: null };
+		} finally {
+			if (existsSync(outputFile)) {
+				try {
+					unlinkSync(outputFile);
+				} catch {
+					/* best-effort cleanup */
+				}
+			}
+		}
+	}
+
+	/**
+	 * Spawn the codex CLI, write the prompt to stdin, and collect stdout/stderr.
+	 * Enforces a timeout and a stdout buffer cap mirroring _invokeSidecar.
+	 */
+	private _spawnCodex(
+		executable: string,
+		args: string[],
+		env: NodeJS.ProcessEnv,
+		stdinPayload: string,
+	): Promise<{
+		code: number | null;
+		stdout: string;
+		stderr: string;
+		timedOut: boolean;
+		maxBufferExceeded: boolean;
+	}> {
+		const MAX_BUFFER = 10 * 1024 * 1024;
+		return new Promise((resolve, reject) => {
+			// lgtm[js/command-line-injection] spawn receives a constrained executable and argv vector; no shell is used.
+			const child = spawn(executable, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+			let stdout = "";
+			let stderr = "";
+			let stdoutBytes = 0;
+			let timedOut = false;
+			let maxBufferExceeded = false;
+			let settled = false;
+
+			const timer = setTimeout(() => {
+				timedOut = true;
+				child.kill("SIGKILL");
+			}, CODEX_SIDECAR_TIMEOUT_MS);
+
+			child.stdout.on("data", (chunk: Buffer) => {
+				stdoutBytes += chunk.length;
+				if (stdoutBytes > MAX_BUFFER) {
+					if (!maxBufferExceeded) {
+						maxBufferExceeded = true;
+						child.kill("SIGKILL");
+					}
+					return;
+				}
+				stdout += chunk.toString("utf-8");
+			});
+			child.stderr.on("data", (chunk: Buffer) => {
+				if (stderr.length < MAX_BUFFER) stderr += chunk.toString("utf-8");
+			});
+
+			child.on("error", (err) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				reject(err);
+			});
+			child.on("close", (code) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				resolve({ code, stdout, stderr, timedOut, maxBufferExceeded });
+			});
+
+			// Write the prompt to stdin and close it.
+			child.stdin.on("error", () => {
+				/* ignore EPIPE if the child exits before consuming stdin */
+			});
+			child.stdin.write(stdinPayload);
+			child.stdin.end();
+		});
+	}
+
+	private async _callCodexSidecar(
+		systemPrompt: string,
+		userPrompt: string,
+	): Promise<string | null> {
+		let { output, error, reportedModel } = await this._invokeCodexSidecar(
+			systemPrompt,
+			userPrompt,
+			true,
+		);
+		// codex exec does not report the resolved model, so reportedModel is always
+		// null here; the branch is retained for parity with the claude_sidecar path.
+		if (reportedModel) this._lastResolvedModel = reportedModel;
+		if (error && this._codexSidecarModel && isCodexSidecarModelError(error)) {
+			console.warn(
+				`[codemem] observer codex_sidecar model unsupported; retrying with default model (model=${this._codexSidecarModel})`,
+			);
+			this._codexSidecarModelFallbackApplied = true;
+			this._codexSidecarModelFallbackReason =
+				"configured sidecar tier model unavailable; retried with default Codex model";
+			({ output, error, reportedModel } = await this._invokeCodexSidecar(
+				systemPrompt,
+				userPrompt,
+				false,
+			));
+			// The codex CLI does not report the resolved model, so clear the marker
+			// rather than asserting a default that may differ per environment.
+			if (reportedModel) this._lastResolvedModel = reportedModel;
+			else this._lastResolvedModel = null;
+		}
+		if (error) {
+			if (isCodexSidecarAuthError(error)) {
+				this._setLastError(
+					"Codex authentication failed. Refresh credentials and retry.",
+					"auth_failed",
+				);
+				throw new ObserverAuthError(error);
+			}
+			if (isCodexSidecarModelError(error)) {
+				this._setLastError(
+					`Codex model is unavailable: ${this._codexSidecarModel || this.model}.`,
+					"invalid_model_id",
+				);
+			}
+			console.warn(`[codemem] observer codex_sidecar call failed: ${redactText(error)}`);
 			return null;
 		}
 		return output;
