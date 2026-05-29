@@ -121,6 +121,21 @@ codex plugin remove codemem@codemem
 
 The plugin bundles `.mcp.json` (`npx -y codemem mcp`) and `hooks/hooks.json`. Hook scripts call `codemem` from `PATH` and fall back to `npx -y codemem@<plugin version>`, so a global CLI is optional but reduces hook latency. Validated targets: Codex CLI 0.135+ and current Desktop builds.
 
+### Plugin-free install (`codemem setup --codex`)
+
+API-key / non-subscription Codex Desktop greys out plugin installation. For that case, configure Codex directly — no marketplace, no plugin:
+
+```bash
+npx -y codemem setup --codex   # or: codemem setup --codex (or --codex-only)
+```
+
+What it does (idempotent; honors `CODEX_HOME`; backs up existing files; `--force` to refresh):
+
+- **MCP:** appends `[mcp_servers.codemem]` (`command = "npx"`, `args = ["-y", "codemem", "mcp"]`) to `<CODEX_HOME>/config.toml` if not already present. The file is never reparsed or reformatted — only appended — so comments and unrelated servers (including secrets) are preserved.
+- **Hooks:** merges `SessionStart`, `UserPromptSubmit` (ingest + inject), `PostToolUse`, and `Stop` into `<CODEX_HOME>/hooks.json`, preserving any unrelated user hooks. Hook commands resolve to a direct `codemem codex-hook-*` call when `codemem` is on `PATH`, otherwise `npx -y codemem codex-hook-*`.
+
+Hooks loaded from the user config layer require a one-time trust approval in Codex (you'll be prompted on first run; MCP recall needs no trust). `setup --codex` also runs automatically in a plain `codemem setup` when a Codex home (`~/.codex` or `$CODEX_HOME`) is detected.
+
 ### Troubleshooting
 
 - **No memories and no raw events captured.** Confirm the `codemem` the hooks resolve actually has the Codex commands: `codemem codex-hook-ingest </dev/null` should print a structured `{"error":"read_error",...}`, not `unknown command`. The Codex commands are first published in codemem 0.35.0; the `0.34.0` release on npm predates them, so an older global install (or the `npx -y codemem@<plugin version>` fallback while the plugin manifest still pins a pre-0.35 version) silently fails and spools. Inspect the backlog at `~/.codemem/codex-hook-spool/` and the plugin log at `~/.codemem/plugin.log`.
