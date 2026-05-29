@@ -73,6 +73,39 @@ For Claude hooks, project resolution precedence is:
 
 `PreToolUse` is intentionally deferred in the default template. Current memory extraction uses `PostToolUse` / `PostToolUseFailure` (`tool_result`) as the shipped Claude tool signal.
 
+## Codex integration (experimental)
+
+The Codex plugin uses the same shared raw-event pipeline as Claude and OpenCode. It is packaged under `plugins/codex/` with `.codex-plugin/plugin.json`, bundled `.mcp.json`, and hook scripts under `plugins/codex/scripts/`.
+
+Codex hook ingestion is HTTP enqueue-first (`POST /api/codex-hooks`) with a CLI fallback chain:
+
+- `codemem codex-hook-ingest` — direct local DB enqueue when the viewer API is unavailable.
+- When both HTTP and direct enqueue fail, the payload is written to a Codex-specific on-disk spool (`~/.codemem/codex-hook-spool`) and drained on a later invocation.
+
+```bash
+printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"codex-1","cwd":"/tmp/demo"}' | codemem codex-hook-ingest
+```
+
+`UserPromptSubmit` runs `scripts/user-prompt-hook.mjs`, which:
+- sends the hook payload into capture ingest (`ingest-hook.mjs`) in the background, and
+- returns `hookSpecificOutput.additionalContext` from `codemem codex-hook-inject` for prompt-time memory injection.
+
+Prompt-time Codex injection uses local pack generation first and falls back to `/api/pack` only when local generation fails and `CODEMEM_INJECT_HTTP_FALLBACK` is enabled. It honors the same injection controls as Claude: `CODEMEM_INJECT_CONTEXT`, `CODEMEM_INJECT_LIMIT`, `CODEMEM_INJECT_TOKEN_BUDGET`, `CODEMEM_INJECT_MAX_CHARS`, and `CODEMEM_INJECT_HTTP_MAX_TIME_S`. Hook failures always emit `{"continue": true}` so Codex sessions are never blocked.
+
+```bash
+printf '%s\n' '{"hook_event_name":"UserPromptSubmit","session_id":"codex-1","prompt":"what did we change","cwd":"/tmp/demo"}' | codemem codex-hook-inject
+```
+
+For Codex hooks, project resolution precedence matches the Claude hook path:
+
+1. `CODEMEM_PROJECT` (if set)
+2. repo/cwd-derived project name
+3. payload `project` fallback (only when cwd is unavailable)
+
+`Stop` events map the inline `last_assistant_message` when present, and fall back to the last assistant message in `transcript_path` so final responses are captured even when the inline field is omitted.
+
+The packaged Codex template registers `SessionStart`, `UserPromptSubmit`, `PostToolUse`, and `Stop` in `plugins/codex/hooks/hooks.json`. Codex support is experimental; see `docs/plans/2026-05-28-codex-first-class-integration.md` for the rollout plan and validation gates.
+
 ## Post-restart config sanity checklist
 
 After restarting OpenCode or the viewer, run this quick check when behavior looks off:

@@ -1,7 +1,7 @@
 import process from "node:process";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomInt, randomUUID } from "node:crypto";
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,15 @@ async function readStdin() {
 
 function printContinue(extra = {}) {
   process.stdout.write(JSON.stringify({ continue: true, ...extra }));
+}
+
+function readPinnedVersion(pluginRoot) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"));
+    return typeof manifest.version === "string" && manifest.version.trim() ? manifest.version.trim() : "latest";
+  } catch {
+    return "latest";
+  }
 }
 
 function normalizePayloadText(raw) {
@@ -77,6 +86,7 @@ if (["1", "true", "yes", "on"].includes((process.env.CODEMEM_CODEX_PLUGIN_SMOKE 
 }
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
+const pluginRoot = process.env.PLUGIN_ROOT || process.env.CLAUDE_PLUGIN_ROOT || dirname(scriptDir);
 try {
   const child = spawn(process.execPath, [join(scriptDir, "ingest-hook.mjs")], {
     detached: true,
@@ -89,6 +99,31 @@ try {
   spoolPayload(payload);
 }
 
-// Context injection lands in codemem codex-hook-inject; until then, keep the
-// prompt path non-blocking and stdout-clean.
-printContinue();
+function runInject(command, args, timeout) {
+  const result = spawnSync(command, args, {
+    input: payload,
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "ignore"],
+    timeout
+  });
+  if (result.status !== 0) return null;
+  const stdout = String(result.stdout ?? "").trim();
+  if (!stdout) return null;
+  try {
+    const parsed = JSON.parse(stdout);
+    if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+const injected =
+  runInject("codemem", ["codex-hook-inject"], 2500) ??
+  runInject("npx", ["-y", `codemem@${readPinnedVersion(pluginRoot)}`, "codex-hook-inject"], 1500);
+
+if (injected) {
+  process.stdout.write(JSON.stringify(injected));
+} else {
+  printContinue();
+}

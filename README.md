@@ -141,6 +141,7 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | | `codemem mcp http` | Local Streamable HTTP MCP server (`POST /mcp`, loopback-only by default) |
 | | `codemem claude-hook-ingest` | Claude hook event ingestion (stdin) |
 | | `codemem codex-hook-ingest` | Codex hook event ingestion (stdin, experimental) |
+| | `codemem codex-hook-inject` | Codex prompt-time memory injection (stdin, experimental) |
 
 Run `codemem --help` for the full list. Legacy top-level aliases (`export-memories`, `import-memories`, `show`, `forget`, `remember`) still work but are hidden from help.
 
