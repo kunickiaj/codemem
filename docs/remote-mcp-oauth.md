@@ -88,6 +88,17 @@ The Funnel will terminate TLS and forward the public hostname/port to your local
 
 For direct public binds (not behind Funnel) set `CODEMEM_MCP_HTTP_UNSAFE_PUBLIC=1` and bind explicitly to the public interface; you are responsible for TLS termination.
 
+## OAuth state persistence
+
+Claude keeps its dynamically-registered `client_id` and refresh token across connector reconnects. The server persists OAuth state to a JSON file so a package upgrade or a routine process restart does not invalidate that client and force the user back through the full OAuth flow.
+
+- **Location:** `~/.codemem/mcp-oauth-state.json` (resolved from `$HOME`).
+- **What is persisted:** dynamically-registered public clients, issued access tokens, and refresh-token grants.
+- **What is stored:** token and refresh-token values are stored only as SHA-256 hashes — never plaintext. A presented token is matched by re-hashing it and comparing, so the file never contains usable bearer material. Authorization codes remain in-memory only (short-lived, single-use).
+- **Restart behavior:** after a restart or upgrade, existing clients keep working and Claude's next refresh succeeds. Without persistence, the prior in-memory-only state made a post-restart refresh look like an unknown client and surfaced as `invalid_client` / `invalid_grant` in the audit log (and "no tools" in Claude).
+
+The file is created on first use and rewritten as state changes; inactive clients and expired tokens are pruned. There is no configuration knob in `codemem mcp http` for the path — it always uses the default location. To force a clean slate (revoking all registered clients and tokens), stop the server and delete the file.
+
 ## OIDC provider setup
 
 The provider must support OIDC Discovery (`/.well-known/openid-configuration`) over HTTPS.
@@ -161,6 +172,7 @@ Early Host/Origin guard denials happen before OAuth audit events and are always 
 | `POST /mcp` returns 401 | No / wrong bearer | Audit log shows `kind=bearer outcome=denied reason=...`. Re-run connector setup or check expired/revoked tokens. |
 | `POST /mcp` returns 403 with valid bearer | Host/Origin mismatch with `CODEMEM_MCP_HTTP_PUBLIC_URL` | Confirm the ingress preserves the configured public hostname. Check `codemem-mcp-http-guard` log lines; OAuth audit will not record this because the request is rejected before bearer verification. |
 | Connector hangs on registration | DCR rejected | Audit log shows `kind=registration outcome=denied reason=invalid_client_metadata`. Confirm Claude's DCR payload uses one of: `https://claude.ai/api/mcp/auth_callback` or a loopback `http://[127.0.0.1|localhost|::1]:<port>/callback` URI. |
+| Claude loses tools / re-prompts for auth after an upgrade or restart | OAuth state not persisted (older builds) or state file removed | Audit log shows `kind=refresh outcome=denied reason=invalid_client`/`invalid_grant`. Confirm `~/.codemem/mcp-oauth-state.json` exists and is writable by the server process; if it was deleted, re-run connector setup once to re-register. |
 
 ## Validation checklist
 
