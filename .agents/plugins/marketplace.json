@@ -1,7 +1,7 @@
 {
   "name": "codemem",
   "interface": {
-    "displayName": "CodeMem"
+    "displayName": "codemem"
   },
   "plugins": [
     {
