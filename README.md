@@ -78,7 +78,7 @@ local pack generation by default, with optional HTTP `/api/pack` fallback.
 
 ### Codex (early beta)
 
-Codex support is **early beta** — functional and dogfooded, but not yet promoted to a stable support tier. It installs through Codex's own plugin marketplace; there is no `codemem setup` step.
+Codex support is **early beta** — functional and dogfooded, but not yet promoted to a stable support tier. It installs through Codex's own plugin marketplace:
 
 1. Add the codemem marketplace and install the plugin:
 
@@ -90,6 +90,14 @@ codex plugin add codemem@codemem
 2. Restart Codex.
 
 The Codex plugin bundles its MCP config (`codemem mcp`) and hooks. Hooks call `codemem` from your `PATH` and fall back to `npx -y codemem@<version>`, so a global install is optional (installing `codemem` globally reduces hook latency). Validated targets are Codex CLI 0.135+ and current Desktop builds.
+
+**API-key Codex Desktop (marketplace unavailable):** When plugin installation is greyed out (non-subscription / API-key Desktop), configure codemem without the plugin surface:
+
+```text
+npx -y codemem setup --codex
+```
+
+This merges `[mcp_servers.codemem]` into `~/.codex/config.toml` and writes `~/.codex/hooks.json` (SessionStart, UserPromptSubmit, PostToolUse, Stop) — backing up existing files and preserving unrelated entries. Restart Codex and approve the one-time prompt to trust the codemem hooks. MCP recall works immediately. If `codemem` is on your `PATH` the hooks call it directly; otherwise they fall back to `npx -y codemem`. Honors `CODEX_HOME`; re-runnable (use `--force` to refresh).
 
 Codex hook ingestion shares the same raw-event pipeline as Claude and OpenCode: HTTP enqueue-first (`POST /api/codex-hooks`), then `codemem codex-hook-ingest` direct enqueue, with a Codex-specific spool fallback. `UserPromptSubmit` runs capture ingest in the background and injects memory context via `additionalContext`; disable injection with `CODEMEM_INJECT_CONTEXT=0`. See [docs/plugin-reference.md](docs/plugin-reference.md) for details and troubleshooting.
 
