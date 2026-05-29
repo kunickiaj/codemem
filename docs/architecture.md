@@ -61,7 +61,7 @@ Support tiers describe operational expectations for each adapter path:
 |---|---|---|
 | OpenCode plugin | Supported | Primary reference adapter for lifecycle events and injection behavior. |
 | Claude hooks/plugin | Supported | Hook-first queue path with CLI/runtime fallback and parity slices tracked in adapter stack PRs. |
-| Codex shell integration | Experimental | Planned as adapter-native ingestion path; no user-facing support contract yet. |
+| Codex plugin (hooks + MCP) | Experimental (early beta) | Functional capture pipeline (`plugins/codex/`, `packages/core/src/codex-hooks.ts`) dogfooded end-to-end: hooks → `POST /api/codex-hooks` → observer → memories. Prompt-time injection present and env-gated but not fully validated on strict models. Not yet promoted to a stable support tier. |
 | Windsurf integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
 | Cursor integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
 

@@ -76,6 +76,23 @@ Claude hook events share the same raw-event queue pipeline used by OpenCode. `Us
 capture ingest in the background and injects memory context via Claude `additionalContext` using
 local pack generation by default, with optional HTTP `/api/pack` fallback.
 
+### Codex (early beta)
+
+Codex support is **early beta** — functional and dogfooded, but not yet promoted to a stable support tier. It installs through Codex's own plugin marketplace; there is no `codemem setup` step.
+
+1. Add the codemem marketplace and install the plugin:
+
+```text
+codex plugin marketplace add https://github.com/kunickiaj/codemem.git
+codex plugin add codemem@codemem
+```
+
+2. Restart Codex.
+
+The Codex plugin bundles its MCP config (`codemem mcp`) and hooks. Hooks call `codemem` from your `PATH` and fall back to `npx -y codemem@<version>`, so a global install is optional (installing `codemem` globally reduces hook latency). Validated targets are Codex CLI 0.135+ and current Desktop builds.
+
+Codex hook ingestion shares the same raw-event pipeline as Claude and OpenCode: HTTP enqueue-first (`POST /api/codex-hooks`), then `codemem codex-hook-ingest` direct enqueue, with a Codex-specific spool fallback. `UserPromptSubmit` runs capture ingest in the background and injects memory context via `additionalContext`; disable injection with `CODEMEM_INJECT_CONTEXT=0`. See [docs/plugin-reference.md](docs/plugin-reference.md) for details and troubleshooting.
+
 > Migrating from `opencode-mem`? See [docs/rename-migration.md](docs/rename-migration.md).
 
 ## How it works

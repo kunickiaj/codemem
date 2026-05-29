@@ -73,9 +73,9 @@ For Claude hooks, project resolution precedence is:
 
 `PreToolUse` is intentionally deferred in the default template. Current memory extraction uses `PostToolUse` / `PostToolUseFailure` (`tool_result`) as the shipped Claude tool signal.
 
-## Codex integration (experimental)
+## Codex integration (early beta)
 
-The Codex plugin uses the same shared raw-event pipeline as Claude and OpenCode. It is packaged under `plugins/codex/` with `.codex-plugin/plugin.json`, bundled `.mcp.json`, and hook scripts under `plugins/codex/scripts/`.
+Codex support is early beta — functional and dogfooded end-to-end, but not yet promoted to a stable support tier. The Codex plugin uses the same shared raw-event pipeline as Claude and OpenCode. It is packaged under `plugins/codex/` with `.codex-plugin/plugin.json`, bundled `.mcp.json`, and hook scripts under `plugins/codex/scripts/`.
 
 Codex hook ingestion is HTTP enqueue-first (`POST /api/codex-hooks`) with a CLI fallback chain:
 
@@ -104,7 +104,30 @@ For Codex hooks, project resolution precedence matches the Claude hook path:
 
 `Stop` events map the inline `last_assistant_message` when present, and fall back to the last assistant message in `transcript_path` so final responses are captured even when the inline field is omitted.
 
-The packaged Codex template registers `SessionStart`, `UserPromptSubmit`, `PostToolUse`, and `Stop` in `plugins/codex/hooks/hooks.json`. Codex support is experimental; see `docs/plans/2026-05-28-codex-first-class-integration.md` for the rollout plan and validation gates.
+The packaged Codex template registers `SessionStart`, `UserPromptSubmit`, `PostToolUse`, and `Stop` in `plugins/codex/hooks/hooks.json`. Codex support is early beta; see `docs/plans/2026-05-28-codex-first-class-integration.md` for the rollout plan and validation gates.
+
+### Install, update, and uninstall
+
+Install through Codex's own plugin marketplace — there is no `codemem setup` step:
+
+```bash
+codex plugin marketplace add https://github.com/kunickiaj/codemem.git
+codex plugin add codemem@codemem
+# refresh the marketplace snapshot later:
+codex plugin marketplace upgrade
+# remove:
+codex plugin remove codemem@codemem
+```
+
+The plugin bundles `.mcp.json` (`npx -y codemem mcp`) and `hooks/hooks.json`. Hook scripts call `codemem` from `PATH` and fall back to `npx -y codemem@<plugin version>`, so a global CLI is optional but reduces hook latency. Validated targets: Codex CLI 0.135+ and current Desktop builds.
+
+### Troubleshooting
+
+- **No memories and no raw events captured.** Confirm the `codemem` the hooks resolve actually has the Codex commands: `codemem codex-hook-ingest </dev/null` should print a structured `{"error":"read_error",...}`, not `unknown command`. The Codex commands are first published in codemem 0.35.0; the `0.34.0` release on npm predates them, so an older global install (or the `npx -y codemem@<plugin version>` fallback while the plugin manifest still pins a pre-0.35 version) silently fails and spools. Inspect the backlog at `~/.codemem/codex-hook-spool/` and the plugin log at `~/.codemem/plugin.log`.
+- **`database locked` in the plugin log / payloads spooling.** The direct-DB fallback lost the writer lock (the viewer or maintenance worker held it). Keep the viewer running and current — it owns the single writer and serves `POST /api/codex-hooks`, so HTTP enqueue avoids cross-process lock contention.
+- **`POST /api/codex-hooks` returns 404.** The running viewer predates Codex support; restart or upgrade it to a build that serves the route.
+- **Spool backlog drains automatically** on the next successful ingest; force it by piping any spooled payload back through `codemem codex-hook-ingest` while the viewer is up.
+- **A model rejects injected context** (for example "the conversation must end with a user message"): disable prompt-time injection with `CODEMEM_INJECT_CONTEXT=0`. Capture/ingest keeps working and recall is still available through the MCP tools.
 
 ## Post-restart config sanity checklist
 

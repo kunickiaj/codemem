@@ -28,6 +28,7 @@ Version bumps are prepared on a release branch and touch these files:
 - `packages/opencode-plugin/.opencode/plugins/codemem.js` (`PINNED_BACKEND_VERSION`)
 - `.claude-plugin/marketplace.json` (marketplace metadata version and codemem plugin entry version)
 - `plugins/claude/.claude-plugin/plugin.json` (Claude plugin metadata version)
+- `plugins/codex/.codex-plugin/plugin.json` (Codex plugin metadata version; also pins the `npx -y codemem@<version>` fallback used by Codex hook scripts)
 
 Use the release version helper to verify or apply the bump:
 
