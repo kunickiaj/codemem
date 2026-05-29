@@ -1,0 +1,53 @@
+{
+  "description": "codemem hook-first Codex integration",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/scripts/ingest-hook.mjs",
+            "timeout": 5,
+            "statusMessage": "codemem SessionStart"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/scripts/user-prompt-hook.mjs",
+            "timeout": 5,
+            "statusMessage": "codemem UserPromptSubmit"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/scripts/ingest-hook.mjs",
+            "timeout": 5,
+            "statusMessage": "codemem PostToolUse"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/scripts/ingest-hook.mjs",
+            "timeout": 5,
+            "statusMessage": "codemem Stop"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "codemem",
+  "interface": {
+    "displayName": "CodeMem"
+  },
+  "plugins": [
+    {
+      "name": "codemem",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Engineering"
+    }
+  ]
+}

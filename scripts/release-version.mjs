@@ -22,6 +22,7 @@ const REQUIRED_REPO_MARKERS = [
 	"packages/opencode-plugin/.opencode/plugins/codemem.js",
 	"plugins/claude/.claude-plugin/plugin.json",
 	".claude-plugin/marketplace.json",
+	"plugins/codex/.codex-plugin/plugin.json",
 ];
 
 function validateSemver(version) {
@@ -144,6 +145,10 @@ export function readVersions(root) {
 		resolveManagedPath(repoRoot, ".claude-plugin/marketplace.json"),
 		".claude-plugin/marketplace.json",
 	);
+	const codexPlugin = loadJson(
+		resolveManagedPath(repoRoot, "plugins/codex/.codex-plugin/plugin.json"),
+		"plugins/codex/.codex-plugin/plugin.json",
+	);
 	const metadata = expectObject(
 		marketplace.metadata,
 		".claude-plugin/marketplace.json metadata",
@@ -188,6 +193,7 @@ export function readVersions(root) {
 		claude_plugin_manifest: String(claudePlugin.version ?? ""),
 		marketplace_metadata: String(metadata.version ?? ""),
 		marketplace_plugin: String(codememPlugin.version ?? ""),
+		codex_plugin_manifest: String(codexPlugin.version ?? ""),
 	};
 }
 
@@ -297,6 +303,15 @@ export function setVersion(root, version, { dryRun = false } = {}) {
 	if (marketplaceChanged) {
 		writes.set(marketplacePath, dumpJson(marketplace, detectJsonIndent(marketplaceText)));
 		changed.push(".claude-plugin/marketplace.json");
+	}
+
+	const codexPluginPath = resolveManagedPath(repoRoot, "plugins/codex/.codex-plugin/plugin.json");
+	const codexPluginText = readText(codexPluginPath);
+	const codexPlugin = loadJson(codexPluginPath, "plugins/codex/.codex-plugin/plugin.json");
+	if (codexPlugin.version !== version) {
+		codexPlugin.version = version;
+		writes.set(codexPluginPath, dumpJson(codexPlugin, detectJsonIndent(codexPluginText)));
+		changed.push("plugins/codex/.codex-plugin/plugin.json");
 	}
 
 	if (!dryRun) {
