@@ -18,6 +18,7 @@ import { claudeHookFileContextCommand } from "./commands/claude-hook-file-contex
 import { claudeHookIngestCommand } from "./commands/claude-hook-ingest.js";
 import { claudeHookInjectCommand } from "./commands/claude-hook-inject.js";
 import { codexHookIngestCommand } from "./commands/codex-hook-ingest.js";
+import { codexHookInjectCommand } from "./commands/codex-hook-inject.js";
 import { configCommand } from "./commands/config.js";
 import { coordinatorCommand } from "./commands/coordinator.js";
 import { dbCommand } from "./commands/db.js";
@@ -55,6 +56,7 @@ completion.on("command", ({ reply }) => {
 		"claude-hook-file-context",
 		"claude-hook-inject",
 		"claude-hook-ingest",
+		"codex-hook-inject",
 		"codex-hook-ingest",
 		"config",
 		"coordinator",
@@ -179,6 +181,7 @@ program.addCommand(mcpCommand);
 program.addCommand(claudeHookInjectCommand);
 program.addCommand(claudeHookIngestCommand);
 program.addCommand(claudeHookFileContextCommand);
+program.addCommand(codexHookInjectCommand);
 program.addCommand(codexHookIngestCommand);
 program.addCommand(dbCommand);
 program.addCommand(exportMemoriesCommand);
