@@ -20,6 +20,13 @@ export {
 	normalizeProjectLabel,
 	resolveHookProject,
 } from "./claude-hooks.js";
+export type { CodexHookAdapterEvent, CodexHookRawEventEnvelope } from "./codex-hooks.js";
+export {
+	buildIngestPayloadFromCodexHook,
+	buildRawEventEnvelopeFromCodexHook,
+	MAPPABLE_CODEX_HOOK_EVENTS,
+	mapCodexHookPayload,
+} from "./codex-hooks.js";
 export {
 	coordinatorArchiveGroupAction,
 	coordinatorCreateGroupAction,

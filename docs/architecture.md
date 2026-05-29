@@ -27,6 +27,8 @@ flowchart LR
     OCA -->|fallback: enqueue-raw-event CLI| DB
     CH["Claude hooks"] -->|POST /api/claude-hooks| VW
     CH -->|fallback: claude-hook-ingest direct enqueue| DB
+    CX["Codex hooks"] -->|POST /api/codex-hooks| VW
+    CX -->|fallback: codex-hook-ingest direct enqueue/spool| DB
     VW --> DB["SQLite"]
     DB -->|flush batch claimed| IN["Ingest pipeline"]
     IN --> OB["Observer"]
@@ -38,7 +40,7 @@ flowchart LR
 
 1. Adapters capture tool/conversation lifecycle events and normalize them into raw events with optional `_adapter` envelopes.
 2. OpenCode streams raw events to the viewer ingest API (`POST /api/raw-events`) with preflight checks (`GET /api/raw-events/status`) and can fall back to CLI queue enqueue when stream writes fail.
-3. Claude hook ingestion posts to `POST /api/claude-hooks` first and falls back to `codemem claude-hook-ingest` direct enqueue when the local viewer API is unavailable.
+3. Claude hook ingestion posts to `POST /api/claude-hooks` first and falls back to `codemem claude-hook-ingest` direct enqueue when the local viewer API is unavailable. Codex hook ingestion follows the same HTTP-first shape through `POST /api/codex-hooks`, then `codemem codex-hook-ingest` direct enqueue, with a Codex-specific on-disk spool as the last-resort fallback.
 4. The viewer/store persists raw events and queues durable flush batches.
 5. Idle and sweeper workers claim batches and run them through ingest.
 6. Before building session context, raw events are passed through `normalizeEventsForSessionContext` (in `ingest-transcript.ts`) which projects adapter-enveloped events (`_adapter` schema v1.0) into the flat `user_prompt` / `tool.execute.after` shapes that `buildSessionContext` scans. This is critical for Claude Code hook events which always arrive wrapped in the adapter envelope.

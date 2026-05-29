@@ -116,7 +116,18 @@ function stableEventId(...parts: string[]): string {
 /** Normalize a raw label value to a plain project name (basename if path). */
 export function normalizeProjectLabel(value: unknown): string | null {
 	if (typeof value !== "string") return null;
-	const cleaned = value.trim().replace(/[\\/]+$/, "");
+	// Strip trailing path separators with a linear scan rather than a regex.
+	// The previous `/[\\/]+$/` pattern backtracks quadratically on adversarial
+	// inputs (a long run of separators followed by a non-separator), and this
+	// value can originate from uncontrolled hook payloads.
+	const trimmed = value.trim();
+	let end = trimmed.length;
+	while (end > 0) {
+		const code = trimmed.charCodeAt(end - 1);
+		if (code === 47 /* / */ || code === 92 /* \\ */) end -= 1;
+		else break;
+	}
+	const cleaned = trimmed.slice(0, end);
 	if (!cleaned) return null;
 	if (cleaned.includes("/") || cleaned.includes("\\")) {
 		// Windows-style path (drive letter or backslash)
@@ -296,8 +307,11 @@ function textFromContent(value: unknown): string {
 /**
  * Read the transcript JSONL and return the last assistant message text + usage.
  * Returns [null, null] on any read or parse failure.
+ *
+ * Exported so other adapter mappers (e.g. Codex) can reuse the same
+ * transcript fallback for Stop events that omit `last_assistant_message`.
  */
-function extractFromTranscript(
+export function extractFromTranscript(
 	transcriptPath: unknown,
 	cwdHint?: string | null,
 ): [string | null, Record<string, number> | null] {

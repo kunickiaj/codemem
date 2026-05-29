@@ -1,11 +1,16 @@
 /**
  * Raw events routes — GET & POST /api/raw-events, GET /api/raw-events/status,
- * POST /api/claude-hooks.
+ * POST /api/claude-hooks, POST /api/codex-hooks.
  */
 
 import { createHash } from "node:crypto";
 import type { MemoryStore, RawEventSweeper } from "@codemem/core";
-import { buildRawEventEnvelopeFromHook, schema, stripPrivateObj } from "@codemem/core";
+import {
+	buildRawEventEnvelopeFromCodexHook,
+	buildRawEventEnvelopeFromHook,
+	schema,
+	stripPrivateObj,
+} from "@codemem/core";
 import { desc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { Hono } from "hono";
@@ -419,6 +424,53 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 			});
 
 			// Note activity for optional debounced auto-flush.
+			nudgeSweeper(sweeper, [opencodeSessionId], source);
+
+			return c.json({ inserted: inserted ? 1 : 0, skipped: 0 });
+		} catch (err) {
+			const response: Record<string, unknown> = { error: "internal server error" };
+			if (process.env.CODEMEM_VIEWER_DEBUG === "1") {
+				response.detail = (err as Error).message;
+			}
+			return c.json(response, 500);
+		}
+	});
+
+	// POST /api/codex-hooks — ingest Codex hook events
+	app.post("/api/codex-hooks", async (c) => {
+		const result = await parseJsonObjectBody(c, MAX_RAW_EVENTS_BODY_BYTES);
+		if (result instanceof Response) return result;
+		const payload = result;
+
+		const envelope = buildRawEventEnvelopeFromCodexHook(payload);
+		if (envelope === null) {
+			return c.json({ inserted: 0, skipped: 1 });
+		}
+
+		const store = getStore();
+		try {
+			const opencodeSessionId = envelope.opencode_session_id;
+			const source = envelope.source;
+			const strippedPayload = stripPrivateObj(envelope.payload) as Record<string, unknown>;
+
+			const inserted = store.recordRawEvent({
+				opencodeSessionId,
+				source,
+				eventId: envelope.event_id,
+				eventType: envelope.event_type,
+				payload: strippedPayload,
+				tsWallMs: envelope.ts_wall_ms,
+			});
+
+			store.updateRawEventSessionMeta({
+				opencodeSessionId,
+				source,
+				cwd: envelope.cwd,
+				project: envelope.project,
+				startedAt: envelope.started_at,
+				lastSeenTsWallMs: envelope.ts_wall_ms,
+			});
+
 			nudgeSweeper(sweeper, [opencodeSessionId], source);
 
 			return c.json({ inserted: inserted ? 1 : 0, skipped: 0 });
