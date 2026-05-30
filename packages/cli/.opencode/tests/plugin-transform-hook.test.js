@@ -124,6 +124,10 @@ describe("experimental.chat.system.transform", () => {
 	const tmpDirs = [];
 
 	beforeEach(() => {
+		// The plugin schedules a delayed compatibility check that can emit its own
+		// toast if a slow pack command crosses the timer boundary. These tests only
+		// cover transform-time injection, so keep that background timer inert.
+		vi.useFakeTimers();
 		vi.resetModules();
 		spawnMock.mockReset();
 		execSyncMock.mockClear();
@@ -137,6 +141,8 @@ describe("experimental.chat.system.transform", () => {
 	});
 
 	afterEach(() => {
+		vi.clearAllTimers();
+		vi.useRealTimers();
 		for (const tmpDir of tmpDirs.splice(0)) {
 			rmSync(tmpDir, { recursive: true, force: true });
 		}
