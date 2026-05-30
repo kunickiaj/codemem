@@ -526,7 +526,7 @@ export function createCoordinatorApp(
 			if (!auth.enrollment) return c.json({ error: "unknown_device" }, 401);
 			const scopes = await store.listScopes({ groupId, includeInactive: false });
 			const scope = scopes.find((item) => item.scope_id === scopeId) ?? null;
-			if (!scope || scope.status !== "active") return c.json({ error: "scope_not_found" }, 404);
+			if (scope?.status !== "active") return c.json({ error: "scope_not_found" }, 404);
 			const memberships = await store.listScopeMemberships(scopeId, false);
 			const requesterAuthorized = memberships.some(
 				(membership) =>

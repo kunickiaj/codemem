@@ -13,14 +13,14 @@
 		"@codemem/core": "workspace:^"
 	},
 	"devDependencies": {
-		"@types/better-sqlite3": "catalog:",
-		"@cloudflare/workers-types": "^4.20260503.1",
 		"@cloudflare/vitest-pool-workers": "^0.13.5",
+		"@cloudflare/workers-types": "^4.20260529.1",
+		"@types/better-sqlite3": "catalog:",
 		"better-sqlite3": "12.8.0",
 		"typescript": "catalog:",
 		"vite": "catalog:",
 		"vitest": "catalog:",
-		"wrangler": "^4.41.0"
+		"wrangler": "^4.95.0"
 	},
 	"repository": {
 		"type": "git",
