@@ -282,7 +282,7 @@ export function hasPendingScopeBackfill(db: SqliteDatabase): boolean {
 	const job = getMaintenanceJob(db, SCOPE_BACKFILL_JOB);
 	if (job?.status === "running") return true;
 	if (unstampedCount === 0) return false;
-	if (!job || job.status !== "completed") return true;
+	if (job?.status !== "completed") return true;
 	const metadata = (job.metadata ?? {}) as ScopeBackfillMetadata;
 	const opWatermark = metadata.unstamped_replication_ops_at_completion;
 	if (typeof opWatermark !== "number") return true;

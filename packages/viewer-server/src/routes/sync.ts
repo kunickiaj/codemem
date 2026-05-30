@@ -326,7 +326,7 @@ async function maybeGrantDefaultSpaceOnJoin(opts: {
 		adminSecret: opts.config.syncCoordinatorAdminSecret || null,
 	});
 	const defaultScope = scopes.find((scope) => scope.scope_id === scopeId) ?? null;
-	if (!defaultScope || defaultScope.kind !== "team_default") return null;
+	if (defaultScope?.kind !== "team_default") return null;
 	return await coordinatorGrantScopeMembershipAction({
 		groupId: opts.groupId,
 		scopeId,
@@ -2229,8 +2229,8 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			if (!auth.ok) {
 				// Specific reasons are logged server-side; wire responses use a generic
 				// reason to prevent info-disclosure.
-				if (bootstrapAttempted) {
-					const grantPresent = Boolean((c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim());
+				const grantPresent = Boolean((c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim());
+				if (bootstrapAttempted && grantPresent) {
 					console.warn(
 						`[sync] bootstrap grant auth failed: reason=${auth.reason} grant_present=${grantPresent} path=${c.req.path}`,
 					);
@@ -2385,8 +2385,8 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			if (!auth.ok) {
 				// Specific reasons are logged server-side; wire responses use a generic
 				// reason to prevent info-disclosure.
-				if (bootstrapAttempted) {
-					const grantPresent = Boolean((c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim());
+				const grantPresent = Boolean((c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim());
+				if (bootstrapAttempted && grantPresent) {
 					console.warn(
 						`[sync] bootstrap grant auth failed: reason=${auth.reason} grant_present=${grantPresent} path=${c.req.path}`,
 					);

@@ -21,13 +21,13 @@ overrides:
   'onnx-proto>protobufjs': 7.5.8
 
 catalog:
-  "@biomejs/biome": ^2.4.14
-  "@hono/node-server": ^2.0.1
+  "@biomejs/biome": ^2.4.16
+  "@hono/node-server": ^2.0.4
   "@types/better-sqlite3": ^7.6.13
   drizzle-orm: ^0.45.2
-  hono: ^4.12.21
+  hono: ^4.12.23
   limiter: ^3.0.0
-  tsx: ^4.21.0
+  tsx: ^4.22.3
   typescript: ^6.0.3
-  vite: ^8.0.10
-  vitest: ^4.1.5
+  vite: ^8.0.14
+  vitest: ^4.1.7

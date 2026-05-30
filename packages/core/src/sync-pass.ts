@@ -219,7 +219,7 @@ function isValidIncrementalOpsResponse(payload: Record<string, unknown> | null):
 	next_cursor: string | null;
 	skipped: number;
 } {
-	if (!payload || payload.reset_required !== false) return false;
+	if (payload?.reset_required !== false) return false;
 	if (!Number.isFinite(payload.generation)) return false;
 	if (typeof payload.snapshot_id !== "string" || payload.snapshot_id.trim().length === 0)
 		return false;

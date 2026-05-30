@@ -143,6 +143,7 @@ function createTestApp(opts?: {
 	return {
 		app,
 		syncApp,
+		ensureStore: () => storeFactory(),
 		getStore: () => store,
 		cleanup: () => {
 			storeCleanup?.();
@@ -3391,7 +3392,7 @@ describe("viewer-server", () => {
 		});
 
 		it("allows /v1/status with a valid bootstrap grant", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-bootstrap-grant-test-"));
 			const peerDbPath = join(peerDir, "peer.sqlite");
 			const peerKeysDir = join(peerDir, "keys");
@@ -3441,9 +3442,7 @@ describe("viewer-server", () => {
 					}),
 				);
 				globalThis.fetch = fetchMock as typeof fetch;
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				ensureStore();
 				const peerDb = connect(peerDbPath);
 				try {
 					initTestSchema(peerDb);
@@ -3478,14 +3477,12 @@ describe("viewer-server", () => {
 		});
 
 		it("returns retryable busy when sync auth cannot record a nonce", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			const peers: ReturnType<typeof createAuthenticatedSyncPeer>[] = [];
 			let blocker: Database | null = null;
 			let lockReleased = false;
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const scenarios: Array<{
 					url: string;
 					method?: "GET" | "POST";
@@ -3567,7 +3564,7 @@ describe("viewer-server", () => {
 		});
 
 		it("does not let unauthorized sync requests consume a verified peer bucket", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp({
+			const { syncApp, ensureStore, cleanup } = createTestApp({
 				syncRequestRateLimit: { readLimit: 1, unauthenticatedReadLimit: 1 },
 			});
 			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
@@ -3575,9 +3572,7 @@ describe("viewer-server", () => {
 			const peerKeysDir = join(peerDir, "keys");
 			try {
 				expect((await syncApp.request("/v1/status")).status).toBe(401);
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 
 				const peerDb = connect(peerDbPath);
 				try {
@@ -3643,7 +3638,7 @@ describe("viewer-server", () => {
 		});
 
 		it("does not allow a bootstrap grant to access /v1/ops", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-bootstrap-grant-test-"));
 			const peerDbPath = join(peerDir, "peer.sqlite");
 			const peerKeysDir = join(peerDir, "keys");
@@ -3693,9 +3688,7 @@ describe("viewer-server", () => {
 					}),
 				);
 				globalThis.fetch = fetchMock as typeof fetch;
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				ensureStore();
 				const peerDb = connect(peerDbPath);
 				try {
 					initTestSchema(peerDb);
@@ -3737,7 +3730,7 @@ describe("viewer-server", () => {
 		});
 
 		it("rejects bootstrap grants whose worker enrollment does not match the granted worker", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-bootstrap-grant-test-"));
 			const peerDbPath = join(peerDir, "peer.sqlite");
 			const peerKeysDir = join(peerDir, "keys");
@@ -3787,9 +3780,7 @@ describe("viewer-server", () => {
 					}),
 				);
 				globalThis.fetch = fetchMock as typeof fetch;
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				ensureStore();
 				const peerDb = connect(peerDbPath);
 				try {
 					initTestSchema(peerDb);
@@ -3869,14 +3860,12 @@ describe("viewer-server", () => {
 		});
 
 		it("returns reset_required metadata for stale peer cursors", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
 			const peerDbPath = join(peerDir, "peer.sqlite");
 			const peerKeysDir = join(peerDir, "keys");
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 
 				const peerDb = connect(peerDbPath);
 				try {
@@ -3944,14 +3933,12 @@ describe("viewer-server", () => {
 		});
 
 		it("requires explicit reset boundary metadata on incremental sync requests", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
 			const peerDbPath = join(peerDir, "peer.sqlite");
 			const peerKeysDir = join(peerDir, "keys");
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 
 				const peerDb = connect(peerDbPath);
 				try {
@@ -4018,12 +4005,10 @@ describe("viewer-server", () => {
 		});
 
 		it("returns reset_required when GET /v1/ops receives an empty scope_id", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const url = "http://localhost/v1/ops?scope_id=&limit=50";
 				peer = createAuthenticatedSyncPeer(store, { url });
 
@@ -4045,12 +4030,10 @@ describe("viewer-server", () => {
 		});
 
 		it("returns reset_required when GET /v1/ops receives an unsupported scope_id", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const url = "http://localhost/v1/ops?scope_id=acme-work&limit=50";
 				peer = createAuthenticatedSyncPeer(store, { url });
 
@@ -4075,12 +4058,10 @@ describe("viewer-server", () => {
 		});
 
 		it("returns reset_required when GET /v1/snapshot receives an unsupported scope_id", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const url = "http://localhost/v1/snapshot?scope_id=acme-work&generation=1&snapshot_id=test";
 				peer = createAuthenticatedSyncPeer(store, { url });
 
@@ -4102,12 +4083,10 @@ describe("viewer-server", () => {
 		});
 
 		it("returns reset_required when GET /v1/snapshot receives an empty scope_id", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const url = "http://localhost/v1/snapshot?scope_id=&generation=1&snapshot_id=test";
 				peer = createAuthenticatedSyncPeer(store, { url });
 
@@ -4129,12 +4108,10 @@ describe("viewer-server", () => {
 		});
 
 		it("returns reset_required when POST /v1/ops receives an unsupported body scope_id", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const url = "http://localhost/v1/ops";
 				const bodyText = JSON.stringify({ ops: [], scope_id: "acme-work" });
 				const bodyBytes = Buffer.from(bodyText);
@@ -4162,12 +4139,10 @@ describe("viewer-server", () => {
 		});
 
 		it("returns reset_required for unsupported POST scope_id before missing ops validation", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const url = "http://localhost/v1/ops";
 				const bodyText = JSON.stringify({ scope_id: "acme-work" });
 				const bodyBytes = Buffer.from(bodyText);
@@ -4195,12 +4170,10 @@ describe("viewer-server", () => {
 		});
 
 		it("returns reset_required for empty POST scope_id before missing ops validation", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const url = "http://localhost/v1/ops";
 				const bodyText = JSON.stringify({ scope_id: "" });
 				const bodyBytes = Buffer.from(bodyText);
@@ -4228,12 +4201,10 @@ describe("viewer-server", () => {
 		});
 
 		it("returns reset_required for unsupported POST scope_id before oversized ops validation", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const url = "http://localhost/v1/ops";
 				const bodyText = JSON.stringify({
 					scope_id: "acme-work",
@@ -4264,14 +4235,12 @@ describe("viewer-server", () => {
 		});
 
 		it("advertises capability on incremental /v1/ops responses", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
 			const peerDbPath = join(peerDir, "peer.sqlite");
 			const peerKeysDir = join(peerDir, "keys");
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 
 				const peerDb = connect(peerDbPath);
 				try {
@@ -4325,12 +4294,10 @@ describe("viewer-server", () => {
 		});
 
 		it("filters local-only outbound /v1/ops before project filters", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = "2026-01-01T00:00:00Z";
 				store.db
 					.prepare(
@@ -4384,14 +4351,12 @@ describe("viewer-server", () => {
 		});
 
 		it("serves paginated memory bootstrap pages with tombstones", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
 			const peerDbPath = join(peerDir, "peer.sqlite");
 			const peerKeysDir = join(peerDir, "keys");
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 
 				const sessionId = insertTestSession(store.db);
 				const now = new Date().toISOString();
@@ -4505,14 +4470,12 @@ describe("viewer-server", () => {
 		});
 
 		it("accepts capability metadata on POST /v1/ops bodies", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
 			const peerDbPath = join(peerDir, "peer.sqlite");
 			const peerKeysDir = join(peerDir, "keys");
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 
 				const peerDb = connect(peerDbPath);
 				try {
@@ -4571,12 +4534,10 @@ describe("viewer-server", () => {
 		});
 
 		it("accepts non-empty legacy pushes from unsupported peers", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const url = "http://localhost/v1/ops";
 				peer = createAuthenticatedSyncPeer(store, { url, method: "POST" });
 				const now = "2026-01-01T00:00:00Z";
@@ -4635,12 +4596,10 @@ describe("viewer-server", () => {
 		});
 
 		it("does not outbound-scope-filter scoped pushes from unsupported peers", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const url = "http://localhost/v1/ops";
 				peer = createAuthenticatedSyncPeer(store, { url, method: "POST" });
 				const now = "2026-01-01T00:00:00Z";
@@ -4701,12 +4660,10 @@ describe("viewer-server", () => {
 		});
 
 		it("filters pushed ops by peer project filters before applying", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const url = "http://localhost/v1/ops";
 				peer = createAuthenticatedSyncPeer(store, { url, method: "POST" });
 				store.db
@@ -4783,12 +4740,10 @@ describe("viewer-server", () => {
 		});
 
 		it("filters null-payload pushed deletes by the existing memory project", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const url = "http://localhost/v1/ops";
 				peer = createAuthenticatedSyncPeer(store, { url, method: "POST" });
 				store.db
@@ -4864,14 +4819,12 @@ describe("viewer-server", () => {
 		});
 
 		it("hard-rejects inbound scope failures without claimed_local_actor bypass", async () => {
-			const { syncApp, getStore, cleanup } = createTestApp();
+			const { syncApp, ensureStore, cleanup } = createTestApp();
 			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
 			const peerDbPath = join(peerDir, "peer.sqlite");
 			const peerKeysDir = join(peerDir, "keys");
 			try {
-				await syncApp.request("/v1/status");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 
 				const peerDb = connect(peerDbPath);
 				try {
