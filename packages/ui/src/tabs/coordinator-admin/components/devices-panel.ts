@@ -67,7 +67,7 @@ export function renderDevicesPanel(deps: DevicesPanelDeps) {
 								class: "peer-card peer-card--padded",
 								key: deviceId || String(item.fingerprint || "unknown"),
 							},
-							h("div", { class: "peer-title" }, h("strong", null, draft || displayName)),
+							h("div", { class: "peer-title" }, h("strong", null, displayName)),
 							h("div", { class: "peer-submeta" }, copy.statusLabel),
 							h("div", { class: "peer-meta" }, copy.advancedDetail),
 							h(
