@@ -761,8 +761,14 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 		actions.appendChild(note);
 		row.appendChild(actions);
 	} else {
-		const hasGuardrailWarnings = assignableProjects.some(
-			(project) => (project.guardrail_warnings ?? []).length > 0,
+		const projectsWithBlockingWarnings = assignableProjects.map((project) => ({
+			project,
+			warnings: (project.guardrail_warnings ?? []).filter(
+				(warning) => warning.requires_confirmation,
+			),
+		}));
+		const hasBlockingGuardrailWarnings = projectsWithBlockingWarnings.some(
+			({ warnings }) => warnings.length > 0,
 		);
 		const suggestedScopes = new Set(
 			assignableProjects
@@ -783,7 +789,7 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 		save.className = "settings-button";
 		save.type = "button";
 		save.textContent = `Save Space for ${assignableProjects.length} identit${assignableProjects.length === 1 ? "y" : "ies"}`;
-		save.disabled = !select.value || hasGuardrailWarnings;
+		save.disabled = !select.value || hasBlockingGuardrailWarnings;
 		save.addEventListener(
 			"click",
 			() => void saveProjectClusterMapping(assignableProjects, select.value),
@@ -791,16 +797,30 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 		select.addEventListener("change", () => {
 			if (select.value) draftClusterDomainSelections.set(clusterKey, select.value);
 			else draftClusterDomainSelections.delete(clusterKey);
-			save.disabled = !select.value || hasGuardrailWarnings;
+			save.disabled = !select.value || hasBlockingGuardrailWarnings;
 		});
 		select.addEventListener("blur", refreshSkippedProjectDataAfterSelectBlur);
 		actions.append(select, save);
-		if (suggestedScopes.size > 1 || resolvedScopes.size > 1 || hasGuardrailWarnings) {
+		if (suggestedScopes.size > 1 || resolvedScopes.size > 1 || hasBlockingGuardrailWarnings) {
 			const note = document.createElement("div");
 			note.className = "settings-note project-attention-note";
-			note.textContent = hasGuardrailWarnings
+			note.textContent = hasBlockingGuardrailWarnings
 				? "One or more identities in this group need individual review before bulk assignment."
 				: "This group has mixed suggestions or current Spaces. Choose a Space explicitly before bulk assignment.";
+			if (hasBlockingGuardrailWarnings) {
+				const blockers = document.createElement("ul");
+				for (const { project, warnings } of projectsWithBlockingWarnings) {
+					if (warnings.length === 0) continue;
+					const item = document.createElement("li");
+					const label = document.createElement("strong");
+					label.textContent = `Blocked identity: ${project.workspace_identity}`;
+					const detail = document.createElement("span");
+					detail.textContent = ` — ${warnings.map((warning) => warning.message).join(" ")}`;
+					item.append(label, detail);
+					blockers.appendChild(item);
+				}
+				note.appendChild(blockers);
+			}
 			actions.appendChild(note);
 		}
 		row.appendChild(actions);
