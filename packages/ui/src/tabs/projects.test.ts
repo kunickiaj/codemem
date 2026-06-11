@@ -619,7 +619,59 @@ describe("Projects tab", () => {
 		expect(save?.disabled).toBe(true);
 		expect(api.saveSharingDomainProjectMappings).not.toHaveBeenCalled();
 		expect(document.body.textContent).toContain("need individual review");
+		expect(document.body.textContent).toContain(
+			"Blocked identity: https://git.example.invalid/exampleco/api.git:worktree",
+		);
+		expect(document.body.textContent).toContain("Another project is also named api.");
 		expect(document.body.textContent).toContain("Show identities in this project");
+	});
+
+	it("does not block cluster bulk assignment for informational guardrail warnings", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [
+				project(),
+				project({
+					guardrail_warnings: [
+						{
+							code: "unknown_project_local_only",
+							message: "This identity currently stays Local only.",
+							requires_confirmation: false,
+							severity: "warning",
+						},
+					],
+					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
+				}),
+			],
+			total: 2,
+		});
+
+		await loadProjectsData();
+		const select = document.querySelector(
+			".project-inventory-cluster select",
+		) as HTMLSelectElement | null;
+		if (!select) throw new Error("cluster select missing");
+		select.value = "exampleco-work";
+		select.dispatchEvent(new Event("change", { bubbles: true }));
+		const save = Array.from(document.querySelectorAll("button")).find(
+			(button) => button.textContent === "Save Space for 2 identities",
+		) as HTMLButtonElement | undefined;
+		expect(save?.disabled).toBe(false);
+		expect(document.body.textContent).not.toContain("Blocked identity:");
+
+		save?.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(api.saveSharingDomainProjectMappings).toHaveBeenCalledWith({
+			mappings: expect.arrayContaining([
+				expect.objectContaining({
+					scope_id: "exampleco-work",
+					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
+				}),
+			]),
+		});
 	});
 
 	it("requires explicit cluster domain choice for mixed suggestions", async () => {
