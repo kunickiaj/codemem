@@ -78,6 +78,12 @@ export function renderSyncAttempts() {
 			peerLabel,
 			detail: detailParts.join(" · "),
 			startedAt: time ? formatTimestamp(time) : "",
+			...(shouldShowSyncAttemptRedactionHint(attempt, redact)
+				? {
+						actionHref: "#sync/diagnostics",
+						actionLabel: "Open Advanced diagnostics Redact setting",
+					}
+				: {}),
 		};
 	});
 
