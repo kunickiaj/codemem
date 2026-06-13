@@ -22,6 +22,7 @@ import {
 	updateMaintenanceJob,
 	VERSION,
 } from "@codemem/core";
+import { serve } from "@hono/node-server";
 import Database from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
 import { createApp, createSyncApp } from "./index.js";
@@ -49,6 +50,47 @@ function createTestStore(): { store: MemoryStore; cleanup: () => void } {
 			rmSync(tmpDir, { recursive: true, force: true });
 		},
 	};
+}
+
+function createRealSyncStore(prefix: string): {
+	store: MemoryStore;
+	keysDir: string;
+	cleanup: () => void;
+} {
+	const tmpDir = mkdtempSync(join(tmpdir(), prefix));
+	const dbPath = join(tmpDir, "mem.sqlite");
+	const rawDb = new Database(dbPath);
+	initTestSchema(rawDb);
+	rawDb.close();
+	const store = new MemoryStore(dbPath);
+	return {
+		store,
+		keysDir: join(tmpDir, "keys"),
+		cleanup: () => {
+			store.close();
+			rmSync(tmpDir, { recursive: true, force: true });
+		},
+	};
+}
+
+async function startTestSyncServer(app: ReturnType<typeof createSyncApp>): Promise<{
+	url: string;
+	close: () => Promise<void>;
+}> {
+	return new Promise((resolve) => {
+		const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 }, (info) => {
+			resolve({
+				url: `http://127.0.0.1:${info.port}`,
+				close: () =>
+					new Promise<void>((closeResolve, closeReject) => {
+						server.close((err) => {
+							if (err) closeReject(err);
+							else closeResolve();
+						});
+					}),
+			});
+		});
+	});
 }
 
 const FRESH_PEER_PUBLIC_KEY = "peer-public-key";
@@ -3388,6 +3430,92 @@ describe("viewer-server", () => {
 				if (previous === undefined) delete process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS;
 				else process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS = previous;
 				cleanup();
+			}
+		});
+
+		it("drives syncOnce through real syncProtocolRoutes for multiple Spaces", async () => {
+			const source = createRealSyncStore("codemem-source-route-sync-test-");
+			const receiver = createRealSyncStore("codemem-receiver-route-sync-test-");
+			const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
+			let server: Awaited<ReturnType<typeof startTestSyncServer>> | null = null;
+			try {
+				const [sourceDeviceId, sourceFingerprint] = ensureDeviceIdentity(source.store.db, {
+					keysDir: source.keysDir,
+				});
+				const sourcePublicKey = loadPublicKey(source.keysDir);
+				const [receiverDeviceId, receiverFingerprint] = ensureDeviceIdentity(receiver.store.db, {
+					keysDir: receiver.keysDir,
+				});
+				const receiverPublicKey = loadPublicKey(receiver.keysDir);
+				if (!sourcePublicKey || !receiverPublicKey) throw new Error("missing test public key");
+
+				const now = "2026-01-01T00:00:00.000Z";
+				source.store.db
+					.prepare(
+						`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
+						 VALUES (?, ?, ?, ?)`,
+					)
+					.run(receiverDeviceId, receiverFingerprint, receiverPublicKey, now);
+				receiver.store.db
+					.prepare(
+						`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
+						 VALUES (?, ?, ?, ?)`,
+					)
+					.run(sourceDeviceId, sourceFingerprint, sourcePublicKey, now);
+
+				const scopes = ["oss", "personal"] as const;
+				for (const scopeId of scopes) {
+					grantSyncScopeToDevices(source.store, scopeId, [sourceDeviceId, receiverDeviceId]);
+					core.setSyncResetState(
+						source.store.db,
+						{
+							generation: 1,
+							snapshot_id: `snapshot-${scopeId}`,
+							baseline_cursor: null,
+							retained_floor_cursor: null,
+						},
+						scopeId,
+					);
+				}
+				const sourceSessionId = insertTestSession(source.store.db);
+				for (const scopeId of scopes) {
+					for (let index = 1; index <= 2; index += 1) {
+						insertTestMemory(source.store, {
+							sessionId: sourceSessionId,
+							kind: "discovery",
+							title: `${scopeId} route item ${index}`,
+							bodyText: `Body for ${scopeId} route item ${index}`,
+							metadata: { clock_device_id: sourceDeviceId },
+							originDeviceId: sourceDeviceId,
+							createdAt: `2026-01-01T00:00:0${index}.000Z`,
+							scopeId,
+						});
+					}
+				}
+
+				process.env.CODEMEM_KEYS_DIR = source.keysDir;
+				server = await startTestSyncServer(createSyncApp({ storeFactory: () => source.store }));
+
+				const result = await core.syncOnce(receiver.store.db, sourceDeviceId, [server.url], {
+					keysDir: receiver.keysDir,
+					scanner: receiver.store.scanner,
+				});
+
+				if (!result.ok) throw new Error(`syncOnce failed: ${result.error ?? "unknown"}`);
+				expect(result.perScopeResults?.map((scope) => scope.scope_id)).toEqual([...scopes]);
+				expect(result.opsIn).toBe(4);
+				for (const scopeId of scopes) {
+					const row = receiver.store.db
+						.prepare("SELECT COUNT(1) AS total FROM memory_items WHERE scope_id = ?")
+						.get(scopeId) as { total: number };
+					expect(row.total).toBe(2);
+				}
+			} finally {
+				await server?.close();
+				if (previousKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
+				receiver.cleanup();
+				source.cleanup();
 			}
 		});
 
