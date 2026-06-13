@@ -11,6 +11,7 @@ import {
 	DEFAULT_SYNC_SCOPE_ID,
 	getReplicationCursor,
 	getSyncResetState,
+	SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
 } from "./sync-replication.js";
 
 export const SYNC_SCOPE_QUERY_PARAM = "scope_id";
@@ -296,14 +297,16 @@ export function listPerPeerScopeSyncState(
 	const scopes = listAuthorizedScopesForPeer(db, { localDeviceId, peerDeviceId });
 	return scopes.map((scope) => {
 		const [lastApplied, lastAcked] = getReplicationCursor(db, peerDeviceId, scope.scope_id);
+		const hasNullBaselineBootstrapMarker =
+			lastAcked === SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER;
 		return {
 			scope_id: scope.scope_id,
 			label: scope.label,
 			authority_type: scope.authority_type,
 			membership_epoch: scope.membership_epoch,
 			last_applied_cursor: lastApplied,
-			last_acked_cursor: lastAcked,
-			bootstrapped: lastApplied != null,
+			last_acked_cursor: hasNullBaselineBootstrapMarker ? null : lastAcked,
+			bootstrapped: lastApplied != null || hasNullBaselineBootstrapMarker,
 		};
 	});
 }

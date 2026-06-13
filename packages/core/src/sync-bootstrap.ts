@@ -22,7 +22,9 @@ import { buildAuthHeaders } from "./sync-auth.js";
 import { LOCAL_SYNC_CAPABILITY, SYNC_CAPABILITY_HEADER } from "./sync-capability.js";
 import { requestJson } from "./sync-http-client.js";
 import {
+	clearReplicationCursorLastApplied,
 	DEFAULT_SYNC_SCOPE_ID,
+	SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
 	setReplicationCursor,
 	setSyncResetState,
 } from "./sync-replication.js";
@@ -378,13 +380,22 @@ export function applyBootstrapSnapshot(
 			result.applied++;
 		}
 
-		// 3. Update replication cursor to baseline_cursor.
-		if (resetInfo.baseline_cursor) {
+		// 3. Update replication cursor to baseline_cursor. For scoped null-baseline
+		// snapshots, baseline_cursor can be null; store a hidden marker in the
+		// scoped cursor row so status can distinguish "this peer/scope bootstrap
+		// completed without a cursor boundary" from "this scope was never attempted".
+		if (resetInfo.baseline_cursor || resetInfo.scope_id) {
+			if (resetInfo.scope_id && !resetInfo.baseline_cursor) {
+				clearReplicationCursorLastApplied(db, peerDeviceId, resetInfo.scope_id);
+			}
 			setReplicationCursor(
 				db,
 				peerDeviceId,
 				{
 					lastApplied: resetInfo.baseline_cursor,
+					lastAcked: resetInfo.baseline_cursor
+						? undefined
+						: SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
 				},
 				resetInfo.scope_id,
 			);

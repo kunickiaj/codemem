@@ -18,6 +18,7 @@ export {
 	derivePeerGrantRoleMismatchView,
 	derivePeerProjectNarrowingView,
 	derivePeerScopeRejectionsView,
+	derivePeerScopeSyncView,
 	derivePeerTrustSummary,
 	derivePeerUiStatus,
 	type PeerAuthorizedDomainsView,
@@ -25,6 +26,8 @@ export {
 	type PeerGrantRoleMismatchView,
 	type PeerProjectNarrowingView,
 	type PeerScopeRejectionsView,
+	type PeerScopeSyncView,
+	type PeerScopeSyncViewItem,
 } from "./view-model/peer-status";
 export {
 	deriveDuplicatePeople,
@@ -38,6 +41,7 @@ export {
 	type PeerClaimedLocalActorScopeLike,
 	type PeerDirection,
 	type PeerLike,
+	type PeerPerScopeSyncLike,
 	type PeerProjectScopeLike,
 	type PeerRecentOps,
 	type PeerScopeRejectionReason,

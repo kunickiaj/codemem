@@ -21,11 +21,13 @@ import {
 	derivePeerGrantRoleMismatchView,
 	derivePeerProjectNarrowingView,
 	derivePeerScopeRejectionsView,
+	derivePeerScopeSyncView,
 	derivePeerTrustSummary,
 	derivePeerUiStatus,
 	type PeerClaimedLocalActorScopeLike,
 	type PeerDirection,
 	type PeerLike,
+	type PeerPerScopeSyncLike,
 	type PeerProjectScopeLike,
 	type PeerScopeRejectionsSummary,
 } from "../view-model";
@@ -108,6 +110,7 @@ type SyncPeer = PeerLike & {
 	addresses?: unknown[];
 	claimed_local_actor?: boolean;
 	claimed_local_actor_scope?: PeerClaimedLocalActorScopeLike | null;
+	per_scope_sync?: PeerPerScopeSyncLike[];
 	project_scope?: PeerProjectScopeLike;
 	scope_rejections?: PeerScopeRejectionsSummary;
 	discovered_via_coordinator_id?: string | null;
@@ -165,6 +168,7 @@ function SyncPeerCard({ peer, onAssignActor, onRemove, onRename, onSync }: SyncP
 	const pendingScopeReview = rawPendingScopeReview && authorizedDomains.total === 0;
 	const grantRoleMismatch = derivePeerGrantRoleMismatchView(peer);
 	const scopeRejections = derivePeerScopeRejectionsView(peer);
+	const scopeSync = derivePeerScopeSyncView(peer);
 	const scope = peer.project_scope || {};
 	const projectNarrowing = derivePeerProjectNarrowingView(scope);
 	const primaryAddress = pickPrimaryAddress(peer.addresses);
@@ -548,6 +552,27 @@ function SyncPeerCard({ peer, onAssignActor, onRemove, onRename, onSync }: SyncP
 							</div>
 						) : null}
 						<div className="peer-meta">{projectNarrowing.note}</div>
+
+						<div className="peer-scope-summary">Space sync progress</div>
+						<div className="peer-meta">
+							{scopeSync.total > 0
+								? "Per-Space progress for this device. Open details to see technical identifiers."
+								: scopeSync.emptyMessage}
+						</div>
+						{scopeSync.rows.length > 0 ? (
+							<ul className="peer-scope-rejections-list" aria-label="Per-Space sync progress">
+								{scopeSync.rows.map((row) => (
+									<li key={row.scopeId} title={row.detail}>
+										<span className="peer-scope-rejection-label">{row.label}</span>
+										<span
+											className={`badge ${row.status === "received" ? "badge-online" : "actor-badge"}`}
+										>
+											{row.badgeLabel}
+										</span>
+									</li>
+								))}
+							</ul>
+						) : null}
 
 						{scopeRejections.total > 0 ? (
 							<div

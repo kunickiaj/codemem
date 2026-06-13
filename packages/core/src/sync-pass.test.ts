@@ -1276,6 +1276,196 @@ describe("syncOnce", () => {
 		expect(result.failureCategory).toBe("other");
 	});
 
+	it("does not re-bootstrap null-baseline scoped bootstraps that already have a marker", async () => {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-empty-scope", "fp-empty-scope", new Date().toISOString());
+		syncReplication.setReplicationCursor(db, "peer-empty-scope", {
+			lastApplied: "2025-12-31T00:00:00Z|default",
+		});
+		syncReplication.setReplicationCursor(
+			db,
+			"peer-empty-scope",
+			{ lastAcked: syncReplication.SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER },
+			"empty-work",
+		);
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		grantScopeForSyncPass(db, "empty-work", ["peer-empty-scope", "local-device-id"]);
+
+		const requestSpy = vi
+			.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([
+				200,
+				{
+					fingerprint: "fp-empty-scope",
+					protocol_version: "2",
+					sync_capability: "scoped",
+					sync_reset: {
+						generation: 1,
+						snapshot_id: "snap-default",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+					authorized_scopes: [
+						{
+							scope_id: "empty-work",
+							label: "empty-work",
+							authority_type: "coordinator",
+							membership_epoch: 1,
+							sync_reset: {
+								scope_id: "empty-work",
+								generation: 1,
+								snapshot_id: "snap-empty",
+								baseline_cursor: null,
+								retained_floor_cursor: null,
+							},
+						},
+					],
+				},
+			])
+			.mockResolvedValueOnce([
+				200,
+				{
+					reset_required: false,
+					generation: 1,
+					snapshot_id: "snap-default",
+					baseline_cursor: null,
+					retained_floor_cursor: null,
+					ops: [],
+					next_cursor: null,
+					skipped: 0,
+				},
+			])
+			.mockResolvedValueOnce([
+				200,
+				{
+					reset_required: false,
+					generation: 1,
+					snapshot_id: "snap-empty",
+					baseline_cursor: null,
+					retained_floor_cursor: null,
+					ops: [],
+					next_cursor: null,
+					skipped: 0,
+				},
+			]);
+
+		const result = await syncOnce(db, "peer-empty-scope", ["http://127.0.0.1:9090"]);
+
+		expect(result.ok).toBe(true);
+		expect(result.perScopeResults?.[0]).toMatchObject({
+			bootstrapped: true,
+			ok: true,
+			scope_id: "empty-work",
+		});
+		const requestedUrls = requestSpy.mock.calls.map(([method, url]) => `${method} ${url}`);
+		expect(requestedUrls.some((entry) => entry.includes("/v1/snapshot"))).toBe(false);
+		expect(
+			requestedUrls.some(
+				(entry) => entry.includes("/v1/ops?") && entry.includes("scope_id=empty-work"),
+			),
+		).toBe(true);
+	});
+
+	it("re-bootstraps marked empty scopes when the peer advertises a baseline", async () => {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-empty-baseline", "fp-empty-baseline", new Date().toISOString());
+		syncReplication.setReplicationCursor(db, "peer-empty-baseline", {
+			lastApplied: "2025-12-31T00:00:00Z|default",
+		});
+		syncReplication.setReplicationCursor(
+			db,
+			"peer-empty-baseline",
+			{ lastAcked: syncReplication.SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER },
+			"empty-work",
+		);
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		grantScopeForSyncPass(db, "empty-work", ["peer-empty-baseline", "local-device-id"]);
+
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([
+				200,
+				{
+					fingerprint: "fp-empty-baseline",
+					protocol_version: "2",
+					sync_capability: "scoped",
+					sync_reset: {
+						generation: 1,
+						snapshot_id: "snap-default",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+					authorized_scopes: [
+						{
+							scope_id: "empty-work",
+							label: "empty-work",
+							authority_type: "coordinator",
+							membership_epoch: 1,
+							sync_reset: {
+								scope_id: "empty-work",
+								generation: 2,
+								snapshot_id: "snap-empty-2",
+								baseline_cursor: "2026-01-02T00:00:00Z|baseline-empty",
+								retained_floor_cursor: null,
+							},
+						},
+					],
+				},
+			])
+			.mockResolvedValueOnce([
+				200,
+				{
+					reset_required: false,
+					generation: 1,
+					snapshot_id: "snap-default",
+					baseline_cursor: null,
+					retained_floor_cursor: null,
+					ops: [],
+					next_cursor: null,
+					skipped: 0,
+				},
+			]);
+		vi.spyOn(syncBootstrap, "fetchAllSnapshotPages").mockResolvedValue({
+			items: [],
+			generation: 2,
+			snapshot_id: "snap-empty-2",
+			baseline_cursor: "2026-01-02T00:00:00Z|baseline-empty",
+		});
+		vi.spyOn(syncBootstrap, "applyBootstrapSnapshot").mockReturnValue({
+			ok: true,
+			applied: 0,
+			deleted: 0,
+		});
+
+		const result = await syncOnce(db, "peer-empty-baseline", ["http://127.0.0.1:9090"]);
+
+		expect(result.ok).toBe(true);
+		expect(result.perScopeResults?.[0]).toMatchObject({
+			bootstrapped: true,
+			ok: true,
+			scope_id: "empty-work",
+		});
+		expect(syncBootstrap.fetchAllSnapshotPages).toHaveBeenCalledOnce();
+		expect(syncBootstrap.fetchAllSnapshotPages).toHaveBeenCalledWith(
+			"http://127.0.0.1:9090",
+			expect.objectContaining({
+				baseline_cursor: "2026-01-02T00:00:00Z|baseline-empty",
+				scope_id: "empty-work",
+			}),
+			"local-device-id",
+			expect.objectContaining({ pageSize: 2000 }),
+		);
+	});
+
 	it("classifies inbound membership rejections as scope failures", async () => {
 		db.prepare(
 			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",

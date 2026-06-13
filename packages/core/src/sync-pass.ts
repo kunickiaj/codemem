@@ -36,6 +36,7 @@ import {
 	hasUnsyncedSharedMemoryChanges,
 	migrateLegacyImportKeys,
 	reconcileStalePeerReceivedRows,
+	SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
 	setReplicationCursor,
 } from "./sync-replication.js";
 import type { ReplicationOp, SyncResetRequired } from "./types.js";
@@ -613,14 +614,17 @@ async function syncOneScope(
 ): Promise<SyncScopeResult> {
 	const { peerDeviceId, baseUrl, deviceId, scope, keysDir, scanner, limit } = options;
 	const scopeId = scope.scope_id;
-	const [lastApplied] = getReplicationCursor(db, peerDeviceId, scopeId);
+	const [lastApplied, lastAcked] = getReplicationCursor(db, peerDeviceId, scopeId);
+	const hasNullBaselineBootstrapMarker = lastAcked === SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER;
+	const nullBaselineBootstrapStillCurrent =
+		hasNullBaselineBootstrapMarker && scope.sync_reset.baseline_cursor == null;
 	const localRowsPresent = hasLocalRowsInScope(db, scopeId);
 
 	// Bootstrap when this device has never pulled the scope and has no local
 	// rows. If there ARE local rows but no cursor, fall through to incremental
 	// so the server's reset_required logic can decide whether a re-bootstrap
 	// is required without clobbering existing data.
-	if (lastApplied == null && !localRowsPresent) {
+	if (lastApplied == null && !localRowsPresent && !nullBaselineBootstrapStillCurrent) {
 		try {
 			const resetInfo: SyncResetRequired = {
 				scope_id: scopeId,
@@ -871,7 +875,7 @@ async function syncOneScope(
 			ok: true,
 			opsIn: applied.applied,
 			opsOut: 0,
-			bootstrapped: false,
+			bootstrapped: hasNullBaselineBootstrapMarker,
 		};
 	} catch (err) {
 		const detail = err instanceof Error ? err.message.trim() || err.constructor.name : "unknown";

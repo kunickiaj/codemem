@@ -7,6 +7,7 @@ import {
 	derivePeerGrantRoleMismatchView,
 	derivePeerProjectNarrowingView,
 	derivePeerScopeRejectionsView,
+	derivePeerScopeSyncView,
 	derivePeerTrustSummary,
 	derivePeerUiStatus,
 	deriveSyncViewModel,
@@ -228,6 +229,65 @@ describe("derivePeerAuthorizedDomainsView", () => {
 		expect(view.domains[0]?.label).toBe("Untitled Space");
 		expect(view.domains[0]?.label).not.toContain("team-alpha-default");
 		expect(view.domains[0]?.detail).not.toContain("team-alpha-default");
+	});
+});
+
+describe("derivePeerScopeSyncView", () => {
+	it("maps per-Space cursor state to received and pending rows", () => {
+		const view = derivePeerScopeSyncView({
+			per_scope_sync: [
+				{
+					authority_type: "coordinator",
+					bootstrapped: true,
+					label: "Acme Work",
+					last_acked_cursor: "2026-01-01T00:00:01Z|ack",
+					last_applied_cursor: "2026-01-01T00:00:02Z|applied",
+					membership_epoch: 3,
+					scope_id: "acme-work",
+				},
+				{
+					authority_type: "local",
+					bootstrapped: false,
+					label: "Personal",
+					last_applied_cursor: null,
+					membership_epoch: 1,
+					scope_id: "personal",
+				},
+				{
+					authority_type: "coordinator",
+					bootstrapped: true,
+					label: "Empty Work",
+					last_applied_cursor: null,
+					membership_epoch: 1,
+					scope_id: "empty-work",
+				},
+			],
+		});
+
+		expect(view.total).toBe(3);
+		expect(view.rows.map((row) => [row.label, row.status, row.badgeLabel])).toEqual([
+			["Acme Work", "received", "Received"],
+			["Personal", "pending", "Pending"],
+			["Empty Work", "received", "Received"],
+		]);
+		expect(view.rows[0]?.detail).toContain("Scope id: acme-work");
+		expect(view.rows[0]?.detail).toContain("membership epoch 3");
+	});
+
+	it("keeps raw Space ids out of primary labels when labels are missing", () => {
+		const view = derivePeerScopeSyncView({
+			per_scope_sync: [
+				{
+					bootstrapped: false,
+					last_applied_cursor: null,
+					scope_id: "team-alpha-default",
+				},
+			],
+		});
+
+		expect(view.rows[0]?.label).toBe("Untitled Space");
+		expect(view.rows[0]?.label).not.toContain("team-alpha-default");
+		expect(view.rows[0]?.detail).toContain("Scope id: team-alpha-default");
 	});
 });
 

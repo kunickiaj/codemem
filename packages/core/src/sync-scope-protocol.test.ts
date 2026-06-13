@@ -1,8 +1,13 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
+	setReplicationCursor,
+} from "./sync-replication.js";
+import {
 	addSyncScopeToBoundary,
 	listAuthorizedScopesForPeer,
+	listPerPeerScopeSyncState,
 	parseSyncScopeRequest,
 	syncScopeResetRequiredPayload,
 } from "./sync-scope-protocol.js";
@@ -265,6 +270,24 @@ describe("listAuthorizedScopesForPeer", () => {
 		).run(scopeId, deviceId, status, NOW);
 	}
 
+	function recordSyncAttempt(
+		peerDeviceId: string,
+		completedAt: string,
+		opts: { ok?: boolean; capability?: string } = {},
+	) {
+		db.prepare(
+			`INSERT INTO sync_attempts(
+				peer_device_id, started_at, finished_at, ok, ops_in, ops_out, negotiated_sync_capability
+			) VALUES (?, ?, ?, ?, 0, 0, ?)`,
+		).run(
+			peerDeviceId,
+			completedAt,
+			completedAt,
+			opts.ok === false ? 0 : 1,
+			opts.capability ?? "scoped",
+		);
+	}
+
 	beforeEach(() => {
 		db = new Database(":memory:");
 		initTestSchema(db);
@@ -360,5 +383,109 @@ describe("listAuthorizedScopesForPeer", () => {
 				peerDeviceId: LOCAL_DEVICE,
 			}),
 		).toEqual([]);
+	});
+
+	it("marks empty authorized Spaces current after scoped bootstrap records a cursor marker", () => {
+		insertScope("empty-work");
+		grantMembership("empty-work", LOCAL_DEVICE);
+		grantMembership("empty-work", PEER_DEVICE);
+		setReplicationCursor(
+			db,
+			PEER_DEVICE,
+			{ lastAcked: SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER },
+			"empty-work",
+		);
+
+		const scopes = listPerPeerScopeSyncState(db, {
+			localDeviceId: LOCAL_DEVICE,
+			peerDeviceId: PEER_DEVICE,
+		});
+
+		expect(scopes).toHaveLength(1);
+		expect(scopes[0]).toMatchObject({
+			bootstrapped: true,
+			last_acked_cursor: null,
+			last_applied_cursor: null,
+			scope_id: "empty-work",
+		});
+	});
+
+	it("does not treat peer-wide scoped attempts as per-Space evidence", () => {
+		insertScope("empty-work");
+		grantMembership("empty-work", LOCAL_DEVICE);
+		grantMembership("empty-work", PEER_DEVICE);
+		recordSyncAttempt(PEER_DEVICE, "2026-05-26T00:00:00.000Z");
+
+		const scopes = listPerPeerScopeSyncState(db, {
+			localDeviceId: LOCAL_DEVICE,
+			peerDeviceId: PEER_DEVICE,
+		});
+
+		expect(scopes).toHaveLength(1);
+		expect(scopes[0]).toMatchObject({
+			bootstrapped: false,
+			last_applied_cursor: null,
+			scope_id: "empty-work",
+		});
+	});
+
+	it("keeps newly granted Spaces pending until scoped sync records a cursor marker", () => {
+		insertScope("new-work");
+		grantMembership("new-work", LOCAL_DEVICE);
+		grantMembership("new-work", PEER_DEVICE);
+		recordSyncAttempt(PEER_DEVICE, "2026-05-26T00:00:00.000Z");
+
+		const scopes = listPerPeerScopeSyncState(db, {
+			localDeviceId: LOCAL_DEVICE,
+			peerDeviceId: PEER_DEVICE,
+		});
+
+		expect(scopes).toHaveLength(1);
+		expect(scopes[0]).toMatchObject({
+			bootstrapped: false,
+			last_applied_cursor: null,
+			scope_id: "new-work",
+		});
+	});
+
+	it("keeps empty Spaces pending after failed or non-scoped sync attempts", () => {
+		insertScope("empty-work");
+		grantMembership("empty-work", LOCAL_DEVICE);
+		grantMembership("empty-work", PEER_DEVICE);
+		recordSyncAttempt(PEER_DEVICE, "2026-05-26T00:00:00.000Z", { ok: false });
+		recordSyncAttempt(PEER_DEVICE, "2026-05-27T00:00:00.000Z", { capability: "aware" });
+
+		const scopes = listPerPeerScopeSyncState(db, {
+			localDeviceId: LOCAL_DEVICE,
+			peerDeviceId: PEER_DEVICE,
+		});
+
+		expect(scopes).toHaveLength(1);
+		expect(scopes[0]).toMatchObject({
+			bootstrapped: false,
+			last_applied_cursor: null,
+			scope_id: "empty-work",
+		});
+	});
+
+	it("keeps unadvertised Spaces pending even when newer irrelevant attempts exist", () => {
+		insertScope("empty-work");
+		grantMembership("empty-work", LOCAL_DEVICE);
+		grantMembership("empty-work", PEER_DEVICE);
+		recordSyncAttempt(PEER_DEVICE, "2026-05-26T00:00:00.000Z");
+		recordSyncAttempt(PEER_DEVICE, "2026-05-27T00:00:00.000Z", { ok: false });
+		recordSyncAttempt(PEER_DEVICE, "2026-05-28T00:00:00.000Z", { capability: "aware" });
+
+		const scopes = listPerPeerScopeSyncState(db, {
+			localDeviceId: LOCAL_DEVICE,
+			peerDeviceId: PEER_DEVICE,
+		});
+
+		expect(scopes).toHaveLength(1);
+		expect(scopes[0]).toMatchObject({
+			bootstrapped: false,
+			last_applied_cursor: null,
+			scope_id: "empty-work",
+		});
 	});
 });

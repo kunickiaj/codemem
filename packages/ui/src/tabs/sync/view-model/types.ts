@@ -158,6 +158,16 @@ export interface PeerAuthorizedScopeLike {
 	updated_at?: string | null;
 }
 
+export interface PeerPerScopeSyncLike {
+	scope_id?: string | null;
+	label?: string | null;
+	authority_type?: string | null;
+	membership_epoch?: number | null;
+	last_applied_cursor?: string | null;
+	last_acked_cursor?: string | null;
+	bootstrapped?: boolean | null;
+}
+
 export interface PeerClaimedLocalActorScopeLike {
 	scope_id?: string | null;
 	authorized?: boolean;
@@ -179,6 +189,7 @@ export interface PeerLike {
 	scope_rejections?: PeerScopeRejectionsSummary;
 	project_scope?: PeerProjectScopeLike;
 	authorized_scopes?: PeerAuthorizedScopeLike[];
+	per_scope_sync?: PeerPerScopeSyncLike[];
 	claimed_local_actor?: boolean;
 	claimed_local_actor_scope?: PeerClaimedLocalActorScopeLike | null;
 }

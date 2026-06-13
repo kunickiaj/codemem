@@ -13,6 +13,7 @@ import type {
 	PeerAuthorizedScopeLike,
 	PeerDirection,
 	PeerLike,
+	PeerPerScopeSyncLike,
 	PeerProjectScopeLike,
 	PeerScopeRejectionReason,
 	UiPeerTrustSummary,
@@ -191,6 +192,22 @@ export interface PeerGrantRoleMismatchView {
 	detail: string;
 }
 
+export type PeerScopeSyncStatus = "received" | "pending";
+
+export interface PeerScopeSyncViewItem {
+	scopeId: string;
+	label: string;
+	status: PeerScopeSyncStatus;
+	badgeLabel: string;
+	detail: string;
+}
+
+export interface PeerScopeSyncView {
+	total: number;
+	rows: PeerScopeSyncViewItem[];
+	emptyMessage: string;
+}
+
 export function derivePeerAuthorizedDomainsView(peer: PeerLike): PeerAuthorizedDomainsView {
 	const domains = (Array.isArray(peer.authorized_scopes) ? peer.authorized_scopes : [])
 		.map((scope: PeerAuthorizedScopeLike): PeerAuthorizedDomainViewItem | null => {
@@ -216,6 +233,45 @@ export function derivePeerAuthorizedDomainsView(peer: PeerLike): PeerAuthorizedD
 		domains,
 		emptyMessage:
 			"No Space access grants exist for this device yet. Advanced project filters cannot send data by themselves.",
+	};
+}
+
+export function derivePeerScopeSyncView(peer: PeerLike): PeerScopeSyncView {
+	const rows = (Array.isArray(peer.per_scope_sync) ? peer.per_scope_sync : [])
+		.map((scope: PeerPerScopeSyncLike): PeerScopeSyncViewItem | null => {
+			const scopeId = cleanText(scope.scope_id);
+			const rawLabel = cleanText(scope.label);
+			if (!scopeId && !rawLabel) return null;
+			const label = rawLabel || "Untitled Space";
+			const lastApplied = cleanText(scope.last_applied_cursor);
+			const lastAcked = cleanText(scope.last_acked_cursor);
+			const bootstrapped = scope.bootstrapped === true || Boolean(lastApplied);
+			const status: PeerScopeSyncStatus = bootstrapped ? "received" : "pending";
+			const authority = labelPart(cleanText(scope.authority_type), "local");
+			const epoch = Number(scope.membership_epoch ?? 0);
+			const detail = [
+				`Scope id: ${scopeId || "unknown"}`,
+				`${authority} authority`,
+				Number.isFinite(epoch) ? `membership epoch ${epoch}` : null,
+				lastApplied ? `last applied ${lastApplied}` : null,
+				lastAcked ? `last acknowledged ${lastAcked}` : null,
+			]
+				.filter((value): value is string => Boolean(value))
+				.join(" · ");
+			return {
+				scopeId: scopeId || label,
+				label,
+				status,
+				badgeLabel: status === "received" ? "Received" : "Pending",
+				detail,
+			};
+		})
+		.filter((item): item is PeerScopeSyncViewItem => item != null);
+	return {
+		total: rows.length,
+		rows,
+		emptyMessage:
+			"No per-Space sync progress is available yet. Run sync after both devices have Space access.",
 	};
 }
 

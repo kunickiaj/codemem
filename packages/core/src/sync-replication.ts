@@ -31,6 +31,8 @@ import type {
 
 export const DEFAULT_SYNC_SCOPE_ID = "local-default";
 export const ACCESS_CLEANUP_OP_TYPE = "access_cleanup";
+export const SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER =
+	"__codemem_scoped_null_baseline_bootstrap__";
 
 export interface SyncResetBoundary {
 	scope_id?: string | null;
@@ -682,21 +684,18 @@ export function clearReplicationCursorLastApplied(
 	const now = new Date().toISOString();
 	const effectiveScopeId = normalizeSyncStateScopeId(scopeId);
 	drizzle(db, { schema })
-		.insert(schema.replicationCursorsV2)
-		.values({
-			peer_device_id: peerDeviceId,
-			scope_id: effectiveScopeId,
+		.update(schema.replicationCursorsV2)
+		.set({
 			last_applied_cursor: null,
 			last_acked_cursor: null,
 			updated_at: now,
 		})
-		.onConflictDoUpdate({
-			target: [schema.replicationCursorsV2.peer_device_id, schema.replicationCursorsV2.scope_id],
-			set: {
-				last_applied_cursor: null,
-				updated_at: sql`excluded.updated_at`,
-			},
-		})
+		.where(
+			and(
+				eq(schema.replicationCursorsV2.peer_device_id, peerDeviceId),
+				eq(schema.replicationCursorsV2.scope_id, effectiveScopeId),
+			),
+		)
 		.run();
 }
 

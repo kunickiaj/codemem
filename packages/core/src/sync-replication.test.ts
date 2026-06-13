@@ -7,6 +7,7 @@ import {
 	backfillReplicationOps,
 	bulkPruneReplicationOpsByAgeCutoff,
 	chunkOpsBySize,
+	clearReplicationCursorLastApplied,
 	clockTuple,
 	DEFAULT_SYNC_SCOPE_ID,
 	diagnoseStalePeerReceivedRows,
@@ -28,6 +29,7 @@ import {
 	reconcileStalePeerReceivedRows,
 	recordAccessCleanupOp,
 	recordReplicationOp,
+	SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
 	setReplicationCursor,
 	setSyncResetState,
 	summarizeInboundScopeRejections,
@@ -3800,6 +3802,95 @@ describe("bootstrap snapshot round-trip parity", () => {
 		expect(applied.narrative).toBe("Bootstrap narrative");
 		expect(applied.user_prompt_id).toBe(99);
 		expect(applied.prompt_number).toBe(3);
+	});
+
+	it("records a scoped cursor marker for empty scoped bootstrap snapshots", async () => {
+		const { applyBootstrapSnapshot } = await import("./sync-bootstrap.js");
+		const resetInfo = {
+			scope_id: "empty-work",
+			generation: 1,
+			snapshot_id: "snap-empty",
+			baseline_cursor: null,
+			retained_floor_cursor: null,
+			reset_required: true as const,
+			reason: "initial_bootstrap" as const,
+		};
+
+		const result = applyBootstrapSnapshot(db, "target-peer", [], resetInfo);
+
+		expect(result.ok).toBe(true);
+		expect(result.applied).toBe(0);
+		const row = db
+			.prepare(
+				`SELECT last_applied_cursor, last_acked_cursor
+				   FROM replication_cursors_v2
+				  WHERE peer_device_id = ? AND scope_id = ?`,
+			)
+			.get("target-peer", "empty-work") as
+			| { last_applied_cursor: string | null; last_acked_cursor: string | null }
+			| undefined;
+		expect(row).toEqual({
+			last_applied_cursor: null,
+			last_acked_cursor: SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
+		});
+	});
+
+	it("clears stale scoped cursors before writing a null-baseline bootstrap marker", async () => {
+		setReplicationCursor(
+			db,
+			"target-peer",
+			{ lastApplied: "2026-01-01T00:00:00Z|stale-cursor", lastAcked: "old-ack" },
+			"empty-work",
+		);
+		const { applyBootstrapSnapshot } = await import("./sync-bootstrap.js");
+		const resetInfo = {
+			scope_id: "empty-work",
+			generation: 2,
+			snapshot_id: "snap-empty-2",
+			baseline_cursor: null,
+			retained_floor_cursor: null,
+			reset_required: true as const,
+			reason: "initial_bootstrap" as const,
+		};
+
+		const result = applyBootstrapSnapshot(db, "target-peer", [], resetInfo);
+
+		expect(result.ok).toBe(true);
+		const row = db
+			.prepare(
+				`SELECT last_applied_cursor, last_acked_cursor
+				   FROM replication_cursors_v2
+				  WHERE peer_device_id = ? AND scope_id = ?`,
+			)
+			.get("target-peer", "empty-work") as
+			| { last_applied_cursor: string | null; last_acked_cursor: string | null }
+			| undefined;
+		expect(row).toEqual({
+			last_applied_cursor: null,
+			last_acked_cursor: SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
+		});
+	});
+
+	it("clears scoped null-baseline bootstrap markers when a scoped reset is required", () => {
+		setReplicationCursor(
+			db,
+			"target-peer",
+			{ lastAcked: SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER },
+			"empty-work",
+		);
+
+		clearReplicationCursorLastApplied(db, "target-peer", "empty-work");
+
+		const row = db
+			.prepare(
+				`SELECT last_applied_cursor, last_acked_cursor
+				   FROM replication_cursors_v2
+				  WHERE peer_device_id = ? AND scope_id = ?`,
+			)
+			.get("target-peer", "empty-work") as
+			| { last_applied_cursor: string | null; last_acked_cursor: string | null }
+			| undefined;
+		expect(row).toEqual({ last_applied_cursor: null, last_acked_cursor: null });
 	});
 });
 
