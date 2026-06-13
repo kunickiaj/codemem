@@ -11,6 +11,8 @@ export type SyncAttemptItem = {
 	peerLabel: string;
 	detail: string;
 	startedAt: string;
+	actionHref?: string;
+	actionLabel?: string;
 };
 
 export type PairingView = {
@@ -49,6 +51,11 @@ function AttemptsList({ attempts, note }: { attempts: SyncAttemptItem[]; note?: 
 							{attempt.peerLabel} — {attempt.status}
 						</div>
 						{attempt.detail ? <div class="small">{attempt.detail}</div> : null}
+						{attempt.actionHref && attempt.actionLabel ? (
+							<a class="small" href={attempt.actionHref}>
+								{attempt.actionLabel}
+							</a>
+						) : null}
 					</div>
 					<div class="right">{attempt.startedAt}</div>
 				</div>
