@@ -879,7 +879,7 @@ statusCmd.action((opts: { db?: string; dbPath?: string; config?: string; json?: 
 					p.log.message(peerHeader);
 				} else {
 					const scopeLines = scopes.map((scope) => {
-						const state = scope.bootstrapped ? "synced" : "pending";
+						const state = scope.bootstrapped ? "received" : "pending";
 						return `      - ${scope.label} (${scope.scope_id}): ${state}`;
 					});
 					p.log.message([peerHeader, "    Spaces:", ...scopeLines].join("\n"));

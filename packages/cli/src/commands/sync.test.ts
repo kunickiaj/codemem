@@ -482,4 +482,94 @@ describe("formatSyncAttempt", () => {
 			rmSync(tmpDbDir, { recursive: true, force: true });
 		}
 	});
+
+	it("reports per-Space sync progress in sync status output", async () => {
+		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-status-scopes-test-"));
+		const dbPath = join(tmpDbDir, "mem.sqlite");
+		const configPath = join(tmpDbDir, "config.json");
+		writeFileSync(configPath, JSON.stringify({ sync_enabled: true }, null, 2));
+		const rawDb = connect(dbPath);
+		initTestSchema(rawDb);
+		rawDb.close();
+		const store = new MemoryStore(dbPath);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const now = "2026-01-01T00:00:00.000Z";
+			store.db
+				.prepare(
+					"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+				)
+				.run("local-device", "local-public-key", "local-fingerprint", now);
+			store.db
+				.prepare("INSERT INTO sync_peers(peer_device_id, name, created_at) VALUES (?, ?, ?)")
+				.run("peer-device", "Work laptop", now);
+			for (const [scopeId, label] of [
+				["work", "Work"],
+				["personal", "Personal"],
+			] as const) {
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at)
+						 VALUES (?, ?, 'user', 'local', 1, 'active', ?, ?)`,
+					)
+					.run(scopeId, label, now, now);
+				for (const deviceId of ["local-device", "peer-device"]) {
+					store.db
+						.prepare(
+							`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
+							 VALUES (?, ?, 'member', 'active', 1, ?)`,
+						)
+						.run(scopeId, deviceId, now);
+				}
+			}
+			store.db
+				.prepare(
+					`INSERT INTO replication_cursors_v2(peer_device_id, scope_id, last_applied_cursor, last_acked_cursor, updated_at)
+					 VALUES (?, ?, ?, ?, ?)`,
+				)
+				.run("peer-device", "work", "2026-01-01T00:00:01Z|op", null, now);
+
+			await syncCommand.parseAsync(
+				["status", "--db-path", dbPath, "--config", configPath, "--json"],
+				{
+					from: "user",
+				},
+			);
+
+			const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+				peers?: Array<{
+					scopes?: Array<{ label: string; scope_id: string; bootstrapped: boolean }>;
+				}>;
+			};
+			expect(payload.peers?.[0]?.scopes).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ label: "Work", scope_id: "work", bootstrapped: true }),
+					expect.objectContaining({
+						label: "Personal",
+						bootstrapped: false,
+						scope_id: "personal",
+					}),
+				]),
+			);
+
+			logSpy.mockClear();
+			const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+			try {
+				await syncCommand.parseAsync(["status", "--db-path", dbPath, "--config", configPath], {
+					from: "user",
+				});
+
+				const rendered = writeSpy.mock.calls.map((call) => String(call[0])).join("\n");
+				expect(rendered).toContain("Spaces:");
+				expect(rendered).toContain("Work (work): received");
+				expect(rendered).toContain("Personal (personal): pending");
+			} finally {
+				writeSpy.mockRestore();
+			}
+		} finally {
+			logSpy.mockRestore();
+			store.close();
+			rmSync(tmpDbDir, { recursive: true, force: true });
+		}
+	});
 });
