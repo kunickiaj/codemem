@@ -423,6 +423,8 @@ export interface SyncResetRequired extends SyncResetBoundary {
 		| "boundary_mismatch"
 		| "initial_bootstrap"
 		| "missing_scope"
+		| "scope_inactive"
+		| "stale_epoch"
 		| "unsupported_scope";
 }
 

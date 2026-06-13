@@ -66,15 +66,18 @@ describe("stats command", () => {
 				.run(store.deviceId, now);
 
 			const sessionId = store.startSession({ cwd: process.cwd(), project: "scope-test" });
-			const visibleId = store.remember(sessionId, "discovery", "Visible stats", "Visible body");
-			const hiddenId = store.remember(sessionId, "discovery", "Hidden stats", "Hidden body");
 			store.db
-				.prepare("UPDATE memory_items SET scope_id = ? WHERE id = ?")
-				.run("authorized-team", visibleId);
+				.prepare(
+					`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, scope_id)
+					 VALUES (?, 'discovery', 'Visible stats', 'Visible body', ?, ?, ?)`,
+				)
+				.run(sessionId, now, now, "authorized-team");
 			store.db
-				.prepare("UPDATE memory_items SET scope_id = ? WHERE id = ?")
-				.run("unauthorized-team", hiddenId);
-			await store.flushPendingVectorWrites();
+				.prepare(
+					`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, scope_id)
+					 VALUES (?, 'discovery', 'Hidden stats', 'Hidden body', ?, ?, ?)`,
+				)
+				.run(sessionId, now, now, "unauthorized-team");
 		} finally {
 			store.close();
 		}

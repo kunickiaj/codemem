@@ -75,9 +75,12 @@ const EXPECTED_SYNC_PROTOCOL_VERSION = "2";
 // Types
 // ---------------------------------------------------------------------------
 
+export type SyncFailureCategory = "trust" | "scope" | "connectivity" | "other";
+
 export interface SyncResult {
 	ok: boolean;
 	error?: string;
+	failureCategory?: SyncFailureCategory;
 	address?: string;
 	opsIn: number;
 	opsOut: number;
@@ -114,6 +117,7 @@ export interface SyncScopeResult {
 	scope_id: string;
 	label?: string;
 	ok: boolean;
+	failureCategory?: SyncFailureCategory;
 	opsIn: number;
 	opsOut: number;
 	error?: string;
@@ -480,6 +484,60 @@ function hasLocalRowsInScope(db: Database, scopeId: string): boolean {
 	return row !== undefined;
 }
 
+function categorizeSyncFailure(error: string | undefined): SyncFailureCategory {
+	const lower = String(error ?? "").toLowerCase();
+	if (!lower) return "other";
+	if (lower.includes("401") && lower.includes("unauthorized")) return "trust";
+	if (lower.includes("fingerprint mismatch")) return "trust";
+	if (lower.includes("peer not pinned")) return "trust";
+	if (lower.includes("scope_rejected") || lower.includes("scope rejected")) return "scope";
+	if (lower.includes("missing_scope")) return "scope";
+	if (lower.includes("stale_epoch")) return "scope";
+	if (lower.includes("scope_inactive")) return "scope";
+	if (lower.includes("no dialable peer addresses")) return "connectivity";
+	if (lower.includes("fetch failed")) return "connectivity";
+	if (lower.includes("connection refused")) return "connectivity";
+	if (lower.includes("network")) return "connectivity";
+	if (lower.includes("timeout")) return "connectivity";
+	if (lower.includes("503") || lower.includes("502") || lower.includes("504"))
+		return "connectivity";
+	if (lower.includes("peer status failed")) return "connectivity";
+	if (lower.includes("peer ops fetch failed")) return "connectivity";
+	if (lower.includes("snapshot fetch failed")) return "connectivity";
+	return "other";
+}
+
+function scopeFailureCategory(error: string | undefined): SyncFailureCategory {
+	return categorizeSyncFailure(error);
+}
+
+function scopeResetFailureCategory(reason: SyncResetRequired["reason"]): SyncFailureCategory {
+	switch (reason) {
+		case "missing_scope":
+		case "scope_inactive":
+		case "stale_epoch":
+			return "scope";
+		case "boundary_mismatch":
+		case "generation_mismatch":
+		case "initial_bootstrap":
+		case "stale_cursor":
+		case "unsupported_scope":
+			return "other";
+	}
+	return "other";
+}
+
+function aggregateScopeFailureCategory(
+	results: SyncScopeResult[],
+): SyncFailureCategory | undefined {
+	const failed = results.filter((result) => !result.ok);
+	if (failed.length === 0) return undefined;
+	const categories = new Set(
+		failed.map((result) => result.failureCategory ?? scopeFailureCategory(result.error)),
+	);
+	return categories.size === 1 ? Array.from(categories)[0] : "other";
+}
+
 /**
  * Run the per-Space iteration after a successful default-scope sync.
  *
@@ -585,25 +643,29 @@ async function syncOneScope(
 			// default-scope auto-bootstrap path already enforces in syncOnce
 			// (see "needs_attention:shared_memories_appeared_during_bootstrap").
 			if (hasLocalRowsInScope(db, scopeId)) {
+				const error = "needs_attention:shared_memories_appeared_during_bootstrap";
 				return {
 					scope_id: scopeId,
 					label: scope.label,
 					ok: false,
+					failureCategory: "other",
 					opsIn: 0,
 					opsOut: 0,
-					error: "needs_attention:shared_memories_appeared_during_bootstrap",
+					error,
 					bootstrapped: true,
 				};
 			}
 			const bootstrapResult = applyBootstrapSnapshot(db, peerDeviceId, items, resetInfo, scanner);
 			if (!bootstrapResult.ok) {
+				const error = "bootstrap apply failed";
 				return {
 					scope_id: scopeId,
 					label: scope.label,
 					ok: false,
+					failureCategory: "other",
 					opsIn: 0,
 					opsOut: 0,
-					error: "bootstrap apply failed",
+					error,
 					bootstrapped: true,
 				};
 			}
@@ -617,13 +679,15 @@ async function syncOneScope(
 			};
 		} catch (err) {
 			const detail = err instanceof Error ? err.message.trim() || err.constructor.name : "unknown";
+			const error = `scoped bootstrap failed: ${detail}`;
 			return {
 				scope_id: scopeId,
 				label: scope.label,
 				ok: false,
+				failureCategory: scopeFailureCategory(error),
 				opsIn: 0,
 				opsOut: 0,
-				error: `scoped bootstrap failed: ${detail}`,
+				error,
 				bootstrapped: true,
 			};
 		}
@@ -666,19 +730,23 @@ async function syncOneScope(
 					case "generation_mismatch":
 					case "boundary_mismatch":
 					case "missing_scope":
+					case "scope_inactive":
+					case "stale_epoch":
 					case "unsupported_scope":
 						return payload.reason;
 					default:
 						return "stale_cursor";
 				}
 			})();
+			const error = `reset_required:${reason}`;
 			return {
 				scope_id: scopeId,
 				label: scope.label,
 				ok: false,
+				failureCategory: scopeResetFailureCategory(reason),
 				opsIn: 0,
 				opsOut: 0,
-				error: `reset_required:${reason}`,
+				error,
 				resetRequired: {
 					reset_required: true,
 					reason,
@@ -699,25 +767,29 @@ async function syncOneScope(
 		if (status !== 200 || payload == null) {
 			const detail = errorDetail(payload);
 			const suffix = detail ? ` (${status}: ${detail})` : ` (${status})`;
+			const error = `peer scoped ops fetch failed${suffix}`;
 			return {
 				scope_id: scopeId,
 				label: scope.label,
 				ok: false,
+				failureCategory: scopeFailureCategory(error),
 				opsIn: 0,
 				opsOut: 0,
-				error: `peer scoped ops fetch failed${suffix}`,
+				error,
 				bootstrapped: false,
 			};
 		}
 
 		if (!isValidIncrementalOpsResponse(payload)) {
+			const error = "invalid scoped ops response";
 			return {
 				scope_id: scopeId,
 				label: scope.label,
 				ok: false,
+				failureCategory: "other",
 				opsIn: 0,
 				opsOut: 0,
-				error: "invalid scoped ops response",
+				error,
 				bootstrapped: false,
 			};
 		}
@@ -727,13 +799,15 @@ async function syncOneScope(
 			(op) => op.device_id !== peerDeviceId || op.clock_device_id !== peerDeviceId,
 		);
 		if (mismatched) {
+			const error = `inbound op device mismatch:${mismatched.op_id}`;
 			return {
 				scope_id: scopeId,
 				label: scope.label,
 				ok: false,
+				failureCategory: "other",
 				opsIn: 0,
 				opsOut: 0,
-				error: `inbound op device mismatch:${mismatched.op_id}`,
+				error,
 				bootstrapped: false,
 			};
 		}
@@ -743,13 +817,15 @@ async function syncOneScope(
 		});
 		if (applied.rejected > 0) {
 			const reason = applied.rejections[0]?.reason ?? "scope_rejected";
+			const error = `inbound scope rejected:${reason}`;
 			return {
 				scope_id: scopeId,
 				label: scope.label,
 				ok: false,
+				failureCategory: "scope",
 				opsIn: 0,
 				opsOut: 0,
-				error: `inbound scope rejected:${reason}`,
+				error,
 				bootstrapped: false,
 			};
 		}
@@ -770,13 +846,15 @@ async function syncOneScope(
 		} catch (queueErr) {
 			const fallback = await bestEffortMaintainVectorsForSyncFallback(db, vectorWork);
 			if (fallback.errors.length > 0) {
+				const error = `vector catch-up failed: ${queueErr instanceof Error ? queueErr.message : String(queueErr)}; fallback failed: ${fallback.errors.join("; ")}`;
 				return {
 					scope_id: scopeId,
 					label: scope.label,
 					ok: false,
+					failureCategory: "other",
 					opsIn: 0,
 					opsOut: 0,
-					error: `vector catch-up failed: ${queueErr instanceof Error ? queueErr.message : String(queueErr)}; fallback failed: ${fallback.errors.join("; ")}`,
+					error,
 					bootstrapped: false,
 				};
 			}
@@ -797,13 +875,15 @@ async function syncOneScope(
 		};
 	} catch (err) {
 		const detail = err instanceof Error ? err.message.trim() || err.constructor.name : "unknown";
+		const error = `scoped incremental failed: ${detail}`;
 		return {
 			scope_id: scopeId,
 			label: scope.label,
 			ok: false,
+			failureCategory: scopeFailureCategory(error),
 			opsIn: 0,
 			opsOut: 0,
-			error: `scoped incremental failed: ${detail}`,
+			error,
 			bootstrapped: false,
 		};
 	}
@@ -856,7 +936,14 @@ export async function syncOnce(
 		.get();
 	const pinnedFingerprint = pinRow?.pinned_fingerprint ?? "";
 	if (!pinnedFingerprint) {
-		return { ok: false, error: "peer not pinned", opsIn: 0, opsOut: 0, addressErrors: [] };
+		return {
+			ok: false,
+			error: "peer not pinned",
+			failureCategory: "trust",
+			opsIn: 0,
+			opsOut: 0,
+			addressErrors: [],
+		};
 	}
 
 	// Read cursors
@@ -870,7 +957,7 @@ export async function syncOnce(
 		const detail = err instanceof Error ? err.message.trim() || err.constructor.name : "unknown";
 		const error = `device identity unavailable: ${detail}`;
 		recordSyncAttempt(db, peerDeviceId, { ok: false, error });
-		return { ok: false, error, opsIn: 0, opsOut: 0, addressErrors: [] };
+		return { ok: false, error, failureCategory: "other", opsIn: 0, opsOut: 0, addressErrors: [] };
 	}
 
 	const addressErrors: Array<{ address: string; error: string }> = [];
@@ -966,6 +1053,7 @@ export async function syncOnce(
 								ok: false,
 								address: baseUrl,
 								error: `needs attention: ${postFetchSharedCount} shared memory change(s) appeared during initial bootstrap fetch`,
+								failureCategory: "other",
 								opsIn: 0,
 								opsOut: 0,
 								addressErrors: [],
@@ -1015,6 +1103,7 @@ export async function syncOnce(
 						return {
 							ok: bootstrapAllOk,
 							address: baseUrl,
+							failureCategory: aggregateScopeFailureCategory(scopedAfterBootstrap.results),
 							opsIn: bootstrapResult.applied + scopedAfterBootstrap.totalOpsIn,
 							opsOut: 0,
 							addressErrors: [],
@@ -1092,6 +1181,7 @@ export async function syncOnce(
 						ok: false,
 						address: baseUrl,
 						error: `needs attention: ${dirtyLocal.count} unsynced shared memory change(s) block automatic reset`,
+						failureCategory: "other",
 						opsIn: 0,
 						opsOut: 0,
 						addressErrors: [],
@@ -1118,6 +1208,7 @@ export async function syncOnce(
 							ok: false,
 							address: baseUrl,
 							error: `needs attention: ${dirtyAfterFetch.count} unsynced shared memory change(s) appeared during bootstrap fetch`,
+							failureCategory: "other",
 							opsIn: 0,
 							opsOut: 0,
 							addressErrors: [],
@@ -1160,6 +1251,7 @@ export async function syncOnce(
 						ok: false,
 						address: baseUrl,
 						error: `bootstrap failed: ${msg}`,
+						failureCategory: "other",
 						opsIn: 0,
 						opsOut: 0,
 						addressErrors: [],
@@ -1283,6 +1375,7 @@ export async function syncOnce(
 			return {
 				ok: allScopesOk,
 				address: baseUrl,
+				failureCategory: aggregateScopeFailureCategory(scopedAfterIncremental.results),
 				opsIn: applied.applied + scopedAfterIncremental.totalOpsIn,
 				opsOut: outboundOps.length,
 				opsSkipped,
@@ -1310,7 +1403,14 @@ export async function syncOnce(
 		error,
 		capabilities: lastCapabilityDiagnostics,
 	});
-	return { ok: false, error, opsIn: 0, opsOut: 0, addressErrors };
+	return {
+		ok: false,
+		error,
+		failureCategory: categorizeSyncFailure(error),
+		opsIn: 0,
+		opsOut: 0,
+		addressErrors,
+	};
 }
 
 // ---------------------------------------------------------------------------

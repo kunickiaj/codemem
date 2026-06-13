@@ -9,6 +9,8 @@ import { cleanText } from "./internal";
 import type {
 	DiscoveredDeviceLike,
 	UiCoordinatorApprovalSummary,
+	UiSyncFailureCategory,
+	UiSyncRunItem,
 	UiSyncRunResponse,
 	UiSyncSkippedOutDetail,
 } from "./types";
@@ -94,8 +96,8 @@ export function summarizeSyncRunResult(payload: UiSyncRunResponse): {
 			warning: false,
 		};
 	}
-	const unauthorizedFailures = failedItems.filter((item) =>
-		isTrustFailureError(cleanText(item.error)),
+	const unauthorizedFailures = failedItems.filter(
+		(item) => failureCategoryForItem(item) === "trust",
 	);
 	if (unauthorizedFailures.length === failedItems.length) {
 		return {
@@ -105,9 +107,7 @@ export function summarizeSyncRunResult(payload: UiSyncRunResponse): {
 			warning: true,
 		};
 	}
-	const scopeFailures = failedItems.filter((item) =>
-		isScopeMembershipFailureError(cleanText(item.error)),
-	);
+	const scopeFailures = failedItems.filter((item) => failureCategoryForItem(item) === "scope");
 	if (scopeFailures.length === failedItems.length) {
 		return {
 			ok: false,
@@ -129,6 +129,24 @@ export function summarizeSyncRunResult(payload: UiSyncRunResponse): {
 		message: error || "Sync failed for at least one device.",
 		warning: true,
 	};
+}
+
+function failureCategoryForItem(item: UiSyncRunItem): UiSyncFailureCategory | null {
+	if (item.failureCategory) return item.failureCategory;
+	const scopeCategories = Array.isArray(item.perScopeResults)
+		? item.perScopeResults
+				.filter((scope) => scope && scope.ok === false)
+				.map((scope) => scope.failureCategory)
+				.filter((category): category is UiSyncFailureCategory => Boolean(category))
+		: [];
+	if (scopeCategories.length) {
+		const unique = new Set(scopeCategories);
+		return unique.size === 1 ? scopeCategories[0] : "other";
+	}
+	const error = cleanText(item.error);
+	if (isTrustFailureError(error)) return "trust";
+	if (isScopeMembershipFailureError(error)) return "scope";
+	return null;
 }
 
 /**

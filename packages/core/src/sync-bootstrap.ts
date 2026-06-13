@@ -130,7 +130,9 @@ export async function fetchAllSnapshotPages(
 
 		const [status, payload] = await requestJson("GET", url, { headers, timeoutS });
 		if (status !== 200 || !payload) {
-			const detail = payload?.error ? String(payload.error) : `status ${status}`;
+			const error = payload?.error ? String(payload.error) : "";
+			const reason = payload?.reason ? String(payload.reason) : "";
+			const detail = error ? (reason ? `${error}:${reason}` : error) : `status ${status}`;
 			throw new Error(`snapshot fetch failed: ${detail}`);
 		}
 

@@ -575,7 +575,7 @@ export {
 	storePrivateKeyKeychain,
 	validateExistingKeypair,
 } from "./sync-identity.js";
-export type { SyncPassOptions, SyncResult } from "./sync-pass.js";
+export type { SyncFailureCategory, SyncPassOptions, SyncResult } from "./sync-pass.js";
 export {
 	consecutiveConnectivityFailures,
 	cursorAdvances,
