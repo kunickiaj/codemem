@@ -556,11 +556,12 @@ describe("loadReplicationOpsSince", () => {
 		createdAt: string,
 		deviceId = "dev-a",
 		scopeId: string | null = null,
+		clockDeviceId = deviceId,
 	) {
 		db.prepare(
 			`INSERT INTO replication_ops(op_id, entity_type, entity_id, op_type, payload_json, clock_rev, clock_updated_at, clock_device_id, device_id, created_at, scope_id)
 			 VALUES (?, 'memory_item', ?, 'upsert', NULL, 1, ?, ?, ?, ?, ?)`,
-		).run(opId, `ent-${opId}`, createdAt, deviceId, deviceId, createdAt, scopeId);
+		).run(opId, `ent-${opId}`, createdAt, clockDeviceId, deviceId, createdAt, scopeId);
 	}
 
 	it("returns all ops when cursor is null", () => {
@@ -598,6 +599,7 @@ describe("loadReplicationOpsSince", () => {
 	it("filters by deviceId", () => {
 		insertOp("op-1", "2026-01-01T00:00:00Z", "dev-a");
 		insertOp("op-2", "2026-01-01T00:00:01Z", "dev-b");
+		insertOp("op-3", "2026-01-01T00:00:02Z", "dev-a", null, "dev-third");
 
 		const [ops] = loadReplicationOpsSince(db, null, 100, "dev-a");
 		expect(ops).toHaveLength(1);
@@ -697,11 +699,12 @@ describe("loadReplicationOpsForPeer", () => {
 		createdAt: string,
 		deviceId = "dev-a",
 		scopeId: string | null = null,
+		clockDeviceId = deviceId,
 	) {
 		db.prepare(
 			`INSERT INTO replication_ops(op_id, entity_type, entity_id, op_type, payload_json, clock_rev, clock_updated_at, clock_device_id, device_id, created_at, scope_id)
 			 VALUES (?, 'memory_item', ?, 'upsert', NULL, 1, ?, ?, ?, ?, ?)`,
-		).run(opId, `ent-${opId}`, createdAt, deviceId, deviceId, createdAt, scopeId);
+		).run(opId, `ent-${opId}`, createdAt, clockDeviceId, deviceId, createdAt, scopeId);
 	}
 
 	it("returns reset_required when the cursor is older than the retained floor", () => {
@@ -796,6 +799,7 @@ describe("loadReplicationOpsForPeer", () => {
 		insertOp("op-work", "2026-01-01T00:00:08Z", "dev-a", "work-scope");
 
 		const result = loadReplicationOpsForPeer(db, {
+			deviceId: "dev-a",
 			scopeId: "work-scope",
 			since: "2026-01-01T00:00:06Z|work-floor",
 			generation: 7,
@@ -809,6 +813,42 @@ describe("loadReplicationOpsForPeer", () => {
 			expect(result.boundary.snapshot_id).toBe("snapshot-work");
 			expect(result.ops.map((op) => op.op_id)).toEqual(["op-work"]);
 			expect(result.nextCursor).toBe("2026-01-01T00:00:08Z|op-work");
+		}
+	});
+
+	it("scoped peer op windows only emit ops authored by the serving device", () => {
+		setSyncResetState(
+			db,
+			{
+				generation: 7,
+				snapshot_id: "snapshot-work",
+				baseline_cursor: "2026-01-01T00:00:05Z|work-base",
+				retained_floor_cursor: "2026-01-01T00:00:06Z|work-floor",
+			},
+			"work-scope",
+		);
+		insertOp("op-local-author", "2026-01-01T00:00:07Z", "dev-a", "work-scope");
+		insertOp("op-third-author", "2026-01-01T00:00:08Z", "dev-third", "work-scope");
+		insertOp("op-third-clock", "2026-01-01T00:00:09Z", "dev-a", "work-scope", "dev-third");
+
+		const result = loadReplicationOpsForPeer(db, {
+			deviceId: "dev-a",
+			scopeId: "work-scope",
+			since: "2026-01-01T00:00:06Z|work-floor",
+			generation: 7,
+			snapshotId: "snapshot-work",
+			baselineCursor: "2026-01-01T00:00:05Z|work-base",
+		});
+
+		expect(result.reset_required).toBe(false);
+		if (!result.reset_required) {
+			expect(result.ops.map((op) => op.op_id)).toEqual(["op-local-author"]);
+			expect(result.ops[0]).toMatchObject({
+				clock_device_id: "dev-a",
+				device_id: "dev-a",
+				scope_id: "work-scope",
+			});
+			expect(result.nextCursor).toBe("2026-01-01T00:00:07Z|op-local-author");
 		}
 	});
 

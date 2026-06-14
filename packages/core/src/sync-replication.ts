@@ -52,15 +52,23 @@ export interface SyncResetRequired extends SyncResetBoundary {
 		| "unsupported_scope";
 }
 
-export interface LoadReplicationOpsForPeerOptions {
+interface LoadReplicationOpsForPeerBaseOptions {
 	since: string | null;
 	limit?: number;
-	deviceId?: string;
-	scopeId?: string | null;
 	generation?: number | null;
 	snapshotId?: string | null;
 	baselineCursor?: string | null;
 }
+
+export type LoadReplicationOpsForPeerOptions =
+	| (LoadReplicationOpsForPeerBaseOptions & {
+			deviceId?: string;
+			scopeId?: null;
+	  })
+	| (LoadReplicationOpsForPeerBaseOptions & {
+			deviceId: string;
+			scopeId: string;
+	  });
 
 export type LoadReplicationOpsForPeerResult =
 	| {
@@ -987,7 +995,9 @@ export function loadReplicationOpsSince(
 	}
 
 	if (deviceId) {
-		conditions.push(or(eq(t.device_id, deviceId), eq(t.device_id, "local")));
+		conditions.push(
+			or(and(eq(t.device_id, deviceId), eq(t.clock_device_id, deviceId)), eq(t.device_id, "local")),
+		);
 	}
 
 	if (scopeFilterRequested) {
@@ -1079,6 +1089,11 @@ export function loadReplicationOpsForPeer(
 		db,
 		since,
 		options.limit,
+		// `/v1/ops` is an author stream, not a Space relay. Even when a
+		// scoped request filters by `scope_id`, this keeps returned ops authored
+		// by the serving device (plus legacy `local` rows) so receivers can keep
+		// rejecting batches whose device_id / clock_device_id do not match the
+		// authenticated peer.
 		options.deviceId,
 		effectiveScopeId,
 	);
