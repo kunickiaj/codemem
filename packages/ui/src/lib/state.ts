@@ -189,6 +189,7 @@ export interface CachedPairingPayload {
 export interface CachedSyncJoinRequest {
 	display_name?: string;
 	device_id?: string;
+	fingerprint?: string;
 	request_id?: string;
 }
 

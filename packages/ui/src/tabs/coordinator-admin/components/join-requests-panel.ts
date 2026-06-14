@@ -44,13 +44,16 @@ export function renderJoinRequestsPanel(deps: JoinRequestsPanelDeps) {
 					items.map((item) => {
 						const requestId = String(item.request_id || "").trim();
 						const deviceId = String(item.device_id || "unknown-device");
-						const displayName = String(item.display_name || deviceId);
+						const displayName = String(item.display_name || deviceId).trim() || deviceId;
+						const fingerprint = String(item.fingerprint || "").trim();
+						const advancedDetails = [`Device ID ${deviceId}`];
+						if (fingerprint) advancedDetails.push(`Fingerprint ${fingerprint}`);
 						const pending = coordinatorAdminState.joinReviewPendingId === requestId;
 						return h(
 							"div",
 							{ class: "peer-card peer-card--padded", key: requestId || deviceId },
 							h("div", { class: "peer-title" }, h("strong", null, displayName)),
-							h("div", { class: "peer-meta" }, `Advanced: Device ID ${deviceId}`),
+							h("div", { class: "peer-meta" }, `Advanced: ${advancedDetails.join(" · ")}`),
 							h(
 								"div",
 								{ class: "peer-actions" },
