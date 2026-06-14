@@ -44,8 +44,8 @@ semantics, use a plain `<button aria-controls aria-expanded>` toggle
 next to a region that conditionally renders. Examples in the codebase:
 
 - "Advanced sharing scope" in the device detail drawer.
-- "Show archived" groups toggle in Coordinator Admin.
-- Coordinator Admin "Scope defaults" drawer inside each group card.
+- "Show archived" Teams toggle in Teams.
+- Teams "Scope defaults" drawer inside each Team card.
 
 Use `var(--sp-3)` gap between the toggle and its revealed region, and
 keep the region inside the same card when possible so proximity
