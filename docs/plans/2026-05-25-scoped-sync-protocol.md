@@ -129,6 +129,14 @@ This is a single round trip. No separate `/v1/scopes` endpoint. A separate endpo
 
 No new signing mechanism. The existing `buildAuthHeaders` HMAC covers `(method, full_url_including_query, body_bytes)`. `scope_id` in the query string is therefore already cryptographically bound to the signed request. For POST, `scope_id` is in the signed JSON body.
 
+### Capability header threat model
+
+`X-Codemem-Sync-Capability` is an unsigned advertisement header. The server treats it as a feature-negotiation hint, not an authorization claim. Authentication still happens through the normal signed sync request headers before the server reads capability-dependent behavior. `/v1/status` can also authenticate a not-yet-paired worker through a valid bootstrap grant; that grant path is part of the same bounded metadata-disclosure model.
+
+The bounded disclosure is intentional for this slice: an authenticated paired peer, or a bootstrap worker with a valid grant and matching membership rows, can claim scoped capability and make `/v1/status` include the `authorized_scopes` entries that caller is already a member of. That reveals Space IDs/labels and reset boundaries for scopes inside the paired-peer or bootstrap-grant trust boundary. It does **not** authorize scoped data reads or writes. `/v1/ops` and `/v1/snapshot` still require signed requests and membership checks for each `scope_id`; unauthorized or stale memberships fail closed with scoped reset/error responses.
+
+If future product requirements treat scope membership enumeration itself as too sensitive for an already-paired device or a bootstrap worker with a valid grant, capability negotiation should move into signed request material or `/v1/status` should gate enumeration to pinned peers only. Until then, the header is acceptable only as metadata negotiation inside the authenticated peer/bootstrap trust boundary.
+
 ### Per-scope boundary
 
 `sync_reset_state_v2` is already keyed by `scope_id`. No schema change. `getSyncResetState(db, scope_id)` returns the per-scope row, or a synthesized default if missing.

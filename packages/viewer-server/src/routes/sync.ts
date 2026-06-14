@@ -2163,9 +2163,14 @@ const PEERS_QUERY = `
  * honor scoped-sync wire features such as explicit `scope_id` parameters
  * and `/v1/status` `authorized_scopes` enumeration.
  *
- * Unsigned headers are fine here: the server is computing what it is
- * willing to do, not granting access. Per-scope authorization is enforced
- * separately via the membership cache when a scope_id is actually used.
+ * Threat model: this header is intentionally only a best-effort capability
+ * advertisement. It is not signed, so an authenticated paired peer — or a
+ * bootstrap worker presenting a valid grant on `/v1/status` — can claim
+ * `scoped` support and cause status to enumerate the scopes that caller is
+ * already authorized to see. That is metadata disclosure inside the paired-peer
+ * or bootstrap-grant trust boundary, not data authorization. Every scoped data
+ * path still requires signed requests and checks membership before returning
+ * scope contents.
  */
 function negotiatedSyncCapability(c: Context) {
 	const header = c.req.header(SYNC_CAPABILITY_HEADER) ?? null;

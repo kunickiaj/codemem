@@ -256,9 +256,9 @@ function capabilityDiagnostics(peerCapability: unknown): SyncCapabilityDiagnosti
 }
 
 function capabilityHeader(): Record<string, string> {
-	// Diagnostic advertisement only. The receiver must never use this unsigned
-	// GET header for authorization; behavioral negotiation comes from response
-	// payloads and signed POST bodies.
+	// Diagnostic advertisement only. This unsigned GET header can opt an
+	// authenticated paired peer into scoped metadata enumeration, but never into
+	// scoped data access; receivers must still authorize every scoped request.
 	return { [SYNC_CAPABILITY_HEADER]: LOCAL_SYNC_CAPABILITY };
 }
 
