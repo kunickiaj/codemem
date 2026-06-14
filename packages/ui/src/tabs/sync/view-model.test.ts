@@ -467,6 +467,29 @@ describe("summarizeSyncRunResult", () => {
 		});
 	});
 
+	it("prefers structured trust failure categories over error text", () => {
+		expect(
+			summarizeSyncRunResult({
+				items: [
+					{
+						peer_device_id: "peer-a",
+						ok: false,
+						failureCategory: "trust",
+						error: "status request failed",
+						opsIn: 0,
+						opsOut: 0,
+						addressErrors: [],
+					},
+				],
+			}),
+		).toEqual({
+			ok: false,
+			message:
+				"This device no longer has two-way trust with the peer. Pair it again from the other device, or remove the stale local record if it should be gone.",
+			warning: true,
+		});
+	});
+
 	it("routes scope_rejected failures to the Teams Space-access message", () => {
 		expect(
 			summarizeSyncRunResult({
@@ -512,6 +535,52 @@ describe("summarizeSyncRunResult", () => {
 		});
 	});
 
+	it("prefers structured scope failure categories over generic text", () => {
+		expect(
+			summarizeSyncRunResult({
+				items: [
+					{
+						peer_device_id: "peer-a",
+						ok: false,
+						failureCategory: "scope",
+						error: "sync failed",
+						opsIn: 0,
+						opsOut: 0,
+						addressErrors: [],
+					},
+				],
+			}),
+		).toEqual({
+			ok: false,
+			message:
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review Space access for this device in Teams, then sync again.",
+			warning: true,
+		});
+	});
+
+	it("uses structured per-scope categories when the top-level item lacks one", () => {
+		expect(
+			summarizeSyncRunResult({
+				items: [
+					{
+						peer_device_id: "peer-a",
+						ok: false,
+						error: "scoped sync incomplete",
+						opsIn: 0,
+						opsOut: 0,
+						addressErrors: [],
+						perScopeResults: [{ scope_id: "oss", ok: false, failureCategory: "scope" }],
+					},
+				],
+			}),
+		).toEqual({
+			ok: false,
+			message:
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review Space access for this device in Teams, then sync again.",
+			warning: true,
+		});
+	});
+
 	it("keeps non-membership scoped sync incomplete failures generic", () => {
 		expect(
 			summarizeSyncRunResult({
@@ -529,6 +598,47 @@ describe("summarizeSyncRunResult", () => {
 		).toEqual({
 			ok: false,
 			message: "scoped sync incomplete: oss=peer scoped ops fetch failed (503: unavailable)",
+			warning: true,
+		});
+	});
+
+	it("keeps structured connectivity and other failures generic", () => {
+		expect(
+			summarizeSyncRunResult({
+				items: [
+					{
+						peer_device_id: "peer-a",
+						ok: false,
+						failureCategory: "connectivity",
+						error: "peer scoped ops fetch failed (503: unavailable)",
+						opsIn: 0,
+						opsOut: 0,
+						addressErrors: [],
+					},
+				],
+			}),
+		).toEqual({
+			ok: false,
+			message: "peer scoped ops fetch failed (503: unavailable)",
+			warning: true,
+		});
+		expect(
+			summarizeSyncRunResult({
+				items: [
+					{
+						peer_device_id: "peer-b",
+						ok: false,
+						failureCategory: "other",
+						error: "invalid scoped ops response",
+						opsIn: 0,
+						opsOut: 0,
+						addressErrors: [],
+					},
+				],
+			}),
+		).toEqual({
+			ok: false,
+			message: "invalid scoped ops response",
 			warning: true,
 		});
 	});

@@ -858,6 +858,8 @@ export interface ApiSyncOpsResetRequiredResponse extends ApiSyncResetBoundary {
 		| "generation_mismatch"
 		| "boundary_mismatch"
 		| "missing_scope"
+		| "scope_inactive"
+		| "stale_epoch"
 		| "unsupported_scope";
 }
 

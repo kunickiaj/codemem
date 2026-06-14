@@ -38,12 +38,23 @@ export interface UiSyncRunItem {
 	peer_device_id: string;
 	ok: boolean;
 	error?: string;
+	failureCategory?: UiSyncFailureCategory;
 	address?: string;
 	opsIn: number;
 	opsOut: number;
 	opsSkipped?: number;
 	skipped_out?: UiSyncSkippedOutDetail | null;
 	addressErrors: Array<{ address: string; error: string }>;
+	perScopeResults?: UiSyncScopeResult[];
+}
+
+export type UiSyncFailureCategory = "trust" | "scope" | "connectivity" | "other";
+
+export interface UiSyncScopeResult {
+	scope_id?: string;
+	ok?: boolean;
+	error?: string;
+	failureCategory?: UiSyncFailureCategory;
 }
 
 export type UiSyncSkippedOutReason = "scope_filter" | "visibility_filter" | "project_filter";
