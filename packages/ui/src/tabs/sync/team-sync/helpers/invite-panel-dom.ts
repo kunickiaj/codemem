@@ -32,14 +32,14 @@ export function applySyncInviteReadinessState() {
 		syncCreateInviteButton.disabled = false;
 		hint.hidden = false;
 		hint.textContent = activeGroup
-			? `Remote coordinator admin is ready for ${activeGroup}. Advanced admin tools now live in Coordinator Admin.`
-			: "Remote coordinator admin is ready. Advanced admin tools now live in Coordinator Admin.";
+			? `Teams is ready for ${activeGroup}. Advanced admin tools now live in Teams.`
+			: "Teams is ready. Advanced admin tools now live in Teams.";
 		return;
 	}
 	const message =
 		readiness === "partial"
-			? "Finish coordinator admin setup before creating remote invites. Use Coordinator Admin to check what is missing."
-			: "Configure a coordinator URL, group, and admin secret before creating remote invites. Use Coordinator Admin to finish setup.";
+			? "Finish Teams setup before creating remote invites. Use Teams to check what is missing."
+			: "Configure a coordinator URL, Team, and admin secret before creating remote invites. Use Teams to finish setup.";
 	syncCreateInviteButton.disabled = true;
 	hint.hidden = false;
 	hint.textContent = message;

@@ -17,32 +17,32 @@ export function coordinatorAdminSummary(): CoordinatorAdminSummary {
 	if (!status) {
 		return {
 			readiness: "partial",
-			title: "Checking coordinator admin readiness…",
-			detail: "Loading local coordinator admin configuration from the viewer server.",
+			title: "Checking Teams readiness…",
+			detail: "Loading local Teams configuration from the viewer server.",
 		};
 	}
 	if (status.readiness === "ready") {
 		return {
 			readiness: "ready",
-			title: "Coordinator admin is ready",
+			title: "Teams is ready",
 			detail:
-				"This viewer can use the local admin configuration to manage invites, join requests, and enrolled devices without exposing the admin secret to the browser.",
+				"This viewer can use the local Teams admin configuration to manage invites, join requests, and enrolled devices without exposing the admin secret to the browser.",
 		};
 	}
 	if (status.readiness === "partial") {
 		return {
 			readiness: "partial",
-			title: "Coordinator admin setup is incomplete",
+			title: "Teams setup is incomplete",
 			detail:
 				status.has_admin_secret === false
-					? "Set a coordinator admin secret for the viewer server before using invite and device admin actions."
-					: "Finish configuring the coordinator target and group before using admin actions.",
+					? "Set a coordinator admin secret for the viewer server before using Teams invite and device actions."
+					: "Finish configuring the coordinator target and Team before using Teams actions.",
 		};
 	}
 	return {
 		readiness: "not_configured",
-		title: "Coordinator admin is not configured",
+		title: "Teams is not configured",
 		detail:
-			"Set a coordinator URL, group, and admin secret locally to enable remote coordinator administration from this viewer.",
+			"Set a coordinator URL, Team, and admin secret locally to enable remote Teams administration from this viewer.",
 	};
 }

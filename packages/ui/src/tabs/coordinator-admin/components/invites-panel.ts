@@ -40,7 +40,7 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 			{ class: "peer-submeta" },
 			summary.readiness === "ready"
 				? "Generate an invite for the selected Team. Default Space access is controlled by that Team's auto-grant setting."
-				: "Finish setup first. Invite creation stays disabled until the local coordinator admin configuration is ready.",
+				: "Finish setup first. Invite creation stays disabled until the local Teams configuration is ready.",
 		),
 		h(
 			"form",

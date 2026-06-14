@@ -133,7 +133,7 @@ function renderShell() {
 				h(
 					RadixTabs,
 					{
-						ariaLabel: "Coordinator admin sections",
+						ariaLabel: "Teams sections",
 						listClassName: "coordinator-admin-tabs-list",
 						onValueChange: (value) => {
 							coordinatorAdminState.activeSection = (value as AdminSection) || "groups";
