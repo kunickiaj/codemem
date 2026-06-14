@@ -3519,6 +3519,130 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("picks up a Space granted after an initial scoped sync", async () => {
+			const source = createRealSyncStore("codemem-source-midflight-sync-test-");
+			const receiver = createRealSyncStore("codemem-receiver-midflight-sync-test-");
+			const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
+			let server: Awaited<ReturnType<typeof startTestSyncServer>> | null = null;
+			try {
+				const [sourceDeviceId, sourceFingerprint] = ensureDeviceIdentity(source.store.db, {
+					keysDir: source.keysDir,
+				});
+				const sourcePublicKey = loadPublicKey(source.keysDir);
+				const [receiverDeviceId, receiverFingerprint] = ensureDeviceIdentity(receiver.store.db, {
+					keysDir: receiver.keysDir,
+				});
+				const receiverPublicKey = loadPublicKey(receiver.keysDir);
+				if (!sourcePublicKey || !receiverPublicKey) throw new Error("missing test public key");
+
+				const now = "2026-01-01T00:00:00.000Z";
+				source.store.db
+					.prepare(
+						`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
+						 VALUES (?, ?, ?, ?)`,
+					)
+					.run(receiverDeviceId, receiverFingerprint, receiverPublicKey, now);
+				receiver.store.db
+					.prepare(
+						`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
+						 VALUES (?, ?, ?, ?)`,
+					)
+					.run(sourceDeviceId, sourceFingerprint, sourcePublicKey, now);
+
+				const initialScope = "scope-a";
+				const laterScope = "scope-b";
+				grantSyncScopeToDevices(source.store, initialScope, [sourceDeviceId, receiverDeviceId]);
+				grantSyncScopeToDevices(source.store, laterScope, [sourceDeviceId]);
+				grantSyncScopeToDevices(receiver.store, initialScope, [sourceDeviceId, receiverDeviceId]);
+				for (const scopeId of [initialScope, laterScope]) {
+					core.setSyncResetState(
+						source.store.db,
+						{
+							generation: 1,
+							snapshot_id: `snapshot-${scopeId}`,
+							baseline_cursor: null,
+							retained_floor_cursor: null,
+						},
+						scopeId,
+					);
+				}
+				const sourceSessionId = insertTestSession(source.store.db);
+				for (const scopeId of [initialScope, laterScope]) {
+					for (let index = 1; index <= 2; index += 1) {
+						insertTestMemory(source.store, {
+							sessionId: sourceSessionId,
+							kind: "discovery",
+							title: `${scopeId} midflight item ${index}`,
+							bodyText: `Body for ${scopeId} midflight item ${index}`,
+							metadata: { clock_device_id: sourceDeviceId },
+							originDeviceId: sourceDeviceId,
+							createdAt: `2026-01-02T00:00:0${index}.000Z`,
+							scopeId,
+						});
+					}
+				}
+
+				process.env.CODEMEM_KEYS_DIR = source.keysDir;
+				server = await startTestSyncServer(createSyncApp({ storeFactory: () => source.store }));
+
+				const first = await core.syncOnce(receiver.store.db, sourceDeviceId, [server.url], {
+					keysDir: receiver.keysDir,
+					scanner: receiver.store.scanner,
+				});
+
+				if (!first.ok) throw new Error(`first syncOnce failed: ${first.error ?? "unknown"}`);
+				expect(first.perScopeResults?.map((scope) => scope.scope_id)).toEqual([initialScope]);
+				expect(
+					receiver.store.db
+						.prepare("SELECT COUNT(1) AS total FROM memory_items WHERE scope_id = ?")
+						.get(initialScope),
+				).toMatchObject({ total: 2 });
+				expect(
+					receiver.store.db
+						.prepare("SELECT COUNT(1) AS total FROM memory_items WHERE scope_id = ?")
+						.get(laterScope),
+				).toMatchObject({ total: 0 });
+
+				// Isolate the second pass from the legacy/default `/v1/ops` pull:
+				// if `scope-b` arrives below, it must come from the newly granted
+				// scoped path rather than from an unscoped catch-up window.
+				core.setReplicationCursor(receiver.store.db, sourceDeviceId, {
+					lastApplied: "9999-01-01T00:00:00.000Z|legacy-skip",
+				});
+
+				grantSyncScopeToDevices(source.store, laterScope, [sourceDeviceId, receiverDeviceId]);
+				grantSyncScopeToDevices(receiver.store, laterScope, [sourceDeviceId, receiverDeviceId]);
+
+				const second = await core.syncOnce(receiver.store.db, sourceDeviceId, [server.url], {
+					keysDir: receiver.keysDir,
+					scanner: receiver.store.scanner,
+				});
+
+				if (!second.ok) throw new Error(`second syncOnce failed: ${second.error ?? "unknown"}`);
+				expect(second.perScopeResults?.map((scope) => scope.scope_id)).toEqual([
+					initialScope,
+					laterScope,
+				]);
+				expect(
+					second.perScopeResults?.find((scope) => scope.scope_id === laterScope),
+				).toMatchObject({
+					bootstrapped: true,
+					opsIn: 2,
+				});
+				expect(
+					receiver.store.db
+						.prepare("SELECT COUNT(1) AS total FROM memory_items WHERE scope_id = ?")
+						.get(laterScope),
+				).toMatchObject({ total: 2 });
+			} finally {
+				await server?.close();
+				if (previousKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
+				receiver.cleanup();
+				source.cleanup();
+			}
+		});
+
 		it("allows /v1/status with a valid bootstrap grant", async () => {
 			const { syncApp, ensureStore, cleanup } = createTestApp();
 			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-bootstrap-grant-test-"));
