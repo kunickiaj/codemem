@@ -243,6 +243,13 @@ describe("coordinatorStatusSnapshot", () => {
 			const second = await coordinatorStatusSnapshot(store, config);
 			const secondFetchCount = fetchCount;
 			const secondPresenceFetchCount = presenceFetchCount;
+			const disabledSyncConfig = readCoordinatorSyncConfig({
+				sync_enabled: false,
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_group: "team-a",
+			});
+			const disabledSync = await coordinatorStatusSnapshot(store, disabledSyncConfig);
+			const disabledSyncFetchCount = fetchCount;
 			const changedAdvertiseConfig = readCoordinatorSyncConfig({
 				sync_enabled: true,
 				sync_coordinator_url: "https://coord.example.test",
@@ -254,11 +261,14 @@ describe("coordinatorStatusSnapshot", () => {
 			process.env.CODEMEM_KEYS_DIR = alternateKeysDir;
 			await coordinatorStatusSnapshot(store, changedAdvertiseConfig);
 
+			expect(first.sync_enabled).toBe(true);
 			expect(first.discovered_peer_count).toBe(1);
 			expect(second.discovered_peer_count).toBe(1);
 			expect(second.paired_peer_count).toBe(1);
+			expect(disabledSync.sync_enabled).toBe(false);
 			expect(firstFetchCount).toBeGreaterThan(0);
 			expect(secondFetchCount).toBe(firstFetchCount);
+			expect(disabledSyncFetchCount).toBeGreaterThan(secondFetchCount);
 			expect(secondPresenceFetchCount).toBe(1);
 			expect(changedAdvertisePresenceFetchCount).toBeGreaterThan(secondPresenceFetchCount);
 			expect(lastPresenceAddresses).toEqual(["http://new.example.test:7337"]);

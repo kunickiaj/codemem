@@ -139,6 +139,7 @@ function coordinatorStatusCacheKey(
 ): string {
 	return [
 		presenceCacheKey(store, config),
+		config.syncEnabled ? "sync-enabled" : "sync-disabled",
 		config.syncHost,
 		config.syncPort,
 		config.syncAdvertise,
@@ -575,6 +576,8 @@ export async function coordinatorStatusSnapshot(
 		return {
 			enabled: false,
 			configured: false,
+			sync_enabled: config.syncEnabled,
+			coordinator_url: config.syncCoordinatorUrl || null,
 			groups: config.syncCoordinatorGroups,
 			paired_peer_count: currentPairedPeerCount,
 		};
@@ -593,6 +596,7 @@ export async function coordinatorStatusSnapshot(
 	const snapshot: Record<string, unknown> = {
 		enabled: true,
 		configured: true,
+		sync_enabled: config.syncEnabled,
 		coordinator_url: config.syncCoordinatorUrl,
 		groups: config.syncCoordinatorGroups,
 		paired_peer_count: currentPairedPeerCount,

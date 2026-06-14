@@ -5433,6 +5433,13 @@ describe("viewer-server", () => {
 					interval_s: number;
 					project_filter_active: boolean;
 					project_filter: { include: string[]; exclude: string[] };
+					coordinator: {
+						enabled: boolean;
+						configured: boolean;
+						sync_enabled: boolean;
+						groups: string[];
+					};
+					join_requests: Array<{ request_id: string }>;
 				};
 				expect(body.enabled).toBe(true);
 				expect(body.interval_s).toBe(45);
@@ -5440,6 +5447,7 @@ describe("viewer-server", () => {
 				expect(body.project_filter).toEqual({ include: ["codemem"], exclude: ["junk"] });
 				expect(body.coordinator.enabled).toBe(true);
 				expect(body.coordinator.configured).toBe(true);
+				expect(body.coordinator.sync_enabled).toBe(true);
 				expect(body.coordinator.groups).toEqual(["team-a"]);
 				expect(body.join_requests).toHaveLength(1);
 				expect(body.join_requests[0].request_id).toBe("req-1");

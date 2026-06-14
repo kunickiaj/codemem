@@ -141,8 +141,9 @@ export interface DiscoveredDevice {
 
 export interface CachedSyncCoordinator {
 	configured?: boolean;
+	sync_enabled?: boolean;
 	groups?: unknown[];
-	coordinator_url?: string;
+	coordinator_url?: string | null;
 	discovered_devices?: DiscoveredDevice[];
 	presence_status?: string;
 	paired_peer_count?: number;

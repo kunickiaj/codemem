@@ -33,9 +33,14 @@ export {
 	deriveDuplicatePeople,
 	deriveVisiblePeopleActors,
 } from "./view-model/people-derivations";
-export { deriveSyncViewModel } from "./view-model/sync-view-model";
+export {
+	deriveCoordinatorSetupBlocker,
+	deriveSyncViewModel,
+} from "./view-model/sync-view-model";
 export {
 	type ActorLike,
+	type CoordinatorSetupBlocker,
+	type CoordinatorSetupBlockerReason,
 	type DiscoveredDeviceLike,
 	type PeerAuthorizedScopeLike,
 	type PeerClaimedLocalActorScopeLike,

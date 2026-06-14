@@ -15,7 +15,15 @@ export interface TeamSyncDiscoveredRow {
 	displayName: string;
 	displayTitle: string | null;
 	fingerprint: string;
-	mode: "accept" | "ambiguous" | "conflict" | "none" | "paired" | "scope-pending" | "stale";
+	mode:
+		| "accept"
+		| "ambiguous"
+		| "conflict"
+		| "none"
+		| "paired"
+		| "scope-pending"
+		| "setup-blocked"
+		| "stale";
 	note: string;
 	pairedMessage: string | null;
 	connectionLabel: string;
@@ -219,7 +227,10 @@ function DiscoveredDeviceRow({
 						{reviewLabel}
 					</button>
 				) : null}
-				{(row.mode === "stale" || row.mode === "ambiguous" || row.mode === "scope-pending") &&
+				{(row.mode === "stale" ||
+					row.mode === "ambiguous" ||
+					row.mode === "scope-pending" ||
+					row.mode === "setup-blocked") &&
 				row.actionMessage ? (
 					<div className="peer-meta">{row.actionMessage}</div>
 				) : null}

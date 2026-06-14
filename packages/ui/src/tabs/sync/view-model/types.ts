@@ -98,6 +98,16 @@ export interface UiSyncViewModel {
 	attentionItems: UiSyncAttentionItem[];
 }
 
+export type CoordinatorSetupBlockerReason =
+	| "coordinator_groups_empty"
+	| "coordinator_url_missing"
+	| "sync_disabled";
+
+export interface CoordinatorSetupBlocker {
+	reason: CoordinatorSetupBlockerReason;
+	message: string;
+}
+
 export interface UiPeerTrustSummary {
 	state: UiTrustState;
 	badgeLabel: string;

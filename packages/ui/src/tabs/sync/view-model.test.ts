@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
 	deriveCoordinatorApprovalSummary,
+	deriveCoordinatorSetupBlocker,
 	deriveDuplicatePeople,
 	derivePeerAuthorizedDomainsView,
 	derivePeerGrantRoleMismatchView,
@@ -62,6 +63,51 @@ describe("deviceNeedsFriendlyName", () => {
 				deviceId: "12345678-1234-1234-1234-123456789abc",
 			}),
 		).toBe(false);
+	});
+});
+
+describe("deriveCoordinatorSetupBlocker", () => {
+	it("asks users to configure a coordinator URL first", () => {
+		expect(deriveCoordinatorSetupBlocker({ groups: ["team-a"], sync_enabled: true })).toEqual({
+			reason: "coordinator_url_missing",
+			message: "Configure a coordinator URL before pairing team devices.",
+		});
+	});
+
+	it("asks users to join or configure a team before pairing", () => {
+		expect(
+			deriveCoordinatorSetupBlocker({
+				coordinator_url: "https://coord.example.test",
+				groups: [],
+				sync_enabled: true,
+			}),
+		).toEqual({
+			reason: "coordinator_groups_empty",
+			message: "Join or configure a team before pairing team devices.",
+		});
+	});
+
+	it("asks users to enable sync before pairing when coordinator setup exists", () => {
+		expect(
+			deriveCoordinatorSetupBlocker({
+				coordinator_url: "https://coord.example.test",
+				groups: ["team-a"],
+				sync_enabled: false,
+			}),
+		).toEqual({
+			reason: "sync_disabled",
+			message: "Enable sync before pairing team devices.",
+		});
+	});
+
+	it("returns no blocker when coordinator setup and sync are ready", () => {
+		expect(
+			deriveCoordinatorSetupBlocker({
+				coordinator_url: "https://coord.example.test",
+				groups: ["team-a"],
+				sync_enabled: true,
+			}),
+		).toBeNull();
 	});
 });
 

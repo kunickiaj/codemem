@@ -10,6 +10,7 @@ import { derivePeerTrustSummary, derivePeerUiStatus } from "./peer-status";
 import { deriveDuplicatePeople } from "./people-derivations";
 import type {
 	ActorLike,
+	CoordinatorSetupBlocker,
 	DiscoveredDeviceLike,
 	PeerLike,
 	UiSyncAttentionItem,
@@ -77,6 +78,40 @@ function createNamingItem(device: {
 		actionLabel: "Go to name field",
 		deviceId: device.id,
 	};
+}
+
+export function deriveCoordinatorSetupBlocker(
+	coordinator:
+		| {
+				configured?: boolean;
+				coordinator_url?: string | null;
+				groups?: unknown[];
+				sync_enabled?: boolean;
+		  }
+		| null
+		| undefined,
+): CoordinatorSetupBlocker | null {
+	const coordinatorUrl = cleanText(coordinator?.coordinator_url);
+	const groups = Array.isArray(coordinator?.groups) ? coordinator.groups : [];
+	if (!coordinatorUrl) {
+		return {
+			reason: "coordinator_url_missing",
+			message: "Configure a coordinator URL before pairing team devices.",
+		};
+	}
+	if (!groups.some((group) => cleanText(group))) {
+		return {
+			reason: "coordinator_groups_empty",
+			message: "Join or configure a team before pairing team devices.",
+		};
+	}
+	if (coordinator?.sync_enabled === false) {
+		return {
+			reason: "sync_disabled",
+			message: "Enable sync before pairing team devices.",
+		};
+	}
+	return null;
 }
 
 function mergeDevices(

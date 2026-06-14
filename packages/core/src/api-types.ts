@@ -491,6 +491,7 @@ export interface ApiCoordinatorDiscoveredDevice {
 export interface ApiCoordinatorStatus {
 	enabled: boolean;
 	configured: boolean;
+	sync_enabled?: boolean;
 	coordinator_url?: string | null;
 	groups?: string[];
 	group_id?: string | null;

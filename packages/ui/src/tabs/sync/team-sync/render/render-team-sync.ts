@@ -36,6 +36,7 @@ import {
 } from "../../sync-dialogs";
 import {
 	deriveCoordinatorApprovalSummary,
+	deriveCoordinatorSetupBlocker,
 	resolveFriendlyDeviceName,
 	SYNC_TERMINOLOGY,
 	shouldShowCoordinatorReviewAction,
@@ -227,9 +228,11 @@ export function renderTeamSync() {
 	};
 
 	const configured = Boolean(coordinator?.configured);
+	const setupBlocker = deriveCoordinatorSetupBlocker(coordinator);
 	meta.textContent = configured
 		? `Team: ${(coordinator.groups || []).join(", ") || "none"}`
-		: "Start by joining an existing team or creating one, then connect people and devices.";
+		: setupBlocker?.message ||
+			"Start by joining an existing team or creating one, then connect people and devices.";
 	meta.title = configured ? String(coordinator.coordinator_url || "").trim() : "";
 
 	const onlineBadge = document.getElementById("syncOnlineBadge");
@@ -279,11 +282,13 @@ export function renderTeamSync() {
 			Boolean(fingerprint) &&
 			Boolean(pairedFingerprint) &&
 			pairedFingerprint !== fingerprint;
-		const canAccept = shouldShowCoordinatorReviewAction({
-			device,
-			hasAmbiguousCoordinatorGroup,
-			pairedLocally: Boolean(pairedPeer),
-		});
+		const canAccept =
+			!setupBlocker &&
+			shouldShowCoordinatorReviewAction({
+				device,
+				hasAmbiguousCoordinatorGroup,
+				pairedLocally: Boolean(pairedPeer),
+			});
 		const addresses = Array.isArray(device.addresses) ? device.addresses : [];
 		const rawHiddenAddressCount = Number(device.address_count ?? 0);
 		const hiddenAddressCount =
@@ -308,6 +313,9 @@ export function renderTeamSync() {
 
 		if (hasConflict) {
 			mode = "conflict";
+		} else if (setupBlocker && (!pairedPeer || approvalSummary.state === "needs-your-approval")) {
+			actionMessage = setupBlocker.message;
+			mode = "setup-blocked";
 		} else if (hasAmbiguousCoordinatorGroup) {
 			actionMessage =
 				"This device appears in multiple coordinator groups. Review team setup first or ask an admin to clean up the duplicate enrollment before approving it here.";
