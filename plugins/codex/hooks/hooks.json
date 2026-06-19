@@ -1,5 +1,4 @@
 {
-  "description": "codemem hook-first Codex integration",
   "hooks": {
     "SessionStart": [
       {
