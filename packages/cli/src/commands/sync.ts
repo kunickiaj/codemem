@@ -244,6 +244,15 @@ attemptsCmd.action((opts: { db?: string; dbPath?: string; limit: string; json?: 
 		for (const row of rows) {
 			console.log(formatSyncAttempt(row));
 		}
+	} catch (error) {
+		const message = error instanceof Error ? error.message : "Failed to read sync attempts";
+		if (opts.json) {
+			emitJsonError("invalid_input", message);
+		} else {
+			p.log.error(message);
+			process.exitCode = 1;
+		}
+		return;
 	} finally {
 		store.close();
 	}
@@ -976,6 +985,15 @@ enableCmd.action(
 				].join("\n"),
 			);
 			p.outro("Sync enabled — restart `codemem serve` to activate");
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Failed to enable sync";
+			if (opts.json) {
+				emitJsonError("invalid_input", message);
+			} else {
+				p.log.error(message);
+				process.exitCode = 1;
+			}
+			return;
 		} finally {
 			store.close();
 		}

@@ -6,6 +6,7 @@ import {
 	addDbOption,
 	addJsonOption,
 	type DbOpts,
+	emitJsonError,
 	type JsonOpts,
 	resolveDbOpt,
 } from "../shared-options.js";
@@ -74,6 +75,15 @@ export const statsCommand = statsCmd.action((opts: DbOpts & JsonOpts) => {
 		}
 
 		p.outro("done");
+	} catch (error) {
+		const message = error instanceof Error ? error.message : "Stats failed";
+		if (opts.json) {
+			emitJsonError("stats_failed", message);
+		} else {
+			p.log.error(message);
+			process.exitCode = 1;
+		}
+		return;
 	} finally {
 		store.close();
 	}

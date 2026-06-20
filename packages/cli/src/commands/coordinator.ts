@@ -878,17 +878,45 @@ export function buildCoordinatorCommand(): Command {
 			host?: string;
 			port?: string;
 		}) => {
-			// Prefer canonical flags; fall back to hidden aliases; then defaults.
-			// Defaults must NOT be set on the Option definitions, otherwise Commander
-			// populates them and ?? cannot distinguish "explicitly passed" from "default".
-			const host = String(opts.coordinatorHost ?? opts.host ?? "127.0.0.1").trim() || "127.0.0.1";
-			const port = Number.parseInt(String(opts.coordinatorPort ?? opts.port ?? "7347"), 10);
-			const dbPath = resolveDbOpt(opts) ?? DEFAULT_COORDINATOR_DB_PATH;
-			const app = createBetterSqliteCoordinatorApp({ dbPath });
-			p.intro("codemem coordinator serve");
-			p.log.success(`Coordinator listening at http://${host}:${port}`);
-			p.log.info(`DB: ${dbPath}`);
-			honoServe({ fetch: app.fetch, hostname: host, port });
+			try {
+				// Prefer canonical flags; fall back to hidden aliases; then defaults.
+				// Defaults must NOT be set on the Option definitions, otherwise Commander
+				// populates them and ?? cannot distinguish "explicitly passed" from "default".
+				const host = String(opts.coordinatorHost ?? opts.host ?? "127.0.0.1").trim() || "127.0.0.1";
+				const port = Number.parseInt(String(opts.coordinatorPort ?? opts.port ?? "7347"), 10);
+				// Allow port 0 (ask the OS for a free ephemeral port; the listening
+				// callback reports the actual bound port). Reject negative/out-of-range.
+				if (!Number.isFinite(port) || port < 0 || port > 65535) {
+					p.log.error(`Invalid port: ${opts.coordinatorPort ?? opts.port}`);
+					process.exitCode = 1;
+					return;
+				}
+				const dbPath = resolveDbOpt(opts) ?? DEFAULT_COORDINATOR_DB_PATH;
+				const app = createBetterSqliteCoordinatorApp({ dbPath });
+				p.intro("codemem coordinator serve");
+				const server = honoServe({ fetch: app.fetch, hostname: host, port }, (info) => {
+					// Announce success only after the socket is actually bound.
+					p.log.success(`Coordinator listening at http://${host}:${info.port}`);
+					p.log.info(`DB: ${dbPath}`);
+				});
+				// honoServe binds asynchronously; bind failures (EADDRINUSE/EACCES)
+				// surface on the server's "error" event, not as a throw the
+				// try/catch could catch. Handle them so the process reports a clean
+				// error instead of crashing with an unhandled exception.
+				server.on("error", (error: NodeJS.ErrnoException) => {
+					const message =
+						error.code === "EADDRINUSE"
+							? `Port ${port} is already in use`
+							: error instanceof Error
+								? error.message
+								: String(error);
+					p.log.error(message);
+					process.exitCode = 1;
+				});
+			} catch (error) {
+				p.log.error(error instanceof Error ? error.message : String(error));
+				process.exitCode = 1;
+			}
 		},
 	);
 	cmd.addCommand(coordServeCmd);

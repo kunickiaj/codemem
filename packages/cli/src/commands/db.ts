@@ -27,6 +27,7 @@ import {
 	addDbOption,
 	addJsonOption,
 	type DbOpts,
+	emitJsonError,
 	type JsonOpts,
 	resolveDbOpt,
 } from "../shared-options.js";
@@ -86,10 +87,15 @@ const initCmd = new Command("init")
 	.description("Create or verify the SQLite database and schema");
 addDbOption(initCmd);
 initCmd.action((opts: DbOpts) => {
-	const result = initDatabase(resolveDbOpt(opts));
-	p.intro("codemem db init");
-	p.log.success(`Database ready: ${result.path}`);
-	p.outro(`Size: ${result.sizeBytes.toLocaleString()} bytes`);
+	try {
+		const result = initDatabase(resolveDbOpt(opts));
+		p.intro("codemem db init");
+		p.log.success(`Database ready: ${result.path}`);
+		p.outro(`Size: ${result.sizeBytes.toLocaleString()} bytes`);
+	} catch (error) {
+		p.log.error(error instanceof Error ? error.message : String(error));
+		process.exitCode = 1;
+	}
 });
 dbCommand.addCommand(initCmd);
 
@@ -99,10 +105,15 @@ const vacuumCmd = new Command("vacuum")
 	.description("Run VACUUM on the SQLite database");
 addDbOption(vacuumCmd);
 vacuumCmd.action((opts: DbOpts) => {
-	const result = vacuumDatabase(resolveDbOpt(opts));
-	p.intro("codemem db vacuum");
-	p.log.success(`Vacuumed: ${result.path}`);
-	p.outro(`Size: ${result.sizeBytes.toLocaleString()} bytes`);
+	try {
+		const result = vacuumDatabase(resolveDbOpt(opts));
+		p.intro("codemem db vacuum");
+		p.log.success(`Vacuumed: ${result.path}`);
+		p.outro(`Size: ${result.sizeBytes.toLocaleString()} bytes`);
+	} catch (error) {
+		p.log.error(error instanceof Error ? error.message : String(error));
+		process.exitCode = 1;
+	}
 });
 dbCommand.addCommand(vacuumCmd);
 
@@ -208,26 +219,36 @@ const rawEventsStatusCmd = new Command("raw-events-status")
 addDbOption(rawEventsStatusCmd);
 addJsonOption(rawEventsStatusCmd);
 rawEventsStatusCmd.action((opts: DbOpts & JsonOpts & { limit: string }) => {
-	const result = getRawEventStatus(resolveDbOpt(opts), Number.parseInt(opts.limit, 10) || 25);
-	if (opts.json) {
-		console.log(JSON.stringify(result, null, 2));
-		return;
-	}
-	p.intro("codemem db raw-events-status");
-	p.log.info(
-		`Totals: ${result.totals.pending.toLocaleString()} pending across ${result.totals.sessions.toLocaleString()} session(s)`,
-	);
-	if (result.items.length === 0) {
-		p.outro("No pending raw events");
-		return;
-	}
-	for (const item of result.items) {
-		p.log.message(
-			`${item.source}:${item.stream_id} pending=${Math.max(0, item.last_received_event_seq - item.last_flushed_event_seq)} ` +
-				`received=${item.last_received_event_seq} flushed=${item.last_flushed_event_seq} project=${item.project ?? ""}`,
+	try {
+		const result = getRawEventStatus(resolveDbOpt(opts), Number.parseInt(opts.limit, 10) || 25);
+		if (opts.json) {
+			console.log(JSON.stringify(result, null, 2));
+			return;
+		}
+		p.intro("codemem db raw-events-status");
+		p.log.info(
+			`Totals: ${result.totals.pending.toLocaleString()} pending across ${result.totals.sessions.toLocaleString()} session(s)`,
 		);
+		if (result.items.length === 0) {
+			p.outro("No pending raw events");
+			return;
+		}
+		for (const item of result.items) {
+			p.log.message(
+				`${item.source}:${item.stream_id} pending=${Math.max(0, item.last_received_event_seq - item.last_flushed_event_seq)} ` +
+					`received=${item.last_received_event_seq} flushed=${item.last_flushed_event_seq} project=${item.project ?? ""}`,
+			);
+		}
+		p.outro("done");
+	} catch (error) {
+		const message = error instanceof Error ? error.message : "Failed to read raw-event status";
+		if (opts.json) {
+			emitJsonError("raw_events_status_failed", message);
+		} else {
+			p.log.error(message);
+			process.exitCode = 1;
+		}
 	}
-	p.outro("done");
 });
 dbCommand.addCommand(rawEventsStatusCmd);
 
@@ -238,9 +259,14 @@ const rawEventsRetryCmd = new Command("raw-events-retry")
 	.option("-n, --limit <n>", "max failed batches to requeue", "25");
 addDbOption(rawEventsRetryCmd);
 rawEventsRetryCmd.action((opts: DbOpts & { limit: string }) => {
-	const result = retryRawEventFailures(resolveDbOpt(opts), Number.parseInt(opts.limit, 10) || 25);
-	p.intro("codemem db raw-events-retry");
-	p.outro(`Requeued ${result.retried.toLocaleString()} failed batch(es)`);
+	try {
+		const result = retryRawEventFailures(resolveDbOpt(opts), Number.parseInt(opts.limit, 10) || 25);
+		p.intro("codemem db raw-events-retry");
+		p.outro(`Requeued ${result.retried.toLocaleString()} failed batch(es)`);
+	} catch (error) {
+		p.log.error(error instanceof Error ? error.message : String(error));
+		process.exitCode = 1;
+	}
 });
 dbCommand.addCommand(rawEventsRetryCmd);
 
@@ -354,6 +380,9 @@ renameProjectCmd.action((oldName: string, newName: string, opts: DbOpts & { appl
 		} else {
 			p.outro("done");
 		}
+	} catch (error) {
+		p.log.error(error instanceof Error ? error.message : String(error));
+		process.exitCode = 1;
 	} finally {
 		store.close();
 	}
@@ -427,6 +456,9 @@ normalizeProjectsCmd.action((opts: DbOpts & { apply?: boolean }) => {
 		} else {
 			p.outro("done");
 		}
+	} catch (error) {
+		p.log.error(error instanceof Error ? error.message : String(error));
+		process.exitCode = 1;
 	} finally {
 		store.close();
 	}
