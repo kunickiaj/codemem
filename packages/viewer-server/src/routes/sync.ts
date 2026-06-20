@@ -3089,7 +3089,12 @@ export function syncRoutes(
 		const store = getStore();
 		{
 			const d = drizzle(store.db, { schema });
-			const body = await c.req.json<Record<string, unknown>>();
+			let body: Record<string, unknown>;
+			try {
+				body = await c.req.json<Record<string, unknown>>();
+			} catch {
+				return c.json({ error: "invalid json" }, 400);
+			}
 			const peerDeviceId = String(body.peer_device_id ?? "").trim();
 			const name = String(body.name ?? "").trim();
 			if (!peerDeviceId) return c.json({ error: "peer_device_id required" }, 400);

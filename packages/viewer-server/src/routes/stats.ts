@@ -243,6 +243,44 @@ const usagePayloadCache = new Map<string, UsageCacheEntry>();
 const USAGE_PAYLOAD_CACHE_MS = 10_000;
 
 /**
+ * Hard cap on cached usage payloads. The cache key folds in the arbitrary
+ * `?project=` filter and a scope-visibility fingerprint that becomes
+ * per-request-unique on the error/bypass path, so without a bound the map
+ * would grow without limit in a long-running viewer. The cap is far above the
+ * realistic working set (a handful of projects times one or two scope
+ * generations), so legitimate hits are never evicted under normal load.
+ */
+const USAGE_PAYLOAD_CACHE_MAX_ENTRIES = 256;
+
+/**
+ * Sweep expired entries and enforce the size cap before inserting a new one.
+ *
+ * Mirrors the lazy-sweep approach in request-rate-limit.ts: eviction is
+ * piggybacked on writes rather than run on a timer, so an idle viewer does no
+ * background work. Expired entries (those past `expiresAtMs`) are always
+ * dropped; if the map is still at capacity afterward — e.g. a burst of
+ * distinct, still-live bypass keys — the oldest-expiring entries are evicted
+ * to make room. This never changes hit/miss semantics for a live entry: the
+ * caller still re-checks `expiresAtMs` on read, and only already-expired or
+ * over-cap entries are removed here.
+ */
+function sweepUsagePayloadCache(cache: Map<string, UsageCacheEntry>, nowMs: number): void {
+	for (const [key, entry] of cache) {
+		if (entry.expiresAtMs <= nowMs) cache.delete(key);
+	}
+	if (cache.size < USAGE_PAYLOAD_CACHE_MAX_ENTRIES) return;
+	// Leave room for the entry about to be inserted by evicting down to one
+	// below the cap. Drop the soonest-to-expire entries first.
+	const byExpiry = [...cache.entries()].sort((a, b) => a[1].expiresAtMs - b[1].expiresAtMs);
+	let overflow = cache.size - USAGE_PAYLOAD_CACHE_MAX_ENTRIES + 1;
+	for (const [key] of byExpiry) {
+		if (overflow <= 0) break;
+		cache.delete(key);
+		overflow -= 1;
+	}
+}
+
+/**
  * Cheap fingerprint of the state that drives scope visibility
  * (`scope_memberships` / `replication_scopes`). Folding this into the usage
  * cache key ensures a membership/scope status change — e.g. a revocation —
@@ -416,9 +454,11 @@ export function statsRoutes(getStore: () => MemoryStore) {
 				totals_filtered: totalsFiltered,
 				recent_packs: recentPacks,
 			};
+			const setAtMs = Date.now();
+			sweepUsagePayloadCache(usagePayloadCache, setAtMs);
 			usagePayloadCache.set(cacheKey, {
 				payload,
-				expiresAtMs: Date.now() + USAGE_PAYLOAD_CACHE_MS,
+				expiresAtMs: setAtMs + USAGE_PAYLOAD_CACHE_MS,
 			});
 			return c.json(payload);
 		}
@@ -426,3 +466,14 @@ export function statsRoutes(getStore: () => MemoryStore) {
 
 	return app;
 }
+
+/**
+ * Internals exposed for unit tests of the usage-cache eviction. Not part of the
+ * route's public surface; consumers should go through the HTTP handlers.
+ */
+export const __usageCacheTestHooks = {
+	cache: usagePayloadCache,
+	sweep: sweepUsagePayloadCache,
+	maxEntries: USAGE_PAYLOAD_CACHE_MAX_ENTRIES,
+	ttlMs: USAGE_PAYLOAD_CACHE_MS,
+};

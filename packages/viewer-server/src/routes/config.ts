@@ -5,9 +5,6 @@
  * codemem/viewer_routes/config.py, scoped to the TS runtime's current needs.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import {
 	CODEMEM_CONFIG_ENV_OVERRIDES,
 	getCodememConfigPath,
@@ -15,8 +12,6 @@ import {
 	listObserverProviderOptions,
 	type RawEventSweeper,
 	readCodememConfigFile,
-	stripJsonComments,
-	stripTrailingCommas,
 	writeCodememConfigFile,
 } from "@codemem/core";
 import { Hono } from "hono";
@@ -112,30 +107,6 @@ export interface ConfigRouteOptions {
 
 function loadProviderOptions(): string[] {
 	return listObserverProviderOptions();
-}
-
-function getConfigPath(): string {
-	const envPath = process.env.CODEMEM_CONFIG;
-	if (envPath) return envPath.replace(/^~/, homedir());
-	const configDir = join(homedir(), ".config", "codemem");
-	const candidates = [join(configDir, "config.json"), join(configDir, "config.jsonc")];
-	return candidates.find((p) => existsSync(p)) ?? join(configDir, "config.json");
-}
-
-function readConfigFile(configPath: string): ConfigData {
-	if (!existsSync(configPath)) return {};
-	try {
-		let text = readFileSync(configPath, "utf-8").trim();
-		if (!text) return {};
-		try {
-			return JSON.parse(text) as ConfigData;
-		} catch {
-			text = stripTrailingCommas(stripJsonComments(text));
-			return JSON.parse(text) as ConfigData;
-		}
-	} catch {
-		return {};
-	}
 }
 
 function withoutRemovedConfigKeys(configData: ConfigData): ConfigData {
@@ -375,8 +346,12 @@ export function configRoutes(opts: ConfigRouteOptions = {}) {
 	const app = new Hono();
 
 	app.get("/api/config", (c) => {
-		const configPath = getConfigPath();
-		const configData = withoutRemovedConfigKeys(readConfigFile(configPath));
+		// Resolve via the core resolver so GET reflects the same file POST
+		// writes — including workspace-scoped overrides honored through
+		// CODEMEM_RUNTIME_ROOT / CODEMEM_WORKSPACE_ID, which the legacy local
+		// getConfigPath() ignored.
+		const configPath = getCodememConfigPath();
+		const configData = withoutRemovedConfigKeys(readCodememConfigFile());
 		const effective = getEffectiveConfig(configData);
 		return c.json({
 			path: configPath,
