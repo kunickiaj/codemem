@@ -3174,7 +3174,15 @@ export function applyReplicationOps(
 
 						// Update existing row from payload — skip if malformed
 						const payload = parseMemoryPayload(op, result.errors);
-						if (!payload) continue;
+						if (!payload) {
+							// A malformed payload can never be applied. Record the op so
+							// it is acknowledged exactly once (not re-parsed and re-errored
+							// every pass) and the inbound cursor can eventually advance
+							// past it instead of stalling forever.
+							insertReplicationOpRow(d, op);
+							result.skipped++;
+							continue;
+						}
 						redactMemoryFields(payload, activeScanner);
 						const metaObj = mergePayloadMetadata(payload.metadata_json, op.clock_device_id);
 						const nextTitle = resolveReplicatedTextUpdate(payload.title, memRow.title);
@@ -3188,9 +3196,17 @@ export function applyReplicationOps(
 							? payload.deleted_at
 							: (memRow.deleted_at ?? null);
 						const becomesActive = nextActive !== 0 && nextDeletedAt == null;
-						const shouldDeleteVectors =
-							payload.deleted_at != null ||
-							(payload.active != null && Number(payload.active) === 0);
+						// Keep `active` consistent with the tombstone: when the row stays
+						// (or becomes) tombstoned, force active=0 so a field-omitting
+						// upsert that carries active=1 cannot resurrect a deleted memory
+						// (read paths filter on active=1).
+						const writtenActive = nextDeletedAt != null ? 0 : nextActive;
+						// Base the vector decision on the FINAL persisted state, not the
+						// raw payload: a row that stays (or becomes) tombstoned — active=0
+						// or deleted_at set — must have its embeddings removed, not
+						// re-upserted (the vector queue lets an upsert cancel a pending
+						// delete, which would leave a deleted memory searchable).
+						const shouldDeleteVectors = nextDeletedAt != null || writtenActive === 0;
 						const shouldQueueVectorUpsert =
 							!shouldDeleteVectors && (contentChanged || (wasInactive && becomesActive));
 
@@ -3202,11 +3218,15 @@ export function applyReplicationOps(
 								body_text: sql`COALESCE(${payload.body_text}, ${schema.memoryItems.body_text})`,
 								confidence: sql`COALESCE(${payload.confidence != null ? Number(payload.confidence) : null}, ${schema.memoryItems.confidence})`,
 								tags_text: sql`COALESCE(NULLIF(TRIM(${payload.tags_text}), ''), ${schema.memoryItems.tags_text})`,
-								active: sql`COALESCE(${payload.active != null ? Number(payload.active) : null}, ${schema.memoryItems.active})`,
+								active: writtenActive,
 								updated_at: op.clock_updated_at,
 								metadata_json: toJson(metaObj),
 								rev: op.clock_rev,
-								deleted_at: payload.deleted_at,
+								// Honor the wire intent flag: only clear/set the tombstone
+								// when the payload actually carried `deleted_at`; otherwise
+								// preserve the existing value (nextDeletedAt). Guards against
+								// a field-omitting upsert resurrecting a tombstoned row.
+								deleted_at: nextDeletedAt,
 								actor_id: sql`COALESCE(${payload.actor_id}, ${schema.memoryItems.actor_id})`,
 								actor_display_name: sql`COALESCE(${payload.actor_display_name}, ${schema.memoryItems.actor_display_name})`,
 								visibility: sql`COALESCE(${payload.visibility}, ${schema.memoryItems.visibility})`,
@@ -3244,7 +3264,13 @@ export function applyReplicationOps(
 					} else {
 						// Insert new memory item — skip if malformed
 						const payload = parseMemoryPayload(op, result.errors);
-						if (!payload) continue;
+						if (!payload) {
+							// See the update branch: record malformed ops so they are
+							// acknowledged once and never block inbound cursor progress.
+							insertReplicationOpRow(d, op);
+							result.skipped++;
+							continue;
+						}
 						redactMemoryFields(payload, activeScanner);
 						const replicatedProject =
 							typeof payload.project === "string" && payload.project.trim()
@@ -3333,7 +3359,9 @@ export function applyReplicationOps(
 					if (existingForDelete) {
 						// Clock-compare: only delete if the incoming op is newer
 						const existingClock = clockTuple(
-							existingForDelete.rev ?? 1,
+							// Match the upsert path's `rev ?? 0` so Lamport tie-breaks are
+							// symmetric when an existing row has a NULL rev.
+							existingForDelete.rev ?? 0,
 							existingForDelete.updated_at ?? "",
 							clockDeviceIdFromMetadataJson(existingForDelete.metadata_json),
 						);
@@ -3358,8 +3386,14 @@ export function applyReplicationOps(
 							.where(eq(schema.memoryItems.id, existingForDelete.id))
 							.run();
 						queueVectorDelete(Number(existingForDelete.id));
+					} else {
+						// import_key not found: record the delete as a tombstone for
+						// future resolution, but it mutated nothing — count it as
+						// skipped rather than applied.
+						insertReplicationOpRow(d, op);
+						result.skipped++;
+						continue;
 					}
-					// If import_key not found, record the op as a tombstone for future resolution
 				} else {
 					result.skipped++;
 					insertReplicationOpRow(d, op);

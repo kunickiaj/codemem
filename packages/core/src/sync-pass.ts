@@ -1021,10 +1021,35 @@ async function syncOneScope(
 		}
 
 		const inboundCursorCandidate = asOptionalCursor(payload.next_cursor);
-		if (cursorAdvances(lastApplied, inboundCursorCandidate)) {
+		// Never advance the inbound cursor past a pass that had apply errors: a
+		// failed op that was not durably recorded would otherwise be skipped
+		// forever (silent data loss). Holding the cursor retries it next pass.
+		// Do NOT "fix" a persistent stall by recording throwing ops — that
+		// reintroduces the silent data loss this guards against.
+		if (applied.errors.length > 0) {
+			process.stderr.write(
+				`[codemem] sync: holding inbound cursor for scope ${scopeId} — ${applied.errors.length} op(s) failed to apply and will be retried\n`,
+			);
+		}
+		if (applied.errors.length === 0 && cursorAdvances(lastApplied, inboundCursorCandidate)) {
 			setReplicationCursor(db, peerDeviceId, { lastApplied: inboundCursorCandidate }, scopeId);
 		}
 
+		if (applied.errors.length > 0) {
+			// Cursor was held (apply errors) — inbound replication for this scope
+			// is incomplete and stalled on this window. Report failure so a
+			// persistent stall surfaces instead of looking like a healthy sync.
+			return {
+				scope_id: scopeId,
+				label: scope.label,
+				ok: false,
+				failureCategory: "other",
+				opsIn: applied.applied,
+				opsOut: 0,
+				error: `inbound apply incomplete: ${applied.errors.length} op(s) failed; cursor held for retry`,
+				bootstrapped: hasNullBaselineBootstrapMarker,
+			};
+		}
 		return {
 			scope_id: scopeId,
 			label: scope.label,
@@ -1501,7 +1526,15 @@ export async function syncOnce(
 			}
 
 			const inboundCursorCandidate = asOptionalCursor(getPayload.next_cursor);
-			if (cursorAdvances(lastApplied, inboundCursorCandidate)) {
+			// Never advance the inbound cursor past a pass that had apply errors
+			// (see syncOneScope): advancing would skip the failed ops permanently.
+			// Do NOT clear a persistent stall by recording throwing ops.
+			if (applied.errors.length > 0) {
+				process.stderr.write(
+					`[codemem] sync: holding inbound cursor for peer ${peerDeviceId} — ${applied.errors.length} op(s) failed to apply and will be retried\n`,
+				);
+			}
+			if (applied.errors.length === 0 && cursorAdvances(lastApplied, inboundCursorCandidate)) {
 				setReplicationCursor(db, peerDeviceId, { lastApplied: inboundCursorCandidate });
 				lastApplied = inboundCursorCandidate;
 			}
@@ -1549,25 +1582,44 @@ export async function syncOnce(
 					: { results: [], totalOpsIn: 0 };
 
 			const allScopesOk = scopedAfterIncremental.results.every((r) => r.ok);
+			// A held inbound cursor (default-scope apply errors) means inbound
+			// replication is incomplete and stalled on this window; report it as a
+			// failure so a persistent stall surfaces instead of masquerading as a
+			// healthy sync (and don't promote the peer as fully successful).
+			const inboundIncomplete = applied.errors.length > 0;
+			const ok = allScopesOk && !inboundIncomplete;
+			const errorParts: string[] = [];
+			if (inboundIncomplete) {
+				errorParts.push(
+					`inbound apply incomplete: ${applied.errors.length} op(s) failed; cursor held for retry`,
+				);
+			}
+			if (!allScopesOk) {
+				errorParts.push(
+					`scoped sync incomplete: ${scopedAfterIncremental.results
+						.filter((r) => !r.ok)
+						.map((r) => `${r.scope_id}=${r.error ?? "unknown"}`)
+						.join("; ")}`,
+				);
+			}
+			const combinedError = errorParts.length > 0 ? errorParts.join("; ") : undefined;
 
-			// -- 7. Record success --
-			recordPeerSuccess(db, peerDeviceId, baseUrl);
+			// -- 7. Record result --
+			if (!inboundIncomplete) recordPeerSuccess(db, peerDeviceId, baseUrl);
 			recordSyncAttempt(db, peerDeviceId, {
-				ok: allScopesOk,
+				ok,
 				opsIn: applied.applied + scopedAfterIncremental.totalOpsIn,
 				opsOut: outboundOps.length,
 				capabilities: lastCapabilityDiagnostics,
-				error: allScopesOk
-					? undefined
-					: `scoped sync incomplete: ${scopedAfterIncremental.results
-							.filter((r) => !r.ok)
-							.map((r) => `${r.scope_id}=${r.error ?? "unknown"}`)
-							.join("; ")}`,
+				error: combinedError,
 			});
 			return {
-				ok: allScopesOk,
+				ok,
 				address: baseUrl,
-				failureCategory: aggregateScopeFailureCategory(scopedAfterIncremental.results),
+				error: combinedError,
+				failureCategory: inboundIncomplete
+					? "other"
+					: aggregateScopeFailureCategory(scopedAfterIncremental.results),
 				opsIn: applied.applied + scopedAfterIncremental.totalOpsIn,
 				opsOut: outboundOps.length,
 				opsSkipped,
