@@ -31,15 +31,17 @@ type VectorModelCount = { model: string; rows: number };
 
 type MemoryTextRow = { id: number; title: string | null; body_text: string | null };
 
-export interface SemanticSearchScopeContext {
-	actorId: string;
-	deviceId: string;
-}
+// Deliberately omits `enforceScopeVisibility` so semantic callers can never
+// disable the local read boundary — scopeVisibleFilterContext() always forces
+// it on below. Field list otherwise mirrors OwnershipFilterContext.
+export type SemanticSearchScopeContext = Omit<OwnershipFilterContext, "enforceScopeVisibility">;
 
 function scopeVisibleFilterContext(context: SemanticSearchScopeContext): OwnershipFilterContext {
 	return {
 		actorId: context?.actorId ?? "",
 		deviceId: context?.deviceId ?? "",
+		claimedDeviceIds: context?.claimedDeviceIds ?? [],
+		legacyActorIds: context?.legacyActorIds ?? [],
 		enforceScopeVisibility: true,
 	};
 }

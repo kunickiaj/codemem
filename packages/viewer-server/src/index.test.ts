@@ -940,6 +940,26 @@ describe("viewer-server", () => {
 					actorId: "peer:other",
 					originDeviceId: "peer-device-002",
 				});
+				store.db
+					.prepare(
+						"INSERT INTO sync_peers(peer_device_id, actor_id, claimed_local_actor, created_at) VALUES (?, ?, ?, ?)",
+					)
+					.run("peer-claimed", store.actorId, 1, "2026-01-01T00:00:00Z");
+				insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Claimed peer mine",
+					actorId: "local:peer-claimed",
+					originDeviceId: "peer-claimed",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Claimed peer metadata mine",
+					actorId: null,
+					originDeviceId: null,
+					metadata: { origin_device_id: "peer-claimed" },
+				});
 				insertTestMemory(store, {
 					sessionId,
 					kind: "discovery",
@@ -954,8 +974,12 @@ describe("viewer-server", () => {
 				const mineItems = (
 					(await mineRes.json()) as { items: Array<{ title: string; owned_by_self?: boolean }> }
 				).items;
-				expect(mineItems.map((item) => item.title)).toEqual(["Mine"]);
-				expect(mineItems[0]?.owned_by_self).toBe(true);
+				expect(mineItems.map((item) => item.title).sort()).toEqual([
+					"Claimed peer metadata mine",
+					"Claimed peer mine",
+					"Mine",
+				]);
+				expect(mineItems.every((item) => item.owned_by_self === true)).toBe(true);
 
 				const theirsRes = await app.request("/api/observations?scope=theirs");
 				expect(theirsRes.status).toBe(200);

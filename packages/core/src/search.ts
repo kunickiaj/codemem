@@ -15,6 +15,7 @@ import {
 	normalizeFilterStrings,
 	normalizeVisibilityValues,
 	normalizeWorkspaceKinds,
+	type OwnershipFilterContext,
 } from "./filters.js";
 import { parsePositiveMemoryId } from "./integers.js";
 import { inferMemoryRole } from "./memory-quality.js";
@@ -52,6 +53,7 @@ export interface StoreHandle {
 	readonly deviceId: string;
 	get(memoryId: number): MemoryItemResponse | null;
 	memoryOwnedBySelf(item: MemoryItem | MemoryResult | Record<string, unknown>): boolean;
+	sameActorPeerIds?(): string[];
 	buildOwnershipPredicate?(): (
 		item: MemoryItem | MemoryResult | Record<string, unknown>,
 	) => boolean;
@@ -77,6 +79,17 @@ const MEMORY_KIND_BONUS: Record<string, number> = {
 	exploration: 0.1,
 	entities: 0.05,
 };
+
+export function ownershipFilterContext(store: StoreHandle): OwnershipFilterContext {
+	const claimedDeviceIds = store.sameActorPeerIds?.() ?? [];
+	return {
+		actorId: store.actorId,
+		deviceId: store.deviceId,
+		claimedDeviceIds,
+		legacyActorIds: claimedDeviceIds.map((peerId) => `legacy-sync:${peerId}`),
+		enforceScopeVisibility: true,
+	};
+}
 
 const PERSONAL_FIRST_BONUS = 0.45;
 const TRUST_BIAS_LEGACY_UNKNOWN_PENALTY = 0.18;
@@ -702,11 +715,7 @@ function fetchResultsByIds(
 	const placeholders = ids.map(() => "?").join(", ");
 	const params: unknown[] = [...ids];
 	const whereClauses = [`memory_items.id IN (${placeholders})`, "memory_items.active = 1"];
-	const filterResult = buildFilterClausesWithContext(filters, {
-		actorId: store.actorId,
-		deviceId: store.deviceId,
-		enforceScopeVisibility: true,
-	});
+	const filterResult = buildFilterClausesWithContext(filters, ownershipFilterContext(store));
 	whereClauses.push(...filterResult.clauses);
 	params.push(...filterResult.params);
 	const joinClause = filterResult.joinSessions
@@ -1000,11 +1009,7 @@ function searchOnce(
 	const params: unknown[] = [expanded];
 	const whereClauses = ["memory_items.active = 1", "memory_fts MATCH ?"];
 
-	const filterResult = buildFilterClausesWithContext(filters, {
-		actorId: store.actorId,
-		deviceId: store.deviceId,
-		enforceScopeVisibility: true,
-	});
+	const filterResult = buildFilterClausesWithContext(filters, ownershipFilterContext(store));
 	whereClauses.push(...filterResult.clauses);
 	params.push(...filterResult.params);
 
@@ -1118,11 +1123,7 @@ function timelineAround(
 		return [];
 	}
 
-	const filterResult = buildFilterClausesWithContext(filters, {
-		actorId: store.actorId,
-		deviceId: store.deviceId,
-		enforceScopeVisibility: true,
-	});
+	const filterResult = buildFilterClausesWithContext(filters, ownershipFilterContext(store));
 	const whereParts = ["memory_items.active = 1", ...filterResult.clauses];
 	const baseParams = [...filterResult.params];
 
@@ -1316,11 +1317,7 @@ function loadItemsByIdsForExplain(
 
 	// Placeholders for the dynamic-filter raw SQL queries below
 	const placeholders = ids.map(() => "?").join(", ");
-	const scopeContext = {
-		actorId: store.actorId,
-		deviceId: store.deviceId,
-		enforceScopeVisibility: true,
-	};
+	const scopeContext = ownershipFilterContext(store);
 	const visibilityFilter = buildFilterClausesWithContext(null, scopeContext);
 	const visibleRows = store.db
 		.prepare(

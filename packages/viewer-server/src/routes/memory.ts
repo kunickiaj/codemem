@@ -18,60 +18,21 @@ import { queryInt } from "../helpers.js";
 
 type StoreFactory = () => MemoryStore;
 
-type OwnershipContext = {
-	actorId: string;
-	claimedPeerIds: Set<string>;
-	deviceId: string;
-	legacyActorIds: Set<string>;
-};
-
-function cleanOwnershipValue(value: unknown): string | null {
-	if (typeof value !== "string") return null;
-	const trimmed = value.trim();
-	return trimmed ? trimmed : null;
-}
-
-function buildOwnershipContext(store: MemoryStore): OwnershipContext {
-	const claimedPeerIds = new Set(store.sameActorPeerIds());
-	return {
-		actorId: store.actorId,
-		claimedPeerIds,
-		deviceId: store.deviceId,
-		legacyActorIds: new Set(Array.from(claimedPeerIds, (peerId) => `legacy-sync:${peerId}`)),
-	};
-}
-
-function memoryOwnedBySelf(
-	row: Record<string, unknown>,
-	ownership: OwnershipContext,
-	metadata = fromJson((row.metadata_json as string) ?? null),
-): boolean {
-	const meta = metadata as Record<string, unknown>;
-	const actorId = cleanOwnershipValue(row.actor_id) ?? cleanOwnershipValue(meta.actor_id);
-	if (actorId === ownership.actorId) return true;
-
-	const deviceId =
-		cleanOwnershipValue(row.origin_device_id) ?? cleanOwnershipValue(meta.origin_device_id);
-	if (deviceId === ownership.deviceId) return true;
-	if (deviceId && ownership.claimedPeerIds.has(deviceId)) return true;
-	if (actorId && ownership.legacyActorIds.has(actorId)) return true;
-
-	return false;
-}
+type OwnershipPredicate = (item: Record<string, unknown>) => boolean;
 
 function serializeMemoryRow(
-	ownership: OwnershipContext,
+	ownedBySelf: OwnershipPredicate,
 	row: Record<string, unknown>,
 ): Record<string, unknown> {
 	const metadata = fromJson((row.metadata_json as string) ?? null);
-	const item = {
+	// Evaluate ownership against the raw row (top-level columns + metadata_json
+	// fallback) before we overwrite metadata_json with the parsed object.
+	const owned_by_self = ownedBySelf(row);
+	return {
 		...row,
 		kind: canonicalMemoryKind((row.kind as string | null | undefined) ?? null, row.metadata_json),
 		metadata_json: metadata,
-	};
-	return {
-		...item,
-		owned_by_self: memoryOwnedBySelf(row, ownership, metadata),
+		owned_by_self,
 	};
 }
 
@@ -139,11 +100,7 @@ function normalizeScope(raw: string | undefined): "mine" | "theirs" | undefined 
 }
 
 function buildViewerMemoryFilters(store: MemoryStore, filters?: MemoryFilters | null) {
-	return buildFilterClausesWithContext(filters, {
-		actorId: store.actorId,
-		deviceId: store.deviceId,
-		enforceScopeVisibility: true,
-	});
+	return buildFilterClausesWithContext(filters, store.ownershipFilterContext());
 }
 
 function countVisibleMemoryRows(store: MemoryStore, filters?: MemoryFilters | null): number {
@@ -274,8 +231,8 @@ function queryMemoryPage(
 		)
 		.all(...filterResult.params, options.limit + 1, options.offset) as Record<string, unknown>[];
 
-	const ownership = buildOwnershipContext(store);
-	return rows.map((row) => serializeMemoryRow(ownership, row));
+	const ownedBySelf = store.buildOwnershipPredicate();
+	return rows.map((row) => serializeMemoryRow(ownedBySelf, row));
 }
 
 function isSummaryLikeMemory(item: Record<string, unknown>): boolean {
@@ -683,8 +640,7 @@ export function memoryRoutes(getStore: StoreFactory) {
 		if (!row) {
 			return c.json({ error: "memory not found" }, 404);
 		}
-		const ownership = buildOwnershipContext(store);
-		if (!memoryOwnedBySelf(row, ownership)) {
+		if (!store.memoryOwnedBySelf(row as Record<string, unknown>)) {
 			return c.json({ error: "memory not owned by this device" }, 403);
 		}
 		if (Number(row.active ?? 1) === 0 || row.deleted_at != null) {

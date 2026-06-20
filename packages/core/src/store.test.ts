@@ -1276,6 +1276,61 @@ describe("MemoryStore", () => {
 			}
 		});
 
+		it("treats claimed same-actor peer rows as mine for SQL ownership filters", () => {
+			const sessionId = insertTestSession(store.db);
+			const now = "2026-01-01T00:00:00Z";
+			store.db
+				.prepare(
+					"INSERT INTO sync_peers(peer_device_id, actor_id, claimed_local_actor, created_at) VALUES (?, ?, ?, ?)",
+				)
+				.run("peer-claimed", store.actorId, 1, now);
+
+			const insertMemory = (
+				title: string,
+				actorId: string | null,
+				originDeviceId: string | null,
+				metadata: Record<string, unknown> = {},
+			) => {
+				const info = store.db
+					.prepare(
+						`INSERT INTO memory_items(
+							session_id, kind, title, body_text, confidence, tags_text, active,
+							created_at, updated_at, metadata_json, rev, scope_id, actor_id, origin_device_id
+						 ) VALUES (?, 'discovery', ?, 'Body', 0.5, '', 1, ?, ?, ?, 1, 'local-default', ?, ?)`,
+					)
+					.run(sessionId, title, now, now, JSON.stringify(metadata), actorId, originDeviceId);
+				return Number(info.lastInsertRowid);
+			};
+
+			const claimedDeviceId = insertMemory("Claimed peer device", null, "peer-claimed");
+			const legacyActorId = insertMemory(
+				"Claimed peer legacy actor",
+				"legacy-sync:peer-claimed",
+				"unknown-origin",
+			);
+			const metadataDeviceId = insertMemory("Claimed metadata peer device", null, null, {
+				origin_device_id: "peer-claimed",
+			});
+			const metadataLegacyActorId = insertMemory("Claimed metadata legacy actor", null, null, {
+				actor_id: "legacy-sync:peer-claimed",
+			});
+			const otherId = insertMemory("Other peer", "local:other-peer", "other-peer");
+
+			const mineIds = store.recent(10, { ownership_scope: "mine" }).map((item) => item.id);
+			expect(mineIds).toContain(claimedDeviceId);
+			expect(mineIds).toContain(legacyActorId);
+			expect(mineIds).toContain(metadataDeviceId);
+			expect(mineIds).toContain(metadataLegacyActorId);
+			expect(mineIds).not.toContain(otherId);
+
+			const theirsIds = store.recent(10, { ownership_scope: "theirs" }).map((item) => item.id);
+			expect(theirsIds).not.toContain(claimedDeviceId);
+			expect(theirsIds).not.toContain(legacyActorId);
+			expect(theirsIds).not.toContain(metadataDeviceId);
+			expect(theirsIds).not.toContain(metadataLegacyActorId);
+			expect(theirsIds).toContain(otherId);
+		});
+
 		it("intersects explicit scope filters with local authorization", () => {
 			grantScopeToLocalDevice("authorized-team");
 			insertCoordinatorScope("unauthorized-team");
@@ -1675,10 +1730,36 @@ describe("buildFilterClauses", () => {
 			{ ownership_scope: "mine" },
 			{ actorId: "local:device-1", deviceId: "device-1" },
 		);
-		expect(result.clauses).toEqual([
-			"(COALESCE(memory_items.actor_id, '') = ? OR COALESCE(memory_items.origin_device_id, '') = ?)",
-		]);
+		expect(result.clauses).toHaveLength(1);
+		expect(result.clauses[0]).toContain("memory_items.actor_id");
+		expect(result.clauses[0]).toContain("$.actor_id");
+		expect(result.clauses[0]).toContain("memory_items.origin_device_id");
+		expect(result.clauses[0]).toContain("$.origin_device_id");
 		expect(result.params).toEqual(["local:device-1", "device-1"]);
+	});
+
+	it("builds ownership_scope mine clause with claimed same-actor peers", () => {
+		const result = buildFilterClausesWithContext(
+			{ ownership_scope: "mine" },
+			{
+				actorId: "local:device-1",
+				deviceId: "device-1",
+				claimedDeviceIds: ["peer-a", " peer-a ", "peer-b"],
+				legacyActorIds: ["legacy-sync:peer-a"],
+			},
+		);
+		expect(result.clauses).toHaveLength(1);
+		expect(result.clauses[0]).toContain("IN (?, ?)");
+		expect(result.clauses[0]).toContain("IN (?)");
+		expect(result.clauses[0]).toContain("$.actor_id");
+		expect(result.clauses[0]).toContain("$.origin_device_id");
+		expect(result.params).toEqual([
+			"local:device-1",
+			"device-1",
+			"peer-a",
+			"peer-b",
+			"legacy-sync:peer-a",
+		]);
 	});
 
 	it("builds ownership_scope theirs clause with null-safe comparisons", () => {
@@ -1686,10 +1767,41 @@ describe("buildFilterClauses", () => {
 			{ ownership_scope: "theirs" },
 			{ actorId: "local:device-1", deviceId: "device-1" },
 		);
-		expect(result.clauses).toEqual([
-			"(COALESCE(memory_items.actor_id, '') != ? AND COALESCE(memory_items.origin_device_id, '') != ?)",
-		]);
+		expect(result.clauses).toHaveLength(1);
+		expect(result.clauses[0]).toMatch(/^NOT \(/);
+		expect(result.clauses[0]).toContain("$.actor_id");
+		expect(result.clauses[0]).toContain("$.origin_device_id");
 		expect(result.params).toEqual(["local:device-1", "device-1"]);
+	});
+
+	it("builds ownership_scope theirs as inverse of claimed same-actor ownership", () => {
+		const result = buildFilterClausesWithContext(
+			{ ownership_scope: "theirs" },
+			{
+				actorId: "local:device-1",
+				deviceId: "device-1",
+				claimedDeviceIds: ["peer-a"],
+				legacyActorIds: ["legacy-sync:peer-a"],
+			},
+		);
+		expect(result.clauses).toHaveLength(1);
+		expect(result.clauses[0]).toMatch(/^NOT \(/);
+		expect(result.clauses[0]).toContain("IN (?)");
+		expect(result.clauses[0]).toContain("$.actor_id");
+		expect(result.clauses[0]).toContain("$.origin_device_id");
+		expect(result.params).toEqual(["local:device-1", "device-1", "peer-a", "legacy-sync:peer-a"]);
+	});
+
+	it("does not treat ownerless rows as mine when identity context is blank", () => {
+		const result = buildFilterClausesWithContext(
+			{ ownership_scope: "mine" },
+			{ actorId: "", deviceId: "  " },
+		);
+		// Blank actor/device must match nothing rather than emitting `<expr> = ''`,
+		// which would otherwise own every anonymous row and diverge from
+		// MemoryStore.buildOwnershipPredicate().
+		expect(result.clauses).toEqual(["(0 = 1)"]);
+		expect(result.params).toEqual([]);
 	});
 });
 

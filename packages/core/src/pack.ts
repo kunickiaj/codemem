@@ -22,7 +22,7 @@ import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap } from "./recap-policy.js";
 import { findByFile } from "./ref-queries.js";
 import type { StoreHandle } from "./search.js";
-import { rerankResults, scoreResult, search, timeline } from "./search.js";
+import { ownershipFilterContext, rerankResults, scoreResult, search, timeline } from "./search.js";
 import {
 	canonicalMemoryKind,
 	getSummaryMetadata,
@@ -943,11 +943,7 @@ function validatePackDeltaBaselineIds(
 	filters: MemoryFilters | null,
 ): number[] | null {
 	if (ids.length === 0) return null;
-	const filterResult = buildFilterClausesWithContext(filters, {
-		actorId: store.actorId,
-		deviceId: store.deviceId,
-		enforceScopeVisibility: true,
-	});
+	const filterResult = buildFilterClausesWithContext(filters, ownershipFilterContext(store));
 	const placeholders = ids.map(() => "?").join(", ");
 	const joinClause = filterResult.joinSessions
 		? "JOIN sessions ON sessions.id = memory_items.session_id"
@@ -970,11 +966,10 @@ function isSummaryLike(item: Pick<MemoryResult, "kind" | "metadata">): boolean {
 }
 
 function findLatestSummaryLike(store: StoreHandle, filters?: MemoryFilters): MemoryResult | null {
-	const filterResult = buildFilterClausesWithContext(filters ?? null, {
-		actorId: store.actorId,
-		deviceId: store.deviceId,
-		enforceScopeVisibility: true,
-	});
+	const filterResult = buildFilterClausesWithContext(
+		filters ?? null,
+		ownershipFilterContext(store),
+	);
 	const whereParts = [
 		"memory_items.active = 1",
 		"(memory_items.kind = 'session_summary' OR json_extract(memory_items.metadata_json, '$.is_summary') = 1)",
@@ -1176,11 +1171,10 @@ function rehydrateScopedCandidateResults(
 	const ids = [...originalById.keys()];
 	if (ids.length === 0) return [];
 
-	const filterResult = buildFilterClausesWithContext(filters ?? null, {
-		actorId: store.actorId,
-		deviceId: store.deviceId,
-		enforceScopeVisibility: true,
-	});
+	const filterResult = buildFilterClausesWithContext(
+		filters ?? null,
+		ownershipFilterContext(store),
+	);
 	const joinClause = filterResult.joinSessions
 		? "JOIN sessions ON sessions.id = memory_items.session_id"
 		: "";
@@ -2000,10 +1994,13 @@ export async function buildMemoryPackAsync(
 	let semResults: MemoryResult[] = [];
 	const semanticQuery = sanitizeSearchQuery(context).clean_query;
 	try {
-		const raw = await semanticSearch(store.db, semanticQuery, limit, filters ?? null, {
-			actorId: store.actorId,
-			deviceId: store.deviceId,
-		});
+		const raw = await semanticSearch(
+			store.db,
+			semanticQuery,
+			limit,
+			filters ?? null,
+			ownershipFilterContext(store),
+		);
 		semResults = semanticMemoryResults(raw);
 	} catch {
 		// Semantic search failure is non-fatal — fall through to FTS-only
@@ -2028,10 +2025,13 @@ export async function buildMemoryPackTraceAsync(
 	let semResults: MemoryResult[] = [];
 	const semanticQuery = sanitizeSearchQuery(context).clean_query;
 	try {
-		const raw = await semanticSearch(store.db, semanticQuery, limit, filters ?? null, {
-			actorId: store.actorId,
-			deviceId: store.deviceId,
-		});
+		const raw = await semanticSearch(
+			store.db,
+			semanticQuery,
+			limit,
+			filters ?? null,
+			ownershipFilterContext(store),
+		);
 		semResults = semanticMemoryResults(raw);
 	} catch {
 		// Semantic search failure is non-fatal — fall through to FTS-only

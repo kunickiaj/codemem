@@ -12,6 +12,8 @@ import type { MemoryFilters } from "./types.js";
 export interface OwnershipFilterContext {
 	actorId: string;
 	deviceId: string;
+	claimedDeviceIds?: string[];
+	legacyActorIds?: string[];
 	/**
 	 * Apply the local read boundary for replication scopes. This is opt-in so
 	 * low-level filter unit tests and non-memory callers can keep using the pure
@@ -94,6 +96,65 @@ function addMultiValueFilter(
 
 const LEGACY_SHARED_REVIEW_SCOPE_ID = "legacy-shared-review";
 
+function cleanUniqueStrings(value: string[] | undefined): string[] {
+	return [...new Set((value ?? []).map((item) => item.trim()).filter(Boolean))];
+}
+
+// Mirror MemoryStore.buildOwnershipPredicate(): prefer the top-level column,
+// then fall back to the metadata_json copy, and finally normalize a missing
+// owner to '' (never NULL) so the `theirs` (NOT ...) comparison stays null-safe.
+function ownershipColumnSql(column: string, jsonPath: string): string {
+	return `COALESCE(
+	NULLIF(TRIM(memory_items.${column}), ''),
+	NULLIF(TRIM(CASE
+		WHEN json_valid(COALESCE(memory_items.metadata_json, ''))
+		THEN COALESCE(json_extract(memory_items.metadata_json, '${jsonPath}'), '')
+		ELSE ''
+	END), ''),
+	''
+)`;
+}
+
+const OWNERSHIP_ACTOR_SQL = ownershipColumnSql("actor_id", "$.actor_id");
+const OWNERSHIP_ORIGIN_DEVICE_SQL = ownershipColumnSql("origin_device_id", "$.origin_device_id");
+
+function ownershipPredicateSql(context: OwnershipFilterContext): {
+	clause: string;
+	params: string[];
+} {
+	const alternatives: string[] = [];
+	const params: string[] = [];
+	// Guard blank identity: an empty actorId/deviceId must NOT match every
+	// ownerless row (mirrors the falsy checks in
+	// MemoryStore.buildOwnershipPredicate()). Skip the equality alternative
+	// when the value is empty rather than emitting `<expr> = ''`.
+	const actorId = context.actorId.trim();
+	if (actorId) {
+		alternatives.push(`${OWNERSHIP_ACTOR_SQL} = ?`);
+		params.push(actorId);
+	}
+	const deviceId = context.deviceId.trim();
+	if (deviceId) {
+		alternatives.push(`${OWNERSHIP_ORIGIN_DEVICE_SQL} = ?`);
+		params.push(deviceId);
+	}
+	const claimedDeviceIds = cleanUniqueStrings(context.claimedDeviceIds);
+	if (claimedDeviceIds.length > 0) {
+		alternatives.push(
+			`${OWNERSHIP_ORIGIN_DEVICE_SQL} IN (${claimedDeviceIds.map(() => "?").join(", ")})`,
+		);
+		params.push(...claimedDeviceIds);
+	}
+	const legacyActorIds = cleanUniqueStrings(context.legacyActorIds);
+	if (legacyActorIds.length > 0) {
+		alternatives.push(`${OWNERSHIP_ACTOR_SQL} IN (${legacyActorIds.map(() => "?").join(", ")})`);
+		params.push(...legacyActorIds);
+	}
+	// No usable owner identity → nothing is "mine" (and `theirs` = everything).
+	if (alternatives.length === 0) return { clause: "(0 = 1)", params };
+	return { clause: `(${alternatives.join(" OR ")})`, params };
+}
+
 function addScopeVisibilityFilter(
 	clauses: string[],
 	params: unknown[],
@@ -170,16 +231,13 @@ export function buildFilterClausesWithContext(
 		.trim()
 		.toLowerCase();
 	if (ownership && (ownershipScope === "mine" || ownershipScope === "theirs")) {
-		const ownedClause =
-			"(COALESCE(memory_items.actor_id, '') = ? OR COALESCE(memory_items.origin_device_id, '') = ?)";
+		const ownedPredicate = ownershipPredicateSql(ownership);
 		if (ownershipScope === "mine") {
-			clauses.push(ownedClause);
+			clauses.push(ownedPredicate.clause);
 		} else {
-			clauses.push(
-				"(COALESCE(memory_items.actor_id, '') != ? AND COALESCE(memory_items.origin_device_id, '') != ?)",
-			);
+			clauses.push(`NOT ${ownedPredicate.clause}`);
 		}
-		params.push(ownership.actorId, ownership.deviceId);
+		params.push(...ownedPredicate.params);
 	}
 
 	// Project scoping — requires sessions JOIN
