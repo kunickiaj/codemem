@@ -5,10 +5,20 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { toJson } from "./db.js";
 import { getMaintenanceJob } from "./maintenance-jobs.js";
-import { applyBootstrapSnapshot, fetchAllSnapshotPages } from "./sync-bootstrap.js";
+import {
+	applyBootstrapSnapshot,
+	fetchAllSnapshotPages,
+	mergeBootstrapSnapshot,
+} from "./sync-bootstrap.js";
 import { SYNC_CAPABILITY_HEADER } from "./sync-capability.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
-import { getReplicationCursor, getSyncResetState, setSyncResetState } from "./sync-replication.js";
+import {
+	getReplicationCursor,
+	getSyncResetState,
+	SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
+	setReplicationCursor,
+	setSyncResetState,
+} from "./sync-replication.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import type { SyncMemorySnapshotItem, SyncResetRequired } from "./types.js";
 import { VECTOR_MODEL_MIGRATION_JOB } from "./vector-migration.js";
@@ -151,6 +161,12 @@ describe("applyBootstrapSnapshot", () => {
 		);
 
 		const items = [makeSnapshotItem("new-work-key")];
+		setReplicationCursor(
+			db,
+			"peer-1",
+			{ lastAcked: SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER },
+			"acme-work",
+		);
 		const result = applyBootstrapSnapshot(
 			db,
 			"peer-1",
@@ -176,6 +192,89 @@ describe("applyBootstrapSnapshot", () => {
 			"2026-01-01T00:00:05Z|base-op",
 			null,
 		]);
+	});
+
+	it("merge recovery preserves stale rows when a newer snapshot item is malformed", () => {
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, visibility, scope_id, metadata_json)
+			 VALUES (?, 'discovery', 'stale-work', 'body', ?, ?, 'stale-work-key', 1, 'shared', 'acme-work', ?)`,
+		).run(sessionId, now, now, toJson({ clock_device_id: "peer-dev" }));
+
+		const result = mergeBootstrapSnapshot(
+			db,
+			"peer-1",
+			[
+				{
+					entity_id: "stale-work-key",
+					op_type: "upsert",
+					payload_json: "{not-json",
+					clock_rev: 2,
+					clock_updated_at: "2026-01-02T00:00:00Z",
+					clock_device_id: "peer-dev",
+				},
+			],
+			makeResetInfo({ scope_id: "acme-work", baseline_cursor: null }),
+		);
+
+		expect(result.ok).toBe(true);
+		expect(result.applied).toBe(0);
+		expect(result.deleted).toBe(0);
+		expect(
+			db
+				.prepare("SELECT title FROM memory_items WHERE import_key = ? AND scope_id = ?")
+				.get("stale-work-key", "acme-work"),
+		).toMatchObject({ title: "stale-work" });
+	});
+
+	it("merge recovery breaks rev/updated_at ties on clock_device_id", () => {
+		const tied = "2026-01-01T00:00:02Z";
+		const seedRow = (importKey: string, title: string, deviceId: string) => {
+			db.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, visibility, scope_id, metadata_json)
+				 VALUES (?, 'discovery', ?, 'body', ?, ?, ?, 1, 'shared', 'acme-work', ?)`,
+			).run(sessionId, title, tied, tied, importKey, toJson({ clock_device_id: deviceId }));
+		};
+		// Existing local clock device id sorts lower than the snapshot's, so on an
+		// exact rev/updated_at tie the snapshot should win and replace the row.
+		seedRow("tie-loser-key", "stale-loser", "dev-a");
+		// Existing local clock device id sorts higher than the snapshot's, so the
+		// local row should win the tie and be preserved.
+		seedRow("tie-winner-key", "local-winner", "dev-z");
+
+		const result = mergeBootstrapSnapshot(
+			db,
+			"peer-1",
+			[
+				makeSnapshotItem("tie-loser-key", {
+					payload: { title: "snapshot-wins", scope_id: "acme-work" },
+					clock_rev: 1,
+					clock_updated_at: tied,
+					clock_device_id: "dev-m",
+				}),
+				makeSnapshotItem("tie-winner-key", {
+					payload: { title: "snapshot-loses", scope_id: "acme-work" },
+					clock_rev: 1,
+					clock_updated_at: tied,
+					clock_device_id: "dev-m",
+				}),
+			],
+			makeResetInfo({ scope_id: "acme-work", baseline_cursor: null }),
+		);
+
+		expect(result.ok).toBe(true);
+		expect(result.applied).toBe(1);
+		expect(result.deleted).toBe(1);
+		expect(
+			db
+				.prepare("SELECT title FROM memory_items WHERE import_key = ? AND scope_id = ?")
+				.get("tie-loser-key", "acme-work"),
+		).toMatchObject({ title: "snapshot-wins" });
+		expect(
+			db
+				.prepare("SELECT title FROM memory_items WHERE import_key = ? AND scope_id = ?")
+				.get("tie-winner-key", "acme-work"),
+		).toMatchObject({ title: "local-winner" });
 	});
 
 	it("unscoped bootstrap replaces only null and local-default scoped rows", () => {

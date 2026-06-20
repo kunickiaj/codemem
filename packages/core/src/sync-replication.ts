@@ -485,7 +485,7 @@ function mergePayloadMetadata(
 	};
 }
 
-function clockDeviceIdFromMetadataJson(raw: string | null): string {
+export function clockDeviceIdFromMetadataJson(raw: string | null): string {
 	const metadata = fromJson(raw);
 	return typeof metadata.clock_device_id === "string" ? metadata.clock_device_id : "";
 }

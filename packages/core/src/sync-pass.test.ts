@@ -457,6 +457,293 @@ describe("syncOnce", () => {
 		});
 	});
 
+	it("merge-recovers scoped snapshots when local rows exist but the peer scope has no cursor", async () => {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-scoped-merge", "fp-scoped-merge", new Date().toISOString());
+		syncReplication.setReplicationCursor(db, "peer-scoped-merge", {
+			lastApplied: "2025-12-31T00:00:00Z|default",
+		});
+		const sessionId = Number(
+			(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?) RETURNING id")
+					.get("2026-01-01T00:00:00Z", "codemem") as { id: number }
+			).id,
+		);
+		db.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, confidence, active, created_at, updated_at,
+				import_key, scope_id, visibility, workspace_id, workspace_kind, origin_device_id, rev, project, metadata_json
+			 ) VALUES (?, 'discovery', ?, ?, 0.8, 1, ?, ?, ?, 'acme-work', 'shared', 'shared:default', 'shared', ?, ?, 'codemem', '{"clock_device_id":"peer-scoped-merge"}')`,
+		).run(
+			sessionId,
+			"Existing scoped memory",
+			"Existing body",
+			"2026-01-01T00:00:00Z",
+			"2026-01-01T00:00:00Z",
+			"existing-key",
+			"peer-scoped-merge",
+			1,
+		);
+		db.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, confidence, active, created_at, updated_at,
+				import_key, scope_id, visibility, workspace_id, workspace_kind, origin_device_id, rev, project
+			 ) VALUES (?, 'discovery', ?, ?, 0.8, 1, ?, ?, ?, 'acme-work', 'shared', 'shared:default', 'shared', ?, ?, 'codemem')`,
+		).run(
+			sessionId,
+			"M4x-only scoped memory",
+			"This row must survive additive recovery",
+			"2026-01-01T00:00:00Z",
+			"2026-01-01T00:00:00Z",
+			"m4x-only-key",
+			"local-device-id",
+			1,
+		);
+		db.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, confidence, active, created_at, updated_at,
+				import_key, scope_id, visibility, workspace_id, workspace_kind, origin_device_id, rev, project
+			 ) VALUES (?, 'discovery', ?, ?, 0.8, 1, ?, ?, ?, 'acme-work', 'shared', 'shared:default', 'shared', ?, ?, 'codemem')`,
+		).run(
+			sessionId,
+			"Stale scoped memory",
+			"Old body",
+			"2026-01-01T00:00:00Z",
+			"2026-01-01T00:00:00Z",
+			"stale-key",
+			"peer-scoped-merge",
+			1,
+		);
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		grantScopeForSyncPass(db, "acme-work", ["peer-scoped-merge", "local-device-id"]);
+
+		const statusResponse = {
+			fingerprint: "fp-scoped-merge",
+			protocol_version: "2",
+			sync_capability: "scoped",
+			sync_reset: {
+				generation: 1,
+				snapshot_id: "snap-default",
+				baseline_cursor: null,
+				retained_floor_cursor: null,
+			},
+			authorized_scopes: [
+				{
+					scope_id: "acme-work",
+					label: "Acme Work",
+					authority_type: "coordinator",
+					membership_epoch: 1,
+					sync_reset: {
+						scope_id: "acme-work",
+						generation: 1,
+						snapshot_id: "snap-acme-1",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+				},
+			],
+		};
+		const defaultOpsResponse = {
+			reset_required: false,
+			generation: 1,
+			snapshot_id: "snap-default",
+			baseline_cursor: null,
+			retained_floor_cursor: null,
+			ops: [],
+			next_cursor: null,
+			skipped: 0,
+		};
+		const requestSpy = vi
+			.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([200, statusResponse])
+			.mockResolvedValueOnce([200, defaultOpsResponse]);
+		vi.spyOn(syncBootstrap, "fetchAllSnapshotPages").mockResolvedValue({
+			items: [
+				{
+					entity_id: "existing-key",
+					op_type: "upsert",
+					payload_json: JSON.stringify({
+						kind: "discovery",
+						title: "Existing scoped memory",
+						body_text: "Existing body",
+						created_at: "2026-01-01T00:00:00Z",
+						updated_at: "2026-01-01T00:00:00Z",
+						scope_id: "acme-work",
+						visibility: "shared",
+						project: "codemem",
+					}),
+					clock_rev: 1,
+					clock_updated_at: "2026-01-01T00:00:00Z",
+					clock_device_id: "peer-scoped-merge",
+				},
+				{
+					entity_id: "missing-key",
+					op_type: "upsert",
+					payload_json: JSON.stringify({
+						kind: "discovery",
+						title: "Missing scoped memory",
+						body_text: "Recovered from peer snapshot",
+						created_at: "2026-01-02T00:00:00Z",
+						updated_at: "2026-01-02T00:00:00Z",
+						scope_id: "acme-work",
+						visibility: "shared",
+						project: "codemem",
+					}),
+					clock_rev: 1,
+					clock_updated_at: "2026-01-02T00:00:00Z",
+					clock_device_id: "peer-scoped-merge",
+				},
+				{
+					entity_id: "stale-key",
+					op_type: "upsert",
+					payload_json: JSON.stringify({
+						kind: "discovery",
+						title: "Updated scoped memory",
+						body_text: "New body",
+						created_at: "2026-01-01T00:00:00Z",
+						updated_at: "2026-01-03T00:00:00Z",
+						scope_id: "acme-work",
+						visibility: "shared",
+						project: "codemem",
+					}),
+					clock_rev: 2,
+					clock_updated_at: "2026-01-03T00:00:00Z",
+					clock_device_id: "peer-scoped-merge",
+				},
+			],
+			generation: 1,
+			snapshot_id: "snap-acme-1",
+			baseline_cursor: null,
+		});
+
+		const result = await syncOnce(db, "peer-scoped-merge", ["http://127.0.0.1:9090"]);
+
+		expect(result.ok).toBe(true);
+		expect(result.perScopeResults?.[0]).toMatchObject({
+			scope_id: "acme-work",
+			ok: true,
+			opsIn: 2,
+			bootstrapped: true,
+		});
+		expect(result.opsIn).toBe(2);
+		expect(syncBootstrap.fetchAllSnapshotPages).toHaveBeenCalledWith(
+			"http://127.0.0.1:9090",
+			expect.objectContaining({ scope_id: "acme-work", snapshot_id: "snap-acme-1" }),
+			"local-device-id",
+			expect.objectContaining({ pageSize: 2000 }),
+		);
+		const requestedUrls = requestSpy.mock.calls.map(([method, url]) => `${method} ${url}`);
+		expect(
+			requestedUrls.some(
+				(entry) => entry.includes("/v1/ops?") && entry.includes("scope_id=acme-work"),
+			),
+		).toBe(false);
+		expect(
+			db
+				.prepare("SELECT COUNT(*) AS n FROM memory_items WHERE import_key = ? AND scope_id = ?")
+				.get("existing-key", "acme-work"),
+		).toMatchObject({ n: 1 });
+		expect(
+			db
+				.prepare("SELECT title FROM memory_items WHERE import_key = ? AND scope_id = ?")
+				.get("missing-key", "acme-work"),
+		).toMatchObject({ title: "Missing scoped memory" });
+		expect(
+			db
+				.prepare("SELECT title FROM memory_items WHERE import_key = ? AND scope_id = ?")
+				.get("stale-key", "acme-work"),
+		).toMatchObject({ title: "Updated scoped memory" });
+		expect(
+			db
+				.prepare("SELECT title FROM memory_items WHERE import_key = ? AND scope_id = ?")
+				.get("m4x-only-key", "acme-work"),
+		).toMatchObject({ title: "M4x-only scoped memory" });
+		expect(syncReplication.getReplicationCursor(db, "peer-scoped-merge", "acme-work")).toEqual([
+			null,
+			syncReplication.SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
+		]);
+	});
+
+	it("does not fetch scoped snapshots for local-only advertised scopes", async () => {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-local-scope", "fp-local-scope", new Date().toISOString());
+		syncReplication.setReplicationCursor(db, "peer-local-scope", {
+			lastApplied: "2025-12-31T00:00:00Z|default",
+		});
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		grantScopeForSyncPass(db, "local-only-scope", ["peer-local-scope", "local-device-id"]);
+		db.prepare("UPDATE replication_scopes SET authority_type = 'local' WHERE scope_id = ?").run(
+			"local-only-scope",
+		);
+
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([
+				200,
+				{
+					fingerprint: "fp-local-scope",
+					protocol_version: "2",
+					sync_capability: "scoped",
+					sync_reset: {
+						generation: 1,
+						snapshot_id: "snap-default",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+					authorized_scopes: [
+						{
+							scope_id: "local-only-scope",
+							label: "Local only",
+							authority_type: "local",
+							membership_epoch: 1,
+							sync_reset: {
+								scope_id: "local-only-scope",
+								generation: 1,
+								snapshot_id: "snap-local-only",
+								baseline_cursor: null,
+								retained_floor_cursor: null,
+							},
+						},
+					],
+				},
+			])
+			.mockResolvedValueOnce([
+				200,
+				{
+					reset_required: false,
+					generation: 1,
+					snapshot_id: "snap-default",
+					baseline_cursor: null,
+					retained_floor_cursor: null,
+					ops: [],
+					next_cursor: null,
+					skipped: 0,
+				},
+			]);
+		const fetchSpy = vi.spyOn(syncBootstrap, "fetchAllSnapshotPages");
+
+		const result = await syncOnce(db, "peer-local-scope", ["http://127.0.0.1:9090"]);
+
+		expect(result.ok).toBe(false);
+		expect(result.perScopeResults?.[0]).toMatchObject({
+			scope_id: "local-only-scope",
+			ok: false,
+			error: "reset_required:missing_scope",
+			failureCategory: "scope",
+		});
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
 	it("reports per-scope failure without rolling back default-scope sync", async () => {
 		db.prepare(
 			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
@@ -471,6 +758,7 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		grantScopeForSyncPass(db, "broken-scope", ["peer-mixed", "local-device-id"]);
 
 		const statusResponse = {
 			fingerprint: "fp-mixed",
@@ -563,6 +851,7 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		grantScopeForSyncPass(db, "oss", ["peer-connectivity", "local-device-id"]);
 		vi.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([
 				200,
@@ -2206,6 +2495,11 @@ describe("syncOnce auto-bootstrap", () => {
 
 	it("triggers bootstrap for empty local state with no cursor", async () => {
 		seedPeer();
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		grantScopeForSyncPass(db, "acme-work", [peerDeviceId, "local-device-id"]);
 
 		vi.spyOn(syncHttpClient, "requestJson").mockResolvedValue([
 			200,
@@ -2237,6 +2531,26 @@ describe("syncOnce auto-bootstrap", () => {
 		const fetchCall = vi.mocked(syncBootstrap.fetchAllSnapshotPages).mock.calls[0];
 		expect(fetchCall?.[1]).toMatchObject({ scope_id: "acme-work" });
 		expect(fetchCall?.[3]?.pageSize).toBe(2000);
+	});
+
+	it("rejects scoped top-level bootstrap when local membership is missing", async () => {
+		seedPeer();
+
+		vi.spyOn(syncHttpClient, "requestJson").mockResolvedValue([
+			200,
+			{
+				...statusPayload,
+				sync_reset: { ...statusPayload.sync_reset, scope_id: "acme-work" },
+			},
+		]);
+		const fetchSpy = vi.spyOn(syncBootstrap, "fetchAllSnapshotPages");
+
+		const result = await syncOnce(db, peerDeviceId, [address]);
+
+		expect(result.ok).toBe(false);
+		expect(result.error).toBe("reset_required:missing_scope");
+		expect(result.failureCategory).toBe("scope");
+		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
 	it("falls through to incremental when local shared data exists", async () => {

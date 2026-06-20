@@ -13,7 +13,11 @@ import { ensureAdditiveSchemaCompatibility } from "./db.js";
 import * as schema from "./schema.js";
 import type { SecretScanner } from "./secret-scanner.js";
 import { buildAuthHeaders } from "./sync-auth.js";
-import { applyBootstrapSnapshot, fetchAllSnapshotPages } from "./sync-bootstrap.js";
+import {
+	applyBootstrapSnapshot,
+	fetchAllSnapshotPages,
+	mergeBootstrapSnapshot,
+} from "./sync-bootstrap.js";
 import {
 	LOCAL_SYNC_CAPABILITY,
 	negotiateSyncCapability,
@@ -68,6 +72,13 @@ const DEFAULT_LIMIT = 500;
 
 /** Elevated page size for initial bootstrap of never-synced peers. */
 const BOOTSTRAP_PAGE_SIZE = 2000;
+
+/**
+ * Per-page snapshot fetch timeout for bootstrap / scoped merge recovery.
+ * Larger than the default incremental timeout because snapshot pages can be
+ * substantially bigger and slower to assemble on the serving peer.
+ */
+const BOOTSTRAP_REQUEST_TIMEOUT_S = 60;
 
 /** Current sync protocol version expected from peers. */
 const EXPECTED_SYNC_PROTOCOL_VERSION = "2";
@@ -485,6 +496,59 @@ function hasLocalRowsInScope(db: Database, scopeId: string): boolean {
 	return row !== undefined;
 }
 
+function scopedSnapshotAccessFailure(
+	db: Database,
+	options: { scopeId: string; peerDeviceId: string; localDeviceId: string },
+): SyncResetRequired["reason"] | null {
+	const scope = db
+		.prepare(
+			`SELECT authority_type, status, membership_epoch
+			   FROM replication_scopes
+			  WHERE scope_id = ?`,
+		)
+		.get(options.scopeId) as
+		| { authority_type: string | null; status: string | null; membership_epoch: number | null }
+		| undefined;
+	if (!scope) return "missing_scope";
+	if (scope.status !== "active") return "scope_inactive";
+	if (scope.authority_type === "local") return "missing_scope";
+
+	const requiredEpoch = Number(scope.membership_epoch ?? 0);
+	for (const deviceId of [options.localDeviceId, options.peerDeviceId]) {
+		const membership = db
+			.prepare(
+				`SELECT status, membership_epoch
+				   FROM scope_memberships
+				  WHERE scope_id = ? AND device_id = ?`,
+			)
+			.get(options.scopeId, deviceId) as
+			| { status: string | null; membership_epoch: number | null }
+			| undefined;
+		if (!membership) return "missing_scope";
+		if (membership.status !== "active") return "scope_inactive";
+		if (Number(membership.membership_epoch ?? 0) < requiredEpoch) return "stale_epoch";
+	}
+
+	return null;
+}
+
+function scopedSnapshotAccessDeniedResult(
+	baseUrl: string,
+	resetInfo: SyncResetRequired,
+	reason: SyncResetRequired["reason"],
+): SyncResult {
+	return {
+		ok: false,
+		address: baseUrl,
+		error: `reset_required:${reason}`,
+		failureCategory: scopeResetFailureCategory(reason),
+		opsIn: 0,
+		opsOut: 0,
+		addressErrors: [],
+		resetRequired: { ...resetInfo, reason },
+	};
+}
+
 function categorizeSyncFailure(error: string | undefined): SyncFailureCategory {
 	const lower = String(error ?? "").toLowerCase();
 	if (!lower) return "other";
@@ -619,12 +683,46 @@ async function syncOneScope(
 	const nullBaselineBootstrapStillCurrent =
 		hasNullBaselineBootstrapMarker && scope.sync_reset.baseline_cursor == null;
 	const localRowsPresent = hasLocalRowsInScope(db, scopeId);
+	const shouldMergeRecoverScope =
+		lastApplied == null && localRowsPresent && !nullBaselineBootstrapStillCurrent;
+	const shouldBootstrapEmptyScope =
+		lastApplied == null && !localRowsPresent && !nullBaselineBootstrapStillCurrent;
+	if (shouldMergeRecoverScope || shouldBootstrapEmptyScope) {
+		const accessFailure = scopedSnapshotAccessFailure(db, {
+			scopeId,
+			peerDeviceId,
+			localDeviceId: deviceId,
+		});
+		if (accessFailure) {
+			return {
+				scope_id: scopeId,
+				label: scope.label,
+				ok: false,
+				failureCategory: scopeResetFailureCategory(accessFailure),
+				opsIn: 0,
+				opsOut: 0,
+				error: `reset_required:${accessFailure}`,
+				resetRequired: {
+					reset_required: true,
+					reason: accessFailure,
+					scope_id: scopeId,
+					generation: scope.sync_reset.generation,
+					snapshot_id: scope.sync_reset.snapshot_id,
+					baseline_cursor: scope.sync_reset.baseline_cursor,
+					retained_floor_cursor: scope.sync_reset.retained_floor_cursor,
+				},
+				bootstrapped: false,
+			};
+		}
+	}
 
-	// Bootstrap when this device has never pulled the scope and has no local
-	// rows. If there ARE local rows but no cursor, fall through to incremental
-	// so the server's reset_required logic can decide whether a re-bootstrap
-	// is required without clobbering existing data.
-	if (lastApplied == null && !localRowsPresent && !nullBaselineBootstrapStillCurrent) {
+	// If this peer/scope has no cursor but the receiver already has rows in the
+	// scope, a destructive bootstrap is unsafe and incremental from an empty
+	// cursor can be a permanent no-op on peers that only retain snapshot state.
+	// Recover additively by merging the advertised scoped snapshot: missing or
+	// stale copies of the same snapshot entity are applied, but rows absent from
+	// the peer snapshot are preserved.
+	if (shouldMergeRecoverScope) {
 		try {
 			const resetInfo: SyncResetRequired = {
 				scope_id: scopeId,
@@ -638,6 +736,64 @@ async function syncOneScope(
 			const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, {
 				keysDir,
 				pageSize: BOOTSTRAP_PAGE_SIZE,
+				timeoutS: BOOTSTRAP_REQUEST_TIMEOUT_S,
+			});
+			const mergeResult = mergeBootstrapSnapshot(db, peerDeviceId, items, resetInfo, scanner);
+			if (!mergeResult.ok) {
+				const error = "scoped merge bootstrap apply failed";
+				return {
+					scope_id: scopeId,
+					label: scope.label,
+					ok: false,
+					failureCategory: "other",
+					opsIn: 0,
+					opsOut: 0,
+					error,
+					bootstrapped: true,
+				};
+			}
+			return {
+				scope_id: scopeId,
+				label: scope.label,
+				ok: true,
+				opsIn: mergeResult.applied,
+				opsOut: 0,
+				bootstrapped: true,
+			};
+		} catch (err) {
+			const detail = err instanceof Error ? err.message.trim() || err.constructor.name : "unknown";
+			const error = `scoped merge bootstrap failed: ${detail}`;
+			return {
+				scope_id: scopeId,
+				label: scope.label,
+				ok: false,
+				failureCategory: scopeFailureCategory(error),
+				opsIn: 0,
+				opsOut: 0,
+				error,
+				bootstrapped: true,
+			};
+		}
+	}
+
+	// Bootstrap when this device has never pulled the scope and has no local
+	// rows. Populated scopes without a peer cursor are handled by the additive
+	// merge-recovery branch above so this destructive bootstrap path stays safe.
+	if (shouldBootstrapEmptyScope) {
+		try {
+			const resetInfo: SyncResetRequired = {
+				scope_id: scopeId,
+				generation: scope.sync_reset.generation,
+				snapshot_id: scope.sync_reset.snapshot_id,
+				baseline_cursor: scope.sync_reset.baseline_cursor,
+				retained_floor_cursor: scope.sync_reset.retained_floor_cursor,
+				reset_required: true,
+				reason: "initial_bootstrap" as SyncResetRequired["reason"],
+			};
+			const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, {
+				keysDir,
+				pageSize: BOOTSTRAP_PAGE_SIZE,
+				timeoutS: BOOTSTRAP_REQUEST_TIMEOUT_S,
 			});
 			// TOCTOU re-check: another process (CLI write, plugin, concurrent
 			// sync pass) could have created shared memories in this scope while
@@ -1032,9 +1188,25 @@ export async function syncOnce(
 							reset_required: true as const,
 							reason: "initial_bootstrap" as const,
 						};
+						if (resetInfo.scope_id) {
+							const accessFailure = scopedSnapshotAccessFailure(db, {
+								scopeId: resetInfo.scope_id,
+								peerDeviceId,
+								localDeviceId: deviceId,
+							});
+							if (accessFailure) {
+								recordSyncAttempt(db, peerDeviceId, {
+									ok: false,
+									error: `reset_required:${accessFailure}`,
+									capabilities: lastCapabilityDiagnostics,
+								});
+								return scopedSnapshotAccessDeniedResult(baseUrl, resetInfo, accessFailure);
+							}
+						}
 						const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, {
 							keysDir,
 							pageSize: BOOTSTRAP_PAGE_SIZE,
+							timeoutS: BOOTSTRAP_REQUEST_TIMEOUT_S,
 						});
 
 						// Re-check after network fetch: another process (plugin, CLI, another
@@ -1195,8 +1367,24 @@ export async function syncOnce(
 
 				// No dirty local state — safe to auto-bootstrap from peer snapshot.
 				try {
+					if (resetRequired.scope_id) {
+						const accessFailure = scopedSnapshotAccessFailure(db, {
+							scopeId: resetRequired.scope_id,
+							peerDeviceId,
+							localDeviceId: deviceId,
+						});
+						if (accessFailure) {
+							recordSyncAttempt(db, peerDeviceId, {
+								ok: false,
+								error: `reset_required:${accessFailure}`,
+								capabilities: lastCapabilityDiagnostics,
+							});
+							return scopedSnapshotAccessDeniedResult(baseUrl, resetRequired, accessFailure);
+						}
+					}
 					const { items } = await fetchAllSnapshotPages(baseUrl, resetRequired, deviceId, {
 						keysDir,
+						timeoutS: BOOTSTRAP_REQUEST_TIMEOUT_S,
 					});
 
 					// Re-check dirty state after network fetch to close the TOCTOU window.

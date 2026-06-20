@@ -3466,6 +3466,9 @@ describe("viewer-server", () => {
 				const scopes = ["oss", "personal"] as const;
 				for (const scopeId of scopes) {
 					grantSyncScopeToDevices(source.store, scopeId, [sourceDeviceId, receiverDeviceId]);
+					// Receiver must hold local scope membership to bootstrap a scoped
+					// snapshot — scopedSnapshotAccessFailure() fails closed otherwise.
+					grantSyncScopeToDevices(receiver.store, scopeId, [sourceDeviceId, receiverDeviceId]);
 					core.setSyncResetState(
 						source.store.db,
 						{
