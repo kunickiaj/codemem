@@ -623,7 +623,22 @@ const detectRunner = ({ cwd, envRunner }) => {
   // Prefer the TS codemem if installed globally, fall back to npx
   try {
     const versionOutput = execSync("codemem --version", { encoding: "utf-8", timeout: 3000 }).trim();
-    if (versionOutput === PINNED_BACKEND_VERSION || versionOutput.startsWith("0.2")) {
+    // Accept any global codemem at or above the pinned backend version, so a
+    // newer global install is used instead of silently downgrading to
+    // `npx codemem@<pin>` (the old check only matched the exact pin or the
+    // long-obsolete 0.2x series).
+    // Accept a global codemem only when it is the EXACT pinned version, or a
+    // clean (non-prerelease) release at least as new as the pin. isVersionAtLeast
+    // ignores prerelease suffixes, so without this a prerelease like
+    // "0.36.1-alpha.0" would wrongly compare >= the "0.36.1" release even though
+    // SemVer orders it below. Requiring an exact match for prereleases also
+    // handles a prerelease PIN correctly (the release script can set one): only
+    // the identical prerelease is trusted, never an older/different one.
+    const isPrerelease = versionOutput.includes("-");
+    const matchesOrCleanNewer =
+      versionOutput === PINNED_BACKEND_VERSION ||
+      (!isPrerelease && isVersionAtLeast(versionOutput, PINNED_BACKEND_VERSION));
+    if (matchesOrCleanNewer) {
       return "codemem";
     }
   } catch {
@@ -722,10 +737,14 @@ export const OpencodeMemPlugin = async ({
   const viewerPort = process.env.CODEMEM_VIEWER_PORT || "38888";
   const viewerDbPath = process.env.CODEMEM_DB || "";
   const viewerConfigPath = process.env.CODEMEM_CONFIG || "";
-  const commandTimeout = Number.parseInt(
-    process.env.CODEMEM_PLUGIN_CMD_TIMEOUT || "20000",
-    10
-  );
+  // A malformed value (e.g. "abc", "", "-1") falls back to the 20s default
+  // instead of NaN, which would silently disable the timeout. An explicit "0"
+  // is preserved as the intentional opt-out (disable the timeout, e.g. for slow
+  // first-run npx installs/backend updates) — the `commandTimeout > 0` guard at
+  // the call site skips installing the timer when it is 0.
+  const rawCommandTimeout = String(process.env.CODEMEM_PLUGIN_CMD_TIMEOUT ?? "").trim();
+  const commandTimeout =
+    rawCommandTimeout === "0" ? 0 : parsePositiveInt(rawCommandTimeout, 20000);
   const backendUpdatePolicy = parseBackendUpdatePolicy(
     process.env.CODEMEM_BACKEND_UPDATE_POLICY || "notify"
   );
@@ -1272,8 +1291,18 @@ export const OpencodeMemPlugin = async ({
       });
       let stdout = "";
       let stderr = "";
-      proc.stdout.on("data", (chunk) => { stdout += chunk; });
-      proc.stderr.on("data", (chunk) => { stderr += chunk; });
+      // Guard stdio access: a hard spawn failure (ENOENT) can hand back null
+      // streams, and a synchronous null-deref here would reject the promise
+      // that callers await for a resolved { exitCode, stdout, stderr }.
+      if (proc.stdout) proc.stdout.on("data", (chunk) => { stdout += chunk; });
+      if (proc.stderr) proc.stderr.on("data", (chunk) => { stderr += chunk; });
+      // Absorb async stream errors (e.g. EPIPE when the child exits mid-write,
+      // or a spawn failure surfacing on a pipe). Without these handlers an
+      // unhandled stream "error" event would crash the host process. The
+      // child-level proc.once("error") below still resolves the promise.
+      for (const stream of [proc.stdin, proc.stdout, proc.stderr]) {
+        if (stream && typeof stream.on === "function") stream.on("error", () => {});
+      }
       if (typeof stdinText === "string") {
         try {
           proc.stdin.write(stdinText);
@@ -2078,7 +2107,9 @@ export const OpencodeMemPlugin = async ({
           limit: tool.schema.number().optional(),
         },
         async execute({ limit }) {
-          const safeLimit = Number.isFinite(limit) ? String(limit) : "5";
+          // Number.isFinite accepts floats and negatives; coerce to a positive
+          // integer (default 5) before forwarding to the CLI.
+          const safeLimit = String(parsePositiveInt(limit, 5));
           const recent = await runCli(["recent", "--limit", safeLimit]);
           if (recent.exitCode === 0) {
             return recent.stdout.trim() || "No recent memories.";
