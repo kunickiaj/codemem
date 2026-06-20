@@ -140,6 +140,23 @@ class FailingAuditBatchD1Database extends SqliteD1Database {
 	}
 }
 
+class FailingDeviceRemovalBatchD1Database extends SqliteD1Database {
+	override async batch(statements: D1PreparedStatementLike[]): Promise<unknown[]> {
+		return this.db.transaction(() => {
+			// Run every delete except the final enrolled_devices delete, then fail
+			// mid-batch so the rollback restores all three row types.
+			const results: unknown[] = [];
+			for (const statement of statements.slice(0, -1)) {
+				if (!(statement instanceof SqliteD1Statement)) {
+					throw new Error("Unsupported D1 statement test double.");
+				}
+				results.push(statement.executeRunSync());
+			}
+			throw new Error("device removal batch failed");
+		})();
+	}
+}
+
 class RacingRevokeBatchD1Database extends SqliteD1Database {
 	private injected = false;
 
@@ -400,6 +417,177 @@ describe("D1CoordinatorStore", () => {
 			vi.useRealTimers();
 			await racingStore.close();
 			await normalStore.close();
+			await cleanup();
+		}
+	});
+
+	it("removes presence, reciprocal approvals, and enrollment atomically", async () => {
+		const { db, cleanup } = setupStore();
+		const store = new D1CoordinatorStore(new SqliteD1Database(db));
+		try {
+			await store.createGroup("g1");
+			await store.enrollDevice("g1", { deviceId: "d1", fingerprint: "fp1", publicKey: "pk1" });
+			await store.enrollDevice("g1", { deviceId: "d2", fingerprint: "fp2", publicKey: "pk2" });
+			await store.upsertPresence({
+				groupId: "g1",
+				deviceId: "d1",
+				addresses: ["http://localhost:9000"],
+				ttlS: 300,
+			});
+			await store.createReciprocalApproval({
+				groupId: "g1",
+				requestingDeviceId: "d1",
+				requestedDeviceId: "d2",
+			});
+
+			expect(await store.removeDevice("g1", "d1")).toBe(true);
+
+			expect(await store.getEnrollment("g1", "d1")).toBeNull();
+			expect(
+				db
+					.prepare(
+						"SELECT COUNT(*) AS n FROM presence_records WHERE group_id = ? AND device_id = ?",
+					)
+					.get("g1", "d1"),
+			).toEqual({ n: 0 });
+			expect(
+				db
+					.prepare(
+						"SELECT COUNT(*) AS n FROM coordinator_reciprocal_approvals WHERE group_id = ? AND (requesting_device_id = ? OR requested_device_id = ?)",
+					)
+					.get("g1", "d1", "d1"),
+			).toEqual({ n: 0 });
+		} finally {
+			await store.close();
+			await cleanup();
+		}
+	});
+
+	it("returns false when removing a non-existent device", async () => {
+		const { db, cleanup } = setupStore();
+		const store = new D1CoordinatorStore(new SqliteD1Database(db));
+		try {
+			await store.createGroup("g1");
+			expect(await store.removeDevice("g1", "ghost")).toBe(false);
+		} finally {
+			await store.close();
+			await cleanup();
+		}
+	});
+
+	it("leaves no partial deletion when the device removal batch fails mid-way", async () => {
+		const { db, cleanup } = setupStore();
+		const normalStore = new D1CoordinatorStore(new SqliteD1Database(db));
+		const failingStore = new D1CoordinatorStore(new FailingDeviceRemovalBatchD1Database(db));
+		try {
+			await normalStore.createGroup("g1");
+			await normalStore.enrollDevice("g1", {
+				deviceId: "d1",
+				fingerprint: "fp1",
+				publicKey: "pk1",
+			});
+			await normalStore.enrollDevice("g1", {
+				deviceId: "d2",
+				fingerprint: "fp2",
+				publicKey: "pk2",
+			});
+			await normalStore.upsertPresence({
+				groupId: "g1",
+				deviceId: "d1",
+				addresses: ["http://localhost:9000"],
+				ttlS: 300,
+			});
+			await normalStore.createReciprocalApproval({
+				groupId: "g1",
+				requestingDeviceId: "d1",
+				requestedDeviceId: "d2",
+			});
+
+			await expect(failingStore.removeDevice("g1", "d1")).rejects.toThrow(
+				"device removal batch failed",
+			);
+
+			// All-or-nothing: the enrollment, presence, and reciprocal approval rows
+			// must all survive the rolled-back batch.
+			expect(await normalStore.getEnrollment("g1", "d1")).not.toBeNull();
+			expect(
+				db
+					.prepare(
+						"SELECT COUNT(*) AS n FROM presence_records WHERE group_id = ? AND device_id = ?",
+					)
+					.get("g1", "d1"),
+			).toEqual({ n: 1 });
+			expect(
+				db
+					.prepare(
+						"SELECT COUNT(*) AS n FROM coordinator_reciprocal_approvals WHERE group_id = ? AND (requesting_device_id = ? OR requested_device_id = ?)",
+					)
+					.get("g1", "d1", "d1"),
+			).toEqual({ n: 1 });
+		} finally {
+			await failingStore.close();
+			await normalStore.close();
+			await cleanup();
+		}
+	});
+
+	it("stores a non-canonical invite expiry in canonical UTC form", async () => {
+		const { store, cleanup } = setupStore();
+		try {
+			await store.createGroup("g1", "Team Alpha");
+			const offsetInvite = await store.createInvite({
+				groupId: "g1",
+				policy: "auto_admit",
+				expiresAt: "2099-07-01T00:00:00+00:00",
+			});
+			expect(offsetInvite.expires_at).toBe("2099-07-01T00:00:00.000Z");
+
+			const dateOnlyInvite = await store.createInvite({
+				groupId: "g1",
+				policy: "auto_admit",
+				expiresAt: "2099-07-01",
+			});
+			expect(dateOnlyInvite.expires_at).toBe("2099-07-01T00:00:00.000Z");
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("rejects an unparseable invite expiry", async () => {
+		const { store, cleanup } = setupStore();
+		try {
+			await store.createGroup("g1");
+			await expect(
+				store.createInvite({ groupId: "g1", policy: "auto_admit", expiresAt: "not-a-date" }),
+			).rejects.toThrow("expiresAt must be a valid date.");
+			await expect(
+				store.createInvite({ groupId: "g1", policy: "auto_admit", expiresAt: "   " }),
+			).rejects.toThrow("expiresAt must be a valid date.");
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("excludes expired invites and includes unexpired ones by token", async () => {
+		const { store, cleanup } = setupStore();
+		try {
+			await store.createGroup("g1");
+			const liveInvite = await store.createInvite({
+				groupId: "g1",
+				policy: "auto_admit",
+				// Future, supplied with a non-canonical offset to confirm the stored
+				// canonical form compares correctly against nowISO().
+				expiresAt: "2099-01-01T00:00:00+00:00",
+			});
+			expect(await store.getInviteByToken(liveInvite.token as string)).not.toBeNull();
+
+			const expiredInvite = await store.createInvite({
+				groupId: "g1",
+				policy: "auto_admit",
+				expiresAt: "2000-01-01T00:00:00+00:00",
+			});
+			expect(await store.getInviteByToken(expiredInvite.token as string)).toBeNull();
+		} finally {
 			await cleanup();
 		}
 	});

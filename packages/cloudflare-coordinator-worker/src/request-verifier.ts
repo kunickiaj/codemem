@@ -86,6 +86,11 @@ export const verifyCloudflareCoordinatorRequest: CoordinatorRequestVerifier = as
 	if (!/^\d+$/.test(request.timestamp)) return false;
 	const timestamp = Number.parseInt(request.timestamp, 10);
 	if (Number.isNaN(timestamp)) return false;
+	// Freshness is checked against real Date.now(), independent of the
+	// coordinator's injected runtime.now() used for nonce cutoffs. This is safe
+	// in production where both are wall-clock, but means a frozen/injected
+	// runtime clock will not move this check. See coordinator-api authorizeRequest
+	// for the matching clock-source note.
 	const now = Math.floor(Date.now() / 1000);
 	if (Math.abs(now - timestamp) > DEFAULT_TIME_WINDOW_S) return false;
 
