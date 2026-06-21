@@ -421,11 +421,27 @@ describe("formatSyncAttempt", () => {
 					"INSERT INTO replication_cursors(peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
 				)
 				.run("peer-1", "cursor-1", "cursor-1", new Date().toISOString());
+			// The v2 cursor drives the replication retention floor; removal must
+			// clear it or replication_ops can never prune past this peer.
+			store.db
+				.prepare(
+					"INSERT INTO replication_cursors_v2(peer_device_id, scope_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?, ?)",
+				)
+				.run("peer-1", "local-default", "cursor-1", "cursor-1", new Date().toISOString());
 			const peers = syncCommand.commands.find((command) => command.name() === "peers");
 			const remove = peers?.commands.find((command) => command.name() === "remove");
 			await remove?.parseAsync(["work", "--db-path", dbPath, "--json"], { from: "user" });
 			expect(logSpy).toHaveBeenCalledWith(
-				JSON.stringify({ ok: true, peer_device_id: "peer-1", name: "work" }, null, 2),
+				JSON.stringify(
+					{
+						ok: true,
+						peer_device_id: "peer-1",
+						name: "work",
+						removed: { cursors: 1, cursorsV2: 1, peers: 1, attempts: 0, rejections: 0 },
+					},
+					null,
+					2,
+				),
 			);
 			const row = store.db
 				.prepare("SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?")
@@ -433,8 +449,117 @@ describe("formatSyncAttempt", () => {
 			const cursor = store.db
 				.prepare("SELECT peer_device_id FROM replication_cursors WHERE peer_device_id = ?")
 				.get("peer-1");
+			const cursorV2 = store.db
+				.prepare("SELECT peer_device_id FROM replication_cursors_v2 WHERE peer_device_id = ?")
+				.get("peer-1");
 			expect(row).toBeUndefined();
 			expect(cursor).toBeUndefined();
+			expect(cursorV2).toBeUndefined();
+			expect(process.exitCode).toBeUndefined();
+		} finally {
+			logSpy.mockRestore();
+			store.close();
+			rmSync(tmpDbDir, { recursive: true, force: true });
+			process.exitCode = prevExitCode;
+		}
+	});
+
+	it("removes a stranded orphan device id with only a replication_cursors_v2 row", async () => {
+		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-peers-remove-orphan-test-"));
+		const dbPath = join(tmpDbDir, "mem.sqlite");
+		const rawDb = connect(dbPath);
+		initTestSchema(rawDb);
+		rawDb.close();
+		const store = new MemoryStore(dbPath);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const prevExitCode = process.exitCode;
+		process.exitCode = undefined;
+		try {
+			// No sync_peers row — only a stranded v2 cursor that pins the
+			// retention floor. Removal by device id must still succeed.
+			store.db
+				.prepare(
+					"INSERT INTO replication_cursors_v2(peer_device_id, scope_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?, ?)",
+				)
+				.run("orphan-device", "local-default", "cursor-1", "cursor-1", new Date().toISOString());
+			const peers = syncCommand.commands.find((command) => command.name() === "peers");
+			const remove = peers?.commands.find((command) => command.name() === "remove");
+			await remove?.parseAsync(["orphan-device", "--db-path", dbPath, "--json"], { from: "user" });
+			expect(logSpy).toHaveBeenCalledWith(
+				JSON.stringify(
+					{
+						ok: true,
+						peer_device_id: "orphan-device",
+						name: null,
+						removed: { cursors: 0, cursorsV2: 1, peers: 0, attempts: 0, rejections: 0 },
+					},
+					null,
+					2,
+				),
+			);
+			const cursorV2 = store.db
+				.prepare("SELECT peer_device_id FROM replication_cursors_v2 WHERE peer_device_id = ?")
+				.get("orphan-device");
+			expect(cursorV2).toBeUndefined();
+			// Did not fail: not-found would set exit code 1.
+			expect(process.exitCode).toBeUndefined();
+		} finally {
+			logSpy.mockRestore();
+			store.close();
+			rmSync(tmpDbDir, { recursive: true, force: true });
+			process.exitCode = prevExitCode;
+		}
+	});
+
+	it("prefers an orphan cursor id over a registered peer whose name collides with it", async () => {
+		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-peers-remove-collision-test-"));
+		const dbPath = join(tmpDbDir, "mem.sqlite");
+		const rawDb = connect(dbPath);
+		initTestSchema(rawDb);
+		rawDb.close();
+		const store = new MemoryStore(dbPath);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const prevExitCode = process.exitCode;
+		process.exitCode = undefined;
+		try {
+			// A live registered peer whose NAME equals an orphan's device id, plus
+			// the stranded orphan v2 cursor under that same id. Removal by id must
+			// target the orphan cursor (exact id), NOT the name-matched live peer.
+			store.db
+				.prepare("INSERT INTO sync_peers(peer_device_id, name, created_at) VALUES (?, ?, ?)")
+				.run("real-device", "collision-id", new Date().toISOString());
+			store.db
+				.prepare(
+					"INSERT INTO replication_cursors_v2(peer_device_id, scope_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?, ?)",
+				)
+				.run("collision-id", "local-default", "cursor-1", "cursor-1", new Date().toISOString());
+			const peers = syncCommand.commands.find((command) => command.name() === "peers");
+			const remove = peers?.commands.find((command) => command.name() === "remove");
+			await remove?.parseAsync(["collision-id", "--db-path", dbPath, "--json"], { from: "user" });
+			expect(logSpy).toHaveBeenCalledWith(
+				JSON.stringify(
+					{
+						ok: true,
+						peer_device_id: "collision-id",
+						name: null,
+						removed: { cursors: 0, cursorsV2: 1, peers: 0, attempts: 0, rejections: 0 },
+					},
+					null,
+					2,
+				),
+			);
+			// The orphan cursor is gone...
+			expect(
+				store.db
+					.prepare("SELECT peer_device_id FROM replication_cursors_v2 WHERE peer_device_id = ?")
+					.get("collision-id"),
+			).toBeUndefined();
+			// ...and the live peer that merely shares the name is untouched.
+			expect(
+				store.db
+					.prepare("SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?")
+					.get("real-device"),
+			).toEqual({ peer_device_id: "real-device" });
 			expect(process.exitCode).toBeUndefined();
 		} finally {
 			logSpy.mockRestore();

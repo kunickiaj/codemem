@@ -16,6 +16,7 @@ import {
 	ensureDeviceIdentity,
 	fetchAllSnapshotPages,
 	fingerprintPublicKey,
+	forgetSyncPeerState,
 	getSemanticIndexDiagnostics,
 	hasUnsyncedSharedMemoryChanges,
 	listPerPeerScopeSyncState,
@@ -113,6 +114,23 @@ function resolvePeerMatch(
 		.where(eq(schema.syncPeers.peer_device_id, trimmed))
 		.get();
 	if (byId) return byId;
+	// Stranded/orphan cursor rows: a peer whose sync_peers row is already gone but
+	// whose replication_cursors(_v2) rows still linger. Resolved by exact device id
+	// BEFORE the name lookup below, so an exact id always wins over a registered
+	// peer whose *name* happens to equal that id (otherwise `remove <orphan-id>`
+	// could target the wrong peer and leave the orphan still pinning retention).
+	const orphanCursor =
+		db
+			.select({ peer_device_id: schema.replicationCursorsV2.peer_device_id })
+			.from(schema.replicationCursorsV2)
+			.where(eq(schema.replicationCursorsV2.peer_device_id, trimmed))
+			.get() ??
+		db
+			.select({ peer_device_id: schema.replicationCursors.peer_device_id })
+			.from(schema.replicationCursors)
+			.where(eq(schema.replicationCursors.peer_device_id, trimmed))
+			.get();
+	if (orphanCursor) return { peer_device_id: trimmed, name: null };
 	const byName = db
 		.select({ peer_device_id: schema.syncPeers.peer_device_id, name: schema.syncPeers.name })
 		.from(schema.syncPeers)
@@ -1091,23 +1109,24 @@ peersRemoveCmd.action((peerRef: string, opts: { db?: string; dbPath?: string; js
 			process.exitCode = 1;
 			return;
 		}
-		d.delete(schema.replicationCursors)
-			.where(eq(schema.replicationCursors.peer_device_id, match.peer_device_id))
-			.run();
-		d.delete(schema.syncPeers)
-			.where(eq(schema.syncPeers.peer_device_id, match.peer_device_id))
-			.run();
+		// Purge every per-peer table (incl. replication_cursors_v2, which drives
+		// the replication retention floor) so removal can't leave orphan rows
+		// that block replication_ops pruning.
+		const { removed } = forgetSyncPeerState(store.db, match.peer_device_id);
 		const payload = {
 			ok: true,
 			peer_device_id: match.peer_device_id,
 			name: match.name,
+			removed,
 		};
 		if (opts.json) {
 			console.log(JSON.stringify(payload, null, 2));
 			return;
 		}
 		p.intro("codemem sync peers remove");
-		p.log.success(`Removed peer ${match.name || match.peer_device_id}`);
+		p.log.success(
+			`Removed peer ${match.name || match.peer_device_id} (cleared ${removed.cursorsV2} cursor(s))`,
+		);
 		p.outro(match.peer_device_id);
 	} finally {
 		store.close();

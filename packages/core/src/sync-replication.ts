@@ -699,6 +699,65 @@ export function clearReplicationCursorLastApplied(
 		.run();
 }
 
+export interface ForgetSyncPeerStateResult {
+	peer_device_id: string;
+	removed: {
+		cursors: number;
+		cursorsV2: number;
+		peers: number;
+		attempts: number;
+		rejections: number;
+	};
+}
+
+/**
+ * Purge all per-peer sync state for a removed peer device, in one transaction.
+ *
+ * Deletes rows keyed on `peer_device_id` from every per-peer table:
+ *   - replication_cursors (v1)
+ *   - replication_cursors_v2 (v2 — drives the replication retention "retained
+ *     floor"; orphaned rows here pin the floor and block replication_ops prune)
+ *   - sync_peers
+ *   - sync_attempts
+ *   - sync_scope_rejections (peer_device_id is nullable; NULL rows never match)
+ *
+ * Returns per-table deleted-row counts. An empty/whitespace id is a no-op.
+ */
+export function forgetSyncPeerState(db: Database, peerDeviceId: string): ForgetSyncPeerStateResult {
+	const id = String(peerDeviceId ?? "").trim();
+	if (!id) {
+		return {
+			peer_device_id: "",
+			removed: { cursors: 0, cursorsV2: 0, peers: 0, attempts: 0, rejections: 0 },
+		};
+	}
+	const d = drizzle(db, { schema });
+	const removed = db.transaction(() => {
+		const cursors = d
+			.delete(schema.replicationCursors)
+			.where(eq(schema.replicationCursors.peer_device_id, id))
+			.run().changes;
+		const cursorsV2 = d
+			.delete(schema.replicationCursorsV2)
+			.where(eq(schema.replicationCursorsV2.peer_device_id, id))
+			.run().changes;
+		const peers = d
+			.delete(schema.syncPeers)
+			.where(eq(schema.syncPeers.peer_device_id, id))
+			.run().changes;
+		const attempts = d
+			.delete(schema.syncAttempts)
+			.where(eq(schema.syncAttempts.peer_device_id, id))
+			.run().changes;
+		const rejections = d
+			.delete(schema.syncScopeRejections)
+			.where(eq(schema.syncScopeRejections.peer_device_id, id))
+			.run().changes;
+		return { cursors, cursorsV2, peers, attempts, rejections };
+	})();
+	return { peer_device_id: id, removed };
+}
+
 // Payload extraction
 
 /**

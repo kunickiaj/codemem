@@ -614,6 +614,7 @@ export {
 	extractReplicationOps,
 	filterReplicationOpsForSync,
 	filterReplicationOpsForSyncWithStatus,
+	forgetSyncPeerState,
 	getReplicationCursor,
 	getSyncResetState,
 	hasUnsyncedSharedMemoryChanges,

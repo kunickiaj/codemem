@@ -14,6 +14,7 @@ import {
 	extractReplicationOps,
 	filterReplicationOpsForSync,
 	filterReplicationOpsForSyncWithStatus,
+	forgetSyncPeerState,
 	getReplicationCursor,
 	getSyncResetState,
 	hasUnsyncedSharedMemoryChanges,
@@ -165,6 +166,101 @@ describe("replication cursors", () => {
 		setReplicationCursor(db, "peer-legacy", { lastApplied: "new-applied" });
 
 		expect(getReplicationCursor(db, "peer-legacy")).toEqual(["new-applied", "legacy-acked"]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// forgetSyncPeerState
+// ---------------------------------------------------------------------------
+
+describe("forgetSyncPeerState", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+	});
+
+	afterEach(() => {
+		db.close();
+	});
+
+	function seedPeer(peerDeviceId: string): void {
+		const now = "2026-01-01T00:00:00Z";
+		db.prepare(
+			"INSERT INTO replication_cursors(peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+		).run(peerDeviceId, "c1", "c1", now);
+		db.prepare(
+			"INSERT INTO replication_cursors_v2(peer_device_id, scope_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?, ?)",
+		).run(peerDeviceId, DEFAULT_SYNC_SCOPE_ID, "c1", "c1", now);
+		db.prepare("INSERT INTO sync_peers(peer_device_id, name, created_at) VALUES (?, ?, ?)").run(
+			peerDeviceId,
+			`name-${peerDeviceId}`,
+			now,
+		);
+		db.prepare(
+			"INSERT INTO sync_attempts(peer_device_id, started_at, ok, ops_in, ops_out) VALUES (?, ?, ?, ?, ?)",
+		).run(peerDeviceId, now, 1, 0, 0);
+		db.prepare(
+			"INSERT INTO sync_scope_rejections(peer_device_id, op_id, entity_type, entity_id, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		).run(peerDeviceId, `op-${peerDeviceId}`, "memory_item", `ent-${peerDeviceId}`, "scope", now);
+	}
+
+	const countFor = (table: string, peerDeviceId: string): number =>
+		Number(
+			(
+				db
+					.prepare(`SELECT count(*) AS n FROM ${table} WHERE peer_device_id = ?`)
+					.get(peerDeviceId) as { n: number }
+			).n,
+		);
+
+	it("purges all five per-peer tables for the target peer and leaves others intact", () => {
+		seedPeer("peer-1");
+		seedPeer("peer-2");
+
+		const result = forgetSyncPeerState(db, "peer-1");
+
+		expect(result).toEqual({
+			peer_device_id: "peer-1",
+			removed: { cursors: 1, cursorsV2: 1, peers: 1, attempts: 1, rejections: 1 },
+		});
+
+		// Peer 1 fully purged across every table.
+		expect(countFor("replication_cursors", "peer-1")).toBe(0);
+		expect(countFor("replication_cursors_v2", "peer-1")).toBe(0);
+		expect(countFor("sync_peers", "peer-1")).toBe(0);
+		expect(countFor("sync_attempts", "peer-1")).toBe(0);
+		expect(countFor("sync_scope_rejections", "peer-1")).toBe(0);
+
+		// Peer 2 untouched.
+		expect(countFor("replication_cursors", "peer-2")).toBe(1);
+		expect(countFor("replication_cursors_v2", "peer-2")).toBe(1);
+		expect(countFor("sync_peers", "peer-2")).toBe(1);
+		expect(countFor("sync_attempts", "peer-2")).toBe(1);
+		expect(countFor("sync_scope_rejections", "peer-2")).toBe(1);
+	});
+
+	it("is a no-op with zeroed counts for an empty id", () => {
+		seedPeer("peer-1");
+		const result = forgetSyncPeerState(db, "   ");
+		expect(result).toEqual({
+			peer_device_id: "",
+			removed: { cursors: 0, cursorsV2: 0, peers: 0, attempts: 0, rejections: 0 },
+		});
+		expect(countFor("sync_peers", "peer-1")).toBe(1);
+	});
+
+	it("removes a stranded v2 cursor even when no sync_peers row exists", () => {
+		db.prepare(
+			"INSERT INTO replication_cursors_v2(peer_device_id, scope_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?, ?)",
+		).run("orphan", DEFAULT_SYNC_SCOPE_ID, "c1", "c1", "2026-01-01T00:00:00Z");
+
+		const result = forgetSyncPeerState(db, "orphan");
+
+		expect(result.removed.cursorsV2).toBe(1);
+		expect(result.removed.peers).toBe(0);
+		expect(countFor("replication_cursors_v2", "orphan")).toBe(0);
 	});
 });
 
