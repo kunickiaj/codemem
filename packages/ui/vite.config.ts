@@ -75,7 +75,7 @@ export default defineConfig(({ command, mode }) => {
 						fileName: () => "app.js",
 					},
 					sourcemap: mode === "development",
-					minify: false,
+					minify: "esbuild",
 				},
 		plugins: [
 			preact(),

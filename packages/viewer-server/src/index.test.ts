@@ -8,6 +8,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { brotliCompressSync } from "node:zlib";
 import * as core from "@codemem/core";
 import {
 	buildAuthHeaders,
@@ -291,6 +292,41 @@ describe("viewer-server", () => {
 			const bundle = await app.request("/assets/app.js");
 			expect(bundle.status).toBe(200);
 			expect(bundle.headers.get("cache-control")).toBe("no-cache");
+		} finally {
+			if (previousStaticDir == null) delete process.env.CODEMEM_VIEWER_STATIC_DIR;
+			else process.env.CODEMEM_VIEWER_STATIC_DIR = previousStaticDir;
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it("serves the brotli-precompressed app bundle when the client accepts it", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-viewer-static-br-"));
+		const previousStaticDir = process.env.CODEMEM_VIEWER_STATIC_DIR;
+		process.env.CODEMEM_VIEWER_STATIC_DIR = tmpDir;
+		try {
+			writeFileSync(
+				join(tmpDir, "index.html"),
+				'<!doctype html><script src="/assets/app.js"></script>',
+			);
+			const rawBundle = "globalThis.__codememTestApp = true;";
+			writeFileSync(join(tmpDir, "app.js"), rawBundle);
+			writeFileSync(join(tmpDir, "app.js.br"), brotliCompressSync(Buffer.from(rawBundle)));
+			const app = createApp({
+				storeFactory: () => createTestStore().store,
+			});
+
+			const compressed = await app.request("/assets/app.js", {
+				headers: { "Accept-Encoding": "br" },
+			});
+			expect(compressed.status).toBe(200);
+			expect(compressed.headers.get("content-encoding")).toBe("br");
+
+			// No matching encoding -> raw file, no Content-Encoding header.
+			const identity = await app.request("/assets/app.js", {
+				headers: { "Accept-Encoding": "identity" },
+			});
+			expect(identity.status).toBe(200);
+			expect(identity.headers.get("content-encoding")).toBeNull();
 		} finally {
 			if (previousStaticDir == null) delete process.env.CODEMEM_VIEWER_STATIC_DIR;
 			else process.env.CODEMEM_VIEWER_STATIC_DIR = previousStaticDir;
