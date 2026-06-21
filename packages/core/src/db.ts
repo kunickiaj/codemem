@@ -218,6 +218,15 @@ export function connect(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
 
 		db.pragma("synchronous = NORMAL");
 
+		// Read tuning for large (multi-GB) databases. The SQLite defaults — a
+		// ~2 MiB page cache and no mmap — force repeated disk/page-cache reads of
+		// B-tree interior pages on every non-trivial query. A 64 MiB cache, 1 GiB
+		// memory-mapped I/O, and in-memory temp B-trees cut that cost. These are
+		// per-connection and must be set here (they do not persist in the file).
+		db.pragma("cache_size = -65536");
+		db.pragma("mmap_size = 1073741824");
+		db.pragma("temp_store = MEMORY");
+
 		return db;
 	} catch (error) {
 		db.close();

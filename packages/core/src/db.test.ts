@@ -77,6 +77,16 @@ describe("connect", () => {
 		expect(sync).toBe(1);
 	});
 
+	it("applies read-tuning pragmas (cache_size, mmap_size, temp_store)", () => {
+		db = connect(join(tmpDir, "test.sqlite"));
+		expect(db.pragma("cache_size", { simple: true })).toBe(-65536);
+		// mmap_size readback is clamped to the build's SQLITE_MAX_MMAP_SIZE, so
+		// assert it's enabled (>0) rather than an exact, build-dependent value.
+		expect(db.pragma("mmap_size", { simple: true })).toBeGreaterThan(0);
+		// temp_store: 2 = MEMORY
+		expect(db.pragma("temp_store", { simple: true })).toBe(2);
+	});
+
 	it("creates parent directories if they don't exist", () => {
 		const nested = join(tmpDir, "deep", "nested", "dir", "test.sqlite");
 		db = connect(nested);
