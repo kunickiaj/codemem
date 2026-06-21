@@ -181,43 +181,48 @@ function sanitizePackUsageMetadata(
 	return sanitized;
 }
 
-function summarizeUsageEvents(rows: UsageRow[]): Record<string, unknown>[] {
-	const byEvent = new Map<
-		string,
-		{
-			event: string;
-			total_tokens_read: number;
-			total_tokens_written: number;
-			total_tokens_saved: number;
-			count: number;
-		}
-	>();
-	for (const row of rows) {
-		const summary = byEvent.get(row.event) ?? {
+type UsageAggregateRow = {
+	event: string;
+	count: number;
+	tokens_read: number;
+	tokens_written: number;
+	tokens_saved: number;
+};
+
+/**
+ * Convert the neutral core aggregate rows into the wire shape for /api/usage
+ * (ApiUsageEventSummary: total_tokens_* names), sorted by event name ASC to
+ * match the route's historical ordering.
+ */
+function mapAggregateEvents(rows: UsageAggregateRow[]): Record<string, unknown>[] {
+	return rows
+		.map((row) => ({
 			event: row.event,
-			total_tokens_read: 0,
-			total_tokens_written: 0,
-			total_tokens_saved: 0,
-			count: 0,
-		};
-		summary.total_tokens_read += row.tokens_read;
-		summary.total_tokens_written += row.tokens_written;
-		summary.total_tokens_saved += row.tokens_saved;
-		summary.count += 1;
-		byEvent.set(row.event, summary);
-	}
-	return [...byEvent.values()].sort((a, b) => a.event.localeCompare(b.event));
+			total_tokens_read: row.tokens_read,
+			total_tokens_written: row.tokens_written,
+			total_tokens_saved: row.tokens_saved,
+			count: row.count,
+		}))
+		.sort((a, b) => a.event.localeCompare(b.event));
 }
 
-function totalUsageEvents(rows: UsageRow[]): Record<string, unknown> {
+/**
+ * Sum the neutral core aggregate rows into the ApiUsageTotals wire shape.
+ */
+function totalsFromAggregate(rows: UsageAggregateRow[]): {
+	tokens_read: number;
+	tokens_written: number;
+	tokens_saved: number;
+	count: number;
+} {
 	return rows.reduce(
 		(acc, row) => ({
-			tokens_read: Number(acc.tokens_read) + row.tokens_read,
-			tokens_written: Number(acc.tokens_written) + row.tokens_written,
-			tokens_saved: Number(acc.tokens_saved) + row.tokens_saved,
-			count: Number(acc.count) + 1,
+			tokens_read: acc.tokens_read + row.tokens_read,
+			tokens_written: acc.tokens_written + row.tokens_written,
+			tokens_saved: acc.tokens_saved + row.tokens_saved,
+			count: acc.count + row.count,
 		}),
-		{ tokens_read: 0, tokens_written: 0, tokens_saved: 0, count: 0 } as Record<string, unknown>,
+		{ tokens_read: 0, tokens_written: 0, tokens_saved: 0, count: 0 },
 	);
 }
 
@@ -232,12 +237,12 @@ interface UsageCacheEntry {
  * Short-lived cache for the computed /api/usage payload.
  *
  * The health dot polls /api/usage on every 5s refresh regardless of the
- * active tab, and the computation scans the full usage_events table to apply
- * scope visibility before aggregating. The resulting token totals are
- * cumulative dashboard figures, so a few seconds of staleness is acceptable
- * in exchange for collapsing the repeated full-table scan on the polling
- * loop. Keyed by db path + scope identity + project filter so distinct
- * stores/projects never share an entry.
+ * active tab. The token/event totals come from indexed SQL aggregates and the
+ * recent-pack window runs scope-visibility resolution over its bounded set, so
+ * each miss is cheap — but the totals are cumulative dashboard figures where a
+ * few seconds of staleness is acceptable, so caching still collapses the
+ * repeated recompute on the polling loop. Keyed by db path + scope identity +
+ * project filter so distinct stores/projects never share an entry.
  */
 const usagePayloadCache = new Map<string, UsageCacheEntry>();
 const USAGE_PAYLOAD_CACHE_MS = 10_000;
@@ -396,7 +401,30 @@ export function statsRoutes(getStore: () => MemoryStore) {
 			if (cached && nowMs < cached.expiresAtMs) {
 				return c.json(cached.payload);
 			}
-			const loadUsageRows = (project?: string | null): UsageRow[] => {
+
+			// Token/event aggregates are unfiltered SQL GROUP BYs (matching
+			// store.stats()), so they never load the full usage_events table
+			// into JS. Only the small surfaced recent_packs window below keeps
+			// per-row scope visibility + metadata sanitization.
+			const globalAggregate = store.usageAggregate();
+			const eventsGlobal = mapAggregateEvents(globalAggregate);
+			const totalsGlobal = totalsFromAggregate(globalAggregate);
+			const filteredAggregate = projectFilter ? store.usageAggregate(projectFilter) : null;
+			const eventsFiltered = filteredAggregate ? mapAggregateEvents(filteredAggregate) : null;
+			const totalsFiltered = filteredAggregate ? totalsFromAggregate(filteredAggregate) : null;
+
+			// recent_packs candidate window. Over-fetch the most-recent pack
+			// events (20x the 10 we surface) so that, in the common case where a
+			// device sees most of its own packs, 10 *visible* packs survive the
+			// scope filter below without ever scanning the whole table.
+			// Tradeoff vs. the old full-scan-then-slice: if MORE than
+			// (LIMIT - 10) of the newest packs are non-visible, fewer than 10
+			// surface, and a visible pack older than the newest 200 is not
+			// shown at all. That only bites a heavily-shared DB whose recent
+			// activity is dominated by other scopes; for an activity widget the
+			// bounded recompute on a 5s poll is the right call.
+			const RECENT_PACK_SCAN_LIMIT = 200;
+			const loadRecentPackWindow = (project?: string | null): UsageRow[] => {
 				const rows = project
 					? (store.db
 							.prepare(
@@ -405,39 +433,27 @@ export function statsRoutes(getStore: () => MemoryStore) {
 									usage_events.created_at, usage_events.metadata_json
 								 FROM usage_events
 								 JOIN sessions ON sessions.id = usage_events.session_id
-								 WHERE sessions.project = ?
-								 ORDER BY usage_events.created_at DESC`,
+								 WHERE sessions.project = ? AND usage_events.event = 'pack'
+								 ORDER BY usage_events.created_at DESC
+								 LIMIT ?`,
 							)
-							.all(project) as Record<string, unknown>[])
+							.all(project, RECENT_PACK_SCAN_LIMIT) as Record<string, unknown>[])
 					: (store.db
 							.prepare(
 								`SELECT id, session_id, event, tokens_read, tokens_written, tokens_saved,
 									created_at, metadata_json
 								 FROM usage_events
-								 ORDER BY created_at DESC`,
+								 WHERE event = 'pack'
+								 ORDER BY created_at DESC
+								 LIMIT ?`,
 							)
-							.all() as Record<string, unknown>[]);
+							.all(RECENT_PACK_SCAN_LIMIT) as Record<string, unknown>[]);
 				return rows.map((row) => toUsageRow(row, parseMetadataJson(row.metadata_json)));
 			};
-			const loadedGlobalRows = loadUsageRows();
-			const globalVisibility = buildUsageVisibility(store, loadedGlobalRows);
-			const globalRows = loadedGlobalRows.filter((row) => usageRowVisible(row, globalVisibility));
-			const loadedFilteredRows = projectFilter ? loadUsageRows(projectFilter) : null;
-			const filteredVisibility = loadedFilteredRows
-				? buildUsageVisibility(store, loadedFilteredRows)
-				: null;
-			const filteredRows = loadedFilteredRows
-				? loadedFilteredRows.filter((row) =>
-						usageRowVisible(row, filteredVisibility ?? globalVisibility),
-					)
-				: null;
-			const eventsGlobal = summarizeUsageEvents(globalRows);
-			const totalsGlobal = totalUsageEvents(globalRows);
-			const eventsFiltered = filteredRows ? summarizeUsageEvents(filteredRows) : null;
-			const totalsFiltered = filteredRows ? totalUsageEvents(filteredRows) : null;
-			const recentVisibility = filteredVisibility ?? globalVisibility;
-			const recentPacks = (filteredRows ?? globalRows)
-				.filter((row) => row.event === "pack")
+			const recentWindow = loadRecentPackWindow(projectFilter);
+			const recentVisibility = buildUsageVisibility(store, recentWindow);
+			const recentPacks = recentWindow
+				.filter((row) => usageRowVisible(row, recentVisibility))
 				.slice(0, 10)
 				.map((row) => ({
 					...row,

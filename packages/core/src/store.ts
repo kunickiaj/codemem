@@ -1031,6 +1031,63 @@ export class MemoryStore {
 		return rows.map((row) => parseMetadata(row));
 	}
 
+	// usageAggregate
+
+	/**
+	 * Neutral, unfiltered token/event aggregate over usage_events, grouped by
+	 * event kind. This is the shared SQL aggregate used by both stats() and the
+	 * viewer /api/usage route so neither has to scan the (potentially large)
+	 * usage_events table into JS to sum it. The COALESCE on tokens_saved matches
+	 * the historical stats() semantics (treat NULL saved as 0). When
+	 * projectFilter is a non-empty string, rows are restricted to the given
+	 * project via the sessions join; otherwise every row is aggregated.
+	 * Callers sort the returned rows as needed.
+	 */
+	usageAggregate(projectFilter?: string | null): Array<{
+		event: string;
+		count: number;
+		tokens_read: number;
+		tokens_written: number;
+		tokens_saved: number;
+	}> {
+		// Two near-identical GROUP BYs kept deliberately separate: the global
+		// variant avoids a needless sessions join, and the projections (incl.
+		// the tokens_saved double-COALESCE) must stay byte-identical in both.
+		const hasProject = typeof projectFilter === "string" && projectFilter.length > 0;
+		const rows = hasProject
+			? (this.db
+					.prepare(
+						`SELECT usage_events.event AS event,
+							COUNT(*) AS count,
+							COALESCE(SUM(usage_events.tokens_read), 0) AS tokens_read,
+							COALESCE(SUM(usage_events.tokens_written), 0) AS tokens_written,
+							COALESCE(SUM(COALESCE(usage_events.tokens_saved, 0)), 0) AS tokens_saved
+						 FROM usage_events
+						 JOIN sessions ON sessions.id = usage_events.session_id
+						 WHERE sessions.project = ?
+						 GROUP BY usage_events.event`,
+					)
+					.all(projectFilter) as Record<string, unknown>[])
+			: (this.db
+					.prepare(
+						`SELECT event AS event,
+							COUNT(*) AS count,
+							COALESCE(SUM(tokens_read), 0) AS tokens_read,
+							COALESCE(SUM(tokens_written), 0) AS tokens_written,
+							COALESCE(SUM(COALESCE(tokens_saved, 0)), 0) AS tokens_saved
+						 FROM usage_events
+						 GROUP BY event`,
+					)
+					.all() as Record<string, unknown>[]);
+		return rows.map((row) => ({
+			event: String(row.event),
+			count: Number(row.count ?? 0),
+			tokens_read: Number(row.tokens_read ?? 0),
+			tokens_written: Number(row.tokens_written ?? 0),
+			tokens_saved: Number(row.tokens_saved ?? 0),
+		}));
+	}
+
 	// stats
 
 	/**
@@ -1098,27 +1155,12 @@ export class MemoryStore {
 			// File may not exist yet or be inaccessible
 		}
 
-		// Usage stats
-		const usageRows = this.d
-			.select({
-				event: schema.usageEvents.event,
-				count: sql<number>`COUNT(*)`,
-				tokens_read: sql<number | null>`SUM(tokens_read)`,
-				tokens_written: sql<number | null>`SUM(tokens_written)`,
-				tokens_saved: sql<number | null>`SUM(COALESCE(tokens_saved, 0))`,
-			})
-			.from(schema.usageEvents)
-			.groupBy(schema.usageEvents.event)
-			.orderBy(desc(sql`COUNT(*)`))
-			.all();
-
-		const usageEvents = usageRows.map((r) => ({
-			event: r.event,
-			count: r.count,
-			tokens_read: r.tokens_read ?? 0,
-			tokens_written: r.tokens_written ?? 0,
-			tokens_saved: r.tokens_saved ?? 0,
-		}));
+		// Usage stats. Sort by count DESC to preserve the historical
+		// ORDER BY COUNT(*) DESC ordering of this block, with event name as a
+		// stable tiebreaker so equal-count rows have a deterministic order.
+		const usageEvents = this.usageAggregate().sort(
+			(a, b) => b.count - a.count || a.event.localeCompare(b.event),
+		);
 
 		const totalEvents = usageEvents.reduce((s, e) => s + e.count, 0);
 		const totalTokensRead = usageEvents.reduce((s, e) => s + e.tokens_read, 0);
