@@ -29,6 +29,7 @@ import {
 	reconcileStalePeerReceivedRows,
 	recordAccessCleanupOp,
 	recordReplicationOp,
+	replicationOpContentEqual,
 	SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
 	setReplicationCursor,
 	setSyncResetState,
@@ -534,6 +535,296 @@ describe("recordReplicationOp", () => {
 			unknown
 		>;
 		expect(row.entity_id).toBe(String(memId));
+	});
+});
+
+// ---------------------------------------------------------------------------
+// recordReplicationOp content-idempotency guard
+// ---------------------------------------------------------------------------
+
+describe("recordReplicationOp content-idempotency", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+	});
+
+	afterEach(() => {
+		db.close();
+	});
+
+	function insertMemory(importKey: string, title: string, body: string): number {
+		const sessionId = insertTestSession(db);
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, metadata_json)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			sessionId,
+			"discovery",
+			title,
+			body,
+			now,
+			now,
+			importKey,
+			1,
+			toJson({ clock_device_id: "dev-a" }),
+		);
+		return (
+			db.prepare("SELECT id FROM memory_items WHERE import_key = ?").get(importKey) as {
+				id: number;
+			}
+		).id;
+	}
+
+	function countOps(entityId: string): number {
+		return (
+			db.prepare("SELECT COUNT(*) AS n FROM replication_ops WHERE entity_id = ?").get(entityId) as {
+				n: number;
+			}
+		).n;
+	}
+
+	it("re-saving identical content N times yields exactly one op (the first)", () => {
+		const memId = insertMemory("key:churn", "Stable title", "stable body");
+
+		// First save emits the op.
+		const firstOpId = recordReplicationOp(db, {
+			memoryId: memId,
+			opType: "upsert",
+			deviceId: "dev-a",
+		});
+		expect(countOps("key:churn")).toBe(1);
+
+		// Simulate the 120s sync cadence bumping rev + updated_at with no content
+		// change. Each call should dedup against the first op and insert nothing.
+		for (let i = 2; i <= 6; i++) {
+			db.prepare("UPDATE memory_items SET rev = ?, updated_at = ? WHERE id = ?").run(
+				i,
+				`2026-06-21T00:00:0${i}Z`,
+				memId,
+			);
+			const opId = recordReplicationOp(db, {
+				memoryId: memId,
+				opType: "upsert",
+				deviceId: "dev-a",
+			});
+			expect(opId).toBe(firstOpId);
+		}
+
+		// Still exactly one op after 5 churn re-saves: amplification is bounded.
+		expect(countOps("key:churn")).toBe(1);
+
+		// ...but the surviving op's clock_rev was refreshed in place to track the
+		// memory's current rev, so the dirty-check invariant (an op exists with
+		// clock_rev == m.rev) still holds — the op is not frozen at rev 1.
+		const op = db
+			.prepare("SELECT clock_rev FROM replication_ops WHERE entity_id = 'key:churn'")
+			.get() as { clock_rev: number };
+		expect(op.clock_rev).toBe(6);
+	});
+
+	it("keeps a churned shared memory out of the dirty-check (clock_rev tracks rev)", () => {
+		const memId = insertMemory("key:dirty", "Stable", "stable body");
+		recordReplicationOp(db, { memoryId: memId, opType: "upsert", deviceId: "dev-a" });
+		// Freshly recorded: an op exists with clock_rev == rev, so not dirty.
+		expect(hasUnsyncedSharedMemoryChanges(db).dirty).toBe(false);
+
+		// Rev churn with no content change. The dedup refreshes the existing op in
+		// place and advances its clock_rev, so the memory must NOT become dirty.
+		// Regression guard: a frozen clock_rev (skip-the-insert) would make this
+		// read dirty forever and abort sync.
+		for (let r = 2; r <= 5; r++) {
+			db.prepare("UPDATE memory_items SET rev = ?, updated_at = ? WHERE id = ?").run(
+				r,
+				`2026-06-21T00:00:0${r}Z`,
+				memId,
+			);
+			recordReplicationOp(db, { memoryId: memId, opType: "upsert", deviceId: "dev-a" });
+			expect(hasUnsyncedSharedMemoryChanges(db).dirty).toBe(false);
+		}
+		expect(countOps("key:dirty")).toBe(1);
+	});
+
+	it("emits a second op when memory content actually changes", () => {
+		const memId = insertMemory("key:real-change", "Original title", "body");
+		recordReplicationOp(db, { memoryId: memId, opType: "upsert", deviceId: "dev-a" });
+		expect(countOps("key:real-change")).toBe(1);
+
+		// A genuine content change (new title) with a rev bump MUST emit.
+		db.prepare("UPDATE memory_items SET title = ?, rev = ?, updated_at = ? WHERE id = ?").run(
+			"New title",
+			2,
+			"2026-06-21T00:00:02Z",
+			memId,
+		);
+		recordReplicationOp(db, { memoryId: memId, opType: "upsert", deviceId: "dev-a" });
+		expect(countOps("key:real-change")).toBe(2);
+	});
+
+	it("does not dedup a delete against a prior upsert", () => {
+		const memId = insertMemory("key:del-after-upsert", "Doomed", "body");
+		recordReplicationOp(db, { memoryId: memId, opType: "upsert", deviceId: "dev-a" });
+		expect(countOps("key:del-after-upsert")).toBe(1);
+
+		// A delete (different op_type) is never deduped against the upsert.
+		recordReplicationOp(db, { memoryId: memId, opType: "delete", deviceId: "dev-a" });
+		expect(countOps("key:del-after-upsert")).toBe(2);
+
+		const ops = db
+			.prepare("SELECT op_type FROM replication_ops WHERE entity_id = ? ORDER BY clock_rev")
+			.all("key:del-after-upsert") as Array<{ op_type: string }>;
+		expect(ops.map((o) => o.op_type).sort()).toEqual(["delete", "upsert"]);
+	});
+
+	it("dedups a repeated delete (delete-vs-delete) for the same entity", () => {
+		const memId = insertMemory("key:double-del", "Doomed", "body");
+		const firstDelete = recordReplicationOp(db, {
+			memoryId: memId,
+			opType: "delete",
+			deviceId: "dev-a",
+		});
+		// Second identical delete (null payload) bumps rev but emits no new op.
+		db.prepare("UPDATE memory_items SET rev = 2 WHERE id = ?").run(memId);
+		const secondDelete = recordReplicationOp(db, {
+			memoryId: memId,
+			opType: "delete",
+			deviceId: "dev-a",
+		});
+		expect(secondDelete).toBe(firstDelete);
+		expect(countOps("key:double-del")).toBe(1);
+	});
+
+	it("does not dedup deletes that target different scopes", () => {
+		const memId = insertMemory("key:scope-del", "Doomed", "body");
+		// A delete's null payload carries no scope, so scope_id (an op-row field
+		// that drives routing) must be part of the dedup key. Two deletes in
+		// different scopes are distinct ops and must both emit.
+		const firstDelete = recordReplicationOp(db, {
+			memoryId: memId,
+			opType: "delete",
+			deviceId: "dev-a",
+			scopeId: "scope-a",
+		});
+		const secondDelete = recordReplicationOp(db, {
+			memoryId: memId,
+			opType: "delete",
+			deviceId: "dev-a",
+			scopeId: "scope-b",
+		});
+		expect(secondDelete).not.toBe(firstDelete);
+		expect(countOps("key:scope-del")).toBe(2);
+	});
+
+	it("emits an upsert after a delete even if content matches the pre-delete upsert", () => {
+		const memId = insertMemory("key:resurrect", "Title", "body");
+		// upsert(C)
+		recordReplicationOp(db, { memoryId: memId, opType: "upsert", deviceId: "dev-a" });
+		expect(countOps("key:resurrect")).toBe(1);
+
+		// delete — the entity is now tombstoned on peers.
+		db.prepare("UPDATE memory_items SET rev = 2 WHERE id = ?").run(memId);
+		recordReplicationOp(db, { memoryId: memId, opType: "delete", deviceId: "dev-a" });
+		expect(countOps("key:resurrect")).toBe(2);
+
+		// upsert(C) again with the SAME content as the first upsert. The dedup
+		// must NOT match against that pre-delete upsert: the most recent op is the
+		// delete, so this resurrecting upsert must emit or peers stay deleted.
+		db.prepare("UPDATE memory_items SET rev = 3 WHERE id = ?").run(memId);
+		recordReplicationOp(db, { memoryId: memId, opType: "upsert", deviceId: "dev-a" });
+		expect(countOps("key:resurrect")).toBe(3);
+
+		// The latest op is the resurrecting upsert, so peers re-create the entity.
+		const latest = db
+			.prepare(
+				"SELECT op_type FROM replication_ops WHERE entity_id = ? ORDER BY clock_rev DESC, created_at DESC LIMIT 1",
+			)
+			.get("key:resurrect") as { op_type: string };
+		expect(latest.op_type).toBe("upsert");
+	});
+});
+
+describe("replicationOpContentEqual", () => {
+	it("treats payloads differing only by rev/updated_at/clock_* as equal", () => {
+		const a = toJson({
+			title: "T",
+			body_text: "B",
+			rev: 1,
+			updated_at: "2026-06-21T00:00:01Z",
+			clock_rev: 1,
+			clock_updated_at: "2026-06-21T00:00:01Z",
+			clock_device_id: "dev-a",
+			metadata_json: { clock_device_id: "dev-a", custom: "x" },
+		});
+		const b = toJson({
+			title: "T",
+			body_text: "B",
+			rev: 9,
+			updated_at: "2026-06-21T09:09:09Z",
+			clock_rev: 9,
+			clock_updated_at: "2026-06-21T09:09:09Z",
+			clock_device_id: "dev-b",
+			metadata_json: { clock_device_id: "dev-b", custom: "x" },
+		});
+		expect(replicationOpContentEqual(a, b)).toBe(true);
+	});
+
+	it("returns false when title differs", () => {
+		const a = toJson({ title: "Old", body_text: "B", rev: 1 });
+		const b = toJson({ title: "New", body_text: "B", rev: 2 });
+		expect(replicationOpContentEqual(a, b)).toBe(false);
+	});
+
+	it("returns true for two null (delete) payloads", () => {
+		expect(replicationOpContentEqual(null, null)).toBe(true);
+	});
+
+	it("returns false for null vs non-null payload", () => {
+		expect(replicationOpContentEqual(null, toJson({ title: "T" }))).toBe(false);
+	});
+
+	it("returns false on unparseable JSON (conservative: emit)", () => {
+		expect(replicationOpContentEqual("{not json", toJson({ title: "T" }))).toBe(false);
+	});
+
+	it("ignores key order in content comparison", () => {
+		const a = toJson({ title: "T", body_text: "B", tags_text: "x y" });
+		const b = toJson({ tags_text: "x y", title: "T", body_text: "B" });
+		expect(replicationOpContentEqual(a, b)).toBe(true);
+	});
+
+	it("does NOT ignore a nested user updated_at/rev (only the top-level clock)", () => {
+		// rev/updated_at are stripped only at the top level (the memory's own
+		// replication clock). The same names nested inside metadata_json are real
+		// user content: a change there must register, or it would silently dedup
+		// away and never reach peers past the op's cursor.
+		const a = toJson({
+			title: "T",
+			updated_at: "2026-06-21T00:00:01Z",
+			metadata_json: { source: { updated_at: "2020-01-01T00:00:00Z", rev: 1 } },
+		});
+		const b = toJson({
+			title: "T",
+			updated_at: "2026-06-21T09:09:09Z", // top-level churn — ignored
+			metadata_json: { source: { updated_at: "2024-12-31T00:00:00Z", rev: 2 } }, // real change
+		});
+		expect(replicationOpContentEqual(a, b)).toBe(false);
+	});
+
+	it("still strips clock_* provenance at any nesting depth", () => {
+		// The clock_ prefix is codemem-internal sync provenance, never user
+		// content, so it is stripped at every level — nested clock_device_id
+		// churn must not defeat dedup.
+		const a = toJson({
+			title: "T",
+			metadata_json: { nested: { clock_device_id: "dev-a", keep: "v" } },
+		});
+		const b = toJson({
+			title: "T",
+			metadata_json: { nested: { clock_device_id: "dev-b", keep: "v" } },
+		});
+		expect(replicationOpContentEqual(a, b)).toBe(true);
 	});
 });
 

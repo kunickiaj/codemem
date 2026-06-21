@@ -775,11 +775,106 @@ export function isNewerClock(
 // Record a replication op
 
 /**
+ * Sync-internal clock provenance keys. The `clock_` prefix is codemem's own
+ * namespace for per-write sync metadata, never user content, so these are
+ * stripped at EVERY nesting level — including the copy embedded inside
+ * `metadata_json`. An explicit set, not a `clock_*` wildcard: a wildcard could
+ * silently drop a future content field that happened to be named `clock_*`,
+ * and this comparison must never treat changed content as a duplicate.
+ */
+const REPLICATION_OP_CLOCK_PROVENANCE_KEYS = new Set([
+	"clock_rev",
+	"clock_updated_at",
+	"clock_device_id",
+]);
+
+/**
+ * Top-level payload fields that are the memory's own replication clock and so
+ * churn (bumped rev/updated_at) without any content change. Stripped ONLY at
+ * the top level: a nested `rev`/`updated_at` (e.g. a user value inside
+ * `metadata_json`) is real content, and ignoring it would let a genuine change
+ * dedup away and never reach peers past the op's cursor.
+ */
+const REPLICATION_OP_TOP_LEVEL_VOLATILE_KEYS = new Set([
+	"rev",
+	"updated_at",
+	"clock_rev",
+	"clock_updated_at",
+	"clock_device_id",
+]);
+
+/**
+ * Strip volatile keys and produce a canonical, order-independent value so two
+ * structurally-equal payloads stringify identically. Object keys are sorted.
+ *
+ * Depth matters: at the top level the memory's replication clock
+ * (rev/updated_at/clock_*) is stripped; deeper (e.g. inside `metadata_json`)
+ * only the unambiguous `clock_*` provenance is stripped, leaving any nested
+ * user `rev`/`updated_at` intact as content.
+ */
+function canonicalizeContent(value: unknown, topLevel: boolean): unknown {
+	if (Array.isArray(value)) {
+		return value.map((entry) => canonicalizeContent(entry, false));
+	}
+	if (value && typeof value === "object") {
+		const ignore = topLevel
+			? REPLICATION_OP_TOP_LEVEL_VOLATILE_KEYS
+			: REPLICATION_OP_CLOCK_PROVENANCE_KEYS;
+		const out: Record<string, unknown> = {};
+		for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+			if (ignore.has(key)) continue;
+			out[key] = canonicalizeContent((value as Record<string, unknown>)[key], false);
+		}
+		return out;
+	}
+	return value;
+}
+
+/**
+ * Compare a previously-recorded op's stored payload JSON against the payload
+ * about to be written, ignoring volatile fields (rev/updated_at/clock_*).
+ *
+ * Returns true only when the remaining memory content (title, body, kind,
+ * tags, concepts, files, visibility, scope, metadata sans clock fields, etc.)
+ * is deep-equal. Conservative by construction: any parse failure or shape
+ * mismatch yields false so a real change always emits a fresh op.
+ *
+ * Handles delete ops too: both null payloads canonicalize to `null` and
+ * compare equal, while a null-vs-object pair does not.
+ */
+export function replicationOpContentEqual(
+	prevPayloadJson: string | null | undefined,
+	nextPayloadJson: string | null | undefined,
+): boolean {
+	const parse = (raw: string | null | undefined): { ok: boolean; value: unknown } => {
+		if (raw === null || raw === undefined) return { ok: true, value: null };
+		try {
+			return { ok: true, value: JSON.parse(raw) };
+		} catch {
+			return { ok: false, value: null };
+		}
+	};
+	const prev = parse(prevPayloadJson);
+	const next = parse(nextPayloadJson);
+	if (!prev.ok || !next.ok) return false;
+	return (
+		JSON.stringify(canonicalizeContent(prev.value, true)) ===
+		JSON.stringify(canonicalizeContent(next.value, true))
+	);
+}
+
+/**
  * Generate and INSERT a single replication op for a memory item.
  *
  * Reads the memory item's clock fields (rev, updated_at, metadata_json)
  * from the DB, builds the op row, and inserts into `replication_ops`.
  * Returns the generated op_id (UUID).
+ *
+ * Idempotent against churn: if the op about to be written is content-identical
+ * (volatile fields ignored) to the most recent existing op for the same entity
+ * and op_type, the insert is skipped and the existing op_id is returned. This
+ * bounds `replication_ops` growth when something keeps bumping rev/updated_at
+ * with no real content change.
  *
  * Uses Drizzle's typed select so all memory_items columns are captured
  * automatically — no hand-maintained column list to go out of sync.
@@ -885,6 +980,66 @@ export function recordReplicationOp(
 		});
 	} else {
 		payloadJson = null;
+	}
+
+	// Content-idempotency guard: when the MOST RECENT op (of ANY type) for this
+	// entity+scope is the same op_type AND carries identical memory content
+	// (volatile rev/timestamp/clock fields ignored), refresh that op IN PLACE
+	// instead of inserting a duplicate row. This bounds replication_ops growth
+	// under rev churn (something bumping rev/updated_at with no content change).
+	//
+	// We must NOT filter the lookup by op_type: doing so could skip past an
+	// intervening delete. e.g. upsert(C) → delete → upsert(C): the trailing
+	// upsert's content matches the pre-delete upsert, but the latest op is the
+	// delete, so this upsert must still emit to resurrect the entity on peers.
+	// scope_id IS part of the lookup — it drives replication routing and is
+	// absent from a delete's (null) payload, so two deletes for the same entity
+	// in different scopes are distinct ops that must both emit.
+	const scopeMatch =
+		scopeId === null
+			? isNull(schema.replicationOps.scope_id)
+			: eq(schema.replicationOps.scope_id, scopeId);
+	const lastOp = d
+		.select({
+			op_id: schema.replicationOps.op_id,
+			op_type: schema.replicationOps.op_type,
+			payload_json: schema.replicationOps.payload_json,
+		})
+		.from(schema.replicationOps)
+		.where(
+			and(
+				eq(schema.replicationOps.entity_type, "memory_item"),
+				eq(schema.replicationOps.entity_id, entityId),
+				scopeMatch,
+			),
+		)
+		.orderBy(desc(schema.replicationOps.clock_rev), desc(schema.replicationOps.created_at))
+		.limit(1)
+		.get();
+
+	if (
+		lastOp &&
+		lastOp.op_type === opts.opType &&
+		replicationOpContentEqual(lastOp.payload_json, payloadJson)
+	) {
+		// Reuse the existing op_id and created_at so the op's outbound cursor
+		// position is unchanged and already-synced peers do not re-pull it. But
+		// still advance clock_rev to the memory's current rev: the dirty-check
+		// (hasUnsyncedSharedMemoryChanges) and backfillReplicationOps both treat a
+		// shared memory as needing an op whenever no op has clock_rev == m.rev, so
+		// a frozen clock_rev would make a content-stable memory read dirty forever
+		// and abort sync. Refreshing payload_json keeps the row's embedded
+		// updated_at current for a future full bootstrap (content is unchanged).
+		d.update(schema.replicationOps)
+			.set({
+				clock_rev: rev,
+				clock_updated_at: updatedAt,
+				clock_device_id: clockDeviceId,
+				payload_json: payloadJson,
+			})
+			.where(eq(schema.replicationOps.op_id, lastOp.op_id))
+			.run();
+		return lastOp.op_id;
 	}
 
 	d.insert(schema.replicationOps)
