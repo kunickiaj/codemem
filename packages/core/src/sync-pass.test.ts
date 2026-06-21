@@ -343,6 +343,79 @@ describe("syncOnce", () => {
 		});
 	});
 
+	it("does not advance the inbound cursor when an op fails to apply", async () => {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-err", "abc123", new Date().toISOString());
+		db.prepare(
+			"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+		).run("peer-err", "2025-12-31T00:00:00Z|local-op-0", null, new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		grantScopeForSyncPass(db, "acme-work", ["peer-err", "local-device-id"]);
+
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([
+				200,
+				{
+					fingerprint: "abc123",
+					protocol_version: "2",
+					sync_capability: "enforcing",
+					sync_reset: {
+						generation: 1,
+						snapshot_id: "snap-1",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+				},
+			])
+			.mockResolvedValueOnce([
+				200,
+				{
+					reset_required: false,
+					generation: 1,
+					snapshot_id: "snap-1",
+					baseline_cursor: null,
+					retained_floor_cursor: null,
+					ops: [
+						{
+							op_id: "remote-bad-op",
+							entity_type: "memory_item",
+							entity_id: "key:sync-bad-1",
+							op_type: "upsert",
+							// Structurally-invalid payload: errors during apply but is
+							// not a scope rejection, so it lands in `errors` (not
+							// `rejected`).
+							payload_json: JSON.stringify("not-an-object"),
+							clock_rev: 1,
+							clock_updated_at: "2026-01-01T00:00:00Z",
+							clock_device_id: "peer-err",
+							device_id: "peer-err",
+							created_at: "2026-01-01T00:00:00Z",
+							scope_id: "acme-work",
+						},
+					],
+					next_cursor: "2026-01-01T00:00:00Z|remote-bad-op",
+					skipped: 0,
+				},
+			]);
+
+		const result = await syncOnce(db, "peer-err", ["http://127.0.0.1:9090"]);
+
+		// A held inbound cursor is reported as a failure (incomplete), not a
+		// healthy sync, so a persistent stall surfaces to the daemon/operator.
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("inbound apply incomplete");
+		// The op errored during apply; the inbound cursor must NOT advance past it
+		// so it is retried on the next pass instead of being silently skipped.
+		expect(syncReplication.getReplicationCursor(db, "peer-err")[0]).toBe(
+			"2025-12-31T00:00:00Z|local-op-0",
+		);
+	});
+
 	it("bootstraps every authorized scope advertised by a scoped peer", async () => {
 		db.prepare(
 			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",

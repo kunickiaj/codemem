@@ -2462,6 +2462,39 @@ describe("applyReplicationOps", () => {
 		expect(r2.applied).toBe(0);
 	});
 
+	it("records malformed-payload upserts so they are not reprocessed every pass", () => {
+		// A structurally-invalid payload can never be applied. It must still be
+		// recorded so it is acknowledged exactly once instead of being re-parsed
+		// (and re-errored) on every subsequent sync pass. Without recording, the
+		// inbound cursor could never safely advance past it.
+		const op = makeReplicationOp({
+			op_id: "bad-payload",
+			payload_json: JSON.stringify("not-an-object"),
+		});
+		const r1 = applyReplicationOps(db, [op], "dev-local");
+		expect(r1.errors.length).toBe(1);
+		expect(memoryExists("key:test-1")).toBe(false);
+
+		// Second pass: the op is already recorded, so it is idempotently skipped
+		// with no repeated error.
+		const r2 = applyReplicationOps(db, [op], "dev-local");
+		expect(r2.skipped).toBe(1);
+		expect(r2.applied).toBe(0);
+		expect(r2.errors.length).toBe(0);
+	});
+
+	it("does not count a delete for an unknown memory as applied", () => {
+		const deleteOp = makeReplicationOp({
+			op_id: "del-unknown",
+			op_type: "delete",
+			entity_id: "key:missing",
+			payload_json: toJson({}),
+		});
+		const result = applyReplicationOps(db, [deleteOp], "dev-local");
+		expect(result.applied).toBe(0);
+		expect(result.skipped).toBe(1);
+	});
+
 	it("inserts a new memory item on upsert", () => {
 		const op = makeReplicationOp();
 		const result = applyReplicationOps(db, [op], "dev-local");
@@ -3550,6 +3583,55 @@ describe("applyReplicationOps", () => {
 			.get("key:undelete") as { active: number; deleted_at: string | null };
 		expect(mem.active).toBe(1);
 		expect(mem.deleted_at).toBeNull();
+	});
+
+	it("does not resurrect a tombstone when an upsert omits deleted_at but sets active=1", () => {
+		const sessionId = insertTestSession(db);
+		const deletedAt = "2026-01-01T00:00:00Z";
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, active, deleted_at, created_at, updated_at, import_key, rev, metadata_json)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			sessionId,
+			"discovery",
+			"Stable title",
+			"stable body",
+			0,
+			deletedAt,
+			deletedAt,
+			deletedAt,
+			"key:no-resurrect",
+			1,
+			toJson({ clock_device_id: "dev-remote" }),
+		);
+
+		// Newer upsert carrying active=1 but OMITTING deleted_at (has_deleted_at
+		// is false). The tombstone must be preserved and the row must stay
+		// inactive — a field-omitting upsert must not resurrect a deleted memory.
+		const op = makeReplicationOp({
+			entity_id: "key:no-resurrect",
+			clock_rev: 2,
+			clock_updated_at: "2026-01-02T00:00:00Z",
+			payload_json: toJson({
+				kind: "discovery",
+				title: "Changed title",
+				body_text: "changed body",
+				active: 1,
+				updated_at: "2026-01-02T00:00:00Z",
+			}),
+		});
+
+		const result = applyReplicationOps(db, [op], "dev-local");
+		expect(result.applied).toBe(1);
+
+		const mem = db
+			.prepare("SELECT id, active, deleted_at FROM memory_items WHERE import_key = ?")
+			.get("key:no-resurrect") as { id: number; active: number; deleted_at: string | null };
+		expect(mem.active).toBe(0);
+		expect(mem.deleted_at).toBe(deletedAt);
+		// Stays tombstoned → embeddings must be queued for deletion, not upsert.
+		expect(result.vectorWork.deleteMemoryIds).toContain(mem.id);
+		expect(result.vectorWork.upsertMemoryIds).not.toContain(mem.id);
 	});
 });
 
