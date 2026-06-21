@@ -1487,6 +1487,100 @@ describe("MemoryStore", () => {
 		});
 	});
 
+	// -- usageAggregate ------------------------------------------------------
+
+	describe("usageAggregate", () => {
+		function insertUsageEvent(
+			sessionId: number | null,
+			event: string,
+			tokensRead: number,
+			tokensWritten: number,
+			tokensSaved: number | null,
+			createdAt = "2026-03-26T23:30:00Z",
+		): void {
+			store.db
+				.prepare(
+					`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
+					 VALUES (?, ?, ?, ?, ?, ?, '{}')`,
+				)
+				.run(sessionId, event, tokensRead, tokensWritten, tokensSaved, createdAt);
+		}
+
+		it("groups by event and sums tokens with tokens_saved NULL coalesced to 0", () => {
+			const sessionId = insertTestSession(store.db);
+			insertUsageEvent(sessionId, "pack", 100, 10, 5);
+			insertUsageEvent(sessionId, "pack", 200, 20, null);
+			insertUsageEvent(sessionId, "search", 30, 3, 7);
+
+			const rows = store.usageAggregate();
+			const byEvent = new Map(rows.map((row) => [row.event, row]));
+			expect(byEvent.get("pack")).toEqual({
+				event: "pack",
+				count: 2,
+				tokens_read: 300,
+				tokens_written: 30,
+				// NULL tokens_saved on the second pack contributes 0.
+				tokens_saved: 5,
+			});
+			expect(byEvent.get("search")).toEqual({
+				event: "search",
+				count: 1,
+				tokens_read: 30,
+				tokens_written: 3,
+				tokens_saved: 7,
+			});
+		});
+
+		it("restricts the aggregate to a project when a non-empty filter is given", () => {
+			const codememSession = insertTestSession(store.db);
+			store.db
+				.prepare("UPDATE sessions SET project = ? WHERE id = ?")
+				.run("codemem", codememSession);
+			const otherSession = insertTestSession(store.db);
+			store.db.prepare("UPDATE sessions SET project = ? WHERE id = ?").run("other", otherSession);
+			insertUsageEvent(codememSession, "pack", 100, 10, 5);
+			insertUsageEvent(otherSession, "pack", 1000, 100, 50);
+
+			const filtered = store.usageAggregate("codemem");
+			expect(filtered).toEqual([
+				{ event: "pack", count: 1, tokens_read: 100, tokens_written: 10, tokens_saved: 5 },
+			]);
+
+			// Empty-string filter behaves like the unfiltered (global) variant.
+			const globalViaEmpty = store.usageAggregate("");
+			const global = store.usageAggregate();
+			expect(globalViaEmpty).toEqual(global);
+			expect(global).toEqual([
+				{ event: "pack", count: 2, tokens_read: 1100, tokens_written: 110, tokens_saved: 55 },
+			]);
+		});
+
+		it("returns an empty array when there are no usage events", () => {
+			expect(store.usageAggregate()).toEqual([]);
+			expect(store.usageAggregate("codemem")).toEqual([]);
+		});
+
+		it("backs store.stats().usage with the same unfiltered values", () => {
+			const sessionId = insertTestSession(store.db);
+			insertUsageEvent(sessionId, "pack", 100, 10, 5);
+			insertUsageEvent(sessionId, "pack", 200, 20, null);
+			insertUsageEvent(sessionId, "search", 30, 3, 7);
+
+			const usage = store.stats().usage;
+			// stats() sorts events by count DESC.
+			expect(usage.events).toEqual([
+				{ event: "pack", count: 2, tokens_read: 300, tokens_written: 30, tokens_saved: 5 },
+				{ event: "search", count: 1, tokens_read: 30, tokens_written: 3, tokens_saved: 7 },
+			]);
+			expect(usage.totals).toEqual({
+				events: 3,
+				tokens_read: 330,
+				tokens_written: 33,
+				tokens_saved: 12,
+			});
+		});
+	});
+
 	// -- updateMemoryVisibility ----------------------------------------------
 
 	describe("updateMemoryVisibility", () => {
