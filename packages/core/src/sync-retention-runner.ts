@@ -58,28 +58,42 @@ function ensureSyncRetentionStateTables(db: Database): void {
 	`);
 }
 
-function listRetentionScopeIds(db: Database): string[] {
-	const rows = db
-		.prepare(
-			`SELECT scope_id FROM (
-				SELECT COALESCE(NULLIF(TRIM(scope_id), ''), ?) AS scope_id FROM replication_ops
-				UNION
-				SELECT COALESCE(NULLIF(TRIM(scope_id), ''), ?) AS scope_id FROM sync_reset_state_v2
-				UNION
-				SELECT COALESCE(NULLIF(TRIM(scope_id), ''), ?) AS scope_id FROM sync_retention_state_v2
-			)
-			ORDER BY CASE WHEN scope_id = ? THEN 0 ELSE 1 END, scope_id`,
-		)
-		.all(
-			DEFAULT_SYNC_SCOPE_ID,
-			DEFAULT_SYNC_SCOPE_ID,
-			DEFAULT_SYNC_SCOPE_ID,
-			DEFAULT_SYNC_SCOPE_ID,
-		) as Array<{ scope_id: string | null }>;
+export function listRetentionScopeIds(db: Database): string[] {
+	const tableExists = (name: string): boolean =>
+		db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !==
+		undefined;
+	const hasScopeIdColumn = (table: string): boolean =>
+		(db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(
+			(col) => col.name === "scope_id",
+		);
+	// Only union over tables that exist AND carry a scope_id column. The v2 state
+	// tables are additive and may be absent on a legacy DB opened via the CLI
+	// prune path (raw connect(), which doesn't run the additive-compat shim) —
+	// and scope_id itself is additive, so even `replication_ops` (a core table)
+	// predates it: an old DB can have the table without the column. Skipping a
+	// source can never drop a scope: anything not enumerated is implicitly the
+	// default scope, which is always seeded below. Without this column guard,
+	// `prune-replication-ops --dry-run` on such a DB would throw `no such column:
+	// scope_id`. Table names are a fixed allowlist — never input.
+	const sources = ["replication_ops", "sync_reset_state_v2", "sync_retention_state_v2"].filter(
+		(table) => tableExists(table) && hasScopeIdColumn(table),
+	);
 	const scopeIds = new Set<string>([DEFAULT_SYNC_SCOPE_ID]);
-	for (const row of rows) {
-		const scopeId = normalizeRetentionScopeId(row.scope_id);
-		scopeIds.add(scopeId);
+	if (sources.length > 0) {
+		const union = sources
+			.map((table) => `SELECT COALESCE(NULLIF(TRIM(scope_id), ''), ?) AS scope_id FROM ${table}`)
+			.join(" UNION ");
+		const rows = db
+			.prepare(
+				`SELECT scope_id FROM ( ${union} )
+				ORDER BY CASE WHEN scope_id = ? THEN 0 ELSE 1 END, scope_id`,
+			)
+			.all(...sources.map(() => DEFAULT_SYNC_SCOPE_ID), DEFAULT_SYNC_SCOPE_ID) as Array<{
+			scope_id: string | null;
+		}>;
+		for (const row of rows) {
+			scopeIds.add(normalizeRetentionScopeId(row.scope_id));
+		}
 	}
 	return Array.from(scopeIds);
 }

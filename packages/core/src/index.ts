@@ -639,7 +639,7 @@ export {
 	syncProjectAllowedByFilters,
 	syncVisibilityAllowed,
 } from "./sync-replication.js";
-export { SyncRetentionRunner } from "./sync-retention-runner.js";
+export { listRetentionScopeIds, SyncRetentionRunner } from "./sync-retention-runner.js";
 export type {
 	AuthorizedScopeEntry,
 	PerPeerScopeSyncEntry,

@@ -248,4 +248,102 @@ describe("db command", () => {
 			logErrorSpy.mockRestore();
 		}
 	});
+
+	// `null` scope_id is the DEFAULT scope (matched by scope_id IS NULL OR = local-default).
+	function seedReplicationOp(
+		store: MemoryStore,
+		opId: string,
+		scopeId: string | null,
+		createdAtIso: string,
+	) {
+		store.db
+			.prepare(
+				`INSERT INTO replication_ops
+				 (op_id, entity_type, entity_id, op_type, payload_json, clock_rev,
+				  clock_updated_at, clock_device_id, device_id, created_at, scope_id)
+				 VALUES (?, 'memory_item', ?, 'upsert', '{}', 1, ?, 'dev-a', 'dev-a', ?, ?)`,
+			)
+			.run(opId, `ent-${opId}`, createdAtIso, createdAtIso, scopeId);
+	}
+
+	function countReplicationOpsByScope(dbPath: string): Map<string | null, number> {
+		const store = new MemoryStore(dbPath);
+		try {
+			const rows = store.db
+				.prepare(
+					"SELECT scope_id AS scope_id, COUNT(*) AS cnt FROM replication_ops GROUP BY scope_id",
+				)
+				.all() as Array<{ scope_id: string | null; cnt: number }>;
+			const counts = new Map<string | null, number>();
+			for (const row of rows) counts.set(row.scope_id, Number(row.cnt));
+			return counts;
+		} finally {
+			store.close();
+		}
+	}
+
+	it("prune-replication-ops deletes old ops across ALL scopes, not just the default", async () => {
+		const pruneRepl = dbCommand.commands.find(
+			(command) => command.name() === "prune-replication-ops",
+		);
+		expect(pruneRepl).toBeDefined();
+		if (!pruneRepl) throw new Error("expected prune-replication-ops command");
+
+		const dbPath = join(mkdtempSync(join(tmpdir(), "codemem-db-prune-repl-")), "test.sqlite");
+		initDatabase(dbPath);
+		// All rows are well older than a 30-day cutoff so the age pass removes them.
+		// No replication_cursors are seeded, so no retained floor blocks deletion.
+		const oldIso = new Date(Date.now() - 200 * 86_400_000).toISOString();
+		const store = new MemoryStore(dbPath);
+		seedReplicationOp(store, "op-default-1", null, oldIso);
+		seedReplicationOp(store, "op-default-2", null, oldIso);
+		seedReplicationOp(store, "op-oss-1", "oss", oldIso);
+		seedReplicationOp(store, "op-oss-2", "oss", oldIso);
+		seedReplicationOp(store, "op-legacy-1", "legacy-shared-review", oldIso);
+		seedReplicationOp(store, "op-legacy-2", "legacy-shared-review", oldIso);
+		store.close();
+
+		const before = countReplicationOpsByScope(dbPath);
+		expect(before.get(null)).toBe(2);
+		expect(before.get("oss")).toBe(2);
+		expect(before.get("legacy-shared-review")).toBe(2);
+
+		await pruneRepl.parseAsync(
+			["node", "prune-replication-ops", "--db-path", dbPath, "--max-age-days", "30"],
+			{ from: "node" },
+		);
+
+		// Every scope must be pruned to zero — the regression deletes only the default scope.
+		const after = countReplicationOpsByScope(dbPath);
+		expect(after.get(null) ?? 0).toBe(0);
+		expect(after.get("oss") ?? 0).toBe(0);
+		expect(after.get("legacy-shared-review") ?? 0).toBe(0);
+	});
+
+	it("prune-replication-ops --dry-run deletes nothing across all scopes", async () => {
+		const pruneRepl = dbCommand.commands.find(
+			(command) => command.name() === "prune-replication-ops",
+		);
+		expect(pruneRepl).toBeDefined();
+		if (!pruneRepl) throw new Error("expected prune-replication-ops command");
+
+		const dbPath = join(mkdtempSync(join(tmpdir(), "codemem-db-prune-repl-dry-")), "test.sqlite");
+		initDatabase(dbPath);
+		const oldIso = new Date(Date.now() - 200 * 86_400_000).toISOString();
+		const store = new MemoryStore(dbPath);
+		seedReplicationOp(store, "op-default-1", null, oldIso);
+		seedReplicationOp(store, "op-oss-1", "oss", oldIso);
+		seedReplicationOp(store, "op-legacy-1", "legacy-shared-review", oldIso);
+		store.close();
+
+		await pruneRepl.parseAsync(
+			["node", "prune-replication-ops", "--db-path", dbPath, "--max-age-days", "30", "--dry-run"],
+			{ from: "node" },
+		);
+
+		const after = countReplicationOpsByScope(dbPath);
+		expect(after.get(null)).toBe(1);
+		expect(after.get("oss")).toBe(1);
+		expect(after.get("legacy-shared-review")).toBe(1);
+	});
 });

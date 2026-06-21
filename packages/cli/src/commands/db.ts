@@ -11,6 +11,7 @@ import {
 	dedupNearDuplicateMemories,
 	getRawEventStatus,
 	initDatabase,
+	listRetentionScopeIds,
 	MemoryStore,
 	planReplicationOpsAgePrune,
 	pruneReplicationOpsUntilCaughtUp,
@@ -125,7 +126,7 @@ const pruneReplCmd = new Command("prune-replication-ops")
 	)
 	.option("--dry-run", "show current size/targets without deleting")
 	.option("--max-age-days <days>", "retention age threshold in days", "30")
-	.option("--max-size-mb <mb>", "target replication log budget in MB", "512")
+	.option("--max-size-mb <mb>", "target per-scope replication log budget in MB", "512")
 	.option("--batch-ops <n>", "max ops deleted per batch", "5000")
 	.option("--batch-runtime-ms <ms>", "max runtime per batch in ms", "2000")
 	.option("--vacuum", "run VACUUM explicitly after prune completes");
@@ -153,12 +154,19 @@ pruneReplCmd.action(
 			p.intro("codemem db prune-replication-ops");
 			p.log.info(`Replication ops size: ${formatBytes(beforeBytes)}`);
 			p.log.info(
-				`Policy: approximately prune oldest-first toward <= ${maxSizeMb} MB while removing history older than ${maxAgeDays} day(s), subject to per-pass batch/runtime limits`,
+				`Policy: across all replication scopes, approximately prune oldest-first toward <= ${maxSizeMb} MB PER SCOPE while removing history older than ${maxAgeDays} day(s), subject to per-pass batch/runtime limits (the size budget is applied per scope, matching the background retention runner; total ops across scopes may exceed it)`,
 			);
+			// Enumerate every replication scope present in the DB (DEFAULT first).
+			// The background retention runner prunes all of them; the offline CLI
+			// must too, otherwise scopes like legacy-shared-review/oss are never
+			// reclaimed and the command is useless for a bloated multi-scope DB.
+			const scopeIds = listRetentionScopeIds(db);
+			// planReplicationOpsAgePrune is whole-table (no scope filter), so the
+			// candidate count already reflects every scope the real prune will cover.
 			const agePlan = planReplicationOpsAgePrune(db, maxAgeDays, batchOps);
 			if (agePlan.candidate_ops > 0) {
 				p.log.info(
-					`Age pass plan: ${agePlan.candidate_ops.toLocaleString()} ops, ~${formatBytes(agePlan.estimated_candidate_bytes)} in ~${agePlan.estimated_batches.toLocaleString()} batch(es), cutoff ${agePlan.cutoff_cursor}`,
+					`Age pass plan (all scopes): ${agePlan.candidate_ops.toLocaleString()} ops, ~${formatBytes(agePlan.estimated_candidate_bytes)} in ~${agePlan.estimated_batches.toLocaleString()} batch(es), cutoff ${agePlan.cutoff_cursor}`,
 				);
 			} else {
 				p.log.info("Age pass plan: no ops older than cutoff");
@@ -169,26 +177,42 @@ pruneReplCmd.action(
 				return;
 			}
 
-			const loopResult = pruneReplicationOpsUntilCaughtUp(db, {
-				maxAgeDays,
-				maxSizeBytes: maxSizeMb * 1024 * 1024,
-				maxDeleteOps: batchOps,
-				maxRuntimeMs: batchRuntimeMs,
-				onPass: (pass) => {
-					if (pass.deleted === 0 && !pass.stoppedByBudget) return;
-					const suffix = pass.stoppedByBudget ? " (budget-limited)" : "";
-					p.log.step(
-						`Pass ${pass.passNumber}: deleted ${pass.deleted.toLocaleString()} ops, remaining size ~${formatBytes(pass.afterBytes)}${suffix}`,
-					);
-				},
-			});
+			let totalDeleted = 0;
+			let anyStoppedByBudget = false;
+			let lastFloor: string | null = null;
+			for (const scopeId of scopeIds) {
+				const loopResult = pruneReplicationOpsUntilCaughtUp(db, {
+					maxAgeDays,
+					maxSizeBytes: maxSizeMb * 1024 * 1024,
+					maxDeleteOps: batchOps,
+					maxRuntimeMs: batchRuntimeMs,
+					scopeId,
+					onPass: (pass) => {
+						if (pass.deleted === 0 && !pass.stoppedByBudget) return;
+						const suffix = pass.stoppedByBudget ? " (budget-limited)" : "";
+						p.log.step(
+							`scope ${scopeId} pass ${pass.passNumber}: deleted ${pass.deleted.toLocaleString()} ops${suffix}`,
+						);
+					},
+				});
+				totalDeleted += loopResult.totalDeleted;
+				if (loopResult.totalDeleted > 0) {
+					p.log.info(`scope ${scopeId}: deleted ${loopResult.totalDeleted.toLocaleString()} ops`);
+				}
+				if (loopResult.lastFloor) lastFloor = loopResult.lastFloor;
+				if (loopResult.stoppedByBudget) anyStoppedByBudget = true;
+			}
 
-			p.log.info(`Deleted ops: ${loopResult.totalDeleted.toLocaleString()}`);
+			p.log.info(`Deleted ops (all scopes): ${totalDeleted.toLocaleString()}`);
+			// Recompute the whole-table physical size so before/after are the same
+			// dbstat measure. (Per-scope afterBytes is a logical content estimate and
+			// is not comparable to the whole-table before-size.)
+			const afterBytes = estimateReplicationOpsBytes(db);
 			p.log.info(
-				`Estimated replication ops size after prune: ${formatBytes(loopResult.afterBytes)} (approximate)`,
+				`Estimated replication ops size after prune: ${formatBytes(afterBytes)} (approximate)`,
 			);
-			if (loopResult.lastFloor) p.log.info(`Retained floor: ${loopResult.lastFloor}`);
-			if (loopResult.stoppedByBudget) {
+			if (lastFloor) p.log.info(`Retained floor: ${lastFloor}`);
+			if (anyStoppedByBudget) {
 				p.log.warn(
 					"Prune stopped because the current batch/runtime budget was exhausted before retention caught up. Re-run with higher --batch-ops or --batch-runtime-ms for faster catch-up.",
 				);
