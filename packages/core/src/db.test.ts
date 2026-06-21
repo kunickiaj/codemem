@@ -96,6 +96,10 @@ describe("connect", () => {
 			 CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_kind ON memory_items(workspace_kind);
 			 CREATE INDEX IF NOT EXISTS idx_memory_items_user_prompt_id ON memory_items(user_prompt_id);`,
 		);
+		// Drop back to a legacy user_version so the additive shim actually runs
+		// (a fresh user_version=SCHEMA_VERSION DB short-circuits the gated DDL,
+		// and never carries these legacy indexes in the first place).
+		db.pragma("user_version = 6");
 		expect(hasIndex(db, "idx_memory_items_visibility")).toBe(true);
 
 		ensureAdditiveSchemaCompatibility(db);
@@ -532,6 +536,10 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		let alterAttempts = 0;
 
 		const fakeDb = {
+			// Legacy user_version so the additive shim runs (does not short-circuit).
+			pragma() {
+				return 0;
+			},
 			prepare(query: string) {
 				return {
 					get(...args: unknown[]) {
@@ -1002,6 +1010,143 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 			.prepare("SELECT session_id, project FROM memory_items ORDER BY session_id")
 			.all() as Array<{ session_id: number; project: string | null }>;
 		expect(rows2).toEqual(rows);
+	});
+});
+
+describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
+	let tmpDir: string;
+	let db: Database;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-test-"));
+		// connect() bootstraps a full schema at user_version=SCHEMA_VERSION.
+		db = connect(join(tmpDir, "test.sqlite"));
+	});
+
+	afterEach(() => {
+		db?.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	function appliedSchemaVersion(database: Database): number | undefined {
+		const row = database
+			.prepare("SELECT applied_schema_version AS v FROM schema_compat_state WHERE id = 1")
+			.get() as { v: number } | undefined;
+		return row?.v;
+	}
+
+	it("applies and marks the schema-compat state on a legacy database", () => {
+		// Simulate a legacy DB so the version short-circuit does not fire.
+		db.pragma("user_version = 6");
+		expect(tableExists(db, "schema_compat_state")).toBe(false);
+
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(tableExists(db, "schema_compat_state")).toBe(true);
+		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
+	});
+
+	it("skips gated DDL once marked and re-applies on version mismatch", () => {
+		db.pragma("user_version = 6");
+		ensureAdditiveSchemaCompatibility(db);
+		expect(hasIndex(db, "idx_memory_items_project")).toBe(true);
+
+		// Drop an additive index. Because the marker now says applied-for-this
+		// version, the next call must skip the gated DDL and NOT recreate it.
+		db.exec("DROP INDEX idx_memory_items_project");
+		expect(hasIndex(db, "idx_memory_items_project")).toBe(false);
+		ensureAdditiveSchemaCompatibility(db);
+		expect(hasIndex(db, "idx_memory_items_project")).toBe(false);
+
+		// Roll the marker back to simulate an older/again-needed schema; the gated
+		// DDL must re-run and recreate the index.
+		db.exec("UPDATE schema_compat_state SET applied_schema_version = 0");
+		ensureAdditiveSchemaCompatibility(db);
+		expect(hasIndex(db, "idx_memory_items_project")).toBe(true);
+		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
+	});
+
+	it("runs the project backfill even when gated DDL is skipped", () => {
+		db.pragma("user_version = 6");
+		// First call marks the schema-compat state so the next open is gated.
+		ensureAdditiveSchemaCompatibility(db);
+
+		const now = new Date().toISOString();
+		db.prepare(
+			"INSERT INTO sessions(id, started_at, cwd, project) VALUES (1, ?, '/work/codemem', 'codemem')",
+		).run(now);
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, project)
+			 VALUES (1, 'discovery', 'a', 'b', ?, ?, NULL)`,
+		).run(now, now);
+
+		// This open is gated (DDL skipped) but the backfill must still run.
+		ensureAdditiveSchemaCompatibility(db);
+
+		const row = db.prepare("SELECT project FROM memory_items WHERE session_id = 1").get() as {
+			project: string | null;
+		};
+		expect(row.project).toBe("codemem");
+	});
+
+	it("applies and marks on a fresh DB (gate is marker-only, not user_version)", () => {
+		// A freshly bootstrapped DB is at user_version=SCHEMA_VERSION, but the gate
+		// keys on the marker, not the version: the shim runs once (its statements
+		// are all idempotent no-ops here) and records the marker.
+		expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
+		expect(tableExists(db, "schema_compat_state")).toBe(false);
+		ensureAdditiveSchemaCompatibility(db);
+		expect(tableExists(db, "schema_compat_state")).toBe(true);
+		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
+	});
+
+	it("re-adds a missing additive column even at user_version=SCHEMA_VERSION", () => {
+		// Regression: additive columns (e.g. memory_items.project) were added over
+		// time WITHOUT bumping SCHEMA_VERSION, so a DB can report
+		// user_version=SCHEMA_VERSION yet still lack one. Gating on user_version
+		// would skip the shim and leave the column missing, breaking inserts that
+		// reference it. The marker-only gate must still repair it.
+		expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
+		db.exec("DROP INDEX IF EXISTS idx_memory_items_project");
+		db.exec("ALTER TABLE memory_items DROP COLUMN project");
+		expect(columnExists(db, "memory_items", "project")).toBe(false);
+
+		// No marker exists, so the shim runs despite user_version=SCHEMA_VERSION.
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(columnExists(db, "memory_items", "project")).toBe(true);
+		expect(hasIndex(db, "idx_memory_items_project")).toBe(true);
+		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
+	});
+
+	it("schemaCompatAlreadyApplied-style probe is fail-safe without the table", () => {
+		// On a DB lacking schema_compat_state, a legacy open must still apply the
+		// shim (the gate returns false on the missing table rather than skipping).
+		const legacy = new BetterSqlite3(join(tmpDir, "legacy.sqlite"));
+		try {
+			legacy.exec(`
+				CREATE TABLE memory_items (
+					id INTEGER PRIMARY KEY,
+					session_id INTEGER NOT NULL,
+					kind TEXT NOT NULL,
+					title TEXT NOT NULL,
+					body_text TEXT NOT NULL,
+					visibility TEXT,
+					workspace_id TEXT,
+					active INTEGER DEFAULT 1,
+					created_at TEXT NOT NULL,
+					updated_at TEXT NOT NULL
+				)
+			`);
+			// user_version defaults to 0 (legacy) and schema_compat_state is absent.
+			expect(tableExists(legacy, "schema_compat_state")).toBe(false);
+			expect(() => ensureAdditiveSchemaCompatibility(legacy)).not.toThrow();
+			// The shim ran (fail-safe gate), creating + marking the state table.
+			expect(tableExists(legacy, "schema_compat_state")).toBe(true);
+			expect(columnExists(legacy, "memory_items", "project")).toBe(true);
+		} finally {
+			legacy.close();
+		}
 	});
 });
 
