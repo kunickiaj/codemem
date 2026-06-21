@@ -167,6 +167,15 @@ async function authorizeRequest(
 		return { ok: false, error: "nonce_replay", enrollment: null };
 	}
 
+	// Clock-source note: the nonce timestamp/cutoff below is driven by the
+	// injected runtime.now(), while the request freshness window is enforced
+	// inside requestVerifier using real Date.now() (see the worker's
+	// request-verifier). In production both are wall-clock so they agree. Under
+	// an injected/frozen clock they can diverge; the freshness check is not
+	// reachable from runtime.now(), so tests that freeze runtime.now() must keep
+	// timestamps within DEFAULT_TIME_WINDOW_S of real time for the verifier to
+	// accept them. Unifying the two would require threading the clock into the
+	// verifier signature across the core/worker boundary.
 	const cutoff = new Date(
 		new Date(createdAt).getTime() - DEFAULT_TIME_WINDOW_S * 2 * 1000,
 	).toISOString();
@@ -1250,6 +1259,11 @@ export function createCoordinatorApp(
 
 		if (!groupId || !["auto_admit", "approval_required"].includes(policy) || !expiresAt) {
 			return c.json({ error: "group_id_policy_and_expires_at_required" }, 400);
+		}
+		// Validate the date at the boundary so store.createInvite's
+		// normalizeInviteExpiresAt throw can't escape as an unhandled 500.
+		if (Number.isNaN(new Date(expiresAt).getTime())) {
+			return c.json({ error: "invalid_expires_at" }, 400);
 		}
 
 		const store = createStore();

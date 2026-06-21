@@ -1,3 +1,19 @@
+/**
+ * Normalize a caller-supplied invite expiry to a canonical UTC ISO-8601
+ * (`...Z`) string. Invite lookups filter with a SQL `expires_at > ?` string
+ * comparison against `new Date().toISOString()`, which is only correct when
+ * stored values share that exact format — a `+00:00` offset or date-only value
+ * would compare wrong. Shared by both coordinator store implementations.
+ */
+export function normalizeInviteExpiresAt(value: string): string {
+	const trimmed = value.trim();
+	const parsed = new Date(trimmed);
+	if (!trimmed || Number.isNaN(parsed.getTime())) {
+		throw new Error("expiresAt must be a valid date.");
+	}
+	return parsed.toISOString();
+}
+
 export interface CoordinatorGroup {
 	group_id: string;
 	display_name: string | null;

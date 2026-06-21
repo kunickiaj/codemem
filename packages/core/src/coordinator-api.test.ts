@@ -185,6 +185,31 @@ describe("createCoordinatorApp dependency injection", () => {
 		expect(store.close).toHaveBeenCalledTimes(1);
 	});
 
+	it("rejects an invalid invite expires_at with 400 instead of a 500", async () => {
+		const store = createMockStore({});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: {
+				adminSecret: () => "test-secret",
+				now: () => "2026-03-28T00:00:00Z",
+			},
+			requestVerifier: allowRequest,
+		});
+
+		const res = await app.request("/v1/admin/invites", {
+			method: "POST",
+			headers: {
+				"X-Codemem-Coordinator-Admin": "test-secret",
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ group_id: "g1", policy: "auto_admit", expires_at: "not-a-date" }),
+		});
+
+		expect(res.status).toBe(400);
+		expect(await res.json()).toEqual({ error: "invalid_expires_at" });
+		expect(store.createInvite).not.toHaveBeenCalled();
+	});
+
 	it("rate limits repeated coordinator reads before route handling continues", async () => {
 		const store = createMockStore({
 			listEnrolledDevices: vi.fn(async () => []),

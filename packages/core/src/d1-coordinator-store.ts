@@ -28,6 +28,7 @@ import type {
 	CoordinatorUpdateScopeInput,
 	CoordinatorUpsertPresenceInput,
 } from "./coordinator-store-contract.js";
+import { normalizeInviteExpiresAt } from "./coordinator-store-contract.js";
 
 interface D1RunResultLike {
 	meta?: {
@@ -534,23 +535,30 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	}
 
 	async removeDevice(_groupId: string, _deviceId: string): Promise<boolean> {
-		await this.db
-			.prepare("DELETE FROM presence_records WHERE group_id = ? AND device_id = ?")
-			.bind(_groupId, _deviceId)
-			.run();
-		await this.db
-			.prepare(
-				"DELETE FROM coordinator_reciprocal_approvals WHERE group_id = ? AND (requesting_device_id = ? OR requested_device_id = ?)",
-			)
-			.bind(_groupId, _deviceId, _deviceId)
-			.run();
-		return (
-			(await runChanges(
-				this.db
-					.prepare("DELETE FROM enrolled_devices WHERE group_id = ? AND device_id = ?")
-					.bind(_groupId, _deviceId),
-			)) > 0
-		);
+		// Presence, reciprocal approvals, and the enrollment row must be removed
+		// all-or-nothing. Running them as independent statements can orphan rows
+		// (an enrolled device with no presence/approvals, or vice versa) if any
+		// one statement fails. D1 batch() is the transaction boundary here, the
+		// same convention used for audited membership changes via runAuditedBatch.
+		if (!this.db.batch) {
+			throw new Error("D1 batch support is required for atomic device removal.");
+		}
+		const results = await this.db.batch([
+			this.db
+				.prepare("DELETE FROM presence_records WHERE group_id = ? AND device_id = ?")
+				.bind(_groupId, _deviceId),
+			this.db
+				.prepare(
+					"DELETE FROM coordinator_reciprocal_approvals WHERE group_id = ? AND (requesting_device_id = ? OR requested_device_id = ?)",
+				)
+				.bind(_groupId, _deviceId, _deviceId),
+			this.db
+				.prepare("DELETE FROM enrolled_devices WHERE group_id = ? AND device_id = ?")
+				.bind(_groupId, _deviceId),
+		]);
+		// The enrolled_devices delete is the last statement; its changes() tells us
+		// whether the device existed, preserving the boolean return contract.
+		return batchResultChanges(results[2]) > 0;
 	}
 
 	async recordNonce(_deviceId: string, _nonce: string, _createdAt: string): Promise<boolean> {
@@ -573,6 +581,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const now = nowISO();
 		const inviteId = tokenUrlSafe(12);
 		const token = tokenUrlSafe(24);
+		const expiresAt = normalizeInviteExpiresAt(_opts.expiresAt);
 		const group = await this.getGroup(_opts.groupId);
 		await this.db
 			.prepare(`INSERT INTO coordinator_invites(
@@ -583,7 +592,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				_opts.groupId,
 				token,
 				_opts.policy,
-				_opts.expiresAt,
+				expiresAt,
 				now,
 				_opts.createdBy ?? null,
 				group?.display_name ?? null,

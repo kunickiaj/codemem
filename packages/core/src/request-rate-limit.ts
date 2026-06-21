@@ -9,6 +9,17 @@ export interface CreateInMemoryRequestRateLimiterOptions {
 	now?: () => number;
 }
 
+/**
+ * Best-effort, per-isolate request rate limiter.
+ *
+ * Buckets live in a module-local Map, so on Cloudflare Workers the limits are
+ * enforced per isolate, not fleet-wide: the effective ceiling is multiplied by
+ * the number of live isolates and resets whenever an isolate is evicted. This
+ * is acceptable as a coarse abuse brake but is NOT a hard global limit. The
+ * unauthenticated /v1/join surface is the most exposed to this gap. Real
+ * fleet-wide enforcement needs a shared counter backed by a Durable Object or
+ * D1/KV.
+ */
 export function createInMemoryRequestRateLimiter(
 	options: CreateInMemoryRequestRateLimiterOptions = {},
 ): InMemoryRequestRateLimiter {

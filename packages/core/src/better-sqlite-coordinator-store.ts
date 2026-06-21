@@ -46,6 +46,7 @@ import type {
 	CoordinatorUpdateScopeInput,
 	CoordinatorUpsertPresenceInput,
 } from "./coordinator-store-contract.js";
+import { normalizeInviteExpiresAt } from "./coordinator-store-contract.js";
 
 export const DEFAULT_COORDINATOR_DB_PATH = join(homedir(), ".codemem", "coordinator.sqlite");
 
@@ -642,18 +643,23 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	}
 
 	async removeDevice(groupId: string, deviceId: string): Promise<boolean> {
-		this.db
-			.prepare("DELETE FROM presence_records WHERE group_id = ? AND device_id = ?")
-			.run(groupId, deviceId);
-		this.db
-			.prepare(
-				"DELETE FROM coordinator_reciprocal_approvals WHERE group_id = ? AND (requesting_device_id = ? OR requested_device_id = ?)",
-			)
-			.run(groupId, deviceId, deviceId);
-		const result = this.db
-			.prepare("DELETE FROM enrolled_devices WHERE group_id = ? AND device_id = ?")
-			.run(groupId, deviceId);
-		return result.changes > 0;
+		// Atomic: a partial failure must not leave presence/approval rows
+		// orphaned against a still-enrolled device (or vice versa).
+		const removeAll = this.db.transaction(() => {
+			this.db
+				.prepare("DELETE FROM presence_records WHERE group_id = ? AND device_id = ?")
+				.run(groupId, deviceId);
+			this.db
+				.prepare(
+					"DELETE FROM coordinator_reciprocal_approvals WHERE group_id = ? AND (requesting_device_id = ? OR requested_device_id = ?)",
+				)
+				.run(groupId, deviceId, deviceId);
+			const result = this.db
+				.prepare("DELETE FROM enrolled_devices WHERE group_id = ? AND device_id = ?")
+				.run(groupId, deviceId);
+			return result.changes > 0;
+		});
+		return removeAll();
 	}
 
 	async recordNonce(deviceId: string, nonce: string, createdAt: string): Promise<boolean> {
@@ -673,6 +679,9 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	async createInvite(opts: CoordinatorCreateInviteInput): Promise<CoordinatorInvite> {
 		const now = nowISO();
+		// Normalize to canonical UTC ISO so the lexicographic `expires_at > ?`
+		// comparison in getInviteByToken is sound.
+		const expiresAt = normalizeInviteExpiresAt(opts.expiresAt);
 		const inviteId = tokenUrlSafe(12);
 		const token = tokenUrlSafe(24);
 		const group = await this.getGroup(opts.groupId);
@@ -685,7 +694,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				opts.groupId,
 				token,
 				opts.policy,
-				opts.expiresAt,
+				expiresAt,
 				now,
 				opts.createdBy ?? null,
 				group?.display_name ?? null,
