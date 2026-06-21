@@ -23,6 +23,8 @@
 		"@radix-ui/react-toast": "^1.2.15",
 		"@radix-ui/react-toggle-group": "^1.1.11",
 		"@radix-ui/react-tooltip": "^1.2.8",
+		"dompurify": "^3.4.11",
+		"marked": "^18.0.5",
 		"preact": "^10.29.2",
 		"tslib": "^2.8.1"
 	},
