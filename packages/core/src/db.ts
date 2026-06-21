@@ -513,16 +513,106 @@ function addColumnIfMissing(
 }
 
 /**
+ * Has the additive compatibility shim already run for the current SCHEMA_VERSION?
+ *
+ * Fail-safe: returns false on any error (including a missing
+ * `schema_compat_state` table) so the shim re-runs rather than skipping needed
+ * additive DDL on uncertainty. Keyed on SCHEMA_VERSION so a future runtime with
+ * a higher SCHEMA_VERSION (and new additive DDL) sees the older marker and
+ * re-applies.
+ */
+function schemaCompatAlreadyApplied(db: DatabaseType): boolean {
+	try {
+		const row = db
+			.prepare("SELECT applied_schema_version AS v FROM schema_compat_state WHERE id = 1 LIMIT 1")
+			.get() as { v: number } | undefined;
+		return typeof row?.v === "number" && row.v >= SCHEMA_VERSION;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Record that the additive compatibility shim has been applied for the current
+ * SCHEMA_VERSION. Fail-open: a failed mark just means the shim re-runs on the
+ * next open, which is harmless because the DDL is idempotent.
+ */
+function markSchemaCompatApplied(db: DatabaseType): void {
+	try {
+		db.prepare(
+			`INSERT INTO schema_compat_state(id, applied_schema_version, applied_at)
+			 VALUES (1, ?, ?)
+			 ON CONFLICT(id) DO UPDATE SET
+				 applied_schema_version = excluded.applied_schema_version,
+				 applied_at = excluded.applied_at`,
+		).run(SCHEMA_VERSION, new Date().toISOString());
+	} catch {
+		// Fail-open: a missed mark only costs one extra idempotent re-run.
+	}
+}
+
+/**
+ * Backfill the denormalized memory_items.project column from sessions.project.
+ *
+ * Runs on EVERY store open (not gated behind the schema-compat marker) because
+ * moveMemoryProject edits sessions.project and relies on this backfill plus a
+ * reader-fallback to propagate the new project to legacy rows whose project is
+ * still NULL. Idempotent — only touches rows where project IS NULL.
+ */
+function backfillMemoryItemProject(db: DatabaseType): void {
+	try {
+		db.exec(`UPDATE memory_items
+			 SET project = (
+				 SELECT s.project FROM sessions s
+				 WHERE s.id = memory_items.session_id
+			 )
+			 WHERE project IS NULL`);
+	} catch {
+		// Best-effort backfill — readers fall back to sessions.project
+		// when memory_items.project is null.
+	}
+}
+
+/**
  * Apply additive compatibility fixes for legacy TS-era schemas.
  *
  * These are safe, one-way `ALTER TABLE ... ADD COLUMN` updates used to
  * prevent runtime failures when older local databases are missing columns
  * introduced in later releases.
+ *
+ * The ~39 idempotent DDL statements are gated behind a `schema_compat_state`
+ * marker so steady-state opens skip them: each database runs the shim once
+ * (idempotent — a fresh DB's statements are all no-ops), records the marker,
+ * and skips thereafter. We deliberately do NOT short-circuit on
+ * `user_version >= SCHEMA_VERSION`: additive columns (e.g. memory_items.project)
+ * have been added over time WITHOUT bumping SCHEMA_VERSION, so a database can
+ * report user_version=SCHEMA_VERSION yet still lack a column the shim adds —
+ * the version is not proof the shim ran. Only the marker is. The project
+ * backfill still runs on every open regardless of the gate.
  */
 export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
-	try {
-		db.exec(`
-			CREATE TABLE IF NOT EXISTS sync_reset_state (
+	const compatAlreadyApplied = schemaCompatAlreadyApplied(db);
+	if (!compatAlreadyApplied) {
+		// IMPORTANT: any NEW DDL added to this gated block REQUIRES bumping
+		// SCHEMA_VERSION. The "already applied" marker keys on SCHEMA_VERSION, so
+		// without a bump, legacy DBs already marked at the current version would
+		// skip the new DDL forever.
+		// Marker table must exist before we can mark; create it first.
+		try {
+			db.exec(`
+				CREATE TABLE IF NOT EXISTS schema_compat_state (
+					id INTEGER PRIMARY KEY CHECK (id = 1),
+					applied_schema_version INTEGER NOT NULL,
+					applied_at TEXT NOT NULL
+				)
+			`);
+		} catch {
+			// Keep compatibility shim fail-open for the marker table.
+		}
+
+		try {
+			db.exec(`
+				CREATE TABLE IF NOT EXISTS sync_reset_state (
 				id INTEGER PRIMARY KEY,
 				generation INTEGER NOT NULL,
 				snapshot_id TEXT NOT NULL,
@@ -531,12 +621,12 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 				updated_at TEXT NOT NULL
 			)
 		`);
-	} catch {
-		// Keep compatibility shim fail-open for optional additive tables.
-	}
+		} catch {
+			// Keep compatibility shim fail-open for optional additive tables.
+		}
 
-	try {
-		db.exec(`
+		try {
+			db.exec(`
 			CREATE TABLE IF NOT EXISTS sync_scope_rejections (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				peer_device_id TEXT,
@@ -552,12 +642,12 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 			CREATE INDEX IF NOT EXISTS idx_sync_scope_rejections_scope_created
 				ON sync_scope_rejections(scope_id, created_at);
 		`);
-	} catch {
-		// Keep compatibility shim fail-open for optional additive diagnostics.
-	}
+		} catch {
+			// Keep compatibility shim fail-open for optional additive diagnostics.
+		}
 
-	try {
-		db.exec(`
+		try {
+			db.exec(`
 			CREATE TABLE IF NOT EXISTS sync_reset_state_v2 (
 				scope_id TEXT PRIMARY KEY NOT NULL,
 				generation INTEGER NOT NULL,
@@ -590,27 +680,27 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 			CREATE INDEX IF NOT EXISTS idx_replication_cursors_v2_scope
 				ON replication_cursors_v2(scope_id);
 		`);
-	} catch {
-		// Keep compatibility shim fail-open for optional additive tables.
-	}
+		} catch {
+			// Keep compatibility shim fail-open for optional additive tables.
+		}
 
-	if (tableExists(db, "sync_reset_state") && tableExists(db, "sync_reset_state_v2")) {
-		try {
-			db.exec(`
+		if (tableExists(db, "sync_reset_state") && tableExists(db, "sync_reset_state_v2")) {
+			try {
+				db.exec(`
 				INSERT OR IGNORE INTO sync_reset_state_v2
 					(scope_id, generation, snapshot_id, baseline_cursor, retained_floor_cursor, updated_at)
 				SELECT 'local-default', generation, snapshot_id, baseline_cursor, retained_floor_cursor, updated_at
 				FROM sync_reset_state
 				WHERE id = 1
 			`);
-		} catch {
-			// Best-effort bridge from legacy singleton state.
+			} catch {
+				// Best-effort bridge from legacy singleton state.
+			}
 		}
-	}
 
-	if (tableExists(db, "sync_retention_state") && tableExists(db, "sync_retention_state_v2")) {
-		try {
-			db.exec(`
+		if (tableExists(db, "sync_retention_state") && tableExists(db, "sync_retention_state_v2")) {
+			try {
+				db.exec(`
 				INSERT OR IGNORE INTO sync_retention_state_v2
 					(
 						scope_id,
@@ -636,132 +726,120 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 				FROM sync_retention_state
 				WHERE id = 1
 			`);
-		} catch {
-			// Best-effort bridge from legacy singleton state.
+			} catch {
+				// Best-effort bridge from legacy singleton state.
+			}
 		}
-	}
 
-	if (tableExists(db, "replication_cursors") && tableExists(db, "replication_cursors_v2")) {
-		try {
-			db.exec(`
+		if (tableExists(db, "replication_cursors") && tableExists(db, "replication_cursors_v2")) {
+			try {
+				db.exec(`
 				INSERT OR IGNORE INTO replication_cursors_v2
 					(peer_device_id, scope_id, last_applied_cursor, last_acked_cursor, updated_at)
 				SELECT peer_device_id, 'local-default', last_applied_cursor, last_acked_cursor, updated_at
 				FROM replication_cursors
 			`);
-		} catch {
-			// Best-effort bridge from legacy peer-level cursors.
+			} catch {
+				// Best-effort bridge from legacy peer-level cursors.
+			}
 		}
-	}
 
-	// Add phase column to sync_daemon_state for rebootstrap safety gate.
-	if (tableExists(db, "sync_daemon_state") && !columnExists(db, "sync_daemon_state", "phase")) {
-		try {
-			db.exec("ALTER TABLE sync_daemon_state ADD COLUMN phase TEXT");
-		} catch {
-			// Race-safe: another process may have added it first.
-		}
-	}
-
-	if (tableExists(db, "memory_items")) {
-		if (!columnExists(db, "memory_items", "dedup_key")) {
+		// Add phase column to sync_daemon_state for rebootstrap safety gate.
+		if (tableExists(db, "sync_daemon_state") && !columnExists(db, "sync_daemon_state", "phase")) {
 			try {
-				db.exec("ALTER TABLE memory_items ADD COLUMN dedup_key TEXT");
-			} catch (err) {
-				const message = err instanceof Error ? err.message.toLowerCase() : "";
-				const duplicateColumn = message.includes("duplicate column name");
-				if (!(duplicateColumn && columnExists(db, "memory_items", "dedup_key"))) {
-					throw err;
+				db.exec("ALTER TABLE sync_daemon_state ADD COLUMN phase TEXT");
+			} catch {
+				// Race-safe: another process may have added it first.
+			}
+		}
+
+		if (tableExists(db, "memory_items")) {
+			if (!columnExists(db, "memory_items", "dedup_key")) {
+				try {
+					db.exec("ALTER TABLE memory_items ADD COLUMN dedup_key TEXT");
+				} catch (err) {
+					const message = err instanceof Error ? err.message.toLowerCase() : "";
+					const duplicateColumn = message.includes("duplicate column name");
+					if (!(duplicateColumn && columnExists(db, "memory_items", "dedup_key"))) {
+						throw err;
+					}
 				}
+			}
+
+			try {
+				db.exec(
+					"CREATE INDEX IF NOT EXISTS idx_memory_items_dedup_key_active_created ON memory_items(dedup_key, active, created_at)",
+				);
+			} catch {
+				// Keep additive compatibility best-effort for index creation.
+			}
+
+			try {
+				db.exec(
+					"CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_items_same_session_dedup_unique ON memory_items(session_id, kind, visibility, workspace_id, dedup_key) WHERE active = 1 AND dedup_key IS NOT NULL",
+				);
+			} catch {
+				// Keep additive compatibility best-effort for index creation.
+			}
+
+			addColumnIfMissing(db, "memory_items", "scope_id", "TEXT");
+			try {
+				db.exec(
+					"CREATE INDEX IF NOT EXISTS idx_memory_items_scope_visibility_created ON memory_items(scope_id, visibility, created_at)",
+				);
+			} catch {
+				// Keep additive compatibility best-effort for index creation.
+			}
+			try {
+				db.exec(
+					"CREATE INDEX IF NOT EXISTS idx_memory_items_scope_backfill_pending ON memory_items(id) WHERE scope_id IS NULL OR scope_id = ''",
+				);
+			} catch {
+				// Keep additive compatibility best-effort for index creation.
+			}
+
+			// Denormalized project column: created here so the Projects read model can
+			// read directly from memory_items without joining through sessions (which
+			// carry device-local cwd and don't replicate). The actual NULL backfill
+			// runs unconditionally via backfillMemoryItemProject() on every open below.
+			addColumnIfMissing(db, "memory_items", "project", "TEXT");
+			try {
+				db.exec("CREATE INDEX IF NOT EXISTS idx_memory_items_project ON memory_items(project)");
+			} catch {
+				// Keep additive compatibility best-effort for index creation.
+			}
+
+			// Drop legacy memory_items indexes that no longer back any query, only
+			// adding write amplification on databases created by older schemas. The
+			// current schema never creates these. `visibility`/`workspace_kind` are
+			// low-cardinality and only ever appear as secondary predicates already
+			// covered by composite indexes (e.g. idx_memory_items_scope_visibility_created,
+			// idx_memory_items_same_session_dedup_unique); `user_prompt_id` is unused
+			// as a filter (and is all-NULL in practice).
+			try {
+				db.exec(
+					`DROP INDEX IF EXISTS idx_memory_items_visibility;
+				 DROP INDEX IF EXISTS idx_memory_items_workspace_kind;
+				 DROP INDEX IF EXISTS idx_memory_items_user_prompt_id;`,
+				);
+			} catch {
+				// Best-effort cleanup of legacy indexes.
+			}
+		}
+
+		if (tableExists(db, "replication_ops")) {
+			addColumnIfMissing(db, "replication_ops", "scope_id", "TEXT");
+			try {
+				db.exec(
+					"CREATE INDEX IF NOT EXISTS idx_replication_ops_scope_created ON replication_ops(scope_id, created_at, op_id)",
+				);
+			} catch {
+				// Keep additive compatibility best-effort for index creation.
 			}
 		}
 
 		try {
-			db.exec(
-				"CREATE INDEX IF NOT EXISTS idx_memory_items_dedup_key_active_created ON memory_items(dedup_key, active, created_at)",
-			);
-		} catch {
-			// Keep additive compatibility best-effort for index creation.
-		}
-
-		try {
-			db.exec(
-				"CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_items_same_session_dedup_unique ON memory_items(session_id, kind, visibility, workspace_id, dedup_key) WHERE active = 1 AND dedup_key IS NOT NULL",
-			);
-		} catch {
-			// Keep additive compatibility best-effort for index creation.
-		}
-
-		addColumnIfMissing(db, "memory_items", "scope_id", "TEXT");
-		try {
-			db.exec(
-				"CREATE INDEX IF NOT EXISTS idx_memory_items_scope_visibility_created ON memory_items(scope_id, visibility, created_at)",
-			);
-		} catch {
-			// Keep additive compatibility best-effort for index creation.
-		}
-		try {
-			db.exec(
-				"CREATE INDEX IF NOT EXISTS idx_memory_items_scope_backfill_pending ON memory_items(id) WHERE scope_id IS NULL OR scope_id = ''",
-			);
-		} catch {
-			// Keep additive compatibility best-effort for index creation.
-		}
-
-		// Denormalized project column: backfill from sessions.project for legacy
-		// rows so the Projects read model can read directly from memory_items
-		// without joining through sessions (which carry device-local cwd and
-		// don't replicate). Idempotent — only backfills rows whose project is
-		// currently NULL, so re-runs are no-ops.
-		addColumnIfMissing(db, "memory_items", "project", "TEXT");
-		try {
-			db.exec(`UPDATE memory_items
-				 SET project = (
-					 SELECT s.project FROM sessions s
-					 WHERE s.id = memory_items.session_id
-				 )
-				 WHERE project IS NULL`);
-		} catch {
-			// Best-effort backfill — readers fall back to sessions.project
-			// when memory_items.project is null.
-		}
-		try {
-			db.exec("CREATE INDEX IF NOT EXISTS idx_memory_items_project ON memory_items(project)");
-		} catch {
-			// Keep additive compatibility best-effort for index creation.
-		}
-
-		// Drop legacy memory_items indexes that no longer back any query, only
-		// adding write amplification on databases created by older schemas. The
-		// current schema never creates these. `visibility`/`workspace_kind` are
-		// low-cardinality and only ever appear as secondary predicates already
-		// covered by composite indexes (e.g. idx_memory_items_scope_visibility_created,
-		// idx_memory_items_same_session_dedup_unique); `user_prompt_id` is unused
-		// as a filter (and is all-NULL in practice).
-		try {
-			db.exec(
-				`DROP INDEX IF EXISTS idx_memory_items_visibility;
-				 DROP INDEX IF EXISTS idx_memory_items_workspace_kind;
-				 DROP INDEX IF EXISTS idx_memory_items_user_prompt_id;`,
-			);
-		} catch {
-			// Best-effort cleanup of legacy indexes.
-		}
-	}
-
-	if (tableExists(db, "replication_ops")) {
-		addColumnIfMissing(db, "replication_ops", "scope_id", "TEXT");
-		try {
-			db.exec(
-				"CREATE INDEX IF NOT EXISTS idx_replication_ops_scope_created ON replication_ops(scope_id, created_at, op_id)",
-			);
-		} catch {
-			// Keep additive compatibility best-effort for index creation.
-		}
-	}
-
-	try {
-		db.exec(`
+			db.exec(`
 			CREATE TABLE IF NOT EXISTS replication_scopes (
 				scope_id TEXT PRIMARY KEY NOT NULL,
 				label TEXT NOT NULL,
@@ -829,14 +907,14 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 				PRIMARY KEY (coordinator_id, group_id)
 			);
 		`);
-	} catch {
-		// Keep compatibility shim fail-open for optional additive scope metadata.
-	}
+		} catch {
+			// Keep compatibility shim fail-open for optional additive scope metadata.
+		}
 
-	// Junction tables for structured file/concept references on memories.
-	// Added in schema v7; existing v6 databases need these created additively.
-	try {
-		db.exec(`
+		// Junction tables for structured file/concept references on memories.
+		// Added in schema v7; existing v6 databases need these created additively.
+		try {
+			db.exec(`
 			CREATE TABLE IF NOT EXISTS memory_file_refs (
 				memory_id INTEGER NOT NULL,
 				file_path TEXT NOT NULL,
@@ -854,47 +932,50 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 			);
 			CREATE INDEX IF NOT EXISTS idx_memory_concept_refs_concept ON memory_concept_refs(concept);
 		`);
-	} catch {
-		// Keep compatibility shim fail-open for optional additive tables.
-	}
+		} catch {
+			// Keep compatibility shim fail-open for optional additive tables.
+		}
 
-	// Multi-team coordinator groups (v1) — additive columns + preferences table.
-	// Existing databases acquire these so peer enrollment can record the group
-	// it came from, and so per-group scope templates can be stored locally.
-	if (tableExists(db, "sync_peers")) {
-		for (const name of ["discovered_via_coordinator_id", "discovered_via_group_id"]) {
-			if (columnExists(db, "sync_peers", name)) continue;
-			try {
-				db.exec(`ALTER TABLE sync_peers ADD COLUMN ${name} TEXT`);
-			} catch (err) {
-				const message = err instanceof Error ? err.message.toLowerCase() : "";
-				if (message.includes("duplicate column name") && columnExists(db, "sync_peers", name)) {
-					continue;
+		// Multi-team coordinator groups (v1) — additive columns + preferences table.
+		// Existing databases acquire these so peer enrollment can record the group
+		// it came from, and so per-group scope templates can be stored locally.
+		if (tableExists(db, "sync_peers")) {
+			for (const name of ["discovered_via_coordinator_id", "discovered_via_group_id"]) {
+				if (columnExists(db, "sync_peers", name)) continue;
+				try {
+					db.exec(`ALTER TABLE sync_peers ADD COLUMN ${name} TEXT`);
+				} catch (err) {
+					const message = err instanceof Error ? err.message.toLowerCase() : "";
+					if (message.includes("duplicate column name") && columnExists(db, "sync_peers", name)) {
+						continue;
+					}
+					throw err;
 				}
-				throw err;
 			}
 		}
-	}
-	if (tableExists(db, "sync_attempts")) {
-		for (const name of [
-			"local_sync_capability",
-			"peer_sync_capability",
-			"negotiated_sync_capability",
-		]) {
-			if (columnExists(db, "sync_attempts", name)) continue;
-			try {
-				db.exec(`ALTER TABLE sync_attempts ADD COLUMN ${name} TEXT`);
-			} catch (err) {
-				const message = err instanceof Error ? err.message.toLowerCase() : "";
-				if (message.includes("duplicate column name") && columnExists(db, "sync_attempts", name)) {
-					continue;
+		if (tableExists(db, "sync_attempts")) {
+			for (const name of [
+				"local_sync_capability",
+				"peer_sync_capability",
+				"negotiated_sync_capability",
+			]) {
+				if (columnExists(db, "sync_attempts", name)) continue;
+				try {
+					db.exec(`ALTER TABLE sync_attempts ADD COLUMN ${name} TEXT`);
+				} catch (err) {
+					const message = err instanceof Error ? err.message.toLowerCase() : "";
+					if (
+						message.includes("duplicate column name") &&
+						columnExists(db, "sync_attempts", name)
+					) {
+						continue;
+					}
+					throw err;
 				}
-				throw err;
 			}
 		}
-	}
-	try {
-		db.exec(`
+		try {
+			db.exec(`
 			CREATE TABLE IF NOT EXISTS coordinator_group_preferences (
 				coordinator_id TEXT NOT NULL,
 				group_id TEXT NOT NULL,
@@ -907,52 +988,59 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 				PRIMARY KEY (coordinator_id, group_id)
 			)
 		`);
-	} catch {
-		// Keep compatibility shim fail-open for optional additive tables.
-	}
-	for (const { name, ddl } of [
-		{ name: "default_space_scope_id", ddl: "TEXT" },
-		{ name: "auto_grant_default_space_on_join", ddl: "INTEGER NOT NULL DEFAULT 0" },
-	]) {
-		if (columnExists(db, "coordinator_group_preferences", name)) continue;
-		try {
-			db.exec(`ALTER TABLE coordinator_group_preferences ADD COLUMN ${name} ${ddl}`);
-		} catch (err) {
-			const message = err instanceof Error ? err.message.toLowerCase() : "";
-			if (message.includes("duplicate column name")) continue;
-			throw err;
+		} catch {
+			// Keep compatibility shim fail-open for optional additive tables.
 		}
-	}
-
-	if (!tableExists(db, "raw_event_flush_batches")) return;
-
-	const additiveColumns: Array<{ name: string; ddl: string }> = [
-		{ name: "error_message", ddl: "TEXT" },
-		{ name: "error_type", ddl: "TEXT" },
-		{ name: "observer_provider", ddl: "TEXT" },
-		{ name: "observer_model", ddl: "TEXT" },
-		{ name: "observer_runtime", ddl: "TEXT" },
-		{ name: "observer_auth_source", ddl: "TEXT" },
-		{ name: "observer_auth_type", ddl: "TEXT" },
-		{ name: "observer_error_code", ddl: "TEXT" },
-		{ name: "observer_error_message", ddl: "TEXT" },
-		{ name: "attempt_count", ddl: "INTEGER NOT NULL DEFAULT 0" },
-	];
-
-	for (const { name, ddl } of additiveColumns) {
-		if (columnExists(db, "raw_event_flush_batches", name)) continue;
-		try {
-			db.exec(`ALTER TABLE raw_event_flush_batches ADD COLUMN ${name} ${ddl}`);
-		} catch (err) {
-			const message = err instanceof Error ? err.message.toLowerCase() : "";
-			const duplicateColumn = message.includes("duplicate column name");
-			if (duplicateColumn && columnExists(db, "raw_event_flush_batches", name)) {
-				// Another process may have raced and added the column first.
-				continue;
+		for (const { name, ddl } of [
+			{ name: "default_space_scope_id", ddl: "TEXT" },
+			{ name: "auto_grant_default_space_on_join", ddl: "INTEGER NOT NULL DEFAULT 0" },
+		]) {
+			if (columnExists(db, "coordinator_group_preferences", name)) continue;
+			try {
+				db.exec(`ALTER TABLE coordinator_group_preferences ADD COLUMN ${name} ${ddl}`);
+			} catch (err) {
+				const message = err instanceof Error ? err.message.toLowerCase() : "";
+				if (message.includes("duplicate column name")) continue;
+				throw err;
 			}
-			throw err;
 		}
+
+		if (tableExists(db, "raw_event_flush_batches")) {
+			const additiveColumns: Array<{ name: string; ddl: string }> = [
+				{ name: "error_message", ddl: "TEXT" },
+				{ name: "error_type", ddl: "TEXT" },
+				{ name: "observer_provider", ddl: "TEXT" },
+				{ name: "observer_model", ddl: "TEXT" },
+				{ name: "observer_runtime", ddl: "TEXT" },
+				{ name: "observer_auth_source", ddl: "TEXT" },
+				{ name: "observer_auth_type", ddl: "TEXT" },
+				{ name: "observer_error_code", ddl: "TEXT" },
+				{ name: "observer_error_message", ddl: "TEXT" },
+				{ name: "attempt_count", ddl: "INTEGER NOT NULL DEFAULT 0" },
+			];
+
+			for (const { name, ddl } of additiveColumns) {
+				if (columnExists(db, "raw_event_flush_batches", name)) continue;
+				try {
+					db.exec(`ALTER TABLE raw_event_flush_batches ADD COLUMN ${name} ${ddl}`);
+				} catch (err) {
+					const message = err instanceof Error ? err.message.toLowerCase() : "";
+					const duplicateColumn = message.includes("duplicate column name");
+					if (duplicateColumn && columnExists(db, "raw_event_flush_batches", name)) {
+						// Another process may have raced and added the column first.
+						continue;
+					}
+					throw err;
+				}
+			}
+		}
+
+		markSchemaCompatApplied(db);
 	}
+
+	// Always runs (not gated): moveMemoryProject relies on this backfill +
+	// reader-fallback to propagate sessions.project edits to legacy NULL rows.
+	backfillMemoryItemProject(db);
 }
 
 /** Safely parse a JSON string, returning {} on failure. */
