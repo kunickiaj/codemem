@@ -551,8 +551,12 @@ describe("viewer-server", () => {
 					recent_packs: Array<{ metadata_json: unknown }>;
 					totals: { count: number; tokens_read: number; tokens_saved: number };
 				};
+				// recent_packs stays scope-filtered: only the visible-session pack
+				// survives, with hidden ids stripped from its metadata.
 				expect(body.recent_packs).toHaveLength(1);
-				expect(body.totals).toMatchObject({ count: 1, tokens_read: 123, tokens_saved: 456 });
+				// Aggregate totals are unfiltered SQL sums over every usage row
+				// (both packs), matching store.stats() semantics.
+				expect(body.totals).toMatchObject({ count: 2, tokens_read: 1122, tokens_saved: 1455 });
 				expect(body.recent_packs[0]?.metadata_json).toMatchObject({
 					pack_item_ids: [visibleId],
 					added_ids: [visibleId],
@@ -603,8 +607,11 @@ describe("viewer-server", () => {
 					recent_packs: unknown[];
 					totals: { count: number; tokens_read: number; tokens_saved: number };
 				};
+				// The hidden-session pack is still excluded from recent_packs
+				// (session not visible), but the unfiltered aggregate totals count
+				// it just like store.stats() would.
 				expect(body.recent_packs).toHaveLength(0);
-				expect(body.totals).toMatchObject({ count: 0, tokens_read: 0, tokens_saved: 0 });
+				expect(body.totals).toMatchObject({ count: 1, tokens_read: 999, tokens_saved: 999 });
 			} finally {
 				cleanup();
 			}
@@ -710,21 +717,23 @@ describe("viewer-server", () => {
 					.run(sessionId, "2026-03-26T23:30:00Z");
 
 				const beforeRevoke = (await (await app.request("/api/usage")).json()) as {
-					totals: { count: number };
+					recent_packs: unknown[];
 				};
-				expect(beforeRevoke.totals.count).toBe(1);
+				expect(beforeRevoke.recent_packs).toHaveLength(1);
 
 				// Revoke the device's membership. Even within the TTL window the
 				// next request must recompute and hide the now-invisible scope
-				// instead of serving the cached (visible) payload.
+				// instead of serving the cached (visible) payload. recent_packs is
+				// the scope-sensitive surface here (aggregate totals are now
+				// unfiltered, so they would not reflect a visibility change).
 				store.db
 					.prepare("DELETE FROM scope_memberships WHERE scope_id = ? AND device_id = ?")
 					.run("authorized-team", store.deviceId);
 
 				const afterRevoke = (await (await app.request("/api/usage")).json()) as {
-					totals: { count: number };
+					recent_packs: unknown[];
 				};
-				expect(afterRevoke.totals.count).toBe(0);
+				expect(afterRevoke.recent_packs).toHaveLength(0);
 			} finally {
 				cleanup();
 			}
@@ -765,6 +774,229 @@ describe("viewer-server", () => {
 				expect(cache.size).toBeLessThanOrEqual(maxEntries);
 			} finally {
 				cache.clear();
+				cleanup();
+			}
+		});
+
+		it("aggregates token/event totals in SQL with hand-summed global and project values", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const codememSession = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET project = ? WHERE id = ?")
+					.run("codemem", codememSession);
+				const otherSession = insertTestSession(store.db);
+				store.db.prepare("UPDATE sessions SET project = ? WHERE id = ?").run("other", otherSession);
+
+				const insertUsage = (
+					sessionId: number,
+					event: string,
+					read: number,
+					written: number,
+					saved: number | null,
+					createdAt: string,
+				) =>
+					store.db
+						.prepare(
+							`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
+							 VALUES (?, ?, ?, ?, ?, ?, '{}')`,
+						)
+						.run(sessionId, event, read, written, saved, createdAt);
+
+				// codemem project: two packs + one search.
+				insertUsage(codememSession, "pack", 100, 10, 5, "2026-03-26T23:30:00Z");
+				insertUsage(codememSession, "pack", 200, 20, null, "2026-03-26T23:31:00Z");
+				insertUsage(codememSession, "search", 30, 3, 7, "2026-03-26T23:32:00Z");
+				// other project: one pack.
+				insertUsage(otherSession, "pack", 1000, 100, 50, "2026-03-26T23:33:00Z");
+
+				const res = await app.request("/api/usage?project=codemem");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					events_global: Array<{
+						event: string;
+						total_tokens_read: number;
+						total_tokens_written: number;
+						total_tokens_saved: number;
+						count: number;
+					}>;
+					totals_global: {
+						tokens_read: number;
+						tokens_written: number;
+						tokens_saved: number;
+						count: number;
+					};
+					events_filtered: Array<{
+						event: string;
+						total_tokens_read: number;
+						total_tokens_written: number;
+						total_tokens_saved: number;
+						count: number;
+					}> | null;
+					totals_filtered: {
+						tokens_read: number;
+						tokens_written: number;
+						tokens_saved: number;
+						count: number;
+					} | null;
+					totals: {
+						tokens_read: number;
+						tokens_written: number;
+						tokens_saved: number;
+						count: number;
+					};
+				};
+
+				// Global aggregate = all four rows, NULL tokens_saved coalesced to 0.
+				expect(body.totals_global).toEqual({
+					tokens_read: 1330,
+					tokens_written: 133,
+					tokens_saved: 62,
+					count: 4,
+				});
+				// events_global is sorted by event name ASC (pack before search).
+				expect(body.events_global).toEqual([
+					{
+						event: "pack",
+						total_tokens_read: 1300,
+						total_tokens_written: 130,
+						total_tokens_saved: 55,
+						count: 3,
+					},
+					{
+						event: "search",
+						total_tokens_read: 30,
+						total_tokens_written: 3,
+						total_tokens_saved: 7,
+						count: 1,
+					},
+				]);
+
+				// Project-filtered aggregate = only the codemem rows.
+				expect(body.totals_filtered).toEqual({
+					tokens_read: 330,
+					tokens_written: 33,
+					tokens_saved: 12,
+					count: 3,
+				});
+				expect(body.events_filtered).toEqual([
+					{
+						event: "pack",
+						total_tokens_read: 300,
+						total_tokens_written: 30,
+						total_tokens_saved: 5,
+						count: 2,
+					},
+					{
+						event: "search",
+						total_tokens_read: 30,
+						total_tokens_written: 3,
+						total_tokens_saved: 7,
+						count: 1,
+					},
+				]);
+
+				// When a project filter is present, `totals` mirrors the filtered values.
+				expect(body.totals).toEqual(body.totals_filtered);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("orders recent_packs by created_at DESC and caps the surfaced window", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Recent-pack visible memory",
+				});
+				const insertPack = (createdAt: string, tokensRead: number) =>
+					store.db
+						.prepare(
+							`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
+							 VALUES (?, 'pack', ?, 0, 0, ?, '{}')`,
+						)
+						.run(sessionId, tokensRead, createdAt);
+
+				// Insert 15 packs in ascending time order; the route should return
+				// the newest first and never surface more than 10.
+				for (let i = 0; i < 15; i += 1) {
+					const minute = String(i).padStart(2, "0");
+					insertPack(`2026-03-26T23:${minute}:00Z`, i);
+				}
+
+				const res = await app.request("/api/usage");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					recent_packs: Array<{ created_at: string }>;
+				};
+				expect(body.recent_packs).toHaveLength(10);
+				const timestamps = body.recent_packs.map((row) => row.created_at);
+				const sortedDesc = [...timestamps].sort((a, b) => b.localeCompare(a));
+				expect(timestamps).toEqual(sortedDesc);
+				// Newest seeded pack (minute 14) is first; oldest surfaced is minute 05.
+				expect(timestamps[0]).toBe("2026-03-26T23:14:00Z");
+				expect(timestamps.at(-1)).toBe("2026-03-26T23:05:00Z");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("does not surface a visible pack older than the bounded recent-pack window", async () => {
+			// Documents the deliberate truncation tradeoff: the recent_packs window
+			// considers only the newest RECENT_PACK_SCAN_LIMIT (200) pack events, so
+			// a visible pack buried under that many newer non-visible packs is not
+			// surfaced — while the unfiltered aggregate still counts every event.
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Starvation-test visible memory",
+				});
+				const insertPack = (sessionRef: number | null, createdAt: string) =>
+					store.db
+						.prepare(
+							`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
+							 VALUES (?, 'pack', 1, 0, 0, ?, '{}')`,
+						)
+						.run(sessionRef, createdAt);
+
+				// One visible pack at the OLDEST timestamp (session is visible)...
+				insertPack(sessionId, "2026-03-26T00:00:00Z");
+				// ...buried under 200 NEWER non-visible packs (NULL session => a row
+				// with no pack_item_ids and a null session is never visible). The
+				// newest-200 window is entirely non-visible, so the lone visible pack
+				// sits at position 201 and is never considered.
+				for (let i = 0; i < 200; i += 1) {
+					const minute = String(Math.floor(i / 60)).padStart(2, "0");
+					const second = String(i % 60).padStart(2, "0");
+					insertPack(null, `2026-04-01T00:${minute}:${second}Z`);
+				}
+
+				const res = await app.request("/api/usage");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					recent_packs: unknown[];
+					totals_global: { count: number };
+				};
+				// recent_packs is starved to empty even though a visible pack exists...
+				expect(body.recent_packs).toHaveLength(0);
+				// ...while the unfiltered aggregate still counts every pack event (201).
+				expect(body.totals_global.count).toBe(201);
+			} finally {
 				cleanup();
 			}
 		});
