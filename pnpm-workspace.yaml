@@ -18,16 +18,17 @@ overrides:
   'jsdom>ws': 8.20.1
   'miniflare>ws': 8.20.1
   '@rollup/pluginutils@5>picomatch': 4.0.4
-  'onnx-proto>protobufjs': 7.5.8
+  'onnx-proto>protobufjs': 7.6.3
+  undici: '>=7.28.0 <8'
 
 catalog:
   "@biomejs/biome": ^2.4.16
   "@hono/node-server": ^2.0.4
   "@types/better-sqlite3": ^7.6.13
   drizzle-orm: ^0.45.2
-  hono: ^4.12.23
+  hono: ^4.12.25
   limiter: ^3.0.0
   tsx: ^4.22.3
   typescript: ^6.0.3
-  vite: ^8.0.14
+  vite: ^8.0.16
   vitest: ^4.1.7
