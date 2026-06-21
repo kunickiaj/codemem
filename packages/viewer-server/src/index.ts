@@ -115,6 +115,7 @@ export function createApp(opts?: AppOptions) {
 		serveStatic({
 			root: staticRoot,
 			rewriteRequestPath: (path) => path.replace(/^\/assets/, ""),
+			precompressed: true,
 		}),
 	);
 
