@@ -41,6 +41,7 @@ import { populateMemoryRefs } from "./ref-populate.js";
 import type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
 import { findByConcept as findByConceptFn, findByFile as findByFileFn } from "./ref-queries.js";
 import * as schema from "./schema.js";
+import { resolveVisibleScopeIds } from "./scope-resolution.js";
 import { ensureMemoryScopeId, resolveSessionScopeId } from "./scope-stamping.js";
 import {
 	type ExplainOptions,
@@ -429,6 +430,11 @@ export class MemoryStore {
 			claimedDeviceIds,
 			legacyActorIds: claimedDeviceIds.map((peerId) => `legacy-sync:${peerId}`),
 			enforceScopeVisibility: true,
+			// Resolve the visible scope set once per request so the SQL filter can
+			// use the index-eligible `scope_id IN (...)` fast path instead of the
+			// per-row EXISTS predicate. Fronts get()/recent()/recentByKinds() and
+			// every viewer-server route.
+			visibleScopeIds: resolveVisibleScopeIds(this.db, this.deviceId),
 		};
 	}
 

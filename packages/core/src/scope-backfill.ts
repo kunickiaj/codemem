@@ -15,9 +15,11 @@ import {
 	startMaintenanceJob,
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
-import { LOCAL_DEFAULT_SCOPE_ID } from "./scope-resolution.js";
+import { LEGACY_SHARED_REVIEW_SCOPE_ID, LOCAL_DEFAULT_SCOPE_ID } from "./scope-resolution.js";
 
-export const LEGACY_SHARED_REVIEW_SCOPE_ID = "legacy-shared-review";
+// Re-exported from its single source of truth (scope-resolution.ts) so existing
+// importers of this symbol from scope-backfill keep working.
+export { LEGACY_SHARED_REVIEW_SCOPE_ID };
 export const SCOPE_BACKFILL_JOB = "scope_id_backfill";
 
 export type ScopeBackfillReason =
