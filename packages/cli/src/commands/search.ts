@@ -6,6 +6,7 @@ import {
 	addDbOption,
 	addJsonOption,
 	type DbOpts,
+	emitJsonError,
 	type JsonOpts,
 	resolveDbOpt,
 } from "../shared-options.js";
@@ -69,6 +70,15 @@ export const searchCommand = searchCmd.action(
 			}
 
 			p.outro("done");
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Search failed";
+			if (opts.json) {
+				emitJsonError("search_failed", message);
+			} else {
+				p.log.error(message);
+				process.exitCode = 1;
+			}
+			return;
 		} finally {
 			store.close();
 		}

@@ -5,6 +5,7 @@ import {
 	addDbOption,
 	addJsonOption,
 	type DbOpts,
+	emitJsonError,
 	type JsonOpts,
 	resolveDbOpt,
 } from "../shared-options.js";
@@ -48,6 +49,15 @@ cmd.action(
 					console.log(`#${item.id} [${item.kind}] ${item.title}`);
 				}
 			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Recent lookup failed";
+			if (opts.json) {
+				emitJsonError("recent_failed", message);
+			} else {
+				console.error(message);
+				process.exitCode = 1;
+			}
+			return;
 		} finally {
 			store.close();
 		}

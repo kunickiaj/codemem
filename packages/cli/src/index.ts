@@ -134,6 +134,19 @@ if (hasRootFlag("--cleanup-completion")) {
 // This avoids accessing Commander internals while keeping a single source of
 // truth for the action logic in the original command modules.
 {
+	// Slice the forwarded argv tail starting from the `memory <sub>` token pair
+	// rather than the first raw occurrence of the subcommand name. Anchoring on
+	// the `memory` group token first guarantees the subcommand token we slice
+	// from is the actual subcommand position, so a positional argument that
+	// happens to be literally "export" or "import" cannot shift the tail.
+	const forwardedTail = (subcommand: "export" | "import"): string[] => {
+		const argv = process.argv.slice(2);
+		const groupIdx = argv.indexOf("memory");
+		const searchFrom = groupIdx >= 0 ? groupIdx + 1 : 0;
+		const subIdx = argv.indexOf(subcommand, searchFrom);
+		return subIdx >= 0 ? argv.slice(subIdx + 1) : [];
+	};
+
 	const memExport = new Command("export")
 		.description("Export memories to a JSON file for sharing or backup")
 		.argument("<output>", "output file path (use '-' for stdout)")
@@ -149,9 +162,11 @@ if (hasRootFlag("--cleanup-completion")) {
 		.action(async () => {
 			// Forward to the original command by re-parsing the raw argv tail.
 			// `memory export <args>` → `export-memories <args>`
-			const idx = process.argv.indexOf("export");
-			const tail = idx >= 0 ? process.argv.slice(idx + 1) : [];
-			await exportMemoriesCommand.parseAsync(["node", "export-memories", ...tail]);
+			await exportMemoriesCommand.parseAsync([
+				"node",
+				"export-memories",
+				...forwardedTail("export"),
+			]);
 		});
 
 	const memImport = new Command("import")
@@ -165,9 +180,11 @@ if (hasRootFlag("--cleanup-completion")) {
 		.allowUnknownOption(true)
 		.allowExcessArguments(true)
 		.action(async () => {
-			const idx = process.argv.indexOf("import");
-			const tail = idx >= 0 ? process.argv.slice(idx + 1) : [];
-			await importMemoriesCommand.parseAsync(["node", "import-memories", ...tail]);
+			await importMemoriesCommand.parseAsync([
+				"node",
+				"import-memories",
+				...forwardedTail("import"),
+			]);
 		});
 
 	memoryCommand.addCommand(memExport);

@@ -184,6 +184,61 @@ describe("memory command aliases", () => {
 	});
 });
 
+describe("memory command error boundaries", () => {
+	it("does not throw and emits a JSON error for an invalid extraction-replay batch id", async () => {
+		const extractionReplay = memoryCommand.commands.find(
+			(command) => command.name() === "extraction-replay",
+		);
+		expect(extractionReplay).toBeDefined();
+		if (!extractionReplay) throw new Error("expected extraction-replay command");
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const originalExitCode = process.exitCode;
+		process.exitCode = undefined;
+		try {
+			await expect(
+				extractionReplay.parseAsync(
+					["--batch-id", "not-a-number", "--scenario", "anything", "--json"],
+					{ from: "user" },
+				),
+			).resolves.toBeDefined();
+
+			const output = logSpy.mock.calls.at(-1)?.[0];
+			expect(JSON.parse(String(output))).toMatchObject({ error: expect.any(String) });
+			expect(process.exitCode).toBe(1);
+		} finally {
+			process.exitCode = originalExitCode;
+			logSpy.mockRestore();
+		}
+	});
+
+	it("does not throw and emits a JSON error for an unknown extraction-benchmark id", async () => {
+		const extractionBenchmark = memoryCommand.commands.find(
+			(command) => command.name() === "extraction-benchmark",
+		);
+		expect(extractionBenchmark).toBeDefined();
+		if (!extractionBenchmark) throw new Error("expected extraction-benchmark command");
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const originalExitCode = process.exitCode;
+		process.exitCode = undefined;
+		try {
+			await expect(
+				extractionBenchmark.parseAsync(["--benchmark", "does-not-exist", "--json"], {
+					from: "user",
+				}),
+			).resolves.toBeDefined();
+
+			const output = logSpy.mock.calls.at(-1)?.[0];
+			expect(JSON.parse(String(output))).toMatchObject({ error: expect.any(String) });
+			expect(process.exitCode).toBe(1);
+		} finally {
+			process.exitCode = originalExitCode;
+			logSpy.mockRestore();
+		}
+	});
+});
+
 describe("memory command scope safety", () => {
 	it("stores vectors for manually remembered memories", async () => {
 		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-memory-command-vector-"));
