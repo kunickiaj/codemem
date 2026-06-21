@@ -16,11 +16,14 @@
  * 7. Handle auth errors by setting backoff
  */
 
+import { readCoordinatorSyncConfig } from "./coordinator-runtime.js";
 import type { IngestOptions } from "./ingest-pipeline.js";
 import { ObserverAuthError } from "./observer-client.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import { flushRawEvents } from "./raw-event-flush.js";
 import type { MemoryStore } from "./store.js";
+
+const MS_PER_DAY = 86_400_000;
 
 /** Back off after an auth error. 60s gives OpenCode time to refresh its
  *  OAuth token while staying longer than the default 30s sweep interval. */
@@ -107,6 +110,17 @@ export class RawEventSweeper {
 	}
 
 	private retentionMs(): number {
+		// The new config key (raw_events_retention_enabled / _max_age_days) is the
+		// authoritative control. An EXPLICIT value wins — enabled=true purges by
+		// age in days, and an explicit enabled=false disables retention even if a
+		// stale legacy CODEMEM_RAW_EVENTS_RETENTION_MS is still set. Only when the
+		// new key is absent do we fall back to that legacy env var for back-compat.
+		const config = readCoordinatorSyncConfig();
+		if (config.rawEventsRetentionConfigured) {
+			return config.rawEventsRetentionEnabled
+				? Math.max(1, config.rawEventsRetentionMaxAgeDays) * MS_PER_DAY
+				: 0;
+		}
 		return envInt("CODEMEM_RAW_EVENTS_RETENTION_MS", 0);
 	}
 

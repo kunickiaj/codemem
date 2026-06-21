@@ -484,6 +484,51 @@ describe("RawEventSweeper auto flush", () => {
 		expect(store.latestRawEventFlushFailure("opencode")?.stream_id).not.toBe("sess-lifecycle-only");
 	});
 
+	it("resolves retentionMs: explicit config wins, legacy env only as absent-fallback", () => {
+		const prevEnabled = process.env.CODEMEM_RAW_EVENTS_RETENTION_ENABLED;
+		const prevMaxAge = process.env.CODEMEM_RAW_EVENTS_RETENTION_MAX_AGE_DAYS;
+		const prevLegacy = process.env.CODEMEM_RAW_EVENTS_RETENTION_MS;
+		// Isolate from any developer config file influence.
+		const prevConfig = process.env.CODEMEM_CONFIG;
+		process.env.CODEMEM_CONFIG = join(tmpDir, "no-such-config.json");
+		// Access the private retentionMs() for direct assertion.
+		const retentionMs = (s: RawEventSweeper) =>
+			(s as unknown as { retentionMs(): number }).retentionMs();
+		const sweeper = new RawEventSweeper(store, ingestOpts);
+		try {
+			// 1. New config keys: enabled + max_age_days => days * 86_400_000.
+			delete process.env.CODEMEM_RAW_EVENTS_RETENTION_MS;
+			process.env.CODEMEM_RAW_EVENTS_RETENTION_ENABLED = "1";
+			process.env.CODEMEM_RAW_EVENTS_RETENTION_MAX_AGE_DAYS = "30";
+			expect(retentionMs(sweeper)).toBe(30 * 86_400_000);
+
+			// 2. New key ABSENT => fall back to the legacy CODEMEM_RAW_EVENTS_RETENTION_MS env var.
+			delete process.env.CODEMEM_RAW_EVENTS_RETENTION_ENABLED;
+			delete process.env.CODEMEM_RAW_EVENTS_RETENTION_MAX_AGE_DAYS;
+			process.env.CODEMEM_RAW_EVENTS_RETENTION_MS = "123456";
+			expect(retentionMs(sweeper)).toBe(123456);
+
+			// 2b. EXPLICIT disable (enabled=0) is authoritative over a stale legacy
+			// env var: retention stays off rather than silently honoring the legacy value.
+			process.env.CODEMEM_RAW_EVENTS_RETENTION_ENABLED = "0";
+			expect(retentionMs(sweeper)).toBe(0);
+			delete process.env.CODEMEM_RAW_EVENTS_RETENTION_ENABLED;
+
+			// 3. Neither set => 0 (no retention).
+			delete process.env.CODEMEM_RAW_EVENTS_RETENTION_MS;
+			expect(retentionMs(sweeper)).toBe(0);
+		} finally {
+			if (prevEnabled == null) delete process.env.CODEMEM_RAW_EVENTS_RETENTION_ENABLED;
+			else process.env.CODEMEM_RAW_EVENTS_RETENTION_ENABLED = prevEnabled;
+			if (prevMaxAge == null) delete process.env.CODEMEM_RAW_EVENTS_RETENTION_MAX_AGE_DAYS;
+			else process.env.CODEMEM_RAW_EVENTS_RETENTION_MAX_AGE_DAYS = prevMaxAge;
+			if (prevLegacy == null) delete process.env.CODEMEM_RAW_EVENTS_RETENTION_MS;
+			else process.env.CODEMEM_RAW_EVENTS_RETENTION_MS = prevLegacy;
+			if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+			else process.env.CODEMEM_CONFIG = prevConfig;
+		}
+	});
+
 	it("does not terminally skip adapter-wrapped prompt sessions", async () => {
 		process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = "1";
 		process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS = "0";

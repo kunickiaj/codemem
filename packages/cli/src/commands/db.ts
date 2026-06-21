@@ -211,6 +211,87 @@ pruneReplCmd.action(
 );
 dbCommand.addCommand(pruneReplCmd);
 
+// --- db prune-raw-events ---
+const pruneRawEventsCmd = new Command("prune-raw-events")
+	.configureHelp(helpStyle)
+	.description("Delete raw_events older than a cutoff (age-based), with dry-run and VACUUM support")
+	.option("--dry-run", "show current size/targets without deleting")
+	.option("--max-age-days <days>", "retention age threshold in days", "90")
+	.option("--vacuum", "run VACUUM explicitly after prune completes");
+addDbOption(pruneRawEventsCmd);
+pruneRawEventsCmd.action(
+	(
+		opts: DbOpts & {
+			dryRun?: boolean;
+			maxAgeDays: string;
+			vacuum?: boolean;
+		},
+	) => {
+		// Validate before opening the DB. This is a destructive command and
+		// raw_events are the re-extraction source, so a mistyped/zero age must be
+		// rejected rather than silently coerced to a real purge window. Match the
+		// WHOLE string against digits: Number.parseInt would accept "1foo"/"1.5"
+		// as 1 and proceed to delete.
+		const rawAge = opts.maxAgeDays.trim();
+		const maxAgeDays = Number.parseInt(rawAge, 10);
+		if (!/^\d+$/.test(rawAge) || !Number.isInteger(maxAgeDays) || maxAgeDays < 1) {
+			p.log.error(
+				`--max-age-days must be a positive integer (got "${opts.maxAgeDays}"). ` +
+					"Refusing to run a destructive prune on invalid input.",
+			);
+			process.exitCode = 1;
+			return;
+		}
+		const dbPath = resolveDbPath(resolveDbOpt(opts));
+		// Construct the store inside the guarded block so an unreadable or
+		// schema-incompatible DB surfaces a clean error + exit code rather than an
+		// uncaught throw from the command handler.
+		let store: MemoryStore | null = null;
+		try {
+			store = new MemoryStore(dbPath);
+			const maxAgeMs = maxAgeDays * 86_400_000;
+			const status = store.rawEventsRetentionStatus(maxAgeMs);
+			p.intro("codemem db prune-raw-events");
+			p.log.warn(
+				"raw_events is the re-extraction source. Age-based purge is NOT extraction-aware: " +
+					"pruning a window shorter than your extraction lag can delete un-extracted events. " +
+					"The 90-day default mitigates this.",
+			);
+			p.log.info(
+				`raw_events: ${status.total_rows.toLocaleString()} rows, ~${formatBytes(status.estimated_bytes)} on disk`,
+			);
+			p.log.info(
+				`Older than ${maxAgeDays} day(s): ${status.candidate_rows.toLocaleString()} row(s) to delete`,
+			);
+
+			if (opts.dryRun) {
+				p.outro("Dry run only; no changes made");
+				return;
+			}
+
+			const deleted = store.purgeRawEvents(maxAgeMs);
+			p.log.info(`Deleted raw_events: ${deleted.toLocaleString()}`);
+			if (opts.vacuum) {
+				p.log.step("Running VACUUM as requested...");
+				store.close();
+				store = null;
+				const vacuumed = vacuumDatabase(dbPath);
+				p.outro(`Done. VACUUM complete. File size is now ${formatBytes(vacuumed.sizeBytes)}.`);
+				return;
+			}
+			p.outro(
+				"Done. SQLite file size may not shrink until you run `codemem db vacuum` explicitly (or re-run this command with --vacuum).",
+			);
+		} catch (error) {
+			p.log.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		} finally {
+			store?.close();
+		}
+	},
+);
+dbCommand.addCommand(pruneRawEventsCmd);
+
 // --- db raw-events-status ---
 const rawEventsStatusCmd = new Command("raw-events-status")
 	.configureHelp(helpStyle)

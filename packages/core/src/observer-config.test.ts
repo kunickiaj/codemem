@@ -288,6 +288,20 @@ describe("getCodememEnvOverrides", () => {
 			delete process.env.CODEMEM_SYNC_RETENTION_MAX_SIZE_MB;
 		}
 	});
+
+	it("includes raw-events retention env overrides when set", () => {
+		process.env.CODEMEM_RAW_EVENTS_RETENTION_ENABLED = "1";
+		process.env.CODEMEM_RAW_EVENTS_RETENTION_MAX_AGE_DAYS = "45";
+		try {
+			expect(getCodememEnvOverrides()).toMatchObject({
+				raw_events_retention_enabled: "CODEMEM_RAW_EVENTS_RETENTION_ENABLED",
+				raw_events_retention_max_age_days: "CODEMEM_RAW_EVENTS_RETENTION_MAX_AGE_DAYS",
+			});
+		} finally {
+			delete process.env.CODEMEM_RAW_EVENTS_RETENTION_ENABLED;
+			delete process.env.CODEMEM_RAW_EVENTS_RETENTION_MAX_AGE_DAYS;
+		}
+	});
 });
 
 describe("resolveCodememConfigPath", () => {

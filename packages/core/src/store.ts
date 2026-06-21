@@ -1713,6 +1713,66 @@ export class MemoryStore {
 	}
 
 	/**
+	 * Report raw_events storage usage and how many rows fall before an age cutoff.
+	 *
+	 * Age-based only (mirrors planReplicationOpsAgePrune / estimateReplicationOps
+	 * style): counts total rows, estimates the on-disk bytes for the raw_events
+	 * table and its indexes, and counts rows with ts_wall_ms older than the
+	 * cutoff implied by maxAgeMs. Used by the prune-raw-events dry-run report.
+	 */
+	rawEventsRetentionStatus(maxAgeMs: number): {
+		total_rows: number;
+		estimated_bytes: number;
+		candidate_rows: number;
+		cutoff_ts_wall_ms: number | null;
+	} {
+		const totalRow = this.d.select({ total: sql<number>`COUNT(*)` }).from(schema.rawEvents).get();
+		const totalRows = Number(totalRow?.total ?? 0);
+
+		let candidateRows = 0;
+		let cutoffTsWallMs: number | null = null;
+		if (maxAgeMs > 0) {
+			cutoffTsWallMs = Date.now() - maxAgeMs;
+			const candidateRow = this.d
+				.select({ total: sql<number>`COUNT(*)` })
+				.from(schema.rawEvents)
+				.where(
+					and(
+						isNotNull(schema.rawEvents.ts_wall_ms),
+						lt(schema.rawEvents.ts_wall_ms, cutoffTsWallMs),
+					),
+				)
+				.get();
+			candidateRows = Number(candidateRow?.total ?? 0);
+		}
+
+		return {
+			total_rows: totalRows,
+			estimated_bytes: this.estimateRawEventsBytes(),
+			candidate_rows: candidateRows,
+			cutoff_ts_wall_ms: cutoffTsWallMs,
+		};
+	}
+
+	private estimateRawEventsBytes(): number {
+		try {
+			const row = this.db
+				.prepare(
+					`SELECT COALESCE(SUM(pgsize), 0) AS total_bytes
+					 FROM dbstat
+					 WHERE name = 'raw_events'
+					    OR name LIKE 'idx_raw_events_%'
+					    OR name LIKE 'sqlite_autoindex_raw_events_%'`,
+				)
+				.get() as { total_bytes?: number | string | null } | undefined;
+			const total = Number(row?.total_bytes ?? 0);
+			return Number.isFinite(total) && total >= 0 ? total : 0;
+		} catch {
+			return 0;
+		}
+	}
+
+	/**
 	 * Mark stuck flush batches (started/running/pending/claimed) as failed.
 	 * Port of mark_stuck_raw_event_batches_as_error().
 	 */

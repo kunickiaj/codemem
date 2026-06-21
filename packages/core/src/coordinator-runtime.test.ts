@@ -52,6 +52,59 @@ describe("readCoordinatorSyncConfig.syncOpsLimit", () => {
 	});
 });
 
+describe("readCoordinatorSyncConfig raw-events retention", () => {
+	afterEach(() => {
+		delete process.env.CODEMEM_RAW_EVENTS_RETENTION_ENABLED;
+		delete process.env.CODEMEM_RAW_EVENTS_RETENTION_MAX_AGE_DAYS;
+	});
+
+	it("defaults to disabled with a 90-day max age when nothing is supplied", () => {
+		const config = readCoordinatorSyncConfig({});
+		expect(config.rawEventsRetentionEnabled).toBe(false);
+		expect(config.rawEventsRetentionMaxAgeDays).toBe(90);
+	});
+
+	it("marks retention configured only when the enabled key is explicitly present", () => {
+		// Absent → not configured (legacy env may still apply downstream).
+		expect(readCoordinatorSyncConfig({}).rawEventsRetentionConfigured).toBe(false);
+		// Explicitly present — true OR false — counts as configured, so an explicit
+		// disable can be treated as authoritative.
+		expect(
+			readCoordinatorSyncConfig({ raw_events_retention_enabled: false })
+				.rawEventsRetentionConfigured,
+		).toBe(true);
+		expect(
+			readCoordinatorSyncConfig({ raw_events_retention_enabled: true })
+				.rawEventsRetentionConfigured,
+		).toBe(true);
+	});
+
+	it("reads enabled + max-age from the config object", () => {
+		const config = readCoordinatorSyncConfig({
+			raw_events_retention_enabled: true,
+			raw_events_retention_max_age_days: 30,
+		});
+		expect(config.rawEventsRetentionEnabled).toBe(true);
+		expect(config.rawEventsRetentionMaxAgeDays).toBe(30);
+	});
+
+	it("honors the env vars over config", () => {
+		process.env.CODEMEM_RAW_EVENTS_RETENTION_ENABLED = "1";
+		process.env.CODEMEM_RAW_EVENTS_RETENTION_MAX_AGE_DAYS = "45";
+		const config = readCoordinatorSyncConfig({
+			raw_events_retention_enabled: false,
+			raw_events_retention_max_age_days: 10,
+		});
+		expect(config.rawEventsRetentionEnabled).toBe(true);
+		expect(config.rawEventsRetentionMaxAgeDays).toBe(45);
+	});
+
+	it("clamps max-age below 1 up to 1", () => {
+		const config = readCoordinatorSyncConfig({ raw_events_retention_max_age_days: 0 });
+		expect(config.rawEventsRetentionMaxAgeDays).toBe(1);
+	});
+});
+
 describe("advertisedSyncAddresses", () => {
 	it("infers the configured sync port for bare advertised hostnames", () => {
 		const config = readCoordinatorSyncConfig({

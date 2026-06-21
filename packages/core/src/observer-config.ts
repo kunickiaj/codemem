@@ -229,6 +229,8 @@ export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
 	sync_projects_exclude: "CODEMEM_SYNC_PROJECTS_EXCLUDE",
 	sync_ops_limit: "CODEMEM_SYNC_OPS_LIMIT",
 	raw_events_sweeper_interval_s: "CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_S",
+	raw_events_retention_enabled: "CODEMEM_RAW_EVENTS_RETENTION_ENABLED",
+	raw_events_retention_max_age_days: "CODEMEM_RAW_EVENTS_RETENTION_MAX_AGE_DAYS",
 };
 
 // ---------------------------------------------------------------------------

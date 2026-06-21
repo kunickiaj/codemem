@@ -78,6 +78,11 @@ export interface CoordinatorSyncConfig {
 	syncRetentionIntervalS: number;
 	syncRetentionMaxRuntimeMs: number;
 	syncRetentionMaxOpsPerPass: number;
+	rawEventsRetentionEnabled: boolean;
+	/** Whether raw_events_retention_enabled was explicitly set (file or env), so
+	 * callers can treat an explicit `false` as authoritative over legacy knobs. */
+	rawEventsRetentionConfigured: boolean;
+	rawEventsRetentionMaxAgeDays: number;
 	syncProjectsInclude: string[];
 	syncProjectsExclude: string[];
 	syncOpsLimit: number;
@@ -190,6 +195,12 @@ export function readCoordinatorSyncConfig(config?: ConfigRecord): CoordinatorSyn
 		syncRetentionIntervalS: Math.max(5, parseIntOr(raw.sync_retention_interval_s, 300)),
 		syncRetentionMaxRuntimeMs: Math.max(100, parseIntOr(raw.sync_retention_max_runtime_ms, 2000)),
 		syncRetentionMaxOpsPerPass: Math.max(1, parseIntOr(raw.sync_retention_max_ops_per_pass, 5000)),
+		rawEventsRetentionEnabled: parseBoolOr(raw.raw_events_retention_enabled, false),
+		rawEventsRetentionConfigured: raw.raw_events_retention_enabled !== undefined,
+		rawEventsRetentionMaxAgeDays: Math.max(
+			1,
+			parseIntOr(raw.raw_events_retention_max_age_days, 90),
+		),
 		syncProjectsInclude: parseStringList(raw.sync_projects_include),
 		syncProjectsExclude: parseStringList(raw.sync_projects_exclude),
 		syncOpsLimit: Math.max(1, Math.min(1000, parseIntOr(raw.sync_ops_limit, 500))),
