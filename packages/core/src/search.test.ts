@@ -3,8 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { connect } from "./db.js";
+import { buildFilterClausesWithContext } from "./filters.js";
 import { sanitizeSearchQuery } from "./query-sanitizer.js";
-import { expandQuery, kindBonus, recencyScore, rerankResults } from "./search.js";
+import { resolveVisibleScopeIds } from "./scope-resolution.js";
+import {
+	expandQuery,
+	kindBonus,
+	ownershipFilterContext,
+	recencyScore,
+	rerankResults,
+} from "./search.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import type { MemoryResult } from "./types.js";
@@ -995,6 +1003,236 @@ describe("MemoryStore.search", () => {
 		expect(result).toHaveProperty("metadata");
 		expect(typeof result.score).toBe("number");
 		expect(typeof result.metadata).toBe("object");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Scope-visibility filter: resolved IN-set equivalence
+// ---------------------------------------------------------------------------
+
+describe("scope visibility filter (resolved visible set)", () => {
+	let tmpDir: string;
+	let dbPath: string;
+	let store: MemoryStore;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-scope-vis-test-"));
+		dbPath = join(tmpDir, "test.sqlite");
+		const setupDb = connect(dbPath);
+		initTestSchema(setupDb);
+		setupDb.close();
+		store = new MemoryStore(dbPath);
+	});
+
+	afterEach(() => {
+		store?.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	function insertLocalAuthorityScope(scopeId: string): void {
+		const now = new Date().toISOString();
+		store.db
+			.prepare(
+				`INSERT OR REPLACE INTO replication_scopes(
+					scope_id, label, kind, authority_type, coordinator_id, group_id,
+					membership_epoch, status, created_at, updated_at
+				 ) VALUES (?, ?, 'user', 'local', NULL, NULL, 0, 'active', ?, ?)`,
+			)
+			.run(scopeId, scopeId, now, now);
+	}
+
+	function insertCoordinatorScopeWithEpoch(
+		scopeId: string,
+		membershipEpoch: number,
+		status: "active" | "inactive",
+	): void {
+		const now = new Date().toISOString();
+		store.db
+			.prepare(
+				`INSERT OR REPLACE INTO replication_scopes(
+					scope_id, label, kind, authority_type, coordinator_id, group_id,
+					membership_epoch, status, created_at, updated_at
+				 ) VALUES (?, ?, 'team', 'coordinator', 'coord-test', 'group-test', ?, ?, ?, ?)`,
+			)
+			.run(scopeId, scopeId, membershipEpoch, status, now, now);
+	}
+
+	function grantMembership(scopeId: string, membershipEpoch: number): void {
+		store.db
+			.prepare(
+				`INSERT OR REPLACE INTO scope_memberships(
+					scope_id, device_id, role, status, membership_epoch,
+					coordinator_id, group_id, updated_at
+				 ) VALUES (?, ?, 'member', 'active', ?, 'coord-test', 'group-test', ?)`,
+			)
+			.run(scopeId, store.deviceId, membershipEpoch, new Date().toISOString());
+	}
+
+	it("resolves and filters to exactly the readable scope set", () => {
+		// Visible scopes
+		insertLocalAuthorityScope("local-authority-team");
+		insertCoordinatorScopeWithEpoch("member-team", 3, "active");
+		grantMembership("member-team", 3); // epoch 3 >= scope epoch 3 -> visible
+
+		// Not-visible scopes
+		insertCoordinatorScopeWithEpoch("nonmember-team", 0, "active"); // no membership
+		insertCoordinatorScopeWithEpoch("stale-team", 5, "active");
+		grantMembership("stale-team", 4); // membership epoch 4 < scope epoch 5 -> not visible
+		insertCoordinatorScopeWithEpoch("inactive-team", 0, "inactive"); // scope inactive
+		grantMembership("inactive-team", 0); // membership active but scope inactive -> not visible
+
+		// Resolver output: literals + local-authority + valid-membership only.
+		const resolved = resolveVisibleScopeIds(store.db, store.deviceId);
+		expect([...resolved].sort()).toEqual(
+			["", "local-default", "legacy-shared-review", "local-authority-team", "member-team"].sort(),
+		);
+		expect(resolved).not.toContain("nonmember-team");
+		expect(resolved).not.toContain("stale-team");
+		expect(resolved).not.toContain("inactive-team");
+
+		// Seed one memory row per scope plus NULL-scope and empty-scope rows.
+		const sessionId = insertTestSession(store.db);
+		const insertRow = (scopeId: string | null): number => {
+			const ts = new Date().toISOString();
+			const info = store.db
+				.prepare(
+					`INSERT INTO memory_items(
+						session_id, kind, title, body_text, confidence, tags_text, active,
+						created_at, updated_at, metadata_json, rev, visibility, scope_id
+					 ) VALUES (?, 'discovery', 'scoped row', 'body', 0.5, '', 1, ?, ?, '{}', 1, 'shared', ?)`,
+				)
+				.run(sessionId, ts, ts, scopeId);
+			return Number(info.lastInsertRowid);
+		};
+
+		const nullId = insertRow(null);
+		const emptyId = insertRow("");
+		const localDefaultId = insertRow("local-default");
+		const legacyReviewId = insertRow("legacy-shared-review");
+		const localAuthorityId = insertRow("local-authority-team");
+		const memberId = insertRow("member-team");
+		const nonmemberId = insertRow("nonmember-team");
+		const staleId = insertRow("stale-team");
+		const inactiveId = insertRow("inactive-team");
+
+		// Render the scope-visibility predicate via the resolved-set context
+		// (search.ts ownershipFilterContext sets visibleScopeIds -> fast path).
+		const filterResult = buildFilterClausesWithContext(null, ownershipFilterContext(store));
+		const whereSql = ["memory_items.active = 1", ...filterResult.clauses].join(" AND ");
+		const rows = store.db
+			.prepare(`SELECT id FROM memory_items WHERE ${whereSql}`)
+			.all(...filterResult.params) as Array<{ id: number }>;
+		const visibleIds = new Set(rows.map((row) => row.id));
+
+		// Visible: NULL, "", local-default, legacy-shared-review, local-authority, valid member.
+		expect(visibleIds.has(nullId)).toBe(true);
+		expect(visibleIds.has(emptyId)).toBe(true);
+		expect(visibleIds.has(localDefaultId)).toBe(true);
+		expect(visibleIds.has(legacyReviewId)).toBe(true);
+		expect(visibleIds.has(localAuthorityId)).toBe(true);
+		expect(visibleIds.has(memberId)).toBe(true);
+
+		// Not visible: non-member, stale-epoch member, inactive scope.
+		expect(visibleIds.has(nonmemberId)).toBe(false);
+		expect(visibleIds.has(staleId)).toBe(false);
+		expect(visibleIds.has(inactiveId)).toBe(false);
+	});
+
+	it("matches the EXISTS fallback predicate for the same data", () => {
+		insertLocalAuthorityScope("local-authority-team");
+		insertCoordinatorScopeWithEpoch("member-team", 3, "active");
+		grantMembership("member-team", 3);
+		insertCoordinatorScopeWithEpoch("nonmember-team", 0, "active");
+		insertCoordinatorScopeWithEpoch("stale-team", 5, "active");
+		grantMembership("stale-team", 4);
+		insertCoordinatorScopeWithEpoch("inactive-team", 0, "inactive");
+		grantMembership("inactive-team", 0);
+
+		const sessionId = insertTestSession(store.db);
+		const insertRow = (scopeId: string | null): number => {
+			const ts = new Date().toISOString();
+			const info = store.db
+				.prepare(
+					`INSERT INTO memory_items(
+						session_id, kind, title, body_text, confidence, tags_text, active,
+						created_at, updated_at, metadata_json, rev, visibility, scope_id
+					 ) VALUES (?, 'discovery', 'scoped row', 'body', 0.5, '', 1, ?, ?, '{}', 1, 'shared', ?)`,
+				)
+				.run(sessionId, ts, ts, scopeId);
+			return Number(info.lastInsertRowid);
+		};
+		for (const scopeId of [
+			null,
+			"",
+			"local-default",
+			"legacy-shared-review",
+			"local-authority-team",
+			"member-team",
+			"nonmember-team",
+			"stale-team",
+			"inactive-team",
+		]) {
+			insertRow(scopeId);
+		}
+
+		const runIds = (context: ReturnType<typeof ownershipFilterContext>): Set<number> => {
+			const filterResult = buildFilterClausesWithContext(null, context);
+			const whereSql = ["memory_items.active = 1", ...filterResult.clauses].join(" AND ");
+			const rows = store.db
+				.prepare(`SELECT id FROM memory_items WHERE ${whereSql}`)
+				.all(...filterResult.params) as Array<{ id: number }>;
+			return new Set(rows.map((row) => row.id));
+		};
+
+		// Fast path (resolved IN-set) vs fallback (EXISTS) must select identical rows.
+		const fastContext = ownershipFilterContext(store);
+		const { visibleScopeIds: _omit, ...fallbackContext } = fastContext;
+		expect([...runIds(fastContext)].sort()).toEqual([...runIds(fallbackContext)].sort());
+	});
+
+	it("renders an index-eligible plan with no correlated scope subquery", () => {
+		insertLocalAuthorityScope("local-authority-team");
+		insertCoordinatorScopeWithEpoch("member-team", 3, "active");
+		grantMembership("member-team", 3);
+
+		// Enough rows that a full scan would be a real regression, not a tie.
+		const sessionId = insertTestSession(store.db);
+		const ts = new Date().toISOString();
+		for (let i = 0; i < 50; i++) {
+			store.db
+				.prepare(
+					`INSERT INTO memory_items(
+						session_id, kind, title, body_text, confidence, tags_text, active,
+						created_at, updated_at, metadata_json, rev, visibility, scope_id
+					 ) VALUES (?, 'discovery', 't', 'b', 0.5, '', 1, ?, ?, '{}', 1, 'shared', ?)`,
+				)
+				.run(sessionId, ts, ts, i % 3 === 0 ? null : "member-team");
+		}
+
+		const explainPlan = (context: ReturnType<typeof ownershipFilterContext>): string => {
+			const filterResult = buildFilterClausesWithContext(null, context);
+			const whereSql = ["memory_items.active = 1", ...filterResult.clauses].join(" AND ");
+			const rows = store.db
+				.prepare(`EXPLAIN QUERY PLAN SELECT id FROM memory_items WHERE ${whereSql}`)
+				.all(...filterResult.params) as Array<{ detail: string }>;
+			return rows.map((row) => row.detail).join("\n");
+		};
+
+		// Fast path: the resolved IN-set must produce an index-backed scan with no
+		// correlated subquery and no TRIM (TRIM would defeat the index). This pins
+		// the actual perf goal: a future regression that reintroduces TRIM or the
+		// per-row EXISTS predicate would resurface CORRELATED here and fail.
+		const fastPlan = explainPlan(ownershipFilterContext(store));
+		expect(fastPlan).toMatch(/USING INDEX/);
+		expect(fastPlan).not.toMatch(/CORRELATED/);
+		expect(fastPlan).not.toMatch(/TRIM/);
+
+		// Contrast guard: the EXISTS fallback is exactly the plan shape we are
+		// hoisting away from — it must still contain the correlated subqueries, so
+		// this assertion proves the fast-path check above is meaningful.
+		const { visibleScopeIds: _omit, ...fallbackContext } = ownershipFilterContext(store);
+		const fallbackPlan = explainPlan(fallbackContext);
+		expect(fallbackPlan).toMatch(/CORRELATED/);
 	});
 });
 

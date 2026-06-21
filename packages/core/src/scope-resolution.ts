@@ -1,7 +1,25 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import type { Database } from "better-sqlite3";
 
 export const LOCAL_DEFAULT_SCOPE_ID = "local-default";
+
+/**
+ * Scope id used by the conservative migration backfill for legacy shared
+ * memories that cannot yet be assigned to a concrete team/org scope. Single
+ * source of truth: filters.ts and scope-backfill.ts re-import this so the
+ * read-visibility predicate and the backfill agree on one literal.
+ */
+export const LEGACY_SHARED_REVIEW_SCOPE_ID = "legacy-shared-review";
+
+/**
+ * Upper bound on how many scope ids we will inline into the index-eligible
+ * `scope_id IN (...)` fast path (one bound parameter each). Kept well under
+ * SQLite's compiled `SQLITE_MAX_VARIABLE_NUMBER` so a device with an
+ * unrealistically large visible set falls back to the fixed-param EXISTS
+ * predicate instead of throwing "too many SQL variables" at prepare time.
+ */
+export const MAX_SCOPE_IN_PARAMS = 500;
 
 export type WorkspaceIdentitySource =
 	| "git_remote"
@@ -247,4 +265,50 @@ export function resolveProjectScope(input: ResolveProjectScopeInput): ScopeResol
 		mapping: null,
 		matchedPattern: null,
 	};
+}
+
+/**
+ * Resolve, once per request, the full set of scope_ids that `deviceId` may read.
+ *
+ * This is the index-eligible equivalent of the per-row EXISTS predicate in
+ * `addScopeVisibilityFilter`'s fallback branch (filters.ts): instead of
+ * evaluating the replication_scopes / scope_memberships subqueries for every
+ * candidate row, we compute the visible set up front and let the SQL filter use
+ * a plain `scope_id IN (...)`. The membership predicate (active membership with
+ * `membership_epoch >= scope.membership_epoch`) is preserved exactly.
+ *
+ * Lives in this leaf module (it imports nothing from filters/search/store/
+ * vectors) so all three OwnershipFilterContext builders can share it without an
+ * import cycle.
+ *
+ * NULL scope_ids are skipped here — a NULL scope_id is handled by the filter's
+ * dedicated `IS NULL` branch, not by membership in this set.
+ */
+export function resolveVisibleScopeIds(db: Database, deviceId: string): string[] {
+	const visible = new Set<string>(["", LOCAL_DEFAULT_SCOPE_ID, LEGACY_SHARED_REVIEW_SCOPE_ID]);
+	const localScopes = db
+		.prepare(
+			`SELECT scope_id
+			 FROM replication_scopes
+			 WHERE status = 'active' AND authority_type = 'local'`,
+		)
+		.all() as Array<{ scope_id: string | null }>;
+	for (const row of localScopes) {
+		if (row.scope_id != null) visible.add(row.scope_id);
+	}
+	const memberScopes = db
+		.prepare(
+			`SELECT sm.scope_id AS scope_id
+			 FROM scope_memberships sm
+			 JOIN replication_scopes rs ON rs.scope_id = sm.scope_id
+			 WHERE sm.device_id = ?
+			   AND sm.status = 'active'
+			   AND rs.status = 'active'
+			   AND sm.membership_epoch >= rs.membership_epoch`,
+		)
+		.all(deviceId) as Array<{ scope_id: string | null }>;
+	for (const row of memberScopes) {
+		if (row.scope_id != null) visible.add(row.scope_id);
+	}
+	return [...visible];
 }

@@ -6,7 +6,11 @@
  */
 
 import { projectClause } from "./project.js";
-import { LOCAL_DEFAULT_SCOPE_ID } from "./scope-resolution.js";
+import {
+	LEGACY_SHARED_REVIEW_SCOPE_ID,
+	LOCAL_DEFAULT_SCOPE_ID,
+	MAX_SCOPE_IN_PARAMS,
+} from "./scope-resolution.js";
 import type { MemoryFilters } from "./types.js";
 
 export interface OwnershipFilterContext {
@@ -21,6 +25,15 @@ export interface OwnershipFilterContext {
 	 * invariant.
 	 */
 	enforceScopeVisibility?: boolean;
+	/**
+	 * Pre-resolved set of scope_ids this device may read (see
+	 * `resolveVisibleScopeIds` in scope-resolution.ts). When present, scope visibility is
+	 * enforced with an index-eligible `scope_id IN (...)` predicate instead of
+	 * the per-row EXISTS subqueries. Callers that cannot resolve the set up front
+	 * (e.g. a context built without db access) omit it and fall back to the
+	 * EXISTS predicate, which is semantically identical.
+	 */
+	visibleScopeIds?: readonly string[];
 }
 
 export interface FilterResult {
@@ -93,8 +106,6 @@ function addMultiValueFilter(
 		params.push(...excludeValues);
 	}
 }
-
-const LEGACY_SHARED_REVIEW_SCOPE_ID = "legacy-shared-review";
 
 function cleanUniqueStrings(value: string[] | undefined): string[] {
 	return [...new Set((value ?? []).map((item) => item.trim()).filter(Boolean))];
@@ -170,6 +181,30 @@ function addScopeVisibilityFilter(
 	// Migration backfill promotes legacy rows to explicit scopes asynchronously,
 	// but until that completes those rows must remain visible to their owning
 	// device exactly the way local-default rows are.
+	const visibleScopeIds = context.visibleScopeIds;
+	if (visibleScopeIds !== undefined && visibleScopeIds.length <= MAX_SCOPE_IN_PARAMS) {
+		// Fast path: the visible scope-id set was resolved once per request (see
+		// resolveVisibleScopeIds in scope-resolution.ts). A plain `scope_id IN (...)`
+		// is index-eligible on idx_memory_items_scope_visibility_created, unlike the
+		// EXISTS-based fallback below.
+		//
+		// Guarded by MAX_SCOPE_IN_PARAMS: each id is one bound parameter, so an
+		// unrealistically large visible set would otherwise blow SQLite's variable
+		// limit and throw at prepare time. Beyond the cap we fail safe to the
+		// fixed-param EXISTS fallback, which is semantically identical.
+		//
+		// We deliberately do NOT TRIM memory_items.scope_id here. TRIM defeats the
+		// index, and it is unnecessary: stored scope_ids are always trimmed on
+		// write (op scope_id is .trim()ed), so no whitespace-padded values exist.
+		// NULL scope_id (legacy rows pending backfill) is handled by the explicit
+		// IS NULL branch; the empty string "" is included in the resolved set.
+		const placeholders = visibleScopeIds.map(() => "?").join(", ");
+		clauses.push(`(memory_items.scope_id IS NULL OR memory_items.scope_id IN (${placeholders}))`);
+		params.push(...visibleScopeIds);
+		return;
+	}
+	// Fallback path: no pre-resolved set (e.g. a context built without db access).
+	// Semantically identical to the IN predicate above, but evaluated per row.
 	clauses.push(`(
 		COALESCE(TRIM(memory_items.scope_id), '') IN (?, ?, ?)
 		OR EXISTS (

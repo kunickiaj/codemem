@@ -43,6 +43,12 @@ function scopeVisibleFilterContext(context: SemanticSearchScopeContext): Ownersh
 		claimedDeviceIds: context?.claimedDeviceIds ?? [],
 		legacyActorIds: context?.legacyActorIds ?? [],
 		enforceScopeVisibility: true,
+		// Forward the pre-resolved visible scope set so the KNN candidate filter
+		// gets the index-eligible `scope_id IN (...)` fast path. Callers reach
+		// semanticSearch via ownershipFilterContext(store) (search.ts / store.ts),
+		// which already resolves this set; when absent the filter falls back to the
+		// equivalent EXISTS predicate. This function has no db handle of its own.
+		visibleScopeIds: context?.visibleScopeIds,
 	};
 }
 

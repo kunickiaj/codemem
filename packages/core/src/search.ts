@@ -24,6 +24,7 @@ import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap, recapPenaltyMultiplier } from "./recap-policy.js";
 import { findByConcept, findByFile } from "./ref-queries.js";
 import * as schema from "./schema.js";
+import { resolveVisibleScopeIds } from "./scope-resolution.js";
 import { canonicalMemoryKind } from "./summary-memory.js";
 import type {
 	ExplainError,
@@ -88,6 +89,7 @@ export function ownershipFilterContext(store: StoreHandle): OwnershipFilterConte
 		claimedDeviceIds,
 		legacyActorIds: claimedDeviceIds.map((peerId) => `legacy-sync:${peerId}`),
 		enforceScopeVisibility: true,
+		visibleScopeIds: resolveVisibleScopeIds(store.db, store.deviceId),
 	};
 }
 
