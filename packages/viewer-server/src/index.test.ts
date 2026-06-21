@@ -26,6 +26,7 @@ import { serve } from "@hono/node-server";
 import Database from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
 import { createApp, createSyncApp } from "./index.js";
+import { __usageCacheTestHooks } from "./routes/stats.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -725,6 +726,45 @@ describe("viewer-server", () => {
 				};
 				expect(afterRevoke.totals.count).toBe(0);
 			} finally {
+				cleanup();
+			}
+		});
+
+		it("evicts expired usage-cache entries on sweep", () => {
+			const { cache, sweep } = __usageCacheTestHooks;
+			cache.clear();
+			try {
+				const nowMs = 1_000_000;
+				// One already-expired entry and one still-live entry.
+				cache.set("expired-key", { payload: {}, expiresAtMs: nowMs - 1 });
+				cache.set("live-key", { payload: {}, expiresAtMs: nowMs + 10_000 });
+				sweep(cache, nowMs);
+				expect(cache.has("expired-key")).toBe(false);
+				expect(cache.has("live-key")).toBe(true);
+				expect(cache.size).toBe(1);
+			} finally {
+				cache.clear();
+			}
+		});
+
+		it("caps the usage cache under a flood of distinct /api/usage requests", async () => {
+			const { app, cleanup } = createTestApp();
+			const { cache, maxEntries } = __usageCacheTestHooks;
+			cache.clear();
+			try {
+				await app.request("/api/stats");
+				// Each distinct ?project= yields a distinct cache key (see
+				// usageCacheKey), mirroring the per-request-unique key growth the
+				// sweep defends against. Driving the real endpoint guards the
+				// handler's use of the sweep, not just the helper in isolation — if
+				// the sweep call is ever removed from the handler, this fails.
+				for (let i = 0; i < maxEntries + 50; i += 1) {
+					await app.request(`/api/usage?project=flood-${i}`);
+				}
+				expect(cache.size).toBeGreaterThan(1);
+				expect(cache.size).toBeLessThanOrEqual(maxEntries);
+			} finally {
+				cache.clear();
 				cleanup();
 			}
 		});
@@ -1899,6 +1939,39 @@ describe("viewer-server", () => {
 	});
 
 	describe("/api/config", () => {
+		it("GET resolves the same workspace-scoped file as the core resolver POST uses", async () => {
+			// Workspace-scoped override via CODEMEM_RUNTIME_ROOT is honored only by
+			// the core resolver (getCodememConfigPath / readCodememConfigFile). The
+			// legacy local getConfigPath() ignored it, so GET and POST could resolve
+			// different files. GET must now match the core resolver exactly.
+			const runtimeRoot = mkdtempSync(join(tmpdir(), "codemem-runtime-root-"));
+			const scopedConfigPath = join(runtimeRoot, "config", "codemem.json");
+			mkdirSync(join(runtimeRoot, "config"), { recursive: true });
+			writeFileSync(scopedConfigPath, JSON.stringify({ observer_model: "scoped-model" }));
+			const prevRuntimeRoot = process.env.CODEMEM_RUNTIME_ROOT;
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			process.env.CODEMEM_RUNTIME_ROOT = runtimeRoot;
+			delete process.env.CODEMEM_CONFIG;
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/config");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				// GET resolves to the workspace-scoped file the core resolver chooses,
+				// which is the same path POST writes to.
+				expect(body.path).toBe(core.getCodememConfigPath());
+				expect(body.path).toBe(scopedConfigPath);
+				expect((body.config as Record<string, unknown>).observer_model).toBe("scoped-model");
+			} finally {
+				cleanup();
+				rmSync(runtimeRoot, { recursive: true, force: true });
+				if (prevRuntimeRoot == null) delete process.env.CODEMEM_RUNTIME_ROOT;
+				else process.env.CODEMEM_RUNTIME_ROOT = prevRuntimeRoot;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+			}
+		});
+
 		it("returns provider options from real opencode config prefixes", async () => {
 			const tmpHome = mkdtempSync(join(tmpdir(), "codemem-home-test-"));
 			const opencodeConfigDir = join(tmpHome, ".config", "opencode");
@@ -2435,6 +2508,23 @@ describe("viewer-server", () => {
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body).toHaveProperty("items");
 				expect(body.redacted).toBe(true);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("returns 400 (not 500) when POST /api/sync/peers/rename gets a malformed body", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const res = await app.request("/api/sync/peers/rename", {
+					method: "POST",
+					headers: { "Content-Type": "application/json", Origin: "http://localhost" },
+					body: "{ not json",
+				});
+				expect(res.status).toBe(400);
+				const body = (await res.json()) as { error?: string };
+				expect(body.error).toBe("invalid json");
 			} finally {
 				cleanup();
 			}
