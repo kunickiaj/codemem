@@ -87,6 +87,26 @@ describe("connect", () => {
 		expect(db.pragma("temp_store", { simple: true })).toBe(2);
 	});
 
+	it("drops legacy memory_items indexes via additive compatibility", () => {
+		db = connect(join(tmpDir, "legacy-idx.sqlite"));
+		// Simulate a database created by an older schema that carried the
+		// now-obsolete indexes the current schema never creates.
+		db.exec(
+			`CREATE INDEX IF NOT EXISTS idx_memory_items_visibility ON memory_items(visibility);
+			 CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_kind ON memory_items(workspace_kind);
+			 CREATE INDEX IF NOT EXISTS idx_memory_items_user_prompt_id ON memory_items(user_prompt_id);`,
+		);
+		expect(hasIndex(db, "idx_memory_items_visibility")).toBe(true);
+
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(hasIndex(db, "idx_memory_items_visibility")).toBe(false);
+		expect(hasIndex(db, "idx_memory_items_workspace_kind")).toBe(false);
+		expect(hasIndex(db, "idx_memory_items_user_prompt_id")).toBe(false);
+		// A composite index that legitimately covers visibility still exists.
+		expect(hasIndex(db, "idx_memory_items_scope_visibility_created")).toBe(true);
+	});
+
 	it("creates parent directories if they don't exist", () => {
 		const nested = join(tmpDir, "deep", "nested", "dir", "test.sqlite");
 		db = connect(nested);
