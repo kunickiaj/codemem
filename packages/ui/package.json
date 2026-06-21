@@ -5,7 +5,7 @@
 	"scripts": {
 		"clean": "rm -rf ../viewer-server/static",
 		"dev": "node ./scripts/make-dev-html.mjs && vite",
-		"build": "vite build --mode production && node ./scripts/stage-viewer-static.mjs",
+		"build": "vite build --mode production && node ./scripts/stage-viewer-static.mjs --precompress",
 		"build:watch": "node ./scripts/stage-viewer-static.mjs && vite build --watch --mode development",
 		"test": "pnpm exec vitest run",
 		"typecheck": "tsc -p tsconfig.json --noEmit"

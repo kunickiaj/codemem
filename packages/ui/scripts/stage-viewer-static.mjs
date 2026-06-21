@@ -1,4 +1,12 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	cpSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
@@ -22,17 +30,29 @@ for (const entry of readdirSync(sourceStaticDir, { withFileTypes: true })) {
 }
 
 // Precompress text assets so the viewer server (serveStatic precompressed:true)
-// serves .br/.gz. Done HERE, as the final build step, so every asset is the
-// freshly-staged content: app.js was written into viewerStaticDir by vite, and
-// the CSS above was just copied. Compressing in vite's writeBundle instead would
-// race the CSS staging and emit stale/missing CSS siblings.
+// serves .br/.gz — but ONLY for production builds, gated behind --precompress.
+//
+// The production `build` runs this AFTER vite, so the staged assets are final
+// and we emit fresh sidecars. `build:watch` runs this BEFORE vite (and vite
+// then rebuilds app.js on every change without re-staging), so emitting
+// sidecars there would leave stale .gz/.br that serveStatic would serve instead
+// of the freshly rebuilt bundle. In that mode we instead STRIP any existing
+// sidecars so the server falls back to the live raw asset.
+const precompress = process.argv.includes("--precompress");
 for (const name of ["app.js", "themes.css", "tokens.css"]) {
 	const filePath = join(viewerStaticDir, name);
+	const gzPath = `${filePath}.gz`;
+	const brPath = `${filePath}.br`;
+	if (!precompress) {
+		rmSync(gzPath, { force: true });
+		rmSync(brPath, { force: true });
+		continue;
+	}
 	if (!existsSync(filePath)) continue;
 	const raw = readFileSync(filePath);
-	writeFileSync(`${filePath}.gz`, gzipSync(raw, { level: 9 }));
+	writeFileSync(gzPath, gzipSync(raw, { level: 9 }));
 	writeFileSync(
-		`${filePath}.br`,
+		brPath,
 		brotliCompressSync(raw, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 11 } }),
 	);
 }
