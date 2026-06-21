@@ -730,6 +730,23 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		} catch {
 			// Keep additive compatibility best-effort for index creation.
 		}
+
+		// Drop legacy memory_items indexes that no longer back any query, only
+		// adding write amplification on databases created by older schemas. The
+		// current schema never creates these. `visibility`/`workspace_kind` are
+		// low-cardinality and only ever appear as secondary predicates already
+		// covered by composite indexes (e.g. idx_memory_items_scope_visibility_created,
+		// idx_memory_items_same_session_dedup_unique); `user_prompt_id` is unused
+		// as a filter (and is all-NULL in practice).
+		try {
+			db.exec(
+				`DROP INDEX IF EXISTS idx_memory_items_visibility;
+				 DROP INDEX IF EXISTS idx_memory_items_workspace_kind;
+				 DROP INDEX IF EXISTS idx_memory_items_user_prompt_id;`,
+			);
+		} catch {
+			// Best-effort cleanup of legacy indexes.
+		}
 	}
 
 	if (tableExists(db, "replication_ops")) {
