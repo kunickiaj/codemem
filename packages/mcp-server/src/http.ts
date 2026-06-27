@@ -53,7 +53,7 @@ import { createCodememMcpServer } from "./server.js";
 export const DEFAULT_MCP_HTTP_HOST = "127.0.0.1";
 export const DEFAULT_MCP_HTTP_PORT = 38889;
 const HTTP_DEFAULT_PORT = 80;
-const TRUSTED_PUBLIC_BROWSER_ORIGINS = new Set(["https://claude.ai"]);
+const TRUSTED_PUBLIC_BROWSER_ORIGINS = new Set(["https://chatgpt.com", "https://claude.ai"]);
 const CORS_ALLOW_HEADERS = "authorization,content-type,mcp-session-id";
 const CORS_MAX_AGE_SECONDS = "600";
 const MAX_GUARD_LOG_FIELD_LENGTH = 256;

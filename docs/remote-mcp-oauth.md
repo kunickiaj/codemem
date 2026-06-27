@@ -1,6 +1,6 @@
 # Remote MCP OAuth (Phase 1)
 
-This document covers deploying the `codemem mcp http` Streamable HTTP MCP server publicly with OAuth 2.1 protection, registering it as a claude.ai custom connector, and validating the handshake end-to-end.
+This document covers deploying the `codemem mcp http` Streamable HTTP MCP server publicly with OAuth 2.1 protection, registering it as a hosted MCP connector such as Claude or ChatGPT, and validating the handshake end-to-end.
 
 The Phase 1 endpoint is **single-user**. One self-hosted codemem instance, one allowed human identity. Partner access and native multi-tenant MCP authorization are out of scope.
 
@@ -63,7 +63,7 @@ The viewer process and `codemem mcp http` process must run on different ports. O
 
 When OIDC env vars or `--public-url` are present the server requires bearer tokens on `POST /mcp`. Without both, the server runs in loopback-only development mode (`localhost`/`127.0.0.1`/`::1` only, no bearer).
 
-Public mode accepts browser CORS preflight requests from `https://claude.ai` on the OAuth and MCP routes while still requiring the request `Host` header to match `CODEMEM_MCP_HTTP_PUBLIC_URL`. Other browser origins remain blocked before OAuth processing.
+Public mode accepts browser CORS preflight requests from trusted hosted connector origins (`https://claude.ai` and `https://chatgpt.com`) on the OAuth and MCP routes while still requiring the request `Host` header to match `CODEMEM_MCP_HTTP_PUBLIC_URL`. Other browser origins remain blocked before OAuth processing.
 
 ## Running the server
 
@@ -109,17 +109,19 @@ The provider must support OIDC Discovery (`/.well-known/openid-configuration`) o
 3. Note the client ID and secret; set them as env vars above.
 4. Set the allowed identity. For Google use the verified Gmail address in `CODEMEM_MCP_OAUTH_ALLOWED_EMAIL` and/or the numeric `sub` in `CODEMEM_MCP_OAUTH_ALLOWED_SUBJECT`.
 
-## claude.ai custom connector registration
+## Hosted connector registration
 
 Plan tier note: claude.ai custom connectors require Pro / Max / Team / Enterprise.
 
-1. Open Claude (web or mobile) → Customize → Connectors → Add custom connector.
+1. Open the hosted client connector setup flow, such as Claude (web or mobile) → Customize → Connectors → Add custom connector, or ChatGPT connector setup.
 2. Paste the MCP URL: `https://codemem-mcp.example.net/mcp`.
-3. Claude fetches `/.well-known/oauth-protected-resource/mcp`, discovers the authorization server, and posts a DCR registration to `/register`.
-4. Claude redirects you to `/authorize`. The codemem server bounces you to your OIDC provider; you sign in there.
-5. The OIDC provider redirects back to `/oauth/callback`. codemem validates the ID token (signature, issuer, audience, expiry, nonce, allowed subject/email) and issues an authorization code to Claude's callback.
-6. Claude exchanges the code at `/token` with PKCE S256 and stores the resulting bearer token.
-7. Claude calls `POST /mcp` with `Authorization: Bearer <token>`; codemem verifies, runs the MCP tool, and returns the result.
+3. The hosted client fetches `/.well-known/oauth-protected-resource/mcp`, discovers the authorization server, and posts a DCR registration to `/register`.
+4. The hosted client redirects you to `/authorize`. The codemem server bounces you to your OIDC provider; you sign in there.
+5. The OIDC provider redirects back to `/oauth/callback`. codemem validates the ID token (signature, issuer, audience, expiry, nonce, allowed subject/email) and issues an authorization code to the registered hosted-client callback.
+6. The hosted client exchanges the code at `/token` with PKCE S256 and stores the resulting bearer token.
+7. The hosted client calls `POST /mcp` with `Authorization: Bearer <token>`; codemem verifies, runs the MCP tool, and returns the result.
+
+Supported hosted redirect callbacks are currently Claude's fixed MCP callback (`https://claude.ai/api/mcp/auth_callback`), ChatGPT connector callbacks matching `https://chatgpt.com/connector/oauth/<connector-id>`, and ChatGPT's legacy published-app callback (`https://chatgpt.com/connector_platform_oauth_redirect`). Native loopback callbacks remain supported for local MCP clients, including Gemini CLI-style `http://localhost:<port>/oauth/callback` redirects.
 
 The bearer token expires after one hour. Revoke at any time with:
 
@@ -171,7 +173,7 @@ Early Host/Origin guard denials happen before OAuth audit events and are always 
 | `/oauth/callback` returns `subject_not_allowed` | OIDC identity not allowlisted | Audit log shows `kind=oidc_callback outcome=denied reason=subject_not_allowed`. Update `CODEMEM_MCP_OAUTH_ALLOWED_SUBJECT` or `CODEMEM_MCP_OAUTH_ALLOWED_EMAIL`. |
 | `POST /mcp` returns 401 | No / wrong bearer | Audit log shows `kind=bearer outcome=denied reason=...`. Re-run connector setup or check expired/revoked tokens. |
 | `POST /mcp` returns 403 with valid bearer | Host/Origin mismatch with `CODEMEM_MCP_HTTP_PUBLIC_URL` | Confirm the ingress preserves the configured public hostname. Check `codemem-mcp-http-guard` log lines; OAuth audit will not record this because the request is rejected before bearer verification. |
-| Connector hangs on registration | DCR rejected | Audit log shows `kind=registration outcome=denied reason=invalid_client_metadata`. Confirm Claude's DCR payload uses one of: `https://claude.ai/api/mcp/auth_callback` or a loopback `http://[127.0.0.1|localhost|::1]:<port>/callback` URI. |
+| Connector hangs on registration | DCR rejected | Audit log shows `kind=registration outcome=denied reason=invalid_client_metadata`. Confirm the DCR payload uses one of: `https://claude.ai/api/mcp/auth_callback`, `https://chatgpt.com/connector/oauth/<connector-id>`, `https://chatgpt.com/connector_platform_oauth_redirect`, or a loopback `http://[127.0.0.1|localhost|::1]:<port>/callback` / `/oauth/callback` URI. |
 | Claude loses tools / re-prompts for auth after an upgrade or restart | OAuth state not persisted (older builds) or state file removed | Audit log shows `kind=refresh outcome=denied reason=invalid_client`/`invalid_grant`. Confirm `~/.codemem/mcp-oauth-state.json` exists and is writable by the server process; if it was deleted, re-run connector setup once to re-register. |
 
 ## Validation checklist
@@ -180,7 +182,7 @@ Before announcing the connector ready, run the steps below against the live host
 
 - [ ] `/.well-known/oauth-authorization-server` returns metadata pointing at the configured public URL.
 - [ ] `/.well-known/oauth-protected-resource/mcp` returns the protected resource document.
-- [ ] `POST /register` accepts the claude.ai callback URI and returns a public-client registration.
+- [ ] `POST /register` accepts the hosted connector callback URI and returns a public-client registration.
 - [ ] `/authorize` for the registered client redirects to the OIDC provider (302 with location matching `CODEMEM_MCP_OIDC_ISSUER_URL`).
 - [ ] OIDC callback with an allowed identity issues an authorization code redirecting back to the registered callback.
 - [ ] `/token` exchange with PKCE S256 returns a 43-character base64url bearer token, `token_type: "Bearer"`, `expires_in: 3600`.

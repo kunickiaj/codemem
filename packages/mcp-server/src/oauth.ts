@@ -25,6 +25,7 @@ export const MCP_OAUTH_SCOPES_SUPPORTED = ["memory:read", "memory:write"];
 export const MCP_OAUTH_SERVICE_DOCUMENTATION_URL = "https://github.com/kunickiaj/codemem#readme";
 
 const CLAUDE_HOSTED_CALLBACK = "https://claude.ai/api/mcp/auth_callback";
+const CHATGPT_LEGACY_HOSTED_CALLBACK = "https://chatgpt.com/connector_platform_oauth_redirect";
 const LOCAL_CALLBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 const SUPPORTED_GRANT_TYPES = new Set(["authorization_code", "refresh_token"]);
 const SUPPORTED_RESPONSE_TYPES = new Set(["code"]);
@@ -39,6 +40,7 @@ const ACCESS_TOKEN_BASE64URL_LENGTH = 43;
 const ACCESS_TOKEN_BASE64URL = /^[A-Za-z0-9_-]{43}$/;
 const PKCE_S256_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
 const PKCE_VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
+const CHATGPT_CONNECTOR_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 export interface McpOAuthMetadataOptions {
 	mcpUrl: string;
@@ -1070,12 +1072,29 @@ function getOriginUrl(url: URL): URL {
 function validateRedirectUris(redirectUris: OAuthClientMetadata["redirect_uris"]): string | null {
 	for (const redirectUri of redirectUris) {
 		const url = new URL(redirectUri);
-		if (url.username || url.password || url.hash) return `Invalid redirect URI: ${redirectUri}`;
-		if (url.href === CLAUDE_HOSTED_CALLBACK) continue;
+		if (url.username || url.password || url.hash) return "Invalid redirect URI";
+		if (isSupportedHostedConnectorRedirectUrl(url)) continue;
 		if (isLoopbackCallbackUrl(url)) continue;
-		return `Unsupported redirect URI: ${redirectUri}`;
+		return "Unsupported redirect URI";
 	}
 	return null;
+}
+
+function isSupportedHostedConnectorRedirectUrl(url: URL): boolean {
+	if (url.search !== "") return false;
+	if (url.href === CLAUDE_HOSTED_CALLBACK) return true;
+	if (url.href === CHATGPT_LEGACY_HOSTED_CALLBACK) return true;
+	return url.protocol === "https:" && url.hostname === "chatgpt.com" && isChatGptConnectorPath(url);
+}
+
+function isChatGptConnectorPath(url: URL): boolean {
+	const pathParts = url.pathname.split("/").filter(Boolean);
+	return (
+		pathParts.length === 3 &&
+		pathParts[0] === "connector" &&
+		pathParts[1] === "oauth" &&
+		CHATGPT_CONNECTOR_ID.test(pathParts[2] ?? "")
+	);
 }
 
 function isSupportedTokenEndpointAuthMethod(method: string | undefined): boolean {
@@ -1090,7 +1109,7 @@ function isLoopbackCallbackUrl(url: URL): boolean {
 	return (
 		url.protocol === "http:" &&
 		LOCAL_CALLBACK_HOSTS.has(normalizeHostname(url.hostname)) &&
-		url.pathname === "/callback" &&
+		(url.pathname === "/callback" || url.pathname === "/oauth/callback") &&
 		url.search === ""
 	);
 }

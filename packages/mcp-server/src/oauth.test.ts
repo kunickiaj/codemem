@@ -93,7 +93,27 @@ describe("MCP OAuth metadata and dynamic client registration", () => {
 	it("accepts native loopback callback redirects", () => {
 		const result = registerMcpOAuthClient(
 			{
-				redirect_uris: ["http://localhost:42713/callback", "http://[::1]:42713/callback"],
+				redirect_uris: [
+					"http://localhost:42713/callback",
+					"http://[::1]:42713/callback",
+					"http://localhost:42713/oauth/callback",
+				],
+				token_endpoint_auth_method: "none",
+			},
+			createInMemoryOAuthClientsStore(),
+		);
+
+		expect(result.status).toBe(201);
+	});
+
+	it("accepts ChatGPT hosted connector redirects", () => {
+		const result = registerMcpOAuthClient(
+			{
+				redirect_uris: [
+					"https://chatgpt.com/connector/oauth/QvWoF4AUziOy",
+					"https://chatgpt.com/connector_platform_oauth_redirect",
+				],
+				client_name: "ChatGPT",
 				token_endpoint_auth_method: "none",
 			},
 			createInMemoryOAuthClientsStore(),
@@ -107,6 +127,40 @@ describe("MCP OAuth metadata and dynamic client registration", () => {
 
 		expect(
 			registerMcpOAuthClient({ redirect_uris: ["https://evil.test/callback"] }, clientsStore),
+		).toMatchObject({ status: 400, body: { error: "invalid_client_metadata" } });
+		expect(
+			registerMcpOAuthClient(
+				{ redirect_uris: ["https://user:secret@evil.test/callback"] },
+				clientsStore,
+			),
+		).toMatchObject({
+			status: 400,
+			body: { error: "invalid_client_metadata", error_description: "Invalid redirect URI" },
+		});
+
+		expect(
+			registerMcpOAuthClient(
+				{ redirect_uris: ["https://chatgpt.com/connector/not-oauth/QvWoF4AUziOy"] },
+				clientsStore,
+			),
+		).toMatchObject({ status: 400, body: { error: "invalid_client_metadata" } });
+		expect(
+			registerMcpOAuthClient(
+				{ redirect_uris: ["https://chatgpt.com/connector/oauth/bad%2Fid"] },
+				clientsStore,
+			),
+		).toMatchObject({ status: 400, body: { error: "invalid_client_metadata" } });
+		expect(
+			registerMcpOAuthClient(
+				{ redirect_uris: ["https://chatgpt.com/connector/oauth/QvWoF4AUziOy?code=secret"] },
+				clientsStore,
+			),
+		).toMatchObject({ status: 400, body: { error: "invalid_client_metadata" } });
+		expect(
+			registerMcpOAuthClient(
+				{ redirect_uris: ["https://chatgpt.com.evil.test/connector/oauth/QvWoF4AUziOy"] },
+				clientsStore,
+			),
 		).toMatchObject({ status: 400, body: { error: "invalid_client_metadata" } });
 
 		expect(
