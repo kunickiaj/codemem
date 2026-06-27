@@ -121,7 +121,7 @@ Plan tier note: claude.ai custom connectors require Pro / Max / Team / Enterpris
 6. The hosted client exchanges the code at `/token` with PKCE S256 and stores the resulting bearer token.
 7. The hosted client calls `POST /mcp` with `Authorization: Bearer <token>`; codemem verifies, runs the MCP tool, and returns the result.
 
-Supported hosted redirect callbacks are currently Claude's fixed MCP callback (`https://claude.ai/api/mcp/auth_callback`) and ChatGPT connector callbacks matching `https://chatgpt.com/connector/oauth/<connector-id>`. Native loopback callbacks remain supported for local MCP clients, including Gemini CLI-style `http://localhost:<port>/oauth/callback` redirects.
+Supported hosted redirect callbacks are currently Claude's fixed MCP callback (`https://claude.ai/api/mcp/auth_callback`), ChatGPT connector callbacks matching `https://chatgpt.com/connector/oauth/<connector-id>`, and ChatGPT's legacy published-app callback (`https://chatgpt.com/connector_platform_oauth_redirect`). Native loopback callbacks remain supported for local MCP clients, including Gemini CLI-style `http://localhost:<port>/oauth/callback` redirects.
 
 The bearer token expires after one hour. Revoke at any time with:
 
@@ -173,7 +173,7 @@ Early Host/Origin guard denials happen before OAuth audit events and are always 
 | `/oauth/callback` returns `subject_not_allowed` | OIDC identity not allowlisted | Audit log shows `kind=oidc_callback outcome=denied reason=subject_not_allowed`. Update `CODEMEM_MCP_OAUTH_ALLOWED_SUBJECT` or `CODEMEM_MCP_OAUTH_ALLOWED_EMAIL`. |
 | `POST /mcp` returns 401 | No / wrong bearer | Audit log shows `kind=bearer outcome=denied reason=...`. Re-run connector setup or check expired/revoked tokens. |
 | `POST /mcp` returns 403 with valid bearer | Host/Origin mismatch with `CODEMEM_MCP_HTTP_PUBLIC_URL` | Confirm the ingress preserves the configured public hostname. Check `codemem-mcp-http-guard` log lines; OAuth audit will not record this because the request is rejected before bearer verification. |
-| Connector hangs on registration | DCR rejected | Audit log shows `kind=registration outcome=denied reason=invalid_client_metadata`. Confirm the DCR payload uses one of: `https://claude.ai/api/mcp/auth_callback`, `https://chatgpt.com/connector/oauth/<connector-id>`, or a loopback `http://[127.0.0.1|localhost|::1]:<port>/callback` / `/oauth/callback` URI. |
+| Connector hangs on registration | DCR rejected | Audit log shows `kind=registration outcome=denied reason=invalid_client_metadata`. Confirm the DCR payload uses one of: `https://claude.ai/api/mcp/auth_callback`, `https://chatgpt.com/connector/oauth/<connector-id>`, `https://chatgpt.com/connector_platform_oauth_redirect`, or a loopback `http://[127.0.0.1|localhost|::1]:<port>/callback` / `/oauth/callback` URI. |
 | Claude loses tools / re-prompts for auth after an upgrade or restart | OAuth state not persisted (older builds) or state file removed | Audit log shows `kind=refresh outcome=denied reason=invalid_client`/`invalid_grant`. Confirm `~/.codemem/mcp-oauth-state.json` exists and is writable by the server process; if it was deleted, re-run connector setup once to re-register. |
 
 ## Validation checklist

@@ -109,7 +109,10 @@ describe("MCP OAuth metadata and dynamic client registration", () => {
 	it("accepts ChatGPT hosted connector redirects", () => {
 		const result = registerMcpOAuthClient(
 			{
-				redirect_uris: ["https://chatgpt.com/connector/oauth/QvWoF4AUziOy"],
+				redirect_uris: [
+					"https://chatgpt.com/connector/oauth/QvWoF4AUziOy",
+					"https://chatgpt.com/connector_platform_oauth_redirect",
+				],
 				client_name: "ChatGPT",
 				token_endpoint_auth_method: "none",
 			},

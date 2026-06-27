@@ -25,6 +25,7 @@ export const MCP_OAUTH_SCOPES_SUPPORTED = ["memory:read", "memory:write"];
 export const MCP_OAUTH_SERVICE_DOCUMENTATION_URL = "https://github.com/kunickiaj/codemem#readme";
 
 const CLAUDE_HOSTED_CALLBACK = "https://claude.ai/api/mcp/auth_callback";
+const CHATGPT_LEGACY_HOSTED_CALLBACK = "https://chatgpt.com/connector_platform_oauth_redirect";
 const LOCAL_CALLBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 const SUPPORTED_GRANT_TYPES = new Set(["authorization_code", "refresh_token"]);
 const SUPPORTED_RESPONSE_TYPES = new Set(["code"]);
@@ -1082,6 +1083,7 @@ function validateRedirectUris(redirectUris: OAuthClientMetadata["redirect_uris"]
 function isSupportedHostedConnectorRedirectUrl(url: URL): boolean {
 	if (url.search !== "") return false;
 	if (url.href === CLAUDE_HOSTED_CALLBACK) return true;
+	if (url.href === CHATGPT_LEGACY_HOSTED_CALLBACK) return true;
 	return url.protocol === "https:" && url.hostname === "chatgpt.com" && isChatGptConnectorPath(url);
 }
 
