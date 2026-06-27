@@ -313,7 +313,7 @@ describe("MCP HTTP transport", () => {
 		expect(token.status).toBe(403);
 	});
 
-	it("allows Claude browser preflight requests on public OAuth and MCP routes", async () => {
+	it("allows trusted hosted connector browser preflight requests on public OAuth and MCP routes", async () => {
 		const server = await startCodememMcpHttpServer({
 			dbPath: tempDbPath(),
 			port: 0,
@@ -349,6 +349,32 @@ describe("MCP HTTP transport", () => {
 		expect(mcp.headers["access-control-allow-headers"]).toBe(
 			"authorization,content-type,mcp-session-id",
 		);
+
+		const chatGpt = await requestWithHost(`${baseUrl}/register`, {
+			method: "OPTIONS",
+			host: "codemem.example.test",
+			headers: {
+				origin: "https://chatgpt.com",
+				"access-control-request-method": "POST",
+				"access-control-request-headers": "content-type",
+			},
+		});
+
+		expect(chatGpt.statusCode).toBe(204);
+		expect(chatGpt.headers["access-control-allow-origin"]).toBe("https://chatgpt.com");
+		expect(chatGpt.headers["access-control-allow-headers"]).toBe("content-type");
+
+		const registration = await requestWithHost(`${baseUrl}/register`, {
+			method: "POST",
+			host: "codemem.example.test",
+			headers: { origin: "https://chatgpt.com" },
+			body: JSON.stringify({
+				redirect_uris: ["https://chatgpt.com/connector/oauth/QvWoF4AUziOy"],
+				token_endpoint_auth_method: "none",
+			}),
+		});
+
+		expect(registration.statusCode).toBe(201);
 	});
 
 	it("logs early public Host and Origin guard denials", async () => {
