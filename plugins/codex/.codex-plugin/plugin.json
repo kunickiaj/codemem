@@ -1,6 +1,6 @@
 {
   "name": "codemem",
-  "version": "0.37.0",
+  "version": "0.37.1",
   "description": "Persistent memory for Codex. Capture work across sessions and recall relevant context.",
   "author": {
     "name": "Adam Kunicki"
