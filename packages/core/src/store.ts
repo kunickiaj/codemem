@@ -989,7 +989,7 @@ export class MemoryStore {
 		const rows = this.d.all<MemoryItem>(
 			sql`SELECT memory_items.* FROM ${fromSql}
 				WHERE ${whereSql}
-				ORDER BY created_at DESC
+				ORDER BY created_at DESC, id DESC
 				LIMIT ${limit} OFFSET ${Math.max(offset, 0)}`,
 		);
 
@@ -1024,7 +1024,7 @@ export class MemoryStore {
 		const rows = this.d.all<MemoryItem>(
 			sql`SELECT memory_items.* FROM ${fromSql}
 				WHERE ${whereSql}
-				ORDER BY created_at DESC
+				ORDER BY created_at DESC, id DESC
 				LIMIT ${limit} OFFSET ${Math.max(offset, 0)}`,
 		);
 

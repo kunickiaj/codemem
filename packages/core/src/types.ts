@@ -61,6 +61,7 @@ export interface MemoryItem {
 	deleted_at: string | null;
 	rev: number;
 	scope_id: string | null;
+	project: string | null;
 }
 
 export interface Artifact {
