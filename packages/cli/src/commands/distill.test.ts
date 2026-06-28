@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	buildDistillReport: vi.fn(),
 	closeStore: vi.fn(),
+	observe: vi.fn(),
 	storePaths: [] as Array<string | undefined>,
 }));
 
@@ -18,6 +19,9 @@ vi.mock("@codemem/core", async (importOriginal) => {
 			}
 			close = mocks.closeStore;
 		},
+		ObserverClient: class {
+			observe = mocks.observe;
+		},
 		resolveDbPath: (value?: string) => value,
 	};
 });
@@ -27,10 +31,42 @@ import { distillCommand, renderDistillReport } from "./distill.js";
 afterEach(() => {
 	mocks.buildDistillReport.mockReset();
 	mocks.closeStore.mockReset();
+	mocks.observe.mockReset();
 	mocks.storePaths.length = 0;
 	process.exitCode = 0;
 	vi.restoreAllMocks();
 });
+
+function userScopeReport() {
+	return {
+		version: 1,
+		candidates: [
+			{
+				scope: "user",
+				suggested_target: "~/.config/opencode/AGENTS.md",
+				score: 0.5,
+				recurrence: 4,
+				projects: ["codemem", "memorybench"],
+				member_ids: [1, 2, 3, 4],
+				representative_id: 1,
+				concepts: ["graphite"],
+				artifact_kind: "context_fact",
+				evidence: ["Use the HTTPS rewrite when Graphite SSH auth stalls."],
+				draft_text: null,
+			},
+		],
+		metadata: {
+			candidate_count: 1,
+			cluster_count: 1,
+			context_document_count: 0,
+			corpus_count: 4,
+			corpus_limit: 2000,
+			documented_cluster_count: 0,
+			include_documented: false,
+			min_recurrence: 2,
+		},
+	};
+}
 
 async function parseDistillCommand(args: string[]): Promise<void> {
 	const root = new Command("codemem");
@@ -51,6 +87,8 @@ describe("distill command", () => {
 		expect(longs).toContain("--limit");
 		expect(longs).toContain("--explain");
 		expect(longs).toContain("--include-documented");
+		expect(longs).toContain("--draft");
+		expect(longs).toContain("--apply");
 	});
 
 	it("emits JSON candidates and passes parsed options to core", async () => {
@@ -163,5 +201,48 @@ describe("distill command", () => {
 
 		expect(renderDistillReport(report, false)).not.toContain("HTTPS rewrite");
 		expect(renderDistillReport(report, true)).toContain("Use HTTPS rewrite");
+	});
+
+	it("drafts a rule for the top candidate and prints a diff without writing", async () => {
+		mocks.buildDistillReport.mockResolvedValue(userScopeReport());
+		mocks.observe.mockResolvedValue({
+			raw: "- Use the HTTPS rewrite when Graphite SSH auth stalls.",
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseDistillCommand(["--draft", "--json"]);
+
+		expect(mocks.observe).toHaveBeenCalledTimes(1);
+		const out = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(out.draft.rule).toBe("Use the HTTPS rewrite when Graphite SSH auth stalls.");
+		expect(out.draft.applied).toBe(false);
+		expect(typeof out.draft.diff).toBe("string");
+		expect(out.draft.diff).toContain("codemem:distilled:begin");
+	});
+
+	it("reports a structured error when drafting has no observer", async () => {
+		mocks.buildDistillReport.mockResolvedValue(userScopeReport());
+		mocks.observe.mockRejectedValue(new Error("no observer auth configured"));
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseDistillCommand(["--draft", "--json"]);
+
+		expect(JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]))).toMatchObject({
+			error: "draft_failed",
+		});
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("does not write when the model declines to draft a rule", async () => {
+		mocks.buildDistillReport.mockResolvedValue(userScopeReport());
+		mocks.observe.mockResolvedValue({ raw: "SKIP" });
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseDistillCommand(["--draft", "--json"]);
+
+		expect(JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]))).toMatchObject({
+			draft: null,
+			reason: "model_declined",
+		});
 	});
 });

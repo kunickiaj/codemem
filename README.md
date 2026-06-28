@@ -178,12 +178,13 @@ Pack rendering defaults to self-contained context. For token-constrained experim
 `codemem distill` finds repeated discoveries and decisions that may be worth promoting into project or user context.
 
 ```text
-codemem distill --project codemem --limit 10
-codemem distill --all-projects --json
-codemem distill --explain
+codemem distill --explain               # ranked candidates + evidence
+codemem distill --all-projects --json   # machine-readable
+codemem distill --draft                 # draft an AGENTS.md rule for the top candidate and show a diff
+codemem distill --draft --apply         # write it after confirmation
 ```
 
-Distill is review-only: it emits ranked candidates and evidence, but it does not edit `AGENTS.md` or user context files.
+Candidate mining is deterministic. `--draft` uses your configured observer model to turn the top candidate into a single `AGENTS.md` rule and renders a unified diff; nothing is written. `--apply` writes that rule into a codemem-managed `## Distilled lessons` block (delimited by `<!-- codemem:distilled:begin/end -->` markers, so all distilled edits stay in one place) after prompting for confirmation.
 
 ## MCP tools
 
