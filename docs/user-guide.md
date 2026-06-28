@@ -110,6 +110,23 @@ Command/file token caching notes:
 - Backfill existing memories with: `codemem embed --dry-run` then `codemem embed`.
 - If sqlite-vec fails to load, semantic recall is skipped and keyword search remains.
 
+## Distill recurring lessons
+
+Use `codemem distill` to find lessons that keep showing up in memory history.
+
+```fish
+codemem distill --project codemem --limit 10
+codemem distill --all-projects --explain
+codemem distill --json
+```
+
+Output is review-only:
+
+- `project` candidates usually belong in that repo's `AGENTS.md`.
+- `user` candidates usually belong in global/user context.
+- `draft_text` is intentionally empty until a human or agent writes the final wording.
+- The command does not edit context files automatically.
+
 ## Sync
 
 ### Enable + run

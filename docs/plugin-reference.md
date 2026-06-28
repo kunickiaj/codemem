@@ -180,6 +180,19 @@ If compatibility toasts appear after restart, follow the runner-specific guidanc
 These are plugin tools callable by the agent/runtime. They are not user-facing
 slash commands in the OpenCode chat input.
 
+## MCP tools exposed to agents
+
+The MCP server exposes memory retrieval and write tools such as `memory_search`,
+`memory_pack`, `memory_recent`, `memory_remember`, and `memory_forget`.
+
+`memory_distill_candidates` mines recurring lessons into reviewable context
+candidates. It is read-only and does not modify documentation files.
+
+Example agent requests:
+
+- "Find recurring project lessons worth adding to AGENTS.md."
+- "Run distill for all projects and show top candidates."
+
 ## Observer model defaults
 
 - OpenAI: `gpt-5.1-codex-mini`

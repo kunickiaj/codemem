@@ -2,7 +2,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { projectBasename, projectClause, projectMatchesFilter, resolveProject } from "./project.js";
+import {
+	projectBasename,
+	projectClause,
+	projectMatchesFilter,
+	resolveProject,
+	resolveProjectRoot,
+} from "./project.js";
 
 describe("project helpers", () => {
 	let tmpDir: string | null = null;
@@ -60,6 +66,33 @@ describe("project helpers", () => {
 		);
 
 		expect(resolveProject(worktree)).toBe("main-repo");
+	});
+
+	it("resolves the working-tree root from a subdirectory", () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-project-test-"));
+		const repoRoot = join(tmpDir, "my-repo");
+		const nested = join(repoRoot, "packages", "core");
+		mkdirSync(join(repoRoot, ".git"), { recursive: true });
+		mkdirSync(nested, { recursive: true });
+
+		expect(resolveProjectRoot(nested)).toBe(repoRoot);
+	});
+
+	it("resolves the linked worktree root, not the primary checkout", () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-project-test-"));
+		const mainRepo = join(tmpDir, "main-repo");
+		const worktree = join(tmpDir, "feature-worktree");
+		mkdirSync(join(mainRepo, ".git", "worktrees", "feature-worktree"), { recursive: true });
+		mkdirSync(join(worktree, "packages"), { recursive: true });
+		writeFileSync(
+			join(worktree, ".git"),
+			`gitdir: ${join(mainRepo, ".git", "worktrees", "feature-worktree")}`,
+		);
+
+		// resolveProject keeps the primary repo name, but the file root must be the
+		// worktree itself so AGENTS.md is read from the worktree being mined.
+		expect(resolveProject(worktree)).toBe("main-repo");
+		expect(resolveProjectRoot(join(worktree, "packages"))).toBe(worktree);
 	});
 
 	it("honors explicit override before cwd resolution", () => {

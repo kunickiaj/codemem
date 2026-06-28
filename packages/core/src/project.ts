@@ -90,3 +90,23 @@ export function resolveProject(cwd: string, override?: string | null): string | 
 	}
 	return basename(resolve(cwd));
 }
+
+/**
+ * Resolve the working-tree root for a directory by walking up to the nearest
+ * `.git` marker and returning the directory that contains it. Returns null when
+ * no repository is found.
+ *
+ * Unlike `resolveProject` (which follows a linked worktree's gitdir back to the
+ * primary checkout for a stable project name), this returns the *current*
+ * worktree root so repo-root files like AGENTS.md are read from the worktree
+ * actually being used, not another checkout.
+ */
+export function resolveProjectRoot(cwd: string): string | null {
+	let current = resolve(cwd);
+	while (true) {
+		if (existsSync(resolve(current, ".git"))) return current;
+		const parent = dirname(current);
+		if (parent === current) return null;
+		current = parent;
+	}
+}
