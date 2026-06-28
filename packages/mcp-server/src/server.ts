@@ -2,6 +2,7 @@ import { type MemoryStore, VERSION } from "@codemem/core";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { resolveDefaultProject } from "./project-scope.js";
 import type { CodememMcpServerOptions, ToolRegistrationContext } from "./tool-context.js";
+import { registerDistillTools } from "./tools/distill.js";
 import { registerItemTools } from "./tools/items.js";
 import { registerLearnTools } from "./tools/learn.js";
 import { registerSchemaTools } from "./tools/schema.js";
@@ -28,6 +29,7 @@ export function createCodememMcpServer(
 
 	registerSearchTools(server, context);
 	registerTimelineTools(server, context);
+	registerDistillTools(server, context);
 	registerItemTools(server, context);
 	registerSchemaTools(server);
 	registerLearnTools(server);

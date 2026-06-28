@@ -145,6 +145,34 @@ export interface DistillCandidateEmitOptions {
 	userTarget?: string;
 }
 
+export interface DistillReportOptions {
+	candidate?: DistillCandidateEmitOptions;
+	cluster?: DistillClusterOptions;
+	contextChunk?: DistillContextChunkOptions;
+	contextDedupe?: DistillContextDedupeOptions;
+	contextDocuments?: DistillContextDocument[];
+	corpus?: DistillCorpusOptions;
+	limit?: number;
+	maxCorpus?: number;
+	minRecurrence?: number;
+	scoring?: DistillScoringOptions;
+}
+
+export interface DistillReport {
+	version: 1;
+	candidates: DistillCandidate[];
+	metadata: {
+		candidate_count: number;
+		cluster_count: number;
+		context_document_count: number;
+		corpus_count: number;
+		corpus_limit: number;
+		documented_cluster_count: number;
+		include_documented: boolean;
+		min_recurrence: number;
+	};
+}
+
 export const DEFAULT_CONTEXT_FACT_KINDS = ["discovery", "decision"] as const;
 
 const DEFAULT_BATCH_SIZE = 500;
@@ -162,6 +190,10 @@ const DEFAULT_USER_CONTEXT_TARGET = "~/.config/opencode/AGENTS.md";
 // Bodies can be very large (ingest allows ~2MB), so cap each evidence string.
 // maxEvidenceItems caps how many entries; this caps the size of each entry.
 const DEFAULT_EVIDENCE_CHAR_LIMIT = 600;
+// Cap the clustering input: clusterDistillFeatures is O(n^2), so an unbounded
+// corpus on a long-lived DB can block the CLI/MCP server even when the caller
+// only wants a few candidates. Bound the corpus before the pairwise step.
+const DEFAULT_DISTILL_CORPUS_LIMIT = 2000;
 const MS_PER_DAY = 86_400_000;
 
 const CLUSTER_STOP_WORDS = new Set([
@@ -929,6 +961,68 @@ export function emitDistillCandidates(
 			];
 		})
 		.toSorted(compareDistillCandidates);
+}
+
+export async function buildDistillReport(
+	store: MemoryStore,
+	options: DistillReportOptions = {},
+): Promise<DistillReport> {
+	const minRecurrence = Math.max(1, Math.floor(options.minRecurrence ?? 2));
+	const limit = Math.max(1, Math.floor(options.limit ?? 10));
+	// Bound the corpus that feeds the O(n^2) clustering step. An explicit
+	// corpus.limit wins; otherwise fall back to maxCorpus or the default cap.
+	const corpusLimit = Math.max(
+		1,
+		Math.floor(options.corpus?.limit ?? options.maxCorpus ?? DEFAULT_DISTILL_CORPUS_LIMIT),
+	);
+	const corpus = selectDistillCorpus(store, { ...options.corpus, limit: corpusLimit });
+	const features = loadDistillVectorFeatures(store, corpus);
+	const clusters = clusterDistillFeatures(features, options.cluster);
+	const scored = scoreDistillClusters(clusters, features, options.scoring);
+	const contextDocuments = options.contextDocuments ?? [];
+
+	// Scope-aware dedupe: route each cluster first, then suppress only against
+	// documents valid for its target scope. A user/global candidate must not be
+	// dropped because one project's AGENTS.md already documents it; project docs
+	// only suppress project-scoped candidates. The routed scope here matches the
+	// scope emitDistillCandidates computes from the same features.
+	const featureById = new Map(features.map((feature) => [feature.memory_id, feature]));
+	const clusterScopeByRepresentative = new Map<number, DistillContextScope>();
+	for (const cluster of scored) {
+		const { scope } = routeDistillScope(
+			cluster.member_ids.map((id) => {
+				const feature = featureById.get(id);
+				return feature ? clean(feature.project) : null;
+			}),
+		);
+		clusterScopeByRepresentative.set(cluster.representative_id, scope);
+	}
+	const contextChunks = chunkDistillContextDocuments(contextDocuments, options.contextChunk);
+	const documented = markDistillClustersDocumented(
+		scored,
+		features,
+		contextChunks,
+		options.contextDedupe,
+		clusterScopeByRepresentative,
+	);
+	const candidates = emitDistillCandidates(documented, features, options.candidate)
+		.filter((candidate) => candidate.recurrence >= minRecurrence)
+		.slice(0, limit);
+
+	return {
+		version: 1,
+		candidates,
+		metadata: {
+			candidate_count: candidates.length,
+			cluster_count: clusters.length,
+			context_document_count: contextDocuments.length,
+			corpus_count: corpus.length,
+			corpus_limit: corpusLimit,
+			documented_cluster_count: documented.filter((cluster) => cluster.already_documented).length,
+			include_documented: options.candidate?.includeDocumented ?? false,
+			min_recurrence: minRecurrence,
+		},
+	};
 }
 
 export function createContextFactDetector(): DistillDetector<ContextFactFeature> {
