@@ -24,6 +24,7 @@ codemem --help
 codemem setup --opencode-only
 codemem stats
 codemem search "query"
+codemem distill --limit 10
 codemem serve start
 codemem mcp
 ```

@@ -165,12 +165,15 @@ export type {
 	DistillDocumentationSignal,
 	DistillDocumentedCluster,
 	DistillPromotabilityScores,
+	DistillReport,
+	DistillReportOptions,
 	DistillScope,
 	DistillScoredCluster,
 	DistillScoringOptions,
 	DistillVectorFeature,
 } from "./distill.js";
 export {
+	buildDistillReport,
 	chunkDistillContextDocuments,
 	clusterDistillFeatures,
 	createContextFactDetector,
@@ -433,6 +436,7 @@ export {
 	projectColumnClause,
 	projectMatchesFilter,
 	resolveProject,
+	resolveProjectRoot,
 } from "./project.js";
 export type {
 	ProjectScopeCandidate,

@@ -141,6 +141,7 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | | `codemem search <query>` | Search memories |
 | | `codemem pack <context>` | Build a context-aware memory pack |
 | | `codemem pack trace <context>` | Inspect retrieval and pack assembly for a manual query |
+| | `codemem distill` | Mine recurring memories into reviewable context candidates |
 | | `codemem embed` | Backfill semantic embeddings |
 | **Memory** | `codemem memory show <id>` | Print a memory item as JSON |
 | | `codemem memory forget <id>` | Deactivate a memory item |
@@ -172,9 +173,21 @@ Run `codemem --help` for the full list. Legacy top-level aliases (`export-memori
 
 Pack rendering defaults to self-contained context. For token-constrained experiments, `codemem pack <context> --compact` renders an index plus top details. Near-related compression is controlled by `--compression-mode off|compact|ids` (or `CODEMEM_PACK_COMPRESSION`); MCP `memory_pack` exposes the same setting as `compression_mode`. Use `ids` only when the agent can follow up with `memory_get_observations`.
 
+### Distill recurring lessons
+
+`codemem distill` finds repeated discoveries and decisions that may be worth promoting into project or user context.
+
+```text
+codemem distill --project codemem --limit 10
+codemem distill --all-projects --json
+codemem distill --explain
+```
+
+Distill is review-only: it emits ranked candidates and evidence, but it does not edit `AGENTS.md` or user context files.
+
 ## MCP tools
 
-To give the LLM direct access to memory tools (search, timeline, pack, remember, forget):
+To give the LLM direct access to memory tools (search, timeline, pack, distill candidates, remember, forget):
 
 ```text
 codemem setup --opencode-only
