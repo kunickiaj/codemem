@@ -7,6 +7,7 @@ import {
 	chunkDistillContextDocuments,
 	clusterDistillFeatures,
 	createContextFactDetector,
+	emitDistillCandidates,
 	loadDistillVectorFeatures,
 	markDistillClustersDocumented,
 	projectContextFactFeatures,
@@ -1215,6 +1216,453 @@ describe("distill", () => {
 
 		expect(first?.documentation_match).toMatchObject({ document_path: "AGENTS.md" });
 		expect(second?.documentation_match).toEqual(first?.documentation_match);
+	});
+
+	it("emits project-scoped candidates with the v1 handoff contract", () => {
+		const features = [
+			{
+				memory_id: 1,
+				title: "Release preflight requires main",
+				text: "Release preflight requires main before tagging.",
+				concepts: ["release", "preflight"],
+				project: "codemem",
+				session_id: 1,
+				created_at: "2026-06-01T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			{
+				memory_id: 2,
+				title: "Release tags need clean main",
+				text: "Release tags need a clean main branch.",
+				concepts: ["release", "preflight"],
+				project: "codemem",
+				session_id: 2,
+				created_at: "2026-06-08T00:00:00.000Z",
+				confidence: 0.9,
+			},
+		];
+		const documented = markDistillClustersDocumented(
+			scoreDistillClusters(
+				[
+					{
+						representative_id: 1,
+						member_ids: [1, 2],
+						overlap_concepts: ["preflight", "release"],
+						overlap_words: ["release"],
+						signal: "semantic",
+					},
+				],
+				features,
+				{ referenceNow: "2026-06-28T00:00:00.000Z" },
+			),
+			features,
+			[],
+		);
+
+		expect(emitDistillCandidates(documented, features)).toMatchInlineSnapshot(`
+			[
+			  {
+			    "artifact_kind": "context_fact",
+			    "concepts": [
+			      "preflight",
+			      "release",
+			    ],
+			    "draft_text": null,
+			    "evidence": [
+			      "Release preflight requires main before tagging.",
+			      "Release tags need a clean main branch.",
+			    ],
+			    "member_ids": [
+			      1,
+			      2,
+			    ],
+			    "projects": [
+			      "codemem",
+			    ],
+			    "recurrence": 2,
+			    "representative_id": 1,
+			    "scope": "project",
+			    "score": 0.19372499999999998,
+			    "suggested_target": "AGENTS.md",
+			  },
+			]
+		`);
+	});
+
+	it("routes clusters with an unknown-project member to user scope", () => {
+		const features = [
+			{
+				memory_id: 1,
+				title: "Known project lesson",
+				text: "Known project lesson.",
+				concepts: ["lesson"],
+				project: "codemem",
+				session_id: 1,
+				created_at: "2026-06-01T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			{
+				memory_id: 2,
+				title: "Unknown project lesson",
+				text: "Unknown project lesson.",
+				concepts: ["lesson"],
+				project: null,
+				session_id: 2,
+				created_at: "2026-06-08T00:00:00.000Z",
+				confidence: 0.9,
+			},
+		];
+		const documented = markDistillClustersDocumented(
+			scoreDistillClusters(
+				[
+					{
+						representative_id: 1,
+						member_ids: [1, 2],
+						overlap_concepts: ["lesson"],
+						overlap_words: ["lesson"],
+						signal: "semantic",
+					},
+				],
+				features,
+				{ referenceNow: "2026-06-28T00:00:00.000Z" },
+			),
+			features,
+			[],
+		);
+
+		const [candidate] = emitDistillCandidates(documented, features);
+		expect(candidate).toMatchObject({
+			scope: "user",
+			projects: ["codemem"],
+		});
+	});
+
+	it("routes distinct same-basename repos to user scope", () => {
+		const features = [
+			{
+				memory_id: 1,
+				title: "Shared lesson",
+				text: "Shared lesson.",
+				concepts: ["lesson"],
+				project: "acme/api",
+				session_id: 1,
+				created_at: "2026-06-01T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			{
+				memory_id: 2,
+				title: "Shared lesson",
+				text: "Shared lesson.",
+				concepts: ["lesson"],
+				project: "oss/api",
+				session_id: 2,
+				created_at: "2026-06-08T00:00:00.000Z",
+				confidence: 0.9,
+			},
+		];
+		const documented = markDistillClustersDocumented(
+			scoreDistillClusters(
+				[
+					{
+						representative_id: 1,
+						member_ids: [1, 2],
+						overlap_concepts: ["lesson"],
+						overlap_words: ["lesson"],
+						signal: "semantic",
+					},
+				],
+				features,
+				{ referenceNow: "2026-06-28T00:00:00.000Z" },
+			),
+			features,
+			[],
+		);
+
+		const [candidate] = emitDistillCandidates(documented, features);
+		expect(candidate).toMatchObject({
+			scope: "user",
+			projects: ["acme/api", "oss/api"],
+		});
+	});
+
+	it("collapses path aliases that differ only by separator or trailing slash", () => {
+		const features = [
+			{
+				memory_id: 1,
+				title: "Sep lesson",
+				text: "Sep lesson.",
+				concepts: ["lesson"],
+				project: "workspace/codemem",
+				session_id: 1,
+				created_at: "2026-06-01T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			{
+				memory_id: 2,
+				title: "Sep lesson",
+				text: "Sep lesson.",
+				concepts: ["lesson"],
+				project: "workspace\\codemem\\",
+				session_id: 2,
+				created_at: "2026-06-08T00:00:00.000Z",
+				confidence: 0.9,
+			},
+		];
+		const documented = markDistillClustersDocumented(
+			scoreDistillClusters(
+				[
+					{
+						representative_id: 1,
+						member_ids: [1, 2],
+						overlap_concepts: ["lesson"],
+						overlap_words: ["lesson"],
+						signal: "semantic",
+					},
+				],
+				features,
+				{ referenceNow: "2026-06-28T00:00:00.000Z" },
+			),
+			features,
+			[],
+		);
+
+		const [candidate] = emitDistillCandidates(documented, features);
+		expect(candidate).toMatchObject({ scope: "project" });
+	});
+
+	it("keeps project scope when cluster projects are path aliases of one repo", () => {
+		const features = [
+			{
+				memory_id: 1,
+				title: "Release preflight requires main",
+				text: "Release preflight requires main before tagging.",
+				concepts: ["release"],
+				project: "codemem",
+				session_id: 1,
+				created_at: "2026-06-01T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			{
+				memory_id: 2,
+				title: "Release tags need clean main",
+				text: "Release tags need a clean main branch.",
+				concepts: ["release"],
+				project: "workspace/codemem",
+				session_id: 2,
+				created_at: "2026-06-08T00:00:00.000Z",
+				confidence: 0.9,
+			},
+		];
+		const documented = markDistillClustersDocumented(
+			scoreDistillClusters(
+				[
+					{
+						representative_id: 1,
+						member_ids: [1, 2],
+						overlap_concepts: ["release"],
+						overlap_words: ["release"],
+						signal: "semantic",
+					},
+				],
+				features,
+				{ referenceNow: "2026-06-28T00:00:00.000Z" },
+			),
+			features,
+			[],
+		);
+
+		const [candidate] = emitDistillCandidates(documented, features);
+		expect(candidate).toMatchObject({
+			scope: "project",
+			suggested_target: "AGENTS.md",
+			projects: ["codemem", "workspace/codemem"],
+		});
+	});
+
+	it("routes cross-project candidates to user context and suppresses documented clusters", () => {
+		const features = [
+			{
+				memory_id: 1,
+				title: "Graphite submit needs HTTPS rewrite",
+				text: "Use the HTTPS rewrite when Graphite SSH auth stalls.",
+				concepts: ["graphite"],
+				project: "codemem",
+				session_id: 1,
+				created_at: "2026-06-01T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			{
+				memory_id: 2,
+				title: "Graphite submit needs HTTPS rewrite",
+				text: "When SSH auth hangs, submit Graphite stacks over HTTPS.",
+				concepts: ["graphite"],
+				project: "memorybench",
+				session_id: 2,
+				created_at: "2026-06-08T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			{
+				memory_id: 3,
+				title: "Viewer server static assets",
+				text: "Viewer server needs built static assets.",
+				concepts: ["viewer"],
+				project: "codemem",
+				session_id: 3,
+				created_at: "2026-06-09T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			{
+				memory_id: 4,
+				title: "Viewer server static assets",
+				text: "Viewer server needs built static assets.",
+				concepts: ["viewer"],
+				project: "codemem",
+				session_id: 4,
+				created_at: "2026-06-10T00:00:00.000Z",
+				confidence: 0.9,
+			},
+		];
+		const scored = scoreDistillClusters(
+			[
+				{
+					representative_id: 3,
+					member_ids: [3, 4],
+					overlap_concepts: ["viewer"],
+					overlap_words: ["viewer"],
+					signal: "title",
+				},
+				{
+					representative_id: 1,
+					member_ids: [1, 2],
+					overlap_concepts: ["graphite"],
+					overlap_words: ["graphite", "submit"],
+					signal: "semantic",
+				},
+			],
+			features,
+			{ referenceNow: "2026-06-28T00:00:00.000Z" },
+		);
+		const documented = markDistillClustersDocumented(
+			scored,
+			features,
+			chunkDistillContextDocuments([
+				{ path: "AGENTS.md", text: "Viewer server needs built static assets." },
+			]),
+		);
+
+		const candidates = emitDistillCandidates(documented, features, {
+			userTarget: "~/.config/opencode/context/core/AGENTS.md",
+		});
+
+		expect(candidates).toHaveLength(1);
+		expect(candidates[0]).toMatchObject({
+			representative_id: 1,
+			scope: "user",
+			suggested_target: "~/.config/opencode/context/core/AGENTS.md",
+			projects: ["codemem", "memorybench"],
+			draft_text: null,
+		});
+	});
+
+	it("caps evidence string length", () => {
+		const longBody = "x".repeat(2000);
+		const features = [
+			{
+				memory_id: 1,
+				title: "Big one",
+				text: longBody,
+				concepts: [],
+				project: "codemem",
+				session_id: 1,
+				created_at: "2026-06-01T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			{
+				memory_id: 2,
+				title: "Big two",
+				text: longBody,
+				concepts: [],
+				project: "codemem",
+				session_id: 2,
+				created_at: "2026-06-08T00:00:00.000Z",
+				confidence: 0.9,
+			},
+		];
+		const documented = markDistillClustersDocumented(
+			scoreDistillClusters(
+				[
+					{
+						representative_id: 1,
+						member_ids: [1, 2],
+						overlap_concepts: [],
+						overlap_words: [],
+						signal: "semantic",
+					},
+				],
+				features,
+				{ referenceNow: "2026-06-28T00:00:00.000Z" },
+			),
+			features,
+			[],
+		);
+
+		const [candidate] = emitDistillCandidates(documented, features, { maxEvidenceChars: 100 });
+		expect(candidate?.evidence.length).toBeGreaterThan(0);
+		expect(candidate?.evidence.every((entry) => entry.length <= 101)).toBe(true);
+		expect(candidate?.evidence.every((entry) => entry.endsWith("…"))).toBe(true);
+	});
+
+	it("emits candidates in stable score order", () => {
+		const features = [
+			{ memory_id: 1, title: "a", text: "a", concepts: [], project: "codemem" },
+			{ memory_id: 2, title: "b", text: "b", concepts: [], project: "codemem" },
+			{ memory_id: 3, title: "c", text: "c", concepts: [], project: "codemem" },
+			{ memory_id: 4, title: "d", text: "d", concepts: [], project: "codemem" },
+		];
+
+		const candidates = emitDistillCandidates(
+			[
+				{
+					representative_id: 3,
+					member_ids: [3, 4],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "title",
+					scores: {
+						combined_score: 0.4,
+						member_count: 2,
+						session_count: 1,
+						time_span_days: 0,
+						mean_confidence: 0.8,
+						recurrence_score: 0.5,
+						session_spread_score: 0.5,
+						time_spread_score: 0.5,
+						recency_score: 0.5,
+					},
+				},
+				{
+					representative_id: 1,
+					member_ids: [1, 2],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "title",
+					scores: {
+						combined_score: 0.4,
+						member_count: 2,
+						session_count: 1,
+						time_span_days: 0,
+						mean_confidence: 0.8,
+						recurrence_score: 0.5,
+						session_spread_score: 0.5,
+						time_spread_score: 0.5,
+						recency_score: 0.5,
+					},
+				},
+			],
+			features,
+		);
+
+		expect(candidates.map((candidate) => candidate.representative_id)).toEqual([1, 3]);
 	});
 
 	it("loads only active-model vectors and averages current-model chunks", () => {

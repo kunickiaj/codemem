@@ -1,4 +1,5 @@
 import { chunkText, embedTexts, hashText } from "./embeddings.js";
+import { projectBasename } from "./project.js";
 import type { MemoryStore } from "./store.js";
 import type { MemoryFilters, MemoryItemResponse } from "./types.js";
 import { resolveSemanticSearchModel } from "./vectors.js";
@@ -135,6 +136,15 @@ export interface DistillContextChunkOptions {
 	maxChunkChars?: number;
 }
 
+export interface DistillCandidateEmitOptions {
+	artifactKind?: ArtifactKind;
+	includeDocumented?: boolean;
+	maxEvidenceItems?: number;
+	maxEvidenceChars?: number;
+	projectTarget?: string;
+	userTarget?: string;
+}
+
 export const DEFAULT_CONTEXT_FACT_KINDS = ["discovery", "decision"] as const;
 
 const DEFAULT_BATCH_SIZE = 500;
@@ -147,6 +157,11 @@ const DEFAULT_RECENCY_HALF_LIFE_DAYS = 60;
 const DEFAULT_UNKNOWN_CONFIDENCE = 1;
 const DEFAULT_CONTEXT_LEXICAL_THRESHOLD = 0.75;
 const DEFAULT_CONTEXT_MIN_LEXICAL_OVERLAP = 3;
+const DEFAULT_PROJECT_CONTEXT_TARGET = "AGENTS.md";
+const DEFAULT_USER_CONTEXT_TARGET = "~/.config/opencode/AGENTS.md";
+// Bodies can be very large (ingest allows ~2MB), so cap each evidence string.
+// maxEvidenceItems caps how many entries; this caps the size of each entry.
+const DEFAULT_EVIDENCE_CHAR_LIMIT = 600;
 const MS_PER_DAY = 86_400_000;
 
 const CLUSTER_STOP_WORDS = new Set([
@@ -191,6 +206,12 @@ function parseJsonList(value: string | null | undefined): string[] {
 	} catch {
 		return [];
 	}
+}
+
+function normalizeProjectPath(project: string): string {
+	let normalized = project.replaceAll("\\", "/");
+	while (normalized.endsWith("/")) normalized = normalized.slice(0, -1);
+	return normalized;
 }
 
 function normalizeKinds(kinds: string[] | undefined): string[] {
@@ -304,6 +325,53 @@ function betterDocumentationMatch(
 	const pathDiff = b.document_path.localeCompare(a.document_path);
 	if (pathDiff !== 0) return pathDiff < 0 ? b : a;
 	return b.chunk_index < a.chunk_index ? b : a;
+}
+
+function hasDocumentationStatus(
+	cluster: DistillScoredCluster | DistillDocumentedCluster,
+): cluster is DistillDocumentedCluster {
+	return "already_documented" in cluster;
+}
+
+function compareDistillCandidates(a: DistillCandidate, b: DistillCandidate): number {
+	if (b.score !== a.score) return b.score - a.score;
+	if (b.recurrence !== a.recurrence) return b.recurrence - a.recurrence;
+	return a.representative_id - b.representative_id;
+}
+
+function truncateEvidence(text: string, limit: number): string {
+	if (text.length <= limit) return text;
+	return `${text.slice(0, limit).trimEnd()}…`;
+}
+
+/**
+ * Route a cluster's candidate scope from its members' projects. Project scope
+ * requires every member to resolve to a single repo (basename aliases collapse;
+ * distinct same-basename repos and unknown projects fall back to user scope).
+ * Shared by candidate emission and scope-aware dedupe so both agree.
+ */
+function routeDistillScope(memberProjects: Array<string | null>): {
+	scope: DistillScope;
+	projects: string[];
+} {
+	const hasUnknownProject = memberProjects.some((project) => project == null);
+	const projects = [
+		...new Set(memberProjects.filter((project): project is string => project != null)),
+	].sort();
+	const normalizedProjects = projects.map(normalizeProjectPath);
+	const distinctBasenames = new Set(
+		normalizedProjects.map((project) => projectBasename(project) || project),
+	);
+	const distinctPathForms = new Set(
+		normalizedProjects.filter((project) => {
+			const base = projectBasename(project);
+			return base !== "" && base !== project;
+		}),
+	);
+	const isSingleRepo =
+		projects.length > 0 && distinctBasenames.size === 1 && distinctPathForms.size <= 1;
+	const scope: DistillScope = !hasUnknownProject && isSingleRepo ? "project" : "user";
+	return { scope, projects };
 }
 
 export function selectDistillCorpus(
@@ -794,6 +862,73 @@ export function markDistillClustersDocumented(
 			documentation_match: best,
 		};
 	});
+}
+
+export function emitDistillCandidates(
+	clusters: Array<DistillScoredCluster | DistillDocumentedCluster>,
+	features: DistillVectorFeature[],
+	options: DistillCandidateEmitOptions = {},
+): DistillCandidate[] {
+	const featureById = new Map(features.map((feature) => [feature.memory_id, feature]));
+	const artifactKind = options.artifactKind ?? "context_fact";
+	const maxEvidenceItems = Math.max(1, Math.floor(options.maxEvidenceItems ?? 5));
+	const maxEvidenceChars = Math.max(
+		1,
+		Math.floor(options.maxEvidenceChars ?? DEFAULT_EVIDENCE_CHAR_LIMIT),
+	);
+
+	return clusters
+		.flatMap((cluster) => {
+			if (
+				hasDocumentationStatus(cluster) &&
+				cluster.already_documented &&
+				!options.includeDocumented
+			) {
+				return [];
+			}
+
+			const members = cluster.member_ids.flatMap((id) => {
+				const feature = featureById.get(id);
+				return feature ? [feature] : [];
+			});
+			const { scope, projects } = routeDistillScope(
+				members.map((feature) => clean(feature.project)),
+			);
+			const concepts = [
+				...new Set(
+					(cluster.overlap_concepts.length > 0
+						? cluster.overlap_concepts
+						: members.flatMap((feature) => feature.concepts)
+					).map((concept) => concept.toLowerCase()),
+				),
+			].sort();
+			const evidence = members
+				.toSorted((a, b) => a.memory_id - b.memory_id)
+				.map((feature) => clean(feature.text) ?? clean(feature.title))
+				.filter((text): text is string => text != null)
+				.slice(0, maxEvidenceItems)
+				.map((text) => truncateEvidence(text, maxEvidenceChars));
+
+			return [
+				{
+					scope,
+					suggested_target:
+						scope === "project"
+							? (options.projectTarget ?? DEFAULT_PROJECT_CONTEXT_TARGET)
+							: (options.userTarget ?? DEFAULT_USER_CONTEXT_TARGET),
+					score: cluster.scores.combined_score,
+					recurrence: cluster.scores.member_count,
+					projects,
+					member_ids: [...cluster.member_ids].sort((a, b) => a - b),
+					representative_id: cluster.representative_id,
+					concepts,
+					artifact_kind: artifactKind,
+					evidence,
+					draft_text: null,
+				},
+			];
+		})
+		.toSorted(compareDistillCandidates);
 }
 
 export function createContextFactDetector(): DistillDetector<ContextFactFeature> {
