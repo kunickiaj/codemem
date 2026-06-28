@@ -8,6 +8,7 @@ import {
 	createContextFactDetector,
 	loadDistillVectorFeatures,
 	projectContextFactFeatures,
+	scoreDistillClusters,
 	selectDistillCorpus,
 } from "./distill.js";
 import { resolveEmbeddingModel, serializeFloat32 } from "./embeddings.js";
@@ -60,6 +61,7 @@ describe("distill", () => {
 		kind: string;
 		title: string;
 		bodyText?: string;
+		confidence?: number;
 		createdAt: string;
 		metadata?: Record<string, unknown>;
 	}): number {
@@ -68,7 +70,7 @@ describe("distill", () => {
 			input.kind,
 			input.title,
 			input.bodyText ?? `${input.title} body`,
-			0.8,
+			input.confidence ?? 0.8,
 			undefined,
 			input.metadata,
 		);
@@ -153,6 +155,9 @@ describe("distill", () => {
 				text: "Release preflight requires main\n\nRelease preflight rejects detached HEADs.",
 				concepts: ["release", "preflight"],
 				project: "codemem",
+				session_id: sessionId,
+				created_at: "2026-06-01T00:00:01.000Z",
+				confidence: 0.8,
 			},
 		]);
 	});
@@ -429,6 +434,9 @@ describe("distill", () => {
 				text: "Keep distill deterministic\n\nKeep distill deterministic body",
 				concepts: ["distill"],
 				project: "codemem",
+				session_id: sessionId,
+				created_at: "2026-06-01T00:00:01.000Z",
+				confidence: 0.8,
 			},
 		]);
 	});
@@ -467,6 +475,335 @@ describe("distill", () => {
 		const [feature] = loadDistillVectorFeatures(store, [item]);
 
 		expect(feature?.project).toBe("denormalized");
+	});
+
+	it("ranks cross-session weekly recurrence above a larger same-session burst", () => {
+		const features = [
+			...Array.from({ length: 8 }, (_, index) => ({
+				memory_id: index + 1,
+				title: `Burst ${index}`,
+				text: `Burst ${index}`,
+				concepts: [],
+				project: "codemem",
+				session_id: 1,
+				created_at: "2026-06-22T00:00:00.000Z",
+				confidence: 0.9,
+			})),
+			...Array.from({ length: 4 }, (_, index) => ({
+				memory_id: index + 101,
+				title: `Spread ${index}`,
+				text: `Spread ${index}`,
+				concepts: [],
+				project: "codemem",
+				session_id: index + 10,
+				created_at: `2026-06-${String(1 + index * 7).padStart(2, "0")}T00:00:00.000Z`,
+				confidence: 0.9,
+			})),
+		];
+		const scored = scoreDistillClusters(
+			[
+				{
+					representative_id: 1,
+					member_ids: [1, 2, 3, 4, 5, 6, 7, 8],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "title",
+				},
+				{
+					representative_id: 101,
+					member_ids: [101, 102, 103, 104],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "semantic",
+				},
+			],
+			features,
+			{ referenceNow: "2026-06-28T00:00:00.000Z" },
+		);
+
+		expect(scored.map((cluster) => cluster.representative_id)).toEqual([101, 1]);
+		expect(scored[0]?.scores.member_count).toBe(4);
+		expect(scored[0]?.scores.session_count).toBe(4);
+		expect(scored[0]?.scores.time_span_days).toBe(21);
+		expect(scored[0]?.scores.mean_confidence).toBeCloseTo(0.9);
+		expect(scored[0]?.scores.combined_score).toBeGreaterThan(scored[1]?.scores.combined_score ?? 0);
+	});
+
+	it("uses recency as a light weighting rather than overpowering spread", () => {
+		const features = [
+			{
+				memory_id: 1,
+				title: "recent burst one",
+				text: "recent burst one",
+				concepts: [],
+				project: "codemem",
+				session_id: 1,
+				created_at: "2026-06-28T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			{
+				memory_id: 2,
+				title: "recent burst two",
+				text: "recent burst two",
+				concepts: [],
+				project: "codemem",
+				session_id: 1,
+				created_at: "2026-06-28T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			{
+				memory_id: 3,
+				title: "old burst one",
+				text: "old burst one",
+				concepts: [],
+				project: "codemem",
+				session_id: 2,
+				created_at: "2026-03-01T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			{
+				memory_id: 4,
+				title: "old burst two",
+				text: "old burst two",
+				concepts: [],
+				project: "codemem",
+				session_id: 2,
+				created_at: "2026-03-01T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			...Array.from({ length: 4 }, (_, index) => ({
+				memory_id: index + 10,
+				title: `older spread ${index}`,
+				text: `older spread ${index}`,
+				concepts: [],
+				project: "codemem",
+				session_id: index + 10,
+				created_at: `2026-03-${String(1 + index * 7).padStart(2, "0")}T00:00:00.000Z`,
+				confidence: 0.9,
+			})),
+		];
+		const scored = scoreDistillClusters(
+			[
+				{
+					representative_id: 1,
+					member_ids: [1, 2],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "title",
+				},
+				{
+					representative_id: 3,
+					member_ids: [3, 4],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "title",
+				},
+				{
+					representative_id: 10,
+					member_ids: [10, 11, 12, 13],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "semantic",
+				},
+			],
+			features,
+			{ referenceNow: "2026-06-28T00:00:00.000Z" },
+		);
+
+		const recentBurst = scored.find((cluster) => cluster.representative_id === 1);
+		const oldBurst = scored.find((cluster) => cluster.representative_id === 3);
+		const olderSpread = scored.find((cluster) => cluster.representative_id === 10);
+		expect(recentBurst?.scores.combined_score).toBeGreaterThan(
+			oldBurst?.scores.combined_score ?? 0,
+		);
+		expect(olderSpread?.scores.combined_score).toBeGreaterThan(
+			recentBurst?.scores.combined_score ?? 0,
+		);
+	});
+
+	it("scores singleton and missing timestamp clusters deterministically", () => {
+		const scored = scoreDistillClusters(
+			[
+				{
+					representative_id: 2,
+					member_ids: [2],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "title",
+				},
+				{
+					representative_id: 1,
+					member_ids: [1],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "title",
+				},
+			],
+			[
+				{
+					memory_id: 1,
+					title: "missing one",
+					text: "missing one",
+					concepts: [],
+					project: "codemem",
+					session_id: 1,
+					created_at: "not-a-date",
+					confidence: 0.7,
+				},
+				{
+					memory_id: 2,
+					title: "missing two",
+					text: "missing two",
+					concepts: [],
+					project: "codemem",
+					session_id: 2,
+					created_at: null,
+					confidence: 0.7,
+				},
+			],
+			{ referenceNow: "2026-06-28T00:00:00.000Z" },
+		);
+
+		expect(scored.map((cluster) => cluster.representative_id)).toEqual([1, 2]);
+		expect(scored[0]?.scores.member_count).toBe(1);
+		expect(scored[0]?.scores.time_span_days).toBe(0);
+		expect(scored[0]?.scores.recency_score).toBe(0);
+		expect(Number.isFinite(scored[0]?.scores.combined_score)).toBe(true);
+	});
+
+	it("treats absent confidence as neutral instead of zeroing promotability", () => {
+		const scored = scoreDistillClusters(
+			[
+				{
+					representative_id: 1,
+					member_ids: [1, 2],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "semantic",
+				},
+			],
+			[
+				{
+					memory_id: 1,
+					title: "missing confidence one",
+					text: "missing confidence one",
+					concepts: [],
+					project: "codemem",
+					session_id: 1,
+					created_at: "2026-06-01T00:00:00.000Z",
+				},
+				{
+					memory_id: 2,
+					title: "missing confidence two",
+					text: "missing confidence two",
+					concepts: [],
+					project: "codemem",
+					session_id: 2,
+					created_at: "2026-06-08T00:00:00.000Z",
+				},
+			],
+			{ referenceNow: "2026-06-28T00:00:00.000Z" },
+		);
+
+		expect(scored[0]?.scores.mean_confidence).toBe(1);
+		expect(scored[0]?.scores.combined_score).toBeGreaterThan(0);
+	});
+
+	it("uses one reference clock per batch for deterministic tie-breaking", () => {
+		const features = [
+			{
+				memory_id: 1,
+				title: "alpha",
+				text: "alpha",
+				concepts: [],
+				project: "codemem",
+				session_id: 1,
+				created_at: "2026-06-01T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			{
+				memory_id: 2,
+				title: "beta",
+				text: "beta",
+				concepts: [],
+				project: "codemem",
+				session_id: 2,
+				created_at: "2026-06-01T00:00:00.000Z",
+				confidence: 0.9,
+			},
+		];
+		// No referenceNow: scoreDistillClusters must capture a single clock so the
+		// two equal clusters tie and fall through to the representative-id ordering.
+		const scored = scoreDistillClusters(
+			[
+				{
+					representative_id: 2,
+					member_ids: [2],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "title",
+				},
+				{
+					representative_id: 1,
+					member_ids: [1],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "title",
+				},
+			],
+			features,
+		);
+
+		expect(scored[0]?.scores.combined_score).toBe(scored[1]?.scores.combined_score);
+		expect(scored.map((cluster) => cluster.representative_id)).toEqual([1, 2]);
+	});
+
+	it("penalizes low mean confidence even with higher recurrence", () => {
+		const lowConfidenceFeatures = Array.from({ length: 6 }, (_, index) => ({
+			memory_id: index + 1,
+			title: `low confidence ${index}`,
+			text: `low confidence ${index}`,
+			concepts: [],
+			project: "codemem",
+			session_id: index + 1,
+			created_at: `2026-06-${String(1 + index).padStart(2, "0")}T00:00:00.000Z`,
+			confidence: 0.2,
+		}));
+		const highConfidenceFeatures = Array.from({ length: 3 }, (_, index) => ({
+			memory_id: index + 101,
+			title: `high confidence ${index}`,
+			text: `high confidence ${index}`,
+			concepts: [],
+			project: "codemem",
+			session_id: index + 101,
+			created_at: `2026-06-${String(1 + index * 3).padStart(2, "0")}T00:00:00.000Z`,
+			confidence: 0.9,
+		}));
+
+		const scored = scoreDistillClusters(
+			[
+				{
+					representative_id: 1,
+					member_ids: [1, 2, 3, 4, 5, 6],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "semantic",
+				},
+				{
+					representative_id: 101,
+					member_ids: [101, 102, 103],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "semantic",
+				},
+			],
+			[...lowConfidenceFeatures, ...highConfidenceFeatures],
+			{ referenceNow: "2026-06-28T00:00:00.000Z" },
+		);
+
+		expect(scored.map((cluster) => cluster.representative_id)).toEqual([101, 1]);
+		expect(scored[0]?.scores.mean_confidence).toBeCloseTo(0.9);
+		expect(scored[1]?.scores.mean_confidence).toBeCloseTo(0.2);
 	});
 
 	it("loads only active-model vectors and averages current-model chunks", () => {
