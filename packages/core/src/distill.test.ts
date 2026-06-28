@@ -4,9 +4,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { connect } from "./db.js";
 import {
+	chunkDistillContextDocuments,
 	clusterDistillFeatures,
 	createContextFactDetector,
 	loadDistillVectorFeatures,
+	markDistillClustersDocumented,
 	projectContextFactFeatures,
 	scoreDistillClusters,
 	selectDistillCorpus,
@@ -767,6 +769,452 @@ describe("distill", () => {
 		expect(scored.map((cluster) => cluster.representative_id)).toEqual([101, 1]);
 		expect(scored[0]?.scores.mean_confidence).toBeCloseTo(0.9);
 		expect(scored[1]?.scores.mean_confidence).toBeCloseTo(0.2);
+	});
+
+	it("chunks context documents before matching clusters", () => {
+		const chunks = chunkDistillContextDocuments(
+			[
+				{
+					path: "AGENTS.md",
+					text: "Viewer server needs built static assets.\n\nRelease tag preflight must run on main with a clean tree.",
+				},
+				{ path: "empty.md", text: "   " },
+			],
+			{ maxChunkChars: 60 },
+		);
+
+		expect(chunks.map((chunk) => chunk.text)).toEqual([
+			"Viewer server needs built static assets.",
+			"Release tag preflight must run on main with a clean tree.",
+		]);
+		expect(chunks.map((chunk) => [chunk.document_path, chunk.chunk_index])).toEqual([
+			["AGENTS.md", 0],
+			["AGENTS.md", 1],
+		]);
+		expect(chunks.every((chunk) => chunk.text_hash.length > 0)).toBe(true);
+	});
+
+	it("clamps non-positive or fractional chunk sizes instead of hanging", () => {
+		const text = "Paragraph one is here.\n\nParagraph two is here.";
+		for (const maxChunkChars of [0, -50, 0.5]) {
+			const chunks = chunkDistillContextDocuments([{ path: "AGENTS.md", text }], {
+				maxChunkChars,
+			});
+			expect(chunks).toHaveLength(1);
+			expect(chunks[0]?.text).toBe(text);
+		}
+	});
+
+	it("does not suppress a cluster when only one member is documented", () => {
+		const features = [
+			{
+				memory_id: 1,
+				title: "Covered member",
+				text: "alpha rule one covered fully here",
+				concepts: [],
+				project: "codemem",
+				session_id: 1,
+				created_at: "2026-06-01T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			{
+				memory_id: 2,
+				title: "Net-new member",
+				text: "beta brand new undocumented distinct rule words",
+				concepts: [],
+				project: "codemem",
+				session_id: 2,
+				created_at: "2026-06-02T00:00:00.000Z",
+				confidence: 0.9,
+			},
+		];
+		const scored = scoreDistillClusters(
+			[
+				{
+					representative_id: 1,
+					member_ids: [1, 2],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "title",
+				},
+			],
+			features,
+			{ referenceNow: "2026-06-28T00:00:00.000Z" },
+		);
+
+		// Only member 1 is documented verbatim; member 2 is net-new, so the cluster
+		// must stay eligible.
+		const documented = markDistillClustersDocumented(
+			scored,
+			features,
+			chunkDistillContextDocuments([
+				{ path: "AGENTS.md", text: "alpha rule one covered fully here" },
+			]),
+		);
+
+		expect(documented[0]).toMatchObject({
+			already_documented: false,
+			documentation_match: null,
+		});
+	});
+
+	it("skips project-scoped context for user-scoped clusters", () => {
+		const features = [
+			{
+				memory_id: 1,
+				title: "Shared lesson",
+				text: "release tag preflight clean main branch",
+				concepts: [],
+				project: "codemem",
+				session_id: 1,
+				created_at: "2026-06-01T00:00:00.000Z",
+				confidence: 0.9,
+			},
+		];
+		const scored = scoreDistillClusters(
+			[
+				{
+					representative_id: 1,
+					member_ids: [1],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "title",
+				},
+			],
+			features,
+			{ referenceNow: "2026-06-28T00:00:00.000Z" },
+		);
+		const chunks = chunkDistillContextDocuments([
+			{ path: "AGENTS.md", text: "release tag preflight clean main branch", scope: "project" },
+		]);
+
+		// User-scoped cluster ignores the project AGENTS.md chunk.
+		const documentedUser = markDistillClustersDocumented(
+			scored,
+			features,
+			chunks,
+			{},
+			new Map([[1, "user"]]),
+		);
+		expect(documentedUser[0]).toMatchObject({
+			already_documented: false,
+			documentation_match: null,
+		});
+
+		// Project-scoped cluster still dedupes against the same chunk.
+		const documentedProject = markDistillClustersDocumented(
+			scored,
+			features,
+			chunks,
+			{},
+			new Map([[1, "project"]]),
+		);
+		expect(documentedProject[0]).toMatchObject({
+			already_documented: true,
+			documentation_match: { signal: "exact" },
+		});
+	});
+
+	it("does not treat a title-only context chunk as an exact match", () => {
+		const features = [
+			{
+				memory_id: 1,
+				title: "Release",
+				text: "Release\n\nRelease preflight must run on main with a clean tree.",
+				concepts: [],
+				project: "codemem",
+				session_id: 1,
+				created_at: "2026-06-01T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			{
+				memory_id: 2,
+				title: "Release",
+				text: "Release\n\nRelease tags require an up-to-date main branch.",
+				concepts: [],
+				project: "codemem",
+				session_id: 2,
+				created_at: "2026-06-02T00:00:00.000Z",
+				confidence: 0.9,
+			},
+		];
+		const scored = scoreDistillClusters(
+			[
+				{
+					representative_id: 1,
+					member_ids: [1, 2],
+					overlap_concepts: [],
+					overlap_words: ["release"],
+					signal: "title",
+				},
+			],
+			features,
+			{ referenceNow: "2026-06-28T00:00:00.000Z" },
+		);
+
+		const documented = markDistillClustersDocumented(
+			scored,
+			features,
+			chunkDistillContextDocuments([{ path: "AGENTS.md", text: "Release" }]),
+		);
+
+		expect(documented[0]).toMatchObject({
+			already_documented: false,
+			documentation_match: null,
+		});
+	});
+
+	it("ignores vector similarity when deduping against context", () => {
+		const features = [
+			{
+				memory_id: 1,
+				title: "Distinct narrative",
+				text: "Distinct narrative wording about widgets.",
+				concepts: [],
+				project: "codemem",
+				session_id: 1,
+				created_at: "2026-06-01T00:00:00.000Z",
+				confidence: 0.9,
+				vector: new Float32Array([1, 0]),
+			},
+		];
+		const scored = scoreDistillClusters(
+			[
+				{
+					representative_id: 1,
+					member_ids: [1],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "semantic",
+				},
+			],
+			features,
+			{ referenceNow: "2026-06-28T00:00:00.000Z" },
+		);
+
+		// Vector is identical to the chunk, but dedupe is exact/lexical only and the
+		// distilled text shares no words with it, so the cluster stays eligible.
+		const documented = markDistillClustersDocumented(scored, features, [
+			{
+				document_path: "AGENTS.md",
+				chunk_index: 0,
+				text: "Completely unrelated documentation heading.",
+				text_hash: "unrelated",
+				vector: new Float32Array([1, 0]),
+			},
+		]);
+
+		expect(documented[0]).toMatchObject({
+			already_documented: false,
+			documentation_match: null,
+		});
+	});
+
+	it("keeps clusters eligible when a vector matches but text does not", () => {
+		const features = [
+			{
+				memory_id: 1,
+				title: "Alpha lesson",
+				text: "Alpha lesson",
+				concepts: [],
+				project: "codemem",
+				session_id: 1,
+				created_at: "2026-06-01T00:00:00.000Z",
+				confidence: 0.9,
+				vector: new Float32Array([1, 0]),
+			},
+			{
+				memory_id: 2,
+				title: "Beta lesson",
+				text: "Beta lesson",
+				concepts: [],
+				project: "codemem",
+				session_id: 2,
+				created_at: "2026-06-02T00:00:00.000Z",
+				confidence: 0.9,
+			},
+		];
+		const scored = scoreDistillClusters(
+			[
+				{
+					representative_id: 1,
+					member_ids: [1, 2],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "semantic",
+				},
+			],
+			features,
+			{ referenceNow: "2026-06-28T00:00:00.000Z" },
+		);
+
+		// A vector identical to the chunk must not suppress the cluster because
+		// dedupe ignores vectors entirely (exact/lexical only).
+		const documented = markDistillClustersDocumented(scored, features, [
+			{
+				document_path: "AGENTS.md",
+				chunk_index: 0,
+				text: "completely different wording",
+				text_hash: "unrelated",
+				vector: new Float32Array([1, 0]),
+			},
+		]);
+
+		expect(documented[0]).toMatchObject({
+			already_documented: false,
+			documentation_match: null,
+		});
+	});
+
+	it("falls back to exact or lexical matching when vectors are absent", () => {
+		const features = [
+			{
+				memory_id: 1,
+				title: "release tag preflight clean main branch",
+				text: "release tag preflight clean main branch",
+				concepts: [],
+				project: "codemem",
+				session_id: 1,
+				created_at: "2026-06-01T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			{
+				memory_id: 2,
+				title: "unrelated sync bootstrap",
+				text: "unrelated sync bootstrap",
+				concepts: [],
+				project: "codemem",
+				session_id: 2,
+				created_at: "2026-06-02T00:00:00.000Z",
+				confidence: 0.9,
+			},
+		];
+		const scored = scoreDistillClusters(
+			[
+				{
+					representative_id: 1,
+					member_ids: [1],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "title",
+				},
+				{
+					representative_id: 2,
+					member_ids: [2],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "title",
+				},
+			],
+			features,
+			{ referenceNow: "2026-06-28T00:00:00.000Z" },
+		);
+
+		const documented = markDistillClustersDocumented(
+			scored,
+			features,
+			chunkDistillContextDocuments([
+				{ path: "AGENTS.md", text: "release tag preflight clean main branch" },
+				{ path: "docs.md", text: "weak overlap branch only" },
+			]),
+		);
+
+		expect(documented.find((cluster) => cluster.representative_id === 1)).toMatchObject({
+			already_documented: true,
+			documentation_match: { signal: "exact" },
+		});
+		expect(documented.find((cluster) => cluster.representative_id === 2)).toMatchObject({
+			already_documented: false,
+			documentation_match: null,
+		});
+	});
+
+	it("does not mark broad clusters documented from short lexical headings", () => {
+		const features = [
+			{
+				memory_id: 1,
+				title: "release tag preflight clean main branch",
+				text: "release tag preflight clean main branch",
+				concepts: [],
+				project: "codemem",
+				session_id: 1,
+				created_at: "2026-06-01T00:00:00.000Z",
+				confidence: 0.9,
+			},
+			{
+				memory_id: 2,
+				title: "release tagging requires preflight clean branch",
+				text: "release tagging requires preflight clean branch",
+				concepts: [],
+				project: "codemem",
+				session_id: 2,
+				created_at: "2026-06-02T00:00:00.000Z",
+				confidence: 0.9,
+			},
+		];
+		const scored = scoreDistillClusters(
+			[
+				{
+					representative_id: 1,
+					member_ids: [1, 2],
+					overlap_concepts: [],
+					overlap_words: ["branch", "clean", "preflight", "release"],
+					signal: "title",
+				},
+			],
+			features,
+			{ referenceNow: "2026-06-28T00:00:00.000Z" },
+		);
+
+		const documented = markDistillClustersDocumented(
+			scored,
+			features,
+			chunkDistillContextDocuments([{ path: "AGENTS.md", text: "## Release" }]),
+		);
+
+		expect(documented[0]).toMatchObject({
+			already_documented: false,
+			documentation_match: null,
+		});
+	});
+
+	it("selects documentation matches deterministically across reordered chunks", () => {
+		const features = [
+			{
+				memory_id: 1,
+				title: "release tag preflight clean main branch",
+				text: "release tag preflight clean main branch",
+				concepts: [],
+				project: "codemem",
+				session_id: 1,
+				created_at: "2026-06-01T00:00:00.000Z",
+				confidence: 0.9,
+			},
+		];
+		const [scored] = scoreDistillClusters(
+			[
+				{
+					representative_id: 1,
+					member_ids: [1],
+					overlap_concepts: [],
+					overlap_words: [],
+					signal: "title",
+				},
+			],
+			features,
+			{ referenceNow: "2026-06-28T00:00:00.000Z" },
+		);
+		if (!scored) throw new Error("expected scored cluster");
+		const chunks = chunkDistillContextDocuments([
+			{ path: "Z.md", text: "release tag preflight clean main branch" },
+			{ path: "AGENTS.md", text: "release tag preflight clean main branch" },
+		]);
+
+		const first = markDistillClustersDocumented([scored], features, chunks)[0];
+		const second = markDistillClustersDocumented([scored], features, chunks.toReversed())[0];
+
+		expect(first?.documentation_match).toMatchObject({ document_path: "AGENTS.md" });
+		expect(second?.documentation_match).toEqual(first?.documentation_match);
 	});
 
 	it("loads only active-model vectors and averages current-model chunks", () => {
