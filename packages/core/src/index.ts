@@ -152,13 +152,18 @@ export type {
 	ArtifactKind,
 	ContextFactFeature,
 	DistillCandidate,
+	DistillCluster,
+	DistillClusterOptions,
 	DistillCorpusOptions,
 	DistillDetector,
 	DistillScope,
+	DistillVectorFeature,
 } from "./distill.js";
 export {
+	clusterDistillFeatures,
 	createContextFactDetector,
 	DEFAULT_CONTEXT_FACT_KINDS,
+	loadDistillVectorFeatures,
 	projectContextFactFeatures,
 	selectDistillCorpus,
 } from "./distill.js";
