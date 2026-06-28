@@ -446,7 +446,10 @@ describe("ingest-sanitize", () => {
 // ingest() integration (mocked observer)
 // ---------------------------------------------------------------------------
 
-describe("ingest() integration", () => {
+// CI occasionally times out these sqlite-backed ingest integration tests on
+// shared runners. Keep the allowance scoped to this persistence-heavy suite
+// rather than changing Vitest's global timeout.
+describe("ingest() integration", { timeout: 15_000 }, () => {
 	let tmpDir: string;
 	let store: MemoryStore;
 
