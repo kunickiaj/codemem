@@ -39,6 +39,9 @@ export interface ContextFactFeature {
 	text: string;
 	concepts: string[];
 	project: string | null;
+	session_id?: number | null;
+	created_at?: string | null;
+	confidence?: number | null;
 }
 
 export interface DistillVectorFeature extends ContextFactFeature {
@@ -60,11 +63,41 @@ export interface DistillClusterOptions {
 	minTitleWordOverlap?: number;
 }
 
+export interface DistillPromotabilityScores {
+	combined_score: number;
+	member_count: number;
+	session_count: number;
+	time_span_days: number;
+	mean_confidence: number;
+	recurrence_score: number;
+	session_spread_score: number;
+	time_spread_score: number;
+	recency_score: number;
+}
+
+export interface DistillScoredCluster extends DistillCluster {
+	scores: DistillPromotabilityScores;
+}
+
+export interface DistillScoringOptions {
+	referenceNow?: Date | string;
+	maxRecurrenceCount?: number;
+	maxSessionCount?: number;
+	maxTimeSpreadDays?: number;
+	recencyHalfLifeDays?: number;
+}
+
 export const DEFAULT_CONTEXT_FACT_KINDS = ["discovery", "decision"] as const;
 
 const DEFAULT_BATCH_SIZE = 500;
 const VECTOR_LOOKUP_BATCH_SIZE = 500;
 const SESSION_LOOKUP_BATCH_SIZE = 500;
+const DEFAULT_MAX_RECURRENCE_COUNT = 8;
+const DEFAULT_MAX_SESSION_COUNT = 4;
+const DEFAULT_MAX_TIME_SPREAD_DAYS = 21;
+const DEFAULT_RECENCY_HALF_LIFE_DAYS = 60;
+const DEFAULT_UNKNOWN_CONFIDENCE = 1;
+const MS_PER_DAY = 86_400_000;
 
 const CLUSTER_STOP_WORDS = new Set([
 	"the",
@@ -188,6 +221,22 @@ function strongerSignal(
 	return signals.toSorted((a, b) => signalRank(b) - signalRank(a))[0] ?? "title";
 }
 
+function clamp01(value: number): number {
+	if (!Number.isFinite(value)) return 0;
+	return Math.min(Math.max(value, 0), 1);
+}
+
+function parseTime(value: string | null | undefined): number | null {
+	if (!value) return null;
+	const time = Date.parse(value);
+	return Number.isFinite(time) ? time : null;
+}
+
+function mean(values: number[]): number {
+	if (values.length === 0) return 0;
+	return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
 export function selectDistillCorpus(
 	store: MemoryStore,
 	options: DistillCorpusOptions = {},
@@ -223,6 +272,9 @@ export function projectContextFactFeatures(items: MemoryItemResponse[]): Context
 			text: [item.title, narrative ?? body ?? ""].filter(Boolean).join("\n\n"),
 			concepts: parseJsonList(item.concepts),
 			project: clean(item.project),
+			session_id: item.session_id,
+			created_at: item.created_at,
+			confidence: item.confidence,
 		};
 	});
 }
@@ -436,6 +488,108 @@ export function clusterDistillFeatures(
 		})
 		.filter((cluster): cluster is DistillCluster => cluster != null)
 		.toSorted((a, b) => a.representative_id - b.representative_id);
+}
+
+export function scoreDistillCluster(
+	cluster: DistillCluster,
+	features: DistillVectorFeature[],
+	options: DistillScoringOptions = {},
+): DistillScoredCluster {
+	const featureById = new Map(features.map((feature) => [feature.memory_id, feature]));
+	const members = cluster.member_ids.flatMap((id) => {
+		const feature = featureById.get(id);
+		return feature ? [feature] : [];
+	});
+	const memberCount = members.length;
+	const sessionCount = new Set(
+		members
+			.map((feature) => feature.session_id)
+			.filter((sessionId): sessionId is number => typeof sessionId === "number"),
+	).size;
+	const times = members
+		.map((feature) => parseTime(feature.created_at))
+		.filter((time): time is number => time != null)
+		.toSorted((a, b) => a - b);
+	const firstTime = times[0] ?? null;
+	const lastTime = times.at(-1) ?? null;
+	const timeSpanDays =
+		firstTime != null && lastTime != null ? (lastTime - firstTime) / MS_PER_DAY : 0;
+	const confidences = members
+		.map((feature) => feature.confidence)
+		.filter(
+			(confidence): confidence is number => confidence != null && Number.isFinite(confidence),
+		);
+	const meanConfidence = clamp01(
+		confidences.length > 0 ? mean(confidences) : DEFAULT_UNKNOWN_CONFIDENCE,
+	);
+
+	const maxRecurrenceCount = Math.max(
+		1,
+		options.maxRecurrenceCount ?? DEFAULT_MAX_RECURRENCE_COUNT,
+	);
+	const maxSessionCount = Math.max(1, options.maxSessionCount ?? DEFAULT_MAX_SESSION_COUNT);
+	const maxTimeSpreadDays = Math.max(1, options.maxTimeSpreadDays ?? DEFAULT_MAX_TIME_SPREAD_DAYS);
+	const recencyHalfLifeDays = Math.max(
+		1,
+		options.recencyHalfLifeDays ?? DEFAULT_RECENCY_HALF_LIFE_DAYS,
+	);
+	const referenceNow =
+		options.referenceNow instanceof Date
+			? options.referenceNow.getTime()
+			: (parseTime(options.referenceNow) ?? Date.now());
+
+	const recurrenceScore = clamp01(Math.log2(memberCount + 1) / Math.log2(maxRecurrenceCount + 1));
+	const sessionSpreadScore = 0.4 + 0.6 * clamp01(sessionCount / maxSessionCount);
+	const timeSpreadScore = 0.4 + 0.6 * clamp01(timeSpanDays / maxTimeSpreadDays);
+	const ageDays =
+		lastTime == null
+			? Number.POSITIVE_INFINITY
+			: Math.max(0, (referenceNow - lastTime) / MS_PER_DAY);
+	const recencyScore = lastTime == null ? 0 : 1 / (1 + ageDays / recencyHalfLifeDays);
+	const recencyMultiplier = 0.95 + 0.1 * recencyScore;
+	const combinedScore =
+		recurrenceScore * sessionSpreadScore * timeSpreadScore * meanConfidence * recencyMultiplier;
+
+	return {
+		...cluster,
+		scores: {
+			combined_score: combinedScore,
+			member_count: memberCount,
+			session_count: sessionCount,
+			time_span_days: timeSpanDays,
+			mean_confidence: meanConfidence,
+			recurrence_score: recurrenceScore,
+			session_spread_score: sessionSpreadScore,
+			time_spread_score: timeSpreadScore,
+			recency_score: recencyScore,
+		},
+	};
+}
+
+export function scoreDistillClusters(
+	clusters: DistillCluster[],
+	features: DistillVectorFeature[],
+	options: DistillScoringOptions = {},
+): DistillScoredCluster[] {
+	// Resolve the scoring clock once so every cluster in the batch shares the
+	// same reference time. Otherwise Date.now() ticks between clusters and equal
+	// clusters get different recency multipliers, making rank depend on timing.
+	const scoringOptions: DistillScoringOptions =
+		options.referenceNow == null ? { ...options, referenceNow: new Date() } : options;
+	return clusters
+		.map((cluster) => scoreDistillCluster(cluster, features, scoringOptions))
+		.toSorted((a, b) => {
+			if (b.scores.combined_score !== a.scores.combined_score) {
+				return b.scores.combined_score - a.scores.combined_score;
+			}
+			if (b.scores.member_count !== a.scores.member_count) {
+				return b.scores.member_count - a.scores.member_count;
+			}
+			if (b.scores.mean_confidence !== a.scores.mean_confidence) {
+				return b.scores.mean_confidence - a.scores.mean_confidence;
+			}
+			return a.representative_id - b.representative_id;
+		});
 }
 
 export function createContextFactDetector(): DistillDetector<ContextFactFeature> {
