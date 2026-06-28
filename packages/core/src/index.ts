@@ -311,6 +311,16 @@ export {
 	startMaintenanceJob,
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
+export type {
+	DerivedMemoryRole,
+	DerivedMemoryRoleResult,
+	InferMemoryRoleInput,
+	MemoryArtifactClass,
+	MemoryWorthinessAction,
+	MemoryWorthinessReason,
+	MemoryWorthinessResult,
+} from "./memory-quality.js";
+export { classifyMemoryWorthiness, inferMemoryRole } from "./memory-quality.js";
 export type { ObserverAuthMaterial } from "./observer-auth.js";
 export {
 	buildCodexHeaders,
