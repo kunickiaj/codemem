@@ -148,6 +148,20 @@ export {
 	hasPendingDedupKeyBackfill,
 	runDedupKeyBackfillPass,
 } from "./dedup-key-backfill.js";
+export type {
+	ArtifactKind,
+	ContextFactFeature,
+	DistillCandidate,
+	DistillCorpusOptions,
+	DistillDetector,
+	DistillScope,
+} from "./distill.js";
+export {
+	createContextFactDetector,
+	DEFAULT_CONTEXT_FACT_KINDS,
+	projectContextFactFeatures,
+	selectDistillCorpus,
+} from "./distill.js";
 export type { EmbeddingClient } from "./embeddings.js";
 export {
 	_resetEmbeddingClient,
