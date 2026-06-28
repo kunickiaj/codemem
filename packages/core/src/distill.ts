@@ -1,3 +1,4 @@
+import { chunkText, embedTexts, hashText } from "./embeddings.js";
 import type { MemoryStore } from "./store.js";
 import type { MemoryFilters, MemoryItemResponse } from "./types.js";
 import { resolveSemanticSearchModel } from "./vectors.js";
@@ -87,6 +88,53 @@ export interface DistillScoringOptions {
 	recencyHalfLifeDays?: number;
 }
 
+export type DistillContextScope = "project" | "user";
+
+export interface DistillContextDocument {
+	path: string;
+	text: string;
+	/**
+	 * Which routed candidate scope this document applies to. "project" docs (a
+	 * repo AGENTS.md) must not suppress user/global candidates; "user" docs apply
+	 * to both. Undefined means the document applies to every scope.
+	 */
+	scope?: DistillContextScope;
+}
+
+export interface DistillContextChunk {
+	document_path: string;
+	chunk_index: number;
+	text: string;
+	text_hash: string;
+	vector?: Float32Array;
+	scope?: DistillContextScope;
+}
+
+export type DistillDocumentationSignal = "semantic" | "exact" | "lexical";
+
+export interface DistillDocumentationMatch {
+	document_path: string;
+	chunk_index: number;
+	signal: DistillDocumentationSignal;
+	score: number;
+	overlap_words: string[];
+}
+
+export interface DistillDocumentedCluster extends DistillScoredCluster {
+	already_documented: boolean;
+	documentation_match: DistillDocumentationMatch | null;
+}
+
+export interface DistillContextDedupeOptions {
+	minLexicalOverlap?: number;
+	semanticThreshold?: number;
+	lexicalThreshold?: number;
+}
+
+export interface DistillContextChunkOptions {
+	maxChunkChars?: number;
+}
+
 export const DEFAULT_CONTEXT_FACT_KINDS = ["discovery", "decision"] as const;
 
 const DEFAULT_BATCH_SIZE = 500;
@@ -97,6 +145,8 @@ const DEFAULT_MAX_SESSION_COUNT = 4;
 const DEFAULT_MAX_TIME_SPREAD_DAYS = 21;
 const DEFAULT_RECENCY_HALF_LIFE_DAYS = 60;
 const DEFAULT_UNKNOWN_CONFIDENCE = 1;
+const DEFAULT_CONTEXT_LEXICAL_THRESHOLD = 0.75;
+const DEFAULT_CONTEXT_MIN_LEXICAL_OVERLAP = 3;
 const MS_PER_DAY = 86_400_000;
 
 const CLUSTER_STOP_WORDS = new Set([
@@ -221,6 +271,12 @@ function strongerSignal(
 	return signals.toSorted((a, b) => signalRank(b) - signalRank(a))[0] ?? "title";
 }
 
+function documentationSignalRank(signal: DistillDocumentationSignal): number {
+	if (signal === "exact") return 3;
+	if (signal === "semantic") return 2;
+	return 1;
+}
+
 function clamp01(value: number): number {
 	if (!Number.isFinite(value)) return 0;
 	return Math.min(Math.max(value, 0), 1);
@@ -235,6 +291,19 @@ function parseTime(value: string | null | undefined): number | null {
 function mean(values: number[]): number {
 	if (values.length === 0) return 0;
 	return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function betterDocumentationMatch(
+	a: DistillDocumentationMatch | null,
+	b: DistillDocumentationMatch,
+): DistillDocumentationMatch {
+	if (!a) return b;
+	if (b.score !== a.score) return b.score > a.score ? b : a;
+	const signalDiff = documentationSignalRank(b.signal) - documentationSignalRank(a.signal);
+	if (signalDiff !== 0) return signalDiff > 0 ? b : a;
+	const pathDiff = b.document_path.localeCompare(a.document_path);
+	if (pathDiff !== 0) return pathDiff < 0 ? b : a;
+	return b.chunk_index < a.chunk_index ? b : a;
 }
 
 export function selectDistillCorpus(
@@ -590,6 +659,141 @@ export function scoreDistillClusters(
 			}
 			return a.representative_id - b.representative_id;
 		});
+}
+
+export function chunkDistillContextDocuments(
+	documents: DistillContextDocument[],
+	options: DistillContextChunkOptions = {},
+): DistillContextChunk[] {
+	// Guard against non-positive or fractional chunk sizes from flags/config:
+	// chunkText advances its hard-split loop by maxChars, so a value that floors
+	// to 0 (e.g. 0.5) would never progress and could hang on a long document.
+	// Require the floored size to be at least 1, else fall back to the default.
+	const flooredChunkChars =
+		options.maxChunkChars != null ? Math.floor(options.maxChunkChars) : undefined;
+	const maxChunkChars =
+		flooredChunkChars != null && flooredChunkChars >= 1 ? flooredChunkChars : undefined;
+	return documents.flatMap((document) => {
+		const documentPath = clean(document.path) ?? "context";
+		return chunkText(document.text, maxChunkChars)
+			.map((chunk) => chunk.trim())
+			.filter(Boolean)
+			.map((chunk, index) => ({
+				document_path: documentPath,
+				chunk_index: index,
+				text: chunk,
+				text_hash: hashText(chunk),
+				scope: document.scope,
+			}));
+	});
+}
+
+export async function embedDistillContextChunks(
+	chunks: DistillContextChunk[],
+): Promise<DistillContextChunk[]> {
+	if (chunks.length === 0) return [];
+	const embeddings = await embedTexts(chunks.map((chunk) => chunk.text));
+	return chunks.map((chunk, index) => {
+		const vector = embeddings[index];
+		return vector ? { ...chunk, vector } : chunk;
+	});
+}
+
+// Exact + lexical matching for a single member against context chunks.
+// Semantic (vector) matching is intentionally excluded: stored vectors are
+// embedded from title+body while a distilled feature may prefer a divergent
+// narrative, so a vector hit could wrongly suppress a net-new lesson.
+// Exact matches require the full projected text, not the title alone, so a
+// terse title (e.g. "Release") whose body carries the rule is not "documented"
+// just because a chunk repeats that title.
+function bestMemberDocumentationMatch(
+	member: DistillVectorFeature,
+	chunks: DistillContextChunk[],
+	minLexicalOverlap: number,
+	lexicalThreshold: number,
+): DistillDocumentationMatch | null {
+	const memberHash = hashText(member.text);
+	const memberWords = significantWords(`${member.title}\n${member.text}`);
+	let best: DistillDocumentationMatch | null = null;
+
+	for (const chunk of chunks) {
+		if (chunk.text_hash === memberHash) {
+			best = betterDocumentationMatch(best, {
+				document_path: chunk.document_path,
+				chunk_index: chunk.chunk_index,
+				signal: "exact",
+				score: 1,
+				overlap_words: overlap(memberWords, significantWords(chunk.text)),
+			});
+			continue;
+		}
+
+		const chunkWords = significantWords(chunk.text);
+		const sharedWords = overlap(memberWords, chunkWords);
+		const denominator = memberWords.size;
+		const lexicalScore = denominator > 0 ? sharedWords.length / denominator : 0;
+		if (sharedWords.length >= minLexicalOverlap && lexicalScore >= lexicalThreshold) {
+			best = betterDocumentationMatch(best, {
+				document_path: chunk.document_path,
+				chunk_index: chunk.chunk_index,
+				signal: "lexical",
+				score: lexicalScore,
+				overlap_words: sharedWords,
+			});
+		}
+	}
+
+	return best;
+}
+
+export function markDistillClustersDocumented(
+	clusters: DistillScoredCluster[],
+	features: DistillVectorFeature[],
+	contextChunks: DistillContextChunk[],
+	options: DistillContextDedupeOptions = {},
+	clusterScopeByRepresentative?: ReadonlyMap<number, DistillContextScope>,
+): DistillDocumentedCluster[] {
+	const lexicalThreshold = options.lexicalThreshold ?? DEFAULT_CONTEXT_LEXICAL_THRESHOLD;
+	const minLexicalOverlap = Math.max(
+		1,
+		Math.floor(options.minLexicalOverlap ?? DEFAULT_CONTEXT_MIN_LEXICAL_OVERLAP),
+	);
+	const featureById = new Map(features.map((feature) => [feature.memory_id, feature]));
+
+	return clusters.map((cluster) => {
+		const members = cluster.member_ids.flatMap((id) => {
+			const feature = featureById.get(id);
+			return feature ? [feature] : [];
+		});
+		// Project-scoped context docs (a repo AGENTS.md) must not suppress a
+		// candidate routed to user/global scope. When the caller supplies the
+		// routed scope, skip "project" chunks for "user" clusters.
+		const clusterScope = clusterScopeByRepresentative?.get(cluster.representative_id);
+		const eligibleChunks =
+			clusterScope === "user"
+				? contextChunks.filter((chunk) => chunk.scope !== "project")
+				: contextChunks;
+
+		// Suppress only when the docs cover EVERY member. A heterogeneous cluster
+		// where one member is documented but another carries a net-new rule must
+		// still surface, so coverage is required per member, not per cluster.
+		const memberMatches = members.map((member) =>
+			bestMemberDocumentationMatch(member, eligibleChunks, minLexicalOverlap, lexicalThreshold),
+		);
+		const allCovered = members.length > 0 && memberMatches.every((match) => match != null);
+		const best = allCovered
+			? memberMatches.reduce<DistillDocumentationMatch | null>(
+					(acc, match) => (match ? betterDocumentationMatch(acc, match) : acc),
+					null,
+				)
+			: null;
+
+		return {
+			...cluster,
+			already_documented: allCovered,
+			documentation_match: best,
+		};
+	});
 }
 
 export function createContextFactDetector(): DistillDetector<ContextFactFeature> {
