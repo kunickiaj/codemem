@@ -10,6 +10,7 @@ describe("injection eval scenarios", () => {
 		expect(INJECTION_EVAL_SCENARIO_PACKS.map((pack) => pack.id)).toEqual([
 			"track3-core",
 			"track3-explicit-recap",
+			"dual-artifact-v1",
 		]);
 	});
 
@@ -18,9 +19,14 @@ describe("injection eval scenarios", () => {
 	});
 
 	it("expands scenario prompts without duplicates", () => {
-		const prompts = getInjectionEvalScenarioPrompts(["track3-core", "track3-explicit-recap"]);
+		const prompts = getInjectionEvalScenarioPrompts([
+			"track3-core",
+			"track3-explicit-recap",
+			"dual-artifact-v1",
+		]);
 		expect(prompts).toContain("memory retrieval issues");
 		expect(prompts).toContain("summary of oauth");
+		expect(prompts).toContain("what must future memory extraction preserve");
 		expect(new Set(prompts).size).toBe(prompts.length);
 	});
 });

@@ -24,6 +24,27 @@ export interface RawEventStatusResult {
 
 export type MemoryRole = "recap" | "durable" | "ephemeral" | "general";
 
+export type MemoryArtifactBucket =
+	| "session_summary"
+	| "telemetry"
+	| "derived_fact_like"
+	| "durable_memory"
+	// Leftover non-durable rows (inferred role ephemeral/general): workstream
+	// noise, next-step state, etc. Kept distinct so they are not counted as
+	// durable memory in the artifact-share report.
+	| "ephemeral";
+
+export type MemoryArtifactCounts = Record<MemoryArtifactBucket, number>;
+
+export type MemoryArtifactShare = Record<
+	| "session_summary_share"
+	| "telemetry_share"
+	| "derived_fact_like_share"
+	| "durable_memory_share"
+	| "ephemeral_share",
+	number
+>;
+
 export interface MemoryRoleReportOptions {
 	project?: string | null;
 	allProjects?: boolean;
@@ -36,6 +57,10 @@ export interface MemoryRoleProbeItem {
 	stable_key: string;
 	kind: string;
 	title: string;
+	/** Source body text, used for telemetry/derived-fact signal scoring. Optional for back-compat. */
+	body_text?: string;
+	/** Source facts JSON, used as a derived-fact signal. Optional for back-compat. */
+	facts?: string | null;
 	role: MemoryRole;
 	role_reason: string;
 	mapping: "mapped" | "unmapped";
@@ -58,6 +83,12 @@ export interface MemoryRoleProbeResult {
 		unmapped_share: number;
 		recap_unmapped_share: number;
 	};
+	/**
+	 * Heuristic dual-artifact eval buckets for the top probe results. Additive and
+	 * report-only; does not imply persisted schema or first-class derived facts.
+	 */
+	top_artifact_counts?: MemoryArtifactCounts;
+	top_artifact_share?: MemoryArtifactShare;
 	simulated_demoted_unmapped_recap?: {
 		item_ids: number[];
 		top_role_counts: Record<MemoryRole, number>;

@@ -104,6 +104,59 @@ export const INJECTION_EVAL_SCENARIO_PACKS: InjectionEvalScenarioPack[] = [
 			},
 		],
 	},
+	{
+		id: "dual-artifact-v1",
+		title: "Dual-artifact memory model scenarios",
+		description:
+			"Measurable-now probes for summary domination, telemetry intrusion, explicit recap quality, and derived-fact-like precision before first-class derived_fact artifacts exist.",
+		scenarios: [
+			{
+				id: "summary-domination-topic",
+				title: "Topical default retrieval prefers durable facts over summaries",
+				category: "decision",
+				prompt: "dual artifact durable policy",
+				expectedModes: ["default", "recall"],
+				expectedPrimary: ["durable", "decision", "derived fact", "implementation contract"],
+				expectedAntiSignals: ["recap takeover", "generic summary", "administrative chatter"],
+			},
+			{
+				id: "telemetry-task-intrusion",
+				title: "Task retrieval avoids review and validation telemetry",
+				category: "continuation",
+				prompt: "what should we do next about dual artifact memory",
+				expectedModes: ["task", "default"],
+				expectedPrimary: ["next-step context", "durable workstream context", "derived fact"],
+				expectedAntiSignals: ["administrative chatter", "review telemetry", "validation telemetry"],
+			},
+			{
+				id: "telemetry-debug-intrusion",
+				title: "Debug retrieval prefers root-cause facts over telemetry",
+				category: "troubleshooting",
+				prompt: "why did memory extraction miss implementation contracts",
+				expectedModes: ["default", "recall"],
+				expectedPrimary: ["bugfix", "discovery", "root cause", "derived fact"],
+				expectedAntiSignals: ["review telemetry", "validation telemetry", "bootstrap telemetry"],
+			},
+			{
+				id: "explicit-dual-artifact-recap",
+				title: "Explicit recap remains summary-capable",
+				category: "continuation",
+				prompt: "catch me up on dual artifact memory work",
+				expectedModes: ["recall"],
+				expectedPrimary: ["session_summary", "recap", "orientation context"],
+				expectedAntiSignals: ["totally summary-free output", "wrong-thread summary"],
+			},
+			{
+				id: "derived-fact-like-contract",
+				title: "Derived-fact-like precision for embedded implementation contracts",
+				category: "decision",
+				prompt: "what must future memory extraction preserve",
+				expectedModes: ["default", "recall"],
+				expectedPrimary: ["derived fact", "implementation contract", "durable"],
+				expectedAntiSignals: ["recap takeover", "validation telemetry", "bootstrap telemetry"],
+			},
+		],
+	},
 ];
 
 export function getInjectionEvalScenarioPack(id: string): InjectionEvalScenarioPack | null {
