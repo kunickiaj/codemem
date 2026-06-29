@@ -1,0 +1,7 @@
+{
+  "name": "@codemem/eval-tools",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Metadata-only marker for standalone eval/regression tooling. Run via root pnpm scripts; not a workspace package or product surface."
+}

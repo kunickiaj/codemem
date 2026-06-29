@@ -324,7 +324,12 @@ export type {
 	MemoryWorthinessReason,
 	MemoryWorthinessResult,
 } from "./memory-quality.js";
-export { classifyMemoryWorthiness, inferMemoryRole } from "./memory-quality.js";
+export {
+	classifyMemoryWorthiness,
+	inferMemoryRole,
+	isDerivedFactRow,
+	readArtifactClass,
+} from "./memory-quality.js";
 export type { ObserverAuthMaterial } from "./observer-auth.js";
 export {
 	buildCodexHeaders,

@@ -23,6 +23,8 @@
     "typecheck": "pnpm run tsc",
     "check": "pnpm run tsc && pnpm run lint && pnpm run test",
     "codemem": "tsx --conditions source packages/cli/src/index.ts",
+    "eval:pack": "tsx --conditions source scripts/eval/pack-eval.ts",
+    "eval:pack:typecheck": "pnpm exec tsc --build packages/core && pnpm exec tsc --noEmit --project scripts/eval/tsconfig.json",
     "dev": "bash scripts/dev.sh",
     "prepare": "husky",
     "release:version": "node scripts/release-version.mjs",
@@ -35,6 +37,8 @@
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@codemem/core": "workspace:^",
+    "@types/node": "^24.12.4",
     "drizzle-kit": "^0.31.10",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
