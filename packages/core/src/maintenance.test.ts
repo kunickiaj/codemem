@@ -1,6 +1,6 @@
-import { mkdtempSync } from "node:fs";
+import { chmodSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import {
@@ -14,6 +14,7 @@ import {
 	deactivateLowSignalObservations,
 	dedupNearDuplicateMemories,
 	extractNarrativeFromBody,
+	getMemoryArtifactReport,
 	getMemoryRoleReport,
 	getRawEventRelinkPlan,
 	getRawEventRelinkReport,
@@ -58,6 +59,30 @@ function seedMaintenanceDb(dbPath: string): void {
 				'opencode', 'sess-1', 'sess-1', 2, 4,
 				'raw_events_v1', 'failed', 'boom', '2026-03-01T10:10:00Z', '2026-03-01T10:05:00Z'
 			);
+		`);
+	} finally {
+		db.close();
+	}
+}
+
+function seedMemoryArtifactReportDb(dbPath: string): void {
+	const db = new Database(dbPath);
+	try {
+		initTestSchema(db);
+		db.exec(`
+			INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version) VALUES
+			  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test'),
+			  (2, '2026-03-01T11:00:00Z', '2026-03-01T11:10:00Z', '/tmp/other', 'other', 'adam', 'test');
+			INSERT INTO memory_items(
+				id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, facts, import_key
+			) VALUES
+			  (1, 1, 'session_summary', 'Session recap', 'Implemented the report and validation passed.', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{}', NULL, 'k1'),
+			  (2, 1, 'change', 'Dedup contract', 'packages/core/src/store.ts must preserve dedup_key propagation.', 1, '2026-03-01T10:10:01Z', '2026-03-01T10:10:01Z', '{}', NULL, 'k2'),
+			  (3, 1, 'change', 'Validation passed', 'pnpm run tsc passed.', 1, '2026-03-01T10:10:02Z', '2026-03-01T10:10:02Z', '{}', NULL, 'k3'),
+			  (4, 1, 'change', 'Minor cleanup', 'Updated wording in the sidebar.', 1, '2026-03-01T10:10:03Z', '2026-03-01T10:10:03Z', '{}', NULL, 'k4'),
+			  (5, 1, 'change', 'Validation contract', 'pnpm run tsc passed and packages/core/src/store.ts must preserve dedup_key propagation.', 1, '2026-03-01T10:10:04Z', '2026-03-01T10:10:04Z', '{}', NULL, 'k5'),
+			  (6, 1, 'change', 'Inactive validation', 'pnpm run tsc passed.', 0, '2026-03-01T10:10:05Z', '2026-03-01T10:10:05Z', '{"inactive":true}', NULL, 'k6'),
+			  (7, 2, 'decision', 'Other project decision', 'Decided the other project keeps this decision because imports rely on it.', 1, '2026-03-01T11:10:00Z', '2026-03-01T11:10:00Z', '{}', NULL, 'k7');
 		`);
 	} finally {
 		db.close();
@@ -495,6 +520,191 @@ describe("maintenance", { timeout: 15_000 }, () => {
 			ephemeral_share: 0,
 		});
 		expect(probe?.scenario_score?.primary_match_count).toBeGreaterThan(0);
+	});
+
+	it("reports legacy memory artifact classes without mutating rows", () => {
+		const dbPath = createDbPath("memory-artifact-report");
+		seedMemoryArtifactReportDb(dbPath);
+		const db = new Database(dbPath, { readonly: true });
+		let before: Array<{ id: number; active: number; metadata_json: string | null }>;
+		try {
+			before = db
+				.prepare("SELECT id, active, metadata_json FROM memory_items ORDER BY id")
+				.all() as Array<{ id: number; active: number; metadata_json: string | null }>;
+		} finally {
+			db.close();
+		}
+
+		const report = getMemoryArtifactReport(dbPath, { project: "codemem" });
+
+		expect(report.totals).toEqual({ memories: 5, active: 5, sessions: 1 });
+		expect(report.counts_by_artifact).toEqual({
+			session_summary: 1,
+			derived_fact: 2,
+			telemetry: 1,
+			unknown: 1,
+		});
+		expect(report.counts_by_action).toEqual({ store: 3, store_demoted: 1, suppress: 1 });
+		expect(report.counts_by_reason.session_summary_recap).toBe(1);
+		expect(report.counts_by_reason.implementation_contract).toBe(2);
+		expect(report.counts_by_reason.validation_telemetry_only).toBe(1);
+		expect(report.counts_by_reason.role_inferred_ephemeral).toBe(1);
+		expect(report.counts_by_kind).toEqual({
+			session_summary: { session_summary: 1 },
+			change: { derived_fact: 2, telemetry: 1, unknown: 1 },
+		});
+		expect(report.counts_by_project.codemem).toEqual({
+			session_summary: 1,
+			derived_fact: 2,
+			telemetry: 1,
+			unknown: 1,
+		});
+		expect(report.high_confidence_telemetry).toEqual({
+			total: 1,
+			by_reason: { validation_telemetry_only: 1 },
+			examples: [
+				{
+					id: 3,
+					kind: "change",
+					project: "codemem",
+					title: "Validation passed",
+					reasons: ["validation_telemetry_only"],
+				},
+			],
+		});
+
+		const dbAfter = new Database(dbPath, { readonly: true });
+		try {
+			const after = dbAfter
+				.prepare("SELECT id, active, metadata_json FROM memory_items ORDER BY id")
+				.all() as Array<{ id: number; active: number; metadata_json: string | null }>;
+			expect(after).toEqual(before);
+		} finally {
+			dbAfter.close();
+		}
+	});
+
+	it("supports artifact report project and inactive filters", () => {
+		const dbPath = createDbPath("memory-artifact-report-filters");
+		seedMemoryArtifactReportDb(dbPath);
+
+		const allProjects = getMemoryArtifactReport(dbPath, { allProjects: true });
+		expect(allProjects.totals).toEqual({ memories: 6, active: 6, sessions: 2 });
+		expect(allProjects.counts_by_artifact).toEqual({
+			session_summary: 1,
+			derived_fact: 3,
+			telemetry: 1,
+			unknown: 1,
+		});
+		expect(allProjects.counts_by_project.other).toEqual({ derived_fact: 1 });
+
+		const includeInactive = getMemoryArtifactReport(dbPath, {
+			project: "codemem",
+			includeInactive: true,
+		});
+		expect(includeInactive.totals).toEqual({ memories: 6, active: 5, sessions: 1 });
+		expect(includeInactive.counts_by_artifact.telemetry).toBe(2);
+		expect(includeInactive.high_confidence_telemetry.total).toBe(2);
+	});
+
+	it("tolerates malformed metadata JSON in artifact reports", () => {
+		const dbPath = createDbPath("memory-artifact-report-malformed-metadata");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version) VALUES
+				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
+				) VALUES
+				  (1, 1, 'change', 'Broken metadata row', 'Updated parsing notes.', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{not-json', 'k1');
+			`);
+		} finally {
+			db.close();
+		}
+
+		const report = getMemoryArtifactReport(dbPath, { project: "codemem" });
+
+		expect(report.totals.memories).toBe(1);
+		expect(report.counts_by_artifact.unknown).toBe(1);
+	});
+
+	it("inspects a read-only database snapshot without write access", () => {
+		const dbPath = createDbPath("memory-artifact-report-readonly");
+		seedMemoryArtifactReportDb(dbPath);
+		// Make the DB file AND its directory read-only so any write-oriented open
+		// path (mkdir, WAL, bootstrap) would fail. The read-only audit must not.
+		chmodSync(dbPath, 0o444);
+		chmodSync(dirname(dbPath), 0o555);
+		try {
+			const report = getMemoryArtifactReport(dbPath, { project: "codemem" });
+			expect(report.totals.memories).toBe(5);
+			expect(report.counts_by_artifact.derived_fact).toBe(2);
+		} finally {
+			// Restore perms so the temp dir can be cleaned up by the OS later.
+			chmodSync(dirname(dbPath), 0o755);
+			chmodSync(dbPath, 0o644);
+		}
+	});
+
+	it("matches a path-style project filter by basename", () => {
+		const dbPath = createDbPath("memory-artifact-report-path-project");
+		seedMemoryArtifactReportDb(dbPath);
+
+		// sessions.project is stored as "codemem"; a path-style filter must still
+		// match by basename instead of returning an empty report.
+		const report = getMemoryArtifactReport(dbPath, { project: "/Users/me/work/codemem" });
+
+		expect(report.totals.memories).toBe(5);
+		expect(report.counts_by_artifact.derived_fact).toBe(2);
+		expect(report.counts_by_project.codemem).toBeDefined();
+	});
+
+	it("classifies durable content stored only in narrative", () => {
+		const dbPath = createDbPath("memory-artifact-report-narrative");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version) VALUES
+				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, narrative, active, created_at, updated_at, metadata_json, import_key
+				) VALUES
+				  (1, 1, 'change', 'Structured row', '', 'packages/core/src/store.ts must preserve dedup_key propagation across replication.', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{}', 'n1');
+			`);
+		} finally {
+			db.close();
+		}
+
+		// Body is empty; the durable contract lives only in `narrative`. It must be
+		// classified as a derived_fact, not dropped as unknown.
+		const report = getMemoryArtifactReport(dbPath, { project: "codemem" });
+		expect(report.counts_by_artifact.derived_fact).toBe(1);
+		expect(report.counts_by_reason.implementation_contract).toBe(1);
+	});
+
+	it("exposes stable artifact report JSON shape", () => {
+		const dbPath = createDbPath("memory-artifact-report-shape");
+		seedMemoryArtifactReportDb(dbPath);
+
+		const report = getMemoryArtifactReport(dbPath, { project: "codemem" });
+
+		expect(Object.keys(report)).toEqual([
+			"totals",
+			"counts_by_artifact",
+			"counts_by_action",
+			"counts_by_reason",
+			"counts_by_kind",
+			"counts_by_project",
+			"high_confidence_telemetry",
+		]);
+		expect(Object.keys(report.high_confidence_telemetry)).toEqual([
+			"total",
+			"by_reason",
+			"examples",
+		]);
 	});
 
 	it("reports persisted session policy buckets from session metadata", () => {

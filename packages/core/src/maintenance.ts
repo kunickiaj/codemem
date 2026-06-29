@@ -1,4 +1,5 @@
 export { initDatabase, vacuumDatabase } from "./maintenance/init-vacuum.js";
+export { getMemoryArtifactReport } from "./maintenance/memory-artifact-report.js";
 export {
 	compareMemoryRoleReports,
 	getMemoryRoleReport,
@@ -11,6 +12,9 @@ export {
 } from "./maintenance/relink.js";
 export { getRawEventStatus, retryRawEventFailures } from "./maintenance/status.js";
 export type {
+	MemoryArtifactClassCount,
+	MemoryArtifactReport,
+	MemoryArtifactReportOptions,
 	MemoryRole,
 	MemoryRoleProbeComparison,
 	MemoryRoleProbeItem,

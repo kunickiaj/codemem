@@ -53,6 +53,7 @@ describe("memory command aliases", () => {
 			"inject",
 			"role-report",
 			"role-compare",
+			"artifact-report",
 			"extraction-report",
 			"extraction-replay",
 			"extraction-benchmark",

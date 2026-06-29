@@ -11,6 +11,7 @@ import {
 	getExtractionBenchmarkProfile,
 	getInjectionEvalScenarioPack,
 	getInjectionEvalScenarioPrompts,
+	getMemoryArtifactReport,
 	getMemoryRoleReport,
 	getRawEventRelinkPlan,
 	getRawEventRelinkReport,
@@ -557,6 +558,84 @@ function createMemoryRoleCompareCommand(): Command {
 				const message = error instanceof Error ? error.message : "Role compare failed";
 				if (opts.json) {
 					emitJsonError("role_compare_failed", message);
+				} else {
+					p.log.error(message);
+					process.exitCode = 1;
+				}
+				return;
+			}
+		},
+	);
+	return cmd;
+}
+
+function createMemoryArtifactReportCommand(): Command {
+	const cmd = new Command("artifact-report")
+		.configureHelp(helpStyle)
+		.description("Analyze legacy memory artifacts in a DB snapshot without mutating rows")
+		.option("--project <project>", "project identifier (defaults to git repo root)")
+		.option("--all-projects", "analyze across all projects")
+		.option("--inactive", "include inactive memories");
+	addDbOption(cmd);
+	addJsonOption(cmd);
+	cmd.action(
+		(
+			opts: DbOpts &
+				JsonOpts & {
+					project?: string;
+					allProjects?: boolean;
+					inactive?: boolean;
+				},
+		) => {
+			try {
+				const project =
+					opts.allProjects === true
+						? null
+						: opts.project?.trim() ||
+							process.env.CODEMEM_PROJECT?.trim() ||
+							resolveProject(process.cwd(), null);
+				const result = getMemoryArtifactReport(resolveDbOpt(opts), {
+					project,
+					allProjects: opts.allProjects === true,
+					includeInactive: opts.inactive === true,
+				});
+
+				if (opts.json) {
+					console.log(JSON.stringify(result, null, 2));
+					return;
+				}
+
+				p.intro("codemem memory artifact-report");
+				p.log.info(
+					[
+						`Memories: ${result.totals.memories}`,
+						`Active: ${result.totals.active}`,
+						`Sessions: ${result.totals.sessions}`,
+					].join("\n"),
+				);
+				p.log.info("Counts by artifact:");
+				for (const [artifact, count] of Object.entries(result.counts_by_artifact)) {
+					p.log.message(`  ${artifact.padEnd(16)} ${String(count)}`);
+				}
+				p.log.info("Counts by action:");
+				for (const [action, count] of Object.entries(result.counts_by_action)) {
+					p.log.message(`  ${action.padEnd(14)} ${String(count)}`);
+				}
+				const topReasons = Object.entries(result.counts_by_reason)
+					.sort(([, a], [, b]) => b - a)
+					.slice(0, 10);
+				if (topReasons.length > 0) {
+					p.log.info("Top reasons:");
+					for (const [reason, count] of topReasons) {
+						p.log.message(`  ${reason.padEnd(36)} ${String(count)}`);
+					}
+				}
+				p.log.info(`High-confidence telemetry: ${result.high_confidence_telemetry.total}`);
+				p.outro("done");
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Artifact report failed";
+				if (opts.json) {
+					emitJsonError("artifact_report_failed", message);
 				} else {
 					p.log.error(message);
 					process.exitCode = 1;
@@ -1270,6 +1349,7 @@ memoryCommand.addCommand(createRememberMemoryCommand());
 memoryCommand.addCommand(createInjectMemoryCommand());
 memoryCommand.addCommand(createMemoryRoleReportCommand());
 memoryCommand.addCommand(createMemoryRoleCompareCommand());
+memoryCommand.addCommand(createMemoryArtifactReportCommand());
 memoryCommand.addCommand(createMemoryExtractionReportCommand());
 memoryCommand.addCommand(createMemoryExtractionReplayCommand());
 memoryCommand.addCommand(createMemoryExtractionBenchmarkCommand());

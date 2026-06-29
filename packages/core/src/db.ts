@@ -234,6 +234,64 @@ export function connect(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
 	}
 }
 
+/**
+ * Open an EXISTING database read-only.
+ *
+ * Unlike {@link connect}, this never creates the parent directory, never opens
+ * for writing, and never enables WAL or runs schema bootstrap — so it works on
+ * read-only snapshots and read-only directories (e.g. a copied audit snapshot).
+ * Read-tuning pragmas are still applied because they are per-connection and do
+ * not write to the file. Schema readiness is validated read-only.
+ */
+export function connectReadOnly(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
+	const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+	try {
+		db.pragma("foreign_keys = ON");
+		db.pragma("busy_timeout = 5000");
+		// Read tuning only — safe on a read-only connection (per-connection state).
+		db.pragma("cache_size = -65536");
+		db.pragma("mmap_size = 1073741824");
+		db.pragma("temp_store = MEMORY");
+		assertSchemaReadyReadOnly(db);
+		return db;
+	} catch (error) {
+		db.close();
+		throw error;
+	}
+}
+
+/**
+ * Validate schema readiness without any writes (no bootstrap, no migration).
+ * Mirrors {@link assertSchemaReady} but is safe on read-only connections.
+ */
+export function assertSchemaReadyReadOnly(db: DatabaseType): void {
+	const version = getSchemaVersion(db);
+	if (version === 0) {
+		throw new Error(
+			"Database schema is not initialized (read-only open). " +
+				"Point at an initialized codemem database.",
+		);
+	}
+	if (version < MIN_COMPATIBLE_SCHEMA) {
+		throw new Error(
+			`Database schema version ${version} is older than minimum compatible (${MIN_COMPATIBLE_SCHEMA}).`,
+		);
+	}
+	if (version > SCHEMA_VERSION) {
+		console.warn(
+			`Database schema version ${version} is newer than this TS runtime (${SCHEMA_VERSION}). ` +
+				"Running in read-only compatibility mode.",
+		);
+	}
+	const missing = REQUIRED_TABLES.filter((t) => !tableExists(db, t));
+	if (missing.length > 0) {
+		throw new Error(
+			`Required tables missing: ${missing.join(", ")}. ` +
+				"The database may be corrupt or from an incompatible version.",
+		);
+	}
+}
+
 function hasBootstrappedCodememSchema(db: DatabaseType): boolean {
 	return REQUIRED_BOOTSTRAPPED_TABLES.every((table) => tableExists(db, table));
 }
