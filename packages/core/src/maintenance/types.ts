@@ -32,6 +32,11 @@ export type MemoryArtifactBucket =
 
 export type MemoryArtifactCounts = Record<MemoryArtifactBucket, number>;
 
+export type MemoryArtifactClassCount = Record<
+	"session_summary" | "derived_fact" | "telemetry" | "unknown",
+	number
+>;
+
 export type MemoryArtifactShare = Record<
 	"session_summary_share" | "telemetry_share" | "derived_fact_like_share" | "durable_memory_share",
 	number
@@ -42,6 +47,32 @@ export interface MemoryRoleReportOptions {
 	allProjects?: boolean;
 	includeInactive?: boolean;
 	probes?: string[];
+}
+
+export interface MemoryArtifactReportOptions {
+	project?: string | null;
+	allProjects?: boolean;
+	includeInactive?: boolean;
+}
+
+export interface MemoryArtifactReport {
+	totals: { memories: number; active: number; sessions: number };
+	counts_by_artifact: MemoryArtifactClassCount;
+	counts_by_action: Record<"store" | "store_demoted" | "suppress", number>;
+	counts_by_reason: Record<string, number>;
+	counts_by_kind: Record<string, Partial<MemoryArtifactClassCount>>;
+	counts_by_project: Record<string, Partial<MemoryArtifactClassCount>>;
+	high_confidence_telemetry: {
+		total: number;
+		by_reason: Record<string, number>;
+		examples: Array<{
+			id: number;
+			kind: string;
+			project: string | null;
+			title: string;
+			reasons: string[];
+		}>;
+	};
 }
 
 export interface MemoryRoleProbeItem {
