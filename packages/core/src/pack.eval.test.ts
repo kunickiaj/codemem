@@ -196,4 +196,18 @@ describe("buildMemoryPack usefulness evals", () => {
 		// appear somewhere in the top N rather than trailing pure distractors.
 		expect(pack.item_ids.slice(0, 5)).toContain(corpus.ids.workingSetPrimaryId);
 	});
+
+	// Dual-artifact target-behavior specs. These encode the desired routing once
+	// artifact-aware retrieval (codemem-ovk2.12) and first-class derived_fact
+	// artifacts (codemem-ovk2.11) exist. They are intentionally pending until then
+	// so this eval-harness PR (codemem-ovk2.7) stays green without asserting
+	// unimplemented behavior. The scenario pack (dual-artifact-v1) and the
+	// role-report artifact-share metric are the shippable deliverables now.
+	it.todo(
+		"prefers durable and derived-fact-like dual-artifact rows over summaries for topical queries (codemem-ovk2.12)",
+	);
+	it.todo(
+		"keeps telemetry below useful dual-artifact rows for default/task/debug probes (codemem-ovk2.12)",
+	);
+	it.todo("still surfaces a summary for explicit dual-artifact recap requests (codemem-ovk2.12)");
 });
