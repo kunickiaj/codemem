@@ -245,6 +245,67 @@ function collectKeepReasons(input: {
 	if (hasDecisionValue || kind === "decision") {
 		reasons.push("durable_decision");
 	}
+	// A `bugfix`/`discovery` row that records an actual fix or finding is durable
+	// even if it also mentions validation telemetry. Without this, an observer row
+	// like `kind=bugfix` / "Fixed the race condition; tests passed" is suppressed
+	// by the validation-telemetry regex below, silently dropping a real fix in the
+	// capture-routing path (Codex). Require a resolution/finding verb so bare
+	// "bugfix: tests passed" with no described fix still falls through.
+	//
+	// STRONG fix verbs always indicate a real change and keep regardless of any
+	// validation/review phrasing in the same row ("Fixed auth timeout; tests
+	// passed and no remaining issues" is still a durable fix — Codex).
+	const hasStrongFixVerb = hasAnyPattern(text, [
+		/\bfixed\b/,
+		/\bresolved\b/,
+		/\broot\s+caused?\b/,
+		/\bpatched\b/,
+	]);
+	// WEAK finding verbs (confirmed/determined/found/discovered/identified) are
+	// durable only when at least one occurrence governs a SUBSTANTIVE object, not
+	// a validation/review subject or a no-findings outcome. The check is
+	// per-clause: "Confirmed CI passed after determining cursor drift came from
+	// unstable sort" must keep on the "determining cursor drift" clause even
+	// though "Confirmed CI" governs telemetry (Codex).
+	const WEAK_FINDING_VERBS =
+		"confirmed|determined|determining|verified|verifying|found|finding|discovered|discovering|identified|identifying|confirming";
+	// A weak finding verb is SUBSTANTIVE only when it directly governs a concrete
+	// object that is NOT validation/review status or a no-finding outcome. We match
+	// the verb followed by a content word other than the telemetry/no-finding
+	// nouns; that excludes both "confirmed CI passed" (telemetry object) and a bare
+	// "Verified" with no object (e.g. a terse title), while keeping "determining
+	// cursor drift came from ..." (Codex: per-clause, not whole-text).
+	// Objects that do NOT make a weak finding substantive: validation/review
+	// status, no-finding outcomes, and another weak finding verb (a duplicated
+	// bare verb such as a terse "Verified" title followed by "verified ..." must
+	// not bootstrap itself into a substantive finding).
+	const NON_SUBSTANTIVE_OBJECTS = `${WEAK_FINDING_VERBS}|tests?|lint|ci|build|typecheck|tsc|checks?|review|reviewer|pr|pull\\s+request|no|nothing|none`;
+	// weak verb -> optional "that" -> optional determiner -> a content word that is
+	// not itself a non-substantive object. Determiners are consumed (not allowed to
+	// satisfy the object) so "verified the tests" / a bare "verified verified" do
+	// not bootstrap a substantive finding, while "determined cursor drift" does.
+	const DETERMINERS = "the|a|an|all|our|its|their";
+	const substantiveWeakFinding = new RegExp(
+		`\\b(?:${WEAK_FINDING_VERBS})\\s+(?:that\\s+)?(?:(?:${DETERMINERS})\\s+)?` +
+			`(?!(?:${NON_SUBSTANTIVE_OBJECTS}|${DETERMINERS})\\b)[a-z]{3,}`,
+	);
+	const hasSubstantiveWeakFinding = substantiveWeakFinding.test(text);
+	// Bare "found no blockers / no remaining issues" review telemetry, with no
+	// strong fix and no substantive finding, still suppresses.
+	const isReviewNoFindings = hasAnyPattern(text, [
+		/\bfound\s+(?:no|nothing|none)\b/,
+		/\bno\s+(?:blockers?|findings?|remaining\s+issues?|issues?)\b/,
+	]);
+	const hasUsefulFindingVerb = hasStrongFixVerb || hasSubstantiveWeakFinding;
+	// `isReviewNoFindings` only blocks when there is no strong fix and no
+	// substantive weak finding to stand on.
+	if (
+		(kind === "bugfix" || kind === "discovery") &&
+		hasUsefulFindingVerb &&
+		(hasStrongFixVerb || hasSubstantiveWeakFinding || !isReviewNoFindings)
+	) {
+		reasons.push(kind === "bugfix" ? "troubleshooting_gotcha" : "durable_decision");
+	}
 	if (hasModalContract || hasContractNoun || hasDependencyLesson) {
 		// A locator (file/module/path) makes it a concrete implementation contract;
 		// otherwise it is still a durable contract/rule (M3/M4: review or workspace
