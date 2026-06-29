@@ -148,6 +148,7 @@ export {
 	hasPendingDedupKeyBackfill,
 	runDedupKeyBackfillPass,
 } from "./dedup-key-backfill.js";
+export * from "./derive.js";
 export type { EmbeddingClient } from "./embeddings.js";
 export {
 	_resetEmbeddingClient,
@@ -513,6 +514,7 @@ export {
 	SESSION_CONTEXT_BACKFILL_JOB,
 	SessionContextBackfillRunner,
 } from "./session-context-backfill.js";
+export type { DerivedFactInput, DerivedFactResult } from "./store.js";
 export { MemoryStore } from "./store.js";
 export {
 	hasPendingSummaryDedupBackfill,

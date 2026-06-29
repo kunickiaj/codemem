@@ -3666,14 +3666,14 @@ describe("replication payload round-trip parity", () => {
 				actor_id, actor_display_name, visibility, workspace_id,
 				workspace_kind, origin_device_id, origin_source, trust_state,
 				narrative, facts, concepts, files_read, files_modified,
-				user_prompt_id, prompt_number, import_key, rev
+				user_prompt_id, prompt_number, import_key, rev, dedup_key
 			) VALUES (
 				?, 'decision', 'Round Trip Title', 'Sub', 'Body text here', 0.85,
 				'tag-a tag-b', 1, ?, ?, '{"custom_key":"custom_val"}',
 				'actor-rt', 'Actor Name', 'shared', 'ws-1',
 				'shared', 'device-origin', 'test', 'trusted',
 				'A narrative', '["fact-1"]', '["concept-1"]', '["file-a"]', '["file-b"]',
-				42, 7, 'roundtrip-key-1', 1
+				42, 7, 'roundtrip-key-1', 1, 'dedup:roundtrip'
 			)
 		`).run(sessionId, now, now);
 
@@ -3729,6 +3729,7 @@ describe("replication payload round-trip parity", () => {
 		expect(payload.narrative).toBe("A narrative");
 		expect(payload.user_prompt_id).toBe(42);
 		expect(payload.prompt_number).toBe(7);
+		expect(payload.dedup_key).toBe("dedup:roundtrip");
 
 		// Now apply this op on a "target" DB (same DB, different import key scenario)
 		// Delete the original memory AND the recorded op so the apply treats this as new
@@ -3780,6 +3781,40 @@ describe("replication payload round-trip parity", () => {
 		expect(applied.narrative).toBe("A narrative");
 		expect(applied.user_prompt_id).toBe(42);
 		expect(applied.prompt_number).toBe(7);
+		expect(applied.dedup_key).toBe("dedup:roundtrip");
+	});
+
+	it("preserves existing dedup_key when older peers omit it on update", () => {
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, confidence, tags_text, active,
+			 created_at, updated_at, metadata_json, import_key, rev, dedup_key)
+			 VALUES (?, 'decision', 'Old', 'Old body', 0.5, '', 1, ?, ?, ?, 'older-peer-key', 1, 'dedup:keep')`,
+		).run(sessionId, now, now, toJson({ clock_device_id: "remote-device" }));
+
+		const op: ReplicationOp = {
+			op_id: "older-peer-dedup-omitted",
+			entity_type: "memory_item",
+			entity_id: "older-peer-key",
+			op_type: "upsert",
+			payload_json: toJson({
+				title: "New",
+				body_text: "New body",
+				updated_at: "2026-01-02T00:00:00Z",
+			}),
+			clock_rev: 2,
+			clock_updated_at: "2026-01-02T00:00:00Z",
+			clock_device_id: "remote-device",
+			device_id: "remote-device",
+			created_at: "2026-01-02T00:00:00Z",
+			scope_id: null,
+		};
+
+		expect(applyReplicationOps(db, [op], "local-device").applied).toBe(1);
+		const row = db
+			.prepare("SELECT dedup_key FROM memory_items WHERE import_key = ?")
+			.get("older-peer-key") as { dedup_key: string | null };
+		expect(row.dedup_key).toBe("dedup:keep");
 	});
 });
 

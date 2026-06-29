@@ -1517,6 +1517,46 @@ describe("backfillMemoryDedupKeys", () => {
 		}
 	});
 
+	it("skips derived facts when backfilling dedup keys", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const now = new Date().toISOString();
+			const id = Number(
+				db
+					.prepare(
+						`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+						 tags_text, active, created_at, updated_at, metadata_json, rev, visibility,
+						 workspace_id, dedup_key)
+						 VALUES (?, 'decision', 'Derived claim', 'Body', 0.7, '', 1, ?, ?, ?, 1, 'shared', 'shared:default', NULL)`,
+					)
+					.run(
+						sessionId,
+						now,
+						now,
+						JSON.stringify({
+							derivation: { artifact_class: "derived_fact", claim_key: "df:v1:x" },
+						}),
+					).lastInsertRowid,
+			);
+
+			const result = backfillMemoryDedupKeys(db);
+
+			expect(result).toMatchObject({ checked: 0, updated: 0, skipped: 0 });
+			const row = db.prepare("SELECT dedup_key FROM memory_items WHERE id = ?").get(id) as {
+				dedup_key: string | null;
+			};
+			expect(row.dedup_key).toBeNull();
+		} finally {
+			db.close();
+		}
+	});
+
 	it("respects dry-run mode", () => {
 		const db = new Database(":memory:");
 		try {

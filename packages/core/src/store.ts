@@ -9,7 +9,7 @@
  * `codemem db init` invocation first.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { and, desc, eq, gt, inArray, isNotNull, lt, lte, or, type SQL, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -139,6 +139,22 @@ function cleanStr(value: unknown): string | null {
 	return trimmed.length > 0 ? trimmed : null;
 }
 
+// Trust tiers from most- to least-trusted. A missing/blank/unknown value is
+// treated as the least-trusted tier so derived-fact merges never launder trust.
+const TRUST_TIER_ORDER = ["trusted", "unreviewed", "legacy_unknown", "untrusted"];
+
+/** Return the least-trusted of two trust states (never upgrades). */
+function leastTrustedOf(a: string | null | undefined, b: string | null | undefined): string {
+	const rank = (state: string | null | undefined): number => {
+		const value = state?.trim() || "legacy_unknown";
+		const idx = TRUST_TIER_ORDER.indexOf(value);
+		return idx === -1 ? TRUST_TIER_ORDER.length : idx; // unknown => least trusted
+	};
+	const aClean = a?.trim() || "legacy_unknown";
+	const bClean = b?.trim() || "legacy_unknown";
+	return rank(a) >= rank(b) ? aClean : bClean;
+}
+
 function parseJsonList(value: unknown): string[] {
 	if (typeof value !== "string" || !value.trim()) return [];
 	try {
@@ -152,6 +168,79 @@ function parseJsonList(value: unknown): string[] {
 	} catch {
 		return [];
 	}
+}
+
+function stringArrayFromUnknown(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return [
+		...new Set(
+			value
+				.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+				.map((item) => item.trim()),
+		),
+	];
+}
+
+function numberArrayFromUnknown(value: unknown): number[] {
+	if (!Array.isArray(value)) return [];
+	return [
+		...new Set(
+			value.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0),
+		),
+	];
+}
+
+function normalizeDerivedFactSource(source: DerivedFactSource): Record<string, unknown> {
+	const normalized: Record<string, unknown> = {
+		session_ids: numberArrayFromUnknown(source.session_ids),
+		memory_ids: numberArrayFromUnknown(source.memory_ids),
+		session_import_keys: stringArrayFromUnknown(source.session_import_keys),
+		memory_import_keys: stringArrayFromUnknown(source.memory_import_keys),
+	};
+	const summaryMemoryId = Number(source.summary_memory_id);
+	if (Number.isInteger(summaryMemoryId) && summaryMemoryId > 0) {
+		normalized.summary_memory_id = summaryMemoryId;
+	}
+	const summaryImportKey = cleanStr(source.summary_memory_import_key);
+	if (summaryImportKey) normalized.summary_memory_import_key = summaryImportKey;
+	return normalized;
+}
+
+function unionDerivedFactSource(
+	existing: Record<string, unknown>,
+	incoming: DerivedFactSource,
+): Record<string, unknown> {
+	const incomingNormalized = normalizeDerivedFactSource(incoming);
+	const unionNumbers = (key: string): number[] =>
+		[
+			...new Set([
+				...numberArrayFromUnknown(existing[key]),
+				...numberArrayFromUnknown(incomingNormalized[key]),
+			]),
+		].sort((a, b) => a - b);
+	const unionStrings = (key: string): string[] =>
+		[
+			...new Set([
+				...stringArrayFromUnknown(existing[key]),
+				...stringArrayFromUnknown(incomingNormalized[key]),
+			]),
+		].sort();
+	const next: Record<string, unknown> = {
+		...existing,
+		session_ids: unionNumbers("session_ids"),
+		memory_ids: unionNumbers("memory_ids"),
+		session_import_keys: unionStrings("session_import_keys"),
+		memory_import_keys: unionStrings("memory_import_keys"),
+	};
+	if (incomingNormalized.summary_memory_id != null)
+		next.summary_memory_id = incomingNormalized.summary_memory_id;
+	else if (existing.summary_memory_id != null) next.summary_memory_id = existing.summary_memory_id;
+	if (incomingNormalized.summary_memory_import_key != null) {
+		next.summary_memory_import_key = incomingNormalized.summary_memory_import_key;
+	} else if (existing.summary_memory_import_key != null) {
+		next.summary_memory_import_key = existing.summary_memory_import_key;
+	}
+	return next;
 }
 
 function projectBasename(value: string | null | undefined): string {
@@ -172,6 +261,63 @@ type DedupHit = {
 	id: number;
 	scope: "same_session" | "cross_session";
 };
+
+export interface DerivedFactSource {
+	session_ids?: number[];
+	memory_ids?: number[];
+	summary_memory_id?: number | null;
+	session_import_keys?: string[];
+	memory_import_keys?: string[];
+	summary_memory_import_key?: string | null;
+}
+
+export interface DerivedFactProvenance {
+	scope_id: string;
+	visibility: "private" | "shared" | string;
+	workspace_id: string;
+	workspace_kind: "personal" | "shared" | string;
+	trust_state: string;
+	actor_id?: string | null;
+	actor_display_name?: string | null;
+	origin_device_id?: string | null;
+}
+
+export interface DerivedFactInput {
+	sessionId: number;
+	kind: string;
+	title: string;
+	bodyText: string;
+	confidence?: number;
+	subtitle?: string | null;
+	narrative?: string | null;
+	facts?: string[] | null;
+	concepts?: string[] | null;
+	filesRead?: string[] | null;
+	filesModified?: string[] | null;
+	derivation: {
+		claim_type: string;
+		claim_key: string;
+		extractor_version: string;
+		source: DerivedFactSource;
+		grounding: {
+			concepts?: string[];
+			files?: string[];
+			must_appear_tokens: string[];
+		};
+		confidence?: number;
+		supersedes?: number | string | null;
+	};
+	provenance: DerivedFactProvenance;
+	options?: {
+		skipVectorWrite?: boolean;
+	};
+}
+
+export type DerivedFactResult =
+	| { outcome: "inserted"; id: number }
+	| { outcome: "updated"; id: number }
+	| { outcome: "skipped_tombstone"; id: number }
+	| { outcome: "skipped_legacy_conflict"; id: number };
 
 function getMemoryDedupMatchText(title: string): string | null {
 	const normalized = normalizeMemoryDedupTitle(title);
@@ -776,6 +922,256 @@ export class MemoryStore {
 		}
 
 		return memoryId;
+	}
+
+	upsertDerivedFact(input: DerivedFactInput): DerivedFactResult {
+		const validKind = validateMemoryKind(input.kind);
+		if (validKind === "session_summary") {
+			throw new Error("derived facts must use a non-summary memory kind");
+		}
+		const claimKey = cleanStr(input.derivation.claim_key);
+		if (!claimKey) throw new Error("derived fact claim_key is required");
+		const scopeId = cleanStr(input.provenance.scope_id);
+		if (!scopeId) throw new Error("derived fact scope_id is required");
+		// Provenance must be explicit — do NOT fail open to the most-privileged
+		// values. Defaulting visibility->"shared" or trust_state->"trusted" would
+		// launder a private/unreviewed source into shared/trusted (search trust-bias
+		// + sync exposure). Require them, mirroring scope_id/workspace_id.
+		const visibility = cleanStr(input.provenance.visibility);
+		if (!visibility) throw new Error("derived fact visibility is required");
+		const workspaceId = cleanStr(input.provenance.workspace_id);
+		if (!workspaceId) throw new Error("derived fact workspace_id is required");
+		const workspaceKind = cleanStr(input.provenance.workspace_kind);
+		if (!workspaceKind) throw new Error("derived fact workspace_kind is required");
+		const trustState = cleanStr(input.provenance.trust_state);
+		if (!trustState) throw new Error("derived fact trust_state is required");
+		this.assertSharedMutationAllowed(visibility);
+
+		const now = nowIso();
+		const scanner = this.scanner;
+		const titleScan = scanner.scan(input.title);
+		const bodyScan = scanner.scan(input.bodyText);
+		const safeTitle = titleScan.redacted;
+		const safeBody = bodyScan.redacted;
+		const safeFacts = scanner.redactValue(input.facts ?? null);
+		const safeConcepts = scanner.redactValue(input.concepts ?? null);
+		const safeFilesRead = scanner.redactValue(input.filesRead ?? null);
+		const safeFilesModified = scanner.redactValue(input.filesModified ?? null);
+
+		let result!: DerivedFactResult;
+		let vectorTitle = safeTitle;
+		let vectorBody = safeBody;
+		this.db.transaction(() => {
+			const existingDerived = this.db
+				.prepare(
+					`SELECT id, active, deleted_at, metadata_json, rev, title, body_text, trust_state
+					 FROM memory_items
+					 WHERE scope_id = ?
+					   AND dedup_key = ?
+					   AND json_extract(metadata_json, '$.derivation.artifact_class') = 'derived_fact'
+					 ORDER BY (deleted_at IS NULL) DESC, id DESC
+					 LIMIT 1`,
+				)
+				.get(scopeId, claimKey) as
+				| {
+						id: number;
+						active: number | null;
+						deleted_at: string | null;
+						metadata_json: string | null;
+						rev: number | null;
+						title: string;
+						body_text: string;
+						trust_state: string | null;
+				  }
+				| undefined;
+
+			if (existingDerived) {
+				if (Number(existingDerived.active ?? 1) === 0 || existingDerived.deleted_at != null) {
+					result = { outcome: "skipped_tombstone", id: Number(existingDerived.id) };
+					return;
+				}
+				const existingMeta = fromJson(existingDerived.metadata_json);
+				const existingDerivation =
+					existingMeta.derivation && typeof existingMeta.derivation === "object"
+						? (existingMeta.derivation as Record<string, unknown>)
+						: {};
+				const existingSource =
+					existingDerivation.source && typeof existingDerivation.source === "object"
+						? (existingDerivation.source as Record<string, unknown>)
+						: {};
+				const nextSource = unionDerivedFactSource(existingSource, input.derivation.source);
+				const nextMeta = {
+					...existingMeta,
+					clock_device_id: this.deviceId,
+					derivation: {
+						...existingDerivation,
+						extractor: "derive-batch",
+						extractor_version: input.derivation.extractor_version,
+						claim_key: claimKey,
+						derived_at: now,
+						source: nextSource,
+					},
+				};
+				const metaScan = scanner.redactValue(nextMeta);
+				const safeMeta = metaScan.value as Record<string, unknown>;
+				const rev = Number(existingDerived.rev ?? 0) + 1;
+				// Trust can only ratchet DOWN on merge: if a later, less-trusted
+				// source contributes to an existing derived fact, lower its
+				// trust_state to the least-trusted of the two (never upgrade).
+				const mergedTrust = leastTrustedOf(existingDerived.trust_state, trustState);
+				this.d
+					.update(schema.memoryItems)
+					.set({
+						updated_at: now,
+						metadata_json: toJson(safeMeta),
+						rev,
+						trust_state: mergedTrust,
+					})
+					.where(eq(schema.memoryItems.id, existingDerived.id))
+					.run();
+				recordReplicationOp(this.db, {
+					memoryId: existingDerived.id,
+					opType: "upsert",
+					deviceId: this.deviceId,
+				});
+				const detections = mergeDetections(metaScan.detections);
+				if (detections.length > 0)
+					this.logSecretRedactions(existingDerived.id, validKind, detections);
+				vectorTitle = existingDerived.title;
+				vectorBody = existingDerived.body_text;
+				result = { outcome: "updated", id: Number(existingDerived.id) };
+				return;
+			}
+
+			const legacyConflict = this.db
+				.prepare(
+					`SELECT id
+					 FROM memory_items
+					 WHERE active = 1
+					   AND scope_id = ?
+					   AND dedup_key = ?
+					   AND COALESCE(json_extract(metadata_json, '$.derivation.artifact_class'), '') != 'derived_fact'
+					 ORDER BY id DESC
+					 LIMIT 1`,
+				)
+				.get(scopeId, claimKey) as { id: number } | undefined;
+			if (legacyConflict) {
+				result = { outcome: "skipped_legacy_conflict", id: Number(legacyConflict.id) };
+				return;
+			}
+
+			const sessionProject = (this.d
+				.select({ project: schema.sessions.project })
+				.from(schema.sessions)
+				.where(eq(schema.sessions.id, input.sessionId))
+				.get()?.project ?? null) as string | null;
+			const importKey = `df:${createHash("sha256").update(`${scopeId}\u241f${claimKey}`).digest("hex")}`;
+			const confidence = input.confidence ?? input.derivation.confidence ?? 0.7;
+			const facts = Array.isArray(safeFacts.value) ? (safeFacts.value as string[]) : null;
+			const concepts = Array.isArray(safeConcepts.value) ? (safeConcepts.value as string[]) : null;
+			const filesRead = Array.isArray(safeFilesRead.value)
+				? (safeFilesRead.value as string[])
+				: null;
+			const filesModified = Array.isArray(safeFilesModified.value)
+				? (safeFilesModified.value as string[])
+				: null;
+			const metaPayload = {
+				clock_device_id: this.deviceId,
+				import_key: importKey,
+				subtitle: input.subtitle ?? undefined,
+				narrative: input.narrative ?? undefined,
+				facts: facts ?? undefined,
+				concepts: concepts ?? undefined,
+				files_read: filesRead ?? undefined,
+				files_modified: filesModified ?? undefined,
+				visibility,
+				workspace_id: workspaceId,
+				workspace_kind: workspaceKind,
+				trust_state: trustState,
+				origin_source: "derive-batch",
+				origin_device_id: cleanStr(input.provenance.origin_device_id) ?? this.deviceId,
+				actor_id: cleanStr(input.provenance.actor_id) ?? this.actorId,
+				actor_display_name: cleanStr(input.provenance.actor_display_name) ?? this.actorDisplayName,
+				derivation: {
+					artifact_class: "derived_fact",
+					extractor: "derive-batch",
+					extractor_version: input.derivation.extractor_version,
+					claim_type: input.derivation.claim_type,
+					claim_key: claimKey,
+					source: normalizeDerivedFactSource(input.derivation.source),
+					grounding: input.derivation.grounding,
+					derived_at: now,
+					confidence,
+					...(input.derivation.supersedes != null
+						? { supersedes: input.derivation.supersedes }
+						: {}),
+				},
+			};
+			const metaScan = scanner.redactValue(metaPayload);
+			const safeMeta = metaScan.value as Record<string, unknown>;
+			const insertedRows = this.d
+				.insert(schema.memoryItems)
+				.values({
+					session_id: input.sessionId,
+					kind: validKind,
+					title: safeTitle,
+					subtitle: input.subtitle ?? null,
+					body_text: safeBody,
+					confidence,
+					tags_text: "",
+					active: 1,
+					created_at: now,
+					updated_at: now,
+					metadata_json: toJson(safeMeta),
+					actor_id: cleanStr(input.provenance.actor_id) ?? this.actorId,
+					actor_display_name:
+						cleanStr(input.provenance.actor_display_name) ?? this.actorDisplayName,
+					visibility,
+					workspace_id: workspaceId,
+					workspace_kind: workspaceKind,
+					origin_device_id: cleanStr(input.provenance.origin_device_id) ?? this.deviceId,
+					origin_source: "derive-batch",
+					trust_state: trustState,
+					narrative: input.narrative ?? null,
+					facts: toJsonNullable(facts),
+					concepts: toJsonNullable(concepts),
+					files_read: toJsonNullable(filesRead),
+					files_modified: toJsonNullable(filesModified),
+					prompt_number: null,
+					user_prompt_id: null,
+					deleted_at: null,
+					rev: 1,
+					dedup_key: claimKey,
+					import_key: importKey,
+					scope_id: scopeId,
+					project: sessionProject,
+				})
+				.returning({ id: schema.memoryItems.id })
+				.all();
+			const id = insertedRows[0]?.id;
+			if (id == null) throw new Error("derived fact insert returned no id");
+			populateMemoryRefs(this.db, id, filesRead, filesModified, concepts);
+			recordReplicationOp(this.db, { memoryId: id, opType: "upsert", deviceId: this.deviceId });
+			const detections = mergeDetections(
+				titleScan.detections,
+				bodyScan.detections,
+				safeFacts.detections,
+				safeConcepts.detections,
+				safeFilesRead.detections,
+				safeFilesModified.detections,
+				metaScan.detections,
+			);
+			if (detections.length > 0) this.logSecretRedactions(id, validKind, detections);
+			result = { outcome: "inserted", id };
+		})();
+
+		if (
+			(result.outcome === "inserted" || result.outcome === "updated") &&
+			input.options?.skipVectorWrite !== true
+		) {
+			this.enqueueVectorWrite(result.id, vectorTitle, vectorBody);
+		}
+		return result;
 	}
 
 	/**

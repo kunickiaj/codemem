@@ -138,6 +138,7 @@ interface MemoryPayload {
 	has_deleted_at: boolean;
 	rev: number;
 	import_key: string | null;
+	dedup_key: string | null;
 	project?: string | null;
 }
 
@@ -239,6 +240,7 @@ function parseMemoryPayload(op: ReplicationOp, errors: string[]): MemoryPayload 
 		has_deleted_at: Object.hasOwn(raw, "deleted_at"),
 		rev: asNumberOrNull(raw.rev) ?? 0,
 		import_key: asStringOrNull(raw.import_key),
+		dedup_key: asStringOrNull(raw.dedup_key),
 		project: asStringOrNull(raw.project),
 	};
 }
@@ -882,6 +884,7 @@ export function recordReplicationOp(
 			prompt_number: row.prompt_number,
 			deleted_at: row.deleted_at,
 			scope_id: scopeId,
+			dedup_key: row.dedup_key,
 		});
 	} else {
 		payloadJson = null;
@@ -3033,6 +3036,7 @@ function buildPayloadFromMemoryRow(row: MemoryItemRow): MemoryPayload {
 		has_deleted_at: row.deleted_at != null,
 		rev: row.rev ?? 0,
 		import_key: row.import_key ?? null,
+		dedup_key: row.dedup_key ?? null,
 		// Denormalized project from memory_items so the outbound payload
 		// carries it without a session join. Callers may still override with
 		// sessions.project for legacy rows whose memory_items.project is null.
@@ -3243,6 +3247,7 @@ export function applyReplicationOps(
 								user_prompt_id: payload.user_prompt_id,
 								prompt_number: payload.prompt_number,
 								scope_id: sql`COALESCE(${opScopeId}, ${schema.memoryItems.scope_id})`,
+								dedup_key: sql`COALESCE(${payload.dedup_key}, ${schema.memoryItems.dedup_key})`,
 								// Backfill project on existing rows when the inbound
 								// payload carries it; preserve the existing value when
 								// the sender (older code) omitted the field.
@@ -3316,6 +3321,7 @@ export function applyReplicationOps(
 								user_prompt_id: payload.user_prompt_id,
 								prompt_number: payload.prompt_number,
 								scope_id: opScopeId,
+								dedup_key: payload.dedup_key ?? null,
 								// Persist replicated project name so the Projects read
 								// model can surface this memory under its originating
 								// project identity without joining through sessions.

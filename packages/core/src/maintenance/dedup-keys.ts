@@ -51,6 +51,7 @@ function selectDedupKeyCandidateRows(
 			 FROM memory_items
 			 WHERE dedup_key IS NULL
 			   AND id > ?
+			   AND COALESCE(json_extract(metadata_json, '$.derivation.artifact_class'), '') != 'derived_fact'
 			 ORDER BY created_at ASC, id ASC
 			 ${limitClause}`,
 		)
