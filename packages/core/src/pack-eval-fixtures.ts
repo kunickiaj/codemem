@@ -9,6 +9,9 @@ export type PackEvalCorpus = {
 		authTaskDecisionId: number;
 		memoryIssuesDurableId: number;
 		memoryIssuesRecapId: number;
+		dualArtifactRecapId: number;
+		derivedFactContractId: number;
+		telemetryValidationId: number;
 		sessionizationDurableId: number;
 		sessionizationSummaryId: number;
 		viewerTaskFeatureId: number;
@@ -79,6 +82,62 @@ export function createPackEvalCorpus(store: MemoryStore): PackEvalCorpus {
 		"Memory retrieval issue root cause",
 		"Identified ranking and summary weighting issues affecting memory retrieval quality",
 		0.92,
+	);
+	// Dual-artifact routing rows live on their OWN topic ("widget pagination")
+	// so the artifact-aware ranking under test does not perturb the unrelated
+	// "memory retrieval" / working-set fixtures used by legacy eval specs.
+	const dualArtifactRecapId = store.remember(
+		currentSessionId,
+		"change",
+		"Widget pagination work recap",
+		"## Request\ncatch me up on widget pagination work\n\n## Completed\nreviewed widget pagination work and summarized widget pagination progress",
+		0.85,
+		undefined,
+		{ is_summary: true },
+	);
+	const derivedFactResult = store.upsertDerivedFact({
+		sessionId: currentSessionId,
+		kind: "discovery",
+		title: "Widget pagination derived fact contract",
+		bodyText:
+			"Widget pagination must page items in stable sorted order so cursors stay valid across widget pages.",
+		confidence: 0.96,
+		facts: ["Widget pagination cursors must remain stable across widget pages."],
+		concepts: ["widget-pagination", "artifact-routing"],
+		derivation: {
+			claim_type: "implementation_contract",
+			claim_key: "pack-eval:widget-pagination-derived-fact-routing",
+			extractor_version: "pack-eval-fixture-v1",
+			source: {
+				session_ids: [currentSessionId],
+				memory_ids: [dualArtifactRecapId],
+				summary_memory_id: dualArtifactRecapId,
+			},
+			grounding: {
+				concepts: ["widget-pagination", "artifact-routing"],
+				files: ["packages/core/src/search.ts", "packages/core/src/pack.ts"],
+				must_appear_tokens: ["widget", "pagination", "derived", "facts"],
+			},
+			confidence: 0.96,
+		},
+		provenance: {
+			scope_id: "local-default",
+			visibility: "private",
+			workspace_id: "personal:test",
+			workspace_kind: "personal",
+			trust_state: "trusted",
+		},
+		options: { skipVectorWrite: true },
+	});
+	const derivedFactContractId = derivedFactResult.id;
+	const telemetryValidationId = store.remember(
+		currentSessionId,
+		"change",
+		"Widget pagination validation passed",
+		"pnpm run lint passed and CI is green for widget pagination work.",
+		0.5,
+		undefined,
+		{ derivation: { artifact_class: "telemetry" } },
 	);
 	const sessionizationSummaryId = store.remember(
 		currentSessionId,
@@ -157,6 +216,9 @@ export function createPackEvalCorpus(store: MemoryStore): PackEvalCorpus {
 			authTaskDecisionId,
 			memoryIssuesDurableId,
 			memoryIssuesRecapId,
+			dualArtifactRecapId,
+			derivedFactContractId,
+			telemetryValidationId,
 			sessionizationDurableId,
 			sessionizationSummaryId,
 			viewerTaskFeatureId,

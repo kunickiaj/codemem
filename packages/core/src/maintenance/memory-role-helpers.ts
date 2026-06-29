@@ -1,6 +1,7 @@
 /* Memory-role probe scoring + helper utilities. */
 
 import { getInjectionEvalScenarioByPrompt } from "../eval-scenarios.js";
+import { readArtifactClass } from "../memory-quality.js";
 import { getSummaryMetadata, isSummaryLikeMemory } from "../summary-memory.js";
 import type {
 	MemoryArtifactBucket,
@@ -122,6 +123,7 @@ export function classifyProbeArtifactBucket(input: {
 	// Use the shared summary detector so legacy `change` rows carrying
 	// `source: "observer_summary"` (or `is_summary`) are bucketed as summaries.
 	if (isSummaryLikeMemory({ kind: input.kind, metadata })) return "session_summary";
+	if (readArtifactClass(metadata) === "derived_fact") return "derived_fact_like";
 	const text = `${input.title} ${input.body_text ?? ""}`.trim();
 	// Signal-balance: durable signals (non-empty facts / derived-fact wording) win
 	// over telemetry wording, mirroring classifyMemoryWorthiness. A row like

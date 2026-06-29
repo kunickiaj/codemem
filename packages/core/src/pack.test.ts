@@ -569,6 +569,98 @@ describe("buildMemoryPack", () => {
 		}
 	});
 
+	it("prioritizes derived facts over equal plain memories in default retrieval", () => {
+		const plainId = store.remember(
+			sessionId,
+			"discovery",
+			"Routing contract plain",
+			"Routing contract requires artifact-aware retrieval for topical work",
+			0.9,
+		);
+		const derivedId = store.remember(
+			sessionId,
+			"discovery",
+			"Routing contract derived",
+			"Routing contract requires artifact-aware retrieval for topical work",
+			0.9,
+			undefined,
+			{ derivation: { artifact_class: "derived_fact" } },
+		);
+
+		const pack = buildMemoryPack(store, "routing contract artifact-aware", 10);
+		expect(pack.item_ids).toContain(derivedId);
+		expect(pack.item_ids).toContain(plainId);
+		expect(pack.item_ids.indexOf(derivedId)).toBeLessThan(pack.item_ids.indexOf(plainId));
+	});
+
+	it("prioritizes derived facts over equal plain memories in task retrieval", () => {
+		const plainId = store.remember(
+			sessionId,
+			"discovery",
+			"Task routing plain",
+			"Next step is routing contract validation for artifact-aware retrieval",
+			0.9,
+		);
+		const derivedId = store.remember(
+			sessionId,
+			"discovery",
+			"Task routing derived",
+			"Next step is routing contract validation for artifact-aware retrieval",
+			0.9,
+			undefined,
+			{ derivation: { artifact_class: "derived_fact" } },
+		);
+
+		const pack = buildMemoryPack(store, "what should we do next about routing contract", 10);
+		expect(pack.metrics.mode).toBe("task");
+		expect(pack.item_ids).toContain(derivedId);
+		expect(pack.item_ids).toContain(plainId);
+		expect(pack.item_ids.indexOf(derivedId)).toBeLessThan(pack.item_ids.indexOf(plainId));
+	});
+
+	it("keeps explicit recap packs summary-first when derived facts are present", () => {
+		const now = new Date().toISOString();
+		store.db
+			.prepare(
+				`INSERT INTO memory_items(
+					session_id, kind, title, body_text, confidence, tags_text, active,
+					created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'session_summary', ?, ?, 0.9, '', 1, ?, ?, '{}', 1, 'local-default')`,
+			)
+			.run(sessionId, "Routing recap", "Catch me up on routing contract work", now, now);
+		const derivedId = store.remember(
+			sessionId,
+			"discovery",
+			"Routing derived contract",
+			"Routing contract requires derived facts to win only for non-recap retrieval",
+			0.9,
+			undefined,
+			{ derivation: { artifact_class: "derived_fact" } },
+		);
+
+		const pack = buildMemoryPack(store, "catch me up on routing contract", 10);
+		expect(pack.metrics.mode).toBe("recall");
+		expect(pack.items[0]?.kind).toBe("session_summary");
+		expect(pack.item_ids.indexOf(derivedId)).toBeGreaterThan(0);
+	});
+
+	it("exposes artifact_class in pack trace candidates", () => {
+		const derivedId = store.remember(
+			sessionId,
+			"discovery",
+			"Trace derived routing",
+			"Trace routing contract requires artifact class visibility",
+			0.9,
+			undefined,
+			{ derivation: { artifact_class: "derived_fact" } },
+		);
+
+		const trace = buildMemoryPackTrace(store, "trace derived routing", 10);
+		const candidate = trace.retrieval.candidates.find((item) => item.id === derivedId);
+		expect(candidate?.artifact_class).toBe("derived_fact");
+		expect(candidate?.scores.derived_fact_adjustment).toBe(0.15);
+	});
+
 	it("records sanitized_query in pack trace for contaminated inputs", () => {
 		store.remember(
 			sessionId,

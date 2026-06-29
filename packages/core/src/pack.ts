@@ -16,13 +16,20 @@
 
 import { type Database, fromJson } from "./db.js";
 import { buildFilterClausesWithContext } from "./filters.js";
-import { inferMemoryRole } from "./memory-quality.js";
+import { inferMemoryRole, isDerivedFactRow, readArtifactClass } from "./memory-quality.js";
 import { projectBasename } from "./project.js";
 import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap } from "./recap-policy.js";
 import { findByFile } from "./ref-queries.js";
 import type { StoreHandle } from "./search.js";
-import { ownershipFilterContext, rerankResults, scoreResult, search, timeline } from "./search.js";
+import {
+	ownershipFilterContext,
+	preferDerivedFactsEnabled,
+	rerankResults,
+	scoreResult,
+	search,
+	timeline,
+} from "./search.js";
 import {
 	canonicalMemoryKind,
 	getSummaryMetadata,
@@ -567,6 +574,7 @@ function candidateReasons(
 	if ((scores.tag_overlap ?? 0) > 0) reasons.push("matched tag overlap");
 	if ((scores.working_set_overlap ?? 0) > 0) reasons.push("working-set overlap");
 	if ((scores.query_path_overlap ?? 0) > 0) reasons.push("matched file path hints");
+	if ((scores.derived_fact_adjustment ?? 0) > 0) reasons.push("derived-fact artifact boost");
 	if (isSummaryLike(item)) reasons.push("summary-like memory");
 	if (section) reasons.push(`selected for ${section}`);
 	if (disposition === "deduped") reasons.push("removed by exact dedupe");
@@ -755,13 +763,24 @@ function prioritizeDefaultResults(
 	results: MemoryResult[],
 	limit: number,
 	query: string,
+	filters?: MemoryFilters,
 ): MemoryResult[] {
 	const preferSummary = queryPrefersRecap(query);
+	const preferDerivedFacts = preferDerivedFactsEnabled(filters);
 	const ordered = [...results];
 	ordered.sort((a, b) => {
 		if (!preferSummary) {
 			const recapDelta = Number(memoryLooksRecapLike(a)) - Number(memoryLooksRecapLike(b));
 			if (recapDelta !== 0) return recapDelta;
+			// Relevance wins first: a directly-matching row must not be displaced by
+			// a less-relevant derived fact. The derived-fact preference is applied
+			// only as a tiebreak among comparably-relevant rows (below).
+			const overlapDelta = textOverlapScore(b, query) - textOverlapScore(a, query);
+			if (overlapDelta !== 0) return overlapDelta;
+			if (preferDerivedFacts) {
+				const derivedDelta = Number(isDerivedFactRow(b)) - Number(isDerivedFactRow(a));
+				if (derivedDelta !== 0) return derivedDelta;
+			}
 			const taskLikeDelta = Number(itemLooksTaskLike(a)) - Number(itemLooksTaskLike(b));
 			if (taskLikeDelta !== 0) return taskLikeDelta;
 			const rank = (item: MemoryResult): number => {
@@ -816,13 +835,23 @@ function filterRecentResults(results: MemoryResult[], days: number): MemoryResul
 	return results.filter((item) => parseCreatedAt(item.created_at) >= cutoff);
 }
 
-function prioritizeTaskResults(results: MemoryResult[], limit: number, query = ""): MemoryResult[] {
+function prioritizeTaskResults(
+	results: MemoryResult[],
+	limit: number,
+	query = "",
+	filters?: MemoryFilters,
+): MemoryResult[] {
+	const preferDerivedFacts = preferDerivedFactsEnabled(filters);
 	const ordered = [...results].sort((a, b) =>
 		(b.created_at ?? "").localeCompare(a.created_at ?? ""),
 	);
 	ordered.sort((a, b) => {
 		const overlapDelta = textOverlapScore(b, query) - textOverlapScore(a, query);
 		if (overlapDelta !== 0) return overlapDelta;
+		if (preferDerivedFacts) {
+			const derivedDelta = Number(isDerivedFactRow(b)) - Number(isDerivedFactRow(a));
+			if (derivedDelta !== 0) return derivedDelta;
+		}
 		const taskLikeDelta = Number(itemLooksTaskLike(b)) - Number(itemLooksTaskLike(a));
 		if (taskLikeDelta !== 0) return taskLikeDelta;
 		const rank = (kind: string): number => {
@@ -841,7 +870,9 @@ function prioritizeRecallResults(
 	limit: number,
 	preferSummary: boolean,
 	query: string,
+	filters?: MemoryFilters,
 ): MemoryResult[] {
+	const preferDerivedFacts = preferDerivedFactsEnabled(filters);
 	const ordered = [...results].sort((a, b) =>
 		(b.created_at ?? "").localeCompare(a.created_at ?? ""),
 	);
@@ -867,6 +898,10 @@ function prioritizeRecallResults(
 			return 5;
 		};
 		if (!preferSummary) {
+			if (preferDerivedFacts) {
+				const derivedDelta = Number(isDerivedFactRow(b)) - Number(isDerivedFactRow(a));
+				if (derivedDelta !== 0) return derivedDelta;
+			}
 			const rankDelta = rank(a) - rank(b);
 			if (rankDelta !== 0) return rankDelta;
 			const recapDelta = Number(memoryLooksRecapLike(a)) - Number(memoryLooksRecapLike(b));
@@ -886,7 +921,7 @@ function taskFallbackRecent(
 ): MemoryResult[] {
 	const expandedLimit = Math.max(limit * 3, limit);
 	const recentRows = store.recent(expandedLimit, filters ?? null);
-	return prioritizeTaskResults(recentRows.map(toMemoryResult), limit);
+	return prioritizeTaskResults(recentRows.map(toMemoryResult), limit, "", filters);
 }
 
 function recallFallbackRecent(
@@ -901,7 +936,7 @@ function recallFallbackRecent(
 
 	const summaryIds = new Set(summaries.map((item) => item.id));
 	const remainder = recentAll.filter((item) => !summaryIds.has(item.id));
-	const prioritized = prioritizeTaskResults(remainder, limit - summaries.length);
+	const prioritized = prioritizeTaskResults(remainder, limit - summaries.length, "", filters);
 	return [...summaries, ...prioritized];
 }
 function parseNonNegativeInt(value: unknown): number | null {
@@ -1332,6 +1367,7 @@ function buildPackArtifacts(
 						: taskResults,
 				effectiveLimit,
 				retrievalContext,
+				filters,
 			);
 		}
 	} else if (recallMode) {
@@ -1383,6 +1419,7 @@ function buildPackArtifacts(
 			effectiveLimit,
 			preferSummary,
 			retrievalContext,
+			filters,
 		);
 		if (results.length === 0) {
 			fallbackUsed = true;
@@ -1418,17 +1455,17 @@ function buildPackArtifacts(
 				retrievalContext,
 				filters,
 			);
-			results = prioritizeDefaultResults(merge.merged, effectiveLimit, retrievalContext);
+			results = prioritizeDefaultResults(merge.merged, effectiveLimit, retrievalContext, filters);
 			ftsCount = merge.ftsCount;
 			semanticCount = merge.semanticCount;
 			retrievalResults = [...merge.merged];
 		} else {
-			results = prioritizeDefaultResults(ftsResults, effectiveLimit, retrievalContext);
+			results = prioritizeDefaultResults(ftsResults, effectiveLimit, retrievalContext, filters);
 			ftsCount = results.length;
 			retrievalResults = [...ftsResults];
 		}
 		results = mergeFileRefCandidates(store, results, filters, effectiveLimit);
-		results = prioritizeDefaultResults(results, effectiveLimit, retrievalContext);
+		results = prioritizeDefaultResults(results, effectiveLimit, retrievalContext, filters);
 
 		if (results.length === 0) {
 			fallbackUsed = true;
@@ -1880,6 +1917,7 @@ function buildPackArtifacts(
 			reasons: candidateReasons(item, scoredCandidate, section, disposition),
 			disposition,
 			section,
+			artifact_class: readArtifactClass(item.metadata),
 			inferred_role: roleInference.role,
 			role_reason: roleInference.reason,
 		};

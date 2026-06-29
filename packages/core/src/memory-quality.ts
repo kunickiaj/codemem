@@ -66,6 +66,47 @@ export interface InferMemoryRoleInput {
 	session_minutes?: number | null;
 }
 
+function coerceMetadataObject(metadata: unknown): Record<string, unknown> | null {
+	if (metadata == null) return null;
+	if (typeof metadata === "string") {
+		try {
+			const parsed: unknown = JSON.parse(metadata);
+			return parsed != null && typeof parsed === "object" && !Array.isArray(parsed)
+				? (parsed as Record<string, unknown>)
+				: null;
+		} catch {
+			return null;
+		}
+	}
+	if (typeof metadata !== "object" || Array.isArray(metadata)) return null;
+	return metadata as Record<string, unknown>;
+}
+
+/**
+ * Read the authoritative artifact marker written by store.upsertDerivedFact().
+ * Candidate-only derivation metadata is intentionally ignored.
+ */
+export function readArtifactClass(metadata: unknown): MemoryArtifactClass {
+	const meta = coerceMetadataObject(metadata);
+	const derivation = meta?.derivation;
+	if (derivation == null || typeof derivation !== "object" || Array.isArray(derivation)) {
+		return "unknown";
+	}
+	const artifactClass = (derivation as Record<string, unknown>).artifact_class;
+	if (
+		artifactClass === "derived_fact" ||
+		artifactClass === "session_summary" ||
+		artifactClass === "telemetry"
+	) {
+		return artifactClass;
+	}
+	return "unknown";
+}
+
+export function isDerivedFactRow(item: { metadata?: unknown }): boolean {
+	return readArtifactClass(item.metadata) === "derived_fact";
+}
+
 function classifyProjectQuality(project: unknown): "normal" | "empty" | "garbage_like" | "unknown" {
 	if (project === undefined) return "unknown";
 	const value = typeof project === "string" ? project.trim() : "";

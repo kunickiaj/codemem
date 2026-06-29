@@ -89,6 +89,7 @@ export type PackTraceCandidateScores = {
 	kind_bonus: number;
 	quality_boost: number;
 	role_adjustment: number;
+	derived_fact_adjustment: number;
 	working_set_overlap: number;
 	query_path_overlap: number;
 	personal_bias: number;
@@ -109,6 +110,7 @@ export type PackTraceCandidate = {
 	reasons: string[];
 	disposition: PackTraceDisposition;
 	section: PackTraceSection | null;
+	artifact_class: "session_summary" | "derived_fact" | "telemetry" | "unknown";
 	inferred_role: "recap" | "durable" | "ephemeral" | "general";
 	role_reason: string;
 };
@@ -545,6 +547,7 @@ export interface ExplainScoreComponents {
 	base: number | null;
 	recency: number;
 	kind_bonus: number;
+	derived_fact_adjustment: number;
 	personal_bias: number;
 	semantic_boost: number | null;
 }
@@ -707,6 +710,7 @@ export interface MemoryFilters {
 	exclude_trust_states?: string[];
 	ownership_scope?: "mine" | "theirs" | string;
 	personal_first?: boolean | string;
+	prefer_derived_facts?: boolean | string;
 	trust_bias?: "off" | "soft" | string;
 	widen_shared_when_weak?: boolean | string;
 	widen_shared_min_personal_results?: number;

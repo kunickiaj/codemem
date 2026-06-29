@@ -12,6 +12,7 @@ import {
 	ownershipFilterContext,
 	recencyScore,
 	rerankResults,
+	scoreResult,
 } from "./search.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
@@ -414,6 +415,77 @@ describe("rerankResults", () => {
 
 	it("returns empty array for empty input", () => {
 		expect(rerankResults(mockStore, [], 10)).toEqual([]);
+	});
+
+	it("applies derived-fact adjustment only for authoritative non-recap rows", () => {
+		const derived = makeResult({
+			id: 1,
+			metadata: { derivation: { artifact_class: "derived_fact" } },
+		});
+		const candidateOnly = makeResult({ id: 2, metadata: { derivation: { candidate: true } } });
+
+		expect(
+			scoreResult(mockStore, derived, undefined, "routing policy").derived_fact_adjustment,
+		).toBe(0.15);
+		expect(
+			scoreResult(mockStore, derived, undefined, "summary of routing").derived_fact_adjustment,
+		).toBe(0);
+		expect(
+			scoreResult(mockStore, candidateOnly, undefined, "routing policy").derived_fact_adjustment,
+		).toBe(0);
+		expect(
+			scoreResult(mockStore, derived, { prefer_derived_facts: false }, "routing policy")
+				.derived_fact_adjustment,
+		).toBe(0);
+	});
+
+	it("honors CODEMEM_DERIVED_FACT_ROUTING as a routing kill-switch", () => {
+		const previous = process.env.CODEMEM_DERIVED_FACT_ROUTING;
+		process.env.CODEMEM_DERIVED_FACT_ROUTING = "off";
+		try {
+			const derived = makeResult({ metadata: { derivation: { artifact_class: "derived_fact" } } });
+			expect(
+				scoreResult(mockStore, derived, undefined, "routing policy").derived_fact_adjustment,
+			).toBe(0);
+		} finally {
+			if (previous === undefined) delete process.env.CODEMEM_DERIVED_FACT_ROUTING;
+			else process.env.CODEMEM_DERIVED_FACT_ROUTING = previous;
+		}
+	});
+
+	it("reranks derived facts above equal plain observations for default retrieval", () => {
+		const results = [
+			makeResult({ id: 1, kind: "observation", title: "Plain routing observation" }),
+			makeResult({
+				id: 2,
+				kind: "observation",
+				title: "Derived routing observation",
+				metadata: { derivation: { artifact_class: "derived_fact" } },
+			}),
+		];
+
+		const reranked = rerankResults(mockStore, results, 10, undefined, "routing policy");
+		expect(reranked[0]?.id).toBe(2);
+	});
+
+	it("does not let derived facts displace summaries for explicit recap retrieval", () => {
+		const results = [
+			makeResult({
+				id: 1,
+				kind: "session_summary",
+				title: "Routing recap",
+				body_text: "Summary of routing policy work",
+			}),
+			makeResult({
+				id: 2,
+				kind: "observation",
+				title: "Routing derived fact",
+				metadata: { derivation: { artifact_class: "derived_fact" } },
+			}),
+		];
+
+		const reranked = rerankResults(mockStore, results, 10, undefined, "summary of routing policy");
+		expect(reranked[0]?.id).toBe(1);
 	});
 
 	it("penalizes summary-like rows for non-summary topical queries", () => {
@@ -1795,6 +1867,23 @@ describe("MemoryStore.explain", () => {
 			expect(recap.role.inferred).toBe("recap");
 			expect(recap.role.reason).toBe("session_summary_kind");
 		}
+	});
+
+	it("exposes derived-fact scoring components in explain output", () => {
+		const sessionId = insertTestSession(store.db);
+		const id = store.remember(
+			sessionId,
+			"discovery",
+			"Routing contract",
+			"Artifact-aware routing must prefer grounded derived facts for topical retrieval",
+			0.9,
+			undefined,
+			{ derivation: { artifact_class: "derived_fact" } },
+		);
+
+		const result = store.explain("routing contract");
+		const item = result.items.find((candidate) => candidate.id === id);
+		expect(item?.score.components.derived_fact_adjustment).toBe(0.15);
 	});
 
 	it("returns items by id lookup", () => {

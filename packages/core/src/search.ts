@@ -18,7 +18,7 @@ import {
 	type OwnershipFilterContext,
 } from "./filters.js";
 import { parsePositiveMemoryId } from "./integers.js";
-import { inferMemoryRole } from "./memory-quality.js";
+import { inferMemoryRole, isDerivedFactRow } from "./memory-quality.js";
 import { projectMatchesFilter } from "./project.js";
 import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap, recapPenaltyMultiplier } from "./recap-policy.js";
@@ -109,6 +109,7 @@ const DURABLE_ROLE_BONUS = 0.12;
 const GENERAL_ROLE_BONUS = 0.05;
 const EPHEMERAL_ROLE_PENALTY = 0.45;
 const EXPLICIT_RECAP_ROLE_BONUS = 0.08;
+const DERIVED_FACT_BOOST = 0.15;
 const MAX_TIMELINE_DEPTH = 200;
 const PERSONAL_QUERY_PATTERNS = [
 	/\bwhat did i\b/i,
@@ -203,10 +204,26 @@ function personalFirstEnabled(filters: MemoryFilters | undefined): boolean {
 	const value = filters.personal_first;
 	if (typeof value === "string") {
 		const lowered = value.trim().toLowerCase();
-		if (["0", "false", "no", "off"].includes(lowered)) return false;
+		if (["0", "false", "no", "off", "disabled"].includes(lowered)) return false;
 		if (["1", "true", "yes", "on"].includes(lowered)) return true;
 	}
 	return Boolean(value);
+}
+
+function parseBooleanSwitch(value: unknown, defaultValue: boolean): boolean {
+	if (typeof value === "string") {
+		const lowered = value.trim().toLowerCase();
+		if (!lowered) return defaultValue;
+		if (["0", "false", "no", "off", "disabled"].includes(lowered)) return false;
+		if (["1", "true", "yes", "on"].includes(lowered)) return true;
+	}
+	if (value === undefined || value === null) return defaultValue;
+	return Boolean(value);
+}
+
+export function preferDerivedFactsEnabled(filters: MemoryFilters | undefined): boolean {
+	if (!parseBooleanSwitch(process.env.CODEMEM_DERIVED_FACT_ROUTING, true)) return false;
+	return parseBooleanSwitch(filters?.prefer_derived_facts, true);
 }
 
 function trustBiasMode(filters: MemoryFilters | undefined): "off" | "soft" {
@@ -480,6 +497,15 @@ function roleAdjustmentForSearch(
 	if (taskLikeQuery && inferred.role === "ephemeral") return 0.0;
 	if (inferred.role === "ephemeral") return -EPHEMERAL_ROLE_PENALTY;
 	return 0.0;
+}
+
+function derivedFactAdjustmentForSearch(
+	item: MemoryResult,
+	preferSummary: boolean,
+	filters: MemoryFilters | undefined,
+): number {
+	if (preferSummary || !preferDerivedFactsEnabled(filters)) return 0.0;
+	return isDerivedFactRow(item) ? DERIVED_FACT_BOOST : 0.0;
 }
 
 function recapPenaltyForSearch(item: MemoryResult, preferSummary: boolean): number {
@@ -808,6 +834,7 @@ export function scoreResult(
 	const kind = kindBonus(item.kind);
 	const qualityBoost = qualityDimensionBoost(item, query);
 	const roleAdjustment = roleAdjustmentForSearch(item, preferSummary, taskLikeQuery);
+	const derivedFactAdjustment = derivedFactAdjustmentForSearch(item, preferSummary, filters);
 	const workingSetOverlap = workingSetOverlapBoost(item, workingSetPaths);
 	const queryPathOverlap = queryPathOverlapBoost(item, query);
 	const personalBiasValue = personalBias(ownership, item, filters);
@@ -824,6 +851,7 @@ export function scoreResult(
 				kind +
 				qualityBoost +
 				roleAdjustment +
+				derivedFactAdjustment +
 				workingSetOverlap +
 				queryPathOverlap +
 				personalBiasValue -
@@ -838,6 +866,7 @@ export function scoreResult(
 		kind_bonus: kind,
 		quality_boost: qualityBoost,
 		role_adjustment: roleAdjustment,
+		derived_fact_adjustment: derivedFactAdjustment,
 		working_set_overlap: workingSetOverlap,
 		query_path_overlap: queryPathOverlap,
 		personal_bias: personalBiasValue,
@@ -1237,7 +1266,9 @@ function explainItem(
 	item: MemoryResult,
 	source: string,
 	rank: number | null,
+	query: string,
 	queryTokens: string[],
+	filters: MemoryFilters | null | undefined,
 	projectFilter: string | null | undefined,
 	projectValue: string | null | undefined,
 	includePackContext: boolean,
@@ -1250,10 +1281,15 @@ function explainItem(
 		source === "query" || source === "query+id_lookup" ? item.score : null;
 	const recencyComponent = recencyScore(item.created_at, referenceNow);
 	const kindComponent = kindBonus(item.kind);
+	const derivedFactComponent = derivedFactAdjustmentForSearch(
+		item,
+		queryPrefersRecap(query),
+		filters ?? undefined,
+	);
 
 	let totalScore: number | null = null;
 	if (baseScore != null) {
-		totalScore = baseScore * 1.5 + recencyComponent + kindComponent;
+		totalScore = baseScore * 1.5 + recencyComponent + kindComponent + derivedFactComponent;
 	}
 
 	// Match the roleAdjustmentForSearch() call shape so explain output reports
@@ -1282,6 +1318,7 @@ function explainItem(
 				base: baseScore,
 				recency: recencyComponent,
 				kind_bonus: kindComponent,
+				derived_fact_adjustment: derivedFactComponent,
 				personal_bias: 0.0,
 				semantic_boost: null,
 			},
@@ -1520,7 +1557,9 @@ export function explain(
 			item,
 			source,
 			rank,
+			sanitizedQuery,
 			queryTokens,
+			filters,
 			filters?.project ?? null,
 			sessionProjects.get(item.session_id) ?? null,
 			includePackContext,

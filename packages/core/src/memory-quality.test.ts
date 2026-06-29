@@ -1,5 +1,37 @@
 import { describe, expect, it } from "vitest";
-import { classifyMemoryWorthiness, inferMemoryRole } from "./memory-quality.js";
+import {
+	classifyMemoryWorthiness,
+	inferMemoryRole,
+	isDerivedFactRow,
+	readArtifactClass,
+} from "./memory-quality.js";
+
+describe("artifact class metadata readers", () => {
+	it("reads authoritative derived_fact artifact markers", () => {
+		const metadata = { derivation: { artifact_class: "derived_fact" } };
+		expect(readArtifactClass(metadata)).toBe("derived_fact");
+		expect(isDerivedFactRow({ metadata })).toBe(true);
+	});
+
+	it("does not boost candidate-only derivation metadata (C13 guard)", () => {
+		const metadata = { derivation: { candidate: true } };
+		expect(readArtifactClass(metadata)).toBe("unknown");
+		expect(isDerivedFactRow({ metadata })).toBe(false);
+	});
+
+	it("treats legacy and null metadata as unknown", () => {
+		expect(readArtifactClass({ is_summary: true })).toBe("unknown");
+		expect(readArtifactClass(null)).toBe("unknown");
+		expect(isDerivedFactRow({})).toBe(false);
+	});
+
+	it("parses stringified metadata and tolerates invalid strings", () => {
+		expect(readArtifactClass(JSON.stringify({ derivation: { artifact_class: "telemetry" } }))).toBe(
+			"telemetry",
+		);
+		expect(readArtifactClass("not-json")).toBe("unknown");
+	});
+});
 
 describe("inferMemoryRole", () => {
 	it("maps summary-like rows to recap", () => {

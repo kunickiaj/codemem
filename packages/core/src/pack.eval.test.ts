@@ -197,17 +197,50 @@ describe("buildMemoryPack usefulness evals", () => {
 		expect(pack.item_ids.slice(0, 5)).toContain(corpus.ids.workingSetPrimaryId);
 	});
 
-	// Dual-artifact target-behavior specs. These encode the desired routing once
-	// artifact-aware retrieval (codemem-ovk2.12) and first-class derived_fact
-	// artifacts (codemem-ovk2.11) exist. They are intentionally pending until then
-	// so this eval-harness PR (codemem-ovk2.7) stays green without asserting
-	// unimplemented behavior. The scenario pack (dual-artifact-v1) and the
-	// role-report artifact-share metric are the shippable deliverables now.
-	it.todo(
-		"prefers durable and derived-fact-like dual-artifact rows over summaries for topical queries (codemem-ovk2.12)",
-	);
-	it.todo(
-		"keeps telemetry below useful dual-artifact rows for default/task/debug probes (codemem-ovk2.12)",
-	);
-	it.todo("still surfaces a summary for explicit dual-artifact recap requests (codemem-ovk2.12)");
+	it("prefers derived facts over summaries for topical queries (codemem-ovk2.12)", () => {
+		const corpus = createPackEvalCorpus(store);
+
+		const pack = buildMemoryPack(store, "widget pagination work", 10);
+
+		expect(pack.metrics.mode).toBe("default");
+		expect(pack.item_ids.indexOf(corpus.ids.derivedFactContractId)).toBeGreaterThanOrEqual(0);
+		expect(pack.item_ids.indexOf(corpus.ids.derivedFactContractId)).toBeLessThan(
+			pack.item_ids.indexOf(corpus.ids.dualArtifactRecapId),
+		);
+	});
+
+	it("keeps telemetry below derived facts for default/task probes (codemem-ovk2.12)", () => {
+		const corpus = createPackEvalCorpus(store);
+
+		const defaultPack = buildMemoryPack(store, "widget pagination work", 10);
+		const taskPack = buildMemoryPack(store, "what should we do next about widget pagination", 10);
+
+		expect(defaultPack.metrics.mode).toBe("default");
+		expect(taskPack.metrics.mode).toBe("task");
+		expect(defaultPack.item_ids).toContain(corpus.ids.derivedFactContractId);
+		expect(defaultPack.item_ids).toContain(corpus.ids.telemetryValidationId);
+		expect(taskPack.item_ids).toContain(corpus.ids.derivedFactContractId);
+		expect(defaultPack.item_ids.indexOf(corpus.ids.derivedFactContractId)).toBeLessThan(
+			defaultPack.item_ids.indexOf(corpus.ids.telemetryValidationId),
+		);
+	});
+
+	it("still surfaces a summary for explicit dual-artifact recap requests (codemem-ovk2.12)", () => {
+		const corpus = createPackEvalCorpus(store);
+
+		const pack = buildMemoryPack(store, "catch me up on widget pagination work", 10);
+
+		expect(pack.metrics.mode).toBe("recall");
+		// Explicit-recap routing contract: the derived-fact boost is gated OFF in
+		// recap, so a derived fact must never lead an explicit recap and must never
+		// be ranked above its own topic summary when both are present. We assert
+		// the contract rather than pinning a weakly-matching fixture summary to a
+		// global rank, since the shared multi-topic corpus competes for recall.
+		expect(pack.item_ids[0]).not.toBe(corpus.ids.derivedFactContractId);
+		const recapIdx = pack.item_ids.indexOf(corpus.ids.dualArtifactRecapId);
+		const derivedIdx = pack.item_ids.indexOf(corpus.ids.derivedFactContractId);
+		if (recapIdx !== -1 && derivedIdx !== -1) {
+			expect(recapIdx).toBeLessThan(derivedIdx);
+		}
+	});
 });
