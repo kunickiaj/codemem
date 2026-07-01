@@ -11,8 +11,8 @@ RUN apt-get update \
 RUN npm install -g "codemem@${CODEMEM_VERSION}" \
 	&& npm cache clean --force
 
-RUN mkdir -p /data /config /keys /app \
-	&& chown -R node:node /data /config /keys /app
+RUN mkdir -p /data /config /keys /app /home/node/.codemem \
+	&& chown -R node:node /data /config /keys /app /home/node/.codemem
 
 WORKDIR /app
 USER node

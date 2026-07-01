@@ -41,6 +41,7 @@ services:
       - codemem-data:/data
       - codemem-config:/config
       - codemem-keys:/keys
+      - codemem-home:/home/node/.codemem
     restart: unless-stopped
     healthcheck:
       test:
@@ -99,6 +100,7 @@ services:
       - codemem-data:/data
       - codemem-config:/config
       - codemem-keys:/keys
+      - codemem-home:/home/node/.codemem
     restart: unless-stopped
     healthcheck:
       test:
@@ -118,3 +120,4 @@ volumes:
   codemem-data:
   codemem-config:
   codemem-keys:
+  codemem-home:

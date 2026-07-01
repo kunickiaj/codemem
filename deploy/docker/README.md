@@ -114,12 +114,18 @@ Compose creates named volumes:
 - `codemem-data` for `/data/mem.sqlite`
 - `codemem-config` for `/config/codemem.json`
 - `codemem-keys` for sync keys and peer identity material
+- `codemem-home` for `/home/node/.codemem`, including hosted-connector OAuth state
 
 Both services use the same database path:
 
 ```text
 /data/mem.sqlite
 ```
+
+The MCP service stores dynamically registered hosted-connector clients and token hashes
+in `/home/node/.codemem/mcp-oauth-state.json`. Keep `codemem-home` mounted across
+image upgrades and container recreates so Claude, ChatGPT, and other hosted MCP clients
+do not lose their registered `client_id`s after a redeploy.
 
 ## Observer credentials
 
@@ -140,12 +146,6 @@ OPENCODE_API_KEY=...
 
 Do not bake observer API keys into the Dockerfile or committed Compose file. Put them in
 the local `.env`, Docker secrets, or the container manager's private environment settings.
-
-## Current limitation
-
-MCP OAuth state is currently process-local in codemem. If the MCP container restarts,
-Claude may need to re-run the connector authorization flow until durable OAuth storage
-is implemented.
 
 ## Useful commands
 
