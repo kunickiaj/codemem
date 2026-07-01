@@ -1350,6 +1350,101 @@ describe("buildMemoryPack", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Artifact-class trace diagnostic + relevance-first default ordering
+// (codemem-ovk2.13: salvaged from the scrapped #1302, no derived-fact boost)
+// ---------------------------------------------------------------------------
+
+describe("buildMemoryPack artifact_class trace + relevance ordering", () => {
+	let tmpDir: string;
+	let store: MemoryStore;
+	let sessionId: number;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-pack-artifact-"));
+		const dbPath = join(tmpDir, "test.db");
+		const db = connect(dbPath);
+		initTestSchema(db);
+		db.close();
+		store = new MemoryStore(dbPath);
+		sessionId = insertTestSession(store.db);
+	});
+
+	afterEach(() => {
+		store.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("surfaces the in-place artifact_class marker in pack trace candidates", () => {
+		store.remember(
+			sessionId,
+			"discovery",
+			"Widget pagination cursor rule",
+			"Widget pagination must page items in stable sorted order so cursors stay valid.",
+			0.92,
+			undefined,
+			{ derivation: { artifact_class: "derived_fact" } },
+		);
+		store.remember(
+			sessionId,
+			"change",
+			"Widget pagination validation passed",
+			"pnpm run lint passed and CI is green for widget pagination work.",
+			0.5,
+			undefined,
+			{ derivation: { artifact_class: "telemetry" } },
+		);
+
+		const trace = buildMemoryPackTrace(store, "widget pagination cursor", 10);
+		const candidates = trace.retrieval.candidates;
+		expect(candidates.length).toBeGreaterThan(0);
+
+		const derived = candidates.find((c) => c.title === "Widget pagination cursor rule");
+		const telemetry = candidates.find((c) => c.title === "Widget pagination validation passed");
+		expect(derived?.artifact_class).toBe("derived_fact");
+		if (telemetry) {
+			expect(telemetry.artifact_class).toBe("telemetry");
+		}
+	});
+
+	it("labels unmarked legacy rows as unknown artifact_class", () => {
+		store.remember(
+			sessionId,
+			"decision",
+			"Plain durable decision",
+			"Chose to cap freshness diagnostics at 24h for the settings tab.",
+			0.9,
+		);
+
+		const trace = buildMemoryPackTrace(store, "freshness diagnostics settings", 10);
+		const candidate = trace.retrieval.candidates.find((c) => c.title === "Plain durable decision");
+		expect(candidate?.artifact_class).toBe("unknown");
+	});
+
+	it("does not let a less-relevant higher-priority kind displace a direct match", () => {
+		// A `decision` (top kind-rank) that barely matches the query must NOT
+		// outrank a `feature` that directly matches it. Relevance wins before kind.
+		store.remember(
+			sessionId,
+			"decision",
+			"General architecture decision",
+			"Chose a modular package layout for the workspace.",
+			0.9,
+		);
+		const featureId = store.remember(
+			sessionId,
+			"feature",
+			"Sparkline widget rendering",
+			"Implemented sparkline widget rendering with incremental canvas draws for the sparkline widget.",
+			0.85,
+		);
+
+		const pack = buildMemoryPack(store, "sparkline widget rendering", 10);
+		expect(pack.metrics.mode).toBe("default");
+		expect(pack.item_ids[0]).toBe(featureId);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Structured content tests: narrative and facts rendering
 // ---------------------------------------------------------------------------
 

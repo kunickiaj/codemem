@@ -66,6 +66,71 @@ export interface InferMemoryRoleInput {
 	session_minutes?: number | null;
 }
 
+function coerceMetadataObject(metadata: unknown): Record<string, unknown> | null {
+	if (metadata == null) return null;
+	if (typeof metadata === "string") {
+		try {
+			const parsed: unknown = JSON.parse(metadata);
+			return parsed != null && typeof parsed === "object" && !Array.isArray(parsed)
+				? (parsed as Record<string, unknown>)
+				: null;
+		} catch {
+			return null;
+		}
+	}
+	if (typeof metadata !== "object" || Array.isArray(metadata)) return null;
+	return metadata as Record<string, unknown>;
+}
+
+/**
+ * Read the in-place artifact classification recorded on a row's metadata.
+ *
+ * This is READ-ONLY classification, not materialization. It reports, in order:
+ *   1. an explicit `metadata.derivation.artifact_class` (authoritative, e.g. a
+ *      future materialization/synthesis pass), then
+ *   2. the capture-time routing signal `metadata.derivation.candidate` — capture
+ *      routing (see ingest-routing.ts) sets `candidate = (artifact ===
+ *      "derived_fact")` but does NOT write `artifact_class`, so without this
+ *      fallback every capture-routed derived-fact candidate would read as
+ *      `unknown` and the pack-trace diagnostic would surface nothing.
+ * Otherwise returns `unknown` so legacy/unmarked rows are judged by inferred
+ * role. No row is ever created, copied, or mutated by reading this marker.
+ */
+export function readArtifactClass(metadata: unknown): MemoryArtifactClass {
+	const meta = coerceMetadataObject(metadata);
+	const derivation = meta?.derivation;
+	if (derivation == null || typeof derivation !== "object" || Array.isArray(derivation)) {
+		return "unknown";
+	}
+	const derivationObj = derivation as Record<string, unknown>;
+	const artifactClass = derivationObj.artifact_class;
+	if (
+		artifactClass === "derived_fact" ||
+		artifactClass === "session_summary" ||
+		artifactClass === "telemetry"
+	) {
+		return artifactClass;
+	}
+	// Capture-time routing marker: `candidate === true` means the row was
+	// classified as a derived_fact at capture (ingest-routing.ts), even though no
+	// authoritative artifact_class was written.
+	if (derivationObj.candidate === true) return "derived_fact";
+	return "unknown";
+}
+
+/**
+ * True when a row carries an in-place `derived_fact` artifact marker.
+ *
+ * Accepts both shapes: `MemoryResult.metadata` and the `metadata_json` field on
+ * the `MemoryItemResponse` rows returned by `store.get()`/`store.recent()`.
+ * Without the `metadata_json` fallback, passing a store row type-checks (metadata
+ * is optional) but silently reads `undefined`, misreporting marked rows (Codex).
+ */
+export function isDerivedFactRow(item: { metadata?: unknown; metadata_json?: unknown }): boolean {
+	const meta = item.metadata ?? item.metadata_json;
+	return readArtifactClass(meta) === "derived_fact";
+}
+
 function classifyProjectQuality(project: unknown): "normal" | "empty" | "garbage_like" | "unknown" {
 	if (project === undefined) return "unknown";
 	const value = typeof project === "string" ? project.trim() : "";

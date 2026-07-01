@@ -1,0 +1,14 @@
+{
+  "probes": 15,
+  "nonRecap": {
+    "summary_share": 0.2,
+    "telemetry_share": 0.03076923076923077,
+    "durable_share": 0.7692307692307694,
+    "stored_derived_fact_share": 0.10769230769230768
+  },
+  "recap": {
+    "summary_share": 0.29166666666666663,
+    "summary_top1_rate": 1,
+    "route_mismatch_count": 0
+  }
+}

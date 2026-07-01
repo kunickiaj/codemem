@@ -109,6 +109,12 @@ export type PackTraceCandidate = {
 	reasons: string[];
 	disposition: PackTraceDisposition;
 	section: PackTraceSection | null;
+	/**
+	 * In-place artifact marker for this row, if capture-time routing recorded one
+	 * (`session_summary` | `derived_fact` | `telemetry` | `unknown`). Diagnostic
+	 * only: it does NOT affect ranking and no row is materialized from it.
+	 */
+	artifact_class: "session_summary" | "derived_fact" | "telemetry" | "unknown";
 	inferred_role: "recap" | "durable" | "ephemeral" | "general";
 	role_reason: string;
 };

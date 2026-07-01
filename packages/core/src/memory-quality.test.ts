@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { classifyMemoryWorthiness, inferMemoryRole } from "./memory-quality.js";
+import {
+	classifyMemoryWorthiness,
+	inferMemoryRole,
+	isDerivedFactRow,
+	readArtifactClass,
+} from "./memory-quality.js";
 
 describe("inferMemoryRole", () => {
 	it("maps summary-like rows to recap", () => {
@@ -481,5 +486,82 @@ describe("classifyMemoryWorthiness", () => {
 			action: "store_demoted",
 			reasons: ["investigation_without_durable_conclusion"],
 		});
+	});
+});
+
+describe("readArtifactClass (read-only in-place marker)", () => {
+	it("reads an in-place derived_fact marker from an object", () => {
+		const metadata = { derivation: { artifact_class: "derived_fact" } };
+		expect(readArtifactClass(metadata)).toBe("derived_fact");
+		expect(isDerivedFactRow({ metadata })).toBe(true);
+	});
+
+	it("reads session_summary and telemetry markers", () => {
+		expect(readArtifactClass({ derivation: { artifact_class: "session_summary" } })).toBe(
+			"session_summary",
+		);
+		expect(readArtifactClass({ derivation: { artifact_class: "telemetry" } })).toBe("telemetry");
+	});
+
+	it("parses marker from a JSON-string metadata payload", () => {
+		expect(
+			readArtifactClass(JSON.stringify({ derivation: { artifact_class: "derived_fact" } })),
+		).toBe("derived_fact");
+	});
+
+	it("surfaces capture-time candidate routing as derived_fact (no artifact_class written)", () => {
+		// Capture routing (ingest-routing.ts) writes `candidate` but never
+		// `artifact_class`. Without the candidate fallback these rows would read as
+		// unknown and the pack-trace diagnostic would surface nothing.
+		const metadata = {
+			derivation: {
+				candidate: true,
+				candidate_reasons: ["durable_decision"],
+				evaluated_extractor_version: "v1",
+			},
+		};
+		expect(readArtifactClass(metadata)).toBe("derived_fact");
+		expect(isDerivedFactRow({ metadata })).toBe(true);
+	});
+
+	it("does not treat candidate=false as a derived fact", () => {
+		const metadata = { derivation: { candidate: false, evaluated_extractor_version: "v1" } };
+		expect(readArtifactClass(metadata)).toBe("unknown");
+		expect(isDerivedFactRow({ metadata })).toBe(false);
+	});
+
+	it("prefers an explicit artifact_class over the candidate signal", () => {
+		expect(
+			readArtifactClass({ derivation: { artifact_class: "telemetry", candidate: true } }),
+		).toBe("telemetry");
+	});
+
+	// Codex: store.get()/recent() rows carry parsed metadata in `metadata_json`,
+	// not `metadata`. isDerivedFactRow must read either shape.
+	it("isDerivedFactRow reads the metadata_json store-row shape", () => {
+		expect(
+			isDerivedFactRow({ metadata_json: { derivation: { artifact_class: "derived_fact" } } }),
+		).toBe(true);
+		expect(isDerivedFactRow({ metadata_json: { derivation: { candidate: true } } })).toBe(true);
+		expect(isDerivedFactRow({ metadata_json: { is_summary: true } })).toBe(false);
+		// `metadata` still takes precedence when both are present.
+		expect(
+			isDerivedFactRow({
+				metadata: { derivation: { artifact_class: "derived_fact" } },
+				metadata_json: { is_summary: true },
+			}),
+		).toBe(true);
+	});
+
+	it("returns unknown for missing, malformed, or non-marker metadata", () => {
+		expect(readArtifactClass(null)).toBe("unknown");
+		expect(readArtifactClass(undefined)).toBe("unknown");
+		expect(readArtifactClass("not-json")).toBe("unknown");
+		expect(readArtifactClass([1, 2, 3])).toBe("unknown");
+		expect(readArtifactClass({ is_summary: true })).toBe("unknown");
+		expect(readArtifactClass({ derivation: { artifact_class: "bogus" } })).toBe("unknown");
+		expect(readArtifactClass({ derivation: "candidate" })).toBe("unknown");
+		expect(isDerivedFactRow({})).toBe(false);
+		expect(isDerivedFactRow({ metadata: { is_summary: true } })).toBe(false);
 	});
 });

@@ -16,7 +16,7 @@
 
 import { type Database, fromJson } from "./db.js";
 import { buildFilterClausesWithContext } from "./filters.js";
-import { inferMemoryRole } from "./memory-quality.js";
+import { inferMemoryRole, readArtifactClass } from "./memory-quality.js";
 import { projectBasename } from "./project.js";
 import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap } from "./recap-policy.js";
@@ -762,6 +762,13 @@ function prioritizeDefaultResults(
 		if (!preferSummary) {
 			const recapDelta = Number(memoryLooksRecapLike(a)) - Number(memoryLooksRecapLike(b));
 			if (recapDelta !== 0) return recapDelta;
+			// Relevance wins before kind. A row that directly matches the query must
+			// not be displaced by a less-relevant row that merely has a
+			// higher-priority kind (e.g. a generic `decision` outranking the
+			// `feature` the user actually asked about). Kind/task-like ordering
+			// then breaks ties among comparably-relevant rows.
+			const overlapDelta = textOverlapScore(b, query) - textOverlapScore(a, query);
+			if (overlapDelta !== 0) return overlapDelta;
 			const taskLikeDelta = Number(itemLooksTaskLike(a)) - Number(itemLooksTaskLike(b));
 			if (taskLikeDelta !== 0) return taskLikeDelta;
 			const rank = (item: MemoryResult): number => {
@@ -779,6 +786,7 @@ function prioritizeDefaultResults(
 			};
 			const rankDelta = rank(a) - rank(b);
 			if (rankDelta !== 0) return rankDelta;
+			return 0;
 		}
 		const overlapDelta = textOverlapScore(b, query) - textOverlapScore(a, query);
 		if (overlapDelta !== 0) return overlapDelta;
@@ -1880,6 +1888,7 @@ function buildPackArtifacts(
 			reasons: candidateReasons(item, scoredCandidate, section, disposition),
 			disposition,
 			section,
+			artifact_class: readArtifactClass(item.metadata),
 			inferred_role: roleInference.role,
 			role_reason: roleInference.reason,
 		};
