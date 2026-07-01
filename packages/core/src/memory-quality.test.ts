@@ -310,6 +310,89 @@ describe("classifyMemoryWorthiness", () => {
 		});
 	});
 
+	// Codex: a real bugfix/discovery that also mentions validation must NOT be
+	// suppressed as telemetry — it carries a durable fix/finding.
+	it("keeps a bugfix that records a fix even when it mentions tests passing", () => {
+		const result = classifyMemoryWorthiness({
+			kind: "bugfix",
+			title: "Fixed auth timeout",
+			body_text: "Fixed the race condition in the auth refresh path; tests passed.",
+		});
+		expect(result.artifact).toBe("derived_fact");
+		expect(result.action).toBe("store");
+		expect(result.reasons).not.toContain("validation_telemetry_only");
+		expect(result.reasons).toContain("troubleshooting_gotcha");
+	});
+
+	it("keeps a discovery that records a finding even when CI is green", () => {
+		const result = classifyMemoryWorthiness({
+			kind: "discovery",
+			title: "Cursor drift",
+			body_text: "Determined the cursor drift came from unstable sort; CI is green now.",
+		});
+		expect(result.artifact).toBe("derived_fact");
+		expect(result.action).toBe("store");
+		expect(result.reasons).not.toContain("validation_telemetry_only");
+	});
+
+	it("still suppresses a bare bugfix that only reports tests passing", () => {
+		const result = classifyMemoryWorthiness({
+			kind: "bugfix",
+			title: "CI check",
+			body_text: "Tests passed and CI is green.",
+		});
+		expect(result.artifact).toBe("telemetry");
+		expect(result.reasons).toContain("validation_telemetry_only");
+	});
+
+	// Codex: a weak finding verb (confirmed/determined/...) whose object is just
+	// validation/review status must NOT be rescued as a durable finding.
+	it("suppresses a discovery that only confirms validation telemetry", () => {
+		const result = classifyMemoryWorthiness({
+			kind: "discovery",
+			title: "CI status",
+			body_text: "Confirmed CI passed and lint was green.",
+		});
+		expect(result.artifact).toBe("telemetry");
+		expect(result.reasons).toContain("validation_telemetry_only");
+		expect(result.reasons).not.toContain("durable_decision");
+	});
+
+	it("suppresses a bugfix that only verifies the tests pass", () => {
+		const result = classifyMemoryWorthiness({
+			kind: "bugfix",
+			title: "Verified",
+			body_text: "Verified the tests are green after the change.",
+		});
+		expect(result.artifact).toBe("telemetry");
+		expect(result.reasons).not.toContain("troubleshooting_gotcha");
+	});
+
+	// Codex: a STRONG fix verb must keep even when a no-findings/validation phrase
+	// is present (the no-findings guard must not cancel a real fix).
+	it("keeps a strong fix even when paired with a no-remaining-issues phrase", () => {
+		const result = classifyMemoryWorthiness({
+			kind: "bugfix",
+			title: "Fixed auth timeout",
+			body_text: "Fixed auth timeout; tests passed and no remaining issues.",
+		});
+		expect(result.artifact).toBe("derived_fact");
+		expect(result.reasons).toContain("troubleshooting_gotcha");
+		expect(result.reasons).not.toContain("validation_telemetry_only");
+	});
+
+	// Codex: a substantive weak finding in the same row as a telemetry-governed
+	// weak verb must still keep (the telemetry guard is per-clause, not global).
+	it("keeps a substantive finding even when another clause confirms telemetry", () => {
+		const result = classifyMemoryWorthiness({
+			kind: "discovery",
+			title: "Cursor drift",
+			body_text: "Confirmed CI passed after determining cursor drift came from unstable sort.",
+		});
+		expect(result.artifact).toBe("derived_fact");
+		expect(result.reasons).toContain("durable_decision");
+	});
+
 	it("stores summaries even when they mention validation telemetry", () => {
 		expect(
 			classifyMemoryWorthiness({

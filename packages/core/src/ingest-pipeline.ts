@@ -36,6 +36,7 @@ import {
 } from "./ingest-events.js";
 import { isLowSignalObservation } from "./ingest-filters.js";
 import { buildObserverPrompt, truncateObserverTranscript } from "./ingest-prompts.js";
+import { type CaptureRoutedObservation, routeObservationsForCapture } from "./ingest-routing.js";
 import {
 	buildTranscript,
 	deriveRequest,
@@ -337,6 +338,7 @@ export async function ingest(
 	const storeTyped = options.storeTyped ?? true;
 	const maxChars = options.maxChars ?? 12_000;
 	const observerMaxChars = options.observerMaxChars ?? 12_000;
+	const captureRoutingEnabled = process.env.CODEMEM_CAPTURE_ROUTING === "1";
 
 	const d = drizzle(store.db, { schema });
 	const now = new Date().toISOString();
@@ -546,7 +548,7 @@ export async function ingest(
 		const parsed = response.parsed;
 		const observerStatus = selectedObserver.getStatus();
 
-		const observationsToStore: typeof parsed.observations = [];
+		let observationsToStore: CaptureRoutedObservation[] = [];
 		if (storeTyped && hasMeaningfulObservation(parsed.observations)) {
 			for (const obs of parsed.observations) {
 				const kind = obs.kind.trim().toLowerCase();
@@ -585,6 +587,29 @@ export async function ingest(
 				const body = summaryBody(summary);
 				if (body && !isLowSignalObservation(firstSentence(body))) {
 					summaryToStore = { summary, request, body };
+				}
+			}
+		}
+
+		let captureSuppressedCount = 0;
+		let captureCandidateCount = 0;
+		if (captureRoutingEnabled) {
+			const routed = routeObservationsForCapture(observationsToStore, {
+				project,
+				sessionMinutes:
+					typeof sessionContext.durationMs === "number" ? sessionContext.durationMs / 60000 : null,
+			});
+			observationsToStore = routed.kept;
+			captureSuppressedCount = routed.suppressedTelemetry.count;
+			captureCandidateCount = observationsToStore.filter(
+				(obs) => obs.derivation?.candidate === true,
+			).length;
+			if (captureSuppressedCount > 0 && process.env.CODEMEM_DEBUG === "1") {
+				const reasonText = [...new Set(routed.suppressedTelemetry.reasons)].join(", ") || "unknown";
+				for (let i = 0; i < captureSuppressedCount; i += 1) {
+					console.error(
+						`[codemem] capture routing suppressed telemetry observation (reasons=${reasonText})`,
+					);
 				}
 			}
 		}
@@ -643,10 +668,26 @@ export async function ingest(
 						hasAssistantMessage: Boolean(lastAssistantMessage),
 						skipSummaryReason: parsed.skipSummaryReason,
 					});
-				if (pureLowSignalSkip || locallySuppressedSummaryOnlyMicro) {
+				// Only soft-skip when capture routing suppressed EVERY observation
+				// (and there was no summary). If something else zeroed the batch,
+				// fall through to the throw so a real losslessness bug isn't masked.
+				const captureSuppressedTelemetryOnly =
+					captureRoutingEnabled &&
+					captureSuppressedCount > 0 &&
+					parsed.observations.length > 0 &&
+					captureSuppressedCount === parsed.observations.length &&
+					summaryToStore == null;
+				if (
+					pureLowSignalSkip ||
+					locallySuppressedSummaryOnlyMicro ||
+					captureSuppressedTelemetryOnly
+				) {
 					endSession(store, sessionId, events.length, sessionContext, {
 						session_class: sessionClass,
-						summary_disposition: locallySuppressedSummaryOnlyMicro ? "suppressed" : "none",
+						summary_disposition: summaryDisposition,
+						// Only emit capture-routing telemetry when the gate is on, so
+						// default-off session metadata stays byte-identical to pre-feature.
+						...(captureRoutingEnabled ? { capture_suppressed_count: captureSuppressedCount } : {}),
 					});
 					return;
 				}
@@ -684,6 +725,7 @@ export async function ingest(
 					filesModified: obs.filesModified,
 				});
 				const memoryId = store.remember(sessionId, kind, memoryTitle, bodyText, 0.5, tags, {
+					...(obs.derivation ? { derivation: obs.derivation } : {}),
 					subtitle: obs.subtitle,
 					narrative: obs.narrative,
 					facts: obs.facts,
@@ -786,6 +828,15 @@ export async function ingest(
 						project,
 						observation_count: observationsToStore.length,
 						has_summary: summaryToStore != null,
+						// Only emit capture-routing telemetry when the gate is on, so
+						// default-off output stays byte-identical to pre-feature.
+						...(captureRoutingEnabled
+							? {
+									capture_suppressed_count: captureSuppressedCount,
+									capture_candidate_count: captureCandidateCount,
+									capture_routing_enabled: true,
+								}
+							: {}),
 						session_class: sessionClass,
 						summary_disposition: summaryDisposition,
 						observer_tier: selectedTier,
@@ -820,6 +871,7 @@ export async function ingest(
 		endSession(store, sessionId, events.length, sessionContext, {
 			session_class: sessionClass,
 			summary_disposition: summaryDisposition,
+			...(captureRoutingEnabled ? { capture_suppressed_count: captureSuppressedCount } : {}),
 			observer_tier: selectedTier,
 			observer_tier_reasons: selectedTierReasons,
 			observer_requested_provider: requestedObserverProvider,

@@ -28,6 +28,7 @@ import {
 import type { IngestPayload, ParsedSummary, ToolEvent } from "./ingest-types.js";
 import { hasMeaningfulObservation, parseObserverResponse } from "./ingest-xml-parser.js";
 import type { ObserverConfig } from "./observer-client.js";
+import { flushRawEvents } from "./raw-event-flush.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema } from "./test-utils.js";
 
@@ -452,8 +453,14 @@ describe("ingest-sanitize", () => {
 describe("ingest() integration", { timeout: 15_000 }, () => {
 	let tmpDir: string;
 	let store: MemoryStore;
+	let priorCaptureRouting: string | undefined;
+	let priorDebug: string | undefined;
 
 	beforeEach(() => {
+		priorCaptureRouting = process.env.CODEMEM_CAPTURE_ROUTING;
+		priorDebug = process.env.CODEMEM_DEBUG;
+		delete process.env.CODEMEM_CAPTURE_ROUTING;
+		delete process.env.CODEMEM_DEBUG;
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-ingest-test-"));
 		const dbPath = join(tmpDir, "test.sqlite");
 		const setupDb = connect(dbPath);
@@ -463,6 +470,10 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 	});
 
 	afterEach(() => {
+		if (priorCaptureRouting === undefined) delete process.env.CODEMEM_CAPTURE_ROUTING;
+		else process.env.CODEMEM_CAPTURE_ROUTING = priorCaptureRouting;
+		if (priorDebug === undefined) delete process.env.CODEMEM_DEBUG;
+		else process.env.CODEMEM_DEBUG = priorDebug;
 		store?.close();
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
@@ -532,6 +543,34 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 		};
 	}
 
+	function observerWithRaw(raw: string) {
+		return {
+			observe: async () => ({ raw, parsed: null, provider: "test", model: "test-model" }),
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+	}
+
+	function latestObserverUsageMetadata(targetStore = store): Record<string, unknown> {
+		const row = targetStore.db
+			.prepare(
+				"SELECT metadata_json FROM usage_events WHERE event = 'observer_call' ORDER BY id DESC LIMIT 1",
+			)
+			.get() as { metadata_json: string };
+		return JSON.parse(row.metadata_json) as Record<string, unknown>;
+	}
+
+	function observerMemoryMetadata(title: string, targetStore = store): Record<string, unknown> {
+		const row = targetStore.db
+			.prepare("SELECT metadata_json FROM memory_items WHERE title = ? ORDER BY id DESC LIMIT 1")
+			.get(title) as { metadata_json: string };
+		return JSON.parse(row.metadata_json) as Record<string, unknown>;
+	}
+
 	it("creates memories from observer response", async () => {
 		const payload = buildPayload();
 		await ingest(payload, store, { observer: mockObserver } as unknown as IngestOptions);
@@ -563,6 +602,235 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 		expect(summaryMetadata.request).toBe("Fix auth timeout");
 		expect(summaryMetadata.completed).toBe("Fixed the timeout");
 		expect(summaryMetadata.learned).toBe("Race condition in handler");
+	});
+
+	it("suppresses telemetry observations with capture routing enabled", async () => {
+		process.env.CODEMEM_CAPTURE_ROUTING = "1";
+		const observer = observerWithRaw(`<observation>
+			<type>change</type>
+			<title>Validation passed</title>
+			<narrative>CI passed and lint was green.</narrative>
+		</observation>`);
+
+		await ingest(buildPayload(), store, { observer } as unknown as IngestOptions);
+
+		expect(store.recent(10)).toHaveLength(0);
+		expect(latestObserverUsageMetadata()).toEqual(
+			expect.objectContaining({
+				capture_suppressed_count: 1,
+				capture_candidate_count: 0,
+				capture_routing_enabled: true,
+			}),
+		);
+	});
+
+	it("keeps durable modal contracts as candidate derived facts", async () => {
+		process.env.CODEMEM_CAPTURE_ROUTING = "1";
+		const observer = observerWithRaw(`<observation>
+			<type>discovery</type>
+			<title>Handlers must return structured errors instead of throwing</title>
+			<narrative>Handlers must return structured errors instead of throwing.</narrative>
+		</observation>`);
+
+		await ingest(buildPayload(), store, { observer } as unknown as IngestOptions);
+
+		const metadata = observerMemoryMetadata(
+			"Handlers must return structured errors instead of throwing",
+		);
+		expect(metadata.derivation).toEqual(
+			expect.objectContaining({
+				candidate: true,
+				evaluated_extractor_version: "v1",
+			}),
+		);
+		expect((metadata.derivation as Record<string, unknown>).candidate_reasons).toContain(
+			"modal_contract",
+		);
+	});
+
+	it("keeps validation text that embeds a durable contract", async () => {
+		process.env.CODEMEM_CAPTURE_ROUTING = "1";
+		const observer = observerWithRaw(`<observation>
+			<type>discovery</type>
+			<title>CI passed after confirming handlers must return structured errors</title>
+			<narrative>CI passed after confirming handlers must return structured errors.</narrative>
+		</observation>`);
+
+		await ingest(buildPayload(), store, { observer } as unknown as IngestOptions);
+
+		const metadata = observerMemoryMetadata(
+			"CI passed after confirming handlers must return structured errors",
+		);
+		expect(metadata.derivation).toEqual(
+			expect.objectContaining({
+				candidate: true,
+				evaluated_extractor_version: "v1",
+			}),
+		);
+	});
+
+	it("stores unknown observations with explicit candidate false", async () => {
+		process.env.CODEMEM_CAPTURE_ROUTING = "1";
+		const observer = observerWithRaw(`<observation>
+			<type>change</type>
+			<title>Review pass is pending</title>
+			<narrative>The review pass is pending.</narrative>
+		</observation>`);
+
+		await ingest(buildPayload(), store, { observer } as unknown as IngestOptions);
+
+		const metadata = observerMemoryMetadata("Review pass is pending");
+		expect(metadata.derivation).toEqual({
+			candidate: false,
+			evaluated_extractor_version: "v1",
+		});
+	});
+
+	it("does not route summaries through capture suppression", async () => {
+		process.env.CODEMEM_CAPTURE_ROUTING = "1";
+		const observer = observerWithRaw(`<observation>
+			<type>change</type>
+			<title>Validation passed</title>
+			<narrative>CI passed and lint was green.</narrative>
+		</observation>
+		<summary>
+			<request>Validate routing</request>
+			<completed>CI passed and lint was green.</completed>
+		</summary>`);
+
+		await ingest(buildPayload(), store, { observer } as unknown as IngestOptions);
+
+		const summaryMemory = store.db
+			.prepare(
+				"SELECT kind, metadata_json FROM memory_items WHERE json_extract(metadata_json, '$.is_summary') = 1 ORDER BY id DESC LIMIT 1",
+			)
+			.get() as { kind: string; metadata_json: string };
+		expect(summaryMemory.kind).toBe("session_summary");
+		expect(JSON.parse(summaryMemory.metadata_json).completed).toBe("CI passed and lint was green.");
+		expect(latestObserverUsageMetadata().capture_suppressed_count).toBe(1);
+	});
+
+	it("does not add derivation metadata to manual memories when routing is enabled", () => {
+		process.env.CODEMEM_CAPTURE_ROUTING = "1";
+		const sessionId = store.startSession({ cwd: tmpDir, project: "codemem" });
+		store.remember(
+			sessionId,
+			"discovery",
+			"Manual contract",
+			"Handlers must return structured errors instead of throwing.",
+		);
+
+		const metadata = observerMemoryMetadata("Manual contract");
+		expect(metadata.derivation).toBeUndefined();
+	});
+
+	it("terminally completes raw-event batches when capture routing suppresses every observation", async () => {
+		process.env.CODEMEM_CAPTURE_ROUTING = "1";
+		store.recordRawEvent({
+			opencodeSessionId: "sess-capture-suppressed",
+			eventId: "evt-1",
+			eventType: "user_prompt",
+			payload: { type: "user_prompt", prompt_text: "run validation" },
+			tsWallMs: 100,
+		});
+		store.recordRawEvent({
+			opencodeSessionId: "sess-capture-suppressed",
+			eventId: "evt-2",
+			eventType: "tool.execute.after",
+			payload: { type: "tool.execute.after", tool: "bash", args: {}, result: "ci passed" },
+			tsWallMs: 200,
+		});
+
+		const observer = observerWithRaw(`<observation>
+			<type>change</type>
+			<title>Validation passed</title>
+			<narrative>CI passed and lint was green.</narrative>
+		</observation>`);
+
+		await expect(
+			flushRawEvents(store, { observer } as unknown as IngestOptions, {
+				opencodeSessionId: "sess-capture-suppressed",
+				cwd: tmpDir,
+				project: "codemem",
+			}),
+		).resolves.toEqual({ flushed: 2, updatedState: 1 });
+
+		expect(store.rawEventFlushState("sess-capture-suppressed")).toBe(1);
+		expect(store.recent(10)).toHaveLength(0);
+		const session = store.db
+			.prepare("SELECT ended_at, metadata_json FROM sessions ORDER BY id DESC LIMIT 1")
+			.get() as { ended_at: string | null; metadata_json: string };
+		expect(session.ended_at).not.toBeNull();
+		expect(JSON.parse(session.metadata_json).post).toEqual(
+			expect.objectContaining({ capture_suppressed_count: 1 }),
+		);
+	});
+
+	it("stores telemetry without derivation metadata when capture routing is off", async () => {
+		const observer = observerWithRaw(`<observation>
+			<type>change</type>
+			<title>Validation passed</title>
+			<narrative>CI passed and lint was green.</narrative>
+		</observation>`);
+
+		await ingest(buildPayload(), store, { observer } as unknown as IngestOptions);
+
+		const metadata = observerMemoryMetadata("Validation passed");
+		expect(metadata.derivation).toBeUndefined();
+		// Default-off must be byte-identical to pre-feature: NO capture keys emitted.
+		const usage = latestObserverUsageMetadata();
+		expect(usage).not.toHaveProperty("capture_suppressed_count");
+		expect(usage).not.toHaveProperty("capture_candidate_count");
+		expect(usage).not.toHaveProperty("capture_routing_enabled");
+	});
+
+	it("stores only durable candidates from mixed batches when capture routing is on", async () => {
+		const raw = `<observation>
+			<type>discovery</type>
+			<title>Handlers must return structured errors</title>
+			<narrative>Handlers must return structured errors instead of throwing.</narrative>
+		</observation>
+		<observation>
+			<type>change</type>
+			<title>CI passed</title>
+			<narrative>CI passed and lint was green.</narrative>
+		</observation>
+		<observation>
+			<type>change</type>
+			<title>Review approved</title>
+			<narrative>The review was approved with no blockers.</narrative>
+		</observation>`;
+
+		await ingest(buildPayload(), store, {
+			observer: observerWithRaw(raw),
+		} as unknown as IngestOptions);
+		expect(store.recent(10).filter((memory) => memory.kind !== "session_summary")).toHaveLength(3);
+
+		const tmpDirOn = mkdtempSync(join(tmpdir(), "codemem-ingest-routing-on-"));
+		const dbPathOn = join(tmpDirOn, "test.sqlite");
+		const setupDbOn = connect(dbPathOn);
+		initTestSchema(setupDbOn);
+		setupDbOn.close();
+		const routingStore = new MemoryStore(dbPathOn);
+		try {
+			process.env.CODEMEM_CAPTURE_ROUTING = "1";
+			await ingest(buildPayload(), routingStore, {
+				observer: observerWithRaw(raw),
+			} as unknown as IngestOptions);
+			expect(
+				routingStore.recent(10).filter((memory) => memory.kind !== "session_summary"),
+			).toHaveLength(1);
+			expect(latestObserverUsageMetadata(routingStore)).toEqual(
+				expect.objectContaining({
+					capture_suppressed_count: 2,
+					capture_candidate_count: 1,
+					capture_routing_enabled: true,
+				}),
+			);
+		} finally {
+			routingStore.close();
+			rmSync(tmpDirOn, { recursive: true, force: true });
+		}
 	});
 
 	it("suppresses summary-only micro-session recap output", async () => {
@@ -834,9 +1102,13 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 
 		expect(store.recent(10)).toHaveLength(0);
 		const session = store.db
-			.prepare("SELECT ended_at FROM sessions ORDER BY id DESC LIMIT 1")
-			.get() as { ended_at: string | null };
+			.prepare("SELECT ended_at, metadata_json FROM sessions ORDER BY id DESC LIMIT 1")
+			.get() as { ended_at: string | null; metadata_json: string | null };
 		expect(session.ended_at).not.toBeNull();
+		// Default-off: this raw-event zero-output session-end branch must NOT leak
+		// capture-routing metadata into session records (Codex default-off P2).
+		const sessionMeta = JSON.parse(session.metadata_json ?? "{}") as Record<string, unknown>;
+		expect(sessionMeta).not.toHaveProperty("capture_suppressed_count");
 	});
 
 	it("still fails raw-event flush when skip_summary reason is not low-signal", async () => {
