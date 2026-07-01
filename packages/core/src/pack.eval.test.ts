@@ -196,4 +196,17 @@ describe("buildMemoryPack usefulness evals", () => {
 		// appear somewhere in the top N rather than trailing pure distractors.
 		expect(pack.item_ids.slice(0, 5)).toContain(corpus.ids.workingSetPrimaryId);
 	});
+
+	// Target-behavior specs for role-based retrieval routing. Per the refocused
+	// policy (2026-06-29), derived_fact is an in-place classification/role over
+	// durable non-summary observations, NOT a materialized row. These encode the
+	// desired routing — durable observations lead default/task, telemetry is
+	// demoted, summaries lead explicit recap — to be asserted with before/after
+	// evals when role-based ranking calibration lands. They stay pending so this
+	// eval-harness work stays green without asserting unimplemented behavior. The
+	// scenario pack (dual-artifact-v1) and the role-report artifact-share metric
+	// are the shippable deliverables now.
+	it.todo("prefers durable non-summary observations over summaries for topical queries");
+	it.todo("keeps telemetry below durable observations for default/task/debug probes");
+	it.todo("still surfaces a summary for explicit recap requests");
 });

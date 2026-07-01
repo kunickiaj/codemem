@@ -454,6 +454,49 @@ describe("maintenance", { timeout: 15_000 }, () => {
 		expect(report.summary_disposition_buckets).toEqual({ unknown: 1 });
 	});
 
+	it("reports heuristic dual-artifact shares for probe top results", () => {
+		const dbPath = createDbPath("memory-role-report-artifacts");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version) VALUES
+				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, facts, import_key, scope_id
+				) VALUES
+				  (1, 1, 'decision', 'Future memory extraction preserve contract', 'Future memory extraction must preserve implementation contract language.', 1, '2026-03-01T10:10:01Z', '2026-03-01T10:10:01Z', '{}', '["Future memory extraction must preserve implementation contract language."]', 'k1', 'local-default'),
+				  (2, 1, 'session_summary', 'Memory extraction recap', 'Summary of future memory extraction preserve work.', 1, '2026-03-01T10:10:02Z', '2026-03-01T10:10:02Z', '{}', NULL, 'k2', 'local-default'),
+				  (3, 1, 'change', 'Future memory extraction tsc passed', 'pnpm run tsc passed for future memory extraction preserve work.', 1, '2026-03-01T10:10:03Z', '2026-03-01T10:10:03Z', '{}', NULL, 'k3', 'local-default'),
+				  (4, 1, 'discovery', 'Future memory extraction overview', 'Overview of the future memory extraction preserve work area and its components.', 1, '2026-03-01T10:10:04Z', '2026-03-01T10:10:04Z', '{}', NULL, 'k4', 'local-default');
+			`);
+		} finally {
+			db.close();
+		}
+
+		const report = getMemoryRoleReport(dbPath, {
+			project: "codemem",
+			probes: ["what must future memory extraction preserve"],
+		});
+
+		const probe = report.probe_results[0];
+		expect(probe?.top_artifact_counts).toEqual({
+			session_summary: 1,
+			telemetry: 1,
+			derived_fact_like: 1,
+			durable_memory: 1,
+			ephemeral: 0,
+		});
+		expect(probe?.top_artifact_share).toEqual({
+			session_summary_share: 0.25,
+			telemetry_share: 0.25,
+			derived_fact_like_share: 0.25,
+			durable_memory_share: 0.25,
+			ephemeral_share: 0,
+		});
+		expect(probe?.scenario_score?.primary_match_count).toBeGreaterThan(0);
+	});
+
 	it("reports persisted session policy buckets from session metadata", () => {
 		const dbPath = createDbPath("memory-role-session-policy-buckets");
 		const db = new Database(dbPath);

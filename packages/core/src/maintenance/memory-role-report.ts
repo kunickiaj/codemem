@@ -8,6 +8,7 @@ import { buildMemoryPack } from "../pack.js";
 import { MemoryStore } from "../store.js";
 import { canonicalMemoryKind, isSummaryLikeMemory } from "../summary-memory.js";
 import {
+	classifyProbeArtifactBucket,
 	classifyProjectQuality,
 	compareProbeResults,
 	type InferredMemoryRole,
@@ -33,6 +34,7 @@ function inferMemoryRoleForReport(row: {
 	body_text: string;
 	project: string | null;
 	metadata_json: string | null;
+	facts?: string | null;
 	session_minutes: number | null;
 	has_opencode_mapping: number;
 }): InferredMemoryRole {
@@ -67,6 +69,7 @@ export function getMemoryRoleReport(
 					m.body_text,
 					m.active,
 					m.metadata_json,
+					m.facts,
 					s.project,
 					s.metadata_json AS session_metadata_json,
 					CASE
@@ -92,6 +95,7 @@ export function getMemoryRoleReport(
 			body_text: string;
 			active: number;
 			metadata_json: string | null;
+			facts: string | null;
 			project: string | null;
 			session_metadata_json: string | null;
 			session_minutes: number | null;
@@ -243,6 +247,8 @@ export function getMemoryRoleReport(
 							}),
 							kind: canonicalMemoryKind(item.kind, item.metadata),
 							title: item.title,
+							body_text: source?.body_text ?? "",
+							facts: source?.facts ?? null,
 							role: inferred.role,
 							role_reason: inferred.reason,
 							mapping,
@@ -257,10 +263,27 @@ export function getMemoryRoleReport(
 						general: 0,
 					};
 					const topMappingCounts = { mapped: 0, unmapped: 0 };
+					const topArtifactCounts = {
+						session_summary: 0,
+						telemetry: 0,
+						derived_fact_like: 0,
+						durable_memory: 0,
+						ephemeral: 0,
+					};
 					let recapUnmappedCount = 0;
 					for (const item of probeItems.slice(0, 5)) {
 						topRoleCounts[item.role] += 1;
 						topMappingCounts[item.mapping] += 1;
+						const source = rows.find((row) => row.id === item.id);
+						const bucket = classifyProbeArtifactBucket({
+							kind: source?.kind ?? item.kind,
+							title: source?.title ?? item.title,
+							body_text: source?.body_text ?? null,
+							role: item.role,
+							metadata: safeParseMetadata(source?.metadata_json ?? null),
+							facts: source?.facts ?? null,
+						});
+						topArtifactCounts[bucket] += 1;
 						if (item.role === "recap" && item.mapping === "unmapped") {
 							recapUnmappedCount += 1;
 						}
@@ -327,6 +350,14 @@ export function getMemoryRoleReport(
 							recap_share: topRoleCounts.recap / topCount,
 							unmapped_share: topMappingCounts.unmapped / topCount,
 							recap_unmapped_share: recapUnmappedCount / topCount,
+						},
+						top_artifact_counts: topArtifactCounts,
+						top_artifact_share: {
+							session_summary_share: topArtifactCounts.session_summary / topCount,
+							telemetry_share: topArtifactCounts.telemetry / topCount,
+							derived_fact_like_share: topArtifactCounts.derived_fact_like / topCount,
+							durable_memory_share: topArtifactCounts.durable_memory / topCount,
+							ephemeral_share: topArtifactCounts.ephemeral / topCount,
 						},
 						simulated_demoted_unmapped_recap: {
 							item_ids: simulatedItems.map((item) => item.id),
