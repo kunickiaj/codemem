@@ -42,6 +42,7 @@ export function buildDistillDraftPrompt(candidate: DistillCandidate): DistillDra
 		"Output exactly one line: an imperative rule with no preamble and no markdown bullet, at most 200 characters.",
 		"It must be specific and actionable so an AI coding agent can follow it without the original evidence.",
 		`If the evidence is too vague or generic to form a useful rule, output the single word: ${SKIP_TOKEN}.`,
+		`If the evidence is routine activity narration (release/CI status, review passes with no findings, context/docs lookups) rather than a durable lesson, output the single word: ${SKIP_TOKEN}.`,
 	].join("\n");
 
 	const evidence = candidate.evidence

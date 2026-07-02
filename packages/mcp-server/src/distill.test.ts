@@ -1,8 +1,21 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const observeMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@codemem/core", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@codemem/core")>();
+	return {
+		...actual,
+		ObserverClient: class {
+			observe = observeMock;
+		},
+	};
+});
+
 import { connect, initTestSchema, MemoryStore } from "@codemem/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCodememMcpServer } from "./index.js";
 
 type RegisteredTool = {
@@ -107,6 +120,61 @@ describe("memory_distill_candidates MCP tool", () => {
 			scope: "user",
 			suggested_target: "~/.config/opencode/AGENTS.md",
 		});
+	});
+
+	it("judges candidates and drops routine-activity clusters when judge is set", async () => {
+		remember("greenroom", "mcp judge greenroom recurring lesson");
+		remember("greenroom", "mcp judge greenroom recurring lesson again");
+		observeMock.mockResolvedValue({ raw: "ROUTINE: release status narration" });
+		const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+		const distill = getTool(server, "memory_distill_candidates");
+
+		const result = parseToolJson(
+			await distill.handler({
+				all_projects: false,
+				include_documented: false,
+				judge: true,
+				limit: 10,
+				max_evidence_items: 5,
+				min_recurrence: 2,
+			}),
+		) as {
+			candidates: unknown[];
+			metadata: { judged?: boolean; routine_filtered_count?: number };
+		};
+
+		expect(observeMock).toHaveBeenCalledTimes(1);
+		expect(result.candidates).toHaveLength(0);
+		expect(result.metadata.judged).toBe(true);
+		expect(result.metadata.routine_filtered_count).toBe(1);
+		observeMock.mockReset();
+	});
+
+	it("falls back to unjudged output when the observer is unavailable", async () => {
+		remember("greenroom", "mcp judge fallback recurring lesson");
+		remember("greenroom", "mcp judge fallback recurring lesson again");
+		observeMock.mockRejectedValue(new Error("no observer auth configured"));
+		const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+		const distill = getTool(server, "memory_distill_candidates");
+
+		const result = parseToolJson(
+			await distill.handler({
+				all_projects: false,
+				include_documented: false,
+				judge: true,
+				limit: 10,
+				max_evidence_items: 5,
+				min_recurrence: 2,
+			}),
+		) as {
+			candidates: unknown[];
+			metadata: { judged?: boolean; judge_error?: string };
+		};
+
+		expect(result.candidates).toHaveLength(1);
+		expect(result.metadata.judged).toBe(false);
+		expect(result.metadata.judge_error).toContain("no observer auth configured");
+		observeMock.mockReset();
 	});
 
 	it("rejects project filters when all-project mining is requested", async () => {

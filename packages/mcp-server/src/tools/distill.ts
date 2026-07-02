@@ -4,7 +4,9 @@ import { join } from "node:path";
 import {
 	buildDistillReport,
 	type DistillContextDocument,
+	judgeDistillReport,
 	type MemoryFilters,
+	ObserverClient,
 	projectMatchesFilter,
 	resolveProject,
 	resolveProjectRoot,
@@ -102,6 +104,12 @@ export function registerDistillTools(server: McpServer, context: ToolRegistratio
 				.max(20)
 				.default(5)
 				.describe("Evidence snippets per candidate"),
+			judge: z
+				.boolean()
+				.default(true)
+				.describe(
+					"Judge candidates with the observer model and drop routine-activity clusters (on by default; falls back to unjudged output when no observer model is configured)",
+				),
 			...filterSchema,
 		},
 		async (args) => {
@@ -109,7 +117,10 @@ export function registerDistillTools(server: McpServer, context: ToolRegistratio
 				const resolvedDefaultProject = defaultProject();
 				const filters = buildDistillFilters(args, resolvedDefaultProject);
 				const kinds = args.kind ? [args.kind] : undefined;
-				const result = await buildDistillReport(store, {
+				// When judging, mine extra candidates so routine drops are backfilled
+				// from the next-ranked clusters instead of shrinking the caller's limit.
+				const fetchLimit = args.judge ? Math.min(args.limit * 3, args.limit + 20) : args.limit;
+				let result = await buildDistillReport(store, {
 					candidate: {
 						includeDocumented: args.include_documented,
 						maxEvidenceItems: args.max_evidence_items,
@@ -118,9 +129,33 @@ export function registerDistillTools(server: McpServer, context: ToolRegistratio
 						shouldIncludeProjectContext(args, resolvedDefaultProject),
 					),
 					corpus: { filters: filters ?? null, kinds },
-					limit: args.limit,
+					limit: fetchLimit,
 					minRecurrence: args.min_recurrence,
 				});
+				if (args.judge) {
+					try {
+						const client = new ObserverClient();
+						result = await judgeDistillReport(result, async (system, user) => {
+							const response = await client.observe(system, user);
+							return response.raw;
+						});
+					} catch (err) {
+						// Fall back to unjudged output rather than failing the tool —
+						// the caller sees judged:false + judge_error and can decide.
+						const message = err instanceof Error ? err.message : String(err);
+						result = {
+							...result,
+							metadata: { ...result.metadata, judged: false, judge_error: message },
+						};
+					}
+					if (result.candidates.length > args.limit) {
+						result = {
+							...result,
+							candidates: result.candidates.slice(0, args.limit),
+							metadata: { ...result.metadata, candidate_count: args.limit },
+						};
+					}
+				}
 				return jsonContent(result);
 			} catch (err) {
 				return errorContent(err instanceof Error ? err.message : String(err));
