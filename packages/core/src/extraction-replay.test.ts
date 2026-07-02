@@ -119,6 +119,69 @@ describe("extraction replay", () => {
 		expect(result.evaluation.pass).toBe(true);
 	});
 
+	it("does not repair summary-only output for a routine-shape scenario", async () => {
+		const dbPath = createDbPath("extraction-replay-routine");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version, metadata_json) VALUES
+				  (166406, '2026-04-06T21:23:59.631Z', '2026-04-07T06:13:45.667Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"post":{"session_class":"working","summary_disposition":"stored"}}');
+				INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
+				  ('opencode', 'ses-2', 'ses-2', 166406, '2026-04-06T21:23:59.631Z');
+				INSERT INTO raw_event_flush_batches(id, source, stream_id, opencode_session_id, start_event_seq, end_event_seq, extractor_version, status, attempt_count, created_at, updated_at) VALUES
+				  (18504, 'opencode', 'ses-2', 'ses-2', 1204, 1356, 'raw_events_v1', 'completed', 1, '2026-04-07T06:13:45.600Z', '2026-04-07T06:13:45.700Z');
+				INSERT INTO raw_events(id, source, stream_id, opencode_session_id, event_id, event_seq, event_type, ts_wall_ms, ts_mono_ms, payload_json, created_at) VALUES
+				  (11, 'opencode', 'ses-2', 'ses-2', 'evt-11', 1204, 'user_prompt', 1000, 1, '{"type":"user_prompt","prompt_text":"Cut release 0.31.2"}', '2026-04-07T06:13:45.600Z'),
+				  (12, 'opencode', 'ses-2', 'ses-2', 'evt-12', 1205, 'user_prompt', 1005, 2, '{"type":"user_prompt","prompt_text":"Is the release workflow green?"}', '2026-04-07T06:13:45.605Z'),
+				  (13, 'opencode', 'ses-2', 'ses-2', 'evt-13', 1206, 'assistant_message', 1010, 3, '{"type":"assistant_message","assistant_text":"Tag pushed; the release workflow is running and green so far."}', '2026-04-07T06:13:45.610Z');
+			`);
+		} finally {
+			db.close();
+		}
+
+		let callCount = 0;
+		const observer = {
+			observe: async () => {
+				callCount += 1;
+				return {
+					raw: `<summary>
+					  <request>Cut release 0.31.2 and confirm the workflow is green.</request>
+					  <investigated>Checked the release workflow status after pushing the tag.</investigated>
+					  <learned>Nothing durable; routine release monitoring.</learned>
+					  <completed>Pushed tag v0.31.2 and confirmed the release workflow was running.</completed>
+					  <next_steps>Wait for the workflow to finish publishing.</next_steps>
+					  <notes>Routine release session with no durable lessons.</notes>
+					  <files_read></files_read>
+					  <files_modified></files_modified>
+					</summary>`,
+					parsed: null,
+					provider: "test",
+					model: "test-model",
+				};
+			},
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		} as unknown as ObserverClient;
+
+		const result = await replayBatchExtraction(dbPath, observer, {
+			batchId: 18504,
+			scenarioId: "routine-batch-shape",
+		});
+
+		// Two prompts make this a rich replay candidate, but the routine scenario
+		// expects zero observations — summary-only output must stand unrepaired.
+		expect(callCount).toBe(1);
+		expect(result.observer.repairApplied).toBe(false);
+		expect(result.evaluation.counts.summaries).toBe(1);
+		expect(result.evaluation.counts.observations).toBe(0);
+		expect(result.evaluation.pass).toBe(true);
+	});
+
 	it("ignores replay observations with unsupported memory kinds", async () => {
 		const dbPath = createDbPath("extraction-replay-invalid-kind");
 		const db = new Database(dbPath);

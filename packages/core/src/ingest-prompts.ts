@@ -51,6 +51,23 @@ If nothing meaningful happened AND nothing was learned:
 - Output no <observation> blocks
 - Output <skip_summary reason="low-signal"/> instead of a <summary> block.`;
 
+const WORTHINESS_GUIDANCE = `Observation worthiness bar — an <observation> must record a durable lesson:
+a constraint, gotcha, root cause, decision with rationale, or how-something-works
+insight that changes how future work should be done.
+Before emitting an observation, ask: "If a future session never reads this, will it repeat a mistake or re-derive something?"
+If the answer is no, do not emit it — the <summary> already records what happened.
+
+Routine activity is NOT an observation, even when it succeeded and even when the
+session is long or busy. The following belong in the <summary> ONLY:
+- release/CI/pipeline status narration ("workflow is running/passed for tag X")
+- review or validation passes that found no issues
+- context/docs lookups and their results ("no repo-local context found; global standards used")
+- restating workflow policy already active in the session (delegation rules, review gates, commit conventions)
+- bootstrap/setup narration (agent init, plugin loading, workspace detection)
+
+Emitting ZERO <observation> blocks with a normal <summary> is correct and common
+for routine sessions (releases, review passes, dependency bumps, status checks).`;
+
 const NARRATIVE_GUIDANCE = `Create narratives that tell the complete story:
 - Context: What was the problem or goal? What prompted this work?
 - Investigation: What was examined? What was discovered?
@@ -68,8 +85,9 @@ const RICH_SESSION_GUIDANCE = `When the session contains MULTIPLE meaningful thr
 - Treat the <summary> as the broad session-wide state, not a recap of only the latest thread.
 - Cover the major subthreads in the summary when they materially changed the direction, outcome, or understanding of the work.
 - Do not let recency dominate: a long transcript often ends on only one thread, but the output should still represent the major work across the full observed batch.
-- Emit a SMALL capped set of durable <observation> blocks for the highest-value reusable subthreads (usually 2-4, not a dump of everything).
-- If the session clearly contains 2 or more substantial durable subthreads, emit at least 2 <observation> blocks. Summary-only output is not sufficient for a rich session.
+- Emit a SMALL capped set of durable <observation> blocks for the subthreads that pass the worthiness bar (usually 2-4, not a dump of everything).
+- If 2 or more subthreads each pass the worthiness bar, cover each with its own <observation>; do not collapse them into summary-only output.
+- If no subthread passes the worthiness bar, emit a <summary> and zero <observation> blocks — a long, busy session can still contain nothing durable.
 - Prefer one durable observation per distinct subthread, not several observations for one thread and silence for the others.
 - Prefer coverage diversity: do not emit multiple observations that mostly restate the same dominant thread.
 - Choose subthreads that future sessions would most want for rediscovery reduction: important decisions, durable learnings, shipped changes, closed investigations, or troubleshooting outcomes.
@@ -77,9 +95,9 @@ const RICH_SESSION_GUIDANCE = `When the session contains MULTIPLE meaningful thr
 
 const OUTPUT_GUIDANCE =
 	"Output only XML. Do not include commentary outside XML.\n\n" +
-	"ALWAYS emit at least one <observation> block for any meaningful work. " +
-	"Observations are the PRIMARY output - they capture what was built, fixed, learned, or decided. " +
-	"Also emit a <summary> block to track session progress.\n\n" +
+	"Emit <observation> blocks only for content that passes the observation worthiness bar. " +
+	"Observations are the durable layer - they capture what was built, fixed, learned, or decided. " +
+	"Also emit a <summary> block to track session progress; the summary alone carries routine activity.\n\n" +
 	"For rich multi-thread sessions, prefer one broad summary plus a small set of durable observations covering the highest-value subthreads.\n\n" +
 	"For rich sessions, do not return summary-only output when multiple substantial durable subthreads are present.\n\n" +
 	"Do not collapse a rich batch into only the final or most recent thread when earlier threads produced durable decisions, learnings, or outcomes.\n\n" +
@@ -94,7 +112,9 @@ const OBSERVATION_SCHEMA = `<observation>
       - refactor: code restructured, behavior unchanged
       - change: generic modification (docs, config, misc)
       - discovery: learning about existing system, debugging insights
+        (NOT routine lookups, status checks, or process narration)
       - decision: architectural/design choice with rationale
+        (NOT restating existing workflow policy)
       - exploration: attempted approach that was tried but NOT shipped
 
     IMPORTANT: Use 'exploration' when:
@@ -270,6 +290,8 @@ export function buildObserverPrompt(context: ObserverContext): {
 		RECORDING_FOCUS,
 		"",
 		SKIP_GUIDANCE,
+		"",
+		WORTHINESS_GUIDANCE,
 		"",
 		NARRATIVE_GUIDANCE,
 		"",

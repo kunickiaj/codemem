@@ -97,6 +97,18 @@ const EXTRACTION_EVAL_SCENARIOS: SessionExtractionEvalScenario[] = [
 		threads: [],
 	},
 	{
+		id: "routine-batch-shape",
+		title: "Routine batch output shape",
+		description:
+			"Evaluates whether a routine-activity batch (release runs, review passes with no findings, status checks, context lookups) yields one summary and zero observations, per the observation worthiness bar.",
+		summaryCountRange: { min: 1, max: 1 },
+		observationCountRange: { min: 0, max: 0 },
+		minSummaryThreadCoverage: 0,
+		minObservationThreadCoverage: 0,
+		minTotalThreadCoverage: 0,
+		threads: [],
+	},
+	{
 		id: "working-batch-shape",
 		title: "Working batch output shape",
 		description:
