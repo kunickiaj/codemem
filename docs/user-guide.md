@@ -115,17 +115,18 @@ Command/file token caching notes:
 Use `codemem distill` to find lessons that keep showing up in memory history.
 
 ```fish
-codemem distill --project codemem --limit 10
-codemem distill --all-projects --explain
-codemem distill --json
+codemem distill --explain
+codemem distill --all-projects --json
+codemem distill --draft          # draft an AGENTS.md rule for the top candidate + diff
+codemem distill --draft --apply  # write it after confirmation
 ```
 
-Output is review-only:
+Candidate mining is deterministic and review-first:
 
-- `project` candidates usually belong in that repo's `AGENTS.md`.
-- `user` candidates usually belong in global/user context.
-- `draft_text` is intentionally empty until a human or agent writes the final wording.
-- The command does not edit context files automatically.
+- `project` candidates target that repo's `AGENTS.md`; `user` candidates target global/user context.
+- Without `--draft`, the command only emits ranked candidates and evidence (`draft_text` is null).
+- `--draft` uses your configured observer model to write one concise rule for the top candidate and prints a unified diff; it does not write anything.
+- `--apply` (implies `--draft`) writes the rule into a codemem-managed `## Distilled lessons` block, delimited by `<!-- codemem:distilled:begin/end -->` markers so every distilled edit stays in one place. It prompts before writing (except with `--json`, which is non-interactive — there `--apply` itself is the explicit consent and the write happens immediately) and appends only (never deletes your existing notes).
 
 ## Sync
 

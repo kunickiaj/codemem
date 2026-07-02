@@ -1,14 +1,19 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
 import {
+	applyDistillRule,
 	buildDistillReport,
+	type DistillCandidate,
 	type DistillContextDocument,
 	type DistillReport,
+	draftDistillRule,
 	type MemoryFilters,
 	MemoryStore,
+	ObserverClient,
 	projectMatchesFilter,
+	renderUnifiedDiff,
 	resolveDbPath,
 	resolveProject,
 	resolveProjectRoot,
@@ -27,6 +32,8 @@ import {
 type DistillCommandOptions = DbOpts &
 	JsonOpts & {
 		allProjects?: boolean;
+		apply?: boolean;
+		draft?: boolean;
 		explain?: boolean;
 		includeDocumented?: boolean;
 		kind: string[];
@@ -145,11 +152,181 @@ export function renderDistillReport(report: DistillReport, explain = false): str
 	return lines.join("\n").trimEnd();
 }
 
+function resolveCandidateTarget(candidate: DistillCandidate): { path: string; display: string } {
+	if (candidate.scope === "user") {
+		return {
+			path: join(homedir(), ".config", "opencode", "AGENTS.md"),
+			display: "~/.config/opencode/AGENTS.md",
+		};
+	}
+	const root = resolveProjectRoot(process.cwd()) ?? process.cwd();
+	return { path: join(root, "AGENTS.md"), display: "AGENTS.md" };
+}
+
+async function draftTopCandidate(
+	report: DistillReport,
+	opts: DistillCommandOptions,
+): Promise<void> {
+	const candidate = report.candidates[0];
+	if (!candidate) {
+		if (opts.json) {
+			console.log(JSON.stringify({ draft: null, reason: "no_candidates" }, null, 2));
+		} else {
+			p.intro("codemem distill");
+			p.log.warn("No distill candidates to draft.");
+			p.outro("done");
+		}
+		return;
+	}
+
+	// A project-scoped candidate targets ITS repo's AGENTS.md. When the run was
+	// filtered to another project (or --all-projects surfaced a different repo),
+	// writing the cwd checkout's AGENTS.md would put the rule in the wrong repo.
+	if (candidate.scope === "project") {
+		const currentProject = resolveProject(process.cwd());
+		const matchesCwd =
+			currentProject != null &&
+			candidate.projects.every((project) => projectMatchesFilter(project, currentProject));
+		if (!matchesCwd) {
+			const projects = candidate.projects.join(", ") || "(unknown)";
+			if (opts.json) {
+				console.log(
+					JSON.stringify(
+						{
+							draft: null,
+							reason: "project_mismatch",
+							representative_id: candidate.representative_id,
+							projects: candidate.projects,
+						},
+						null,
+						2,
+					),
+				);
+			} else {
+				p.intro("codemem distill draft");
+				p.log.warn(
+					`The top candidate belongs to project "${projects}", not this checkout. Run distill from that repo to draft its AGENTS.md rule.`,
+				);
+				p.outro("nothing written");
+			}
+			return;
+		}
+	}
+
+	const target = resolveCandidateTarget(candidate);
+	const current = existsSync(target.path) ? readFileSync(target.path, "utf8") : "";
+
+	let rule: string | null;
+	let raw: string | null;
+	try {
+		const client = new ObserverClient();
+		const drafted = await draftDistillRule(candidate, async (system, user) => {
+			const response = await client.observe(system, user);
+			return response.raw;
+		});
+		rule = drafted.rule;
+		raw = drafted.raw;
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		const guidance = `drafting needs a configured observer model: ${message}`;
+		if (opts.json) {
+			emitJsonError("draft_failed", guidance, 1);
+		} else {
+			p.log.error(guidance);
+			process.exitCode = 1;
+		}
+		return;
+	}
+
+	if (!rule) {
+		if (opts.json) {
+			console.log(
+				JSON.stringify(
+					{
+						draft: null,
+						reason: "model_declined",
+						representative_id: candidate.representative_id,
+						raw,
+					},
+					null,
+					2,
+				),
+			);
+		} else {
+			p.intro("codemem distill draft");
+			p.log.warn("The model declined to draft a rule for the top candidate (too vague).");
+			p.outro("done");
+		}
+		return;
+	}
+
+	const applied = applyDistillRule(current, rule);
+	const diff = renderUnifiedDiff(target.display, current, applied.text);
+
+	if (opts.json) {
+		const wrote = Boolean(opts.apply && applied.changed);
+		if (wrote) {
+			mkdirSync(dirname(target.path), { recursive: true });
+			writeFileSync(target.path, applied.text);
+		}
+		console.log(
+			JSON.stringify(
+				{
+					draft: {
+						target: target.display,
+						scope: candidate.scope,
+						representative_id: candidate.representative_id,
+						recurrence: candidate.recurrence,
+						score: candidate.score,
+						rule,
+						diff,
+						already_present: !applied.changed,
+						applied: wrote,
+					},
+				},
+				null,
+				2,
+			),
+		);
+		return;
+	}
+
+	p.intro("codemem distill draft");
+	p.log.info(
+		`Top candidate [${candidate.scope}] recurrence=${candidate.recurrence} → ${target.display}`,
+	);
+	p.log.step(`Proposed rule:\n  ${rule}`);
+	if (!applied.changed) {
+		p.log.warn("This rule is already present in the target file.");
+		p.outro("nothing to apply");
+		return;
+	}
+	console.log(diff);
+
+	if (!opts.apply) {
+		p.outro(`dry run — re-run with --apply to write ${target.display}`);
+		return;
+	}
+
+	const confirmed = await p.confirm({ message: `Apply this change to ${target.display}?` });
+	if (p.isCancel(confirmed) || !confirmed) {
+		p.outro("aborted — nothing written");
+		return;
+	}
+	mkdirSync(dirname(target.path), { recursive: true });
+	writeFileSync(target.path, applied.text);
+	p.outro(`wrote ${target.display}`);
+}
+
 async function distillAction(opts: DistillCommandOptions): Promise<void> {
 	let store: MemoryStore | null = null;
 	try {
 		store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 		const result = await runDistill(store, opts);
+		if (opts.draft || opts.apply) {
+			await draftTopCandidate(result, opts);
+			return;
+		}
 		if (opts.json) {
 			console.log(JSON.stringify(result, null, 2));
 			return;
@@ -180,7 +357,12 @@ const cmd = new Command("distill")
 	.option("-m, --min-recurrence <n>", "minimum member count per candidate", "2")
 	.option("-l, --limit <n>", "max candidates", "10")
 	.option("-e, --explain", "include evidence snippets in human output")
-	.option("--include-documented", "include candidates already represented in context files");
+	.option("--include-documented", "include candidates already represented in context files")
+	.option("-D, --draft", "draft an AGENTS.md rule for the top candidate and show the diff")
+	.option(
+		"--apply",
+		"write the drafted rule to the target file (implies --draft; prompts to confirm; with --json applies immediately without prompting)",
+	);
 
 addDbOption(cmd);
 addJsonOption(cmd);

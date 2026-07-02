@@ -187,6 +187,22 @@ export {
 	scoreDistillClusters,
 	selectDistillCorpus,
 } from "./distill.js";
+export type {
+	DistillApplyResult,
+	DistillDraftPrompt,
+	DistillDraftResult,
+	DistillRuleDrafter,
+} from "./distill-draft.js";
+export {
+	applyDistillRule,
+	buildDistillDraftPrompt,
+	DISTILL_BLOCK_BEGIN,
+	DISTILL_BLOCK_END,
+	DISTILL_LESSONS_HEADING,
+	draftDistillRule,
+	renderUnifiedDiff,
+	sanitizeRuleLine,
+} from "./distill-draft.js";
 export type { EmbeddingClient } from "./embeddings.js";
 export {
 	_resetEmbeddingClient,
