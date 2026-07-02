@@ -22,6 +22,7 @@ import { codexHookInjectCommand } from "./commands/codex-hook-inject.js";
 import { configCommand } from "./commands/config.js";
 import { coordinatorCommand } from "./commands/coordinator.js";
 import { dbCommand } from "./commands/db.js";
+import { distillCommand } from "./commands/distill.js";
 import { embedCommand } from "./commands/embed.js";
 import { enqueueRawEventCommand } from "./commands/enqueue-raw-event.js";
 import { exportMemoriesCommand } from "./commands/export-memories.js";
@@ -61,6 +62,7 @@ completion.on("command", ({ reply }) => {
 		"config",
 		"coordinator",
 		"db",
+		"distill",
 		"embed",
 		"enqueue-raw-event",
 		"export-memories",
@@ -201,6 +203,7 @@ program.addCommand(claudeHookFileContextCommand);
 program.addCommand(codexHookInjectCommand);
 program.addCommand(codexHookIngestCommand);
 program.addCommand(dbCommand);
+program.addCommand(distillCommand);
 program.addCommand(exportMemoriesCommand);
 program.addCommand(importMemoriesCommand);
 program.addCommand(statsCommand);

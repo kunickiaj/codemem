@@ -14,6 +14,7 @@ describe("createCodememMcpServer", () => {
 		).toSorted();
 
 		expect(tools).toEqual([
+			"memory_distill_candidates",
 			"memory_expand",
 			"memory_explain",
 			"memory_forget",
