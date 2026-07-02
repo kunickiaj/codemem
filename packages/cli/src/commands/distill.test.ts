@@ -122,6 +122,7 @@ describe("distill command", () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		await parseDistillCommand([
+			"--no-judge",
 			"--json",
 			"--db-path",
 			"memory.sqlite",
@@ -210,7 +211,7 @@ describe("distill command", () => {
 		});
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-		await parseDistillCommand(["--draft", "--json"]);
+		await parseDistillCommand(["--no-judge", "--draft", "--json"]);
 
 		expect(mocks.observe).toHaveBeenCalledTimes(1);
 		const out = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
@@ -225,7 +226,7 @@ describe("distill command", () => {
 		mocks.observe.mockRejectedValue(new Error("no observer auth configured"));
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-		await parseDistillCommand(["--draft", "--json"]);
+		await parseDistillCommand(["--no-judge", "--draft", "--json"]);
 
 		expect(JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]))).toMatchObject({
 			error: "draft_failed",
@@ -238,7 +239,7 @@ describe("distill command", () => {
 		mocks.observe.mockResolvedValue({ raw: "SKIP" });
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-		await parseDistillCommand(["--draft", "--json"]);
+		await parseDistillCommand(["--no-judge", "--draft", "--json"]);
 
 		expect(JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]))).toMatchObject({
 			draft: null,
@@ -261,7 +262,7 @@ describe("distill command", () => {
 		mocks.buildDistillReport.mockResolvedValue(report);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-		await parseDistillCommand(["--draft", "--json"]);
+		await parseDistillCommand(["--no-judge", "--draft", "--json"]);
 
 		// The cwd checkout is not "another-unrelated-repo": drafting must refuse
 		// before any model call so the wrong repo's AGENTS.md is never targeted.
@@ -271,5 +272,148 @@ describe("distill command", () => {
 			reason: "project_mismatch",
 			projects: ["another-unrelated-repo"],
 		});
+	});
+
+	it("judges candidates by default and drops routine-activity clusters from the report", async () => {
+		const report = userScopeReport();
+		const [first] = report.candidates;
+		if (!first) throw new Error("expected a seeded candidate");
+		report.candidates.push({
+			...first,
+			representative_id: 2,
+			concepts: ["release-status"],
+			evidence: ["Release workflow confirmed running for tag v0.31.2."],
+		});
+		report.metadata.candidate_count = 2;
+		mocks.buildDistillReport.mockResolvedValue(report);
+		mocks.observe.mockImplementation(async (_system: string, user: string) => ({
+			raw: user.includes("release-status")
+				? "ROUTINE: release status narration"
+				: "LESSON: durable auth workaround",
+		}));
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseDistillCommand(["--json"]);
+
+		expect(mocks.observe).toHaveBeenCalledTimes(2);
+		const out = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(out.metadata.judged).toBe(true);
+		expect(out.metadata.routine_filtered_count).toBe(1);
+		expect(out.metadata.candidate_count).toBe(1);
+		expect(out.candidates).toHaveLength(1);
+		expect(out.candidates[0].representative_id).toBe(1);
+		expect(out.candidates[0].judge).toEqual({
+			verdict: "lesson",
+			reason: "durable auth workaround",
+			raw: "LESSON: durable auth workaround",
+		});
+	});
+
+	it("keeps unjudged candidates when the model output is unparseable", async () => {
+		mocks.buildDistillReport.mockResolvedValue(userScopeReport());
+		mocks.observe.mockResolvedValue({ raw: "hard to say" });
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseDistillCommand(["--json"]);
+
+		const out = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(out.candidates).toHaveLength(1);
+		expect(out.candidates[0].judge.verdict).toBe("unjudged");
+		expect(out.metadata.routine_filtered_count).toBe(0);
+	});
+
+	it("falls back to unjudged output when no observer is configured", async () => {
+		mocks.buildDistillReport.mockResolvedValue(userScopeReport());
+		mocks.observe.mockRejectedValue(new Error("no observer auth configured"));
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseDistillCommand(["--json"]);
+
+		const out = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(out.candidates).toHaveLength(1);
+		expect(out.candidates[0].judge).toBeUndefined();
+		expect(out.metadata.judged).toBe(false);
+		expect(out.metadata.judge_error).toContain("no observer auth configured");
+		expect(process.exitCode).toBe(0);
+	});
+
+	it("overfetches when judging and backfills routine drops up to the limit", async () => {
+		const report = userScopeReport();
+		const [first] = report.candidates;
+		if (!first) throw new Error("expected a seeded candidate");
+		report.candidates = [
+			{
+				...first,
+				representative_id: 1,
+				concepts: ["release-status"],
+				evidence: ["Release workflow confirmed running for tag v0.31.2."],
+			},
+			{ ...first, representative_id: 2, concepts: ["signing"] },
+		];
+		report.metadata.candidate_count = 2;
+		mocks.buildDistillReport.mockResolvedValue(report);
+		mocks.observe.mockImplementation(async (_system: string, user: string) => ({
+			raw: user.includes("release-status")
+				? "ROUTINE: release status narration"
+				: "LESSON: durable auth workaround",
+		}));
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseDistillCommand(["--limit", "1", "--json"]);
+
+		// The deterministic window is overfetched (limit 1 → fetch 3) so the
+		// judged-out top candidate is backfilled by the next survivor.
+		expect(mocks.buildDistillReport).toHaveBeenCalledWith(
+			expect.any(Object),
+			expect.objectContaining({ limit: 3 }),
+		);
+		const out = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(out.candidates).toHaveLength(1);
+		expect(out.candidates[0].representative_id).toBe(2);
+		expect(out.metadata.candidate_count).toBe(1);
+		expect(out.metadata.routine_filtered_count).toBe(1);
+	});
+
+	it("skips judging entirely with --no-judge", async () => {
+		mocks.buildDistillReport.mockResolvedValue(userScopeReport());
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseDistillCommand(["--no-judge", "--json"]);
+
+		expect(mocks.observe).not.toHaveBeenCalled();
+		const out = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(out.metadata.judged).toBeUndefined();
+		expect(out.metadata.judge_error).toBeUndefined();
+	});
+
+	it("judges before drafting so the draft targets the top surviving candidate", async () => {
+		const report = userScopeReport();
+		const [first] = report.candidates;
+		if (!first) throw new Error("expected a seeded candidate");
+		report.candidates.unshift({
+			...first,
+			representative_id: 9,
+			concepts: ["release-status"],
+			evidence: ["Release workflow confirmed running for tag v0.31.2."],
+		});
+		report.metadata.candidate_count = 2;
+		mocks.buildDistillReport.mockResolvedValue(report);
+		mocks.observe.mockImplementation(async (system: string, user: string) => {
+			if (system.includes("LESSON:")) {
+				return {
+					raw: user.includes("release-status")
+						? "ROUTINE: release status narration"
+						: "LESSON: durable auth workaround",
+				};
+			}
+			return { raw: "Use the HTTPS rewrite when Graphite SSH auth stalls." };
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseDistillCommand(["--draft", "--json"]);
+
+		const out = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(out.draft.representative_id).toBe(1);
+		expect(out.draft.rule).toBe("Use the HTTPS rewrite when Graphite SSH auth stalls.");
 	});
 });

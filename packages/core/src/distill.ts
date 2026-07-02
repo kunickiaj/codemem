@@ -170,6 +170,12 @@ export interface DistillReport {
 		documented_cluster_count: number;
 		include_documented: boolean;
 		min_recurrence: number;
+		/** Set when a worthiness judge pass ran over the candidates. */
+		judged?: boolean;
+		/** Candidates the judge classified as routine activity and removed. */
+		routine_filtered_count?: number;
+		/** Why the judge pass was skipped (e.g. no observer model configured). */
+		judge_error?: string;
 	};
 }
 

@@ -180,11 +180,12 @@ Pack rendering defaults to self-contained context. For token-constrained experim
 ```text
 codemem distill --explain               # ranked candidates + evidence
 codemem distill --all-projects --json   # machine-readable
+codemem distill --no-judge              # skip the observer-model worthiness judgment
 codemem distill --draft                 # draft an AGENTS.md rule for the top candidate and show a diff
 codemem distill --draft --apply         # write it after confirmation
 ```
 
-Candidate mining is deterministic. `--draft` uses your configured observer model to turn the top candidate into a single `AGENTS.md` rule and renders a unified diff; nothing is written. `--apply` writes that rule into a codemem-managed `## Distilled lessons` block (delimited by `<!-- codemem:distilled:begin/end -->` markers, so all distilled edits stay in one place) after prompting for confirmation.
+Candidate mining is deterministic, and by default an observer-model worthiness pass then drops clusters of recurring routine activity (release/CI status, review passes with no findings, context lookups) that recurrence scoring cannot distinguish from real lessons. Without a configured observer model the command falls back to unjudged output with a warning; `--no-judge` opts out entirely. `--draft` uses your configured observer model to turn the top candidate into a single `AGENTS.md` rule and renders a unified diff; nothing is written. `--apply` writes that rule into a codemem-managed `## Distilled lessons` block (delimited by `<!-- codemem:distilled:begin/end -->` markers, so all distilled edits stay in one place) after prompting for confirmation.
 
 ## MCP tools
 

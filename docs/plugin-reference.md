@@ -186,12 +186,18 @@ The MCP server exposes memory retrieval and write tools such as `memory_search`,
 `memory_pack`, `memory_recent`, `memory_remember`, and `memory_forget`.
 
 `memory_distill_candidates` mines recurring lessons into reviewable context
-candidates. It is read-only and does not modify documentation files.
+candidates. It is read-only and does not modify documentation files. By
+default an observer-model worthiness pass drops routine-activity clusters
+(release/CI status, review passes with no findings, context lookups) before
+the candidates are returned; pass `judge: false` to skip it. When no observer
+model is configured the tool returns unjudged output with `judged: false` and
+a `judge_error` in the metadata.
 
 Example agent requests:
 
 - "Find recurring project lessons worth adding to AGENTS.md."
 - "Run distill for all projects and show top candidates."
+- "Distill without judging so I can see the raw recurrence ranking."
 
 ## Observer model defaults
 

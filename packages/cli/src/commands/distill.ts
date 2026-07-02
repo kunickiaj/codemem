@@ -6,9 +6,11 @@ import {
 	applyDistillRule,
 	buildDistillReport,
 	type DistillCandidate,
+	type DistillCandidateJudgement,
 	type DistillContextDocument,
 	type DistillReport,
 	draftDistillRule,
+	judgeDistillReport,
 	type MemoryFilters,
 	MemoryStore,
 	ObserverClient,
@@ -36,6 +38,7 @@ type DistillCommandOptions = DbOpts &
 		draft?: boolean;
 		explain?: boolean;
 		includeDocumented?: boolean;
+		judge?: boolean;
 		kind: string[];
 		limit: string;
 		minRecurrence: string;
@@ -113,8 +116,21 @@ function buildFilters(opts: DistillCommandOptions): MemoryFilters | undefined {
 	return project ? { project } : undefined;
 }
 
-async function runDistill(store: MemoryStore, opts: DistillCommandOptions): Promise<DistillReport> {
-	const limit = parsePositiveInteger(opts.limit, "limit");
+// When judging is on, mine extra candidates so routine drops can be backfilled
+// from the next-ranked clusters instead of shrinking the user's requested limit
+// (e.g. --limit 1 whose top candidate is routine would otherwise return none).
+const JUDGE_OVERFETCH_FACTOR = 3;
+const JUDGE_OVERFETCH_MAX_EXTRA = 20;
+
+function judgeFetchLimit(limit: number): number {
+	return Math.min(limit * JUDGE_OVERFETCH_FACTOR, limit + JUDGE_OVERFETCH_MAX_EXTRA);
+}
+
+async function runDistill(
+	store: MemoryStore,
+	opts: DistillCommandOptions,
+	limit: number,
+): Promise<DistillReport> {
 	const minRecurrence = parsePositiveInteger(opts.minRecurrence, "min recurrence");
 	return buildDistillReport(store, {
 		candidate: {
@@ -131,6 +147,19 @@ async function runDistill(store: MemoryStore, opts: DistillCommandOptions): Prom
 	});
 }
 
+/**
+ * B-side worthiness gate: an LLM judges each deterministic candidate and
+ * routine-activity clusters are dropped. Recurrence alone cannot make this
+ * call — releases, review passes, and context lookups recur by definition.
+ */
+async function judgeReport(report: DistillReport): Promise<DistillReport> {
+	const client = new ObserverClient();
+	return judgeDistillReport(report, async (system, user) => {
+		const response = await client.observe(system, user);
+		return response.raw;
+	});
+}
+
 export function renderDistillReport(report: DistillReport, explain = false): string {
 	if (report.candidates.length === 0) {
 		return "No distill candidates found.";
@@ -144,6 +173,10 @@ export function renderDistillReport(report: DistillReport, explain = false): str
 		lines.push(`   projects: ${candidate.projects.join(", ") || "(none)"}`);
 		lines.push(`   concepts: ${candidate.concepts.join(", ") || "(none)"}`);
 		lines.push(`   members: ${candidate.member_ids.join(", ")}`);
+		const judge = (candidate as { judge?: DistillCandidateJudgement }).judge;
+		if (judge) {
+			lines.push(`   judge: ${judge.verdict}${judge.reason ? ` — ${judge.reason}` : ""}`);
+		}
 		if (explain) {
 			for (const evidence of candidate.evidence) lines.push(`   - ${evidence}`);
 		}
@@ -322,7 +355,33 @@ async function distillAction(opts: DistillCommandOptions): Promise<void> {
 	let store: MemoryStore | null = null;
 	try {
 		store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
-		const result = await runDistill(store, opts);
+		const limit = parsePositiveInteger(opts.limit, "limit");
+		const judging = opts.judge !== false;
+		let result = await runDistill(store, opts, judging ? judgeFetchLimit(limit) : limit);
+		// Judged by default: recurrence scoring alone cannot tell recurring
+		// lessons from recurring routine activity, so unjudged output is only
+		// offered as an explicit opt-out. Judge failure falls back to unjudged
+		// output rather than failing the command.
+		if (judging) {
+			try {
+				result = await judgeReport(result);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				result = {
+					...result,
+					metadata: { ...result.metadata, judged: false, judge_error: message },
+				};
+			}
+			// Trim the overfetched window back to the requested limit; survivors
+			// beyond it exist only to backfill judged-out routine clusters.
+			if (result.candidates.length > limit) {
+				result = {
+					...result,
+					candidates: result.candidates.slice(0, limit),
+					metadata: { ...result.metadata, candidate_count: limit },
+				};
+			}
+		}
 		if (opts.draft || opts.apply) {
 			await draftTopCandidate(result, opts);
 			return;
@@ -333,6 +392,15 @@ async function distillAction(opts: DistillCommandOptions): Promise<void> {
 		}
 		p.intro("codemem distill");
 		console.log(renderDistillReport(result, opts.explain ?? false));
+		if (result.metadata.judged) {
+			p.log.info(
+				`judge dropped ${result.metadata.routine_filtered_count ?? 0} routine-activity candidate(s)`,
+			);
+		} else if (result.metadata.judge_error) {
+			p.log.warn(
+				`worthiness judgment skipped (needs a configured observer model): ${result.metadata.judge_error}. Candidates are unfiltered; recurring routine activity may rank high.`,
+			);
+		}
 		p.outro("review candidates before editing context files");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -358,6 +426,10 @@ const cmd = new Command("distill")
 	.option("-l, --limit <n>", "max candidates", "10")
 	.option("-e, --explain", "include evidence snippets in human output")
 	.option("--include-documented", "include candidates already represented in context files")
+	.option(
+		"--no-judge",
+		"skip the observer-model worthiness judgment that drops routine-activity clusters",
+	)
 	.option("-D, --draft", "draft an AGENTS.md rule for the top candidate and show the diff")
 	.option(
 		"--apply",

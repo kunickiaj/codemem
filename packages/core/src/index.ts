@@ -203,6 +203,19 @@ export {
 	renderUnifiedDiff,
 	sanitizeRuleLine,
 } from "./distill-draft.js";
+export type {
+	DistillCandidateJudgement,
+	DistillJudgePrompt,
+	DistillJudgeVerdict,
+	JudgedDistillCandidate,
+} from "./distill-judge.js";
+export {
+	buildDistillJudgePrompt,
+	judgeDistillCandidate,
+	judgeDistillCandidates,
+	judgeDistillReport,
+	parseJudgeVerdict,
+} from "./distill-judge.js";
 export type { EmbeddingClient } from "./embeddings.js";
 export {
 	_resetEmbeddingClient,

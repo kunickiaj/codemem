@@ -117,6 +117,7 @@ Use `codemem distill` to find lessons that keep showing up in memory history.
 ```fish
 codemem distill --explain
 codemem distill --all-projects --json
+codemem distill --no-judge       # skip the observer-model worthiness judgment
 codemem distill --draft          # draft an AGENTS.md rule for the top candidate + diff
 codemem distill --draft --apply  # write it after confirmation
 ```
@@ -125,6 +126,7 @@ Candidate mining is deterministic and review-first:
 
 - `project` candidates target that repo's `AGENTS.md`; `user` candidates target global/user context.
 - Without `--draft`, the command only emits ranked candidates and evidence (`draft_text` is null).
+- Candidates are judged by default: one short observer-model call per candidate drops clusters that are recurring *activity* (release/CI status, review passes with no findings, context lookups) rather than recurring *lessons* — recurrence alone cannot tell these apart. Unjudgeable candidates are kept and marked `unjudged`. When no observer model is configured, the command falls back to unjudged output with a warning; `--no-judge` skips the judgment (and its model calls) entirely.
 - `--draft` uses your configured observer model to write one concise rule for the top candidate and prints a unified diff; it does not write anything.
 - `--apply` (implies `--draft`) writes the rule into a codemem-managed `## Distilled lessons` block, delimited by `<!-- codemem:distilled:begin/end -->` markers so every distilled edit stays in one place. It prompts before writing (except with `--json`, which is non-interactive — there `--apply` itself is the explicit consent and the write happens immediately) and appends only (never deletes your existing notes).
 
