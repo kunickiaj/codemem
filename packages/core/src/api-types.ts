@@ -102,7 +102,7 @@ export interface ApiUsageResponse {
 
 /** Extended memory item with session + ownership fields attached by the viewer. */
 export interface ApiMemoryItem extends MemoryItemResponse {
-	project?: string;
+	project: string | null;
 	cwd?: string;
 	owned_by_self?: boolean;
 }
