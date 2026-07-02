@@ -156,7 +156,10 @@ export type {
 	DistillClusterOptions,
 	DistillCorpusOptions,
 	DistillDetector,
+	DistillPromotabilityScores,
 	DistillScope,
+	DistillScoredCluster,
+	DistillScoringOptions,
 	DistillVectorFeature,
 } from "./distill.js";
 export {
@@ -165,6 +168,8 @@ export {
 	DEFAULT_CONTEXT_FACT_KINDS,
 	loadDistillVectorFeatures,
 	projectContextFactFeatures,
+	scoreDistillCluster,
+	scoreDistillClusters,
 	selectDistillCorpus,
 } from "./distill.js";
 export type { EmbeddingClient } from "./embeddings.js";
