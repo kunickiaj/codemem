@@ -29,6 +29,13 @@ describe("session extraction eval", () => {
 		);
 	});
 
+	it("exposes the routine batch shape scenario expecting zero observations", () => {
+		const scenario = getSessionExtractionEvalScenario("routine-batch-shape");
+		expect(scenario?.title).toContain("Routine batch output shape");
+		expect(scenario?.observationCountRange).toEqual({ min: 0, max: 0 });
+		expect(scenario?.summaryCountRange).toEqual({ min: 1, max: 1 });
+	});
+
 	it("exposes simple and working batch shape scenarios", () => {
 		expect(getSessionExtractionEvalScenario("simple-batch-shape")?.title).toContain(
 			"Simple batch output shape",

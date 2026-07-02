@@ -333,11 +333,17 @@ function needsRichSessionRepair(
 	evaluation: ReturnType<typeof evaluateSessionExtractionItems>,
 	observerContext: ObserverContext,
 	sessionContext: SessionContext,
+	scenario: { observationCountRange: { min: number } },
 ): boolean {
 	if (!isRichReplayCandidate(observerContext, sessionContext, evaluation.threads.length))
 		return false;
+	// Honor the scenario's own floor: a routine-shape scenario expects zero
+	// observations, and repairing a valid summary-only response would force the
+	// exact routine narration the worthiness bar exists to reject.
+	const minObservations = scenario.observationCountRange.min;
+	if (minObservations <= 0) return false;
 	if (evaluation.counts.observations === 0 && evaluation.counts.summaries >= 1) return true;
-	return evaluation.counts.observations < 2;
+	return evaluation.counts.observations < minObservations;
 }
 
 async function observeRichSessionRepair(
@@ -615,7 +621,12 @@ async function replayPreparedBatch(
 	let repairApplied = false;
 	if (
 		initialResponse.raw &&
-		needsRichSessionRepair(evaluation, prepared.observerContext, prepared.sessionContext)
+		needsRichSessionRepair(
+			evaluation,
+			prepared.observerContext,
+			prepared.sessionContext,
+			prepared.scenario,
+		)
 	) {
 		repairApplied = true;
 		finalResponse = await observeRichSessionRepair(
