@@ -46,16 +46,17 @@ export const RICH_TIER_DEFAULTS: Partial<ObserverConfig> = {
 	observerMaxOutputTokens: 12000,
 };
 
+// No temperature on the Anthropic tiers: the Anthropic request builders and
+// the sidecar runtimes never send a sampling temperature, and newer Claude
+// models reject non-default values outright.
 export const SIMPLE_TIER_ANTHROPIC_DEFAULTS: Partial<ObserverConfig> = {
 	observerProvider: "anthropic",
 	observerModel: "claude-haiku-4-5",
-	observerTemperature: 0.2,
 };
 
 export const RICH_TIER_ANTHROPIC_DEFAULTS: Partial<ObserverConfig> = {
 	observerProvider: "anthropic",
 	observerModel: "claude-sonnet-4-6",
-	observerTemperature: 0.2,
 	observerMaxOutputTokens: 12000,
 };
 
