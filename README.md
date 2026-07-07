@@ -115,7 +115,7 @@ participant ST as MemoryStore
 participant DB as SQLite
 
 OC->>PL: tool.execute.after events
-OC->>PL: experimental.chat.system.transform
+OC->>PL: experimental.chat.messages.transform
 PL->>ST: build_memory_pack with shaped query
 ST->>DB: FTS5 BM25 lexical search
 ST->>DB: sqlite vec semantic search
@@ -126,7 +126,7 @@ PL->>OC: inject codemem context
 
 **Retrieval** combines two strategies: keyword search via SQLite FTS5 with BM25 scoring and semantic similarity via sqlite-vec embeddings. In the pack-building path, results from both are merged, exactly deduplicated, and re-ranked using recency and memory-kind boosts. Near-related memories stay fully rendered by default; use compact rendering or `CODEMEM_PACK_COMPRESSION=ids` only when you intentionally want ID-based expansion via `memory_get_observations`.
 
-**Injection** happens automatically. The plugin builds a query from the current session context (first prompt, latest prompt, project, recently modified files), calls `build_memory_pack`, and appends the result to the system prompt via `experimental.chat.system.transform`.
+**Injection** happens automatically. The plugin builds a query from the current session context (first prompt, latest prompt, project, recently modified files), calls `build_memory_pack`, and appends the result to the latest user message via `experimental.chat.messages.transform`. Prior injected message blocks are replayed byte-for-byte on later turns so provider prompt caches can keep the stable prefix. Set `CODEMEM_INJECT_SURFACE=system` to use the legacy system-prompt surface.
 
 **Memories** are typed — `bugfix`, `feature`, `refactor`, `change`, `discovery`, `decision`, `exploration` — with structured fields like `facts`, `concepts`, `files_read`, and `files_modified` that improve retrieval relevance. Low-signal events are filtered at multiple layers before persistence.
 
@@ -217,6 +217,7 @@ Common overrides:
 |----------|---------|
 | `CODEMEM_DB` | SQLite database path |
 | `CODEMEM_INJECT_CONTEXT` | `0` to disable automatic context injection |
+| `CODEMEM_INJECT_SURFACE` | `message` (default) to inject near the latest OpenCode user message; `system` for the legacy OpenCode system-prompt surface |
 | `CODEMEM_VIEWER_HOST`, `CODEMEM_VIEWER_PORT` | Host/port the plugin-managed viewer should start, probe, and restart |
 | `CODEMEM_VIEWER_AUTO` | `0` to disable auto-starting the viewer |
 | `CODEMEM_MCP_HTTP_HOST`, `CODEMEM_MCP_HTTP_PORT` | Host/port for `codemem mcp http` |

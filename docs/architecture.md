@@ -163,7 +163,7 @@ flowchart TD
 
 ## Context injection
 
-The plugin injects a memory pack into the system prompt on every turn. This is the primary way codemem delivers value — it happens automatically, no manual steps required.
+The plugin injects a memory pack automatically on every turn. In OpenCode, volatile recall output is appended beside the latest user message by default so provider prompt caches can keep the stable system/history prefix.
 
 Feed and retrieval surfaces can scope the corpus without splitting storage into separate pools:
 
@@ -201,7 +201,7 @@ In plugin mode, these can be overridden via `CODEMEM_INJECT_LIMIT` and `CODEMEM_
 
 ### Injection hook
 
-The plugin uses `experimental.chat.system.transform` to append the pack text to the system prompt. It caches the pack per session and re-fetches when the query changes (i.e., when prompts or file activity shift context). A toast notification shows injection stats on first inject per session.
+The OpenCode plugin uses `experimental.chat.messages.transform` to append the current pack text to the latest user message. Earlier injected message blocks are cached by message ID and replayed byte-for-byte on later turns, preserving the stable prompt prefix for provider prompt caches while only the newest user turn receives volatile recall output. Scope revocation affects newly built packs, but historical injected blocks in the same OpenCode session are not retroactively scrubbed; start a new session after revoking access if prompt history must be clean. Set `CODEMEM_INJECT_SURFACE=system` to use the legacy `experimental.chat.system.transform` system-prompt surface. A toast notification shows injection stats on first inject per session.
 
 ```mermaid
 sequenceDiagram
@@ -213,7 +213,7 @@ participant DB as SQLite
 
 OC->>PL: tool.execute.after events
 PL->>PL: update session context
-OC->>PL: experimental.chat.system.transform
+OC->>PL: experimental.chat.messages.transform
 PL->>PL: build injection query from working set
 PL->>CLI: codemem pack with query, limit, token budget
 CLI->>ST: build_memory_pack
@@ -222,7 +222,7 @@ ST->>DB: sqlite-vec semantic search
 ST->>ST: merge, rerank, assemble sections
 ST-->>CLI: pack text and metrics
 CLI-->>PL: JSON result
-PL->>OC: append codemem context to system prompt
+PL->>OC: append codemem context to latest user message
 ```
 
 ## Observer pipeline
