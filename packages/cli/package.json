@@ -1,6 +1,6 @@
 {
 	"name": "codemem",
-	"version": "0.38.0",
+	"version": "0.39.0",
 	"description": "Memory layer for AI coding agents — search, recall, and sync context across sessions",
 	"type": "module",
 	"bin": {
