@@ -10,8 +10,9 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 
 1. Start OpenCode inside this repo (or make the plugin global so it globs in everywhere).
 2. Every tooling session creates memory artifacts in SQLite.
-3. Use `codemem stats` and `codemem recent` to confirm ingestion.
-4. Browse the viewer at the printed URL.
+3. Prompt-time memory injection appends volatile recall output to the latest user message by default, preserving the stable system/history prefix for provider prompt caches.
+4. Use `codemem stats` and `codemem recent` to confirm ingestion.
+5. Browse the viewer at the printed URL.
 
 ## Claude marketplace install
 
@@ -358,6 +359,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_PLUGIN_DEBUG` | Set to `1`, `true`, or `yes` to log plugin lifecycle events. |
 | `CODEMEM_PLUGIN_IGNORE` | Skip all plugin behavior for this process. |
 | `CODEMEM_INJECT_CONTEXT` | Set to `0` to disable memory pack injection (default on). |
+| `CODEMEM_INJECT_SURFACE` | OpenCode injection surface: `message` by default; set `system` for the legacy system-prompt transform. |
 | `CODEMEM_INJECT_LIMIT` | Max memory items in injected pack (default `8`). |
 | `CODEMEM_INJECT_TOKEN_BUDGET` | Approx token budget for injected pack (default `800`). |
 | `CODEMEM_USE_OPENCODE_RUN` | Use `opencode run` for observer generation (default off). |

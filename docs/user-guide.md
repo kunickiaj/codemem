@@ -97,11 +97,13 @@ Command/file token caching notes:
 - Low-signal observations are filtered before writing.
 
 ## Automatic context injection
-- The plugin can inject a memory pack into the system prompt.
+- The OpenCode plugin injects a memory pack next to the latest user message by default, keeping older prompt prefixes stable for provider prompt caches.
 - Controls:
   - `CODEMEM_INJECT_CONTEXT=0` disables injection.
+  - `CODEMEM_INJECT_SURFACE=system` uses the legacy OpenCode system-prompt injection surface.
   - `CODEMEM_INJECT_LIMIT` caps memory items (default 8).
   - `CODEMEM_INJECT_TOKEN_BUDGET` caps pack size (default 800).
+- Scope revocation affects newly built packs immediately, but already-injected context in the current OpenCode session is not retroactively scrubbed; start a new session after revoking access if you need a clean prompt history.
 - Reuse savings estimate discovery work versus pack read size.
 
 ## Semantic recall

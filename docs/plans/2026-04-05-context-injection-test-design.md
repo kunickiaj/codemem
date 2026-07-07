@@ -133,7 +133,8 @@ injection path and its supporting query logic.
 
 Required coverage:
 
-- `experimental.chat.system.transform` injects context into `output.system`
+- `experimental.chat.messages.transform` injects context into the latest user message
+- `CODEMEM_INJECT_SURFACE=system` preserves the legacy `experimental.chat.system.transform` fallback
 - injected context is prefixed/formatted according to the adapter contract
 - no injection occurs when pack generation fails
 - no injection occurs for invalid or empty JSON payloads
@@ -187,7 +188,7 @@ These tests provide a simple, stable baseline for adapter consumers.
 
 | Adapter | Entry point | Output mechanism | Query/input source | Cache behavior | Test location |
 |---|---|---|---|---|---|
-| OpenCode | plugin transform | append to system prompt | prompts + project + modified files | per-session/query cache | `packages/cli/.opencode/tests/` |
+| OpenCode | plugin transform | append to latest user message by default; legacy system prompt with `CODEMEM_INJECT_SURFACE=system` | prompts + project + modified files | per-message stable replay for prior injected blocks | `packages/cli/.opencode/tests/` |
 | Claude hook | hook path | hook-emitted prompt/additional context text | hook-specific prompt/context inputs | adapter-defined | Claude hook test file(s) |
 | CLI/manual | `pack` / `memory inject` | stdout JSON or raw text | command arguments | none | `packages/cli/src/commands/*.test.ts` and core tests |
 
