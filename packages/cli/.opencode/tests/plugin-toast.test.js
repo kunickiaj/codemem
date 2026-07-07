@@ -22,20 +22,30 @@ describe("buildInjectionToastMessage", () => {
     expect(message).toContain("delta +2/-1");
   });
 
-  test("omits delta segment when unavailable", () => {
-    const message = buildInjectionToastMessage({
-      items: 1,
+	test("omits delta segment when unavailable", () => {
+		const message = buildInjectionToastMessage({
+			items: 1,
       pack_tokens: 50,
       pack_delta_available: false,
       added_ids: [11],
       removed_ids: [7],
     });
 
-    expect(message).toContain("codemem injected");
-    expect(message).not.toContain("delta +");
-  });
+		expect(message).toContain("codemem injected");
+		expect(message).not.toContain("delta +");
+	});
 
-  test("omits avoided-work segment when breakdown metrics are missing", () => {
+	test("uses total_items from real pack metrics when items is absent", () => {
+		const message = buildInjectionToastMessage({
+			total_items: 4,
+			pack_tokens: 120,
+		});
+
+		expect(message).toContain("4 items");
+		expect(message).toContain("~120 tokens");
+	});
+
+	test("omits avoided-work segment when breakdown metrics are missing", () => {
     const message = buildInjectionToastMessage({
       items: 2,
       pack_tokens: 100,
