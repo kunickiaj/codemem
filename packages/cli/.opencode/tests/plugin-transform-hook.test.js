@@ -119,7 +119,7 @@ const insertScopedMemory = (
 	).run(sessionId, title, bodyText, now, now, scopeId);
 };
 
-describe("experimental.chat.system.transform", () => {
+describe("OpenCode transform-time injection", () => {
 	const originalEnv = { ...process.env };
 	const tmpDirs = [];
 
@@ -149,13 +149,13 @@ describe("experimental.chat.system.transform", () => {
 		process.env = originalEnv;
 	});
 
-	test("appends built memory pack to output.system", async () => {
+	test("appends built memory pack to the latest user message by default", async () => {
 		spawnMock.mockImplementation((_command, args) => {
 			if (Array.isArray(args) && args.includes("pack")) {
 				return makeProcess({
 					stdout: JSON.stringify({
 						pack_text: "## Summary\n[1] (feature) Titanic artifact client shipped",
-						metrics: { items: 1, pack_tokens: 42 },
+						metrics: { total_items: 1, pack_tokens: 42 },
 					}),
 				});
 			}
@@ -173,19 +173,328 @@ describe("experimental.chat.system.transform", () => {
 			worktree: "/tmp/greenroom",
 		});
 
-		expect(typeof hooks["experimental.chat.system.transform"]).toBe("function");
+		expect(typeof hooks["experimental.chat.messages.transform"]).toBe("function");
+
+		const output = {
+			messages: [
+				{
+					info: { id: "user-1", sessionID: "sess-1", role: "user" },
+					parts: [
+						{
+							id: "user-1-text",
+							sessionID: "sess-1",
+							messageID: "user-1",
+							type: "text",
+							text: "ship the Titanic artifact client",
+						},
+					],
+				},
+			],
+		};
+		await hooks["experimental.chat.messages.transform"]({}, output);
+
+		expect(output.messages[0].parts.at(-1)).toEqual({
+			id: "codemem-context-user-1",
+			sessionID: "sess-1",
+			messageID: "user-1",
+			type: "text",
+			text: "[codemem context]\n## Summary\n[1] (feature) Titanic artifact client shipped",
+			synthetic: true,
+		});
+		expect(spawnMock).toHaveBeenCalledTimes(1);
+	});
+
+	test("skips message injection for the transform immediately following compaction", async () => {
+		const packQueries = [];
+		spawnMock.mockImplementation((_command, args) => {
+			if (Array.isArray(args) && args.includes("pack")) {
+				packQueries.push(args[args.indexOf("pack") + 1]);
+				return makeProcess({
+					stdout: JSON.stringify({
+						pack_text: "## Summary\n[1] (feature) Normal turn context",
+						metrics: { total_items: 1, pack_tokens: 42 },
+					}),
+				});
+			}
+			return makeProcess({ stdout: "" });
+		});
+
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: {
+				app: { log: vi.fn().mockResolvedValue(undefined) },
+				tui: {},
+			},
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+
+		expect(typeof hooks["experimental.session.compacting"]).toBe("function");
+		await hooks["experimental.session.compacting"]({ sessionID: "sess-compact" }, { context: [] });
+
+		const output = {
+			messages: [
+				{
+					info: { id: "user-compact", sessionID: "sess-compact", role: "user" },
+					parts: [
+						{
+							id: "user-compact-text",
+							sessionID: "sess-compact",
+							messageID: "user-compact",
+							type: "text",
+							text: "summarize this session",
+						},
+					],
+				},
+			],
+		};
+
+		await hooks["experimental.chat.messages.transform"]({ sessionID: "sess-compact" }, output);
+		expect(output.messages[0].parts).toHaveLength(1);
+		expect(spawnMock).not.toHaveBeenCalled();
+
+		await hooks["experimental.chat.messages.transform"]({ sessionID: "sess-compact" }, output);
+		expect(output.messages[0].parts.at(-1).text).toBe(
+			"[codemem context]\n## Summary\n[1] (feature) Normal turn context",
+		);
+		expect(packQueries).toEqual(["summarize this session greenroom"]);
+	});
+
+	test("keeps legacy system prompt injection when CODEMEM_INJECT_SURFACE=system", async () => {
+		process.env.CODEMEM_INJECT_SURFACE = "system";
+		spawnMock.mockImplementation((_command, args) => {
+			if (Array.isArray(args) && args.includes("pack")) {
+				return makeProcess({
+					stdout: JSON.stringify({
+						pack_text: "## Summary\n[1] (feature) Legacy system injection",
+						metrics: { total_items: 1, pack_tokens: 42 },
+					}),
+				});
+			}
+			return makeProcess({ stdout: "" });
+		});
+
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: {
+				app: { log: vi.fn().mockResolvedValue(undefined) },
+				tui: {},
+			},
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
 
 		const output = { system: ["base system prompt"] };
 		await hooks["experimental.chat.system.transform"](
-			{ sessionID: "sess-1", model: {} },
+			{ sessionID: "sess-legacy", model: {} },
 			output,
 		);
 
 		expect(output.system).toEqual([
 			"base system prompt",
-			"[codemem context]\n## Summary\n[1] (feature) Titanic artifact client shipped",
+			"[codemem context]\n## Summary\n[1] (feature) Legacy system injection",
+		]);
+	});
+
+	test("skips legacy system injection for the transform immediately following compaction", async () => {
+		process.env.CODEMEM_INJECT_SURFACE = "system";
+		spawnMock.mockImplementation((_command, args) => {
+			if (Array.isArray(args) && args.includes("pack")) {
+				return makeProcess({
+					stdout: JSON.stringify({
+						pack_text: "## Summary\n[1] (feature) Legacy context after compaction",
+						metrics: { total_items: 1, pack_tokens: 42 },
+					}),
+				});
+			}
+			return makeProcess({ stdout: "" });
+		});
+
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: {
+				app: { log: vi.fn().mockResolvedValue(undefined) },
+				tui: {},
+			},
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+
+		await hooks["experimental.session.compacting"]({ sessionID: "sess-legacy-compact" }, { context: [] });
+
+		const output = { system: ["base system prompt"] };
+		await hooks["experimental.chat.system.transform"](
+			{ sessionID: "sess-legacy-compact", model: {} },
+			output,
+		);
+		expect(output.system).toEqual(["base system prompt"]);
+		expect(spawnMock).not.toHaveBeenCalled();
+
+		await hooks["experimental.chat.system.transform"](
+			{ sessionID: "sess-legacy-compact", model: {} },
+			output,
+		);
+		expect(output.system).toEqual([
+			"base system prompt",
+			"[codemem context]\n## Summary\n[1] (feature) Legacy context after compaction",
 		]);
 		expect(spawnMock).toHaveBeenCalledTimes(1);
+	});
+
+	test("does not inject into system prompt in default message mode", async () => {
+		spawnMock.mockImplementation((_command, args) => {
+			if (Array.isArray(args) && args.includes("pack")) {
+				return makeProcess({
+					stdout: JSON.stringify({
+						pack_text: "## Summary\n[1] (feature) Should not be used",
+						metrics: { total_items: 1, pack_tokens: 42 },
+					}),
+				});
+			}
+			return makeProcess({ stdout: "" });
+		});
+
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: {
+				app: { log: vi.fn().mockResolvedValue(undefined) },
+				tui: {},
+			},
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+
+		const output = { system: ["base system prompt"] };
+		await hooks["experimental.chat.system.transform"](
+			{ sessionID: "sess-default-system", model: {} },
+			output,
+		);
+
+		expect(output.system).toEqual(["base system prompt"]);
+		expect(spawnMock).not.toHaveBeenCalled();
+	});
+
+	test("does not inject into messages in legacy system mode", async () => {
+		process.env.CODEMEM_INJECT_SURFACE = "system";
+		spawnMock.mockImplementation((_command, args) => {
+			if (Array.isArray(args) && args.includes("pack")) {
+				return makeProcess({
+					stdout: JSON.stringify({
+						pack_text: "## Summary\n[1] (feature) Should not be used",
+						metrics: { total_items: 1, pack_tokens: 42 },
+					}),
+				});
+			}
+			return makeProcess({ stdout: "" });
+		});
+
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: {
+				app: { log: vi.fn().mockResolvedValue(undefined) },
+				tui: {},
+			},
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+
+		const output = {
+			messages: [
+				{
+					info: { id: "user-legacy", sessionID: "sess-legacy", role: "user" },
+					parts: [
+						{
+							id: "user-legacy-text",
+							sessionID: "sess-legacy",
+							messageID: "user-legacy",
+							type: "text",
+							text: "legacy mode prompt",
+						},
+					],
+				},
+			],
+		};
+		await hooks["experimental.chat.messages.transform"]({}, output);
+
+		expect(output.messages[0].parts).toHaveLength(1);
+		expect(output.messages[0].parts[0].text).toBe("legacy mode prompt");
+		expect(spawnMock).not.toHaveBeenCalled();
+	});
+
+	test("honors empty prompt overrides instead of falling back to stale captured prompts", async () => {
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		const packQueries = [];
+		spawnMock.mockImplementation((_command, args) => {
+			if (Array.isArray(args) && args.includes("pack")) {
+				packQueries.push(args[args.indexOf("pack") + 1]);
+				return makeProcess({
+					stdout: JSON.stringify({
+						pack_text: "## Summary\n[1] (feature) Empty prompt override respected",
+						metrics: { total_items: 1, pack_tokens: 42 },
+					}),
+				});
+			}
+			return makeProcess({ stdout: "" });
+		});
+
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: {
+				app: { log: vi.fn().mockResolvedValue(undefined) },
+				tui: {},
+			},
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+
+		await hooks.event({
+			event: {
+				type: "message.updated",
+				properties: {
+					sessionID: "sess-empty-override",
+					info: { id: "user-stale", role: "user" },
+				},
+			},
+		});
+		await hooks.event({
+			event: {
+				type: "message.part.updated",
+				properties: {
+					sessionID: "sess-empty-override",
+					part: { messageID: "user-stale", type: "text", text: "stale captured prompt" },
+				},
+			},
+		});
+
+		const output = {
+			messages: [
+				{
+					info: { id: "user-empty", sessionID: "sess-empty-override", role: "user" },
+					parts: [
+						{
+							id: "user-empty-text",
+							sessionID: "sess-empty-override",
+							messageID: "user-empty",
+							type: "text",
+							text: "   ",
+						},
+					],
+				},
+			],
+		};
+
+		await hooks["experimental.chat.messages.transform"]({ sessionID: "sess-empty-override" }, output);
+
+		expect(packQueries).toEqual(["greenroom"]);
+		expect(output.messages[0].parts.at(-1).text).toBe(
+			"[codemem context]\n## Summary\n[1] (feature) Empty prompt override respected",
+		);
 	});
 
 	test("injects the CLI-scoped pack without unauthorized scope memories", async () => {
@@ -236,16 +545,28 @@ describe("experimental.chat.system.transform", () => {
 			worktree,
 		});
 
-		const output = { system: ["base system prompt"] };
-		await hooks["experimental.chat.system.transform"](
-			{ sessionID: "sess-scope-a", model: {} },
-			output,
-		);
+		const output = {
+			messages: [
+				{
+					info: { id: "user-scope", sessionID: "sess-scope-a", role: "user" },
+					parts: [
+						{
+							id: "user-scope-text",
+							sessionID: "sess-scope-a",
+							messageID: "user-scope",
+							type: "text",
+							text: "greenroom scope safety",
+						},
+					],
+				},
+			],
+		};
+		await hooks["experimental.chat.messages.transform"]({}, output);
 
-		const systemPrompt = output.system.join("\n");
-		expect(systemPrompt).toContain("Greenroom authorized scope note");
-		expect(systemPrompt).not.toContain("Greenroom forbidden payroll secret");
-		expect(systemPrompt).not.toContain("forbidden payroll details");
+		const userPrompt = output.messages[0].parts.map((part) => part.text || "").join("\n");
+		expect(userPrompt).toContain("Greenroom authorized scope note");
+		expect(userPrompt).not.toContain("Greenroom forbidden payroll secret");
+		expect(userPrompt).not.toContain("forbidden payroll details");
 		expect(showToast).toHaveBeenCalledTimes(1);
 		expect(JSON.stringify(showToast.mock.calls)).not.toContain("forbidden payroll");
 	});

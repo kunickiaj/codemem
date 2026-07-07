@@ -18,6 +18,10 @@ const DISABLED_VALUES = ["0", "false", "off"];
 const PINNED_BACKEND_VERSION = "0.38.0";
 const COMPAT_CHECK_DELAY_MS = 1500;
 const COMPAT_CHECK_CACHE_TTL_MS = 5 * 60 * 1000;
+const CODEMEM_CONTEXT_PART_ID_PREFIX = "codemem-context-";
+const MAX_MESSAGE_INJECTION_CACHE_SESSIONS = 20;
+const MAX_MESSAGE_INJECTION_CACHE_MESSAGES = 100;
+const COMPACTION_INJECTION_SKIP_TTL_MS = 30 * 1000;
 
 let compatCheckCache = null;
 
@@ -26,6 +30,16 @@ const envHasValue = (value, truthyValues) =>
   truthyValues.includes(normalizeEnvValue(value));
 const envNotDisabled = (value) =>
   !DISABLED_VALUES.includes(normalizeEnvValue(value));
+
+const resolveInjectSurface = (value) => {
+  const normalized = String(value || "message").trim().toLowerCase();
+  if (normalized === "system") {
+    return "system";
+  }
+  return "message";
+};
+
+const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value || {}, key);
 
 const DEFAULT_LOG_PATH = (homeDir, cwd) => `${homeDir || cwd}/.codemem/plugin.log`;
 
@@ -282,6 +296,256 @@ const applyInjectedContextToOutput = async ({
   }
   output.system.push(injected.text);
   return true;
+};
+
+const isUserMessageEntry = (entry) => entry?.info?.role === "user";
+
+const resolveEntryMessageId = (entry) => {
+  const id = entry?.info?.id || entry?.parts?.find((part) => part?.messageID)?.messageID;
+  return id ? String(id) : null;
+};
+
+const fallbackEntryMessageId = (entry, index = 0) => {
+  const id = resolveEntryMessageId(entry);
+  if (id) return id;
+  const text = extractMessageText(entry);
+  if (text) {
+    return `message-${createHash("sha256").update(text).digest("hex").slice(0, 16)}`;
+  }
+  return `message-${index}`;
+};
+
+const resolveEntrySessionID = (entry) => {
+  const id = entry?.info?.sessionID || entry?.parts?.find((part) => part?.sessionID)?.sessionID;
+  return id ? String(id) : null;
+};
+
+const isCodememContextPart = (part) =>
+  part?.type === "text" && String(part?.id || "").startsWith(CODEMEM_CONTEXT_PART_ID_PREFIX);
+
+const extractMessageText = (entry) => {
+  if (!Array.isArray(entry?.parts)) {
+    return "";
+  }
+  return entry.parts
+    .filter((part) => part?.type === "text" && !isCodememContextPart(part))
+    .map((part) => String(part?.text || "").trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+};
+
+const findFirstUserMessage = (messages) => {
+  for (let index = 0; index < messages.length; index += 1) {
+    const entry = messages[index];
+    if (isUserMessageEntry(entry)) {
+      return { entry, index };
+    }
+  }
+  return null;
+};
+
+const findLatestUserMessage = (messages) => {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const entry = messages[index];
+    if (isUserMessageEntry(entry)) {
+      return { entry, index };
+    }
+  }
+  return null;
+};
+
+const markCompactionInjectionSkip = (compactionInjectionSkips, sessionID, now = Date.now()) => {
+  if (!compactionInjectionSkips || !sessionID) return;
+  compactionInjectionSkips.set(String(sessionID), now + COMPACTION_INJECTION_SKIP_TTL_MS);
+};
+
+const consumeCompactionInjectionSkip = (compactionInjectionSkips, sessionID, now = Date.now()) => {
+  if (!compactionInjectionSkips || !sessionID) return false;
+  const key = String(sessionID);
+  const expiresAt = compactionInjectionSkips.get(key);
+  if (!expiresAt) return false;
+  compactionInjectionSkips.delete(key);
+  return now <= expiresAt;
+};
+
+// OpenCode does not guarantee that synthetic message parts survive into the
+// next transform call. Cache each message's injected block by message ID and
+// re-append the exact same bytes on later turns: older prompts stay stable for
+// provider prefix caching while only the newest user message triggers a fresh
+// pack build. The replay cache only activates when OpenCode provides both a
+// session ID and a real message ID; unidentified messages still receive current
+// turn context, but are not cached because positional fallbacks can drift across
+// turns or sessions. Do not "simplify" this into recomputing previous turns.
+const getSessionMessageInjectionCache = (messageInjectionCache, sessionID) => {
+  if (!sessionID) {
+    return null;
+  }
+  const cacheKey = sessionID;
+  let sessionCache = messageInjectionCache.get(cacheKey);
+  if (sessionCache) {
+    // Refresh recency so the bounded cache behaves like a small LRU.
+    messageInjectionCache.delete(cacheKey);
+  } else {
+    sessionCache = new Map();
+  }
+  messageInjectionCache.set(cacheKey, sessionCache);
+  while (messageInjectionCache.size > MAX_MESSAGE_INJECTION_CACHE_SESSIONS) {
+    const oldestKey = messageInjectionCache.keys().next().value;
+    if (!oldestKey) break;
+    messageInjectionCache.delete(oldestKey);
+  }
+  return sessionCache;
+};
+
+const trimSessionMessageInjectionCache = (sessionCache) => {
+  if (!sessionCache) return;
+  while (sessionCache.size > MAX_MESSAGE_INJECTION_CACHE_MESSAGES) {
+    const oldestKey = sessionCache.keys().next().value;
+    if (!oldestKey) break;
+    sessionCache.delete(oldestKey);
+  }
+};
+
+const normalizeInjectedMessageParts = (messages, sessionCache) => {
+  for (let index = 0; index < messages.length; index += 1) {
+    const entry = messages[index];
+    if (!isUserMessageEntry(entry) || !Array.isArray(entry.parts)) {
+      continue;
+    }
+
+    const messageId = resolveEntryMessageId(entry);
+    const retainedParts = [];
+    let existingText = null;
+    for (const part of entry.parts) {
+      if (isCodememContextPart(part)) {
+        const text = String(part?.text || "");
+        if (text.trim()) {
+          existingText = text;
+        }
+      } else {
+        retainedParts.push(part);
+      }
+    }
+    if (existingText && sessionCache && messageId && !sessionCache.has(messageId)) {
+      sessionCache.set(messageId, existingText);
+      trimSessionMessageInjectionCache(sessionCache);
+    }
+    if (retainedParts.length !== entry.parts.length) {
+      entry.parts.splice(0, entry.parts.length, ...retainedParts);
+    }
+  }
+};
+
+const buildInjectedContextPart = (entry, index, text, options = {}) => {
+  const messageId = options.messageId || fallbackEntryMessageId(entry, index);
+  const sessionID = options.sessionID || resolveEntrySessionID(entry) || "unknown";
+  return {
+    id: `${CODEMEM_CONTEXT_PART_ID_PREFIX}${messageId}`,
+    sessionID,
+    messageID: messageId,
+    type: "text",
+    text,
+    synthetic: true,
+  };
+};
+
+const appendCachedInjectedContextParts = (messages, sessionCache, sessionID = null) => {
+  let appended = 0;
+  for (let index = 0; index < messages.length; index += 1) {
+    const entry = messages[index];
+    if (!isUserMessageEntry(entry) || !Array.isArray(entry.parts)) {
+      continue;
+    }
+    const messageId = resolveEntryMessageId(entry);
+    if (!messageId) {
+      continue;
+    }
+    const text = sessionCache.get(messageId);
+    if (!text) {
+      continue;
+    }
+    entry.parts.push(buildInjectedContextPart(entry, index, text, { messageId, sessionID }));
+    appended += 1;
+  }
+  return appended;
+};
+
+const applyInjectedContextToMessages = async ({
+  injectEnabled,
+  input,
+  output,
+  injectionToastShown,
+  showToast,
+  resolveInjectQuery,
+  buildInjectedContext,
+  messageInjectionCache,
+  compactionInjectionSkips,
+}) => {
+  if (!injectEnabled || !Array.isArray(output?.messages)) {
+    return false;
+  }
+
+  const latestUser = findLatestUserMessage(output.messages);
+  const sessionID = latestUser
+    ? resolveEntrySessionID(latestUser.entry) || input?.sessionID || null
+    : input?.sessionID || null;
+
+  if (consumeCompactionInjectionSkip(compactionInjectionSkips, sessionID)) {
+    normalizeInjectedMessageParts(output.messages, null);
+    return false;
+  }
+
+  if (!latestUser) {
+    return false;
+  }
+
+  const sessionCache = getSessionMessageInjectionCache(messageInjectionCache, sessionID);
+  normalizeInjectedMessageParts(output.messages, sessionCache);
+
+  const latestMessageId = resolveEntryMessageId(latestUser.entry);
+  const canReplay = Boolean(sessionCache && latestMessageId);
+  if (!canReplay || !sessionCache.has(latestMessageId)) {
+    const firstUser = findFirstUserMessage(output.messages);
+    const query = resolveInjectQuery({
+      firstPrompt: firstUser ? extractMessageText(firstUser.entry) : null,
+      lastPromptText: extractMessageText(latestUser.entry),
+    });
+    const injected = await buildInjectedContext(query);
+    if (injected?.text) {
+      if (canReplay) {
+        sessionCache.set(latestMessageId, injected.text);
+        trimSessionMessageInjectionCache(sessionCache);
+      } else if (Array.isArray(latestUser.entry.parts)) {
+        latestUser.entry.parts.push(
+          buildInjectedContextPart(latestUser.entry, latestUser.index, injected.text, {
+            messageId: latestMessageId || undefined,
+            sessionID: sessionID || undefined,
+          })
+        );
+      }
+
+      const toastKey = sessionID || latestMessageId || "unknown";
+      if (!injectionToastShown.has(toastKey) && showToast) {
+        injectionToastShown.add(toastKey);
+        try {
+          await showToast(buildInjectionToastMessage(injected.metrics));
+        } catch {
+          // best-effort only
+        }
+      }
+    }
+  }
+
+  if (!canReplay) {
+    return Boolean(
+      Array.isArray(latestUser.entry.parts)
+      && latestUser.entry.parts.some(isCodememContextPart)
+    );
+  }
+
+  const appended = appendCachedInjectedContextParts(output.messages, sessionCache, sessionID);
+  return appended > 0;
 };
 
 const mapOpencodeEventTypeToAdapterType = (eventType) => {
@@ -589,7 +853,7 @@ const parsePositiveInt = (value, fallback) => {
 };
 
 export const buildInjectionToastMessage = (metrics) => {
-  const items = asFiniteNonNegativeInt(metrics?.items);
+  const items = asFiniteNonNegativeInt(metrics?.items) ?? asFiniteNonNegativeInt(metrics?.total_items);
   const packTokens = asFiniteNonNegativeInt(metrics?.pack_tokens);
   const avoided = asFiniteNonNegativeInt(metrics?.avoided_work_tokens);
   const avoidedUnknown = asNonNegativeCount(metrics?.avoided_work_unknown_items);
@@ -756,12 +1020,15 @@ export const OpencodeMemPlugin = async ({
   const injectEnabled = envNotDisabled(
     process.env.CODEMEM_INJECT_CONTEXT || "1"
   );
+  const injectSurface = resolveInjectSurface(process.env.CODEMEM_INJECT_SURFACE);
   // Only use env overrides if explicitly set; otherwise CLI uses config defaults
   const injectLimitEnv = process.env.CODEMEM_INJECT_LIMIT;
   const injectLimit = injectLimitEnv ? parseNumber(injectLimitEnv, null) : null;
   const injectTokenBudgetEnv = process.env.CODEMEM_INJECT_TOKEN_BUDGET;
   const injectTokenBudget = injectTokenBudgetEnv ? parseNumber(injectTokenBudgetEnv, null) : null;
   const injectionToastShown = new Set();
+  const messageInjectionCache = new Map();
+  const compactionInjectionSkips = new Map();
   let sessionStartedAt = null;
   let activeSessionID = null;
   let viewerStarted = false;
@@ -1050,6 +1317,20 @@ export const OpencodeMemPlugin = async ({
       return null;
     }
     return event?.properties?.sessionID || null;
+  };
+
+  const extractHookSessionID = (input) => {
+    if (!input || typeof input !== "object") {
+      return null;
+    }
+    return (
+      input.sessionID ||
+      input.sessionId ||
+      input.session?.id ||
+      input.session?.sessionID ||
+      input.properties?.sessionID ||
+      null
+    );
   };
 
   // Session context tracking for comprehensive memories
@@ -1500,21 +1781,34 @@ export const OpencodeMemPlugin = async ({
     await showToast(`${message}. Suggested action: ${guidance.action}`, "warning");
   };
 
-  const resolveInjectQuery = () =>
-    buildInjectQuery({
-      firstPrompt: sessionContext.firstPrompt,
-      lastPromptText,
+  const resolveInjectQuery = (overrides = {}) => {
+    const firstPrompt = hasOwn(overrides, "firstPrompt")
+      ? overrides.firstPrompt
+      : sessionContext.firstPrompt;
+    const resolvedLastPromptText = hasOwn(overrides, "lastPromptText")
+      ? overrides.lastPromptText
+      : lastPromptText;
+    return buildInjectQuery({
+      firstPrompt,
+      lastPromptText: resolvedLastPromptText,
       projectName: resolveProjectName(project, cwd),
       filesModified: sessionContext.filesModified,
     });
+  };
 
-  const describeInjectQuery = (query) => {
+  const describeInjectQuery = (query, overrides = {}) => {
     const safeQuery = redactLog((query || "").trim(), 240);
     const projectName = resolveProjectName(project, cwd) || "";
+    const firstPrompt = hasOwn(overrides, "firstPrompt")
+      ? overrides.firstPrompt
+      : sessionContext.firstPrompt;
+    const resolvedLastPromptText = hasOwn(overrides, "lastPromptText")
+      ? overrides.lastPromptText
+      : lastPromptText;
     return {
       safeQuery,
-      firstPromptLen: sessionContext.firstPrompt?.trim()?.length || 0,
-      lastPromptLen: lastPromptText?.trim()?.length || 0,
+      firstPromptLen: firstPrompt?.trim()?.length || 0,
+      lastPromptLen: resolvedLastPromptText?.trim()?.length || 0,
       projectName,
       filesModifiedCount: sessionContext.filesModified.size,
     };
@@ -1806,7 +2100,87 @@ export const OpencodeMemPlugin = async ({
   };
 
   return {
+    "experimental.session.compacting": async (input) => {
+      const sessionID = extractHookSessionID(input) || activeSessionID;
+      markCompactionInjectionSkip(compactionInjectionSkips, sessionID);
+      if (debug) {
+        await logLine(
+          `inject.compaction_skip_marked sessionID=${sessionID || "unknown"}`
+        );
+      }
+    },
+    "experimental.chat.messages.transform": async (input, output) => {
+      if (injectSurface === "system") {
+        return;
+      }
+      const latestUser = Array.isArray(output?.messages)
+        ? findLatestUserMessage(output.messages)
+        : null;
+      const sessionID = latestUser ? resolveEntrySessionID(latestUser.entry) : input?.sessionID;
+      const latestPromptText = latestUser ? extractMessageText(latestUser.entry) : "";
+      if (debug) {
+        const query = resolveInjectQuery({ lastPromptText: latestPromptText });
+        const { safeQuery, firstPromptLen, lastPromptLen, projectName, filesModifiedCount } =
+          describeInjectQuery(query, { lastPromptText: latestPromptText });
+        await logLine(
+          `inject.messages_transform sessionID=${sessionID || "unknown"} query_len=${
+            query ? query.length : 0
+          } inject_enabled=${injectEnabled} tui_toast=${Boolean(client.tui?.showToast)} query=${JSON.stringify(safeQuery)} first_prompt_len=${firstPromptLen} last_prompt_len=${lastPromptLen} project=${JSON.stringify(projectName)} files_modified=${filesModifiedCount}`
+        );
+      }
+
+      let applied = false;
+      try {
+        applied = await applyInjectedContextToMessages({
+          injectEnabled,
+          input,
+          output,
+          injectionToastShown,
+          showToast: client.tui?.showToast
+            ? async (message) => {
+              await client.tui.showToast({
+                body: {
+                  message,
+                  variant: "info",
+                },
+              });
+            }
+            : null,
+          resolveInjectQuery,
+          buildInjectedContext,
+          messageInjectionCache,
+          compactionInjectionSkips,
+        });
+      } catch (err) {
+        await logLine(
+          `inject.messages_transform.error sessionID=${sessionID || "unknown"} message=${JSON.stringify(err instanceof Error ? err.message : String(err))}`
+        );
+      }
+      if (debug) {
+        const partsCount = Array.isArray(output?.messages)
+          ? output.messages.reduce(
+            (count, entry) => count + (Array.isArray(entry?.parts) ? entry.parts.length : 0),
+            0
+          )
+          : 0;
+        await logLine(
+          `inject.messages_transform.result sessionID=${sessionID || "unknown"} applied=${Boolean(applied)} messages=${Array.isArray(output?.messages) ? output.messages.length : 0} parts=${partsCount}`
+        );
+      }
+    },
     "experimental.chat.system.transform": async (input, output) => {
+      if (injectSurface !== "system") {
+        return;
+      }
+      const hookSessionID = input?.sessionID || activeSessionID;
+      if (consumeCompactionInjectionSkip(compactionInjectionSkips, hookSessionID)) {
+        if (debug) {
+          await logLine(
+            `inject.transform.skip_compaction sessionID=${hookSessionID || "unknown"}`
+          );
+        }
+        return;
+      }
       const query = resolveInjectQuery();
       if (debug) {
         const { safeQuery, firstPromptLen, lastPromptLen, projectName, filesModifiedCount } =
@@ -2033,6 +2407,8 @@ export const OpencodeMemPlugin = async ({
         activeSessionID = null;
         if (sessionID) {
           injectionToastShown.delete(sessionID);
+          messageInjectionCache.delete(sessionID);
+          compactionInjectionSkips.delete(sessionID);
         }
         await stopViewer();
       }
@@ -2143,7 +2519,11 @@ export const __testUtils = {
   buildPackArgs,
   parsePackText,
   parsePackMetrics,
+  resolveInjectSurface,
   applyInjectedContextToOutput,
+  applyInjectedContextToMessages,
+  extractMessageText,
+  isCodememContextPart,
   buildRunnerArgs,
   appendWorkingSetFileArgs,
   extractApplyPatchPaths,

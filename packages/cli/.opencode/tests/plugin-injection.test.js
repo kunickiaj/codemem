@@ -289,3 +289,229 @@ describe("applyInjectedContextToOutput", () => {
     expect(buildInjectedContext).not.toHaveBeenCalled();
   });
 });
+
+describe("applyInjectedContextToMessages", () => {
+  const userEntry = (messageID, text, sessionID = "sess-messages") => ({
+    info: { id: messageID, sessionID, role: "user" },
+    parts: [{ id: `${messageID}-text`, sessionID, messageID, type: "text", text }],
+  });
+
+  const assistantEntry = (messageID, text, sessionID = "sess-messages") => ({
+    info: { id: messageID, sessionID, role: "assistant" },
+    parts: [{ id: `${messageID}-text`, sessionID, messageID, type: "text", text }],
+  });
+
+  const unidentifiedUserEntry = (text) => ({
+    info: { role: "user" },
+    parts: [{ id: "text", type: "text", text }],
+  });
+
+  test("appends current memory to the latest user message", async () => {
+    const output = {
+      messages: [userEntry("user-1", "fix prompt caching")],
+    };
+    const buildInjectedContext = vi.fn().mockResolvedValue({
+      text: "[codemem context]\n## Summary\n[1] (decision) Message injection",
+      metrics: { total_items: 1, pack_tokens: 42 },
+    });
+    const showToast = vi.fn().mockResolvedValue(undefined);
+
+    const applied = await __testUtils.applyInjectedContextToMessages({
+      injectEnabled: true,
+      input: {},
+      output,
+      injectionToastShown: new Set(),
+      showToast,
+      resolveInjectQuery: vi.fn(({ firstPrompt, lastPromptText }) => `${firstPrompt} ${lastPromptText}`),
+      buildInjectedContext,
+      messageInjectionCache: new Map(),
+    });
+
+    expect(applied).toBe(true);
+    expect(output.messages[0].parts).toEqual([
+      { id: "user-1-text", sessionID: "sess-messages", messageID: "user-1", type: "text", text: "fix prompt caching" },
+      {
+        id: "codemem-context-user-1",
+        sessionID: "sess-messages",
+        messageID: "user-1",
+        type: "text",
+        text: "[codemem context]\n## Summary\n[1] (decision) Message injection",
+        synthetic: true,
+      },
+    ]);
+    expect(buildInjectedContext).toHaveBeenCalledTimes(1);
+    expect(showToast).toHaveBeenCalledTimes(1);
+  });
+
+  test("preserves prior injected message blocks and only builds the new turn", async () => {
+    const messageInjectionCache = new Map();
+    const injectionToastShown = new Set();
+    const buildInjectedContext = vi
+      .fn()
+      .mockResolvedValueOnce({ text: "[codemem context]\nturn one" })
+      .mockResolvedValueOnce({ text: "[codemem context]\nturn two" });
+    const resolveInjectQuery = vi.fn(({ firstPrompt, lastPromptText }) =>
+      [firstPrompt, lastPromptText].filter(Boolean).join(" | "),
+    );
+
+    const firstOutput = { messages: [userEntry("user-1", "first prompt")] };
+    await __testUtils.applyInjectedContextToMessages({
+      injectEnabled: true,
+      input: {},
+      output: firstOutput,
+      injectionToastShown,
+      showToast: null,
+      resolveInjectQuery,
+      buildInjectedContext,
+      messageInjectionCache,
+    });
+
+    const secondOutput = {
+      messages: [
+        userEntry("user-1", "first prompt"),
+        assistantEntry("assistant-1", "done"),
+        userEntry("user-2", "second prompt"),
+      ],
+    };
+    await __testUtils.applyInjectedContextToMessages({
+      injectEnabled: true,
+      input: {},
+      output: secondOutput,
+      injectionToastShown,
+      showToast: null,
+      resolveInjectQuery,
+      buildInjectedContext,
+      messageInjectionCache,
+    });
+
+    expect(buildInjectedContext).toHaveBeenCalledTimes(2);
+    expect(secondOutput.messages[0].parts.at(-1).text).toBe("[codemem context]\nturn one");
+    expect(secondOutput.messages[2].parts.at(-1).text).toBe("[codemem context]\nturn two");
+    expect(secondOutput.messages[0].parts.filter(__testUtils.isCodememContextPart)).toHaveLength(1);
+  });
+
+  test("deduplicates already-present codemem message parts", async () => {
+    const output = {
+      messages: [
+        {
+          info: { id: "user-1", sessionID: "sess-messages", role: "user" },
+          parts: [
+            { id: "user-1-text", sessionID: "sess-messages", messageID: "user-1", type: "text", text: "same prompt" },
+            {
+              id: "codemem-context-user-1",
+              sessionID: "sess-messages",
+              messageID: "user-1",
+              type: "text",
+              text: "[codemem context]\nexisting",
+              synthetic: true,
+            },
+          ],
+        },
+      ],
+    };
+    const buildInjectedContext = vi.fn();
+
+    await __testUtils.applyInjectedContextToMessages({
+      injectEnabled: true,
+      input: {},
+      output,
+      injectionToastShown: new Set(),
+      showToast: null,
+      resolveInjectQuery: () => "same prompt",
+      buildInjectedContext,
+      messageInjectionCache: new Map(),
+    });
+
+    expect(buildInjectedContext).not.toHaveBeenCalled();
+    expect(output.messages[0].parts.filter(__testUtils.isCodememContextPart)).toHaveLength(1);
+    expect(output.messages[0].parts.at(-1).text).toBe("[codemem context]\nexisting");
+  });
+
+  test("skips message injection once for compaction and strips codemem parts", async () => {
+    const output = {
+      messages: [
+        {
+          info: { id: "user-compact", sessionID: "sess-compact", role: "user" },
+          parts: [
+            {
+              id: "user-compact-text",
+              sessionID: "sess-compact",
+              messageID: "user-compact",
+              type: "text",
+              text: "compact this session",
+            },
+            {
+              id: "codemem-context-user-compact",
+              sessionID: "sess-compact",
+              messageID: "user-compact",
+              type: "text",
+              text: "[codemem context]\nold synthetic context",
+              synthetic: true,
+            },
+          ],
+        },
+      ],
+    };
+    const buildInjectedContext = vi.fn().mockResolvedValue({ text: "[codemem context]\nnew" });
+    const compactionInjectionSkips = new Map([["sess-compact", Date.now() + 1000]]);
+
+    const applied = await __testUtils.applyInjectedContextToMessages({
+      injectEnabled: true,
+      input: { sessionID: "sess-compact" },
+      output,
+      injectionToastShown: new Set(),
+      showToast: null,
+      resolveInjectQuery: () => "compact this session",
+      buildInjectedContext,
+      messageInjectionCache: new Map(),
+      compactionInjectionSkips,
+    });
+
+    expect(applied).toBe(false);
+    expect(buildInjectedContext).not.toHaveBeenCalled();
+    expect(compactionInjectionSkips.has("sess-compact")).toBe(false);
+    expect(output.messages[0].parts).toEqual([
+      {
+        id: "user-compact-text",
+        sessionID: "sess-compact",
+        messageID: "user-compact",
+        type: "text",
+        text: "compact this session",
+      },
+    ]);
+  });
+
+  test("does not replay cached context for unidentified sessions or positional messages", async () => {
+    const messageInjectionCache = new Map();
+    const buildInjectedContext = vi
+      .fn()
+      .mockResolvedValueOnce({ text: "[codemem context]\nsession A" })
+      .mockResolvedValueOnce({ text: "[codemem context]\nsession B" });
+    const common = {
+      injectEnabled: true,
+      input: {},
+      injectionToastShown: new Set(),
+      showToast: null,
+      resolveInjectQuery: ({ lastPromptText }) => lastPromptText,
+      buildInjectedContext,
+      messageInjectionCache,
+    };
+
+    const firstOutput = { messages: [unidentifiedUserEntry("same prompt")] };
+    await __testUtils.applyInjectedContextToMessages({
+      ...common,
+      output: firstOutput,
+    });
+
+    const secondOutput = { messages: [unidentifiedUserEntry("same prompt")] };
+    await __testUtils.applyInjectedContextToMessages({
+      ...common,
+      output: secondOutput,
+    });
+
+    expect(buildInjectedContext).toHaveBeenCalledTimes(2);
+    expect(messageInjectionCache.size).toBe(0);
+    expect(firstOutput.messages[0].parts.at(-1).text).toBe("[codemem context]\nsession A");
+    expect(secondOutput.messages[0].parts.at(-1).text).toBe("[codemem context]\nsession B");
+  });
+});
