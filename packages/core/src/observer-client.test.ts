@@ -888,6 +888,33 @@ describe("ObserverClient.observe()", () => {
 		expect(capturedHeaders?.["x-api-key"]).toBe(apiKey);
 		expect(result.raw).toBe("test response");
 		expect(result.provider).toBe("anthropic");
+		expect(result.usage).toBeNull();
+	});
+
+	it("normalizes Anthropic token usage including cache fields", async () => {
+		const apiKey = fixtureToken("anthropic-usage");
+		globalThis.fetch = (async () =>
+			new Response(
+				JSON.stringify({
+					content: [{ type: "text", text: "anthropic response" }],
+					usage: {
+						input_tokens: 101,
+						output_tokens: 23,
+						cache_read_input_tokens: 17,
+						cache_creation_input_tokens: 11,
+					},
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			)) as typeof globalThis.fetch;
+
+		const result = await makeClient("anthropic", apiKey).observe("system", "user");
+
+		expect(result.usage).toEqual({
+			inputTokens: 101,
+			outputTokens: 23,
+			cacheReadInputTokens: 17,
+			cacheCreationInputTokens: 11,
+		});
 	});
 
 	it("routes OpenAI to chat/completions when user explicitly disables Responses", async () => {
@@ -928,6 +955,37 @@ describe("ObserverClient.observe()", () => {
 		expect(result.raw).toBe("chat completions response");
 	});
 
+	it("normalizes OpenAI chat token usage", async () => {
+		const observerApiKey = fixtureToken("openai-chat-usage");
+		globalThis.fetch = (async () =>
+			new Response(
+				JSON.stringify({
+					choices: [{ message: { content: "chat response" } }],
+					usage: {
+						prompt_tokens: 73,
+						completion_tokens: 19,
+						total_tokens: 92,
+						prompt_tokens_details: { cached_tokens: 31 },
+					},
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			)) as typeof globalThis.fetch;
+		const client = new ObserverClient({
+			...makeClient("openai", observerApiKey).toConfig(),
+			observerOpenAIUseResponses: false,
+			observerExplicitConfigKeys: ["observerOpenAIUseResponses"],
+		});
+
+		const result = await client.observe("system", "user");
+
+		expect(result.usage).toEqual({
+			inputTokens: 73,
+			outputTokens: 19,
+			totalTokens: 92,
+			cacheReadInputTokens: 31,
+		});
+	});
+
 	it("calls OpenAI Responses endpoint by default", async () => {
 		const apiKey = fixtureToken("openai-responses");
 		let capturedUrl: string | undefined;
@@ -948,6 +1006,7 @@ describe("ObserverClient.observe()", () => {
 							content: [{ type: "output_text", text: "openai response text" }],
 						},
 					],
+					usage: { input_tokens: 211, output_tokens: 37, total_tokens: 248 },
 				}),
 				{ status: 200, headers: { "content-type": "application/json" } },
 			);
@@ -962,6 +1021,36 @@ describe("ObserverClient.observe()", () => {
 		expect(capturedBody?.input).toBeDefined();
 		expect(result.raw).toBe("openai response text");
 		expect(result.provider).toBe("openai");
+		expect(result.elapsedMs).toBeGreaterThanOrEqual(0);
+		expect(result.usage).toEqual({ inputTokens: 211, outputTokens: 37, totalTokens: 248 });
+	});
+
+	it("keeps token usage isolated across concurrent observe calls", async () => {
+		const apiKey = fixtureToken("openai-concurrent-usage");
+		globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+			const request = JSON.parse(String(init?.body)) as {
+				input: Array<{ role: string; content: Array<{ text: string }> }>;
+			};
+			const userText = request.input.find((item) => item.role === "user")?.content[0]?.text;
+			const inputTokens = userText === "slow" ? 10 : 20;
+			if (userText === "slow") await new Promise((resolve) => setTimeout(resolve, 5));
+			return new Response(
+				JSON.stringify({
+					output_text: userText,
+					usage: { input_tokens: inputTokens, output_tokens: 1 },
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		}) as typeof globalThis.fetch;
+		const client = makeClient("openai", apiKey);
+
+		const [slow, fast] = await Promise.all([
+			client.observe("system", "slow"),
+			client.observe("system", "fast"),
+		]);
+
+		expect(slow.usage).toEqual({ inputTokens: 10, outputTokens: 1 });
+		expect(fast.usage).toEqual({ inputTokens: 20, outputTokens: 1 });
 	});
 
 	it("allows no-auth calls to explicit OpenAI-compatible base URLs", async () => {
@@ -1347,7 +1436,11 @@ describe("ObserverClient.observe()", () => {
 		globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
 			capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
 			return new Response(
-				'data: {"type":"response.output_text.delta","delta":"<summary><request>ok</request></summary>"}\n\n',
+				[
+					'data: {"type":"response.output_text.delta","delta":"<summary><request>ok</request></summary>"}',
+					'data: {"type":"response.completed","response":{"usage":{"input_tokens":211,"output_tokens":37,"total_tokens":248}}}',
+					"",
+				].join("\n\n"),
 				{ status: 200, headers: { "content-type": "text/event-stream" } },
 			);
 		}) as typeof globalThis.fetch;
@@ -1370,10 +1463,11 @@ describe("ObserverClient.observe()", () => {
 				observerAuthCacheTtlS: 300,
 			});
 
-			await client.observe("SYSTEM XML CONTRACT", "USER SESSION TRANSCRIPT");
+			const result = await client.observe("SYSTEM XML CONTRACT", "USER SESSION TRANSCRIPT");
 
 			expect(client.getStatus().auth.type).toBe("codex_consumer");
 			expect(capturedBody?.instructions).toBe("SYSTEM XML CONTRACT");
+			expect(result.usage).toEqual({ inputTokens: 211, outputTokens: 37, totalTokens: 248 });
 		} finally {
 			if (prevHome == null) delete process.env.HOME;
 			else process.env.HOME = prevHome;

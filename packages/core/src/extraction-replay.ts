@@ -36,6 +36,7 @@ import {
 	type ObserverClient,
 	ObserverClient as ObserverClientImpl,
 	type ObserverConfig,
+	type ObserverTokenUsage,
 } from "./observer-client.js";
 import { resolveProject } from "./project.js";
 import { buildSessionContext } from "./raw-event-flush.js";
@@ -97,8 +98,22 @@ async function observeStructuredOutput(
 	system: string,
 	user: string,
 ): Promise<{
-	initial: { raw: string | null; parsed: ParsedOutput; provider: string; model: string };
-	repaired: { raw: string | null; parsed: ParsedOutput; provider: string; model: string } | null;
+	initial: {
+		raw: string | null;
+		parsed: ParsedOutput;
+		provider: string;
+		model: string;
+		elapsedMs: number | null;
+		usage: ObserverTokenUsage | null;
+	};
+	repaired: {
+		raw: string | null;
+		parsed: ParsedOutput;
+		provider: string;
+		model: string;
+		elapsedMs: number | null;
+		usage: ObserverTokenUsage | null;
+	} | null;
 }> {
 	const first = await observer.observe(system, user);
 	const firstParsed = first.raw
@@ -109,6 +124,8 @@ async function observeStructuredOutput(
 		parsed: firstParsed,
 		provider: first.provider,
 		model: first.model,
+		elapsedMs: first.elapsedMs ?? null,
+		usage: first.usage ?? null,
 	};
 	if (
 		!first.raw ||
@@ -132,7 +149,38 @@ async function observeStructuredOutput(
 			parsed: repairedParsed,
 			provider: repaired.provider,
 			model: repaired.model,
+			elapsedMs: repaired.elapsedMs ?? null,
+			usage: repaired.usage ?? null,
 		},
+	};
+}
+
+function sumObserverUsage(
+	initial: ObserverTokenUsage | null,
+	repaired: ObserverTokenUsage | null,
+	repairApplied: boolean,
+): ObserverTokenUsage | null {
+	if (!initial || (repairApplied && !repaired)) return null;
+	if (!repairApplied) return { ...initial };
+	if (!repaired) return null;
+	const totalTokens =
+		initial.totalTokens != null && repaired.totalTokens != null
+			? initial.totalTokens + repaired.totalTokens
+			: undefined;
+	const cacheReadInputTokens =
+		initial.cacheReadInputTokens != null || repaired.cacheReadInputTokens != null
+			? (initial.cacheReadInputTokens ?? 0) + (repaired.cacheReadInputTokens ?? 0)
+			: undefined;
+	const cacheCreationInputTokens =
+		initial.cacheCreationInputTokens != null || repaired.cacheCreationInputTokens != null
+			? (initial.cacheCreationInputTokens ?? 0) + (repaired.cacheCreationInputTokens ?? 0)
+			: undefined;
+	return {
+		inputTokens: initial.inputTokens + repaired.inputTokens,
+		outputTokens: initial.outputTokens + repaired.outputTokens,
+		...(totalTokens != null ? { totalTokens } : {}),
+		...(cacheReadInputTokens != null ? { cacheReadInputTokens } : {}),
+		...(cacheCreationInputTokens != null ? { cacheCreationInputTokens } : {}),
 	};
 }
 
@@ -165,12 +213,18 @@ export interface ExtractionReplayResult {
 		temperature: number | null;
 		repairApplied: boolean;
 		initialRaw: string | null;
+		initialElapsedMs: number | null;
+		initialUsage: ObserverTokenUsage | null;
 		initialParsed: ParsedOutput;
 		initialDiagnostics: ReturnType<typeof evaluateExtractionStructure> | null;
 		repairedRaw: string | null;
+		repairedElapsedMs: number | null;
+		repairedUsage: ObserverTokenUsage | null;
 		repairedParsed: ParsedOutput | null;
 		repairedDiagnostics: ReturnType<typeof evaluateExtractionStructure> | null;
 		raw: string | null;
+		totalElapsedMs: number | null;
+		totalUsage: ObserverTokenUsage | null;
 		parsed: ParsedOutput;
 		diagnostics: ReturnType<typeof evaluateExtractionStructure> | null;
 	};
@@ -593,6 +647,16 @@ async function replayPreparedBatch(
 	const repairedDiagnostics = response.repaired
 		? evaluateExtractionStructure(response.repaired.raw ?? "", response.repaired.parsed)
 		: null;
+	const repairApplied = response.repaired !== null;
+	const totalElapsedMs =
+		response.initial.elapsedMs != null && (!repairApplied || response.repaired?.elapsedMs != null)
+			? response.initial.elapsedMs + (response.repaired?.elapsedMs ?? 0)
+			: null;
+	const totalUsage = sumObserverUsage(
+		response.initial.usage,
+		response.repaired?.usage ?? null,
+		repairApplied,
+	);
 
 	return {
 		scenario: {
@@ -617,14 +681,20 @@ async function replayPreparedBatch(
 			reasoningSummary: observer.reasoningSummary,
 			maxOutputTokens: observer.maxOutputTokens,
 			temperature: observer.temperature,
-			repairApplied: response.repaired !== null,
+			repairApplied,
 			initialRaw: response.initial.raw,
+			initialElapsedMs: response.initial.elapsedMs,
+			initialUsage: response.initial.usage,
 			initialParsed: response.initial.parsed,
 			initialDiagnostics,
 			repairedRaw: response.repaired?.raw ?? null,
+			repairedElapsedMs: response.repaired?.elapsedMs ?? null,
+			repairedUsage: response.repaired?.usage ?? null,
 			repairedParsed: response.repaired?.parsed ?? null,
 			repairedDiagnostics,
 			raw: finalResponse.raw,
+			totalElapsedMs,
+			totalUsage,
 			parsed: finalResponse.parsed,
 			diagnostics: repairedDiagnostics ?? initialDiagnostics,
 		},
