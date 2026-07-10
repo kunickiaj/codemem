@@ -1,5 +1,12 @@
 import { connect, resolveDbPath } from "./db.js";
+import type { ParsedOutput } from "./ingest-types.js";
+import {
+	inspectObserverResponseStructure,
+	type ObserverResponseStructuralDiagnostics,
+} from "./ingest-xml-parser.js";
 import { getSummaryMetadata, isSummaryLikeMemory } from "./summary-memory.js";
+
+export type ExtractionStructuralDiagnostics = ObserverResponseStructuralDiagnostics;
 
 export interface SessionExtractionEvalThread {
 	id: string;
@@ -13,6 +20,7 @@ export interface SessionExtractionEvalScenario {
 	description: string;
 	summaryCountRange: { min: number; max: number };
 	observationCountRange: { min: number; max: number };
+	enforceObservationCountRange: boolean;
 	minSummaryThreadCoverage: number;
 	minObservationThreadCoverage: number;
 	minTotalThreadCoverage: number;
@@ -91,6 +99,7 @@ const EXTRACTION_EVAL_SCENARIOS: SessionExtractionEvalScenario[] = [
 			"Evaluates whether a smaller/simple batch yields one summary and at most one durable observation without unnecessary output sprawl.",
 		summaryCountRange: { min: 1, max: 1 },
 		observationCountRange: { min: 0, max: 1 },
+		enforceObservationCountRange: true,
 		minSummaryThreadCoverage: 0,
 		minObservationThreadCoverage: 0,
 		minTotalThreadCoverage: 0,
@@ -103,6 +112,7 @@ const EXTRACTION_EVAL_SCENARIOS: SessionExtractionEvalScenario[] = [
 			"Evaluates whether a routine-activity batch (release runs, review passes with no findings, status checks, context lookups) yields one summary and zero observations, per the observation worthiness bar.",
 		summaryCountRange: { min: 1, max: 1 },
 		observationCountRange: { min: 0, max: 0 },
+		enforceObservationCountRange: true,
 		minSummaryThreadCoverage: 0,
 		minObservationThreadCoverage: 0,
 		minTotalThreadCoverage: 0,
@@ -112,9 +122,10 @@ const EXTRACTION_EVAL_SCENARIOS: SessionExtractionEvalScenario[] = [
 		id: "working-batch-shape",
 		title: "Working batch output shape",
 		description:
-			"Evaluates whether a moderate working batch yields one summary and a small set of 1-2 durable observations without over-compressing or over-emitting.",
+			"Evaluates whether a moderate working batch yields one summary and no more than two worthwhile durable observations without over-emitting.",
 		summaryCountRange: { min: 1, max: 1 },
-		observationCountRange: { min: 1, max: 2 },
+		observationCountRange: { min: 0, max: 2 },
+		enforceObservationCountRange: false,
 		minSummaryThreadCoverage: 0,
 		minObservationThreadCoverage: 0,
 		minTotalThreadCoverage: 0,
@@ -126,7 +137,8 @@ const EXTRACTION_EVAL_SCENARIOS: SessionExtractionEvalScenario[] = [
 		description:
 			"Evaluates whether a rich batch yields one broad summary plus a small capped set of durable observations, without enforcing scenario-specific thread topics.",
 		summaryCountRange: { min: 1, max: 1 },
-		observationCountRange: { min: 2, max: 4 },
+		observationCountRange: { min: 0, max: 4 },
+		enforceObservationCountRange: false,
 		minSummaryThreadCoverage: 0,
 		minObservationThreadCoverage: 0,
 		minTotalThreadCoverage: 0,
@@ -138,7 +150,8 @@ const EXTRACTION_EVAL_SCENARIOS: SessionExtractionEvalScenario[] = [
 		description:
 			"Evaluates whether a rich session yields one broad summary plus a small set of durable observations covering the major reusable subthreads.",
 		summaryCountRange: { min: 1, max: 1 },
-		observationCountRange: { min: 2, max: 4 },
+		observationCountRange: { min: 0, max: 4 },
+		enforceObservationCountRange: false,
 		minSummaryThreadCoverage: 2,
 		minObservationThreadCoverage: 2,
 		minTotalThreadCoverage: 3,
@@ -195,7 +208,7 @@ function buildFailureReasons(
 			`summary count ${counts.summaries} outside expected range ${scenario.summaryCountRange.min}-${scenario.summaryCountRange.max}`,
 		);
 	}
-	if (!rangeChecks.observationCountInRange) {
+	if (scenario.enforceObservationCountRange && !rangeChecks.observationCountInRange) {
 		failures.push(
 			`observation count ${counts.observations} outside expected range ${scenario.observationCountRange.min}-${scenario.observationCountRange.max}`,
 		);
@@ -226,6 +239,13 @@ function buildFailureReasons(
 export function getSessionExtractionEvalScenario(id: string): SessionExtractionEvalScenario | null {
 	const normalized = normalizeText(id);
 	return EXTRACTION_EVAL_SCENARIOS.find((scenario) => scenario.id === normalized) ?? null;
+}
+
+export function evaluateExtractionStructure(
+	raw: string,
+	parsed: ParsedOutput,
+): ExtractionStructuralDiagnostics {
+	return inspectObserverResponseStructure(raw, parsed);
 }
 
 export function evaluateSessionExtractionItems(

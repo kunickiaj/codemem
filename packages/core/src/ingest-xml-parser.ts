@@ -20,6 +20,42 @@ const SUMMARY_BLOCK_RE = /<summary[^>]*>.*?<\/summary>/gs;
 const SKIP_SUMMARY_RE = /<skip_summary(?:\s+reason="(?<reason>[^"]+)")?\s*\/>/i;
 const CODE_FENCE_RE = /```(?:xml)?/gi;
 
+const SUMMARY_FIELDS = new Set([
+	"request",
+	"investigated",
+	"learned",
+	"completed",
+	"next_steps",
+	"notes",
+	"files_read",
+	"files_modified",
+]);
+
+export const SUPPORTED_OBSERVATION_KINDS = new Set([
+	"bugfix",
+	"feature",
+	"refactor",
+	"change",
+	"discovery",
+	"decision",
+	"exploration",
+]);
+
+export interface ObserverResponseStructuralDiagnostics {
+	recognizedOutput: boolean;
+	observationBlocks: number;
+	retainedObservations: number;
+	summaryBlocks: number;
+	retainedSummaries: number;
+	illegalObservationNestingInSummary: number;
+	unknownSummaryFields: string[];
+	unsupportedObservationKinds: string[];
+	missingObservationKinds: number;
+	discardedObservationBlocks: number;
+	discardedSummaryBlocks: number;
+	dataLoss: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Text extraction helpers
 // ---------------------------------------------------------------------------
@@ -56,13 +92,39 @@ function extractChildTexts(xml: string, parentTag: string, childTag: string): st
 	return items;
 }
 
+function directChildTagNames(block: string, rootTag: string): string[] {
+	const inner = extractTagText(block, rootTag);
+	const tags: string[] = [];
+	const tagPattern = /<\/?([A-Za-z_][\w:.-]*)(?:\s[^<>]*?)?\s*\/?>/g;
+	let depth = 0;
+	for (let match = tagPattern.exec(inner); match !== null; match = tagPattern.exec(inner)) {
+		const token = match[0];
+		const tag = match[1]?.toLowerCase();
+		if (!tag) continue;
+		if (token.startsWith("</")) {
+			depth = Math.max(0, depth - 1);
+			continue;
+		}
+		if (depth === 0) tags.push(tag);
+		if (!token.endsWith("/>")) depth += 1;
+	}
+	return tags;
+}
+
+function observationKind(block: string): string {
+	const type = extractTagText(block, "type");
+	if (type) return type.trim().toLowerCase();
+	const attribute = /<observation\b[^>]*\bkind=["']([^"']+)["']/i.exec(block)?.[1];
+	return attribute?.trim().toLowerCase() ?? "";
+}
+
 // ---------------------------------------------------------------------------
 // Block parsers
 // ---------------------------------------------------------------------------
 
 function parseObservationBlock(block: string): ParsedObservation | null {
 	// Minimal validation — must have at least a type or title
-	const kind = extractTagText(block, "type");
+	const kind = observationKind(block);
 	const title = extractTagText(block, "title");
 	if (!kind && !title) return null;
 
@@ -137,6 +199,65 @@ export function parseObserverResponse(raw: string): ParsedOutput {
 	const skipReason = skipMatch?.groups?.reason ?? null;
 
 	return { observations, summary, skipSummaryReason: skipReason };
+}
+
+/** Inspect permissively parsed output without changing production parser behavior. */
+export function inspectObserverResponseStructure(
+	raw: string,
+	parsed: ParsedOutput = parseObserverResponse(raw),
+): ObserverResponseStructuralDiagnostics {
+	const cleaned = cleanXmlText(raw);
+	const observationBlockValues = cleaned.match(OBSERVATION_BLOCK_RE) ?? [];
+	const observationBlocks = cleaned.match(/<observation(?:\s|>)/gi)?.length ?? 0;
+	const summaryBlockValues = cleaned.match(SUMMARY_BLOCK_RE) ?? [];
+	const summaryBlocks = cleaned.match(/<summary(?:\s|>)/gi)?.length ?? 0;
+	const recognizedOutput =
+		observationBlocks > 0 || summaryBlocks > 0 || SKIP_SUMMARY_RE.test(cleaned);
+	const illegalObservationNestingInSummary = summaryBlockValues.reduce(
+		(count, block) => count + (block.match(/<observation(?:\s|>)/gi)?.length ?? 0),
+		0,
+	);
+	const unknownSummaryFields = [
+		...new Set(
+			summaryBlockValues
+				.flatMap((block) => directChildTagNames(block, "summary"))
+				.filter((field) => field !== "observation" && !SUMMARY_FIELDS.has(field)),
+		),
+	].sort();
+	const unsupportedObservationKinds = [
+		...new Set(
+			observationBlockValues
+				.map(observationKind)
+				.filter((kind) => kind && !SUPPORTED_OBSERVATION_KINDS.has(kind)),
+		),
+	].sort();
+	const missingObservationKinds = observationBlockValues.filter(
+		(block) => !observationKind(block) && parseObservationBlock(block) !== null,
+	).length;
+	const retainedSummaries = parsed.summary ? 1 : 0;
+	const discardedObservationBlocks = Math.max(0, observationBlocks - parsed.observations.length);
+	const discardedSummaryBlocks = Math.max(0, summaryBlocks - retainedSummaries);
+
+	return {
+		recognizedOutput,
+		observationBlocks,
+		retainedObservations: parsed.observations.length,
+		summaryBlocks,
+		retainedSummaries,
+		illegalObservationNestingInSummary,
+		unknownSummaryFields,
+		unsupportedObservationKinds,
+		missingObservationKinds,
+		discardedObservationBlocks,
+		discardedSummaryBlocks,
+		dataLoss:
+			(cleaned.length > 0 && !recognizedOutput) ||
+			discardedObservationBlocks > 0 ||
+			discardedSummaryBlocks > 0 ||
+			unknownSummaryFields.length > 0 ||
+			unsupportedObservationKinds.length > 0 ||
+			missingObservationKinds > 0,
+	};
 }
 
 /** Return true if at least one observation has a title or narrative. */

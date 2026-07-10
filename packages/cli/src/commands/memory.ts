@@ -8,6 +8,7 @@
 import * as p from "@clack/prompts";
 import {
 	compareMemoryRoleReports,
+	type ExtractionStructuralDiagnostics,
 	getExtractionBenchmarkProfile,
 	getInjectionEvalScenarioPack,
 	getInjectionEvalScenarioPrompts,
@@ -1038,6 +1039,25 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					summaries: number;
 					observations: number;
 					repairApplied: boolean;
+					initial: {
+						status: "pass" | "shape_fail" | "observer_no_output";
+						reason: string;
+						pass: boolean;
+						failureReasons: string[];
+						summaries: number;
+						observations: number;
+						diagnostics: ExtractionStructuralDiagnostics | null;
+					};
+					repair: {
+						applied: boolean;
+						status: "pass" | "shape_fail" | "observer_no_output" | null;
+						reason: string | null;
+						pass: boolean | null;
+						failureReasons: string[];
+						summaries: number | null;
+						observations: number | null;
+						diagnostics: ExtractionStructuralDiagnostics | null;
+					};
 				}>;
 				for (const batch of benchmark.batches) {
 					const scenarioId = batch.scenarioId ?? benchmark.scenarioId;
@@ -1084,6 +1104,25 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						summaries: result.evaluation.counts.summaries,
 						observations: result.evaluation.counts.observations,
 						repairApplied: result.observer.repairApplied,
+						initial: {
+							status: result.initialClassification.status,
+							reason: result.initialClassification.reason,
+							pass: result.initialEvaluation.pass,
+							failureReasons: result.initialEvaluation.failureReasons,
+							summaries: result.initialEvaluation.counts.summaries,
+							observations: result.initialEvaluation.counts.observations,
+							diagnostics: result.observer.initialDiagnostics,
+						},
+						repair: {
+							applied: result.observer.repairApplied,
+							status: result.repairedClassification?.status ?? null,
+							reason: result.repairedClassification?.reason ?? null,
+							pass: result.repairedEvaluation?.pass ?? null,
+							failureReasons: result.repairedEvaluation?.failureReasons ?? [],
+							summaries: result.repairedEvaluation?.counts.summaries ?? null,
+							observations: result.repairedEvaluation?.counts.observations ?? null,
+							diagnostics: result.observer.repairedDiagnostics,
+						},
 					});
 				}
 				const summary = {
@@ -1190,7 +1229,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 				);
 				for (const run of runs) {
 					p.log.message(
-						`  [${run.batchId}] ${run.status.padEnd(18)} ${run.complexity.padEnd(10)} tier=${run.tier.padEnd(6)} expected=${(run.expectedTier ?? "n/a").padEnd(6)} span=${String(run.analysis.eventSpan).padEnd(3)} prompts=${run.analysis.promptCount} tools=${String(run.analysis.toolCount).padEnd(2)} transcript=${run.analysis.transcriptLength} ${run.provider}/${run.model}${run.openaiUseResponses ? " [responses]" : ""} summaries=${run.summaries} observations=${run.observations} repair=${run.repairApplied ? "yes" : "no"} — ${run.label}`,
+						`  [${run.batchId}] ${run.status.padEnd(18)} ${run.complexity.padEnd(10)} tier=${run.tier.padEnd(6)} expected=${(run.expectedTier ?? "n/a").padEnd(6)} span=${String(run.analysis.eventSpan).padEnd(3)} prompts=${run.analysis.promptCount} tools=${String(run.analysis.toolCount).padEnd(2)} transcript=${run.analysis.transcriptLength} ${run.provider}/${run.model}${run.openaiUseResponses ? " [responses]" : ""} initial=${run.initial.summaries}s/${run.initial.observations}o final=${run.summaries}s/${run.observations}o schema_loss=${run.initial.diagnostics?.dataLoss === true ? "yes" : "no"} repair=${run.repairApplied ? "yes" : "no"} — ${run.label}`,
 					);
 				}
 				p.outro("done");
