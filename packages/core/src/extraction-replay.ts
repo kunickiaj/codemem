@@ -204,6 +204,11 @@ export interface ExtractionReplayResult {
 	observer: {
 		provider: string;
 		model: string;
+		transport: string;
+		requestedModel: string;
+		resolvedModel: string | null;
+		modelFallbackApplied: boolean;
+		modelFallbackReason: string | null;
 		tier: "simple" | "rich" | null;
 		tierReasons: string[];
 		openaiUseResponses: boolean;
@@ -599,7 +604,14 @@ async function replayPreparedBatch(
 	tier: "simple" | "rich" | null,
 	tierReasons: string[],
 ): Promise<ExtractionReplayResult> {
+	const configuredModel = observer.requestedModel ?? observer.model;
 	const response = await observeStructuredOutput(observer, prepared.system, prepared.user);
+	const requestedModel = configuredModel || response.initial.model;
+	const observerStatus = observer.getStatus();
+	const modelFallbackApplied = observerStatus.modelFallbackApplied === true;
+	const resolvedModel = modelFallbackApplied
+		? (observerStatus.actualModel ?? null)
+		: (observerStatus.actualModel ?? response.initial.model);
 	const session = {
 		id: prepared.batch.session_id,
 		project: prepared.batch.project,
@@ -657,6 +669,11 @@ async function replayPreparedBatch(
 		response.repaired?.usage ?? null,
 		repairApplied,
 	);
+	const transport =
+		observerStatus.auth.type === "codex_consumer" ||
+		observerStatus.auth.type === "anthropic_consumer"
+			? observerStatus.auth.type
+			: observerStatus.runtime;
 
 	return {
 		scenario: {
@@ -674,6 +691,11 @@ async function replayPreparedBatch(
 		observer: {
 			provider: finalResponse.provider,
 			model: finalResponse.model,
+			transport,
+			requestedModel,
+			resolvedModel,
+			modelFallbackApplied,
+			modelFallbackReason: observerStatus.modelFallbackReason ?? null,
 			tier,
 			tierReasons,
 			openaiUseResponses: observer.openaiUseResponses,

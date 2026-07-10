@@ -1234,6 +1234,7 @@ function nowMs(): number {
  */
 export class ObserverClient {
 	readonly provider: string;
+	readonly requestedModel: string | null;
 	model: string;
 	readonly runtime: string;
 	readonly temperature: number | null;
@@ -1299,6 +1300,7 @@ export class ObserverClient {
 
 		const provider = (cfg.observerProvider ?? "").toLowerCase();
 		const model = (cfg.observerModel ?? "").trim();
+		this.requestedModel = model || null;
 
 		// Collect known custom providers
 		const customProviders = listConfiguredOpenCodeProviders();

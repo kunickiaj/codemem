@@ -53,12 +53,20 @@ export interface ExtractionBenchmarkSchemaScore {
 	violations: string[];
 }
 
+export interface ExtractionBenchmarkSummaryDispositionScore {
+	expected: "required" | "optional" | "skip";
+	actual: "summary" | "skip" | "invalid_skip" | "none";
+	skipReason: string | null;
+	score: 0 | 1;
+}
+
 export interface ExtractionBenchmarkScore {
 	reviewStatus: ExtractionBenchmarkReview["status"];
 	matchingPolicy: {
 		mode: "all_keyword_groups_in_one_observation";
 		notes: string;
 	};
+	summaryDisposition: ExtractionBenchmarkSummaryDispositionScore;
 	requiredRecall: ExtractionBenchmarkRecallScore;
 	optionalRecall: ExtractionBenchmarkRecallScore;
 	forbidden: ExtractionBenchmarkForbiddenScore;
@@ -76,11 +84,13 @@ export interface ExtractionBenchmarkScore {
 		notes: string;
 	};
 	weightedQualityScore: number | null;
+	weightedQualityCoverage: number | null;
 	costAdjustedScore: number | null;
 	costAdjustedScoreUnit: "quality_points_per_cent";
 }
 
 export interface ExtractionBenchmarkQualityDimensions {
+	summaryDisposition: number | null;
 	requiredRecall: number | null;
 	optionalRecall: number | null;
 	worthinessPrecision: number | null;
@@ -92,6 +102,7 @@ export interface ExtractionBenchmarkQualityDimensions {
 }
 
 const QUALITY_WEIGHTS: Readonly<Record<keyof ExtractionBenchmarkQualityDimensions, number>> = {
+	summaryDisposition: 0.1,
 	requiredRecall: 0.45,
 	optionalRecall: 0.05,
 	worthinessPrecision: 0.15,
@@ -101,6 +112,11 @@ const QUALITY_WEIGHTS: Readonly<Record<keyof ExtractionBenchmarkQualityDimension
 	schemaCompliance: 0.1,
 	factualGrounding: 0,
 };
+
+const TOTAL_AUTOMATED_QUALITY_WEIGHT = Object.values(QUALITY_WEIGHTS).reduce(
+	(sum, weight) => sum + weight,
+	0,
+);
 
 const REDUNDANCY_THRESHOLD = 0.8;
 
@@ -276,6 +292,52 @@ function schemaScore(
 	return { compliant: violations.length === 0, score: violations.length === 0 ? 1 : 0, violations };
 }
 
+function summaryDispositionScore(
+	parsed: ParsedOutput,
+	expected: ExtractionBenchmarkSummaryDispositionScore["expected"],
+	recognizedOutput: boolean,
+): ExtractionBenchmarkSummaryDispositionScore {
+	if (!recognizedOutput) {
+		return {
+			expected,
+			actual: "none",
+			skipReason: parsed.skipSummaryReason,
+			score: 0,
+		};
+	}
+	const hasSummary = parsed.summary !== null && parsed.skipSummaryReason === null;
+	const normalizedSkipReason = parsed.skipSummaryReason?.trim().toLowerCase() ?? null;
+	const validSkip = parsed.summary === null && normalizedSkipReason === "low-signal";
+	const actual: ExtractionBenchmarkSummaryDispositionScore["actual"] = hasSummary
+		? "summary"
+		: validSkip
+			? "skip"
+			: parsed.skipSummaryReason
+				? "invalid_skip"
+				: "none";
+	const matches =
+		expected === "required"
+			? hasSummary
+			: expected === "skip"
+				? validSkip
+				: hasSummary || validSkip;
+	return {
+		expected,
+		actual,
+		skipReason: parsed.skipSummaryReason,
+		score: matches ? 1 : 0,
+	};
+}
+
+export function calculateWeightedQualityCoverage(
+	dimensions: ExtractionBenchmarkQualityDimensions,
+): number {
+	const scoredWeight = (Object.keys(QUALITY_WEIGHTS) as Array<keyof typeof QUALITY_WEIGHTS>)
+		.filter((key) => dimensions[key] !== null && QUALITY_WEIGHTS[key] > 0)
+		.reduce((sum, key) => sum + QUALITY_WEIGHTS[key], 0);
+	return TOTAL_AUTOMATED_QUALITY_WEIGHT === 0 ? 0 : scoredWeight / TOTAL_AUTOMATED_QUALITY_WEIGHT;
+}
+
 export function calculateWeightedQualityScore(
 	dimensions: ExtractionBenchmarkQualityDimensions,
 ): number {
@@ -309,9 +371,15 @@ export function scoreExtractionBenchmarkOutput(input: {
 	parsed: ParsedOutput;
 	diagnostics: ObserverResponseStructuralDiagnostics;
 	review: ExtractionBenchmarkReview;
+	expectedSummaryDisposition?: "required" | "optional" | "skip";
 	estimatedCostUsd?: number | null;
 }): ExtractionBenchmarkScore {
 	const observations = input.parsed.observations.map(observationText);
+	const summaryDisposition = summaryDispositionScore(
+		input.parsed,
+		input.expectedSummaryDisposition ?? "required",
+		input.diagnostics.recognizedOutput,
+	);
 	const requiredLabels = labelsFor(input.review, "required");
 	const optionalLabels = labelsFor(input.review, "optional");
 	const forbiddenLabels = labelsFor(input.review, "forbidden");
@@ -364,6 +432,21 @@ export function scoreExtractionBenchmarkOutput(input: {
 	const weightedQualityScore =
 		input.review.status === "reviewed"
 			? calculateWeightedQualityScore({
+					summaryDisposition: summaryDisposition.score,
+					requiredRecall: requiredRecall.score,
+					optionalRecall: optionalRecall.score,
+					worthinessPrecision: worthinessPrecision.score,
+					summaryBreadth: summaryBreadth.score,
+					redundancyAvoidance: signals.redundancyAvoidance,
+					segmentation: signals.segmentation,
+					schemaCompliance: schemaCompliance.score,
+					factualGrounding: null,
+				})
+			: null;
+	const weightedQualityCoverage =
+		input.review.status === "reviewed"
+			? calculateWeightedQualityCoverage({
+					summaryDisposition: summaryDisposition.score,
 					requiredRecall: requiredRecall.score,
 					optionalRecall: optionalRecall.score,
 					worthinessPrecision: worthinessPrecision.score,
@@ -381,6 +464,7 @@ export function scoreExtractionBenchmarkOutput(input: {
 			notes:
 				"Deterministic matching is intentionally recall-conservative; inspect matched and missing labels plus raw output before selecting a model.",
 		},
+		summaryDisposition,
 		requiredRecall,
 		optionalRecall,
 		forbidden,
@@ -395,6 +479,7 @@ export function scoreExtractionBenchmarkOutput(input: {
 				"Keyword matching measures repeatable label coverage, not whether claims are factually grounded in the source transcript.",
 		},
 		weightedQualityScore,
+		weightedQualityCoverage,
 		costAdjustedScore: calculateCostAdjustedScore(
 			weightedQualityScore,
 			input.estimatedCostUsd ?? null,

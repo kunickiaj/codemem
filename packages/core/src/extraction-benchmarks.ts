@@ -6,6 +6,7 @@ export interface ExtractionBenchmarkBatch {
 	complexity: "simple" | "working" | "rich" | "robustness";
 	scenarioId?: string;
 	expectedTier?: "simple" | "rich";
+	expectedSummaryDisposition: "required" | "optional" | "skip";
 	notes: string;
 	/** Human-reviewed durable-fact labels; omitted profiles are treated as unreviewed. */
 	review?: ExtractionBenchmarkReview;
@@ -19,6 +20,7 @@ export interface ExtractionBenchmarkLabel {
 	disposition: ExtractionBenchmarkLabelDisposition;
 	keywordGroups: string[][];
 	reviewerNotes: string;
+	sourceEvidence: string;
 }
 
 export type ExtractionBenchmarkReview =
@@ -83,6 +85,8 @@ const REVIEWED_BATCHES: Readonly<Record<number, ExtractionBenchmarkReview>> = {
 				],
 				reviewerNotes:
 					"Capture the reusable regression lesson: the TypeScript path must retain stable-session reuse rather than creating a fresh session for each event or flush.",
+				sourceEvidence:
+					"Replay input names #607 / 10d324c5 as the stable-session reuse fix and links the missing behavior to fragmented micro-sessions.",
 			},
 			{
 				id: "graphite-branch-hygiene",
@@ -94,6 +98,8 @@ const REVIEWED_BATCHES: Readonly<Record<number, ExtractionBenchmarkReview>> = {
 				],
 				reviewerNotes:
 					"Branch cleanup and stack-management narration is routine workflow telemetry, not a durable project fact.",
+				sourceEvidence:
+					"Replay input contains Graphite branch cleanup narration, but no reusable product constraint or technical learning from that workflow.",
 			},
 		],
 	},
@@ -103,16 +109,18 @@ const REVIEWED_BATCHES: Readonly<Record<number, ExtractionBenchmarkReview>> = {
 			"Known review identified the transparent repair implementation and a separate limitation of relinking as required durable lessons.",
 		labels: [
 			{
-				id: "transparent-repair-implementation",
-				title: "Repair behavior must remain transparent",
+				id: "transparent-relink-startup",
+				title: "Raw-event relink repair runs transparently at startup",
 				disposition: "required",
 				keywordGroups: [
-					["repair", "repair pass", "repair call"],
-					["transparent", "reported separately", "visible separately"],
-					["initial output", "original output", "pre-repair output"],
+					["relink", "relinking"],
+					["transparent", "internal", "quietly"],
+					["startup", "prepareviewerdatabase", "viewer preparation"],
 				],
 				reviewerNotes:
-					"Capture the implementation contract that initial model output remains visible and repair is reported as a separate recovery step.",
+					"Capture the product behavior evidenced by this replay: safe raw-event relinking is wired into startup/viewer preparation rather than exposed as a user-operated repair step.",
+				sourceEvidence:
+					"The replay request asks for a transparent repair path, and tool/test output shows prepareViewerDatabase invoking the internal relink executor.",
 			},
 			{
 				id: "relinking-does-not-fix-recap-dominance",
@@ -125,6 +133,8 @@ const REVIEWED_BATCHES: Readonly<Record<number, ExtractionBenchmarkReview>> = {
 				],
 				reviewerNotes:
 					"Keep this distinct from transparent repair: relinking reduces the unmapped-session burden, but retrieval can still be dominated by recap/summary artifacts.",
+				sourceEvidence:
+					"Replay transcript explicitly reports that relinking reduces unmapped burden while recap dominance remains a separate ranking problem.",
 			},
 		],
 	},
@@ -193,6 +203,7 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				complexity: "rich",
 				scenarioId: "rich-batch-shape",
 				expectedTier: "rich",
+				expectedSummaryDisposition: "required",
 				notes:
 					"Flagship hard case: historically under-extracted batch with multiple meaningful subthreads.",
 				review: benchmarkReview(18503),
@@ -205,6 +216,7 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				complexity: "rich",
 				scenarioId: "rich-batch-shape",
 				expectedTier: "rich",
+				expectedSummaryDisposition: "required",
 				notes:
 					"Useful adjacent batch from the same long session; helps avoid overfitting to 18503 alone.",
 				review: benchmarkReview(18502),
@@ -217,6 +229,7 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				complexity: "rich",
 				scenarioId: "rich-batch-shape",
 				expectedTier: "rich",
+				expectedSummaryDisposition: "required",
 				notes:
 					"Later large batch from the same session; currently passes on stronger models and validates generalization within the stream.",
 				review: benchmarkReview(18506),
@@ -229,6 +242,7 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				complexity: "rich",
 				scenarioId: "rich-batch-shape",
 				expectedTier: "rich",
+				expectedSummaryDisposition: "required",
 				notes:
 					"High-volume snapshot batch used to compare budget and model sensitivity outside the Track 3 stream.",
 				review: benchmarkReview(18432),
@@ -241,6 +255,7 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				complexity: "rich",
 				scenarioId: "rich-batch-shape",
 				expectedTier: "rich",
+				expectedSummaryDisposition: "optional",
 				notes:
 					"Useful stubborn case: some models return summary-only or nothing; stronger models plus repair can recover it.",
 				review: benchmarkReview(18446),
@@ -253,6 +268,7 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				complexity: "robustness",
 				scenarioId: "rich-batch-shape",
 				expectedTier: "rich",
+				expectedSummaryDisposition: "optional",
 				notes:
 					"Stored extraction passes shape, but replay may return no raw output at all. Track separately as observer/replay robustness, not shape quality.",
 				review: benchmarkReview(18476),
@@ -303,6 +319,7 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				complexity: "simple",
 				scenarioId: "simple-batch-shape",
 				expectedTier: "simple",
+				expectedSummaryDisposition: "optional",
 				notes: "Very small batch that should clearly remain on the cheap/simple tier.",
 				review: benchmarkReview(18530),
 			},
@@ -314,6 +331,7 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				complexity: "simple",
 				scenarioId: "simple-batch-shape",
 				expectedTier: "simple",
+				expectedSummaryDisposition: "required",
 				notes: "Small batch with low tool count that should not trigger the rich tier.",
 				review: benchmarkReview(18490),
 			},
@@ -325,6 +343,7 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				complexity: "simple",
 				scenarioId: "simple-batch-shape",
 				expectedTier: "simple",
+				expectedSummaryDisposition: "required",
 				notes: "Short-session compact batch chosen for genuinely low-complexity characteristics.",
 				review: benchmarkReview(18494),
 			},
@@ -336,6 +355,7 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				complexity: "working",
 				scenarioId: "working-batch-shape",
 				expectedTier: "simple",
+				expectedSummaryDisposition: "required",
 				notes: "Moderate batch that should remain cheap unless thresholds are too aggressive.",
 				review: benchmarkReview(18524),
 			},
@@ -347,6 +367,7 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				complexity: "working",
 				scenarioId: "working-batch-shape",
 				expectedTier: "simple",
+				expectedSummaryDisposition: "required",
 				notes: "Moderate batch with some prompt/tool activity but still below rich-batch scale.",
 				review: benchmarkReview(18525),
 			},
@@ -358,6 +379,7 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				complexity: "working",
 				scenarioId: "working-batch-shape",
 				expectedTier: "simple",
+				expectedSummaryDisposition: "required",
 				notes:
 					"Cross-session moderate batch to verify the simple tier remains viable outside the main stream.",
 				review: benchmarkReview(18460),
@@ -370,6 +392,7 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				complexity: "rich",
 				scenarioId: "rich-batch-shape",
 				expectedTier: "rich",
+				expectedSummaryDisposition: "required",
 				notes: "Flagship hard case that should still escalate to the rich tier.",
 				review: benchmarkReview(18503),
 			},
@@ -381,6 +404,7 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				complexity: "rich",
 				scenarioId: "rich-batch-shape",
 				expectedTier: "rich",
+				expectedSummaryDisposition: "required",
 				notes: "High-volume snapshot batch that should continue escalating.",
 				review: benchmarkReview(18432),
 			},
@@ -392,6 +416,7 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				complexity: "robustness",
 				scenarioId: "rich-batch-shape",
 				expectedTier: "rich",
+				expectedSummaryDisposition: "optional",
 				notes:
 					"Known no-output replay robustness case retained to make sure routing does not hide robustness failures.",
 				review: benchmarkReview(18476),

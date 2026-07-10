@@ -243,9 +243,11 @@ export {
 export type {
 	ExtractionBenchmarkQualityDimensions,
 	ExtractionBenchmarkScore,
+	ExtractionBenchmarkSummaryDispositionScore,
 } from "./extraction-benchmark-scoring.js";
 export {
 	calculateCostAdjustedScore,
+	calculateWeightedQualityCoverage,
 	calculateWeightedQualityScore,
 	scoreExtractionBenchmarkOutput,
 } from "./extraction-benchmark-scoring.js";
