@@ -81,7 +81,8 @@ Every shape case records an expected summary disposition:
 Each reviewed durable-fact label includes a human-readable claim, disposition,
 source-evidence notes, and conservative matching aliases. Labels must be
 satisfiable from the exact replay input. Tests enforce that reviewed labels have
-evidence notes and that impossible or empty reviews cannot enter the benchmark.
+evidence notes. Reviewed skip controls may intentionally have no positive labels;
+their ground truth is the expected `skip` disposition itself.
 
 ## Scoring
 
@@ -116,6 +117,10 @@ This makes every aggregate auditable.
 3. Select finalists per transport and tier.
 4. Run finalists three times on a balanced representative/challenge subset.
 5. Recommend defaults only from repeated results that clear all gates.
+
+The benchmark runner's `--repetitions <n>` option records an iteration on every
+run and reports per-batch pass rates/status sequences, so a three-run finalist
+screen is reproducible rather than assembled from unrelated one-off reports.
 
 Terra remains a rich API finalist because its latency advantage is material and
 its only observed shape miss passed on repetition. Luna remains a Codex-sidecar
