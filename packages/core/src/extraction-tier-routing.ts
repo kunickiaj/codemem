@@ -85,9 +85,9 @@ function resolveRichTierDefaults(provider: KnownTierProvider): Partial<ObserverC
 }
 
 function normalizeRuntime(value: string | null | undefined): string {
-	return typeof value === "string" && value.trim().toLowerCase() === "claude_sidecar"
-		? "claude_sidecar"
-		: "api_http";
+	const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+	if (normalized === "claude_sidecar" || normalized === "codex_sidecar") return normalized;
+	return "api_http";
 }
 
 function nullIfUndefined<T>(value: T | undefined): T | null {
@@ -159,6 +159,52 @@ export function buildTieredObserverSelection(
 		};
 		const fallbackReason =
 			hasExplicitProviderOverride && requestedProvider && requestedProvider !== "anthropic"
+				? "unsupported tier override for runtime"
+				: null;
+		return {
+			observer,
+			metadata: requestedMetadata(
+				decision,
+				{
+					...observer,
+					observerProvider: requestedProvider ?? observer.observerProvider,
+					observerRuntime: normalizedRuntime,
+				},
+				fallbackReason,
+			),
+		};
+	}
+	if (normalizedRuntime === "codex_sidecar") {
+		const sidecarProviderKey =
+			decision.tier === "simple" ? "observerSimpleProvider" : "observerRichProvider";
+		const hasExplicitProviderOverride =
+			explicitConfigKeys.has(sidecarProviderKey) || explicitConfigKeys.has("observerProvider");
+		const requestedProvider =
+			(sidecarProviderKey === "observerSimpleProvider"
+				? trimmedProvider(baseConfig.observerSimpleProvider)
+				: trimmedProvider(baseConfig.observerRichProvider)) ??
+			trimmedProvider(baseConfig.observerProvider);
+		const observer = {
+			...baseConfig,
+			observerProvider: "openai",
+			observerModel:
+				decision.tier === "simple"
+					? (baseConfig.observerSimpleModel ?? baseConfig.observerModel)
+					: (baseConfig.observerRichModel ?? baseConfig.observerModel),
+			observerTemperature:
+				decision.tier === "simple"
+					? (baseConfig.observerSimpleTemperature ?? baseConfig.observerTemperature)
+					: (baseConfig.observerRichTemperature ?? baseConfig.observerTemperature),
+			observerOpenAIUseResponses: undefined,
+			observerReasoningEffort: null,
+			observerReasoningSummary: null,
+			observerMaxOutputTokens:
+				decision.tier === "simple"
+					? baseConfig.observerMaxTokens
+					: (baseConfig.observerRichMaxOutputTokens ?? baseConfig.observerMaxTokens),
+		};
+		const fallbackReason =
+			hasExplicitProviderOverride && requestedProvider && requestedProvider !== "openai"
 				? "unsupported tier override for runtime"
 				: null;
 		return {

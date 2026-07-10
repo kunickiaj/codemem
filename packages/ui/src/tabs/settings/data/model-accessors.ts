@@ -28,7 +28,7 @@ export function getTieredRoutingHelperText(values: SettingsFormState): string {
 	if (!values.observerTierRoutingEnabled) {
 		return "Off: codemem uses the base observer settings from the Connection tab for all batches. Explicit user settings always win over built-in routing defaults.";
 	}
-	return "On: codemem routes simpler batches to a lighter model and richer batches to a higher-quality configuration. Rich-tier OpenAI requests default to the Responses transport, and Claude sidecar runtimes route both tiers through the local Claude CLI.";
+	return "On: codemem routes simpler batches to a lighter model and richer batches to a higher-quality configuration. Rich-tier OpenAI requests default to the Responses transport, and sidecar runtimes route both tiers through their local CLI.";
 }
 
 export function getObserverModelLabel(values: SettingsFormState): string {
@@ -44,7 +44,7 @@ export function getObserverModelTooltip(values: SettingsFormState): string {
 export function getObserverModelDescription(values: SettingsFormState): string {
 	return values.observerTierRoutingEnabled
 		? "Tiered routing is active. Use this only as a fallback while the Processing tab owns simple/rich model selection and explicit tier settings override built-in defaults."
-		: "Default: `gpt-5.1-codex-mini` for Direct API; `claude-4.5-haiku` for Local Claude session.";
+		: "Default: `gpt-5.1-codex-mini` for Direct API or Local Codex session; `claude-4.5-haiku` for Local Claude session.";
 }
 
 export function hiddenUnlessAdvanced(showAdvanced: boolean): boolean {

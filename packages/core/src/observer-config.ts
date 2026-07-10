@@ -185,6 +185,7 @@ export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
 	actor_id: "CODEMEM_ACTOR_ID",
 	actor_display_name: "CODEMEM_ACTOR_DISPLAY_NAME",
 	claude_command: "CODEMEM_CLAUDE_COMMAND",
+	codex_command: "CODEMEM_CODEX_COMMAND",
 	observer_provider: "CODEMEM_OBSERVER_PROVIDER",
 	observer_model: "CODEMEM_OBSERVER_MODEL",
 	observer_temperature: "CODEMEM_OBSERVER_TEMPERATURE",
@@ -232,6 +233,31 @@ export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
 	raw_events_retention_enabled: "CODEMEM_RAW_EVENTS_RETENTION_ENABLED",
 	raw_events_retention_max_age_days: "CODEMEM_RAW_EVENTS_RETENTION_MAX_AGE_DAYS",
 };
+
+/** Normalize a configured sidecar command from argv or a shell-style string. */
+export function coerceObserverCommand(value: unknown): string[] | null {
+	if (value == null) return null;
+	if (Array.isArray(value)) {
+		const parts = value.filter((item): item is string => {
+			return typeof item === "string" && item.trim() !== "";
+		});
+		return parts.length > 0 ? parts : null;
+	}
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	if (!trimmed) return null;
+	try {
+		const parsed = JSON.parse(trimmed) as unknown;
+		if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
+			const parts = parsed.filter((item) => item.trim() !== "");
+			return parts.length > 0 ? parts : null;
+		}
+	} catch {
+		// Non-JSON command strings use the same whitespace splitting as existing config.
+	}
+	const parts = trimmed.split(/\s+/).filter((item) => item !== "");
+	return parts.length > 0 ? parts : null;
+}
 
 // ---------------------------------------------------------------------------
 // Unified config path resolver with full traceability
