@@ -41,16 +41,7 @@ describe("extraction replay", () => {
 				callCount += 1;
 				if (callCount === 1) {
 					return {
-						raw: `<summary>
-						  <request>Investigate qd7h, prep 0.23.0, and reframe Track 3 around injection-first quality.</request>
-						  <investigated>Reviewed the policy plan and discussed qd7h closure, release readiness, and graph future direction.</investigated>
-						  <learned>qd7h could be closed and Track 3 needed reframing.</learned>
-						  <completed>Started the investigation and captured a broad summary only.</completed>
-						  <next_steps>Add durable observations for the missing subthreads.</next_steps>
-						  <notes>This intentionally under-extracts to trigger the repair pass.</notes>
-						  <files_read><file>docs/plans/2026-04-07-track-3-injection-first-memory-policy.md</file></files_read>
-						  <files_modified></files_modified>
-						</summary>`,
+						raw: "I found several useful threads, but this is not valid observer XML.",
 						parsed: null,
 						provider: "test",
 						model: "test-model",
@@ -113,9 +104,78 @@ describe("extraction replay", () => {
 		expect(result.evaluation.counts.observations).toBe(2);
 		expect(result.observer.provider).toBe("test");
 		expect(result.observer.repairApplied).toBe(true);
+		expect(result.observer.initialRaw).toContain("not valid observer XML");
+		expect(result.observer.raw).toContain("<observation>");
+		expect(result.initialEvaluation.counts.observations).toBe(0);
+		expect(result.initialEvaluation.pass).toBe(false);
+		expect(result.initialClassification.status).toBe("shape_fail");
+		expect(result.repairedClassification?.status).toBe("pass");
+		expect(result.observer.repairedDiagnostics?.dataLoss).toBe(false);
+		expect(result.observer.initialDiagnostics).toMatchObject({
+			recognizedOutput: false,
+			dataLoss: true,
+		});
 		expect(callCount).toBe(2);
 		expect(result.observerContext.userPrompt).toContain("Track 3");
 		expect(result.evaluation.coverage.totalThreadCoverage).toBeGreaterThanOrEqual(3);
+		expect(result.evaluation.pass).toBe(true);
+	});
+
+	it("does not repair a rich result when observation count is its only potential failure", async () => {
+		// Arrange
+		const dbPath = createDbPath("extraction-replay-rich-count-only");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version, metadata_json) VALUES
+				  (166407, '2026-04-06T21:23:59.631Z', '2026-04-07T06:13:45.667Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"post":{"session_class":"durable","summary_disposition":"stored"}}');
+				INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
+				  ('opencode', 'ses-3', 'ses-3', 166407, '2026-04-06T21:23:59.631Z');
+				INSERT INTO raw_event_flush_batches(id, source, stream_id, opencode_session_id, start_event_seq, end_event_seq, extractor_version, status, attempt_count, created_at, updated_at) VALUES
+				  (18505, 'opencode', 'ses-3', 'ses-3', 1, 2, 'raw_events_v1', 'completed', 1, '2026-04-07T06:13:45.600Z', '2026-04-07T06:13:45.700Z');
+				INSERT INTO raw_events(id, source, stream_id, opencode_session_id, event_id, event_seq, event_type, ts_wall_ms, ts_mono_ms, payload_json, created_at) VALUES
+				  (21, 'opencode', 'ses-3', 'ses-3', 'evt-21', 1, 'user_prompt', 1000, 1, '{"type":"user_prompt","prompt_text":"Investigate several extraction evaluation concerns"}', '2026-04-07T06:13:45.600Z'),
+				  (22, 'opencode', 'ses-3', 'ses-3', 'evt-22', 2, 'user_prompt', 1010, 2, '{"type":"user_prompt","prompt_text":"Report only durable outcomes"}', '2026-04-07T06:13:45.610Z');
+			`);
+		} finally {
+			db.close();
+		}
+		const raw = `<summary>
+		  <request>Investigate several extraction evaluation concerns.</request>
+		  <investigated>Reviewed the evaluation policy and replay behavior.</investigated>
+		  <learned>No individual fact cleared the durable observation bar.</learned>
+		  <completed>Produced a broad summary without manufacturing observations.</completed>
+		  <next_steps>Continue with labelled durable-fact evaluation.</next_steps>
+		  <notes>The zero-observation cardinality is intentional.</notes>
+		</summary>`;
+		let callCount = 0;
+		const observer = {
+			observe: async () => {
+				callCount += 1;
+				return { raw, parsed: null, provider: "test", model: "test-model" };
+			},
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		} as unknown as ObserverClient;
+
+		// Act
+		const result = await replayBatchExtraction(dbPath, observer, {
+			batchId: 18505,
+			scenarioId: "rich-batch-shape",
+		});
+
+		// Assert
+		expect(callCount).toBe(1);
+		expect(result.observer.repairApplied).toBe(false);
+		expect(result.observer.initialRaw).toBe(raw);
+		expect(result.observer.raw).toBe(raw);
+		expect(result.initialEvaluation.counts.observations).toBe(0);
+		expect(result.evaluation.counts.observations).toBe(0);
 		expect(result.evaluation.pass).toBe(true);
 	});
 
@@ -239,7 +299,8 @@ describe("extraction replay", () => {
 
 		expect(result.evaluation.counts.summaries).toBe(1);
 		expect(result.evaluation.counts.observations).toBe(0);
-		expect(result.classification.status).toBe("shape_fail");
+		expect(result.classification.status).toBe("pass");
+		expect(result.observer.initialDiagnostics?.unsupportedObservationKinds).toEqual(["foo"]);
 	});
 
 	it("populates session context fields from Claude Code adapter-enveloped raw events during replay", async () => {

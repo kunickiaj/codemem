@@ -26,7 +26,11 @@ import {
 	normalizeRequestText,
 } from "./ingest-transcript.js";
 import type { IngestPayload, ParsedSummary, ToolEvent } from "./ingest-types.js";
-import { hasMeaningfulObservation, parseObserverResponse } from "./ingest-xml-parser.js";
+import {
+	hasMeaningfulObservation,
+	inspectObserverResponseStructure,
+	parseObserverResponse,
+} from "./ingest-xml-parser.js";
 import type { ObserverConfig } from "./observer-client.js";
 import { flushRawEvents } from "./raw-event-flush.js";
 import { MemoryStore } from "./store.js";
@@ -297,6 +301,12 @@ describe("ingest-xml-parser", () => {
 			expect(result.summary?.request).toBe("Fix the auth bug");
 			expect(result.summary?.completed).toBe("Fixed the timeout");
 			expect(result.skipSummaryReason).toBeNull();
+			expect(inspectObserverResponseStructure(xml, result)).toMatchObject({
+				dataLoss: false,
+				illegalObservationNestingInSummary: 0,
+				unknownSummaryFields: [],
+				unsupportedObservationKinds: [],
+			});
 		});
 
 		it("handles skip_summary", () => {
@@ -329,6 +339,101 @@ describe("ingest-xml-parser", () => {
 			expect(result.observations).toHaveLength(2);
 			expect(result.observations[0]?.title).toBe("First");
 			expect(result.observations[1]?.title).toBe("Second");
+		});
+
+		it("reports invalid observation nesting inside a summary", () => {
+			// Arrange
+			const xml = `<summary>
+			  <request>Summarize the work.</request>
+			  <observation><type>decision</type><title>Nested decision</title></observation>
+			</summary>`;
+
+			// Act
+			const result = inspectObserverResponseStructure(xml);
+
+			// Assert
+			expect(result.illegalObservationNestingInSummary).toBe(1);
+		});
+
+		it("reports unknown summary fields instead of silently discarding them", () => {
+			// Arrange
+			const xml = `<summary>
+			  <request>Summarize the work.</request>
+			  <outcome>The implementation shipped.</outcome>
+			</summary>`;
+
+			// Act
+			const result = inspectObserverResponseStructure(xml);
+
+			// Assert
+			expect(result.unknownSummaryFields).toEqual(["outcome"]);
+			expect(result.dataLoss).toBe(true);
+		});
+
+		it("reports multiple summaries while retaining the selected summary", () => {
+			// Arrange
+			const xml = `
+			<summary><request>First request</request></summary>
+			<summary><request>Second request</request></summary>`;
+
+			// Act
+			const parsed = parseObserverResponse(xml);
+			const result = inspectObserverResponseStructure(xml, parsed);
+
+			// Assert
+			expect(parsed.summary?.request).toBe("Second request");
+			expect(result.summaryBlocks).toBe(2);
+			expect(result.discardedSummaryBlocks).toBe(1);
+			expect(result.dataLoss).toBe(true);
+		});
+
+		it("reports unsupported observation kinds", () => {
+			// Arrange
+			const xml = `<observation>
+			  <type>status_update</type>
+			  <title>Release status</title>
+			  <narrative>The release workflow was green.</narrative>
+			</observation>`;
+
+			// Act
+			const result = inspectObserverResponseStructure(xml);
+
+			// Assert
+			expect(result.unsupportedObservationKinds).toEqual(["status_update"]);
+		});
+
+		it("reports a retained observation with no kind as data loss", () => {
+			const xml = `<observation>
+			  <title>Durable lesson without a type</title>
+			  <narrative>This block parses but replay cannot store it without a kind.</narrative>
+			</observation>`;
+
+			const result = inspectObserverResponseStructure(xml);
+
+			expect(result.retainedObservations).toBe(1);
+			expect(result.missingObservationKinds).toBe(1);
+			expect(result.dataLoss).toBe(true);
+		});
+
+		it("preserves an observation kind attribute", () => {
+			const xml = `<observation kind="decision">
+			  <title>Durable decision</title>
+			  <narrative>The observer used the supported attribute form.</narrative>
+			</observation>`;
+
+			const parsed = parseObserverResponse(xml);
+			const diagnostics = inspectObserverResponseStructure(xml, parsed);
+
+			expect(parsed.observations[0]?.kind).toBe("decision");
+			expect(diagnostics.missingObservationKinds).toBe(0);
+			expect(diagnostics.dataLoss).toBe(false);
+		});
+
+		it("reports plain prose as unrecognized lossy output", () => {
+			const result = inspectObserverResponseStructure("I found a durable lesson.");
+
+			expect(result.recognizedOutput).toBe(false);
+			expect(result.dataLoss).toBe(true);
 		});
 	});
 

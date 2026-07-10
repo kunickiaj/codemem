@@ -249,6 +249,7 @@ export {
 	listExtractionBenchmarkProfiles,
 } from "./extraction-benchmarks.js";
 export type {
+	ExtractionStructuralDiagnostics,
 	SessionExtractionEvalItem,
 	SessionExtractionEvalResult,
 	SessionExtractionEvalScenario,
@@ -256,6 +257,7 @@ export type {
 	SessionExtractionEvalThreadResult,
 } from "./extraction-eval.js";
 export {
+	evaluateExtractionStructure,
 	evaluateSessionExtractionItems,
 	getSessionExtractionEval,
 	getSessionExtractionEvalScenario,
@@ -319,7 +321,13 @@ export type {
 	SessionContext,
 	ToolEvent,
 } from "./ingest-types.js";
-export { hasMeaningfulObservation, parseObserverResponse } from "./ingest-xml-parser.js";
+export type { ObserverResponseStructuralDiagnostics } from "./ingest-xml-parser.js";
+export {
+	hasMeaningfulObservation,
+	inspectObserverResponseStructure,
+	parseObserverResponse,
+	SUPPORTED_OBSERVATION_KINDS,
+} from "./ingest-xml-parser.js";
 export { parsePositiveMemoryId, parseStrictInteger } from "./integers.js";
 export type {
 	BackfillTagsTextOptions,
