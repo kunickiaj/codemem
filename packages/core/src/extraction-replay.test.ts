@@ -45,6 +45,8 @@ describe("extraction replay", () => {
 						parsed: null,
 						provider: "test",
 						model: "test-model",
+						elapsedMs: 12,
+						usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 },
 					};
 				}
 				return {
@@ -81,6 +83,8 @@ describe("extraction replay", () => {
 					parsed: null,
 					provider: "test",
 					model: "test-model",
+					elapsedMs: 20,
+					usage: { inputTokens: 120, outputTokens: 30, totalTokens: 150 },
 				};
 			},
 			getStatus: () => ({
@@ -114,6 +118,12 @@ describe("extraction replay", () => {
 		expect(result.observer.initialDiagnostics).toMatchObject({
 			recognizedOutput: false,
 			dataLoss: true,
+		});
+		expect(result.observer.totalElapsedMs).toBe(32);
+		expect(result.observer.totalUsage).toEqual({
+			inputTokens: 220,
+			outputTokens: 40,
+			totalTokens: 260,
 		});
 		expect(callCount).toBe(2);
 		expect(result.observerContext.userPrompt).toContain("Track 3");

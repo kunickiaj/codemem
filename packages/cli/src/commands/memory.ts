@@ -8,8 +8,12 @@
 import * as p from "@clack/prompts";
 import {
 	compareMemoryRoleReports,
+	type ExtractionBenchmarkScore,
+	type ExtractionModelCostEstimate,
 	type ExtractionStructuralDiagnostics,
+	estimateExtractionModelCost,
 	getExtractionBenchmarkProfile,
+	getExtractionModelPricing,
 	getInjectionEvalScenarioPack,
 	getInjectionEvalScenarioPrompts,
 	getMemoryArtifactReport,
@@ -21,10 +25,12 @@ import {
 	loadObserverConfig,
 	MemoryStore,
 	ObserverClient,
+	type ObserverTokenUsage,
 	replayBatchExtraction,
 	replayBatchExtractionWithTierRouting,
 	resolveDbPath,
 	resolveProject,
+	scoreExtractionBenchmarkOutput,
 } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
@@ -1047,6 +1053,8 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						summaries: number;
 						observations: number;
 						diagnostics: ExtractionStructuralDiagnostics | null;
+						elapsedMs: number | null;
+						usage: ObserverTokenUsage | null;
 					};
 					repair: {
 						applied: boolean;
@@ -1057,7 +1065,21 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						summaries: number | null;
 						observations: number | null;
 						diagnostics: ExtractionStructuralDiagnostics | null;
+						elapsedMs: number | null;
+						usage: ObserverTokenUsage | null;
 					};
+					telemetry: {
+						totalElapsedMs: number | null;
+						totalUsage: ObserverTokenUsage | null;
+					};
+					pricing: ReturnType<typeof getExtractionModelPricing>;
+					cost: {
+						initial: ExtractionModelCostEstimate | null;
+						repair: ExtractionModelCostEstimate | null;
+						total: ExtractionModelCostEstimate | null;
+						unavailableReason: "missing_usage" | "unknown_model_pricing" | null;
+					};
+					quality: ExtractionBenchmarkScore | null;
 				}>;
 				for (const batch of benchmark.batches) {
 					const scenarioId = batch.scenarioId ?? benchmark.scenarioId;
@@ -1077,6 +1099,35 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 									scenarioId,
 									transcriptBudget: transcriptBudget ?? undefined,
 								});
+					const initialCost = estimateExtractionModelCost(
+						result.observer.model,
+						result.observer.initialUsage,
+					);
+					const repairCost = estimateExtractionModelCost(
+						result.observer.model,
+						result.observer.repairedUsage,
+					);
+					const totalCost = estimateExtractionModelCost(
+						result.observer.model,
+						result.observer.totalUsage,
+					);
+					const pricing = getExtractionModelPricing(result.observer.model);
+					const costUnavailableReason = totalCost
+						? null
+						: result.observer.totalUsage == null
+							? "missing_usage"
+							: "unknown_model_pricing";
+					const quality = result.observer.initialDiagnostics
+						? scoreExtractionBenchmarkOutput({
+								parsed: result.observer.initialParsed,
+								diagnostics: result.observer.initialDiagnostics,
+								review: batch.review ?? {
+									status: "unreviewed",
+									reviewerNotes: "No durable-fact review has been recorded for this batch.",
+								},
+								estimatedCostUsd: initialCost?.totalCostUsd ?? null,
+							})
+						: null;
 					runs.push({
 						batchId: batch.batchId,
 						sessionId: batch.sessionId,
@@ -1112,6 +1163,8 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 							summaries: result.initialEvaluation.counts.summaries,
 							observations: result.initialEvaluation.counts.observations,
 							diagnostics: result.observer.initialDiagnostics,
+							elapsedMs: result.observer.initialElapsedMs,
+							usage: result.observer.initialUsage,
 						},
 						repair: {
 							applied: result.observer.repairApplied,
@@ -1122,9 +1175,26 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 							summaries: result.repairedEvaluation?.counts.summaries ?? null,
 							observations: result.repairedEvaluation?.counts.observations ?? null,
 							diagnostics: result.observer.repairedDiagnostics,
+							elapsedMs: result.observer.repairedElapsedMs,
+							usage: result.observer.repairedUsage,
 						},
+						telemetry: {
+							totalElapsedMs: result.observer.totalElapsedMs,
+							totalUsage: result.observer.totalUsage,
+						},
+						pricing,
+						cost: {
+							initial: initialCost,
+							repair: repairCost,
+							total: totalCost,
+							unavailableReason: costUnavailableReason,
+						},
+						quality,
 					});
 				}
+				const reviewedQualityRuns = runs.filter((run) => run.quality?.weightedQualityScore != null);
+				const knownCostRuns = runs.filter((run) => run.cost.total != null);
+				const knownElapsedRuns = runs.filter((run) => run.telemetry.totalElapsedMs != null);
 				const summary = {
 					total: runs.length,
 					shapeQualityTotal: runs.filter((run) => run.purpose === "shape_quality").length,
@@ -1139,6 +1209,23 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						(run) => run.expectedTier != null && run.expectedTier === run.tier,
 					).length,
 					robustnessNoOutput: runs.filter((run) => run.status === "observer_no_output").length,
+					reviewedQualityRuns: reviewedQualityRuns.length,
+					knownCostRuns: knownCostRuns.length,
+					unknownCostRuns: runs.length - knownCostRuns.length,
+					missingUsageRuns: runs.filter((run) => run.cost.unavailableReason === "missing_usage")
+						.length,
+					unknownPricingRuns: runs.filter(
+						(run) => run.cost.unavailableReason === "unknown_model_pricing",
+					).length,
+					totalKnownCostUsd: knownCostRuns.reduce(
+						(sum, run) => sum + (run.cost.total?.totalCostUsd ?? 0),
+						0,
+					),
+					knownElapsedRuns: knownElapsedRuns.length,
+					totalKnownElapsedMs: knownElapsedRuns.reduce(
+						(sum, run) => sum + (run.telemetry.totalElapsedMs ?? 0),
+						0,
+					),
 				};
 				const uniqueObserverKeys = Array.from(
 					new Set(
@@ -1198,6 +1285,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						id: benchmark.id,
 						title: benchmark.title,
 						scenarioId: benchmark.scenarioId,
+						modelCandidates: benchmark.modelCandidates,
 					},
 					observer: observerSummary,
 					summary,
@@ -1225,11 +1313,23 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						`Shape-quality fails: ${summary.shapeQualityFails}`,
 						`Expected-tier matches: ${summary.expectedTierMatches}/${summary.expectedTierTotal}`,
 						`Observer no-output cases: ${summary.robustnessNoOutput}`,
+						`Reviewed quality runs: ${summary.reviewedQualityRuns} (compare per-run dimensions; scores are fixture-specific)`,
+						`Known estimated cost: $${summary.totalKnownCostUsd.toFixed(6)} (${summary.knownCostRuns}/${summary.total}; missing usage=${summary.missingUsageRuns}, unknown pricing=${summary.unknownPricingRuns})`,
+						`Known elapsed time: ${summary.totalKnownElapsedMs}ms (${summary.knownElapsedRuns}/${summary.total} run(s))`,
 					].join("\n"),
 				);
 				for (const run of runs) {
+					const qualityLabel =
+						run.quality?.weightedQualityScore == null
+							? "n/a"
+							: run.quality.weightedQualityScore.toFixed(3);
+					const costLabel =
+						run.cost.total == null ? "n/a" : `$${run.cost.total.totalCostUsd.toFixed(6)}`;
+					const latencyLabel =
+						run.telemetry.totalElapsedMs == null ? "n/a" : `${run.telemetry.totalElapsedMs}ms`;
+					const missingRequired = run.quality?.requiredRecall.missingLabelIds.join(",") || "none";
 					p.log.message(
-						`  [${run.batchId}] ${run.status.padEnd(18)} ${run.complexity.padEnd(10)} tier=${run.tier.padEnd(6)} expected=${(run.expectedTier ?? "n/a").padEnd(6)} span=${String(run.analysis.eventSpan).padEnd(3)} prompts=${run.analysis.promptCount} tools=${String(run.analysis.toolCount).padEnd(2)} transcript=${run.analysis.transcriptLength} ${run.provider}/${run.model}${run.openaiUseResponses ? " [responses]" : ""} initial=${run.initial.summaries}s/${run.initial.observations}o final=${run.summaries}s/${run.observations}o schema_loss=${run.initial.diagnostics?.dataLoss === true ? "yes" : "no"} repair=${run.repairApplied ? "yes" : "no"} — ${run.label}`,
+						`  [${run.batchId}] ${run.status.padEnd(18)} ${run.complexity.padEnd(10)} tier=${run.tier.padEnd(6)} expected=${(run.expectedTier ?? "n/a").padEnd(6)} span=${String(run.analysis.eventSpan).padEnd(3)} prompts=${run.analysis.promptCount} tools=${String(run.analysis.toolCount).padEnd(2)} transcript=${run.analysis.transcriptLength} ${run.provider}/${run.model}${run.openaiUseResponses ? " [responses]" : ""} initial=${run.initial.summaries}s/${run.initial.observations}o final=${run.summaries}s/${run.observations}o quality=${qualityLabel} required_missing=${missingRequired} cost=${costLabel} latency=${latencyLabel} schema_loss=${run.initial.diagnostics?.dataLoss === true ? "yes" : "no"} repair=${run.repairApplied ? "yes" : "no"} — ${run.label}`,
 					);
 				}
 				p.outro("done");

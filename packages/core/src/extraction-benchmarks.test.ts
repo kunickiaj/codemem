@@ -19,6 +19,16 @@ describe("extraction benchmarks", () => {
 				temperature: 0.2,
 			}),
 		);
+		expect(profile?.modelCandidates).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ model: "gpt-5.4", role: "rich_baseline" }),
+				expect.objectContaining({ model: "gpt-5.5", role: "quality_ceiling" }),
+				expect.objectContaining({
+					model: "gpt-5.6-terra",
+					role: "cost_matched_challenger",
+				}),
+			]),
+		);
 		expect(profile?.batches).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ batchId: 18503, purpose: "shape_quality" }),
@@ -39,6 +49,50 @@ describe("extraction benchmarks", () => {
 		);
 	});
 
+	it("carries the known durable-fact review for batches 18503 and 18432", () => {
+		const profile = getExtractionBenchmarkProfile("rich-batch-shape-v1");
+		const batch18503 = profile?.batches.find((batch) => batch.batchId === 18503);
+		const batch18432 = profile?.batches.find((batch) => batch.batchId === 18432);
+		expect(batch18503?.review).toEqual(
+			expect.objectContaining({
+				status: "reviewed",
+				labels: expect.arrayContaining([
+					expect.objectContaining({
+						id: "stable-session-reuse-regression",
+						disposition: "required",
+					}),
+					expect.objectContaining({
+						id: "graphite-branch-hygiene",
+						disposition: "forbidden",
+					}),
+				]),
+			}),
+		);
+		expect(batch18432?.review).toEqual(
+			expect.objectContaining({
+				status: "reviewed",
+				labels: expect.arrayContaining([
+					expect.objectContaining({
+						id: "transparent-repair-implementation",
+						disposition: "required",
+					}),
+					expect.objectContaining({
+						id: "relinking-does-not-fix-recap-dominance",
+						disposition: "required",
+					}),
+				]),
+			}),
+		);
+	});
+
+	it("marks batches without known review as explicitly unreviewed", () => {
+		const profile = getExtractionBenchmarkProfile("rich-batch-shape-v1");
+		expect(profile?.batches.find((batch) => batch.batchId === 18502)?.review).toEqual({
+			status: "unreviewed",
+			reviewerNotes: "No durable-fact review has been recorded for this batch.",
+		});
+	});
+
 	it("returns defensive copies from the benchmark listing", () => {
 		const profiles = listExtractionBenchmarkProfiles();
 		expect(profiles.length).toBeGreaterThan(0);
@@ -47,7 +101,20 @@ describe("extraction benchmarks", () => {
 		const firstBatch = firstProfile.batches[0];
 		if (!firstBatch) throw new Error("expected at least one batch in the first profile");
 		firstBatch.label = "mutated";
+		const firstCandidate = firstProfile.modelCandidates[0];
+		if (!firstCandidate) throw new Error("expected at least one model candidate");
+		firstCandidate.model = "mutated-model";
+		if (firstBatch.review?.status === "reviewed") {
+			const firstLabel = firstBatch.review.labels[0];
+			if (!firstLabel) throw new Error("expected reviewed batch to have a label");
+			firstLabel.keywordGroups[0]?.push("mutated keyword");
+		}
 		const fresh = getExtractionBenchmarkProfile("rich-batch-shape-v1");
 		expect(fresh?.batches[0]?.label).not.toBe("mutated");
+		expect(fresh?.modelCandidates[0]?.model).not.toBe("mutated-model");
+		const freshReview = fresh?.batches[0]?.review;
+		expect(
+			freshReview?.status === "reviewed" ? freshReview.labels[0]?.keywordGroups[0] : [],
+		).not.toContain("mutated keyword");
 	});
 });

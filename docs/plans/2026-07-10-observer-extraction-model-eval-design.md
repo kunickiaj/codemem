@@ -105,3 +105,13 @@ reported as unknown rather than inferred from string length.
 - Existing routine-session zero-observation behavior remains protected.
 - Targeted typecheck, lint, and tests pass for each stacked PR.
 - Calibration results include raw outputs and reviewer-readable dimension scores.
+
+## Initial Model Recommendation
+
+Keep GPT-5.4-mini as the simple-tier default and GPT-5.4 as the rich-tier
+default. Treat GPT-5.6 Terra as the leading cost-matched rich-tier challenger
+and GPT-5.5 as the higher-cost quality ceiling. Existing reviewed samples show
+Terra is competitive, but two batches are not enough evidence for a production
+default change. Use reasoning effort `none` for this extraction workload unless
+the corrected evaluation demonstrates a repeatable gain from additional
+reasoning.

@@ -241,8 +241,21 @@ export {
 	readImportPayload,
 } from "./export-import.js";
 export type {
+	ExtractionBenchmarkQualityDimensions,
+	ExtractionBenchmarkScore,
+} from "./extraction-benchmark-scoring.js";
+export {
+	calculateCostAdjustedScore,
+	calculateWeightedQualityScore,
+	scoreExtractionBenchmarkOutput,
+} from "./extraction-benchmark-scoring.js";
+export type {
 	ExtractionBenchmarkBatch,
+	ExtractionBenchmarkLabel,
+	ExtractionBenchmarkLabelDisposition,
+	ExtractionBenchmarkModelCandidate,
 	ExtractionBenchmarkProfile,
+	ExtractionBenchmarkReview,
 } from "./extraction-benchmarks.js";
 export {
 	getExtractionBenchmarkProfile,
@@ -262,6 +275,16 @@ export {
 	getSessionExtractionEval,
 	getSessionExtractionEvalScenario,
 } from "./extraction-eval.js";
+export type {
+	ExtractionModelCostEstimate,
+	ExtractionModelPricing,
+	NormalizedExtractionTokenUsage,
+} from "./extraction-model-pricing.js";
+export {
+	estimateExtractionModelCost,
+	getExtractionModelPricing,
+	listExtractionModelPricing,
+} from "./extraction-model-pricing.js";
 export type { ExtractionReplayResult } from "./extraction-replay.js";
 export {
 	replayBatchExtraction,
@@ -422,7 +445,12 @@ export {
 	resolveOAuthProvider,
 	runAuthCommand,
 } from "./observer-auth.js";
-export type { ObserverConfig, ObserverResponse, ObserverStatus } from "./observer-client.js";
+export type {
+	ObserverConfig,
+	ObserverResponse,
+	ObserverStatus,
+	ObserverTokenUsage,
+} from "./observer-client.js";
 export { loadObserverConfig, ObserverAuthError, ObserverClient } from "./observer-client.js";
 export type {
 	ConfigPathResolution,
