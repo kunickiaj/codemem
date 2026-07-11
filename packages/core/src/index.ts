@@ -459,6 +459,7 @@ export type {
 } from "./observer-config.js";
 export {
 	CODEMEM_CONFIG_ENV_OVERRIDES,
+	coerceObserverCommand,
 	getCodememConfigPath,
 	getCodememEnvOverrides,
 	getOpenCodeProviderConfig,

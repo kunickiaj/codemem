@@ -23,6 +23,8 @@ export function formatAuthMethod(method: string): string {
 			return "API key";
 		case "claude_sidecar":
 			return "Local Claude session";
+		case "codex_sidecar":
+			return "Local Codex session";
 		case "opencode_run":
 			return "OpenCode sidecar";
 		default:

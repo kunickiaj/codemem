@@ -5,7 +5,7 @@
  * an LLM (Anthropic Messages or OpenAI Chat Completions) via fetch to extract
  * memories from session transcripts.
  *
- * Supports api_http and claude_sidecar runtimes (no opencode_run).
+ * Supports api_http, claude_sidecar, and codex_sidecar runtimes (no opencode_run).
  * Non-streaming responses via fetch (no SDK deps).
  */
 
@@ -30,6 +30,7 @@ import {
 	resolveOAuthProvider,
 } from "./observer-auth.js";
 import {
+	coerceObserverCommand,
 	getOpenCodeProviderConfig,
 	getProviderApiKey,
 	listConfiguredOpenCodeProviders,
@@ -355,45 +356,6 @@ function coerceCommand(value: unknown): string[] | null {
 	}
 	return null;
 }
-
-/**
- * Coerce a claude_command value to a string array.
- * Accepts a string (split on whitespace) or an array of strings.
- */
-function coerceClaudeCommand(value: unknown): string[] | null {
-	if (value == null) return null;
-	if (Array.isArray(value)) {
-		const parts = value.filter((v): v is string => typeof v === "string" && v.trim() !== "");
-		return parts.length > 0 ? parts : null;
-	}
-	if (typeof value === "string") {
-		const trimmed = value.trim();
-		if (!trimmed) return null;
-		// Try JSON array first
-		try {
-			const parsed = JSON.parse(trimmed);
-			if (Array.isArray(parsed) && parsed.every((v: unknown) => typeof v === "string")) {
-				const parts = (parsed as string[]).filter((v) => v.trim() !== "");
-				return parts.length > 0 ? parts : null;
-			}
-		} catch {
-			/* not JSON — split on whitespace */
-		}
-		const parts = trimmed.split(/\s+/).filter((v) => v !== "");
-		return parts.length > 0 ? parts : null;
-	}
-	return null;
-}
-
-/**
- * Coerce a codex_command value to a string array.
- * Accepts a string (split on whitespace) or an array of strings.
- * Mirrors coerceClaudeCommand.
- */
-function coerceCodexCommand(value: unknown): string[] | null {
-	return coerceClaudeCommand(value);
-}
-
 /**
  * True when the OpenCode OAuth cache holds usable credentials for any built-in
  * provider (openai/anthropic OAuth access, or an opencode API key). Used to
@@ -600,11 +562,11 @@ export function loadObserverConfig(): ObserverConfig {
 	if (authCmd) cfg.observerAuthCommand = authCmd;
 
 	// claude_command: string or string[] → string[]
-	const claudeCmd = coerceClaudeCommand(data.claude_command);
+	const claudeCmd = coerceObserverCommand(data.claude_command);
 	if (claudeCmd) cfg.claudeCommand = claudeCmd;
 
 	// codex_command: string or string[] → string[]
-	const codexCmd = coerceCodexCommand(data.codex_command);
+	const codexCmd = coerceObserverCommand(data.codex_command);
 	if (codexCmd) cfg.codexCommand = codexCmd;
 
 	// Apply env var overrides (take precedence over file)
@@ -678,10 +640,10 @@ export function loadObserverConfig(): ObserverConfig {
 	const envAuthCmd = coerceCommand(process.env.CODEMEM_OBSERVER_AUTH_COMMAND);
 	if (envAuthCmd) cfg.observerAuthCommand = envAuthCmd;
 
-	const envClaudeCmd = coerceClaudeCommand(process.env.CODEMEM_CLAUDE_COMMAND);
+	const envClaudeCmd = coerceObserverCommand(process.env.CODEMEM_CLAUDE_COMMAND);
 	if (envClaudeCmd) cfg.claudeCommand = envClaudeCmd;
 
-	const envCodexCmd = coerceCodexCommand(process.env.CODEMEM_CODEX_COMMAND);
+	const envCodexCmd = coerceObserverCommand(process.env.CODEMEM_CODEX_COMMAND);
 	if (envCodexCmd) cfg.codexCommand = envCodexCmd;
 
 	// Auto-detect Claude environment for runtime default.
