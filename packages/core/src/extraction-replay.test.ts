@@ -37,6 +37,8 @@ describe("extraction replay", () => {
 		}
 
 		const observer = {
+			model: "test-model",
+			requestedModel: "test-model-alias",
 			observe: async () => {
 				callCount += 1;
 				if (callCount === 1) {
@@ -90,8 +92,8 @@ describe("extraction replay", () => {
 			getStatus: () => ({
 				provider: "test",
 				model: "test-model",
-				runtime: "test",
-				auth: { source: "none", type: "none", hasToken: false },
+				runtime: "api_http",
+				auth: { source: "opencode", type: "codex_consumer", hasToken: true },
 			}),
 		} as unknown as ObserverClient;
 		let callCount = 0;
@@ -107,6 +109,10 @@ describe("extraction replay", () => {
 		expect(result.evaluation.counts.summaries).toBe(1);
 		expect(result.evaluation.counts.observations).toBe(2);
 		expect(result.observer.provider).toBe("test");
+		expect(result.observer.requestedModel).toBe("test-model-alias");
+		expect(result.observer.resolvedModel).toBe("test-model");
+		expect(result.observer.transport).toBe("codex_consumer");
+		expect(result.observer.modelFallbackApplied).toBe(false);
 		expect(result.observer.repairApplied).toBe(true);
 		expect(result.observer.initialRaw).toContain("not valid observer XML");
 		expect(result.observer.raw).toContain("<observation>");

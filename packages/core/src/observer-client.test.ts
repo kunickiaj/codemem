@@ -1190,6 +1190,8 @@ describe("ObserverClient.observe()", () => {
 				observerAuthTimeoutMs: 1500,
 				observerAuthCacheTtlS: 300,
 			});
+			expect(client.requestedModel).toBe("work/fast");
+			expect(client.model).toBe("gateway-fast");
 
 			const result = await client.observe("system", "user");
 

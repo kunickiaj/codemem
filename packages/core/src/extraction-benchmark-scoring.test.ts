@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	calculateCostAdjustedScore,
+	calculateWeightedQualityCoverage,
 	calculateWeightedQualityScore,
 	scoreExtractionBenchmarkOutput,
 } from "./extraction-benchmark-scoring.js";
@@ -119,13 +120,13 @@ describe("extraction benchmark scoring", () => {
 
 	it("scores the two reviewed 18432 lessons as distinct required facts", () => {
 		const learned =
-			"The repair pass keeps pre-repair output transparent. Relinking reduces unmapped sessions but does not solve summary dominance.";
+			"Transparent startup relinking runs during viewer preparation. Relinking reduces unmapped sessions but does not solve summary dominance.";
 		const result = scoreExtractionBenchmarkOutput({
 			parsed: parsed(
 				[
 					observation(
-						"Repair output stays transparent",
-						"The repair pass is reported separately from the initial output.",
+						"Relink repair runs transparently",
+						"Internal relinking runs at startup during PrepareViewerDatabase.",
 					),
 					observation(
 						"Relinking has a bounded benefit",
@@ -140,7 +141,7 @@ describe("extraction benchmark scoring", () => {
 
 		expect(result.requiredRecall.score).toBe(1);
 		expect(result.requiredRecall.matchedLabelIds).toEqual([
-			"transparent-repair-implementation",
+			"transparent-relink-startup",
 			"relinking-does-not-fix-recap-dominance",
 		]);
 		expect(result.summaryBreadth.score).toBe(1);
@@ -174,6 +175,7 @@ describe("extraction benchmark scoring", () => {
 					disposition: "required",
 					keywordGroups: [["durable"], ["contract"]],
 					reviewerNotes: "Required fixture label.",
+					sourceEvidence: "Synthetic test evidence for the durable contract.",
 				},
 				{
 					id: "optional-context",
@@ -181,6 +183,7 @@ describe("extraction benchmark scoring", () => {
 					disposition: "optional",
 					keywordGroups: [["extra"], ["context"]],
 					reviewerNotes: "Optional fixture label.",
+					sourceEvidence: "Synthetic test evidence for the optional context.",
 				},
 			],
 		};
@@ -225,6 +228,7 @@ describe("extraction benchmark scoring", () => {
 
 	it("excludes null and human-only dimensions from weighted quality", () => {
 		const score = calculateWeightedQualityScore({
+			summaryDisposition: null,
 			requiredRecall: 1,
 			optionalRecall: null,
 			worthinessPrecision: null,
@@ -236,6 +240,65 @@ describe("extraction benchmark scoring", () => {
 		});
 
 		expect(score).toBeCloseTo(0.45 / (0.45 + 0.1));
+	});
+
+	it("reports how much of the weighted rubric was actually scored", () => {
+		const coverage = calculateWeightedQualityCoverage({
+			summaryDisposition: 1,
+			requiredRecall: 1,
+			optionalRecall: null,
+			worthinessPrecision: null,
+			summaryBreadth: null,
+			redundancyAvoidance: null,
+			segmentation: null,
+			schemaCompliance: 1,
+			factualGrounding: null,
+		});
+
+		expect(coverage).toBeGreaterThan(0);
+		expect(coverage).toBeLessThan(1);
+	});
+
+	it("accepts a valid low-signal skip only when the batch disposition permits it", () => {
+		const skipped: ParsedOutput = {
+			observations: [],
+			summary: null,
+			skipSummaryReason: "low-signal",
+		};
+		const optional = scoreExtractionBenchmarkOutput({
+			parsed: skipped,
+			diagnostics: { ...CLEAN_DIAGNOSTICS, summaryBlocks: 0, retainedSummaries: 0 },
+			review: reviewedBatch(18503),
+			expectedSummaryDisposition: "optional",
+		});
+		const required = scoreExtractionBenchmarkOutput({
+			parsed: skipped,
+			diagnostics: { ...CLEAN_DIAGNOSTICS, summaryBlocks: 0, retainedSummaries: 0 },
+			review: reviewedBatch(18503),
+			expectedSummaryDisposition: "required",
+		});
+
+		expect(optional.summaryDisposition).toEqual(
+			expect.objectContaining({ actual: "skip", score: 1 }),
+		);
+		expect(required.summaryDisposition).toEqual(
+			expect.objectContaining({ actual: "skip", score: 0 }),
+		);
+	});
+
+	it("normalizes low-signal skip reasons like production ingestion", () => {
+		const score = scoreExtractionBenchmarkOutput({
+			parsed: {
+				observations: [],
+				summary: null,
+				skipSummaryReason: " Low-Signal ",
+			},
+			diagnostics: { ...CLEAN_DIAGNOSTICS, summaryBlocks: 0, retainedSummaries: 0 },
+			review: reviewedBatch(18503),
+			expectedSummaryDisposition: "skip",
+		});
+
+		expect(score.summaryDisposition).toEqual(expect.objectContaining({ actual: "skip", score: 1 }));
 	});
 
 	it("keeps cost-adjusted quality null until an actual cost is supplied", () => {
@@ -271,7 +334,7 @@ describe("extraction benchmark scoring", () => {
 		expect(result.requiredRecall.score).toBe(0);
 		expect(result.worthinessPrecision.score).toBeNull();
 		expect(result.observationSignals.redundancyAvoidance).toBeNull();
-		expect(result.weightedQualityScore).toBeLessThanOrEqual(0.25);
+		expect(result.weightedQualityScore).toBeLessThanOrEqual(0.3);
 	});
 
 	it("scores a reviewed no-output response as zero quality", () => {

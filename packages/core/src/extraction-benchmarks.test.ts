@@ -73,7 +73,7 @@ describe("extraction benchmarks", () => {
 				status: "reviewed",
 				labels: expect.arrayContaining([
 					expect.objectContaining({
-						id: "transparent-repair-implementation",
+						id: "transparent-relink-startup",
 						disposition: "required",
 					}),
 					expect.objectContaining({
@@ -83,6 +83,18 @@ describe("extraction benchmarks", () => {
 				]),
 			}),
 		);
+	});
+
+	it("records summary disposition and source evidence for every reviewed label", () => {
+		for (const profile of listExtractionBenchmarkProfiles()) {
+			for (const batch of profile.batches) {
+				expect(["required", "optional", "skip"]).toContain(batch.expectedSummaryDisposition);
+				if (batch.review.status !== "reviewed") continue;
+				for (const label of batch.review.labels) {
+					expect(label.sourceEvidence.trim().length).toBeGreaterThan(0);
+				}
+			}
+		}
 	});
 
 	it("marks batches without known review as explicitly unreviewed", () => {

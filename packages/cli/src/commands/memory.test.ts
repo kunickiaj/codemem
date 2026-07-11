@@ -7,6 +7,7 @@ import * as embeddings from "../../../core/src/embeddings.js";
 import {
 	forgetMemoryCommand,
 	memoryCommand,
+	reconcileExtractionBenchmarkStatus,
 	rememberMemoryCommand,
 	showMemoryCommand,
 } from "./memory.js";
@@ -186,6 +187,88 @@ describe("memory command aliases", () => {
 });
 
 describe("memory command error boundaries", () => {
+	it("preserves a repaired benchmark pass when the initial disposition failed", () => {
+		const initialQuality = {
+			summaryDisposition: { expected: "required", actual: "none", score: 0 },
+		};
+		const finalQuality = {
+			summaryDisposition: { expected: "required", actual: "summary", score: 1 },
+		};
+		const result = reconcileExtractionBenchmarkStatus({
+			purpose: "shape_quality",
+			classification: { status: "pass", reason: "repaired output satisfies rubric" },
+			finalFailureReasons: [],
+			initialQuality,
+			finalQuality,
+		});
+
+		expect(result).toEqual({
+			status: "pass",
+			reason: "repaired output satisfies rubric",
+			quality: finalQuality,
+			initialQuality,
+		});
+	});
+
+	it("preserves observer_no_output before summary disposition scoring", () => {
+		const quality = {
+			summaryDisposition: { expected: "required", actual: "none", score: 0 },
+		};
+		const result = reconcileExtractionBenchmarkStatus({
+			purpose: "shape_quality",
+			classification: { status: "observer_no_output", reason: "observer returned no output" },
+			finalFailureReasons: ["observer returned no output"],
+			initialQuality: quality,
+			finalQuality: quality,
+		});
+
+		expect(result).toEqual({
+			status: "observer_no_output",
+			reason: "observer returned no output",
+			quality,
+			initialQuality: quality,
+		});
+	});
+
+	it("does not accept a repaired skip with non-summary final failures", () => {
+		const quality = {
+			summaryDisposition: { expected: "skip", actual: "skip", score: 1 },
+		};
+		const result = reconcileExtractionBenchmarkStatus({
+			purpose: "shape_quality",
+			classification: { status: "shape_fail", reason: "observation count outside range" },
+			finalFailureReasons: [
+				"summary count 0 outside expected range 1-1",
+				"observation count 1 outside expected range 0-0",
+			],
+			initialQuality: quality,
+			finalQuality: quality,
+		});
+
+		expect(result).toEqual({
+			status: "shape_fail",
+			reason: "observation count outside range",
+			quality,
+			initialQuality: quality,
+		});
+	});
+
+	it("accepts a valid skip when the final failure is only summary count", () => {
+		const quality = {
+			summaryDisposition: { expected: "skip", actual: "skip", score: 1 },
+		};
+		const result = reconcileExtractionBenchmarkStatus({
+			purpose: "shape_quality",
+			classification: { status: "shape_fail", reason: "summary count outside range" },
+			finalFailureReasons: ["summary count 0 outside expected range 1-1"],
+			initialQuality: quality,
+			finalQuality: quality,
+		});
+
+		expect(result.status).toBe("pass");
+		expect(result.reason).toBe("valid low-signal skip satisfies benchmark disposition");
+	});
+
 	it("does not throw and emits a JSON error for an invalid extraction-replay batch id", async () => {
 		const extractionReplay = memoryCommand.commands.find(
 			(command) => command.name() === "extraction-replay",
