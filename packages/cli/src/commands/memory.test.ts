@@ -156,6 +156,7 @@ describe("memory command aliases", () => {
 		expect(longs).toContain("--max-output-tokens");
 		expect(longs).toContain("--observer-temperature");
 		expect(longs).toContain("--transcript-budget");
+		expect(longs).toContain("--repetitions");
 		expect(longs).toContain("--json");
 	});
 
@@ -315,6 +316,33 @@ describe("memory command error boundaries", () => {
 
 			const output = logSpy.mock.calls.at(-1)?.[0];
 			expect(JSON.parse(String(output))).toMatchObject({ error: expect.any(String) });
+			expect(process.exitCode).toBe(1);
+		} finally {
+			process.exitCode = originalExitCode;
+			logSpy.mockRestore();
+		}
+	});
+
+	it("rejects unsafe extraction-benchmark repetition counts before running a model", async () => {
+		const extractionBenchmark = memoryCommand.commands.find(
+			(command) => command.name() === "extraction-benchmark",
+		);
+		if (!extractionBenchmark) throw new Error("expected extraction-benchmark command");
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const originalExitCode = process.exitCode;
+		process.exitCode = undefined;
+		try {
+			await extractionBenchmark.parseAsync(
+				["--benchmark", "balanced-observer-quality-v1", "--repetitions", "11", "--json"],
+				{ from: "user" },
+			);
+
+			const output = logSpy.mock.calls.at(-1)?.[0];
+			expect(JSON.parse(String(output))).toMatchObject({
+				error: "extraction_benchmark_failed",
+				message: expect.stringContaining("Invalid repetitions"),
+			});
 			expect(process.exitCode).toBe(1);
 		} finally {
 			process.exitCode = originalExitCode;

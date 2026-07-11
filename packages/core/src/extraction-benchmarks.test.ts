@@ -5,6 +5,36 @@ import {
 } from "./extraction-benchmarks.js";
 
 describe("extraction benchmarks", () => {
+	it("exposes a balanced fully reviewed 18-case quality profile", () => {
+		const profile = getExtractionBenchmarkProfile("balanced-observer-quality-v1");
+		expect(profile).not.toBeNull();
+		const shapeBatches =
+			profile?.batches.filter((batch) => batch.purpose === "shape_quality") ?? [];
+		expect(shapeBatches).toHaveLength(18);
+		for (const complexity of ["simple", "working", "rich"] as const) {
+			expect(shapeBatches.filter((batch) => batch.complexity === complexity)).toHaveLength(6);
+		}
+		expect(shapeBatches.every((batch) => batch.review?.status === "reviewed")).toBe(true);
+		expect(profile?.batches.filter((batch) => batch.purpose === "replay_robustness")).toEqual([
+			expect.objectContaining({ batchId: 18476 }),
+		]);
+	});
+
+	it("routes all balanced zero-observation controls through the routine scenario", () => {
+		const profile = getExtractionBenchmarkProfile("balanced-observer-quality-v1");
+		const zeroObservationBatchIds = new Set([18530, 28350, 28344, 28262, 28301, 18446]);
+		const zeroObservationControls =
+			profile?.batches.filter((batch) => zeroObservationBatchIds.has(batch.batchId)) ?? [];
+
+		expect(zeroObservationControls.map((batch) => batch.batchId)).toEqual([
+			18530, 28350, 28344, 28262, 28301, 18446,
+		]);
+		expect(zeroObservationControls.every((batch) => batch.observationPolicy === "zero")).toBe(true);
+		expect(
+			zeroObservationControls.every((batch) => batch.scenarioId === "routine-batch-shape"),
+		).toBe(true);
+	});
+
 	it("exposes the rich-batch benchmark profile", () => {
 		const profile = getExtractionBenchmarkProfile("rich-batch-shape-v1");
 		expect(profile).not.toBeNull();
@@ -32,6 +62,11 @@ describe("extraction benchmarks", () => {
 		expect(profile?.batches).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ batchId: 18503, purpose: "shape_quality" }),
+				expect.objectContaining({
+					batchId: 18446,
+					scenarioId: "routine-batch-shape",
+					observationPolicy: "zero",
+				}),
 				expect.objectContaining({ batchId: 18476, purpose: "replay_robustness" }),
 			]),
 		);
@@ -42,7 +77,13 @@ describe("extraction benchmarks", () => {
 		expect(profile).not.toBeNull();
 		expect(profile?.batches).toEqual(
 			expect.arrayContaining([
-				expect.objectContaining({ batchId: 18530, complexity: "simple", expectedTier: "simple" }),
+				expect.objectContaining({
+					batchId: 18530,
+					complexity: "simple",
+					expectedTier: "simple",
+					scenarioId: "routine-batch-shape",
+					observationPolicy: "zero",
+				}),
 				expect.objectContaining({ batchId: 18524, complexity: "working", expectedTier: "simple" }),
 				expect.objectContaining({ batchId: 18503, complexity: "rich", expectedTier: "rich" }),
 			]),
@@ -97,9 +138,9 @@ describe("extraction benchmarks", () => {
 		}
 	});
 
-	it("marks batches without known review as explicitly unreviewed", () => {
+	it("marks only robustness batches without known review as explicitly unreviewed", () => {
 		const profile = getExtractionBenchmarkProfile("rich-batch-shape-v1");
-		expect(profile?.batches.find((batch) => batch.batchId === 18502)?.review).toEqual({
+		expect(profile?.batches.find((batch) => batch.batchId === 18476)?.review).toEqual({
 			status: "unreviewed",
 			reviewerNotes: "No durable-fact review has been recorded for this batch.",
 		});
