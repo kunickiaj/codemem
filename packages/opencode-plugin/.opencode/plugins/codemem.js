@@ -892,7 +892,7 @@ const detectRunner = ({ cwd, envRunner }) => {
       // Suppress shell "not found" noise when codemem is not on PATH; the
       // catch below falls back to npx. Without this, stderr leaks to the
       // terminal on every OpenCode startup for npx-only installs.
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     // Accept any global codemem at or above the pinned backend version, so a
     // newer global install is used instead of silently downgrading to
@@ -1955,7 +1955,7 @@ export const OpencodeMemPlugin = async ({
       encoding: "utf-8",
       // Suppress "fatal: not a git repository" when the working directory is
       // not a git repo. The catch below leaves version as "unknown".
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "ignore"],
     }).trim();
   } catch (err) {
     // Ignore - version will remain 'unknown'
