@@ -32,6 +32,10 @@ export function formStateFromPayload(payload: ConfigPayload): SettingsFormState 
 	const claudeCommand = Array.isArray(claudeCommandValue)
 		? claudeCommandValue.filter((item): item is string => typeof item === "string")
 		: [];
+	const codexCommandValue = effectiveOrConfigured(config, effective, "codex_command");
+	const codexCommand = Array.isArray(codexCommandValue)
+		? codexCommandValue.filter((item): item is string => typeof item === "string")
+		: [];
 	const authCommandValue = effectiveOrConfigured(config, effective, "observer_auth_command");
 	const authCommand = Array.isArray(authCommandValue)
 		? authCommandValue.filter((item): item is string => typeof item === "string")
@@ -39,6 +43,7 @@ export function formStateFromPayload(payload: ConfigPayload): SettingsFormState 
 
 	return {
 		claudeCommand: claudeCommand.length ? JSON.stringify(claudeCommand, null, 2) : "",
+		codexCommand: codexCommand.length ? JSON.stringify(codexCommand, null, 2) : "",
 		observerProvider: asInputString(effectiveOrConfigured(config, effective, "observer_provider")),
 		observerModel: asInputString(effectiveOrConfigured(config, effective, "observer_model")),
 		observerTierRoutingEnabled: asBooleanValue(

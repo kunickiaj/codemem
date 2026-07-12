@@ -190,6 +190,58 @@ describe("extraction tier routing", () => {
 		expect(config.observerRuntime).toBe("claude_sidecar");
 	});
 
+	it("preserves the Codex sidecar default for simple tier routing", () => {
+		const decision = decideExtractionReplayTier({
+			batchId: 19001,
+			sessionId: 200001,
+			eventSpan: 12,
+			promptCount: 1,
+			toolCount: 1,
+			transcriptLength: 320,
+		});
+		const selection = buildTieredObserverSelection(
+			baseConfig({
+				observerProvider: "openai",
+				observerModel: "gpt-5.1-codex-mini",
+				observerRuntime: "codex_sidecar",
+				observerSimpleModel: null,
+			}),
+			decision,
+		);
+
+		expect(selection.observer.observerProvider).toBe("openai");
+		expect(selection.observer.observerModel).toBe("gpt-5.1-codex-mini");
+		expect(selection.observer.observerRuntime).toBe("codex_sidecar");
+		expect(selection.metadata.requestedRuntime).toBe("codex_sidecar");
+		expect(selection.metadata.requestedModel).toBe("gpt-5.1-codex-mini");
+	});
+
+	it("preserves the Codex sidecar default for rich tier routing", () => {
+		const decision = decideExtractionReplayTier({
+			batchId: 18503,
+			sessionId: 166405,
+			eventSpan: 153,
+			promptCount: 4,
+			toolCount: 12,
+			transcriptLength: 2800,
+		});
+		const selection = buildTieredObserverSelection(
+			baseConfig({
+				observerProvider: "openai",
+				observerModel: "gpt-5.1-codex-mini",
+				observerRuntime: "codex_sidecar",
+				observerRichModel: null,
+			}),
+			decision,
+		);
+
+		expect(selection.observer.observerProvider).toBe("openai");
+		expect(selection.observer.observerModel).toBe("gpt-5.1-codex-mini");
+		expect(selection.observer.observerRuntime).toBe("codex_sidecar");
+		expect(selection.metadata.requestedRuntime).toBe("codex_sidecar");
+		expect(selection.metadata.requestedModel).toBe("gpt-5.1-codex-mini");
+	});
+
 	it("respects observerRichProvider override even when base provider is openai", () => {
 		const decision = decideExtractionReplayTier({
 			batchId: 18503,

@@ -41,16 +41,19 @@
 
 ## Observer auth configuration
 
-- Runtime choices are `api_http` and `claude_sidecar`.
+- Runtime choices are `api_http`, `claude_sidecar`, and `codex_sidecar`.
 - `claude_sidecar` runs observer calls through the local Claude runtime (subscription/session auth) and does not require `ANTHROPIC_API_KEY`.
 - `claude_command` controls how `claude_sidecar` invokes Claude CLI (default `["claude"]`).
   - Wrapper example: `"claude_command": ["wrapper", "claude", "--"]`
+- `codex_sidecar` runs observer calls through the local Codex CLI login and does not require `OPENAI_API_KEY`.
+- `codex_command` controls how `codex_sidecar` invokes Codex CLI (default `["codex"]`).
 - Default model selection:
 - `api_http`: `gpt-5.1-codex-mini` unless `observer_model` is set.
 - `claude_sidecar`: `claude-4.5-haiku` unless `observer_model` is set.
+- `codex_sidecar`: `gpt-5.1-codex-mini` unless `observer_model` is set.
 - Tier routing may pick different simple/rich models automatically when the current runtime/provider path is marked capability-safe.
 - Anthropic direct API calls use Anthropic's direct model IDs. codemem translates the common shorthand `claude-4.5-haiku` to `claude-haiku-4-5`; if you want a fixed snapshot, set a versioned model like `claude-haiku-4-5-20251001` directly.
-- If a configured `observer_model` is unsupported by Claude CLI, codemem retries once with Claude's default model.
+- If a configured `observer_model` is unsupported by a sidecar CLI, codemem retries once with that CLI's default model.
 - Supported auth sources: `auto`, `env`, `file`, `command`, `none`.
 - `observer_auth_command` is argv and must be a JSON string array, not a space-separated string.
   - Config file form: `"observer_auth_command": ["iap-auth", "--audience", "example"]`

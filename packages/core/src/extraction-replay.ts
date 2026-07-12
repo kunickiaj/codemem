@@ -1,5 +1,6 @@
 import { connect, resolveDbPath } from "./db.js";
 import {
+	evaluateExtractionStructure,
 	evaluateSessionExtractionItems,
 	getSessionExtractionEvalScenario,
 } from "./extraction-eval.js";
@@ -30,24 +31,15 @@ import type {
 	SessionContext,
 	ToolEvent,
 } from "./ingest-types.js";
-import { parseObserverResponse } from "./ingest-xml-parser.js";
+import { parseObserverResponse, SUPPORTED_OBSERVATION_KINDS } from "./ingest-xml-parser.js";
 import {
 	type ObserverClient,
 	ObserverClient as ObserverClientImpl,
 	type ObserverConfig,
+	type ObserverTokenUsage,
 } from "./observer-client.js";
 import { resolveProject } from "./project.js";
 import { buildSessionContext } from "./raw-event-flush.js";
-
-const ALLOWED_KINDS = new Set([
-	"bugfix",
-	"feature",
-	"refactor",
-	"change",
-	"discovery",
-	"decision",
-	"exploration",
-]);
 
 function normalizePath(path: string, repoRoot: string | null): string {
 	if (!path) return "";
@@ -105,23 +97,43 @@ async function observeStructuredOutput(
 	observer: ObserverClient,
 	system: string,
 	user: string,
-): Promise<{ raw: string | null; parsed: ParsedOutput; provider: string; model: string }> {
+): Promise<{
+	initial: {
+		raw: string | null;
+		parsed: ParsedOutput;
+		provider: string;
+		model: string;
+		elapsedMs: number | null;
+		usage: ObserverTokenUsage | null;
+	};
+	repaired: {
+		raw: string | null;
+		parsed: ParsedOutput;
+		provider: string;
+		model: string;
+		elapsedMs: number | null;
+		usage: ObserverTokenUsage | null;
+	} | null;
+}> {
 	const first = await observer.observe(system, user);
 	const firstParsed = first.raw
 		? parseObserverResponse(first.raw)
 		: { observations: [], summary: null, skipSummaryReason: null };
+	const initial = {
+		raw: first.raw,
+		parsed: firstParsed,
+		provider: first.provider,
+		model: first.model,
+		elapsedMs: first.elapsedMs ?? null,
+		usage: first.usage ?? null,
+	};
 	if (
 		!first.raw ||
 		firstParsed.observations.length > 0 ||
 		firstParsed.summary !== null ||
 		firstParsed.skipSummaryReason !== null
 	) {
-		return {
-			raw: first.raw,
-			parsed: firstParsed,
-			provider: first.provider,
-			model: first.model,
-		};
+		return { initial, repaired: null };
 	}
 
 	const repairSystem = `${system}\n\nYour previous reply was invalid because it did not follow the required XML-only schema. Rewrite the same analysis as valid XML only. Do not include prose outside XML.`;
@@ -131,10 +143,44 @@ async function observeStructuredOutput(
 		? parseObserverResponse(repaired.raw)
 		: { observations: [], summary: null, skipSummaryReason: null };
 	return {
-		raw: repaired.raw,
-		parsed: repairedParsed,
-		provider: repaired.provider,
-		model: repaired.model,
+		initial,
+		repaired: {
+			raw: repaired.raw,
+			parsed: repairedParsed,
+			provider: repaired.provider,
+			model: repaired.model,
+			elapsedMs: repaired.elapsedMs ?? null,
+			usage: repaired.usage ?? null,
+		},
+	};
+}
+
+function sumObserverUsage(
+	initial: ObserverTokenUsage | null,
+	repaired: ObserverTokenUsage | null,
+	repairApplied: boolean,
+): ObserverTokenUsage | null {
+	if (!initial || (repairApplied && !repaired)) return null;
+	if (!repairApplied) return { ...initial };
+	if (!repaired) return null;
+	const totalTokens =
+		initial.totalTokens != null && repaired.totalTokens != null
+			? initial.totalTokens + repaired.totalTokens
+			: undefined;
+	const cacheReadInputTokens =
+		initial.cacheReadInputTokens != null || repaired.cacheReadInputTokens != null
+			? (initial.cacheReadInputTokens ?? 0) + (repaired.cacheReadInputTokens ?? 0)
+			: undefined;
+	const cacheCreationInputTokens =
+		initial.cacheCreationInputTokens != null || repaired.cacheCreationInputTokens != null
+			? (initial.cacheCreationInputTokens ?? 0) + (repaired.cacheCreationInputTokens ?? 0)
+			: undefined;
+	return {
+		inputTokens: initial.inputTokens + repaired.inputTokens,
+		outputTokens: initial.outputTokens + repaired.outputTokens,
+		...(totalTokens != null ? { totalTokens } : {}),
+		...(cacheReadInputTokens != null ? { cacheReadInputTokens } : {}),
+		...(cacheCreationInputTokens != null ? { cacheCreationInputTokens } : {}),
 	};
 }
 
@@ -158,6 +204,11 @@ export interface ExtractionReplayResult {
 	observer: {
 		provider: string;
 		model: string;
+		transport: string;
+		requestedModel: string;
+		resolvedModel: string | null;
+		modelFallbackApplied: boolean;
+		modelFallbackReason: string | null;
 		tier: "simple" | "rich" | null;
 		tierReasons: string[];
 		openaiUseResponses: boolean;
@@ -167,10 +218,26 @@ export interface ExtractionReplayResult {
 		temperature: number | null;
 		repairApplied: boolean;
 		initialRaw: string | null;
+		initialElapsedMs: number | null;
+		initialUsage: ObserverTokenUsage | null;
+		initialParsed: ParsedOutput;
+		initialDiagnostics: ReturnType<typeof evaluateExtractionStructure> | null;
+		repairedRaw: string | null;
+		repairedElapsedMs: number | null;
+		repairedUsage: ObserverTokenUsage | null;
+		repairedParsed: ParsedOutput | null;
+		repairedDiagnostics: ReturnType<typeof evaluateExtractionStructure> | null;
 		raw: string | null;
+		totalElapsedMs: number | null;
+		totalUsage: ObserverTokenUsage | null;
 		parsed: ParsedOutput;
+		diagnostics: ReturnType<typeof evaluateExtractionStructure> | null;
 	};
 	observerContext: ObserverContext;
+	initialClassification: ExtractionReplayResult["classification"];
+	repairedClassification: ExtractionReplayResult["classification"] | null;
+	initialEvaluation: ReturnType<typeof evaluateSessionExtractionItems>;
+	repairedEvaluation: ReturnType<typeof evaluateSessionExtractionItems> | null;
 	evaluation: ReturnType<typeof evaluateSessionExtractionItems>;
 }
 
@@ -236,20 +303,6 @@ function classifyReplayResult(input: {
 	};
 }
 
-function isRichReplayCandidate(
-	observerContext: ObserverContext,
-	sessionContext: SessionContext,
-	scenarioThreadCount: number,
-): boolean {
-	const transcriptLength = observerContext.transcript.trim().length;
-	return (
-		(sessionContext.promptCount ?? 0) >= 2 ||
-		(sessionContext.toolCount ?? 0) >= 3 ||
-		transcriptLength >= 1500 ||
-		scenarioThreadCount >= 3
-	);
-}
-
 function buildReplayItems(
 	parsed: ParsedOutput,
 	batch: {
@@ -280,7 +333,7 @@ function buildReplayItems(
 	for (const obs of parsed.observations) {
 		const kind = obs.kind.trim().toLowerCase();
 		if (!kind || (!obs.title && !obs.narrative)) continue;
-		if (!ALLOWED_KINDS.has(kind)) continue;
+		if (!SUPPORTED_OBSERVATION_KINDS.has(kind)) continue;
 		if (isLowSignalObservation(obs.title) || isLowSignalObservation(obs.narrative)) continue;
 		const bodyParts: string[] = [];
 		if (obs.narrative) bodyParts.push(obs.narrative);
@@ -327,56 +380,6 @@ function buildReplayItems(
 		}
 	}
 	return replayItems;
-}
-
-function needsRichSessionRepair(
-	evaluation: ReturnType<typeof evaluateSessionExtractionItems>,
-	observerContext: ObserverContext,
-	sessionContext: SessionContext,
-	scenario: { observationCountRange: { min: number } },
-): boolean {
-	if (!isRichReplayCandidate(observerContext, sessionContext, evaluation.threads.length))
-		return false;
-	// Honor the scenario's own floor: a routine-shape scenario expects zero
-	// observations, and repairing a valid summary-only response would force the
-	// exact routine narration the worthiness bar exists to reject.
-	const minObservations = scenario.observationCountRange.min;
-	if (minObservations <= 0) return false;
-	if (evaluation.counts.observations === 0 && evaluation.counts.summaries >= 1) return true;
-	return evaluation.counts.observations < minObservations;
-}
-
-async function observeRichSessionRepair(
-	observer: ObserverClient,
-	baseSystem: string,
-	baseUser: string,
-	initialRaw: string,
-	evaluation: ReturnType<typeof evaluateSessionExtractionItems>,
-): Promise<{ raw: string | null; parsed: ParsedOutput; provider: string; model: string }> {
-	const missingThreads = evaluation.threads
-		.filter((thread) => !thread.observationMatch)
-		.map((thread) => thread.title);
-	const repairSystem = `${baseSystem}
-
-RICH-SESSION REPAIR REQUIREMENT:
-- The previous output under-extracted a rich batch.
-- For a rich session, summary-only output is not acceptable when multiple durable subthreads are present.
-- Return valid XML with one broad <summary> plus at least 2 durable <observation> blocks covering DISTINCT subthreads.
-- Do not repeat the same dominant thread in multiple observations.
-- Choose observations for reusable decisions, learnings, troubleshooting outcomes, or future-facing exploration that would reduce rediscovery in later sessions.`;
-	const repairUser = `${baseUser}
-
-Previous under-extracted XML to repair:
-${initialRaw}
-
-The previous output failed because:
-- observations returned: ${evaluation.counts.observations}
-- total thread coverage: ${evaluation.coverage.totalThreadCoverage}
-- missing observation coverage for: ${missingThreads.length > 0 ? missingThreads.join(", ") : "none recorded"}
-
-Rewrite the analysis as valid XML only.
-Keep the broad summary, but add 2-4 durable observations for distinct subthreads if the transcript supports them.`;
-	return observeStructuredOutput(observer, repairSystem, repairUser);
 }
 
 async function prepareReplayBatch(
@@ -601,57 +604,76 @@ async function replayPreparedBatch(
 	tier: "simple" | "rich" | null,
 	tierReasons: string[],
 ): Promise<ExtractionReplayResult> {
-	const initialResponse = await observeStructuredOutput(observer, prepared.system, prepared.user);
-	let finalResponse = initialResponse;
-	let replayItems = buildReplayItems(finalResponse.parsed, prepared.batch, prepared.sessionContext);
-	let evaluation = evaluateSessionExtractionItems(
-		{ type: "batch", sessionId: prepared.batch.session_id, batchId: prepared.batch.id },
-		{
-			id: prepared.batch.session_id,
-			project: prepared.batch.project,
-			cwd: prepared.batch.cwd ?? process.cwd(),
-			startedAt: prepared.batch.started_at ?? "",
-			endedAt: prepared.batch.ended_at,
-			sessionClass: String(prepared.sessionPost.session_class ?? "unknown"),
-			summaryDisposition: String(prepared.sessionPost.summary_disposition ?? "unknown"),
-		},
-		replayItems,
+	const configuredModel = observer.requestedModel ?? observer.model;
+	const response = await observeStructuredOutput(observer, prepared.system, prepared.user);
+	const requestedModel = configuredModel || response.initial.model;
+	const observerStatus = observer.getStatus();
+	const modelFallbackApplied = observerStatus.modelFallbackApplied === true;
+	const resolvedModel = modelFallbackApplied
+		? (observerStatus.actualModel ?? null)
+		: (observerStatus.actualModel ?? response.initial.model);
+	const session = {
+		id: prepared.batch.session_id,
+		project: prepared.batch.project,
+		cwd: prepared.batch.cwd ?? process.cwd(),
+		startedAt: prepared.batch.started_at ?? "",
+		endedAt: prepared.batch.ended_at,
+		sessionClass: String(prepared.sessionPost.session_class ?? "unknown"),
+		summaryDisposition: String(prepared.sessionPost.summary_disposition ?? "unknown"),
+	};
+	const target = {
+		type: "batch" as const,
+		sessionId: prepared.batch.session_id,
+		batchId: prepared.batch.id,
+	};
+	const initialEvaluation = evaluateSessionExtractionItems(
+		target,
+		session,
+		buildReplayItems(response.initial.parsed, prepared.batch, prepared.sessionContext),
 		prepared.scenario,
 	);
-	let repairApplied = false;
-	if (
-		initialResponse.raw &&
-		needsRichSessionRepair(
-			evaluation,
-			prepared.observerContext,
-			prepared.sessionContext,
-			prepared.scenario,
-		)
-	) {
-		repairApplied = true;
-		finalResponse = await observeRichSessionRepair(
-			observer,
-			prepared.system,
-			prepared.user,
-			initialResponse.raw,
-			evaluation,
-		);
-		replayItems = buildReplayItems(finalResponse.parsed, prepared.batch, prepared.sessionContext);
-		evaluation = evaluateSessionExtractionItems(
-			{ type: "batch", sessionId: prepared.batch.session_id, batchId: prepared.batch.id },
-			{
-				id: prepared.batch.session_id,
-				project: prepared.batch.project,
-				cwd: prepared.batch.cwd ?? process.cwd(),
-				startedAt: prepared.batch.started_at ?? "",
-				endedAt: prepared.batch.ended_at,
-				sessionClass: String(prepared.sessionPost.session_class ?? "unknown"),
-				summaryDisposition: String(prepared.sessionPost.summary_disposition ?? "unknown"),
-			},
-			replayItems,
-			prepared.scenario,
-		);
-	}
+	const repairedEvaluation = response.repaired
+		? evaluateSessionExtractionItems(
+				target,
+				session,
+				buildReplayItems(response.repaired.parsed, prepared.batch, prepared.sessionContext),
+				prepared.scenario,
+			)
+		: null;
+	const finalResponse = response.repaired ?? response.initial;
+	const evaluation = repairedEvaluation ?? initialEvaluation;
+	const initialClassification = classifyReplayResult({
+		raw: response.initial.raw,
+		evaluation: initialEvaluation,
+	});
+	const repairedClassification = response.repaired
+		? classifyReplayResult({
+				raw: response.repaired.raw,
+				evaluation: repairedEvaluation ?? initialEvaluation,
+			})
+		: null;
+	const initialDiagnostics = evaluateExtractionStructure(
+		response.initial.raw ?? "",
+		response.initial.parsed,
+	);
+	const repairedDiagnostics = response.repaired
+		? evaluateExtractionStructure(response.repaired.raw ?? "", response.repaired.parsed)
+		: null;
+	const repairApplied = response.repaired !== null;
+	const totalElapsedMs =
+		response.initial.elapsedMs != null && (!repairApplied || response.repaired?.elapsedMs != null)
+			? response.initial.elapsedMs + (response.repaired?.elapsedMs ?? 0)
+			: null;
+	const totalUsage = sumObserverUsage(
+		response.initial.usage,
+		response.repaired?.usage ?? null,
+		repairApplied,
+	);
+	const transport =
+		observerStatus.auth.type === "codex_consumer" ||
+		observerStatus.auth.type === "anthropic_consumer"
+			? observerStatus.auth.type
+			: observerStatus.runtime;
 
 	return {
 		scenario: {
@@ -669,6 +691,11 @@ async function replayPreparedBatch(
 		observer: {
 			provider: finalResponse.provider,
 			model: finalResponse.model,
+			transport,
+			requestedModel,
+			resolvedModel,
+			modelFallbackApplied,
+			modelFallbackReason: observerStatus.modelFallbackReason ?? null,
 			tier,
 			tierReasons,
 			openaiUseResponses: observer.openaiUseResponses,
@@ -677,11 +704,27 @@ async function replayPreparedBatch(
 			maxOutputTokens: observer.maxOutputTokens,
 			temperature: observer.temperature,
 			repairApplied,
-			initialRaw: initialResponse.raw,
+			initialRaw: response.initial.raw,
+			initialElapsedMs: response.initial.elapsedMs,
+			initialUsage: response.initial.usage,
+			initialParsed: response.initial.parsed,
+			initialDiagnostics,
+			repairedRaw: response.repaired?.raw ?? null,
+			repairedElapsedMs: response.repaired?.elapsedMs ?? null,
+			repairedUsage: response.repaired?.usage ?? null,
+			repairedParsed: response.repaired?.parsed ?? null,
+			repairedDiagnostics,
 			raw: finalResponse.raw,
+			totalElapsedMs,
+			totalUsage,
 			parsed: finalResponse.parsed,
+			diagnostics: repairedDiagnostics ?? initialDiagnostics,
 		},
 		observerContext: prepared.observerContext,
+		initialClassification,
+		repairedClassification,
+		initialEvaluation,
+		repairedEvaluation,
 		evaluation,
 	};
 }

@@ -241,14 +241,30 @@ export {
 	readImportPayload,
 } from "./export-import.js";
 export type {
+	ExtractionBenchmarkQualityDimensions,
+	ExtractionBenchmarkScore,
+	ExtractionBenchmarkSummaryDispositionScore,
+} from "./extraction-benchmark-scoring.js";
+export {
+	calculateCostAdjustedScore,
+	calculateWeightedQualityCoverage,
+	calculateWeightedQualityScore,
+	scoreExtractionBenchmarkOutput,
+} from "./extraction-benchmark-scoring.js";
+export type {
 	ExtractionBenchmarkBatch,
+	ExtractionBenchmarkLabel,
+	ExtractionBenchmarkLabelDisposition,
+	ExtractionBenchmarkModelCandidate,
 	ExtractionBenchmarkProfile,
+	ExtractionBenchmarkReview,
 } from "./extraction-benchmarks.js";
 export {
 	getExtractionBenchmarkProfile,
 	listExtractionBenchmarkProfiles,
 } from "./extraction-benchmarks.js";
 export type {
+	ExtractionStructuralDiagnostics,
 	SessionExtractionEvalItem,
 	SessionExtractionEvalResult,
 	SessionExtractionEvalScenario,
@@ -256,10 +272,21 @@ export type {
 	SessionExtractionEvalThreadResult,
 } from "./extraction-eval.js";
 export {
+	evaluateExtractionStructure,
 	evaluateSessionExtractionItems,
 	getSessionExtractionEval,
 	getSessionExtractionEvalScenario,
 } from "./extraction-eval.js";
+export type {
+	ExtractionModelCostEstimate,
+	ExtractionModelPricing,
+	NormalizedExtractionTokenUsage,
+} from "./extraction-model-pricing.js";
+export {
+	estimateExtractionModelCost,
+	getExtractionModelPricing,
+	listExtractionModelPricing,
+} from "./extraction-model-pricing.js";
 export type { ExtractionReplayResult } from "./extraction-replay.js";
 export {
 	replayBatchExtraction,
@@ -319,7 +346,13 @@ export type {
 	SessionContext,
 	ToolEvent,
 } from "./ingest-types.js";
-export { hasMeaningfulObservation, parseObserverResponse } from "./ingest-xml-parser.js";
+export type { ObserverResponseStructuralDiagnostics } from "./ingest-xml-parser.js";
+export {
+	hasMeaningfulObservation,
+	inspectObserverResponseStructure,
+	parseObserverResponse,
+	SUPPORTED_OBSERVATION_KINDS,
+} from "./ingest-xml-parser.js";
 export { parsePositiveMemoryId, parseStrictInteger } from "./integers.js";
 export type {
 	BackfillTagsTextOptions,
@@ -414,7 +447,12 @@ export {
 	resolveOAuthProvider,
 	runAuthCommand,
 } from "./observer-auth.js";
-export type { ObserverConfig, ObserverResponse, ObserverStatus } from "./observer-client.js";
+export type {
+	ObserverConfig,
+	ObserverResponse,
+	ObserverStatus,
+	ObserverTokenUsage,
+} from "./observer-client.js";
 export { loadObserverConfig, ObserverAuthError, ObserverClient } from "./observer-client.js";
 export type {
 	ConfigPathResolution,
@@ -423,6 +461,7 @@ export type {
 } from "./observer-config.js";
 export {
 	CODEMEM_CONFIG_ENV_OVERRIDES,
+	coerceObserverCommand,
 	getCodememConfigPath,
 	getCodememEnvOverrides,
 	getOpenCodeProviderConfig,

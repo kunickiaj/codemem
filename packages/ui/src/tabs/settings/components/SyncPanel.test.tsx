@@ -32,6 +32,7 @@ function baseProps(): SettingsPanelProps {
 	return {
 		values: {
 			claudeCommand: "",
+			codexCommand: "",
 			observerProvider: "openai",
 			observerModel: "",
 			observerTierRoutingEnabled: false,

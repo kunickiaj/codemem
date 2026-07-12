@@ -38,6 +38,26 @@ export function collectSettingsPayload(
 			: [];
 	}
 
+	let codexCommand: string[] = [];
+	try {
+		codexCommand = parseCommandArgv(values.codexCommand, {
+			label: "codex command",
+			normalize: true,
+			requireNonEmpty: true,
+		});
+	} catch (error) {
+		if (!allowUntouchedParseErrors || touchedKeys.has("codex_command")) {
+			throw error;
+		}
+		const baselineValue = baseline.codex_command;
+		codexCommand = Array.isArray(baselineValue)
+			? baselineValue
+					.filter((item): item is string => typeof item === "string")
+					.map((item) => item.trim())
+					.filter((item) => item.length > 0)
+			: [];
+	}
+
 	let authCommand: string[] = [];
 	try {
 		authCommand = parseCommandArgv(values.observerAuthCommand, { label: "observer auth command" });
@@ -118,6 +138,7 @@ export function collectSettingsPayload(
 
 	return {
 		claude_command: claudeCommand,
+		codex_command: codexCommand,
 		observer_provider: normalizeTextValue(values.observerProvider),
 		observer_model: normalizeTextValue(values.observerModel),
 		observer_tier_routing_enabled: values.observerTierRoutingEnabled,

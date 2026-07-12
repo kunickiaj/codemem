@@ -67,6 +67,9 @@ export function inferObserverModel(
 	if (runtime === "claude_sidecar") {
 		return { model: DEFAULT_ANTHROPIC_MODEL, source: "Recommended (local Claude session)" };
 	}
+	if (runtime === "codex_sidecar") {
+		return { model: DEFAULT_OPENAI_MODEL, source: "Recommended (local Codex session)" };
+	}
 	if (provider === "anthropic") {
 		return { model: DEFAULT_ANTHROPIC_MODEL, source: "Recommended (Anthropic provider)" };
 	}
@@ -84,6 +87,17 @@ export function configuredValueForKey(config: unknown, key: string): unknown {
 	switch (key) {
 		case "claude_command": {
 			const value = cfg.claude_command;
+			if (!Array.isArray(value)) return [];
+			const normalized: string[] = [];
+			value.forEach((item) => {
+				if (typeof item !== "string") return;
+				const token = item.trim();
+				if (token) normalized.push(token);
+			});
+			return normalized;
+		}
+		case "codex_command": {
+			const value = cfg.codex_command;
 			if (!Array.isArray(value)) return [];
 			const normalized: string[] = [];
 			value.forEach((item) => {
