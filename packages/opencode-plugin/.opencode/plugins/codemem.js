@@ -886,7 +886,14 @@ const detectRunner = ({ cwd, envRunner }) => {
   }
   // Prefer the TS codemem if installed globally, fall back to npx
   try {
-    const versionOutput = execSync("codemem --version", { encoding: "utf-8", timeout: 3000 }).trim();
+    const versionOutput = execSync("codemem --version", {
+      encoding: "utf-8",
+      timeout: 3000,
+      // Suppress shell "not found" noise when codemem is not on PATH; the
+      // catch below falls back to npx. Without this, stderr leaks to the
+      // terminal on every OpenCode startup for npx-only installs.
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
     // Accept any global codemem at or above the pinned backend version, so a
     // newer global install is used instead of silently downgrading to
     // `npx codemem@<pin>` (the old check only matched the exact pin or the
@@ -1946,6 +1953,9 @@ export const OpencodeMemPlugin = async ({
       cwd: runnerFrom,
       timeout: 500,
       encoding: "utf-8",
+      // Suppress "fatal: not a git repository" when the working directory is
+      // not a git repo. The catch below leaves version as "unknown".
+      stdio: ["ignore", "pipe", "ignore"],
     }).trim();
   } catch (err) {
     // Ignore - version will remain 'unknown'
