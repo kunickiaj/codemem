@@ -674,4 +674,87 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		);
 		expect(dataPlaneRes.status).toBe(404);
 	});
+
+	it("reuses a managed project boundary and grants only the explicit bounded device set", async () => {
+		await env.COORDINATOR_DB.prepare(
+			"INSERT INTO groups (group_id, display_name, created_at) VALUES ('g1', 'Team', ?)",
+		)
+			.bind("2026-07-20T00:00:00Z")
+			.run();
+		const devices = [createIdentity(), createIdentity(), createIdentity(), createIdentity()];
+		for (const [index, device] of devices.entries()) {
+			const enrolled = await exports.default.fetch("https://example.com/v1/admin/devices", {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					"X-Codemem-Coordinator-Admin": "test-secret",
+				},
+				body: JSON.stringify({
+					group_id: "g1",
+					device_id: device.deviceId,
+					fingerprint: device.fingerprint,
+					public_key: device.publicKey,
+					display_name: `Device ${index + 1}`,
+				}),
+			});
+			expect(enrolled.status).toBe(200);
+		}
+		const scopeBody = JSON.stringify({
+			scope_id: "managed-project:deterministic",
+			label: "api",
+			kind: "managed_project",
+			authority_type: "coordinator",
+			membership_epoch: 1,
+		});
+		const create = () =>
+			exports.default.fetch("https://example.com/v1/admin/groups/g1/scopes", {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					"X-Codemem-Coordinator-Admin": "test-secret",
+				},
+				body: scopeBody,
+			});
+		expect((await create()).status).toBe(201);
+		// Duplicate create may report conflict; the durable boundary remains unique
+		// and is safely recoverable by re-reading it.
+		expect([200, 400, 409]).toContain((await create()).status);
+		const scopes = await exports.default.fetch("https://example.com/v1/admin/groups/g1/scopes", {
+			headers: { "X-Codemem-Coordinator-Admin": "test-secret" },
+		});
+		const scopesPayload = (await scopes.json()) as { items: Array<{ scope_id: string }> };
+		expect(
+			scopesPayload.items.filter((scope) => scope.scope_id === "managed-project:deterministic"),
+		).toHaveLength(1);
+		const reviewed = devices.slice(0, 3);
+		for (const device of reviewed) {
+			const grant = () =>
+				exports.default.fetch(
+					"https://example.com/v1/admin/groups/g1/scopes/managed-project%3Adeterministic/members",
+					{
+						method: "POST",
+						headers: {
+							"content-type": "application/json",
+							"X-Codemem-Coordinator-Admin": "test-secret",
+						},
+						body: JSON.stringify({
+							device_id: device.deviceId,
+							role: "member",
+							membership_epoch: 1,
+						}),
+					},
+				);
+			expect((await grant()).status).toBe(201);
+			expect((await grant()).status).toBe(201);
+		}
+		const listed = await exports.default.fetch(
+			"https://example.com/v1/admin/groups/g1/scopes/managed-project%3Adeterministic/members",
+			{ headers: { "X-Codemem-Coordinator-Admin": "test-secret" } },
+		);
+		const payload = (await listed.json()) as { items: Array<{ device_id: string }> };
+		expect(payload.items.map((item) => item.device_id).sort()).toEqual(
+			reviewed.map((device) => device.deviceId).sort(),
+		);
+		expect(payload.items.some((item) => item.device_id === devices[3]?.deviceId)).toBe(false);
+	});
 });

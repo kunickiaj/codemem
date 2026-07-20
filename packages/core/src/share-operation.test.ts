@@ -500,6 +500,26 @@ describe("share-operation persistence", () => {
 		).toBe("pending");
 	});
 
+	it("does not regress a provisioning lifecycle on authoritative acceptance replay", () => {
+		const operation = plan();
+		persistShareOperation(db, operation, {
+			inviteId: "invite-1",
+			tokenDigest: inviteTokenDigest("token-1"),
+		});
+		const input = acceptanceInput(operation);
+		reconcileShareOperationAcceptance(db, input);
+		db.prepare("UPDATE share_operations SET state = 'initial_sync' WHERE operation_id = ?").run(
+			operation.operationId,
+		);
+		reconcileShareOperationAcceptance(db, input);
+		expect(
+			db
+				.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
+				.pluck()
+				.get(operation.operationId),
+		).toBe("initial_sync");
+	});
+
 	it("rejects malformed or mismatched authoritative project intent", () => {
 		expect(() => parseAcceptedProjectIntent([{ display_name: "codemem" }])).toThrow(
 			"operation_intent_invalid",

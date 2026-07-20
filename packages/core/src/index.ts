@@ -656,6 +656,17 @@ export {
 	SHARE_OPERATION_STATE,
 	shareProjectSetDigest,
 } from "./share-operation.js";
+export type {
+	ManagedProjectPlan,
+	ReassignScopeCapability,
+	ShareProvisioningDependencies,
+	ShareProvisioningPlan,
+} from "./share-provisioning.js";
+export {
+	countShareableProjectMemories,
+	executeShareProvisioning,
+	planShareProvisioning,
+} from "./share-provisioning.js";
 export { MemoryStore } from "./store.js";
 export {
 	hasPendingSummaryDedupBackfill,
@@ -681,14 +692,20 @@ export {
 export { DEFAULT_TIME_WINDOW_S } from "./sync-auth-constants.js";
 export type { BootstrapOptions, BootstrapResult } from "./sync-bootstrap.js";
 export { applyBootstrapSnapshot, fetchAllSnapshotPages } from "./sync-bootstrap.js";
-export type { SyncCapability } from "./sync-capability.js";
+export type { SyncCapability, SyncFeature } from "./sync-capability.js";
 export {
 	isScopedSyncCapability,
 	LOCAL_SYNC_CAPABILITY,
+	LOCAL_SYNC_FEATURES,
 	negotiateSyncCapability,
 	normalizeSyncCapability,
+	normalizeSyncFeatures,
+	SYNC_AUTHORIZATION_REFRESH_HEADER,
 	SYNC_CAPABILITIES,
 	SYNC_CAPABILITY_HEADER,
+	SYNC_FEATURES,
+	SYNC_FEATURES_HEADER,
+	supportsSyncFeature,
 } from "./sync-capability.js";
 export type { SyncDaemonOptions, SyncDaemonPhase, SyncTickResult } from "./sync-daemon.js";
 export {
@@ -754,6 +771,7 @@ export type {
 	InboundScopeRejectionRecord,
 	InboundScopeRejectionSummaryOptions,
 	ListInboundScopeRejectionsOptions,
+	ReassignScopePayload,
 	ReconcileStalePeerReceivedRowsOptions,
 	ReconcileStalePeerReceivedRowsResult,
 	StalePeerReceivedRowDiagnostic,
@@ -780,14 +798,17 @@ export {
 	loadReplicationOpsForPeer,
 	loadReplicationOpsSince,
 	migrateLegacyImportKeys,
+	parseReassignScopePayload,
 	peerCanSyncPrivateOpByPersonalScopeGrant,
 	personalScopeGrantStatusForPeer,
 	planReplicationOpsAgePrune,
 	pruneReplicationOps,
 	pruneReplicationOpsUntilCaughtUp,
+	REASSIGN_SCOPE_OP_TYPE,
 	reconcileStalePeerReceivedRows,
 	recordAccessCleanupOp,
 	recordReplicationOp,
+	recordScopeReassignment,
 	rejectInboundScopeFailures,
 	replicationOpRequiresPersonalScopeAuthorization,
 	setReplicationCursor,

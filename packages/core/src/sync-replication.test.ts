@@ -2591,6 +2591,145 @@ describe("applyReplicationOps", () => {
 		expect(memoryExists(op.entity_id)).toBe(true);
 	});
 
+	it("allows sender-owned local-default cleanup for a prior recipient outside the destination", () => {
+		const importKey = "key:default-reassign";
+		insertReplicatedMemory({
+			importKey,
+			originDeviceId: "dev-remote",
+			scopeId: DEFAULT_SYNC_SCOPE_ID,
+		});
+		grantScope("managed-project", ["dev-remote"]);
+		const op = makeReplicationOp({
+			op_id: "default-reassign-old",
+			entity_id: importKey,
+			op_type: "reassign_scope",
+			payload_json: toJson({
+				operation_id: "share_default",
+				memory_id: importKey,
+				old_scope_id: DEFAULT_SYNC_SCOPE_ID,
+				new_scope_id: "managed-project",
+				revision: 2,
+				side: "old",
+			}),
+			clock_rev: 2,
+			clock_updated_at: "2026-01-01T00:00:01Z",
+			created_at: "2026-01-01T00:00:01Z",
+			scope_id: DEFAULT_SYNC_SCOPE_ID,
+		});
+
+		const result = applyWithScopeValidation(op);
+
+		expect(result).toMatchObject({ applied: 1, rejected: 0 });
+		expect(
+			db.prepare("SELECT active, scope_id FROM memory_items WHERE import_key = ?").get(importKey),
+		).toEqual({ active: 0, scope_id: DEFAULT_SYNC_SCOPE_ID });
+		expect(
+			db
+				.prepare("SELECT COUNT(*) FROM memory_items WHERE import_key = ? AND scope_id = ?")
+				.pluck()
+				.get(importKey, "managed-project"),
+		).toBe(0);
+	});
+
+	it("rejects local-default reassignment when the sender lacks destination access", () => {
+		const importKey = "key:default-reassign-sender-not-member";
+		insertReplicatedMemory({
+			importKey,
+			originDeviceId: "dev-remote",
+			scopeId: DEFAULT_SYNC_SCOPE_ID,
+		});
+		grantScope("managed-project", ["dev-local"]);
+		const op = makeReplicationOp({
+			entity_id: importKey,
+			op_type: "reassign_scope",
+			payload_json: toJson({
+				operation_id: "share_default",
+				memory_id: importKey,
+				old_scope_id: DEFAULT_SYNC_SCOPE_ID,
+				new_scope_id: "managed-project",
+				revision: 2,
+				side: "old",
+			}),
+			clock_rev: 2,
+			clock_updated_at: "2026-01-01T00:00:01Z",
+			created_at: "2026-01-01T00:00:01Z",
+			scope_id: DEFAULT_SYNC_SCOPE_ID,
+		});
+
+		const result = applyWithScopeValidation(op);
+
+		expect(result.rejections[0]?.reason).toBe("sender_not_member");
+		expect(
+			db.prepare("SELECT active FROM memory_items WHERE import_key = ?").pluck().get(importKey),
+		).toBe(1);
+	});
+
+	it("rejects local-default reassignment for an unknown-origin memory", () => {
+		const importKey = "key:unknown-origin-default";
+		insertReplicatedMemory({
+			importKey,
+			originDeviceId: null,
+			scopeId: DEFAULT_SYNC_SCOPE_ID,
+		});
+		grantScope("managed-project", ["dev-remote"]);
+		const op = makeReplicationOp({
+			entity_id: importKey,
+			op_type: "reassign_scope",
+			payload_json: toJson({
+				operation_id: "share_default",
+				memory_id: importKey,
+				old_scope_id: DEFAULT_SYNC_SCOPE_ID,
+				new_scope_id: "managed-project",
+				revision: 2,
+				side: "old",
+			}),
+			clock_rev: 2,
+			clock_updated_at: "2026-01-01T00:00:01Z",
+			created_at: "2026-01-01T00:00:01Z",
+			scope_id: DEFAULT_SYNC_SCOPE_ID,
+		});
+
+		const result = applyWithScopeValidation(op);
+
+		expect(result.rejections[0]?.reason).toBe("sender_not_member");
+		expect(
+			db.prepare("SELECT active FROM memory_items WHERE import_key = ?").pluck().get(importKey),
+		).toBe(1);
+	});
+
+	it("rejects local-default reassignment for a receiver-owned memory", () => {
+		const importKey = "key:receiver-owned-default";
+		insertReplicatedMemory({
+			importKey,
+			originDeviceId: "dev-local",
+			scopeId: DEFAULT_SYNC_SCOPE_ID,
+		});
+		grantScope("managed-project", ["dev-remote", "dev-local"]);
+		const op = makeReplicationOp({
+			entity_id: importKey,
+			op_type: "reassign_scope",
+			payload_json: toJson({
+				operation_id: "share_default",
+				memory_id: importKey,
+				old_scope_id: DEFAULT_SYNC_SCOPE_ID,
+				new_scope_id: "managed-project",
+				revision: 2,
+				side: "old",
+			}),
+			clock_rev: 2,
+			clock_updated_at: "2026-01-01T00:00:01Z",
+			created_at: "2026-01-01T00:00:01Z",
+			scope_id: DEFAULT_SYNC_SCOPE_ID,
+		});
+
+		const result = applyWithScopeValidation(op);
+
+		expect(result.rejections[0]?.reason).toBe("sender_not_member");
+		expect(
+			db.prepare("SELECT active FROM memory_items WHERE import_key = ?").pluck().get(importKey),
+		).toBe(1);
+	});
+
 	it.each([
 		{
 			name: "missing op-row scope_id",

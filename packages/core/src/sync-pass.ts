@@ -20,10 +20,14 @@ import {
 } from "./sync-bootstrap.js";
 import {
 	LOCAL_SYNC_CAPABILITY,
+	LOCAL_SYNC_FEATURES,
 	negotiateSyncCapability,
 	normalizeSyncCapability,
+	SYNC_AUTHORIZATION_REFRESH_HEADER,
 	SYNC_CAPABILITY_HEADER,
+	SYNC_FEATURES_HEADER,
 	type SyncCapability,
+	supportsSyncFeature,
 } from "./sync-capability.js";
 import { recordPeerSuccess } from "./sync-discovery.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
@@ -145,6 +149,7 @@ export interface SyncScopeResult {
 export interface SyncPassOptions {
 	limit?: number;
 	keysDir?: string;
+	refreshAuthorization?: boolean;
 	/**
 	 * Secret scanner used to redact peer-shipped content on apply. Callers that
 	 * own a `MemoryStore` should pass `store.scanner` so workspace-level rule
@@ -271,7 +276,10 @@ function capabilityHeader(): Record<string, string> {
 	// Diagnostic advertisement only. This unsigned GET header can opt an
 	// authenticated paired peer into scoped metadata enumeration, but never into
 	// scoped data access; receivers must still authorize every scoped request.
-	return { [SYNC_CAPABILITY_HEADER]: LOCAL_SYNC_CAPABILITY };
+	return {
+		[SYNC_CAPABILITY_HEADER]: LOCAL_SYNC_CAPABILITY,
+		[SYNC_FEATURES_HEADER]: LOCAL_SYNC_FEATURES.join(","),
+	};
 }
 
 function defaultCapabilityDiagnostics(): SyncCapabilityDiagnostics {
@@ -381,7 +389,11 @@ async function pushOps(
 ): Promise<void> {
 	if (ops.length === 0) return;
 
-	const body = { ops, sync_capability: LOCAL_SYNC_CAPABILITY };
+	const body = {
+		ops,
+		sync_capability: LOCAL_SYNC_CAPABILITY,
+		sync_features: LOCAL_SYNC_FEATURES,
+	};
 	const bodyBytes = Buffer.from(JSON.stringify(body), "utf-8");
 	const headers = {
 		...buildAuthHeaders({
@@ -1171,6 +1183,7 @@ export async function syncOnce(
 					bootstrapGrantId: pendingBootstrapGrantId,
 				}),
 				...capabilityHeader(),
+				...(options?.refreshAuthorization ? { [SYNC_AUTHORIZATION_REFRESH_HEADER]: "1" } : {}),
 			};
 			const [statusCode, statusPayload] = await requestJson("GET", statusUrl, {
 				headers: statusHeaders,
@@ -1556,6 +1569,7 @@ export async function syncOnce(
 			const [outboundOps, filteredOutboundCursor, skippedOutbound] =
 				filterReplicationOpsForSyncWithStatus(db, outboundWindow, peerDeviceId, {
 					localDeviceId: deviceId,
+					supportsReassignScope: supportsSyncFeature(statusPayload.sync_features, "reassign_scope"),
 				});
 			const opsSkipped = skippedOutbound?.skipped_count ?? 0;
 			const postUrl = `${baseUrl}/v1/ops`;
