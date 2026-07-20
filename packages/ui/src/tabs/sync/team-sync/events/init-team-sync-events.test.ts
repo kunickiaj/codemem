@@ -22,8 +22,11 @@ vi.mock("../helpers/invite-panel-dom", () => ({
 	setInviteOutputVisibility: vi.fn(),
 	setJoinFeedbackVisibility: vi.fn(),
 }));
+vi.mock("../../../project-sharing", () => ({ openProjectShareFlow: vi.fn() }));
 
 import * as api from "../../../../lib/api";
+import { showGlobalNotice } from "../../../../lib/notice";
+import { openProjectShareFlow } from "../../../project-sharing";
 import { initTeamSyncEvents } from "./init-team-sync-events";
 
 describe("project invite review events", () => {
@@ -34,8 +37,9 @@ describe("project invite review events", () => {
 				<h4 id="syncProjectInviteReviewHeading" tabindex="-1">Review project invitation</h4>
 				<div id="syncProjectInviteContext"></div>
 				<input id="syncRecipientName" />
-				<input id="syncRecipientDeviceName" />
+			<input id="syncRecipientDeviceName" />
 			</div>
+			<button id="syncShareProjectsButton">Share projects</button>
 			<button id="syncJoinButton">Review invite</button>
 		`;
 		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
@@ -48,6 +52,34 @@ describe("project invite review events", () => {
 			team_name: "Team",
 		});
 		vi.mocked(api.importCoordinatorInvite).mockResolvedValue({ status: "joined" });
+	});
+
+	it("opens the shared project flow from Sync", () => {
+		vi.mocked(openProjectShareFlow).mockReturnValueOnce(true);
+		initTeamSyncEvents(
+			() => {},
+			async () => {},
+		);
+
+		(document.getElementById("syncShareProjectsButton") as HTMLButtonElement).click();
+
+		expect(openProjectShareFlow).toHaveBeenCalledOnce();
+		expect(openProjectShareFlow).toHaveBeenCalledWith();
+	});
+
+	it("explains when the shared project flow is unavailable", () => {
+		vi.mocked(openProjectShareFlow).mockReturnValueOnce(false);
+		initTeamSyncEvents(
+			() => {},
+			async () => {},
+		);
+
+		(document.getElementById("syncShareProjectsButton") as HTMLButtonElement).click();
+
+		expect(showGlobalNotice).toHaveBeenCalledWith(
+			"Project sharing is unavailable. Refresh Projects and try again.",
+			"warning",
+		);
 	});
 
 	afterEach(() => {

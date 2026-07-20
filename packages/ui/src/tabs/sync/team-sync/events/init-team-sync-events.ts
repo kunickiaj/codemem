@@ -9,6 +9,7 @@ import { clearFieldError, friendlyError, markFieldError } from "../../../../lib/
 import { handlePrimaryActionKeyboard } from "../../../../lib/keyboard";
 import { showGlobalNotice } from "../../../../lib/notice";
 import { state } from "../../../../lib/state";
+import { openProjectShareFlow } from "../../../project-sharing";
 import type { SyncActionFeedback } from "../../components/sync-inline-feedback";
 import { summarizeSyncRunResult } from "../../view-model";
 import { teamSyncState } from "../data/state";
@@ -24,6 +25,9 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 	renderInvitePolicySelect();
 
 	const syncNowButton = document.getElementById("syncNowButton") as HTMLButtonElement | null;
+	const syncShareProjectsButton = document.getElementById(
+		"syncShareProjectsButton",
+	) as HTMLButtonElement | null;
 	const syncCreateInviteButton = document.getElementById(
 		"syncCreateInviteButton",
 	) as HTMLButtonElement | null;
@@ -49,6 +53,15 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 	) as HTMLInputElement | null;
 	let inspectedInviteValue = "";
 	let inviteInputRevision = 0;
+
+	syncShareProjectsButton?.addEventListener("click", () => {
+		if (!openProjectShareFlow()) {
+			showGlobalNotice(
+				"Project sharing is unavailable. Refresh Projects and try again.",
+				"warning",
+			);
+		}
+	});
 
 	const reviewProjectInvite = async (
 		inviteValue: string,

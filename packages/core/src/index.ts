@@ -657,6 +657,18 @@ export {
 	shareProjectSetDigest,
 } from "./share-operation.js";
 export type {
+	ShareOperationLifecycle,
+	ShareOperationLifecycleInput,
+	ShareOperationLifecycleProjection,
+	ShareOperationLifecycleStepInput,
+	ShareOperationPrimaryAction,
+} from "./share-operation-lifecycle.js";
+export {
+	projectShareLifecycle,
+	SHARE_OPERATION_MAX_ATTEMPTS,
+	SHARE_OPERATION_STALE_AFTER_MS,
+} from "./share-operation-lifecycle.js";
+export type {
 	ManagedProjectPlan,
 	ReassignScopeCapability,
 	ShareProvisioningDependencies,
@@ -707,8 +719,15 @@ export {
 	SYNC_FEATURES_HEADER,
 	supportsSyncFeature,
 } from "./sync-capability.js";
-export type { SyncDaemonOptions, SyncDaemonPhase, SyncTickResult } from "./sync-daemon.js";
+export type {
+	SyncDaemonOptions,
+	SyncDaemonPhase,
+	SyncDaemonTickCallback,
+	SyncDaemonTickContext,
+	SyncTickResult,
+} from "./sync-daemon.js";
 export {
+	createSerializedDaemonTickRunner,
 	getSyncDaemonPhase,
 	runSyncDaemon,
 	setSyncDaemonError,

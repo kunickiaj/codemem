@@ -3761,6 +3761,7 @@
             <span class="sync-online-badge" id="syncOnlineBadge" hidden role="status" aria-live="polite"></span>
           </div>
           <div class="section-actions">
+            <button class="settings-button" id="syncShareProjectsButton" type="button">Share projects</button>
             <button class="settings-button" id="syncNowButton">Sync now</button>
             <a class="sync-subview-link" href="#sync/diagnostics">View diagnostics &rarr;</a>
           </div>
@@ -3806,6 +3807,13 @@
       <div class="card" style="animation-delay: 0.04s">
         <h2>People &amp; devices</h2>
 
+        <h3 class="settings-group-title">Project sharing</h3>
+        <div class="section-meta" id="syncProjectShareOperationsMeta">Loading project sharing status…</div>
+        <div class="actor-list" id="syncProjectShareOperations" aria-live="polite"></div>
+
+        <details class="project-inventory-details" style="margin-top: 20px">
+          <summary>Manual device and identity controls</summary>
+
         <h3 class="settings-group-title">People</h3>
         <div class="section-meta" id="syncActorsMeta">Create and rename people here. Assign each device below.</div>
         <div class="actor-create-row">
@@ -3835,6 +3843,7 @@
           <div id="syncPairingDisclosureMount" style="display: contents"></div>
         </div>
         <div id="syncPairingPanelMount" style="display: contents"></div>
+        </details>
 
         <div id="syncSharingReview" hidden>
           <h3 class="settings-group-title" style="margin-top: 20px">What teammates will receive</h3>

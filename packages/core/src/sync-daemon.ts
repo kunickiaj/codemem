@@ -47,7 +47,21 @@ export interface SyncDaemonOptions {
 	 * stay in lockstep with local writes.
 	 */
 	scanner?: SecretScanner;
+	/**
+	 * Optional maintenance work serialized with each daemon tick. It runs after
+	 * coordinator presence and membership refresh have been attempted and before
+	 * peer synchronization starts. Failures are recorded but do not stop peer sync.
+	 */
+	onAfterCoordinatorRefresh?: SyncDaemonTickCallback;
 }
+
+export interface SyncDaemonTickContext {
+	db: Database;
+	dbPath: string;
+	keysDir?: string;
+}
+
+export type SyncDaemonTickCallback = (context: SyncDaemonTickContext) => Promise<void> | void;
 
 export interface SyncTickResult {
 	ok: boolean;
@@ -249,6 +263,7 @@ export async function runSyncDaemon(options?: SyncDaemonOptions): Promise<void> 
 	const signal = options?.signal;
 	const onPhaseChange = options?.onPhaseChange;
 	const scanner = options?.scanner;
+	const onAfterCoordinatorRefresh = options?.onAfterCoordinatorRefresh;
 	onPhaseChange?.("starting");
 
 	// Ensure device identity
@@ -275,19 +290,10 @@ export async function runSyncDaemon(options?: SyncDaemonOptions): Promise<void> 
 	// Importantly, the first tick is scheduled asynchronously so startup callers
 	// are not blocked by large sync preflight work on the main request path.
 	return new Promise<void>((resolve) => {
-		let tickRunning = false;
-		let firstTickCompleted = false;
-		const runTick = () => {
-			if (tickRunning) return; // Skip if previous tick still running
-			tickRunning = true;
-			runTickOnce(dbPath, keysDir, scanner).finally(() => {
-				tickRunning = false;
-				if (!firstTickCompleted) {
-					firstTickCompleted = true;
-					onPhaseChange?.("running");
-				}
-			});
-		};
+		const runTick = createSerializedDaemonTickRunner(
+			() => runTickOnce(dbPath, keysDir, scanner, onAfterCoordinatorRefresh),
+			() => onPhaseChange?.("running"),
+		);
 
 		const timer = setInterval(runTick, intervalS * 1000);
 		setTimeout(runTick, 0).unref?.();
@@ -309,6 +315,26 @@ export async function runSyncDaemon(options?: SyncDaemonOptions): Promise<void> 
 	});
 }
 
+export function createSerializedDaemonTickRunner(
+	runTick: () => Promise<void>,
+	onFirstCompleted?: () => void,
+): () => boolean {
+	let tickRunning = false;
+	let firstTickCompleted = false;
+	return () => {
+		if (tickRunning) return false;
+		tickRunning = true;
+		void runTick().finally(() => {
+			tickRunning = false;
+			if (!firstTickCompleted) {
+				firstTickCompleted = true;
+				onFirstCompleted?.();
+			}
+		});
+		return true;
+	};
+}
+
 /**
  * Run a single tick, opening and closing a DB connection.
  *
@@ -318,6 +344,7 @@ export async function runTickOnce(
 	dbPath: string,
 	keysDir?: string,
 	scanner?: SecretScanner,
+	onAfterCoordinatorRefresh?: SyncDaemonTickCallback,
 ): Promise<void> {
 	const resolvedKeysDir = resolveSyncDaemonKeysDir(keysDir);
 	const db = connectDb(dbPath);
@@ -329,6 +356,15 @@ export async function runTickOnce(
 			// Coordinator discovery is a supplemental surface. Keep direct peer sync running
 			// even when heartbeat posting fails for this tick.
 		}
+		let callbackFailed = false;
+		try {
+			await onAfterCoordinatorRefresh?.({ db, dbPath, keysDir: resolvedKeysDir });
+		} catch (error) {
+			callbackFailed = true;
+			const message = error instanceof Error ? error.message : String(error);
+			const stack = error instanceof Error ? (error.stack ?? "") : "";
+			setSyncDaemonError(db, `daemon tick callback failed: ${message}`, stack);
+		}
 		// Best-effort: skip peers the coordinator reports as offline.
 		// Returns empty set when coordinator is disabled or lookup fails.
 		const stalePeers = await fetchCoordinatorStalePeers(db, dbPath, resolvedKeysDir);
@@ -336,7 +372,7 @@ export async function runTickOnce(
 		const needsAttention = results.some((r) => !r.ok && r.error?.includes("needs_attention"));
 		if (needsAttention) {
 			setSyncDaemonPhase(db, "needs_attention");
-		} else {
+		} else if (!callbackFailed) {
 			// Clear any prior needs_attention phase — all peers are healthy.
 			setSyncDaemonOk(db);
 		}

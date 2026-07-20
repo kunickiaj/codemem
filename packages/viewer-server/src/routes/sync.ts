@@ -16,6 +16,7 @@ import type {
 	ReassignScopeCapability,
 	ReplicationOp,
 	SemanticIndexDiagnostics,
+	ShareOperationLifecycleStepInput,
 	ShareOperationPlan,
 	SharePersonIntent,
 	ShareProjectIntent,
@@ -102,6 +103,7 @@ import {
 	persistShareOperation,
 	personalScopeGrantStatusForPeer,
 	planShareOperation,
+	projectShareLifecycle,
 	readCodememConfigFile,
 	readCoordinatorSyncConfig,
 	reassignProjectScopeInventoryProject,
@@ -775,6 +777,564 @@ function projectInvitePreview(plan: ShareOperationPlan) {
 		history_policy: plan.historyPolicy,
 		reviewed_project_set_digest: plan.reviewedProjectSetDigest,
 	};
+}
+
+type CoordinatorProjectInvitePayload = Record<string, unknown> & {
+	operation_id?: string;
+	group_id?: string;
+	state?: string;
+};
+
+async function coordinatorProjectInvitePayload(operationId: string): Promise<{
+	groupId: string;
+	config: ReturnType<typeof readCoordinatorSyncConfig>;
+	payload: CoordinatorProjectInvitePayload;
+}> {
+	const { groupId, config } = projectInviteStatus();
+	const [status, payload] = await requestJson(
+		"GET",
+		`${buildBaseUrl(config.syncCoordinatorUrl)}/v1/admin/project-invites/${encodeURIComponent(operationId)}?group_id=${encodeURIComponent(groupId)}`,
+		{
+			headers: { "X-Codemem-Coordinator-Admin": config.syncCoordinatorAdminSecret },
+			timeoutS: 10,
+		},
+	);
+	if (status < 200 || status >= 300) {
+		const error = new Error(String(payload?.error ?? "operation_read_failed"));
+		Object.assign(error, { status });
+		throw error;
+	}
+	if (!payload || payload.operation_id !== operationId || payload.group_id !== groupId) {
+		const error = new Error("operation_scope_mismatch");
+		Object.assign(error, { status: 409 });
+		throw error;
+	}
+	return { groupId, config, payload: payload as CoordinatorProjectInvitePayload };
+}
+
+async function reconcileProjectInviteAcceptance(
+	store: MemoryStore,
+	operationId: string,
+): Promise<{ accepted: boolean; payload: CoordinatorProjectInvitePayload }> {
+	const owner = store.db
+		.prepare("SELECT inviter_actor_id FROM share_operations WHERE operation_id = ?")
+		.pluck()
+		.get(operationId) as string | undefined;
+	if (!owner) throw new Error("operation_not_found");
+	if (owner !== store.actorId) throw new Error("operation_scope_mismatch");
+	const { groupId, payload } = await coordinatorProjectInvitePayload(operationId);
+	if (payload.state === "waiting_for_acceptance") return { accepted: false, payload };
+	if (payload.state !== "accepted") {
+		const error = new Error("operation_state_invalid");
+		Object.assign(error, { status: 409 });
+		throw error;
+	}
+	const required = [
+		"reviewed_project_set_digest",
+		"recipient_actor_id",
+		"recipient_display_name",
+		"recipient_device_id",
+		"recipient_device_display_name",
+		"recipient_public_key",
+		"recipient_fingerprint",
+		"consumed_at",
+		"trust_state",
+	] as const;
+	if (required.some((key) => typeof payload[key] !== "string" || !String(payload[key]).trim())) {
+		const error = new Error("operation_acceptance_invalid");
+		Object.assign(error, { status: 409 });
+		throw error;
+	}
+	const trustState = String(payload.trust_state);
+	const bootstrapGrantId =
+		typeof payload.bootstrap_grant_id === "string" && payload.bootstrap_grant_id.trim()
+			? payload.bootstrap_grant_id
+			: null;
+	if (
+		(trustState !== "pending_inviter_device" && trustState !== "bootstrap_grant_created") ||
+		(trustState === "bootstrap_grant_created") !== Boolean(bootstrapGrantId)
+	) {
+		const error = new Error("operation_trust_state_invalid");
+		Object.assign(error, { status: 409 });
+		throw error;
+	}
+	const projects = parseAcceptedProjectIntent(payload.projects);
+	reconcileShareOperationAcceptance(store.db, {
+		operationId,
+		coordinatorGroupId: groupId,
+		reviewedProjectSetDigest: String(payload.reviewed_project_set_digest),
+		recipientActorId: String(payload.recipient_actor_id),
+		recipientDisplayName: String(payload.recipient_display_name),
+		recipientDeviceId: String(payload.recipient_device_id),
+		recipientDeviceDisplayName: String(payload.recipient_device_display_name),
+		recipientPublicKey: String(payload.recipient_public_key),
+		recipientFingerprint: String(payload.recipient_fingerprint),
+		consumedAt: String(payload.consumed_at),
+		trustState,
+		bootstrapGrantId,
+		projects,
+	});
+	return { accepted: true, payload };
+}
+
+interface ShareOperationReadRow {
+	operation_id: string;
+	state: string;
+	person_id: string;
+	teammate_name: string;
+	recipient_actor_id: string | null;
+	recipient_display_name: string | null;
+	recipient_device_id: string | null;
+	recipient_device_display_name: string | null;
+	invite_expires_at: string;
+	acceptance_consumed_at: string | null;
+	created_at: string;
+	updated_at: string;
+	actor_display_name: string | null;
+	peer_display_name: string | null;
+	device_last_seen_at: string | null;
+}
+
+async function shareOperationReadModels(
+	store: MemoryStore,
+	operationId?: string,
+	includeInviteLinks = true,
+) {
+	const rows = store.db
+		.prepare(`SELECT o.operation_id, o.state, o.person_id, o.teammate_name,
+			o.recipient_actor_id, o.recipient_display_name, o.recipient_device_id,
+			o.recipient_device_display_name, o.invite_expires_at, o.acceptance_consumed_at,
+			o.created_at, o.updated_at, a.display_name AS actor_display_name,
+			p.name AS peer_display_name, p.last_sync_at AS device_last_seen_at
+		 FROM share_operations o
+		 LEFT JOIN actors a ON a.actor_id = o.person_id
+		 LEFT JOIN sync_peers p ON p.peer_device_id = o.recipient_device_id
+		 WHERE o.inviter_actor_id = ? AND (? IS NULL OR o.operation_id = ?)
+		 ORDER BY o.created_at DESC, o.operation_id`)
+		.all(store.actorId, operationId ?? null, operationId ?? null) as ShareOperationReadRow[];
+	const now = new Date().toISOString();
+	return Promise.all(
+		rows.map(async (row) => {
+			const projects = store.db
+				.prepare(`SELECT canonical_project_identity AS project_id, display_name, existing_memory_count
+				 FROM share_operation_projects WHERE operation_id = ? ORDER BY ordinal`)
+				.all(row.operation_id) as Array<{
+				project_id: string;
+				display_name: string;
+				existing_memory_count: number;
+			}>;
+			const steps = (
+				store.db
+					.prepare(`SELECT step_key, status, attempt_count, started_at, last_attempt_at,
+						safe_error_code, updated_at FROM share_operation_steps WHERE operation_id = ?`)
+					.all(row.operation_id) as Array<{
+					step_key: string;
+					status: ShareOperationLifecycleStepInput["status"];
+					attempt_count: number;
+					started_at: string | null;
+					last_attempt_at: string | null;
+					safe_error_code: string | null;
+					updated_at: string;
+				}>
+			).map(
+				(step): ShareOperationLifecycleStepInput => ({
+					attemptCount: step.attempt_count,
+					lastAttemptAt: step.last_attempt_at,
+					safeErrorCode: step.safe_error_code,
+					startedAt: step.started_at,
+					status: step.status,
+					stepKey: step.step_key,
+					updatedAt: step.updated_at,
+				}),
+			);
+			let inviteLink: string | null = null;
+			let projectedState = row.state;
+			if (includeInviteLinks && row.state === "waiting_for_acceptance") {
+				try {
+					const remote = await coordinatorProjectInvitePayload(row.operation_id);
+					if (remote.payload.state === "accepted") projectedState = "accepted";
+					inviteLink =
+						typeof remote.payload.invite_link === "string" && remote.payload.invite_link.trim()
+							? remote.payload.invite_link
+							: null;
+				} catch {
+					// A read-model refresh remains useful when the coordinator is temporarily unavailable.
+				}
+			}
+			const personId = row.recipient_actor_id || row.person_id;
+			const personName = row.recipient_display_name || row.actor_display_name || row.teammate_name;
+			const deviceName = row.recipient_device_display_name || row.peer_display_name;
+			const lifecycle = projectShareLifecycle({
+				deviceLastSeenAt: row.device_last_seen_at,
+				deviceName,
+				inviteLink,
+				now,
+				personName,
+				state: projectedState,
+				steps,
+			});
+			return {
+				operation_id: row.operation_id,
+				person: { actor_id: personId, display_name: personName },
+				devices:
+					row.recipient_device_id && deviceName
+						? [
+								{
+									device_id: row.recipient_device_id,
+									display_name: deviceName,
+									last_seen_at: row.device_last_seen_at,
+								},
+							]
+						: [],
+				projects,
+				project_count: projects.length,
+				lifecycle: {
+					state: lifecycle.lifecycle,
+					label: lifecycle.label,
+					explanation: lifecycle.explanation,
+					primary_action:
+						lifecycle.primaryAction?.kind === "copy_invite"
+							? {
+									kind: "copy_invite",
+									label: lifecycle.primaryAction.label,
+									invite_link: lifecycle.primaryAction.inviteLink,
+								}
+							: !includeInviteLinks && lifecycle.lifecycle === "waiting_for_acceptance"
+								? { kind: "copy_invite", label: "Copy invite" }
+								: lifecycle.primaryAction,
+				},
+				timestamps: {
+					created_at: row.created_at,
+					updated_at: row.updated_at,
+					accepted_at: row.acceptance_consumed_at,
+					invite_expires_at: row.invite_expires_at,
+				},
+			};
+		}),
+	);
+}
+
+async function executeProjectShareProvisioning(store: MemoryStore, operationId: string) {
+	const { groupId, config } = projectInviteStatus();
+	const coordinatorId = config.syncCoordinatorUrl || null;
+	if (!coordinatorId) throw new Error("coordinator_not_configured");
+	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+	return executeShareProvisioning(
+		store.db,
+		{ operationId, initiatingDeviceId: localDeviceId },
+		{
+			createOrGetBoundary: async (project, expectedGroupId) => {
+				if (expectedGroupId !== groupId) throw new Error("operation_scope_mismatch");
+				const readExisting = async () =>
+					(
+						await coordinatorListScopesAction({
+							groupId,
+							includeInactive: true,
+							remoteUrl: config.syncCoordinatorUrl || null,
+							adminSecret: config.syncCoordinatorAdminSecret || null,
+						})
+					).find((scope) => scope.scope_id === project.boundaryId) ?? null;
+				const existing = await readExisting();
+				if (existing) return existing;
+				try {
+					return await coordinatorCreateScopeAction({
+						groupId,
+						scopeId: project.boundaryId,
+						label: project.displayName,
+						kind: "managed_project",
+						authorityType: "coordinator",
+						coordinatorId,
+						membershipEpoch: 1,
+						status: "active",
+						remoteUrl: config.syncCoordinatorUrl || null,
+						adminSecret: config.syncCoordinatorAdminSecret || null,
+					});
+				} catch (error) {
+					const reread = await readExisting();
+					if (reread) return reread;
+					throw error;
+				}
+			},
+			grantMembership: ({ groupId: expectedGroupId, scopeId, deviceId, role }) => {
+				if (expectedGroupId !== groupId) throw new Error("operation_scope_mismatch");
+				return coordinatorGrantScopeMembershipAction({
+					groupId,
+					scopeId,
+					deviceId,
+					role,
+					membershipEpoch: 1,
+					coordinatorId,
+					remoteUrl: config.syncCoordinatorUrl || null,
+					adminSecret: config.syncCoordinatorAdminSecret || null,
+				});
+			},
+			supportsReassignScope: (deviceId) => peerSupportsReassignScope(store, deviceId),
+			refreshAuthorization: async (expectedGroupId) => {
+				if (expectedGroupId !== groupId) throw new Error("operation_scope_mismatch");
+				const refreshed = await refreshConfiguredScopeMembershipCache(store.db, config, {
+					keysDir: syncKeysDir(),
+				});
+				const group = refreshed.groups.find((item) => item.groupId === groupId);
+				if (group?.status !== "refreshed") throw new Error("authorization_refresh_failed");
+			},
+			runInitialSync: (recipientDeviceId) =>
+				runSyncPass(store.db, recipientDeviceId, {
+					keysDir: syncKeysDir(),
+					scanner: store.scanner,
+					refreshAuthorization: true,
+				}),
+		},
+	);
+}
+
+export interface AdvanceProjectShareOperationResult {
+	advanced: boolean;
+	state: "active" | "waiting_for_acceptance";
+}
+
+export async function advanceProjectShareOperation(
+	store: MemoryStore,
+	operationId: string,
+): Promise<AdvanceProjectShareOperationResult> {
+	const operation = store.db
+		.prepare(
+			"SELECT state, inviter_actor_id, recipient_device_id FROM share_operations WHERE operation_id = ?",
+		)
+		.get(operationId) as
+		| { state: string; inviter_actor_id: string; recipient_device_id: string | null }
+		| undefined;
+	if (!operation) throw new Error("operation_not_found");
+	if (operation.inviter_actor_id !== store.actorId) throw new Error("operation_scope_mismatch");
+	if (!operation.recipient_device_id) {
+		const reconciliation = await reconcileProjectInviteAcceptance(store, operationId);
+		if (!reconciliation.accepted) {
+			return { advanced: false, state: "waiting_for_acceptance" };
+		}
+	}
+	await executeProjectShareProvisioning(store, operationId);
+	return { advanced: true, state: "active" };
+}
+
+export interface AdvancePendingProjectSharesResult {
+	processed: number;
+	advanced: number;
+	waiting: number;
+	attention: number;
+	failed: number;
+	items: Array<{
+		operationId: string;
+		outcome:
+			| "advanced"
+			| "waiting_for_acceptance"
+			| "waiting_for_device"
+			| "retry_scheduled"
+			| "needs_attention"
+			| "failed";
+		error?: string;
+	}>;
+}
+
+const AUTOMATIC_SHARE_OPERATION_STATES = [
+	"waiting_for_acceptance",
+	"accepted",
+	"provisioning",
+	"initial_sync",
+	"waiting_for_device",
+] as const;
+
+const AUTOMATIC_WAITING_ACCEPTANCE_RETRY_COOLDOWN_MS = 30 * 1000;
+const AUTOMATIC_WAITING_DEVICE_RETRY_COOLDOWN_MS = 5 * 60 * 1000;
+const TERMINAL_SHARE_MAINTENANCE_ERRORS = new Set([
+	"coordinator_not_configured",
+	"team_sharing_not_configured",
+	"team_selection_ambiguous",
+	"initiating_device_not_reviewed",
+	"inviter_project_access_ambiguous",
+	"managed_boundary_plan_missing",
+	"operation_device_binding_missing",
+	"operation_intent_invalid",
+	"provisioning_membership_plan_invalid",
+]);
+const TERMINAL_RECONCILIATION_ERRORS = new Set([
+	"coordinator_not_configured",
+	"team_sharing_not_configured",
+	"team_selection_ambiguous",
+	"operation_not_found",
+	"operation_scope_mismatch",
+	"operation_state_invalid",
+	"operation_acceptance_invalid",
+	"operation_trust_state_invalid",
+	"operation_intent_invalid",
+	"operation_intent_mismatch",
+	"recipient_fingerprint_mismatch",
+	"recipient_device_identity_conflict",
+	"recipient_actor_conflict",
+	"pending_person_identity_conflict",
+]);
+
+function errorStatus(error: unknown): number | null {
+	const value = error && typeof error === "object" ? (error as { status?: unknown }).status : null;
+	return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function isRetryableReconciliationError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	if (TERMINAL_RECONCILIATION_ERRORS.has(message)) return false;
+	const status = errorStatus(error);
+	return status == null || status === 408 || status === 429 || status >= 500;
+}
+
+function safeReconciliationErrorCode(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	return TERMINAL_RECONCILIATION_ERRORS.has(message) ? message : "operation_read_failed";
+}
+
+function recordInviteReconciliationFailure(
+	store: MemoryStore,
+	operationId: string,
+	error: unknown,
+	now: string,
+): "retry_scheduled" | "needs_attention" {
+	const safeErrorCode = safeReconciliationErrorCode(error);
+	const retryable = isRetryableReconciliationError(error);
+	store.db
+		.prepare(`UPDATE share_operation_steps SET
+			status = CASE WHEN ? = 1 THEN 'pending' ELSE 'failed' END,
+			attempt_count = attempt_count + 1, last_attempt_at = ?, safe_error_code = ?, updated_at = ?
+			WHERE operation_id = ? AND step_key = 'invite_consumption'`)
+		.run(retryable ? 1 : 0, now, safeErrorCode, now, operationId);
+	const outcome = retryable ? "retry_scheduled" : "needs_attention";
+	store.db
+		.prepare("UPDATE share_operations SET state = ?, updated_at = ? WHERE operation_id = ?")
+		.run(
+			outcome === "needs_attention" ? "needs_attention" : "waiting_for_acceptance",
+			now,
+			operationId,
+		);
+	return outcome;
+}
+
+export async function advancePendingProjectShares(
+	store: MemoryStore,
+	options: {
+		limit?: number;
+		now?: Date;
+		advanceOperation?: (
+			store: MemoryStore,
+			operationId: string,
+		) => Promise<AdvanceProjectShareOperationResult>;
+	} = {},
+): Promise<AdvancePendingProjectSharesResult> {
+	const limit = Math.max(1, Math.min(Math.trunc(options.limit ?? 3), 10));
+	const placeholders = AUTOMATIC_SHARE_OPERATION_STATES.map(() => "?").join(", ");
+	const maintenanceNow = options.now ?? new Date();
+	const waitingAcceptanceRetryBefore = new Date(
+		maintenanceNow.getTime() - AUTOMATIC_WAITING_ACCEPTANCE_RETRY_COOLDOWN_MS,
+	).toISOString();
+	const waitingRetryBefore = new Date(
+		maintenanceNow.getTime() - AUTOMATIC_WAITING_DEVICE_RETRY_COOLDOWN_MS,
+	).toISOString();
+	const rows = store.db
+		.prepare(`SELECT operation_id FROM share_operations
+		 WHERE inviter_actor_id = ?
+		 AND state IN (${placeholders})
+		 AND (state <> 'waiting_for_acceptance' OR updated_at <= ?)
+		 AND (state <> 'waiting_for_device' OR updated_at <= ?)
+		 ORDER BY CASE WHEN state IN ('accepted', 'provisioning', 'initial_sync') THEN 0 ELSE 1 END,
+			CASE WHEN state IN ('waiting_for_acceptance', 'waiting_for_device')
+				THEN updated_at ELSE created_at END ASC,
+			created_at ASC, operation_id ASC
+		 LIMIT ?`)
+		.all(
+			store.actorId,
+			...AUTOMATIC_SHARE_OPERATION_STATES,
+			waitingAcceptanceRetryBefore,
+			waitingRetryBefore,
+			limit,
+		) as Array<{
+		operation_id: string;
+	}>;
+	const advanceOperation = options.advanceOperation ?? advanceProjectShareOperation;
+	const result: AdvancePendingProjectSharesResult = {
+		processed: 0,
+		advanced: 0,
+		waiting: 0,
+		attention: 0,
+		failed: 0,
+		items: [],
+	};
+	for (const row of rows) {
+		result.processed += 1;
+		try {
+			const advanced = await advanceOperation(store, row.operation_id);
+			if (!advanced.advanced) {
+				store.db
+					.prepare("UPDATE share_operations SET updated_at = ? WHERE operation_id = ?")
+					.run(maintenanceNow.toISOString(), row.operation_id);
+				result.waiting += 1;
+				result.items.push({
+					operationId: row.operation_id,
+					outcome: "waiting_for_acceptance",
+				});
+				continue;
+			}
+			result.advanced += 1;
+			result.items.push({ operationId: row.operation_id, outcome: "advanced" });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			const state = store.db
+				.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
+				.pluck()
+				.get(row.operation_id);
+			if (message === "waiting_for_device" || state === "waiting_for_device") {
+				result.waiting += 1;
+				result.items.push({ operationId: row.operation_id, outcome: "waiting_for_device" });
+				continue;
+			}
+			if (state === "needs_attention") {
+				result.attention += 1;
+				result.items.push({
+					operationId: row.operation_id,
+					outcome: "needs_attention",
+					error: message,
+				});
+				continue;
+			}
+			if (state === "waiting_for_acceptance") {
+				const outcome = recordInviteReconciliationFailure(
+					store,
+					row.operation_id,
+					error,
+					maintenanceNow.toISOString(),
+				);
+				if (outcome === "needs_attention") result.attention += 1;
+				else result.waiting += 1;
+				result.items.push({ operationId: row.operation_id, outcome, error: message });
+				continue;
+			}
+			if (TERMINAL_SHARE_MAINTENANCE_ERRORS.has(message)) {
+				store.db
+					.prepare(
+						"UPDATE share_operations SET state = 'needs_attention', updated_at = ? WHERE operation_id = ?",
+					)
+					.run(maintenanceNow.toISOString(), row.operation_id);
+				result.attention += 1;
+				result.items.push({
+					operationId: row.operation_id,
+					outcome: "needs_attention",
+					error: message,
+				});
+				continue;
+			}
+			result.failed += 1;
+			result.items.push({
+				operationId: row.operation_id,
+				outcome: "failed",
+				error: message,
+			});
+		}
+	}
+	return result;
 }
 
 function sortActiveMaintenanceJobs<
@@ -3508,20 +4068,50 @@ export function syncRoutes(
 		});
 	});
 
-	app.get("/api/sync/projects", (c) => {
+	app.get("/api/sync/projects", async (c) => {
 		const store = getStore();
 		const limit = Math.max(1, queryInt(c.req.query("limit"), 50));
 		const offset = Math.max(0, queryInt(c.req.query("offset"), 0));
-		return c.json(
-			listProjectScopeInventory(store.db, {
-				identitySource: c.req.query("identity_source"),
-				limit,
-				offset,
-				query: c.req.query("q"),
-				scopeId: c.req.query("scope_id"),
-				status: c.req.query("status"),
-			}),
+		const inventory = listProjectScopeInventory(store.db, {
+			identitySource: c.req.query("identity_source"),
+			limit,
+			offset,
+			query: c.req.query("q"),
+			scopeId: c.req.query("scope_id"),
+			status: c.req.query("status"),
+		});
+		const operations = await shareOperationReadModels(store, undefined, false);
+		const operationById = new Map(
+			operations.map((operation) => [operation.operation_id, operation]),
 		);
+		const sharingByProject = new Map<string, Array<Record<string, unknown>>>();
+		const reviewed = store.db
+			.prepare(`SELECT p.operation_id, p.canonical_project_identity
+			 FROM share_operation_projects p
+			 JOIN share_operations o ON o.operation_id = p.operation_id
+			 WHERE o.inviter_actor_id = ? ORDER BY o.created_at, p.ordinal`)
+			.all(store.actorId) as Array<{ operation_id: string; canonical_project_identity: string }>;
+		for (const item of reviewed) {
+			const operation = operationById.get(item.operation_id);
+			if (!operation) continue;
+			const current = sharingByProject.get(item.canonical_project_identity) ?? [];
+			current.push({
+				person: operation.person,
+				lifecycle: {
+					state: operation.lifecycle.state,
+					label: operation.lifecycle.label,
+					explanation: operation.lifecycle.explanation,
+				},
+			});
+			sharingByProject.set(item.canonical_project_identity, current);
+		}
+		return c.json({
+			...inventory,
+			projects: inventory.projects.map((project) => ({
+				...project,
+				sharing: sharingByProject.get(project.workspace_identity) ?? [],
+			})),
+		});
 	});
 
 	app.post("/api/sync/projects/reassign-project", async (c) => {
@@ -3689,87 +4279,82 @@ export function syncRoutes(
 	});
 
 	app.get("/api/sync/project-invites/:operationId", async (c) => {
+		const operationId = String(c.req.param("operationId") ?? "").trim();
+		if (!/^share_[a-f0-9]{40}$/u.test(operationId)) {
+			return c.json({ error: "operation_id_invalid" }, 400);
+		}
+		try {
+			const { payload } = await coordinatorProjectInvitePayload(operationId);
+			return c.json(payload);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "operation_read_failed";
+			return c.json(
+				{ error: message },
+				message === "operation_not_found"
+					? 404
+					: message.includes("mismatch") || message === "operation_intent_invalid"
+						? 409
+						: 400,
+			);
+		}
+	});
+
+	app.post("/api/sync/project-invites/:operationId/reconcile", async (c) => {
 		const store = getStore();
 		const operationId = String(c.req.param("operationId") ?? "").trim();
 		if (!/^share_[a-f0-9]{40}$/u.test(operationId)) {
 			return c.json({ error: "operation_id_invalid" }, 400);
 		}
 		try {
-			const { groupId, config } = projectInviteStatus();
-			const [status, payload] = await requestJson(
-				"GET",
-				`${buildBaseUrl(config.syncCoordinatorUrl)}/v1/admin/project-invites/${encodeURIComponent(operationId)}?group_id=${encodeURIComponent(groupId)}`,
-				{
-					headers: { "X-Codemem-Coordinator-Admin": config.syncCoordinatorAdminSecret },
-					timeoutS: 10,
-				},
-			);
-			if (status < 200 || status >= 300) {
-				return c.json(
-					{ error: String(payload?.error ?? "operation_read_failed") },
-					status === 404 ? 404 : status === 409 ? 409 : 400,
-				);
-			}
-			if (!payload || payload.operation_id !== operationId || payload.group_id !== groupId) {
-				return c.json({ error: "operation_scope_mismatch" }, 409);
-			}
-			if (payload.state === "waiting_for_acceptance") {
-				return c.json(payload);
-			}
-			if (payload.state !== "accepted") {
-				return c.json({ error: "operation_state_invalid" }, 409);
-			}
-			const required = [
-				"reviewed_project_set_digest",
-				"recipient_actor_id",
-				"recipient_display_name",
-				"recipient_device_id",
-				"recipient_device_display_name",
-				"recipient_public_key",
-				"recipient_fingerprint",
-				"consumed_at",
-				"trust_state",
-			] as const;
-			if (
-				required.some((key) => typeof payload[key] !== "string" || !String(payload[key]).trim())
-			) {
-				return c.json({ error: "operation_acceptance_invalid" }, 409);
-			}
-			const trustState = String(payload.trust_state);
-			const bootstrapGrantId =
-				typeof payload.bootstrap_grant_id === "string" && payload.bootstrap_grant_id.trim()
-					? payload.bootstrap_grant_id
-					: null;
-			if (
-				(trustState !== "pending_inviter_device" && trustState !== "bootstrap_grant_created") ||
-				(trustState === "bootstrap_grant_created") !== Boolean(bootstrapGrantId)
-			) {
-				return c.json({ error: "operation_trust_state_invalid" }, 409);
-			}
-			const projects = parseAcceptedProjectIntent(payload.projects);
-			reconcileShareOperationAcceptance(store.db, {
-				operationId,
-				coordinatorGroupId: groupId,
-				reviewedProjectSetDigest: String(payload.reviewed_project_set_digest),
-				recipientActorId: String(payload.recipient_actor_id),
-				recipientDisplayName: String(payload.recipient_display_name),
-				recipientDeviceId: String(payload.recipient_device_id),
-				recipientDeviceDisplayName: String(payload.recipient_device_display_name),
-				recipientPublicKey: String(payload.recipient_public_key),
-				recipientFingerprint: String(payload.recipient_fingerprint),
-				consumedAt: String(payload.consumed_at),
-				trustState,
-				bootstrapGrantId,
-				projects,
+			const result = await reconcileProjectInviteAcceptance(store, operationId);
+			return c.json({
+				ok: true,
+				operation_id: operationId,
+				reconciled: result.accepted,
+				state: result.accepted ? "accepted" : "waiting_for_acceptance",
 			});
-			return c.json({ ...payload, reconciled: true });
 		} catch (error) {
-			return c.json(
-				{ error: error instanceof Error ? error.message : "operation_read_failed" },
-				400,
-			);
+			const message = error instanceof Error ? error.message : "operation_reconcile_failed";
+			return c.json({ error: message }, message === "operation_not_found" ? 404 : 409);
 		}
 	});
+
+	app.get("/api/sync/share-operations", async (c) => {
+		const store = getStore();
+		const items = await shareOperationReadModels(store, undefined, false);
+		return c.json({ items });
+	});
+
+	app.get("/api/sync/share-operations/:operationId", async (c) => {
+		const store = getStore();
+		const operationId = String(c.req.param("operationId") ?? "").trim();
+		if (!/^share_[a-f0-9]{40}$/u.test(operationId)) {
+			return c.json({ error: "operation_id_invalid" }, 400);
+		}
+		const [item] = await shareOperationReadModels(store, operationId);
+		return item ? c.json(item) : c.json({ error: "operation_not_found" }, 404);
+	});
+
+	const advanceProjectShare = async (c: Context) => {
+		const store = getStore();
+		const operationId = String(c.req.param("operationId") ?? "").trim();
+		if (!/^share_[a-f0-9]{40}$/u.test(operationId)) {
+			return c.json({ error: "operation_id_invalid" }, 400);
+		}
+		try {
+			const advanced = await advanceProjectShareOperation(store, operationId);
+			if (!advanced.advanced) {
+				return c.json({ error: "invitation_not_accepted" }, 409);
+			}
+			const [operation] = await shareOperationReadModels(store, operationId);
+			return c.json({ ok: true, operation });
+		} catch (error) {
+			const code = error instanceof Error ? error.message : "provisioning_failed";
+			return c.json({ error: code }, code === "operation_not_found" ? 404 : 409);
+		}
+	};
+
+	app.post("/api/sync/share-operations/:operationId/advance", advanceProjectShare);
 
 	app.post("/api/sync/project-invites/:operationId/provision", async (c) => {
 		const store = getStore();
@@ -3778,76 +4363,7 @@ export function syncRoutes(
 			return c.json({ error: "operation_id_invalid" }, 400);
 		}
 		try {
-			const { groupId, config } = projectInviteStatus();
-			const coordinatorId = config.syncCoordinatorUrl || null;
-			if (!coordinatorId) throw new Error("coordinator_not_configured");
-			const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
-			const plan = await executeShareProvisioning(
-				store.db,
-				{ operationId, initiatingDeviceId: localDeviceId },
-				{
-					createOrGetBoundary: async (project, expectedGroupId) => {
-						if (expectedGroupId !== groupId) throw new Error("operation_scope_mismatch");
-						const readExisting = async () =>
-							(
-								await coordinatorListScopesAction({
-									groupId,
-									includeInactive: true,
-									remoteUrl: config.syncCoordinatorUrl || null,
-									adminSecret: config.syncCoordinatorAdminSecret || null,
-								})
-							).find((scope) => scope.scope_id === project.boundaryId) ?? null;
-						const existing = await readExisting();
-						if (existing) return existing;
-						try {
-							return await coordinatorCreateScopeAction({
-								groupId,
-								scopeId: project.boundaryId,
-								label: project.displayName,
-								kind: "managed_project",
-								authorityType: "coordinator",
-								coordinatorId,
-								membershipEpoch: 1,
-								status: "active",
-								remoteUrl: config.syncCoordinatorUrl || null,
-								adminSecret: config.syncCoordinatorAdminSecret || null,
-							});
-						} catch (error) {
-							const reread = await readExisting();
-							if (reread) return reread;
-							throw error;
-						}
-					},
-					grantMembership: ({ groupId: expectedGroupId, scopeId, deviceId, role }) => {
-						if (expectedGroupId !== groupId) throw new Error("operation_scope_mismatch");
-						return coordinatorGrantScopeMembershipAction({
-							groupId,
-							scopeId,
-							deviceId,
-							role,
-							membershipEpoch: 1,
-							coordinatorId,
-							remoteUrl: config.syncCoordinatorUrl || null,
-							adminSecret: config.syncCoordinatorAdminSecret || null,
-						});
-					},
-					supportsReassignScope: (deviceId) => peerSupportsReassignScope(store, deviceId),
-					refreshAuthorization: async (expectedGroupId) => {
-						if (expectedGroupId !== groupId) throw new Error("operation_scope_mismatch");
-						const refreshed = await refreshConfiguredScopeMembershipCache(store.db, config, {
-							keysDir: syncKeysDir(),
-						});
-						const group = refreshed.groups.find((item) => item.groupId === groupId);
-						if (group?.status !== "refreshed") throw new Error("authorization_refresh_failed");
-					},
-					runInitialSync: (recipientDeviceId) =>
-						runSyncPass(store.db, recipientDeviceId, {
-							keysDir: syncKeysDir(),
-							scanner: store.scanner,
-							refreshAuthorization: true,
-						}),
-				},
-			);
+			const plan = await executeProjectShareProvisioning(store, operationId);
 			return c.json({ ok: true, operation_id: operationId, state: "active", plan });
 		} catch (error) {
 			const code = error instanceof Error ? error.message : "provisioning_failed";

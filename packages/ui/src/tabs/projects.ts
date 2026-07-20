@@ -84,6 +84,30 @@ function projectResolutionLabel(project: ProjectScopeInventoryProject): string {
 		: formatResolution(project.resolution_reason);
 }
 
+function projectSharingRelationshipLabel(
+	summary: NonNullable<ProjectScopeInventoryProject["sharing"]>[number],
+): string {
+	const personName = summary.person.display_name;
+	switch (summary.lifecycle.state) {
+		case "waiting_for_acceptance":
+			return `Invitation sent to ${personName}`;
+		case "active":
+			return `Shared with ${personName}`;
+		case "waiting_for_device":
+			return `Waiting for ${personName}'s device`;
+		case "needs_attention":
+			return `Sharing with ${personName} needs attention`;
+		case "revoking":
+			return `Removing sharing with ${personName}`;
+		case "revoked":
+			return `Previously shared with ${personName}`;
+		case "cancelled":
+			return `Invitation to ${personName} cancelled`;
+		default:
+			return `Setting up sharing with ${personName}`;
+	}
+}
+
 function formatLatest(value: string | null): string {
 	if (!value) return "No recent sessions";
 	const date = new Date(value);
@@ -649,6 +673,26 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 	meta.className = "project-inventory-meta";
 	meta.textContent = `${projectResolutionLabel(project)} · ${project.identity_source} · ${formatLatest(project.latest_session_at)}`;
 	row.appendChild(meta);
+
+	if (project.sharing && project.sharing.length > 0) {
+		const sharing = document.createElement("div");
+		sharing.className = "settings-note project-sharing-summary";
+		const title = document.createElement("strong");
+		title.textContent = "Project sharing";
+		const list = document.createElement("ul");
+		list.setAttribute("aria-label", `People sharing ${project.display_project}`);
+		for (const summary of project.sharing) {
+			const item = document.createElement("li");
+			const person = document.createElement("strong");
+			person.textContent = projectSharingRelationshipLabel(summary);
+			const status = document.createElement("span");
+			status.textContent = ` — ${summary.lifecycle.label}. ${summary.lifecycle.explanation}`;
+			item.append(person, status);
+			list.appendChild(item);
+		}
+		sharing.append(title, list);
+		row.appendChild(sharing);
+	}
 
 	if (isPeerReceivedProject(project)) {
 		const receivedNote = document.createElement("div");

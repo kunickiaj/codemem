@@ -510,6 +510,52 @@ describe("createCoordinatorApp dependency injection", () => {
 		expect(consumeProjectInvite).toHaveBeenCalledOnce();
 	});
 
+	it("reconstructs a safe project invite link only while the coordinator token is unconsumed", async () => {
+		const operationId = `share_${"c".repeat(40)}`;
+		const invite = {
+			invite_id: "invite-project-copy",
+			group_id: "g1",
+			token: "token-project-copy",
+			policy: "auto_admit",
+			expires_at: "2099-01-01T00:00:00Z",
+			created_at: "2026-03-28T00:00:00Z",
+			created_by: null,
+			team_name_snapshot: "Team One",
+			revoked_at: null,
+			operation_id: operationId,
+			reviewed_project_set_digest: "d".repeat(64),
+			inviter_display_name: "Adam",
+			project_intent_json: JSON.stringify([
+				{
+					canonical_identity: "git:https://example.test/codemem",
+					display_name: "codemem",
+					existing_memory_count: 3,
+				},
+			]),
+			consumed_at: null as string | null,
+		};
+		const store = createMockStore({ listInvites: vi.fn(async () => [invite]) });
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+		const request = () =>
+			app.request(`/v1/admin/project-invites/${operationId}?group_id=g1`, {
+				headers: { "X-Codemem-Coordinator-Admin": "test-secret" },
+			});
+
+		const pending = (await (await request()).json()) as Record<string, unknown>;
+		expect(pending.invite_link).toMatch(/^codemem:\/\/join\?invite=/u);
+		expect(JSON.stringify(pending)).not.toContain("token-project-copy");
+
+		invite.consumed_at = "2026-03-28T01:00:00Z";
+		invite.token = "consumed:invite-project-copy";
+		const consumed = (await (await request()).json()) as Record<string, unknown>;
+		expect(consumed.invite_link).toBeNull();
+		expect(JSON.stringify(consumed)).not.toContain("token-project-copy");
+	});
+
 	it("rejects invalid project-invite identity fields before consuming the invite", async () => {
 		const publicKey = "recipient-public-key";
 		const consumeProjectInvite = vi.fn(async () => {
