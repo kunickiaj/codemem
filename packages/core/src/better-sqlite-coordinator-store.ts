@@ -393,7 +393,9 @@ function initializeSchema(db: DatabaseType): void {
 			created_at TEXT NOT NULL,
 			created_by TEXT,
 			team_name_snapshot TEXT,
-			revoked_at TEXT
+			revoked_at TEXT,
+			operation_id TEXT,
+			reviewed_project_set_digest TEXT
 		);
 
 		CREATE TABLE IF NOT EXISTS coordinator_join_requests (
@@ -502,6 +504,16 @@ function initializeSchema(db: DatabaseType): void {
 	} catch {
 		// already exists
 	}
+	for (const column of ["operation_id", "reviewed_project_set_digest"]) {
+		try {
+			db.prepare(`ALTER TABLE coordinator_invites ADD COLUMN ${column} TEXT`).run();
+		} catch {
+			// already exists
+		}
+	}
+	db.exec(
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_coordinator_invites_operation_id ON coordinator_invites(operation_id) WHERE operation_id IS NOT NULL",
+	);
 }
 
 export function connectCoordinator(path?: string): DatabaseType {
@@ -685,22 +697,82 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		const inviteId = tokenUrlSafe(12);
 		const token = tokenUrlSafe(24);
 		const group = await this.getGroup(opts.groupId);
-		this.db
-			.prepare(`INSERT INTO coordinator_invites(
-					invite_id, group_id, token, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`)
-			.run(
-				inviteId,
-				opts.groupId,
-				token,
-				opts.policy,
-				expiresAt,
-				now,
-				opts.createdBy ?? null,
-				group?.display_name ?? null,
-			);
+		const operationId = clean(opts.operationId);
+		const reviewedProjectSetDigest = clean(opts.reviewedProjectSetDigest);
+		if (Boolean(operationId) !== Boolean(reviewedProjectSetDigest)) {
+			throw new Error("operationId and reviewedProjectSetDigest must be provided together.");
+		}
+		const readOperationInvite = (): CoordinatorInvite | null => {
+			if (!operationId) return null;
+			const existing = this.db
+				.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by,
+					team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest
+					FROM coordinator_invites WHERE operation_id = ?`)
+				.get(operationId) as CoordinatorInvite | undefined;
+			if (!existing) return null;
+			if (
+				existing.group_id !== opts.groupId ||
+				existing.policy !== opts.policy ||
+				existing.reviewed_project_set_digest !== reviewedProjectSetDigest
+			) {
+				throw new Error("invite_operation_intent_conflict");
+			}
+			return existing;
+		};
+		const renewOperationInvite = (existing: CoordinatorInvite): CoordinatorInvite => {
+			if (!existing.revoked_at && existing.expires_at > now) return existing;
+			this.db
+				.prepare(`UPDATE coordinator_invites
+					SET token = ?, expires_at = ?, created_at = ?, created_by = ?,
+						team_name_snapshot = ?, revoked_at = NULL
+					WHERE operation_id = ? AND token = ?
+					  AND (revoked_at IS NOT NULL OR expires_at <= ?)`)
+				.run(
+					token,
+					expiresAt,
+					now,
+					opts.createdBy ?? null,
+					group?.display_name ?? null,
+					operationId,
+					existing.token,
+					now,
+				);
+			const renewed = readOperationInvite();
+			if (!renewed) throw new Error("invite_operation_reissue_failed");
+			return renewed;
+		};
+		if (operationId) {
+			const existing = readOperationInvite();
+			if (existing) return renewOperationInvite(existing);
+		}
+		try {
+			this.db
+				.prepare(`INSERT INTO coordinator_invites(
+					invite_id, group_id, token, policy, expires_at, created_at, created_by,
+					team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`)
+				.run(
+					inviteId,
+					opts.groupId,
+					token,
+					opts.policy,
+					expiresAt,
+					now,
+					opts.createdBy ?? null,
+					group?.display_name ?? null,
+					operationId,
+					reviewedProjectSetDigest,
+				);
+		} catch (error) {
+			if (operationId) {
+				const existing = readOperationInvite();
+				if (existing) return renewOperationInvite(existing);
+			}
+			throw error;
+		}
 		const row = this.db
-			.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
+			.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by,
+					team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest
 				 FROM coordinator_invites WHERE invite_id = ?`)
 			.get(inviteId);
 		return rowToRecord<CoordinatorInvite>(row);
@@ -708,7 +780,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	async getInviteByToken(token: string): Promise<CoordinatorInvite | null> {
 		const row = this.db
-			.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
+			.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by,
+					team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest
 				 FROM coordinator_invites
 				 WHERE token = ?
 				   AND revoked_at IS NULL
@@ -719,7 +792,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	async listInvites(groupId: string): Promise<CoordinatorInvite[]> {
 		return this.db
-			.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
+			.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by,
+					team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest
 				 FROM coordinator_invites WHERE group_id = ?
 				 ORDER BY created_at DESC`)
 			.all(groupId)

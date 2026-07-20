@@ -946,6 +946,8 @@ export async function coordinatorCreateInviteAction(opts: {
 	dbPath?: string | null;
 	remoteUrl?: string | null;
 	adminSecret?: string | null;
+	operationId?: string | null;
+	reviewedProjectSetDigest?: string | null;
 }): Promise<Record<string, unknown>> {
 	if (!VALID_INVITE_POLICIES.has(opts.policy)) throw new Error(`Invalid policy: ${opts.policy}`);
 	const expiresAt = new Date(Date.now() + opts.ttlHours * 3600 * 1000).toISOString();
@@ -964,10 +966,20 @@ export async function coordinatorCreateInviteAction(opts: {
 				expires_at: expiresAt,
 				created_by: opts.createdBy ?? null,
 				coordinator_url: opts.coordinatorUrl || remote,
+				operation_id: opts.operationId ?? null,
+				reviewed_project_set_digest: opts.reviewedProjectSetDigest ?? null,
 			},
 		);
+		const invite = payload?.invite;
+		const inviteRecord =
+			invite && typeof invite === "object" && !Array.isArray(invite)
+				? (invite as Record<string, unknown>)
+				: null;
 		return {
 			group_id: opts.groupId,
+			invite_id: inviteRecord?.invite_id,
+			operation_id: inviteRecord?.operation_id ?? null,
+			reviewed_project_set_digest: inviteRecord?.reviewed_project_set_digest ?? null,
 			encoded: payload?.encoded,
 			link: payload?.link,
 			payload: payload?.payload,
@@ -988,20 +1000,25 @@ export async function coordinatorCreateInviteAction(opts: {
 			policy: opts.policy,
 			expiresAt,
 			createdBy: opts.createdBy ?? null,
+			operationId: opts.operationId ?? null,
+			reviewedProjectSetDigest: opts.reviewedProjectSetDigest ?? null,
 		});
 		const payload: InvitePayload = {
 			v: 1,
 			kind: "coordinator_team_invite",
 			coordinator_url: resolvedCoordinatorUrl,
 			group_id: opts.groupId,
-			policy: opts.policy,
+			policy: invite.policy,
 			token: String(invite.token ?? ""),
-			expires_at: expiresAt,
+			expires_at: invite.expires_at,
 			team_name: (invite.team_name_snapshot as string) ?? null,
 		};
 		const encoded = encodeInvitePayload(payload);
 		return {
 			group_id: opts.groupId,
+			invite_id: invite.invite_id,
+			operation_id: invite.operation_id ?? null,
+			reviewed_project_set_digest: invite.reviewed_project_set_digest ?? null,
 			encoded,
 			link: inviteLink(encoded),
 			payload,

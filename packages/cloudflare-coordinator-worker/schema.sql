@@ -42,8 +42,13 @@ CREATE TABLE IF NOT EXISTS coordinator_invites (
   created_at TEXT NOT NULL,
   created_by TEXT,
   team_name_snapshot TEXT,
-  revoked_at TEXT
+  revoked_at TEXT,
+  operation_id TEXT,
+  reviewed_project_set_digest TEXT
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_coordinator_invites_operation_id
+ON coordinator_invites(operation_id) WHERE operation_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS coordinator_join_requests (
   request_id TEXT PRIMARY KEY,

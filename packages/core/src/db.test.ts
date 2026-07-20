@@ -1043,7 +1043,162 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		ensureAdditiveSchemaCompatibility(db);
 
 		expect(tableExists(db, "schema_compat_state")).toBe(true);
+		expect(tableExists(db, "share_operations")).toBe(true);
+		expect(tableExists(db, "share_operation_projects")).toBe(true);
+		expect(tableExists(db, "share_operation_steps")).toBe(true);
 		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
+	});
+
+	it("upgrades a marked schema-v8 database and remains idempotent after reopen", () => {
+		db.close();
+		const dbPath = join(tmpDir, "schema-v8.sqlite");
+		const previous = new BetterSqlite3(dbPath);
+		previous.exec(`
+			PRAGMA user_version = 8;
+			CREATE TABLE schema_compat_state (
+				id INTEGER PRIMARY KEY,
+				applied_schema_version INTEGER NOT NULL,
+				applied_at TEXT NOT NULL
+			);
+			INSERT INTO schema_compat_state VALUES (1, 8, '2026-07-19T00:00:00Z');
+		`);
+		expect(tableExists(previous, "share_operations")).toBe(false);
+
+		ensureAdditiveSchemaCompatibility(previous);
+
+		for (const table of ["share_operations", "share_operation_projects", "share_operation_steps"]) {
+			expect(tableExists(previous, table)).toBe(true);
+		}
+		expect(columnExists(previous, "share_operations", "pending_person_operation_id")).toBe(true);
+		expect(columnExists(previous, "share_operation_projects", "existing_memory_count")).toBe(true);
+		expect(columnExists(previous, "share_operation_steps", "effect_id")).toBe(true);
+		expect(hasIndex(previous, "idx_share_operations_state_updated")).toBe(true);
+		expect(hasIndex(previous, "idx_share_operations_invite_digest")).toBe(true);
+		expect(hasIndex(previous, "idx_share_operations_pending_person_operation")).toBe(true);
+		expect(appliedSchemaVersion(previous)).toBe(SCHEMA_VERSION);
+		previous
+			.prepare(
+				`INSERT INTO share_operations(
+				operation_id, state, inviter_actor_id, inviter_device_ids_json, person_id,
+				person_kind, pending_person_operation_id, teammate_name, history_policy,
+				reviewed_project_set_digest, coordinator_group_id, coordinator_invite_id,
+				invite_token_digest, invite_expires_at, created_at, updated_at
+			 ) VALUES ('share_test', 'waiting_for_acceptance', 'actor', '[]', 'person',
+				'pending', 'share_test', 'Brian', 'existing_and_future', 'digest', 'group',
+				'invite', 'token-digest', '2099-01-01T00:00:00Z', '2026-07-20T00:00:00Z',
+				'2026-07-20T00:00:00Z')`,
+			)
+			.run();
+		previous.close();
+
+		const reopened = new BetterSqlite3(dbPath);
+		ensureAdditiveSchemaCompatibility(reopened);
+		expect(reopened.prepare("SELECT COUNT(*) FROM share_operations").pluck().get()).toBe(1);
+		expect(appliedSchemaVersion(reopened)).toBe(SCHEMA_VERSION);
+		reopened.close();
+		db = connect(join(tmpDir, "replacement.sqlite"));
+	});
+
+	it("repairs partially-created share-operation tables before marking compatibility", () => {
+		db.close();
+		const partial = new BetterSqlite3(join(tmpDir, "partial.sqlite"));
+		partial.exec(`
+			PRAGMA user_version = 8;
+			CREATE TABLE schema_compat_state (
+				id INTEGER PRIMARY KEY,
+				applied_schema_version INTEGER NOT NULL,
+				applied_at TEXT NOT NULL
+			);
+			INSERT INTO schema_compat_state VALUES (1, 8, '2026-07-19T00:00:00Z');
+			CREATE TABLE share_operations (operation_id TEXT PRIMARY KEY NOT NULL);
+			CREATE TABLE share_operation_projects (
+				operation_id TEXT NOT NULL,
+				canonical_project_identity TEXT NOT NULL,
+				PRIMARY KEY (operation_id, canonical_project_identity)
+			);
+			CREATE TABLE share_operation_steps (
+				operation_id TEXT NOT NULL,
+				step_key TEXT NOT NULL,
+				PRIMARY KEY (operation_id, step_key)
+			);
+		`);
+
+		ensureAdditiveSchemaCompatibility(partial);
+
+		expect(columnExists(partial, "share_operations", "invite_token_digest")).toBe(true);
+		expect(columnExists(partial, "share_operation_projects", "existing_memory_count")).toBe(true);
+		expect(columnExists(partial, "share_operation_steps", "safe_error_code")).toBe(true);
+		expect(hasIndex(partial, "idx_share_operations_invite_digest")).toBe(true);
+		expect(hasIndex(partial, "idx_share_operation_steps_effect_id_nonempty")).toBe(true);
+		partial
+			.prepare(
+				`INSERT INTO share_operation_steps(operation_id, step_key, effect_id)
+				 VALUES (?, ?, ?)`,
+			)
+			.run("share-one", "step-one", "effect-one");
+		partial
+			.prepare(
+				`INSERT INTO share_operation_steps(operation_id, step_key, effect_id)
+				 VALUES (?, ?, ?)`,
+			)
+			.run("share-two", "step-two", "effect-one");
+		expect(
+			partial
+				.prepare("SELECT COUNT(*) FROM share_operation_steps WHERE effect_id = ?")
+				.pluck()
+				.get("effect-one"),
+		).toBe(2);
+		expect(appliedSchemaVersion(partial)).toBe(SCHEMA_VERSION);
+		partial.close();
+		db = connect(join(tmpDir, "replacement.sqlite"));
+	});
+
+	it("repairs a previously applied unique effect-id constraint", () => {
+		const stale = new BetterSqlite3(join(tmpDir, "stale-share-effect.sqlite"));
+		try {
+			stale.exec(`
+				CREATE TABLE schema_compat_state (
+					id INTEGER PRIMARY KEY CHECK (id = 1),
+					applied_schema_version INTEGER NOT NULL,
+					applied_at TEXT NOT NULL
+				);
+				INSERT INTO schema_compat_state VALUES (1, ${SCHEMA_VERSION}, '2026-07-20T00:00:00Z');
+				CREATE TABLE share_operation_steps (
+					operation_id TEXT NOT NULL,
+					step_key TEXT NOT NULL,
+					effect_id TEXT NOT NULL UNIQUE,
+					status TEXT NOT NULL,
+					attempt_count INTEGER NOT NULL DEFAULT 0,
+					started_at TEXT,
+					completed_at TEXT,
+					last_attempt_at TEXT,
+					safe_error_code TEXT,
+					updated_at TEXT NOT NULL,
+					PRIMARY KEY (operation_id, step_key)
+				);
+				CREATE UNIQUE INDEX idx_share_operation_steps_effect_id_nonempty
+					ON share_operation_steps(effect_id) WHERE effect_id <> '';
+				INSERT INTO share_operation_steps(
+					operation_id, step_key, effect_id, status, updated_at
+				) VALUES ('share-one', 'step-one', 'shared-effect', 'pending', '2026-07-20T00:00:00Z');
+			`);
+
+			ensureAdditiveSchemaCompatibility(stale);
+			stale
+				.prepare(`INSERT INTO share_operation_steps(
+					operation_id, step_key, effect_id, status, updated_at
+				) VALUES (?, ?, ?, 'pending', ?)`)
+				.run("share-two", "step-two", "shared-effect", "2026-07-20T00:01:00Z");
+
+			expect(
+				stale
+					.prepare("SELECT COUNT(*) FROM share_operation_steps WHERE effect_id = ?")
+					.pluck()
+					.get("shared-effect"),
+			).toBe(2);
+		} finally {
+			stale.close();
+		}
 	});
 
 	it("skips gated DDL once marked and re-applies on version mismatch", () => {

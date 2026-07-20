@@ -776,6 +776,40 @@ export interface ApiCreateInviteResponse {
 	mode?: "local" | "remote";
 }
 
+export interface ApiProjectInviteRequest {
+	teammate_name: string;
+	project_ids: string[];
+}
+
+export interface ApiProjectInvitePreviewProject {
+	project_id: string;
+	display_name: string;
+	existing_memory_count: number;
+}
+
+export interface ApiProjectInvitePreviewResponse {
+	operation_id: string;
+	teammate: {
+		display_name: string;
+		match: "existing" | "pending";
+		person_id?: string;
+	};
+	projects: ApiProjectInvitePreviewProject[];
+	existing_memory_count: number;
+	future_memories_shared: true;
+	history_policy: "existing_and_future";
+	reviewed_project_set_digest: string;
+}
+
+export interface ApiCreateProjectInviteRequest extends ApiProjectInviteRequest {
+	reviewed_project_set_digest: string;
+}
+
+export interface ApiCreateProjectInviteResponse extends ApiProjectInvitePreviewResponse {
+	ok: true;
+	invite: { link: string; encoded: string; expires_at: string };
+}
+
 /** POST /api/sync/invites/import — request. */
 export interface ApiImportInviteRequest {
 	invite: string;

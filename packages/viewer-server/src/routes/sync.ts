@@ -15,6 +15,9 @@ import type {
 	ProjectScopeGuardrailWarning,
 	ReplicationOp,
 	SemanticIndexDiagnostics,
+	ShareOperationPlan,
+	SharePersonIntent,
+	ShareProjectIntent,
 } from "@codemem/core";
 import {
 	ACCESS_CLEANUP_OP_TYPE,
@@ -62,6 +65,7 @@ import {
 	getSemanticIndexDiagnostics,
 	getSyncResetState,
 	type InboundScopeRejectionPeerSummary,
+	inviteTokenDigest,
 	isScopedSyncCapability,
 	LEGACY_SHARED_REVIEW_SCOPE_ID,
 	LOCAL_DEFAULT_SCOPE_ID,
@@ -82,8 +86,11 @@ import {
 	negotiateSyncCapability,
 	normalizeAddress,
 	normalizeSyncCapability,
+	normalizeTeammateName,
 	parseSyncScopeRequest,
+	persistShareOperation,
 	personalScopeGrantStatusForPeer,
+	planShareOperation,
 	readCodememConfigFile,
 	readCoordinatorSyncConfig,
 	reassignProjectScopeInventoryProject,
@@ -532,6 +539,166 @@ function parseInviteTtlHours(value: unknown): number | null {
 	const ttlHours = Number(String(value ?? 24));
 	if (!Number.isInteger(ttlHours) || ttlHours < 1) return null;
 	return ttlHours;
+}
+
+const PROJECT_INVITE_TTL_HOURS = 7 * 24;
+const PROJECT_INVITE_BODY_KEYS = new Set([
+	"teammate_name",
+	"project_ids",
+	"reviewed_project_set_digest",
+]);
+
+function projectInviteStringList(body: Record<string, unknown>, key: string): string[] {
+	const value = body[key];
+	if (!Array.isArray(value)) throw new Error(`${key}_must_be_string_array`);
+	if (value.length > 100) throw new Error(`${key}_too_large`);
+	const items = value.map((item) => {
+		if (typeof item !== "string") throw new Error(`${key}_must_be_string_array`);
+		return item.trim();
+	});
+	if (items.some((item) => !item)) throw new Error(`${key}_contains_empty_value`);
+	if (new Set(items).size !== items.length) throw new Error(`${key}_contains_duplicates`);
+	return items;
+}
+
+function assertProjectInviteBody(body: Record<string, unknown>, creating: boolean): void {
+	const allowed = creating ? PROJECT_INVITE_BODY_KEYS : new Set(["teammate_name", "project_ids"]);
+	if (Object.keys(body).some((key) => !allowed.has(key))) {
+		throw new Error("unexpected_project_invite_fields");
+	}
+	if (typeof body.teammate_name !== "string") throw new Error("teammate_name_must_be_string");
+	if (creating && typeof body.reviewed_project_set_digest !== "string") {
+		throw new Error("reviewed_project_set_digest_required");
+	}
+	if (creating && !/^[a-f0-9]{64}$/u.test(String(body.reviewed_project_set_digest).trim())) {
+		throw new Error("reviewed_project_set_digest_invalid");
+	}
+}
+
+function projectInviteStatus(config = readCoordinatorSyncConfig()): {
+	groupId: string;
+	config: ReturnType<typeof readCoordinatorSyncConfig>;
+} {
+	const status = coordinatorAdminStatusPayload(config);
+	if (status.readiness !== "ready") throw new Error("team_sharing_not_configured");
+	if (status.groups.length !== 1) throw new Error("team_selection_ambiguous");
+	if (!status.active_group) throw new Error("team_sharing_not_configured");
+	return { groupId: status.active_group, config };
+}
+
+function resolveProjectInviteSelection(
+	store: MemoryStore,
+	requestedIds: string[],
+): ShareProjectIntent[] {
+	if (requestedIds.length === 0) throw new Error("project_selection_empty");
+	const requested = new Set(requestedIds);
+	const byIdentity = new Map<
+		string,
+		ReturnType<typeof listProjectScopeInventory>["projects"][number]
+	>();
+	let offset = 0;
+	while (byIdentity.size < requested.size) {
+		const page = listProjectScopeInventory(store.db, { limit: 250, offset });
+		for (const project of page.projects) {
+			if (requested.has(project.workspace_identity)) {
+				byIdentity.set(project.workspace_identity, project);
+			}
+		}
+		if (!page.has_more) break;
+		offset += page.limit;
+	}
+	return requestedIds.map((projectId) => {
+		const project = byIdentity.get(projectId);
+		if (!project) throw new Error("project_selection_unknown");
+		const ambiguous = project.guardrail_warnings.some(
+			(warning) => warning.code === "basename_collision_review" && warning.requires_confirmation,
+		);
+		if (ambiguous) throw new Error("project_selection_ambiguous");
+		if (
+			project.read_only ||
+			project.identity_source === "unmapped" ||
+			project.memory_count == null ||
+			project.guardrail_warnings.some((warning) => warning.requires_confirmation)
+		) {
+			throw new Error("project_selection_unsupported");
+		}
+		return {
+			canonicalIdentity: project.workspace_identity,
+			displayName: project.display_project,
+			identitySource: project.identity_source,
+			existingMemoryCount: project.memory_count,
+		};
+	});
+}
+
+function resolveSharePerson(store: MemoryStore, teammateName: string): SharePersonIntent {
+	const matches = store.db
+		.prepare(
+			`SELECT actor_id, display_name, status
+			 FROM actors
+			 WHERE status IN ('active', 'pending') AND lower(trim(display_name)) = lower(?)
+			 ORDER BY actor_id`,
+		)
+		.all(teammateName) as Array<{ actor_id: string; display_name: string; status: string }>;
+	if (matches.length > 1) throw new Error("teammate_match_ambiguous");
+	const match = matches[0];
+	if (match) {
+		return match.status === "pending"
+			? { kind: "pending", personId: match.actor_id, displayName: match.display_name }
+			: { kind: "existing", personId: match.actor_id, displayName: match.display_name };
+	}
+	return { kind: "pending", displayName: teammateName };
+}
+
+function projectInvitePlan(
+	store: MemoryStore,
+	body: Record<string, unknown>,
+	createdAt: string,
+	inviteExpiresAt: string,
+): { plan: ShareOperationPlan; config: ReturnType<typeof readCoordinatorSyncConfig> } {
+	const teammateName = normalizeTeammateName(String(body.teammate_name));
+	const projects = resolveProjectInviteSelection(
+		store,
+		projectInviteStringList(body, "project_ids"),
+	);
+	const { groupId, config } = projectInviteStatus();
+	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+	store.adoptEnsuredDeviceIdentity(localDeviceId);
+	return {
+		plan: planShareOperation({
+			inviterActorId: store.actorId,
+			inviterDeviceIds: [localDeviceId],
+			person: resolveSharePerson(store, teammateName),
+			projects,
+			coordinatorGroupId: groupId,
+			createdAt,
+			inviteExpiresAt,
+		}),
+		config,
+	};
+}
+
+function projectInvitePreview(plan: ShareOperationPlan) {
+	return {
+		operation_id: plan.operationId,
+		teammate: {
+			display_name: plan.teammateName,
+			match: plan.personKind,
+			...(plan.personKind === "existing" ? { person_id: plan.personId } : {}),
+		},
+		projects: plan.projects.map((project) => ({
+			project_id: project.canonicalIdentity,
+			display_name: project.displayName,
+			existing_memory_count: project.existingMemoryCount,
+		})),
+		existing_memory_count: plan.projects.reduce(
+			(total, project) => total + project.existingMemoryCount,
+			0,
+		),
+		future_memories_shared: true as const,
+		history_policy: plan.historyPolicy,
+		reviewed_project_set_digest: plan.reviewedProjectSetDigest,
+	};
 }
 
 function sortActiveMaintenanceJobs<
@@ -3287,6 +3454,108 @@ export function syncRoutes(
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			return c.json({ error: message }, message.includes("not found") ? 404 : 400);
+		}
+	});
+
+	app.post("/api/sync/project-invites/preview", async (c) => {
+		const store = getStore();
+		const body = await parseViewerJsonBody(c);
+		if (!body) return c.json({ error: "invalid_json" }, 400);
+		try {
+			assertProjectInviteBody(body, false);
+			const createdAt = new Date().toISOString();
+			const inviteExpiresAt = new Date(
+				new Date(createdAt).getTime() + PROJECT_INVITE_TTL_HOURS * 3600 * 1000,
+			).toISOString();
+			const { plan } = projectInvitePlan(store, body, createdAt, inviteExpiresAt);
+			return c.json(projectInvitePreview(plan));
+		} catch (error) {
+			return c.json(
+				{ error: error instanceof Error ? error.message : "project_invite_invalid" },
+				400,
+			);
+		}
+	});
+
+	app.post("/api/sync/project-invites", async (c) => {
+		const store = getStore();
+		const body = await parseViewerJsonBody(c);
+		if (!body) return c.json({ error: "invalid_json" }, 400);
+		try {
+			assertProjectInviteBody(body, true);
+			const createdAt = new Date().toISOString();
+			const inviteExpiresAt = new Date(
+				new Date(createdAt).getTime() + PROJECT_INVITE_TTL_HOURS * 3600 * 1000,
+			).toISOString();
+			const { plan, config } = projectInvitePlan(store, body, createdAt, inviteExpiresAt);
+			if (String(body.reviewed_project_set_digest).trim() !== plan.reviewedProjectSetDigest) {
+				return c.json({ error: "reviewed_project_set_changed" }, 409);
+			}
+			const existingState = (() => {
+				try {
+					return store.db
+						.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
+						.pluck()
+						.get(plan.operationId) as string | undefined;
+				} catch {
+					// Local persistence below remains authoritative. Keeping this precheck
+					// best-effort preserves coordinator idempotency if local storage is unavailable.
+					return undefined;
+				}
+			})();
+			if (existingState && existingState !== "waiting_for_acceptance") {
+				return c.json({ error: "operation_state_invalid" }, 409);
+			}
+			// The coordinator invite is minted before local persistence. If the local
+			// transaction fails, operationId makes coordinator creation return the
+			// current invite. Expired or revoked waiting invites are renewed in place.
+			const result = await coordinatorCreateInviteAction({
+				groupId: plan.coordinatorGroupId,
+				coordinatorUrl: config.syncCoordinatorUrl || null,
+				policy: "auto_admit",
+				ttlHours: PROJECT_INVITE_TTL_HOURS,
+				createdBy: store.actorId,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+				operationId: plan.operationId,
+				reviewedProjectSetDigest: plan.reviewedProjectSetDigest,
+			});
+			if (
+				String(result.operation_id ?? "").trim() !== plan.operationId ||
+				String(result.reviewed_project_set_digest ?? "").trim() !== plan.reviewedProjectSetDigest
+			) {
+				throw new Error("coordinator_invite_intent_mismatch");
+			}
+			const payload = result.payload;
+			if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+				throw new Error("coordinator_invite_payload_missing");
+			}
+			const token = String((payload as Record<string, unknown>).token ?? "").trim();
+			const expiresAt = String((payload as Record<string, unknown>).expires_at ?? "").trim();
+			const link = String(result.link ?? "").trim();
+			const encoded = String(result.encoded ?? "").trim();
+			if (!token || !expiresAt || !link || !encoded) {
+				throw new Error("coordinator_invite_payload_invalid");
+			}
+			const persistedPlan = { ...plan, inviteExpiresAt: new Date(expiresAt).toISOString() };
+			persistShareOperation(store.db, persistedPlan, {
+				inviteId: String(result.invite_id ?? "").trim() || null,
+				tokenDigest: inviteTokenDigest(token),
+			});
+			return c.json({
+				ok: true,
+				...projectInvitePreview(persistedPlan),
+				invite: {
+					link,
+					encoded,
+					expires_at: persistedPlan.inviteExpiresAt,
+				},
+			});
+		} catch (error) {
+			return c.json(
+				{ error: error instanceof Error ? error.message : "project_invite_failed" },
+				400,
+			);
 		}
 	});
 

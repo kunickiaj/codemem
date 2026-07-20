@@ -33,16 +33,18 @@ import { __usageCacheTestHooks } from "./routes/stats.js";
 // Test helpers
 // ---------------------------------------------------------------------------
 
-function createTestStore(): { store: MemoryStore; cleanup: () => void } {
+function createTestStore(seedDevice = true): { store: MemoryStore; cleanup: () => void } {
 	const tmpDir = mkdtempSync(join(tmpdir(), "codemem-viewer-store-test-"));
 	const dbPath = join(tmpDir, "test.sqlite");
 	const rawDb = new Database(dbPath);
 	initTestSchema(rawDb);
-	rawDb
-		.prepare(
-			"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
-		)
-		.run("test-device-001", "test-public-key", "test-fingerprint", new Date().toISOString());
+	if (seedDevice) {
+		rawDb
+			.prepare(
+				"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+			)
+			.run("test-device-001", "test-public-key", "test-fingerprint", new Date().toISOString());
+	}
 	rawDb.close();
 	const store = new MemoryStore(dbPath);
 	return {
@@ -149,6 +151,7 @@ function insertTestMemory(
 
 /** Create a test Hono app backed by a fresh in-memory DB. */
 function createTestApp(opts?: {
+	seedDevice?: boolean;
 	sweeper?: unknown;
 	syncRequestRateLimit?: {
 		readLimit?: number;
@@ -166,7 +169,7 @@ function createTestApp(opts?: {
 
 	const storeFactory = () => {
 		if (!store) {
-			const created = createTestStore();
+			const created = createTestStore(opts?.seedDevice);
 			store = created.store;
 			storeCleanup = created.cleanup;
 		}
@@ -9195,6 +9198,462 @@ describe("viewer-server", () => {
 				cleanup();
 				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
 				else process.env.CODEMEM_CONFIG = prevConfig;
+			}
+		});
+
+		it("previews and creates an exact project-first invite from server inventory", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevDeviceId = process.env.CODEMEM_DEVICE_ID;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			process.env.CODEMEM_KEYS_DIR = mkdtempSync(join(tmpdir(), "codemem-project-invite-keys-"));
+			delete process.env.CODEMEM_DEVICE_ID;
+			const expiresAt = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
+			let projectIntentEcho: "none" | "operation_only" | "all" = "none";
+			const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = String(input);
+				if (url.includes("/v1/admin/invites")) {
+					const request = init?.body
+						? (JSON.parse(new TextDecoder().decode(init.body as ArrayBufferView)) as Record<
+								string,
+								unknown
+							>)
+						: {};
+					return new Response(
+						JSON.stringify({
+							encoded: "project-invite-blob",
+							invite: {
+								invite_id: `invite-${String(request.operation_id)}`,
+								operation_id: projectIntentEcho === "none" ? null : request.operation_id,
+								reviewed_project_set_digest:
+									projectIntentEcho === "all" ? request.reviewed_project_set_digest : null,
+							},
+							link: "codemem://join?invite=project-invite-blob",
+							payload: {
+								expires_at: expiresAt,
+								group_id: "team-a",
+								token: `token-${String(request.operation_id)}`,
+							},
+							request,
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "team-a",
+					sync_coordinator_admin_secret: "secret",
+				}),
+			);
+			const { app, getStore, cleanup } = createTestApp({ seedDevice: false });
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				store.db
+					.prepare(
+						`INSERT INTO actors(
+							actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+						 ) VALUES ('pending-brian', 'Brian', 0, 'pending', NULL, ?, ?)`,
+					)
+					.run("2026-07-20T00:00:00Z", "2026-07-20T00:00:00Z");
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET cwd = ?, git_remote = ?, project = ? WHERE id = ?")
+					.run(
+						"/workspace/codemem",
+						"https://git.example.invalid/codemem.git",
+						"codemem",
+						sessionId,
+					);
+				insertTestMemory(store, { sessionId, kind: "discovery", title: "first" });
+				insertTestMemory(store, { sessionId, kind: "decision", title: "second" });
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "inactive third",
+					active: false,
+				});
+				const inventoryRes = await app.request("/api/sync/projects?q=codemem");
+				const inventory = (await inventoryRes.json()) as {
+					projects: Array<{ workspace_identity: string }>;
+				};
+				const projectId = inventory.projects[0]?.workspace_identity;
+				if (!projectId) throw new Error("project missing");
+				const firstCollisionSession = insertTestSession(store.db);
+				const secondCollisionSession = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET cwd = ?, git_remote = NULL, project = ? WHERE id = ?")
+					.run("/workspace/client-a/api", "api", firstCollisionSession);
+				store.db
+					.prepare("UPDATE sessions SET cwd = ?, git_remote = NULL, project = ? WHERE id = ?")
+					.run("/workspace/client-b/api", "api", secondCollisionSession);
+				insertTestMemory(store, {
+					sessionId: firstCollisionSession,
+					kind: "discovery",
+					title: "client a api",
+				});
+				insertTestMemory(store, {
+					sessionId: secondCollisionSession,
+					kind: "discovery",
+					title: "client b api",
+				});
+				const collisionInventory = (await (
+					await app.request("/api/sync/projects?q=api")
+				).json()) as { projects: Array<{ workspace_identity: string }> };
+				const collisionId = collisionInventory.projects[0]?.workspace_identity;
+				if (!collisionId) throw new Error("collision project missing");
+				const collisionRes = await app.request("/api/sync/project-invites/preview", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ teammate_name: "Brian", project_ids: [collisionId] }),
+				});
+				expect(collisionRes.status).toBe(400);
+				expect(await collisionRes.json()).toEqual({ error: "project_selection_ambiguous" });
+
+				const receivedSession = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET cwd = ?, project = NULL WHERE id = ?")
+					.run("__sync_bootstrap__/peer-a", receivedSession);
+				const receivedMemoryId = insertTestMemory(store, {
+					sessionId: receivedSession,
+					kind: "discovery",
+					title: "received private project",
+					originDeviceId: "peer-a",
+				});
+				store.db
+					.prepare("UPDATE memory_items SET project = ? WHERE id = ?")
+					.run("received-project", receivedMemoryId);
+				const receivedInventory = (await (
+					await app.request("/api/sync/projects?status=received")
+				).json()) as { projects: Array<{ workspace_identity: string }> };
+				const receivedId = receivedInventory.projects[0]?.workspace_identity;
+				if (!receivedId) throw new Error("received project missing");
+				const unsupportedRes = await app.request("/api/sync/project-invites/preview", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ teammate_name: "Brian", project_ids: [receivedId] }),
+				});
+				expect(unsupportedRes.status).toBe(400);
+				expect(await unsupportedRes.json()).toEqual({ error: "project_selection_unsupported" });
+
+				const emptyRes = await app.request("/api/sync/project-invites/preview", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ teammate_name: "Brian", project_ids: [] }),
+				});
+				expect(emptyRes.status).toBe(400);
+				expect(await emptyRes.json()).toEqual({ error: "project_selection_empty" });
+				const unknownProjectRes = await app.request("/api/sync/project-invites/preview", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						teammate_name: "Brian",
+						project_ids: ["workspace:unknown-project"],
+					}),
+				});
+				expect(unknownProjectRes.status).toBe(400);
+				expect(await unknownProjectRes.json()).toEqual({ error: "project_selection_unknown" });
+				for (const [projectIds, expectedError] of [
+					[[projectId, projectId], "project_ids_contains_duplicates"],
+					[[projectId, 42], "project_ids_must_be_string_array"],
+					[Array.from({ length: 101 }, () => projectId), "project_ids_too_large"],
+				] as const) {
+					const invalidSelection = await app.request("/api/sync/project-invites/preview", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ teammate_name: "Brian", project_ids: projectIds }),
+					});
+					expect(await invalidSelection.json()).toEqual({ error: expectedError });
+				}
+
+				const scopeInjectionRes = await app.request("/api/sync/project-invites/preview", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						teammate_name: "Brian",
+						project_ids: [projectId],
+						scope_ids: ["all-company-data"],
+					}),
+				});
+				expect(scopeInjectionRes.status).toBe(400);
+				expect(await scopeInjectionRes.json()).toEqual({
+					error: "unexpected_project_invite_fields",
+				});
+
+				const previewRes = await app.request("/api/sync/project-invites/preview", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ teammate_name: "  Brian  ", project_ids: [projectId] }),
+				});
+				expect(previewRes.status).toBe(200);
+				const preview = (await previewRes.json()) as {
+					operation_id: string;
+					reviewed_project_set_digest: string;
+					projects: Array<{ project_id: string; existing_memory_count: number }>;
+					future_memories_shared: boolean;
+				};
+				expect(preview.projects).toEqual([
+					{ project_id: projectId, display_name: "codemem", existing_memory_count: 2 },
+				]);
+				expect(preview.future_memories_shared).toBe(true);
+				const localDeviceId = store.db
+					.prepare("SELECT device_id FROM sync_device LIMIT 1")
+					.pluck()
+					.get() as string | undefined;
+				expect(localDeviceId).toBeTruthy();
+				expect(localDeviceId).not.toBe("local");
+				for (const [body, expectedError] of [
+					[
+						{ teammate_name: "Brian", project_ids: [projectId] },
+						"reviewed_project_set_digest_required",
+					],
+					[
+						{
+							teammate_name: "Brian",
+							project_ids: [projectId],
+							reviewed_project_set_digest: "invalid",
+						},
+						"reviewed_project_set_digest_invalid",
+					],
+					[
+						{
+							teammate_name: "Brian",
+							project_ids: [projectId],
+							reviewed_project_set_digest: preview.reviewed_project_set_digest,
+							access_scope: "everything",
+						},
+						"unexpected_project_invite_fields",
+					],
+				] as const) {
+					const invalidCreate = await app.request("/api/sync/project-invites", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify(body),
+					});
+					expect(invalidCreate.status).toBe(400);
+					expect(await invalidCreate.json()).toEqual({ error: expectedError });
+				}
+
+				const changedRes = await app.request("/api/sync/project-invites", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						teammate_name: "Brian",
+						project_ids: [projectId],
+						reviewed_project_set_digest: "0".repeat(64),
+					}),
+				});
+				expect(changedRes.status).toBe(409);
+				expect(fetchMock).not.toHaveBeenCalled();
+				insertTestMemory(store, { sessionId, kind: "feature", title: "active third" });
+				const changedCountRes = await app.request("/api/sync/project-invites", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						teammate_name: "Brian",
+						project_ids: [projectId],
+						reviewed_project_set_digest: preview.reviewed_project_set_digest,
+					}),
+				});
+				expect(changedCountRes.status).toBe(409);
+				const updatedPreviewRes = await app.request("/api/sync/project-invites/preview", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ teammate_name: "Brian", project_ids: [projectId] }),
+				});
+				const updatedPreview = (await updatedPreviewRes.json()) as typeof preview;
+				expect(updatedPreview.projects[0]?.existing_memory_count).toBe(3);
+				expect(updatedPreview.reviewed_project_set_digest).not.toBe(
+					preview.reviewed_project_set_digest,
+				);
+
+				const createRequest = {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						teammate_name: "Brian",
+						project_ids: [projectId],
+						reviewed_project_set_digest: updatedPreview.reviewed_project_set_digest,
+					}),
+				};
+				const legacyCoordinatorResponse = await app.request(
+					"/api/sync/project-invites",
+					createRequest,
+				);
+				expect(legacyCoordinatorResponse.status).toBe(400);
+				expect(await legacyCoordinatorResponse.json()).toEqual({
+					error: "coordinator_invite_intent_mismatch",
+				});
+				expect(store.db.prepare("SELECT COUNT(*) FROM share_operations").pluck().get()).toBe(0);
+				projectIntentEcho = "operation_only";
+				const missingDigestResponse = await app.request("/api/sync/project-invites", createRequest);
+				expect(missingDigestResponse.status).toBe(400);
+				expect(await missingDigestResponse.json()).toEqual({
+					error: "coordinator_invite_intent_mismatch",
+				});
+				expect(store.db.prepare("SELECT COUNT(*) FROM share_operations").pluck().get()).toBe(0);
+				projectIntentEcho = "all";
+				store.db.exec("ALTER TABLE share_operations RENAME TO share_operations_blocked");
+				const failedPersistence = await app.request("/api/sync/project-invites", createRequest);
+				expect(failedPersistence.status).toBe(400);
+				store.db.exec("ALTER TABLE share_operations_blocked RENAME TO share_operations");
+
+				const createRes = await app.request("/api/sync/project-invites", createRequest);
+				expect(createRes.status).toBe(200);
+				const created = (await createRes.json()) as Record<string, unknown>;
+				expect(created).toMatchObject({
+					operation_id: updatedPreview.operation_id,
+					existing_memory_count: 3,
+					future_memories_shared: true,
+					invite: { link: "codemem://join?invite=project-invite-blob" },
+				});
+				const coordinatorRequestBody = (fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)
+					?.body;
+				const coordinatorBody = coordinatorRequestBody
+					? (JSON.parse(
+							new TextDecoder().decode(coordinatorRequestBody as ArrayBufferView),
+						) as Record<string, unknown>)
+					: {};
+				expect(coordinatorBody).toMatchObject({
+					operation_id: updatedPreview.operation_id,
+					reviewed_project_set_digest: updatedPreview.reviewed_project_set_digest,
+				});
+				expect(coordinatorBody).not.toHaveProperty("scope_ids");
+				expect(coordinatorBody).not.toHaveProperty("project_ids");
+				expect(fetchMock).toHaveBeenCalledTimes(4);
+				expect(
+					store.db.prepare("SELECT state, teammate_name, person_id FROM share_operations").get(),
+				).toEqual({
+					state: "waiting_for_acceptance",
+					teammate_name: "Brian",
+					person_id: "pending-brian",
+				});
+				expect(
+					store.db.prepare("SELECT inviter_device_ids_json FROM share_operations").pluck().get(),
+				).toBe(JSON.stringify([localDeviceId]));
+				expect(store.actorId).toBe(`local:${localDeviceId}`);
+				expect(
+					store.db.prepare("SELECT inviter_actor_id FROM share_operations").pluck().get(),
+				).toBe(`local:${localDeviceId}`);
+				expect(
+					store.db
+						.prepare(
+							"SELECT canonical_project_identity, existing_memory_count FROM share_operation_projects",
+						)
+						.all(),
+				).toEqual([{ canonical_project_identity: projectId, existing_memory_count: 3 }]);
+				expect(
+					store.db
+						.prepare("SELECT COUNT(*) FROM actors WHERE lower(display_name) = 'brian'")
+						.pluck()
+						.get(),
+				).toBe(1);
+				const coordinatorCallsBeforeActiveRetry = fetchMock.mock.calls.length;
+				store.db
+					.prepare("UPDATE share_operations SET state = 'active' WHERE operation_id = ?")
+					.run(updatedPreview.operation_id);
+				const activeRetry = await app.request("/api/sync/project-invites", createRequest);
+				expect(activeRetry.status).toBe(409);
+				expect(await activeRetry.json()).toEqual({ error: "operation_state_invalid" });
+				expect(fetchMock).toHaveBeenCalledTimes(coordinatorCallsBeforeActiveRetry);
+				store.db
+					.prepare(
+						"UPDATE share_operations SET state = 'waiting_for_acceptance' WHERE operation_id = ?",
+					)
+					.run(updatedPreview.operation_id);
+
+				const insertMapping = store.db.prepare(
+					`INSERT INTO project_scope_mappings(
+						workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+					 ) VALUES (?, ?, 'local-default', 0, 'user', ?, ?)`,
+				);
+				for (let index = 0; index < 260; index += 1) {
+					const suffix = String(index).padStart(3, "0");
+					insertMapping.run(
+						`workspace:pagination-${suffix}`,
+						`pagination-${suffix}`,
+						"2026-07-20T00:00:00Z",
+						"2026-07-20T00:00:00Z",
+					);
+				}
+				const laterPage = (await (
+					await app.request("/api/sync/projects?offset=250&limit=250")
+				).json()) as { projects: Array<{ display_project: string; workspace_identity: string }> };
+				const laterProject = laterPage.projects.find((project) =>
+					project.display_project.startsWith("pagination-"),
+				);
+				if (!laterProject) throw new Error("later-page project missing");
+				const laterPreview = await app.request("/api/sync/project-invites/preview", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						teammate_name: "Brian",
+						project_ids: [laterProject.workspace_identity],
+					}),
+				});
+				expect(laterPreview.status).toBe(200);
+				const laterReviewed = (await laterPreview.json()) as {
+					reviewed_project_set_digest: string;
+				};
+				const coordinatorCallsBeforeSubstitution = fetchMock.mock.calls.length;
+				const substitution = await app.request("/api/sync/project-invites", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						teammate_name: "Brian",
+						project_ids: [laterProject.workspace_identity],
+						reviewed_project_set_digest: updatedPreview.reviewed_project_set_digest,
+					}),
+				});
+				expect(substitution.status).toBe(409);
+				expect(await substitution.json()).toEqual({ error: "reviewed_project_set_changed" });
+				expect(fetchMock).toHaveBeenCalledTimes(coordinatorCallsBeforeSubstitution);
+
+				const laterCreate = await app.request("/api/sync/project-invites", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						teammate_name: "Brian",
+						project_ids: [laterProject.workspace_identity],
+						reviewed_project_set_digest: laterReviewed.reviewed_project_set_digest,
+					}),
+				});
+				expect(laterCreate.status).toBe(200);
+				expect(await laterCreate.json()).toMatchObject({
+					projects: [{ project_id: laterProject.workspace_identity }],
+				});
+				expect(fetchMock).toHaveBeenCalledTimes(coordinatorCallsBeforeSubstitution + 1);
+
+				store.db
+					.prepare(
+						`INSERT INTO actors(
+							actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+						 ) VALUES ('pending-brian-duplicate', 'Brian', 0, 'pending', NULL, ?, ?)`,
+					)
+					.run("2026-07-20T00:00:00Z", "2026-07-20T00:00:00Z");
+				const ambiguousPerson = await app.request("/api/sync/project-invites/preview", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ teammate_name: "Brian", project_ids: [projectId] }),
+				});
+				expect(await ambiguousPerson.json()).toEqual({ error: "teammate_match_ambiguous" });
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevDeviceId == null) delete process.env.CODEMEM_DEVICE_ID;
+				else process.env.CODEMEM_DEVICE_ID = prevDeviceId;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
 			}
 		});
 

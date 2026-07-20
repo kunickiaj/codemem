@@ -16,6 +16,7 @@ import { initTestSchema } from "./test-utils.js";
 function insertSession(
 	db: InstanceType<typeof Database>,
 	input: {
+		active?: boolean;
 		cwd?: string | null;
 		project?: string | null;
 		gitRemote?: string | null;
@@ -59,7 +60,7 @@ function insertMemory(
 			`INSERT INTO memory_items(
 			session_id, kind, title, body_text, created_at, updated_at,
 			visibility, workspace_id, origin_device_id, active, metadata_json, project, scope_id, import_key
-		 ) VALUES (?, 'discovery', 'Scoped project', 'Body', ?, ?, 'shared', ?, ?, 1, ?, ?, ?, ?)`,
+		 ) VALUES (?, 'discovery', 'Scoped project', 'Body', ?, ?, 'shared', ?, ?, ?, ?, ?, ?, ?)`,
 		)
 		.run(
 			sessionId,
@@ -67,6 +68,7 @@ function insertMemory(
 			now,
 			input.workspaceId === undefined ? "shared:acme" : input.workspaceId,
 			input.originDeviceId === undefined ? null : input.originDeviceId,
+			input.active === false ? 0 : 1,
 			toJson({}),
 			input.project === undefined ? null : input.project,
 			input.scopeId === undefined ? null : input.scopeId,
@@ -131,6 +133,18 @@ describe("project scope settings", () => {
 					}),
 				],
 			}),
+		]);
+	});
+
+	it("counts only active memories in project inventory", () => {
+		const sessionId = insertSession(db);
+		insertMemory(db, sessionId);
+		insertMemory(db, sessionId, { active: false, importKey: "inactive-memory" });
+
+		const inventory = listProjectScopeInventory(db);
+
+		expect(inventory.projects).toEqual([
+			expect.objectContaining({ display_project: "api", memory_count: 1 }),
 		]);
 	});
 

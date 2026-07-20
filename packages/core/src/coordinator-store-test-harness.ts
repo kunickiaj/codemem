@@ -711,6 +711,136 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 		});
 
 		describe("invites", () => {
+			it("retains project-intent references and retries the same operation idempotently", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Team Alpha");
+					const input = {
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2099-01-01T00:00:00Z",
+						operationId: `share_${"a".repeat(40)}`,
+						reviewedProjectSetDigest: "b".repeat(64),
+					};
+
+					const first = await store.createInvite(input);
+					const retry = await store.createInvite(input);
+
+					expect(retry.invite_id).toBe(first.invite_id);
+					expect(retry.token).toBe(first.token);
+					expect(retry).toMatchObject({
+						operation_id: input.operationId,
+						reviewed_project_set_digest: input.reviewedProjectSetDigest,
+					});
+				});
+			});
+
+			it("reissues an expired project invite without changing its operation identity", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Team Alpha");
+					const operationId = `share_${"c".repeat(40)}`;
+					const reviewedProjectSetDigest = "d".repeat(64);
+					const expired = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2000-01-01T00:00:00Z",
+						operationId,
+						reviewedProjectSetDigest,
+					});
+
+					const reissued = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2099-01-01T00:00:00Z",
+						operationId,
+						reviewedProjectSetDigest,
+					});
+
+					expect(reissued.invite_id).toBe(expired.invite_id);
+					expect(reissued.token).not.toBe(expired.token);
+					expect(reissued.expires_at).toBe("2099-01-01T00:00:00.000Z");
+					expect(reissued.revoked_at).toBeNull();
+					expect(await store.getInviteByToken(expired.token)).toBeNull();
+					expect(await store.getInviteByToken(reissued.token)).toMatchObject({
+						operation_id: operationId,
+					});
+				});
+			});
+
+			it("returns one invite for concurrent same-intent operation creation", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Team Alpha");
+					const input = {
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2099-01-01T00:00:00Z",
+						operationId: `share_${"d".repeat(40)}`,
+						reviewedProjectSetDigest: "e".repeat(64),
+					};
+
+					const [first, second] = await Promise.all([
+						store.createInvite(input),
+						store.createInvite(input),
+					]);
+
+					expect(second.invite_id).toBe(first.invite_id);
+					expect(second.token).toBe(first.token);
+				});
+			});
+
+			it("rejects the loser of concurrent conflicting-intent operation creation", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Team Alpha");
+					const operationId = `share_${"f".repeat(40)}`;
+					const results = await Promise.allSettled([
+						store.createInvite({
+							groupId: "g1",
+							policy: "auto_admit",
+							expiresAt: "2099-01-01T00:00:00Z",
+							operationId,
+							reviewedProjectSetDigest: "1".repeat(64),
+						}),
+						store.createInvite({
+							groupId: "g1",
+							policy: "auto_admit",
+							expiresAt: "2099-01-01T00:00:00Z",
+							operationId,
+							reviewedProjectSetDigest: "2".repeat(64),
+						}),
+					]);
+
+					expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+					const rejected = results.find((result) => result.status === "rejected");
+					expect(rejected).toMatchObject({
+						status: "rejected",
+						reason: expect.objectContaining({ message: "invite_operation_intent_conflict" }),
+					});
+				});
+			});
+
+			it("rejects reuse of an operation id with different reviewed intent", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Team Alpha");
+					const operationId = `share_${"a".repeat(40)}`;
+					await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2099-01-01T00:00:00Z",
+						operationId,
+						reviewedProjectSetDigest: "b".repeat(64),
+					});
+
+					await expect(
+						store.createInvite({
+							groupId: "g1",
+							policy: "auto_admit",
+							expiresAt: "2099-01-01T00:00:00Z",
+							operationId,
+							reviewedProjectSetDigest: "c".repeat(64),
+						}),
+					).rejects.toThrow("invite_operation_intent_conflict");
+				});
+			});
+
 			it("creates an invite and retrieves by token", async () => {
 				await withContext(async ({ store }) => {
 					await store.createGroup("g1", "Team Alpha");
@@ -724,6 +854,8 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					expect(invite.group_id).toBe("g1");
 					expect(invite.policy).toBe("auto_approve");
 					expect(invite.team_name_snapshot).toBe("Team Alpha");
+					expect(invite.operation_id ?? null).toBeNull();
+					expect(invite.reviewed_project_set_digest ?? null).toBeNull();
 					const byToken = await store.getInviteByToken(invite.token as string);
 					expect(byToken).not.toBeNull();
 					expect(byToken?.invite_id).toBe(invite.invite_id);

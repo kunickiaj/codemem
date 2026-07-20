@@ -972,7 +972,7 @@ export function listProjectScopeInventory(
 				COUNT(DISTINCT s.id) AS session_count,
 				COUNT(mi_count.id) AS memory_count
 			 FROM sessions s
-			 LEFT JOIN memory_items mi_count ON mi_count.session_id = s.id
+			 LEFT JOIN memory_items mi_count ON mi_count.session_id = s.id AND mi_count.active = 1
 			 WHERE (
 			           COALESCE(TRIM(s.git_remote), TRIM(s.cwd), TRIM(s.project), '') <> ''
 			        OR mi_count.id IS NOT NULL

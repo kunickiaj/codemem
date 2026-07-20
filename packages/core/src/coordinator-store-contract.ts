@@ -41,6 +41,10 @@ export interface CoordinatorInvite {
 	created_by: string | null;
 	team_name_snapshot: string | null;
 	revoked_at: string | null;
+	/** Null/absent identifies a legacy enrollment invite, which grants no project intent by itself. */
+	operation_id?: string | null;
+	/** Digest reference only; the reviewed project set remains server-owned operation state. */
+	reviewed_project_set_digest?: string | null;
 }
 
 export interface CoordinatorJoinRequest {
@@ -170,6 +174,8 @@ export interface CoordinatorCreateInviteInput {
 	policy: string;
 	expiresAt: string;
 	createdBy?: string | null;
+	operationId?: string | null;
+	reviewedProjectSetDigest?: string | null;
 }
 
 export interface CoordinatorCreateJoinRequestInput {

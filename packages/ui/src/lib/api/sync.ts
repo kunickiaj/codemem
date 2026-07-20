@@ -246,6 +246,31 @@ export interface ProjectScopeInventoryResult {
 	has_more: boolean;
 }
 
+export interface ProjectInvitePreviewProject {
+	project_id: string;
+	display_name: string;
+	existing_memory_count: number;
+}
+
+export interface ProjectInvitePreview {
+	operation_id: string;
+	teammate: {
+		display_name: string;
+		match: "existing" | "pending";
+		person_id?: string;
+	};
+	projects: ProjectInvitePreviewProject[];
+	existing_memory_count: number;
+	future_memories_shared: true;
+	history_policy: "existing_and_future";
+	reviewed_project_set_digest: string;
+}
+
+export interface CreatedProjectInvite extends ProjectInvitePreview {
+	ok: true;
+	invite: { link: string; encoded: string; expires_at: string };
+}
+
 export interface ProjectReassignmentResult {
 	workspace_identity: string;
 	project: string;
@@ -362,6 +387,35 @@ export async function loadProjectScopeInventory(
 	}
 	const query = params.toString();
 	return fetchJson<ProjectScopeInventoryResult>(`/api/sync/projects${query ? `?${query}` : ""}`);
+}
+
+async function projectInviteRequest<T>(
+	path: string,
+	input: { teammate_name: string; project_ids: string[]; reviewed_project_set_digest?: string },
+): Promise<T> {
+	const resp = await fetch(path, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(input),
+	});
+	const { text, payload } = await readJsonPayload<T>(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	return payload as T;
+}
+
+export function previewProjectInvite(input: {
+	teammate_name: string;
+	project_ids: string[];
+}): Promise<ProjectInvitePreview> {
+	return projectInviteRequest("/api/sync/project-invites/preview", input);
+}
+
+export function createProjectInvite(input: {
+	teammate_name: string;
+	project_ids: string[];
+	reviewed_project_set_digest: string;
+}): Promise<CreatedProjectInvite> {
+	return projectInviteRequest("/api/sync/project-invites", input);
 }
 
 export async function saveSharingDomainProjectMapping(input: {

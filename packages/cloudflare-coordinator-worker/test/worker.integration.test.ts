@@ -203,6 +203,129 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		expect(await replayRes.json()).toEqual({ error: "nonce_replay" });
 	});
 
+	it("persists project intent while preserving legacy join behavior after migration 0007", async () => {
+		const legacyJoiner = createIdentity();
+		const projectJoiner = createIdentity();
+		const adminHeaders = {
+			"content-type": "application/json",
+			"X-Codemem-Coordinator-Admin": "test-secret",
+		};
+		await env.COORDINATOR_DB.prepare(
+			"INSERT INTO groups (group_id, display_name, created_at) VALUES (?, ?, ?)",
+		)
+			.bind("g1", "Team Alpha", "2026-03-28T00:00:00Z")
+			.run();
+
+		const legacyInviteResponse = await exports.default.fetch(
+			"https://example.com/v1/admin/invites",
+			{
+				method: "POST",
+				headers: adminHeaders,
+				body: JSON.stringify({
+					group_id: "g1",
+					policy: "auto_admit",
+					expires_at: "2099-01-01T00:00:00Z",
+					coordinator_url: "https://example.com",
+				}),
+			},
+		);
+		const legacyInvite = (await legacyInviteResponse.json()) as { payload: InvitePayload };
+		const legacyJoinResponse = await exports.default.fetch("https://example.com/v1/join", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				token: legacyInvite.payload.token,
+				device_id: legacyJoiner.deviceId,
+				public_key: legacyJoiner.publicKey,
+				fingerprint: legacyJoiner.fingerprint,
+			}),
+		});
+		expect(legacyJoinResponse.status).toBe(200);
+		expect(await legacyJoinResponse.json()).toMatchObject({ status: "enrolled" });
+
+		const operationId = `share_${"a".repeat(40)}`;
+		const reviewedProjectSetDigest = "b".repeat(64);
+		const projectInviteBody = {
+			group_id: "g1",
+			policy: "auto_admit",
+			expires_at: "2099-01-01T00:00:00Z",
+			coordinator_url: "https://example.com",
+			operation_id: operationId,
+			reviewed_project_set_digest: reviewedProjectSetDigest,
+		};
+		const projectInviteResponse = await exports.default.fetch(
+			"https://example.com/v1/admin/invites",
+			{
+				method: "POST",
+				headers: adminHeaders,
+				body: JSON.stringify(projectInviteBody),
+			},
+		);
+		expect(projectInviteResponse.status).toBe(200);
+		const projectInvite = (await projectInviteResponse.json()) as { payload: InvitePayload };
+		const retryResponse = await exports.default.fetch("https://example.com/v1/admin/invites", {
+			method: "POST",
+			headers: adminHeaders,
+			body: JSON.stringify(projectInviteBody),
+		});
+		expect(retryResponse.status).toBe(200);
+		expect((await retryResponse.json()) as { payload: InvitePayload }).toMatchObject({
+			payload: { token: projectInvite.payload.token },
+		});
+		const conflictResponse = await exports.default.fetch("https://example.com/v1/admin/invites", {
+			method: "POST",
+			headers: adminHeaders,
+			body: JSON.stringify({
+				...projectInviteBody,
+				reviewed_project_set_digest: "c".repeat(64),
+			}),
+		});
+		expect(conflictResponse.status).toBe(409);
+		expect(await conflictResponse.json()).toEqual({ error: "invite_operation_intent_conflict" });
+		expect(
+			await env.COORDINATOR_DB.prepare(
+				`SELECT operation_id, reviewed_project_set_digest
+				 FROM coordinator_invites WHERE operation_id = ?`,
+			)
+				.bind(operationId)
+				.first(),
+		).toEqual({ operation_id: operationId, reviewed_project_set_digest: reviewedProjectSetDigest });
+		await expect(
+			env.COORDINATOR_DB.prepare(
+				`INSERT INTO coordinator_invites(
+					invite_id, group_id, token, policy, expires_at, created_at, operation_id,
+					reviewed_project_set_digest
+				 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			)
+				.bind(
+					"duplicate-operation",
+					"g1",
+					"duplicate-token",
+					"auto_admit",
+					"2099-01-01T00:00:00Z",
+					"2026-03-28T00:00:00Z",
+					operationId,
+					reviewedProjectSetDigest,
+				)
+				.run(),
+		).rejects.toThrow();
+
+		const projectJoinResponse = await exports.default.fetch("https://example.com/v1/join", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				token: projectInvite.payload.token,
+				device_id: projectJoiner.deviceId,
+				public_key: projectJoiner.publicKey,
+				fingerprint: projectJoiner.fingerprint,
+			}),
+		});
+		expect(projectJoinResponse.status).toBe(409);
+		expect(await projectJoinResponse.json()).toEqual({
+			error: "project_invite_acceptance_not_available",
+		});
+	});
+
 	it("manages Sharing domain metadata and explicit memberships through worker admin routes", async () => {
 		await env.COORDINATOR_DB.prepare(
 			"INSERT INTO groups (group_id, display_name, created_at) VALUES (?, ?, ?)",

@@ -45,11 +45,16 @@ vi.mock("../lib/api", () => ({
 }));
 
 vi.mock("../lib/notice", () => ({ showGlobalNotice: vi.fn() }));
+vi.mock("./project-sharing", () => ({
+	openProjectShareFlow: vi.fn(),
+	renderProjectShareFlow: vi.fn(),
+}));
 vi.mock("./sync/sync-dialogs", () => ({ openSyncInputDialog: vi.fn() }));
 
 import * as api from "../lib/api";
-import type { ProjectScopeInventoryProject } from "../lib/api/sync";
+import type { ProjectScopeInventoryProject, ProjectScopeInventoryResult } from "../lib/api/sync";
 import { state } from "../lib/state";
+import * as projectSharing from "./project-sharing";
 import { initProjectsTab, loadProjectsData } from "./projects";
 import { openSyncInputDialog } from "./sync/sync-dialogs";
 
@@ -87,6 +92,7 @@ function mountProjectsDom() {
 		<div id="projectsInventoryMeta"></div>
 		<div id="projectsInventorySkeleton"></div>
 		<div id="projectsInventoryList"></div>
+		<div id="projectShareFlowMount"></div>
 		<button id="projectsPrevPage"></button>
 		<button id="projectsNextPage"></button>
 	`;
@@ -184,6 +190,217 @@ describe("Projects tab", () => {
 			expect.objectContaining({ limit: 250 }),
 		);
 		expect(document.getElementById("projectsInventorySkeleton")).toBeNull();
+	});
+
+	it("opens row sharing with exactly the selected canonical project", async () => {
+		const selected = project({
+			cwd: "/workspace/work/exampleco/codemem",
+			display_project: "codemem",
+			git_remote: "https://git.example.invalid/exampleco/codemem.git",
+			project: "codemem",
+			workspace_identity: "git:https://git.example.invalid/exampleco/codemem.git",
+		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project(), selected],
+			total: 2,
+		});
+
+		initProjectsTab(() => {});
+		await loadProjectsData();
+		const selectedRow = [...document.querySelectorAll<HTMLElement>(".project-inventory-row")].find(
+			(row) => row.textContent?.includes("codemem"),
+		);
+		if (!selectedRow) throw new Error("selected project row missing");
+		const share = [...selectedRow.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Share",
+		);
+		if (!share) throw new Error("Share button missing");
+		share.click();
+
+		expect(projectSharing.renderProjectShareFlow).toHaveBeenCalledWith(
+			document.getElementById("projectShareFlowMount"),
+			[project(), selected],
+			{ inventoryError: false },
+		);
+		expect(projectSharing.openProjectShareFlow).toHaveBeenCalledWith([selected.workspace_identity]);
+	});
+
+	it("loads the sharing selector independently from the filtered inventory page", async () => {
+		const filtered = project({ display_project: "filtered", workspace_identity: "git:filtered" });
+		const later = project({ display_project: "later", workspace_identity: "git:later" });
+		vi.mocked(api.loadProjectScopeInventory)
+			.mockResolvedValueOnce({
+				has_more: false,
+				limit: 250,
+				offset: 0,
+				projects: [filtered],
+				total: 1,
+			})
+			.mockResolvedValueOnce({
+				has_more: true,
+				limit: 250,
+				offset: 0,
+				projects: [project()],
+				total: 251,
+			})
+			.mockResolvedValueOnce({
+				has_more: false,
+				limit: 250,
+				offset: 250,
+				projects: [later],
+				total: 251,
+			});
+
+		initProjectsTab(() => {});
+		await loadProjectsData();
+
+		expect(projectSharing.renderProjectShareFlow).toHaveBeenCalledWith(
+			document.getElementById("projectShareFlowMount"),
+			[project(), later],
+			{ inventoryError: false },
+		);
+		expect(api.loadProjectScopeInventory).toHaveBeenNthCalledWith(2, { limit: 250, offset: 0 });
+		expect(api.loadProjectScopeInventory).toHaveBeenNthCalledWith(3, {
+			limit: 250,
+			offset: 250,
+		});
+	});
+
+	it("does not let an older project load overwrite a newer selector snapshot", async () => {
+		let resolveOldFiltered: (value: ProjectScopeInventoryResult) => void = () => {};
+		let resolveOldSharing: (value: ProjectScopeInventoryResult) => void = () => {};
+		const oldFiltered = new Promise<ProjectScopeInventoryResult>((resolve) => {
+			resolveOldFiltered = resolve;
+		});
+		const oldSharing = new Promise<ProjectScopeInventoryResult>((resolve) => {
+			resolveOldSharing = resolve;
+		});
+		const newerFiltered = project({
+			display_project: "new filtered",
+			workspace_identity: "new-filtered",
+		});
+		const newerSharing = project({
+			display_project: "new sharing",
+			workspace_identity: "new-sharing",
+		});
+		let call = 0;
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async () => {
+			call += 1;
+			if (call === 1) return oldFiltered;
+			if (call === 2) return oldSharing;
+			return {
+				has_more: false,
+				limit: 250,
+				offset: 0,
+				projects: [call === 3 ? newerFiltered : newerSharing],
+				total: 1,
+			};
+		});
+
+		initProjectsTab(() => {});
+		const olderLoad = loadProjectsData();
+		await loadProjectsData();
+		resolveOldFiltered({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project({ display_project: "old filtered", workspace_identity: "old-filtered" })],
+			total: 1,
+		});
+		resolveOldSharing({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project({ display_project: "old sharing", workspace_identity: "old-sharing" })],
+			total: 1,
+		});
+		await olderLoad;
+
+		expect(projectSharing.renderProjectShareFlow).toHaveBeenLastCalledWith(
+			document.getElementById("projectShareFlowMount"),
+			[newerSharing],
+			{ inventoryError: false },
+		);
+		expect(document.body.textContent).toContain("new filtered");
+		expect(document.body.textContent).not.toContain("old filtered");
+	});
+
+	it("does not let an older coordinator refresh redraw stale project rows", async () => {
+		let resolveOldStatus: (value: { has_admin_secret: boolean; readiness: "ready" }) => void =
+			() => {};
+		const oldStatus = new Promise<{ has_admin_secret: boolean; readiness: "ready" }>((resolve) => {
+			resolveOldStatus = resolve;
+		});
+		vi.mocked(api.loadCoordinatorAdminStatus)
+			.mockImplementationOnce(async () => oldStatus)
+			.mockResolvedValueOnce({ has_admin_secret: true, readiness: "ready" });
+		const old = project({ display_project: "old filtered", workspace_identity: "old-filtered" });
+		const newer = project({ display_project: "new filtered", workspace_identity: "new-filtered" });
+		vi.mocked(api.loadProjectScopeInventory)
+			.mockResolvedValueOnce({
+				has_more: false,
+				limit: 250,
+				offset: 0,
+				projects: [old],
+				total: 1,
+			})
+			.mockResolvedValueOnce({
+				has_more: false,
+				limit: 250,
+				offset: 0,
+				projects: [old],
+				total: 1,
+			})
+			.mockResolvedValueOnce({
+				has_more: false,
+				limit: 250,
+				offset: 0,
+				projects: [newer],
+				total: 1,
+			})
+			.mockResolvedValueOnce({
+				has_more: false,
+				limit: 250,
+				offset: 0,
+				projects: [newer],
+				total: 1,
+			});
+
+		initProjectsTab(() => {});
+		await loadProjectsData();
+		await loadProjectsData();
+		await flushAsyncWork();
+		resolveOldStatus({ has_admin_secret: true, readiness: "ready" });
+		await flushAsyncWork();
+
+		expect(document.body.textContent).toContain("new filtered");
+		expect(document.body.textContent).not.toContain("old filtered");
+	});
+
+	it("disables stale sharing choices when a later primary inventory load fails", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		});
+		initProjectsTab(() => {});
+		await loadProjectsData();
+		vi.mocked(api.loadProjectScopeInventory).mockRejectedValueOnce(
+			new Error("inventory unavailable"),
+		);
+
+		await loadProjectsData();
+
+		expect(projectSharing.renderProjectShareFlow).toHaveBeenLastCalledWith(
+			document.getElementById("projectShareFlowMount"),
+			[],
+			{ inventoryError: true },
+		);
 	});
 
 	it("removes the project inventory skeleton when loading fails", async () => {

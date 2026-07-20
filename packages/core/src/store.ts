@@ -208,10 +208,11 @@ function parseMetadata(row: MemoryItem): MemoryItemResponse {
 export class MemoryStore {
 	readonly db: Database;
 	readonly dbPath: string;
-	readonly deviceId: string;
-	readonly actorId: string;
-	readonly actorDisplayName: string;
+	deviceId: string;
+	actorId: string;
+	actorDisplayName: string;
 	readonly crossSessionDedupWindowMs: number;
+	private readonly actorIdUsesDeviceFallback: boolean;
 	/**
 	 * Per-store secret scanner. Lives on the instance (not as a module global)
 	 * so workspace-level rule overrides and allowlists can be wired without
@@ -273,6 +274,7 @@ export class MemoryStore {
 		const configActorId = Object.hasOwn(process.env, "CODEMEM_ACTOR_ID")
 			? cleanStr(process.env.CODEMEM_ACTOR_ID)
 			: (cleanStr(config.actor_id) ?? null);
+		this.actorIdUsesDeviceFallback = !configActorId;
 		this.actorId = configActorId || `local:${this.deviceId}`;
 
 		const configDisplayName = Object.hasOwn(process.env, "CODEMEM_ACTOR_DISPLAY_NAME")
@@ -281,6 +283,16 @@ export class MemoryStore {
 		this.actorDisplayName =
 			configDisplayName || process.env.USER?.trim() || process.env.USERNAME?.trim() || this.actorId;
 		this.crossSessionDedupWindowMs = resolveCrossSessionDedupWindowMs();
+	}
+
+	adoptEnsuredDeviceIdentity(deviceId: string): void {
+		const normalizedDeviceId = deviceId.trim();
+		if (!normalizedDeviceId || normalizedDeviceId === "local" || this.deviceId !== "local") return;
+		const previousActorId = this.actorId;
+		this.deviceId = normalizedDeviceId;
+		if (!this.actorIdUsesDeviceFallback) return;
+		this.actorId = `local:${normalizedDeviceId}`;
+		if (this.actorDisplayName === previousActorId) this.actorDisplayName = this.actorId;
 	}
 
 	private findExistingDuplicateMemory(

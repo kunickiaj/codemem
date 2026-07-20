@@ -1256,6 +1256,8 @@ export function createCoordinatorApp(
 		const policy = String(data.policy ?? "auto_admit").trim();
 		const expiresAt = String(data.expires_at ?? "").trim();
 		const createdBy = String(data.created_by ?? "").trim() || null;
+		const operationId = String(data.operation_id ?? "").trim() || null;
+		const reviewedProjectSetDigest = String(data.reviewed_project_set_digest ?? "").trim() || null;
 
 		if (!groupId || !["auto_admit", "approval_required"].includes(policy) || !expiresAt) {
 			return c.json({ error: "group_id_policy_and_expires_at_required" }, 400);
@@ -1264,6 +1266,15 @@ export function createCoordinatorApp(
 		// normalizeInviteExpiresAt throw can't escape as an unhandled 500.
 		if (Number.isNaN(new Date(expiresAt).getTime())) {
 			return c.json({ error: "invalid_expires_at" }, 400);
+		}
+		if (Boolean(operationId) !== Boolean(reviewedProjectSetDigest)) {
+			return c.json({ error: "operation_intent_reference_incomplete" }, 400);
+		}
+		if (
+			(operationId && !/^share_[a-f0-9]{40}$/u.test(operationId)) ||
+			(reviewedProjectSetDigest && !/^[a-f0-9]{64}$/u.test(reviewedProjectSetDigest))
+		) {
+			return c.json({ error: "operation_intent_reference_invalid" }, 400);
 		}
 
 		const store = createStore();
@@ -1277,6 +1288,8 @@ export function createCoordinatorApp(
 				policy,
 				expiresAt,
 				createdBy,
+				operationId,
+				reviewedProjectSetDigest,
 			});
 
 			const payload: InvitePayload = {
@@ -1284,9 +1297,9 @@ export function createCoordinatorApp(
 				kind: "coordinator_team_invite",
 				coordinator_url: String(data.coordinator_url ?? "").trim(),
 				group_id: groupId,
-				policy,
+				policy: invite.policy,
 				token: String(invite.token ?? ""),
-				expires_at: expiresAt,
+				expires_at: invite.expires_at,
 				team_name: (invite.team_name_snapshot as string) ?? null,
 			};
 			const encoded = encodeInvitePayload(payload);
@@ -1301,6 +1314,11 @@ export function createCoordinatorApp(
 				encoded,
 				link: inviteLink(encoded),
 			});
+		} catch (error) {
+			if (error instanceof Error && error.message === "invite_operation_intent_conflict") {
+				return c.json({ error: "invite_operation_intent_conflict" }, 409);
+			}
+			throw error;
 		} finally {
 			await store.close();
 		}
@@ -1456,6 +1474,12 @@ export function createCoordinatorApp(
 		try {
 			const invite = await store.getInviteByToken(token);
 			if (!invite) return c.json({ error: "invalid_token" }, 404);
+			// Project-first acceptance needs the atomic device/key binding introduced
+			// by the next slice. Never let the legacy enrollment path consume a
+			// reviewed project invite without that enforcement.
+			if (invite.operation_id || invite.reviewed_project_set_digest) {
+				return c.json({ error: "project_invite_acceptance_not_available" }, 409);
+			}
 			const group = await store.getGroup(String(invite.group_id));
 			if (!group) return c.json({ error: "group_not_found" }, 404);
 			if (group.archived_at) return c.json({ error: "group_archived" }, 409);
