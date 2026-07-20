@@ -14,6 +14,7 @@ import {
 	buildAuthHeaders,
 	connect,
 	ensureDeviceIdentity,
+	fingerprintPublicKey,
 	initTestSchema,
 	insertTestSession,
 	loadPublicKey,
@@ -4207,7 +4208,7 @@ describe("viewer-server", () => {
 					}),
 				);
 				globalThis.fetch = fetchMock as typeof fetch;
-				ensureStore();
+				const store = ensureStore();
 				const peerDb = connect(peerDbPath);
 				try {
 					initTestSchema(peerDb);
@@ -4229,6 +4230,16 @@ describe("viewer-server", () => {
 					});
 					const res = await syncApp.request(url, { headers });
 					expect(res.status).toBe(200);
+					expect(
+						store.db
+							.prepare(
+								"SELECT pinned_fingerprint, public_key FROM sync_peers WHERE peer_device_id = ?",
+							)
+							.get(peerDeviceId),
+					).toEqual({
+						pinned_fingerprint: peerFingerprintValue,
+						public_key: peerPublicKeyValue,
+					});
 				} finally {
 					peerDb.close();
 				}
@@ -9525,6 +9536,7 @@ describe("viewer-server", () => {
 				expect(coordinatorBody).toMatchObject({
 					operation_id: updatedPreview.operation_id,
 					reviewed_project_set_digest: updatedPreview.reviewed_project_set_digest,
+					inviter_device_id: localDeviceId,
 				});
 				expect(coordinatorBody).not.toHaveProperty("scope_ids");
 				expect(coordinatorBody).not.toHaveProperty("project_ids");
@@ -9754,6 +9766,150 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("reads and reconciles authoritative project invite acceptance with scoped stable failures", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const operationId = `share_${"d".repeat(40)}`;
+			const projectId = "workspace:codemem";
+			const reviewedDigest = "e".repeat(64);
+			const publicKey = "recipient-public-key";
+			const fingerprint = fingerprintPublicKey(publicKey);
+			let mode:
+				| "not_found"
+				| "malformed"
+				| "wrong_group"
+				| "waiting"
+				| "invalid_trust"
+				| "accepted" = "not_found";
+			const fetchMock = vi.fn(async () => {
+				if (mode === "not_found") {
+					return new Response(JSON.stringify({ error: "operation_not_found" }), { status: 404 });
+				}
+				if (mode === "malformed") {
+					return new Response(JSON.stringify({ error: "operation_intent_invalid" }), {
+						status: 409,
+					});
+				}
+				const base = {
+					operation_id: operationId,
+					group_id: mode === "wrong_group" ? "team-other" : "team-a",
+					reviewed_project_set_digest: reviewedDigest,
+					projects: [
+						{ canonical_identity: projectId, display_name: "codemem", existing_memory_count: 3 },
+					],
+				};
+				if (mode === "waiting" || mode === "wrong_group") {
+					return new Response(JSON.stringify({ ...base, state: "waiting_for_acceptance" }), {
+						status: 200,
+					});
+				}
+				return new Response(
+					JSON.stringify({
+						...base,
+						state: "accepted",
+						recipient_actor_id: "actor-brian",
+						recipient_display_name: "Brian",
+						recipient_device_id: "device-brian",
+						recipient_device_display_name: "Brian's MacBook",
+						recipient_public_key: publicKey,
+						recipient_fingerprint: fingerprint,
+						consumed_at: "2026-07-20T13:00:00.000Z",
+						trust_state: mode === "invalid_trust" ? "trusted" : "bootstrap_grant_created",
+						bootstrap_grant_id: "grant-1",
+					}),
+					{ status: 200 },
+				);
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "team-a",
+					sync_coordinator_admin_secret: "secret",
+				}),
+			);
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				store.db.exec(`
+					INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+					VALUES ('pending-brian', 'Brian', 0, 'pending', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z');
+				`);
+				store.db
+					.prepare(`INSERT INTO share_operations(
+						operation_id, state, inviter_actor_id, inviter_device_ids_json, person_id,
+						person_kind, pending_person_operation_id, teammate_name, history_policy,
+						reviewed_project_set_digest, coordinator_group_id, invite_token_digest,
+						invite_expires_at, created_at, updated_at
+					) VALUES (?, 'waiting_for_acceptance', ?, '[]', 'pending-brian', 'pending', ?,
+						'Brian', 'existing_and_future', ?, 'team-a', 'digest', '2099-01-01T00:00:00Z', ?, ?)`)
+					.run(
+						operationId,
+						store.actorId,
+						operationId,
+						reviewedDigest,
+						"2026-07-20T00:00:00Z",
+						"2026-07-20T00:00:00Z",
+					);
+				store.db
+					.prepare(`INSERT INTO share_operation_projects(
+						operation_id, canonical_project_identity, display_name, identity_source,
+						existing_memory_count, ordinal) VALUES (?, ?, 'codemem', 'workspace', 3, 0)`)
+					.run(operationId, projectId);
+
+				const request = () => app.request(`/api/sync/project-invites/${operationId}`);
+				expect((await request()).status).toBe(404);
+				mode = "malformed";
+				const malformed = await request();
+				expect(malformed.status).toBe(409);
+				expect(await malformed.json()).toEqual({ error: "operation_intent_invalid" });
+				mode = "wrong_group";
+				expect((await request()).status).toBe(409);
+				mode = "waiting";
+				const waiting = await request();
+				expect(waiting.status).toBe(200);
+				expect(
+					store.db
+						.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
+						.pluck()
+						.get(operationId),
+				).toBe("waiting_for_acceptance");
+				mode = "invalid_trust";
+				const invalidTrust = await request();
+				expect(invalidTrust.status).toBe(409);
+				expect(await invalidTrust.json()).toEqual({ error: "operation_trust_state_invalid" });
+				expect(
+					store.db
+						.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
+						.pluck()
+						.get(operationId),
+				).toBe("waiting_for_acceptance");
+				mode = "accepted";
+				const accepted = await request();
+				expect(accepted.status).toBe(200);
+				expect(await accepted.json()).toMatchObject({ reconciled: true, state: "accepted" });
+				expect(
+					store.db
+						.prepare("SELECT state, recipient_actor_id, recipient_device_id FROM share_operations")
+						.get(),
+				).toEqual({
+					state: "accepted",
+					recipient_actor_id: "actor-brian",
+					recipient_device_id: "device-brian",
+				});
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+			}
+		});
+
 		it("returns invite warnings for private-looking coordinator URLs", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;
@@ -9851,6 +10007,142 @@ describe("viewer-server", () => {
 				>;
 				expect(writtenConfig.sync_coordinator_url).toBe("https://coord.example.test");
 				expect(writtenConfig.sync_coordinator_group).toBe("team-a");
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			}
+		});
+
+		it("inspects and accepts a project invite with confirmed local identity only", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const operationId = `share_${"a".repeat(40)}`;
+			const invitePayload = {
+				v: 1,
+				kind: "coordinator_team_invite",
+				coordinator_url: "https://coord.example.test",
+				group_id: "team-a",
+				policy: "auto_admit",
+				token: "project-token",
+				expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+				team_name: "Team A",
+				operation_id: operationId,
+				inviter_name: "Adam",
+				project_summaries: [{ display_name: "codemem", existing_memory_count: 3 }],
+			};
+			const invite = Buffer.from(JSON.stringify(invitePayload), "utf8").toString("base64url");
+			let joinBody: Record<string, unknown> = {};
+			let corruptInviter = false;
+			const inviterPublicKey = "inviter-public-key";
+			const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = String(input);
+				if (url.includes("/v1/invites/inspect")) {
+					return new Response(
+						JSON.stringify({
+							kind: "project_share_invite",
+							operation_id: operationId,
+							inviter_name: "Adam",
+							team_name: "Team A",
+							projects: [{ display_name: "codemem", existing_memory_count: 3 }],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.includes("/v1/join")) {
+					joinBody = JSON.parse(
+						init?.body instanceof Uint8Array
+							? new TextDecoder().decode(init.body)
+							: String(init?.body ?? "{}"),
+					) as Record<string, unknown>;
+					return new Response(
+						JSON.stringify({
+							status: "accepted",
+							operation_id: operationId,
+							group_id: "team-a",
+							trust_state: "bootstrap_grant_created",
+							bootstrap_grant_id: "grant-1",
+							inviter_device: {
+								device_id: "device-adam",
+								public_key: inviterPublicKey,
+								fingerprint: corruptInviter
+									? "wrong-fingerprint"
+									: fingerprintPublicKey(inviterPublicKey),
+								display_name: "Adam's Mac",
+							},
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(configPath, JSON.stringify({ actor_display_name: "Local Person" }));
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				ensureDeviceIdentity(store.db, { keysDir });
+				const inspect = await app.request("/api/sync/invites/inspect", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ invite }),
+				});
+				expect(await inspect.json()).toMatchObject({
+					inviter_name: "Adam",
+					recipient_name: "Local Person",
+					projects: [{ display_name: "codemem", existing_memory_count: 3 }],
+				});
+				const accepted = await app.request("/api/sync/invites/import", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						invite,
+						recipient_name: "Brian",
+						device_name: "Brian's Test Mac",
+					}),
+				});
+				const acceptedBody = (await accepted.json()) as Record<string, unknown>;
+				expect(accepted.status, JSON.stringify(acceptedBody)).toBe(200);
+				expect(joinBody).toMatchObject({
+					operation_id: operationId,
+					recipient_actor_id: store.actorId,
+					recipient_display_name: "Brian",
+					device_display_name: "Brian's Test Mac",
+				});
+				expect(joinBody).not.toHaveProperty("projects");
+				expect(joinBody).not.toHaveProperty("scope_ids");
+				expect(
+					store.db
+						.prepare("SELECT display_name, status FROM actors WHERE actor_id = ?")
+						.get(store.actorId),
+				).toEqual({ display_name: "Brian", status: "active" });
+				expect(
+					store.db
+						.prepare("SELECT pending_bootstrap_grant_id FROM sync_peers WHERE peer_device_id = ?")
+						.get("device-adam"),
+				).toEqual({ pending_bootstrap_grant_id: "grant-1" });
+				corruptInviter = true;
+				const rejected = await app.request("/api/sync/invites/import", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						invite,
+						recipient_name: "Brian",
+						device_name: "Brian's Test Mac",
+					}),
+				});
+				expect(rejected.status).toBe(400);
+				expect(await rejected.json()).toEqual({ error: "inviter_identity_invalid" });
 			} finally {
 				cleanup();
 				globalThis.fetch = prevFetch;

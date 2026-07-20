@@ -26,6 +26,15 @@ CREATE TABLE IF NOT EXISTS share_operations (
 	coordinator_invite_id TEXT,
 	invite_token_digest TEXT NOT NULL,
 	invite_expires_at TEXT NOT NULL,
+	recipient_actor_id TEXT,
+	recipient_display_name TEXT,
+	recipient_device_id TEXT,
+	recipient_device_display_name TEXT,
+	recipient_public_key TEXT,
+	recipient_fingerprint TEXT,
+	acceptance_consumed_at TEXT,
+	trust_state TEXT,
+	bootstrap_grant_id TEXT,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );

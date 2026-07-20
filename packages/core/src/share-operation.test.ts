@@ -2,10 +2,13 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	inviteTokenDigest,
+	parseAcceptedProjectIntent,
 	persistShareOperation,
 	planShareOperation,
+	reconcileShareOperationAcceptance,
 	shareProjectSetDigest,
 } from "./share-operation.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { initTestSchema } from "./test-utils.js";
 
 const createdAt = "2026-07-20T12:00:00.000Z";
@@ -26,6 +29,7 @@ const projects = [
 ];
 
 type PlanInput = Parameters<typeof planShareOperation>[0];
+type AcceptanceInput = Parameters<typeof reconcileShareOperationAcceptance>[1];
 
 function plan(overrides: Partial<PlanInput> = {}) {
 	return planShareOperation({
@@ -38,6 +42,33 @@ function plan(overrides: Partial<PlanInput> = {}) {
 		inviteExpiresAt,
 		...overrides,
 	});
+}
+
+function acceptanceInput(
+	operation: ReturnType<typeof planShareOperation>,
+	overrides: Partial<AcceptanceInput> = {},
+): AcceptanceInput {
+	const publicKey = "recipient-key";
+	return {
+		operationId: operation.operationId,
+		coordinatorGroupId: operation.coordinatorGroupId,
+		reviewedProjectSetDigest: operation.reviewedProjectSetDigest,
+		recipientActorId: "actor-brian",
+		recipientDisplayName: "Brian",
+		recipientDeviceId: "device-brian",
+		recipientDeviceDisplayName: "Brian's MacBook",
+		recipientPublicKey: publicKey,
+		recipientFingerprint: fingerprintPublicKey(publicKey),
+		consumedAt: "2026-07-20T13:00:00.000Z",
+		trustState: "bootstrap_grant_created",
+		bootstrapGrantId: "grant-1",
+		projects: operation.projects.map((project) => ({
+			canonical_identity: project.canonicalIdentity,
+			display_name: project.displayName,
+			existing_memory_count: project.existingMemoryCount,
+		})),
+		...overrides,
+	};
 }
 
 function managedBoundaryIds(operation: ReturnType<typeof planShareOperation>): string[] {
@@ -349,5 +380,158 @@ describe("share-operation persistence", () => {
 				tokenDigest: inviteTokenDigest("token-2"),
 			}),
 		).toThrow("share_operation_intent_conflict");
+	});
+
+	it("reconciles authoritative acceptance into the pending Person and device without name matching", () => {
+		const operation = plan();
+		persistShareOperation(db, operation, {
+			inviteId: "invite-1",
+			tokenDigest: inviteTokenDigest("token-1"),
+		});
+		const publicKey = "recipient-key";
+		reconcileShareOperationAcceptance(db, {
+			operationId: operation.operationId,
+			coordinatorGroupId: operation.coordinatorGroupId,
+			reviewedProjectSetDigest: operation.reviewedProjectSetDigest,
+			recipientActorId: "actor-brian",
+			recipientDisplayName: "Brian",
+			recipientDeviceId: "device-brian",
+			recipientDeviceDisplayName: "Brian's MacBook",
+			recipientPublicKey: publicKey,
+			recipientFingerprint: fingerprintPublicKey(publicKey),
+			consumedAt: "2026-07-20T13:00:00.000Z",
+			trustState: "bootstrap_grant_created",
+			bootstrapGrantId: "grant-1",
+			projects: operation.projects.map((project) => ({
+				canonical_identity: project.canonicalIdentity,
+				display_name: project.displayName,
+				existing_memory_count: project.existingMemoryCount,
+			})),
+		});
+
+		expect(
+			db
+				.prepare(`SELECT state, person_id, recipient_actor_id, recipient_device_id,
+					recipient_device_display_name, bootstrap_grant_id FROM share_operations`)
+				.get(),
+		).toEqual({
+			state: "accepted",
+			person_id: "actor-brian",
+			recipient_actor_id: "actor-brian",
+			recipient_device_id: "device-brian",
+			recipient_device_display_name: "Brian's MacBook",
+			bootstrap_grant_id: "grant-1",
+		});
+		expect(
+			db
+				.prepare("SELECT status, merged_into_actor_id FROM actors WHERE actor_id = ?")
+				.get(operation.personId),
+		).toEqual({ status: "merged", merged_into_actor_id: "actor-brian" });
+		expect(
+			db
+				.prepare("SELECT actor_id, name FROM sync_peers WHERE peer_device_id = ?")
+				.get("device-brian"),
+		).toEqual({ actor_id: "actor-brian", name: "Brian's MacBook" });
+	});
+
+	it("rejects pending acceptance that collides with an existing active Person", () => {
+		const operation = plan();
+		persistShareOperation(db, operation, {
+			inviteId: "invite-1",
+			tokenDigest: inviteTokenDigest("token-1"),
+		});
+		db.prepare(`INSERT INTO actors(
+				actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+			) VALUES ('actor-alex', 'Alex', 0, 'active', NULL, ?, ?)`).run(createdAt, createdAt);
+		const publicKey = "recipient-key";
+
+		expect(() =>
+			reconcileShareOperationAcceptance(db, {
+				operationId: operation.operationId,
+				coordinatorGroupId: operation.coordinatorGroupId,
+				reviewedProjectSetDigest: operation.reviewedProjectSetDigest,
+				recipientActorId: "actor-alex",
+				recipientDisplayName: "Brian",
+				recipientDeviceId: "device-brian",
+				recipientDeviceDisplayName: "Brian's MacBook",
+				recipientPublicKey: publicKey,
+				recipientFingerprint: fingerprintPublicKey(publicKey),
+				consumedAt: "2026-07-20T13:00:00.000Z",
+				trustState: "bootstrap_grant_created",
+				bootstrapGrantId: "grant-1",
+				projects: operation.projects.map((project) => ({
+					canonical_identity: project.canonicalIdentity,
+					display_name: project.displayName,
+					existing_memory_count: project.existingMemoryCount,
+				})),
+			}),
+		).toThrow("recipient_actor_conflict");
+		expect(
+			db.prepare("SELECT display_name, status FROM actors WHERE actor_id = 'actor-alex'").get(),
+		).toEqual({ display_name: "Alex", status: "active" });
+		expect(
+			db.prepare("SELECT status FROM actors WHERE actor_id = ?").pluck().get(operation.personId),
+		).toBe("pending");
+	});
+
+	it.each([
+		["locally claimed", "actor-adam", 1],
+		["assigned to another Person", "actor-alex", 0],
+	] as const)("rejects a recipient device already %s", (_label, actorId, claimedLocalActor) => {
+		const operation = plan();
+		persistShareOperation(db, operation, {
+			inviteId: "invite-1",
+			tokenDigest: inviteTokenDigest("token-1"),
+		});
+		db.prepare(`INSERT INTO sync_peers(
+				peer_device_id, actor_id, claimed_local_actor, created_at
+			) VALUES ('device-brian', ?, ?, ?)`).run(actorId, claimedLocalActor, createdAt);
+
+		expect(() => reconcileShareOperationAcceptance(db, acceptanceInput(operation))).toThrow(
+			"recipient_device_identity_conflict",
+		);
+		expect(
+			db
+				.prepare("SELECT actor_id, claimed_local_actor FROM sync_peers WHERE peer_device_id = ?")
+				.get("device-brian"),
+		).toEqual({ actor_id: actorId, claimed_local_actor: claimedLocalActor });
+		expect(
+			db.prepare("SELECT status FROM actors WHERE actor_id = ?").pluck().get(operation.personId),
+		).toBe("pending");
+	});
+
+	it("rejects malformed or mismatched authoritative project intent", () => {
+		expect(() => parseAcceptedProjectIntent([{ display_name: "codemem" }])).toThrow(
+			"operation_intent_invalid",
+		);
+		const operation = plan();
+		persistShareOperation(db, operation, {
+			inviteId: "invite-1",
+			tokenDigest: inviteTokenDigest("token-1"),
+		});
+		const publicKey = "recipient-key";
+		expect(() =>
+			reconcileShareOperationAcceptance(db, {
+				operationId: operation.operationId,
+				coordinatorGroupId: operation.coordinatorGroupId,
+				reviewedProjectSetDigest: operation.reviewedProjectSetDigest,
+				recipientActorId: "actor-brian",
+				recipientDisplayName: "Brian",
+				recipientDeviceId: "device-brian",
+				recipientDeviceDisplayName: "Brian's MacBook",
+				recipientPublicKey: publicKey,
+				recipientFingerprint: fingerprintPublicKey(publicKey),
+				consumedAt: "2026-07-20T13:00:00.000Z",
+				trustState: "pending_inviter_device",
+				bootstrapGrantId: null,
+				projects: [
+					{
+						canonical_identity: "workspace:other",
+						display_name: "other",
+						existing_memory_count: 0,
+					},
+				],
+			}),
+		).toThrow("operation_intent_mismatch");
 	});
 });

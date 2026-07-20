@@ -1,5 +1,10 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { CoordinatorStore } from "./coordinator-store-contract.js";
+import type {
+	CoordinatorCreateInviteInput,
+	CoordinatorStore,
+} from "./coordinator-store-contract.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 export interface CoordinatorStoreHarnessContext<
 	TStore extends CoordinatorStore = CoordinatorStore,
@@ -711,6 +716,247 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 		});
 
 		describe("invites", () => {
+			it("fails closed for archived groups and mismatched public-key fingerprints", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Team Alpha");
+					const operationId = `share_${"7".repeat(40)}`;
+					const invite = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2099-01-01T00:00:00Z",
+						operationId,
+						reviewedProjectSetDigest: "6".repeat(64),
+						projectIntent: [
+							{
+								canonical_identity: "git:https://example.test/codemem",
+								display_name: "codemem",
+								existing_memory_count: 0,
+							},
+						],
+					});
+					const input = {
+						token: invite.token,
+						operationId,
+						deviceId: "device",
+						publicKey: "key",
+						fingerprint: "wrong",
+						recipientActorId: "actor",
+						recipientDisplayName: "Brian",
+						deviceDisplayName: "Brian's Mac",
+						now: "2026-07-20T00:00:00.000Z",
+					};
+					await expect(store.consumeProjectInvite(input)).rejects.toThrow("fingerprint_mismatch");
+					await store.archiveGroup("g1", "2026-07-20T00:00:00.000Z");
+					await expect(
+						store.consumeProjectInvite({ ...input, fingerprint: fingerprintPublicKey("key") }),
+					).rejects.toThrow("group_archived");
+				});
+			});
+
+			it("distinguishes expired and invalid project invite acceptance", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Team Alpha");
+					const operationId = `share_${"9".repeat(40)}`;
+					const invite = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2000-01-01T00:00:00Z",
+						operationId,
+						reviewedProjectSetDigest: "8".repeat(64),
+						projectIntent: [
+							{
+								canonical_identity: "git:https://example.test/codemem",
+								display_name: "codemem",
+								existing_memory_count: 0,
+							},
+						],
+					});
+					const input = {
+						token: invite.token,
+						operationId,
+						deviceId: "device",
+						publicKey: "key",
+						fingerprint: fingerprintPublicKey("key"),
+						recipientActorId: "actor",
+						recipientDisplayName: "Brian",
+						deviceDisplayName: "Brian's Mac",
+						now: "2026-07-20T00:00:00.000Z",
+					};
+					await expect(store.consumeProjectInvite(input)).rejects.toThrow("invite_expired");
+					await expect(store.consumeProjectInvite({ ...input, token: "invalid" })).rejects.toThrow(
+						"invite_invalid",
+					);
+				});
+			});
+
+			it("atomically binds a project invite and returns the same acceptance only to the same identity", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Team Alpha");
+					await store.enrollDevice("g1", {
+						deviceId: "seed-1",
+						fingerprint: "seed-fp",
+						publicKey: "seed-pk",
+					});
+					const operationId = `share_${"a".repeat(40)}`;
+					const invite = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2099-01-01T00:00:00Z",
+						operationId,
+						reviewedProjectSetDigest: "b".repeat(64),
+						inviterActorId: "actor-adam",
+						inviterDisplayName: "Adam",
+						inviterDeviceId: "seed-1",
+						pendingPersonId: "pending-brian",
+						projectSummaries: [{ display_name: "codemem", existing_memory_count: 3 }],
+						projectIntent: [
+							{
+								canonical_identity: "git:https://example.test/codemem",
+								display_name: "codemem",
+								existing_memory_count: 3,
+							},
+						],
+					});
+					const publicKey = "brian-key";
+					const input = {
+						token: invite.token,
+						operationId,
+						deviceId: "brian-device",
+						publicKey,
+						fingerprint: fingerprintPublicKey(publicKey),
+						recipientActorId: "actor-brian",
+						recipientDisplayName: "Brian",
+						deviceDisplayName: "Brian's MacBook",
+						now: "2026-07-20T00:00:00.000Z",
+					};
+					const accepted = await store.consumeProjectInvite(input);
+					const retry = await store.consumeProjectInvite(input);
+					const retryAfterExpiry = await store.consumeProjectInvite({
+						...input,
+						now: "2100-01-01T00:00:00.000Z",
+					});
+					expect(accepted.status).toBe("accepted");
+					expect(retry.status).toBe("existing");
+					expect(retryAfterExpiry.status).toBe("existing");
+					expect(retry.invite).toMatchObject({
+						bound_device_id: "brian-device",
+						recipient_actor_id: "actor-brian",
+						recipient_device_display_name: "Brian's MacBook",
+						trust_state: "bootstrap_grant_created",
+					});
+					expect(retry.bootstrap_grant?.seed_device_id).toBe("seed-1");
+					await expect(
+						store.consumeProjectInvite({ ...input, deviceId: "other-device" }),
+					).rejects.toThrow("invite_already_bound");
+					await expect(
+						store.consumeProjectInvite({
+							...input,
+							publicKey: "other-key",
+							fingerprint: fingerprintPublicKey("other-key"),
+						}),
+					).rejects.toThrow("invite_already_bound");
+					await expect(
+						store.consumeProjectInvite({ ...input, operationId: `share_${"c".repeat(40)}` }),
+					).rejects.toThrow("invite_invalid");
+					await expect(
+						store.consumeProjectInvite({ ...input, recipientDisplayName: "Not Brian" }),
+					).rejects.toThrow("invite_identity_conflict");
+				});
+			});
+
+			it("reports one accepted result for concurrent identical consumes", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Team Alpha");
+					const operationId = `share_${"4".repeat(40)}`;
+					const invite = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2099-01-01T00:00:00Z",
+						operationId,
+						reviewedProjectSetDigest: "3".repeat(64),
+						projectIntent: [
+							{
+								canonical_identity: "workspace:codemem",
+								display_name: "codemem",
+								existing_memory_count: 1,
+							},
+						],
+					});
+					const publicKey = "race-key";
+					const input = {
+						token: invite.token,
+						operationId,
+						deviceId: "race-device",
+						publicKey,
+						fingerprint: fingerprintPublicKey(publicKey),
+						recipientActorId: "race-actor",
+						recipientDisplayName: "Brian",
+						deviceDisplayName: "Brian's Mac",
+						now: "2026-07-20T00:00:00.000Z",
+					};
+					const results = await Promise.all([
+						store.consumeProjectInvite(input),
+						store.consumeProjectInvite(input),
+					]);
+					expect(results.map((result) => result.status).toSorted()).toEqual([
+						"accepted",
+						"existing",
+					]);
+					const saved = await store.getInviteByTokenForInspection(invite.token);
+					expect(saved?.token).toBe(`consumed:${invite.invite_id}`);
+				});
+			});
+
+			it("recovers pending inviter bootstrap once and reuses it across retries", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Team Alpha");
+					const operationId = `share_${"2".repeat(40)}`;
+					const invite = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2099-01-01T00:00:00Z",
+						operationId,
+						reviewedProjectSetDigest: "1".repeat(64),
+						inviterActorId: "actor-adam",
+						inviterDeviceId: "seed-later",
+						projectIntent: [
+							{
+								canonical_identity: "workspace:codemem",
+								display_name: "codemem",
+								existing_memory_count: 1,
+							},
+						],
+					});
+					const publicKey = "pending-key";
+					const input = {
+						token: invite.token,
+						operationId,
+						deviceId: "pending-device",
+						publicKey,
+						fingerprint: fingerprintPublicKey(publicKey),
+						recipientActorId: "actor-brian",
+						recipientDisplayName: "Brian",
+						deviceDisplayName: "Brian's Mac",
+						now: "2026-07-20T00:00:00.000Z",
+					};
+					const pending = await store.consumeProjectInvite(input);
+					expect(pending.invite.trust_state).toBe("pending_inviter_device");
+					expect(pending.bootstrap_grant).toBeNull();
+					await store.enrollDevice("g1", {
+						deviceId: "seed-later",
+						publicKey: "seed-key",
+						fingerprint: fingerprintPublicKey("seed-key"),
+					});
+					const retries = await Promise.all([
+						store.consumeProjectInvite(input),
+						store.consumeProjectInvite(input),
+					]);
+					expect(retries.every((result) => result.status === "existing")).toBe(true);
+					expect(retries[0]?.invite.trust_state).toBe("bootstrap_grant_created");
+					expect(retries[0]?.bootstrap_grant?.grant_id).toBe(retries[1]?.bootstrap_grant?.grant_id);
+					expect(await store.listBootstrapGrants("g1")).toHaveLength(1);
+				});
+			});
 			it("retains project-intent references and retries the same operation idempotently", async () => {
 				await withContext(async ({ store }) => {
 					await store.createGroup("g1", "Team Alpha");
@@ -757,12 +1003,38 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 
 					expect(reissued.invite_id).toBe(expired.invite_id);
 					expect(reissued.token).not.toBe(expired.token);
+					expect(reissued.token_digest).toBe(
+						createHash("sha256").update(reissued.token, "utf8").digest("hex"),
+					);
 					expect(reissued.expires_at).toBe("2099-01-01T00:00:00.000Z");
 					expect(reissued.revoked_at).toBeNull();
 					expect(await store.getInviteByToken(expired.token)).toBeNull();
 					expect(await store.getInviteByToken(reissued.token)).toMatchObject({
 						operation_id: operationId,
 					});
+				});
+			});
+
+			it("treats project invite expiry as output when retrying the same operation", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Team Alpha");
+					const input = {
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2099-01-01T00:00:00Z",
+						operationId: `share_${"e".repeat(40)}`,
+						reviewedProjectSetDigest: "f".repeat(64),
+					};
+					const first = await store.createInvite(input);
+
+					const retry = await store.createInvite({
+						...input,
+						expiresAt: "2099-02-01T00:00:00Z",
+					});
+
+					expect(retry.invite_id).toBe(first.invite_id);
+					expect(retry.token).toBe(first.token);
+					expect(retry.expires_at).toBe(first.expires_at);
 				});
 			});
 
@@ -821,23 +1093,111 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 				await withContext(async ({ store }) => {
 					await store.createGroup("g1", "Team Alpha");
 					const operationId = `share_${"a".repeat(40)}`;
-					await store.createInvite({
+					const original = {
 						groupId: "g1",
 						policy: "auto_admit",
 						expiresAt: "2099-01-01T00:00:00Z",
 						operationId,
 						reviewedProjectSetDigest: "b".repeat(64),
-					});
+						projectSummaries: [{ display_name: "codemem", existing_memory_count: 1 }],
+					} satisfies CoordinatorCreateInviteInput;
+					await store.createInvite(original);
 
 					await expect(
 						store.createInvite({
-							groupId: "g1",
-							policy: "auto_admit",
-							expiresAt: "2099-01-01T00:00:00Z",
-							operationId,
+							...original,
 							reviewedProjectSetDigest: "c".repeat(64),
 						}),
 					).rejects.toThrow("invite_operation_intent_conflict");
+					await expect(
+						store.createInvite({
+							...original,
+							projectSummaries: [{ display_name: "renamed", existing_memory_count: 1 }],
+						}),
+					).rejects.toThrow("invite_operation_intent_conflict");
+				});
+			});
+
+			it("rejects a project invite that conflicts with a disabled enrollment identity", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Team Alpha");
+					await store.enrollDevice("g1", {
+						deviceId: "disabled-device",
+						publicKey: "old-key",
+						fingerprint: fingerprintPublicKey("old-key"),
+					});
+					await store.setDeviceEnabled("g1", "disabled-device", false);
+					const operationId = `share_${"6".repeat(40)}`;
+					const invite = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2099-01-01T00:00:00Z",
+						operationId,
+						reviewedProjectSetDigest: "7".repeat(64),
+						projectIntent: [
+							{
+								canonical_identity: "workspace:codemem",
+								display_name: "codemem",
+								existing_memory_count: 0,
+							},
+						],
+					});
+
+					await expect(
+						store.consumeProjectInvite({
+							token: invite.token,
+							operationId,
+							deviceId: "disabled-device",
+							publicKey: "new-key",
+							fingerprint: fingerprintPublicKey("new-key"),
+							recipientActorId: "actor-brian",
+							recipientDisplayName: "Brian",
+							deviceDisplayName: "Brian's Mac",
+							now: "2026-07-20T00:00:00.000Z",
+						}),
+					).rejects.toThrow("invite_identity_conflict");
+				});
+			});
+
+			it("does not let a consumed invite retry re-enable an admin-disabled device", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Team Alpha");
+					const operationId = `share_${"5".repeat(40)}`;
+					const invite = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2099-01-01T00:00:00Z",
+						operationId,
+						reviewedProjectSetDigest: "4".repeat(64),
+						projectIntent: [
+							{
+								canonical_identity: "workspace:codemem",
+								display_name: "codemem",
+								existing_memory_count: 0,
+							},
+						],
+					});
+					const publicKey = "accepted-key";
+					const input = {
+						token: invite.token,
+						operationId,
+						deviceId: "accepted-device",
+						publicKey,
+						fingerprint: fingerprintPublicKey(publicKey),
+						recipientActorId: "actor-brian",
+						recipientDisplayName: "Brian",
+						deviceDisplayName: "Brian's Mac",
+						now: "2026-07-20T00:00:00.000Z",
+					};
+					await expect(store.consumeProjectInvite(input)).resolves.toMatchObject({
+						status: "accepted",
+					});
+					await store.setDeviceEnabled("g1", "accepted-device", false);
+
+					await expect(store.consumeProjectInvite(input)).rejects.toThrow(
+						"invite_acceptance_incomplete",
+					);
+					expect(await store.getEnrollment("g1", "accepted-device")).toBeNull();
 				});
 			});
 

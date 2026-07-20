@@ -5,6 +5,7 @@ export {
 } from "./better-sqlite-coordinator-store.js";
 export type {
 	CoordinatorBootstrapGrantVerification,
+	CoordinatorConsumeProjectInviteInput,
 	CoordinatorCreateInviteInput,
 	CoordinatorCreateJoinRequestInput,
 	CoordinatorCreateReciprocalApprovalInput,
@@ -21,6 +22,8 @@ export type {
 	CoordinatorListScopesInput,
 	CoordinatorPeerRecord,
 	CoordinatorPresenceRecord,
+	CoordinatorProjectInviteAcceptance,
+	CoordinatorProjectInviteSummary,
 	CoordinatorReciprocalApproval,
 	CoordinatorReviewJoinRequestInput,
 	CoordinatorRevokeScopeMembershipInput,

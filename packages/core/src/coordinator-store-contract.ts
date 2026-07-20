@@ -45,6 +45,35 @@ export interface CoordinatorInvite {
 	operation_id?: string | null;
 	/** Digest reference only; the reviewed project set remains server-owned operation state. */
 	reviewed_project_set_digest?: string | null;
+	token_digest?: string | null;
+	inviter_actor_id?: string | null;
+	inviter_display_name?: string | null;
+	inviter_device_id?: string | null;
+	pending_person_id?: string | null;
+	project_summaries_json?: string | null;
+	project_intent_json?: string | null;
+	consumed_at?: string | null;
+	bound_device_id?: string | null;
+	bound_public_key?: string | null;
+	bound_fingerprint?: string | null;
+	recipient_actor_id?: string | null;
+	recipient_display_name?: string | null;
+	recipient_device_display_name?: string | null;
+	trust_state?: string | null;
+	bootstrap_grant_id?: string | null;
+}
+
+export interface CoordinatorProjectInviteSummary {
+	display_name: string;
+	existing_memory_count: number;
+}
+
+export interface CoordinatorProjectInviteAcceptance {
+	status: "accepted" | "existing";
+	invite: CoordinatorInvite;
+	enrollment: CoordinatorEnrollment;
+	seed_enrollment: CoordinatorEnrollment | null;
+	bootstrap_grant: CoordinatorBootstrapGrant | null;
 }
 
 export interface CoordinatorJoinRequest {
@@ -176,6 +205,25 @@ export interface CoordinatorCreateInviteInput {
 	createdBy?: string | null;
 	operationId?: string | null;
 	reviewedProjectSetDigest?: string | null;
+	inviterActorId?: string | null;
+	inviterDisplayName?: string | null;
+	inviterDeviceId?: string | null;
+	pendingPersonId?: string | null;
+	projectSummaries?: CoordinatorProjectInviteSummary[] | null;
+	projectIntent?: Array<CoordinatorProjectInviteSummary & { canonical_identity: string }> | null;
+}
+
+export interface CoordinatorConsumeProjectInviteInput {
+	token: string;
+	operationId: string;
+	deviceId: string;
+	publicKey: string;
+	fingerprint: string;
+	recipientActorId: string;
+	recipientDisplayName: string;
+	deviceDisplayName: string;
+	/** Runtime-authoritative timestamp used for expiry, binding, and grant creation. */
+	now: string;
 }
 
 export interface CoordinatorCreateJoinRequestInput {
@@ -308,6 +356,10 @@ export interface CoordinatorStore {
 	cleanupNonces(cutoff: string): Promise<void>;
 	createInvite(opts: CoordinatorCreateInviteInput): Promise<CoordinatorInvite>;
 	getInviteByToken(token: string): Promise<CoordinatorInvite | null>;
+	getInviteByTokenForInspection(token: string): Promise<CoordinatorInvite | null>;
+	consumeProjectInvite(
+		opts: CoordinatorConsumeProjectInviteInput,
+	): Promise<CoordinatorProjectInviteAcceptance>;
 	listInvites(groupId: string): Promise<CoordinatorInvite[]>;
 	createJoinRequest(opts: CoordinatorCreateJoinRequestInput): Promise<CoordinatorJoinRequest>;
 	listJoinRequests(groupId: string, status?: string): Promise<CoordinatorJoinRequest[]>;

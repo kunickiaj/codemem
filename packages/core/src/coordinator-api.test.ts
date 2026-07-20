@@ -62,6 +62,12 @@ function createMockStore(
 			throw new Error("not implemented");
 		}),
 		getInviteByToken: vi.fn(async (_: string): Promise<CoordinatorInvite | null> => null),
+		getInviteByTokenForInspection: vi.fn(
+			async (_: string): Promise<CoordinatorInvite | null> => null,
+		),
+		consumeProjectInvite: vi.fn(async () => {
+			throw new Error("not implemented");
+		}),
 		listInvites: vi.fn(async (_: string): Promise<CoordinatorInvite[]> => []),
 		createJoinRequest: vi.fn(
 			async (_: CoordinatorCreateJoinRequestInput): Promise<CoordinatorJoinRequest> => {
@@ -224,6 +230,10 @@ describe("createCoordinatorApp dependency injection", () => {
 			revoked_at: null,
 			operation_id: input.operationId ?? null,
 			reviewed_project_set_digest: input.reviewedProjectSetDigest ?? null,
+			inviter_actor_id: input.inviterActorId ?? null,
+			inviter_display_name: input.inviterDisplayName ?? null,
+			inviter_device_id: input.inviterDeviceId ?? null,
+			pending_person_id: input.pendingPersonId ?? null,
 		}));
 		const store = createMockStore({
 			createInvite,
@@ -274,18 +284,40 @@ describe("createCoordinatorApp dependency injection", () => {
 				...base,
 				operation_id: operationId,
 				reviewed_project_set_digest: reviewedProjectSetDigest,
+				inviter_actor_id: "actor-adam",
+				inviter_display_name: "Adam",
+				inviter_device_id: "device-adam",
+				pending_person_id: "pending-brian",
+				project_summaries: [{ display_name: "codemem", existing_memory_count: 3 }],
+				project_intent: [
+					{
+						canonical_identity: "git:https://example.test/codemem",
+						display_name: "codemem",
+						existing_memory_count: 3,
+					},
+				],
 			}),
 		});
 		expect(projectFirst.status).toBe(200);
+		const projectPayload = (await projectFirst.json()) as {
+			payload: Record<string, unknown>;
+		};
+		expect(projectPayload.payload).toMatchObject({
+			operation_id: operationId,
+			inviter_name: "Adam",
+			project_summaries: [{ display_name: "codemem", existing_memory_count: 3 }],
+		});
+		expect(projectPayload.payload).not.toHaveProperty("project_intent");
+		expect(projectPayload.payload).not.toHaveProperty("scope_ids");
 		expect(createInvite).toHaveBeenLastCalledWith(
 			expect.objectContaining({ operationId, reviewedProjectSetDigest }),
 		);
 	});
 
-	it("fails closed instead of consuming a project-first invite through legacy join", async () => {
+	it("fails closed when project-first acceptance omits identity confirmation", async () => {
 		const publicKey = "recipient-public-key";
 		const store = createMockStore({
-			getInviteByToken: vi.fn(async () => ({
+			getInviteByTokenForInspection: vi.fn(async () => ({
 				invite_id: "invite-project-1",
 				group_id: "g1",
 				token: "token-project-1",
@@ -316,12 +348,221 @@ describe("createCoordinatorApp dependency injection", () => {
 			}),
 		});
 
-		expect(response.status).toBe(409);
+		expect(response.status).toBe(400);
 		expect(await response.json()).toEqual({
-			error: "project_invite_acceptance_not_available",
+			error: "project_invite_identity_required",
 		});
 		expect(store.enrollDevice).not.toHaveBeenCalled();
 		expect(store.createJoinRequest).not.toHaveBeenCalled();
+	});
+
+	it("rejects project invites accepted by the inviter device", async () => {
+		const publicKey = "inviter-public-key";
+		const operationId = `share_${"a".repeat(40)}`;
+		const consumeProjectInvite = vi.fn(async () => {
+			throw new Error("should not consume an invite on the inviter device");
+		});
+		const store = createMockStore({
+			getInviteByTokenForInspection: vi.fn(async () => ({
+				invite_id: "invite-project-1",
+				group_id: "g1",
+				token: "token-project-1",
+				policy: "auto_admit",
+				expires_at: "2099-01-01T00:00:00Z",
+				created_at: "2026-03-28T00:00:00Z",
+				created_by: null,
+				team_name_snapshot: "Team One",
+				revoked_at: null,
+				operation_id: operationId,
+				reviewed_project_set_digest: "b".repeat(64),
+				inviter_device_id: "device-adam",
+			})),
+			consumeProjectInvite,
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+
+		const response = await app.request("/v1/join", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				token: "token-project-1",
+				operation_id: operationId,
+				device_id: "device-adam",
+				public_key: publicKey,
+				fingerprint: fingerprintPublicKey(publicKey),
+				recipient_actor_id: "actor-adam",
+				recipient_display_name: "Adam",
+				device_display_name: "Adam's Mac",
+			}),
+		});
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({
+			error: "project_invite_self_acceptance_forbidden",
+		});
+		expect(consumeProjectInvite).not.toHaveBeenCalled();
+	});
+
+	it("rejects project identity fields on a legacy invite before enrollment", async () => {
+		const publicKey = "recipient-public-key";
+		const enrollDevice = vi.fn(async () => undefined);
+		const store = createMockStore({
+			getInviteByTokenForInspection: vi.fn(async () => ({
+				invite_id: "invite-legacy-1",
+				group_id: "g1",
+				token: "token-legacy-1",
+				policy: "auto_admit",
+				expires_at: "2099-01-01T00:00:00Z",
+				created_at: "2026-03-28T00:00:00Z",
+				created_by: null,
+				team_name_snapshot: "Team One",
+				revoked_at: null,
+				operation_id: null,
+				reviewed_project_set_digest: null,
+			})),
+			getGroup: vi.fn(async () => ({
+				group_id: "g1",
+				display_name: "Team One",
+				archived_at: null,
+				created_at: "2026-03-28T00:00:00Z",
+			})),
+			enrollDevice,
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+
+		const response = await app.request("/v1/join", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				token: "token-legacy-1",
+				operation_id: `share_${"a".repeat(40)}`,
+				device_id: "device-recipient",
+				public_key: publicKey,
+				fingerprint: fingerprintPublicKey(publicKey),
+				recipient_actor_id: "actor-brian",
+				recipient_display_name: "Brian",
+				device_display_name: "Brian's Mac",
+			}),
+		});
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ error: "unexpected_project_invite_fields" });
+		expect(enrollDevice).not.toHaveBeenCalled();
+	});
+
+	it("allows an identically bound project invite retry after expiry", async () => {
+		const publicKey = "recipient-public-key";
+		const operationId = `share_${"a".repeat(40)}`;
+		const consumeProjectInvite = vi.fn(async () => ({
+			status: "existing" as const,
+			invite: { trust_state: "bootstrap_grant_created" },
+			bootstrap_grant: null,
+		}));
+		const store = createMockStore({
+			getInviteByTokenForInspection: vi.fn(async () => ({
+				invite_id: "invite-project-1",
+				group_id: "g1",
+				token: "consumed:invite-project-1",
+				policy: "auto_admit",
+				expires_at: "2026-03-27T00:00:00Z",
+				created_at: "2026-03-20T00:00:00Z",
+				created_by: null,
+				team_name_snapshot: "Team One",
+				revoked_at: null,
+				consumed_at: "2026-03-26T00:00:00Z",
+				operation_id: operationId,
+				reviewed_project_set_digest: "b".repeat(64),
+				inviter_device_id: "device-adam",
+			})),
+			consumeProjectInvite,
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+
+		const response = await app.request("/v1/join", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				token: "token-project-1",
+				operation_id: operationId,
+				device_id: "device-recipient",
+				public_key: publicKey,
+				fingerprint: fingerprintPublicKey(publicKey),
+				recipient_actor_id: "actor-brian",
+				recipient_display_name: "Brian",
+				device_display_name: "Brian's Mac",
+			}),
+		});
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ ok: true, status: "existing" });
+		expect(consumeProjectInvite).toHaveBeenCalledOnce();
+	});
+
+	it("rejects invalid project-invite identity fields before consuming the invite", async () => {
+		const publicKey = "recipient-public-key";
+		const consumeProjectInvite = vi.fn(async () => {
+			throw new Error("should not consume invalid identity");
+		});
+		const store = createMockStore({
+			getInviteByTokenForInspection: vi.fn(async () => ({
+				invite_id: "invite-project-1",
+				group_id: "g1",
+				token: "token-project-1",
+				policy: "auto_admit",
+				expires_at: "2099-01-01T00:00:00Z",
+				created_at: "2026-03-28T00:00:00Z",
+				created_by: null,
+				team_name_snapshot: "Team One",
+				revoked_at: null,
+				operation_id: `share_${"a".repeat(40)}`,
+				reviewed_project_set_digest: "b".repeat(64),
+			})),
+			consumeProjectInvite,
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+		const base = {
+			token: "token-project-1",
+			operation_id: `share_${"a".repeat(40)}`,
+			device_id: "device-recipient",
+			public_key: publicKey,
+			fingerprint: fingerprintPublicKey(publicKey),
+			recipient_actor_id: "actor-brian",
+			recipient_display_name: "Brian",
+			device_display_name: "Brian's Mac",
+		};
+
+		const invalidActor = await app.request("/v1/join", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ ...base, recipient_actor_id: "actor\u0000brian" }),
+		});
+		expect(invalidActor.status).toBe(400);
+		expect(await invalidActor.json()).toEqual({ error: "recipient_actor_id_invalid" });
+
+		const invalidName = await app.request("/v1/join", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ ...base, recipient_display_name: "x".repeat(121) }),
+		});
+		expect(invalidName.status).toBe(400);
+		expect(await invalidName.json()).toEqual({ error: "recipient_display_name_too_long" });
+		expect(consumeProjectInvite).not.toHaveBeenCalled();
 	});
 
 	it("rate limits repeated coordinator reads before route handling continues", async () => {

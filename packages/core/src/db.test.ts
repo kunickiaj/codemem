@@ -1049,18 +1049,18 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
 	});
 
-	it("upgrades a marked schema-v8 database and remains idempotent after reopen", () => {
+	it("upgrades a marked schema-v9 database to schema v10 and remains idempotent after reopen", () => {
 		db.close();
-		const dbPath = join(tmpDir, "schema-v8.sqlite");
+		const dbPath = join(tmpDir, "schema-v9.sqlite");
 		const previous = new BetterSqlite3(dbPath);
 		previous.exec(`
-			PRAGMA user_version = 8;
+			PRAGMA user_version = 9;
 			CREATE TABLE schema_compat_state (
 				id INTEGER PRIMARY KEY,
 				applied_schema_version INTEGER NOT NULL,
 				applied_at TEXT NOT NULL
 			);
-			INSERT INTO schema_compat_state VALUES (1, 8, '2026-07-19T00:00:00Z');
+			INSERT INTO schema_compat_state VALUES (1, 9, '2026-07-19T00:00:00Z');
 		`);
 		expect(tableExists(previous, "share_operations")).toBe(false);
 
@@ -1070,6 +1070,8 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 			expect(tableExists(previous, table)).toBe(true);
 		}
 		expect(columnExists(previous, "share_operations", "pending_person_operation_id")).toBe(true);
+		expect(columnExists(previous, "share_operations", "recipient_device_id")).toBe(true);
+		expect(columnExists(previous, "share_operations", "bootstrap_grant_id")).toBe(true);
 		expect(columnExists(previous, "share_operation_projects", "existing_memory_count")).toBe(true);
 		expect(columnExists(previous, "share_operation_steps", "effect_id")).toBe(true);
 		expect(hasIndex(previous, "idx_share_operations_state_updated")).toBe(true);
@@ -1126,6 +1128,8 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		ensureAdditiveSchemaCompatibility(partial);
 
 		expect(columnExists(partial, "share_operations", "invite_token_digest")).toBe(true);
+		expect(columnExists(partial, "share_operations", "recipient_actor_id")).toBe(true);
+		expect(columnExists(partial, "share_operations", "recipient_fingerprint")).toBe(true);
 		expect(columnExists(partial, "share_operation_projects", "existing_memory_count")).toBe(true);
 		expect(columnExists(partial, "share_operation_steps", "safe_error_code")).toBe(true);
 		expect(hasIndex(partial, "idx_share_operations_invite_digest")).toBe(true);

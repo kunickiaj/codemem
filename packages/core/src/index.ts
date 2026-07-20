@@ -91,6 +91,7 @@ export {
 } from "./coordinator-runtime.js";
 export type {
 	CoordinatorBootstrapGrantVerification,
+	CoordinatorConsumeProjectInviteInput,
 	CoordinatorCreateInviteInput,
 	CoordinatorCreateJoinRequestInput,
 	CoordinatorCreateReciprocalApprovalInput,
@@ -107,6 +108,8 @@ export type {
 	CoordinatorListScopesInput,
 	CoordinatorPeerRecord,
 	CoordinatorPresenceRecord,
+	CoordinatorProjectInviteAcceptance,
+	CoordinatorProjectInviteSummary,
 	CoordinatorReciprocalApproval,
 	CoordinatorReviewJoinRequestInput,
 	CoordinatorRevokeScopeMembershipInput,
@@ -506,6 +509,13 @@ export {
 	resolveProject,
 	resolveProjectRoot,
 } from "./project.js";
+export type { ProjectInviteSummary } from "./project-invite-identity.js";
+export {
+	friendlyDeviceName,
+	normalizeDeviceNameHint,
+	normalizeIdentityDisplayName,
+	normalizeProjectInviteSummaries,
+} from "./project-invite-identity.js";
 export type {
 	ProjectScopeCandidate,
 	ProjectScopeGuardrailCode,
@@ -627,7 +637,9 @@ export {
 	SessionContextBackfillRunner,
 } from "./session-context-backfill.js";
 export type {
+	AcceptedProjectIntent,
 	PersistShareOperationInvite,
+	ShareOperationAcceptanceInput,
 	ShareOperationPlan,
 	ShareOperationStep,
 	SharePersonIntent,
@@ -636,8 +648,10 @@ export type {
 export {
 	inviteTokenDigest,
 	normalizeTeammateName,
+	parseAcceptedProjectIntent,
 	persistShareOperation,
 	planShareOperation,
+	reconcileShareOperationAcceptance,
 	SHARE_HISTORY_POLICY,
 	SHARE_OPERATION_STATE,
 	shareProjectSetDigest,

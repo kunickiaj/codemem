@@ -20,6 +20,42 @@ describe("CoordinatorStore", () => {
 	}
 
 	describe("schema", () => {
+		it("upgrades an existing project-intent invite table additively", async () => {
+			const tmpDir = mkdtempSync(join(tmpdir(), "coord-upgrade-test-"));
+			const path = join(tmpDir, "coordinator.sqlite");
+			const legacy = new Database(path);
+			legacy.exec(`
+				CREATE TABLE coordinator_invites (
+					invite_id TEXT PRIMARY KEY, group_id TEXT NOT NULL, token TEXT NOT NULL UNIQUE,
+					policy TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL,
+					created_by TEXT, team_name_snapshot TEXT, revoked_at TEXT, operation_id TEXT,
+					reviewed_project_set_digest TEXT
+				);
+				INSERT INTO coordinator_invites(invite_id, group_id, token, policy, expires_at, created_at)
+				VALUES ('legacy', 'g1', 'token', 'auto_admit', '2099-01-01T00:00:00Z',
+					'2026-07-20T00:00:00Z');
+			`);
+			legacy.close();
+			const store = new BetterSqliteCoordinatorStore(path);
+			try {
+				const row = store.db
+					.prepare(
+						"SELECT token, token_digest, consumed_at, bound_device_id, trust_state FROM coordinator_invites",
+					)
+					.get();
+				expect(row).toEqual({
+					token: "token",
+					token_digest: null,
+					consumed_at: null,
+					bound_device_id: null,
+					trust_state: null,
+				});
+			} finally {
+				await store.close();
+				rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
 		it("creates all expected tables", async () => {
 			const { store, cleanup } = setupStore();
 			try {
