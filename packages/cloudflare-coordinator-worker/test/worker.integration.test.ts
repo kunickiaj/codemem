@@ -71,6 +71,7 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 
 	describe("workers vitest + local D1 validation", () => {
 	afterEach(async () => {
+		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_bootstrap_grants").run();
 		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_scope_membership_audit_log").run();
 		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_scope_memberships").run();
 		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_scopes").run();
@@ -203,9 +204,10 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		expect(await replayRes.json()).toEqual({ error: "nonce_replay" });
 	});
 
-	it("persists project intent while preserving legacy join behavior after migration 0007", async () => {
+	it("atomically accepts project invites while preserving legacy join behavior after migration 0008", async () => {
 		const legacyJoiner = createIdentity();
 		const projectJoiner = createIdentity();
+		const conflictingJoiner = createIdentity();
 		const adminHeaders = {
 			"content-type": "application/json",
 			"X-Codemem-Coordinator-Admin": "test-secret",
@@ -252,6 +254,18 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 			coordinator_url: "https://example.com",
 			operation_id: operationId,
 			reviewed_project_set_digest: reviewedProjectSetDigest,
+			inviter_actor_id: "actor-adam",
+			inviter_display_name: "Adam",
+			inviter_device_id: "inviter-device",
+			pending_person_id: "pending-brian",
+			project_summaries: [{ display_name: "codemem", existing_memory_count: 3 }],
+			project_intent: [
+				{
+					canonical_identity: "git:https://example.test/codemem",
+					display_name: "codemem",
+					existing_memory_count: 3,
+				},
+			],
 		};
 		const projectInviteResponse = await exports.default.fetch(
 			"https://example.com/v1/admin/invites",
@@ -310,19 +324,114 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 				.run(),
 		).rejects.toThrow();
 
+		const tamperedJoinResponse = await exports.default.fetch("https://example.com/v1/join", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				token: projectInvite.payload.token,
+				operation_id: operationId,
+				device_id: projectJoiner.deviceId,
+				public_key: projectJoiner.publicKey,
+				fingerprint: projectJoiner.fingerprint,
+				recipient_actor_id: "actor-brian",
+				recipient_display_name: "Brian",
+				device_display_name: "Brian's Test Mac",
+				projects: [{ canonical_identity: "attacker-controlled" }],
+			}),
+		});
+		expect(tamperedJoinResponse.status).toBe(400);
+		expect(await tamperedJoinResponse.json()).toEqual({
+			error: "unexpected_project_invite_fields",
+		});
+
+		const fingerprintMismatchResponse = await exports.default.fetch(
+			"https://example.com/v1/join",
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					token: projectInvite.payload.token,
+					operation_id: operationId,
+					device_id: projectJoiner.deviceId,
+					public_key: projectJoiner.publicKey,
+					fingerprint: conflictingJoiner.fingerprint,
+					recipient_actor_id: "actor-brian",
+					recipient_display_name: "Brian",
+					device_display_name: "Brian's Test Mac",
+				}),
+			},
+		);
+		expect(fingerprintMismatchResponse.status).toBe(400);
+		expect(await fingerprintMismatchResponse.json()).toEqual({ error: "fingerprint_mismatch" });
+
 		const projectJoinResponse = await exports.default.fetch("https://example.com/v1/join", {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({
 				token: projectInvite.payload.token,
+				operation_id: operationId,
 				device_id: projectJoiner.deviceId,
 				public_key: projectJoiner.publicKey,
 				fingerprint: projectJoiner.fingerprint,
+				recipient_actor_id: "actor-brian",
+				recipient_display_name: "Brian",
+				device_display_name: "Brian's Test Mac",
 			}),
 		});
-		expect(projectJoinResponse.status).toBe(409);
-		expect(await projectJoinResponse.json()).toEqual({
-			error: "project_invite_acceptance_not_available",
+		const projectJoinBody = (await projectJoinResponse.json()) as Record<string, unknown>;
+		expect(projectJoinResponse.status, JSON.stringify(projectJoinBody)).toBe(200);
+		expect(projectJoinBody).toMatchObject({
+			status: "accepted",
+			operation_id: operationId,
+			trust_state: "pending_inviter_device",
+		});
+		const retry = await exports.default.fetch("https://example.com/v1/join", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				token: projectInvite.payload.token,
+				operation_id: operationId,
+				device_id: projectJoiner.deviceId,
+				public_key: projectJoiner.publicKey,
+				fingerprint: projectJoiner.fingerprint,
+				recipient_actor_id: "actor-brian",
+				recipient_display_name: "Brian",
+				device_display_name: "Brian's Test Mac",
+			}),
+		});
+		expect(await retry.json()).toMatchObject({ status: "existing" });
+		const conflictingJoinResponse = await exports.default.fetch(
+			"https://example.com/v1/join",
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					token: projectInvite.payload.token,
+					operation_id: operationId,
+					device_id: conflictingJoiner.deviceId,
+					public_key: conflictingJoiner.publicKey,
+					fingerprint: conflictingJoiner.fingerprint,
+					recipient_actor_id: "actor-brian",
+					recipient_display_name: "Brian",
+					device_display_name: "Brian's Other Mac",
+				}),
+			},
+		);
+		expect(conflictingJoinResponse.status).toBe(409);
+		expect(await conflictingJoinResponse.json()).toEqual({ error: "invite_already_bound" });
+		expect(
+			await env.COORDINATOR_DB.prepare(
+				`SELECT token, token_digest, bound_device_id, recipient_actor_id, project_intent_json
+				 FROM coordinator_invites WHERE operation_id = ?`,
+			)
+				.bind(operationId)
+				.first(),
+		).toEqual({
+			token: expect.stringMatching(/^consumed:/),
+			token_digest: expect.any(String),
+			bound_device_id: projectJoiner.deviceId,
+			recipient_actor_id: "actor-brian",
+			project_intent_json: JSON.stringify(projectInviteBody.project_intent),
 		});
 	});
 

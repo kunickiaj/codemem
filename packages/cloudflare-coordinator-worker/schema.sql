@@ -44,11 +44,30 @@ CREATE TABLE IF NOT EXISTS coordinator_invites (
   team_name_snapshot TEXT,
   revoked_at TEXT,
   operation_id TEXT,
-  reviewed_project_set_digest TEXT
+  reviewed_project_set_digest TEXT,
+  token_digest TEXT,
+  inviter_actor_id TEXT,
+  inviter_display_name TEXT,
+  inviter_device_id TEXT,
+  pending_person_id TEXT,
+  project_summaries_json TEXT,
+  project_intent_json TEXT,
+  consumed_at TEXT,
+  bound_device_id TEXT,
+  bound_public_key TEXT,
+  bound_fingerprint TEXT,
+  recipient_actor_id TEXT,
+  recipient_display_name TEXT,
+  recipient_device_display_name TEXT,
+  trust_state TEXT,
+  bootstrap_grant_id TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_coordinator_invites_operation_id
 ON coordinator_invites(operation_id) WHERE operation_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_coordinator_invites_token_digest
+ON coordinator_invites(token_digest) WHERE token_digest IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS coordinator_join_requests (
   request_id TEXT PRIMARY KEY,

@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import {
 	BetterSqliteCoordinatorStore,
 	DEFAULT_COORDINATOR_DB_PATH,
@@ -27,6 +28,9 @@ import {
 	readCodememConfigFileAtPath,
 	writeCodememConfigFile,
 } from "./observer-config.js";
+import { friendlyDeviceName, normalizeIdentityDisplayName } from "./project-invite-identity.js";
+import { updatePeerAddresses } from "./sync-discovery.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 
@@ -948,8 +952,30 @@ export async function coordinatorCreateInviteAction(opts: {
 	adminSecret?: string | null;
 	operationId?: string | null;
 	reviewedProjectSetDigest?: string | null;
+	inviterActorId?: string | null;
+	inviterDisplayName?: string | null;
+	inviterDeviceId?: string | null;
+	pendingPersonId?: string | null;
+	projectSummaries?: Array<{ display_name: string; existing_memory_count: number }> | null;
+	projectIntent?: Array<{
+		canonical_identity: string;
+		display_name: string;
+		existing_memory_count: number;
+	}> | null;
 }): Promise<Record<string, unknown>> {
 	if (!VALID_INVITE_POLICIES.has(opts.policy)) throw new Error(`Invalid policy: ${opts.policy}`);
+	if (
+		opts.operationId &&
+		(!opts.reviewedProjectSetDigest ||
+			!opts.inviterActorId ||
+			!opts.inviterDisplayName ||
+			!opts.inviterDeviceId ||
+			!opts.pendingPersonId ||
+			!opts.projectSummaries?.length ||
+			!opts.projectIntent?.length)
+	) {
+		throw new Error("project_invite_context_required");
+	}
 	const expiresAt = new Date(Date.now() + opts.ttlHours * 3600 * 1000).toISOString();
 	const remote = opts.remoteUrl ?? coordinatorRemoteTarget().remoteUrl;
 	const adminSecret = opts.adminSecret ?? coordinatorRemoteTarget().adminSecret;
@@ -968,6 +994,12 @@ export async function coordinatorCreateInviteAction(opts: {
 				coordinator_url: opts.coordinatorUrl || remote,
 				operation_id: opts.operationId ?? null,
 				reviewed_project_set_digest: opts.reviewedProjectSetDigest ?? null,
+				inviter_actor_id: opts.inviterActorId ?? null,
+				inviter_display_name: opts.inviterDisplayName ?? null,
+				inviter_device_id: opts.inviterDeviceId ?? null,
+				pending_person_id: opts.pendingPersonId ?? null,
+				project_summaries: opts.projectSummaries ?? null,
+				project_intent: opts.projectIntent ?? null,
 			},
 		);
 		const invite = payload?.invite;
@@ -1002,6 +1034,12 @@ export async function coordinatorCreateInviteAction(opts: {
 			createdBy: opts.createdBy ?? null,
 			operationId: opts.operationId ?? null,
 			reviewedProjectSetDigest: opts.reviewedProjectSetDigest ?? null,
+			inviterActorId: opts.inviterActorId ?? null,
+			inviterDisplayName: opts.inviterDisplayName ?? null,
+			inviterDeviceId: opts.inviterDeviceId ?? null,
+			pendingPersonId: opts.pendingPersonId ?? null,
+			projectSummaries: opts.projectSummaries ?? null,
+			projectIntent: opts.projectIntent ?? null,
 		});
 		const payload: InvitePayload = {
 			v: 1,
@@ -1012,6 +1050,13 @@ export async function coordinatorCreateInviteAction(opts: {
 			token: String(invite.token ?? ""),
 			expires_at: invite.expires_at,
 			team_name: (invite.team_name_snapshot as string) ?? null,
+			...(invite.operation_id
+				? {
+						operation_id: invite.operation_id,
+						inviter_name: invite.inviter_display_name ?? null,
+						project_summaries: opts.projectSummaries ?? [],
+					}
+				: {}),
 		};
 		const encoded = encodeInvitePayload(payload);
 		return {
@@ -1030,11 +1075,94 @@ export async function coordinatorCreateInviteAction(opts: {
 	}
 }
 
+interface ProjectInviteTrustResult {
+	bootstrapGrantId: string | null;
+	inviterPeer?: {
+		deviceId: string;
+		publicKey: string;
+		fingerprint: string;
+		displayName?: string;
+	};
+}
+
+function parseProjectInviteTrust(
+	response: Record<string, unknown> | null,
+): ProjectInviteTrustResult {
+	const trustState = String(response?.trust_state ?? "").trim();
+	if (!["pending_inviter_device", "bootstrap_grant_created"].includes(trustState)) {
+		throw new Error("project_invite_trust_state_invalid");
+	}
+	const bootstrapGrantId = String(response?.bootstrap_grant_id ?? "").trim() || null;
+	const inviter = response?.inviter_device;
+	const inviterObject =
+		inviter && typeof inviter === "object" && !Array.isArray(inviter)
+			? (inviter as Record<string, unknown>)
+			: null;
+	if (trustState === "pending_inviter_device") {
+		if (inviter != null || bootstrapGrantId) throw new Error("project_invite_bootstrap_incomplete");
+		return { bootstrapGrantId: null };
+	}
+	if (!inviterObject || !bootstrapGrantId) throw new Error("project_invite_bootstrap_incomplete");
+	const deviceId = String(inviterObject.device_id ?? "").trim();
+	const publicKey = String(inviterObject.public_key ?? "").trim();
+	const fingerprint = String(inviterObject.fingerprint ?? "").trim();
+	if (!deviceId || !publicKey || fingerprintPublicKey(publicKey) !== fingerprint) {
+		throw new Error("inviter_identity_invalid");
+	}
+	return {
+		bootstrapGrantId,
+		inviterPeer: {
+			deviceId,
+			publicKey,
+			fingerprint,
+			displayName: String(inviterObject.display_name ?? "").trim() || undefined,
+		},
+	};
+}
+
+function persistProjectInviteTrust(opts: {
+	dbPath: string;
+	recipientActorId: string;
+	recipientDisplayName: string;
+	groupId: string;
+	response: Record<string, unknown> | null;
+}): void {
+	const trust = parseProjectInviteTrust(opts.response);
+	const conn = connect(opts.dbPath);
+	try {
+		conn.transaction(() => {
+			const now = new Date().toISOString();
+			conn
+				.prepare(`INSERT INTO actors(actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at)
+				VALUES (?, ?, 1, 'active', NULL, ?, ?)
+				ON CONFLICT(actor_id) DO UPDATE SET display_name = excluded.display_name,
+				is_local = 1, status = 'active', merged_into_actor_id = NULL, updated_at = excluded.updated_at`)
+				.run(opts.recipientActorId, opts.recipientDisplayName, now, now);
+			if (!trust.inviterPeer) return;
+			updatePeerAddresses(conn, trust.inviterPeer.deviceId, [], {
+				pinnedFingerprint: trust.inviterPeer.fingerprint,
+				publicKey: trust.inviterPeer.publicKey,
+				name: trust.inviterPeer.displayName,
+				replaceTrust: true,
+			});
+			conn
+				.prepare(`UPDATE sync_peers SET pending_bootstrap_grant_id = ?,
+				discovered_via_group_id = ? WHERE peer_device_id = ?`)
+				.run(trust.bootstrapGrantId, opts.groupId, trust.inviterPeer.deviceId);
+		})();
+	} finally {
+		conn.close();
+	}
+}
+
 export async function coordinatorImportInviteAction(opts: {
 	inviteValue: string;
 	dbPath?: string | null;
 	keysDir?: string | null;
 	configPath?: string | null;
+	recipientActorId?: string | null;
+	recipientDisplayName?: string | null;
+	deviceDisplayName?: string | null;
 }): Promise<Record<string, unknown>> {
 	const payload = decodeInvitePayload(extractInvitePayload(opts.inviteValue));
 	const resolvedDbPath = resolveDbPath(opts.dbPath ?? undefined);
@@ -1055,7 +1183,26 @@ export async function coordinatorImportInviteAction(opts: {
 	const config = opts.configPath
 		? readCodememConfigFileAtPath(opts.configPath)
 		: readCodememConfigFile();
-	const displayName = String(config.actor_display_name ?? deviceId).trim() || deviceId;
+	const projectInvite = Boolean(payload.operation_id);
+	const fallbackDeviceName = friendlyDeviceName({
+		explicitName: String(config.sync_device_name ?? ""),
+		osName: hostname(),
+		fallbackSeed: deviceId,
+	});
+	const recipientActorId =
+		String(opts.recipientActorId ?? config.actor_id ?? "").trim() || `local:${deviceId}`;
+	const recipientDisplayName = projectInvite
+		? normalizeIdentityDisplayName(
+				String(opts.recipientDisplayName ?? config.actor_display_name ?? fallbackDeviceName),
+				"recipient_display_name",
+			)
+		: String(config.actor_display_name ?? deviceId).trim() || deviceId;
+	const displayName = projectInvite
+		? normalizeIdentityDisplayName(
+				String(opts.deviceDisplayName ?? fallbackDeviceName),
+				"device_display_name",
+			)
+		: recipientDisplayName;
 	// V1 of multi-team assumes one coordinator hosting multiple groups.
 	// If this device is already enrolled in a different coordinator, surface
 	// that as a hard error instead of silently overwriting the existing
@@ -1084,6 +1231,14 @@ export async function coordinatorImportInviteAction(opts: {
 					public_key: publicKey,
 					fingerprint,
 					display_name: displayName,
+					...(projectInvite
+						? {
+								operation_id: payload.operation_id,
+								recipient_actor_id: recipientActorId,
+								recipient_display_name: recipientDisplayName,
+								device_display_name: displayName,
+							}
+						: {}),
 				},
 				timeoutS: INVITE_IMPORT_TIMEOUT_S,
 			},
@@ -1093,12 +1248,36 @@ export async function coordinatorImportInviteAction(opts: {
 	}
 	if (status < 200 || status >= 300) {
 		const detail = typeof response?.error === "string" ? response.error : "unknown";
+		if (
+			[
+				"invite_already_bound",
+				"invite_expired",
+				"invite_identity_conflict",
+				"invite_invalid",
+			].includes(detail)
+		) {
+			throw new Error(detail);
+		}
 		throw new Error(`Invite import failed (${status}): ${detail}`);
+	}
+	if (projectInvite) {
+		persistProjectInviteTrust({
+			dbPath: resolvedDbPath,
+			recipientActorId,
+			recipientDisplayName,
+			groupId: String(payload.group_id),
+			response,
+		});
 	}
 	const nextConfig = opts.configPath
 		? readCodememConfigFileAtPath(opts.configPath)
 		: readCodememConfigFile();
 	nextConfig.sync_coordinator_url = coordinatorUrl;
+	if (projectInvite) {
+		nextConfig.actor_id = recipientActorId;
+		nextConfig.actor_display_name = recipientDisplayName;
+		nextConfig.sync_device_name = displayName;
+	}
 	// Append the new group to sync_coordinator_groups (dedup) instead of
 	// overwriting sync_coordinator_group. The runtime reads both the plural
 	// and singular forms; we keep singular pointing at the first group for
@@ -1124,6 +1303,10 @@ export async function coordinatorImportInviteAction(opts: {
 		group_id: payload.group_id,
 		coordinator_url: payload.coordinator_url,
 		status: response?.status ?? null,
+		operation_id: response?.operation_id ?? payload.operation_id ?? null,
+		trust_state: response?.trust_state ?? null,
+		bootstrap_grant_id: response?.bootstrap_grant_id ?? null,
+		inviter_device: response?.inviter_device ?? null,
 		config_path: configPath,
 		groups: mergedGroups,
 	};

@@ -516,6 +516,7 @@ export const syncPeers = sqliteTable("sync_peers", {
 	last_error: text("last_error"),
 	discovered_via_coordinator_id: text("discovered_via_coordinator_id"),
 	discovered_via_group_id: text("discovered_via_group_id"),
+	pending_bootstrap_grant_id: text("pending_bootstrap_grant_id"),
 });
 
 export type SyncPeer = typeof syncPeers.$inferSelect;

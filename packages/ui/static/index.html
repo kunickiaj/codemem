@@ -3779,7 +3779,15 @@
             <div class="actor-create-row" id="syncJoinPanel">
               <label for="syncJoinInvite" class="sr-only">Team invite or pairing payload</label>
               <textarea class="feed-search" id="syncJoinInvite" placeholder="Paste a team invite or device pairing payload"></textarea>
-              <button class="settings-button" id="syncJoinButton">Accept</button>
+              <div id="syncProjectInviteReview" role="region" aria-labelledby="syncProjectInviteReviewHeading" hidden>
+                <h4 id="syncProjectInviteReviewHeading" tabindex="-1">Review project invitation</h4>
+                <div class="section-meta" id="syncProjectInviteContext"></div>
+                <label for="syncRecipientName">Your name</label>
+                <input class="feed-search" id="syncRecipientName" maxlength="120" autocomplete="name" />
+                <label for="syncRecipientDeviceName">This device</label>
+                <input class="feed-search" id="syncRecipientDeviceName" maxlength="120" />
+              </div>
+              <button class="settings-button" id="syncJoinButton">Review invite</button>
             </div>
           </div>
           <div id="syncAdminSection">

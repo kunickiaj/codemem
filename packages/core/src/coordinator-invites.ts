@@ -13,6 +13,10 @@ export interface InvitePayload {
 	token: string;
 	expires_at: string;
 	team_name: string | null;
+	/** Present only for project-first invites. All values are display-only; access intent stays coordinator-owned. */
+	operation_id?: string;
+	inviter_name?: string | null;
+	project_summaries?: Array<{ display_name: string; existing_memory_count: number }>;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

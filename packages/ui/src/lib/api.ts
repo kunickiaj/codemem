@@ -53,6 +53,7 @@ export {
 	enrollPeer,
 	forgetProjectInventoryMemories,
 	importCoordinatorInvite,
+	inspectCoordinatorInvite,
 	LegacySharedReviewConfirmationError,
 	loadCoordinatorGroupPreferences,
 	loadPairing,

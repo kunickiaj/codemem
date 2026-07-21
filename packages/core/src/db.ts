@@ -32,7 +32,7 @@ import { canAutoBootstrapSchema, ensureSchemaBootstrapped } from "./schema-boots
 export type { DatabaseType as Database };
 
 /** Current schema version this TS runtime was built against. */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /**
  * Minimum schema version the TS runtime can operate with.
@@ -745,6 +745,15 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 				coordinator_invite_id TEXT,
 				invite_token_digest TEXT NOT NULL,
 				invite_expires_at TEXT NOT NULL,
+				recipient_actor_id TEXT,
+				recipient_display_name TEXT,
+				recipient_device_id TEXT,
+				recipient_device_display_name TEXT,
+				recipient_public_key TEXT,
+				recipient_fingerprint TEXT,
+				acceptance_consumed_at TEXT,
+				trust_state TEXT,
+				bootstrap_grant_id TEXT,
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL
 			);
@@ -788,6 +797,15 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 			["coordinator_invite_id", "TEXT"],
 			["invite_token_digest", "TEXT NOT NULL DEFAULT ''"],
 			["invite_expires_at", "TEXT NOT NULL DEFAULT ''"],
+			["recipient_actor_id", "TEXT"],
+			["recipient_display_name", "TEXT"],
+			["recipient_device_id", "TEXT"],
+			["recipient_device_display_name", "TEXT"],
+			["recipient_public_key", "TEXT"],
+			["recipient_fingerprint", "TEXT"],
+			["acceptance_consumed_at", "TEXT"],
+			["trust_state", "TEXT"],
+			["bootstrap_grant_id", "TEXT"],
 			["created_at", "TEXT NOT NULL DEFAULT ''"],
 			["updated_at", "TEXT NOT NULL DEFAULT ''"],
 		] as const;
@@ -1173,7 +1191,11 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		// Existing databases acquire these so peer enrollment can record the group
 		// it came from, and so per-group scope templates can be stored locally.
 		if (tableExists(db, "sync_peers")) {
-			for (const name of ["discovered_via_coordinator_id", "discovered_via_group_id"]) {
+			for (const name of [
+				"discovered_via_coordinator_id",
+				"discovered_via_group_id",
+				"pending_bootstrap_grant_id",
+			]) {
 				if (columnExists(db, "sync_peers", name)) continue;
 				try {
 					db.exec(`ALTER TABLE sync_peers ADD COLUMN ${name} TEXT`);

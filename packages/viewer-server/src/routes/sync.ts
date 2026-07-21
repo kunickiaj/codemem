@@ -4,7 +4,7 @@
 
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { networkInterfaces } from "node:os";
+import { hostname, networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import type {
 	CoordinatorBootstrapGrantVerification,
@@ -52,15 +52,18 @@ import {
 	coordinatorUpdateScopeAction,
 	createCoordinatorReciprocalApproval,
 	DEFAULT_TIME_WINDOW_S,
+	decodeInvitePayload,
 	defaultSpaceScopeIdForGroup,
 	deleteProjectScopeSettingsMapping,
 	diagnoseStalePeerReceivedRows,
 	ensureDeviceIdentity,
+	extractInvitePayload,
 	extractReplicationOps,
 	type FilterReplicationSkipped,
 	filterReplicationOpsForSyncWithStatus,
 	fingerprintPublicKey,
 	formatHostPort,
+	friendlyDeviceName,
 	getCoordinatorGroupPreference,
 	getSemanticIndexDiagnostics,
 	getSyncResetState,
@@ -87,6 +90,7 @@ import {
 	normalizeAddress,
 	normalizeSyncCapability,
 	normalizeTeammateName,
+	parseAcceptedProjectIntent,
 	parseSyncScopeRequest,
 	persistShareOperation,
 	personalScopeGrantStatusForPeer,
@@ -94,6 +98,7 @@ import {
 	readCodememConfigFile,
 	readCoordinatorSyncConfig,
 	reassignProjectScopeInventoryProject,
+	reconcileShareOperationAcceptance,
 	recordNonce,
 	rejectInboundScopeFailures,
 	requestJson,
@@ -973,6 +978,11 @@ async function authorizeBootstrapGrantRequest(
 	if (Number(workerEnrollment.enabled) !== 1) {
 		return { ok: false, reason: "bootstrap_grant_worker_disabled", deviceId };
 	}
+	const workerPublicKey = String(workerEnrollment.public_key ?? "").trim();
+	const workerFingerprint = String(workerEnrollment.fingerprint ?? "").trim();
+	if (!workerPublicKey || fingerprintPublicKey(workerPublicKey) !== workerFingerprint) {
+		return { ok: false, reason: "bootstrap_grant_worker_identity_invalid", deviceId };
+	}
 	if (grant.worker_device_id !== deviceId) {
 		return { ok: false, reason: "bootstrap_grant_worker_mismatch", deviceId };
 	}
@@ -992,7 +1002,7 @@ async function authorizeBootstrapGrantRequest(
 			timestamp,
 			nonce,
 			signature,
-			publicKey: String(workerEnrollment.public_key),
+			publicKey: workerPublicKey,
 			deviceId,
 		});
 	} catch {
@@ -1005,6 +1015,12 @@ async function authorizeBootstrapGrantRequest(
 	const createdAt = new Date().toISOString();
 	const nonceResult = recordSyncAuthNonce(store, deviceId, nonce, createdAt);
 	if (nonceResult) return nonceResult;
+	updatePeerAddresses(store.db, deviceId, [], {
+		name: String(workerEnrollment.display_name ?? "").trim() || undefined,
+		pinnedFingerprint: workerFingerprint,
+		publicKey: workerPublicKey,
+		replaceTrust: true,
+	});
 	return { ok: true, reason: "ok", deviceId };
 }
 
@@ -3519,6 +3535,19 @@ export function syncRoutes(
 				adminSecret: config.syncCoordinatorAdminSecret || null,
 				operationId: plan.operationId,
 				reviewedProjectSetDigest: plan.reviewedProjectSetDigest,
+				inviterActorId: plan.inviterActorId,
+				inviterDisplayName: store.actorDisplayName,
+				inviterDeviceId: plan.inviterDeviceIds[0],
+				pendingPersonId: plan.personId,
+				projectSummaries: plan.projects.map((project) => ({
+					display_name: project.displayName,
+					existing_memory_count: project.existingMemoryCount,
+				})),
+				projectIntent: plan.projects.map((project) => ({
+					canonical_identity: project.canonicalIdentity,
+					display_name: project.displayName,
+					existing_memory_count: project.existingMemoryCount,
+				})),
 			});
 			if (
 				String(result.operation_id ?? "").trim() !== plan.operationId ||
@@ -3554,6 +3583,89 @@ export function syncRoutes(
 		} catch (error) {
 			return c.json(
 				{ error: error instanceof Error ? error.message : "project_invite_failed" },
+				400,
+			);
+		}
+	});
+
+	app.get("/api/sync/project-invites/:operationId", async (c) => {
+		const store = getStore();
+		const operationId = String(c.req.param("operationId") ?? "").trim();
+		if (!/^share_[a-f0-9]{40}$/u.test(operationId)) {
+			return c.json({ error: "operation_id_invalid" }, 400);
+		}
+		try {
+			const { groupId, config } = projectInviteStatus();
+			const [status, payload] = await requestJson(
+				"GET",
+				`${buildBaseUrl(config.syncCoordinatorUrl)}/v1/admin/project-invites/${encodeURIComponent(operationId)}?group_id=${encodeURIComponent(groupId)}`,
+				{
+					headers: { "X-Codemem-Coordinator-Admin": config.syncCoordinatorAdminSecret },
+					timeoutS: 10,
+				},
+			);
+			if (status < 200 || status >= 300) {
+				return c.json(
+					{ error: String(payload?.error ?? "operation_read_failed") },
+					status === 404 ? 404 : status === 409 ? 409 : 400,
+				);
+			}
+			if (!payload || payload.operation_id !== operationId || payload.group_id !== groupId) {
+				return c.json({ error: "operation_scope_mismatch" }, 409);
+			}
+			if (payload.state === "waiting_for_acceptance") {
+				return c.json(payload);
+			}
+			if (payload.state !== "accepted") {
+				return c.json({ error: "operation_state_invalid" }, 409);
+			}
+			const required = [
+				"reviewed_project_set_digest",
+				"recipient_actor_id",
+				"recipient_display_name",
+				"recipient_device_id",
+				"recipient_device_display_name",
+				"recipient_public_key",
+				"recipient_fingerprint",
+				"consumed_at",
+				"trust_state",
+			] as const;
+			if (
+				required.some((key) => typeof payload[key] !== "string" || !String(payload[key]).trim())
+			) {
+				return c.json({ error: "operation_acceptance_invalid" }, 409);
+			}
+			const trustState = String(payload.trust_state);
+			const bootstrapGrantId =
+				typeof payload.bootstrap_grant_id === "string" && payload.bootstrap_grant_id.trim()
+					? payload.bootstrap_grant_id
+					: null;
+			if (
+				(trustState !== "pending_inviter_device" && trustState !== "bootstrap_grant_created") ||
+				(trustState === "bootstrap_grant_created") !== Boolean(bootstrapGrantId)
+			) {
+				return c.json({ error: "operation_trust_state_invalid" }, 409);
+			}
+			const projects = parseAcceptedProjectIntent(payload.projects);
+			reconcileShareOperationAcceptance(store.db, {
+				operationId,
+				coordinatorGroupId: groupId,
+				reviewedProjectSetDigest: String(payload.reviewed_project_set_digest),
+				recipientActorId: String(payload.recipient_actor_id),
+				recipientDisplayName: String(payload.recipient_display_name),
+				recipientDeviceId: String(payload.recipient_device_id),
+				recipientDeviceDisplayName: String(payload.recipient_device_display_name),
+				recipientPublicKey: String(payload.recipient_public_key),
+				recipientFingerprint: String(payload.recipient_fingerprint),
+				consumedAt: String(payload.consumed_at),
+				trustState,
+				bootstrapGrantId,
+				projects,
+			});
+			return c.json({ ...payload, reconciled: true });
+		} catch (error) {
+			return c.json(
+				{ error: error instanceof Error ? error.message : "operation_read_failed" },
 				400,
 			);
 		}
@@ -4015,6 +4127,39 @@ export function syncRoutes(
 		}
 	});
 
+	app.post("/api/sync/invites/inspect", async (c) => {
+		const store = getStore();
+		const body = await parseViewerJsonBody(c);
+		if (!body || typeof body.invite !== "string") return c.json({ error: "invite_invalid" }, 400);
+		try {
+			const payload = decodeInvitePayload(extractInvitePayload(body.invite));
+			if (!payload.operation_id) return c.json({ kind: "legacy_team_invite" });
+			const [status, inspected] = await requestJson(
+				"POST",
+				`${buildBaseUrl(payload.coordinator_url)}/v1/invites/inspect`,
+				{ body: { token: payload.token }, timeoutS: 10 },
+			);
+			if (status < 200 || status >= 300) {
+				return c.json(
+					{ error: String(inspected?.error ?? "invite_invalid") },
+					status === 410 ? 410 : 400,
+				);
+			}
+			const config = readCodememConfigFile();
+			return c.json({
+				...inspected,
+				recipient_name: store.actorDisplayName,
+				device_name: friendlyDeviceName({
+					explicitName: String(config.sync_device_name ?? ""),
+					osName: hostname(),
+					fallbackSeed: store.deviceId,
+				}),
+			});
+		} catch {
+			return c.json({ error: "invite_invalid" }, 400);
+		}
+	});
+
 	// POST /api/sync/invites/import accepts both team invites (coordinator
 	// invite envelope or codemem:// link) and device-pairing payloads
 	// (base64 JSON with { device_id, fingerprint, public_key, addresses }).
@@ -4082,6 +4227,10 @@ export function syncRoutes(
 			const result = await coordinatorImportInviteAction({
 				inviteValue: rawValue,
 				dbPath: store.dbPath,
+				recipientActorId: store.actorId,
+				recipientDisplayName:
+					typeof body.recipient_name === "string" ? body.recipient_name : store.actorDisplayName,
+				deviceDisplayName: typeof body.device_name === "string" ? body.device_name : null,
 			});
 			return c.json({ ...result, type: "team_join" });
 		} catch (error) {

@@ -42,6 +42,7 @@ function addSyncTables(db: InstanceType<typeof Database>): void {
 			actor_id TEXT,
 			projects_include_json TEXT,
 			projects_exclude_json TEXT,
+			pending_bootstrap_grant_id TEXT,
 			created_at TEXT NOT NULL,
 			last_seen_at TEXT,
 			last_sync_at TEXT,
@@ -235,6 +236,78 @@ describe("syncOnce", () => {
 			peer_sync_capability: "unsupported",
 			negotiated_sync_capability: "unsupported",
 		});
+	});
+
+	it("uses and clears a pending bootstrap grant after the peer accepts status authentication", async () => {
+		db.prepare(`INSERT INTO sync_peers(
+			peer_device_id, pinned_fingerprint, pending_bootstrap_grant_id, created_at
+		) VALUES (?, ?, ?, ?)`).run("peer-bootstrap", "abc123", "grant-1", new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		const auth = vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([
+				200,
+				{
+					fingerprint: "abc123",
+					protocol_version: "2",
+					sync_capability: "legacy",
+					sync_reset: {
+						generation: 1,
+						snapshot_id: "snap-1",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+				},
+			])
+			.mockResolvedValueOnce([500, { error: "stop_after_status" }]);
+
+		await syncOnce(db, "peer-bootstrap", ["http://127.0.0.1:9090"]);
+
+		expect(auth.mock.calls[0]?.[0]).toMatchObject({ bootstrapGrantId: "grant-1" });
+		expect(
+			db
+				.prepare("SELECT pending_bootstrap_grant_id FROM sync_peers WHERE peer_device_id = ?")
+				.pluck()
+				.get("peer-bootstrap"),
+		).toBeNull();
+	});
+
+	it("retains a pending bootstrap grant when status returns the wrong peer identity", async () => {
+		db.prepare(`INSERT INTO sync_peers(
+			peer_device_id, pinned_fingerprint, pending_bootstrap_grant_id, created_at
+		) VALUES (?, ?, ?, ?)`).run("peer-bootstrap", "expected", "grant-1", new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		vi.spyOn(syncHttpClient, "requestJson").mockResolvedValueOnce([
+			200,
+			{
+				fingerprint: "unexpected",
+				protocol_version: "2",
+				sync_capability: "legacy",
+				sync_reset: {
+					generation: 1,
+					snapshot_id: "snap-1",
+					baseline_cursor: null,
+					retained_floor_cursor: null,
+				},
+			},
+		]);
+
+		const result = await syncOnce(db, "peer-bootstrap", ["http://127.0.0.1:9090"]);
+
+		expect(result.ok).toBe(false);
+		expect(
+			db
+				.prepare("SELECT pending_bootstrap_grant_id FROM sync_peers WHERE peer_device_id = ?")
+				.pluck()
+				.get("peer-bootstrap"),
+		).toBe("grant-1");
 	});
 
 	it("queues durable vector catch-up after applying incremental inbound ops", async () => {

@@ -514,6 +514,81 @@ describe("coordinator local admin actions", () => {
 		]);
 	});
 
+	it("falls back to the local actor identity for CLI project invite imports", async () => {
+		const actionDbPath = join(tmpDir, "project-invite.sqlite");
+		const keysDir = join(tmpDir, "project-keys");
+		const capturedBodies: Record<string, unknown>[] = [];
+		const operationId = `share_${"a".repeat(40)}`;
+		const inviterPublicKey = "ssh-ed25519 inviter-public-key";
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_url: string, init?: RequestInit) => {
+				const body =
+					init?.body instanceof Uint8Array ? Buffer.from(init.body).toString("utf8") : "{}";
+				capturedBodies.push(JSON.parse(body) as Record<string, unknown>);
+				return new Response(
+					JSON.stringify({
+						ok: true,
+						status: "accepted",
+						operation_id: operationId,
+						trust_state: "bootstrap_grant_created",
+						bootstrap_grant_id: "grant-1",
+						inviter_device: {
+							device_id: "inviter-device",
+							public_key: inviterPublicKey,
+							fingerprint: fingerprintPublicKey(inviterPublicKey),
+							display_name: "Adam's Mac",
+						},
+					}),
+					{
+						status: 200,
+						headers: { "content-type": "application/json" },
+					},
+				);
+			}),
+		);
+		const invite = encodeInvitePayload({
+			v: 1,
+			kind: "coordinator_team_invite",
+			coordinator_url: "https://coord.example.test",
+			group_id: "team-a",
+			policy: "auto_admit",
+			token: "project-invite-token",
+			expires_at: "2099-01-01T00:00:00.000Z",
+			team_name: "Team A",
+			operation_id: operationId,
+		});
+
+		await coordinatorImportInviteAction({ inviteValue: invite, dbPath: actionDbPath, keysDir });
+
+		const body = capturedBodies[0];
+		expect(body?.recipient_actor_id).toBe(`local:${body?.device_id}`);
+		expect(body?.recipient_display_name).toEqual(expect.any(String));
+		expect(body?.device_display_name).toEqual(expect.any(String));
+		const conn = connect(actionDbPath);
+		try {
+			expect(
+				conn
+					.prepare(`SELECT name, pinned_fingerprint, public_key, pending_bootstrap_grant_id,
+						discovered_via_group_id FROM sync_peers WHERE peer_device_id = 'inviter-device'`)
+					.get(),
+			).toEqual({
+				name: "Adam's Mac",
+				pinned_fingerprint: fingerprintPublicKey(inviterPublicKey),
+				public_key: inviterPublicKey,
+				pending_bootstrap_grant_id: "grant-1",
+				discovered_via_group_id: "team-a",
+			});
+			expect(
+				conn
+					.prepare("SELECT display_name, is_local, status FROM actors WHERE actor_id = ?")
+					.get(body?.recipient_actor_id),
+			).toMatchObject({ is_local: 1, status: "active" });
+		} finally {
+			conn.close();
+		}
+	});
+
 	it("warns when local invite coordinator URL uses private IPv6 space", async () => {
 		await coordinatorCreateGroupAction({ groupId: "team-a", dbPath });
 		const invite = await coordinatorCreateInviteAction({

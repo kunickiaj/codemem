@@ -34,6 +34,57 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 	) as HTMLTextAreaElement | null;
 	const syncJoinButton = document.getElementById("syncJoinButton") as HTMLButtonElement | null;
 	const syncJoinInvite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement | null;
+	const projectInviteReview = document.getElementById(
+		"syncProjectInviteReview",
+	) as HTMLDivElement | null;
+	const projectInviteContext = document.getElementById(
+		"syncProjectInviteContext",
+	) as HTMLDivElement | null;
+	const projectInviteReviewHeading = document.getElementById(
+		"syncProjectInviteReviewHeading",
+	) as HTMLHeadingElement | null;
+	const recipientName = document.getElementById("syncRecipientName") as HTMLInputElement | null;
+	const recipientDeviceName = document.getElementById(
+		"syncRecipientDeviceName",
+	) as HTMLInputElement | null;
+	let inspectedInviteValue = "";
+	let inviteInputRevision = 0;
+
+	const reviewProjectInvite = async (
+		inviteValue: string,
+		inputRevision: number,
+	): Promise<"project" | "other" | "stale"> => {
+		if (!projectInviteReview || !recipientName || !recipientDeviceName) return "other";
+		const inspected = await api.inspectCoordinatorInvite(inviteValue);
+		if (inputRevision !== inviteInputRevision || syncJoinInvite?.value.trim() !== inviteValue) {
+			return "stale";
+		}
+		if (inspected.kind !== "project_share_invite") return "other";
+		const projectNames = (inspected.projects ?? [])
+			.map(
+				(project) =>
+					`${project.display_name} (${project.existing_memory_count} existing ${project.existing_memory_count === 1 ? "memory" : "memories"})`,
+			)
+			.join(", ");
+		if (projectInviteContext) {
+			projectInviteContext.textContent = `${inspected.inviter_name || "A teammate"} invited you${inspected.team_name ? ` through ${inspected.team_name}` : ""} to share ${projectNames || "selected projects"}.`;
+		}
+		recipientName.value = inspected.recipient_name ?? "";
+		recipientDeviceName.value = inspected.device_name ?? "";
+		projectInviteReview.hidden = false;
+		inspectedInviteValue = inviteValue;
+		if (syncJoinButton) syncJoinButton.textContent = "Accept and start syncing";
+		projectInviteReviewHeading?.focus();
+		return "project";
+	};
+
+	syncJoinInvite?.addEventListener("input", () => {
+		inviteInputRevision += 1;
+		if (syncJoinInvite.value.trim() === inspectedInviteValue) return;
+		inspectedInviteValue = "";
+		if (projectInviteReview) projectInviteReview.hidden = true;
+		if (syncJoinButton) syncJoinButton.textContent = "Review invite";
+	});
 
 	syncCreateInviteButton?.addEventListener("click", async () => {
 		if (!syncCreateInviteButton || !syncInviteGroup || !syncInviteTtl || !syncInviteOutput) return;
@@ -110,10 +161,51 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 			return;
 		}
 		clearFieldError(syncJoinInvite);
+		if (inspectedInviteValue !== inviteValue) {
+			const inputRevision = inviteInputRevision;
+			try {
+				const reviewOutcome = await reviewProjectInvite(inviteValue, inputRevision);
+				if (reviewOutcome === "project" || reviewOutcome === "stale") return;
+			} catch {
+				// Pairing payloads and legacy envelopes continue through the existing importer.
+			}
+			if (inputRevision !== inviteInputRevision || syncJoinInvite.value.trim() !== inviteValue) {
+				return;
+			}
+			inspectedInviteValue = inviteValue;
+			syncJoinButton.textContent = "Accept invite";
+			return;
+		}
+		const identity =
+			projectInviteReview && !projectInviteReview.hidden
+				? {
+						recipient_name: recipientName?.value.trim() ?? "",
+						device_name: recipientDeviceName?.value.trim() ?? "",
+					}
+				: undefined;
+		if (identity) {
+			const invalid = (value: string) =>
+				!value ||
+				[...value].length > 120 ||
+				[...value].some((character) => /[\p{Cc}\p{Cf}]/u.test(character));
+			if (invalid(identity.recipient_name)) {
+				if (recipientName)
+					markFieldError(recipientName, "Enter a valid name using 120 characters or fewer.");
+				return;
+			}
+			if (invalid(identity.device_name)) {
+				if (recipientDeviceName)
+					markFieldError(
+						recipientDeviceName,
+						"Enter a valid device name using 120 characters or fewer.",
+					);
+				return;
+			}
+		}
 		syncJoinButton.disabled = true;
 		syncJoinButton.textContent = "Accepting\u2026";
 		try {
-			const result = await api.importCoordinatorInvite(inviteValue);
+			const result = await api.importCoordinatorInvite(inviteValue, identity);
 			state.lastTeamJoin = result;
 			const resultType =
 				typeof (result as { type?: unknown }).type === "string"
@@ -140,6 +232,8 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 			state.syncJoinFlowFeedback = feedback;
 			setJoinFeedbackVisibility();
 			syncJoinInvite.value = "";
+			inspectedInviteValue = "";
+			if (projectInviteReview) projectInviteReview.hidden = true;
 			try {
 				await loadSyncData();
 			} catch (error) {
@@ -168,7 +262,7 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 		} finally {
 			if (syncJoinButton.disabled) {
 				syncJoinButton.disabled = false;
-				syncJoinButton.textContent = "Accept";
+				syncJoinButton.textContent = "Review invite";
 			}
 		}
 	});

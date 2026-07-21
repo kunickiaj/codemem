@@ -209,6 +209,7 @@ export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
 	pack_observation_limit: "CODEMEM_PACK_OBSERVATION_LIMIT",
 	pack_session_limit: "CODEMEM_PACK_SESSION_LIMIT",
 	sync_enabled: "CODEMEM_SYNC_ENABLED",
+	sync_device_name: "CODEMEM_SYNC_DEVICE_NAME",
 	sync_host: "CODEMEM_SYNC_HOST",
 	sync_port: "CODEMEM_SYNC_PORT",
 	sync_interval_s: "CODEMEM_SYNC_INTERVAL_S",

@@ -10,7 +10,7 @@
  * Ported from codemem/coordinator_store.py.
  */
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -18,6 +18,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import Database from "better-sqlite3";
 import type {
 	CoordinatorBootstrapGrant,
+	CoordinatorConsumeProjectInviteInput,
 	CoordinatorCreateBootstrapGrantInput,
 	CoordinatorCreateInviteInput,
 	CoordinatorCreateJoinRequestInput,
@@ -35,6 +36,7 @@ import type {
 	CoordinatorListScopesInput,
 	CoordinatorPeerRecord,
 	CoordinatorPresenceRecord,
+	CoordinatorProjectInviteAcceptance,
 	CoordinatorReciprocalApproval,
 	CoordinatorReviewJoinRequestBootstrapGrantInput,
 	CoordinatorReviewJoinRequestInput,
@@ -47,6 +49,7 @@ import type {
 	CoordinatorUpsertPresenceInput,
 } from "./coordinator-store-contract.js";
 import { normalizeInviteExpiresAt } from "./coordinator-store-contract.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 export const DEFAULT_COORDINATOR_DB_PATH = join(homedir(), ".codemem", "coordinator.sqlite");
 
@@ -101,6 +104,17 @@ function nowISO(): string {
 function tokenUrlSafe(bytes: number): string {
 	return randomBytes(bytes).toString("base64url").replace(/=+$/, "");
 }
+
+function tokenDigest(token: string): string {
+	return createHash("sha256").update(token).digest("hex");
+}
+
+const INVITE_COLUMNS = `invite_id, group_id, token, policy, expires_at, created_at, created_by,
+	team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest, token_digest,
+	inviter_actor_id, inviter_display_name, inviter_device_id, pending_person_id,
+	project_summaries_json, project_intent_json, consumed_at, bound_device_id, bound_public_key, bound_fingerprint,
+	recipient_actor_id, recipient_display_name, recipient_device_display_name, trust_state,
+	bootstrap_grant_id`;
 
 function rowToRecord<T>(row: unknown): T {
 	if (row == null) throw new Error("expected row");
@@ -325,10 +339,12 @@ function assertScopeMembershipDeviceEnrolled(
 function insertBootstrapGrantSync(
 	db: DatabaseType,
 	opts: CoordinatorCreateBootstrapGrantInput,
+	requestedGrantId?: string,
+	requestedCreatedAt?: string,
 ): CoordinatorBootstrapGrant {
 	const normalized = normalizeBootstrapGrantInput(opts);
-	const grantId = tokenUrlSafe(12);
-	const createdAt = nowISO();
+	const grantId = requestedGrantId ?? tokenUrlSafe(12);
+	const createdAt = requestedCreatedAt ?? nowISO();
 	db.prepare(`INSERT INTO coordinator_bootstrap_grants(
 			grant_id, group_id, seed_device_id, worker_device_id, expires_at, created_at, created_by, revoked_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`).run(
@@ -395,7 +411,23 @@ function initializeSchema(db: DatabaseType): void {
 			team_name_snapshot TEXT,
 			revoked_at TEXT,
 			operation_id TEXT,
-			reviewed_project_set_digest TEXT
+			reviewed_project_set_digest TEXT,
+			token_digest TEXT,
+			inviter_actor_id TEXT,
+			inviter_display_name TEXT,
+			inviter_device_id TEXT,
+			pending_person_id TEXT,
+			project_summaries_json TEXT,
+			project_intent_json TEXT,
+			consumed_at TEXT,
+			bound_device_id TEXT,
+			bound_public_key TEXT,
+			bound_fingerprint TEXT,
+			recipient_actor_id TEXT,
+			recipient_display_name TEXT,
+			recipient_device_display_name TEXT,
+			trust_state TEXT,
+			bootstrap_grant_id TEXT
 		);
 
 		CREATE TABLE IF NOT EXISTS coordinator_join_requests (
@@ -504,7 +536,26 @@ function initializeSchema(db: DatabaseType): void {
 	} catch {
 		// already exists
 	}
-	for (const column of ["operation_id", "reviewed_project_set_digest"]) {
+	for (const column of [
+		"operation_id",
+		"reviewed_project_set_digest",
+		"token_digest",
+		"inviter_actor_id",
+		"inviter_display_name",
+		"inviter_device_id",
+		"pending_person_id",
+		"project_summaries_json",
+		"project_intent_json",
+		"consumed_at",
+		"bound_device_id",
+		"bound_public_key",
+		"bound_fingerprint",
+		"recipient_actor_id",
+		"recipient_display_name",
+		"recipient_device_display_name",
+		"trust_state",
+		"bootstrap_grant_id",
+	]) {
 		try {
 			db.prepare(`ALTER TABLE coordinator_invites ADD COLUMN ${column} TEXT`).run();
 		} catch {
@@ -512,7 +563,10 @@ function initializeSchema(db: DatabaseType): void {
 		}
 	}
 	db.exec(
-		"CREATE UNIQUE INDEX IF NOT EXISTS idx_coordinator_invites_operation_id ON coordinator_invites(operation_id) WHERE operation_id IS NOT NULL",
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_coordinator_invites_operation_id
+			ON coordinator_invites(operation_id) WHERE operation_id IS NOT NULL;
+		 CREATE UNIQUE INDEX IF NOT EXISTS idx_coordinator_invites_token_digest
+			ON coordinator_invites(token_digest) WHERE token_digest IS NOT NULL;`,
 	);
 }
 
@@ -696,6 +750,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		const expiresAt = normalizeInviteExpiresAt(opts.expiresAt);
 		const inviteId = tokenUrlSafe(12);
 		const token = tokenUrlSafe(24);
+		const digest = tokenDigest(token);
 		const group = await this.getGroup(opts.groupId);
 		const operationId = clean(opts.operationId);
 		const reviewedProjectSetDigest = clean(opts.reviewedProjectSetDigest);
@@ -705,15 +760,25 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		const readOperationInvite = (): CoordinatorInvite | null => {
 			if (!operationId) return null;
 			const existing = this.db
-				.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by,
-					team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest
-					FROM coordinator_invites WHERE operation_id = ?`)
+				.prepare(`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE operation_id = ?`)
 				.get(operationId) as CoordinatorInvite | undefined;
 			if (!existing) return null;
+			// Project bearer tokens remain retrievable only until first consume so an
+			// interrupted create can return the same invite. Consume replaces the
+			// plaintext with a non-secret marker; later create retries must not emit it.
+			if (existing.consumed_at) throw new Error("invite_already_bound");
 			if (
 				existing.group_id !== opts.groupId ||
 				existing.policy !== opts.policy ||
-				existing.reviewed_project_set_digest !== reviewedProjectSetDigest
+				existing.reviewed_project_set_digest !== reviewedProjectSetDigest ||
+				existing.inviter_actor_id !== clean(opts.inviterActorId) ||
+				existing.inviter_display_name !== clean(opts.inviterDisplayName) ||
+				existing.inviter_device_id !== clean(opts.inviterDeviceId) ||
+				existing.pending_person_id !== clean(opts.pendingPersonId) ||
+				existing.project_summaries_json !==
+					(opts.projectSummaries ? JSON.stringify(opts.projectSummaries) : null) ||
+				existing.project_intent_json !==
+					(opts.projectIntent ? JSON.stringify(opts.projectIntent) : null)
 			) {
 				throw new Error("invite_operation_intent_conflict");
 			}
@@ -723,12 +788,13 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			if (!existing.revoked_at && existing.expires_at > now) return existing;
 			this.db
 				.prepare(`UPDATE coordinator_invites
-					SET token = ?, expires_at = ?, created_at = ?, created_by = ?,
+					SET token = ?, token_digest = ?, expires_at = ?, created_at = ?, created_by = ?,
 						team_name_snapshot = ?, revoked_at = NULL
 					WHERE operation_id = ? AND token = ?
 					  AND (revoked_at IS NOT NULL OR expires_at <= ?)`)
 				.run(
 					token,
+					digest,
 					expiresAt,
 					now,
 					opts.createdBy ?? null,
@@ -749,8 +815,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			this.db
 				.prepare(`INSERT INTO coordinator_invites(
 					invite_id, group_id, token, policy, expires_at, created_at, created_by,
-					team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`)
+					team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest,
+					token_digest, inviter_actor_id, inviter_display_name, inviter_device_id,
+					pending_person_id, project_summaries_json, project_intent_json, trust_state
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 				.run(
 					inviteId,
 					opts.groupId,
@@ -762,6 +830,14 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					group?.display_name ?? null,
 					operationId,
 					reviewedProjectSetDigest,
+					digest,
+					clean(opts.inviterActorId),
+					clean(opts.inviterDisplayName),
+					clean(opts.inviterDeviceId),
+					clean(opts.pendingPersonId),
+					opts.projectSummaries ? JSON.stringify(opts.projectSummaries) : null,
+					opts.projectIntent ? JSON.stringify(opts.projectIntent) : null,
+					operationId ? "pending" : null,
 				);
 		} catch (error) {
 			if (operationId) {
@@ -771,29 +847,197 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			throw error;
 		}
 		const row = this.db
-			.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by,
-					team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest
-				 FROM coordinator_invites WHERE invite_id = ?`)
+			.prepare(`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE invite_id = ?`)
 			.get(inviteId);
 		return rowToRecord<CoordinatorInvite>(row);
 	}
 
 	async getInviteByToken(token: string): Promise<CoordinatorInvite | null> {
 		const row = this.db
-			.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by,
-					team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest
+			.prepare(`SELECT ${INVITE_COLUMNS}
 				 FROM coordinator_invites
-				 WHERE token = ?
+				 WHERE (token_digest = ? OR token = ?)
 				   AND revoked_at IS NULL
 				   AND expires_at > ?`)
-			.get(token, new Date().toISOString());
+			.get(tokenDigest(token), token, new Date().toISOString());
 		return row ? rowToRecord<CoordinatorInvite>(row) : null;
+	}
+
+	async getInviteByTokenForInspection(token: string): Promise<CoordinatorInvite | null> {
+		const row = this.db
+			.prepare(
+				`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE token_digest = ? OR token = ?`,
+			)
+			.get(tokenDigest(token), token);
+		return row ? rowToRecord<CoordinatorInvite>(row) : null;
+	}
+
+	async consumeProjectInvite(
+		opts: CoordinatorConsumeProjectInviteInput,
+	): Promise<CoordinatorProjectInviteAcceptance> {
+		const consumedAt = normalizeInviteExpiresAt(opts.now);
+		return this.db.transaction(() => {
+			let invite = this.db
+				.prepare(
+					`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE token_digest = ? OR token = ?`,
+				)
+				.get(tokenDigest(opts.token), opts.token) as CoordinatorInvite | undefined;
+			if (!invite?.operation_id || !invite.project_intent_json || invite.revoked_at) {
+				throw new Error("invite_invalid");
+			}
+			const group = this.db
+				.prepare("SELECT archived_at FROM groups WHERE group_id = ?")
+				.get(invite.group_id) as { archived_at: string | null } | undefined;
+			if (!group) throw new Error("group_not_found");
+			if (group.archived_at) throw new Error("group_archived");
+			if (invite.operation_id !== opts.operationId) throw new Error("invite_invalid");
+			if (fingerprintPublicKey(opts.publicKey) !== opts.fingerprint) {
+				throw new Error("fingerprint_mismatch");
+			}
+			if (!invite.consumed_at && new Date(invite.expires_at) <= new Date(consumedAt)) {
+				throw new Error("invite_expired");
+			}
+			const sameBinding =
+				invite.bound_device_id === opts.deviceId &&
+				invite.bound_public_key === opts.publicKey &&
+				invite.bound_fingerprint === opts.fingerprint;
+			if (invite.consumed_at && !sameBinding) throw new Error("invite_already_bound");
+			if (
+				invite.consumed_at &&
+				(invite.recipient_actor_id !== opts.recipientActorId ||
+					invite.recipient_display_name !== opts.recipientDisplayName ||
+					invite.recipient_device_display_name !== opts.deviceDisplayName)
+			) {
+				throw new Error("invite_identity_conflict");
+			}
+			const existingEnrollment = this.db
+				.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+					FROM enrolled_devices WHERE group_id = ? AND device_id = ?`)
+				.get(invite.group_id, opts.deviceId) as CoordinatorEnrollment | undefined;
+			if (
+				existingEnrollment &&
+				(existingEnrollment.public_key !== opts.publicKey ||
+					existingEnrollment.fingerprint !== opts.fingerprint)
+			) {
+				throw new Error("invite_identity_conflict");
+			}
+
+			let accepted = false;
+			if (!invite.consumed_at) {
+				const changed = this.db
+					.prepare(`UPDATE coordinator_invites SET token = ?, consumed_at = ?, bound_device_id = ?,
+						bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = ?,
+						recipient_display_name = ?, recipient_device_display_name = ?,
+						trust_state = 'pending_inviter_device'
+						WHERE invite_id = ? AND consumed_at IS NULL
+						AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id
+							AND g.archived_at IS NULL)`)
+					.run(
+						`consumed:${invite.invite_id}`,
+						consumedAt,
+						opts.deviceId,
+						opts.publicKey,
+						opts.fingerprint,
+						opts.recipientActorId,
+						opts.recipientDisplayName,
+						opts.deviceDisplayName,
+						invite.invite_id,
+					);
+				accepted = changed.changes === 1;
+				invite = this.db
+					.prepare(`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE invite_id = ?`)
+					.get(invite.invite_id) as CoordinatorInvite;
+				if (!accepted) {
+					const currentGroup = this.db
+						.prepare("SELECT archived_at FROM groups WHERE group_id = ?")
+						.get(invite.group_id) as { archived_at: string | null } | undefined;
+					if (currentGroup?.archived_at) throw new Error("group_archived");
+					if (
+						invite.bound_device_id !== opts.deviceId ||
+						invite.bound_public_key !== opts.publicKey ||
+						invite.bound_fingerprint !== opts.fingerprint
+					) {
+						throw new Error("invite_already_bound");
+					}
+				}
+			}
+			if (
+				invite.recipient_actor_id !== opts.recipientActorId ||
+				invite.recipient_display_name !== opts.recipientDisplayName ||
+				invite.recipient_device_display_name !== opts.deviceDisplayName
+			) {
+				throw new Error("invite_identity_conflict");
+			}
+
+			if (accepted) {
+				this.enrollDeviceSync(invite.group_id, {
+					deviceId: opts.deviceId,
+					publicKey: opts.publicKey,
+					fingerprint: opts.fingerprint,
+					displayName: opts.deviceDisplayName,
+				});
+			}
+			const seed = invite.inviter_device_id
+				? (this.db
+						.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+							FROM enrolled_devices WHERE group_id = ? AND device_id = ? AND enabled = 1`)
+						.get(invite.group_id, invite.inviter_device_id) as CoordinatorEnrollment | undefined)
+				: undefined;
+			let bootstrapGrant: CoordinatorBootstrapGrant | null = null;
+			if (
+				seed &&
+				!invite.bootstrap_grant_id &&
+				new Date(invite.expires_at) > new Date(consumedAt)
+			) {
+				const grantId = tokenUrlSafe(12);
+				const claimed = this.db
+					.prepare(`UPDATE coordinator_invites SET bootstrap_grant_id = ?,
+						trust_state = 'bootstrap_grant_created'
+						WHERE invite_id = ? AND bootstrap_grant_id IS NULL AND bound_device_id = ?`)
+					.run(grantId, invite.invite_id, opts.deviceId);
+				if (claimed.changes === 1) {
+					bootstrapGrant = insertBootstrapGrantSync(
+						this.db,
+						{
+							groupId: invite.group_id,
+							seedDeviceId: seed.device_id,
+							workerDeviceId: opts.deviceId,
+							expiresAt: invite.expires_at,
+							createdBy: invite.inviter_actor_id,
+						},
+						grantId,
+						consumedAt,
+					);
+				}
+			}
+			const saved = this.db
+				.prepare(`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE invite_id = ?`)
+				.get(invite.invite_id) as CoordinatorInvite;
+			const enrollment = this.db
+				.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+					FROM enrolled_devices WHERE group_id = ? AND device_id = ? AND enabled = 1`)
+				.get(invite.group_id, opts.deviceId) as CoordinatorEnrollment | undefined;
+			if (!enrollment) throw new Error("invite_acceptance_incomplete");
+			if (!bootstrapGrant && saved.bootstrap_grant_id) {
+				bootstrapGrant =
+					(this.db
+						.prepare(`SELECT grant_id, group_id, seed_device_id, worker_device_id, expires_at,
+							created_at, created_by, revoked_at FROM coordinator_bootstrap_grants WHERE grant_id = ?`)
+						.get(saved.bootstrap_grant_id) as CoordinatorBootstrapGrant | undefined) ?? null;
+			}
+			return {
+				status: accepted ? ("accepted" as const) : ("existing" as const),
+				invite: saved,
+				enrollment,
+				seed_enrollment: seed ?? null,
+				bootstrap_grant: bootstrapGrant,
+			};
+		})();
 	}
 
 	async listInvites(groupId: string): Promise<CoordinatorInvite[]> {
 		return this.db
-			.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by,
-					team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest
+			.prepare(`SELECT ${INVITE_COLUMNS}
 				 FROM coordinator_invites WHERE group_id = ?
 				 ORDER BY created_at DESC`)
 			.all(groupId)

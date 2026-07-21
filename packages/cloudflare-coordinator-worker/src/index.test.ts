@@ -162,6 +162,43 @@ describe("createCloudflareCoordinatorWorker", () => {
 		});
 	});
 
+	it("migration 0008 preserves legacy invites while adding atomic binding columns", () => {
+		db.exec(`
+			DROP TABLE coordinator_invites;
+			CREATE TABLE coordinator_invites (
+				invite_id TEXT PRIMARY KEY, group_id TEXT NOT NULL, token TEXT NOT NULL UNIQUE,
+				policy TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL,
+				created_by TEXT, team_name_snapshot TEXT, revoked_at TEXT, operation_id TEXT,
+				reviewed_project_set_digest TEXT
+			);
+			INSERT INTO coordinator_invites(invite_id, group_id, token, policy, expires_at, created_at)
+			VALUES ('legacy-invite', 'g1', 'legacy-token', 'auto_admit', '2099-01-01T00:00:00Z',
+				'2026-03-28T00:00:00Z');
+		`);
+		const migration = readFileSync(
+			join(import.meta.dirname, "../migrations/0008_add_project_invite_acceptance.sql"),
+			"utf8",
+		);
+		db.exec(migration);
+		expect(
+			db
+				.prepare(
+					`SELECT invite_id, token, token_digest, consumed_at, bound_device_id,
+						recipient_actor_id, trust_state
+					 FROM coordinator_invites WHERE invite_id = 'legacy-invite'`,
+				)
+				.get(),
+		).toEqual({
+			invite_id: "legacy-invite",
+			token: "legacy-token",
+			token_digest: null,
+			consumed_at: null,
+			bound_device_id: null,
+			recipient_actor_id: null,
+			trust_state: null,
+		});
+	});
+
 	it("serves coordinator admin data through the worker entrypoint", async () => {
 		const store = new D1CoordinatorStore(d1db);
 		await store.createGroup("g1", "Team Alpha");

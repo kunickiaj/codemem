@@ -1115,11 +1115,15 @@ export async function syncOnce(
 	// Look up pinned fingerprint
 	const d = drizzle(db, { schema });
 	const pinRow = d
-		.select({ pinned_fingerprint: schema.syncPeers.pinned_fingerprint })
+		.select({
+			pinned_fingerprint: schema.syncPeers.pinned_fingerprint,
+			pending_bootstrap_grant_id: schema.syncPeers.pending_bootstrap_grant_id,
+		})
 		.from(schema.syncPeers)
 		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
 		.get();
 	const pinnedFingerprint = pinRow?.pinned_fingerprint ?? "";
+	const pendingBootstrapGrantId = pinRow?.pending_bootstrap_grant_id?.trim() || undefined;
 	if (!pinnedFingerprint) {
 		return {
 			ok: false,
@@ -1164,6 +1168,7 @@ export async function syncOnce(
 					url: statusUrl,
 					bodyBytes: Buffer.alloc(0),
 					keysDir,
+					bootstrapGrantId: pendingBootstrapGrantId,
 				}),
 				...capabilityHeader(),
 			};
@@ -1187,6 +1192,13 @@ export async function syncOnce(
 			const peerResetBoundary = parsePeerResetBoundary(statusPayload);
 			if (!peerResetBoundary) {
 				throw new Error("peer status missing sync_reset boundary");
+			}
+			if (pendingBootstrapGrantId) {
+				db.prepare(`UPDATE sync_peers SET pending_bootstrap_grant_id = NULL
+					WHERE peer_device_id = ? AND pending_bootstrap_grant_id = ?`).run(
+					peerDeviceId,
+					pendingBootstrapGrantId,
+				);
 			}
 
 			// -- 1b. Auto-bootstrap if local node is empty and has never synced --

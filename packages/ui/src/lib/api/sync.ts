@@ -4,7 +4,12 @@
  * /api/sync/* or /api/sync/run/* on the viewer. */
 
 import { fetchJson, payloadError, readJsonPayload } from "./internal";
-import type { AcceptDiscoveredPeerResult, ImportInviteResult, SyncRunResponse } from "./types";
+import type {
+	AcceptDiscoveredPeerResult,
+	ImportInviteResult,
+	InspectInviteResult,
+	SyncRunResponse,
+} from "./types";
 
 type TriggerSyncTarget = {
 	address?: string;
@@ -24,15 +29,29 @@ export async function loadSyncStatus(
 	return fetchJson(`/api/sync/status${suffix}`);
 }
 
-export async function importCoordinatorInvite(invite: string): Promise<ImportInviteResult> {
+export async function importCoordinatorInvite(
+	invite: string,
+	identity?: { recipient_name: string; device_name: string },
+): Promise<ImportInviteResult> {
 	const resp = await fetch("/api/sync/invites/import", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ invite }),
+		body: JSON.stringify({ invite, ...identity }),
 	});
 	const { text, payload: data } = await readJsonPayload<ImportInviteResult>(resp);
 	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
 	return data;
+}
+
+export async function inspectCoordinatorInvite(invite: string): Promise<InspectInviteResult> {
+	const resp = await fetch("/api/sync/invites/inspect", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ invite }),
+	});
+	const { text, payload } = await readJsonPayload<InspectInviteResult>(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	return payload as InspectInviteResult;
 }
 
 export async function loadSyncActors(): Promise<unknown> {
