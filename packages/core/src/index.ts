@@ -544,6 +544,30 @@ export {
 export type { FlushRawEventsOptions } from "./raw-event-flush.js";
 export { buildSessionContext, flushRawEvents } from "./raw-event-flush.js";
 export { RawEventSweeper } from "./raw-event-sweeper.js";
+export type {
+	RecipientPolicyAuthorityV1,
+	RecipientPolicyBlockedItemV1,
+	RecipientPolicyContractVersion,
+	RecipientPolicyEffectiveDeviceV1,
+	RecipientPolicyEnforcementV1,
+	RecipientPolicyIdentityDeviceV1,
+	RecipientPolicyIdentityKindV1,
+	RecipientPolicyIdentityStatusV1,
+	RecipientPolicyIdentityV1,
+	RecipientPolicyIntentSourceV1,
+	RecipientPolicyParityV1,
+	RecipientPolicyProjectionV1,
+	RecipientPolicyProjectRecipientV1,
+	RecipientPolicyProjectV1,
+	RecipientPolicyReconciliationStatusV1,
+	RecipientPolicyReviewDecisionV1,
+	RecipientPolicyReviewItemV1,
+	RecipientPolicyReviewOptionV1,
+	RecipientPolicyReviewResolutionV1,
+	RecipientPolicyTeamMembershipV1,
+	RecipientPolicyTeamV1,
+} from "./recipient-policy-contract.js";
+export { RECIPIENT_POLICY_CONTRACT_VERSION } from "./recipient-policy-contract.js";
 export {
 	hasPendingRefBackfill,
 	REF_BACKFILL_JOB,
