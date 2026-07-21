@@ -17,7 +17,7 @@ the network boundary you care about (for example VPNs).
 - it does not queue offline sync data
 - it does not replace local SQLite as the source of truth
 - it is not a codemem-hosted public service
-- it does not automatically create or repair `sync_peers`
+- it does not turn discovery-group membership into project access
 - joining a coordinator group does not, by itself, create an active sync relationship
 - joining a coordinator group does not, by itself, grant access to any Sharing domain
 
@@ -129,6 +129,12 @@ authorize a device to receive `acme-work`, `personal:<actor_id>`, or any other
 domain. The coordinator group is the administrative container. The Sharing
 domain grant is the data-access decision.
 
+## Project-first sharing and advanced administration
+
+For a teammate, start in the viewer's **Projects** tab: choose a Person, choose the exact projects, review existing-memory counts and future sharing, then send one expiring invite. Acceptance links the Person and device, establishes the required trust and access, and starts initial sync.
+
+The coordinator remains the authority for the invite and access steps, but its groups, devices, Spaces, grants, and project mappings are advanced administration—not normal teammate setup. Legacy coordinator invites and manual pairing remain compatible, but do not grant project access by themselves.
+
 ## Sharing-domain membership and revocation
 
 Use coordinator Sharing-domain commands when a group needs explicit access
@@ -160,6 +166,12 @@ cached peer addresses and cached membership state. They must not treat a
 coordinator outage as permission to widen access. When membership cannot be
 verified for a scoped operation, fail closed or keep data local until the cache
 is refreshed.
+
+### Compatibility and reassignment
+
+Project-first sharing may move selected project history into a managed boundary. For history that could already have replicated, participating owner devices must negotiate support for `reassign_scope`. If a required device lacks that capability, setup fails closed before any partial migration; update that device and retry the sharing operation.
+
+Older invitations and pairing payloads continue to parse through their legacy enrollment paths. They remain valid for compatibility, but are clearly separate from a project-scoped invite and cannot silently acquire its access.
 
 ## How discovery works
 

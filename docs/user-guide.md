@@ -137,24 +137,60 @@ Candidate mining is deterministic and review-first:
 
 ## Sync
 
+### Share projects with a teammate
+
+The normal teammate flow starts in **Projects**, not pairing or Teams:
+
+1. Choose **Share** for one project, or select projects and choose **Share projects**.
+2. Choose an existing **Person** or enter the teammate's name.
+3. Select the exact projects and review their existing-memory counts.
+4. Confirm that the invite shares those existing memories and future activity, then send the one expiring invite.
+5. The recipient accepts once and confirms their name and device name. Codemem links the Person and device, establishes trust and project access, and starts initial sync.
+
+```text
+Brian will receive:
+• 436 existing memories and future activity from codemem
+
+No other projects will be shared.
+```
+
+Project access uses canonical project identity, not a display name. Selecting `codemem` does not share a similarly named or sibling project in the same Space. **Only me** keeps a memory local, even when its project is shared.
+
+The invite is single-use, expires, and is limited to the reviewed projects. The recipient cannot add projects during acceptance. Existing and future selected-project memories arrive after setup; unrelated projects remain absent.
+
+### Setup status and recovery
+
+| Status | Meaning | What to do |
+| --- | --- | --- |
+| Waiting for acceptance | The invite has not been accepted. | Copy the invite or cancel it. |
+| Setting up project access / Starting first sync | Codemem is establishing trust, access, and initial replication. | Wait. |
+| Waiting for device | The recipient device is offline. | Wait; sync continues when it reconnects. |
+| Up to date | The selected projects are syncing. | Nothing. |
+| Needs attention | A setup step reached a terminal failure. | Use **Retry setup**. |
+| Access removed | Future access has been removed. Previously copied memories may remain on the other device. | Share again if appropriate. |
+
+An offline device is a passive waiting state, not a failure. Retry only when codemem shows **Needs attention**; it preserves completed setup work and resumes from the failed step.
+
 ### Enable + run
 
 - `codemem sync enable` generates keys and writes config.
 - `codemem sync start` starts the viewer-backed sync runtime.
 - `codemem sync status` shows device info and peer health.
 
-### Pair devices
+### Advanced and legacy device pairing
+
+Use manual pairing for same-person devices, existing integrations, or compatibility—not normal teammate sharing.
 
 1. In the viewer, open the Sync panel and scan/copy the QR payload (recommended).
 2. Or run `codemem sync pair` and copy the payload.
 3. On the other device, run `codemem sync pair --accept '<payload>'`.
 
-Optional (recommended for coworker sync): set a per-peer project filter at accept time:
+Optional legacy filters can narrow an already-authorized peer's data; they cannot grant project access:
 
 - `codemem sync pair --accept '<payload>' --include shared-repo-1,shared-repo-2`
 - `codemem sync pair --accept '<payload>' --exclude private-repo`
 
-### Sharing domains and mixed-device safety
+### Advanced sharing domains and mixed-device safety
 
 A **Sharing domain** is the boundary that decides which devices may receive a
 memory. Internally this is stored as `scope_id`. Project filters still matter,
@@ -214,13 +250,13 @@ Inspect current and completed maintenance jobs with:
 codemem maintenance status
 ```
 
-### Claim your own devices
+### Same-person device recovery
 
 - In the Sync panel, use `Assigned actor` to map a peer to your local actor when that machine should count as part of your identity.
 - Actor assignment preserves provenance and same-person UI continuity. Private sync still requires membership in a personal Sharing domain; actor assignment is not an access grant.
 - If a machine is replaced or re-paired, use `Claim old device as mine` to reconnect older synced history to your local actor.
 
-### Manage actors
+### Advanced actor management
 
 - The Sync panel now has an `Actors` section for creating and renaming non-local actors.
 - The same section can merge a duplicate actor into another actor; this immediately moves assigned peers, while already-stamped historical memories keep their current provenance until a later follow-on flow changes them.
@@ -230,6 +266,12 @@ codemem maintenance status
 - Non-local peers receive memories only after Sharing-domain authorization succeeds. Their include/exclude filters can narrow that set, but cannot grant access.
 - Use `Only me` on a memory when it should stay local and not sync to non-local actors.
 - The Sync panel also shows a teammate review card with per-peer counts for memories that will share by default versus memories marked `Only me`, plus a one-click jump into `My memories` in the Feed for review.
+
+### Advanced compatibility and reassignment
+
+Legacy pairing and coordinator invitations remain supported, but do not grant selected-project access by themselves. Manual Space grants and project mappings are advanced administration.
+
+When selected history may already have replicated, all participating owner devices must support `reassign_scope` before codemem moves it into a project-specific boundary. If any required device lacks support, setup fails closed before partial migration; update that device, then use **Retry setup**. Technical capability details and IDs are available only in diagnostics.
 
 ### One-off sync
 
@@ -258,7 +300,7 @@ codemem maintenance status
 - Use coordinator-backed discovery when peers are reachable but their addresses change frequently or mDNS does not work across network boundaries such as VPNs.
 - Set `sync_coordinator_url` and `sync_coordinator_group` to enable it.
 - The Settings UI exposes coordinator URL, group, timeout, and presence TTL fields under Device Sync.
-- Manage project-to-Space assignment from the Projects tab; Device Sync is only for sync configuration.
+- Use **Share** in Projects for normal teammate sharing. Manual project-to-Space assignment is advanced/legacy administration; Device Sync is for runtime configuration.
 - The coordinator is self-hosted/operator-run and only helps peers discover fresh addresses; direct peer-to-peer sync remains the data path.
 - See [docs/coordinator-discovery.md](coordinator-discovery.md) for setup, config, and current limitations.
 - See [docs/anchor-peer-deployment.md](anchor-peer-deployment.md) if you want an always-on peer as a sync backstop for personal or team Sharing domains.

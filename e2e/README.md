@@ -10,6 +10,7 @@ This directory holds the first local Docker/Compose-based E2E harness for sync s
 - fleet spec and Compose fleet-smoke proving scenario
 - coordinator invite/join/approval/discovery scenario
 - direct peer sync scenario with data-plane assertions
+- project-first teammate-sharing scenario with exact-project isolation assertions
 - bootstrap scenario plus dirty-local refusal validation
 - seed modes: `empty`, `fixture-small`, `fixture-large`, `local-import`
 - automatic artifact capture under `.tmp/e2e-artifacts/`
@@ -37,6 +38,16 @@ pnpm run e2e:coordinator
 ```fish
 pnpm run e2e:direct-sync
 ```
+
+## Run the project-sharing scenario
+
+```fish
+set -lx CODEMEM_E2E_BUILD 1
+set -lx CODEMEM_E2E_JSON 1
+pnpm run e2e:project-sharing -- --json
+```
+
+This scenario creates two canonical projects on one peer, shares exactly one through the project-first invite flow, and verifies automatic identity linking, existing and future replication, source-membership isolation, and the absence of unrelated-project rows on the recipient.
 
 ## Run the fleet smoke scenario
 

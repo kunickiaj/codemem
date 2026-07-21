@@ -152,7 +152,7 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | **Viewer** | `codemem serve [start\|stop\|restart]` | Launch / manage the web viewer |
 | **Sync** | `codemem sync enable\|disable` | Enable or disable peer-to-peer sync |
 | | `codemem sync status` | Device info and peer health |
-| | `codemem sync pair` | Generate or accept a pairing payload |
+| | `codemem sync pair` | Advanced/legacy device pairing |
 | | `codemem sync once` | Run one immediate sync pass |
 | | `codemem sync doctor` | Diagnose sync configuration issues |
 | | `codemem sync bootstrap` | Bootstrap sync from a peer snapshot |
@@ -266,7 +266,26 @@ See `codemem memory export --help` and `codemem memory import --help` for full o
 
 ## Peer-to-peer sync
 
-Replicate memories across devices without a central server.
+Share selected project memories with a teammate, or replicate memories between your own devices, without a central data service.
+
+### Share projects with a teammate
+
+In the viewer, choose **Share** on a project (or select projects, then choose **Share projects**):
+
+1. Choose or enter the teammate's **Person** name.
+2. Select the exact projects to share and review each existing-memory count.
+3. Confirm that existing memories **and future activity** from those projects will share, then send the one expiring invite.
+4. The recipient accepts once, confirms their name and device name, and codemem links the Person and device, establishes trust and access, and starts the first sync.
+
+Only the reviewed canonical projects are shared—similarly named or sibling projects are not included. A memory marked **Only me** stays local even when its project is shared. Removing access stops future sharing; memories already copied to another device may remain there.
+
+While setup is progressing, codemem reports what it is doing. An offline recipient device is waiting, not an error; sync resumes when it reconnects. If a setup step reaches a terminal failure, codemem shows its cause and one **Retry setup** action.
+
+Manual pairing, actor assignment, Space grants, and project mappings remain available for same-person devices, legacy setups, and diagnostics. They are not required for normal teammate sharing. See [the user guide](docs/user-guide.md#share-projects-with-a-teammate).
+
+### Advanced and legacy device pairing
+
+Use manual pairing only for a same-person device, an existing integration, or a compatibility workflow:
 
 ```text
 codemem sync enable        # generate device keys
@@ -275,9 +294,7 @@ codemem sync start         # start the viewer-backed sync runtime
 codemem sync once          # run one immediate sync pass
 ```
 
-The viewer now includes actor management for mapping multiple peers to one logical person, plus owned-memory visibility controls so project-filtered memories share by default while `Only me` stays a per-memory local override.
-
-Project filters, peer-to-actor assignment, visibility controls, and config keys are documented in [docs/user-guide.md](docs/user-guide.md).
+Legacy pairing and legacy coordinator invitations do not grant project access by themselves. For advanced access details, compatibility, and recovery, see [the user guide](docs/user-guide.md).
 
 For cross-network setups where peer addresses change frequently or mDNS does not cross VPN/network boundaries, codemem also supports optional coordinator-backed discovery with a self-hosted coordinator. The preferred deployment path is the built-in `codemem coordinator` service; see [docs/coordinator-discovery.md](docs/coordinator-discovery.md).
 
