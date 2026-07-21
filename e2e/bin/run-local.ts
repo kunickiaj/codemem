@@ -4,6 +4,7 @@ import { runFleetSmokeScenario } from "../scenarios/fleet-smoke.js";
 import { runBootstrapScenario } from "../scenarios/bootstrap.js";
 import { runCoordinatorScenario } from "../scenarios/coordinator.js";
 import { runDirectSyncScenario } from "../scenarios/direct-sync.js";
+import { runProjectSharingScenario } from "../scenarios/project-sharing.js";
 import { runSharingDomainsScenario } from "../scenarios/sharing-domains.js";
 import { runSmokeScenario } from "../scenarios/smoke.js";
 import { createScenarioContext } from "../lib/scenario-context.js";
@@ -15,6 +16,7 @@ const scenarios = {
 	fleetCleanup: runFleetCleanupScenario,
 	fleetReady: runFleetReadyScenario,
 	fleetSmoke: runFleetSmokeScenario,
+	projectSharing: runProjectSharingScenario,
 	sharingDomains: runSharingDomainsScenario,
 	smoke: runSmokeScenario,
 } as const;
