@@ -2,8 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
 	advanceShareOperation,
+	loadRecipientPolicyReview,
 	loadShareOperation,
 	loadShareOperations,
+	RecipientPolicyReviewStaleError,
+	resolveRecipientPolicyReview,
+	resolveRecipientPolicyReviewBulk,
 	triggerSync,
 } from "./sync";
 
@@ -73,6 +77,95 @@ describe("share operation API", () => {
 		expect(fetchMock).toHaveBeenLastCalledWith(
 			`/api/sync/share-operations/${operation.operation_id}/advance`,
 			{ method: "POST" },
+		);
+	});
+});
+
+describe("recipient policy review API", () => {
+	it("loads the camelCase review DTO and submits an input-free decision unchanged", async () => {
+		const review = { version: 1, reviewItems: [], blockedItems: [] } as const;
+		const applied = {
+			reviewItemId: "review-1",
+			sourceFingerprint: "fingerprint-1",
+			status: "applied",
+			errorCode: null,
+			idempotent: false,
+		} as const;
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(new Response(JSON.stringify(review), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify(applied), { status: 200 }));
+		globalThis.fetch = fetchMock as typeof fetch;
+
+		expect(await loadRecipientPolicyReview()).toEqual(review);
+		expect(
+			await resolveRecipientPolicyReview({
+				reviewItemId: "review-1",
+				sourceFingerprint: "fingerprint-1",
+				decision: "keep_current_setup",
+			}),
+		).toEqual(applied);
+		expect(fetchMock).toHaveBeenLastCalledWith(
+			"/api/sync/recipient-policy/v1/review/resolve",
+			expect.objectContaining({
+				body: JSON.stringify({
+					reviewItemId: "review-1",
+					sourceFingerprint: "fingerprint-1",
+					decision: "keep_current_setup",
+				}),
+				method: "POST",
+			}),
+		);
+	});
+
+	it("throws a typed stale error for a stale 409 result", async () => {
+		const stale = {
+			reviewItemId: "review-1",
+			sourceFingerprint: "stale-fingerprint",
+			status: "stale",
+			errorCode: "source_fingerprint_stale",
+			idempotent: false,
+		} as const;
+		globalThis.fetch = vi.fn(
+			async () => new Response(JSON.stringify(stale), { status: 409 }),
+		) as typeof fetch;
+
+		const promise = resolveRecipientPolicyReview({
+			reviewItemId: "review-1",
+			sourceFingerprint: "stale-fingerprint",
+			decision: "reject_suggestion",
+		});
+		await expect(promise).rejects.toBeInstanceOf(RecipientPolicyReviewStaleError);
+		await expect(promise).rejects.toMatchObject({ result: stale });
+	});
+
+	it("returns per-item results from a 207 bulk response", async () => {
+		const bulk = {
+			version: 1,
+			results: [
+				{
+					reviewItemId: "review-1",
+					sourceFingerprint: "fingerprint-1",
+					status: "not_found",
+					errorCode: "review_item_not_found",
+					idempotent: false,
+				},
+			],
+		} as const;
+		const fetchMock = vi.fn(async () => new Response(JSON.stringify(bulk), { status: 207 }));
+		globalThis.fetch = fetchMock as typeof fetch;
+
+		const requests = [
+			{
+				reviewItemId: "review-1",
+				sourceFingerprint: "fingerprint-1",
+				decision: "keep_current_setup" as const,
+			},
+		];
+		expect(await resolveRecipientPolicyReviewBulk(requests)).toEqual(bulk);
+		expect(fetchMock).toHaveBeenCalledWith(
+			"/api/sync/recipient-policy/v1/review/resolve-bulk",
+			expect.objectContaining({ body: JSON.stringify({ requests }), method: "POST" }),
 		);
 	});
 });

@@ -7549,6 +7549,14 @@ describe("viewer-server", () => {
 					title: "project domain candidate",
 					metadata: {},
 				});
+				store.db
+					.prepare(
+						`INSERT INTO sync_peers(
+							peer_device_id, name, public_key, pinned_fingerprint, addresses_json, created_at
+						 ) VALUES ('unrelated-peer', 'Unrelated peer', 'sensitive-review-public-key',
+							'sensitive-review-transport-fingerprint', '["sensitive-review-address"]', ?)`,
+					)
+					.run(new Date().toISOString());
 				const now = new Date().toISOString();
 				store.db
 					.prepare(
@@ -7896,6 +7904,189 @@ describe("viewer-server", () => {
 				expect(Number(store.db.prepare("SELECT total_changes() AS total").pluck().get())).toBe(
 					totalChangesBefore,
 				);
+			} finally {
+				getStore()?.db.pragma("query_only = OFF");
+				cleanup();
+			}
+		});
+
+		it("serves and resolves recipient-policy review without mutating protected state", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const projectId = "https://git.example.invalid/acme/review-route.git";
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
+					.run(projectId, "review-route", sessionId);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "review route fixture",
+					metadata: {},
+				});
+				const protectedTables = [
+					"replication_scopes",
+					"project_scope_mappings",
+					"scope_memberships",
+					"memory_items",
+					"replication_ops",
+					"replication_cursors",
+					"sync_peers",
+				];
+				const snapshot = () =>
+					JSON.stringify(
+						Object.fromEntries(
+							protectedTables.map((table) => [
+								table,
+								store.db.prepare(`SELECT * FROM ${table}`).all(),
+							]),
+						),
+					);
+
+				expect(
+					store.db.prepare("SELECT 1 FROM actors WHERE actor_id = ?").get(store.actorId),
+				).toBeUndefined();
+				const reviewResponse = await app.request("/api/sync/recipient-policy/v1/review");
+				const review = (await reviewResponse.json()) as {
+					reviewItems: Array<{
+						reviewItemId: string;
+						sourceFingerprint: string;
+						options: Array<{ preview: { projects: Array<{ canonicalIdentity: string }> } }>;
+					}>;
+				};
+				const item = review.reviewItems[0];
+				if (!item) throw new Error("review item missing");
+				const serialized = JSON.stringify(review);
+
+				expect(reviewResponse.status).toBe(200);
+				expect(
+					store.db
+						.prepare("SELECT status FROM actors WHERE actor_id = ? AND is_local = 1")
+						.pluck()
+						.get(store.actorId),
+				).toBe("active");
+				expect(item.options[0]?.preview.projects[0]?.canonicalIdentity).toBe(projectId);
+				for (const forbidden of [
+					"scopeId",
+					"address",
+					"publicKey",
+					"epoch",
+					"cursor",
+					"token",
+					"payload",
+				]) {
+					expect(serialized).not.toContain(forbidden);
+				}
+				for (const secret of [
+					"sensitive-review-public-key",
+					"sensitive-review-transport-fingerprint",
+					"sensitive-review-address",
+				]) {
+					expect(serialized).not.toContain(secret);
+				}
+
+				const beforeSingle = snapshot();
+				const attributedByClient = await app.request(
+					"/api/sync/recipient-policy/v1/review/resolve",
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							reviewItemId: item.reviewItemId,
+							sourceFingerprint: item.sourceFingerprint,
+							decision: "keep_current_setup",
+							decidedByIdentityId: "client-supplied",
+						}),
+					},
+				);
+				expect(attributedByClient.status).toBe(400);
+				const staleResponse = await app.request("/api/sync/recipient-policy/v1/review/resolve", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						reviewItemId: item.reviewItemId,
+						sourceFingerprint: "stale",
+						decision: "keep_current_setup",
+					}),
+				});
+				expect(staleResponse.status).toBe(409);
+				expect(
+					store.db
+						.prepare("SELECT COUNT(*) FROM recipient_policy_review_resolutions")
+						.pluck()
+						.get(),
+				).toBe(0);
+
+				store.db.prepare("DELETE FROM actors WHERE actor_id = ?").run(store.actorId);
+				const resolveResponse = await app.request("/api/sync/recipient-policy/v1/review/resolve", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						reviewItemId: item.reviewItemId,
+						sourceFingerprint: item.sourceFingerprint,
+						decision: "keep_current_setup",
+					}),
+				});
+				expect(resolveResponse.status).toBe(200);
+				expect(await resolveResponse.json()).toMatchObject({ status: "applied" });
+				expect(snapshot()).toBe(beforeSingle);
+
+				const bulkProjectId = "https://git.example.invalid/acme/review-bulk-route.git";
+				const bulkSessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
+					.run(bulkProjectId, "review-bulk-route", bulkSessionId);
+				insertTestMemory(store, {
+					sessionId: bulkSessionId,
+					kind: "discovery",
+					title: "bulk review route fixture",
+					metadata: {},
+				});
+				const reopenedResponse = await app.request("/api/sync/recipient-policy/v1/review");
+				const reopened = (await reopenedResponse.json()) as typeof review;
+				const reopenedItem = reopened.reviewItems[0];
+				if (!reopenedItem) throw new Error("reopened review item missing");
+				const beforeBulk = snapshot();
+				const bulkResponse = await app.request(
+					"/api/sync/recipient-policy/v1/review/resolve-bulk",
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							requests: [
+								{
+									reviewItemId: reopenedItem.reviewItemId,
+									sourceFingerprint: reopenedItem.sourceFingerprint,
+									decision: "keep_current_setup",
+								},
+								{
+									reviewItemId: "missing",
+									sourceFingerprint: "missing",
+									decision: "keep_current_setup",
+								},
+							],
+						}),
+					},
+				);
+				const bulk = (await bulkResponse.json()) as {
+					results: Array<{ status: string }>;
+				};
+				expect(bulkResponse.status).toBe(207);
+				expect(bulk.results.map((result) => result.status)).toEqual(["applied", "not_found"]);
+				expect(snapshot()).toBe(beforeBulk);
+				const attribution = store.db
+					.prepare(
+						`SELECT decided_by_identity_id, decided_by_device_id
+						 FROM recipient_policy_review_resolutions ORDER BY resolved_at LIMIT 1`,
+					)
+					.get() as Record<string, unknown>;
+				expect(attribution).toMatchObject({
+					decided_by_identity_id: store.actorId,
+					decided_by_device_id: store.deviceId,
+				});
 			} finally {
 				getStore()?.db.pragma("query_only = OFF");
 				cleanup();

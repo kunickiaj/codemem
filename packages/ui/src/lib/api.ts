@@ -41,6 +41,20 @@ export {
 } from "./api/memories";
 export { loadProjects, loadRuntimeInfo, pingViewerReady } from "./api/runtime";
 export { loadRawEvents, loadSession, loadStats, loadUsage } from "./api/stats";
+export type {
+	RecipientPolicyBlockedItemV1,
+	RecipientPolicyReviewBulkResultV1,
+	RecipientPolicyReviewDecisionV1,
+	RecipientPolicyReviewItemV1,
+	RecipientPolicyReviewListV1,
+	RecipientPolicyReviewOptionV1,
+	RecipientPolicyReviewPreviewDeviceV1,
+	RecipientPolicyReviewPreviewProjectV1,
+	RecipientPolicyReviewPreviewV1,
+	RecipientPolicyReviewResolveRequestV1,
+	RecipientPolicyReviewResolveResultV1,
+	RecipientPolicyReviewResolveStatusV1,
+} from "./api/sync";
 export {
 	acceptDiscoveredPeer,
 	advanceShareOperation,
@@ -59,6 +73,7 @@ export {
 	loadCoordinatorGroupPreferences,
 	loadPairing,
 	loadProjectScopeInventory,
+	loadRecipientPolicyReview,
 	loadShareOperation,
 	loadShareOperations,
 	loadSharingDomainSettings,
@@ -67,10 +82,13 @@ export {
 	mergeActor,
 	ProjectForgetConfirmationError,
 	previewProjectInvite,
+	RecipientPolicyReviewStaleError,
 	reassignLegacySharedReviewGroup,
 	reassignProjectInventoryProject,
 	renameActor,
 	renamePeer,
+	resolveRecipientPolicyReview,
+	resolveRecipientPolicyReviewBulk,
 	SharingDomainGuardrailConfirmationError,
 	saveCoordinatorGroupPreferences,
 	saveSharingDomainProjectMapping,

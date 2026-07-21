@@ -433,6 +433,156 @@ export class LegacySharedReviewConfirmationError extends Error {
 	}
 }
 
+export type RecipientPolicyReviewDecisionV1 =
+	| "apply_recommendation"
+	| "choose_recipients"
+	| "preserve_current_access"
+	| "reject_suggestion"
+	| "keep_current_setup"
+	| "keep_project_local"
+	| "keep_identities_separate"
+	| "attach_device_to_identity"
+	| "create_identity"
+	| "remove_stale_device";
+
+export interface RecipientPolicyReviewPreviewProjectV1 {
+	canonicalIdentity: string;
+	displayName: string;
+}
+
+export interface RecipientPolicyReviewPreviewDeviceV1 {
+	deviceId: string;
+	displayName: string;
+	identityId: string | null;
+	assignment: "assigned" | "unassigned";
+}
+
+export interface RecipientPolicyReviewPreviewV1 {
+	projects: RecipientPolicyReviewPreviewProjectV1[];
+	effectiveDevices: RecipientPolicyReviewPreviewDeviceV1[];
+	affectedProjectCount: number;
+	affectedMemoryCount: number;
+	affectedDeviceCount: number;
+	effect: "none" | "grant_reviewed_access" | "revoke_reviewed_access" | "metadata_only";
+	requiresDecisionInput: boolean;
+}
+
+export interface RecipientPolicyReviewOptionV1 {
+	decision: RecipientPolicyReviewDecisionV1;
+	label: string;
+	effect: RecipientPolicyReviewPreviewV1["effect"];
+	affectedProjectCount: number;
+	affectedMemoryCount: number;
+	affectedDeviceCount: number;
+	preview: RecipientPolicyReviewPreviewV1;
+}
+
+export interface RecipientPolicyReviewItemV1 {
+	version: 1;
+	reviewItemId: string;
+	sourceFingerprint: string;
+	finding: string;
+	reason: string;
+	recommendedDecision: RecipientPolicyReviewDecisionV1;
+	options: RecipientPolicyReviewOptionV1[];
+	state: "open" | "resolved";
+	resolution: null | {
+		decision: RecipientPolicyReviewDecisionV1;
+		decidedByIdentityId: string;
+		decidedByDeviceId: string;
+		resolvedAt: string;
+	};
+}
+
+export interface RecipientPolicyBlockedItemV1 {
+	version: 1;
+	blockedItemId: string;
+	finding: string;
+	reason: string;
+	ownerLabel: string;
+	repairAction: string;
+}
+
+export interface RecipientPolicyReviewListV1 {
+	version: 1;
+	reviewItems: RecipientPolicyReviewItemV1[];
+	blockedItems: RecipientPolicyBlockedItemV1[];
+}
+
+export interface RecipientPolicyReviewResolveRequestV1 {
+	reviewItemId: string;
+	sourceFingerprint: string;
+	decision: RecipientPolicyReviewDecisionV1;
+	decisionInput?: unknown;
+}
+
+export type RecipientPolicyReviewResolveStatusV1 =
+	| "applied"
+	| "stale"
+	| "not_found"
+	| "invalid"
+	| "conflict";
+
+export interface RecipientPolicyReviewResolveResultV1 {
+	reviewItemId: string;
+	sourceFingerprint: string;
+	status: RecipientPolicyReviewResolveStatusV1;
+	errorCode: string | null;
+	idempotent: boolean;
+}
+
+export interface RecipientPolicyReviewBulkResultV1 {
+	version: 1;
+	results: RecipientPolicyReviewResolveResultV1[];
+}
+
+export class RecipientPolicyReviewStaleError extends Error {
+	result: RecipientPolicyReviewResolveResultV1;
+
+	constructor(result: RecipientPolicyReviewResolveResultV1) {
+		super("Recipient policy review source state changed");
+		this.name = "RecipientPolicyReviewStaleError";
+		this.result = result;
+	}
+}
+
+export function loadRecipientPolicyReview(): Promise<RecipientPolicyReviewListV1> {
+	return fetchJson<RecipientPolicyReviewListV1>("/api/sync/recipient-policy/v1/review");
+}
+
+export async function resolveRecipientPolicyReview(
+	input: RecipientPolicyReviewResolveRequestV1,
+): Promise<RecipientPolicyReviewResolveResultV1> {
+	const resp = await fetch("/api/sync/recipient-policy/v1/review/resolve", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(input),
+	});
+	const { text, payload } = await readJsonPayload<RecipientPolicyReviewResolveResultV1>(resp);
+	if (!resp.ok) {
+		if (resp.status === 409 && payload?.status === "stale") {
+			throw new RecipientPolicyReviewStaleError(payload);
+		}
+		throw new Error(payloadError(payload) || text || "request failed");
+	}
+	return payload as RecipientPolicyReviewResolveResultV1;
+}
+
+export async function resolveRecipientPolicyReviewBulk(
+	requests: RecipientPolicyReviewResolveRequestV1[],
+): Promise<RecipientPolicyReviewBulkResultV1> {
+	const resp = await fetch("/api/sync/recipient-policy/v1/review/resolve-bulk", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ requests }),
+	});
+	const { text, payload } = await readJsonPayload<RecipientPolicyReviewBulkResultV1>(resp);
+	if (!resp.ok && resp.status !== 207) {
+		throw new Error(payloadError(payload) || text || "request failed");
+	}
+	return payload as RecipientPolicyReviewBulkResultV1;
+}
+
 export async function loadSharingDomainSettings(): Promise<SharingDomainSettings> {
 	return fetchJson<SharingDomainSettings>("/api/sync/sharing-domains/settings");
 }

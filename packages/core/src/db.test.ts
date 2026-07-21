@@ -1046,21 +1046,22 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		expect(tableExists(db, "share_operations")).toBe(true);
 		expect(tableExists(db, "share_operation_projects")).toBe(true);
 		expect(tableExists(db, "share_operation_steps")).toBe(true);
+		expect(tableExists(db, "recipient_policy_review_resolutions")).toBe(true);
 		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
 	});
 
-	it("upgrades a marked schema-v9 database to schema v10 and remains idempotent after reopen", () => {
+	it("upgrades a database marked at the previous schema version and remains idempotent", () => {
 		db.close();
-		const dbPath = join(tmpDir, "schema-v9.sqlite");
+		const dbPath = join(tmpDir, "schema-previous.sqlite");
 		const previous = new BetterSqlite3(dbPath);
 		previous.exec(`
-			PRAGMA user_version = 9;
+			PRAGMA user_version = ${SCHEMA_VERSION - 1};
 			CREATE TABLE schema_compat_state (
 				id INTEGER PRIMARY KEY,
 				applied_schema_version INTEGER NOT NULL,
 				applied_at TEXT NOT NULL
 			);
-			INSERT INTO schema_compat_state VALUES (1, 9, '2026-07-19T00:00:00Z');
+			INSERT INTO schema_compat_state VALUES (1, ${SCHEMA_VERSION - 1}, '2026-07-19T00:00:00Z');
 		`);
 		expect(tableExists(previous, "share_operations")).toBe(false);
 
@@ -1069,6 +1070,7 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		for (const table of ["share_operations", "share_operation_projects", "share_operation_steps"]) {
 			expect(tableExists(previous, table)).toBe(true);
 		}
+		expect(tableExists(previous, "recipient_policy_review_resolutions")).toBe(true);
 		expect(columnExists(previous, "share_operations", "pending_person_operation_id")).toBe(true);
 		expect(columnExists(previous, "share_operations", "recipient_device_id")).toBe(true);
 		expect(columnExists(previous, "share_operations", "bootstrap_grant_id")).toBe(true);

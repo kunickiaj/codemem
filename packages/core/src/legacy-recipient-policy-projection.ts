@@ -915,7 +915,7 @@ function loadSnapshot(
 	};
 }
 
-function resolveLocalProjectionIdentity(
+export function resolveLegacyRecipientPolicyLocalIdentity(
 	db: Database,
 	options: ListLegacyRecipientPolicyProjectionsOptions,
 ): ListLegacyRecipientPolicyProjectionsOptions {
@@ -951,7 +951,10 @@ export function listLegacyRecipientPolicyProjections(
 	const localActorId = options.localActorId.trim();
 	const localDeviceId = options.localDeviceId.trim();
 	if (!localActorId || !localDeviceId) throw new Error("legacy_projection_local_identity_required");
-	const normalizedOptions = resolveLocalProjectionIdentity(db, { localActorId, localDeviceId });
+	const normalizedOptions = resolveLegacyRecipientPolicyLocalIdentity(db, {
+		localActorId,
+		localDeviceId,
+	});
 	return projectLegacyRecipientPolicyProjections(
 		loadSnapshot(db, normalizedOptions),
 		normalizedOptions,

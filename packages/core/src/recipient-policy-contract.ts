@@ -114,6 +114,30 @@ export interface RecipientPolicyReviewOptionV1 {
 	affectedProjectCount: number;
 	affectedMemoryCount: number;
 	affectedDeviceCount: number;
+	/** Additive exact preview used by actionable review APIs. */
+	preview?: RecipientPolicyReviewPreviewV1;
+}
+
+export interface RecipientPolicyReviewPreviewProjectV1 {
+	canonicalIdentity: string;
+	displayName: string;
+}
+
+export interface RecipientPolicyReviewPreviewDeviceV1 {
+	deviceId: string;
+	displayName: string;
+	identityId: string | null;
+	assignment: "assigned" | "unassigned";
+}
+
+export interface RecipientPolicyReviewPreviewV1 {
+	projects: RecipientPolicyReviewPreviewProjectV1[];
+	effectiveDevices: RecipientPolicyReviewPreviewDeviceV1[];
+	affectedProjectCount: number;
+	affectedMemoryCount: number;
+	affectedDeviceCount: number;
+	effect: RecipientPolicyReviewOptionV1["effect"];
+	requiresDecisionInput: boolean;
 }
 
 export interface RecipientPolicyReviewResolutionV1 {

@@ -32,7 +32,7 @@ import { canAutoBootstrapSchema, ensureSchemaBootstrapped } from "./schema-boots
 export type { DatabaseType as Database };
 
 /** Current schema version this TS runtime was built against. */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 /**
  * Minimum schema version the TS runtime can operate with.
@@ -730,6 +730,17 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 
 		try {
 			db.exec(`
+			CREATE TABLE IF NOT EXISTS recipient_policy_review_resolutions (
+				review_item_id TEXT NOT NULL,
+				source_fingerprint TEXT NOT NULL,
+				decision TEXT NOT NULL,
+				decision_input_json TEXT NOT NULL,
+				preview_json TEXT NOT NULL,
+				decided_by_identity_id TEXT NOT NULL,
+				decided_by_device_id TEXT NOT NULL,
+				resolved_at TEXT NOT NULL,
+				PRIMARY KEY (review_item_id, source_fingerprint)
+			);
 			CREATE TABLE IF NOT EXISTS share_operations (
 				operation_id TEXT PRIMARY KEY NOT NULL,
 				state TEXT NOT NULL,
