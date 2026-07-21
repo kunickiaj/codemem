@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { columnExists } from "./db.js";
 import {
+	createSerializedDaemonTickRunner,
 	getSyncDaemonPhase,
 	refreshCoordinatorPresenceForDaemon,
 	resolveSyncDaemonKeysDir,
@@ -386,6 +387,122 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 			verified.close();
 			rmSync(dbPath, { force: true });
 		}
+	});
+
+	it("runs tick maintenance after coordinator refresh and before peer sync", async () => {
+		const { coordinatorEnabled, fetchCoordinatorStalePeers, registerCoordinatorPresence } =
+			await import("./coordinator-runtime.js");
+		const { refreshConfiguredScopeMembershipCache } = await import("./scope-membership-cache.js");
+		const { runSyncPass } = await import("./sync-pass.js");
+		const order: string[] = [];
+		vi.mocked(coordinatorEnabled).mockReturnValue(true);
+		vi.mocked(registerCoordinatorPresence).mockImplementation(async () => {
+			order.push("presence");
+			return null;
+		});
+		vi.mocked(refreshConfiguredScopeMembershipCache).mockImplementation(async () => {
+			order.push("membership");
+			return { status: "skipped", coordinatorId: null, groups: [] } as never;
+		});
+		vi.mocked(fetchCoordinatorStalePeers).mockImplementation(async () => {
+			order.push("stale-peers");
+			return new Set();
+		});
+		vi.mocked(runSyncPass).mockImplementation(async () => {
+			order.push("peer-sync");
+			return { ok: true, opsIn: 0, opsOut: 0, addressErrors: [] } as never;
+		});
+		const dbPath = join(tmpdir(), `codemem-sync-daemon-callback-order-${Date.now()}.sqlite`);
+		const fileDb = new Database(dbPath);
+		try {
+			initTestSchema(fileDb);
+			fileDb
+				.prepare(
+					"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+				)
+				.run("peer-1", "fp1", new Date().toISOString());
+		} finally {
+			fileDb.close();
+		}
+
+		try {
+			await runTickOnce(dbPath, undefined, undefined, () => {
+				order.push("maintenance");
+			});
+			expect(order).toEqual(["presence", "membership", "maintenance", "stale-peers", "peer-sync"]);
+		} finally {
+			rmSync(dbPath, { force: true });
+		}
+	});
+
+	it("records maintenance failure and continues normal peer sync", async () => {
+		const { coordinatorEnabled } = await import("./coordinator-runtime.js");
+		const { runSyncPass } = await import("./sync-pass.js");
+		vi.mocked(coordinatorEnabled).mockReturnValue(false);
+		vi.mocked(runSyncPass).mockResolvedValue({
+			ok: true,
+			opsIn: 0,
+			opsOut: 0,
+			addressErrors: [],
+		} as never);
+		const dbPath = join(tmpdir(), `codemem-sync-daemon-callback-error-${Date.now()}.sqlite`);
+		const fileDb = new Database(dbPath);
+		try {
+			initTestSchema(fileDb);
+			fileDb
+				.prepare(
+					"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+				)
+				.run("peer-1", "fp1", new Date().toISOString());
+		} finally {
+			fileDb.close();
+		}
+
+		try {
+			await runTickOnce(dbPath, undefined, undefined, () => {
+				throw new Error("share maintenance unavailable");
+			});
+			expect(runSyncPass).toHaveBeenCalled();
+			const verified = new Database(dbPath);
+			try {
+				const state = verified
+					.prepare(
+						"SELECT last_error, last_error_at, last_ok_at FROM sync_daemon_state WHERE id = 1",
+					)
+					.get() as { last_error: string; last_error_at: string; last_ok_at: string | null };
+				expect(state.last_error).toContain(
+					"daemon tick callback failed: share maintenance unavailable",
+				);
+				expect(state.last_error_at).toBeTruthy();
+				expect(state.last_ok_at).toBeNull();
+			} finally {
+				verified.close();
+			}
+		} finally {
+			rmSync(dbPath, { force: true });
+		}
+	});
+});
+
+describe("createSerializedDaemonTickRunner", () => {
+	it("does not overlap maintenance callbacks across serialized ticks", async () => {
+		let finishFirst!: () => void;
+		const first = new Promise<void>((resolve) => {
+			finishFirst = resolve;
+		});
+		const tick = vi.fn().mockReturnValueOnce(first).mockResolvedValue(undefined);
+		const firstCompleted = vi.fn();
+		const run = createSerializedDaemonTickRunner(tick, firstCompleted);
+
+		expect(run()).toBe(true);
+		expect(run()).toBe(false);
+		expect(tick).toHaveBeenCalledTimes(1);
+		finishFirst();
+		await first;
+		await Promise.resolve();
+		expect(firstCompleted).toHaveBeenCalledTimes(1);
+		expect(run()).toBe(true);
+		expect(tick).toHaveBeenCalledTimes(2);
 	});
 });
 

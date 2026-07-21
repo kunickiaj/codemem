@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../lib/api", () => ({
 	loadSyncStatus: vi.fn(),
 	loadSyncActors: vi.fn(),
+	loadShareOperations: vi.fn(),
+	loadCoordinatorAdminStatus: vi.fn(),
 }));
 
 vi.mock("../health", () => ({ renderHealthOverview: vi.fn() }));
@@ -25,6 +27,7 @@ vi.mock("./people", () => ({
 	renderSyncPeers: vi.fn(),
 	renderSyncPeopleUnavailable: vi.fn(),
 	renderLegacyDeviceClaims: vi.fn(),
+	renderProjectSharingOperations: vi.fn(),
 	initPeopleEvents: vi.fn(),
 	setLoadSyncData: vi.fn(),
 }));
@@ -62,6 +65,8 @@ describe("loadSyncData", () => {
 		state.lastSyncPeers = [];
 		state.pendingAcceptedSyncPeers = [];
 		state.lastSyncActors = [];
+		state.lastShareOperations = [];
+		state.shareOperationsLoadError = false;
 		state.lastSyncCoordinator = null;
 		state.lastSyncViewModel = null;
 	});
@@ -70,6 +75,7 @@ describe("loadSyncData", () => {
 		const api = await import("../../lib/api");
 		const { state } = await import("../../lib/state");
 		const { loadSyncData } = await import("./index");
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
 
 		const first = deferred<{
 			peers: Array<{ peer_device_id: string }>;
@@ -88,6 +94,7 @@ describe("loadSyncData", () => {
 			.mockReturnValueOnce(first.promise as never)
 			.mockReturnValueOnce(second.promise as never);
 		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
 		const firstLoad = loadSyncData();
 		const secondLoad = loadSyncData();
 
@@ -149,5 +156,24 @@ describe("loadSyncData", () => {
 		await loadSyncData();
 
 		expect(api.loadSyncActors).not.toHaveBeenCalled();
+	});
+
+	it("keeps peer diagnostics when project sharing lifecycle loading fails", async () => {
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadSyncData } = await import("./index");
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({
+			peers: [{ peer_device_id: "peer-still-visible" }],
+			sharing_review: [],
+			attempts: [],
+			legacy_devices: [],
+		} as never);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadShareOperations).mockRejectedValue(new Error("lifecycle unavailable"));
+
+		await loadSyncData();
+
+		expect(state.lastSyncPeers.map((peer) => peer.peer_device_id)).toEqual(["peer-still-visible"]);
+		expect(state.shareOperationsLoadError).toBe(true);
 	});
 });

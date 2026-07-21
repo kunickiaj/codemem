@@ -1,4 +1,4 @@
-import type { ComponentChildren } from "preact";
+import { type ComponentChildren, render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -96,8 +96,29 @@ describe("project sharing flow", () => {
 	});
 
 	afterEach(() => {
+		const mount = document.getElementById("mount");
+		if (mount) act(() => render(null, mount));
 		vi.clearAllMocks();
 		document.body.innerHTML = "";
+	});
+
+	it("opens a queued recovery request after direct Sync-tab startup", async () => {
+		expect(openProjectShareFlow([project.workspace_identity], "Brian")).toBe(true);
+		expect(window.location.hash).toBe("#projects");
+		const mount = document.getElementById("mount");
+		if (!mount) throw new Error("mount missing");
+
+		await act(async () => {
+			renderProjectShareFlow(mount, [project]);
+			await Promise.resolve();
+		});
+
+		expect((document.getElementById("project-share-teammate") as HTMLInputElement).value).toBe(
+			"Brian",
+		);
+		expect((document.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(
+			true,
+		);
 	});
 
 	it("reviews exact projects, counts, and future sharing without internal terminology", async () => {
@@ -170,10 +191,35 @@ describe("project sharing flow", () => {
 		};
 		act(() => renderProjectShareFlow(mount, [project, selected]));
 
-		act(() => openProjectShareFlow([selected.workspace_identity]));
+		act(() => {
+			openProjectShareFlow([selected.workspace_identity]);
+		});
 
 		const checkboxes = [...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
 		expect(checkboxes.map((checkbox) => checkbox.checked)).toEqual([false, true]);
+	});
+
+	it("blocks terminal-action restart when any original project is unavailable", () => {
+		const mount = document.getElementById("mount");
+		if (!mount) throw new Error("mount missing");
+		act(() => renderProjectShareFlow(mount, [project]));
+
+		act(() => {
+			openProjectShareFlow([project.workspace_identity, "git:missing"], "Brian");
+		});
+
+		expect((document.getElementById("project-share-teammate") as HTMLInputElement).value).toBe(
+			"Brian",
+		);
+		expect((document.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(
+			false,
+		);
+		expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+			"original project selection is no longer available",
+		);
+		expect((document.querySelector(".sync-dialog-confirm") as HTMLButtonElement).disabled).toBe(
+			true,
+		);
 	});
 
 	it("uses unique control IDs for canonical identities that sanitize alike", () => {
@@ -209,6 +255,18 @@ describe("project sharing flow", () => {
 		expect(document.getElementById("project-share-inventory-error")?.textContent).toContain(
 			"Refresh Projects to try again",
 		);
+	});
+
+	it("rejects and clears queued requests when the complete inventory cannot be loaded", () => {
+		const mount = document.getElementById("mount");
+		if (!mount) throw new Error("mount missing");
+		expect(openProjectShareFlow([project.workspace_identity], "Old teammate")).toBe(true);
+		act(() => renderProjectShareFlow(mount, [], { inventoryError: true }));
+
+		expect(openProjectShareFlow([project.workspace_identity], "New teammate")).toBe(false);
+		act(() => renderProjectShareFlow(mount, [project]));
+
+		expect(document.querySelector('[role="dialog"]')).toBeNull();
 	});
 
 	it("closes and clears an open selector when the complete inventory becomes unavailable", () => {

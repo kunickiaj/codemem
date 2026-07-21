@@ -552,7 +552,8 @@ async function startBackgroundViewer(invocation: ResolvedServeInvocation): Promi
 }
 
 async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
-	const { createApp, createSyncApp, closeStore, getStore } = await import("@codemem/server");
+	const { advancePendingProjectShares, createApp, createSyncApp, closeStore, getStore } =
+		await import("@codemem/server");
 	const { serve } = await import("@hono/node-server");
 
 	if (invocation.dbPath) process.env.CODEMEM_DB = invocation.dbPath;
@@ -675,6 +676,14 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 						// rules apply to inbound peer payloads instead of the daemon
 						// silently falling back to the built-in default ruleset.
 						scanner: store.scanner,
+						onAfterCoordinatorRefresh: async () => {
+							const result = await advancePendingProjectShares(store, { limit: 3 });
+							if (result.failed > 0) {
+								throw new Error(
+									`share operation maintenance failed for ${result.failed} of ${result.processed} operations`,
+								);
+							}
+						},
 						onPhaseChange: (phase) => {
 							if (phase === "running") {
 								syncRuntimeStatus.phase = null;

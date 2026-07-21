@@ -34,12 +34,12 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 	return h(
 		RadixTabsContent,
 		{ className: "coordinator-admin-panel", value: "invites" },
-		h("h3", null, "Create teammate invite"),
+		h("h3", null, "Legacy Team invites"),
 		h(
 			"p",
 			{ class: "peer-submeta" },
 			summary.readiness === "ready"
-				? "Generate an invite for the selected Team. Default Space access is controlled by that Team's auto-grant setting."
+				? "Legacy Team invites enroll a device in the selected Team. They do not grant project access; share projects from Projects instead."
 				: "Finish setup first. Invite creation stays disabled until the local Teams configuration is ready.",
 		),
 		h(
@@ -125,7 +125,7 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 						disabled: inviteDisabled,
 						type: "submit",
 					},
-					coordinatorAdminState.invitePending ? "Creating…" : "Create invite",
+					coordinatorAdminState.invitePending ? "Creating…" : "Create legacy Team invite",
 				),
 				effectiveGroup
 					? h("span", { class: "peer-submeta" }, `Using Team ${effectiveGroup}`)
@@ -157,5 +157,29 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 		warnings?.length
 			? h("div", { class: "peer-meta coordinator-admin-warning-list" }, warnings.join(" · "))
 			: null,
+		h("h3", null, "Project sharing operations"),
+		h(
+			"p",
+			{ class: "peer-submeta" },
+			"Read-only status from the project-first sharing flow. Start new sharing from Projects.",
+		),
+		state.lastShareOperations.length > 0
+			? h(
+					"ul",
+					{ class: "peer-scope-rejections-list", "aria-label": "Project sharing operations" },
+					...state.lastShareOperations.map((operation) =>
+						h(
+							"li",
+							{ key: operation.operation_id },
+							h("strong", null, operation.person.display_name),
+							h(
+								"span",
+								null,
+								` — ${operation.projects.map((project) => project.display_name).join(", ")} — ${operation.lifecycle.label}`,
+							),
+						),
+					),
+				)
+			: h("div", { class: "peer-meta" }, "No project sharing operations yet."),
 	);
 }

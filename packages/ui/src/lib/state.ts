@@ -1,6 +1,7 @@
 /* Global application state — shared across tabs. */
 
 import type { UiSyncViewModel } from "../tabs/sync/view-model";
+import type { ShareOperationReadModel } from "./api/sync";
 
 export type RefreshState = "idle" | "refreshing" | "paused" | "error";
 export type TabId = "feed" | "projects" | "sync" | "health" | "coordinator-admin";
@@ -242,6 +243,8 @@ export const state = {
 	lastSyncStatus: null as CachedSyncStatus | null,
 	lastSyncActors: [] as SyncActor[],
 	lastSyncPeers: [] as SyncPeer[],
+	lastShareOperations: [] as ShareOperationReadModel[],
+	shareOperationsLoadError: false,
 	pendingAcceptedSyncPeers: [] as SyncPeer[],
 	lastSyncSharingReview: [] as SyncSharingReviewRow[],
 	lastSyncLegacySharedReview: null as CachedLegacySharedReview | null,

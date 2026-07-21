@@ -403,6 +403,98 @@ describe("Projects tab", () => {
 		);
 	});
 
+	it("shows exact project sharing People without leaking the summary to a sibling identity", async () => {
+		const selected = project({
+			display_project: "codemem",
+			project: "codemem",
+			workspace_identity: "git:https://git.example.invalid/exampleco/codemem.git",
+			sharing: [
+				{
+					person: { actor_id: "actor-brian", display_name: "Brian" },
+					lifecycle: {
+						state: "active",
+						label: "Up to date",
+						explanation: "Existing memories and future activity are shared.",
+					},
+				},
+				{
+					person: { actor_id: "actor-alex", display_name: "Alex" },
+					lifecycle: {
+						state: "waiting_for_device",
+						label: "Waiting for device",
+						explanation: "Sync will continue when the device reconnects.",
+					},
+				},
+			],
+		});
+		const sibling = project({
+			display_project: "codemem-docs",
+			project: "codemem-docs",
+			workspace_identity: "git:https://git.example.invalid/exampleco/codemem-docs.git",
+			sharing: [],
+		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [selected, sibling],
+			total: 2,
+		});
+
+		await loadProjectsData();
+
+		const rows = [...document.querySelectorAll<HTMLElement>(".project-inventory-row")];
+		const selectedRow = rows.find(
+			(row) => row.querySelector(".project-inventory-title")?.textContent === "codemem",
+		);
+		const siblingRow = rows.find(
+			(row) => row.querySelector(".project-inventory-title")?.textContent === "codemem-docs",
+		);
+		expect(selectedRow?.querySelector(".project-sharing-summary")?.textContent).toContain("Brian");
+		expect(selectedRow?.querySelector(".project-sharing-summary")?.textContent).toContain("Alex");
+		expect(selectedRow?.textContent).toContain("Up to date");
+		expect(selectedRow?.textContent).toContain("Waiting for device");
+		expect(siblingRow?.querySelector(".project-sharing-summary")).toBeNull();
+	});
+
+	it("describes revoked and cancelled project shares as history", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [
+				project({
+					sharing: [
+						{
+							person: { actor_id: "actor-brian", display_name: "Brian" },
+							lifecycle: {
+								state: "revoked",
+								label: "Access removed",
+								explanation: "Previously copied memories may remain.",
+							},
+						},
+						{
+							person: { actor_id: "actor-alex", display_name: "Alex" },
+							lifecycle: {
+								state: "cancelled",
+								label: "Invitation cancelled",
+								explanation: "No project access was added.",
+							},
+						},
+					],
+				}),
+			],
+			total: 1,
+		});
+
+		await loadProjectsData();
+
+		const summary = document.querySelector(".project-sharing-summary");
+		expect(summary?.textContent).toContain("Previously shared with Brian");
+		expect(summary?.textContent).toContain("Invitation to Alex cancelled");
+		expect(summary?.querySelector("strong")?.textContent).toBe("Project sharing");
+	});
+
 	it("removes the project inventory skeleton when loading fails", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockRejectedValue(new Error("inventory unavailable"));
 

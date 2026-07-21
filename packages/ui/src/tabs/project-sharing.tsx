@@ -8,10 +8,20 @@ import type {
 	ProjectScopeInventoryProject,
 } from "../lib/api/sync";
 
-let requestOpen: ((projectIds: string[]) => void) | null = null;
+type ProjectShareRequest = { projectIds: string[]; teammateName: string };
 
-export function openProjectShareFlow(projectIds: string[] = []): void {
-	requestOpen?.(projectIds);
+let pendingOpen: ProjectShareRequest | null = null;
+let requestOpen: ((projectIds: string[], teammateName?: string) => boolean) | null = null;
+
+export function openProjectShareFlow(projectIds: string[] = [], teammateName = ""): boolean {
+	if (requestOpen) {
+		const opened = requestOpen(projectIds, teammateName);
+		if (!opened) pendingOpen = null;
+		return opened;
+	}
+	pendingOpen = { projectIds, teammateName };
+	window.location.hash = "#projects";
+	return true;
 }
 
 function canShare(project: ProjectScopeInventoryProject): boolean {
@@ -111,21 +121,35 @@ function ProjectShareFlow({
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [copyStatus, setCopyStatus] = useState<string | null>(null);
+	const [selectionBlocked, setSelectionBlocked] = useState(false);
 	const availableProjects = useMemo(() => projects.filter(canShare), [projects]);
 
 	useEffect(() => {
-		requestOpen = (projectIds) => {
-			if (inventoryError) return;
-			setTeammateName("");
-			setSelectedIds(
-				projectIds.filter((id) => availableProjects.some((item) => item.workspace_identity === id)),
+		requestOpen = (projectIds, requestedTeammateName = "") => {
+			if (inventoryError) return false;
+			const requestedIds = [...new Set(projectIds)];
+			const unavailableSelection = requestedIds.some(
+				(id) => !availableProjects.some((item) => item.workspace_identity === id),
 			);
+			setTeammateName(requestedTeammateName.trim());
+			setSelectedIds(unavailableSelection ? [] : requestedIds);
+			setSelectionBlocked(unavailableSelection);
 			setPreview(null);
 			setCreated(null);
-			setError(null);
+			setError(
+				unavailableSelection
+					? "The original project selection is no longer available. Refresh Projects and try again."
+					: null,
+			);
 			setCopyStatus(null);
 			setOpen(true);
+			return true;
 		};
+		if (pendingOpen) {
+			const pending = pendingOpen;
+			pendingOpen = null;
+			requestOpen(pending.projectIds, pending.teammateName);
+		}
 		return () => {
 			requestOpen = null;
 		};
@@ -133,6 +157,7 @@ function ProjectShareFlow({
 
 	useEffect(() => {
 		if (!inventoryError) return;
+		pendingOpen = null;
 		setOpen(false);
 		setTeammateName("");
 		setSelectedIds([]);
@@ -140,6 +165,7 @@ function ProjectShareFlow({
 		setCreated(null);
 		setError(null);
 		setCopyStatus(null);
+		setSelectionBlocked(false);
 	}, [inventoryError]);
 
 	const close = () => {
@@ -308,7 +334,7 @@ function ProjectShareFlow({
 							{!created ? (
 								<button
 									className="settings-button sync-dialog-confirm"
-									disabled={busy}
+									disabled={busy || selectionBlocked}
 									onClick={() => void (preview ? create() : review())}
 									type="button"
 								>

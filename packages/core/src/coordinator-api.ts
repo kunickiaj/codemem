@@ -1525,6 +1525,33 @@ export function createCoordinatorApp(
 			} catch {
 				return c.json({ error: "operation_intent_invalid" }, 409);
 			}
+			let inviteLinkValue: string | null = null;
+			if (
+				!invite.consumed_at &&
+				!invite.revoked_at &&
+				new Date(invite.expires_at) > new Date(runtime.now()) &&
+				invite.token &&
+				!invite.token.startsWith("consumed:")
+			) {
+				const summaries = projects.map((project) => ({
+					display_name: String(project.display_name ?? ""),
+					existing_memory_count: Number(project.existing_memory_count ?? 0),
+				}));
+				const payload: InvitePayload = {
+					v: 1,
+					kind: "coordinator_team_invite",
+					coordinator_url: new URL(c.req.url).origin,
+					group_id: invite.group_id,
+					policy: invite.policy,
+					token: invite.token,
+					expires_at: invite.expires_at,
+					team_name: invite.team_name_snapshot,
+					operation_id: operationId,
+					inviter_name: invite.inviter_display_name ?? null,
+					project_summaries: summaries,
+				};
+				inviteLinkValue = inviteLink(encodeInvitePayload(payload));
+			}
 			return c.json({
 				operation_id: invite.operation_id,
 				group_id: invite.group_id,
@@ -1541,6 +1568,7 @@ export function createCoordinatorApp(
 				bootstrap_grant_id: invite.bootstrap_grant_id,
 				trust_state: invite.trust_state,
 				projects,
+				invite_link: inviteLinkValue,
 			});
 		} finally {
 			await store.close();

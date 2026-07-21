@@ -255,6 +255,54 @@ export interface ProjectScopeInventoryProject extends ProjectScopeCandidate {
 	memory_count: number | null;
 	session_count: number;
 	statuses: ProjectScopeInventoryStatus[];
+	sharing?: ProjectSharingSummary[];
+}
+
+export interface ProjectSharingSummary {
+	person: { actor_id: string; display_name: string };
+	lifecycle: Pick<ShareOperationLifecycle, "state" | "label" | "explanation">;
+}
+
+export type ShareOperationLifecycleState =
+	| "waiting_for_acceptance"
+	| "provisioning"
+	| "initial_sync"
+	| "waiting_for_device"
+	| "active"
+	| "needs_attention"
+	| "revoking"
+	| "revoked"
+	| "cancelled";
+
+export interface ShareOperationLifecycle {
+	state: ShareOperationLifecycleState;
+	label: string;
+	explanation: string;
+	primary_action:
+		| { kind: "copy_invite"; label: string; invite_link?: string }
+		| { kind: "retry_setup"; label: string }
+		| { kind: "share_again"; label: string }
+		| { kind: "create_new_invite"; label: string }
+		| null;
+}
+
+export interface ShareOperationReadModel {
+	operation_id: string;
+	person: { actor_id: string; display_name: string };
+	devices: Array<{ device_id: string; display_name: string; last_seen_at: string | null }>;
+	projects: Array<{ project_id?: string; display_name: string; existing_memory_count: number }>;
+	project_count: number;
+	lifecycle: ShareOperationLifecycle;
+	timestamps: {
+		created_at: string;
+		updated_at: string;
+		accepted_at: string | null;
+		invite_expires_at: string;
+	};
+}
+
+export interface ShareOperationList {
+	items: ShareOperationReadModel[];
 }
 
 export interface ProjectScopeInventoryResult {
@@ -435,6 +483,30 @@ export function createProjectInvite(input: {
 	reviewed_project_set_digest: string;
 }): Promise<CreatedProjectInvite> {
 	return projectInviteRequest("/api/sync/project-invites", input);
+}
+
+export function loadShareOperations(): Promise<ShareOperationList> {
+	return fetchJson<ShareOperationList>("/api/sync/share-operations");
+}
+
+export function loadShareOperation(operationId: string): Promise<ShareOperationReadModel> {
+	return fetchJson<ShareOperationReadModel>(
+		`/api/sync/share-operations/${encodeURIComponent(operationId)}`,
+	);
+}
+
+export async function advanceShareOperation(operationId: string): Promise<ShareOperationReadModel> {
+	const resp = await fetch(
+		`/api/sync/share-operations/${encodeURIComponent(operationId)}/advance`,
+		{ method: "POST" },
+	);
+	const { text, payload } = await readJsonPayload<{
+		error?: string;
+		operation?: ShareOperationReadModel;
+	}>(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	if (!payload?.operation) throw new Error("response missing share operation");
+	return payload.operation;
 }
 
 export async function saveSharingDomainProjectMapping(input: {

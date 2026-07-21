@@ -208,6 +208,12 @@ export async function loadCoordinatorAdminData() {
 	resolveAdminTargetGroup();
 	if (state.lastCoordinatorAdminStatus?.readiness === "ready") {
 		try {
+			const payload = await api.loadShareOperations();
+			state.lastShareOperations = Array.isArray(payload.items) ? payload.items : [];
+		} catch {
+			// Keep the previous read-only reflection; Teams administration remains usable.
+		}
+		try {
 			const groupsPayload = (await api.loadCoordinatorAdminGroupsFiltered(
 				coordinatorAdminState.showArchivedGroups,
 			)) as {

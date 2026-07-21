@@ -26,6 +26,15 @@ import { rawEventsRoutes } from "./routes/raw-events.js";
 import { statsRoutes } from "./routes/stats.js";
 import { syncProtocolRoutes, syncRoutes } from "./routes/sync.js";
 
+export type {
+	AdvancePendingProjectSharesResult,
+	AdvanceProjectShareOperationResult,
+} from "./routes/sync.js";
+export {
+	advancePendingProjectShares,
+	advanceProjectShareOperation,
+} from "./routes/sync.js";
+
 export { VERSION };
 
 /** Shared store instance — SQLite WAL mode handles concurrent reads safely. */

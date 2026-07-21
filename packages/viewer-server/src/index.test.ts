@@ -10051,7 +10051,7 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("reads and reconciles authoritative project invite acceptance with scoped stable failures", async () => {
+		it("keeps project invite reads pure and reconciles authoritative acceptance explicitly and idempotently", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;
 			const operationId = `share_${"d".repeat(40)}`;
@@ -10084,9 +10084,16 @@ describe("viewer-server", () => {
 					],
 				};
 				if (mode === "waiting" || mode === "wrong_group") {
-					return new Response(JSON.stringify({ ...base, state: "waiting_for_acceptance" }), {
-						status: 200,
-					});
+					return new Response(
+						JSON.stringify({
+							...base,
+							state: "waiting_for_acceptance",
+							invite_link: mode === "waiting" ? "codemem://invite/safe-existing-link" : null,
+						}),
+						{
+							status: 200,
+						},
+					);
 				}
 				return new Response(
 					JSON.stringify({
@@ -10166,8 +10173,13 @@ describe("viewer-server", () => {
 				).toBe("waiting_for_acceptance");
 				mode = "invalid_trust";
 				const invalidTrust = await request();
-				expect(invalidTrust.status).toBe(409);
-				expect(await invalidTrust.json()).toEqual({ error: "operation_trust_state_invalid" });
+				expect(invalidTrust.status).toBe(200);
+				const invalidReconcile = await app.request(
+					`/api/sync/project-invites/${operationId}/reconcile`,
+					{ method: "POST" },
+				);
+				expect(invalidReconcile.status).toBe(409);
+				expect(await invalidReconcile.json()).toEqual({ error: "operation_trust_state_invalid" });
 				expect(
 					store.db
 						.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
@@ -10177,7 +10189,18 @@ describe("viewer-server", () => {
 				mode = "accepted";
 				const accepted = await request();
 				expect(accepted.status).toBe(200);
-				expect(await accepted.json()).toMatchObject({ reconciled: true, state: "accepted" });
+				expect(await accepted.json()).toMatchObject({ state: "accepted" });
+				expect(
+					store.db
+						.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
+						.pluck()
+						.get(operationId),
+				).toBe("waiting_for_acceptance");
+
+				const reconcile = () =>
+					app.request(`/api/sync/project-invites/${operationId}/reconcile`, { method: "POST" });
+				expect((await reconcile()).status).toBe(200);
+				expect((await reconcile()).status).toBe(200);
 				expect(
 					store.db
 						.prepare("SELECT state, recipient_actor_id, recipient_device_id FROM share_operations")
@@ -10187,6 +10210,72 @@ describe("viewer-server", () => {
 					recipient_actor_id: "actor-brian",
 					recipient_device_id: "device-brian",
 				});
+
+				mode = "waiting";
+				store.db
+					.prepare(
+						"UPDATE share_operations SET state = 'waiting_for_acceptance' WHERE operation_id = ?",
+					)
+					.run(operationId);
+				const otherOperationId = `share_${"9".repeat(40)}`;
+				store.db
+					.prepare(`INSERT INTO share_operations(
+						operation_id, state, inviter_actor_id, inviter_device_ids_json, person_id,
+						person_kind, teammate_name, history_policy, reviewed_project_set_digest,
+						coordinator_group_id, invite_token_digest, invite_expires_at, created_at, updated_at
+					) VALUES (?, 'cancelled', 'actor-other-owner', '[]', 'actor-brian', 'existing',
+						'Brian', 'existing_and_future', ?, 'team-a', 'other-digest',
+						'2099-01-01T00:00:00Z', ?, ?)`)
+					.run(otherOperationId, "f".repeat(64), "2026-07-20T00:00:00Z", "2026-07-20T00:00:00Z");
+
+				const fetchCallsBeforeList = fetchMock.mock.calls.length;
+				const lifecycleResponse = await app.request("/api/sync/share-operations");
+				expect(lifecycleResponse.status).toBe(200);
+				const lifecyclePayload = (await lifecycleResponse.json()) as {
+					items: Array<Record<string, unknown>>;
+				};
+				expect(lifecyclePayload.items).toHaveLength(1);
+				expect(lifecyclePayload.items[0]).toMatchObject({
+					person: { actor_id: "actor-brian", display_name: "Brian" },
+					projects: [{ project_id: projectId, display_name: "codemem", existing_memory_count: 3 }],
+					lifecycle: {
+						state: "waiting_for_acceptance",
+						primary_action: {
+							kind: "copy_invite",
+						},
+					},
+				});
+				expect(fetchMock).toHaveBeenCalledTimes(fetchCallsBeforeList);
+				const lifecycleDetailResponse = await app.request(
+					`/api/sync/share-operations/${operationId}`,
+				);
+				expect(lifecycleDetailResponse.status).toBe(200);
+				expect(await lifecycleDetailResponse.json()).toMatchObject({
+					lifecycle: {
+						primary_action: {
+							kind: "copy_invite",
+							invite_link: "codemem://invite/safe-existing-link",
+						},
+					},
+				});
+				const serialized = JSON.stringify(lifecyclePayload);
+				for (const sensitive of [
+					"recipient_public_key",
+					"recipient_fingerprint",
+					"canonical_identity",
+					"scope_id",
+				]) {
+					expect(serialized).not.toContain(sensitive);
+				}
+				expect(
+					store.db
+						.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
+						.pluck()
+						.get(operationId),
+				).toBe("waiting_for_acceptance");
+				expect((await app.request(`/api/sync/share-operations/${otherOperationId}`)).status).toBe(
+					404,
+				);
 			} finally {
 				cleanup();
 				globalThis.fetch = prevFetch;
@@ -10196,7 +10285,6 @@ describe("viewer-server", () => {
 		});
 
 		it("maps project provision errors and preflights reassignment before mutations", async () => {
-			// Arrange
 			const configDir = mkdtempSync(join(tmpdir(), "codemem-provision-route-test-"));
 			const configPath = join(configDir, "config.json");
 			const previousConfig = process.env.CODEMEM_CONFIG;
@@ -10298,7 +10386,6 @@ describe("viewer-server", () => {
 					.pluck()
 					.get(memoryId);
 
-				// Act
 				const invalid = await app.request("/api/sync/project-invites/not-an-operation/provision", {
 					method: "POST",
 				});
@@ -10310,19 +10397,24 @@ describe("viewer-server", () => {
 					`/api/sync/project-invites/${plan.operationId}/provision`,
 					{ method: "POST" },
 				);
+				const advance = await app.request(
+					`/api/sync/share-operations/${plan.operationId}/advance`,
+					{ method: "POST" },
+				);
 				capabilityProbe = "undetermined";
 				const waiting = await app.request(
 					`/api/sync/project-invites/${plan.operationId}/provision`,
 					{ method: "POST" },
 				);
 
-				// Assert
 				expect(invalid.status).toBe(400);
 				expect(await invalid.json()).toEqual({ error: "operation_id_invalid" });
 				expect(missing.status).toBe(404);
 				expect(await missing.json()).toEqual({ error: "operation_not_found" });
 				expect(unsupported.status).toBe(409);
 				expect(await unsupported.json()).toEqual({ error: "reassign_capability_required" });
+				expect(advance.status).toBe(409);
+				expect(await advance.json()).toEqual({ error: "reassign_capability_required" });
 				expect(waiting.status).toBe(409);
 				expect(await waiting.json()).toEqual({ error: "waiting_for_device" });
 				expect(store.db.prepare("SELECT state FROM share_operations").pluck().get()).toBe(

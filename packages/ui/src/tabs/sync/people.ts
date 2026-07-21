@@ -5,6 +5,7 @@ import { clearFieldError, friendlyError, markFieldError } from "../../lib/form";
 import { handlePrimaryActionKeyboard } from "../../lib/keyboard";
 import { showGlobalNotice } from "../../lib/notice";
 import { state } from "../../lib/state";
+import { renderProjectShareOperations } from "./components/project-share-operations";
 import { renderSyncActorsList } from "./components/sync-actors";
 import { renderSyncEmptyState } from "./components/sync-diagnostics";
 import type { SyncActionFeedback } from "./components/sync-inline-feedback";
@@ -102,6 +103,25 @@ export function renderSyncActorsUnavailable() {
 			detail:
 				"Refresh this page to retry. When the people endpoint responds again, named people will reload here.",
 		});
+	}
+}
+
+export function renderProjectSharingOperations() {
+	const mount = document.getElementById("syncProjectShareOperations");
+	if (!mount) return;
+	renderProjectShareOperations(mount, {
+		operations: state.lastShareOperations,
+		onAdvance: (operationId) => api.advanceShareOperation(operationId),
+		onLoadOperation: (operationId) => api.loadShareOperation(operationId),
+		onReload: _loadSyncData,
+	});
+	const meta = document.getElementById("syncProjectShareOperationsMeta");
+	if (meta) {
+		meta.textContent = state.shareOperationsLoadError
+			? "Project sharing status could not be refreshed. Existing device diagnostics remain available below."
+			: state.lastShareOperations.length > 0
+				? "Project access is grouped by Person. Devices appear after invitation acceptance."
+				: "Share a project from Projects to invite a teammate.";
 	}
 }
 

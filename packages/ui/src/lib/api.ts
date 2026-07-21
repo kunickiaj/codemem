@@ -43,6 +43,7 @@ export { loadProjects, loadRuntimeInfo, pingViewerReady } from "./api/runtime";
 export { loadRawEvents, loadSession, loadStats, loadUsage } from "./api/stats";
 export {
 	acceptDiscoveredPeer,
+	advanceShareOperation,
 	assignPeerActor,
 	claimLegacyDeviceIdentity,
 	createActor,
@@ -58,6 +59,8 @@ export {
 	loadCoordinatorGroupPreferences,
 	loadPairing,
 	loadProjectScopeInventory,
+	loadShareOperation,
+	loadShareOperations,
 	loadSharingDomainSettings,
 	loadSyncActors,
 	loadSyncStatus,

@@ -17,6 +17,7 @@ import { hideSkeleton, readDuplicatePersonDecisions } from "./helpers";
 import {
 	initPeopleEvents,
 	renderLegacyDeviceClaims,
+	renderProjectSharingOperations,
 	renderSyncActors,
 	renderSyncActorsUnavailable,
 	renderSyncPeers,
@@ -135,8 +136,10 @@ export async function loadSyncData() {
 
 		let actorsPayload: SyncActorListResponseLike | null = null;
 		let coordinatorAdminStatus: Record<string, unknown> | null = null;
+		let shareOperations = state.lastShareOperations;
 		let actorLoadError = false;
 		let coordinatorAdminLoadError = false;
+		let shareOperationsLoadError = false;
 		const duplicatePersonDecisions = readDuplicatePersonDecisions();
 		try {
 			actorsPayload = await api.loadSyncActors();
@@ -147,6 +150,12 @@ export async function loadSyncData() {
 			coordinatorAdminStatus = (await api.loadCoordinatorAdminStatus()) as Record<string, unknown>;
 		} catch {
 			coordinatorAdminLoadError = true;
+		}
+		try {
+			const sharePayload = await api.loadShareOperations();
+			shareOperations = Array.isArray(sharePayload.items) ? sharePayload.items : [];
+		} catch {
+			shareOperationsLoadError = true;
 		}
 
 		if (requestId !== latestSyncLoadRequestId) return;
@@ -160,6 +169,8 @@ export async function loadSyncData() {
 			payload,
 			actorsPayload,
 			coordinatorAdminStatus,
+			shareOperations,
+			shareOperationsLoadError,
 			duplicatePersonDecisions,
 		]);
 		if (hash === lastSyncHash) return;
@@ -187,6 +198,8 @@ export async function loadSyncData() {
 			: [];
 		state.pendingAcceptedSyncPeers = pendingPeers;
 		state.lastSyncPeers = [...payloadPeers, ...pendingPeers];
+		state.lastShareOperations = shareOperations;
+		state.shareOperationsLoadError = shareOperationsLoadError;
 		state.lastSyncSharingReview = payload.sharing_review || [];
 		state.lastSyncLegacySharedReview =
 			payload.legacy_shared_review && typeof payload.legacy_shared_review === "object"
@@ -210,6 +223,7 @@ export async function loadSyncData() {
 		renderSyncStatus();
 		renderTeamSync();
 		renderSyncActors();
+		renderProjectSharingOperations();
 		renderSyncSharingReview();
 		renderSyncPeers();
 		renderLegacyDeviceClaims();
