@@ -7,6 +7,7 @@ vi.mock("../lib/api", () => ({
 	loadCoordinatorAdminGroupsFiltered: vi.fn(),
 	loadCoordinatorAdminStatus: vi.fn(),
 	loadProjectScopeInventory: vi.fn(),
+	loadRecipientPolicyIntent: vi.fn(),
 	loadRecipientPolicyReview: vi.fn(),
 	loadSharingDomainSettings: vi.fn(),
 	reassignProjectInventoryProject: vi.fn(),
@@ -59,12 +60,17 @@ vi.mock("./project-sharing", () => ({
 	openProjectShareFlow: vi.fn(),
 	renderProjectShareFlow: vi.fn(),
 }));
+vi.mock("./recipient-policy-management", () => ({
+	mountRecipientPolicyManagement: vi.fn(),
+	openRecipientPolicyManagement: vi.fn(),
+}));
 vi.mock("./sync/sync-dialogs", () => ({ openSyncInputDialog: vi.fn() }));
 
 import * as api from "../lib/api";
 import type {
 	ProjectScopeInventoryProject,
 	ProjectScopeInventoryResult,
+	RecipientPolicyIntentGraphV1,
 	RecipientPolicyReviewDecisionV1,
 	RecipientPolicyReviewItemV1,
 	RecipientPolicyReviewListV1,
@@ -72,6 +78,7 @@ import type {
 import { state } from "../lib/state";
 import * as projectSharing from "./project-sharing";
 import { initProjectsTab, loadProjectsData } from "./projects";
+import * as recipientPolicyManagement from "./recipient-policy-management";
 import { openSyncInputDialog } from "./sync/sync-dialogs";
 
 function project(
@@ -174,6 +181,30 @@ function recipientReview(
 	return { blockedItems: [], reviewItems: [reviewItem()], version: 1, ...overrides };
 }
 
+function recipientIntent(
+	overrides: Partial<RecipientPolicyIntentGraphV1> = {},
+): RecipientPolicyIntentGraphV1 {
+	return {
+		version: 1,
+		identities: [
+			{
+				version: 1,
+				identityId: "identity-adam",
+				displayName: "Adam",
+				kind: "personal",
+				verification: "local",
+				status: "active",
+				mergedIntoIdentityId: null,
+			},
+		],
+		teams: [{ version: 1, teamId: "team-example", displayName: "ExampleCo", status: "active" }],
+		teamMemberships: [],
+		identityDevices: [],
+		projectRecipients: [],
+		...overrides,
+	};
+}
+
 function mountProjectsDom() {
 	document.body.innerHTML = `
 		<input id="projectsSearch" />
@@ -183,6 +214,9 @@ function mountProjectsDom() {
 		<div id="projectsInventoryList"></div>
 		<div id="projectShareFlowMount"></div>
 		<div id="recipientPolicyReviewMount"></div>
+		<div id="recipientPolicyManagementMount"></div>
+		<button id="projectsShareSelected"></button>
+		<div id="projectsSelectionStatus"></div>
 		<button id="projectsPrevPage"></button>
 		<button id="projectsNextPage"></button>
 	`;
@@ -241,6 +275,7 @@ describe("Projects tab", () => {
 			reviewItems: [],
 			version: 1,
 		});
+		vi.mocked(api.loadRecipientPolicyIntent).mockResolvedValue(recipientIntent());
 		vi.mocked(api.resolveRecipientPolicyReview).mockResolvedValue({
 			errorCode: null,
 			idempotent: false,
@@ -565,6 +600,23 @@ describe("Projects tab", () => {
 			[project(), later],
 			{ inventoryError: false },
 		);
+		expect(recipientPolicyManagement.mountRecipientPolicyManagement).toHaveBeenCalledWith(
+			document.getElementById("recipientPolicyManagementMount"),
+			[
+				{
+					canonicalProjectIdentity: project().workspace_identity,
+					displayName: "api",
+					existingMemoryCount: 1,
+				},
+				{
+					canonicalProjectIdentity: "git:later",
+					displayName: "later",
+					existingMemoryCount: 1,
+				},
+			],
+			recipientIntent(),
+			expect.objectContaining({ loadError: false }),
+		);
 		expect(api.loadProjectScopeInventory).toHaveBeenNthCalledWith(2, { limit: 250, offset: 0 });
 		expect(api.loadProjectScopeInventory).toHaveBeenNthCalledWith(3, {
 			limit: 250,
@@ -626,6 +678,18 @@ describe("Projects tab", () => {
 			document.getElementById("projectShareFlowMount"),
 			[newerSharing],
 			{ inventoryError: false },
+		);
+		expect(recipientPolicyManagement.mountRecipientPolicyManagement).toHaveBeenLastCalledWith(
+			document.getElementById("recipientPolicyManagementMount"),
+			[
+				{
+					canonicalProjectIdentity: "new-sharing",
+					displayName: "new sharing",
+					existingMemoryCount: 1,
+				},
+			],
+			recipientIntent(),
+			expect.objectContaining({ loadError: false }),
 		);
 		expect(document.body.textContent).toContain("new filtered");
 		expect(document.body.textContent).not.toContain("old filtered");
@@ -893,7 +957,7 @@ describe("Projects tab", () => {
 		await loadProjectsData();
 		await flushAsyncWork();
 		const select = document.querySelector(
-			".project-inventory-cluster > .project-inventory-actions .project-domain-select",
+			".project-inventory-cluster > details > .project-advanced-administration .project-domain-select",
 		) as HTMLSelectElement | null;
 		if (!select) throw new Error("cluster Space select missing");
 		select.focus();
@@ -928,7 +992,7 @@ describe("Projects tab", () => {
 		});
 		await loadProjectsData();
 		const select = document.querySelector(
-			".project-inventory-cluster > .project-inventory-actions .project-domain-select",
+			".project-inventory-cluster > details > .project-advanced-administration .project-domain-select",
 		) as HTMLSelectElement | null;
 		if (!select) throw new Error("cluster Space select missing");
 		select.value = "exampleco-work";
@@ -937,7 +1001,7 @@ describe("Projects tab", () => {
 		await loadProjectsData();
 
 		const rerenderedSelect = document.querySelector(
-			".project-inventory-cluster > .project-inventory-actions .project-domain-select",
+			".project-inventory-cluster > details > .project-advanced-administration .project-domain-select",
 		) as HTMLSelectElement | null;
 		if (!rerenderedSelect) throw new Error("cluster Space select missing after refresh");
 		expect(rerenderedSelect.value).toBe("exampleco-work");
@@ -959,7 +1023,7 @@ describe("Projects tab", () => {
 		expect(refresh).toHaveBeenCalled();
 		await loadProjectsData();
 		const clearedSelect = document.querySelector(
-			".project-inventory-cluster > .project-inventory-actions .project-domain-select",
+			".project-inventory-cluster > details > .project-advanced-administration .project-domain-select",
 		) as HTMLSelectElement | null;
 		expect(clearedSelect?.value).toBe("");
 	});
@@ -1235,7 +1299,7 @@ describe("Projects tab", () => {
 			"Blocked identity: https://git.example.invalid/exampleco/api.git:worktree",
 		);
 		expect(document.body.textContent).toContain("Another project is also named api.");
-		expect(document.body.textContent).toContain("Show identities in this project");
+		expect(document.body.textContent).toContain("Advanced Project administration");
 	});
 
 	it("does not block cluster bulk assignment for informational guardrail warnings", async () => {
@@ -1779,6 +1843,303 @@ describe("Projects tab", () => {
 			confirmation_token: "confirm-token",
 			confirmed: true,
 			workspace_identity: "https://git.example.invalid/exampleco/api.git",
+		});
+	});
+
+	it("renders active Team and Identity recipients with only recipient management primary", async () => {
+		const selected = project({
+			display_project: "codemem",
+			workspace_identity: "project-codemem",
+			git_remote: "https://git.example.invalid/exampleco/codemem.git",
+		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [selected],
+			total: 1,
+		});
+		vi.mocked(api.loadRecipientPolicyIntent).mockResolvedValue(
+			recipientIntent({
+				projectRecipients: [
+					{
+						version: 1,
+						canonicalProjectIdentity: "project-codemem",
+						recipientKind: "team",
+						teamId: "team-example",
+						intentSource: "user",
+						policyRevision: "one",
+						status: "active",
+					},
+					{
+						version: 1,
+						canonicalProjectIdentity: "project-codemem",
+						recipientKind: "identity",
+						identityId: "identity-adam",
+						intentSource: "user",
+						policyRevision: "two",
+						status: "active",
+					},
+				],
+			}),
+		);
+
+		await loadProjectsData();
+
+		const row = document.querySelector<HTMLElement>(".project-inventory-row");
+		if (!row) throw new Error("project row missing");
+		expect(row.querySelector(".project-recipient-status")?.textContent).toBe(
+			"Shared with 2 recipients.",
+		);
+		expect(
+			[...row.querySelectorAll(".project-recipient-chip")].map((chip) => chip.textContent),
+		).toEqual(["Identity: Adam", "Team: ExampleCo"]);
+		const primaryButtons = [
+			...row.querySelectorAll<HTMLButtonElement>(":scope > .project-inventory-row-header button"),
+		].map((button) => button.textContent);
+		expect(primaryButtons).toEqual(["Manage recipients"]);
+		expect(row.querySelector("details")?.textContent).toContain("Share");
+		const normalCopy = row.cloneNode(true) as HTMLElement;
+		normalCopy.querySelector("details")?.remove();
+		expect(normalCopy.textContent).not.toContain(selected.workspace_identity);
+		expect(normalCopy.textContent).not.toContain("Space");
+
+		row.querySelector<HTMLButtonElement>(".project-recipient-action")?.click();
+		expect(recipientPolicyManagement.openRecipientPolicyManagement).toHaveBeenCalledWith({
+			mode: "project-manage",
+			projectId: "project-codemem",
+		});
+	});
+
+	it("bulk-selects exact canonical Projects and opens sorted recipient sharing", async () => {
+		const alpha = project({
+			display_project: "alpha",
+			git_remote: "git:alpha",
+			project: "alpha",
+			workspace_identity: "project-zeta",
+		});
+		const beta = project({
+			display_project: "beta",
+			git_remote: "git:beta",
+			project: "beta",
+			workspace_identity: "project-alpha",
+		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [alpha, beta],
+			total: 2,
+		});
+
+		initProjectsTab(() => {});
+		await loadProjectsData();
+		document
+			.querySelector<HTMLInputElement>('input[aria-label="Select alpha for recipient sharing"]')
+			?.click();
+		document
+			.querySelector<HTMLInputElement>('input[aria-label="Select beta for recipient sharing"]')
+			?.click();
+
+		const shareSelected = document.getElementById("projectsShareSelected") as HTMLButtonElement;
+		expect(shareSelected.textContent).toBe("Share selected (2)");
+		expect(shareSelected.disabled).toBe(false);
+		expect(document.getElementById("projectsSelectionStatus")?.textContent).toBe(
+			"2 Projects selected.",
+		);
+		shareSelected.click();
+
+		expect(recipientPolicyManagement.openRecipientPolicyManagement).toHaveBeenCalledWith({
+			mode: "project-add",
+			projectIds: ["project-alpha", "project-zeta"],
+		});
+	});
+
+	it("keeps selection across renders and prunes Projects absent from complete inventory", async () => {
+		initProjectsTab(() => {});
+		const alpha = project({
+			display_project: "alpha",
+			git_remote: "git:alpha",
+			project: "alpha",
+			workspace_identity: "project-alpha",
+		});
+		const beta = project({
+			display_project: "beta",
+			git_remote: "git:beta",
+			project: "beta",
+			workspace_identity: "project-beta",
+		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [alpha, beta],
+			total: 2,
+		});
+
+		await loadProjectsData();
+		document
+			.querySelector<HTMLInputElement>('input[aria-label="Select alpha for recipient sharing"]')
+			?.click();
+		document
+			.querySelector<HTMLInputElement>('input[aria-label="Select beta for recipient sharing"]')
+			?.click();
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [alpha],
+			total: 1,
+		});
+
+		await loadProjectsData();
+
+		expect(document.getElementById("projectsSelectionStatus")?.textContent).toBe(
+			"1 Project selected.",
+		);
+		expect(
+			document.querySelector<HTMLInputElement>(
+				'input[aria-label="Select alpha for recipient sharing"]',
+			)?.checked,
+		).toBe(true);
+	});
+
+	it("keeps inventory usable and disables recipient actions when intent loading fails", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		});
+		vi.mocked(api.loadRecipientPolicyIntent).mockRejectedValueOnce(new Error("intent unavailable"));
+
+		initProjectsTab(() => {});
+		await loadProjectsData();
+
+		expect(document.body.textContent).toContain("Recipient access is unavailable.");
+		expect(document.querySelector<HTMLButtonElement>(".project-recipient-action")?.disabled).toBe(
+			true,
+		);
+		expect(
+			document.getElementById("projectsShareSelected")?.getAttribute("disabled"),
+		).not.toBeNull();
+		expect(recipientPolicyManagement.mountRecipientPolicyManagement).toHaveBeenCalledWith(
+			document.getElementById("recipientPolicyManagementMount"),
+			[
+				{
+					canonicalProjectIdentity: project().workspace_identity,
+					displayName: "api",
+					existingMemoryCount: 1,
+				},
+			],
+			expect.objectContaining({ projectRecipients: [] }),
+			expect.objectContaining({ loadError: true }),
+		);
+	});
+
+	it("mounts complete inventory and clears selection after a successful management commit", async () => {
+		const refresh = vi.fn();
+		const selected = project({
+			display_project: "selected",
+			workspace_identity: "project-selected",
+		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [selected],
+			total: 1,
+		});
+
+		initProjectsTab(refresh);
+		await loadProjectsData();
+		document.querySelector<HTMLInputElement>(".project-selection-checkbox")?.click();
+		const calls = vi.mocked(recipientPolicyManagement.mountRecipientPolicyManagement).mock.calls;
+		const options = calls[calls.length - 1]?.[3];
+		expect(calls[calls.length - 1]?.[1]).toEqual([
+			{
+				canonicalProjectIdentity: "project-selected",
+				displayName: "selected",
+				existingMemoryCount: 1,
+			},
+		]);
+		await options?.onCommitted?.({
+			version: 1,
+			status: "applied",
+			reviewedPolicyDigest: "digest",
+			errorCode: null,
+			outcomes: [],
+			writeCount: 1,
+			idempotent: false,
+		});
+
+		expect(refresh).toHaveBeenCalled();
+		expect(document.getElementById("projectsSelectionStatus")?.textContent).toBe(
+			"0 Projects selected.",
+		);
+	});
+
+	it("aggregates clustered recipients and shares all exact canonical identities", async () => {
+		const first = project({ cwd: "/workspace/a", workspace_identity: "project-zeta" });
+		const second = project({ cwd: "/workspace/b", workspace_identity: "project-alpha" });
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [first, second],
+			total: 2,
+		});
+		vi.mocked(api.loadRecipientPolicyIntent).mockResolvedValue(
+			recipientIntent({
+				projectRecipients: [
+					{
+						version: 1,
+						canonicalProjectIdentity: "project-zeta",
+						recipientKind: "team",
+						teamId: "team-example",
+						intentSource: "user",
+						policyRevision: "one",
+						status: "active",
+					},
+					{
+						version: 1,
+						canonicalProjectIdentity: "project-alpha",
+						recipientKind: "identity",
+						identityId: "identity-adam",
+						intentSource: "user",
+						policyRevision: "two",
+						status: "active",
+					},
+				],
+			}),
+		);
+
+		await loadProjectsData();
+
+		const cluster = document.querySelector<HTMLElement>(".project-inventory-cluster");
+		if (!cluster) throw new Error("project cluster missing");
+		expect(
+			[
+				...cluster.querySelectorAll(":scope > .project-recipient-summary .project-recipient-chip"),
+			].map((chip) => chip.textContent),
+		).toEqual(["Identity: Adam", "Team: ExampleCo"]);
+		const action = cluster.querySelector<HTMLButtonElement>(
+			":scope > .project-inventory-row-header .project-recipient-action",
+		);
+		expect(action?.textContent).toBe("Share selected");
+		expect(action?.getAttribute("aria-label")).toBe("Share selected identities for api");
+		const clusterSelection = cluster.querySelector<HTMLInputElement>(
+			':scope > .project-inventory-row-header input[aria-label="Select all identities for api"]',
+		);
+		clusterSelection?.click();
+		expect(document.getElementById("projectsSelectionStatus")?.textContent).toBe(
+			"2 Projects selected.",
+		);
+		action?.click();
+		expect(recipientPolicyManagement.openRecipientPolicyManagement).toHaveBeenCalledWith({
+			mode: "project-add",
+			projectIds: ["project-alpha", "project-zeta"],
 		});
 	});
 });

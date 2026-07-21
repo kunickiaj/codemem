@@ -2,11 +2,20 @@ import * as api from "../lib/api";
 import type {
 	ProjectScopeGuardrailWarning,
 	ProjectScopeInventoryProject,
+	RecipientPolicyIntentGraphV1,
 	SharingDomainScope,
 } from "../lib/api/sync";
 import { showGlobalNotice } from "../lib/notice";
 import { state } from "../lib/state";
 import { openProjectShareFlow, renderProjectShareFlow } from "./project-sharing";
+import {
+	mountRecipientPolicyManagement,
+	openRecipientPolicyManagement,
+} from "./recipient-policy-management";
+import {
+	isRecipientPolicyManageableProject,
+	toRecipientPolicyManagementProjects,
+} from "./recipient-policy-projects";
 import {
 	renderRecipientPolicyReview,
 	renderRecipientPolicyReviewLoadError,
@@ -46,6 +55,18 @@ let skippedProjectRefreshForActiveSelect = false;
 let coordinatorGroupNamesCurrent = false;
 let projectShareInventoryReady = false;
 let projectsLoadGeneration = 0;
+const selectedProjectIds = new Set<string>();
+const selectionIdsByCheckbox = new WeakMap<HTMLInputElement, string[]>();
+const emptyRecipientPolicyIntent: RecipientPolicyIntentGraphV1 = {
+	version: 1,
+	identities: [],
+	teams: [],
+	teamMemberships: [],
+	identityDevices: [],
+	projectRecipients: [],
+};
+let recipientPolicyIntent = emptyRecipientPolicyIntent;
+let recipientPolicyIntentReady = false;
 
 function el<T extends HTMLElement>(id: string): T | null {
 	return document.getElementById(id) as T | null;
@@ -119,6 +140,173 @@ function formatLatest(value: string | null): string {
 	return date.toLocaleString();
 }
 
+function uniqueProjectIds(projects: ProjectScopeInventoryProject[]): string[] {
+	return [...new Set(projects.map((project) => project.workspace_identity))].sort();
+}
+
+function updateSelectionControls() {
+	const count = selectedProjectIds.size;
+	const shareSelected = el<HTMLButtonElement>("projectsShareSelected");
+	if (shareSelected) {
+		shareSelected.textContent = count === 0 ? "Share selected" : `Share selected (${count})`;
+		shareSelected.disabled =
+			count === 0 || !projectShareInventoryReady || !recipientPolicyIntentReady;
+		shareSelected.classList.add("project-selection-target");
+	}
+	const status = el<HTMLElement>("projectsSelectionStatus");
+	if (status) {
+		status.setAttribute("role", "status");
+		status.setAttribute("aria-live", "polite");
+		status.textContent = `${count.toLocaleString()} Project${count === 1 ? "" : "s"} selected.`;
+	}
+	for (const checkbox of document.querySelectorAll<HTMLInputElement>(
+		".project-selection-checkbox",
+	)) {
+		const projectIds = selectionIdsByCheckbox.get(checkbox) ?? [];
+		const selectedCount = projectIds.filter((projectId) =>
+			selectedProjectIds.has(projectId),
+		).length;
+		checkbox.checked = projectIds.length > 0 && selectedCount === projectIds.length;
+		checkbox.indeterminate = selectedCount > 0 && selectedCount < projectIds.length;
+	}
+	for (const action of document.querySelectorAll<HTMLButtonElement>(".project-recipient-action")) {
+		action.disabled = !projectShareInventoryReady || !recipientPolicyIntentReady;
+	}
+}
+
+function setProjectSelection(projectIds: string[]) {
+	const allSelected = projectIds.every((projectId) => selectedProjectIds.has(projectId));
+	for (const projectId of projectIds) {
+		if (allSelected) selectedProjectIds.delete(projectId);
+		else selectedProjectIds.add(projectId);
+	}
+	updateSelectionControls();
+}
+
+function renderProjectSelection(
+	projects: ProjectScopeInventoryProject[],
+	label: string,
+): HTMLElement {
+	const projectIds = uniqueProjectIds(projects);
+	const wrapper = document.createElement("label");
+	wrapper.className = "project-selection-control project-selection-target";
+	const checkbox = document.createElement("input");
+	checkbox.className = "project-selection-checkbox";
+	checkbox.dataset.projectFocusKey = `select:${projectIds.join("|")}`;
+	checkbox.type = "checkbox";
+	checkbox.setAttribute("aria-label", label);
+	selectionIdsByCheckbox.set(checkbox, projectIds);
+	checkbox.addEventListener("change", () => setProjectSelection(projectIds));
+	const text = document.createElement("span");
+	text.className = "sr-only";
+	text.textContent = label;
+	wrapper.append(checkbox, text);
+	return wrapper;
+}
+
+type RecipientChip = { key: string; kind: "Team" | "Identity"; displayName: string };
+
+function recipientChips(projectIds: string[]): RecipientChip[] {
+	if (!recipientPolicyIntentReady) return [];
+	const projectIdSet = new Set(projectIds);
+	const teams = new Map(
+		recipientPolicyIntent.teams
+			.filter((team) => team.status === "active")
+			.map((team) => [team.teamId, team.displayName]),
+	);
+	const identities = new Map(
+		recipientPolicyIntent.identities
+			.filter((identity) => identity.status === "active" || identity.status === "pending")
+			.map((identity) => [identity.identityId, identity.displayName]),
+	);
+	const chips = new Map<string, RecipientChip>();
+	for (const edge of recipientPolicyIntent.projectRecipients) {
+		if (edge.status !== "active" || !projectIdSet.has(edge.canonicalProjectIdentity)) continue;
+		if (edge.recipientKind === "team") {
+			const displayName = teams.get(edge.teamId);
+			if (displayName) {
+				chips.set(`team:${edge.teamId}`, {
+					key: `team:${edge.teamId}`,
+					kind: "Team",
+					displayName,
+				});
+			}
+		} else {
+			const displayName = identities.get(edge.identityId);
+			if (displayName) {
+				chips.set(`identity:${edge.identityId}`, {
+					key: `identity:${edge.identityId}`,
+					kind: "Identity",
+					displayName,
+				});
+			}
+		}
+	}
+	return [...chips.values()].sort((left, right) =>
+		`${left.kind}:${left.displayName}`.localeCompare(`${right.kind}:${right.displayName}`),
+	);
+}
+
+function renderRecipientSummary(projectIds: string[]): HTMLElement {
+	const container = document.createElement("div");
+	container.className = "project-recipient-summary";
+	const chips = recipientChips(projectIds);
+	const status = document.createElement("div");
+	status.className = "project-recipient-status";
+	status.textContent = !recipientPolicyIntentReady
+		? "Recipient access is unavailable."
+		: chips.length === 0
+			? "Not shared with any recipients."
+			: projectIds.length === 1
+				? `Shared with ${chips.length.toLocaleString()} recipient${chips.length === 1 ? "" : "s"}.`
+				: `${chips.length.toLocaleString()} recipient${chips.length === 1 ? "" : "s"} across these Project identities.`;
+	container.appendChild(status);
+	if (chips.length > 0) {
+		const list = document.createElement("ul");
+		list.className = "project-recipient-chips";
+		list.setAttribute("aria-label", "Active recipients");
+		for (const chip of chips) {
+			const item = document.createElement("li");
+			item.className = `project-recipient-chip project-recipient-chip-${chip.kind.toLowerCase()}`;
+			item.textContent = `${chip.kind}: ${chip.displayName}`;
+			list.appendChild(item);
+		}
+		container.appendChild(list);
+	}
+	return container;
+}
+
+function renderManageRecipientsAction(
+	projectIds: string[],
+	projectLabel: string,
+): HTMLButtonElement {
+	const button = document.createElement("button");
+	button.className = "settings-button project-recipient-action project-selection-target";
+	button.type = "button";
+	button.disabled = !projectShareInventoryReady || !recipientPolicyIntentReady;
+	if (projectIds.length === 1) {
+		button.textContent = "Manage recipients";
+		button.setAttribute("aria-label", `Manage recipients for ${projectLabel}`);
+		button.dataset.projectFocusKey = `manage:${projectIds[0]}`;
+		button.addEventListener("click", () => {
+			openRecipientPolicyManagement({ mode: "project-manage", projectId: projectIds[0] });
+		});
+	} else {
+		button.textContent = "Share selected";
+		button.setAttribute("aria-label", `Share selected identities for ${projectLabel}`);
+		button.dataset.projectFocusKey = `share:${projectIds.join("|")}`;
+		button.addEventListener("click", () => {
+			for (const projectId of projectIds) selectedProjectIds.add(projectId);
+			updateSelectionControls();
+			openRecipientPolicyManagement({
+				mode: "project-add",
+				projectIds: [...projectIds].sort(),
+			});
+		});
+	}
+	return button;
+}
+
 function strongestSignal(project: ProjectScopeInventoryProject): string {
 	if (project.git_remote) return project.git_remote;
 	if (project.cwd) return project.cwd;
@@ -132,7 +320,7 @@ function projectClusterKey(project: ProjectScopeInventoryProject): string {
 }
 
 function projectClusterLabel(project: ProjectScopeInventoryProject): string {
-	return project.project || project.display_project || strongestSignal(project);
+	return project.project || project.display_project || "Unnamed Project";
 }
 
 function teamName(groupId: string | null | undefined): string | null {
@@ -659,24 +847,44 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 	const row = document.createElement("article");
 	row.className = "project-inventory-row";
+	const titleId = `project-title-${project.workspace_identity.replace(/[^a-z0-9_-]/gi, "-")}`;
+	row.setAttribute("aria-labelledby", titleId);
 	const header = document.createElement("div");
 	header.className = "project-inventory-row-header";
+	if (isRecipientPolicyManageableProject(project)) {
+		header.appendChild(
+			renderProjectSelection([project], `Select ${project.display_project} for recipient sharing`),
+		);
+	}
 
-	const title = document.createElement("div");
+	const title = document.createElement("h3");
 	title.className = "project-inventory-title";
+	title.id = titleId;
 	title.textContent = project.display_project;
 	header.appendChild(title);
-
-	const domain = document.createElement("div");
-	domain.className = "project-inventory-domain";
-	domain.textContent = projectDomainLabel(project);
-	header.appendChild(domain);
+	if (isRecipientPolicyManageableProject(project)) {
+		header.appendChild(
+			renderManageRecipientsAction([project.workspace_identity], project.display_project),
+		);
+	}
 	row.appendChild(header);
 
 	const meta = document.createElement("div");
 	meta.className = "project-inventory-meta";
-	meta.textContent = `${projectResolutionLabel(project)} · ${project.identity_source} · ${formatLatest(project.latest_session_at)}`;
+	meta.textContent = `${(project.memory_count ?? 0).toLocaleString()} memories · ${project.session_count.toLocaleString()} sessions · ${formatLatest(project.latest_session_at)}`;
 	row.appendChild(meta);
+	row.appendChild(renderRecipientSummary([project.workspace_identity]));
+
+	const advanced = document.createElement("div");
+	advanced.className = "project-advanced-administration";
+	const domain = document.createElement("div");
+	domain.className = "project-inventory-domain";
+	domain.textContent = projectDomainLabel(project);
+	advanced.appendChild(domain);
+	const resolution = document.createElement("div");
+	resolution.className = "project-inventory-meta";
+	resolution.textContent = `${projectResolutionLabel(project)} · ${project.identity_source} · ${formatLatest(project.latest_session_at)}`;
+	advanced.appendChild(resolution);
 
 	if (project.sharing && project.sharing.length > 0) {
 		const sharing = document.createElement("div");
@@ -695,7 +903,7 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 			list.appendChild(item);
 		}
 		sharing.append(title, list);
-		row.appendChild(sharing);
+		advanced.appendChild(sharing);
 	}
 
 	if (isPeerReceivedProject(project)) {
@@ -703,13 +911,13 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 		receivedNote.className = "settings-note";
 		receivedNote.textContent =
 			"Received memories keep the source device's project and Space assignment. Local reassignment controls are disabled here to avoid split-brain sync state.";
-		row.appendChild(receivedNote);
+		advanced.appendChild(receivedNote);
 	}
 
 	const signal = document.createElement("div");
 	signal.className = "project-inventory-signal mono";
 	signal.textContent = strongestSignal(project);
-	row.appendChild(signal);
+	advanced.appendChild(signal);
 
 	if (project.suggested_scope_id && project.suggested_scope_id !== project.resolved_scope_id) {
 		const suggestion = document.createElement("div");
@@ -717,7 +925,7 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 		suggestion.textContent = project.suggestion_reason
 			? `Suggestion: ${project.suggestion_reason}`
 			: `Suggestion: assign this project to ${scopeSummary(project.suggested_scope_id)}.`;
-		row.appendChild(suggestion);
+		advanced.appendChild(suggestion);
 	}
 
 	const warnings = (project.guardrail_warnings ?? []).filter(
@@ -727,7 +935,7 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 		const warningBox = document.createElement("div");
 		warningBox.className = "settings-note project-attention-note";
 		warningBox.textContent = `Needs attention: ${warnings.map((warning) => warning.message).join(" ")}`;
-		row.appendChild(warningBox);
+		advanced.appendChild(warningBox);
 	}
 
 	if (project.statuses.length > 0) {
@@ -739,7 +947,7 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 			badge.textContent = formatStatus(status);
 			badges.appendChild(badge);
 		}
-		row.appendChild(badges);
+		advanced.appendChild(badges);
 	}
 
 	const detail = document.createElement("details");
@@ -750,8 +958,12 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 		else openProjectDetails.delete(project.workspace_identity);
 	});
 	const summary = document.createElement("summary");
-	summary.textContent = "Identity and mapping details";
+	summary.textContent =
+		warnings.length > 0
+			? `Advanced Project administration — ${warnings.length.toLocaleString()} item${warnings.length === 1 ? "" : "s"} need attention`
+			: "Advanced Project administration";
 	detail.appendChild(summary);
+	detail.appendChild(advanced);
 	const list = document.createElement("dl");
 	list.className = "project-detail-grid";
 	const fields: Array<[string, string | number | null | undefined]> = [
@@ -792,20 +1004,40 @@ function clusterDomainLabel(projects: ProjectScopeInventoryProject[]): string {
 function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLElement {
 	if (projects.length === 1) return renderProjectRow(projects[0]);
 	const clusterKey = projectClusterKey(projects[0]);
+	const manageableProjects = projects.filter(isRecipientPolicyManageableProject);
+	const projectIds = uniqueProjectIds(manageableProjects);
 	const row = document.createElement("article");
 	row.className = "project-inventory-row project-inventory-cluster";
+	const clusterLabel = projectClusterLabel(projects[0]);
+	const titleId = `project-cluster-title-${clusterKey.replace(/[^a-z0-9_-]/gi, "-")}`;
+	row.setAttribute("aria-labelledby", titleId);
 
 	const header = document.createElement("div");
 	header.className = "project-inventory-row-header";
-	const title = document.createElement("div");
+	if (manageableProjects.length > 0) {
+		header.appendChild(
+			renderProjectSelection(
+				manageableProjects,
+				`Select all identities for ${projectClusterLabel(projects[0])}`,
+			),
+		);
+	}
+	const title = document.createElement("h3");
 	title.className = "project-inventory-title";
-	title.textContent = projectClusterLabel(projects[0]);
+	title.id = titleId;
+	title.textContent = clusterLabel;
 	header.appendChild(title);
+	if (projectIds.length > 0) {
+		header.appendChild(renderManageRecipientsAction(projectIds, clusterLabel));
+	}
+	row.appendChild(header);
+
+	const advanced = document.createElement("div");
+	advanced.className = "project-advanced-administration";
 	const domain = document.createElement("div");
 	domain.className = "project-inventory-domain";
 	domain.textContent = clusterDomainLabel(projects);
-	header.appendChild(domain);
-	row.appendChild(header);
+	advanced.appendChild(domain);
 
 	const memoryCount = projects.reduce((total, project) => total + (project.memory_count ?? 0), 0);
 	const sessionCount = projects.reduce((total, project) => total + project.session_count, 0);
@@ -813,6 +1045,7 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 	meta.className = "project-inventory-meta";
 	meta.textContent = `${projects.length} identities · ${sessionCount.toLocaleString()} sessions · ${memoryCount.toLocaleString()} memories`;
 	row.appendChild(meta);
+	row.appendChild(renderRecipientSummary(projectIds));
 
 	const actions = document.createElement("div");
 	actions.className = "project-inventory-actions";
@@ -824,7 +1057,7 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 			? "These project identities were received from peers. Change project or Space assignments on their source devices."
 			: "These project identities cannot be bulk assigned until they have stable local identities. Expand each identity for details.";
 		actions.appendChild(note);
-		row.appendChild(actions);
+		advanced.appendChild(actions);
 	} else {
 		const projectsWithBlockingWarnings = assignableProjects.map((project) => ({
 			project,
@@ -888,7 +1121,7 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 			}
 			actions.appendChild(note);
 		}
-		row.appendChild(actions);
+		advanced.appendChild(actions);
 	}
 
 	const details = document.createElement("details");
@@ -899,8 +1132,18 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 		else openProjectClusters.delete(clusterKey);
 	});
 	const summary = document.createElement("summary");
-	summary.textContent = "Show identities in this project";
+	const warningCount = projects.reduce(
+		(total, project) =>
+			total +
+			(project.guardrail_warnings ?? []).filter((warning) => warning.severity === "warning").length,
+		0,
+	);
+	summary.textContent =
+		warningCount > 0
+			? `Advanced Project administration — ${warningCount.toLocaleString()} item${warningCount === 1 ? "" : "s"} need attention`
+			: "Advanced Project administration";
 	details.appendChild(summary);
+	details.appendChild(advanced);
 	for (const project of projects) details.appendChild(renderProjectRow(project));
 	row.appendChild(details);
 	return row;
@@ -940,6 +1183,10 @@ function renderProjectInventory(result: {
 	const meta = el<HTMLDivElement>("projectsInventoryMeta");
 	const list = el<HTMLDivElement>("projectsInventoryList");
 	if (!meta || !list) return;
+	const focusedKey =
+		document.activeElement instanceof HTMLElement
+			? document.activeElement.dataset.projectFocusKey
+			: undefined;
 	hideProjectInventorySkeleton();
 	list.textContent = "";
 	if (result.projects.length === 0) {
@@ -956,6 +1203,13 @@ function renderProjectInventory(result: {
 	const next = el<HTMLButtonElement>("projectsNextPage");
 	if (prev) prev.disabled = result.offset === 0;
 	if (next) next.disabled = !result.has_more;
+	updateSelectionControls();
+	if (focusedKey) {
+		const nextFocused = [...list.querySelectorAll<HTMLElement>("[data-project-focus-key]")].find(
+			(element) => element.dataset.projectFocusKey === focusedKey,
+		);
+		nextFocused?.focus();
+	}
 }
 
 function refreshProjectCoordinatorGroupNamesInBackground(
@@ -986,6 +1240,23 @@ async function loadAllProjectShareChoices(): Promise<ProjectScopeInventoryProjec
 	return [...projects.values()];
 }
 
+function mountProjectRecipientManagement(
+	projects: ProjectScopeInventoryProject[],
+	intent: RecipientPolicyIntentGraphV1,
+	loadError: boolean,
+) {
+	const mount = el<HTMLDivElement>("recipientPolicyManagementMount");
+	if (!mount) return;
+	mountRecipientPolicyManagement(mount, toRecipientPolicyManagementProjects(projects), intent, {
+		loadError,
+		onCommitted: (result) => {
+			if (result.status === "applied") selectedProjectIds.clear();
+			updateSelectionControls();
+			refreshProjects?.();
+		},
+	});
+}
+
 export async function loadProjectsData() {
 	const meta = el<HTMLDivElement>("projectsInventoryMeta");
 	const list = el<HTMLDivElement>("projectsInventoryList");
@@ -996,27 +1267,48 @@ export async function loadProjectsData() {
 	}
 	skippedProjectRefreshForActiveSelect = false;
 	const loadGeneration = ++projectsLoadGeneration;
+	projectShareInventoryReady = false;
+	recipientPolicyIntentReady = false;
+	updateSelectionControls();
 	meta.textContent = "Loading project inventory…";
 	try {
-		const [result, settings, shareInventory, recipientPolicyReview] = await Promise.all([
-			api.loadProjectScopeInventory({
-				limit: lastLimit,
-				offset: currentOffset,
-				q: el<HTMLInputElement>("projectsSearch")?.value.trim() || undefined,
-				status: el<HTMLSelectElement>("projectsStatusFilter")?.value || undefined,
-			}),
-			api.loadSharingDomainSettings(),
-			loadAllProjectShareChoices()
-				.then((projects) => ({ ok: true as const, projects }))
-				.catch(() => ({ ok: false as const, projects: [] as ProjectScopeInventoryProject[] })),
-			api
-				.loadRecipientPolicyReview()
-				.then((review) => ({ ok: true as const, review }))
-				.catch((error: unknown) => ({ ok: false as const, error })),
-		]);
+		const [result, settings, shareInventory, recipientPolicyReview, intentResult] =
+			await Promise.all([
+				api.loadProjectScopeInventory({
+					limit: lastLimit,
+					offset: currentOffset,
+					q: el<HTMLInputElement>("projectsSearch")?.value.trim() || undefined,
+					status: el<HTMLSelectElement>("projectsStatusFilter")?.value || undefined,
+				}),
+				api.loadSharingDomainSettings(),
+				loadAllProjectShareChoices()
+					.then((projects) => ({ ok: true as const, projects }))
+					.catch(() => ({ ok: false as const, projects: [] as ProjectScopeInventoryProject[] })),
+				api
+					.loadRecipientPolicyReview()
+					.then((review) => ({ ok: true as const, review }))
+					.catch((error: unknown) => ({ ok: false as const, error })),
+				api
+					.loadRecipientPolicyIntent()
+					.then((intent) => ({ ok: true as const, intent }))
+					.catch((error: unknown) => ({ ok: false as const, error })),
+			]);
 		if (loadGeneration !== projectsLoadGeneration) return;
 		scopes = settings.scopes;
 		projectShareInventoryReady = shareInventory.ok;
+		recipientPolicyIntentReady = intentResult.ok;
+		recipientPolicyIntent = intentResult.ok ? intentResult.intent : emptyRecipientPolicyIntent;
+		if (shareInventory.ok) {
+			const availableProjectIds = new Set(
+				toRecipientPolicyManagementProjects(shareInventory.projects).map(
+					(project) => project.canonicalProjectIdentity,
+				),
+			);
+			for (const selectedProjectId of selectedProjectIds) {
+				if (!availableProjectIds.has(selectedProjectId))
+					selectedProjectIds.delete(selectedProjectId);
+			}
+		}
 		const shareMount = el<HTMLDivElement>("projectShareFlowMount");
 		if (shareMount) {
 			renderProjectShareFlow(shareMount, shareInventory.projects, {
@@ -1031,13 +1323,22 @@ export async function loadProjectsData() {
 				renderRecipientPolicyReviewLoadError(reviewMount, recipientPolicyReview.error);
 			}
 		}
+		mountProjectRecipientManagement(
+			shareInventory.projects,
+			recipientPolicyIntent,
+			!shareInventory.ok || !intentResult.ok,
+		);
 		renderProjectInventory(result);
 		refreshProjectCoordinatorGroupNamesInBackground(result, loadGeneration);
 	} catch (error) {
 		if (loadGeneration !== projectsLoadGeneration) return;
 		projectShareInventoryReady = false;
+		recipientPolicyIntentReady = false;
+		recipientPolicyIntent = emptyRecipientPolicyIntent;
 		const shareMount = el<HTMLDivElement>("projectShareFlowMount");
 		if (shareMount) renderProjectShareFlow(shareMount, [], { inventoryError: true });
+		mountProjectRecipientManagement([], emptyRecipientPolicyIntent, true);
+		updateSelectionControls();
 		hideProjectInventorySkeleton();
 		meta.textContent = "Project inventory failed to load.";
 		renderEmpty(error instanceof Error ? error.message : "Unable to load project inventory.");
@@ -1046,6 +1347,7 @@ export async function loadProjectsData() {
 
 export function initProjectsTab(refresh: RefreshFn) {
 	refreshProjects = refresh;
+	selectedProjectIds.clear();
 	const status = el<HTMLSelectElement>("projectsStatusFilter");
 	if (status && status.options.length === 0) {
 		for (const [value, label] of STATUS_OPTIONS) {
@@ -1069,4 +1371,16 @@ export function initProjectsTab(refresh: RefreshFn) {
 		currentOffset += lastLimit;
 		refreshProjects?.();
 	});
+	const shareSelected = el<HTMLButtonElement>("projectsShareSelected");
+	if (shareSelected && shareSelected.dataset.recipientPolicyBound !== "true") {
+		shareSelected.dataset.recipientPolicyBound = "true";
+		shareSelected.addEventListener("click", () => {
+			if (selectedProjectIds.size === 0) return;
+			openRecipientPolicyManagement({
+				mode: "project-add",
+				projectIds: [...selectedProjectIds].sort(),
+			});
+		});
+	}
+	updateSelectionControls();
 }

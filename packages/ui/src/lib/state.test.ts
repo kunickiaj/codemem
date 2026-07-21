@@ -11,12 +11,20 @@ import {
 
 describe("Viewer tab routing", () => {
 	it("orders tabs around the primary review and sync workflow", () => {
-		expect(ALL_TAB_IDS).toEqual(["feed", "projects", "sync", "health", "coordinator-admin"]);
+		expect(ALL_TAB_IDS).toEqual([
+			"feed",
+			"projects",
+			"sharing",
+			"sync",
+			"health",
+			"coordinator-admin",
+		]);
 	});
 
 	it("recognizes Projects as a routable top-level tab", () => {
 		expect(ALL_TAB_IDS).toContain("projects");
 		expect(parseTabFromHash("#projects")).toBe("projects");
+		expect(parseTabFromHash("#sharing")).toBe("sharing");
 	});
 });
 
@@ -34,6 +42,7 @@ describe("Coordinator Admin tab gating", () => {
 
 		expect(shouldShowCoordinatorAdminTab(status)).toBe(false);
 		expect(getVisibleTabs(status)).not.toContain("coordinator-admin");
+		expect(getVisibleTabs(status)).toContain("sharing");
 	});
 
 	it("keeps the tab visible when the admin secret is configured", () => {
@@ -53,6 +62,7 @@ describe("Coordinator Admin tab gating", () => {
 		};
 
 		expect(resolveAccessibleTab("coordinator-admin", status)).toBe("sync");
+		expect(resolveAccessibleTab("sharing", status)).toBe("sharing");
 		expect(resolveAccessibleTab("feed", status)).toBe("feed");
 	});
 });

@@ -106,9 +106,11 @@ export function listRecipientPolicyIntent(db: Database): RecipientPolicyIntentGr
 				version: RECIPIENT_POLICY_CONTRACT_VERSION,
 				canonicalProjectIdentity: String(value.canonical_project_identity ?? ""),
 				intentSource:
-					value.provenance === "exact_project_invite"
-						? ("legacy_project_invite" as const)
-						: ("migration" as const),
+					value.provenance === "user"
+						? ("user" as const)
+						: value.provenance === "exact_project_invite"
+							? ("legacy_project_invite" as const)
+							: ("migration" as const),
 				policyRevision: String(value.policy_revision ?? ""),
 				status: value.status === "revoked" ? ("revoked" as const) : ("active" as const),
 			};

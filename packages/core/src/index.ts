@@ -588,6 +588,27 @@ export type {
 	RecipientPolicyTeamV1,
 } from "./recipient-policy-contract.js";
 export { RECIPIENT_POLICY_CONTRACT_VERSION } from "./recipient-policy-contract.js";
+export type {
+	RecipientPolicyEdgeChangeV1,
+	RecipientPolicyEdgeCommitOutcomeV1,
+	RecipientPolicyEdgeCommitRequestV1,
+	RecipientPolicyEdgeCommitResultV1,
+	RecipientPolicyEdgeEffectiveDeviceV1,
+	RecipientPolicyEdgeIdentitySummaryV1,
+	RecipientPolicyEdgeOutcomeV1,
+	RecipientPolicyEdgePreviewProjectV1,
+	RecipientPolicyEdgePreviewRequestV1,
+	RecipientPolicyEdgePreviewResponseV1,
+	RecipientPolicyEdgeRecipientRefV1,
+	RecipientPolicyEdgeSelectedRecipientV1,
+} from "./recipient-policy-edges.js";
+export {
+	commitRecipientPolicyEdges,
+	parseRecipientPolicyEdgeCommitRequest,
+	parseRecipientPolicyEdgePreviewRequest,
+	previewRecipientPolicyEdges,
+	RecipientPolicyEdgeRequestError,
+} from "./recipient-policy-edges.js";
 export type { RecipientPolicyIntentGraphV1 } from "./recipient-policy-intent.js";
 export { listRecipientPolicyIntent } from "./recipient-policy-intent.js";
 export type {

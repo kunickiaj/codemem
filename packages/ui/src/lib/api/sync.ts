@@ -546,6 +546,199 @@ export class RecipientPolicyReviewStaleError extends Error {
 	}
 }
 
+export type RecipientPolicyEdgeRecipientRefV1 =
+	| { recipientKind: "identity"; identityId: string }
+	| { recipientKind: "team"; teamId: string };
+
+export interface RecipientPolicyIdentityV1 {
+	version: 1;
+	identityId: string;
+	displayName: string;
+	kind: "personal" | "work" | "other";
+	verification: "local";
+	status: "active" | "pending" | "merged";
+	mergedIntoIdentityId: string | null;
+}
+
+export interface RecipientPolicyTeamV1 {
+	version: 1;
+	teamId: string;
+	displayName: string;
+	status: "active" | "archived";
+}
+
+export interface RecipientPolicyTeamMembershipV1 {
+	version: 1;
+	teamId: string;
+	identityId: string;
+	role: "member" | "admin";
+	status: "active" | "pending" | "revoked";
+}
+
+export interface RecipientPolicyIdentityDeviceV1 {
+	version: 1;
+	identityId: string;
+	deviceId: string;
+	displayName: string;
+	status: "active" | "revoked";
+}
+
+interface RecipientPolicyProjectRecipientBaseV1 {
+	version: 1;
+	canonicalProjectIdentity: string;
+	intentSource: "user" | "migration" | "legacy_project_invite";
+	policyRevision: string;
+	status: "active" | "revoked";
+}
+
+export type RecipientPolicyProjectRecipientV1 =
+	| (RecipientPolicyProjectRecipientBaseV1 & { recipientKind: "identity"; identityId: string })
+	| (RecipientPolicyProjectRecipientBaseV1 & { recipientKind: "team"; teamId: string });
+
+export interface RecipientPolicyIntentGraphV1 {
+	version: 1;
+	identities: RecipientPolicyIdentityV1[];
+	teams: RecipientPolicyTeamV1[];
+	teamMemberships: RecipientPolicyTeamMembershipV1[];
+	identityDevices: RecipientPolicyIdentityDeviceV1[];
+	projectRecipients: RecipientPolicyProjectRecipientV1[];
+}
+
+export interface RecipientPolicyEdgeChangeV1 {
+	canonicalProjectIdentity: string;
+	recipient: RecipientPolicyEdgeRecipientRefV1;
+	action: "add" | "remove";
+}
+
+export interface RecipientPolicyEdgePreviewRequestV1 {
+	version: 1;
+	changes: RecipientPolicyEdgeChangeV1[];
+}
+
+export interface RecipientPolicyEdgeCommitRequestV1 extends RecipientPolicyEdgePreviewRequestV1 {
+	reviewedPolicyDigest: string;
+}
+
+export interface RecipientPolicyEdgePreviewProjectV1 {
+	canonicalProjectIdentity: string;
+	displayName: string;
+	existingMemoryCount: number;
+	futureMemoriesShared: true;
+}
+
+export interface RecipientPolicyEdgeIdentitySummaryV1 {
+	identityId: string;
+	displayName: string;
+	verification: "local";
+}
+
+export type RecipientPolicyEdgeSelectedRecipientV1 =
+	| ({ recipientKind: "identity" } & RecipientPolicyEdgeIdentitySummaryV1)
+	| {
+			recipientKind: "team";
+			teamId: string;
+			displayName: string;
+			currentMembers: RecipientPolicyEdgeIdentitySummaryV1[];
+			futureMembersInherit: true;
+	  };
+
+export interface RecipientPolicyEdgeEffectiveDeviceV1 {
+	canonicalProjectIdentity: string;
+	identityId: string;
+	deviceId: string;
+	displayName: string;
+}
+
+export interface RecipientPolicyEdgePreviewResponseV1 {
+	version: 1;
+	normalizedChanges: RecipientPolicyEdgeChangeV1[];
+	projects: RecipientPolicyEdgePreviewProjectV1[];
+	selectedRecipients: RecipientPolicyEdgeSelectedRecipientV1[];
+	effectiveDevices: RecipientPolicyEdgeEffectiveDeviceV1[];
+	unchangedProjects: RecipientPolicyEdgePreviewProjectV1[];
+	reviewedPolicyDigest: string;
+	addCount: number;
+	removeCount: number;
+	netWriteCount: number;
+}
+
+export type RecipientPolicyEdgeOutcomeV1 =
+	| "added"
+	| "removed"
+	| "already_present"
+	| "already_absent";
+
+export interface RecipientPolicyEdgeCommitOutcomeV1 {
+	change: RecipientPolicyEdgeChangeV1;
+	outcome: RecipientPolicyEdgeOutcomeV1;
+}
+
+export interface RecipientPolicyEdgeCommitResultV1 {
+	version: 1;
+	status: "applied" | "stale" | "invalid" | "not_found" | "conflict";
+	reviewedPolicyDigest: string;
+	errorCode: string | null;
+	outcomes: RecipientPolicyEdgeCommitOutcomeV1[];
+	writeCount: number;
+	idempotent: boolean;
+}
+
+export class RecipientPolicyEdgesStaleError extends Error {
+	result: RecipientPolicyEdgeCommitResultV1;
+
+	constructor(result: RecipientPolicyEdgeCommitResultV1) {
+		super("Recipient policy changed after review");
+		this.name = "RecipientPolicyEdgesStaleError";
+		this.result = result;
+	}
+}
+
+export function loadRecipientPolicyIntent(): Promise<RecipientPolicyIntentGraphV1> {
+	return fetchJson<RecipientPolicyIntentGraphV1>("/api/sync/recipient-policy/v1/intent");
+}
+
+async function recipientPolicyEdgeRequest<T>(
+	path: string,
+	input: RecipientPolicyEdgePreviewRequestV1 | RecipientPolicyEdgeCommitRequestV1,
+): Promise<T> {
+	const resp = await fetch(path, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(input),
+	});
+	const { text, payload } = await readJsonPayload<T>(resp);
+	if (!resp.ok) {
+		if (
+			resp.status === 409 &&
+			payload &&
+			typeof payload === "object" &&
+			(payload as unknown as RecipientPolicyEdgeCommitResultV1).status === "stale"
+		) {
+			throw new RecipientPolicyEdgesStaleError(
+				payload as unknown as RecipientPolicyEdgeCommitResultV1,
+			);
+		}
+		const edgeErrorCode =
+			payload && typeof payload === "object" && "errorCode" in payload
+				? String((payload as { errorCode?: unknown }).errorCode ?? "")
+				: "";
+		throw new Error(edgeErrorCode || payloadError(payload) || text || "request failed");
+	}
+	return payload as T;
+}
+
+export function previewRecipientPolicyEdges(
+	input: RecipientPolicyEdgePreviewRequestV1,
+): Promise<RecipientPolicyEdgePreviewResponseV1> {
+	return recipientPolicyEdgeRequest("/api/sync/recipient-policy/v1/edges/preview", input);
+}
+
+export function commitRecipientPolicyEdges(
+	input: RecipientPolicyEdgeCommitRequestV1,
+): Promise<RecipientPolicyEdgeCommitResultV1> {
+	return recipientPolicyEdgeRequest("/api/sync/recipient-policy/v1/edges/commit", input);
+}
+
 export function loadRecipientPolicyReview(): Promise<RecipientPolicyReviewListV1> {
 	return fetchJson<RecipientPolicyReviewListV1>("/api/sync/recipient-policy/v1/review");
 }

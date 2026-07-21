@@ -200,7 +200,7 @@
         padding: var(--sp-3) var(--sp-4);
         border: none;
         background: transparent;
-        color: var(--text-tertiary);
+        color: var(--text-secondary);
         font-family: var(--font-sans);
         font-size: var(--font-size-md);
         font-weight: var(--font-weight-medium);
@@ -213,8 +213,14 @@
       }
 
       .tab-btn.active {
-        color: var(--accent);
+        color: var(--accent-hover);
         font-weight: var(--font-weight-semibold);
+      }
+
+      #recipientPolicyManagementMount .small,
+      .recipient-policy-management-dialog .small,
+      #recipientPolicySharingMount .small {
+        color: var(--text-secondary);
       }
 
       .tab-btn.active::after {
@@ -1146,6 +1152,102 @@
         padding-left: var(--sp-5);
       }
       .recipient-policy-blocked-heading { margin-top: var(--sp-5) !important; }
+      .project-selection-actions,
+      .recipient-policy-management-actions,
+      .recipient-policy-sharing-actions {
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .project-selection-target,
+      .recipient-policy-management-target,
+      .recipient-policy-sharing-target-24 {
+        min-width: 24px;
+        min-height: 24px;
+      }
+      .project-selection-control {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 32px;
+        min-width: 32px;
+        min-height: 32px;
+        cursor: pointer;
+      }
+      .project-selection-checkbox { width: 18px; height: 18px; }
+      .project-recipient-summary { margin-top: var(--sp-3); }
+      .project-recipient-status { color: var(--text-secondary); font-size: var(--font-size-sm); }
+      .project-recipient-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sp-2);
+        padding: 0;
+        margin: var(--sp-2) 0 0;
+        list-style: none;
+      }
+      .project-recipient-chip {
+        padding: 3px 9px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-pill);
+        background: var(--surface-2);
+        color: var(--text-primary);
+        font-size: var(--font-size-xs);
+      }
+      .project-advanced-administration { margin-top: var(--sp-3); }
+      .project-advanced-surface summary,
+      .advanced-administration-disclosure > summary {
+        cursor: pointer;
+        color: var(--text-primary);
+        font-weight: var(--font-weight-semibold);
+      }
+      .recipient-policy-management-dialog .modal-card { width: min(720px, calc(100vw - 32px)); }
+      .recipient-policy-management-selection fieldset { border: 0; padding: 0; margin: var(--sp-4) 0 0; }
+      .recipient-policy-management-selection legend { font-weight: var(--font-weight-semibold); }
+      .recipient-policy-management-review section + section { margin-top: var(--sp-4); }
+      .recipient-policy-management-review ul { padding-left: var(--sp-5); }
+      .recipient-policy-management-status:empty { display: none; }
+      .recipient-policy-sharing-header { margin-bottom: var(--sp-4); }
+      .recipient-policy-sharing-tabs {
+        position: static;
+        display: flex;
+        gap: var(--sp-1);
+        margin-bottom: var(--sp-4);
+        padding: 0;
+        background: transparent;
+        border: 0;
+        z-index: auto;
+      }
+      .recipient-policy-sharing-tabs .tab-btn { color: var(--text-secondary); }
+      .recipient-policy-sharing-tabs .tab-btn.active { color: var(--text-primary); }
+      .recipient-policy-sharing-grid { display: grid; gap: var(--sp-3); }
+      .recipient-policy-sharing-card { border: 1px solid var(--border); border-radius: var(--radius-md); }
+      .recipient-policy-sharing-card-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-3);
+      }
+      .recipient-policy-sharing-card-title h3 { margin: 0; }
+      .recipient-policy-sharing-details { display: grid; gap: var(--sp-3); margin: var(--sp-4) 0; }
+      .recipient-policy-sharing-details div {
+        display: grid;
+        grid-template-columns: minmax(150px, max-content) 1fr;
+        gap: var(--sp-3);
+      }
+      .recipient-policy-sharing-details dt { color: var(--text-secondary); }
+      .recipient-policy-sharing-details dd { margin: 0; color: var(--text-primary); }
+
+      @media (max-width: 720px) {
+        .project-inventory-row-header { align-items: center; flex-wrap: wrap; }
+        .project-inventory-title { flex: 1 1 calc(100% - 48px); }
+        .project-recipient-action { width: 100%; }
+        .recipient-policy-management-dialog .modal-card { width: calc(100vw - 16px); }
+        .recipient-policy-management-actions,
+        .recipient-policy-sharing-responsive-actions { display: grid; grid-template-columns: 1fr; }
+        .recipient-policy-management-actions button,
+        .recipient-policy-sharing-responsive-actions button { min-height: 44px; width: 100%; }
+        .recipient-policy-sharing-responsive-tabs { overflow-x: auto; }
+        .recipient-policy-sharing-details div { grid-template-columns: 1fr; gap: var(--sp-1); }
+      }
 
       /* 36×36 square icon buttons — theme toggle, settings gear. */
       .icon-button {
@@ -3430,13 +3532,15 @@
 
     <!-- ── Tab bar ─────────────────────────────────────────── -->
     <nav class="tab-bar" aria-label="Main navigation">
-      <button class="tab-btn active" id="tabBtn-feed">Feed</button>
+      <button class="tab-btn active" id="tabBtn-feed" aria-current="page">Feed</button>
       <button class="tab-btn" id="tabBtn-projects">Projects</button>
+      <button class="tab-btn" id="tabBtn-sharing">Sharing</button>
       <button class="tab-btn" id="tabBtn-sync">Sync</button>
       <button class="tab-btn" id="tabBtn-health">Health</button>
-      <button class="tab-btn" id="tabBtn-coordinator-admin">Teams</button>
+      <button class="tab-btn" id="tabBtn-coordinator-admin">Advanced</button>
     </nav>
     <div id="toastRoot"></div>
+    <div id="recipientPolicyManagementMount"></div>
     <div class="viewer-reconnect-overlay" id="viewerReconnectOverlay" hidden>
       <div class="viewer-reconnect-card" role="status" aria-live="assertive">
         <div class="viewer-reconnect-eyebrow">Viewer connection</div>
@@ -3734,10 +3838,13 @@
       <div class="card" style="animation-delay: 0s">
         <div class="section-header">
           <div>
-            <h2>Projects & Sharing domains</h2>
-            <div class="section-meta">Choose which Sharing domain future memories use. “Stays on this device” means no Sharing domain is assigned yet, so it belongs in Projects review rather than Sync triage.</div>
+            <h2>Projects</h2>
+            <div class="section-meta">Choose exact Projects, then share them with Teams or Identities.</div>
           </div>
-          <div class="section-actions" id="projectShareFlowMount"></div>
+          <div class="section-actions project-selection-actions">
+            <span class="section-meta" id="projectsSelectionStatus" role="status" aria-live="polite">0 Projects selected.</span>
+            <button class="settings-button project-selection-target" id="projectsShareSelected" type="button" disabled>Share selected</button>
+          </div>
         </div>
         <div class="projects-toolbar">
           <input class="feed-search" id="projectsSearch" placeholder="Search project, path, git remote, or workspace id…" />
@@ -3762,6 +3869,16 @@
           <button class="settings-button" id="projectsNextPage" type="button">Next</button>
         </div>
       </div>
+      <details class="card project-advanced-surface">
+        <summary>Advanced Project invitations</summary>
+        <div class="section-meta">Use the legacy invitation flow when the recipient does not have an Identity yet.</div>
+        <div class="section-actions" id="projectShareFlowMount"></div>
+      </details>
+    </div>
+
+    <!-- ── Tab: Sharing ────────────────────────────────────── -->
+    <div class="tab-panel" id="tab-sharing" hidden>
+      <div class="card" id="recipientPolicySharingMount"></div>
     </div>
 
     <!-- ── Tab: Sync ───────────────────────────────────────── -->
@@ -3914,7 +4031,13 @@
     </div>
 
     <div class="tab-panel" id="tab-coordinator-admin" hidden>
-      <div id="coordinatorAdminMount"></div>
+      <div class="card">
+        <details class="advanced-administration-disclosure">
+          <summary>Advanced Team administration</summary>
+          <div class="section-meta">Manage legacy enrollment, Spaces, device administration, and coordinator settings.</div>
+          <div id="coordinatorAdminMount"></div>
+        </details>
+      </div>
     </div>
 
     <script src="/assets/app.js"></script>

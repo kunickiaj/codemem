@@ -2,9 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
 	advanceShareOperation,
+	commitRecipientPolicyEdges,
+	loadRecipientPolicyIntent,
 	loadRecipientPolicyReview,
 	loadShareOperation,
 	loadShareOperations,
+	previewRecipientPolicyEdges,
+	RecipientPolicyEdgesStaleError,
 	RecipientPolicyReviewStaleError,
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
@@ -167,5 +171,106 @@ describe("recipient policy review API", () => {
 			"/api/sync/recipient-policy/v1/review/resolve-bulk",
 			expect.objectContaining({ body: JSON.stringify({ requests }), method: "POST" }),
 		);
+	});
+});
+
+describe("recipient policy edge API", () => {
+	it("loads intent and sends exact preview and commit payloads", async () => {
+		const intent = {
+			version: 1,
+			identities: [],
+			teams: [],
+			teamMemberships: [],
+			identityDevices: [],
+			projectRecipients: [],
+		} as const;
+		const changes = [
+			{
+				canonicalProjectIdentity: "git:codemem",
+				recipient: { recipientKind: "team" as const, teamId: "team-1" },
+				action: "add" as const,
+			},
+		];
+		const preview = {
+			version: 1,
+			normalizedChanges: changes,
+			projects: [],
+			selectedRecipients: [],
+			effectiveDevices: [],
+			unchangedProjects: [],
+			reviewedPolicyDigest: "policy:digest",
+			addCount: 1,
+			removeCount: 0,
+			netWriteCount: 1,
+		} as const;
+		const committed = {
+			version: 1,
+			status: "applied",
+			reviewedPolicyDigest: "policy:digest",
+			errorCode: null,
+			outcomes: [{ change: changes[0], outcome: "added" }],
+			writeCount: 1,
+			idempotent: false,
+		} as const;
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(new Response(JSON.stringify(intent), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify(preview), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify(committed), { status: 200 }));
+		globalThis.fetch = fetchMock as typeof fetch;
+
+		expect(await loadRecipientPolicyIntent()).toEqual(intent);
+		expect(await previewRecipientPolicyEdges({ version: 1, changes })).toEqual(preview);
+		expect(
+			await commitRecipientPolicyEdges({
+				version: 1,
+				changes: preview.normalizedChanges,
+				reviewedPolicyDigest: preview.reviewedPolicyDigest,
+			}),
+		).toEqual(committed);
+		expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/sync/recipient-policy/v1/edges/preview", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ version: 1, changes }),
+		});
+		expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/sync/recipient-policy/v1/edges/commit", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				version: 1,
+				changes: preview.normalizedChanges,
+				reviewedPolicyDigest: preview.reviewedPolicyDigest,
+			}),
+		});
+	});
+
+	it("throws a typed stale error for a stale edge commit", async () => {
+		const stale = {
+			version: 1,
+			status: "stale",
+			reviewedPolicyDigest: "policy:old",
+			errorCode: "reviewed_policy_stale",
+			outcomes: [],
+			writeCount: 0,
+			idempotent: false,
+		} as const;
+		globalThis.fetch = vi.fn(
+			async () => new Response(JSON.stringify(stale), { status: 409 }),
+		) as typeof fetch;
+
+		const promise = commitRecipientPolicyEdges({
+			version: 1,
+			changes: [
+				{
+					canonicalProjectIdentity: "git:codemem",
+					recipient: { recipientKind: "identity", identityId: "identity-1" },
+					action: "remove",
+				},
+			],
+			reviewedPolicyDigest: "policy:old",
+		});
+
+		await expect(promise).rejects.toBeInstanceOf(RecipientPolicyEdgesStaleError);
+		await expect(promise).rejects.toMatchObject({ result: stale });
 	});
 });

@@ -9,6 +9,7 @@
 
 declare const __CODEMEM_GIT_COMMIT__: string;
 
+import { createRecipientPolicySharingLoader } from "./app-sharing";
 import { mountToastHost } from "./components/primitives/toast";
 import * as api from "./lib/api";
 import { $, $button, $select } from "./lib/dom";
@@ -367,7 +368,10 @@ function renderTabs(activeTab: TabId) {
 		const btn = $(`tabBtn-${id}`);
 		if (!btn) return;
 		btn.hidden = !visibleTabs.has(id);
-		btn.classList.toggle("active", id === activeTab && visibleTabs.has(id));
+		const active = id === activeTab && visibleTabs.has(id);
+		btn.classList.toggle("active", active);
+		if (active) btn.setAttribute("aria-current", "page");
+		else btn.removeAttribute("aria-current");
 	});
 }
 
@@ -425,6 +429,8 @@ async function loadProjects() {
 		});
 	} catch {}
 }
+
+const loadRecipientPolicySharingData = createRecipientPolicySharingLoader();
 
 $select("projectFilter")?.addEventListener("change", () => {
 	state.currentProject = $select("projectFilter")?.value || "";
@@ -497,6 +503,9 @@ async function doRefresh() {
 		}
 		if (refreshTab === "projects") {
 			promises.push(loadProjectsData());
+		}
+		if (refreshTab === "sharing") {
+			promises.push(loadRecipientPolicySharingData());
 		}
 		// Sync data is needed by both Sync tab and Health tab (health cards derive sync state)
 		if (refreshTab === "sync" || refreshTab === "health") {

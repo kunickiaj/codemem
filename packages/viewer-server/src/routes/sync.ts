@@ -32,6 +32,7 @@ import {
 	buildBaseUrl,
 	canonicalWorkspaceIdentity,
 	cleanupNonces,
+	commitRecipientPolicyEdges,
 	coordinatorArchiveGroupAction,
 	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
@@ -109,7 +110,9 @@ import {
 	persistShareOperation,
 	personalScopeGrantStatusForPeer,
 	planShareOperation,
+	previewRecipientPolicyEdges,
 	projectShareLifecycle,
+	RecipientPolicyEdgeRequestError,
 	readCodememConfigFile,
 	readCoordinatorSyncConfig,
 	reassignProjectScopeInventoryProject,
@@ -4102,6 +4105,57 @@ export function syncRoutes(
 	app.get("/api/sync/recipient-policy/v1/intent", (c) => {
 		const store = getStore();
 		return c.json(listRecipientPolicyIntent(store.db));
+	});
+
+	app.post("/api/sync/recipient-policy/v1/edges/preview", async (c) => {
+		const store = getStore();
+		const body = await parseViewerJsonBody(c);
+		try {
+			return c.json(previewRecipientPolicyEdges(store.db, body));
+		} catch (error) {
+			if (error instanceof RecipientPolicyEdgeRequestError) {
+				if (error.status === "not_found") {
+					return c.json({ error: error.errorCode }, 404);
+				}
+				return c.json({ error: error.errorCode }, 400);
+			}
+			if (isSqliteBusy(error)) {
+				c.header("Retry-After", "1");
+				return c.json({ error: "edge_preview_busy" }, 503);
+			}
+			return c.json({ error: "edge_preview_failed" }, 500);
+		}
+	});
+
+	app.post("/api/sync/recipient-policy/v1/edges/commit", async (c) => {
+		const store = getStore();
+		const body = await parseViewerJsonBody(c);
+		try {
+			const result = commitRecipientPolicyEdges(store.db, body);
+			if (result.status === "invalid") return c.json(result, 400);
+			if (result.status === "not_found") return c.json(result, 404);
+			if (result.status === "stale" || result.status === "conflict") {
+				return c.json(result, 409);
+			}
+			return c.json(result);
+		} catch (error) {
+			if (isSqliteBusy(error)) {
+				c.header("Retry-After", "1");
+				return c.json({ error: "edge_commit_busy" }, 503);
+			}
+			return c.json(
+				{
+					version: 1,
+					status: "conflict",
+					reviewedPolicyDigest: "",
+					errorCode: "edge_commit_conflict",
+					outcomes: [],
+					writeCount: 0,
+					idempotent: false,
+				},
+				409,
+			);
+		}
 	});
 
 	app.post("/api/sync/recipient-policy/v1/migrate", async (c) => {
