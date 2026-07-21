@@ -7738,6 +7738,170 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("returns a deterministic read-only legacy recipient-policy projection", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = "2026-07-21T12:00:00.000Z";
+				const projectId = "https://git.example.invalid/acme/projection.git";
+				const scopeId = "sensitive-managed-scope-id";
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
+					.run(projectId, "projection", sessionId);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "projection fixture",
+					scopeId,
+				});
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, coordinator_id, group_id,
+							manifest_issuer_device_id, membership_epoch, manifest_hash,
+							status, created_at, updated_at
+						 ) VALUES (?, 'projection', 'managed_project', 'coordinator',
+							'sensitive-coordinator', 'sensitive-group', 'sensitive-issuer', 7,
+							'sensitive-manifest', 'active', ?, ?)`,
+					)
+					.run(scopeId, now, now);
+				store.db
+					.prepare(
+						`INSERT INTO project_scope_mappings(
+							workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+						 ) VALUES (?, ?, ?, 1000, 'test', ?, ?)`,
+					)
+					.run(projectId, projectId, scopeId, now, now);
+				store.db
+					.prepare(
+						`INSERT INTO scope_memberships(
+							scope_id, device_id, role, status, membership_epoch, coordinator_id,
+							group_id, manifest_issuer_device_id, manifest_hash, signed_manifest_json, updated_at
+						 ) VALUES (?, 'unassigned-device', 'member', 'active', 7,
+							'sensitive-coordinator', 'sensitive-group', 'sensitive-issuer',
+							'sensitive-manifest', '{"sensitive":"manifest-payload"}', ?)`,
+					)
+					.run(scopeId, now);
+				store.db
+					.prepare(
+						`INSERT INTO sync_peers(
+							peer_device_id, name, public_key, pinned_fingerprint, addresses_json, created_at
+						 ) VALUES ('unassigned-device', 'Spare laptop', 'sensitive-public-key',
+							'sensitive-fingerprint', '["sensitive-address"]', ?)`,
+					)
+					.run(now);
+				store.db
+					.prepare(
+						`INSERT INTO replication_ops(
+							op_id, entity_type, entity_id, op_type, payload_json, clock_rev,
+							clock_updated_at, clock_device_id, device_id, created_at, scope_id
+						 ) VALUES ('projection-op', 'memory_item', 'projection-memory', 'upsert',
+							'{"sensitive":"replication-payload"}', 1, ?, 'test-device-001',
+							'test-device-001', ?, ?)`,
+					)
+					.run(now, now, scopeId);
+				store.db
+					.prepare(
+						`INSERT INTO replication_cursors(
+							peer_device_id, last_applied_cursor, last_acked_cursor, updated_at
+						 ) VALUES ('unassigned-device', 'sensitive-applied-cursor', 'sensitive-acked-cursor', ?)`,
+					)
+					.run(now);
+				const replicationBefore = JSON.stringify({
+					ops: store.db.prepare("SELECT * FROM replication_ops ORDER BY op_id").all(),
+					cursors: store.db
+						.prepare("SELECT * FROM replication_cursors ORDER BY peer_device_id")
+						.all(),
+				});
+				const totalChangesBefore = Number(
+					store.db.prepare("SELECT total_changes() AS total").pluck().get(),
+				);
+				store.db.pragma("query_only = ON");
+
+				const firstResponse = await app.request("/api/sync/recipient-policy/v1/projection");
+				const secondResponse = await app.request("/api/sync/recipient-policy/v1/projection");
+				const firstText = await firstResponse.text();
+				const secondText = await secondResponse.text();
+				const payload = JSON.parse(firstText) as Array<Record<string, unknown>>;
+				const serialized = JSON.stringify(payload);
+				const forbiddenKeys = new Set([
+					"scope_id",
+					"address",
+					"addresses",
+					"public_key",
+					"fingerprint",
+					"manifest",
+					"manifest_hash",
+					"membership_epoch",
+					"epoch",
+					"cursor",
+					"invite_token",
+					"token_digest",
+					"filter",
+					"payload",
+				]);
+				const visit = (value: unknown): void => {
+					if (Array.isArray(value)) {
+						value.forEach(visit);
+						return;
+					}
+					if (!value || typeof value !== "object") return;
+					for (const [key, child] of Object.entries(value)) {
+						expect(forbiddenKeys.has(key.toLowerCase())).toBe(false);
+						visit(child);
+					}
+				};
+
+				expect(firstResponse.status).toBe(200);
+				expect(secondResponse.status).toBe(200);
+				expect(secondText).toBe(firstText);
+				expect(payload).toEqual([
+					expect.objectContaining({
+						project: { version: 1, canonicalIdentity: projectId, displayName: "projection" },
+						intent: [],
+						enforcement: expect.objectContaining({ state: "managed_exact_project" }),
+						effectiveDevices: [
+							expect.objectContaining({
+								deviceId: "unassigned-device",
+								assignment: "unassigned",
+							}),
+						],
+					}),
+				]);
+				visit(payload);
+				for (const forbiddenValue of [
+					scopeId,
+					"sensitive-address",
+					"sensitive-public-key",
+					"sensitive-fingerprint",
+					"sensitive-manifest",
+					"manifest-payload",
+					"replication-payload",
+					"sensitive-applied-cursor",
+					"sensitive-acked-cursor",
+				]) {
+					expect(serialized).not.toContain(forbiddenValue);
+				}
+				expect(
+					JSON.stringify({
+						ops: store.db.prepare("SELECT * FROM replication_ops ORDER BY op_id").all(),
+						cursors: store.db
+							.prepare("SELECT * FROM replication_cursors ORDER BY peer_device_id")
+							.all(),
+					}),
+				).toBe(replicationBefore);
+				expect(Number(store.db.prepare("SELECT total_changes() AS total").pluck().get())).toBe(
+					totalChangesBefore,
+				);
+			} finally {
+				getStore()?.db.pragma("query_only = OFF");
+				cleanup();
+			}
+		});
+
 		it("returns searchable project inventory for the Projects screen", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
