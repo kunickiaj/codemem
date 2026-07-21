@@ -583,24 +583,90 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const token = tokenUrlSafe(24);
 		const expiresAt = normalizeInviteExpiresAt(_opts.expiresAt);
 		const group = await this.getGroup(_opts.groupId);
-		await this.db
-			.prepare(`INSERT INTO coordinator_invites(
-				invite_id, group_id, token, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`)
-			.bind(
-				inviteId,
-				_opts.groupId,
-				token,
-				_opts.policy,
-				expiresAt,
-				now,
-				_opts.createdBy ?? null,
-				group?.display_name ?? null,
-			)
-			.run();
+		const operationId = String(_opts.operationId ?? "").trim() || null;
+		const reviewedProjectSetDigest = String(_opts.reviewedProjectSetDigest ?? "").trim() || null;
+		if (Boolean(operationId) !== Boolean(reviewedProjectSetDigest)) {
+			throw new Error("operationId and reviewedProjectSetDigest must be provided together.");
+		}
+		const readOperationInvite = async (): Promise<CoordinatorInvite | null> => {
+			if (!operationId) return null;
+			const existing = await firstRow<CoordinatorInvite>(
+				this.db
+					.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by,
+						team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest
+						FROM coordinator_invites WHERE operation_id = ?`)
+					.bind(operationId),
+			);
+			if (!existing) return null;
+			if (
+				existing.group_id !== _opts.groupId ||
+				existing.policy !== _opts.policy ||
+				existing.reviewed_project_set_digest !== reviewedProjectSetDigest
+			) {
+				throw new Error("invite_operation_intent_conflict");
+			}
+			return rowToRecord<CoordinatorInvite>(existing);
+		};
+		const renewOperationInvite = async (
+			existing: CoordinatorInvite,
+		): Promise<CoordinatorInvite> => {
+			if (!existing.revoked_at && existing.expires_at > now) return existing;
+			await runChanges(
+				this.db
+					.prepare(`UPDATE coordinator_invites
+						SET token = ?, expires_at = ?, created_at = ?, created_by = ?,
+							team_name_snapshot = ?, revoked_at = NULL
+						WHERE operation_id = ? AND token = ?
+						  AND (revoked_at IS NOT NULL OR expires_at <= ?)`)
+					.bind(
+						token,
+						expiresAt,
+						now,
+						_opts.createdBy ?? null,
+						group?.display_name ?? null,
+						operationId,
+						existing.token,
+						now,
+					),
+			);
+			const renewed = await readOperationInvite();
+			if (!renewed) throw new Error("invite_operation_reissue_failed");
+			return renewed;
+		};
+		if (operationId) {
+			const existing = await readOperationInvite();
+			if (existing) return await renewOperationInvite(existing);
+		}
+		try {
+			await this.db
+				.prepare(`INSERT INTO coordinator_invites(
+				invite_id, group_id, token, policy, expires_at, created_at, created_by,
+				team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`)
+				.bind(
+					inviteId,
+					_opts.groupId,
+					token,
+					_opts.policy,
+					expiresAt,
+					now,
+					_opts.createdBy ?? null,
+					group?.display_name ?? null,
+					operationId,
+					reviewedProjectSetDigest,
+				)
+				.run();
+		} catch (error) {
+			if (operationId) {
+				const existing = await readOperationInvite();
+				if (existing) return await renewOperationInvite(existing);
+			}
+			throw error;
+		}
 		const row = await firstRow<CoordinatorInvite>(
 			this.db
-				.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
+				.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by,
+						team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest
 					 FROM coordinator_invites WHERE invite_id = ?`)
 				.bind(inviteId),
 		);
@@ -610,7 +676,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	async getInviteByToken(_token: string): Promise<CoordinatorInvite | null> {
 		const row = await firstRow<CoordinatorInvite>(
 			this.db
-				.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
+				.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by,
+						team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest
 					 FROM coordinator_invites
 					 WHERE token = ?
 					   AND revoked_at IS NULL
@@ -624,7 +691,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		return (
 			await allRows<CoordinatorInvite>(
 				this.db
-					.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
+					.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by,
+						team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest
 					 FROM coordinator_invites WHERE group_id = ?
 					 ORDER BY created_at DESC`)
 					.bind(_groupId),

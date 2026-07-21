@@ -119,6 +119,49 @@ describe("createCloudflareCoordinatorWorker", () => {
 		expect(await res.json()).toEqual({ error: "missing_d1_binding" });
 	});
 
+	it("migration 0007 preserves legacy invites while adding project-intent columns", () => {
+		db.exec("DROP TABLE coordinator_invites");
+		db.exec(`
+			CREATE TABLE coordinator_invites (
+				invite_id TEXT PRIMARY KEY,
+				group_id TEXT NOT NULL,
+				token TEXT NOT NULL UNIQUE,
+				policy TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				created_by TEXT,
+				team_name_snapshot TEXT,
+				revoked_at TEXT
+			);
+			INSERT INTO coordinator_invites(
+				invite_id, group_id, token, policy, expires_at, created_at
+			) VALUES (
+				'legacy-invite', 'g1', 'legacy-token', 'auto_admit',
+				'2099-01-01T00:00:00Z', '2026-03-28T00:00:00Z'
+			);
+		`);
+		const migration = readFileSync(
+			join(import.meta.dirname, "../migrations/0007_add_invite_project_intent_reference.sql"),
+			"utf8",
+		);
+
+		db.exec(migration);
+
+		expect(
+			db
+				.prepare(
+					`SELECT invite_id, token, operation_id, reviewed_project_set_digest
+					 FROM coordinator_invites WHERE invite_id = 'legacy-invite'`,
+				)
+				.get(),
+		).toEqual({
+			invite_id: "legacy-invite",
+			token: "legacy-token",
+			operation_id: null,
+			reviewed_project_set_digest: null,
+		});
+	});
+
 	it("serves coordinator admin data through the worker entrypoint", async () => {
 		const store = new D1CoordinatorStore(d1db);
 		await store.createGroup("g1", "Team Alpha");

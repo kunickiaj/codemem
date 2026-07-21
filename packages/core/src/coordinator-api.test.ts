@@ -31,6 +31,7 @@ import {
 	type CoordinatorUpdateScopeInput,
 	type CoordinatorUpsertPresenceInput,
 	createCoordinatorApp,
+	fingerprintPublicKey,
 } from "./index.js";
 import { createInMemoryRequestRateLimiter } from "./request-rate-limit.js";
 
@@ -208,6 +209,119 @@ describe("createCoordinatorApp dependency injection", () => {
 		expect(res.status).toBe(400);
 		expect(await res.json()).toEqual({ error: "invalid_expires_at" });
 		expect(store.createInvite).not.toHaveBeenCalled();
+	});
+
+	it("validates and retains an additive project-intent reference while legacy invites remain valid", async () => {
+		const createInvite = vi.fn(async (input: CoordinatorCreateInviteInput) => ({
+			invite_id: "invite-1",
+			group_id: input.groupId,
+			token: "token-1",
+			policy: input.policy,
+			expires_at: input.expiresAt,
+			created_at: "2026-03-28T00:00:00Z",
+			created_by: null,
+			team_name_snapshot: "Team One",
+			revoked_at: null,
+			operation_id: input.operationId ?? null,
+			reviewed_project_set_digest: input.reviewedProjectSetDigest ?? null,
+		}));
+		const store = createMockStore({
+			createInvite,
+			getGroup: vi.fn(async () => ({
+				group_id: "g1",
+				display_name: "Team One",
+				archived_at: null,
+				created_at: "2026-03-28T00:00:00Z",
+			})),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+		const headers = {
+			"X-Codemem-Coordinator-Admin": "test-secret",
+			"Content-Type": "application/json",
+		};
+		const base = {
+			group_id: "g1",
+			policy: "auto_admit",
+			expires_at: "2026-04-04T00:00:00Z",
+			coordinator_url: "https://coord.example.test",
+		};
+
+		const incomplete = await app.request("/v1/admin/invites", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ ...base, operation_id: `share_${"a".repeat(40)}` }),
+		});
+		expect(incomplete.status).toBe(400);
+		expect(await incomplete.json()).toEqual({ error: "operation_intent_reference_incomplete" });
+
+		const legacy = await app.request("/v1/admin/invites", {
+			method: "POST",
+			headers,
+			body: JSON.stringify(base),
+		});
+		expect(legacy.status).toBe(200);
+
+		const operationId = `share_${"a".repeat(40)}`;
+		const reviewedProjectSetDigest = "b".repeat(64);
+		const projectFirst = await app.request("/v1/admin/invites", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({
+				...base,
+				operation_id: operationId,
+				reviewed_project_set_digest: reviewedProjectSetDigest,
+			}),
+		});
+		expect(projectFirst.status).toBe(200);
+		expect(createInvite).toHaveBeenLastCalledWith(
+			expect.objectContaining({ operationId, reviewedProjectSetDigest }),
+		);
+	});
+
+	it("fails closed instead of consuming a project-first invite through legacy join", async () => {
+		const publicKey = "recipient-public-key";
+		const store = createMockStore({
+			getInviteByToken: vi.fn(async () => ({
+				invite_id: "invite-project-1",
+				group_id: "g1",
+				token: "token-project-1",
+				policy: "auto_admit",
+				expires_at: "2099-01-01T00:00:00Z",
+				created_at: "2026-03-28T00:00:00Z",
+				created_by: null,
+				team_name_snapshot: "Team One",
+				revoked_at: null,
+				operation_id: `share_${"a".repeat(40)}`,
+				reviewed_project_set_digest: "b".repeat(64),
+			})),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+
+		const response = await app.request("/v1/join", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				token: "token-project-1",
+				device_id: "device-recipient",
+				public_key: publicKey,
+				fingerprint: fingerprintPublicKey(publicKey),
+			}),
+		});
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({
+			error: "project_invite_acceptance_not_available",
+		});
+		expect(store.enrollDevice).not.toHaveBeenCalled();
+		expect(store.createJoinRequest).not.toHaveBeenCalled();
 	});
 
 	it("rate limits repeated coordinator reads before route handling continues", async () => {

@@ -32,7 +32,7 @@ import { canAutoBootstrapSchema, ensureSchemaBootstrapped } from "./schema-boots
 export type { DatabaseType as Database };
 
 /** Current schema version this TS runtime was built against. */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /**
  * Minimum schema version the TS runtime can operate with.
@@ -648,6 +648,66 @@ function backfillMemoryItemProject(db: DatabaseType): void {
  * the version is not proof the shim ran. Only the marker is. The project
  * backfill still runs on every open regardless of the gate.
  */
+function indexColumns(db: DatabaseType, indexName: string): string[] {
+	const quoted = indexName.replaceAll('"', '""');
+	return (db.prepare(`PRAGMA index_info("${quoted}")`).all() as Array<{ name?: string }>)
+		.map((row) => String(row.name ?? ""))
+		.filter(Boolean);
+}
+
+function repairShareOperationEffectIdIndex(db: DatabaseType): void {
+	if (
+		!tableExists(db, "share_operation_steps") ||
+		!columnExists(db, "share_operation_steps", "effect_id")
+	) {
+		return;
+	}
+	const indexes = db.prepare("PRAGMA index_list('share_operation_steps')").all() as Array<{
+		name: string;
+		unique: number;
+	}>;
+	const hasInlineUniqueEffectId = indexes.some(
+		(index) =>
+			index.unique === 1 &&
+			index.name !== "idx_share_operation_steps_effect_id_nonempty" &&
+			indexColumns(db, index.name).join(",") === "effect_id",
+	);
+	if (hasInlineUniqueEffectId) {
+		db.transaction(() => {
+			db.exec(`
+				DROP INDEX IF EXISTS idx_share_operation_steps_effect_id_nonempty;
+				ALTER TABLE share_operation_steps RENAME TO share_operation_steps_unique_legacy;
+				CREATE TABLE share_operation_steps (
+					operation_id TEXT NOT NULL,
+					step_key TEXT NOT NULL,
+					effect_id TEXT NOT NULL,
+					status TEXT NOT NULL,
+					attempt_count INTEGER NOT NULL DEFAULT 0,
+					started_at TEXT,
+					completed_at TEXT,
+					last_attempt_at TEXT,
+					safe_error_code TEXT,
+					updated_at TEXT NOT NULL,
+					PRIMARY KEY (operation_id, step_key)
+				);
+				INSERT INTO share_operation_steps(
+					operation_id, step_key, effect_id, status, attempt_count, started_at,
+					completed_at, last_attempt_at, safe_error_code, updated_at
+				) SELECT operation_id, step_key, effect_id, status, attempt_count, started_at,
+					completed_at, last_attempt_at, safe_error_code, updated_at
+				FROM share_operation_steps_unique_legacy;
+				DROP TABLE share_operation_steps_unique_legacy;
+			`);
+		})();
+	}
+	db.exec(`
+		DROP INDEX IF EXISTS idx_share_operation_steps_effect_id_nonempty;
+		CREATE INDEX IF NOT EXISTS idx_share_operation_steps_effect_id_nonempty
+			ON share_operation_steps(effect_id)
+			WHERE effect_id <> '';
+	`);
+}
+
 export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	const compatAlreadyApplied = schemaCompatAlreadyApplied(db);
 	if (!compatAlreadyApplied) {
@@ -670,7 +730,122 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 
 		try {
 			db.exec(`
-				CREATE TABLE IF NOT EXISTS sync_reset_state (
+			CREATE TABLE IF NOT EXISTS share_operations (
+				operation_id TEXT PRIMARY KEY NOT NULL,
+				state TEXT NOT NULL,
+				inviter_actor_id TEXT NOT NULL,
+				inviter_device_ids_json TEXT NOT NULL,
+				person_id TEXT NOT NULL,
+				person_kind TEXT NOT NULL,
+				pending_person_operation_id TEXT,
+				teammate_name TEXT NOT NULL,
+				history_policy TEXT NOT NULL,
+				reviewed_project_set_digest TEXT NOT NULL,
+				coordinator_group_id TEXT NOT NULL,
+				coordinator_invite_id TEXT,
+				invite_token_digest TEXT NOT NULL,
+				invite_expires_at TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS share_operation_projects (
+				operation_id TEXT NOT NULL,
+				canonical_project_identity TEXT NOT NULL,
+				display_name TEXT NOT NULL,
+				identity_source TEXT NOT NULL,
+				existing_memory_count INTEGER NOT NULL,
+				ordinal INTEGER NOT NULL,
+				PRIMARY KEY (operation_id, canonical_project_identity)
+			);
+			CREATE TABLE IF NOT EXISTS share_operation_steps (
+				operation_id TEXT NOT NULL,
+				step_key TEXT NOT NULL,
+				effect_id TEXT NOT NULL,
+				status TEXT NOT NULL,
+				attempt_count INTEGER NOT NULL DEFAULT 0,
+				started_at TEXT,
+				completed_at TEXT,
+				last_attempt_at TEXT,
+				safe_error_code TEXT,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (operation_id, step_key)
+			);
+		`);
+		} catch {
+			// Keep compatibility shim fail-open for additive share-operation state.
+		}
+		const shareOperationColumns = [
+			["state", "TEXT NOT NULL DEFAULT 'waiting_for_acceptance'"],
+			["inviter_actor_id", "TEXT NOT NULL DEFAULT ''"],
+			["inviter_device_ids_json", "TEXT NOT NULL DEFAULT '[]'"],
+			["person_id", "TEXT NOT NULL DEFAULT ''"],
+			["person_kind", "TEXT NOT NULL DEFAULT 'pending'"],
+			["pending_person_operation_id", "TEXT"],
+			["teammate_name", "TEXT NOT NULL DEFAULT ''"],
+			["history_policy", "TEXT NOT NULL DEFAULT 'existing_and_future'"],
+			["reviewed_project_set_digest", "TEXT NOT NULL DEFAULT ''"],
+			["coordinator_group_id", "TEXT NOT NULL DEFAULT ''"],
+			["coordinator_invite_id", "TEXT"],
+			["invite_token_digest", "TEXT NOT NULL DEFAULT ''"],
+			["invite_expires_at", "TEXT NOT NULL DEFAULT ''"],
+			["created_at", "TEXT NOT NULL DEFAULT ''"],
+			["updated_at", "TEXT NOT NULL DEFAULT ''"],
+		] as const;
+		for (const [name, definition] of shareOperationColumns) {
+			try {
+				addColumnIfMissing(db, "share_operations", name, definition);
+			} catch {
+				// Continue repairing independent additive columns.
+			}
+		}
+		for (const [table, columns] of [
+			[
+				"share_operation_projects",
+				[
+					["display_name", "TEXT NOT NULL DEFAULT ''"],
+					["identity_source", "TEXT NOT NULL DEFAULT ''"],
+					["existing_memory_count", "INTEGER NOT NULL DEFAULT 0"],
+					["ordinal", "INTEGER NOT NULL DEFAULT 0"],
+				],
+			],
+			[
+				"share_operation_steps",
+				[
+					["effect_id", "TEXT NOT NULL DEFAULT ''"],
+					["status", "TEXT NOT NULL DEFAULT 'pending'"],
+					["attempt_count", "INTEGER NOT NULL DEFAULT 0"],
+					["started_at", "TEXT"],
+					["completed_at", "TEXT"],
+					["last_attempt_at", "TEXT"],
+					["safe_error_code", "TEXT"],
+					["updated_at", "TEXT NOT NULL DEFAULT ''"],
+				],
+			],
+		] as const) {
+			for (const [name, definition] of columns) {
+				try {
+					addColumnIfMissing(db, table, name, definition);
+				} catch {
+					// Continue repairing independent additive columns.
+				}
+			}
+		}
+		try {
+			db.exec(`
+				CREATE INDEX IF NOT EXISTS idx_share_operations_state_updated
+					ON share_operations(state, updated_at);
+				CREATE UNIQUE INDEX IF NOT EXISTS idx_share_operations_invite_digest
+					ON share_operations(invite_token_digest);
+				CREATE UNIQUE INDEX IF NOT EXISTS idx_share_operations_pending_person_operation
+					ON share_operations(pending_person_operation_id)
+					WHERE pending_person_operation_id IS NOT NULL;
+			`);
+		} catch {
+			// Keep compatibility shim fail-open for additive share-operation indexes.
+		}
+		try {
+			db.exec(`
+			CREATE TABLE IF NOT EXISTS sync_reset_state (
 				id INTEGER PRIMARY KEY,
 				generation INTEGER NOT NULL,
 				snapshot_id TEXT NOT NULL,
@@ -1094,6 +1269,11 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		}
 
 		markSchemaCompatApplied(db);
+	}
+	try {
+		repairShareOperationEffectIdIndex(db);
+	} catch {
+		// Keep compatibility shim fail-open for interrupted or partial legacy schemas.
 	}
 
 	// Always runs (not gated): moveMemoryProject relies on this backfill +

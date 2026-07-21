@@ -6,6 +6,7 @@ import type {
 } from "../lib/api/sync";
 import { showGlobalNotice } from "../lib/notice";
 import { state } from "../lib/state";
+import { openProjectShareFlow, renderProjectShareFlow } from "./project-sharing";
 import { openSyncInputDialog } from "./sync/sync-dialogs";
 
 type RefreshFn = () => void;
@@ -39,6 +40,8 @@ const pendingForgetConfirmations = new Map<
 >();
 let skippedProjectRefreshForActiveSelect = false;
 let coordinatorGroupNamesCurrent = false;
+let projectShareInventoryReady = false;
+let projectsLoadGeneration = 0;
 
 function el<T extends HTMLElement>(id: string): T | null {
 	return document.getElementById(id) as T | null;
@@ -444,6 +447,20 @@ async function reassignProject(project: ProjectScopeInventoryProject) {
 function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElement {
 	const actions = document.createElement("div");
 	actions.className = "project-inventory-actions";
+	if (
+		isLocallyAssignableProject(project) &&
+		project.memory_count != null &&
+		project.guardrail_warnings.every((warning) => !warning.requires_confirmation)
+	) {
+		const share = document.createElement("button");
+		share.className = "settings-button";
+		share.type = "button";
+		share.textContent = "Share";
+		share.disabled = !projectShareInventoryReady;
+		if (!projectShareInventoryReady) share.title = "The complete project list is unavailable.";
+		share.addEventListener("click", () => openProjectShareFlow([project.workspace_identity]));
+		actions.appendChild(share);
+	}
 	if (isPeerReceivedProject(project)) {
 		const note = document.createElement("div");
 		note.className = "settings-note";
@@ -893,16 +910,32 @@ function renderProjectInventory(result: {
 	if (next) next.disabled = !result.has_more;
 }
 
-function refreshProjectCoordinatorGroupNamesInBackground(result: {
-	projects: ProjectScopeInventoryProject[];
-	total: number;
-	offset: number;
-	has_more: boolean;
-}) {
+function refreshProjectCoordinatorGroupNamesInBackground(
+	result: {
+		projects: ProjectScopeInventoryProject[];
+		total: number;
+		offset: number;
+		has_more: boolean;
+	},
+	loadGeneration: number,
+) {
 	void refreshProjectCoordinatorGroupNames().then(() => {
+		if (loadGeneration !== projectsLoadGeneration) return;
 		if (isProjectSpaceSelectActive()) return;
 		renderProjectInventory(result);
 	});
+}
+
+async function loadAllProjectShareChoices(): Promise<ProjectScopeInventoryProject[]> {
+	const projects = new Map<string, ProjectScopeInventoryProject>();
+	let offset = 0;
+	while (true) {
+		const page = await api.loadProjectScopeInventory({ limit: 250, offset });
+		for (const project of page.projects) projects.set(project.workspace_identity, project);
+		if (!page.has_more) break;
+		offset += page.limit;
+	}
+	return [...projects.values()];
 }
 
 export async function loadProjectsData() {
@@ -914,9 +947,10 @@ export async function loadProjectsData() {
 		return;
 	}
 	skippedProjectRefreshForActiveSelect = false;
+	const loadGeneration = ++projectsLoadGeneration;
 	meta.textContent = "Loading project inventory…";
 	try {
-		const [result, settings] = await Promise.all([
+		const [result, settings, shareInventory] = await Promise.all([
 			api.loadProjectScopeInventory({
 				limit: lastLimit,
 				offset: currentOffset,
@@ -924,11 +958,26 @@ export async function loadProjectsData() {
 				status: el<HTMLSelectElement>("projectsStatusFilter")?.value || undefined,
 			}),
 			api.loadSharingDomainSettings(),
+			loadAllProjectShareChoices()
+				.then((projects) => ({ ok: true as const, projects }))
+				.catch(() => ({ ok: false as const, projects: [] as ProjectScopeInventoryProject[] })),
 		]);
+		if (loadGeneration !== projectsLoadGeneration) return;
 		scopes = settings.scopes;
+		projectShareInventoryReady = shareInventory.ok;
+		const shareMount = el<HTMLDivElement>("projectShareFlowMount");
+		if (shareMount) {
+			renderProjectShareFlow(shareMount, shareInventory.projects, {
+				inventoryError: !shareInventory.ok,
+			});
+		}
 		renderProjectInventory(result);
-		refreshProjectCoordinatorGroupNamesInBackground(result);
+		refreshProjectCoordinatorGroupNamesInBackground(result, loadGeneration);
 	} catch (error) {
+		if (loadGeneration !== projectsLoadGeneration) return;
+		projectShareInventoryReady = false;
+		const shareMount = el<HTMLDivElement>("projectShareFlowMount");
+		if (shareMount) renderProjectShareFlow(shareMount, [], { inventoryError: true });
 		hideProjectInventorySkeleton();
 		meta.textContent = "Project inventory failed to load.";
 		renderEmpty(error instanceof Error ? error.message : "Unable to load project inventory.");

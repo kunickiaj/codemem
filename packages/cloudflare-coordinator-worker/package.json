@@ -7,7 +7,8 @@
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
 		"build": "pnpm exec vite build && pnpm exec tsc --build",
 		"typecheck": "pnpm exec tsc --build",
-		"test:worker": "pnpm --filter @codemem/core build && pnpm exec vitest run --config vitest.config.ts test/worker.integration.test.ts"
+		"test:node": "pnpm exec vitest run --config vitest.node.config.ts src/index.test.ts",
+		"test:worker": "pnpm run test:node && pnpm --filter @codemem/core build && pnpm exec vitest run --config vitest.config.ts test/worker.integration.test.ts"
 	},
 	"dependencies": {
 		"@codemem/core": "workspace:^"

@@ -11,6 +11,54 @@ import { TEST_SCHEMA_BASE_DDL } from "./test-schema.generated.js";
 const SCHEMA_AUX_DDL = `
 CREATE INDEX IF NOT EXISTS idx_sync_peers_actor_id ON sync_peers(actor_id);
 
+CREATE TABLE IF NOT EXISTS share_operations (
+	operation_id TEXT PRIMARY KEY NOT NULL,
+	state TEXT NOT NULL,
+	inviter_actor_id TEXT NOT NULL,
+	inviter_device_ids_json TEXT NOT NULL,
+	person_id TEXT NOT NULL,
+	person_kind TEXT NOT NULL,
+	pending_person_operation_id TEXT,
+	teammate_name TEXT NOT NULL,
+	history_policy TEXT NOT NULL,
+	reviewed_project_set_digest TEXT NOT NULL,
+	coordinator_group_id TEXT NOT NULL,
+	coordinator_invite_id TEXT,
+	invite_token_digest TEXT NOT NULL,
+	invite_expires_at TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_share_operations_state_updated
+	ON share_operations(state, updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_share_operations_invite_digest
+	ON share_operations(invite_token_digest);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_share_operations_pending_person_operation
+	ON share_operations(pending_person_operation_id)
+	WHERE pending_person_operation_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS share_operation_projects (
+	operation_id TEXT NOT NULL,
+	canonical_project_identity TEXT NOT NULL,
+	display_name TEXT NOT NULL,
+	identity_source TEXT NOT NULL,
+	existing_memory_count INTEGER NOT NULL,
+	ordinal INTEGER NOT NULL,
+	PRIMARY KEY (operation_id, canonical_project_identity)
+);
+CREATE TABLE IF NOT EXISTS share_operation_steps (
+	operation_id TEXT NOT NULL,
+	step_key TEXT NOT NULL,
+	effect_id TEXT NOT NULL,
+	status TEXT NOT NULL,
+	attempt_count INTEGER NOT NULL DEFAULT 0,
+	started_at TEXT,
+	completed_at TEXT,
+	last_attempt_at TEXT,
+	safe_error_code TEXT,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (operation_id, step_key)
+);
+
 CREATE TABLE IF NOT EXISTS sync_retention_state (
 	id INTEGER PRIMARY KEY,
 	last_run_at TEXT,

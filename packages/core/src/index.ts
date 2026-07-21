@@ -626,6 +626,22 @@ export {
 	SESSION_CONTEXT_BACKFILL_JOB,
 	SessionContextBackfillRunner,
 } from "./session-context-backfill.js";
+export type {
+	PersistShareOperationInvite,
+	ShareOperationPlan,
+	ShareOperationStep,
+	SharePersonIntent,
+	ShareProjectIntent,
+} from "./share-operation.js";
+export {
+	inviteTokenDigest,
+	normalizeTeammateName,
+	persistShareOperation,
+	planShareOperation,
+	SHARE_HISTORY_POLICY,
+	SHARE_OPERATION_STATE,
+	shareProjectSetDigest,
+} from "./share-operation.js";
 export { MemoryStore } from "./store.js";
 export {
 	hasPendingSummaryDedupBackfill,
