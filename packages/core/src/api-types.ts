@@ -11,7 +11,7 @@
  * Import existing store/entity types where shapes match.
  */
 
-import type { SyncCapability } from "./sync-capability.js";
+import type { SyncCapability, SyncFeature } from "./sync-capability.js";
 import type {
 	Actor,
 	MemoryItemResponse,
@@ -874,6 +874,7 @@ export interface ApiSyncProtocolStatusResponse {
 	fingerprint: string;
 	sync_reset: ApiSyncResetBoundary;
 	sync_capability: SyncCapability;
+	sync_features: SyncFeature[];
 }
 
 export interface ApiSyncOpsIncrementalResponse extends ApiSyncResetBoundary {

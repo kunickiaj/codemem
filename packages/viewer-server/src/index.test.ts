@@ -3928,6 +3928,80 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("advertises reassign_scope and refreshes authorization only on explicit feature-aware status requests", async () => {
+			// Arrange
+			const configDir = mkdtempSync(join(tmpdir(), "codemem-status-refresh-test-"));
+			const configPath = join(configDir, "config.json");
+			const previousConfig = process.env.CODEMEM_CONFIG;
+			const previousFetch = globalThis.fetch;
+			const fetchMock = vi.fn(
+				async () => new Response(JSON.stringify({ error: "offline" }), { status: 503 }),
+			);
+			process.env.CODEMEM_CONFIG = configPath;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "team-a",
+					sync_coordinator_admin_secret: "secret",
+				}),
+			);
+			globalThis.fetch = fetchMock as typeof fetch;
+			const { syncApp, ensureStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				const store = ensureStore();
+				const url = "http://localhost/v1/status";
+				peer = createAuthenticatedSyncPeer(store, { url });
+				const signedHeaders = () =>
+					buildAuthHeaders({
+						deviceId: peer?.peerDeviceId ?? "",
+						method: "GET",
+						url,
+						bodyBytes: Buffer.alloc(0),
+						keysDir: peer?.keysDir,
+					});
+
+				// Act
+				const ordinary = await syncApp.request(url, { headers: signedHeaders() });
+				const refreshOnly = await syncApp.request(url, {
+					headers: { ...signedHeaders(), "X-Codemem-Refresh-Authorization": "1" },
+				});
+				const featureOnly = await syncApp.request(url, {
+					headers: { ...signedHeaders(), "X-Codemem-Sync-Features": "reassign_scope" },
+				});
+
+				// Assert
+				expect(ordinary.status).toBe(200);
+				expect((await ordinary.json()) as Record<string, unknown>).toMatchObject({
+					sync_features: ["reassign_scope"],
+				});
+				expect(refreshOnly.status).toBe(200);
+				expect(featureOnly.status).toBe(200);
+				expect(fetchMock).not.toHaveBeenCalled();
+
+				// Act
+				const explicitRefresh = await syncApp.request(url, {
+					headers: {
+						...signedHeaders(),
+						"X-Codemem-Refresh-Authorization": "1",
+						"X-Codemem-Sync-Features": "reassign_scope",
+					},
+				});
+
+				// Assert
+				expect(explicitRefresh.status).toBe(200);
+				expect(fetchMock).toHaveBeenCalled();
+			} finally {
+				peer?.cleanup();
+				cleanup();
+				globalThis.fetch = previousFetch;
+				if (previousConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = previousConfig;
+				rmSync(configDir, { recursive: true, force: true });
+			}
+		});
+
 		it("exposes sync auth failure reasons only when diagnostics are explicitly enabled", async () => {
 			const previous = process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS;
 			process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS = "1";
@@ -5003,6 +5077,184 @@ describe("viewer-server", () => {
 					sync_capability: "scoped",
 					reason: "unsupported_scope",
 					scope_id: null,
+				});
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("rejects reassign_scope batches without feature advertisement", async () => {
+			// Arrange
+			const { syncApp, ensureStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				const store = ensureStore();
+				const url = "http://localhost/v1/ops";
+				peer = createAuthenticatedSyncPeer(store, { url, method: "POST" });
+				const now = "2026-07-20T14:00:00.000Z";
+				const bodyText = JSON.stringify({
+					sync_capability: "scoped",
+					ops: [
+						{
+							op_id: "reassign-without-feature",
+							entity_type: "memory_item",
+							entity_id: "memory:key",
+							op_type: "reassign_scope",
+							payload_json: JSON.stringify({
+								operation_id: "share_operation",
+								memory_id: "memory:key",
+								old_scope_id: "source",
+								new_scope_id: "managed",
+								revision: 3,
+								side: "old",
+							}),
+							clock_rev: 3,
+							clock_updated_at: now,
+							clock_device_id: peer.peerDeviceId,
+							device_id: peer.peerDeviceId,
+							created_at: now,
+							scope_id: "source",
+						},
+					],
+				});
+				const bodyBytes = Buffer.from(bodyText);
+				const headers = buildAuthHeaders({
+					deviceId: peer.peerDeviceId,
+					method: "POST",
+					url,
+					bodyBytes,
+					keysDir: peer.keysDir,
+				});
+
+				// Act
+				const response = await syncApp.request(url, {
+					method: "POST",
+					headers: { ...headers, "Content-Type": "application/json" },
+					body: bodyText,
+				});
+
+				// Assert
+				expect(response.status).toBe(409);
+				expect(await response.json()).toEqual({ error: "reassign_capability_required" });
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("rejects malformed feature-advertised reassign_scope payloads", async () => {
+			// Arrange
+			const { syncApp, ensureStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				const store = ensureStore();
+				const url = "http://localhost/v1/ops";
+				peer = createAuthenticatedSyncPeer(store, { url, method: "POST" });
+				const now = "2026-07-20T14:00:00.000Z";
+				const bodyText = JSON.stringify({
+					sync_capability: "scoped",
+					sync_features: ["reassign_scope"],
+					ops: [
+						{
+							op_id: "malformed-reassign",
+							entity_type: "memory_item",
+							entity_id: "memory:key",
+							op_type: "reassign_scope",
+							payload_json: "{}",
+							clock_rev: 3,
+							clock_updated_at: now,
+							clock_device_id: peer.peerDeviceId,
+							device_id: peer.peerDeviceId,
+							created_at: now,
+							scope_id: "source",
+						},
+					],
+				});
+				const bodyBytes = Buffer.from(bodyText);
+				const headers = buildAuthHeaders({
+					deviceId: peer.peerDeviceId,
+					method: "POST",
+					url,
+					bodyBytes,
+					keysDir: peer.keysDir,
+				});
+
+				// Act
+				const response = await syncApp.request(url, {
+					method: "POST",
+					headers: { ...headers, "Content-Type": "application/json" },
+					body: bodyText,
+				});
+
+				// Assert
+				expect(response.status).toBe(400);
+				expect(await response.json()).toEqual({ error: "reassign_payload_invalid" });
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("accepts authorized feature-advertised reassign_scope batches", async () => {
+			// Arrange
+			const { syncApp, ensureStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				const store = ensureStore();
+				const url = "http://localhost/v1/ops";
+				peer = createAuthenticatedSyncPeer(store, { url, method: "POST" });
+				grantSyncScopeToDevices(store, "source", [store.deviceId, peer.peerDeviceId]);
+				grantSyncScopeToDevices(store, "managed", [store.deviceId, peer.peerDeviceId]);
+				const sessionId = insertTestSession(store.db);
+				const memoryId = insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "reassign source",
+					originDeviceId: peer.peerDeviceId,
+					scopeId: "source",
+				});
+				core.recordScopeReassignment(store.db, {
+					operationId: "share_operation",
+					memoryId,
+					oldScopeId: "source",
+					newScopeId: "managed",
+					deviceId: peer.peerDeviceId,
+					createdAt: "2026-07-20T14:00:00.000Z",
+				});
+				const ops = store.db
+					.prepare(
+						"SELECT * FROM replication_ops WHERE op_type = 'reassign_scope' ORDER BY scope_id",
+					)
+					.all();
+				const bodyText = JSON.stringify({
+					sync_capability: "scoped",
+					sync_features: ["reassign_scope"],
+					ops,
+				});
+				const bodyBytes = Buffer.from(bodyText);
+				const headers = buildAuthHeaders({
+					deviceId: peer.peerDeviceId,
+					method: "POST",
+					url,
+					bodyBytes,
+					keysDir: peer.keysDir,
+				});
+
+				// Act
+				const response = await syncApp.request(url, {
+					method: "POST",
+					headers: { ...headers, "Content-Type": "application/json" },
+					body: bodyText,
+				});
+
+				// Assert
+				expect(response.status).toBe(200);
+				expect(await response.json()).toMatchObject({
+					applied: 0,
+					rejected: 0,
+					skipped: 2,
+					sync_capability: "scoped",
 				});
 			} finally {
 				peer?.cleanup();
@@ -9268,6 +9520,11 @@ describe("viewer-server", () => {
 				await app.request("/api/stats");
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
+				expect(store.deviceId).toBe("local");
+				const [localDeviceId] = ensureDeviceIdentity(store.db, {
+					keysDir: process.env.CODEMEM_KEYS_DIR,
+				});
+				expect(localDeviceId).not.toBe("local");
 				store.db
 					.prepare(
 						`INSERT INTO actors(
@@ -9284,13 +9541,42 @@ describe("viewer-server", () => {
 						"codemem",
 						sessionId,
 					);
-				insertTestMemory(store, { sessionId, kind: "discovery", title: "first" });
-				insertTestMemory(store, { sessionId, kind: "decision", title: "second" });
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "first",
+					originDeviceId: localDeviceId,
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "decision",
+					title: "second",
+					originDeviceId: localDeviceId,
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "private",
+					originDeviceId: localDeviceId,
+				});
+				store.db
+					.prepare("UPDATE memory_items SET visibility = 'private' WHERE title = 'private'")
+					.run();
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "personal",
+					originDeviceId: localDeviceId,
+				});
+				store.db
+					.prepare("UPDATE memory_items SET visibility = 'personal' WHERE title = 'personal'")
+					.run();
 				insertTestMemory(store, {
 					sessionId,
 					kind: "discovery",
 					title: "inactive third",
 					active: false,
+					originDeviceId: localDeviceId,
 				});
 				const inventoryRes = await app.request("/api/sync/projects?q=codemem");
 				const inventory = (await inventoryRes.json()) as {
@@ -9415,12 +9701,6 @@ describe("viewer-server", () => {
 					{ project_id: projectId, display_name: "codemem", existing_memory_count: 2 },
 				]);
 				expect(preview.future_memories_shared).toBe(true);
-				const localDeviceId = store.db
-					.prepare("SELECT device_id FROM sync_device LIMIT 1")
-					.pluck()
-					.get() as string | undefined;
-				expect(localDeviceId).toBeTruthy();
-				expect(localDeviceId).not.toBe("local");
 				for (const [body, expectedError] of [
 					[
 						{ teammate_name: "Brian", project_ids: [projectId] },
@@ -9464,7 +9744,12 @@ describe("viewer-server", () => {
 				});
 				expect(changedRes.status).toBe(409);
 				expect(fetchMock).not.toHaveBeenCalled();
-				insertTestMemory(store, { sessionId, kind: "feature", title: "active third" });
+				insertTestMemory(store, {
+					sessionId,
+					kind: "feature",
+					title: "active third",
+					originDeviceId: localDeviceId,
+				});
 				const changedCountRes = await app.request("/api/sync/project-invites", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
@@ -9907,6 +10192,160 @@ describe("viewer-server", () => {
 				globalThis.fetch = prevFetch;
 				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
 				else process.env.CODEMEM_CONFIG = prevConfig;
+			}
+		});
+
+		it("maps project provision errors and preflights reassignment before mutations", async () => {
+			// Arrange
+			const configDir = mkdtempSync(join(tmpdir(), "codemem-provision-route-test-"));
+			const configPath = join(configDir, "config.json");
+			const previousConfig = process.env.CODEMEM_CONFIG;
+			const previousFetch = globalThis.fetch;
+			const recipientPublicKey = "recipient-route-key";
+			const recipientFingerprint = fingerprintPublicKey(recipientPublicKey);
+			let capabilityProbe: "unsupported" | "undetermined" = "unsupported";
+			globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.endsWith("/v1/status")) {
+					return new Response(
+						JSON.stringify(
+							capabilityProbe === "unsupported"
+								? {
+										device_id: "recipient-route",
+										fingerprint: recipientFingerprint,
+										sync_features: [],
+									}
+								: {
+										device_id: "wrong-device",
+										fingerprint: "wrong-fingerprint",
+										sync_features: ["reassign_scope"],
+									},
+						),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			}) as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "team-a",
+					sync_coordinator_admin_secret: "secret",
+				}),
+			);
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const store = ensureStore();
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
+					.run("https://git.example.invalid/codemem.git", "codemem", sessionId);
+				const memoryId = insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "provision history",
+					scopeId: "local-default",
+				});
+				const canonicalIdentity = "https://git.example.invalid/codemem.git";
+				const plan = core.planShareOperation({
+					inviterActorId: store.actorId,
+					inviterDeviceIds: [store.deviceId],
+					person: { kind: "pending", displayName: "Brian" },
+					projects: [
+						{
+							canonicalIdentity,
+							displayName: "codemem",
+							identitySource: "git_remote",
+							existingMemoryCount: 1,
+						},
+					],
+					coordinatorGroupId: "team-a",
+					inviteExpiresAt: "2099-01-01T00:00:00.000Z",
+					createdAt: "2026-07-20T12:00:00.000Z",
+				});
+				core.persistShareOperation(store.db, plan, {
+					inviteId: "invite-route",
+					tokenDigest: core.inviteTokenDigest("token-route"),
+				});
+				core.reconcileShareOperationAcceptance(store.db, {
+					operationId: plan.operationId,
+					coordinatorGroupId: "team-a",
+					reviewedProjectSetDigest: plan.reviewedProjectSetDigest,
+					recipientActorId: "actor-recipient-route",
+					recipientDisplayName: "Brian",
+					recipientDeviceId: "recipient-route",
+					recipientDeviceDisplayName: "Brian's MacBook",
+					recipientPublicKey,
+					recipientFingerprint,
+					consumedAt: "2026-07-20T13:00:00.000Z",
+					trustState: "bootstrap_grant_created",
+					bootstrapGrantId: "grant-route",
+					projects: [
+						{
+							canonical_identity: canonicalIdentity,
+							display_name: "codemem",
+							existing_memory_count: 1,
+						},
+					],
+				});
+				store.db
+					.prepare("UPDATE sync_peers SET addresses_json = ? WHERE peer_device_id = ?")
+					.run(JSON.stringify(["https://wrong.example.test"]), "recipient-route");
+				const originalScope = store.db
+					.prepare("SELECT scope_id FROM memory_items WHERE id = ?")
+					.pluck()
+					.get(memoryId);
+
+				// Act
+				const invalid = await app.request("/api/sync/project-invites/not-an-operation/provision", {
+					method: "POST",
+				});
+				const missing = await app.request(
+					`/api/sync/project-invites/share_${"f".repeat(40)}/provision`,
+					{ method: "POST" },
+				);
+				const unsupported = await app.request(
+					`/api/sync/project-invites/${plan.operationId}/provision`,
+					{ method: "POST" },
+				);
+				capabilityProbe = "undetermined";
+				const waiting = await app.request(
+					`/api/sync/project-invites/${plan.operationId}/provision`,
+					{ method: "POST" },
+				);
+
+				// Assert
+				expect(invalid.status).toBe(400);
+				expect(await invalid.json()).toEqual({ error: "operation_id_invalid" });
+				expect(missing.status).toBe(404);
+				expect(await missing.json()).toEqual({ error: "operation_not_found" });
+				expect(unsupported.status).toBe(409);
+				expect(await unsupported.json()).toEqual({ error: "reassign_capability_required" });
+				expect(waiting.status).toBe(409);
+				expect(await waiting.json()).toEqual({ error: "waiting_for_device" });
+				expect(store.db.prepare("SELECT state FROM share_operations").pluck().get()).toBe(
+					"waiting_for_device",
+				);
+				expect(
+					store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
+				).toBe(originalScope);
+				expect(store.db.prepare("SELECT COUNT(*) FROM project_scope_mappings").pluck().get()).toBe(
+					0,
+				);
+				expect(
+					store.db
+						.prepare("SELECT COUNT(*) FROM replication_ops WHERE op_type = 'reassign_scope'")
+						.pluck()
+						.get(),
+				).toBe(0);
+			} finally {
+				cleanup();
+				globalThis.fetch = previousFetch;
+				if (previousConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = previousConfig;
+				rmSync(configDir, { recursive: true, force: true });
 			}
 		});
 

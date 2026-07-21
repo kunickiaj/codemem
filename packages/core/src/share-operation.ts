@@ -212,7 +212,9 @@ export function planShareOperation(input: {
 		step(operationId, "invite_creation", input.createdAt, true),
 		step(operationId, "invite_consumption", input.createdAt, false),
 		step(operationId, "person_device_link", input.createdAt, false),
+		step(operationId, "capability_preflight", input.createdAt, false),
 		...projectSteps(operationId, coordinatorGroupId, inviterDeviceIds, projects, input.createdAt),
+		step(operationId, "authorization_refresh", input.createdAt, false),
 		step(operationId, "initial_sync", input.createdAt, false),
 	];
 	return {
@@ -566,7 +568,9 @@ export function reconcileShareOperationAcceptance(
 				.run(input.recipientActorId, input.consumedAt, operation.person_id);
 			if (linked.changes !== 1) throw new Error("pending_person_identity_conflict");
 		}
-		db.prepare(`UPDATE share_operations SET state = 'accepted', person_id = ?, person_kind = 'existing',
+		db.prepare(`UPDATE share_operations SET
+				state = CASE WHEN state IN ('waiting_for_acceptance', 'accepted') THEN 'accepted' ELSE state END,
+				person_id = ?, person_kind = 'existing',
 				pending_person_operation_id = NULL, recipient_actor_id = ?, recipient_display_name = ?,
 				recipient_device_id = ?, recipient_device_display_name = ?, recipient_public_key = ?,
 				recipient_fingerprint = ?, acceptance_consumed_at = ?, trust_state = ?,

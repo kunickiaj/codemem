@@ -8,7 +8,7 @@
  * a raw Database handle. Ported from codemem/sync/replication.py.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq, gt, isNotNull, isNull, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
@@ -31,6 +31,7 @@ import type {
 
 export const DEFAULT_SYNC_SCOPE_ID = "local-default";
 export const ACCESS_CLEANUP_OP_TYPE = "access_cleanup";
+export const REASSIGN_SCOPE_OP_TYPE = "reassign_scope";
 export const SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER =
 	"__codemem_scoped_null_baseline_bootstrap__";
 
@@ -145,6 +146,54 @@ interface AccessCleanupPayload {
 	cleanup_scope_id: string | null;
 	reason: string | null;
 	target_peer_device_id: string | null;
+}
+
+export interface ReassignScopePayload {
+	operation_id: string;
+	memory_id: string;
+	old_scope_id: string;
+	new_scope_id: string;
+	revision: number;
+	side: "old" | "new";
+}
+
+function requiredPayloadText(value: unknown): string | null {
+	return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function parseReassignScopePayload(op: ReplicationOp): ReassignScopePayload {
+	if (op.op_type !== REASSIGN_SCOPE_OP_TYPE) throw new Error("reassign_payload_invalid");
+	const payload = parsePayload(op.payload_json);
+	const operationId = requiredPayloadText(payload?.operation_id);
+	const memoryId = requiredPayloadText(payload?.memory_id);
+	const oldScopeId = requiredPayloadText(payload?.old_scope_id);
+	const newScopeId = requiredPayloadText(payload?.new_scope_id);
+	const side = payload?.side;
+	const revision = payload?.revision;
+	if (
+		!operationId ||
+		!memoryId ||
+		memoryId !== op.entity_id ||
+		!oldScopeId ||
+		!newScopeId ||
+		oldScopeId === newScopeId ||
+		(side !== "old" && side !== "new") ||
+		!Number.isSafeInteger(revision) ||
+		Number(revision) <= 0 ||
+		Number(revision) !== op.clock_rev ||
+		cleanText(op.scope_id) !== (side === "old" ? oldScopeId : newScopeId) ||
+		(side === "new" && cleanText(payload?.scope_id) !== newScopeId)
+	) {
+		throw new Error("reassign_payload_invalid");
+	}
+	return {
+		operation_id: operationId,
+		memory_id: memoryId,
+		old_scope_id: oldScopeId,
+		new_scope_id: newScopeId,
+		revision: Number(revision),
+		side,
+	};
 }
 
 function parseAccessCleanupPayload(op: ReplicationOp): AccessCleanupPayload {
@@ -904,6 +953,146 @@ export function recordReplicationOp(
 		.run();
 
 	return opId;
+}
+
+function deterministicReassignOpId(
+	operationId: string,
+	memoryId: string,
+	oldScopeId: string,
+	newScopeId: string,
+	side: "old" | "new",
+): string {
+	return `reassign_${createHash("sha256")
+		.update(JSON.stringify([operationId, memoryId, oldScopeId, newScopeId, side]))
+		.digest("hex")}`;
+}
+
+export function recordScopeReassignment(
+	db: Database,
+	opts: {
+		operationId: string;
+		memoryId: number;
+		oldScopeId: string;
+		newScopeId: string;
+		deviceId: string;
+		createdAt?: string;
+	},
+): { revision: number; oldOpId: string; newOpId: string } {
+	const operationId = requiredPayloadText(opts.operationId);
+	const oldScopeId = requiredPayloadText(opts.oldScopeId);
+	const newScopeId = requiredPayloadText(opts.newScopeId);
+	const deviceId = requiredPayloadText(opts.deviceId);
+	if (
+		!operationId ||
+		!oldScopeId ||
+		!newScopeId ||
+		oldScopeId === newScopeId ||
+		!deviceId ||
+		!Number.isSafeInteger(opts.memoryId) ||
+		opts.memoryId <= 0
+	) {
+		throw new Error("reassign_input_invalid");
+	}
+	const d = drizzle(db, { schema });
+	const existing = d
+		.select()
+		.from(schema.memoryItems)
+		.where(eq(schema.memoryItems.id, opts.memoryId))
+		.get();
+	if (!existing) throw new Error("reassign_memory_not_found");
+	const memoryId = existing.import_key ?? String(existing.id);
+	const oldOpId = deterministicReassignOpId(operationId, memoryId, oldScopeId, newScopeId, "old");
+	const newOpId = deterministicReassignOpId(operationId, memoryId, oldScopeId, newScopeId, "new");
+	const existingOps = db
+		.prepare("SELECT op_id, clock_rev FROM replication_ops WHERE op_id IN (?, ?)")
+		.all(oldOpId, newOpId) as Array<{ op_id: string; clock_rev: number }>;
+	if (existingOps.length > 0) {
+		if (
+			existingOps.length !== 2 ||
+			existingOps.some((op) => op.clock_rev !== existingOps[0]?.clock_rev)
+		) {
+			throw new Error("reassign_replay_conflict");
+		}
+		return { revision: Number(existingOps[0]?.clock_rev ?? 0), oldOpId, newOpId };
+	}
+	if ((cleanText(existing.scope_id) ?? DEFAULT_SYNC_SCOPE_ID) !== oldScopeId) {
+		throw new Error("reassign_old_scope_mismatch");
+	}
+	const revision = Number(existing.rev ?? 0) + 1;
+	const createdAt = opts.createdAt ?? new Date().toISOString();
+	const metadata = fromJson(existing.metadata_json);
+	metadata.clock_device_id = deviceId;
+	metadata.last_scope_reassignment = {
+		operation_id: operationId,
+		old_scope_id: oldScopeId,
+		new_scope_id: newScopeId,
+		revision,
+	};
+	const write = db.transaction(() => {
+		d.update(schema.memoryItems)
+			.set({
+				scope_id: newScopeId,
+				rev: revision,
+				updated_at: createdAt,
+				metadata_json: toJson(metadata),
+			})
+			.where(eq(schema.memoryItems.id, opts.memoryId))
+			.run();
+		const updated = d
+			.select()
+			.from(schema.memoryItems)
+			.where(eq(schema.memoryItems.id, opts.memoryId))
+			.get();
+		if (!updated) throw new Error("reassign_memory_not_found");
+		const sessionProject = updated.session_id
+			? cleanText(
+					db.prepare("SELECT project FROM sessions WHERE id = ?").pluck().get(updated.session_id),
+				)
+			: null;
+		const common = {
+			operation_id: operationId,
+			memory_id: memoryId,
+			old_scope_id: oldScopeId,
+			new_scope_id: newScopeId,
+			revision,
+		};
+		const insert = db.prepare(`INSERT INTO replication_ops(
+			op_id, entity_type, entity_id, op_type, payload_json, clock_rev,
+			clock_updated_at, clock_device_id, device_id, created_at, scope_id
+		) VALUES (?, 'memory_item', ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+		insert.run(
+			oldOpId,
+			memoryId,
+			REASSIGN_SCOPE_OP_TYPE,
+			toJson({ ...common, side: "old" }),
+			revision,
+			createdAt,
+			deviceId,
+			deviceId,
+			createdAt,
+			oldScopeId,
+		);
+		insert.run(
+			newOpId,
+			memoryId,
+			REASSIGN_SCOPE_OP_TYPE,
+			toJson({
+				...buildPayloadFromMemoryRow(updated),
+				project: cleanText(updated.project) ?? sessionProject,
+				...common,
+				side: "new",
+				scope_id: newScopeId,
+			}),
+			revision,
+			createdAt,
+			deviceId,
+			deviceId,
+			createdAt,
+			newScopeId,
+		);
+	});
+	write.immediate();
+	return { revision, oldOpId, newOpId };
 }
 
 export function recordAccessCleanupOp(
@@ -1702,7 +1891,7 @@ function effectiveSyncProjectFilters(
 	};
 }
 
-function syncProjectAllowed(
+export function syncProjectAllowed(
 	db: Database,
 	project: string | null,
 	peerDeviceId: string | null,
@@ -1875,6 +2064,7 @@ export interface FilterReplicationSkipped {
 export interface FilterReplicationOpsForSyncOptions {
 	localDeviceId?: string | null;
 	applyScopeFilter?: boolean;
+	supportsReassignScope?: boolean;
 }
 
 interface ExistingMemoryFilterContext {
@@ -1997,6 +2187,23 @@ function outboundScopeAllowed(
 	return localAuth.authorized && localAuth.scope?.authority_type !== "local";
 }
 
+function legacyDefaultReassignAllowed(
+	db: Database,
+	op: ReplicationOp,
+	peerDeviceId: string | null,
+): boolean {
+	const existing = existingMemoryFilterContext(db, op.entity_id);
+	if (!existing) return false;
+	if (
+		(replicationOpRequiresPersonalScopeAuthorization(op, existing.payload) ||
+			!syncVisibilityAllowed(existing.payload)) &&
+		!peerCanSyncPrivateOpByPersonalScopeGrant(db, op, existing.payload, peerDeviceId)
+	) {
+		return false;
+	}
+	return syncProjectAllowed(db, existing.project, peerDeviceId);
+}
+
 /**
  * Filter replication ops for peer sync scopes.
  *
@@ -2017,6 +2224,14 @@ export function filterReplicationOpsForSyncWithStatus(
 	for (const op of ops) {
 		if (op.entity_type === "memory_item") {
 			const payload = parsePayload(op.payload_json);
+			if (op.op_type === REASSIGN_SCOPE_OP_TYPE && options.supportsReassignScope !== true) {
+				addSkipped(skipped, op, {
+					reason: "scope_filter",
+					scope_id: cleanText(op.scope_id),
+				});
+				nextCursor = computeCursor(op.created_at, op.op_id);
+				continue;
+			}
 			if (op.op_type === ACCESS_CLEANUP_OP_TYPE) {
 				if (!accessCleanupTargetsPeer(op, peerDeviceId)) {
 					addSkipped(skipped, op, {
@@ -2029,6 +2244,36 @@ export function filterReplicationOpsForSyncWithStatus(
 				allowed.push(op);
 				nextCursor = computeCursor(op.created_at, op.op_id);
 				continue;
+			}
+			if (op.op_type === REASSIGN_SCOPE_OP_TYPE) {
+				try {
+					const reassignment = parseReassignScopePayload(op);
+					const scopeAllowed =
+						!applyScopeFilter ||
+						(reassignment.side === "old" && reassignment.old_scope_id === DEFAULT_SYNC_SCOPE_ID
+							? legacyDefaultReassignAllowed(db, op, peerDeviceId)
+							: outboundScopeAllowed(db, op, payload, peerDeviceId, options.localDeviceId ?? null));
+					if (!scopeAllowed) {
+						addSkipped(skipped, op, {
+							reason: "scope_filter",
+							scope_id: cleanText(op.scope_id),
+						});
+						nextCursor = computeCursor(op.created_at, op.op_id);
+						continue;
+					}
+					if (reassignment.side === "old") {
+						allowed.push(op);
+						nextCursor = computeCursor(op.created_at, op.op_id);
+						continue;
+					}
+				} catch {
+					addSkipped(skipped, op, {
+						reason: "scope_filter",
+						scope_id: cleanText(op.scope_id),
+					});
+					nextCursor = computeCursor(op.created_at, op.op_id);
+					continue;
+				}
 			}
 			if (
 				applyScopeFilter &&
@@ -2473,10 +2718,6 @@ function validateInboundScopeOp(
 	const opScopeId = normalizeInboundScopeId(op.scope_id);
 
 	if (!opScopeId) return inboundScopeRejection(op, "missing_scope", peerDeviceId, null);
-	if (opScopeId === DEFAULT_SYNC_SCOPE_ID) {
-		return inboundScopeRejection(op, "scope_mismatch", peerDeviceId, opScopeId);
-	}
-
 	const payload = parsePayload(op.payload_json);
 	if (payloadContradictsInboundScope(opScopeId, payload)) {
 		return inboundScopeRejection(op, "scope_mismatch", peerDeviceId, opScopeId);
@@ -2489,23 +2730,48 @@ function validateInboundScopeOp(
 	) {
 		return inboundScopeRejection(op, "sender_not_member", peerDeviceId, opScopeId);
 	}
+	let authorizationScopeId = opScopeId;
+	let requireReceiverMembership = true;
+	if (opScopeId === DEFAULT_SYNC_SCOPE_ID) {
+		try {
+			const reassignment = parseReassignScopePayload(op);
+			if (reassignment.side !== "old" || reassignment.old_scope_id !== DEFAULT_SYNC_SCOPE_ID) {
+				return inboundScopeRejection(op, "scope_mismatch", peerDeviceId, opScopeId);
+			}
+			const existing = db
+				.prepare("SELECT origin_device_id FROM memory_items WHERE import_key = ?")
+				.get(op.entity_id) as { origin_device_id: string | null } | undefined;
+			if (existing && cleanText(existing.origin_device_id) !== senderDeviceId) {
+				return inboundScopeRejection(op, "sender_not_member", peerDeviceId, opScopeId);
+			}
+			authorizationScopeId = reassignment.new_scope_id;
+			// This side only retracts sender-origin data previously delivered through
+			// local-default. Prior recipients intentionally are not members of the new
+			// boundary, and the apply path cannot create a new-scope row for them.
+			requireReceiverMembership = false;
+		} catch {
+			return inboundScopeRejection(op, "scope_mismatch", peerDeviceId, opScopeId);
+		}
+	}
 
 	const senderAuth = getCachedScopeAuthorization(db, {
 		deviceId: senderDeviceId,
-		scopeId: opScopeId,
+		scopeId: authorizationScopeId,
 	});
 	const senderFailure = authorizationFailureReason(senderAuth, "sender_not_member");
 	if (senderFailure) return inboundScopeRejection(op, senderFailure, peerDeviceId, opScopeId);
 
-	if (!receiverDeviceId) {
-		return inboundScopeRejection(op, "receiver_not_member", peerDeviceId, opScopeId);
+	if (requireReceiverMembership) {
+		if (!receiverDeviceId) {
+			return inboundScopeRejection(op, "receiver_not_member", peerDeviceId, opScopeId);
+		}
+		const receiverAuth = getCachedScopeAuthorization(db, {
+			deviceId: receiverDeviceId,
+			scopeId: authorizationScopeId,
+		});
+		const receiverFailure = authorizationFailureReason(receiverAuth, "receiver_not_member");
+		if (receiverFailure) return inboundScopeRejection(op, receiverFailure, peerDeviceId, opScopeId);
 	}
-	const receiverAuth = getCachedScopeAuthorization(db, {
-		deviceId: receiverDeviceId,
-		scopeId: opScopeId,
-	});
-	const receiverFailure = authorizationFailureReason(receiverAuth, "receiver_not_member");
-	if (receiverFailure) return inboundScopeRejection(op, receiverFailure, peerDeviceId, opScopeId);
 
 	return null;
 }
@@ -3127,6 +3393,58 @@ export function applyReplicationOps(
 					continue;
 				}
 
+				const reassignment =
+					op.op_type === REASSIGN_SCOPE_OP_TYPE ? parseReassignScopePayload(op) : null;
+				if (reassignment?.side === "old") {
+					const current = d
+						.select({
+							id: schema.memoryItems.id,
+							rev: schema.memoryItems.rev,
+							updated_at: schema.memoryItems.updated_at,
+							metadata_json: schema.memoryItems.metadata_json,
+							scope_id: schema.memoryItems.scope_id,
+						})
+						.from(schema.memoryItems)
+						.where(eq(schema.memoryItems.import_key, op.entity_id))
+						.get();
+					if (
+						!current ||
+						(cleanText(current.scope_id) ?? DEFAULT_SYNC_SCOPE_ID) !== reassignment.old_scope_id
+					) {
+						insertReplicationOpRow(d, op);
+						result.skipped++;
+						continue;
+					}
+					const currentClock = clockTuple(
+						current.rev ?? 0,
+						current.updated_at ?? "",
+						clockDeviceIdFromMetadataJson(current.metadata_json),
+					);
+					const incomingClock = clockTuple(op.clock_rev, op.clock_updated_at, op.clock_device_id);
+					if (!isNewerClock(incomingClock, currentClock)) {
+						insertReplicationOpRow(d, op);
+						result.conflicts++;
+						continue;
+					}
+					const metadata = fromJson(current.metadata_json);
+					metadata.clock_device_id = op.clock_device_id;
+					metadata.last_scope_reassignment = reassignment;
+					d.update(schema.memoryItems)
+						.set({
+							active: 0,
+							deleted_at: op.clock_updated_at,
+							rev: op.clock_rev,
+							updated_at: op.clock_updated_at,
+							metadata_json: toJson(metadata),
+						})
+						.where(eq(schema.memoryItems.id, current.id))
+						.run();
+					queueVectorDelete(Number(current.id));
+					insertReplicationOpRow(d, op);
+					result.applied++;
+					continue;
+				}
+
 				if (op.op_type === ACCESS_CLEANUP_OP_TYPE) {
 					const cleaned = applyAccessCleanupOp(op);
 					insertReplicationOpRow(d, op);
@@ -3135,7 +3453,7 @@ export function applyReplicationOps(
 					continue;
 				}
 
-				if (op.op_type === "upsert") {
+				if (op.op_type === "upsert" || reassignment?.side === "new") {
 					const importKey = op.entity_id;
 					const opScopeId =
 						typeof op.scope_id === "string" && op.scope_id.trim().length > 0
@@ -3151,6 +3469,7 @@ export function applyReplicationOps(
 							active: schema.memoryItems.active,
 							deleted_at: schema.memoryItems.deleted_at,
 							metadata_json: schema.memoryItems.metadata_json,
+							scope_id: schema.memoryItems.scope_id,
 						})
 						.from(schema.memoryItems)
 						.where(eq(schema.memoryItems.import_key, importKey))
@@ -3165,7 +3484,21 @@ export function applyReplicationOps(
 						);
 						const opClock = clockTuple(op.clock_rev, op.clock_updated_at, op.clock_device_id);
 
-						if (!isNewerClock(opClock, existingClock)) {
+						const sameReassignmentClock =
+							reassignment?.side === "new" &&
+							opClock[0] === existingClock[0] &&
+							opClock[1] === existingClock[1] &&
+							opClock[2] === existingClock[2] &&
+							(cleanText(memRow.scope_id) ?? DEFAULT_SYNC_SCOPE_ID) === reassignment.old_scope_id;
+						if (
+							reassignment &&
+							![reassignment.old_scope_id, reassignment.new_scope_id].includes(
+								cleanText(memRow.scope_id) ?? DEFAULT_SYNC_SCOPE_ID,
+							)
+						) {
+							throw new Error("reassign_existing_scope_mismatch");
+						}
+						if (!isNewerClock(opClock, existingClock) && !sameReassignmentClock) {
 							result.conflicts++;
 							// Still record the op so we don't re-process it
 							insertReplicationOpRow(d, op);

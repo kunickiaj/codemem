@@ -10,7 +10,28 @@ export const SYNC_CAPABILITIES = ["unsupported", "aware", "enforcing", "scoped"]
 
 export const SYNC_CAPABILITY_HEADER = "X-Codemem-Sync-Capability";
 
+export const SYNC_FEATURES_HEADER = "X-Codemem-Sync-Features";
+export const SYNC_AUTHORIZATION_REFRESH_HEADER = "X-Codemem-Refresh-Authorization";
+export const SYNC_FEATURES = ["reassign_scope"] as const;
+export const LOCAL_SYNC_FEATURES: readonly SyncFeature[] = SYNC_FEATURES;
+
 export type SyncCapability = (typeof SYNC_CAPABILITIES)[number];
+export type SyncFeature = (typeof SYNC_FEATURES)[number];
+
+export function normalizeSyncFeatures(value: unknown): SyncFeature[] {
+	const values = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+	return [
+		...new Set(
+			values
+				.map((item) => String(item).trim().toLowerCase())
+				.filter((item): item is SyncFeature => SYNC_FEATURES.includes(item as SyncFeature)),
+		),
+	].toSorted();
+}
+
+export function supportsSyncFeature(value: unknown, feature: SyncFeature): boolean {
+	return normalizeSyncFeatures(value).includes(feature);
+}
 
 /**
  * Local sync capability advertised on every wire response and outbound request.

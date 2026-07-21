@@ -13,6 +13,7 @@ import type {
 	MaintenanceJobSnapshot,
 	MemoryStore,
 	ProjectScopeGuardrailWarning,
+	ReassignScopeCapability,
 	ReplicationOp,
 	SemanticIndexDiagnostics,
 	ShareOperationPlan,
@@ -24,6 +25,7 @@ import {
 	addSyncScopeToBoundary,
 	analyzeProjectScopeMappingChangeGuardrails,
 	applyReplicationOps,
+	buildAuthHeaders,
 	buildBaseUrl,
 	canonicalWorkspaceIdentity,
 	cleanupNonces,
@@ -50,6 +52,7 @@ import {
 	coordinatorStatusSnapshot,
 	coordinatorUnarchiveGroupAction,
 	coordinatorUpdateScopeAction,
+	countShareableProjectMemories,
 	createCoordinatorReciprocalApproval,
 	DEFAULT_TIME_WINDOW_S,
 	decodeInvitePayload,
@@ -57,6 +60,7 @@ import {
 	deleteProjectScopeSettingsMapping,
 	diagnoseStalePeerReceivedRows,
 	ensureDeviceIdentity,
+	executeShareProvisioning,
 	extractInvitePayload,
 	extractReplicationOps,
 	type FilterReplicationSkipped,
@@ -73,6 +77,7 @@ import {
 	LEGACY_SHARED_REVIEW_SCOPE_ID,
 	LOCAL_DEFAULT_SCOPE_ID,
 	LOCAL_SYNC_CAPABILITY,
+	LOCAL_SYNC_FEATURES,
 	listAuthorizedScopesForPeer,
 	listCoordinatorJoinRequests,
 	listInboundScopeRejections,
@@ -89,8 +94,10 @@ import {
 	negotiateSyncCapability,
 	normalizeAddress,
 	normalizeSyncCapability,
+	normalizeSyncFeatures,
 	normalizeTeammateName,
 	parseAcceptedProjectIntent,
+	parseReassignScopePayload,
 	parseSyncScopeRequest,
 	persistShareOperation,
 	personalScopeGrantStatusForPeer,
@@ -100,13 +107,17 @@ import {
 	reassignProjectScopeInventoryProject,
 	reconcileShareOperationAcceptance,
 	recordNonce,
+	refreshConfiguredScopeMembershipCache,
 	rejectInboundScopeFailures,
 	requestJson,
 	runSyncPass,
+	SYNC_AUTHORIZATION_REFRESH_HEADER,
 	SYNC_CAPABILITY_HEADER,
+	SYNC_FEATURES_HEADER,
 	SYNC_SCOPE_QUERY_PARAM,
 	schema,
 	summarizeInboundScopeRejections,
+	supportsSyncFeature,
 	syncScopeResetRequiredPayload,
 	updatePeerAddresses,
 	upsertCoordinatorGroupPreference,
@@ -591,9 +602,65 @@ function projectInviteStatus(config = readCoordinatorSyncConfig()): {
 	return { groupId: status.active_group, config };
 }
 
+async function peerSupportsReassignScope(
+	store: MemoryStore,
+	deviceId: string,
+): Promise<ReassignScopeCapability> {
+	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+	if (deviceId === localDeviceId) return "supported";
+	const row = store.db
+		.prepare(
+			"SELECT addresses_json, pinned_fingerprint, public_key FROM sync_peers WHERE peer_device_id = ?",
+		)
+		.get(deviceId) as
+		| {
+				addresses_json: string | null;
+				pinned_fingerprint: string | null;
+				public_key: string | null;
+		  }
+		| undefined;
+	const expectedFingerprint =
+		String(row?.pinned_fingerprint ?? "").trim() ||
+		(row?.public_key ? fingerprintPublicKey(row.public_key) : "");
+	const addresses = safeJsonList(row?.addresses_json ?? null);
+	for (const address of addresses) {
+		try {
+			const url = `${buildBaseUrl(address)}/v1/status`;
+			const headers = {
+				...buildAuthHeaders({
+					deviceId: localDeviceId,
+					method: "GET",
+					url,
+					bodyBytes: Buffer.alloc(0),
+					keysDir: syncKeysDir(),
+				}),
+				[SYNC_CAPABILITY_HEADER]: LOCAL_SYNC_CAPABILITY,
+				[SYNC_FEATURES_HEADER]: LOCAL_SYNC_FEATURES.join(","),
+			};
+			const [status, payload] = await requestJson("GET", url, { headers, timeoutS: 5 });
+			if (status >= 200 && status < 300) {
+				if (String(payload?.device_id ?? "").trim() !== deviceId) continue;
+				if (
+					expectedFingerprint &&
+					String(payload?.fingerprint ?? "").trim() !== expectedFingerprint
+				) {
+					continue;
+				}
+				return supportsSyncFeature(payload?.sync_features, "reassign_scope")
+					? "supported"
+					: "unsupported";
+			}
+		} catch {
+			// Try the next reviewed address. Ambiguous/unreachable capability fails closed.
+		}
+	}
+	return "undetermined";
+}
+
 function resolveProjectInviteSelection(
 	store: MemoryStore,
 	requestedIds: string[],
+	initiatingDeviceId: string,
 ): ShareProjectIntent[] {
 	if (requestedIds.length === 0) throw new Error("project_selection_empty");
 	const requested = new Set(requestedIds);
@@ -631,7 +698,10 @@ function resolveProjectInviteSelection(
 			canonicalIdentity: project.workspace_identity,
 			displayName: project.display_project,
 			identitySource: project.identity_source,
-			existingMemoryCount: project.memory_count,
+			existingMemoryCount: countShareableProjectMemories(store.db, {
+				canonicalIdentity: project.workspace_identity,
+				initiatingDeviceId,
+			}),
 		};
 	});
 }
@@ -662,13 +732,14 @@ function projectInvitePlan(
 	inviteExpiresAt: string,
 ): { plan: ShareOperationPlan; config: ReturnType<typeof readCoordinatorSyncConfig> } {
 	const teammateName = normalizeTeammateName(String(body.teammate_name));
+	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+	store.adoptEnsuredDeviceIdentity(localDeviceId);
 	const projects = resolveProjectInviteSelection(
 		store,
 		projectInviteStringList(body, "project_ids"),
+		localDeviceId,
 	);
 	const { groupId, config } = projectInviteStatus();
-	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
-	store.adoptEnsuredDeviceIdentity(localDeviceId);
 	return {
 		plan: planShareOperation({
 			inviterActorId: store.actorId,
@@ -1567,11 +1638,12 @@ function filterOpsForPeer(
 	peerDeviceId: string,
 	localDeviceId: string | null,
 	ops: ReplicationOp[],
-	options: { applyScopeFilter?: boolean } = {},
+	options: { applyScopeFilter?: boolean; supportsReassignScope?: boolean } = {},
 ): { allowed: ReplicationOp[]; skipped: number; skippedDetail: SafeSkippedSyncDetail | null } {
 	const [allowed, , skipped] = filterReplicationOpsForSyncWithStatus(store.db, ops, peerDeviceId, {
 		localDeviceId,
 		applyScopeFilter: options.applyScopeFilter,
+		supportsReassignScope: options.supportsReassignScope,
 	});
 	return {
 		allowed,
@@ -2433,6 +2505,17 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			if (limited) return limited;
 
 			try {
+				if (
+					c.req.header(SYNC_AUTHORIZATION_REFRESH_HEADER) === "1" &&
+					supportsSyncFeature(c.req.header(SYNC_FEATURES_HEADER), "reassign_scope")
+				) {
+					// Project-first provisioning grants at the coordinator immediately before
+					// this status probe. Refresh now so the managed scope can participate in
+					// the same initial sync pass instead of waiting for the daemon interval.
+					await refreshConfiguredScopeMembershipCache(store.db, undefined, {
+						keysDir: syncKeysDir(),
+					});
+				}
 				const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, {
 					keysDir: syncKeysDir(),
 				});
@@ -2450,6 +2533,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 					fingerprint,
 					sync_reset: addSyncScopeToBoundary(syncReset, null),
 					sync_capability: LOCAL_SYNC_CAPABILITY,
+					sync_features: LOCAL_SYNC_FEATURES,
 				};
 				if (authorizedScopes !== null) {
 					response.authorized_scopes = authorizedScopes;
@@ -2526,7 +2610,12 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				);
 			}
 			const { ops, nextCursor, boundary } = result;
-			const filtered = filterOpsForPeer(store, peerDeviceId, localDeviceId, ops);
+			const filtered = filterOpsForPeer(store, peerDeviceId, localDeviceId, ops, {
+				supportsReassignScope: supportsSyncFeature(
+					c.req.header(SYNC_FEATURES_HEADER),
+					"reassign_scope",
+				),
+			});
 			return c.json({
 				reset_required: false,
 				sync_capability: LOCAL_SYNC_CAPABILITY,
@@ -2719,6 +2808,16 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		}
 
 		const normalizedOps = extractReplicationOps(body);
+		const peerFeatures = normalizeSyncFeatures(body.sync_features);
+		const reassignOps = normalizedOps.filter((op) => op.op_type === "reassign_scope");
+		if (reassignOps.length > 0 && !peerFeatures.includes("reassign_scope")) {
+			return c.json({ error: "reassign_capability_required" }, 409);
+		}
+		try {
+			for (const op of reassignOps) parseReassignScopePayload(op);
+		} catch {
+			return c.json({ error: "reassign_payload_invalid" }, 400);
+		}
 		for (const op of normalizedOps) {
 			if (op.device_id !== peerDeviceId || op.clock_device_id !== peerDeviceId) {
 				return c.json(
@@ -2736,6 +2835,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		// scope rejection during rollout, so outbound filtering would silently drop data.
 		const filtered = filterOpsForPeer(store, peerDeviceId, localDeviceId, normalizedOps, {
 			applyScopeFilter: false,
+			supportsReassignScope: peerFeatures.includes("reassign_scope"),
 		});
 		// Scope validation runs against the full signed batch so bad scoped ops cannot
 		// evade fail-closed rejection by also tripping peer project filters.
@@ -3668,6 +3768,90 @@ export function syncRoutes(
 				{ error: error instanceof Error ? error.message : "operation_read_failed" },
 				400,
 			);
+		}
+	});
+
+	app.post("/api/sync/project-invites/:operationId/provision", async (c) => {
+		const store = getStore();
+		const operationId = String(c.req.param("operationId") ?? "").trim();
+		if (!/^share_[a-f0-9]{40}$/u.test(operationId)) {
+			return c.json({ error: "operation_id_invalid" }, 400);
+		}
+		try {
+			const { groupId, config } = projectInviteStatus();
+			const coordinatorId = config.syncCoordinatorUrl || null;
+			if (!coordinatorId) throw new Error("coordinator_not_configured");
+			const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+			const plan = await executeShareProvisioning(
+				store.db,
+				{ operationId, initiatingDeviceId: localDeviceId },
+				{
+					createOrGetBoundary: async (project, expectedGroupId) => {
+						if (expectedGroupId !== groupId) throw new Error("operation_scope_mismatch");
+						const readExisting = async () =>
+							(
+								await coordinatorListScopesAction({
+									groupId,
+									includeInactive: true,
+									remoteUrl: config.syncCoordinatorUrl || null,
+									adminSecret: config.syncCoordinatorAdminSecret || null,
+								})
+							).find((scope) => scope.scope_id === project.boundaryId) ?? null;
+						const existing = await readExisting();
+						if (existing) return existing;
+						try {
+							return await coordinatorCreateScopeAction({
+								groupId,
+								scopeId: project.boundaryId,
+								label: project.displayName,
+								kind: "managed_project",
+								authorityType: "coordinator",
+								coordinatorId,
+								membershipEpoch: 1,
+								status: "active",
+								remoteUrl: config.syncCoordinatorUrl || null,
+								adminSecret: config.syncCoordinatorAdminSecret || null,
+							});
+						} catch (error) {
+							const reread = await readExisting();
+							if (reread) return reread;
+							throw error;
+						}
+					},
+					grantMembership: ({ groupId: expectedGroupId, scopeId, deviceId, role }) => {
+						if (expectedGroupId !== groupId) throw new Error("operation_scope_mismatch");
+						return coordinatorGrantScopeMembershipAction({
+							groupId,
+							scopeId,
+							deviceId,
+							role,
+							membershipEpoch: 1,
+							coordinatorId,
+							remoteUrl: config.syncCoordinatorUrl || null,
+							adminSecret: config.syncCoordinatorAdminSecret || null,
+						});
+					},
+					supportsReassignScope: (deviceId) => peerSupportsReassignScope(store, deviceId),
+					refreshAuthorization: async (expectedGroupId) => {
+						if (expectedGroupId !== groupId) throw new Error("operation_scope_mismatch");
+						const refreshed = await refreshConfiguredScopeMembershipCache(store.db, config, {
+							keysDir: syncKeysDir(),
+						});
+						const group = refreshed.groups.find((item) => item.groupId === groupId);
+						if (group?.status !== "refreshed") throw new Error("authorization_refresh_failed");
+					},
+					runInitialSync: (recipientDeviceId) =>
+						runSyncPass(store.db, recipientDeviceId, {
+							keysDir: syncKeysDir(),
+							scanner: store.scanner,
+							refreshAuthorization: true,
+						}),
+				},
+			);
+			return c.json({ ok: true, operation_id: operationId, state: "active", plan });
+		} catch (error) {
+			const code = error instanceof Error ? error.message : "provisioning_failed";
+			return c.json({ error: code }, code === "operation_not_found" ? 404 : 409);
 		}
 	});
 
