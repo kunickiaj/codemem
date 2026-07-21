@@ -8093,6 +8093,158 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("serves safe recipient intent and strictly validates per-Project migration", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = "2026-07-21T12:00:00.000Z";
+				const projectId = "https://git.example.invalid/acme/intent-route.git";
+				const scopeId = "protected-route-scope";
+				const recipientId = "identity-route-recipient";
+				const deviceId = "device-route-recipient";
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
+					.run(projectId, "intent-route", sessionId);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "intent route fixture",
+					scopeId,
+				});
+				store.db
+					.prepare(
+						`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+						 VALUES (?, 'Route recipient', 0, 'active', ?, ?)`,
+					)
+					.run(recipientId, now, now);
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, coordinator_id, group_id,
+							membership_epoch, status, created_at, updated_at
+						 ) VALUES (?, 'Intent route', 'managed_project', 'coordinator',
+							'private-coordinator', 'private-group', 1, 'active', ?, ?)`,
+					)
+					.run(scopeId, now, now);
+				store.db
+					.prepare(
+						`INSERT INTO project_scope_mappings(
+							workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+						 ) VALUES (?, ?, ?, 1000, 'test', ?, ?)`,
+					)
+					.run(projectId, projectId, scopeId, now, now);
+				store.db
+					.prepare(
+						`INSERT INTO sync_peers(
+							peer_device_id, name, actor_id, public_key, pinned_fingerprint, addresses_json, created_at
+						 ) VALUES (?, 'Route laptop', ?, 'private-key', 'private-transport-fingerprint',
+							'["private-address"]', ?)`,
+					)
+					.run(deviceId, recipientId, now);
+				store.db
+					.prepare(
+						`INSERT INTO scope_memberships(
+							scope_id, device_id, status, membership_epoch, coordinator_id, group_id, updated_at
+						 ) VALUES (?, ?, 'active', 1, 'private-coordinator', 'private-group', ?)`,
+					)
+					.run(scopeId, deviceId, now);
+				const project = {
+					canonicalIdentity: projectId,
+					displayName: "intent-route",
+					identitySource: "git_remote",
+					existingMemoryCount: 1,
+				};
+				const reviewedDigest = core.shareProjectSetDigest([project]);
+				store.db
+					.prepare(
+						`INSERT INTO share_operations(
+							operation_id, state, inviter_actor_id, inviter_device_ids_json, person_id,
+							person_kind, teammate_name, history_policy, reviewed_project_set_digest,
+							coordinator_group_id, invite_token_digest, invite_expires_at,
+							recipient_actor_id, recipient_device_id, acceptance_consumed_at, created_at, updated_at
+						 ) VALUES ('route-operation', 'active', ?, '[]', ?, 'existing', 'Route recipient',
+							'existing_and_future', ?, 'private-group', 'private-invite-digest',
+							'2099-01-01T00:00:00.000Z', ?, ?, ?, ?, ?)`,
+					)
+					.run(store.actorId, recipientId, reviewedDigest, recipientId, deviceId, now, now, now);
+				store.db
+					.prepare(
+						`INSERT INTO share_operation_projects(
+							operation_id, canonical_project_identity, display_name, identity_source,
+							existing_memory_count, ordinal
+						 ) VALUES ('route-operation', ?, 'intent-route', 'git_remote', 1, 0)`,
+					)
+					.run(projectId);
+
+				const invalid = await app.request("/api/sync/recipient-policy/v1/migrate", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ dryRun: true, actorId: "client-controlled" }),
+				});
+				expect(invalid.status).toBe(400);
+
+				const dryRun = await app.request("/api/sync/recipient-policy/v1/migrate", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ dryRun: true }),
+				});
+				expect(dryRun.status).toBe(200);
+				expect(await dryRun.json()).toMatchObject({ dryRun: true });
+				expect(store.db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
+
+				const migrate = await app.request("/api/sync/recipient-policy/v1/migrate", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({}),
+				});
+				expect(migrate.status).toBe(200);
+				const intentResponse = await app.request("/api/sync/recipient-policy/v1/intent");
+				const intentText = await intentResponse.text();
+				const intent = JSON.parse(intentText) as Record<string, unknown>;
+
+				expect(intentResponse.status).toBe(200);
+				expect(intent).toMatchObject({
+					version: 1,
+					projectRecipients: [
+						expect.objectContaining({
+							canonicalProjectIdentity: projectId,
+							recipientKind: "identity",
+							identityId: recipientId,
+						}),
+					],
+				});
+				for (const forbidden of [
+					scopeId,
+					"private-group",
+					"private-coordinator",
+					"private-address",
+					"private-key",
+					"private-transport-fingerprint",
+					"private-invite-digest",
+				]) {
+					expect(intentText).not.toContain(forbidden);
+				}
+				for (const forbiddenKey of [
+					"scopeId",
+					"groupId",
+					"address",
+					"publicKey",
+					"fingerprint",
+					"epoch",
+					"cursor",
+					"filter",
+					"payload",
+				]) {
+					expect(intentText).not.toContain(forbiddenKey);
+				}
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("returns searchable project inventory for the Projects screen", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {

@@ -90,12 +90,14 @@ import {
 	listProjectScopeCandidates,
 	listProjectScopeInventory,
 	listProjectScopeSettingsMappings,
+	listRecipientPolicyIntent,
 	listRecipientPolicyReview,
 	listSharingDomainSettingsScopes,
 	loadMemorySnapshotPageForPeer,
 	loadReplicationOpsForPeer,
 	lookupCoordinatorPeers,
 	mergeAddresses,
+	migrateRecipientPolicyIntent,
 	negotiateSyncCapability,
 	normalizeAddress,
 	normalizeSyncCapability,
@@ -4094,6 +4096,33 @@ export function syncRoutes(
 				localActorId: store.actorId,
 				localDeviceId: store.deviceId,
 			}),
+		);
+	});
+
+	app.get("/api/sync/recipient-policy/v1/intent", (c) => {
+		const store = getStore();
+		return c.json(listRecipientPolicyIntent(store.db));
+	});
+
+	app.post("/api/sync/recipient-policy/v1/migrate", async (c) => {
+		const store = getStore();
+		const value = await parseViewerJsonBody(c);
+		if (!value || typeof value !== "object" || Array.isArray(value)) {
+			return c.json({ error: "request_invalid" }, 400);
+		}
+		const body = value as Record<string, unknown>;
+		if (
+			Object.keys(body).some((key) => key !== "dryRun") ||
+			(Object.hasOwn(body, "dryRun") && typeof body.dryRun !== "boolean")
+		) {
+			return c.json({ error: "request_invalid" }, 400);
+		}
+		return c.json(
+			migrateRecipientPolicyIntent(
+				store.db,
+				{ localActorId: store.actorId, localDeviceId: store.deviceId },
+				{ dryRun: body.dryRun === true },
+			),
 		);
 	});
 

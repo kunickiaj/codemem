@@ -11,6 +11,7 @@ import {
 	type RecipientPolicyTeamMembershipV1,
 	type RecipientPolicyTeamV1,
 } from "./recipient-policy-contract.js";
+import type { RecipientPolicyIntentGraphV1 } from "./recipient-policy-intent.js";
 
 const PERSONAL_IDENTITY = {
 	version: RECIPIENT_POLICY_CONTRACT_VERSION,
@@ -162,6 +163,19 @@ describe("recipient policy V1 contract", () => {
 			"scopeId" | "deviceId" | "trusted" | "projectFilters"
 		>;
 		expectTypeOf<ForbiddenIntentKey>().toEqualTypeOf<never>();
+		type ForbiddenGraphKey = Extract<
+			keyof RecipientPolicyIntentGraphV1,
+			| "scopes"
+			| "groupIds"
+			| "addresses"
+			| "keys"
+			| "fingerprints"
+			| "epochs"
+			| "cursors"
+			| "filters"
+			| "payloads"
+		>;
+		expectTypeOf<ForbiddenGraphKey>().toEqualTypeOf<never>();
 	});
 
 	it("makes keeping current setup an actionable outcome", () => {

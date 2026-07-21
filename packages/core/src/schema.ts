@@ -735,6 +735,104 @@ export type RecipientPolicyReviewResolution = typeof recipientPolicyReviewResolu
 export type NewRecipientPolicyReviewResolution =
 	typeof recipientPolicyReviewResolutions.$inferInsert;
 
+export const policyTeams = sqliteTable("policy_teams", {
+	team_id: text("team_id").primaryKey(),
+	display_name: text("display_name").notNull(),
+	status: text("status").notNull(),
+	provenance: text("provenance").notNull(),
+	revision: text("revision").notNull(),
+	migration_state: text("migration_state").notNull(),
+	source_fingerprint: text("source_fingerprint"),
+	idempotency_key: text("idempotency_key").notNull().unique(),
+	created_at: text("created_at").notNull(),
+	updated_at: text("updated_at").notNull(),
+});
+
+export type PolicyTeam = typeof policyTeams.$inferSelect;
+export type NewPolicyTeam = typeof policyTeams.$inferInsert;
+
+export const policyTeamMemberships = sqliteTable(
+	"policy_team_memberships",
+	{
+		team_id: text("team_id").notNull(),
+		identity_id: text("identity_id").notNull(),
+		role: text("role").notNull(),
+		status: text("status").notNull(),
+		provenance: text("provenance").notNull(),
+		revision: text("revision").notNull(),
+		migration_state: text("migration_state").notNull(),
+		source_fingerprint: text("source_fingerprint"),
+		idempotency_key: text("idempotency_key").notNull().unique(),
+		created_at: text("created_at").notNull(),
+		updated_at: text("updated_at").notNull(),
+	},
+	(table) => ({
+		pk: primaryKey({ columns: [table.team_id, table.identity_id] }),
+		identityStatusIdx: index("idx_policy_team_memberships_identity_status").on(
+			table.identity_id,
+			table.status,
+		),
+	}),
+);
+
+export type PolicyTeamMembership = typeof policyTeamMemberships.$inferSelect;
+export type NewPolicyTeamMembership = typeof policyTeamMemberships.$inferInsert;
+
+export const identityDevices = sqliteTable(
+	"identity_devices",
+	{
+		device_id: text("device_id").primaryKey(),
+		identity_id: text("identity_id").notNull(),
+		display_name: text("display_name").notNull(),
+		status: text("status").notNull(),
+		provenance: text("provenance").notNull(),
+		revision: text("revision").notNull(),
+		migration_state: text("migration_state").notNull(),
+		source_fingerprint: text("source_fingerprint"),
+		idempotency_key: text("idempotency_key").notNull().unique(),
+		created_at: text("created_at").notNull(),
+		updated_at: text("updated_at").notNull(),
+	},
+	(table) => ({
+		identityStatusIdx: index("idx_identity_devices_identity_status").on(
+			table.identity_id,
+			table.status,
+		),
+	}),
+);
+
+export type IdentityDevice = typeof identityDevices.$inferSelect;
+export type NewIdentityDevice = typeof identityDevices.$inferInsert;
+
+export const projectRecipients = sqliteTable(
+	"project_recipients",
+	{
+		canonical_project_identity: text("canonical_project_identity").notNull(),
+		recipient_kind: text("recipient_kind").notNull(),
+		recipient_id: text("recipient_id").notNull(),
+		status: text("status").notNull(),
+		provenance: text("provenance").notNull(),
+		policy_revision: text("policy_revision").notNull(),
+		migration_state: text("migration_state").notNull(),
+		source_fingerprint: text("source_fingerprint"),
+		idempotency_key: text("idempotency_key").notNull().unique(),
+		created_at: text("created_at").notNull(),
+		updated_at: text("updated_at").notNull(),
+	},
+	(table) => ({
+		pk: primaryKey({
+			columns: [table.canonical_project_identity, table.recipient_kind, table.recipient_id],
+		}),
+		projectStatusIdx: index("idx_project_recipients_project_status").on(
+			table.canonical_project_identity,
+			table.status,
+		),
+	}),
+);
+
+export type ProjectRecipient = typeof projectRecipients.$inferSelect;
+export type NewProjectRecipient = typeof projectRecipients.$inferInsert;
+
 export const schema = {
 	sessions,
 	replicationScopes,
@@ -768,4 +866,8 @@ export const schema = {
 	coordinatorGroupPreferences,
 	actors,
 	recipientPolicyReviewResolutions,
+	policyTeams,
+	policyTeamMemberships,
+	identityDevices,
+	projectRecipients,
 };
