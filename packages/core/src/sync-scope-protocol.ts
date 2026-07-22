@@ -233,6 +233,11 @@ export function listAuthorizedScopesForPeer(
 	const entries: AuthorizedScopeEntry[] = [];
 	for (const local of localMemberships) {
 		if (!local.scope_id || local.scope_id === DEFAULT_SYNC_SCOPE_ID) continue;
+		const localAuth = getCachedScopeAuthorization(db, {
+			deviceId: localDeviceId,
+			scopeId: local.scope_id,
+		});
+		if (!localAuth.authorized) continue;
 
 		// Peer must also be an active member of the same scope, at the same
 		// or higher membership_epoch as the local row, before we advertise.

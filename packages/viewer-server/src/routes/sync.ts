@@ -2,7 +2,7 @@
  * Sync routes — status, peers, actors, attempts, pairing, mutations.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { hostname, networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
@@ -14,6 +14,10 @@ import type {
 	MemoryStore,
 	ProjectScopeGuardrailWarning,
 	ReassignScopeCapability,
+	RecipientPolicyCoordinatorEffectReceipt,
+	RecipientPolicyPeerCapability,
+	RecipientPolicyReconcileResult,
+	RecipientPolicyReconcilerEffects,
 	RecipientPolicyReviewDecisionV1,
 	RecipientPolicyReviewResolveRequestV1,
 	ReplicationOp,
@@ -73,6 +77,7 @@ import {
 	formatHostPort,
 	friendlyDeviceName,
 	getCoordinatorGroupPreference,
+	getRecipientPolicyAuthorityState,
 	getSemanticIndexDiagnostics,
 	getSyncResetState,
 	type InboundScopeRejectionPeerSummary,
@@ -117,6 +122,7 @@ import {
 	readCodememConfigFile,
 	readCoordinatorSyncConfig,
 	reassignProjectScopeInventoryProject,
+	reconcileRecipientPolicyProject,
 	reconcileShareOperationAcceptance,
 	recordNonce,
 	refreshConfiguredScopeMembershipCache,
@@ -125,6 +131,7 @@ import {
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
 	runSyncPass,
+	SCOPE_MEMBERSHIP_REVOCATION_LIMITATION,
 	SYNC_AUTHORIZATION_REFRESH_HEADER,
 	SYNC_CAPABILITY_HEADER,
 	SYNC_FEATURES_HEADER,
@@ -325,6 +332,7 @@ async function ensureDefaultSpaceForTeam(opts: {
 		}));
 	const [deviceId] = ensureDeviceIdentity(opts.store.db, { keysDir: syncKeysDir() });
 	const membership = await coordinatorGrantScopeMembershipAction({
+		effectId: `team-default-grant:${opts.groupId}:${scopeId}:${deviceId}:1`,
 		groupId: opts.groupId,
 		scopeId,
 		deviceId,
@@ -347,6 +355,7 @@ async function maybeGrantDefaultSpaceOnJoin(opts: {
 	store: MemoryStore;
 	config: ReturnType<typeof readCoordinatorSyncConfig>;
 	groupId: string;
+	requestId: string;
 	deviceId: string;
 }): Promise<CoordinatorScopeMembership | null> {
 	const coordinatorId = opts.config.syncCoordinatorUrl || null;
@@ -365,6 +374,7 @@ async function maybeGrantDefaultSpaceOnJoin(opts: {
 	const defaultScope = scopes.find((scope) => scope.scope_id === scopeId) ?? null;
 	if (defaultScope?.kind !== "team_default") return null;
 	return await coordinatorGrantScopeMembershipAction({
+		effectId: `team-default-join:${opts.requestId}:${scopeId}:${opts.deviceId}:1`,
 		groupId: opts.groupId,
 		scopeId,
 		deviceId: opts.deviceId,
@@ -464,6 +474,41 @@ function optionalViewerNumber(body: Record<string, unknown>, key: string): numbe
 	return Number.isFinite(number) ? Math.trunc(number) : Number.NaN;
 }
 
+function coordinatorAdminMembershipEffectId(
+	action: "grant" | "revoke",
+	attemptId: string,
+	input: {
+		groupId: string;
+		scopeId: string;
+		deviceId: string;
+		role?: string | null;
+		membershipEpoch: number | null;
+		coordinatorId?: string | null;
+		manifestIssuerDeviceId?: string | null;
+		manifestHash: string | null;
+		signedManifestJson: string | null;
+	},
+): string {
+	const fingerprint = createHash("sha256")
+		.update(
+			JSON.stringify({
+				action,
+				attemptId,
+				groupId: input.groupId,
+				scopeId: input.scopeId,
+				deviceId: input.deviceId,
+				role: input.role ?? null,
+				membershipEpoch: input.membershipEpoch,
+				coordinatorId: input.coordinatorId ?? null,
+				manifestIssuerDeviceId: input.manifestIssuerDeviceId ?? null,
+				manifestHash: input.manifestHash,
+				signedManifestJson: input.signedManifestJson,
+			}),
+		)
+		.digest("hex");
+	return `viewer-admin-membership:${action}:${fingerprint}`;
+}
+
 function optionalViewerInteger(body: Record<string, unknown>, key: string): number | null {
 	const value = body[key];
 	if (value == null || value === "") return null;
@@ -513,6 +558,7 @@ function coordinatorAdminMutationStatus(message: string): 400 | 404 | 409 | 502 
 	if (
 		message.includes("not active") ||
 		message.includes("scope_not_active") ||
+		message.includes("scope_membership_effect_conflict") ||
 		message.includes("group_archived") ||
 		message.includes("Group is archived")
 	) {
@@ -693,10 +739,21 @@ function coordinatorPreviewDigest(reviewedOnboardingDigest: string): string {
 	return match[1];
 }
 
-async function peerSupportsReassignScope(
+export function recipientPolicyCapabilityFromStatus(payload: {
+	sync_capability?: unknown;
+	sync_features?: unknown;
+}): RecipientPolicyPeerCapability {
+	if (!isScopedSyncCapability(normalizeSyncCapability(payload.sync_capability))) {
+		return "unsupported";
+	}
+	return supportsSyncFeature(payload.sync_features, "reassign_scope") ? "supported" : "unsupported";
+}
+
+async function peerSupportsSyncRequirements(
 	store: MemoryStore,
 	deviceId: string,
-): Promise<ReassignScopeCapability> {
+	requirements: { scoped: boolean; reassignScope: boolean },
+): Promise<RecipientPolicyPeerCapability> {
 	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 	if (deviceId === localDeviceId) return "supported";
 	const row = store.db
@@ -729,23 +786,49 @@ async function peerSupportsReassignScope(
 				[SYNC_FEATURES_HEADER]: LOCAL_SYNC_FEATURES.join(","),
 			};
 			const [status, payload] = await requestJson("GET", url, { headers, timeoutS: 5 });
-			if (status >= 200 && status < 300) {
-				if (String(payload?.device_id ?? "").trim() !== deviceId) continue;
-				if (
-					expectedFingerprint &&
-					String(payload?.fingerprint ?? "").trim() !== expectedFingerprint
-				) {
-					continue;
-				}
-				return supportsSyncFeature(payload?.sync_features, "reassign_scope")
-					? "supported"
-					: "unsupported";
+			if (status < 200 || status >= 300) continue;
+			if (String(payload?.device_id ?? "").trim() !== deviceId) continue;
+			if (
+				expectedFingerprint &&
+				String(payload?.fingerprint ?? "").trim() !== expectedFingerprint
+			) {
+				continue;
 			}
+			if (
+				requirements.scoped &&
+				requirements.reassignScope &&
+				recipientPolicyCapabilityFromStatus(payload ?? {}) !== "supported"
+			) {
+				return "unsupported";
+			}
+			if (
+				requirements.scoped &&
+				!isScopedSyncCapability(normalizeSyncCapability(payload?.sync_capability))
+			) {
+				return "unsupported";
+			}
+			if (
+				requirements.reassignScope &&
+				!supportsSyncFeature(payload?.sync_features, "reassign_scope")
+			) {
+				return "unsupported";
+			}
+			return "supported";
 		} catch {
 			// Try the next reviewed address. Ambiguous/unreachable capability fails closed.
 		}
 	}
 	return "undetermined";
+}
+
+async function peerSupportsReassignScope(
+	store: MemoryStore,
+	deviceId: string,
+): Promise<ReassignScopeCapability> {
+	return peerSupportsSyncRequirements(store, deviceId, {
+		scoped: false,
+		reassignScope: true,
+	});
 }
 
 function resolveProjectInviteSelection(
@@ -1146,9 +1229,10 @@ async function executeProjectShareProvisioning(store: MemoryStore, operationId: 
 					throw error;
 				}
 			},
-			grantMembership: ({ groupId: expectedGroupId, scopeId, deviceId, role }) => {
+			grantMembership: ({ effectId, groupId: expectedGroupId, scopeId, deviceId, role }) => {
 				if (expectedGroupId !== groupId) throw new Error("operation_scope_mismatch");
 				return coordinatorGrantScopeMembershipAction({
+					effectId,
 					groupId,
 					scopeId,
 					deviceId,
@@ -1426,6 +1510,389 @@ export async function advancePendingProjectShares(
 		}
 	}
 	return result;
+}
+
+const RECIPIENT_POLICY_MAINTENANCE_MAX_LIMIT = 10;
+const RECIPIENT_POLICY_MAINTENANCE_DEFAULT_LIMIT = 3;
+const RECIPIENT_POLICY_MAINTENANCE_BACKOFF_MS = 60_000;
+const RECIPIENT_POLICY_WAITING_ERRORS = new Set([
+	"recipient_policy_capability_undetermined",
+	"recipient_policy_parity_incomplete",
+	"recipient_policy_snapshot_not_fresh",
+]);
+
+interface RecipientPolicyCoordinatorBoundary {
+	coordinatorId: string;
+	groupId: string;
+	membershipEpoch: number;
+}
+
+function recipientPolicyCoordinatorBoundary(
+	store: MemoryStore,
+	scopeId: string,
+): RecipientPolicyCoordinatorBoundary {
+	const row = store.db
+		.prepare(
+			`SELECT coordinator_id, group_id, membership_epoch FROM replication_scopes
+			 WHERE scope_id = ? AND kind = 'managed_project' AND authority_type = 'coordinator'
+			 AND status = 'active'`,
+		)
+		.get(scopeId) as
+		| {
+				coordinator_id: string | null;
+				group_id: string | null;
+				membership_epoch: number;
+		  }
+		| undefined;
+	const coordinatorId = String(row?.coordinator_id ?? "").trim();
+	const groupId = String(row?.group_id ?? "").trim();
+	const membershipEpoch = Number(row?.membership_epoch);
+	if (!coordinatorId || !groupId || !Number.isSafeInteger(membershipEpoch) || membershipEpoch < 0) {
+		throw new Error("recipient_policy_active_managed_scope_required");
+	}
+	return { coordinatorId, groupId, membershipEpoch };
+}
+
+function recipientPolicySnapshotFingerprint(
+	scopeId: string,
+	scopeMembershipEpoch: number,
+	memberships: Array<{
+		deviceId: string;
+		status: "active" | "revoked";
+		membershipEpoch: number;
+	}>,
+): string {
+	const canonical = memberships
+		.toSorted(
+			(left, right) =>
+				left.deviceId.localeCompare(right.deviceId) ||
+				left.status.localeCompare(right.status) ||
+				left.membershipEpoch - right.membershipEpoch,
+		)
+		.map(
+			(membership) =>
+				`${membership.deviceId}\u0000${membership.status}\u0000${membership.membershipEpoch}`,
+		)
+		.join("\u0001");
+	return `recipient-policy-coordinator-snapshot-v2:${createHash("sha256")
+		.update(`${scopeId}\u0000${scopeMembershipEpoch}\u0000${canonical}`)
+		.digest("hex")}`;
+}
+
+export function createRecipientPolicyReconcilerEffects(
+	store: MemoryStore,
+	options: {
+		config?: ReturnType<typeof readCoordinatorSyncConfig>;
+		now?: () => string;
+	} = {},
+): RecipientPolicyReconcilerEffects {
+	const config = options.config ?? readCoordinatorSyncConfig();
+	const now = options.now ?? (() => new Date().toISOString());
+	const target = (scopeId: string) => recipientPolicyCoordinatorBoundary(store, scopeId);
+	const coordinatorOptions = (scopeId: string) => {
+		const boundary = target(scopeId);
+		const remoteUrl = config.syncCoordinatorUrl?.trim();
+		const adminSecret = config.syncCoordinatorAdminSecret?.trim();
+		if (!remoteUrl || !adminSecret) throw new Error("recipient_policy_effect_failed");
+		if (!config.syncCoordinatorGroups.includes(boundary.groupId)) {
+			throw new Error("recipient_policy_effect_failed");
+		}
+		try {
+			if (buildBaseUrl(boundary.coordinatorId) !== buildBaseUrl(remoteUrl)) {
+				throw new Error("recipient_policy_effect_failed");
+			}
+		} catch {
+			throw new Error("recipient_policy_effect_failed");
+		}
+		return {
+			...boundary,
+			remoteUrl,
+			adminSecret,
+		};
+	};
+	return {
+		now,
+		snapshot: async ({ scopeId }) => {
+			const targetOptions = coordinatorOptions(scopeId);
+			const memberships = await coordinatorListScopeMembershipsAction({
+				groupId: targetOptions.groupId,
+				scopeId,
+				includeRevoked: true,
+				remoteUrl: targetOptions.remoteUrl,
+				adminSecret: targetOptions.adminSecret,
+			}).catch(() => {
+				throw new Error("recipient_policy_snapshot_not_fresh");
+			});
+			const snapshotMemberships = memberships.map((membership) => {
+				if (membership.status !== "active" && membership.status !== "revoked") {
+					throw new Error("recipient_policy_snapshot_invalid");
+				}
+				const status: "active" | "revoked" = membership.status;
+				return {
+					deviceId: membership.device_id,
+					status,
+					membershipEpoch: membership.membership_epoch,
+				};
+			});
+			return {
+				authoritative: true,
+				scopeId,
+				scopeMembershipEpoch: targetOptions.membershipEpoch,
+				fingerprint: recipientPolicySnapshotFingerprint(
+					scopeId,
+					targetOptions.membershipEpoch,
+					snapshotMemberships,
+				),
+				observedAt: now(),
+				memberships: snapshotMemberships,
+			};
+		},
+		probeCapability: (deviceId) =>
+			peerSupportsSyncRequirements(store, deviceId, {
+				scoped: true,
+				reassignScope: true,
+			}),
+		revoke: async (input): Promise<RecipientPolicyCoordinatorEffectReceipt> => {
+			const targetOptions = coordinatorOptions(input.scopeId);
+			await coordinatorRevokeScopeMembershipAction({
+				effectId: input.effectId,
+				groupId: targetOptions.groupId,
+				scopeId: input.scopeId,
+				deviceId: input.deviceId,
+				remoteUrl: targetOptions.remoteUrl,
+				adminSecret: targetOptions.adminSecret,
+			});
+			return {
+				effectId: input.effectId,
+				scopeId: input.scopeId,
+				deviceId: input.deviceId,
+				status: "revoked",
+			};
+		},
+		grant: async (input): Promise<RecipientPolicyCoordinatorEffectReceipt> => {
+			const targetOptions = coordinatorOptions(input.scopeId);
+			const membership = await coordinatorGrantScopeMembershipAction({
+				effectId: input.effectId,
+				groupId: targetOptions.groupId,
+				scopeId: input.scopeId,
+				deviceId: input.deviceId,
+				role: input.role,
+				coordinatorId: targetOptions.coordinatorId,
+				remoteUrl: targetOptions.remoteUrl,
+				adminSecret: targetOptions.adminSecret,
+			});
+			return {
+				effectId: input.effectId,
+				scopeId: membership.scope_id,
+				deviceId: membership.device_id,
+				status: membership.status === "active" ? "active" : "revoked",
+			};
+		},
+		refresh: async ({ scopeId }) => {
+			const boundary = target(scopeId);
+			const refreshed = await refreshConfiguredScopeMembershipCache(store.db, config, {
+				keysDir: syncKeysDir(),
+			});
+			const group = refreshed.groups.find((item) => item.groupId === boundary.groupId);
+			if (group?.status !== "refreshed") throw new Error("recipient_policy_effect_failed");
+		},
+	};
+}
+
+export interface ReconcileRecipientPolicyProjectsResult {
+	processed: number;
+	active: number;
+	waiting: number;
+	attention: number;
+	failed: number;
+	items: Array<{
+		canonicalProjectIdentity: string;
+		status: RecipientPolicyReconcileResult["status"] | "failed";
+		safeErrorCode: string | null;
+	}>;
+}
+
+export async function reconcileRecipientPolicyProjects(
+	store: MemoryStore,
+	options: {
+		limit?: number;
+		now?: Date;
+		backoffMs?: number;
+		leaseOwner?: string;
+		effects?: RecipientPolicyReconcilerEffects;
+		reconcileProject?: typeof reconcileRecipientPolicyProject;
+	} = {},
+): Promise<ReconcileRecipientPolicyProjectsResult> {
+	const limit = Math.max(
+		1,
+		Math.min(
+			Math.trunc(options.limit ?? RECIPIENT_POLICY_MAINTENANCE_DEFAULT_LIMIT),
+			RECIPIENT_POLICY_MAINTENANCE_MAX_LIMIT,
+		),
+	);
+	const maintenanceNow = options.now ?? new Date();
+	const backoffMs = Math.max(
+		0,
+		Math.trunc(options.backoffMs ?? RECIPIENT_POLICY_MAINTENANCE_BACKOFF_MS),
+	);
+	const retryBefore = new Date(maintenanceNow.getTime() - backoffMs).toISOString();
+	const rows = store.db
+		.prepare(
+			`WITH projects AS (
+				SELECT DISTINCT canonical_project_identity FROM project_recipients
+				UNION
+				SELECT canonical_project_identity FROM recipient_policy_authority_states
+			)
+			 SELECT projects.canonical_project_identity
+			 FROM projects
+			 LEFT JOIN recipient_policy_authority_states authority
+			  ON authority.canonical_project_identity = projects.canonical_project_identity
+			 WHERE authority.safe_error_code IS NULL OR authority.last_attempt_at IS NULL
+			  OR authority.last_attempt_at <= ?
+			 ORDER BY CASE WHEN authority.last_attempt_at IS NULL THEN 0 ELSE 1 END,
+			  authority.last_attempt_at, projects.canonical_project_identity
+			 LIMIT ?`,
+		)
+		.all(retryBefore, limit) as Array<{ canonical_project_identity: string }>;
+	const effects = options.effects ?? createRecipientPolicyReconcilerEffects(store);
+	const reconcileProject = options.reconcileProject ?? reconcileRecipientPolicyProject;
+	const result: ReconcileRecipientPolicyProjectsResult = {
+		processed: 0,
+		active: 0,
+		waiting: 0,
+		attention: 0,
+		failed: 0,
+		items: [],
+	};
+	for (const row of rows) {
+		result.processed += 1;
+		try {
+			const outcome = await reconcileProject(
+				store.db,
+				{
+					canonicalProjectIdentity: row.canonical_project_identity,
+					leaseOwner:
+						options.leaseOwner ?? `recipient-policy-maintenance:${store.deviceId || process.pid}`,
+				},
+				effects,
+			);
+			if (outcome.status === "active") result.active += 1;
+			else if (outcome.status === "needs_attention") result.attention += 1;
+			else result.waiting += 1;
+			result.items.push({
+				canonicalProjectIdentity: row.canonical_project_identity,
+				status: outcome.status,
+				safeErrorCode: outcome.safeErrorCode,
+			});
+		} catch {
+			result.failed += 1;
+			result.items.push({
+				canonicalProjectIdentity: row.canonical_project_identity,
+				status: "failed",
+				safeErrorCode: "recipient_policy_reconciliation_failed",
+			});
+		}
+	}
+	return result;
+}
+
+export type RecipientPolicyReconciliationReadState =
+	| "active"
+	| "needs_attention"
+	| "pending"
+	| "verifying"
+	| "waiting";
+
+export interface RecipientPolicyReconciliationReadModel {
+	version: 1;
+	items: Array<{
+		canonicalProjectIdentity: string;
+		state: RecipientPolicyReconciliationReadState;
+		label: string;
+		explanation: string;
+		deliveredCopiesMayRemain: true;
+		revocationWarning: string;
+	}>;
+}
+
+function recipientPolicyReadState(
+	authority: ReturnType<typeof getRecipientPolicyAuthorityState>,
+): RecipientPolicyReconciliationReadState {
+	if (!authority) return "pending";
+	if (authority.safeErrorCode && RECIPIENT_POLICY_WAITING_ERRORS.has(authority.safeErrorCode)) {
+		return "waiting";
+	}
+	if (authority.safeErrorCode || authority.authorityState === "rolled_back") {
+		return "needs_attention";
+	}
+	if (authority.authorityState === "active") return "active";
+	if (authority.authorityState === "eligible") return "verifying";
+	return "pending";
+}
+
+function recipientPolicyReadCopy(state: RecipientPolicyReconciliationReadState): {
+	label: string;
+	explanation: string;
+} {
+	if (state === "active") {
+		return {
+			label: "Recipient policy active",
+			explanation: "Recipient policy now controls future access for this Project.",
+		};
+	}
+	if (state === "verifying") {
+		return {
+			label: "Verifying recipient policy",
+			explanation: "Current access matches recipient policy and needs one more stable check.",
+		};
+	}
+	if (state === "waiting") {
+		return {
+			label: "Waiting to reconcile",
+			explanation:
+				"Waiting for devices or a fresh coordinator snapshot. No partial grant is applied.",
+		};
+	}
+	if (state === "needs_attention") {
+		return {
+			label: "Reconciliation needs attention",
+			explanation:
+				"Legacy scope enforcement remains in control until this Project is safe to retry.",
+		};
+	}
+	return {
+		label: "Recipient policy pending",
+		explanation: "Legacy scope enforcement remains in control while reconciliation is pending.",
+	};
+}
+
+export function listRecipientPolicyReconciliationStatus(
+	store: MemoryStore,
+): RecipientPolicyReconciliationReadModel {
+	const projectIds = (
+		store.db
+			.prepare(
+				`SELECT DISTINCT canonical_project_identity FROM project_recipients WHERE status = 'active'
+				 UNION SELECT canonical_project_identity FROM recipient_policy_authority_states
+				 ORDER BY canonical_project_identity`,
+			)
+			.all() as Array<{ canonical_project_identity: string }>
+	).map((row) => row.canonical_project_identity);
+	return {
+		version: 1,
+		items: projectIds.map((canonicalProjectIdentity) => {
+			const state = recipientPolicyReadState(
+				getRecipientPolicyAuthorityState(store.db, canonicalProjectIdentity),
+			);
+			return {
+				canonicalProjectIdentity,
+				state,
+				...recipientPolicyReadCopy(state),
+				deliveredCopiesMayRemain: true,
+				revocationWarning: SCOPE_MEMBERSHIP_REVOCATION_LIMITATION,
+			};
+		}),
+	};
 }
 
 function sortActiveMaintenanceJobs<
@@ -4187,6 +4654,10 @@ export function syncRoutes(
 		return c.json(listRecipientPolicyIntent(store.db));
 	});
 
+	app.get("/api/sync/recipient-policy/v1/reconciliation-status", (c) => {
+		return c.json(listRecipientPolicyReconciliationStatus(getStore()));
+	});
+
 	app.post("/api/sync/recipient-policy/v1/edges/preview", async (c) => {
 		const store = getStore();
 		const body = await parseViewerJsonBody(c);
@@ -5638,17 +6109,36 @@ export function syncRoutes(
 		if (Number.isNaN(membershipEpoch)) {
 			return c.json({ error: "membership_epoch must be number", status }, 400);
 		}
-		try {
-			const membership = await coordinatorGrantScopeMembershipAction({
+		const role = optionalViewerString(body, "role");
+		const coordinatorId = optionalViewerString(body, "coordinator_id");
+		const manifestIssuerDeviceId = optionalViewerString(body, "manifest_issuer_device_id");
+		const manifestHash = optionalViewerString(body, "manifest_hash");
+		const signedManifestJson = optionalViewerString(body, "signed_manifest_json");
+		const effectId =
+			optionalViewerString(body, "effect_id") ??
+			coordinatorAdminMembershipEffectId("grant", randomUUID(), {
 				groupId,
 				scopeId,
 				deviceId,
-				role: optionalViewerString(body, "role"),
+				role,
 				membershipEpoch,
-				coordinatorId: optionalViewerString(body, "coordinator_id"),
-				manifestIssuerDeviceId: optionalViewerString(body, "manifest_issuer_device_id"),
-				manifestHash: optionalViewerString(body, "manifest_hash"),
-				signedManifestJson: optionalViewerString(body, "signed_manifest_json"),
+				coordinatorId,
+				manifestIssuerDeviceId,
+				manifestHash,
+				signedManifestJson,
+			});
+		try {
+			const membership = await coordinatorGrantScopeMembershipAction({
+				effectId,
+				groupId,
+				scopeId,
+				deviceId,
+				role,
+				membershipEpoch,
+				coordinatorId,
+				manifestIssuerDeviceId,
+				manifestHash,
+				signedManifestJson,
 				remoteUrl: config.syncCoordinatorUrl || null,
 				adminSecret: config.syncCoordinatorAdminSecret || null,
 			});
@@ -5678,14 +6168,27 @@ export function syncRoutes(
 			if (Number.isNaN(membershipEpoch)) {
 				return c.json({ error: "membership_epoch must be number", status }, 400);
 			}
-			try {
-				const ok = await coordinatorRevokeScopeMembershipAction({
+			const manifestHash = optionalViewerString(body, "manifest_hash");
+			const signedManifestJson = optionalViewerString(body, "signed_manifest_json");
+			const effectId =
+				optionalViewerString(body, "effect_id") ??
+				coordinatorAdminMembershipEffectId("revoke", randomUUID(), {
 					groupId,
 					scopeId,
 					deviceId,
 					membershipEpoch,
-					manifestHash: optionalViewerString(body, "manifest_hash"),
-					signedManifestJson: optionalViewerString(body, "signed_manifest_json"),
+					manifestHash,
+					signedManifestJson,
+				});
+			try {
+				const ok = await coordinatorRevokeScopeMembershipAction({
+					effectId,
+					groupId,
+					scopeId,
+					deviceId,
+					membershipEpoch,
+					manifestHash,
+					signedManifestJson,
 					remoteUrl: config.syncCoordinatorUrl || null,
 					adminSecret: config.syncCoordinatorAdminSecret || null,
 				});
@@ -5800,6 +6303,7 @@ export function syncRoutes(
 					store: getStore(),
 					config,
 					groupId: result.group_id,
+					requestId,
 					deviceId: result.device_id,
 				});
 			} catch (grantError) {

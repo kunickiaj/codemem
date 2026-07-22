@@ -12,7 +12,9 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { toJson } from "./db.js";
+import { putRecipientPolicyDenyOverlay } from "./recipient-policy-reconciliation.js";
 import {
+	applyReplicationOps,
 	DEFAULT_SYNC_SCOPE_ID,
 	filterReplicationOpsForSyncWithStatus,
 	getReplicationCursor,
@@ -428,6 +430,82 @@ describe("mixed personal/work/OSS sync — boundary enforcement", () => {
 		expect(ossAfter.map((op) => op.op_id)).toEqual(["op-oss-1"]);
 		const [personalAfter] = filterForPeer(fixture.db, [fixture.ops.personal], PEER_PERSONAL);
 		expect(personalAfter.map((op) => op.op_id)).toEqual(["op-personal-1"]);
+	});
+
+	it("a pending policy deny blocks exact outbound ops and snapshots without touching sibling scopes", () => {
+		putRecipientPolicyDenyOverlay(fixture.db, {
+			canonicalProjectIdentity: "project:acme",
+			scopeId: ACME_SCOPE,
+			deviceId: PEER_ACME,
+			generation: 4,
+			reasonCode: "pending_revoke",
+			now: "2026-05-03T00:00:05Z",
+		});
+
+		const [acmeOps] = filterForPeer(fixture.db, [fixture.ops.acme], PEER_ACME);
+		expect(acmeOps).toEqual([]);
+		const acmeSnapshot = loadMemorySnapshotPageForPeer(fixture.db, {
+			peerDeviceId: PEER_ACME,
+			scopeId: ACME_SCOPE,
+			generation: 1,
+			snapshotId: "snap-1",
+			baselineCursor: "2026-05-03T00:00:00Z|baseline-op",
+		});
+		expect(acmeSnapshot.items).toEqual([]);
+
+		const [ossOps] = filterForPeer(fixture.db, [fixture.ops.oss], PEER_OSS);
+		expect(ossOps.map((op) => op.op_id)).toEqual(["op-oss-1"]);
+		const ossSnapshot = loadMemorySnapshotPageForPeer(fixture.db, {
+			peerDeviceId: PEER_OSS,
+			scopeId: OSS_SCOPE,
+			generation: 1,
+			snapshotId: "snap-1",
+			baselineCursor: "2026-05-03T00:00:00Z|baseline-op",
+		});
+		expect(ossSnapshot.items.map((item) => item.entity_id)).toEqual(["key:oss-1"]);
+	});
+
+	it("a pending sender deny rejects inbound ops only for the exact scope and device", () => {
+		putRecipientPolicyDenyOverlay(fixture.db, {
+			canonicalProjectIdentity: "project:acme",
+			scopeId: ACME_SCOPE,
+			deviceId: PEER_ACME,
+			generation: 4,
+			reasonCode: "pending_revoke",
+			now: "2026-05-03T00:00:05Z",
+		});
+		const inbound = (deviceId: string, scopeId: string, opId: string): ReplicationOp => ({
+			...makeOp({
+				opId,
+				entityId: `key:${opId}`,
+				scopeId,
+				createdAt: "2026-05-03T00:00:06Z",
+				payload: { project: opId, visibility: "shared", scope_id: scopeId },
+			}),
+			clock_device_id: deviceId,
+			device_id: deviceId,
+		});
+
+		const denied = applyReplicationOps(
+			fixture.db,
+			[inbound(PEER_ACME, ACME_SCOPE, "inbound-acme")],
+			LOCAL_DEVICE,
+			undefined,
+			{ inboundScopeValidation: { peerDeviceId: PEER_ACME } },
+		);
+		expect(denied.rejections).toEqual([
+			expect.objectContaining({ reason: "sender_not_member", scope_id: ACME_SCOPE }),
+		]);
+
+		const allowed = applyReplicationOps(
+			fixture.db,
+			[inbound(PEER_OSS, OSS_SCOPE, "inbound-oss")],
+			LOCAL_DEVICE,
+			undefined,
+			{ inboundScopeValidation: { peerDeviceId: PEER_OSS } },
+		);
+		expect(allowed.rejected).toBe(0);
+		expect(allowed.applied).toBe(1);
 	});
 
 	it("requires an explicit personal-scope grant for same-actor private sync", () => {

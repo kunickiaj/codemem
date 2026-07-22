@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
 import { type Database, fromJson } from "./db.js";
+import { assertLegacyShareGrantAllowed } from "./recipient-policy-reconciler.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 import {
 	DEFAULT_SYNC_SCOPE_ID,
@@ -35,6 +36,7 @@ export interface ShareProvisioningDependencies {
 	beforeStep?(stepKey: string): Promise<void> | void;
 	createOrGetBoundary(project: ManagedProjectPlan, groupId: string): Promise<CoordinatorScope>;
 	grantMembership(input: {
+		effectId: string;
 		groupId: string;
 		scopeId: string;
 		deviceId: string;
@@ -672,8 +674,19 @@ export async function executeShareProvisioning(
 		for (const deviceId of project.memberDeviceIds) {
 			const stepKey = `space_grant:${project.canonicalIdentity}:${deviceId}`;
 			const expectedRole = deviceId === input.initiatingDeviceId ? "admin" : "member";
-			await executeStep(stepKey, `space-grant:${project.boundaryId}:${deviceId}:1`, async () => {
+			const effectId = persistedEffectId(
+				db,
+				plan.operationId,
+				stepKey,
+				`space-grant:${project.boundaryId}:${deviceId}:1`,
+			);
+			await executeStep(stepKey, effectId, async () => {
+				assertLegacyShareGrantAllowed(db, {
+					canonicalProjectIdentity: project.canonicalIdentity,
+					deviceId,
+				});
 				const membership = await dependencies.grantMembership({
+					effectId,
 					groupId: plan.groupId,
 					scopeId: project.boundaryId,
 					deviceId,

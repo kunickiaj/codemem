@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { CoordinatorMembershipError } from "./coordinator-membership-effects.js";
 import {
 	BetterSqliteCoordinatorStore,
 	type CoordinatorCreateInviteInput,
@@ -1291,12 +1292,16 @@ describe("createCoordinatorApp dependency injection", () => {
 			{
 				path: "/v1/admin/groups/g1/scopes/scope-acme/members",
 				method: "POST",
-				body: { device_id: "device-a", membership_epoch: "   " },
+				body: {
+					effect_id: "test:invalid-epoch:grant",
+					device_id: "device-a",
+					membership_epoch: "   ",
+				},
 			},
 			{
 				path: "/v1/admin/groups/g1/scopes/scope-acme/members/device-a/revoke",
 				method: "POST",
-				body: { membership_epoch: true },
+				body: { effect_id: "test:invalid-epoch:revoke", membership_epoch: true },
 			},
 		];
 
@@ -1676,6 +1681,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				"X-Codemem-Coordinator-Admin": "test-secret",
 			},
 			body: JSON.stringify({
+				effect_id: "api:grant:scope-acme:device-a:4",
 				device_id: "device-a",
 				role: "admin",
 				membership_epoch: 4,
@@ -1687,8 +1693,8 @@ describe("createCoordinatorApp dependency injection", () => {
 
 		expect(res.status).toBe(201);
 		expect(await res.json()).toEqual({ ok: true, membership });
-		expect(store.getEnrollment).toHaveBeenCalledWith("g1", "device-a");
 		expect(store.grantScopeMembership).toHaveBeenCalledWith({
+			effectId: "api:grant:scope-acme:device-a:4",
 			scopeId: "scope-acme",
 			deviceId: "device-a",
 			role: "admin",
@@ -1701,6 +1707,41 @@ describe("createCoordinatorApp dependency injection", () => {
 			actorType: "admin",
 			actorId: null,
 		});
+	});
+
+	it("rejects grants for archived groups before mutating membership", async () => {
+		const store = createMockStore({
+			getGroup: vi.fn(async () => ({
+				group_id: "g1",
+				display_name: "Archived",
+				archived_at: "2026-03-28T00:00:00Z",
+				created_at: "2026-03-27T00:00:00Z",
+			})),
+			grantScopeMembership: vi.fn(async () => {
+				throw new Error("grant must not run");
+			}),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: {
+				adminSecret: () => "test-secret",
+				now: () => "2026-03-28T00:00:00Z",
+			},
+			requestVerifier: allowRequest,
+		});
+
+		const res = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Codemem-Coordinator-Admin": "test-secret",
+			},
+			body: JSON.stringify({ effect_id: "api:archived:grant", device_id: "device-a" }),
+		});
+
+		expect(res.status).toBe(409);
+		expect(await res.json()).toEqual({ error: "group_archived" });
+		expect(store.grantScopeMembership).not.toHaveBeenCalled();
 	});
 
 	it("writes audit rows through admin Sharing domain grant and revoke APIs", async () => {
@@ -1739,6 +1780,7 @@ describe("createCoordinatorApp dependency injection", () => {
 					"X-Codemem-Coordinator-Admin-Actor": "admin-alice",
 				},
 				body: JSON.stringify({
+					effect_id: "api:audit:grant",
 					device_id: "device-a",
 					membership_epoch: 2,
 					manifest_hash: "hash-grant",
@@ -1746,6 +1788,39 @@ describe("createCoordinatorApp dependency injection", () => {
 				}),
 			});
 			expect(grantRes.status).toBe(201);
+			const grantReplay = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Codemem-Coordinator-Admin": "test-secret",
+					"X-Codemem-Coordinator-Admin-Actor": "admin-alice",
+				},
+				body: JSON.stringify({
+					effect_id: "api:audit:grant",
+					device_id: "device-a",
+					membership_epoch: 2,
+					manifest_hash: "hash-grant",
+					actor_id: "another-spoofed-body-actor",
+				}),
+			});
+			expect(grantReplay.status).toBe(201);
+			const grantConflict = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Codemem-Coordinator-Admin": "test-secret",
+					"X-Codemem-Coordinator-Admin-Actor": "admin-alice",
+				},
+				body: JSON.stringify({
+					effect_id: "api:audit:grant",
+					device_id: "device-a",
+					role: "admin",
+					membership_epoch: 2,
+					manifest_hash: "hash-grant",
+				}),
+			});
+			expect(grantConflict.status).toBe(409);
+			expect(await grantConflict.json()).toEqual({ error: "scope_membership_effect_conflict" });
 
 			const revokeRes = await app.request(
 				"/v1/admin/groups/g1/scopes/scope-acme/members/device-a/revoke",
@@ -1756,10 +1831,31 @@ describe("createCoordinatorApp dependency injection", () => {
 						"X-Codemem-Coordinator-Admin": "test-secret",
 						"X-Codemem-Coordinator-Admin-Actor": "admin-bob",
 					},
-					body: JSON.stringify({ membership_epoch: 3, manifest_hash: "hash-revoke" }),
+					body: JSON.stringify({
+						effect_id: "api:audit:revoke",
+						membership_epoch: 3,
+						manifest_hash: "hash-revoke",
+					}),
 				},
 			);
 			expect(revokeRes.status).toBe(200);
+			const revokeReplay = await app.request(
+				"/v1/admin/groups/g1/scopes/scope-acme/members/device-a/revoke",
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"X-Codemem-Coordinator-Admin": "test-secret",
+						"X-Codemem-Coordinator-Admin-Actor": "admin-bob",
+					},
+					body: JSON.stringify({
+						effect_id: "api:audit:revoke",
+						membership_epoch: 3,
+						manifest_hash: "hash-revoke",
+					}),
+				},
+			);
+			expect(revokeReplay.status).toBe(200);
 
 			const verifyStore = new BetterSqliteCoordinatorStore(dbPath);
 			try {
@@ -1840,7 +1936,7 @@ describe("createCoordinatorApp dependency injection", () => {
 		});
 
 		expect(res.status).toBe(400);
-		expect(await res.json()).toEqual({ error: "device_id_required" });
+		expect(await res.json()).toEqual({ error: "effect_id_required" });
 		expect(store.grantScopeMembership).not.toHaveBeenCalled();
 	});
 
@@ -1866,8 +1962,10 @@ describe("createCoordinatorApp dependency injection", () => {
 				archived_at: null,
 				created_at: "2026-03-28T00:00:00Z",
 			})),
-			getEnrollment: vi.fn(async () => null),
 			listScopes: vi.fn(async () => [scope]),
+			grantScopeMembership: vi.fn(async () => {
+				throw new CoordinatorMembershipError("device_not_enrolled");
+			}),
 		});
 		const app = createCoordinatorApp({
 			storeFactory: () => store,
@@ -1884,12 +1982,12 @@ describe("createCoordinatorApp dependency injection", () => {
 				"Content-Type": "application/json",
 				"X-Codemem-Coordinator-Admin": "test-secret",
 			},
-			body: JSON.stringify({ device_id: "device-a" }),
+			body: JSON.stringify({ effect_id: "api:outside-group:grant", device_id: "device-a" }),
 		});
 
 		expect(res.status).toBe(404);
 		expect(await res.json()).toEqual({ error: "device_not_enrolled_for_scope_group" });
-		expect(store.grantScopeMembership).not.toHaveBeenCalled();
+		expect(store.grantScopeMembership).toHaveBeenCalledOnce();
 	});
 
 	it("revokes explicit Sharing domain memberships", async () => {
@@ -1947,7 +2045,11 @@ describe("createCoordinatorApp dependency injection", () => {
 				"Content-Type": "application/json",
 				"X-Codemem-Coordinator-Admin": "test-secret",
 			},
-			body: JSON.stringify({ membership_epoch: 5, manifest_hash: "hash-revoke" }),
+			body: JSON.stringify({
+				effect_id: "api:revoke:scope-acme:device-a:5",
+				membership_epoch: 5,
+				manifest_hash: "hash-revoke",
+			}),
 		});
 
 		expect(res.status).toBe(200);
@@ -1966,8 +2068,10 @@ describe("createCoordinatorApp dependency injection", () => {
 			},
 		});
 		expect(store.revokeScopeMembership).toHaveBeenCalledWith({
+			effectId: "api:revoke:scope-acme:device-a:5",
 			scopeId: "scope-acme",
 			deviceId: "device-a",
+			groupId: "g1",
 			membershipEpoch: 5,
 			manifestHash: "hash-revoke",
 			signedManifestJson: null,
@@ -1975,6 +2079,41 @@ describe("createCoordinatorApp dependency injection", () => {
 			actorId: null,
 		});
 		expect(store.listScopeMemberships).toHaveBeenCalledWith("scope-acme", true);
+	});
+
+	it("rejects revokes for archived groups before mutating membership", async () => {
+		const store = createMockStore({
+			getGroup: vi.fn(async () => ({
+				group_id: "g1",
+				display_name: "Archived",
+				archived_at: "2026-03-28T00:00:00Z",
+				created_at: "2026-03-27T00:00:00Z",
+			})),
+			revokeScopeMembership: vi.fn(async () => {
+				throw new Error("revoke must not run");
+			}),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: {
+				adminSecret: () => "test-secret",
+				now: () => "2026-03-28T00:00:00Z",
+			},
+			requestVerifier: allowRequest,
+		});
+
+		const res = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members/device-a/revoke", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Codemem-Coordinator-Admin": "test-secret",
+			},
+			body: JSON.stringify({ effect_id: "api:archived:revoke" }),
+		});
+
+		expect(res.status).toBe(409);
+		expect(await res.json()).toEqual({ error: "group_archived" });
+		expect(store.revokeScopeMembership).not.toHaveBeenCalled();
 	});
 
 	it("does not fail a persisted revoke when response enrichment cannot reload it", async () => {
@@ -2020,7 +2159,10 @@ describe("createCoordinatorApp dependency injection", () => {
 				"Content-Type": "application/json",
 				"X-Codemem-Coordinator-Admin": "test-secret",
 			},
-			body: JSON.stringify({ membership_epoch: 5 }),
+			body: JSON.stringify({
+				effect_id: "api:revoke:enrichment-failure",
+				membership_epoch: 5,
+			}),
 		});
 
 		expect(res.status).toBe(200);
@@ -2032,8 +2174,10 @@ describe("createCoordinatorApp dependency injection", () => {
 			},
 		});
 		expect(store.revokeScopeMembership).toHaveBeenCalledWith({
+			effectId: "api:revoke:enrichment-failure",
 			scopeId: "scope-acme",
 			deviceId: "device-a",
+			groupId: "g1",
 			membershipEpoch: 5,
 			manifestHash: null,
 			signedManifestJson: null,
@@ -2098,7 +2242,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				"Content-Type": "application/json",
 				"X-Codemem-Coordinator-Admin": "test-secret",
 			},
-			body: JSON.stringify({}),
+			body: JSON.stringify({ effect_id: "api:revoke:implicit-epoch" }),
 		});
 
 		expect(res.status).toBe(200);

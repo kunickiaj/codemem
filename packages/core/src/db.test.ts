@@ -133,6 +133,9 @@ describe("connect", () => {
 		expect(tableExists(db, "sync_reset_state_v2")).toBe(true);
 		expect(tableExists(db, "sync_retention_state_v2")).toBe(true);
 		expect(tableExists(db, "replication_cursors_v2")).toBe(true);
+		expect(tableExists(db, "recipient_policy_authority_states")).toBe(true);
+		expect(tableExists(db, "recipient_policy_reconciliation_steps")).toBe(true);
+		expect(tableExists(db, "recipient_policy_deny_overlays")).toBe(true);
 		expect(columnExists(db, "memory_items", "scope_id")).toBe(true);
 		expect(columnExists(db, "replication_ops", "scope_id")).toBe(true);
 		expect(hasIndex(db, "idx_memory_items_scope_visibility_created")).toBe(true);
@@ -1052,6 +1055,9 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 			"policy_team_memberships",
 			"identity_devices",
 			"project_recipients",
+			"recipient_policy_authority_states",
+			"recipient_policy_reconciliation_steps",
+			"recipient_policy_deny_overlays",
 		]) {
 			expect(tableExists(db, table)).toBe(true);
 		}
@@ -1085,6 +1091,9 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 			"policy_team_memberships",
 			"identity_devices",
 			"project_recipients",
+			"recipient_policy_authority_states",
+			"recipient_policy_reconciliation_steps",
+			"recipient_policy_deny_overlays",
 		]) {
 			expect(tableExists(previous, table)).toBe(true);
 		}

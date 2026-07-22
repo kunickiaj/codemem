@@ -6,6 +6,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
 import type { Database as CoreDatabase } from "./db.js";
 import {
+	clearRecipientPolicyDenyOverlay,
+	putRecipientPolicyDenyOverlay,
+} from "./recipient-policy-reconciliation.js";
+import {
 	getCachedScopeAuthorization,
 	listCachedScopesForDevice,
 	refreshScopeMembershipCache,
@@ -191,6 +195,89 @@ describe("scope membership cache", () => {
 				authority: { coordinatorId: "coord-a", groupId: "team-a" },
 			}).freshness,
 		).toBe("fresh");
+	});
+
+	it("keeps an exact policy deny ahead of stale active membership until foundation clearing", async () => {
+		const local = setup();
+		await refreshScopeMembershipCache(local, {
+			groupIds: ["team-a"],
+			coordinatorId: "coord-a",
+			now: new Date(now()),
+			fetchers: {
+				listScopes: async () => [scope(), scope({ scope_id: "scope-oss" })],
+				listMemberships: async (_groupId, scopeId) => [
+					membership({ scope_id: scopeId }),
+					membership({ scope_id: scopeId, device_id: "device-b" }),
+				],
+			},
+		});
+		putRecipientPolicyDenyOverlay(local, {
+			canonicalProjectIdentity: "project:acme",
+			scopeId: "scope-acme",
+			deviceId: "device-a",
+			generation: 7,
+			reasonCode: "pending_revoke",
+			now: now(1),
+		});
+
+		await refreshScopeMembershipCache(local, {
+			groupIds: ["team-a"],
+			coordinatorId: "coord-a",
+			now: new Date(now(2)),
+			fetchers: {
+				listScopes: async () => {
+					throw new Error("coordinator offline");
+				},
+				listMemberships: async () => [],
+			},
+		});
+
+		expect(
+			getCachedScopeAuthorization(local, {
+				deviceId: "device-a",
+				scopeId: "scope-acme",
+				now: new Date(now(60_000)),
+			}),
+		).toMatchObject({ authorized: false, state: "policy_denied", freshness: "stale" });
+		expect(
+			getCachedScopeAuthorization(local, { deviceId: "device-a", scopeId: "scope-oss" }),
+		).toMatchObject({ authorized: true, state: "authorized" });
+		expect(
+			getCachedScopeAuthorization(local, { deviceId: "device-b", scopeId: "scope-acme" }),
+		).toMatchObject({ authorized: true, state: "authorized" });
+		expect(
+			listCachedScopesForDevice(local, "device-a").memberships.map((item) => item.scope_id),
+		).toEqual(["scope-oss"]);
+		await refreshScopeMembershipCache(local, {
+			groupIds: ["team-a"],
+			coordinatorId: "coord-a",
+			now: new Date(now(3)),
+			fetchers: {
+				listScopes: async () => [scope({ membership_epoch: 8 }), scope({ scope_id: "scope-oss" })],
+				listMemberships: async (_groupId, scopeId) =>
+					scopeId === "scope-acme"
+						? [membership({ device_id: "device-b", membership_epoch: 8 })]
+						: [
+								membership({ scope_id: scopeId }),
+								membership({ scope_id: scopeId, device_id: "device-b" }),
+							],
+			},
+		});
+		expect(
+			getCachedScopeAuthorization(local, { deviceId: "device-a", scopeId: "scope-acme" }),
+		).toMatchObject({ authorized: false, state: "policy_denied" });
+
+		expect(
+			clearRecipientPolicyDenyOverlay(local, {
+				canonicalProjectIdentity: "project:acme",
+				scopeId: "scope-acme",
+				deviceId: "device-a",
+				verifiedGeneration: 8,
+			}),
+		).toBe(true);
+		expect(
+			getCachedScopeAuthorization(local, { deviceId: "device-a", scopeId: "scope-acme" }),
+		).toMatchObject({ authorized: false, state: "revoked" });
 	});
 
 	it("filters device lookups by requested coordinator and group authority", async () => {

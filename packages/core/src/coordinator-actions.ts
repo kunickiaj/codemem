@@ -10,6 +10,10 @@ import {
 	type InvitePayload,
 	inviteLink,
 } from "./coordinator-invites.js";
+import {
+	CoordinatorMembershipError,
+	normalizeMembershipEffectId,
+} from "./coordinator-membership-effects.js";
 import type {
 	CoordinatorBootstrapGrant,
 	CoordinatorEnrollment,
@@ -601,6 +605,7 @@ export async function coordinatorGrantScopeMembershipAction(
 	const groupId = String(opts.groupId ?? "").trim();
 	const scopeId = String(opts.scopeId ?? "").trim();
 	const deviceId = String(opts.deviceId ?? "").trim();
+	const effectId = normalizeMembershipEffectId(opts.effectId);
 	if (!groupId || !scopeId || !deviceId) {
 		throw new Error("group_id, scope_id, and device_id are required.");
 	}
@@ -614,6 +619,7 @@ export async function coordinatorGrantScopeMembershipAction(
 			`${stripTrailingSlashes(remote)}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}/members`,
 			adminSecret,
 			{
+				effect_id: effectId,
 				device_id: deviceId,
 				role: opts.role ?? null,
 				membership_epoch: opts.membershipEpoch ?? null,
@@ -632,22 +638,30 @@ export async function coordinatorGrantScopeMembershipAction(
 	}
 	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
-		const scope = await localScopeForGroup(store, groupId, scopeId);
-		if (!scope) throw new Error(`Scope not found: ${scopeId}`);
-		if (scope.status !== "active") throw new Error(`Scope is not active: ${scopeId}`);
-		return await store.grantScopeMembership({
-			scopeId,
-			deviceId,
-			role: opts.role ?? null,
-			membershipEpoch: opts.membershipEpoch ?? null,
-			coordinatorId: opts.coordinatorId ?? null,
-			groupId,
-			manifestIssuerDeviceId: opts.manifestIssuerDeviceId ?? null,
-			manifestHash: opts.manifestHash ?? null,
-			signedManifestJson: opts.signedManifestJson ?? null,
-			actorType: opts.actorType ?? "admin",
-			actorId: opts.actorId ?? null,
-		});
+		try {
+			return await store.grantScopeMembership({
+				effectId,
+				scopeId,
+				deviceId,
+				role: opts.role ?? null,
+				membershipEpoch: opts.membershipEpoch ?? null,
+				coordinatorId: opts.coordinatorId ?? null,
+				groupId,
+				manifestIssuerDeviceId: opts.manifestIssuerDeviceId ?? null,
+				manifestHash: opts.manifestHash ?? null,
+				signedManifestJson: opts.signedManifestJson ?? null,
+				actorType: opts.actorType ?? "admin",
+				actorId: opts.actorId ?? null,
+			});
+		} catch (error) {
+			if (error instanceof CoordinatorMembershipError && error.code === "scope_not_found") {
+				throw new Error(`Scope not found: ${scopeId}`);
+			}
+			if (error instanceof CoordinatorMembershipError && error.code === "scope_inactive") {
+				throw new Error(`Scope is not active: ${scopeId}`);
+			}
+			throw error;
+		}
 	} finally {
 		await store.close();
 	}
@@ -664,6 +678,7 @@ export async function coordinatorRevokeScopeMembershipAction(
 	const groupId = String(opts.groupId ?? "").trim();
 	const scopeId = String(opts.scopeId ?? "").trim();
 	const deviceId = String(opts.deviceId ?? "").trim();
+	const effectId = normalizeMembershipEffectId(opts.effectId);
 	if (!groupId || !scopeId || !deviceId) {
 		throw new Error("group_id, scope_id, and device_id are required.");
 	}
@@ -678,6 +693,7 @@ export async function coordinatorRevokeScopeMembershipAction(
 				`${stripTrailingSlashes(remote)}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}/members/${encodeURIComponent(deviceId)}/revoke`,
 				adminSecret,
 				{
+					effect_id: effectId,
 					membership_epoch: opts.membershipEpoch ?? null,
 					manifest_hash: opts.manifestHash ?? null,
 					signed_manifest_json: opts.signedManifestJson ?? null,
@@ -692,10 +708,11 @@ export async function coordinatorRevokeScopeMembershipAction(
 	}
 	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
-		if (!(await localScopeForGroup(store, groupId, scopeId))) return false;
 		return await store.revokeScopeMembership({
+			effectId,
 			scopeId,
 			deviceId,
+			groupId,
 			membershipEpoch: opts.membershipEpoch ?? null,
 			manifestHash: opts.manifestHash ?? null,
 			signedManifestJson: opts.signedManifestJson ?? null,

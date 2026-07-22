@@ -77,6 +77,7 @@ describe("CoordinatorStore", () => {
 					"coordinator_join_requests",
 					"coordinator_reciprocal_approvals",
 					"coordinator_scope_membership_audit_log",
+					"coordinator_scope_membership_effect_receipts",
 					"coordinator_scope_memberships",
 					"coordinator_scopes",
 					"enrolled_devices",

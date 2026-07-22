@@ -89,6 +89,8 @@ describe("createCloudflareCoordinatorWorker", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "cloudflare-coord-worker-test-"));
 		db = connectCoordinator(join(tmpDir, "coordinator.sqlite"));
 		db.exec(`
+			DROP TABLE IF EXISTS coordinator_scope_membership_effect_receipts;
+			DROP TABLE IF EXISTS coordinator_scope_membership_audit_log;
 			DROP TABLE IF EXISTS coordinator_scope_memberships;
 			DROP TABLE IF EXISTS coordinator_scopes;
 			DROP TABLE IF EXISTS coordinator_reciprocal_approvals;
@@ -102,6 +104,54 @@ describe("createCloudflareCoordinatorWorker", () => {
 		schemaSql = readFileSync(join(import.meta.dirname, "../schema.sql"), "utf8");
 		db.exec(schemaSql);
 		d1db = new SqliteD1Database(db);
+	});
+
+	it("migration 0010 preserves audit history and adds immutable effect receipts", () => {
+		db.exec("DROP TABLE coordinator_scope_membership_effect_receipts");
+		db.exec("DROP INDEX idx_coordinator_scope_membership_audit_effect");
+		db.exec("ALTER TABLE coordinator_scope_membership_audit_log RENAME TO audit_with_effect");
+		db.exec(`
+			CREATE TABLE coordinator_scope_membership_audit_log (
+				event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+				action TEXT NOT NULL,
+				scope_id TEXT NOT NULL,
+				device_id TEXT NOT NULL,
+				role TEXT,
+				status TEXT NOT NULL,
+				membership_epoch INTEGER NOT NULL,
+				previous_role TEXT,
+				previous_status TEXT,
+				previous_membership_epoch INTEGER,
+				coordinator_id TEXT,
+				group_id TEXT,
+				actor_type TEXT,
+				actor_id TEXT,
+				manifest_hash TEXT,
+				created_at TEXT NOT NULL
+			);
+			INSERT INTO coordinator_scope_membership_audit_log(
+				action, scope_id, device_id, status, membership_epoch, created_at
+			) VALUES ('grant', 'scope-a', 'device-a', 'active', 1, '2026-07-21T00:00:00Z');
+			DROP TABLE audit_with_effect;
+		`);
+		const migration = readFileSync(
+			join(import.meta.dirname, "../migrations/0010_add_scope_membership_effect_receipts.sql"),
+			"utf8",
+		);
+
+		db.exec(migration);
+
+		expect(
+			db.prepare("SELECT action, effect_id FROM coordinator_scope_membership_audit_log").get(),
+		).toEqual({ action: "grant", effect_id: null });
+		expect(
+			db
+				.prepare(
+					"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_scope_membership_effect_receipts'",
+				)
+				.pluck()
+				.get(),
+		).toBe("coordinator_scope_membership_effect_receipts");
 	});
 
 	afterEach(() => {

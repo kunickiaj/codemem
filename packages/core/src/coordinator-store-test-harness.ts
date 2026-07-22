@@ -18,6 +18,10 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 	setup: () => CoordinatorStoreHarnessContext<TStore>,
 ): void {
 	describe(label, () => {
+		let effectSequence = 0;
+		const nextEffect = (action: "grant" | "revoke") =>
+			`contract:${label}:${action}:${++effectSequence}`;
+
 		async function withContext(
 			run: (ctx: CoordinatorStoreHarnessContext<TStore>) => Promise<void> | void,
 		) {
@@ -172,7 +176,11 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					expect(await store.listScopeMemberships("scope-acme")).toEqual([]);
 					expect(await store.listScopeMembershipAuditEvents({ scopeId: "scope-acme" })).toEqual([]);
 
-					await store.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" });
+					await store.grantScopeMembership({
+						effectId: nextEffect("grant"),
+						scopeId: "scope-acme",
+						deviceId: "device-a",
+					});
 
 					expect(await store.listScopeMemberships("scope-acme")).toEqual([
 						expect.objectContaining({
@@ -202,6 +210,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 
 					await expect(
 						store.grantScopeMembership({
+							effectId: nextEffect("grant"),
 							scopeId: "scope-acme",
 							deviceId: "device-a",
 							coordinatorId: "coord-b",
@@ -210,6 +219,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					).rejects.toThrow("membership coordinatorId must match the scope coordinatorId");
 					await expect(
 						store.grantScopeMembership({
+							effectId: nextEffect("grant"),
 							scopeId: "scope-acme",
 							deviceId: "device-a",
 							coordinatorId: "coord-a",
@@ -236,7 +246,11 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					});
 
 					await expect(
-						store.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" }),
+						store.grantScopeMembership({
+							effectId: nextEffect("grant"),
+							scopeId: "scope-acme",
+							deviceId: "device-a",
+						}),
 					).rejects.toThrow("device must be enrolled and enabled in the scope group");
 
 					await store.enrollDevice("group-a", {
@@ -246,12 +260,20 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					});
 					expect(await store.setDeviceEnabled("group-a", "device-a", false)).toBe(true);
 					await expect(
-						store.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" }),
+						store.grantScopeMembership({
+							effectId: nextEffect("grant"),
+							scopeId: "scope-acme",
+							deviceId: "device-a",
+						}),
 					).rejects.toThrow("device must be enrolled and enabled in the scope group");
 
 					expect(await store.setDeviceEnabled("group-a", "device-a", true)).toBe(true);
 					await expect(
-						store.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" }),
+						store.grantScopeMembership({
+							effectId: nextEffect("grant"),
+							scopeId: "scope-acme",
+							deviceId: "device-a",
+						}),
 					).resolves.toEqual(expect.objectContaining({ status: "active" }));
 				});
 			});
@@ -271,6 +293,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						groupId: "group-a",
 					});
 					const grant = await store.grantScopeMembership({
+						effectId: nextEffect("grant"),
 						scopeId: "scope-acme",
 						deviceId: "device-a",
 						role: "admin",
@@ -298,6 +321,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 
 					expect(
 						await store.revokeScopeMembership({
+							effectId: nextEffect("revoke"),
 							scopeId: "scope-acme",
 							deviceId: "device-a",
 							membershipEpoch: 4,
@@ -319,6 +343,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					]);
 					expect(await store.listScopeMembershipAuditEvents({ scopeId: "scope-acme" })).toEqual([
 						expect.objectContaining({
+							effect_id: expect.stringContaining(":grant:"),
 							action: "grant",
 							scope_id: "scope-acme",
 							device_id: "device-a",
@@ -335,6 +360,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 							manifest_hash: "hash-grant",
 						}),
 						expect.objectContaining({
+							effect_id: expect.stringContaining(":revoke:"),
 							action: "revoke",
 							scope_id: "scope-acme",
 							device_id: "device-a",
@@ -371,6 +397,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 
 					await expect(
 						store.grantScopeMembership({
+							effectId: "test:grant:scope-acme:device-a:below-epoch",
 							scopeId: "scope-acme",
 							deviceId: "device-a",
 							membershipEpoch: 6,
@@ -387,9 +414,17 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						label: "Acme Work",
 						membershipEpoch: 7,
 					});
-					await store.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" });
+					await store.grantScopeMembership({
+						effectId: nextEffect("grant"),
+						scopeId: "scope-acme",
+						deviceId: "device-a",
+					});
 					expect(
-						await store.revokeScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" }),
+						await store.revokeScopeMembership({
+							effectId: nextEffect("revoke"),
+							scopeId: "scope-acme",
+							deviceId: "device-a",
+						}),
 					).toBe(true);
 					expect(await store.listScopeMemberships("scope-acme", true)).toEqual([
 						expect.objectContaining({
@@ -400,6 +435,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					]);
 					await expect(
 						store.grantScopeMembership({
+							effectId: nextEffect("grant"),
 							scopeId: "scope-acme",
 							deviceId: "device-a",
 							membershipEpoch: 8,
@@ -414,6 +450,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					]);
 
 					const regrant = await store.grantScopeMembership({
+						effectId: nextEffect("grant"),
 						scopeId: "scope-acme",
 						deviceId: "device-a",
 					});
@@ -426,6 +463,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					);
 					await expect(
 						store.revokeScopeMembership({
+							effectId: nextEffect("revoke"),
 							scopeId: "scope-acme",
 							deviceId: "device-a",
 							membershipEpoch: 8,
@@ -433,6 +471,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					).rejects.toThrow("membershipEpoch must increase on revoke");
 					await expect(
 						store.grantScopeMembership({
+							effectId: nextEffect("grant"),
 							scopeId: "scope-acme",
 							deviceId: "device-a",
 							membershipEpoch: 8,
@@ -462,10 +501,19 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						membershipEpoch: 2,
 					});
 
-					await store.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" });
-					await store.grantScopeMembership({ scopeId: "scope-oss", deviceId: "device-a" });
+					await store.grantScopeMembership({
+						effectId: nextEffect("grant"),
+						scopeId: "scope-acme",
+						deviceId: "device-a",
+					});
+					await store.grantScopeMembership({
+						effectId: nextEffect("grant"),
+						scopeId: "scope-oss",
+						deviceId: "device-a",
+					});
 					expect(
 						await store.revokeScopeMembership({
+							effectId: nextEffect("revoke"),
 							scopeId: "scope-acme",
 							deviceId: "device-a",
 							membershipEpoch: 3,
@@ -508,7 +556,11 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						label: "Acme Work",
 						groupId: "group-a",
 					});
-					await store.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-b" });
+					await store.grantScopeMembership({
+						effectId: nextEffect("grant"),
+						scopeId: "scope-acme",
+						deviceId: "device-b",
+					});
 					await store.upsertPresence({
 						groupId: "group-a",
 						deviceId: "device-b",
@@ -517,7 +569,11 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					});
 
 					expect(
-						await store.revokeScopeMembership({ scopeId: "scope-acme", deviceId: "device-b" }),
+						await store.revokeScopeMembership({
+							effectId: nextEffect("revoke"),
+							scopeId: "scope-acme",
+							deviceId: "device-b",
+						}),
 					).toBe(true);
 
 					expect(await store.listScopeMemberships("scope-acme")).toEqual([]);
@@ -529,6 +585,82 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 							addresses: ["http://10.0.0.5:7337"],
 						}),
 					]);
+				});
+			});
+
+			it("replays identical effects without changing membership or audit history", async () => {
+				await withContext(async ({ store }) => {
+					await store.createScope({ scopeId: "scope-replay", label: "Replay" });
+					const request = {
+						effectId: "contract:membership-replay:grant",
+						scopeId: "scope-replay",
+						deviceId: "device-a",
+						membershipEpoch: 4,
+					};
+					const first = await store.grantScopeMembership(request);
+					const replay = await store.grantScopeMembership(request);
+					expect(replay).toEqual(first);
+					expect(
+						await store.listScopeMembershipAuditEvents({ scopeId: "scope-replay" }),
+					).toHaveLength(1);
+
+					const revoke = {
+						effectId: "contract:membership-replay:revoke",
+						scopeId: "scope-replay",
+						deviceId: "device-a",
+						membershipEpoch: 5,
+					};
+					expect(await store.revokeScopeMembership(revoke)).toBe(true);
+					expect(await store.revokeScopeMembership(revoke)).toBe(true);
+					expect(await store.grantScopeMembership(request)).toEqual(first);
+					expect(await store.listScopeMemberships("scope-replay", true)).toEqual([
+						expect.objectContaining({ status: "revoked", membership_epoch: 5 }),
+					]);
+					expect(
+						await store.listScopeMembershipAuditEvents({ scopeId: "scope-replay" }),
+					).toHaveLength(2);
+				});
+			});
+
+			it("fails closed when an effect id is reused for a different request", async () => {
+				await withContext(async ({ store }) => {
+					await store.createScope({ scopeId: "scope-conflict", label: "Conflict" });
+					await store.grantScopeMembership({
+						effectId: "contract:membership-conflict",
+						scopeId: "scope-conflict",
+						deviceId: "device-a",
+						role: "member",
+					});
+					await expect(
+						store.grantScopeMembership({
+							effectId: "contract:membership-conflict",
+							scopeId: "scope-conflict",
+							deviceId: "device-a",
+							role: "admin",
+						}),
+					).rejects.toThrow("scope_membership_effect_conflict");
+					expect(await store.listScopeMemberships("scope-conflict")).toEqual([
+						expect.objectContaining({ role: "member", membership_epoch: 0 }),
+					]);
+					expect(
+						await store.listScopeMembershipAuditEvents({ scopeId: "scope-conflict" }),
+					).toHaveLength(1);
+
+					const missingRevoke = {
+						effectId: "contract:missing-revoke",
+						scopeId: "scope-conflict",
+						deviceId: "missing-device",
+					};
+					expect(await store.revokeScopeMembership(missingRevoke)).toBe(false);
+					expect(await store.revokeScopeMembership(missingRevoke)).toBe(false);
+					await expect(
+						store.grantScopeMembership({
+							effectId: missingRevoke.effectId,
+							scopeId: missingRevoke.scopeId,
+							deviceId: missingRevoke.deviceId,
+						}),
+					).rejects.toThrow("scope_membership_effect_conflict");
+					expect(await store.listScopeMemberships("scope-conflict")).toHaveLength(1);
 				});
 			});
 		});

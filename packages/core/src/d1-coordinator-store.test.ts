@@ -178,6 +178,7 @@ describe("D1CoordinatorStore", () => {
 		const tmpDir = mkdtempSync(join(tmpdir(), "d1-coord-test-"));
 		const db = connectCoordinator(join(tmpDir, "coordinator.sqlite"));
 		db.exec(`
+			DROP TABLE IF EXISTS coordinator_scope_membership_effect_receipts;
 			DROP TABLE IF EXISTS coordinator_scope_membership_audit_log;
 			DROP TABLE IF EXISTS coordinator_scope_memberships;
 			DROP TABLE IF EXISTS coordinator_scopes;
@@ -357,13 +358,25 @@ describe("D1CoordinatorStore", () => {
 			});
 
 			await expect(
-				failingStore.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" }),
+				failingStore.grantScopeMembership({
+					effectId: "d1:failed-audit:grant",
+					scopeId: "scope-acme",
+					deviceId: "device-a",
+				}),
 			).rejects.toThrow("audit insert failed");
 			expect(await normalStore.listScopeMemberships("scope-acme", true)).toEqual([]);
 
-			await normalStore.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" });
+			await normalStore.grantScopeMembership({
+				effectId: "d1:failed-audit:baseline-grant",
+				scopeId: "scope-acme",
+				deviceId: "device-a",
+			});
 			await expect(
-				failingStore.revokeScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" }),
+				failingStore.revokeScopeMembership({
+					effectId: "d1:failed-audit:revoke",
+					scopeId: "scope-acme",
+					deviceId: "device-a",
+				}),
 			).rejects.toThrow("audit insert failed");
 			expect(await normalStore.listScopeMemberships("scope-acme", true)).toEqual([
 				expect.objectContaining({ device_id: "device-a", status: "active" }),
@@ -394,12 +407,20 @@ describe("D1CoordinatorStore", () => {
 				label: "Acme Work",
 				groupId: "group-a",
 			});
-			await normalStore.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" });
+			await normalStore.grantScopeMembership({
+				effectId: "d1:race:baseline-grant",
+				scopeId: "scope-acme",
+				deviceId: "device-a",
+			});
 			vi.useFakeTimers();
 			vi.setSystemTime(new Date("2026-05-02T00:00:00.000Z"));
 
 			await expect(
-				racingStore.revokeScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" }),
+				racingStore.revokeScopeMembership({
+					effectId: "d1:race:revoke",
+					scopeId: "scope-acme",
+					deviceId: "device-a",
+				}),
 			).resolves.toBe(false);
 			vi.useRealTimers();
 
@@ -417,6 +438,42 @@ describe("D1CoordinatorStore", () => {
 			vi.useRealTimers();
 			await racingStore.close();
 			await normalStore.close();
+			await cleanup();
+		}
+	});
+
+	it("converges concurrent identical D1 effects to one receipt and one audit event", async () => {
+		const { db, cleanup } = setupStore();
+		const firstStore = new D1CoordinatorStore(new SqliteD1Database(db));
+		const secondStore = new D1CoordinatorStore(new SqliteD1Database(db));
+		try {
+			await firstStore.createScope({ scopeId: "scope-effect-race", label: "Effect race" });
+			const request = {
+				effectId: "d1:effect-race:grant",
+				scopeId: "scope-effect-race",
+				deviceId: "device-a",
+				membershipEpoch: 3,
+			};
+
+			const [first, second] = await Promise.all([
+				firstStore.grantScopeMembership(request),
+				secondStore.grantScopeMembership(request),
+			]);
+
+			expect(second).toEqual(first);
+			expect(
+				await firstStore.listScopeMembershipAuditEvents({ scopeId: "scope-effect-race" }),
+			).toEqual([expect.objectContaining({ effect_id: request.effectId, membership_epoch: 3 })]);
+			expect(
+				db
+					.prepare(
+						"SELECT COUNT(*) AS count FROM coordinator_scope_membership_effect_receipts WHERE effect_id = ?",
+					)
+					.get(request.effectId),
+			).toEqual({ count: 1 });
+		} finally {
+			await secondStore.close();
+			await firstStore.close();
 			await cleanup();
 		}
 	});

@@ -515,6 +515,36 @@ export function sqliteVecFailureDiagnostics(error: unknown, dbPath: string): str
 	];
 }
 
+export interface ServeCoordinatorMaintenanceResult {
+	projectShares: { processed: number; failed: number };
+	recipientPolicies: { processed: number; failed: number };
+}
+
+export async function runServeCoordinatorMaintenance(
+	store: MemoryStore,
+	dependencies: {
+		advancePendingProjectShares: (
+			store: MemoryStore,
+			options: { limit: number },
+		) => Promise<{ processed: number; failed: number }>;
+		reconcileRecipientPolicyProjects: (
+			store: MemoryStore,
+			options: { limit: number },
+		) => Promise<{ processed: number; failed: number }>;
+	},
+): Promise<ServeCoordinatorMaintenanceResult> {
+	const projectShares = await dependencies.advancePendingProjectShares(store, { limit: 3 });
+	if (projectShares.failed > 0) {
+		throw new Error(
+			`share operation maintenance failed for ${projectShares.failed} of ${projectShares.processed} operations`,
+		);
+	}
+	const recipientPolicies = await dependencies.reconcileRecipientPolicyProjects(store, {
+		limit: 3,
+	});
+	return { projectShares, recipientPolicies };
+}
+
 async function startBackgroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
 	warnIfViewerExposed(invocation.host, invocation.port);
 	if (await isPortOpen(invocation.host, invocation.port)) {
@@ -552,8 +582,14 @@ async function startBackgroundViewer(invocation: ResolvedServeInvocation): Promi
 }
 
 async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
-	const { advancePendingProjectShares, createApp, createSyncApp, closeStore, getStore } =
-		await import("@codemem/server");
+	const {
+		advancePendingProjectShares,
+		createApp,
+		createSyncApp,
+		closeStore,
+		getStore,
+		reconcileRecipientPolicyProjects,
+	} = await import("@codemem/server");
 	const { serve } = await import("@hono/node-server");
 
 	if (invocation.dbPath) process.env.CODEMEM_DB = invocation.dbPath;
@@ -677,12 +713,10 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 						// silently falling back to the built-in default ruleset.
 						scanner: store.scanner,
 						onAfterCoordinatorRefresh: async () => {
-							const result = await advancePendingProjectShares(store, { limit: 3 });
-							if (result.failed > 0) {
-								throw new Error(
-									`share operation maintenance failed for ${result.failed} of ${result.processed} operations`,
-								);
-							}
+							await runServeCoordinatorMaintenance(store, {
+								advancePendingProjectShares,
+								reconcileRecipientPolicyProjects,
+							});
 						},
 						onPhaseChange: (phase) => {
 							if (phase === "running") {

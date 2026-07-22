@@ -9,6 +9,7 @@ import {
 } from "./coordinator-runtime.js";
 import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
 import type { Database } from "./db.js";
+import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-reconciliation.js";
 import {
 	explainScopeMembershipRevocation,
 	type ScopeMembershipEpochStatus,
@@ -28,6 +29,7 @@ export type ScopeMembershipAuthorizationState =
 	| "not_authorized"
 	| "revoked"
 	| "stale_epoch"
+	| "policy_denied"
 	| "scope_unknown"
 	| "scope_inactive";
 
@@ -698,10 +700,17 @@ export function listCachedScopesForDevice(
 		)
 		.all(...params) as JoinedMembershipRow[];
 	const cacheStates = loadCacheStates(db, opts.authority ?? null);
+	const memberships = rows.filter(
+		(row) =>
+			getAnyRecipientPolicyDenyOverlayForScopeDevice(db, {
+				scopeId: row.scope_id,
+				deviceId: cleanDeviceId,
+			}) == null,
+	);
 	return {
 		deviceId: cleanDeviceId,
 		freshness: freshness(cacheStates, opts),
-		memberships: rows.map((row) => ({
+		memberships: memberships.map((row) => ({
 			...membershipFromJoinedRow(row),
 			scope: scopeFromJoinedRow(row),
 		})),
@@ -740,6 +749,20 @@ export function getCachedScopeAuthorization(
 		membershipEpoch: membership?.membership_epoch ?? null,
 		requiredEpoch: scope?.membership_epoch ?? null,
 	});
+	if (getAnyRecipientPolicyDenyOverlayForScopeDevice(db, { deviceId, scopeId })) {
+		return {
+			deviceId,
+			scopeId,
+			authorized: false,
+			state: "policy_denied",
+			freshness: currentFreshness,
+			epoch,
+			revocation: null,
+			membership,
+			scope,
+			cacheStates,
+		};
+	}
 	if (!membership) {
 		return {
 			deviceId,

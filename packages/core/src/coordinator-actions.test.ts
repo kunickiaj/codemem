@@ -227,6 +227,7 @@ describe("coordinator local admin actions", () => {
 		);
 
 		const grant = await coordinatorGrantScopeMembershipAction({
+			effectId: "actions:team-a:scope-acme:device-1:grant:3",
 			groupId: "team-a",
 			scopeId: "scope-acme",
 			deviceId: "device-1",
@@ -252,6 +253,7 @@ describe("coordinator local admin actions", () => {
 		).toEqual([expect.objectContaining({ device_id: "device-1", status: "active" })]);
 		expect(
 			await coordinatorRevokeScopeMembershipAction({
+				effectId: "actions:team-a:scope-acme:device-1:revoke:4",
 				groupId: "team-a",
 				scopeId: "scope-acme",
 				deviceId: "device-1",
@@ -325,6 +327,7 @@ describe("coordinator local admin actions", () => {
 		).rejects.toThrow("Scope not found: missing-scope");
 		await expect(
 			coordinatorGrantScopeMembershipAction({
+				effectId: "actions:missing-scope:grant",
 				groupId: "team-a",
 				scopeId: "missing-scope",
 				deviceId: "device-1",
@@ -400,6 +403,7 @@ describe("coordinator local admin actions", () => {
 			).toEqual(scope);
 			expect(
 				await coordinatorGrantScopeMembershipAction({
+					effectId: "actions:remote:grant",
 					groupId: "team-a",
 					scopeId: "scope-acme",
 					deviceId: "device-1",
@@ -408,6 +412,7 @@ describe("coordinator local admin actions", () => {
 			).toEqual(membership);
 			expect(
 				await coordinatorRevokeScopeMembershipAction({
+					effectId: "actions:remote:revoke",
 					groupId: "team-a",
 					scopeId: "scope-acme",
 					deviceId: "device-1",
@@ -432,6 +437,7 @@ describe("coordinator local admin actions", () => {
 
 		expect(
 			await coordinatorRevokeScopeMembershipAction({
+				effectId: "actions:remote:missing-revoke",
 				groupId: "team-a",
 				scopeId: "scope-acme",
 				deviceId: "device-1",

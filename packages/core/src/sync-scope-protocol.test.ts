@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { putRecipientPolicyDenyOverlay } from "./recipient-policy-reconciliation.js";
 import {
 	SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
 	setReplicationCursor,
@@ -220,6 +221,29 @@ describe("parseSyncScopeRequest scoped path", () => {
 		expect(result).toEqual({ ok: false, reason: "scope_inactive" });
 	});
 
+	it("rejects a scoped request while an exact peer deny overlay is pending", () => {
+		insertScope(SCOPE_ID);
+		grantMembership(SCOPE_ID, LOCAL_DEVICE);
+		grantMembership(SCOPE_ID, PEER_DEVICE);
+		putRecipientPolicyDenyOverlay(db, {
+			canonicalProjectIdentity: "project:acme",
+			scopeId: SCOPE_ID,
+			deviceId: PEER_DEVICE,
+			generation: 2,
+			reasonCode: "pending_revoke",
+			now: NOW,
+		});
+
+		expect(
+			parseSyncScopeRequest(SCOPE_ID, true, {
+				db,
+				localDeviceId: LOCAL_DEVICE,
+				negotiatedCapability: "scoped",
+				peerDeviceId: PEER_DEVICE,
+			}),
+		).toEqual({ ok: false, reason: "missing_scope" });
+	});
+
 	it("falls back to unsupported_scope when caller advertises a lower capability", () => {
 		insertScope(SCOPE_ID);
 		grantMembership(SCOPE_ID, LOCAL_DEVICE);
@@ -372,6 +396,51 @@ describe("listAuthorizedScopesForPeer", () => {
 			peerDeviceId: PEER_DEVICE,
 		});
 		expect(scopes).toEqual([]);
+	});
+
+	it("does not advertise an exact denied scope and leaves sibling scopes available", () => {
+		insertScope("acme-work");
+		insertScope("oss");
+		for (const scopeId of ["acme-work", "oss"]) {
+			grantMembership(scopeId, LOCAL_DEVICE);
+			grantMembership(scopeId, PEER_DEVICE);
+		}
+		putRecipientPolicyDenyOverlay(db, {
+			canonicalProjectIdentity: "project:acme",
+			scopeId: "acme-work",
+			deviceId: PEER_DEVICE,
+			generation: 2,
+			reasonCode: "pending_revoke",
+			now: NOW,
+		});
+
+		expect(
+			listAuthorizedScopesForPeer(db, {
+				localDeviceId: LOCAL_DEVICE,
+				peerDeviceId: PEER_DEVICE,
+			}).map((scope) => scope.scope_id),
+		).toEqual(["oss"]);
+	});
+
+	it("does not advertise a scope denied for the local device", () => {
+		insertScope("acme-work");
+		grantMembership("acme-work", LOCAL_DEVICE);
+		grantMembership("acme-work", PEER_DEVICE);
+		putRecipientPolicyDenyOverlay(db, {
+			canonicalProjectIdentity: "project:acme",
+			scopeId: "acme-work",
+			deviceId: LOCAL_DEVICE,
+			generation: 2,
+			reasonCode: "pending_revoke",
+			now: NOW,
+		});
+
+		expect(
+			listAuthorizedScopesForPeer(db, {
+				localDeviceId: LOCAL_DEVICE,
+				peerDeviceId: PEER_DEVICE,
+			}),
+		).toEqual([]);
 	});
 
 	it("returns an empty list when local and peer device ids are equal", () => {

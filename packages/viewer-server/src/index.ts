@@ -29,10 +29,17 @@ import { syncProtocolRoutes, syncRoutes } from "./routes/sync.js";
 export type {
 	AdvancePendingProjectSharesResult,
 	AdvanceProjectShareOperationResult,
+	RecipientPolicyReconciliationReadModel,
+	RecipientPolicyReconciliationReadState,
+	ReconcileRecipientPolicyProjectsResult,
 } from "./routes/sync.js";
 export {
 	advancePendingProjectShares,
 	advanceProjectShareOperation,
+	createRecipientPolicyReconcilerEffects,
+	listRecipientPolicyReconciliationStatus,
+	recipientPolicyCapabilityFromStatus,
+	reconcileRecipientPolicyProjects,
 } from "./routes/sync.js";
 
 export { VERSION };

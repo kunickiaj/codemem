@@ -1,3 +1,12 @@
+import {
+	assertMatchingMembershipEffectReceipt,
+	type CoordinatorMembershipEffectReceipt,
+	CoordinatorMembershipError,
+	grantMembershipEffectRequestJson,
+	membershipFromEffectReceipt,
+	normalizeMembershipEffectId,
+	revokeMembershipEffectRequestJson,
+} from "./coordinator-membership-effects.js";
 import type {
 	CoordinatorBootstrapGrant,
 	CoordinatorConsumeProjectInviteInput,
@@ -344,7 +353,7 @@ function normalizeGrantInput(
 		throw new Error("membership coordinatorId must match the scope coordinatorId.");
 	}
 	if (groupId && groupId !== scope?.group_id) {
-		throw new Error("membership groupId must match the scope groupId.");
+		throw new CoordinatorMembershipError("scope_group_mismatch");
 	}
 	const requestedEpoch = opts.membershipEpoch == null ? null : normalizeEpoch(opts.membershipEpoch);
 	const inheritedEpoch = scope?.membership_epoch ?? 0;
@@ -391,6 +400,8 @@ function normalizeAuditLimit(limit: number | null | undefined): number {
 function prepareMembershipAuditFromCurrentRow(
 	db: D1DatabaseLike,
 	input: {
+		effectId: string;
+		requestJson: string;
 		action: "grant" | "revoke";
 		previous: CoordinatorScopeMembership | null;
 		scopeId: string;
@@ -403,22 +414,22 @@ function prepareMembershipAuditFromCurrentRow(
 		createdAt: string;
 	},
 ): D1PreparedStatementLike {
-	// D1 batch() is the transaction boundary for audited membership changes.
-	// changes() ties the audit insert to the immediately preceding mutation in
-	// the same batch. Losing guarded updates insert no audit row, while winning
-	// mutations still emit one required row; if the post-mutation membership row
-	// is then missing, NOT NULL audit columns make the statement fail and roll
-	// back the batch instead of committing an unaudited grant/revoke.
+	// The immediately preceding statement inserts the immutable effect receipt.
+	// changes() therefore emits an audit row only for the request that won the
+	// receipt insert, while outcome_applied excludes persisted no-op revokes.
 	return db
 		.prepare(`INSERT INTO coordinator_scope_membership_audit_log(
-			action, scope_id, device_id, role, status, membership_epoch,
+			effect_id, action, scope_id, device_id, role, status, membership_epoch,
 			previous_role, previous_status, previous_membership_epoch,
 			coordinator_id, group_id, actor_type, actor_id, manifest_hash, created_at
 		)
-		SELECT ?, membership.scope_id, membership.device_id, membership.role, membership.status,
+		SELECT receipt.effect_id, ?, membership.scope_id, membership.device_id, membership.role, membership.status,
 			membership.membership_epoch, ?, ?, ?, membership.coordinator_id, membership.group_id,
 			?, ?, membership.manifest_hash, ?
 		FROM (SELECT 1 WHERE changes() > 0) AS required
+		JOIN coordinator_scope_membership_effect_receipts AS receipt
+			ON receipt.effect_id = ? AND receipt.action = ? AND receipt.request_json = ?
+			AND receipt.outcome_applied = 1
 		LEFT JOIN coordinator_scope_memberships AS membership
 			ON membership.scope_id = ?
 			AND membership.device_id = ?
@@ -433,11 +444,91 @@ function prepareMembershipAuditFromCurrentRow(
 			input.actorType,
 			input.actorId,
 			input.createdAt,
+			input.effectId,
+			input.action,
+			input.requestJson,
 			input.scopeId,
 			input.deviceId,
 			input.status,
 			input.membershipEpoch,
 			input.updatedAt,
+		);
+}
+
+async function getMembershipEffectReceipt(
+	db: D1DatabaseLike,
+	effectId: string,
+): Promise<CoordinatorMembershipEffectReceipt | null> {
+	return await firstRow<CoordinatorMembershipEffectReceipt>(
+		db
+			.prepare(`SELECT effect_id, action, request_json, outcome_applied, scope_id, device_id,
+				role, status, membership_epoch, coordinator_id, group_id, manifest_issuer_device_id,
+				manifest_hash, signed_manifest_json, updated_at, created_at
+			 FROM coordinator_scope_membership_effect_receipts WHERE effect_id = ?`)
+			.bind(effectId),
+	);
+}
+
+function prepareGrantEffectReceipt(
+	db: D1DatabaseLike,
+	input: {
+		effectId: string;
+		requestJson: string;
+		scopeId: string;
+		deviceId: string;
+		createdAt: string;
+	},
+): D1PreparedStatementLike {
+	return db
+		.prepare(`INSERT INTO coordinator_scope_membership_effect_receipts(
+			effect_id, action, request_json, outcome_applied, scope_id, device_id,
+			role, status, membership_epoch, coordinator_id, group_id, manifest_issuer_device_id,
+			manifest_hash, signed_manifest_json, updated_at, created_at
+		)
+		SELECT ?, 'grant', ?, 1, membership.scope_id, membership.device_id,
+			membership.role, membership.status, membership.membership_epoch,
+			membership.coordinator_id, membership.group_id, membership.manifest_issuer_device_id,
+			membership.manifest_hash, membership.signed_manifest_json, membership.updated_at, ?
+		FROM coordinator_scope_memberships AS membership
+		WHERE changes() > 0 AND membership.scope_id = ? AND membership.device_id = ?`)
+		.bind(input.effectId, input.requestJson, input.createdAt, input.scopeId, input.deviceId);
+}
+
+function prepareRevokeEffectReceipt(
+	db: D1DatabaseLike,
+	input: {
+		effectId: string;
+		requestJson: string;
+		scopeId: string;
+		deviceId: string;
+		createdAt: string;
+	},
+): D1PreparedStatementLike {
+	return db
+		.prepare(`INSERT INTO coordinator_scope_membership_effect_receipts(
+			effect_id, action, request_json, outcome_applied, scope_id, device_id,
+			role, status, membership_epoch, coordinator_id, group_id, manifest_issuer_device_id,
+			manifest_hash, signed_manifest_json, updated_at, created_at
+		)
+		SELECT ?, 'revoke', ?, changed.applied, ?, ?, membership.role, membership.status,
+			membership.membership_epoch, membership.coordinator_id, membership.group_id,
+			membership.manifest_issuer_device_id, membership.manifest_hash,
+			membership.signed_manifest_json, membership.updated_at, ?
+		FROM (SELECT CASE WHEN changes() > 0 THEN 1 ELSE 0 END AS applied) AS changed
+		LEFT JOIN coordinator_scope_memberships AS membership
+			ON changed.applied = 1 AND membership.scope_id = ? AND membership.device_id = ?
+		WHERE NOT EXISTS (
+			SELECT 1 FROM coordinator_scope_membership_effect_receipts WHERE effect_id = ?
+		)`)
+		.bind(
+			input.effectId,
+			input.requestJson,
+			input.scopeId,
+			input.deviceId,
+			input.createdAt,
+			input.scopeId,
+			input.deviceId,
+			input.effectId,
 		);
 }
 
@@ -1550,25 +1641,36 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	async grantScopeMembership(
 		opts: CoordinatorGrantScopeMembershipInput,
 	): Promise<CoordinatorScopeMembership> {
+		const effectId = normalizeMembershipEffectId(opts.effectId);
+		const requestJson = grantMembershipEffectRequestJson(opts);
+		const priorReceipt = await getMembershipEffectReceipt(this.db, effectId);
+		if (priorReceipt) {
+			assertMatchingMembershipEffectReceipt(priorReceipt, "grant", requestJson);
+			return membershipFromEffectReceipt(priorReceipt);
+		}
 		const scopeId = clean(opts.scopeId);
 		const deviceId = clean(opts.deviceId);
 		const scope = scopeId ? await this.getScope(scopeId) : null;
-		if (!scope) throw new Error("scopeId must reference an existing scope.");
+		if (!scope) throw new CoordinatorMembershipError("scope_not_found");
+		if (scope.status !== "active") throw new CoordinatorMembershipError("scope_inactive");
 		const existing = scopeId && deviceId ? await this.getScopeMembership(scopeId, deviceId) : null;
 		const normalized = normalizeGrantInput(opts, scope, existing);
 		if (normalized.groupId) {
 			const enrollment = await this.getEnrollment(normalized.groupId, normalized.deviceId);
 			if (!enrollment) {
-				throw new Error("device must be enrolled and enabled in the scope group.");
+				throw new CoordinatorMembershipError("device_not_enrolled");
 			}
 		}
 		const now = nowISO();
-		const batchResults = await runAuditedBatch(this.db, [
+		await runAuditedBatch(this.db, [
 			this.db
 				.prepare(`INSERT INTO coordinator_scope_memberships(
 					scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
 					manifest_issuer_device_id, manifest_hash, signed_manifest_json, updated_at
-				) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
+				) SELECT ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?
+				WHERE NOT EXISTS (
+					SELECT 1 FROM coordinator_scope_membership_effect_receipts WHERE effect_id = ?
+				)
 				ON CONFLICT(scope_id, device_id) DO UPDATE SET
 					role = excluded.role,
 					status = 'active',
@@ -1595,8 +1697,18 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					normalized.manifestHash,
 					normalized.signedManifestJson,
 					now,
+					effectId,
 				),
+			prepareGrantEffectReceipt(this.db, {
+				effectId,
+				requestJson,
+				scopeId: normalized.scopeId,
+				deviceId: normalized.deviceId,
+				createdAt: now,
+			}),
 			prepareMembershipAuditFromCurrentRow(this.db, {
+				effectId,
+				requestJson,
 				action: "grant",
 				previous: existing,
 				scopeId: normalized.scopeId,
@@ -1609,33 +1721,36 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				createdAt: now,
 			}),
 		]);
-		if (batchResultChanges(batchResults[0]) <= 0) {
-			throw new Error("scope membership grant was not applied.");
-		}
-		const row = await firstRow<CoordinatorScopeMembership>(
-			this.db
-				.prepare(`SELECT scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
-						manifest_issuer_device_id, manifest_hash, signed_manifest_json, updated_at
-					 FROM coordinator_scope_memberships
-					 WHERE scope_id = ? AND device_id = ?`)
-				.bind(normalized.scopeId, normalized.deviceId),
-		);
-		return rowToRecord<CoordinatorScopeMembership>(row);
+		const receipt = await getMembershipEffectReceipt(this.db, effectId);
+		if (!receipt) throw new Error("scope membership grant was not applied.");
+		assertMatchingMembershipEffectReceipt(receipt, "grant", requestJson);
+		return membershipFromEffectReceipt(receipt);
 	}
 
 	async revokeScopeMembership(opts: CoordinatorRevokeScopeMembershipInput): Promise<boolean> {
 		const scopeId = clean(opts.scopeId);
 		const deviceId = clean(opts.deviceId);
 		if (!scopeId || !deviceId) throw new Error("scopeId and deviceId are required.");
+		const effectId = normalizeMembershipEffectId(opts.effectId);
+		const requestJson = revokeMembershipEffectRequestJson(opts);
+		const priorReceipt = await getMembershipEffectReceipt(this.db, effectId);
+		if (priorReceipt) {
+			assertMatchingMembershipEffectReceipt(priorReceipt, "revoke", requestJson);
+			return priorReceipt.outcome_applied === 1;
+		}
 		const membershipEpoch =
 			opts.membershipEpoch == null ? null : normalizeEpoch(opts.membershipEpoch);
+		const requestedGroupId = clean(opts.groupId);
+		const scope = requestedGroupId ? await this.getScope(scopeId) : null;
+		if (requestedGroupId && requestedGroupId !== scope?.group_id) {
+			throw new CoordinatorMembershipError("scope_group_mismatch");
+		}
 		const existing = await this.getScopeMembership(scopeId, deviceId);
-		if (!existing) return false;
 		if (membershipEpoch != null && existing && membershipEpoch <= existing.membership_epoch) {
 			throw new Error("membershipEpoch must increase on revoke.");
 		}
 		const now = nowISO();
-		const revokedEpoch = membershipEpoch ?? existing.membership_epoch + 1;
+		const revokedEpoch = membershipEpoch ?? (existing?.membership_epoch ?? -1) + 1;
 		const updateStatement = this.db
 			.prepare(`UPDATE coordinator_scope_memberships
 						 SET status = 'revoked',
@@ -1643,7 +1758,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 							 manifest_hash = COALESCE(?, manifest_hash),
 							 signed_manifest_json = COALESCE(?, signed_manifest_json),
 							 updated_at = ?
-						 WHERE scope_id = ? AND device_id = ? AND membership_epoch = ? AND status = ?`)
+						 WHERE scope_id = ? AND device_id = ? AND membership_epoch = ? AND status = ?
+						   AND NOT EXISTS (
+							SELECT 1 FROM coordinator_scope_membership_effect_receipts WHERE effect_id = ?
+						   )`)
 			.bind(
 				membershipEpoch,
 				membershipEpoch,
@@ -1652,10 +1770,20 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				now,
 				scopeId,
 				deviceId,
-				existing.membership_epoch,
-				existing.status,
+				existing?.membership_epoch ?? -1,
+				existing?.status ?? "",
+				effectId,
 			);
+		const receiptStatement = prepareRevokeEffectReceipt(this.db, {
+			effectId,
+			requestJson,
+			scopeId,
+			deviceId,
+			createdAt: now,
+		});
 		const auditStatement = prepareMembershipAuditFromCurrentRow(this.db, {
+			effectId,
+			requestJson,
 			action: "revoke",
 			previous: existing,
 			scopeId,
@@ -1667,22 +1795,24 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			actorId: clean(opts.actorId),
 			createdAt: now,
 		});
-		let batchResults: unknown[];
 		try {
-			batchResults = await runAuditedBatch(this.db, [updateStatement, auditStatement]);
+			await runAuditedBatch(this.db, [updateStatement, receiptStatement, auditStatement]);
 		} catch (err) {
 			const current = await this.getScopeMembership(scopeId, deviceId);
 			if (
-				!current ||
-				current.membership_epoch !== existing.membership_epoch ||
-				current.status !== existing.status
+				existing &&
+				(!current ||
+					current.membership_epoch !== existing.membership_epoch ||
+					current.status !== existing.status)
 			) {
 				return false;
 			}
 			throw err;
 		}
-		if (batchResultChanges(batchResults[0]) <= 0) return false;
-		return true;
+		const receipt = await getMembershipEffectReceipt(this.db, effectId);
+		if (!receipt) throw new Error("scope membership revoke receipt was not persisted.");
+		assertMatchingMembershipEffectReceipt(receipt, "revoke", requestJson);
+		return receipt.outcome_applied === 1;
 	}
 
 	async listScopeMemberships(
@@ -1717,7 +1847,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		return (
 			await allRows<CoordinatorScopeMembershipAuditEvent>(
 				this.db
-					.prepare(`SELECT event_id, action, scope_id, device_id, role, status, membership_epoch,
+					.prepare(`SELECT event_id, effect_id, action, scope_id, device_id, role, status, membership_epoch,
 							previous_role, previous_status, previous_membership_epoch,
 							coordinator_id, group_id, actor_type, actor_id, manifest_hash, created_at
 						 FROM coordinator_scope_membership_audit_log

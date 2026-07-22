@@ -7926,6 +7926,106 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("returns safe recipient-policy reconciliation states with the delivered-copy warning", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = "2026-07-22T12:00:00.000Z";
+				const waitingProject = "https://git.example.invalid/acme/waiting.git";
+				const unsupportedProject = "https://git.example.invalid/acme/unsupported.git";
+				const insertRecipient = store.db.prepare(
+					`INSERT INTO project_recipients(
+					 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+					 policy_revision, migration_state, idempotency_key, created_at, updated_at
+					 ) VALUES (?, 'identity', ?, 'active', 'test', 'private-revision', 'native', ?, ?, ?)`,
+				);
+				insertRecipient.run(
+					waitingProject,
+					"identity-waiting",
+					"recipient-status-waiting",
+					now,
+					now,
+				);
+				insertRecipient.run(
+					unsupportedProject,
+					"identity-unsupported",
+					"recipient-status-unsupported",
+					now,
+					now,
+				);
+				const insertAuthority = store.db.prepare(
+					`INSERT INTO recipient_policy_authority_states(
+					 canonical_project_identity, authority_state, generation, desired_devices_digest,
+					 current_devices_digest, fresh_snapshot_fingerprint, safe_error_code,
+					 state_changed_at, last_error_at, attempt_count, last_attempt_at, created_at, updated_at
+					 ) VALUES (?, 'legacy', 2, 'private-desired-digest', 'private-current-digest',
+					 'private-snapshot-fingerprint', ?, ?, ?, 1, ?, ?, ?)`,
+				);
+				insertAuthority.run(
+					waitingProject,
+					"recipient_policy_capability_undetermined",
+					now,
+					now,
+					now,
+					now,
+					now,
+				);
+				insertAuthority.run(
+					unsupportedProject,
+					"recipient_policy_capability_unsupported",
+					now,
+					now,
+					now,
+					now,
+					now,
+				);
+				store.db.pragma("query_only = ON");
+
+				const response = await app.request("/api/sync/recipient-policy/v1/reconciliation-status");
+				const text = await response.text();
+				const payload = JSON.parse(text) as {
+					version: number;
+					items: Array<{
+						canonicalProjectIdentity: string;
+						state: string;
+						deliveredCopiesMayRemain: boolean;
+						revocationWarning: string;
+					}>;
+				};
+
+				expect(response.status).toBe(200);
+				expect(payload.version).toBe(1);
+				expect(payload.items).toEqual([
+					expect.objectContaining({
+						canonicalProjectIdentity: unsupportedProject,
+						state: "needs_attention",
+						deliveredCopiesMayRemain: true,
+					}),
+					expect.objectContaining({
+						canonicalProjectIdentity: waitingProject,
+						state: "waiting",
+						deliveredCopiesMayRemain: true,
+					}),
+				]);
+				expect(payload.items.every((item) => item.revocationWarning.length > 0)).toBe(true);
+				for (const privateValue of [
+					"private-revision",
+					"private-desired-digest",
+					"private-current-digest",
+					"private-snapshot-fingerprint",
+					"recipient_policy_capability_undetermined",
+					"recipient_policy_capability_unsupported",
+				]) {
+					expect(text).not.toContain(privateValue);
+				}
+			} finally {
+				getStore()?.db.pragma("query_only = OFF");
+				cleanup();
+			}
+		});
+
 		it("serves and resolves recipient-policy review without mutating protected state", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
@@ -12602,25 +12702,55 @@ describe("viewer-server", () => {
 						},
 					);
 					expect(granted.status).toBe(200);
-
 					const revoked = await app.request(
 						"/api/coordinator/admin/groups/team-a/scopes/scope-a/members/device-1/revoke",
 						{
 							method: "POST",
 							headers: { "Content-Type": "application/json" },
-							body: JSON.stringify({ membership_epoch: 4, memory_items: [{ id: 1 }] }),
+							body: JSON.stringify({
+								effect_id: "caller-supplied-revoke",
+								membership_epoch: 4,
+								memory_items: [{ id: 1 }],
+							}),
 						},
 					);
 					expect(revoked.status).toBe(200);
 
+					const repeatedGrant = await app.request(
+						"/api/coordinator/admin/groups/team-a/scopes/scope-a/members",
+						{
+							method: "POST",
+							headers: { "Content-Type": "application/json" },
+							body: JSON.stringify({
+								device_id: "device-1",
+								role: "reader",
+								membership_epoch: 3,
+								memory_payload: { id: 1 },
+							}),
+						},
+					);
+					expect(repeatedGrant.status).toBe(200);
+
 					const calls = fetchMock.mock.calls;
-					expect(calls).toHaveLength(3);
+					expect(calls).toHaveLength(4);
 					const grantBody = bodyJson(calls[1]?.[1] as RequestInit | undefined);
-					expect(grantBody).toMatchObject({ device_id: "device-1", role: "reader" });
+					expect(grantBody).toMatchObject({
+						device_id: "device-1",
+						role: "reader",
+					});
+					expect(grantBody.effect_id).toMatch(/^viewer-admin-membership:grant:[a-f0-9]{64}$/);
 					expect(grantBody).not.toHaveProperty("memory_payload");
 					const revokeBody = bodyJson(calls[2]?.[1] as RequestInit | undefined);
-					expect(revokeBody).toMatchObject({ membership_epoch: 4 });
+					expect(revokeBody).toMatchObject({
+						effect_id: "caller-supplied-revoke",
+						membership_epoch: 4,
+					});
 					expect(revokeBody).not.toHaveProperty("memory_items");
+					const repeatedGrantBody = bodyJson(calls[3]?.[1] as RequestInit | undefined);
+					expect(repeatedGrantBody.effect_id).toMatch(
+						/^viewer-admin-membership:grant:[a-f0-9]{64}$/,
+					);
+					expect(repeatedGrantBody.effect_id).not.toBe(grantBody.effect_id);
 				} finally {
 					cleanup();
 				}

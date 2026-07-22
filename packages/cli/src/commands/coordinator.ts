@@ -561,6 +561,7 @@ export function buildCoordinatorCommand(): Command {
 		.argument("<group>", "group id")
 		.argument("<scope-id>", "Sharing domain scope_id")
 		.argument("<device-id>", "device id")
+		.requiredOption("--effect-id <id>", "deterministic mutation effect id")
 		.option("--role <role>", "membership role")
 		.option("--membership-epoch <epoch>", "membership epoch")
 		.option("--manifest-hash <hash>", "membership manifest hash")
@@ -574,6 +575,7 @@ export function buildCoordinatorCommand(): Command {
 			scopeId: string,
 			deviceId: string,
 			opts: {
+				effectId: string;
 				role?: string;
 				membershipEpoch?: string;
 				manifestHash?: string;
@@ -586,6 +588,7 @@ export function buildCoordinatorCommand(): Command {
 		) => {
 			try {
 				const membership = await coordinatorGrantScopeMembershipAction({
+					effectId: opts.effectId,
 					groupId,
 					scopeId,
 					deviceId,
@@ -626,6 +629,7 @@ export function buildCoordinatorCommand(): Command {
 		.argument("<group>", "group id")
 		.argument("<scope-id>", "Sharing domain scope_id")
 		.argument("<device-id>", "device id")
+		.requiredOption("--effect-id <id>", "deterministic mutation effect id")
 		.option("--membership-epoch <epoch>", "membership epoch")
 		.option("--manifest-hash <hash>", "membership manifest hash")
 		.option("--remote-url <url>", "remote coordinator URL override")
@@ -638,6 +642,7 @@ export function buildCoordinatorCommand(): Command {
 			scopeId: string,
 			deviceId: string,
 			opts: {
+				effectId: string;
 				membershipEpoch?: string;
 				manifestHash?: string;
 				remoteUrl?: string;
@@ -649,6 +654,7 @@ export function buildCoordinatorCommand(): Command {
 		) => {
 			try {
 				const ok = await coordinatorRevokeScopeMembershipAction({
+					effectId: opts.effectId,
 					groupId,
 					scopeId,
 					deviceId,
