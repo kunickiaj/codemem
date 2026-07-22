@@ -358,6 +358,20 @@ export {
 } from "./ingest-xml-parser.js";
 export { parsePositiveMemoryId, parseStrictInteger } from "./integers.js";
 export type {
+	LegacyRecipientPolicyConditionCodeV1,
+	LegacyRecipientPolicyConditionV1,
+	LegacyRecipientPolicyConfidenceV1,
+	LegacyRecipientPolicyEffectiveDeviceV1,
+	LegacyRecipientPolicyEnforcementStateV1,
+	LegacyRecipientPolicyEnforcementV1,
+	LegacyRecipientPolicyIdentityCandidateV1,
+	LegacyRecipientPolicyProjectionV1,
+	LegacyRecipientPolicyProvenanceV1,
+	LegacyRecipientPolicyTeamCandidateV1,
+	ListLegacyRecipientPolicyProjectionsOptions,
+} from "./legacy-recipient-policy-projection.js";
+export { listLegacyRecipientPolicyProjections } from "./legacy-recipient-policy-projection.js";
+export type {
 	BackfillTagsTextOptions,
 	BackfillTagsTextResult,
 	DeactivateLowSignalMemoriesOptions,

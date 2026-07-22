@@ -82,6 +82,7 @@ import {
 	listAuthorizedScopesForPeer,
 	listCoordinatorJoinRequests,
 	listInboundScopeRejections,
+	listLegacyRecipientPolicyProjections,
 	listMaintenanceJobs,
 	listPerPeerScopeSyncState,
 	listProjectScopeCandidates,
@@ -4066,6 +4067,16 @@ export function syncRoutes(
 			projects: listProjectScopeCandidates(store.db, { limit }),
 			local_default_scope_id: LOCAL_DEFAULT_SCOPE_ID,
 		});
+	});
+
+	app.get("/api/sync/recipient-policy/v1/projection", (c) => {
+		const store = getStore();
+		return c.json(
+			listLegacyRecipientPolicyProjections(store.db, {
+				localActorId: store.actorId,
+				localDeviceId: store.deviceId,
+			}),
+		);
 	});
 
 	app.get("/api/sync/projects", async (c) => {
