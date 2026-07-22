@@ -11213,11 +11213,12 @@ describe("viewer-server", () => {
 						person_kind, pending_person_operation_id, teammate_name, history_policy,
 						reviewed_project_set_digest, coordinator_group_id, invite_token_digest,
 						invite_expires_at, created_at, updated_at
-					) VALUES (?, 'waiting_for_acceptance', ?, '[]', 'pending-brian', 'pending', ?,
+					) VALUES (?, 'waiting_for_acceptance', ?, ?, 'pending-brian', 'pending', ?,
 						'Brian', 'existing_and_future', ?, 'team-a', 'digest', '2099-01-01T00:00:00Z', ?, ?)`)
 					.run(
 						operationId,
 						store.actorId,
+						JSON.stringify([store.deviceId]),
 						operationId,
 						reviewedDigest,
 						"2026-07-20T00:00:00Z",
@@ -11401,6 +11402,13 @@ describe("viewer-server", () => {
 			const { app, ensureStore, cleanup } = createTestApp();
 			try {
 				const store = ensureStore();
+				store.db
+					.prepare(
+						`INSERT INTO actors(
+							actor_id, display_name, is_local, status, created_at, updated_at
+						 ) VALUES (?, 'Local inviter', 1, 'active', ?, ?)`,
+					)
+					.run(store.actorId, "2026-07-20T12:00:00.000Z", "2026-07-20T12:00:00.000Z");
 				const sessionId = insertTestSession(store.db);
 				store.db
 					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
@@ -11434,6 +11442,7 @@ describe("viewer-server", () => {
 				});
 				core.reconcileShareOperationAcceptance(store.db, {
 					operationId: plan.operationId,
+					localInviterActorId: store.actorId,
 					coordinatorGroupId: "team-a",
 					reviewedProjectSetDigest: plan.reviewedProjectSetDigest,
 					recipientActorId: "actor-recipient-route",

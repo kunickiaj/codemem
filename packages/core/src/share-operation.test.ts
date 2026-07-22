@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { previewRecipientPolicyEdges } from "./recipient-policy-edges.js";
 import {
 	inviteTokenDigest,
 	parseAcceptedProjectIntent,
@@ -51,6 +52,7 @@ function acceptanceInput(
 	const publicKey = "recipient-key";
 	return {
 		operationId: operation.operationId,
+		localInviterActorId: operation.inviterActorId,
 		coordinatorGroupId: operation.coordinatorGroupId,
 		reviewedProjectSetDigest: operation.reviewedProjectSetDigest,
 		recipientActorId: "actor-brian",
@@ -232,6 +234,9 @@ describe("share-operation persistence", () => {
 	beforeEach(() => {
 		db = new Database(":memory:");
 		initTestSchema(db);
+		db.prepare(`INSERT INTO actors(
+			actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+		) VALUES ('actor-adam', 'Adam', 1, 'active', NULL, ?, ?)`).run(createdAt, createdAt);
 	});
 
 	afterEach(() => db.close());
@@ -388,6 +393,15 @@ describe("share-operation persistence", () => {
 			inviteId: "invite-1",
 			tokenDigest: inviteTokenDigest("token-1"),
 		});
+		db.prepare(`INSERT INTO replication_scopes(
+			scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+		) VALUES ('source-scope', 'Source', 'team', 'local', 1, 'active', ?, ?)`).run(
+			createdAt,
+			createdAt,
+		);
+		db.prepare(`INSERT INTO scope_memberships(
+			scope_id, device_id, role, status, membership_epoch, updated_at
+		) VALUES ('source-scope', 'source-bystander', 'member', 'active', 1, ?)`).run(createdAt);
 		const protectedBefore = Object.fromEntries(
 			[
 				"replication_scopes",
@@ -402,6 +416,7 @@ describe("share-operation persistence", () => {
 		const publicKey = "recipient-key";
 		reconcileShareOperationAcceptance(db, {
 			operationId: operation.operationId,
+			localInviterActorId: operation.inviterActorId,
 			coordinatorGroupId: operation.coordinatorGroupId,
 			reviewedProjectSetDigest: operation.reviewedProjectSetDigest,
 			recipientActorId: "actor-brian",
@@ -443,22 +458,53 @@ describe("share-operation persistence", () => {
 				.prepare("SELECT actor_id, name FROM sync_peers WHERE peer_device_id = ?")
 				.get("device-brian"),
 		).toEqual({ actor_id: "actor-brian", name: "Brian's MacBook" });
-		expect(db.prepare("SELECT identity_id, device_id FROM identity_devices").all()).toEqual([
+		expect(
+			db.prepare("SELECT identity_id, device_id FROM identity_devices ORDER BY device_id").all(),
+		).toEqual([
+			{ identity_id: "actor-adam", device_id: "device-a" },
+			{ identity_id: "actor-adam", device_id: "device-b" },
 			{ identity_id: "actor-brian", device_id: "device-brian" },
 		]);
 		expect(
 			db
 				.prepare(`SELECT canonical_project_identity, recipient_kind, recipient_id
-					FROM project_recipients ORDER BY canonical_project_identity`)
+					FROM project_recipients ORDER BY canonical_project_identity, recipient_id`)
 				.all(),
 		).toEqual(
-			operation.projects.map((project) => ({
-				canonical_project_identity: project.canonicalIdentity,
-				recipient_kind: "identity",
-				recipient_id: "actor-brian",
-			})),
+			operation.projects.flatMap((project) => [
+				{
+					canonical_project_identity: project.canonicalIdentity,
+					recipient_kind: "identity",
+					recipient_id: "actor-adam",
+				},
+				{
+					canonical_project_identity: project.canonicalIdentity,
+					recipient_kind: "identity",
+					recipient_id: "actor-brian",
+				},
+			]),
 		);
+		expect(
+			db.prepare("SELECT 1 FROM identity_devices WHERE device_id = 'source-bystander'").get(),
+		).toBeUndefined();
 		expect(db.prepare("SELECT COUNT(*) FROM policy_team_memberships").pluck().get()).toBe(0);
+		const reconciliation = previewRecipientPolicyEdges(db, {
+			version: 1,
+			changes: [
+				{
+					canonicalProjectIdentity: operation.projects[0]?.canonicalIdentity,
+					recipient: { recipientKind: "identity", identityId: "actor-adam" },
+					action: "add",
+				},
+			],
+		});
+		expect(
+			reconciliation.effectiveDevices
+				.filter(
+					(device) => device.canonicalProjectIdentity === operation.projects[0]?.canonicalIdentity,
+				)
+				.map((device) => device.deviceId),
+		).toEqual(["device-a", "device-b", "device-brian"]);
 		expect(
 			Object.fromEntries(
 				Object.keys(protectedBefore).map((table) => [
@@ -467,6 +513,124 @@ describe("share-operation persistence", () => {
 				]),
 			),
 		).toEqual(protectedBefore);
+	});
+
+	it("accepts compatible migrated inviter policy without rewriting its metadata", () => {
+		const project = projects[0];
+		if (!project) throw new Error("project fixture missing");
+		const operation = plan({ inviterDeviceIds: ["device-a"], projects: [project] });
+		persistShareOperation(db, operation, {
+			inviteId: "invite-1",
+			tokenDigest: inviteTokenDigest("token-1"),
+		});
+		db.prepare(`INSERT INTO identity_devices(
+			identity_id, device_id, display_name, status, provenance, revision, migration_state,
+			source_fingerprint, idempotency_key, created_at, updated_at
+		) VALUES ('actor-adam', 'device-a', 'Migrated laptop', 'active', 'migration',
+			'migration-device-revision', 'projected', NULL, 'migration-device-key', ?, ?)`).run(
+			createdAt,
+			createdAt,
+		);
+		db.prepare(`INSERT INTO project_recipients(
+			canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			policy_revision, migration_state, source_fingerprint, idempotency_key,
+			created_at, updated_at
+		) VALUES (?, 'identity', 'actor-adam', 'active', 'migration',
+			'migration-project-revision', 'projected', 'different-source',
+			'migration-project-key', ?, ?)`).run(
+			operation.projects[0]?.canonicalIdentity,
+			createdAt,
+			createdAt,
+		);
+		const migratedRows = JSON.stringify({
+			device: db.prepare("SELECT * FROM identity_devices WHERE device_id = 'device-a'").get(),
+			project: db
+				.prepare("SELECT * FROM project_recipients WHERE recipient_id = 'actor-adam'")
+				.get(),
+		});
+		const input = acceptanceInput(operation);
+
+		reconcileShareOperationAcceptance(db, input);
+
+		expect(
+			JSON.stringify({
+				device: db.prepare("SELECT * FROM identity_devices WHERE device_id = 'device-a'").get(),
+				project: db
+					.prepare("SELECT * FROM project_recipients WHERE recipient_id = 'actor-adam'")
+					.get(),
+			}),
+		).toBe(migratedRows);
+		expect(db.prepare("SELECT COUNT(*) FROM identity_devices").pluck().get()).toBe(2);
+		expect(db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(2);
+		const policyAfterFirstAcceptance = JSON.stringify({
+			devices: db.prepare("SELECT * FROM identity_devices ORDER BY device_id").all(),
+			recipients: db.prepare("SELECT * FROM project_recipients ORDER BY recipient_id").all(),
+		});
+
+		reconcileShareOperationAcceptance(db, input);
+
+		expect(
+			JSON.stringify({
+				devices: db.prepare("SELECT * FROM identity_devices ORDER BY device_id").all(),
+				recipients: db.prepare("SELECT * FROM project_recipients ORDER BY recipient_id").all(),
+			}),
+		).toBe(policyAfterFirstAcceptance);
+	});
+
+	it("rolls back acceptance when a reviewed inviter device is bound to another Identity", () => {
+		const operation = plan();
+		persistShareOperation(db, operation, {
+			inviteId: "invite-1",
+			tokenDigest: inviteTokenDigest("token-1"),
+		});
+		db.prepare(`INSERT INTO actors(
+			actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+		) VALUES ('actor-other', 'Other', 0, 'active', NULL, ?, ?)`).run(createdAt, createdAt);
+		db.prepare(`INSERT INTO identity_devices(
+			identity_id, device_id, display_name, status, provenance, revision, migration_state,
+			source_fingerprint, idempotency_key, created_at, updated_at
+		) VALUES ('actor-other', 'device-a', 'Other device', 'active', 'user',
+			'existing-revision', 'user_managed', 'existing-source', 'existing-key', ?, ?)`).run(
+			createdAt,
+			createdAt,
+		);
+
+		expect(() => reconcileShareOperationAcceptance(db, acceptanceInput(operation))).toThrow(
+			"device_binding_conflict",
+		);
+		expect(
+			db
+				.prepare("SELECT state, person_id FROM share_operations WHERE operation_id = ?")
+				.get(operation.operationId),
+		).toEqual({ state: "waiting_for_acceptance", person_id: operation.personId });
+		expect(db.prepare("SELECT 1 FROM actors WHERE actor_id = 'actor-brian'").get()).toBeUndefined();
+		expect(
+			db.prepare("SELECT 1 FROM project_recipients WHERE recipient_id = 'actor-brian'").get(),
+		).toBeUndefined();
+		expect(
+			db
+				.prepare("SELECT identity_id FROM identity_devices WHERE device_id = 'device-a'")
+				.pluck()
+				.get(),
+		).toBe("actor-other");
+	});
+
+	it("rejects acceptance when the persisted inviter does not match the local runtime", () => {
+		const operation = plan();
+		persistShareOperation(db, operation, {
+			inviteId: "invite-1",
+			tokenDigest: inviteTokenDigest("token-1"),
+		});
+
+		expect(() =>
+			reconcileShareOperationAcceptance(
+				db,
+				acceptanceInput(operation, { localInviterActorId: "actor-other-local" }),
+			),
+		).toThrow("operation_scope_mismatch");
+		expect(db.prepare("SELECT 1 FROM actors WHERE actor_id = 'actor-brian'").get()).toBeUndefined();
+		expect(db.prepare("SELECT COUNT(*) FROM identity_devices").pluck().get()).toBe(0);
+		expect(db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
 	});
 
 	it("rejects pending acceptance that collides with an existing active Person", () => {
@@ -483,6 +647,7 @@ describe("share-operation persistence", () => {
 		expect(() =>
 			reconcileShareOperationAcceptance(db, {
 				operationId: operation.operationId,
+				localInviterActorId: operation.inviterActorId,
 				coordinatorGroupId: operation.coordinatorGroupId,
 				reviewedProjectSetDigest: operation.reviewedProjectSetDigest,
 				recipientActorId: "actor-alex",
@@ -543,6 +708,14 @@ describe("share-operation persistence", () => {
 		});
 		const input = acceptanceInput(operation);
 		reconcileShareOperationAcceptance(db, input);
+		const firstPolicySnapshot = JSON.stringify({
+			devices: db.prepare("SELECT * FROM identity_devices ORDER BY device_id").all(),
+			recipients: db
+				.prepare(
+					"SELECT * FROM project_recipients ORDER BY canonical_project_identity, recipient_id",
+				)
+				.all(),
+		});
 		db.prepare("UPDATE share_operations SET state = 'initial_sync' WHERE operation_id = ?").run(
 			operation.operationId,
 		);
@@ -553,6 +726,69 @@ describe("share-operation persistence", () => {
 				.pluck()
 				.get(operation.operationId),
 		).toBe("initial_sync");
+		expect(
+			JSON.stringify({
+				devices: db.prepare("SELECT * FROM identity_devices ORDER BY device_id").all(),
+				recipients: db
+					.prepare(
+						"SELECT * FROM project_recipients ORDER BY canonical_project_identity, recipient_id",
+					)
+					.all(),
+			}),
+		).toBe(firstPolicySnapshot);
+	});
+
+	it("uses stable friendly inviter device names without persisting raw long IDs", () => {
+		const longDeviceId = `device-${"x".repeat(180)}`;
+		const operation = plan({ inviterDeviceIds: [longDeviceId, "device-friendly"] });
+		persistShareOperation(db, operation, {
+			inviteId: "invite-1",
+			tokenDigest: inviteTokenDigest("token-1"),
+		});
+		db.prepare(`INSERT INTO sync_peers(peer_device_id, name, created_at)
+			VALUES ('device-friendly', 'Owner laptop', ?), (?, ?, ?)`).run(
+			createdAt,
+			longDeviceId,
+			"x".repeat(121),
+			createdAt,
+		);
+		const input = acceptanceInput(operation);
+
+		reconcileShareOperationAcceptance(db, input);
+
+		expect(
+			db
+				.prepare(`SELECT device_id, display_name FROM identity_devices
+				WHERE identity_id = 'actor-adam' ORDER BY device_id`)
+				.all(),
+		).toEqual([
+			{ device_id: "device-friendly", display_name: "Owner laptop" },
+			{ device_id: longDeviceId, display_name: "Existing device" },
+		]);
+		db.prepare("UPDATE sync_peers SET name = 'Renamed peer' WHERE peer_device_id = ?").run(
+			"device-friendly",
+		);
+		db.prepare("UPDATE sync_peers SET name = 'Now friendly' WHERE peer_device_id = ?").run(
+			longDeviceId,
+		);
+
+		reconcileShareOperationAcceptance(db, input);
+
+		expect(
+			db
+				.prepare(`SELECT device_id, display_name FROM identity_devices
+				WHERE identity_id = 'actor-adam' ORDER BY device_id`)
+				.all(),
+		).toEqual([
+			{ device_id: "device-friendly", display_name: "Owner laptop" },
+			{ device_id: longDeviceId, display_name: "Existing device" },
+		]);
+		expect(
+			db
+				.prepare("SELECT COUNT(*) FROM identity_devices WHERE display_name = ?")
+				.pluck()
+				.get(longDeviceId),
+		).toBe(0);
 	});
 
 	it("rejects malformed or mismatched authoritative project intent", () => {
@@ -568,6 +804,7 @@ describe("share-operation persistence", () => {
 		expect(() =>
 			reconcileShareOperationAcceptance(db, {
 				operationId: operation.operationId,
+				localInviterActorId: operation.inviterActorId,
 				coordinatorGroupId: operation.coordinatorGroupId,
 				reviewedProjectSetDigest: operation.reviewedProjectSetDigest,
 				recipientActorId: "actor-brian",

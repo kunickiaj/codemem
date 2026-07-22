@@ -911,6 +911,7 @@ async function reconcileProjectInviteAcceptance(
 		.get(operationId) as string | undefined;
 	if (!owner) throw new Error("operation_not_found");
 	if (owner !== store.actorId) throw new Error("operation_scope_mismatch");
+	ensureLocalActorRecord(store);
 	const { groupId, payload } = await coordinatorProjectInvitePayload(operationId);
 	if (payload.state === "waiting_for_acceptance") return { accepted: false, payload };
 	if (payload.state !== "accepted") {
@@ -950,6 +951,7 @@ async function reconcileProjectInviteAcceptance(
 	const projects = parseAcceptedProjectIntent(payload.projects);
 	reconcileShareOperationAcceptance(store.db, {
 		operationId,
+		localInviterActorId: store.actorId,
 		coordinatorGroupId: groupId,
 		reviewedProjectSetDigest: String(payload.reviewed_project_set_digest),
 		recipientActorId: String(payload.recipient_actor_id),
