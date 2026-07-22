@@ -12,6 +12,7 @@ import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
 import type {
 	CoordinatorBootstrapGrantVerification,
 	CoordinatorEnrollment,
+	CoordinatorInviteKind,
 	CoordinatorScope,
 	CoordinatorScopeMembership,
 	CoordinatorStore,
@@ -1301,6 +1302,10 @@ export function createCoordinatorApp(
 		const inviterDisplayName = String(data.inviter_display_name ?? "").trim() || null;
 		const inviterDeviceId = String(data.inviter_device_id ?? "").trim() || null;
 		const pendingPersonId = String(data.pending_person_id ?? "").trim() || null;
+		const requestedInviteKind = String(data.invite_kind ?? data.kind ?? "").trim();
+		const policyTeamId = String(data.policy_team_id ?? "").trim() || null;
+		const targetIdentityId = String(data.target_identity_id ?? "").trim() || null;
+		const reviewedPreviewDigest = String(data.reviewed_preview_digest ?? "").trim() || null;
 		let projectSummaries: ReturnType<typeof normalizeProjectInviteSummaries> | null = null;
 		let projectIntent: Array<{
 			canonical_identity: string;
@@ -1318,6 +1323,38 @@ export function createCoordinatorApp(
 		}
 		if (Boolean(operationId) !== Boolean(reviewedProjectSetDigest)) {
 			return c.json({ error: "operation_intent_reference_incomplete" }, 400);
+		}
+		const inviteKind = (requestedInviteKind ||
+			(operationId ? "project_share" : "legacy_enrollment")) as CoordinatorInviteKind;
+		if (
+			!(["legacy_enrollment", "project_share", "team_member", "add_device"] as const).includes(
+				inviteKind,
+			)
+		) {
+			return c.json({ error: "invite_kind_invalid" }, 400);
+		}
+		if (inviteKind === "project_share" ? !operationId : Boolean(operationId)) {
+			return c.json({ error: "invite_kind_intent_mismatch" }, 400);
+		}
+		if (reviewedPreviewDigest && !/^[a-f0-9]{64}$/u.test(reviewedPreviewDigest)) {
+			return c.json({ error: "reviewed_preview_digest_invalid" }, 400);
+		}
+		if (
+			(inviteKind === "team_member" &&
+				(!policyTeamId || !reviewedPreviewDigest || Boolean(targetIdentityId))) ||
+			(inviteKind === "add_device" &&
+				(!targetIdentityId || !reviewedPreviewDigest || Boolean(policyTeamId))) ||
+			(!["team_member", "add_device"].includes(inviteKind) &&
+				Boolean(policyTeamId || targetIdentityId || reviewedPreviewDigest))
+		) {
+			return c.json({ error: "recipient_invite_metadata_invalid" }, 400);
+		}
+		if (
+			[policyTeamId, targetIdentityId]
+				.filter((value): value is string => Boolean(value))
+				.some((value) => value.length > 256 || /[\p{Cc}\p{Cf}]/u.test(value))
+		) {
+			return c.json({ error: "recipient_invite_identifier_invalid" }, 400);
 		}
 		if (
 			(operationId && !/^share_[a-f0-9]{40}$/u.test(operationId)) ||
@@ -1397,11 +1434,18 @@ export function createCoordinatorApp(
 				pendingPersonId,
 				projectSummaries,
 				projectIntent,
+				inviteKind,
+				policyTeamId,
+				targetIdentityId,
+				reviewedPreviewDigest,
 			});
 
 			const payload: InvitePayload = {
 				v: 1,
-				kind: "coordinator_team_invite",
+				kind:
+					invite.invite_kind === "team_member" || invite.invite_kind === "add_device"
+						? invite.invite_kind
+						: "coordinator_team_invite",
 				coordinator_url: String(data.coordinator_url ?? "").trim(),
 				group_id: groupId,
 				policy: invite.policy,
@@ -1413,6 +1457,18 @@ export function createCoordinatorApp(
 							operation_id: invite.operation_id,
 							inviter_name: invite.inviter_display_name ?? null,
 							project_summaries: projectSummaries ?? [],
+						}
+					: {}),
+				...(invite.invite_kind === "team_member"
+					? {
+							policy_team_id: invite.policy_team_id ?? undefined,
+							reviewed_preview_digest: invite.reviewed_preview_digest ?? undefined,
+						}
+					: {}),
+				...(invite.invite_kind === "add_device"
+					? {
+							target_identity_id: invite.target_identity_id ?? undefined,
+							reviewed_preview_digest: invite.reviewed_preview_digest ?? undefined,
 						}
 					: {}),
 			};
@@ -1452,6 +1508,31 @@ export function createCoordinatorApp(
 		try {
 			const invite = await store.getInviteByTokenForInspection(token);
 			if (!invite || invite.revoked_at) return c.json({ error: "invite_invalid" }, 404);
+			if (invite.invite_kind === "team_member" || invite.invite_kind === "add_device") {
+				try {
+					const inspection = await store.inspectRecipientInvite({ token, now: runtime.now() });
+					if (!inspection) return c.json({ error: "invite_invalid" }, 404);
+					return c.json(
+						inspection.kind === "team_member"
+							? {
+									kind: inspection.kind,
+									policy_team_id: inspection.policy_team_id,
+									reviewed_preview_digest: inspection.reviewed_preview_digest,
+									bound: inspection.bound,
+								}
+							: {
+									kind: inspection.kind,
+									target_identity_id: inspection.target_identity_id,
+									reviewed_preview_digest: inspection.reviewed_preview_digest,
+									bound: inspection.bound,
+								},
+					);
+				} catch (error) {
+					const code = error instanceof Error ? error.message : "invite_invalid";
+					const status = code === "invite_expired" ? 410 : code === "invite_invalid" ? 404 : 409;
+					return c.json({ error: code }, status);
+				}
+			}
 			const projectInvite = Boolean(invite.operation_id || invite.reviewed_project_set_digest);
 			if (
 				new Date(invite.expires_at) <= new Date(runtime.now()) &&
@@ -1708,11 +1789,66 @@ export function createCoordinatorApp(
 			const invite = await store.getInviteByTokenForInspection(token);
 			if (!invite) return c.json({ error: "invite_invalid" }, 404);
 			const projectInvite = Boolean(invite.operation_id || invite.reviewed_project_set_digest);
+			const recipientInvite =
+				invite.invite_kind === "team_member" || invite.invite_kind === "add_device";
 			if (invite.revoked_at) {
-				return c.json({ error: projectInvite ? "invite_invalid" : "revoked_token" }, 400);
+				return c.json(
+					{ error: projectInvite || recipientInvite ? "invite_invalid" : "revoked_token" },
+					400,
+				);
 			}
 			if (!invite.consumed_at && new Date(invite.expires_at) <= new Date(runtime.now())) {
-				return c.json({ error: projectInvite ? "invite_expired" : "expired_token" }, 410);
+				return c.json(
+					{ error: projectInvite || recipientInvite ? "invite_expired" : "expired_token" },
+					410,
+				);
+			}
+			if (recipientInvite) {
+				const allowedRecipientAcceptanceFields = new Set([
+					"token",
+					"invite_kind",
+					"kind",
+					"identity_id",
+					"device_id",
+					"public_key",
+					"fingerprint",
+				]);
+				if (Object.keys(data).some((key) => !allowedRecipientAcceptanceFields.has(key))) {
+					return c.json({ error: "unexpected_recipient_invite_fields" }, 400);
+				}
+				const requestedKind = String(data.invite_kind ?? data.kind ?? "").trim();
+				const identityId = String(data.identity_id ?? "").trim();
+				if (!identityId || requestedKind !== invite.invite_kind) {
+					return c.json({ error: "recipient_invite_binding_required" }, 400);
+				}
+				if (identityId.length > 256 || /[\p{Cc}\p{Cf}]/u.test(identityId)) {
+					return c.json({ error: "identity_id_invalid" }, 400);
+				}
+				try {
+					const acceptance = await store.consumeRecipientInvite({
+						token,
+						inviteKind: invite.invite_kind as "team_member" | "add_device",
+						identityId,
+						deviceId,
+						publicKey,
+						fingerprint,
+						now: runtime.now(),
+					});
+					return c.json({
+						ok: true,
+						status: acceptance.status,
+						kind: acceptance.invite.invite_kind,
+						group_id: acceptance.invite.group_id,
+						identity_id: acceptance.invite.recipient_actor_id,
+						policy_team_id: acceptance.invite.policy_team_id ?? null,
+						target_identity_id: acceptance.invite.target_identity_id ?? null,
+						reviewed_preview_digest: acceptance.invite.reviewed_preview_digest,
+					});
+				} catch (error) {
+					const code = error instanceof Error ? error.message : "invite_invalid";
+					const status = code === "invite_expired" ? 410 : code === "invite_invalid" ? 404 : 409;
+					return c.json({ error: code }, status);
+				}
 			}
 			if (invite.operation_id || invite.reviewed_project_set_digest) {
 				const allowedProjectAcceptanceFields = new Set([

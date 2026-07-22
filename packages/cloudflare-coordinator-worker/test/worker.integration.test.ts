@@ -757,4 +757,128 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		);
 		expect(payload.items.some((item) => item.device_id === devices[3]?.deviceId)).toBe(false);
 	});
+
+	it("persists explicit Team and add-device invitation bindings without mutating coordinator memberships", async () => {
+		const device = createIdentity();
+		const otherDevice = createIdentity();
+		const adminHeaders = {
+			"content-type": "application/json",
+			"X-Codemem-Coordinator-Admin": "test-secret",
+		};
+		await env.COORDINATOR_DB.prepare(
+			"INSERT INTO groups (group_id, display_name, created_at) VALUES ('g1', 'Coordinator Team', ?)",
+		)
+			.bind("2026-07-21T00:00:00Z")
+			.run();
+		const createInvite = async (body: Record<string, unknown>) => {
+			const response = await exports.default.fetch("https://example.com/v1/admin/invites", {
+				method: "POST",
+				headers: adminHeaders,
+				body: JSON.stringify({
+					group_id: "g1",
+					policy: "auto_admit",
+					expires_at: "2099-01-01T00:00:00Z",
+					coordinator_url: "https://example.com",
+					...body,
+				}),
+			});
+			expect(response.status).toBe(200);
+			return (await response.json()) as { payload: InvitePayload };
+		};
+
+		const team = await createInvite({
+			invite_kind: "team_member",
+			policy_team_id: "policy-team-1",
+			reviewed_preview_digest: "a".repeat(64),
+		});
+		expect(team.payload).toMatchObject({
+			kind: "team_member",
+			policy_team_id: "policy-team-1",
+			reviewed_preview_digest: "a".repeat(64),
+		});
+		const inspect = await exports.default.fetch("https://example.com/v1/invites/inspect", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ token: team.payload.token }),
+		});
+		expect(await inspect.json()).toMatchObject({
+			kind: "team_member",
+			policy_team_id: "policy-team-1",
+			bound: false,
+		});
+		const acceptBody = {
+			token: team.payload.token,
+			invite_kind: "team_member",
+			identity_id: "identity-brian",
+			device_id: device.deviceId,
+			public_key: device.publicKey,
+			fingerprint: device.fingerprint,
+		};
+		const accept = () =>
+			exports.default.fetch("https://example.com/v1/join", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(acceptBody),
+			});
+		expect(await (await accept()).json()).toMatchObject({ status: "accepted" });
+		expect(await (await accept()).json()).toMatchObject({ status: "existing" });
+		const changedDevice = await exports.default.fetch("https://example.com/v1/join", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				...acceptBody,
+				device_id: otherDevice.deviceId,
+				public_key: otherDevice.publicKey,
+				fingerprint: otherDevice.fingerprint,
+			}),
+		});
+		expect(changedDevice.status).toBe(409);
+		expect(await changedDevice.json()).toEqual({ error: "invite_already_bound" });
+
+		const addDevice = await createInvite({
+			invite_kind: "add_device",
+			target_identity_id: "identity-brian",
+			reviewed_preview_digest: "b".repeat(64),
+		});
+		const wrongIdentity = await exports.default.fetch("https://example.com/v1/join", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				token: addDevice.payload.token,
+				invite_kind: "add_device",
+				identity_id: "identity-other",
+				device_id: otherDevice.deviceId,
+				public_key: otherDevice.publicKey,
+				fingerprint: otherDevice.fingerprint,
+			}),
+		});
+		expect(wrongIdentity.status).toBe(409);
+		expect(await wrongIdentity.json()).toEqual({ error: "invite_identity_conflict" });
+
+		expect(
+			await env.COORDINATOR_DB.prepare("SELECT COUNT(*) AS count FROM enrolled_devices")
+				.first<{ count: number }>(),
+		).toEqual({ count: 0 });
+		expect(
+			await env.COORDINATOR_DB.prepare("SELECT COUNT(*) AS count FROM coordinator_scope_memberships")
+				.first<{ count: number }>(),
+		).toEqual({ count: 0 });
+
+		await env.COORDINATOR_DB.prepare(
+			"UPDATE coordinator_invites SET revoked_at = ? WHERE token_digest IS NOT NULL AND invite_kind = 'team_member'",
+		)
+			.bind("2026-07-21T01:00:00Z")
+			.run();
+		expect((await accept()).status).toBe(400);
+		await env.COORDINATOR_DB.prepare("UPDATE groups SET archived_at = ? WHERE group_id = 'g1'")
+			.bind("2026-07-21T01:00:00Z")
+			.run();
+		const archived = await exports.default.fetch("https://example.com/v1/invites/inspect", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ token: addDevice.payload.token }),
+		});
+		expect(archived.status).toBe(409);
+		expect(await archived.json()).toEqual({ error: "group_archived" });
+	});
 });

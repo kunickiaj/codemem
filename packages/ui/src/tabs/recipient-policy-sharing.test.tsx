@@ -167,7 +167,7 @@ describe("recipient-focused Sharing", () => {
 		document.body.innerHTML = "";
 	});
 
-	it("renders all three accessible views and the invitation handoff without fake controls", () => {
+	it("renders all three accessible views and recipient-aware invitation controls", () => {
 		mount();
 		expect(document.querySelector('[role="tablist"]')?.getAttribute("aria-label")).toBe(
 			"Sharing views",
@@ -183,10 +183,12 @@ describe("recipient-focused Sharing", () => {
 		clickTab("Identities");
 		expect(visiblePanel().textContent).toContain("Local identity");
 		clickTab("Invitations");
+		expect(visiblePanel().textContent).toContain("Invite Team member");
+		expect(visiblePanel().textContent).toContain("Add a device");
+		expect(visiblePanel().textContent).toContain("Share exact Projects");
 		expect(visiblePanel().textContent).toContain(
-			"Invitation management remains in Advanced Team administration until PR6’s recipient-aware journey lands",
+			"Legacy invitation import remains under Advanced Team administration",
 		);
-		expect(visiblePanel().querySelector("button")).toBeNull();
 	});
 
 	it("supports automatic keyboard tab activation, wraparound, Home, End, and focus", () => {

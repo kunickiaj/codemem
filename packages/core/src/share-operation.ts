@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
+import {
+	commitRecipientPolicyOnboarding,
+	previewRecipientPolicyOnboarding,
+} from "./recipient-policy-onboarding.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 export const SHARE_HISTORY_POLICY = "existing_and_future" as const;
@@ -617,4 +621,26 @@ export function reconcileShareOperationAcceptance(
 		}
 	});
 	reconcile();
+	const onboardingRequest = {
+		version: 1 as const,
+		journey: "direct_project" as const,
+		invitationId: input.operationId,
+		identityId: input.recipientActorId,
+		deviceId: input.recipientDeviceId,
+		devicePublicKey: input.recipientPublicKey,
+		deviceDisplayName: input.recipientDeviceDisplayName,
+		canonicalProjectIdentities: acceptedProjects.map((project) => project.canonical_identity),
+	};
+	const preview = previewRecipientPolicyOnboarding(db, onboardingRequest);
+	const onboarding = commitRecipientPolicyOnboarding(
+		db,
+		{
+			...onboardingRequest,
+			reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
+		},
+		{ now: () => input.consumedAt },
+	);
+	if (onboarding.status !== "applied") {
+		throw new Error(onboarding.errorCode ?? "onboarding_commit_failed");
+	}
 }

@@ -1,6 +1,7 @@
 import { render } from "preact";
 import { useRef, useState } from "preact/hooks";
 import type { RecipientPolicyIntentGraphV1 } from "../lib/api/sync";
+import { RecipientPolicyInvitations } from "./recipient-policy-invitations";
 import {
 	openRecipientPolicyManagement,
 	type RecipientPolicyManagementProject,
@@ -317,19 +318,6 @@ function IdentitiesView({
 	);
 }
 
-function InvitationsView() {
-	return (
-		<div className="peer-card peer-card--padded recipient-policy-sharing-card recipient-policy-sharing-invitations">
-			<h3>Invitation management is coming here later</h3>
-			<p>
-				Invitation management remains in Advanced Team administration until PR6’s recipient-aware
-				journey lands.
-			</p>
-			<p className="small">Use Advanced Team administration to review current invitations.</p>
-		</div>
-	);
-}
-
 function RecipientPolicySharing({
 	intent,
 	options,
@@ -416,7 +404,7 @@ function RecipientPolicySharing({
 					) : tab.id === "identities" ? (
 						<IdentitiesView intent={intent} projects={projects} />
 					) : (
-						<InvitationsView />
+						<RecipientPolicyInvitations intent={intent} />
 					)}
 				</div>
 			))}

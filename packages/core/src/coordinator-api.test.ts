@@ -65,6 +65,10 @@ function createMockStore(
 		getInviteByTokenForInspection: vi.fn(
 			async (_: string): Promise<CoordinatorInvite | null> => null,
 		),
+		inspectRecipientInvite: vi.fn(async () => null),
+		consumeRecipientInvite: vi.fn(async () => {
+			throw new Error("not implemented");
+		}),
 		consumeProjectInvite: vi.fn(async () => {
 			throw new Error("not implemented");
 		}),
@@ -312,6 +316,84 @@ describe("createCoordinatorApp dependency injection", () => {
 		expect(createInvite).toHaveBeenLastCalledWith(
 			expect.objectContaining({ operationId, reviewedProjectSetDigest }),
 		);
+	});
+
+	it("inspects and consumes explicit Team invitations without enrollment or scope grants", async () => {
+		const publicKey = "recipient-public-key";
+		const digest = "e".repeat(64);
+		const invite: CoordinatorInvite = {
+			invite_id: "invite-team-1",
+			group_id: "g1",
+			token: "team-token",
+			policy: "auto_admit",
+			expires_at: "2099-01-01T00:00:00Z",
+			created_at: "2026-03-28T00:00:00Z",
+			created_by: null,
+			team_name_snapshot: "Coordinator One",
+			revoked_at: null,
+			invite_kind: "team_member",
+			policy_team_id: "policy-team-1",
+			reviewed_preview_digest: digest,
+		};
+		const consumeRecipientInvite = vi.fn(async () => ({
+			status: "accepted" as const,
+			invite: {
+				...invite,
+				consumed_at: "2026-03-28T00:00:00Z",
+				recipient_actor_id: "identity-brian",
+			},
+		}));
+		const store = createMockStore({
+			getInviteByTokenForInspection: vi.fn(async () => invite),
+			inspectRecipientInvite: vi.fn(async () => ({
+				kind: "team_member" as const,
+				invite,
+				policy_team_id: "policy-team-1",
+				reviewed_preview_digest: digest,
+				bound: false,
+			})),
+			consumeRecipientInvite,
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+
+		const inspection = await app.request("/v1/invites/inspect", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ token: invite.token }),
+		});
+		expect(await inspection.json()).toEqual({
+			kind: "team_member",
+			policy_team_id: "policy-team-1",
+			reviewed_preview_digest: digest,
+			bound: false,
+		});
+
+		const accepted = await app.request("/v1/join", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				token: invite.token,
+				invite_kind: "team_member",
+				identity_id: "identity-brian",
+				device_id: "device-brian",
+				public_key: publicKey,
+				fingerprint: fingerprintPublicKey(publicKey),
+			}),
+		});
+		expect(await accepted.json()).toMatchObject({
+			ok: true,
+			status: "accepted",
+			kind: "team_member",
+			identity_id: "identity-brian",
+			policy_team_id: "policy-team-1",
+		});
+		expect(consumeRecipientInvite).toHaveBeenCalledOnce();
+		expect(store.enrollDevice).not.toHaveBeenCalled();
+		expect(store.grantScopeMembership).not.toHaveBeenCalled();
 	});
 
 	it("fails closed when project-first acceptance omits identity confirmation", async () => {

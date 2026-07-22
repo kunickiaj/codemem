@@ -40,7 +40,9 @@ describe("CoordinatorStore", () => {
 			try {
 				const row = store.db
 					.prepare(
-						"SELECT token, token_digest, consumed_at, bound_device_id, trust_state FROM coordinator_invites",
+						`SELECT token, token_digest, consumed_at, bound_device_id, trust_state,
+							invite_kind, policy_team_id, target_identity_id, reviewed_preview_digest
+						 FROM coordinator_invites`,
 					)
 					.get();
 				expect(row).toEqual({
@@ -49,6 +51,10 @@ describe("CoordinatorStore", () => {
 					consumed_at: null,
 					bound_device_id: null,
 					trust_state: null,
+					invite_kind: "legacy_enrollment",
+					policy_team_id: null,
+					target_identity_id: null,
+					reviewed_preview_digest: null,
 				});
 			} finally {
 				await store.close();

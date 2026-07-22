@@ -3,10 +3,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	advanceShareOperation,
 	commitRecipientPolicyEdges,
+	createRecipientInvite,
+	inspectCoordinatorInvite,
 	loadRecipientPolicyIntent,
 	loadRecipientPolicyReview,
 	loadShareOperation,
 	loadShareOperations,
+	previewRecipientInvite,
 	previewRecipientPolicyEdges,
 	RecipientPolicyEdgesStaleError,
 	RecipientPolicyReviewStaleError,
@@ -20,6 +23,98 @@ const originalFetch = globalThis.fetch;
 afterEach(() => {
 	globalThis.fetch = originalFetch;
 	vi.restoreAllMocks();
+});
+
+describe("recipient invitation API", () => {
+	it("sends exact Team preview/create and add-device inspect payloads", async () => {
+		const preview = {
+			kind: "team_member",
+			preview: { reviewedOnboardingDigest: "recipient-onboarding-preview-v1:digest" },
+		};
+		const created = { ok: true, ...preview, invite: { link: "codemem://join" } };
+		const inspected = { kind: "add_device", onboarding: { journey: "add_device" } };
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(new Response(JSON.stringify(preview), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify(created), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify(inspected), { status: 200 }));
+		globalThis.fetch = fetchMock as typeof fetch;
+
+		await previewRecipientInvite({ kind: "team_member", policy_team_id: "team-one" });
+		await createRecipientInvite({
+			kind: "team_member",
+			policy_team_id: "team-one",
+			reviewed_onboarding_digest: "recipient-onboarding-preview-v1:digest",
+		});
+		await inspectCoordinatorInvite("invite-value", { device_name: "Travel Laptop" });
+
+		expect(fetchMock.mock.calls).toEqual([
+			[
+				"/api/sync/recipient-policy/v1/invites/preview",
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ kind: "team_member", policy_team_id: "team-one" }),
+				},
+			],
+			[
+				"/api/sync/recipient-policy/v1/invites",
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						kind: "team_member",
+						policy_team_id: "team-one",
+						reviewed_onboarding_digest: "recipient-onboarding-preview-v1:digest",
+					}),
+				},
+			],
+			[
+				"/api/sync/invites/inspect",
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ invite: "invite-value", device_name: "Travel Laptop" }),
+				},
+			],
+		]);
+	});
+
+	it("sends only the target Identity and reviewed digest for add-device creation", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						kind: "add_device",
+						preview: { reviewedOnboardingDigest: "recipient-onboarding-preview-v1:device" },
+					}),
+					{ status: 200 },
+				),
+			)
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ ok: true, kind: "add_device", invite: {} }), {
+					status: 200,
+				}),
+			);
+		globalThis.fetch = fetchMock as typeof fetch;
+
+		await previewRecipientInvite({ kind: "add_device", target_identity_id: "identity-one" });
+		await createRecipientInvite({
+			kind: "add_device",
+			target_identity_id: "identity-one",
+			reviewed_onboarding_digest: "recipient-onboarding-preview-v1:device",
+		});
+
+		expect(fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)))).toEqual([
+			{ kind: "add_device", target_identity_id: "identity-one" },
+			{
+				kind: "add_device",
+				target_identity_id: "identity-one",
+				reviewed_onboarding_digest: "recipient-onboarding-preview-v1:device",
+			},
+		]);
+	});
 });
 
 describe("triggerSync", () => {

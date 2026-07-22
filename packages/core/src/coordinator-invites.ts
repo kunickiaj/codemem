@@ -6,7 +6,7 @@
 
 export interface InvitePayload {
 	v: number;
-	kind: string;
+	kind: "coordinator_team_invite" | "team_member" | "add_device" | string;
 	coordinator_url: string;
 	group_id: string;
 	policy: string;
@@ -17,6 +17,10 @@ export interface InvitePayload {
 	operation_id?: string;
 	inviter_name?: string | null;
 	project_summaries?: Array<{ display_name: string; existing_memory_count: number }>;
+	/** Policy metadata for recipient-aware invites. It is preview-only and never grants scope access. */
+	policy_team_id?: string;
+	target_identity_id?: string;
+	reviewed_preview_digest?: string;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

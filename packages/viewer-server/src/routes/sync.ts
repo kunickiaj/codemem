@@ -111,6 +111,7 @@ import {
 	personalScopeGrantStatusForPeer,
 	planShareOperation,
 	previewRecipientPolicyEdges,
+	previewRecipientPolicyOnboarding,
 	projectShareLifecycle,
 	RecipientPolicyEdgeRequestError,
 	readCodememConfigFile,
@@ -613,6 +614,83 @@ function projectInviteStatus(config = readCoordinatorSyncConfig()): {
 	if (status.groups.length !== 1) throw new Error("team_selection_ambiguous");
 	if (!status.active_group) throw new Error("team_sharing_not_configured");
 	return { groupId: status.active_group, config };
+}
+
+type RecipientInviteKind = "team_member" | "add_device";
+
+function recipientInviteKind(value: unknown): RecipientInviteKind {
+	if (value === "team_member" || value === "add_device") return value;
+	throw new Error("recipient_invite_kind_invalid");
+}
+
+function localOnboardingBinding(
+	store: MemoryStore,
+	deviceName: string | null,
+): {
+	deviceId: string;
+	devicePublicKey: string;
+	deviceDisplayName: string;
+} {
+	const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+	store.adoptEnsuredDeviceIdentity(deviceId);
+	ensureLocalActorRecord(store);
+	const devicePublicKey = String(
+		store.db
+			.prepare("SELECT public_key FROM sync_device WHERE device_id = ?")
+			.pluck()
+			.get(deviceId) ?? "",
+	).trim();
+	if (!devicePublicKey) throw new Error("device_public_key_missing");
+	const config = readCodememConfigFile();
+	return {
+		deviceId,
+		devicePublicKey,
+		deviceDisplayName: friendlyDeviceName({
+			explicitName: deviceName ?? String(config.sync_device_name ?? ""),
+			osName: hostname(),
+			fallbackSeed: deviceId,
+		}),
+	};
+}
+
+function recipientInviteOnboardingPreview(
+	store: MemoryStore,
+	body: Record<string, unknown>,
+	invitationId: string,
+) {
+	const kind = recipientInviteKind(body.kind ?? body.invite_kind);
+	const binding = localOnboardingBinding(store, optionalViewerString(body, "device_name"));
+	const teamId = optionalViewerStrictString(body, "policy_team_id");
+	const targetIdentityId = optionalViewerStrictString(body, "target_identity_id");
+	if (kind === "team_member") {
+		if (!teamId || targetIdentityId) throw new Error("recipient_invite_metadata_invalid");
+		return previewRecipientPolicyOnboarding(store.db, {
+			version: 1,
+			journey: "team",
+			invitationId,
+			identityId: store.actorId,
+			...binding,
+			teamId,
+		});
+	}
+	if (!targetIdentityId || teamId) throw new Error("recipient_invite_metadata_invalid");
+	return previewRecipientPolicyOnboarding(store.db, {
+		version: 1,
+		journey: "add_device",
+		invitationId,
+		identityId: targetIdentityId,
+		...binding,
+	});
+}
+
+function recipientInvitePreviewId(kind: RecipientInviteKind, targetId: string): string {
+	return `recipient-invite-preview:${kind}:${targetId}`;
+}
+
+function coordinatorPreviewDigest(reviewedOnboardingDigest: string): string {
+	const match = /^recipient-onboarding-preview-v1:([a-f0-9]{64})$/u.exec(reviewedOnboardingDigest);
+	if (!match?.[1]) throw new Error("reviewed_onboarding_digest_invalid");
+	return match[1];
 }
 
 async function peerSupportsReassignScope(
@@ -4158,6 +4236,86 @@ export function syncRoutes(
 		}
 	});
 
+	app.post("/api/sync/recipient-policy/v1/invites/preview", async (c) => {
+		const store = getStore();
+		const body = await parseViewerJsonBody(c);
+		if (!body) return c.json({ error: "request_invalid" }, 400);
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		const unavailable = coordinatorAdminUnavailable(status);
+		if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
+		try {
+			const kind = recipientInviteKind(body.kind ?? body.invite_kind);
+			const targetId =
+				kind === "team_member"
+					? optionalViewerStrictString(body, "policy_team_id")
+					: optionalViewerStrictString(body, "target_identity_id");
+			if (!targetId) throw new Error("recipient_invite_metadata_invalid");
+			const preview = recipientInviteOnboardingPreview(
+				store,
+				body,
+				recipientInvitePreviewId(kind, targetId),
+			);
+			return c.json({ kind, preview });
+		} catch (error) {
+			return c.json(
+				{ error: error instanceof Error ? error.message : "recipient_invite_invalid" },
+				400,
+			);
+		}
+	});
+
+	app.post("/api/sync/recipient-policy/v1/invites", async (c) => {
+		const store = getStore();
+		const body = await parseViewerJsonBody(c);
+		if (!body) return c.json({ error: "request_invalid" }, 400);
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		const unavailable = coordinatorAdminUnavailable(status);
+		if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
+		try {
+			const kind = recipientInviteKind(body.kind ?? body.invite_kind);
+			const targetId =
+				kind === "team_member"
+					? optionalViewerStrictString(body, "policy_team_id")
+					: optionalViewerStrictString(body, "target_identity_id");
+			if (!targetId) throw new Error("recipient_invite_metadata_invalid");
+			const preview = recipientInviteOnboardingPreview(
+				store,
+				body,
+				recipientInvitePreviewId(kind, targetId),
+			);
+			const reviewedDigest = optionalViewerStrictString(body, "reviewed_onboarding_digest");
+			if (!reviewedDigest) throw new Error("reviewed_onboarding_digest_required");
+			if (reviewedDigest !== preview.reviewedOnboardingDigest) {
+				return c.json({ error: "reviewed_onboarding_stale", preview }, 409);
+			}
+			const groupId = resolveCoordinatorAdminGroup(optionalViewerString(body, "group_id"), status);
+			const ttlHours = parseInviteTtlHours(body.ttl_hours);
+			if (!groupId) throw new Error("group_id_required");
+			if (ttlHours == null) throw new Error("ttl_hours_invalid");
+			const result = await coordinatorCreateInviteAction({
+				groupId,
+				coordinatorUrl: config.syncCoordinatorUrl || null,
+				policy: "auto_admit",
+				ttlHours,
+				createdBy: store.actorId,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+				inviteKind: kind,
+				policyTeamId: kind === "team_member" ? targetId : null,
+				targetIdentityId: kind === "add_device" ? targetId : null,
+				reviewedPreviewDigest: coordinatorPreviewDigest(preview.reviewedOnboardingDigest),
+			});
+			return c.json({ ok: true, kind, preview, invite: result });
+		} catch (error) {
+			return c.json(
+				{ error: error instanceof Error ? error.message : "recipient_invite_failed" },
+				400,
+			);
+		}
+	});
+
 	app.post("/api/sync/recipient-policy/v1/migrate", async (c) => {
 		const store = getStore();
 		const value = await parseViewerJsonBody(c);
@@ -5004,7 +5162,8 @@ export function syncRoutes(
 		if (!body || typeof body.invite !== "string") return c.json({ error: "invite_invalid" }, 400);
 		try {
 			const payload = decodeInvitePayload(extractInvitePayload(body.invite));
-			if (!payload.operation_id) return c.json({ kind: "legacy_team_invite" });
+			const recipientInvite = payload.kind === "team_member" || payload.kind === "add_device";
+			if (!payload.operation_id && !recipientInvite) return c.json({ kind: "legacy_team_invite" });
 			const [status, inspected] = await requestJson(
 				"POST",
 				`${buildBaseUrl(payload.coordinator_url)}/v1/invites/inspect`,
@@ -5017,6 +5176,42 @@ export function syncRoutes(
 				);
 			}
 			const config = readCodememConfigFile();
+			const identityId =
+				payload.kind === "add_device"
+					? String(inspected?.target_identity_id ?? "").trim()
+					: store.actorId;
+			const expectedTarget =
+				payload.kind === "team_member"
+					? String(inspected?.policy_team_id ?? "").trim()
+					: String(inspected?.target_identity_id ?? "").trim();
+			if (recipientInvite) {
+				if (
+					String(inspected?.kind ?? "").trim() !== payload.kind ||
+					!expectedTarget ||
+					String(inspected?.reviewed_preview_digest ?? "").trim() !==
+						String(payload.reviewed_preview_digest ?? "").trim() ||
+					(payload.kind === "team_member" && expectedTarget !== payload.policy_team_id) ||
+					(payload.kind === "add_device" && expectedTarget !== payload.target_identity_id)
+				) {
+					return c.json({ error: "recipient_invite_intent_mismatch" }, 409);
+				}
+				const preview = recipientInviteOnboardingPreview(
+					store,
+					{
+						kind: payload.kind,
+						policy_team_id: payload.kind === "team_member" ? expectedTarget : null,
+						target_identity_id: payload.kind === "add_device" ? identityId : null,
+						device_name: optionalViewerString(body, "device_name"),
+					},
+					String(payload.token),
+				);
+				return c.json({
+					...inspected,
+					recipient_name: store.actorDisplayName,
+					device_name: preview.binding.deviceDisplayName,
+					onboarding: preview,
+				});
+			}
 			return c.json({
 				...inspected,
 				recipient_name: store.actorDisplayName,
@@ -5095,6 +5290,15 @@ export function syncRoutes(
 		}
 
 		try {
+			const decoded = decodeInvitePayload(extractInvitePayload(rawValue));
+			const recipientInvite = decoded.kind === "team_member" || decoded.kind === "add_device";
+			const reviewedOnboardingDigest =
+				typeof body.reviewed_onboarding_digest === "string"
+					? body.reviewed_onboarding_digest.trim()
+					: "";
+			if (recipientInvite && !reviewedOnboardingDigest) {
+				return c.json({ error: "reviewed_onboarding_digest_required" }, 400);
+			}
 			const result = await coordinatorImportInviteAction({
 				inviteValue: rawValue,
 				dbPath: store.dbPath,
@@ -5102,8 +5306,15 @@ export function syncRoutes(
 				recipientDisplayName:
 					typeof body.recipient_name === "string" ? body.recipient_name : store.actorDisplayName,
 				deviceDisplayName: typeof body.device_name === "string" ? body.device_name : null,
+				reviewedOnboardingDigest: reviewedOnboardingDigest || null,
 			});
-			return c.json({ ...result, type: "team_join" });
+			return c.json({
+				...result,
+				type:
+					decoded.kind === "team_member" || decoded.kind === "add_device"
+						? "recipient_onboarding"
+						: "team_join",
+			});
 		} catch (error) {
 			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
 		}
