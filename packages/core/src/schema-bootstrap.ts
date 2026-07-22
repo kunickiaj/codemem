@@ -23,6 +23,65 @@ CREATE TABLE IF NOT EXISTS recipient_policy_review_resolutions (
 	PRIMARY KEY (review_item_id, source_fingerprint)
 );
 
+CREATE TABLE IF NOT EXISTS recipient_policy_authority_states (
+	canonical_project_identity TEXT PRIMARY KEY NOT NULL,
+	authority_state TEXT NOT NULL DEFAULT 'legacy',
+	generation INTEGER NOT NULL DEFAULT 0,
+	desired_devices_digest TEXT,
+	current_devices_digest TEXT,
+	stable_parity_evidence_digest TEXT,
+	stable_parity_passed_at TEXT,
+	fresh_snapshot_fingerprint TEXT,
+	fresh_snapshot_observed_at TEXT,
+	safe_error_code TEXT,
+	state_changed_at TEXT NOT NULL,
+	last_error_at TEXT,
+	attempt_count INTEGER NOT NULL DEFAULT 0,
+	last_attempt_at TEXT,
+	last_completed_at TEXT,
+	lease_owner TEXT,
+	lease_acquired_at TEXT,
+	lease_expires_at TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS recipient_policy_reconciliation_steps (
+	canonical_project_identity TEXT NOT NULL,
+	generation INTEGER NOT NULL,
+	step_key TEXT NOT NULL,
+	effect_id TEXT NOT NULL,
+	payload_digest TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT 'pending',
+	attempt_count INTEGER NOT NULL DEFAULT 0,
+	started_at TEXT,
+	completed_at TEXT,
+	last_attempt_at TEXT,
+	safe_error_code TEXT,
+	error_at TEXT,
+	lease_owner TEXT,
+	lease_acquired_at TEXT,
+	lease_expires_at TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (canonical_project_identity, generation, step_key)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_recipient_policy_reconciliation_steps_effect
+	ON recipient_policy_reconciliation_steps(effect_id);
+CREATE INDEX IF NOT EXISTS idx_recipient_policy_reconciliation_steps_status
+	ON recipient_policy_reconciliation_steps(canonical_project_identity, status);
+CREATE TABLE IF NOT EXISTS recipient_policy_deny_overlays (
+	canonical_project_identity TEXT NOT NULL,
+	scope_id TEXT NOT NULL,
+	device_id TEXT NOT NULL,
+	generation INTEGER NOT NULL,
+	reason_code TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (canonical_project_identity, scope_id, device_id)
+);
+CREATE INDEX IF NOT EXISTS idx_recipient_policy_deny_overlays_scope_device
+	ON recipient_policy_deny_overlays(scope_id, device_id);
+
 CREATE TABLE IF NOT EXISTS share_operations (
 	operation_id TEXT PRIMARY KEY NOT NULL,
 	state TEXT NOT NULL,

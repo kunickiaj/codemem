@@ -708,9 +708,15 @@ describe("exact project share provisioning", () => {
 	it("preserves a pre-existing step effect_id while executing it", async () => {
 		// Arrange
 		const preservedEffectId = "persisted-effect-before-resume";
+		const preservedGrantEffectId = "persisted-grant-effect-before-resume";
 		db.prepare(
 			"UPDATE share_operation_steps SET effect_id = ? WHERE operation_id = ? AND step_key = 'authorization_refresh'",
 		).run(preservedEffectId, operationId);
+		db.prepare(`UPDATE share_operation_steps SET effect_id = ?
+			WHERE operation_id = ? AND step_key = (
+				SELECT step_key FROM share_operation_steps
+				WHERE operation_id = ? AND step_key LIKE 'space_grant:%' ORDER BY step_key LIMIT 1
+			)`).run(preservedGrantEffectId, operationId, operationId);
 		const { deps } = dependencies();
 
 		// Act
@@ -724,6 +730,9 @@ describe("exact project share provisioning", () => {
 				)
 				.get(operationId),
 		).toEqual({ effect_id: preservedEffectId, status: "completed" });
+		expect(vi.mocked(deps.grantMembership).mock.calls.map(([input]) => input.effectId)).toContain(
+			preservedGrantEffectId,
+		);
 	});
 
 	it("resumes idempotently across migration, mapping, refresh, and initial-sync failures", async () => {
@@ -760,5 +769,38 @@ describe("exact project share provisioning", () => {
 				.pluck()
 				.get(operationId),
 		).toBe("active");
+	});
+
+	it("blocks stale legacy grant retries when active recipient policy no longer desires the device", async () => {
+		const now = createdAt;
+		db.prepare(
+			`INSERT INTO recipient_policy_authority_states(
+			 canonical_project_identity, authority_state, generation, desired_devices_digest,
+			 state_changed_at, created_at, updated_at
+			 ) VALUES (?, 'active', 1, 'desired', ?, ?, ?)`,
+		).run(remote, now, now, now);
+		db.prepare(
+			`UPDATE project_recipients SET status = 'revoked', updated_at = ?
+			 WHERE canonical_project_identity = ? AND recipient_kind = 'identity'
+			 AND recipient_id = 'actor-recipient'`,
+		).run(now, remote);
+		const { deps } = dependencies();
+
+		await expect(
+			executeShareProvisioning(db, { operationId, initiatingDeviceId: "owner" }, deps),
+		).rejects.toThrow("recipient_policy_legacy_grant_blocked");
+
+		expect(vi.mocked(deps.grantMembership).mock.calls.map(([input]) => input.deviceId)).toEqual([
+			"owner",
+			"owner-proven",
+		]);
+		expect(
+			db
+				.prepare(
+					"SELECT safe_error_code FROM share_operation_steps WHERE operation_id = ? AND step_key = ?",
+				)
+				.pluck()
+				.get(operationId, `space_grant:${remote}:recipient`),
+		).toBe("recipient_policy_legacy_grant_blocked");
 	});
 });

@@ -641,6 +641,55 @@ export {
 	RecipientPolicyOnboardingRequestError,
 } from "./recipient-policy-onboarding.js";
 export type {
+	RecipientPolicyCoordinatorEffectReceipt,
+	RecipientPolicyCoordinatorSnapshot,
+	RecipientPolicyPeerCapability,
+	RecipientPolicyReconcileResult,
+	RecipientPolicyReconcilerEffects,
+	RecipientPolicyReconcileStatus,
+	ReconcileRecipientPolicyProjectInput,
+} from "./recipient-policy-reconciler.js";
+export {
+	assertLegacyShareGrantAllowed,
+	reconcileRecipientPolicyProject,
+} from "./recipient-policy-reconciler.js";
+export type {
+	DeriveRecipientPolicyEffectiveDevicesInput,
+	RecipientPolicyAuthorityState,
+	RecipientPolicyAuthorityStateRecord,
+	RecipientPolicyDenyOverlayRecord,
+	RecipientPolicyDerivationBlock,
+	RecipientPolicyDerivationBlockCode,
+	RecipientPolicyDerivationIdentity,
+	RecipientPolicyDerivationIdentityDevice,
+	RecipientPolicyDerivationProjectRecipient,
+	RecipientPolicyDerivationTeam,
+	RecipientPolicyDerivationTeamMembership,
+	RecipientPolicyEffectiveDeviceSource,
+	RecipientPolicyReconciliationStepRecord,
+	RecordRecipientPolicyAuthorityExecutionInput,
+	RecordRecipientPolicyReconciliationStepStateInput,
+	StrictRecipientPolicyEffectiveDevice,
+	StrictRecipientPolicyEffectiveDeviceDerivation,
+	UpsertRecipientPolicyAuthorityObservationInput,
+} from "./recipient-policy-reconciliation.js";
+export {
+	clearRecipientPolicyDenyOverlay,
+	deriveRecipientPolicyEffectiveDevices,
+	deriveRecipientPolicyEffectiveDevicesFromDatabase,
+	deterministicRecipientPolicyReconciliationEffectId,
+	ensureRecipientPolicyReconciliationStep,
+	getAnyRecipientPolicyDenyOverlayForScopeDevice,
+	getRecipientPolicyAuthorityState,
+	listRecipientPolicyDenyOverlays,
+	putRecipientPolicyDenyOverlay,
+	recipientPolicyDevicesDigest,
+	recordRecipientPolicyAuthorityExecution,
+	recordRecipientPolicyReconciliationStepState,
+	recordRecipientPolicyStableParityPass,
+	upsertRecipientPolicyAuthorityObservation,
+} from "./recipient-policy-reconciliation.js";
+export type {
 	RecipientPolicyActionableReviewItemV1,
 	RecipientPolicyDerivedReviewState,
 	RecipientPolicyReviewActionOptionV1,
@@ -675,10 +724,16 @@ export type {
 	NewPolicyTeam,
 	NewPolicyTeamMembership,
 	NewProjectRecipient,
+	NewRecipientPolicyAuthorityStateRow,
+	NewRecipientPolicyDenyOverlay,
+	NewRecipientPolicyReconciliationStep,
 	NewRecipientPolicyReviewResolution,
 	PolicyTeam,
 	PolicyTeamMembership,
 	ProjectRecipient,
+	RecipientPolicyAuthorityStateRow,
+	RecipientPolicyDenyOverlay,
+	RecipientPolicyReconciliationStep,
 	RecipientPolicyReviewResolution,
 } from "./schema.js";
 export * as schema from "./schema.js";

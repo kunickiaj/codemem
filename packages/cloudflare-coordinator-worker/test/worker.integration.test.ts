@@ -72,6 +72,7 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 	describe("workers vitest + local D1 validation", () => {
 	afterEach(async () => {
 		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_bootstrap_grants").run();
+		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_scope_membership_effect_receipts").run();
 		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_scope_membership_audit_log").run();
 		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_scope_memberships").run();
 		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_scopes").run();
@@ -530,6 +531,7 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 				method: "POST",
 				headers: adminHeaders,
 				body: JSON.stringify({
+					effect_id: "worker:scope-a:grant:device",
 					device_id: device.deviceId,
 					role: "reader",
 					membership_epoch: 3,
@@ -564,7 +566,11 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 			{
 				method: "POST",
 				headers: adminHeaders,
-				body: JSON.stringify({ membership_epoch: 4, memory_payload: { id: 1 } }),
+				body: JSON.stringify({
+					effect_id: "worker:scope-a:revoke:device",
+					membership_epoch: 4,
+					memory_payload: { id: 1 },
+				}),
 			},
 		);
 		expect(revokeRes.status).toBe(200);
@@ -635,7 +641,7 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		]);
 
 		const auditRows = await env.COORDINATOR_DB.prepare(
-			`SELECT action, scope_id, device_id, status, membership_epoch,
+			`SELECT effect_id, action, scope_id, device_id, status, membership_epoch,
 				previous_status, previous_membership_epoch, actor_type, actor_id
 			 FROM coordinator_scope_membership_audit_log
 			 WHERE scope_id = ?
@@ -645,6 +651,7 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 			.all<Record<string, unknown>>();
 		expect(auditRows.results).toEqual([
 			expect.objectContaining({
+				effect_id: "worker:scope-a:grant:device",
 				action: "grant",
 				scope_id: "scope-a",
 				device_id: device.deviceId,
@@ -656,6 +663,7 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 				actor_id: "admin-worker",
 			}),
 			expect.objectContaining({
+				effect_id: "worker:scope-a:revoke:device",
 				action: "revoke",
 				scope_id: "scope-a",
 				device_id: device.deviceId,
@@ -738,6 +746,7 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 							"X-Codemem-Coordinator-Admin": "test-secret",
 						},
 						body: JSON.stringify({
+							effect_id: `worker:managed-project:grant:${device.deviceId}:1`,
 							device_id: device.deviceId,
 							role: "member",
 							membership_epoch: 1,
@@ -747,6 +756,38 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 			expect((await grant()).status).toBe(201);
 			expect((await grant()).status).toBe(201);
 		}
+		const conflictingEffect = await exports.default.fetch(
+			"https://example.com/v1/admin/groups/g1/scopes/managed-project%3Adeterministic/members",
+			{
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					"X-Codemem-Coordinator-Admin": "test-secret",
+				},
+				body: JSON.stringify({
+					effect_id: `worker:managed-project:grant:${reviewed[0]?.deviceId}:1`,
+					device_id: reviewed[0]?.deviceId,
+					role: "admin",
+					membership_epoch: 1,
+				}),
+			},
+		);
+		expect(conflictingEffect.status).toBe(409);
+		expect(await conflictingEffect.json()).toEqual({ error: "scope_membership_effect_conflict" });
+		expect(
+			await env.COORDINATOR_DB.prepare(
+				"SELECT COUNT(*) AS count FROM coordinator_scope_membership_effect_receipts WHERE scope_id = ?",
+			)
+				.bind("managed-project:deterministic")
+				.first<{ count: number }>(),
+		).toEqual({ count: reviewed.length });
+		expect(
+			await env.COORDINATOR_DB.prepare(
+				"SELECT COUNT(*) AS count FROM coordinator_scope_membership_audit_log WHERE scope_id = ?",
+			)
+				.bind("managed-project:deterministic")
+				.first<{ count: number }>(),
+		).toEqual({ count: reviewed.length });
 		const listed = await exports.default.fetch(
 			"https://example.com/v1/admin/groups/g1/scopes/managed-project%3Adeterministic/members",
 			{ headers: { "X-Codemem-Coordinator-Admin": "test-secret" } },

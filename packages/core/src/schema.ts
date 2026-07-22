@@ -833,6 +833,93 @@ export const projectRecipients = sqliteTable(
 export type ProjectRecipient = typeof projectRecipients.$inferSelect;
 export type NewProjectRecipient = typeof projectRecipients.$inferInsert;
 
+export const recipientPolicyAuthorityStates = sqliteTable("recipient_policy_authority_states", {
+	canonical_project_identity: text("canonical_project_identity").primaryKey(),
+	authority_state: text("authority_state").notNull().default("legacy"),
+	generation: integer("generation").notNull().default(0),
+	desired_devices_digest: text("desired_devices_digest"),
+	current_devices_digest: text("current_devices_digest"),
+	stable_parity_evidence_digest: text("stable_parity_evidence_digest"),
+	stable_parity_passed_at: text("stable_parity_passed_at"),
+	fresh_snapshot_fingerprint: text("fresh_snapshot_fingerprint"),
+	fresh_snapshot_observed_at: text("fresh_snapshot_observed_at"),
+	safe_error_code: text("safe_error_code"),
+	state_changed_at: text("state_changed_at").notNull(),
+	last_error_at: text("last_error_at"),
+	attempt_count: integer("attempt_count").notNull().default(0),
+	last_attempt_at: text("last_attempt_at"),
+	last_completed_at: text("last_completed_at"),
+	lease_owner: text("lease_owner"),
+	lease_acquired_at: text("lease_acquired_at"),
+	lease_expires_at: text("lease_expires_at"),
+	created_at: text("created_at").notNull(),
+	updated_at: text("updated_at").notNull(),
+});
+
+export type RecipientPolicyAuthorityStateRow = typeof recipientPolicyAuthorityStates.$inferSelect;
+export type NewRecipientPolicyAuthorityStateRow =
+	typeof recipientPolicyAuthorityStates.$inferInsert;
+
+export const recipientPolicyReconciliationSteps = sqliteTable(
+	"recipient_policy_reconciliation_steps",
+	{
+		canonical_project_identity: text("canonical_project_identity").notNull(),
+		generation: integer("generation").notNull(),
+		step_key: text("step_key").notNull(),
+		effect_id: text("effect_id").notNull(),
+		payload_digest: text("payload_digest").notNull(),
+		status: text("status").notNull().default("pending"),
+		attempt_count: integer("attempt_count").notNull().default(0),
+		started_at: text("started_at"),
+		completed_at: text("completed_at"),
+		last_attempt_at: text("last_attempt_at"),
+		safe_error_code: text("safe_error_code"),
+		error_at: text("error_at"),
+		lease_owner: text("lease_owner"),
+		lease_acquired_at: text("lease_acquired_at"),
+		lease_expires_at: text("lease_expires_at"),
+		created_at: text("created_at").notNull(),
+		updated_at: text("updated_at").notNull(),
+	},
+	(table) => [
+		primaryKey({
+			columns: [table.canonical_project_identity, table.generation, table.step_key],
+		}),
+		uniqueIndex("idx_recipient_policy_reconciliation_steps_effect").on(table.effect_id),
+		index("idx_recipient_policy_reconciliation_steps_status").on(
+			table.canonical_project_identity,
+			table.status,
+		),
+	],
+);
+
+export type RecipientPolicyReconciliationStep =
+	typeof recipientPolicyReconciliationSteps.$inferSelect;
+export type NewRecipientPolicyReconciliationStep =
+	typeof recipientPolicyReconciliationSteps.$inferInsert;
+
+export const recipientPolicyDenyOverlays = sqliteTable(
+	"recipient_policy_deny_overlays",
+	{
+		canonical_project_identity: text("canonical_project_identity").notNull(),
+		scope_id: text("scope_id").notNull(),
+		device_id: text("device_id").notNull(),
+		generation: integer("generation").notNull(),
+		reason_code: text("reason_code").notNull(),
+		created_at: text("created_at").notNull(),
+		updated_at: text("updated_at").notNull(),
+	},
+	(table) => [
+		primaryKey({
+			columns: [table.canonical_project_identity, table.scope_id, table.device_id],
+		}),
+		index("idx_recipient_policy_deny_overlays_scope_device").on(table.scope_id, table.device_id),
+	],
+);
+
+export type RecipientPolicyDenyOverlay = typeof recipientPolicyDenyOverlays.$inferSelect;
+export type NewRecipientPolicyDenyOverlay = typeof recipientPolicyDenyOverlays.$inferInsert;
+
 export const schema = {
 	sessions,
 	replicationScopes,
@@ -870,4 +957,7 @@ export const schema = {
 	policyTeamMemberships,
 	identityDevices,
 	projectRecipients,
+	recipientPolicyAuthorityStates,
+	recipientPolicyReconciliationSteps,
+	recipientPolicyDenyOverlays,
 };

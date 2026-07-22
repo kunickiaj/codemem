@@ -9,6 +9,10 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import type { InvitePayload } from "./coordinator-invites.js";
 import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
+import {
+	CoordinatorMembershipError,
+	SCOPE_MEMBERSHIP_EFFECT_CONFLICT,
+} from "./coordinator-membership-effects.js";
 import type {
 	CoordinatorBootstrapGrantVerification,
 	CoordinatorEnrollment,
@@ -1020,8 +1024,10 @@ export function createCoordinatorApp(
 
 		const groupId = String(c.req.param("group_id") ?? "").trim();
 		const scopeId = String(c.req.param("scope_id") ?? "").trim();
+		const effectId = optionalString(data, "effect_id");
 		const deviceId = optionalString(data, "device_id");
 		const membershipEpoch = optionalNumber(data, "membership_epoch");
+		if (!effectId) return c.json({ error: "effect_id_required" }, 400);
 		if (!deviceId) return c.json({ error: "device_id_required" }, 400);
 		if (Number.isNaN(membershipEpoch)) {
 			return c.json({ error: "membership_epoch_must_be_number" }, 400);
@@ -1031,10 +1037,8 @@ export function createCoordinatorApp(
 		try {
 			const lookup = await findAdminScope(store, groupId, scopeId, c);
 			if (lookup.response) return lookup.response;
-			if (lookup.scope?.status !== "active") return c.json({ error: "scope_not_active" }, 409);
-			const enrollment = await store.getEnrollment(groupId, deviceId);
-			if (!enrollment) return c.json({ error: "device_not_enrolled_for_scope_group" }, 404);
 			const membership = await store.grantScopeMembership({
+				effectId,
 				scopeId,
 				deviceId,
 				role: optionalString(data, "role"),
@@ -1049,7 +1053,22 @@ export function createCoordinatorApp(
 			});
 			return c.json({ ok: true, membership }, 201);
 		} catch (error) {
-			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+			const message = error instanceof Error ? error.message : String(error);
+			if (
+				error instanceof CoordinatorMembershipError &&
+				(error.code === "scope_not_found" || error.code === "scope_group_mismatch")
+			) {
+				return c.json({ error: "scope_not_found" }, 404);
+			}
+			if (error instanceof CoordinatorMembershipError && error.code === "device_not_enrolled") {
+				return c.json({ error: "device_not_enrolled_for_scope_group" }, 404);
+			}
+			const scopeInactive =
+				error instanceof CoordinatorMembershipError && error.code === "scope_inactive";
+			return c.json(
+				{ error: scopeInactive ? "scope_not_active" : message },
+				message === SCOPE_MEMBERSHIP_EFFECT_CONFLICT || scopeInactive ? 409 : 400,
+			);
 		} finally {
 			await store.close();
 		}
@@ -1071,7 +1090,9 @@ export function createCoordinatorApp(
 		const groupId = String(c.req.param("group_id") ?? "").trim();
 		const scopeId = String(c.req.param("scope_id") ?? "").trim();
 		const deviceId = String(c.req.param("device_id") ?? "").trim();
+		const effectId = optionalString(data, "effect_id");
 		const membershipEpoch = optionalNumber(data, "membership_epoch");
+		if (!effectId) return c.json({ error: "effect_id_required" }, 400);
 		if (!deviceId) return c.json({ error: "device_id_required" }, 400);
 		if (Number.isNaN(membershipEpoch)) {
 			return c.json({ error: "membership_epoch_must_be_number" }, 400);
@@ -1082,8 +1103,10 @@ export function createCoordinatorApp(
 			const lookup = await findAdminScope(store, groupId, scopeId, c);
 			if (lookup.response) return lookup.response;
 			const ok = await store.revokeScopeMembership({
+				effectId,
 				scopeId,
 				deviceId,
+				groupId,
 				membershipEpoch,
 				manifestHash: optionalString(data, "manifest_hash"),
 				signedManifestJson: optionalString(data, "signed_manifest_json"),
@@ -1110,7 +1133,11 @@ export function createCoordinatorApp(
 				}),
 			});
 		} catch (error) {
-			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+			const message = error instanceof Error ? error.message : String(error);
+			if (error instanceof CoordinatorMembershipError && error.code === "scope_group_mismatch") {
+				return c.json({ error: "scope_not_found" }, 404);
+			}
+			return c.json({ error: message }, message === SCOPE_MEMBERSHIP_EFFECT_CONFLICT ? 409 : 400);
 		} finally {
 			await store.close();
 		}

@@ -214,6 +214,7 @@ export type CoordinatorScopeMembershipAuditAction = "grant" | "revoke";
 
 export interface CoordinatorScopeMembershipAuditEvent {
 	event_id: number;
+	effect_id: string | null;
 	action: CoordinatorScopeMembershipAuditAction;
 	scope_id: string;
 	device_id: string;
@@ -360,6 +361,7 @@ export interface CoordinatorListScopesInput {
 }
 
 export interface CoordinatorGrantScopeMembershipInput {
+	effectId: string;
 	scopeId: string;
 	deviceId: string;
 	role?: string | null;
@@ -376,8 +378,11 @@ export interface CoordinatorGrantScopeMembershipInput {
 }
 
 export interface CoordinatorRevokeScopeMembershipInput {
+	effectId: string;
 	scopeId: string;
 	deviceId: string;
+	/** Optional assertion; persisted authority is derived from the referenced scope. */
+	groupId?: string | null;
 	membershipEpoch?: number | null;
 	manifestHash?: string | null;
 	signedManifestJson?: string | null;

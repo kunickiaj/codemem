@@ -15,6 +15,7 @@ import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import { projectBasename } from "./project.js";
+import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-reconciliation.js";
 import { clearMemoryRefs, populateMemoryRefs } from "./ref-populate.js";
 import * as schema from "./schema.js";
 import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
@@ -1308,6 +1309,17 @@ export function loadMemorySnapshotPageForPeer(
 	}
 	if (normalizeCursor(options.baselineCursor) !== boundary.baseline_cursor) {
 		throw new Error("boundary_mismatch");
+	}
+	const peerDeviceId = cleanText(options.peerDeviceId);
+	if (
+		scopeFilterRequested &&
+		peerDeviceId &&
+		getAnyRecipientPolicyDenyOverlayForScopeDevice(db, {
+			scopeId: effectiveScopeId,
+			deviceId: peerDeviceId,
+		})
+	) {
+		return { boundary, items: [], nextPageToken: null, hasMore: false };
 	}
 
 	// Cap raised to 5000 to support elevated bootstrap page sizes (default 2000).

@@ -157,6 +157,7 @@ ON coordinator_scope_memberships(coordinator_id, group_id);
 
 CREATE TABLE IF NOT EXISTS coordinator_scope_membership_audit_log (
   event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  effect_id TEXT,
   action TEXT NOT NULL,
   scope_id TEXT NOT NULL,
   device_id TEXT NOT NULL,
@@ -179,6 +180,28 @@ ON coordinator_scope_membership_audit_log(scope_id, created_at, event_id);
 
 CREATE INDEX IF NOT EXISTS idx_coordinator_scope_membership_audit_device_created
 ON coordinator_scope_membership_audit_log(device_id, created_at, event_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_coordinator_scope_membership_audit_effect
+ON coordinator_scope_membership_audit_log(effect_id) WHERE effect_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS coordinator_scope_membership_effect_receipts (
+  effect_id TEXT PRIMARY KEY,
+  action TEXT NOT NULL CHECK (action IN ('grant', 'revoke')),
+  request_json TEXT NOT NULL,
+  outcome_applied INTEGER NOT NULL CHECK (outcome_applied IN (0, 1)),
+  scope_id TEXT NOT NULL,
+  device_id TEXT NOT NULL,
+  role TEXT,
+  status TEXT,
+  membership_epoch INTEGER,
+  coordinator_id TEXT,
+  group_id TEXT,
+  manifest_issuer_device_id TEXT,
+  manifest_hash TEXT,
+  signed_manifest_json TEXT,
+  updated_at TEXT,
+  created_at TEXT NOT NULL
+);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_coordinator_reciprocal_pending_pair
 ON coordinator_reciprocal_approvals(group_id, pending_pair_low_device_id, pending_pair_high_device_id)

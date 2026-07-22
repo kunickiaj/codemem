@@ -16,6 +16,7 @@ import {
 	maintenanceWorkerPidFilePath,
 	pickViewerPidCandidate,
 	prepareViewerDatabase,
+	runServeCoordinatorMaintenance,
 	sqliteVecFailureDiagnostics,
 	terminateTrustedMaintenanceWorker,
 	terminateTrustedViewerPid,
@@ -184,6 +185,39 @@ describe("serve command option resolution", () => {
 			"--config",
 			"/tmp/codemem.jsonc",
 		]);
+	});
+
+	it("runs recipient-policy maintenance only after existing share maintenance", async () => {
+		const calls: string[] = [];
+		const store = {} as MemoryStore;
+		const result = await runServeCoordinatorMaintenance(store, {
+			advancePendingProjectShares: vi.fn(async (_store, options) => {
+				calls.push(`shares:${options.limit}`);
+				return { processed: 1, failed: 0 };
+			}),
+			reconcileRecipientPolicyProjects: vi.fn(async (_store, options) => {
+				calls.push(`policies:${options.limit}`);
+				return { processed: 2, failed: 1 };
+			}),
+		});
+
+		expect(calls).toEqual(["shares:3", "policies:3"]);
+		expect(result).toEqual({
+			projectShares: { processed: 1, failed: 0 },
+			recipientPolicies: { processed: 2, failed: 1 },
+		});
+	});
+
+	it("does not start policy reconciliation when old share maintenance fails", async () => {
+		const reconcileRecipientPolicyProjects = vi.fn(async () => ({ processed: 0, failed: 0 }));
+
+		await expect(
+			runServeCoordinatorMaintenance({} as MemoryStore, {
+				advancePendingProjectShares: vi.fn(async () => ({ processed: 2, failed: 1 })),
+				reconcileRecipientPolicyProjects,
+			}),
+		).rejects.toThrow("share operation maintenance failed for 1 of 2 operations");
+		expect(reconcileRecipientPolicyProjects).not.toHaveBeenCalled();
 	});
 
 	it("detects sqlite-vec load errors for viewer startup fallback", () => {
