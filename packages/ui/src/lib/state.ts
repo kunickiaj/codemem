@@ -4,15 +4,20 @@ import type { UiSyncViewModel } from "../tabs/sync/view-model";
 import type { ShareOperationReadModel } from "./api/sync";
 
 export type RefreshState = "idle" | "refreshing" | "paused" | "error";
-export type TabId = "feed" | "projects" | "sharing" | "sync" | "health" | "coordinator-admin";
-export const ALL_TAB_IDS: TabId[] = [
+export type CanonicalTabId = "feed" | "projects" | "sharing" | "devices" | "health" | "advanced";
+export type LegacyTabId = "sync" | "coordinator-admin";
+export type TabId = CanonicalTabId | LegacyTabId;
+export type RoutableTabId = TabId;
+export type AdvancedSection = "sync" | "teams";
+export const ALL_TAB_IDS: CanonicalTabId[] = [
 	"feed",
 	"projects",
 	"sharing",
-	"sync",
+	"devices",
 	"health",
-	"coordinator-admin",
+	"advanced",
 ];
+export const LEGACY_TAB_IDS: LegacyTabId[] = ["sync", "coordinator-admin"];
 
 /* ── Cached server payload shapes ─────────────────────────── */
 
@@ -202,6 +207,7 @@ export interface CachedSyncJoinRequest {
 }
 
 const TAB_KEY = "codemem-tab";
+const ADVANCED_SECTION_KEY = "codemem-advanced-section";
 const FEED_FILTER_KEY = "codemem-feed-filter";
 const FEED_SCOPE_KEY = "codemem-feed-scope";
 const DETAILS_OPEN_KEY = "codemem-details-open";
@@ -219,6 +225,7 @@ export type FeedScope = (typeof FEED_SCOPES)[number];
 export const state = {
 	/* Tab */
 	activeTab: "feed" as TabId,
+	advancedSection: "sync" as AdvancedSection,
 
 	/* Project filter */
 	currentProject: "",
@@ -307,42 +314,72 @@ export function shouldShowCoordinatorAdminTab(
 	return status.has_admin_secret === true;
 }
 
-export function getVisibleTabs(status: CachedCoordinatorAdminStatus | null | undefined): TabId[] {
-	return shouldShowCoordinatorAdminTab(status)
-		? [...ALL_TAB_IDS]
-		: ALL_TAB_IDS.filter((tabId) => tabId !== "coordinator-admin");
+export function getVisibleTabs(
+	status: CachedCoordinatorAdminStatus | null | undefined,
+): CanonicalTabId[] {
+	void status;
+	return [...ALL_TAB_IDS];
 }
 
 export function resolveAccessibleTab(
-	tab: TabId,
+	tab: RoutableTabId,
 	status: CachedCoordinatorAdminStatus | null | undefined,
-): TabId {
-	return getVisibleTabs(status).includes(tab) ? tab : "sync";
+): CanonicalTabId {
+	void status;
+	if (tab === "sync" || tab === "coordinator-admin") return "advanced";
+	return ALL_TAB_IDS.includes(tab) ? tab : "feed";
 }
 
 /* ── Persistence helpers ───────────────────────────────────── */
 
 /**
- * Parse `window.location.hash` into its top-level tab segment. Hashes with
- * sub-view segments (e.g. `#sync/diagnostics`) return their leading tab
- * (`sync`); sub-view state is owned per-tab.
+ * Parse `window.location.hash` into its canonical top-level tab. Legacy Sync
+ * and coordinator-admin hashes remain valid, but resolve under Advanced.
  */
-export function parseTabFromHash(hash = window.location.hash): TabId | null {
-	const first = hash.replace(/^#/, "").split("/")[0] as TabId;
-	return ALL_TAB_IDS.includes(first) ? first : null;
+export function parseTabFromHash(hash = window.location.hash): CanonicalTabId | null {
+	const first = hash.replace(/^#/, "").split("/")[0] as RoutableTabId;
+	if (LEGACY_TAB_IDS.includes(first as LegacyTabId)) return "advanced";
+	return ALL_TAB_IDS.includes(first as CanonicalTabId) ? (first as CanonicalTabId) : null;
 }
 
-export function getActiveTab(): TabId {
+export function parseAdvancedSectionFromHash(hash = window.location.hash): AdvancedSection | null {
+	const [first, second] = hash.replace(/^#/, "").split("/");
+	if (first === "sync") return "sync";
+	if (first === "coordinator-admin") return "teams";
+	if (first !== "advanced") return null;
+	return second === "teams" ? "teams" : "sync";
+}
+
+export function getActiveTab(): CanonicalTabId {
 	const fromHash = parseTabFromHash();
 	if (fromHash) return resolveAccessibleTab(fromHash, state.lastCoordinatorAdminStatus);
 	const saved = localStorage.getItem(TAB_KEY);
-	if (saved && ALL_TAB_IDS.includes(saved as TabId)) {
-		return resolveAccessibleTab(saved as TabId, state.lastCoordinatorAdminStatus);
+	if (
+		saved &&
+		(ALL_TAB_IDS.includes(saved as CanonicalTabId) || LEGACY_TAB_IDS.includes(saved as LegacyTabId))
+	) {
+		return resolveAccessibleTab(saved as RoutableTabId, state.lastCoordinatorAdminStatus);
 	}
 	return "feed";
 }
 
-export function setActiveTab(tab: TabId) {
+export function getActiveAdvancedSection(): AdvancedSection {
+	const fromHash = parseAdvancedSectionFromHash();
+	if (fromHash) return fromHash;
+	const savedTab = localStorage.getItem(TAB_KEY);
+	if (savedTab === "coordinator-admin") return "teams";
+	if (savedTab === "sync") return "sync";
+	const savedSection = localStorage.getItem(ADVANCED_SECTION_KEY);
+	return savedSection === "teams" ? "teams" : "sync";
+}
+
+export function setAdvancedSection(section: AdvancedSection, writeHash = false) {
+	state.advancedSection = section;
+	localStorage.setItem(ADVANCED_SECTION_KEY, section);
+	if (writeHash) window.location.hash = `advanced/${section}`;
+}
+
+export function setActiveTab(tab: RoutableTabId, options: { canonicalHash?: boolean } = {}) {
 	const nextTab = resolveAccessibleTab(tab, state.lastCoordinatorAdminStatus);
 	state.activeTab = nextTab;
 	localStorage.setItem(TAB_KEY, nextTab);
@@ -352,8 +389,10 @@ export function setActiveTab(tab: TabId) {
 	// active tab — otherwise the sub-view fragment is clobbered before the
 	// sync view controller can read it.
 	const currentTop = parseTabFromHash();
-	if (currentTop !== nextTab) {
+	if (options.canonicalHash) {
 		window.location.hash = nextTab;
+	} else if (currentTop !== nextTab) {
+		window.location.hash = nextTab === "advanced" ? `advanced/${state.advancedSection}` : nextTab;
 	}
 }
 
@@ -417,6 +456,7 @@ export function setDetailsOpen(open: boolean) {
 
 export function initState() {
 	state.activeTab = getActiveTab();
+	state.advancedSection = getActiveAdvancedSection();
 	state.feedTypeFilter = getFeedTypeFilter();
 	state.feedScopeFilter = getFeedScopeFilter();
 	state.syncDiagnosticsOpen = isSyncDiagnosticsOpen();

@@ -6,6 +6,7 @@ import {
 	createRecipientInvite,
 	inspectCoordinatorInvite,
 	loadRecipientPolicyIntent,
+	loadRecipientPolicyReconciliationStatus,
 	loadRecipientPolicyReview,
 	loadShareOperation,
 	loadShareOperations,
@@ -270,6 +271,27 @@ describe("recipient policy review API", () => {
 });
 
 describe("recipient policy edge API", () => {
+	it("loads the typed safe reconciliation status", async () => {
+		const status = {
+			version: 1,
+			items: [
+				{
+					canonicalProjectIdentity: "git:codemem",
+					state: "waiting",
+					label: "Waiting to reconcile",
+					explanation: "Waiting for devices or a fresh coordinator snapshot.",
+					deliveredCopiesMayRemain: true,
+					revocationWarning: "Copies already delivered may remain.",
+				},
+			],
+		} as const;
+		const fetchMock = vi.fn(async () => new Response(JSON.stringify(status), { status: 200 }));
+		globalThis.fetch = fetchMock as typeof fetch;
+
+		expect(await loadRecipientPolicyReconciliationStatus()).toEqual(status);
+		expect(fetchMock).toHaveBeenCalledWith("/api/sync/recipient-policy/v1/reconciliation-status");
+	});
+
 	it("loads intent and sends exact preview and commit payloads", async () => {
 		const intent = {
 			version: 1,

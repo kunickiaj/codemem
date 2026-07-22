@@ -676,6 +676,25 @@ export interface RecipientPolicyIntentGraphV1 {
 	projectRecipients: RecipientPolicyProjectRecipientV1[];
 }
 
+export type RecipientPolicyReconciliationReadState =
+	| "active"
+	| "needs_attention"
+	| "pending"
+	| "verifying"
+	| "waiting";
+
+export interface RecipientPolicyReconciliationStatusV1 {
+	version: 1;
+	items: Array<{
+		canonicalProjectIdentity: string;
+		state: RecipientPolicyReconciliationReadState;
+		label: string;
+		explanation: string;
+		deliveredCopiesMayRemain: true;
+		revocationWarning: string;
+	}>;
+}
+
 export interface RecipientPolicyEdgeChangeV1 {
 	canonicalProjectIdentity: string;
 	recipient: RecipientPolicyEdgeRecipientRefV1;
@@ -767,6 +786,12 @@ export class RecipientPolicyEdgesStaleError extends Error {
 
 export function loadRecipientPolicyIntent(): Promise<RecipientPolicyIntentGraphV1> {
 	return fetchJson<RecipientPolicyIntentGraphV1>("/api/sync/recipient-policy/v1/intent");
+}
+
+export function loadRecipientPolicyReconciliationStatus(): Promise<RecipientPolicyReconciliationStatusV1> {
+	return fetchJson<RecipientPolicyReconciliationStatusV1>(
+		"/api/sync/recipient-policy/v1/reconciliation-status",
+	);
 }
 
 async function recipientPolicyEdgeRequest<T>(

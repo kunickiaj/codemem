@@ -135,11 +135,11 @@ Candidate mining is deterministic and review-first:
 - `--draft` uses your configured observer model to write one concise rule for the top candidate and prints a unified diff; it does not write anything.
 - `--apply` (implies `--draft`) writes the rule into a codemem-managed `## Distilled lessons` block, delimited by `<!-- codemem:distilled:begin/end -->` markers so every distilled edit stays in one place. It prompts before writing (except with `--json`, which is non-interactive — there `--apply` itself is the explicit consent and the write happens immediately) and appends only (never deletes your existing notes).
 
-## Sync
+## Projects, Sharing, Devices, and Health
 
 ### Share projects with a teammate
 
-The normal teammate flow starts in **Projects**, not pairing or Teams:
+The normal teammate flow is **Projects → Sharing → Devices → Health**, not pairing or Teams:
 
 1. Choose **Share** for one project, or select projects and choose **Share projects**.
 2. Choose an existing **Person** or enter the teammate's name.
@@ -158,7 +158,11 @@ Project access uses canonical project identity, not a display name. Selecting `c
 
 The invite is single-use, expires, and is limited to the reviewed projects. The recipient cannot add projects during acceptance. Existing and future selected-project memories arrive after setup; unrelated projects remain absent.
 
-### Setup status and recovery
+### Devices, status, and recovery
+
+**Devices** is a read-only view of where Project access can arrive. A device belongs to one **Identity**. Its Projects are labeled **Direct** when shared with that Identity and **Team** when inherited through a Team; both are limited to the exact canonical Projects selected in Sharing.
+
+**Availability** tells you whether the device can currently receive work. It does not change ownership or Project access:
 
 | Status | Meaning | What to do |
 | --- | --- | --- |
@@ -169,19 +173,25 @@ The invite is single-use, expires, and is limited to the reviewed projects. The 
 | Needs attention | A setup step reached a terminal failure. | Use **Retry setup**. |
 | Access removed | Future access has been removed. Previously copied memories may remain on the other device. | Share again if appropriate. |
 
-An offline device is a passive waiting state, not a failure. Retry only when codemem shows **Needs attention**; it preserves completed setup work and resumes from the failed step.
+An offline device is a passive waiting state, not a failure. Retry only when codemem shows **Needs attention**; it preserves completed setup work and resumes from the failed step. Removing access prevents future delivery, but cannot delete memories already copied to a recipient device.
 
-### Enable + run
+## Advanced operator and compatibility guidance
+
+Use this section for same-person devices, existing integrations, diagnostics, or self-hosted coordination. These controls preserve internal compatibility; they are not required for the normal Projects → Sharing → Devices → Health workflow.
+
+Legacy `#sync` and `#sync/diagnostics` viewer links remain valid Advanced routes. Saved Sync views and coordinator administration remain available through **Advanced**.
+
+### Sync runtime
 
 - `codemem sync enable` generates keys and writes config.
 - `codemem sync start` starts the viewer-backed sync runtime.
 - `codemem sync status` shows device info and peer health.
 
-### Advanced and legacy device pairing
+### Manual pairing
 
 Use manual pairing for same-person devices, existing integrations, or compatibility—not normal teammate sharing.
 
-1. In the viewer, open the Sync panel and scan/copy the QR payload (recommended).
+1. In **Advanced**, open the Sync panel and scan/copy the QR payload (recommended).
 2. Or run `codemem sync pair` and copy the payload.
 3. On the other device, run `codemem sync pair --accept '<payload>'`.
 
@@ -190,11 +200,9 @@ Optional legacy filters can narrow an already-authorized peer's data; they canno
 - `codemem sync pair --accept '<payload>' --include shared-repo-1,shared-repo-2`
 - `codemem sync pair --accept '<payload>' --exclude private-repo`
 
-### Advanced sharing domains and mixed-device safety
+### Sharing domains, Spaces, grants, and filters
 
-A **Sharing domain** is the boundary that decides which devices may receive a
-memory. Internally this is stored as `scope_id`. Project filters still matter,
-but only as a narrowing rule after Sharing-domain authorization succeeds.
+A **Sharing domain** is an operator boundary that decides which devices may receive a memory. Internally this is stored as `scope_id`. Project filters narrow an already-authorized peer; they never grant Project access.
 
 Use separate Sharing domains for personal, work, client, and OSS data on the
 same machine:
@@ -252,7 +260,7 @@ codemem maintenance status
 
 ### Same-person device recovery
 
-- In the Sync panel, use `Assigned actor` to map a peer to your local actor when that machine should count as part of your identity.
+- In **Advanced → Sync**, use `Assigned actor` to map a peer to your local actor when that machine should count as part of your identity.
 - Actor assignment preserves provenance and same-person UI continuity. Private sync still requires membership in a personal Sharing domain; actor assignment is not an access grant.
 - If a machine is replaced or re-paired, use `Claim old device as mine` to reconnect older synced history to your local actor.
 
@@ -267,9 +275,9 @@ codemem maintenance status
 - Use `Only me` on a memory when it should stay local and not sync to non-local actors.
 - The Sync panel also shows a teammate review card with per-peer counts for memories that will share by default versus memories marked `Only me`, plus a one-click jump into `My memories` in the Feed for review.
 
-### Advanced compatibility and reassignment
+### Compatibility, Spaces, grants, and reassignment
 
-Legacy pairing and coordinator invitations remain supported, but do not grant selected-project access by themselves. Manual Space grants and project mappings are advanced administration.
+Legacy pairing and coordinator invitations remain supported, but do not grant selected-project access by themselves. Manual Space grants and project mappings are Advanced administration.
 
 When selected history may already have replicated, all participating owner devices must support `reassign_scope` before codemem moves it into a project-specific boundary. If any required device lacks support, setup fails closed before partial migration; update that device, then use **Retry setup**. Technical capability details and IDs are available only in diagnostics.
 
@@ -300,7 +308,7 @@ When selected history may already have replicated, all participating owner devic
 - Use coordinator-backed discovery when peers are reachable but their addresses change frequently or mDNS does not work across network boundaries such as VPNs.
 - Set `sync_coordinator_url` and `sync_coordinator_group` to enable it.
 - The Settings UI exposes coordinator URL, group, timeout, and presence TTL fields under Device Sync.
-- Use **Share** in Projects for normal teammate sharing. Manual project-to-Space assignment is advanced/legacy administration; Device Sync is for runtime configuration.
+- Use **Share** in Projects for normal teammate sharing. Manual project-to-Space assignment, grants, addresses, fingerprints, filters, epochs, and cursors are operator/compatibility details; Device Sync is for runtime configuration.
 - The coordinator is self-hosted/operator-run and only helps peers discover fresh addresses; direct peer-to-peer sync remains the data path.
 - See [docs/coordinator-discovery.md](coordinator-discovery.md) for setup, config, and current limitations.
 - See [docs/anchor-peer-deployment.md](anchor-peer-deployment.md) if you want an always-on peer as a sync backstop for personal or team Sharing domains.
@@ -377,7 +385,7 @@ The wire error is intentionally generic. Check the peer serving the bootstrap sn
 - The feed supports `All`, `Mine`, and `Theirs` scopes without splitting memories into separate databases.
 - For non-local peers, Sharing-domain membership is the access boundary. Project and per-peer sync filters narrow the eligible set, and `Only me` acts as a per-memory override.
 
-## Viewer sync panel
+## Advanced Sync panel
 - The `Actors` section gives actor creation/rename one home, while peer cards keep assignment close to the peer being changed.
 - `Assigned actor` replaces the older `Belongs to me` language in the peer cards.
 - Feed cards you own include a visibility control so shared/private intent can be changed without editing raw metadata.

@@ -12,24 +12,35 @@ declare const __CODEMEM_GIT_COMMIT__: string;
 import { createRecipientPolicySharingLoader } from "./app-sharing";
 import { mountToastHost } from "./components/primitives/toast";
 import * as api from "./lib/api";
+import type { ProjectScopeInventoryProject } from "./lib/api/sync";
 import { $, $button, $select } from "./lib/dom";
 import { handlePrimaryActionKeyboard } from "./lib/keyboard";
 import {
+	type AdvancedSection,
 	ALL_TAB_IDS,
 	getVisibleTabs,
 	initState,
+	parseAdvancedSectionFromHash,
 	parseTabFromHash,
 	resolveAccessibleTab,
 	setActiveTab,
+	setAdvancedSection,
 	state,
 	type TabId,
 } from "./lib/state";
 import { getTheme, initThemeToggle, setTheme } from "./lib/theme";
 
 import { initCoordinatorAdminTab, loadCoordinatorAdminData } from "./tabs/coordinator-admin";
+import {
+	type DeviceAvailabilityInput,
+	type DevicesNavigationTarget,
+	type DevicesProjectInput,
+	mountDevices,
+} from "./tabs/devices";
 import { initFeedTab, loadFeedData, updateFeedView } from "./tabs/feed";
 import { initHealthTab, loadHealthData } from "./tabs/health";
 import { initProjectsTab, loadProjectsData } from "./tabs/projects";
+import { toRecipientPolicyManagementProjects } from "./tabs/recipient-policy-projects";
 import { initSettings, isSettingsOpen, loadConfigData } from "./tabs/settings";
 import {
 	initSyncTab,
@@ -37,6 +48,8 @@ import {
 	loadPairingData,
 	loadSyncData,
 } from "./tabs/sync";
+import { applySyncSubView } from "./tabs/sync/sync-view-controller";
+import { derivePeerUiStatus } from "./tabs/sync/view-model/peer-status";
 
 function setRuntimeLabel(version: string, commit: string | null) {
 	const el = $("runtimeLabel");
@@ -357,6 +370,24 @@ document.addEventListener("visibilitychange", () => {
 
 /* ── Tab routing ─────────────────────────────────────────── */
 
+function renderAdvancedSection() {
+	const isSync = state.advancedSection === "sync";
+	const syncContent = $("advancedSyncContent");
+	const teamsContent = $("advancedTeamsContent");
+	if (syncContent) syncContent.hidden = !isSync;
+	if (teamsContent) teamsContent.hidden = isSync;
+	const syncButton = $("advancedSyncButton");
+	const teamsButton = $("advancedTeamsButton");
+	syncButton?.setAttribute("aria-pressed", String(isSync));
+	teamsButton?.setAttribute("aria-pressed", String(!isSync));
+	queueMicrotask(() => {
+		const hash = window.location.hash.replace(/^#/, "");
+		applySyncSubView(
+			hash === "sync/diagnostics" || hash === "advanced/sync/diagnostics" ? "diagnostics" : "main",
+		);
+	});
+}
+
 function renderTabs(activeTab: TabId) {
 	const visibleTabs = new Set(getVisibleTabs(state.lastCoordinatorAdminStatus));
 	ALL_TAB_IDS.forEach((id) => {
@@ -373,11 +404,20 @@ function renderTabs(activeTab: TabId) {
 		if (active) btn.setAttribute("aria-current", "page");
 		else btn.removeAttribute("aria-current");
 	});
+	renderAdvancedSection();
 }
 
-function switchTab(tab: TabId) {
+function switchTab(
+	tab: TabId,
+	options: { canonicalHash?: boolean; advancedSection?: AdvancedSection } = {},
+) {
 	const nextTab = resolveAccessibleTab(tab, state.lastCoordinatorAdminStatus);
-	setActiveTab(nextTab);
+	if (nextTab === "advanced") {
+		setAdvancedSection(
+			options.advancedSection ?? parseAdvancedSectionFromHash() ?? state.advancedSection,
+		);
+	}
+	setActiveTab(nextTab, options.canonicalHash ? { canonicalHash: true } : {});
 	renderTabs(nextTab);
 
 	// Refresh data for active tab
@@ -387,16 +427,26 @@ function switchTab(tab: TabId) {
 function initTabs() {
 	ALL_TAB_IDS.forEach((id) => {
 		const btn = $(`tabBtn-${id}`);
-		btn?.addEventListener("click", () => switchTab(id));
+		btn?.addEventListener("click", () =>
+			switchTab(
+				id,
+				id === "advanced"
+					? { canonicalHash: true, advancedSection: "sync" }
+					: { canonicalHash: true },
+			),
+		);
 	});
+	$("advancedSyncButton")?.addEventListener("click", () => setAdvancedSection("sync", true));
+	$("advancedTeamsButton")?.addEventListener("click", () => setAdvancedSection("teams", true));
 
 	// Listen for hash changes (back/forward navigation). Hashes may include a
 	// sub-view segment (e.g. `#sync/diagnostics`) — parse with the shared
 	// helper so nested segments still resolve to their parent tab.
 	window.addEventListener("hashchange", () => {
 		const top = parseTabFromHash();
-		if (top && top !== state.activeTab) {
-			switchTab(top);
+		if (top) {
+			const advancedSection = parseAdvancedSectionFromHash();
+			switchTab(top, advancedSection ? { advancedSection } : {});
 		}
 	});
 
@@ -431,6 +481,107 @@ async function loadProjects() {
 }
 
 const loadRecipientPolicySharingData = createRecipientPolicySharingLoader();
+const emptyRecipientPolicyIntent: api.RecipientPolicyIntentGraphV1 = {
+	version: 1,
+	identities: [],
+	teams: [],
+	teamMemberships: [],
+	identityDevices: [],
+	projectRecipients: [],
+};
+let devicesLoaded = false;
+let lastDevicesData: {
+	projects: DevicesProjectInput[];
+	intent: api.RecipientPolicyIntentGraphV1;
+	reconciliation: api.RecipientPolicyReconciliationStatusV1;
+	availability: DeviceAvailabilityInput[];
+} | null = null;
+
+async function loadRecipientPolicyProjects(): Promise<DevicesProjectInput[]> {
+	const projects: ProjectScopeInventoryProject[] = [];
+	let offset = 0;
+	while (true) {
+		const page = await api.loadProjectScopeInventory({ limit: 250, offset });
+		projects.push(...page.projects);
+		if (!page.has_more) break;
+		offset += page.limit;
+	}
+	return toRecipientPolicyManagementProjects(projects);
+}
+
+function deriveDeviceAvailability(): DeviceAvailabilityInput[] {
+	const availability = new Map<string, DeviceAvailabilityInput["state"]>();
+	const rank = { unknown: 0, offline: 1, available: 2 } as const;
+	const record = (deviceId: string, next: DeviceAvailabilityInput["state"]) => {
+		if (!deviceId || rank[next] <= rank[availability.get(deviceId) ?? "unknown"]) return;
+		availability.set(deviceId, next);
+	};
+	for (const device of state.lastSyncCoordinator?.discovered_devices ?? []) {
+		record(String(device.device_id ?? "").trim(), device.stale ? "offline" : "available");
+	}
+	for (const peer of state.lastSyncPeers) {
+		const deviceId = String(peer.peer_device_id ?? "").trim();
+		const syncState = derivePeerUiStatus(peer);
+		record(
+			deviceId,
+			syncState === "connected" || syncState === "available"
+				? "available"
+				: syncState === "offline"
+					? "offline"
+					: "unknown",
+		);
+	}
+	return [...availability].map(([deviceId, state]) => ({ deviceId, state }));
+}
+
+function navigateFromDevices(target: DevicesNavigationTarget) {
+	switchTab(target, { canonicalHash: true });
+	queueMicrotask(() => document.getElementById(`tabBtn-${target}`)?.focus());
+}
+
+async function loadDevicesData(): Promise<boolean> {
+	const mount = document.getElementById("devicesMount");
+	if (!mount) return true;
+	if (!devicesLoaded) {
+		mountDevices(mount, emptyRecipientPolicyIntent, { version: 1, items: [] }, [], [], {
+			loading: true,
+		});
+	}
+	try {
+		const [projects, intent, reconciliation] = await Promise.all([
+			loadRecipientPolicyProjects(),
+			api.loadRecipientPolicyIntent(),
+			api.loadRecipientPolicyReconciliationStatus(),
+			loadSyncData(),
+		]);
+		const availability = deriveDeviceAvailability();
+		mountDevices(mount, intent, reconciliation, projects, availability, {
+			onNavigate: navigateFromDevices,
+		});
+		lastDevicesData = { projects, intent, reconciliation, availability };
+		devicesLoaded = true;
+		return true;
+	} catch {
+		if (lastDevicesData) {
+			mountDevices(
+				mount,
+				lastDevicesData.intent,
+				lastDevicesData.reconciliation,
+				lastDevicesData.projects,
+				lastDevicesData.availability,
+				{
+					onNavigate: navigateFromDevices,
+					refreshError: true,
+				},
+			);
+		} else {
+			mountDevices(mount, emptyRecipientPolicyIntent, { version: 1, items: [] }, [], [], {
+				loadError: true,
+			});
+		}
+		return false;
+	}
+}
 
 $select("projectFilter")?.addEventListener("change", () => {
 	state.currentProject = $select("projectFilter")?.value || "";
@@ -460,27 +611,11 @@ async function doRefresh() {
 	try {
 		setRefreshStatus("refreshing");
 
-		let refreshTab = state.activeTab;
-		if (refreshTab === "coordinator-admin") {
-			try {
-				const status = await api.loadCoordinatorAdminStatus();
-				state.lastCoordinatorAdminStatus =
-					status && typeof status === "object"
-						? (status as typeof state.lastCoordinatorAdminStatus)
-						: null;
-			} catch {
-				state.lastCoordinatorAdminStatus = null;
-			}
-			refreshTab = state.activeTab;
-			refreshTab = resolveAccessibleTab(refreshTab, state.lastCoordinatorAdminStatus);
-			if (refreshTab !== state.activeTab) {
-				setActiveTab(refreshTab);
-				renderTabs(refreshTab);
-			}
-		}
+		const refreshTab = state.activeTab;
 
 		// Always load health data (for the header health dot) and config
 		const promises: Promise<unknown>[] = [loadHealthData(), loadConfigData()];
+		let devicesRefreshSucceeded = true;
 		if (refreshTab === "feed") {
 			promises.push(
 				api
@@ -507,11 +642,21 @@ async function doRefresh() {
 		if (refreshTab === "sharing") {
 			promises.push(loadRecipientPolicySharingData());
 		}
-		// Sync data is needed by both Sync tab and Health tab (health cards derive sync state)
-		if (refreshTab === "sync" || refreshTab === "health") {
+		if (refreshTab === "devices") {
+			promises.push(
+				loadDevicesData().then((succeeded) => {
+					devicesRefreshSucceeded = succeeded;
+				}),
+			);
+		}
+		// Sync data is needed by Advanced Sync and Health (health cards derive sync state).
+		if (
+			(refreshTab === "advanced" && state.advancedSection === "sync") ||
+			refreshTab === "health"
+		) {
 			promises.push(loadSyncData());
 		}
-		if (refreshTab === "coordinator-admin") {
+		if (refreshTab === "advanced" && state.advancedSection === "teams") {
 			promises.push(loadCoordinatorAdminData());
 		}
 
@@ -527,7 +672,7 @@ async function doRefresh() {
 			setActiveTab(nextTab);
 		}
 		renderTabs(state.activeTab);
-		setRefreshStatus("idle");
+		setRefreshStatus(devicesRefreshSucceeded ? "idle" : "error");
 	} catch {
 		const ready = await isViewerReady();
 		if (!ready) {

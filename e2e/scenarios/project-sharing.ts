@@ -10,7 +10,12 @@ import {
 import type { ScenarioContext } from "../lib/scenario-context.js";
 import { waitFor } from "../lib/wait.js";
 
+const POLICY_SELECTED_PROJECT = "https://example.invalid/acme/policy-selected.git";
+const POLICY_UNRELATED_PROJECT = "https://example.invalid/acme/policy-unrelated.git";
+
 interface FixtureSummary {
+	device_id: string;
+	actor_id: string;
 	memories: Array<{ title: string; project: string | null; scope_id: string | null; active: number }>;
 	actors: Array<{ actor_id: string; display_name: string; status: string }>;
 	peers: Array<{ peer_device_id: string; name: string | null; actor_id: string | null }>;
@@ -23,6 +28,66 @@ interface FixtureSummary {
 		recipient_device_id: string | null;
 		recipient_device_display_name: string | null;
 	}>;
+	policy: {
+		team_memberships: Array<{ team_id: string; identity_id: string; status: string }>;
+		identity_devices: Array<{
+			identity_id: string;
+			device_id: string;
+			display_name: string;
+			status: string;
+		}>;
+		project_recipients: Array<{
+			canonical_project_identity: string;
+			recipient_kind: string;
+			recipient_id: string;
+			status: string;
+		}>;
+		effective_projects: Array<{
+			canonicalProjectIdentity: string;
+			status: string;
+			devices: Array<{
+				identityId: string;
+				deviceId: string;
+				sources: Array<{ kind: "direct_identity" | "team_membership"; teamId?: string }>;
+			}>;
+		}>;
+	};
+	action_result?: Record<string, unknown> | null;
+}
+
+interface RecipientPolicyIntentGraph {
+	teamMemberships: Array<{ teamId: string; identityId: string; status: string }>;
+	projectRecipients: Array<{
+		canonicalProjectIdentity: string;
+		recipientKind: "identity" | "team";
+		identityId?: string;
+		teamId?: string;
+		status: string;
+	}>;
+}
+
+interface ReconciliationProof {
+	unsupported: {
+		result: { status: string; safeErrorCode: string | null };
+		membership_unchanged: boolean;
+		mutation_calls: string[];
+	};
+	offline_resume: {
+		waiting: { status: string; safeErrorCode: string | null };
+		resumed: { status: string };
+		active: { status: string };
+	};
+	revocation: {
+		revoking: { status: string; revokedDeviceIds: string[] };
+		active: { status: string };
+		members: string[];
+		deny_overlays: unknown[];
+	};
+	rollback: {
+		result: { status: string };
+		authority: { authorityState: string } | null;
+		mutation_calls: string[];
+	};
 }
 
 function fixture(ctx: ScenarioContext, service: string, action: string, artifact: string): FixtureSummary {
@@ -321,21 +386,320 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		!finalA.managed_memberships.some((member) => member.device_id === "source-bystander"),
 		"managed project boundary inherited an unreviewed source member",
 	);
+	const recipientPeer = finalA.peers.find((peer) => peer.peer_device_id === peerB.device_id);
+	assert(recipientPeer?.actor_id, "recipient Identity was not linked to the accepted device");
+	assert(
+		finalA.policy.project_recipients.some(
+			(item) =>
+				item.canonical_project_identity === selected.workspace_identity &&
+				item.recipient_kind === "identity" &&
+				item.recipient_id === finalA.actor_id &&
+				item.status === "active",
+		),
+		"real direct invitation did not preserve the inviter Identity's selected Project access",
+	);
+	assert(
+		finalA.policy.project_recipients.some(
+			(item) =>
+				item.canonical_project_identity === selected.workspace_identity &&
+				item.recipient_kind === "identity" &&
+				item.recipient_id === recipientPeer.actor_id &&
+				item.status === "active",
+		),
+		"real direct invitation did not preserve the recipient Identity's selected Project access",
+	);
+	for (const [deviceId, label] of [
+		[peerA.device_id, "inviter"],
+		[peerB.device_id, "recipient"],
+	] as const) {
+		assert(
+			finalA.managed_memberships.some(
+				(member) => member.device_id === deviceId && member.status === "active",
+			),
+			`real direct invitation did not keep the ${label} device active`,
+		);
+	}
+
+	// Arrange: seed isolated recipient intent without changing the real direct-invite Projects.
+	const seededPolicy = fixture(ctx, "peer-a", "seed-policy", "28-seed-recipient-policy");
+	// Act: read canonical intent and derive effective devices from the persisted graph.
+	const initialIntent = await request<RecipientPolicyIntentGraph>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/intent",
+		"29-initial-recipient-intent",
+	);
+	// Assert: direct Identity, Team, and Personal/Work Project boundaries are exact.
+	assert(initialIntent.status === 200, "initial recipient-policy intent failed");
+	const selectedPolicy = seededPolicy.policy.effective_projects.find(
+		(item) => item.canonicalProjectIdentity === POLICY_SELECTED_PROJECT,
+	);
+	const unrelatedPolicy = seededPolicy.policy.effective_projects.find(
+		(item) => item.canonicalProjectIdentity === POLICY_UNRELATED_PROJECT,
+	);
+	assert(selectedPolicy && unrelatedPolicy, "isolated policy Project projections missing");
+	assert(
+		initialIntent.body.projectRecipients.some(
+			(item) =>
+				item.canonicalProjectIdentity === POLICY_SELECTED_PROJECT &&
+				item.recipientKind === "identity" &&
+				item.identityId === "identity-direct-personal",
+		),
+		"direct Identity recipient missing from policy-selected Project",
+	);
+	assert(
+		!seededPolicy.policy.team_memberships.some(
+			(item) => item.identity_id === "identity-direct-personal" && item.status === "active",
+		),
+		"direct Identity unexpectedly gained Team membership",
+	);
+	assert(
+		initialIntent.body.projectRecipients.some(
+			(item) =>
+				item.canonicalProjectIdentity === POLICY_SELECTED_PROJECT &&
+				item.recipientKind === "team" &&
+				item.teamId === "team-project-sharing",
+		),
+		"Team recipient missing from policy-selected Project",
+	);
+	assert(
+		unrelatedPolicy.devices.length === 1 &&
+			unrelatedPolicy.devices.every(
+			(item) => item.identityId === "identity-work" && item.deviceId === "device-work",
+			),
+		"unrelated Work Project inherited Personal or Team devices",
+	);
+	assert(
+		selectedPolicy.devices.every((item) => item.identityId !== "identity-work"),
+		"Work Identity leaked into policy-selected Personal Project",
+	);
+
+	// Arrange/Act: add a future Team member and a second device to the direct Identity.
+	const inheritedPolicy = fixture(ctx, "peer-a", "inherit-policy", "30-inherit-recipient-policy");
+	const inheritedIntent = await request<RecipientPolicyIntentGraph>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/intent",
+		"31-inherited-recipient-intent",
+	);
+	// Assert: future Team membership and add-device access inherit without new Project edges.
+	assert(inheritedIntent.status === 200, "inherited recipient-policy intent failed");
+	const inheritedSelected = inheritedPolicy.policy.effective_projects.find(
+		(item) => item.canonicalProjectIdentity === POLICY_SELECTED_PROJECT,
+	);
+	assert(inheritedSelected, "inherited policy-selected Project projection missing");
+	assert(
+		inheritedSelected.devices.some(
+			(item) =>
+				item.deviceId === "device-team-future" &&
+				item.sources.some(
+					(source) =>
+						source.kind === "team_membership" && source.teamId === "team-project-sharing",
+				),
+		),
+		"future Team member did not inherit the policy-selected Project",
+	);
+	assert(
+		inheritedSelected.devices.some(
+			(item) =>
+				item.deviceId === "device-direct-2" &&
+				item.sources.some((source) => source.kind === "direct_identity"),
+		),
+		"new device did not inherit its Identity's direct Project",
+	);
+	assert(
+		(inheritedPolicy.action_result as { add_device_commit?: { status?: string } } | null)
+			?.add_device_commit?.status === "applied",
+		"add-device intent commit was not applied",
+	);
+
+	// Arrange: preview adding the Work Identity to the isolated policy-selected Project.
+	const edgeChange = {
+		canonicalProjectIdentity: POLICY_SELECTED_PROJECT,
+		recipient: { recipientKind: "identity", identityId: "identity-work" },
+		action: "add",
+	};
+	const edgePreview = await request<{ reviewedPolicyDigest: string }>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/edges/preview",
+		"32-preview-policy-edge",
+		{ version: 1, changes: [edgeChange] },
+	);
+	assert(edgePreview.status === 200, "recipient-policy edge preview failed");
+	fixture(ctx, "peer-a", "add-stale-memory", "33-stale-preview-change");
+	const refreshedEdgePreview = await request<{ reviewedPolicyDigest: string }>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/edges/preview",
+		"34-refreshed-policy-edge",
+		{ version: 1, changes: [edgeChange] },
+	);
+	assert(refreshedEdgePreview.status === 200, "refreshed recipient-policy edge preview failed");
+	assert(
+		refreshedEdgePreview.body.reviewedPolicyDigest !== edgePreview.body.reviewedPolicyDigest,
+		"synthetic policy-selected Project change did not stale the reviewed digest",
+	);
+	// Act: commit the now-stale preview.
+	const staleCommit = await request<{ status: string; writeCount: number }>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/edges/commit",
+		"35-reject-stale-policy-edge",
+		{ version: 1, changes: [edgeChange], reviewedPolicyDigest: edgePreview.body.reviewedPolicyDigest },
+	);
+	// Assert: stale review is rejected with no recipient mutation.
+	assert(staleCommit.status === 409, "stale recipient-policy preview was not rejected");
+	assert(
+		staleCommit.body.status === "stale" && staleCommit.body.writeCount === 0,
+		"stale recipient-policy rejection reported a write",
+	);
+	const afterStale = fixture(ctx, "peer-a", "summary", "36-after-stale-summary");
+	assert(
+		!afterStale.policy.project_recipients.some(
+			(item) =>
+				item.canonical_project_identity === POLICY_SELECTED_PROJECT &&
+				item.recipient_id === "identity-work",
+		),
+		"stale recipient-policy preview mutated policy-selected Project intent",
+	);
+
+	// Arrange/Act: revoke only the policy-selected Project's direct Identity recipient.
+	const revokedPolicy = fixture(ctx, "peer-a", "revoke-policy", "37-revoke-direct-recipient");
+	const revokedIntent = await request<RecipientPolicyIntentGraph>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/intent",
+		"38-revoked-recipient-intent",
+	);
+	// Assert: Team access remains, direct devices disappear, and the unrelated Work Project is unchanged.
+	assert(revokedIntent.status === 200, "revoked recipient-policy intent failed");
+	const revokedSelected = revokedPolicy.policy.effective_projects.find(
+		(item) => item.canonicalProjectIdentity === POLICY_SELECTED_PROJECT,
+	);
+	const revokedUnrelated = revokedPolicy.policy.effective_projects.find(
+		(item) => item.canonicalProjectIdentity === POLICY_UNRELATED_PROJECT,
+	);
+	assert(revokedSelected && revokedUnrelated, "revoked policy projections missing");
+	for (const identityId of [finalA.actor_id, recipientPeer.actor_id]) {
+		assert(
+			revokedIntent.body.projectRecipients.some(
+				(item) =>
+					item.canonicalProjectIdentity === selected.workspace_identity &&
+					item.recipientKind === "identity" &&
+					item.identityId === identityId &&
+					item.status === "active",
+			),
+			"synthetic revocation changed real direct-invite recipient access",
+		);
+	}
+	assert(
+		revokedSelected.devices.some((item) =>
+			item.sources.some((source) => source.kind === "team_membership"),
+		) &&
+			revokedSelected.devices.every(
+				(item) =>
+					item.identityId !== "identity-direct-personal" &&
+					item.sources.every((source) => source.kind === "team_membership"),
+			),
+		"revoked direct Identity retained policy-selected Project access",
+	);
+	assert(
+		revokedUnrelated.devices.some((item) => item.deviceId === "device-work"),
+		"unrelated Work Project changed during selected Project revocation",
+	);
+
+	// Arrange/Act: resolve one migration review as Keep current and rerun migration.
+	const keepCurrent = fixture(ctx, "peer-a", "keep-current", "39-keep-current-migration");
+	const keepCurrentProof = keepCurrent.action_result as {
+		resolved?: { status?: string };
+		recipient_count_unchanged?: boolean;
+		resolution_durable?: boolean;
+		first_migration?: { results?: Array<{ status: string; writeCount: number }> };
+		second_migration?: { results?: Array<{ status: string; writeCount: number }> };
+	};
+	// Assert: ambiguous migration under-shares, Keep current is durable, and reruns stay no-op.
+	assert(keepCurrentProof.resolved?.status === "applied", "Keep current review was not applied");
+	assert(keepCurrentProof.recipient_count_unchanged === true, "Keep current migration wrote recipients");
+	assert(keepCurrentProof.resolution_durable === true, "Keep current review resolution was not durable");
+	assert(
+		keepCurrentProof.second_migration?.results?.every(
+			(item) => item.status !== "migrated" && item.writeCount === 0,
+		) === true,
+		"repeated Keep current migration was not a no-op",
+	);
+
+	// Arrange/Act: exercise deterministic reconciliation against isolated fake coordinator effects.
+	const reconciliation = fixture(
+		ctx,
+		"peer-a",
+		"reconciliation-proof",
+		"40-recipient-reconciliation-proof",
+	).action_result as unknown as ReconciliationProof;
+	// Assert: unsupported peers fail before mutation; offline work waits/resumes; revocation and rollback stay visible.
+	assert(
+		reconciliation.unsupported.result.status === "needs_attention" &&
+			reconciliation.unsupported.result.safeErrorCode === "recipient_policy_capability_unsupported",
+		"unsupported old peer did not fail closed",
+	);
+	assert(reconciliation.unsupported.membership_unchanged, "unsupported old peer mutated membership");
+	assert(reconciliation.unsupported.mutation_calls.length === 0, "unsupported old peer ran mutations");
+	assert(
+		reconciliation.offline_resume.waiting.status === "waiting" &&
+			reconciliation.offline_resume.waiting.safeErrorCode ===
+				"recipient_policy_capability_undetermined",
+		"offline recipient did not enter a safe waiting state",
+	);
+	assert(
+		reconciliation.offline_resume.resumed.status === "parity_pending" &&
+			reconciliation.offline_resume.active.status === "active",
+		"offline reconciliation did not resume to active",
+	);
+	assert(
+		reconciliation.revocation.revoking.revokedDeviceIds.includes("device-revocation-old") &&
+			reconciliation.revocation.active.status === "active" &&
+			!reconciliation.revocation.members.includes("device-revocation-old") &&
+			reconciliation.revocation.deny_overlays.length === 0,
+		"revocation did not converge and clear its deny overlay",
+	);
+	assert(
+		reconciliation.rollback.result.status === "needs_attention" &&
+			reconciliation.rollback.authority?.authorityState === "rolled_back" &&
+			reconciliation.rollback.mutation_calls.length === 0,
+		"unsupported active Project did not roll back without grants",
+	);
+	const reconciliationStatus = await request<{
+		items: Array<{ canonicalProjectIdentity: string; state: string; explanation: string }>;
+	}>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/reconciliation-status",
+		"41-reconciliation-status",
+	);
+	assert(
+		reconciliationStatus.body.items.some(
+			(item) =>
+				item.canonicalProjectIdentity === "https://example.invalid/e2e/rollback.git" &&
+				item.state === "needs_attention" &&
+				item.explanation.includes("Legacy scope enforcement remains in control"),
+		),
+		"rollback was not visible through the safe reconciliation API",
+	);
 
 	ctx.compose.copyFromContainer(
 		"peer-a:/data/mem.sqlite",
 		`${ctx.artifactsDir}/db/peer-a-project-sharing.sqlite`,
-		"28-copy-peer-a-db",
+		"42-copy-peer-a-db",
 	);
 	ctx.compose.copyFromContainer(
 		"peer-b:/data/mem.sqlite",
 		`${ctx.artifactsDir}/db/peer-b-project-sharing.sqlite`,
-		"29-copy-peer-b-db",
+		"43-copy-peer-b-db",
 	);
 	ctx.compose.copyFromContainer(
 		"coordinator:/data/coordinator.sqlite",
 		`${ctx.artifactsDir}/db/coordinator-project-sharing.sqlite`,
-		"30-copy-coordinator-db",
+		"44-copy-coordinator-db",
 	);
-	if (!ctx.keepStackOnFailure) ctx.compose.down("31-compose-down-post");
+	if (!ctx.keepStackOnFailure) ctx.compose.down("45-compose-down-post");
 }

@@ -1,13 +1,21 @@
 # Deploying the coordinator
 
-The built-in TypeScript coordinator is the canonical deployment target for team sync. This guide covers how to run it
-natively, in a container, and how to expose it to teammates outside your local network.
+The built-in TypeScript coordinator is the canonical **operator deployment** target for cross-network discovery. Normal teammate sharing is **Projects → Sharing → Devices → Health**; the coordinator, Teams, Spaces, grants, and direct-peer state are Advanced compatibility and operations mechanics.
 
 The coordinator HTTP service is Hono-based, but the canonical deployment path today is still the built-in
 `codemem sync coordinator serve` runtime on Node/Linux with a local SQLite database. If your end goal is Cloudflare,
-validate this Linux/Node flow first, then use the dedicated Worker runbook in `docs/cloudflare-coordinator-deployment.md`.
+validate this Linux/Node flow first, then use the dedicated Worker runbook in [Cloudflare coordinator deployment](cloudflare-coordinator-deployment.md).
 
-If you want the fastest clean validation path, use `docs/coordinator-e2e-runbook.md` alongside this guide.
+If you want the fastest clean validation path, use [the coordinator E2E runbook](coordinator-e2e-runbook.md) alongside this guide.
+
+## What the coordinator does (and does not do)
+
+- It enrolls devices in a coordinator group and advertises fresh peer addresses.
+- It does **not** grant a Project, create a direct peer relationship, or relay memory payloads.
+- Project access comes from **Sharing**. In **Devices**, delivery is shown as **Direct** or **Team** inheritance; **Health** distinguishes waiting from needs-attention recovery.
+- Removing Project access stops future delivery but cannot erase a copy already delivered to a device.
+
+Use the controls below only when you operate a coordinator, diagnose compatibility, or maintain an existing integration. Internal identifiers, fingerprints, addresses, scopes/grants, filters, epochs, and cursors belong in this operator surface—not the normal sharing workflow.
 
 ## Quick start (native)
 
@@ -44,7 +52,7 @@ codemem sync coordinator serve [OPTIONS]
 | `--host`    | `127.0.0.1`   | Bind address (`0.0.0.0` for all interfaces) |
 | `--port`    | `7347`        | Listen port                            |
 
-### Team management
+### Team management (Advanced/operator)
 
 ```fish
 # Create a group
@@ -155,7 +163,7 @@ cloudflared tunnel --url http://localhost:7347
 Use the generated `*.trycloudflare.com` URL for quick testing, or configure a named tunnel with a custom domain for
 production use.
 
-## Client configuration
+## Client configuration (Advanced/operator)
 
 Once the coordinator is reachable, teammates configure their codemem client:
 
@@ -194,10 +202,9 @@ Or through the viewer UI: Settings → Device Sync → Coordinator URL / Group.
 **Note:** Teammates who join via an invite link don't need to configure anything manually — the invite import
 auto-configures `sync_coordinator_url` and `sync_coordinator_group`.
 
-Joining the coordinator team enrolls the device for coordinator-backed discovery, but it does not automatically create a
-local sync peer relationship. Direct sync still depends on explicit `sync_peers` state.
+Joining the coordinator Team enrolls the device for coordinator-backed discovery, but it does not automatically create a local `sync_peers` relationship or Project grant. Direct sync still depends on explicit `sync_peers` state.
 
-## Onboarding teammates
+## Onboarding teammates (Advanced/operator)
 
 ### Admin-driven enrollment
 
@@ -223,12 +230,12 @@ This outputs an encoded invite string. Share it with the teammate, who imports i
 codemem sync coordinator import-invite <encoded-invite>
 ```
 
-Or paste the invite in the viewer UI under Team sync → Join team.
+Or paste the invite in the viewer UI under **Advanced → Team sync → Join team**.
 
 If the invite policy is `approval_required`, the teammate's join request will appear in the admin's pending queue. The
 admin approves it from the CLI or the viewer UI.
 
-## Data model
+## Data model (operator terms)
 
 The coordinator stores:
 

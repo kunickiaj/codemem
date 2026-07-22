@@ -264,9 +264,9 @@ codemem memory import project.json --remap-project ~/workspace/myproject
 
 See `codemem memory export --help` and `codemem memory import --help` for full options. Legacy top-level aliases still work but are hidden from help.
 
-## Peer-to-peer sync
+## Sharing and devices
 
-Share selected project memories with a teammate, or replicate memories between your own devices, without a central data service.
+Share selected project memories with a teammate, or use the same Project-first model to understand your own devices. The viewer's normal workflow is **Projects → Sharing → Devices → Health**; sync internals live under **Advanced**.
 
 ### Share projects with a teammate
 
@@ -279,9 +279,20 @@ In the viewer, choose **Share** on a project (or select projects, then choose **
 
 Only the reviewed canonical projects are shared—similarly named or sibling projects are not included. A memory marked **Only me** stays local even when its project is shared. Removing access stops future sharing; memories already copied to another device may remain there.
 
-While setup is progressing, codemem reports what it is doing. An offline recipient device is waiting, not an error; sync resumes when it reconnects. If a setup step reaches a terminal failure, codemem shows its cause and one **Retry setup** action.
+### Check devices and health
 
-Manual pairing, actor assignment, Space grants, and project mappings remain available for same-person devices, legacy setups, and diagnostics. They are not required for normal teammate sharing. See [the user guide](docs/user-guide.md#share-projects-with-a-teammate).
+**Devices** is read-only. Each card shows the device's owning Identity, whether it is available, and the Projects it receives:
+
+- **Direct** — the Project was shared with that Identity.
+- **Team** — the Identity receives the Project through a Team.
+- **Waiting** — setup or delivery is waiting for an offline device; it resumes on reconnect.
+- **Needs attention** — setup reached a terminal failure; use the displayed retry action.
+
+Use **Health** for the current status. Removing access prevents future delivery, but cannot erase a copy already delivered to another device.
+
+### Advanced and compatibility
+
+Manual pairing, actor assignment, Spaces, grants, project mappings, and coordinator administration remain available for same-person devices, existing integrations, and diagnostics. They are not required for normal teammate sharing. Existing `#sync` and `#sync/diagnostics` links remain supported as Advanced compatibility routes. See [the user guide](docs/user-guide.md#advanced-operator-and-compatibility-guidance).
 
 ### Advanced and legacy device pairing
 
@@ -331,7 +342,9 @@ Start OpenCode inside the codemem repo directory — the plugin auto-loads from 
 
 - [Architecture](docs/architecture.md) — data flow, retrieval, observer pipeline, design tradeoffs
 - [Coordinator-backed discovery](docs/coordinator-discovery.md) — self-hosted cross-network peer discovery
-- [User guide](docs/user-guide.md) — viewer usage, sync setup, troubleshooting
+- [User guide](docs/user-guide.md) — Projects, Sharing, Devices, Health, and Advanced operations
+- [Coordinator deployment](docs/coordinator-deployment.md) — advanced operator deployment and discovery
+- [Coordinator E2E runbook](docs/coordinator-e2e-runbook.md) — advanced coordinator validation
 - [Plugin reference](docs/plugin-reference.md) — plugin behavior, env vars, stream reliability
 - [Migration guide](docs/rename-migration.md) — migrating from `opencode-mem`
 - [Contributing](CONTRIBUTING.md) — development setup, tests, linting, releases

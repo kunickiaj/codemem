@@ -10,7 +10,8 @@ This directory holds the first local Docker/Compose-based E2E harness for sync s
 - fleet spec and Compose fleet-smoke proving scenario
 - coordinator invite/join/approval/discovery scenario
 - direct peer sync scenario with data-plane assertions
-- project-first teammate-sharing scenario with exact-project isolation assertions
+- project-sharing scenario covering exact-project replication and recipient-policy promotion gates
+- sharing-domain scenario covering Personal/Work/OSS boundaries and hostile/legacy peers
 - bootstrap scenario plus dirty-local refusal validation
 - seed modes: `empty`, `fixture-small`, `fixture-large`, `local-import`
 - automatic artifact capture under `.tmp/e2e-artifacts/`
@@ -47,7 +48,32 @@ set -lx CODEMEM_E2E_JSON 1
 pnpm run e2e:project-sharing -- --json
 ```
 
-This scenario creates two canonical projects on one peer, shares exactly one through the project-first invite flow, and verifies automatic identity linking, existing and future replication, source-membership isolation, and the absence of unrelated-project rows on the recipient.
+This scenario reuses one two-peer setup to prove:
+
+- direct Identity access without Team membership
+- Team access inherited by existing and future members
+- add-device inheritance for an Identity's existing Projects
+- Personal/Work and unrelated-Project isolation
+- existing and future memory replication for the selected Project
+- stale preview rejection without intent mutation
+- revocation plus offline waiting and resume
+- unsupported old-peer rejection before coordinator mutations
+- durable ambiguous-migration `Keep current` decisions
+- rollback visibility through the safe reconciliation API
+
+## Run the sharing-domain scenario
+
+```fish
+set -lx CODEMEM_E2E_BUILD 1
+set -lx CODEMEM_E2E_JSON 1
+pnpm run e2e:sharing-domains -- --json
+```
+
+This scenario verifies hard sharing-domain boundaries, Project filters that only narrow access, coordinator group membership that grants no data access, legacy-peer default deny, revocation, and hostile-row rejection.
+
+## CI promotion gates
+
+CI runs `smoke`, `project-sharing`, and `sharing-domains` as separate matrix entries. Each entry uploads its `.tmp/e2e-artifacts/` directory on failure, so a failing promotion gate remains independently identifiable and diagnosable. The Cloudflare Worker integration job remains a separate gate.
 
 ## Run the fleet smoke scenario
 

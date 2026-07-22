@@ -1236,6 +1236,21 @@
       .recipient-policy-sharing-details dt { color: var(--text-secondary); }
       .recipient-policy-sharing-details dd { margin: 0; color: var(--text-primary); }
 
+      #devicesMount .recipient-policy-sharing-grid {
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+        list-style: none;
+        padding: 0;
+      }
+      #devicesMount .recipient-policy-sharing-card { height: 100%; }
+      #devicesMount .recipient-policy-sharing-card section + section { margin-top: var(--sp-4); }
+      #devicesMount .recipient-policy-sharing-card section ul {
+        display: grid;
+        gap: var(--sp-2);
+        margin-top: var(--sp-2);
+        padding-left: var(--sp-5);
+      }
+      #devicesMount .recipient-policy-sharing-card > .settings-button { margin-top: var(--sp-4); }
+
       @media (max-width: 720px) {
         .project-inventory-row-header { align-items: center; flex-wrap: wrap; }
         .project-inventory-title { flex: 1 1 calc(100% - 48px); }
@@ -1247,6 +1262,10 @@
         .recipient-policy-sharing-responsive-actions button { min-height: 44px; width: 100%; }
         .recipient-policy-sharing-responsive-tabs { overflow-x: auto; }
         .recipient-policy-sharing-details div { grid-template-columns: 1fr; gap: var(--sp-1); }
+        #devicesMount .recipient-policy-sharing-card > .settings-button {
+          min-height: 44px;
+          width: 100%;
+        }
       }
 
       /* 36×36 square icon buttons — theme toggle, settings gear. */
@@ -3535,9 +3554,9 @@
       <button class="tab-btn active" id="tabBtn-feed" aria-current="page">Feed</button>
       <button class="tab-btn" id="tabBtn-projects">Projects</button>
       <button class="tab-btn" id="tabBtn-sharing">Sharing</button>
-      <button class="tab-btn" id="tabBtn-sync">Sync</button>
+      <button class="tab-btn" id="tabBtn-devices">Devices</button>
       <button class="tab-btn" id="tabBtn-health">Health</button>
-      <button class="tab-btn" id="tabBtn-coordinator-admin">Advanced</button>
+      <button class="tab-btn" id="tabBtn-advanced">Advanced</button>
     </nav>
     <div id="toastRoot"></div>
     <div id="recipientPolicyManagementMount"></div>
@@ -3881,11 +3900,30 @@
       <div class="card" id="recipientPolicySharingMount"></div>
     </div>
 
-    <!-- ── Tab: Sync ───────────────────────────────────────── -->
-    <div class="tab-panel" id="tab-sync" hidden>
+    <!-- ── Tab: Devices ────────────────────────────────────── -->
+    <div class="tab-panel" id="tab-devices" hidden>
+      <div class="card" id="devicesMount"></div>
+    </div>
 
-      <!-- Sub-view: main Sync surface. Toggled by syncViewController
-           based on #sync vs #sync/diagnostics in the URL hash. -->
+    <!-- ── Tab: Advanced ───────────────────────────────────── -->
+    <div class="tab-panel" id="tab-advanced" hidden>
+      <div class="card">
+        <div class="section-header">
+          <div>
+            <h2>Advanced</h2>
+            <div class="section-meta">Compatibility tools for device sync and Team administration.</div>
+          </div>
+          <div class="section-actions" aria-label="Advanced sections">
+            <button class="settings-button" id="advancedSyncButton" type="button" aria-pressed="true">Sync</button>
+            <button class="settings-button" id="advancedTeamsButton" type="button" aria-pressed="false">Teams</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="advancedSyncContent">
+
+      <!-- Sub-view: main Sync surface. Toggled by syncViewController and
+           app compatibility routing for canonical and legacy hashes. -->
       <div id="syncMainView">
 
       <!-- 1. Needs attention + team setup/status -->
@@ -3898,7 +3936,7 @@
           <div class="section-actions">
             <button class="settings-button" id="syncShareProjectsButton" type="button">Share projects</button>
             <button class="settings-button" id="syncNowButton">Sync now</button>
-            <a class="sync-subview-link" href="#sync/diagnostics">View diagnostics &rarr;</a>
+            <a class="sync-subview-link" href="#advanced/sync/diagnostics">View diagnostics &rarr;</a>
           </div>
         </div>
         <div class="section-meta" id="syncTeamMeta">Start with the next step below, then review team status and device details.</div>
@@ -3999,13 +4037,13 @@
 
       </div><!-- /#syncMainView -->
 
-      <!-- Sub-view: Advanced diagnostics. Reached via #sync/diagnostics;
-           shown by syncViewController when that hash is active. -->
+      <!-- Sub-view: Advanced diagnostics. Canonically reached through
+           #advanced/sync/diagnostics; #sync/diagnostics remains compatible. -->
       <div id="syncDiagnosticsView" hidden>
       <div class="card" style="animation-delay: 0.06s">
         <div class="section-header">
           <div class="section-header-title">
-            <a class="sync-subview-link" href="#sync">&larr; Back to sync</a>
+            <a class="sync-subview-link" href="#advanced/sync">&larr; Back to sync</a>
             <h2>Sync diagnostics</h2>
           </div>
           <div class="section-actions">
@@ -4028,15 +4066,16 @@
         <div class="attempts-list" id="syncAttempts"></div>
       </div>
       </div><!-- /#syncDiagnosticsView -->
-    </div>
+      </div><!-- /#advancedSyncContent -->
 
-    <div class="tab-panel" id="tab-coordinator-admin" hidden>
-      <div class="card">
-        <details class="advanced-administration-disclosure">
-          <summary>Advanced Team administration</summary>
-          <div class="section-meta">Manage legacy enrollment, Spaces, device administration, and coordinator settings.</div>
-          <div id="coordinatorAdminMount"></div>
-        </details>
+      <div id="advancedTeamsContent" hidden>
+        <div class="card">
+          <details class="advanced-administration-disclosure" open>
+            <summary>Advanced Team administration</summary>
+            <div class="section-meta">Manage legacy enrollment, Spaces, device administration, and coordinator settings.</div>
+            <div id="coordinatorAdminMount"></div>
+          </details>
+        </div>
       </div>
     </div>
 
