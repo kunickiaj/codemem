@@ -32,7 +32,7 @@ import { canAutoBootstrapSchema, ensureSchemaBootstrapped } from "./schema-boots
 export type { DatabaseType as Database };
 
 /** Current schema version this TS runtime was built against. */
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 /**
  * Minimum schema version the TS runtime can operate with.
@@ -741,6 +741,65 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 				resolved_at TEXT NOT NULL,
 				PRIMARY KEY (review_item_id, source_fingerprint)
 			);
+			CREATE TABLE IF NOT EXISTS policy_teams (
+				team_id TEXT PRIMARY KEY NOT NULL,
+				display_name TEXT NOT NULL,
+				status TEXT NOT NULL,
+				provenance TEXT NOT NULL,
+				revision TEXT NOT NULL,
+				migration_state TEXT NOT NULL,
+				source_fingerprint TEXT,
+				idempotency_key TEXT NOT NULL UNIQUE,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS policy_team_memberships (
+				team_id TEXT NOT NULL,
+				identity_id TEXT NOT NULL,
+				role TEXT NOT NULL,
+				status TEXT NOT NULL,
+				provenance TEXT NOT NULL,
+				revision TEXT NOT NULL,
+				migration_state TEXT NOT NULL,
+				source_fingerprint TEXT,
+				idempotency_key TEXT NOT NULL UNIQUE,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (team_id, identity_id)
+			);
+			CREATE TABLE IF NOT EXISTS identity_devices (
+				device_id TEXT PRIMARY KEY NOT NULL,
+				identity_id TEXT NOT NULL,
+				display_name TEXT NOT NULL,
+				status TEXT NOT NULL,
+				provenance TEXT NOT NULL,
+				revision TEXT NOT NULL,
+				migration_state TEXT NOT NULL,
+				source_fingerprint TEXT,
+				idempotency_key TEXT NOT NULL UNIQUE,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS project_recipients (
+				canonical_project_identity TEXT NOT NULL,
+				recipient_kind TEXT NOT NULL,
+				recipient_id TEXT NOT NULL,
+				status TEXT NOT NULL,
+				provenance TEXT NOT NULL,
+				policy_revision TEXT NOT NULL,
+				migration_state TEXT NOT NULL,
+				source_fingerprint TEXT,
+				idempotency_key TEXT NOT NULL UNIQUE,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (canonical_project_identity, recipient_kind, recipient_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_policy_team_memberships_identity_status
+				ON policy_team_memberships(identity_id, status);
+			CREATE INDEX IF NOT EXISTS idx_identity_devices_identity_status
+				ON identity_devices(identity_id, status);
+			CREATE INDEX IF NOT EXISTS idx_project_recipients_project_status
+				ON project_recipients(canonical_project_identity, status);
 			CREATE TABLE IF NOT EXISTS share_operations (
 				operation_id TEXT PRIMARY KEY NOT NULL,
 				state TEXT NOT NULL,
@@ -1301,6 +1360,16 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 			}
 		}
 
+		const recipientPolicyTablesReady = [
+			"policy_teams",
+			"policy_team_memberships",
+			"identity_devices",
+			"project_recipients",
+		].every((table) => tableExists(db, table));
+		const currentVersion = getSchemaVersion(db);
+		if (recipientPolicyTablesReady && currentVersion > 0 && currentVersion < SCHEMA_VERSION) {
+			db.pragma(`user_version = ${SCHEMA_VERSION}`);
+		}
 		markSchemaCompatApplied(db);
 	}
 	try {

@@ -65,7 +65,7 @@ export interface RecipientPolicyReviewBulkResultV1 {
 	results: RecipientPolicyReviewResolveResultV1[];
 }
 
-interface DerivedReviewState {
+export interface RecipientPolicyDerivedReviewState {
 	allReviewItems: RecipientPolicyActionableReviewItemV1[];
 	blockedItems: RecipientPolicyBlockedItemV1[];
 }
@@ -316,11 +316,11 @@ function blockedOwner(code: LegacyRecipientPolicyConditionCodeV1): {
 	};
 }
 
-function deriveReviewState(
+export function deriveRecipientPolicyReviewState(
 	db: Database,
 	context: RecipientPolicyReviewContext,
 	projections = listLegacyRecipientPolicyProjections(db, context),
-): DerivedReviewState {
+): RecipientPolicyDerivedReviewState {
 	const memoryCounts = memoryCountsByProject(db);
 	const allReviewItems: RecipientPolicyActionableReviewItemV1[] = [];
 	const blockedItems: RecipientPolicyBlockedItemV1[] = [];
@@ -401,7 +401,7 @@ export function listRecipientPolicyReview(
 	db: Database,
 	context: RecipientPolicyReviewContext,
 ): RecipientPolicyReviewListV1 {
-	const state = deriveReviewState(db, context);
+	const state = deriveRecipientPolicyReviewState(db, context);
 	return {
 		version: RECIPIENT_POLICY_CONTRACT_VERSION,
 		reviewItems: state.allReviewItems.filter((item) => !hasResolution(db, item)),
@@ -532,7 +532,7 @@ function resolveInTransaction(
 		return invalid(request, "request_invalid");
 	}
 	const projections = listLegacyRecipientPolicyProjections(db, context);
-	const state = deriveReviewState(db, context, projections);
+	const state = deriveRecipientPolicyReviewState(db, context, projections);
 	const item = state.allReviewItems.find(
 		(candidate) => candidate.reviewItemId === request.reviewItemId,
 	);

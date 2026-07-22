@@ -588,8 +588,21 @@ export type {
 	RecipientPolicyTeamV1,
 } from "./recipient-policy-contract.js";
 export { RECIPIENT_POLICY_CONTRACT_VERSION } from "./recipient-policy-contract.js";
+export type { RecipientPolicyIntentGraphV1 } from "./recipient-policy-intent.js";
+export { listRecipientPolicyIntent } from "./recipient-policy-intent.js";
+export type {
+	RecipientPolicyMigrationOptions,
+	RecipientPolicyMigrationProjectResultV1,
+	RecipientPolicyMigrationProjectStatus,
+	RecipientPolicyMigrationResultV1,
+} from "./recipient-policy-migration.js";
+export {
+	deterministicPolicyTeamId,
+	migrateRecipientPolicyIntent,
+} from "./recipient-policy-migration.js";
 export type {
 	RecipientPolicyActionableReviewItemV1,
+	RecipientPolicyDerivedReviewState,
 	RecipientPolicyReviewActionOptionV1,
 	RecipientPolicyReviewBulkResultV1,
 	RecipientPolicyReviewContext,
@@ -599,6 +612,7 @@ export type {
 	RecipientPolicyReviewResolveStatusV1,
 } from "./recipient-policy-review.js";
 export {
+	deriveRecipientPolicyReviewState,
 	listRecipientPolicyReview,
 	recipientPolicyReviewSourceFingerprint,
 	resolveRecipientPolicyReview,
@@ -614,9 +628,17 @@ export { clearMemoryRefs, normalizeConcept, populateMemoryRefs } from "./ref-pop
 export type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
 export { findByConcept, findByFile } from "./ref-queries.js";
 export type {
+	IdentityDevice,
 	MaintenanceJob,
+	NewIdentityDevice,
 	NewMaintenanceJob,
+	NewPolicyTeam,
+	NewPolicyTeamMembership,
+	NewProjectRecipient,
 	NewRecipientPolicyReviewResolution,
+	PolicyTeam,
+	PolicyTeamMembership,
+	ProjectRecipient,
 	RecipientPolicyReviewResolution,
 } from "./schema.js";
 export * as schema from "./schema.js";

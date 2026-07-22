@@ -1047,6 +1047,15 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		expect(tableExists(db, "share_operation_projects")).toBe(true);
 		expect(tableExists(db, "share_operation_steps")).toBe(true);
 		expect(tableExists(db, "recipient_policy_review_resolutions")).toBe(true);
+		for (const table of [
+			"policy_teams",
+			"policy_team_memberships",
+			"identity_devices",
+			"project_recipients",
+		]) {
+			expect(tableExists(db, table)).toBe(true);
+		}
+		expect(tableExists(db, "identities")).toBe(false);
 		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
 	});
 
@@ -1071,6 +1080,16 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 			expect(tableExists(previous, table)).toBe(true);
 		}
 		expect(tableExists(previous, "recipient_policy_review_resolutions")).toBe(true);
+		for (const table of [
+			"policy_teams",
+			"policy_team_memberships",
+			"identity_devices",
+			"project_recipients",
+		]) {
+			expect(tableExists(previous, table)).toBe(true);
+		}
+		expect(tableExists(previous, "identities")).toBe(false);
+		expect(getSchemaVersion(previous)).toBe(SCHEMA_VERSION);
 		expect(columnExists(previous, "share_operations", "pending_person_operation_id")).toBe(true);
 		expect(columnExists(previous, "share_operations", "recipient_device_id")).toBe(true);
 		expect(columnExists(previous, "share_operations", "bootstrap_grant_id")).toBe(true);
