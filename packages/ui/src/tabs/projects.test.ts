@@ -7,6 +7,7 @@ vi.mock("../lib/api", () => ({
 	loadCoordinatorAdminGroupsFiltered: vi.fn(),
 	loadCoordinatorAdminStatus: vi.fn(),
 	loadProjectScopeInventory: vi.fn(),
+	loadRecipientPolicyReview: vi.fn(),
 	loadSharingDomainSettings: vi.fn(),
 	reassignProjectInventoryProject: vi.fn(),
 	saveSharingDomainProjectMapping: vi.fn(),
@@ -28,6 +29,15 @@ vi.mock("../lib/api", () => ({
 			this.preview = preview;
 		}
 	},
+	RecipientPolicyReviewStaleError: class RecipientPolicyReviewStaleError extends Error {
+		result: unknown;
+
+		constructor(result: unknown) {
+			super("Recipient policy review source state changed");
+			this.result = result;
+		}
+	},
+	resolveRecipientPolicyReview: vi.fn(),
 	saveSharingDomainProjectMappings: vi.fn(),
 	SharingDomainGuardrailConfirmationError: class SharingDomainGuardrailConfirmationError extends Error {
 		requiredGuardrailTokens: string[];
@@ -52,7 +62,13 @@ vi.mock("./project-sharing", () => ({
 vi.mock("./sync/sync-dialogs", () => ({ openSyncInputDialog: vi.fn() }));
 
 import * as api from "../lib/api";
-import type { ProjectScopeInventoryProject, ProjectScopeInventoryResult } from "../lib/api/sync";
+import type {
+	ProjectScopeInventoryProject,
+	ProjectScopeInventoryResult,
+	RecipientPolicyReviewDecisionV1,
+	RecipientPolicyReviewItemV1,
+	RecipientPolicyReviewListV1,
+} from "../lib/api/sync";
 import { state } from "../lib/state";
 import * as projectSharing from "./project-sharing";
 import { initProjectsTab, loadProjectsData } from "./projects";
@@ -85,6 +101,79 @@ function project(
 	};
 }
 
+function reviewItem(
+	overrides: Partial<RecipientPolicyReviewItemV1> = {},
+): RecipientPolicyReviewItemV1 {
+	const preview = {
+		affectedDeviceCount: 2,
+		affectedMemoryCount: 12,
+		affectedProjectCount: 1,
+		effect: "none" as const,
+		effectiveDevices: [
+			{
+				assignment: "assigned" as const,
+				deviceId: "private-device-id",
+				displayName: "Adam’s Mac",
+				identityId: "private-identity-id",
+			},
+			{
+				assignment: "unassigned" as const,
+				deviceId: "private-build-device-id",
+				displayName: "Build host",
+				identityId: null,
+			},
+		],
+		projects: [{ canonicalIdentity: "private-project-id", displayName: "Codemem" }],
+		requiresDecisionInput: false,
+	};
+	return {
+		finding: "Older project sharing needs a decision.",
+		options: [
+			{
+				affectedDeviceCount: 2,
+				affectedMemoryCount: 12,
+				affectedProjectCount: 1,
+				decision: "keep_current_setup",
+				effect: "none",
+				label: "Keep current setup unchanged",
+				preview,
+			},
+			{
+				affectedDeviceCount: 2,
+				affectedMemoryCount: 12,
+				affectedProjectCount: 1,
+				decision: "reject_suggestion",
+				effect: "none",
+				label: "Reject suggestion",
+				preview,
+			},
+			{
+				affectedDeviceCount: 2,
+				affectedMemoryCount: 12,
+				affectedProjectCount: 1,
+				decision: "choose_recipients",
+				effect: "metadata_only",
+				label: "Choose recipients",
+				preview: { ...preview, effect: "metadata_only", requiresDecisionInput: true },
+			},
+		],
+		reason: "Review current recipient evidence for Codemem.",
+		recommendedDecision: "keep_current_setup",
+		resolution: null,
+		reviewItemId: "review-1",
+		sourceFingerprint: "fingerprint-1",
+		state: "open",
+		version: 1,
+		...overrides,
+	};
+}
+
+function recipientReview(
+	overrides: Partial<RecipientPolicyReviewListV1> = {},
+): RecipientPolicyReviewListV1 {
+	return { blockedItems: [], reviewItems: [reviewItem()], version: 1, ...overrides };
+}
+
 function mountProjectsDom() {
 	document.body.innerHTML = `
 		<input id="projectsSearch" />
@@ -93,6 +182,7 @@ function mountProjectsDom() {
 		<div id="projectsInventorySkeleton"></div>
 		<div id="projectsInventoryList"></div>
 		<div id="projectShareFlowMount"></div>
+		<div id="recipientPolicyReviewMount"></div>
 		<button id="projectsPrevPage"></button>
 		<button id="projectsNextPage"></button>
 	`;
@@ -146,6 +236,18 @@ describe("Projects tab", () => {
 				},
 			],
 		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue({
+			blockedItems: [],
+			reviewItems: [],
+			version: 1,
+		});
+		vi.mocked(api.resolveRecipientPolicyReview).mockResolvedValue({
+			errorCode: null,
+			idempotent: false,
+			reviewItemId: "review-1",
+			sourceFingerprint: "fingerprint-1",
+			status: "applied",
+		});
 		vi.mocked(api.loadProjects).mockResolvedValue(["api", "codemem"]);
 		vi.mocked(api.reassignProjectInventoryProject).mockResolvedValue({
 			moved_memory_count: 1,
@@ -190,6 +292,207 @@ describe("Projects tab", () => {
 			expect.objectContaining({ limit: 250 }),
 		);
 		expect(document.getElementById("projectsInventorySkeleton")).toBeNull();
+	});
+
+	it("renders all decisions and the selected option's exact project, memory, and device preview", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());
+
+		await loadProjectsData();
+
+		const surface = document.querySelector(".recipient-policy-review");
+		const select = surface?.querySelector("select") as HTMLSelectElement | null;
+		expect(surface?.textContent).toContain("Older project sharing needs a decision.");
+		expect(surface?.textContent).toContain("Recommended: Keep current setup unchanged");
+		expect(Array.from(select?.options ?? []).map((option) => option.textContent)).toEqual([
+			"Keep current setup unchanged",
+			"Reject suggestion",
+			"Choose recipients",
+		]);
+		expect(surface?.textContent).toContain("Exact preview: 1 project · 12 memories · 2 devices");
+		expect(surface?.textContent).toContain("Codemem");
+		expect(surface?.textContent).toContain("Adam’s Mac (assigned)");
+		expect(surface?.textContent).toContain("Build host (unassigned)");
+		expect(surface?.textContent).not.toContain("private-project-id");
+		expect(surface?.textContent).not.toContain("private-device-id");
+
+		if (!select) throw new Error("review decision select missing");
+		select.value = "choose_recipients";
+		select.dispatchEvent(new Event("change"));
+		expect(surface?.textContent).toContain("Recipient or device details are required");
+		expect(surface?.querySelector<HTMLButtonElement>("button")?.disabled).toBe(true);
+	});
+
+	it.each<RecipientPolicyReviewDecisionV1>([
+		"keep_current_setup",
+		"reject_suggestion",
+	])("submits %s without decision input and clears the resolved card after refresh", async (decision) => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview)
+			.mockResolvedValueOnce(recipientReview())
+			.mockResolvedValue({ blockedItems: [], reviewItems: [], version: 1 });
+
+		await loadProjectsData();
+		const select = document.querySelector(
+			".recipient-policy-review select",
+		) as HTMLSelectElement | null;
+		if (!select) throw new Error("review decision select missing");
+		select.value = decision;
+		select.dispatchEvent(new Event("change"));
+		document.querySelector<HTMLButtonElement>(".recipient-policy-review button")?.click();
+		await flushAsyncWork();
+
+		expect(api.resolveRecipientPolicyReview).toHaveBeenCalledWith({
+			decision,
+			reviewItemId: "review-1",
+			sourceFingerprint: "fingerprint-1",
+		});
+		expect(document.querySelector(".recipient-policy-review-item")).toBeNull();
+		expect(document.getElementById("recipientPolicyReviewMount")?.hidden).toBe(true);
+	});
+
+	it("re-enables the same input-free decision after a non-stale failure and permits retry", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview)
+			.mockResolvedValueOnce(recipientReview())
+			.mockResolvedValue({ blockedItems: [], reviewItems: [], version: 1 });
+		vi.mocked(api.resolveRecipientPolicyReview).mockRejectedValueOnce(
+			new Error("Unable to apply this decision right now."),
+		);
+
+		await loadProjectsData();
+		const select = document.querySelector(
+			".recipient-policy-review select",
+		) as HTMLSelectElement | null;
+		const submit = document.querySelector<HTMLButtonElement>(".recipient-policy-review button");
+		if (!select || !submit) throw new Error("review decision controls missing");
+		select.value = "reject_suggestion";
+		select.dispatchEvent(new Event("change"));
+
+		submit.click();
+		await flushAsyncWork();
+
+		expect(select.value).toBe("reject_suggestion");
+		expect(select.disabled).toBe(false);
+		expect(submit.disabled).toBe(false);
+		expect(submit.textContent).toBe("Apply decision");
+		expect(document.querySelector(".recipient-policy-review-status")?.textContent).toBe(
+			"Unable to apply this decision right now.",
+		);
+
+		submit.click();
+		await flushAsyncWork();
+
+		expect(api.resolveRecipientPolicyReview).toHaveBeenCalledTimes(2);
+		expect(api.resolveRecipientPolicyReview).toHaveBeenNthCalledWith(2, {
+			decision: "reject_suggestion",
+			reviewItemId: "review-1",
+			sourceFingerprint: "fingerprint-1",
+		});
+		expect(document.querySelector(".recipient-policy-review-item")).toBeNull();
+	});
+
+	it("retains a stale card, announces the source change, and refreshes review data", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());
+		vi.mocked(api.resolveRecipientPolicyReview).mockRejectedValueOnce(
+			new api.RecipientPolicyReviewStaleError({
+				errorCode: "source_fingerprint_stale",
+				idempotent: false,
+				reviewItemId: "review-1",
+				sourceFingerprint: "fingerprint-1",
+				status: "stale",
+			}),
+		);
+
+		await loadProjectsData();
+		const loadsBeforeSubmit = vi.mocked(api.loadRecipientPolicyReview).mock.calls.length;
+		document.querySelector<HTMLButtonElement>(".recipient-policy-review button")?.click();
+		await flushAsyncWork();
+
+		expect(document.querySelector(".recipient-policy-review-item")).not.toBeNull();
+		expect(document.querySelector("[aria-live='polite']")?.textContent).toContain(
+			"Source state changed",
+		);
+		expect(document.body.textContent).toContain("Review the refreshed choices before trying again");
+		expect(vi.mocked(api.loadRecipientPolicyReview).mock.calls.length).toBeGreaterThan(
+			loadsBeforeSubmit,
+		);
+	});
+
+	it("renders blocked repair ownership without decision controls", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({
+				blockedItems: [
+					{
+						blockedItemId: "blocked-1",
+						finding: "Project identity is unstable.",
+						ownerLabel: "Project owner",
+						reason: "Codemem requires source-state repair.",
+						repairAction: "Assign a stable canonical Project identity.",
+						version: 1,
+					},
+				],
+				reviewItems: [],
+			}),
+		);
+
+		await loadProjectsData();
+
+		const blocked = document.querySelector(".recipient-policy-blocked-item");
+		expect(blocked?.textContent).toContain("Blocked");
+		expect(blocked?.textContent).toContain("Owner: Project owner");
+		expect(blocked?.textContent).toContain("Repair: Assign a stable canonical Project identity.");
+		expect(blocked?.querySelector("button, select")).toBeNull();
+	});
+
+	it("does not render an actionable card with zero decisions", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({ reviewItems: [reviewItem({ options: [] })] }),
+		);
+
+		await loadProjectsData();
+
+		expect(document.querySelector(".recipient-policy-review-item")).toBeNull();
+		expect(document.getElementById("recipientPolicyReviewMount")?.hidden).toBe(true);
 	});
 
 	it("opens row sharing with exactly the selected canonical project", async () => {

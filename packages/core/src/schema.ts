@@ -716,6 +716,25 @@ export const actors = sqliteTable(
 export type Actor = typeof actors.$inferSelect;
 export type NewActor = typeof actors.$inferInsert;
 
+export const recipientPolicyReviewResolutions = sqliteTable(
+	"recipient_policy_review_resolutions",
+	{
+		review_item_id: text("review_item_id").notNull(),
+		source_fingerprint: text("source_fingerprint").notNull(),
+		decision: text("decision").notNull(),
+		decision_input_json: text("decision_input_json").notNull(),
+		preview_json: text("preview_json").notNull(),
+		decided_by_identity_id: text("decided_by_identity_id").notNull(),
+		decided_by_device_id: text("decided_by_device_id").notNull(),
+		resolved_at: text("resolved_at").notNull(),
+	},
+	(table) => [primaryKey({ columns: [table.review_item_id, table.source_fingerprint] })],
+);
+
+export type RecipientPolicyReviewResolution = typeof recipientPolicyReviewResolutions.$inferSelect;
+export type NewRecipientPolicyReviewResolution =
+	typeof recipientPolicyReviewResolutions.$inferInsert;
+
 export const schema = {
 	sessions,
 	replicationScopes,
@@ -748,4 +767,5 @@ export const schema = {
 	rawEventIngestStats,
 	coordinatorGroupPreferences,
 	actors,
+	recipientPolicyReviewResolutions,
 };

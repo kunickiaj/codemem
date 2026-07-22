@@ -1129,6 +1129,23 @@
         margin-top: var(--sp-2);
       }
       .projects-pagination { margin-top: var(--sp-4); }
+      .recipient-policy-review > h3 { margin-top: var(--sp-4); }
+      .recipient-policy-review-status:empty { display: none; }
+      .recipient-policy-review-list { margin-top: var(--sp-3); }
+      .recipient-policy-review-item .project-inventory-actions label {
+        color: var(--text-secondary);
+        font-size: var(--font-size-sm);
+        font-weight: var(--font-weight-semibold);
+      }
+      .recipient-policy-review-select { min-width: min(100%, 280px); }
+      .recipient-policy-deferred { margin-top: var(--sp-3); }
+      .recipient-policy-preview { margin-top: var(--sp-3); }
+      .recipient-policy-preview-list { margin-top: var(--sp-2); }
+      .recipient-policy-preview-list ul {
+        margin-top: var(--sp-1);
+        padding-left: var(--sp-5);
+      }
+      .recipient-policy-blocked-heading { margin-top: var(--sp-5) !important; }
 
       /* 36×36 square icon buttons — theme toggle, settings gear. */
       .icon-button {
@@ -3713,6 +3730,7 @@
 
     <!-- ── Tab: Projects ───────────────────────────────────── -->
     <div class="tab-panel" id="tab-projects" hidden>
+      <div id="recipientPolicyReviewMount" hidden></div>
       <div class="card" style="animation-delay: 0s">
         <div class="section-header">
           <div>

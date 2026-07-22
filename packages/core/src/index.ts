@@ -370,7 +370,10 @@ export type {
 	LegacyRecipientPolicyTeamCandidateV1,
 	ListLegacyRecipientPolicyProjectionsOptions,
 } from "./legacy-recipient-policy-projection.js";
-export { listLegacyRecipientPolicyProjections } from "./legacy-recipient-policy-projection.js";
+export {
+	listLegacyRecipientPolicyProjections,
+	resolveLegacyRecipientPolicyLocalIdentity,
+} from "./legacy-recipient-policy-projection.js";
 export type {
 	BackfillTagsTextOptions,
 	BackfillTagsTextResult,
@@ -577,11 +580,30 @@ export type {
 	RecipientPolicyReviewDecisionV1,
 	RecipientPolicyReviewItemV1,
 	RecipientPolicyReviewOptionV1,
+	RecipientPolicyReviewPreviewDeviceV1,
+	RecipientPolicyReviewPreviewProjectV1,
+	RecipientPolicyReviewPreviewV1,
 	RecipientPolicyReviewResolutionV1,
 	RecipientPolicyTeamMembershipV1,
 	RecipientPolicyTeamV1,
 } from "./recipient-policy-contract.js";
 export { RECIPIENT_POLICY_CONTRACT_VERSION } from "./recipient-policy-contract.js";
+export type {
+	RecipientPolicyActionableReviewItemV1,
+	RecipientPolicyReviewActionOptionV1,
+	RecipientPolicyReviewBulkResultV1,
+	RecipientPolicyReviewContext,
+	RecipientPolicyReviewListV1,
+	RecipientPolicyReviewResolveRequestV1,
+	RecipientPolicyReviewResolveResultV1,
+	RecipientPolicyReviewResolveStatusV1,
+} from "./recipient-policy-review.js";
+export {
+	listRecipientPolicyReview,
+	recipientPolicyReviewSourceFingerprint,
+	resolveRecipientPolicyReview,
+	resolveRecipientPolicyReviewBulk,
+} from "./recipient-policy-review.js";
 export {
 	hasPendingRefBackfill,
 	REF_BACKFILL_JOB,
@@ -591,7 +613,12 @@ export {
 export { clearMemoryRefs, normalizeConcept, populateMemoryRefs } from "./ref-populate.js";
 export type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
 export { findByConcept, findByFile } from "./ref-queries.js";
-export type { MaintenanceJob, NewMaintenanceJob } from "./schema.js";
+export type {
+	MaintenanceJob,
+	NewMaintenanceJob,
+	NewRecipientPolicyReviewResolution,
+	RecipientPolicyReviewResolution,
+} from "./schema.js";
 export * as schema from "./schema.js";
 export { bootstrapSchema, ensureSchemaBootstrapped } from "./schema-bootstrap.js";
 export type {

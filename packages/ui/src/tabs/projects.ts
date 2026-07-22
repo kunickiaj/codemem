@@ -7,6 +7,10 @@ import type {
 import { showGlobalNotice } from "../lib/notice";
 import { state } from "../lib/state";
 import { openProjectShareFlow, renderProjectShareFlow } from "./project-sharing";
+import {
+	renderRecipientPolicyReview,
+	renderRecipientPolicyReviewLoadError,
+} from "./recipient-policy-review";
 import { openSyncInputDialog } from "./sync/sync-dialogs";
 
 type RefreshFn = () => void;
@@ -994,7 +998,7 @@ export async function loadProjectsData() {
 	const loadGeneration = ++projectsLoadGeneration;
 	meta.textContent = "Loading project inventory…";
 	try {
-		const [result, settings, shareInventory] = await Promise.all([
+		const [result, settings, shareInventory, recipientPolicyReview] = await Promise.all([
 			api.loadProjectScopeInventory({
 				limit: lastLimit,
 				offset: currentOffset,
@@ -1005,6 +1009,10 @@ export async function loadProjectsData() {
 			loadAllProjectShareChoices()
 				.then((projects) => ({ ok: true as const, projects }))
 				.catch(() => ({ ok: false as const, projects: [] as ProjectScopeInventoryProject[] })),
+			api
+				.loadRecipientPolicyReview()
+				.then((review) => ({ ok: true as const, review }))
+				.catch((error: unknown) => ({ ok: false as const, error })),
 		]);
 		if (loadGeneration !== projectsLoadGeneration) return;
 		scopes = settings.scopes;
@@ -1014,6 +1022,14 @@ export async function loadProjectsData() {
 			renderProjectShareFlow(shareMount, shareInventory.projects, {
 				inventoryError: !shareInventory.ok,
 			});
+		}
+		const reviewMount = el<HTMLDivElement>("recipientPolicyReviewMount");
+		if (reviewMount) {
+			if ("review" in recipientPolicyReview) {
+				renderRecipientPolicyReview(reviewMount, recipientPolicyReview.review, loadProjectsData);
+			} else {
+				renderRecipientPolicyReviewLoadError(reviewMount, recipientPolicyReview.error);
+			}
 		}
 		renderProjectInventory(result);
 		refreshProjectCoordinatorGroupNamesInBackground(result, loadGeneration);

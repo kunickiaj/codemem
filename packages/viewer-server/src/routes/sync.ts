@@ -14,6 +14,8 @@ import type {
 	MemoryStore,
 	ProjectScopeGuardrailWarning,
 	ReassignScopeCapability,
+	RecipientPolicyReviewDecisionV1,
+	RecipientPolicyReviewResolveRequestV1,
 	ReplicationOp,
 	SemanticIndexDiagnostics,
 	ShareOperationLifecycleStepInput,
@@ -88,6 +90,7 @@ import {
 	listProjectScopeCandidates,
 	listProjectScopeInventory,
 	listProjectScopeSettingsMappings,
+	listRecipientPolicyReview,
 	listSharingDomainSettingsScopes,
 	loadMemorySnapshotPageForPeer,
 	loadReplicationOpsForPeer,
@@ -113,6 +116,8 @@ import {
 	refreshConfiguredScopeMembershipCache,
 	rejectInboundScopeFailures,
 	requestJson,
+	resolveRecipientPolicyReview,
+	resolveRecipientPolicyReviewBulk,
 	runSyncPass,
 	SYNC_AUTHORIZATION_REFRESH_HEADER,
 	SYNC_CAPABILITY_HEADER,
@@ -1774,7 +1779,7 @@ function ensureLocalActorRecord(store: MemoryStore): void {
 		.where(and(eq(schema.actors.is_local, 1), ne(schema.actors.actor_id, store.actorId)))
 		.run();
 	const existing = d
-		.select({ actor_id: schema.actors.actor_id })
+		.select({ actor_id: schema.actors.actor_id, is_local: schema.actors.is_local })
 		.from(schema.actors)
 		.where(eq(schema.actors.actor_id, store.actorId))
 		.get();
@@ -1783,10 +1788,12 @@ function ensureLocalActorRecord(store: MemoryStore): void {
 		// above guarantees it is the only is_local=1 row, but the row itself
 		// may have been previously set to is_local=0 (e.g. via a stale demote
 		// from an even earlier identity). Re-mark it as local idempotently.
-		d.update(schema.actors)
-			.set({ is_local: 1, updated_at: now })
-			.where(eq(schema.actors.actor_id, store.actorId))
-			.run();
+		if (existing.is_local !== 1) {
+			d.update(schema.actors)
+				.set({ is_local: 1, updated_at: now })
+				.where(eq(schema.actors.actor_id, store.actorId))
+				.run();
+		}
 		return;
 	}
 	d.insert(schema.actors)
@@ -4077,6 +4084,76 @@ export function syncRoutes(
 				localDeviceId: store.deviceId,
 			}),
 		);
+	});
+
+	app.get("/api/sync/recipient-policy/v1/review", (c) => {
+		const store = getStore();
+		ensureLocalActorRecord(store);
+		return c.json(
+			listRecipientPolicyReview(store.db, {
+				localActorId: store.actorId,
+				localDeviceId: store.deviceId,
+			}),
+		);
+	});
+
+	const parseReviewRequest = (value: unknown): RecipientPolicyReviewResolveRequestV1 | null => {
+		if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+		const body = value as Record<string, unknown>;
+		const allowedKeys = new Set(["reviewItemId", "sourceFingerprint", "decision", "decisionInput"]);
+		if (
+			Object.keys(body).some((key) => !allowedKeys.has(key)) ||
+			typeof body.reviewItemId !== "string" ||
+			typeof body.sourceFingerprint !== "string" ||
+			typeof body.decision !== "string"
+		) {
+			return null;
+		}
+		return {
+			reviewItemId: body.reviewItemId,
+			sourceFingerprint: body.sourceFingerprint,
+			decision: body.decision as RecipientPolicyReviewDecisionV1,
+			...(Object.hasOwn(body, "decisionInput") ? { decisionInput: body.decisionInput } : {}),
+		};
+	};
+
+	app.post("/api/sync/recipient-policy/v1/review/resolve", async (c) => {
+		const store = getStore();
+		const body = await parseViewerJsonBody(c);
+		const request = parseReviewRequest(body);
+		if (!request) return c.json({ error: "request_invalid" }, 400);
+		ensureLocalActorRecord(store);
+		const result = resolveRecipientPolicyReview(
+			store.db,
+			{ localActorId: store.actorId, localDeviceId: store.deviceId },
+			request,
+		);
+		if (result.status === "stale" || result.status === "conflict") return c.json(result, 409);
+		if (result.status === "not_found") return c.json(result, 404);
+		if (result.status === "invalid") return c.json(result, 400);
+		return c.json(result);
+	});
+
+	app.post("/api/sync/recipient-policy/v1/review/resolve-bulk", async (c) => {
+		const store = getStore();
+		const body = await parseViewerJsonBody(c);
+		if (
+			!body ||
+			!Array.isArray(body.requests) ||
+			body.requests.length === 0 ||
+			body.requests.length > 100
+		)
+			return c.json({ error: "request_invalid" }, 400);
+		const requests = body.requests.map(parseReviewRequest);
+		if (requests.some((request) => request == null))
+			return c.json({ error: "request_invalid" }, 400);
+		ensureLocalActorRecord(store);
+		const result = resolveRecipientPolicyReviewBulk(
+			store.db,
+			{ localActorId: store.actorId, localDeviceId: store.deviceId },
+			requests as RecipientPolicyReviewResolveRequestV1[],
+		);
+		return c.json(result, result.results.some((item) => item.status !== "applied") ? 207 : 200);
 	});
 
 	app.get("/api/sync/projects", async (c) => {
