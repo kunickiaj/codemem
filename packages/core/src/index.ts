@@ -622,6 +622,25 @@ export {
 	migrateRecipientPolicyIntent,
 } from "./recipient-policy-migration.js";
 export type {
+	RecipientPolicyAddDeviceOnboardingRequestV1,
+	RecipientPolicyDirectProjectOnboardingRequestV1,
+	RecipientPolicyOnboardingBindingV1,
+	RecipientPolicyOnboardingCommitRequestV1,
+	RecipientPolicyOnboardingCommitResultV1,
+	RecipientPolicyOnboardingExcludedProjectV1,
+	RecipientPolicyOnboardingJourneyV1,
+	RecipientPolicyOnboardingPreviewRequestV1,
+	RecipientPolicyOnboardingPreviewV1,
+	RecipientPolicyOnboardingProjectSourceV1,
+	RecipientPolicyOnboardingProjectV1,
+	RecipientPolicyTeamOnboardingRequestV1,
+} from "./recipient-policy-onboarding.js";
+export {
+	commitRecipientPolicyOnboarding,
+	previewRecipientPolicyOnboarding,
+	RecipientPolicyOnboardingRequestError,
+} from "./recipient-policy-onboarding.js";
+export type {
 	RecipientPolicyActionableReviewItemV1,
 	RecipientPolicyDerivedReviewState,
 	RecipientPolicyReviewActionOptionV1,

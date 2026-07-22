@@ -4,12 +4,77 @@
  * /api/sync/* or /api/sync/run/* on the viewer. */
 
 import { fetchJson, payloadError, readJsonPayload } from "./internal";
-import type {
-	AcceptDiscoveredPeerResult,
-	ImportInviteResult,
-	InspectInviteResult,
-	SyncRunResponse,
-} from "./types";
+import type { AcceptDiscoveredPeerResult, ImportInviteResult, SyncRunResponse } from "./types";
+
+export type RecipientInvitationKind = "team_member" | "add_device";
+
+export type RecipientOnboardingProjectSourceV1 =
+	| { kind: "direct" }
+	| { kind: "team"; teamId: string; displayName: string };
+
+export interface RecipientOnboardingProjectV1 {
+	canonicalProjectIdentity: string;
+	displayName: string;
+	existingMemoryCount: number;
+	futureMemoriesShared: true;
+	sources: RecipientOnboardingProjectSourceV1[];
+}
+
+export interface RecipientOnboardingPreviewV1 {
+	version: 1;
+	journey: "team" | "direct_project" | "add_device";
+	binding: {
+		invitationId: string;
+		identityId: string;
+		deviceId: string;
+		deviceKeyFingerprint: string;
+		deviceDisplayName: string;
+	};
+	team: { teamId: string; displayName: string; futureProjectsInherit: true } | null;
+	projects: RecipientOnboardingProjectV1[];
+	excludedProjects: Array<{
+		canonicalProjectIdentity: string;
+		displayName: string;
+		existingMemoryCount: number;
+	}>;
+	reviewedOnboardingDigest: string;
+}
+
+export type InspectInviteResult =
+	| { kind: "legacy_team_invite" }
+	| {
+			kind: "project_share_invite";
+			operation_id?: string;
+			inviter_name?: string | null;
+			team_name?: string | null;
+			recipient_name?: string;
+			device_name?: string;
+			projects?: Array<{ display_name: string; existing_memory_count: number }>;
+	  }
+	| {
+			kind: RecipientInvitationKind;
+			recipient_name: string;
+			device_name: string;
+			onboarding: RecipientOnboardingPreviewV1;
+	  };
+
+export type RecipientInvitePreviewRequest =
+	| { kind: "team_member"; policy_team_id: string }
+	| { kind: "add_device"; target_identity_id: string };
+
+export interface RecipientInvitePreviewResult {
+	kind: RecipientInvitationKind;
+	preview: RecipientOnboardingPreviewV1;
+}
+
+export interface CreatedRecipientInvite extends RecipientInvitePreviewResult {
+	ok: true;
+	invite: {
+		encoded?: string;
+		link?: string;
+		invite_id?: string;
+	};
+}
 
 type TriggerSyncTarget = {
 	address?: string;
@@ -31,7 +96,11 @@ export async function loadSyncStatus(
 
 export async function importCoordinatorInvite(
 	invite: string,
-	identity?: { recipient_name: string; device_name: string },
+	identity?: {
+		recipient_name: string;
+		device_name: string;
+		reviewed_onboarding_digest?: string;
+	},
 ): Promise<ImportInviteResult> {
 	const resp = await fetch("/api/sync/invites/import", {
 		method: "POST",
@@ -43,11 +112,14 @@ export async function importCoordinatorInvite(
 	return data;
 }
 
-export async function inspectCoordinatorInvite(invite: string): Promise<InspectInviteResult> {
+export async function inspectCoordinatorInvite(
+	invite: string,
+	options: { device_name?: string } = {},
+): Promise<InspectInviteResult> {
 	const resp = await fetch("/api/sync/invites/inspect", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ invite }),
+		body: JSON.stringify({ invite, ...options }),
 	});
 	const { text, payload } = await readJsonPayload<InspectInviteResult>(resp);
 	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
@@ -737,6 +809,32 @@ export function commitRecipientPolicyEdges(
 	input: RecipientPolicyEdgeCommitRequestV1,
 ): Promise<RecipientPolicyEdgeCommitResultV1> {
 	return recipientPolicyEdgeRequest("/api/sync/recipient-policy/v1/edges/commit", input);
+}
+
+async function recipientInviteRequest<T>(
+	path: string,
+	input: RecipientInvitePreviewRequest & { reviewed_onboarding_digest?: string },
+): Promise<T> {
+	const resp = await fetch(path, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(input),
+	});
+	const { text, payload } = await readJsonPayload<T>(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	return payload as T;
+}
+
+export function previewRecipientInvite(
+	input: RecipientInvitePreviewRequest,
+): Promise<RecipientInvitePreviewResult> {
+	return recipientInviteRequest("/api/sync/recipient-policy/v1/invites/preview", input);
+}
+
+export function createRecipientInvite(
+	input: RecipientInvitePreviewRequest & { reviewed_onboarding_digest: string },
+): Promise<CreatedRecipientInvite> {
+	return recipientInviteRequest("/api/sync/recipient-policy/v1/invites", input);
 }
 
 export function loadRecipientPolicyReview(): Promise<RecipientPolicyReviewListV1> {

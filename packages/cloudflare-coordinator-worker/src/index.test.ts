@@ -199,6 +199,50 @@ describe("createCloudflareCoordinatorWorker", () => {
 		});
 	});
 
+	it("migration 0009 classifies existing invites and adds recipient invitation metadata", () => {
+		db.exec(`
+			DROP TABLE coordinator_invites;
+			CREATE TABLE coordinator_invites (
+				invite_id TEXT PRIMARY KEY, group_id TEXT NOT NULL, token TEXT NOT NULL UNIQUE,
+				policy TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL,
+				created_by TEXT, team_name_snapshot TEXT, revoked_at TEXT, operation_id TEXT
+			);
+			INSERT INTO coordinator_invites(invite_id, group_id, token, policy, expires_at, created_at, operation_id)
+			VALUES
+				('legacy-invite', 'g1', 'legacy-token', 'auto_admit', '2099-01-01T00:00:00Z',
+					'2026-03-28T00:00:00Z', NULL),
+				('project-invite', 'g1', 'project-token', 'auto_admit', '2099-01-01T00:00:00Z',
+					'2026-03-28T00:00:00Z', 'share_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+		`);
+		const migration = readFileSync(
+			join(import.meta.dirname, "../migrations/0009_add_recipient_invite_kinds.sql"),
+			"utf8",
+		);
+		db.exec(migration);
+
+		expect(
+			db
+				.prepare(`SELECT invite_id, invite_kind, policy_team_id, target_identity_id,
+					reviewed_preview_digest FROM coordinator_invites ORDER BY invite_id`)
+				.all(),
+		).toEqual([
+			{
+				invite_id: "legacy-invite",
+				invite_kind: "legacy_enrollment",
+				policy_team_id: null,
+				target_identity_id: null,
+				reviewed_preview_digest: null,
+			},
+			{
+				invite_id: "project-invite",
+				invite_kind: "project_share",
+				policy_team_id: null,
+				target_identity_id: null,
+				reviewed_preview_digest: null,
+			},
+		]);
+	});
+
 	it("serves coordinator admin data through the worker entrypoint", async () => {
 		const store = new D1CoordinatorStore(d1db);
 		await store.createGroup("g1", "Team Alpha");

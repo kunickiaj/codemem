@@ -388,6 +388,17 @@ describe("share-operation persistence", () => {
 			inviteId: "invite-1",
 			tokenDigest: inviteTokenDigest("token-1"),
 		});
+		const protectedBefore = Object.fromEntries(
+			[
+				"replication_scopes",
+				"scope_memberships",
+				"scope_membership_cache_state",
+				"project_scope_mappings",
+				"replication_ops",
+				"replication_cursors",
+				"replication_cursors_v2",
+			].map((table) => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]),
+		);
 		const publicKey = "recipient-key";
 		reconcileShareOperationAcceptance(db, {
 			operationId: operation.operationId,
@@ -432,6 +443,30 @@ describe("share-operation persistence", () => {
 				.prepare("SELECT actor_id, name FROM sync_peers WHERE peer_device_id = ?")
 				.get("device-brian"),
 		).toEqual({ actor_id: "actor-brian", name: "Brian's MacBook" });
+		expect(db.prepare("SELECT identity_id, device_id FROM identity_devices").all()).toEqual([
+			{ identity_id: "actor-brian", device_id: "device-brian" },
+		]);
+		expect(
+			db
+				.prepare(`SELECT canonical_project_identity, recipient_kind, recipient_id
+					FROM project_recipients ORDER BY canonical_project_identity`)
+				.all(),
+		).toEqual(
+			operation.projects.map((project) => ({
+				canonical_project_identity: project.canonicalIdentity,
+				recipient_kind: "identity",
+				recipient_id: "actor-brian",
+			})),
+		);
+		expect(db.prepare("SELECT COUNT(*) FROM policy_team_memberships").pluck().get()).toBe(0);
+		expect(
+			Object.fromEntries(
+				Object.keys(protectedBefore).map((table) => [
+					table,
+					db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+				]),
+			),
+		).toEqual(protectedBefore);
 	});
 
 	it("rejects pending acceptance that collides with an existing active Person", () => {

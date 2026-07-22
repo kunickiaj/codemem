@@ -60,7 +60,11 @@ CREATE TABLE IF NOT EXISTS coordinator_invites (
   recipient_display_name TEXT,
   recipient_device_display_name TEXT,
   trust_state TEXT,
-  bootstrap_grant_id TEXT
+  bootstrap_grant_id TEXT,
+  invite_kind TEXT,
+  policy_team_id TEXT,
+  target_identity_id TEXT,
+  reviewed_preview_digest TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_coordinator_invites_operation_id

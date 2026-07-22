@@ -716,6 +716,236 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 		});
 
 		describe("invites", () => {
+			it("persists and single-use binds explicit Team and add-device invitations without scope membership", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Coordinator Alpha");
+					await store.createScope({ scopeId: "scope-project", label: "Project" });
+					const digest = "a".repeat(64);
+					const teamInvite = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2099-01-01T00:00:00Z",
+						inviteKind: "team_member",
+						policyTeamId: "policy-team-1",
+						reviewedPreviewDigest: digest,
+					});
+					expect(teamInvite).toMatchObject({
+						invite_kind: "team_member",
+						policy_team_id: "policy-team-1",
+						reviewed_preview_digest: digest,
+					});
+					expect(
+						await store.inspectRecipientInvite({
+							token: teamInvite.token,
+							now: "2026-07-21T00:00:00.000Z",
+						}),
+					).toMatchObject({ kind: "team_member", policy_team_id: "policy-team-1", bound: false });
+					const publicKey = "team-member-key";
+					const teamInput = {
+						token: teamInvite.token,
+						inviteKind: "team_member" as const,
+						identityId: "identity-brian",
+						deviceId: "device-brian",
+						publicKey,
+						fingerprint: fingerprintPublicKey(publicKey),
+						now: "2026-07-21T00:00:00.000Z",
+					};
+					expect((await store.consumeRecipientInvite(teamInput)).status).toBe("accepted");
+					expect((await store.consumeRecipientInvite(teamInput)).status).toBe("existing");
+					await expect(
+						store.consumeRecipientInvite({ ...teamInput, identityId: "identity-other" }),
+					).rejects.toThrow("invite_identity_conflict");
+					await expect(
+						store.consumeRecipientInvite({ ...teamInput, deviceId: "device-other" }),
+					).rejects.toThrow("invite_already_bound");
+					await expect(
+						store.consumeRecipientInvite({
+							...teamInput,
+							publicKey: "other-key",
+							fingerprint: fingerprintPublicKey("other-key"),
+						}),
+					).rejects.toThrow("invite_already_bound");
+
+					const addDeviceInvite = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2099-01-01T00:00:00Z",
+						inviteKind: "add_device",
+						targetIdentityId: "identity-brian",
+						reviewedPreviewDigest: "b".repeat(64),
+					});
+					expect(
+						await store.inspectRecipientInvite({
+							token: addDeviceInvite.token,
+							now: "2026-07-21T00:00:00.000Z",
+						}),
+					).toMatchObject({ kind: "add_device", target_identity_id: "identity-brian" });
+					await expect(
+						store.consumeRecipientInvite({
+							...teamInput,
+							token: addDeviceInvite.token,
+							inviteKind: "add_device",
+							identityId: "identity-other",
+						}),
+					).rejects.toThrow("invite_identity_conflict");
+					const addDeviceInput = {
+						...teamInput,
+						token: addDeviceInvite.token,
+						inviteKind: "add_device" as const,
+						deviceId: "device-brian-2",
+						publicKey: "add-device-key",
+						fingerprint: fingerprintPublicKey("add-device-key"),
+					};
+					expect((await store.consumeRecipientInvite(addDeviceInput)).status).toBe("accepted");
+					expect((await store.consumeRecipientInvite(addDeviceInput)).status).toBe("existing");
+					expect(await store.listScopeMemberships("scope-project")).toEqual([]);
+				});
+			});
+
+			it("replays only the exact consumed recipient binding after expiry", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Coordinator Alpha");
+					const publicKey = "post-expiry-key";
+					const invite = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2026-07-21T00:00:01.000Z",
+						inviteKind: "team_member",
+						policyTeamId: "policy-team-1",
+						reviewedPreviewDigest: "e".repeat(64),
+					});
+					const input = {
+						token: invite.token,
+						inviteKind: "team_member" as const,
+						identityId: "identity-brian",
+						deviceId: "device-brian",
+						publicKey,
+						fingerprint: fingerprintPublicKey(publicKey),
+						now: "2026-07-21T00:00:00.000Z",
+					};
+
+					expect((await store.consumeRecipientInvite(input)).status).toBe("accepted");
+					expect(
+						await store.inspectRecipientInvite({
+							token: invite.token,
+							now: "2026-07-21T00:00:02.000Z",
+						}),
+					).toMatchObject({ kind: "team_member", bound: true });
+					const replay = await store.consumeRecipientInvite({
+						...input,
+						now: "2026-07-21T00:00:02.000Z",
+					});
+					expect(replay.status).toBe("existing");
+					await expect(
+						store.consumeRecipientInvite({
+							...input,
+							deviceId: "device-other",
+							now: "2026-07-21T00:00:02.000Z",
+						}),
+					).rejects.toThrow("invite_already_bound");
+					await expect(
+						store.consumeRecipientInvite({
+							...input,
+							identityId: "identity-other",
+							now: "2026-07-21T00:00:02.000Z",
+						}),
+					).rejects.toThrow("invite_identity_conflict");
+					const otherPublicKey = "post-expiry-other-key";
+					await expect(
+						store.consumeRecipientInvite({
+							...input,
+							publicKey: otherPublicKey,
+							fingerprint: fingerprintPublicKey(otherPublicKey),
+							now: "2026-07-21T00:00:02.000Z",
+						}),
+					).rejects.toThrow("invite_already_bound");
+				});
+			});
+
+			it("rejects first recipient invite use after expiry", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Coordinator Alpha");
+					const publicKey = "expired-first-use-key";
+					const invite = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2026-07-21T00:00:01.000Z",
+						inviteKind: "add_device",
+						targetIdentityId: "identity-brian",
+						reviewedPreviewDigest: "f".repeat(64),
+					});
+
+					await expect(
+						store.consumeRecipientInvite({
+							token: invite.token,
+							inviteKind: "add_device",
+							identityId: "identity-brian",
+							deviceId: "device-brian",
+							publicKey,
+							fingerprint: fingerprintPublicKey(publicKey),
+							now: "2026-07-21T00:00:02.000Z",
+						}),
+					).rejects.toThrow("invite_expired");
+				});
+			});
+
+			it("fails closed when recipient invitations expire or their coordinator group is archived", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Coordinator Alpha");
+					const expired = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2000-01-01T00:00:00Z",
+						inviteKind: "team_member",
+						policyTeamId: "policy-team-1",
+						reviewedPreviewDigest: "c".repeat(64),
+					});
+					await expect(
+						store.inspectRecipientInvite({
+							token: expired.token,
+							now: "2026-07-21T00:00:00.000Z",
+						}),
+					).rejects.toThrow("invite_expired");
+					await expect(
+						store.consumeRecipientInvite({
+							token: expired.token,
+							inviteKind: "team_member",
+							identityId: "identity-brian",
+							deviceId: "device-brian",
+							publicKey: "expired-key",
+							fingerprint: fingerprintPublicKey("expired-key"),
+							now: "2026-07-21T00:00:00.000Z",
+						}),
+					).rejects.toThrow("invite_expired");
+					const active = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2099-01-01T00:00:00Z",
+						inviteKind: "add_device",
+						targetIdentityId: "identity-brian",
+						reviewedPreviewDigest: "d".repeat(64),
+					});
+					await store.archiveGroup("g1", "2026-07-21T00:00:00.000Z");
+					await expect(
+						store.inspectRecipientInvite({
+							token: active.token,
+							now: "2026-07-21T00:00:00.000Z",
+						}),
+					).rejects.toThrow("group_archived");
+					await expect(
+						store.consumeRecipientInvite({
+							token: active.token,
+							inviteKind: "add_device",
+							identityId: "identity-brian",
+							deviceId: "device-brian",
+							publicKey: "archived-key",
+							fingerprint: fingerprintPublicKey("archived-key"),
+							now: "2026-07-21T00:00:00.000Z",
+						}),
+					).rejects.toThrow("group_archived");
+				});
+			});
+
 			it("fails closed for archived groups and mismatched public-key fingerprints", async () => {
 				await withContext(async ({ store }) => {
 					await store.createGroup("g1", "Team Alpha");

@@ -29,6 +29,11 @@ import {
 	writeCodememConfigFile,
 } from "./observer-config.js";
 import { friendlyDeviceName, normalizeIdentityDisplayName } from "./project-invite-identity.js";
+import {
+	commitRecipientPolicyOnboarding,
+	previewRecipientPolicyOnboarding,
+	type RecipientPolicyOnboardingPreviewRequestV1,
+} from "./recipient-policy-onboarding.js";
 import { updatePeerAddresses } from "./sync-discovery.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
@@ -962,6 +967,10 @@ export async function coordinatorCreateInviteAction(opts: {
 		display_name: string;
 		existing_memory_count: number;
 	}> | null;
+	inviteKind?: "legacy_enrollment" | "project_share" | "team_member" | "add_device" | null;
+	policyTeamId?: string | null;
+	targetIdentityId?: string | null;
+	reviewedPreviewDigest?: string | null;
 }): Promise<Record<string, unknown>> {
 	if (!VALID_INVITE_POLICIES.has(opts.policy)) throw new Error(`Invalid policy: ${opts.policy}`);
 	if (
@@ -975,6 +984,15 @@ export async function coordinatorCreateInviteAction(opts: {
 			!opts.projectIntent?.length)
 	) {
 		throw new Error("project_invite_context_required");
+	}
+	const inviteKind = opts.inviteKind ?? (opts.operationId ? "project_share" : "legacy_enrollment");
+	if (
+		(inviteKind === "team_member" &&
+			(!opts.policyTeamId || !opts.reviewedPreviewDigest || opts.targetIdentityId)) ||
+		(inviteKind === "add_device" &&
+			(!opts.targetIdentityId || !opts.reviewedPreviewDigest || opts.policyTeamId))
+	) {
+		throw new Error("recipient_invite_context_required");
 	}
 	const expiresAt = new Date(Date.now() + opts.ttlHours * 3600 * 1000).toISOString();
 	const remote = opts.remoteUrl ?? coordinatorRemoteTarget().remoteUrl;
@@ -1000,6 +1018,10 @@ export async function coordinatorCreateInviteAction(opts: {
 				pending_person_id: opts.pendingPersonId ?? null,
 				project_summaries: opts.projectSummaries ?? null,
 				project_intent: opts.projectIntent ?? null,
+				invite_kind: inviteKind,
+				policy_team_id: opts.policyTeamId ?? null,
+				target_identity_id: opts.targetIdentityId ?? null,
+				reviewed_preview_digest: opts.reviewedPreviewDigest ?? null,
 			},
 		);
 		const invite = payload?.invite;
@@ -1012,6 +1034,11 @@ export async function coordinatorCreateInviteAction(opts: {
 			invite_id: inviteRecord?.invite_id,
 			operation_id: inviteRecord?.operation_id ?? null,
 			reviewed_project_set_digest: inviteRecord?.reviewed_project_set_digest ?? null,
+			invite_kind: inviteRecord?.invite_kind ?? inviteKind,
+			policy_team_id: inviteRecord?.policy_team_id ?? opts.policyTeamId ?? null,
+			target_identity_id: inviteRecord?.target_identity_id ?? opts.targetIdentityId ?? null,
+			reviewed_preview_digest:
+				inviteRecord?.reviewed_preview_digest ?? opts.reviewedPreviewDigest ?? null,
 			encoded: payload?.encoded,
 			link: payload?.link,
 			payload: payload?.payload,
@@ -1040,10 +1067,17 @@ export async function coordinatorCreateInviteAction(opts: {
 			pendingPersonId: opts.pendingPersonId ?? null,
 			projectSummaries: opts.projectSummaries ?? null,
 			projectIntent: opts.projectIntent ?? null,
+			inviteKind,
+			policyTeamId: opts.policyTeamId ?? null,
+			targetIdentityId: opts.targetIdentityId ?? null,
+			reviewedPreviewDigest: opts.reviewedPreviewDigest ?? null,
 		});
 		const payload: InvitePayload = {
 			v: 1,
-			kind: "coordinator_team_invite",
+			kind:
+				invite.invite_kind === "team_member" || invite.invite_kind === "add_device"
+					? invite.invite_kind
+					: "coordinator_team_invite",
 			coordinator_url: resolvedCoordinatorUrl,
 			group_id: opts.groupId,
 			policy: invite.policy,
@@ -1057,6 +1091,18 @@ export async function coordinatorCreateInviteAction(opts: {
 						project_summaries: opts.projectSummaries ?? [],
 					}
 				: {}),
+			...(invite.invite_kind === "team_member"
+				? {
+						policy_team_id: invite.policy_team_id ?? undefined,
+						reviewed_preview_digest: invite.reviewed_preview_digest ?? undefined,
+					}
+				: {}),
+			...(invite.invite_kind === "add_device"
+				? {
+						target_identity_id: invite.target_identity_id ?? undefined,
+						reviewed_preview_digest: invite.reviewed_preview_digest ?? undefined,
+					}
+				: {}),
 		};
 		const encoded = encodeInvitePayload(payload);
 		return {
@@ -1064,6 +1110,10 @@ export async function coordinatorCreateInviteAction(opts: {
 			invite_id: invite.invite_id,
 			operation_id: invite.operation_id ?? null,
 			reviewed_project_set_digest: invite.reviewed_project_set_digest ?? null,
+			invite_kind: invite.invite_kind ?? inviteKind,
+			policy_team_id: invite.policy_team_id ?? null,
+			target_identity_id: invite.target_identity_id ?? null,
+			reviewed_preview_digest: invite.reviewed_preview_digest ?? null,
 			encoded,
 			link: inviteLink(encoded),
 			payload,
@@ -1155,6 +1205,91 @@ function persistProjectInviteTrust(opts: {
 	}
 }
 
+function recipientInviteOnboardingRequest(opts: {
+	payload: InvitePayload;
+	identityId: string;
+	deviceId: string;
+	publicKey: string;
+	deviceDisplayName: string;
+}): RecipientPolicyOnboardingPreviewRequestV1 {
+	const base = {
+		version: 1 as const,
+		invitationId: String(opts.payload.token),
+		identityId: opts.identityId,
+		deviceId: opts.deviceId,
+		devicePublicKey: opts.publicKey,
+		deviceDisplayName: opts.deviceDisplayName,
+	};
+	return opts.payload.kind === "team_member"
+		? {
+				...base,
+				journey: "team",
+				teamId: String(opts.payload.policy_team_id ?? ""),
+			}
+		: { ...base, journey: "add_device" };
+}
+
+function previewRecipientInviteOnboardingDigest(opts: {
+	dbPath: string;
+	payload: InvitePayload;
+	identityId: string;
+	identityDisplayName: string;
+	deviceId: string;
+	publicKey: string;
+	deviceDisplayName: string;
+}): string {
+	const conn = connect(opts.dbPath);
+	try {
+		conn.exec("BEGIN");
+		const now = new Date().toISOString();
+		conn
+			.prepare(`INSERT INTO actors(
+			actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+		) VALUES (?, ?, 1, 'active', NULL, ?, ?)
+		ON CONFLICT(actor_id) DO NOTHING`)
+			.run(opts.identityId, opts.identityDisplayName, now, now);
+		const preview = previewRecipientPolicyOnboarding(conn, recipientInviteOnboardingRequest(opts));
+		conn.exec("ROLLBACK");
+		return preview.reviewedOnboardingDigest;
+	} catch (error) {
+		if (conn.inTransaction) conn.exec("ROLLBACK");
+		throw error;
+	} finally {
+		conn.close();
+	}
+}
+
+function persistRecipientInviteOnboarding(opts: {
+	dbPath: string;
+	payload: InvitePayload;
+	identityId: string;
+	identityDisplayName: string;
+	deviceId: string;
+	publicKey: string;
+	deviceDisplayName: string;
+	reviewedOnboardingDigest: string;
+}): void {
+	const conn = connect(opts.dbPath);
+	try {
+		const now = new Date().toISOString();
+		conn
+			.prepare(`INSERT INTO actors(
+			actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+		) VALUES (?, ?, 1, 'active', NULL, ?, ?)
+		ON CONFLICT(actor_id) DO NOTHING`)
+			.run(opts.identityId, opts.identityDisplayName, now, now);
+		const request = recipientInviteOnboardingRequest(opts);
+		const result = commitRecipientPolicyOnboarding(conn, {
+			...request,
+			reviewedOnboardingDigest: opts.reviewedOnboardingDigest,
+		});
+		if (result.status !== "applied")
+			throw new Error(result.errorCode ?? "onboarding_commit_failed");
+	} finally {
+		conn.close();
+	}
+}
+
 export async function coordinatorImportInviteAction(opts: {
 	inviteValue: string;
 	dbPath?: string | null;
@@ -1163,6 +1298,7 @@ export async function coordinatorImportInviteAction(opts: {
 	recipientActorId?: string | null;
 	recipientDisplayName?: string | null;
 	deviceDisplayName?: string | null;
+	reviewedOnboardingDigest?: string | null;
 }): Promise<Record<string, unknown>> {
 	const payload = decodeInvitePayload(extractInvitePayload(opts.inviteValue));
 	const resolvedDbPath = resolveDbPath(opts.dbPath ?? undefined);
@@ -1184,25 +1320,55 @@ export async function coordinatorImportInviteAction(opts: {
 		? readCodememConfigFileAtPath(opts.configPath)
 		: readCodememConfigFile();
 	const projectInvite = Boolean(payload.operation_id);
+	const recipientInvite = payload.kind === "team_member" || payload.kind === "add_device";
 	const fallbackDeviceName = friendlyDeviceName({
 		explicitName: String(config.sync_device_name ?? ""),
 		osName: hostname(),
 		fallbackSeed: deviceId,
 	});
+	const explicitRecipientActorId = String(opts.recipientActorId ?? "").trim();
+	const configuredRecipientActorId = String(config.actor_id ?? "").trim();
+	const addDeviceTargetIdentityId =
+		payload.kind === "add_device" ? String(payload.target_identity_id ?? "").trim() : "";
 	const recipientActorId =
-		String(opts.recipientActorId ?? config.actor_id ?? "").trim() || `local:${deviceId}`;
-	const recipientDisplayName = projectInvite
-		? normalizeIdentityDisplayName(
-				String(opts.recipientDisplayName ?? config.actor_display_name ?? fallbackDeviceName),
-				"recipient_display_name",
-			)
-		: String(config.actor_display_name ?? deviceId).trim() || deviceId;
-	const displayName = projectInvite
-		? normalizeIdentityDisplayName(
-				String(opts.deviceDisplayName ?? fallbackDeviceName),
-				"device_display_name",
-			)
-		: recipientDisplayName;
+		explicitRecipientActorId ||
+		configuredRecipientActorId ||
+		addDeviceTargetIdentityId ||
+		`local:${deviceId}`;
+	if (
+		payload.kind === "add_device" &&
+		[recipientActorId, explicitRecipientActorId, configuredRecipientActorId].some(
+			(identityId) => identityId.length > 0 && identityId !== addDeviceTargetIdentityId,
+		)
+	) {
+		throw new Error("invite_identity_conflict");
+	}
+	const recipientDisplayName =
+		projectInvite || recipientInvite
+			? normalizeIdentityDisplayName(
+					String(opts.recipientDisplayName ?? config.actor_display_name ?? fallbackDeviceName),
+					"recipient_display_name",
+				)
+			: String(config.actor_display_name ?? deviceId).trim() || deviceId;
+	const displayName =
+		projectInvite || recipientInvite
+			? normalizeIdentityDisplayName(
+					String(opts.deviceDisplayName ?? fallbackDeviceName),
+					"device_display_name",
+				)
+			: recipientDisplayName;
+	const reviewedOnboardingDigest = recipientInvite
+		? String(opts.reviewedOnboardingDigest ?? "").trim() ||
+			previewRecipientInviteOnboardingDigest({
+				dbPath: resolvedDbPath,
+				payload,
+				identityId: recipientActorId,
+				identityDisplayName: recipientDisplayName,
+				deviceId,
+				publicKey,
+				deviceDisplayName: displayName,
+			})
+		: null;
 	// V1 of multi-team assumes one coordinator hosting multiple groups.
 	// If this device is already enrolled in a different coordinator, surface
 	// that as a hard error instead of silently overwriting the existing
@@ -1230,7 +1396,13 @@ export async function coordinatorImportInviteAction(opts: {
 					device_id: deviceId,
 					public_key: publicKey,
 					fingerprint,
-					display_name: displayName,
+					...(recipientInvite ? {} : { display_name: displayName }),
+					...(recipientInvite
+						? {
+								invite_kind: payload.kind,
+								identity_id: recipientActorId,
+							}
+						: {}),
 					...(projectInvite
 						? {
 								operation_id: payload.operation_id,
@@ -1269,12 +1441,40 @@ export async function coordinatorImportInviteAction(opts: {
 			response,
 		});
 	}
+	if (recipientInvite) {
+		const responseKind = String(response?.kind ?? "").trim();
+		const responseDigest = String(response?.reviewed_preview_digest ?? "").trim();
+		if (
+			responseKind !== payload.kind ||
+			responseDigest !== String(payload.reviewed_preview_digest ?? "").trim() ||
+			(payload.kind === "team_member" &&
+				String(response?.policy_team_id ?? "").trim() !==
+					String(payload.policy_team_id ?? "").trim()) ||
+			(payload.kind === "add_device" &&
+				String(response?.target_identity_id ?? "").trim() !==
+					String(payload.target_identity_id ?? "").trim())
+		) {
+			throw new Error("recipient_invite_intent_mismatch");
+		}
+		persistRecipientInviteOnboarding({
+			dbPath: resolvedDbPath,
+			payload,
+			identityId: recipientActorId,
+			identityDisplayName: recipientDisplayName,
+			deviceId,
+			publicKey,
+			deviceDisplayName: displayName,
+			reviewedOnboardingDigest: reviewedOnboardingDigest ?? "",
+		});
+	}
 	const nextConfig = opts.configPath
 		? readCodememConfigFileAtPath(opts.configPath)
 		: readCodememConfigFile();
 	nextConfig.sync_coordinator_url = coordinatorUrl;
-	if (projectInvite) {
+	if (projectInvite || recipientInvite) {
 		nextConfig.actor_id = recipientActorId;
+	}
+	if (projectInvite) {
 		nextConfig.actor_display_name = recipientDisplayName;
 		nextConfig.sync_device_name = displayName;
 	}
@@ -1299,6 +1499,18 @@ export async function coordinatorImportInviteAction(opts: {
 	nextConfig.sync_coordinator_groups = mergedGroups;
 	nextConfig.sync_coordinator_group = mergedGroups[0] ?? newGroupId;
 	const configPath = writeCodememConfigFile(nextConfig, opts.configPath ?? undefined);
+	if (recipientInvite) {
+		return {
+			group_id: response?.group_id ?? payload.group_id,
+			coordinator_url: payload.coordinator_url,
+			status: response?.status ?? null,
+			invite_kind: response?.kind ?? payload.kind,
+			identity_id: response?.identity_id ?? recipientActorId,
+			policy_team_id: response?.policy_team_id ?? payload.policy_team_id ?? null,
+			target_identity_id: response?.target_identity_id ?? payload.target_identity_id ?? null,
+			reviewed_preview_digest: response?.reviewed_preview_digest ?? null,
+		};
+	}
 	return {
 		group_id: payload.group_id,
 		coordinator_url: payload.coordinator_url,

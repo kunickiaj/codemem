@@ -22,16 +22,6 @@ export interface ImportInviteResult {
 	[key: string]: unknown;
 }
 
-export interface InspectInviteResult {
-	kind: "legacy_team_invite" | "project_share_invite";
-	operation_id?: string;
-	inviter_name?: string | null;
-	team_name?: string | null;
-	recipient_name?: string;
-	device_name?: string;
-	projects?: Array<{ display_name: string; existing_memory_count: number }>;
-}
-
 export interface AcceptDiscoveredPeerResult {
 	name?: string;
 	[key: string]: unknown;

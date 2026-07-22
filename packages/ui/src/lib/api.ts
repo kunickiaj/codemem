@@ -42,6 +42,13 @@ export {
 export { loadProjects, loadRuntimeInfo, pingViewerReady } from "./api/runtime";
 export { loadRawEvents, loadSession, loadStats, loadUsage } from "./api/stats";
 export type {
+	CreatedRecipientInvite,
+	InspectInviteResult,
+	RecipientInvitationKind,
+	RecipientInvitePreviewRequest,
+	RecipientInvitePreviewResult,
+	RecipientOnboardingPreviewV1,
+	RecipientOnboardingProjectV1,
 	RecipientPolicyBlockedItemV1,
 	RecipientPolicyEdgeChangeV1,
 	RecipientPolicyEdgeCommitOutcomeV1,
@@ -81,6 +88,7 @@ export {
 	commitRecipientPolicyEdges,
 	createActor,
 	createProjectInvite,
+	createRecipientInvite,
 	deactivateActor,
 	deletePeer,
 	deleteSharingDomainProjectMapping,
@@ -102,6 +110,7 @@ export {
 	mergeActor,
 	ProjectForgetConfirmationError,
 	previewProjectInvite,
+	previewRecipientInvite,
 	previewRecipientPolicyEdges,
 	RecipientPolicyEdgesStaleError,
 	RecipientPolicyReviewStaleError,

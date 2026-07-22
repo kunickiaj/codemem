@@ -271,6 +271,22 @@ function grantSyncScopeToDevices(store: MemoryStore, scopeId: string, deviceIds:
 	}
 }
 
+function authorizationReplicationSnapshot(store: MemoryStore): Record<string, unknown[]> {
+	return Object.fromEntries(
+		[
+			"replication_scopes",
+			"scope_memberships",
+			"scope_membership_cache_state",
+			"project_scope_mappings",
+			"replication_ops",
+			"replication_cursors",
+			"replication_cursors_v2",
+			"sync_reset_state",
+			"sync_reset_state_v2",
+		].map((table) => [table, store.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]),
+	);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -10247,6 +10263,279 @@ describe("viewer-server", () => {
 				cleanup();
 				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
 				else process.env.CODEMEM_CONFIG = prevConfig;
+			}
+		});
+
+		it("previews and creates Team and add-device invites through the recipient coordinator contract", async () => {
+			const configDir = mkdtempSync(join(tmpdir(), "codemem-recipient-invite-create-"));
+			const configPath = join(configDir, "config.json");
+			const keysDir = join(configDir, "keys");
+			const previousConfig = process.env.CODEMEM_CONFIG;
+			const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const previousFetch = globalThis.fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "coordinator-a",
+					sync_coordinator_admin_secret: "secret",
+				}),
+			);
+			const coordinatorBodies: Record<string, unknown>[] = [];
+			globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+				const body = JSON.parse(
+					init?.body instanceof Uint8Array
+						? new TextDecoder().decode(init.body)
+						: String(init?.body ?? "{}"),
+				) as Record<string, unknown>;
+				coordinatorBodies.push(body);
+				const payload = {
+					v: 1,
+					kind: body.invite_kind,
+					coordinator_url: "https://coord.example.test",
+					group_id: body.group_id,
+					policy: body.policy,
+					token: `token-${String(body.invite_kind)}`,
+					expires_at: body.expires_at,
+					team_name: null,
+					policy_team_id: body.policy_team_id ?? undefined,
+					target_identity_id: body.target_identity_id ?? undefined,
+					reviewed_preview_digest: body.reviewed_preview_digest,
+				};
+				return new Response(
+					JSON.stringify({
+						invite: {
+							invite_id: `invite-${String(body.invite_kind)}`,
+							invite_kind: body.invite_kind,
+							policy_team_id: body.policy_team_id,
+							target_identity_id: body.target_identity_id,
+							reviewed_preview_digest: body.reviewed_preview_digest,
+						},
+						payload,
+						encoded: core.encodeInvitePayload(payload as core.InvitePayload),
+						link: "codemem://join?invite=recipient",
+					}),
+					{ status: 200 },
+				);
+			}) as typeof fetch;
+			const { app, ensureStore, cleanup } = createTestApp({ seedDevice: false });
+			try {
+				const store = ensureStore();
+				const [deviceId] = ensureDeviceIdentity(store.db, { keysDir });
+				store.adoptEnsuredDeviceIdentity(deviceId);
+				const now = "2026-07-21T12:00:00.000Z";
+				store.db
+					.prepare(`INSERT INTO policy_teams(
+					team_id, display_name, status, provenance, revision, migration_state,
+					source_fingerprint, idempotency_key, created_at, updated_at
+				) VALUES ('policy-team-a', 'Policy Team A', 'active', 'user', 'r1',
+					'user_managed', NULL, 'team-a', ?, ?)`)
+					.run(now, now);
+
+				for (const requestBody of [
+					{ kind: "team_member", policy_team_id: "policy-team-a" },
+					{ kind: "add_device", target_identity_id: store.actorId },
+				] as const) {
+					const previewResponse = await app.request(
+						"/api/sync/recipient-policy/v1/invites/preview",
+						{
+							method: "POST",
+							headers: { "Content-Type": "application/json" },
+							body: JSON.stringify(requestBody),
+						},
+					);
+					expect(previewResponse.status).toBe(200);
+					const previewBody = (await previewResponse.json()) as {
+						preview: { reviewedOnboardingDigest: string };
+					};
+					const createResponse = await app.request("/api/sync/recipient-policy/v1/invites", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							...requestBody,
+							reviewed_onboarding_digest: previewBody.preview.reviewedOnboardingDigest,
+						}),
+					});
+					expect(createResponse.status, JSON.stringify(await createResponse.clone().json())).toBe(
+						200,
+					);
+				}
+				expect(coordinatorBodies).toHaveLength(2);
+				expect(coordinatorBodies[0]).toMatchObject({
+					invite_kind: "team_member",
+					policy_team_id: "policy-team-a",
+				});
+				expect(coordinatorBodies[1]).toMatchObject({
+					invite_kind: "add_device",
+					target_identity_id: store.actorId,
+				});
+				for (const body of coordinatorBodies) {
+					expect(body).not.toHaveProperty("scope_id");
+					expect(body).not.toHaveProperty("project_ids");
+					expect(body).not.toHaveProperty("operation_id", expect.any(String));
+				}
+			} finally {
+				cleanup();
+				globalThis.fetch = previousFetch;
+				if (previousConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = previousConfig;
+				if (previousKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
+				rmSync(configDir, { recursive: true, force: true });
+			}
+		});
+
+		it("inspects and accepts Team/add-device invites with intent-only local writes", async () => {
+			for (const kind of ["team_member", "add_device"] as const) {
+				const testDir = mkdtempSync(join(tmpdir(), `codemem-${kind}-accept-`));
+				const configPath = join(testDir, "config.json");
+				const keysDir = join(testDir, "keys");
+				const previousConfig = process.env.CODEMEM_CONFIG;
+				const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
+				const previousFetch = globalThis.fetch;
+				process.env.CODEMEM_CONFIG = configPath;
+				process.env.CODEMEM_KEYS_DIR = keysDir;
+				writeFileSync(configPath, JSON.stringify({ actor_display_name: "Local Identity" }));
+				const { app, ensureStore, cleanup } = createTestApp({ seedDevice: false });
+				try {
+					const store = ensureStore();
+					const [deviceId] = ensureDeviceIdentity(store.db, { keysDir });
+					store.adoptEnsuredDeviceIdentity(deviceId);
+					const now = "2026-07-21T12:00:00.000Z";
+					store.db
+						.prepare(`INSERT INTO policy_teams(
+						team_id, display_name, status, provenance, revision, migration_state,
+						source_fingerprint, idempotency_key, created_at, updated_at
+					) VALUES ('policy-team-a', 'Policy Team A', 'active', 'user', 'r1',
+						'user_managed', NULL, 'team-a', ?, ?)`)
+						.run(now, now);
+					const projectId = "https://git.example.invalid/acme/recipient.git";
+					const sessionId = insertTestSession(store.db);
+					store.db
+						.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
+						.run(projectId, "recipient", sessionId);
+					insertTestMemory(store, { sessionId, kind: "discovery", title: "recipient memory" });
+					store.db
+						.prepare(`INSERT INTO project_recipients(
+						canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+						policy_revision, migration_state, source_fingerprint, idempotency_key,
+						created_at, updated_at
+					) VALUES (?, ?, ?, 'active', 'user', 'r1', 'user_managed', NULL, ?, ?, ?)`)
+						.run(
+							projectId,
+							kind === "team_member" ? "team" : "identity",
+							kind === "team_member" ? "policy-team-a" : store.actorId,
+							`recipient-${kind}`,
+							now,
+							now,
+						);
+					const digest = "a".repeat(64);
+					const payload: core.InvitePayload = {
+						v: 1,
+						kind,
+						coordinator_url: "https://coord.example.test",
+						group_id: "coordinator-a",
+						policy: "auto_admit",
+						token: `token-${kind}`,
+						expires_at: "2099-01-01T00:00:00.000Z",
+						team_name: null,
+						reviewed_preview_digest: digest,
+						...(kind === "team_member"
+							? { policy_team_id: "policy-team-a" }
+							: { target_identity_id: store.actorId }),
+					};
+					const encoded = core.encodeInvitePayload(payload);
+					let joinBody: Record<string, unknown> = {};
+					globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+						const url = String(input);
+						if (url.endsWith("/v1/invites/inspect")) {
+							return new Response(
+								JSON.stringify({
+									kind,
+									reviewed_preview_digest: digest,
+									bound: false,
+									...(kind === "team_member"
+										? { policy_team_id: "policy-team-a" }
+										: { target_identity_id: store.actorId }),
+								}),
+								{ status: 200 },
+							);
+						}
+						joinBody = JSON.parse(
+							init?.body instanceof Uint8Array
+								? new TextDecoder().decode(init.body)
+								: String(init?.body ?? "{}"),
+						) as Record<string, unknown>;
+						return new Response(
+							JSON.stringify({
+								ok: true,
+								status: "accepted",
+								kind,
+								group_id: "coordinator-a",
+								identity_id: store.actorId,
+								reviewed_preview_digest: digest,
+								...(kind === "team_member"
+									? { policy_team_id: "policy-team-a", target_identity_id: null }
+									: { policy_team_id: null, target_identity_id: store.actorId }),
+							}),
+							{ status: 200 },
+						);
+					}) as typeof fetch;
+					const before = authorizationReplicationSnapshot(store);
+					const inspect = await app.request("/api/sync/invites/inspect", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ invite: encoded, device_name: "Recipient Laptop" }),
+					});
+					expect(inspect.status).toBe(200);
+					const inspection = (await inspect.json()) as {
+						kind: string;
+						onboarding: { reviewedOnboardingDigest: string };
+					};
+					expect(inspection).toMatchObject({
+						kind,
+						onboarding: {
+							journey: kind === "team_member" ? "team" : "add_device",
+							projects: [{ canonicalProjectIdentity: projectId }],
+						},
+					});
+					const accepted = await app.request("/api/sync/invites/import", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							invite: encoded,
+							recipient_name: "Local Identity",
+							device_name: "Recipient Laptop",
+							reviewed_onboarding_digest: inspection.onboarding.reviewedOnboardingDigest,
+						}),
+					});
+					expect(accepted.status, JSON.stringify(await accepted.clone().json())).toBe(200);
+					expect(joinBody).toMatchObject({
+						invite_kind: kind,
+						identity_id: store.actorId,
+						device_id: deviceId,
+					});
+					expect(joinBody).not.toHaveProperty("operation_id");
+					expect(joinBody).not.toHaveProperty("scope_id");
+					expect(
+						store.db.prepare("SELECT identity_id, device_id FROM identity_devices").all(),
+					).toEqual([{ identity_id: store.actorId, device_id: deviceId }]);
+					expect(
+						store.db.prepare("SELECT COUNT(*) FROM policy_team_memberships").pluck().get(),
+					).toBe(kind === "team_member" ? 1 : 0);
+					expect(store.db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(1);
+					expect(authorizationReplicationSnapshot(store)).toEqual(before);
+				} finally {
+					cleanup();
+					globalThis.fetch = previousFetch;
+					if (previousConfig == null) delete process.env.CODEMEM_CONFIG;
+					else process.env.CODEMEM_CONFIG = previousConfig;
+					if (previousKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+					else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
+					rmSync(testDir, { recursive: true, force: true });
+				}
 			}
 		});
 
