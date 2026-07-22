@@ -4,8 +4,15 @@ import type { UiSyncViewModel } from "../tabs/sync/view-model";
 import type { ShareOperationReadModel } from "./api/sync";
 
 export type RefreshState = "idle" | "refreshing" | "paused" | "error";
-export type TabId = "feed" | "projects" | "sync" | "health" | "coordinator-admin";
-export const ALL_TAB_IDS: TabId[] = ["feed", "projects", "sync", "health", "coordinator-admin"];
+export type TabId = "feed" | "projects" | "sharing" | "sync" | "health" | "coordinator-admin";
+export const ALL_TAB_IDS: TabId[] = [
+	"feed",
+	"projects",
+	"sharing",
+	"sync",
+	"health",
+	"coordinator-admin",
+];
 
 /* ── Cached server payload shapes ─────────────────────────── */
 

@@ -8245,6 +8245,285 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("strictly previews and commits safe recipient-policy edge changes", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = "2026-07-21T12:00:00.000Z";
+				const projectId = "https://git.example.invalid/acme/edge-route.git";
+				const identityId = "identity-edge-route";
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
+					.run(projectId, "edge-route", sessionId);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "edge route fixture",
+					metadata: {},
+				});
+				store.db
+					.prepare(
+						`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+						 VALUES (?, 'Edge recipient', 0, 'active', ?, ?)`,
+					)
+					.run(identityId, now, now);
+				store.db
+					.prepare(
+						`INSERT INTO identity_devices(
+						 device_id, identity_id, display_name, status, provenance, revision,
+						 migration_state, source_fingerprint, idempotency_key, created_at, updated_at
+						 ) VALUES ('edge-device', ?, 'Recipient laptop', 'active', 'user',
+						 'private-device-revision', 'user_managed', 'private-source-fingerprint',
+						 'private-device-idempotency', ?, ?)`,
+					)
+					.run(identityId, now, now);
+				store.db
+					.prepare(
+						`INSERT INTO sync_peers(
+						 peer_device_id, name, actor_id, public_key, pinned_fingerprint, addresses_json, created_at
+						 ) VALUES ('edge-device', 'Recipient laptop', ?, 'private-public-key',
+						 'private-transport-fingerprint', '["private-address"]', ?)`,
+					)
+					.run(identityId, now);
+
+				const change = {
+					canonicalProjectIdentity: projectId,
+					recipient: { recipientKind: "identity", identityId },
+					action: "add",
+				};
+				for (const invalidBody of [
+					{ version: 1, changes: [{ ...change, displayName: "edge-route" }] },
+					{ version: 1, changes: [change], direction: "project-first" },
+					{ version: 1, changes: [change], decidedByIdentityId: "client-controlled" },
+					{
+						version: 1,
+						changes: [
+							{
+								...change,
+								recipient: { ...change.recipient, displayName: "Edge recipient" },
+							},
+						],
+					},
+				]) {
+					const invalid = await app.request("/api/sync/recipient-policy/v1/edges/preview", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify(invalidBody),
+					});
+					expect(invalid.status).toBe(400);
+				}
+
+				const protectedTables = [
+					"actors",
+					"identity_devices",
+					"sessions",
+					"memory_items",
+					"sync_peers",
+					"scope_memberships",
+					"replication_ops",
+					"replication_cursors",
+				];
+				const protectedSnapshot = () =>
+					JSON.stringify(
+						Object.fromEntries(
+							protectedTables.map((table) => [
+								table,
+								store.db.prepare(`SELECT * FROM ${table}`).all(),
+							]),
+						),
+					);
+				const beforePreview = protectedSnapshot();
+				const previewResponse = await app.request("/api/sync/recipient-policy/v1/edges/preview", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ version: 1, changes: [change] }),
+				});
+				const previewText = await previewResponse.text();
+				const preview = JSON.parse(previewText) as { reviewedPolicyDigest: string };
+				expect(previewResponse.status).toBe(200);
+				expect(preview).toMatchObject({
+					projects: [
+						{
+							canonicalProjectIdentity: projectId,
+							displayName: "edge-route",
+							existingMemoryCount: 1,
+							futureMemoriesShared: true,
+						},
+					],
+					selectedRecipients: [
+						{
+							recipientKind: "identity",
+							identityId,
+							displayName: "Edge recipient",
+							verification: "local",
+						},
+					],
+				});
+				expect(protectedSnapshot()).toBe(beforePreview);
+				expect(store.db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
+				for (const secret of [
+					"private-public-key",
+					"private-transport-fingerprint",
+					"private-address",
+					"private-source-fingerprint",
+					"private-device-idempotency",
+				]) {
+					expect(previewText).not.toContain(secret);
+				}
+				for (const forbiddenKey of [
+					"scopeId",
+					"groupId",
+					"address",
+					"publicKey",
+					"fingerprint",
+					"epoch",
+					"cursor",
+					"filter",
+					"payload",
+				]) {
+					expect(previewText).not.toContain(forbiddenKey);
+				}
+
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "concurrent edge route memory",
+					metadata: {},
+				});
+				const staleCommit = await app.request("/api/sync/recipient-policy/v1/edges/commit", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						version: 1,
+						changes: [change],
+						reviewedPolicyDigest: preview.reviewedPolicyDigest,
+					}),
+				});
+				expect(staleCommit.status).toBe(409);
+				expect(await staleCommit.json()).toMatchObject({ status: "stale", writeCount: 0 });
+				expect(store.db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
+				const refreshedResponse = await app.request("/api/sync/recipient-policy/v1/edges/preview", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ version: 1, changes: [change] }),
+				});
+				const refreshed = (await refreshedResponse.json()) as { reviewedPolicyDigest: string };
+				const beforeCommit = protectedSnapshot();
+
+				const invalidCommit = await app.request("/api/sync/recipient-policy/v1/edges/commit", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						version: 1,
+						changes: [change],
+						reviewedPolicyDigest: refreshed.reviewedPolicyDigest,
+						displayName: "forbidden",
+					}),
+				});
+				expect(invalidCommit.status).toBe(400);
+
+				const commitResponse = await app.request("/api/sync/recipient-policy/v1/edges/commit", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						version: 1,
+						changes: [change],
+						reviewedPolicyDigest: refreshed.reviewedPolicyDigest,
+					}),
+				});
+				expect(commitResponse.status).toBe(200);
+				expect(await commitResponse.json()).toMatchObject({
+					status: "applied",
+					writeCount: 1,
+					idempotent: false,
+					outcomes: [{ outcome: "added" }],
+				});
+				expect(protectedSnapshot()).toBe(beforeCommit);
+
+				const missing = await app.request("/api/sync/recipient-policy/v1/edges/preview", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						version: 1,
+						changes: [{ ...change, canonicalProjectIdentity: "edge-route" }],
+					}),
+				});
+				expect(missing.status).toBe(404);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("returns retryable 503 when recipient-policy commit cannot acquire the write lock", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			let competing: InstanceType<typeof Database> | null = null;
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = "2026-07-21T12:00:00.000Z";
+				const projectId = "https://git.example.invalid/acme/busy-edge.git";
+				const identityId = "identity-busy-edge";
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
+					.run(projectId, "busy-edge", sessionId);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "busy edge fixture",
+					metadata: {},
+				});
+				store.db
+					.prepare(
+						`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+						 VALUES (?, 'Busy recipient', 0, 'active', ?, ?)`,
+					)
+					.run(identityId, now, now);
+				const changes = [
+					{
+						canonicalProjectIdentity: projectId,
+						recipient: { recipientKind: "identity", identityId },
+						action: "add",
+					},
+				];
+				const previewResponse = await app.request("/api/sync/recipient-policy/v1/edges/preview", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ version: 1, changes }),
+				});
+				const preview = (await previewResponse.json()) as { reviewedPolicyDigest: string };
+				const database = store.db.pragma("database_list") as Array<{ file: string }>;
+				const databasePath = database.find((entry) => entry.file)?.file;
+				if (!databasePath) throw new Error("test database path missing");
+				store.db.pragma("busy_timeout = 1");
+				competing = new Database(databasePath);
+				competing.exec("BEGIN IMMEDIATE");
+
+				const response = await app.request("/api/sync/recipient-policy/v1/edges/commit", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						version: 1,
+						changes,
+						reviewedPolicyDigest: preview.reviewedPolicyDigest,
+					}),
+				});
+
+				expect(response.status).toBe(503);
+				expect(response.headers.get("Retry-After")).toBe("1");
+				expect(await response.json()).toEqual({ error: "edge_commit_busy" });
+				expect(store.db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
+			} finally {
+				if (competing?.inTransaction) competing.exec("ROLLBACK");
+				competing?.close();
+				cleanup();
+			}
+		});
+
 		it("returns searchable project inventory for the Projects screen", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
