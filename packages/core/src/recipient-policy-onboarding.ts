@@ -88,6 +88,18 @@ export interface RecipientPolicyOnboardingCommitResultV1 {
 	idempotent: boolean;
 }
 
+export interface DirectProjectSharePolicyCommitInput {
+	operationId: string;
+	inviterIdentityId: string;
+	inviterDevices: Array<{ deviceId: string; displayName: string }>;
+	recipientIdentityId: string;
+	recipientDeviceId: string;
+	recipientDevicePublicKey: string;
+	recipientDeviceDisplayName: string;
+	canonicalProjectIdentities: string[];
+	now: string;
+}
+
 export class RecipientPolicyOnboardingRequestError extends Error {
 	readonly status: "invalid" | "not_found";
 	readonly errorCode: string;
@@ -298,6 +310,15 @@ function assertActiveIdentity(db: Database, identityId: string): void {
 		| undefined;
 	if (row?.status !== "active") {
 		throw new RecipientPolicyOnboardingRequestError("not_found", "identity_not_found");
+	}
+}
+
+function assertActiveLocalIdentity(db: Database, identityId: string): void {
+	const row = db
+		.prepare("SELECT is_local, status FROM actors WHERE actor_id = ?")
+		.get(identityId) as { is_local: number; status: string } | undefined;
+	if (row?.status !== "active" || row.is_local !== 1) {
+		throw new Error("inviter_identity_conflict");
 	}
 }
 
@@ -569,6 +590,69 @@ function projectRow(
 	};
 }
 
+function inviterDeviceRow(input: {
+	identityId: string;
+	deviceId: string;
+	displayName: string;
+	now: string;
+}): IntentRow {
+	const stableBinding = { identityId: input.identityId, deviceId: input.deviceId };
+	const metadata = relationshipMetadata(
+		"identity-device",
+		["direct_project_inviter", stableBinding],
+		["direct_project_inviter", stableBinding],
+	);
+	return {
+		table: "identity_devices",
+		key: { device_id: input.deviceId },
+		values: {
+			identity_id: input.identityId,
+			display_name: input.displayName,
+			...baseValues({
+				provenance: "exact_project_invite",
+				revision: metadata.revision,
+				idempotencyKey: metadata.idempotencyKey,
+				sourceFingerprint: digest("recipient-onboarding-inviter-device-v1", stableBinding),
+				now: input.now,
+			}),
+		},
+	};
+}
+
+function inviterProjectRow(input: {
+	identityId: string;
+	projectId: string;
+	now: string;
+}): IntentRow {
+	const stableBinding = {
+		canonicalProjectIdentity: input.projectId,
+		recipientKind: "identity",
+		recipientId: input.identityId,
+	};
+	const metadata = relationshipMetadata(
+		"project-recipient",
+		["direct_project_inviter", stableBinding],
+		["direct_project_inviter", stableBinding],
+	);
+	const values = baseValues({
+		provenance: "exact_project_invite",
+		revision: metadata.revision,
+		idempotencyKey: metadata.idempotencyKey,
+		sourceFingerprint: digest("recipient-onboarding-inviter-project-v1", stableBinding),
+		now: input.now,
+	});
+	const { revision, ...rest } = values;
+	return {
+		table: "project_recipients",
+		key: {
+			canonical_project_identity: input.projectId,
+			recipient_kind: "identity",
+			recipient_id: input.identityId,
+		},
+		values: { ...rest, policy_revision: revision },
+	};
+}
+
 function planRows(request: NormalizedRequest, now: string): IntentRow[] {
 	const rows = [deviceRow(request, now)];
 	if (request.journey === "team") rows.push(membershipRow(request, now));
@@ -601,12 +685,21 @@ function validateOrWriteRow(db: Database, row: IntentRow): boolean {
 	if (existing) {
 		const expected = { ...row.key, ...row.values };
 		if (row.table === "identity_devices" && keyMatch && !idempotencyMatch) {
+			const hasRecipientKeyBinding =
+				keyMatch.provenance === "recipient_invite" && expected.provenance === "recipient_invite";
+			const hasConflictingFingerprint =
+				hasRecipientKeyBinding && keyMatch.source_fingerprint !== expected.source_fingerprint;
 			if (
 				keyMatch.identity_id !== expected.identity_id ||
-				keyMatch.source_fingerprint !== expected.source_fingerprint
+				keyMatch.status !== "active" ||
+				hasConflictingFingerprint
 			) {
 				throw new Error("device_binding_conflict");
 			}
+			return false;
+		}
+		if (row.table === "project_recipients" && keyMatch && !idempotencyMatch) {
+			if (keyMatch.status !== "active") throw new Error("intent_conflict");
 			return false;
 		}
 		const comparableColumns = Object.keys(expected).filter(
@@ -624,6 +717,55 @@ function validateOrWriteRow(db: Database, row: IntentRow): boolean {
 		`INSERT INTO ${row.table}(${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
 	).run(...Object.values(row.key), ...Object.values(row.values));
 	return true;
+}
+
+export function commitDirectProjectSharePolicyInTransaction(
+	db: Database,
+	input: DirectProjectSharePolicyCommitInput,
+): number {
+	if (!db.inTransaction) throw new Error("direct_share_policy_transaction_required");
+	const normalized = normalizeRequest({
+		version: 1,
+		journey: "direct_project",
+		invitationId: input.operationId,
+		identityId: input.recipientIdentityId,
+		deviceId: input.recipientDeviceId,
+		devicePublicKey: input.recipientDevicePublicKey,
+		deviceDisplayName: input.recipientDeviceDisplayName,
+		canonicalProjectIdentities: input.canonicalProjectIdentities,
+	});
+	if (normalized.journey !== "direct_project") throw new Error("journey_invalid");
+	assertActiveIdentity(db, normalized.binding.identityId);
+	assertActiveLocalIdentity(db, input.inviterIdentityId);
+	if (input.inviterDevices.length === 0) throw new Error("inviter_device_binding_missing");
+	const inviterDevices = input.inviterDevices
+		.map((device) => ({
+			deviceId: strictId(device.deviceId, "inviter_device_id", 256),
+			displayName: normalizeIdentityDisplayName(device.displayName, "device_display_name"),
+		}))
+		.toSorted((left, right) => compareText(left.deviceId, right.deviceId));
+	if (new Set(inviterDevices.map((device) => device.deviceId)).size !== inviterDevices.length) {
+		throw new Error("inviter_device_binding_invalid");
+	}
+	const rows = [
+		...inviterDevices.map((device) =>
+			inviterDeviceRow({
+				identityId: input.inviterIdentityId,
+				deviceId: device.deviceId,
+				displayName: device.displayName,
+				now: input.now,
+			}),
+		),
+		...normalized.canonicalProjectIdentities.map((projectId) =>
+			inviterProjectRow({ identityId: input.inviterIdentityId, projectId, now: input.now }),
+		),
+		...planRows(normalized, input.now),
+	];
+	let writeCount = 0;
+	for (const row of rows) {
+		if (validateOrWriteRow(db, row)) writeCount += 1;
+	}
+	return writeCount;
 }
 
 function emptyResult(

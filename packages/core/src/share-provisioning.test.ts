@@ -26,6 +26,9 @@ describe("exact project share provisioning", () => {
 	beforeEach(() => {
 		db = new Database(":memory:");
 		initTestSchema(db);
+		db.prepare(`INSERT INTO actors(
+			actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+		) VALUES ('actor-owner', 'Owner', 1, 'active', NULL, ?, ?)`).run(createdAt, createdAt);
 		const sourceScope = "source-space";
 		db.prepare(`INSERT INTO replication_scopes(
 			scope_id, label, kind, authority_type, coordinator_id, group_id,
@@ -129,6 +132,7 @@ describe("exact project share provisioning", () => {
 		const publicKey = "recipient-key";
 		reconcileShareOperationAcceptance(db, {
 			operationId,
+			localInviterActorId: "actor-owner",
 			coordinatorGroupId: "team",
 			reviewedProjectSetDigest: plan.reviewedProjectSetDigest,
 			recipientActorId: "actor-recipient",

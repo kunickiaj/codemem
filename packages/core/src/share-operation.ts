@@ -1,9 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
-import {
-	commitRecipientPolicyOnboarding,
-	previewRecipientPolicyOnboarding,
-} from "./recipient-policy-onboarding.js";
+import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
+import { commitDirectProjectSharePolicyInTransaction } from "./recipient-policy-onboarding.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 export const SHARE_HISTORY_POLICY = "existing_and_future" as const;
@@ -415,6 +413,7 @@ export interface AcceptedProjectIntent {
 
 export interface ShareOperationAcceptanceInput {
 	operationId: string;
+	localInviterActorId: string;
 	coordinatorGroupId: string;
 	reviewedProjectSetDigest: string;
 	recipientActorId: string;
@@ -427,6 +426,56 @@ export interface ShareOperationAcceptanceInput {
 	trustState: string;
 	bootstrapGrantId: string | null;
 	projects: AcceptedProjectIntent[];
+}
+
+function parsePersistedInviterDeviceIds(value: string): string[] {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(value);
+	} catch {
+		throw new Error("operation_intent_invalid");
+	}
+	if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 100) {
+		throw new Error("operation_intent_invalid");
+	}
+	const deviceIds = parsed.map((deviceId) => {
+		if (
+			typeof deviceId !== "string" ||
+			!deviceId ||
+			deviceId !== deviceId.trim() ||
+			deviceId.length > 256 ||
+			/[\p{Cc}\p{Cf}]/u.test(deviceId)
+		) {
+			throw new Error("operation_intent_invalid");
+		}
+		return deviceId;
+	});
+	const canonical = [...new Set(deviceIds)].toSorted();
+	if (JSON.stringify(canonical) !== value) throw new Error("operation_intent_invalid");
+	return canonical;
+}
+
+function validInviterDeviceDisplayName(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	try {
+		return normalizeIdentityDisplayName(value, "device_display_name");
+	} catch {
+		return null;
+	}
+}
+
+function inviterDeviceDisplayName(db: Database, deviceId: string): string {
+	const persistedName = db
+		.prepare("SELECT display_name FROM identity_devices WHERE device_id = ?")
+		.pluck()
+		.get(deviceId);
+	const existing = validInviterDeviceDisplayName(persistedName);
+	if (existing) return existing;
+	const peerName = db
+		.prepare("SELECT name FROM sync_peers WHERE peer_device_id = ?")
+		.pluck()
+		.get(deviceId);
+	return validInviterDeviceDisplayName(peerName) ?? "Existing device";
 }
 
 export function parseAcceptedProjectIntent(value: unknown): AcceptedProjectIntent[] {
@@ -472,12 +521,15 @@ export function reconcileShareOperationAcceptance(
 	const acceptedProjects = parseAcceptedProjectIntent(input.projects);
 	const reconcile = db.transaction(() => {
 		const operation = db
-			.prepare(`SELECT operation_id, state, person_id, person_kind, coordinator_group_id,
-				reviewed_project_set_digest FROM share_operations WHERE operation_id = ?`)
+			.prepare(`SELECT operation_id, state, inviter_actor_id, inviter_device_ids_json,
+				person_id, person_kind, coordinator_group_id, reviewed_project_set_digest
+				FROM share_operations WHERE operation_id = ?`)
 			.get(input.operationId) as
 			| {
 					operation_id: string;
 					state: string;
+					inviter_actor_id: string;
+					inviter_device_ids_json: string;
 					person_id: string;
 					person_kind: string;
 					coordinator_group_id: string;
@@ -486,11 +538,13 @@ export function reconcileShareOperationAcceptance(
 			| undefined;
 		if (!operation) throw new Error("operation_not_found");
 		if (
+			operation.inviter_actor_id !== input.localInviterActorId ||
 			operation.coordinator_group_id !== input.coordinatorGroupId ||
 			operation.reviewed_project_set_digest !== input.reviewedProjectSetDigest
 		) {
 			throw new Error("operation_scope_mismatch");
 		}
+		const inviterDeviceIds = parsePersistedInviterDeviceIds(operation.inviter_device_ids_json);
 		const localProjects = (
 			db
 				.prepare(`SELECT canonical_project_identity, display_name, existing_memory_count
@@ -607,6 +661,21 @@ export function reconcileShareOperationAcceptance(
 			input.consumedAt,
 			input.coordinatorGroupId,
 		);
+		const inviterDevices = inviterDeviceIds.map((deviceId) => ({
+			deviceId,
+			displayName: inviterDeviceDisplayName(db, deviceId),
+		}));
+		commitDirectProjectSharePolicyInTransaction(db, {
+			operationId: operation.operation_id,
+			inviterIdentityId: operation.inviter_actor_id,
+			inviterDevices,
+			recipientIdentityId: input.recipientActorId,
+			recipientDeviceId: input.recipientDeviceId,
+			recipientDevicePublicKey: input.recipientPublicKey,
+			recipientDeviceDisplayName: input.recipientDeviceDisplayName,
+			canonicalProjectIdentities: acceptedProjects.map((project) => project.canonical_identity),
+			now: input.consumedAt,
+		});
 		for (const stepKey of ["invite_consumption", "person_device_link"]) {
 			db.prepare(`UPDATE share_operation_steps SET status = 'completed', attempt_count = 1,
 					started_at = COALESCE(started_at, ?), completed_at = ?, last_attempt_at = ?,
@@ -621,26 +690,4 @@ export function reconcileShareOperationAcceptance(
 		}
 	});
 	reconcile();
-	const onboardingRequest = {
-		version: 1 as const,
-		journey: "direct_project" as const,
-		invitationId: input.operationId,
-		identityId: input.recipientActorId,
-		deviceId: input.recipientDeviceId,
-		devicePublicKey: input.recipientPublicKey,
-		deviceDisplayName: input.recipientDeviceDisplayName,
-		canonicalProjectIdentities: acceptedProjects.map((project) => project.canonical_identity),
-	};
-	const preview = previewRecipientPolicyOnboarding(db, onboardingRequest);
-	const onboarding = commitRecipientPolicyOnboarding(
-		db,
-		{
-			...onboardingRequest,
-			reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
-		},
-		{ now: () => input.consumedAt },
-	);
-	if (onboarding.status !== "applied") {
-		throw new Error(onboarding.errorCode ?? "onboarding_commit_failed");
-	}
 }

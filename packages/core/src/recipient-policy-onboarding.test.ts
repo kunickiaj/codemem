@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { listRecipientPolicyIntent } from "./recipient-policy-intent.js";
 import {
+	commitDirectProjectSharePolicyInTransaction,
 	commitRecipientPolicyOnboarding,
 	previewRecipientPolicyOnboarding,
 	type RecipientPolicyOnboardingPreviewRequestV1,
@@ -17,11 +18,12 @@ function insertActor(
 	db: InstanceType<typeof Database>,
 	identityId: string,
 	displayName: string,
+	isLocal = false,
 ): void {
 	db.prepare(
 		`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
-		 VALUES (?, ?, 0, 'active', ?, ?)`,
-	).run(identityId, displayName, NOW, NOW);
+		 VALUES (?, ?, ?, 'active', ?, ?)`,
+	).run(identityId, displayName, isLocal ? 1 : 0, NOW, NOW);
 }
 
 function insertProject(
@@ -340,6 +342,233 @@ describe("recipient-policy onboarding", () => {
 		);
 	});
 
+	it("atomically commits the complete direct-share owner and recipient graph", () => {
+		insertActor(db, "identity-owner", "Owner", true);
+		const membershipsBefore = db
+			.prepare("SELECT * FROM policy_team_memberships ORDER BY rowid")
+			.all();
+		const input = {
+			operationId: "share-complete-graph",
+			inviterIdentityId: "identity-owner",
+			inviterDevices: [
+				{ deviceId: "device-owner", displayName: "Owner laptop" },
+				{ deviceId: "device-owner-proven", displayName: "Owner server" },
+			],
+			recipientIdentityId: "identity-b",
+			recipientDeviceId: "device-recipient",
+			recipientDevicePublicKey: "recipient-public-key",
+			recipientDeviceDisplayName: "Recipient laptop",
+			canonicalProjectIdentities: [PROJECT_C, PROJECT_A],
+			now: NOW,
+		};
+		const commit = db.transaction(() => commitDirectProjectSharePolicyInTransaction(db, input));
+
+		expect(commit()).toBe(7);
+		expect(
+			db.prepare("SELECT identity_id, device_id FROM identity_devices ORDER BY device_id").all(),
+		).toEqual([
+			{ identity_id: "identity-owner", device_id: "device-owner" },
+			{ identity_id: "identity-owner", device_id: "device-owner-proven" },
+			{ identity_id: "identity-b", device_id: "device-recipient" },
+		]);
+		expect(
+			db
+				.prepare(`SELECT canonical_project_identity, recipient_id
+				FROM project_recipients
+				WHERE recipient_id IN ('identity-owner', 'identity-b')
+				ORDER BY canonical_project_identity, recipient_id`)
+				.all(),
+		).toEqual([
+			{ canonical_project_identity: PROJECT_A, recipient_id: "identity-b" },
+			{ canonical_project_identity: PROJECT_A, recipient_id: "identity-owner" },
+			{ canonical_project_identity: PROJECT_C, recipient_id: "identity-b" },
+			{ canonical_project_identity: PROJECT_C, recipient_id: "identity-owner" },
+		]);
+		expect(
+			db.prepare("SELECT 1 FROM identity_devices WHERE device_id = 'source-bystander'").get(),
+		).toBeUndefined();
+		expect(db.prepare("SELECT * FROM policy_team_memberships ORDER BY rowid").all()).toEqual(
+			membershipsBefore,
+		);
+		expect(commit()).toBe(0);
+	});
+
+	it("preserves compatible migration rows and writes only new recipient intent", () => {
+		insertActor(db, "identity-owner", "Owner", true);
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 identity_id, device_id, display_name, status, provenance, revision, migration_state,
+			 source_fingerprint, idempotency_key, created_at, updated_at
+			 ) VALUES ('identity-owner', 'device-owner', 'Migrated owner device', 'active',
+			 'migration', 'migration-device-revision', 'projected', 'migration-device-source',
+			 'migration-device-idempotency', ?, ?)`,
+		).run(NOW, NOW);
+		db.prepare(
+			`INSERT INTO project_recipients(
+			 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			 policy_revision, migration_state, source_fingerprint, idempotency_key,
+			 created_at, updated_at
+			 ) VALUES (?, 'identity', 'identity-owner', 'active', 'migration',
+			 'migration-project-revision', 'projected', 'migration-source-fingerprint',
+			 'migration-project-idempotency', ?, ?)`,
+		).run(PROJECT_A, NOW, NOW);
+		const existingDevice = db
+			.prepare("SELECT * FROM identity_devices WHERE device_id = 'device-owner'")
+			.get();
+		const existingProject = db
+			.prepare(`SELECT * FROM project_recipients
+				WHERE canonical_project_identity = ? AND recipient_kind = 'identity'
+				AND recipient_id = 'identity-owner'`)
+			.get(PROJECT_A);
+		const input = {
+			operationId: "share-migrated-owner",
+			inviterIdentityId: "identity-owner",
+			inviterDevices: [{ deviceId: "device-owner", displayName: "Ignored new label" }],
+			recipientIdentityId: "identity-b",
+			recipientDeviceId: "device-recipient",
+			recipientDevicePublicKey: "recipient-public-key",
+			recipientDeviceDisplayName: "Recipient laptop",
+			canonicalProjectIdentities: [PROJECT_A],
+			now: NOW,
+		};
+		const commit = db.transaction(() => commitDirectProjectSharePolicyInTransaction(db, input));
+
+		expect(commit()).toBe(2);
+		expect(
+			db.prepare("SELECT * FROM identity_devices WHERE device_id = 'device-owner'").get(),
+		).toEqual(existingDevice);
+		expect(
+			db
+				.prepare(`SELECT * FROM project_recipients
+				WHERE canonical_project_identity = ? AND recipient_kind = 'identity'
+				AND recipient_id = 'identity-owner'`)
+				.get(PROJECT_A),
+		).toEqual(existingProject);
+		expect(
+			db
+				.prepare("SELECT identity_id, device_id FROM identity_devices WHERE device_id = ?")
+				.get("device-recipient"),
+		).toEqual({ identity_id: "identity-b", device_id: "device-recipient" });
+		expect(commit()).toBe(0);
+	});
+
+	it("rejects a revoked inviter Project edge without partial recipient intent", () => {
+		insertActor(db, "identity-owner", "Owner", true);
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 identity_id, device_id, display_name, status, provenance, revision, migration_state,
+			 source_fingerprint, idempotency_key, created_at, updated_at
+			 ) VALUES ('identity-owner', 'device-owner', 'Migrated owner device', 'active',
+			 'migration', 'migration-device-revision', 'projected', NULL,
+			 'migration-device-idempotency', ?, ?)`,
+		).run(NOW, NOW);
+		db.prepare(
+			`INSERT INTO project_recipients(
+			 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			 policy_revision, migration_state, source_fingerprint, idempotency_key,
+			 created_at, updated_at
+			 ) VALUES (?, 'identity', 'identity-owner', 'revoked', 'migration',
+			 'migration-project-revision', 'projected', NULL,
+			 'migration-project-idempotency', ?, ?)`,
+		).run(PROJECT_A, NOW, NOW);
+		const commit = db.transaction(() =>
+			commitDirectProjectSharePolicyInTransaction(db, {
+				operationId: "share-revoked-owner",
+				inviterIdentityId: "identity-owner",
+				inviterDevices: [{ deviceId: "device-owner", displayName: "Owner device" }],
+				recipientIdentityId: "identity-b",
+				recipientDeviceId: "device-recipient",
+				recipientDevicePublicKey: "recipient-public-key",
+				recipientDeviceDisplayName: "Recipient laptop",
+				canonicalProjectIdentities: [PROJECT_A],
+				now: NOW,
+			}),
+		);
+
+		expect(() => commit()).toThrow("intent_conflict");
+		expect(
+			db
+				.prepare("SELECT status FROM project_recipients WHERE recipient_id = 'identity-owner'")
+				.pluck()
+				.get(),
+		).toBe("revoked");
+		expect(
+			db.prepare("SELECT 1 FROM identity_devices WHERE device_id = 'device-recipient'").get(),
+		).toBeUndefined();
+		expect(
+			db.prepare("SELECT 1 FROM project_recipients WHERE recipient_id = 'identity-b'").get(),
+		).toBeUndefined();
+	});
+
+	it("rolls back recipient intent when a reviewed inviter device belongs to another Identity", () => {
+		insertActor(db, "identity-owner", "Owner", true);
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 identity_id, device_id, display_name, status, provenance, revision, migration_state,
+			 source_fingerprint, idempotency_key, created_at, updated_at
+			 ) VALUES ('identity-a', 'device-owner', 'Wrong owner', 'active', 'user',
+			 'existing-revision', 'user_managed', 'existing-source', 'existing-key', ?, ?)`,
+		).run(NOW, NOW);
+		const intentBefore = JSON.stringify({
+			devices: db.prepare("SELECT * FROM identity_devices ORDER BY rowid").all(),
+			recipients: db.prepare("SELECT * FROM project_recipients ORDER BY rowid").all(),
+		});
+		const commit = db.transaction(() =>
+			commitDirectProjectSharePolicyInTransaction(db, {
+				operationId: "share-conflicting-owner",
+				inviterIdentityId: "identity-owner",
+				inviterDevices: [{ deviceId: "device-owner", displayName: "Owner laptop" }],
+				recipientIdentityId: "identity-b",
+				recipientDeviceId: "device-recipient",
+				recipientDevicePublicKey: "recipient-public-key",
+				recipientDeviceDisplayName: "Recipient laptop",
+				canonicalProjectIdentities: [PROJECT_A],
+				now: NOW,
+			}),
+		);
+
+		expect(() => commit()).toThrow("device_binding_conflict");
+		expect(
+			JSON.stringify({
+				devices: db.prepare("SELECT * FROM identity_devices ORDER BY rowid").all(),
+				recipients: db.prepare("SELECT * FROM project_recipients ORDER BY rowid").all(),
+			}),
+		).toBe(intentBefore);
+	});
+
+	it("rejects a non-active inviter device binding", () => {
+		insertActor(db, "identity-owner", "Owner", true);
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 identity_id, device_id, display_name, status, provenance, revision, migration_state,
+			 source_fingerprint, idempotency_key, created_at, updated_at
+			 ) VALUES ('identity-owner', 'device-owner', 'Revoked owner device', 'revoked',
+			 'migration', 'migration-device-revision', 'projected', NULL,
+			 'migration-device-idempotency', ?, ?)`,
+		).run(NOW, NOW);
+		const commit = db.transaction(() =>
+			commitDirectProjectSharePolicyInTransaction(db, {
+				operationId: "share-revoked-device",
+				inviterIdentityId: "identity-owner",
+				inviterDevices: [{ deviceId: "device-owner", displayName: "Owner device" }],
+				recipientIdentityId: "identity-b",
+				recipientDeviceId: "device-recipient",
+				recipientDevicePublicKey: "recipient-public-key",
+				recipientDeviceDisplayName: "Recipient laptop",
+				canonicalProjectIdentities: [PROJECT_A],
+				now: NOW,
+			}),
+		);
+
+		expect(() => commit()).toThrow("device_binding_conflict");
+		expect(
+			db.prepare("SELECT 1 FROM identity_devices WHERE device_id = 'device-recipient'").get(),
+		).toBeUndefined();
+		expect(
+			db.prepare("SELECT 1 FROM project_recipients WHERE recipient_id = 'identity-b'").get(),
+		).toBeUndefined();
+	});
+
 	it("reuses an identical device binding across direct and Team invitations", () => {
 		const direct = baseRequest({
 			journey: "direct_project",
@@ -372,6 +601,35 @@ describe("recipient-policy onboarding", () => {
 		expect(
 			db.prepare("SELECT team_id, identity_id FROM policy_team_memberships").all(),
 		).toContainEqual({ team_id: "team-a", identity_id: "identity-b" });
+	});
+
+	it("rejects a changed device key across distinct invitations", () => {
+		const first = baseRequest({ invitationId: "invite-first" });
+		const firstPreview = previewRecipientPolicyOnboarding(db, first);
+		commitRecipientPolicyOnboarding(
+			db,
+			{ ...first, reviewedOnboardingDigest: firstPreview.reviewedOnboardingDigest },
+			{ now: () => NOW },
+		);
+		const originalBinding = db
+			.prepare("SELECT * FROM identity_devices WHERE device_id = ?")
+			.get(first.deviceId);
+		const second = baseRequest({
+			invitationId: "invite-second",
+			devicePublicKey: "public-key-b",
+		});
+		const secondPreview = previewRecipientPolicyOnboarding(db, second);
+
+		expect(
+			commitRecipientPolicyOnboarding(
+				db,
+				{ ...second, reviewedOnboardingDigest: secondPreview.reviewedOnboardingDigest },
+				{ now: () => NOW },
+			),
+		).toMatchObject({ status: "conflict", errorCode: "device_binding_conflict", writeCount: 0 });
+		expect(
+			db.prepare("SELECT * FROM identity_devices WHERE device_id = ?").get(first.deviceId),
+		).toEqual(originalBinding);
 	});
 
 	it("commits add-device as the only intent write", () => {
