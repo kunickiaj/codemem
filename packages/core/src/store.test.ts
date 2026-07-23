@@ -144,6 +144,49 @@ describe("MemoryStore", () => {
 			expect(store.actorId).toBe("local:local");
 		});
 
+		it("refreshes a proven persisted local identity without restart", () => {
+			const now = "2026-07-23T12:00:00.000Z";
+			store.db
+				.prepare(
+					`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+					 VALUES ('identity-reviewed', 'Reviewed Owner', 1, 'active', ?, ?)`,
+				)
+				.run(now, now);
+
+			expect(store.refreshPersistedLocalIdentity("identity-reviewed")).toBe(true);
+			expect(store.actorId).toBe("identity-reviewed");
+			expect(store.actorDisplayName).toBe("Reviewed Owner");
+
+			store.adoptEnsuredDeviceIdentity("device-after-refresh");
+			expect(store.deviceId).toBe("device-after-refresh");
+			expect(store.actorId).toBe("identity-reviewed");
+			expect(store.actorDisplayName).toBe("Reviewed Owner");
+		});
+
+		it.each([
+			["missing", null],
+			["remote", { isLocal: 0, status: "active", mergedInto: null }],
+			["inactive", { isLocal: 1, status: "inactive", mergedInto: null }],
+			["merged", { isLocal: 1, status: "active", mergedInto: "identity-canonical" }],
+		] as const)("does not refresh an unproven persisted identity: %s", (_label, candidate) => {
+			const originalActorId = store.actorId;
+			const originalDisplayName = store.actorDisplayName;
+			if (candidate) {
+				const now = "2026-07-23T12:00:00.000Z";
+				store.db
+					.prepare(
+						`INSERT INTO actors(
+						 actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+						 ) VALUES ('identity-unproven', 'Unproven', ?, ?, ?, ?, ?)`,
+					)
+					.run(candidate.isLocal, candidate.status, candidate.mergedInto, now, now);
+			}
+
+			expect(store.refreshPersistedLocalIdentity("identity-unproven")).toBe(false);
+			expect(store.actorId).toBe(originalActorId);
+			expect(store.actorDisplayName).toBe(originalDisplayName);
+		});
+
 		it("adopts an ensured device identity and retires the fallback local actor", () => {
 			const now = "2026-07-23T12:00:00.000Z";
 			store.db

@@ -640,11 +640,16 @@ export type {
 	RecipientPolicyOnboardingPreviewV1,
 	RecipientPolicyOnboardingProjectSourceV1,
 	RecipientPolicyOnboardingProjectV1,
+	RecipientPolicyReviewedIntentCommitRequestV1,
+	RecipientPolicyReviewedIntentPreviewRequestV1,
 	RecipientPolicyTeamOnboardingRequestV1,
 } from "./recipient-policy-onboarding.js";
 export {
+	assertAddDeviceIdentityAdoptionAllowed,
 	commitRecipientPolicyOnboarding,
+	commitRecipientPolicyOnboardingFromReviewedIntent,
 	previewRecipientPolicyOnboarding,
+	previewRecipientPolicyOnboardingFromReviewedIntent,
 	RecipientPolicyOnboardingRequestError,
 } from "./recipient-policy-onboarding.js";
 export type {
@@ -714,6 +719,22 @@ export {
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
 } from "./recipient-policy-review.js";
+export type {
+	RecipientReviewedIntentExcludedProjectV1,
+	RecipientReviewedIntentProjectSourceV1,
+	RecipientReviewedIntentProjectV1,
+	RecipientReviewedIntentTargetV1,
+	RecipientReviewedIntentV1,
+} from "./recipient-reviewed-intent.js";
+export {
+	canonicalRecipientReviewedIntentJson,
+	normalizeRecipientReviewedIntent,
+	parseStoredRecipientReviewedIntent,
+	RECIPIENT_REVIEWED_INTENT_VERSION,
+	RecipientReviewedIntentError,
+	recipientReviewedIntentDigest,
+	verifyRecipientReviewedIntent,
+} from "./recipient-reviewed-intent.js";
 export {
 	hasPendingRefBackfill,
 	REF_BACKFILL_JOB,

@@ -63,6 +63,12 @@ import type {
 	CoordinatorUpsertPresenceInput,
 } from "./coordinator-store-contract.js";
 import { normalizeInviteExpiresAt } from "./coordinator-store-contract.js";
+import {
+	canonicalRecipientReviewedIntentJson,
+	parseStoredRecipientReviewedIntent,
+	type RecipientReviewedIntentTargetV1,
+	verifyRecipientReviewedIntent,
+} from "./recipient-reviewed-intent.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 export const DEFAULT_COORDINATOR_DB_PATH = join(homedir(), ".codemem", "coordinator.sqlite");
@@ -128,7 +134,8 @@ const INVITE_COLUMNS = `invite_id, group_id, token, policy, expires_at, created_
 	inviter_actor_id, inviter_display_name, inviter_device_id, pending_person_id,
 	project_summaries_json, project_intent_json, consumed_at, bound_device_id, bound_public_key, bound_fingerprint,
 	recipient_actor_id, recipient_display_name, recipient_device_display_name, trust_state,
-	bootstrap_grant_id, invite_kind, policy_team_id, target_identity_id, reviewed_preview_digest`;
+	bootstrap_grant_id, invite_kind, policy_team_id, target_identity_id, reviewed_preview_digest,
+	reviewed_intent_json`;
 
 function rowToRecord<T>(row: unknown): T {
 	if (row == null) throw new Error("expected row");
@@ -173,12 +180,13 @@ function clean(value: string | null | undefined): string | null {
 	return trimmed ? trimmed : null;
 }
 
-function normalizeInviteMetadata(opts: CoordinatorCreateInviteInput): {
+async function normalizeInviteMetadata(opts: CoordinatorCreateInviteInput): Promise<{
 	inviteKind: CoordinatorInviteKind;
 	policyTeamId: string | null;
 	targetIdentityId: string | null;
 	reviewedPreviewDigest: string | null;
-} {
+	reviewedIntentJson: string | null;
+}> {
 	const inviteKind =
 		opts.inviteKind ?? (clean(opts.operationId) ? "project_share" : "legacy_enrollment");
 	const policyTeamId = clean(opts.policyTeamId);
@@ -221,31 +229,72 @@ function normalizeInviteMetadata(opts: CoordinatorCreateInviteInput): {
 			throw new Error("add_device invite metadata is invalid.");
 		}
 	}
-	return { inviteKind, policyTeamId, targetIdentityId, reviewedPreviewDigest };
+	const reviewedIntentProvided = opts.reviewedIntent !== undefined && opts.reviewedIntent !== null;
+	if (!reviewedIntentProvided) {
+		if (inviteKind === "team_member" || inviteKind === "add_device") {
+			throw new Error("recipient_invite_review_unavailable");
+		}
+		return {
+			inviteKind,
+			policyTeamId,
+			targetIdentityId,
+			reviewedPreviewDigest,
+			reviewedIntentJson: null,
+		};
+	}
+	let target: RecipientReviewedIntentTargetV1;
+	if (inviteKind === "team_member" && policyTeamId && reviewedPreviewDigest) {
+		target = { kind: "team_member", policyTeamId };
+	} else if (inviteKind === "add_device" && targetIdentityId && reviewedPreviewDigest) {
+		target = { kind: "add_device", targetIdentityId };
+	} else {
+		throw new Error("recipient invite metadata requires a recipient invite kind.");
+	}
+	await verifyRecipientReviewedIntent(opts.reviewedIntent, {
+		target,
+		digest: reviewedPreviewDigest,
+	});
+	return {
+		inviteKind,
+		policyTeamId,
+		targetIdentityId,
+		reviewedPreviewDigest,
+		reviewedIntentJson: canonicalRecipientReviewedIntentJson(opts.reviewedIntent, target),
+	};
 }
 
-function recipientInspection(
+async function recipientInspection(
 	invite: CoordinatorInvite,
-): CoordinatorRecipientInviteInspection | null {
+): Promise<CoordinatorRecipientInviteInspection | null> {
 	if (invite.invite_kind === "team_member") {
 		if (!invite.policy_team_id || !invite.reviewed_preview_digest)
 			throw new Error("invite_invalid");
+		const reviewedIntent = await parseStoredRecipientReviewedIntent(invite.reviewed_intent_json, {
+			target: { kind: "team_member", policyTeamId: invite.policy_team_id },
+			digest: invite.reviewed_preview_digest,
+		});
 		return {
 			kind: "team_member",
 			invite,
 			policy_team_id: invite.policy_team_id,
 			reviewed_preview_digest: invite.reviewed_preview_digest,
+			reviewed_intent: reviewedIntent,
 			bound: Boolean(invite.consumed_at),
 		};
 	}
 	if (invite.invite_kind === "add_device") {
 		if (!invite.target_identity_id || !invite.reviewed_preview_digest)
 			throw new Error("invite_invalid");
+		const reviewedIntent = await parseStoredRecipientReviewedIntent(invite.reviewed_intent_json, {
+			target: { kind: "add_device", targetIdentityId: invite.target_identity_id },
+			digest: invite.reviewed_preview_digest,
+		});
 		return {
 			kind: "add_device",
 			invite,
 			target_identity_id: invite.target_identity_id,
 			reviewed_preview_digest: invite.reviewed_preview_digest,
+			reviewed_intent: reviewedIntent,
 			bound: Boolean(invite.consumed_at),
 		};
 	}
@@ -576,7 +625,8 @@ function initializeSchema(db: DatabaseType): void {
 			invite_kind TEXT,
 			policy_team_id TEXT,
 			target_identity_id TEXT,
-			reviewed_preview_digest TEXT
+			reviewed_preview_digest TEXT,
+			reviewed_intent_json TEXT
 		);
 
 		CREATE TABLE IF NOT EXISTS coordinator_join_requests (
@@ -737,6 +787,7 @@ function initializeSchema(db: DatabaseType): void {
 		"policy_team_id",
 		"target_identity_id",
 		"reviewed_preview_digest",
+		"reviewed_intent_json",
 	]) {
 		try {
 			db.prepare(`ALTER TABLE coordinator_invites ADD COLUMN ${column} TEXT`).run();
@@ -939,7 +990,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		const group = await this.getGroup(opts.groupId);
 		const operationId = clean(opts.operationId);
 		const reviewedProjectSetDigest = clean(opts.reviewedProjectSetDigest);
-		const metadata = normalizeInviteMetadata(opts);
+		const metadata = await normalizeInviteMetadata(opts);
 		if (Boolean(operationId) !== Boolean(reviewedProjectSetDigest)) {
 			throw new Error("operationId and reviewedProjectSetDigest must be provided together.");
 		}
@@ -968,7 +1019,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					(opts.projectIntent ? JSON.stringify(opts.projectIntent) : null) ||
 				existing.policy_team_id !== metadata.policyTeamId ||
 				existing.target_identity_id !== metadata.targetIdentityId ||
-				existing.reviewed_preview_digest !== metadata.reviewedPreviewDigest
+				existing.reviewed_preview_digest !== metadata.reviewedPreviewDigest ||
+				existing.reviewed_intent_json !== metadata.reviewedIntentJson
 			) {
 				throw new Error("invite_operation_intent_conflict");
 			}
@@ -1008,8 +1060,9 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest,
 					token_digest, inviter_actor_id, inviter_display_name, inviter_device_id,
 					pending_person_id, project_summaries_json, project_intent_json, trust_state,
-					invite_kind, policy_team_id, target_identity_id, reviewed_preview_digest
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+					invite_kind, policy_team_id, target_identity_id, reviewed_preview_digest,
+					reviewed_intent_json
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 				.run(
 					inviteId,
 					opts.groupId,
@@ -1033,6 +1086,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					metadata.policyTeamId,
 					metadata.targetIdentityId,
 					metadata.reviewedPreviewDigest,
+					metadata.reviewedIntentJson,
 				);
 		} catch (error) {
 			if (operationId) {
@@ -1072,7 +1126,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	): Promise<CoordinatorRecipientInviteInspection | null> {
 		const invite = await this.getInviteByTokenForInspection(opts.token);
 		if (!invite) return null;
-		const inspection = recipientInspection(invite);
+		const inspection = await recipientInspection(invite);
 		if (!inspection) return null;
 		if (invite.revoked_at) throw new Error("invite_invalid");
 		if (
@@ -1105,14 +1159,24 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		) {
 			throw new Error("invite_identity_conflict");
 		}
+		const preflightInvite = await this.getInviteByTokenForInspection(opts.token);
+		const preflightInspection = preflightInvite ? await recipientInspection(preflightInvite) : null;
 		return this.db.transaction((): CoordinatorRecipientInviteAcceptance => {
 			const invite = this.db
 				.prepare(
 					`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE token_digest = ? OR token = ?`,
 				)
 				.get(tokenDigest(opts.token), opts.token) as CoordinatorInvite | undefined;
-			const inspection = invite ? recipientInspection(invite) : null;
-			if (!invite || !inspection || inspection.kind !== opts.inviteKind || invite.revoked_at) {
+			const inspection = invite ? preflightInspection : null;
+			if (
+				!invite ||
+				!inspection ||
+				invite.invite_id !== preflightInvite?.invite_id ||
+				invite.reviewed_intent_json !== preflightInvite.reviewed_intent_json ||
+				invite.reviewed_preview_digest !== preflightInvite.reviewed_preview_digest ||
+				inspection.kind !== opts.inviteKind ||
+				invite.revoked_at
+			) {
 				throw new Error("invite_invalid");
 			}
 			const group = this.db
@@ -1168,7 +1232,11 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				throw new Error("invite_already_bound");
 			}
 			if (saved.recipient_actor_id !== opts.identityId) throw new Error("invite_identity_conflict");
-			return { status: changed === 1 ? "accepted" : "existing", invite: saved };
+			return {
+				status: changed === 1 ? "accepted" : "existing",
+				invite: saved,
+				reviewed_intent: inspection.reviewed_intent,
+			};
 		})();
 	}
 

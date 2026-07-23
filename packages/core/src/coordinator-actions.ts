@@ -38,10 +38,16 @@ import {
 } from "./project-invite-acceptance.js";
 import { friendlyDeviceName, normalizeIdentityDisplayName } from "./project-invite-identity.js";
 import {
-	commitRecipientPolicyOnboarding,
-	previewRecipientPolicyOnboarding,
-	type RecipientPolicyOnboardingPreviewRequestV1,
+	assertAddDeviceIdentityAdoptionAllowed,
+	commitRecipientPolicyOnboardingFromReviewedIntent,
+	previewRecipientPolicyOnboardingFromReviewedIntent,
+	type RecipientPolicyReviewedIntentPreviewRequestV1,
 } from "./recipient-policy-onboarding.js";
+import {
+	RecipientReviewedIntentError,
+	type RecipientReviewedIntentV1,
+	verifyRecipientReviewedIntent,
+} from "./recipient-reviewed-intent.js";
 import { updatePeerAddresses } from "./sync-discovery.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
@@ -61,7 +67,7 @@ function stripTrailingSlashes(value: string): string {
 	return end === value.length ? value : value.slice(0, end);
 }
 
-function enableProjectInviteSync(config: Record<string, unknown>): Record<string, unknown> {
+function enableInviteSync(config: Record<string, unknown>): Record<string, unknown> {
 	const port = Number(config.sync_port);
 	const intervalS = Number(config.sync_interval_s);
 	return {
@@ -1015,6 +1021,7 @@ export async function coordinatorCreateInviteAction(opts: {
 	policyTeamId?: string | null;
 	targetIdentityId?: string | null;
 	reviewedPreviewDigest?: string | null;
+	reviewedIntent?: unknown;
 }): Promise<Record<string, unknown>> {
 	if (!VALID_INVITE_POLICIES.has(opts.policy)) throw new Error(`Invalid policy: ${opts.policy}`);
 	if (
@@ -1034,8 +1041,33 @@ export async function coordinatorCreateInviteAction(opts: {
 		(inviteKind === "team_member" &&
 			(!opts.policyTeamId || !opts.reviewedPreviewDigest || opts.targetIdentityId)) ||
 		(inviteKind === "add_device" &&
-			(!opts.targetIdentityId || !opts.reviewedPreviewDigest || opts.policyTeamId))
+			(!opts.targetIdentityId || !opts.reviewedPreviewDigest || opts.policyTeamId)) ||
+		(!["team_member", "add_device"].includes(inviteKind) &&
+			Boolean(opts.policyTeamId || opts.targetIdentityId || opts.reviewedPreviewDigest))
 	) {
+		throw new Error("recipient_invite_context_required");
+	}
+	let reviewedIntent: RecipientReviewedIntentV1 | undefined;
+	if (inviteKind === "team_member" || inviteKind === "add_device") {
+		if (opts.reviewedIntent == null) throw new Error("recipient_invite_review_unavailable");
+		try {
+			reviewedIntent = await verifyRecipientReviewedIntent(opts.reviewedIntent, {
+				target:
+					inviteKind === "team_member"
+						? { kind: "team_member", policyTeamId: String(opts.policyTeamId) }
+						: { kind: "add_device", targetIdentityId: String(opts.targetIdentityId) },
+				digest: String(opts.reviewedPreviewDigest),
+			});
+		} catch (error) {
+			if (
+				error instanceof RecipientReviewedIntentError &&
+				error.code === "recipient_invite_intent_mismatch"
+			) {
+				throw error;
+			}
+			throw new Error("recipient_invite_review_unavailable");
+		}
+	} else if (opts.reviewedIntent != null) {
 		throw new Error("recipient_invite_context_required");
 	}
 	const expiresAt = new Date(Date.now() + opts.ttlHours * 3600 * 1000).toISOString();
@@ -1066,6 +1098,7 @@ export async function coordinatorCreateInviteAction(opts: {
 				policy_team_id: opts.policyTeamId ?? null,
 				target_identity_id: opts.targetIdentityId ?? null,
 				reviewed_preview_digest: opts.reviewedPreviewDigest ?? null,
+				reviewed_intent: reviewedIntent ?? null,
 			},
 		);
 		const invite = payload?.invite;
@@ -1115,6 +1148,7 @@ export async function coordinatorCreateInviteAction(opts: {
 			policyTeamId: opts.policyTeamId ?? null,
 			targetIdentityId: opts.targetIdentityId ?? null,
 			reviewedPreviewDigest: opts.reviewedPreviewDigest ?? null,
+			reviewedIntent,
 		});
 		const payload: InvitePayload = {
 			v: 1,
@@ -1255,7 +1289,7 @@ function recipientInviteOnboardingRequest(opts: {
 	deviceId: string;
 	publicKey: string;
 	deviceDisplayName: string;
-}): RecipientPolicyOnboardingPreviewRequestV1 {
+}): RecipientPolicyReviewedIntentPreviewRequestV1 {
 	const base = {
 		version: 1 as const,
 		invitationId: String(opts.payload.token),
@@ -1273,36 +1307,6 @@ function recipientInviteOnboardingRequest(opts: {
 		: { ...base, journey: "add_device" };
 }
 
-function previewRecipientInviteOnboardingDigest(opts: {
-	dbPath: string;
-	payload: InvitePayload;
-	identityId: string;
-	identityDisplayName: string;
-	deviceId: string;
-	publicKey: string;
-	deviceDisplayName: string;
-}): string {
-	const conn = connect(opts.dbPath);
-	try {
-		conn.exec("BEGIN");
-		const now = new Date().toISOString();
-		conn
-			.prepare(`INSERT INTO actors(
-			actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
-		) VALUES (?, ?, 1, 'active', NULL, ?, ?)
-		ON CONFLICT(actor_id) DO NOTHING`)
-			.run(opts.identityId, opts.identityDisplayName, now, now);
-		const preview = previewRecipientPolicyOnboarding(conn, recipientInviteOnboardingRequest(opts));
-		conn.exec("ROLLBACK");
-		return preview.reviewedOnboardingDigest;
-	} catch (error) {
-		if (conn.inTransaction) conn.exec("ROLLBACK");
-		throw error;
-	} finally {
-		conn.close();
-	}
-}
-
 function persistRecipientInviteOnboarding(opts: {
 	dbPath: string;
 	payload: InvitePayload;
@@ -1311,20 +1315,16 @@ function persistRecipientInviteOnboarding(opts: {
 	deviceId: string;
 	publicKey: string;
 	deviceDisplayName: string;
+	reviewedIntent: RecipientReviewedIntentV1;
 	reviewedOnboardingDigest: string;
 }): void {
 	const conn = connect(opts.dbPath);
 	try {
-		const now = new Date().toISOString();
-		conn
-			.prepare(`INSERT INTO actors(
-			actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
-		) VALUES (?, ?, 1, 'active', NULL, ?, ?)
-		ON CONFLICT(actor_id) DO NOTHING`)
-			.run(opts.identityId, opts.identityDisplayName, now, now);
 		const request = recipientInviteOnboardingRequest(opts);
-		const result = commitRecipientPolicyOnboarding(conn, {
+		const result = commitRecipientPolicyOnboardingFromReviewedIntent(conn, {
 			...request,
+			identityDisplayName: opts.identityDisplayName,
+			reviewedIntent: opts.reviewedIntent,
 			reviewedOnboardingDigest: opts.reviewedOnboardingDigest,
 		});
 		if (result.status !== "applied")
@@ -1374,18 +1374,29 @@ export async function coordinatorImportInviteAction(opts: {
 	const configuredRecipientActorId = String(config.actor_id ?? "").trim();
 	const addDeviceTargetIdentityId =
 		payload.kind === "add_device" ? String(payload.target_identity_id ?? "").trim() : "";
-	const recipientActorId =
-		explicitRecipientActorId ||
-		configuredRecipientActorId ||
-		addDeviceTargetIdentityId ||
-		`local:${deviceId}`;
-	if (
-		payload.kind === "add_device" &&
-		[recipientActorId, explicitRecipientActorId, configuredRecipientActorId].some(
-			(identityId) => identityId.length > 0 && identityId !== addDeviceTargetIdentityId,
-		)
-	) {
-		throw new Error("invite_identity_conflict");
+	let recipientActorId =
+		explicitRecipientActorId || configuredRecipientActorId || `local:${deviceId}`;
+	if (payload.kind === "add_device") {
+		if (
+			!addDeviceTargetIdentityId ||
+			(explicitRecipientActorId && explicitRecipientActorId !== addDeviceTargetIdentityId)
+		) {
+			throw new Error("invite_identity_conflict");
+		}
+		if (
+			configuredRecipientActorId &&
+			configuredRecipientActorId !== addDeviceTargetIdentityId &&
+			configuredRecipientActorId !== `local:${deviceId}`
+		) {
+			throw new Error("invite_identity_conflict");
+		}
+		const identityConn = connect(resolvedDbPath);
+		try {
+			assertAddDeviceIdentityAdoptionAllowed(identityConn, addDeviceTargetIdentityId, deviceId);
+		} finally {
+			identityConn.close();
+		}
+		recipientActorId = addDeviceTargetIdentityId;
 	}
 	const recipientDisplayName =
 		projectInvite || recipientInvite
@@ -1401,18 +1412,6 @@ export async function coordinatorImportInviteAction(opts: {
 					"device_display_name",
 				)
 			: recipientDisplayName;
-	const reviewedOnboardingDigest = recipientInvite
-		? String(opts.reviewedOnboardingDigest ?? "").trim() ||
-			previewRecipientInviteOnboardingDigest({
-				dbPath: resolvedDbPath,
-				payload,
-				identityId: recipientActorId,
-				identityDisplayName: recipientDisplayName,
-				deviceId,
-				publicKey,
-				deviceDisplayName: displayName,
-			})
-		: null;
 	// V1 of multi-team assumes one coordinator hosting multiple groups.
 	// If this device is already enrolled in a different coordinator, surface
 	// that as a hard error instead of silently overwriting the existing
@@ -1427,6 +1426,10 @@ export async function coordinatorImportInviteAction(opts: {
 		throw new Error(
 			`This device is already enrolled with coordinator ${existingCoordinator}. Multi-team joining is only supported across groups on the same coordinator.`,
 		);
+	}
+	const reviewedOnboardingDigest = String(opts.reviewedOnboardingDigest ?? "").trim();
+	if (recipientInvite && !reviewedOnboardingDigest) {
+		throw new Error("reviewed_onboarding_digest_required");
 	}
 	let status = 0;
 	let response: Record<string, unknown> | null = null;
@@ -1470,6 +1473,8 @@ export async function coordinatorImportInviteAction(opts: {
 				"invite_expired",
 				"invite_identity_conflict",
 				"invite_invalid",
+				"recipient_invite_intent_mismatch",
+				"recipient_invite_review_unavailable",
 			].includes(detail)
 		) {
 			throw new Error(detail);
@@ -1485,6 +1490,8 @@ export async function coordinatorImportInviteAction(opts: {
 			response,
 		});
 	}
+	let persistedRecipientDisplayName = recipientDisplayName;
+	let recipientOnboarding: Parameters<typeof persistRecipientInviteOnboarding>[0] | null = null;
 	if (recipientInvite) {
 		const responseKind = String(response?.kind ?? "").trim();
 		const responseDigest = String(response?.reviewed_preview_digest ?? "").trim();
@@ -1500,27 +1507,65 @@ export async function coordinatorImportInviteAction(opts: {
 		) {
 			throw new Error("recipient_invite_intent_mismatch");
 		}
-		persistRecipientInviteOnboarding({
-			dbPath: resolvedDbPath,
+		let reviewedIntent: RecipientReviewedIntentV1;
+		try {
+			reviewedIntent = await verifyRecipientReviewedIntent(response?.reviewed_intent, {
+				target:
+					payload.kind === "team_member"
+						? {
+								kind: "team_member",
+								policyTeamId: String(payload.policy_team_id ?? "").trim(),
+							}
+						: {
+								kind: "add_device",
+								targetIdentityId: String(payload.target_identity_id ?? "").trim(),
+							},
+				digest: responseDigest,
+			});
+		} catch (error) {
+			if (error instanceof RecipientReviewedIntentError) {
+				throw new Error("recipient_invite_intent_mismatch");
+			}
+			throw error;
+		}
+		if (reviewedIntent.journey === "add_device") {
+			persistedRecipientDisplayName = reviewedIntent.targetIdentity.displayName;
+		}
+		const onboardingRequest = recipientInviteOnboardingRequest({
 			payload,
 			identityId: recipientActorId,
-			identityDisplayName: recipientDisplayName,
 			deviceId,
 			publicKey,
 			deviceDisplayName: displayName,
-			reviewedOnboardingDigest: reviewedOnboardingDigest ?? "",
 		});
+		const preview = previewRecipientPolicyOnboardingFromReviewedIntent(
+			reviewedIntent,
+			onboardingRequest,
+		);
+		if (reviewedOnboardingDigest !== preview.reviewedOnboardingDigest) {
+			throw new Error("reviewed_onboarding_stale");
+		}
+		recipientOnboarding = {
+			dbPath: resolvedDbPath,
+			payload,
+			identityId: recipientActorId,
+			identityDisplayName: persistedRecipientDisplayName,
+			deviceId,
+			publicKey,
+			deviceDisplayName: displayName,
+			reviewedIntent,
+			reviewedOnboardingDigest,
+		};
 	}
-	let nextConfig = opts.configPath
+	const previousConfig = opts.configPath
 		? readCodememConfigFileAtPath(opts.configPath)
 		: readCodememConfigFile();
-	if (projectInvite) nextConfig = enableProjectInviteSync(nextConfig);
+	let nextConfig = { ...previousConfig };
+	if (projectInvite || recipientInvite) nextConfig = enableInviteSync(nextConfig);
 	nextConfig.sync_coordinator_url = coordinatorUrl;
 	if (projectInvite || recipientInvite) {
 		nextConfig.actor_id = recipientActorId;
-	}
-	if (projectInvite) {
-		nextConfig.actor_display_name = recipientDisplayName;
+		nextConfig.actor_display_name = persistedRecipientDisplayName;
 		nextConfig.sync_device_name = displayName;
 	}
 	// Append the new group to sync_coordinator_groups (dedup) instead of
@@ -1552,6 +1597,18 @@ export async function coordinatorImportInviteAction(opts: {
 		}
 		throw error;
 	}
+	if (recipientOnboarding) {
+		try {
+			persistRecipientInviteOnboarding(recipientOnboarding);
+		} catch (error) {
+			try {
+				writeCodememConfigFile(previousConfig, opts.configPath ?? undefined);
+			} catch (restoreError) {
+				throw new AggregateError([error, restoreError], "recipient_invite_config_restore_failed");
+			}
+			throw error;
+		}
+	}
 	if (recipientInvite) {
 		return {
 			group_id: response?.group_id ?? payload.group_id,
@@ -1562,6 +1619,7 @@ export async function coordinatorImportInviteAction(opts: {
 			policy_team_id: response?.policy_team_id ?? payload.policy_team_id ?? null,
 			target_identity_id: response?.target_identity_id ?? payload.target_identity_id ?? null,
 			reviewed_preview_digest: response?.reviewed_preview_digest ?? null,
+			sync_enabled: true,
 		};
 	}
 	return {

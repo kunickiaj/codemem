@@ -15,11 +15,13 @@ import type {
 	ProjectScopeGuardrailWarning,
 	ReassignScopeCapability,
 	RecipientPolicyCoordinatorEffectReceipt,
+	RecipientPolicyOnboardingPreviewV1,
 	RecipientPolicyPeerCapability,
 	RecipientPolicyReconcileResult,
 	RecipientPolicyReconcilerEffects,
 	RecipientPolicyReviewDecisionV1,
 	RecipientPolicyReviewResolveRequestV1,
+	RecipientReviewedIntentV1,
 	ReplicationOp,
 	SemanticIndexDiagnostics,
 	ShareOperationLifecycleStepInput,
@@ -118,11 +120,13 @@ import {
 	planShareOperation,
 	previewRecipientPolicyEdges,
 	previewRecipientPolicyOnboarding,
+	previewRecipientPolicyOnboardingFromReviewedIntent,
 	projectShareLifecycle,
 	RecipientPolicyEdgeRequestError,
 	readCodememConfigFile,
 	readCoordinatorSyncConfig,
 	reassignProjectScopeInventoryProject,
+	recipientReviewedIntentDigest,
 	reconcileRecipientPolicyProject,
 	reconcileShareOperationAcceptance,
 	recordNonce,
@@ -144,6 +148,7 @@ import {
 	updatePeerAddresses,
 	upsertCoordinatorGroupPreference,
 	upsertProjectScopeSettingsMapping,
+	verifyRecipientReviewedIntent,
 	verifySignature,
 	writeCodememConfigFile,
 } from "@codemem/core";
@@ -706,12 +711,16 @@ function recipientInviteKind(value: unknown): RecipientInviteKind {
 function localOnboardingBinding(
 	store: MemoryStore,
 	deviceName: string | null,
+	options: { materializeActor?: boolean } = {},
 ): {
 	deviceId: string;
 	devicePublicKey: string;
 	deviceDisplayName: string;
 } {
-	const deviceId = ensureStableStoreIdentity(store);
+	const deviceId =
+		options.materializeActor === false
+			? ensureStableStoreDeviceIdentity(store)
+			: ensureStableStoreIdentity(store);
 	const devicePublicKey = String(
 		store.db
 			.prepare("SELECT public_key FROM sync_device WHERE device_id = ?")
@@ -761,14 +770,92 @@ function recipientInviteOnboardingPreview(
 	});
 }
 
-function recipientInvitePreviewId(kind: RecipientInviteKind, targetId: string): string {
-	return `recipient-invite-preview:${kind}:${targetId}`;
+function recipientInviteReviewedIntent(
+	store: MemoryStore,
+	kind: RecipientInviteKind,
+	targetId: string,
+	preview: RecipientPolicyOnboardingPreviewV1,
+): RecipientReviewedIntentV1 {
+	if (kind === "team_member") {
+		if (preview.journey !== "team" || !preview.team || preview.team.teamId !== targetId) {
+			throw new Error("recipient_invite_intent_mismatch");
+		}
+		return {
+			version: 1,
+			journey: "team",
+			team: preview.team,
+			projects: preview.projects,
+			excludedProjects: [],
+		};
+	}
+	if (preview.journey !== "add_device" || preview.binding.identityId !== targetId) {
+		throw new Error("recipient_invite_intent_mismatch");
+	}
+	const targetIdentity = store.db
+		.prepare(
+			`SELECT display_name FROM actors
+			 WHERE actor_id = ? AND status = 'active' AND merged_into_actor_id IS NULL`,
+		)
+		.get(targetId) as { display_name: string } | undefined;
+	if (!targetIdentity?.display_name) throw new Error("identity_not_found");
+	return {
+		version: 1,
+		journey: "add_device",
+		targetIdentity: { identityId: targetId, displayName: targetIdentity.display_name },
+		projects: preview.projects,
+		excludedProjects: preview.excludedProjects,
+	};
 }
 
-function coordinatorPreviewDigest(reviewedOnboardingDigest: string): string {
-	const match = /^recipient-onboarding-preview-v1:([a-f0-9]{64})$/u.exec(reviewedOnboardingDigest);
-	if (!match?.[1]) throw new Error("reviewed_onboarding_digest_invalid");
-	return match[1];
+function recipientInviteOnboardingPreviewFromReviewedIntent(
+	store: MemoryStore,
+	body: Record<string, unknown>,
+	invitationId: string,
+	reviewedIntent: RecipientReviewedIntentV1,
+) {
+	const kind = recipientInviteKind(body.kind ?? body.invite_kind);
+	const binding = localOnboardingBinding(store, optionalViewerString(body, "device_name"), {
+		materializeActor: false,
+	});
+	const teamId = optionalViewerStrictString(body, "policy_team_id");
+	const targetIdentityId = optionalViewerStrictString(body, "target_identity_id");
+	if (kind === "team_member") {
+		if (!teamId || targetIdentityId) throw new Error("recipient_invite_metadata_invalid");
+		return previewRecipientPolicyOnboardingFromReviewedIntent(reviewedIntent, {
+			version: 1,
+			journey: "team",
+			invitationId,
+			identityId: store.actorId,
+			...binding,
+			teamId,
+		});
+	}
+	if (!targetIdentityId || teamId) throw new Error("recipient_invite_metadata_invalid");
+	return previewRecipientPolicyOnboardingFromReviewedIntent(reviewedIntent, {
+		version: 1,
+		journey: "add_device",
+		invitationId,
+		identityId: targetIdentityId,
+		...binding,
+	});
+}
+
+const SAFE_RECIPIENT_INVITE_ERRORS = new Set([
+	"invite_already_bound",
+	"invite_expired",
+	"invite_identity_conflict",
+	"invite_invalid",
+	"recipient_invite_intent_mismatch",
+	"recipient_invite_review_unavailable",
+]);
+
+function safeRecipientInviteError(value: unknown, fallback = "invite_invalid"): string {
+	const code = value instanceof Error ? value.message : String(value ?? "").trim();
+	return SAFE_RECIPIENT_INVITE_ERRORS.has(code) ? code : fallback;
+}
+
+function recipientInvitePreviewId(kind: RecipientInviteKind, targetId: string): string {
+	return `recipient-invite-preview:${kind}:${targetId}`;
 }
 
 export function recipientPolicyCapabilityFromStatus(payload: {
@@ -2433,9 +2520,14 @@ function ensureLocalActorRecord(store: MemoryStore): void {
 }
 
 function ensureStableStoreIdentity(store: MemoryStore): string {
+	const deviceId = ensureStableStoreDeviceIdentity(store);
+	ensureLocalActorRecord(store);
+	return deviceId;
+}
+
+function ensureStableStoreDeviceIdentity(store: MemoryStore): string {
 	const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 	store.adoptEnsuredDeviceIdentity(deviceId);
-	ensureLocalActorRecord(store);
 	return deviceId;
 }
 
@@ -4845,6 +4937,8 @@ export function syncRoutes(
 			if (reviewedDigest !== preview.reviewedOnboardingDigest) {
 				return c.json({ error: "reviewed_onboarding_stale", preview }, 409);
 			}
+			const reviewedIntent = recipientInviteReviewedIntent(store, kind, targetId, preview);
+			const reviewedPreviewDigest = await recipientReviewedIntentDigest(reviewedIntent);
 			const groupId = resolveCoordinatorAdminGroup(optionalViewerString(body, "group_id"), status);
 			const ttlHours = parseInviteTtlHours(body.ttl_hours);
 			if (!groupId) throw new Error("group_id_required");
@@ -4860,7 +4954,8 @@ export function syncRoutes(
 				inviteKind: kind,
 				policyTeamId: kind === "team_member" ? targetId : null,
 				targetIdentityId: kind === "add_device" ? targetId : null,
-				reviewedPreviewDigest: coordinatorPreviewDigest(preview.reviewedOnboardingDigest),
+				reviewedPreviewDigest,
+				reviewedIntent,
 			});
 			return c.json({ ok: true, kind, preview, invite: result });
 		} catch (error) {
@@ -5718,8 +5813,9 @@ export function syncRoutes(
 		if (!body || typeof body.invite !== "string") return c.json({ error: "invite_invalid" }, 400);
 		try {
 			const payload = decodeInvitePayload(extractInvitePayload(body.invite));
-			ensureStableStoreIdentity(store);
 			const recipientInvite = payload.kind === "team_member" || payload.kind === "add_device";
+			if (recipientInvite) ensureStableStoreDeviceIdentity(store);
+			else ensureStableStoreIdentity(store);
 			if (!payload.operation_id && !recipientInvite) return c.json({ kind: "legacy_team_invite" });
 			const [status, inspected] = await requestJson(
 				"POST",
@@ -5728,7 +5824,11 @@ export function syncRoutes(
 			);
 			if (status < 200 || status >= 300) {
 				return c.json(
-					{ error: String(inspected?.error ?? "invite_invalid") },
+					{
+						error: recipientInvite
+							? safeRecipientInviteError(inspected?.error)
+							: String(inspected?.error ?? "invite_invalid"),
+					},
 					status === 410 ? 410 : 400,
 				);
 			}
@@ -5752,7 +5852,22 @@ export function syncRoutes(
 				) {
 					return c.json({ error: "recipient_invite_intent_mismatch" }, 409);
 				}
-				const preview = recipientInviteOnboardingPreview(
+				if (inspected?.reviewed_intent == null) {
+					return c.json({ error: "recipient_invite_review_unavailable" }, 409);
+				}
+				let reviewedIntent: RecipientReviewedIntentV1;
+				try {
+					reviewedIntent = await verifyRecipientReviewedIntent(inspected.reviewed_intent, {
+						target:
+							payload.kind === "team_member"
+								? { kind: "team_member", policyTeamId: expectedTarget }
+								: { kind: "add_device", targetIdentityId: expectedTarget },
+						digest: String(payload.reviewed_preview_digest ?? "").trim(),
+					});
+				} catch {
+					return c.json({ error: "recipient_invite_intent_mismatch" }, 409);
+				}
+				const preview = recipientInviteOnboardingPreviewFromReviewedIntent(
 					store,
 					{
 						kind: payload.kind,
@@ -5761,10 +5876,14 @@ export function syncRoutes(
 						device_name: optionalViewerString(body, "device_name"),
 					},
 					String(payload.token),
+					reviewedIntent,
 				);
 				return c.json({
 					...inspected,
-					recipient_name: store.actorDisplayName,
+					recipient_name:
+						reviewedIntent.journey === "add_device"
+							? reviewedIntent.targetIdentity.displayName
+							: store.actorDisplayName,
 					device_name: preview.binding.deviceDisplayName,
 					onboarding: preview,
 				});
@@ -5778,8 +5897,8 @@ export function syncRoutes(
 					fallbackSeed: store.deviceId,
 				}),
 			});
-		} catch {
-			return c.json({ error: "invite_invalid" }, 400);
+		} catch (error) {
+			return c.json({ error: safeRecipientInviteError(error) }, 400);
 		}
 	});
 
@@ -5847,11 +5966,13 @@ export function syncRoutes(
 		}
 
 		let projectInvite = false;
+		let recipientInvite = false;
 		try {
 			const decoded = decodeInvitePayload(extractInvitePayload(rawValue));
 			projectInvite = Boolean(decoded.operation_id);
-			ensureStableStoreIdentity(store);
-			const recipientInvite = decoded.kind === "team_member" || decoded.kind === "add_device";
+			recipientInvite = decoded.kind === "team_member" || decoded.kind === "add_device";
+			if (decoded.kind === "add_device") ensureStableStoreDeviceIdentity(store);
+			else ensureStableStoreIdentity(store);
 			const reviewedOnboardingDigest =
 				typeof body.reviewed_onboarding_digest === "string"
 					? body.reviewed_onboarding_digest.trim()
@@ -5862,7 +5983,7 @@ export function syncRoutes(
 			const result = await coordinatorImportInviteAction({
 				inviteValue: rawValue,
 				dbPath: store.dbPath,
-				recipientActorId: store.actorId,
+				recipientActorId: decoded.kind === "add_device" ? null : store.actorId,
 				recipientDisplayName:
 					typeof body.recipient_name === "string" ? body.recipient_name : store.actorDisplayName,
 				deviceDisplayName: typeof body.device_name === "string" ? body.device_name : null,
@@ -5873,15 +5994,34 @@ export function syncRoutes(
 				: projectInvite
 					? "project_share"
 					: "team_join";
-			if (projectInvite && getSyncRuntimeStatus?.()?.phase === "disabled") {
+			if (decoded.kind === "add_device") {
+				const persistedIdentityId = String(
+					result.identity_id ?? result.target_identity_id ?? "",
+				).trim();
+				if (!store.refreshPersistedLocalIdentity(persistedIdentityId)) {
+					return c.json(
+						{
+							...result,
+							type,
+							setup_state: "restart_required",
+							restart_required: true,
+							detail:
+								"The invitation was accepted and the reviewed Identity was persisted, but this process could not safely adopt it. Restart codemem before continuing.",
+						},
+						200,
+					);
+				}
+			}
+			if ((projectInvite || recipientInvite) && getSyncRuntimeStatus?.()?.phase === "disabled") {
 				return c.json(
 					{
 						...result,
 						type,
 						setup_state: "restart_required",
 						restart_required: true,
-						detail:
-							"The invitation was accepted and sync was enabled. Restart codemem to start the sync service; Project setup remains pending until the first sync finishes.",
+						detail: projectInvite
+							? "The invitation was accepted and sync was enabled. Restart codemem to start the sync service; Project setup remains pending until the first sync finishes."
+							: "The invitation was accepted and sync was enabled. Restart codemem to start the sync service and receive the reviewed Projects.",
 					},
 					200,
 				);
@@ -5892,6 +6032,7 @@ export function syncRoutes(
 			});
 		} catch (error) {
 			if (projectInvite) return c.json(projectInviteAcceptanceFailure(error), 400);
+			if (recipientInvite) return c.json({ error: safeRecipientInviteError(error) }, 400);
 			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
 		}
 	});

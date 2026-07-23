@@ -4,9 +4,13 @@ import { listRecipientPolicyIntent } from "./recipient-policy-intent.js";
 import {
 	commitDirectProjectSharePolicyInTransaction,
 	commitRecipientPolicyOnboarding,
+	commitRecipientPolicyOnboardingFromReviewedIntent,
 	previewRecipientPolicyOnboarding,
+	previewRecipientPolicyOnboardingFromReviewedIntent,
 	type RecipientPolicyOnboardingPreviewRequestV1,
+	type RecipientPolicyReviewedIntentPreviewRequestV1,
 } from "./recipient-policy-onboarding.js";
+import type { RecipientReviewedIntentV1 } from "./recipient-reviewed-intent.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { initTestSchema } from "./test-utils.js";
 
@@ -118,6 +122,12 @@ function baseRequest(
 	} as RecipientPolicyOnboardingPreviewRequestV1;
 }
 
+function reviewedIntentRequest(
+	overrides: Partial<RecipientPolicyOnboardingPreviewRequestV1> = {},
+): RecipientPolicyReviewedIntentPreviewRequestV1 {
+	return baseRequest(overrides) as RecipientPolicyReviewedIntentPreviewRequestV1;
+}
+
 function protectedSnapshot(db: InstanceType<typeof Database>): string {
 	const tables = [
 		"replication_scopes",
@@ -137,6 +147,44 @@ function protectedSnapshot(db: InstanceType<typeof Database>): string {
 			tables.map((table) => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]),
 		),
 	);
+}
+
+function teamReviewedIntent(): Extract<RecipientReviewedIntentV1, { journey: "team" }> {
+	return {
+		version: 1,
+		journey: "team",
+		team: { teamId: "team-fresh", displayName: "Fresh Team", futureProjectsInherit: true },
+		projects: [
+			{
+				canonicalProjectIdentity: PROJECT_A,
+				displayName: "alpha",
+				existingMemoryCount: 2,
+				futureMemoriesShared: true,
+				sources: [{ kind: "team", teamId: "team-fresh", displayName: "Fresh Team" }],
+			},
+		],
+		excludedProjects: [
+			{ canonicalProjectIdentity: PROJECT_B, displayName: "beta", existingMemoryCount: 1 },
+		],
+	};
+}
+
+function addDeviceReviewedIntent(): Extract<RecipientReviewedIntentV1, { journey: "add_device" }> {
+	return {
+		version: 1,
+		journey: "add_device",
+		targetIdentity: { identityId: "identity-existing", displayName: "Existing Person" },
+		projects: [
+			{
+				canonicalProjectIdentity: PROJECT_A,
+				displayName: "alpha",
+				existingMemoryCount: 2,
+				futureMemoriesShared: true,
+				sources: [{ kind: "direct" }],
+			},
+		],
+		excludedProjects: [],
+	};
 }
 
 describe("recipient-policy onboarding", () => {
@@ -160,6 +208,334 @@ describe("recipient-policy onboarding", () => {
 	});
 
 	afterEach(() => db.close());
+
+	it("builds fresh Team and add-device previews only from reviewed intent and local binding", () => {
+		const fresh = new Database(":memory:");
+		initTestSchema(fresh);
+		try {
+			const team = previewRecipientPolicyOnboardingFromReviewedIntent(
+				teamReviewedIntent(),
+				reviewedIntentRequest({
+					journey: "team",
+					invitationId: "fresh-team",
+					identityId: "identity-fresh",
+					teamId: "team-fresh",
+				}),
+			);
+			const addDevice = previewRecipientPolicyOnboardingFromReviewedIntent(
+				addDeviceReviewedIntent(),
+				reviewedIntentRequest({ identityId: "identity-existing" }),
+			);
+
+			expect(team).toMatchObject({
+				journey: "team",
+				team: { teamId: "team-fresh", displayName: "Fresh Team" },
+				projects: [{ canonicalProjectIdentity: PROJECT_A, existingMemoryCount: 2 }],
+			});
+			expect(addDevice).toMatchObject({
+				journey: "add_device",
+				binding: { identityId: "identity-existing" },
+				projects: [{ canonicalProjectIdentity: PROJECT_A, sources: [{ kind: "direct" }] }],
+			});
+			expect(fresh.prepare("SELECT COUNT(*) FROM actors").pluck().get()).toBe(0);
+			expect(fresh.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+		} finally {
+			fresh.close();
+		}
+	});
+
+	it("atomically materializes and replays the minimum fresh Team graph", () => {
+		const fresh = new Database(":memory:");
+		initTestSchema(fresh);
+		try {
+			const request = reviewedIntentRequest({
+				journey: "team",
+				invitationId: "fresh-team",
+				identityId: "identity-fresh",
+				teamId: "team-fresh",
+			});
+			const intent = teamReviewedIntent();
+			const preview = previewRecipientPolicyOnboardingFromReviewedIntent(intent, request);
+			const commitRequest = {
+				...request,
+				identityDisplayName: "Fresh Person",
+				reviewedIntent: intent,
+				reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
+			};
+
+			const first = commitRecipientPolicyOnboardingFromReviewedIntent(fresh, commitRequest, {
+				now: () => NOW,
+			});
+			const replay = commitRecipientPolicyOnboardingFromReviewedIntent(fresh, commitRequest, {
+				now: () => "2026-07-21T13:00:00.000Z",
+			});
+
+			expect(first).toMatchObject({ status: "applied", writeCount: 4, idempotent: false });
+			expect(replay).toMatchObject({ status: "applied", writeCount: 0, idempotent: true });
+			expect(fresh.prepare("SELECT actor_id, is_local FROM actors").all()).toEqual([
+				{ actor_id: "identity-fresh", is_local: 1 },
+			]);
+			expect(fresh.prepare("SELECT team_id FROM policy_teams").pluck().all()).toEqual([
+				"team-fresh",
+			]);
+			expect(
+				fresh.prepare("SELECT team_id, identity_id FROM policy_team_memberships").all(),
+			).toEqual([{ team_id: "team-fresh", identity_id: "identity-fresh" }]);
+			expect(fresh.prepare("SELECT identity_id FROM identity_devices").pluck().get()).toBe(
+				"identity-fresh",
+			);
+			expect(fresh.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
+		} finally {
+			fresh.close();
+		}
+	});
+
+	it("keeps a zero-reference bootstrap Identity pristine with a human-friendly display name", () => {
+		const fresh = new Database(":memory:");
+		initTestSchema(fresh);
+		insertActor(fresh, "local:device-new", "Ada", true);
+		try {
+			const request = reviewedIntentRequest({ identityId: "identity-existing" });
+			const intent = addDeviceReviewedIntent();
+			const preview = previewRecipientPolicyOnboardingFromReviewedIntent(intent, request);
+
+			const result = commitRecipientPolicyOnboardingFromReviewedIntent(
+				fresh,
+				{
+					...request,
+					identityDisplayName: "Ignored local name",
+					reviewedIntent: intent,
+					reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
+				},
+				{ now: () => NOW },
+			);
+
+			expect(result).toMatchObject({ status: "applied", writeCount: 2 });
+			expect(
+				fresh
+					.prepare(
+						"SELECT actor_id, is_local, status, merged_into_actor_id FROM actors ORDER BY actor_id",
+					)
+					.all(),
+			).toEqual([
+				{
+					actor_id: "identity-existing",
+					is_local: 1,
+					status: "active",
+					merged_into_actor_id: null,
+				},
+				{
+					actor_id: "local:device-new",
+					is_local: 0,
+					status: "merged",
+					merged_into_actor_id: "identity-existing",
+				},
+			]);
+		} finally {
+			fresh.close();
+		}
+	});
+
+	it.each([
+		["an actor assignment", "local:device-new", 0],
+		["a claimed-local assignment", null, 1],
+	] as const)("rejects add-device adoption when a sync peer has %s", (_name, peerActorId, claimed) => {
+		const fresh = new Database(":memory:");
+		initTestSchema(fresh);
+		insertActor(fresh, "local:device-new", "Ada", true);
+		fresh
+			.prepare(
+				`INSERT INTO sync_peers(peer_device_id, actor_id, claimed_local_actor, created_at)
+				 VALUES (?, ?, ?, ?)`,
+			)
+			.run("peer-device", peerActorId, claimed, NOW);
+		try {
+			const request = reviewedIntentRequest({ identityId: "identity-existing" });
+			const intent = addDeviceReviewedIntent();
+			const preview = previewRecipientPolicyOnboardingFromReviewedIntent(intent, request);
+
+			expect(
+				commitRecipientPolicyOnboardingFromReviewedIntent(fresh, {
+					...request,
+					identityDisplayName: "Ada",
+					reviewedIntent: intent,
+					reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
+				}),
+			).toMatchObject({ status: "conflict", errorCode: "invite_identity_conflict", writeCount: 0 });
+			expect(
+				fresh
+					.prepare("SELECT is_local, status, merged_into_actor_id FROM actors WHERE actor_id = ?")
+					.get("local:device-new"),
+			).toEqual({ is_local: 1, status: "active", merged_into_actor_id: null });
+		} finally {
+			fresh.close();
+		}
+	});
+
+	it("rejects established-profile adoption without writes", () => {
+		const fresh = new Database(":memory:");
+		initTestSchema(fresh);
+		insertActor(fresh, "local:device-new", "Established Person", true);
+		insertTeam(fresh, "team-established", "Established Team");
+		insertMembership(fresh, "team-established", "local:device-new");
+		try {
+			const request = reviewedIntentRequest({ identityId: "identity-existing" });
+			const intent = addDeviceReviewedIntent();
+			const preview = previewRecipientPolicyOnboardingFromReviewedIntent(intent, request);
+
+			expect(
+				commitRecipientPolicyOnboardingFromReviewedIntent(fresh, {
+					...request,
+					identityDisplayName: "Established Person",
+					reviewedIntent: intent,
+					reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
+				}),
+			).toMatchObject({ status: "conflict", errorCode: "invite_identity_conflict", writeCount: 0 });
+			expect(fresh.prepare("SELECT actor_id FROM actors").pluck().all()).toEqual([
+				"local:device-new",
+			]);
+			expect(fresh.prepare("SELECT COUNT(*) FROM identity_devices").pluck().get()).toBe(0);
+		} finally {
+			fresh.close();
+		}
+	});
+
+	it("rolls back add-device adoption when identity-device insertion fails", () => {
+		const fresh = new Database(":memory:");
+		initTestSchema(fresh);
+		insertActor(fresh, "local:device-new", "Ada", true);
+		try {
+			const request = reviewedIntentRequest({ identityId: "identity-existing" });
+			const intent = addDeviceReviewedIntent();
+			const preview = previewRecipientPolicyOnboardingFromReviewedIntent(intent, request);
+			const commitRequest = {
+				...request,
+				identityDisplayName: "Ada",
+				reviewedIntent: intent,
+				reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
+			};
+			fresh.exec(`CREATE TRIGGER fail_add_device_binding BEFORE INSERT ON identity_devices
+				BEGIN SELECT RAISE(ABORT, 'test identity-device failure'); END`);
+
+			expect(commitRecipientPolicyOnboardingFromReviewedIntent(fresh, commitRequest)).toMatchObject(
+				{
+					status: "conflict",
+					writeCount: 0,
+				},
+			);
+			expect(
+				fresh.prepare("SELECT actor_id, is_local, status, merged_into_actor_id FROM actors").all(),
+			).toEqual([
+				{
+					actor_id: "local:device-new",
+					is_local: 1,
+					status: "active",
+					merged_into_actor_id: null,
+				},
+			]);
+			expect(fresh.prepare("SELECT COUNT(*) FROM identity_devices").pluck().get()).toBe(0);
+
+			fresh.exec("DROP TRIGGER fail_add_device_binding");
+			expect(commitRecipientPolicyOnboardingFromReviewedIntent(fresh, commitRequest)).toMatchObject(
+				{
+					status: "applied",
+					writeCount: 2,
+				},
+			);
+			expect(
+				fresh
+					.prepare("SELECT identity_id FROM identity_devices WHERE device_id = ?")
+					.pluck()
+					.get("device-new"),
+			).toBe("identity-existing");
+		} finally {
+			fresh.close();
+		}
+	});
+
+	it("rejects snapshot digest and device-key conflicts atomically", () => {
+		const fresh = new Database(":memory:");
+		initTestSchema(fresh);
+		try {
+			const request = reviewedIntentRequest({
+				journey: "team",
+				invitationId: "fresh-team",
+				identityId: "identity-fresh",
+				teamId: "team-fresh",
+			});
+			const intent = teamReviewedIntent();
+			const preview = previewRecipientPolicyOnboardingFromReviewedIntent(intent, request);
+			const invalid = commitRecipientPolicyOnboardingFromReviewedIntent(fresh, {
+				...request,
+				identityDisplayName: "Fresh Person",
+				reviewedIntent: { ...intent, team: { ...intent.team, displayName: "Tampered" } },
+				reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
+			});
+			expect(invalid).toMatchObject({
+				status: "stale",
+				errorCode: "reviewed_onboarding_stale",
+			});
+			expect(fresh.prepare("SELECT COUNT(*) FROM actors").pluck().get()).toBe(0);
+
+			commitRecipientPolicyOnboardingFromReviewedIntent(fresh, {
+				...request,
+				identityDisplayName: "Fresh Person",
+				reviewedIntent: intent,
+				reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
+			});
+			const changedKey = {
+				...request,
+				invitationId: "fresh-team-two",
+				devicePublicKey: "other-key",
+			};
+			const changedPreview = previewRecipientPolicyOnboardingFromReviewedIntent(intent, changedKey);
+			expect(
+				commitRecipientPolicyOnboardingFromReviewedIntent(fresh, {
+					...changedKey,
+					identityDisplayName: "Fresh Person",
+					reviewedIntent: intent,
+					reviewedOnboardingDigest: changedPreview.reviewedOnboardingDigest,
+				}),
+			).toMatchObject({
+				status: "conflict",
+				errorCode: "device_binding_conflict",
+				writeCount: 0,
+			});
+			expect(fresh.prepare("SELECT COUNT(*) FROM identity_devices").pluck().get()).toBe(1);
+		} finally {
+			fresh.close();
+		}
+	});
+
+	it("rolls back snapshot materialization when a later row fails", () => {
+		const fresh = new Database(":memory:");
+		initTestSchema(fresh);
+		try {
+			const request = reviewedIntentRequest({
+				journey: "team",
+				identityId: "identity-fresh",
+				teamId: "team-fresh",
+			});
+			const intent = teamReviewedIntent();
+			const preview = previewRecipientPolicyOnboardingFromReviewedIntent(intent, request);
+			fresh.exec(`CREATE TRIGGER fail_fresh_membership BEFORE INSERT ON policy_team_memberships
+				BEGIN SELECT RAISE(ABORT, 'test conflict'); END`);
+
+			expect(
+				commitRecipientPolicyOnboardingFromReviewedIntent(fresh, {
+					...request,
+					identityDisplayName: "Fresh Person",
+					reviewedIntent: intent,
+					reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
+				}),
+			).toMatchObject({ status: "conflict", writeCount: 0 });
+			expect(fresh.prepare("SELECT COUNT(*) FROM actors").pluck().get()).toBe(0);
+			expect(fresh.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+			expect(fresh.prepare("SELECT COUNT(*) FROM identity_devices").pluck().get()).toBe(0);
+		} finally {
+			fresh.close();
+		}
+	});
 
 	it("previews Team Projects, memory counts, exclusions, and future inheritance without writes", () => {
 		const request = baseRequest({

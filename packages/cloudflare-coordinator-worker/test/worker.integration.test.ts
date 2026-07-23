@@ -3,6 +3,8 @@ import {
 	type CoordinatorPeerRecord,
 	fingerprintPublicKey,
 	type InvitePayload,
+	recipientReviewedIntentDigest,
+	type RecipientReviewedIntentV1,
 	SIGNATURE_VERSION,
 } from "@codemem/core";
 import { env, exports } from "cloudflare:workers";
@@ -50,6 +52,26 @@ function createIdentity(): TestIdentity {
 		publicKey: sshPublic,
 		fingerprint: fingerprintPublicKey(sshPublic),
 		privateKey,
+	};
+}
+
+function teamReviewedIntent(teamId = "policy-team-1"): RecipientReviewedIntentV1 {
+	return {
+		version: 1,
+		journey: "team",
+		team: { teamId, displayName: "Product", futureProjectsInherit: true },
+		projects: [],
+		excludedProjects: [],
+	};
+}
+
+function addDeviceReviewedIntent(identityId = "identity-brian"): RecipientReviewedIntentV1 {
+	return {
+		version: 1,
+		journey: "add_device",
+		targetIdentity: { identityId, displayName: "Brian" },
+		projects: [],
+		excludedProjects: [],
 	};
 }
 
@@ -834,6 +856,10 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 	it("persists explicit Team and add-device invitation bindings without mutating coordinator memberships", async () => {
 		const device = createIdentity();
 		const otherDevice = createIdentity();
+		const teamIntent = teamReviewedIntent();
+		const teamDigest = await recipientReviewedIntentDigest(teamIntent);
+		const addDeviceIntent = addDeviceReviewedIntent();
+		const addDeviceDigest = await recipientReviewedIntentDigest(addDeviceIntent);
 		const adminHeaders = {
 			"content-type": "application/json",
 			"X-Codemem-Coordinator-Admin": "test-secret",
@@ -862,13 +888,15 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		const team = await createInvite({
 			invite_kind: "team_member",
 			policy_team_id: "policy-team-1",
-			reviewed_preview_digest: "a".repeat(64),
+			reviewed_preview_digest: teamDigest,
+			reviewed_intent: teamIntent,
 		});
 		expect(team.payload).toMatchObject({
 			kind: "team_member",
 			policy_team_id: "policy-team-1",
-			reviewed_preview_digest: "a".repeat(64),
+			reviewed_preview_digest: teamDigest,
 		});
+		expect(team.payload).not.toHaveProperty("reviewed_intent");
 		const inspect = await exports.default.fetch("https://example.com/v1/invites/inspect", {
 			method: "POST",
 			headers: { "content-type": "application/json" },
@@ -877,6 +905,8 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		expect(await inspect.json()).toMatchObject({
 			kind: "team_member",
 			policy_team_id: "policy-team-1",
+			reviewed_preview_digest: teamDigest,
+			reviewed_intent: teamIntent,
 			bound: false,
 		});
 		const acceptBody = {
@@ -893,8 +923,14 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify(acceptBody),
 			});
-		expect(await (await accept()).json()).toMatchObject({ status: "accepted" });
-		expect(await (await accept()).json()).toMatchObject({ status: "existing" });
+		expect(await (await accept()).json()).toMatchObject({
+			status: "accepted",
+			reviewed_intent: teamIntent,
+		});
+		expect(await (await accept()).json()).toMatchObject({
+			status: "existing",
+			reviewed_intent: teamIntent,
+		});
 		const changedDevice = await exports.default.fetch("https://example.com/v1/join", {
 			method: "POST",
 			headers: { "content-type": "application/json" },
@@ -911,7 +947,8 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		const addDevice = await createInvite({
 			invite_kind: "add_device",
 			target_identity_id: "identity-brian",
-			reviewed_preview_digest: "b".repeat(64),
+			reviewed_preview_digest: addDeviceDigest,
+			reviewed_intent: addDeviceIntent,
 		});
 		const wrongIdentity = await exports.default.fetch("https://example.com/v1/join", {
 			method: "POST",
@@ -941,8 +978,14 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify(addDeviceBody),
 			});
-		expect(await (await acceptAddDevice()).json()).toMatchObject({ status: "accepted" });
-		expect(await (await acceptAddDevice()).json()).toMatchObject({ status: "existing" });
+		expect(await (await acceptAddDevice()).json()).toMatchObject({
+			status: "accepted",
+			reviewed_intent: addDeviceIntent,
+		});
+		expect(await (await acceptAddDevice()).json()).toMatchObject({
+			status: "existing",
+			reviewed_intent: addDeviceIntent,
+		});
 
 		expect(
 			await env.COORDINATOR_DB.prepare("SELECT COUNT(*) AS count FROM enrolled_devices")
@@ -952,6 +995,45 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 			await env.COORDINATOR_DB.prepare("SELECT COUNT(*) AS count FROM coordinator_scope_memberships")
 				.first<{ count: number }>(),
 		).toEqual({ count: 0 });
+
+		const storedTeamReview = await env.COORDINATOR_DB.prepare(
+			"SELECT reviewed_intent_json, reviewed_preview_digest FROM coordinator_invites WHERE invite_kind = 'team_member'",
+		).first<{ reviewed_intent_json: string; reviewed_preview_digest: string }>();
+		if (!storedTeamReview) throw new Error("Expected stored Team reviewed intent.");
+		await env.COORDINATOR_DB.prepare(
+			"UPDATE coordinator_invites SET reviewed_intent_json = ? WHERE invite_kind = 'team_member'",
+		)
+			.bind('{"invalid":true}')
+			.run();
+		const unavailable = await exports.default.fetch("https://example.com/v1/invites/inspect", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ token: team.payload.token }),
+		});
+		expect(unavailable.status).toBe(409);
+		expect(await unavailable.json()).toEqual({ error: "recipient_invite_review_unavailable" });
+		const unavailableAcceptance = await accept();
+		expect(unavailableAcceptance.status).toBe(409);
+		expect(await unavailableAcceptance.json()).toEqual({
+			error: "recipient_invite_review_unavailable",
+		});
+		await env.COORDINATOR_DB.prepare(
+			"UPDATE coordinator_invites SET reviewed_intent_json = ?, reviewed_preview_digest = ? WHERE invite_kind = 'team_member'",
+		)
+			.bind(storedTeamReview.reviewed_intent_json, "f".repeat(64))
+			.run();
+		const mismatched = await exports.default.fetch("https://example.com/v1/invites/inspect", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ token: team.payload.token }),
+		});
+		expect(mismatched.status).toBe(409);
+		expect(await mismatched.json()).toEqual({ error: "recipient_invite_intent_mismatch" });
+		await env.COORDINATOR_DB.prepare(
+			"UPDATE coordinator_invites SET reviewed_preview_digest = ? WHERE invite_kind = 'team_member'",
+		)
+			.bind(storedTeamReview.reviewed_preview_digest)
+			.run();
 
 		await env.COORDINATOR_DB.prepare(
 			"UPDATE coordinator_invites SET revoked_at = ? WHERE token_digest IS NOT NULL AND invite_kind = 'team_member'",

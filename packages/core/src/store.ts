@@ -212,7 +212,7 @@ export class MemoryStore {
 	actorId: string;
 	actorDisplayName: string;
 	readonly crossSessionDedupWindowMs: number;
-	private readonly actorIdUsesDeviceFallback: boolean;
+	private actorIdUsesDeviceFallback: boolean;
 	/**
 	 * Per-store secret scanner. Lives on the instance (not as a module global)
 	 * so workspace-level rule overrides and allowlists can be wired without
@@ -283,6 +283,29 @@ export class MemoryStore {
 		this.actorDisplayName =
 			configDisplayName || process.env.USER?.trim() || process.env.USERNAME?.trim() || this.actorId;
 		this.crossSessionDedupWindowMs = resolveCrossSessionDedupWindowMs();
+	}
+
+	refreshPersistedLocalIdentity(expectedActorId: string): boolean {
+		const actorId = cleanStr(expectedActorId);
+		if (!actorId) return false;
+		try {
+			if (!tableExists(this.db, "actors")) return false;
+			const actor = this.db
+				.prepare(
+					`SELECT display_name FROM actors
+					 WHERE actor_id = ? AND is_local = 1 AND status = 'active'
+					   AND merged_into_actor_id IS NULL`,
+				)
+				.get(actorId) as { display_name: string } | undefined;
+			const displayName = cleanStr(actor?.display_name);
+			if (!actor || !displayName) return false;
+			this.actorId = actorId;
+			this.actorDisplayName = displayName;
+			this.actorIdUsesDeviceFallback = false;
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	adoptEnsuredDeviceIdentity(deviceId: string): void {
