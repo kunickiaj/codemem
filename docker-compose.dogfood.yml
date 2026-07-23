@@ -1,0 +1,24 @@
+x-dogfood-viewer: &dogfood-viewer
+  command:
+    - "sh"
+    - "-c"
+    - >-
+      pnpm --filter @codemem/ui build &&
+      exec pnpm exec tsx --conditions source packages/cli/src/index.ts
+      serve start --foreground --db-path /data/mem.sqlite --host 0.0.0.0 --port 38888
+
+services:
+  peer-a:
+    <<: *dogfood-viewer
+    ports:
+      - "127.0.0.1:38881:38888"
+
+  peer-b:
+    <<: *dogfood-viewer
+    ports:
+      - "127.0.0.1:38882:38888"
+
+  peer-c:
+    <<: *dogfood-viewer
+    ports:
+      - "127.0.0.1:38883:38888"

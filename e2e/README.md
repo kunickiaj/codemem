@@ -15,6 +15,55 @@ This directory holds the first local Docker/Compose-based E2E harness for sync s
 - bootstrap scenario plus dirty-local refusal validation
 - seed modes: `empty`, `fixture-small`, `fixture-large`, `local-import`
 - automatic artifact capture under `.tmp/e2e-artifacts/`
+- disposable three-peer sharing dogfood sandbox
+
+## Disposable sharing dogfood sandbox
+
+Use the test-only runner to exercise the real sharing UI. It uses only synthetic, isolated state under `.tmp/dogfood/`; it never reads or changes a normal user database, config, keys, coordinator, or Projects. Invitations remain operator-driven: the fixture never creates, inspects, accepts, or commits them.
+
+Prerequisites: Docker Engine with the Compose plugin, available loopback ports `38881`–`38883`, and built images when using `--build`. Check Docker and a conflicting port with:
+
+```fish
+docker compose version
+lsof -nP -iTCP:38881 -sTCP:LISTEN
+```
+
+Set up the fixed `codemem-dogfood` sandbox:
+
+```fish
+pnpm run dogfood -- setup --build
+```
+
+Setup refuses existing dogfood state. Reset only that fixed sandbox when you intend to discard it:
+
+```fish
+pnpm run dogfood -- setup --reset
+```
+
+View the isolated peers at fixed loopback URLs:
+
+- Owner: `http://127.0.0.1:38881`
+- Teammate: `http://127.0.0.1:38882`
+- Second device: `http://127.0.0.1:38883`
+
+In the UI, assign the selected Project to the test Team; create and accept exact-Project then Team invitations on the teammate; create and accept an add-device invitation on the second device. Add selected and unrelated future memories, then verify delivery, isolation, offline revocation, recovery, and restart persistence.
+
+| Command | Use |
+| --- | --- |
+| `pnpm run dogfood -- status` | Show sandbox status and viewer URLs. |
+| `pnpm run dogfood -- add-future selected` | Add a synthetic future memory to the selected Project. |
+| `pnpm run dogfood -- add-future unrelated` | Add one to the unrelated Project. |
+| `pnpm run dogfood -- offline teammate` | Stop the teammate. |
+| `pnpm run dogfood -- online teammate` | Start the teammate. |
+| `pnpm run dogfood -- restart teammate` | Restart the teammate. |
+| `pnpm run dogfood -- offline second-device` | Stop the second device. |
+| `pnpm run dogfood -- online second-device` | Start the second device. |
+| `pnpm run dogfood -- restart second-device` | Restart the second device. |
+| `pnpm run dogfood -- snapshot` | Save redacted summaries and database copies. |
+| `pnpm run dogfood -- logs` | Capture Compose logs. |
+| `pnpm run dogfood -- cleanup` | Remove only `codemem-dogfood` containers, volumes, and `.tmp/dogfood/`. |
+
+Snapshots, copied databases, state, and logs stay under ignored `.tmp/dogfood/`. `cleanup` is idempotent and fixed-target only; it does not discover or delete normal local state.
 
 ## Run the smoke scenario
 
