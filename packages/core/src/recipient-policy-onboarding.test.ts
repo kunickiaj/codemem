@@ -7,6 +7,7 @@ import {
 	previewRecipientPolicyOnboarding,
 	type RecipientPolicyOnboardingPreviewRequestV1,
 } from "./recipient-policy-onboarding.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { initTestSchema } from "./test-utils.js";
 
 const NOW = "2026-07-21T12:00:00.000Z";
@@ -629,6 +630,103 @@ describe("recipient-policy onboarding", () => {
 		).toMatchObject({ status: "conflict", errorCode: "device_binding_conflict", writeCount: 0 });
 		expect(
 			db.prepare("SELECT * FROM identity_devices WHERE device_id = ?").get(first.deviceId),
+		).toEqual(originalBinding);
+	});
+
+	it("key-binds a compatible exact-Project inviter device on recipient onboarding", () => {
+		db.prepare(
+			`INSERT INTO sync_device(device_id, public_key, fingerprint, created_at)
+			 VALUES ('device-new', 'public-key-a', ?, ?)`,
+		).run(fingerprintPublicKey("public-key-a"), NOW);
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 identity_id, device_id, display_name, status, provenance, revision, migration_state,
+			 source_fingerprint, idempotency_key, created_at, updated_at
+			 ) VALUES ('identity-a', 'device-new', 'Original device', 'active',
+			 'exact_project_invite', 'exact-project-revision', 'user_managed',
+			 'exact-project-source', 'exact-project-idempotency', ?, ?)`,
+		).run(NOW, NOW);
+		const request = baseRequest({ invitationId: "invite-key-binding-transition" });
+		const preview = previewRecipientPolicyOnboarding(db, request);
+
+		const result = commitRecipientPolicyOnboarding(
+			db,
+			{ ...request, reviewedOnboardingDigest: preview.reviewedOnboardingDigest },
+			{ now: () => "2026-07-21T12:01:00.000Z" },
+		);
+
+		expect(result).toMatchObject({ status: "applied", writeCount: 1, idempotent: false });
+		expect(
+			db
+				.prepare(
+					`SELECT identity_id, device_id, display_name, status, provenance,
+					 migration_state, source_fingerprint, idempotency_key, created_at, updated_at
+					 FROM identity_devices WHERE device_id = 'device-new'`,
+				)
+				.get(),
+		).toMatchObject({
+			identity_id: "identity-a",
+			device_id: "device-new",
+			display_name: "Ada’s Laptop",
+			status: "active",
+			provenance: "recipient_invite",
+			migration_state: "user_managed",
+			created_at: NOW,
+			updated_at: "2026-07-21T12:01:00.000Z",
+		});
+
+		const changed = baseRequest({
+			invitationId: "invite-after-key-binding-transition",
+			devicePublicKey: "public-key-b",
+		});
+		const changedPreview = previewRecipientPolicyOnboarding(db, changed);
+		const bindingAfterTransition = db
+			.prepare("SELECT * FROM identity_devices WHERE device_id = 'device-new'")
+			.get();
+
+		expect(
+			commitRecipientPolicyOnboarding(db, {
+				...changed,
+				reviewedOnboardingDigest: changedPreview.reviewedOnboardingDigest,
+			}),
+		).toMatchObject({ status: "conflict", errorCode: "device_binding_conflict", writeCount: 0 });
+		expect(
+			db.prepare("SELECT * FROM identity_devices WHERE device_id = 'device-new'").get(),
+		).toEqual(bindingAfterTransition);
+	});
+
+	it.each([
+		null,
+		"different-public-key",
+	])("rejects an exact-Project device transition without matching local key %s", (localPublicKey) => {
+		if (localPublicKey) {
+			db.prepare(
+				`INSERT INTO sync_device(device_id, public_key, fingerprint, created_at)
+					 VALUES ('device-new', ?, ?, ?)`,
+			).run(localPublicKey, fingerprintPublicKey(localPublicKey), NOW);
+		}
+		db.prepare(
+			`INSERT INTO identity_devices(
+				 identity_id, device_id, display_name, status, provenance, revision, migration_state,
+				 source_fingerprint, idempotency_key, created_at, updated_at
+				 ) VALUES ('identity-a', 'device-new', 'Original device', 'active',
+				 'exact_project_invite', 'exact-project-revision', 'user_managed',
+				 'exact-project-source', 'exact-project-idempotency', ?, ?)`,
+		).run(NOW, NOW);
+		const originalBinding = db
+			.prepare("SELECT * FROM identity_devices WHERE device_id = 'device-new'")
+			.get();
+		const request = baseRequest({ invitationId: "invite-rejected-key-transition" });
+		const preview = previewRecipientPolicyOnboarding(db, request);
+
+		expect(
+			commitRecipientPolicyOnboarding(db, {
+				...request,
+				reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
+			}),
+		).toMatchObject({ status: "conflict", errorCode: "device_binding_conflict", writeCount: 0 });
+		expect(
+			db.prepare("SELECT * FROM identity_devices WHERE device_id = 'device-new'").get(),
 		).toEqual(originalBinding);
 	});
 

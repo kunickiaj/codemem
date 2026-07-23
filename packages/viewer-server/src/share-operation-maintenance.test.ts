@@ -249,7 +249,7 @@ describe("advancePendingProjectShares", () => {
 		"coordinator_not_configured",
 		"team_sharing_not_configured",
 		"team_selection_ambiguous",
-	])("moves pre-step configuration failure %s to explicit recovery", async (errorCode) => {
+	])("moves deterministic advancement failure %s to explicit recovery", async (errorCode) => {
 		seedOperation({
 			id: "share-missing-coordinator",
 			state: "accepted",
@@ -374,6 +374,9 @@ describe("advancePendingProjectShares", () => {
 		"recipient_actor_conflict",
 		"pending_person_identity_conflict",
 		"operation_intent_mismatch",
+		"device_binding_conflict",
+		"intent_conflict",
+		"inviter_identity_conflict",
 	])("moves status-less deterministic conflict %s to explicit recovery", async (errorCode) => {
 		seedOperation({
 			id: "share-invalid-identity",
