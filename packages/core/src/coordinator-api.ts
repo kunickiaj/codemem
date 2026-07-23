@@ -27,6 +27,11 @@ import {
 	normalizeProjectInviteSummaries,
 } from "./project-invite-identity.js";
 import {
+	RecipientReviewedIntentError,
+	type RecipientReviewedIntentV1,
+	verifyRecipientReviewedIntent,
+} from "./recipient-reviewed-intent.js";
+import {
 	createInMemoryRequestRateLimiter,
 	type InMemoryRequestRateLimiter,
 } from "./request-rate-limit.js";
@@ -1334,6 +1339,7 @@ export function createCoordinatorApp(
 		const policyTeamId = String(data.policy_team_id ?? "").trim() || null;
 		const targetIdentityId = String(data.target_identity_id ?? "").trim() || null;
 		const reviewedPreviewDigest = String(data.reviewed_preview_digest ?? "").trim() || null;
+		let reviewedIntent: RecipientReviewedIntentV1 | undefined;
 		let projectSummaries: ReturnType<typeof normalizeProjectInviteSummaries> | null = null;
 		let projectIntent: Array<{
 			canonical_identity: string;
@@ -1383,6 +1389,30 @@ export function createCoordinatorApp(
 				.some((value) => value.length > 256 || /[\p{Cc}\p{Cf}]/u.test(value))
 		) {
 			return c.json({ error: "recipient_invite_identifier_invalid" }, 400);
+		}
+		if (inviteKind === "team_member" || inviteKind === "add_device") {
+			if (data.reviewed_intent == null) {
+				return c.json({ error: "recipient_invite_review_unavailable" }, 400);
+			}
+			try {
+				reviewedIntent = await verifyRecipientReviewedIntent(data.reviewed_intent, {
+					target:
+						inviteKind === "team_member"
+							? { kind: "team_member", policyTeamId: String(policyTeamId) }
+							: { kind: "add_device", targetIdentityId: String(targetIdentityId) },
+					digest: String(reviewedPreviewDigest),
+				});
+			} catch (error) {
+				if (
+					error instanceof RecipientReviewedIntentError &&
+					error.code === "recipient_invite_intent_mismatch"
+				) {
+					return c.json({ error: error.code }, 409);
+				}
+				return c.json({ error: "recipient_invite_review_unavailable" }, 400);
+			}
+		} else if (data.reviewed_intent != null) {
+			return c.json({ error: "recipient_invite_metadata_invalid" }, 400);
 		}
 		if (
 			(operationId && !/^share_[a-f0-9]{40}$/u.test(operationId)) ||
@@ -1466,6 +1496,7 @@ export function createCoordinatorApp(
 				policyTeamId,
 				targetIdentityId,
 				reviewedPreviewDigest,
+				reviewedIntent,
 			});
 
 			const payload: InvitePayload = {
@@ -1546,12 +1577,14 @@ export function createCoordinatorApp(
 									kind: inspection.kind,
 									policy_team_id: inspection.policy_team_id,
 									reviewed_preview_digest: inspection.reviewed_preview_digest,
+									reviewed_intent: inspection.reviewed_intent,
 									bound: inspection.bound,
 								}
 							: {
 									kind: inspection.kind,
 									target_identity_id: inspection.target_identity_id,
 									reviewed_preview_digest: inspection.reviewed_preview_digest,
+									reviewed_intent: inspection.reviewed_intent,
 									bound: inspection.bound,
 								},
 					);
@@ -1871,6 +1904,7 @@ export function createCoordinatorApp(
 						policy_team_id: acceptance.invite.policy_team_id ?? null,
 						target_identity_id: acceptance.invite.target_identity_id ?? null,
 						reviewed_preview_digest: acceptance.invite.reviewed_preview_digest,
+						reviewed_intent: acceptance.reviewed_intent,
 					});
 				} catch (error) {
 					const code = error instanceof Error ? error.message : "invite_invalid";

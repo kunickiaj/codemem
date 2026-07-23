@@ -267,6 +267,40 @@ describe("recipient-policy invitations", () => {
 		expect(dialog.textContent).not.toContain("Project setup is pending");
 	});
 
+	it("surfaces restart guidance when Team acceptance enables sync", async () => {
+		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
+			kind: "team_member",
+			recipient_name: "Local Identity",
+			device_name: "Work Laptop",
+			onboarding: teamPreview,
+		});
+		vi.mocked(api.importCoordinatorInvite).mockResolvedValue({
+			status: "accepted",
+			setup_state: "restart_required",
+			restart_required: true,
+			sync_enabled: true,
+			detail: "Restart codemem to start receiving the reviewed Projects.",
+		});
+		mount();
+		act(() => button("Review invitation").click());
+		const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+		const dialog = document.querySelector('[role="dialog"]');
+		if (!textarea || !dialog) throw new Error("acceptance dialog missing");
+		act(() => {
+			textarea.value = "team-member-invite";
+			textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		act(() => button("Review invitation", dialog).click());
+		await vi.waitFor(() => expect(dialog.textContent).toContain("Current Projects for"));
+		act(() => button("Accept invitation", dialog).click());
+
+		await vi.waitFor(() =>
+			expect(dialog.textContent).toContain(
+				"Restart codemem to start receiving the reviewed Projects.",
+			),
+		);
+	});
+
 	it("keeps unknown recipient-import errors generic", async () => {
 		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
 			kind: "team_member",
@@ -296,6 +330,35 @@ describe("recipient-policy invitations", () => {
 			),
 		);
 		expect(dialog.textContent).not.toContain("recipient_invite_unmapped_internal");
+	});
+
+	it("shows contextual Identity guidance when add-device acceptance conflicts", async () => {
+		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
+			kind: "add_device",
+			recipient_name: "Owner Identity",
+			device_name: "Travel Laptop",
+			onboarding: addDevicePreview,
+		});
+		vi.mocked(api.importCoordinatorInvite).mockRejectedValue(new Error("invite_identity_conflict"));
+		mount();
+		act(() => button("Review invitation").click());
+		const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+		const dialog = document.querySelector('[role="dialog"]');
+		if (!textarea || !dialog) throw new Error("acceptance dialog missing");
+		act(() => {
+			textarea.value = "add-device-invite";
+			textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		act(() => button("Review invitation", dialog).click());
+		await vi.waitFor(() => expect(dialog.textContent).toContain("Direct Projects"));
+		act(() => button("Accept invitation", dialog).click());
+
+		await vi.waitFor(() =>
+			expect(dialog.querySelector('[role="alert"]')?.textContent).toContain(
+				"This device already belongs to a different Identity",
+			),
+		);
+		expect(dialog.textContent).not.toContain("invite_identity_conflict");
 	});
 
 	it("reviews and accepts direct exact-Project access in the same dialog without repasting", async () => {
@@ -717,6 +780,38 @@ describe("recipient-policy invitations", () => {
 		);
 		expect(document.body.textContent).toContain("No active Teams or Identities are available");
 		expect(document.body.textContent).not.toMatch(/\b(scope|grant|actor|filter|epoch|cursor)\b/i);
+	});
+
+	it.each([
+		[
+			"recipient_invite_review_unavailable",
+			"The invitation review is unavailable. Ask the owner to create a new invitation.",
+		],
+		[
+			"recipient_invite_intent_mismatch",
+			"The invitation details do not match the reviewed access. Ask the owner to create a new invitation.",
+		],
+		[
+			"invite_identity_conflict",
+			"This device already belongs to a different Identity. Use a fresh device or ask the owner for the correct invitation.",
+		],
+	] as const)("shows contextual guidance for %s", async (code, guidance) => {
+		vi.mocked(api.inspectCoordinatorInvite).mockRejectedValue(new Error(code));
+		mount();
+		act(() => button("Review invitation").click());
+		const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+		const dialog = document.querySelector('[role="dialog"]');
+		if (!textarea || !dialog) throw new Error("acceptance dialog missing");
+		act(() => {
+			textarea.value = "safe-invitation";
+			textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		act(() => button("Review invitation", dialog).click());
+
+		await vi.waitFor(() =>
+			expect(dialog.querySelector('[role="alert"]')?.textContent).toContain(guidance),
+		);
+		expect(dialog.textContent).not.toContain(code);
 	});
 
 	it("moves focus to the heading and restores it after Radix keyboard close", () => {

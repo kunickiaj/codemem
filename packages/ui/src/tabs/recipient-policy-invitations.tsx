@@ -47,8 +47,18 @@ function normalizeProjectShareAcceptance(result: ImportInviteResult): ProjectSha
 }
 
 function errorMessage(cause: unknown, fallback: string): string {
-	if (cause instanceof Error && cause.message === "reviewed_onboarding_stale") {
+	if (!(cause instanceof Error)) return fallback;
+	if (cause.message === "reviewed_onboarding_stale") {
 		return "Invitation details changed. Review them again before creating it.";
+	}
+	if (cause.message === "recipient_invite_review_unavailable") {
+		return "The invitation review is unavailable. Ask the owner to create a new invitation.";
+	}
+	if (cause.message === "recipient_invite_intent_mismatch") {
+		return "The invitation details do not match the reviewed access. Ask the owner to create a new invitation.";
+	}
+	if (cause.message === "invite_identity_conflict") {
+		return "This device already belongs to a different Identity. Use a fresh device or ask the owner for the correct invitation.";
 	}
 	return fallback;
 }
@@ -452,10 +462,13 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 					result.restart_required === true || result.setup_state === "restart_required";
 				const detail = typeof result.detail === "string" ? result.detail.trim() : "";
 				setStatus(
-					inspected.kind === "team_member"
-						? "Team invitation accepted."
-						: restartRequired
-							? detail || "Device added. Restart codemem before continuing."
+					restartRequired
+						? detail ||
+								(inspected.kind === "team_member"
+									? "Team invitation accepted. Restart codemem before continuing."
+									: "Device added. Restart codemem before continuing.")
+						: inspected.kind === "team_member"
+							? "Team invitation accepted."
 							: "Device added.",
 				);
 				setInspected(null);

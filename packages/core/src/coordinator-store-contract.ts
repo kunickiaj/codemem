@@ -1,3 +1,5 @@
+import type { RecipientReviewedIntentV1 } from "./recipient-reviewed-intent.js";
+
 /**
  * Normalize a caller-supplied invite expiry to a canonical UTC ISO-8601
  * (`...Z`) string. Invite lookups filter with a SQL `expires_at > ?` string
@@ -69,6 +71,8 @@ export interface CoordinatorInvite {
 	target_identity_id?: string | null;
 	/** Digest of the server-owned preview reviewed before invitation creation. */
 	reviewed_preview_digest?: string | null;
+	/** Canonical JSON for the inviter-reviewed access intent. */
+	reviewed_intent_json?: string | null;
 }
 
 export type CoordinatorInviteKind =
@@ -101,6 +105,7 @@ export type CoordinatorRecipientInviteInspection =
 			invite: CoordinatorInvite;
 			policy_team_id: string;
 			reviewed_preview_digest: string;
+			reviewed_intent?: RecipientReviewedIntentV1;
 			bound: boolean;
 	  }
 	| {
@@ -108,12 +113,14 @@ export type CoordinatorRecipientInviteInspection =
 			invite: CoordinatorInvite;
 			target_identity_id: string;
 			reviewed_preview_digest: string;
+			reviewed_intent?: RecipientReviewedIntentV1;
 			bound: boolean;
 	  };
 
 export interface CoordinatorRecipientInviteAcceptance {
 	status: "accepted" | "existing";
 	invite: CoordinatorInvite;
+	reviewed_intent?: RecipientReviewedIntentV1;
 }
 
 export interface CoordinatorJoinRequest {
@@ -256,6 +263,7 @@ export interface CoordinatorCreateInviteInput {
 	policyTeamId?: string | null;
 	targetIdentityId?: string | null;
 	reviewedPreviewDigest?: string | null;
+	reviewedIntent?: unknown;
 }
 
 export interface CoordinatorConsumeProjectInviteInput {

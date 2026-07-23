@@ -162,6 +162,18 @@ describe("recipient invitation API", () => {
 			},
 		]);
 	});
+
+	it("preserves safe recipient invitation error codes for contextual UI guidance", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ error: "recipient_invite_intent_mismatch" }), {
+				status: 409,
+			}),
+		) as typeof fetch;
+
+		await expect(inspectCoordinatorInvite("tampered-invite")).rejects.toThrow(
+			"recipient_invite_intent_mismatch",
+		);
+	});
 });
 
 describe("triggerSync", () => {

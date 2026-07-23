@@ -33,6 +33,8 @@ import {
 	type CoordinatorUpsertPresenceInput,
 	createCoordinatorApp,
 	fingerprintPublicKey,
+	type RecipientReviewedIntentV1,
+	recipientReviewedIntentDigest,
 } from "./index.js";
 import { createInMemoryRequestRateLimiter } from "./request-rate-limit.js";
 
@@ -146,6 +148,24 @@ function authHeaders(deviceId = "device-a", nonce = "nonce-a") {
 		"X-Opencode-Signature": "sig",
 		"X-Opencode-Timestamp": "2026-03-28T00:00:00Z",
 		"X-Opencode-Nonce": nonce,
+	};
+}
+
+function teamReviewedIntent(teamId = "policy-team-1"): RecipientReviewedIntentV1 {
+	return {
+		version: 1,
+		journey: "team",
+		team: { teamId, displayName: "Product", futureProjectsInherit: true },
+		projects: [
+			{
+				canonicalProjectIdentity: "git:https://example.test/codemem",
+				displayName: "codemem",
+				existingMemoryCount: 3,
+				futureMemoriesShared: true,
+				sources: [{ kind: "team", teamId, displayName: "Product" }],
+			},
+		],
+		excludedProjects: [],
 	};
 }
 
@@ -319,9 +339,153 @@ describe("createCoordinatorApp dependency injection", () => {
 		);
 	});
 
+	it("validates recipient reviewed intent at creation and keeps invitation payloads digest-only", async () => {
+		const reviewedIntent = teamReviewedIntent();
+		const digest = await recipientReviewedIntentDigest(reviewedIntent);
+		const createInvite = vi.fn(async (input: CoordinatorCreateInviteInput) => ({
+			invite_id: "invite-team-1",
+			group_id: input.groupId,
+			token: "team-token",
+			policy: input.policy,
+			expires_at: input.expiresAt,
+			created_at: "2026-03-28T00:00:00Z",
+			created_by: null,
+			team_name_snapshot: "Coordinator One",
+			revoked_at: null,
+			invite_kind: "team_member" as const,
+			policy_team_id: "policy-team-1",
+			reviewed_preview_digest: digest,
+		}));
+		const store = createMockStore({
+			createInvite,
+			getGroup: vi.fn(async () => ({
+				group_id: "g1",
+				display_name: "Coordinator One",
+				archived_at: null,
+				created_at: "2026-03-28T00:00:00Z",
+			})),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+		const headers = {
+			"X-Codemem-Coordinator-Admin": "test-secret",
+			"Content-Type": "application/json",
+		};
+		const base = {
+			group_id: "g1",
+			policy: "auto_admit",
+			expires_at: "2026-04-04T00:00:00Z",
+			coordinator_url: "https://coord.example.test",
+			invite_kind: "team_member",
+			policy_team_id: "policy-team-1",
+			reviewed_preview_digest: digest,
+		};
+
+		const missing = await app.request("/v1/admin/invites", {
+			method: "POST",
+			headers,
+			body: JSON.stringify(base),
+		});
+		expect(missing.status).toBe(400);
+		expect(await missing.json()).toEqual({ error: "recipient_invite_review_unavailable" });
+
+		const mismatched = await app.request("/v1/admin/invites", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ ...base, reviewed_intent: teamReviewedIntent("other-team") }),
+		});
+		expect(mismatched.status).toBe(409);
+		expect(await mismatched.json()).toEqual({ error: "recipient_invite_intent_mismatch" });
+
+		const malformed = await app.request("/v1/admin/invites", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ ...base, reviewed_intent: { version: 1, journey: "team" } }),
+		});
+		expect(malformed.status).toBe(400);
+		expect(await malformed.json()).toEqual({ error: "recipient_invite_review_unavailable" });
+
+		const digestMismatch = await app.request("/v1/admin/invites", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({
+				...base,
+				reviewed_preview_digest: "f".repeat(64),
+				reviewed_intent: reviewedIntent,
+			}),
+		});
+		expect(digestMismatch.status).toBe(409);
+		expect(await digestMismatch.json()).toEqual({ error: "recipient_invite_intent_mismatch" });
+
+		const valid = await app.request("/v1/admin/invites", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ ...base, reviewed_intent: reviewedIntent }),
+		});
+		expect(valid.status).toBe(200);
+		const response = (await valid.json()) as {
+			payload: Record<string, unknown>;
+			encoded: string;
+			link: string;
+		};
+		expect(createInvite).toHaveBeenCalledWith(
+			expect.objectContaining({ reviewedIntent, reviewedPreviewDigest: digest }),
+		);
+		expect(response.payload).not.toHaveProperty("reviewed_intent");
+		expect(response.encoded).not.toContain("reviewed_intent");
+		expect(response.link).not.toContain("reviewed_intent");
+	});
+
+	it("returns safe errors for unavailable or mismatched stored recipient reviews", async () => {
+		const invite: CoordinatorInvite = {
+			invite_id: "invite-team-1",
+			group_id: "g1",
+			token: "team-token",
+			policy: "auto_admit",
+			expires_at: "2099-01-01T00:00:00Z",
+			created_at: "2026-03-28T00:00:00Z",
+			created_by: null,
+			team_name_snapshot: "Coordinator One",
+			revoked_at: null,
+			invite_kind: "team_member",
+			policy_team_id: "policy-team-1",
+			reviewed_preview_digest: "e".repeat(64),
+		};
+		const inspectRecipientInvite = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("recipient_invite_review_unavailable"))
+			.mockRejectedValueOnce(new Error("recipient_invite_intent_mismatch"));
+		const store = createMockStore({
+			getInviteByTokenForInspection: vi.fn(async () => invite),
+			inspectRecipientInvite,
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+		const inspect = () =>
+			app.request("/v1/invites/inspect", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ token: invite.token }),
+			});
+
+		const unavailable = await inspect();
+		expect(unavailable.status).toBe(409);
+		expect(await unavailable.json()).toEqual({ error: "recipient_invite_review_unavailable" });
+		const mismatched = await inspect();
+		expect(mismatched.status).toBe(409);
+		expect(await mismatched.json()).toEqual({ error: "recipient_invite_intent_mismatch" });
+	});
+
 	it("inspects and consumes explicit Team invitations without enrollment or scope grants", async () => {
 		const publicKey = "recipient-public-key";
-		const digest = "e".repeat(64);
+		const reviewedIntent = teamReviewedIntent();
+		const digest = await recipientReviewedIntentDigest(reviewedIntent);
 		const invite: CoordinatorInvite = {
 			invite_id: "invite-team-1",
 			group_id: "g1",
@@ -343,6 +507,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				consumed_at: "2026-03-28T00:00:00Z",
 				recipient_actor_id: "identity-brian",
 			},
+			reviewed_intent: reviewedIntent,
 		}));
 		const store = createMockStore({
 			getInviteByTokenForInspection: vi.fn(async () => invite),
@@ -351,6 +516,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				invite,
 				policy_team_id: "policy-team-1",
 				reviewed_preview_digest: digest,
+				reviewed_intent: reviewedIntent,
 				bound: false,
 			})),
 			consumeRecipientInvite,
@@ -370,6 +536,7 @@ describe("createCoordinatorApp dependency injection", () => {
 			kind: "team_member",
 			policy_team_id: "policy-team-1",
 			reviewed_preview_digest: digest,
+			reviewed_intent: reviewedIntent,
 			bound: false,
 		});
 
@@ -391,6 +558,8 @@ describe("createCoordinatorApp dependency injection", () => {
 			kind: "team_member",
 			identity_id: "identity-brian",
 			policy_team_id: "policy-team-1",
+			reviewed_preview_digest: digest,
+			reviewed_intent: reviewedIntent,
 		});
 		expect(consumeRecipientInvite).toHaveBeenCalledOnce();
 		expect(store.enrollDevice).not.toHaveBeenCalled();

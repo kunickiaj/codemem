@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS coordinator_invites (
   invite_kind TEXT,
   policy_team_id TEXT,
   target_identity_id TEXT,
-  reviewed_preview_digest TEXT
+  reviewed_preview_digest TEXT,
+  reviewed_intent_json TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_coordinator_invites_operation_id

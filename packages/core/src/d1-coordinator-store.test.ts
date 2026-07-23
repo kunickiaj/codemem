@@ -209,8 +209,22 @@ describe("D1CoordinatorStore", () => {
 	}
 
 	runCoordinatorStoreContract("contract", () => {
-		const { store, cleanup } = setupStore();
-		return { store, cleanup };
+		const { store, db, cleanup } = setupStore();
+		return {
+			store,
+			clearInviteReviewedIntent: (inviteId: string) => {
+				db.prepare(
+					"UPDATE coordinator_invites SET reviewed_intent_json = NULL WHERE invite_id = ?",
+				).run(inviteId);
+			},
+			revokeInvite: (inviteId: string, revokedAt: string) => {
+				db.prepare("UPDATE coordinator_invites SET revoked_at = ? WHERE invite_id = ?").run(
+					revokedAt,
+					inviteId,
+				);
+			},
+			cleanup,
+		};
 	});
 
 	it("converges to completed when a reverse pending row appears during insert", async () => {
