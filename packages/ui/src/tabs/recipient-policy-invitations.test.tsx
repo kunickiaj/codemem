@@ -112,6 +112,19 @@ const addDevicePreview: RecipientOnboardingPreviewV1 = {
 	reviewedOnboardingDigest: "recipient-onboarding-preview-v1:device",
 };
 
+const projectShareInspection = {
+	kind: "project_share_invite" as const,
+	operation_id: "share-projects",
+	inviter_name: "Adam",
+	team_name: "Example Team",
+	recipient_name: "Brian",
+	device_name: "Brian’s Mac",
+	projects: [
+		{ display_name: "Codemem", existing_memory_count: 41 },
+		{ display_name: "Viewer", existing_memory_count: 1 },
+	],
+};
+
 function button(label: string, root: ParentNode = document): HTMLButtonElement {
 	const match = [...root.querySelectorAll<HTMLButtonElement>("button")].find(
 		(item) => item.textContent?.trim() === label,
@@ -219,6 +232,320 @@ describe("recipient-policy invitations", () => {
 			recipient_name: "Local Identity",
 			device_name: "Travel Laptop",
 			reviewed_onboarding_digest: addDevicePreview.reviewedOnboardingDigest,
+		});
+	});
+
+	it("inspects and accepts a Team invitation with required names, digest, and Team result copy", async () => {
+		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
+			kind: "team_member",
+			recipient_name: "Local Identity",
+			device_name: "Work Laptop",
+			onboarding: teamPreview,
+		});
+		vi.mocked(api.importCoordinatorInvite).mockResolvedValue({ status: "accepted" });
+		mount();
+
+		act(() => button("Review invitation").click());
+		const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+		const dialog = document.querySelector('[role="dialog"]');
+		if (!textarea || !dialog) throw new Error("acceptance dialog missing");
+		act(() => {
+			textarea.value = "team-member-invite";
+			textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		act(() => button("Review invitation", dialog).click());
+		await vi.waitFor(() => expect(dialog.textContent).toContain("Current Projects for"));
+		act(() => button("Accept invitation", dialog).click());
+
+		await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledOnce());
+		expect(api.importCoordinatorInvite).toHaveBeenCalledWith("team-member-invite", {
+			recipient_name: "Local Identity",
+			device_name: "Work Laptop",
+			reviewed_onboarding_digest: teamPreview.reviewedOnboardingDigest,
+		});
+		await vi.waitFor(() => expect(dialog.textContent).toContain("Team invitation accepted"));
+		expect(dialog.textContent).not.toContain("Project setup is pending");
+	});
+
+	it("reviews and accepts direct exact-Project access in the same dialog without repasting", async () => {
+		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue(projectShareInspection);
+		vi.mocked(api.importCoordinatorInvite).mockResolvedValue({
+			status: "pending_setup",
+			setup_state: "pending_inviter",
+			sync_enabled: true,
+			type: "project_share",
+		});
+		mount();
+
+		const trigger = button("Review invitation");
+		trigger.focus();
+		act(() => trigger.click());
+		const dialog = document.querySelector('[role="dialog"]');
+		const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+		if (!dialog || !textarea) throw new Error("acceptance dialog missing");
+		act(() => {
+			textarea.value = "project-invite-payload";
+			textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		act(() => button("Review invitation", dialog).click());
+
+		await vi.waitFor(() =>
+			expect(api.inspectCoordinatorInvite).toHaveBeenCalledWith("project-invite-payload"),
+		);
+		await vi.waitFor(() =>
+			expect(document.activeElement).toBe(
+				document.getElementById("project-share-invitation-projects"),
+			),
+		);
+		expect(dialog.textContent).toContain("Invitation from Adam");
+		expect(dialog.textContent).toContain("direct access only");
+		expect(dialog.textContent).toContain("Codemem — 41 existing memories and future activity");
+		expect(dialog.textContent).toContain("Viewer — 1 existing memory and future activity");
+		expect(dialog.textContent).toContain("does not join a Team");
+		expect(dialog.textContent).toContain("No other Projects are included");
+		expect(dialog.textContent).not.toContain("Use Advanced Team administration");
+		expect(document.querySelector("textarea")).toBeNull();
+
+		const accept = button("Accept Project access", dialog);
+		expect(accept.type).toBe("button");
+		accept.focus();
+		act(() => accept.click());
+		await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledOnce());
+		expect(api.importCoordinatorInvite).toHaveBeenCalledWith("project-invite-payload", {
+			recipient_name: "Brian",
+			device_name: "Brian’s Mac",
+		});
+		await vi.waitFor(() =>
+			expect(document.activeElement).toBe(
+				document.getElementById("project-share-invitation-result"),
+			),
+		);
+		expect(dialog.textContent).toContain("Project setup is pending");
+		expect(dialog.textContent).toContain("owner still needs to finish access setup");
+		expect(dialog.textContent).not.toContain("Team invitation accepted");
+		expect(document.querySelector('[role="dialog"]')).toBe(dialog);
+	});
+
+	it.each([
+		["missing", undefined],
+		["empty", []],
+	] as Array<
+		[string, typeof projectShareInspection.projects | undefined]
+	>)("blocks Project acceptance when the inspected Project list is $0", async (_label, projects) => {
+		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
+			...projectShareInspection,
+			projects,
+		});
+		mount();
+		act(() => button("Review invitation").click());
+		const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+		const dialog = document.querySelector('[role="dialog"]');
+		if (!textarea || !dialog) throw new Error("acceptance dialog missing");
+		act(() => {
+			textarea.value = "project-without-details";
+			textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		act(() => button("Review invitation", dialog).click());
+
+		await vi.waitFor(() =>
+			expect(dialog.querySelector('[role="alert"]')?.textContent).toContain(
+				"Project details are unavailable",
+			),
+		);
+		const accept = button("Accept Project access", dialog);
+		expect(accept.disabled).toBe(true);
+		act(() => accept.click());
+		expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
+	});
+
+	it("retries failed Project inspection with the preserved invite text", async () => {
+		vi.mocked(api.inspectCoordinatorInvite)
+			.mockRejectedValueOnce(new Error("coordinator_unavailable"))
+			.mockResolvedValueOnce(projectShareInspection);
+		mount();
+		act(() => button("Review invitation").click());
+		const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+		const dialog = document.querySelector('[role="dialog"]');
+		if (!textarea || !dialog) throw new Error("acceptance dialog missing");
+		act(() => {
+			textarea.value = "preserved-project-invite";
+			textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		act(() => button("Review invitation", dialog).click());
+		await vi.waitFor(() =>
+			expect(dialog.querySelector('[role="alert"]')?.textContent).toContain(
+				"Unable to review this invitation",
+			),
+		);
+		expect(textarea.value).toBe("preserved-project-invite");
+
+		act(() => button("Review invitation", dialog).click());
+		await vi.waitFor(() => expect(dialog.textContent).toContain("Exact Projects shared directly"));
+		expect(api.inspectCoordinatorInvite).toHaveBeenCalledTimes(2);
+		expect(api.inspectCoordinatorInvite).toHaveBeenNthCalledWith(1, "preserved-project-invite");
+		expect(api.inspectCoordinatorInvite).toHaveBeenNthCalledWith(2, "preserved-project-invite");
+		expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
+	});
+
+	it("discards a stale Project inspection after the invitation text changes", async () => {
+		let resolveInspection: (
+			value: Awaited<ReturnType<typeof api.inspectCoordinatorInvite>>,
+		) => void = () => undefined;
+		vi.mocked(api.inspectCoordinatorInvite)
+			.mockReturnValueOnce(
+				new Promise((resolve) => {
+					resolveInspection = resolve;
+				}),
+			)
+			.mockResolvedValueOnce({
+				...projectShareInspection,
+				inviter_name: "Payload B owner",
+				projects: [{ display_name: "Current Project B", existing_memory_count: 8 }],
+			});
+		mount();
+		act(() => button("Review invitation").click());
+		const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+		const dialog = document.querySelector('[role="dialog"]');
+		if (!textarea || !dialog) throw new Error("acceptance dialog missing");
+		act(() => {
+			textarea.value = "payload-a";
+			textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		act(() => button("Review invitation", dialog).click());
+		await vi.waitFor(() => expect(api.inspectCoordinatorInvite).toHaveBeenCalledWith("payload-a"));
+
+		act(() => {
+			textarea.value = "payload-b";
+			textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		await act(async () => {
+			resolveInspection({
+				...projectShareInspection,
+				inviter_name: "Stale payload A owner",
+				projects: [{ display_name: "Stale Project A", existing_memory_count: 99 }],
+			});
+			await Promise.resolve();
+		});
+
+		expect(textarea.value).toBe("payload-b");
+		expect(dialog.textContent).not.toContain("Stale payload A owner");
+		expect(dialog.textContent).not.toContain("Stale Project A");
+		expect(
+			[...dialog.querySelectorAll("button")].some(
+				(candidate) => candidate.textContent?.trim() === "Accept Project access",
+			),
+		).toBe(false);
+		expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
+
+		act(() => button("Review invitation", dialog).click());
+		await vi.waitFor(() => expect(dialog.textContent).toContain("Current Project B"));
+		expect(api.inspectCoordinatorInvite).toHaveBeenNthCalledWith(2, "payload-b");
+		expect(button("Accept Project access", dialog).disabled).toBe(false);
+		expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
+	});
+
+	it("shows restart-required Project setup as pending and restores focus after keyboard close", async () => {
+		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue(projectShareInspection);
+		vi.mocked(api.importCoordinatorInvite).mockResolvedValue({
+			status: "pending_setup",
+			setup_state: "restart_required",
+			restart_required: true,
+			type: "project_share",
+		});
+		mount();
+		const trigger = button("Review invitation");
+		trigger.focus();
+		act(() => trigger.click());
+		const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+		const dialog = document.querySelector('[role="dialog"]');
+		if (!textarea || !dialog) throw new Error("acceptance dialog missing");
+		act(() => {
+			textarea.value = "restart-project-invite";
+			textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		act(() => button("Review invitation", dialog).click());
+		await vi.waitFor(() => expect(dialog.textContent).toContain("Exact Projects shared directly"));
+		act(() => button("Accept Project access", dialog).click());
+		await vi.waitFor(() => expect(dialog.textContent).toContain("codemem must be restarted"));
+		expect(dialog.textContent).toContain("Access remains pending");
+		expect(dialog.textContent).not.toContain("Joined the team");
+
+		const props = dialogSpy.mock.calls.at(-1)?.[0] as {
+			onCloseAutoFocus: (event: Event) => void;
+			onOpenChange: (open: boolean) => void;
+		};
+		const event = new Event("focus", { cancelable: true });
+		act(() => props.onOpenChange(false));
+		props.onCloseAutoFocus(event);
+		expect(event.defaultPrevented).toBe(true);
+		expect(document.activeElement).toBe(trigger);
+	});
+
+	it("uses safe fallback result copy and omits unavailable optional Project identity names", async () => {
+		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
+			...projectShareInspection,
+			recipient_name: undefined,
+			device_name: undefined,
+		});
+		vi.mocked(api.importCoordinatorInvite).mockResolvedValue({
+			status: "accepted",
+			type: "team_join",
+		});
+		mount();
+		act(() => button("Review invitation").click());
+		const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+		const dialog = document.querySelector('[role="dialog"]');
+		if (!textarea || !dialog) throw new Error("acceptance dialog missing");
+		act(() => {
+			textarea.value = "project-without-names";
+			textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		act(() => button("Review invitation", dialog).click());
+		await vi.waitFor(() => expect(dialog.textContent).toContain("Exact Projects shared directly"));
+		act(() => button("Accept Project access", dialog).click());
+
+		await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledOnce());
+		expect(api.importCoordinatorInvite).toHaveBeenCalledWith("project-without-names", {});
+		await vi.waitFor(() =>
+			expect(dialog.textContent).toContain("Project setup status could not be confirmed"),
+		);
+		expect(dialog.textContent).not.toContain("Joined the team");
+	});
+
+	it("keeps the reviewed Project payload available for retry after an acceptance error", async () => {
+		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue(projectShareInspection);
+		vi.mocked(api.importCoordinatorInvite)
+			.mockRejectedValueOnce(new Error("project_invite_acceptance_failed"))
+			.mockResolvedValueOnce({
+				status: "pending_setup",
+				setup_state: "pending_inviter",
+				type: "project_share",
+			});
+		mount();
+		act(() => button("Review invitation").click());
+		const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+		const dialog = document.querySelector('[role="dialog"]');
+		if (!textarea || !dialog) throw new Error("acceptance dialog missing");
+		act(() => {
+			textarea.value = "retry-project-invite";
+			textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		act(() => button("Review invitation", dialog).click());
+		await vi.waitFor(() => expect(dialog.textContent).toContain("Exact Projects shared directly"));
+
+		act(() => button("Accept Project access", dialog).click());
+		await vi.waitFor(() =>
+			expect(dialog.querySelector('[role="alert"]')?.textContent).toContain(
+				"Unable to accept this invitation",
+			),
+		);
+		expect(dialog.textContent).toContain("Codemem — 41 existing memories");
+		expect(button("Accept Project access", dialog).disabled).toBe(false);
+		act(() => button("Accept Project access", dialog).click());
+		await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledTimes(2));
+		expect(api.importCoordinatorInvite).toHaveBeenNthCalledWith(2, "retry-project-invite", {
+			recipient_name: "Brian",
+			device_name: "Brian’s Mac",
 		});
 	});
 

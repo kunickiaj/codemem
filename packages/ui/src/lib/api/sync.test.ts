@@ -4,6 +4,7 @@ import {
 	advanceShareOperation,
 	commitRecipientPolicyEdges,
 	createRecipientInvite,
+	importCoordinatorInvite,
 	inspectCoordinatorInvite,
 	loadRecipientPolicyIntent,
 	loadRecipientPolicyReconciliationStatus,
@@ -27,6 +28,23 @@ afterEach(() => {
 });
 
 describe("recipient invitation API", () => {
+	it("omits unavailable optional identity names from Project invitation imports", async () => {
+		const fetchMock = vi.fn().mockResolvedValueOnce(
+			new Response(JSON.stringify({ status: "pending_setup", type: "project_share" }), {
+				status: 200,
+			}),
+		);
+		globalThis.fetch = fetchMock as typeof fetch;
+
+		await importCoordinatorInvite("project-invite", {});
+
+		expect(fetchMock).toHaveBeenCalledWith("/api/sync/invites/import", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ invite: "project-invite" }),
+		});
+	});
+
 	it("sends exact Team preview/create and add-device inspect payloads", async () => {
 		const preview = {
 			kind: "team_member",
