@@ -76,6 +76,18 @@ export interface CreatedRecipientInvite extends RecipientInvitePreviewResult {
 	};
 }
 
+type CoordinatorInviteIdentity =
+	| {
+			recipient_name?: string;
+			device_name?: string;
+			reviewed_onboarding_digest?: never;
+	  }
+	| {
+			recipient_name: string;
+			device_name: string;
+			reviewed_onboarding_digest: string;
+	  };
+
 type TriggerSyncTarget = {
 	address?: string;
 	peerDeviceId?: string;
@@ -96,11 +108,7 @@ export async function loadSyncStatus(
 
 export async function importCoordinatorInvite(
 	invite: string,
-	identity?: {
-		recipient_name: string;
-		device_name: string;
-		reviewed_onboarding_digest?: string;
-	},
+	identity?: CoordinatorInviteIdentity,
 ): Promise<ImportInviteResult> {
 	const resp = await fetch("/api/sync/invites/import", {
 		method: "POST",

@@ -1,4 +1,4 @@
-import { useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { RadixDialog } from "../components/primitives/radix-dialog";
 import * as api from "../lib/api";
 import type {
@@ -8,10 +8,43 @@ import type {
 	RecipientOnboardingPreviewV1,
 	RecipientPolicyIntentGraphV1,
 } from "../lib/api/sync";
+import type { ImportInviteResult } from "../lib/api/types";
 import { openProjectShareFlow } from "./project-sharing";
 
 type CreateKind = "team_member" | "add_device";
 type DialogMode = "create" | "accept";
+type ProjectShareInvite = Extract<InspectInviteResult, { kind: "project_share_invite" }>;
+type ProjectShareAcceptance = Omit<ImportInviteResult, "status"> & {
+	status?: "pending_setup";
+	setup_state?: "pending_inviter" | "restart_required";
+	restart_required?: boolean;
+	detail?: string;
+	type?: "project_share";
+};
+
+function displayNameError(value: string, label: string): string {
+	const reviewed = value.trim();
+	if (!reviewed) return `${label} is required.`;
+	if ([...reviewed].length > 120) return `${label} must use 120 characters or fewer.`;
+	if ([...reviewed].some((character) => /[\p{Cc}\p{Cf}]/u.test(character))) {
+		return `${label} cannot include control or format characters.`;
+	}
+	return "";
+}
+
+function normalizeProjectShareAcceptance(result: ImportInviteResult): ProjectShareAcceptance {
+	return {
+		...result,
+		status: result.status === "pending_setup" ? "pending_setup" : undefined,
+		setup_state:
+			result.setup_state === "pending_inviter" || result.setup_state === "restart_required"
+				? result.setup_state
+				: undefined,
+		restart_required: result.restart_required === true,
+		detail: typeof result.detail === "string" ? result.detail : undefined,
+		type: result.type === "project_share" ? "project_share" : undefined,
+	};
+}
 
 function errorMessage(cause: unknown, fallback: string): string {
 	if (cause instanceof Error && cause.message === "reviewed_onboarding_stale") {
@@ -127,6 +160,123 @@ function Confirmation({ preview }: { preview: RecipientOnboardingPreviewV1 }) {
 	);
 }
 
+function ProjectShareConfirmation({
+	deviceName,
+	deviceNameError,
+	invite,
+	onDeviceNameChange,
+	onRecipientNameChange,
+	recipientName,
+	recipientNameError,
+}: {
+	deviceName: string;
+	deviceNameError: string;
+	invite: ProjectShareInvite;
+	onDeviceNameChange: (value: string) => void;
+	onRecipientNameChange: (value: string) => void;
+	recipientName: string;
+	recipientNameError: string;
+}) {
+	const projects = invite.projects ?? [];
+	return (
+		<div className="sync-dialog-stack">
+			<section aria-labelledby="project-share-invitation-recipient">
+				<h3 id="project-share-invitation-recipient">Who will receive access</h3>
+				<p>Review these display names before importing the invitation.</p>
+				<label className="field" htmlFor="project-share-recipient-name">
+					<span>Identity display name</span>
+					<input
+						aria-describedby={recipientNameError ? "project-share-recipient-name-error" : undefined}
+						aria-invalid={Boolean(recipientNameError)}
+						id="project-share-recipient-name"
+						onInput={(event) => onRecipientNameChange(event.currentTarget.value)}
+						value={recipientName}
+					/>
+				</label>
+				{recipientNameError ? (
+					<p className="small" id="project-share-recipient-name-error" role="alert">
+						{recipientNameError}
+					</p>
+				) : null}
+				<label className="field" htmlFor="project-share-device-name">
+					<span>Device display name</span>
+					<input
+						aria-describedby={deviceNameError ? "project-share-device-name-error" : undefined}
+						aria-invalid={Boolean(deviceNameError)}
+						id="project-share-device-name"
+						onInput={(event) => onDeviceNameChange(event.currentTarget.value)}
+						value={deviceName}
+					/>
+				</label>
+				{deviceNameError ? (
+					<p className="small" id="project-share-device-name-error" role="alert">
+						{deviceNameError}
+					</p>
+				) : null}
+			</section>
+			<section aria-labelledby="project-share-invitation-projects">
+				<h3 id="project-share-invitation-projects" tabIndex={-1}>
+					Exact Projects shared directly
+				</h3>
+				{invite.inviter_name ? <p>Invitation from {invite.inviter_name}.</p> : null}
+				<p>
+					You will receive <strong>direct access only</strong> to the exact Projects listed below.
+				</p>
+				{projects.length ? (
+					<ul>
+						{projects.map((project, index) => (
+							<li key={`${project.display_name}:${index}`}>
+								<strong>{project.display_name}</strong> —{" "}
+								{memoryLabel(project.existing_memory_count)} and future activity
+							</li>
+						))}
+					</ul>
+				) : (
+					<p role="alert">
+						Project details are unavailable. Ask the owner to create a new invitation before
+						accepting.
+					</p>
+				)}
+			</section>
+			<p>
+				<strong>Accepting this invitation does not join a Team.</strong>
+			</p>
+			<p>
+				<strong>No other Projects are included.</strong>
+			</p>
+		</div>
+	);
+}
+
+function ProjectShareResult({ result }: { result: ProjectShareAcceptance }) {
+	const restartRequired =
+		result.restart_required === true || result.setup_state === "restart_required";
+	const pending = result.type === "project_share" && result.status === "pending_setup";
+	return (
+		<div className="sync-dialog-stack">
+			<h3 id="project-share-invitation-result" tabIndex={-1}>
+				Project invitation accepted
+			</h3>
+			{restartRequired ? (
+				<p role="status">
+					<strong>Project setup is pending and codemem must be restarted.</strong> Restart codemem
+					to start the sync service. Access remains pending until setup and the first sync finish.
+				</p>
+			) : pending ? (
+				<p role="status">
+					<strong>Project setup is pending.</strong> The owner still needs to finish access setup,
+					and the Projects will appear after the first sync completes.
+				</p>
+			) : (
+				<p role="status">
+					The invitation was accepted, but Project setup status could not be confirmed. Check Sync
+					before expecting Project data.
+				</p>
+			)}
+		</div>
+	);
+}
+
 function request(kind: CreateKind, targetId: string): RecipientInvitePreviewRequest {
 	return kind === "team_member"
 		? { kind, policy_team_id: targetId }
@@ -142,15 +292,34 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 	const [invite, setInvite] = useState("");
 	const [preview, setPreview] = useState<RecipientOnboardingPreviewV1 | null>(null);
 	const [inspected, setInspected] = useState<InspectInviteResult | null>(null);
+	const [projectAcceptance, setProjectAcceptance] = useState<ProjectShareAcceptance | null>(null);
+	const [projectRecipientName, setProjectRecipientName] = useState("");
+	const [projectDeviceName, setProjectDeviceName] = useState("");
 	const [created, setCreated] = useState<CreatedRecipientInvite | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [status, setStatus] = useState("");
 	const [error, setError] = useState("");
 	const returnFocus = useRef<HTMLElement | null>(null);
+	const inviteRevision = useRef(0);
+	const inviteValue = useRef("");
+
+	useEffect(() => {
+		if (projectAcceptance) {
+			document.getElementById("project-share-invitation-result")?.focus();
+			return;
+		}
+		if (inspected?.kind === "project_share_invite") {
+			document.getElementById("project-share-invitation-projects")?.focus();
+		}
+	}, [inspected, projectAcceptance]);
 
 	const reset = () => {
+		inviteRevision.current += 1;
 		setPreview(null);
 		setInspected(null);
+		setProjectAcceptance(null);
+		setProjectRecipientName("");
+		setProjectDeviceName("");
 		setCreated(null);
 		setStatus("");
 		setError("");
@@ -161,7 +330,14 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 		setMode(nextMode);
 	};
 	const close = () => {
-		if (!busy) setMode(null);
+		if (busy) return;
+		inviteRevision.current += 1;
+		setMode(null);
+	};
+	const updateInvite = (nextInvite: string) => {
+		inviteRevision.current += 1;
+		inviteValue.current = nextInvite;
+		setInvite(nextInvite);
 	};
 	const chooseKind = (nextKind: CreateKind) => {
 		setKind(nextKind);
@@ -209,22 +385,34 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 		}
 	};
 	const inspect = async () => {
-		if (!invite.trim()) {
+		const reviewedInvite = inviteValue.current.trim();
+		const reviewedRevision = inviteRevision.current;
+		if (!reviewedInvite) {
 			setError("Paste an invitation first.");
 			return;
 		}
+		const isCurrentInspection = () =>
+			inviteRevision.current === reviewedRevision && inviteValue.current.trim() === reviewedInvite;
 		setBusy(true);
 		setError("");
 		setStatus("Reviewing invitation…");
 		try {
-			const result = await api.inspectCoordinatorInvite(invite.trim());
+			const result = await api.inspectCoordinatorInvite(reviewedInvite);
+			if (!isCurrentInspection()) return;
 			setInspected(result);
+			if (result.kind === "project_share_invite") {
+				setProjectRecipientName(result.recipient_name ?? "");
+				setProjectDeviceName(result.device_name ?? "");
+			}
 			setStatus(
 				result.kind === "team_member" || result.kind === "add_device"
 					? "Review ready. Confirm before accepting."
-					: "Open Advanced Team administration to continue with this invitation.",
+					: result.kind === "project_share_invite"
+						? "Review ready. Confirm the exact Projects before accepting."
+						: "Open Advanced Team administration to continue with this invitation.",
 			);
 		} catch (cause) {
+			if (!isCurrentInspection()) return;
 			setError(errorMessage(cause, "Unable to review this invitation."));
 			setStatus("");
 		} finally {
@@ -232,21 +420,54 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 		}
 	};
 	const accept = async () => {
-		if (!inspected || (inspected.kind !== "team_member" && inspected.kind !== "add_device")) return;
+		if (!inspected || inspected.kind === "legacy_team_invite") return;
+		if (inspected.kind === "project_share_invite" && !(inspected.projects?.length ?? 0)) return;
+		if (
+			inspected.kind === "project_share_invite" &&
+			(displayNameError(projectRecipientName, "Identity display name") ||
+				displayNameError(projectDeviceName, "Device display name"))
+		) {
+			return;
+		}
 		setBusy(true);
 		setError("");
 		setStatus("Accepting invitation…");
 		try {
-			await api.importCoordinatorInvite(invite.trim(), {
-				recipient_name: inspected.recipient_name,
-				device_name: inspected.device_name,
-				reviewed_onboarding_digest: inspected.onboarding.reviewedOnboardingDigest,
-			});
-			setStatus(inspected.kind === "team_member" ? "Team invitation accepted." : "Device added.");
-			setInspected(null);
-			setInvite("");
+			const result =
+				inspected.kind === "project_share_invite"
+					? await api.importCoordinatorInvite(invite.trim(), {
+							recipient_name: projectRecipientName.trim(),
+							device_name: projectDeviceName.trim(),
+						})
+					: await api.importCoordinatorInvite(invite.trim(), {
+							recipient_name: inspected.recipient_name,
+							device_name: inspected.device_name,
+							reviewed_onboarding_digest: inspected.onboarding.reviewedOnboardingDigest,
+						});
+			if (inspected.kind === "project_share_invite") {
+				setProjectAcceptance(normalizeProjectShareAcceptance(result));
+				setStatus("");
+			} else {
+				const restartRequired =
+					result.restart_required === true || result.setup_state === "restart_required";
+				const detail = typeof result.detail === "string" ? result.detail.trim() : "";
+				setStatus(
+					inspected.kind === "team_member"
+						? "Team invitation accepted."
+						: restartRequired
+							? detail || "Device added. Restart codemem before continuing."
+							: "Device added.",
+				);
+				setInspected(null);
+				updateInvite("");
+			}
 		} catch (cause) {
-			setError(errorMessage(cause, "Unable to accept this invitation."));
+			const detail = cause instanceof Error ? cause.message.trim() : "";
+			const fallback =
+				inspected.kind === "project_share_invite" && detail
+					? detail
+					: "Unable to accept this invitation.";
+			setError(errorMessage(cause, fallback));
 			setStatus("");
 		} finally {
 			setBusy(false);
@@ -270,6 +491,13 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 		inspected?.kind === "team_member" || inspected?.kind === "add_device"
 			? inspected.onboarding
 			: null;
+	const projectShareInvite = inspected?.kind === "project_share_invite" ? inspected : null;
+	const projectRecipientNameError = projectShareInvite
+		? displayNameError(projectRecipientName, "Identity display name")
+		: "";
+	const projectDeviceNameError = projectShareInvite
+		? displayNameError(projectDeviceName, "Device display name")
+		: "";
 	return (
 		<div className="recipient-policy-sharing-grid recipient-policy-sharing-responsive-grid">
 			<article className="peer-card peer-card--padded recipient-policy-sharing-card">
@@ -314,7 +542,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 			</article>
 			<article className="peer-card peer-card--padded recipient-policy-sharing-card">
 				<h3>Accept an invitation</h3>
-				<p>Review Team membership or device access before accepting.</p>
+				<p>Review Team membership, device access, or exact Project access before accepting.</p>
 				<button
 					className="settings-button recipient-policy-sharing-target-24"
 					onClick={(event) => open("accept", event.currentTarget)}
@@ -385,8 +613,11 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 									<textarea
 										id="recipient-invitation-value"
 										onInput={(event) => {
-											setInvite(event.currentTarget.value);
+											updateInvite(event.currentTarget.value);
 											setInspected(null);
+											setProjectAcceptance(null);
+											setStatus("");
+											setError("");
 										}}
 										rows={5}
 										value={invite}
@@ -395,6 +626,24 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 							) : null}
 							{preview ? <Confirmation preview={preview} /> : null}
 							{recipientPreview ? <Confirmation preview={recipientPreview} /> : null}
+							{projectShareInvite && !projectAcceptance ? (
+								<ProjectShareConfirmation
+									deviceName={projectDeviceName}
+									deviceNameError={projectDeviceNameError}
+									invite={projectShareInvite}
+									onDeviceNameChange={(value) => {
+										setProjectDeviceName(value);
+										setError("");
+									}}
+									onRecipientNameChange={(value) => {
+										setProjectRecipientName(value);
+										setError("");
+									}}
+									recipientName={projectRecipientName}
+									recipientNameError={projectRecipientNameError}
+								/>
+							) : null}
+							{projectAcceptance ? <ProjectShareResult result={projectAcceptance} /> : null}
 							{created ? (
 								<div>
 									<p>Share the invitation with the recipient.</p>
@@ -403,8 +652,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 									</button>
 								</div>
 							) : null}
-							{inspected?.kind === "legacy_team_invite" ||
-							inspected?.kind === "project_share_invite" ? (
+							{inspected?.kind === "legacy_team_invite" ? (
 								<p>Use Advanced Team administration to review and import this invitation.</p>
 							) : null}
 							<p aria-live="polite" className="small" role="status">
@@ -418,7 +666,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 						</div>
 						<div className="modal-footer recipient-policy-sharing-responsive-actions">
 							<button className="settings-button" disabled={busy} onClick={close} type="button">
-								{created ? "Done" : "Cancel"}
+								{created || projectAcceptance ? "Done" : "Cancel"}
 							</button>
 							{mode === "create" && !created ? (
 								<button
@@ -438,14 +686,26 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 								>
 									{busy ? "Reviewing…" : "Review invitation"}
 								</button>
-							) : recipientPreview ? (
+							) : recipientPreview || (projectShareInvite && !projectAcceptance) ? (
 								<button
 									className="settings-button sync-dialog-confirm"
-									disabled={busy}
+									disabled={
+										busy ||
+										Boolean(
+											projectShareInvite &&
+												(!projectShareInvite.projects?.length ||
+													projectRecipientNameError ||
+													projectDeviceNameError),
+										)
+									}
 									onClick={() => void accept()}
 									type="button"
 								>
-									{busy ? "Accepting…" : "Accept invitation"}
+									{busy
+										? "Accepting…"
+										: projectShareInvite
+											? "Accept Project access"
+											: "Accept invitation"}
 								</button>
 							) : null}
 						</div>
