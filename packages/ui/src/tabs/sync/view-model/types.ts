@@ -89,6 +89,8 @@ export interface UiDuplicatePersonCandidate {
 }
 
 export interface UiSyncViewModel {
+	/** Single Project/Team directive; attentionItems remain device-level follow-ups. */
+	primaryStatus: UiTeamSyncPrimaryStatus;
 	summary: {
 		connectedDeviceCount: number;
 		seenOnTeamCount: number;
@@ -97,6 +99,79 @@ export interface UiSyncViewModel {
 	duplicatePeople: UiDuplicatePersonCandidate[];
 	attentionItems: UiSyncAttentionItem[];
 }
+
+export type UiTeamSyncPrimaryState =
+	| "disabled"
+	| "needs-attention"
+	| "pending-setup"
+	| "trust-blocked"
+	| "not-enrolled"
+	| "reachable"
+	| "unreachable"
+	| "healthy";
+
+export interface UiTeamSyncPrimaryStatus {
+	state: UiTeamSyncPrimaryState;
+	badgeLabel: string;
+	meta: string;
+	nextAction: string | null;
+}
+
+export interface ProjectShareOperationLike {
+	person?: { display_name?: string };
+	projects?: Array<{ display_name?: string }>;
+	lifecycle?: {
+		state?: TeamSyncProjectOperationState;
+		primary_action?: { kind?: TeamSyncProjectOperationActionKind } | null;
+	};
+}
+
+export interface RecipientPolicyReconciliationLike {
+	items?: Array<{
+		canonicalProjectIdentity?: string;
+		state?: TeamSyncReconciliationState;
+	}>;
+}
+
+export type TeamSyncProjectOperationState =
+	| "pending_setup"
+	| "waiting_for_acceptance"
+	| "provisioning"
+	| "initial_sync"
+	| "waiting_for_device"
+	| "active"
+	| "needs_attention"
+	| "revoking"
+	| "revoked"
+	| "cancelled";
+
+export type TeamSyncProjectOperationActionKind =
+	| "copy_invite"
+	| "retry_setup"
+	| "share_again"
+	| "create_new_invite";
+
+export type TeamSyncReconciliationState =
+	| "active"
+	| "needs_attention"
+	| "pending"
+	| "verifying"
+	| "waiting";
+
+export type TeamSyncDaemonState =
+	| "ok"
+	| "disabled"
+	| "error"
+	| "stopped"
+	| "stopping"
+	| "starting"
+	| "needs_attention"
+	| "rebootstrapping"
+	| "degraded"
+	| "offline-peers"
+	| "stale";
+
+export type TeamSyncPresenceState = "posted" | "not_enrolled" | "unknown" | "error";
 
 export type CoordinatorSetupBlockerReason =
 	| "coordinator_groups_empty"

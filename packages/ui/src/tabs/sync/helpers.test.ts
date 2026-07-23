@@ -11,6 +11,12 @@ import {
 const originalActors = state.lastSyncActors;
 const originalPeers = state.lastSyncPeers;
 const originalViewModel = state.lastSyncViewModel;
+const healthyPrimaryStatus = {
+	state: "healthy" as const,
+	badgeLabel: "Healthy",
+	meta: "Sync is healthy.",
+	nextAction: null,
+};
 
 afterEach(() => {
 	state.lastSyncActors = originalActors;
@@ -43,6 +49,7 @@ describe("buildActorSelectOptions", () => {
 		];
 		state.lastSyncPeers = [];
 		state.lastSyncViewModel = {
+			primaryStatus: healthyPrimaryStatus,
 			summary: { connectedDeviceCount: 0, seenOnTeamCount: 0, offlineTeamDeviceCount: 0 },
 			attentionItems: [],
 			duplicatePeople: [
@@ -68,6 +75,7 @@ describe("buildActorSelectOptions", () => {
 		];
 		state.lastSyncPeers = [];
 		state.lastSyncViewModel = {
+			primaryStatus: healthyPrimaryStatus,
 			summary: { connectedDeviceCount: 0, seenOnTeamCount: 0, offlineTeamDeviceCount: 0 },
 			attentionItems: [],
 			duplicatePeople: [
@@ -90,6 +98,7 @@ describe("buildActorSelectOptions", () => {
 		state.lastSyncActors = [{ actor_id: "actor-local", display_name: "Adam", is_local: true }];
 		state.lastSyncPeers = [];
 		state.lastSyncViewModel = {
+			primaryStatus: healthyPrimaryStatus,
 			summary: { connectedDeviceCount: 0, seenOnTeamCount: 0, offlineTeamDeviceCount: 0 },
 			attentionItems: [],
 			duplicatePeople: [],

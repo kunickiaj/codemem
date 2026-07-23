@@ -8,11 +8,16 @@ import { deviceNeedsFriendlyName, resolveFriendlyDeviceName } from "./device-nam
 import { cleanText } from "./internal";
 import { derivePeerTrustSummary, derivePeerUiStatus } from "./peer-status";
 import { deriveDuplicatePeople } from "./people-derivations";
+import { deriveTeamSyncPrimaryStatus } from "./primary-status";
 import type {
 	ActorLike,
 	CoordinatorSetupBlocker,
 	DiscoveredDeviceLike,
 	PeerLike,
+	ProjectShareOperationLike,
+	RecipientPolicyReconciliationLike,
+	TeamSyncDaemonState,
+	TeamSyncPresenceState,
 	UiSyncAttentionItem,
 	UiSyncViewModel,
 } from "./types";
@@ -153,7 +158,21 @@ function mergeDevices(
 export function deriveSyncViewModel(input: {
 	actors?: ActorLike[];
 	peers?: PeerLike[];
-	coordinator?: { discovered_devices?: DiscoveredDeviceLike[] };
+	coordinator?: {
+		configured?: boolean;
+		sync_enabled?: boolean;
+		presence_status?: TeamSyncPresenceState;
+		groups?: unknown[];
+		discovered_devices?: DiscoveredDeviceLike[];
+	};
+	status?: {
+		enabled?: boolean;
+		daemon_state?: TeamSyncDaemonState;
+		daemon_running?: boolean;
+	} | null;
+	shareOperations?: ProjectShareOperationLike[];
+	shareOperationsLoadError?: boolean;
+	reconciliation?: RecipientPolicyReconciliationLike | null;
 	duplicatePersonDecisions?: Record<string, string>;
 }): UiSyncViewModel {
 	const actors = Array.isArray(input.actors) ? input.actors : [];
@@ -291,6 +310,14 @@ export function deriveSyncViewModel(input: {
 	});
 
 	return {
+		primaryStatus: deriveTeamSyncPrimaryStatus({
+			status: input.status,
+			coordinator: input.coordinator,
+			peers,
+			shareOperations: input.shareOperations,
+			shareOperationsLoadError: input.shareOperationsLoadError,
+			reconciliation: input.reconciliation,
+		}),
 		summary: {
 			connectedDeviceCount: peers.filter((peer) => derivePeerUiStatus(peer) === "connected").length,
 			seenOnTeamCount: discoveredDevices.length,
