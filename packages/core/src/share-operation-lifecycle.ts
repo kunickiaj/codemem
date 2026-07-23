@@ -55,6 +55,8 @@ const FAILURE_COPY: Record<string, string> = {
 		"Existing project access needs review before setup can continue.",
 	managed_boundary_conflict: "The project access boundary does not match the reviewed share.",
 	managed_grant_conflict: "Project access could not be granted as reviewed.",
+	operation_intent_mismatch: "The accepted Project list no longer matches the reviewed invitation.",
+	operation_scope_mismatch: "The accepted invitation no longer matches this owner's sharing setup.",
 	operation_read_failed: "Invitation status could not be refreshed from the coordinator.",
 	project_mapping_conflict: "The project is already assigned to different access settings.",
 	reassign_capability_required:

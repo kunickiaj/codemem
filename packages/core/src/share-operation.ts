@@ -627,7 +627,7 @@ export function reconcileShareOperationAcceptance(
 			if (linked.changes !== 1) throw new Error("pending_person_identity_conflict");
 		}
 		db.prepare(`UPDATE share_operations SET
-				state = CASE WHEN state IN ('waiting_for_acceptance', 'accepted') THEN 'accepted' ELSE state END,
+				state = CASE WHEN state IN ('waiting_for_acceptance', 'accepted') THEN 'provisioning' ELSE state END,
 				person_id = ?, person_kind = 'existing',
 				pending_person_operation_id = NULL, recipient_actor_id = ?, recipient_display_name = ?,
 				recipient_device_id = ?, recipient_device_display_name = ?, recipient_public_key = ?,

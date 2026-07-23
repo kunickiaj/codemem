@@ -207,6 +207,7 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 
 	it("atomically accepts project invites while preserving legacy join behavior after migration 0008", async () => {
 		const legacyJoiner = createIdentity();
+		const projectInviter = createIdentity();
 		const projectJoiner = createIdentity();
 		const conflictingJoiner = createIdentity();
 		const adminHeaders = {
@@ -257,7 +258,7 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 			reviewed_project_set_digest: reviewedProjectSetDigest,
 			inviter_actor_id: "actor-adam",
 			inviter_display_name: "Adam",
-			inviter_device_id: "inviter-device",
+			inviter_device_id: projectInviter.deviceId,
 			pending_person_id: "pending-brian",
 			project_summaries: [{ display_name: "codemem", existing_memory_count: 3 }],
 			project_intent: [
@@ -382,10 +383,25 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		const projectJoinBody = (await projectJoinResponse.json()) as Record<string, unknown>;
 		expect(projectJoinResponse.status, JSON.stringify(projectJoinBody)).toBe(200);
 		expect(projectJoinBody).toMatchObject({
-			status: "accepted",
+			status: "pending_setup",
 			operation_id: operationId,
 			trust_state: "pending_inviter_device",
 		});
+		const inviterEnrollment = await exports.default.fetch(
+			"https://example.com/v1/admin/devices",
+			{
+				method: "POST",
+				headers: adminHeaders,
+				body: JSON.stringify({
+					group_id: "g1",
+					device_id: projectInviter.deviceId,
+					public_key: projectInviter.publicKey,
+					fingerprint: projectInviter.fingerprint,
+					display_name: "Adam's Mac",
+				}),
+			},
+		);
+		expect(inviterEnrollment.status).toBe(200);
 		const retry = await exports.default.fetch("https://example.com/v1/join", {
 			method: "POST",
 			headers: { "content-type": "application/json" },
@@ -400,7 +416,23 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 				device_display_name: "Brian's Test Mac",
 			}),
 		});
-		expect(await retry.json()).toMatchObject({ status: "existing" });
+		expect(await retry.json()).toMatchObject({
+			status: "pending_setup",
+			trust_state: "bootstrap_grant_created",
+			bootstrap_grant_id: expect.any(String),
+			inviter_device: {
+				device_id: projectInviter.deviceId,
+				public_key: projectInviter.publicKey,
+				fingerprint: projectInviter.fingerprint,
+			},
+		});
+		expect(
+			await env.COORDINATOR_DB.prepare(
+				"SELECT COUNT(*) AS total FROM coordinator_bootstrap_grants WHERE worker_device_id = ?",
+			)
+				.bind(projectJoiner.deviceId)
+				.first(),
+		).toEqual({ total: 1 });
 		const conflictingJoinResponse = await exports.default.fetch(
 			"https://example.com/v1/join",
 			{
@@ -895,6 +927,22 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		});
 		expect(wrongIdentity.status).toBe(409);
 		expect(await wrongIdentity.json()).toEqual({ error: "invite_identity_conflict" });
+		const addDeviceBody = {
+			token: addDevice.payload.token,
+			invite_kind: "add_device",
+			identity_id: "identity-brian",
+			device_id: otherDevice.deviceId,
+			public_key: otherDevice.publicKey,
+			fingerprint: otherDevice.fingerprint,
+		};
+		const acceptAddDevice = () =>
+			exports.default.fetch("https://example.com/v1/join", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(addDeviceBody),
+			});
+		expect(await (await acceptAddDevice()).json()).toMatchObject({ status: "accepted" });
+		expect(await (await acceptAddDevice()).json()).toMatchObject({ status: "existing" });
 
 		expect(
 			await env.COORDINATOR_DB.prepare("SELECT COUNT(*) AS count FROM enrolled_devices")

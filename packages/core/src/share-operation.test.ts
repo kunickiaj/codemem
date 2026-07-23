@@ -441,7 +441,7 @@ describe("share-operation persistence", () => {
 					recipient_device_display_name, bootstrap_grant_id FROM share_operations`)
 				.get(),
 		).toEqual({
-			state: "accepted",
+			state: "provisioning",
 			person_id: "actor-brian",
 			recipient_actor_id: "actor-brian",
 			recipient_device_id: "device-brian",

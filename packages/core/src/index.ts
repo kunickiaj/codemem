@@ -526,6 +526,13 @@ export {
 	resolveProject,
 	resolveProjectRoot,
 } from "./project.js";
+export {
+	isProjectSyncEnablementError,
+	PROJECT_INVITE_PENDING_STATUS,
+	PROJECT_SYNC_ENABLEMENT_FAILED,
+	PROJECT_SYNC_ENABLEMENT_FAILURE_DETAIL,
+	ProjectSyncEnablementError,
+} from "./project-invite-acceptance.js";
 export type { ProjectInviteSummary } from "./project-invite-identity.js";
 export {
 	friendlyDeviceName,

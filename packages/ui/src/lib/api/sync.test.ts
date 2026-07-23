@@ -4,6 +4,7 @@ import {
 	advanceShareOperation,
 	commitRecipientPolicyEdges,
 	createRecipientInvite,
+	importCoordinatorInvite,
 	inspectCoordinatorInvite,
 	loadRecipientPolicyIntent,
 	loadRecipientPolicyReconciliationStatus,
@@ -27,6 +28,34 @@ afterEach(() => {
 });
 
 describe("recipient invitation API", () => {
+	it("prefers actionable invite-import detail over an opaque error code", async () => {
+		globalThis.fetch = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						detail: "Restart codemem to finish project setup.",
+						error: "sync_runtime_disabled",
+					}),
+					{ status: 409 },
+				),
+		) as typeof fetch;
+
+		await expect(importCoordinatorInvite("project-invite")).rejects.toThrow(
+			"Restart codemem to finish project setup.",
+		);
+	});
+
+	it("ignores blank invite-import detail and falls back to the error code", async () => {
+		globalThis.fetch = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ detail: "   ", error: "invalid_invite" }), {
+					status: 400,
+				}),
+		) as typeof fetch;
+
+		await expect(importCoordinatorInvite("bad-invite")).rejects.toThrow("invalid_invite");
+	});
+
 	it("sends exact Team preview/create and add-device inspect payloads", async () => {
 		const preview = {
 			kind: "team_member",

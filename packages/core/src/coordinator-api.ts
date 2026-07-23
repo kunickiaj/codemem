@@ -21,6 +21,7 @@ import type {
 	CoordinatorScopeMembership,
 	CoordinatorStore,
 } from "./coordinator-store-contract.js";
+import { PROJECT_INVITE_PENDING_STATUS } from "./project-invite-acceptance.js";
 import {
 	normalizeIdentityDisplayName,
 	normalizeProjectInviteSummaries,
@@ -1932,7 +1933,7 @@ export function createCoordinatorApp(
 					});
 					return c.json({
 						ok: true,
-						status: acceptance.status,
+						status: PROJECT_INVITE_PENDING_STATUS,
 						group_id: acceptance.invite.group_id,
 						operation_id: acceptance.invite.operation_id,
 						trust_state: acceptance.invite.trust_state,

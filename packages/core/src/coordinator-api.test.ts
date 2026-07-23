@@ -439,6 +439,58 @@ describe("createCoordinatorApp dependency injection", () => {
 		expect(store.createJoinRequest).not.toHaveBeenCalled();
 	});
 
+	it("preserves add-device idempotent existing status", async () => {
+		const publicKey = "add-device-public-key";
+		const invite = {
+			invite_id: "invite-add-device-1",
+			group_id: "g1",
+			token: "token-add-device-1",
+			policy: "auto_admit",
+			expires_at: "2099-01-01T00:00:00Z",
+			created_at: "2026-03-28T00:00:00Z",
+			created_by: null,
+			team_name_snapshot: "Coordinator One",
+			revoked_at: null,
+			invite_kind: "add_device" as const,
+			target_identity_id: "identity-brian",
+			reviewed_preview_digest: "d".repeat(64),
+		};
+		const consumeRecipientInvite = vi.fn(async () => ({
+			status: "existing" as const,
+			invite: { ...invite, recipient_actor_id: "identity-brian" },
+		}));
+		const store = createMockStore({
+			getInviteByTokenForInspection: vi.fn(async () => invite),
+			consumeRecipientInvite,
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+
+		const response = await app.request("/v1/join", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				token: invite.token,
+				invite_kind: "add_device",
+				identity_id: "identity-brian",
+				device_id: "device-brian-2",
+				public_key: publicKey,
+				fingerprint: fingerprintPublicKey(publicKey),
+			}),
+		});
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({
+			status: "existing",
+			kind: "add_device",
+			target_identity_id: "identity-brian",
+		});
+		expect(consumeRecipientInvite).toHaveBeenCalledOnce();
+	});
+
 	it("rejects project invites accepted by the inviter device", async () => {
 		const publicKey = "inviter-public-key";
 		const operationId = `share_${"a".repeat(40)}`;
@@ -589,7 +641,68 @@ describe("createCoordinatorApp dependency injection", () => {
 		});
 
 		expect(response.status).toBe(200);
-		expect(await response.json()).toMatchObject({ ok: true, status: "existing" });
+		expect(await response.json()).toMatchObject({ ok: true, status: "pending_setup" });
+		expect(consumeProjectInvite).toHaveBeenCalledOnce();
+	});
+
+	it("reports a newly consumed project invite as pending setup", async () => {
+		const publicKey = "recipient-public-key";
+		const operationId = `share_${"b".repeat(40)}`;
+		const consumeProjectInvite = vi.fn(async () => ({
+			status: "accepted" as const,
+			invite: {
+				group_id: "g1",
+				operation_id: operationId,
+				trust_state: "pending_inviter_device",
+			},
+			bootstrap_grant: null,
+			seed_enrollment: null,
+		}));
+		const store = createMockStore({
+			getInviteByTokenForInspection: vi.fn(async () => ({
+				invite_id: "invite-project-new",
+				group_id: "g1",
+				token: "token-project-new",
+				policy: "auto_admit",
+				expires_at: "2099-01-01T00:00:00Z",
+				created_at: "2026-03-28T00:00:00Z",
+				created_by: null,
+				team_name_snapshot: "Team One",
+				revoked_at: null,
+				operation_id: operationId,
+				reviewed_project_set_digest: "c".repeat(64),
+				inviter_device_id: "device-adam",
+			})),
+			consumeProjectInvite,
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+
+		const response = await app.request("/v1/join", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				token: "token-project-new",
+				operation_id: operationId,
+				device_id: "device-recipient",
+				public_key: publicKey,
+				fingerprint: fingerprintPublicKey(publicKey),
+				recipient_actor_id: "actor-brian",
+				recipient_display_name: "Brian",
+				device_display_name: "Brian's Mac",
+			}),
+		});
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({
+			ok: true,
+			status: "pending_setup",
+			operation_id: operationId,
+			trust_state: "pending_inviter_device",
+		});
 		expect(consumeProjectInvite).toHaveBeenCalledOnce();
 	});
 

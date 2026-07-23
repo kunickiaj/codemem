@@ -82,6 +82,7 @@ import {
 	getSyncResetState,
 	type InboundScopeRejectionPeerSummary,
 	inviteTokenDigest,
+	isProjectSyncEnablementError,
 	isScopedSyncCapability,
 	LEGACY_SHARED_REVIEW_SCOPE_ID,
 	LOCAL_DEFAULT_SCOPE_ID,
@@ -617,6 +618,39 @@ function parseInviteTtlHours(value: unknown): number | null {
 	return ttlHours;
 }
 
+function projectInviteAcceptanceFailure(error: unknown): {
+	error: string;
+	detail: string;
+} {
+	if (isProjectSyncEnablementError(error)) {
+		return { error: error.code, detail: error.detail };
+	}
+	const code = error instanceof Error ? error.message : "project_invite_acceptance_failed";
+	const detailByCode: Record<string, string> = {
+		invite_already_bound:
+			"This invitation was accepted by another device. Ask the owner to create a new invitation.",
+		invite_expired: "This invitation expired. Ask the owner to create a new invitation.",
+		invite_identity_conflict:
+			"This invitation does not match this Identity. Ask the owner to create a new invitation for this recipient.",
+		invite_invalid: "This invitation is no longer valid. Ask the owner to create a new invitation.",
+		inviter_identity_invalid:
+			"The owner's device identity could not be verified. Ask the owner to review the share and create a new invitation.",
+		project_invite_self_acceptance_forbidden:
+			"The owner cannot accept this recipient invitation on the owner's device.",
+		project_invite_bootstrap_incomplete:
+			"The owner's device is not ready to establish trust yet. Retry once, then ask the owner to review the share.",
+		project_invite_trust_state_invalid:
+			"The owner's trust setup could not be verified. Ask the owner to review the share.",
+	};
+	const safeCode = Object.hasOwn(detailByCode, code) ? code : "project_invite_acceptance_failed";
+	return {
+		error: safeCode,
+		detail:
+			detailByCode[code] ??
+			"The invitation could not be accepted safely. Retry once, then ask the owner to review the share.",
+	};
+}
+
 const PROJECT_INVITE_TTL_HOURS = 7 * 24;
 const PROJECT_INVITE_BODY_KEYS = new Set([
 	"teammate_name",
@@ -968,7 +1002,11 @@ async function coordinatorProjectInvitePayload(operationId: string): Promise<{
 			headers: { "X-Codemem-Coordinator-Admin": config.syncCoordinatorAdminSecret },
 			timeoutS: 10,
 		},
-	);
+	).catch((cause: unknown) => {
+		const error = new Error("coordinator_unavailable", { cause });
+		Object.assign(error, { status: 503 });
+		throw error;
+	});
 	if (status < 200 || status >= 300) {
 		const error = new Error(String(payload?.error ?? "operation_read_failed"));
 		Object.assign(error, { status });
@@ -1331,11 +1369,7 @@ const TERMINAL_SHARE_MAINTENANCE_ERRORS = new Set([
 	"intent_conflict",
 	"inviter_identity_conflict",
 ]);
-const TERMINAL_RECONCILIATION_ERRORS = new Set([
-	"coordinator_not_configured",
-	"team_sharing_not_configured",
-	"team_selection_ambiguous",
-	"operation_not_found",
+const PROJECT_INVITE_OWNER_CONFLICT_ERRORS = new Set([
 	"operation_scope_mismatch",
 	"operation_state_invalid",
 	"operation_acceptance_invalid",
@@ -1350,10 +1384,43 @@ const TERMINAL_RECONCILIATION_ERRORS = new Set([
 	"intent_conflict",
 	"inviter_identity_conflict",
 ]);
+const TERMINAL_RECONCILIATION_ERRORS = new Set([
+	"coordinator_not_configured",
+	"team_sharing_not_configured",
+	"team_selection_ambiguous",
+	"operation_not_found",
+	...PROJECT_INVITE_OWNER_CONFLICT_ERRORS,
+]);
 
 function errorStatus(error: unknown): number | null {
 	const value = error && typeof error === "object" ? (error as { status?: unknown }).status : null;
-	return typeof value === "number" && Number.isFinite(value) ? value : null;
+	return typeof value === "number" && Number.isInteger(value) && value >= 400 && value <= 599
+		? value
+		: null;
+}
+
+function projectInviteOwnerErrorResponse(
+	error: unknown,
+	fallback: { code: "operation_read_failed" | "operation_reconcile_failed"; status: 400 | 409 },
+): {
+	code: string;
+	status: 400 | 404 | 409 | 502 | 503;
+} {
+	const message = error instanceof Error ? error.message : "";
+	const status = errorStatus(error);
+	if (message === "operation_not_found" && (status == null || status === 404)) {
+		return { code: message, status: 404 };
+	}
+	if (PROJECT_INVITE_OWNER_CONFLICT_ERRORS.has(message) && (status == null || status === 409)) {
+		return { code: message, status: 409 };
+	}
+	if (status != null && status >= 500 && message !== "coordinator_unavailable") {
+		return { code: "coordinator_upstream_failed", status: 502 };
+	}
+	if (message === "coordinator_unavailable" || status === 408 || status === 429 || status === 503) {
+		return { code: "coordinator_unavailable", status: 503 };
+	}
+	return fallback;
 }
 
 function isRetryableReconciliationError(error: unknown): boolean {
@@ -5098,17 +5165,15 @@ export function syncRoutes(
 		}
 		try {
 			const { payload } = await coordinatorProjectInvitePayload(operationId);
-			return c.json(payload);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "operation_read_failed";
 			return c.json(
-				{ error: message },
-				message === "operation_not_found"
-					? 404
-					: message.includes("mismatch") || message === "operation_intent_invalid"
-						? 409
-						: 400,
+				payload.state === "accepted" ? { ...payload, state: "pending_setup" } : payload,
 			);
+		} catch (error) {
+			const mapped = projectInviteOwnerErrorResponse(error, {
+				code: "operation_read_failed",
+				status: 400,
+			});
+			return c.json({ error: mapped.code }, mapped.status);
 		}
 	});
 
@@ -5124,11 +5189,14 @@ export function syncRoutes(
 				ok: true,
 				operation_id: operationId,
 				reconciled: result.accepted,
-				state: result.accepted ? "accepted" : "waiting_for_acceptance",
+				state: result.accepted ? "pending_setup" : "waiting_for_acceptance",
 			});
 		} catch (error) {
-			const message = error instanceof Error ? error.message : "operation_reconcile_failed";
-			return c.json({ error: message }, message === "operation_not_found" ? 404 : 409);
+			const mapped = projectInviteOwnerErrorResponse(error, {
+				code: "operation_reconcile_failed",
+				status: 409,
+			});
+			return c.json({ error: mapped.code }, mapped.status);
 		}
 	});
 
@@ -5715,8 +5783,8 @@ export function syncRoutes(
 	// invite envelope or codemem:// link) and device-pairing payloads
 	// (base64 JSON with { device_id, fingerprint, public_key, addresses }).
 	// The server discriminates by decoding the pasted text — UI callers get
-	// one textarea for both flows. Response carries `type: "team_join"` or
-	// `type: "pair"` so the UI can render the right success message.
+	// one textarea for all flows. Response type distinguishes legacy Team joins,
+	// exact-Project pending setup, recipient onboarding, and direct pairing.
 	app.post("/api/sync/invites/import", async (c) => {
 		const store = getStore();
 		let body: Record<string, unknown>;
@@ -5774,8 +5842,10 @@ export function syncRoutes(
 			}
 		}
 
+		let projectInvite = false;
 		try {
 			const decoded = decodeInvitePayload(extractInvitePayload(rawValue));
+			projectInvite = Boolean(decoded.operation_id);
 			ensureStableStoreIdentity(store);
 			const recipientInvite = decoded.kind === "team_member" || decoded.kind === "add_device";
 			const reviewedOnboardingDigest =
@@ -5794,14 +5864,30 @@ export function syncRoutes(
 				deviceDisplayName: typeof body.device_name === "string" ? body.device_name : null,
 				reviewedOnboardingDigest: reviewedOnboardingDigest || null,
 			});
+			const type = recipientInvite
+				? "recipient_onboarding"
+				: projectInvite
+					? "project_share"
+					: "team_join";
+			if (projectInvite && getSyncRuntimeStatus?.()?.phase === "disabled") {
+				return c.json(
+					{
+						...result,
+						type,
+						setup_state: "restart_required",
+						restart_required: true,
+						detail:
+							"The invitation was accepted and sync was enabled. Restart codemem to start the sync service; Project setup remains pending until the first sync finishes.",
+					},
+					200,
+				);
+			}
 			return c.json({
 				...result,
-				type:
-					decoded.kind === "team_member" || decoded.kind === "add_device"
-						? "recipient_onboarding"
-						: "team_join",
+				type,
 			});
 		} catch (error) {
+			if (projectInvite) return c.json(projectInviteAcceptanceFailure(error), 400);
 			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
 		}
 	});

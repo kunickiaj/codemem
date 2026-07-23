@@ -26,6 +26,7 @@ vi.mock("../../../project-sharing", () => ({ openProjectShareFlow: vi.fn() }));
 
 import * as api from "../../../../lib/api";
 import { showGlobalNotice } from "../../../../lib/notice";
+import { state } from "../../../../lib/state";
 import { openProjectShareFlow } from "../../../project-sharing";
 import { initTeamSyncEvents } from "./init-team-sync-events";
 
@@ -191,5 +192,36 @@ describe("project invite review events", () => {
 			recipient_name: "Brian Updated",
 		});
 		await vi.waitFor(() => expect(button.textContent).toBe("Review invite"));
+	});
+
+	it.each([
+		["restart-required", { restart_required: true }],
+		["pending inviter", { setup_state: "pending_inviter" }],
+		["pending-setup status", { status: "pending_setup" }],
+	])("reports project invitation %s detail as a warning", async (_label, pendingState) => {
+		vi.mocked(api.importCoordinatorInvite).mockResolvedValueOnce({
+			type: "project_share",
+			status: "accepted",
+			detail: "Restart codemem to finish project setup.",
+			...pendingState,
+		});
+		initTeamSyncEvents(
+			() => {},
+			async () => {},
+		);
+		const invite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement;
+		const button = document.getElementById("syncJoinButton") as HTMLButtonElement;
+		invite.value = "project-invite";
+
+		button.click();
+		await vi.waitFor(() => expect(button.textContent).toBe("Accept and start syncing"));
+		button.click();
+
+		await vi.waitFor(() =>
+			expect(state.syncJoinFlowFeedback).toEqual({
+				message: "Restart codemem to finish project setup.",
+				tone: "warning",
+			}),
+		);
 	});
 });

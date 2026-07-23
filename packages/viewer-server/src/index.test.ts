@@ -10612,6 +10612,21 @@ describe("viewer-server", () => {
 						}),
 					});
 					expect(accepted.status, JSON.stringify(await accepted.clone().json())).toBe(200);
+					const acceptedBody = (await accepted.json()) as Record<string, unknown>;
+					expect(acceptedBody).toMatchObject({
+						status: "accepted",
+						type: "recipient_onboarding",
+					});
+					expect(acceptedBody).not.toHaveProperty("restart_required");
+					expect(acceptedBody).not.toHaveProperty("setup_state");
+					const persistedConfig = JSON.parse(readFileSync(configPath, "utf8")) as Record<
+						string,
+						unknown
+					>;
+					expect(persistedConfig).not.toHaveProperty("sync_enabled");
+					expect(persistedConfig).not.toHaveProperty("sync_host");
+					expect(persistedConfig).not.toHaveProperty("sync_port");
+					expect(persistedConfig).not.toHaveProperty("sync_interval_s");
 					expect(joinBody).toMatchObject({
 						invite_kind: kind,
 						identity_id: store.actorId,
@@ -11236,6 +11251,8 @@ describe("viewer-server", () => {
 			const fingerprint = fingerprintPublicKey(publicKey);
 			let mode:
 				| "not_found"
+				| "upstream_500"
+				| "transport"
 				| "malformed"
 				| "wrong_group"
 				| "waiting"
@@ -11244,6 +11261,14 @@ describe("viewer-server", () => {
 			const fetchMock = vi.fn(async () => {
 				if (mode === "not_found") {
 					return new Response(JSON.stringify({ error: "operation_not_found" }), { status: 404 });
+				}
+				if (mode === "upstream_500") {
+					return new Response("coordinator stack trace with internal-host.example", {
+						status: 500,
+					});
+				}
+				if (mode === "transport") {
+					throw new Error("fetch failed for internal-host.example");
 				}
 				if (mode === "malformed") {
 					return new Response(JSON.stringify({ error: "operation_intent_invalid" }), {
@@ -11331,13 +11356,54 @@ describe("viewer-server", () => {
 					.run(operationId, projectId);
 
 				const request = () => app.request(`/api/sync/project-invites/${operationId}`);
-				expect((await request()).status).toBe(404);
+				const notFound = await request();
+				expect(notFound.status).toBe(404);
+				expect(await notFound.json()).toEqual({ error: "operation_not_found" });
+				const missingOperationId = `share_${"8".repeat(40)}`;
+				const missingReconcile = await app.request(
+					`/api/sync/project-invites/${missingOperationId}/reconcile`,
+					{ method: "POST" },
+				);
+				expect(missingReconcile.status).toBe(404);
+				expect(await missingReconcile.json()).toEqual({ error: "operation_not_found" });
+				mode = "upstream_500";
+				for (const [label, response] of [
+					["read", await request()],
+					[
+						"reconcile",
+						await app.request(`/api/sync/project-invites/${operationId}/reconcile`, {
+							method: "POST",
+						}),
+					],
+				] as const) {
+					expect(response.status, label).toBe(502);
+					const body = await response.json();
+					expect(body).toEqual({ error: "coordinator_upstream_failed" });
+					expect(JSON.stringify(body)).not.toContain("internal-host.example");
+				}
+				mode = "transport";
+				for (const [label, response] of [
+					["read", await request()],
+					[
+						"reconcile",
+						await app.request(`/api/sync/project-invites/${operationId}/reconcile`, {
+							method: "POST",
+						}),
+					],
+				] as const) {
+					expect(response.status, label).toBe(503);
+					const body = await response.json();
+					expect(body).toEqual({ error: "coordinator_unavailable" });
+					expect(JSON.stringify(body)).not.toContain("internal-host.example");
+				}
 				mode = "malformed";
 				const malformed = await request();
 				expect(malformed.status).toBe(409);
 				expect(await malformed.json()).toEqual({ error: "operation_intent_invalid" });
 				mode = "wrong_group";
-				expect((await request()).status).toBe(409);
+				const wrongGroup = await request();
+				expect(wrongGroup.status).toBe(409);
+				expect(await wrongGroup.json()).toEqual({ error: "operation_scope_mismatch" });
 				mode = "waiting";
 				const waiting = await request();
 				expect(waiting.status).toBe(200);
@@ -11365,7 +11431,7 @@ describe("viewer-server", () => {
 				mode = "accepted";
 				const accepted = await request();
 				expect(accepted.status).toBe(200);
-				expect(await accepted.json()).toMatchObject({ state: "accepted" });
+				expect(await accepted.json()).toMatchObject({ state: "pending_setup" });
 				expect(
 					store.db
 						.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
@@ -11375,14 +11441,16 @@ describe("viewer-server", () => {
 
 				const reconcile = () =>
 					app.request(`/api/sync/project-invites/${operationId}/reconcile`, { method: "POST" });
-				expect((await reconcile()).status).toBe(200);
+				const firstReconcile = await reconcile();
+				expect(firstReconcile.status).toBe(200);
+				expect(await firstReconcile.json()).toMatchObject({ state: "pending_setup" });
 				expect((await reconcile()).status).toBe(200);
 				expect(
 					store.db
 						.prepare("SELECT state, recipient_actor_id, recipient_device_id FROM share_operations")
 						.get(),
 				).toEqual({
-					state: "accepted",
+					state: "provisioning",
 					recipient_actor_id: "actor-brian",
 					recipient_device_id: "device-brian",
 				});
@@ -11723,6 +11791,8 @@ describe("viewer-server", () => {
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body.group_id).toBe("team-a");
 				expect(body.status).toBe("pending");
+				expect(body.type).toBe("team_join");
+				expect(body).not.toHaveProperty("restart_required");
 				expect(store.deviceId).not.toBe("local");
 				expect(store.actorId).toBe(`local:${store.deviceId}`);
 				expect(store.actorDisplayName).toBe("Fixture User");
@@ -11739,6 +11809,10 @@ describe("viewer-server", () => {
 				>;
 				expect(writtenConfig.sync_coordinator_url).toBe("https://coord.example.test");
 				expect(writtenConfig.sync_coordinator_group).toBe("team-a");
+				expect(writtenConfig).not.toHaveProperty("sync_enabled");
+				expect(writtenConfig).not.toHaveProperty("sync_host");
+				expect(writtenConfig).not.toHaveProperty("sync_port");
+				expect(writtenConfig).not.toHaveProperty("sync_interval_s");
 			} finally {
 				cleanup();
 				globalThis.fetch = prevFetch;
@@ -11854,6 +11928,7 @@ describe("viewer-server", () => {
 			const invite = Buffer.from(JSON.stringify(invitePayload), "utf8").toString("base64url");
 			let joinBody: Record<string, unknown> = {};
 			let corruptInviter = false;
+			let exposeInternalFailure = false;
 			const inviterPublicKey = "inviter-public-key";
 			const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
 				const url = String(input);
@@ -11870,6 +11945,7 @@ describe("viewer-server", () => {
 					);
 				}
 				if (url.includes("/v1/join")) {
+					if (exposeInternalFailure) throw new Error("internal recipient device id: device-secret");
 					joinBody = JSON.parse(
 						init?.body instanceof Uint8Array
 							? new TextDecoder().decode(init.body)
@@ -11947,6 +12023,13 @@ describe("viewer-server", () => {
 				});
 				const acceptedBody = (await accepted.json()) as Record<string, unknown>;
 				expect(accepted.status, JSON.stringify(acceptedBody)).toBe(200);
+				expect(acceptedBody).toMatchObject({
+					status: "pending_setup",
+					setup_state: "pending_inviter",
+					sync_enabled: true,
+					type: "project_share",
+				});
+				expect(acceptedBody).not.toHaveProperty("restart_required");
 				expect(joinBody).toMatchObject({
 					operation_id: operationId,
 					recipient_actor_id: store.actorId,
@@ -11972,6 +12055,16 @@ describe("viewer-server", () => {
 						.prepare("SELECT pending_bootstrap_grant_id FROM sync_peers WHERE peer_device_id = ?")
 						.get("device-adam"),
 				).toEqual({ pending_bootstrap_grant_id: "grant-1" });
+				const enabledConfig = JSON.parse(readFileSync(configPath, "utf8")) as Record<
+					string,
+					unknown
+				>;
+				expect(enabledConfig).toMatchObject({
+					sync_enabled: true,
+					sync_host: "0.0.0.0",
+					sync_port: 7337,
+					sync_interval_s: 120,
+				});
 				corruptInviter = true;
 				const rejected = await app.request("/api/sync/invites/import", {
 					method: "POST",
@@ -11983,7 +12076,21 @@ describe("viewer-server", () => {
 					}),
 				});
 				expect(rejected.status).toBe(400);
-				expect(await rejected.json()).toEqual({ error: "inviter_identity_invalid" });
+				expect(await rejected.json()).toEqual({
+					error: "inviter_identity_invalid",
+					detail:
+						"The owner's device identity could not be verified. Ask the owner to review the share and create a new invitation.",
+				});
+				exposeInternalFailure = true;
+				const redactedFailure = await app.request("/api/sync/invites/import", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ invite, device_name: "Brian's Test Mac" }),
+				});
+				expect(redactedFailure.status).toBe(400);
+				const redactedBody = (await redactedFailure.json()) as Record<string, unknown>;
+				expect(redactedBody.error).toBe("project_invite_acceptance_failed");
+				expect(JSON.stringify(redactedBody)).not.toContain("device-secret");
 			} finally {
 				cleanup();
 				globalThis.fetch = prevFetch;
@@ -11991,6 +12098,171 @@ describe("viewer-server", () => {
 				else process.env.CODEMEM_CONFIG = prevConfig;
 				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
 				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			}
+		});
+
+		it("persists restart-required project setup and replays acceptance without duplicate records", async () => {
+			const testDir = mkdtempSync(join(tmpdir(), "codemem-project-restart-test-"));
+			const configPath = join(testDir, "config.json");
+			const keysDir = join(testDir, "keys");
+			const previousConfig = process.env.CODEMEM_CONFIG;
+			const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const previousFetch = globalThis.fetch;
+			const operationId = `share_${"d".repeat(40)}`;
+			const inviterPublicKey = "restart-inviter-public-key";
+			const invite = core.encodeInvitePayload({
+				v: 1,
+				kind: "coordinator_team_invite",
+				coordinator_url: "https://coord.example.test",
+				group_id: "team-a",
+				policy: "auto_admit",
+				token: "project-restart-token",
+				expires_at: "2099-01-01T00:00:00.000Z",
+				team_name: "Team A",
+				operation_id: operationId,
+			});
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(
+				configPath,
+				JSON.stringify({ actor_display_name: "Brian", sync_enabled: false }),
+			);
+			const fetchMock = vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							status: "pending_setup",
+							operation_id: operationId,
+							group_id: "team-a",
+							trust_state: "bootstrap_grant_created",
+							bootstrap_grant_id: "grant-restart",
+							inviter_device: {
+								device_id: "device-adam",
+								public_key: inviterPublicKey,
+								fingerprint: fingerprintPublicKey(inviterPublicKey),
+								display_name: "Adam's Mac",
+							},
+						}),
+						{ status: 200 },
+					),
+			);
+			globalThis.fetch = fetchMock as typeof fetch;
+			const { app, ensureStore, cleanup } = createTestApp({
+				seedDevice: false,
+				getSyncRuntimeStatus: () => ({ phase: "disabled", detail: "Sync is disabled" }),
+			});
+			try {
+				const store = ensureStore();
+				for (let attempt = 0; attempt < 2; attempt += 1) {
+					const response = await app.request("/api/sync/invites/import", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ invite, device_name: "Brian's Mac" }),
+					});
+					expect(response.status).toBe(200);
+					expect(await response.json()).toMatchObject({
+						status: "pending_setup",
+						setup_state: "restart_required",
+						restart_required: true,
+						type: "project_share",
+						detail: expect.stringContaining("Restart codemem"),
+					});
+				}
+				expect(fetchMock).toHaveBeenCalledTimes(2);
+				expect(JSON.parse(readFileSync(configPath, "utf8"))).toMatchObject({
+					sync_enabled: true,
+					sync_host: "0.0.0.0",
+					sync_port: 7337,
+					sync_interval_s: 120,
+					sync_coordinator_groups: ["team-a"],
+				});
+				expect(
+					store.db
+						.prepare("SELECT COUNT(*) FROM sync_peers WHERE peer_device_id = 'device-adam'")
+						.pluck()
+						.get(),
+				).toBe(1);
+				expect(
+					store.db
+						.prepare("SELECT COUNT(*) FROM actors WHERE actor_id = ?")
+						.pluck()
+						.get(store.actorId),
+				).toBe(1);
+			} finally {
+				cleanup();
+				globalThis.fetch = previousFetch;
+				if (previousConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = previousConfig;
+				if (previousKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
+				rmSync(testDir, { recursive: true, force: true });
+			}
+		});
+
+		it("returns a safe actionable error when project sync config cannot be written", async () => {
+			const testDir = mkdtempSync(join(tmpdir(), "codemem-project-config-failure-test-"));
+			const configPath = join(testDir, "config-as-directory");
+			const keysDir = join(testDir, "keys");
+			const previousConfig = process.env.CODEMEM_CONFIG;
+			const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const previousFetch = globalThis.fetch;
+			const inviterPublicKey = "config-failure-inviter-public-key";
+			mkdirSync(configPath);
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			globalThis.fetch = vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							status: "pending_setup",
+							operation_id: `share_${"e".repeat(40)}`,
+							group_id: "team-a",
+							trust_state: "bootstrap_grant_created",
+							bootstrap_grant_id: "grant-write",
+							inviter_device: {
+								device_id: "internal-device-id",
+								public_key: inviterPublicKey,
+								fingerprint: fingerprintPublicKey(inviterPublicKey),
+							},
+						}),
+						{ status: 200 },
+					),
+			) as typeof fetch;
+			const invite = core.encodeInvitePayload({
+				v: 1,
+				kind: "coordinator_team_invite",
+				coordinator_url: "https://coord.example.test",
+				group_id: "team-a",
+				policy: "auto_admit",
+				token: "project-config-write-token",
+				expires_at: "2099-01-01T00:00:00.000Z",
+				team_name: "Team A",
+				operation_id: `share_${"e".repeat(40)}`,
+			});
+			const { app, cleanup } = createTestApp({ seedDevice: false });
+			try {
+				const response = await app.request("/api/sync/invites/import", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ invite, recipient_name: "Brian" }),
+				});
+				expect(response.status).toBe(400);
+				const body = (await response.json()) as Record<string, unknown>;
+				expect(body).toEqual({
+					error: "project_sync_enablement_failed",
+					detail:
+						"Invitation was accepted, but sync could not be enabled. Make the codemem config writable, then retry.",
+				});
+				expect(JSON.stringify(body)).not.toContain("internal-device-id");
+				expect(JSON.stringify(body)).not.toContain(configPath);
+			} finally {
+				cleanup();
+				globalThis.fetch = previousFetch;
+				if (previousConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = previousConfig;
+				if (previousKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
+				rmSync(testDir, { recursive: true, force: true });
 			}
 		});
 

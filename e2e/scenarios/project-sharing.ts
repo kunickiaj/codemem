@@ -144,6 +144,32 @@ function startServer(ctx: ScenarioContext, service: string, artifact: string): v
 	assertStatus(result.status, 0, `${service} viewer/sync server failed to start`);
 }
 
+function restartServer(ctx: ScenarioContext, service: string, artifact: string): void {
+	const restarted = ctx.compose.restart(service, `${artifact}-container`);
+	assertStatus(restarted.status, 0, `${service} container failed to restart`);
+	startServer(ctx, service, `${artifact}-start`);
+}
+
+function readConfig(
+	ctx: ScenarioContext,
+	service: string,
+	artifact: string,
+): Record<string, unknown> {
+	const result = ctx.compose.exec(
+		service,
+		[
+			"node",
+			"--input-type=module",
+			"-e",
+			"import { readFileSync } from 'node:fs'; console.log(readFileSync('/config/codemem.json', 'utf8'));",
+		],
+		artifact,
+		30_000,
+	);
+	assertStatus(result.status, 0, `${service} config read failed`);
+	return parseJson<Record<string, unknown>>(result.stdout, artifact);
+}
+
 async function request<T>(
 	ctx: ScenarioContext,
 	service: string,
@@ -204,9 +230,9 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		"source bystander fixture missing",
 	);
 
-	for (const [service, deviceName] of [
-		["peer-a", "Adam's Test Mac"],
-		["peer-b", "Brian's Test Mac"],
+	for (const [service, deviceName, syncEnabled] of [
+		["peer-a", "Adam's Test Mac", true],
+		["peer-b", "Brian's Test Mac", false],
 	] as const) {
 		writePeerConfig(
 			ctx,
@@ -214,7 +240,7 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 			{
 				actor_display_name: service === "peer-a" ? "Adam" : "Brian",
 				sync_device_name: deviceName,
-				sync_enabled: true,
+				sync_enabled: syncEnabled,
 				sync_host: "0.0.0.0",
 				sync_port: 7337,
 				sync_advertise: `http://${service}:7337`,
@@ -310,6 +336,22 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		{ invite: created.body.invite.encoded, recipient_name: "Brian", device_name: "Brian's Test Mac" },
 	);
 	assert(accepted.status === 200, `project invite acceptance failed: ${JSON.stringify(accepted.body)}`);
+	assert(
+		accepted.body.status === "pending_setup" &&
+			accepted.body.sync_enabled === true &&
+			accepted.body.type === "project_share" &&
+			accepted.body.setup_state === "restart_required" &&
+			accepted.body.restart_required === true,
+		"disabled recipient acceptance must remain pending and require restart",
+	);
+	assert(
+		String(accepted.body.detail ?? "").includes("Restart codemem"),
+		"restart-required acceptance did not provide actionable detail",
+	);
+	const enabledRecipientConfig = readConfig(ctx, "peer-b", "19-read-enabled-peer-b-config");
+	assert(enabledRecipientConfig.sync_enabled === true, "project acceptance did not persist recipient sync");
+	restartServer(ctx, "peer-b", "20-restart-peer-b");
+	await waitForServer(ctx, "peer-b", "21-peer-b-ready-after-restart");
 
 	await waitFor(
 		async () => {
@@ -317,7 +359,7 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 				ctx,
 				"peer-a",
 				`/api/sync/project-invites/${created.body.operation_id}/reconcile`,
-				"19-reconcile",
+				"23-reconcile",
 				{},
 			);
 			assert(reconciled.status === 200, `acceptance reconciliation failed: ${JSON.stringify(reconciled.body)}`);
@@ -325,7 +367,7 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 				ctx,
 				"peer-a",
 				`/api/sync/share-operations/${created.body.operation_id}/advance`,
-				"20-advance",
+				"24-advance",
 				{},
 			);
 			assert(advanced.status === 200, `project provisioning not ready: ${JSON.stringify(advanced.body)}`);
