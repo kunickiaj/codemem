@@ -677,9 +677,7 @@ function localOnboardingBinding(
 	devicePublicKey: string;
 	deviceDisplayName: string;
 } {
-	const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
-	store.adoptEnsuredDeviceIdentity(deviceId);
-	ensureLocalActorRecord(store);
+	const deviceId = ensureStableStoreIdentity(store);
 	const devicePublicKey = String(
 		store.db
 			.prepare("SELECT public_key FROM sync_device WHERE device_id = ?")
@@ -2365,6 +2363,13 @@ function ensureLocalActorRecord(store: MemoryStore): void {
 			updated_at: now,
 		})
 		.run();
+}
+
+function ensureStableStoreIdentity(store: MemoryStore): string {
+	const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+	store.adoptEnsuredDeviceIdentity(deviceId);
+	ensureLocalActorRecord(store);
+	return deviceId;
 }
 
 function findPeerDeviceIdForAddress(store: MemoryStore, address: string): string | null {
@@ -5641,6 +5646,7 @@ export function syncRoutes(
 		if (!body || typeof body.invite !== "string") return c.json({ error: "invite_invalid" }, 400);
 		try {
 			const payload = decodeInvitePayload(extractInvitePayload(body.invite));
+			ensureStableStoreIdentity(store);
 			const recipientInvite = payload.kind === "team_member" || payload.kind === "add_device";
 			if (!payload.operation_id && !recipientInvite) return c.json({ kind: "legacy_team_invite" });
 			const [status, inspected] = await requestJson(
@@ -5770,6 +5776,7 @@ export function syncRoutes(
 
 		try {
 			const decoded = decodeInvitePayload(extractInvitePayload(rawValue));
+			ensureStableStoreIdentity(store);
 			const recipientInvite = decoded.kind === "team_member" || decoded.kind === "add_device";
 			const reviewedOnboardingDigest =
 				typeof body.reviewed_onboarding_digest === "string"

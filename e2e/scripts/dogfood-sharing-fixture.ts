@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { initDatabase, MemoryStore } from "../../packages/core/src/index.ts";
+import { ensureDeviceIdentity, initDatabase, MemoryStore } from "../../packages/core/src/index.ts";
 
 const DB_PATH = "/data/mem.sqlite";
 const FIXTURE_TIME = "2026-07-23T12:00:00.000Z";
@@ -55,6 +55,10 @@ export interface FixtureSummary {
 		identity_id: string;
 		device_id: string;
 		display_name: string;
+		identity_invariant: {
+			active_local_count: number;
+			human_named: boolean;
+		};
 	};
 	team: {
 		team_id: string;
@@ -200,6 +204,19 @@ export function buildSafeSummary(
 	const actor = store.db
 		.prepare("SELECT display_name FROM actors WHERE actor_id = ?")
 		.get(store.actorId) as { display_name: string } | undefined;
+	const activeLocalActors = store.db
+		.prepare(
+			"SELECT actor_id, display_name FROM actors WHERE is_local = 1 AND status = 'active' ORDER BY actor_id",
+		)
+		.all() as Array<{ actor_id: string; display_name: string }>;
+	const canonicalLocalActor = activeLocalActors[0];
+	const humanNamed = Boolean(
+		canonicalLocalActor &&
+			canonicalLocalActor.actor_id === store.actorId &&
+			canonicalLocalActor.display_name.trim() &&
+			canonicalLocalActor.display_name !== canonicalLocalActor.actor_id &&
+			canonicalLocalActor.display_name !== "local:local",
+	);
 	const teamExists = Boolean(
 		store.db.prepare("SELECT 1 FROM policy_teams WHERE team_id = ?").get(TEAM_ID),
 	);
@@ -219,6 +236,10 @@ export function buildSafeSummary(
 			identity_id: store.actorId,
 			device_id: store.deviceId,
 			display_name: actor?.display_name ?? store.actorDisplayName,
+			identity_invariant: {
+				active_local_count: activeLocalActors.length,
+				human_named: humanNamed,
+			},
 		},
 		team: {
 			team_id: TEAM_ID,
@@ -239,6 +260,10 @@ export async function runFixtureAction(
 	store: MemoryStore,
 	action: FixtureAction,
 ): Promise<FixtureSummary> {
+	const [deviceId] = ensureDeviceIdentity(store.db, {
+		keysDir: process.env.CODEMEM_KEYS_DIR?.trim() || undefined,
+	});
+	store.adoptEnsuredDeviceIdentity(deviceId);
 	if (action === "setup-owner") {
 		ensureProfile(store, "owner");
 		ensureEmptyTeam(store);

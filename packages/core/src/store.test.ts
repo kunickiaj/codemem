@@ -144,6 +144,199 @@ describe("MemoryStore", () => {
 			expect(store.actorId).toBe("local:local");
 		});
 
+		it("adopts an ensured device identity and retires the fallback local actor", () => {
+			const now = "2026-07-23T12:00:00.000Z";
+			store.db
+				.prepare(
+					`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+					 VALUES ('local:local', 'Dogfood Owner', 1, 'active', ?, ?)`,
+				)
+				.run(now, now);
+
+			store.adoptEnsuredDeviceIdentity("device-stable-owner");
+
+			expect(store.deviceId).toBe("device-stable-owner");
+			expect(store.actorId).toBe("local:device-stable-owner");
+			expect(store.actorDisplayName).toBe("Dogfood Owner");
+			expect(
+				store.db
+					.prepare(
+						"SELECT actor_id, display_name, is_local, status, merged_into_actor_id FROM actors ORDER BY actor_id",
+					)
+					.all(),
+			).toEqual([
+				{
+					actor_id: "local:device-stable-owner",
+					display_name: "Dogfood Owner",
+					is_local: 1,
+					status: "active",
+					merged_into_actor_id: null,
+				},
+				{
+					actor_id: "local:local",
+					display_name: "Dogfood Owner",
+					is_local: 0,
+					status: "merged",
+					merged_into_actor_id: "local:device-stable-owner",
+				},
+			]);
+		});
+
+		it("migrates fallback-authored memory ownership without rewriting historical device clocks", () => {
+			const sessionId = insertTestSession(store.db);
+			const memoryId = store.remember(sessionId, "discovery", "Fallback memory", "Body", 0.5, [], {
+				visibility: "private",
+			});
+
+			store.adoptEnsuredDeviceIdentity("device-stable-memory");
+
+			const memory = store.db
+				.prepare(
+					`SELECT actor_id, actor_display_name, origin_device_id, workspace_id, metadata_json
+					 FROM memory_items WHERE id = ?`,
+				)
+				.get(memoryId) as {
+				actor_id: string;
+				actor_display_name: string;
+				origin_device_id: string;
+				workspace_id: string;
+				metadata_json: string;
+			};
+			expect(memory).toMatchObject({
+				actor_id: "local:device-stable-memory",
+				origin_device_id: "local",
+				workspace_id: "personal:local:device-stable-memory",
+			});
+			expect(JSON.parse(memory.metadata_json)).toMatchObject({ clock_device_id: "local" });
+			expect(store.memoryOwnedBySelf(memory)).toBe(true);
+			expect(store.recent(10, { ownership_scope: "mine" }).map((item) => item.id)).toContain(
+				memoryId,
+			);
+		});
+
+		it("keeps configured actor identity while adopting the ensured device", () => {
+			store.close();
+			writeFileSync(
+				process.env.CODEMEM_CONFIG as string,
+				JSON.stringify({ actor_id: "actor:configured", actor_display_name: "Configured User" }),
+			);
+			store = new MemoryStore(dbPath);
+
+			store.adoptEnsuredDeviceIdentity("device-for-configured-actor");
+
+			expect(store.deviceId).toBe("device-for-configured-actor");
+			expect(store.actorId).toBe("actor:configured");
+			expect(store.actorDisplayName).toBe("Configured User");
+		});
+
+		it("keeps a configured actor canonical while retiring an active stale fallback actor", () => {
+			store.close();
+			writeFileSync(
+				process.env.CODEMEM_CONFIG as string,
+				JSON.stringify({ actor_id: "actor:configured", actor_display_name: "Configured User" }),
+			);
+			store = new MemoryStore(dbPath);
+			const now = "2026-07-23T12:00:00.000Z";
+			store.db
+				.prepare(
+					`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+					 VALUES ('local:local', 'local:local', 1, 'active', ?, ?)`,
+				)
+				.run(now, now);
+
+			store.adoptEnsuredDeviceIdentity("device-for-configured-actor");
+
+			expect(store.deviceId).toBe("device-for-configured-actor");
+			expect(store.actorId).toBe("actor:configured");
+			expect(store.actorDisplayName).toBe("Configured User");
+			expect(
+				store.db
+					.prepare(
+						"SELECT actor_id, display_name FROM actors WHERE is_local = 1 AND status = 'active'",
+					)
+					.all(),
+			).toEqual([{ actor_id: "actor:configured", display_name: "Configured User" }]);
+			expect(
+				store.db
+					.prepare(
+						"SELECT is_local, status, merged_into_actor_id FROM actors WHERE actor_id = 'local:local'",
+					)
+					.get(),
+			).toEqual({
+				is_local: 0,
+				status: "merged",
+				merged_into_actor_id: "actor:configured",
+			});
+		});
+
+		it("does not advance in-memory identity when fallback persistence fails", () => {
+			const sessionId = insertTestSession(store.db);
+			const memoryId = store.remember(sessionId, "discovery", "Rollback memory", "Body", 0.5, [], {
+				visibility: "private",
+			});
+			const now = "2026-07-23T12:00:00.000Z";
+			store.db
+				.prepare(
+					`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+					 VALUES ('local:local', 'Fallback User', 1, 'active', ?, ?)`,
+				)
+				.run(now, now);
+			store.db.exec(`CREATE TRIGGER reject_fallback_retirement BEFORE UPDATE ON actors
+				WHEN OLD.actor_id = 'local:local' BEGIN SELECT RAISE(ABORT, 'retirement failed'); END`);
+
+			expect(() => store.adoptEnsuredDeviceIdentity("device-transaction-failure")).toThrow(
+				"retirement failed",
+			);
+			expect(store.deviceId).toBe("local");
+			expect(store.actorId).toBe("local:local");
+			expect(store.db.prepare("SELECT actor_id FROM actors ORDER BY actor_id").all()).toEqual([
+				{ actor_id: "local:local" },
+			]);
+			const memory = store.db
+				.prepare(
+					"SELECT actor_id, workspace_id, origin_device_id, metadata_json FROM memory_items WHERE id = ?",
+				)
+				.get(memoryId) as {
+				actor_id: string;
+				workspace_id: string;
+				origin_device_id: string;
+				metadata_json: string;
+			};
+			expect(memory).toMatchObject({
+				actor_id: "local:local",
+				workspace_id: "personal:local:local",
+				origin_device_id: "local",
+			});
+			expect(JSON.parse(memory.metadata_json)).toMatchObject({ clock_device_id: "local" });
+		});
+
+		it("does not claim fallback actor rows authored by a foreign device", () => {
+			const sessionId = insertTestSession(store.db);
+			const memoryId = store.remember(sessionId, "discovery", "Foreign fallback", "Body", 0.5, [], {
+				actor_id: "local:local",
+				origin_device_id: "foreign-device",
+				visibility: "private",
+			});
+
+			store.adoptEnsuredDeviceIdentity("device-stable-local");
+
+			const memory = store.db
+				.prepare("SELECT actor_id, workspace_id, origin_device_id FROM memory_items WHERE id = ?")
+				.get(memoryId) as { actor_id: string; workspace_id: string; origin_device_id: string };
+			expect(memory).toEqual({
+				actor_id: "local:local",
+				workspace_id: "personal:local:local",
+				origin_device_id: "foreign-device",
+			});
+			expect(store.memoryOwnedBySelf(memory)).toBe(false);
+			expect(store.recent(10, { ownership_scope: "mine" }).map((item) => item.id)).not.toContain(
+				memoryId,
+			);
+			expect(store.recent(10, { ownership_scope: "theirs" }).map((item) => item.id)).toContain(
+				memoryId,
+			);
+		});
+
 		it("loads actor identity defaults from codemem config file", () => {
 			store.close();
 			writeFileSync(

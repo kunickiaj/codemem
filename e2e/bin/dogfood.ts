@@ -82,6 +82,46 @@ interface DogfoodOperations {
 	captureLogs(): void;
 }
 
+interface FixtureIdentityProof {
+	profile: {
+		identity_id: string;
+		identity_invariant: { active_local_count: number; human_named: boolean };
+	};
+}
+
+function fixtureIdentityProof(value: unknown): FixtureIdentityProof | null {
+	if (!value || typeof value !== "object") return null;
+	const profile = (value as { profile?: unknown }).profile;
+	if (!profile || typeof profile !== "object") return null;
+	const identityId = String((profile as { identity_id?: unknown }).identity_id ?? "").trim();
+	const invariant = (profile as { identity_invariant?: unknown }).identity_invariant;
+	if (!identityId || !invariant || typeof invariant !== "object") return null;
+	return {
+		profile: {
+			identity_id: identityId,
+			identity_invariant: {
+				active_local_count: Number(
+					(invariant as { active_local_count?: unknown }).active_local_count ?? 0,
+				),
+				human_named: (invariant as { human_named?: unknown }).human_named === true,
+			},
+		},
+	};
+}
+
+function assertDistinctFixtureIdentities(summaries: unknown[]): void {
+	const proofs = summaries.map(fixtureIdentityProof);
+	const identities = proofs.map((proof) => proof?.profile.identity_id ?? "");
+	const valid = proofs.every(
+		(proof) =>
+			proof?.profile.identity_invariant.active_local_count === 1 &&
+			proof.profile.identity_invariant.human_named,
+	);
+	if (!valid || new Set(identities).size !== summaries.length) {
+		throw new Error("Each dogfood peer must prove one distinct active human-named local Identity.");
+	}
+}
+
 export interface DogfoodDependencies {
 	state: StateStore;
 	operations: DogfoodOperations;
@@ -259,9 +299,12 @@ async function runSetup(
 		dependencies.state.remove();
 	}
 	dependencies.operations.up(command.build);
-	dependencies.operations.fixture("peer-a", "setup-owner");
-	dependencies.operations.fixture("peer-b", "setup-teammate");
-	dependencies.operations.fixture("peer-c", "setup-second-device");
+	const fixtureSummaries = [
+		dependencies.operations.fixture("peer-a", "setup-owner"),
+		dependencies.operations.fixture("peer-b", "setup-teammate"),
+		dependencies.operations.fixture("peer-c", "setup-second-device"),
+	];
+	assertDistinctFixtureIdentities(fixtureSummaries);
 	dependencies.operations.configureAndEnrollOwner();
 	await dependencies.operations.waitForViewers();
 	dependencies.state.write({

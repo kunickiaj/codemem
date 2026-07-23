@@ -11673,7 +11673,7 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("imports coordinator invites through the viewer route", async () => {
+		it("imports directly from a fallback store with one stable human-named local actor", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
 			const prevConfig = process.env.CODEMEM_CONFIG;
@@ -11701,12 +11701,19 @@ describe("viewer-server", () => {
 			process.env.CODEMEM_CONFIG = configPath;
 			process.env.CODEMEM_KEYS_DIR = keysDir;
 			writeFileSync(configPath, JSON.stringify({ actor_display_name: "Fixture User" }));
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, getStore, cleanup } = createTestApp({ seedDevice: false });
 			try {
 				await app.request("/api/stats");
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
-				ensureDeviceIdentity(store.db, { keysDir });
+				expect(store.actorId).toBe("local:local");
+				const fallbackNow = "2026-07-23T12:00:00.000Z";
+				store.db
+					.prepare(
+						`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+						 VALUES ('local:local', 'local:local', 1, 'active', ?, ?)`,
+					)
+					.run(fallbackNow, fallbackNow);
 				const res = await app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
@@ -11716,6 +11723,16 @@ describe("viewer-server", () => {
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body.group_id).toBe("team-a");
 				expect(body.status).toBe("pending");
+				expect(store.deviceId).not.toBe("local");
+				expect(store.actorId).toBe(`local:${store.deviceId}`);
+				expect(store.actorDisplayName).toBe("Fixture User");
+				expect(
+					store.db
+						.prepare(
+							"SELECT actor_id, display_name FROM actors WHERE is_local = 1 AND status = 'active'",
+						)
+						.all(),
+				).toEqual([{ actor_id: store.actorId, display_name: "Fixture User" }]);
 				const writtenConfig = JSON.parse(readFileSync(configPath, "utf8")) as Record<
 					string,
 					unknown
@@ -11729,6 +11746,89 @@ describe("viewer-server", () => {
 				else process.env.CODEMEM_CONFIG = prevConfig;
 				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
 				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			}
+		});
+
+		it("keeps configured identity canonical and hides a stale fallback during invite import", async () => {
+			const configDir = mkdtempSync(join(tmpdir(), "codemem-configured-invite-test-"));
+			const configPath = join(configDir, "config.json");
+			const keysDir = join(configDir, "keys");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const invitePayload = {
+				v: 1,
+				kind: "coordinator_team_invite",
+				coordinator_url: "https://coord.example.test",
+				group_id: "team-a",
+				policy: "approval_required",
+				token: "configured-token",
+				expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+				team_name: "Team A",
+			};
+			const invite = Buffer.from(JSON.stringify(invitePayload), "utf8").toString("base64url");
+			let joinBody: Record<string, unknown> = {};
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				if (String(input).includes("/v1/join")) {
+					joinBody = JSON.parse(
+						init?.body instanceof Uint8Array
+							? new TextDecoder().decode(init.body)
+							: String(init?.body ?? "{}"),
+					) as Record<string, unknown>;
+					return new Response(JSON.stringify({ status: "pending" }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			}) as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(
+				configPath,
+				JSON.stringify({ actor_id: "actor:configured", actor_display_name: "Configured User" }),
+			);
+			const { app, getStore, cleanup } = createTestApp({ seedDevice: false });
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = "2026-07-23T12:00:00.000Z";
+				store.db
+					.prepare(
+						`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+						 VALUES ('local:local', 'local:local', 1, 'active', ?, ?)`,
+					)
+					.run(now, now);
+
+				const imported = await app.request("/api/sync/invites/import", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ invite }),
+				});
+				const importedBody = (await imported.json()) as Record<string, unknown>;
+				expect(imported.status).toBe(200);
+				expect(JSON.stringify(importedBody)).not.toContain("local:local");
+				expect(joinBody).toMatchObject({ display_name: "Configured User" });
+				expect(JSON.stringify(joinBody)).not.toContain("local:local");
+				expect(store.actorId).toBe("actor:configured");
+
+				const actors = await app.request("/api/sync/actors");
+				const actorsBody = (await actors.json()) as { items: Array<Record<string, unknown>> };
+				expect(actorsBody.items).toEqual([
+					expect.objectContaining({
+						actor_id: "actor:configured",
+						display_name: "Configured User",
+						is_local: 1,
+						status: "active",
+					}),
+				]);
+				expect(JSON.stringify(actorsBody)).not.toContain("local:local");
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+				rmSync(configDir, { recursive: true, force: true });
 			}
 		});
 
@@ -11801,12 +11901,19 @@ describe("viewer-server", () => {
 			process.env.CODEMEM_CONFIG = configPath;
 			process.env.CODEMEM_KEYS_DIR = keysDir;
 			writeFileSync(configPath, JSON.stringify({ actor_display_name: "Local Person" }));
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, getStore, cleanup } = createTestApp({ seedDevice: false });
 			try {
 				await app.request("/api/stats");
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
-				ensureDeviceIdentity(store.db, { keysDir });
+				expect(store.actorId).toBe("local:local");
+				const fallbackNow = "2026-07-23T12:00:00.000Z";
+				store.db
+					.prepare(
+						`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+						 VALUES ('local:local', 'local:local', 1, 'active', ?, ?)`,
+					)
+					.run(fallbackNow, fallbackNow);
 				const inspect = await app.request("/api/sync/invites/inspect", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
@@ -11817,12 +11924,24 @@ describe("viewer-server", () => {
 					recipient_name: "Local Person",
 					projects: [{ display_name: "codemem", existing_memory_count: 3 }],
 				});
+				expect(store.deviceId).not.toBe("local");
+				expect(store.actorId).toBe(`local:${store.deviceId}`);
+				expect(
+					store.db
+						.prepare(
+							"SELECT is_local, status, merged_into_actor_id FROM actors WHERE actor_id = 'local:local'",
+						)
+						.get(),
+				).toEqual({
+					is_local: 0,
+					status: "merged",
+					merged_into_actor_id: store.actorId,
+				});
 				const accepted = await app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({
 						invite,
-						recipient_name: "Brian",
 						device_name: "Brian's Test Mac",
 					}),
 				});
@@ -11831,7 +11950,7 @@ describe("viewer-server", () => {
 				expect(joinBody).toMatchObject({
 					operation_id: operationId,
 					recipient_actor_id: store.actorId,
-					recipient_display_name: "Brian",
+					recipient_display_name: "Local Person",
 					device_display_name: "Brian's Test Mac",
 				});
 				expect(joinBody).not.toHaveProperty("projects");
@@ -11840,7 +11959,14 @@ describe("viewer-server", () => {
 					store.db
 						.prepare("SELECT display_name, status FROM actors WHERE actor_id = ?")
 						.get(store.actorId),
-				).toEqual({ display_name: "Brian", status: "active" });
+				).toEqual({ display_name: "Local Person", status: "active" });
+				expect(
+					store.db
+						.prepare(
+							"SELECT actor_id, display_name FROM actors WHERE is_local = 1 AND status = 'active'",
+						)
+						.all(),
+				).toEqual([{ actor_id: store.actorId, display_name: "Local Person" }]);
 				expect(
 					store.db
 						.prepare("SELECT pending_bootstrap_grant_id FROM sync_peers WHERE peer_device_id = ?")
