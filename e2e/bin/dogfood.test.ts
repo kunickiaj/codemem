@@ -43,7 +43,14 @@ function createHarness(initialState: DogfoodState | null = null) {
 			up: vi.fn(),
 			down: vi.fn(),
 			ps: vi.fn(() => "peer-a running (healthy)"),
-			fixture: vi.fn((_service, action) => ({ ok: true, action })),
+			fixture: vi.fn((service, action) => ({
+				ok: true,
+				action,
+				profile: {
+					identity_id: `identity-${service}`,
+					identity_invariant: { active_local_count: 1, human_named: true },
+				},
+			})),
 			configureAndEnrollOwner: vi.fn(),
 			waitForViewers: vi.fn(async () => undefined),
 			stop: vi.fn(),
@@ -171,6 +178,14 @@ describe("dogfood runner", () => {
 
 	it("checks fixed resources before a fresh successful setup", async () => {
 		const { runner, dependencies, output, getState } = createHarness();
+		vi.mocked(dependencies.operations.fixture).mockImplementation((service, action) => ({
+			ok: true,
+			action,
+			profile: {
+				identity_id: `identity-${service}`,
+				identity_invariant: { active_local_count: 1, human_named: true },
+			},
+		}));
 
 		await runner.run({ name: "setup", build: false, reset: false });
 
@@ -181,6 +196,42 @@ describe("dogfood runner", () => {
 		expect(
 			vi.mocked(dependencies.operations.resourcesExist).mock.invocationCallOrder[0] ?? 0,
 		).toBeLessThan(vi.mocked(dependencies.operations.up).mock.invocationCallOrder[0] ?? 0);
+	});
+
+	it("rejects setup when peer fixture summaries do not prove distinct local Identities", async () => {
+		const { runner, dependencies } = createHarness();
+		vi.mocked(dependencies.operations.fixture).mockImplementation((_service, action) => ({
+			ok: true,
+			action,
+			profile: {
+				identity_id: "local:local",
+				identity_invariant: { active_local_count: 1, human_named: false },
+			},
+		}));
+
+		await expect(runner.run({ name: "setup", build: false, reset: false })).rejects.toThrow(
+			"distinct active human-named local Identity",
+		);
+		expect(dependencies.operations.configureAndEnrollOwner).not.toHaveBeenCalled();
+		expect(dependencies.state.write).not.toHaveBeenCalled();
+	});
+
+	it("rejects otherwise-valid peer proofs that reuse the same Identity", async () => {
+		const { runner, dependencies } = createHarness();
+		vi.mocked(dependencies.operations.fixture).mockImplementation((_service, action) => ({
+			ok: true,
+			action,
+			profile: {
+				identity_id: "identity-reused-by-all-peers",
+				identity_invariant: { active_local_count: 1, human_named: true },
+			},
+		}));
+
+		await expect(runner.run({ name: "setup", build: false, reset: false })).rejects.toThrow(
+			"distinct active human-named local Identity",
+		);
+		expect(dependencies.operations.configureAndEnrollOwner).not.toHaveBeenCalled();
+		expect(dependencies.state.write).not.toHaveBeenCalled();
 	});
 
 	it("resets only the fixed sandbox before deterministic setup", async () => {

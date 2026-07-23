@@ -11,12 +11,18 @@ import {
 
 const temporaryDirectories: string[] = [];
 
-function createStore(role: string): MemoryStore {
+function createStore(role: string, options: { preseedIdentity?: boolean } = {}): MemoryStore {
 	const directory = mkdtempSync(join(tmpdir(), `codemem-dogfood-${role}-`));
 	temporaryDirectories.push(directory);
 	vi.stubEnv("CODEMEM_CONFIG", join(directory, "missing-config.json"));
-	vi.stubEnv("CODEMEM_DEVICE_ID", `dogfood-${role}-device`);
-	vi.stubEnv("CODEMEM_ACTOR_ID", `dogfood-${role}-identity`);
+	vi.stubEnv("CODEMEM_KEYS_DIR", join(directory, "keys"));
+	if (options.preseedIdentity !== false) {
+		vi.stubEnv("CODEMEM_DEVICE_ID", `dogfood-${role}-device`);
+		vi.stubEnv("CODEMEM_ACTOR_ID", `dogfood-${role}-identity`);
+	} else {
+		vi.stubEnv("CODEMEM_DEVICE_ID", undefined);
+		vi.stubEnv("CODEMEM_ACTOR_ID", undefined);
+	}
 	vi.stubEnv("CODEMEM_ACTOR_DISPLAY_NAME", `Dogfood ${role}`);
 	vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
 	const databasePath = join(directory, "mem.sqlite");
@@ -132,6 +138,60 @@ describe("runFixtureAction", () => {
 			}
 		},
 	);
+
+	it("ensures device identity before creating one human-named active local Identity", async () => {
+		const store = createStore("owner", { preseedIdentity: false });
+		try {
+			expect(store.actorId).toBe("local:local");
+
+			const summary = await runFixtureAction(store, "setup-owner");
+			const localActors = store.db
+				.prepare(
+					"SELECT actor_id, display_name FROM actors WHERE is_local = 1 AND status = 'active'",
+				)
+				.all() as Array<{ actor_id: string; display_name: string }>;
+
+			expect(summary.profile.identity_id).not.toBe("local:local");
+			expect(summary.profile.identity_invariant).toEqual({
+				active_local_count: 1,
+				human_named: true,
+			});
+			expect(localActors).toEqual([
+				{ actor_id: summary.profile.identity_id, display_name: "Dogfood Owner" },
+			]);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("creates distinct stable human-named Identities for all three fresh peers", async () => {
+		const summaries: Awaited<ReturnType<typeof runFixtureAction>>[] = [];
+		const stores: MemoryStore[] = [];
+		try {
+			for (const role of ["owner", "teammate", "second-device"] as const) {
+				const store = createStore(role, { preseedIdentity: false });
+				stores.push(store);
+				summaries.push(await runFixtureAction(store, `setup-${role}`));
+			}
+
+			expect(new Set(summaries.map((summary) => summary.profile.identity_id)).size).toBe(3);
+			expect(summaries.every((summary) => summary.profile.device_id !== "local")).toBe(true);
+			expect(
+				summaries.every(
+					(summary) =>
+						summary.profile.identity_invariant.active_local_count === 1 &&
+						summary.profile.identity_invariant.human_named,
+				),
+			).toBe(true);
+			expect(summaries.map((summary) => summary.profile.display_name)).toEqual([
+				"Dogfood Owner",
+				"Dogfood Teammate",
+				"Dogfood Teammate Second Device",
+			]);
+		} finally {
+			for (const store of stores) store.close();
+		}
+	});
 
 	it.each(["add-future-selected", "add-future-unrelated"] as const)(
 		"rejects %s before the owner baseline exists",
