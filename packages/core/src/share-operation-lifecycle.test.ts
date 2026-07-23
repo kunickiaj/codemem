@@ -125,6 +125,18 @@ describe("projectShareLifecycle", () => {
 		expect(result.explanation).not.toContain("reassign_capability_required");
 	});
 
+	it("keeps a terminal reviewed-intent failure actionable without exposing its code", () => {
+		const result = project("needs_attention", [
+			step({ status: "failed", safeErrorCode: "operation_intent_mismatch" }),
+		]);
+		expect(result).toMatchObject({
+			lifecycle: "needs_attention",
+			explanation: "The accepted Project list no longer matches the reviewed invitation.",
+			primaryAction: { kind: "retry_setup", label: "Retry setup" },
+		});
+		expect(result.explanation).not.toContain("operation_intent_mismatch");
+	});
+
 	it("warns that revocation cannot recall copied memories", () => {
 		expect(project("revoked").explanation).toBe("Previously copied memories may remain.");
 	});

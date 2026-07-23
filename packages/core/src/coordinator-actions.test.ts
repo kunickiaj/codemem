@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +25,13 @@ import { encodeInvitePayload } from "./coordinator-invites.js";
 import { connect } from "./db.js";
 import { initDatabase } from "./maintenance.js";
 import { readCodememConfigFileAtPath, writeCodememConfigFile } from "./observer-config.js";
+import {
+	isProjectSyncEnablementError,
+	PROJECT_INVITE_PENDING_STATUS,
+	PROJECT_SYNC_ENABLEMENT_FAILED,
+	PROJECT_SYNC_ENABLEMENT_FAILURE_DETAIL,
+	ProjectSyncEnablementError,
+} from "./project-invite-acceptance.js";
 import { previewRecipientPolicyOnboarding } from "./recipient-policy-onboarding.js";
 import { ensureDeviceIdentity, fingerprintPublicKey, loadPublicKey } from "./sync-identity.js";
 
@@ -504,6 +511,11 @@ describe("coordinator local admin actions", () => {
 		});
 
 		await coordinatorImportInviteAction({ inviteValue: invite });
+		const persistedConfig = readCodememConfigFileAtPath(String(process.env.CODEMEM_CONFIG));
+		expect(persistedConfig).not.toHaveProperty("sync_enabled");
+		expect(persistedConfig).not.toHaveProperty("sync_host");
+		expect(persistedConfig).not.toHaveProperty("sync_port");
+		expect(persistedConfig).not.toHaveProperty("sync_interval_s");
 
 		const publicKey = loadPublicKey(envKeysDir);
 		expect(publicKey).toBeTruthy();
@@ -568,9 +580,18 @@ describe("coordinator local admin actions", () => {
 			operation_id: operationId,
 		});
 
-		await coordinatorImportInviteAction({ inviteValue: invite, dbPath: actionDbPath, keysDir });
+		const imported = await coordinatorImportInviteAction({
+			inviteValue: invite,
+			dbPath: actionDbPath,
+			keysDir,
+		});
 
 		const body = capturedBodies[0];
+		expect(imported).toMatchObject({
+			status: PROJECT_INVITE_PENDING_STATUS,
+			setup_state: "pending_inviter",
+			sync_enabled: true,
+		});
 		expect(body?.recipient_actor_id).toBe(`local:${body?.device_id}`);
 		expect(body?.recipient_display_name).toEqual(expect.any(String));
 		expect(body?.device_display_name).toEqual(expect.any(String));
@@ -593,6 +614,110 @@ describe("coordinator local admin actions", () => {
 					.prepare("SELECT display_name, is_local, status FROM actors WHERE actor_id = ?")
 					.get(body?.recipient_actor_id),
 			).toMatchObject({ is_local: 1, status: "active" });
+		} finally {
+			conn.close();
+		}
+		expect(readCodememConfigFileAtPath(String(process.env.CODEMEM_CONFIG))).toMatchObject({
+			sync_enabled: true,
+			sync_host: "0.0.0.0",
+			sync_port: 7337,
+			sync_interval_s: 120,
+		});
+	});
+
+	it("recovers idempotently when a consumed project invite initially cannot enable sync", async () => {
+		const actionDbPath = join(tmpDir, "project-invite-config-failure.sqlite");
+		const keysDir = join(tmpDir, "project-invite-config-failure-keys");
+		const configParent = join(tmpDir, "blocked-config-parent");
+		const configPath = join(configParent, "config.json");
+		const operationId = `share_${"f".repeat(40)}`;
+		const inviterPublicKey = "ssh-ed25519 inviter-public-key";
+		const fetchMock = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						status: "accepted",
+						operation_id: operationId,
+						trust_state: "bootstrap_grant_created",
+						bootstrap_grant_id: "grant-1",
+						inviter_device: {
+							device_id: "inviter-device",
+							public_key: inviterPublicKey,
+							fingerprint: fingerprintPublicKey(inviterPublicKey),
+						},
+					}),
+					{ status: 200 },
+				),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const invite = encodeInvitePayload({
+			v: 1,
+			kind: "coordinator_team_invite",
+			coordinator_url: "https://coord.example.test",
+			group_id: "team-a",
+			policy: "auto_admit",
+			token: "project-invite-token",
+			expires_at: "2099-01-01T00:00:00.000Z",
+			team_name: "Team A",
+			operation_id: operationId,
+		});
+
+		writeFileSync(configParent, "not-a-directory", "utf8");
+		let failure: unknown;
+		try {
+			await coordinatorImportInviteAction({
+				inviteValue: invite,
+				dbPath: actionDbPath,
+				keysDir,
+				configPath,
+				recipientActorId: "actor-brian",
+				recipientDisplayName: "Brian",
+			});
+		} catch (error) {
+			failure = error;
+		}
+
+		expect(failure).toBeInstanceOf(ProjectSyncEnablementError);
+		expect(isProjectSyncEnablementError(failure)).toBe(true);
+		expect(isProjectSyncEnablementError(new Error(PROJECT_SYNC_ENABLEMENT_FAILURE_DETAIL))).toBe(
+			false,
+		);
+		expect(failure).toMatchObject({
+			code: PROJECT_SYNC_ENABLEMENT_FAILED,
+			detail: PROJECT_SYNC_ENABLEMENT_FAILURE_DETAIL,
+			message: PROJECT_SYNC_ENABLEMENT_FAILURE_DETAIL,
+		});
+
+		rmSync(configParent);
+		const retried = await coordinatorImportInviteAction({
+			inviteValue: invite,
+			dbPath: actionDbPath,
+			keysDir,
+			configPath,
+			recipientActorId: "actor-brian",
+			recipientDisplayName: "Brian",
+		});
+
+		expect(retried).toMatchObject({
+			status: PROJECT_INVITE_PENDING_STATUS,
+			groups: ["team-a"],
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(readCodememConfigFileAtPath(configPath)).toMatchObject({
+			sync_enabled: true,
+			sync_coordinator_groups: ["team-a"],
+		});
+		const conn = connect(actionDbPath);
+		try {
+			expect(
+				conn.prepare("SELECT COUNT(1) AS total FROM actors WHERE actor_id = ?").get("actor-brian"),
+			).toEqual({ total: 1 });
+			expect(
+				conn
+					.prepare(`SELECT COUNT(1) AS total FROM sync_peers
+					 WHERE peer_device_id = ? AND pending_bootstrap_grant_id = ?`)
+					.get("inviter-device", "grant-1"),
+			).toEqual({ total: 1 });
 		} finally {
 			conn.close();
 		}
@@ -794,12 +919,17 @@ describe("coordinator local admin actions", () => {
 			recipientActorId: testCase.identityId,
 		});
 
-		expect(readCodememConfigFileAtPath(configPath)).toMatchObject({
+		const persistedConfig = readCodememConfigFileAtPath(configPath);
+		expect(persistedConfig).toMatchObject({
 			actor_id: testCase.identityId,
 			sync_coordinator_url: "https://coord.example.test",
 			sync_coordinator_groups: testCase.expectedGroups,
 			sync_coordinator_group: "existing-group",
 		});
+		expect(persistedConfig).not.toHaveProperty("sync_enabled");
+		expect(persistedConfig).not.toHaveProperty("sync_host");
+		expect(persistedConfig).not.toHaveProperty("sync_port");
+		expect(persistedConfig).not.toHaveProperty("sync_interval_s");
 	});
 
 	it("rejects recipient onboarding when local access changes after the reviewed preview", async () => {

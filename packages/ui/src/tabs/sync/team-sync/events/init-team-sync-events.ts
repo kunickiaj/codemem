@@ -220,10 +220,13 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 		try {
 			const result = await api.importCoordinatorInvite(inviteValue, identity);
 			state.lastTeamJoin = result;
-			const resultType =
-				typeof (result as { type?: unknown }).type === "string"
-					? ((result as { type: string }).type as "pair" | "team_join")
-					: "team_join";
+			const resultFields = result as {
+				detail?: unknown;
+				restart_required?: unknown;
+				setup_state?: unknown;
+				type?: unknown;
+			};
+			const resultType = typeof resultFields.type === "string" ? resultFields.type : "team_join";
 			let feedback: SyncActionFeedback;
 			if (resultType === "pair") {
 				const peerId = String((result as { peer_device_id?: unknown }).peer_device_id ?? "").trim();
@@ -233,6 +236,24 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 						: "Paired the device. It will appear in People & devices.",
 					tone: "success",
 				};
+			} else if (resultType === "project_share") {
+				const pendingSetup =
+					resultFields.restart_required === true ||
+					resultFields.setup_state === "pending_inviter" ||
+					result.status === "pending_setup";
+				const detail = typeof resultFields.detail === "string" ? resultFields.detail.trim() : "";
+				feedback = pendingSetup
+					? {
+							message:
+								detail ||
+								(resultFields.restart_required === true
+									? "Project invitation accepted. Restart codemem to finish setup."
+									: resultFields.setup_state === "pending_inviter"
+										? "Project invitation accepted. Waiting for the inviter to finish setup."
+										: "Project invitation accepted. Setup is still pending."),
+							tone: "warning",
+						}
+					: { message: "Project invitation accepted.", tone: "success" };
 			} else {
 				feedback = {
 					message:
