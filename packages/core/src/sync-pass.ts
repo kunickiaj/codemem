@@ -286,6 +286,29 @@ function defaultCapabilityDiagnostics(): SyncCapabilityDiagnostics {
 	return capabilityDiagnostics("unsupported");
 }
 
+async function reconcilePeerRowsBeforeExchange(
+	db: Database,
+	options: { localDeviceId: string; peerDeviceId: string },
+): Promise<void> {
+	const reconciliation = reconcileStalePeerReceivedRows(db, options);
+	if (reconciliation.deleted_memory_ids.length === 0) return;
+	const vectorWork = {
+		upsertMemoryIds: [],
+		deleteMemoryIds: reconciliation.deleted_memory_ids,
+	};
+	try {
+		queueVectorBackfillForIncrementalSync(db, vectorWork);
+	} catch (queueError) {
+		const fallback = await bestEffortMaintainVectorsForSyncFallback(db, vectorWork);
+		if (fallback.errors.length > 0) {
+			const queueDetail = queueError instanceof Error ? queueError.message : String(queueError);
+			throw new Error(
+				`peer recovery vector cleanup failed: ${queueDetail}; fallback failed: ${fallback.errors.join("; ")}`,
+			);
+		}
+	}
+}
+
 /**
  * Record a sync attempt in the sync_attempts table.
  */
@@ -1206,6 +1229,10 @@ export async function syncOnce(
 			if (!peerResetBoundary) {
 				throw new Error("peer status missing sync_reset boundary");
 			}
+			await reconcilePeerRowsBeforeExchange(db, {
+				localDeviceId: deviceId,
+				peerDeviceId,
+			});
 			if (pendingBootstrapGrantId) {
 				db.prepare(`UPDATE sync_peers SET pending_bootstrap_grant_id = NULL
 					WHERE peer_device_id = ? AND pending_bootstrap_grant_id = ?`).run(

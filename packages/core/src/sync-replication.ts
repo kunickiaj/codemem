@@ -207,8 +207,12 @@ function parseAccessCleanupPayload(op: ReplicationOp): AccessCleanupPayload {
 }
 
 function accessCleanupTargetsPeer(op: ReplicationOp, peerDeviceId: string | null): boolean {
-	const targetPeerDeviceId = parseAccessCleanupPayload(op).target_peer_device_id;
-	return !targetPeerDeviceId || targetPeerDeviceId === cleanText(peerDeviceId);
+	const cleanup = parseAccessCleanupPayload(op);
+	if (!cleanup.cleanup_scope_id) return false;
+	return (
+		cleanup.target_peer_device_id === null ||
+		cleanup.target_peer_device_id === cleanText(peerDeviceId)
+	);
 }
 
 function resolveReplicatedTextUpdate(
@@ -1286,10 +1290,18 @@ export function loadReplicationOpsForPeer(
 		options.deviceId,
 		effectiveScopeId,
 	);
+	const peerBoundaryOps = ops.filter((op) => {
+		if (op.entity_type !== "memory_item") return true;
+		if (op.op_type === ACCESS_CLEANUP_OP_TYPE || op.op_type === REASSIGN_SCOPE_OP_TYPE) {
+			return true;
+		}
+		const scopeId = cleanText(op.scope_id);
+		return Boolean(scopeId && scopeId !== DEFAULT_SYNC_SCOPE_ID);
+	});
 	return {
 		reset_required: false,
 		boundary,
-		ops,
+		ops: peerBoundaryOps,
 		nextCursor,
 	};
 }
@@ -1341,10 +1353,7 @@ export function loadMemorySnapshotPageForPeer(
 				and(
 					isNotNull(schema.memoryItems.import_key),
 					effectiveScopeId === DEFAULT_SYNC_SCOPE_ID
-						? or(
-								isNull(schema.memoryItems.scope_id),
-								eq(schema.memoryItems.scope_id, DEFAULT_SYNC_SCOPE_ID),
-							)
+						? sql`0 = 1`
 						: eq(schema.memoryItems.scope_id, effectiveScopeId),
 					token
 						? or(
@@ -2287,6 +2296,12 @@ export function filterReplicationOpsForSyncWithStatus(
 					continue;
 				}
 			}
+			const regularScopeId = cleanText(op.scope_id);
+			if (!regularScopeId || regularScopeId === DEFAULT_SYNC_SCOPE_ID) {
+				addSkipped(skipped, op, { reason: "scope_filter", scope_id: regularScopeId });
+				nextCursor = computeCursor(op.created_at, op.op_id);
+				continue;
+			}
 			if (
 				applyScopeFilter &&
 				!outboundScopeAllowed(db, op, payload, peerDeviceId, options.localDeviceId ?? null)
@@ -2543,15 +2558,12 @@ function reconcileStalePeerReceivedRowsInternal(
 				continue;
 			}
 			if (!scopeId || scopeId === DEFAULT_SYNC_SCOPE_ID) {
-				result.ambiguous.push(
-					stalePeerCandidateDiagnostic({
-						importKey,
-						memoryId,
-						originDeviceId,
-						reason: "missing_scope",
-						scopeId,
-					}),
-				);
+				if (deleteRows) {
+					clearMemoryRefs(db, memoryId);
+					deleteMemory?.run(memoryId);
+				}
+				result.deleted += 1;
+				result.deleted_memory_ids.push(memoryId);
 				continue;
 			}
 			if (!importKey) {
@@ -2707,6 +2719,40 @@ function authorizationFailureReason(
 	return notMemberReason;
 }
 
+type LocalDefaultOldSideReassignmentValidation =
+	| { ok: true; reassignment: ReassignScopePayload }
+	| { ok: false; reason: "scope_mismatch" | "sender_not_member" };
+
+function validateLocalDefaultOldSideReassignment(
+	db: Database,
+	op: ReplicationOp,
+	senderDeviceId: string | null,
+): LocalDefaultOldSideReassignmentValidation {
+	let reassignment: ReassignScopePayload;
+	try {
+		reassignment = parseReassignScopePayload(op);
+	} catch {
+		return { ok: false, reason: "scope_mismatch" };
+	}
+	if (reassignment.side !== "old" || reassignment.old_scope_id !== DEFAULT_SYNC_SCOPE_ID) {
+		return { ok: false, reason: "scope_mismatch" };
+	}
+	if (
+		!senderDeviceId ||
+		cleanText(op.device_id) !== senderDeviceId ||
+		cleanText(op.clock_device_id) !== senderDeviceId
+	) {
+		return { ok: false, reason: "sender_not_member" };
+	}
+	const existing = db
+		.prepare("SELECT origin_device_id FROM memory_items WHERE import_key = ?")
+		.get(op.entity_id) as { origin_device_id: string | null } | undefined;
+	if (existing && cleanText(existing.origin_device_id) !== senderDeviceId) {
+		return { ok: false, reason: "sender_not_member" };
+	}
+	return { ok: true, reassignment };
+}
+
 function validateInboundScopeOp(
 	db: Database,
 	op: ReplicationOp,
@@ -2745,25 +2791,15 @@ function validateInboundScopeOp(
 	let authorizationScopeId = opScopeId;
 	let requireReceiverMembership = true;
 	if (opScopeId === DEFAULT_SYNC_SCOPE_ID) {
-		try {
-			const reassignment = parseReassignScopePayload(op);
-			if (reassignment.side !== "old" || reassignment.old_scope_id !== DEFAULT_SYNC_SCOPE_ID) {
-				return inboundScopeRejection(op, "scope_mismatch", peerDeviceId, opScopeId);
-			}
-			const existing = db
-				.prepare("SELECT origin_device_id FROM memory_items WHERE import_key = ?")
-				.get(op.entity_id) as { origin_device_id: string | null } | undefined;
-			if (existing && cleanText(existing.origin_device_id) !== senderDeviceId) {
-				return inboundScopeRejection(op, "sender_not_member", peerDeviceId, opScopeId);
-			}
-			authorizationScopeId = reassignment.new_scope_id;
-			// This side only retracts sender-origin data previously delivered through
-			// local-default. Prior recipients intentionally are not members of the new
-			// boundary, and the apply path cannot create a new-scope row for them.
-			requireReceiverMembership = false;
-		} catch {
-			return inboundScopeRejection(op, "scope_mismatch", peerDeviceId, opScopeId);
+		const validation = validateLocalDefaultOldSideReassignment(db, op, senderDeviceId);
+		if (!validation.ok) {
+			return inboundScopeRejection(op, validation.reason, peerDeviceId, opScopeId);
 		}
+		authorizationScopeId = validation.reassignment.new_scope_id;
+		// This side only retracts sender-origin data previously delivered through
+		// local-default. Prior recipients intentionally are not members of the new
+		// boundary, and the apply path cannot create a new-scope row for them.
+		requireReceiverMembership = false;
 	}
 
 	const senderAuth = getCachedScopeAuthorization(db, {
@@ -2800,6 +2836,38 @@ function validateInboundScopeBatch(
 		if (!expectedPeerDeviceId && op.device_id === localDeviceId) continue;
 		const rejection = validateInboundScopeOp(db, op, localDeviceId, options);
 		if (rejection) rejections.push(rejection);
+	}
+	return rejections;
+}
+
+function validateInboundLocalOnlyBatch(
+	db: Database,
+	ops: ReplicationOp[],
+	options: InboundScopeValidationOptions,
+): InboundScopeRejection[] {
+	const peerDeviceId = cleanText(options.peerDeviceId);
+	const rejections: InboundScopeRejection[] = [];
+	for (const op of ops) {
+		if (op.entity_type !== "memory_item" || op.op_type === ACCESS_CLEANUP_OP_TYPE) continue;
+		const scopeId = normalizeInboundScopeId(op.scope_id);
+		if (!scopeId) {
+			rejections.push(inboundScopeRejection(op, "missing_scope", peerDeviceId, null));
+			continue;
+		}
+		if (scopeId !== DEFAULT_SYNC_SCOPE_ID) continue;
+		if (op.op_type === REASSIGN_SCOPE_OP_TYPE) {
+			const validation = validateLocalDefaultOldSideReassignment(
+				db,
+				op,
+				peerDeviceId ?? cleanText(op.clock_device_id),
+			);
+			if (validation.ok) continue;
+			if (validation.reason === "sender_not_member") {
+				rejections.push(inboundScopeRejection(op, validation.reason, peerDeviceId, scopeId));
+				continue;
+			}
+		}
+		rejections.push(inboundScopeRejection(op, "scope_mismatch", peerDeviceId, scopeId));
 	}
 	return rejections;
 }
@@ -2865,8 +2933,13 @@ export function rejectInboundScopeFailures(
 	localDeviceId: string,
 	options: InboundScopeValidationOptions,
 ): ApplyResult | null {
-	if (options.enabled === false) return null;
-	const rejections = validateInboundScopeBatch(db, ops, localDeviceId, options);
+	const localOnlyRejections = validateInboundLocalOnlyBatch(db, ops, options);
+	const rejections =
+		localOnlyRejections.length > 0
+			? localOnlyRejections
+			: options.enabled === false
+				? []
+				: validateInboundScopeBatch(db, ops, localDeviceId, options);
 	if (rejections.length === 0) return null;
 	const result = emptyApplyResult();
 	result.rejected = rejections.length;
@@ -3411,6 +3484,7 @@ export function applyReplicationOps(
 					const current = d
 						.select({
 							id: schema.memoryItems.id,
+							origin_device_id: schema.memoryItems.origin_device_id,
 							rev: schema.memoryItems.rev,
 							updated_at: schema.memoryItems.updated_at,
 							metadata_json: schema.memoryItems.metadata_json,
@@ -3426,6 +3500,19 @@ export function applyReplicationOps(
 						insertReplicationOpRow(d, op);
 						result.skipped++;
 						continue;
+					}
+					if (reassignment.old_scope_id === DEFAULT_SYNC_SCOPE_ID) {
+						const senderDeviceId = cleanText(op.clock_device_id);
+						const originDeviceId = cleanText(current.origin_device_id);
+						if (
+							!senderDeviceId ||
+							cleanText(op.device_id) !== senderDeviceId ||
+							!originDeviceId ||
+							originDeviceId !== senderDeviceId ||
+							originDeviceId === localDeviceId
+						) {
+							throw new Error("reassign_origin_mismatch");
+						}
 					}
 					const currentClock = clockTuple(
 						current.rev ?? 0,

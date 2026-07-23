@@ -5386,7 +5386,7 @@ describe("viewer-server", () => {
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body.ops).toEqual([]);
-				expect(body.skipped).toBe(1);
+				expect(body.skipped).toBe(0);
 				expect(body.next_cursor).toBe("2026-01-01T00:00:00Z|local-default-outbound-op");
 			} finally {
 				peer?.cleanup();
@@ -5406,8 +5406,8 @@ describe("viewer-server", () => {
 				const now = new Date().toISOString();
 				store.db
 					.prepare(
-						`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, deleted_at, visibility, metadata_json)
-						 VALUES (?, 'discovery', ?, 'body', ?, ?, ?, 1, ?, ?, ?, ?)`,
+						`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, deleted_at, visibility, scope_id, metadata_json)
+						 VALUES (?, 'discovery', ?, 'body', ?, ?, ?, 1, ?, ?, ?, 'snapshot-work', ?)`,
 					)
 					.run(
 						sessionId,
@@ -5422,8 +5422,8 @@ describe("viewer-server", () => {
 					);
 				store.db
 					.prepare(
-						`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, deleted_at, visibility, metadata_json)
-						 VALUES (?, 'discovery', ?, 'body', ?, ?, ?, 1, ?, ?, ?, ?)`,
+						`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, deleted_at, visibility, scope_id, metadata_json)
+						 VALUES (?, 'discovery', ?, 'body', ?, ?, ?, 1, ?, ?, ?, 'snapshot-work', ?)`,
 					)
 					.run(
 						sessionId,
@@ -5437,18 +5437,16 @@ describe("viewer-server", () => {
 						JSON.stringify({ clock_device_id: "dev-a" }),
 					);
 
-				store.db
-					.prepare(
-						`INSERT OR REPLACE INTO sync_reset_state(id, generation, snapshot_id, baseline_cursor, retained_floor_cursor, updated_at)
-						 VALUES (1, ?, ?, ?, ?, ?)`,
-					)
-					.run(
-						11,
-						"snapshot-11",
-						"2026-01-01T00:00:02Z|base-op",
-						"2026-01-01T00:00:03Z|floor-op",
-						now,
-					);
+				core.setSyncResetState(
+					store.db,
+					{
+						generation: 11,
+						snapshot_id: "snapshot-11",
+						baseline_cursor: "2026-01-01T00:00:02Z|base-op",
+						retained_floor_cursor: "2026-01-01T00:00:03Z|floor-op",
+					},
+					"snapshot-work",
+				);
 
 				const peerDb = connect(peerDbPath);
 				try {
@@ -5467,9 +5465,14 @@ describe("viewer-server", () => {
 							 VALUES (?, ?, ?, ?)`,
 						)
 						.run(peerDeviceId, peerFingerprint.fingerprint, peerPublicKey, now);
+					const localDevice = store.db.prepare("SELECT device_id FROM sync_device LIMIT 1").get() as
+						| { device_id: string }
+						| undefined;
+					if (!localDevice?.device_id) throw new Error("local sync device missing");
+					grantSyncScopeToDevices(store, "snapshot-work", [localDevice.device_id, peerDeviceId]);
 
 					const url =
-						"http://localhost/v1/snapshot?limit=2&generation=11&snapshot_id=snapshot-11&baseline_cursor=2026-01-01T00:00:02Z%7Cbase-op";
+						"http://localhost/v1/snapshot?limit=2&generation=11&snapshot_id=snapshot-11&baseline_cursor=2026-01-01T00:00:02Z%7Cbase-op&scope_id=snapshot-work";
 					const headers = buildAuthHeaders({
 						deviceId: peerDeviceId,
 						method: "GET",
@@ -5477,6 +5480,7 @@ describe("viewer-server", () => {
 						bodyBytes: Buffer.alloc(0),
 						keysDir: peerKeysDir,
 					});
+					headers[core.SYNC_CAPABILITY_HEADER] = "scoped";
 
 					const res = await syncApp.request(url, { headers });
 					expect(res.status).toBe(200);
@@ -5484,7 +5488,7 @@ describe("viewer-server", () => {
 					expect(body.generation).toBe(11);
 					expect(body.snapshot_id).toBe("snapshot-11");
 					expect(body.sync_capability).toBe("scoped");
-					expect(body.scope_id).toBeNull();
+					expect(body.scope_id).toBe("snapshot-work");
 					const items = body.items as Array<Record<string, unknown>>;
 					expect(items.map((item) => item.entity_id)).toEqual(["key-a", "key-b"]);
 					expect(items[1]?.op_type).toBe("delete");
@@ -5597,6 +5601,7 @@ describe("viewer-server", () => {
 								body_text: "Legacy push body",
 								created_at: now,
 								kind: "discovery",
+								scope_id: "legacy-explicit",
 								title: "Legacy push title",
 								updated_at: now,
 								visibility: "shared",
@@ -5606,6 +5611,7 @@ describe("viewer-server", () => {
 							clock_device_id: peer.peerDeviceId,
 							device_id: peer.peerDeviceId,
 							created_at: now,
+							scope_id: "legacy-explicit",
 						},
 					],
 				};
@@ -5632,7 +5638,7 @@ describe("viewer-server", () => {
 					store.db
 						.prepare("SELECT title, scope_id FROM memory_items WHERE import_key = ?")
 						.get("legacy-push-key"),
-				).toMatchObject({ title: "Legacy push title", scope_id: null });
+				).toMatchObject({ title: "Legacy push title", scope_id: "legacy-explicit" });
 			} finally {
 				peer?.cleanup();
 				cleanup();
@@ -5659,7 +5665,7 @@ describe("viewer-server", () => {
 								body_text: "Unsupported scoped push body",
 								created_at: now,
 								kind: "discovery",
-								scope_id: "local-default",
+								scope_id: "unsupported-explicit",
 								title: "Unsupported scoped push title",
 								updated_at: now,
 								visibility: "shared",
@@ -5669,7 +5675,7 @@ describe("viewer-server", () => {
 							clock_device_id: peer.peerDeviceId,
 							device_id: peer.peerDeviceId,
 							created_at: now,
-							scope_id: "local-default",
+							scope_id: "unsupported-explicit",
 						},
 					],
 				};
@@ -5696,7 +5702,10 @@ describe("viewer-server", () => {
 					store.db
 						.prepare("SELECT title, scope_id FROM memory_items WHERE import_key = ?")
 						.get("unsupported-scoped-push-key"),
-				).toMatchObject({ title: "Unsupported scoped push title", scope_id: "local-default" });
+				).toMatchObject({
+					title: "Unsupported scoped push title",
+					scope_id: "unsupported-explicit",
+				});
 			} finally {
 				peer?.cleanup();
 				cleanup();
@@ -5978,7 +5987,7 @@ describe("viewer-server", () => {
 								clock_device_id: peerDeviceId,
 								device_id: peerDeviceId,
 								created_at: "2026-01-01T00:00:02Z",
-								scope_id: null,
+								scope_id: "personal:actor-1",
 							},
 						],
 					};
@@ -6007,7 +6016,10 @@ describe("viewer-server", () => {
 						expect.arrayContaining([
 							expect.objectContaining({ op_id: "private-op-1", reason: "sender_not_member" }),
 							expect.objectContaining({ op_id: "private-delete-1", reason: "sender_not_member" }),
-							expect.objectContaining({ op_id: "shared-delete-1", reason: "missing_scope" }),
+							expect.objectContaining({
+								op_id: "shared-delete-1",
+								reason: "sender_not_member",
+							}),
 						]),
 					);
 					const deleted = store.db
@@ -6019,10 +6031,7 @@ describe("viewer-server", () => {
 						.prepare("SELECT reason, count(*) AS count FROM sync_scope_rejections GROUP BY reason")
 						.all() as Array<{ reason: string; count: number }>;
 					expect(logged).toEqual(
-						expect.arrayContaining([
-							{ reason: "sender_not_member", count: 2 },
-							{ reason: "missing_scope", count: 1 },
-						]),
+						expect.arrayContaining([{ reason: "sender_not_member", count: 3 }]),
 					);
 				} finally {
 					peerDb.close();

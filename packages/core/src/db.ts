@@ -1133,6 +1133,14 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		}
 
 		if (tableExists(db, "memory_items")) {
+			try {
+				db.exec(
+					"CREATE INDEX IF NOT EXISTS idx_memory_items_origin_device_active ON memory_items(origin_device_id, active)",
+				);
+			} catch {
+				// Keep additive compatibility best-effort for index creation.
+			}
+
 			if (!columnExists(db, "memory_items", "dedup_key")) {
 				try {
 					db.exec("ALTER TABLE memory_items ADD COLUMN dedup_key TEXT");

@@ -296,11 +296,15 @@ describe("vector migration", () => {
 		try {
 			fileDb = new Database(dbPath);
 			initTestSchema(fileDb);
-			setSyncResetState(fileDb, {
-				generation: 1,
-				snapshot_id: "snap-1",
-				baseline_cursor: null,
-			});
+			setSyncResetState(
+				fileDb,
+				{
+					generation: 1,
+					snapshot_id: "snap-1",
+					baseline_cursor: null,
+				},
+				"vector-work",
+			);
 			applyBootstrapSnapshot(
 				fileDb,
 				"peer-1",
@@ -317,6 +321,7 @@ describe("vector migration", () => {
 							workspace_id: "shared:default",
 							created_at: "2026-01-01T00:00:01Z",
 							metadata_json: { clock_device_id: "peer-dev" },
+							scope_id: "vector-work",
 						}),
 						clock_rev: 1,
 						clock_updated_at: "2026-01-01T00:00:02Z",
@@ -330,6 +335,7 @@ describe("vector migration", () => {
 					snapshot_id: "snap-2",
 					baseline_cursor: "2026-01-01T00:00:05Z|base-op",
 					retained_floor_cursor: null,
+					scope_id: "vector-work",
 				},
 			);
 
@@ -475,11 +481,15 @@ describe("vector migration", () => {
 	});
 
 	it("marks a queued bootstrap backfill as failed when the embedding client is unavailable", async () => {
-		setSyncResetState(db, {
-			generation: 1,
-			snapshot_id: "snap-1",
-			baseline_cursor: null,
-		});
+		setSyncResetState(
+			db,
+			{
+				generation: 1,
+				snapshot_id: "snap-1",
+				baseline_cursor: null,
+			},
+			"vector-work",
+		);
 		applyBootstrapSnapshot(
 			db,
 			"peer-1",
@@ -496,6 +506,7 @@ describe("vector migration", () => {
 						workspace_id: "shared:default",
 						created_at: "2026-01-01T00:00:01Z",
 						metadata_json: { clock_device_id: "peer-dev" },
+						scope_id: "vector-work",
 					}),
 					clock_rev: 1,
 					clock_updated_at: "2026-01-01T00:00:02Z",
@@ -509,6 +520,7 @@ describe("vector migration", () => {
 				snapshot_id: "snap-2",
 				baseline_cursor: "2026-01-01T00:00:05Z|base-op",
 				retained_floor_cursor: null,
+				scope_id: "vector-work",
 			},
 		);
 

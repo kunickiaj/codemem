@@ -230,6 +230,7 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		"source bystander fixture missing",
 	);
 
+	// Keep periodic maintenance outside this scenario so explicit steps own the provisioning order.
 	for (const [service, deviceName, syncEnabled] of [
 		["peer-a", "Adam's Test Mac", true],
 		["peer-b", "Brian's Test Mac", false],
@@ -244,7 +245,7 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 				sync_host: "0.0.0.0",
 				sync_port: 7337,
 				sync_advertise: `http://${service}:7337`,
-				sync_interval_s: 2,
+				sync_interval_s: 3600,
 				sync_coordinator_url: "http://coordinator:7347",
 				sync_coordinator_group: GROUP_ID,
 				sync_coordinator_admin_secret: ADMIN_SECRET,
@@ -286,6 +287,20 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 	startServer(ctx, "peer-b", "12-start-peer-b");
 	await waitForServer(ctx, "peer-a", "13-peer-a-ready");
 	await waitForServer(ctx, "peer-b", "14-peer-b-ready");
+	await waitFor(
+		async () => {
+			const status = await request<{ daemon_state: string; daemon_last_ok_at?: string | null }>(
+				ctx,
+				"peer-a",
+				"/api/sync/status?includeDiagnostics=true",
+				"14-owner-initial-sync-complete",
+			);
+			assert(status.status === 200, "owner sync status failed");
+			assert(status.body.daemon_state !== "starting", "owner initial sync is still starting");
+			assert(status.body.daemon_last_ok_at, "owner initial sync has not completed");
+		},
+		{ description: "owner initial sync before Project invite", timeoutMs: 120_000, intervalMs: 2_000 },
+	);
 
 	const inventory = await request<{ projects: Array<{ workspace_identity: string; display_project: string }> }>(
 		ctx,
@@ -352,22 +367,94 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 	assert(enabledRecipientConfig.sync_enabled === true, "project acceptance did not persist recipient sync");
 	restartServer(ctx, "peer-b", "20-restart-peer-b");
 	await waitForServer(ctx, "peer-b", "21-peer-b-ready-after-restart");
+	await waitFor(
+		async () => {
+			const status = await request<{ daemon_state: string; daemon_last_ok_at?: string | null }>(
+				ctx,
+				"peer-b",
+				"/api/sync/status?includeDiagnostics=true",
+				"21-recipient-initial-sync-complete",
+			);
+			assert(status.status === 200, "recipient sync status failed");
+			assert(status.body.daemon_state !== "starting", "recipient initial sync is still starting");
+			assert(status.body.daemon_last_ok_at, "recipient initial sync has not completed");
+		},
+		{ description: "recipient initial sync after restart", timeoutMs: 120_000, intervalMs: 2_000 },
+	);
+	const startupRecipient = fixture(ctx, "peer-b", "summary", "22-peer-b-post-startup-summary");
+	const startupTitles = startupRecipient.memories.map((memory) => memory.title);
+	assert(
+		!startupTitles.includes("selected existing"),
+		"selected existing memory reached peer-b during its startup sync",
+	);
+	assert(
+		!startupTitles.includes("unrelated existing"),
+		"unrelated existing memory leaked to peer-b during its startup sync",
+	);
+	const ownerPresence = await request<Record<string, unknown>>(
+		ctx,
+		"peer-a",
+		"/api/sync/status?includeDiagnostics=true",
+		"23-refresh-owner-presence",
+	);
+	assert(ownerPresence.status === 200, "owner presence refresh failed before recipient sync");
+
+	// The recipient's bootstrap-grant snapshot pull is the pre-provisioning leak window.
+	syncOnce(ctx, "peer-b", "24-sync-recipient-before-provisioning");
+	const preProvisioning = fixture(ctx, "peer-b", "summary", "25-peer-b-pre-provisioning-summary");
+	const preProvisioningTitles = preProvisioning.memories.map((memory) => memory.title);
+	assert(
+		!preProvisioningTitles.includes("selected existing"),
+		"selected existing memory reached peer-b before Project provisioning became active",
+	);
+	assert(
+		!preProvisioningTitles.includes("unrelated existing"),
+		"unrelated existing memory leaked to peer-b while Project provisioning was non-active",
+	);
+	const preProvisioningOwner = fixture(ctx, "peer-a", "summary", "26-peer-a-pre-provisioning-summary");
+	const pendingOperation = preProvisioningOwner.operations.find(
+		(item) => item.operation_id === created.body.operation_id,
+	);
+	assert(
+		pendingOperation?.state === "waiting_for_acceptance",
+		`owner provisioning advanced before the pre-provisioning sync: ${pendingOperation?.state ?? "missing"}`,
+	);
+	assert(
+		preProvisioning.peers.some((peer) => peer.peer_device_id === peerA.device_id),
+		"peer-b has no peer-a record after the pre-provisioning sync",
+	);
+	const reconciled = await request<Record<string, unknown>>(
+		ctx,
+		"peer-a",
+		`/api/sync/project-invites/${created.body.operation_id}/reconcile`,
+		"27-reconcile-owner-after-pre-provisioning-sync",
+		{},
+	);
+	assert(reconciled.status === 200, `acceptance reconciliation failed: ${JSON.stringify(reconciled.body)}`);
+	const provisioningOwner = fixture(ctx, "peer-a", "summary", "28-peer-a-provisioning-summary");
+	const provisioningOperation = provisioningOwner.operations.find(
+		(item) => item.operation_id === created.body.operation_id,
+	);
+	assert(
+		provisioningOperation?.state === "provisioning",
+		`owner operation did not enter provisioning after reconciliation: ${provisioningOperation?.state ?? "missing"}`,
+	);
+	assert(
+		provisioningOperation.recipient_device_id === peerB.device_id,
+		"owner reconciliation did not link the recipient device",
+	);
+	assert(
+		provisioningOwner.peers.some((peer) => peer.peer_device_id === peerB.device_id),
+		"peer-a has no peer-b record after reconciliation",
+	);
 
 	await waitFor(
 		async () => {
-			const reconciled = await request<Record<string, unknown>>(
-				ctx,
-				"peer-a",
-				`/api/sync/project-invites/${created.body.operation_id}/reconcile`,
-				"23-reconcile",
-				{},
-			);
-			assert(reconciled.status === 200, `acceptance reconciliation failed: ${JSON.stringify(reconciled.body)}`);
 			const advanced = await request<Record<string, unknown>>(
 				ctx,
 				"peer-a",
 				`/api/sync/share-operations/${created.body.operation_id}/advance`,
-				"24-advance",
+				"29-advance-project-share",
 				{},
 			);
 			assert(advanced.status === 200, `project provisioning not ready: ${JSON.stringify(advanced.body)}`);
@@ -375,11 +462,11 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		{ description: "project share provisioning", timeoutMs: 180_000, intervalMs: 3_000 },
 	);
 
-	syncOnce(ctx, "peer-a", "20-sync-existing-a");
-	syncOnce(ctx, "peer-b", "21-sync-existing-b");
+	syncOnce(ctx, "peer-a", "32-sync-existing-a");
+	syncOnce(ctx, "peer-b", "33-sync-existing-b");
 	await waitFor(
 		async () => {
-			const summary = fixture(ctx, "peer-b", "summary", "22-peer-b-existing-summary");
+			const summary = fixture(ctx, "peer-b", "summary", "34-peer-b-existing-summary");
 			const titles = summary.memories.map((memory) => memory.title);
 			assert(titles.includes("selected existing"), "selected existing memory has not arrived");
 			assert(!titles.includes("unrelated existing"), "unrelated existing memory leaked to peer-b");
@@ -387,12 +474,12 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		{ description: "selected existing memory on peer-b", timeoutMs: 120_000, intervalMs: 3_000 },
 	);
 
-	fixture(ctx, "peer-a", "add-future", "23-add-future-memories");
-	syncOnce(ctx, "peer-a", "24-sync-future-a");
-	syncOnce(ctx, "peer-b", "25-sync-future-b");
+	fixture(ctx, "peer-a", "add-future", "35-add-future-memories");
+	syncOnce(ctx, "peer-a", "36-sync-future-a");
+	syncOnce(ctx, "peer-b", "37-sync-future-b");
 	await waitFor(
 		async () => {
-			const summary = fixture(ctx, "peer-b", "summary", "26-peer-b-future-summary");
+			const summary = fixture(ctx, "peer-b", "summary", "38-peer-b-future-summary");
 			const titles = summary.memories.map((memory) => memory.title);
 			assert(titles.includes("selected future"), "selected future memory has not arrived");
 			for (const forbidden of ["unrelated existing", "unrelated future"]) {
@@ -402,7 +489,7 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		{ description: "selected future memory and unrelated-project isolation", timeoutMs: 120_000, intervalMs: 3_000 },
 	);
 
-	const finalA = fixture(ctx, "peer-a", "summary", "27-peer-a-final-summary");
+	const finalA = fixture(ctx, "peer-a", "summary", "39-peer-a-final-summary");
 	const operation = finalA.operations.find((item) => item.operation_id === created.body.operation_id);
 	assert(operation?.state === "active", `share operation did not become active: ${operation?.state}`);
 	assert(operation.recipient_device_id === peerB.device_id, "recipient device was not linked automatically");
@@ -463,13 +550,13 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 	}
 
 	// Arrange: seed isolated recipient intent without changing the real direct-invite Projects.
-	const seededPolicy = fixture(ctx, "peer-a", "seed-policy", "28-seed-recipient-policy");
+	const seededPolicy = fixture(ctx, "peer-a", "seed-policy", "40-seed-recipient-policy");
 	// Act: read canonical intent and derive effective devices from the persisted graph.
 	const initialIntent = await request<RecipientPolicyIntentGraph>(
 		ctx,
 		"peer-a",
 		"/api/sync/recipient-policy/v1/intent",
-		"29-initial-recipient-intent",
+		"41-initial-recipient-intent",
 	);
 	// Assert: direct Identity, Team, and Personal/Work Project boundaries are exact.
 	assert(initialIntent.status === 200, "initial recipient-policy intent failed");
@@ -517,12 +604,12 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 	);
 
 	// Arrange/Act: add a future Team member and a second device to the direct Identity.
-	const inheritedPolicy = fixture(ctx, "peer-a", "inherit-policy", "30-inherit-recipient-policy");
+	const inheritedPolicy = fixture(ctx, "peer-a", "inherit-policy", "42-inherit-recipient-policy");
 	const inheritedIntent = await request<RecipientPolicyIntentGraph>(
 		ctx,
 		"peer-a",
 		"/api/sync/recipient-policy/v1/intent",
-		"31-inherited-recipient-intent",
+		"43-inherited-recipient-intent",
 	);
 	// Assert: future Team membership and add-device access inherit without new Project edges.
 	assert(inheritedIntent.status === 200, "inherited recipient-policy intent failed");
@@ -565,16 +652,16 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		ctx,
 		"peer-a",
 		"/api/sync/recipient-policy/v1/edges/preview",
-		"32-preview-policy-edge",
+		"44-preview-policy-edge",
 		{ version: 1, changes: [edgeChange] },
 	);
 	assert(edgePreview.status === 200, "recipient-policy edge preview failed");
-	fixture(ctx, "peer-a", "add-stale-memory", "33-stale-preview-change");
+	fixture(ctx, "peer-a", "add-stale-memory", "45-stale-preview-change");
 	const refreshedEdgePreview = await request<{ reviewedPolicyDigest: string }>(
 		ctx,
 		"peer-a",
 		"/api/sync/recipient-policy/v1/edges/preview",
-		"34-refreshed-policy-edge",
+		"46-refreshed-policy-edge",
 		{ version: 1, changes: [edgeChange] },
 	);
 	assert(refreshedEdgePreview.status === 200, "refreshed recipient-policy edge preview failed");
@@ -587,7 +674,7 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		ctx,
 		"peer-a",
 		"/api/sync/recipient-policy/v1/edges/commit",
-		"35-reject-stale-policy-edge",
+		"47-reject-stale-policy-edge",
 		{ version: 1, changes: [edgeChange], reviewedPolicyDigest: edgePreview.body.reviewedPolicyDigest },
 	);
 	// Assert: stale review is rejected with no recipient mutation.
@@ -596,7 +683,7 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		staleCommit.body.status === "stale" && staleCommit.body.writeCount === 0,
 		"stale recipient-policy rejection reported a write",
 	);
-	const afterStale = fixture(ctx, "peer-a", "summary", "36-after-stale-summary");
+	const afterStale = fixture(ctx, "peer-a", "summary", "48-after-stale-summary");
 	assert(
 		!afterStale.policy.project_recipients.some(
 			(item) =>
@@ -607,12 +694,12 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 	);
 
 	// Arrange/Act: revoke only the policy-selected Project's direct Identity recipient.
-	const revokedPolicy = fixture(ctx, "peer-a", "revoke-policy", "37-revoke-direct-recipient");
+	const revokedPolicy = fixture(ctx, "peer-a", "revoke-policy", "49-revoke-direct-recipient");
 	const revokedIntent = await request<RecipientPolicyIntentGraph>(
 		ctx,
 		"peer-a",
 		"/api/sync/recipient-policy/v1/intent",
-		"38-revoked-recipient-intent",
+		"50-revoked-recipient-intent",
 	);
 	// Assert: Team access remains, direct devices disappear, and the unrelated Work Project is unchanged.
 	assert(revokedIntent.status === 200, "revoked recipient-policy intent failed");
@@ -652,7 +739,7 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 	);
 
 	// Arrange/Act: resolve one migration review as Keep current and rerun migration.
-	const keepCurrent = fixture(ctx, "peer-a", "keep-current", "39-keep-current-migration");
+	const keepCurrent = fixture(ctx, "peer-a", "keep-current", "51-keep-current-migration");
 	const keepCurrentProof = keepCurrent.action_result as {
 		resolved?: { status?: string };
 		recipient_count_unchanged?: boolean;
@@ -676,7 +763,7 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		ctx,
 		"peer-a",
 		"reconciliation-proof",
-		"40-recipient-reconciliation-proof",
+		"52-recipient-reconciliation-proof",
 	).action_result as unknown as ReconciliationProof;
 	// Assert: unsupported peers fail before mutation; offline work waits/resumes; revocation and rollback stay visible.
 	assert(
@@ -716,7 +803,7 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		ctx,
 		"peer-a",
 		"/api/sync/recipient-policy/v1/reconciliation-status",
-		"41-reconciliation-status",
+		"53-reconciliation-status",
 	);
 	assert(
 		reconciliationStatus.body.items.some(
@@ -731,17 +818,17 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 	ctx.compose.copyFromContainer(
 		"peer-a:/data/mem.sqlite",
 		`${ctx.artifactsDir}/db/peer-a-project-sharing.sqlite`,
-		"42-copy-peer-a-db",
+		"54-copy-peer-a-db",
 	);
 	ctx.compose.copyFromContainer(
 		"peer-b:/data/mem.sqlite",
 		`${ctx.artifactsDir}/db/peer-b-project-sharing.sqlite`,
-		"43-copy-peer-b-db",
+		"55-copy-peer-b-db",
 	);
 	ctx.compose.copyFromContainer(
 		"coordinator:/data/coordinator.sqlite",
 		`${ctx.artifactsDir}/db/coordinator-project-sharing.sqlite`,
-		"44-copy-coordinator-db",
+		"56-copy-coordinator-db",
 	);
-	if (!ctx.keepStackOnFailure) ctx.compose.down("45-compose-down-post");
+	if (!ctx.keepStackOnFailure) ctx.compose.down("57-compose-down-post");
 }

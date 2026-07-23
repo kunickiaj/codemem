@@ -31,6 +31,7 @@ function makeResetInfo(overrides?: Partial<SyncResetRequired>): SyncResetRequire
 		snapshot_id: "snap-2",
 		baseline_cursor: "2026-01-01T00:00:05Z|base-op",
 		retained_floor_cursor: null,
+		scope_id: "acme-work",
 		...overrides,
 	};
 }
@@ -52,6 +53,7 @@ function makeSnapshotItem(
 			workspace_id: "shared:default",
 			created_at: "2026-01-01T00:00:01Z",
 			metadata_json: { clock_device_id: "peer-dev" },
+			scope_id: "acme-work",
 			...payload,
 		}),
 		clock_rev: overrides?.clock_rev ?? 1,
@@ -84,8 +86,8 @@ describe("applyBootstrapSnapshot", () => {
 		// Insert existing shared memory
 		const now = new Date().toISOString();
 		db.prepare(
-			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, visibility, metadata_json)
-			 VALUES (?, 'discovery', 'old-shared', 'old body', ?, ?, 'old-key', 1, 'shared', ?)`,
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, visibility, scope_id, metadata_json)
+			 VALUES (?, 'discovery', 'old-shared', 'old body', ?, ?, 'old-key', 1, 'shared', 'acme-work', ?)`,
 		).run(sessionId, now, now, toJson({ clock_device_id: "local" }));
 
 		const items = [makeSnapshotItem("new-key-a"), makeSnapshotItem("new-key-b")];
@@ -120,7 +122,51 @@ describe("applyBootstrapSnapshot", () => {
 		expect(scoped.scope_id).toBe("acme-work");
 	});
 
-	it("ignores non-string snapshot payload scope_id values", () => {
+	it.each(
+		[
+			{ name: "apply", bootstrap: applyBootstrapSnapshot },
+			{ name: "merge", bootstrap: mergeBootstrapSnapshot },
+		].flatMap(({ name, bootstrap }) =>
+			[
+				{ scopeCase: "managed scope", payloadScopeId: "acme-work" },
+				{ scopeCase: "null scope", payloadScopeId: null },
+				{ scopeCase: "local-default scope", payloadScopeId: "local-default" },
+				{ scopeCase: "non-string scope", payloadScopeId: 123 },
+			].map((scope) => ({ name, bootstrap, ...scope })),
+		),
+	)("$name rejects $scopeCase rows on default bootstrap before mutating local state", ({
+		bootstrap,
+		payloadScopeId,
+	}) => {
+		const now = "2026-01-01T00:00:00Z";
+		db.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, created_at, updated_at, import_key, rev,
+				visibility, scope_id, metadata_json
+			 ) VALUES (?, 'discovery', 'existing', 'body', ?, ?, 'existing-key', 1, 'shared', NULL, ?)`,
+		).run(sessionId, now, now, toJson({ clock_device_id: "local" }));
+		const items = [
+			makeSnapshotItem("unauthorized-scoped-row", { payload: { scope_id: payloadScopeId } }),
+		];
+
+		expect(() => bootstrap(db, "peer-1", items, makeResetInfo({ scope_id: null }))).toThrow(
+			"scope_mismatch",
+		);
+
+		expect(
+			db.prepare("SELECT title FROM memory_items WHERE import_key = ?").get("existing-key"),
+		).toEqual({ title: "existing" });
+		expect(
+			db
+				.prepare("SELECT COUNT(*) FROM memory_items WHERE import_key = ?")
+				.pluck()
+				.get("unauthorized-scoped-row"),
+		).toBe(0);
+		expect(getSyncResetState(db).snapshot_id).toBe("snap-1");
+		expect(getReplicationCursor(db, "peer-1")).toEqual([null, null]);
+	});
+
+	it("uses the requested managed scope when payload scope_id is non-string", () => {
 		const items = [makeSnapshotItem("malformed-scope-key", { payload: { scope_id: 123 } })];
 
 		const result = applyBootstrapSnapshot(db, "peer-1", items, makeResetInfo());
@@ -129,7 +175,7 @@ describe("applyBootstrapSnapshot", () => {
 		const scoped = db
 			.prepare("SELECT scope_id FROM memory_items WHERE import_key = 'malformed-scope-key'")
 			.get() as Record<string, unknown>;
-		expect(scoped.scope_id).toBeNull();
+		expect(scoped.scope_id).toBe("acme-work");
 	});
 
 	it("replaces only the requested scope during scoped bootstrap", () => {
@@ -277,7 +323,7 @@ describe("applyBootstrapSnapshot", () => {
 		).toMatchObject({ title: "local-winner" });
 	});
 
-	it("unscoped bootstrap replaces only null and local-default scoped rows", () => {
+	it("scoped bootstrap replaces only the requested managed scope", () => {
 		const now = new Date().toISOString();
 		db.prepare(
 			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, visibility, scope_id, metadata_json)
@@ -304,25 +350,59 @@ describe("applyBootstrapSnapshot", () => {
 			db,
 			"peer-1",
 			[makeSnapshotItem("new-key")],
-			makeResetInfo(),
+			makeResetInfo({ scope_id: "acme-work" }),
 		);
 
 		expect(result.ok).toBe(true);
-		expect(result.deleted).toBe(2);
+		expect(result.deleted).toBe(1);
 		const rows = db
 			.prepare("SELECT import_key, scope_id FROM memory_items ORDER BY import_key")
 			.all() as Array<{ import_key: string; scope_id: string | null }>;
 		expect(rows).toEqual([
-			{ import_key: "new-key", scope_id: null },
-			{ import_key: "old-work-key", scope_id: "acme-work" },
+			{ import_key: "new-key", scope_id: "acme-work" },
+			{ import_key: "old-local-default-key", scope_id: "local-default" },
+			{ import_key: "old-null-key", scope_id: null },
 		]);
+	});
+
+	it("empty unscoped bootstrap preserves locally-originated local-only rows", () => {
+		const now = "2026-01-01T00:00:00Z";
+		db.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, created_at, updated_at, import_key,
+				rev, visibility, origin_device_id, scope_id, metadata_json
+			 ) VALUES
+			 (?, 'discovery', 'local-null', 'body', ?, ?, 'local-null-key', 1, 'shared', 'dev-local', NULL, ?),
+			 (?, 'discovery', 'local-default', 'body', ?, ?, 'local-default-key', 1, 'shared', 'dev-local', 'local-default', ?)`,
+		).run(
+			sessionId,
+			now,
+			now,
+			toJson({ clock_device_id: "dev-local" }),
+			sessionId,
+			now,
+			now,
+			toJson({ clock_device_id: "dev-local" }),
+		);
+
+		const result = applyBootstrapSnapshot(db, "peer-1", [], makeResetInfo({ scope_id: null }));
+
+		expect(result).toMatchObject({ ok: true, applied: 0, deleted: 0 });
+		expect(
+			db.prepare("SELECT import_key, scope_id FROM memory_items ORDER BY import_key").all(),
+		).toEqual([
+			{ import_key: "local-default-key", scope_id: "local-default" },
+			{ import_key: "local-null-key", scope_id: null },
+		]);
+		expect(getSyncResetState(db).snapshot_id).toBe("snap-2");
+		expect(getReplicationCursor(db, "peer-1")[0]).toBe("2026-01-01T00:00:05Z|base-op");
 	});
 
 	it("preserves private memories during bootstrap", () => {
 		const now = new Date().toISOString();
 		db.prepare(
-			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, visibility, metadata_json)
-			 VALUES (?, 'discovery', 'my-private', 'private body', ?, ?, 'private-key', 1, 'private', ?)`,
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, visibility, scope_id, metadata_json)
+			 VALUES (?, 'discovery', 'my-private', 'private body', ?, ?, 'private-key', 1, 'private', 'acme-work', ?)`,
 		).run(sessionId, now, now, toJson({ clock_device_id: "local" }));
 
 		const items = [makeSnapshotItem("new-key")];
@@ -365,7 +445,7 @@ describe("applyBootstrapSnapshot", () => {
 		const items = [makeSnapshotItem("key-a")];
 		applyBootstrapSnapshot(db, "peer-1", items, makeResetInfo());
 
-		const state = getSyncResetState(db);
+		const state = getSyncResetState(db, "acme-work");
 		expect(state.generation).toBe(2);
 		expect(state.snapshot_id).toBe("snap-2");
 		expect(state.baseline_cursor).toBe("2026-01-01T00:00:05Z|base-op");
@@ -375,10 +455,7 @@ describe("applyBootstrapSnapshot", () => {
 		const items = [makeSnapshotItem("key-a")];
 		applyBootstrapSnapshot(db, "peer-1", items, makeResetInfo());
 
-		const cursor = db
-			.prepare("SELECT last_applied_cursor FROM replication_cursors WHERE peer_device_id = ?")
-			.get("peer-1") as { last_applied_cursor: string } | undefined;
-		expect(cursor?.last_applied_cursor).toBe("2026-01-01T00:00:05Z|base-op");
+		expect(getReplicationCursor(db, "peer-1", "acme-work")[0]).toBe("2026-01-01T00:00:05Z|base-op");
 	});
 
 	it("queues a persisted vector backfill job for bootstrap catch-up", () => {
@@ -446,8 +523,8 @@ describe("applyBootstrapSnapshot", () => {
 	it("applies empty snapshot (wipes shared, inserts nothing)", () => {
 		const now = new Date().toISOString();
 		db.prepare(
-			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, visibility, metadata_json)
-			 VALUES (?, 'discovery', 'old-shared', 'body', ?, ?, 'old-key', 1, 'shared', ?)`,
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, visibility, scope_id, metadata_json)
+			 VALUES (?, 'discovery', 'old-shared', 'body', ?, ?, 'old-key', 1, 'shared', 'acme-work', ?)`,
 		).run(sessionId, now, now, toJson({ clock_device_id: "local" }));
 
 		const result = applyBootstrapSnapshot(db, "peer-1", [], makeResetInfo());

@@ -2125,7 +2125,7 @@ describe("syncOnce", () => {
 		).toBeUndefined();
 	});
 
-	it("treats missing peer capability as unsupported while preserving legacy sync", async () => {
+	it("treats missing peer capability as unsupported while preserving explicitly scoped transport", async () => {
 		db.prepare(
 			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
 		).run("peer-legacy", "legacy-fp", new Date().toISOString());
@@ -2137,6 +2137,7 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		grantScopeForSyncPass(db, "acme-work", ["peer-legacy", "local-device-id"]);
 		vi.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([
 				200,
@@ -2170,6 +2171,7 @@ describe("syncOnce", () => {
 								body_text: "Legacy body",
 								created_at: "2026-01-01T00:00:00Z",
 								kind: "discovery",
+								scope_id: "acme-work",
 								title: "Legacy title",
 								updated_at: "2026-01-01T00:00:00Z",
 								visibility: "shared",
@@ -2179,6 +2181,7 @@ describe("syncOnce", () => {
 							clock_device_id: "peer-legacy",
 							device_id: "peer-legacy",
 							created_at: "2026-01-01T00:00:00Z",
+							scope_id: "acme-work",
 						},
 					],
 					next_cursor: "2026-01-01T00:00:00Z|legacy-op-1",
@@ -2197,7 +2200,7 @@ describe("syncOnce", () => {
 			db
 				.prepare("SELECT title, scope_id FROM memory_items WHERE import_key = ?")
 				.get("legacy-key-1"),
-		).toMatchObject({ title: "Legacy title", scope_id: null });
+		).toMatchObject({ title: "Legacy title", scope_id: "acme-work" });
 		expect(db.prepare("SELECT count(*) AS count FROM sync_scope_rejections").get()).toMatchObject({
 			count: 0,
 		});
@@ -2677,6 +2680,67 @@ describe("syncOnce auto-bootstrap", () => {
 		const fetchCall = vi.mocked(syncBootstrap.fetchAllSnapshotPages).mock.calls[0];
 		expect(fetchCall?.[1]).toMatchObject({ scope_id: "acme-work" });
 		expect(fetchCall?.[3]?.pageSize).toBe(2000);
+	});
+
+	it("cleans remote-origin local-only rows before initial bootstrap exchange", async () => {
+		seedPeer();
+		const sessionId = Number(
+			db
+				.prepare("INSERT INTO sessions (started_at, user, tool_version) VALUES (?, ?, ?)")
+				.run("2026-01-01T00:00:00Z", "test", "test").lastInsertRowid,
+		);
+		const leakedMemoryId = Number(
+			db
+				.prepare(
+					`INSERT INTO memory_items(
+						session_id, kind, title, body_text, import_key, visibility,
+						origin_device_id, scope_id, created_at, updated_at
+					 ) VALUES (?, 'discovery', 'leaked', 'remote local-only memory', ?, 'shared', ?, NULL, ?, ?)`,
+				)
+				.run(
+					sessionId,
+					"leaked-local-only",
+					peerDeviceId,
+					"2026-01-01T00:00:00Z",
+					"2026-01-01T00:00:00Z",
+				).lastInsertRowid,
+		);
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		grantScopeForSyncPass(db, "acme-work", [peerDeviceId, "local-device-id"]);
+		vi.spyOn(syncHttpClient, "requestJson").mockResolvedValue([
+			200,
+			{
+				...statusPayload,
+				sync_reset: { ...statusPayload.sync_reset, scope_id: "acme-work" },
+			},
+		]);
+		vi.spyOn(syncBootstrap, "fetchAllSnapshotPages").mockImplementation(async () => {
+			expect(
+				db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(leakedMemoryId),
+			).toBeUndefined();
+			return {
+				items: [],
+				generation: 1,
+				snapshot_id: "snap-1",
+				baseline_cursor: "2026-01-01T00:00:00Z|base",
+			};
+		});
+		vi.spyOn(syncBootstrap, "applyBootstrapSnapshot").mockReturnValue({
+			ok: true,
+			applied: 0,
+			deleted: 0,
+		});
+
+		const result = await syncOnce(db, peerDeviceId, [address]);
+
+		expect(result.ok).toBe(true);
+		expect(syncBootstrap.fetchAllSnapshotPages).toHaveBeenCalledOnce();
+		expect(
+			db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(leakedMemoryId),
+		).toBeUndefined();
 	});
 
 	it("rejects scoped top-level bootstrap when local membership is missing", async () => {

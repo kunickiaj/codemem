@@ -217,6 +217,22 @@ function snapshotPayloadScopeId(
 	return normalizeBootstrapScopeId(payload.scope_id);
 }
 
+function validateSnapshotScopes(
+	items: SyncMemorySnapshotItem[],
+	bootstrapScopeId: string | null,
+): void {
+	if (bootstrapScopeId === DEFAULT_SYNC_SCOPE_ID) throw new Error("scope_mismatch");
+	for (const item of items) {
+		const payload = parseSnapshotPayload(item);
+		if (!payload) continue;
+		const payloadScopeId = normalizeBootstrapScopeId(payload.scope_id);
+		if (!bootstrapScopeId) throw new Error("scope_mismatch");
+		if (payloadScopeId && payloadScopeId !== bootstrapScopeId) {
+			throw new Error("scope_mismatch");
+		}
+	}
+}
+
 const bootstrapSessionCache = new Map<string, number>();
 
 function ensureSessionForBootstrap(
@@ -372,8 +388,9 @@ function clearScopedAckedCursor(db: Database, peerDeviceId: string, scopeId: str
  * synced memories in the requested scope with the snapshot contents.
  *
  * This runs in a single IMMEDIATE transaction:
- * 1. Delete local shared-visibility memory_items in the requested scope
- *    (preserving private and other-scope rows)
+ * 1. For an explicit scope, delete local shared-visibility memory_items in
+ *    that scope (preserving private and other-scope rows). Unscoped bootstrap
+ *    is non-destructive because its serving lane contains no regular rows.
  * 2. Insert all snapshot items (upsert handles tombstones via active/deleted_at)
  * 3. Update the replication cursor to baseline_cursor
  * 4. Bump the local generation + snapshot_id to match the peer
@@ -392,18 +409,13 @@ export function applyBootstrapSnapshot(
 	// the peer emitted before they ran scanner-aware versions.
 	const activeScanner = scanner ?? new SecretScanner();
 	const bootstrapScopeId = normalizeBootstrapScopeId(resetInfo.scope_id);
-	const deleteScopePredicate = bootstrapScopeId
-		? eq(schema.memoryItems.scope_id, bootstrapScopeId)
-		: or(
-				isNull(schema.memoryItems.scope_id),
-				eq(schema.memoryItems.scope_id, DEFAULT_SYNC_SCOPE_ID),
-			);
+	validateSnapshotScopes(items, bootstrapScopeId);
 
 	db.transaction(() => {
 		const d = drizzle(db, { schema });
 		let embeddableApplied = 0;
 
-		// 1. Delete local sync-eligible memories for this bootstrap scope.
+		// 1. Delete local sync-eligible memories only for an explicit bootstrap scope.
 		// - Only memories with import_key (i.e. previously synced) are deleted.
 		// - Bootstrap for one Sharing domain must not wipe rows from another.
 		// - Only explicitly private memories are preserved; NULL visibility is
@@ -411,17 +423,19 @@ export function applyBootstrapSnapshot(
 		//   to avoid leaving stale rows that could create duplicate import_keys.
 		// - The dirty-local gate in sync-pass ensures we only reach here when
 		//   no unsynced shared changes exist.
-		const deleteResult = d
-			.delete(schema.memoryItems)
-			.where(
-				and(
-					isNotNull(schema.memoryItems.import_key),
-					deleteScopePredicate,
-					ne(sql`COALESCE(${schema.memoryItems.visibility}, '')`, "private"),
-				),
-			)
-			.run();
-		result.deleted = deleteResult.changes;
+		if (bootstrapScopeId) {
+			const deleteResult = d
+				.delete(schema.memoryItems)
+				.where(
+					and(
+						isNotNull(schema.memoryItems.import_key),
+						eq(schema.memoryItems.scope_id, bootstrapScopeId),
+						ne(sql`COALESCE(${schema.memoryItems.visibility}, '')`, "private"),
+					),
+				)
+				.run();
+			result.deleted = deleteResult.changes;
+		}
 
 		// 2. Insert snapshot items, grouping by project.
 		bootstrapSessionCache.clear();
@@ -495,6 +509,7 @@ export function mergeBootstrapSnapshot(
 	const result: BootstrapResult = { ok: false, applied: 0, deleted: 0 };
 	const activeScanner = scanner ?? new SecretScanner();
 	const bootstrapScopeId = normalizeBootstrapScopeId(resetInfo.scope_id);
+	validateSnapshotScopes(items, bootstrapScopeId);
 	const mergeScopePredicate = bootstrapScopeId
 		? eq(schema.memoryItems.scope_id, bootstrapScopeId)
 		: or(

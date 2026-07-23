@@ -138,6 +138,7 @@ describe("connect", () => {
 		expect(tableExists(db, "recipient_policy_deny_overlays")).toBe(true);
 		expect(columnExists(db, "memory_items", "scope_id")).toBe(true);
 		expect(columnExists(db, "replication_ops", "scope_id")).toBe(true);
+		expect(hasIndex(db, "idx_memory_items_origin_device_active")).toBe(true);
 		expect(hasIndex(db, "idx_memory_items_scope_visibility_created")).toBe(true);
 		expect(hasIndex(db, "idx_memory_items_scope_backfill_pending")).toBe(true);
 		expect(hasIndex(db, "idx_replication_ops_scope_created")).toBe(true);

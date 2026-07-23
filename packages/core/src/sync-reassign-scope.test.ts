@@ -159,6 +159,9 @@ describe("reassign_scope replication", () => {
 		const receiver = new Database(":memory:");
 		initTestSchema(receiver);
 		insertMemory(receiver, null);
+		receiver
+			.prepare("UPDATE memory_items SET origin_device_id = 'owner' WHERE import_key = 'memory:key'")
+			.run();
 
 		const result = applyReplicationOps(receiver, ops(db), "receiver");
 
