@@ -163,7 +163,19 @@ describe("loadSyncData", () => {
 		const { state } = await import("../../lib/state");
 		const { loadSyncData } = await import("./index");
 		vi.mocked(api.loadSyncStatus).mockResolvedValue({
-			peers: [{ peer_device_id: "peer-still-visible" }],
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			coordinator: {
+				configured: true,
+				sync_enabled: true,
+				groups: ["Acme"],
+				presence_status: "posted",
+			},
+			peers: [
+				{
+					peer_device_id: "peer-still-visible",
+					status: { peer_state: "online", sync_status: "ok" },
+				},
+			],
 			sharing_review: [],
 			attempts: [],
 			legacy_devices: [],
@@ -175,5 +187,10 @@ describe("loadSyncData", () => {
 
 		expect(state.lastSyncPeers.map((peer) => peer.peer_device_id)).toEqual(["peer-still-visible"]);
 		expect(state.shareOperationsLoadError).toBe(true);
+		expect(state.lastSyncViewModel?.primaryStatus).toMatchObject({
+			state: "needs-attention",
+			badgeLabel: "Refresh needed",
+			nextAction: expect.stringMatching(/Refresh.*retry/),
+		});
 	});
 });

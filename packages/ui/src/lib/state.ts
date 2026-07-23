@@ -1,6 +1,10 @@
 /* Global application state — shared across tabs. */
 
-import type { UiSyncViewModel } from "../tabs/sync/view-model";
+import type {
+	TeamSyncDaemonState,
+	TeamSyncPresenceState,
+	UiSyncViewModel,
+} from "../tabs/sync/view-model";
 import type { ShareOperationReadModel } from "./api/sync";
 
 export type RefreshState = "idle" | "refreshing" | "paused" | "error";
@@ -79,7 +83,8 @@ export interface CachedRawEventsPayload {
 }
 
 export interface CachedSyncStatus {
-	daemon_state?: string;
+	daemon_state?: TeamSyncDaemonState;
+	daemon_running?: boolean;
 	enabled?: boolean;
 	last_sync_at?: string;
 	last_sync_at_utc?: string;
@@ -158,7 +163,7 @@ export interface CachedSyncCoordinator {
 	groups?: unknown[];
 	coordinator_url?: string | null;
 	discovered_devices?: DiscoveredDevice[];
-	presence_status?: string;
+	presence_status?: TeamSyncPresenceState;
 	paired_peer_count?: number;
 }
 

@@ -4335,6 +4335,9 @@ export function syncRoutes(
 			const legacyDevices = traceSync("legacyDevices", () => store.claimableLegacyDeviceIds());
 			const legacyReview = traceSync("legacySharedReview", () => legacySharedReviewSummary(store));
 			const sharingReview = traceSync("sharingReview", () => store.sharingReviewSummary(project));
+			const recipientPolicyReconciliation = traceSync("recipientPolicyReconciliation", () =>
+				listRecipientPolicyReconciliationStatus(store),
+			);
 			let joinRequests: Record<string, unknown>[] = [];
 			if (includeJoinRequests && showDiag && config.syncCoordinatorAdminSecret) {
 				try {
@@ -4393,6 +4396,7 @@ export function syncRoutes(
 				legacy_devices: legacyDevices,
 				legacy_shared_review: legacyReview,
 				sharing_review: sharingReview,
+				recipient_policy_reconciliation: recipientPolicyReconciliation,
 				coordinator,
 			};
 			if (includeJoinRequests && showDiag) {
