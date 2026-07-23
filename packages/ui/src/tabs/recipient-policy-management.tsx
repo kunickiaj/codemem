@@ -1,5 +1,6 @@
 import { render } from "preact";
 import { useEffect, useId, useMemo, useRef, useState } from "preact/hooks";
+import { DialogCloseButton } from "../components/primitives/dialog-close-button";
 import { RadixDialog } from "../components/primitives/radix-dialog";
 import * as api from "../lib/api";
 import type {
@@ -41,8 +42,12 @@ let requestOpen: ((request: RecipientPolicyManagementRequest) => boolean) | null
 let returnFocus: HTMLElement | null = null;
 
 export function openRecipientPolicyManagement(request: RecipientPolicyManagementRequest): boolean {
+	if (requestOpen) {
+		if (!requestOpen(request)) return false;
+		returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+		return true;
+	}
 	returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-	if (requestOpen) return requestOpen(request);
 	pendingOpen = request;
 	return true;
 }
@@ -104,8 +109,8 @@ function Choice({
 		>
 			<input checked={checked} disabled={disabled} id={id} onChange={onChange} type="checkbox" />
 			<span>
-				<strong>{label}</strong>
-				<span className="small">{description}</span>
+				<strong className="recipient-policy-management-name">{label}</strong>
+				<span className="small recipient-policy-management-description">{description}</span>
 			</span>
 		</label>
 	);
@@ -301,75 +306,163 @@ function dialogCopy(request: RecipientPolicyManagementRequest) {
 	};
 }
 
-function Review({ preview }: { preview: RecipientPolicyEdgePreviewResponseV1 }) {
-	const memoryTotal = preview.projects.reduce(
-		(total, project) => total + project.existingMemoryCount,
-		0,
-	);
+function recipientActionLabel(
+	changes: RecipientPolicyEdgeChangeV1[],
+	recipient: RecipientPolicyEdgeRecipientRefV1,
+): string {
+	let addsAccess = false;
+	let removesAccess = false;
+	const key = recipientKey(recipient);
+	for (const change of changes) {
+		if (recipientKey(change.recipient) !== key) continue;
+		if (change.action === "add") addsAccess = true;
+		else removesAccess = true;
+	}
+	if (addsAccess && removesAccess) return "Mixed changes";
+	if (removesAccess) return "Removing access";
+	return "Adding access";
+}
+
+function changedRecipientsMissingFromPreview(
+	preview: RecipientPolicyEdgePreviewResponseV1,
+): RecipientPolicyEdgeRecipientRefV1[] {
+	const selectedKeys = new Set(preview.selectedRecipients.map(recipientKey));
+	const missing = new Map<string, RecipientPolicyEdgeRecipientRefV1>();
+	for (const change of preview.normalizedChanges) {
+		const key = recipientKey(change.recipient);
+		if (!selectedKeys.has(key)) missing.set(key, change.recipient);
+	}
+	return [...missing.values()];
+}
+
+function deduplicateEffectiveDevices(
+	devices: RecipientPolicyEdgePreviewResponseV1["effectiveDevices"],
+): RecipientPolicyEdgePreviewResponseV1["effectiveDevices"] {
+	const seenDeviceIds = new Set<string>();
+	return devices.filter((device) => {
+		if (seenDeviceIds.has(device.deviceId)) return false;
+		seenDeviceIds.add(device.deviceId);
+		return true;
+	});
+}
+
+function Review({
+	preview,
+	recipientLabels,
+}: {
+	preview: RecipientPolicyEdgePreviewResponseV1;
+	recipientLabels: ReadonlyMap<string, string>;
+}) {
+	const effectiveDevices = deduplicateEffectiveDevices(preview.effectiveDevices);
+	const missingChangedRecipients = changedRecipientsMissingFromPreview(preview);
 	return (
 		<div className="sync-dialog-stack recipient-policy-management-review">
-			<section>
-				<h3>Exact Projects</h3>
+			<section aria-labelledby="recipient-policy-review-projects">
+				<h3 id="recipient-policy-review-projects">Projects affected</h3>
 				<ul>
 					{preview.projects.map((project) => (
 						<li key={project.canonicalProjectIdentity}>
-							<strong>{project.displayName}</strong> —{" "}
-							{project.existingMemoryCount.toLocaleString()} existing memories and future activity
+							<strong className="recipient-policy-management-name">{project.displayName}</strong>
+							<span>
+								{" "}
+								— Access changes affect {project.existingMemoryCount.toLocaleString()} existing
+								memories
+								{project.futureMemoriesShared
+									? " and future activity"
+									: "; future activity is not included"}
+							</span>
 						</li>
 					))}
 				</ul>
-				<p className="small">
-					{preview.projects.length.toLocaleString()}{" "}
-					{preview.projects.length === 1 ? "Project" : "Projects"} · {memoryTotal.toLocaleString()}{" "}
-					existing memories total
-				</p>
 			</section>
-			<section>
-				<h3>Selected recipients</h3>
+			<section aria-labelledby="recipient-policy-review-recipients">
+				<h3 id="recipient-policy-review-recipients">Recipient changes</h3>
 				<ul>
 					{preview.selectedRecipients.map((recipient) => (
 						<li key={recipientKey(recipient)}>
-							<strong>{recipient.displayName}</strong>{" "}
+							<strong className="recipient-policy-management-name">{recipient.displayName}</strong>{" "}
+							<span>— {recipientActionLabel(preview.normalizedChanges, recipient)} · </span>
 							{recipient.recipientKind === "identity" ? (
-								<span>— locally verified Identity</span>
+								<span>Identity · locally verified</span>
 							) : (
-								<span>
-									— Team with {recipient.currentMembers.length.toLocaleString()} current{" "}
+								<span className="recipient-policy-management-recipient-context">
+									Team · {recipient.currentMembers.length.toLocaleString()} current{" "}
 									{recipient.currentMembers.length === 1 ? "member" : "members"}
-									{recipient.currentMembers.length
-										? `: ${recipient.currentMembers.map((member) => member.displayName).join(", ")}`
-										: ""}
-									. Future Team members inherit access.
+									{recipient.currentMembers.length ? (
+										<>
+											:{" "}
+											<span className="recipient-policy-management-member-names">
+												{recipient.currentMembers.map((member) => member.displayName).join(", ")}
+											</span>
+										</>
+									) : null}
+									. Future Team members{" "}
+									{recipient.futureMembersInherit ? "inherit" : "do not inherit"} access.
 								</span>
 							)}
 						</li>
 					))}
+					{missingChangedRecipients.map((recipient) => (
+						<li key={recipientKey(recipient)}>
+							<strong className="recipient-policy-management-name">
+								{recipientLabels.get(recipientKey(recipient)) ??
+									(recipient.recipientKind === "team" ? recipient.teamId : recipient.identityId)}
+							</strong>{" "}
+							<span>
+								— {recipientActionLabel(preview.normalizedChanges, recipient)} ·{" "}
+								{recipient.recipientKind === "team" ? "Team" : "Identity"}
+							</span>
+						</li>
+					))}
 				</ul>
 			</section>
-			<p>
-				<strong>
-					{preview.effectiveDevices.length.toLocaleString()} effective{" "}
-					{preview.effectiveDevices.length === 1 ? "device" : "devices"}
-				</strong>
-			</p>
-			{preview.unchangedProjects.length ? (
-				<section>
-					<h3>Unchanged Projects</h3>
-					<ul>
-						{preview.unchangedProjects.map((project) => (
-							<li key={project.canonicalProjectIdentity}>{project.displayName}</li>
-						))}
-					</ul>
-				</section>
-			) : (
-				<p>
-					<strong>No other Projects will change.</strong>
+			<section aria-labelledby="recipient-policy-review-availability">
+				<h3 id="recipient-policy-review-availability">Resulting availability</h3>
+				{effectiveDevices.length ? (
+					<>
+						<p>
+							After the update, the affected Projects will be available on{" "}
+							{effectiveDevices.length.toLocaleString()} current{" "}
+							{effectiveDevices.length === 1 ? "device" : "devices"} across all recipients.
+						</p>
+						<ul>
+							{effectiveDevices.map((device) => (
+								<li className="recipient-policy-management-name" key={device.deviceId}>
+									{device.displayName}
+								</li>
+							))}
+						</ul>
+					</>
+				) : (
+					<p>After the update, no current devices will have access to the affected Projects.</p>
+				)}
+			</section>
+			<details className="recipient-policy-management-details">
+				<summary>Change details</summary>
+				<p className="small">
+					{preview.addCount.toLocaleString()} {preview.addCount === 1 ? "add" : "adds"} ·{" "}
+					{preview.removeCount.toLocaleString()} {preview.removeCount === 1 ? "remove" : "removes"}{" "}
+					· {preview.netWriteCount.toLocaleString()}{" "}
+					{preview.netWriteCount === 1 ? "write" : "writes"}
 				</p>
-			)}
-			<p className="small">
-				Adds {preview.addCount.toLocaleString()} · Removes {preview.removeCount.toLocaleString()} ·{" "}
-				{preview.netWriteCount.toLocaleString()} {preview.netWriteCount === 1 ? "write" : "writes"}
-			</p>
+				{preview.unchangedProjects.length ? (
+					<>
+						<p className="small recipient-policy-management-detail-label">
+							<strong>Unchanged Projects</strong>
+						</p>
+						<ul aria-label="Unchanged Projects">
+							{preview.unchangedProjects.map((project) => (
+								<li
+									className="recipient-policy-management-name"
+									key={project.canonicalProjectIdentity}
+								>
+									{project.displayName}
+								</li>
+							))}
+						</ul>
+					</>
+				) : null}
+			</details>
 		</div>
 	);
 }
@@ -381,41 +474,46 @@ function CommitResult({
 	preview: RecipientPolicyEdgePreviewResponseV1;
 	result: RecipientPolicyEdgeCommitResultV1;
 }) {
-	const complete = result.status === "applied";
+	const technicalStatus =
+		result.status === "applied"
+			? "Applied"
+			: result.status === "not_found"
+				? "Not found"
+				: `${result.status.charAt(0).toUpperCase()}${result.status.slice(1)}`;
 	return (
 		<div className="sync-dialog-stack recipient-policy-management-result">
-			<p role="status">
-				<strong>
-					{complete
-						? `Recipient access updated with ${result.writeCount.toLocaleString()} ${result.writeCount === 1 ? "write" : "writes"}.`
-						: "Some recipient access changes could not be completed."}
-				</strong>
-			</p>
-			{result.outcomes.length ? (
-				<ul>
-					{result.outcomes.map((item) => {
-						const projectName =
-							preview.projects.find(
-								(project) =>
-									project.canonicalProjectIdentity === item.change.canonicalProjectIdentity,
-							)?.displayName ?? "Selected Project";
-						const recipientName =
-							preview.selectedRecipients.find(
-								(recipient) => recipientKey(recipient) === recipientKey(item.change.recipient),
-							)?.displayName ??
-							(item.change.recipient.recipientKind === "team" ? "Team" : "Identity");
-						return (
-							<li
-								key={`${item.change.canonicalProjectIdentity}:${recipientKey(item.change.recipient)}`}
-							>
-								{item.change.action === "add" ? "Add" : "Remove"} {recipientName}{" "}
-								{item.change.action === "add" ? "to" : "from"} {projectName}:{" "}
-								{item.outcome.replaceAll("_", " ")}
-							</li>
-						);
-					})}
-				</ul>
-			) : null}
+			<details className="recipient-policy-management-details">
+				<summary>Technical details</summary>
+				<p>
+					Status: {technicalStatus}. Writes: {result.writeCount.toLocaleString()}.
+				</p>
+				{result.errorCode ? <p>Error code: {result.errorCode.replaceAll("_", " ")}.</p> : null}
+				{result.outcomes.length ? (
+					<ul>
+						{result.outcomes.map((item) => {
+							const projectName =
+								preview.projects.find(
+									(project) =>
+										project.canonicalProjectIdentity === item.change.canonicalProjectIdentity,
+								)?.displayName ?? "Selected Project";
+							const recipientName =
+								preview.selectedRecipients.find(
+									(recipient) => recipientKey(recipient) === recipientKey(item.change.recipient),
+								)?.displayName ??
+								(item.change.recipient.recipientKind === "team" ? "Team" : "Identity");
+							return (
+								<li
+									key={`${item.change.canonicalProjectIdentity}:${recipientKey(item.change.recipient)}`}
+								>
+									{item.change.action === "add" ? "Add" : "Remove"} {recipientName}{" "}
+									{item.change.action === "add" ? "to" : "from"} {projectName}:{" "}
+									{item.outcome.replaceAll("_", " ")}
+								</li>
+							);
+						})}
+					</ul>
+				) : null}
+			</details>
 		</div>
 	);
 }
@@ -431,6 +529,16 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 	const [busy, setBusy] = useState(false);
 	const submitting = useRef(false);
 	const choices = useMemo(() => recipientChoices(intent, request), [intent, request]);
+	const recipientLabels = useMemo(
+		() =>
+			new Map([
+				...intent.teams.map((team) => [`team:${team.teamId}`, team.displayName] as const),
+				...intent.identities.map(
+					(identity) => [`identity:${identity.identityId}`, identity.displayName] as const,
+				),
+			]),
+		[intent],
+	);
 	const projectIds = useMemo(
 		() => new Set(projects.map((project) => project.canonicalProjectIdentity)),
 		[projects],
@@ -461,6 +569,11 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 		};
 	}, [intent]);
 
+	useEffect(() => {
+		if (!result) return;
+		document.getElementById("recipient-policy-management-title")?.focus();
+	}, [result]);
+
 	if (!request) return null;
 	const copy = dialogCopy(request);
 	const fixedProjects = requestProjectIds(request);
@@ -480,6 +593,21 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 	const noChanges =
 		request.mode !== "project-add" && request.mode !== "recipient-add" && changes.length === 0;
 	const availableProjects = projectChoices(projects, request, initial);
+	const resultApplied = result?.status === "applied";
+	const title = result
+		? resultApplied
+			? "Recipient access updated"
+			: "Recipient access needs attention"
+		: preview
+			? "Review recipient access"
+			: copy.title;
+	const description = result
+		? resultApplied
+			? "The reviewed recipient access changes are applied."
+			: "Some reviewed recipient access changes were not applied. Review the technical details."
+		: preview
+			? "Confirm the exact Projects, recipients, and resulting access."
+			: copy.description;
 
 	const close = () => {
 		if (submitting.current) return;
@@ -534,11 +662,7 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 				reviewedPolicyDigest: preview.reviewedPolicyDigest,
 			});
 			setResult(committed);
-			setStatus(
-				committed.status === "applied"
-					? "Recipient access changes saved."
-					: "Some recipient access changes need attention.",
-			);
+			setStatus("");
 			try {
 				await options.onCommitted?.(committed);
 			} catch {
@@ -547,7 +671,7 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 		} catch (cause) {
 			if (cause instanceof api.RecipientPolicyEdgesStaleError) {
 				setPreview(null);
-				setStatus("Recipient access changed. Refresh and review the preserved selection again.");
+				setStatus("");
 			}
 			setError(safeError(cause, "Unable to save recipient access changes."));
 		} finally {
@@ -583,10 +707,10 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 				returnFocus = null;
 			}}
 			onOpenAutoFocus={(event) => {
-				const title = document.getElementById("recipient-policy-management-title");
-				if (!title) return;
+				const titleElement = document.getElementById("recipient-policy-management-title");
+				if (!titleElement) return;
 				event.preventDefault();
-				title.focus();
+				titleElement.focus();
 			}}
 			onOpenChange={(open) => {
 				if (!open) close();
@@ -601,23 +725,18 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 			>
 				<div className="modal-header">
 					<h2 id="recipient-policy-management-title" tabIndex={-1}>
-						{preview ? "Review recipient access" : copy.title}
+						{title}
 					</h2>
-					<button
-						aria-label={`Close ${copy.title}`}
-						className="recipient-policy-management-target"
+					<DialogCloseButton
+						ariaLabel={`Close ${title}`}
+						className="modal-close-button recipient-policy-management-target"
 						disabled={busy}
 						onClick={close}
-						type="button"
-					>
-						×
-					</button>
+					/>
 				</div>
 				<div className="modal-body recipient-policy-management-selection">
 					<p className="small" id="recipient-policy-management-description">
-						{preview
-							? "Confirm the exact Projects, recipients, and resulting access."
-							: copy.description}
+						{description}
 					</p>
 					{unavailableMessage ? (
 						<p aria-live="polite" role={options.loadError ? "alert" : "status"}>
@@ -626,7 +745,7 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 					) : result && preview ? (
 						<CommitResult preview={preview} result={result} />
 					) : preview ? (
-						<Review preview={preview} />
+						<Review preview={preview} recipientLabels={recipientLabels} />
 					) : request.mode === "recipient-add" || request.mode === "recipient-manage" ? (
 						<fieldset className="sync-dialog-radio-list" disabled={busy}>
 							<legend>{copy.legend}</legend>
@@ -670,9 +789,15 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 							)}
 						</fieldset>
 					)}
-					<p aria-live="polite" className="small recipient-policy-management-status" role="status">
-						{status}
-					</p>
+					{result ? null : (
+						<p
+							aria-live="polite"
+							className="small recipient-policy-management-status"
+							role="status"
+						>
+							{status}
+						</p>
+					)}
 					{error ? (
 						<p aria-live="assertive" role="alert">
 							{error}
@@ -690,7 +815,14 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 					<button
 						className="settings-button recipient-policy-management-target"
 						disabled={busy}
-						onClick={preview && !result ? () => setPreview(null) : close}
+						onClick={
+							preview && !result
+								? () => {
+										setPreview(null);
+										setStatus("");
+									}
+								: close
+						}
 						type="button"
 					>
 						{result ? "Done" : preview ? "Back" : "Cancel"}
