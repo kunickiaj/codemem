@@ -1329,6 +1329,9 @@ const TERMINAL_SHARE_MAINTENANCE_ERRORS = new Set([
 	"operation_device_binding_missing",
 	"operation_intent_invalid",
 	"provisioning_membership_plan_invalid",
+	"device_binding_conflict",
+	"intent_conflict",
+	"inviter_identity_conflict",
 ]);
 const TERMINAL_RECONCILIATION_ERRORS = new Set([
 	"coordinator_not_configured",
@@ -1345,6 +1348,9 @@ const TERMINAL_RECONCILIATION_ERRORS = new Set([
 	"recipient_device_identity_conflict",
 	"recipient_actor_conflict",
 	"pending_person_identity_conflict",
+	"device_binding_conflict",
+	"intent_conflict",
+	"inviter_identity_conflict",
 ]);
 
 function errorStatus(error: unknown): number | null {

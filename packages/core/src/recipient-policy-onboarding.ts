@@ -673,6 +673,37 @@ function rowWhere(key: Record<string, string>): { clause: string; parameters: st
 	};
 }
 
+function hasMatchingLocalDeviceKey(db: Database, expected: Record<string, string | null>): boolean {
+	const publicKey = db
+		.prepare("SELECT public_key FROM sync_device WHERE device_id = ?")
+		.pluck()
+		.get(expected.device_id);
+	if (typeof publicKey !== "string" || !publicKey.trim()) return false;
+	return (
+		expected.source_fingerprint ===
+		digest("recipient-onboarding-binding-v1", {
+			identityId: expected.identity_id,
+			deviceId: expected.device_id,
+			deviceKeyFingerprint: fingerprintPublicKey(publicKey),
+		})
+	);
+}
+
+function transitionExactProjectDevice(
+	db: Database,
+	row: IntentRow,
+	where: { clause: string; parameters: string[] },
+): void {
+	const entries = Object.entries(row.values).filter(([column]) => column !== "created_at");
+	const result = db
+		.prepare(
+			`UPDATE identity_devices SET ${entries.map(([column]) => `${column} = ?`).join(", ")}
+			 WHERE ${where.clause}`,
+		)
+		.run(...entries.map(([, value]) => value), ...where.parameters);
+	if (result.changes !== 1) throw new Error("device_binding_conflict");
+}
+
 function validateOrWriteRow(db: Database, row: IntentRow): boolean {
 	const idempotencyMatch = db
 		.prepare(`SELECT * FROM ${row.table} WHERE idempotency_key = ?`)
@@ -695,6 +726,16 @@ function validateOrWriteRow(db: Database, row: IntentRow): boolean {
 				hasConflictingFingerprint
 			) {
 				throw new Error("device_binding_conflict");
+			}
+			if (
+				keyMatch.provenance === "exact_project_invite" &&
+				expected.provenance === "recipient_invite"
+			) {
+				if (!hasMatchingLocalDeviceKey(db, expected)) {
+					throw new Error("device_binding_conflict");
+				}
+				transitionExactProjectDevice(db, row, where);
+				return true;
 			}
 			return false;
 		}
