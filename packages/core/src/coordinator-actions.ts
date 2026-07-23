@@ -32,6 +32,10 @@ import {
 	readCodememConfigFileAtPath,
 	writeCodememConfigFile,
 } from "./observer-config.js";
+import {
+	PROJECT_INVITE_PENDING_STATUS,
+	ProjectSyncEnablementError,
+} from "./project-invite-acceptance.js";
 import { friendlyDeviceName, normalizeIdentityDisplayName } from "./project-invite-identity.js";
 import {
 	commitRecipientPolicyOnboarding,
@@ -45,11 +49,34 @@ import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 
 const VALID_INVITE_POLICIES = new Set(["auto_admit", "approval_required"]);
 const INVITE_IMPORT_TIMEOUT_S = 10;
+const PROJECT_INVITE_SYNC_DEFAULTS = {
+	host: "0.0.0.0",
+	intervalS: 120,
+	port: 7337,
+} as const;
 
 function stripTrailingSlashes(value: string): string {
 	let end = value.length;
 	while (end > 0 && value.charCodeAt(end - 1) === 47) end--;
 	return end === value.length ? value : value.slice(0, end);
+}
+
+function enableProjectInviteSync(config: Record<string, unknown>): Record<string, unknown> {
+	const port = Number(config.sync_port);
+	const intervalS = Number(config.sync_interval_s);
+	return {
+		...config,
+		sync_enabled: true,
+		sync_host: String(config.sync_host ?? "").trim() || PROJECT_INVITE_SYNC_DEFAULTS.host,
+		sync_port:
+			Number.isSafeInteger(port) && port > 0 && port <= 65_535
+				? port
+				: PROJECT_INVITE_SYNC_DEFAULTS.port,
+		sync_interval_s:
+			Number.isSafeInteger(intervalS) && intervalS > 0
+				? intervalS
+				: PROJECT_INVITE_SYNC_DEFAULTS.intervalS,
+	};
 }
 
 function coordinatorRemoteTarget(config = readCodememConfigFile()): {
@@ -1484,9 +1511,10 @@ export async function coordinatorImportInviteAction(opts: {
 			reviewedOnboardingDigest: reviewedOnboardingDigest ?? "",
 		});
 	}
-	const nextConfig = opts.configPath
+	let nextConfig = opts.configPath
 		? readCodememConfigFileAtPath(opts.configPath)
 		: readCodememConfigFile();
+	if (projectInvite) nextConfig = enableProjectInviteSync(nextConfig);
 	nextConfig.sync_coordinator_url = coordinatorUrl;
 	if (projectInvite || recipientInvite) {
 		nextConfig.actor_id = recipientActorId;
@@ -1515,7 +1543,15 @@ export async function coordinatorImportInviteAction(opts: {
 	const mergedGroups = Array.from(new Set([...existingGroups, newGroupId]));
 	nextConfig.sync_coordinator_groups = mergedGroups;
 	nextConfig.sync_coordinator_group = mergedGroups[0] ?? newGroupId;
-	const configPath = writeCodememConfigFile(nextConfig, opts.configPath ?? undefined);
+	let configPath: string;
+	try {
+		configPath = writeCodememConfigFile(nextConfig, opts.configPath ?? undefined);
+	} catch (error) {
+		if (projectInvite) {
+			throw new ProjectSyncEnablementError({ cause: error });
+		}
+		throw error;
+	}
 	if (recipientInvite) {
 		return {
 			group_id: response?.group_id ?? payload.group_id,
@@ -1531,7 +1567,15 @@ export async function coordinatorImportInviteAction(opts: {
 	return {
 		group_id: payload.group_id,
 		coordinator_url: payload.coordinator_url,
-		status: response?.status ?? null,
+		status: projectInvite ? PROJECT_INVITE_PENDING_STATUS : (response?.status ?? null),
+		...(projectInvite
+			? {
+					setup_state: "pending_inviter",
+					sync_enabled: true,
+					message:
+						"Invitation accepted. Project access is still being set up and the first sync has not completed yet.",
+				}
+			: {}),
 		operation_id: response?.operation_id ?? payload.operation_id ?? null,
 		trust_state: response?.trust_state ?? null,
 		bootstrap_grant_id: response?.bootstrap_grant_id ?? null,
