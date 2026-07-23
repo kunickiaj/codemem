@@ -191,11 +191,31 @@ function checkbox(label: string): HTMLInputElement {
 	return input;
 }
 
+function actionButton(label: string): HTMLButtonElement {
+	const match = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+		(button) => button.textContent === label,
+	);
+	if (!match) throw new Error(`button missing: ${label}`);
+	return match;
+}
+
 async function reviewSelection() {
 	await act(async () => {
 		(
 			[...document.querySelectorAll<HTMLButtonElement>("button")].find(
 				(button) => button.textContent === "Review changes",
+			) as HTMLButtonElement
+		).click();
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+}
+
+async function confirmChanges() {
+	await act(async () => {
+		(
+			[...document.querySelectorAll<HTMLButtonElement>("button")].find(
+				(button) => button.textContent === "Confirm changes",
 			) as HTMLButtonElement
 		).click();
 		await Promise.resolve();
@@ -525,7 +545,25 @@ describe("recipient policy management dialog", () => {
 		expect(vi.mocked(api.previewRecipientPolicyEdges).mock.calls[0]?.[0].changes).toHaveLength(500);
 	});
 
-	it("renders exact preview detail and commits only normalized changes plus digest", async () => {
+	it("renders the three review questions in order and commits normalized changes plus digest", async () => {
+		vi.mocked(api.commitRecipientPolicyEdges).mockResolvedValueOnce({
+			version: 1,
+			status: "applied",
+			reviewedPolicyDigest: "policy:digest",
+			errorCode: null,
+			outcomes: [
+				{
+					change: {
+						canonicalProjectIdentity: "git:codemem",
+						recipient: { recipientKind: "team", teamId: "team-example" },
+						action: "add",
+					},
+					outcome: "already_present",
+				},
+			],
+			writeCount: 0,
+			idempotent: true,
+		});
 		mount();
 		act(() => {
 			openRecipientPolicyManagement({ mode: "project-add", projectIds: ["git:codemem"] });
@@ -533,25 +571,45 @@ describe("recipient policy management dialog", () => {
 		act(() => checkbox("ExampleCo").click());
 		await reviewSelection();
 
+		expect(document.getElementById("recipient-policy-management-title")?.textContent).toBe(
+			"Review recipient access",
+		);
+		expect(document.getElementById("recipient-policy-management-description")?.textContent).toBe(
+			"Confirm the exact Projects, recipients, and resulting access.",
+		);
+		expect(
+			[...document.querySelectorAll(".recipient-policy-management-review > section > h3")].map(
+				(heading) => heading.textContent,
+			),
+		).toEqual(["What is shared", "Who receives it", "Available now"]);
 		expect(document.body.textContent).toContain(
 			"Codemem — 436 existing memories and future activity",
 		);
-		expect(document.body.textContent).toContain("436 existing memories total");
 		expect(document.body.textContent).toContain("ExampleCo");
+		expect(document.body.textContent).toContain("Team · 2 current members");
 		expect(document.body.textContent).toContain("Adam, Brian");
 		expect(document.body.textContent).toContain("Future Team members inherit access");
-		expect(document.body.textContent).toContain("1 effective device");
-		expect(document.body.textContent).toContain("No other Projects will change");
+		expect(document.body.textContent).toContain(
+			"This access will be available on 1 current device after the update",
+		);
+		const reviewFooter = document.querySelector(
+			".modal-footer.recipient-policy-management-actions",
+		);
+		const backButton = actionButton("Back");
+		const confirmButton = actionButton("Confirm changes");
+		expect(reviewFooter?.contains(backButton)).toBe(true);
+		expect(reviewFooter?.contains(confirmButton)).toBe(true);
+		expect(backButton.type).toBe("button");
+		expect(confirmButton.type).toBe("button");
+		const changeDetails = [...document.querySelectorAll<HTMLDetailsElement>("details")].find(
+			(details) => details.querySelector("summary")?.textContent === "Change details",
+		);
+		expect(changeDetails).toBeInstanceOf(HTMLDetailsElement);
+		expect(changeDetails?.open).toBe(false);
+		expect(document.querySelector(".recipient-policy-management-details h4")).toBeNull();
+		expect(document.body.textContent).not.toContain("existing memories total");
 
-		await act(async () => {
-			(
-				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Confirm changes",
-				) as HTMLButtonElement
-			).click();
-			await Promise.resolve();
-			await Promise.resolve();
-		});
+		await confirmChanges();
 		expect(api.commitRecipientPolicyEdges).toHaveBeenCalledWith({
 			version: 1,
 			changes: preview([
@@ -563,6 +621,118 @@ describe("recipient policy management dialog", () => {
 			]).normalizedChanges,
 			reviewedPolicyDigest: "policy:digest",
 		});
+		expect(document.getElementById("recipient-policy-management-title")?.textContent).toBe(
+			"Recipient access updated",
+		);
+		const resultDescription = document.getElementById("recipient-policy-management-description");
+		const appliedSummary = "The reviewed recipient access changes are applied.";
+		expect(resultDescription?.textContent).toBe(appliedSummary);
+		expect(resultDescription?.hasAttribute("aria-live")).toBe(false);
+		expect(resultDescription?.hasAttribute("role")).toBe(false);
+		expect(document.activeElement).toBe(
+			document.getElementById("recipient-policy-management-title"),
+		);
+		expect(document.body.textContent?.split(appliedSummary)).toHaveLength(2);
+		expect(document.body.textContent).not.toContain("updated with");
+		expect(document.body.textContent).not.toContain("changes saved");
+		const resultFooter = document.querySelector(
+			".modal-footer.recipient-policy-management-actions",
+		);
+		const doneButton = actionButton("Done");
+		expect(resultFooter?.contains(doneButton)).toBe(true);
+		expect(doneButton.type).toBe("button");
+		expect(document.body.textContent).not.toContain("Confirm changes");
+		const technicalDetails = document.querySelector<HTMLDetailsElement>(
+			".recipient-policy-management-result details",
+		);
+		expect(technicalDetails).toBeInstanceOf(HTMLDetailsElement);
+		expect(technicalDetails?.open).toBe(false);
+		expect(technicalDetails?.querySelector("summary")?.textContent).toBe("Technical details");
+	});
+
+	it("describes zero current-device impact", async () => {
+		vi.mocked(api.previewRecipientPolicyEdges).mockImplementationOnce(async (request) => ({
+			...preview(request.changes),
+			effectiveDevices: [],
+		}));
+		mount();
+		act(() => {
+			openRecipientPolicyManagement({ mode: "project-add", projectIds: ["git:codemem"] });
+		});
+		act(() => checkbox("ExampleCo").click());
+		await reviewSelection();
+
+		expect(document.body.textContent).toContain(
+			"No current devices will have this access immediately.",
+		);
+	});
+
+	it("marks long Project, Team, Identity, member, and device names as wrappable", async () => {
+		const longProject = "Project-with-a-very-long-unbroken-name-that-must-wrap";
+		const longTeam = "Team-with-a-very-long-unbroken-name-that-must-wrap";
+		const longIdentity = "Identity-with-a-very-long-unbroken-name-that-must-wrap";
+		const longMember = "Member-with-a-very-long-unbroken-name-that-must-wrap";
+		const longDevice = "Device-with-a-very-long-unbroken-name-that-must-wrap";
+		vi.mocked(api.previewRecipientPolicyEdges).mockImplementationOnce(async (request) => {
+			const value = preview(request.changes);
+			const [project] = value.projects;
+			const [recipient] = value.selectedRecipients;
+			const [device] = value.effectiveDevices;
+			if (!project || !recipient || recipient.recipientKind !== "team" || !device) {
+				throw new Error("preview fixture is incomplete");
+			}
+			const [currentMember] = recipient.currentMembers;
+			if (!currentMember) {
+				throw new Error("preview fixture is incomplete");
+			}
+			return {
+				...value,
+				projects: [{ ...project, displayName: longProject }],
+				selectedRecipients: [
+					{
+						...recipient,
+						displayName: longTeam,
+						currentMembers: [{ ...currentMember, displayName: longMember }],
+					},
+					{
+						recipientKind: "identity",
+						identityId: "identity-brian",
+						displayName: longIdentity,
+						verification: "local",
+					},
+				],
+				effectiveDevices: [{ ...device, displayName: longDevice }],
+			};
+		});
+		const baseIntent = intent();
+		mount(
+			intent({
+				identities: baseIntent.identities.map((identity, index) => ({
+					...identity,
+					displayName: index === 0 ? longMember : longIdentity,
+				})),
+			}),
+		);
+		act(() => {
+			openRecipientPolicyManagement({ mode: "project-add", projectIds: ["git:codemem"] });
+		});
+		const teamDescription = checkbox("ExampleCo")
+			.closest("label")
+			?.querySelector(".recipient-policy-management-description");
+		expect(teamDescription?.textContent).toContain(longMember);
+		expect(checkbox(longIdentity).closest(".recipient-policy-management-choice")).not.toBeNull();
+		act(() => checkbox("ExampleCo").click());
+		await reviewSelection();
+
+		for (const name of [longProject, longTeam, longIdentity, longDevice]) {
+			const node = [...document.querySelectorAll(".recipient-policy-management-name")].find(
+				(candidate) => candidate.textContent === name,
+			);
+			expect(node).not.toBeUndefined();
+		}
+		expect(document.querySelector(".recipient-policy-management-member-names")?.textContent).toBe(
+			longMember,
+		);
 	});
 
 	it("discards stale preview, preserves selection, and announces another review", async () => {
@@ -593,15 +763,36 @@ describe("recipient policy management dialog", () => {
 			await Promise.resolve();
 		});
 
-		expect(document.body.textContent).toContain("Review the refreshed changes before trying again");
-		expect(document.querySelector("[aria-live='polite']")?.textContent).toContain(
-			"Refresh and review the preserved selection again",
+		const alerts = document.querySelectorAll("[role='alert']");
+		expect(alerts).toHaveLength(1);
+		expect(alerts[0]?.textContent).toBe(
+			"Recipient access changed after this review. Review the refreshed changes before trying again.",
 		);
+		expect(document.querySelector(".recipient-policy-management-status")?.textContent).toBe("");
 		expect(checkbox("ExampleCo").checked).toBe(true);
 		expect(document.body.textContent).toContain("Review changes");
 	});
 
-	it("provides labels, live regions, busy state, target hooks, and neutral opening focus", () => {
+	it("clears review-ready status when returning to selection", async () => {
+		mount();
+		act(() => {
+			openRecipientPolicyManagement({ mode: "project-add", projectIds: ["git:codemem"] });
+		});
+		act(() => checkbox("ExampleCo").click());
+		await reviewSelection();
+		expect(document.querySelector(".recipient-policy-management-status")?.textContent).toContain(
+			"Review ready",
+		);
+
+		act(() => {
+			[...document.querySelectorAll<HTMLButtonElement>("button")]
+				.find((button) => button.textContent === "Back")
+				?.click();
+		});
+		expect(document.querySelector(".recipient-policy-management-status")?.textContent).toBe("");
+	});
+
+	it("provides labels, live regions, busy state, semantic actions, and neutral opening focus", () => {
 		mount();
 		act(() => {
 			openRecipientPolicyManagement({ mode: "project-manage", projectId: "git:codemem" });
@@ -614,11 +805,25 @@ describe("recipient policy management dialog", () => {
 		}
 		expect(document.querySelector("[aria-busy='false']")).not.toBeNull();
 		expect(document.querySelector("[aria-live='polite']")).not.toBeNull();
-		expect(document.querySelectorAll(".recipient-policy-management-target").length).toBeGreaterThan(
-			2,
+		const closeButton = document.querySelector<HTMLButtonElement>(
+			".modal-close-button.recipient-policy-management-target",
 		);
+		expect(closeButton?.getAttribute("aria-label")).toBe("Close Manage Project recipients");
+		expect(closeButton?.type).toBe("button");
+		expect(closeButton?.textContent).toContain("Close");
+		expect(closeButton?.querySelector(".modal-close-button-icon")).not.toBeNull();
+		const footer = document.querySelector(".modal-footer.recipient-policy-management-actions");
+		const cancelButton = actionButton("Cancel");
+		const reviewButton = actionButton("Review changes");
+		expect(footer?.contains(cancelButton)).toBe(true);
+		expect(footer?.contains(reviewButton)).toBe(true);
+		expect(cancelButton.type).toBe("button");
+		expect(reviewButton.type).toBe("button");
 
-		const props = dialogSpy.mock.calls.at(-1)?.[0] as { onOpenAutoFocus: (event: Event) => void };
+		const props = dialogSpy.mock.calls.at(-1)?.[0] as {
+			onOpenAutoFocus: (event: Event) => void;
+			onOpenChange: (open: boolean) => void;
+		};
 		const event = new Event("focus");
 		const preventDefault = vi.spyOn(event, "preventDefault");
 		props.onOpenAutoFocus(event);
@@ -626,6 +831,8 @@ describe("recipient policy management dialog", () => {
 		expect(document.activeElement).toBe(
 			document.getElementById("recipient-policy-management-title"),
 		);
+		act(() => props.onOpenChange(false));
+		expect(document.getElementById("recipientPolicyManagementDialog")).toBeNull();
 	});
 
 	it("restores focus to a stable tab when polling replaced the original trigger", () => {
@@ -651,6 +858,25 @@ describe("recipient policy management dialog", () => {
 		expect(document.activeElement).toBe(document.getElementById("tabBtn-sharing"));
 	});
 
+	it("restores focus to the connected opening trigger", () => {
+		const trigger = document.getElementById("trigger") as HTMLButtonElement;
+		trigger.focus();
+		mount();
+		act(() => {
+			openRecipientPolicyManagement({ mode: "project-manage", projectId: "git:codemem" });
+		});
+		const props = dialogSpy.mock.calls.at(-1)?.[0] as {
+			onCloseAutoFocus: (event: Event) => void;
+		};
+		const event = new Event("close");
+		const preventDefault = vi.spyOn(event, "preventDefault");
+		document.getElementById("recipient-policy-management-title")?.focus();
+		props.onCloseAutoFocus(event);
+
+		expect(preventDefault).toHaveBeenCalled();
+		expect(document.activeElement).toBe(trigger);
+	});
+
 	it("blocks duplicate preview submissions before the first request settles", async () => {
 		let resolvePreview: ((value: RecipientPolicyEdgePreviewResponseV1) => void) | null = null;
 		vi.mocked(api.previewRecipientPolicyEdges).mockImplementationOnce((request) =>
@@ -673,6 +899,7 @@ describe("recipient policy management dialog", () => {
 		});
 		expect(api.previewRecipientPolicyEdges).toHaveBeenCalledTimes(1);
 		expect(checkbox("ExampleCo").disabled).toBe(true);
+		expect(document.querySelector<HTMLButtonElement>(".modal-close-button")?.disabled).toBe(true);
 
 		await act(async () => {
 			resolvePreview?.(preview([]));
@@ -700,24 +927,15 @@ describe("recipient policy management dialog", () => {
 		).toBe(true);
 	});
 
-	it("renders partial commit outcomes with text rather than color-only meaning", async () => {
+	it("renders a realistic non-idempotent conflict with text rather than color-only meaning", async () => {
 		vi.mocked(api.commitRecipientPolicyEdges).mockResolvedValueOnce({
 			version: 1,
 			status: "conflict",
 			reviewedPolicyDigest: "policy:digest",
-			errorCode: "edge_conflict",
-			outcomes: [
-				{
-					change: {
-						canonicalProjectIdentity: "git:codemem",
-						recipient: { recipientKind: "team", teamId: "team-example" },
-						action: "add",
-					},
-					outcome: "already_present",
-				},
-			],
+			errorCode: null,
+			outcomes: [],
 			writeCount: 0,
-			idempotent: true,
+			idempotent: false,
 		});
 		mount();
 		act(() => {
@@ -735,9 +953,19 @@ describe("recipient policy management dialog", () => {
 			await Promise.resolve();
 		});
 
-		expect(document.body.textContent).toContain(
-			"Some recipient access changes could not be completed",
+		expect(document.getElementById("recipient-policy-management-title")?.textContent).toBe(
+			"Recipient access needs attention",
 		);
-		expect(document.body.textContent).toContain("already present");
+		expect(document.getElementById("recipient-policy-management-description")?.textContent).toBe(
+			"Some reviewed recipient access changes were not applied. Review the technical details.",
+		);
+		expect(document.activeElement).toBe(
+			document.getElementById("recipient-policy-management-title"),
+		);
+		expect(document.body.textContent).toContain("Status: Conflict");
+		expect(document.body.textContent).not.toContain("already present");
+		expect(document.querySelector(".recipient-policy-management-result summary")?.textContent).toBe(
+			"Technical details",
+		);
 	});
 });
