@@ -32,7 +32,7 @@ import {
 	renderTeamSync,
 	setLoadSyncData as setTeamSyncLoadData,
 } from "./team-sync";
-import { deriveSyncViewModel } from "./view-model";
+import { deriveSyncViewModel, type TeamSyncReconciliationState } from "./view-model";
 
 /* ── Re-exports consumed by app.ts ───────────────────────── */
 
@@ -51,6 +51,12 @@ type SyncStatusResponseLike = {
 	legacy_shared_review?: Record<string, unknown> | null;
 	attempts?: unknown[];
 	legacy_devices?: unknown[];
+	recipient_policy_reconciliation?: {
+		items?: Array<{
+			canonicalProjectIdentity?: string;
+			state?: TeamSyncReconciliationState;
+		}>;
+	} | null;
 };
 
 type SyncActorListResponseLike = {
@@ -218,6 +224,9 @@ export async function loadSyncData() {
 			actors: state.lastSyncActors,
 			peers: state.lastSyncPeers,
 			coordinator: state.lastSyncCoordinator,
+			status: statusPayload,
+			shareOperations: state.lastShareOperations,
+			reconciliation: payload.recipient_policy_reconciliation,
 			duplicatePersonDecisions: state.lastSyncDuplicatePersonDecisions,
 		});
 		renderSyncStatus();

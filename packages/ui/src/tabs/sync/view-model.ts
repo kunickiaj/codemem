@@ -33,6 +33,7 @@ export {
 	deriveDuplicatePeople,
 	deriveVisiblePeopleActors,
 } from "./view-model/people-derivations";
+export { deriveTeamSyncPrimaryStatus } from "./view-model/primary-status";
 export {
 	deriveCoordinatorSetupBlocker,
 	deriveSyncViewModel,
@@ -51,7 +52,14 @@ export {
 	type PeerRecentOps,
 	type PeerScopeRejectionReason,
 	type PeerScopeRejectionsSummary,
+	type ProjectShareOperationLike,
+	type RecipientPolicyReconciliationLike,
 	SYNC_TERMINOLOGY,
+	type TeamSyncDaemonState,
+	type TeamSyncPresenceState,
+	type TeamSyncProjectOperationActionKind,
+	type TeamSyncProjectOperationState,
+	type TeamSyncReconciliationState,
 	type UiCoordinatorApprovalState,
 	type UiCoordinatorApprovalSummary,
 	type UiDuplicatePersonCandidate,
@@ -61,6 +69,8 @@ export {
 	type UiSyncRunResponse,
 	type UiSyncStatus,
 	type UiSyncViewModel,
+	type UiTeamSyncPrimaryState,
+	type UiTeamSyncPrimaryStatus,
 	type UiTrustState,
 	type VisiblePeopleResult,
 } from "./view-model/types";
