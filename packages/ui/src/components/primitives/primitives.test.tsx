@@ -1,4 +1,5 @@
 import { type ComponentChild, render } from "preact";
+import { useState } from "preact/hooks";
 import { act } from "preact/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -108,6 +109,7 @@ vi.mock("@radix-ui/react-switch", () => ({
 }));
 
 import { DialogCloseButton } from "./dialog-close-button";
+import { RadixDialog } from "./radix-dialog";
 import { RadixRadioGroup } from "./radix-radio-group";
 import { RadixSelect } from "./radix-select";
 import { RadixSwitch } from "./radix-switch";
@@ -150,13 +152,78 @@ describe("DialogCloseButton", () => {
 
 		const button = root.querySelector("button");
 		expect(button?.getAttribute("aria-label")).toBe("Close settings");
+		expect(button?.classList.contains("modal-close-button")).toBe(true);
 		expect(button?.textContent).toContain("Close");
+		expect(button?.querySelector(".modal-close-button-icon")?.getAttribute("aria-hidden")).toBe(
+			"true",
+		);
 
 		act(() => {
 			button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 		});
 
 		expect(onClick).toHaveBeenCalledTimes(1);
+	});
+
+	it("supports a disabled close control without firing onClick", () => {
+		const onClick = vi.fn();
+		const root = renderIntoDocument(
+			<DialogCloseButton ariaLabel="Close busy dialog" disabled onClick={onClick} />,
+		);
+		const button = root.querySelector<HTMLButtonElement>("button");
+
+		expect(button?.disabled).toBe(true);
+		act(() => button?.click());
+		expect(onClick).not.toHaveBeenCalled();
+	});
+});
+
+describe("RadixDialog", () => {
+	it("dismisses with Escape and restores focus to the opening trigger", async () => {
+		function Harness() {
+			const [open, setOpen] = useState(false);
+			return (
+				<>
+					<button id="radix-dialog-trigger" onClick={() => setOpen(true)} type="button">
+						Open dialog
+					</button>
+					<RadixDialog
+						ariaLabelledby="radix-dialog-title"
+						contentId="radix-dialog-content"
+						modal={false}
+						onCloseAutoFocus={(event) => {
+							event.preventDefault();
+							document.getElementById("radix-dialog-trigger")?.focus();
+						}}
+						onOpenChange={setOpen}
+						open={open}
+						overlayId="radix-dialog-overlay"
+					>
+						<h2 id="radix-dialog-title">Primitive dialog</h2>
+						<button type="button">Inside</button>
+					</RadixDialog>
+				</>
+			);
+		}
+
+		const root = renderIntoDocument(<Harness />);
+		const trigger = root.querySelector<HTMLButtonElement>("#radix-dialog-trigger");
+		if (!trigger) throw new Error("dialog trigger missing");
+		trigger.focus();
+		act(() => {
+			trigger.click();
+		});
+		await vi.waitFor(() => {
+			expect(document.getElementById("radix-dialog-content")).not.toBeNull();
+		});
+
+		act(() => {
+			document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+		});
+		await vi.waitFor(() => {
+			expect(document.getElementById("radix-dialog-content")).toBeNull();
+			expect(document.activeElement).toBe(trigger);
+		});
 	});
 });
 

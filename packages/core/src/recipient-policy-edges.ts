@@ -55,6 +55,7 @@ export interface RecipientPolicyEdgeEffectiveDeviceV1 {
 export interface RecipientPolicyEdgePreviewResponseV1 {
 	version: 1;
 	normalizedChanges: RecipientPolicyEdgeChangeV1[];
+	outcomes: RecipientPolicyEdgeCommitOutcomeV1[];
 	projects: RecipientPolicyEdgePreviewProjectV1[];
 	selectedRecipients: RecipientPolicyEdgeSelectedRecipientV1[];
 	effectiveDevices: RecipientPolicyEdgeEffectiveDeviceV1[];
@@ -634,6 +635,7 @@ function buildPreview(db: Database, request: RecipientPolicyEdgePreviewRequestV1
 	let addCount = 0;
 	let removeCount = 0;
 	const changedProjects = new Set<string>();
+	const outcomes: RecipientPolicyEdgeCommitOutcomeV1[] = [];
 	for (const change of request.changes) {
 		const current = edgesByKey.get(
 			edgeKey(
@@ -645,14 +647,21 @@ function buildPreview(db: Database, request: RecipientPolicyEdgePreviewRequestV1
 		if (change.action === "add" && current?.status !== "active") {
 			addCount += 1;
 			changedProjects.add(change.canonicalProjectIdentity);
+			outcomes.push({ change, outcome: "added" });
+		} else if (change.action === "add") {
+			outcomes.push({ change, outcome: "already_present" });
 		}
 		if (change.action === "remove" && current?.status === "active") {
 			removeCount += 1;
 			changedProjects.add(change.canonicalProjectIdentity);
+			outcomes.push({ change, outcome: "removed" });
+		} else if (change.action === "remove") {
+			outcomes.push({ change, outcome: "already_absent" });
 		}
 	}
 	const reviewedPolicyDigest = digest("edge-preview-v1", {
 		normalizedChanges: request.changes,
+		outcomes,
 		projects,
 		selectedRecipientFacts: selectedRecipientDigestFacts(
 			request.changes,
@@ -667,6 +676,7 @@ function buildPreview(db: Database, request: RecipientPolicyEdgePreviewRequestV1
 		response: {
 			version: 1,
 			normalizedChanges: request.changes,
+			outcomes,
 			projects,
 			selectedRecipients: recipients,
 			effectiveDevices: resultingDevices,

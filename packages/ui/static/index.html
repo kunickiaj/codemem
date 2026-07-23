@@ -1203,7 +1203,32 @@
       .recipient-policy-management-selection fieldset { border: 0; padding: 0; margin: var(--sp-4) 0 0; }
       .recipient-policy-management-selection legend { font-weight: var(--font-weight-semibold); }
       .recipient-policy-management-review section + section { margin-top: var(--sp-4); }
-      .recipient-policy-management-review ul { padding-left: var(--sp-5); }
+      .recipient-policy-management-review h3 { margin: 0 0 var(--sp-2); }
+      .recipient-policy-management-review p,
+      .recipient-policy-management-review ul { margin-top: var(--sp-2); }
+      .recipient-policy-management-review ul,
+      .recipient-policy-management-details ul { padding-left: var(--sp-5); }
+      .recipient-policy-management-name { overflow-wrap: anywhere; }
+      .recipient-policy-management-choice > span { min-width: 0; }
+      .recipient-policy-management-description,
+      .recipient-policy-management-member-names,
+      .recipient-policy-management-recipient-context,
+      .recipient-policy-management-review li,
+      .recipient-policy-management-review li span {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .recipient-policy-management-details {
+        margin-top: var(--sp-3);
+        color: var(--text-secondary);
+      }
+      .recipient-policy-management-details summary {
+        color: var(--text-primary);
+        cursor: pointer;
+        font-weight: var(--font-weight-semibold);
+      }
+      .recipient-policy-management-details p { margin-top: var(--sp-2); }
+      .recipient-policy-management-details li { overflow-wrap: anywhere; }
       .recipient-policy-management-status:empty { display: none; }
       .recipient-policy-sharing-header { margin-bottom: var(--sp-4); }
       .recipient-policy-sharing-tabs {
@@ -2773,7 +2798,7 @@
         font-size: var(--font-size-sm);
         transition: border-color var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard);
       }
-      .modal-close-button:hover {
+      .modal-close-button:hover:not(:disabled) {
         border-color: var(--border-hover);
         background: color-mix(in srgb, var(--surface-0) 92%, var(--control-hover-bg));
         color: var(--text-primary);
@@ -2782,6 +2807,13 @@
         outline: 2px solid var(--accent);
         outline-offset: 2px;
         box-shadow: 0 0 0 4px var(--focus-ring);
+      }
+      .modal-close-button:disabled {
+        border-color: var(--border);
+        background: var(--surface-1);
+        color: var(--text-tertiary);
+        cursor: not-allowed;
+        opacity: 0.65;
       }
       .modal-close-button-icon {
         display: inline-flex;

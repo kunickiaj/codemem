@@ -538,6 +538,71 @@ describe("recipient-policy edge changes", () => {
 		}
 	});
 
+	it("rejects an already-present preview when the reviewed edge changes before commit", () => {
+		const db = seedGraph();
+		insertProjectRecipient(db, PROJECT_A, "identity-a");
+		const changes = [identityChange(PROJECT_A, "identity-a")];
+		const preview = previewRecipientPolicyEdges(db, { version: 1, changes });
+		expect(preview.outcomes).toEqual([{ change: changes[0], outcome: "already_present" }]);
+
+		db.prepare(
+			`UPDATE project_recipients SET status = 'revoked'
+			 WHERE canonical_project_identity = ? AND recipient_kind = 'identity' AND recipient_id = ?`,
+		).run(PROJECT_A, "identity-a");
+		const before = rowSnapshot(db);
+
+		expect(
+			commitRecipientPolicyEdges(db, {
+				version: 1,
+				changes,
+				reviewedPolicyDigest: preview.reviewedPolicyDigest,
+			}),
+		).toMatchObject({ status: "stale", writeCount: 0 });
+		expect(rowSnapshot(db)).toEqual(before);
+	});
+
+	it("rejects a remove preview when the reviewed edge is removed before commit", () => {
+		const db = seedGraph();
+		insertProjectRecipient(db, PROJECT_A, "identity-a");
+		const changes = [identityChange(PROJECT_A, "identity-a", "remove")];
+		const preview = previewRecipientPolicyEdges(db, { version: 1, changes });
+		expect(preview.outcomes).toEqual([{ change: changes[0], outcome: "removed" }]);
+
+		db.prepare(
+			`UPDATE project_recipients SET status = 'revoked'
+			 WHERE canonical_project_identity = ? AND recipient_kind = 'identity' AND recipient_id = ?`,
+		).run(PROJECT_A, "identity-a");
+		const before = rowSnapshot(db);
+
+		expect(
+			commitRecipientPolicyEdges(db, {
+				version: 1,
+				changes,
+				reviewedPolicyDigest: preview.reviewedPolicyDigest,
+			}),
+		).toMatchObject({ status: "stale", writeCount: 0 });
+		expect(rowSnapshot(db)).toEqual(before);
+	});
+
+	it("rejects an already-absent preview when the edge becomes active before commit", () => {
+		const db = seedGraph();
+		const changes = [identityChange(PROJECT_A, "identity-a", "remove")];
+		const preview = previewRecipientPolicyEdges(db, { version: 1, changes });
+		expect(preview.outcomes).toEqual([{ change: changes[0], outcome: "already_absent" }]);
+
+		insertProjectRecipient(db, PROJECT_A, "identity-a");
+		const before = rowSnapshot(db);
+
+		expect(
+			commitRecipientPolicyEdges(db, {
+				version: 1,
+				changes,
+				reviewedPolicyDigest: preview.reviewedPolicyDigest,
+			}),
+		).toMatchObject({ status: "stale", writeCount: 0 });
+		expect(rowSnapshot(db)).toEqual(before);
+	});
+
 	it("makes a second overlapping preview stale after the first commit changes desired edges", () => {
 		const db = seedGraph();
 		const identityChanges = [identityChange(PROJECT_A, "identity-a")];
@@ -591,10 +656,11 @@ describe("recipient-policy edge changes", () => {
 		competing.exec("ROLLBACK");
 	});
 
-	it("adds, removes, preserves row identity metadata, and replays idempotently", () => {
+	it("adds, removes, preserves row identity metadata, and keeps unchanged previews idempotent", () => {
 		const db = seedGraph();
 		const add = [identityChange(PROJECT_A, "identity-a")];
 		const preview = previewRecipientPolicyEdges(db, { version: 1, changes: add });
+		expect(preview.outcomes).toEqual([{ change: add[0], outcome: "added" }]);
 		const applied = commitRecipientPolicyEdges(
 			db,
 			{ version: 1, changes: add, reviewedPolicyDigest: preview.reviewedPolicyDigest },
@@ -612,10 +678,12 @@ describe("recipient-policy edge changes", () => {
 		});
 		const inserted = rowSnapshot(db)[0] as Record<string, unknown>;
 
+		const presentPreview = previewRecipientPolicyEdges(db, { version: 1, changes: add });
+		expect(presentPreview.outcomes).toEqual([{ change: add[0], outcome: "already_present" }]);
 		const replay = commitRecipientPolicyEdges(db, {
 			version: 1,
 			changes: add,
-			reviewedPolicyDigest: preview.reviewedPolicyDigest,
+			reviewedPolicyDigest: presentPreview.reviewedPolicyDigest,
 		});
 		expect(replay).toMatchObject({
 			status: "applied",
@@ -623,9 +691,17 @@ describe("recipient-policy edge changes", () => {
 			idempotent: true,
 			outcomes: [{ outcome: "already_present" }],
 		});
+		expect(
+			commitRecipientPolicyEdges(db, {
+				version: 1,
+				changes: add,
+				reviewedPolicyDigest: presentPreview.reviewedPolicyDigest,
+			}),
+		).toMatchObject({ status: "applied", writeCount: 0, idempotent: true });
 
 		const remove = [identityChange(PROJECT_A, "identity-a", "remove")];
 		const removePreview = previewRecipientPolicyEdges(db, { version: 1, changes: remove });
+		expect(removePreview.outcomes).toEqual([{ change: remove[0], outcome: "removed" }]);
 		expect(
 			commitRecipientPolicyEdges(
 				db,
@@ -648,13 +724,14 @@ describe("recipient-policy edge changes", () => {
 		});
 
 		const absentPreview = previewRecipientPolicyEdges(db, { version: 1, changes: remove });
-		expect(absentPreview.reviewedPolicyDigest).toBe(removePreview.reviewedPolicyDigest);
+		expect(absentPreview.reviewedPolicyDigest).not.toBe(removePreview.reviewedPolicyDigest);
 		expect(absentPreview.unchangedProjects).toEqual(absentPreview.projects);
+		expect(absentPreview.outcomes).toEqual([{ change: remove[0], outcome: "already_absent" }]);
 		expect(
 			commitRecipientPolicyEdges(db, {
 				version: 1,
 				changes: remove,
-				reviewedPolicyDigest: removePreview.reviewedPolicyDigest,
+				reviewedPolicyDigest: absentPreview.reviewedPolicyDigest,
 			}),
 		).toMatchObject({
 			status: "applied",

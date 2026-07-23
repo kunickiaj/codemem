@@ -754,6 +754,7 @@ export interface RecipientPolicyEdgeEffectiveDeviceV1 {
 export interface RecipientPolicyEdgePreviewResponseV1 {
 	version: 1;
 	normalizedChanges: RecipientPolicyEdgeChangeV1[];
+	outcomes: RecipientPolicyEdgeCommitOutcomeV1[];
 	projects: RecipientPolicyEdgePreviewProjectV1[];
 	selectedRecipients: RecipientPolicyEdgeSelectedRecipientV1[];
 	effectiveDevices: RecipientPolicyEdgeEffectiveDeviceV1[];
@@ -825,6 +826,14 @@ async function recipientPolicyEdgeRequest<T>(
 			throw new RecipientPolicyEdgesStaleError(
 				payload as unknown as RecipientPolicyEdgeCommitResultV1,
 			);
+		}
+		if (
+			resp.status === 409 &&
+			payload &&
+			typeof payload === "object" &&
+			(payload as unknown as RecipientPolicyEdgeCommitResultV1).status === "conflict"
+		) {
+			return payload as T;
 		}
 		const edgeErrorCode =
 			payload && typeof payload === "object" && "errorCode" in payload
