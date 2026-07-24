@@ -436,4 +436,27 @@ describe("recipient policy edge API", () => {
 		await expect(promise).rejects.toBeInstanceOf(RecipientPolicyEdgesStaleError);
 		await expect(promise).rejects.toMatchObject({ result: stale });
 	});
+
+	it("returns structured conflict results from edge commit 409 responses", async () => {
+		const conflict = {
+			version: 1,
+			status: "conflict",
+			reviewedPolicyDigest: "policy:digest",
+			errorCode: "edge_commit_conflict",
+			outcomes: [],
+			writeCount: 0,
+			idempotent: false,
+		} as const;
+		globalThis.fetch = vi.fn(
+			async () => new Response(JSON.stringify(conflict), { status: 409 }),
+		) as typeof fetch;
+
+		await expect(
+			commitRecipientPolicyEdges({
+				version: 1,
+				changes: [],
+				reviewedPolicyDigest: "policy:digest",
+			}),
+		).resolves.toEqual(conflict);
+	});
 });

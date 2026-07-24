@@ -826,6 +826,14 @@ async function recipientPolicyEdgeRequest<T>(
 				payload as unknown as RecipientPolicyEdgeCommitResultV1,
 			);
 		}
+		if (
+			resp.status === 409 &&
+			payload &&
+			typeof payload === "object" &&
+			(payload as unknown as RecipientPolicyEdgeCommitResultV1).status === "conflict"
+		) {
+			return payload as T;
+		}
 		const edgeErrorCode =
 			payload && typeof payload === "object" && "errorCode" in payload
 				? String((payload as { errorCode?: unknown }).errorCode ?? "")
