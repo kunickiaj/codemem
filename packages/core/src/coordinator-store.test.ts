@@ -12,6 +12,16 @@ describe("CoordinatorStore", () => {
 		const store = new BetterSqliteCoordinatorStore(join(tmpDir, "coordinator.sqlite"));
 		return {
 			store,
+			clearInviteReviewedIntent: (inviteId: string) => {
+				store.db
+					.prepare("UPDATE coordinator_invites SET reviewed_intent_json = NULL WHERE invite_id = ?")
+					.run(inviteId);
+			},
+			revokeInvite: (inviteId: string, revokedAt: string) => {
+				store.db
+					.prepare("UPDATE coordinator_invites SET revoked_at = ? WHERE invite_id = ?")
+					.run(revokedAt, inviteId);
+			},
 			cleanup: async () => {
 				await store.close();
 				rmSync(tmpDir, { recursive: true, force: true });
@@ -41,7 +51,8 @@ describe("CoordinatorStore", () => {
 				const row = store.db
 					.prepare(
 						`SELECT token, token_digest, consumed_at, bound_device_id, trust_state,
-							invite_kind, policy_team_id, target_identity_id, reviewed_preview_digest
+							invite_kind, policy_team_id, target_identity_id, reviewed_preview_digest,
+							reviewed_intent_json
 						 FROM coordinator_invites`,
 					)
 					.get();
@@ -55,6 +66,7 @@ describe("CoordinatorStore", () => {
 					policy_team_id: null,
 					target_identity_id: null,
 					reviewed_preview_digest: null,
+					reviewed_intent_json: null,
 				});
 			} finally {
 				await store.close();
@@ -113,7 +125,11 @@ describe("CoordinatorStore", () => {
 					name: string;
 				}>;
 				expect(columns.map((column) => column.name)).toEqual(
-					expect.arrayContaining(["operation_id", "reviewed_project_set_digest"]),
+					expect.arrayContaining([
+						"operation_id",
+						"reviewed_project_set_digest",
+						"reviewed_intent_json",
+					]),
 				);
 				expect(
 					store.db

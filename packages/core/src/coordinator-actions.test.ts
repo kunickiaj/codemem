@@ -32,8 +32,69 @@ import {
 	PROJECT_SYNC_ENABLEMENT_FAILURE_DETAIL,
 	ProjectSyncEnablementError,
 } from "./project-invite-acceptance.js";
-import { previewRecipientPolicyOnboarding } from "./recipient-policy-onboarding.js";
+import { previewRecipientPolicyOnboardingFromReviewedIntent } from "./recipient-policy-onboarding.js";
+import {
+	type RecipientReviewedIntentV1,
+	recipientReviewedIntentDigest,
+} from "./recipient-reviewed-intent.js";
 import { ensureDeviceIdentity, fingerprintPublicKey, loadPublicKey } from "./sync-identity.js";
+
+type TeamReviewedIntent = Extract<RecipientReviewedIntentV1, { journey: "team" }>;
+type AddDeviceReviewedIntent = Extract<RecipientReviewedIntentV1, { journey: "add_device" }>;
+
+function teamReviewedIntent(teamId = "policy-team-1"): TeamReviewedIntent {
+	return {
+		version: 1,
+		journey: "team",
+		team: { teamId, displayName: "Product", futureProjectsInherit: true },
+		projects: [],
+		excludedProjects: [],
+	};
+}
+
+function addDeviceReviewedIntent(identityId: string): AddDeviceReviewedIntent {
+	return {
+		version: 1,
+		journey: "add_device",
+		targetIdentity: { identityId, displayName: "Existing Person" },
+		projects: [],
+		excludedProjects: [],
+	};
+}
+
+function reviewedOnboardingDigestForRecipientInvite(opts: {
+	dbPath: string;
+	keysDir: string;
+	invitationId: string;
+	identityId: string;
+	deviceDisplayName: string;
+	reviewedIntent: RecipientReviewedIntentV1;
+}): string {
+	initDatabase(opts.dbPath);
+	const conn = connect(opts.dbPath);
+	let deviceId = "";
+	try {
+		[deviceId] = ensureDeviceIdentity(conn, { keysDir: opts.keysDir });
+	} finally {
+		conn.close();
+	}
+	const devicePublicKey = loadPublicKey(opts.keysDir);
+	if (!devicePublicKey) throw new Error("test public key missing");
+	const base = {
+		version: 1 as const,
+		invitationId: opts.invitationId,
+		identityId: opts.identityId,
+		deviceId,
+		devicePublicKey,
+		deviceDisplayName: opts.deviceDisplayName,
+	};
+	const request =
+		opts.reviewedIntent.journey === "team"
+			? { ...base, journey: "team" as const, teamId: opts.reviewedIntent.team.teamId }
+			: { ...base, journey: "add_device" as const };
+	return previewRecipientPolicyOnboardingFromReviewedIntent(opts.reviewedIntent, request)
+		.reviewedOnboardingDigest;
+}
 
 describe("coordinator local admin actions", () => {
 	let tmpDir: string;
@@ -480,6 +541,99 @@ describe("coordinator local admin actions", () => {
 		expect(invite.warnings).toEqual([]);
 	});
 
+	it("stores canonical reviewed intent for local recipient invites without embedding it in links", async () => {
+		await coordinatorCreateGroupAction({ groupId: "team-a", dbPath });
+		const reviewedIntent = teamReviewedIntent();
+		const digest = await recipientReviewedIntentDigest(reviewedIntent);
+		await expect(
+			coordinatorCreateInviteAction({
+				groupId: "team-a",
+				coordinatorUrl: "https://coord.example.test",
+				policy: "auto_admit",
+				ttlHours: 24,
+				dbPath,
+				inviteKind: "team_member",
+				policyTeamId: "policy-team-1",
+				reviewedPreviewDigest: digest,
+			}),
+		).rejects.toThrow("recipient_invite_review_unavailable");
+		const result = await coordinatorCreateInviteAction({
+			groupId: "team-a",
+			coordinatorUrl: "https://coord.example.test",
+			policy: "auto_admit",
+			ttlHours: 24,
+			dbPath,
+			inviteKind: "team_member",
+			policyTeamId: "policy-team-1",
+			reviewedPreviewDigest: digest,
+			reviewedIntent,
+		});
+		const payload = result.payload as Record<string, unknown>;
+		expect(payload).not.toHaveProperty("reviewed_intent");
+		expect(String(result.link)).not.toContain("reviewed_intent");
+
+		const store = new BetterSqliteCoordinatorStore(dbPath);
+		try {
+			const inspected = await store.inspectRecipientInvite({
+				token: String(payload.token),
+				now: new Date().toISOString(),
+			});
+			expect(inspected?.reviewed_intent).toEqual(reviewedIntent);
+		} finally {
+			await store.close();
+		}
+	});
+
+	it("sends canonical reviewed intent when creating remote recipient invites", async () => {
+		const reviewedIntent = teamReviewedIntent();
+		const digest = await recipientReviewedIntentDigest(reviewedIntent);
+		let requestBody: Record<string, unknown> | null = null;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_url: string, init?: RequestInit) => {
+				const body =
+					init?.body instanceof Uint8Array
+						? Buffer.from(init.body).toString("utf8")
+						: String(init?.body ?? "{}");
+				requestBody = JSON.parse(body) as Record<string, unknown>;
+				return new Response(
+					JSON.stringify({
+						invite: {
+							invite_id: "invite-team-1",
+							invite_kind: "team_member",
+							policy_team_id: "policy-team-1",
+							reviewed_preview_digest: digest,
+						},
+						payload: {
+							kind: "team_member",
+							policy_team_id: "policy-team-1",
+							reviewed_preview_digest: digest,
+						},
+						encoded: "digest-only",
+						link: "https://coord.example.test/invite#digest-only",
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}),
+		);
+
+		const result = await coordinatorCreateInviteAction({
+			groupId: "team-a",
+			coordinatorUrl: "https://coord.example.test",
+			policy: "auto_admit",
+			ttlHours: 24,
+			remoteUrl: "https://coord.example.test",
+			adminSecret: "secret",
+			inviteKind: "team_member",
+			policyTeamId: "policy-team-1",
+			reviewedPreviewDigest: digest,
+			reviewedIntent,
+		});
+
+		expect(requestBody).toMatchObject({ reviewed_intent: reviewedIntent });
+		expect(result.payload).not.toHaveProperty("reviewed_intent");
+	});
+
 	it("imports invites using CODEMEM_DB and CODEMEM_KEYS_DIR when flags are omitted", async () => {
 		const envDbPath = join(tmpDir, "env-mem.sqlite");
 		const envKeysDir = join(tmpDir, "env-keys");
@@ -723,11 +877,59 @@ describe("coordinator local admin actions", () => {
 		}
 	});
 
+	it.each([
+		{ kind: "team_member" as const, targetId: "team-a" },
+		{ kind: "add_device" as const, targetId: "identity-existing" },
+	])("requires a reviewed onboarding digest before consuming a $kind invite", async (testCase) => {
+		const actionDbPath = join(tmpDir, `${testCase.kind}-missing-review.sqlite`);
+		const keysDir = join(tmpDir, `${testCase.kind}-missing-review-keys`);
+		const reviewedIntent =
+			testCase.kind === "team_member"
+				? teamReviewedIntent(testCase.targetId)
+				: addDeviceReviewedIntent(testCase.targetId);
+		const reviewedDigest = await recipientReviewedIntentDigest(reviewedIntent);
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+		const invite = encodeInvitePayload({
+			v: 1,
+			kind: testCase.kind,
+			coordinator_url: "https://coord.example.test",
+			group_id: "coordinator-a",
+			policy: "auto_admit",
+			token: `${testCase.kind}-missing-review-token`,
+			expires_at: "2099-01-01T00:00:00.000Z",
+			team_name: null,
+			...(testCase.kind === "team_member"
+				? { policy_team_id: testCase.targetId }
+				: { target_identity_id: testCase.targetId }),
+			reviewed_preview_digest: reviewedDigest,
+		});
+
+		await expect(
+			coordinatorImportInviteAction({
+				inviteValue: invite,
+				dbPath: actionDbPath,
+				keysDir,
+			}),
+		).rejects.toThrow("reviewed_onboarding_digest_required");
+		expect(fetchMock).not.toHaveBeenCalled();
+		const conn = connect(actionDbPath);
+		try {
+			expect(conn.prepare("SELECT COUNT(*) FROM actors").pluck().get()).toBe(0);
+			expect(conn.prepare("SELECT COUNT(*) FROM identity_devices").pluck().get()).toBe(0);
+			expect(conn.prepare("SELECT COUNT(*) FROM policy_team_memberships").pluck().get()).toBe(0);
+		} finally {
+			conn.close();
+		}
+	});
+
 	it("adopts the add-device target identity on a fresh profile", async () => {
 		const actionDbPath = join(tmpDir, "fresh-add-device.sqlite");
 		const keysDir = join(tmpDir, "fresh-add-device-keys");
 		const configPath = join(tmpDir, "fresh-add-device-config.json");
 		const targetIdentityId = "identity-existing";
+		const reviewedIntent = addDeviceReviewedIntent(targetIdentityId);
+		const reviewedDigest = await recipientReviewedIntentDigest(reviewedIntent);
 		const capturedBodies: Record<string, unknown>[] = [];
 		vi.stubGlobal(
 			"fetch",
@@ -744,7 +946,8 @@ describe("coordinator local admin actions", () => {
 						identity_id: targetIdentityId,
 						policy_team_id: null,
 						target_identity_id: targetIdentityId,
-						reviewed_preview_digest: "coordinator-review",
+						reviewed_preview_digest: reviewedDigest,
+						reviewed_intent: reviewedIntent,
 					}),
 					{ status: 200 },
 				);
@@ -760,7 +963,15 @@ describe("coordinator local admin actions", () => {
 			expires_at: "2099-01-01T00:00:00.000Z",
 			team_name: null,
 			target_identity_id: targetIdentityId,
-			reviewed_preview_digest: "coordinator-review",
+			reviewed_preview_digest: reviewedDigest,
+		});
+		const reviewedOnboardingDigest = reviewedOnboardingDigestForRecipientInvite({
+			dbPath: actionDbPath,
+			keysDir,
+			invitationId: "fresh-add-device-token",
+			identityId: targetIdentityId,
+			deviceDisplayName: "Recipient laptop",
+			reviewedIntent,
 		});
 
 		await expect(
@@ -769,6 +980,8 @@ describe("coordinator local admin actions", () => {
 				dbPath: actionDbPath,
 				keysDir,
 				configPath,
+				deviceDisplayName: "Recipient laptop",
+				reviewedOnboardingDigest,
 			}),
 		).resolves.toEqual({
 			group_id: "coordinator-a",
@@ -778,7 +991,8 @@ describe("coordinator local admin actions", () => {
 			identity_id: targetIdentityId,
 			policy_team_id: null,
 			target_identity_id: targetIdentityId,
-			reviewed_preview_digest: "coordinator-review",
+			reviewed_preview_digest: reviewedDigest,
+			sync_enabled: true,
 		});
 		expect(capturedBodies[0]?.identity_id).toBe(targetIdentityId);
 		expect(readCodememConfigFileAtPath(configPath)).toMatchObject({
@@ -791,6 +1005,216 @@ describe("coordinator local admin actions", () => {
 			});
 		} finally {
 			conn.close();
+		}
+	});
+
+	it("does not adopt the add-device target when the config write fails and converges on retry", async () => {
+		const actionDbPath = join(tmpDir, "add-device-config-failure.sqlite");
+		const keysDir = join(tmpDir, "add-device-config-failure-keys");
+		const blockedParent = join(tmpDir, "blocked-config-parent");
+		const configPath = join(blockedParent, "config.json");
+		const targetIdentityId = "identity-existing";
+		const reviewedIntent = addDeviceReviewedIntent(targetIdentityId);
+		const reviewedDigest = await recipientReviewedIntentDigest(reviewedIntent);
+		writeFileSync(blockedParent, "not a directory", "utf8");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							ok: true,
+							status: "accepted",
+							kind: "add_device",
+							group_id: "coordinator-a",
+							identity_id: targetIdentityId,
+							policy_team_id: null,
+							target_identity_id: targetIdentityId,
+							reviewed_preview_digest: reviewedDigest,
+							reviewed_intent: reviewedIntent,
+						}),
+						{ status: 200 },
+					),
+			),
+		);
+		const invite = encodeInvitePayload({
+			v: 1,
+			kind: "add_device",
+			coordinator_url: "https://coord.example.test",
+			group_id: "coordinator-a",
+			policy: "auto_admit",
+			token: "add-device-config-failure-token",
+			expires_at: "2099-01-01T00:00:00.000Z",
+			team_name: null,
+			target_identity_id: targetIdentityId,
+			reviewed_preview_digest: reviewedDigest,
+		});
+		const reviewedOnboardingDigest = reviewedOnboardingDigestForRecipientInvite({
+			dbPath: actionDbPath,
+			keysDir,
+			invitationId: "add-device-config-failure-token",
+			identityId: targetIdentityId,
+			deviceDisplayName: "Recipient laptop",
+			reviewedIntent,
+		});
+
+		await expect(
+			coordinatorImportInviteAction({
+				inviteValue: invite,
+				dbPath: actionDbPath,
+				keysDir,
+				configPath,
+				deviceDisplayName: "Recipient laptop",
+				reviewedOnboardingDigest,
+			}),
+		).rejects.toThrow();
+		const failed = connect(actionDbPath);
+		try {
+			expect(failed.prepare("SELECT COUNT(*) FROM actors").pluck().get()).toBe(0);
+			expect(failed.prepare("SELECT COUNT(*) FROM identity_devices").pluck().get()).toBe(0);
+		} finally {
+			failed.close();
+		}
+
+		rmSync(blockedParent);
+		await expect(
+			coordinatorImportInviteAction({
+				inviteValue: invite,
+				dbPath: actionDbPath,
+				keysDir,
+				configPath,
+				deviceDisplayName: "Recipient laptop",
+				reviewedOnboardingDigest,
+			}),
+		).resolves.toMatchObject({ status: "accepted", identity_id: targetIdentityId });
+		expect(readCodememConfigFileAtPath(configPath)).toMatchObject({ actor_id: targetIdentityId });
+		const retried = connect(actionDbPath);
+		try {
+			expect(retried.prepare("SELECT identity_id FROM identity_devices").pluck().get()).toBe(
+				targetIdentityId,
+			);
+		} finally {
+			retried.close();
+		}
+	});
+
+	it("restores bootstrap config when add-device local commit fails and converges on retry", async () => {
+		const actionDbPath = join(tmpDir, "add-device-commit-failure.sqlite");
+		const keysDir = join(tmpDir, "add-device-commit-failure-keys");
+		const configPath = join(tmpDir, "add-device-commit-failure-config.json");
+		const targetIdentityId = "identity-existing";
+		const reviewedIntent = addDeviceReviewedIntent(targetIdentityId);
+		const reviewedDigest = await recipientReviewedIntentDigest(reviewedIntent);
+		initDatabase(actionDbPath);
+		const setup = connect(actionDbPath);
+		let bootstrapIdentityId = "";
+		try {
+			const [deviceId] = ensureDeviceIdentity(setup, { keysDir });
+			bootstrapIdentityId = `local:${deviceId}`;
+			setup
+				.prepare(`INSERT INTO actors(
+					actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+				) VALUES (?, 'Ada', 1, 'active', NULL, ?, ?)`)
+				.run(bootstrapIdentityId, "2026-07-23T00:00:00.000Z", "2026-07-23T00:00:00.000Z");
+			setup.exec(`CREATE TRIGGER fail_add_device_binding BEFORE INSERT ON identity_devices
+				BEGIN SELECT RAISE(ABORT, 'test identity-device failure'); END`);
+		} finally {
+			setup.close();
+		}
+		const originalConfig = {
+			actor_id: bootstrapIdentityId,
+			actor_display_name: "Ada",
+			sync_coordinator_groups: ["existing-group"],
+		};
+		writeCodememConfigFile(originalConfig, configPath);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							ok: true,
+							status: "accepted",
+							kind: "add_device",
+							group_id: "coordinator-a",
+							identity_id: targetIdentityId,
+							policy_team_id: null,
+							target_identity_id: targetIdentityId,
+							reviewed_preview_digest: reviewedDigest,
+							reviewed_intent: reviewedIntent,
+						}),
+						{ status: 200 },
+					),
+			),
+		);
+		const invite = encodeInvitePayload({
+			v: 1,
+			kind: "add_device",
+			coordinator_url: "https://coord.example.test",
+			group_id: "coordinator-a",
+			policy: "auto_admit",
+			token: "add-device-commit-failure-token",
+			expires_at: "2099-01-01T00:00:00.000Z",
+			team_name: null,
+			target_identity_id: targetIdentityId,
+			reviewed_preview_digest: reviewedDigest,
+		});
+		const reviewedOnboardingDigest = reviewedOnboardingDigestForRecipientInvite({
+			dbPath: actionDbPath,
+			keysDir,
+			invitationId: "add-device-commit-failure-token",
+			identityId: targetIdentityId,
+			deviceDisplayName: "Recipient laptop",
+			reviewedIntent,
+		});
+
+		await expect(
+			coordinatorImportInviteAction({
+				inviteValue: invite,
+				dbPath: actionDbPath,
+				keysDir,
+				configPath,
+				deviceDisplayName: "Recipient laptop",
+				reviewedOnboardingDigest,
+			}),
+		).rejects.toThrow("onboarding_intent_conflict");
+		expect(readCodememConfigFileAtPath(configPath)).toEqual(originalConfig);
+		const failed = connect(actionDbPath);
+		try {
+			expect(
+				failed.prepare("SELECT actor_id, is_local, status, merged_into_actor_id FROM actors").all(),
+			).toEqual([
+				{
+					actor_id: bootstrapIdentityId,
+					is_local: 1,
+					status: "active",
+					merged_into_actor_id: null,
+				},
+			]);
+			expect(failed.prepare("SELECT COUNT(*) FROM identity_devices").pluck().get()).toBe(0);
+			failed.exec("DROP TRIGGER fail_add_device_binding");
+		} finally {
+			failed.close();
+		}
+
+		await expect(
+			coordinatorImportInviteAction({
+				inviteValue: invite,
+				dbPath: actionDbPath,
+				keysDir,
+				configPath,
+				deviceDisplayName: "Recipient laptop",
+				reviewedOnboardingDigest,
+			}),
+		).resolves.toMatchObject({ status: "accepted", identity_id: targetIdentityId });
+		expect(readCodememConfigFileAtPath(configPath)).toMatchObject({ actor_id: targetIdentityId });
+		const retried = connect(actionDbPath);
+		try {
+			expect(retried.prepare("SELECT identity_id FROM identity_devices").pluck().get()).toBe(
+				targetIdentityId,
+			);
+		} finally {
+			retried.close();
 		}
 	});
 
@@ -859,24 +1283,11 @@ describe("coordinator local admin actions", () => {
 		const keysDir = join(tmpDir, `${testCase.kind}-config-keys`);
 		const configPath = join(tmpDir, `${testCase.kind}-config.json`);
 		writeCodememConfigFile(testCase.initialConfig, configPath);
-		if (testCase.kind === "team_member") {
-			initDatabase(actionDbPath);
-			const conn = connect(actionDbPath);
-			try {
-				const now = "2026-07-21T12:00:00.000Z";
-				conn
-					.prepare(
-						`INSERT INTO policy_teams(
-							 team_id, display_name, status, provenance, revision, migration_state,
-							 idempotency_key, created_at, updated_at
-							 ) VALUES ('team-a', 'Team A', 'active', 'user', 'r1', 'user_managed',
-							 'team-a', ?, ?)`,
-					)
-					.run(now, now);
-			} finally {
-				conn.close();
-			}
-		}
+		const reviewedIntent =
+			testCase.kind === "team_member"
+				? teamReviewedIntent("team-a")
+				: addDeviceReviewedIntent(testCase.identityId);
+		const reviewedDigest = await recipientReviewedIntentDigest(reviewedIntent);
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(
@@ -890,7 +1301,8 @@ describe("coordinator local admin actions", () => {
 							identity_id: testCase.identityId,
 							policy_team_id: testCase.kind === "team_member" ? "team-a" : null,
 							target_identity_id: testCase.kind === "add_device" ? testCase.identityId : null,
-							reviewed_preview_digest: "coordinator-review",
+							reviewed_preview_digest: reviewedDigest,
+							reviewed_intent: reviewedIntent,
 						}),
 						{ status: 200 },
 					),
@@ -908,91 +1320,114 @@ describe("coordinator local admin actions", () => {
 			...(testCase.kind === "team_member"
 				? { policy_team_id: "team-a" }
 				: { target_identity_id: testCase.identityId }),
-			reviewed_preview_digest: "coordinator-review",
+			reviewed_preview_digest: reviewedDigest,
+		});
+		const reviewedOnboardingDigest = reviewedOnboardingDigestForRecipientInvite({
+			dbPath: actionDbPath,
+			keysDir,
+			invitationId: `${testCase.kind}-config-token`,
+			identityId: testCase.identityId,
+			deviceDisplayName: "Recipient laptop",
+			reviewedIntent,
 		});
 
+		const result = await coordinatorImportInviteAction({
+			inviteValue: invite,
+			dbPath: actionDbPath,
+			keysDir,
+			configPath,
+			recipientActorId: testCase.identityId,
+			deviceDisplayName: "Recipient laptop",
+			reviewedOnboardingDigest,
+		});
+		expect(result).toMatchObject({ status: "accepted", sync_enabled: true });
 		await coordinatorImportInviteAction({
 			inviteValue: invite,
 			dbPath: actionDbPath,
 			keysDir,
 			configPath,
 			recipientActorId: testCase.identityId,
+			deviceDisplayName: "Recipient laptop",
+			reviewedOnboardingDigest,
 		});
 
 		const persistedConfig = readCodememConfigFileAtPath(configPath);
 		expect(persistedConfig).toMatchObject({
 			actor_id: testCase.identityId,
+			sync_enabled: true,
+			sync_host: "0.0.0.0",
+			sync_port: 7337,
+			sync_interval_s: 120,
 			sync_coordinator_url: "https://coord.example.test",
 			sync_coordinator_groups: testCase.expectedGroups,
 			sync_coordinator_group: "existing-group",
 		});
-		expect(persistedConfig).not.toHaveProperty("sync_enabled");
-		expect(persistedConfig).not.toHaveProperty("sync_host");
-		expect(persistedConfig).not.toHaveProperty("sync_port");
-		expect(persistedConfig).not.toHaveProperty("sync_interval_s");
-	});
-
-	it("rejects recipient onboarding when local access changes after the reviewed preview", async () => {
-		const actionDbPath = join(tmpDir, "recipient-invite-stale.sqlite");
-		const keysDir = join(tmpDir, "recipient-invite-stale-keys");
-		const configPath = join(tmpDir, "recipient-invite-stale-config.json");
-		const originalConfig = { sync_coordinator_groups: ["existing-group"] };
-		writeCodememConfigFile(originalConfig, configPath);
-		const identityId = "identity-recipient";
-		initDatabase(actionDbPath);
 		const conn = connect(actionDbPath);
-		let deviceId = "";
-		let reviewedOnboardingDigest = "";
 		try {
-			[deviceId] = ensureDeviceIdentity(conn, { keysDir });
-			const now = "2026-07-21T12:00:00.000Z";
-			conn
-				.prepare(
-					`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
-				 VALUES (?, 'Recipient', 1, 'active', ?, ?)`,
-				)
-				.run(identityId, now, now);
-			conn
-				.prepare(
-					`INSERT INTO policy_teams(
-				 team_id, display_name, status, provenance, revision, migration_state,
-				 idempotency_key, created_at, updated_at
-				 ) VALUES ('team-a', 'Team A', 'active', 'user', 'r1', 'user_managed', 'team-a', ?, ?)`,
-				)
-				.run(now, now);
-			conn
-				.prepare(
-					`INSERT INTO project_recipients(
-				 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
-				 policy_revision, migration_state, idempotency_key, created_at, updated_at
-				 ) VALUES ('project-one', 'team', 'team-a', 'active', 'user', 'r1',
-				 'user_managed', 'project-one-team-a', ?, ?)`,
-				)
-				.run(now, now);
-			const publicKey = loadPublicKey(keysDir);
-			if (!publicKey) throw new Error("public key missing");
-			reviewedOnboardingDigest = previewRecipientPolicyOnboarding(conn, {
-				version: 1,
-				journey: "team",
-				invitationId: "recipient-token",
-				identityId,
-				deviceId,
-				devicePublicKey: publicKey,
-				deviceDisplayName: "Recipient laptop",
-				teamId: "team-a",
-			}).reviewedOnboardingDigest;
-			conn
-				.prepare(
-					`INSERT INTO project_recipients(
-				 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
-				 policy_revision, migration_state, idempotency_key, created_at, updated_at
-				 ) VALUES ('project-two', 'team', 'team-a', 'active', 'user', 'r2',
-				 'user_managed', 'project-two-team-a', ?, ?)`,
-				)
-				.run(now, now);
+			expect(conn.prepare("SELECT COUNT(*) FROM actors").pluck().get()).toBe(1);
+			expect(conn.prepare("SELECT COUNT(*) FROM identity_devices").pluck().get()).toBe(1);
+			expect(conn.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
+			expect(conn.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(
+				testCase.kind === "team_member" ? 1 : 0,
+			);
+			expect(conn.prepare("SELECT COUNT(*) FROM policy_team_memberships").pluck().get()).toBe(
+				testCase.kind === "team_member" ? 1 : 0,
+			);
 		} finally {
 			conn.close();
 		}
+	});
+
+	it.each([
+		{ label: "kind", responseOverride: { kind: "add_device" } },
+		{ label: "target ID", responseOverride: { policy_team_id: "team-other" } },
+		{ label: "reviewed digest", responseOverride: { reviewed_preview_digest: "f".repeat(64) } },
+	])("rejects a mismatched $label returned by recipient invite acceptance without local mutation", async (testCase) => {
+		// Arrange
+		const actionDbPath = join(
+			tmpDir,
+			`recipient-invite-${testCase.label.replaceAll(" ", "-")}.sqlite`,
+		);
+		const keysDir = join(tmpDir, `recipient-invite-${testCase.label.replaceAll(" ", "-")}-keys`);
+		const configPath = join(
+			tmpDir,
+			`recipient-invite-${testCase.label.replaceAll(" ", "-")}-config.json`,
+		);
+		const identityId = "identity-recipient";
+		const originalConfig = {
+			actor_id: identityId,
+			sync_coordinator_groups: ["existing-group"],
+		};
+		writeCodememConfigFile(originalConfig, configPath);
+		initDatabase(actionDbPath);
+		const setup = connect(actionDbPath);
+		try {
+			ensureDeviceIdentity(setup, { keysDir });
+		} finally {
+			setup.close();
+		}
+		const localSnapshot = () => {
+			const db = connect(actionDbPath);
+			try {
+				return JSON.stringify(
+					Object.fromEntries(
+						[
+							"actors",
+							"sync_device",
+							"identity_devices",
+							"policy_teams",
+							"policy_team_memberships",
+							"project_recipients",
+						].map((table) => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]),
+					),
+				);
+			} finally {
+				db.close();
+			}
+		};
+		const beforeDb = localSnapshot();
+		const reviewedIntent = teamReviewedIntent("team-a");
+		const reviewedDigest = await recipientReviewedIntentDigest(reviewedIntent);
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(
@@ -1006,7 +1441,9 @@ describe("coordinator local admin actions", () => {
 							identity_id: identityId,
 							policy_team_id: "team-a",
 							target_identity_id: null,
-							reviewed_preview_digest: "coordinator-review",
+							reviewed_preview_digest: reviewedDigest,
+							reviewed_intent: reviewedIntent,
+							...testCase.responseOverride,
 						}),
 						{ status: 200 },
 					),
@@ -1018,33 +1455,29 @@ describe("coordinator local admin actions", () => {
 			coordinator_url: "https://coord.example.test",
 			group_id: "coordinator-a",
 			policy: "auto_admit",
-			token: "recipient-token",
+			token: `recipient-${testCase.label}-token`,
 			expires_at: "2099-01-01T00:00:00.000Z",
 			team_name: null,
 			policy_team_id: "team-a",
-			reviewed_preview_digest: "coordinator-review",
+			reviewed_preview_digest: reviewedDigest,
 		});
 
-		await expect(
-			coordinatorImportInviteAction({
-				inviteValue: invite,
-				dbPath: actionDbPath,
-				keysDir,
-				configPath,
-				recipientActorId: identityId,
-				recipientDisplayName: "Recipient",
-				deviceDisplayName: "Recipient laptop",
-				reviewedOnboardingDigest,
-			}),
-		).rejects.toThrow("reviewed_onboarding_stale");
+		// Act
+		const acceptance = coordinatorImportInviteAction({
+			inviteValue: invite,
+			dbPath: actionDbPath,
+			keysDir,
+			configPath,
+			recipientActorId: identityId,
+			recipientDisplayName: "Recipient",
+			deviceDisplayName: "Recipient laptop",
+			reviewedOnboardingDigest: `recipient-onboarding-preview-v1:${"a".repeat(64)}`,
+		});
+
+		// Assert
+		await expect(acceptance).rejects.toThrow("recipient_invite_intent_mismatch");
+		expect(localSnapshot()).toBe(beforeDb);
 		expect(readCodememConfigFileAtPath(configPath)).toEqual(originalConfig);
-		const after = connect(actionDbPath);
-		try {
-			expect(after.prepare("SELECT COUNT(*) FROM identity_devices").pluck().get()).toBe(0);
-			expect(after.prepare("SELECT COUNT(*) FROM policy_team_memberships").pluck().get()).toBe(0);
-		} finally {
-			after.close();
-		}
 	});
 
 	it("warns when local invite coordinator URL uses private IPv6 space", async () => {

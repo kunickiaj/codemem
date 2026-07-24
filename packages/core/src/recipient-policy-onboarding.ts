@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
+import {
+	normalizeRecipientReviewedIntent,
+	type RecipientReviewedIntentV1,
+} from "./recipient-reviewed-intent.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -49,6 +53,17 @@ export type RecipientPolicyOnboardingPreviewRequestV1 =
 export type RecipientPolicyOnboardingCommitRequestV1 = RecipientPolicyOnboardingPreviewRequestV1 & {
 	reviewedOnboardingDigest: string;
 };
+
+export type RecipientPolicyReviewedIntentPreviewRequestV1 =
+	| RecipientPolicyTeamOnboardingRequestV1
+	| RecipientPolicyAddDeviceOnboardingRequestV1;
+
+export type RecipientPolicyReviewedIntentCommitRequestV1 =
+	RecipientPolicyReviewedIntentPreviewRequestV1 & {
+		identityDisplayName: string;
+		reviewedIntent: RecipientReviewedIntentV1;
+		reviewedOnboardingDigest: string;
+	};
 
 export type RecipientPolicyOnboardingProjectSourceV1 =
 	| { kind: "direct" }
@@ -478,6 +493,52 @@ export function previewRecipientPolicyOnboarding(
 	return buildPreview(db, normalizeRequest(request));
 }
 
+function reviewedIntentTarget(request: NormalizedRequest) {
+	if (request.journey === "team") {
+		return { kind: "team_member" as const, policyTeamId: request.teamId };
+	}
+	if (request.journey === "add_device") {
+		return { kind: "add_device" as const, targetIdentityId: request.binding.identityId };
+	}
+	throw new RecipientPolicyOnboardingRequestError("invalid", "journey_invalid");
+}
+
+function buildReviewedIntentPreview(
+	request: NormalizedRequest,
+	reviewedIntentValue: RecipientReviewedIntentV1,
+): RecipientPolicyOnboardingPreviewV1 {
+	const reviewedIntent = normalizeRecipientReviewedIntent(
+		reviewedIntentValue,
+		reviewedIntentTarget(request),
+	);
+	const team = reviewedIntent.journey === "team" ? reviewedIntent.team : null;
+	const reviewedOnboardingDigest = digest("recipient-onboarding-preview-v1", {
+		journey: request.journey,
+		binding: request.binding,
+		team,
+		projects: reviewedIntent.projects,
+		excludedProjectIdentities: reviewedIntent.excludedProjects.map(
+			(project) => project.canonicalProjectIdentity,
+		),
+	});
+	return {
+		version: 1,
+		journey: request.journey,
+		binding: request.binding,
+		team,
+		projects: reviewedIntent.projects,
+		excludedProjects: reviewedIntent.excludedProjects,
+		reviewedOnboardingDigest,
+	};
+}
+
+export function previewRecipientPolicyOnboardingFromReviewedIntent(
+	reviewedIntent: RecipientReviewedIntentV1,
+	request: RecipientPolicyReviewedIntentPreviewRequestV1,
+): RecipientPolicyOnboardingPreviewV1 {
+	return buildReviewedIntentPreview(normalizeRequest(request), reviewedIntent);
+}
+
 function relationshipMetadata(
 	kind: string,
 	revisionIdentity: unknown,
@@ -662,6 +723,169 @@ function planRows(request: NormalizedRequest, now: string): IntentRow[] {
 		);
 	}
 	return rows;
+}
+
+function isPristineBootstrapIdentity(db: Database, identityId: string, deviceId: string): boolean {
+	if (identityId !== `local:${deviceId}`) return false;
+	const actor = db
+		.prepare(
+			`SELECT is_local, status, merged_into_actor_id
+			 FROM actors WHERE actor_id = ?`,
+		)
+		.get(identityId) as
+		| {
+				is_local: number;
+				status: string;
+				merged_into_actor_id: string | null;
+		  }
+		| undefined;
+	if (actor?.is_local !== 1 || actor.status !== "active" || actor.merged_into_actor_id !== null) {
+		return false;
+	}
+	const references = [
+		Number(
+			db.prepare("SELECT COUNT(*) FROM memory_items WHERE actor_id = ?").pluck().get(identityId),
+		),
+		Number(
+			db
+				.prepare("SELECT COUNT(*) FROM identity_devices WHERE identity_id = ?")
+				.pluck()
+				.get(identityId),
+		),
+		Number(
+			db
+				.prepare("SELECT COUNT(*) FROM policy_team_memberships WHERE identity_id = ?")
+				.pluck()
+				.get(identityId),
+		),
+		Number(
+			db
+				.prepare(
+					`SELECT COUNT(*) FROM project_recipients
+					 WHERE recipient_kind = 'identity' AND recipient_id = ?`,
+				)
+				.pluck()
+				.get(identityId),
+		),
+		Number(
+			db
+				.prepare(
+					"SELECT COUNT(*) FROM recipient_policy_review_resolutions WHERE decided_by_identity_id = ?",
+				)
+				.pluck()
+				.get(identityId),
+		),
+		Number(
+			db
+				.prepare("SELECT COUNT(*) FROM sync_peers WHERE actor_id = ? OR claimed_local_actor = 1")
+				.pluck()
+				.get(identityId),
+		),
+	];
+	return references.every((count) => count === 0);
+}
+
+export function assertAddDeviceIdentityAdoptionAllowed(
+	db: Database,
+	targetIdentityId: string,
+	deviceId: string,
+): void {
+	const targetId = strictId(targetIdentityId, "identity_id", 256);
+	const localDeviceId = strictId(deviceId, "device_id", 256);
+	const localIdentities = db
+		.prepare(
+			`SELECT actor_id FROM actors
+			 WHERE is_local = 1 AND status = 'active' AND merged_into_actor_id IS NULL
+			 ORDER BY actor_id`,
+		)
+		.pluck()
+		.all() as string[];
+	const target = db
+		.prepare("SELECT is_local, status, merged_into_actor_id FROM actors WHERE actor_id = ?")
+		.get(targetId) as
+		| { is_local: number; status: string; merged_into_actor_id: string | null }
+		| undefined;
+	if (
+		target &&
+		(target.is_local !== 1 || target.status !== "active" || target.merged_into_actor_id)
+	) {
+		throw new Error("invite_identity_conflict");
+	}
+	for (const identityId of localIdentities) {
+		if (identityId === targetId) continue;
+		if (!isPristineBootstrapIdentity(db, identityId, localDeviceId)) {
+			throw new Error("invite_identity_conflict");
+		}
+	}
+}
+
+function materializeLocalIdentity(
+	db: Database,
+	input: {
+		identityId: string;
+		displayName: string;
+		deviceId: string;
+		allowBootstrapAdoption: boolean;
+	},
+	now: string,
+): boolean {
+	if (input.allowBootstrapAdoption) {
+		assertAddDeviceIdentityAdoptionAllowed(db, input.identityId, input.deviceId);
+		db.prepare(
+			`UPDATE actors SET is_local = 0, status = 'merged', merged_into_actor_id = ?, updated_at = ?
+			 WHERE actor_id <> ? AND is_local = 1 AND status = 'active'`,
+		).run(input.identityId, now, input.identityId);
+	}
+	const existing = db
+		.prepare("SELECT is_local, status, merged_into_actor_id FROM actors WHERE actor_id = ?")
+		.get(input.identityId) as
+		| { is_local: number; status: string; merged_into_actor_id: string | null }
+		| undefined;
+	if (existing) {
+		if (existing.is_local !== 1 || existing.status !== "active" || existing.merged_into_actor_id) {
+			throw new Error("invite_identity_conflict");
+		}
+		return false;
+	}
+	db.prepare(
+		`INSERT INTO actors(
+		 actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+		 ) VALUES (?, ?, 1, 'active', NULL, ?, ?)`,
+	).run(input.identityId, input.displayName, now, now);
+	return true;
+}
+
+function materializeReviewedTeam(
+	db: Database,
+	team: { teamId: string; displayName: string; futureProjectsInherit: true },
+	now: string,
+): boolean {
+	const existing = db
+		.prepare("SELECT display_name, status FROM policy_teams WHERE team_id = ?")
+		.get(team.teamId) as { display_name: string; status: string } | undefined;
+	if (existing) {
+		if (existing.display_name !== team.displayName || existing.status !== "active") {
+			throw new Error("intent_conflict");
+		}
+		return false;
+	}
+	const stableTeam = { teamId: team.teamId, displayName: team.displayName };
+	const metadata = relationshipMetadata("team", stableTeam, stableTeam);
+	db.prepare(
+		`INSERT INTO policy_teams(
+		 team_id, display_name, status, provenance, revision, migration_state,
+		 source_fingerprint, idempotency_key, created_at, updated_at
+		 ) VALUES (?, ?, 'active', 'team_invite', ?, 'user_managed', ?, ?, ?, ?)`,
+	).run(
+		team.teamId,
+		team.displayName,
+		metadata.revision,
+		digest("recipient-onboarding-team-v1", stableTeam),
+		metadata.idempotencyKey,
+		now,
+		now,
+	);
+	return true;
 }
 
 function rowWhere(key: Record<string, string>): { clause: string; parameters: string[] } {
@@ -898,6 +1122,102 @@ export function commitRecipientPolicyOnboarding(
 			error instanceof Error && error.message === "device_binding_conflict"
 				? "device_binding_conflict"
 				: "onboarding_intent_conflict";
+		return emptyResult("conflict", errorCode, normalized.journey, request.reviewedOnboardingDigest);
+	}
+}
+
+export function commitRecipientPolicyOnboardingFromReviewedIntent(
+	db: Database,
+	request: RecipientPolicyReviewedIntentCommitRequestV1,
+	options: { now?: () => string } = {},
+): RecipientPolicyOnboardingCommitResultV1 {
+	let normalized: NormalizedRequest;
+	try {
+		normalized = normalizeRequest(request);
+		if (normalized.journey === "direct_project") {
+			return emptyResult("invalid", "journey_invalid", normalized.journey, "");
+		}
+	} catch (error) {
+		if (error instanceof RecipientPolicyOnboardingRequestError) {
+			return emptyResult(error.status, error.errorCode, null, "");
+		}
+		return emptyResult("invalid", "request_invalid", null, "");
+	}
+	if (!/^recipient-onboarding-preview-v1:[a-f0-9]{64}$/u.test(request.reviewedOnboardingDigest)) {
+		return emptyResult("invalid", "reviewed_onboarding_digest_invalid", normalized.journey, "");
+	}
+	try {
+		db.exec("BEGIN IMMEDIATE");
+		try {
+			const reviewedIntent = normalizeRecipientReviewedIntent(
+				request.reviewedIntent,
+				reviewedIntentTarget(normalized),
+			);
+			const preview = buildReviewedIntentPreview(normalized, reviewedIntent);
+			if (preview.reviewedOnboardingDigest !== request.reviewedOnboardingDigest) {
+				db.exec("ROLLBACK");
+				return emptyResult(
+					"stale",
+					"reviewed_onboarding_stale",
+					normalized.journey,
+					preview.reviewedOnboardingDigest,
+				);
+			}
+			const now = (options.now ?? (() => new Date().toISOString()))();
+			const identityDisplayName =
+				normalized.journey === "add_device" && reviewedIntent.journey === "add_device"
+					? reviewedIntent.targetIdentity.displayName
+					: normalizeIdentityDisplayName(request.identityDisplayName, "identity_display_name");
+			let writeCount = materializeLocalIdentity(
+				db,
+				{
+					identityId: normalized.binding.identityId,
+					displayName: identityDisplayName,
+					deviceId: normalized.binding.deviceId,
+					allowBootstrapAdoption: normalized.journey === "add_device",
+				},
+				now,
+			)
+				? 1
+				: 0;
+			if (normalized.journey === "team") {
+				if (reviewedIntent.journey !== "team") throw new Error("intent_conflict");
+				if (materializeReviewedTeam(db, reviewedIntent.team, now)) writeCount += 1;
+			}
+			for (const row of planRows(normalized, now)) {
+				if (validateOrWriteRow(db, row)) writeCount += 1;
+			}
+			db.exec("COMMIT");
+			return {
+				version: 1,
+				status: "applied",
+				journey: normalized.journey,
+				reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
+				errorCode: null,
+				writeCount,
+				idempotent: writeCount === 0,
+			};
+		} catch (error) {
+			if (db.inTransaction) db.exec("ROLLBACK");
+			throw error;
+		}
+	} catch (error) {
+		if (isSqliteBusy(error)) throw error;
+		if (error instanceof RecipientPolicyOnboardingRequestError) {
+			return emptyResult(
+				error.status,
+				error.errorCode,
+				normalized.journey,
+				request.reviewedOnboardingDigest,
+			);
+		}
+		const message = error instanceof Error ? error.message : "";
+		const errorCode =
+			message === "device_binding_conflict"
+				? "device_binding_conflict"
+				: message === "invite_identity_conflict"
+					? "invite_identity_conflict"
+					: "onboarding_intent_conflict";
 		return emptyResult("conflict", errorCode, normalized.journey, request.reviewedOnboardingDigest);
 	}
 }

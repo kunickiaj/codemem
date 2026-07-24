@@ -293,6 +293,33 @@ describe("createCloudflareCoordinatorWorker", () => {
 		]);
 	});
 
+	it("migration 0011 adds nullable reviewed intent without changing existing invitations", () => {
+		db.exec(`
+			DROP TABLE coordinator_invites;
+			CREATE TABLE coordinator_invites (
+				invite_id TEXT PRIMARY KEY,
+				group_id TEXT NOT NULL,
+				token TEXT NOT NULL UNIQUE,
+				policy TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				created_at TEXT NOT NULL
+			);
+			INSERT INTO coordinator_invites(invite_id, group_id, token, policy, expires_at, created_at)
+			VALUES ('legacy-invite', 'g1', 'legacy-token', 'auto_admit', '2099-01-01T00:00:00Z',
+				'2026-03-28T00:00:00Z');
+		`);
+		const migration = readFileSync(
+			join(import.meta.dirname, "../migrations/0011_add_recipient_reviewed_intent.sql"),
+			"utf8",
+		);
+
+		db.exec(migration);
+
+		expect(
+			db.prepare("SELECT invite_id, reviewed_intent_json FROM coordinator_invites").get(),
+		).toEqual({ invite_id: "legacy-invite", reviewed_intent_json: null });
+	});
+
 	it("serves coordinator admin data through the worker entrypoint", async () => {
 		const store = new D1CoordinatorStore(d1db);
 		await store.createGroup("g1", "Team Alpha");

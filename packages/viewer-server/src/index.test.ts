@@ -10487,6 +10487,16 @@ describe("viewer-server", () => {
 					target_identity_id: store.actorId,
 				});
 				for (const body of coordinatorBodies) {
+					expect(body.reviewed_intent).toMatchObject({
+						version: 1,
+						journey: body.invite_kind === "team_member" ? "team" : "add_device",
+					});
+					expect(body.reviewed_preview_digest).toBe(
+						await core.recipientReviewedIntentDigest(body.reviewed_intent),
+					);
+					expect(body.reviewed_intent).not.toHaveProperty("binding");
+					expect(body.reviewed_intent).not.toHaveProperty("reviewedOnboardingDigest");
+					expect(body).not.toHaveProperty("reviewed_onboarding_digest");
 					expect(body).not.toHaveProperty("scope_id");
 					expect(body).not.toHaveProperty("project_ids");
 					expect(body).not.toHaveProperty("operation_id", expect.any(String));
@@ -10513,7 +10523,10 @@ describe("viewer-server", () => {
 				process.env.CODEMEM_CONFIG = configPath;
 				process.env.CODEMEM_KEYS_DIR = keysDir;
 				writeFileSync(configPath, JSON.stringify({ actor_display_name: "Local Identity" }));
-				const { app, ensureStore, cleanup } = createTestApp({ seedDevice: false });
+				const { app, ensureStore, cleanup } = createTestApp({
+					seedDevice: false,
+					getSyncRuntimeStatus: () => ({ phase: "disabled" }),
+				});
 				try {
 					const store = ensureStore();
 					const [deviceId] = ensureDeviceIdentity(store.db, { keysDir });
@@ -10546,7 +10559,52 @@ describe("viewer-server", () => {
 							now,
 							now,
 						);
-					const digest = "a".repeat(64);
+					const reviewedIntent: core.RecipientReviewedIntentV1 =
+						kind === "team_member"
+							? {
+									version: 1,
+									journey: "team",
+									team: {
+										teamId: "policy-team-a",
+										displayName: "Policy Team A",
+										futureProjectsInherit: true,
+									},
+									projects: [
+										{
+											canonicalProjectIdentity: projectId,
+											displayName: "recipient",
+											existingMemoryCount: 1,
+											futureMemoriesShared: true,
+											sources: [
+												{
+													kind: "team",
+													teamId: "policy-team-a",
+													displayName: "Policy Team A",
+												},
+											],
+										},
+									],
+									excludedProjects: [],
+								}
+							: {
+									version: 1,
+									journey: "add_device",
+									targetIdentity: {
+										identityId: store.actorId,
+										displayName: "Local Identity",
+									},
+									projects: [
+										{
+											canonicalProjectIdentity: projectId,
+											displayName: "recipient",
+											existingMemoryCount: 1,
+											futureMemoriesShared: true,
+											sources: [{ kind: "direct" }],
+										},
+									],
+									excludedProjects: [],
+								};
+					const digest = await core.recipientReviewedIntentDigest(reviewedIntent);
 					const payload: core.InvitePayload = {
 						v: 1,
 						kind,
@@ -10570,6 +10628,7 @@ describe("viewer-server", () => {
 								JSON.stringify({
 									kind,
 									reviewed_preview_digest: digest,
+									reviewed_intent: reviewedIntent,
 									bound: false,
 									...(kind === "team_member"
 										? { policy_team_id: "policy-team-a" }
@@ -10591,6 +10650,7 @@ describe("viewer-server", () => {
 								group_id: "coordinator-a",
 								identity_id: store.actorId,
 								reviewed_preview_digest: digest,
+								reviewed_intent: reviewedIntent,
 								...(kind === "team_member"
 									? { policy_team_id: "policy-team-a", target_identity_id: null }
 									: { policy_team_id: null, target_identity_id: store.actorId }),
@@ -10631,17 +10691,21 @@ describe("viewer-server", () => {
 					expect(acceptedBody).toMatchObject({
 						status: "accepted",
 						type: "recipient_onboarding",
+						setup_state: "restart_required",
+						restart_required: true,
+						sync_enabled: true,
+						detail: expect.stringContaining("Restart codemem"),
 					});
-					expect(acceptedBody).not.toHaveProperty("restart_required");
-					expect(acceptedBody).not.toHaveProperty("setup_state");
 					const persistedConfig = JSON.parse(readFileSync(configPath, "utf8")) as Record<
 						string,
 						unknown
 					>;
-					expect(persistedConfig).not.toHaveProperty("sync_enabled");
-					expect(persistedConfig).not.toHaveProperty("sync_host");
-					expect(persistedConfig).not.toHaveProperty("sync_port");
-					expect(persistedConfig).not.toHaveProperty("sync_interval_s");
+					expect(persistedConfig).toMatchObject({
+						sync_enabled: true,
+						sync_host: "0.0.0.0",
+						sync_port: 7337,
+						sync_interval_s: 120,
+					});
 					expect(joinBody).toMatchObject({
 						invite_kind: kind,
 						identity_id: store.actorId,
@@ -10666,6 +10730,524 @@ describe("viewer-server", () => {
 					else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
 					rmSync(testDir, { recursive: true, force: true });
 				}
+			}
+		});
+
+		it("fails closed with safe errors for unavailable or tampered recipient reviewed intent", async () => {
+			// Arrange
+			const testDir = mkdtempSync(join(tmpdir(), "codemem-recipient-intent-errors-"));
+			const configPath = join(testDir, "config.json");
+			const keysDir = join(testDir, "keys");
+			const previousConfig = process.env.CODEMEM_CONFIG;
+			const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const previousFetch = globalThis.fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(configPath, JSON.stringify({ actor_display_name: "Fresh Recipient" }));
+			const reviewedIntent: Extract<core.RecipientReviewedIntentV1, { journey: "team" }> = {
+				version: 1,
+				journey: "team",
+				team: {
+					teamId: "team-reviewed",
+					displayName: "Reviewed Team",
+					futureProjectsInherit: true,
+				},
+				projects: [],
+				excludedProjects: [],
+			};
+			const digest = await core.recipientReviewedIntentDigest(reviewedIntent);
+			const encoded = core.encodeInvitePayload({
+				v: 1,
+				kind: "team_member",
+				coordinator_url: "https://coord.example.test",
+				group_id: "coordinator-a",
+				policy: "auto_admit",
+				token: "token-reviewed",
+				expires_at: "2099-01-01T00:00:00.000Z",
+				team_name: null,
+				policy_team_id: "team-reviewed",
+				reviewed_preview_digest: digest,
+			});
+			globalThis.fetch = vi
+				.fn()
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ error: "recipient_invite_review_unavailable" }), {
+						status: 409,
+					}),
+				)
+				.mockResolvedValueOnce(
+					new Response(
+						JSON.stringify({
+							kind: "team_member",
+							policy_team_id: "team-reviewed",
+							reviewed_preview_digest: digest,
+						}),
+						{ status: 200 },
+					),
+				)
+				.mockResolvedValueOnce(
+					new Response(
+						JSON.stringify({
+							kind: "team_member",
+							policy_team_id: "team-reviewed",
+							reviewed_preview_digest: digest,
+							reviewed_intent: {
+								...reviewedIntent,
+								team: { ...reviewedIntent.team, displayName: "Tampered Team" },
+							},
+						}),
+						{ status: 200 },
+					),
+				) as typeof fetch;
+			const { app, cleanup } = createTestApp({ seedDevice: false });
+			try {
+				// Act / Assert
+				for (const expected of [
+					"recipient_invite_review_unavailable",
+					"recipient_invite_review_unavailable",
+					"recipient_invite_intent_mismatch",
+				]) {
+					const response = await app.request("/api/sync/invites/inspect", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ invite: encoded }),
+					});
+					expect([400, 409]).toContain(response.status);
+					expect(await response.json()).toEqual({ error: expected });
+				}
+			} finally {
+				cleanup();
+				globalThis.fetch = previousFetch;
+				if (previousConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = previousConfig;
+				if (previousKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
+				rmSync(testDir, { recursive: true, force: true });
+			}
+		});
+
+		it.each([
+			{ label: "kind", responseOverride: { kind: "add_device" } },
+			{ label: "target ID", responseOverride: { policy_team_id: "team-other" } },
+			{ label: "reviewed digest", responseOverride: { reviewed_preview_digest: "f".repeat(64) } },
+		])("rejects a mismatched inspect $label without mutating the recipient DB or config", async (testCase) => {
+			// Arrange
+			const testDir = mkdtempSync(join(tmpdir(), "codemem-recipient-inspect-mismatch-"));
+			const configPath = join(testDir, "config.json");
+			const keysDir = join(testDir, "keys");
+			const previousConfig = process.env.CODEMEM_CONFIG;
+			const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const previousFetch = globalThis.fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(configPath, JSON.stringify({ actor_display_name: "Fresh Recipient" }));
+			const reviewedIntent: Extract<core.RecipientReviewedIntentV1, { journey: "team" }> = {
+				version: 1,
+				journey: "team",
+				team: {
+					teamId: "team-reviewed",
+					displayName: "Reviewed Team",
+					futureProjectsInherit: true,
+				},
+				projects: [],
+				excludedProjects: [],
+			};
+			const digest = await core.recipientReviewedIntentDigest(reviewedIntent);
+			const encoded = core.encodeInvitePayload({
+				v: 1,
+				kind: "team_member",
+				coordinator_url: "https://coord.example.test",
+				group_id: "coordinator-a",
+				policy: "auto_admit",
+				token: "token-reviewed",
+				expires_at: "2099-01-01T00:00:00.000Z",
+				team_name: null,
+				policy_team_id: "team-reviewed",
+				reviewed_preview_digest: digest,
+			});
+			globalThis.fetch = vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							kind: "team_member",
+							policy_team_id: "team-reviewed",
+							reviewed_preview_digest: digest,
+							reviewed_intent: reviewedIntent,
+							bound: false,
+							...testCase.responseOverride,
+						}),
+						{ status: 200 },
+					),
+			) as typeof fetch;
+			const { app, ensureStore, cleanup } = createTestApp({ seedDevice: false });
+			try {
+				const store = ensureStore();
+				const [deviceId] = ensureDeviceIdentity(store.db, { keysDir });
+				store.adoptEnsuredDeviceIdentity(deviceId);
+				const snapshot = () =>
+					JSON.stringify(
+						Object.fromEntries(
+							[
+								"actors",
+								"sync_device",
+								"identity_devices",
+								"policy_teams",
+								"policy_team_memberships",
+								"project_recipients",
+							].map((table) => [
+								table,
+								store.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+							]),
+						),
+					);
+				const beforeDb = snapshot();
+				const beforeConfig = readFileSync(configPath, "utf8");
+
+				// Act
+				const response = await app.request("/api/sync/invites/inspect", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ invite: encoded, device_name: "Recipient Laptop" }),
+				});
+
+				// Assert
+				expect(response.status).toBe(409);
+				expect(await response.json()).toEqual({ error: "recipient_invite_intent_mismatch" });
+				expect(snapshot()).toBe(beforeDb);
+				expect(readFileSync(configPath, "utf8")).toBe(beforeConfig);
+			} finally {
+				cleanup();
+				globalThis.fetch = previousFetch;
+				if (previousConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = previousConfig;
+				if (previousKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
+				rmSync(testDir, { recursive: true, force: true });
+			}
+		});
+
+		it.each([
+			{ label: "Team", kind: "team_member" as const },
+			{ label: "add-device", kind: "add_device" as const },
+		])("creates a $label invite through the owner viewer and accepts it in a separate fresh recipient", async (testCase) => {
+			// Arrange
+			const testDir = mkdtempSync(join(tmpdir(), `codemem-${testCase.kind}-coordinator-`));
+			const coordinatorDbPath = join(testDir, "coordinator.sqlite");
+			const ownerConfigPath = join(testDir, "owner-config.json");
+			const ownerKeysDir = join(testDir, "owner-keys");
+			const recipientConfigPath = join(testDir, "recipient-config.json");
+			const recipientKeysDir = join(testDir, "recipient-keys");
+			const previousConfig = process.env.CODEMEM_CONFIG;
+			const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const previousAdminSecret = process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+			const previousFetch = globalThis.fetch;
+			const setupCoordinator = new core.BetterSqliteCoordinatorStore(coordinatorDbPath);
+			await setupCoordinator.createGroup("coordinator-a", "Coordinator A");
+			await setupCoordinator.close();
+			const coordinatorApp = core.createCoordinatorApp({
+				storeFactory: () => new core.BetterSqliteCoordinatorStore(coordinatorDbPath),
+				runtime: {
+					adminSecret: () => "secret",
+					now: () => "2026-07-23T12:00:00.000Z",
+				},
+				requestVerifier: async () => true,
+			});
+			globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+				coordinatorApp.request(String(input), init),
+			) as typeof fetch;
+			process.env.CODEMEM_CONFIG = ownerConfigPath;
+			process.env.CODEMEM_KEYS_DIR = ownerKeysDir;
+			process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = "secret";
+			writeFileSync(
+				ownerConfigPath,
+				JSON.stringify({
+					actor_display_name: "Owner Identity",
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "coordinator-a",
+					sync_coordinator_admin_secret: "secret",
+				}),
+			);
+			const owner = createTestApp({ seedDevice: false });
+			let recipient: ReturnType<typeof createTestApp> | null = null;
+			try {
+				const ownerStore = owner.ensureStore();
+				const [ownerDeviceId] = ensureDeviceIdentity(ownerStore.db, { keysDir: ownerKeysDir });
+				ownerStore.adoptEnsuredDeviceIdentity(ownerDeviceId);
+				const teamId = "policy-team-a";
+				const alphaProjectId = "https://git.example.invalid/acme/alpha.git";
+				const betaProjectId = "https://git.example.invalid/acme/beta.git";
+				const now = "2026-07-23T12:00:00.000Z";
+				for (const [projectId, displayName, count] of [
+					[alphaProjectId, "alpha", 2],
+					[betaProjectId, "beta", 1],
+				] as const) {
+					const sessionId = insertTestSession(ownerStore.db);
+					ownerStore.db
+						.prepare("UPDATE sessions SET cwd = ?, git_remote = ?, project = ? WHERE id = ?")
+						.run(`/workspace/${displayName}`, projectId, displayName, sessionId);
+					for (let index = 0; index < count; index += 1) {
+						insertTestMemory(ownerStore, {
+							sessionId,
+							kind: "discovery",
+							title: `${displayName}-${index}`,
+							originDeviceId: ownerDeviceId,
+						});
+					}
+				}
+				ownerStore.db
+					.prepare(`INSERT INTO policy_teams(
+							team_id, display_name, status, provenance, revision, migration_state,
+							source_fingerprint, idempotency_key, created_at, updated_at
+						) VALUES (?, ?, 'active', 'user', 'r1', 'user_managed', NULL, 'team-a', ?, ?)`)
+					.run(teamId, "Policy Team A", now, now);
+				for (const [recipientKind, recipientId] of [
+					["team", teamId],
+					["identity", ownerStore.actorId],
+				] as const) {
+					ownerStore.db
+						.prepare(`INSERT INTO project_recipients(
+								canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+								policy_revision, migration_state, source_fingerprint, idempotency_key,
+								created_at, updated_at
+							) VALUES (?, ?, ?, 'active', 'user', ?, 'user_managed', NULL, ?, ?, ?)`)
+						.run(
+							alphaProjectId,
+							recipientKind,
+							recipientId,
+							`revision-${recipientKind}`,
+							`idempotency-${recipientKind}`,
+							now,
+							now,
+						);
+				}
+				const ownerRequest =
+					testCase.kind === "team_member"
+						? { kind: testCase.kind, policy_team_id: teamId }
+						: { kind: testCase.kind, target_identity_id: ownerStore.actorId };
+				const preview = (await (
+					await owner.app.request("/api/sync/recipient-policy/v1/invites/preview", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify(ownerRequest),
+					})
+				).json()) as { preview: { reviewedOnboardingDigest: string } };
+				const createResponse = await owner.app.request("/api/sync/recipient-policy/v1/invites", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						...ownerRequest,
+						reviewed_onboarding_digest: preview.preview.reviewedOnboardingDigest,
+					}),
+				});
+				expect(createResponse.status, JSON.stringify(await createResponse.clone().json())).toBe(
+					200,
+				);
+				const created = (await createResponse.json()) as { invite: { encoded: string } };
+				const payload = core.decodeInvitePayload(created.invite.encoded);
+
+				process.env.CODEMEM_CONFIG = recipientConfigPath;
+				process.env.CODEMEM_KEYS_DIR = recipientKeysDir;
+				writeFileSync(
+					recipientConfigPath,
+					JSON.stringify(
+						testCase.kind === "team_member" ? { actor_display_name: "Fresh Recipient" } : {},
+					),
+				);
+				recipient = createTestApp({ seedDevice: false });
+				const recipientStore = recipient.ensureStore();
+				expect(recipientStore.db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(
+					0,
+				);
+				expect(
+					recipientStore.db.prepare("SELECT COUNT(*) FROM policy_team_memberships").pluck().get(),
+				).toBe(0);
+				expect(
+					recipientStore.db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get(),
+				).toBe(0);
+
+				// Act
+				const inspectResponse = await recipient.app.request("/api/sync/invites/inspect", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ invite: created.invite.encoded, device_name: "Recipient Laptop" }),
+				});
+				expect(inspectResponse.status, JSON.stringify(await inspectResponse.clone().json())).toBe(
+					200,
+				);
+				const inspection = (await inspectResponse.json()) as {
+					recipient_name: string;
+					onboarding: {
+						reviewedOnboardingDigest: string;
+						projects: unknown[];
+						excludedProjects: unknown[];
+					};
+				};
+
+				// Assert
+				expect(inspection.onboarding.projects).toEqual([
+					{
+						canonicalProjectIdentity: alphaProjectId,
+						displayName: "alpha",
+						existingMemoryCount: 2,
+						futureMemoriesShared: true,
+						sources:
+							testCase.kind === "team_member"
+								? [{ kind: "team", teamId, displayName: "Policy Team A" }]
+								: [{ kind: "direct" }],
+					},
+				]);
+				expect(inspection.onboarding.excludedProjects).toEqual(
+					testCase.kind === "team_member"
+						? []
+						: [
+								{
+									canonicalProjectIdentity: betaProjectId,
+									displayName: "beta",
+									existingMemoryCount: 1,
+								},
+							],
+				);
+				if (testCase.kind === "team_member") {
+					expect(JSON.stringify(inspection)).not.toContain(betaProjectId);
+					expect(JSON.stringify(inspection)).not.toContain('"beta"');
+				}
+				const importBody = {
+					invite: created.invite.encoded,
+					recipient_name: inspection.recipient_name,
+					device_name: "Recipient Laptop",
+					reviewed_onboarding_digest: inspection.onboarding.reviewedOnboardingDigest,
+				};
+				const accepted = await recipient.app.request("/api/sync/invites/import", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(importBody),
+				});
+				expect(accepted.status, JSON.stringify(await accepted.clone().json())).toBe(200);
+				expect(await accepted.json()).toMatchObject({
+					status: "accepted",
+					type: "recipient_onboarding",
+				});
+				const expectedIdentityId =
+					testCase.kind === "team_member" ? recipientStore.actorId : ownerStore.actorId;
+				if (testCase.kind === "add_device") {
+					expect(recipientStore.actorId).toBe(ownerStore.actorId);
+					expect(recipientStore.actorDisplayName).toBe("Owner Identity");
+				}
+				const recipientDeviceId = recipientStore.db
+					.prepare("SELECT device_id FROM sync_device LIMIT 1")
+					.pluck()
+					.get() as string;
+				expect(
+					recipientStore.db.prepare("SELECT identity_id, device_id FROM identity_devices").all(),
+				).toEqual([{ identity_id: expectedIdentityId, device_id: recipientDeviceId }]);
+				expect(
+					recipientStore.db
+						.prepare(
+							"SELECT actor_id, display_name, is_local, status FROM actors ORDER BY actor_id",
+						)
+						.all(),
+				).toEqual([
+					{
+						actor_id: expectedIdentityId,
+						display_name: testCase.kind === "team_member" ? "Fresh Recipient" : "Owner Identity",
+						is_local: 1,
+						status: "active",
+					},
+				]);
+				expect(
+					recipientStore.db.prepare("SELECT team_id, display_name, status FROM policy_teams").all(),
+				).toEqual(
+					testCase.kind === "team_member"
+						? [{ team_id: teamId, display_name: "Policy Team A", status: "active" }]
+						: [],
+				);
+				expect(
+					recipientStore.db
+						.prepare("SELECT team_id, identity_id, role, status FROM policy_team_memberships")
+						.all(),
+				).toEqual(
+					testCase.kind === "team_member"
+						? [
+								{
+									team_id: teamId,
+									identity_id: expectedIdentityId,
+									role: "member",
+									status: "active",
+								},
+							]
+						: [],
+				);
+				expect(
+					recipientStore.db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get(),
+				).toBe(0);
+				const persistedConfig = JSON.parse(readFileSync(recipientConfigPath, "utf8"));
+				expect(persistedConfig).toMatchObject({
+					actor_id: expectedIdentityId,
+					actor_display_name:
+						testCase.kind === "team_member" ? "Fresh Recipient" : "Owner Identity",
+					sync_device_name: "Recipient Laptop",
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "coordinator-a",
+					sync_coordinator_groups: ["coordinator-a"],
+				});
+				const materializedState = JSON.stringify({
+					actors: recipientStore.db.prepare("SELECT * FROM actors ORDER BY actor_id").all(),
+					devices: recipientStore.db
+						.prepare("SELECT * FROM identity_devices ORDER BY identity_id")
+						.all(),
+					teams: recipientStore.db.prepare("SELECT * FROM policy_teams ORDER BY team_id").all(),
+					memberships: recipientStore.db
+						.prepare("SELECT * FROM policy_team_memberships ORDER BY team_id, identity_id")
+						.all(),
+				});
+				const persistedConfigText = readFileSync(recipientConfigPath, "utf8");
+				const replay = await recipient.app.request("/api/sync/invites/import", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(importBody),
+				});
+				expect(replay.status).toBe(200);
+				expect(await replay.json()).toMatchObject({ status: "existing" });
+				expect(
+					JSON.stringify({
+						actors: recipientStore.db.prepare("SELECT * FROM actors ORDER BY actor_id").all(),
+						devices: recipientStore.db
+							.prepare("SELECT * FROM identity_devices ORDER BY identity_id")
+							.all(),
+						teams: recipientStore.db.prepare("SELECT * FROM policy_teams ORDER BY team_id").all(),
+						memberships: recipientStore.db
+							.prepare("SELECT * FROM policy_team_memberships ORDER BY team_id, identity_id")
+							.all(),
+					}),
+				).toBe(materializedState);
+				expect(readFileSync(recipientConfigPath, "utf8")).toBe(persistedConfigText);
+				const coordinatorVerification = new core.BetterSqliteCoordinatorStore(coordinatorDbPath);
+				try {
+					expect(
+						await coordinatorVerification.getInviteByTokenForInspection(String(payload.token)),
+					).toMatchObject({
+						invite_kind: testCase.kind,
+						bound_device_id: recipientDeviceId,
+						recipient_actor_id: expectedIdentityId,
+						consumed_at: expect.any(String),
+					});
+				} finally {
+					await coordinatorVerification.close();
+				}
+			} finally {
+				recipient?.cleanup();
+				owner.cleanup();
+				globalThis.fetch = previousFetch;
+				if (previousConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = previousConfig;
+				if (previousKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
+				if (previousAdminSecret == null) {
+					delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+				} else {
+					process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = previousAdminSecret;
+				}
+				rmSync(testDir, { recursive: true, force: true });
 			}
 		});
 
