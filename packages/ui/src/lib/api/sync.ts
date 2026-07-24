@@ -108,7 +108,10 @@ export async function importCoordinatorInvite(
 		body: JSON.stringify({ invite, ...identity }),
 	});
 	const { text, payload: data } = await readJsonPayload<ImportInviteResult>(resp);
-	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	if (!resp.ok) {
+		const detail = typeof data?.detail === "string" ? data.detail.trim() : "";
+		throw new Error(detail || payloadError(data) || text || "request failed");
+	}
 	return data;
 }
 

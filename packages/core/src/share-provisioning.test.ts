@@ -431,6 +431,12 @@ describe("exact project share provisioning", () => {
 
 	it("moves capability preflight to needs-attention after three failed attempts", async () => {
 		const { deps } = dependencies({ supportsReassignScope: vi.fn(async () => "unsupported") });
+		expect(
+			db
+				.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
+				.pluck()
+				.get(operationId),
+		).toBe("provisioning");
 
 		for (let attempt = 1; attempt <= 3; attempt += 1) {
 			await expect(
@@ -441,7 +447,7 @@ describe("exact project share provisioning", () => {
 					.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
 					.pluck()
 					.get(operationId),
-			).toBe(attempt === 3 ? "needs_attention" : "accepted");
+			).toBe(attempt === 3 ? "needs_attention" : "provisioning");
 		}
 
 		expect(
