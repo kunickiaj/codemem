@@ -2,7 +2,7 @@ import type { ComponentChildren } from "preact";
 import { createPortal } from "preact/compat";
 import { useState } from "preact/hooks";
 import { state } from "../../../lib/state";
-import type { UiSyncAttentionItem } from "../view-model";
+import type { UiSyncAttentionItem, UiTeamSyncPrimaryStatus } from "../view-model";
 import type { SyncActionFeedback } from "./sync-inline-feedback";
 import { SyncInlineFeedback } from "./sync-inline-feedback";
 
@@ -49,6 +49,7 @@ type TeamSyncPanelProps = {
 	onReviewDiscoveredDevice: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
 	pendingJoinRequests: TeamSyncPendingJoinRequest[];
 	presenceStatus: string;
+	primaryStatus: UiTeamSyncPrimaryStatus;
 };
 
 function SectionHeading({ count, label }: { count?: number; label: string }) {
@@ -280,7 +281,7 @@ function ActionContent(props: TeamSyncPanelProps) {
 	const hasAttentionItems = props.actionItems.length > 0;
 	const hasOtherActionableWork = props.actionableCount > props.actionItems.length;
 	const showNextStepsLabel =
-		hasAttentionItems || hasOtherActionableWork || props.presenceStatus !== "posted";
+		hasAttentionItems || hasOtherActionableWork || props.primaryStatus.state !== "healthy";
 
 	return (
 		<>
@@ -288,30 +289,28 @@ function ActionContent(props: TeamSyncPanelProps) {
 			{showNextStepsLabel ? (
 				<SectionNote>Start here when something needs review, re-pairing, or approval.</SectionNote>
 			) : null}
+			{props.primaryStatus.nextAction ? (
+				<div className="sync-action" data-primary-sync-state={props.primaryStatus.state}>
+					<div className="sync-action-text">
+						{props.primaryStatus.badgeLabel}
+						<span className="sync-action-command">{props.primaryStatus.nextAction}</span>
+					</div>
+				</div>
+			) : null}
 			{hasAttentionItems
 				? props.actionItems.map((item) => (
 						<AttentionRow key={item.id} item={item} onAction={props.onAttentionAction} />
 					))
 				: null}
-			{!hasAttentionItems && !hasOtherActionableWork && props.presenceStatus === "posted" ? (
+			{!hasAttentionItems && !hasOtherActionableWork && props.primaryStatus.state === "healthy" ? (
 				<div className="sync-action">
 					<div className="sync-action-text">No urgent team work right now.</div>
 				</div>
 			) : null}
-			{!hasAttentionItems && hasOtherActionableWork && props.presenceStatus === "posted" ? (
+			{!hasAttentionItems && hasOtherActionableWork ? (
 				<div className="sync-action">
 					<div className="sync-action-text">
 						More team follow-up is listed below when you are ready.
-					</div>
-				</div>
-			) : null}
-			{!hasAttentionItems && props.presenceStatus === "not_enrolled" ? (
-				<div className="sync-action">
-					<div className="sync-action-text">
-						This device needs team enrollment
-						<span className="sync-action-command">
-							Import an invite or ask an admin to enroll it.
-						</span>
 					</div>
 				</div>
 			) : null}

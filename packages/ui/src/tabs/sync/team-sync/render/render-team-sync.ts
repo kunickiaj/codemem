@@ -37,9 +37,11 @@ import {
 import {
 	deriveCoordinatorApprovalSummary,
 	deriveCoordinatorSetupBlocker,
+	deriveTeamSyncPrimaryStatus,
 	resolveFriendlyDeviceName,
 	SYNC_TERMINOLOGY,
 	shouldShowCoordinatorReviewAction,
+	type UiTeamSyncPrimaryStatus,
 } from "../../view-model";
 import { teamSyncState } from "../data/state";
 import { clearContent, pulseAttentionTarget, syncScrollBehavior } from "../helpers/dom";
@@ -54,27 +56,51 @@ import {
 
 const TEAM_SYNC_ACTIONS_MOUNT_ID = "syncTeamActionsMount";
 
-// Top-of-card online badge. Hidden when the coordinator isn't configured yet,
-// otherwise mirrors the coordinator presence_status so operators can see at a
-// glance whether this device is reaching the coordinator.
-function updateSyncOnlineBadge(badge: HTMLElement, configured: boolean, presenceStatus: string) {
-	if (!configured) {
-		badge.hidden = true;
-		badge.textContent = "";
-		badge.className = "sync-online-badge";
-		return;
-	}
+export function renderTeamSyncPrimaryStatus(
+	badge: HTMLElement,
+	meta: HTMLElement,
+	primaryStatus: UiTeamSyncPrimaryStatus,
+) {
 	badge.hidden = false;
-	if (presenceStatus === "posted") {
+	badge.textContent = primaryStatus.badgeLabel;
+	meta.textContent = primaryStatus.meta;
+	if (primaryStatus.state === "healthy") {
 		badge.className = "sync-online-badge";
-		badge.textContent = "Online";
-	} else if (presenceStatus === "not_enrolled") {
+	} else if (
+		primaryStatus.state === "disabled" ||
+		primaryStatus.state === "pending-setup" ||
+		primaryStatus.state === "not-enrolled" ||
+		primaryStatus.state === "reachable"
+	) {
 		badge.className = "sync-online-badge sync-online-offline";
-		badge.textContent = "Not enrolled";
 	} else {
 		badge.className = "sync-online-badge sync-online-error";
-		badge.textContent = "Offline";
 	}
+}
+
+function renderPrimaryActionOnly(actions: HTMLElement, primaryStatus: UiTeamSyncPrimaryStatus) {
+	const actionMount = document.createElement("div");
+	actionMount.id = TEAM_SYNC_ACTIONS_MOUNT_ID;
+	actions.appendChild(actionMount);
+	renderIntoSyncMount(
+		actionMount,
+		h(TeamSyncPanel, {
+			actionItems: [],
+			actionableCount: 0,
+			discoveredListMount: null,
+			discoveredRows: [],
+			joinRequestsMount: null,
+			onApproveJoinRequest: async () => null,
+			onAttentionAction: async () => {},
+			onDenyJoinRequest: async () => null,
+			onInspectConflict: () => {},
+			onRemoveConflict: async () => null,
+			onReviewDiscoveredDevice: async () => null,
+			pendingJoinRequests: [],
+			presenceStatus: "unknown",
+			primaryStatus,
+		}),
+	);
 }
 
 function teardownTeamSyncRender(actions: HTMLElement | null, targets: Array<HTMLElement | null>) {
@@ -115,6 +141,13 @@ export function renderTeamSync() {
 
 	const coordinator = state.lastSyncCoordinator;
 	const syncView = state.lastSyncViewModel || {
+		primaryStatus: deriveTeamSyncPrimaryStatus({
+			status: state.lastSyncStatus,
+			coordinator,
+			peers: state.lastSyncPeers,
+			shareOperations: state.lastShareOperations,
+			shareOperationsLoadError: state.shareOperationsLoadError,
+		}),
 		summary: { connectedDeviceCount: 0, seenOnTeamCount: 0, offlineTeamDeviceCount: 0 },
 		duplicatePeople: [],
 		attentionItems: [],
@@ -229,21 +262,20 @@ export function renderTeamSync() {
 
 	const configured = Boolean(coordinator?.configured);
 	const setupBlocker = deriveCoordinatorSetupBlocker(coordinator);
-	meta.textContent = configured
-		? `Team: ${(coordinator.groups || []).join(", ") || "none"}`
-		: setupBlocker?.message ||
-			"Start by joining an existing team or creating one, then connect people and devices.";
 	meta.title = configured ? String(coordinator.coordinator_url || "").trim() : "";
 
 	const onlineBadge = document.getElementById("syncOnlineBadge");
 	if (onlineBadge) {
-		updateSyncOnlineBadge(onlineBadge, configured, String(coordinator?.presence_status || ""));
+		renderTeamSyncPrimaryStatus(onlineBadge, meta, syncView.primaryStatus);
+	} else {
+		meta.textContent = syncView.primaryStatus.meta;
 	}
 
 	if (!configured) {
 		teardownTeamSyncRender(actions, [joinRequests, discoveredList]);
 		setupPanel.hidden = false;
-		actions.hidden = true;
+		actions.hidden = false;
+		renderPrimaryActionOnly(actions, syncView.primaryStatus);
 		if (joinRequests) joinRequests.hidden = true;
 		if (discoveredPanel) discoveredPanel.hidden = true;
 		return;
@@ -387,16 +419,6 @@ export function renderTeamSync() {
 	).length;
 	const actionableCount =
 		attentionItems.length + pendingJoinRequests.length + discoveredActionableCount;
-	const teamLabel = (coordinator.groups || []).join(", ") || "none";
-	meta.textContent =
-		presenceStatus === "posted"
-			? actionableCount > 0
-				? `Team: ${teamLabel}. Start with the next step below, then scan the current team status.`
-				: `Team: ${teamLabel}. Team status and device details are below.`
-			: presenceStatus === "not_enrolled"
-				? `Team: ${teamLabel}. Enroll this device first, then return here to review the rest of the team.`
-				: `Team: ${teamLabel}. Fix the current sync issue first, then use the rest of this card to verify the team state.`;
-
 	if (discoveredPanel) {
 		discoveredPanel.hidden = visibleDiscoveredRows.length === 0 && !state.syncDiscoveredFeedback;
 	}
@@ -574,6 +596,7 @@ export function renderTeamSync() {
 			},
 			pendingJoinRequests,
 			presenceStatus,
+			primaryStatus: syncView.primaryStatus,
 		}),
 	);
 }

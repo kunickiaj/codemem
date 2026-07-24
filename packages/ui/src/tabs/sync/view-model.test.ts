@@ -12,6 +12,7 @@ import {
 	derivePeerTrustSummary,
 	derivePeerUiStatus,
 	deriveSyncViewModel,
+	deriveTeamSyncPrimaryStatus,
 	deriveVisiblePeopleActors,
 	deviceNeedsFriendlyName,
 	resolveFriendlyDeviceName,
@@ -108,6 +109,410 @@ describe("deriveCoordinatorSetupBlocker", () => {
 				sync_enabled: true,
 			}),
 		).toBeNull();
+	});
+});
+
+describe("deriveTeamSyncPrimaryStatus", () => {
+	const healthyPeer = {
+		peer_device_id: "peer-healthy",
+		status: { peer_state: "online", sync_status: "ok" },
+	};
+	const postedCoordinator: NonNullable<
+		Parameters<typeof deriveTeamSyncPrimaryStatus>[0]["coordinator"]
+	> = {
+		configured: true,
+		sync_enabled: true,
+		groups: ["Acme"],
+		presence_status: "posted",
+	};
+
+	it("keeps sync disabled above posted presence and every lower-priority signal", () => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: false, daemon_state: "disabled" },
+			coordinator: postedCoordinator,
+			peers: [healthyPeer],
+			shareOperations: [
+				{
+					projects: [{ display_name: "Roadmap" }],
+					lifecycle: { state: "needs_attention" },
+				},
+			],
+		});
+
+		expect(view).toMatchObject({
+			state: "disabled",
+			badgeLabel: "Sync off",
+			nextAction: expect.stringContaining("turn on sync"),
+		});
+		expect(view.badgeLabel).not.toBe("Online");
+	});
+
+	it("keeps pending_setup above trust, coordinator presence, and healthy peers", () => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok" },
+			coordinator: postedCoordinator,
+			peers: [healthyPeer],
+			shareOperations: [
+				{
+					projects: [{ display_name: "Roadmap" }],
+					lifecycle: { state: "pending_setup" },
+				},
+			],
+		});
+
+		expect(view).toMatchObject({
+			state: "pending-setup",
+			badgeLabel: "Setup pending",
+			nextAction: expect.stringContaining("Roadmap"),
+		});
+	});
+
+	it("keeps owner needs_attention above pending reconciliation and healthy sync", () => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok" },
+			coordinator: postedCoordinator,
+			peers: [
+				healthyPeer,
+				{ peer_device_id: "peer-trust-pending", status: { peer_state: "waiting" } },
+			],
+			shareOperations: [
+				{
+					person: { display_name: "Project owner" },
+					projects: [{ display_name: "Roadmap" }],
+					lifecycle: { state: "needs_attention", primary_action: { kind: "retry_setup" } },
+				},
+			],
+			reconciliation: {
+				items: [{ canonicalProjectIdentity: "Roadmap", state: "pending" }],
+			},
+		});
+
+		expect(view).toMatchObject({
+			state: "needs-attention",
+			badgeLabel: "Needs attention",
+			nextAction: "Open Project sharing below and retry setup for Roadmap.",
+		});
+	});
+
+	it("keeps pending setup above trust blockers, healthy peers, and posted presence", () => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok" },
+			coordinator: postedCoordinator,
+			peers: [healthyPeer, { peer_device_id: "peer-pending", status: { peer_state: "waiting" } }],
+			reconciliation: {
+				items: [{ canonicalProjectIdentity: "Roadmap", state: "pending" }],
+			},
+		});
+
+		expect(view).toMatchObject({
+			state: "pending-setup",
+			badgeLabel: "Setup pending",
+		});
+	});
+
+	it("keeps a trust blocker above a separate otherwise-healthy peer and posted presence", () => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			coordinator: postedCoordinator,
+			peers: [healthyPeer, { peer_device_id: "peer-pending", status: { peer_state: "waiting" } }],
+		});
+
+		expect(view).toMatchObject({
+			state: "trust-blocked",
+			badgeLabel: "Pairing needed",
+			nextAction: expect.stringContaining("both devices"),
+		});
+	});
+
+	it("labels enrolled and reachable coordinator presence without claiming healthy sync", () => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok" },
+			coordinator: postedCoordinator,
+		});
+
+		expect(view).toMatchObject({
+			state: "reachable",
+			badgeLabel: "Reachable",
+			nextAction: expect.stringContaining("Pair and approve"),
+		});
+		expect(`${view.badgeLabel} ${view.meta}`).not.toContain("Online");
+	});
+
+	it("reports healthy only for an enabled trusted data plane without higher blockers", () => {
+		expect(
+			deriveTeamSyncPrimaryStatus({
+				status: { enabled: true, daemon_state: "ok", daemon_running: true },
+				coordinator: postedCoordinator,
+				peers: [healthyPeer],
+				reconciliation: {
+					items: [{ canonicalProjectIdentity: "Roadmap", state: "active" }],
+				},
+			}),
+		).toMatchObject({ state: "healthy", badgeLabel: "Healthy", nextAction: null });
+	});
+
+	it.each([
+		["not enrolled", "not_enrolled", "not-enrolled", "Not enrolled"],
+		["coordinator error", "error", "unreachable", "Unreachable"],
+		["unknown coordinator presence", "unknown", "unreachable", "Unreachable"],
+	] as const)("prioritizes %s over peer-connectivity guidance", (_label, presenceStatus, expectedState, expectedBadge) => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			coordinator: { ...postedCoordinator, presence_status: presenceStatus },
+			peers: [{ peer_device_id: "peer-offline", status: { peer_state: "offline" } }],
+		});
+
+		expect(view).toMatchObject({ state: expectedState, badgeLabel: expectedBadge });
+		expect(view.nextAction).not.toBeNull();
+		expect(view.badgeLabel).not.toBe("Check devices");
+	});
+
+	it.each([
+		["fresh ping", { peer_state: "online", ping_status: "ok", fresh: true }],
+		["online presence", { peer_state: "online", fresh: true }],
+	] as const)("directs %s without a successful sync to run sync", (_name, peerStatus) => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			coordinator: postedCoordinator,
+			peers: [{ peer_device_id: "peer-no-sync", status: peerStatus }],
+		});
+
+		expect(view).toMatchObject({ state: "reachable", badgeLabel: "Reachable" });
+		expect(view.nextAction).toContain("Run Sync now");
+		expect(view.nextAction).not.toContain("Pair and approve");
+	});
+
+	it("fails closed when Project sharing lifecycle status could not be loaded", () => {
+		const view = deriveSyncViewModel({
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			coordinator: postedCoordinator,
+			peers: [healthyPeer],
+			shareOperationsLoadError: true,
+		});
+
+		expect(view.primaryStatus).toMatchObject({
+			state: "needs-attention",
+			badgeLabel: "Refresh needed",
+			nextAction: expect.stringMatching(/Refresh.*retry/),
+		});
+	});
+
+	it("tells the owner to send a pending invitation", () => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			coordinator: postedCoordinator,
+			peers: [healthyPeer],
+			shareOperations: [
+				{
+					projects: [{ display_name: "Roadmap" }],
+					lifecycle: {
+						state: "waiting_for_acceptance",
+						primary_action: { kind: "copy_invite" },
+					},
+				},
+			],
+		});
+
+		expect(view).toMatchObject({
+			state: "pending-setup",
+			nextAction: "Copy the invitation for Roadmap and send it to the recipient.",
+		});
+	});
+
+	it.each([
+		"offline-peers",
+		"stale",
+		"degraded",
+	] as const)("directs users to check paired devices when daemon_state is %s", (daemonState) => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: daemonState, daemon_running: true },
+			coordinator: postedCoordinator,
+			peers: [healthyPeer],
+		});
+
+		expect(view).toMatchObject({
+			state: "reachable",
+			badgeLabel: "Check devices",
+			nextAction: expect.stringContaining("Bring the paired devices online"),
+		});
+		expect(view.nextAction).not.toContain("Pair and approve");
+	});
+
+	it("directs users to check an offline peer before suggesting another pairing", () => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			coordinator: postedCoordinator,
+			peers: [{ peer_device_id: "peer-offline", status: { peer_state: "offline" } }],
+		});
+
+		expect(view).toMatchObject({
+			state: "reachable",
+			badgeLabel: "Check devices",
+			nextAction: expect.stringContaining("Bring the paired devices online"),
+		});
+	});
+
+	it.each([
+		["degraded", { peer_state: "degraded" }, false],
+		["errored", { peer_state: "online" }, true],
+	] as const)("directs users to check a %s peer", (_name, peerStatus, hasError) => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			coordinator: postedCoordinator,
+			peers: [{ peer_device_id: "peer-problem", has_error: hasError, status: peerStatus }],
+		});
+
+		expect(view).toMatchObject({
+			state: "reachable",
+			badgeLabel: "Check devices",
+			nextAction: expect.stringContaining("check their sync errors"),
+		});
+		expect(view.nextAction).not.toContain("Pair and approve");
+	});
+
+	it("routes unauthorized peer errors to re-pairing guidance", () => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			coordinator: postedCoordinator,
+			peers: [
+				{
+					peer_device_id: "peer-unauthorized",
+					has_error: true,
+					last_error: "peer status failed (401: unauthorized)",
+					status: { peer_state: "online" },
+				},
+			],
+		});
+
+		expect(view).toMatchObject({
+			state: "trust-blocked",
+			badgeLabel: "Pairing needed",
+			nextAction: expect.stringContaining("finish pairing"),
+		});
+	});
+
+	it("prioritizes pairing blockers when another paired device is offline", () => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			coordinator: {
+				...postedCoordinator,
+				discovered_devices: [{ device_id: "device-pending", needs_local_approval: true }],
+			},
+			peers: [{ peer_device_id: "peer-offline", status: { peer_state: "offline" } }],
+		});
+
+		expect(view).toMatchObject({
+			state: "trust-blocked",
+			badgeLabel: "Pairing needed",
+			nextAction: expect.stringContaining("finish pairing"),
+		});
+	});
+
+	it.each([
+		"needs_attention",
+		"error",
+		"stopped",
+		"stopping",
+		"starting",
+		"rebootstrapping",
+		"disabled",
+	] as const)("directs users to sync-service guidance when daemon_state is %s", (daemonState) => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: daemonState },
+			coordinator: postedCoordinator,
+			peers: [healthyPeer],
+		});
+
+		expect(view).toMatchObject({
+			state: "needs-attention",
+			badgeLabel: "Sync needs attention",
+			nextAction: expect.stringContaining("Review the sync status"),
+		});
+		expect(view.nextAction).not.toContain("Pair and approve");
+	});
+
+	it("fails closed when daemon_state is unavailable", () => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: undefined },
+			coordinator: postedCoordinator,
+			peers: [healthyPeer],
+		});
+
+		expect(view.state).toBe("reachable");
+	});
+
+	it("fails closed when the daemon explicitly is not running", () => {
+		expect(
+			deriveTeamSyncPrimaryStatus({
+				status: { enabled: true, daemon_state: "ok", daemon_running: false },
+				coordinator: postedCoordinator,
+				peers: [healthyPeer],
+			}),
+		).toMatchObject({ state: "needs-attention", badgeLabel: "Sync needs attention" });
+	});
+
+	it.each([
+		[
+			"status.enabled is missing",
+			{ daemon_state: "ok" as const, daemon_running: true },
+			postedCoordinator,
+		],
+		[
+			"coordinator.sync_enabled is missing",
+			{ enabled: true, daemon_state: "ok" as const, daemon_running: true },
+			{ ...postedCoordinator, sync_enabled: undefined },
+		],
+	])("fails closed when %s despite daemon health and mutual trust", (_name, status, coordinator) => {
+		const view = deriveTeamSyncPrimaryStatus({ status, coordinator, peers: [healthyPeer] });
+
+		expect(view).toMatchObject({ state: "reachable", badgeLabel: "Reachable" });
+	});
+
+	const coordinatorCases: Array<
+		[
+			string,
+			NonNullable<Parameters<typeof deriveTeamSyncPrimaryStatus>[0]["coordinator"]>,
+			string,
+			string,
+			string,
+			string,
+		]
+	> = [
+		[
+			"not enrolled",
+			{ ...postedCoordinator, presence_status: "not_enrolled" },
+			"not-enrolled",
+			"Not enrolled",
+			"Team: Acme. This device is not enrolled with the coordinator.",
+			"Paste a Team invite below, or ask a Team admin to enroll this device.",
+		],
+		[
+			"configured unreachable",
+			{ ...postedCoordinator, presence_status: "unknown" },
+			"unreachable",
+			"Unreachable",
+			"Team: Acme. The coordinator is not currently reachable and no healthy data-plane sync is confirmed.",
+			"Check the coordinator connection, then refresh Team sync.",
+		],
+		[
+			"unconfigured",
+			{ configured: false, sync_enabled: true, groups: [] },
+			"unreachable",
+			"Setup needed",
+			"Configure or join a Team before expecting Project data to sync.",
+			"Paste a Team invite below, or configure a coordinator in Advanced settings.",
+		],
+	];
+
+	it.each(
+		coordinatorCases,
+	)("models %s with one exact directive", (_name, coordinator, state, badgeLabel, meta, nextAction) => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			coordinator,
+		});
+
+		expect(view).toEqual({ state, badgeLabel, meta, nextAction });
 	});
 });
 

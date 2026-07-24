@@ -7981,6 +7981,19 @@ describe("viewer-server", () => {
 					now,
 					now,
 				);
+				const syncStatusResponse = await app.request("/api/sync/status");
+				const syncStatusPayload = (await syncStatusResponse.json()) as {
+					recipient_policy_reconciliation?: {
+						version: number;
+						items: Array<{
+							canonicalProjectIdentity: string;
+							state: string;
+							deliveredCopiesMayRemain: boolean;
+							revocationWarning: string;
+						}>;
+					};
+				};
+				expect(syncStatusResponse.status).toBe(200);
 				store.db.pragma("query_only = ON");
 
 				const response = await app.request("/api/sync/recipient-policy/v1/reconciliation-status");
@@ -8010,6 +8023,8 @@ describe("viewer-server", () => {
 					}),
 				]);
 				expect(payload.items.every((item) => item.revocationWarning.length > 0)).toBe(true);
+
+				expect(syncStatusPayload.recipient_policy_reconciliation?.items).toEqual(payload.items);
 				for (const privateValue of [
 					"private-revision",
 					"private-desired-digest",
