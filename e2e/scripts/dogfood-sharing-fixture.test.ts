@@ -283,6 +283,37 @@ describe("runFixtureAction", () => {
 		}
 	});
 
+	it("counts replicated memories whose sessions arrive without a git remote", async () => {
+		const store = createStore("teammate");
+		try {
+			await runFixtureAction(store, "setup-teammate");
+			// Replicated sessions on recipients carry the project name but no
+			// git_remote; the summary must still attribute their memories.
+			const sessionId = store.startSession({
+				project: "dogfood-selected-project",
+				user: "dogfood",
+				toolVersion: "dogfood-sharing-fixture",
+			});
+			store.remember(
+				sessionId,
+				"discovery",
+				"DOGFOOD selected existing",
+				"replicated body",
+				0.9,
+				["dogfood-sharing-fixture"],
+				{ visibility: "shared" },
+			);
+			store.endSession(sessionId, {});
+
+			const summary = await runFixtureAction(store, "summary");
+			expect(summary.projects.selected.memory_count).toBe(1);
+			expect(summary.projects.selected.titles).toEqual(["DOGFOOD selected existing"]);
+			expect(summary.projects.unrelated.memory_count).toBe(0);
+		} finally {
+			store.close();
+		}
+	});
+
 	it("leaves invitation and recipient-policy tables empty after supported actions", async () => {
 		const store = createStore("owner");
 		try {

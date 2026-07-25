@@ -122,17 +122,19 @@ function ensureEmptyTeam(store: MemoryStore): void {
 		.run(TEAM_ID, TEAM_NAME, `team:${TEAM_ID}`, FIXTURE_TIME, FIXTURE_TIME);
 }
 
-function memoryExists(store: MemoryStore, remote: string, title: string): boolean {
+// Match memories by the denormalized memory_items.project instead of the
+// session git_remote: replicated sessions on recipients arrive without
+// git_remote, which previously made recipient counts report false zeros.
+function memoryExists(store: MemoryStore, project: string, title: string): boolean {
 	return Boolean(
 		store.db
 			.prepare(
 				`SELECT 1
 				 FROM memory_items mi
-				 JOIN sessions s ON s.id = mi.session_id
-				 WHERE mi.active = 1 AND s.git_remote = ? AND mi.title = ?
+				 WHERE mi.active = 1 AND mi.project = ? AND mi.title = ?
 				 LIMIT 1`,
 			)
-			.get(remote, title),
+			.get(project, title),
 	);
 }
 
@@ -141,7 +143,7 @@ function ensureMemory(
 	project: (typeof PROJECTS)[keyof typeof PROJECTS],
 	title: string,
 ): void {
-	if (memoryExists(store, project.remote, title)) return;
+	if (memoryExists(store, project.project, title)) return;
 	const sessionId = store.startSession({
 		cwd: `/workspace/${project.project}`,
 		project: project.project,
@@ -171,7 +173,7 @@ function assertOwnerBaseline(store: MemoryStore): void {
 		.prepare("SELECT 1 FROM policy_teams WHERE team_id = ?")
 		.get(TEAM_ID);
 	const baselineExists = Object.values(PROJECTS).every((project) =>
-		memoryExists(store, project.remote, project.existingTitle),
+		memoryExists(store, project.project, project.existingTitle),
 	);
 	if (!teamExists || !baselineExists) {
 		throw new Error("Owner fixture is not initialized; run setup-owner first");
@@ -184,11 +186,10 @@ function projectSummary(store: MemoryStore, key: keyof typeof PROJECTS): Project
 		.prepare(
 			`SELECT mi.title
 			 FROM memory_items mi
-			 JOIN sessions s ON s.id = mi.session_id
-			 WHERE mi.active = 1 AND s.git_remote = ?
+			 WHERE mi.active = 1 AND mi.project = ?
 			 ORDER BY mi.title`,
 		)
-		.all(project.remote) as Array<{ title: string }>;
+		.all(project.project) as Array<{ title: string }>;
 	const titles = rows.map((row) => row.title);
 	return { remote: project.remote, memory_count: titles.length, titles };
 }
