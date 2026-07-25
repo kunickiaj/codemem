@@ -446,7 +446,11 @@ function Review({
 						</ul>
 					</>
 				) : (
-					<p>After the update, no current devices will have access to the affected Projects.</p>
+					<p>
+						After the update, no recipient devices will have access to the affected Projects yet —
+						for example, a Team with no current members. Your own access on this device is not
+						affected.
+					</p>
 				)}
 			</section>
 			<details className="recipient-policy-management-details">

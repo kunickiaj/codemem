@@ -771,8 +771,9 @@ describe("recipient policy management dialog", () => {
 		await reviewSelection();
 
 		expect(document.body.textContent).toContain(
-			"After the update, no current devices will have access to the affected Projects.",
+			"After the update, no recipient devices will have access to the affected Projects yet",
 		);
+		expect(document.body.textContent).toContain("Your own access on this device is not affected.");
 	});
 
 	it("deduplicates effective devices by device ID while preserving first-item order", async () => {
