@@ -167,7 +167,7 @@ describe("recipient-focused Sharing", () => {
 		document.body.innerHTML = "";
 	});
 
-	it("renders all three accessible views and recipient-aware invitation controls", () => {
+	it("renders all four accessible views and recipient-aware invitation controls", () => {
 		mount();
 		expect(document.querySelector('[role="tablist"]')?.getAttribute("aria-label")).toBe(
 			"Sharing views",
@@ -175,6 +175,7 @@ describe("recipient-focused Sharing", () => {
 		expect([...document.querySelectorAll('[role="tab"]')].map((item) => item.textContent)).toEqual([
 			"Teams",
 			"Identities",
+			"Received",
 			"Invitations",
 		]);
 		expect(tab("Teams").getAttribute("aria-controls")).toBe("recipient-policy-sharing-panel-teams");
@@ -182,6 +183,8 @@ describe("recipient-focused Sharing", () => {
 
 		clickTab("Identities");
 		expect(visiblePanel().textContent).toContain("Local identity");
+		clickTab("Received");
+		expect(visiblePanel().textContent).toContain("No received Projects on this device");
 		clickTab("Invitations");
 		expect(visiblePanel().textContent).toContain("Invite Team member");
 		expect(visiblePanel().textContent).toContain("Add a device");
@@ -189,6 +192,33 @@ describe("recipient-focused Sharing", () => {
 		expect(visiblePanel().textContent).toContain(
 			"Legacy invitation import remains under Advanced Team administration",
 		);
+	});
+
+	it("lists received Projects with counts, activity, and read-only guidance", () => {
+		mount(intent(), {
+			received: [
+				{
+					canonicalProjectIdentity: "git:received-api",
+					displayName: "Received API",
+					existingMemoryCount: 2,
+					latestSessionAt: "2026-07-25T12:00:00.000Z",
+				},
+				{
+					canonicalProjectIdentity: "git:received-tools",
+					displayName: "Received Tools",
+					existingMemoryCount: 1,
+					latestSessionAt: null,
+				},
+			],
+		});
+		clickTab("Received");
+		const text = visiblePanel().textContent ?? "";
+		expect(text).toContain("Received API");
+		expect(text).toContain("2 memories");
+		expect(text).toContain("Received Tools");
+		expect(text).toContain("1 memory");
+		expect(text).toContain("No recent sessions");
+		expect(text).toContain("Access is managed where the Project is shared from");
 	});
 
 	it("supports automatic keyboard tab activation, wraparound, Home, End, and focus", () => {

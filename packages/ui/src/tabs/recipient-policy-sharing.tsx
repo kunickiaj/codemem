@@ -6,17 +6,20 @@ import {
 	openRecipientPolicyManagement,
 	type RecipientPolicyManagementProject,
 } from "./recipient-policy-management";
+import type { ReceivedProjectShare } from "./recipient-policy-projects";
 
 export interface RecipientPolicySharingOptions {
 	loading?: boolean;
 	loadError?: boolean;
+	received?: ReceivedProjectShare[];
 }
 
-type SharingTab = "teams" | "identities" | "invitations";
+type SharingTab = "teams" | "identities" | "received" | "invitations";
 
 const SHARING_TABS: Array<{ id: SharingTab; label: string }> = [
 	{ id: "teams", label: "Teams" },
 	{ id: "identities", label: "Identities" },
+	{ id: "received", label: "Received" },
 	{ id: "invitations", label: "Invitations" },
 ];
 
@@ -318,6 +321,54 @@ function IdentitiesView({
 	);
 }
 
+function ReceivedView({ received }: { received: ReceivedProjectShare[] }) {
+	if (received.length === 0) {
+		return (
+			<p className="small recipient-policy-sharing-empty" role="status">
+				No received Projects on this device. Accepted invitations appear here once their first sync
+				completes.
+			</p>
+		);
+	}
+	return (
+		<div className="recipient-policy-sharing-grid recipient-policy-sharing-responsive-grid">
+			{received.map((share, index) => {
+				const titleId = `recipient-policy-sharing-received-title-${index}`;
+				return (
+					<article
+						aria-labelledby={titleId}
+						className="peer-card peer-card--padded recipient-policy-sharing-card recipient-policy-sharing-received-card"
+						key={share.canonicalProjectIdentity}
+					>
+						<div className="peer-title recipient-policy-sharing-card-title">
+							<h3 id={titleId}>{share.displayName}</h3>
+							<span className="badge actor-badge">Received</span>
+						</div>
+						<dl className="recipient-policy-sharing-details">
+							<div>
+								<dt>Memories on this device</dt>
+								<dd>{countLabel(share.existingMemoryCount, "memory", "memories")}</dd>
+							</div>
+							<div>
+								<dt>Latest activity</dt>
+								<dd>
+									{share.latestSessionAt
+										? new Date(share.latestSessionAt).toLocaleString()
+										: "No recent sessions"}
+								</dd>
+							</div>
+						</dl>
+						<p className="small">
+							This Project is received from another device. Access is managed where the Project is
+							shared from; this device keeps it read-only.
+						</p>
+					</article>
+				);
+			})}
+		</div>
+	);
+}
+
 function RecipientPolicySharing({
 	intent,
 	options,
@@ -403,6 +454,8 @@ function RecipientPolicySharing({
 						<TeamsView intent={intent} projects={projects} />
 					) : tab.id === "identities" ? (
 						<IdentitiesView intent={intent} projects={projects} />
+					) : tab.id === "received" ? (
+						<ReceivedView received={options.received ?? []} />
 					) : (
 						<RecipientPolicyInvitations intent={intent} />
 					)}

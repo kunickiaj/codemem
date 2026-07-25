@@ -973,15 +973,40 @@ export function listProjectScopeInventory(
 				COUNT(mi_count.id) AS memory_count
 			 FROM sessions s
 			 LEFT JOIN memory_items mi_count ON mi_count.session_id = s.id AND mi_count.active = 1
+				AND NOT (
+					COALESCE(s.tool_version, '') = 'sync_replication'
+					AND COALESCE(TRIM(mi_count.project), '') <> ''
+				)
 			 WHERE (
 			           COALESCE(TRIM(s.git_remote), TRIM(s.cwd), TRIM(s.project), '') <> ''
 			        OR mi_count.id IS NOT NULL
 			       )
 			   AND (s.cwd IS NULL OR substr(s.cwd, 1, length(?)) <> ?)
+			   AND NOT (
+			         COALESCE(s.tool_version, '') = 'sync_replication'
+			     AND (
+			           COALESCE(TRIM(s.project), '') <> ''
+			        OR NOT EXISTS (
+			             SELECT 1 FROM memory_items mp
+			             WHERE mp.session_id = s.id AND mp.active = 1
+			               AND COALESCE(TRIM(mp.project), '') = ''
+			           )
+			         )
+			       )
 			 GROUP BY s.id
 			 ORDER BY MAX(s.started_at) DESC, s.id DESC`,
 		)
 		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as ProjectScopeCandidateRow[];
+	// Peer-received rows cover both bootstrap snapshot sessions (marked by the
+	// bootstrap cwd prefix) and sessions minted by incremental replication
+	// (tool_version 'sync_replication', no cwd). Both hold peer-owned content
+	// the local device receives but does not manage. Memories in a managed
+	// Project scope key on that scope — it is the sender's canonical Project
+	// identity and stays stable across multiple authoring devices — while
+	// legacy rows without a managed scope fall back to origin device + name.
+	// MAX(project) makes the displayed name deterministic when scope members
+	// briefly disagree (renames converge as replication upserts rewrite the
+	// project on existing rows).
 	const bootstrapRows = db
 		.prepare(
 			`SELECT
@@ -989,10 +1014,13 @@ export function listProjectScopeInventory(
 				'peer_received' AS inventory_source,
 				MAX(COALESCE(mi.updated_at, s.started_at)) AS started_at,
 				NULL AS cwd,
-				TRIM(mi.project) AS project,
+				MAX(TRIM(mi.project)) AS project,
 				NULL AS git_remote,
 				NULL AS git_branch,
-				'peer-received:' || COALESCE(NULLIF(TRIM(mi.origin_device_id), ''), 'unknown') || ':project:' || TRIM(mi.project) AS workspace_id,
+				'peer-received:' || CASE
+					WHEN mi.scope_id LIKE 'managed-project:%' THEN 'scope:' || mi.scope_id
+					ELSE COALESCE(NULLIF(TRIM(mi.origin_device_id), ''), 'unknown') || ':project:' || TRIM(mi.project)
+				END AS workspace_id,
 				0 AS session_count,
 				COUNT(mi.id) AS memory_count
 			 FROM memory_items mi
@@ -1000,9 +1028,14 @@ export function listProjectScopeInventory(
 			 WHERE mi.active = 1
 			   AND mi.project IS NOT NULL
 			   AND TRIM(mi.project) <> ''
-			   AND s.cwd IS NOT NULL
-			   AND substr(s.cwd, 1, length(?)) = ?
-			 GROUP BY TRIM(mi.project), workspace_id
+			   AND (
+			         (s.cwd IS NOT NULL AND substr(s.cwd, 1, length(?)) = ?)
+			      OR (s.cwd IS NULL AND s.tool_version = 'sync_replication')
+			       )
+			 GROUP BY CASE
+				WHEN mi.scope_id LIKE 'managed-project:%' THEN 'scope:' || mi.scope_id
+				ELSE COALESCE(NULLIF(TRIM(mi.origin_device_id), ''), 'unknown') || ':project:' || TRIM(mi.project)
+			 END
 			 ORDER BY MAX(COALESCE(mi.updated_at, s.started_at)) DESC, TRIM(mi.project) ASC`,
 		)
 		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as ProjectScopeCandidateRow[];

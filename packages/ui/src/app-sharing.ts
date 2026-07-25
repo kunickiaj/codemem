@@ -4,7 +4,11 @@ import {
 	mountRecipientPolicyManagement,
 	type RecipientPolicyManagementProject,
 } from "./tabs/recipient-policy-management";
-import { toRecipientPolicyManagementProjects } from "./tabs/recipient-policy-projects";
+import {
+	type ReceivedProjectShare,
+	toReceivedProjectShares,
+	toRecipientPolicyManagementProjects,
+} from "./tabs/recipient-policy-projects";
 import { mountRecipientPolicySharing } from "./tabs/recipient-policy-sharing";
 
 const EMPTY_RECIPIENT_POLICY_INTENT: api.RecipientPolicyIntentGraphV1 = {
@@ -16,7 +20,12 @@ const EMPTY_RECIPIENT_POLICY_INTENT: api.RecipientPolicyIntentGraphV1 = {
 	projectRecipients: [],
 };
 
-async function loadRecipientPolicyProjects(): Promise<RecipientPolicyManagementProject[]> {
+interface RecipientPolicyProjectInventory {
+	manageable: RecipientPolicyManagementProject[];
+	received: ReceivedProjectShare[];
+}
+
+async function loadRecipientPolicyProjects(): Promise<RecipientPolicyProjectInventory> {
 	const projects: ProjectScopeInventoryProject[] = [];
 	let offset = 0;
 	while (true) {
@@ -25,12 +34,15 @@ async function loadRecipientPolicyProjects(): Promise<RecipientPolicyManagementP
 		if (!page.has_more) break;
 		offset += page.limit;
 	}
-	return toRecipientPolicyManagementProjects(projects);
+	return {
+		manageable: toRecipientPolicyManagementProjects(projects),
+		received: toReceivedProjectShares(projects),
+	};
 }
 
 interface RecipientPolicySharingLoaderDependencies {
 	loadIntent: typeof api.loadRecipientPolicyIntent;
-	loadProjects: () => Promise<RecipientPolicyManagementProject[]>;
+	loadProjects: () => Promise<RecipientPolicyProjectInventory>;
 	mountManagement: typeof mountRecipientPolicyManagement;
 	mountSharing: typeof mountRecipientPolicySharing;
 }
@@ -58,14 +70,16 @@ export function createRecipientPolicySharingLoader(
 			});
 		}
 		try {
-			const [projects, intent] = await Promise.all([
+			const [inventory, intent] = await Promise.all([
 				dependencies.loadProjects(),
 				dependencies.loadIntent(),
 			]);
-			dependencies.mountSharing(sharingMount, projects, intent);
+			dependencies.mountSharing(sharingMount, inventory.manageable, intent, {
+				received: inventory.received,
+			});
 			loaded = true;
 			if (managementMount) {
-				dependencies.mountManagement(managementMount, projects, intent, {
+				dependencies.mountManagement(managementMount, inventory.manageable, intent, {
 					onCommitted: loadRecipientPolicySharingData,
 				});
 			}

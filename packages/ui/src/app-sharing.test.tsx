@@ -73,7 +73,7 @@ describe("Sharing app data refresh", () => {
 	it("replaces stale actions after a refresh failure and restores them after recovery", async () => {
 		document.body.innerHTML =
 			'<div id="recipientPolicySharingMount"></div><div id="recipientPolicyManagementMount"></div>';
-		const loadProjects = vi.fn().mockResolvedValue(projects);
+		const loadProjects = vi.fn().mockResolvedValue({ manageable: projects, received: [] });
 		const loadIntent = vi.fn().mockResolvedValue(intent);
 		const load = createRecipientPolicySharingLoader({ loadIntent, loadProjects });
 

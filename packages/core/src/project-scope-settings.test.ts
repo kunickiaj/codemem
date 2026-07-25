@@ -21,6 +21,7 @@ function insertSession(
 		project?: string | null;
 		gitRemote?: string | null;
 		gitBranch?: string | null;
+		toolVersion?: string;
 	} = {},
 ) {
 	const now = "2026-05-06T00:00:00Z";
@@ -38,7 +39,7 @@ function insertSession(
 				: input.gitRemote,
 			input.gitBranch === undefined ? "main" : input.gitBranch,
 			"test-user",
-			"test",
+			input.toolVersion ?? "test",
 		);
 	return Number(result.lastInsertRowid);
 }
@@ -1060,6 +1061,156 @@ describe("project scope settings", () => {
 			inventory.projects.some(
 				(project) => project.workspace_identity === "https://git.example.invalid/exampleco/api.git",
 			),
+		).toBe(true);
+	});
+
+	it("marks projects from incremental replication sessions as peer received", () => {
+		// Sessions minted by ensureSessionForReplication carry no cwd and
+		// tool_version 'sync_replication'. Their memories are peer-owned and
+		// must be classified peer_received, matching bootstrap sessions.
+		const replicatedSession = insertSession(db, {
+			cwd: null,
+			gitRemote: null,
+			project: "codemem",
+			toolVersion: "sync_replication",
+		});
+		insertMemory(db, replicatedSession, {
+			originDeviceId: "peer-a",
+			project: "codemem",
+			workspaceId: "shared:default",
+		});
+
+		const inventory = listProjectScopeInventory(db);
+		expect(inventory.projects).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					display_project: "codemem",
+					memory_count: 1,
+					read_only: true,
+					read_only_reason: "peer_received",
+					workspace_identity: "peer-received:peer-a:project:codemem",
+				}),
+			]),
+		);
+		// The synthetic replication session itself is not listed as a local project.
+		expect(
+			inventory.projects.filter((project) => project.display_project === "codemem"),
+		).toHaveLength(1);
+	});
+
+	it("groups peer-received memories from multiple origin devices by their managed scope", () => {
+		const scopeId = "managed-project:abc123";
+		const bootstrapSession = insertSession(db, {
+			cwd: "__sync_bootstrap__:codemem",
+			gitRemote: null,
+			project: "codemem",
+		});
+		insertMemory(db, bootstrapSession, {
+			originDeviceId: "owner-laptop",
+			project: "codemem",
+			scopeId,
+			workspaceId: "shared:default",
+		});
+		const replicationSession = insertSession(db, {
+			cwd: null,
+			gitRemote: null,
+			project: "codemem",
+			toolVersion: "sync_replication",
+		});
+		insertMemory(db, replicationSession, {
+			originDeviceId: "owner-desktop",
+			project: "codemem",
+			scopeId,
+			workspaceId: "shared:default",
+		});
+
+		const inventory = listProjectScopeInventory(db);
+		const received = inventory.projects.filter(
+			(project) => project.read_only_reason === "peer_received",
+		);
+		// One card for the Project despite two authoring devices.
+		expect(received).toHaveLength(1);
+		expect(received[0]).toMatchObject({
+			display_project: "codemem",
+			memory_count: 2,
+			workspace_identity: `peer-received:scope:${scopeId}`,
+		});
+	});
+
+	it("does not double-list a replicated session whose memories gained a project later", () => {
+		// Older senders create the session without a project; later upserts
+		// backfill only memory_items.project. The session must not surface as a
+		// shareable local project next to the peer-received card.
+		const upgradedSession = insertSession(db, {
+			cwd: null,
+			gitRemote: null,
+			project: null,
+			toolVersion: "sync_replication",
+		});
+		insertMemory(db, upgradedSession, {
+			originDeviceId: "peer-a",
+			project: "codemem",
+			workspaceId: "shared:default",
+		});
+
+		const inventory = listProjectScopeInventory(db);
+		const cards = inventory.projects.filter(
+			(project) => project.display_project === "codemem" || project.project === "codemem",
+		);
+		expect(cards).toHaveLength(1);
+		expect(cards[0]).toMatchObject({ read_only: true, read_only_reason: "peer_received" });
+	});
+
+	it("keeps project-less siblings visible when a replicated session is partially upgraded", () => {
+		// Mixed legacy session: one row upgraded with a project (represented by
+		// the peer-received card) and one still project-less (must stay visible
+		// through the session row without double counting the upgraded one).
+		const mixedSession = insertSession(db, {
+			cwd: null,
+			gitRemote: null,
+			project: null,
+			toolVersion: "sync_replication",
+		});
+		insertMemory(db, mixedSession, {
+			originDeviceId: "peer-a",
+			project: "codemem",
+			workspaceId: "shared:default",
+		});
+		insertMemory(db, mixedSession, {
+			originDeviceId: "peer-a",
+			project: null,
+			workspaceId: "shared:default",
+		});
+
+		const inventory = listProjectScopeInventory(db);
+		const receivedCard = inventory.projects.find(
+			(project) => project.read_only_reason === "peer_received",
+		);
+		expect(receivedCard).toMatchObject({ display_project: "codemem", memory_count: 1 });
+		const sessionCard = inventory.projects.find(
+			(project) => project.read_only_reason !== "peer_received",
+		);
+		// The project-less sibling remains represented, counted once.
+		expect(sessionCard?.memory_count).toBe(1);
+	});
+
+	it("keeps project-less replicated sessions visible via their workspace identity", () => {
+		// Older senders may omit the project on replicated payloads; those
+		// sessions must not vanish from the inventory entirely.
+		const projectlessSession = insertSession(db, {
+			cwd: null,
+			gitRemote: null,
+			project: null,
+			toolVersion: "sync_replication",
+		});
+		insertMemory(db, projectlessSession, {
+			originDeviceId: "peer-a",
+			workspaceId: "shared:default",
+		});
+
+		const inventory = listProjectScopeInventory(db);
+		expect(
+			inventory.projects.some((project) => project.workspace_identity === "shared:default"),
 		).toBe(true);
 	});
 
