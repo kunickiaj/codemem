@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS enrolled_devices (
   device_id TEXT NOT NULL,
   public_key TEXT NOT NULL,
   fingerprint TEXT NOT NULL,
+  identity_id TEXT,
   display_name TEXT,
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
@@ -64,6 +65,7 @@ CREATE TABLE IF NOT EXISTS coordinator_invites (
   invite_kind TEXT,
   policy_team_id TEXT,
   target_identity_id TEXT,
+  assigned_identity_id TEXT,
   reviewed_preview_digest TEXT,
   reviewed_intent_json TEXT
 );

@@ -858,8 +858,6 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		const otherDevice = createIdentity();
 		const teamIntent = teamReviewedIntent();
 		const teamDigest = await recipientReviewedIntentDigest(teamIntent);
-		const addDeviceIntent = addDeviceReviewedIntent();
-		const addDeviceDigest = await recipientReviewedIntentDigest(addDeviceIntent);
 		const adminHeaders = {
 			"content-type": "application/json",
 			"X-Codemem-Coordinator-Admin": "test-secret",
@@ -884,6 +882,26 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 			expect(response.status).toBe(200);
 			return (await response.json()) as { payload: InvitePayload };
 		};
+		const callerAssigned = await exports.default.fetch(
+			"https://example.com/v1/admin/invites",
+			{
+				method: "POST",
+				headers: adminHeaders,
+				body: JSON.stringify({
+					group_id: "g1",
+					policy: "auto_admit",
+					expires_at: "2099-01-01T00:00:00Z",
+					coordinator_url: "https://example.com",
+					invite_kind: "team_member",
+					policy_team_id: "policy-team-1",
+					assigned_identity_id: "identity-owner",
+					reviewed_preview_digest: teamDigest,
+					reviewed_intent: teamIntent,
+				}),
+			},
+		);
+		expect(callerAssigned.status).toBe(400);
+		expect(await callerAssigned.json()).toEqual({ error: "assigned_identity_id_forbidden" });
 
 		const team = await createInvite({
 			invite_kind: "team_member",
@@ -894,8 +912,10 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		expect(team.payload).toMatchObject({
 			kind: "team_member",
 			policy_team_id: "policy-team-1",
+			assigned_identity_id: expect.any(String),
 			reviewed_preview_digest: teamDigest,
 		});
+		const assignedIdentityId = String(team.payload.assigned_identity_id);
 		expect(team.payload).not.toHaveProperty("reviewed_intent");
 		const inspect = await exports.default.fetch("https://example.com/v1/invites/inspect", {
 			method: "POST",
@@ -905,6 +925,7 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		expect(await inspect.json()).toMatchObject({
 			kind: "team_member",
 			policy_team_id: "policy-team-1",
+			assigned_identity_id: assignedIdentityId,
 			reviewed_preview_digest: teamDigest,
 			reviewed_intent: teamIntent,
 			bound: false,
@@ -912,7 +933,7 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		const acceptBody = {
 			token: team.payload.token,
 			invite_kind: "team_member",
-			identity_id: "identity-brian",
+			identity_id: assignedIdentityId,
 			device_id: device.deviceId,
 			public_key: device.publicKey,
 			fingerprint: device.fingerprint,
@@ -923,6 +944,34 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify(acceptBody),
 			});
+		await env.COORDINATOR_DB.prepare(
+			"UPDATE coordinator_invites SET assigned_identity_id = NULL WHERE token_digest IS NOT NULL AND invite_kind = 'team_member'",
+		).run();
+		const missingAssignment = await exports.default.fetch(
+			"https://example.com/v1/invites/inspect",
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ token: team.payload.token }),
+			},
+		);
+		expect(missingAssignment.status).toBe(404);
+		expect(await missingAssignment.json()).toEqual({ error: "invite_invalid" });
+		const missingAssignmentAcceptance = await accept();
+		expect(missingAssignmentAcceptance.status).toBe(404);
+		expect(await missingAssignmentAcceptance.json()).toEqual({ error: "invite_invalid" });
+		await env.COORDINATOR_DB.prepare(
+			"UPDATE coordinator_invites SET assigned_identity_id = ? WHERE token_digest IS NOT NULL AND invite_kind = 'team_member'",
+		)
+			.bind(assignedIdentityId)
+			.run();
+		const wrongTeamIdentity = await exports.default.fetch("https://example.com/v1/join", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ ...acceptBody, identity_id: "identity-owner" }),
+		});
+		expect(wrongTeamIdentity.status).toBe(409);
+		expect(await wrongTeamIdentity.json()).toEqual({ error: "invite_identity_conflict" });
 		expect(await (await accept()).json()).toMatchObject({
 			status: "accepted",
 			reviewed_intent: teamIntent,
@@ -944,9 +993,11 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		expect(changedDevice.status).toBe(409);
 		expect(await changedDevice.json()).toEqual({ error: "invite_already_bound" });
 
+		const addDeviceIntent = addDeviceReviewedIntent(assignedIdentityId);
+		const addDeviceDigest = await recipientReviewedIntentDigest(addDeviceIntent);
 		const addDevice = await createInvite({
 			invite_kind: "add_device",
-			target_identity_id: "identity-brian",
+			target_identity_id: assignedIdentityId,
 			reviewed_preview_digest: addDeviceDigest,
 			reviewed_intent: addDeviceIntent,
 		});
@@ -967,7 +1018,7 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		const addDeviceBody = {
 			token: addDevice.payload.token,
 			invite_kind: "add_device",
-			identity_id: "identity-brian",
+			identity_id: assignedIdentityId,
 			device_id: otherDevice.deviceId,
 			public_key: otherDevice.publicKey,
 			fingerprint: otherDevice.fingerprint,
@@ -988,7 +1039,7 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		});
 
 		const enrollments = await env.COORDINATOR_DB.prepare(
-			`SELECT group_id, device_id, public_key, fingerprint, enabled
+			`SELECT group_id, device_id, public_key, fingerprint, identity_id, enabled
 			 FROM enrolled_devices ORDER BY device_id ASC`,
 		).all<Record<string, unknown>>();
 		expect(enrollments.results).toEqual(
@@ -999,6 +1050,7 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 					device_id: enrolledDevice.deviceId,
 					public_key: enrolledDevice.publicKey,
 					fingerprint: enrolledDevice.fingerprint,
+					identity_id: assignedIdentityId,
 					enabled: 1,
 				})),
 		);

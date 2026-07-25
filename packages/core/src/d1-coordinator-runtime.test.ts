@@ -117,6 +117,7 @@ describe("createD1CoordinatorApp", () => {
 					device_id: "d1",
 					public_key: "pk1",
 					fingerprint: "fp1",
+					identity_id: null,
 					display_name: "Laptop",
 					enabled: 1,
 					created_at: expect.any(String),

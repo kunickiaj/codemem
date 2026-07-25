@@ -17,6 +17,11 @@ describe("CoordinatorStore", () => {
 					.prepare("UPDATE coordinator_invites SET reviewed_intent_json = NULL WHERE invite_id = ?")
 					.run(inviteId);
 			},
+			setInviteAssignedIdentity: (inviteId: string, identityId: string | null) => {
+				store.db
+					.prepare("UPDATE coordinator_invites SET assigned_identity_id = ? WHERE invite_id = ?")
+					.run(identityId, inviteId);
+			},
 			revokeInvite: (inviteId: string, revokedAt: string) => {
 				store.db
 					.prepare("UPDATE coordinator_invites SET revoked_at = ? WHERE invite_id = ?")
@@ -30,6 +35,53 @@ describe("CoordinatorStore", () => {
 	}
 
 	describe("schema", () => {
+		it("adds nullable enrollment identity binding while preserving pre-column rows", async () => {
+			// Arrange
+			const tmpDir = mkdtempSync(join(tmpdir(), "coord-enrollment-identity-upgrade-test-"));
+			const path = join(tmpDir, "coordinator.sqlite");
+			const legacy = new Database(path);
+			legacy.exec(`
+				CREATE TABLE enrolled_devices (
+					group_id TEXT NOT NULL,
+					device_id TEXT NOT NULL,
+					public_key TEXT NOT NULL,
+					fingerprint TEXT NOT NULL,
+					display_name TEXT,
+					enabled INTEGER NOT NULL DEFAULT 1,
+					created_at TEXT NOT NULL,
+					PRIMARY KEY (group_id, device_id)
+				);
+				INSERT INTO enrolled_devices(
+					group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+				) VALUES (
+					'g1', 'legacy-device', 'legacy-key', 'legacy-fingerprint', 'Legacy device', 1,
+					'2026-07-24T00:00:00Z'
+				);
+			`);
+			legacy.close();
+
+			// Act
+			const store = new BetterSqliteCoordinatorStore(path);
+
+			try {
+				// Assert
+				const columns = store.db.prepare("PRAGMA table_info(enrolled_devices)").all() as Array<{
+					name: string;
+				}>;
+				expect(columns.map((column) => column.name)).toContain("identity_id");
+				expect(
+					store.db
+						.prepare(
+							"SELECT device_id, identity_id FROM enrolled_devices WHERE device_id = 'legacy-device'",
+						)
+						.get(),
+				).toEqual({ device_id: "legacy-device", identity_id: null });
+			} finally {
+				await store.close();
+				rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
 		it("upgrades an existing project-intent invite table additively", async () => {
 			const tmpDir = mkdtempSync(join(tmpdir(), "coord-upgrade-test-"));
 			const path = join(tmpDir, "coordinator.sqlite");
@@ -51,7 +103,8 @@ describe("CoordinatorStore", () => {
 				const row = store.db
 					.prepare(
 						`SELECT token, token_digest, consumed_at, bound_device_id, trust_state,
-							invite_kind, policy_team_id, target_identity_id, reviewed_preview_digest,
+							invite_kind, policy_team_id, target_identity_id, assigned_identity_id,
+							reviewed_preview_digest,
 							reviewed_intent_json
 						 FROM coordinator_invites`,
 					)
@@ -65,6 +118,7 @@ describe("CoordinatorStore", () => {
 					invite_kind: "legacy_enrollment",
 					policy_team_id: null,
 					target_identity_id: null,
+					assigned_identity_id: null,
 					reviewed_preview_digest: null,
 					reviewed_intent_json: null,
 				});

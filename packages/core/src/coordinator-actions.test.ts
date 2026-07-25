@@ -602,11 +602,13 @@ describe("coordinator local admin actions", () => {
 							invite_id: "invite-team-1",
 							invite_kind: "team_member",
 							policy_team_id: "policy-team-1",
+							assigned_identity_id: "identity-assigned-team",
 							reviewed_preview_digest: digest,
 						},
 						payload: {
 							kind: "team_member",
 							policy_team_id: "policy-team-1",
+							assigned_identity_id: "identity-assigned-team",
 							reviewed_preview_digest: digest,
 						},
 						encoded: "digest-only",
@@ -900,7 +902,7 @@ describe("coordinator local admin actions", () => {
 			expires_at: "2099-01-01T00:00:00.000Z",
 			team_name: null,
 			...(testCase.kind === "team_member"
-				? { policy_team_id: testCase.targetId }
+				? { policy_team_id: testCase.targetId, assigned_identity_id: "identity-team" }
 				: { target_identity_id: testCase.targetId }),
 			reviewed_preview_digest: reviewedDigest,
 		});
@@ -1303,6 +1305,7 @@ describe("coordinator local admin actions", () => {
 							identity_id: testCase.identityId,
 							policy_team_id: testCase.kind === "team_member" ? "team-a" : null,
 							target_identity_id: testCase.kind === "add_device" ? testCase.identityId : null,
+							assigned_identity_id: testCase.kind === "team_member" ? testCase.identityId : null,
 							reviewed_preview_digest: reviewedDigest,
 							reviewed_intent: reviewedIntent,
 						}),
@@ -1320,7 +1323,7 @@ describe("coordinator local admin actions", () => {
 			expires_at: "2099-01-01T00:00:00.000Z",
 			team_name: null,
 			...(testCase.kind === "team_member"
-				? { policy_team_id: "team-a" }
+				? { policy_team_id: "team-a", assigned_identity_id: testCase.identityId }
 				: { target_identity_id: testCase.identityId }),
 			reviewed_preview_digest: reviewedDigest,
 		});
@@ -1442,6 +1445,7 @@ describe("coordinator local admin actions", () => {
 					JSON.stringify({
 						kind: testCase.kind,
 						policy_team_id: testCase.kind === "team_member" ? testCase.targetId : undefined,
+						assigned_identity_id: testCase.kind === "team_member" ? testCase.identityId : undefined,
 						target_identity_id: testCase.kind === "add_device" ? testCase.targetId : undefined,
 						reviewed_preview_digest: reviewedDigest,
 						reviewed_intent: reviewedIntent,
@@ -1461,7 +1465,10 @@ describe("coordinator local admin actions", () => {
 			expires_at: "2099-01-01T00:00:00.000Z",
 			team_name: null,
 			...(testCase.kind === "team_member"
-				? { policy_team_id: testCase.targetId }
+				? {
+						policy_team_id: testCase.targetId,
+						assigned_identity_id: testCase.identityId,
+					}
 				: { target_identity_id: testCase.targetId }),
 			reviewed_preview_digest: reviewedDigest,
 		});
@@ -1545,6 +1552,7 @@ describe("coordinator local admin actions", () => {
 							identity_id: identityId,
 							policy_team_id: "team-a",
 							target_identity_id: null,
+							assigned_identity_id: identityId,
 							reviewed_preview_digest: reviewedDigest,
 							reviewed_intent: reviewedIntent,
 							...testCase.responseOverride,
@@ -1563,6 +1571,7 @@ describe("coordinator local admin actions", () => {
 			expires_at: "2099-01-01T00:00:00.000Z",
 			team_name: null,
 			policy_team_id: "team-a",
+			assigned_identity_id: identityId,
 			reviewed_preview_digest: reviewedDigest,
 		});
 
@@ -1584,32 +1593,49 @@ describe("coordinator local admin actions", () => {
 		expect(readCodememConfigFileAtPath(configPath)).toEqual(originalConfig);
 	});
 
-	it("rejects a recipient response changed after valid inspection without local persistence", async () => {
-		const actionDbPath = join(tmpDir, "recipient-post-join-mismatch.sqlite");
-		const keysDir = join(tmpDir, "recipient-post-join-mismatch-keys");
-		const configPath = join(tmpDir, "recipient-post-join-mismatch-config.json");
-		const identityId = "identity-recipient";
-		const token = "recipient-post-join-mismatch-token";
-		const originalConfig = { actor_id: identityId, sync_coordinator_groups: ["existing-group"] };
+	it.each([
+		{
+			kind: "team_member" as const,
+			targetId: "team-a",
+			identityId: "identity-recipient-team",
+		},
+		{
+			kind: "add_device" as const,
+			targetId: "identity-recipient-device",
+			identityId: "identity-recipient-device",
+		},
+	])("rejects a conflicting $kind response Identity after valid inspection without local persistence", async (testCase) => {
+		const actionDbPath = join(tmpDir, `recipient-post-join-${testCase.kind}-mismatch.sqlite`);
+		const keysDir = join(tmpDir, `recipient-post-join-${testCase.kind}-mismatch-keys`);
+		const configPath = join(tmpDir, `recipient-post-join-${testCase.kind}-mismatch-config.json`);
+		const token = `recipient-post-join-${testCase.kind}-mismatch-token`;
+		const originalConfig = {
+			actor_id: testCase.identityId,
+			sync_coordinator_groups: ["existing-group"],
+		};
 		writeCodememConfigFile(originalConfig, configPath);
-		const reviewedIntent = teamReviewedIntent("team-a");
+		const reviewedIntent =
+			testCase.kind === "team_member"
+				? teamReviewedIntent(testCase.targetId)
+				: addDeviceReviewedIntent(testCase.targetId);
 		const reviewedDigest = await recipientReviewedIntentDigest(reviewedIntent);
 		const reviewedOnboardingDigest = reviewedOnboardingDigestForRecipientInvite({
 			dbPath: actionDbPath,
 			keysDir,
 			invitationId: token,
-			identityId,
+			identityId: testCase.identityId,
 			deviceDisplayName: "Recipient laptop",
 			reviewedIntent,
 		});
 		const validResponse = {
 			ok: true,
 			status: "accepted",
-			kind: "team_member",
+			kind: testCase.kind,
 			group_id: "coordinator-a",
-			identity_id: identityId,
-			policy_team_id: "team-a",
-			target_identity_id: null,
+			identity_id: testCase.identityId,
+			policy_team_id: testCase.kind === "team_member" ? testCase.targetId : null,
+			target_identity_id: testCase.kind === "add_device" ? testCase.targetId : null,
+			assigned_identity_id: testCase.kind === "team_member" ? testCase.identityId : null,
 			reviewed_preview_digest: reviewedDigest,
 			reviewed_intent: reviewedIntent,
 		};
@@ -1623,7 +1649,7 @@ describe("coordinator local admin actions", () => {
 					JSON.stringify(
 						requestedUrl.endsWith("/v1/invites/inspect")
 							? validResponse
-							: { ...validResponse, reviewed_preview_digest: "f".repeat(64) },
+							: { ...validResponse, identity_id: "identity-other" },
 					),
 					{ status: 200 },
 				);
@@ -1631,14 +1657,19 @@ describe("coordinator local admin actions", () => {
 		);
 		const invite = encodeInvitePayload({
 			v: 1,
-			kind: "team_member",
+			kind: testCase.kind,
 			coordinator_url: "https://coord.example.test",
 			group_id: "coordinator-a",
 			policy: "auto_admit",
 			token,
 			expires_at: "2099-01-01T00:00:00.000Z",
 			team_name: null,
-			policy_team_id: "team-a",
+			...(testCase.kind === "team_member"
+				? {
+						policy_team_id: testCase.targetId,
+						assigned_identity_id: testCase.identityId,
+					}
+				: { target_identity_id: testCase.targetId }),
 			reviewed_preview_digest: reviewedDigest,
 		});
 
@@ -1648,7 +1679,7 @@ describe("coordinator local admin actions", () => {
 				dbPath: actionDbPath,
 				keysDir,
 				configPath,
-				recipientActorId: identityId,
+				recipientActorId: testCase.identityId,
 				recipientDisplayName: "Recipient",
 				deviceDisplayName: "Recipient laptop",
 				reviewedOnboardingDigest,

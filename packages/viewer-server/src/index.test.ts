@@ -10426,6 +10426,8 @@ describe("viewer-server", () => {
 					team_name: null,
 					policy_team_id: body.policy_team_id ?? undefined,
 					target_identity_id: body.target_identity_id ?? undefined,
+					assigned_identity_id:
+						body.invite_kind === "team_member" ? "identity-assigned-team" : undefined,
 					reviewed_preview_digest: body.reviewed_preview_digest,
 				};
 				return new Response(
@@ -10435,6 +10437,8 @@ describe("viewer-server", () => {
 							invite_kind: body.invite_kind,
 							policy_team_id: body.policy_team_id,
 							target_identity_id: body.target_identity_id,
+							assigned_identity_id:
+								body.invite_kind === "team_member" ? "identity-assigned-team" : null,
 							reviewed_preview_digest: body.reviewed_preview_digest,
 						},
 						payload,
@@ -10523,6 +10527,7 @@ describe("viewer-server", () => {
 
 		it("inspects and accepts Team/add-device invites with intent-only local writes", async () => {
 			for (const kind of ["team_member", "add_device"] as const) {
+				const assignedTeamIdentityId = "identity-assigned-team-recipient";
 				const testDir = mkdtempSync(join(tmpdir(), `codemem-${kind}-accept-`));
 				const configPath = join(testDir, "config.json");
 				const keysDir = join(testDir, "keys");
@@ -10625,7 +10630,10 @@ describe("viewer-server", () => {
 						team_name: null,
 						reviewed_preview_digest: digest,
 						...(kind === "team_member"
-							? { policy_team_id: "policy-team-a" }
+							? {
+									policy_team_id: "policy-team-a",
+									assigned_identity_id: assignedTeamIdentityId,
+								}
 							: { target_identity_id: store.actorId }),
 					};
 					const encoded = core.encodeInvitePayload(payload);
@@ -10640,7 +10648,10 @@ describe("viewer-server", () => {
 									reviewed_intent: reviewedIntent,
 									bound: false,
 									...(kind === "team_member"
-										? { policy_team_id: "policy-team-a" }
+										? {
+												policy_team_id: "policy-team-a",
+												assigned_identity_id: assignedTeamIdentityId,
+											}
 										: { target_identity_id: store.actorId }),
 								}),
 								{ status: 200 },
@@ -10657,11 +10668,15 @@ describe("viewer-server", () => {
 								status: "accepted",
 								kind,
 								group_id: "coordinator-a",
-								identity_id: store.actorId,
+								identity_id: kind === "team_member" ? assignedTeamIdentityId : store.actorId,
 								reviewed_preview_digest: digest,
 								reviewed_intent: reviewedIntent,
 								...(kind === "team_member"
-									? { policy_team_id: "policy-team-a", target_identity_id: null }
+									? {
+											policy_team_id: "policy-team-a",
+											target_identity_id: null,
+											assigned_identity_id: assignedTeamIdentityId,
+										}
 									: { policy_team_id: null, target_identity_id: store.actorId }),
 							}),
 							{ status: 200 },
@@ -10775,6 +10790,7 @@ describe("viewer-server", () => {
 				expires_at: "2099-01-01T00:00:00.000Z",
 				team_name: null,
 				policy_team_id: "team-reviewed",
+				assigned_identity_id: "identity-assigned-team",
 				reviewed_preview_digest: digest,
 			});
 			globalThis.fetch = vi
@@ -10789,6 +10805,7 @@ describe("viewer-server", () => {
 						JSON.stringify({
 							kind: "team_member",
 							policy_team_id: "team-reviewed",
+							assigned_identity_id: "identity-assigned-team",
 							reviewed_preview_digest: digest,
 						}),
 						{ status: 200 },
@@ -10799,6 +10816,7 @@ describe("viewer-server", () => {
 						JSON.stringify({
 							kind: "team_member",
 							policy_team_id: "team-reviewed",
+							assigned_identity_id: "identity-assigned-team",
 							reviewed_preview_digest: digest,
 							reviewed_intent: {
 								...reviewedIntent,
@@ -10872,6 +10890,7 @@ describe("viewer-server", () => {
 				expires_at: "2099-01-01T00:00:00.000Z",
 				team_name: null,
 				policy_team_id: "team-reviewed",
+				assigned_identity_id: "identity-assigned-team",
 				reviewed_preview_digest: digest,
 			});
 			globalThis.fetch = vi.fn(
@@ -10880,6 +10899,7 @@ describe("viewer-server", () => {
 						JSON.stringify({
 							kind: "team_member",
 							policy_team_id: "team-reviewed",
+							assigned_identity_id: "identity-assigned-team",
 							reviewed_preview_digest: digest,
 							reviewed_intent: reviewedIntent,
 							bound: false,
@@ -11064,6 +11084,8 @@ describe("viewer-server", () => {
 				);
 				recipient = createTestApp({ seedDevice: false });
 				const recipientStore = recipient.ensureStore();
+				const bootstrapActorId = recipientStore.actorId;
+				expect(bootstrapActorId.length).toBeGreaterThan(0);
 				expect(recipientStore.db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(
 					0,
 				);
@@ -11085,6 +11107,7 @@ describe("viewer-server", () => {
 				);
 				const inspection = (await inspectResponse.json()) as {
 					recipient_name: string;
+					assigned_identity_id?: string;
 					onboarding: {
 						reviewedOnboardingDigest: string;
 						projects: unknown[];
@@ -11093,6 +11116,13 @@ describe("viewer-server", () => {
 				};
 
 				// Assert
+				if (testCase.kind === "team_member") {
+					expect(inspection.assigned_identity_id).toEqual(expect.any(String));
+					expect(inspection.assigned_identity_id?.trim()).toBe(inspection.assigned_identity_id);
+					expect(inspection.assigned_identity_id?.length).toBeGreaterThan(0);
+					expect(inspection.assigned_identity_id).not.toBe(bootstrapActorId);
+					expect(inspection.assigned_identity_id).not.toBe(ownerStore.actorId);
+				}
 				expect(inspection.onboarding.projects).toEqual([
 					{
 						canonicalProjectIdentity: alphaProjectId,
@@ -11133,6 +11163,9 @@ describe("viewer-server", () => {
 				});
 				expect(stale.status).toBe(400);
 				expect(await stale.json()).toEqual({ error: "reviewed_onboarding_stale" });
+				expect(recipientStore.actorId).not.toBe(
+					testCase.kind === "team_member" ? inspection.assigned_identity_id : ownerStore.actorId,
+				);
 
 				const accepted = await recipient.app.request("/api/sync/invites/import", {
 					method: "POST",
@@ -11145,9 +11178,12 @@ describe("viewer-server", () => {
 					type: "recipient_onboarding",
 				});
 				const expectedIdentityId =
-					testCase.kind === "team_member" ? recipientStore.actorId : ownerStore.actorId;
+					testCase.kind === "team_member"
+						? String(inspection.assigned_identity_id)
+						: ownerStore.actorId;
+				expect(recipientStore.actorId).toBe(expectedIdentityId);
+				expect(recipientStore.actorId).not.toBe(bootstrapActorId);
 				if (testCase.kind === "add_device") {
-					expect(recipientStore.actorId).toBe(ownerStore.actorId);
 					expect(recipientStore.actorDisplayName).toBe("Owner Identity");
 				}
 				const recipientDeviceId = recipientStore.db
@@ -11244,6 +11280,9 @@ describe("viewer-server", () => {
 						await coordinatorVerification.getInviteByTokenForInspection(String(payload.token)),
 					).toMatchObject({
 						invite_kind: testCase.kind,
+						...(testCase.kind === "team_member"
+							? { assigned_identity_id: expectedIdentityId }
+							: { target_identity_id: expectedIdentityId }),
 						bound_device_id: recipientDeviceId,
 						recipient_actor_id: expectedIdentityId,
 						consumed_at: expect.any(String),

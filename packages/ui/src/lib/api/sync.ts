@@ -55,6 +55,7 @@ export type InspectInviteResult =
 			kind: RecipientInvitationKind;
 			recipient_name: string;
 			device_name: string;
+			assigned_identity_id?: string;
 			onboarding: RecipientOnboardingPreviewV1;
 	  };
 

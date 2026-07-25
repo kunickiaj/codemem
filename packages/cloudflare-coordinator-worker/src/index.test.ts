@@ -320,6 +320,97 @@ describe("createCloudflareCoordinatorWorker", () => {
 		).toEqual({ invite_id: "legacy-invite", reviewed_intent_json: null });
 	});
 
+	it("migration 0012 adds nullable enrollment identity binding and preserves existing rows", () => {
+		// Arrange
+		db.exec(`
+			DROP TABLE enrolled_devices;
+			CREATE TABLE enrolled_devices (
+				group_id TEXT NOT NULL,
+				device_id TEXT NOT NULL,
+				public_key TEXT NOT NULL,
+				fingerprint TEXT NOT NULL,
+				display_name TEXT,
+				enabled INTEGER NOT NULL DEFAULT 1,
+				created_at TEXT NOT NULL,
+				PRIMARY KEY (group_id, device_id)
+			);
+			INSERT INTO enrolled_devices(
+				group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+			) VALUES (
+				'g1', 'legacy-device', 'legacy-key', 'legacy-fingerprint', 'Legacy device', 1,
+				'2026-07-24T00:00:00Z'
+			);
+		`);
+		const migration = readFileSync(
+			join(import.meta.dirname, "../migrations/0012_add_enrolled_device_identity.sql"),
+			"utf8",
+		);
+
+		// Act
+		db.exec(migration);
+
+		// Assert
+		const columns = db.prepare("PRAGMA table_info(enrolled_devices)").all() as Array<{
+			name: string;
+		}>;
+		expect(columns.map((column) => column.name)).toContain("identity_id");
+		expect(
+			db
+				.prepare(
+					"SELECT device_id, identity_id FROM enrolled_devices WHERE device_id = 'legacy-device'",
+				)
+				.get(),
+		).toEqual({ device_id: "legacy-device", identity_id: null });
+	});
+
+	it("migration 0013 adds nullable assigned Team identity and preserves existing invitations", () => {
+		// Arrange
+		db.exec(`
+			DROP TABLE coordinator_invites;
+			CREATE TABLE coordinator_invites (
+				invite_id TEXT PRIMARY KEY,
+				group_id TEXT NOT NULL,
+				token TEXT NOT NULL UNIQUE,
+				policy TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				invite_kind TEXT,
+				policy_team_id TEXT
+			);
+			INSERT INTO coordinator_invites(
+				invite_id, group_id, token, policy, expires_at, created_at, invite_kind, policy_team_id
+			) VALUES (
+				'legacy-team-invite', 'g1', 'legacy-team-token', 'auto_admit',
+				'2099-01-01T00:00:00Z', '2026-07-24T00:00:00Z', 'team_member', 'policy-team-1'
+			);
+		`);
+		const migration = readFileSync(
+			join(import.meta.dirname, "../migrations/0013_add_invite_assigned_identity.sql"),
+			"utf8",
+		);
+
+		// Act
+		db.exec(migration);
+
+		// Assert
+		const columns = db.prepare("PRAGMA table_info(coordinator_invites)").all() as Array<{
+			name: string;
+		}>;
+		expect(columns.map((column) => column.name)).toContain("assigned_identity_id");
+		expect(
+			db
+				.prepare(
+					"SELECT invite_id, invite_kind, policy_team_id, assigned_identity_id FROM coordinator_invites",
+				)
+				.get(),
+		).toEqual({
+			invite_id: "legacy-team-invite",
+			invite_kind: "team_member",
+			policy_team_id: "policy-team-1",
+			assigned_identity_id: null,
+		});
+	});
+
 	it("serves coordinator admin data through the worker entrypoint", async () => {
 		const store = new D1CoordinatorStore(d1db);
 		await store.createGroup("g1", "Team Alpha");
@@ -350,6 +441,7 @@ describe("createCloudflareCoordinatorWorker", () => {
 					device_id: "d1",
 					public_key: "pk1",
 					fingerprint: "fp1",
+					identity_id: null,
 					display_name: "Laptop",
 					enabled: 1,
 					created_at: expect.any(String),

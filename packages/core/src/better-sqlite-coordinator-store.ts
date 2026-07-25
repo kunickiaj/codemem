@@ -62,7 +62,11 @@ import type {
 	CoordinatorUpdateScopeInput,
 	CoordinatorUpsertPresenceInput,
 } from "./coordinator-store-contract.js";
-import { normalizeInviteExpiresAt } from "./coordinator-store-contract.js";
+import {
+	isCoordinatorAssignedIdentityId,
+	normalizeInviteExpiresAt,
+	recipientInviteAuthoritativeIdentityId,
+} from "./coordinator-store-contract.js";
 import {
 	canonicalRecipientReviewedIntentJson,
 	parseStoredRecipientReviewedIntent,
@@ -134,8 +138,11 @@ const INVITE_COLUMNS = `invite_id, group_id, token, policy, expires_at, created_
 	inviter_actor_id, inviter_display_name, inviter_device_id, pending_person_id,
 	project_summaries_json, project_intent_json, consumed_at, bound_device_id, bound_public_key, bound_fingerprint,
 	recipient_actor_id, recipient_display_name, recipient_device_display_name, trust_state,
-	bootstrap_grant_id, invite_kind, policy_team_id, target_identity_id, reviewed_preview_digest,
-	reviewed_intent_json`;
+	bootstrap_grant_id, invite_kind, policy_team_id, target_identity_id, assigned_identity_id,
+	reviewed_preview_digest, reviewed_intent_json`;
+
+const ENROLLMENT_COLUMNS =
+	"group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at";
 
 function rowToRecord<T>(row: unknown): T {
 	if (row == null) throw new Error("expected row");
@@ -267,7 +274,11 @@ async function recipientInspection(
 	invite: CoordinatorInvite,
 ): Promise<CoordinatorRecipientInviteInspection | null> {
 	if (invite.invite_kind === "team_member") {
-		if (!invite.policy_team_id || !invite.reviewed_preview_digest)
+		if (
+			!invite.policy_team_id ||
+			!isCoordinatorAssignedIdentityId(invite.assigned_identity_id) ||
+			!invite.reviewed_preview_digest
+		)
 			throw new Error("invite_invalid");
 		const reviewedIntent = await parseStoredRecipientReviewedIntent(invite.reviewed_intent_json, {
 			target: { kind: "team_member", policyTeamId: invite.policy_team_id },
@@ -277,6 +288,7 @@ async function recipientInspection(
 			kind: "team_member",
 			invite,
 			policy_team_id: invite.policy_team_id,
+			assigned_identity_id: invite.assigned_identity_id,
 			reviewed_preview_digest: invite.reviewed_preview_digest,
 			reviewed_intent: reviewedIntent,
 			bound: Boolean(invite.consumed_at),
@@ -571,6 +583,7 @@ function initializeSchema(db: DatabaseType): void {
 			device_id TEXT NOT NULL,
 			public_key TEXT NOT NULL,
 			fingerprint TEXT NOT NULL,
+			identity_id TEXT,
 			display_name TEXT,
 			enabled INTEGER NOT NULL DEFAULT 1,
 			created_at TEXT NOT NULL,
@@ -625,6 +638,7 @@ function initializeSchema(db: DatabaseType): void {
 			invite_kind TEXT,
 			policy_team_id TEXT,
 			target_identity_id TEXT,
+			assigned_identity_id TEXT,
 			reviewed_preview_digest TEXT,
 			reviewed_intent_json TEXT
 		);
@@ -764,6 +778,11 @@ function initializeSchema(db: DatabaseType): void {
 	} catch {
 		// already exists
 	}
+	try {
+		db.prepare("ALTER TABLE enrolled_devices ADD COLUMN identity_id TEXT").run();
+	} catch {
+		// already exists
+	}
 	for (const column of [
 		"operation_id",
 		"reviewed_project_set_digest",
@@ -786,6 +805,7 @@ function initializeSchema(db: DatabaseType): void {
 		"invite_kind",
 		"policy_team_id",
 		"target_identity_id",
+		"assigned_identity_id",
 		"reviewed_preview_digest",
 		"reviewed_intent_json",
 	]) {
@@ -828,23 +848,29 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	}
 
 	private enrollDeviceSync(groupId: string, opts: CoordinatorEnrollDeviceInput): void {
-		this.db
+		const result = this.db
 			.prepare(`INSERT INTO enrolled_devices(
-					group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
-				) VALUES (?, ?, ?, ?, ?, 1, ?)
+					group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
+				) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
 				ON CONFLICT(group_id, device_id) DO UPDATE SET
 					public_key = excluded.public_key,
 					fingerprint = excluded.fingerprint,
+					identity_id = COALESCE(enrolled_devices.identity_id, excluded.identity_id),
 					display_name = excluded.display_name,
-					enabled = 1`)
+					enabled = 1
+				WHERE excluded.identity_id IS NULL
+					OR enrolled_devices.identity_id IS NULL
+					OR enrolled_devices.identity_id = excluded.identity_id`)
 			.run(
 				groupId,
 				opts.deviceId,
 				opts.publicKey,
 				opts.fingerprint,
+				opts.identityId ?? null,
 				opts.displayName ?? null,
 				nowISO(),
 			);
+		if (result.changes === 0) throw new Error("invite_identity_conflict");
 	}
 
 	async close(): Promise<void> {
@@ -911,7 +937,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	): Promise<CoordinatorEnrollment[]> {
 		const where = includeDisabled ? "" : "AND enabled = 1";
 		return this.db
-			.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+			.prepare(`SELECT ${ENROLLMENT_COLUMNS}
 				 FROM enrolled_devices
 				 WHERE group_id = ? ${where}
 				 ORDER BY created_at ASC, device_id ASC`)
@@ -921,7 +947,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	async getEnrollment(groupId: string, deviceId: string): Promise<CoordinatorEnrollment | null> {
 		const row = this.db
-			.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+			.prepare(`SELECT ${ENROLLMENT_COLUMNS}
 				 FROM enrolled_devices
 				 WHERE group_id = ? AND device_id = ? AND enabled = 1`)
 			.get(groupId, deviceId);
@@ -991,6 +1017,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		const operationId = clean(opts.operationId);
 		const reviewedProjectSetDigest = clean(opts.reviewedProjectSetDigest);
 		const metadata = await normalizeInviteMetadata(opts);
+		const assignedIdentityId =
+			metadata.inviteKind === "team_member" ? `identity:${tokenUrlSafe(18)}` : null;
 		if (Boolean(operationId) !== Boolean(reviewedProjectSetDigest)) {
 			throw new Error("operationId and reviewedProjectSetDigest must be provided together.");
 		}
@@ -1060,9 +1088,9 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest,
 					token_digest, inviter_actor_id, inviter_display_name, inviter_device_id,
 					pending_person_id, project_summaries_json, project_intent_json, trust_state,
-					invite_kind, policy_team_id, target_identity_id, reviewed_preview_digest,
-					reviewed_intent_json
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+					invite_kind, policy_team_id, target_identity_id, assigned_identity_id,
+					reviewed_preview_digest, reviewed_intent_json
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 				.run(
 					inviteId,
 					opts.groupId,
@@ -1085,6 +1113,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					metadata.inviteKind,
 					metadata.policyTeamId,
 					metadata.targetIdentityId,
+					assignedIdentityId,
 					metadata.reviewedPreviewDigest,
 					metadata.reviewedIntentJson,
 				);
@@ -1174,6 +1203,9 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				invite.invite_id !== preflightInvite?.invite_id ||
 				invite.reviewed_intent_json !== preflightInvite.reviewed_intent_json ||
 				invite.reviewed_preview_digest !== preflightInvite.reviewed_preview_digest ||
+				invite.policy_team_id !== preflightInvite.policy_team_id ||
+				invite.target_identity_id !== preflightInvite.target_identity_id ||
+				invite.assigned_identity_id !== preflightInvite.assigned_identity_id ||
 				inspection.kind !== opts.inviteKind ||
 				invite.revoked_at
 			) {
@@ -1190,7 +1222,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			if (fingerprintPublicKey(opts.publicKey) !== opts.fingerprint) {
 				throw new Error("fingerprint_mismatch");
 			}
-			if (inspection.kind === "add_device" && inspection.target_identity_id !== opts.identityId) {
+			const authoritativeIdentityId = recipientInviteAuthoritativeIdentityId(inspection);
+			if (authoritativeIdentityId !== opts.identityId) {
 				throw new Error("invite_identity_conflict");
 			}
 			const sameBinding =
@@ -1198,17 +1231,19 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				invite.bound_public_key === opts.publicKey &&
 				invite.bound_fingerprint === opts.fingerprint;
 			if (invite.consumed_at && !sameBinding) throw new Error("invite_already_bound");
-			if (invite.consumed_at && invite.recipient_actor_id !== opts.identityId) {
+			if (invite.consumed_at && invite.recipient_actor_id !== authoritativeIdentityId) {
 				throw new Error("invite_identity_conflict");
 			}
 			const existingEnrollment = this.db
-				.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+				.prepare(`SELECT ${ENROLLMENT_COLUMNS}
 					FROM enrolled_devices WHERE group_id = ? AND device_id = ?`)
 				.get(invite.group_id, opts.deviceId) as CoordinatorEnrollment | undefined;
 			if (
 				existingEnrollment &&
 				(existingEnrollment.public_key !== opts.publicKey ||
-					existingEnrollment.fingerprint !== opts.fingerprint)
+					existingEnrollment.fingerprint !== opts.fingerprint ||
+					(existingEnrollment.identity_id !== null &&
+						existingEnrollment.identity_id !== authoritativeIdentityId))
 			) {
 				throw new Error("invite_identity_conflict");
 			}
@@ -1227,7 +1262,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 							opts.deviceId,
 							opts.publicKey,
 							opts.fingerprint,
-							opts.identityId,
+							authoritativeIdentityId,
 							invite.invite_id,
 							consumedAt,
 							opts.inviteKind,
@@ -1242,24 +1277,51 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			) {
 				throw new Error("invite_already_bound");
 			}
-			if (saved.recipient_actor_id !== opts.identityId) throw new Error("invite_identity_conflict");
+			if (saved.recipient_actor_id !== authoritativeIdentityId)
+				throw new Error("invite_identity_conflict");
 			if (changed === 1) {
 				this.db
 					.prepare(`INSERT INTO enrolled_devices(
-						group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
-					) VALUES (?, ?, ?, ?, NULL, 1, ?)
+						group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
+					) VALUES (?, ?, ?, ?, ?, NULL, 1, ?)
 					ON CONFLICT(group_id, device_id) DO UPDATE SET
 						public_key = excluded.public_key,
 						fingerprint = excluded.fingerprint,
-						enabled = 1`)
-					.run(invite.group_id, opts.deviceId, opts.publicKey, opts.fingerprint, consumedAt);
+						identity_id = COALESCE(enrolled_devices.identity_id, excluded.identity_id),
+						enabled = 1
+					WHERE enrolled_devices.identity_id IS NULL
+						OR enrolled_devices.identity_id = excluded.identity_id`)
+					.run(
+						invite.group_id,
+						opts.deviceId,
+						opts.publicKey,
+						opts.fingerprint,
+						authoritativeIdentityId,
+						consumedAt,
+					);
+			} else {
+				this.db
+					.prepare(`UPDATE enrolled_devices SET identity_id = ?
+						WHERE group_id = ? AND device_id = ? AND identity_id IS NULL
+							AND public_key = ? AND fingerprint = ?`)
+					.run(
+						authoritativeIdentityId,
+						invite.group_id,
+						opts.deviceId,
+						opts.publicKey,
+						opts.fingerprint,
+					);
 			}
 			const enrollment = this.db
-				.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+				.prepare(`SELECT ${ENROLLMENT_COLUMNS}
 					FROM enrolled_devices WHERE group_id = ? AND device_id = ? AND enabled = 1`)
 				.get(invite.group_id, opts.deviceId) as CoordinatorEnrollment | undefined;
 			if (!enrollment) throw new Error("invite_acceptance_incomplete");
-			if (enrollment.public_key !== opts.publicKey || enrollment.fingerprint !== opts.fingerprint) {
+			if (
+				enrollment.public_key !== opts.publicKey ||
+				enrollment.fingerprint !== opts.fingerprint ||
+				enrollment.identity_id !== authoritativeIdentityId
+			) {
 				throw new Error("invite_identity_conflict");
 			}
 			return {
@@ -1309,7 +1371,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				throw new Error("invite_identity_conflict");
 			}
 			const existingEnrollment = this.db
-				.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+				.prepare(`SELECT ${ENROLLMENT_COLUMNS}
 					FROM enrolled_devices WHERE group_id = ? AND device_id = ?`)
 				.get(invite.group_id, opts.deviceId) as CoordinatorEnrollment | undefined;
 			if (
@@ -1377,7 +1439,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			}
 			const seed = invite.inviter_device_id
 				? (this.db
-						.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+						.prepare(`SELECT ${ENROLLMENT_COLUMNS}
 							FROM enrolled_devices WHERE group_id = ? AND device_id = ? AND enabled = 1`)
 						.get(invite.group_id, invite.inviter_device_id) as CoordinatorEnrollment | undefined)
 				: undefined;
@@ -1412,7 +1474,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				.prepare(`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE invite_id = ?`)
 				.get(invite.invite_id) as CoordinatorInvite;
 			const enrollment = this.db
-				.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+				.prepare(`SELECT ${ENROLLMENT_COLUMNS}
 					FROM enrolled_devices WHERE group_id = ? AND device_id = ? AND enabled = 1`)
 				.get(invite.group_id, opts.deviceId) as CoordinatorEnrollment | undefined;
 			if (!enrollment) throw new Error("invite_acceptance_incomplete");

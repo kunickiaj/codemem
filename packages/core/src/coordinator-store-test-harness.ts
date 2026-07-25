@@ -35,6 +35,7 @@ export interface CoordinatorStoreHarnessContext<
 > {
 	store: TStore;
 	clearInviteReviewedIntent: (inviteId: string) => Promise<void> | void;
+	setInviteAssignedIdentity: (inviteId: string, identityId: string | null) => Promise<void> | void;
 	revokeInvite: (inviteId: string, revokedAt: string) => Promise<void> | void;
 	cleanup: () => Promise<void> | void;
 }
@@ -692,9 +693,12 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 		});
 
 		describe("devices", () => {
-			it("enrolls and retrieves a device", async () => {
+			it("keeps direct admin enrollment unbound to an identity", async () => {
 				await withContext(async ({ store }) => {
+					// Arrange
 					await store.createGroup("g1");
+
+					// Act
 					await store.enrollDevice("g1", {
 						deviceId: "d1",
 						fingerprint: "fp1",
@@ -702,9 +706,12 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						displayName: "Laptop",
 					});
 					const enrollment = await store.getEnrollment("g1", "d1");
+
+					// Assert
 					expect(enrollment).not.toBeNull();
 					expect(enrollment?.device_id).toBe("d1");
 					expect(enrollment?.display_name).toBe("Laptop");
+					expect(enrollment).toEqual(expect.objectContaining({ identity_id: null }));
 				});
 			});
 
@@ -899,7 +906,10 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					const acceptance = {
 						token: invite.token,
 						inviteKind: testCase.kind,
-						identityId: testCase.kind === "add_device" ? testCase.targetId : "identity-recipient",
+						identityId:
+							testCase.kind === "team_member"
+								? String(invite.assigned_identity_id)
+								: testCase.targetId,
 						deviceId: "device-recipient",
 						publicKey: "recipient-public-key",
 						fingerprint: fingerprintPublicKey("recipient-public-key"),
@@ -955,7 +965,10 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					const acceptance = {
 						token: invite.token,
 						inviteKind: testCase.kind,
-						identityId: testCase.kind === "add_device" ? testCase.targetId : "identity-recipient",
+						identityId:
+							testCase.kind === "team_member"
+								? String(invite.assigned_identity_id)
+								: testCase.targetId,
 						deviceId: "device-recipient",
 						publicKey: "recipient-public-key",
 						fingerprint: fingerprintPublicKey("recipient-public-key"),
@@ -995,6 +1008,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 
 			it("persists, enrolls, and single-use binds explicit Team and add-device invitations without scope membership", async () => {
 				await withContext(async ({ store }) => {
+					// Arrange
 					await store.createGroup("g1", "Coordinator Alpha");
 					await store.createScope({ scopeId: "scope-project", label: "Project" });
 					const reviewedIntent = teamReviewedIntent("policy-team-1");
@@ -1008,9 +1022,15 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						reviewedPreviewDigest: digest,
 						reviewedIntent,
 					});
+					const assignedIdentityId = teamInvite.assigned_identity_id;
+					expect(assignedIdentityId).toEqual(expect.any(String));
+					expect(assignedIdentityId?.trim()).toBe(assignedIdentityId);
+					expect(assignedIdentityId).toMatch(/^identity:[A-Za-z0-9_-]{18,24}$/u);
+					expect(assignedIdentityId).not.toBe("identity-owner");
 					expect(teamInvite).toMatchObject({
 						invite_kind: "team_member",
 						policy_team_id: "policy-team-1",
+						assigned_identity_id: assignedIdentityId,
 						reviewed_preview_digest: digest,
 						reviewed_intent_json: canonicalRecipientReviewedIntentJson(reviewedIntent),
 					});
@@ -1021,6 +1041,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					expect(teamInspection).toMatchObject({
 						kind: "team_member",
 						policy_team_id: "policy-team-1",
+						assigned_identity_id: assignedIdentityId,
 						reviewed_intent: reviewedIntent,
 						bound: false,
 					});
@@ -1028,29 +1049,68 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					const teamInput = {
 						token: teamInvite.token,
 						inviteKind: "team_member" as const,
-						identityId: "identity-brian",
+						identityId: String(assignedIdentityId),
 						deviceId: "device-brian",
 						publicKey,
 						fingerprint: fingerprintPublicKey(publicKey),
 						now: "2026-07-21T00:00:00.000Z",
 					};
+
+					// Act
+					const ownerConflict = store.consumeRecipientInvite({
+						...teamInput,
+						identityId: "identity-owner",
+					});
+					const differentIdentityConflict = store.consumeRecipientInvite({
+						...teamInput,
+						identityId: "identity-other",
+					});
+
+					// Assert
+					await Promise.all([
+						expect(ownerConflict).rejects.toThrow("invite_identity_conflict"),
+						expect(differentIdentityConflict).rejects.toThrow("invite_identity_conflict"),
+					]);
+					expect(await store.getEnrollment("g1", teamInput.deviceId)).toBeNull();
+					expect(await store.getInviteByTokenForInspection(teamInvite.token)).toMatchObject({
+						assigned_identity_id: assignedIdentityId,
+						consumed_at: null,
+						bound_device_id: null,
+						recipient_actor_id: null,
+					});
+
+					// Act
 					const acceptedTeam = await store.consumeRecipientInvite(teamInput);
-					const replayedTeam = await store.consumeRecipientInvite(teamInput);
+					const acceptedTeamEnrollment = await store.getEnrollment("g1", teamInput.deviceId);
+
+					// Assert
 					expect(acceptedTeam).toMatchObject({
 						status: "accepted",
 						reviewed_intent: reviewedIntent,
 					});
+
+					const replayedTeam = await store.consumeRecipientInvite(teamInput);
+					const replayedTeamEnrollment = await store.getEnrollment("g1", teamInput.deviceId);
 					expect(replayedTeam).toMatchObject({
 						status: "existing",
+						invite: { assigned_identity_id: assignedIdentityId },
 						reviewed_intent: reviewedIntent,
 					});
-					expect(await store.getEnrollment("g1", teamInput.deviceId)).toMatchObject({
-						group_id: "g1",
-						device_id: teamInput.deviceId,
-						public_key: teamInput.publicKey,
+					await store.enrollDevice("g1", {
+						deviceId: teamInput.deviceId,
+						publicKey: teamInput.publicKey,
 						fingerprint: teamInput.fingerprint,
-						enabled: 1,
+						displayName: "Brian's renamed device",
 					});
+					const reenrolledTeamEnrollment = await store.getEnrollment("g1", teamInput.deviceId);
+					await expect(
+						store.enrollDevice("g1", {
+							deviceId: teamInput.deviceId,
+							publicKey: teamInput.publicKey,
+							fingerprint: teamInput.fingerprint,
+							identityId: "identity-other",
+						}),
+					).rejects.toThrow("invite_identity_conflict");
 					await expect(
 						store.consumeRecipientInvite({ ...teamInput, identityId: "identity-other" }),
 					).rejects.toThrow("invite_identity_conflict");
@@ -1093,20 +1153,96 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						...teamInput,
 						token: addDeviceInvite.token,
 						inviteKind: "add_device" as const,
+						identityId: "identity-brian",
 						deviceId: "device-brian-2",
 						publicKey: "add-device-key",
 						fingerprint: fingerprintPublicKey("add-device-key"),
 					};
 					expect((await store.consumeRecipientInvite(addDeviceInput)).status).toBe("accepted");
+					const acceptedAddDeviceEnrollment = await store.getEnrollment(
+						"g1",
+						addDeviceInput.deviceId,
+					);
 					expect((await store.consumeRecipientInvite(addDeviceInput)).status).toBe("existing");
-					expect(await store.getEnrollment("g1", addDeviceInput.deviceId)).toMatchObject({
-						group_id: "g1",
-						device_id: addDeviceInput.deviceId,
-						public_key: addDeviceInput.publicKey,
-						fingerprint: addDeviceInput.fingerprint,
-						enabled: 1,
-					});
+					const replayedAddDeviceEnrollment = await store.getEnrollment(
+						"g1",
+						addDeviceInput.deviceId,
+					);
+					expect([
+						acceptedTeamEnrollment,
+						replayedTeamEnrollment,
+						reenrolledTeamEnrollment,
+						acceptedAddDeviceEnrollment,
+						replayedAddDeviceEnrollment,
+					]).toEqual([
+						expect.objectContaining({
+							group_id: "g1",
+							device_id: teamInput.deviceId,
+							public_key: teamInput.publicKey,
+							fingerprint: teamInput.fingerprint,
+							identity_id: assignedIdentityId,
+							enabled: 1,
+						}),
+						expect.objectContaining({ identity_id: assignedIdentityId }),
+						expect.objectContaining({
+							identity_id: assignedIdentityId,
+							display_name: "Brian's renamed device",
+						}),
+						expect.objectContaining({
+							group_id: "g1",
+							device_id: addDeviceInput.deviceId,
+							public_key: addDeviceInput.publicKey,
+							fingerprint: addDeviceInput.fingerprint,
+							identity_id: addDeviceInput.identityId,
+							enabled: 1,
+						}),
+						expect.objectContaining({ identity_id: addDeviceInput.identityId }),
+					]);
 					expect(await store.listScopeMemberships("scope-project")).toEqual([]);
+				});
+			});
+
+			it("fails closed for malformed coordinator-assigned Team identities", async () => {
+				await withContext(async ({ store, setInviteAssignedIdentity }) => {
+					await store.createGroup("g1", "Coordinator Alpha");
+					const reviewedIntent = teamReviewedIntent("policy-team-1");
+					const invite = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2099-01-01T00:00:00Z",
+						inviteKind: "team_member",
+						policyTeamId: "policy-team-1",
+						reviewedPreviewDigest: await recipientReviewedIntentDigest(reviewedIntent),
+						reviewedIntent,
+					});
+					for (const malformed of [
+						null,
+						"",
+						" identity:abcdefghijklmnopqr ",
+						"identity:abc\u0000defghijklmnop",
+						`identity:${"a".repeat(25)}`,
+						"identity-owner",
+					]) {
+						await setInviteAssignedIdentity(invite.invite_id, malformed);
+						await expect(
+							store.inspectRecipientInvite({
+								token: invite.token,
+								now: "2026-07-21T00:00:00.000Z",
+							}),
+						).rejects.toThrow("invite_invalid");
+						await expect(
+							store.consumeRecipientInvite({
+								token: invite.token,
+								inviteKind: "team_member",
+								identityId: String(malformed ?? "identity:abcdefghijklmnopqr"),
+								deviceId: "device-brian",
+								publicKey: "team-member-key",
+								fingerprint: fingerprintPublicKey("team-member-key"),
+								now: "2026-07-21T00:00:00.000Z",
+							}),
+						).rejects.toThrow();
+					}
+					expect(await store.getEnrollment("g1", "device-brian")).toBeNull();
 				});
 			});
 
@@ -1210,7 +1346,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					const input = {
 						token: invite.token,
 						inviteKind: "team_member" as const,
-						identityId: "identity-brian",
+						identityId: String(invite.assigned_identity_id),
 						deviceId: "device-brian",
 						publicKey,
 						fingerprint: fingerprintPublicKey(publicKey),
@@ -1474,6 +1610,9 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						trust_state: "bootstrap_grant_created",
 					});
 					expect(retry.bootstrap_grant?.seed_device_id).toBe("seed-1");
+					expect(await store.getEnrollment("g1", input.deviceId)).toEqual(
+						expect.objectContaining({ identity_id: null }),
+					);
 					await expect(
 						store.consumeProjectInvite({ ...input, deviceId: "other-device" }),
 					).rejects.toThrow("invite_already_bound");
@@ -1950,6 +2089,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					expect(reviewed?.reviewed_by).toBe("admin");
 					const enrollment = await store.getEnrollment("g1", "d-new");
 					expect(enrollment?.fingerprint).toBe("fp-new");
+					expect(enrollment).toEqual(expect.objectContaining({ identity_id: null }));
 				});
 			});
 

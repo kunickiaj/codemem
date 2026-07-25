@@ -126,6 +126,7 @@ import {
 	readCodememConfigFile,
 	readCoordinatorSyncConfig,
 	reassignProjectScopeInventoryProject,
+	recipientInviteAuthoritativeIdentityId,
 	recipientReviewedIntentDigest,
 	reconcileRecipientPolicyProject,
 	reconcileShareOperationAcceptance,
@@ -819,18 +820,23 @@ function recipientInviteOnboardingPreviewFromReviewedIntent(
 	});
 	const teamId = optionalViewerStrictString(body, "policy_team_id");
 	const targetIdentityId = optionalViewerStrictString(body, "target_identity_id");
+	const assignedIdentityId = optionalViewerStrictString(body, "assigned_identity_id");
 	if (kind === "team_member") {
-		if (!teamId || targetIdentityId) throw new Error("recipient_invite_metadata_invalid");
+		if (!teamId || !assignedIdentityId || targetIdentityId) {
+			throw new Error("recipient_invite_metadata_invalid");
+		}
 		return previewRecipientPolicyOnboardingFromReviewedIntent(reviewedIntent, {
 			version: 1,
 			journey: "team",
 			invitationId,
-			identityId: store.actorId,
+			identityId: assignedIdentityId,
 			...binding,
 			teamId,
 		});
 	}
-	if (!targetIdentityId || teamId) throw new Error("recipient_invite_metadata_invalid");
+	if (!targetIdentityId || teamId || assignedIdentityId) {
+		throw new Error("recipient_invite_metadata_invalid");
+	}
 	return previewRecipientPolicyOnboardingFromReviewedIntent(reviewedIntent, {
 		version: 1,
 		journey: "add_device",
@@ -5834,10 +5840,13 @@ export function syncRoutes(
 				);
 			}
 			const config = readCodememConfigFile();
-			const identityId =
-				payload.kind === "add_device"
-					? String(inspected?.target_identity_id ?? "").trim()
-					: store.actorId;
+			const identityId = recipientInvite
+				? recipientInviteAuthoritativeIdentityId({
+						kind: payload.kind as "team_member" | "add_device",
+						assigned_identity_id: inspected?.assigned_identity_id,
+						target_identity_id: inspected?.target_identity_id,
+					})
+				: store.actorId;
 			const expectedTarget =
 				payload.kind === "team_member"
 					? String(inspected?.policy_team_id ?? "").trim()
@@ -5849,6 +5858,8 @@ export function syncRoutes(
 					String(inspected?.reviewed_preview_digest ?? "").trim() !==
 						String(payload.reviewed_preview_digest ?? "").trim() ||
 					(payload.kind === "team_member" && expectedTarget !== payload.policy_team_id) ||
+					(payload.kind === "team_member" &&
+						(identityId !== String(payload.assigned_identity_id ?? "").trim() || !identityId)) ||
 					(payload.kind === "add_device" && expectedTarget !== payload.target_identity_id)
 				) {
 					return c.json({ error: "recipient_invite_intent_mismatch" }, 409);
@@ -5873,6 +5884,7 @@ export function syncRoutes(
 					{
 						kind: payload.kind,
 						policy_team_id: payload.kind === "team_member" ? expectedTarget : null,
+						assigned_identity_id: payload.kind === "team_member" ? identityId : null,
 						target_identity_id: payload.kind === "add_device" ? identityId : null,
 						device_name: optionalViewerString(body, "device_name"),
 					},
@@ -5972,7 +5984,7 @@ export function syncRoutes(
 			const decoded = decodeInvitePayload(extractInvitePayload(rawValue));
 			projectInvite = Boolean(decoded.operation_id);
 			recipientInvite = decoded.kind === "team_member" || decoded.kind === "add_device";
-			if (decoded.kind === "add_device") ensureStableStoreDeviceIdentity(store);
+			if (recipientInvite) ensureStableStoreDeviceIdentity(store);
 			else ensureStableStoreIdentity(store);
 			const reviewedOnboardingDigest =
 				typeof body.reviewed_onboarding_digest === "string"
@@ -5984,7 +5996,7 @@ export function syncRoutes(
 			const result = await coordinatorImportInviteAction({
 				inviteValue: rawValue,
 				dbPath: store.dbPath,
-				recipientActorId: decoded.kind === "add_device" ? null : store.actorId,
+				recipientActorId: recipientInvite ? null : store.actorId,
 				recipientDisplayName:
 					typeof body.recipient_name === "string" ? body.recipient_name : store.actorDisplayName,
 				deviceDisplayName: typeof body.device_name === "string" ? body.device_name : null,
@@ -5995,10 +6007,8 @@ export function syncRoutes(
 				: projectInvite
 					? "project_share"
 					: "team_join";
-			if (decoded.kind === "add_device") {
-				const persistedIdentityId = String(
-					result.identity_id ?? result.target_identity_id ?? "",
-				).trim();
+			if (recipientInvite) {
+				const persistedIdentityId = String(result.identity_id ?? "").trim();
 				if (!store.refreshPersistedLocalIdentity(persistedIdentityId)) {
 					return c.json(
 						{

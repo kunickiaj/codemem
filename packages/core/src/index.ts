@@ -127,6 +127,10 @@ export {
 	connectCoordinator,
 	DEFAULT_COORDINATOR_DB_PATH,
 } from "./coordinator-store.js";
+export {
+	isCoordinatorAssignedIdentityId,
+	recipientInviteAuthoritativeIdentityId,
+} from "./coordinator-store-contract.js";
 export type { Database } from "./db.js";
 export {
 	assertSchemaReady,

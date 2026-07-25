@@ -20,6 +20,7 @@ export interface InvitePayload {
 	/** Policy metadata for recipient-aware invites. It is preview-only and never grants scope access. */
 	policy_team_id?: string;
 	target_identity_id?: string;
+	assigned_identity_id?: string;
 	reviewed_preview_digest?: string;
 }
 

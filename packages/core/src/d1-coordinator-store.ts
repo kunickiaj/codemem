@@ -44,7 +44,11 @@ import type {
 	CoordinatorUpdateScopeInput,
 	CoordinatorUpsertPresenceInput,
 } from "./coordinator-store-contract.js";
-import { normalizeInviteExpiresAt } from "./coordinator-store-contract.js";
+import {
+	isCoordinatorAssignedIdentityId,
+	normalizeInviteExpiresAt,
+	recipientInviteAuthoritativeIdentityId,
+} from "./coordinator-store-contract.js";
 import {
 	canonicalRecipientReviewedIntentJson,
 	parseStoredRecipientReviewedIntent,
@@ -170,8 +174,11 @@ const INVITE_COLUMNS = `invite_id, group_id, token, policy, expires_at, created_
 	inviter_actor_id, inviter_display_name, inviter_device_id, pending_person_id,
 	project_summaries_json, project_intent_json, consumed_at, bound_device_id, bound_public_key, bound_fingerprint,
 	recipient_actor_id, recipient_display_name, recipient_device_display_name, trust_state,
-	bootstrap_grant_id, invite_kind, policy_team_id, target_identity_id, reviewed_preview_digest,
-	reviewed_intent_json`;
+	bootstrap_grant_id, invite_kind, policy_team_id, target_identity_id, assigned_identity_id,
+	reviewed_preview_digest, reviewed_intent_json`;
+
+const ENROLLMENT_COLUMNS =
+	"group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at";
 
 function requireTrimmedBootstrapGrantInput(opts: CoordinatorCreateBootstrapGrantInput): {
 	groupId: string;
@@ -283,7 +290,11 @@ async function recipientInspection(
 	invite: CoordinatorInvite,
 ): Promise<CoordinatorRecipientInviteInspection | null> {
 	if (invite.invite_kind === "team_member") {
-		if (!invite.policy_team_id || !invite.reviewed_preview_digest)
+		if (
+			!invite.policy_team_id ||
+			!isCoordinatorAssignedIdentityId(invite.assigned_identity_id) ||
+			!invite.reviewed_preview_digest
+		)
 			throw new Error("invite_invalid");
 		const reviewedIntent = await parseStoredRecipientReviewedIntent(invite.reviewed_intent_json, {
 			target: { kind: "team_member", policyTeamId: invite.policy_team_id },
@@ -293,6 +304,7 @@ async function recipientInspection(
 			kind: "team_member",
 			invite,
 			policy_team_id: invite.policy_team_id,
+			assigned_identity_id: invite.assigned_identity_id,
 			reviewed_preview_digest: invite.reviewed_preview_digest,
 			reviewed_intent: reviewedIntent,
 			bound: Boolean(invite.consumed_at),
@@ -703,24 +715,31 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	}
 
 	async enrollDevice(_groupId: string, _opts: CoordinatorEnrollDeviceInput): Promise<void> {
-		await this.db
-			.prepare(`INSERT INTO enrolled_devices(
-				group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
-			) VALUES (?, ?, ?, ?, ?, 1, ?)
-			ON CONFLICT(group_id, device_id) DO UPDATE SET
-				public_key = excluded.public_key,
-				fingerprint = excluded.fingerprint,
-				display_name = excluded.display_name,
-				enabled = 1`)
-			.bind(
-				_groupId,
-				_opts.deviceId,
-				_opts.publicKey,
-				_opts.fingerprint,
-				_opts.displayName ?? null,
-				nowISO(),
-			)
-			.run();
+		const changes = await runChanges(
+			this.db
+				.prepare(`INSERT INTO enrolled_devices(
+					group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
+				) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+				ON CONFLICT(group_id, device_id) DO UPDATE SET
+					public_key = excluded.public_key,
+					fingerprint = excluded.fingerprint,
+					identity_id = COALESCE(enrolled_devices.identity_id, excluded.identity_id),
+					display_name = excluded.display_name,
+					enabled = 1
+				WHERE excluded.identity_id IS NULL
+					OR enrolled_devices.identity_id IS NULL
+					OR enrolled_devices.identity_id = excluded.identity_id`)
+				.bind(
+					_groupId,
+					_opts.deviceId,
+					_opts.publicKey,
+					_opts.fingerprint,
+					_opts.identityId ?? null,
+					_opts.displayName ?? null,
+					nowISO(),
+				),
+		);
+		if (changes === 0) throw new Error("invite_identity_conflict");
 	}
 
 	async listEnrolledDevices(
@@ -731,7 +750,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		return (
 			await allRows<CoordinatorEnrollment>(
 				this.db
-					.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+					.prepare(`SELECT ${ENROLLMENT_COLUMNS}
 						 FROM enrolled_devices
 						 WHERE group_id = ? ${where}
 						 ORDER BY created_at ASC, device_id ASC`)
@@ -743,7 +762,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	async getEnrollment(_groupId: string, _deviceId: string): Promise<CoordinatorEnrollment | null> {
 		const row = await firstRow<CoordinatorEnrollment>(
 			this.db
-				.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+				.prepare(`SELECT ${ENROLLMENT_COLUMNS}
 					 FROM enrolled_devices
 					 WHERE group_id = ? AND device_id = ? AND enabled = 1`)
 				.bind(_groupId, _deviceId),
@@ -826,6 +845,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const operationId = String(_opts.operationId ?? "").trim() || null;
 		const reviewedProjectSetDigest = String(_opts.reviewedProjectSetDigest ?? "").trim() || null;
 		const metadata = await normalizeInviteMetadata(_opts);
+		const assignedIdentityId =
+			metadata.inviteKind === "team_member" ? `identity:${tokenUrlSafe(18)}` : null;
 		if (Boolean(operationId) !== Boolean(reviewedProjectSetDigest)) {
 			throw new Error("operationId and reviewedProjectSetDigest must be provided together.");
 		}
@@ -900,9 +921,9 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest,
 				token_digest, inviter_actor_id, inviter_display_name, inviter_device_id,
 				pending_person_id, project_summaries_json, project_intent_json, trust_state,
-				invite_kind, policy_team_id, target_identity_id, reviewed_preview_digest,
-				reviewed_intent_json
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+				invite_kind, policy_team_id, target_identity_id, assigned_identity_id,
+				reviewed_preview_digest, reviewed_intent_json
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 				.bind(
 					inviteId,
 					_opts.groupId,
@@ -925,6 +946,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					metadata.inviteKind,
 					metadata.policyTeamId,
 					metadata.targetIdentityId,
+					assignedIdentityId,
 					metadata.reviewedPreviewDigest,
 					metadata.reviewedIntentJson,
 				)
@@ -1023,7 +1045,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		if (fingerprintPublicKey(_opts.publicKey) !== _opts.fingerprint) {
 			throw new Error("fingerprint_mismatch");
 		}
-		if (inspection.kind === "add_device" && inspection.target_identity_id !== _opts.identityId) {
+		const authoritativeIdentityId = recipientInviteAuthoritativeIdentityId(inspection);
+		if (authoritativeIdentityId !== _opts.identityId) {
 			throw new Error("invite_identity_conflict");
 		}
 		const sameBinding =
@@ -1031,19 +1054,21 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			initial.bound_public_key === _opts.publicKey &&
 			initial.bound_fingerprint === _opts.fingerprint;
 		if (initial.consumed_at && !sameBinding) throw new Error("invite_already_bound");
-		if (initial.consumed_at && initial.recipient_actor_id !== _opts.identityId) {
+		if (initial.consumed_at && initial.recipient_actor_id !== authoritativeIdentityId) {
 			throw new Error("invite_identity_conflict");
 		}
 		const existingEnrollment = await firstRow<CoordinatorEnrollment>(
 			this.db
-				.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+				.prepare(`SELECT ${ENROLLMENT_COLUMNS}
 					FROM enrolled_devices WHERE group_id = ? AND device_id = ?`)
 				.bind(initial.group_id, _opts.deviceId),
 		);
 		if (
 			existingEnrollment &&
 			(existingEnrollment.public_key !== _opts.publicKey ||
-				existingEnrollment.fingerprint !== _opts.fingerprint)
+				existingEnrollment.fingerprint !== _opts.fingerprint ||
+				(existingEnrollment.identity_id !== null &&
+					existingEnrollment.identity_id !== authoritativeIdentityId))
 		) {
 			throw new Error("invite_identity_conflict");
 		}
@@ -1058,6 +1083,14 @@ export class D1CoordinatorStore implements CoordinatorStore {
 						WHERE (token_digest = ? OR token = ?) AND consumed_at IS NULL
 						AND revoked_at IS NULL AND expires_at > ? AND invite_kind = ?
 						AND reviewed_intent_json = ? AND reviewed_preview_digest = ?
+						AND ((invite_kind = 'team_member' AND assigned_identity_id = ?)
+							OR (invite_kind = 'add_device' AND target_identity_id = ?))
+						AND NOT EXISTS (
+							SELECT 1 FROM enrolled_devices e
+							WHERE e.group_id = coordinator_invites.group_id AND e.device_id = ?
+								AND (e.public_key <> ? OR e.fingerprint <> ?
+									OR (e.identity_id IS NOT NULL AND e.identity_id <> ?))
+						)
 						AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id
 							AND g.archived_at IS NULL)`)
 					.bind(
@@ -1066,23 +1099,34 @@ export class D1CoordinatorStore implements CoordinatorStore {
 						_opts.deviceId,
 						_opts.publicKey,
 						_opts.fingerprint,
-						_opts.identityId,
+						authoritativeIdentityId,
 						digest,
 						_opts.token,
 						consumedAt,
 						_opts.inviteKind,
 						initial.reviewed_intent_json,
 						initial.reviewed_preview_digest,
+						authoritativeIdentityId,
+						authoritativeIdentityId,
+						_opts.deviceId,
+						_opts.publicKey,
+						_opts.fingerprint,
+						authoritativeIdentityId,
 					),
 				this.db
 					.prepare(`INSERT INTO enrolled_devices(
-						group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+						group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
 					) SELECT i.group_id, i.bound_device_id, i.bound_public_key, i.bound_fingerprint,
-						NULL, 1, ? FROM coordinator_invites i
+						i.recipient_actor_id, NULL, 1, ? FROM coordinator_invites i
 					JOIN groups g ON g.group_id = i.group_id AND g.archived_at IS NULL
 					WHERE (i.token_digest = ? OR i.token = ?) AND i.bound_device_id = ?
 						AND i.bound_public_key = ? AND i.bound_fingerprint = ?
-					ON CONFLICT(group_id, device_id) DO UPDATE SET enabled = 1`)
+						AND i.recipient_actor_id = ?
+					ON CONFLICT(group_id, device_id) DO UPDATE SET
+						identity_id = COALESCE(enrolled_devices.identity_id, excluded.identity_id),
+						enabled = 1
+					WHERE enrolled_devices.identity_id IS NULL
+						OR enrolled_devices.identity_id = excluded.identity_id`)
 					.bind(
 						consumedAt,
 						digest,
@@ -1090,6 +1134,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 						_opts.deviceId,
 						_opts.publicKey,
 						_opts.fingerprint,
+						authoritativeIdentityId,
 					),
 			]);
 			changed = batchResultChanges(results[0]);
@@ -1097,6 +1142,21 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const currentGroup = await this.getGroup(initial.group_id);
 		if (!currentGroup) throw new Error("group_not_found");
 		if (currentGroup.archived_at) throw new Error("group_archived");
+		const currentEnrollment = await firstRow<CoordinatorEnrollment>(
+			this.db
+				.prepare(`SELECT ${ENROLLMENT_COLUMNS}
+					FROM enrolled_devices WHERE group_id = ? AND device_id = ?`)
+				.bind(initial.group_id, _opts.deviceId),
+		);
+		if (
+			currentEnrollment &&
+			(currentEnrollment.public_key !== _opts.publicKey ||
+				currentEnrollment.fingerprint !== _opts.fingerprint ||
+				(currentEnrollment.identity_id !== null &&
+					currentEnrollment.identity_id !== authoritativeIdentityId))
+		) {
+			throw new Error("invite_identity_conflict");
+		}
 		const saved = await this.getInviteByTokenForInspection(_opts.token);
 		if (
 			!saved ||
@@ -1109,6 +1169,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		if (!savedInspection || savedInspection.kind !== _opts.inviteKind) {
 			throw new Error("invite_invalid");
 		}
+		const savedIdentityId = recipientInviteAuthoritativeIdentityId(savedInspection);
+		if (savedIdentityId !== authoritativeIdentityId) {
+			throw new Error("invite_identity_conflict");
+		}
 		if (
 			saved.bound_device_id !== _opts.deviceId ||
 			saved.bound_public_key !== _opts.publicKey ||
@@ -1116,10 +1180,27 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		) {
 			throw new Error("invite_already_bound");
 		}
-		if (saved.recipient_actor_id !== _opts.identityId) throw new Error("invite_identity_conflict");
+		if (saved.recipient_actor_id !== authoritativeIdentityId)
+			throw new Error("invite_identity_conflict");
+		await this.db
+			.prepare(`UPDATE enrolled_devices SET identity_id = ?
+				WHERE group_id = ? AND device_id = ? AND identity_id IS NULL
+					AND public_key = ? AND fingerprint = ?`)
+			.bind(
+				authoritativeIdentityId,
+				saved.group_id,
+				_opts.deviceId,
+				_opts.publicKey,
+				_opts.fingerprint,
+			)
+			.run();
 		const enrollment = await this.getEnrollment(saved.group_id, _opts.deviceId);
 		if (!enrollment) throw new Error("invite_acceptance_incomplete");
-		if (enrollment.public_key !== _opts.publicKey || enrollment.fingerprint !== _opts.fingerprint) {
+		if (
+			enrollment.public_key !== _opts.publicKey ||
+			enrollment.fingerprint !== _opts.fingerprint ||
+			enrollment.identity_id !== authoritativeIdentityId
+		) {
 			throw new Error("invite_identity_conflict");
 		}
 		return {
@@ -1164,7 +1245,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		}
 		const existingEnrollment = await firstRow<CoordinatorEnrollment>(
 			this.db
-				.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+				.prepare(`SELECT ${ENROLLMENT_COLUMNS}
 					FROM enrolled_devices WHERE group_id = ? AND device_id = ?`)
 				.bind(initial.group_id, _opts.deviceId),
 		);

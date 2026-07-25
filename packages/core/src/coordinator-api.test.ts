@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CoordinatorMembershipError } from "./coordinator-membership-effects.js";
 import {
 	BetterSqliteCoordinatorStore,
+	type CoordinatorConsumeRecipientInviteInput,
 	type CoordinatorCreateInviteInput,
 	type CoordinatorCreateJoinRequestInput,
 	type CoordinatorCreateReciprocalApprovalInput,
@@ -178,6 +179,7 @@ describe("createCoordinatorApp dependency injection", () => {
 					device_id: "d1",
 					public_key: "pk1",
 					fingerprint: "fp1",
+					identity_id: null,
 					display_name: "Laptop",
 					enabled: 1,
 					created_at: "2026-03-28T00:00:00Z",
@@ -206,6 +208,7 @@ describe("createCoordinatorApp dependency injection", () => {
 					device_id: "d1",
 					public_key: "pk1",
 					fingerprint: "fp1",
+					identity_id: null,
 					display_name: "Laptop",
 					enabled: 1,
 					created_at: "2026-03-28T00:00:00Z",
@@ -340,8 +343,10 @@ describe("createCoordinatorApp dependency injection", () => {
 	});
 
 	it("validates recipient reviewed intent at creation and keeps invitation payloads digest-only", async () => {
+		// Arrange
 		const reviewedIntent = teamReviewedIntent();
 		const digest = await recipientReviewedIntentDigest(reviewedIntent);
+		const assignedIdentityId = "opaque-assigned-team-identity";
 		const createInvite = vi.fn(async (input: CoordinatorCreateInviteInput) => ({
 			invite_id: "invite-team-1",
 			group_id: input.groupId,
@@ -354,6 +359,7 @@ describe("createCoordinatorApp dependency injection", () => {
 			revoked_at: null,
 			invite_kind: "team_member" as const,
 			policy_team_id: "policy-team-1",
+			assigned_identity_id: assignedIdentityId,
 			reviewed_preview_digest: digest,
 		}));
 		const store = createMockStore({
@@ -420,11 +426,25 @@ describe("createCoordinatorApp dependency injection", () => {
 		expect(digestMismatch.status).toBe(409);
 		expect(await digestMismatch.json()).toEqual({ error: "recipient_invite_intent_mismatch" });
 
+		const callerAssigned = await app.request("/v1/admin/invites", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({
+				...base,
+				assigned_identity_id: "identity-owner",
+				reviewed_intent: reviewedIntent,
+			}),
+		});
+		expect(callerAssigned.status).toBe(400);
+		expect(await callerAssigned.json()).toEqual({ error: "assigned_identity_id_forbidden" });
+
 		const valid = await app.request("/v1/admin/invites", {
 			method: "POST",
 			headers,
 			body: JSON.stringify({ ...base, reviewed_intent: reviewedIntent }),
 		});
+
+		// Assert
 		expect(valid.status).toBe(200);
 		const response = (await valid.json()) as {
 			payload: Record<string, unknown>;
@@ -434,6 +454,7 @@ describe("createCoordinatorApp dependency injection", () => {
 		expect(createInvite).toHaveBeenCalledWith(
 			expect.objectContaining({ reviewedIntent, reviewedPreviewDigest: digest }),
 		);
+		expect(createInvite).toHaveBeenCalledTimes(1);
 		expect(response.payload).not.toHaveProperty("reviewed_intent");
 		expect(response.encoded).not.toContain("reviewed_intent");
 		expect(response.link).not.toContain("reviewed_intent");
@@ -483,9 +504,11 @@ describe("createCoordinatorApp dependency injection", () => {
 	});
 
 	it("inspects and consumes explicit Team invitations without enrollment or scope grants", async () => {
+		// Arrange
 		const publicKey = "recipient-public-key";
 		const reviewedIntent = teamReviewedIntent();
 		const digest = await recipientReviewedIntentDigest(reviewedIntent);
+		const assignedIdentityId = "opaque-assigned-team-identity";
 		const invite: CoordinatorInvite = {
 			invite_id: "invite-team-1",
 			group_id: "g1",
@@ -498,23 +521,30 @@ describe("createCoordinatorApp dependency injection", () => {
 			revoked_at: null,
 			invite_kind: "team_member",
 			policy_team_id: "policy-team-1",
+			assigned_identity_id: assignedIdentityId,
 			reviewed_preview_digest: digest,
 		};
-		const consumeRecipientInvite = vi.fn(async () => ({
-			status: "accepted" as const,
-			invite: {
-				...invite,
-				consumed_at: "2026-03-28T00:00:00Z",
-				recipient_actor_id: "identity-brian",
-			},
-			reviewed_intent: reviewedIntent,
-		}));
+		const consumeRecipientInvite = vi.fn(async (input: CoordinatorConsumeRecipientInviteInput) => {
+			if (input.identityId !== assignedIdentityId) {
+				throw new Error("invite_identity_conflict");
+			}
+			return {
+				status: "accepted" as const,
+				invite: {
+					...invite,
+					consumed_at: "2026-03-28T00:00:00Z",
+					recipient_actor_id: assignedIdentityId,
+				},
+				reviewed_intent: reviewedIntent,
+			};
+		});
 		const store = createMockStore({
 			getInviteByTokenForInspection: vi.fn(async () => invite),
 			inspectRecipientInvite: vi.fn(async () => ({
 				kind: "team_member" as const,
 				invite,
 				policy_team_id: "policy-team-1",
+				assigned_identity_id: assignedIdentityId,
 				reviewed_preview_digest: digest,
 				reviewed_intent: reviewedIntent,
 				bound: false,
@@ -527,41 +557,67 @@ describe("createCoordinatorApp dependency injection", () => {
 			requestVerifier: allowRequest,
 		});
 
+		// Act
 		const inspection = await app.request("/v1/invites/inspect", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ token: invite.token }),
 		});
+
+		// Assert
 		expect(await inspection.json()).toEqual({
 			kind: "team_member",
 			policy_team_id: "policy-team-1",
+			assigned_identity_id: assignedIdentityId,
 			reviewed_preview_digest: digest,
 			reviewed_intent: reviewedIntent,
 			bound: false,
 		});
 
+		// Act
+		const conflicting = await app.request("/v1/join", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				token: invite.token,
+				invite_kind: "team_member",
+				identity_id: "identity-owner",
+				device_id: "device-brian",
+				public_key: publicKey,
+				fingerprint: fingerprintPublicKey(publicKey),
+			}),
+		});
+
+		// Assert
+		expect(conflicting.status).toBe(409);
+		expect(await conflicting.json()).toEqual({ error: "invite_identity_conflict" });
+
+		// Act
 		const accepted = await app.request("/v1/join", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				token: invite.token,
 				invite_kind: "team_member",
-				identity_id: "identity-brian",
+				identity_id: assignedIdentityId,
 				device_id: "device-brian",
 				public_key: publicKey,
 				fingerprint: fingerprintPublicKey(publicKey),
 			}),
 		});
+
+		// Assert
 		expect(await accepted.json()).toMatchObject({
 			ok: true,
 			status: "accepted",
 			kind: "team_member",
-			identity_id: "identity-brian",
+			identity_id: assignedIdentityId,
 			policy_team_id: "policy-team-1",
+			assigned_identity_id: assignedIdentityId,
 			reviewed_preview_digest: digest,
 			reviewed_intent: reviewedIntent,
 		});
-		expect(consumeRecipientInvite).toHaveBeenCalledOnce();
+		expect(consumeRecipientInvite).toHaveBeenCalledTimes(2);
 		expect(store.enrollDevice).not.toHaveBeenCalled();
 		expect(store.grantScopeMembership).not.toHaveBeenCalled();
 	});
@@ -1047,6 +1103,7 @@ describe("createCoordinatorApp dependency injection", () => {
 			device_id: "d1",
 			public_key: "pk1",
 			fingerprint: "fp1",
+			identity_id: null,
 			display_name: "Laptop",
 			enabled: 1,
 			created_at: "2026-03-28T00:00:00Z",
@@ -1105,6 +1162,7 @@ describe("createCoordinatorApp dependency injection", () => {
 			device_id: "d1",
 			public_key: "pk1",
 			fingerprint: "fp1",
+			identity_id: null,
 			display_name: "Laptop",
 			enabled: 1,
 			created_at: "2026-03-28T00:00:00Z",
@@ -1254,6 +1312,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				device_id: "local-device",
 				public_key: "pk1",
 				fingerprint: "fp1",
+				identity_id: null,
 				display_name: "Laptop",
 				enabled: 1,
 				created_at: "2026-03-28T00:00:00Z",
@@ -1329,6 +1388,7 @@ describe("createCoordinatorApp dependency injection", () => {
 						device_id: deviceId,
 						public_key: deviceId === "local-device" ? "pk1" : "pk2",
 						fingerprint: deviceId === "local-device" ? "fp1" : "fp2",
+						identity_id: null,
 						display_name: deviceId,
 						enabled: 1,
 						created_at: "2026-03-28T00:00:00Z",
@@ -1724,6 +1784,7 @@ describe("createCoordinatorApp dependency injection", () => {
 					device_id: "device-a",
 					public_key: "pk1",
 					fingerprint: "fp1",
+					identity_id: null,
 					display_name: "Laptop",
 					enabled: 1,
 					created_at: "2026-03-28T00:00:00Z",
@@ -1866,6 +1927,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				device_id: "device-a",
 				public_key: "pk-a",
 				fingerprint: "fp-a",
+				identity_id: null,
 				display_name: "Device A",
 				enabled: 1,
 				created_at: "2026-03-28T00:00:00Z",
@@ -1940,6 +2002,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				device_id: "device-a",
 				public_key: "pk-a",
 				fingerprint: "fp-a",
+				identity_id: null,
 				display_name: "Device A",
 				enabled: 1,
 				created_at: "2026-03-28T00:00:00Z",

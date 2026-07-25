@@ -21,10 +21,12 @@ import type {
 	CoordinatorGroup,
 	CoordinatorJoinRequest,
 	CoordinatorJoinRequestReviewResult,
+	CoordinatorRecipientInviteKind,
 	CoordinatorRevokeScopeMembershipInput,
 	CoordinatorScope,
 	CoordinatorScopeMembership,
 } from "./coordinator-store-contract.js";
+import { recipientInviteAuthoritativeIdentityId } from "./coordinator-store-contract.js";
 import { connect, resolveDbPath } from "./db.js";
 import { initDatabase } from "./maintenance.js";
 import {
@@ -1114,6 +1116,7 @@ export async function coordinatorCreateInviteAction(opts: {
 			invite_kind: inviteRecord?.invite_kind ?? inviteKind,
 			policy_team_id: inviteRecord?.policy_team_id ?? opts.policyTeamId ?? null,
 			target_identity_id: inviteRecord?.target_identity_id ?? opts.targetIdentityId ?? null,
+			assigned_identity_id: inviteRecord?.assigned_identity_id ?? null,
 			reviewed_preview_digest:
 				inviteRecord?.reviewed_preview_digest ?? opts.reviewedPreviewDigest ?? null,
 			encoded: payload?.encoded,
@@ -1172,6 +1175,7 @@ export async function coordinatorCreateInviteAction(opts: {
 			...(invite.invite_kind === "team_member"
 				? {
 						policy_team_id: invite.policy_team_id ?? undefined,
+						assigned_identity_id: invite.assigned_identity_id ?? undefined,
 						reviewed_preview_digest: invite.reviewed_preview_digest ?? undefined,
 					}
 				: {}),
@@ -1191,6 +1195,7 @@ export async function coordinatorCreateInviteAction(opts: {
 			invite_kind: invite.invite_kind ?? inviteKind,
 			policy_team_id: invite.policy_team_id ?? null,
 			target_identity_id: invite.target_identity_id ?? null,
+			assigned_identity_id: invite.assigned_identity_id ?? null,
 			reviewed_preview_digest: invite.reviewed_preview_digest ?? null,
 			encoded,
 			link: inviteLink(encoded),
@@ -1316,21 +1321,34 @@ async function validateRecipientInviteReview(opts: {
 	deviceDisplayName: string;
 	recipientDisplayName: string;
 	reviewedOnboardingDigest: string;
+	requireResponseIdentity?: boolean;
 }): Promise<{
 	reviewedIntent: RecipientReviewedIntentV1;
 	persistedRecipientDisplayName: string;
 }> {
 	const responseKind = String(opts.response?.kind ?? "").trim();
 	const responseDigest = String(opts.response?.reviewed_preview_digest ?? "").trim();
+	const payloadIdentityId = recipientInviteAuthoritativeIdentityId({
+		kind: opts.payload.kind as CoordinatorRecipientInviteKind,
+		assigned_identity_id: opts.payload.assigned_identity_id,
+		target_identity_id: opts.payload.target_identity_id,
+	});
+	const responseIdentityId = recipientInviteAuthoritativeIdentityId({
+		kind: opts.payload.kind as CoordinatorRecipientInviteKind,
+		assigned_identity_id: opts.response?.assigned_identity_id,
+		target_identity_id: opts.response?.target_identity_id,
+	});
+	const acceptedIdentityId = String(opts.response?.identity_id ?? "").trim();
 	if (
 		responseKind !== opts.payload.kind ||
+		!payloadIdentityId ||
+		opts.identityId !== payloadIdentityId ||
+		responseIdentityId !== payloadIdentityId ||
+		(opts.requireResponseIdentity && acceptedIdentityId !== payloadIdentityId) ||
 		responseDigest !== String(opts.payload.reviewed_preview_digest ?? "").trim() ||
 		(opts.payload.kind === "team_member" &&
 			String(opts.response?.policy_team_id ?? "").trim() !==
-				String(opts.payload.policy_team_id ?? "").trim()) ||
-		(opts.payload.kind === "add_device" &&
-			String(opts.response?.target_identity_id ?? "").trim() !==
-				String(opts.payload.target_identity_id ?? "").trim())
+				String(opts.payload.policy_team_id ?? "").trim())
 	) {
 		throw new Error("recipient_invite_intent_mismatch");
 	}
@@ -1442,31 +1460,36 @@ export async function coordinatorImportInviteAction(opts: {
 	});
 	const explicitRecipientActorId = String(opts.recipientActorId ?? "").trim();
 	const configuredRecipientActorId = String(config.actor_id ?? "").trim();
-	const addDeviceTargetIdentityId =
-		payload.kind === "add_device" ? String(payload.target_identity_id ?? "").trim() : "";
+	const recipientInviteIdentityId = recipientInvite
+		? recipientInviteAuthoritativeIdentityId({
+				kind: payload.kind as CoordinatorRecipientInviteKind,
+				assigned_identity_id: payload.assigned_identity_id,
+				target_identity_id: payload.target_identity_id,
+			})
+		: "";
 	let recipientActorId =
 		explicitRecipientActorId || configuredRecipientActorId || `local:${deviceId}`;
-	if (payload.kind === "add_device") {
+	if (recipientInvite) {
 		if (
-			!addDeviceTargetIdentityId ||
-			(explicitRecipientActorId && explicitRecipientActorId !== addDeviceTargetIdentityId)
+			!recipientInviteIdentityId ||
+			(explicitRecipientActorId && explicitRecipientActorId !== recipientInviteIdentityId)
 		) {
 			throw new Error("invite_identity_conflict");
 		}
 		if (
 			configuredRecipientActorId &&
-			configuredRecipientActorId !== addDeviceTargetIdentityId &&
+			configuredRecipientActorId !== recipientInviteIdentityId &&
 			configuredRecipientActorId !== `local:${deviceId}`
 		) {
 			throw new Error("invite_identity_conflict");
 		}
 		const identityConn = connect(resolvedDbPath);
 		try {
-			assertAddDeviceIdentityAdoptionAllowed(identityConn, addDeviceTargetIdentityId, deviceId);
+			assertAddDeviceIdentityAdoptionAllowed(identityConn, recipientInviteIdentityId, deviceId);
 		} finally {
 			identityConn.close();
 		}
-		recipientActorId = addDeviceTargetIdentityId;
+		recipientActorId = recipientInviteIdentityId;
 	}
 	const recipientDisplayName =
 		projectInvite || recipientInvite
@@ -1612,6 +1635,7 @@ export async function coordinatorImportInviteAction(opts: {
 			response,
 			recipientDisplayName,
 			reviewedOnboardingDigest,
+			requireResponseIdentity: true,
 		});
 		persistedRecipientDisplayName = validatedReview.persistedRecipientDisplayName;
 		recipientOnboarding = {
@@ -1684,9 +1708,15 @@ export async function coordinatorImportInviteAction(opts: {
 			coordinator_url: payload.coordinator_url,
 			status: response?.status ?? null,
 			invite_kind: response?.kind ?? payload.kind,
-			identity_id: response?.identity_id ?? recipientActorId,
+			identity_id: recipientActorId,
 			policy_team_id: response?.policy_team_id ?? payload.policy_team_id ?? null,
 			target_identity_id: response?.target_identity_id ?? payload.target_identity_id ?? null,
+			...(payload.kind === "team_member"
+				? {
+						assigned_identity_id:
+							response?.assigned_identity_id ?? payload.assigned_identity_id ?? null,
+					}
+				: {}),
 			reviewed_preview_digest: response?.reviewed_preview_digest ?? null,
 			sync_enabled: true,
 		};

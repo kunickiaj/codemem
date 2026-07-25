@@ -28,6 +28,7 @@ export interface CoordinatorEnrollment {
 	device_id: string;
 	public_key: string;
 	fingerprint: string;
+	identity_id: string | null;
 	display_name: string | null;
 	enabled: number;
 	created_at: string;
@@ -69,6 +70,8 @@ export interface CoordinatorInvite {
 	policy_team_id?: string | null;
 	/** Identity fixed by an add-device invitation. */
 	target_identity_id?: string | null;
+	/** Opaque Identity minted by the coordinator for a Team-member invitation. */
+	assigned_identity_id?: string | null;
 	/** Digest of the server-owned preview reviewed before invitation creation. */
 	reviewed_preview_digest?: string | null;
 	/** Canonical JSON for the inviter-reviewed access intent. */
@@ -85,6 +88,28 @@ export type CoordinatorRecipientInviteKind = Extract<
 	CoordinatorInviteKind,
 	"team_member" | "add_device"
 >;
+
+const COORDINATOR_ASSIGNED_IDENTITY_PATTERN = /^identity:[A-Za-z0-9_-]{18,24}$/u;
+
+export function isCoordinatorAssignedIdentityId(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value === value.trim() &&
+		COORDINATOR_ASSIGNED_IDENTITY_PATTERN.test(value)
+	);
+}
+
+export function recipientInviteAuthoritativeIdentityId(value: {
+	kind: CoordinatorRecipientInviteKind;
+	assigned_identity_id?: unknown;
+	target_identity_id?: unknown;
+}): string {
+	return String(
+		value.kind === "team_member"
+			? (value.assigned_identity_id ?? "")
+			: (value.target_identity_id ?? ""),
+	).trim();
+}
 
 export interface CoordinatorProjectInviteSummary {
 	display_name: string;
@@ -104,6 +129,7 @@ export type CoordinatorRecipientInviteInspection =
 			kind: "team_member";
 			invite: CoordinatorInvite;
 			policy_team_id: string;
+			assigned_identity_id: string;
 			reviewed_preview_digest: string;
 			reviewed_intent?: RecipientReviewedIntentV1;
 			bound: boolean;
@@ -244,6 +270,8 @@ export interface CoordinatorEnrollDeviceInput {
 	fingerprint: string;
 	publicKey: string;
 	displayName?: string | null;
+	/** Null or omitted means the enrollment has no authoritative issuance binding. */
+	identityId?: string | null;
 }
 
 export interface CoordinatorCreateInviteInput {

@@ -1350,6 +1350,9 @@ export function createCoordinatorApp(
 		if (!groupId || !["auto_admit", "approval_required"].includes(policy) || !expiresAt) {
 			return c.json({ error: "group_id_policy_and_expires_at_required" }, 400);
 		}
+		if (Object.hasOwn(data, "assigned_identity_id")) {
+			return c.json({ error: "assigned_identity_id_forbidden" }, 400);
+		}
 		// Validate the date at the boundary so store.createInvite's
 		// normalizeInviteExpiresAt throw can't escape as an unhandled 500.
 		if (Number.isNaN(new Date(expiresAt).getTime())) {
@@ -1521,6 +1524,7 @@ export function createCoordinatorApp(
 				...(invite.invite_kind === "team_member"
 					? {
 							policy_team_id: invite.policy_team_id ?? undefined,
+							assigned_identity_id: invite.assigned_identity_id ?? undefined,
 							reviewed_preview_digest: invite.reviewed_preview_digest ?? undefined,
 						}
 					: {}),
@@ -1576,6 +1580,7 @@ export function createCoordinatorApp(
 							? {
 									kind: inspection.kind,
 									policy_team_id: inspection.policy_team_id,
+									assigned_identity_id: inspection.assigned_identity_id,
 									reviewed_preview_digest: inspection.reviewed_preview_digest,
 									reviewed_intent: inspection.reviewed_intent,
 									bound: inspection.bound,
@@ -1903,6 +1908,7 @@ export function createCoordinatorApp(
 						identity_id: acceptance.invite.recipient_actor_id,
 						policy_team_id: acceptance.invite.policy_team_id ?? null,
 						target_identity_id: acceptance.invite.target_identity_id ?? null,
+						assigned_identity_id: acceptance.invite.assigned_identity_id ?? null,
 						reviewed_preview_digest: acceptance.invite.reviewed_preview_digest,
 						reviewed_intent: acceptance.reviewed_intent,
 					});

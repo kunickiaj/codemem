@@ -1187,7 +1187,8 @@ export function commitRecipientPolicyOnboardingFromReviewedIntent(
 					identityId: normalized.binding.identityId,
 					displayName: identityDisplayName,
 					deviceId: normalized.binding.deviceId,
-					allowBootstrapAdoption: normalized.journey === "add_device",
+					allowBootstrapAdoption:
+						normalized.journey === "add_device" || normalized.journey === "team",
 				},
 				now,
 			)

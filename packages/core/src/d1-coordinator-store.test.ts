@@ -217,6 +217,11 @@ describe("D1CoordinatorStore", () => {
 					"UPDATE coordinator_invites SET reviewed_intent_json = NULL WHERE invite_id = ?",
 				).run(inviteId);
 			},
+			setInviteAssignedIdentity: (inviteId: string, identityId: string | null) => {
+				db.prepare(
+					"UPDATE coordinator_invites SET assigned_identity_id = ? WHERE invite_id = ?",
+				).run(identityId, inviteId);
+			},
 			revokeInvite: (inviteId: string, revokedAt: string) => {
 				db.prepare("UPDATE coordinator_invites SET revoked_at = ? WHERE invite_id = ?").run(
 					revokedAt,
