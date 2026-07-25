@@ -28,6 +28,23 @@ type RecipientAcceptance = {
 	detail: string;
 };
 
+const MACHINE_NAME_PREFIX = /^(?:local:|identity:|pending_)/iu;
+const UUID_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+const HEX_FRAGMENT_NAME = /^[0-9a-f]{12,}$/iu;
+
+/**
+ * Machine identifiers (device ids, identity ids, uuid fragments) make terrible
+ * display names. Seed the name fields empty instead so the required-field
+ * validation asks the person for a real name, with placeholder text as the hint.
+ */
+function humanProvidedNameOrEmpty(value: string | null | undefined): string {
+	const reviewed = String(value ?? "").trim();
+	if (!reviewed) return "";
+	if (MACHINE_NAME_PREFIX.test(reviewed)) return "";
+	if (UUID_NAME.test(reviewed) || HEX_FRAGMENT_NAME.test(reviewed)) return "";
+	return reviewed;
+}
+
 function displayNameError(value: string, label: string): string {
 	const reviewed = value.trim();
 	if (!reviewed) return `${label} is required.`;
@@ -206,6 +223,7 @@ function ProjectShareConfirmation({
 						aria-invalid={Boolean(recipientNameError)}
 						id="project-share-recipient-name"
 						onInput={(event) => onRecipientNameChange(event.currentTarget.value)}
+						placeholder="Your name — e.g. Alex Rivera"
 						value={recipientName}
 					/>
 				</label>
@@ -221,6 +239,7 @@ function ProjectShareConfirmation({
 						aria-invalid={Boolean(deviceNameError)}
 						id="project-share-device-name"
 						onInput={(event) => onDeviceNameChange(event.currentTarget.value)}
+						placeholder="This device — e.g. Work Laptop"
 						value={deviceName}
 					/>
 				</label>
@@ -450,8 +469,8 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 			if (!isCurrentInspection()) return;
 			setInspected(result);
 			if (result.kind === "project_share_invite") {
-				setProjectRecipientName(result.recipient_name ?? "");
-				setProjectDeviceName(result.device_name ?? "");
+				setProjectRecipientName(humanProvidedNameOrEmpty(result.recipient_name));
+				setProjectDeviceName(humanProvidedNameOrEmpty(result.device_name));
 			}
 			setStatus(
 				result.kind === "team_member" || result.kind === "add_device"

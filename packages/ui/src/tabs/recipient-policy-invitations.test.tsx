@@ -481,6 +481,37 @@ describe("recipient-policy invitations", () => {
 		expect(document.querySelector('[role="dialog"]')).toBe(dialog);
 	});
 
+	it("seeds machine-generated identity and device names as empty fields with placeholder hints", async () => {
+		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
+			...projectShareInspection,
+			recipient_name: "local:203a0bb0-4879-455a-a43d-4d3f1c98acbc",
+			device_name: "916b139e2bb6",
+		});
+		mount();
+
+		act(() => button("Review invitation").click());
+		const dialog = document.querySelector('[role="dialog"]');
+		const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+		if (!dialog || !textarea) throw new Error("acceptance dialog missing");
+		act(() => {
+			textarea.value = "project-invite-payload";
+			textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		act(() => button("Review invitation", dialog).click());
+		await vi.waitFor(() => expect(api.inspectCoordinatorInvite).toHaveBeenCalledOnce());
+		await vi.waitFor(() =>
+			expect(dialog.querySelector("#project-share-recipient-name")).not.toBeNull(),
+		);
+
+		const recipientName = dialog.querySelector<HTMLInputElement>("#project-share-recipient-name");
+		const deviceName = dialog.querySelector<HTMLInputElement>("#project-share-device-name");
+		if (!recipientName || !deviceName) throw new Error("Project identity fields missing");
+		expect(recipientName.value).toBe("");
+		expect(deviceName.value).toBe("");
+		expect(recipientName.placeholder).toContain("Your name");
+		expect(deviceName.placeholder).toContain("This device");
+	});
+
 	it.each([
 		["empty names", "project-share-recipient-name", "   ", "Identity display name is required"],
 		[
