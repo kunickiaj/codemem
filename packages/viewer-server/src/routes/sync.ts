@@ -1411,7 +1411,7 @@ async function executeProjectShareProvisioning(store: MemoryStore, operationId: 
 
 export interface AdvanceProjectShareOperationResult {
 	advanced: boolean;
-	state: "active" | "waiting_for_acceptance";
+	state: "active" | "waiting_for_acceptance" | "cancelled";
 }
 
 export async function advanceProjectShareOperation(
@@ -1427,13 +1427,24 @@ export async function advanceProjectShareOperation(
 		| undefined;
 	if (!operation) throw new Error("operation_not_found");
 	if (operation.inviter_actor_id !== store.actorId) throw new Error("operation_scope_mismatch");
+	if (operation.state === "cancelled") {
+		// Already superseded (possibly earlier in the same maintenance batch);
+		// provisioning a cancelled operation would only produce a misleading
+		// operation_not_accepted failure.
+		return { advanced: false, state: "cancelled" };
+	}
 	if (!operation.recipient_device_id) {
 		const reconciliation = await reconcileProjectInviteAcceptance(store, operationId);
 		if (!reconciliation.accepted) {
 			return { advanced: false, state: "waiting_for_acceptance" };
 		}
 	}
-	await executeProjectShareProvisioning(store, operationId);
+	const plan = await executeProjectShareProvisioning(store, operationId);
+	if (plan.superseded) {
+		// A duplicate operation won the race and cancelled this one mid-flight;
+		// reporting it as active would contradict the stored state.
+		return { advanced: false, state: "cancelled" };
+	}
 	return { advanced: true, state: "active" };
 }
 
@@ -1451,6 +1462,7 @@ export interface AdvancePendingProjectSharesResult {
 			| "waiting_for_device"
 			| "retry_scheduled"
 			| "needs_attention"
+			| "superseded"
 			| "failed";
 		error?: string;
 	}>;
@@ -1625,6 +1637,11 @@ export async function advancePendingProjectShares(
 		try {
 			const advanced = await advanceOperation(store, row.operation_id);
 			if (!advanced.advanced) {
+				if (advanced.state === "cancelled") {
+					// Superseded by a duplicate that reached active first; terminal.
+					result.items.push({ operationId: row.operation_id, outcome: "superseded" });
+					continue;
+				}
 				store.db
 					.prepare("UPDATE share_operations SET updated_at = ? WHERE operation_id = ?")
 					.run(maintenanceNow.toISOString(), row.operation_id);
@@ -1643,6 +1660,13 @@ export async function advancePendingProjectShares(
 				.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
 				.pluck()
 				.get(row.operation_id);
+			if (state === "cancelled") {
+				// Superseded by a duplicate while a step was in flight; the stored
+				// state is terminal and benign, so the step's rejection must not be
+				// reported as a failure or push the daemon into an error phase.
+				result.items.push({ operationId: row.operation_id, outcome: "superseded" });
+				continue;
+			}
 			if (message === "waiting_for_device" || state === "waiting_for_device") {
 				result.waiting += 1;
 				result.items.push({ operationId: row.operation_id, outcome: "waiting_for_device" });
@@ -5369,12 +5393,25 @@ export function syncRoutes(
 		try {
 			const advanced = await advanceProjectShareOperation(store, operationId);
 			if (!advanced.advanced) {
-				return c.json({ error: "invitation_not_accepted" }, 409);
+				return c.json(
+					{
+						error:
+							advanced.state === "cancelled" ? "operation_superseded" : "invitation_not_accepted",
+					},
+					409,
+				);
 			}
 			const [operation] = await shareOperationReadModels(store, operationId);
 			return c.json({ ok: true, operation });
 		} catch (error) {
 			const code = error instanceof Error ? error.message : "provisioning_failed";
+			const state = store.db
+				.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
+				.pluck()
+				.get(operationId);
+			if (state === "cancelled") {
+				return c.json({ error: "operation_superseded" }, 409);
+			}
 			return c.json({ error: code }, code === "operation_not_found" ? 404 : 409);
 		}
 	};
@@ -5389,9 +5426,21 @@ export function syncRoutes(
 		}
 		try {
 			const plan = await executeProjectShareProvisioning(store, operationId);
+			if (plan.superseded) {
+				// Consistent with /advance: a supersession race is a conflict, not a
+				// success with a flag.
+				return c.json({ error: "operation_superseded" }, 409);
+			}
 			return c.json({ ok: true, operation_id: operationId, state: "active", plan });
 		} catch (error) {
 			const code = error instanceof Error ? error.message : "provisioning_failed";
+			const state = store.db
+				.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
+				.pluck()
+				.get(operationId);
+			if (state === "cancelled") {
+				return c.json({ error: "operation_superseded" }, 409);
+			}
 			return c.json({ error: code }, code === "operation_not_found" ? 404 : 409);
 		}
 	});

@@ -563,6 +563,276 @@ describe("exact project share provisioning", () => {
 		).toBe("active");
 	});
 
+	it("cancels superseded accepted duplicates for the same person and project set once active", async () => {
+		const operationState = (id: string) =>
+			db.prepare("SELECT state FROM share_operations WHERE operation_id = ?").pluck().get(id);
+		const acceptance = (
+			id: string,
+			digest: string,
+			projects: Array<{
+				canonical_identity: string;
+				display_name: string;
+				existing_memory_count: number;
+			}>,
+		) => {
+			const publicKey = "recipient-key";
+			reconcileShareOperationAcceptance(db, {
+				operationId: id,
+				localInviterActorId: "actor-owner",
+				coordinatorGroupId: "team",
+				reviewedProjectSetDigest: digest,
+				recipientActorId: "actor-recipient",
+				recipientDisplayName: "Brian",
+				recipientDeviceId: "recipient",
+				recipientDeviceDisplayName: "Brian's MacBook",
+				recipientPublicKey: publicKey,
+				recipientFingerprint: fingerprintPublicKey(publicKey),
+				consumedAt: "2026-07-20T13:00:00.000Z",
+				trustState: "bootstrap_grant_created",
+				bootstrapGrantId: "grant",
+				projects,
+			});
+		};
+		// Stale duplicate: same recipient, same exact project set, stuck after
+		// acceptance. Uses the existing-person intent (as a redone flow does once
+		// the recipient actor exists) so it gets a distinct operation id.
+		const stale = planShareOperation({
+			inviterActorId: "actor-owner",
+			inviterDeviceIds: ["owner", "owner-proven"],
+			person: { kind: "existing", personId: "actor-recipient", displayName: "Brian" },
+			projects: [
+				{
+					canonicalIdentity: remote,
+					displayName: "api",
+					identitySource: "git_remote",
+					existingMemoryCount: 2,
+				},
+			],
+			coordinatorGroupId: "team",
+			inviteExpiresAt: "2026-07-27T12:00:00.000Z",
+			createdAt: "2026-07-19T12:00:00.000Z",
+		});
+		persistShareOperation(db, stale, {
+			inviteId: "invite-stale",
+			tokenDigest: inviteTokenDigest("token-stale"),
+		});
+		acceptance(stale.operationId, stale.reviewedProjectSetDigest, [
+			{ canonical_identity: remote, display_name: "api", existing_memory_count: 2 },
+		]);
+		db.prepare(
+			"UPDATE share_operations SET state = 'waiting_for_device' WHERE operation_id = ?",
+		).run(stale.operationId);
+		// Control: same recipient but a different project set must stay untouched.
+		const otherRemote = "https://example.invalid/acme/other.git";
+		const unrelated = planShareOperation({
+			inviterActorId: "actor-owner",
+			inviterDeviceIds: ["owner", "owner-proven"],
+			person: { kind: "existing", personId: "actor-recipient", displayName: "Brian" },
+			projects: [
+				{
+					canonicalIdentity: otherRemote,
+					displayName: "other",
+					identitySource: "git_remote",
+					existingMemoryCount: 1,
+				},
+			],
+			coordinatorGroupId: "team",
+			inviteExpiresAt: "2026-07-27T12:00:00.000Z",
+			createdAt: "2026-07-19T12:00:00.000Z",
+		});
+		persistShareOperation(db, unrelated, {
+			inviteId: "invite-other",
+			tokenDigest: inviteTokenDigest("token-other"),
+		});
+		acceptance(unrelated.operationId, unrelated.reviewedProjectSetDigest, [
+			{ canonical_identity: otherRemote, display_name: "other", existing_memory_count: 1 },
+		]);
+		db.prepare(
+			"UPDATE share_operations SET state = 'waiting_for_device' WHERE operation_id = ?",
+		).run(unrelated.operationId);
+
+		// Controls that must SURVIVE supersession. The planner derives operation
+		// ids from group + inviter devices + person + projects, so each control
+		// starts from a distinct inviter-device set for a unique id and then has
+		// the non-varied columns aligned with the active operation via SQL to
+		// isolate exactly one mismatch dimension.
+		const control = (
+			label: string,
+			inviterDeviceIds: string[],
+			recipientDeviceId: string,
+		): string => {
+			const planned = planShareOperation({
+				inviterActorId: "actor-owner",
+				inviterDeviceIds,
+				person: { kind: "existing", personId: "actor-recipient", displayName: "Brian" },
+				projects: [
+					{
+						canonicalIdentity: remote,
+						displayName: "api",
+						identitySource: "git_remote",
+						existingMemoryCount: 2,
+					},
+				],
+				coordinatorGroupId: "team",
+				inviteExpiresAt: "2026-07-27T12:00:00.000Z",
+				createdAt: "2026-07-19T12:00:00.000Z",
+			});
+			persistShareOperation(db, planned, {
+				inviteId: `invite-${label}`,
+				tokenDigest: inviteTokenDigest(`token-${label}`),
+			});
+			// Derive the key from the device id so repeat acceptances for an
+			// already-pinned device present its established key.
+			const publicKey = `${recipientDeviceId}-key`;
+			reconcileShareOperationAcceptance(db, {
+				operationId: planned.operationId,
+				localInviterActorId: "actor-owner",
+				coordinatorGroupId: "team",
+				reviewedProjectSetDigest: planned.reviewedProjectSetDigest,
+				recipientActorId: "actor-recipient",
+				recipientDisplayName: "Brian",
+				recipientDeviceId,
+				recipientDeviceDisplayName: `Brian's ${label}`,
+				recipientPublicKey: publicKey,
+				recipientFingerprint: fingerprintPublicKey(publicKey),
+				consumedAt: "2026-07-20T13:00:00.000Z",
+				trustState: "bootstrap_grant_created",
+				bootstrapGrantId: `grant-${label}`,
+				projects: [{ canonical_identity: remote, display_name: "api", existing_memory_count: 2 }],
+			});
+			db.prepare(
+				"UPDATE share_operations SET state = 'waiting_for_device' WHERE operation_id = ?",
+			).run(planned.operationId);
+			return planned.operationId;
+		};
+		const alignInviterDevices = (id: string) => {
+			db.prepare(
+				`UPDATE share_operations SET inviter_device_ids_json =
+					(SELECT inviter_device_ids_json FROM share_operations WHERE operation_id = ?)
+				 WHERE operation_id = ?`,
+			).run(operationId, id);
+		};
+		// Same person + projects + group + inviter devices, DIFFERENT device.
+		const secondDeviceId = control("second-device", ["owner"], "recipient-second-device");
+		alignInviterDevices(secondDeviceId);
+		// Same everything except a different coordinator group.
+		const otherGroupId = control("other-group", ["owner-proven"], "recipient");
+		alignInviterDevices(otherGroupId);
+		db.prepare(
+			"UPDATE share_operations SET coordinator_group_id = 'other-team' WHERE operation_id = ?",
+		).run(otherGroupId);
+		// Same everything except a different reviewed inviter-device set.
+		const otherInviterSetId = control("other-inviter-set", ["owner-filtered"], "recipient");
+
+		const { deps } = dependencies();
+		await executeShareProvisioning(db, { operationId, initiatingDeviceId: "owner" }, deps);
+
+		expect(operationState(operationId)).toBe("active");
+		expect(operationState(stale.operationId)).toBe("cancelled");
+		expect(operationState(unrelated.operationId)).toBe("waiting_for_device");
+		expect(operationState(secondDeviceId)).toBe("waiting_for_device");
+		expect(operationState(otherGroupId)).toBe("waiting_for_device");
+		expect(operationState(otherInviterSetId)).toBe("waiting_for_device");
+	});
+
+	it("does not let a superseded invocation finishing late cancel newer duplicates or reactivate", async () => {
+		const operationState = (id: string) =>
+			db.prepare("SELECT state FROM share_operations WHERE operation_id = ?").pluck().get(id);
+		// A duplicate that this invocation would normally supersede.
+		const newer = planShareOperation({
+			inviterActorId: "actor-owner",
+			inviterDeviceIds: ["owner"],
+			person: { kind: "existing", personId: "actor-recipient", displayName: "Brian" },
+			projects: [
+				{
+					canonicalIdentity: remote,
+					displayName: "api",
+					identitySource: "git_remote",
+					existingMemoryCount: 2,
+				},
+			],
+			coordinatorGroupId: "team",
+			inviteExpiresAt: "2026-07-27T12:00:00.000Z",
+			createdAt: "2026-07-21T12:00:00.000Z",
+		});
+		persistShareOperation(db, newer, {
+			inviteId: "invite-newer",
+			tokenDigest: inviteTokenDigest("token-newer"),
+		});
+		const publicKey = "recipient-key";
+		reconcileShareOperationAcceptance(db, {
+			operationId: newer.operationId,
+			localInviterActorId: "actor-owner",
+			coordinatorGroupId: "team",
+			reviewedProjectSetDigest: newer.reviewedProjectSetDigest,
+			recipientActorId: "actor-recipient",
+			recipientDisplayName: "Brian",
+			recipientDeviceId: "recipient",
+			recipientDeviceDisplayName: "Brian's MacBook",
+			recipientPublicKey: publicKey,
+			recipientFingerprint: fingerprintPublicKey(publicKey),
+			consumedAt: "2026-07-20T13:00:00.000Z",
+			trustState: "bootstrap_grant_created",
+			bootstrapGrantId: "grant-newer",
+			projects: [{ canonical_identity: remote, display_name: "api", existing_memory_count: 2 }],
+		});
+		db.prepare(
+			`UPDATE share_operations SET inviter_device_ids_json =
+				(SELECT inviter_device_ids_json FROM share_operations WHERE operation_id = ?),
+				state = 'provisioning'
+			 WHERE operation_id = ?`,
+		).run(operationId, newer.operationId);
+
+		const { deps, scopeId } = dependencies();
+		const cancelSelf = () => {
+			// The duplicate wins the race and supersedes this invocation mid-flight.
+			db.prepare("UPDATE share_operations SET state = 'cancelled' WHERE operation_id = ?").run(
+				operationId,
+			);
+		};
+		// Cancellation during an early await must survive the later provisioning
+		// and initial_sync transitions (all guarded against 'cancelled').
+		const innerRefresh = deps.refreshAuthorization;
+		deps.refreshAuthorization = vi.fn(async (groupId: string) => {
+			cancelSelf();
+			await innerRefresh(groupId);
+		});
+		deps.runInitialSync = vi.fn(async () => ({
+			ok: true,
+			perScopeResults: [{ scope_id: scopeId, ok: true }],
+		}));
+		const result = await executeShareProvisioning(
+			db,
+			{ operationId, initiatingDeviceId: "owner" },
+			deps,
+		);
+
+		// The cancelled invocation neither reactivates nor cancels the newer op,
+		// and it reports the superseded outcome instead of success.
+		expect(result.superseded).toBe(true);
+		expect(operationState(operationId)).toBe("cancelled");
+		expect(operationState(newer.operationId)).toBe("provisioning");
+	});
+
+	it("keeps a superseded operation cancelled when its in-flight step fails afterwards", async () => {
+		const operationState = (id: string) =>
+			db.prepare("SELECT state FROM share_operations WHERE operation_id = ?").pluck().get(id);
+		const { deps } = dependencies();
+		deps.runInitialSync = vi.fn(async () => {
+			// Superseded mid-sync, then the sync fails with a connectivity error —
+			// the failure path must not resurrect waiting_for_device.
+			db.prepare("UPDATE share_operations SET state = 'cancelled' WHERE operation_id = ?").run(
+				operationId,
+			);
+			return { ok: false, failureCategory: "connectivity" as const };
+		});
+
+		await expect(
+			executeShareProvisioning(db, { operationId, initiatingDeviceId: "owner" }, deps),
+		).rejects.toThrow("waiting_for_device");
+		expect(operationState(operationId)).toBe("cancelled");
+	});
+
 	it("preserves completed effects and resumes from the failed grant", async () => {
 		let fail = true;
 		const { deps } = dependencies({

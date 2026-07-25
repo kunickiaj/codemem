@@ -496,12 +496,13 @@ function failStep(
 			: Number(failed?.attempt_count ?? 0) >= 3
 				? "needs_attention"
 				: null;
+	// Never overwrite a concurrent cancellation with a failure state — the
+	// superseded operation must stay cancelled even when its in-flight step
+	// fails afterwards.
 	if (state) {
-		db.prepare("UPDATE share_operations SET state = ?, updated_at = ? WHERE operation_id = ?").run(
-			state,
-			now,
-			operationId,
-		);
+		db.prepare(
+			"UPDATE share_operations SET state = ?, updated_at = ? WHERE operation_id = ? AND state != 'cancelled'",
+		).run(state, now, operationId);
 	} else {
 		db.prepare("UPDATE share_operations SET updated_at = ? WHERE operation_id = ?").run(
 			now,
@@ -623,7 +624,7 @@ export async function executeShareProvisioning(
 	db: Database,
 	input: { operationId: string; initiatingDeviceId: string },
 	dependencies: ShareProvisioningDependencies,
-): Promise<ShareProvisioningPlan> {
+): Promise<ShareProvisioningPlan & { superseded: boolean }> {
 	const plan = planShareProvisioning(db, input);
 	const executeStep = (
 		stepKey: string,
@@ -651,8 +652,11 @@ export async function executeShareProvisioning(
 		}
 	});
 	persistMembershipPlan(db, plan);
+	// Every state transition in this flow is guarded against 'cancelled' so a
+	// concurrently superseded operation can never overwrite its cancellation
+	// while this invocation is between async steps.
 	db.prepare(
-		"UPDATE share_operations SET state = 'provisioning', updated_at = ? WHERE operation_id = ?",
+		"UPDATE share_operations SET state = 'provisioning', updated_at = ? WHERE operation_id = ? AND state != 'cancelled'",
 	).run(new Date().toISOString(), plan.operationId);
 	for (const project of plan.projects) {
 		await executeStep(
@@ -733,7 +737,7 @@ export async function executeShareProvisioning(
 		dependencies.refreshAuthorization(plan.groupId),
 	);
 	db.prepare(
-		"UPDATE share_operations SET state = 'initial_sync', updated_at = ? WHERE operation_id = ?",
+		"UPDATE share_operations SET state = 'initial_sync', updated_at = ? WHERE operation_id = ? AND state != 'cancelled'",
 	).run(new Date().toISOString(), plan.operationId);
 	await executeStep("initial_sync", `initial-sync:${plan.operationId}`, async () => {
 		const result = await dependencies.runInitialSync(plan.recipientDeviceId);
@@ -745,8 +749,97 @@ export async function executeShareProvisioning(
 			if (!scoped?.ok) throw new Error(scoped?.error || "initial_sync_scope_incomplete");
 		}
 	});
-	db.prepare(
-		"UPDATE share_operations SET state = 'active', updated_at = ? WHERE operation_id = ?",
-	).run(new Date().toISOString(), plan.operationId);
-	return plan;
+	const activatedAt = new Date().toISOString();
+	// The state guard keeps a concurrently superseded (cancelled) duplicate from
+	// resurrecting itself to active after its own initial sync resolves. Only an
+	// invocation whose row actually transitioned to active may supersede others;
+	// a cancelled invocation finishing late has no authority to cancel anything.
+	const activation = db
+		.prepare(
+			"UPDATE share_operations SET state = 'active', updated_at = ? WHERE operation_id = ? AND state != 'cancelled'",
+		)
+		.run(activatedAt, plan.operationId);
+	if (activation.changes > 0) {
+		cancelSupersededShareOperations(db, plan.operationId, activatedAt);
+	}
+	// superseded: a duplicate won the race and cancelled this operation while it
+	// was in flight. Callers must not report it as active.
+	return { ...plan, superseded: activation.changes === 0 };
+}
+
+/**
+ * When a redone invite flow reaches active, older accepted-but-unfinished
+ * duplicates for the same recipient device and exact project set become
+ * zombies that report misleading states like "waiting for device". Cancel them
+ * so only the active operation represents the share.
+ *
+ * A duplicate must match the coordinator group (managed boundaries and
+ * memberships are group-specific), the reviewed inviter-device set (different
+ * sets are different provisioning intents), the recipient_device_id (the same
+ * person accepting the same project set on a different device is a legitimate
+ * in-flight share), and the exact project set. Operations in needs_attention
+ * are deliberately excluded — a user may still want to inspect or retry them
+ * explicitly.
+ */
+function cancelSupersededShareOperations(db: Database, operationId: string, now: string): void {
+	const active = db
+		.prepare(
+			`SELECT inviter_actor_id, inviter_device_ids_json, person_id, recipient_actor_id,
+				recipient_device_id, coordinator_group_id
+			 FROM share_operations WHERE operation_id = ?`,
+		)
+		.get(operationId) as
+		| {
+				inviter_actor_id: string;
+				inviter_device_ids_json: string;
+				person_id: string;
+				recipient_actor_id: string | null;
+				recipient_device_id: string | null;
+				coordinator_group_id: string;
+		  }
+		| undefined;
+	if (!active?.recipient_device_id) return;
+	const projectSet = (id: string): string =>
+		(
+			db
+				.prepare(
+					`SELECT canonical_project_identity FROM share_operation_projects
+					 WHERE operation_id = ? ORDER BY canonical_project_identity`,
+				)
+				.all(id) as Array<{ canonical_project_identity: string }>
+		)
+			.map((row) => row.canonical_project_identity)
+			.join("\u0000");
+	const activeProjects = projectSet(operationId);
+	const candidates = db
+		.prepare(
+			`SELECT operation_id FROM share_operations
+			 WHERE operation_id != ? AND inviter_actor_id = ?
+			   AND state IN ('accepted', 'provisioning', 'initial_sync', 'waiting_for_device')
+			   AND coordinator_group_id = ?
+			   AND inviter_device_ids_json = ?
+			   AND recipient_device_id = ?
+			   AND (person_id = ? OR (recipient_actor_id IS NOT NULL AND recipient_actor_id = ?))`,
+		)
+		.all(
+			operationId,
+			active.inviter_actor_id,
+			active.coordinator_group_id,
+			active.inviter_device_ids_json,
+			active.recipient_device_id,
+			active.person_id,
+			active.recipient_actor_id ?? active.person_id,
+		) as Array<{ operation_id: string }>;
+	// Re-check the candidate state at write time: a concurrent provisioning
+	// process may have activated this candidate between selection and update,
+	// and a successfully activated operation must never be overwritten.
+	const cancel = db.prepare(
+		`UPDATE share_operations SET state = 'cancelled', updated_at = ?
+		 WHERE operation_id = ?
+		   AND state IN ('accepted', 'provisioning', 'initial_sync', 'waiting_for_device')`,
+	);
+	for (const row of candidates) {
+		if (projectSet(row.operation_id) !== activeProjects) continue;
+		cancel.run(now, row.operation_id);
+	}
 }

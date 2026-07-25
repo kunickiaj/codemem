@@ -138,8 +138,8 @@ export function projectShareLifecycle(
 			"waiting_for_device",
 			"Waiting for device",
 			lastSeen
-				? `${deviceName} is offline. Sync will continue when it reconnects; last seen ${lastSeen}.`
-				: `${deviceName} is offline. Sync will continue when it reconnects.`,
+				? `Waiting to reach ${deviceName}. Sync continues automatically when it is reachable; last seen ${lastSeen}.`
+				: `Waiting to reach ${deviceName}. Sync continues automatically when it is reachable.`,
 		);
 	}
 
