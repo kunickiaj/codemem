@@ -759,12 +759,17 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		).map((row) => rowToRecord<CoordinatorEnrollment>(row));
 	}
 
-	async getEnrollment(_groupId: string, _deviceId: string): Promise<CoordinatorEnrollment | null> {
+	async getEnrollment(
+		_groupId: string,
+		_deviceId: string,
+		_includeDisabled = false,
+	): Promise<CoordinatorEnrollment | null> {
+		const enabledClause = _includeDisabled ? "" : "AND enabled = 1";
 		const row = await firstRow<CoordinatorEnrollment>(
 			this.db
 				.prepare(`SELECT ${ENROLLMENT_COLUMNS}
 					 FROM enrolled_devices
-					 WHERE group_id = ? AND device_id = ? AND enabled = 1`)
+					 WHERE group_id = ? AND device_id = ? ${enabledClause}`)
 				.bind(_groupId, _deviceId),
 		);
 		return row ? rowToRecord<CoordinatorEnrollment>(row) : null;

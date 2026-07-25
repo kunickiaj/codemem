@@ -29,6 +29,7 @@ export {
 } from "./codex-hooks.js";
 export {
 	coordinatorArchiveGroupAction,
+	coordinatorCreateAddDeviceInviteAction,
 	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
 	coordinatorCreateScopeAction,

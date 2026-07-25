@@ -449,7 +449,11 @@ export interface CoordinatorStore {
 	unarchiveGroup(groupId: string): Promise<boolean>;
 	enrollDevice(groupId: string, opts: CoordinatorEnrollDeviceInput): Promise<void>;
 	listEnrolledDevices(groupId: string, includeDisabled?: boolean): Promise<CoordinatorEnrollment[]>;
-	getEnrollment(groupId: string, deviceId: string): Promise<CoordinatorEnrollment | null>;
+	getEnrollment(
+		groupId: string,
+		deviceId: string,
+		includeDisabled?: boolean,
+	): Promise<CoordinatorEnrollment | null>;
 	renameDevice(groupId: string, deviceId: string, displayName: string): Promise<boolean>;
 	setDeviceEnabled(groupId: string, deviceId: string, enabled: boolean): Promise<boolean>;
 	removeDevice(groupId: string, deviceId: string): Promise<boolean>;

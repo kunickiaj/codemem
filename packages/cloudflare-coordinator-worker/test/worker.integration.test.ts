@@ -853,6 +853,155 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		expect(payload.items.some((item) => item.device_id === devices[3]?.deviceId)).toBe(false);
 	});
 
+	it("creates signed add-device invitations for the caller's persisted Identity", async () => {
+		const device = createIdentity();
+		const identityId = "identity-owner";
+		const reviewedIntent = addDeviceReviewedIntent(identityId);
+		const digest = await recipientReviewedIntentDigest(reviewedIntent);
+		await env.COORDINATOR_DB.prepare(
+			"INSERT INTO groups (group_id, display_name, created_at) VALUES ('g1', 'Coordinator Team', ?)",
+		)
+			.bind("2026-07-25T00:00:00Z")
+			.run();
+		const enrollment = await exports.default.fetch("https://example.com/v1/admin/devices", {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				"X-Codemem-Coordinator-Admin": "test-secret",
+			},
+			body: JSON.stringify({
+				group_id: "g1",
+				device_id: device.deviceId,
+				fingerprint: device.fingerprint,
+				public_key: device.publicKey,
+				display_name: "Owner Device",
+			}),
+		});
+		expect(enrollment.status).toBe(200);
+		await env.COORDINATOR_DB.prepare(
+			"UPDATE enrolled_devices SET identity_id = ? WHERE group_id = 'g1' AND device_id = ?",
+		)
+			.bind(identityId, device.deviceId)
+			.run();
+
+		const url = "https://example.com/v1/invites/add-device";
+		const body = JSON.stringify({
+			group_id: "g1",
+			expires_at: "2099-01-01T00:00:00Z",
+			reviewed_preview_digest: digest,
+			reviewed_intent: reviewedIntent,
+		});
+		const signedRequest = (identity: TestIdentity, requestBody: string) => ({
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				...signHeaders(identity, "POST", url, requestBody),
+			},
+			body: requestBody,
+		});
+		const unknown = createIdentity();
+		const unknownResponse = await exports.default.fetch(url, signedRequest(unknown, body));
+		expect(unknownResponse.status).toBe(401);
+		expect(await unknownResponse.json()).toEqual({ error: "unknown_device" });
+
+		await env.COORDINATOR_DB.prepare(
+			"UPDATE enrolled_devices SET identity_id = NULL WHERE group_id = 'g1' AND device_id = ?",
+		)
+			.bind(device.deviceId)
+			.run();
+		const unboundResponse = await exports.default.fetch(url, signedRequest(device, body));
+		expect(unboundResponse.status).toBe(403);
+		expect(await unboundResponse.json()).toEqual({ error: "identity_binding_required" });
+
+		await env.COORDINATOR_DB.prepare(
+			"UPDATE enrolled_devices SET identity_id = ?, enabled = 0 WHERE group_id = 'g1' AND device_id = ?",
+		)
+			.bind(identityId, device.deviceId)
+			.run();
+		const disabledResponse = await exports.default.fetch(url, signedRequest(device, body));
+		expect(disabledResponse.status).toBe(403);
+		expect(await disabledResponse.json()).toEqual({ error: "device_disabled" });
+		await env.COORDINATOR_DB.prepare(
+			"UPDATE enrolled_devices SET enabled = 1 WHERE group_id = 'g1' AND device_id = ?",
+		)
+			.bind(device.deviceId)
+			.run();
+
+		const invalidSignatureRequest = signedRequest(device, body);
+		invalidSignatureRequest.headers["X-Opencode-Signature"] = `${SIGNATURE_VERSION}:AAAA`;
+		const invalidSignature = await exports.default.fetch(url, invalidSignatureRequest);
+		expect(invalidSignature.status).toBe(401);
+		expect(await invalidSignature.json()).toEqual({ error: "invalid_signature" });
+
+		const crossIdentityIntent = addDeviceReviewedIntent("identity-other");
+		const crossIdentityBody = JSON.stringify({
+			group_id: "g1",
+			expires_at: "2099-01-01T00:00:00Z",
+			reviewed_preview_digest: await recipientReviewedIntentDigest(crossIdentityIntent),
+			reviewed_intent: crossIdentityIntent,
+		});
+		const crossIdentityResponse = await exports.default.fetch(
+			url,
+			signedRequest(device, crossIdentityBody),
+		);
+		expect(crossIdentityResponse.status).toBe(409);
+		expect(await crossIdentityResponse.json()).toEqual({
+			error: "recipient_invite_intent_mismatch",
+		});
+
+		const teamIntent = teamReviewedIntent();
+		const teamBody = JSON.stringify({
+			group_id: "g1",
+			expires_at: "2099-01-01T00:00:00Z",
+			reviewed_preview_digest: await recipientReviewedIntentDigest(teamIntent),
+			reviewed_intent: teamIntent,
+		});
+		const teamResponse = await exports.default.fetch(url, signedRequest(device, teamBody));
+		expect(teamResponse.status).toBe(409);
+		expect(await teamResponse.json()).toEqual({ error: "recipient_invite_intent_mismatch" });
+
+		const kindFieldBody = JSON.stringify({
+			...JSON.parse(body),
+			invite_kind: "team_member",
+		});
+		const kindFieldResponse = await exports.default.fetch(
+			url,
+			signedRequest(device, kindFieldBody),
+		);
+		expect(kindFieldResponse.status).toBe(400);
+		expect(await kindFieldResponse.json()).toEqual({
+			error: "unexpected_add_device_invite_fields",
+		});
+
+		const successfulRequest = signedRequest(device, body);
+		const response = await exports.default.fetch(url, successfulRequest);
+
+		expect(response.status).toBe(200);
+		const result = (await response.json()) as { payload: InvitePayload };
+		expect(result.payload).toMatchObject({
+			kind: "add_device",
+			coordinator_url: "https://example.com",
+			group_id: "g1",
+			policy: "auto_admit",
+			target_identity_id: identityId,
+			reviewed_preview_digest: digest,
+		});
+		const replay = await exports.default.fetch(url, successfulRequest);
+		expect(replay.status).toBe(401);
+		expect(await replay.json()).toEqual({ error: "nonce_replay" });
+		expect(
+			await env.COORDINATOR_DB.prepare(
+				`SELECT invite_kind, target_identity_id, created_by, policy
+				 FROM coordinator_invites WHERE token_digest IS NOT NULL`,
+			).first(),
+		).toEqual({
+			invite_kind: "add_device",
+			target_identity_id: identityId,
+			created_by: identityId,
+			policy: "auto_admit",
+		});
+	});
+
 	it("persists explicit Team and add-device invitation bindings without mutating coordinator memberships", async () => {
 		const device = createIdentity();
 		const otherDevice = createIdentity();
