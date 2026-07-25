@@ -1260,6 +1260,40 @@
       }
       .recipient-policy-sharing-details dt { color: var(--text-secondary); }
       .recipient-policy-sharing-details dd { margin: 0; color: var(--text-primary); }
+      .recipient-policy-invitation-result {
+        display: flex;
+        align-items: flex-start;
+        gap: var(--sp-3);
+        padding: var(--sp-4);
+        border: 1px solid color-mix(in srgb, var(--status-healthy) 36%, var(--border));
+        border-radius: var(--radius-md);
+        background: color-mix(in srgb, var(--status-healthy) 9%, var(--surface-1));
+      }
+      .recipient-policy-invitation-result:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        box-shadow: 0 0 0 4px var(--focus-ring);
+      }
+      .recipient-policy-invitation-result-mark {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 28px;
+        width: 28px;
+        height: 28px;
+        border-radius: var(--radius-pill);
+        background: color-mix(in srgb, var(--status-healthy) 18%, var(--surface-0));
+        color: var(--status-healthy);
+        font-weight: var(--font-weight-semibold);
+        line-height: 1;
+      }
+      .recipient-policy-invitation-result-copy { min-width: 0; }
+      .recipient-policy-invitation-result-copy h3 { margin: 0; }
+      .recipient-policy-invitation-result-copy p {
+        margin-top: var(--sp-2);
+        color: var(--text-secondary);
+        overflow-wrap: anywhere;
+      }
 
       #devicesMount .recipient-policy-sharing-grid {
         grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
@@ -1287,6 +1321,7 @@
         .recipient-policy-sharing-responsive-actions button { min-height: 44px; width: 100%; }
         .recipient-policy-sharing-responsive-tabs { overflow-x: auto; }
         .recipient-policy-sharing-details div { grid-template-columns: 1fr; gap: var(--sp-1); }
+        .recipient-policy-invitation-result { padding: var(--sp-3); }
         #devicesMount .recipient-policy-sharing-card > .settings-button {
           min-height: 44px;
           width: 100%;

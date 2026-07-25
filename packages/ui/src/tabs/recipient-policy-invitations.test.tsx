@@ -233,9 +233,17 @@ describe("recipient-policy invitations", () => {
 			device_name: "Travel Laptop",
 			reviewed_onboarding_digest: addDevicePreview.reviewedOnboardingDigest,
 		});
+		await vi.waitFor(() => expect(dialog.textContent).toContain("Device added"));
+		const result = dialog.querySelector("#recipient-invitation-result");
+		expect(result).not.toBeNull();
+		expect(document.activeElement).toBe(result);
+		expect(dialog.querySelector("textarea")).toBeNull();
+		expect(() => button("Accept invitation", dialog)).toThrow("button missing");
+		await act(async () => Promise.resolve());
+		expect(dialog.querySelector("#recipient-invitation-result")).toBe(result);
 	});
 
-	it("inspects and accepts a Team invitation with required names, digest, and Team result copy", async () => {
+	it("persists a Team completion, prevents repeat acceptance, and resets after close and reopen", async () => {
 		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
 			kind: "team_member",
 			recipient_name: "Local Identity",
@@ -255,7 +263,11 @@ describe("recipient-policy invitations", () => {
 		});
 		act(() => button("Review invitation", dialog).click());
 		await vi.waitFor(() => expect(dialog.textContent).toContain("Current Projects for"));
-		act(() => button("Accept invitation", dialog).click());
+		const acceptButton = button("Accept invitation", dialog);
+		act(() => {
+			acceptButton.click();
+			acceptButton.click();
+		});
 
 		await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledOnce());
 		expect(api.importCoordinatorInvite).toHaveBeenCalledWith("team-member-invite", {
@@ -265,6 +277,24 @@ describe("recipient-policy invitations", () => {
 		});
 		await vi.waitFor(() => expect(dialog.textContent).toContain("Team invitation accepted"));
 		expect(dialog.textContent).not.toContain("Project setup is pending");
+		const result = dialog.querySelector("#recipient-invitation-result");
+		expect(result).not.toBeNull();
+		expect(document.activeElement).toBe(result);
+		expect(dialog.querySelector("textarea")).toBeNull();
+		expect(() => button("Review invitation", dialog)).toThrow("button missing");
+		expect(() => button("Accept invitation", dialog)).toThrow("button missing");
+		act(() => acceptButton.click());
+		expect(api.importCoordinatorInvite).toHaveBeenCalledOnce();
+
+		act(() => button("Done", dialog).click());
+		expect(document.querySelector('[role="dialog"]')).toBeNull();
+		act(() => button("Review invitation").click());
+		const reopenedDialog = document.querySelector('[role="dialog"]');
+		const reopenedInvite = reopenedDialog?.querySelector<HTMLTextAreaElement>("textarea");
+		if (!reopenedDialog || !reopenedInvite) throw new Error("reopened dialog missing");
+		expect(reopenedInvite.value).toBe("");
+		expect(reopenedDialog.querySelector("#recipient-invitation-result")).toBeNull();
+		expect(button("Review invitation", reopenedDialog).disabled).toBe(false);
 	});
 
 	it("surfaces restart guidance when Team acceptance enables sync", async () => {
@@ -299,6 +329,25 @@ describe("recipient-policy invitations", () => {
 				"Restart codemem to start receiving the reviewed Projects.",
 			),
 		);
+		const result = dialog.querySelector<HTMLElement>("#recipient-invitation-result");
+		if (!result) throw new Error("Team restart completion missing");
+		expect(result.classList.contains("recipient-policy-invitation-result")).toBe(true);
+		expect(result.getAttribute("aria-labelledby")).toBe("recipient-invitation-result-title");
+		expect(result.getAttribute("aria-describedby")).toBe("recipient-invitation-result-detail");
+		expect(
+			result.querySelector(".recipient-policy-invitation-result-mark")?.getAttribute("aria-hidden"),
+		).toBe("true");
+		expect(document.activeElement).toBe(result);
+		expect(dialog.querySelector("textarea")).toBeNull();
+		expect(() => button("Accept invitation", dialog)).toThrow("button missing");
+		expect(
+			dialog
+				.querySelector(".modal-footer")
+				?.classList.contains("recipient-policy-sharing-responsive-actions"),
+		).toBe(true);
+		expect(
+			button("Done", dialog).closest(".recipient-policy-sharing-responsive-actions"),
+		).not.toBeNull();
 	});
 
 	it("keeps unknown recipient-import errors generic", async () => {
@@ -669,6 +718,8 @@ describe("recipient-policy invitations", () => {
 			),
 		);
 		expect(dialog.textContent).not.toContain("Device added.");
+		expect(dialog.querySelector("#recipient-invitation-result")).toBe(document.activeElement);
+		expect(() => button("Accept invitation", dialog)).toThrow("button missing");
 	});
 
 	it("uses safe fallback result copy after reviewing unavailable optional Project identity names", async () => {
@@ -812,6 +863,20 @@ describe("recipient-policy invitations", () => {
 			expect(dialog.querySelector('[role="alert"]')?.textContent).toContain(guidance),
 		);
 		expect(dialog.textContent).not.toContain(code);
+	});
+
+	it("uses the shared labelled close-button structure", () => {
+		mount();
+		act(() => button("Review invitation").click());
+		const dialog = document.querySelector('[role="dialog"]');
+		const closeButton = dialog?.querySelector<HTMLButtonElement>(".modal-close-button");
+		if (!closeButton) throw new Error("shared close button missing");
+		expect(closeButton.getAttribute("aria-label")).toBe("Close invitation");
+		expect(closeButton.querySelector(".modal-close-button-icon")?.getAttribute("data-lucide")).toBe(
+			"x",
+		);
+		expect(closeButton.querySelector(".modal-close-button-label")?.textContent).toBe("Close");
+		expect(closeButton.textContent).not.toContain("×");
 	});
 
 	it("moves focus to the heading and restores it after Radix keyboard close", () => {

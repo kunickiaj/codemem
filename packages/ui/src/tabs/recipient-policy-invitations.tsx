@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { DialogCloseButton } from "../components/primitives/dialog-close-button";
 import { RadixDialog } from "../components/primitives/radix-dialog";
 import * as api from "../lib/api";
 import type {
@@ -20,6 +21,11 @@ type ProjectShareAcceptance = Omit<ImportInviteResult, "status"> & {
 	restart_required?: boolean;
 	detail?: string;
 	type?: "project_share";
+};
+type RecipientAcceptance = {
+	kind: CreateKind;
+	restartRequired: boolean;
+	detail: string;
 };
 
 function displayNameError(value: string, label: string): string {
@@ -287,6 +293,29 @@ function ProjectShareResult({ result }: { result: ProjectShareAcceptance }) {
 	);
 }
 
+function RecipientAcceptanceResult({ result }: { result: RecipientAcceptance }) {
+	const title = result.kind === "team_member" ? "Team invitation accepted" : "Device added";
+	return (
+		<section
+			aria-describedby={result.restartRequired ? "recipient-invitation-result-detail" : undefined}
+			aria-labelledby="recipient-invitation-result-title"
+			className="recipient-policy-invitation-result"
+			id="recipient-invitation-result"
+			tabIndex={-1}
+		>
+			<span aria-hidden="true" className="recipient-policy-invitation-result-mark">
+				✓
+			</span>
+			<div className="recipient-policy-invitation-result-copy">
+				<h3 id="recipient-invitation-result-title">{title}</h3>
+				{result.restartRequired ? (
+					<p id="recipient-invitation-result-detail">{result.detail}</p>
+				) : null}
+			</div>
+		</section>
+	);
+}
+
 function request(kind: CreateKind, targetId: string): RecipientInvitePreviewRequest {
 	return kind === "team_member"
 		? { kind, policy_team_id: targetId }
@@ -303,6 +332,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 	const [preview, setPreview] = useState<RecipientOnboardingPreviewV1 | null>(null);
 	const [inspected, setInspected] = useState<InspectInviteResult | null>(null);
 	const [projectAcceptance, setProjectAcceptance] = useState<ProjectShareAcceptance | null>(null);
+	const [recipientAcceptance, setRecipientAcceptance] = useState<RecipientAcceptance | null>(null);
 	const [projectRecipientName, setProjectRecipientName] = useState("");
 	const [projectDeviceName, setProjectDeviceName] = useState("");
 	const [created, setCreated] = useState<CreatedRecipientInvite | null>(null);
@@ -312,8 +342,13 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 	const returnFocus = useRef<HTMLElement | null>(null);
 	const inviteRevision = useRef(0);
 	const inviteValue = useRef("");
+	const accepting = useRef(false);
 
 	useEffect(() => {
+		if (recipientAcceptance) {
+			document.getElementById("recipient-invitation-result")?.focus();
+			return;
+		}
 		if (projectAcceptance) {
 			document.getElementById("project-share-invitation-result")?.focus();
 			return;
@@ -321,13 +356,17 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 		if (inspected?.kind === "project_share_invite") {
 			document.getElementById("project-share-invitation-projects")?.focus();
 		}
-	}, [inspected, projectAcceptance]);
+	}, [inspected, projectAcceptance, recipientAcceptance]);
 
 	const reset = () => {
 		inviteRevision.current += 1;
+		inviteValue.current = "";
+		accepting.current = false;
+		setInvite("");
 		setPreview(null);
 		setInspected(null);
 		setProjectAcceptance(null);
+		setRecipientAcceptance(null);
 		setProjectRecipientName("");
 		setProjectDeviceName("");
 		setCreated(null);
@@ -341,8 +380,8 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 	};
 	const close = () => {
 		if (busy) return;
-		inviteRevision.current += 1;
 		setMode(null);
+		reset();
 	};
 	const updateInvite = (nextInvite: string) => {
 		inviteRevision.current += 1;
@@ -430,6 +469,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 		}
 	};
 	const accept = async () => {
+		if (busy || accepting.current || recipientAcceptance) return;
 		if (!inspected || inspected.kind === "legacy_team_invite") return;
 		if (inspected.kind === "project_share_invite" && !(inspected.projects?.length ?? 0)) return;
 		if (
@@ -439,6 +479,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 		) {
 			return;
 		}
+		accepting.current = true;
 		setBusy(true);
 		setError("");
 		setStatus("Accepting invitation…");
@@ -458,23 +499,19 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 				setProjectAcceptance(normalizeProjectShareAcceptance(result));
 				setStatus("");
 			} else {
+				const acceptedKind = inspected.kind;
 				const restartRequired =
 					result.restart_required === true || result.setup_state === "restart_required";
 				const detail = typeof result.detail === "string" ? result.detail.trim() : "";
-				setStatus(
-					restartRequired
-						? detail ||
-								(inspected.kind === "team_member"
-									? "Team invitation accepted. Restart codemem before continuing."
-									: "Device added. Restart codemem before continuing.")
-						: inspected.kind === "team_member"
-							? "Team invitation accepted."
-							: "Device added.",
-				);
-				setInspected(null);
-				updateInvite("");
+				setRecipientAcceptance({
+					kind: acceptedKind,
+					restartRequired,
+					detail: detail || "Restart codemem before continuing.",
+				});
+				setStatus("");
 			}
 		} catch (cause) {
+			accepting.current = false;
 			const detail = cause instanceof Error ? cause.message.trim() : "";
 			const fallback =
 				inspected.kind === "project_share_invite" && detail
@@ -592,15 +629,24 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 					<div aria-busy={busy} className="modal-card sync-dialog-card">
 						<div className="modal-header">
 							<h2 id="recipient-invitation-title" tabIndex={-1}>
-								{mode === "create" ? "Create invitation" : "Review invitation"}
+								{recipientAcceptance
+									? "Invitation accepted"
+									: mode === "create"
+										? "Create invitation"
+										: "Review invitation"}
 							</h2>
-							<button aria-label="Close invitation" disabled={busy} onClick={close} type="button">
-								×
-							</button>
+							<DialogCloseButton
+								ariaLabel="Close invitation"
+								className="modal-close-button recipient-policy-sharing-target-24"
+								disabled={busy}
+								onClick={close}
+							/>
 						</div>
 						<div className="modal-body">
 							<p className="small" id="recipient-invitation-description">
-								Confirm exactly what this invitation includes before continuing.
+								{recipientAcceptance
+									? "The invitation has been accepted."
+									: "Confirm exactly what this invitation includes before continuing."}
 							</p>
 							{mode === "create" && !preview && !created ? (
 								<label className="field" htmlFor="recipient-invitation-target">
@@ -620,7 +666,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 										))}
 									</select>
 								</label>
-							) : mode === "accept" && !inspected ? (
+							) : mode === "accept" && !inspected && !recipientAcceptance ? (
 								<label className="field" htmlFor="recipient-invitation-value">
 									<span>Invitation</span>
 									<textarea
@@ -638,7 +684,9 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 								</label>
 							) : null}
 							{preview ? <Confirmation preview={preview} /> : null}
-							{recipientPreview ? <Confirmation preview={recipientPreview} /> : null}
+							{recipientPreview && !recipientAcceptance ? (
+								<Confirmation preview={recipientPreview} />
+							) : null}
 							{projectShareInvite && !projectAcceptance ? (
 								<ProjectShareConfirmation
 									deviceName={projectDeviceName}
@@ -657,6 +705,9 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 								/>
 							) : null}
 							{projectAcceptance ? <ProjectShareResult result={projectAcceptance} /> : null}
+							{recipientAcceptance ? (
+								<RecipientAcceptanceResult result={recipientAcceptance} />
+							) : null}
 							{created ? (
 								<div>
 									<p>Share the invitation with the recipient.</p>
@@ -679,7 +730,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 						</div>
 						<div className="modal-footer recipient-policy-sharing-responsive-actions">
 							<button className="settings-button" disabled={busy} onClick={close} type="button">
-								{created || projectAcceptance ? "Done" : "Cancel"}
+								{created || projectAcceptance || recipientAcceptance ? "Done" : "Cancel"}
 							</button>
 							{mode === "create" && !created ? (
 								<button
@@ -690,7 +741,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 								>
 									{busy ? "Working…" : preview ? "Create invitation" : "Review invitation"}
 								</button>
-							) : mode === "accept" && !inspected ? (
+							) : mode === "accept" && !inspected && !recipientAcceptance ? (
 								<button
 									className="settings-button sync-dialog-confirm"
 									disabled={busy}
@@ -699,7 +750,8 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 								>
 									{busy ? "Reviewing…" : "Review invitation"}
 								</button>
-							) : recipientPreview || (projectShareInvite && !projectAcceptance) ? (
+							) : (recipientPreview && !recipientAcceptance) ||
+								(projectShareInvite && !projectAcceptance) ? (
 								<button
 									className="settings-button sync-dialog-confirm"
 									disabled={
