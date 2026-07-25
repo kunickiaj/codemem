@@ -769,6 +769,10 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					await store.setDeviceEnabled("g1", "d1", false);
 					expect(await store.listEnrolledDevices("g1")).toHaveLength(0);
 					expect(await store.listEnrolledDevices("g1", true)).toHaveLength(1);
+					expect(await store.getEnrollment("g1", "d1", true)).toMatchObject({
+						device_id: "d1",
+						enabled: 0,
+					});
 					await store.setDeviceEnabled("g1", "d1", true);
 					expect(await store.listEnrolledDevices("g1")).toHaveLength(1);
 				});

@@ -145,9 +145,12 @@ async function authorizeRequest(
 		return { ok: false, error: "missing_headers", enrollment: null };
 	}
 
-	const enrollment = await store.getEnrollment(opts.groupId, deviceId);
+	const enrollment = await store.getEnrollment(opts.groupId, deviceId, true);
 	if (!enrollment) {
 		return { ok: false, error: "unknown_device", enrollment: null };
+	}
+	if (enrollment.enabled !== 1) {
+		return { ok: false, error: "device_disabled", enrollment: null };
 	}
 	const group = await store.getGroup(opts.groupId);
 	if (!group) {
@@ -197,6 +200,12 @@ async function authorizeRequest(
 	await cleanupNonces(store, cutoff);
 
 	return { ok: true, error: "ok", enrollment };
+}
+
+function authErrorStatus(error: string): 401 | 403 | 409 {
+	if (error === "device_disabled") return 403;
+	if (error === "group_archived") return 409;
+	return 401;
 }
 
 // ---------------------------------------------------------------------------
@@ -402,7 +411,7 @@ export function createCoordinatorApp(
 				auth,
 				response:
 					rateLimitedResponse(c, c.req.path, false) ??
-					c.json({ error: auth.error }, auth.error === "group_archived" ? 409 : 401),
+					c.json({ error: auth.error }, authErrorStatus(auth.error)),
 			};
 		}
 		const limited = rateLimitedResponse(c, String(auth.enrollment.device_id), true);
@@ -463,7 +472,7 @@ export function createCoordinatorApp(
 			if (!auth.ok || !auth.enrollment) {
 				const limited = rateLimitedResponse(c, c.req.path, false);
 				if (limited) return limited;
-				return c.json({ error: auth.error }, auth.error === "group_archived" ? 409 : 401);
+				return c.json({ error: auth.error }, authErrorStatus(auth.error));
 			}
 			const limited = rateLimitedResponse(c, String(auth.enrollment.device_id), true);
 			if (limited) return limited;
@@ -531,7 +540,7 @@ export function createCoordinatorApp(
 			if (!auth.ok || !auth.enrollment) {
 				const limited = rateLimitedResponse(c, c.req.path, false);
 				if (limited) return limited;
-				return c.json({ error: auth.error }, auth.error === "group_archived" ? 409 : 401);
+				return c.json({ error: auth.error }, authErrorStatus(auth.error));
 			}
 			const limited = rateLimitedResponse(c, String(auth.enrollment.device_id), true);
 			if (limited) return limited;
@@ -629,7 +638,10 @@ export function createCoordinatorApp(
 				nonce: c.req.header("X-Opencode-Nonce") ?? null,
 			});
 			if (!auth.ok || !auth.enrollment) {
-				return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: auth.error }, 401);
+				return (
+					rateLimitedResponse(c, c.req.path, false) ??
+					c.json({ error: auth.error }, authErrorStatus(auth.error))
+				);
 			}
 			const limited = rateLimitedResponse(c, String(auth.enrollment.device_id), true);
 			if (limited) return limited;
@@ -679,7 +691,10 @@ export function createCoordinatorApp(
 				nonce: c.req.header("X-Opencode-Nonce") ?? null,
 			});
 			if (!auth.ok || !auth.enrollment) {
-				return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: auth.error }, 401);
+				return (
+					rateLimitedResponse(c, c.req.path, false) ??
+					c.json({ error: auth.error }, authErrorStatus(auth.error))
+				);
 			}
 			const limited = rateLimitedResponse(c, String(auth.enrollment.device_id), true);
 			if (limited) return limited;
@@ -696,6 +711,125 @@ export function createCoordinatorApp(
 				requestedDeviceId,
 			});
 			return c.json({ ok: true, request });
+		} finally {
+			await store.close();
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// POST /v1/invites/add-device — create an Identity-owned device invite
+	// -----------------------------------------------------------------------
+
+	app.post("/v1/invites/add-device", async (c) => {
+		const raw = await readRequestBytes(c);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
+		const data = parseJsonObject(raw);
+		if (!data) return c.json({ error: "invalid_json" }, 400);
+
+		const allowedFields = new Set([
+			"group_id",
+			"expires_at",
+			"reviewed_preview_digest",
+			"reviewed_intent",
+		]);
+		if (Object.keys(data).some((key) => !allowedFields.has(key))) {
+			return c.json({ error: "unexpected_add_device_invite_fields" }, 400);
+		}
+
+		const groupId = String(data.group_id ?? "").trim();
+		const expiresAt = String(data.expires_at ?? "").trim();
+		const reviewedPreviewDigest = String(data.reviewed_preview_digest ?? "").trim();
+		if (!groupId || !expiresAt) {
+			return c.json({ error: "group_id_and_expires_at_required" }, 400);
+		}
+		if (Number.isNaN(new Date(expiresAt).getTime())) {
+			return c.json({ error: "invalid_expires_at" }, 400);
+		}
+		if (!/^[a-f0-9]{64}$/u.test(reviewedPreviewDigest)) {
+			return c.json({ error: "reviewed_preview_digest_invalid" }, 400);
+		}
+		if (data.reviewed_intent == null) {
+			return c.json({ error: "recipient_invite_review_unavailable" }, 400);
+		}
+
+		const store = createStore();
+		try {
+			const auth = await authorizeRequest(store, runtime, requestVerifier, {
+				method: c.req.method,
+				url: c.req.url,
+				groupId,
+				body: raw,
+				deviceId: c.req.header("X-Opencode-Device") ?? null,
+				signature: c.req.header("X-Opencode-Signature") ?? null,
+				timestamp: c.req.header("X-Opencode-Timestamp") ?? null,
+				nonce: c.req.header("X-Opencode-Nonce") ?? null,
+			});
+			if (!auth.ok || !auth.enrollment) {
+				return (
+					rateLimitedResponse(c, c.req.path, false) ??
+					c.json({ error: auth.error }, authErrorStatus(auth.error))
+				);
+			}
+			const limited = rateLimitedResponse(c, String(auth.enrollment.device_id), true);
+			if (limited) return limited;
+
+			const targetIdentityId = auth.enrollment.identity_id;
+			if (
+				!targetIdentityId ||
+				targetIdentityId !== targetIdentityId.trim() ||
+				targetIdentityId.length > 256 ||
+				/[\p{Cc}\p{Cf}]/u.test(targetIdentityId)
+			) {
+				return c.json({ error: "identity_binding_required" }, 403);
+			}
+
+			let reviewedIntent: RecipientReviewedIntentV1;
+			try {
+				reviewedIntent = await verifyRecipientReviewedIntent(data.reviewed_intent, {
+					target: { kind: "add_device", targetIdentityId },
+					digest: reviewedPreviewDigest,
+				});
+			} catch (error) {
+				if (
+					error instanceof RecipientReviewedIntentError &&
+					error.code === "recipient_invite_intent_mismatch"
+				) {
+					return c.json({ error: error.code }, 409);
+				}
+				return c.json({ error: "recipient_invite_review_unavailable" }, 400);
+			}
+
+			const invite = await store.createInvite({
+				groupId,
+				policy: "auto_admit",
+				expiresAt,
+				createdBy: targetIdentityId,
+				inviteKind: "add_device",
+				targetIdentityId,
+				reviewedPreviewDigest,
+				reviewedIntent,
+			});
+			const payload: InvitePayload = {
+				v: 1,
+				kind: "add_device",
+				coordinator_url: new URL(c.req.url).origin,
+				group_id: groupId,
+				policy: invite.policy,
+				token: String(invite.token ?? ""),
+				expires_at: invite.expires_at,
+				team_name: (invite.team_name_snapshot as string) ?? null,
+				target_identity_id: invite.target_identity_id ?? undefined,
+				reviewed_preview_digest: invite.reviewed_preview_digest ?? undefined,
+			};
+			const encoded = encodeInvitePayload(payload);
+			const { token: _token, ...inviteWithoutToken } = invite;
+			return c.json({
+				ok: true,
+				invite: inviteWithoutToken,
+				payload,
+				encoded,
+				link: inviteLink(encoded),
+			});
 		} finally {
 			await store.close();
 		}

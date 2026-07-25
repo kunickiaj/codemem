@@ -10396,9 +10396,11 @@ describe("viewer-server", () => {
 			const keysDir = join(configDir, "keys");
 			const previousConfig = process.env.CODEMEM_CONFIG;
 			const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const previousAdminSecret = process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
 			const previousFetch = globalThis.fetch;
 			process.env.CODEMEM_CONFIG = configPath;
 			process.env.CODEMEM_KEYS_DIR = keysDir;
+			delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
 			writeFileSync(
 				configPath,
 				JSON.stringify({
@@ -10408,37 +10410,48 @@ describe("viewer-server", () => {
 				}),
 			);
 			const coordinatorBodies: Record<string, unknown>[] = [];
-			globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+			const coordinatorUrls: string[] = [];
+			const coordinatorHeaders: Headers[] = [];
+			globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = String(input);
 				const body = JSON.parse(
 					init?.body instanceof Uint8Array
 						? new TextDecoder().decode(init.body)
 						: String(init?.body ?? "{}"),
 				) as Record<string, unknown>;
 				coordinatorBodies.push(body);
+				coordinatorUrls.push(url);
+				coordinatorHeaders.push(new Headers(init?.headers));
+				const signedAddDevice = url.endsWith("/v1/invites/add-device");
+				const reviewedIntent = body.reviewed_intent as
+					| Extract<core.RecipientReviewedIntentV1, { journey: "add_device" }>
+					| undefined;
+				const kind = signedAddDevice ? "add_device" : String(body.invite_kind);
+				const targetIdentityId = signedAddDevice
+					? reviewedIntent?.targetIdentity.identityId
+					: body.target_identity_id;
 				const payload = {
 					v: 1,
-					kind: body.invite_kind,
+					kind,
 					coordinator_url: "https://coord.example.test",
 					group_id: body.group_id,
-					policy: body.policy,
-					token: `token-${String(body.invite_kind)}`,
+					policy: signedAddDevice ? "auto_admit" : body.policy,
+					token: `token-${kind}`,
 					expires_at: body.expires_at,
 					team_name: null,
 					policy_team_id: body.policy_team_id ?? undefined,
-					target_identity_id: body.target_identity_id ?? undefined,
-					assigned_identity_id:
-						body.invite_kind === "team_member" ? "identity-assigned-team" : undefined,
+					target_identity_id: targetIdentityId ?? undefined,
+					assigned_identity_id: kind === "team_member" ? "identity-assigned-team" : undefined,
 					reviewed_preview_digest: body.reviewed_preview_digest,
 				};
 				return new Response(
 					JSON.stringify({
 						invite: {
-							invite_id: `invite-${String(body.invite_kind)}`,
-							invite_kind: body.invite_kind,
+							invite_id: `invite-${kind}`,
+							invite_kind: kind,
 							policy_team_id: body.policy_team_id,
-							target_identity_id: body.target_identity_id,
-							assigned_identity_id:
-								body.invite_kind === "team_member" ? "identity-assigned-team" : null,
+							target_identity_id: targetIdentityId,
+							assigned_identity_id: kind === "team_member" ? "identity-assigned-team" : null,
 							reviewed_preview_digest: body.reviewed_preview_digest,
 						},
 						payload,
@@ -10491,6 +10504,10 @@ describe("viewer-server", () => {
 					);
 				}
 				expect(coordinatorBodies).toHaveLength(2);
+				expect(coordinatorUrls).toEqual([
+					"https://coord.example.test/v1/admin/invites",
+					"https://coord.example.test/v1/admin/invites",
+				]);
 				expect(coordinatorBodies[0]).toMatchObject({
 					invite_kind: "team_member",
 					policy_team_id: "policy-team-a",
@@ -10499,10 +10516,11 @@ describe("viewer-server", () => {
 					invite_kind: "add_device",
 					target_identity_id: store.actorId,
 				});
+				expect(coordinatorHeaders[0]?.get("X-Codemem-Coordinator-Admin")).toBeTruthy();
+				expect(coordinatorHeaders[1]?.get("X-Codemem-Coordinator-Admin")).toBeTruthy();
 				for (const body of coordinatorBodies) {
 					expect(body.reviewed_intent).toMatchObject({
 						version: 1,
-						journey: body.invite_kind === "team_member" ? "team" : "add_device",
 					});
 					expect(body.reviewed_preview_digest).toBe(
 						await core.recipientReviewedIntentDigest(body.reviewed_intent),
@@ -10521,6 +10539,116 @@ describe("viewer-server", () => {
 				else process.env.CODEMEM_CONFIG = previousConfig;
 				if (previousKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
 				else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
+				if (previousAdminSecret == null) delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+				else process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = previousAdminSecret;
+				rmSync(configDir, { recursive: true, force: true });
+			}
+		});
+
+		it("creates add-device invites without an admin secret while Team creation stays admin-only", async () => {
+			const configDir = mkdtempSync(join(tmpdir(), "codemem-signed-add-device-invite-"));
+			const configPath = join(configDir, "config.json");
+			const keysDir = join(configDir, "keys");
+			const previousConfig = process.env.CODEMEM_CONFIG;
+			const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const previousAdminSecret = process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+			const previousFetch = globalThis.fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "coordinator-a",
+					actor_display_name: "Owner",
+				}),
+			);
+			const { app, ensureStore, cleanup } = createTestApp({ seedDevice: false });
+			try {
+				const store = ensureStore();
+				const [deviceId] = ensureDeviceIdentity(store.db, { keysDir });
+				store.adoptEnsuredDeviceIdentity(deviceId);
+				let signedBody: Record<string, unknown> | null = null;
+				globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+					expect(String(input)).toBe("https://coord.example.test/v1/invites/add-device");
+					signedBody = JSON.parse(
+						init?.body instanceof Uint8Array
+							? new TextDecoder().decode(init.body)
+							: String(init?.body ?? "{}"),
+					) as Record<string, unknown>;
+					const digest = String(signedBody.reviewed_preview_digest);
+					return new Response(
+						JSON.stringify({
+							invite: {
+								invite_id: "invite-add-device",
+								invite_kind: "add_device",
+								target_identity_id: store.actorId,
+								reviewed_preview_digest: digest,
+							},
+							payload: {
+								kind: "add_device",
+								target_identity_id: store.actorId,
+								reviewed_preview_digest: digest,
+							},
+							encoded: "signed-add-device",
+							link: "codemem://join?invite=signed-add-device",
+						}),
+						{ status: 200 },
+					);
+				}) as typeof fetch;
+
+				const preview = await app.request("/api/sync/recipient-policy/v1/invites/preview", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ kind: "add_device", target_identity_id: store.actorId }),
+				});
+				expect(preview.status).toBe(200);
+				const previewBody = (await preview.json()) as {
+					preview: { reviewedOnboardingDigest: string };
+				};
+				const created = await app.request("/api/sync/recipient-policy/v1/invites", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						kind: "add_device",
+						target_identity_id: store.actorId,
+						reviewed_onboarding_digest: previewBody.preview.reviewedOnboardingDigest,
+					}),
+				});
+				expect(created.status, JSON.stringify(await created.clone().json())).toBe(200);
+				expect(signedBody).not.toHaveProperty("target_identity_id");
+				expect(signedBody).not.toHaveProperty("invite_kind");
+
+				const teamPreview = await app.request("/api/sync/recipient-policy/v1/invites/preview", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ kind: "team_member", policy_team_id: "policy-team-a" }),
+				});
+				expect(teamPreview.status).toBe(400);
+				expect(await teamPreview.json()).toMatchObject({
+					error: "coordinator_admin_secret_missing",
+				});
+
+				const crossIdentity = await app.request("/api/sync/recipient-policy/v1/invites/preview", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						kind: "add_device",
+						target_identity_id: "identity-other",
+					}),
+				});
+				expect(crossIdentity.status).toBe(400);
+				expect(await crossIdentity.json()).toEqual({ error: "invite_identity_conflict" });
+			} finally {
+				cleanup();
+				globalThis.fetch = previousFetch;
+				if (previousConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = previousConfig;
+				if (previousKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
+				if (previousAdminSecret == null) delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+				else process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = previousAdminSecret;
 				rmSync(configDir, { recursive: true, force: true });
 			}
 		});

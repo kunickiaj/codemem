@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
 import {
+	coordinatorCreateAddDeviceInviteAction,
 	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
 	coordinatorCreateScopeAction,
@@ -37,6 +38,7 @@ import {
 	type RecipientReviewedIntentV1,
 	recipientReviewedIntentDigest,
 } from "./recipient-reviewed-intent.js";
+import { verifySignature } from "./sync-auth.js";
 import { ensureDeviceIdentity, fingerprintPublicKey, loadPublicKey } from "./sync-identity.js";
 
 type TeamReviewedIntent = Extract<RecipientReviewedIntentV1, { journey: "team" }>;
@@ -634,6 +636,125 @@ describe("coordinator local admin actions", () => {
 
 		expect(requestBody).toMatchObject({ reviewed_intent: reviewedIntent });
 		expect(result.payload).not.toHaveProperty("reviewed_intent");
+	});
+
+	it("signs the exact identity-owned add-device invite body without admin or target fields", async () => {
+		const keysDir = join(tmpDir, "signed-add-device-keys");
+		const identityDbPath = join(tmpDir, "signed-add-device.sqlite");
+		initDatabase(identityDbPath);
+		const identityDb = connect(identityDbPath);
+		let deviceId = "";
+		try {
+			[deviceId] = ensureDeviceIdentity(identityDb, { keysDir });
+		} finally {
+			identityDb.close();
+		}
+		const reviewedIntent = addDeviceReviewedIntent("identity-owner");
+		const digest = await recipientReviewedIntentDigest(reviewedIntent);
+		let requestBody: Record<string, unknown> | null = null;
+		let requestHeaders = new Headers();
+		let transmittedBody = Buffer.alloc(0);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string, init?: RequestInit) => {
+				expect(url).toBe("https://coord.example.test/v1/invites/add-device");
+				requestHeaders = new Headers(init?.headers);
+				transmittedBody =
+					init?.body instanceof Uint8Array ? Buffer.from(init.body) : Buffer.alloc(0);
+				requestBody = JSON.parse(transmittedBody.toString("utf8")) as Record<string, unknown>;
+				return new Response(
+					JSON.stringify({
+						invite: {
+							invite_id: "invite-device-1",
+							invite_kind: "add_device",
+							target_identity_id: "identity-owner",
+							reviewed_preview_digest: digest,
+						},
+						payload: {
+							kind: "add_device",
+							target_identity_id: "identity-owner",
+							reviewed_preview_digest: digest,
+						},
+						encoded: "digest-only",
+						link: "codemem://join?invite=digest-only",
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}),
+		);
+
+		const result = await coordinatorCreateAddDeviceInviteAction({
+			groupId: "team-a",
+			coordinatorUrl: "https://coord.example.test",
+			ttlHours: 24,
+			deviceId,
+			keysDir,
+			reviewedPreviewDigest: digest,
+			reviewedIntent,
+		});
+
+		expect(requestBody).toMatchObject({
+			group_id: "team-a",
+			reviewed_preview_digest: digest,
+			reviewed_intent: reviewedIntent,
+		});
+		expect(requestBody).not.toHaveProperty("target_identity_id");
+		expect(requestBody).not.toHaveProperty("invite_kind");
+		expect(requestHeaders.get("X-Opencode-Device")).toBe(deviceId);
+		expect(requestHeaders.get("X-Opencode-Signature")).toMatch(/^v2:/u);
+		expect(requestHeaders.has("X-Codemem-Coordinator-Admin")).toBe(false);
+		expect(
+			verifySignature({
+				method: "POST",
+				pathWithQuery: "/v1/invites/add-device",
+				timestamp: String(requestHeaders.get("X-Opencode-Timestamp")),
+				nonce: String(requestHeaders.get("X-Opencode-Nonce")),
+				signature: String(requestHeaders.get("X-Opencode-Signature")),
+				publicKey: String(loadPublicKey(keysDir)),
+				deviceId,
+				bodyBytes: transmittedBody,
+			}),
+		).toBe(true);
+		expect(result).toMatchObject({
+			invite_id: "invite-device-1",
+			invite_kind: "add_device",
+			target_identity_id: "identity-owner",
+			link: "codemem://join?invite=digest-only",
+		});
+	});
+
+	it("surfaces signed add-device coordinator authorization failures without admin fallback", async () => {
+		const keysDir = join(tmpDir, "signed-add-device-error-keys");
+		const identityDbPath = join(tmpDir, "signed-add-device-error.sqlite");
+		initDatabase(identityDbPath);
+		const identityDb = connect(identityDbPath);
+		let deviceId = "";
+		try {
+			[deviceId] = ensureDeviceIdentity(identityDb, { keysDir });
+		} finally {
+			identityDb.close();
+		}
+		const reviewedIntent = addDeviceReviewedIntent("identity-owner");
+		const digest = await recipientReviewedIntentDigest(reviewedIntent);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(JSON.stringify({ error: "identity_binding_required" }), { status: 403 }),
+			),
+		);
+
+		await expect(
+			coordinatorCreateAddDeviceInviteAction({
+				groupId: "team-a",
+				coordinatorUrl: "https://coord.example.test",
+				ttlHours: 24,
+				deviceId,
+				keysDir,
+				reviewedPreviewDigest: digest,
+				reviewedIntent,
+			}),
+		).rejects.toThrow("Remote coordinator request failed (403): identity_binding_required");
 	});
 
 	it("imports invites using CODEMEM_DB and CODEMEM_KEYS_DIR when flags are omitted", async () => {

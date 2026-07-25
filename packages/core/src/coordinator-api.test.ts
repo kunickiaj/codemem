@@ -170,6 +170,40 @@ function teamReviewedIntent(teamId = "policy-team-1"): RecipientReviewedIntentV1
 	};
 }
 
+function addDeviceReviewedIntent(identityId = "identity-owner"): RecipientReviewedIntentV1 {
+	return {
+		version: 1,
+		journey: "add_device",
+		targetIdentity: { identityId, displayName: "Adam" },
+		projects: [
+			{
+				canonicalProjectIdentity: "git:https://example.test/codemem",
+				displayName: "codemem",
+				existingMemoryCount: 3,
+				futureMemoriesShared: true,
+				sources: [{ kind: "direct" }],
+			},
+		],
+		excludedProjects: [],
+	};
+}
+
+function enrolledDevice(
+	identityId: string | null = "identity-owner",
+	enabled = 1,
+): CoordinatorEnrollment {
+	return {
+		group_id: "g1",
+		device_id: "device-a",
+		public_key: "pk-a",
+		fingerprint: "fp-a",
+		identity_id: identityId,
+		display_name: "Device A",
+		enabled,
+		created_at: "2026-03-28T00:00:00Z",
+	};
+}
+
 describe("createCoordinatorApp dependency injection", () => {
 	it("uses injected admin secret and store factory for admin routes", async () => {
 		const store = createMockStore({
@@ -458,6 +492,312 @@ describe("createCoordinatorApp dependency injection", () => {
 		expect(response.payload).not.toHaveProperty("reviewed_intent");
 		expect(response.encoded).not.toContain("reviewed_intent");
 		expect(response.link).not.toContain("reviewed_intent");
+	});
+
+	describe("signed add-device invitation creation", () => {
+		function activeGroup(): CoordinatorGroup {
+			return {
+				group_id: "g1",
+				display_name: "Coordinator One",
+				archived_at: null,
+				created_at: "2026-03-28T00:00:00Z",
+			};
+		}
+
+		it("derives invitation authority from the signed enrollment and signs exact body bytes", async () => {
+			const reviewedIntent = addDeviceReviewedIntent();
+			const digest = await recipientReviewedIntentDigest(reviewedIntent);
+			const body = JSON.stringify({
+				group_id: "g1",
+				expires_at: "2026-04-04T00:00:00Z",
+				reviewed_preview_digest: digest,
+				reviewed_intent: reviewedIntent,
+			});
+			const requestVerifier: CoordinatorRequestVerifier = vi.fn(async (input) => {
+				expect(new TextDecoder().decode(input.bodyBytes)).toBe(body);
+				expect(input.pathWithQuery).toBe("/v1/invites/add-device");
+				return true;
+			});
+			const createInvite = vi.fn(async (input: CoordinatorCreateInviteInput) => ({
+				invite_id: "invite-add-device-1",
+				group_id: input.groupId,
+				token: "add-device-token",
+				policy: input.policy,
+				expires_at: input.expiresAt,
+				created_at: "2026-03-28T00:00:00Z",
+				created_by: input.createdBy ?? null,
+				team_name_snapshot: "Coordinator One",
+				revoked_at: null,
+				invite_kind: "add_device" as const,
+				target_identity_id: input.targetIdentityId ?? null,
+				reviewed_preview_digest: input.reviewedPreviewDigest ?? null,
+			}));
+			const store = createMockStore({
+				getEnrollment: vi.fn(async () => enrolledDevice()),
+				getGroup: vi.fn(async () => activeGroup()),
+				createInvite,
+			});
+			const app = createCoordinatorApp({
+				storeFactory: () => store,
+				runtime: { adminSecret: () => null, now: () => "2026-03-28T00:00:00Z" },
+				requestVerifier,
+			});
+
+			const response = await app.request("https://coordinator.example.test/v1/invites/add-device", {
+				method: "POST",
+				headers: { ...authHeaders(), "Content-Type": "application/json" },
+				body,
+			});
+
+			expect(response.status).toBe(200);
+			expect(await response.json()).toMatchObject({
+				ok: true,
+				payload: {
+					kind: "add_device",
+					coordinator_url: "https://coordinator.example.test",
+					group_id: "g1",
+					policy: "auto_admit",
+					target_identity_id: "identity-owner",
+					reviewed_preview_digest: digest,
+				},
+			});
+			expect(createInvite).toHaveBeenCalledWith({
+				groupId: "g1",
+				policy: "auto_admit",
+				expiresAt: "2026-04-04T00:00:00Z",
+				createdBy: "identity-owner",
+				inviteKind: "add_device",
+				targetIdentityId: "identity-owner",
+				reviewedPreviewDigest: digest,
+				reviewedIntent,
+			});
+			expect(requestVerifier).toHaveBeenCalledOnce();
+		});
+
+		it("rejects disabled enrollments centrally before signature or nonce handling", async () => {
+			const reviewedIntent = addDeviceReviewedIntent();
+			const digest = await recipientReviewedIntentDigest(reviewedIntent);
+			const requestVerifier = vi.fn(async () => true);
+			const store = createMockStore({
+				getEnrollment: vi.fn(async () => enrolledDevice("identity-owner", 0)),
+				getGroup: vi.fn(async () => activeGroup()),
+			});
+			const app = createCoordinatorApp({
+				storeFactory: () => store,
+				runtime: { adminSecret: () => null, now: () => "2026-03-28T00:00:00Z" },
+				requestVerifier,
+			});
+
+			const response = await app.request("/v1/presence", {
+				method: "POST",
+				headers: { ...authHeaders(), "Content-Type": "application/json" },
+				body: JSON.stringify({ group_id: "g1", addresses: [] }),
+			});
+			const inviteResponse = await app.request("/v1/invites/add-device", {
+				method: "POST",
+				headers: { ...authHeaders(), "Content-Type": "application/json" },
+				body: JSON.stringify({
+					group_id: "g1",
+					expires_at: "2026-04-04T00:00:00Z",
+					reviewed_preview_digest: digest,
+					reviewed_intent: reviewedIntent,
+				}),
+			});
+
+			expect(response.status).toBe(403);
+			expect(await response.json()).toEqual({ error: "device_disabled" });
+			expect(inviteResponse.status).toBe(403);
+			expect(await inviteResponse.json()).toEqual({ error: "device_disabled" });
+			expect(requestVerifier).not.toHaveBeenCalled();
+			expect(store.recordNonce).not.toHaveBeenCalled();
+			expect(store.upsertPresence).not.toHaveBeenCalled();
+		});
+
+		it("rejects signed issuance from an enrollment without an Identity binding", async () => {
+			const reviewedIntent = addDeviceReviewedIntent();
+			const digest = await recipientReviewedIntentDigest(reviewedIntent);
+			const store = createMockStore({
+				getEnrollment: vi.fn(async () => enrolledDevice(null)),
+				getGroup: vi.fn(async () => activeGroup()),
+			});
+			const app = createCoordinatorApp({
+				storeFactory: () => store,
+				runtime: { adminSecret: () => null, now: () => "2026-03-28T00:00:00Z" },
+				requestVerifier: allowRequest,
+			});
+
+			const response = await app.request("/v1/invites/add-device", {
+				method: "POST",
+				headers: { ...authHeaders(), "Content-Type": "application/json" },
+				body: JSON.stringify({
+					group_id: "g1",
+					expires_at: "2026-04-04T00:00:00Z",
+					reviewed_preview_digest: digest,
+					reviewed_intent: reviewedIntent,
+				}),
+			});
+
+			expect(response.status).toBe(403);
+			expect(await response.json()).toEqual({ error: "identity_binding_required" });
+			expect(store.createInvite).not.toHaveBeenCalled();
+		});
+
+		it("rejects signed issuance from an unknown device", async () => {
+			const reviewedIntent = addDeviceReviewedIntent();
+			const digest = await recipientReviewedIntentDigest(reviewedIntent);
+			const requestVerifier = vi.fn(async () => true);
+			const store = createMockStore({ getEnrollment: vi.fn(async () => null) });
+			const app = createCoordinatorApp({
+				storeFactory: () => store,
+				runtime: { adminSecret: () => null, now: () => "2026-03-28T00:00:00Z" },
+				requestVerifier,
+			});
+
+			const response = await app.request("/v1/invites/add-device", {
+				method: "POST",
+				headers: { ...authHeaders("unknown-device"), "Content-Type": "application/json" },
+				body: JSON.stringify({
+					group_id: "g1",
+					expires_at: "2026-04-04T00:00:00Z",
+					reviewed_preview_digest: digest,
+					reviewed_intent: reviewedIntent,
+				}),
+			});
+
+			expect(response.status).toBe(401);
+			expect(await response.json()).toEqual({ error: "unknown_device" });
+			expect(requestVerifier).not.toHaveBeenCalled();
+			expect(store.recordNonce).not.toHaveBeenCalled();
+			expect(store.createInvite).not.toHaveBeenCalled();
+		});
+
+		it("preserves bad-signature and nonce-replay authorization errors", async () => {
+			const reviewedIntent = addDeviceReviewedIntent();
+			const digest = await recipientReviewedIntentDigest(reviewedIntent);
+			const body = JSON.stringify({
+				group_id: "g1",
+				expires_at: "2026-04-04T00:00:00Z",
+				reviewed_preview_digest: digest,
+				reviewed_intent: reviewedIntent,
+			});
+			const baseStore = {
+				getEnrollment: vi.fn(async () => enrolledDevice()),
+				getGroup: vi.fn(async () => activeGroup()),
+			};
+			const invalidSignatureStore = createMockStore(baseStore);
+			const invalidSignatureApp = createCoordinatorApp({
+				storeFactory: () => invalidSignatureStore,
+				runtime: { adminSecret: () => null, now: () => "2026-03-28T00:00:00Z" },
+				requestVerifier: async () => false,
+			});
+			const replayStore = createMockStore({ ...baseStore, recordNonce: vi.fn(async () => false) });
+			const replayApp = createCoordinatorApp({
+				storeFactory: () => replayStore,
+				runtime: { adminSecret: () => null, now: () => "2026-03-28T00:00:00Z" },
+				requestVerifier: allowRequest,
+			});
+
+			const invalidSignature = await invalidSignatureApp.request("/v1/invites/add-device", {
+				method: "POST",
+				headers: { ...authHeaders(), "Content-Type": "application/json" },
+				body,
+			});
+			const replay = await replayApp.request("/v1/invites/add-device", {
+				method: "POST",
+				headers: { ...authHeaders(), "Content-Type": "application/json" },
+				body,
+			});
+
+			expect(invalidSignature.status).toBe(401);
+			expect(await invalidSignature.json()).toEqual({ error: "invalid_signature" });
+			expect(replay.status).toBe(401);
+			expect(await replay.json()).toEqual({ error: "nonce_replay" });
+			expect(invalidSignatureStore.createInvite).not.toHaveBeenCalled();
+			expect(replayStore.createInvite).not.toHaveBeenCalled();
+		});
+
+		it("rejects every field outside the fixed add-device request contract", async () => {
+			const reviewedIntent = addDeviceReviewedIntent();
+			const digest = await recipientReviewedIntentDigest(reviewedIntent);
+			const storeFactory = vi.fn(() => createMockStore());
+			const app = createCoordinatorApp({
+				storeFactory,
+				runtime: { adminSecret: () => null, now: () => "2026-03-28T00:00:00Z" },
+				requestVerifier: allowRequest,
+			});
+			const forbiddenFields = [
+				["invite_kind", "team_member"],
+				["target_identity_id", "identity-other"],
+				["policy", "approval_required"],
+				["created_by", "identity-other"],
+				["coordinator_url", "https://attacker.example.test"],
+				["assigned_identity_id", "identity-other"],
+			] as const;
+
+			for (const [field, value] of forbiddenFields) {
+				const response = await app.request("/v1/invites/add-device", {
+					method: "POST",
+					headers: { ...authHeaders(), "Content-Type": "application/json" },
+					body: JSON.stringify({
+						group_id: "g1",
+						expires_at: "2026-04-04T00:00:00Z",
+						reviewed_preview_digest: digest,
+						reviewed_intent: reviewedIntent,
+						[field]: value,
+					}),
+				});
+				expect(response.status).toBe(400);
+				expect(await response.json()).toEqual({
+					error: "unexpected_add_device_invite_fields",
+				});
+			}
+			expect(storeFactory).not.toHaveBeenCalled();
+		});
+
+		it("rejects cross-Identity, malformed, and digest-mismatched reviewed intents", async () => {
+			const crossIdentityIntent = addDeviceReviewedIntent("identity-other");
+			const crossIdentityDigest = await recipientReviewedIntentDigest(crossIdentityIntent);
+			const validIntent = addDeviceReviewedIntent();
+			const store = createMockStore({
+				getEnrollment: vi.fn(async () => enrolledDevice()),
+				getGroup: vi.fn(async () => activeGroup()),
+			});
+			const app = createCoordinatorApp({
+				storeFactory: () => store,
+				runtime: { adminSecret: () => null, now: () => "2026-03-28T00:00:00Z" },
+				requestVerifier: allowRequest,
+			});
+			const request = (reviewedIntent: unknown, digest: string, nonce: string) =>
+				app.request("/v1/invites/add-device", {
+					method: "POST",
+					headers: { ...authHeaders("device-a", nonce), "Content-Type": "application/json" },
+					body: JSON.stringify({
+						group_id: "g1",
+						expires_at: "2026-04-04T00:00:00Z",
+						reviewed_preview_digest: digest,
+						reviewed_intent: reviewedIntent,
+					}),
+				});
+
+			const crossIdentity = await request(crossIdentityIntent, crossIdentityDigest, "nonce-cross");
+			const malformed = await request(
+				{ version: 1, journey: "add_device" },
+				"f".repeat(64),
+				"nonce-malformed",
+			);
+			const malformedDigest = await request(validIntent, "not-a-digest", "nonce-bad-digest");
+			const mismatchedDigest = await request(validIntent, "f".repeat(64), "nonce-wrong-digest");
+
+			expect(crossIdentity.status).toBe(409);
+			expect(await crossIdentity.json()).toEqual({ error: "recipient_invite_intent_mismatch" });
+			expect(malformed.status).toBe(400);
+			expect(await malformed.json()).toEqual({ error: "recipient_invite_review_unavailable" });
+			expect(malformedDigest.status).toBe(400);
+			expect(await malformedDigest.json()).toEqual({ error: "reviewed_preview_digest_invalid" });
+			expect(mismatchedDigest.status).toBe(409);
+			expect(await mismatchedDigest.json()).toEqual({ error: "recipient_invite_intent_mismatch" });
+			expect(store.createInvite).not.toHaveBeenCalled();
+		});
 	});
 
 	it("returns safe errors for unavailable or mismatched stored recipient reviews", async () => {

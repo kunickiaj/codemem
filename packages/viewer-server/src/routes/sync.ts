@@ -40,6 +40,7 @@ import {
 	cleanupNonces,
 	commitRecipientPolicyEdges,
 	coordinatorArchiveGroupAction,
+	coordinatorCreateAddDeviceInviteAction,
 	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
 	coordinatorCreateScopeAction,
@@ -425,6 +426,22 @@ function coordinatorAdminUnavailable(status: ReturnType<typeof coordinatorAdminS
 		return { body: { error: "coordinator_not_configured", status }, httpStatus: 400 };
 	}
 	if (!status.has_admin_secret) {
+		return { body: { error: "coordinator_admin_secret_missing", status }, httpStatus: 400 };
+	}
+	return null;
+}
+
+function recipientInviteCreationUnavailable(
+	status: ReturnType<typeof coordinatorAdminStatusPayload>,
+	kind: RecipientInviteKind,
+): { body: Record<string, unknown>; httpStatus: 400 } | null {
+	if (status.readiness === "not_configured") {
+		return { body: { error: "coordinator_not_configured", status }, httpStatus: 400 };
+	}
+	if (!status.has_groups) {
+		return { body: { error: "coordinator_group_missing", status }, httpStatus: 400 };
+	}
+	if (kind === "team_member" && !status.has_admin_secret) {
 		return { body: { error: "coordinator_admin_secret_missing", status }, httpStatus: 400 };
 	}
 	return null;
@@ -4894,17 +4911,20 @@ export function syncRoutes(
 		const store = getStore();
 		const body = await parseViewerJsonBody(c);
 		if (!body) return c.json({ error: "request_invalid" }, 400);
-		const config = readCoordinatorSyncConfig();
-		const status = coordinatorAdminStatusPayload(config);
-		const unavailable = coordinatorAdminUnavailable(status);
-		if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
 		try {
 			const kind = recipientInviteKind(body.kind ?? body.invite_kind);
+			const config = readCoordinatorSyncConfig();
+			const status = coordinatorAdminStatusPayload(config);
+			const unavailable = recipientInviteCreationUnavailable(status, kind);
+			if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
 			const targetId =
 				kind === "team_member"
 					? optionalViewerStrictString(body, "policy_team_id")
 					: optionalViewerStrictString(body, "target_identity_id");
 			if (!targetId) throw new Error("recipient_invite_metadata_invalid");
+			if (kind === "add_device" && targetId !== store.actorId) {
+				throw new Error("invite_identity_conflict");
+			}
 			const preview = recipientInviteOnboardingPreview(
 				store,
 				body,
@@ -4923,17 +4943,20 @@ export function syncRoutes(
 		const store = getStore();
 		const body = await parseViewerJsonBody(c);
 		if (!body) return c.json({ error: "request_invalid" }, 400);
-		const config = readCoordinatorSyncConfig();
-		const status = coordinatorAdminStatusPayload(config);
-		const unavailable = coordinatorAdminUnavailable(status);
-		if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
 		try {
 			const kind = recipientInviteKind(body.kind ?? body.invite_kind);
+			const config = readCoordinatorSyncConfig();
+			const status = coordinatorAdminStatusPayload(config);
+			const unavailable = recipientInviteCreationUnavailable(status, kind);
+			if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
 			const targetId =
 				kind === "team_member"
 					? optionalViewerStrictString(body, "policy_team_id")
 					: optionalViewerStrictString(body, "target_identity_id");
 			if (!targetId) throw new Error("recipient_invite_metadata_invalid");
+			if (kind === "add_device" && targetId !== store.actorId) {
+				throw new Error("invite_identity_conflict");
+			}
 			const preview = recipientInviteOnboardingPreview(
 				store,
 				body,
@@ -4950,20 +4973,35 @@ export function syncRoutes(
 			const ttlHours = parseInviteTtlHours(body.ttl_hours);
 			if (!groupId) throw new Error("group_id_required");
 			if (ttlHours == null) throw new Error("ttl_hours_invalid");
-			const result = await coordinatorCreateInviteAction({
-				groupId,
-				coordinatorUrl: config.syncCoordinatorUrl || null,
-				policy: "auto_admit",
-				ttlHours,
-				createdBy: store.actorId,
-				remoteUrl: config.syncCoordinatorUrl || null,
-				adminSecret: config.syncCoordinatorAdminSecret || null,
-				inviteKind: kind,
-				policyTeamId: kind === "team_member" ? targetId : null,
-				targetIdentityId: kind === "add_device" ? targetId : null,
-				reviewedPreviewDigest,
-				reviewedIntent,
-			});
+			// Initial owner enrollments intentionally remain Identity-unbound, so an explicitly
+			// admin-configured owner selects admin issuance up front. Non-admin devices use the
+			// signed Identity-bound endpoint; failures never fall back across this boundary.
+			const useAdminIssuance = kind === "team_member" || status.has_admin_secret;
+			const result = useAdminIssuance
+				? await coordinatorCreateInviteAction({
+						groupId,
+						coordinatorUrl: config.syncCoordinatorUrl || null,
+						policy: "auto_admit",
+						ttlHours,
+						createdBy: store.actorId,
+						remoteUrl: config.syncCoordinatorUrl || null,
+						adminSecret: config.syncCoordinatorAdminSecret || null,
+						inviteKind: kind,
+						policyTeamId: kind === "team_member" ? targetId : null,
+						targetIdentityId: kind === "add_device" ? targetId : null,
+						reviewedPreviewDigest,
+						reviewedIntent,
+					})
+				: await coordinatorCreateAddDeviceInviteAction({
+						groupId,
+						coordinatorUrl: config.syncCoordinatorUrl || null,
+						ttlHours,
+						deviceId: preview.binding.deviceId,
+						keysDir: syncKeysDir(),
+						remoteUrl: config.syncCoordinatorUrl || null,
+						reviewedPreviewDigest,
+						reviewedIntent,
+					});
 			return c.json({ ok: true, kind, preview, invite: result });
 		} catch (error) {
 			return c.json(

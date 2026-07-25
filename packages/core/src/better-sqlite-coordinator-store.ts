@@ -945,11 +945,16 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			.map((row) => rowToRecord<CoordinatorEnrollment>(row));
 	}
 
-	async getEnrollment(groupId: string, deviceId: string): Promise<CoordinatorEnrollment | null> {
+	async getEnrollment(
+		groupId: string,
+		deviceId: string,
+		includeDisabled = false,
+	): Promise<CoordinatorEnrollment | null> {
+		const enabledClause = includeDisabled ? "" : "AND enabled = 1";
 		const row = this.db
 			.prepare(`SELECT ${ENROLLMENT_COLUMNS}
 				 FROM enrolled_devices
-				 WHERE group_id = ? AND device_id = ? AND enabled = 1`)
+				 WHERE group_id = ? AND device_id = ? ${enabledClause}`)
 			.get(groupId, deviceId);
 		return row ? rowToRecord<CoordinatorEnrollment>(row) : null;
 	}

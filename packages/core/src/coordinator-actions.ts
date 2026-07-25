@@ -50,6 +50,7 @@ import {
 	type RecipientReviewedIntentV1,
 	verifyRecipientReviewedIntent,
 } from "./recipient-reviewed-intent.js";
+import { buildAuthHeaders } from "./sync-auth.js";
 import { updatePeerAddresses } from "./sync-discovery.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
@@ -1206,6 +1207,71 @@ export async function coordinatorCreateInviteAction(opts: {
 	} finally {
 		await store.close();
 	}
+}
+
+export async function coordinatorCreateAddDeviceInviteAction(opts: {
+	groupId: string;
+	coordinatorUrl?: string | null;
+	ttlHours: number;
+	deviceId: string;
+	keysDir?: string | null;
+	remoteUrl?: string | null;
+	reviewedPreviewDigest: string;
+	reviewedIntent: RecipientReviewedIntentV1;
+}): Promise<Record<string, unknown>> {
+	const groupId = String(opts.groupId ?? "").trim();
+	const deviceId = String(opts.deviceId ?? "").trim();
+	const remote = String(
+		opts.remoteUrl ?? opts.coordinatorUrl ?? coordinatorRemoteTarget().remoteUrl ?? "",
+	).trim();
+	if (!groupId) throw new Error("group_id_required");
+	if (!deviceId) throw new Error("device_id_required");
+	if (!remote) throw new Error("coordinator_not_configured");
+	if (!Number.isInteger(opts.ttlHours) || opts.ttlHours < 1) throw new Error("ttl_hours_invalid");
+	const reviewedPreviewDigest = String(opts.reviewedPreviewDigest ?? "").trim();
+	if (!/^[a-f0-9]{64}$/u.test(reviewedPreviewDigest)) {
+		throw new Error("reviewed_preview_digest_invalid");
+	}
+	const expiresAt = new Date(Date.now() + opts.ttlHours * 3600 * 1000).toISOString();
+	const body = {
+		group_id: groupId,
+		expires_at: expiresAt,
+		reviewed_preview_digest: reviewedPreviewDigest,
+		reviewed_intent: opts.reviewedIntent,
+	};
+	const url = `${stripTrailingSlashes(remote)}/v1/invites/add-device`;
+	const bodyBytes = Buffer.from(JSON.stringify(body), "utf8");
+	const [status, response] = await requestJson("POST", url, {
+		headers: buildAuthHeaders({
+			deviceId,
+			method: "POST",
+			url,
+			bodyBytes,
+			keysDir: opts.keysDir ?? undefined,
+		}),
+		bodyBytes,
+		timeoutS: 3,
+	});
+	if (status < 200 || status >= 300) {
+		const detail = typeof response?.error === "string" ? response.error : "unknown";
+		throw new Error(`Remote coordinator request failed (${status}): ${detail}`);
+	}
+	const invite =
+		response?.invite && typeof response.invite === "object" && !Array.isArray(response.invite)
+			? (response.invite as Record<string, unknown>)
+			: null;
+	return {
+		group_id: groupId,
+		invite_id: invite?.invite_id,
+		invite_kind: invite?.invite_kind ?? "add_device",
+		target_identity_id: invite?.target_identity_id ?? null,
+		reviewed_preview_digest: invite?.reviewed_preview_digest ?? reviewedPreviewDigest,
+		encoded: response?.encoded,
+		link: response?.link,
+		payload: response?.payload,
+		warnings: inviteUrlWarnings(opts.coordinatorUrl || remote),
+		mode: "remote",
+	};
 }
 
 interface ProjectInviteTrustResult {
