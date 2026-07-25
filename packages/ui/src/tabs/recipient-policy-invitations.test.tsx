@@ -225,6 +225,9 @@ describe("recipient-policy invitations", () => {
 		expect(dialog.textContent).toContain("through Example Team");
 		expect(dialog.textContent).toContain("Private — 9 existing memories");
 		expect(dialog.textContent).toContain("This device will not receive the Projects listed here");
+		expect(dialog.textContent).toContain(
+			"Project data does not sync to the invited device until the Project owner’s device completes access setup",
+		);
 
 		act(() => button("Accept invitation", dialog).click());
 		await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledOnce());
@@ -234,6 +237,16 @@ describe("recipient-policy invitations", () => {
 			reviewed_onboarding_digest: addDevicePreview.reviewedOnboardingDigest,
 		});
 		await vi.waitFor(() => expect(dialog.textContent).toContain("Device added"));
+		expect(dialog.textContent).toContain(
+			"Existing shared Projects do not sync to this device until",
+		);
+		// The delivery expectation must join the focused result's announcement.
+		expect(
+			dialog
+				.querySelector("#recipient-invitation-result")
+				?.getAttribute("aria-describedby")
+				?.split(" "),
+		).toContain("recipient-invitation-result-delivery");
 		const result = dialog.querySelector("#recipient-invitation-result");
 		expect(result).not.toBeNull();
 		expect(document.activeElement).toBe(result);
@@ -241,6 +254,35 @@ describe("recipient-policy invitations", () => {
 		expect(() => button("Accept invitation", dialog)).toThrow("button missing");
 		await act(async () => Promise.resolve());
 		expect(dialog.querySelector("#recipient-invitation-result")).toBe(result);
+	});
+
+	it("omits the delivery expectation when an add-device invitation shares no Projects", async () => {
+		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
+			kind: "add_device",
+			recipient_name: "Local Identity",
+			device_name: "Travel Laptop",
+			onboarding: { ...addDevicePreview, projects: [] },
+		});
+		vi.mocked(api.importCoordinatorInvite).mockResolvedValue({ status: "accepted" });
+		mount();
+
+		act(() => button("Review invitation").click());
+		const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+		if (!textarea) throw new Error("textarea missing");
+		act(() => {
+			textarea.value = "recipient-invite";
+			textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		const dialog = document.querySelector('[role="dialog"]');
+		if (!dialog) throw new Error("dialog missing");
+		act(() => button("Review invitation", dialog).click());
+		await vi.waitFor(() => expect(api.inspectCoordinatorInvite).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(dialog.textContent).toContain("No Projects are shared directly"));
+		expect(dialog.textContent).not.toContain("describe access, not delivery");
+
+		act(() => button("Accept invitation", dialog).click());
+		await vi.waitFor(() => expect(dialog.textContent).toContain("Device added"));
+		expect(dialog.textContent).not.toContain("Existing shared Projects do not sync");
 	});
 
 	it("persists a Team completion, prevents repeat acceptance, and resets after close and reopen", async () => {

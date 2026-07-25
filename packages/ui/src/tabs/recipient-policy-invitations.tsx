@@ -26,6 +26,7 @@ type RecipientAcceptance = {
 	kind: CreateKind;
 	restartRequired: boolean;
 	detail: string;
+	deliveryPending: boolean;
 };
 
 const MACHINE_NAME_PREFIX = /^(?:local:|identity:|pending_)/iu;
@@ -181,6 +182,13 @@ function AddDeviceConfirmation({ preview }: { preview: RecipientOnboardingPrevie
 				)}
 				<p className="small">This device will not receive the Projects listed here.</p>
 			</section>
+			{preview.projects.length > 0 ? (
+				<p className="small" role="note">
+					The lists above describe access, not delivery: Project data does not sync to the invited
+					device until the Project owner’s device completes access setup for it. Until then, shared
+					memories remain on the Identity’s existing devices.
+				</p>
+			) : null}
 		</div>
 	);
 }
@@ -314,9 +322,16 @@ function ProjectShareResult({ result }: { result: ProjectShareAcceptance }) {
 
 function RecipientAcceptanceResult({ result }: { result: RecipientAcceptance }) {
 	const title = result.kind === "team_member" ? "Team invitation accepted" : "Device added";
+	const describedBy =
+		[
+			result.restartRequired ? "recipient-invitation-result-detail" : null,
+			result.deliveryPending ? "recipient-invitation-result-delivery" : null,
+		]
+			.filter(Boolean)
+			.join(" ") || undefined;
 	return (
 		<section
-			aria-describedby={result.restartRequired ? "recipient-invitation-result-detail" : undefined}
+			aria-describedby={describedBy}
 			aria-labelledby="recipient-invitation-result-title"
 			className="recipient-policy-invitation-result"
 			id="recipient-invitation-result"
@@ -329,6 +344,12 @@ function RecipientAcceptanceResult({ result }: { result: RecipientAcceptance }) 
 				<h3 id="recipient-invitation-result-title">{title}</h3>
 				{result.restartRequired ? (
 					<p id="recipient-invitation-result-detail">{result.detail}</p>
+				) : null}
+				{result.deliveryPending ? (
+					<p className="small" id="recipient-invitation-result-delivery">
+						Existing shared Projects do not sync to this device until the Project owner’s device
+						completes access setup for it.
+					</p>
 				) : null}
 			</div>
 		</section>
@@ -473,11 +494,15 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 				setProjectDeviceName(humanProvidedNameOrEmpty(result.device_name));
 			}
 			setStatus(
-				result.kind === "team_member" || result.kind === "add_device"
-					? "Review ready. Confirm before accepting."
-					: result.kind === "project_share_invite"
-						? "Review ready. Confirm the exact Projects before accepting."
-						: "Open Advanced Team administration to continue with this invitation.",
+				result.kind === "add_device"
+					? (result.onboarding?.projects?.length ?? 0) > 0
+						? "Review ready. Existing shared Projects sync to the invited device only after the owner’s device completes access setup. Confirm before accepting."
+						: "Review ready. Confirm before accepting."
+					: result.kind === "team_member"
+						? "Review ready. Confirm before accepting."
+						: result.kind === "project_share_invite"
+							? "Review ready. Confirm the exact Projects before accepting."
+							: "Open Advanced Team administration to continue with this invitation.",
 			);
 		} catch (cause) {
 			if (!isCurrentInspection()) return;
@@ -526,6 +551,8 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 					kind: acceptedKind,
 					restartRequired,
 					detail: detail || "Restart codemem before continuing.",
+					deliveryPending:
+						acceptedKind === "add_device" && (inspected.onboarding?.projects?.length ?? 0) > 0,
 				});
 				setStatus("");
 			}
