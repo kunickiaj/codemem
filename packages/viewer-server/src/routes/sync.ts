@@ -2163,6 +2163,16 @@ function syncKeysDir(): string | undefined {
 	return process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
 }
 
+/** Strip control/format characters and cap length so attacker-controlled
+ * headers cannot forge log lines when included in diagnostics. */
+function loggableHeaderValue(value: string | undefined): string {
+	const sanitized = (value ?? "")
+		.replace(/[\p{Cc}\p{Cf}]/gu, "")
+		.slice(0, 64)
+		.trim();
+	return sanitized || "unknown";
+}
+
 function intEnvOr(name: string, fallback: number): number {
 	const value = Number.parseInt(process.env[name] ?? "", 10);
 	return Number.isFinite(value) ? value : fallback;
@@ -3807,6 +3817,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 			let preauthChecked = false;
 			let bootstrapAttempted = false;
+			let deviceAuthReason: string | null = null;
 			if (!auth.ok) {
 				const bootstrapGrantId = (c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim();
 				if (bootstrapGrantId) {
@@ -3820,6 +3831,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 					const unauthLimited = rateLimitedResponse(c, c.req.path, false);
 					if (unauthLimited) return unauthLimited;
 				}
+				deviceAuthReason = auth.reason;
 				auth = await authorizeBootstrapGrantRequest(store, c.req, Buffer.alloc(0));
 				bootstrapAttempted = true;
 			}
@@ -3828,12 +3840,23 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				// Specific reasons are logged server-side; wire responses use a generic
 				// reason to prevent info-disclosure.
 				const grantPresent = Boolean((c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim());
-				if (bootstrapAttempted && grantPresent) {
+				// Warn only when the caller actually attempted authentication (a
+				// grant or signed device headers); bare probes and health checks
+				// must not fill logs with attacker-controllable noise.
+				const authAttempted =
+					grantPresent || (deviceAuthReason != null && deviceAuthReason !== "missing_headers");
+				if (bootstrapAttempted && authAttempted) {
 					console.warn(
-						`[sync] bootstrap grant auth failed: reason=${auth.reason} grant_present=${grantPresent} path=${c.req.path}`,
+						`[sync] peer auth failed: reason=${auth.reason} device_auth_reason=${deviceAuthReason ?? "none"} grant_present=${grantPresent} path=${c.req.path} device=${loggableHeaderValue(c.req.header("X-Opencode-Device"))}`,
 					);
 				}
-				const wireReason = bootstrapAttempted ? "bootstrap_grant_invalid" : auth.reason;
+				// Mask grant details only when a grant was actually presented; a
+				// grant-less caller gets its device-auth failure reason so signature
+				// and clock issues stay diagnosable from the client side.
+				const wireReason =
+					bootstrapAttempted && grantPresent
+						? "bootstrap_grant_invalid"
+						: (deviceAuthReason ?? auth.reason);
 				return (
 					(preauthChecked ? null : rateLimitedResponse(c, c.req.path, false)) ??
 					c.json(unauthorizedPayload(wireReason, true), 401)
@@ -3980,6 +4003,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 			let preauthChecked = false;
 			let bootstrapAttempted = false;
+			let deviceAuthReason: string | null = null;
 			if (!auth.ok) {
 				const bootstrapGrantId = (c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim();
 				if (bootstrapGrantId) {
@@ -3993,6 +4017,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 					const unauthLimited = rateLimitedResponse(c, c.req.path, false);
 					if (unauthLimited) return unauthLimited;
 				}
+				deviceAuthReason = auth.reason;
 				auth = await authorizeBootstrapGrantRequest(store, c.req, Buffer.alloc(0));
 				bootstrapAttempted = true;
 			}
@@ -4001,12 +4026,23 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				// Specific reasons are logged server-side; wire responses use a generic
 				// reason to prevent info-disclosure.
 				const grantPresent = Boolean((c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim());
-				if (bootstrapAttempted && grantPresent) {
+				// Warn only when the caller actually attempted authentication (a
+				// grant or signed device headers); bare probes and health checks
+				// must not fill logs with attacker-controllable noise.
+				const authAttempted =
+					grantPresent || (deviceAuthReason != null && deviceAuthReason !== "missing_headers");
+				if (bootstrapAttempted && authAttempted) {
 					console.warn(
-						`[sync] bootstrap grant auth failed: reason=${auth.reason} grant_present=${grantPresent} path=${c.req.path}`,
+						`[sync] peer auth failed: reason=${auth.reason} device_auth_reason=${deviceAuthReason ?? "none"} grant_present=${grantPresent} path=${c.req.path} device=${loggableHeaderValue(c.req.header("X-Opencode-Device"))}`,
 					);
 				}
-				const wireReason = bootstrapAttempted ? "bootstrap_grant_invalid" : auth.reason;
+				// Mask grant details only when a grant was actually presented; a
+				// grant-less caller gets its device-auth failure reason so signature
+				// and clock issues stay diagnosable from the client side.
+				const wireReason =
+					bootstrapAttempted && grantPresent
+						? "bootstrap_grant_invalid"
+						: (deviceAuthReason ?? auth.reason);
 				return (
 					(preauthChecked ? null : rateLimitedResponse(c, c.req.path, false)) ??
 					c.json(unauthorizedPayload(wireReason, true), 401)
@@ -4776,7 +4812,13 @@ export function syncRoutes(
 		}
 		const items = [] as Array<Record<string, unknown>>;
 		for (const peerId of peerIds) {
-			const result = await runSyncPass(store.db, peerId, { scanner: store.scanner });
+			// keysDir must match the sync daemon's key material — omitting it made
+			// this route sign with a different device key whenever CODEMEM_KEYS_DIR
+			// was set, so manual sync runs failed peer auth while daemon syncs worked.
+			const result = await runSyncPass(store.db, peerId, {
+				keysDir: syncKeysDir(),
+				scanner: store.scanner,
+			});
 			items.push({
 				peer_device_id: peerId,
 				...result,

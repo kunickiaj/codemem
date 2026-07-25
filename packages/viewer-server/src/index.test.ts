@@ -4026,7 +4026,10 @@ describe("viewer-server", () => {
 				const res = await syncApp.request("/v1/status");
 				expect(res.status).toBe(401);
 				const body = (await res.json()) as Record<string, unknown>;
-				expect(body).toMatchObject({ error: "unauthorized", reason: "bootstrap_grant_invalid" });
+				// Grant-less callers get the truthful device-auth reason; the generic
+				// bootstrap_grant_invalid masking applies only when a grant header
+				// was actually presented.
+				expect(body).toMatchObject({ error: "unauthorized", reason: "missing_headers" });
 			} finally {
 				if (previous === undefined) delete process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS;
 				else process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS = previous;
