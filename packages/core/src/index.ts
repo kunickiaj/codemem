@@ -27,6 +27,7 @@ export {
 	MAPPABLE_CODEX_HOOK_EVENTS,
 	mapCodexHookPayload,
 } from "./codex-hooks.js";
+export type { CoordinatorConsumedTeamInvite } from "./coordinator-actions.js";
 export {
 	coordinatorArchiveGroupAction,
 	coordinatorCreateAddDeviceInviteAction,
@@ -39,6 +40,7 @@ export {
 	coordinatorGrantScopeMembershipAction,
 	coordinatorImportInviteAction,
 	coordinatorListBootstrapGrantsAction,
+	coordinatorListConsumedTeamInvitesAction,
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
 	coordinatorListJoinRequestsAction,

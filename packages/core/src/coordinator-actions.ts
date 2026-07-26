@@ -19,6 +19,7 @@ import type {
 	CoordinatorEnrollment,
 	CoordinatorGrantScopeMembershipInput,
 	CoordinatorGroup,
+	CoordinatorInvite,
 	CoordinatorJoinRequest,
 	CoordinatorJoinRequestReviewResult,
 	CoordinatorRecipientInviteKind,
@@ -26,7 +27,10 @@ import type {
 	CoordinatorScope,
 	CoordinatorScopeMembership,
 } from "./coordinator-store-contract.js";
-import { recipientInviteAuthoritativeIdentityId } from "./coordinator-store-contract.js";
+import {
+	isCoordinatorAssignedIdentityId,
+	recipientInviteAuthoritativeIdentityId,
+} from "./coordinator-store-contract.js";
 import { connect, resolveDbPath } from "./db.js";
 import { initDatabase } from "./maintenance.js";
 import {
@@ -810,11 +814,13 @@ export async function coordinatorListDevicesAction(opts: {
 			`${stripTrailingSlashes(remote)}/v1/admin/devices?group_id=${encodeURIComponent(groupId)}&include_disabled=${opts.includeDisabled ? "1" : "0"}`,
 			adminSecret,
 		);
-		return Array.isArray(payload?.items)
-			? payload.items.filter(
-					(row): row is CoordinatorEnrollment => Boolean(row) && typeof row === "object",
-				)
-			: [];
+		if (
+			!Array.isArray(payload?.items) ||
+			payload.items.some((row) => !row || typeof row !== "object" || Array.isArray(row))
+		) {
+			throw new Error("coordinator_device_list_malformed");
+		}
+		return payload.items as CoordinatorEnrollment[];
 	}
 	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
@@ -822,6 +828,115 @@ export async function coordinatorListDevicesAction(opts: {
 	} finally {
 		await store.close();
 	}
+}
+
+export interface CoordinatorConsumedTeamInvite {
+	invite_id: string;
+	group_id: string;
+	policy_team_id: string;
+	assigned_identity_id: string;
+	recipient_actor_id: string;
+	bound_device_id: string;
+	consumed_at: string;
+}
+
+function requiredConsumedTeamInviteText(value: unknown, maxLength = 2048): string {
+	if (
+		typeof value !== "string" ||
+		!value ||
+		value !== value.trim() ||
+		value.length > maxLength ||
+		/[\p{Cc}\p{Cf}]/u.test(value)
+	) {
+		throw new Error("coordinator_consumed_team_invite_invalid");
+	}
+	return value;
+}
+
+function isCanonicalConsumedTeamInviteTimestamp(value: string): boolean {
+	const parsed = new Date(value);
+	if (Number.isNaN(parsed.getTime())) return false;
+	const canonical = parsed.toISOString();
+	return value === canonical || value === canonical.replace(/\.000Z$/u, "Z");
+}
+
+function consumedTeamInvites(
+	invites: Array<Partial<CoordinatorInvite>>,
+): CoordinatorConsumedTeamInvite[] {
+	return invites
+		.filter((invite) => invite.invite_kind === "team_member" && invite.consumed_at != null)
+		.map((invite) => {
+			const assignedIdentityId = invite.assigned_identity_id;
+			const recipientActorId = invite.recipient_actor_id;
+			if (
+				!isCoordinatorAssignedIdentityId(assignedIdentityId) ||
+				!isCoordinatorAssignedIdentityId(recipientActorId) ||
+				assignedIdentityId !== recipientActorId
+			) {
+				throw new Error("coordinator_consumed_team_invite_invalid");
+			}
+			const consumedAt = requiredConsumedTeamInviteText(invite.consumed_at);
+			if (!isCanonicalConsumedTeamInviteTimestamp(consumedAt)) {
+				throw new Error("coordinator_consumed_team_invite_invalid");
+			}
+			const row = {
+				invite_id: requiredConsumedTeamInviteText(invite.invite_id),
+				group_id: requiredConsumedTeamInviteText(invite.group_id),
+				policy_team_id: requiredConsumedTeamInviteText(invite.policy_team_id, 256),
+				assigned_identity_id: assignedIdentityId,
+				recipient_actor_id: recipientActorId,
+				bound_device_id: requiredConsumedTeamInviteText(invite.bound_device_id, 256),
+				consumed_at: consumedAt,
+			};
+			if (Object.values(row).some((value) => !value)) {
+				throw new Error("coordinator_consumed_team_invite_invalid");
+			}
+			return row;
+		})
+		.toSorted(
+			(left, right) =>
+				left.consumed_at.localeCompare(right.consumed_at) ||
+				left.invite_id.localeCompare(right.invite_id),
+		);
+}
+
+export async function coordinatorListConsumedTeamInvitesAction(opts: {
+	groupId: string;
+	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
+}): Promise<CoordinatorConsumedTeamInvite[]> {
+	const groupId = String(opts.groupId ?? "").trim();
+	if (!groupId) throw new Error("Group id required.");
+	const remote = opts.remoteUrl ?? null;
+	const adminSecret = opts.adminSecret ?? null;
+	let invites: Array<Partial<CoordinatorInvite>>;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		const payload = await remoteRequest(
+			"GET",
+			`${stripTrailingSlashes(remote)}/v1/admin/invites?group_id=${encodeURIComponent(groupId)}`,
+			adminSecret,
+		);
+		if (
+			!Array.isArray(payload?.items) ||
+			payload.items.some((row) => !row || typeof row !== "object" || Array.isArray(row))
+		) {
+			throw new Error("coordinator_invite_list_malformed");
+		}
+		invites = payload.items as Array<Partial<CoordinatorInvite>>;
+	} else {
+		const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+		try {
+			invites = await store.listInvites(groupId);
+		} finally {
+			await store.close();
+		}
+	}
+	if (invites.some((invite) => invite.group_id !== groupId)) {
+		throw new Error("coordinator_invite_group_mismatch");
+	}
+	return consumedTeamInvites(invites);
 }
 
 export async function coordinatorRenameDeviceAction(opts: {

@@ -13,6 +13,7 @@ import {
 	coordinatorEnrollDeviceAction,
 	coordinatorGrantScopeMembershipAction,
 	coordinatorImportInviteAction,
+	coordinatorListConsumedTeamInvitesAction,
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
 	coordinatorListScopeMembershipsAction,
@@ -151,6 +152,209 @@ describe("coordinator local admin actions", () => {
 		expect(await coordinatorListDevicesAction({ groupId: "team-a", dbPath })).toEqual([
 			expect.objectContaining({ device_id: "device-1", display_name: "Laptop" }),
 		]);
+	});
+
+	it.each([
+		{},
+		{ items: null },
+		{ items: "not-a-list" },
+		{ items: [null] },
+	])("rejects malformed remote device lists: %j", async (payload) => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(JSON.stringify(payload), {
+						status: 200,
+						headers: { "content-type": "application/json" },
+					}),
+			),
+		);
+
+		await expect(
+			coordinatorListDevicesAction({
+				groupId: "team-a",
+				remoteUrl: "https://coord.example.test",
+				adminSecret: "secret",
+			}),
+		).rejects.toThrow("coordinator_device_list_malformed");
+	});
+
+	it("lists only consumed Team invites without tokens", async () => {
+		await coordinatorCreateGroupAction({ groupId: "team-a", dbPath });
+		const reviewedIntent = teamReviewedIntent();
+		const reviewedPreviewDigest = await recipientReviewedIntentDigest(reviewedIntent);
+		const created = await coordinatorCreateInviteAction({
+			groupId: "team-a",
+			coordinatorUrl: "https://coord.example.test",
+			policy: "auto_admit",
+			ttlHours: 24,
+			dbPath,
+			inviteKind: "team_member",
+			policyTeamId: "policy-team-1",
+			reviewedPreviewDigest,
+			reviewedIntent,
+		});
+		await coordinatorCreateInviteAction({
+			groupId: "team-a",
+			coordinatorUrl: "https://coord.example.test",
+			policy: "auto_admit",
+			ttlHours: 24,
+			dbPath,
+		});
+		const payload = created.payload as Record<string, unknown>;
+		const identityId = String(payload.assigned_identity_id);
+		const publicKey = "public-key-team-1";
+		const store = new BetterSqliteCoordinatorStore(dbPath);
+		try {
+			await store.consumeRecipientInvite({
+				token: String(payload.token),
+				inviteKind: "team_member",
+				identityId,
+				deviceId: "device-team-1",
+				publicKey,
+				fingerprint: fingerprintPublicKey(publicKey),
+				now: "2026-07-26T00:00:00.000Z",
+			});
+		} finally {
+			await store.close();
+		}
+
+		expect(await coordinatorListConsumedTeamInvitesAction({ groupId: "team-a", dbPath })).toEqual([
+			{
+				invite_id: created.invite_id,
+				group_id: "team-a",
+				policy_team_id: "policy-team-1",
+				assigned_identity_id: identityId,
+				recipient_actor_id: identityId,
+				bound_device_id: "device-team-1",
+				consumed_at: "2026-07-26T00:00:00.000Z",
+			},
+		]);
+	});
+
+	it("validates remote consumed Team invite identity bindings", async () => {
+		const valid = {
+			invite_id: "invite-team-1",
+			group_id: "team-a",
+			invite_kind: "team_member",
+			policy_team_id: "policy-team-1",
+			assigned_identity_id: "identity:abcdefghijklmnopqr",
+			recipient_actor_id: "identity:abcdefghijklmnopqr",
+			bound_device_id: "device-team-1",
+			consumed_at: "2026-07-26T00:00:00.000Z",
+		};
+		const expected = {
+			invite_id: valid.invite_id,
+			group_id: valid.group_id,
+			policy_team_id: valid.policy_team_id,
+			assigned_identity_id: valid.assigned_identity_id,
+			recipient_actor_id: valid.recipient_actor_id,
+			bound_device_id: valid.bound_device_id,
+			consumed_at: valid.consumed_at,
+		};
+		const fetchMock = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						items: [
+							valid,
+							{ ...valid, invite_id: "pending-team", consumed_at: null },
+							{ ...valid, invite_id: "legacy", invite_kind: "legacy_enrollment" },
+						],
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			coordinatorListConsumedTeamInvitesAction({
+				groupId: "team-a",
+				remoteUrl: "https://coord.example.test/",
+				adminSecret: "secret",
+			}),
+		).resolves.toEqual([expected]);
+		expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+			"https://coord.example.test/v1/admin/invites?group_id=team-a",
+		);
+		expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
+			"X-Codemem-Coordinator-Admin": "secret",
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							items: [{ ...valid, consumed_at: "2026-07-26T00:00:00Z" }],
+						}),
+						{ status: 200, headers: { "content-type": "application/json" } },
+					),
+			),
+		);
+		await expect(
+			coordinatorListConsumedTeamInvitesAction({
+				groupId: "team-a",
+				remoteUrl: "https://coord.example.test",
+				adminSecret: "secret",
+			}),
+		).resolves.toEqual([{ ...expected, consumed_at: "2026-07-26T00:00:00Z" }]);
+
+		for (const invalid of [
+			{ ...valid, recipient_actor_id: "identity:stuvwxyzABCDEFGH12" },
+			{ ...valid, assigned_identity_id: ` ${valid.assigned_identity_id}` },
+			{ ...valid, recipient_actor_id: `${valid.recipient_actor_id} ` },
+			{ ...valid, invite_id: ` ${valid.invite_id}` },
+			{ ...valid, policy_team_id: `${valid.policy_team_id} ` },
+			{ ...valid, policy_team_id: "p".repeat(257) },
+			{ ...valid, bound_device_id: ` ${valid.bound_device_id}` },
+			{ ...valid, bound_device_id: "d".repeat(257) },
+			{ ...valid, consumed_at: "2026-07-26T00:00:00.00Z" },
+			{
+				...valid,
+				assigned_identity_id: "identity-team-1",
+				recipient_actor_id: "identity-team-1",
+			},
+		]) {
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(
+					async () =>
+						new Response(JSON.stringify({ items: [invalid] }), {
+							status: 200,
+							headers: { "content-type": "application/json" },
+						}),
+				),
+			);
+			await expect(
+				coordinatorListConsumedTeamInvitesAction({
+					groupId: "team-a",
+					remoteUrl: "https://coord.example.test",
+					adminSecret: "secret",
+				}),
+			).rejects.toThrow("coordinator_consumed_team_invite_invalid");
+		}
+
+		for (const malformed of [{}, { items: null }, { items: "not-a-list" }, { items: [null] }]) {
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(
+					async () =>
+						new Response(JSON.stringify(malformed), {
+							status: 200,
+							headers: { "content-type": "application/json" },
+						}),
+				),
+			);
+			await expect(
+				coordinatorListConsumedTeamInvitesAction({
+					groupId: "team-a",
+					remoteUrl: "https://coord.example.test",
+					adminSecret: "secret",
+				}),
+			).rejects.toThrow("coordinator_invite_list_malformed");
+		}
 	});
 
 	it("renames, disables, and removes devices", async () => {
