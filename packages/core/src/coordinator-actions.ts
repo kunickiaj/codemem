@@ -50,6 +50,7 @@ import {
 	type RecipientPolicyReviewedIntentPreviewRequestV1,
 } from "./recipient-policy-onboarding.js";
 import {
+	parseStoredRecipientReviewedIntent,
 	RecipientReviewedIntentError,
 	type RecipientReviewedIntentV1,
 	verifyRecipientReviewedIntent,
@@ -814,13 +815,51 @@ export async function coordinatorListDevicesAction(opts: {
 			`${stripTrailingSlashes(remote)}/v1/admin/devices?group_id=${encodeURIComponent(groupId)}&include_disabled=${opts.includeDisabled ? "1" : "0"}`,
 			adminSecret,
 		);
-		if (
-			!Array.isArray(payload?.items) ||
-			payload.items.some((row) => !row || typeof row !== "object" || Array.isArray(row))
-		) {
+		if (!Array.isArray(payload?.items)) {
 			throw new Error("coordinator_device_list_malformed");
 		}
-		return payload.items as CoordinatorEnrollment[];
+		return payload.items.map((row) => {
+			if (!row || typeof row !== "object" || Array.isArray(row)) {
+				throw new Error("coordinator_device_list_malformed");
+			}
+			const record = row as Record<string, unknown>;
+			if (
+				record.group_id !== groupId ||
+				!isCanonicalCoordinatorIdentifier(record.device_id) ||
+				typeof record.public_key !== "string" ||
+				typeof record.fingerprint !== "string" ||
+				(record.identity_id !== null && !isCanonicalCoordinatorIdentifier(record.identity_id)) ||
+				(record.display_name !== null && typeof record.display_name !== "string") ||
+				typeof record.enabled !== "number" ||
+				typeof record.created_at !== "string"
+			) {
+				throw new Error("coordinator_device_list_malformed");
+			}
+			const enrollment: CoordinatorEnrollment = {
+				group_id: groupId,
+				device_id: record.device_id,
+				public_key: record.public_key,
+				fingerprint: record.fingerprint,
+				identity_id: record.identity_id,
+				display_name: record.display_name,
+				enabled: record.enabled,
+				created_at: record.created_at,
+			};
+			if (
+				typeof record.presence_expires_at === "string" &&
+				record.presence_capabilities !== null &&
+				typeof record.presence_capabilities === "object" &&
+				!Array.isArray(record.presence_capabilities)
+			) {
+				const capabilities = record.presence_capabilities as Record<string, unknown>;
+				enrollment.presence_expires_at = record.presence_expires_at;
+				enrollment.presence_capabilities = {
+					sync_capability: capabilities.sync_capability,
+					sync_features: capabilities.sync_features,
+				};
+			}
+			return enrollment;
+		});
 	}
 	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
@@ -828,6 +867,16 @@ export async function coordinatorListDevicesAction(opts: {
 	} finally {
 		await store.close();
 	}
+}
+
+function isCanonicalCoordinatorIdentifier(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value.length > 0 &&
+		value.length <= 256 &&
+		value === value.trim() &&
+		!/[\p{Cc}\p{Cf}]/u.test(value)
+	);
 }
 
 export interface CoordinatorConsumedTeamInvite {
@@ -937,6 +986,163 @@ export async function coordinatorListConsumedTeamInvitesAction(opts: {
 		throw new Error("coordinator_invite_group_mismatch");
 	}
 	return consumedTeamInvites(invites);
+}
+
+interface CoordinatorReviewedRecipientInviteEvidenceBase {
+	invite_id: string;
+	group_id: string;
+	bound_device_id: string;
+	bound_public_key: string;
+	bound_fingerprint: string;
+	recipient_actor_id: string;
+	consumed_at: string;
+	reviewed_preview_digest: string;
+}
+
+/** Token-free proof that a recipient invite remains reviewed and bound after consumption. */
+export type CoordinatorReviewedRecipientInviteEvidence =
+	| (CoordinatorReviewedRecipientInviteEvidenceBase & {
+			invite_kind: "team_member";
+			policy_team_id: string;
+			assigned_identity_id: string;
+	  })
+	| (CoordinatorReviewedRecipientInviteEvidenceBase & {
+			invite_kind: "add_device";
+			target_identity_id: string;
+	  });
+
+function requiredInviteText(value: unknown, maxLength = 2048): string {
+	if (
+		typeof value !== "string" ||
+		!value ||
+		value !== value.trim() ||
+		value.length > maxLength ||
+		/[\p{Cc}\p{Cf}]/u.test(value)
+	) {
+		throw new Error("coordinator_reviewed_recipient_invite_invalid");
+	}
+	return value;
+}
+
+function isCanonicalInviteTimestamp(value: string): boolean {
+	const parsed = new Date(value);
+	if (Number.isNaN(parsed.getTime())) return false;
+	const canonical = parsed.toISOString();
+	return value === canonical || value === canonical.replace(/\.000Z$/u, "Z");
+}
+
+async function reviewedRecipientInviteEvidence(
+	invite: Partial<CoordinatorInvite>,
+): Promise<CoordinatorReviewedRecipientInviteEvidence | null> {
+	if (invite.invite_kind !== "team_member" && invite.invite_kind !== "add_device") return null;
+	if (invite.consumed_at == null) return null;
+	if (invite.revoked_at != null) return null;
+	const common = {
+		invite_id: requiredInviteText(invite.invite_id),
+		group_id: requiredInviteText(invite.group_id),
+		bound_device_id: requiredInviteText(invite.bound_device_id, 256),
+		bound_public_key: requiredInviteText(invite.bound_public_key),
+		bound_fingerprint: requiredInviteText(invite.bound_fingerprint),
+		recipient_actor_id: requiredInviteText(invite.recipient_actor_id, 256),
+		consumed_at: requiredInviteText(invite.consumed_at),
+		reviewed_preview_digest: requiredInviteText(invite.reviewed_preview_digest),
+	};
+	if (
+		!isCanonicalInviteTimestamp(common.consumed_at) ||
+		!/^[a-f0-9]{64}$/u.test(common.reviewed_preview_digest) ||
+		fingerprintPublicKey(common.bound_public_key) !== common.bound_fingerprint
+	) {
+		throw new Error("coordinator_reviewed_recipient_invite_invalid");
+	}
+	if (invite.invite_kind === "team_member") {
+		const policyTeamId = requiredInviteText(invite.policy_team_id, 256);
+		const assignedIdentityId = requiredInviteText(invite.assigned_identity_id, 256);
+		if (
+			invite.target_identity_id !== null ||
+			!isCoordinatorAssignedIdentityId(assignedIdentityId) ||
+			common.recipient_actor_id !== assignedIdentityId
+		) {
+			throw new Error("coordinator_reviewed_recipient_invite_invalid");
+		}
+		await parseStoredRecipientReviewedIntent(invite.reviewed_intent_json, {
+			target: { kind: "team_member", policyTeamId },
+			digest: common.reviewed_preview_digest,
+		}).catch(() => {
+			throw new Error("coordinator_reviewed_recipient_invite_invalid");
+		});
+		return {
+			...common,
+			invite_kind: "team_member",
+			policy_team_id: policyTeamId,
+			assigned_identity_id: assignedIdentityId,
+		};
+	}
+	const targetIdentityId = requiredInviteText(invite.target_identity_id, 256);
+	if (
+		invite.policy_team_id !== null ||
+		invite.assigned_identity_id !== null ||
+		common.recipient_actor_id !== targetIdentityId
+	) {
+		throw new Error("coordinator_reviewed_recipient_invite_invalid");
+	}
+	await parseStoredRecipientReviewedIntent(invite.reviewed_intent_json, {
+		target: { kind: "add_device", targetIdentityId },
+		digest: common.reviewed_preview_digest,
+	}).catch(() => {
+		throw new Error("coordinator_reviewed_recipient_invite_invalid");
+	});
+	return {
+		...common,
+		invite_kind: "add_device",
+		target_identity_id: targetIdentityId,
+	};
+}
+
+/** List fail-closed recipient bootstrap evidence from a local or remote coordinator store. */
+export async function coordinatorListReviewedRecipientInviteEvidenceAction(opts: {
+	groupId: string;
+	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
+}): Promise<CoordinatorReviewedRecipientInviteEvidence[]> {
+	const groupId = String(opts.groupId ?? "").trim();
+	if (!groupId) throw new Error("Group id required.");
+	const remote = opts.remoteUrl ?? null;
+	const adminSecret = opts.adminSecret ?? null;
+	let invites: Array<Partial<CoordinatorInvite>>;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		const payload = await remoteRequest(
+			"GET",
+			`${stripTrailingSlashes(remote)}/v1/admin/invites?group_id=${encodeURIComponent(groupId)}`,
+			adminSecret,
+		);
+		if (
+			!Array.isArray(payload?.items) ||
+			payload.items.some((row) => !row || typeof row !== "object" || Array.isArray(row))
+		) {
+			throw new Error("coordinator_invite_list_malformed");
+		}
+		invites = payload.items as Array<Partial<CoordinatorInvite>>;
+	} else {
+		const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+		try {
+			invites = await store.listInvites(groupId);
+		} finally {
+			await store.close();
+		}
+	}
+	if (invites.some((invite) => invite.group_id !== groupId)) {
+		throw new Error("coordinator_invite_group_mismatch");
+	}
+	const evidence = await Promise.all(invites.map(reviewedRecipientInviteEvidence));
+	return evidence
+		.filter((item): item is CoordinatorReviewedRecipientInviteEvidence => item != null)
+		.toSorted(
+			(left, right) =>
+				left.consumed_at.localeCompare(right.consumed_at) ||
+				left.invite_id.localeCompare(right.invite_id),
+		);
 }
 
 export async function coordinatorRenameDeviceAction(opts: {
@@ -1298,6 +1504,7 @@ export async function coordinatorCreateInviteAction(opts: {
 			...(invite.invite_kind === "add_device"
 				? {
 						target_identity_id: invite.target_identity_id ?? undefined,
+						inviter_device_id: invite.inviter_device_id ?? undefined,
 						reviewed_preview_digest: invite.reviewed_preview_digest ?? undefined,
 					}
 				: {}),
@@ -1399,6 +1606,38 @@ interface ProjectInviteTrustResult {
 	};
 }
 
+export function isPeerTrustBindingCompatible(
+	db: ReturnType<typeof connect>,
+	deviceId: string,
+	publicKey: string,
+	fingerprint: string,
+): boolean {
+	const existing = db
+		.prepare(
+			`SELECT peer.claimed_local_actor, peer.pinned_fingerprint, peer.public_key,
+			 actor.is_local AS actor_is_local
+			 FROM sync_peers peer
+			 LEFT JOIN actors actor ON actor.actor_id = peer.actor_id
+			 WHERE peer.peer_device_id = ?`,
+		)
+		.get(deviceId) as
+		| {
+				claimed_local_actor: number;
+				pinned_fingerprint: string | null;
+				public_key: string | null;
+				actor_is_local: number | null;
+		  }
+		| undefined;
+	if (!existing) return true;
+	if (existing.claimed_local_actor === 1 || existing.actor_is_local === 1) return false;
+	const existingFingerprint = String(existing.pinned_fingerprint ?? "").trim();
+	const existingPublicKey = String(existing.public_key ?? "").trim();
+	return (
+		(!existingFingerprint || existingFingerprint === fingerprint) &&
+		(!existingPublicKey || existingPublicKey === publicKey)
+	);
+}
+
 function parseProjectInviteTrust(
 	response: Record<string, unknown> | null,
 ): ProjectInviteTrustResult {
@@ -1453,6 +1692,16 @@ function persistProjectInviteTrust(opts: {
 				is_local = 1, status = 'active', merged_into_actor_id = NULL, updated_at = excluded.updated_at`)
 				.run(opts.recipientActorId, opts.recipientDisplayName, now, now);
 			if (!trust.inviterPeer) return;
+			if (
+				!isPeerTrustBindingCompatible(
+					conn,
+					trust.inviterPeer.deviceId,
+					trust.inviterPeer.publicKey,
+					trust.inviterPeer.fingerprint,
+				)
+			) {
+				throw new Error("inviter_peer_trust_conflict");
+			}
 			updatePeerAddresses(conn, trust.inviterPeer.deviceId, [], {
 				pinnedFingerprint: trust.inviterPeer.fingerprint,
 				publicKey: trust.inviterPeer.publicKey,
@@ -1598,6 +1847,46 @@ function persistRecipientInviteOnboarding(opts: {
 		});
 		if (result.status !== "applied")
 			throw new Error(result.errorCode ?? "onboarding_commit_failed");
+	} finally {
+		conn.close();
+	}
+}
+
+async function persistAddDeviceInviterTrust(opts: {
+	dbPath: string;
+	payload: InvitePayload;
+	response: Record<string, unknown> | null;
+}): Promise<boolean> {
+	if (opts.payload.kind !== "add_device") return false;
+	const inviter = opts.response?.inviter_device;
+	const inviterObject =
+		inviter && typeof inviter === "object" && !Array.isArray(inviter)
+			? (inviter as Record<string, unknown>)
+			: null;
+	const bootstrapGrantId = String(opts.response?.bootstrap_grant_id ?? "").trim();
+	const responseGroupId = String(opts.response?.group_id ?? "").trim();
+	if (!inviterObject || !bootstrapGrantId || responseGroupId !== String(opts.payload.group_id)) {
+		return false;
+	}
+	const inviterDeviceId = String(inviterObject.device_id ?? "").trim();
+	const publicKey = String(inviterObject.public_key ?? "").trim();
+	const fingerprint = String(inviterObject.fingerprint ?? "").trim();
+	if (!inviterDeviceId || !publicKey || fingerprintPublicKey(publicKey) !== fingerprint)
+		return false;
+	const conn = connect(opts.dbPath);
+	try {
+		if (!isPeerTrustBindingCompatible(conn, inviterDeviceId, publicKey, fingerprint)) return false;
+		updatePeerAddresses(conn, inviterDeviceId, [], {
+			name: String(inviterObject.display_name ?? "").trim() || "Existing device",
+			pinnedFingerprint: fingerprint,
+			publicKey,
+			replaceTrust: true,
+		});
+		conn
+			.prepare(`UPDATE sync_peers SET pending_bootstrap_grant_id = ?,
+				discovered_via_group_id = ? WHERE peer_device_id = ?`)
+			.run(bootstrapGrantId, responseGroupId, inviterDeviceId);
+		return true;
 	} finally {
 		conn.close();
 	}
@@ -1783,6 +2072,7 @@ export async function coordinatorImportInviteAction(opts: {
 		const detail = typeof response?.error === "string" ? response.error : "unknown";
 		if (
 			[
+				"add_device_invite_self_acceptance_forbidden",
 				"invite_already_bound",
 				"invite_expired",
 				"invite_identity_conflict",
@@ -1883,6 +2173,11 @@ export async function coordinatorImportInviteAction(opts: {
 			throw error;
 		}
 	}
+	const inviterPeerLinked = await persistAddDeviceInviterTrust({
+		dbPath: resolvedDbPath,
+		payload,
+		response,
+	}).catch(() => false);
 	if (recipientInvite) {
 		return {
 			group_id: response?.group_id ?? payload.group_id,
@@ -1890,6 +2185,7 @@ export async function coordinatorImportInviteAction(opts: {
 			status: response?.status ?? null,
 			invite_kind: response?.kind ?? payload.kind,
 			identity_id: recipientActorId,
+			inviter_peer_linked: inviterPeerLinked,
 			policy_team_id: response?.policy_team_id ?? payload.policy_team_id ?? null,
 			target_identity_id: response?.target_identity_id ?? payload.target_identity_id ?? null,
 			...(payload.kind === "team_member"

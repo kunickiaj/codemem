@@ -8,8 +8,12 @@ import {
 import type { CoordinatorReciprocalApproval } from "./coordinator-store-contract.js";
 import type { Database } from "./db.js";
 import { getCodememEnvOverrides, readCodememConfigFile } from "./observer-config.js";
+import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
 import type { MemoryStore } from "./store.js";
 import { buildAuthHeaders } from "./sync-auth.js";
+import { LOCAL_SYNC_CAPABILITY, LOCAL_SYNC_FEATURES } from "./sync-capability.js";
+import { updatePeerAddresses } from "./sync-discovery.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 
@@ -105,6 +109,7 @@ interface PresenceSnapshot {
 
 interface CoordinatorStatusCacheEntry {
 	snapshot: Record<string, unknown>;
+	discoveredPeers: Record<string, unknown>[];
 	nextRefreshAtMs: number;
 }
 
@@ -263,6 +268,10 @@ export async function registerCoordinatorPresence(
 		public_key: publicKey,
 		addresses: advertisedSyncAddresses(config),
 		ttl_s: Math.max(1, config.syncCoordinatorPresenceTtlS),
+		capabilities: {
+			sync_capability: LOCAL_SYNC_CAPABILITY,
+			sync_features: LOCAL_SYNC_FEATURES,
+		},
 	};
 	const responses: Record<string, unknown>[] = [];
 	for (const groupId of config.syncCoordinatorGroups) {
@@ -330,6 +339,7 @@ export async function lookupCoordinatorPeers(
 				merged.set(key, {
 					...record,
 					addresses: mergeAddresses([], freshAddresses),
+					coordinator_id: baseUrl,
 					groups: [groupId],
 					fresh_groups: record.stale ? [] : [groupId],
 				});
@@ -365,6 +375,16 @@ export async function lookupCoordinatorPeers(
 function stringList(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
 	return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function coordinatorPeerGroups(value: unknown): string[] | null {
+	if (!Array.isArray(value) || value.length === 0) return null;
+	const groups: string[] = [];
+	for (const item of value) {
+		if (typeof item !== "string" || !item.trim()) return null;
+		groups.push(item.trim());
+	}
+	return groups;
 }
 
 function parseAddressCache(value: unknown): string[] {
@@ -436,6 +456,225 @@ export function refreshStoredCoordinatorPeerAddresses(
 	});
 	refresh.immediate();
 	return updated;
+}
+
+type SharedManagedScopeState =
+	| { state: "authorized"; groupId: string }
+	| { state: "not_authorized" | "indeterminate" };
+
+function sharedManagedScopeState(
+	db: Database,
+	localDeviceId: string,
+	peerDeviceId: string,
+	coordinatorId: string,
+	peerGroupIds: string[],
+): SharedManagedScopeState {
+	const candidateScopes = db
+		.prepare(
+			`SELECT scope.scope_id, scope.coordinator_id, scope.group_id
+			 FROM scope_memberships local_member
+			 JOIN scope_memberships peer_member
+			   ON peer_member.scope_id = local_member.scope_id
+			 JOIN replication_scopes scope
+			   ON scope.scope_id = local_member.scope_id
+			 WHERE local_member.device_id = ?
+			   AND peer_member.device_id = ?
+			   AND scope.status = 'active'
+			   AND scope.kind = 'managed_project'
+			   AND scope.authority_type = 'coordinator'`,
+		)
+		.all(localDeviceId, peerDeviceId) as Array<{
+		scope_id: string;
+		coordinator_id: string | null;
+		group_id: string | null;
+	}>;
+	let indeterminate = false;
+	for (const scope of candidateScopes) {
+		const scopeId = clean(scope.scope_id);
+		const groupId = clean(scope.group_id);
+		if (
+			!scopeId ||
+			clean(scope.coordinator_id) !== coordinatorId ||
+			!groupId ||
+			!peerGroupIds.includes(groupId)
+		) {
+			continue;
+		}
+		const authority = { coordinatorId, groupId };
+		const localAuthorization = getCachedScopeAuthorization(db, {
+			deviceId: localDeviceId,
+			scopeId,
+			authority,
+		});
+		const peerAuthorization = getCachedScopeAuthorization(db, {
+			deviceId: peerDeviceId,
+			scopeId,
+			authority,
+		});
+		if (localAuthorization.freshness !== "fresh" || peerAuthorization.freshness !== "fresh") {
+			indeterminate = true;
+			continue;
+		}
+		if (localAuthorization.authorized && peerAuthorization.authorized) {
+			return { state: "authorized", groupId };
+		}
+	}
+	return { state: indeterminate ? "indeterminate" : "not_authorized" };
+}
+
+/**
+ * Trust coordinator-discovered devices only after local policy proves that
+ * both devices are active members of a Project managed by the exact
+ * coordinator and group that supplied the discovered key.
+ */
+export function trustCoordinatorPeersWithSharedManagedScopes(
+	db: Database,
+	localDeviceId: string,
+	peers: Record<string, unknown>[],
+): number {
+	let trusted = 0;
+	for (const peer of peers) {
+		const peerDeviceId = clean(peer.device_id);
+		const publicKey = clean(peer.public_key);
+		const fingerprint = clean(peer.fingerprint);
+		const coordinatorId = clean(peer.coordinator_id);
+		const peerGroupIds = coordinatorPeerGroups(peer.groups);
+		if (
+			!peerDeviceId ||
+			peerDeviceId === localDeviceId ||
+			!publicKey ||
+			!fingerprint ||
+			!coordinatorId ||
+			!peerGroupIds
+		) {
+			continue;
+		}
+		try {
+			if (fingerprintPublicKey(publicKey) !== fingerprint) continue;
+		} catch {
+			continue;
+		}
+		const sharedScope = sharedManagedScopeState(
+			db,
+			localDeviceId,
+			peerDeviceId,
+			coordinatorId,
+			peerGroupIds,
+		);
+		if (sharedScope.state !== "authorized") continue;
+		const existing = db
+			.prepare(
+				`SELECT pinned_fingerprint, public_key, claimed_local_actor, actor_id,
+				 pending_bootstrap_grant_id, trust_provenance
+				 FROM sync_peers WHERE peer_device_id = ? LIMIT 1`,
+			)
+			.get(peerDeviceId) as
+			| {
+					pinned_fingerprint: string | null;
+					public_key: string | null;
+					claimed_local_actor: number;
+					actor_id: string | null;
+					pending_bootstrap_grant_id: string | null;
+					trust_provenance: string | null;
+			  }
+			| undefined;
+		if (
+			existing &&
+			(existing.claimed_local_actor === 1 ||
+				(clean(existing.pinned_fingerprint) &&
+					clean(existing.pinned_fingerprint) !== fingerprint) ||
+				(clean(existing.public_key) && clean(existing.public_key) !== publicKey))
+		) {
+			continue;
+		}
+		const existingHasTrust = Boolean(
+			clean(existing?.pinned_fingerprint) || clean(existing?.public_key),
+		);
+		const policyDerivedTrust =
+			!existing ||
+			(existing.claimed_local_actor === 0 &&
+				existing.actor_id == null &&
+				existing.pending_bootstrap_grant_id == null &&
+				(!existingHasTrust || existing.trust_provenance === "coordinator_policy"));
+		const addresses = peer.stale ? [] : stringList(peer.addresses);
+		updatePeerAddresses(db, peerDeviceId, addresses, {
+			name: clean(peer.display_name) || undefined,
+			pinnedFingerprint: fingerprint,
+			publicKey,
+		});
+		if (policyDerivedTrust) {
+			db.prepare(
+				`UPDATE sync_peers SET discovered_via_coordinator_id = ?,
+				 discovered_via_group_id = ?, trust_provenance = 'coordinator_policy'
+				 WHERE peer_device_id = ?
+				 AND claimed_local_actor = 0 AND actor_id IS NULL
+				 AND pending_bootstrap_grant_id IS NULL`,
+			).run(coordinatorId, sharedScope.groupId, peerDeviceId);
+		}
+		trusted += 1;
+	}
+	return trusted;
+}
+
+/** Delete only policy-derived peer rows after their last fresh shared scope ends. */
+export function revokeUnauthorizedCoordinatorPeerTrust(
+	db: Database,
+	localDeviceId: string,
+): number {
+	const peers = db
+		.prepare(
+			`SELECT peer_device_id, discovered_via_coordinator_id, discovered_via_group_id
+			 FROM sync_peers
+			 WHERE claimed_local_actor = 0
+			   AND actor_id IS NULL
+			   AND pending_bootstrap_grant_id IS NULL
+			   AND trust_provenance = 'coordinator_policy'
+			   AND discovered_via_coordinator_id IS NOT NULL
+			   AND discovered_via_group_id IS NOT NULL
+			   AND (pinned_fingerprint IS NOT NULL OR public_key IS NOT NULL)`,
+		)
+		.all() as Array<{
+		peer_device_id: string;
+		discovered_via_coordinator_id: string;
+		discovered_via_group_id: string;
+	}>;
+	let revoked = 0;
+	for (const peer of peers) {
+		const peerDeviceId = clean(peer.peer_device_id);
+		const coordinatorId = clean(peer.discovered_via_coordinator_id);
+		const groupId = clean(peer.discovered_via_group_id);
+		if (!peerDeviceId || !coordinatorId || !groupId) continue;
+		const sharedScope = sharedManagedScopeState(db, localDeviceId, peerDeviceId, coordinatorId, [
+			groupId,
+		]);
+		if (sharedScope.state !== "not_authorized") continue;
+		const result = db
+			.prepare(
+				`DELETE FROM sync_peers
+				 WHERE peer_device_id = ? AND claimed_local_actor = 0
+				 AND actor_id IS NULL AND pending_bootstrap_grant_id IS NULL
+				 AND trust_provenance = 'coordinator_policy'
+				 AND discovered_via_coordinator_id = ? AND discovered_via_group_id = ?`,
+			)
+			.run(peerDeviceId, coordinatorId, groupId);
+		revoked += result.changes;
+	}
+	return revoked;
+}
+
+export async function refreshAuthorizedCoordinatorPeerTrust(
+	store: PresenceStoreLike,
+	config: CoordinatorSyncConfig,
+	options?: { keysDir?: string },
+): Promise<{ peers: Record<string, unknown>[]; trusted: number }> {
+	if (!coordinatorEnabled(config)) return { peers: [], trusted: 0 };
+	const keysDir = options?.keysDir ?? (process.env.CODEMEM_KEYS_DIR?.trim() || undefined);
+	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir });
+	const peers = await lookupCoordinatorPeers(store, config, { keysDir });
+	refreshStoredCoordinatorPeerAddresses(store.db, peers);
+	const trusted = trustCoordinatorPeersWithSharedManagedScopes(store.db, localDeviceId, peers);
+	revokeUnauthorizedCoordinatorPeerTrust(store.db, localDeviceId);
+	return { peers, trusted };
 }
 
 /**
@@ -594,11 +833,16 @@ export async function coordinatorStatusSnapshot(
 		};
 	}
 	const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
-	ensureDeviceIdentity(store.db, { keysDir });
+	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir });
 	const cacheKey = coordinatorStatusCacheKey(store, config);
 	const now = Date.now();
 	const cachedSnapshot = coordinatorStatusCache.get(cacheKey);
 	if (cachedSnapshot && now < cachedSnapshot.nextRefreshAtMs) {
+		trustCoordinatorPeersWithSharedManagedScopes(
+			store.db,
+			localDeviceId,
+			cachedSnapshot.discoveredPeers,
+		);
 		return {
 			...structuredClone(cachedSnapshot.snapshot),
 			paired_peer_count: pairedPeerCount(store),
@@ -655,9 +899,10 @@ export async function coordinatorStatusSnapshot(
 			});
 		}
 	}
+	let discoveredPeers: Record<string, unknown>[] = [];
 	try {
-		const peers = await lookupCoordinatorPeers(store, config);
-		refreshStoredCoordinatorPeerAddresses(store.db, peers);
+		const { peers } = await refreshAuthorizedCoordinatorPeerTrust(store, config, { keysDir });
+		discoveredPeers = structuredClone(peers);
 		let incomingApprovals: CoordinatorReciprocalApproval[] = [];
 		let outgoingApprovals: CoordinatorReciprocalApproval[] = [];
 		try {
@@ -702,6 +947,7 @@ export async function coordinatorStatusSnapshot(
 	if (snapshot.presence_status !== "not_enrolled") {
 		coordinatorStatusCache.set(cacheKey, {
 			snapshot: structuredClone(snapshot),
+			discoveredPeers,
 			nextRefreshAtMs: Date.now() + COORDINATOR_STATUS_SNAPSHOT_CACHE_MS,
 		});
 	}

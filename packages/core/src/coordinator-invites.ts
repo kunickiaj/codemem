@@ -16,6 +16,7 @@ export interface InvitePayload {
 	/** Present only for project-first invites. All values are display-only; access intent stays coordinator-owned. */
 	operation_id?: string;
 	inviter_name?: string | null;
+	inviter_device_id?: string;
 	project_summaries?: Array<{ display_name: string; existing_memory_count: number }>;
 	/** Policy metadata for recipient-aware invites. It is preview-only and never grants scope access. */
 	policy_team_id?: string;

@@ -44,8 +44,13 @@ export interface RecipientPolicyReconcilerEffects {
 	listBoundaryEnrollments(input: {
 		canonicalProjectIdentity: string;
 		scopeId: string;
-	}): Promise<Array<{ deviceId: string; identityId: string }>>;
-	probeCapability(deviceId: string): Promise<RecipientPolicyPeerCapability>;
+	}): Promise<
+		Array<{ deviceId: string; identityId: string; publicKey: string; fingerprint: string }>
+	>;
+	probeCapability(input: {
+		deviceId: string;
+		scopeId: string;
+	}): Promise<RecipientPolicyPeerCapability>;
 	revoke(input: {
 		effectId: string;
 		canonicalProjectIdentity: string;
@@ -318,20 +323,34 @@ function activeSnapshotDevices(
 }
 
 function boundaryEnrollmentIdentities(
-	enrollments: Array<{ deviceId: string; identityId: string }>,
-): Map<string, string> {
-	const identities = new Map<string, string>();
+	enrollments: Array<{
+		deviceId: string;
+		identityId: string;
+		publicKey: string;
+		fingerprint: string;
+	}>,
+): Map<string, { identityId: string; publicKey: string; fingerprint: string }> {
+	const bindings = new Map<
+		string,
+		{ identityId: string; publicKey: string; fingerprint: string }
+	>();
 	for (const enrollment of enrollments) {
 		if (
 			!validId(enrollment.deviceId) ||
 			!validId(enrollment.identityId) ||
-			identities.has(enrollment.deviceId)
+			!validId(enrollment.publicKey) ||
+			!validId(enrollment.fingerprint) ||
+			bindings.has(enrollment.deviceId)
 		) {
 			throw new Error("recipient_policy_snapshot_invalid");
 		}
-		identities.set(enrollment.deviceId, enrollment.identityId);
+		bindings.set(enrollment.deviceId, {
+			identityId: enrollment.identityId,
+			publicKey: enrollment.publicKey,
+			fingerprint: enrollment.fingerprint,
+		});
 	}
-	return identities;
+	return bindings;
 }
 
 function boundaryEnrollmentIdentityId(
@@ -497,6 +516,7 @@ async function preflight(
 	input: {
 		projectId: string;
 		generation: number;
+		scopeId: string;
 		deviceIds: string[];
 		passKey: string;
 		leaseOwner: string;
@@ -519,7 +539,10 @@ async function preflight(
 				now: input.effects.now,
 			},
 			async () => {
-				const observed = await input.effects.probeCapability(deviceId);
+				const observed = await input.effects.probeCapability({
+					deviceId,
+					scopeId: input.scopeId,
+				});
 				capability = ["supported", "unsupported", "undetermined"].includes(observed)
 					? observed
 					: "undetermined";
@@ -770,6 +793,7 @@ export async function reconcileRecipientPolicyProject(
 		const capability = await preflight(db, {
 			projectId,
 			generation: activeGeneration,
+			scopeId: managedBoundary.scopeId,
 			deviceIds: expectedDeviceIds,
 			passKey,
 			leaseOwner: input.leaseOwner,

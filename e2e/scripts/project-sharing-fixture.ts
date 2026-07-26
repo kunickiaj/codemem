@@ -318,10 +318,20 @@ function reconciliationEffects(
 				.map((deviceId) => ({ deviceId, status: "active" as const })),
 		}),
 		listBoundaryEnrollments: async () => [
-			{ deviceId: `device-${label}-keep`, identityId: `identity-${label}` },
-			{ deviceId: `device-${label}-new`, identityId: `identity-${label}` },
+			{
+				deviceId: `device-${label}-keep`,
+				identityId: `identity-${label}`,
+				publicKey: `pk-${label}-keep`,
+				fingerprint: `fp-${label}-keep`,
+			},
+			{
+				deviceId: `device-${label}-new`,
+				identityId: `identity-${label}`,
+				publicKey: `pk-${label}-new`,
+				fingerprint: `fp-${label}-new`,
+			},
 		],
-		probeCapability: async (deviceId) => {
+		probeCapability: async ({ deviceId }) => {
 			calls.push(`probe:${deviceId}`);
 			return capability(deviceId);
 		},

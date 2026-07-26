@@ -27,7 +27,10 @@ export {
 	MAPPABLE_CODEX_HOOK_EVENTS,
 	mapCodexHookPayload,
 } from "./codex-hooks.js";
-export type { CoordinatorConsumedTeamInvite } from "./coordinator-actions.js";
+export type {
+	CoordinatorConsumedTeamInvite,
+	CoordinatorReviewedRecipientInviteEvidence,
+} from "./coordinator-actions.js";
 export {
 	coordinatorArchiveGroupAction,
 	coordinatorCreateAddDeviceInviteAction,
@@ -44,6 +47,7 @@ export {
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
 	coordinatorListJoinRequestsAction,
+	coordinatorListReviewedRecipientInviteEvidenceAction,
 	coordinatorListScopeMembershipsAction,
 	coordinatorListScopesAction,
 	coordinatorRemoveDeviceAction,
@@ -54,6 +58,7 @@ export {
 	coordinatorRevokeScopeMembershipAction,
 	coordinatorUnarchiveGroupAction,
 	coordinatorUpdateScopeAction,
+	isPeerTrustBindingCompatible,
 } from "./coordinator-actions.js";
 export type {
 	CoordinatorRequestVerifier,
@@ -94,8 +99,10 @@ export {
 	listCoordinatorReciprocalApprovals,
 	lookupCoordinatorPeers,
 	readCoordinatorSyncConfig,
+	refreshAuthorizedCoordinatorPeerTrust,
 	refreshStoredCoordinatorPeerAddresses,
 	registerCoordinatorPresence,
+	trustCoordinatorPeersWithSharedManagedScopes,
 } from "./coordinator-runtime.js";
 export type {
 	CoordinatorBootstrapGrantVerification,

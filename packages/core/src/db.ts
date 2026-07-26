@@ -1330,6 +1330,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 			for (const name of [
 				"discovered_via_coordinator_id",
 				"discovered_via_group_id",
+				"trust_provenance",
 				"pending_bootstrap_grant_id",
 			]) {
 				if (columnExists(db, "sync_peers", name)) continue;

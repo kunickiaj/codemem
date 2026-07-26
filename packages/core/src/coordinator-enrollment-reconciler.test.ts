@@ -99,6 +99,7 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 		expect(db.prepare("SELECT identity_id FROM identity_devices ORDER BY device_id").all()).toEqual(
 			[{ identity_id: "identity-direct" }, { identity_id: "identity-team" }],
 		);
+		expect(db.prepare("SELECT actor_id FROM sync_peers ORDER BY peer_device_id").all()).toEqual([]);
 		db.prepare(`INSERT INTO project_recipients(
 			canonical_project_identity, recipient_kind, recipient_id, status, provenance,
 			policy_revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at

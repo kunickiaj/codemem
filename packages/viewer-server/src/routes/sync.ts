@@ -56,6 +56,7 @@ import {
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
 	coordinatorListJoinRequestsAction,
+	coordinatorListReviewedRecipientInviteEvidenceAction,
 	coordinatorListScopeMembershipsAction,
 	coordinatorListScopesAction,
 	coordinatorRemoveDeviceAction,
@@ -89,6 +90,7 @@ import {
 	getSyncResetState,
 	type InboundScopeRejectionPeerSummary,
 	inviteTokenDigest,
+	isPeerTrustBindingCompatible,
 	isProjectSyncEnablementError,
 	isScopedSyncCapability,
 	LEGACY_SHARED_REVIEW_SCOPE_ID,
@@ -137,6 +139,7 @@ import {
 	reconcileRecipientPolicyProject,
 	reconcileShareOperationAcceptance,
 	recordNonce,
+	refreshAuthorizedCoordinatorPeerTrust,
 	refreshConfiguredScopeMembershipCache,
 	rejectInboundScopeFailures,
 	requestJson,
@@ -1876,15 +1879,73 @@ function recipientPolicySnapshotFingerprint(
 		.digest("hex")}`;
 }
 
+function recipientPolicyPresenceCapabilityExpiresAt(
+	enrollment: CoordinatorEnrollment,
+	observedAt: string,
+): number | null {
+	const expiresAt = enrollment.presence_expires_at;
+	const capabilities = enrollment.presence_capabilities;
+	if (typeof expiresAt !== "string" || !capabilities) return null;
+	const expiresAtMs = Date.parse(expiresAt);
+	const observedAtMs = Date.parse(observedAt);
+	if (
+		!Number.isFinite(expiresAtMs) ||
+		!Number.isFinite(observedAtMs) ||
+		new Date(expiresAtMs).toISOString() !== expiresAt ||
+		expiresAtMs <= observedAtMs ||
+		capabilities.sync_capability !== "scoped" ||
+		!Array.isArray(capabilities.sync_features) ||
+		!capabilities.sync_features.every((feature) => typeof feature === "string") ||
+		!capabilities.sync_features.includes("reassign_scope")
+	) {
+		return null;
+	}
+	return expiresAtMs;
+}
+
 export function createRecipientPolicyReconcilerEffects(
 	store: MemoryStore,
 	options: {
 		config?: ReturnType<typeof readCoordinatorSyncConfig>;
 		now?: () => string;
+		listDevices?: typeof coordinatorListDevicesAction;
+		listReviewedRecipientInviteEvidence?: typeof coordinatorListReviewedRecipientInviteEvidenceAction;
 	} = {},
 ): RecipientPolicyReconcilerEffects {
 	const config = options.config ?? readCoordinatorSyncConfig();
 	const now = options.now ?? (() => new Date().toISOString());
+	const listDevices = options.listDevices ?? coordinatorListDevicesAction;
+	const listReviewedRecipientInviteEvidence =
+		options.listReviewedRecipientInviteEvidence ??
+		coordinatorListReviewedRecipientInviteEvidenceAction;
+	const reviewedRecipientInviteEvidence = new Map<
+		string,
+		ReturnType<typeof coordinatorListReviewedRecipientInviteEvidenceAction>
+	>();
+	const loadReviewedRecipientInviteEvidence = (groupId: string) => {
+		let evidence = reviewedRecipientInviteEvidence.get(groupId);
+		if (!evidence) {
+			evidence = listReviewedRecipientInviteEvidence({
+				groupId,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			reviewedRecipientInviteEvidence.set(groupId, evidence);
+		}
+		return evidence;
+	};
+	const boundaryEnrollments = new Map<
+		string,
+		Map<
+			string,
+			{
+				identityId: string;
+				publicKey: string;
+				fingerprint: string;
+				presenceCapabilityExpiresAtMs: number | null;
+			}
+		>
+	>();
 	const target = (scopeId: string) => recipientPolicyCoordinatorBoundary(store, scopeId);
 	const coordinatorOptions = (scopeId: string) => {
 		const boundary = target(scopeId);
@@ -1949,17 +2010,27 @@ export function createRecipientPolicyReconcilerEffects(
 		},
 		listBoundaryEnrollments: async ({ scopeId }) => {
 			const targetOptions = coordinatorOptions(scopeId);
-			const enrollments = await coordinatorListDevicesAction({
+			const observedAt = now();
+			const enrollments = await listDevices({
 				groupId: targetOptions.groupId,
 				remoteUrl: targetOptions.remoteUrl,
 				adminSecret: targetOptions.adminSecret,
 			}).catch(() => {
 				throw new Error("recipient_policy_snapshot_not_fresh");
 			});
-			return enrollments.flatMap((enrollment) => {
+			const presenceCapabilityExpiries = new Map(
+				enrollments.map((enrollment) => [
+					enrollment.device_id,
+					recipientPolicyPresenceCapabilityExpiresAt(enrollment, observedAt),
+				]),
+			);
+			const mapped = enrollments.flatMap((enrollment) => {
 				if (
 					enrollment.group_id !== targetOptions.groupId ||
 					typeof enrollment.device_id !== "string" ||
+					typeof enrollment.public_key !== "string" ||
+					typeof enrollment.fingerprint !== "string" ||
+					fingerprintPublicKey(enrollment.public_key) !== enrollment.fingerprint ||
 					enrollment.enabled !== 1
 				) {
 					throw new Error("recipient_policy_snapshot_invalid");
@@ -1968,14 +2039,87 @@ export function createRecipientPolicyReconcilerEffects(
 				if (typeof enrollment.identity_id !== "string") {
 					throw new Error("recipient_policy_snapshot_invalid");
 				}
-				return [{ deviceId: enrollment.device_id, identityId: enrollment.identity_id }];
+				return [
+					{
+						deviceId: enrollment.device_id,
+						identityId: enrollment.identity_id,
+						publicKey: enrollment.public_key,
+						fingerprint: enrollment.fingerprint,
+					},
+				];
 			});
+			boundaryEnrollments.set(
+				scopeId,
+				new Map(
+					mapped.map((enrollment) => [
+						enrollment.deviceId,
+						{
+							identityId: enrollment.identityId,
+							publicKey: enrollment.publicKey,
+							fingerprint: enrollment.fingerprint,
+							presenceCapabilityExpiresAtMs:
+								presenceCapabilityExpiries.get(enrollment.deviceId) ?? null,
+						},
+					]),
+				),
+			);
+			return mapped;
 		},
-		probeCapability: (deviceId) =>
-			peerSupportsSyncRequirements(store, deviceId, {
+		probeCapability: async ({ deviceId, scopeId }) => {
+			if (deviceId === store.deviceId) return "supported";
+			// Reconciliation always lists this scope's enrollments before capability
+			// preflight. A missing binding still fails closed if that order changes.
+			const targetOptions = coordinatorOptions(scopeId);
+			const enrollment = boundaryEnrollments.get(scopeId)?.get(deviceId);
+			if (!enrollment) return "undetermined";
+			const peer = store.db
+				.prepare("SELECT pinned_fingerprint, public_key FROM sync_peers WHERE peer_device_id = ?")
+				.get(deviceId) as
+				| { pinned_fingerprint: string | null; public_key: string | null }
+				| undefined;
+			if (peer) {
+				const peerPublicKey = String(peer.public_key ?? "").trim();
+				const peerFingerprint =
+					String(peer.pinned_fingerprint ?? "").trim() ||
+					(peerPublicKey ? fingerprintPublicKey(peerPublicKey) : "");
+				if (
+					(peerFingerprint || peerPublicKey) &&
+					(peerFingerprint !== enrollment.fingerprint ||
+						(peerPublicKey && peerPublicKey !== enrollment.publicKey))
+				) {
+					return "undetermined";
+				}
+			}
+			const observed = await peerSupportsSyncRequirements(store, deviceId, {
 				scoped: true,
 				reassignScope: true,
-			}),
+			});
+			if (observed !== "undetermined") return observed;
+			const observedAtMs = Date.parse(now());
+			if (
+				enrollment.presenceCapabilityExpiresAtMs == null ||
+				!Number.isFinite(observedAtMs) ||
+				enrollment.presenceCapabilityExpiresAtMs <= observedAtMs
+			) {
+				return "undetermined";
+			}
+			// A consumed, still-reviewed Team/add-device invite is the only bootstrap
+			// identity proof accepted before normal peer discovery can observe the new
+			// device. Fresh authenticated presence separately proves capability.
+			const evidence = await loadReviewedRecipientInviteEvidence(targetOptions.groupId).catch(
+				() => [],
+			);
+			return evidence.some(
+				(invite) =>
+					invite.group_id === targetOptions.groupId &&
+					invite.bound_device_id === deviceId &&
+					invite.recipient_actor_id === enrollment.identityId &&
+					invite.bound_public_key === enrollment.publicKey &&
+					invite.bound_fingerprint === enrollment.fingerprint,
+			)
+				? "supported"
+				: "undetermined";
+		},
 		revoke: async (input): Promise<RecipientPolicyCoordinatorEffectReceipt> => {
 			const targetOptions = coordinatorOptions(input.scopeId);
 			await coordinatorRevokeScopeMembershipAction({
@@ -2019,6 +2163,7 @@ export function createRecipientPolicyReconcilerEffects(
 			});
 			const group = refreshed.groups.find((item) => item.groupId === boundary.groupId);
 			if (group?.status !== "refreshed") throw new Error("recipient_policy_effect_failed");
+			await refreshAuthorizedCoordinatorPeerTrust(store, config);
 		},
 	};
 }
@@ -2463,24 +2608,44 @@ async function authorizeBootstrapGrantRequest(
 	}
 
 	const config = readCoordinatorSyncConfig();
-	if (!config.syncCoordinatorUrl || !config.syncCoordinatorAdminSecret) {
+	if (!config.syncCoordinatorUrl) {
 		return { ok: false, reason: "bootstrap_grant_coordinator_not_configured", deviceId };
 	}
 
 	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 	let verification: CoordinatorBootstrapGrantVerification;
 	try {
-		const [status, payload] = await requestJson(
-			"GET",
-			`${buildBaseUrl(config.syncCoordinatorUrl)}/v1/admin/bootstrap-grants/${encodeURIComponent(grantId)}`,
-			{
-				headers: { "X-Codemem-Coordinator-Admin": config.syncCoordinatorAdminSecret },
-				timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
-			},
-		);
-		if (status !== 200 || !payload) {
-			return { ok: false, reason: "bootstrap_grant_lookup_failed", deviceId };
+		let payload: Record<string, unknown> | null = null;
+		if (config.syncCoordinatorAdminSecret) {
+			const [status, adminPayload] = await requestJson(
+				"GET",
+				`${buildBaseUrl(config.syncCoordinatorUrl)}/v1/admin/bootstrap-grants/${encodeURIComponent(grantId)}`,
+				{
+					headers: { "X-Codemem-Coordinator-Admin": config.syncCoordinatorAdminSecret },
+					timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
+				},
+			);
+			if (status === 200) payload = adminPayload;
+		} else {
+			for (const groupId of config.syncCoordinatorGroups) {
+				const lookupUrl = `${buildBaseUrl(config.syncCoordinatorUrl)}/v1/bootstrap-grants/${encodeURIComponent(grantId)}?group_id=${encodeURIComponent(groupId)}`;
+				const [status, signedPayload] = await requestJson("GET", lookupUrl, {
+					headers: buildAuthHeaders({
+						deviceId: localDeviceId,
+						method: "GET",
+						url: lookupUrl,
+						bodyBytes: Buffer.alloc(0),
+						keysDir: syncKeysDir(),
+					}),
+					timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
+				});
+				if (status === 200) {
+					payload = signedPayload;
+					break;
+				}
+			}
 		}
+		if (!payload) return { ok: false, reason: "bootstrap_grant_lookup_failed", deviceId };
 		verification = payload as unknown as CoordinatorBootstrapGrantVerification;
 	} catch {
 		return { ok: false, reason: "bootstrap_grant_lookup_failed", deviceId };
@@ -2490,6 +2655,12 @@ async function authorizeBootstrapGrantRequest(
 	const workerEnrollment = verification.worker_enrollment;
 	if (!grant || !workerEnrollment) {
 		return { ok: false, reason: "bootstrap_grant_invalid_payload", deviceId };
+	}
+	if (
+		config.syncCoordinatorGroups.length > 0 &&
+		!config.syncCoordinatorGroups.includes(String(grant.group_id))
+	) {
+		return { ok: false, reason: "bootstrap_grant_group_mismatch", deviceId };
 	}
 	if (grant.revoked_at) return { ok: false, reason: "bootstrap_grant_revoked", deviceId };
 	if (String(workerEnrollment.device_id) !== String(grant.worker_device_id)) {
@@ -2533,6 +2704,9 @@ async function authorizeBootstrapGrantRequest(
 	}
 	if (!valid) {
 		return { ok: false, reason: "bootstrap_grant_invalid_signature", deviceId };
+	}
+	if (!isPeerTrustBindingCompatible(store.db, deviceId, workerPublicKey, workerFingerprint)) {
+		return { ok: false, reason: "bootstrap_grant_peer_trust_conflict", deviceId };
 	}
 
 	const createdAt = new Date().toISOString();
@@ -5173,6 +5347,7 @@ export function syncRoutes(
 						inviteKind: kind,
 						policyTeamId: kind === "team_member" ? targetId : null,
 						targetIdentityId: kind === "add_device" ? targetId : null,
+						inviterDeviceId: kind === "add_device" ? preview.binding.deviceId : null,
 						reviewedPreviewDigest,
 						reviewedIntent,
 					})

@@ -599,12 +599,14 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 
 		expect(columnExists(db, "sync_peers", "discovered_via_coordinator_id")).toBe(false);
 		expect(columnExists(db, "sync_peers", "discovered_via_group_id")).toBe(false);
+		expect(columnExists(db, "sync_peers", "trust_provenance")).toBe(false);
 		expect(tableExists(db, "coordinator_group_preferences")).toBe(false);
 
 		ensureAdditiveSchemaCompatibility(db);
 
 		expect(columnExists(db, "sync_peers", "discovered_via_coordinator_id")).toBe(true);
 		expect(columnExists(db, "sync_peers", "discovered_via_group_id")).toBe(true);
+		expect(columnExists(db, "sync_peers", "trust_provenance")).toBe(true);
 		expect(tableExists(db, "coordinator_group_preferences")).toBe(true);
 		expect(columnExists(db, "coordinator_group_preferences", "default_space_scope_id")).toBe(true);
 		expect(

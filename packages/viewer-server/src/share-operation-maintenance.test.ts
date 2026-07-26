@@ -1,5 +1,6 @@
 import {
 	assertLegacyShareGrantAllowed,
+	fingerprintPublicKey,
 	initTestSchema,
 	type MemoryStore,
 	type RecipientPolicyReconcilerEffects,
@@ -108,6 +109,14 @@ describe("advancePendingProjectShares", () => {
 		);
 	}
 
+	function seedCapabilityBoundary(scopeId: string, groupId: string, now: string): void {
+		db.prepare(`INSERT INTO replication_scopes(
+			scope_id, label, kind, authority_type, coordinator_id, group_id, membership_epoch,
+			status, created_at, updated_at
+		) VALUES (?, 'Capability boundary', 'managed_project', 'coordinator',
+			'https://coord.example.test', ?, 1, 'active', ?, ?)`).run(scopeId, groupId, now, now);
+	}
+
 	beforeEach(() => {
 		db = new Database(":memory:");
 		initTestSchema(db);
@@ -115,6 +124,274 @@ describe("advancePendingProjectShares", () => {
 	});
 
 	afterEach(() => db.close());
+
+	it("accepts the local owner device capability without a recipient enrollment binding", async () => {
+		store.deviceId = "device-local-owner";
+		const effects = createRecipientPolicyReconcilerEffects(store, {
+			config: {
+				syncCoordinatorUrl: "https://coord.example.test",
+				syncCoordinatorAdminSecret: "secret",
+				syncCoordinatorGroups: ["group-a"],
+			} as never,
+		});
+
+		await expect(
+			effects.probeCapability({ deviceId: "device-local-owner", scopeId: "scope-not-needed" }),
+		).resolves.toBe("supported");
+	});
+
+	it("binds reviewed bootstrap capability evidence to the boundary group, identity, and key", async () => {
+		const now = "2026-07-26T00:00:00.000Z";
+		const scopeId = "scope-capability-a";
+		const publicKey = "reviewed-device-key";
+		const fingerprint = fingerprintPublicKey(publicKey);
+		let reviewedPresence: {
+			presence_expires_at?: string;
+			presence_capabilities?: Record<string, unknown>;
+		} = {};
+		seedCapabilityBoundary(scopeId, "group-a", now);
+		const listDevices = vi.fn(async () => [
+			{
+				group_id: "group-a",
+				device_id: "device-reviewed",
+				public_key: publicKey,
+				fingerprint,
+				identity_id: "identity:abcdefghijklmnopqr",
+				display_name: "Reviewed device",
+				enabled: 1,
+				created_at: now,
+				...reviewedPresence,
+			},
+			{
+				group_id: "group-a",
+				device_id: "device-stale-presence",
+				public_key: "stale-presence-key",
+				fingerprint: fingerprintPublicKey("stale-presence-key"),
+				identity_id: "identity:abcdefghijklmnopqr",
+				display_name: "Stale presence device",
+				enabled: 1,
+				created_at: now,
+				presence_expires_at: "2026-07-25T23:59:59.000Z",
+				presence_capabilities: {
+					sync_capability: "scoped",
+					sync_features: ["reassign_scope"],
+				},
+			},
+			{
+				group_id: "group-a",
+				device_id: "device-legacy-presence",
+				public_key: "legacy-presence-key",
+				fingerprint: fingerprintPublicKey("legacy-presence-key"),
+				identity_id: "identity:abcdefghijklmnopqr",
+				display_name: "Legacy presence device",
+				enabled: 1,
+				created_at: now,
+				presence_expires_at: "2026-07-27T00:00:00.000Z",
+				presence_capabilities: {
+					sync_capability: "scoped",
+					sync_features: "reassign_scope",
+				},
+			},
+			{
+				group_id: "group-a",
+				device_id: "device-cross-group",
+				public_key: "cross-group-current-key",
+				fingerprint: fingerprintPublicKey("cross-group-current-key"),
+				identity_id: "identity:abcdefghijklmnopqr",
+				display_name: "Cross-group collision",
+				enabled: 1,
+				created_at: now,
+			},
+			{
+				group_id: "group-a",
+				device_id: "device-rekeyed",
+				public_key: "current-rekeyed-key",
+				fingerprint: fingerprintPublicKey("current-rekeyed-key"),
+				identity_id: "identity:abcdefghijklmnopqr",
+				display_name: "Rekeyed device",
+				enabled: 1,
+				created_at: now,
+			},
+		]);
+
+		const listReviewedRecipientInviteEvidence = vi.fn(async ({ groupId }: { groupId: string }) =>
+			groupId === "group-a"
+				? [
+						{
+							invite_id: "invite-reviewed-1",
+							group_id: "group-a",
+							invite_kind: "team_member" as const,
+							policy_team_id: "policy-team-1",
+							assigned_identity_id: "identity:abcdefghijklmnopqr",
+							recipient_actor_id: "identity:abcdefghijklmnopqr",
+							bound_device_id: "device-reviewed",
+							bound_public_key: publicKey,
+							bound_fingerprint: fingerprint,
+							consumed_at: now,
+							reviewed_preview_digest: "a".repeat(64),
+						},
+						{
+							invite_id: "invite-stale-key",
+							group_id: "group-a",
+							invite_kind: "team_member" as const,
+							policy_team_id: "policy-team-1",
+							assigned_identity_id: "identity:abcdefghijklmnopqr",
+							recipient_actor_id: "identity:abcdefghijklmnopqr",
+							bound_device_id: "device-rekeyed",
+							bound_public_key: "stale-rekeyed-key",
+							bound_fingerprint: fingerprintPublicKey("stale-rekeyed-key"),
+							consumed_at: now,
+							reviewed_preview_digest: "c".repeat(64),
+						},
+						...[
+							{
+								deviceId: "device-stale-presence",
+								key: "stale-presence-key",
+								digest: "d",
+							},
+							{
+								deviceId: "device-legacy-presence",
+								key: "legacy-presence-key",
+								digest: "e",
+							},
+						].map((item) => ({
+							invite_id: `invite-${item.deviceId}`,
+							group_id: "group-a",
+							invite_kind: "team_member" as const,
+							policy_team_id: "policy-team-1",
+							assigned_identity_id: "identity:abcdefghijklmnopqr",
+							recipient_actor_id: "identity:abcdefghijklmnopqr",
+							bound_device_id: item.deviceId,
+							bound_public_key: item.key,
+							bound_fingerprint: fingerprintPublicKey(item.key),
+							consumed_at: now,
+							reviewed_preview_digest: item.digest.repeat(64),
+						})),
+					]
+				: [
+						{
+							invite_id: "invite-wrong-group",
+							group_id: "group-b",
+							invite_kind: "team_member" as const,
+							policy_team_id: "policy-team-1",
+							assigned_identity_id: "identity:abcdefghijklmnopqr",
+							recipient_actor_id: "identity:abcdefghijklmnopqr",
+							bound_device_id: "device-cross-group",
+							bound_public_key: "cross-group-current-key",
+							bound_fingerprint: fingerprintPublicKey("cross-group-current-key"),
+							consumed_at: now,
+							reviewed_preview_digest: "b".repeat(64),
+						},
+					],
+		);
+		const effects = createRecipientPolicyReconcilerEffects(store, {
+			config: {
+				syncCoordinatorUrl: "https://coord.example.test",
+				syncCoordinatorAdminSecret: "secret",
+				syncCoordinatorGroups: ["group-a", "group-b"],
+			} as never,
+			listDevices,
+			listReviewedRecipientInviteEvidence,
+			now: () => now,
+		});
+		await effects.listBoundaryEnrollments({
+			canonicalProjectIdentity: "project-capability-a",
+			scopeId,
+		});
+		db.prepare(
+			`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
+			 VALUES ('device-reviewed', NULL, NULL, ?)`,
+		).run(now);
+		await expect(effects.probeCapability({ deviceId: "device-reviewed", scopeId })).resolves.toBe(
+			"undetermined",
+		);
+		reviewedPresence = {
+			presence_expires_at: "2026-07-27T00:00:00.000Z",
+			presence_capabilities: {
+				sync_capability: "scoped",
+				sync_features: ["reassign_scope"],
+			},
+		};
+		await effects.listBoundaryEnrollments({
+			canonicalProjectIdentity: "project-capability-a",
+			scopeId,
+		});
+		await expect(effects.probeCapability({ deviceId: "device-reviewed", scopeId })).resolves.toBe(
+			"supported",
+		);
+		await expect(
+			effects.probeCapability({ deviceId: "device-stale-presence", scopeId }),
+		).resolves.toBe("undetermined");
+		await expect(
+			effects.probeCapability({ deviceId: "device-legacy-presence", scopeId }),
+		).resolves.toBe("undetermined");
+		db.prepare(
+			"UPDATE sync_peers SET pinned_fingerprint = 'stale-peer-fingerprint' WHERE peer_device_id = 'device-reviewed'",
+		).run();
+		await expect(effects.probeCapability({ deviceId: "device-reviewed", scopeId })).resolves.toBe(
+			"undetermined",
+		);
+		await expect(
+			effects.probeCapability({ deviceId: "device-cross-group", scopeId }),
+		).resolves.toBe("undetermined");
+		await expect(effects.probeCapability({ deviceId: "device-rekeyed", scopeId })).resolves.toBe(
+			"undetermined",
+		);
+		await expect(effects.probeCapability({ deviceId: "device-unknown", scopeId })).resolves.toBe(
+			"undetermined",
+		);
+		expect(listReviewedRecipientInviteEvidence).toHaveBeenCalledOnce();
+		expect(listReviewedRecipientInviteEvidence.mock.calls.map(([input]) => input.groupId)).toEqual([
+			"group-a",
+		]);
+	});
+
+	it("keeps capability undetermined when reviewed invite evidence validation fails", async () => {
+		const now = "2026-07-26T00:00:00.000Z";
+		const scopeId = "scope-capability-invalid";
+		const publicKey = "unreviewed-device-key";
+		seedCapabilityBoundary(scopeId, "group-a", now);
+		const listReviewedRecipientInviteEvidence = vi.fn(async () => {
+			throw new Error("coordinator_reviewed_recipient_invite_invalid");
+		});
+		const effects = createRecipientPolicyReconcilerEffects(store, {
+			config: {
+				syncCoordinatorUrl: "https://coord.example.test",
+				syncCoordinatorAdminSecret: "secret",
+				syncCoordinatorGroups: ["group-a"],
+			} as never,
+			listDevices: vi.fn(async () => [
+				{
+					group_id: "group-a",
+					device_id: "device-unreviewed",
+					public_key: publicKey,
+					fingerprint: fingerprintPublicKey(publicKey),
+					identity_id: "identity:abcdefghijklmnopqr",
+					display_name: "Unreviewed device",
+					enabled: 1,
+					created_at: now,
+					presence_expires_at: "2099-07-27T00:00:00.000Z",
+					presence_capabilities: {
+						sync_capability: "scoped",
+						sync_features: ["reassign_scope"],
+					},
+				},
+			]),
+			listReviewedRecipientInviteEvidence,
+		});
+
+		await effects.listBoundaryEnrollments({
+			canonicalProjectIdentity: "project-capability-invalid",
+			scopeId,
+		});
+		await expect(effects.probeCapability({ deviceId: "device-unreviewed", scopeId })).resolves.toBe(
+			"undetermined",
+		);
+		await expect(effects.probeCapability({ deviceId: "device-other", scopeId })).resolves.toBe(
+			"undetermined",
+		);
+		expect(listReviewedRecipientInviteEvidence).toHaveBeenCalledOnce();
+	});
 
 	it("requires scoped enforcement and reassign_scope capability", () => {
 		expect(
@@ -607,6 +884,8 @@ describe("recipient-policy maintenance", () => {
 	it("reads identity-bound enrollments from the managed boundary group", async () => {
 		const projectId = "project-boundary-enrollments";
 		const scopeId = "scope-boundary-enrollments";
+		const recipientPublicKey = "boundary-recipient-key";
+		const ownerPublicKey = "boundary-owner-key";
 		seedManagedBoundary(projectId, scopeId);
 		db.prepare("UPDATE replication_scopes SET coordinator_id = ? WHERE scope_id = ?").run(
 			"https://coord.example.test",
@@ -620,14 +899,22 @@ describe("recipient-policy maintenance", () => {
 							{
 								group_id: "group",
 								device_id: "device-recipient",
+								public_key: recipientPublicKey,
+								fingerprint: fingerprintPublicKey(recipientPublicKey),
 								identity_id: "identity-recipient",
+								display_name: null,
 								enabled: 1,
+								created_at: "2026-07-26T00:00:00.000Z",
 							},
 							{
 								group_id: "group",
 								device_id: "device-owner",
+								public_key: ownerPublicKey,
+								fingerprint: fingerprintPublicKey(ownerPublicKey),
 								identity_id: null,
+								display_name: null,
 								enabled: 1,
+								created_at: "2026-07-26T00:00:00.000Z",
 							},
 						],
 					}),
@@ -645,7 +932,14 @@ describe("recipient-policy maintenance", () => {
 
 		await expect(
 			effects.listBoundaryEnrollments({ canonicalProjectIdentity: projectId, scopeId }),
-		).resolves.toEqual([{ deviceId: "device-recipient", identityId: "identity-recipient" }]);
+		).resolves.toEqual([
+			{
+				deviceId: "device-recipient",
+				identityId: "identity-recipient",
+				publicKey: recipientPublicKey,
+				fingerprint: fingerprintPublicKey(recipientPublicKey),
+			},
+		]);
 		expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
 			"https://coord.example.test/v1/admin/devices?group_id=group&include_disabled=0",
 		);
@@ -681,7 +975,7 @@ describe("recipient-policy maintenance", () => {
 
 		await expect(
 			effects.listBoundaryEnrollments({ canonicalProjectIdentity: projectId, scopeId }),
-		).rejects.toThrow("recipient_policy_snapshot_invalid");
+		).rejects.toThrow("recipient_policy_snapshot_not_fresh");
 	});
 
 	it("rejects boundary enrollment reads outside the configured coordinator authority", async () => {
@@ -823,7 +1117,12 @@ describe("recipient-policy maintenance", () => {
 				};
 			}),
 			listBoundaryEnrollments: vi.fn(async () => [
-				{ deviceId: "device-revoked", identityId: `identity:${projectId}` },
+				{
+					deviceId: "device-revoked",
+					identityId: `identity:${projectId}`,
+					publicKey: "pk-revoked",
+					fingerprint: "fp-revoked",
+				},
 			]),
 			probeCapability: vi.fn(async () => "supported"),
 			revoke: vi.fn(async (input) => {
@@ -952,7 +1251,12 @@ describe("recipient-policy maintenance", () => {
 				};
 			}),
 			listBoundaryEnrollments: vi.fn(async () => [
-				{ deviceId: "device-recipient", identityId: `identity:${projectId}` },
+				{
+					deviceId: "device-recipient",
+					identityId: `identity:${projectId}`,
+					publicKey: "pk-recipient",
+					fingerprint: "fp-recipient",
+				},
 			]),
 			probeCapability: vi.fn(async () => "supported"),
 			revoke: vi.fn(async (input) => ({

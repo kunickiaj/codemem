@@ -222,6 +222,11 @@ describe("D1CoordinatorStore", () => {
 					"UPDATE coordinator_invites SET assigned_identity_id = ? WHERE invite_id = ?",
 				).run(identityId, inviteId);
 			},
+			setEnrollmentIdentity: (groupId: string, deviceId: string, identityId: string | null) => {
+				db.prepare(
+					"UPDATE enrolled_devices SET identity_id = ? WHERE group_id = ? AND device_id = ?",
+				).run(identityId, groupId, deviceId);
+			},
 			revokeInvite: (inviteId: string, revokedAt: string) => {
 				db.prepare("UPDATE coordinator_invites SET revoked_at = ? WHERE invite_id = ?").run(
 					revokedAt,

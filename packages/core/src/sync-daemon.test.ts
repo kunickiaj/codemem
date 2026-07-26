@@ -32,6 +32,7 @@ vi.mock("./coordinator-runtime.js", () => ({
 	coordinatorEnabled: vi.fn().mockReturnValue(false),
 	fetchCoordinatorStalePeers: vi.fn().mockResolvedValue(new Set()),
 	readCoordinatorSyncConfig: vi.fn().mockReturnValue({}),
+	refreshAuthorizedCoordinatorPeerTrust: vi.fn().mockResolvedValue({ peers: [], trusted: 0 }),
 	registerCoordinatorPresence: vi.fn().mockResolvedValue(null),
 }));
 
@@ -253,8 +254,12 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 	});
 
 	it("posts coordinator presence and refreshes scope membership cache when enabled", async () => {
-		const { coordinatorEnabled, readCoordinatorSyncConfig, registerCoordinatorPresence } =
-			await import("./coordinator-runtime.js");
+		const {
+			coordinatorEnabled,
+			readCoordinatorSyncConfig,
+			refreshAuthorizedCoordinatorPeerTrust,
+			registerCoordinatorPresence,
+		} = await import("./coordinator-runtime.js");
 		const { refreshConfiguredScopeMembershipCache } = await import("./scope-membership-cache.js");
 		vi.mocked(coordinatorEnabled).mockReturnValue(true);
 		vi.mocked(readCoordinatorSyncConfig).mockReturnValue({
@@ -281,6 +286,30 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 			}),
 			{ keysDir: "/tmp/keys" },
 		);
+		expect(refreshAuthorizedCoordinatorPeerTrust).toHaveBeenCalledWith(
+			{ db, dbPath: ":memory:" },
+			expect.objectContaining({
+				syncCoordinatorUrl: "http://coord",
+				syncCoordinatorGroups: ["team"],
+			}),
+			{ keysDir: "/tmp/keys" },
+		);
+	});
+
+	it("does not refresh authorized peer trust when membership refresh fails", async () => {
+		const { coordinatorEnabled, refreshAuthorizedCoordinatorPeerTrust } = await import(
+			"./coordinator-runtime.js"
+		);
+		const { refreshConfiguredScopeMembershipCache } = await import("./scope-membership-cache.js");
+		vi.mocked(coordinatorEnabled).mockReturnValue(true);
+		vi.mocked(refreshConfiguredScopeMembershipCache).mockRejectedValueOnce(
+			new Error("membership refresh failed"),
+		);
+
+		await expect(refreshCoordinatorPresenceForDaemon(db, ":memory:")).rejects.toThrow(
+			"membership refresh failed",
+		);
+		expect(refreshAuthorizedCoordinatorPeerTrust).not.toHaveBeenCalled();
 	});
 
 	it("keeps direct peer sync running when coordinator heartbeat fails", async () => {
@@ -390,8 +419,12 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 	});
 
 	it("runs tick maintenance after coordinator refresh and before peer sync", async () => {
-		const { coordinatorEnabled, fetchCoordinatorStalePeers, registerCoordinatorPresence } =
-			await import("./coordinator-runtime.js");
+		const {
+			coordinatorEnabled,
+			fetchCoordinatorStalePeers,
+			refreshAuthorizedCoordinatorPeerTrust,
+			registerCoordinatorPresence,
+		} = await import("./coordinator-runtime.js");
 		const { refreshConfiguredScopeMembershipCache } = await import("./scope-membership-cache.js");
 		const { runSyncPass } = await import("./sync-pass.js");
 		const order: string[] = [];
@@ -403,6 +436,10 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 		vi.mocked(refreshConfiguredScopeMembershipCache).mockImplementation(async () => {
 			order.push("membership");
 			return { status: "skipped", coordinatorId: null, groups: [] } as never;
+		});
+		vi.mocked(refreshAuthorizedCoordinatorPeerTrust).mockImplementation(async () => {
+			order.push("trust");
+			return { peers: [], trusted: 0 };
 		});
 		vi.mocked(fetchCoordinatorStalePeers).mockImplementation(async () => {
 			order.push("stale-peers");
@@ -429,7 +466,14 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 			await runTickOnce(dbPath, undefined, undefined, () => {
 				order.push("maintenance");
 			});
-			expect(order).toEqual(["presence", "membership", "maintenance", "stale-peers", "peer-sync"]);
+			expect(order).toEqual([
+				"presence",
+				"membership",
+				"trust",
+				"maintenance",
+				"stale-peers",
+				"peer-sync",
+			]);
 		} finally {
 			rmSync(dbPath, { force: true });
 		}

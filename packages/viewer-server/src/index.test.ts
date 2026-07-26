@@ -4250,23 +4250,28 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("allows /v1/status with a valid bootstrap grant", async () => {
+		it("allows /v1/status with a valid bootstrap grant using seed-device lookup", async () => {
 			const { syncApp, ensureStore, cleanup } = createTestApp();
 			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-bootstrap-grant-test-"));
 			const peerDbPath = join(peerDir, "peer.sqlite");
 			const peerKeysDir = join(peerDir, "keys");
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevAdminSecret = process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
 			let peerDeviceIdValue = "";
-			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+			const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
 				const url = String(input);
-				if (url.includes("/v1/admin/bootstrap-grants/grant-1")) {
+				if (url.includes("/v1/bootstrap-grants/grant-1?group_id=g1")) {
+					const lookupHeaders = new Headers(init?.headers);
+					const seedDeviceId = lookupHeaders.get("X-Opencode-Device");
+					expect(seedDeviceId).toBeTruthy();
+					expect(lookupHeaders.get("X-Opencode-Signature")).toBeTruthy();
 					return new Response(
 						JSON.stringify({
 							grant: {
 								grant_id: "grant-1",
 								group_id: "g1",
-								seed_device_id: "test-device-001",
+								seed_device_id: seedDeviceId,
 								worker_device_id: peerDeviceIdValue,
 								expires_at: "2099-01-01T00:00:00Z",
 								created_at: "2026-01-01T00:00:00Z",
@@ -4293,11 +4298,12 @@ describe("viewer-server", () => {
 			let peerFingerprintValue = "";
 			try {
 				process.env.CODEMEM_CONFIG = configPath;
+				delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
 				writeFileSync(
 					configPath,
 					JSON.stringify({
 						sync_coordinator_url: "https://coord.example.test",
-						sync_coordinator_admin_secret: "secret",
+						sync_coordinator_groups: ["g1"],
 					}),
 				);
 				globalThis.fetch = fetchMock as typeof fetch;
@@ -4333,6 +4339,26 @@ describe("viewer-server", () => {
 						pinned_fingerprint: peerFingerprintValue,
 						public_key: peerPublicKeyValue,
 					});
+					const now = new Date().toISOString();
+					store.db
+						.prepare(`INSERT INTO actors(
+						 actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+						 ) VALUES ('identity-local', 'Local Identity', 1, 'active', NULL, ?, ?)`)
+						.run(now, now);
+					store.db.prepare("DELETE FROM sync_peers WHERE peer_device_id = ?").run(peerDeviceId);
+					store.db
+						.prepare(`INSERT INTO sync_peers(peer_device_id, actor_id, created_at)
+						 VALUES (?, 'identity-local', ?)`)
+						.run(peerDeviceId, now);
+					const conflictingHeaders = buildAuthHeaders({
+						deviceId: peerDeviceId,
+						method: "GET",
+						url,
+						bodyBytes: Buffer.alloc(0),
+						keysDir: peerKeysDir,
+						bootstrapGrantId: "grant-1",
+					});
+					expect((await syncApp.request(url, { headers: conflictingHeaders })).status).toBe(401);
 				} finally {
 					peerDb.close();
 				}
@@ -4341,6 +4367,8 @@ describe("viewer-server", () => {
 				rmSync(peerDir, { recursive: true, force: true });
 				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
 				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevAdminSecret == null) delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+				else process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = prevAdminSecret;
 				globalThis.fetch = prevFetch;
 			}
 		});
@@ -14135,7 +14163,18 @@ describe("viewer-server", () => {
 				if (url.includes("/v1/admin/devices?group_id=team-a&include_disabled=1")) {
 					return new Response(
 						JSON.stringify({
-							items: [{ device_id: "device-1", group_id: "team-a", display_name: "Laptop" }],
+							items: [
+								{
+									device_id: "device-1",
+									group_id: "team-a",
+									public_key: "device-1-key",
+									fingerprint: "device-1-fingerprint",
+									identity_id: null,
+									display_name: "Laptop",
+									enabled: 1,
+									created_at: "2026-07-27T00:00:00.000Z",
+								},
+							],
 						}),
 						{ status: 200 },
 					);

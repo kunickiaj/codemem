@@ -529,6 +529,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				team_name_snapshot: "Coordinator One",
 				revoked_at: null,
 				invite_kind: "add_device" as const,
+				inviter_device_id: input.inviterDeviceId ?? null,
 				target_identity_id: input.targetIdentityId ?? null,
 				reviewed_preview_digest: input.reviewedPreviewDigest ?? null,
 			}));
@@ -558,6 +559,7 @@ describe("createCoordinatorApp dependency injection", () => {
 					group_id: "g1",
 					policy: "auto_admit",
 					target_identity_id: "identity-owner",
+					inviter_device_id: "device-a",
 					reviewed_preview_digest: digest,
 				},
 			});
@@ -566,6 +568,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				policy: "auto_admit",
 				expiresAt: "2026-04-04T00:00:00Z",
 				createdBy: "identity-owner",
+				inviterDeviceId: "device-a",
 				inviteKind: "add_device",
 				targetIdentityId: "identity-owner",
 				reviewedPreviewDigest: digest,
@@ -1054,6 +1057,54 @@ describe("createCoordinatorApp dependency injection", () => {
 			target_identity_id: "identity-brian",
 		});
 		expect(consumeRecipientInvite).toHaveBeenCalledOnce();
+	});
+
+	it("rejects add-device invites accepted by the inviter device", async () => {
+		const publicKey = "inviter-public-key";
+		const consumeRecipientInvite = vi.fn(async () => {
+			throw new Error("should not consume an add-device invite on the inviter device");
+		});
+		const store = createMockStore({
+			getInviteByTokenForInspection: vi.fn(async () => ({
+				invite_id: "invite-add-device-self",
+				group_id: "g1",
+				token: "token-add-device-self",
+				policy: "auto_admit",
+				expires_at: "2099-01-01T00:00:00Z",
+				created_at: "2026-03-28T00:00:00Z",
+				created_by: null,
+				team_name_snapshot: "Team One",
+				revoked_at: null,
+				invite_kind: "add_device",
+				target_identity_id: "identity-adam",
+				inviter_device_id: "device-adam",
+			})),
+			consumeRecipientInvite,
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+
+		const response = await app.request("/v1/join", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				token: "token-add-device-self",
+				invite_kind: "add_device",
+				identity_id: "identity-adam",
+				device_id: "device-adam",
+				public_key: publicKey,
+				fingerprint: fingerprintPublicKey(publicKey),
+			}),
+		});
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({
+			error: "add_device_invite_self_acceptance_forbidden",
+		});
+		expect(consumeRecipientInvite).not.toHaveBeenCalled();
 	});
 
 	it("rejects project invites accepted by the inviter device", async () => {
@@ -1612,6 +1663,62 @@ describe("createCoordinatorApp dependency injection", () => {
 					seed_device_id: "seed-1",
 				}),
 			],
+		});
+	});
+
+	it("lets an authenticated seed device inspect its bootstrap grant", async () => {
+		const seedEnrollment: CoordinatorEnrollment = {
+			group_id: "g1",
+			device_id: "seed-1",
+			public_key: "seed-public-key",
+			fingerprint: "seed-fingerprint",
+			identity_id: null,
+			display_name: "Seed",
+			enabled: 1,
+			created_at: "2026-01-01T00:00:00Z",
+		};
+		const workerEnrollment: CoordinatorEnrollment = {
+			...seedEnrollment,
+			device_id: "worker-1",
+			public_key: "worker-public-key",
+			fingerprint: "worker-fingerprint",
+			display_name: "Worker",
+		};
+		const store = createMockStore({
+			getGroup: vi.fn(async () => ({
+				group_id: "g1",
+				display_name: "Group 1",
+				archived_at: null,
+				created_at: "2026-01-01T00:00:00Z",
+			})),
+			getEnrollment: vi.fn(async (_groupId, deviceId) =>
+				deviceId === "seed-1" ? seedEnrollment : workerEnrollment,
+			),
+			getBootstrapGrant: vi.fn(async () => ({
+				grant_id: "grant-1",
+				group_id: "g1",
+				seed_device_id: "seed-1",
+				worker_device_id: "worker-1",
+				expires_at: "2099-01-01T00:00:00Z",
+				created_at: "2026-01-01T00:00:00Z",
+				created_by: "seed-1",
+				revoked_at: null,
+			})),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => null, now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+
+		const res = await app.request("/v1/bootstrap-grants/grant-1?group_id=g1", {
+			headers: authHeaders("seed-1"),
+		});
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({
+			grant: expect.objectContaining({ grant_id: "grant-1", seed_device_id: "seed-1" }),
+			worker_enrollment: expect.objectContaining({ device_id: "worker-1" }),
 		});
 	});
 

@@ -804,6 +804,7 @@ export function createCoordinatorApp(
 				policy: "auto_admit",
 				expiresAt,
 				createdBy: targetIdentityId,
+				inviterDeviceId: String(auth.enrollment.device_id),
 				inviteKind: "add_device",
 				targetIdentityId,
 				reviewedPreviewDigest,
@@ -819,6 +820,7 @@ export function createCoordinatorApp(
 				expires_at: invite.expires_at,
 				team_name: (invite.team_name_snapshot as string) ?? null,
 				target_identity_id: invite.target_identity_id ?? undefined,
+				inviter_device_id: invite.inviter_device_id ?? undefined,
 				reviewed_preview_digest: invite.reviewed_preview_digest ?? undefined,
 			};
 			const encoded = encodeInvitePayload(payload);
@@ -1665,6 +1667,7 @@ export function createCoordinatorApp(
 				...(invite.invite_kind === "add_device"
 					? {
 							target_identity_id: invite.target_identity_id ?? undefined,
+							inviter_device_id: invite.inviter_device_id ?? undefined,
 							reviewed_preview_digest: invite.reviewed_preview_digest ?? undefined,
 						}
 					: {}),
@@ -1882,6 +1885,46 @@ export function createCoordinatorApp(
 		}
 	});
 
+	app.get("/v1/bootstrap-grants/:grantId", async (c) => {
+		const grantId = String(c.req.param("grantId") ?? "").trim();
+		const groupId = String(c.req.query("group_id") ?? "").trim();
+		if (!grantId || !groupId) return c.json({ error: "grant_id_and_group_id_required" }, 400);
+		const store = createStore();
+		try {
+			const auth = await authorizeRequest(store, runtime, requestVerifier, {
+				method: c.req.method,
+				url: c.req.url,
+				groupId,
+				body: new Uint8Array(0),
+				deviceId: c.req.header("X-Opencode-Device") ?? null,
+				signature: c.req.header("X-Opencode-Signature") ?? null,
+				timestamp: c.req.header("X-Opencode-Timestamp") ?? null,
+				nonce: c.req.header("X-Opencode-Nonce") ?? null,
+			});
+			if (!auth.ok || !auth.enrollment) {
+				return (
+					rateLimitedResponse(c, c.req.path, false) ??
+					c.json({ error: auth.error }, authErrorStatus(auth.error))
+				);
+			}
+			const limited = rateLimitedResponse(c, String(auth.enrollment.device_id), true);
+			if (limited) return limited;
+			const grant = await store.getBootstrapGrant(grantId);
+			if (
+				!grant ||
+				grant.group_id !== groupId ||
+				grant.seed_device_id !== String(auth.enrollment.device_id)
+			) {
+				return c.json({ error: "grant_not_found" }, 404);
+			}
+			const workerEnrollment = await store.getEnrollment(groupId, grant.worker_device_id);
+			if (!workerEnrollment) return c.json({ error: "worker_enrollment_not_found" }, 404);
+			return c.json({ grant, worker_enrollment: workerEnrollment });
+		} finally {
+			await store.close();
+		}
+	});
+
 	app.get("/v1/admin/bootstrap-grants", async (c) => {
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
 		if (!adminAuth.ok)
@@ -2024,6 +2067,12 @@ export function createCoordinatorApp(
 				if (identityId.length > 256 || /[\p{Cc}\p{Cf}]/u.test(identityId)) {
 					return c.json({ error: "identity_id_invalid" }, 400);
 				}
+				if (
+					invite.invite_kind === "add_device" &&
+					String(invite.inviter_device_id ?? "").trim() === deviceId
+				) {
+					return c.json({ error: "add_device_invite_self_acceptance_forbidden" }, 409);
+				}
 				try {
 					const acceptance = await store.consumeRecipientInvite({
 						token,
@@ -2043,6 +2092,13 @@ export function createCoordinatorApp(
 						policy_team_id: acceptance.invite.policy_team_id ?? null,
 						target_identity_id: acceptance.invite.target_identity_id ?? null,
 						assigned_identity_id: acceptance.invite.assigned_identity_id ?? null,
+						bootstrap_grant_id: acceptance.bootstrap_grant?.grant_id ?? null,
+						inviter_device: acceptance.bootstrap_grant
+							? await store.getEnrollment(
+									acceptance.invite.group_id,
+									acceptance.bootstrap_grant.seed_device_id,
+								)
+							: null,
 						reviewed_preview_digest: acceptance.invite.reviewed_preview_digest,
 						reviewed_intent: acceptance.reviewed_intent,
 					});

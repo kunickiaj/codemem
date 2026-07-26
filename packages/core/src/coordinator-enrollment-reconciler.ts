@@ -192,6 +192,28 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 				}
 				continue;
 			}
+			const existingPeer = db
+				.prepare(
+					`SELECT public_key, pinned_fingerprint, claimed_local_actor
+					 FROM sync_peers WHERE peer_device_id = ?`,
+				)
+				.get(enrollment.device_id) as
+				| {
+						public_key: string | null;
+						pinned_fingerprint: string | null;
+						claimed_local_actor: number;
+				  }
+				| undefined;
+			if (
+				existingPeer &&
+				(existingPeer.claimed_local_actor === 1 ||
+					(existingPeer.public_key != null && existingPeer.public_key !== enrollment.public_key) ||
+					(existingPeer.pinned_fingerprint != null &&
+						existingPeer.pinned_fingerprint !== enrollment.fingerprint))
+			) {
+				issue("device", enrollment.device_id, "device_trust_conflict");
+				continue;
+			}
 			const stableBinding = {
 				groupId: input.groupId,
 				identityId,

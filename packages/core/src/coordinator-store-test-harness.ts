@@ -36,6 +36,11 @@ export interface CoordinatorStoreHarnessContext<
 	store: TStore;
 	clearInviteReviewedIntent: (inviteId: string) => Promise<void> | void;
 	setInviteAssignedIdentity: (inviteId: string, identityId: string | null) => Promise<void> | void;
+	setEnrollmentIdentity: (
+		groupId: string,
+		deviceId: string,
+		identityId: string | null,
+	) => Promise<void> | void;
 	revokeInvite: (inviteId: string, revokedAt: string) => Promise<void> | void;
 	cleanup: () => Promise<void> | void;
 }
@@ -748,7 +753,30 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					await store.createGroup("g1");
 					await store.enrollDevice("g1", { deviceId: "d1", fingerprint: "fp1", publicKey: "pk1" });
 					await store.enrollDevice("g1", { deviceId: "d2", fingerprint: "fp2", publicKey: "pk2" });
-					expect(await store.listEnrolledDevices("g1")).toHaveLength(2);
+					await store.upsertPresence({
+						groupId: "g1",
+						deviceId: "d2",
+						addresses: [],
+						ttlS: 300,
+						capabilities: {
+							sync_capability: "scoped",
+							sync_features: ["reassign_scope"],
+							token: "must-not-cross-device-list-boundary",
+						},
+					});
+					const devices = await store.listEnrolledDevices("g1");
+					expect(devices).toHaveLength(2);
+					expect(devices[0]).not.toHaveProperty("presence_capabilities");
+					expect(devices[1]).toMatchObject({
+						group_id: "g1",
+						device_id: "d2",
+						presence_capabilities: {
+							sync_capability: "scoped",
+							sync_features: ["reassign_scope"],
+						},
+					});
+					expect(devices[1]?.presence_expires_at).toBeTruthy();
+					expect(devices[1]?.presence_capabilities).not.toHaveProperty("token");
 				});
 			});
 
@@ -1135,6 +1163,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						policy: "auto_admit",
 						expiresAt: "2099-01-01T00:00:00Z",
 						inviteKind: "add_device",
+						inviterDeviceId: teamInput.deviceId,
 						targetIdentityId: "identity-brian",
 						reviewedPreviewDigest: await recipientReviewedIntentDigest(addDeviceIntent),
 						reviewedIntent: addDeviceIntent,
@@ -1162,7 +1191,12 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						publicKey: "add-device-key",
 						fingerprint: fingerprintPublicKey("add-device-key"),
 					};
-					expect((await store.consumeRecipientInvite(addDeviceInput)).status).toBe("accepted");
+					const acceptedAddDevice = await store.consumeRecipientInvite(addDeviceInput);
+					expect(acceptedAddDevice.status).toBe("accepted");
+					expect(acceptedAddDevice.bootstrap_grant).toMatchObject({
+						seed_device_id: teamInput.deviceId,
+						worker_device_id: addDeviceInput.deviceId,
+					});
 					const acceptedAddDeviceEnrollment = await store.getEnrollment(
 						"g1",
 						addDeviceInput.deviceId,
@@ -1203,6 +1237,63 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						expect.objectContaining({ identity_id: addDeviceInput.identityId }),
 					]);
 					expect(await store.listScopeMemberships("scope-project")).toEqual([]);
+				});
+			});
+
+			it("recovers an add-device bootstrap grant after the seed device is re-enabled", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Coordinator Alpha");
+					const seedPublicKey = "recovery-seed-key";
+					await store.enrollDevice("g1", {
+						deviceId: "recovery-seed",
+						publicKey: seedPublicKey,
+						fingerprint: fingerprintPublicKey(seedPublicKey),
+						identityId: "identity-brian",
+					});
+					const reviewedIntent = addDeviceReviewedIntent("identity-brian");
+					const invite = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2099-01-01T00:00:00Z",
+						inviteKind: "add_device",
+						inviterDeviceId: "recovery-seed",
+						targetIdentityId: "identity-brian",
+						reviewedPreviewDigest: await recipientReviewedIntentDigest(reviewedIntent),
+						reviewedIntent,
+					});
+					await store.setDeviceEnabled("g1", "recovery-seed", false);
+					const workerPublicKey = "recovery-worker-key";
+					const input = {
+						token: invite.token,
+						inviteKind: "add_device" as const,
+						identityId: "identity-brian",
+						deviceId: "recovery-worker",
+						publicKey: workerPublicKey,
+						fingerprint: fingerprintPublicKey(workerPublicKey),
+						now: "2026-07-21T00:00:00.000Z",
+					};
+
+					const pending = await store.consumeRecipientInvite(input);
+					expect(pending).toMatchObject({
+						status: "accepted",
+						bootstrap_grant: null,
+					});
+					await store.setDeviceEnabled("g1", "recovery-seed", true);
+					const [recovered, replay] = await Promise.all([
+						store.consumeRecipientInvite(input),
+						store.consumeRecipientInvite(input),
+					]);
+
+					expect(recovered).toMatchObject({
+						status: "existing",
+						invite: { trust_state: "bootstrap_grant_created" },
+						bootstrap_grant: {
+							seed_device_id: "recovery-seed",
+							worker_device_id: "recovery-worker",
+						},
+					});
+					expect(replay.bootstrap_grant?.grant_id).toBe(recovered.bootstrap_grant?.grant_id);
+					expect(await store.listBootstrapGrants("g1")).toHaveLength(1);
 				});
 			});
 
@@ -1615,7 +1706,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					});
 					expect(retry.bootstrap_grant?.seed_device_id).toBe("seed-1");
 					expect(await store.getEnrollment("g1", input.deviceId)).toEqual(
-						expect.objectContaining({ identity_id: null }),
+						expect.objectContaining({ identity_id: "actor-brian" }),
 					);
 					await expect(
 						store.consumeProjectInvite({ ...input, deviceId: "other-device" }),
@@ -1633,6 +1724,68 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					await expect(
 						store.consumeProjectInvite({ ...input, recipientDisplayName: "Not Brian" }),
 					).rejects.toThrow("invite_identity_conflict");
+				});
+			});
+
+			it("backfills only an exact legacy consumed project-invite enrollment binding", async () => {
+				await withContext(async ({ store, setEnrollmentIdentity }) => {
+					await store.createGroup("g1", "Team Alpha");
+					const operationId = `share_${"1".repeat(40)}`;
+					const invite = await store.createInvite({
+						groupId: "g1",
+						policy: "auto_admit",
+						expiresAt: "2099-01-01T00:00:00Z",
+						operationId,
+						reviewedProjectSetDigest: "2".repeat(64),
+						projectIntent: [
+							{
+								canonical_identity: "workspace:legacy-project-invite",
+								display_name: "Legacy project invite",
+								existing_memory_count: 0,
+							},
+						],
+					});
+					const publicKey = "legacy-project-invite-key";
+					const input = {
+						token: invite.token,
+						operationId,
+						deviceId: "legacy-project-invite-device",
+						publicKey,
+						fingerprint: fingerprintPublicKey(publicKey),
+						recipientActorId: "actor-legacy-recipient",
+						recipientDisplayName: "Legacy Recipient",
+						deviceDisplayName: "Legacy Recipient's Mac",
+						now: "2026-07-20T00:00:00.000Z",
+					};
+					await store.consumeProjectInvite(input);
+
+					await setEnrollmentIdentity("g1", input.deviceId, null);
+					await expect(store.consumeProjectInvite(input)).resolves.toMatchObject({
+						status: "existing",
+						enrollment: { identity_id: input.recipientActorId },
+					});
+
+					await setEnrollmentIdentity("g1", input.deviceId, "actor-conflicting-recipient");
+					await expect(store.consumeProjectInvite(input)).rejects.toThrow(
+						"invite_identity_conflict",
+					);
+					expect(await store.getEnrollment("g1", input.deviceId)).toMatchObject({
+						identity_id: "actor-conflicting-recipient",
+					});
+
+					await setEnrollmentIdentity("g1", input.deviceId, null);
+					await store.renameDevice("g1", input.deviceId, "Renamed device");
+					await expect(store.consumeProjectInvite(input)).resolves.toMatchObject({
+						status: "existing",
+						enrollment: {
+							identity_id: input.recipientActorId,
+							display_name: "Renamed device",
+						},
+					});
+					expect(await store.getEnrollment("g1", input.deviceId)).toMatchObject({
+						identity_id: input.recipientActorId,
+						display_name: "Renamed device",
+					});
 				});
 			});
 

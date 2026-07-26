@@ -69,10 +69,20 @@ function harness(active: string[]) {
 			};
 		}),
 		listBoundaryEnrollments: vi.fn(async () => [
-			{ deviceId: "device-keep", identityId: "identity-a" },
-			{ deviceId: "device-new", identityId: "identity-a" },
+			{
+				deviceId: "device-keep",
+				identityId: "identity-a",
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+			},
+			{
+				deviceId: "device-new",
+				identityId: "identity-a",
+				publicKey: "pk-new",
+				fingerprint: "fp-new",
+			},
 		]),
-		probeCapability: vi.fn(async (deviceId) => {
+		probeCapability: vi.fn(async ({ deviceId }) => {
 			calls.push(`probe:${deviceId}`);
 			return "supported";
 		}),
@@ -169,7 +179,12 @@ describe("recipient-policy reconciler executor", () => {
 	it("does not grant a policy device that is not enrolled in the boundary group", async () => {
 		const { effects } = harness(["device-keep"]);
 		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
-			{ deviceId: "device-keep", identityId: "identity-a" },
+			{
+				deviceId: "device-keep",
+				identityId: "identity-a",
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+			},
 		]);
 
 		const outcome = await reconcileRecipientPolicyProject(
@@ -183,7 +198,7 @@ describe("recipient-policy reconciler executor", () => {
 			grantedDeviceIds: [],
 		});
 		expect(effects.grant).not.toHaveBeenCalled();
-		expect(vi.mocked(effects.probeCapability).mock.calls.map(([deviceId]) => deviceId)).toEqual([
+		expect(vi.mocked(effects.probeCapability).mock.calls.map(([input]) => input.deviceId)).toEqual([
 			"device-keep",
 		]);
 	});
@@ -192,12 +207,32 @@ describe("recipient-policy reconciler executor", () => {
 		const { effects } = harness(["device-keep"]);
 		vi.mocked(effects.listBoundaryEnrollments)
 			.mockResolvedValueOnce([
-				{ deviceId: "device-keep", identityId: "identity-a" },
-				{ deviceId: "device-new", identityId: "identity-a" },
+				{
+					deviceId: "device-keep",
+					identityId: "identity-a",
+					publicKey: "pk-keep",
+					fingerprint: "fp-keep",
+				},
+				{
+					deviceId: "device-new",
+					identityId: "identity-a",
+					publicKey: "pk-new",
+					fingerprint: "fp-new",
+				},
 			])
 			.mockResolvedValueOnce([
-				{ deviceId: "device-keep", identityId: "identity-a" },
-				{ deviceId: "device-new", identityId: "identity-other" },
+				{
+					deviceId: "device-keep",
+					identityId: "identity-a",
+					publicKey: "pk-keep",
+					fingerprint: "fp-keep",
+				},
+				{
+					deviceId: "device-new",
+					identityId: "identity-other",
+					publicKey: "pk-new-other",
+					fingerprint: "fp-new-other",
+				},
 			]);
 
 		const outcome = await reconcileRecipientPolicyProject(
@@ -217,15 +252,35 @@ describe("recipient-policy reconciler executor", () => {
 	it("revokes a new grant immediately when its enrollment Identity changes", async () => {
 		const { effects } = harness(["device-keep"]);
 		const matching = [
-			{ deviceId: "device-keep", identityId: "identity-a" },
-			{ deviceId: "device-new", identityId: "identity-a" },
+			{
+				deviceId: "device-keep",
+				identityId: "identity-a",
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+			},
+			{
+				deviceId: "device-new",
+				identityId: "identity-a",
+				publicKey: "pk-new",
+				fingerprint: "fp-new",
+			},
 		];
 		vi.mocked(effects.listBoundaryEnrollments)
 			.mockResolvedValueOnce(matching)
 			.mockResolvedValueOnce(matching)
 			.mockResolvedValue([
-				{ deviceId: "device-keep", identityId: "identity-a" },
-				{ deviceId: "device-new", identityId: "identity-other" },
+				{
+					deviceId: "device-keep",
+					identityId: "identity-a",
+					publicKey: "pk-keep",
+					fingerprint: "fp-keep",
+				},
+				{
+					deviceId: "device-new",
+					identityId: "identity-other",
+					publicKey: "pk-new-other",
+					fingerprint: "fp-new-other",
+				},
 			]);
 
 		const outcome = await reconcileRecipientPolicyProject(
@@ -258,7 +313,12 @@ describe("recipient-policy reconciler executor", () => {
 		).run();
 		const { effects } = harness(["device-keep"]);
 		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
-			{ deviceId: "device-keep", identityId: "identity-other" },
+			{
+				deviceId: "device-keep",
+				identityId: "identity-other",
+				publicKey: "key-device-keep-other",
+				fingerprint: "fingerprint-device-keep-other",
+			},
 		]);
 
 		const outcome = await reconcileRecipientPolicyProject(
@@ -354,7 +414,7 @@ describe("recipient-policy reconciler executor", () => {
 	it("revokes removals before rejecting an unsupported grant candidate", async () => {
 		const { effects } = harness(["device-keep", "device-old"]);
 		insertActiveAuthority(db);
-		vi.mocked(effects.probeCapability).mockImplementation(async (deviceId) =>
+		vi.mocked(effects.probeCapability).mockImplementation(async ({ deviceId }) =>
 			deviceId === "device-new" ? "unsupported" : "supported",
 		);
 
@@ -374,7 +434,7 @@ describe("recipient-policy reconciler executor", () => {
 		);
 		expect(effects.grant).not.toHaveBeenCalled();
 		expect(effects.refresh).not.toHaveBeenCalled();
-		expect(vi.mocked(effects.probeCapability).mock.calls.map(([deviceId]) => deviceId)).toEqual([
+		expect(vi.mocked(effects.probeCapability).mock.calls.map(([input]) => input.deviceId)).toEqual([
 			"device-keep",
 			"device-new",
 		]);

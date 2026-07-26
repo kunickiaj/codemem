@@ -32,6 +32,10 @@ export interface CoordinatorEnrollment {
 	display_name: string | null;
 	enabled: number;
 	created_at: string;
+	/** Authenticated presence expiry for this exact group/device enrollment. */
+	presence_expires_at?: string;
+	/** Token-free capabilities from the same authenticated presence record. */
+	presence_capabilities?: Record<string, unknown>;
 }
 
 export interface CoordinatorInvite {
@@ -147,6 +151,7 @@ export interface CoordinatorRecipientInviteAcceptance {
 	status: "accepted" | "existing";
 	invite: CoordinatorInvite;
 	reviewed_intent?: RecipientReviewedIntentV1;
+	bootstrap_grant?: CoordinatorBootstrapGrant | null;
 }
 
 export interface CoordinatorJoinRequest {

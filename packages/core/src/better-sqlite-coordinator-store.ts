@@ -144,9 +144,44 @@ const INVITE_COLUMNS = `invite_id, group_id, token, policy, expires_at, created_
 const ENROLLMENT_COLUMNS =
 	"group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at";
 
+const ENROLLMENT_PRESENCE_COLUMNS = `enrolled_devices.group_id, enrolled_devices.device_id,
+	enrolled_devices.public_key, enrolled_devices.fingerprint, enrolled_devices.identity_id,
+	enrolled_devices.display_name, enrolled_devices.enabled, enrolled_devices.created_at,
+	presence_records.expires_at AS presence_expires_at,
+	presence_records.capabilities_json AS presence_capabilities_json`;
+
 function rowToRecord<T>(row: unknown): T {
 	if (row == null) throw new Error("expected row");
 	return row as T;
+}
+
+function rowToEnrollmentWithPresence(row: unknown): CoordinatorEnrollment {
+	const record = rowToRecord<Record<string, unknown>>(row);
+	const {
+		presence_capabilities_json: capabilitiesJson,
+		presence_expires_at: expiresAt,
+		...base
+	} = record;
+	if (typeof expiresAt !== "string" || typeof capabilitiesJson !== "string") {
+		return base as unknown as CoordinatorEnrollment;
+	}
+	try {
+		const capabilities = JSON.parse(capabilitiesJson) as unknown;
+		if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
+			return base as unknown as CoordinatorEnrollment;
+		}
+		const capabilityRecord = capabilities as Record<string, unknown>;
+		return {
+			...(base as unknown as CoordinatorEnrollment),
+			presence_expires_at: expiresAt,
+			presence_capabilities: {
+				sync_capability: capabilityRecord.sync_capability,
+				sync_features: capabilityRecord.sync_features,
+			},
+		};
+	} catch {
+		return base as unknown as CoordinatorEnrollment;
+	}
 }
 
 function normalizeBootstrapGrantRequest(
@@ -935,14 +970,17 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		groupId: string,
 		includeDisabled = false,
 	): Promise<CoordinatorEnrollment[]> {
-		const where = includeDisabled ? "" : "AND enabled = 1";
+		const where = includeDisabled ? "" : "AND enrolled_devices.enabled = 1";
 		return this.db
-			.prepare(`SELECT ${ENROLLMENT_COLUMNS}
+			.prepare(`SELECT ${ENROLLMENT_PRESENCE_COLUMNS}
 				 FROM enrolled_devices
-				 WHERE group_id = ? ${where}
-				 ORDER BY created_at ASC, device_id ASC`)
+				 LEFT JOIN presence_records
+				   ON presence_records.group_id = enrolled_devices.group_id
+				  AND presence_records.device_id = enrolled_devices.device_id
+				 WHERE enrolled_devices.group_id = ? ${where}
+				 ORDER BY enrolled_devices.created_at ASC, enrolled_devices.device_id ASC`)
 			.all(groupId)
-			.map((row) => rowToRecord<CoordinatorEnrollment>(row));
+			.map(rowToEnrollmentWithPresence);
 	}
 
 	async getEnrollment(
@@ -1329,10 +1367,56 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			) {
 				throw new Error("invite_identity_conflict");
 			}
+			let bootstrapGrant: CoordinatorBootstrapGrant | null = null;
+			if (
+				inspection.kind === "add_device" &&
+				invite.inviter_device_id &&
+				!invite.bootstrap_grant_id &&
+				new Date(invite.expires_at) > new Date(consumedAt)
+			) {
+				const seed = this.db
+					.prepare(`SELECT ${ENROLLMENT_COLUMNS} FROM enrolled_devices
+					 WHERE group_id = ? AND device_id = ? AND enabled = 1`)
+					.get(invite.group_id, invite.inviter_device_id) as CoordinatorEnrollment | undefined;
+				if (seed) {
+					const grantId = tokenUrlSafe(12);
+					const claimed = this.db
+						.prepare(`UPDATE coordinator_invites SET bootstrap_grant_id = ?,
+						 trust_state = 'bootstrap_grant_created'
+						 WHERE invite_id = ? AND bootstrap_grant_id IS NULL`)
+						.run(grantId, invite.invite_id);
+					if (claimed.changes === 1) {
+						bootstrapGrant = insertBootstrapGrantSync(
+							this.db,
+							{
+								groupId: invite.group_id,
+								seedDeviceId: seed.device_id,
+								workerDeviceId: opts.deviceId,
+								expiresAt: invite.expires_at,
+								createdBy: authoritativeIdentityId,
+							},
+							grantId,
+							consumedAt,
+						);
+					}
+				}
+			}
+			const savedWithGrant = this.db
+				.prepare(`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE invite_id = ?`)
+				.get(invite.invite_id) as CoordinatorInvite;
+			if (!bootstrapGrant && savedWithGrant.bootstrap_grant_id) {
+				bootstrapGrant =
+					(this.db
+						.prepare(`SELECT grant_id, group_id, seed_device_id, worker_device_id, expires_at,
+						 created_at, created_by, revoked_at FROM coordinator_bootstrap_grants WHERE grant_id = ?`)
+						.get(savedWithGrant.bootstrap_grant_id) as CoordinatorBootstrapGrant | undefined) ??
+					null;
+			}
 			return {
 				status: changed === 1 ? "accepted" : "existing",
-				invite: saved,
+				invite: savedWithGrant,
 				reviewed_intent: inspection.reviewed_intent,
+				bootstrap_grant: bootstrapGrant,
 			};
 		})();
 	}
@@ -1382,7 +1466,9 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			if (
 				existingEnrollment &&
 				(existingEnrollment.public_key !== opts.publicKey ||
-					existingEnrollment.fingerprint !== opts.fingerprint)
+					existingEnrollment.fingerprint !== opts.fingerprint ||
+					(existingEnrollment.identity_id != null &&
+						existingEnrollment.identity_id !== opts.recipientActorId))
 			) {
 				throw new Error("invite_identity_conflict");
 			}
@@ -1439,8 +1525,21 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					deviceId: opts.deviceId,
 					publicKey: opts.publicKey,
 					fingerprint: opts.fingerprint,
+					identityId: opts.recipientActorId,
 					displayName: opts.deviceDisplayName,
 				});
+			} else {
+				this.db
+					.prepare(`UPDATE enrolled_devices SET identity_id = ?
+						WHERE group_id = ? AND device_id = ? AND identity_id IS NULL AND enabled = 1
+							AND public_key = ? AND fingerprint = ?`)
+					.run(
+						opts.recipientActorId,
+						invite.group_id,
+						opts.deviceId,
+						opts.publicKey,
+						opts.fingerprint,
+					);
 			}
 			const seed = invite.inviter_device_id
 				? (this.db
@@ -1483,6 +1582,9 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					FROM enrolled_devices WHERE group_id = ? AND device_id = ? AND enabled = 1`)
 				.get(invite.group_id, opts.deviceId) as CoordinatorEnrollment | undefined;
 			if (!enrollment) throw new Error("invite_acceptance_incomplete");
+			if (enrollment.identity_id !== opts.recipientActorId) {
+				throw new Error("invite_identity_conflict");
+			}
 			if (!bootstrapGrant && saved.bootstrap_grant_id) {
 				bootstrapGrant =
 					(this.db

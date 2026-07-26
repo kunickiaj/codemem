@@ -12,6 +12,7 @@ import {
 	coordinatorEnabled,
 	fetchCoordinatorStalePeers,
 	readCoordinatorSyncConfig,
+	refreshAuthorizedCoordinatorPeerTrust,
 	registerCoordinatorPresence,
 } from "./coordinator-runtime.js";
 
@@ -168,6 +169,7 @@ export async function refreshCoordinatorPresenceForDaemon(
 	if (!coordinatorEnabled(config)) return false;
 	await registerCoordinatorPresence({ db, dbPath }, config, { keysDir });
 	await refreshConfiguredScopeMembershipCache(db, config, { keysDir });
+	await refreshAuthorizedCoordinatorPeerTrust({ db, dbPath }, config, { keysDir });
 	return true;
 }
 

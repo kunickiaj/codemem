@@ -10,9 +10,14 @@ import {
 	fetchCoordinatorStalePeers,
 	lookupCoordinatorPeers,
 	readCoordinatorSyncConfig,
+	refreshAuthorizedCoordinatorPeerTrust,
 	refreshStoredCoordinatorPeerAddresses,
+	revokeUnauthorizedCoordinatorPeerTrust,
+	trustCoordinatorPeersWithSharedManagedScopes,
 } from "./coordinator-runtime.js";
 import type { MemoryStore } from "./store.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 import { initTestSchema } from "./test-utils.js";
 
 describe("readCoordinatorSyncConfig.syncOpsLimit", () => {
@@ -170,6 +175,7 @@ describe("lookupCoordinatorPeers", () => {
 			);
 
 			expect(peers).toHaveLength(1);
+			expect(peers[0]?.coordinator_id).toBe("https://coord.example.test");
 			expect(peers[0]?.groups).toEqual(["team-a", "team-b"]);
 			expect(peers[0]?.fresh_groups).toEqual(["team-a", "team-b"]);
 		} finally {
@@ -239,6 +245,7 @@ describe("coordinatorStatusSnapshot", () => {
 		let fetchCount = 0;
 		let presenceFetchCount = 0;
 		let lastPresenceAddresses: unknown = null;
+		let lastPresenceCapabilities: unknown = null;
 		try {
 			initTestSchema(db);
 			process.env.CODEMEM_KEYS_DIR = keysDir;
@@ -252,6 +259,7 @@ describe("coordinatorStatusSnapshot", () => {
 						? JSON.parse(Buffer.from(rawBody as ArrayBuffer).toString("utf8"))
 						: {};
 					lastPresenceAddresses = body.addresses;
+					lastPresenceCapabilities = body.capabilities;
 					return new Response(JSON.stringify({ addresses: ["http://local.test:7337"] }), {
 						status: 200,
 					});
@@ -325,6 +333,10 @@ describe("coordinatorStatusSnapshot", () => {
 			expect(secondPresenceFetchCount).toBe(1);
 			expect(changedAdvertisePresenceFetchCount).toBeGreaterThan(secondPresenceFetchCount);
 			expect(lastPresenceAddresses).toEqual(["http://new.example.test:7337"]);
+			expect(lastPresenceCapabilities).toEqual({
+				sync_capability: "scoped",
+				sync_features: ["reassign_scope"],
+			});
 			expect(fetchCount).toBeGreaterThan(secondFetchCount);
 			expect(presenceFetchCount).toBeGreaterThan(changedAdvertisePresenceFetchCount);
 		} finally {
@@ -334,6 +346,111 @@ describe("coordinatorStatusSnapshot", () => {
 			db.close();
 			rmSync(keysDir, { recursive: true, force: true });
 			rmSync(alternateKeysDir, { recursive: true, force: true });
+		}
+	});
+
+	it("reuses private peer bindings when cached authorization becomes valid", async () => {
+		const db = new Database(":memory:");
+		const peerDb = new Database(":memory:");
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-cache-local-key-"));
+		const peerKeysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-cache-peer-key-"));
+		const prevFetch = globalThis.fetch;
+		const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+		let fetchCount = 0;
+		try {
+			initTestSchema(db);
+			initTestSchema(peerDb);
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			const [localDeviceId] = ensureDeviceIdentity(db, { keysDir });
+			const [peerDeviceId] = ensureDeviceIdentity(peerDb, { keysDir: peerKeysDir });
+			const peerPublicKey = loadPublicKey(peerKeysDir);
+			if (!peerPublicKey) throw new Error("expected peer public key");
+			globalThis.fetch = (async (input: RequestInfo | URL) => {
+				fetchCount += 1;
+				const url = new URL(String(input));
+				if (url.pathname === "/v1/presence") {
+					return new Response(JSON.stringify({ addresses: ["http://local.test:7337"] }), {
+						status: 200,
+					});
+				}
+				if (url.pathname === "/v1/peers") {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: peerDeviceId,
+									display_name: "Project peer",
+									public_key: peerPublicKey,
+									fingerprint: fingerprintPublicKey(peerPublicKey),
+									addresses: ["http://peer.example:7337"],
+									stale: false,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.pathname === "/v1/reciprocal-approvals") {
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+			}) as typeof fetch;
+
+			const config = readCoordinatorSyncConfig({
+				sync_enabled: true,
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_group: "group-1",
+			});
+			const store = {
+				db,
+				dbPath: `:memory:-${randomUUID()}`,
+			} as unknown as MemoryStore;
+
+			const first = await coordinatorStatusSnapshot(store, config);
+			const firstFetchCount = fetchCount;
+			expect(db.prepare("SELECT COUNT(1) AS total FROM sync_peers").get()).toEqual({ total: 0 });
+
+			const now = new Date().toISOString();
+			db.prepare(
+				`INSERT INTO replication_scopes(
+				 scope_id, label, kind, authority_type, coordinator_id, group_id,
+				 membership_epoch, status, created_at, updated_at
+				 ) VALUES ('scope-1', 'Project', 'managed_project', 'coordinator',
+				 'https://coord.example.test', 'group-1', 1, 'active', ?, ?)`,
+			).run(now, now);
+			const addMembership = db.prepare(
+				`INSERT INTO scope_memberships(
+				 scope_id, device_id, role, status, membership_epoch, updated_at
+				 ) VALUES ('scope-1', ?, 'member', 'active', 1, ?)`,
+			);
+			addMembership.run(localDeviceId, now);
+			addMembership.run(peerDeviceId, now);
+			markScopeMembershipCacheFresh(db, "https://coord.example.test", "group-1", now);
+
+			const second = await coordinatorStatusSnapshot(store, config);
+			const discovered = (second.discovered_devices as Array<Record<string, unknown>>)[0];
+
+			expect(fetchCount).toBe(firstFetchCount);
+			expect(second.paired_peer_count).toBe(1);
+			expect(
+				db
+					.prepare("SELECT pinned_fingerprint, public_key FROM sync_peers WHERE peer_device_id = ?")
+					.get(peerDeviceId),
+			).toEqual({
+				pinned_fingerprint: fingerprintPublicKey(peerPublicKey),
+				public_key: peerPublicKey,
+			});
+			expect(first.discovered_devices).toEqual(second.discovered_devices);
+			expect(Object.hasOwn(discovered ?? {}, "public_key")).toBe(false);
+			expect(Object.hasOwn(discovered ?? {}, "coordinator_id")).toBe(false);
+		} finally {
+			globalThis.fetch = prevFetch;
+			if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			db.close();
+			peerDb.close();
+			rmSync(keysDir, { recursive: true, force: true });
+			rmSync(peerKeysDir, { recursive: true, force: true });
 		}
 	});
 });
@@ -526,5 +643,385 @@ describe("refreshStoredCoordinatorPeerAddresses", () => {
 			total: number;
 		};
 		expect(count.total).toBe(0);
+	});
+});
+
+function markScopeMembershipCacheFresh(
+	db: InstanceType<typeof Database>,
+	coordinatorId: string,
+	groupId: string,
+	now: string,
+): void {
+	db.prepare(`INSERT OR REPLACE INTO scope_membership_cache_state(
+		coordinator_id, group_id, last_refresh_at, last_success_at, last_error, updated_at
+	) VALUES (?, ?, ?, ?, NULL, ?)`).run(coordinatorId, groupId, now, now, now);
+}
+
+describe("trustCoordinatorPeersWithSharedManagedScopes", () => {
+	it("refreshes reciprocal trust after both devices gain the managed scope", async () => {
+		const db = new Database(":memory:");
+		const peerDb = new Database(":memory:");
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-local-key-"));
+		const peerKeysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-peer-key-"));
+		const prevFetch = globalThis.fetch;
+		try {
+			initTestSchema(db);
+			initTestSchema(peerDb);
+			const [localDeviceId] = ensureDeviceIdentity(db, { keysDir });
+			const [peerDeviceId] = ensureDeviceIdentity(peerDb, { keysDir: peerKeysDir });
+			const peerPublicKey = loadPublicKey(peerKeysDir);
+			if (!peerPublicKey) throw new Error("expected peer public key");
+			const now = new Date().toISOString();
+			db.prepare(
+				`INSERT INTO replication_scopes(
+				 scope_id, label, kind, authority_type, coordinator_id, group_id,
+				 membership_epoch, status, created_at, updated_at
+				 ) VALUES ('scope-1', 'Project', 'managed_project', 'coordinator',
+				 'https://coord.example.test', 'group-1', 1, 'active', ?, ?)`,
+			).run(now, now);
+			const addMembership = db.prepare(
+				`INSERT INTO scope_memberships(
+				 scope_id, device_id, role, status, membership_epoch, updated_at
+				 ) VALUES ('scope-1', ?, 'member', 'active', 1, ?)`,
+			);
+			addMembership.run(localDeviceId, now);
+			addMembership.run(peerDeviceId, now);
+			markScopeMembershipCacheFresh(db, "https://coord.example.test", "group-1", now);
+			globalThis.fetch = (async () =>
+				new Response(
+					JSON.stringify({
+						items: [
+							{
+								device_id: peerDeviceId,
+								display_name: "Project peer",
+								public_key: peerPublicKey,
+								fingerprint: fingerprintPublicKey(peerPublicKey),
+								addresses: ["http://peer.example:7337"],
+								stale: false,
+							},
+						],
+					}),
+					{ status: 200 },
+				)) as typeof fetch;
+
+			await expect(
+				refreshAuthorizedCoordinatorPeerTrust(
+					{ db, dbPath: ":memory:" },
+					readCoordinatorSyncConfig({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_groups: ["group-1"],
+					}),
+					{ keysDir },
+				),
+			).resolves.toMatchObject({ trusted: 1 });
+			expect(
+				db
+					.prepare(
+						`SELECT peer_device_id, discovered_via_coordinator_id, discovered_via_group_id,
+						 trust_provenance
+						 FROM sync_peers WHERE peer_device_id = ?`,
+					)
+					.get(peerDeviceId),
+			).toEqual({
+				peer_device_id: peerDeviceId,
+				discovered_via_coordinator_id: "https://coord.example.test",
+				discovered_via_group_id: "group-1",
+				trust_provenance: "coordinator_policy",
+			});
+
+			db.prepare(
+				"UPDATE scope_memberships SET status = 'revoked' WHERE scope_id = 'scope-1' AND device_id = ?",
+			).run(peerDeviceId);
+			db.prepare(
+				`UPDATE scope_membership_cache_state SET last_error = 'coordinator_unavailable'
+				 WHERE coordinator_id = 'https://coord.example.test' AND group_id = 'group-1'`,
+			).run();
+			expect(revokeUnauthorizedCoordinatorPeerTrust(db, localDeviceId)).toBe(0);
+			expect(
+				db
+					.prepare("SELECT pinned_fingerprint FROM sync_peers WHERE peer_device_id = ?")
+					.pluck()
+					.get(peerDeviceId),
+			).toBe(fingerprintPublicKey(peerPublicKey));
+
+			markScopeMembershipCacheFresh(db, "https://coord.example.test", "group-1", now);
+			expect(revokeUnauthorizedCoordinatorPeerTrust(db, localDeviceId)).toBe(1);
+			expect(
+				db
+					.prepare("SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?")
+					.get(peerDeviceId),
+			).toBeUndefined();
+		} finally {
+			globalThis.fetch = prevFetch;
+			db.close();
+			peerDb.close();
+			rmSync(keysDir, { recursive: true, force: true });
+			rmSync(peerKeysDir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not revoke invite-derived or manually approved coordinator trust", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			db.prepare(
+				`INSERT INTO sync_peers(
+				 peer_device_id, pinned_fingerprint, public_key, actor_id,
+				 discovered_via_coordinator_id, discovered_via_group_id, created_at
+				 ) VALUES ('peer-invite', 'fp-invite', 'pk-invite', 'identity-invite',
+				 'https://coord.example.test', 'group-1', ?)`,
+			).run(new Date().toISOString());
+			db.prepare(
+				`INSERT INTO sync_peers(
+				 peer_device_id, pinned_fingerprint, public_key,
+				 discovered_via_coordinator_id, discovered_via_group_id, created_at
+				 ) VALUES ('peer-manual', 'fp-manual', 'pk-manual',
+				 'https://coord.example.test', 'group-1', ?)`,
+			).run(new Date().toISOString());
+
+			expect(revokeUnauthorizedCoordinatorPeerTrust(db, "local-device")).toBe(0);
+			expect(
+				db
+					.prepare(
+						`SELECT peer_device_id, pinned_fingerprint, public_key FROM sync_peers
+						 ORDER BY peer_device_id`,
+					)
+					.all(),
+			).toEqual([
+				{
+					peer_device_id: "peer-invite",
+					pinned_fingerprint: "fp-invite",
+					public_key: "pk-invite",
+				},
+				{
+					peer_device_id: "peer-manual",
+					pinned_fingerprint: "fp-manual",
+					public_key: "pk-manual",
+				},
+			]);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("trusts a discovered peer only when local policy grants both devices the managed scope", () => {
+		const db = new Database(":memory:");
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-peer-key-"));
+		try {
+			initTestSchema(db);
+			const [peerDeviceId] = ensureDeviceIdentity(db, { keysDir });
+			const publicKey = loadPublicKey(keysDir);
+			if (!publicKey) throw new Error("expected peer public key");
+			const now = new Date().toISOString();
+			db.prepare(
+				`INSERT INTO replication_scopes(
+				 scope_id, label, kind, authority_type, coordinator_id, group_id,
+				 membership_epoch, status, created_at, updated_at
+				 ) VALUES ('scope-1', 'Project', 'managed_project', 'coordinator',
+				 'coordinator-1', 'group-1', 1, 'active', ?, ?)`,
+			).run(now, now);
+			db.prepare(
+				`INSERT INTO scope_memberships(
+				 scope_id, device_id, role, status, membership_epoch, updated_at
+				 ) VALUES ('scope-1', ?, 'member', 'active', 1, ?)`,
+			).run(peerDeviceId, now);
+			const peers = [
+				{
+					device_id: peerDeviceId,
+					display_name: "Project peer",
+					public_key: publicKey,
+					fingerprint: fingerprintPublicKey(publicKey),
+					addresses: ["http://peer.example:7337"],
+					coordinator_id: "coordinator-1",
+					groups: ["group-1"],
+				},
+			];
+
+			db.prepare(
+				`INSERT INTO scope_memberships(
+				 scope_id, device_id, role, status, membership_epoch, updated_at
+				 ) VALUES ('scope-1', 'local-device', 'member', 'active', 1, ?)`,
+			).run(now);
+			db.prepare(
+				"UPDATE scope_memberships SET membership_epoch = 0 WHERE scope_id = 'scope-1' AND device_id = ?",
+			).run(peerDeviceId);
+
+			expect(trustCoordinatorPeersWithSharedManagedScopes(db, "local-device", peers)).toBe(0);
+			db.prepare(
+				"UPDATE scope_memberships SET membership_epoch = 1 WHERE scope_id = 'scope-1' AND device_id = ?",
+			).run(peerDeviceId);
+
+			expect(trustCoordinatorPeersWithSharedManagedScopes(db, "local-device", peers)).toBe(0);
+			markScopeMembershipCacheFresh(db, "coordinator-1", "group-1", now);
+			db.prepare(
+				`UPDATE scope_membership_cache_state SET last_error = 'coordinator_unavailable'
+				 WHERE coordinator_id = 'coordinator-1' AND group_id = 'group-1'`,
+			).run();
+			expect(trustCoordinatorPeersWithSharedManagedScopes(db, "local-device", peers)).toBe(0);
+			markScopeMembershipCacheFresh(db, "coordinator-1", "group-1", now);
+			db.prepare(
+				`INSERT INTO sync_peers(peer_device_id, claimed_local_actor, created_at)
+				 VALUES (?, 1, ?)`,
+			).run(peerDeviceId, now);
+			expect(trustCoordinatorPeersWithSharedManagedScopes(db, "local-device", peers)).toBe(0);
+			db.prepare("DELETE FROM sync_peers WHERE peer_device_id = ?").run(peerDeviceId);
+			expect(trustCoordinatorPeersWithSharedManagedScopes(db, "local-device", peers)).toBe(1);
+			expect(
+				db
+					.prepare(
+						"SELECT pinned_fingerprint, public_key, addresses_json FROM sync_peers WHERE peer_device_id = ?",
+					)
+					.get(peerDeviceId),
+			).toEqual({
+				pinned_fingerprint: fingerprintPublicKey(publicKey),
+				public_key: publicKey,
+				addresses_json: JSON.stringify(["http://peer.example:7337"]),
+			});
+		} finally {
+			db.close();
+			rmSync(keysDir, { recursive: true, force: true });
+		}
+	});
+
+	it("pins only the key discovered through the shared scope authority when a conflicting key appears first", () => {
+		const db = new Database(":memory:");
+		const attackerDb = new Database(":memory:");
+		const legitimateDb = new Database(":memory:");
+		const attackerKeysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-attacker-key-"));
+		const legitimateKeysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-legitimate-key-"));
+		try {
+			initTestSchema(db);
+			initTestSchema(attackerDb);
+			initTestSchema(legitimateDb);
+			ensureDeviceIdentity(attackerDb, { keysDir: attackerKeysDir });
+			ensureDeviceIdentity(legitimateDb, { keysDir: legitimateKeysDir });
+			const attackerPublicKey = loadPublicKey(attackerKeysDir);
+			const legitimatePublicKey = loadPublicKey(legitimateKeysDir);
+			if (!attackerPublicKey || !legitimatePublicKey) {
+				throw new Error("expected peer public keys");
+			}
+			const now = new Date().toISOString();
+			db.prepare(
+				`INSERT INTO replication_scopes(
+				 scope_id, label, kind, authority_type, coordinator_id, group_id,
+				 membership_epoch, status, created_at, updated_at
+				 ) VALUES ('scope-1', 'Project', 'managed_project', 'coordinator',
+				 'https://coord.example.test', 'group-legitimate', 1, 'active', ?, ?)`,
+			).run(now, now);
+			const addMembership = db.prepare(
+				`INSERT INTO scope_memberships(
+				 scope_id, device_id, role, status, membership_epoch, updated_at
+				 ) VALUES ('scope-1', ?, 'member', 'active', 1, ?)`,
+			);
+			addMembership.run("local-device", now);
+			addMembership.run("shared-device", now);
+			markScopeMembershipCacheFresh(db, "https://coord.example.test", "group-legitimate", now);
+
+			const trusted = trustCoordinatorPeersWithSharedManagedScopes(db, "local-device", [
+				{
+					device_id: "shared-device",
+					public_key: attackerPublicKey,
+					fingerprint: fingerprintPublicKey(attackerPublicKey),
+					coordinator_id: "https://coord.example.test",
+					groups: ["group-attacker"],
+				},
+				{
+					device_id: "shared-device",
+					public_key: legitimatePublicKey,
+					fingerprint: fingerprintPublicKey(legitimatePublicKey),
+					coordinator_id: "https://coord.example.test",
+					groups: ["group-legitimate"],
+				},
+			]);
+
+			expect(trusted).toBe(1);
+			expect(
+				db
+					.prepare("SELECT pinned_fingerprint, public_key FROM sync_peers WHERE peer_device_id = ?")
+					.get("shared-device"),
+			).toEqual({
+				pinned_fingerprint: fingerprintPublicKey(legitimatePublicKey),
+				public_key: legitimatePublicKey,
+			});
+		} finally {
+			db.close();
+			attackerDb.close();
+			legitimateDb.close();
+			rmSync(attackerKeysDir, { recursive: true, force: true });
+			rmSync(legitimateKeysDir, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects discovered peers with missing or mismatched coordinator authority metadata", () => {
+		const db = new Database(":memory:");
+		const keysDb = new Database(":memory:");
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-mismatch-key-"));
+		try {
+			initTestSchema(db);
+			initTestSchema(keysDb);
+			ensureDeviceIdentity(keysDb, { keysDir });
+			const publicKey = loadPublicKey(keysDir);
+			if (!publicKey) throw new Error("expected peer public key");
+			const now = new Date().toISOString();
+			db.prepare(
+				`INSERT INTO replication_scopes(
+				 scope_id, label, kind, authority_type, coordinator_id, group_id,
+				 membership_epoch, status, created_at, updated_at
+				 ) VALUES ('scope-1', 'Project', 'managed_project', 'coordinator',
+				 'https://coord.example.test', 'group-1', 1, 'active', ?, ?)`,
+			).run(now, now);
+			const addMembership = db.prepare(
+				`INSERT INTO scope_memberships(
+				 scope_id, device_id, role, status, membership_epoch, updated_at
+				 ) VALUES ('scope-1', ?, 'member', 'active', 1, ?)`,
+			);
+			addMembership.run("local-device", now);
+			addMembership.run("peer-device", now);
+			markScopeMembershipCacheFresh(db, "https://coord.example.test", "group-1", now);
+			const peer = {
+				device_id: "peer-device",
+				public_key: publicKey,
+				fingerprint: fingerprintPublicKey(publicKey),
+				groups: ["group-1"],
+			};
+
+			expect(trustCoordinatorPeersWithSharedManagedScopes(db, "local-device", [peer])).toBe(0);
+			expect(
+				trustCoordinatorPeersWithSharedManagedScopes(db, "local-device", [
+					{ ...peer, coordinator_id: 123 },
+				]),
+			).toBe(0);
+			expect(
+				trustCoordinatorPeersWithSharedManagedScopes(db, "local-device", [
+					{ ...peer, coordinator_id: "https://other-coord.example.test" },
+				]),
+			).toBe(0);
+			expect(
+				trustCoordinatorPeersWithSharedManagedScopes(db, "local-device", [
+					{ ...peer, coordinator_id: "https://coord.example.test", groups: "group-1" },
+				]),
+			).toBe(0);
+			expect(
+				trustCoordinatorPeersWithSharedManagedScopes(db, "local-device", [
+					{ ...peer, coordinator_id: "https://coord.example.test", groups: undefined },
+				]),
+			).toBe(0);
+			expect(
+				trustCoordinatorPeersWithSharedManagedScopes(db, "local-device", [
+					{
+						...peer,
+						coordinator_id: "https://coord.example.test",
+						groups: ["group-1", null],
+					},
+				]),
+			).toBe(0);
+			expect(db.prepare("SELECT COUNT(1) AS total FROM sync_peers").get()).toEqual({
+				total: 0,
+			});
+		} finally {
+			db.close();
+			keysDb.close();
+			rmSync(keysDir, { recursive: true, force: true });
+		}
 	});
 });
