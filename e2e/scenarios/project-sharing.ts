@@ -197,17 +197,36 @@ async function waitForServer(ctx: ScenarioContext, service: string, artifact: st
 	);
 }
 
-function syncOnce(ctx: ScenarioContext, service: string, artifact: string): void {
+function syncOnce(ctx: ScenarioContext, service: string, artifact: string, peerDeviceId?: string): void {
+	const peerArgs = peerDeviceId ? ["--peer", peerDeviceId] : [];
 	const result = ctx.compose.exec(
 		service,
-		[...CLI_PREFIX, "sync", "once", "--db-path", "/data/mem.sqlite"],
+		[
+			...CLI_PREFIX,
+			"sync",
+			"once",
+			"--db-path",
+			"/data/mem.sqlite",
+			...peerArgs,
+			"--json",
+		],
 		artifact,
 		180_000,
 		true,
 	);
+	const attempts =
+		result.status === 0
+			? null
+			: ctx.compose.exec(
+					service,
+					[...CLI_PREFIX, "sync", "attempts", "--db-path", "/data/mem.sqlite", "--json"],
+					`${artifact}-attempts`,
+					60_000,
+					true,
+				);
 	assert(
 		result.status === 0 || result.stderr.includes("no accepted peers"),
-		`${service} sync once failed: ${result.stderr || result.stdout}`,
+		`${service} sync once failed: ${result.stderr || result.stdout}${attempts?.stdout ? `\nAttempts:\n${attempts.stdout}` : ""}`,
 	);
 }
 
@@ -217,13 +236,15 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		"Project-first sharing: two isolated peers, two canonical projects, one reviewed project invite, automatic identity/device linking, exact existing-and-future replication, and source-membership non-inheritance.",
 	);
 	ctx.compose.down("00-compose-down-pre", true);
-	ctx.compose.up(["coordinator", "peer-a", "peer-b"], "01-compose-up");
+	ctx.compose.up(["coordinator", "peer-a", "peer-b", "peer-c"], "01-compose-up");
 	ctx.compose.ps("02-compose-ps");
 
 	fixture(ctx, "peer-a", "init", "03-init-peer-a");
 	fixture(ctx, "peer-b", "init", "04-init-peer-b");
+	fixture(ctx, "peer-c", "init", "04-init-peer-c");
 	const peerA = readPeerIdentity(ctx, "peer-a", "05-peer-a-identity");
 	const peerB = readPeerIdentity(ctx, "peer-b", "06-peer-b-identity");
+	const peerC = readPeerIdentity(ctx, "peer-c", "06-peer-c-identity");
 	const seededA = fixture(ctx, "peer-a", "seed-a", "07-seed-peer-a");
 	assert(
 		seededA.source_memberships.some((member) => member.device_id === "source-bystander"),
@@ -231,9 +252,10 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 	);
 
 	// Keep periodic maintenance outside this scenario so explicit steps own the provisioning order.
-	for (const [service, deviceName, syncEnabled] of [
-		["peer-a", "Adam's Test Mac", true],
-		["peer-b", "Brian's Test Mac", false],
+	for (const [service, deviceName, syncEnabled, hasAdminSecret] of [
+		["peer-a", "Adam's Test Mac", true, true],
+		["peer-b", "Brian's Test Mac", false, false],
+		["peer-c", "Brian's Second Mac", false, false],
 	] as const) {
 		writePeerConfig(
 			ctx,
@@ -248,7 +270,7 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 				sync_interval_s: 3600,
 				sync_coordinator_url: "http://coordinator:7347",
 				sync_coordinator_group: GROUP_ID,
-				sync_coordinator_admin_secret: ADMIN_SECRET,
+				...(hasAdminSecret ? { sync_coordinator_admin_secret: ADMIN_SECRET } : {}),
 			},
 			`08-config-${service}`,
 		);
@@ -549,6 +571,236 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		);
 	}
 
+	const recipientIdentityId = String(enabledRecipientConfig.actor_id ?? "").trim();
+	assert(recipientIdentityId, "recipient Identity was not persisted after direct-share acceptance");
+	const beforeAddDeviceInviterRestart = await request<{ daemon_last_ok_at?: string | null }>(
+		ctx,
+		"peer-b",
+		"/api/sync/status?includeDiagnostics=true",
+		"39-add-device-inviter-before-restart",
+	);
+	restartServer(ctx, "peer-b", "39-restart-add-device-inviter");
+	await waitForServer(ctx, "peer-b", "39-add-device-inviter-ready");
+	await waitFor(
+		async () => {
+			const status = await request<{ daemon_last_ok_at?: string | null }>(
+				ctx,
+				"peer-b",
+				"/api/sync/status?includeDiagnostics=true",
+				"39-add-device-inviter-presence",
+			);
+			assert(status.body.daemon_last_ok_at, "add-device inviter presence has not refreshed");
+			assert(
+				!beforeAddDeviceInviterRestart.body.daemon_last_ok_at ||
+					status.body.daemon_last_ok_at > beforeAddDeviceInviterRestart.body.daemon_last_ok_at,
+				"add-device inviter presence did not advance after restart",
+			);
+		},
+		{ description: "add-device inviter presence", timeoutMs: 120_000, intervalMs: 2_000 },
+	);
+	const addDevicePreview = await request<{
+		preview: { reviewedOnboardingDigest: string; projects: unknown[] };
+	}>(ctx, "peer-b", "/api/sync/recipient-policy/v1/invites/preview", "39-add-device-preview", {
+		kind: "add_device",
+		target_identity_id: recipientIdentityId,
+	});
+	assert(addDevicePreview.status === 200, "add-device preview failed");
+	const addDeviceCreated = await request<{
+		invite: { encoded: string };
+	}>(ctx, "peer-b", "/api/sync/recipient-policy/v1/invites", "39-add-device-create", {
+		kind: "add_device",
+		target_identity_id: recipientIdentityId,
+		reviewed_onboarding_digest: addDevicePreview.body.preview.reviewedOnboardingDigest,
+		ttl_hours: 24,
+	});
+	assert(addDeviceCreated.status === 200, "signed add-device invitation creation failed");
+	startServer(ctx, "peer-c", "39-start-peer-c-for-add-device");
+	await waitForServer(ctx, "peer-c", "39-peer-c-ready-for-add-device");
+	const addDeviceInspected = await request<{
+		onboarding: { reviewedOnboardingDigest: string };
+	}>(ctx, "peer-c", "/api/sync/invites/inspect", "39-add-device-inspect", {
+		invite: addDeviceCreated.body.invite.encoded,
+		device_name: "Brian's Second Mac",
+	});
+	assert(addDeviceInspected.status === 200, "add-device invitation inspection failed");
+	const addDeviceAccepted = await request<Record<string, unknown>>(
+		ctx,
+		"peer-c",
+		"/api/sync/invites/import",
+		"39-add-device-accept",
+		{
+			invite: addDeviceCreated.body.invite.encoded,
+			device_name: "Brian's Second Mac",
+			reviewed_onboarding_digest: addDeviceInspected.body.onboarding.reviewedOnboardingDigest,
+		},
+	);
+	assert(addDeviceAccepted.status === 200, "add-device invitation acceptance failed");
+	restartServer(ctx, "peer-c", "39-restart-peer-c");
+	await waitForServer(ctx, "peer-c", "39-peer-c-ready-after-restart");
+	const adoptedSecondDeviceConfig = readConfig(ctx, "peer-c", "39-read-peer-c-adopted-identity");
+	assert(
+		String(adoptedSecondDeviceConfig.actor_id ?? "").trim() === recipientIdentityId,
+		"second device did not persist the invited recipient Identity",
+	);
+	await waitFor(
+		async () => {
+			const status = await request<{ daemon_state: string; daemon_last_ok_at?: string | null }>(
+				ctx,
+				"peer-c",
+				"/api/sync/status?includeDiagnostics=true",
+				"39-peer-c-initial-sync-complete",
+			);
+			assert(status.status === 200, "second-device sync status failed");
+			assert(status.body.daemon_state !== "starting", "second-device initial sync is still starting");
+			assert(status.body.daemon_last_ok_at, "second-device initial sync has not completed");
+		},
+		{ description: "second-device initial sync", timeoutMs: 120_000, intervalMs: 2_000 },
+	);
+	const beforeEnrollmentReconcile = fixture(ctx, "peer-c", "summary", "39-peer-c-before-reconcile");
+	assert(
+		beforeEnrollmentReconcile.memories.every(
+			(memory) =>
+				memory.title !== "selected existing" &&
+				memory.title !== "selected future" &&
+				memory.title !== "unrelated existing" &&
+				memory.title !== "unrelated future",
+		),
+		"second device received Project data before owner reconciliation",
+	);
+
+	const ownerConfig = readConfig(ctx, "peer-a", "39-read-owner-config");
+	writePeerConfig(
+		ctx,
+		"peer-a",
+		{ ...ownerConfig, sync_interval_s: 2 },
+		"39-enable-owner-reconciliation",
+	);
+	restartServer(ctx, "peer-a", "39-restart-owner-for-reconciliation");
+	await waitForServer(ctx, "peer-a", "39-owner-ready-for-reconciliation");
+	await waitFor(
+		async () => {
+			const owner = fixture(ctx, "peer-a", "summary", "39-owner-enrollment-reconciled");
+			assert(
+				owner.policy.identity_devices.some(
+					(device) =>
+						device.identity_id === recipientIdentityId &&
+						device.device_id === peerC.device_id &&
+						device.status === "active",
+				),
+				"owner policy has not ingested the second device",
+			);
+			assert(
+				owner.managed_memberships.some(
+					(member) => member.device_id === peerC.device_id && member.status === "active",
+				),
+				"owner reconciliation has not granted the managed Project boundary",
+			);
+		},
+		{ description: "second-device owner reconciliation", timeoutMs: 180_000, intervalMs: 3_000 },
+	);
+	const beforeBootstrapGrantRefresh = await request<{ daemon_last_ok_at?: string | null }>(
+		ctx,
+		"peer-b",
+		"/api/sync/status?includeDiagnostics=true",
+		"39-inviter-before-bootstrap-grant-refresh",
+	);
+	restartServer(ctx, "peer-b", "39-restart-inviter-after-add-device-acceptance");
+	await waitForServer(ctx, "peer-b", "39-inviter-ready-after-add-device-acceptance");
+	await waitFor(
+		async () => {
+			const status = await request<{ daemon_state: string; daemon_last_ok_at?: string | null }>(
+				ctx,
+				"peer-b",
+				"/api/sync/status?includeDiagnostics=true",
+				"39-inviter-bootstrap-grant-refresh",
+			);
+			assert(status.body.daemon_state !== "starting", "inviter bootstrap-grant refresh is starting");
+			assert(status.body.daemon_last_ok_at, "inviter bootstrap-grant refresh has not completed");
+			assert(
+				!beforeBootstrapGrantRefresh.body.daemon_last_ok_at ||
+					status.body.daemon_last_ok_at > beforeBootstrapGrantRefresh.body.daemon_last_ok_at,
+				"inviter bootstrap-grant refresh did not advance after restart",
+			);
+		},
+		{ description: "inviter bootstrap-grant refresh", timeoutMs: 120_000, intervalMs: 2_000 },
+	);
+	const beforePostGrantRestart = await request<{ last_sync_at?: string | null }>(
+		ctx,
+		"peer-c",
+		"/api/sync/status?includeDiagnostics=true",
+		"39-peer-c-before-post-grant-restart",
+	);
+	restartServer(ctx, "peer-c", "39-restart-peer-c-after-grant");
+	await waitForServer(ctx, "peer-c", "39-peer-c-ready-after-grant");
+	await waitFor(
+		async () => {
+			const status = await request<{
+				peers: Array<{ peer_device_id: string; pinned: boolean }>;
+				last_sync_at?: string | null;
+				daemon_last_ok_at?: string | null;
+			}>(
+				ctx,
+				"peer-c",
+				"/api/sync/status?includeDiagnostics=true",
+				"39-peer-c-discovery-after-grant",
+			);
+			assert(status.body.daemon_last_ok_at, "second-device post-grant sync has not completed");
+			assert(
+				status.body.last_sync_at &&
+					status.body.last_sync_at !== beforePostGrantRestart.body.last_sync_at,
+				"second-device post-grant sync has not advanced",
+			);
+			assert(
+				status.body.peers.some(
+					(peer) => peer.peer_device_id === peerA.device_id && peer.pinned === true,
+				),
+				"second device has not established direct trust with the Project owner",
+			);
+		},
+		{ description: "second-device discovery after grant", timeoutMs: 120_000, intervalMs: 2_000 },
+	);
+	syncOnce(ctx, "peer-c", "39-sync-peer-c-after-reconciliation", peerA.device_id);
+	await waitFor(
+		async () => {
+			const summary = fixture(ctx, "peer-c", "summary", "39-peer-c-existing-after-reconcile");
+			const titles = summary.memories.map((memory) => memory.title);
+			assert(titles.includes("selected existing"), "second device did not receive existing Project data");
+			assert(titles.includes("selected future"), "second device did not receive pre-enrollment history");
+			assert(!titles.includes("unrelated existing"), "unrelated Project leaked to the second device");
+		},
+		{ description: "existing Project data on second device", timeoutMs: 120_000, intervalMs: 3_000 },
+	);
+	fixture(ctx, "peer-a", "add-device-future", "39-add-post-device-memory");
+	syncOnce(ctx, "peer-a", "39-sync-post-device-owner", peerB.device_id);
+	syncOnce(ctx, "peer-c", "39-sync-post-device-recipient");
+	await waitFor(
+		async () => {
+			const summary = fixture(ctx, "peer-c", "summary", "39-peer-c-post-device-future");
+			const titles = summary.memories.map((memory) => memory.title);
+			assert(titles.includes("selected after device"), "second device did not receive future Project data");
+			assert(!titles.includes("unrelated future"), "unrelated future data leaked to the second device");
+			assert(
+				!titles.includes("unrelated after device"),
+				"post-enrollment unrelated data leaked to the second device",
+			);
+		},
+		{ description: "future Project data on second device", timeoutMs: 120_000, intervalMs: 3_000 },
+	);
+
+	const ownerConfigBeforePolicyProof = readConfig(
+		ctx,
+		"peer-a",
+		"39-read-owner-config-before-policy-proof",
+	);
+	writePeerConfig(
+		ctx,
+		"peer-a",
+		{ ...ownerConfigBeforePolicyProof, sync_enabled: false, sync_interval_s: 3600 },
+		"39-disable-owner-maintenance-before-policy-proof",
+	);
+	restartServer(ctx, "peer-a", "39-restart-owner-without-maintenance");
+	await waitForServer(ctx, "peer-a", "39-owner-ready-without-maintenance");
+
 	// Arrange: seed isolated recipient intent without changing the real direct-invite Projects.
 	const seededPolicy = fixture(ctx, "peer-a", "seed-policy", "40-seed-recipient-policy");
 	// Act: read canonical intent and derive effective devices from the persisted graph.
@@ -832,6 +1084,11 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		"peer-b:/data/mem.sqlite",
 		`${ctx.artifactsDir}/db/peer-b-project-sharing.sqlite`,
 		"55-copy-peer-b-db",
+	);
+	ctx.compose.copyFromContainer(
+		"peer-c:/data/mem.sqlite",
+		`${ctx.artifactsDir}/db/peer-c-project-sharing.sqlite`,
+		"55-copy-peer-c-db",
 	);
 	ctx.compose.copyFromContainer(
 		"coordinator:/data/coordinator.sqlite",

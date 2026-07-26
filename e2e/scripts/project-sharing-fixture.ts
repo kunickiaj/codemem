@@ -31,6 +31,7 @@ type Action =
 	| "init"
 	| "seed-a"
 	| "add-future"
+	| "add-device-future"
 	| "summary"
 	| "seed-policy"
 	| "inherit-policy"
@@ -43,6 +44,7 @@ const ACTIONS: Action[] = [
 	"init",
 	"seed-a",
 	"add-future",
+	"add-device-future",
 	"summary",
 	"seed-policy",
 	"inherit-policy",
@@ -264,6 +266,17 @@ function addFuture(store: MemoryStore): void {
 	const unrelatedSession = session(store, "unrelated-project", UNRELATED_REMOTE);
 	const unrelatedId = remember(store, unrelatedSession, "unrelated future");
 	store.endSession(unrelatedSession, { fixture: "unrelated-future" });
+	stampSourceScope(store, unrelatedId, true);
+}
+
+function addDeviceFuture(store: MemoryStore): void {
+	const selectedSession = session(store, "selected-project", SELECTED_REMOTE);
+	remember(store, selectedSession, "selected after device", null);
+	store.endSession(selectedSession, { fixture: "selected-after-device" });
+
+	const unrelatedSession = session(store, "unrelated-project", UNRELATED_REMOTE);
+	const unrelatedId = remember(store, unrelatedSession, "unrelated after device");
+	store.endSession(unrelatedSession, { fixture: "unrelated-after-device" });
 	stampSourceScope(store, unrelatedId, true);
 }
 
@@ -600,6 +613,7 @@ async function main(): Promise<void> {
 		const selectedAction = action();
 		if (selectedAction === "seed-a") seedA(store);
 		if (selectedAction === "add-future") addFuture(store);
+		if (selectedAction === "add-device-future") addDeviceFuture(store);
 		if (selectedAction === "seed-policy") seedRecipientPolicy(store);
 		const actionResult =
 			selectedAction === "inherit-policy"

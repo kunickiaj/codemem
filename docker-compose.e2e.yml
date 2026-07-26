@@ -91,7 +91,6 @@ services:
     build:
       context: .
       dockerfile: e2e/images/peer.Dockerfile
-    profiles: ["bootstrap"]
     working_dir: /workspace
     command: ["sleep", "infinity"]
     environment:
