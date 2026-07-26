@@ -84,7 +84,7 @@ interface ReconciliationProof {
 		deny_overlays: unknown[];
 	};
 	rollback: {
-		result: { status: string };
+		result: { status: string; revokedDeviceIds: string[] };
 		authority: { authorityState: string } | null;
 		mutation_calls: string[];
 	};
@@ -765,14 +765,20 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		"reconciliation-proof",
 		"52-recipient-reconciliation-proof",
 	).action_result as unknown as ReconciliationProof;
-	// Assert: unsupported peers fail before mutation; offline work waits/resumes; revocation and rollback stay visible.
+	// Assert: unsupported grant candidates fail before mutation; offline work waits/resumes; revocation and rollback stay visible.
 	assert(
 		reconciliation.unsupported.result.status === "needs_attention" &&
 			reconciliation.unsupported.result.safeErrorCode === "recipient_policy_capability_unsupported",
-		"unsupported old peer did not fail closed",
+		"unsupported grant candidate did not fail closed",
 	);
-	assert(reconciliation.unsupported.membership_unchanged, "unsupported old peer mutated membership");
-	assert(reconciliation.unsupported.mutation_calls.length === 0, "unsupported old peer ran mutations");
+	assert(
+		reconciliation.unsupported.membership_unchanged,
+		"unsupported grant candidate mutated membership",
+	);
+	assert(
+		reconciliation.unsupported.mutation_calls.length === 0,
+		"unsupported grant candidate ran mutations",
+	);
 	assert(
 		reconciliation.offline_resume.waiting.status === "waiting" &&
 			reconciliation.offline_resume.waiting.safeErrorCode ===
@@ -793,9 +799,11 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 	);
 	assert(
 		reconciliation.rollback.result.status === "needs_attention" &&
+			reconciliation.rollback.result.revokedDeviceIds.includes("device-rollback-old") &&
 			reconciliation.rollback.authority?.authorityState === "rolled_back" &&
-			reconciliation.rollback.mutation_calls.length === 0,
-		"unsupported active Project did not roll back without grants",
+			reconciliation.rollback.mutation_calls.length === 1 &&
+			reconciliation.rollback.mutation_calls[0] === "revoke:device-rollback-old",
+		"unsupported active Project did not revoke stale access and roll back without grants",
 	);
 	const reconciliationStatus = await request<{
 		items: Array<{ canonicalProjectIdentity: string; state: string; explanation: string }>;

@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	assertLegacyShareGrantAllowed,
 	type RecipientPolicyReconcilerEffects,
 	reconcileRecipientPolicyProject,
 } from "./recipient-policy-reconciler.js";
@@ -67,6 +68,10 @@ function harness(active: string[]) {
 				memberships: deviceIds.map((deviceId) => ({ deviceId, status: "active" as const })),
 			};
 		}),
+		listBoundaryEnrollments: vi.fn(async () => [
+			{ deviceId: "device-keep", identityId: "identity-a" },
+			{ deviceId: "device-new", identityId: "identity-a" },
+		]),
 		probeCapability: vi.fn(async (deviceId) => {
 			calls.push(`probe:${deviceId}`);
 			return "supported";
@@ -136,10 +141,9 @@ describe("recipient-policy reconciler executor", () => {
 		});
 		expect(calls).toEqual([
 			"snapshot",
+			"revoke:device-old",
 			"probe:device-keep",
 			"probe:device-new",
-			"probe:device-old",
-			"revoke:device-old",
 			"grant:device-new",
 			"refresh",
 			"snapshot",
@@ -162,8 +166,194 @@ describe("recipient-policy reconciler executor", () => {
 		expect(getRecipientPolicyAuthorityState(db, PROJECT)?.authorityState).toBe("active");
 	});
 
-	it("preflights every peer and needs attention without mutations for confirmed unsupported peers", async () => {
+	it("does not grant a policy device that is not enrolled in the boundary group", async () => {
+		const { effects } = harness(["device-keep"]);
+		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
+			{ deviceId: "device-keep", identityId: "identity-a" },
+		]);
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-boundary" },
+			effects,
+		);
+
+		expect(outcome).toMatchObject({
+			status: "parity_pending",
+			grantedDeviceIds: [],
+		});
+		expect(effects.grant).not.toHaveBeenCalled();
+		expect(vi.mocked(effects.probeCapability).mock.calls.map(([deviceId]) => deviceId)).toEqual([
+			"device-keep",
+		]);
+	});
+
+	it("does not grant when the enrollment Identity changes during preflight", async () => {
+		const { effects } = harness(["device-keep"]);
+		vi.mocked(effects.listBoundaryEnrollments)
+			.mockResolvedValueOnce([
+				{ deviceId: "device-keep", identityId: "identity-a" },
+				{ deviceId: "device-new", identityId: "identity-a" },
+			])
+			.mockResolvedValueOnce([
+				{ deviceId: "device-keep", identityId: "identity-a" },
+				{ deviceId: "device-new", identityId: "identity-other" },
+			]);
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-enrollment-race" },
+			effects,
+		);
+
+		expect(outcome).toMatchObject({
+			status: "stale",
+			safeErrorCode: "recipient_policy_generation_stale",
+			grantedDeviceIds: [],
+		});
+		expect(effects.grant).not.toHaveBeenCalled();
+	});
+
+	it("revokes a new grant immediately when its enrollment Identity changes", async () => {
+		const { effects } = harness(["device-keep"]);
+		const matching = [
+			{ deviceId: "device-keep", identityId: "identity-a" },
+			{ deviceId: "device-new", identityId: "identity-a" },
+		];
+		vi.mocked(effects.listBoundaryEnrollments)
+			.mockResolvedValueOnce(matching)
+			.mockResolvedValueOnce(matching)
+			.mockResolvedValue([
+				{ deviceId: "device-keep", identityId: "identity-a" },
+				{ deviceId: "device-new", identityId: "identity-other" },
+			]);
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-post-grant-race" },
+			effects,
+		);
+
+		expect(outcome).toMatchObject({
+			status: "stale",
+			safeErrorCode: "recipient_policy_generation_stale",
+			grantedDeviceIds: ["device-new"],
+			revokedDeviceIds: ["device-new"],
+		});
+		expect(effects.grant).toHaveBeenCalledWith(expect.objectContaining({ deviceId: "device-new" }));
+		expect(effects.revoke).toHaveBeenCalledWith(
+			expect.objectContaining({ deviceId: "device-new" }),
+		);
+		expect(listRecipientPolicyDenyOverlays(db, PROJECT)).toEqual([
+			expect.objectContaining({
+				deviceId: "device-new",
+				reasonCode: "enrollment_identity_conflict",
+			}),
+		]);
+	});
+
+	it("revokes a current device whose boundary enrollment changed Identity", async () => {
+		db.prepare(
+			"UPDATE identity_devices SET status = 'revoked' WHERE device_id = 'device-new'",
+		).run();
+		const { effects } = harness(["device-keep"]);
+		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
+			{ deviceId: "device-keep", identityId: "identity-other" },
+		]);
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-enrollment-conflict" },
+			effects,
+		);
+
+		expect(outcome).toMatchObject({
+			revokedDeviceIds: ["device-keep"],
+			grantedDeviceIds: [],
+		});
+		expect(effects.revoke).toHaveBeenCalledWith(
+			expect.objectContaining({ scopeId: SCOPE, deviceId: "device-keep" }),
+		);
+		expect(effects.grant).not.toHaveBeenCalled();
+	});
+
+	it("does not revoke a current policy device merely omitted from boundary enrollments", async () => {
+		db.prepare(
+			"UPDATE identity_devices SET status = 'revoked' WHERE device_id = 'device-new'",
+		).run();
+		const { effects } = harness(["device-keep"]);
+		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([]);
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-enrollment-omission" },
+			effects,
+		);
+
+		expect(outcome.revokedDeviceIds).toEqual([]);
+		expect(effects.revoke).not.toHaveBeenCalled();
+	});
+
+	it("blocks legacy grants when active authority excludes a policy-desired device", () => {
+		insertActiveAuthority(db);
+
+		expect(() =>
+			assertLegacyShareGrantAllowed(db, {
+				canonicalProjectIdentity: PROJECT,
+				deviceId: "device-keep",
+			}),
+		).toThrow("recipient_policy_legacy_grant_blocked");
+	});
+
+	it("allows legacy retries while active authority still matches policy", async () => {
+		const { effects } = harness(["device-keep", "device-new"]);
+		await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-activate-1" },
+			effects,
+		);
+		await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-activate-2" },
+			effects,
+		);
+
+		expect(getRecipientPolicyAuthorityState(db, PROJECT)?.authorityState).toBe("active");
+		expect(() =>
+			assertLegacyShareGrantAllowed(db, {
+				canonicalProjectIdentity: PROJECT,
+				deviceId: "device-keep",
+			}),
+		).not.toThrow();
+	});
+
+	it("revokes owner-policy removals when the boundary enrollment read fails", async () => {
 		const { effects } = harness(["device-keep", "device-old"]);
+		vi.mocked(effects.listBoundaryEnrollments).mockRejectedValue(
+			new Error("recipient_policy_snapshot_not_fresh"),
+		);
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-revoke" },
+			effects,
+		);
+
+		expect(outcome).toMatchObject({
+			status: "waiting",
+			safeErrorCode: "recipient_policy_snapshot_not_fresh",
+			revokedDeviceIds: ["device-old"],
+			grantedDeviceIds: [],
+		});
+		expect(effects.revoke).toHaveBeenCalledWith(
+			expect.objectContaining({ scopeId: SCOPE, deviceId: "device-old" }),
+		);
+		expect(effects.grant).not.toHaveBeenCalled();
+	});
+
+	it("revokes removals before rejecting an unsupported grant candidate", async () => {
+		const { effects } = harness(["device-keep", "device-old"]);
+		insertActiveAuthority(db);
 		vi.mocked(effects.probeCapability).mockImplementation(async (deviceId) =>
 			deviceId === "device-new" ? "unsupported" : "supported",
 		);
@@ -177,18 +367,27 @@ describe("recipient-policy reconciler executor", () => {
 		expect(outcome).toMatchObject({
 			status: "needs_attention",
 			safeErrorCode: "recipient_policy_capability_unsupported",
+			revokedDeviceIds: ["device-old"],
 		});
-		expect(effects.revoke).not.toHaveBeenCalled();
+		expect(effects.revoke).toHaveBeenCalledWith(
+			expect.objectContaining({ deviceId: "device-old" }),
+		);
 		expect(effects.grant).not.toHaveBeenCalled();
 		expect(effects.refresh).not.toHaveBeenCalled();
 		expect(vi.mocked(effects.probeCapability).mock.calls.map(([deviceId]) => deviceId)).toEqual([
 			"device-keep",
 			"device-new",
-			"device-old",
 		]);
 		expect(listRecipientPolicyDenyOverlays(db, PROJECT)).toEqual([
 			expect.objectContaining({ scopeId: SCOPE, deviceId: "device-old" }),
 		]);
+		expect(getRecipientPolicyAuthorityState(db, PROJECT)?.authorityState).toBe("rolled_back");
+		expect(() =>
+			assertLegacyShareGrantAllowed(db, {
+				canonicalProjectIdentity: PROJECT,
+				deviceId: "device-old",
+			}),
+		).toThrow("recipient_policy_legacy_grant_blocked");
 	});
 
 	it("retries a failed coordinator mutation with the same deterministic effect identity", async () => {
@@ -379,14 +578,18 @@ describe("recipient-policy reconciler executor", () => {
 	});
 
 	it("cancels a stale generation after revokes and before any grant", async () => {
-		const { effects } = harness(["device-old"]);
-		vi.mocked(effects.probeCapability).mockImplementation(async (deviceId) => {
-			if (deviceId === "device-old") {
-				db.prepare(
-					"UPDATE identity_devices SET status = 'revoked' WHERE device_id = 'device-new'",
-				).run();
-			}
-			return "supported";
+		const { effects, members } = harness(["device-old"]);
+		vi.mocked(effects.revoke).mockImplementation(async (input) => {
+			db.prepare(
+				"UPDATE identity_devices SET status = 'revoked' WHERE device_id = 'device-new'",
+			).run();
+			members.delete(input.deviceId);
+			return {
+				effectId: input.effectId,
+				scopeId: input.scopeId,
+				deviceId: input.deviceId,
+				status: "revoked",
+			};
 		});
 
 		const outcome = await reconcileRecipientPolicyProject(

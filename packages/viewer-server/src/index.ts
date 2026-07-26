@@ -31,6 +31,7 @@ export type {
 	AdvanceProjectShareOperationResult,
 	RecipientPolicyReconciliationReadModel,
 	RecipientPolicyReconciliationReadState,
+	ReconcileConfiguredCoordinatorEnrollmentResult,
 	ReconcileRecipientPolicyProjectsResult,
 } from "./routes/sync.js";
 export {
@@ -39,6 +40,7 @@ export {
 	createRecipientPolicyReconcilerEffects,
 	listRecipientPolicyReconciliationStatus,
 	recipientPolicyCapabilityFromStatus,
+	reconcileConfiguredCoordinatorEnrollment,
 	reconcileRecipientPolicyProjects,
 } from "./routes/sync.js";
 

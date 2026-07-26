@@ -8,6 +8,9 @@ import { hostname, networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import type {
 	CoordinatorBootstrapGrantVerification,
+	CoordinatorConsumedTeamInvite,
+	CoordinatorEnrollment,
+	CoordinatorEnrollmentReconcileResult,
 	CoordinatorScope,
 	CoordinatorScopeMembership,
 	MaintenanceJobSnapshot,
@@ -49,6 +52,7 @@ import {
 	coordinatorGrantScopeMembershipAction,
 	coordinatorImportInviteAction,
 	coordinatorListBootstrapGrantsAction,
+	coordinatorListConsumedTeamInvitesAction,
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
 	coordinatorListJoinRequestsAction,
@@ -129,6 +133,7 @@ import {
 	reassignProjectScopeInventoryProject,
 	recipientInviteAuthoritativeIdentityId,
 	recipientReviewedIntentDigest,
+	reconcileCoordinatorEnrollmentSnapshot,
 	reconcileRecipientPolicyProject,
 	reconcileShareOperationAcceptance,
 	recordNonce,
@@ -1718,6 +1723,92 @@ export async function advancePendingProjectShares(
 	return result;
 }
 
+export interface ReconcileConfiguredCoordinatorEnrollmentResult {
+	skipped: boolean;
+	groupsProcessed: number;
+	failedGroups: number;
+	devicesAdded: number;
+	membershipsAdded: number;
+	identitiesAdded: number;
+	unchanged: number;
+	issues: number;
+}
+
+export async function reconcileConfiguredCoordinatorEnrollment(
+	store: MemoryStore,
+	options: {
+		config?: ReturnType<typeof readCoordinatorSyncConfig>;
+		listDevices?: (input: {
+			groupId: string;
+			remoteUrl: string;
+			adminSecret: string;
+		}) => Promise<CoordinatorEnrollment[]>;
+		listConsumedTeamInvites?: (input: {
+			groupId: string;
+			remoteUrl: string;
+			adminSecret: string;
+		}) => Promise<CoordinatorConsumedTeamInvite[]>;
+		reconcileSnapshot?: (
+			input: Parameters<typeof reconcileCoordinatorEnrollmentSnapshot>[1],
+		) => CoordinatorEnrollmentReconcileResult;
+	} = {},
+): Promise<ReconcileConfiguredCoordinatorEnrollmentResult> {
+	const config = options.config ?? readCoordinatorSyncConfig();
+	const remoteUrl = config.syncCoordinatorUrl.trim();
+	const adminSecret = config.syncCoordinatorAdminSecret.trim();
+	if (!remoteUrl || !adminSecret || config.syncCoordinatorGroups.length === 0) {
+		return {
+			skipped: true,
+			groupsProcessed: 0,
+			failedGroups: 0,
+			devicesAdded: 0,
+			membershipsAdded: 0,
+			identitiesAdded: 0,
+			unchanged: 0,
+			issues: 0,
+		};
+	}
+	const listDevices = options.listDevices ?? coordinatorListDevicesAction;
+	const listConsumedTeamInvites =
+		options.listConsumedTeamInvites ?? coordinatorListConsumedTeamInvitesAction;
+	const reconcileSnapshot =
+		options.reconcileSnapshot ??
+		((input) => reconcileCoordinatorEnrollmentSnapshot(store.db, input));
+	const total: ReconcileConfiguredCoordinatorEnrollmentResult = {
+		skipped: false,
+		groupsProcessed: 0,
+		failedGroups: 0,
+		devicesAdded: 0,
+		membershipsAdded: 0,
+		identitiesAdded: 0,
+		unchanged: 0,
+		issues: 0,
+	};
+	for (const groupId of config.syncCoordinatorGroups) {
+		try {
+			const [enrollments, consumedTeamInvites] = await Promise.all([
+				listDevices({ groupId, remoteUrl, adminSecret }),
+				listConsumedTeamInvites({ groupId, remoteUrl, adminSecret }),
+			]);
+			const result = reconcileSnapshot({
+				groupId,
+				enrollments,
+				consumedTeamInvites,
+				localDeviceId: store.deviceId,
+			});
+			total.groupsProcessed += 1;
+			total.devicesAdded += result.devicesAdded;
+			total.membershipsAdded += result.membershipsAdded;
+			total.identitiesAdded += result.identitiesAdded;
+			total.unchanged += result.unchanged;
+			total.issues += result.issues.length;
+		} catch {
+			total.failedGroups += 1;
+		}
+	}
+	return total;
+}
+
 const RECIPIENT_POLICY_MAINTENANCE_MAX_LIMIT = 10;
 const RECIPIENT_POLICY_MAINTENANCE_DEFAULT_LIMIT = 3;
 const RECIPIENT_POLICY_MAINTENANCE_BACKOFF_MS = 60_000;
@@ -1830,7 +1921,10 @@ export function createRecipientPolicyReconcilerEffects(
 				throw new Error("recipient_policy_snapshot_not_fresh");
 			});
 			const snapshotMemberships = memberships.map((membership) => {
-				if (membership.status !== "active" && membership.status !== "revoked") {
+				if (
+					typeof membership.device_id !== "string" ||
+					(membership.status !== "active" && membership.status !== "revoked")
+				) {
 					throw new Error("recipient_policy_snapshot_invalid");
 				}
 				const status: "active" | "revoked" = membership.status;
@@ -1852,6 +1946,30 @@ export function createRecipientPolicyReconcilerEffects(
 				observedAt: now(),
 				memberships: snapshotMemberships,
 			};
+		},
+		listBoundaryEnrollments: async ({ scopeId }) => {
+			const targetOptions = coordinatorOptions(scopeId);
+			const enrollments = await coordinatorListDevicesAction({
+				groupId: targetOptions.groupId,
+				remoteUrl: targetOptions.remoteUrl,
+				adminSecret: targetOptions.adminSecret,
+			}).catch(() => {
+				throw new Error("recipient_policy_snapshot_not_fresh");
+			});
+			return enrollments.flatMap((enrollment) => {
+				if (
+					enrollment.group_id !== targetOptions.groupId ||
+					typeof enrollment.device_id !== "string" ||
+					enrollment.enabled !== 1
+				) {
+					throw new Error("recipient_policy_snapshot_invalid");
+				}
+				if (enrollment.identity_id == null) return [];
+				if (typeof enrollment.identity_id !== "string") {
+					throw new Error("recipient_policy_snapshot_invalid");
+				}
+				return [{ deviceId: enrollment.device_id, identityId: enrollment.identity_id }];
+			});
 		},
 		probeCapability: (deviceId) =>
 			peerSupportsSyncRequirements(store, deviceId, {

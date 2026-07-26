@@ -41,6 +41,10 @@ export interface RecipientPolicyReconcilerEffects {
 		canonicalProjectIdentity: string;
 		scopeId: string;
 	}): Promise<RecipientPolicyCoordinatorSnapshot>;
+	listBoundaryEnrollments(input: {
+		canonicalProjectIdentity: string;
+		scopeId: string;
+	}): Promise<Array<{ deviceId: string; identityId: string }>>;
 	probeCapability(deviceId: string): Promise<RecipientPolicyPeerCapability>;
 	revoke(input: {
 		effectId: string;
@@ -313,6 +317,29 @@ function activeSnapshotDevices(
 		.toSorted();
 }
 
+function boundaryEnrollmentIdentities(
+	enrollments: Array<{ deviceId: string; identityId: string }>,
+): Map<string, string> {
+	const identities = new Map<string, string>();
+	for (const enrollment of enrollments) {
+		if (
+			!validId(enrollment.deviceId) ||
+			!validId(enrollment.identityId) ||
+			identities.has(enrollment.deviceId)
+		) {
+			throw new Error("recipient_policy_snapshot_invalid");
+		}
+		identities.set(enrollment.deviceId, enrollment.identityId);
+	}
+	return identities;
+}
+
+function boundaryEnrollmentIdentityId(
+	binding: string | { identityId: string } | undefined,
+): string | undefined {
+	return typeof binding === "string" ? binding : binding?.identityId;
+}
+
 function generation(db: Database, projectId: string, desiredDigest: string): number {
 	const state = getRecipientPolicyAuthorityState(db, projectId);
 	if (!state || state.desiredDevicesDigest === null) return 1;
@@ -517,13 +544,18 @@ export function assertLegacyShareGrantAllowed(
 	input: { canonicalProjectIdentity: string; deviceId: string },
 ): void {
 	const state = getRecipientPolicyAuthorityState(db, input.canonicalProjectIdentity);
-	if (state?.authorityState !== "active") return;
+	if (!state || state.authorityState === "legacy") return;
 	const desired = deriveRecipientPolicyEffectiveDevicesFromDatabase(
 		db,
 		input.canonicalProjectIdentity,
 	);
+	const desiredDeviceDigest =
+		desired.status === "eligible"
+			? deviceDigest(desired.devices.map((item) => item.deviceId).toSorted())
+			: null;
 	if (
 		desired.status !== "eligible" ||
+		desiredDeviceDigest !== state.desiredDevicesDigest ||
 		!desired.devices.some((item) => item.deviceId === input.deviceId)
 	) {
 		throw new Error("recipient_policy_legacy_grant_blocked");
@@ -565,7 +597,6 @@ export async function reconcileRecipientPolicyProject(
 				"recipient_policy_desired_state_invalid",
 			);
 		}
-		activeGeneration = generation(db, projectId, desired.desiredDevicesDigest);
 		const initialSnapshot = await effects.snapshot({
 			canonicalProjectIdentity: projectId,
 			scopeId: managedBoundary.scopeId,
@@ -575,26 +606,12 @@ export async function reconcileRecipientPolicyProject(
 			managedBoundary.scopeId,
 			startedAt,
 		);
-		const desiredDeviceIds = desired.devices.map((device) => device.deviceId).toSorted();
-		const desiredSet = new Set(desiredDeviceIds);
+		const policyDesiredDeviceIds = desired.devices.map((device) => device.deviceId).toSorted();
+		const policyDesiredSet = new Set(policyDesiredDeviceIds);
 		const currentSet = new Set(currentDeviceIds);
-		const revokeDeviceIds = currentDeviceIds.filter((deviceId) => !desiredSet.has(deviceId));
-		const grantDeviceIds = desiredDeviceIds.filter((deviceId) => !currentSet.has(deviceId));
-		upsertRecipientPolicyAuthorityObservation(db, {
-			canonicalProjectIdentity: projectId,
-			generation: activeGeneration,
-			desiredDevicesDigest: desired.desiredDevicesDigest,
-			currentDevicesDigest:
-				revokeDeviceIds.length === 0 && grantDeviceIds.length === 0
-					? desired.desiredDevicesDigest
-					: deviceDigest(currentDeviceIds),
-			freshSnapshotFingerprint: initialSnapshot.fingerprint,
-			freshSnapshotObservedAt: initialSnapshot.observedAt,
-			now: effects.now(),
-		});
-		if (revokeDeviceIds.length > 0 || grantDeviceIds.length > 0) {
-			resetParity(db, projectId, effects.now());
-		}
+		const revokeDeviceIds = currentDeviceIds.filter((deviceId) => !policyDesiredSet.has(deviceId));
+		activeGeneration = Math.max(activeGeneration, 1);
+		if (revokeDeviceIds.length > 0) resetParity(db, projectId, effects.now());
 		for (const deviceId of revokeDeviceIds) {
 			putRecipientPolicyDenyOverlay(db, {
 				canonicalProjectIdentity: projectId,
@@ -608,32 +625,6 @@ export async function reconcileRecipientPolicyProject(
 		const snapshotStateKey = digest("recipient-policy-snapshot-state-v1", {
 			fingerprint: initialSnapshot.fingerprint,
 		});
-		const passKey = digest("recipient-policy-pass-v1", {
-			fingerprint: initialSnapshot.fingerprint,
-			observedAt: initialSnapshot.observedAt,
-		});
-		const capability = await preflight(db, {
-			projectId,
-			generation: activeGeneration,
-			deviceIds: [...new Set([...currentDeviceIds, ...desiredDeviceIds])].toSorted(),
-			passKey,
-			leaseOwner: input.leaseOwner,
-			lease,
-			effects,
-		});
-		if (capability !== "supported") {
-			const safeErrorCode =
-				capability === "unsupported"
-					? "recipient_policy_capability_unsupported"
-					: "recipient_policy_capability_undetermined";
-			authority(db, { projectId, safeErrorCode, now: effects.now() });
-			return result(
-				projectId,
-				capability === "unsupported" ? "needs_attention" : "waiting",
-				activeGeneration,
-				safeErrorCode,
-			);
-		}
 		for (const deviceId of revokeDeviceIds) {
 			const changed = await step(
 				db,
@@ -682,6 +673,151 @@ export async function reconcileRecipientPolicyProject(
 				revokedDeviceIds,
 			);
 		}
+		const remainingPolicyCurrentDeviceIds = currentDeviceIds.filter(
+			(deviceId) => !revokeDeviceIds.includes(deviceId),
+		);
+		const enrollmentIdentities = boundaryEnrollmentIdentities(
+			await effects.listBoundaryEnrollments({
+				canonicalProjectIdentity: projectId,
+				scopeId: managedBoundary.scopeId,
+			}),
+		);
+		const desiredIdentityByDeviceId = new Map(
+			desired.devices.map((device) => [device.deviceId, device.identityId]),
+		);
+		const enrollmentConflictDeviceIds = remainingPolicyCurrentDeviceIds.filter((deviceId) => {
+			const enrollmentIdentityId = boundaryEnrollmentIdentityId(enrollmentIdentities.get(deviceId));
+			const desiredIdentityId = desiredIdentityByDeviceId.get(deviceId);
+			return Boolean(
+				enrollmentIdentityId && desiredIdentityId && enrollmentIdentityId !== desiredIdentityId,
+			);
+		});
+		if (enrollmentConflictDeviceIds.length > 0) resetParity(db, projectId, effects.now());
+		for (const deviceId of enrollmentConflictDeviceIds) {
+			putRecipientPolicyDenyOverlay(db, {
+				canonicalProjectIdentity: projectId,
+				scopeId: managedBoundary.scopeId,
+				deviceId,
+				generation: activeGeneration,
+				reasonCode: "enrollment_identity_conflict",
+				now: effects.now(),
+			});
+			const changed = await step(
+				db,
+				{
+					projectId,
+					generation: activeGeneration,
+					stepKey: `revoke-enrollment-conflict:${snapshotStateKey}:${deviceId}`,
+					payload: { scopeId: managedBoundary.scopeId, deviceId, status: "revoked" },
+					leaseOwner: input.leaseOwner,
+					lease,
+					now: effects.now,
+				},
+				async (effectId) => {
+					const receipt = await effects.revoke({
+						effectId,
+						canonicalProjectIdentity: projectId,
+						generation: activeGeneration,
+						scopeId: managedBoundary.scopeId,
+						deviceId,
+					});
+					validateReceipt(receipt, {
+						effectId,
+						scopeId: managedBoundary.scopeId,
+						deviceId,
+						status: "revoked",
+					});
+				},
+			);
+			if (changed) revokedDeviceIds.push(deviceId);
+		}
+		const remainingCurrentDeviceIds = remainingPolicyCurrentDeviceIds.filter(
+			(deviceId) => !enrollmentConflictDeviceIds.includes(deviceId),
+		);
+		const grantEligibleDeviceIds = desired.devices
+			.filter(
+				(device) =>
+					boundaryEnrollmentIdentityId(enrollmentIdentities.get(device.deviceId)) ===
+					device.identityId,
+			)
+			.map((device) => device.deviceId)
+			.toSorted();
+		const expectedDeviceIds = [
+			...new Set([
+				...remainingCurrentDeviceIds.filter((deviceId) => policyDesiredSet.has(deviceId)),
+				...grantEligibleDeviceIds,
+			]),
+		].toSorted();
+		const expectedSet = new Set(expectedDeviceIds);
+		const expectedDigest = deviceDigest(expectedDeviceIds);
+		activeGeneration = generation(db, projectId, expectedDigest);
+		const grantDeviceIds = grantEligibleDeviceIds.filter((deviceId) => !currentSet.has(deviceId));
+		upsertRecipientPolicyAuthorityObservation(db, {
+			canonicalProjectIdentity: projectId,
+			generation: activeGeneration,
+			desiredDevicesDigest: expectedDigest,
+			currentDevicesDigest:
+				grantDeviceIds.length === 0 ? expectedDigest : deviceDigest(remainingCurrentDeviceIds),
+			freshSnapshotFingerprint: initialSnapshot.fingerprint,
+			freshSnapshotObservedAt: initialSnapshot.observedAt,
+			now: effects.now(),
+		});
+		if (grantDeviceIds.length > 0) resetParity(db, projectId, effects.now());
+		const passKey = digest("recipient-policy-pass-v1", {
+			fingerprint: initialSnapshot.fingerprint,
+			observedAt: initialSnapshot.observedAt,
+		});
+		const capability = await preflight(db, {
+			projectId,
+			generation: activeGeneration,
+			deviceIds: expectedDeviceIds,
+			passKey,
+			leaseOwner: input.leaseOwner,
+			lease,
+			effects,
+		});
+		if (capability !== "supported") {
+			const safeErrorCode =
+				capability === "unsupported"
+					? "recipient_policy_capability_unsupported"
+					: "recipient_policy_capability_undetermined";
+			authority(db, { projectId, safeErrorCode, now: effects.now() });
+			return result(
+				projectId,
+				capability === "unsupported" ? "needs_attention" : "waiting",
+				activeGeneration,
+				safeErrorCode,
+				revokedDeviceIds,
+			);
+		}
+		if (grantDeviceIds.length > 0) {
+			const preGrantEnrollmentIdentities = boundaryEnrollmentIdentities(
+				await effects.listBoundaryEnrollments({
+					canonicalProjectIdentity: projectId,
+					scopeId: managedBoundary.scopeId,
+				}),
+			);
+			const changedBinding = grantDeviceIds.some(
+				(deviceId) =>
+					boundaryEnrollmentIdentityId(preGrantEnrollmentIdentities.get(deviceId)) !==
+					desiredIdentityByDeviceId.get(deviceId),
+			);
+			if (changedBinding) {
+				resetParity(db, projectId, effects.now());
+				authority(db, {
+					projectId,
+					safeErrorCode: "recipient_policy_generation_stale",
+					now: effects.now(),
+				});
+				return result(
+					projectId,
+					"stale",
+					activeGeneration,
+					"recipient_policy_generation_stale",
+					revokedDeviceIds,
+				);
+			}
+		}
 		for (const deviceId of grantDeviceIds) {
 			const changed = await step(
 				db,
@@ -712,6 +848,73 @@ export async function reconcileRecipientPolicyProject(
 				},
 			);
 			if (changed) grantedDeviceIds.push(deviceId);
+		}
+		if (grantDeviceIds.length > 0) {
+			const postGrantEnrollmentIdentities = boundaryEnrollmentIdentities(
+				await effects.listBoundaryEnrollments({
+					canonicalProjectIdentity: projectId,
+					scopeId: managedBoundary.scopeId,
+				}),
+			);
+			const changedBindingDeviceIds = grantDeviceIds.filter(
+				(deviceId) =>
+					boundaryEnrollmentIdentityId(postGrantEnrollmentIdentities.get(deviceId)) !==
+					desiredIdentityByDeviceId.get(deviceId),
+			);
+			if (changedBindingDeviceIds.length > 0) {
+				resetParity(db, projectId, effects.now());
+				for (const deviceId of changedBindingDeviceIds) {
+					putRecipientPolicyDenyOverlay(db, {
+						canonicalProjectIdentity: projectId,
+						scopeId: managedBoundary.scopeId,
+						deviceId,
+						generation: activeGeneration,
+						reasonCode: "enrollment_identity_conflict",
+						now: effects.now(),
+					});
+					const changed = await step(
+						db,
+						{
+							projectId,
+							generation: activeGeneration,
+							stepKey: `revoke-post-grant-enrollment-conflict:${snapshotStateKey}:${deviceId}`,
+							payload: { scopeId: managedBoundary.scopeId, deviceId, status: "revoked" },
+							leaseOwner: input.leaseOwner,
+							lease,
+							now: effects.now,
+						},
+						async (effectId) => {
+							const receipt = await effects.revoke({
+								effectId,
+								canonicalProjectIdentity: projectId,
+								generation: activeGeneration,
+								scopeId: managedBoundary.scopeId,
+								deviceId,
+							});
+							validateReceipt(receipt, {
+								effectId,
+								scopeId: managedBoundary.scopeId,
+								deviceId,
+								status: "revoked",
+							});
+						},
+					);
+					if (changed) revokedDeviceIds.push(deviceId);
+				}
+				authority(db, {
+					projectId,
+					safeErrorCode: "recipient_policy_generation_stale",
+					now: effects.now(),
+				});
+				return result(
+					projectId,
+					"stale",
+					activeGeneration,
+					"recipient_policy_generation_stale",
+					revokedDeviceIds,
+					grantedDeviceIds,
+				);
+			}
 		}
 		await step(
 			db,
@@ -745,7 +948,7 @@ export async function reconcileRecipientPolicyProject(
 		for (const overlay of listRecipientPolicyDenyOverlays(db, projectId)) {
 			const revokeVerified = !verifiedSet.has(overlay.deviceId);
 			const desiredActiveVerified =
-				desiredSet.has(overlay.deviceId) && verifiedSet.has(overlay.deviceId);
+				expectedSet.has(overlay.deviceId) && verifiedSet.has(overlay.deviceId);
 			if (
 				overlay.scopeId === managedBoundary.scopeId &&
 				(revokeVerified || desiredActiveVerified)
@@ -759,13 +962,13 @@ export async function reconcileRecipientPolicyProject(
 			}
 		}
 		const parity =
-			verifiedDeviceIds.length === desiredDeviceIds.length &&
-			verifiedDeviceIds.every((deviceId, index) => deviceId === desiredDeviceIds[index]);
+			verifiedDeviceIds.length === expectedDeviceIds.length &&
+			verifiedDeviceIds.every((deviceId, index) => deviceId === expectedDeviceIds[index]);
 		upsertRecipientPolicyAuthorityObservation(db, {
 			canonicalProjectIdentity: projectId,
 			generation: activeGeneration,
-			desiredDevicesDigest: desired.desiredDevicesDigest,
-			currentDevicesDigest: parity ? desired.desiredDevicesDigest : deviceDigest(verifiedDeviceIds),
+			desiredDevicesDigest: expectedDigest,
+			currentDevicesDigest: parity ? expectedDigest : deviceDigest(verifiedDeviceIds),
 			freshSnapshotFingerprint: verifiedSnapshot.fingerprint,
 			freshSnapshotObservedAt: verifiedSnapshot.observedAt,
 			now: effects.now(),
@@ -790,8 +993,8 @@ export async function reconcileRecipientPolicyProject(
 			canonicalProjectIdentity: projectId,
 			generation: activeGeneration,
 			scopeId: managedBoundary.scopeId,
-			desiredDevicesDigest: desired.desiredDevicesDigest,
-			deviceIds: desiredDeviceIds,
+			desiredDevicesDigest: expectedDigest,
+			deviceIds: expectedDeviceIds,
 		});
 		const state = getRecipientPolicyAuthorityState(db, projectId);
 		const laterUnchangedNoOp =

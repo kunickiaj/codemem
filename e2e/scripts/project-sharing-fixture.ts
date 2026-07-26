@@ -305,6 +305,7 @@ function reconciliationEffects(
 ): RecipientPolicyReconcilerEffects {
 	let tick = 0;
 	const now = () => new Date(Date.parse(NOW) + tick++ * 1_000).toISOString();
+	const label = scopeId.startsWith("scope-") ? scopeId.slice("scope-".length) : scopeId;
 	return {
 		now,
 		snapshot: async () => ({
@@ -316,6 +317,10 @@ function reconciliationEffects(
 				.toSorted()
 				.map((deviceId) => ({ deviceId, status: "active" as const })),
 		}),
+		listBoundaryEnrollments: async () => [
+			{ deviceId: `device-${label}-keep`, identityId: `identity-${label}` },
+			{ deviceId: `device-${label}-new`, identityId: `identity-${label}` },
+		],
 		probeCapability: async (deviceId) => {
 			calls.push(`probe:${deviceId}`);
 			return capability(deviceId);
@@ -338,10 +343,7 @@ function reconciliationEffects(
 
 async function reconciliationProof(store: MemoryStore): Promise<Record<string, unknown>> {
 	const unsupported = seedReconciliationProject(store, "unsupported-old-peer");
-	const unsupportedMembers = new Set([
-		"device-unsupported-old-peer-keep",
-		"device-unsupported-old-peer-old",
-	]);
+	const unsupportedMembers = new Set(["device-unsupported-old-peer-keep"]);
 	const unsupportedCalls: string[] = [];
 	const membershipsBefore = JSON.stringify([...unsupportedMembers].toSorted());
 	const unsupportedResult = await reconcileRecipientPolicyProject(
@@ -350,7 +352,7 @@ async function reconciliationProof(store: MemoryStore): Promise<Record<string, u
 		reconciliationEffects(
 			unsupported.scopeId,
 			unsupportedMembers,
-			(deviceId) => (deviceId.endsWith("-old") ? "unsupported" : "supported"),
+			(deviceId) => (deviceId.endsWith("-new") ? "unsupported" : "supported"),
 			unsupportedCalls,
 		),
 	);

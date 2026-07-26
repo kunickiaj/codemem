@@ -298,4 +298,30 @@ describe("recipient-policy reconciliation persistence", () => {
 			}),
 		).toBe(true);
 	});
+
+	it("allows same-generation deny reasons to become stricter without accepting stale writes", () => {
+		const base = {
+			canonicalProjectIdentity: PROJECT,
+			scopeId: "scope-project",
+			deviceId: "device-a",
+			generation: 4,
+			now: NOW,
+		};
+		putRecipientPolicyDenyOverlay(db, {
+			...base,
+			reasonCode: "enrollment_identity_conflict",
+		});
+		putRecipientPolicyDenyOverlay(db, { ...base, reasonCode: "pending_revoke" });
+
+		expect(listRecipientPolicyDenyOverlays(db, PROJECT)).toEqual([
+			expect.objectContaining({ generation: 4, reasonCode: "pending_revoke" }),
+		]);
+		expect(() =>
+			putRecipientPolicyDenyOverlay(db, {
+				...base,
+				generation: 3,
+				reasonCode: "enrollment_identity_conflict",
+			}),
+		).toThrow("recipient_policy_deny_overlay_stale");
+	});
 });

@@ -9,9 +9,75 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	advancePendingProjectShares,
+	createRecipientPolicyReconcilerEffects,
 	recipientPolicyCapabilityFromStatus,
+	reconcileConfiguredCoordinatorEnrollment,
 	reconcileRecipientPolicyProjects,
 } from "./routes/sync.js";
+
+describe("reconcileConfiguredCoordinatorEnrollment", () => {
+	it("skips recipient devices without coordinator admin configuration", async () => {
+		const result = await reconcileConfiguredCoordinatorEnrollment({ db: {} } as MemoryStore, {
+			config: {
+				syncCoordinatorUrl: "https://coord.example.test",
+				syncCoordinatorAdminSecret: "",
+				syncCoordinatorGroups: ["group-a"],
+			} as never,
+		});
+		expect(result).toMatchObject({ skipped: true, groupsProcessed: 0 });
+	});
+
+	it("reads and reconciles each configured group", async () => {
+		const calls: string[] = [];
+		const result = await reconcileConfiguredCoordinatorEnrollment(
+			{ db: {}, deviceId: "device-local" } as MemoryStore,
+			{
+				config: {
+					syncCoordinatorUrl: "https://coord.example.test",
+					syncCoordinatorAdminSecret: "secret",
+					syncCoordinatorGroups: ["group-a", "group-b"],
+				} as never,
+				listDevices: async ({ groupId }) => {
+					calls.push(`devices:${groupId}`);
+					return [];
+				},
+				listConsumedTeamInvites: async ({ groupId }) => {
+					calls.push(`invites:${groupId}`);
+					return [];
+				},
+				reconcileSnapshot: (input) => {
+					calls.push(`reconcile:${input.groupId}:${input.localDeviceId}`);
+					return {
+						devicesAdded: 1,
+						membershipsAdded: 2,
+						identitiesAdded: 1,
+						unchanged: 3,
+						issues: [],
+					};
+				},
+			},
+		);
+
+		expect(calls).toEqual([
+			"devices:group-a",
+			"invites:group-a",
+			"reconcile:group-a:device-local",
+			"devices:group-b",
+			"invites:group-b",
+			"reconcile:group-b:device-local",
+		]);
+		expect(result).toEqual({
+			skipped: false,
+			groupsProcessed: 2,
+			failedGroups: 0,
+			devicesAdded: 2,
+			membershipsAdded: 4,
+			identitiesAdded: 2,
+			unchanged: 6,
+			issues: 0,
+		});
+	});
+});
 
 describe("advancePendingProjectShares", () => {
 	let db: InstanceType<typeof Database>;
@@ -513,6 +579,9 @@ describe("recipient-policy maintenance", () => {
 			snapshot: vi.fn(async () => {
 				throw new Error("unused");
 			}),
+			listBoundaryEnrollments: vi.fn(async () => {
+				throw new Error("unused");
+			}),
 			probeCapability: vi.fn(async () => "supported"),
 			revoke: vi.fn(async () => {
 				throw new Error("unused");
@@ -530,7 +599,126 @@ describe("recipient-policy maintenance", () => {
 		store = { actorId: "actor-local", db, deviceId: "device-local" } as unknown as MemoryStore;
 	});
 
-	afterEach(() => db.close());
+	afterEach(() => {
+		db.close();
+		vi.unstubAllGlobals();
+	});
+
+	it("reads identity-bound enrollments from the managed boundary group", async () => {
+		const projectId = "project-boundary-enrollments";
+		const scopeId = "scope-boundary-enrollments";
+		seedManagedBoundary(projectId, scopeId);
+		db.prepare("UPDATE replication_scopes SET coordinator_id = ? WHERE scope_id = ?").run(
+			"https://coord.example.test",
+			scopeId,
+		);
+		const fetchMock = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						items: [
+							{
+								group_id: "group",
+								device_id: "device-recipient",
+								identity_id: "identity-recipient",
+								enabled: 1,
+							},
+							{
+								group_id: "group",
+								device_id: "device-owner",
+								identity_id: null,
+								enabled: 1,
+							},
+						],
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const effects = createRecipientPolicyReconcilerEffects(store, {
+			config: {
+				syncCoordinatorUrl: "https://coord.example.test",
+				syncCoordinatorAdminSecret: "secret",
+				syncCoordinatorGroups: ["group"],
+			} as never,
+		});
+
+		await expect(
+			effects.listBoundaryEnrollments({ canonicalProjectIdentity: projectId, scopeId }),
+		).resolves.toEqual([{ deviceId: "device-recipient", identityId: "identity-recipient" }]);
+		expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+			"https://coord.example.test/v1/admin/devices?group_id=group&include_disabled=0",
+		);
+	});
+
+	it("rejects malformed boundary enrollment rows before reconciliation", async () => {
+		const projectId = "project-malformed-enrollment";
+		const scopeId = "scope-malformed-enrollment";
+		seedManagedBoundary(projectId, scopeId);
+		db.prepare("UPDATE replication_scopes SET coordinator_id = ? WHERE scope_id = ?").run(
+			"https://coord.example.test",
+			scopeId,
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							items: [{ group_id: "group", identity_id: "identity-recipient", enabled: 1 }],
+						}),
+						{ status: 200, headers: { "content-type": "application/json" } },
+					),
+			),
+		);
+		const effects = createRecipientPolicyReconcilerEffects(store, {
+			config: {
+				syncCoordinatorUrl: "https://coord.example.test",
+				syncCoordinatorAdminSecret: "secret",
+				syncCoordinatorGroups: ["group"],
+			} as never,
+		});
+
+		await expect(
+			effects.listBoundaryEnrollments({ canonicalProjectIdentity: projectId, scopeId }),
+		).rejects.toThrow("recipient_policy_snapshot_invalid");
+	});
+
+	it("rejects boundary enrollment reads outside the configured coordinator authority", async () => {
+		const projectId = "project-boundary-authority";
+		const scopeId = "scope-boundary-authority";
+		seedManagedBoundary(projectId, scopeId);
+		db.prepare("UPDATE replication_scopes SET coordinator_id = ? WHERE scope_id = ?").run(
+			"https://coord.example.test",
+			scopeId,
+		);
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		for (const config of [
+			{
+				syncCoordinatorUrl: "https://coord.example.test",
+				syncCoordinatorAdminSecret: "secret",
+				syncCoordinatorGroups: ["other-group"],
+			},
+			{
+				syncCoordinatorUrl: "https://other.example.test",
+				syncCoordinatorAdminSecret: "secret",
+				syncCoordinatorGroups: ["group"],
+			},
+			{
+				syncCoordinatorUrl: "https://coord.example.test",
+				syncCoordinatorAdminSecret: "",
+				syncCoordinatorGroups: ["group"],
+			},
+		]) {
+			const effects = createRecipientPolicyReconcilerEffects(store, { config: config as never });
+			await expect(
+				effects.listBoundaryEnrollments({ canonicalProjectIdentity: projectId, scopeId }),
+			).rejects.toThrow("recipient_policy_effect_failed");
+		}
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
 
 	it("bounds work and isolates one Project failure from the next", async () => {
 		seedRecipientProject("project-a");
@@ -634,6 +822,9 @@ describe("recipient-policy maintenance", () => {
 					})),
 				};
 			}),
+			listBoundaryEnrollments: vi.fn(async () => [
+				{ deviceId: "device-revoked", identityId: `identity:${projectId}` },
+			]),
 			probeCapability: vi.fn(async () => "supported"),
 			revoke: vi.fn(async (input) => {
 				members.delete(input.deviceId);
@@ -760,6 +951,9 @@ describe("recipient-policy maintenance", () => {
 					memberships: deviceIds.map((deviceId) => ({ deviceId, status: "active" as const })),
 				};
 			}),
+			listBoundaryEnrollments: vi.fn(async () => [
+				{ deviceId: "device-recipient", identityId: `identity:${projectId}` },
+			]),
 			probeCapability: vi.fn(async () => "supported"),
 			revoke: vi.fn(async (input) => ({
 				effectId: input.effectId,

@@ -63,6 +63,11 @@ export type {
 } from "./coordinator-api.js";
 export { createCoordinatorApp } from "./coordinator-api.js";
 export type {
+	CoordinatorEnrollmentReconcileIssue,
+	CoordinatorEnrollmentReconcileResult,
+} from "./coordinator-enrollment-reconciler.js";
+export { reconcileCoordinatorEnrollmentSnapshot } from "./coordinator-enrollment-reconciler.js";
+export type {
 	CoordinatorGroupPreference,
 	UpsertCoordinatorGroupPreferenceInput,
 } from "./coordinator-group-preferences.js";

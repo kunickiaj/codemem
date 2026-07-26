@@ -1047,7 +1047,7 @@ describe("exact project share provisioning", () => {
 		).toBe("active");
 	});
 
-	it("blocks stale legacy grant retries when active recipient policy no longer desires the device", async () => {
+	it("blocks stale legacy grant retries before any mutation when active policy changed", async () => {
 		const now = createdAt;
 		db.prepare(
 			`INSERT INTO recipient_policy_authority_states(
@@ -1066,17 +1066,16 @@ describe("exact project share provisioning", () => {
 			executeShareProvisioning(db, { operationId, initiatingDeviceId: "owner" }, deps),
 		).rejects.toThrow("recipient_policy_legacy_grant_blocked");
 
-		expect(vi.mocked(deps.grantMembership).mock.calls.map(([input]) => input.deviceId)).toEqual([
-			"owner",
-			"owner-proven",
-		]);
+		expect(deps.grantMembership).not.toHaveBeenCalled();
 		expect(
 			db
 				.prepare(
-					"SELECT safe_error_code FROM share_operation_steps WHERE operation_id = ? AND step_key = ?",
+					"SELECT step_key, safe_error_code FROM share_operation_steps WHERE operation_id = ? AND safe_error_code IS NOT NULL",
 				)
-				.pluck()
-				.get(operationId, `space_grant:${remote}:recipient`),
-		).toBe("recipient_policy_legacy_grant_blocked");
+				.get(operationId),
+		).toEqual({
+			step_key: `space_grant:${remote}:owner`,
+			safe_error_code: "recipient_policy_legacy_grant_blocked",
+		});
 	});
 });

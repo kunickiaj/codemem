@@ -187,37 +187,64 @@ describe("serve command option resolution", () => {
 		]);
 	});
 
-	it("runs recipient-policy maintenance only after existing share maintenance", async () => {
+	it("surfaces recipient-policy failures after running every maintenance stage", async () => {
 		const calls: string[] = [];
 		const store = {} as MemoryStore;
-		const result = await runServeCoordinatorMaintenance(store, {
-			advancePendingProjectShares: vi.fn(async (_store, options) => {
-				calls.push(`shares:${options.limit}`);
-				return { processed: 1, failed: 0 };
+		await expect(
+			runServeCoordinatorMaintenance(store, {
+				advancePendingProjectShares: vi.fn(async (_store, options) => {
+					calls.push(`shares:${options.limit}`);
+					return { processed: 1, failed: 0 };
+				}),
+				reconcileConfiguredCoordinatorEnrollment: vi.fn(async () => {
+					calls.push("enrollment");
+					return { groupsProcessed: 1, failedGroups: 0 };
+				}),
+				reconcileRecipientPolicyProjects: vi.fn(async (_store, options) => {
+					calls.push(`policies:${options.limit}`);
+					return { processed: 2, failed: 1 };
+				}),
 			}),
-			reconcileRecipientPolicyProjects: vi.fn(async (_store, options) => {
-				calls.push(`policies:${options.limit}`);
-				return { processed: 2, failed: 1 };
-			}),
-		});
+		).rejects.toThrow("recipient policy maintenance failed for 1 of 2 projects");
 
-		expect(calls).toEqual(["shares:3", "policies:3"]);
-		expect(result).toEqual({
-			projectShares: { processed: 1, failed: 0 },
-			recipientPolicies: { processed: 2, failed: 1 },
-		});
+		expect(calls).toEqual(["shares:3", "enrollment", "policies:3"]);
 	});
 
-	it("does not start policy reconciliation when old share maintenance fails", async () => {
+	it("runs enrollment and policy reconciliation before surfacing share maintenance failures", async () => {
+		const reconcileConfiguredCoordinatorEnrollment = vi.fn(async () => ({
+			groupsProcessed: 0,
+			failedGroups: 0,
+		}));
 		const reconcileRecipientPolicyProjects = vi.fn(async () => ({ processed: 0, failed: 0 }));
 
 		await expect(
 			runServeCoordinatorMaintenance({} as MemoryStore, {
 				advancePendingProjectShares: vi.fn(async () => ({ processed: 2, failed: 1 })),
+				reconcileConfiguredCoordinatorEnrollment,
 				reconcileRecipientPolicyProjects,
 			}),
 		).rejects.toThrow("share operation maintenance failed for 1 of 2 operations");
-		expect(reconcileRecipientPolicyProjects).not.toHaveBeenCalled();
+		expect(reconcileConfiguredCoordinatorEnrollment).toHaveBeenCalledOnce();
+		expect(reconcileRecipientPolicyProjects).toHaveBeenCalledOnce();
+	});
+
+	it("runs policy reconciliation before surfacing incomplete enrollment reconciliation", async () => {
+		const reconcileRecipientPolicyProjects = vi.fn(async () => ({ processed: 0, failed: 0 }));
+
+		await expect(
+			runServeCoordinatorMaintenance({} as MemoryStore, {
+				advancePendingProjectShares: vi.fn(async () => ({ processed: 0, failed: 0 })),
+				reconcileConfiguredCoordinatorEnrollment: vi.fn(async () => ({
+					groupsProcessed: 1,
+					failedGroups: 1,
+					issues: 2,
+				})),
+				reconcileRecipientPolicyProjects,
+			}),
+		).rejects.toThrow(
+			"coordinator enrollment maintenance failed for 1 group with 2 reconciliation issues",
+		);
+		expect(reconcileRecipientPolicyProjects).toHaveBeenCalledOnce();
 	});
 
 	it("detects sqlite-vec load errors for viewer startup fallback", () => {

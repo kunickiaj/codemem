@@ -829,13 +829,6 @@ export function putRecipientPolicyDenyOverlay(
 	if (existing && input.generation < Number(existing.generation)) {
 		throw new Error("recipient_policy_deny_overlay_stale");
 	}
-	if (
-		existing &&
-		input.generation === Number(existing.generation) &&
-		input.reasonCode !== existing.reason_code
-	) {
-		throw new Error("recipient_policy_deny_overlay_conflict");
-	}
 	db.prepare(
 		`INSERT INTO recipient_policy_deny_overlays(
 		 canonical_project_identity, scope_id, device_id, generation, reason_code, created_at, updated_at

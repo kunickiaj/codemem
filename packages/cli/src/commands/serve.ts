@@ -517,6 +517,7 @@ export function sqliteVecFailureDiagnostics(error: unknown, dbPath: string): str
 
 export interface ServeCoordinatorMaintenanceResult {
 	projectShares: { processed: number; failed: number };
+	coordinatorEnrollment: { groupsProcessed: number; failedGroups: number; issues?: number };
 	recipientPolicies: { processed: number; failed: number };
 }
 
@@ -531,18 +532,35 @@ export async function runServeCoordinatorMaintenance(
 			store: MemoryStore,
 			options: { limit: number },
 		) => Promise<{ processed: number; failed: number }>;
+		reconcileConfiguredCoordinatorEnrollment: (
+			store: MemoryStore,
+		) => Promise<{ groupsProcessed: number; failedGroups: number; issues?: number }>;
 	},
 ): Promise<ServeCoordinatorMaintenanceResult> {
 	const projectShares = await dependencies.advancePendingProjectShares(store, { limit: 3 });
+	const coordinatorEnrollment = await dependencies.reconcileConfiguredCoordinatorEnrollment(store);
+	const enrollmentIssues = coordinatorEnrollment.issues ?? 0;
+	const recipientPolicies = await dependencies.reconcileRecipientPolicyProjects(store, {
+		limit: 3,
+	});
 	if (projectShares.failed > 0) {
 		throw new Error(
 			`share operation maintenance failed for ${projectShares.failed} of ${projectShares.processed} operations`,
 		);
 	}
-	const recipientPolicies = await dependencies.reconcileRecipientPolicyProjects(store, {
-		limit: 3,
-	});
-	return { projectShares, recipientPolicies };
+	if (coordinatorEnrollment.failedGroups > 0 || enrollmentIssues > 0) {
+		const groupLabel = coordinatorEnrollment.failedGroups === 1 ? "group" : "groups";
+		const issueLabel = enrollmentIssues === 1 ? "issue" : "issues";
+		throw new Error(
+			`coordinator enrollment maintenance failed for ${coordinatorEnrollment.failedGroups} ${groupLabel} with ${enrollmentIssues} reconciliation ${issueLabel}`,
+		);
+	}
+	if (recipientPolicies.failed > 0) {
+		throw new Error(
+			`recipient policy maintenance failed for ${recipientPolicies.failed} of ${recipientPolicies.processed} projects`,
+		);
+	}
+	return { projectShares, coordinatorEnrollment, recipientPolicies };
 }
 
 async function startBackgroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
@@ -588,6 +606,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		createSyncApp,
 		closeStore,
 		getStore,
+		reconcileConfiguredCoordinatorEnrollment,
 		reconcileRecipientPolicyProjects,
 	} = await import("@codemem/server");
 	const { serve } = await import("@hono/node-server");
@@ -715,6 +734,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 						onAfterCoordinatorRefresh: async () => {
 							await runServeCoordinatorMaintenance(store, {
 								advancePendingProjectShares,
+								reconcileConfiguredCoordinatorEnrollment,
 								reconcileRecipientPolicyProjects,
 							});
 						},
