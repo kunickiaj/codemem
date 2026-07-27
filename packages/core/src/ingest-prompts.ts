@@ -51,22 +51,11 @@ If nothing meaningful happened AND nothing was learned:
 - Output no <observation> blocks
 - Output <skip_summary reason="low-signal"/> instead of a <summary> block.`;
 
-const WORTHINESS_GUIDANCE = `Observation worthiness bar — an <observation> must record a durable lesson:
-a constraint, gotcha, root cause, decision with rationale, or how-something-works
-insight that changes how future work should be done.
-Before emitting an observation, ask: "If a future session never reads this, will it repeat a mistake or re-derive something?"
-If the answer is no, do not emit it — the <summary> already records what happened.
-
-Routine activity is NOT an observation, even when it succeeded and even when the
-session is long or busy. The following belong in the <summary> ONLY:
-- release/CI/pipeline status narration ("workflow is running/passed for tag X")
-- review or validation passes that found no issues
-- context/docs lookups and their results ("no repo-local context found; global standards used")
-- restating workflow policy already active in the session (delegation rules, review gates, commit conventions)
-- bootstrap/setup narration (agent init, plugin loading, workspace detection)
-
-Emitting ZERO <observation> blocks with a normal <summary> is correct and common
-for routine sessions (releases, review passes, dependency bumps, status checks).`;
+const WORTHINESS_GUIDANCE = `Observation worthiness policy:
+- Emit an <observation> only for a durable, reusable lesson such as a constraint, root cause, decision with rationale, or how-it-works insight.
+- When a durable lesson exists, emit it as an <observation>; do not leave it only in <summary>.
+- Routine status, review, setup, and workflow narration belongs only in <summary>.
+- Zero observations is valid when the session contains no durable lesson.`;
 
 const NARRATIVE_GUIDANCE = `Create narratives that tell the complete story:
 - Context: What was the problem or goal? What prompted this work?
