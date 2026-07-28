@@ -6,8 +6,10 @@ import {
 	type RecipientReviewedIntentV1,
 } from "./recipient-reviewed-intent.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
+import { managedProjectScopeId } from "./share-operation.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import { buildBaseUrl } from "./sync-http-client.js";
 
 export type RecipientPolicyOnboardingJourneyV1 = "team" | "direct_project" | "add_device";
 
@@ -316,7 +318,44 @@ function projectFacts(db: Database): Map<string, ProjectFact> {
 		.all() as Array<Record<string, unknown>>) {
 		add(row.canonical_project_identity, row.canonical_project_identity);
 	}
+	for (const row of db
+		.prepare(
+			`SELECT canonical_project_identity, display_name
+			 FROM recipient_managed_project_projections
+			 ORDER BY source_operation_id, canonical_project_identity`,
+		)
+		.all() as Array<Record<string, unknown>>) {
+		add(row.canonical_project_identity, row.display_name);
+	}
 	return projects;
+}
+
+function managedProjectFact(db: Database, projectId: string): ProjectFact | null {
+	for (const row of db
+		.prepare(
+			`SELECT scope.scope_id, scope.label, scope.group_id
+			 FROM project_scope_mappings mapping
+			 JOIN replication_scopes scope ON scope.scope_id = mapping.scope_id
+			  AND scope.kind = 'managed_project' AND scope.authority_type = 'coordinator'
+			  AND scope.status = 'active'
+			 WHERE mapping.workspace_identity = ? AND mapping.project_pattern = ?
+			 ORDER BY mapping.id`,
+		)
+		.all(projectId, projectId) as Array<{
+		scope_id: string;
+		label: string;
+		group_id: string | null;
+	}>) {
+		const groupId = String(row.group_id ?? "").trim();
+		if (groupId && row.scope_id === managedProjectScopeId(groupId, projectId)) {
+			return {
+				canonicalProjectIdentity: projectId,
+				displayName: row.label.trim() || projectId,
+				existingMemoryCount: 0,
+			};
+		}
+	}
+	return null;
 }
 
 function assertActiveIdentity(db: Database, identityId: string): void {
@@ -383,6 +422,11 @@ function teamSources(
 	return result;
 }
 
+function sameCoordinatorBoundary(...values: Array<string | null>): boolean {
+	const normalized = values.map((value) => buildBaseUrl(value ?? ""));
+	return normalized[0] !== "" && normalized.every((value) => value === normalized[0]);
+}
+
 function inheritedSources(
 	db: Database,
 	identityId: string,
@@ -395,6 +439,93 @@ function inheritedSources(
 			 ORDER BY canonical_project_identity`,
 		)
 		.all(identityId) as Array<{ canonical_project_identity: string }>) {
+		addSource(result, row.canonical_project_identity, { kind: "direct" });
+	}
+	for (const row of db
+		.prepare(
+			`SELECT projection.canonical_project_identity, projection.managed_scope_id,
+				projection.coordinator_id AS projection_coordinator_id, projection.group_id,
+				scope.coordinator_id AS scope_coordinator_id,
+				membership.coordinator_id AS membership_coordinator_id
+			 FROM recipient_managed_project_projections projection
+			 JOIN replication_scopes scope
+			  ON scope.scope_id = projection.managed_scope_id
+			 AND scope.kind = 'managed_project'
+			 AND scope.authority_type = 'coordinator'
+			 AND scope.status = 'active'
+			 AND scope.group_id = projection.group_id
+			 JOIN scope_memberships membership
+			  ON membership.scope_id = projection.managed_scope_id
+			 AND membership.device_id = projection.accepting_device_id
+			 AND membership.status = 'active'
+			 AND membership.membership_epoch >= scope.membership_epoch
+			 AND COALESCE(membership.group_id, scope.group_id) = projection.group_id
+			 WHERE projection.recipient_identity_id = ?
+			  AND projection.status = 'active'
+			  AND projection.revoked_at IS NULL
+			 ORDER BY projection.canonical_project_identity, projection.source_operation_id`,
+		)
+		.all(identityId) as Array<{
+		canonical_project_identity: string;
+		managed_scope_id: string;
+		projection_coordinator_id: string;
+		scope_coordinator_id: string | null;
+		membership_coordinator_id: string | null;
+		group_id: string;
+	}>) {
+		if (
+			row.managed_scope_id !==
+				managedProjectScopeId(row.group_id, row.canonical_project_identity) ||
+			!sameCoordinatorBoundary(
+				row.projection_coordinator_id,
+				row.scope_coordinator_id,
+				row.membership_coordinator_id ?? row.scope_coordinator_id,
+			)
+		) {
+			continue;
+		}
+		addSource(result, row.canonical_project_identity, { kind: "direct" });
+	}
+	for (const row of db
+		.prepare(
+			`SELECT mapping.workspace_identity AS canonical_project_identity, scope.scope_id,
+				scope.coordinator_id AS scope_coordinator_id, scope.group_id,
+				membership.coordinator_id AS membership_coordinator_id
+			 FROM actors actor
+			 CROSS JOIN sync_device device
+			 JOIN scope_memberships membership ON membership.device_id = device.device_id
+			  AND membership.status = 'active'
+			 JOIN replication_scopes scope ON scope.scope_id = membership.scope_id
+			  AND scope.kind = 'managed_project' AND scope.authority_type = 'coordinator'
+			  AND scope.status = 'active'
+			  AND membership.membership_epoch >= scope.membership_epoch
+			  AND COALESCE(membership.group_id, scope.group_id) = scope.group_id
+			 JOIN project_scope_mappings mapping ON mapping.scope_id = scope.scope_id
+			  AND mapping.workspace_identity IS NOT NULL
+			  AND mapping.workspace_identity = mapping.project_pattern
+			 WHERE actor.actor_id = ? AND actor.is_local = 1 AND actor.status = 'active'
+			  AND (SELECT COUNT(*) FROM actors WHERE is_local = 1 AND status = 'active') = 1
+			  AND (SELECT COUNT(*) FROM sync_device) = 1
+			 ORDER BY mapping.workspace_identity, mapping.id`,
+		)
+		.all(identityId) as Array<{
+		canonical_project_identity: string;
+		scope_id: string;
+		scope_coordinator_id: string | null;
+		membership_coordinator_id: string | null;
+		group_id: string | null;
+	}>) {
+		const groupId = String(row.group_id ?? "").trim();
+		if (
+			!groupId ||
+			row.scope_id !== managedProjectScopeId(groupId, row.canonical_project_identity) ||
+			!sameCoordinatorBoundary(
+				row.scope_coordinator_id,
+				row.membership_coordinator_id ?? row.scope_coordinator_id,
+			)
+		) {
+			continue;
+		}
 		addSource(result, row.canonical_project_identity, { kind: "direct" });
 	}
 	for (const row of db
@@ -447,11 +578,12 @@ function buildPreview(
 	}
 	const projects = [...sources.entries()]
 		.map(([projectId, projectSources]): RecipientPolicyOnboardingProjectV1 => {
-			const fact = facts.get(projectId) ?? {
-				canonicalProjectIdentity: projectId,
-				displayName: projectId,
-				existingMemoryCount: 0,
-			};
+			const fact = facts.get(projectId) ??
+				managedProjectFact(db, projectId) ?? {
+					canonicalProjectIdentity: projectId,
+					displayName: projectId,
+					existingMemoryCount: 0,
+				};
 			return {
 				...fact,
 				futureMemoriesShared: true,

@@ -36,6 +36,7 @@ import {
 	type InMemoryRequestRateLimiter,
 } from "./request-rate-limit.js";
 import { explainScopeMembershipRevocation } from "./scope-membership-semantics.js";
+import { acceptedProjectIntentDigest, parseAcceptedProjectIntent } from "./share-operation.js";
 import { DEFAULT_TIME_WINDOW_S } from "./sync-auth-constants.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
@@ -337,29 +338,37 @@ export function createCoordinatorApp(
 		);
 	}
 
-	function storedProjectIntent(value: string | null | undefined): Array<Record<string, unknown>> {
+	function storedProjectIntent(value: string | null | undefined) {
 		try {
-			const parsed: unknown = JSON.parse(value ?? "");
-			if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 100) {
-				throw new Error("operation_intent_invalid");
-			}
-			return parsed.map((item) => {
-				if (!item || typeof item !== "object" || Array.isArray(item)) {
-					throw new Error("operation_intent_invalid");
-				}
-				const record = item as Record<string, unknown>;
-				if (
-					!String(record.canonical_identity ?? "").trim() ||
-					!String(record.display_name ?? "").trim() ||
-					!Number.isSafeInteger(record.existing_memory_count)
-				) {
-					throw new Error("operation_intent_invalid");
-				}
-				return record;
-			});
+			return parseAcceptedProjectIntent(JSON.parse(value ?? ""));
 		} catch {
 			throw new Error("operation_intent_invalid");
 		}
+	}
+
+	function buildAcceptedProjectIntent(invite: {
+		operation_id?: string | null;
+		reviewed_project_set_digest?: string | null;
+		project_intent_json?: string | null;
+	}) {
+		const operationId = String(invite.operation_id ?? "").trim();
+		const reviewedProjectSetDigest = String(invite.reviewed_project_set_digest ?? "").trim();
+		if (
+			!/^share_[a-f0-9]{40}$/u.test(operationId) ||
+			!/^[a-f0-9]{64}$/u.test(reviewedProjectSetDigest)
+		) {
+			throw new Error("operation_intent_invalid");
+		}
+		const projects = storedProjectIntent(invite.project_intent_json);
+		const computedDigest = acceptedProjectIntentDigest(projects);
+		if (computedDigest !== reviewedProjectSetDigest) {
+			throw new Error("operation_intent_invalid");
+		}
+		return {
+			operation_id: operationId,
+			reviewed_project_set_digest: reviewedProjectSetDigest,
+			projects,
+		};
 	}
 
 	function storedProjectSummaries(
@@ -1580,23 +1589,22 @@ export function createCoordinatorApp(
 					throw new Error("project_intent_invalid");
 				}
 				projectIntent = data.project_intent.map((item, index) => {
-					if (!item || typeof item !== "object" || Array.isArray(item)) {
+					let parsed: ReturnType<typeof parseAcceptedProjectIntent>[number] | undefined;
+					try {
+						parsed = parseAcceptedProjectIntent([item])[0];
+					} catch {
 						throw new Error("project_intent_invalid");
 					}
-					const record = item as Record<string, unknown>;
-					const canonicalIdentity = String(record.canonical_identity ?? "").trim();
 					const summary = projectSummaries?.[index];
 					if (
-						!canonicalIdentity ||
-						canonicalIdentity.length > 2048 ||
-						/[\p{Cc}\p{Cf}]/u.test(canonicalIdentity) ||
+						!parsed ||
 						!summary ||
-						record.display_name !== summary.display_name ||
-						record.existing_memory_count !== summary.existing_memory_count
+						parsed.display_name !== summary.display_name ||
+						parsed.existing_memory_count !== summary.existing_memory_count
 					) {
 						throw new Error("project_intent_invalid");
 					}
-					return { canonical_identity: canonicalIdentity, ...summary };
+					return parsed;
 				});
 				if (
 					new Set(projectIntent.map((item) => item.canonical_identity)).size !==
@@ -1803,7 +1811,7 @@ export function createCoordinatorApp(
 				(item) => item.operation_id === operationId,
 			);
 			if (!invite) return c.json({ error: "operation_not_found" }, 404);
-			let projects: Array<Record<string, unknown>>;
+			let projects: ReturnType<typeof storedProjectIntent>;
 			try {
 				projects = storedProjectIntent(invite.project_intent_json);
 			} catch {
@@ -2149,6 +2157,12 @@ export function createCoordinatorApp(
 						400,
 					);
 				}
+				let acceptedIntent: ReturnType<typeof buildAcceptedProjectIntent>;
+				try {
+					acceptedIntent = buildAcceptedProjectIntent(invite);
+				} catch {
+					return c.json({ error: "operation_intent_invalid" }, 409);
+				}
 				try {
 					const acceptance = await store.consumeProjectInvite({
 						token,
@@ -2176,6 +2190,7 @@ export function createCoordinatorApp(
 									display_name: acceptance.seed_enrollment.display_name,
 								}
 							: null,
+						accepted_project_intent: acceptedIntent,
 					});
 				} catch (error) {
 					const code = error instanceof Error ? error.message : "invite_invalid";

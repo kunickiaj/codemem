@@ -103,6 +103,28 @@ CREATE TABLE IF NOT EXISTS recipient_policy_deny_overlays (
 CREATE INDEX IF NOT EXISTS idx_recipient_policy_deny_overlays_scope_device
 	ON recipient_policy_deny_overlays(scope_id, device_id);
 
+CREATE TABLE IF NOT EXISTS recipient_managed_project_projections (
+	canonical_project_identity TEXT NOT NULL,
+	display_name TEXT NOT NULL,
+	managed_scope_id TEXT NOT NULL,
+	coordinator_id TEXT NOT NULL,
+	group_id TEXT NOT NULL,
+	recipient_identity_id TEXT NOT NULL,
+	accepting_device_id TEXT NOT NULL,
+	source_operation_id TEXT NOT NULL,
+	reviewed_project_set_digest TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT 'active',
+	accepted_at TEXT NOT NULL,
+	revoked_at TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (source_operation_id, canonical_project_identity)
+);
+CREATE INDEX IF NOT EXISTS idx_recipient_managed_projects_identity_status
+	ON recipient_managed_project_projections(recipient_identity_id, status);
+CREATE INDEX IF NOT EXISTS idx_recipient_managed_projects_scope_authority
+	ON recipient_managed_project_projections(managed_scope_id, coordinator_id, group_id, status);
+
 CREATE TABLE IF NOT EXISTS share_operations (
 	operation_id TEXT PRIMARY KEY NOT NULL,
 	state TEXT NOT NULL,

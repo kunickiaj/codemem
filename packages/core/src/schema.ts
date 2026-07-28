@@ -872,6 +872,46 @@ export const projectRecipients = sqliteTable(
 export type ProjectRecipient = typeof projectRecipients.$inferSelect;
 export type NewProjectRecipient = typeof projectRecipients.$inferInsert;
 
+export const recipientManagedProjectProjections = sqliteTable(
+	"recipient_managed_project_projections",
+	{
+		canonical_project_identity: text("canonical_project_identity").notNull(),
+		display_name: text("display_name").notNull(),
+		managed_scope_id: text("managed_scope_id").notNull(),
+		coordinator_id: text("coordinator_id").notNull(),
+		group_id: text("group_id").notNull(),
+		recipient_identity_id: text("recipient_identity_id").notNull(),
+		accepting_device_id: text("accepting_device_id").notNull(),
+		source_operation_id: text("source_operation_id").notNull(),
+		reviewed_project_set_digest: text("reviewed_project_set_digest").notNull(),
+		status: text("status").notNull().default("active"),
+		accepted_at: text("accepted_at").notNull(),
+		revoked_at: text("revoked_at"),
+		created_at: text("created_at").notNull(),
+		updated_at: text("updated_at").notNull(),
+	},
+	(table) => [
+		primaryKey({
+			columns: [table.source_operation_id, table.canonical_project_identity],
+		}),
+		index("idx_recipient_managed_projects_identity_status").on(
+			table.recipient_identity_id,
+			table.status,
+		),
+		index("idx_recipient_managed_projects_scope_authority").on(
+			table.managed_scope_id,
+			table.coordinator_id,
+			table.group_id,
+			table.status,
+		),
+	],
+);
+
+export type RecipientManagedProjectProjection =
+	typeof recipientManagedProjectProjections.$inferSelect;
+export type NewRecipientManagedProjectProjection =
+	typeof recipientManagedProjectProjections.$inferInsert;
+
 export const recipientPolicyAuthorityStates = sqliteTable("recipient_policy_authority_states", {
 	canonical_project_identity: text("canonical_project_identity").primaryKey(),
 	authority_state: text("authority_state").notNull().default("legacy"),
@@ -997,6 +1037,7 @@ export const schema = {
 	policyTeamMemberships,
 	identityDevices,
 	projectRecipients,
+	recipientManagedProjectProjections,
 	recipientPolicyAuthorityStates,
 	recipientPolicyReconciliationSteps,
 	recipientPolicyDenyOverlays,

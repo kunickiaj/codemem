@@ -12,6 +12,7 @@ import { waitFor } from "../lib/wait.js";
 
 const POLICY_SELECTED_PROJECT = "https://example.invalid/acme/policy-selected.git";
 const POLICY_UNRELATED_PROJECT = "https://example.invalid/acme/policy-unrelated.git";
+const RECIPIENT_LOCAL_EXCLUDED_PROJECTS = ["project-sharing-source", "shared:default"];
 
 interface FixtureSummary {
 	device_id: string;
@@ -612,12 +613,47 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		{ description: "add-device inviter presence", timeoutMs: 120_000, intervalMs: 2_000 },
 	);
 	const addDevicePreview = await request<{
-		preview: { reviewedOnboardingDigest: string; projects: unknown[] };
+		preview: {
+			reviewedOnboardingDigest: string;
+			projects: Array<{
+				canonicalProjectIdentity: string;
+				sources: Array<{ kind: "direct" } | { kind: "team"; teamId: string }>;
+			}>;
+			excludedProjects: Array<{ canonicalProjectIdentity: string }>;
+		};
 	}>(ctx, "peer-b", "/api/sync/recipient-policy/v1/invites/preview", "39-add-device-preview", {
 		kind: "add_device",
 		target_identity_id: recipientIdentityId,
 	});
 	assert(addDevicePreview.status === 200, "add-device preview failed");
+	const reviewedProjectIdentities = addDevicePreview.body.preview.projects.map(
+		(project) => project.canonicalProjectIdentity,
+	);
+	const excludedProjectIdentities = addDevicePreview.body.preview.excludedProjects.map(
+		(project) => project.canonicalProjectIdentity,
+	);
+	assert(
+		JSON.stringify(reviewedProjectIdentities) === JSON.stringify([selected.workspace_identity]),
+		"add-device preview did not contain exactly the directly inherited selected canonical Project",
+	);
+	const reviewedSelectedProject = addDevicePreview.body.preview.projects[0];
+	assert(
+		JSON.stringify(reviewedSelectedProject?.sources) === JSON.stringify([{ kind: "direct" }]),
+		"selected canonical Project was not sourced only from direct recipient inheritance",
+	);
+	assert(
+		!reviewedProjectIdentities.includes(unrelated.workspace_identity),
+		"unrelated canonical Project appeared in the reviewed add-device selection",
+	);
+	assert(
+		JSON.stringify(excludedProjectIdentities) ===
+			JSON.stringify(RECIPIENT_LOCAL_EXCLUDED_PROJECTS),
+		"add-device preview did not preserve the exact recipient-local Project exclusions",
+	);
+	assert(
+		!excludedProjectIdentities.includes(selected.workspace_identity),
+		"selected canonical Project was incorrectly excluded from add-device inheritance",
+	);
 	const addDeviceCreated = await request<{
 		invite: { encoded: string };
 	}>(ctx, "peer-b", "/api/sync/recipient-policy/v1/invites", "39-add-device-create", {
@@ -630,12 +666,56 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 	startServer(ctx, "peer-c", "39-start-peer-c-for-add-device");
 	await waitForServer(ctx, "peer-c", "39-peer-c-ready-for-add-device");
 	const addDeviceInspected = await request<{
-		onboarding: { reviewedOnboardingDigest: string };
+		reviewed_intent: {
+			projects: Array<{
+				canonicalProjectIdentity: string;
+				sources: Array<{ kind: "direct" } | { kind: "team"; teamId: string }>;
+			}>;
+			excludedProjects: Array<{ canonicalProjectIdentity: string }>;
+		};
+		onboarding: {
+			reviewedOnboardingDigest: string;
+			projects: Array<{ canonicalProjectIdentity: string }>;
+			excludedProjects: Array<{ canonicalProjectIdentity: string }>;
+		};
 	}>(ctx, "peer-c", "/api/sync/invites/inspect", "39-add-device-inspect", {
 		invite: addDeviceCreated.body.invite.encoded,
 		device_name: "Brian's Second Mac",
 	});
 	assert(addDeviceInspected.status === 200, "add-device invitation inspection failed");
+	const inspectedProjectIdentities = addDeviceInspected.body.onboarding.projects.map(
+		(project) => project.canonicalProjectIdentity,
+	);
+	const inspectedExcludedProjectIdentities = addDeviceInspected.body.onboarding.excludedProjects.map(
+		(project) => project.canonicalProjectIdentity,
+	);
+	assert(
+		JSON.stringify(inspectedProjectIdentities) === JSON.stringify(reviewedProjectIdentities),
+		"peer-c inspection changed the exact reviewed canonical Project selection",
+	);
+	assert(
+		JSON.stringify(inspectedExcludedProjectIdentities) === JSON.stringify(excludedProjectIdentities),
+		"peer-c inspection changed the exact excluded canonical Project identities",
+	);
+	const storedReviewedProjectIdentities = addDeviceInspected.body.reviewed_intent.projects.map(
+		(project) => project.canonicalProjectIdentity,
+	);
+	const storedExcludedProjectIdentities = addDeviceInspected.body.reviewed_intent.excludedProjects.map(
+		(project) => project.canonicalProjectIdentity,
+	);
+	assert(
+		JSON.stringify(storedReviewedProjectIdentities) === JSON.stringify(reviewedProjectIdentities),
+		"coordinator-stored reviewed intent changed the selected canonical Project before acceptance",
+	);
+	assert(
+		JSON.stringify(addDeviceInspected.body.reviewed_intent.projects[0]?.sources) ===
+			JSON.stringify([{ kind: "direct" }]),
+		"coordinator-stored reviewed intent did not preserve direct recipient inheritance",
+	);
+	assert(
+		JSON.stringify(storedExcludedProjectIdentities) === JSON.stringify(excludedProjectIdentities),
+		"coordinator-stored reviewed intent changed the excluded canonical identities before acceptance",
+	);
 	const addDeviceAccepted = await request<Record<string, unknown>>(
 		ctx,
 		"peer-c",

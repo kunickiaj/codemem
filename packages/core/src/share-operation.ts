@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
 import { commitDirectProjectSharePolicyInTransaction } from "./recipient-policy-onboarding.js";
+import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 export const SHARE_HISTORY_POLICY = "existing_and_future" as const;
@@ -77,6 +78,24 @@ export function shareProjectSetDigest(projects: ShareProjectIntent[]): string {
 	return digest({ v: 1, historyPolicy: SHARE_HISTORY_POLICY, projects: reviewedProjects });
 }
 
+export function acceptedProjectIntentDigest(projects: AcceptedProjectIntent[]): string {
+	return shareProjectSetDigest(
+		projects.map((project) => ({
+			canonicalIdentity: project.canonical_identity,
+			displayName: project.display_name,
+			identitySource: "coordinator_acceptance",
+			existingMemoryCount: project.existing_memory_count,
+		})),
+	);
+}
+
+export function managedProjectScopeId(
+	coordinatorGroupId: string,
+	canonicalProjectIdentity: string,
+): string {
+	return `managed-project:${digest([coordinatorGroupId, canonicalProjectIdentity])}`;
+}
+
 function effect(operationId: string, step: string, identity?: string): string {
 	return `share-effect:${digest([operationId, step, identity ?? null])}`;
 }
@@ -112,7 +131,7 @@ function projectSteps(
 	// Membership epoch 1 is the initial grant identity for a new managed boundary.
 	const initialMembershipEpoch = 1;
 	return projects.flatMap((project) => {
-		const boundaryId = `managed-project:${digest([coordinatorGroupId, project.canonicalIdentity])}`;
+		const boundaryId = managedProjectScopeId(coordinatorGroupId, project.canonicalIdentity);
 		const grants = inviterDeviceIds.map((deviceId) =>
 			step(
 				operationId,
@@ -487,12 +506,29 @@ export function parseAcceptedProjectIntent(value: unknown): AcceptedProjectInten
 			throw new Error("operation_intent_invalid");
 		}
 		const record = item as Record<string, unknown>;
-		const canonicalIdentity = String(record.canonical_identity ?? "").trim();
-		const displayName = String(record.display_name ?? "").trim();
+		if (typeof record.canonical_identity !== "string" || typeof record.display_name !== "string") {
+			throw new Error("operation_intent_invalid");
+		}
+		const canonicalIdentityRaw = record.canonical_identity;
+		const canonicalIdentity = canonicalIdentityRaw.trim();
+		const displayNameRaw = record.display_name;
+		let displayName: string;
+		try {
+			displayName = normalizeIdentityDisplayName(displayNameRaw, "project_name");
+		} catch {
+			throw new Error("operation_intent_invalid");
+		}
 		const count = record.existing_memory_count;
+		const canonicalIdentityRoundTrip = canonicalWorkspaceIdentity({
+			gitRemote: canonicalIdentity,
+		}).value;
 		if (
 			!canonicalIdentity ||
-			!displayName ||
+			canonicalIdentity !== canonicalIdentityRaw ||
+			canonicalIdentity.length > 2048 ||
+			canonicalIdentity.startsWith("unmapped:") ||
+			canonicalIdentityRoundTrip !== canonicalIdentity ||
+			displayName !== displayNameRaw ||
 			!Number.isSafeInteger(count) ||
 			Number(count) < 0 ||
 			/[\p{Cc}\p{Cf}]/u.test(canonicalIdentity) ||

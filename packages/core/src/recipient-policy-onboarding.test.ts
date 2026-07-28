@@ -11,6 +11,7 @@ import {
 	type RecipientPolicyReviewedIntentPreviewRequestV1,
 } from "./recipient-policy-onboarding.js";
 import type { RecipientReviewedIntentV1 } from "./recipient-reviewed-intent.js";
+import { managedProjectScopeId } from "./share-operation.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { initTestSchema } from "./test-utils.js";
 
@@ -102,6 +103,96 @@ function insertRecipient(
 		recipientId,
 		`revision-${projectId}-${recipientKind}-${recipientId}`,
 		`idempotency-${projectId}-${recipientKind}-${recipientId}`,
+		NOW,
+		NOW,
+	);
+}
+
+function insertRecipientManagedProjectProjection(
+	db: InstanceType<typeof Database>,
+	overrides: {
+		identityId?: string;
+		projectionStatus?: string;
+		membershipStatus?: string;
+		membershipEpoch?: number;
+		managedScopeId?: string;
+		scopeCoordinatorId?: string;
+	} = {},
+): void {
+	const groupId = "coordinator-a";
+	const coordinatorId = "https://coord.example.test";
+	const managedScopeId = overrides.managedScopeId ?? managedProjectScopeId(groupId, PROJECT_A);
+	db.prepare(`INSERT INTO recipient_managed_project_projections(
+		canonical_project_identity, display_name, managed_scope_id, coordinator_id, group_id,
+		recipient_identity_id, accepting_device_id, source_operation_id,
+		reviewed_project_set_digest, status, accepted_at, created_at, updated_at
+	 ) VALUES (?, 'alpha', ?, ?, ?, ?, 'device-accepting', ?, ?, ?, ?, ?, ?)`).run(
+		PROJECT_A,
+		managedScopeId,
+		coordinatorId,
+		groupId,
+		overrides.identityId ?? "identity-a",
+		`share_${"a".repeat(40)}`,
+		"b".repeat(64),
+		overrides.projectionStatus ?? "active",
+		NOW,
+		NOW,
+		NOW,
+	);
+	db.prepare(`INSERT INTO replication_scopes(
+		scope_id, label, kind, authority_type, coordinator_id, group_id,
+		membership_epoch, status, created_at, updated_at
+	 ) VALUES (?, 'alpha', 'managed_project', 'coordinator', ?, ?, 1, 'active', ?, ?)`).run(
+		managedScopeId,
+		overrides.scopeCoordinatorId ?? coordinatorId,
+		groupId,
+		NOW,
+		NOW,
+	);
+	db.prepare(`INSERT INTO scope_memberships(
+		scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id, updated_at
+	 ) VALUES (?, 'device-accepting', 'member', ?, ?, ?, ?, ?)`).run(
+		managedScopeId,
+		overrides.membershipStatus ?? "active",
+		overrides.membershipEpoch ?? 1,
+		overrides.scopeCoordinatorId ?? coordinatorId,
+		groupId,
+		NOW,
+	);
+}
+
+function insertLegacyManagedProjectAccess(db: InstanceType<typeof Database>): void {
+	const groupId = "coordinator-a";
+	const coordinatorId = "https://coord.example.test";
+	const managedScopeId = managedProjectScopeId(groupId, PROJECT_A);
+	db.prepare(
+		`INSERT INTO sync_device(device_id, public_key, fingerprint, created_at)
+		 VALUES ('device-legacy', 'public-key', 'fingerprint', ?)`,
+	).run(NOW);
+	db.prepare(`INSERT INTO replication_scopes(
+		scope_id, label, kind, authority_type, coordinator_id, group_id,
+		membership_epoch, status, created_at, updated_at
+	 ) VALUES (?, 'alpha', 'managed_project', 'coordinator', ?, ?, 1, 'active', ?, ?)`).run(
+		managedScopeId,
+		coordinatorId,
+		groupId,
+		NOW,
+		NOW,
+	);
+	db.prepare(`INSERT INTO scope_memberships(
+		scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id, updated_at
+	 ) VALUES (?, 'device-legacy', 'member', 'active', 1, ?, ?, ?)`).run(
+		managedScopeId,
+		`${coordinatorId}/`,
+		groupId,
+		NOW,
+	);
+	db.prepare(`INSERT INTO project_scope_mappings(
+		workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+	 ) VALUES (?, ?, ?, 100, 'managed-project', ?, ?)`).run(
+		PROJECT_A,
+		PROJECT_A,
+		managedScopeId,
 		NOW,
 		NOW,
 	);
@@ -239,6 +330,142 @@ describe("recipient-policy onboarding", () => {
 			});
 			expect(fresh.prepare("SELECT COUNT(*) FROM actors").pluck().get()).toBe(0);
 			expect(fresh.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+		} finally {
+			fresh.close();
+		}
+	});
+
+	it("includes a zero-memory recipient projection without owner-policy rows", () => {
+		const fresh = new Database(":memory:");
+		initTestSchema(fresh);
+		try {
+			insertActor(fresh, "identity-a", "Ada", true);
+			insertRecipientManagedProjectProjection(fresh);
+
+			const preview = previewRecipientPolicyOnboarding(fresh, baseRequest());
+
+			expect(preview.projects).toEqual([
+				expect.objectContaining({
+					canonicalProjectIdentity: PROJECT_A,
+					displayName: "alpha",
+					existingMemoryCount: 0,
+					sources: [{ kind: "direct" }],
+				}),
+			]);
+			expect(fresh.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
+			expect(fresh.prepare("SELECT COUNT(*) FROM policy_team_memberships").pluck().get()).toBe(0);
+		} finally {
+			fresh.close();
+		}
+	});
+
+	it("matches normalized coordinator URLs for recipient projections", () => {
+		const fresh = new Database(":memory:");
+		initTestSchema(fresh);
+		try {
+			insertActor(fresh, "identity-a", "Ada", true);
+			insertRecipientManagedProjectProjection(fresh, {
+				scopeCoordinatorId: "https://coord.example.test/",
+			});
+			fresh.prepare("UPDATE scope_memberships SET coordinator_id = NULL").run();
+
+			expect(previewRecipientPolicyOnboarding(fresh, baseRequest()).projects).toEqual([
+				expect.objectContaining({ canonicalProjectIdentity: PROJECT_A }),
+			]);
+		} finally {
+			fresh.close();
+		}
+	});
+
+	it.each([
+		[
+			"non-local Identity",
+			(database: InstanceType<typeof Database>) =>
+				database.prepare("UPDATE actors SET is_local = 0 WHERE actor_id = 'identity-a'").run(),
+		],
+		[
+			"revoked membership",
+			(database: InstanceType<typeof Database>) =>
+				database.prepare("UPDATE scope_memberships SET status = 'revoked'").run(),
+		],
+		[
+			"wrong coordinator boundary",
+			(database: InstanceType<typeof Database>) =>
+				database
+					.prepare("UPDATE scope_memberships SET coordinator_id = 'https://other.example.test'")
+					.run(),
+		],
+		[
+			"ambiguous local device state",
+			(database: InstanceType<typeof Database>) =>
+				database
+					.prepare(
+						`INSERT INTO sync_device(device_id, public_key, fingerprint, created_at)
+						 VALUES ('device-other', 'other-key', 'other-fingerprint', ?)`,
+					)
+					.run(NOW),
+		],
+		[
+			"ambiguous local Identity state",
+			(database: InstanceType<typeof Database>) =>
+				insertActor(database, "identity-other", "Other", true),
+		],
+	] as const)("rejects pre-projection evidence with %s", (_label, mutate) => {
+		const fresh = new Database(":memory:");
+		initTestSchema(fresh);
+		try {
+			insertActor(fresh, "identity-a", "Ada", true);
+			insertLegacyManagedProjectAccess(fresh);
+			mutate(fresh);
+
+			expect(previewRecipientPolicyOnboarding(fresh, baseRequest()).projects).toEqual([]);
+		} finally {
+			fresh.close();
+		}
+	});
+
+	it("uses exact active managed-scope evidence for pre-projection recipients", () => {
+		const fresh = new Database(":memory:");
+		initTestSchema(fresh);
+		try {
+			insertActor(fresh, "identity-a", "Ada", true);
+			insertLegacyManagedProjectAccess(fresh);
+
+			expect(previewRecipientPolicyOnboarding(fresh, baseRequest()).projects).toEqual([
+				expect.objectContaining({
+					canonicalProjectIdentity: PROJECT_A,
+					displayName: "alpha",
+					sources: [{ kind: "direct" }],
+				}),
+			]);
+			expect(
+				fresh.prepare("SELECT COUNT(*) FROM recipient_managed_project_projections").pluck().get(),
+			).toBe(0);
+		} finally {
+			fresh.close();
+		}
+	});
+
+	it.each([
+		["wrong Identity", { identityId: "identity-b" }],
+		["non-deterministic boundary", { managedScopeId: "managed-project:wrong" }],
+		["revoked projection", { projectionStatus: "revoked" }],
+		["revoked accepting-device membership", { membershipStatus: "revoked" }],
+		["stale accepting-device membership", { membershipEpoch: 0 }],
+		["wrong coordinator boundary", { scopeCoordinatorId: "https://other.example.test" }],
+	] as const)("excludes a projected Project with %s", (_label, overrides) => {
+		const fresh = new Database(":memory:");
+		initTestSchema(fresh);
+		try {
+			insertActor(fresh, "identity-a", "Ada", true);
+			insertRecipientManagedProjectProjection(fresh, overrides);
+
+			const preview = previewRecipientPolicyOnboarding(fresh, baseRequest());
+
+			expect(preview.projects).toEqual([]);
+			expect(preview.excludedProjects).toEqual([
+				expect.objectContaining({ canonicalProjectIdentity: PROJECT_A, existingMemoryCount: 0 }),
+			]);
 		} finally {
 			fresh.close();
 		}

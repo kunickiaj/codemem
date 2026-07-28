@@ -55,6 +55,12 @@ import {
 	type RecipientReviewedIntentV1,
 	verifyRecipientReviewedIntent,
 } from "./recipient-reviewed-intent.js";
+import {
+	type AcceptedProjectIntent,
+	acceptedProjectIntentDigest,
+	managedProjectScopeId,
+	parseAcceptedProjectIntent,
+} from "./share-operation.js";
 import { buildAuthHeaders } from "./sync-auth.js";
 import { updatePeerAddresses } from "./sync-discovery.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -1606,6 +1612,14 @@ interface ProjectInviteTrustResult {
 	};
 }
 
+interface ValidatedAcceptedProjectIntent {
+	operationId: string;
+	reviewedProjectSetDigest: string;
+	coordinatorId: string;
+	groupId: string;
+	projects: Array<AcceptedProjectIntent & { managedScopeId: string }>;
+}
+
 export function isPeerTrustBindingCompatible(
 	db: ReturnType<typeof connect>,
 	deviceId: string,
@@ -1673,12 +1687,63 @@ function parseProjectInviteTrust(
 	};
 }
 
+function validateAcceptedProjectIntent(opts: {
+	payload: InvitePayload;
+	response: Record<string, unknown> | null;
+	coordinatorUrl: string;
+}): ValidatedAcceptedProjectIntent | null {
+	if (!Object.hasOwn(opts.response ?? {}, "accepted_project_intent")) return null;
+	const value = opts.response?.accepted_project_intent;
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("accepted_project_intent_invalid");
+	}
+	const record = value as Record<string, unknown>;
+	const operationId = String(record.operation_id ?? "").trim();
+	const reviewedProjectSetDigest = String(record.reviewed_project_set_digest ?? "").trim();
+	const payloadOperationId = String(opts.payload.operation_id ?? "").trim();
+	const responseOperationId = String(opts.response?.operation_id ?? "").trim();
+	const groupId = String(opts.payload.group_id ?? "").trim();
+	const responseGroupId = String(opts.response?.group_id ?? "").trim();
+	if (
+		!/^share_[a-f0-9]{40}$/u.test(operationId) ||
+		operationId !== payloadOperationId ||
+		operationId !== responseOperationId ||
+		!groupId ||
+		groupId !== responseGroupId ||
+		!/^[a-f0-9]{64}$/u.test(reviewedProjectSetDigest)
+	) {
+		throw new Error("accepted_project_intent_mismatch");
+	}
+	let projects: AcceptedProjectIntent[];
+	try {
+		projects = parseAcceptedProjectIntent(record.projects);
+	} catch {
+		throw new Error("accepted_project_intent_invalid");
+	}
+	const computedDigest = acceptedProjectIntentDigest(projects);
+	if (computedDigest !== reviewedProjectSetDigest) {
+		throw new Error("accepted_project_intent_mismatch");
+	}
+	return {
+		operationId,
+		reviewedProjectSetDigest,
+		coordinatorId: buildBaseUrl(opts.coordinatorUrl),
+		groupId,
+		projects: projects.map((project) => ({
+			...project,
+			managedScopeId: managedProjectScopeId(groupId, project.canonical_identity),
+		})),
+	};
+}
+
 function persistProjectInviteTrust(opts: {
 	dbPath: string;
 	recipientActorId: string;
 	recipientDisplayName: string;
+	acceptingDeviceId: string;
 	groupId: string;
 	response: Record<string, unknown> | null;
+	acceptedIntent: ValidatedAcceptedProjectIntent | null;
 }): void {
 	const trust = parseProjectInviteTrust(opts.response);
 	const conn = connect(opts.dbPath);
@@ -1691,8 +1756,8 @@ function persistProjectInviteTrust(opts: {
 				ON CONFLICT(actor_id) DO UPDATE SET display_name = excluded.display_name,
 				is_local = 1, status = 'active', merged_into_actor_id = NULL, updated_at = excluded.updated_at`)
 				.run(opts.recipientActorId, opts.recipientDisplayName, now, now);
-			if (!trust.inviterPeer) return;
 			if (
+				trust.inviterPeer &&
 				!isPeerTrustBindingCompatible(
 					conn,
 					trust.inviterPeer.deviceId,
@@ -1702,16 +1767,71 @@ function persistProjectInviteTrust(opts: {
 			) {
 				throw new Error("inviter_peer_trust_conflict");
 			}
-			updatePeerAddresses(conn, trust.inviterPeer.deviceId, [], {
-				pinnedFingerprint: trust.inviterPeer.fingerprint,
-				publicKey: trust.inviterPeer.publicKey,
-				name: trust.inviterPeer.displayName,
-				replaceTrust: true,
-			});
-			conn
-				.prepare(`UPDATE sync_peers SET pending_bootstrap_grant_id = ?,
-				discovered_via_group_id = ? WHERE peer_device_id = ?`)
-				.run(trust.bootstrapGrantId, opts.groupId, trust.inviterPeer.deviceId);
+			if (trust.inviterPeer) {
+				updatePeerAddresses(conn, trust.inviterPeer.deviceId, [], {
+					pinnedFingerprint: trust.inviterPeer.fingerprint,
+					publicKey: trust.inviterPeer.publicKey,
+					name: trust.inviterPeer.displayName,
+					replaceTrust: true,
+				});
+				conn
+					.prepare(`UPDATE sync_peers SET pending_bootstrap_grant_id = ?,
+					discovered_via_group_id = ? WHERE peer_device_id = ?`)
+					.run(trust.bootstrapGrantId, opts.groupId, trust.inviterPeer.deviceId);
+			}
+			const intent = opts.acceptedIntent;
+			if (!intent) return;
+			for (const project of intent.projects) {
+				const existing = conn
+					.prepare(`SELECT display_name, managed_scope_id, coordinator_id, group_id,
+						recipient_identity_id, accepting_device_id, reviewed_project_set_digest
+					 FROM recipient_managed_project_projections
+					 WHERE source_operation_id = ? AND canonical_project_identity = ?`)
+					.get(intent.operationId, project.canonical_identity) as
+					| {
+							display_name: string;
+							managed_scope_id: string;
+							coordinator_id: string;
+							group_id: string;
+							recipient_identity_id: string;
+							accepting_device_id: string;
+							reviewed_project_set_digest: string;
+					  }
+					| undefined;
+				if (
+					existing &&
+					(existing.display_name !== project.display_name ||
+						existing.managed_scope_id !== project.managedScopeId ||
+						existing.coordinator_id !== intent.coordinatorId ||
+						existing.group_id !== intent.groupId ||
+						existing.recipient_identity_id !== opts.recipientActorId ||
+						existing.accepting_device_id !== opts.acceptingDeviceId ||
+						existing.reviewed_project_set_digest !== intent.reviewedProjectSetDigest)
+				) {
+					throw new Error("accepted_project_projection_conflict");
+				}
+				if (existing) continue;
+				conn
+					.prepare(`INSERT INTO recipient_managed_project_projections(
+					canonical_project_identity, display_name, managed_scope_id, coordinator_id,
+					group_id, recipient_identity_id, accepting_device_id, source_operation_id,
+					reviewed_project_set_digest, status, accepted_at, revoked_at, created_at, updated_at
+				 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?)`)
+					.run(
+						project.canonical_identity,
+						project.display_name,
+						project.managedScopeId,
+						intent.coordinatorId,
+						intent.groupId,
+						opts.recipientActorId,
+						opts.acceptingDeviceId,
+						intent.operationId,
+						intent.reviewedProjectSetDigest,
+						now,
+						now,
+						now,
+					);
+			}
 		})();
 	} finally {
 		conn.close();
@@ -2085,13 +2205,20 @@ export async function coordinatorImportInviteAction(opts: {
 		}
 		throw new Error(`Invite import failed (${status}): ${detail}`);
 	}
+	// A successful consume is trusted coordinator state; malformed authority must fail closed,
+	// not be silently downgraded into an invite without its managed-Project projection.
+	const acceptedProjectIntent = projectInvite
+		? validateAcceptedProjectIntent({ payload, response, coordinatorUrl })
+		: null;
 	if (projectInvite) {
 		persistProjectInviteTrust({
 			dbPath: resolvedDbPath,
 			recipientActorId,
 			recipientDisplayName,
+			acceptingDeviceId: deviceId,
 			groupId: String(payload.group_id),
 			response,
+			acceptedIntent: acceptedProjectIntent,
 		});
 	}
 	let persistedRecipientDisplayName = recipientDisplayName;

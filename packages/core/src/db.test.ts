@@ -137,6 +137,9 @@ describe("connect", () => {
 		expect(tableExists(db, "recipient_policy_reconciliation_steps")).toBe(true);
 		expect(tableExists(db, "recipient_policy_deny_overlays")).toBe(true);
 		expect(tableExists(db, "coordinator_enrollment_reconciliation_issues")).toBe(true);
+		expect(tableExists(db, "recipient_managed_project_projections")).toBe(true);
+		expect(hasIndex(db, "idx_recipient_managed_projects_identity_status")).toBe(true);
+		expect(hasIndex(db, "idx_recipient_managed_projects_scope_authority")).toBe(true);
 		expect(columnExists(db, "memory_items", "scope_id")).toBe(true);
 		expect(columnExists(db, "replication_ops", "scope_id")).toBe(true);
 		expect(hasIndex(db, "idx_memory_items_origin_device_active")).toBe(true);
@@ -1062,6 +1065,7 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 			"policy_team_memberships",
 			"identity_devices",
 			"project_recipients",
+			"recipient_managed_project_projections",
 			"recipient_policy_authority_states",
 			"recipient_policy_reconciliation_steps",
 			"recipient_policy_deny_overlays",
@@ -1069,6 +1073,9 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 			expect(tableExists(db, table)).toBe(true);
 		}
 		expect(tableExists(db, "identities")).toBe(false);
+		expect(
+			db.prepare("SELECT COUNT(*) FROM recipient_managed_project_projections").pluck().get(),
+		).toBe(0);
 		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
 	});
 
@@ -1099,6 +1106,7 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 			"policy_team_memberships",
 			"identity_devices",
 			"project_recipients",
+			"recipient_managed_project_projections",
 			"recipient_policy_authority_states",
 			"recipient_policy_reconciliation_steps",
 			"recipient_policy_deny_overlays",
@@ -1117,6 +1125,8 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		expect(hasIndex(previous, "idx_share_operations_pending_person_operation")).toBe(true);
 		expect(hasIndex(previous, "idx_coordinator_enrollment_issues_boundary_status")).toBe(true);
 		expect(hasIndex(previous, "idx_coordinator_enrollment_issues_status_recent")).toBe(true);
+		expect(hasIndex(previous, "idx_recipient_managed_projects_identity_status")).toBe(true);
+		expect(hasIndex(previous, "idx_recipient_managed_projects_scope_authority")).toBe(true);
 		expect(appliedSchemaVersion(previous)).toBe(SCHEMA_VERSION);
 		previous
 			.prepare(`INSERT INTO coordinator_enrollment_reconciliation_issues(
@@ -1151,6 +1161,30 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		).toBe(1);
 		expect(appliedSchemaVersion(reopened)).toBe(SCHEMA_VERSION);
 		reopened.close();
+		db = connect(join(tmpDir, "replacement.sqlite"));
+	});
+
+	it("upgrades a schema-v14 marker before using managed Project projections", () => {
+		db.close();
+		const previous = new BetterSqlite3(join(tmpDir, "schema-v14-projection.sqlite"));
+		previous.exec(`
+			PRAGMA user_version = 14;
+			CREATE TABLE schema_compat_state (
+				id INTEGER PRIMARY KEY,
+				applied_schema_version INTEGER NOT NULL,
+				applied_at TEXT NOT NULL
+			);
+			INSERT INTO schema_compat_state VALUES (1, 14, '2026-07-29T00:00:00Z');
+		`);
+
+		ensureAdditiveSchemaCompatibility(previous);
+
+		expect(tableExists(previous, "recipient_managed_project_projections")).toBe(true);
+		expect(hasIndex(previous, "idx_recipient_managed_projects_identity_status")).toBe(true);
+		expect(hasIndex(previous, "idx_recipient_managed_projects_scope_authority")).toBe(true);
+		expect(getSchemaVersion(previous)).toBe(SCHEMA_VERSION);
+		expect(appliedSchemaVersion(previous)).toBe(SCHEMA_VERSION);
+		previous.close();
 		db = connect(join(tmpDir, "replacement.sqlite"));
 	});
 

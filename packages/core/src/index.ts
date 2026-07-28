@@ -881,7 +881,9 @@ export type {
 	ShareProjectIntent,
 } from "./share-operation.js";
 export {
+	acceptedProjectIntentDigest,
 	inviteTokenDigest,
+	managedProjectScopeId,
 	normalizeTeammateName,
 	parseAcceptedProjectIntent,
 	persistShareOperation,

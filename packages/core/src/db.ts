@@ -32,7 +32,7 @@ import { canAutoBootstrapSchema, ensureSchemaBootstrapped } from "./schema-boots
 export type { DatabaseType as Database };
 
 /** Current schema version this TS runtime was built against. */
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 /**
  * Minimum schema version the TS runtime can operate with.
@@ -880,6 +880,29 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 				ON identity_devices(identity_id, status);
 			CREATE INDEX IF NOT EXISTS idx_project_recipients_project_status
 				ON project_recipients(canonical_project_identity, status);
+			CREATE TABLE IF NOT EXISTS recipient_managed_project_projections (
+				canonical_project_identity TEXT NOT NULL,
+				display_name TEXT NOT NULL,
+				managed_scope_id TEXT NOT NULL,
+				coordinator_id TEXT NOT NULL,
+				group_id TEXT NOT NULL,
+				recipient_identity_id TEXT NOT NULL,
+				accepting_device_id TEXT NOT NULL,
+				source_operation_id TEXT NOT NULL,
+				reviewed_project_set_digest TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'active',
+				accepted_at TEXT NOT NULL,
+				revoked_at TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (source_operation_id, canonical_project_identity)
+			);
+			CREATE INDEX IF NOT EXISTS idx_recipient_managed_projects_identity_status
+				ON recipient_managed_project_projections(recipient_identity_id, status);
+			CREATE INDEX IF NOT EXISTS idx_recipient_managed_projects_scope_authority
+				ON recipient_managed_project_projections(
+					managed_scope_id, coordinator_id, group_id, status
+				);
 			CREATE TABLE IF NOT EXISTS share_operations (
 				operation_id TEXT PRIMARY KEY NOT NULL,
 				state TEXT NOT NULL,
@@ -1455,6 +1478,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 			"policy_team_memberships",
 			"identity_devices",
 			"project_recipients",
+			"recipient_managed_project_projections",
 			"recipient_policy_authority_states",
 			"recipient_policy_reconciliation_steps",
 			"recipient_policy_deny_overlays",

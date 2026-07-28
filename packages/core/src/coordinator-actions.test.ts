@@ -42,6 +42,7 @@ import {
 	type RecipientReviewedIntentV1,
 	recipientReviewedIntentDigest,
 } from "./recipient-reviewed-intent.js";
+import { managedProjectScopeId, shareProjectSetDigest } from "./share-operation.js";
 import { verifySignature } from "./sync-auth.js";
 import { ensureDeviceIdentity, fingerprintPublicKey, loadPublicKey } from "./sync-identity.js";
 
@@ -155,6 +156,87 @@ describe("coordinator local admin actions", () => {
 		expect(await coordinatorListDevicesAction({ groupId: "team-a", dbPath })).toEqual([
 			expect.objectContaining({ device_id: "device-1", display_name: "Laptop" }),
 		]);
+	});
+
+	it.each([
+		"operation",
+		"group",
+		"digest",
+		"tampered_project",
+	] as const)("rejects an accepted Project intent with a %s mismatch before projection persistence", async (mismatch) => {
+		const actionDbPath = join(tmpDir, `project-accepted-${mismatch}.sqlite`);
+		const keysDir = join(tmpDir, `project-accepted-${mismatch}-keys`);
+		const configPath = join(tmpDir, `project-accepted-${mismatch}-config.json`);
+		const operationId = `share_${"9".repeat(40)}`;
+		const project = {
+			canonical_identity: "https://git.example.invalid/acme/alpha.git",
+			display_name: "alpha",
+			existing_memory_count: 1,
+		};
+		const digest = shareProjectSetDigest([
+			{
+				canonicalIdentity: project.canonical_identity,
+				displayName: project.display_name,
+				identitySource: "git_remote",
+				existingMemoryCount: project.existing_memory_count,
+			},
+		]);
+		const acceptedProjectIntent = {
+			operation_id: mismatch === "operation" ? `share_${"8".repeat(40)}` : operationId,
+			reviewed_project_set_digest: mismatch === "digest" ? "7".repeat(64) : digest,
+			projects:
+				mismatch === "tampered_project" ? [{ ...project, existing_memory_count: 2 }] : [project],
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							status: "accepted",
+							group_id: mismatch === "group" ? "team-b" : "team-a",
+							operation_id: operationId,
+							trust_state: "pending_inviter_device",
+							bootstrap_grant_id: null,
+							inviter_device: null,
+							accepted_project_intent: acceptedProjectIntent,
+						}),
+						{ status: 200 },
+					),
+			),
+		);
+		const invite = encodeInvitePayload({
+			v: 1,
+			kind: "coordinator_team_invite",
+			coordinator_url: "https://coord.example.test",
+			group_id: "team-a",
+			policy: "auto_admit",
+			token: `project-${mismatch}-token`,
+			expires_at: "2099-01-01T00:00:00.000Z",
+			team_name: "Team A",
+			operation_id: operationId,
+		});
+
+		await expect(
+			coordinatorImportInviteAction({
+				inviteValue: invite,
+				dbPath: actionDbPath,
+				keysDir,
+				configPath,
+				recipientActorId: "identity-recipient",
+				recipientDisplayName: "Recipient",
+				deviceDisplayName: "Recipient laptop",
+			}),
+		).rejects.toThrow("accepted_project_intent");
+		const db = connect(actionDbPath);
+		try {
+			expect(
+				db.prepare("SELECT COUNT(*) FROM recipient_managed_project_projections").pluck().get(),
+			).toBe(0);
+			expect(db.prepare("SELECT COUNT(*) FROM actors").pluck().get()).toBe(0);
+		} finally {
+			db.close();
+		}
 	});
 
 	it.each([
@@ -1303,12 +1385,25 @@ describe("coordinator local admin actions", () => {
 		]);
 	});
 
-	it("falls back to the local actor identity for CLI project invite imports", async () => {
+	it("falls back to the local actor identity and accepts additive accepted-intent fields", async () => {
 		const actionDbPath = join(tmpDir, "project-invite.sqlite");
 		const keysDir = join(tmpDir, "project-keys");
 		const capturedBodies: Record<string, unknown>[] = [];
 		const operationId = `share_${"a".repeat(40)}`;
 		const inviterPublicKey = "ssh-ed25519 inviter-public-key";
+		const project = {
+			canonical_identity: "https://git.example.invalid/acme/alpha.git",
+			display_name: "alpha",
+			existing_memory_count: 0,
+		};
+		const reviewedProjectSetDigest = shareProjectSetDigest([
+			{
+				canonicalIdentity: project.canonical_identity,
+				displayName: project.display_name,
+				identitySource: "git_remote",
+				existingMemoryCount: project.existing_memory_count,
+			},
+		]);
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async (_url: string, init?: RequestInit) => {
@@ -1319,6 +1414,7 @@ describe("coordinator local admin actions", () => {
 					JSON.stringify({
 						ok: true,
 						status: "accepted",
+						group_id: "team-a",
 						operation_id: operationId,
 						trust_state: "bootstrap_grant_created",
 						bootstrap_grant_id: "grant-1",
@@ -1327,6 +1423,12 @@ describe("coordinator local admin actions", () => {
 							public_key: inviterPublicKey,
 							fingerprint: fingerprintPublicKey(inviterPublicKey),
 							display_name: "Adam's Mac",
+						},
+						accepted_project_intent: {
+							operation_id: operationId,
+							reviewed_project_set_digest: reviewedProjectSetDigest,
+							projects: [{ ...project, future_project_metadata: "ignored" }],
+							future_intent_metadata: { version: 2 },
 						},
 					}),
 					{
@@ -1382,6 +1484,27 @@ describe("coordinator local admin actions", () => {
 					.prepare("SELECT display_name, is_local, status FROM actors WHERE actor_id = ?")
 					.get(body?.recipient_actor_id),
 			).toMatchObject({ is_local: 1, status: "active" });
+			expect(
+				conn
+					.prepare(`SELECT canonical_project_identity, display_name, managed_scope_id,
+					coordinator_id, group_id, recipient_identity_id, accepting_device_id,
+					source_operation_id, reviewed_project_set_digest, status
+				 FROM recipient_managed_project_projections`)
+					.get(),
+			).toEqual({
+				canonical_project_identity: project.canonical_identity,
+				display_name: project.display_name,
+				managed_scope_id: managedProjectScopeId("team-a", project.canonical_identity),
+				coordinator_id: "https://coord.example.test",
+				group_id: "team-a",
+				recipient_identity_id: body?.recipient_actor_id,
+				accepting_device_id: body?.device_id,
+				source_operation_id: operationId,
+				reviewed_project_set_digest: reviewedProjectSetDigest,
+				status: "active",
+			});
+			expect(conn.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
+			expect(conn.prepare("SELECT COUNT(*) FROM policy_team_memberships").pluck().get()).toBe(0);
 		} finally {
 			conn.close();
 		}
@@ -1486,6 +1609,9 @@ describe("coordinator local admin actions", () => {
 					 WHERE peer_device_id = ? AND pending_bootstrap_grant_id = ?`)
 					.get("inviter-device", "grant-1"),
 			).toEqual({ total: 1 });
+			expect(
+				conn.prepare("SELECT COUNT(*) FROM recipient_managed_project_projections").pluck().get(),
+			).toBe(0);
 		} finally {
 			conn.close();
 		}

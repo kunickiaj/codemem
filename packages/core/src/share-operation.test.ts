@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { previewRecipientPolicyEdges } from "./recipient-policy-edges.js";
 import {
 	inviteTokenDigest,
+	managedProjectScopeId,
 	parseAcceptedProjectIntent,
 	persistShareOperation,
 	planShareOperation,
@@ -97,6 +98,11 @@ describe("share-operation planner", () => {
 		expect(
 			first.steps.find((item) => item.stepKey.startsWith("managed_boundary:"))?.effectId,
 		).toMatch(/^managed-project:/u);
+		expect(managedBoundaryIds(first)).toEqual(
+			first.projects.map((project) =>
+				managedProjectScopeId(first.coordinatorGroupId, project.canonicalIdentity),
+			),
+		);
 	});
 
 	it("canonicalizes project/device permutations and binds only authorization-relevant identity", () => {
@@ -825,5 +831,59 @@ describe("share-operation persistence", () => {
 				],
 			}),
 		).toThrow("operation_intent_mismatch");
+	});
+
+	it("accepts additive wire fields while preserving known accepted Project intent", () => {
+		expect(
+			parseAcceptedProjectIntent([
+				{
+					canonical_identity: "git:https://example.invalid/acme/api.git",
+					display_name: "api",
+					existing_memory_count: 12,
+					future_project_metadata: { version: 2 },
+				},
+			]),
+		).toEqual([
+			{
+				canonical_identity: "git:https://example.invalid/acme/api.git",
+				display_name: "api",
+				existing_memory_count: 12,
+			},
+		]);
+	});
+
+	it.each([
+		"git:https://example.invalid/acme/api.git",
+		"https://git.example.invalid/acme/api.git",
+		"/Users/example/workspace/api",
+		"workspace:acme/api",
+	])("accepts historical canonical Project identity %s", (canonicalIdentity) => {
+		expect(
+			parseAcceptedProjectIntent([
+				{
+					canonical_identity: canonicalIdentity,
+					display_name: "api",
+					existing_memory_count: 0,
+				},
+			]),
+		).toEqual([
+			{
+				canonical_identity: canonicalIdentity,
+				display_name: "api",
+				existing_memory_count: 0,
+			},
+		]);
+	});
+
+	it("rejects unmapped canonical Project identities", () => {
+		expect(() =>
+			parseAcceptedProjectIntent([
+				{
+					canonical_identity: `unmapped:${"a".repeat(64)}`,
+					display_name: "unknown",
+					existing_memory_count: 0,
+				},
+			]),
+		).toThrow("operation_intent_invalid");
 	});
 });

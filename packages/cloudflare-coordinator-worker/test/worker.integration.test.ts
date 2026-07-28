@@ -1,4 +1,5 @@
 import {
+	acceptedProjectIntentDigest,
 	buildCanonicalRequest,
 	type CoordinatorPeerRecord,
 	fingerprintPublicKey,
@@ -270,7 +271,14 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		expect(await legacyJoinResponse.json()).toMatchObject({ status: "enrolled" });
 
 		const operationId = `share_${"a".repeat(40)}`;
-		const reviewedProjectSetDigest = "b".repeat(64);
+		const projectIntent = [
+			{
+				canonical_identity: "git:https://example.test/codemem",
+				display_name: "codemem",
+				existing_memory_count: 3,
+			},
+		];
+		const reviewedProjectSetDigest = acceptedProjectIntentDigest(projectIntent);
 		const projectInviteBody = {
 			group_id: "g1",
 			policy: "auto_admit",
@@ -283,13 +291,7 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 			inviter_device_id: projectInviter.deviceId,
 			pending_person_id: "pending-brian",
 			project_summaries: [{ display_name: "codemem", existing_memory_count: 3 }],
-			project_intent: [
-				{
-					canonical_identity: "git:https://example.test/codemem",
-					display_name: "codemem",
-					existing_memory_count: 3,
-				},
-			],
+			project_intent: projectIntent,
 		};
 		const projectInviteResponse = await exports.default.fetch(
 			"https://example.com/v1/admin/invites",

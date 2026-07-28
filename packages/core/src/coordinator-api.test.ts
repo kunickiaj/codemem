@@ -36,8 +36,26 @@ import {
 	fingerprintPublicKey,
 	type RecipientReviewedIntentV1,
 	recipientReviewedIntentDigest,
+	shareProjectSetDigest,
 } from "./index.js";
 import { createInMemoryRequestRateLimiter } from "./request-rate-limit.js";
+
+const ACCEPTED_PROJECT = {
+	canonical_identity: "https://git.example.invalid/acme/alpha.git",
+	display_name: "alpha",
+	existing_memory_count: 3,
+};
+
+function acceptedProjectDigest(): string {
+	return shareProjectSetDigest([
+		{
+			canonicalIdentity: ACCEPTED_PROJECT.canonical_identity,
+			displayName: ACCEPTED_PROJECT.display_name,
+			identitySource: "git_remote",
+			existingMemoryCount: ACCEPTED_PROJECT.existing_memory_count,
+		},
+	]);
+}
 
 function createMockStore(
 	overrides?: Partial<CoordinatorStoreInterface>,
@@ -356,6 +374,7 @@ describe("createCoordinatorApp dependency injection", () => {
 						canonical_identity: "git:https://example.test/codemem",
 						display_name: "codemem",
 						existing_memory_count: 3,
+						future_project_metadata: "ignored",
 					},
 				],
 			}),
@@ -374,6 +393,32 @@ describe("createCoordinatorApp dependency injection", () => {
 		expect(createInvite).toHaveBeenLastCalledWith(
 			expect.objectContaining({ operationId, reviewedProjectSetDigest }),
 		);
+
+		const callsBeforeInvalidIntent = createInvite.mock.calls.length;
+		const invalidCanonicalIntent = await app.request("/v1/admin/invites", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({
+				...base,
+				operation_id: `share_${"c".repeat(40)}`,
+				reviewed_project_set_digest: "d".repeat(64),
+				inviter_actor_id: "actor-adam",
+				inviter_display_name: "Adam",
+				inviter_device_id: "device-adam",
+				pending_person_id: "pending-casey",
+				project_summaries: [{ display_name: "invalid", existing_memory_count: 0 }],
+				project_intent: [
+					{
+						canonical_identity: "git:https://example.test/invalid/",
+						display_name: "invalid",
+						existing_memory_count: 0,
+					},
+				],
+			}),
+		});
+		expect(invalidCanonicalIntent.status).toBe(400);
+		expect(await invalidCanonicalIntent.json()).toEqual({ error: "project_intent_invalid" });
+		expect(createInvite).toHaveBeenCalledTimes(callsBeforeInvalidIntent);
 	});
 
 	it("validates recipient reviewed intent at creation and keeps invitation payloads digest-only", async () => {
@@ -1214,7 +1259,11 @@ describe("createCoordinatorApp dependency injection", () => {
 		const operationId = `share_${"a".repeat(40)}`;
 		const consumeProjectInvite = vi.fn(async () => ({
 			status: "existing" as const,
-			invite: { trust_state: "bootstrap_grant_created" },
+			invite: {
+				group_id: "g1",
+				operation_id: operationId,
+				trust_state: "bootstrap_grant_created",
+			},
 			bootstrap_grant: null,
 		}));
 		const store = createMockStore({
@@ -1230,7 +1279,8 @@ describe("createCoordinatorApp dependency injection", () => {
 				revoked_at: null,
 				consumed_at: "2026-03-26T00:00:00Z",
 				operation_id: operationId,
-				reviewed_project_set_digest: "b".repeat(64),
+				reviewed_project_set_digest: acceptedProjectDigest(),
+				project_intent_json: JSON.stringify([ACCEPTED_PROJECT]),
 				inviter_device_id: "device-adam",
 			})),
 			consumeProjectInvite,
@@ -1286,7 +1336,8 @@ describe("createCoordinatorApp dependency injection", () => {
 				team_name_snapshot: "Team One",
 				revoked_at: null,
 				operation_id: operationId,
-				reviewed_project_set_digest: "c".repeat(64),
+				reviewed_project_set_digest: acceptedProjectDigest(),
+				project_intent_json: JSON.stringify([ACCEPTED_PROJECT]),
 				inviter_device_id: "device-adam",
 			})),
 			consumeProjectInvite,
@@ -1318,8 +1369,63 @@ describe("createCoordinatorApp dependency injection", () => {
 			status: "pending_setup",
 			operation_id: operationId,
 			trust_state: "pending_inviter_device",
+			accepted_project_intent: {
+				operation_id: operationId,
+				reviewed_project_set_digest: acceptedProjectDigest(),
+				projects: [ACCEPTED_PROJECT],
+			},
 		});
 		expect(consumeProjectInvite).toHaveBeenCalledOnce();
+	});
+
+	it("fails closed before consuming a project invite with malformed stored intent", async () => {
+		const publicKey = "recipient-public-key";
+		const operationId = `share_${"e".repeat(40)}`;
+		const consumeProjectInvite = vi.fn(async () => {
+			throw new Error("malformed intent must not be consumed");
+		});
+		const store = createMockStore({
+			getInviteByTokenForInspection: vi.fn(async () => ({
+				invite_id: "invite-project-malformed",
+				group_id: "g1",
+				token: "token-project-malformed",
+				policy: "auto_admit",
+				expires_at: "2099-01-01T00:00:00Z",
+				created_at: "2026-03-28T00:00:00Z",
+				created_by: null,
+				team_name_snapshot: "Team One",
+				revoked_at: null,
+				operation_id: operationId,
+				reviewed_project_set_digest: acceptedProjectDigest(),
+				project_intent_json: JSON.stringify([{ ...ACCEPTED_PROJECT, existing_memory_count: -1 }]),
+				inviter_device_id: "device-adam",
+			})),
+			consumeProjectInvite,
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+
+		const response = await app.request("/v1/join", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				token: "token-project-malformed",
+				operation_id: operationId,
+				device_id: "device-recipient",
+				public_key: publicKey,
+				fingerprint: fingerprintPublicKey(publicKey),
+				recipient_actor_id: "actor-brian",
+				recipient_display_name: "Brian",
+				device_display_name: "Brian's Mac",
+			}),
+		});
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({ error: "operation_intent_invalid" });
+		expect(consumeProjectInvite).not.toHaveBeenCalled();
 	});
 
 	it("reconstructs a safe project invite link only while the coordinator token is unconsumed", async () => {
