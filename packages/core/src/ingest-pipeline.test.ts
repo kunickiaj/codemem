@@ -30,6 +30,8 @@ import {
 	hasMeaningfulObservation,
 	inspectObserverResponseStructure,
 	parseObserverResponse,
+	shouldPreferRepairedObserverResponse,
+	shouldRepairObserverResponse,
 } from "./ingest-xml-parser.js";
 import type { ObserverConfig } from "./observer-client.js";
 import { flushRawEvents } from "./raw-event-flush.js";
@@ -315,6 +317,60 @@ describe("ingest-xml-parser", () => {
 			expect(result.observations).toHaveLength(0);
 			expect(result.summary).toBeNull();
 			expect(result.skipSummaryReason).toBe("low-signal");
+			expect(parseObserverResponse('<skip_summary reason="paired"></skip_summary>')).toMatchObject({
+				skipSummaryReason: "paired",
+			});
+			const unspecified = parseObserverResponse("<skip_summary/>");
+			expect(unspecified).toMatchObject({
+				skipSummaryReason: null,
+			});
+			expect(inspectObserverResponseStructure("<skip_summary/>", unspecified).dataLoss).toBe(true);
+			expect(shouldRepairObserverResponse("<skip_summary/>", unspecified)).toBe(true);
+			const labeledRepair = '<skip_summary reason="low-signal"/>';
+			expect(
+				shouldPreferRepairedObserverResponse(
+					unspecified,
+					labeledRepair,
+					parseObserverResponse(labeledRepair),
+					"<skip_summary/>",
+				),
+			).toBe(true);
+		});
+
+		it("reports contradictory summary decisions as data loss", () => {
+			const xml = `<summary><request>Keep this summary</request></summary>
+				<skip_summary reason="low-signal"></skip_summary>`;
+			const parsed = parseObserverResponse(xml);
+
+			expect(parsed.summary?.request).toBe("Keep this summary");
+			expect(parsed.skipSummaryReason).toBe("low-signal");
+			expect(inspectObserverResponseStructure(xml, parsed).dataLoss).toBe(true);
+			expect(shouldRepairObserverResponse(xml, parsed)).toBe(true);
+
+			const repaired = `<summary><request>Keep this summary</request></summary>`;
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parsed,
+					repaired,
+					parseObserverResponse(repaired),
+					xml,
+				),
+			).toBe(true);
+		});
+
+		it("allows a validated recovered summary to replace a skip marker", () => {
+			const lossy = `<skip_summary reason="low-signal"/>
+				<summary><request>Fix auth`;
+			const repaired = `<summary><request>Fix auth safely</request></summary>`;
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					repaired,
+					parseObserverResponse(repaired),
+					lossy,
+				),
+			).toBe(true);
 		});
 
 		it("handles empty/malformed XML gracefully", () => {
@@ -430,10 +486,1354 @@ describe("ingest-xml-parser", () => {
 		});
 
 		it("reports plain prose as unrecognized lossy output", () => {
-			const result = inspectObserverResponseStructure("I found a durable lesson.");
+			const prose = "I found a durable auth lesson in src/auth.ts.";
+			const result = inspectObserverResponseStructure(prose);
+			const groundedRepair = `<observation>
+				<type>discovery</type>
+				<title>durable auth lesson</title>
+				<subtitle>durable auth lesson</subtitle>
+				<narrative>I found a durable auth lesson in src/auth.ts.</narrative>
+				<facts><fact>durable auth lesson</fact></facts>
+				<concepts><concept>how-it-works</concept></concepts>
+				<files_read><file>src/auth.ts</file></files_read>
+			</observation>
+			<summary><learned>I found a durable auth lesson in src/auth.ts.</learned></summary>`;
+			const embellishedRepair = groundedRepair.replace(
+				"durable auth lesson</fact>",
+				"Deployed the fix</fact>",
+			);
+			const negatedProse = "I did not find a durable auth issue.";
+			const negationDroppingRepair = `<observation>
+				<type>discovery</type><title>find a durable auth issue</title>
+				<narrative>I did not find a durable auth issue.</narrative>
+			</observation><summary><investigated>I did not find a durable auth issue.</investigated></summary>`;
+			const fabricatedSummaryRepair = groundedRepair.replace(
+				"</summary>",
+				"<completed>Deployed the fix</completed></summary>",
+			);
+			const duplicateRepair = groundedRepair.replace(
+				"</observation>",
+				`</observation>
+				<observation><type>discovery</type><title>durable auth lesson</title>
+				<narrative>I found a durable auth lesson in src/auth.ts.</narrative></observation>`,
+			);
+			const summaryOnlyRepair = `<summary><learned>I found a durable auth lesson in src/auth.ts.</learned></summary>`;
+			const skipRepair = `<skip_summary reason="low-signal"/>`;
+			const observationWithoutSummary = groundedRepair.replace(
+				"<summary><learned>I found a durable auth lesson in src/auth.ts.</learned></summary>",
+				"",
+			);
+			const unsupportedConceptRepair = groundedRepair.replace("how-it-works", "discovery");
+			const partialPathRepair = groundedRepair.replace("<file>src/auth.ts", "<file>auth.ts");
+			const contractionProse = "The retry path doesn't recover the batch.";
+			const contractionRepair = `<observation><type>discovery</type><title>recover the batch</title>
+				<narrative>The retry path doesn't recover the batch.</narrative></observation>
+				<summary><learned>The retry path doesn't recover the batch.</learned></summary>`;
+			const prefixedProse = "This is a non-blocking issue.";
+			const prefixedRepair = `<observation><type>discovery</type><title>blocking issue</title>
+				<narrative>This is a non-blocking issue.</narrative></observation>
+				<summary><learned>This is a non-blocking issue.</learned></summary>`;
+			const entityProse = "Fixed the R&D pipeline.";
+			const entityRepair = `<summary><completed>Fixed the R&amp;D pipeline.</completed></summary>`;
 
 			expect(result.recognizedOutput).toBe(false);
 			expect(result.dataLoss).toBe(true);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(prose),
+					groundedRepair,
+					parseObserverResponse(groundedRepair),
+					prose,
+				),
+			).toBe(true);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(entityProse),
+					entityRepair,
+					parseObserverResponse(entityRepair),
+					entityProse,
+				),
+			).toBe(true);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(prose),
+					summaryOnlyRepair,
+					parseObserverResponse(summaryOnlyRepair),
+					prose,
+				),
+			).toBe(true);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(prose),
+					skipRepair,
+					parseObserverResponse(skipRepair),
+					prose,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse("Okay."),
+					skipRepair,
+					parseObserverResponse(skipRepair),
+					"Okay.",
+				),
+			).toBe(true);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(prose),
+					embellishedRepair,
+					parseObserverResponse(embellishedRepair),
+					prose,
+				),
+			).toBe(false);
+			for (const ungrounded of [
+				fabricatedSummaryRepair,
+				duplicateRepair,
+				observationWithoutSummary,
+				unsupportedConceptRepair,
+				partialPathRepair,
+			]) {
+				expect(
+					shouldPreferRepairedObserverResponse(
+						parseObserverResponse(prose),
+						ungrounded,
+						parseObserverResponse(ungrounded),
+						prose,
+					),
+				).toBe(false);
+			}
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(negatedProse),
+					negationDroppingRepair,
+					parseObserverResponse(negationDroppingRepair),
+					negatedProse,
+				),
+			).toBe(false);
+			for (const [source, repair] of [
+				[contractionProse, contractionRepair],
+				[prefixedProse, prefixedRepair],
+			] as const) {
+				expect(
+					shouldPreferRepairedObserverResponse(
+						parseObserverResponse(source),
+						repair,
+						parseObserverResponse(repair),
+						source,
+					),
+				).toBe(false);
+			}
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(" "),
+					summaryOnlyRepair,
+					parseObserverResponse(summaryOnlyRepair),
+					" ",
+				),
+			).toBe(false);
+		});
+
+		it("rejects repairs that drop prose surrounding malformed XML", () => {
+			const initial = `Auth race fixed
+				<observation><type>bugfix</type><title>Recovered title`;
+			const reducedRepair = `<observation><type>bugfix</type><title>Recovered title</title>
+				<narrative>Recovered title</narrative></observation>
+				<summary><completed>Recovered title</completed></summary>`;
+			const preservingRepair = reducedRepair
+				.replace(
+					"<narrative>Recovered title</narrative>",
+					"<narrative>Auth race fixed. Recovered title</narrative>",
+				)
+				.replace(
+					"<completed>Recovered title</completed>",
+					"<completed>Auth race fixed</completed>",
+				);
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(initial),
+					reducedRepair,
+					parseObserverResponse(reducedRepair),
+					initial,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(initial),
+					preservingRepair,
+					parseObserverResponse(preservingRepair),
+					initial,
+				),
+			).toBe(true);
+		});
+
+		it("rejects ungrounded fields added while repairing a truncated observation", () => {
+			const initial = `<observation><type>bugfix</type><title>Recovered title`;
+			const inventedRepair = `<observation><type>bugfix</type><title>Recovered title</title>
+				<narrative>Invented deployment result</narrative>
+				<facts><fact>Invented fact</fact></facts>
+				<concepts><concept>gotcha</concept></concepts>
+				<files_modified><file>src/invented.ts</file></files_modified></observation>
+				<summary><completed>Invented deployment result</completed></summary>`;
+			const groundedRepair = `<observation><type>bugfix</type><title>Recovered title</title>
+				<narrative>Recovered title</narrative></observation>
+				<summary><completed>Recovered title</completed></summary>`;
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(initial),
+					inventedRepair,
+					parseObserverResponse(inventedRepair),
+					initial,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(initial),
+					groundedRepair,
+					parseObserverResponse(groundedRepair),
+					initial,
+				),
+			).toBe(true);
+
+			const prefixedInitial = `<observation><type>discovery</type><title>Findings</title>
+				<narrative>This is a non-blocking issue in src/auth.ts</narrative>`;
+			const prefixDroppingRepair = `<observation><type>discovery</type><title>Findings</title>
+				<subtitle>blocking issue</subtitle>
+				<narrative>This is a non-blocking issue in src/auth.ts</narrative></observation>`;
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(prefixedInitial),
+					prefixDroppingRepair,
+					parseObserverResponse(prefixDroppingRepair),
+					prefixedInitial,
+				),
+			).toBe(false);
+
+			const fabricatedSummaryRepair = groundedRepair.replace(
+				"<completed>Recovered title</completed>",
+				"<completed>Invented deployment result</completed>",
+			);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(initial),
+					fabricatedSummaryRepair,
+					parseObserverResponse(fabricatedSummaryRepair),
+					initial,
+				),
+			).toBe(false);
+		});
+
+		it("grounds repairs against visible text inside unrecognized XML roots", () => {
+			const initial = `<result>Auth race fixed</result>`;
+			const groundedRepair = `<summary><completed>Auth race fixed</completed></summary>`;
+			const unrelatedRepair = `<summary><completed>Deployed unrelated fix</completed></summary>`;
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(initial),
+					groundedRepair,
+					parseObserverResponse(groundedRepair),
+					initial,
+				),
+			).toBe(true);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(initial),
+					unrelatedRepair,
+					parseObserverResponse(unrelatedRepair),
+					initial,
+				),
+			).toBe(false);
+		});
+
+		it("requests repair for malformed children in retained root blocks", () => {
+			const malformed = `<observation><type>discovery</type><title>Durable title
+				<narrative>Durable narrative</narrative></observation>`;
+			const parsed = parseObserverResponse(malformed);
+
+			expect(parsed.observations).toHaveLength(1);
+			expect(parsed.observations[0]?.title).toBe("");
+			expect(inspectObserverResponseStructure(malformed, parsed).dataLoss).toBe(true);
+			expect(shouldRepairObserverResponse(malformed, parsed)).toBe(true);
+		});
+
+		it("requests repair for parser data loss but not retained shape-only nesting", () => {
+			const lossy = `<summary><request>Preserve the result</request><notes><observation></notes></summary>`;
+			const retained = `<summary><request>Preserve the result</request><notes>
+				<observation><type>discovery</type><title>Retained lesson</title></observation>
+			</notes></summary>`;
+			const repaired = `<observation><type>discovery</type><title>Repaired lesson</title></observation>
+				<summary><request>Preserve the result</request></summary>`;
+			const thinnerRepair = `<summary><request>Preserve the result</request></summary>`;
+			const empty = { observations: [], summary: null, skipSummaryReason: null };
+
+			expect(shouldRepairObserverResponse(lossy, parseObserverResponse(lossy))).toBe(true);
+			expect(shouldRepairObserverResponse(retained, parseObserverResponse(retained))).toBe(false);
+			expect(shouldRepairObserverResponse(" ", parseObserverResponse(" "))).toBe(true);
+			expect(shouldRepairObserverResponse(null, empty)).toBe(false);
+			expect(shouldPreferRepairedObserverResponse(parseObserverResponse(lossy), null, empty)).toBe(
+				false,
+			);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					repaired,
+					parseObserverResponse(repaired),
+				),
+			).toBe(true);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					lossy,
+					parseObserverResponse(lossy),
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(retained),
+					thinnerRepair,
+					parseObserverResponse(thinnerRepair),
+				),
+			).toBe(false);
+		});
+
+		it("rejects clean repairs that drop retained observations or populated summary fields", () => {
+			const retainedObservation = `<observation>
+				<type>discovery</type><title>Retained lesson</title>
+				<narrative>Keep this exact parsed observation.</narrative>
+			</observation>`;
+			const replacementObservation = `<observation>
+				<type>discovery</type><title>Replacement lesson</title>
+				<narrative>This must not replace the retained lesson.</narrative>
+			</observation>`;
+			const initial = `${retainedObservation}
+				<summary><request>Preserve the result</request><learned>Durable detail</learned></summary>`;
+			const disjointRepair = `${replacementObservation}
+				<summary><request>Preserve the result</request><learned>Different detail</learned></summary>`;
+			const incompleteSummaryRepair = `${retainedObservation}
+				<summary><request>Preserve the result</request></summary>`;
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(initial),
+					disjointRepair,
+					parseObserverResponse(disjointRepair),
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(initial),
+					incompleteSummaryRepair,
+					parseObserverResponse(incompleteSummaryRepair),
+				),
+			).toBe(false);
+		});
+
+		it("matches retained observation lists as order-insensitive multisets", () => {
+			const retained = `<observation><type>discovery</type><title>Retained lesson</title>
+				<facts><fact>First fact</fact><fact>Second fact</fact></facts>
+				<concepts><concept>gotcha</concept><concept>pattern</concept></concepts>
+				<files_read><file>src/a.ts</file><file>src/b.ts</file></files_read>
+			</observation>`;
+			const initial = `${retained}<observation><type>decision</type><title>Recovered decision`;
+			const reordered = retained
+				.replace(
+					"<fact>First fact</fact><fact>Second fact</fact>",
+					"<fact>Second fact</fact><fact>First fact</fact>",
+				)
+				.replace(
+					"<concept>gotcha</concept><concept>pattern</concept>",
+					"<concept>pattern</concept><concept>gotcha</concept>",
+				)
+				.replace(
+					"<file>src/a.ts</file><file>src/b.ts</file>",
+					"<file>src/b.ts</file><file>src/a.ts</file>",
+				);
+			const repair = `${reordered}<observation><type>decision</type><title>Recovered decision</title></observation>`;
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(initial),
+					repair,
+					parseObserverResponse(repair),
+					initial,
+				),
+			).toBe(true);
+		});
+
+		it("rejects clean repairs that rewrite populated summary content", () => {
+			const observation = `<observation>
+				<type>discovery</type><title>Retained lesson</title>
+				<narrative>Keep this exact parsed observation.</narrative>
+			</observation>`;
+			const initial = `${observation}<summary>
+				<request>Preserve the result</request>
+				<files_read><file>src/retained.ts</file></files_read>
+			</summary>`;
+			const rewrittenScalar = initial.replace("Preserve the result", "Replace the result");
+			const rewrittenList = initial.replace("src/retained.ts", "src/replacement.ts");
+			const introducedSkip = `${initial}<skip_summary reason="low-signal"/>`;
+			const duplicateInitial = initial.replace(
+				"<file>src/retained.ts</file>",
+				"<file>src/retained.ts</file><file>src/retained.ts</file>",
+			);
+
+			for (const repair of [rewrittenScalar, rewrittenList, introducedSkip]) {
+				expect(
+					shouldPreferRepairedObserverResponse(
+						parseObserverResponse(initial),
+						repair,
+						parseObserverResponse(repair),
+					),
+				).toBe(false);
+			}
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(duplicateInitial),
+					initial,
+					parseObserverResponse(initial),
+				),
+			).toBe(false);
+		});
+
+		it("accepts repairs that only correct an invalid observation kind", () => {
+			const unsupported = `<observation>
+				<type>unsupported</type><title>Durable lesson</title>
+				<narrative>Preserve every field while correcting the kind.</narrative>
+			</observation>`;
+			const missing = `<observation>
+				<title>Durable lesson</title>
+				<narrative>Preserve every field while correcting the kind.</narrative>
+			</observation>`;
+			const repaired = `<observation>
+				<type>discovery</type><title>Durable lesson</title>
+				<narrative>Preserve every field while correcting the kind.</narrative>
+			</observation>`;
+			const alreadyValid = unsupported.replace("unsupported", "decision");
+			const repairedParsed = parseObserverResponse(repaired);
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(unsupported),
+					repaired,
+					repairedParsed,
+				),
+			).toBe(true);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(missing),
+					repaired,
+					repairedParsed,
+				),
+			).toBe(true);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(alreadyValid),
+					repaired,
+					repairedParsed,
+				),
+			).toBe(false);
+		});
+
+		it("rejects repairs that preserve parsed items but omit discarded observation blocks", () => {
+			const retained = `<observation>
+				<type>discovery</type><title>Retained lesson</title>
+				<narrative>Keep this observation.</narrative>
+			</observation>`;
+			const lossy = `${retained}<observation>
+				<type>bugfix</type><title>Discarded fix</title>
+				<narrative>Recover this truncated observation.`;
+			const unrelatedRepair = `${retained}<observation>
+				<type>bugfix</type><title>Unrelated clean item</title>
+				<narrative>This does not recover the discarded fix.</narrative>
+			</observation>`;
+			const faithfulRepair = `${retained}<observation>
+				<type>bugfix</type><title>Discarded fix</title>
+				<narrative>Recover this truncated observation.</narrative>
+			</observation>`;
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					retained,
+					parseObserverResponse(retained),
+					lossy,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					unrelatedRepair,
+					parseObserverResponse(unrelatedRepair),
+					lossy,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					faithfulRepair,
+					parseObserverResponse(faithfulRepair),
+					lossy,
+				),
+			).toBe(true);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					`${retained}${retained}`,
+					parseObserverResponse(`${retained}${retained}`),
+					lossy,
+				),
+			).toBe(false);
+
+			const twoDiscarded = `${lossy}<observation>
+				<type>decision</type><title>Second discarded item`;
+			const recoveredOnce = `<observation>
+				<type>bugfix</type><title>Recovered fix</title>
+				<narrative>Only one discarded block was actually recovered.</narrative>
+			</observation>`;
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(twoDiscarded),
+					`${retained}${recoveredOnce}${recoveredOnce}`,
+					parseObserverResponse(`${retained}${recoveredOnce}${recoveredOnce}`),
+					twoDiscarded,
+				),
+			).toBe(false);
+		});
+
+		it("allows recovered structured output to replace a contradictory skip marker", () => {
+			const lossy = `<skip_summary reason="low-signal"/><observation>
+				<type>discovery</type><title>Recovered lesson`;
+			const repaired = `<observation>
+				<type>discovery</type><title>Recovered lesson</title>
+				<narrative>Recovered lesson</narrative>
+			</observation>`;
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					repaired,
+					parseObserverResponse(repaired),
+					lossy,
+				),
+			).toBe(true);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					`${repaired}<skip_summary reason="rewritten"/>`,
+					parseObserverResponse(`${repaired}<skip_summary reason="rewritten"/>`),
+					lossy,
+				),
+			).toBe(false);
+
+			const summaryRepair = `<summary><request>Recovered summary only</request></summary>`;
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(`<skip_summary reason="low-signal"/><summary><request>Broken`),
+					summaryRepair,
+					parseObserverResponse(summaryRepair),
+					`<skip_summary reason="low-signal"/><summary><request>Broken`,
+				),
+			).toBe(false);
+		});
+
+		it("requires repairs to preserve recoverable fields from a discarded summary", () => {
+			const retained = `<observation>
+				<type>discovery</type><title>Retained lesson</title>
+				<narrative>Keep this observation.</narrative>
+			</observation>`;
+			const lossy = `${retained}<summary>
+				<request>Preserve the original request</request>
+				<files_read><file>src/original.ts</file></files_read>`;
+			const unrelatedRepair = `${retained}<summary>
+				<request>Different request</request>
+				<files_read><file>src/unrelated.ts</file></files_read>
+			</summary>`;
+			const faithfulRepair = `${retained}<summary>
+				<request>Preserve the original request</request>
+				<files_read><file>src/original.ts</file></files_read>
+			</summary>`;
+			const extendedCompleteFieldRepair = faithfulRepair.replace(
+				"Preserve the original request",
+				"Preserve the original request and more",
+			);
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					unrelatedRepair,
+					parseObserverResponse(unrelatedRepair),
+					lossy,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					extendedCompleteFieldRepair,
+					parseObserverResponse(extendedCompleteFieldRepair),
+					lossy,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					faithfulRepair,
+					parseObserverResponse(faithfulRepair),
+					lossy,
+				),
+			).toBe(true);
+
+			const unknownLossy = `${retained}<summary><outcome>Auth race fixed`;
+			const unknownFaithfulRepair = `${retained}<summary>
+				<completed>Auth race fixed</completed>
+			</summary>`;
+			const unknownUnrelatedRepair = `${retained}<summary>
+				<completed>Different result</completed>
+			</summary>`;
+			const unknownFabricatedRepair = unknownFaithfulRepair.replace(
+				"</summary>",
+				"<learned>Invented lesson</learned><files_read><file>src/invented.ts</file></files_read></summary>",
+			);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(unknownLossy),
+					unknownUnrelatedRepair,
+					parseObserverResponse(unknownUnrelatedRepair),
+					unknownLossy,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(unknownLossy),
+					unknownFaithfulRepair,
+					parseObserverResponse(unknownFaithfulRepair),
+					unknownLossy,
+				),
+			).toBe(true);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(unknownLossy),
+					unknownFabricatedRepair,
+					parseObserverResponse(unknownFabricatedRepair),
+					unknownLossy,
+				),
+			).toBe(false);
+			const adjacentUnknowns = `${retained}<summary>
+				<outcome>Auth race fixed<verdict>Ship it`;
+			const adjacentFaithfulRepair = `${retained}<summary>
+				<completed>Auth race fixed Ship it</completed>
+			</summary>`;
+			const adjacentDroppedRepair = `${retained}<summary>
+				<completed>Auth race fixed safely</completed>
+			</summary>`;
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(adjacentUnknowns),
+					adjacentDroppedRepair,
+					parseObserverResponse(adjacentDroppedRepair),
+					adjacentUnknowns,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(adjacentUnknowns),
+					adjacentFaithfulRepair,
+					parseObserverResponse(adjacentFaithfulRepair),
+					adjacentUnknowns,
+				),
+			).toBe(true);
+
+			const truncatedListItem = `${retained}<summary>
+				<request>Preserve the original request</request>
+				<files_read><file>src/orig`;
+			const unrelatedListRepair = `${retained}<summary>
+				<request>Preserve the original request</request>
+				<files_read><file>src/unrelated.ts</file></files_read>
+			</summary>`;
+			const faithfulListRepair = `${retained}<summary>
+				<request>Preserve the original request</request>
+				<files_read><file>src/original.ts</file></files_read>
+			</summary>`;
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(truncatedListItem),
+					unrelatedListRepair,
+					parseObserverResponse(unrelatedListRepair),
+					truncatedListItem,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(truncatedListItem),
+					faithfulListRepair,
+					parseObserverResponse(faithfulListRepair),
+					truncatedListItem,
+				),
+			).toBe(true);
+
+			const overlappingListItems = `${retained}<summary>
+				<request>Preserve the original request</request>
+				<files_read><file>src/<file>src/a.ts</file>`;
+			const overlappingListRepair = `${retained}<summary>
+				<request>Preserve the original request</request>
+				<files_read><file>src/a.ts</file><file>src/b.ts</file></files_read>
+			</summary>`;
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(overlappingListItems),
+					overlappingListRepair,
+					parseObserverResponse(overlappingListRepair),
+					overlappingListItems,
+				),
+			).toBe(true);
+
+			const duplicateListItems = `${retained}<summary>
+				<request>Preserve the original request</request>
+				<files_read><file>src/a.ts</file><file>src/a.ts</file>`;
+			const missingDuplicateRepair = overlappingListRepair.replace("<file>src/b.ts</file>", "");
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(duplicateListItems),
+					missingDuplicateRepair,
+					parseObserverResponse(missingDuplicateRepair),
+					duplicateListItems,
+				),
+			).toBe(false);
+		});
+
+		it("requires unknown summary values to map into a supported repaired field", () => {
+			const initial = `<summary>
+				<request>Fix auth</request>
+				<outcome>Auth race fixed</outcome>
+			</summary>`;
+			const dropped = `<summary><request>Fix auth</request></summary>`;
+			const mapped = `<summary>
+				<request>Fix auth</request>
+				<completed>Auth race fixed</completed>
+			</summary>`;
+			const embellishedMapping = mapped.replace(
+				"Auth race fixed",
+				"Auth race fixed with unrelated invented detail",
+			);
+			const reusedMapping = mapped.replace(
+				"</summary>",
+				"<learned>Auth race fixed</learned></summary>",
+			);
+			const unclosedUnknown = `<summary>
+				<request>Fix auth</request>
+				<outcome>Auth race fixed<detail>context</detail>
+			</summary>`;
+			const nestedValueMapping = mapped.replace("Auth race fixed", "Auth race fixed context");
+			const embellishedNestedValue = nestedValueMapping.replace(
+				"Auth race fixed context",
+				"Auth race fixed context with unrelated invented detail",
+			);
+			const fabricatedObservation = `${mapped}<observation>
+				<type>bugfix</type><title>Invented repair result</title>
+				<narrative>This observation has no source block.</narrative>
+			</observation>`;
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(initial),
+					dropped,
+					parseObserverResponse(dropped),
+					initial,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(initial),
+					mapped,
+					parseObserverResponse(mapped),
+					initial,
+				),
+			).toBe(true);
+			for (const ungrounded of [embellishedMapping, reusedMapping]) {
+				expect(
+					shouldPreferRepairedObserverResponse(
+						parseObserverResponse(initial),
+						ungrounded,
+						parseObserverResponse(ungrounded),
+						initial,
+					),
+				).toBe(false);
+			}
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(unclosedUnknown),
+					nestedValueMapping,
+					parseObserverResponse(nestedValueMapping),
+					unclosedUnknown,
+				),
+			).toBe(true);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(unclosedUnknown),
+					embellishedNestedValue,
+					parseObserverResponse(embellishedNestedValue),
+					unclosedUnknown,
+				),
+			).toBe(false);
+
+			const nestedOccurrence = `<summary>
+				<request>Fix auth</request>
+				<notes>See <outcome>nested context</outcome></notes>
+				<outcome>Direct result</outcome>
+			</summary>`;
+			const directOccurrenceMapping = `<summary>
+				<request>Fix auth</request>
+				<notes>See <outcome>nested context</outcome></notes>
+				<completed>Direct result</completed>
+			</summary>`;
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(nestedOccurrence),
+					directOccurrenceMapping,
+					parseObserverResponse(directOccurrenceMapping),
+					nestedOccurrence,
+				),
+			).toBe(true);
+
+			const quotedAttribute = `<summary>
+				<request>Fix auth</request>
+				<note kind="a > b">Unknown note</note>
+				<outcome>Direct result</outcome>
+			</summary>`;
+			const quotedAttributeMapping = `<summary>
+				<request>Fix auth</request>
+				<notes>Unknown note</notes>
+				<completed>Direct result</completed>
+			</summary>`;
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(quotedAttribute),
+					quotedAttributeMapping,
+					parseObserverResponse(quotedAttributeMapping),
+					quotedAttribute,
+				),
+			).toBe(true);
+			const unbalancedAttribute = quotedAttribute.replace('kind="a > b"', 'kind="broken');
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(unbalancedAttribute),
+					quotedAttributeMapping,
+					parseObserverResponse(quotedAttributeMapping),
+					unbalancedAttribute,
+				),
+			).toBe(true);
+
+			const unclosedBeforeKnown = `<summary>
+				<request>Fix auth</request>
+				<outcome>Auth race fixed<completed>Shipped safely</completed>
+			</summary>`;
+			const unclosedBeforeKnownMapping = `<summary>
+				<request>Fix auth</request>
+				<notes>Auth race fixed</notes>
+				<completed>Shipped safely</completed>
+			</summary>`;
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(unclosedBeforeKnown),
+					unclosedBeforeKnownMapping,
+					parseObserverResponse(unclosedBeforeKnownMapping),
+					unclosedBeforeKnown,
+				),
+			).toBe(true);
+			const unknownAfterKnown = unclosedBeforeKnown.replace(
+				"</summary>",
+				"<verdict>Ship it</verdict></summary>",
+			);
+			const droppedUnknownAfterKnown = unclosedBeforeKnownMapping;
+			const preservedUnknownAfterKnown = unclosedBeforeKnownMapping.replace(
+				"</summary>",
+				"<learned>Ship it</learned></summary>",
+			);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(unknownAfterKnown),
+					droppedUnknownAfterKnown,
+					parseObserverResponse(droppedUnknownAfterKnown),
+					unknownAfterKnown,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(unknownAfterKnown),
+					preservedUnknownAfterKnown,
+					parseObserverResponse(preservedUnknownAfterKnown),
+					unknownAfterKnown,
+				),
+			).toBe(true);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(initial),
+					fabricatedObservation,
+					parseObserverResponse(fabricatedObservation),
+					initial,
+				),
+			).toBe(false);
+
+			const nestedInitial = `<summary>
+				<request>Index files</request>
+				<files><file>src/a.ts</file></files>
+			</summary>`;
+			const nestedMapped = `<summary>
+				<request>Index files</request>
+				<files_read><file>src/a.ts</file></files_read>
+			</summary>`;
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(nestedInitial),
+					nestedMapped,
+					parseObserverResponse(nestedMapped),
+					nestedInitial,
+				),
+			).toBe(true);
+		});
+
+		it("grounds restored retained-summary fields in the malformed raw prefix", () => {
+			const lossy = `<summary>
+				<request>Fix auth</request>
+				<learned>Critical auth race
+			</summary>
+			<observation><type>bugfix</type><title>Recover this fix`;
+			const faithfulRepair = `<summary>
+				<request>Fix auth</request>
+				<learned>Critical auth race in token refresh</learned>
+			</summary>
+			<observation><type>bugfix</type><title>Recover this fix safely</title></observation>`;
+			const unrelatedRepair = faithfulRepair.replace(
+				"Critical auth race in token refresh",
+				"Unrelated cache observation",
+			);
+			const injectedListRepair = faithfulRepair.replace(
+				"</summary>",
+				"<files_modified><file>src/fabricated.ts</file></files_modified></summary>",
+			);
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					unrelatedRepair,
+					parseObserverResponse(unrelatedRepair),
+					lossy,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					injectedListRepair,
+					parseObserverResponse(injectedListRepair),
+					lossy,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					faithfulRepair,
+					parseObserverResponse(faithfulRepair),
+					lossy,
+				),
+			).toBe(true);
+		});
+
+		it("allows multiple summaries to merge while preserving every value", () => {
+			const initial = `<summary><request>First request</request></summary>
+				<summary><request>Second request</request></summary>`;
+			const merged = `<summary>
+				<request>First request; Second request</request>
+			</summary>`;
+			const embellishedMerge = merged.replace(
+				"Second request",
+				"Second request with invented detail",
+			);
+			const fabricatedScalar = merged.replace(
+				"</summary>",
+				"<learned>Invented lesson</learned></summary>",
+			);
+			const fabricatedList = merged.replace(
+				"</summary>",
+				"<files_read><file>src/invented.ts</file></files_read></summary>",
+			);
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(initial),
+					merged,
+					parseObserverResponse(merged),
+					initial,
+				),
+			).toBe(true);
+			for (const ungrounded of [embellishedMerge, fabricatedScalar, fabricatedList]) {
+				expect(
+					shouldPreferRepairedObserverResponse(
+						parseObserverResponse(initial),
+						ungrounded,
+						parseObserverResponse(ungrounded),
+						initial,
+					),
+				).toBe(false);
+			}
+
+			const truncatedSecond = `<summary><request>First request</request></summary>
+				<summary><request>Second request`;
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(truncatedSecond),
+					merged,
+					parseObserverResponse(merged),
+					truncatedSecond,
+				),
+			).toBe(true);
+			for (const ungrounded of [fabricatedScalar, fabricatedList]) {
+				expect(
+					shouldPreferRepairedObserverResponse(
+						parseObserverResponse(truncatedSecond),
+						ungrounded,
+						parseObserverResponse(ungrounded),
+						truncatedSecond,
+					),
+				).toBe(false);
+			}
+			const truncatedUnknownMerge = `<summary><outcome>Result A</outcome></summary>
+				<summary><outcome>Result B`;
+			const groundedTruncatedUnknown = `<summary>
+				<completed>Result A and Result B</completed>
+			</summary>`;
+			const embellishedTruncatedUnknown = groundedTruncatedUnknown.replace(
+				"Result B",
+				"Result B with invented detail",
+			);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(truncatedUnknownMerge),
+					groundedTruncatedUnknown,
+					parseObserverResponse(groundedTruncatedUnknown),
+					truncatedUnknownMerge,
+				),
+			).toBe(true);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(truncatedUnknownMerge),
+					embellishedTruncatedUnknown,
+					parseObserverResponse(embellishedTruncatedUnknown),
+					truncatedUnknownMerge,
+				),
+			).toBe(false);
+
+			const unknownOnly = `<summary><outcome>Result A</outcome></summary>
+				<summary><outcome>Result B</outcome></summary>`;
+			const groundedUnknownMerge = `<summary><completed>Result A and Result B</completed></summary>`;
+			const reusedUnknownMerge = `<summary>
+				<learned>Result A</learned><completed>Result A and Result B</completed>
+			</summary>`;
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(unknownOnly),
+					groundedUnknownMerge,
+					parseObserverResponse(groundedUnknownMerge),
+					unknownOnly,
+				),
+			).toBe(true);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(unknownOnly),
+					reusedUnknownMerge,
+					parseObserverResponse(reusedUnknownMerge),
+					unknownOnly,
+				),
+			).toBe(false);
+
+			const overlappingUnknowns = `<summary><outcome>Result A</outcome>
+				<summary><outcome>Result B</outcome></summary>`;
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(overlappingUnknowns),
+					reusedUnknownMerge,
+					parseObserverResponse(reusedUnknownMerge),
+					overlappingUnknowns,
+				),
+			).toBe(false);
+
+			const nonFinalTruncatedRequest = `<summary><request>Fix auth
+				<summary><request>Deploy the service</request></summary>`;
+			const exactBoundaryMerge = `<summary>
+				<request>Deploy the service; Fix auth</request>
+			</summary>`;
+			const embellishedBoundaryMerge = exactBoundaryMerge.replace(
+				"Fix auth",
+				"Fix auth in the token refresh path",
+			);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(nonFinalTruncatedRequest),
+					embellishedBoundaryMerge,
+					parseObserverResponse(embellishedBoundaryMerge),
+					nonFinalTruncatedRequest,
+				),
+			).toBe(false);
+		});
+
+		it("requires distinct merged summary scalars to be consumed independently", () => {
+			const initial = `<summary><request>auth</request></summary>
+				<summary><request>oauth</request></summary>`;
+			const reducedRepair = `<summary><request>oauth</request></summary>`;
+			const completeRepair = `<summary><request>auth and oauth</request></summary>`;
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(initial),
+					reducedRepair,
+					parseObserverResponse(reducedRepair),
+					initial,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(initial),
+					completeRepair,
+					parseObserverResponse(completeRepair),
+					initial,
+				),
+			).toBe(true);
+		});
+
+		it("validates discarded fragments even when the initial parse retained nothing", () => {
+			const lossy = `<observation>
+				<type>bugfix</type><title>Recover this bugfix</title>
+				<narrative>Truncated`;
+			const unrelatedRepair = `<summary><request>Unrelated summary</request></summary>`;
+			const faithfulRepair = `<observation>
+				<type>bugfix</type><title>Recover this bugfix</title>
+				<narrative>Truncated content recovered durably.</narrative>
+			</observation>`;
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					unrelatedRepair,
+					parseObserverResponse(unrelatedRepair),
+					lossy,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					faithfulRepair,
+					parseObserverResponse(faithfulRepair),
+					lossy,
+				),
+			).toBe(true);
+		});
+
+		it("allows repairs to restore recoverable fields in retained malformed observations", () => {
+			const malformedRetained = `<observation>
+				<type>discovery</type>
+				<title>Recovered title prefix
+				<narrative>Keep this parsed narrative.</narrative>
+			</observation>`;
+			const lossy = `${malformedRetained}<observation>
+				<type>bugfix</type><title>Recover the second item`;
+			const faithfulRepair = `<observation>
+				<type>discovery</type>
+				<title>Recovered title prefix with detail</title>
+				<narrative>Keep this parsed narrative.</narrative>
+			</observation>
+			<observation>
+				<type>bugfix</type><title>Recover the second item safely</title>
+			</observation>`;
+			const unrelatedRepair = faithfulRepair.replace(
+				"Recovered title prefix with detail",
+				"Unrelated replacement title",
+			);
+			const injectedRepair = faithfulRepair.replace(
+				"</observation>",
+				"<files_modified><file>src/unrelated.ts</file></files_modified></observation>",
+			);
+			const injectedScalarRepair = faithfulRepair.replace(
+				"</observation>",
+				"<subtitle>Unrelated injected subtitle</subtitle></observation>",
+			);
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					unrelatedRepair,
+					parseObserverResponse(unrelatedRepair),
+					lossy,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					injectedScalarRepair,
+					parseObserverResponse(injectedScalarRepair),
+					lossy,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					injectedRepair,
+					parseObserverResponse(injectedRepair),
+					lossy,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					faithfulRepair,
+					parseObserverResponse(faithfulRepair),
+					lossy,
+				),
+			).toBe(true);
+		});
+
+		it("preserves visible prefixes from scalar tags truncated mid-value", () => {
+			const lossy = `<observation>
+				<type>bugfix</type><title>Critical auth race`;
+			const unrelatedRepair = `<observation>
+				<type>bugfix</type><title>Unrelated cache bug</title>
+			</observation>`;
+			const faithfulRepair = `<observation>
+				<type>bugfix</type><title>Critical auth race in token refresh</title>
+			</observation>`;
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					unrelatedRepair,
+					parseObserverResponse(unrelatedRepair),
+					lossy,
+				),
+			).toBe(false);
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					faithfulRepair,
+					parseObserverResponse(faithfulRepair),
+					lossy,
+				),
+			).toBe(true);
+		});
+
+		it("allows whitespace-only reflow in retained fields during repair", () => {
+			const lossy = `<summary>
+				<learned>Line one
+					Line two</learned>
+				<files_read><file>src/a.ts</file></files_read>
+			</summary>
+			<observation><type>bugfix</type><title>Recover this fix`;
+			const repaired = `<summary>
+				<learned>Line one Line two</learned>
+				<files_read><file>src/a.ts</file></files_read>
+			</summary>
+			<observation><type>bugfix</type><title>Recover this fix safely</title></observation>`;
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					repaired,
+					parseObserverResponse(repaired),
+					lossy,
+				),
+			).toBe(true);
+		});
+
+		it("rejects repaired output containing both a summary and skip marker", () => {
+			const lossy = `<observation>
+				<type>bugfix</type><title>Recover this bugfix`;
+			const contradictoryRepair = `<observation>
+				<type>bugfix</type><title>Recover this bugfix</title>
+			</observation>
+			<summary><request>Recovered summary</request></summary>
+			<skip_summary reason="low-signal"/>`;
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					contradictoryRepair,
+					parseObserverResponse(contradictoryRepair),
+					lossy,
+				),
+			).toBe(false);
+		});
+
+		it("allows unsupported kinds in discarded fragments to be corrected", () => {
+			const retained = `<observation>
+				<type>discovery</type><title>Retained lesson</title>
+			</observation>`;
+			const lossy = `${retained}<observation>
+				<type>memo</type><title>Recover this item</title>`;
+			const correctedRepair = `${retained}<observation>
+				<type>decision</type><title>Recover this item</title>
+			</observation>`;
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(lossy),
+					correctedRepair,
+					parseObserverResponse(correctedRepair),
+					lossy,
+				),
+			).toBe(true);
+
+			const supportedLossy = lossy.replace("memo", "bugfix");
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(supportedLossy),
+					correctedRepair,
+					parseObserverResponse(correctedRepair),
+					supportedLossy,
+				),
+			).toBe(false);
+		});
+
+		it("matches incomplete kinds by supported prefix or corrects unknown kinds", () => {
+			const decisionRepair = `<observation>
+				<type>decision</type><title>Recover this item</title>
+			</observation>`;
+			const bugfixRepair = decisionRepair.replace("decision", "bugfix");
+			for (const lossyKind of ["dec", "memo"]) {
+				const lossy = `<observation><type>${lossyKind}<title>Recover this item`;
+				expect(
+					shouldPreferRepairedObserverResponse(
+						parseObserverResponse(lossy),
+						decisionRepair,
+						parseObserverResponse(decisionRepair),
+						lossy,
+					),
+				).toBe(true);
+			}
+			const supportedPrefix = `<observation><type>dec<title>Recover this item`;
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(supportedPrefix),
+					bugfixRepair,
+					parseObserverResponse(bugfixRepair),
+					supportedPrefix,
+				),
+			).toBe(false);
+		});
+
+		it("reserves exact kind matches before correcting unsupported duplicates", () => {
+			const sharedContent = `<title>Shared content</title>
+				<narrative>Same durable body.</narrative>`;
+			const initial = `<observation><type>memo</type>${sharedContent}</observation>
+				<observation><type>discovery</type>${sharedContent}</observation>`;
+			const repaired = `<observation><type>discovery</type>${sharedContent}</observation>
+				<observation><type>decision</type>${sharedContent}</observation>`;
+
+			expect(
+				shouldPreferRepairedObserverResponse(
+					parseObserverResponse(initial),
+					repaired,
+					parseObserverResponse(repaired),
+					initial,
+				),
+			).toBe(true);
 		});
 	});
 
@@ -707,6 +2107,173 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 		expect(summaryMetadata.request).toBe("Fix auth timeout");
 		expect(summaryMetadata.completed).toBe("Fixed the timeout");
 		expect(summaryMetadata.learned).toBe("Race condition in handler");
+	});
+
+	it("repairs a structured response when parsing would discard an observation", async () => {
+		const calls: Array<{ system: string; user: string }> = [];
+		const lossy = `<summary>
+			<request>Preserve the parser fix</request>
+			<learned>The parser detected discarded durable content.</learned>
+		</summary>
+		<observation>
+				<type>discovery</type>
+				<title>Parser data loss now triggers repair</title>
+				<narrative>A one-shot repair preserves durable observer content that malformed XML would discard.</narrative>
+				<facts><fact>Parser-confirmed data loss triggers one XML repair call.</fact></facts>
+				<concepts><concept>problem-solution</concept></concepts>
+				<files_read></files_read><files_modified></files_modified>`;
+		const repaired = `<observation>
+			<type>discovery</type>
+			<title>Parser data loss now triggers repair</title>
+			<narrative>A one-shot repair preserves durable observer content that malformed XML would discard.</narrative>
+			<facts><fact>Parser-confirmed data loss triggers one XML repair call.</fact></facts>
+			<concepts><concept>problem-solution</concept></concepts>
+			<files_read></files_read><files_modified></files_modified>
+		</observation>
+		<summary><request>Preserve the parser fix</request><learned>The parser detected discarded durable content.</learned></summary>`;
+		const observer = {
+			observe: async (system: string, user: string) => {
+				calls.push({ system, user });
+				return {
+					raw: calls.length === 1 ? lossy : repaired,
+					parsed: null,
+					provider: "test",
+					model: "test-model",
+				};
+			},
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		await ingest(buildPayload(), store, { observer } as unknown as IngestOptions);
+
+		expect(calls).toHaveLength(2);
+		expect(calls[1]?.system).toContain("previous reply was invalid");
+		expect(calls[1]?.user).toContain(lossy);
+		expect(
+			store.recent(10).some((memory) => memory.title === "Parser data loss now triggers repair"),
+		).toBe(true);
+	});
+
+	it("retains valid initial content when the parser repair returns no output", async () => {
+		const calls: Array<{ system: string; user: string }> = [];
+		const partiallyRetained = `<observation>
+			<type>discovery</type>
+			<title>Initial valid lesson survives repair failure</title>
+			<narrative>The parser retained this valid observation before detecting another malformed block.</narrative>
+		</observation>
+		<summary>
+			<request>Keep valid initial content</request>
+			<notes><observation></notes>
+		</summary>`;
+		const observer = {
+			observe: async (system: string, user: string) => {
+				calls.push({ system, user });
+				return {
+					raw: calls.length === 1 ? partiallyRetained : null,
+					parsed: null,
+					provider: "test",
+					model: "test-model",
+				};
+			},
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		await ingest(buildPayload(), store, { observer } as unknown as IngestOptions);
+
+		expect(calls).toHaveLength(2);
+		expect(
+			store
+				.recent(10)
+				.some((memory) => memory.title === "Initial valid lesson survives repair failure"),
+		).toBe(true);
+	});
+
+	it("retains valid initial content when the parser repair throws", async () => {
+		let callCount = 0;
+		const partiallyRetained = `<observation>
+			<type>discovery</type>
+			<title>Initial valid lesson survives repair exception</title>
+			<narrative>The parser retained this valid observation before repair failed.</narrative>
+		</observation><observation><type>bugfix</type><title>Truncated`;
+		const observer = {
+			observe: async () => {
+				callCount += 1;
+				if (callCount === 2) throw new Error("repair transport failed");
+				return {
+					raw: partiallyRetained,
+					parsed: null,
+					provider: "test",
+					model: "test-model",
+				};
+			},
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		await ingest(buildPayload(), store, { observer } as unknown as IngestOptions);
+
+		expect(callCount).toBe(2);
+		expect(
+			store
+				.recent(10)
+				.some((memory) => memory.title === "Initial valid lesson survives repair exception"),
+		).toBe(true);
+	});
+
+	it("retains valid initial content when a clean repair returns different observations", async () => {
+		const calls: string[] = [];
+		const partiallyRetained = `<observation>
+			<type>discovery</type>
+			<title>Session ownership prevents stale refresh races</title>
+			<narrative>The active session must own the refresh result before replacing authentication state.</narrative>
+		</observation>
+		<observation><type>discovery</type><title>Truncated replacement`;
+		const disjointRepair = `<observation>
+			<type>discovery</type>
+			<title>Cache eviction uses bounded batches</title>
+			<narrative>The clean response describes a different durable outcome.</narrative>
+		</observation>`;
+		const observer = {
+			observe: async () => {
+				calls.push("observe");
+				return {
+					raw: calls.length === 1 ? partiallyRetained : disjointRepair,
+					parsed: null,
+					provider: "test",
+					model: "test-model",
+				};
+			},
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		await ingest(buildPayload(), store, { observer } as unknown as IngestOptions);
+
+		expect(calls).toHaveLength(2);
+		expect(store.recent(10).map((memory) => memory.title)).toContain(
+			"Session ownership prevents stale refresh races",
+		);
+		expect(
+			store.recent(10).some((memory) => memory.title === "Cache eviction uses bounded batches"),
+		).toBe(false);
 	});
 
 	it("suppresses telemetry observations with capture routing enabled", async () => {
@@ -1279,7 +2846,7 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 
 		await expect(
 			ingest(payload, store, { observer: mixedObserver } as unknown as IngestOptions),
-		).rejects.toThrow("observer produced no storable output for raw-event flush");
+		).rejects.toThrow("observer repair remained lossy during raw-event flush");
 
 		expect(store.recent(10)).toHaveLength(0);
 	});
@@ -1397,7 +2964,7 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 					};
 				}
 				return {
-					raw: `<summary><request>Check restart state</request><completed>Confirmed the observer needed an XML retry.</completed></summary>`,
+					raw: `<observation><type>discovery</type><title>current pack stats and restart state</title><subtitle>current pack stats and restart state</subtitle><narrative>Got it — the session inspected current pack stats and restart state.</narrative><concepts><concept>how-it-works</concept></concepts></observation><summary><investigated>the session inspected current pack stats and restart state</investigated></summary>`,
 					parsed: null,
 					provider: "test",
 					model: "test-model",
@@ -1426,7 +2993,9 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 
 		expect(calls).toBe(2);
 		const memories = store.recent(10);
-		expect(memories[0]?.title).toBe("Check restart state");
+		expect(memories.some((memory) => memory.title === "current pack stats and restart state")).toBe(
+			true,
+		);
 	});
 
 	it("still fails raw-event flush when observer stays non-XML after retry", async () => {

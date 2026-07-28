@@ -35,7 +35,11 @@ import {
 	projectAdapterToolEvent,
 } from "./ingest-events.js";
 import { isLowSignalObservation } from "./ingest-filters.js";
-import { buildObserverPrompt, truncateObserverTranscript } from "./ingest-prompts.js";
+import {
+	buildObserverPrompt,
+	buildObserverRepairPrompt,
+	truncateObserverTranscript,
+} from "./ingest-prompts.js";
 import { type CaptureRoutedObservation, routeObservationsForCapture } from "./ingest-routing.js";
 import {
 	buildTranscript,
@@ -55,7 +59,12 @@ import type {
 	SessionContext,
 	ToolEvent,
 } from "./ingest-types.js";
-import { hasMeaningfulObservation, parseObserverResponse } from "./ingest-xml-parser.js";
+import {
+	hasMeaningfulObservation,
+	parseObserverResponse,
+	shouldPreferRepairedObserverResponse,
+	shouldRepairObserverResponse,
+} from "./ingest-xml-parser.js";
 import { type ObserverClient, ObserverClient as ObserverClientImpl } from "./observer-client.js";
 import { resolveProject } from "./project.js";
 import * as schema from "./schema.js";
@@ -279,12 +288,6 @@ export interface IngestOptions {
 	storeTyped?: boolean;
 }
 
-function hasStructuredObserverOutput(parsed: ParsedOutput): boolean {
-	return (
-		parsed.observations.length > 0 || parsed.summary !== null || parsed.skipSummaryReason !== null
-	);
-}
-
 async function observeStructuredOutput(
 	observer: ObserverClient,
 	system: string,
@@ -294,7 +297,7 @@ async function observeStructuredOutput(
 	const firstParsed = first.raw
 		? parseObserverResponse(first.raw)
 		: { observations: [], summary: null, skipSummaryReason: null };
-	if (!first.raw || hasStructuredObserverOutput(firstParsed)) {
+	if (!shouldRepairObserverResponse(first.raw, firstParsed)) {
 		return {
 			raw: first.raw,
 			parsed: firstParsed,
@@ -303,12 +306,34 @@ async function observeStructuredOutput(
 		};
 	}
 
-	const repairSystem = `${system}\n\nYour previous reply was invalid because it did not follow the required XML-only schema. Rewrite the same analysis as valid XML only. Do not include prose outside XML.`;
-	const repairUser = `${user}\n\nPrevious invalid response to rewrite as valid XML:\n${first.raw}`;
-	const repaired = await observer.observe(repairSystem, repairUser);
+	const repairPrompt = buildObserverRepairPrompt(
+		system,
+		user,
+		first.raw as string,
+		observer.maxChars,
+	);
+	let repaired: Awaited<ReturnType<ObserverClient["observe"]>>;
+	try {
+		repaired = await observer.observe(repairPrompt.system, repairPrompt.user);
+	} catch {
+		return {
+			raw: first.raw,
+			parsed: firstParsed,
+			provider: first.provider,
+			model: first.model,
+		};
+	}
 	const repairedParsed = repaired.raw
 		? parseObserverResponse(repaired.raw)
 		: { observations: [], summary: null, skipSummaryReason: null };
+	if (!shouldPreferRepairedObserverResponse(firstParsed, repaired.raw, repairedParsed, first.raw)) {
+		return {
+			raw: first.raw,
+			parsed: firstParsed,
+			provider: first.provider,
+			model: first.model,
+		};
+	}
 	return {
 		raw: repaired.raw,
 		parsed: repairedParsed,
@@ -546,6 +571,15 @@ export async function ingest(
 		// ------------------------------------------------------------------
 		const rawText = response.raw;
 		const parsed = response.parsed;
+		if (
+			sessionContext?.flusher === "raw_events" &&
+			(parsed.observations.length > 0 ||
+				parsed.summary !== null ||
+				parsed.skipSummaryReason !== null) &&
+			shouldRepairObserverResponse(rawText, parsed)
+		) {
+			throw new Error("observer repair remained lossy during raw-event flush");
+		}
 		const observerStatus = selectedObserver.getStatus();
 
 		let observationsToStore: CaptureRoutedObservation[] = [];

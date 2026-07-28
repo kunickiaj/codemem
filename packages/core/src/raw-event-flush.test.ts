@@ -159,6 +159,106 @@ describe("flushRawEvents max retry", () => {
 		expect(batch.status).toBe("failed");
 	});
 
+	it("keeps a lossy batch retryable when the repair is rejected", async () => {
+		const sessionId = "ses_rejected_lossy_repair";
+		seedEvents(sessionId);
+		let callCount = 0;
+		const lossy = `<observation>
+			<type>discovery</type><title>Retained result</title>
+			<narrative>Keep this valid observation.</narrative>
+		</observation><observation><type>bugfix</type><title>Truncated result`;
+		const unrelatedRepair = `<observation>
+			<type>discovery</type><title>Unrelated result</title>
+			<narrative>This does not recover the truncated block.</narrative>
+		</observation>`;
+		const observer = {
+			observe: async () => {
+				callCount += 1;
+				return {
+					raw: callCount === 1 ? lossy : unrelatedRepair,
+					parsed: null,
+					provider: "test",
+					model: "test-model",
+				};
+			},
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		await expect(
+			flushRawEvents(store, { observer } as unknown as IngestOptions, {
+				opencodeSessionId: sessionId,
+				source: "opencode",
+				cwd: null,
+				project: null,
+				startedAt: null,
+				maxEvents: null,
+			}),
+		).rejects.toThrow("observer repair remained lossy during raw-event flush");
+
+		expect(callCount).toBe(2);
+		expect(store.rawEventFlushState(sessionId, "opencode")).toBe(-1);
+		const batch = store.db
+			.prepare(
+				"SELECT status, error_message FROM raw_event_flush_batches WHERE opencode_session_id = ?",
+			)
+			.get(sessionId) as { status: string; error_message: string };
+		expect(batch.status).toBe("failed");
+		expect(batch.error_message).toBe(
+			"Test returned structurally incomplete output that could not be repaired.",
+		);
+		expect(store.recent(10)).toHaveLength(0);
+	});
+
+	it("keeps a lossy skip fallback retryable when repair cannot recover it", async () => {
+		const sessionId = "ses_lossy_skip_repair";
+		seedEvents(sessionId);
+		let callCount = 0;
+		const observer = {
+			observe: async () => {
+				callCount += 1;
+				return {
+					raw:
+						callCount === 1
+							? `<skip_summary reason="low-signal"/><observation><type>bugfix</type><title>Truncated durable result`
+							: `<summary><request>Unrelated repair</request></summary>`,
+					parsed: null,
+					provider: "test",
+					model: "test-model",
+				};
+			},
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		await expect(
+			flushRawEvents(store, { observer } as unknown as IngestOptions, {
+				opencodeSessionId: sessionId,
+				source: "opencode",
+				cwd: null,
+				project: null,
+				startedAt: null,
+				maxEvents: null,
+			}),
+		).rejects.toThrow("observer repair remained lossy during raw-event flush");
+
+		expect(callCount).toBe(2);
+		expect(store.rawEventFlushState(sessionId, "opencode")).toBe(-1);
+		const batch = store.db
+			.prepare("SELECT status FROM raw_event_flush_batches WHERE opencode_session_id = ?")
+			.get(sessionId) as { status: string };
+		expect(batch.status).toBe("failed");
+		expect(store.recent(10)).toHaveLength(0);
+	});
+
 	it("uses default max of 5 when env var is not set", async () => {
 		delete process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS;
 		const sessionId = "ses_default_max";

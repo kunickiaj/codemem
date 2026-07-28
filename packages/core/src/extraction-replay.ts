@@ -13,7 +13,11 @@ import {
 	projectAdapterToolEvent,
 } from "./ingest-events.js";
 import { isLowSignalObservation } from "./ingest-filters.js";
-import { buildObserverPrompt, truncateObserverTranscript } from "./ingest-prompts.js";
+import {
+	buildObserverPrompt,
+	buildObserverRepairPrompt,
+	truncateObserverTranscript,
+} from "./ingest-prompts.js";
 import {
 	buildTranscript,
 	deriveRequest,
@@ -31,11 +35,17 @@ import type {
 	SessionContext,
 	ToolEvent,
 } from "./ingest-types.js";
-import { parseObserverResponse, SUPPORTED_OBSERVATION_KINDS } from "./ingest-xml-parser.js";
+import {
+	parseObserverResponse,
+	SUPPORTED_OBSERVATION_KINDS,
+	shouldPreferRepairedObserverResponse,
+	shouldRepairObserverResponse,
+} from "./ingest-xml-parser.js";
 import {
 	type ObserverClient,
 	ObserverClient as ObserverClientImpl,
 	type ObserverConfig,
+	type ObserverStatus,
 	type ObserverTokenUsage,
 } from "./observer-client.js";
 import { resolveProject } from "./project.js";
@@ -53,6 +63,15 @@ function normalizePath(path: string, repoRoot: string | null): string {
 
 function normalizePaths(paths: string[], repoRoot: string | null): string[] {
 	return paths.map((p) => normalizePath(p, repoRoot)).filter(Boolean);
+}
+
+function snapshotObserverStatus(observer: ObserverClient): ObserverStatus {
+	const status = observer.getStatus();
+	return {
+		...status,
+		auth: { ...status.auth },
+		...(status.lastError ? { lastError: { ...status.lastError } } : {}),
+	};
 }
 
 function summaryBody(summary: ParsedSummary): string {
@@ -105,6 +124,7 @@ async function observeStructuredOutput(
 		model: string;
 		elapsedMs: number | null;
 		usage: ObserverTokenUsage | null;
+		status: ObserverStatus;
 	};
 	repaired: {
 		raw: string | null;
@@ -113,6 +133,7 @@ async function observeStructuredOutput(
 		model: string;
 		elapsedMs: number | null;
 		usage: ObserverTokenUsage | null;
+		status: ObserverStatus;
 	} | null;
 }> {
 	const first = await observer.observe(system, user);
@@ -126,19 +147,24 @@ async function observeStructuredOutput(
 		model: first.model,
 		elapsedMs: first.elapsedMs ?? null,
 		usage: first.usage ?? null,
+		status: snapshotObserverStatus(observer),
 	};
-	if (
-		!first.raw ||
-		firstParsed.observations.length > 0 ||
-		firstParsed.summary !== null ||
-		firstParsed.skipSummaryReason !== null
-	) {
+	if (!shouldRepairObserverResponse(first.raw, firstParsed)) {
 		return { initial, repaired: null };
 	}
 
-	const repairSystem = `${system}\n\nYour previous reply was invalid because it did not follow the required XML-only schema. Rewrite the same analysis as valid XML only. Do not include prose outside XML.`;
-	const repairUser = `${user}\n\nPrevious invalid response to rewrite as valid XML:\n${first.raw}`;
-	const repaired = await observer.observe(repairSystem, repairUser);
+	const repairPrompt = buildObserverRepairPrompt(
+		system,
+		user,
+		first.raw as string,
+		observer.maxChars,
+	);
+	let repaired: Awaited<ReturnType<ObserverClient["observe"]>>;
+	try {
+		repaired = await observer.observe(repairPrompt.system, repairPrompt.user);
+	} catch {
+		return { initial, repaired: null };
+	}
 	const repairedParsed = repaired.raw
 		? parseObserverResponse(repaired.raw)
 		: { observations: [], summary: null, skipSummaryReason: null };
@@ -151,6 +177,7 @@ async function observeStructuredOutput(
 			model: repaired.model,
 			elapsedMs: repaired.elapsedMs ?? null,
 			usage: repaired.usage ?? null,
+			status: snapshotObserverStatus(observer),
 		},
 	};
 }
@@ -354,9 +381,11 @@ function buildReplayItems(
 		});
 	}
 	if (parsed.summary && !parsed.skipSummaryReason) {
-		const summary = parsed.summary;
-		summary.filesRead = normalizePaths(summary.filesRead, batch.cwd);
-		summary.filesModified = normalizePaths(summary.filesModified, batch.cwd);
+		const summary = {
+			...parsed.summary,
+			filesRead: normalizePaths(parsed.summary.filesRead, batch.cwd),
+			filesModified: normalizePaths(parsed.summary.filesModified, batch.cwd),
+		};
 		let request = summary.request;
 		if (isTrivialRequest(request)) {
 			const derived = deriveRequest(summary);
@@ -607,11 +636,6 @@ async function replayPreparedBatch(
 	const configuredModel = observer.requestedModel ?? observer.model;
 	const response = await observeStructuredOutput(observer, prepared.system, prepared.user);
 	const requestedModel = configuredModel || response.initial.model;
-	const observerStatus = observer.getStatus();
-	const modelFallbackApplied = observerStatus.modelFallbackApplied === true;
-	const resolvedModel = modelFallbackApplied
-		? (observerStatus.actualModel ?? null)
-		: (observerStatus.actualModel ?? response.initial.model);
 	const session = {
 		id: prepared.batch.session_id,
 		project: prepared.batch.project,
@@ -640,8 +664,25 @@ async function replayPreparedBatch(
 				prepared.scenario,
 			)
 		: null;
-	const finalResponse = response.repaired ?? response.initial;
-	const evaluation = repairedEvaluation ?? initialEvaluation;
+	const preferRepaired = response.repaired
+		? shouldPreferRepairedObserverResponse(
+				response.initial.parsed,
+				response.repaired.raw,
+				response.repaired.parsed,
+				response.initial.raw,
+			)
+		: false;
+	const finalResponse = preferRepaired
+		? (response.repaired as NonNullable<typeof response.repaired>)
+		: response.initial;
+	const observerStatus = finalResponse.status;
+	const modelFallbackApplied = observerStatus.modelFallbackApplied === true;
+	const resolvedModel = modelFallbackApplied
+		? (observerStatus.actualModel ?? null)
+		: (observerStatus.actualModel ?? finalResponse.model);
+	const evaluation = preferRepaired
+		? (repairedEvaluation as NonNullable<typeof repairedEvaluation>)
+		: initialEvaluation;
 	const initialClassification = classifyReplayResult({
 		raw: response.initial.raw,
 		evaluation: initialEvaluation,
@@ -659,15 +700,15 @@ async function replayPreparedBatch(
 	const repairedDiagnostics = response.repaired
 		? evaluateExtractionStructure(response.repaired.raw ?? "", response.repaired.parsed)
 		: null;
-	const repairApplied = response.repaired !== null;
+	const repairAttempted = response.repaired !== null;
 	const totalElapsedMs =
-		response.initial.elapsedMs != null && (!repairApplied || response.repaired?.elapsedMs != null)
+		response.initial.elapsedMs != null && (!repairAttempted || response.repaired?.elapsedMs != null)
 			? response.initial.elapsedMs + (response.repaired?.elapsedMs ?? 0)
 			: null;
 	const totalUsage = sumObserverUsage(
 		response.initial.usage,
 		response.repaired?.usage ?? null,
-		repairApplied,
+		repairAttempted,
 	);
 	const transport =
 		observerStatus.auth.type === "codex_consumer" ||
@@ -703,7 +744,7 @@ async function replayPreparedBatch(
 			reasoningSummary: observer.reasoningSummary,
 			maxOutputTokens: observer.maxOutputTokens,
 			temperature: observer.temperature,
-			repairApplied,
+			repairApplied: preferRepaired,
 			initialRaw: response.initial.raw,
 			initialElapsedMs: response.initial.elapsedMs,
 			initialUsage: response.initial.usage,
@@ -718,7 +759,9 @@ async function replayPreparedBatch(
 			totalElapsedMs,
 			totalUsage,
 			parsed: finalResponse.parsed,
-			diagnostics: repairedDiagnostics ?? initialDiagnostics,
+			diagnostics: preferRepaired
+				? (repairedDiagnostics as NonNullable<typeof repairedDiagnostics>)
+				: initialDiagnostics,
 		},
 		observerContext: prepared.observerContext,
 		initialClassification,

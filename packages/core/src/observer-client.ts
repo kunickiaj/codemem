@@ -1592,11 +1592,13 @@ export class ObserverClient {
 		const maxChars = this.maxChars;
 		const minUserBudget = Math.floor(maxChars * 0.25);
 		const systemBudget = Math.max(0, maxChars - minUserBudget);
-		const clippedSystem =
-			systemPrompt.length > systemBudget ? systemPrompt.slice(0, systemBudget) : systemPrompt;
+		const clippedSystem = (
+			systemPrompt.length > systemBudget ? systemPrompt.slice(0, systemBudget) : systemPrompt
+		).toWellFormed();
 		const userBudget = Math.max(minUserBudget, maxChars - clippedSystem.length);
-		const clippedUser =
-			userPrompt.length > userBudget ? userPrompt.slice(0, userBudget) : userPrompt;
+		const clippedUser = (
+			userPrompt.length > userBudget ? userPrompt.slice(0, userBudget) : userPrompt
+		).toWellFormed();
 
 		try {
 			if (this.runtime === "claude_sidecar") {

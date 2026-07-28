@@ -58,6 +58,9 @@ function summarizeFlushFailure(exc: Error, provider: string | null | undefined):
 	) {
 		return `${providerTitle} returned no usable output for raw-event processing.`;
 	}
+	if (rawMessage === "observer repair remained lossy during raw-event flush") {
+		return `${providerTitle} returned structurally incomplete output that could not be repaired.`;
+	}
 	if (/parse|xml|json/i.test(rawMessage)) {
 		return `${providerTitle} response could not be processed.`;
 	}

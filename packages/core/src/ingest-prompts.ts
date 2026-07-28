@@ -51,22 +51,11 @@ If nothing meaningful happened AND nothing was learned:
 - Output no <observation> blocks
 - Output <skip_summary reason="low-signal"/> instead of a <summary> block.`;
 
-const WORTHINESS_GUIDANCE = `Observation worthiness bar — an <observation> must record a durable lesson:
-a constraint, gotcha, root cause, decision with rationale, or how-something-works
-insight that changes how future work should be done.
-Before emitting an observation, ask: "If a future session never reads this, will it repeat a mistake or re-derive something?"
-If the answer is no, do not emit it — the <summary> already records what happened.
-
-Routine activity is NOT an observation, even when it succeeded and even when the
-session is long or busy. The following belong in the <summary> ONLY:
-- release/CI/pipeline status narration ("workflow is running/passed for tag X")
-- review or validation passes that found no issues
-- context/docs lookups and their results ("no repo-local context found; global standards used")
-- restating workflow policy already active in the session (delegation rules, review gates, commit conventions)
-- bootstrap/setup narration (agent init, plugin loading, workspace detection)
-
-Emitting ZERO <observation> blocks with a normal <summary> is correct and common
-for routine sessions (releases, review passes, dependency bumps, status checks).`;
+const WORTHINESS_GUIDANCE = `Observation worthiness policy:
+- Emit an <observation> only for a durable, reusable lesson such as a constraint, root cause, decision with rationale, or how-it-works insight.
+- When a durable lesson exists, emit it as an <observation>; do not leave it only in <summary>.
+- Routine status, review, setup, and workflow narration belongs only in <summary>.
+- Zero observations is valid when the session contains no durable lesson.`;
 
 const NARRATIVE_GUIDANCE = `Create narratives that tell the complete story:
 - Context: What was the problem or goal? What prompted this work?
@@ -355,6 +344,38 @@ export function buildObserverPrompt(context: ObserverContext): {
 	const user = userBlocks.join("\n\n").trim();
 
 	return { system, user };
+}
+
+/** Build the one-shot prompt used to repair malformed observer XML. */
+export function buildObserverRepairPrompt(
+	system: string,
+	user: string,
+	previousRaw: string,
+	maxChars = 12_000,
+): { system: string; user: string } {
+	const repairDirective =
+		"Your previous reply was invalid because it did not follow the required XML-only schema. " +
+		"Rewrite it as valid XML only, using only wording supported verbatim by your previous reply. " +
+		'Do not add, infer, or rephrase details. If the reply was only a short acknowledgement or another low-signal response, emit only <skip_summary reason="low-signal"/>. ' +
+		"Otherwise emit a <summary> whose fields use phrases from the previous reply, optionally plus one <observation>. " +
+		"For that observation, copy the entire previous reply into <narrative>; use single-clause phrases from it for <title>, <subtitle>, and <fact>; preserve negation words; " +
+		"use only the fixed concept taxonomy and file paths that literally appear in the previous reply. Do not include prose outside XML.";
+	const repairSystem = `${repairDirective}\n\n${system}`;
+	const minUserBudget = Math.floor(maxChars * 0.25);
+	const systemBudget = Math.max(0, maxChars - minUserBudget);
+	const clippedSystemLength = Math.min(repairSystem.length, systemBudget);
+	const userBudget = Math.max(minUserBudget, maxChars - clippedSystemLength);
+	const previousPrefix = "Previous invalid response to rewrite as valid XML:\n";
+	const contextPrefix = "\n\nOriginal session context:\n";
+	const contentBudget = Math.max(0, userBudget - previousPrefix.length - contextPrefix.length);
+	const previousBudget = Math.floor(contentBudget * 0.7);
+	const contextBudget = contentBudget - previousBudget;
+	const previousResponse = truncateMiddle(previousRaw.trim(), previousBudget);
+	const originalContext = truncateMiddle(user.trim(), contextBudget);
+	return {
+		system: repairSystem,
+		user: `${previousPrefix}${previousResponse}${contextPrefix}${originalContext}`,
+	};
 }
 
 export function truncateObserverTranscript(transcript: string, maxChars: number): string {

@@ -1025,6 +1025,33 @@ describe("ObserverClient.observe()", () => {
 		expect(result.usage).toEqual({ inputTokens: 211, outputTokens: 37, totalTokens: 248 });
 	});
 
+	it("normalizes unpaired UTF-16 surrogates after prompt clipping", async () => {
+		const apiKey = fixtureToken("openai-well-formed-unicode");
+		let capturedInput: Array<{ role: string; content: Array<{ text: string }> }> = [];
+		globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body ?? "{}")) as {
+				input?: Array<{ role: string; content: Array<{ text: string }> }>;
+			};
+			capturedInput = body.input ?? [];
+			return new Response(JSON.stringify({ output_text: "ok" }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		}) as typeof globalThis.fetch;
+		const client = new ObserverClient({
+			...makeClient("openai", apiKey).toConfig(),
+			observerMaxChars: 100,
+		});
+
+		// A 100-char budget gives the system prompt 75 UTF-16 units; the emoji is split at 75.
+		await client.observe(`${"s".repeat(74)}😀`, "user\uDC00");
+
+		const texts = capturedInput.flatMap((item) => item.content.map((content) => content.text));
+		expect(texts).toHaveLength(2);
+		expect(texts.every((text) => text.isWellFormed())).toBe(true);
+		expect(texts.join("\n")).toContain("�");
+	});
+
 	it("keeps token usage isolated across concurrent observe calls", async () => {
 		const apiKey = fixtureToken("openai-concurrent-usage");
 		globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
