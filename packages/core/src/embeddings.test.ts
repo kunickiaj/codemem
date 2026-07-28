@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { chunkText, hashText, serializeFloat32 } from "./embeddings.js";
+import { chunkText, embeddingDataToFloat32, hashText, serializeFloat32 } from "./embeddings.js";
 
 describe("hashText", () => {
 	it("returns a 64-char hex SHA-256 digest", () => {
@@ -58,6 +58,36 @@ describe("chunkText", () => {
 		// No sentence/paragraph breaks — should still produce chunks
 		const chunks = chunkText(text, 100);
 		expect(chunks.length).toBeGreaterThanOrEqual(1);
+	});
+});
+
+describe("embeddingDataToFloat32", () => {
+	it("converts numeric typed arrays to Float32Array", () => {
+		const vector = embeddingDataToFloat32(new Float64Array([1.5, -2.25, 3]));
+
+		expect(vector).toEqual(new Float32Array([1.5, -2.25, 3]));
+	});
+
+	it("copies source storage", () => {
+		const source = new Float32Array([1, 2, 3]);
+		const vector = embeddingDataToFloat32(source);
+
+		source[0] = 99;
+		expect(vector[0]).toBe(1);
+		expect(vector.buffer).not.toBe(source.buffer);
+	});
+
+	it("rejects bigint data", () => {
+		expect(() => embeddingDataToFloat32(new BigInt64Array([1n]))).toThrow(TypeError);
+	});
+
+	it.each([
+		Number.NaN,
+		Number.POSITIVE_INFINITY,
+		Number.NEGATIVE_INFINITY,
+		Number.MAX_VALUE,
+	])("rejects non-finite or unrepresentable data: %s", (value) => {
+		expect(() => embeddingDataToFloat32([value])).toThrow(TypeError);
 	});
 });
 

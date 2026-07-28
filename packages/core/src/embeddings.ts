@@ -24,6 +24,22 @@ export interface EmbeddingClient {
 	embed(texts: string[]): Promise<Float32Array[]>;
 }
 
+/** Copy validated embedding model data into owned Float32 storage. */
+export function embeddingDataToFloat32(data: ArrayLike<number | bigint>): Float32Array {
+	const vector = new Float32Array(data.length);
+	for (let index = 0; index < data.length; index++) {
+		const value = data[index];
+		const float32Value = typeof value === "number" ? Math.fround(value) : Number.NaN;
+		if (!Number.isFinite(float32Value)) {
+			throw new TypeError(
+				`Embedding model returned non-finite, non-numeric, or unrepresentable tensor data at index ${index}`,
+			);
+		}
+		vector[index] = float32Value;
+	}
+	return vector;
+}
+
 // ---------------------------------------------------------------------------
 // Text helpers (ports of semantic.py)
 // ---------------------------------------------------------------------------
@@ -169,7 +185,7 @@ async function createTransformersClient(model: string): Promise<EmbeddingClient>
 			for (const text of texts) {
 				const output = await extractor(text, { pooling: "mean", normalize: true });
 				// output.data is a Float32Array of shape [1, dims]
-				results.push(new Float32Array(output.data));
+				results.push(embeddingDataToFloat32(output.data));
 			}
 			return results;
 		},
