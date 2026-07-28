@@ -48,7 +48,7 @@ describe("buildObserverPrompt", () => {
 		);
 	});
 
-	it("sets a per-observation worthiness bar and allows zero observations for routine sessions", () => {
+	it("uses the concise worthiness policy validated against the observer output schema", () => {
 		const { system } = buildObserverPrompt({
 			project: "codemem",
 			userPrompt: "Cut release 0.99.0",
@@ -61,19 +61,22 @@ describe("buildObserverPrompt", () => {
 			includeSummary: true,
 		});
 
-		expect(system).toContain("Observation worthiness bar");
+		expect(system).toContain("Observation worthiness policy:");
 		expect(system).toContain(
-			'"If a future session never reads this, will it repeat a mistake or re-derive something?"',
+			"Emit an <observation> only for a durable, reusable lesson such as a constraint, root cause, decision with rationale, or how-it-works insight.",
 		);
-		expect(system).toContain("Routine activity is NOT an observation");
-		expect(system).toContain("release/CI/pipeline status narration");
-		expect(system).toContain("review or validation passes that found no issues");
-		expect(system).toContain("context/docs lookups and their results");
-		expect(system).toContain("restating workflow policy already active in the session");
-		expect(system).toContain("bootstrap/setup narration");
 		expect(system).toContain(
-			"Emitting ZERO <observation> blocks with a normal <summary> is correct and common",
+			"When a durable lesson exists, emit it as an <observation>; do not leave it only in <summary>.",
 		);
+		expect(system).toContain(
+			"Routine status, review, setup, and workflow narration belongs only in <summary>.",
+		);
+		expect(system).toContain(
+			"Zero observations is valid when the session contains no durable lesson.",
+		);
+		// The long v0.38 policy destabilized XML shape across both gpt-5.4 tiers.
+		expect(system).not.toContain("If a future session never reads this");
+		expect(system).not.toContain("release/CI/pipeline status narration");
 		// The old quota forced observations out of routine sessions; it must stay gone.
 		expect(system).not.toContain("ALWAYS emit at least one <observation> block");
 		expect(system).not.toContain("Summary-only output is not sufficient for a rich session.");
