@@ -1905,6 +1905,10 @@ function recipientPolicyPresenceCapabilityExpiresAt(
 	return expiresAtMs;
 }
 
+function recipientPolicyEnrollmentValueIsValid(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0 && value === value.trim();
+}
+
 export function createRecipientPolicyReconcilerEffects(
 	store: MemoryStore,
 	options: {
@@ -2015,6 +2019,7 @@ export function createRecipientPolicyReconcilerEffects(
 			const observedAt = now();
 			const enrollments = await listDevices({
 				groupId: targetOptions.groupId,
+				includeDisabled: true,
 				remoteUrl: targetOptions.remoteUrl,
 				adminSecret: targetOptions.adminSecret,
 			}).catch(() => {
@@ -2026,43 +2031,46 @@ export function createRecipientPolicyReconcilerEffects(
 					recipientPolicyPresenceCapabilityExpiresAt(enrollment, observedAt),
 				]),
 			);
-			const mapped = enrollments.flatMap((enrollment) => {
+			const mapped = enrollments.map((enrollment) => {
 				if (
 					enrollment.group_id !== targetOptions.groupId ||
-					typeof enrollment.device_id !== "string" ||
-					typeof enrollment.public_key !== "string" ||
-					typeof enrollment.fingerprint !== "string" ||
+					!recipientPolicyEnrollmentValueIsValid(enrollment.device_id) ||
+					!recipientPolicyEnrollmentValueIsValid(enrollment.public_key) ||
+					!recipientPolicyEnrollmentValueIsValid(enrollment.fingerprint) ||
 					fingerprintPublicKey(enrollment.public_key) !== enrollment.fingerprint ||
-					enrollment.enabled !== 1
+					(enrollment.enabled !== 0 && enrollment.enabled !== 1) ||
+					(enrollment.identity_id !== null &&
+						!recipientPolicyEnrollmentValueIsValid(enrollment.identity_id))
 				) {
 					throw new Error("recipient_policy_snapshot_invalid");
 				}
-				if (enrollment.identity_id == null) return [];
-				if (typeof enrollment.identity_id !== "string") {
-					throw new Error("recipient_policy_snapshot_invalid");
-				}
-				return [
-					{
-						deviceId: enrollment.device_id,
-						identityId: enrollment.identity_id,
-						publicKey: enrollment.public_key,
-						fingerprint: enrollment.fingerprint,
-					},
-				];
+				return {
+					deviceId: enrollment.device_id,
+					identityId: enrollment.identity_id,
+					publicKey: enrollment.public_key,
+					fingerprint: enrollment.fingerprint,
+					enabled: enrollment.enabled === 1,
+				};
 			});
 			boundaryEnrollments.set(
 				scopeId,
 				new Map(
-					mapped.map((enrollment) => [
-						enrollment.deviceId,
-						{
-							identityId: enrollment.identityId,
-							publicKey: enrollment.publicKey,
-							fingerprint: enrollment.fingerprint,
-							presenceCapabilityExpiresAtMs:
-								presenceCapabilityExpiries.get(enrollment.deviceId) ?? null,
-						},
-					]),
+					mapped.flatMap((enrollment) =>
+						enrollment.enabled && enrollment.identityId !== null
+							? [
+									[
+										enrollment.deviceId,
+										{
+											identityId: enrollment.identityId,
+											publicKey: enrollment.publicKey,
+											fingerprint: enrollment.fingerprint,
+											presenceCapabilityExpiresAtMs:
+												presenceCapabilityExpiries.get(enrollment.deviceId) ?? null,
+										},
+									] as const,
+								]
+							: [],
+					),
 				),
 			);
 			return mapped;

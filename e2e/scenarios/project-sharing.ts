@@ -18,7 +18,15 @@ interface FixtureSummary {
 	actor_id: string;
 	memories: Array<{ title: string; project: string | null; scope_id: string | null; active: number }>;
 	actors: Array<{ actor_id: string; display_name: string; status: string }>;
-	peers: Array<{ peer_device_id: string; name: string | null; actor_id: string | null }>;
+	peers: Array<{
+		peer_device_id: string;
+		name: string | null;
+		actor_id: string | null;
+		pinned_fingerprint: string | null;
+		trust_provenance: string | null;
+		discovered_via_coordinator_id: string | null;
+		discovered_via_group_id: string | null;
+	}>;
 	managed_memberships: Array<{ scope_id: string; device_id: string; status: string }>;
 	source_memberships: Array<{ device_id: string; status: string }>;
 	operations: Array<{
@@ -29,6 +37,11 @@ interface FixtureSummary {
 		recipient_device_display_name: string | null;
 	}>;
 	policy: {
+		authority_states: Array<{
+			canonical_project_identity: string;
+			authority_state: string;
+			attempt_count: number;
+		}>;
 		team_memberships: Array<{ team_id: string; identity_id: string; status: string }>;
 		identity_devices: Array<{
 			identity_id: string;
@@ -785,6 +798,186 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 			);
 		},
 		{ description: "future Project data on second device", timeoutMs: 120_000, intervalMs: 3_000 },
+	);
+
+	// Arrange: retain a local-only anchor, then disable peer-c in the exact coordinator group.
+	const localAnchor = fixture(ctx, "peer-c", "add-stale-memory", "39-seed-peer-c-local-anchor");
+	assert(
+		localAnchor.memories.some(
+			(memory) => memory.title === "policy selected stale-preview change" && memory.active === 1,
+		),
+		"second-device local anchor was not created before enrollment revocation",
+	);
+	const beforeEnrollmentDisable = fixture(
+		ctx,
+		"peer-a",
+		"summary",
+		"39-owner-before-peer-c-enrollment-disable",
+	);
+	const selectedScopeMembership = beforeEnrollmentDisable.managed_memberships.find(
+		(member) => member.device_id === peerC.device_id && member.status === "active",
+	);
+	assert(selectedScopeMembership, "peer-c was not active in the selected managed Project before disable");
+	assert(
+		beforeEnrollmentDisable.peers.some(
+			(peer) =>
+				peer.peer_device_id === peerC.device_id &&
+				peer.pinned_fingerprint &&
+				peer.trust_provenance === "coordinator_policy" &&
+				peer.discovered_via_group_id === GROUP_ID,
+		),
+		"owner did not hold group-derived coordinator-policy trust for peer-c before disable",
+	);
+	const disabledEnrollment = ctx.compose.exec(
+		"coordinator",
+		[
+			...CLI_PREFIX,
+			"sync",
+			"coordinator",
+			"disable-device",
+			GROUP_ID,
+			peerC.device_id,
+			"--db-path",
+			"/data/coordinator.sqlite",
+			"--json",
+		],
+		"39-disable-peer-c-enrollment",
+	);
+	assertStatus(disabledEnrollment.status, 0, "peer-c coordinator enrollment disable failed");
+
+	// Act: periodic owner maintenance reads the disabled enrollment and reconciles the exact Project scope.
+	let revocationAttemptCount = -1;
+	await waitFor(
+		async () => {
+			const owner = fixture(ctx, "peer-a", "summary", "39-owner-peer-c-revocation-convergence");
+			assert(
+				owner.managed_memberships.some(
+					(member) =>
+						member.scope_id === selectedScopeMembership.scope_id &&
+						member.device_id === peerC.device_id &&
+						member.status === "revoked",
+				),
+				"owner maintenance has not revoked peer-c from the selected managed Project",
+			);
+			assert(
+				owner.policy.identity_devices.some(
+					(device) => device.device_id === peerC.device_id && device.status === "active",
+				),
+				"group-scoped enrollment disable globally revoked peer-c's Identity device",
+			);
+			assert(
+				!owner.peers.some(
+					(peer) =>
+						peer.peer_device_id === peerC.device_id &&
+						(peer.pinned_fingerprint || peer.trust_provenance === "coordinator_policy"),
+				),
+				"coordinator-policy-derived peer-c trust survived the scope refresh",
+			);
+			const authority = owner.policy.authority_states.find(
+				(state) => state.canonical_project_identity === selected.workspace_identity,
+			);
+			assert(authority, "selected Project recipient-policy authority state is missing");
+			revocationAttemptCount = authority.attempt_count;
+		},
+		{ description: "group-scoped peer-c enrollment revocation", timeoutMs: 180_000, intervalMs: 3_000 },
+	);
+
+	// Act: let another deterministic maintenance tick run to exercise retry convergence.
+	await waitFor(
+		async () => {
+			const owner = fixture(
+				ctx,
+				"peer-a",
+				"summary",
+				"39-owner-peer-c-revocation-retry-attempt",
+			);
+			const authority = owner.policy.authority_states.find(
+				(state) => state.canonical_project_identity === selected.workspace_identity,
+			);
+			assert(
+				authority && authority.attempt_count > revocationAttemptCount,
+				"selected Project reconciliation retry has not advanced",
+			);
+		},
+		{ description: "idempotent enrollment revocation retry", timeoutMs: 120_000, intervalMs: 2_000 },
+	);
+	const afterRevocationRetry = fixture(
+		ctx,
+		"peer-a",
+		"summary",
+		"39-owner-after-peer-c-revocation-retry",
+	);
+	assert(
+		afterRevocationRetry.managed_memberships.filter(
+			(member) =>
+				member.scope_id === selectedScopeMembership.scope_id && member.device_id === peerC.device_id,
+		).length === 1 &&
+			afterRevocationRetry.managed_memberships.some(
+				(member) =>
+					member.scope_id === selectedScopeMembership.scope_id &&
+					member.device_id === peerC.device_id &&
+					member.status === "revoked",
+			),
+		"repeated disabled-enrollment maintenance did not remain idempotently revoked",
+	);
+	assert(
+		!afterRevocationRetry.peers.some(
+			(peer) =>
+				peer.peer_device_id === peerC.device_id &&
+				(peer.pinned_fingerprint || peer.trust_provenance === "coordinator_policy"),
+		),
+		"repeated disabled-enrollment maintenance restored coordinator-policy trust",
+	);
+
+	// Act: publish new selected-Project data and make peer-c attempt a direct refresh from the owner.
+	fixture(ctx, "peer-a", "add-after-revocation", "39-add-selected-memory-after-revocation");
+	const revokedSync = ctx.compose.exec(
+		"peer-c",
+		[
+			...CLI_PREFIX,
+			"sync",
+			"once",
+			"--db-path",
+			"/data/mem.sqlite",
+			"--peer",
+			peerA.device_id,
+			"--json",
+		],
+		"39-sync-peer-c-after-revocation",
+		180_000,
+		true,
+	);
+	assertStatus(revokedSync.status, 1, "revoked peer-c sync was not blocked by the owner");
+	const revokedSyncResult = parseJson<{
+		ok: boolean;
+		results: Array<{ peer_device_id: string; ok: boolean; error?: string }>;
+	}>(revokedSync.stdout, "39-sync-peer-c-after-revocation");
+	assert(
+		revokedSyncResult.ok === false &&
+			revokedSyncResult.results.some(
+				(result) =>
+					result.peer_device_id === peerA.device_id &&
+					result.ok === false &&
+					String(result.error ?? "").includes("unauthorized:unknown_peer"),
+			),
+		"revoked peer-c sync did not fail through the owner's trust boundary",
+	);
+	const peerCAfterRevocation = fixture(
+		ctx,
+		"peer-c",
+		"summary",
+		"39-peer-c-after-revocation-summary",
+	);
+	// Assert: revoked Project data is blocked while unrelated local data remains intact.
+	assert(
+		!peerCAfterRevocation.memories.some((memory) => memory.title === "selected after revocation"),
+		"peer-c received selected Project data after its group-scoped enrollment was revoked",
+	);
+	assert(
+		peerCAfterRevocation.memories.some(
+			(memory) => memory.title === "policy selected stale-preview change" && memory.active === 1,
+		),
+		"group-scoped enrollment revocation removed unrelated local data from peer-c",
 	);
 
 	const ownerConfigBeforePolicyProof = readConfig(

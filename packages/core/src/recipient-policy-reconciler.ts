@@ -35,6 +35,14 @@ export interface RecipientPolicyCoordinatorEffectReceipt {
 	status: "active" | "revoked";
 }
 
+export interface RecipientPolicyBoundaryEnrollment {
+	deviceId: string;
+	identityId: string | null;
+	publicKey: string;
+	fingerprint: string;
+	enabled: boolean;
+}
+
 export interface RecipientPolicyReconcilerEffects {
 	now(): string;
 	snapshot(input: {
@@ -44,9 +52,7 @@ export interface RecipientPolicyReconcilerEffects {
 	listBoundaryEnrollments(input: {
 		canonicalProjectIdentity: string;
 		scopeId: string;
-	}): Promise<
-		Array<{ deviceId: string; identityId: string; publicKey: string; fingerprint: string }>
-	>;
+	}): Promise<RecipientPolicyBoundaryEnrollment[]>;
 	probeCapability(input: {
 		deviceId: string;
 		scopeId: string;
@@ -323,40 +329,85 @@ function activeSnapshotDevices(
 }
 
 function boundaryEnrollmentIdentities(
-	enrollments: Array<{
-		deviceId: string;
-		identityId: string;
-		publicKey: string;
-		fingerprint: string;
-	}>,
-): Map<string, { identityId: string; publicKey: string; fingerprint: string }> {
-	const bindings = new Map<
-		string,
-		{ identityId: string; publicKey: string; fingerprint: string }
-	>();
+	enrollments: RecipientPolicyBoundaryEnrollment[],
+): Map<string, RecipientPolicyBoundaryEnrollment> {
+	const bindings = new Map<string, RecipientPolicyBoundaryEnrollment>();
 	for (const enrollment of enrollments) {
 		if (
 			!validId(enrollment.deviceId) ||
-			!validId(enrollment.identityId) ||
+			typeof enrollment.enabled !== "boolean" ||
+			(enrollment.identityId !== null && !validId(enrollment.identityId)) ||
 			!validId(enrollment.publicKey) ||
 			!validId(enrollment.fingerprint) ||
 			bindings.has(enrollment.deviceId)
 		) {
 			throw new Error("recipient_policy_snapshot_invalid");
 		}
-		bindings.set(enrollment.deviceId, {
-			identityId: enrollment.identityId,
-			publicKey: enrollment.publicKey,
-			fingerprint: enrollment.fingerprint,
-		});
+		bindings.set(enrollment.deviceId, enrollment);
 	}
 	return bindings;
 }
 
-function boundaryEnrollmentIdentityId(
-	binding: string | { identityId: string } | undefined,
-): string | undefined {
-	return typeof binding === "string" ? binding : binding?.identityId;
+type EnrollmentRevocationReason = "enrollment_disabled" | "enrollment_identity_conflict";
+type EnrollmentRevocationPhase = "steady_state" | "post_grant";
+
+interface EnrollmentRevocation {
+	deviceId: string;
+	reasonCode: EnrollmentRevocationReason;
+}
+
+function enrollmentRevocationReason(
+	binding: RecipientPolicyBoundaryEnrollment | undefined,
+	desiredIdentityId: string | undefined,
+): EnrollmentRevocationReason | null {
+	if (!binding) return null;
+	if (!binding.enabled) return "enrollment_disabled";
+	return desiredIdentityId &&
+		binding.identityId !== null &&
+		binding.identityId !== desiredIdentityId
+		? "enrollment_identity_conflict"
+		: null;
+}
+
+function isEnrollmentEnabledForIdentityGrant(
+	binding: RecipientPolicyBoundaryEnrollment | undefined,
+	desiredIdentityId: string | undefined,
+): boolean {
+	return Boolean(binding?.enabled && desiredIdentityId && binding.identityId === desiredIdentityId);
+}
+
+function unreachableEnrollmentRevocationCase(value: never): never {
+	throw new Error(`recipient_policy_enrollment_revocation_invalid:${String(value)}`);
+}
+
+function enrollmentRevocationStepKey(
+	reasonCode: EnrollmentRevocationReason,
+	phase: EnrollmentRevocationPhase,
+	snapshotStateKey: string,
+	deviceId: string,
+): string {
+	switch (phase) {
+		case "steady_state":
+			switch (reasonCode) {
+				case "enrollment_identity_conflict":
+					return `revoke-enrollment-conflict:${snapshotStateKey}:${deviceId}`;
+				case "enrollment_disabled":
+					return `revoke-enrollment-disabled:${snapshotStateKey}:${deviceId}`;
+				default:
+					return unreachableEnrollmentRevocationCase(reasonCode);
+			}
+		case "post_grant":
+			switch (reasonCode) {
+				case "enrollment_identity_conflict":
+					return `revoke-post-grant-enrollment-conflict:${snapshotStateKey}:${deviceId}`;
+				case "enrollment_disabled":
+					return `revoke-post-grant-enrollment-disabled:${snapshotStateKey}:${deviceId}`;
+				default:
+					return unreachableEnrollmentRevocationCase(reasonCode);
+			}
+		default:
+			return unreachableEnrollmentRevocationCase(phase);
+	}
 }
 
 function generation(db: Database, projectId: string, desiredDigest: string): number {
@@ -509,6 +560,69 @@ function validateReceipt(
 	) {
 		throw new Error("recipient_policy_effect_receipt_invalid");
 	}
+}
+
+async function applyEnrollmentRevocations(
+	db: Database,
+	input: {
+		projectId: string;
+		generation: number;
+		scopeId: string;
+		snapshotStateKey: string;
+		phase: EnrollmentRevocationPhase;
+		revocations: EnrollmentRevocation[];
+		leaseOwner: string;
+		lease: Lease;
+		effects: RecipientPolicyReconcilerEffects;
+	},
+): Promise<string[]> {
+	if (input.revocations.length === 0) return [];
+	resetParity(db, input.projectId, input.effects.now());
+	const changedDeviceIds: string[] = [];
+	for (const { deviceId, reasonCode } of input.revocations) {
+		putRecipientPolicyDenyOverlay(db, {
+			canonicalProjectIdentity: input.projectId,
+			scopeId: input.scopeId,
+			deviceId,
+			generation: input.generation,
+			reasonCode,
+			now: input.effects.now(),
+		});
+		const changed = await step(
+			db,
+			{
+				projectId: input.projectId,
+				generation: input.generation,
+				stepKey: enrollmentRevocationStepKey(
+					reasonCode,
+					input.phase,
+					input.snapshotStateKey,
+					deviceId,
+				),
+				payload: { scopeId: input.scopeId, deviceId, status: "revoked" },
+				leaseOwner: input.leaseOwner,
+				lease: input.lease,
+				now: input.effects.now,
+			},
+			async (effectId) => {
+				const receipt = await input.effects.revoke({
+					effectId,
+					canonicalProjectIdentity: input.projectId,
+					generation: input.generation,
+					scopeId: input.scopeId,
+					deviceId,
+				});
+				validateReceipt(receipt, {
+					effectId,
+					scopeId: input.scopeId,
+					deviceId,
+					status: "revoked",
+				});
+			},
+		);
+		if (changed) changedDeviceIds.push(deviceId);
+	}
+	return changedDeviceIds;
 }
 
 async function preflight(
@@ -708,60 +822,40 @@ export async function reconcileRecipientPolicyProject(
 		const desiredIdentityByDeviceId = new Map(
 			desired.devices.map((device) => [device.deviceId, device.identityId]),
 		);
-		const enrollmentConflictDeviceIds = remainingPolicyCurrentDeviceIds.filter((deviceId) => {
-			const enrollmentIdentityId = boundaryEnrollmentIdentityId(enrollmentIdentities.get(deviceId));
-			const desiredIdentityId = desiredIdentityByDeviceId.get(deviceId);
-			return Boolean(
-				enrollmentIdentityId && desiredIdentityId && enrollmentIdentityId !== desiredIdentityId,
-			);
-		});
-		if (enrollmentConflictDeviceIds.length > 0) resetParity(db, projectId, effects.now());
-		for (const deviceId of enrollmentConflictDeviceIds) {
-			putRecipientPolicyDenyOverlay(db, {
-				canonicalProjectIdentity: projectId,
-				scopeId: managedBoundary.scopeId,
-				deviceId,
+		const enrollmentRevocations: EnrollmentRevocation[] = remainingPolicyCurrentDeviceIds.flatMap(
+			(deviceId) => {
+				const reasonCode = enrollmentRevocationReason(
+					enrollmentIdentities.get(deviceId),
+					desiredIdentityByDeviceId.get(deviceId),
+				);
+				return reasonCode ? [{ deviceId, reasonCode }] : [];
+			},
+		);
+		revokedDeviceIds.push(
+			...(await applyEnrollmentRevocations(db, {
+				projectId,
 				generation: activeGeneration,
-				reasonCode: "enrollment_identity_conflict",
-				now: effects.now(),
-			});
-			const changed = await step(
-				db,
-				{
-					projectId,
-					generation: activeGeneration,
-					stepKey: `revoke-enrollment-conflict:${snapshotStateKey}:${deviceId}`,
-					payload: { scopeId: managedBoundary.scopeId, deviceId, status: "revoked" },
-					leaseOwner: input.leaseOwner,
-					lease,
-					now: effects.now,
-				},
-				async (effectId) => {
-					const receipt = await effects.revoke({
-						effectId,
-						canonicalProjectIdentity: projectId,
-						generation: activeGeneration,
-						scopeId: managedBoundary.scopeId,
-						deviceId,
-					});
-					validateReceipt(receipt, {
-						effectId,
-						scopeId: managedBoundary.scopeId,
-						deviceId,
-						status: "revoked",
-					});
-				},
-			);
-			if (changed) revokedDeviceIds.push(deviceId);
-		}
+				scopeId: managedBoundary.scopeId,
+				snapshotStateKey,
+				phase: "steady_state",
+				revocations: enrollmentRevocations,
+				leaseOwner: input.leaseOwner,
+				lease,
+				effects,
+			})),
+		);
+		const enrollmentRevokedDeviceIds = new Set(
+			enrollmentRevocations.map(({ deviceId }) => deviceId),
+		);
 		const remainingCurrentDeviceIds = remainingPolicyCurrentDeviceIds.filter(
-			(deviceId) => !enrollmentConflictDeviceIds.includes(deviceId),
+			(deviceId) => !enrollmentRevokedDeviceIds.has(deviceId),
 		);
 		const grantEligibleDeviceIds = desired.devices
-			.filter(
-				(device) =>
-					boundaryEnrollmentIdentityId(enrollmentIdentities.get(device.deviceId)) ===
+			.filter((device) =>
+				isEnrollmentEnabledForIdentityGrant(
+					enrollmentIdentities.get(device.deviceId),
 					device.identityId,
+				),
 			)
 			.map((device) => device.deviceId)
 			.toSorted();
@@ -823,8 +917,10 @@ export async function reconcileRecipientPolicyProject(
 			);
 			const changedBinding = grantDeviceIds.some(
 				(deviceId) =>
-					boundaryEnrollmentIdentityId(preGrantEnrollmentIdentities.get(deviceId)) !==
-					desiredIdentityByDeviceId.get(deviceId),
+					!isEnrollmentEnabledForIdentityGrant(
+						preGrantEnrollmentIdentities.get(deviceId),
+						desiredIdentityByDeviceId.get(deviceId),
+					),
 			);
 			if (changedBinding) {
 				resetParity(db, projectId, effects.now());
@@ -880,51 +976,34 @@ export async function reconcileRecipientPolicyProject(
 					scopeId: managedBoundary.scopeId,
 				}),
 			);
-			const changedBindingDeviceIds = grantDeviceIds.filter(
-				(deviceId) =>
-					boundaryEnrollmentIdentityId(postGrantEnrollmentIdentities.get(deviceId)) !==
-					desiredIdentityByDeviceId.get(deviceId),
-			);
-			if (changedBindingDeviceIds.length > 0) {
-				resetParity(db, projectId, effects.now());
-				for (const deviceId of changedBindingDeviceIds) {
-					putRecipientPolicyDenyOverlay(db, {
-						canonicalProjectIdentity: projectId,
-						scopeId: managedBoundary.scopeId,
-						deviceId,
-						generation: activeGeneration,
-						reasonCode: "enrollment_identity_conflict",
-						now: effects.now(),
-					});
-					const changed = await step(
-						db,
-						{
-							projectId,
-							generation: activeGeneration,
-							stepKey: `revoke-post-grant-enrollment-conflict:${snapshotStateKey}:${deviceId}`,
-							payload: { scopeId: managedBoundary.scopeId, deviceId, status: "revoked" },
-							leaseOwner: input.leaseOwner,
-							lease,
-							now: effects.now,
-						},
-						async (effectId) => {
-							const receipt = await effects.revoke({
-								effectId,
-								canonicalProjectIdentity: projectId,
-								generation: activeGeneration,
-								scopeId: managedBoundary.scopeId,
-								deviceId,
-							});
-							validateReceipt(receipt, {
-								effectId,
-								scopeId: managedBoundary.scopeId,
-								deviceId,
-								status: "revoked",
-							});
-						},
-					);
-					if (changed) revokedDeviceIds.push(deviceId);
+			const changedBindings: EnrollmentRevocation[] = grantDeviceIds.flatMap((deviceId) => {
+				const binding = postGrantEnrollmentIdentities.get(deviceId);
+				if (isEnrollmentEnabledForIdentityGrant(binding, desiredIdentityByDeviceId.get(deviceId))) {
+					return [];
 				}
+				return [
+					{
+						deviceId,
+						reasonCode:
+							enrollmentRevocationReason(binding, desiredIdentityByDeviceId.get(deviceId)) ??
+							"enrollment_identity_conflict",
+					},
+				];
+			});
+			if (changedBindings.length > 0) {
+				revokedDeviceIds.push(
+					...(await applyEnrollmentRevocations(db, {
+						projectId,
+						generation: activeGeneration,
+						scopeId: managedBoundary.scopeId,
+						snapshotStateKey,
+						phase: "post_grant",
+						revocations: changedBindings,
+						leaseOwner: input.leaseOwner,
+						lease,
+						effects,
+					})),
+				);
 				authority(db, {
 					projectId,
 					safeErrorCode: "recipient_policy_generation_stale",

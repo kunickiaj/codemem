@@ -74,12 +74,14 @@ function harness(active: string[]) {
 				identityId: "identity-a",
 				publicKey: "pk-keep",
 				fingerprint: "fp-keep",
+				enabled: true,
 			},
 			{
 				deviceId: "device-new",
 				identityId: "identity-a",
 				publicKey: "pk-new",
 				fingerprint: "fp-new",
+				enabled: true,
 			},
 		]),
 		probeCapability: vi.fn(async ({ deviceId }) => {
@@ -184,9 +186,9 @@ describe("recipient-policy reconciler executor", () => {
 				identityId: "identity-a",
 				publicKey: "pk-keep",
 				fingerprint: "fp-keep",
+				enabled: true,
 			},
 		]);
-
 		const outcome = await reconcileRecipientPolicyProject(
 			db,
 			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-boundary" },
@@ -212,12 +214,14 @@ describe("recipient-policy reconciler executor", () => {
 					identityId: "identity-a",
 					publicKey: "pk-keep",
 					fingerprint: "fp-keep",
+					enabled: true,
 				},
 				{
 					deviceId: "device-new",
 					identityId: "identity-a",
 					publicKey: "pk-new",
 					fingerprint: "fp-new",
+					enabled: true,
 				},
 			])
 			.mockResolvedValueOnce([
@@ -226,12 +230,64 @@ describe("recipient-policy reconciler executor", () => {
 					identityId: "identity-a",
 					publicKey: "pk-keep",
 					fingerprint: "fp-keep",
+					enabled: true,
 				},
 				{
 					deviceId: "device-new",
 					identityId: "identity-other",
 					publicKey: "pk-new-other",
 					fingerprint: "fp-new-other",
+					enabled: true,
+				},
+			]);
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-identity-race" },
+			effects,
+		);
+
+		expect(outcome).toMatchObject({
+			status: "stale",
+			safeErrorCode: "recipient_policy_generation_stale",
+			grantedDeviceIds: [],
+		});
+		expect(effects.grant).not.toHaveBeenCalled();
+	});
+
+	it("does not grant when the enrollment becomes disabled during preflight", async () => {
+		const { effects } = harness(["device-keep"]);
+		vi.mocked(effects.listBoundaryEnrollments)
+			.mockResolvedValueOnce([
+				{
+					deviceId: "device-keep",
+					identityId: "identity-a",
+					publicKey: "pk-keep",
+					fingerprint: "fp-keep",
+					enabled: true,
+				},
+				{
+					deviceId: "device-new",
+					identityId: "identity-a",
+					publicKey: "pk-new",
+					fingerprint: "fp-new",
+					enabled: true,
+				},
+			])
+			.mockResolvedValueOnce([
+				{
+					deviceId: "device-keep",
+					identityId: "identity-a",
+					publicKey: "pk-keep",
+					fingerprint: "fp-keep",
+					enabled: true,
+				},
+				{
+					deviceId: "device-new",
+					identityId: null,
+					publicKey: "pk-new",
+					fingerprint: "fp-new",
+					enabled: false,
 				},
 			]);
 
@@ -257,12 +313,14 @@ describe("recipient-policy reconciler executor", () => {
 				identityId: "identity-a",
 				publicKey: "pk-keep",
 				fingerprint: "fp-keep",
+				enabled: true,
 			},
 			{
 				deviceId: "device-new",
 				identityId: "identity-a",
 				publicKey: "pk-new",
 				fingerprint: "fp-new",
+				enabled: true,
 			},
 		];
 		vi.mocked(effects.listBoundaryEnrollments)
@@ -274,12 +332,76 @@ describe("recipient-policy reconciler executor", () => {
 					identityId: "identity-a",
 					publicKey: "pk-keep",
 					fingerprint: "fp-keep",
+					enabled: true,
 				},
 				{
 					deviceId: "device-new",
 					identityId: "identity-other",
 					publicKey: "pk-new-other",
 					fingerprint: "fp-new-other",
+					enabled: true,
+				},
+			]);
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-post-grant-identity-race" },
+			effects,
+		);
+
+		expect(outcome).toMatchObject({
+			status: "stale",
+			safeErrorCode: "recipient_policy_generation_stale",
+			grantedDeviceIds: ["device-new"],
+			revokedDeviceIds: ["device-new"],
+		});
+		expect(effects.grant).toHaveBeenCalledWith(expect.objectContaining({ deviceId: "device-new" }));
+		expect(effects.revoke).toHaveBeenCalledWith(
+			expect.objectContaining({ deviceId: "device-new" }),
+		);
+		expect(listRecipientPolicyDenyOverlays(db, PROJECT)).toEqual([
+			expect.objectContaining({
+				deviceId: "device-new",
+				reasonCode: "enrollment_identity_conflict",
+			}),
+		]);
+	});
+
+	it("revokes a new grant immediately when its enrollment becomes disabled", async () => {
+		const { effects } = harness(["device-keep"]);
+		const matching = [
+			{
+				deviceId: "device-keep",
+				identityId: "identity-a",
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+				enabled: true,
+			},
+			{
+				deviceId: "device-new",
+				identityId: "identity-a",
+				publicKey: "pk-new",
+				fingerprint: "fp-new",
+				enabled: true,
+			},
+		];
+		vi.mocked(effects.listBoundaryEnrollments)
+			.mockResolvedValueOnce(matching)
+			.mockResolvedValueOnce(matching)
+			.mockResolvedValue([
+				{
+					deviceId: "device-keep",
+					identityId: "identity-a",
+					publicKey: "pk-keep",
+					fingerprint: "fp-keep",
+					enabled: true,
+				},
+				{
+					deviceId: "device-new",
+					identityId: null,
+					publicKey: "pk-new",
+					fingerprint: "fp-new",
+					enabled: false,
 				},
 			]);
 
@@ -302,7 +424,7 @@ describe("recipient-policy reconciler executor", () => {
 		expect(listRecipientPolicyDenyOverlays(db, PROJECT)).toEqual([
 			expect.objectContaining({
 				deviceId: "device-new",
-				reasonCode: "enrollment_identity_conflict",
+				reasonCode: "enrollment_disabled",
 			}),
 		]);
 	});
@@ -318,6 +440,7 @@ describe("recipient-policy reconciler executor", () => {
 				identityId: "identity-other",
 				publicKey: "key-device-keep-other",
 				fingerprint: "fingerprint-device-keep-other",
+				enabled: true,
 			},
 		]);
 
@@ -337,6 +460,109 @@ describe("recipient-policy reconciler executor", () => {
 		expect(effects.grant).not.toHaveBeenCalled();
 	});
 
+	it("revokes an explicitly disabled current member without mutating global owner policy", async () => {
+		db.prepare(
+			"UPDATE identity_devices SET status = 'revoked' WHERE device_id = 'device-new'",
+		).run();
+		const { effects, members } = harness(["device-keep"]);
+		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
+			{
+				deviceId: "device-keep",
+				identityId: null,
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+				enabled: false,
+			},
+		]);
+		vi.mocked(effects.revoke).mockImplementation(async (input) => {
+			expect(listRecipientPolicyDenyOverlays(db, PROJECT)).toEqual([
+				expect.objectContaining({
+					scopeId: SCOPE,
+					deviceId: "device-keep",
+					reasonCode: "enrollment_disabled",
+				}),
+			]);
+			members.delete(input.deviceId);
+			return {
+				effectId: input.effectId,
+				scopeId: input.scopeId,
+				deviceId: input.deviceId,
+				status: "revoked",
+			};
+		});
+
+		const first = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-disabled-first" },
+			effects,
+		);
+		const second = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-disabled-second" },
+			effects,
+		);
+
+		expect(first).toMatchObject({ status: "parity_pending", revokedDeviceIds: ["device-keep"] });
+		expect(second).toMatchObject({ status: "active", revokedDeviceIds: [] });
+		expect(effects.revoke).toHaveBeenCalledTimes(1);
+		expect(
+			db.prepare("SELECT status FROM identity_devices WHERE device_id = 'device-keep'").get(),
+		).toEqual({ status: "active" });
+	});
+
+	it("leaves the same device active in another managed Project group", async () => {
+		db.prepare(
+			"UPDATE identity_devices SET status = 'revoked' WHERE device_id = 'device-new'",
+		).run();
+		const otherProject = "https://git.example.invalid/acme/other.git";
+		const otherScope = "managed-project-scope-other";
+		const now = new Date(BASE_TIME).toISOString();
+		db.prepare(
+			`INSERT INTO project_recipients(
+			 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			 policy_revision, migration_state, idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'identity', 'identity-a', 'active', 'test', '1', 'native', 'recipient:other', ?, ?)`,
+		).run(otherProject, now, now);
+		db.prepare(
+			`INSERT INTO replication_scopes(
+			 scope_id, label, kind, authority_type, coordinator_id, group_id, membership_epoch,
+			 status, created_at, updated_at
+			 ) VALUES (?, 'Other Project', 'managed_project', 'coordinator', 'coord', 'group-other', 1,
+			 'active', ?, ?)`,
+		).run(otherScope, now, now);
+		db.prepare(
+			`INSERT INTO project_scope_mappings(
+			 workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+			 ) VALUES (?, ?, ?, 1000, 'test', ?, ?)`,
+		).run(otherProject, otherProject, otherScope, now, now);
+		const { effects } = harness(["device-keep"]);
+		vi.mocked(effects.snapshot).mockImplementation(async () => ({
+			authoritative: true,
+			scopeId: otherScope,
+			fingerprint: "snapshot:other:device-keep",
+			observedAt: effects.now(),
+			memberships: [{ deviceId: "device-keep", status: "active" }],
+		}));
+		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
+			{
+				deviceId: "device-keep",
+				identityId: "identity-a",
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+				enabled: true,
+			},
+		]);
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: otherProject, leaseOwner: "worker-other-group" },
+			effects,
+		);
+
+		expect(outcome.revokedDeviceIds).toEqual([]);
+		expect(effects.revoke).not.toHaveBeenCalled();
+	});
+
 	it("does not revoke a current policy device merely omitted from boundary enrollments", async () => {
 		db.prepare(
 			"UPDATE identity_devices SET status = 'revoked' WHERE device_id = 'device-new'",
@@ -347,6 +573,31 @@ describe("recipient-policy reconciler executor", () => {
 		const outcome = await reconcileRecipientPolicyProject(
 			db,
 			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-enrollment-omission" },
+			effects,
+		);
+
+		expect(outcome.revokedDeviceIds).toEqual([]);
+		expect(effects.revoke).not.toHaveBeenCalled();
+	});
+
+	it("does not treat an enabled enrollment without an Identity as a revocation signal", async () => {
+		db.prepare(
+			"UPDATE identity_devices SET status = 'revoked' WHERE device_id = 'device-new'",
+		).run();
+		const { effects } = harness(["device-keep"]);
+		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
+			{
+				deviceId: "device-keep",
+				identityId: null,
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+				enabled: true,
+			},
+		]);
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-null-identity" },
 			effects,
 		);
 

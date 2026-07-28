@@ -102,6 +102,7 @@ This scenario reuses one two-peer setup to prove:
 - direct Identity access without Team membership
 - Team access inherited by existing and future members
 - add-device inheritance for an Identity's existing Projects
+- group-scoped add-device enrollment revocation and future-data isolation
 - Personal/Work and unrelated-Project isolation
 - existing and future memory replication for the selected Project
 - stale preview rejection without intent mutation

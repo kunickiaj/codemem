@@ -32,6 +32,7 @@ type Action =
 	| "seed-a"
 	| "add-future"
 	| "add-device-future"
+	| "add-after-revocation"
 	| "summary"
 	| "seed-policy"
 	| "inherit-policy"
@@ -45,6 +46,7 @@ const ACTIONS: Action[] = [
 	"seed-a",
 	"add-future",
 	"add-device-future",
+	"add-after-revocation",
 	"summary",
 	"seed-policy",
 	"inherit-policy",
@@ -280,6 +282,12 @@ function addDeviceFuture(store: MemoryStore): void {
 	stampSourceScope(store, unrelatedId, true);
 }
 
+function addAfterRevocation(store: MemoryStore): void {
+	const selectedSession = session(store, "selected-project", SELECTED_REMOTE);
+	remember(store, selectedSession, "selected after revocation", null);
+	store.endSession(selectedSession, { fixture: "selected-after-revocation" });
+}
+
 function seedReconciliationProject(
 	store: MemoryStore,
 	label: string,
@@ -336,12 +344,14 @@ function reconciliationEffects(
 				identityId: `identity-${label}`,
 				publicKey: `pk-${label}-keep`,
 				fingerprint: `fp-${label}-keep`,
+				enabled: true,
 			},
 			{
 				deviceId: `device-${label}-new`,
 				identityId: `identity-${label}`,
 				publicKey: `pk-${label}-new`,
 				fingerprint: `fp-${label}-new`,
+				enabled: true,
 			},
 		],
 		probeCapability: async ({ deviceId }) => {
@@ -559,7 +569,11 @@ function summary(store: MemoryStore): Record<string, unknown> {
 			.prepare("SELECT actor_id, display_name, status FROM actors ORDER BY actor_id")
 			.all(),
 		peers: store.db
-			.prepare("SELECT peer_device_id, name, actor_id FROM sync_peers ORDER BY peer_device_id")
+			.prepare(
+				`SELECT peer_device_id, name, actor_id, pinned_fingerprint, trust_provenance,
+				 discovered_via_coordinator_id, discovered_via_group_id
+				 FROM sync_peers ORDER BY peer_device_id`,
+			)
 			.all(),
 		managed_memberships: store.db
 			.prepare(
@@ -581,6 +595,12 @@ function summary(store: MemoryStore): Record<string, unknown> {
 			)
 			.all(),
 		policy: {
+			authority_states: store.db
+				.prepare(
+					`SELECT canonical_project_identity, authority_state, attempt_count
+					 FROM recipient_policy_authority_states ORDER BY canonical_project_identity`,
+				)
+				.all(),
 			teams: store.db.prepare("SELECT team_id, display_name, status FROM policy_teams ORDER BY team_id").all(),
 			team_memberships: store.db
 				.prepare(
@@ -614,6 +634,7 @@ async function main(): Promise<void> {
 		if (selectedAction === "seed-a") seedA(store);
 		if (selectedAction === "add-future") addFuture(store);
 		if (selectedAction === "add-device-future") addDeviceFuture(store);
+		if (selectedAction === "add-after-revocation") addAfterRevocation(store);
 		if (selectedAction === "seed-policy") seedRecipientPolicy(store);
 		const actionResult =
 			selectedAction === "inherit-policy"

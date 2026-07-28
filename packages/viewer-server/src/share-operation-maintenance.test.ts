@@ -930,11 +930,12 @@ describe("recipient-policy maintenance", () => {
 		vi.unstubAllGlobals();
 	});
 
-	it("reads identity-bound enrollments from the managed boundary group", async () => {
+	it("reads enabled and disabled enrollments from the exact managed boundary group", async () => {
 		const projectId = "project-boundary-enrollments";
 		const scopeId = "scope-boundary-enrollments";
 		const recipientPublicKey = "boundary-recipient-key";
 		const ownerPublicKey = "boundary-owner-key";
+		const disabledPublicKey = "boundary-disabled-key";
 		seedManagedBoundary(projectId, scopeId);
 		db.prepare("UPDATE replication_scopes SET coordinator_id = ? WHERE scope_id = ?").run(
 			"https://coord.example.test",
@@ -965,6 +966,16 @@ describe("recipient-policy maintenance", () => {
 								enabled: 1,
 								created_at: "2026-07-26T00:00:00.000Z",
 							},
+							{
+								group_id: "group",
+								device_id: "device-disabled",
+								public_key: disabledPublicKey,
+								fingerprint: fingerprintPublicKey(disabledPublicKey),
+								identity_id: null,
+								display_name: null,
+								enabled: 0,
+								created_at: "2026-07-26T00:00:00.000Z",
+							},
 						],
 					}),
 					{ status: 200, headers: { "content-type": "application/json" } },
@@ -987,10 +998,69 @@ describe("recipient-policy maintenance", () => {
 				identityId: "identity-recipient",
 				publicKey: recipientPublicKey,
 				fingerprint: fingerprintPublicKey(recipientPublicKey),
+				enabled: true,
+			},
+			{
+				deviceId: "device-owner",
+				identityId: null,
+				publicKey: ownerPublicKey,
+				fingerprint: fingerprintPublicKey(ownerPublicKey),
+				enabled: true,
+			},
+			{
+				deviceId: "device-disabled",
+				identityId: null,
+				publicKey: disabledPublicKey,
+				fingerprint: fingerprintPublicKey(disabledPublicKey),
+				enabled: false,
 			},
 		]);
 		expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
-			"https://coord.example.test/v1/admin/devices?group_id=group&include_disabled=0",
+			"https://coord.example.test/v1/admin/devices?group_id=group&include_disabled=1",
+		);
+		await expect(effects.probeCapability({ deviceId: "device-owner", scopeId })).resolves.toBe(
+			"undetermined",
+		);
+		await expect(effects.probeCapability({ deviceId: "device-disabled", scopeId })).resolves.toBe(
+			"undetermined",
+		);
+	});
+
+	it("rejects non-binary boundary enrollment state", async () => {
+		const projectId = "project-malformed-enrollment-state";
+		const scopeId = "scope-malformed-enrollment-state";
+		const publicKey = "malformed-state-key";
+		seedManagedBoundary(projectId, scopeId);
+		db.prepare("UPDATE replication_scopes SET coordinator_id = ? WHERE scope_id = ?").run(
+			"https://coord.example.test",
+			scopeId,
+		);
+		const listDevices = vi.fn(async ({ groupId }: { groupId: string }) => [
+			{
+				group_id: groupId,
+				device_id: "device-malformed-state",
+				public_key: publicKey,
+				fingerprint: fingerprintPublicKey(publicKey),
+				identity_id: "identity-malformed-state",
+				display_name: null,
+				enabled: 2,
+				created_at: now,
+			},
+		]);
+		const effects = createRecipientPolicyReconcilerEffects(store, {
+			config: {
+				syncCoordinatorUrl: "https://coord.example.test",
+				syncCoordinatorAdminSecret: "secret",
+				syncCoordinatorGroups: ["group"],
+			} as never,
+			listDevices,
+		});
+
+		await expect(
+			effects.listBoundaryEnrollments({ canonicalProjectIdentity: projectId, scopeId }),
+		).rejects.toThrow("recipient_policy_snapshot_invalid");
+		expect(listDevices).toHaveBeenCalledWith(
+			expect.objectContaining({ groupId: "group", includeDisabled: true }),
 		);
 	});
 
@@ -1171,6 +1241,7 @@ describe("recipient-policy maintenance", () => {
 					identityId: `identity:${projectId}`,
 					publicKey: "pk-revoked",
 					fingerprint: "fp-revoked",
+					enabled: true,
 				},
 			]),
 			probeCapability: vi.fn(async () => "supported"),
@@ -1305,6 +1376,7 @@ describe("recipient-policy maintenance", () => {
 					identityId: `identity:${projectId}`,
 					publicKey: "pk-recipient",
 					fingerprint: "fp-recipient",
+					enabled: true,
 				},
 			]),
 			probeCapability: vi.fn(async () => "supported"),
