@@ -84,6 +84,7 @@ import {
 	fingerprintPublicKey,
 	formatHostPort,
 	friendlyDeviceName,
+	getCoordinatorEnrollmentReconciliationIssueSummary,
 	getCoordinatorGroupPreference,
 	getRecipientPolicyAuthorityState,
 	getSemanticIndexDiagnostics,
@@ -1794,6 +1795,7 @@ export async function reconcileConfiguredCoordinatorEnrollment(
 				listConsumedTeamInvites({ groupId, remoteUrl, adminSecret }),
 			]);
 			const result = reconcileSnapshot({
+				coordinatorId: buildBaseUrl(remoteUrl),
 				groupId,
 				enrollments,
 				consumedTeamInvites,
@@ -4626,6 +4628,29 @@ export function syncRoutes(
 			const semanticIndex = traceSync("semanticIndex", () =>
 				redactSemanticIndexDiagnostics(getSemanticIndexDiagnostics(store.db), showDiag),
 			);
+			const enrollmentIssueSummary = traceSync("coordinatorEnrollmentIssues", () =>
+				getCoordinatorEnrollmentReconciliationIssueSummary(store.db),
+			);
+			const enrollmentIssueStatus = {
+				counts: enrollmentIssueSummary.counts,
+				...(showDiag
+					? {
+							issues: enrollmentIssueSummary.issues.map((issue) => ({
+								coordinator_id: issue.coordinatorId,
+								group_id: issue.groupId,
+								kind: issue.kind,
+								reference_id: issue.referenceId,
+								code: issue.code,
+								status: issue.status,
+								first_seen_at: issue.firstSeenAt,
+								last_seen_at: issue.lastSeenAt,
+								resolved_at: issue.resolvedAt,
+								occurrence_count: issue.occurrenceCount,
+								updated_at: issue.updatedAt,
+							})),
+						}
+					: {}),
+			};
 
 			const lastError = daemonState?.last_error as string | null;
 			const lastErrorAt = daemonState?.last_error_at as string | null;
@@ -4685,6 +4710,7 @@ export function syncRoutes(
 					last_error_at: (retentionState?.last_error_at as string | null) ?? null,
 				},
 				semantic_index: semanticIndex,
+				coordinator_enrollment_reconciliation_issues: enrollmentIssueStatus,
 				peer_count: Number(peerCountRow?.total ?? 0),
 				last_sync_at: lastSyncRow?.last_sync_at ?? null,
 				daemon_state: daemonStateValue,

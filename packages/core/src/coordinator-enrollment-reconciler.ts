@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { CoordinatorConsumedTeamInvite } from "./coordinator-actions.js";
+import { persistCoordinatorEnrollmentReconciliationIssues } from "./coordinator-enrollment-reconciliation-issues.js";
 import type { CoordinatorEnrollment } from "./coordinator-store-contract.js";
 import type { Database } from "./db.js";
 
@@ -36,6 +37,7 @@ function strictId(value: unknown): value is string {
 export function reconcileCoordinatorEnrollmentSnapshot(
 	db: Database,
 	input: {
+		coordinatorId: string;
 		groupId: string;
 		enrollments: CoordinatorEnrollment[];
 		consumedTeamInvites: CoordinatorConsumedTeamInvite[];
@@ -43,6 +45,7 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 		now?: string;
 	},
 ): CoordinatorEnrollmentReconcileResult {
+	if (!strictId(input.coordinatorId)) throw new Error("coordinator_id_invalid");
 	if (!strictId(input.groupId)) throw new Error("coordinator_group_id_invalid");
 	const now = input.now ?? new Date().toISOString();
 	if (Number.isNaN(new Date(now).getTime())) throw new Error("reconciliation_time_invalid");
@@ -58,7 +61,13 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 		referenceId: string,
 		code: string,
 	): void => {
-		result.issues.push({ kind, referenceId, code });
+		const safeReferenceId = strictId(referenceId)
+			? referenceId
+			: `invalid-reference:${digest("coordinator-enrollment-issue-reference-v1", {
+					kind,
+					referenceId,
+				})}`;
+		result.issues.push({ kind, referenceId: safeReferenceId, code });
 	};
 	const localEnrollmentIdentityIds = new Set(
 		input.enrollments
@@ -235,11 +244,26 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 			);
 			result.devicesAdded += 1;
 		}
+
+		const issueSet = new Map(
+			result.issues.map((item) => [
+				`${item.kind}\u0000${item.referenceId}\u0000${item.code}`,
+				item,
+			]),
+		);
+		result.issues = [...issueSet.values()].sort(
+			(left, right) =>
+				left.kind.localeCompare(right.kind) ||
+				left.referenceId.localeCompare(right.referenceId) ||
+				left.code.localeCompare(right.code),
+		);
+		persistCoordinatorEnrollmentReconciliationIssues(db, {
+			coordinatorId: input.coordinatorId,
+			groupId: input.groupId,
+			issues: result.issues,
+			now,
+		});
 	});
 	apply();
-	result.issues.sort(
-		(left, right) =>
-			left.kind.localeCompare(right.kind) || left.referenceId.localeCompare(right.referenceId),
-	);
 	return result;
 }

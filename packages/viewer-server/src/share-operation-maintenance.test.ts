@@ -47,7 +47,7 @@ describe("reconcileConfiguredCoordinatorEnrollment", () => {
 					return [];
 				},
 				reconcileSnapshot: (input) => {
-					calls.push(`reconcile:${input.groupId}:${input.localDeviceId}`);
+					calls.push(`reconcile:${input.coordinatorId}:${input.groupId}:${input.localDeviceId}`);
 					return {
 						devicesAdded: 1,
 						membershipsAdded: 2,
@@ -62,10 +62,10 @@ describe("reconcileConfiguredCoordinatorEnrollment", () => {
 		expect(calls).toEqual([
 			"devices:group-a",
 			"invites:group-a",
-			"reconcile:group-a:device-local",
+			"reconcile:https://coord.example.test:group-a:device-local",
 			"devices:group-b",
 			"invites:group-b",
-			"reconcile:group-b:device-local",
+			"reconcile:https://coord.example.test:group-b:device-local",
 		]);
 		expect(result).toEqual({
 			skipped: false,
@@ -77,6 +77,55 @@ describe("reconcileConfiguredCoordinatorEnrollment", () => {
 			unchanged: 6,
 			issues: 0,
 		});
+	});
+
+	it("preserves issues on fetch failure and resolves them after a successful empty snapshot", async () => {
+		const db = new Database(":memory:");
+		initTestSchema(db);
+		try {
+			db.prepare(`INSERT INTO coordinator_enrollment_reconciliation_issues(
+				coordinator_id, group_id, kind, reference_id, code, status,
+				first_seen_at, last_seen_at, occurrence_count, updated_at
+			) VALUES (?, 'group-a', 'device', 'device-a', 'identity_not_active', 'open', ?, ?, 1, ?)`).run(
+				"https://coord.example.test",
+				"2026-07-29T00:00:00.000Z",
+				"2026-07-29T00:00:00.000Z",
+				"2026-07-29T00:00:00.000Z",
+			);
+			const store = { db, deviceId: "device-local" } as unknown as MemoryStore;
+			const config = {
+				syncCoordinatorUrl: "https://coord.example.test/",
+				syncCoordinatorAdminSecret: "secret",
+				syncCoordinatorGroups: ["group-a"],
+			} as never;
+
+			const failed = await reconcileConfiguredCoordinatorEnrollment(store, {
+				config,
+				listDevices: async () => {
+					throw new Error("fetch failed");
+				},
+				listConsumedTeamInvites: async () => [],
+			});
+			expect(failed).toMatchObject({ groupsProcessed: 0, failedGroups: 1 });
+			expect(
+				db.prepare("SELECT status FROM coordinator_enrollment_reconciliation_issues").pluck().get(),
+			).toBe("open");
+
+			const succeeded = await reconcileConfiguredCoordinatorEnrollment(store, {
+				config,
+				listDevices: async () => [],
+				listConsumedTeamInvites: async () => [],
+			});
+			expect(succeeded).toMatchObject({ groupsProcessed: 1, failedGroups: 0, issues: 0 });
+			expect(
+				db
+					.prepare(`SELECT status, resolved_at
+					FROM coordinator_enrollment_reconciliation_issues`)
+					.get(),
+			).toMatchObject({ status: "resolved", resolved_at: expect.any(String) });
+		} finally {
+			db.close();
+		}
 	});
 });
 

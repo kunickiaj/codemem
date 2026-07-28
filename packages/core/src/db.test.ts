@@ -136,6 +136,7 @@ describe("connect", () => {
 		expect(tableExists(db, "recipient_policy_authority_states")).toBe(true);
 		expect(tableExists(db, "recipient_policy_reconciliation_steps")).toBe(true);
 		expect(tableExists(db, "recipient_policy_deny_overlays")).toBe(true);
+		expect(tableExists(db, "coordinator_enrollment_reconciliation_issues")).toBe(true);
 		expect(columnExists(db, "memory_items", "scope_id")).toBe(true);
 		expect(columnExists(db, "replication_ops", "scope_id")).toBe(true);
 		expect(hasIndex(db, "idx_memory_items_origin_device_active")).toBe(true);
@@ -143,6 +144,8 @@ describe("connect", () => {
 		expect(hasIndex(db, "idx_memory_items_scope_backfill_pending")).toBe(true);
 		expect(hasIndex(db, "idx_replication_ops_scope_created")).toBe(true);
 		expect(hasIndex(db, "idx_replication_cursors_v2_scope")).toBe(true);
+		expect(hasIndex(db, "idx_coordinator_enrollment_issues_boundary_status")).toBe(true);
+		expect(hasIndex(db, "idx_coordinator_enrollment_issues_status_recent")).toBe(true);
 		expect(() => assertSchemaReady(db)).not.toThrow();
 	});
 
@@ -1054,6 +1057,7 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		expect(tableExists(db, "share_operation_steps")).toBe(true);
 		expect(tableExists(db, "recipient_policy_review_resolutions")).toBe(true);
 		for (const table of [
+			"coordinator_enrollment_reconciliation_issues",
 			"policy_teams",
 			"policy_team_memberships",
 			"identity_devices",
@@ -1090,6 +1094,7 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		}
 		expect(tableExists(previous, "recipient_policy_review_resolutions")).toBe(true);
 		for (const table of [
+			"coordinator_enrollment_reconciliation_issues",
 			"policy_teams",
 			"policy_team_memberships",
 			"identity_devices",
@@ -1110,7 +1115,16 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		expect(hasIndex(previous, "idx_share_operations_state_updated")).toBe(true);
 		expect(hasIndex(previous, "idx_share_operations_invite_digest")).toBe(true);
 		expect(hasIndex(previous, "idx_share_operations_pending_person_operation")).toBe(true);
+		expect(hasIndex(previous, "idx_coordinator_enrollment_issues_boundary_status")).toBe(true);
+		expect(hasIndex(previous, "idx_coordinator_enrollment_issues_status_recent")).toBe(true);
 		expect(appliedSchemaVersion(previous)).toBe(SCHEMA_VERSION);
+		previous
+			.prepare(`INSERT INTO coordinator_enrollment_reconciliation_issues(
+			coordinator_id, group_id, kind, reference_id, code, status,
+			first_seen_at, last_seen_at, occurrence_count, updated_at
+		) VALUES ('coordinator', 'group', 'device', 'device', 'safe_code', 'open',
+			'2026-07-29T00:00:00Z', '2026-07-29T00:00:00Z', 1, '2026-07-29T00:00:00Z')`)
+			.run();
 		previous
 			.prepare(
 				`INSERT INTO share_operations(
@@ -1129,6 +1143,12 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		const reopened = new BetterSqlite3(dbPath);
 		ensureAdditiveSchemaCompatibility(reopened);
 		expect(reopened.prepare("SELECT COUNT(*) FROM share_operations").pluck().get()).toBe(1);
+		expect(
+			reopened
+				.prepare("SELECT COUNT(*) FROM coordinator_enrollment_reconciliation_issues")
+				.pluck()
+				.get(),
+		).toBe(1);
 		expect(appliedSchemaVersion(reopened)).toBe(SCHEMA_VERSION);
 		reopened.close();
 		db = connect(join(tmpDir, "replacement.sqlite"));

@@ -6588,6 +6588,91 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("returns empty enrollment reconciliation issue counts without diagnostics", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/sync/status");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.coordinator_enrollment_reconciliation_issues).toEqual({
+					counts: { open: 0, resolved: 0 },
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("redacts enrollment reconciliation issue identifiers while retaining counts", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				store.db
+					.prepare(`INSERT INTO coordinator_enrollment_reconciliation_issues(
+					coordinator_id, group_id, kind, reference_id, code, status,
+					first_seen_at, last_seen_at, occurrence_count, updated_at
+				) VALUES ('https://private.example.test', 'private-group', 'device', 'private-device',
+					'safe_code', 'open', '2026-07-29T00:00:00.000Z',
+					'2026-07-29T00:00:00.000Z', 1, '2026-07-29T00:00:00.000Z')`)
+					.run();
+
+				const res = await app.request("/api/sync/status");
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.coordinator_enrollment_reconciliation_issues).toEqual({
+					counts: { open: 1, resolved: 0 },
+				});
+				expect(JSON.stringify(body.coordinator_enrollment_reconciliation_issues)).not.toContain(
+					"private",
+				);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("returns bounded safe enrollment issue diagnostics in open-first recency order", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const insert = store.db.prepare(`INSERT INTO coordinator_enrollment_reconciliation_issues(
+					coordinator_id, group_id, kind, reference_id, code, status, first_seen_at,
+					last_seen_at, resolved_at, occurrence_count, updated_at
+				) VALUES ('https://coord.example.test', 'group-a', 'device', ?, 'safe_code', ?,
+					'2026-07-29T00:00:00.000Z', ?, ?, 1, ?)`);
+				insert.run(
+					"open-item",
+					"open",
+					"2026-07-29T00:30:00.000Z",
+					null,
+					"2026-07-29T00:30:00.000Z",
+				);
+				for (let index = 0; index < 25; index += 1) {
+					const timestamp = new Date(Date.UTC(2026, 6, 29, 0, index)).toISOString();
+					insert.run(`resolved-${index}`, "resolved", timestamp, timestamp, timestamp);
+				}
+
+				const res = await app.request("/api/sync/status?includeDiagnostics=true");
+				const body = (await res.json()) as {
+					coordinator_enrollment_reconciliation_issues: {
+						counts: { open: number; resolved: number };
+						issues: Array<Record<string, unknown>>;
+					};
+				};
+				const block = body.coordinator_enrollment_reconciliation_issues;
+				expect(block.counts).toEqual({ open: 1, resolved: 25 });
+				expect(block.issues).toHaveLength(25);
+				expect(block.issues[0]).toMatchObject({ reference_id: "open-item", status: "open" });
+				expect(block.issues[1]).toMatchObject({ reference_id: "resolved-24", status: "resolved" });
+				expect(block.issues.at(-1)).toMatchObject({ reference_id: "resolved-1" });
+				expect(block.issues[0]).not.toHaveProperty("payload");
+				expect(block.issues[0]).not.toHaveProperty("error");
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("includes semantic-index diagnostics in sync status output", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {

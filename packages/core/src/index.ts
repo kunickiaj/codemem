@@ -73,6 +73,12 @@ export type {
 } from "./coordinator-enrollment-reconciler.js";
 export { reconcileCoordinatorEnrollmentSnapshot } from "./coordinator-enrollment-reconciler.js";
 export type {
+	CoordinatorEnrollmentReconciliationIssueDiagnostic,
+	CoordinatorEnrollmentReconciliationIssueStatus,
+	CoordinatorEnrollmentReconciliationIssueSummary,
+} from "./coordinator-enrollment-reconciliation-issues.js";
+export { getCoordinatorEnrollmentReconciliationIssueSummary } from "./coordinator-enrollment-reconciliation-issues.js";
+export type {
 	CoordinatorGroupPreference,
 	UpsertCoordinatorGroupPreferenceInput,
 } from "./coordinator-group-preferences.js";

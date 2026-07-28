@@ -737,6 +737,43 @@ export type RecipientPolicyReviewResolution = typeof recipientPolicyReviewResolu
 export type NewRecipientPolicyReviewResolution =
 	typeof recipientPolicyReviewResolutions.$inferInsert;
 
+export const coordinatorEnrollmentReconciliationIssues = sqliteTable(
+	"coordinator_enrollment_reconciliation_issues",
+	{
+		coordinator_id: text("coordinator_id").notNull(),
+		group_id: text("group_id").notNull(),
+		kind: text("kind").notNull(),
+		reference_id: text("reference_id").notNull(),
+		code: text("code").notNull(),
+		status: text("status").notNull().default("open"),
+		first_seen_at: text("first_seen_at").notNull(),
+		last_seen_at: text("last_seen_at").notNull(),
+		resolved_at: text("resolved_at"),
+		occurrence_count: integer("occurrence_count").notNull().default(1),
+		updated_at: text("updated_at").notNull(),
+	},
+	(table) => [
+		primaryKey({
+			columns: [table.coordinator_id, table.group_id, table.kind, table.reference_id, table.code],
+		}),
+		index("idx_coordinator_enrollment_issues_boundary_status").on(
+			table.coordinator_id,
+			table.group_id,
+			table.status,
+		),
+		index("idx_coordinator_enrollment_issues_status_recent").on(
+			table.status,
+			table.last_seen_at,
+			table.resolved_at,
+		),
+	],
+);
+
+export type CoordinatorEnrollmentReconciliationIssue =
+	typeof coordinatorEnrollmentReconciliationIssues.$inferSelect;
+export type NewCoordinatorEnrollmentReconciliationIssue =
+	typeof coordinatorEnrollmentReconciliationIssues.$inferInsert;
+
 export const policyTeams = sqliteTable("policy_teams", {
 	team_id: text("team_id").primaryKey(),
 	display_name: text("display_name").notNull(),
@@ -955,6 +992,7 @@ export const schema = {
 	coordinatorGroupPreferences,
 	actors,
 	recipientPolicyReviewResolutions,
+	coordinatorEnrollmentReconciliationIssues,
 	policyTeams,
 	policyTeamMemberships,
 	identityDevices,

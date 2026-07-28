@@ -32,7 +32,7 @@ import { canAutoBootstrapSchema, ensureSchemaBootstrapped } from "./schema-boots
 export type { DatabaseType as Database };
 
 /** Current schema version this TS runtime was built against. */
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 /**
  * Minimum schema version the TS runtime can operate with.
@@ -52,7 +52,11 @@ const REQUIRED_TABLES = [
 	"usage_events",
 ] as const;
 
-export const REQUIRED_BOOTSTRAPPED_TABLES = [...REQUIRED_TABLES, "memory_fts"] as const;
+export const REQUIRED_BOOTSTRAPPED_TABLES = [
+	...REQUIRED_TABLES,
+	"memory_fts",
+	"coordinator_enrollment_reconciliation_issues",
+] as const;
 
 /** Marker file written after the first successful TS access to a DB. */
 const TS_MARKER = ".codemem-ts-accessed";
@@ -730,6 +734,24 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 
 		try {
 			db.exec(`
+			CREATE TABLE IF NOT EXISTS coordinator_enrollment_reconciliation_issues (
+				coordinator_id TEXT NOT NULL,
+				group_id TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				reference_id TEXT NOT NULL,
+				code TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'open',
+				first_seen_at TEXT NOT NULL,
+				last_seen_at TEXT NOT NULL,
+				resolved_at TEXT,
+				occurrence_count INTEGER NOT NULL DEFAULT 1,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (coordinator_id, group_id, kind, reference_id, code)
+			);
+			CREATE INDEX IF NOT EXISTS idx_coordinator_enrollment_issues_boundary_status
+				ON coordinator_enrollment_reconciliation_issues(coordinator_id, group_id, status);
+			CREATE INDEX IF NOT EXISTS idx_coordinator_enrollment_issues_status_recent
+				ON coordinator_enrollment_reconciliation_issues(status, last_seen_at, resolved_at);
 			CREATE TABLE IF NOT EXISTS recipient_policy_review_resolutions (
 				review_item_id TEXT NOT NULL,
 				source_fingerprint TEXT NOT NULL,
@@ -1428,6 +1450,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		}
 
 		const recipientPolicyTablesReady = [
+			"coordinator_enrollment_reconciliation_issues",
 			"policy_teams",
 			"policy_team_memberships",
 			"identity_devices",

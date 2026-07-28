@@ -35,6 +35,7 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 
 	it("materializes accepted Team membership and new devices idempotently", () => {
 		const input = {
+			coordinatorId: "https://coord.example.test",
 			groupId: "group-a",
 			now: NOW,
 			consumedTeamInvites: [
@@ -122,6 +123,7 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 		) VALUES ('device-local', 'identity-direct', 'My custom name', 'active', 'manual', 'r1',
 			'user_managed', 's1', 'local-device', ?, ?)`).run(NOW, NOW);
 		const input = {
+			coordinatorId: "https://coord.example.test",
 			groupId: "group-a",
 			now: NOW,
 			consumedTeamInvites: [],
@@ -172,6 +174,7 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 			'user_managed', 'revoked-source', 'revoked-membership', ?, ?)`).run(NOW, NOW);
 
 		const result = reconcileCoordinatorEnrollmentSnapshot(db, {
+			coordinatorId: "https://coord.example.test",
 			groupId: "group-a",
 			now: NOW,
 			enrollments: [],
@@ -213,6 +216,7 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 			'user_managed', 'revoked-source', 'revoked-device', ?, ?)`).run(NOW, NOW);
 
 		const result = reconcileCoordinatorEnrollmentSnapshot(db, {
+			coordinatorId: "https://coord.example.test",
 			groupId: "group-a",
 			now: NOW,
 			consumedTeamInvites: [],
@@ -247,6 +251,7 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 		) VALUES ('identity-local-team', 'Local actor', 1, 'active', NULL, ?, ?)`).run(NOW, NOW);
 
 		const result = reconcileCoordinatorEnrollmentSnapshot(db, {
+			coordinatorId: "https://coord.example.test",
 			groupId: "group-a",
 			now: NOW,
 			enrollments: [],
@@ -292,6 +297,7 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 		) VALUES ('identity-local-device', 'Local actor', 1, 'active', NULL, ?, ?)`).run(NOW, NOW);
 
 		const result = reconcileCoordinatorEnrollmentSnapshot(db, {
+			coordinatorId: "https://coord.example.test",
 			groupId: "group-a",
 			localDeviceId: "device-this-machine",
 			now: NOW,
@@ -337,6 +343,7 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 		) VALUES ('identity-local-device', 'Local actor', 1, 'active', NULL, ?, ?)`).run(NOW, NOW);
 
 		const result = reconcileCoordinatorEnrollmentSnapshot(db, {
+			coordinatorId: "https://coord.example.test",
 			groupId: "group-a",
 			localDeviceId: "device-local-actor",
 			now: NOW,
@@ -383,6 +390,7 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 		db.prepare("UPDATE actors SET status = 'deactivated' WHERE actor_id = 'identity-direct'").run();
 
 		const result = reconcileCoordinatorEnrollmentSnapshot(db, {
+			coordinatorId: "https://coord.example.test",
 			groupId: "group-a",
 			now: NOW,
 			consumedTeamInvites: [],
@@ -408,5 +416,234 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 				.pluck()
 				.get(),
 		).toBe("identity-other");
+	});
+
+	it("persists, deduplicates, resolves, and reopens issue lifecycle", () => {
+		const issueEnrollment = {
+			group_id: "group-a",
+			device_id: "device-conflict",
+			public_key: "pk",
+			fingerprint: "fp",
+			identity_id: "missing-identity",
+			display_name: null,
+			enabled: 1,
+			created_at: NOW,
+		};
+		const input = {
+			coordinatorId: "https://coord.example.test",
+			groupId: "group-a",
+			now: NOW,
+			consumedTeamInvites: [],
+			enrollments: [issueEnrollment, issueEnrollment],
+		};
+
+		expect(reconcileCoordinatorEnrollmentSnapshot(db, input).issues).toHaveLength(1);
+		expect(
+			db
+				.prepare("SELECT occurrence_count FROM coordinator_enrollment_reconciliation_issues")
+				.pluck()
+				.get(),
+		).toBe(1);
+		reconcileCoordinatorEnrollmentSnapshot(db, {
+			...input,
+			now: "2026-07-26T00:01:00.000Z",
+		});
+		expect(
+			db
+				.prepare(`SELECT status, first_seen_at, last_seen_at, resolved_at, occurrence_count
+				FROM coordinator_enrollment_reconciliation_issues`)
+				.get(),
+		).toEqual({
+			status: "open",
+			first_seen_at: NOW,
+			last_seen_at: "2026-07-26T00:01:00.000Z",
+			resolved_at: null,
+			occurrence_count: 2,
+		});
+
+		reconcileCoordinatorEnrollmentSnapshot(db, {
+			...input,
+			now: "2026-07-26T00:02:00.000Z",
+			enrollments: [],
+		});
+		expect(
+			db
+				.prepare(`SELECT status, resolved_at FROM coordinator_enrollment_reconciliation_issues`)
+				.get(),
+		).toEqual({ status: "resolved", resolved_at: "2026-07-26T00:02:00.000Z" });
+
+		reconcileCoordinatorEnrollmentSnapshot(db, {
+			...input,
+			now: "2026-07-26T00:03:00.000Z",
+		});
+		expect(
+			db
+				.prepare(`SELECT status, first_seen_at, resolved_at, occurrence_count
+				FROM coordinator_enrollment_reconciliation_issues`)
+				.get(),
+		).toEqual({ status: "open", first_seen_at: NOW, resolved_at: null, occurrence_count: 3 });
+	});
+
+	it("treats changed codes distinctly and isolates coordinator/group boundaries", () => {
+		const reconcile = (coordinatorId: string, groupId: string, now: string) =>
+			reconcileCoordinatorEnrollmentSnapshot(db, {
+				coordinatorId,
+				groupId,
+				now,
+				consumedTeamInvites: [],
+				enrollments: [
+					{
+						group_id: groupId,
+						device_id: "device-shared",
+						public_key: "pk",
+						fingerprint: "fp",
+						identity_id: "missing-identity",
+						display_name: null,
+						enabled: 1,
+						created_at: now,
+					},
+				],
+			});
+		reconcile("https://coord-a.example.test", "group-a", NOW);
+		reconcile("https://coord-a.example.test", "group-b", "2026-07-26T00:01:00.000Z");
+		reconcile("https://coord-b.example.test", "group-a", "2026-07-26T00:02:00.000Z");
+		db.prepare(`INSERT INTO actors(
+			actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+		) VALUES ('missing-identity', 'Now active', 0, 'active', NULL, ?, ?)`).run(NOW, NOW);
+		db.prepare(`INSERT INTO identity_devices(
+			device_id, identity_id, display_name, status, provenance, revision, migration_state,
+			source_fingerprint, idempotency_key, created_at, updated_at
+		) VALUES ('device-shared', 'identity-direct', 'Existing', 'active', 'manual', 'r1',
+			'user_managed', 'source', 'device-shared', ?, ?)`).run(NOW, NOW);
+		reconcile("https://coord-a.example.test", "group-a", "2026-07-26T00:03:00.000Z");
+
+		expect(
+			db
+				.prepare(`SELECT coordinator_id, group_id, code, status
+				FROM coordinator_enrollment_reconciliation_issues
+				ORDER BY coordinator_id, group_id, code`)
+				.all(),
+		).toEqual([
+			{
+				coordinator_id: "https://coord-a.example.test",
+				group_id: "group-a",
+				code: "device_identity_conflict",
+				status: "open",
+			},
+			{
+				coordinator_id: "https://coord-a.example.test",
+				group_id: "group-a",
+				code: "identity_not_active",
+				status: "resolved",
+			},
+			{
+				coordinator_id: "https://coord-a.example.test",
+				group_id: "group-b",
+				code: "identity_not_active",
+				status: "open",
+			},
+			{
+				coordinator_id: "https://coord-b.example.test",
+				group_id: "group-a",
+				code: "identity_not_active",
+				status: "open",
+			},
+		]);
+	});
+
+	it("rolls policy and lifecycle changes back together", () => {
+		db.prepare(`INSERT INTO coordinator_enrollment_reconciliation_issues(
+			coordinator_id, group_id, kind, reference_id, code, status,
+			first_seen_at, last_seen_at, occurrence_count, updated_at
+		) VALUES ('https://coord.example.test', 'group-a', 'device', 'prior-device',
+			'prior_code', 'open', ?, ?, 1, ?)`).run(NOW, NOW, NOW);
+		db.exec(`CREATE TRIGGER fail_issue_insert
+			BEFORE INSERT ON coordinator_enrollment_reconciliation_issues
+			BEGIN SELECT RAISE(ABORT, 'injected issue failure'); END`);
+
+		expect(() =>
+			reconcileCoordinatorEnrollmentSnapshot(db, {
+				coordinatorId: "https://coord.example.test",
+				groupId: "group-a",
+				now: NOW,
+				enrollments: [
+					{
+						group_id: "group-a",
+						device_id: "device-issue",
+						public_key: "pk-issue",
+						fingerprint: "fp-issue",
+						identity_id: "missing-identity",
+						display_name: null,
+						enabled: 1,
+						created_at: NOW,
+					},
+				],
+				consumedTeamInvites: [
+					{
+						invite_id: "invite-rollback",
+						group_id: "group-a",
+						policy_team_id: "team-a",
+						assigned_identity_id: "identity-rollback",
+						recipient_actor_id: "identity-rollback",
+						bound_device_id: "device-rollback",
+						consumed_at: NOW,
+					},
+				],
+			}),
+		).toThrow("injected issue failure");
+		expect(
+			db.prepare("SELECT COUNT(*) FROM actors WHERE actor_id = 'identity-rollback'").pluck().get(),
+		).toBe(0);
+		expect(
+			db
+				.prepare(
+					"SELECT COUNT(*) FROM policy_team_memberships WHERE identity_id = 'identity-rollback'",
+				)
+				.pluck()
+				.get(),
+		).toBe(0);
+		expect(
+			db
+				.prepare(`SELECT reference_id, status, resolved_at
+				FROM coordinator_enrollment_reconciliation_issues`)
+				.get(),
+		).toEqual({ reference_id: "prior-device", status: "open", resolved_at: null });
+	});
+
+	it("hashes invalid remote reference IDs before returning or persisting diagnostics", () => {
+		const unsafeReferenceId = `device-secret\n${"x".repeat(300)}`;
+
+		const result = reconcileCoordinatorEnrollmentSnapshot(db, {
+			coordinatorId: "https://coord.example.test",
+			groupId: "group-a",
+			now: NOW,
+			consumedTeamInvites: [],
+			enrollments: [
+				{
+					group_id: "group-a",
+					device_id: unsafeReferenceId,
+					public_key: "pk",
+					fingerprint: "fp",
+					identity_id: "identity-direct",
+					display_name: null,
+					enabled: 1,
+					created_at: NOW,
+				},
+			],
+		});
+
+		expect(result.issues).toEqual([
+			{
+				kind: "device",
+				referenceId: expect.stringMatching(/^invalid-reference:[a-f0-9]{64}$/u),
+				code: "enrollment_invalid",
+			},
+		]);
+		const persistedReferenceId = db
+			.prepare("SELECT reference_id FROM coordinator_enrollment_reconciliation_issues")
+			.pluck()
+			.get();
+		expect(persistedReferenceId).toBe(result.issues[0]?.referenceId);
+		expect(String(persistedReferenceId)).not.toContain("secret");
 	});
 });
