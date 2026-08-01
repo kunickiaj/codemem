@@ -119,7 +119,7 @@ function projectSharingRelationshipLabel(
 		case "active":
 			return `Shared with ${personName}`;
 		case "waiting_for_device":
-			return `Waiting for ${personName}'s device`;
+			return `Sharing with ${personName}`;
 		case "needs_attention":
 			return `Sharing with ${personName} needs attention`;
 		case "revoking":

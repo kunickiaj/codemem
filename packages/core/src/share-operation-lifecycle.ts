@@ -131,6 +131,18 @@ export function projectShareLifecycle(
 	}
 
 	const incomplete = input.steps.filter((step) => step.status !== "completed");
+	const capabilityWait = incomplete.find(
+		(step) =>
+			step.stepKey === "capability_preflight" &&
+			(step.status === "running" || DEVICE_WAIT_CODES.has(step.safeErrorCode ?? "")),
+	);
+	if (capabilityWait && input.state === "waiting_for_device") {
+		return passive(
+			"waiting_for_device",
+			"Checking device compatibility",
+			"Waiting for a participating device to report the required sharing capability.",
+		);
+	}
 	const deviceWait = incomplete.find(isDeviceWait);
 	if (input.state === "waiting_for_device" || deviceWait) {
 		const lastSeen = input.deviceLastSeenAt?.trim();

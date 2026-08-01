@@ -788,8 +788,9 @@ describe("Projects tab", () => {
 					person: { actor_id: "actor-alex", display_name: "Alex" },
 					lifecycle: {
 						state: "waiting_for_device",
-						label: "Waiting for device",
-						explanation: "Sync will continue when the device reconnects.",
+						label: "Checking device compatibility",
+						explanation:
+							"Waiting for a participating device to report the required sharing capability.",
 					},
 				},
 			],
@@ -820,7 +821,8 @@ describe("Projects tab", () => {
 		expect(selectedRow?.querySelector(".project-sharing-summary")?.textContent).toContain("Brian");
 		expect(selectedRow?.querySelector(".project-sharing-summary")?.textContent).toContain("Alex");
 		expect(selectedRow?.textContent).toContain("Up to date");
-		expect(selectedRow?.textContent).toContain("Waiting for device");
+		expect(selectedRow?.textContent).toContain("Checking device compatibility");
+		expect(selectedRow?.textContent.match(/Checking device compatibility/g)).toHaveLength(1);
 		expect(siblingRow?.querySelector(".project-sharing-summary")).toBeNull();
 	});
 

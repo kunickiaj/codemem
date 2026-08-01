@@ -117,6 +117,42 @@ describe("projectShareLifecycle", () => {
 		expect(result).toMatchObject({ lifecycle: "waiting_for_device", primaryAction: null });
 	});
 
+	it("distinguishes capability evidence waits from an offline recipient", () => {
+		const result = project("waiting_for_device", [
+			step({
+				safeErrorCode: "waiting_for_device",
+				status: "failed",
+				stepKey: "capability_preflight",
+			}),
+		]);
+
+		expect(result).toMatchObject({
+			lifecycle: "waiting_for_device",
+			label: "Checking device compatibility",
+			explanation: "Waiting for a participating device to report the required sharing capability.",
+			primaryAction: null,
+		});
+		expect(result.explanation).not.toContain("reach");
+	});
+
+	it("keeps a running capability retry classified as a compatibility wait", () => {
+		const result = project("waiting_for_device", [
+			step({
+				safeErrorCode: null,
+				status: "running",
+				stepKey: "capability_preflight",
+			}),
+		]);
+
+		expect(result).toMatchObject({
+			lifecycle: "waiting_for_device",
+			label: "Checking device compatibility",
+			explanation: "Waiting for a participating device to report the required sharing capability.",
+			primaryAction: null,
+		});
+		expect(result.explanation).not.toContain("reach");
+	});
+
 	it("maps safe failure codes without leaking technical traces", () => {
 		const result = project("needs_attention", [
 			step({ status: "failed", safeErrorCode: "reassign_capability_required" }),
