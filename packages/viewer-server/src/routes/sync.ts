@@ -1223,6 +1223,7 @@ interface ShareOperationReadRow {
 	actor_display_name: string | null;
 	peer_display_name: string | null;
 	device_last_seen_at: string | null;
+	device_last_reached_at: string | null;
 }
 
 async function shareOperationReadModels(
@@ -1235,7 +1236,8 @@ async function shareOperationReadModels(
 			o.recipient_actor_id, o.recipient_display_name, o.recipient_device_id,
 			o.recipient_device_display_name, o.invite_expires_at, o.acceptance_consumed_at,
 			o.created_at, o.updated_at, a.display_name AS actor_display_name,
-			p.name AS peer_display_name, p.last_sync_at AS device_last_seen_at
+			p.name AS peer_display_name, p.last_seen_at AS device_last_seen_at,
+			p.last_sync_at AS device_last_reached_at
 		 FROM share_operations o
 		 LEFT JOIN actors a ON a.actor_id = o.person_id
 		 LEFT JOIN sync_peers p ON p.peer_device_id = o.recipient_device_id
@@ -1296,6 +1298,7 @@ async function shareOperationReadModels(
 			const deviceName = row.recipient_device_display_name || row.peer_display_name;
 			const lifecycle = projectShareLifecycle({
 				deviceLastSeenAt: row.device_last_seen_at,
+				deviceLastReachedAt: row.device_last_reached_at,
 				deviceName,
 				inviteLink,
 				now,

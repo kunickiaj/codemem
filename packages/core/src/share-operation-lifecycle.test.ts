@@ -117,6 +117,84 @@ describe("projectShareLifecycle", () => {
 		expect(result).toMatchObject({ lifecycle: "waiting_for_device", primaryAction: null });
 	});
 
+	it("does not describe a successfully reconnected recipient as offline while setup resumes", () => {
+		const result = projectShareLifecycle({
+			deviceLastSeenAt: "2026-07-20T12:19:30.000Z",
+			deviceLastReachedAt: "2026-07-20T12:19:00.000Z",
+			deviceName: "Brian's MacBook",
+			now,
+			personName: "Brian",
+			state: "waiting_for_device",
+			steps: [
+				step({
+					lastAttemptAt: "2026-07-20T12:18:00.000Z",
+					safeErrorCode: "waiting_for_device",
+					status: "failed",
+					stepKey: "initial_sync",
+					updatedAt: "2026-07-20T12:18:00.000Z",
+				}),
+			],
+		});
+
+		expect(result).toMatchObject({
+			lifecycle: "waiting_for_device",
+			label: "Finishing project setup",
+			explanation:
+				"A recent sync reached Brian's MacBook. Project setup will continue automatically.",
+			primaryAction: null,
+		});
+		expect(result.explanation).not.toContain("Waiting to reach");
+	});
+
+	it.each([
+		["before the wait", "2026-07-20T12:17:00.000Z"],
+		["at the wait boundary", "2026-07-20T12:18:00.000Z"],
+		["outside the reachability window", "2026-07-20T12:14:00.000Z"],
+		["with an invalid timestamp", "not-a-time"],
+	])("keeps offline copy when the device was last reached %s", (_label, deviceLastReachedAt) => {
+		const result = projectShareLifecycle({
+			deviceLastSeenAt: "2026-07-20T12:19:30.000Z",
+			deviceLastReachedAt,
+			deviceName: "Brian's MacBook",
+			now,
+			personName: "Brian",
+			state: "waiting_for_device",
+			steps: [
+				step({
+					safeErrorCode: "waiting_for_device",
+					status: "failed",
+					stepKey: "initial_sync",
+					updatedAt: "2026-07-20T12:18:00.000Z",
+				}),
+			],
+		});
+
+		expect(result.label).toBe("Waiting for device");
+		expect(result.explanation).toContain("Waiting to reach");
+	});
+
+	it("does not infer recent reachability from display-only last-seen metadata", () => {
+		const result = projectShareLifecycle({
+			deviceLastSeenAt: "2026-07-20T12:19:00.000Z",
+			deviceLastReachedAt: null,
+			deviceName: "Brian's MacBook",
+			now,
+			personName: "Brian",
+			state: "waiting_for_device",
+			steps: [
+				step({
+					safeErrorCode: "waiting_for_device",
+					status: "failed",
+					stepKey: "initial_sync",
+					updatedAt: "2026-07-20T12:18:00.000Z",
+				}),
+			],
+		});
+
+		expect(result.label).toBe("Waiting for device");
+		expect(result.explanation).toContain("Waiting to reach");
+	});
+
 	it("distinguishes capability evidence waits from an offline recipient", () => {
 		const result = project("waiting_for_device", [
 			step({

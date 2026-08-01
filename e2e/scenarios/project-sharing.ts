@@ -25,6 +25,7 @@ interface FixtureSummary {
 		actor_id: string | null;
 		pinned_fingerprint: string | null;
 		trust_provenance: string | null;
+		last_sync_at: string | null;
 		discovered_via_coordinator_id: string | null;
 		discovered_via_group_id: string | null;
 	}>;
@@ -36,6 +37,7 @@ interface FixtureSummary {
 		teammate_name: string;
 		recipient_device_id: string | null;
 		recipient_device_display_name: string | null;
+		updated_at: string;
 	}>;
 	policy: {
 		authority_states: Array<{
@@ -484,19 +486,118 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		"peer-a has no peer-b record after reconciliation",
 	);
 
+	const recipientBeforeOfflineWait = await request<{ daemon_last_ok_at?: string | null }>(
+		ctx,
+		"peer-b",
+		"/api/sync/status?includeDiagnostics=true",
+		"29-recipient-before-offline-wait",
+	);
+	const stoppedRecipient = ctx.compose.stop("peer-b", "29-stop-recipient-before-provisioning");
+	assertStatus(stoppedRecipient.status, 0, "recipient failed to stop before offline provisioning check");
+	const offlineAdvance = await request<{ error?: string }>(
+		ctx,
+		"peer-a",
+		`/api/sync/share-operations/${created.body.operation_id}/advance`,
+		"29-advance-project-share-offline",
+		{},
+	);
+	assert(
+		offlineAdvance.status === 409 && offlineAdvance.body.error === "waiting_for_device",
+		`offline recipient did not enter a safe waiting state: ${JSON.stringify(offlineAdvance.body)}`,
+	);
+	const waitingOwner = fixture(ctx, "peer-a", "summary", "29-peer-a-waiting-summary");
+	const waitingOperation = waitingOwner.operations.find(
+		(item) => item.operation_id === created.body.operation_id,
+	);
+	assert(
+		waitingOperation?.state === "waiting_for_device",
+		`offline recipient did not persist waiting_for_device: ${waitingOperation?.state ?? "missing"}`,
+	);
+
+	const startedRecipient = ctx.compose.start("peer-b", "30-start-recipient-for-auto-resume-container");
+	assertStatus(startedRecipient.status, 0, "recipient container failed to start for automatic resume");
+	startServer(ctx, "peer-b", "30-start-recipient-for-auto-resume-server");
+	await waitForServer(ctx, "peer-b", "30-recipient-ready-for-auto-resume");
 	await waitFor(
 		async () => {
-			const advanced = await request<Record<string, unknown>>(
+			const status = await request<{ daemon_state: string; daemon_last_ok_at?: string | null }>(
 				ctx,
-				"peer-a",
-				`/api/sync/share-operations/${created.body.operation_id}/advance`,
-				"29-advance-project-share",
-				{},
+				"peer-b",
+				"/api/sync/status?includeDiagnostics=true",
+				"30-recipient-sync-ready-after-reconnect",
 			);
-			assert(advanced.status === 200, `project provisioning not ready: ${JSON.stringify(advanced.body)}`);
+			assert(status.body.daemon_state !== "starting", "recipient sync is still starting");
+			assert(status.body.daemon_last_ok_at, "recipient sync has not completed after reconnect");
+			assert(
+				!recipientBeforeOfflineWait.body.daemon_last_ok_at ||
+					status.body.daemon_last_ok_at > recipientBeforeOfflineWait.body.daemon_last_ok_at,
+				"recipient sync status did not advance after reconnect",
+			);
 		},
-		{ description: "project share provisioning", timeoutMs: 180_000, intervalMs: 3_000 },
+		{ description: "recipient sync readiness after reconnect", timeoutMs: 120_000, intervalMs: 2_000 },
 	);
+	syncOnce(ctx, "peer-a", "30-sync-reconnected-recipient", peerB.device_id);
+	const reconnectReadModel = await request<{
+		lifecycle: { state: string; label: string; explanation: string };
+	}>(
+		ctx,
+		"peer-a",
+		`/api/sync/share-operations/${created.body.operation_id}`,
+		"30-reconnected-operation-read-model",
+	);
+	assert(reconnectReadModel.status === 200, "reconnected operation read model failed");
+	assert(
+		reconnectReadModel.body.lifecycle.label !== "Checking device compatibility",
+		`recipient reachability did not resolve capability preflight: ${JSON.stringify(reconnectReadModel.body.lifecycle)}`,
+	);
+	assert(
+		reconnectReadModel.body.lifecycle.state === "waiting_for_device" &&
+			reconnectReadModel.body.lifecycle.label === "Finishing project setup" &&
+			!reconnectReadModel.body.lifecycle.explanation.includes("Waiting to reach"),
+		`online recipient was still described as offline: ${JSON.stringify(reconnectReadModel.body.lifecycle)}`,
+	);
+	const syncedOwner = fixture(ctx, "peer-a", "summary", "30-peer-a-reconnected-sync-summary");
+	const reconnectedPeer = syncedOwner.peers.find((peer) => peer.peer_device_id === peerB.device_id);
+	assert(
+		reconnectedPeer?.last_sync_at && reconnectedPeer.last_sync_at > waitingOperation.updated_at,
+		`owner did not record successful recipient sync after the wait: ${reconnectedPeer?.last_sync_at ?? "missing"}`,
+	);
+	const ownerConfigBeforeAutoResume = readConfig(
+		ctx,
+		"peer-a",
+		"31-read-owner-config-for-auto-resume",
+	);
+	writePeerConfig(
+		ctx,
+		"peer-a",
+		{ ...ownerConfigBeforeAutoResume, sync_interval_s: 2 },
+		"31-enable-owner-maintenance-for-auto-resume",
+	);
+	restartServer(ctx, "peer-a", "31-restart-owner-for-automatic-maintenance");
+	await waitForServer(ctx, "peer-a", "31-owner-ready-for-automatic-maintenance");
+	await waitFor(
+		async () => {
+			const resumedOwner = fixture(ctx, "peer-a", "summary", "31-peer-a-auto-resumed-summary");
+			const resumedOperation = resumedOwner.operations.find(
+				(item) => item.operation_id === created.body.operation_id,
+			);
+			assert(
+				resumedOperation?.state === "active",
+				`project provisioning did not resume automatically: ${resumedOperation?.state ?? "missing"}`,
+			);
+		},
+		{ description: "automatic Project setup resume", timeoutMs: 180_000, intervalMs: 3_000 },
+	);
+	writePeerConfig(
+		ctx,
+		"peer-a",
+		ownerConfigBeforeAutoResume,
+		"31-restore-owner-config-after-auto-resume",
+	);
+	// The running daemon captures its interval at startup; restart to keep the owner quiet
+	// until the second-device no-leak check deliberately re-enables reconciliation below.
+	restartServer(ctx, "peer-a", "31-restart-owner-after-auto-resume");
+	await waitForServer(ctx, "peer-a", "31-owner-ready-after-auto-resume");
 
 	syncOnce(ctx, "peer-a", "32-sync-existing-a");
 	syncOnce(ctx, "peer-b", "33-sync-existing-b");

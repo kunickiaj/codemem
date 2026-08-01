@@ -1,5 +1,6 @@
 export const SHARE_OPERATION_STALE_AFTER_MS = 10 * 60 * 1000;
 export const SHARE_OPERATION_MAX_ATTEMPTS = 3;
+export const SHARE_OPERATION_DEVICE_REACHABLE_WINDOW_MS = 5 * 60 * 1000;
 
 export type ShareOperationLifecycle =
 	| "waiting_for_acceptance"
@@ -33,6 +34,7 @@ export interface ShareOperationLifecycleInput {
 	personName: string;
 	deviceName: string | null;
 	deviceLastSeenAt: string | null;
+	deviceLastReachedAt?: string | null;
 	inviteLink?: string | null;
 	steps: ShareOperationLifecycleStepInput[];
 	now: string;
@@ -98,6 +100,7 @@ export function projectShareLifecycle(
 ): ShareOperationLifecycleProjection {
 	const personName = input.personName.trim() || "your teammate";
 	const deviceName = input.deviceName?.trim() || `${personName}'s device`;
+	const nowMs = validTime(input.now) ?? 0;
 	if (input.state === "revoking") {
 		return passive("revoking", "Removing future access", "Previously copied memories may remain.");
 	}
@@ -144,6 +147,22 @@ export function projectShareLifecycle(
 		);
 	}
 	const deviceWait = incomplete.find(isDeviceWait);
+	const deviceLastReachedAt = validTime(input.deviceLastReachedAt ?? null);
+	const deviceWaitUpdatedAt = validTime(deviceWait?.updatedAt ?? null);
+	if (
+		deviceWait &&
+		deviceLastReachedAt !== null &&
+		deviceWaitUpdatedAt !== null &&
+		deviceLastReachedAt > deviceWaitUpdatedAt &&
+		deviceLastReachedAt <= nowMs &&
+		nowMs - deviceLastReachedAt <= SHARE_OPERATION_DEVICE_REACHABLE_WINDOW_MS
+	) {
+		return passive(
+			"waiting_for_device",
+			"Finishing project setup",
+			`A recent sync reached ${deviceName}. Project setup will continue automatically.`,
+		);
+	}
 	if (input.state === "waiting_for_device" || deviceWait) {
 		const lastSeen = input.deviceLastSeenAt?.trim();
 		return passive(
@@ -155,7 +174,6 @@ export function projectShareLifecycle(
 		);
 	}
 
-	const nowMs = validTime(input.now) ?? 0;
 	const failed = incomplete.find((step) => step.status === "failed" && !isDeviceWait(step));
 	const exhausted = incomplete.find(
 		(step) =>

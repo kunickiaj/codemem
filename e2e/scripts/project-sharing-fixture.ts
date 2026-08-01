@@ -570,7 +570,7 @@ function summary(store: MemoryStore): Record<string, unknown> {
 			.all(),
 		peers: store.db
 			.prepare(
-				`SELECT peer_device_id, name, actor_id, pinned_fingerprint, trust_provenance,
+				`SELECT peer_device_id, name, actor_id, pinned_fingerprint, trust_provenance, last_sync_at,
 				 discovered_via_coordinator_id, discovered_via_group_id
 				 FROM sync_peers ORDER BY peer_device_id`,
 			)
@@ -590,7 +590,7 @@ function summary(store: MemoryStore): Record<string, unknown> {
 		operations: store.db
 			.prepare(
 				`SELECT operation_id, state, teammate_name, recipient_device_id,
-					recipient_device_display_name
+					recipient_device_display_name, updated_at
 				 FROM share_operations ORDER BY created_at`,
 			)
 			.all(),
