@@ -1326,8 +1326,8 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		reconciliation.rollback.result.status === "needs_attention" &&
 			reconciliation.rollback.result.revokedDeviceIds.includes("device-rollback-old") &&
 			reconciliation.rollback.authority?.authorityState === "rolled_back" &&
-			reconciliation.rollback.mutation_calls.length === 1 &&
-			reconciliation.rollback.mutation_calls[0] === "revoke:device-rollback-old",
+			reconciliation.rollback.mutation_calls.join(",") ===
+				"revoke:device-rollback-old,refresh",
 		"unsupported active Project did not revoke stale access and roll back without grants",
 	);
 	const reconciliationStatus = await request<{

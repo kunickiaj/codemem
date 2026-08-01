@@ -154,6 +154,7 @@ describe("recipient-policy reconciler executor", () => {
 		expect(calls).toEqual([
 			"snapshot",
 			"revoke:device-old",
+			"refresh",
 			"probe:device-keep",
 			"probe:device-new",
 			"grant:device-new",
@@ -174,7 +175,7 @@ describe("recipient-policy reconciler executor", () => {
 		expect(second.grantedDeviceIds).toEqual([]);
 		expect(vi.mocked(effects.revoke)).toHaveBeenCalledTimes(1);
 		expect(vi.mocked(effects.grant)).toHaveBeenCalledTimes(1);
-		expect(vi.mocked(effects.refresh)).toHaveBeenCalledTimes(2);
+		expect(vi.mocked(effects.refresh)).toHaveBeenCalledTimes(3);
 		expect(getRecipientPolicyAuthorityState(db, PROJECT)?.authorityState).toBe("active");
 	});
 
@@ -510,6 +511,51 @@ describe("recipient-policy reconciler executor", () => {
 		).toEqual({ status: "active" });
 	});
 
+	it("stages every disabled-member deny overlay before the first revoke", async () => {
+		const { effects } = harness(["device-keep", "device-new"]);
+		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
+			{
+				deviceId: "device-keep",
+				identityId: null,
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+				enabled: false,
+			},
+			{
+				deviceId: "device-new",
+				identityId: null,
+				publicKey: "pk-new",
+				fingerprint: "fp-new",
+				enabled: false,
+			},
+		]);
+		vi.mocked(effects.revoke).mockImplementation(async () => {
+			expect(
+				listRecipientPolicyDenyOverlays(db, PROJECT)
+					.map(({ deviceId }) => deviceId)
+					.toSorted(),
+			).toEqual(["device-keep", "device-new"]);
+			throw new Error("coordinator_unavailable");
+		});
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-disabled-failure" },
+			effects,
+		);
+
+		expect(outcome).toMatchObject({
+			status: "needs_attention",
+			safeErrorCode: "recipient_policy_effect_failed",
+		});
+		expect(effects.revoke).toHaveBeenCalledTimes(1);
+		expect(
+			listRecipientPolicyDenyOverlays(db, PROJECT)
+				.map(({ deviceId }) => deviceId)
+				.toSorted(),
+		).toEqual(["device-keep", "device-new"]);
+	});
+
 	it("leaves the same device active in another managed Project group", async () => {
 		db.prepare(
 			"UPDATE identity_devices SET status = 'revoked' WHERE device_id = 'device-new'",
@@ -659,6 +705,10 @@ describe("recipient-policy reconciler executor", () => {
 		expect(effects.revoke).toHaveBeenCalledWith(
 			expect.objectContaining({ scopeId: SCOPE, deviceId: "device-old" }),
 		);
+		expect(effects.refresh).toHaveBeenCalledWith({
+			canonicalProjectIdentity: PROJECT,
+			scopeId: SCOPE,
+		});
 		expect(effects.grant).not.toHaveBeenCalled();
 	});
 
@@ -684,7 +734,10 @@ describe("recipient-policy reconciler executor", () => {
 			expect.objectContaining({ deviceId: "device-old" }),
 		);
 		expect(effects.grant).not.toHaveBeenCalled();
-		expect(effects.refresh).not.toHaveBeenCalled();
+		expect(effects.refresh).toHaveBeenCalledWith({
+			canonicalProjectIdentity: PROJECT,
+			scopeId: SCOPE,
+		});
 		expect(vi.mocked(effects.probeCapability).mock.calls.map(([input]) => input.deviceId)).toEqual([
 			"device-keep",
 			"device-new",
@@ -699,6 +752,304 @@ describe("recipient-policy reconciler executor", () => {
 				deviceId: "device-old",
 			}),
 		).toThrow("recipient_policy_legacy_grant_blocked");
+	});
+
+	it("refreshes disabled-member revocations before unsupported capability returns", async () => {
+		const { calls, effects } = harness(["device-keep"]);
+		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
+			{
+				deviceId: "device-keep",
+				identityId: null,
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+				enabled: false,
+			},
+			{
+				deviceId: "device-new",
+				identityId: "identity-a",
+				publicKey: "pk-new",
+				fingerprint: "fp-new",
+				enabled: true,
+			},
+		]);
+		vi.mocked(effects.probeCapability).mockImplementation(async ({ deviceId }) => {
+			calls.push(`probe:${deviceId}`);
+			return "unsupported";
+		});
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-disabled-unsupported" },
+			effects,
+		);
+
+		expect(outcome).toMatchObject({
+			status: "needs_attention",
+			safeErrorCode: "recipient_policy_capability_unsupported",
+			revokedDeviceIds: ["device-keep"],
+		});
+		expect(calls.indexOf("refresh")).toBeGreaterThan(calls.indexOf("revoke:device-keep"));
+		expect(calls.indexOf("refresh")).toBeLessThan(calls.indexOf("probe:device-new"));
+		expect(effects.grant).not.toHaveBeenCalled();
+	});
+
+	it("retries a failed revocation refresh without repeating the completed revoke", async () => {
+		insertActiveAuthority(db);
+		const { calls, effects } = harness(["device-keep"]);
+		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
+			{
+				deviceId: "device-keep",
+				identityId: "identity-a",
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+				enabled: false,
+			},
+			{
+				deviceId: "device-new",
+				identityId: "identity-a",
+				publicKey: "pk-new",
+				fingerprint: "fp-new",
+				enabled: true,
+			},
+		]);
+		vi.mocked(effects.probeCapability).mockImplementation(async ({ deviceId }) => {
+			calls.push(`probe:${deviceId}`);
+			return "unsupported";
+		});
+		vi.mocked(effects.refresh)
+			.mockImplementationOnce(async () => {
+				calls.push("refresh");
+				throw new Error("refresh_failed");
+			})
+			.mockImplementation(async () => {
+				calls.push("refresh");
+			});
+
+		const failed = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-refresh-failed" },
+			effects,
+		);
+		const refreshGenerations = db
+			.prepare(
+				`SELECT DISTINCT generation FROM recipient_policy_reconciliation_steps
+				 WHERE step_key LIKE 'revoke-enrollment-disabled:%'
+				 OR step_key LIKE 'refresh-after-revocations-v2:%'
+				 ORDER BY generation`,
+			)
+			.all();
+		const retried = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-refresh-retry" },
+			effects,
+		);
+
+		expect(failed.safeErrorCode).toBe("recipient_policy_effect_failed");
+		expect(failed.revokedDeviceIds).toEqual(["device-keep"]);
+		expect(retried.safeErrorCode).toBe("recipient_policy_capability_unsupported");
+		expect(refreshGenerations).toEqual([{ generation: 1 }]);
+		expect(
+			db
+				.prepare(
+					`SELECT DISTINCT generation FROM recipient_policy_reconciliation_steps
+					 WHERE step_key LIKE 'revoke-enrollment-disabled:%'
+					 OR step_key LIKE 'refresh-after-revocations-v2:%'
+					 ORDER BY generation`,
+				)
+				.all(),
+		).toEqual([{ generation: 1 }]);
+		expect(effects.revoke).toHaveBeenCalledTimes(1);
+		expect(effects.refresh).toHaveBeenCalledTimes(2);
+		expect(calls.lastIndexOf("refresh")).toBeLessThan(calls.lastIndexOf("probe:device-new"));
+	});
+
+	it("replays a pending refresh through the current boundary after a scope remap", async () => {
+		db.prepare(
+			"UPDATE identity_devices SET status = 'revoked' WHERE device_id = 'device-new'",
+		).run();
+		const { effects, members } = harness(["device-keep"]);
+		let currentScopeId = SCOPE;
+		vi.mocked(effects.snapshot).mockImplementation(async () => {
+			const deviceIds = [...members].toSorted();
+			return {
+				authoritative: true,
+				scopeId: currentScopeId,
+				fingerprint: `snapshot:${deviceIds.join(",")}`,
+				observedAt: effects.now(),
+				memberships: deviceIds.map((deviceId) => ({ deviceId, status: "active" as const })),
+			};
+		});
+		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
+			{
+				deviceId: "device-keep",
+				identityId: "identity-a",
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+				enabled: false,
+			},
+		]);
+		vi.mocked(effects.refresh)
+			.mockRejectedValueOnce(new Error("refresh_failed"))
+			.mockResolvedValueOnce(undefined)
+			.mockRejectedValue(new Error("redundant_refresh"));
+
+		await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-old-scope" },
+			effects,
+		);
+		currentScopeId = "managed-project-scope-remapped";
+		const now = effects.now();
+		db.prepare(
+			`INSERT INTO replication_scopes(
+			 scope_id, label, kind, authority_type, coordinator_id, group_id, membership_epoch,
+			 status, created_at, updated_at
+			 ) VALUES (?, 'Remapped Project', 'managed_project', 'coordinator', 'coord', 'group-remapped', 1,
+			 'active', ?, ?)`,
+		).run(currentScopeId, now, now);
+		db.prepare("UPDATE project_scope_mappings SET scope_id = ? WHERE workspace_identity = ?").run(
+			currentScopeId,
+			PROJECT,
+		);
+
+		const retried = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-remapped-scope" },
+			effects,
+		);
+
+		expect(retried.safeErrorCode).toBeNull();
+		expect(vi.mocked(effects.refresh).mock.calls.map(([input]) => input.scopeId)).toEqual([
+			SCOPE,
+			currentScopeId,
+		]);
+	});
+
+	it("stages new revocations before retrying an older failed refresh", async () => {
+		db.prepare(
+			"UPDATE identity_devices SET status = 'revoked' WHERE device_id = 'device-new'",
+		).run();
+		const { effects, members } = harness(["device-keep"]);
+		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
+			{
+				deviceId: "device-keep",
+				identityId: "identity-a",
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+				enabled: false,
+			},
+		]);
+		vi.mocked(effects.refresh).mockRejectedValue(new Error("refresh_failed"));
+
+		await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-old-refresh" },
+			effects,
+		);
+		members.add("device-old");
+		const retried = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-new-revoke" },
+			effects,
+		);
+
+		expect(retried.safeErrorCode).toBe("recipient_policy_effect_failed");
+		expect(vi.mocked(effects.revoke).mock.calls.map(([input]) => input.deviceId)).toEqual([
+			"device-keep",
+			"device-old",
+		]);
+		expect(listRecipientPolicyDenyOverlays(db, PROJECT)).toEqual([
+			expect.objectContaining({ deviceId: "device-keep" }),
+			expect.objectContaining({ deviceId: "device-old" }),
+		]);
+	});
+
+	it("continues policy revokes and stages enrollment denials after a refresh failure", async () => {
+		const { effects } = harness(["device-keep", "device-old-a", "device-old-b"]);
+		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
+			{
+				deviceId: "device-keep",
+				identityId: "identity-a",
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+				enabled: false,
+			},
+			{
+				deviceId: "device-new",
+				identityId: "identity-a",
+				publicKey: "pk-new",
+				fingerprint: "fp-new",
+				enabled: true,
+			},
+		]);
+		vi.mocked(effects.refresh)
+			.mockRejectedValueOnce(new Error("refresh_failed"))
+			.mockResolvedValue(undefined);
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-refresh-denials" },
+			effects,
+		);
+
+		expect(outcome).toMatchObject({
+			status: "needs_attention",
+			safeErrorCode: "recipient_policy_effect_failed",
+			revokedDeviceIds: ["device-old-a", "device-old-b"],
+		});
+		expect(vi.mocked(effects.revoke).mock.calls.map(([input]) => input.deviceId)).toEqual([
+			"device-old-a",
+			"device-old-b",
+		]);
+		expect(listRecipientPolicyDenyOverlays(db, PROJECT)).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ deviceId: "device-old-a", reasonCode: "pending_revoke" }),
+				expect.objectContaining({ deviceId: "device-old-b", reasonCode: "pending_revoke" }),
+				expect.objectContaining({ deviceId: "device-keep", reasonCode: "enrollment_disabled" }),
+			]),
+		);
+		expect(effects.grant).not.toHaveBeenCalled();
+	});
+
+	it("refreshes each distinct enrollment revocation reason for the same snapshot", async () => {
+		db.prepare(
+			"UPDATE identity_devices SET status = 'revoked' WHERE device_id = 'device-new'",
+		).run();
+		const { effects, members } = harness(["device-keep"]);
+		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
+			{
+				deviceId: "device-keep",
+				identityId: "identity-b",
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+				enabled: true,
+			},
+		]);
+
+		await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-conflict" },
+			effects,
+		);
+		members.add("device-keep");
+		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
+			{
+				deviceId: "device-keep",
+				identityId: "identity-a",
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+				enabled: false,
+			},
+		]);
+
+		await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-disabled" },
+			effects,
+		);
+
+		expect(effects.revoke).toHaveBeenCalledTimes(2);
+		expect(effects.refresh).toHaveBeenCalledTimes(2);
 	});
 
 	it("retries a failed coordinator mutation with the same deterministic effect identity", async () => {

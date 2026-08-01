@@ -356,6 +356,11 @@ interface EnrollmentRevocation {
 	reasonCode: EnrollmentRevocationReason;
 }
 
+interface RevocationStep {
+	deviceId: string;
+	stepKey: string;
+}
+
 function enrollmentRevocationReason(
 	binding: RecipientPolicyBoundaryEnrollment | undefined,
 	desiredIdentityId: string | undefined,
@@ -408,6 +413,32 @@ function enrollmentRevocationStepKey(
 		default:
 			return unreachableEnrollmentRevocationCase(phase);
 	}
+}
+
+function enrollmentRevocationStep(
+	revocation: EnrollmentRevocation,
+	phase: EnrollmentRevocationPhase,
+	snapshotStateKey: string,
+): RevocationStep {
+	return {
+		deviceId: revocation.deviceId,
+		stepKey: enrollmentRevocationStepKey(
+			revocation.reasonCode,
+			phase,
+			snapshotStateKey,
+			revocation.deviceId,
+		),
+	};
+}
+
+function revocationRefreshStepKey(input: {
+	scopeId: string;
+	phase: EnrollmentRevocationPhase;
+	snapshotStateKey: string;
+	revocationSetKey: string;
+}): string {
+	const scopeKey = digest("recipient-policy-revocation-refresh-scope-v1", input.scopeId);
+	return `refresh-after-revocations-v2:${scopeKey}:${input.phase}:${input.snapshotStateKey}:${input.revocationSetKey}`;
 }
 
 function generation(db: Database, projectId: string, desiredDigest: string): number {
@@ -571,35 +602,27 @@ async function applyEnrollmentRevocations(
 		snapshotStateKey: string;
 		phase: EnrollmentRevocationPhase;
 		revocations: EnrollmentRevocation[];
+		changedDeviceIds: string[];
 		leaseOwner: string;
 		lease: Lease;
 		effects: RecipientPolicyReconcilerEffects;
 	},
-): Promise<string[]> {
-	if (input.revocations.length === 0) return [];
-	resetParity(db, input.projectId, input.effects.now());
-	const changedDeviceIds: string[] = [];
-	for (const { deviceId, reasonCode } of input.revocations) {
-		putRecipientPolicyDenyOverlay(db, {
-			canonicalProjectIdentity: input.projectId,
-			scopeId: input.scopeId,
-			deviceId,
-			generation: input.generation,
-			reasonCode,
-			now: input.effects.now(),
-		});
+): Promise<void> {
+	if (input.revocations.length === 0) return;
+	stageEnrollmentRevocationOverlays(db, input);
+	for (const revocation of input.revocations) {
+		const revocationStep = enrollmentRevocationStep(
+			revocation,
+			input.phase,
+			input.snapshotStateKey,
+		);
 		const changed = await step(
 			db,
 			{
 				projectId: input.projectId,
 				generation: input.generation,
-				stepKey: enrollmentRevocationStepKey(
-					reasonCode,
-					input.phase,
-					input.snapshotStateKey,
-					deviceId,
-				),
-				payload: { scopeId: input.scopeId, deviceId, status: "revoked" },
+				stepKey: revocationStep.stepKey,
+				payload: { scopeId: input.scopeId, deviceId: revocation.deviceId, status: "revoked" },
 				leaseOwner: input.leaseOwner,
 				lease: input.lease,
 				now: input.effects.now,
@@ -610,19 +633,139 @@ async function applyEnrollmentRevocations(
 					canonicalProjectIdentity: input.projectId,
 					generation: input.generation,
 					scopeId: input.scopeId,
-					deviceId,
+					deviceId: revocation.deviceId,
 				});
 				validateReceipt(receipt, {
 					effectId,
 					scopeId: input.scopeId,
-					deviceId,
+					deviceId: revocation.deviceId,
 					status: "revoked",
 				});
 			},
 		);
-		if (changed) changedDeviceIds.push(deviceId);
+		if (changed) input.changedDeviceIds.push(revocation.deviceId);
+		await refreshAfterRevocations(db, {
+			projectId: input.projectId,
+			generation: input.generation,
+			scopeId: input.scopeId,
+			snapshotStateKey: input.snapshotStateKey,
+			phase: input.phase,
+			revocations: [revocationStep],
+			leaseOwner: input.leaseOwner,
+			lease: input.lease,
+			effects: input.effects,
+		});
 	}
-	return changedDeviceIds;
+}
+
+function stageEnrollmentRevocationOverlays(
+	db: Database,
+	input: {
+		projectId: string;
+		generation: number;
+		scopeId: string;
+		revocations: EnrollmentRevocation[];
+		effects: RecipientPolicyReconcilerEffects;
+	},
+): void {
+	if (input.revocations.length === 0) return;
+	resetParity(db, input.projectId, input.effects.now());
+	for (const { deviceId, reasonCode } of input.revocations) {
+		putRecipientPolicyDenyOverlay(db, {
+			canonicalProjectIdentity: input.projectId,
+			scopeId: input.scopeId,
+			deviceId,
+			generation: input.generation,
+			reasonCode,
+			now: input.effects.now(),
+		});
+	}
+}
+
+async function refreshAfterRevocations(
+	db: Database,
+	input: {
+		projectId: string;
+		generation: number;
+		scopeId: string;
+		snapshotStateKey: string;
+		phase: EnrollmentRevocationPhase;
+		revocations: RevocationStep[];
+		leaseOwner: string;
+		lease: Lease;
+		effects: RecipientPolicyReconcilerEffects;
+	},
+): Promise<void> {
+	const revocationStepKeys = [
+		...new Set(input.revocations.map(({ stepKey }) => stepKey)),
+	].toSorted();
+	if (revocationStepKeys.length === 0) return;
+	const revocationSetKey = digest("recipient-policy-revocation-refresh-v2", {
+		revocationStepKeys,
+	});
+	await step(
+		db,
+		{
+			projectId: input.projectId,
+			generation: input.generation,
+			stepKey: revocationRefreshStepKey({
+				scopeId: input.scopeId,
+				phase: input.phase,
+				snapshotStateKey: input.snapshotStateKey,
+				revocationSetKey,
+			}),
+			payload: { canonicalProjectIdentity: input.projectId },
+			leaseOwner: input.leaseOwner,
+			lease: input.lease,
+			now: input.effects.now,
+		},
+		async () =>
+			input.effects.refresh({
+				canonicalProjectIdentity: input.projectId,
+				scopeId: input.scopeId,
+			}),
+	);
+}
+
+async function retryPendingRevocationRefreshes(
+	db: Database,
+	input: {
+		projectId: string;
+		scopeId: string;
+		leaseOwner: string;
+		lease: Lease;
+		effects: RecipientPolicyReconcilerEffects;
+	},
+): Promise<boolean> {
+	const pending = db
+		.prepare(
+			`SELECT generation, step_key FROM recipient_policy_reconciliation_steps
+			 WHERE canonical_project_identity = ?
+			 AND step_key LIKE 'refresh-after-revocations-v2:%'
+			 AND status IN ('pending', 'running', 'failed')
+			 ORDER BY generation, step_key`,
+		)
+		.all(input.projectId) as Array<{ generation: number; step_key: string }>;
+	for (const refresh of pending) {
+		await step(
+			db,
+			{
+				projectId: input.projectId,
+				generation: refresh.generation,
+				stepKey: refresh.step_key,
+				payload: { canonicalProjectIdentity: input.projectId },
+				leaseOwner: input.leaseOwner,
+				lease: input.lease,
+				now: input.effects.now,
+			},
+			async () =>
+				input.effects.refresh({
+					canonicalProjectIdentity: input.projectId,
+					scopeId: input.scopeId,
+				}),
+		);
+	}
+	return pending.length > 0;
 }
 
 async function preflight(
@@ -762,14 +905,24 @@ export async function reconcileRecipientPolicyProject(
 		const snapshotStateKey = digest("recipient-policy-snapshot-state-v1", {
 			fingerprint: initialSnapshot.fingerprint,
 		});
-		for (const deviceId of revokeDeviceIds) {
+		const policyRevocations = revokeDeviceIds.map((deviceId) => ({
+			deviceId,
+			stepKey: `revoke:${snapshotStateKey}:${deviceId}`,
+		}));
+		let replayedRevocationRefresh = false;
+		let revocationRefreshError: unknown = null;
+		for (const revocation of policyRevocations) {
 			const changed = await step(
 				db,
 				{
 					projectId,
 					generation: activeGeneration,
-					stepKey: `revoke:${snapshotStateKey}:${deviceId}`,
-					payload: { scopeId: managedBoundary.scopeId, deviceId, status: "revoked" },
+					stepKey: revocation.stepKey,
+					payload: {
+						scopeId: managedBoundary.scopeId,
+						deviceId: revocation.deviceId,
+						status: "revoked",
+					},
 					leaseOwner: input.leaseOwner,
 					lease,
 					now: effects.now,
@@ -780,17 +933,47 @@ export async function reconcileRecipientPolicyProject(
 						canonicalProjectIdentity: projectId,
 						generation: activeGeneration,
 						scopeId: managedBoundary.scopeId,
-						deviceId,
+						deviceId: revocation.deviceId,
 					});
 					validateReceipt(receipt, {
 						effectId,
 						scopeId: managedBoundary.scopeId,
-						deviceId,
+						deviceId: revocation.deviceId,
 						status: "revoked",
 					});
 				},
 			);
-			if (changed) revokedDeviceIds.push(deviceId);
+			if (changed) revokedDeviceIds.push(revocation.deviceId);
+			try {
+				await refreshAfterRevocations(db, {
+					projectId,
+					generation: activeGeneration,
+					scopeId: managedBoundary.scopeId,
+					snapshotStateKey,
+					phase: "steady_state",
+					revocations: [revocation],
+					leaseOwner: input.leaseOwner,
+					lease,
+					effects,
+				});
+				replayedRevocationRefresh = true;
+			} catch (error) {
+				revocationRefreshError ??= error;
+			}
+		}
+		if (!revocationRefreshError) {
+			try {
+				replayedRevocationRefresh =
+					(await retryPendingRevocationRefreshes(db, {
+						projectId,
+						scopeId: managedBoundary.scopeId,
+						leaseOwner: input.leaseOwner,
+						lease,
+						effects,
+					})) || replayedRevocationRefresh;
+			} catch (error) {
+				revocationRefreshError = error;
+			}
 		}
 		const rederived = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, projectId);
 		if (
@@ -831,19 +1014,28 @@ export async function reconcileRecipientPolicyProject(
 				return reasonCode ? [{ deviceId, reasonCode }] : [];
 			},
 		);
-		revokedDeviceIds.push(
-			...(await applyEnrollmentRevocations(db, {
+		if (revocationRefreshError) {
+			stageEnrollmentRevocationOverlays(db, {
 				projectId,
 				generation: activeGeneration,
 				scopeId: managedBoundary.scopeId,
-				snapshotStateKey,
-				phase: "steady_state",
 				revocations: enrollmentRevocations,
-				leaseOwner: input.leaseOwner,
-				lease,
 				effects,
-			})),
-		);
+			});
+			throw revocationRefreshError;
+		}
+		await applyEnrollmentRevocations(db, {
+			projectId,
+			generation: activeGeneration,
+			scopeId: managedBoundary.scopeId,
+			snapshotStateKey,
+			phase: "steady_state",
+			revocations: enrollmentRevocations,
+			changedDeviceIds: revokedDeviceIds,
+			leaseOwner: input.leaseOwner,
+			lease,
+			effects,
+		});
 		const enrollmentRevokedDeviceIds = new Set(
 			enrollmentRevocations.map(({ deviceId }) => deviceId),
 		);
@@ -867,8 +1059,18 @@ export async function reconcileRecipientPolicyProject(
 		].toSorted();
 		const expectedSet = new Set(expectedDeviceIds);
 		const expectedDigest = deviceDigest(expectedDeviceIds);
-		activeGeneration = generation(db, projectId, expectedDigest);
 		const grantDeviceIds = grantEligibleDeviceIds.filter((deviceId) => !currentSet.has(deviceId));
+		const passKey = digest("recipient-policy-pass-v1", {
+			fingerprint: initialSnapshot.fingerprint,
+			observedAt: initialSnapshot.observedAt,
+		});
+		const revocations = [
+			...policyRevocations,
+			...enrollmentRevocations.map((revocation) =>
+				enrollmentRevocationStep(revocation, "steady_state", snapshotStateKey),
+			),
+		];
+		activeGeneration = generation(db, projectId, expectedDigest);
 		upsertRecipientPolicyAuthorityObservation(db, {
 			canonicalProjectIdentity: projectId,
 			generation: activeGeneration,
@@ -880,10 +1082,6 @@ export async function reconcileRecipientPolicyProject(
 			now: effects.now(),
 		});
 		if (grantDeviceIds.length > 0) resetParity(db, projectId, effects.now());
-		const passKey = digest("recipient-policy-pass-v1", {
-			fingerprint: initialSnapshot.fingerprint,
-			observedAt: initialSnapshot.observedAt,
-		});
 		const capability = await preflight(db, {
 			projectId,
 			generation: activeGeneration,
@@ -991,19 +1189,18 @@ export async function reconcileRecipientPolicyProject(
 				];
 			});
 			if (changedBindings.length > 0) {
-				revokedDeviceIds.push(
-					...(await applyEnrollmentRevocations(db, {
-						projectId,
-						generation: activeGeneration,
-						scopeId: managedBoundary.scopeId,
-						snapshotStateKey,
-						phase: "post_grant",
-						revocations: changedBindings,
-						leaseOwner: input.leaseOwner,
-						lease,
-						effects,
-					})),
-				);
+				await applyEnrollmentRevocations(db, {
+					projectId,
+					generation: activeGeneration,
+					scopeId: managedBoundary.scopeId,
+					snapshotStateKey,
+					phase: "post_grant",
+					revocations: changedBindings,
+					changedDeviceIds: revokedDeviceIds,
+					leaseOwner: input.leaseOwner,
+					lease,
+					effects,
+				});
 				authority(db, {
 					projectId,
 					safeErrorCode: "recipient_policy_generation_stale",
@@ -1019,24 +1216,29 @@ export async function reconcileRecipientPolicyProject(
 				);
 			}
 		}
-		await step(
-			db,
-			{
-				projectId,
-				generation: activeGeneration,
-				stepKey: `refresh:${passKey}`,
-				payload: {
-					scopeId: managedBoundary.scopeId,
-					fingerprint: initialSnapshot.fingerprint,
-					observedAt: initialSnapshot.observedAt,
+		if (grantDeviceIds.length > 0 || (revocations.length === 0 && !replayedRevocationRefresh)) {
+			await step(
+				db,
+				{
+					projectId,
+					generation: activeGeneration,
+					stepKey: `refresh:${passKey}`,
+					payload: {
+						scopeId: managedBoundary.scopeId,
+						fingerprint: initialSnapshot.fingerprint,
+						observedAt: initialSnapshot.observedAt,
+					},
+					leaseOwner: input.leaseOwner,
+					lease,
+					now: effects.now,
 				},
-				leaseOwner: input.leaseOwner,
-				lease,
-				now: effects.now,
-			},
-			async () =>
-				effects.refresh({ canonicalProjectIdentity: projectId, scopeId: managedBoundary.scopeId }),
-		);
+				async () =>
+					effects.refresh({
+						canonicalProjectIdentity: projectId,
+						scopeId: managedBoundary.scopeId,
+					}),
+			);
+		}
 		const verificationRequestedAt = effects.now();
 		const verifiedSnapshot = await effects.snapshot({
 			canonicalProjectIdentity: projectId,
