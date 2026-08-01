@@ -1122,6 +1122,44 @@ describe("recipient-policy reconciler executor", () => {
 		expect(getRecipientPolicyAuthorityState(db, PROJECT)?.authorityState).toBe("active");
 	});
 
+	it("does not rewrite lease loss during capability preflight as undetermined", async () => {
+		const { effects } = harness(["device-keep", "device-new"]);
+		insertActiveAuthority(db);
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{
+				canonicalProjectIdentity: PROJECT,
+				leaseOwner: "worker-expired",
+				leaseDurationMs: 1,
+			},
+			effects,
+		);
+
+		expect(outcome).toMatchObject({
+			status: "needs_attention",
+			safeErrorCode: "recipient_policy_lease_lost",
+		});
+		expect(effects.probeCapability).not.toHaveBeenCalled();
+		expect(getRecipientPolicyAuthorityState(db, PROJECT)?.authorityState).toBe("rolled_back");
+	});
+
+	it("does not rewrite capability effect failures as undetermined", async () => {
+		const { effects } = harness(["device-keep", "device-new"]);
+		vi.mocked(effects.probeCapability).mockRejectedValue(new Error("network_failed"));
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-failed-probe" },
+			effects,
+		);
+
+		expect(outcome).toMatchObject({
+			status: "needs_attention",
+			safeErrorCode: "recipient_policy_effect_failed",
+		});
+	});
+
 	it("preserves active authority while the coordinator snapshot is not fresh", async () => {
 		const { effects } = harness(["device-keep", "device-new"]);
 		vi.mocked(effects.snapshot).mockResolvedValue({

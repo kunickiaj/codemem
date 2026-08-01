@@ -784,33 +784,45 @@ async function preflight(
 	const capabilities: RecipientPolicyPeerCapability[] = [];
 	for (const deviceId of input.deviceIds) {
 		let capability: RecipientPolicyPeerCapability = "undetermined";
-		const executed = await step(
-			db,
-			{
-				projectId: input.projectId,
-				generation: input.generation,
-				stepKey: `capability:${input.passKey}:${deviceId}`,
-				payload: { deviceId, passKey: input.passKey },
-				leaseOwner: input.leaseOwner,
-				lease: input.lease,
-				now: input.effects.now,
-			},
-			async () => {
-				const observed = await input.effects.probeCapability({
-					deviceId,
-					scopeId: input.scopeId,
-				});
-				capability = ["supported", "unsupported", "undetermined"].includes(observed)
-					? observed
-					: "undetermined";
-				if (capability === "unsupported") {
-					throw new Error("recipient_policy_capability_unsupported");
-				}
-				if (capability === "undetermined") {
-					throw new Error("recipient_policy_capability_undetermined");
-				}
-			},
-		).catch(() => undefined);
+		let executed: boolean | undefined;
+		try {
+			executed = await step(
+				db,
+				{
+					projectId: input.projectId,
+					generation: input.generation,
+					stepKey: `capability:${input.passKey}:${deviceId}`,
+					payload: { deviceId, passKey: input.passKey },
+					leaseOwner: input.leaseOwner,
+					lease: input.lease,
+					now: input.effects.now,
+				},
+				async () => {
+					const observed = await input.effects.probeCapability({
+						deviceId,
+						scopeId: input.scopeId,
+					});
+					capability = ["supported", "unsupported", "undetermined"].includes(observed)
+						? observed
+						: "undetermined";
+					if (capability === "unsupported") {
+						throw new Error("recipient_policy_capability_unsupported");
+					}
+					if (capability === "undetermined") {
+						throw new Error("recipient_policy_capability_undetermined");
+					}
+				},
+			);
+		} catch (error) {
+			const safeErrorCode = safeError(error, "recipient_policy_reconciliation_failed");
+			if (safeErrorCode === "recipient_policy_capability_unsupported") {
+				capability = "unsupported";
+			} else if (safeErrorCode === "recipient_policy_capability_undetermined") {
+				capability = "undetermined";
+			} else {
+				throw error;
+			}
+		}
 		if (executed === false) capability = "supported";
 		capabilities.push(capability);
 	}
