@@ -1612,16 +1612,46 @@ export async function advancePendingProjectShares(
 	const waitingRetryBefore = new Date(
 		maintenanceNow.getTime() - AUTOMATIC_WAITING_DEVICE_RETRY_COOLDOWN_MS,
 	).toISOString();
+	// A later failed attempt supersedes older reachability evidence and keeps the cooldown in force.
 	const rows = store.db
-		.prepare(`SELECT operation_id FROM share_operations
-		 WHERE inviter_actor_id = ?
-		 AND state IN (${placeholders})
-		 AND (state <> 'waiting_for_acceptance' OR updated_at <= ?)
-		 AND (state <> 'waiting_for_device' OR updated_at <= ?)
-		 ORDER BY CASE WHEN state IN ('accepted', 'provisioning', 'initial_sync') THEN 0 ELSE 1 END,
-			CASE WHEN state IN ('waiting_for_acceptance', 'waiting_for_device')
-				THEN updated_at ELSE created_at END ASC,
-			created_at ASC, operation_id ASC
+		.prepare(`SELECT operation.operation_id FROM share_operations AS operation
+		 WHERE operation.inviter_actor_id = ?
+		 AND operation.state IN (${placeholders})
+		 AND (operation.state <> 'waiting_for_acceptance' OR operation.updated_at <= ?)
+		 AND (
+			operation.state <> 'waiting_for_device'
+			OR operation.updated_at <= ?
+			OR (
+				NOT EXISTS (
+					SELECT 1 FROM share_operation_steps AS step
+					WHERE step.operation_id = operation.operation_id
+					AND step.step_key = 'capability_preflight'
+					AND step.status <> 'completed'
+					AND (
+						step.status = 'running'
+						OR step.safe_error_code IN (
+							'waiting_for_device', 'device_offline', 'recipient_offline'
+						)
+					)
+				)
+				AND EXISTS (
+					SELECT 1 FROM sync_attempts AS attempt
+					WHERE attempt.id = (
+						SELECT latest.id FROM sync_attempts AS latest
+						WHERE latest.peer_device_id = operation.recipient_device_id
+						ORDER BY latest.started_at DESC, latest.id DESC
+						LIMIT 1
+					)
+					AND attempt.ok = 1
+					AND julianday(COALESCE(attempt.finished_at, attempt.started_at)) >
+						julianday(operation.updated_at)
+				)
+			)
+		 )
+		 ORDER BY CASE WHEN operation.state IN ('accepted', 'provisioning', 'initial_sync') THEN 0 ELSE 1 END,
+			CASE WHEN operation.state IN ('waiting_for_acceptance', 'waiting_for_device')
+				THEN operation.updated_at ELSE operation.created_at END ASC,
+			operation.created_at ASC, operation.operation_id ASC
 		 LIMIT ?`)
 		.all(
 			store.actorId,

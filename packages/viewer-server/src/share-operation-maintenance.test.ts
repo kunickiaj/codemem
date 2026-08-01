@@ -577,6 +577,139 @@ describe("advancePendingProjectShares", () => {
 			state: "waiting_for_device",
 			createdAt: "2026-07-20T00:58:00Z",
 		});
+		db.prepare("UPDATE share_operations SET recipient_device_id = ? WHERE operation_id = ?").run(
+			"device-recipient",
+			"share-waiting-device",
+		);
+		db.prepare(`INSERT INTO sync_peers(
+			peer_device_id, addresses_json, created_at, last_seen_at
+		) VALUES (
+			'device-recipient', '[]', '2026-07-20T00:00:00Z', '2026-07-20T00:59:00Z'
+		)`).run();
+		const advanceOperation = vi.fn(async () => ({ advanced: true, state: "active" as const }));
+
+		const result = await advancePendingProjectShares(store, {
+			now: new Date("2026-07-20T01:00:00Z"),
+			advanceOperation,
+		});
+
+		expect(advanceOperation).not.toHaveBeenCalled();
+		expect(result).toMatchObject({ processed: 0, waiting: 0, attention: 0, failed: 0 });
+	});
+
+	it("retries a recent waiting-for-device operation after a fully successful sync", async () => {
+		seedOperation({
+			id: "share-reconnected-device",
+			state: "waiting_for_device",
+			createdAt: "2026-07-20T00:58:00Z",
+		});
+		db.prepare("UPDATE share_operations SET recipient_device_id = ? WHERE operation_id = ?").run(
+			"device-recipient",
+			"share-reconnected-device",
+		);
+		db.prepare(`INSERT INTO sync_peers(peer_device_id, created_at, last_sync_at)
+			VALUES ('device-recipient', '2026-07-20T00:00:00Z', '2026-07-20T00:59:00Z')`).run();
+		db.prepare(`INSERT INTO sync_attempts(
+			peer_device_id, started_at, finished_at, ok, ops_in, ops_out
+		) VALUES (
+			'device-recipient', '2026-07-20T00:59:00Z', '2026-07-20T00:59:00Z', 1, 0, 0
+		)`).run();
+		const advanceOperation = vi.fn(async () => ({ advanced: true, state: "active" as const }));
+
+		const result = await advancePendingProjectShares(store, {
+			now: new Date("2026-07-20T01:00:00Z"),
+			advanceOperation,
+		});
+
+		expect(advanceOperation).toHaveBeenCalledWith(store, "share-reconnected-device");
+		expect(result).toMatchObject({ processed: 1, advanced: 1, failed: 0 });
+	});
+
+	it("preserves cooldown when the latest peer activity was not a fully successful sync", async () => {
+		seedOperation({
+			id: "share-partial-sync",
+			state: "waiting_for_device",
+			createdAt: "2026-07-20T00:58:00Z",
+		});
+		db.prepare("UPDATE share_operations SET recipient_device_id = ? WHERE operation_id = ?").run(
+			"device-recipient",
+			"share-partial-sync",
+		);
+		db.prepare(`INSERT INTO sync_peers(peer_device_id, created_at, last_sync_at)
+			VALUES ('device-recipient', '2026-07-20T00:00:00Z', '2026-07-20T00:59:00Z')`).run();
+		db.prepare(`INSERT INTO sync_attempts(
+			peer_device_id, started_at, finished_at, ok, ops_in, ops_out
+		) VALUES (
+			'device-recipient', '2026-07-20T00:58:30Z', '2026-07-20T00:58:30Z', 1, 0, 0
+		)`).run();
+		db.prepare(`INSERT INTO sync_attempts(
+			peer_device_id, started_at, finished_at, ok, ops_in, ops_out, error
+		) VALUES (
+			'device-recipient', '2026-07-20T00:59:00Z', '2026-07-20T00:59:00Z',
+			0, 0, 0, 'scoped sync incomplete'
+		)`).run();
+		const advanceOperation = vi.fn(async () => ({ advanced: true, state: "active" as const }));
+
+		const result = await advancePendingProjectShares(store, {
+			now: new Date("2026-07-20T01:00:00Z"),
+			advanceOperation,
+		});
+
+		expect(advanceOperation).not.toHaveBeenCalled();
+		expect(result).toMatchObject({ processed: 0, waiting: 0, attention: 0, failed: 0 });
+	});
+
+	it("preserves cooldown while a capability preflight retry is running", async () => {
+		seedOperation({
+			id: "share-running-capability",
+			state: "waiting_for_device",
+			createdAt: "2026-07-20T00:58:00Z",
+		});
+		db.prepare("UPDATE share_operations SET recipient_device_id = ? WHERE operation_id = ?").run(
+			"device-recipient",
+			"share-running-capability",
+		);
+		db.prepare(`INSERT INTO share_operation_steps(
+			operation_id, step_key, effect_id, status, attempt_count, safe_error_code, updated_at
+		) VALUES (?, 'capability_preflight', 'capability:running', 'running', 2,
+			NULL, '2026-07-20T00:58:00Z')`).run("share-running-capability");
+		db.prepare(`INSERT INTO sync_attempts(
+			peer_device_id, started_at, finished_at, ok, ops_in, ops_out
+		) VALUES (
+			'device-recipient', '2026-07-20T00:59:00Z', '2026-07-20T00:59:00Z', 1, 0, 0
+		)`).run();
+		const advanceOperation = vi.fn(async () => ({ advanced: true, state: "active" as const }));
+
+		const result = await advancePendingProjectShares(store, {
+			now: new Date("2026-07-20T01:00:00Z"),
+			advanceOperation,
+		});
+
+		expect(advanceOperation).not.toHaveBeenCalled();
+		expect(result).toMatchObject({ processed: 0, waiting: 0, attention: 0, failed: 0 });
+	});
+
+	it("preserves cooldown when capability preflight waits on another device", async () => {
+		seedOperation({
+			id: "share-capability-wait",
+			state: "waiting_for_device",
+			createdAt: "2026-07-20T00:58:00Z",
+		});
+		db.prepare("UPDATE share_operations SET recipient_device_id = ? WHERE operation_id = ?").run(
+			"device-recipient",
+			"share-capability-wait",
+		);
+		db.prepare(`INSERT INTO share_operation_steps(
+			operation_id, step_key, effect_id, status, attempt_count, safe_error_code, updated_at
+		) VALUES (?, 'capability_preflight', 'capability:test', 'failed', 1,
+			'waiting_for_device', '2026-07-20T00:58:00Z')`).run("share-capability-wait");
+		db.prepare(`INSERT INTO sync_peers(peer_device_id, created_at, last_sync_at)
+			VALUES ('device-recipient', '2026-07-20T00:00:00Z', '2026-07-20T00:59:00Z')`).run();
+		db.prepare(`INSERT INTO sync_attempts(
+			peer_device_id, started_at, finished_at, ok, ops_in, ops_out
+		) VALUES (
+			'device-recipient', '2026-07-20T00:59:00Z', '2026-07-20T00:59:00Z', 1, 0, 0
+		)`).run();
 		const advanceOperation = vi.fn(async () => ({ advanced: true, state: "active" as const }));
 
 		const result = await advancePendingProjectShares(store, {
