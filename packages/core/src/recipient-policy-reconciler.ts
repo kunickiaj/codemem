@@ -3,9 +3,14 @@ import type { Database } from "./db.js";
 import {
 	clearRecipientPolicyDenyOverlay,
 	deriveRecipientPolicyEffectiveDevicesFromDatabase,
+	deterministicRecipientPolicyReconciliationEffectId,
 	ensureRecipientPolicyReconciliationStep,
 	getRecipientPolicyAuthorityState,
+	listPendingRecipientPolicyRefreshSteps,
+	listPendingRecipientPolicyRevocationRefreshSteps,
 	listRecipientPolicyDenyOverlays,
+	pruneRecipientPolicyReconciliationSteps,
+	pruneSupersededRecipientPolicyCapabilitySteps,
 	putRecipientPolicyDenyOverlay,
 	recordRecipientPolicyReconciliationStepState,
 	recordRecipientPolicyStableParityPass,
@@ -737,23 +742,68 @@ async function retryPendingRevocationRefreshes(
 		effects: RecipientPolicyReconcilerEffects;
 	},
 ): Promise<boolean> {
-	const pending = db
-		.prepare(
-			`SELECT generation, step_key FROM recipient_policy_reconciliation_steps
-			 WHERE canonical_project_identity = ?
-			 AND step_key LIKE 'refresh-after-revocations-v2:%'
-			 AND status IN ('pending', 'running', 'failed')
-			 ORDER BY generation, step_key`,
-		)
-		.all(input.projectId) as Array<{ generation: number; step_key: string }>;
+	const pending = listPendingRecipientPolicyRevocationRefreshSteps(db, input.projectId);
 	for (const refresh of pending) {
 		await step(
 			db,
 			{
 				projectId: input.projectId,
 				generation: refresh.generation,
-				stepKey: refresh.step_key,
+				stepKey: refresh.stepKey,
+				// The effect refreshes the current boundary, so replay must survive a scope remap.
 				payload: { canonicalProjectIdentity: input.projectId },
+				leaseOwner: input.leaseOwner,
+				lease: input.lease,
+				now: input.effects.now,
+			},
+			async () =>
+				input.effects.refresh({
+					canonicalProjectIdentity: input.projectId,
+					scopeId: input.scopeId,
+				}),
+		);
+	}
+	return pending.length > 0;
+}
+
+async function retryPendingRefreshes(
+	db: Database,
+	input: {
+		projectId: string;
+		scopeId: string;
+		leaseOwner: string;
+		lease: Lease;
+		effects: RecipientPolicyReconcilerEffects;
+	},
+): Promise<boolean> {
+	const pending = listPendingRecipientPolicyRefreshSteps(db, input.projectId);
+	for (const refresh of pending) {
+		const payload = { canonicalProjectIdentity: input.projectId };
+		const payloadDigest = digest("recipient-policy-step-payload-v1", payload);
+		const effectId = deterministicRecipientPolicyReconciliationEffectId({
+			canonicalProjectIdentity: input.projectId,
+			generation: refresh.generation,
+			stepKey: refresh.stepKey,
+			payloadDigest,
+		});
+		// Pre-upgrade incomplete refresh rows used snapshot-specific payload identities. Refresh is
+		// idempotent and targets the current boundary, so normalize those rows before replay.
+		db.transaction(() => {
+			assertLease(db, input.projectId, input.leaseOwner, input.effects.now());
+			db.prepare(
+				`UPDATE recipient_policy_reconciliation_steps
+				 SET effect_id = ?, payload_digest = ?
+				 WHERE canonical_project_identity = ? AND generation = ? AND step_key = ?
+				 AND status IN ('pending', 'running', 'failed')`,
+			).run(effectId, payloadDigest, input.projectId, refresh.generation, refresh.stepKey);
+		}).immediate();
+		await step(
+			db,
+			{
+				projectId: input.projectId,
+				generation: refresh.generation,
+				stepKey: refresh.stepKey,
+				payload,
 				leaseOwner: input.leaseOwner,
 				lease: input.lease,
 				now: input.effects.now,
@@ -874,6 +924,7 @@ export async function reconcileRecipientPolicyProject(
 	const revokedDeviceIds: string[] = [];
 	const grantedDeviceIds: string[] = [];
 	try {
+		pruneRecipientPolicyReconciliationSteps(db, { canonicalProjectIdentity: projectId });
 		const managedBoundary = boundary(db, projectId);
 		const desired = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, projectId);
 		if (desired.status !== "eligible") {
@@ -1076,13 +1127,23 @@ export async function reconcileRecipientPolicyProject(
 			fingerprint: initialSnapshot.fingerprint,
 			observedAt: initialSnapshot.observedAt,
 		});
+		// Keep the lease fence and prune atomic so a replacement worker cannot acquire
+		// the lease between them and lose its in-flight capability steps.
+		db.transaction(() => {
+			assertLease(db, projectId, input.leaseOwner, effects.now());
+			activeGeneration = generation(db, projectId, expectedDigest);
+			pruneSupersededRecipientPolicyCapabilitySteps(db, {
+				canonicalProjectIdentity: projectId,
+				activeGeneration,
+				activePassKey: passKey,
+			});
+		}).immediate();
 		const revocations = [
 			...policyRevocations,
 			...enrollmentRevocations.map((revocation) =>
 				enrollmentRevocationStep(revocation, "steady_state", snapshotStateKey),
 			),
 		];
-		activeGeneration = generation(db, projectId, expectedDigest);
 		upsertRecipientPolicyAuthorityObservation(db, {
 			canonicalProjectIdentity: projectId,
 			generation: activeGeneration,
@@ -1228,18 +1289,24 @@ export async function reconcileRecipientPolicyProject(
 				);
 			}
 		}
-		if (grantDeviceIds.length > 0 || (revocations.length === 0 && !replayedRevocationRefresh)) {
+		const replayedRefresh = await retryPendingRefreshes(db, {
+			projectId,
+			scopeId: managedBoundary.scopeId,
+			leaseOwner: input.leaseOwner,
+			lease,
+			effects,
+		});
+		if (
+			!replayedRefresh &&
+			(grantDeviceIds.length > 0 || (revocations.length === 0 && !replayedRevocationRefresh))
+		) {
 			await step(
 				db,
 				{
 					projectId,
 					generation: activeGeneration,
 					stepKey: `refresh:${passKey}`,
-					payload: {
-						scopeId: managedBoundary.scopeId,
-						fingerprint: initialSnapshot.fingerprint,
-						observedAt: initialSnapshot.observedAt,
-					},
+					payload: { canonicalProjectIdentity: projectId },
 					leaseOwner: input.leaseOwner,
 					lease,
 					now: effects.now,

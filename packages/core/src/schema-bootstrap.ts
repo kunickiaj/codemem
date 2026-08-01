@@ -90,6 +90,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_recipient_policy_reconciliation_steps_effe
 	ON recipient_policy_reconciliation_steps(effect_id);
 CREATE INDEX IF NOT EXISTS idx_recipient_policy_reconciliation_steps_status
 	ON recipient_policy_reconciliation_steps(canonical_project_identity, status);
+CREATE INDEX IF NOT EXISTS idx_recipient_policy_reconciliation_steps_pending_refresh
+	ON recipient_policy_reconciliation_steps(canonical_project_identity, generation, step_key)
+	WHERE status IN ('pending', 'running', 'failed')
+	AND step_key GLOB 'refresh-after-revocations-v2:*';
 CREATE TABLE IF NOT EXISTS recipient_policy_deny_overlays (
 	canonical_project_identity TEXT NOT NULL,
 	scope_id TEXT NOT NULL,

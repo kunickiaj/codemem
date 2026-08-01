@@ -969,6 +969,11 @@ export const recipientPolicyReconciliationSteps = sqliteTable(
 			table.canonical_project_identity,
 			table.status,
 		),
+		index("idx_recipient_policy_reconciliation_steps_pending_refresh")
+			.on(table.canonical_project_identity, table.generation, table.step_key)
+			.where(
+				sql`${table.status} IN ('pending', 'running', 'failed') AND ${table.step_key} GLOB 'refresh-after-revocations-v2:*'`,
+			),
 	],
 );
 

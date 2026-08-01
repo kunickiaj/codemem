@@ -32,7 +32,7 @@ import { canAutoBootstrapSchema, ensureSchemaBootstrapped } from "./schema-boots
 export type { DatabaseType as Database };
 
 /** Current schema version this TS runtime was built against. */
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 
 /**
  * Minimum schema version the TS runtime can operate with.
@@ -862,6 +862,10 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 				ON recipient_policy_reconciliation_steps(effect_id);
 			CREATE INDEX IF NOT EXISTS idx_recipient_policy_reconciliation_steps_status
 				ON recipient_policy_reconciliation_steps(canonical_project_identity, status);
+			CREATE INDEX IF NOT EXISTS idx_recipient_policy_reconciliation_steps_pending_refresh
+				ON recipient_policy_reconciliation_steps(canonical_project_identity, generation, step_key)
+				WHERE status IN ('pending', 'running', 'failed')
+				AND step_key GLOB 'refresh-after-revocations-v2:*';
 			CREATE TABLE IF NOT EXISTS recipient_policy_deny_overlays (
 				canonical_project_identity TEXT NOT NULL,
 				scope_id TEXT NOT NULL,

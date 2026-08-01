@@ -149,6 +149,7 @@ describe("connect", () => {
 		expect(hasIndex(db, "idx_replication_cursors_v2_scope")).toBe(true);
 		expect(hasIndex(db, "idx_coordinator_enrollment_issues_boundary_status")).toBe(true);
 		expect(hasIndex(db, "idx_coordinator_enrollment_issues_status_recent")).toBe(true);
+		expect(hasIndex(db, "idx_recipient_policy_reconciliation_steps_pending_refresh")).toBe(true);
 		expect(() => assertSchemaReady(db)).not.toThrow();
 	});
 
@@ -1127,6 +1128,9 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		expect(hasIndex(previous, "idx_coordinator_enrollment_issues_status_recent")).toBe(true);
 		expect(hasIndex(previous, "idx_recipient_managed_projects_identity_status")).toBe(true);
 		expect(hasIndex(previous, "idx_recipient_managed_projects_scope_authority")).toBe(true);
+		expect(hasIndex(previous, "idx_recipient_policy_reconciliation_steps_pending_refresh")).toBe(
+			true,
+		);
 		expect(appliedSchemaVersion(previous)).toBe(SCHEMA_VERSION);
 		previous
 			.prepare(`INSERT INTO coordinator_enrollment_reconciliation_issues(

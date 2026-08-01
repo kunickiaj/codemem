@@ -964,6 +964,88 @@ describe("recipient-policy reconciler executor", () => {
 		]);
 	});
 
+	it("retries an incomplete ordinary refresh without creating another step", async () => {
+		const { effects } = harness(["device-keep"]);
+		vi.mocked(effects.refresh).mockRejectedValue(new Error("refresh_failed"));
+
+		for (let attempt = 1; attempt <= 3; attempt += 1) {
+			const outcome = await reconcileRecipientPolicyProject(
+				db,
+				{ canonicalProjectIdentity: PROJECT, leaseOwner: `worker-refresh-${attempt}` },
+				effects,
+			);
+
+			expect(outcome.safeErrorCode).toBe("recipient_policy_effect_failed");
+			expect(
+				db
+					.prepare(
+						`SELECT COUNT(*) FROM recipient_policy_reconciliation_steps
+						 WHERE canonical_project_identity = ?
+						 AND status IN ('pending', 'running', 'failed')
+						 AND step_key GLOB 'refresh:*'`,
+					)
+					.pluck()
+					.get(PROJECT),
+			).toBe(1);
+		}
+	});
+
+	it("retries an incomplete ordinary refresh through a remapped boundary", async () => {
+		const { effects, members } = harness(["device-keep"]);
+		let currentScopeId = SCOPE;
+		vi.mocked(effects.snapshot).mockImplementation(async () => {
+			const deviceIds = [...members].toSorted();
+			return {
+				authoritative: true,
+				scopeId: currentScopeId,
+				fingerprint: `snapshot:${deviceIds.join(",")}`,
+				observedAt: effects.now(),
+				memberships: deviceIds.map((deviceId) => ({ deviceId, status: "active" as const })),
+			};
+		});
+		vi.mocked(effects.refresh)
+			.mockRejectedValueOnce(new Error("refresh_failed"))
+			.mockResolvedValueOnce(undefined)
+			.mockRejectedValue(new Error("redundant_refresh"));
+
+		await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-old-ordinary-scope" },
+			effects,
+		);
+		db.prepare(
+			`UPDATE recipient_policy_reconciliation_steps
+			 SET effect_id = 'legacy-refresh-effect', payload_digest = 'legacy-refresh-payload'
+			 WHERE canonical_project_identity = ? AND step_key GLOB 'refresh:*'
+			 AND status = 'failed'`,
+		).run(PROJECT);
+		currentScopeId = "managed-project-scope-ordinary-remapped";
+		const now = effects.now();
+		db.prepare(
+			`INSERT INTO replication_scopes(
+			 scope_id, label, kind, authority_type, coordinator_id, group_id, membership_epoch,
+			 status, created_at, updated_at
+			 ) VALUES (?, 'Remapped Project', 'managed_project', 'coordinator', 'coord',
+			 'group-ordinary-remapped', 1, 'active', ?, ?)`,
+		).run(currentScopeId, now, now);
+		db.prepare("UPDATE project_scope_mappings SET scope_id = ? WHERE workspace_identity = ?").run(
+			currentScopeId,
+			PROJECT,
+		);
+
+		const retried = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-remapped-ordinary-scope" },
+			effects,
+		);
+
+		expect(retried.safeErrorCode).toBeNull();
+		expect(vi.mocked(effects.refresh).mock.calls.map(([input]) => input.scopeId)).toEqual([
+			SCOPE,
+			currentScopeId,
+		]);
+	});
+
 	it("continues policy revokes and stages enrollment denials after a refresh failure", async () => {
 		const { effects } = harness(["device-keep", "device-old-a", "device-old-b"]);
 		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
@@ -1107,6 +1189,44 @@ describe("recipient-policy reconciler executor", () => {
 		expect(effects.grant).not.toHaveBeenCalled();
 	});
 
+	it.each([
+		"unsupported",
+		"undetermined",
+	] as const)("bounds failed capability steps across repeated %s preflights", async (capability) => {
+		const { effects } = harness(["device-keep"]);
+		vi.mocked(effects.probeCapability).mockResolvedValue(capability);
+		const at = new Date(BASE_TIME).toISOString();
+		const insert = db.prepare(
+			`INSERT INTO recipient_policy_reconciliation_steps(
+			 canonical_project_identity, generation, step_key, effect_id, payload_digest,
+			 status, created_at, updated_at
+			 ) VALUES (?, 1, ?, ?, 'payload', ?, ?, ?)`,
+		);
+		insert.run(PROJECT, "capability:stale:device-a", "stale-pending", "pending", at, at);
+		insert.run(PROJECT, "capability:stale:device-b", "stale-running", "running", at, at);
+
+		for (let pass = 1; pass <= 3; pass += 1) {
+			const outcome = await reconcileRecipientPolicyProject(
+				db,
+				{ canonicalProjectIdentity: PROJECT, leaseOwner: `worker-${pass}` },
+				effects,
+			);
+
+			expect(outcome.safeErrorCode).toBe(`recipient_policy_capability_${capability}`);
+			expect(
+				db
+					.prepare(
+						`SELECT COUNT(*) FROM recipient_policy_reconciliation_steps
+							 WHERE canonical_project_identity = ?
+							 AND status IN ('pending', 'running', 'failed')
+							 AND step_key GLOB 'capability:*'`,
+					)
+					.pluck()
+					.get(PROJECT),
+			).toBe(2);
+		}
+	});
+
 	it("preserves active authority while capability evidence is undetermined", async () => {
 		const { effects } = harness(["device-keep"]);
 		vi.mocked(effects.probeCapability).mockResolvedValue("undetermined");
@@ -1125,6 +1245,14 @@ describe("recipient-policy reconciler executor", () => {
 	it("does not rewrite lease loss during capability preflight as undetermined", async () => {
 		const { effects } = harness(["device-keep", "device-new"]);
 		insertActiveAuthority(db);
+		const at = new Date(BASE_TIME).toISOString();
+		db.prepare(
+			`INSERT INTO recipient_policy_reconciliation_steps(
+			 canonical_project_identity, generation, step_key, effect_id, payload_digest,
+			 status, created_at, updated_at
+			 ) VALUES (?, 1, 'capability:replacement-pass:device-new', 'replacement-running',
+			 'payload', 'running', ?, ?)`,
+		).run(PROJECT, at, at);
 
 		const outcome = await reconcileRecipientPolicyProject(
 			db,
@@ -1142,6 +1270,16 @@ describe("recipient-policy reconciler executor", () => {
 		});
 		expect(effects.probeCapability).not.toHaveBeenCalled();
 		expect(getRecipientPolicyAuthorityState(db, PROJECT)?.authorityState).toBe("rolled_back");
+		expect(
+			db
+				.prepare(
+					`SELECT COUNT(*) FROM recipient_policy_reconciliation_steps
+					 WHERE canonical_project_identity = ?
+					 AND step_key = 'capability:replacement-pass:device-new'`,
+				)
+				.pluck()
+				.get(PROJECT),
+		).toBe(1);
 	});
 
 	it("does not rewrite capability effect failures as undetermined", async () => {

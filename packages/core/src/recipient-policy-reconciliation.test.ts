@@ -6,7 +6,12 @@ import {
 	deriveRecipientPolicyEffectiveDevices,
 	ensureRecipientPolicyReconciliationStep,
 	getRecipientPolicyAuthorityState,
+	listPendingRecipientPolicyRefreshSteps,
+	listPendingRecipientPolicyRevocationRefreshSteps,
 	listRecipientPolicyDenyOverlays,
+	PENDING_RECIPIENT_POLICY_REVOCATION_REFRESH_STEPS_SQL,
+	pruneRecipientPolicyReconciliationSteps,
+	pruneSupersededRecipientPolicyCapabilitySteps,
 	putRecipientPolicyDenyOverlay,
 	recordRecipientPolicyAuthorityExecution,
 	recordRecipientPolicyReconciliationStepState,
@@ -265,6 +270,319 @@ describe("recipient-policy reconciliation persistence", () => {
 		expect(() =>
 			ensureRecipientPolicyReconciliationStep(db, { ...input, payloadDigest: "payload:changed" }),
 		).toThrow("recipient_policy_reconciliation_step_conflict");
+	});
+
+	it("prunes only old completed capability and refresh bookkeeping", () => {
+		const insert = db.prepare(
+			`INSERT INTO recipient_policy_reconciliation_steps(
+			 canonical_project_identity, generation, step_key, effect_id, payload_digest,
+			 status, completed_at, created_at, updated_at
+			 ) VALUES (?, ?, ?, ?, 'payload', ?, ?, ?, ?)`,
+		);
+		for (let generation = 1; generation <= 4; generation += 1) {
+			const at = `2026-07-22T10:0${generation}:00.000Z`;
+			insert.run(
+				PROJECT,
+				generation,
+				`capability:pass:${generation}`,
+				`cap-${generation}`,
+				"completed",
+				at,
+				at,
+				at,
+			);
+			insert.run(
+				PROJECT,
+				generation,
+				`refresh:pass:${generation}`,
+				`refresh-${generation}`,
+				"completed",
+				at,
+				at,
+				at,
+			);
+		}
+		insert.run(PROJECT, 1, "revoke:snapshot:device-a", "revoke-1", "completed", NOW, NOW, NOW);
+		insert.run(PROJECT, 1, "grant:pass:device-a", "grant-1", "completed", NOW, NOW, NOW);
+		insert.run(
+			PROJECT,
+			1,
+			"refresh-after-revocations-v2:scope:steady:snapshot:completed",
+			"revocation-refresh-completed",
+			"completed",
+			NOW,
+			NOW,
+			NOW,
+		);
+		insert.run(PROJECT, 1, "capability:pending:device-a", "cap-pending", "failed", null, NOW, NOW);
+		insert.run(PROJECT, 1, "capability:waiting:device-a", "cap-waiting", "waiting", null, NOW, NOW);
+		insert.run(PROJECT, 1, "refresh:running", "refresh-running", "running", null, NOW, NOW);
+		insert.run(
+			PROJECT,
+			1,
+			"refresh-after-revocations-v2:scope:steady:snapshot:pending",
+			"refresh-pending",
+			"pending",
+			null,
+			NOW,
+			NOW,
+		);
+
+		expect(
+			pruneRecipientPolicyReconciliationSteps(db, {
+				canonicalProjectIdentity: PROJECT,
+				retainCompletedPerKind: 2,
+			}),
+		).toBe(4);
+
+		const rows = db
+			.prepare(
+				`SELECT step_key, status FROM recipient_policy_reconciliation_steps
+				 WHERE canonical_project_identity = ? ORDER BY step_key`,
+			)
+			.all(PROJECT) as Array<{ step_key: string; status: string }>;
+		expect(rows.map((row) => row.step_key)).not.toContain("capability:pass:1");
+		expect(rows.map((row) => row.step_key)).not.toContain("refresh:pass:1");
+		expect(rows).toEqual(
+			expect.arrayContaining([
+				{ step_key: "capability:pending:device-a", status: "failed" },
+				{ step_key: "capability:waiting:device-a", status: "waiting" },
+				{ step_key: "grant:pass:device-a", status: "completed" },
+				{ step_key: "revoke:snapshot:device-a", status: "completed" },
+				{
+					step_key: "refresh-after-revocations-v2:scope:steady:snapshot:completed",
+					status: "completed",
+				},
+				{
+					step_key: "refresh-after-revocations-v2:scope:steady:snapshot:pending",
+					status: "pending",
+				},
+				{ step_key: "refresh:running", status: "running" },
+			]),
+		);
+
+		const otherProject = "https://git.example.invalid/acme/other.git";
+		insert.run(otherProject, 1, "capability:pass:other", "cap-other", "completed", NOW, NOW, NOW);
+		pruneRecipientPolicyReconciliationSteps(db, {
+			canonicalProjectIdentity: PROJECT,
+			retainCompletedPerKind: 0,
+		});
+		expect(
+			db
+				.prepare(
+					"SELECT COUNT(*) FROM recipient_policy_reconciliation_steps WHERE canonical_project_identity = ?",
+				)
+				.pluck()
+				.get(otherProject),
+		).toBe(1);
+	});
+
+	it("drains completed bookkeeping overflow with tied timestamps", () => {
+		const insert = db.prepare(
+			`INSERT INTO recipient_policy_reconciliation_steps(
+			 canonical_project_identity, generation, step_key, effect_id, payload_digest,
+			 status, completed_at, created_at, updated_at
+			 ) VALUES (?, ?, ?, ?, 'payload', 'completed', ?, ?, ?)`,
+		);
+		for (let generation = 1; generation <= 200; generation += 1) {
+			insert.run(
+				PROJECT,
+				generation,
+				`capability:pass:${generation}`,
+				`cap-${generation}`,
+				NOW,
+				NOW,
+				NOW,
+			);
+			insert.run(
+				PROJECT,
+				generation,
+				`refresh:pass:${generation}`,
+				`refresh-${generation}`,
+				NOW,
+				NOW,
+				NOW,
+			);
+		}
+
+		expect(
+			pruneRecipientPolicyReconciliationSteps(db, {
+				canonicalProjectIdentity: PROJECT,
+				retainCompletedPerKind: 2,
+			}),
+		).toBe(396);
+		expect(
+			db
+				.prepare(
+					`SELECT step_key, generation FROM recipient_policy_reconciliation_steps
+					 WHERE canonical_project_identity = ? ORDER BY step_key`,
+				)
+				.all(PROJECT),
+		).toEqual([
+			{ step_key: "capability:pass:199", generation: 199 },
+			{ step_key: "capability:pass:200", generation: 200 },
+			{ step_key: "refresh:pass:199", generation: 199 },
+			{ step_key: "refresh:pass:200", generation: 200 },
+		]);
+	});
+
+	it("prunes only incomplete capability steps from superseded passes", () => {
+		const insert = db.prepare(
+			`INSERT INTO recipient_policy_reconciliation_steps(
+			 canonical_project_identity, generation, step_key, effect_id, payload_digest,
+			 status, created_at, updated_at
+			 ) VALUES (?, ?, ?, ?, 'payload', ?, ?, ?)`,
+		);
+		insert.run(PROJECT, 1, "capability:old-pass:device-a", "old-failed", "failed", NOW, NOW);
+		insert.run(
+			PROJECT,
+			2,
+			"capability:current-pass:device-a",
+			"current-failed",
+			"failed",
+			NOW,
+			NOW,
+		);
+		insert.run(PROJECT, 1, "capability:old-pass:device-b", "old-pending", "pending", NOW, NOW);
+		insert.run(
+			PROJECT,
+			2,
+			"capability:current-pass:device-b",
+			"current-pending",
+			"pending",
+			NOW,
+			NOW,
+		);
+		insert.run(PROJECT, 1, "capability:old-pass:device-c", "old-running", "running", NOW, NOW);
+		insert.run(
+			PROJECT,
+			2,
+			"capability:current-pass:device-c",
+			"current-running",
+			"running",
+			NOW,
+			NOW,
+		);
+		insert.run(
+			PROJECT,
+			1,
+			"capability:current-pass:device-e",
+			"old-generation",
+			"failed",
+			NOW,
+			NOW,
+		);
+		insert.run(PROJECT, 1, "capability:old-pass:device-d", "old-completed", "completed", NOW, NOW);
+		insert.run(PROJECT, 1, "refresh:old-pass", "old-refresh", "failed", NOW, NOW);
+		const otherProject = "https://git.example.invalid/acme/other.git";
+		insert.run(
+			otherProject,
+			1,
+			"capability:old-pass:device-a",
+			"other-old-failed",
+			"failed",
+			NOW,
+			NOW,
+		);
+
+		expect(
+			pruneSupersededRecipientPolicyCapabilitySteps(db, {
+				canonicalProjectIdentity: PROJECT,
+				activeGeneration: 2,
+				activePassKey: "current-pass",
+			}),
+		).toBe(4);
+		expect(
+			db
+				.prepare(
+					`SELECT step_key, status FROM recipient_policy_reconciliation_steps
+					 WHERE canonical_project_identity = ? ORDER BY step_key`,
+				)
+				.all(PROJECT),
+		).toEqual([
+			{ step_key: "capability:current-pass:device-a", status: "failed" },
+			{ step_key: "capability:current-pass:device-b", status: "pending" },
+			{ step_key: "capability:current-pass:device-c", status: "running" },
+			{ step_key: "capability:old-pass:device-d", status: "completed" },
+			{ step_key: "refresh:old-pass", status: "failed" },
+		]);
+		expect(
+			db
+				.prepare(
+					`SELECT COUNT(*) FROM recipient_policy_reconciliation_steps
+					 WHERE canonical_project_identity = ?`,
+				)
+				.pluck()
+				.get(otherProject),
+		).toBe(1);
+	});
+
+	it("bounds pending revocation refresh lookup while preserving deterministic order", () => {
+		const insert = db.prepare(
+			`INSERT INTO recipient_policy_reconciliation_steps(
+			 canonical_project_identity, generation, step_key, effect_id, payload_digest,
+			 status, created_at, updated_at
+			 ) VALUES (?, ?, ?, ?, 'payload', ?, ?, ?)`,
+		);
+		for (let generation = 3; generation >= 1; generation -= 1) {
+			insert.run(
+				PROJECT,
+				generation,
+				`refresh-after-revocations-v2:scope:steady:snapshot:${generation}`,
+				`refresh-${generation}`,
+				"failed",
+				NOW,
+				NOW,
+			);
+		}
+		insert.run(PROJECT, 0, "capability:pass:device-a", "capability", "failed", NOW, NOW);
+
+		expect(listPendingRecipientPolicyRevocationRefreshSteps(db, PROJECT, 2)).toEqual([
+			{
+				generation: 1,
+				stepKey: "refresh-after-revocations-v2:scope:steady:snapshot:1",
+			},
+			{
+				generation: 2,
+				stepKey: "refresh-after-revocations-v2:scope:steady:snapshot:2",
+			},
+		]);
+		const plan = db
+			.prepare(`EXPLAIN QUERY PLAN ${PENDING_RECIPIENT_POLICY_REVOCATION_REFRESH_STEPS_SQL}`)
+			.all(PROJECT, 2) as Array<{ detail: string }>;
+		expect(
+			plan.some((row) =>
+				row.detail.includes("idx_recipient_policy_reconciliation_steps_pending_refresh"),
+			),
+		).toBe(true);
+	});
+
+	it("bounds ordinary refresh lookup without selecting revocation refreshes", () => {
+		const insert = db.prepare(
+			`INSERT INTO recipient_policy_reconciliation_steps(
+			 canonical_project_identity, generation, step_key, effect_id, payload_digest,
+			 status, created_at, updated_at
+			 ) VALUES (?, ?, ?, ?, 'payload', 'failed', ?, ?)`,
+		);
+		insert.run(PROJECT, 2, "refresh:pass-b", "ordinary-2", NOW, NOW);
+		insert.run(PROJECT, 1, "refresh:pass-a", "ordinary-1", NOW, NOW);
+		insert.run(
+			PROJECT,
+			1,
+			"refresh-after-revocations-v2:scope:steady:snapshot:1",
+			"revocation-1",
+			NOW,
+			NOW,
+		);
+		insert.run(PROJECT, 0, "capability:pass:device-a", "capability-1", NOW, NOW);
+
+		expect(listPendingRecipientPolicyRefreshSteps(db, PROJECT)).toEqual([
+			{ generation: 1, stepKey: "refresh:pass-a" },
+			{ generation: 2, stepKey: "refresh:pass-b" },
+		]);
+		expect(listPendingRecipientPolicyRefreshSteps(db, PROJECT, 1)).toEqual([
+			{ generation: 1, stepKey: "refresh:pass-a" },
+		]);
 	});
 
 	it("keeps deny overlays keyed by exact Project, scope, and device until verified", () => {

@@ -175,6 +175,27 @@ export interface RecipientPolicyReconciliationStepRecord {
 	updatedAt: string;
 }
 
+export interface PendingRecipientPolicyRevocationRefreshStep {
+	generation: number;
+	stepKey: string;
+}
+
+export interface PendingRecipientPolicyRefreshStep {
+	generation: number;
+	stepKey: string;
+}
+
+export interface PruneRecipientPolicyReconciliationStepsInput {
+	canonicalProjectIdentity: string;
+	retainCompletedPerKind?: number;
+}
+
+export interface PruneSupersededRecipientPolicyCapabilityStepsInput {
+	canonicalProjectIdentity: string;
+	activeGeneration: number;
+	activePassKey: string;
+}
+
 export interface RecipientPolicyDenyOverlayRecord {
 	canonicalProjectIdentity: string;
 	scopeId: string;
@@ -188,6 +209,15 @@ export interface RecipientPolicyDenyOverlayRecord {
 const CONTROL_CHARACTER = /\p{Cc}/u;
 const KNOWN_MEMBERSHIP_STATUSES = new Set(["active", "pending", "revoked"]);
 const KNOWN_DEVICE_STATUSES = new Set(["active", "revoked"]);
+const DEFAULT_COMPLETED_STEP_RETENTION_PER_KIND = 256;
+const MAX_PENDING_REVOCATION_REFRESH_STEPS = 64;
+const PRUNABLE_COMPLETED_STEP_PATTERNS = ["capability:*", "refresh:*"] as const;
+export const PENDING_RECIPIENT_POLICY_REVOCATION_REFRESH_STEPS_SQL = `SELECT generation, step_key FROM recipient_policy_reconciliation_steps
+	 WHERE canonical_project_identity = ?
+	 AND step_key GLOB 'refresh-after-revocations-v2:*'
+	 AND status IN ('pending', 'running', 'failed')
+	 ORDER BY generation, step_key
+	 LIMIT ?`;
 const KNOWN_RECIPIENT_STATUSES = new Set(["active", "revoked"]);
 
 function compareText(left: string, right: string): number {
@@ -675,6 +705,116 @@ function stepRow(row: Record<string, unknown>): RecipientPolicyReconciliationSte
 		createdAt: String(row.created_at),
 		updatedAt: String(row.updated_at),
 	};
+}
+
+export function listPendingRecipientPolicyRevocationRefreshSteps(
+	db: Database,
+	canonicalProjectIdentity: string,
+	limit = MAX_PENDING_REVOCATION_REFRESH_STEPS,
+): PendingRecipientPolicyRevocationRefreshStep[] {
+	if (
+		!strictId(canonicalProjectIdentity) ||
+		!Number.isSafeInteger(limit) ||
+		limit < 1 ||
+		limit > MAX_PENDING_REVOCATION_REFRESH_STEPS
+	) {
+		throw new Error("recipient_policy_reconciliation_step_invalid");
+	}
+	const rows = db
+		.prepare(PENDING_RECIPIENT_POLICY_REVOCATION_REFRESH_STEPS_SQL)
+		.all(canonicalProjectIdentity, limit) as Array<{ generation: number; step_key: string }>;
+	return rows.map((row) => ({ generation: row.generation, stepKey: row.step_key }));
+}
+
+export function listPendingRecipientPolicyRefreshSteps(
+	db: Database,
+	canonicalProjectIdentity: string,
+	limit = MAX_PENDING_REVOCATION_REFRESH_STEPS,
+): PendingRecipientPolicyRefreshStep[] {
+	if (
+		!strictId(canonicalProjectIdentity) ||
+		!Number.isSafeInteger(limit) ||
+		limit < 1 ||
+		limit > MAX_PENDING_REVOCATION_REFRESH_STEPS
+	) {
+		throw new Error("recipient_policy_reconciliation_step_invalid");
+	}
+	const rows = db
+		.prepare(
+			`SELECT generation, step_key FROM recipient_policy_reconciliation_steps
+			 WHERE canonical_project_identity = ?
+			 AND step_key GLOB 'refresh:*'
+			 AND status IN ('pending', 'running', 'failed')
+			 ORDER BY generation, step_key
+			 LIMIT ?`,
+		)
+		.all(canonicalProjectIdentity, limit) as Array<{ generation: number; step_key: string }>;
+	return rows.map((row) => ({ generation: row.generation, stepKey: row.step_key }));
+}
+
+export function pruneRecipientPolicyReconciliationSteps(
+	db: Database,
+	input: PruneRecipientPolicyReconciliationStepsInput,
+): number {
+	const retainCompletedPerKind =
+		input.retainCompletedPerKind ?? DEFAULT_COMPLETED_STEP_RETENTION_PER_KIND;
+	if (
+		!strictId(input.canonicalProjectIdentity) ||
+		!Number.isSafeInteger(retainCompletedPerKind) ||
+		retainCompletedPerKind < 0
+	) {
+		throw new Error("recipient_policy_reconciliation_step_invalid");
+	}
+	const remove = db.prepare(
+		`DELETE FROM recipient_policy_reconciliation_steps
+		 WHERE canonical_project_identity = ? AND status = 'completed' AND step_key GLOB ?
+		 AND rowid NOT IN (
+			 SELECT rowid FROM recipient_policy_reconciliation_steps
+			 WHERE canonical_project_identity = ? AND status = 'completed' AND step_key GLOB ?
+			 ORDER BY updated_at DESC, generation DESC, step_key DESC
+			 LIMIT ?
+		 )`,
+	);
+	return db
+		.transaction(() => {
+			let deleted = 0;
+			for (const pattern of PRUNABLE_COMPLETED_STEP_PATTERNS) {
+				deleted += remove.run(
+					input.canonicalProjectIdentity,
+					pattern,
+					input.canonicalProjectIdentity,
+					pattern,
+					retainCompletedPerKind,
+				).changes;
+			}
+			return deleted;
+		})
+		.immediate();
+}
+
+export function pruneSupersededRecipientPolicyCapabilitySteps(
+	db: Database,
+	input: PruneSupersededRecipientPolicyCapabilityStepsInput,
+): number {
+	if (
+		!strictId(input.canonicalProjectIdentity) ||
+		!Number.isSafeInteger(input.activeGeneration) ||
+		input.activeGeneration < 0 ||
+		!strictId(input.activePassKey)
+	) {
+		throw new Error("recipient_policy_reconciliation_step_invalid");
+	}
+	const activeStepPrefix = `capability:${input.activePassKey}:`;
+	return db
+		.prepare(
+			`DELETE FROM recipient_policy_reconciliation_steps
+			 WHERE canonical_project_identity = ?
+			 AND status IN ('pending', 'running', 'failed')
+			 AND step_key GLOB 'capability:*'
+			 AND (generation <> ? OR substr(step_key, 1, length(?)) <> ?)`,
+		)
+		.run(input.canonicalProjectIdentity, input.activeGeneration, activeStepPrefix, activeStepPrefix)
+		.changes;
 }
 
 export function ensureRecipientPolicyReconciliationStep(
