@@ -106,9 +106,112 @@ describe("buildPackArgs", () => {
 
     expect(args).toEqual(["pack", "recent work", "--json"]);
   });
+
+  test("adds the hidden ledger transport only for internal callers", () => {
+    expect(__testUtils.buildPackArgs({
+      query: "recent work",
+      filesModified: [],
+      injectLimit: 10,
+      injectTokenBudget: null,
+      internalLedger: true,
+    })).toContain("--internal-ledger");
+    expect(__testUtils.buildPackArgs({
+      query: "recent work",
+      filesModified: [],
+      injectLimit: 10,
+      injectTokenBudget: null,
+    })).not.toContain("--internal-ledger");
+  });
+});
+
+describe("prompt-pack request identity", () => {
+  test("is deterministic for retries and distinct for new turns", () => {
+    const base = {
+      source: "opencode",
+      sessionID: "sess-identity",
+      requestKey: "user-1",
+      surface: "message",
+      promptNumber: 3,
+      queryHash: __testUtils.hashPromptPackQuery("private raw prompt"),
+    };
+
+    const first = __testUtils.promptPackIdentity(base);
+    const retry = __testUtils.promptPackIdentity(base);
+    const nextTurn = __testUtils.promptPackIdentity({ ...base, requestKey: "user-2" });
+    const firstCacheReuse = __testUtils.promptPackIdentity({
+      ...base,
+      requestKey: "user-1:cache:1",
+    });
+    const secondCacheReuse = __testUtils.promptPackIdentity({
+      ...base,
+      requestKey: "user-1:cache:2",
+    });
+
+    expect(retry).toEqual(first);
+    expect(nextTurn.attemptId).not.toBe(first.attemptId);
+    expect(nextTurn.requestId).not.toBe(first.requestId);
+    expect(secondCacheReuse.attemptId).not.toBe(firstCacheReuse.attemptId);
+    expect(JSON.stringify(first)).not.toContain("private raw prompt");
+  });
+
+  test("redacts the positional query from command error diagnostics", () => {
+    const rendered = __testUtils.redactPackCommand("pnpm", ["run", "codemem"], [
+      "pack",
+      "raw private query",
+      "--json",
+      "--internal-ledger",
+      "--working-set-file",
+      "/private/worktree/secret.ts",
+    ]);
+
+    expect(rendered).toContain("pack [query-redacted] --json --internal-ledger");
+    expect(rendered).not.toContain("raw private query");
+    expect(rendered).not.toContain("/private/worktree/secret.ts");
+    expect(rendered).toContain("--working-set-file [path-redacted]");
+  });
 });
 
 describe("applyInjectedContextToOutput", () => {
+  test("marks legacy-system handoff only after exact bytes are attached", async () => {
+    const output = {};
+    const text = "[codemem context]\nlegacy bytes";
+    const confirmDelivery = vi.fn(() => {
+      expect(output.system).toEqual([text]);
+    });
+
+    await __testUtils.applyInjectedContextToOutput({
+      injectEnabled: true,
+      input: { sessionID: "sess-system" },
+      output,
+      injectionToastShown: new Set(),
+      showToast: null,
+      resolveInjectQuery: () => "legacy query",
+      buildInjectedContext: vi.fn().mockResolvedValue({ text, attemptId: "legacy-attempt" }),
+      confirmDelivery,
+    });
+
+    expect(confirmDelivery).toHaveBeenCalledWith("legacy-attempt");
+  });
+
+  test("marks delivery failed when the legacy output rejects attachment", async () => {
+    const confirmDelivery = vi.fn();
+    await expect(__testUtils.applyInjectedContextToOutput({
+      injectEnabled: true,
+      input: { sessionID: "sess-frozen" },
+      output: { system: Object.freeze([]) },
+      injectionToastShown: new Set(),
+      showToast: null,
+      resolveInjectQuery: () => "frozen query",
+      buildInjectedContext: vi.fn().mockResolvedValue({
+        text: "[codemem context]\nfrozen",
+        attemptId: "frozen-attempt",
+      }),
+      confirmDelivery,
+    })).rejects.toThrow();
+    expect(confirmDelivery).toHaveBeenCalledWith("frozen-attempt", "failed");
+    expect(confirmDelivery).not.toHaveBeenCalledWith("frozen-attempt");
+  });
+
   test("recomputes pack on every call so same-session cache hits cannot cross scopes", async () => {
     const injectionToastShown = new Set();
     const buildInjectedContext = vi
@@ -313,8 +416,14 @@ describe("applyInjectedContextToMessages", () => {
     const buildInjectedContext = vi.fn().mockResolvedValue({
       text: "[codemem context]\n## Summary\n[1] (decision) Message injection",
       metrics: { total_items: 1, pack_tokens: 42 },
+      attemptId: "message-attempt",
     });
     const showToast = vi.fn().mockResolvedValue(undefined);
+    const confirmDelivery = vi.fn(() => {
+      expect(output.messages[0].parts.at(-1).text).toBe(
+        "[codemem context]\n## Summary\n[1] (decision) Message injection",
+      );
+    });
 
     const applied = await __testUtils.applyInjectedContextToMessages({
       injectEnabled: true,
@@ -325,6 +434,7 @@ describe("applyInjectedContextToMessages", () => {
       resolveInjectQuery: vi.fn(({ firstPrompt, lastPromptText }) => `${firstPrompt} ${lastPromptText}`),
       buildInjectedContext,
       messageInjectionCache: new Map(),
+      confirmDelivery,
     });
 
     expect(applied).toBe(true);
@@ -340,7 +450,107 @@ describe("applyInjectedContextToMessages", () => {
       },
     ]);
     expect(buildInjectedContext).toHaveBeenCalledTimes(1);
+    expect(buildInjectedContext).toHaveBeenCalledWith(
+      "fix prompt caching fix prompt caching",
+      { sessionID: "sess-messages", requestKey: "user-1", surface: "message" },
+    );
+    expect(confirmDelivery).toHaveBeenCalledTimes(1);
     expect(showToast).toHaveBeenCalledTimes(1);
+  });
+
+  test("records one new attempt when the latest message is satisfied from cache", async () => {
+    const messageInjectionCache = new Map();
+    const exactBytes = "[codemem context]\n## Summary\n[1] (decision) Byte stable";
+    const buildInjectedContext = vi
+      .fn()
+      .mockResolvedValueOnce({
+        text: exactBytes,
+        attemptId: "original-attempt",
+        queryHash: "query-hash",
+        promptNumber: 1,
+      });
+    const confirmDelivery = vi.fn();
+    const recordCacheReuse = vi.fn((cached, context) => {
+      expect(cached.attemptId).toBe("original-attempt");
+      expect(context.messageId).toBe("user-1");
+      return "replay-attempt";
+    });
+
+    await __testUtils.applyInjectedContextToMessages({
+      injectEnabled: true,
+      input: {},
+      output: { messages: [userEntry("user-1", "first prompt")] },
+      injectionToastShown: new Set(),
+      showToast: null,
+      resolveInjectQuery: ({ lastPromptText }) => lastPromptText,
+      buildInjectedContext,
+      messageInjectionCache,
+      confirmDelivery,
+      recordCacheReuse,
+    });
+    confirmDelivery.mockClear();
+
+    const output = { messages: [userEntry("user-1", "first prompt")] };
+    await __testUtils.applyInjectedContextToMessages({
+      injectEnabled: true,
+      input: {},
+      output,
+      injectionToastShown: new Set(),
+      showToast: null,
+      resolveInjectQuery: ({ lastPromptText }) => lastPromptText,
+      buildInjectedContext,
+      messageInjectionCache,
+      confirmDelivery,
+      recordCacheReuse,
+    });
+
+    expect(output.messages[0].parts.at(-1).text).toBe(exactBytes);
+    expect(recordCacheReuse).toHaveBeenCalledTimes(1);
+    expect(confirmDelivery).toHaveBeenCalledWith("replay-attempt");
+    expect(confirmDelivery).not.toHaveBeenCalledWith("original-attempt");
+    expect(buildInjectedContext).toHaveBeenCalledTimes(1);
+  });
+
+  test("reattaches many historical cached parts with constant ledger callback count", async () => {
+    const sessionID = "sess-many-cached";
+    const sessionCache = new Map();
+    const messages = [];
+    for (let index = 1; index <= 100; index += 1) {
+      const messageId = `user-${index}`;
+      messages.push(userEntry(messageId, `prompt ${index}`, sessionID));
+      sessionCache.set(messageId, {
+        text: `[codemem context]\ncached ${index}`,
+        attemptId: `attempt-${index}`,
+        queryHash: `hash-${index}`,
+        promptNumber: index,
+        reuseCount: 0,
+      });
+    }
+    const recordCacheReuse = vi.fn(() => "latest-replay-attempt");
+    const confirmDelivery = vi.fn();
+    const buildInjectedContext = vi.fn();
+
+    const applied = await __testUtils.applyInjectedContextToMessages({
+      injectEnabled: true,
+      input: { sessionID },
+      output: { messages },
+      injectionToastShown: new Set(),
+      showToast: null,
+      resolveInjectQuery: vi.fn(),
+      buildInjectedContext,
+      messageInjectionCache: new Map([[sessionID, sessionCache]]),
+      confirmDelivery,
+      recordCacheReuse,
+    });
+
+    expect(applied).toBe(true);
+    expect(buildInjectedContext).not.toHaveBeenCalled();
+    expect(recordCacheReuse).toHaveBeenCalledTimes(1);
+    expect(recordCacheReuse.mock.calls[0][0].attemptId).toBe("attempt-100");
+    expect(confirmDelivery).toHaveBeenCalledTimes(1);
+    expect(confirmDelivery).toHaveBeenCalledWith("latest-replay-attempt");
+    expect(messages[0].parts.at(-1).text).toBe("[codemem context]\ncached 1");
+    expect(messages.at(-1).parts.at(-1).text).toBe("[codemem context]\ncached 100");
   });
 
   test("preserves prior injected message blocks and only builds the new turn", async () => {
@@ -390,17 +600,33 @@ describe("applyInjectedContextToMessages", () => {
     expect(secondOutput.messages[0].parts.filter(__testUtils.isCodememContextPart)).toHaveLength(1);
   });
 
-  test("deduplicates already-present codemem message parts", async () => {
+  test("rebuilds the latest reconstructed part while preserving historical identity-less replay", async () => {
+    // Arrange
+    const messageInjectionCache = new Map();
     const output = {
       messages: [
         {
           info: { id: "user-1", sessionID: "sess-messages", role: "user" },
           parts: [
-            { id: "user-1-text", sessionID: "sess-messages", messageID: "user-1", type: "text", text: "same prompt" },
+            { id: "user-1-text", sessionID: "sess-messages", messageID: "user-1", type: "text", text: "first prompt" },
             {
               id: "codemem-context-user-1",
               sessionID: "sess-messages",
               messageID: "user-1",
+              type: "text",
+              text: "[codemem context]\nhistorical",
+              synthetic: true,
+            },
+          ],
+        },
+        {
+          info: { id: "user-2", sessionID: "sess-messages", role: "user" },
+          parts: [
+            { id: "user-2-text", sessionID: "sess-messages", messageID: "user-2", type: "text", text: "same prompt" },
+            {
+              id: "codemem-context-user-2",
+              sessionID: "sess-messages",
+              messageID: "user-2",
               type: "text",
               text: "[codemem context]\nexisting",
               synthetic: true,
@@ -409,8 +635,14 @@ describe("applyInjectedContextToMessages", () => {
         },
       ],
     };
-    const buildInjectedContext = vi.fn();
+    const buildInjectedContext = vi.fn().mockResolvedValue({
+      text: "[codemem context]\nrebuilt",
+      attemptId: "rebuilt-attempt",
+    });
+    const recordCacheReuse = vi.fn();
+    const confirmDelivery = vi.fn();
 
+    // Act
     await __testUtils.applyInjectedContextToMessages({
       injectEnabled: true,
       input: {},
@@ -419,12 +651,107 @@ describe("applyInjectedContextToMessages", () => {
       showToast: null,
       resolveInjectQuery: () => "same prompt",
       buildInjectedContext,
-      messageInjectionCache: new Map(),
+      messageInjectionCache,
+      recordCacheReuse,
+      confirmDelivery,
     });
 
-    expect(buildInjectedContext).not.toHaveBeenCalled();
+    // Assert
+    expect(buildInjectedContext).toHaveBeenCalledTimes(1);
+    expect(recordCacheReuse).not.toHaveBeenCalled();
     expect(output.messages[0].parts.filter(__testUtils.isCodememContextPart)).toHaveLength(1);
-    expect(output.messages[0].parts.at(-1).text).toBe("[codemem context]\nexisting");
+    expect(output.messages[0].parts.at(-1).text).toBe("[codemem context]\nhistorical");
+    expect(output.messages[1].parts.filter(__testUtils.isCodememContextPart)).toHaveLength(1);
+    expect(output.messages[1].parts.at(-1).text).toBe("[codemem context]\nrebuilt");
+    expect(messageInjectionCache.get("sess-messages").get("user-2")).toMatchObject({
+      text: "[codemem context]\nrebuilt",
+      attemptId: "rebuilt-attempt",
+    });
+    expect(confirmDelivery).toHaveBeenCalledWith("rebuilt-attempt");
+  });
+
+  test("does not replay a reconstructed latest part when its rebuild is empty", async () => {
+    // Arrange
+    const messageInjectionCache = new Map();
+    const output = {
+      messages: [
+        {
+          info: { id: "user-1", sessionID: "sess-empty-rebuild", role: "user" },
+          parts: [
+            { id: "user-1-text", sessionID: "sess-empty-rebuild", messageID: "user-1", type: "text", text: "same prompt" },
+            {
+              id: "codemem-context-user-1",
+              sessionID: "sess-empty-rebuild",
+              messageID: "user-1",
+              type: "text",
+              text: "[codemem context]\nstale",
+              synthetic: true,
+            },
+          ],
+        },
+      ],
+    };
+    const buildInjectedContext = vi.fn().mockResolvedValue({ text: "" });
+
+    // Act
+    const applied = await __testUtils.applyInjectedContextToMessages({
+      injectEnabled: true,
+      input: {},
+      output,
+      injectionToastShown: new Set(),
+      showToast: null,
+      resolveInjectQuery: () => "same prompt",
+      buildInjectedContext,
+      messageInjectionCache,
+    });
+
+    // Assert
+    expect(applied).toBe(false);
+    expect(buildInjectedContext).toHaveBeenCalledTimes(1);
+    expect(output.messages[0].parts.filter(__testUtils.isCodememContextPart)).toHaveLength(0);
+    expect(messageInjectionCache.get("sess-empty-rebuild").has("user-1")).toBe(false);
+  });
+
+  test("replays a freshly built latest cache entry without an attempt identity", async () => {
+    // Arrange
+    const sessionID = "sess-unattributed-build";
+    const messageInjectionCache = new Map([
+      [
+        sessionID,
+        new Map([
+          [
+            "user-1",
+            {
+              text: "[codemem context]\nfresh build",
+              attemptId: null,
+              requestId: null,
+              queryHash: null,
+              promptNumber: 0,
+              reuseCount: 0,
+            },
+          ],
+        ]),
+      ],
+    ]);
+    const output = { messages: [userEntry("user-1", "same prompt", sessionID)] };
+    const buildInjectedContext = vi.fn();
+
+    // Act
+    const applied = await __testUtils.applyInjectedContextToMessages({
+      injectEnabled: true,
+      input: { sessionID },
+      output,
+      injectionToastShown: new Set(),
+      showToast: null,
+      resolveInjectQuery: vi.fn(),
+      buildInjectedContext,
+      messageInjectionCache,
+    });
+
+    // Assert
+    expect(applied).toBe(true);
+    expect(buildInjectedContext).not.toHaveBeenCalled();
+    expect(output.messages[0].parts.at(-1).text).toBe("[codemem context]\nfresh build");
   });
 
   test("skips message injection once for compaction and strips codemem parts", async () => {

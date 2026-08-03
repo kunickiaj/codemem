@@ -1,9 +1,57 @@
+import { Readable } from "node:stream";
 import { Command } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const buildMemoryPackAsync = vi.fn();
+const buildMemoryPackWithTraceAsync = vi.fn(async (...args: unknown[]) => {
+	const response = await buildMemoryPackAsync(...args);
+	return {
+		response,
+		trace: {
+			version: 1,
+			inputs: {
+				query: String(args[0] ?? ""),
+				project: null,
+				working_set_files: [],
+				token_budget: null,
+				limit: Number(args[1] ?? 10),
+			},
+			mode: { selected: "default", reasons: [] },
+			retrieval: { candidate_count: response.items.length, candidates: [] },
+			assembly: {
+				deduped_ids: [],
+				collapsed_groups: [],
+				compressed_clusters: [],
+				trimmed_ids: [],
+				trim_reasons: [],
+				sections: { summary: [], timeline: [], observations: [] },
+			},
+			output: {
+				estimated_tokens: response.metrics.pack_tokens,
+				truncated: false,
+				section_counts: { summary: 0, timeline: 0, observations: 0 },
+				pack_text: response.pack_text,
+			},
+		},
+	};
+});
 const buildMemoryPackTraceAsync = vi.fn();
 const closeStore = vi.fn();
+type MockLedgerOutcome =
+	| { ok: true; value: { inserted: boolean } }
+	| {
+			ok: false;
+			errorCode: "retrieval_ledger_write_failed";
+			reason: "idempotency_conflict" | "storage_unavailable";
+	  };
+const { recordPromptPackArtifacts } = vi.hoisted(() => ({
+	recordPromptPackArtifacts: vi.fn(
+		(): MockLedgerOutcome => ({
+			ok: true,
+			value: { inserted: true },
+		}),
+	),
+}));
 const storePaths: Array<string | undefined> = [];
 
 vi.mock("@codemem/core", async (importOriginal) => {
@@ -11,23 +59,30 @@ vi.mock("@codemem/core", async (importOriginal) => {
 	return {
 		...actual,
 		MemoryStore: class {
+			db = {};
 			constructor(dbPath?: string) {
 				storePaths.push(dbPath);
 			}
 			buildMemoryPackAsync = buildMemoryPackAsync;
+			buildMemoryPackWithTraceAsync = buildMemoryPackWithTraceAsync;
 			buildMemoryPackTraceAsync = buildMemoryPackTraceAsync;
 			close = closeStore;
 		},
+		promptPackArtifactFingerprint: () => "a".repeat(64),
+		recordPromptPackArtifacts,
 		resolveDbPath: (value?: string) => value,
 	};
 });
 
-import { packCommand, renderPackTrace } from "./pack.js";
+import { packCommand, parseInternalLedgerPayload, renderPackTrace } from "./pack.js";
 
 afterEach(() => {
 	buildMemoryPackAsync.mockReset();
+	buildMemoryPackWithTraceAsync.mockClear();
 	buildMemoryPackTraceAsync.mockReset();
 	closeStore.mockReset();
+	recordPromptPackArtifacts.mockReset();
+	recordPromptPackArtifacts.mockReturnValue({ ok: true, value: { inserted: true } });
 	storePaths.length = 0;
 	process.exitCode = 0;
 	vi.restoreAllMocks();
@@ -47,6 +102,47 @@ async function parseTraceCommand(args: string[]): Promise<void> {
 }
 
 describe("pack command", () => {
+	it("accepts only bounded allowlisted internal ledger metadata", () => {
+		expect(
+			parseInternalLedgerPayload(
+				JSON.stringify({
+					action: "delivery",
+					attempt_id: "018f2db4-f9d3-7a22-8d18-000000000001",
+					delivery_status: "handed_off",
+				}),
+			),
+		).toMatchObject({ action: "delivery", delivery_status: "handed_off" });
+		expect(() =>
+			parseInternalLedgerPayload(JSON.stringify({ attempt_id: "safe", raw_prompt: "secret" })),
+		).toThrow("rejects sensitive field");
+		expect(() =>
+			parseInternalLedgerPayload(
+				JSON.stringify({ attempt_id: "safe", source_session_id: "/private/tmp/session.json" }),
+			),
+		).toThrow("rejects absolute paths");
+		expect(() =>
+			parseInternalLedgerPayload(
+				JSON.stringify({ attempt_id: "safe", source_session_id: "C:\\private\\session.json" }),
+			),
+		).toThrow("rejects absolute paths");
+		expect(() =>
+			parseInternalLedgerPayload(
+				JSON.stringify({ attempt_id: "safe", request_id: "x".repeat(17 * 1024) }),
+			),
+		).toThrow("exceeds 16384 bytes");
+		expect(() =>
+			parseInternalLedgerPayload(JSON.stringify({ action: "unknown", attempt_id: "safe" })),
+		).toThrow("action is invalid");
+		expect(() =>
+			parseInternalLedgerPayload(
+				JSON.stringify({ attempt_id: "safe", delivery_status: "not_attempted" }),
+			),
+		).toThrow("delivery_status is invalid");
+		expect(() =>
+			parseInternalLedgerPayload(JSON.stringify({ attempt_id: "safe", prompt_number: -1 })),
+		).toThrow("non-negative integer");
+	});
+
 	it("registers trace as a pack subcommand with shared options", () => {
 		const trace = packCommand.commands.find((command) => command.name() === "trace");
 		expect(trace).toBeDefined();
@@ -206,11 +302,145 @@ describe("pack command", () => {
 			{ project: "codemem", working_set_paths: ["packages/ui/src/app.ts"] },
 			{ compact: true, compactDetailCount: 2 },
 		);
+		expect(buildMemoryPackWithTraceAsync).not.toHaveBeenCalled();
 		const output = logSpy.mock.calls.at(-1)?.[0];
-		expect(JSON.parse(String(output))).toMatchObject({
+		const parsed = JSON.parse(String(output));
+		expect(parsed).toMatchObject({
 			pack_text: "## Summary\n[101] (decision) Keep Search",
 			metrics: { total_items: 1 },
 		});
+		expect(parsed).not.toHaveProperty("trace");
+		expect(parsed).not.toHaveProperty("attempt_id");
+		expect(parsed).not.toHaveProperty("delivery_status");
+	});
+
+	it("emits legacy pack JSON when internal ledger stdin is malformed", async () => {
+		buildMemoryPackAsync.mockResolvedValue({
+			items: [{ id: 101, kind: "decision", title: "Safe output", subtitle: null }],
+			metrics: {
+				total_items: 1,
+				pack_tokens: 20,
+				fallback_used: false,
+				sources: { fts: 1, semantic: 0, fuzzy: 0 },
+			},
+			pack_text: "## Summary\n[101] (decision) Safe output",
+		});
+		vi.spyOn(process, "stdin", "get").mockReturnValue(
+			Readable.from(["not-json"]) as unknown as typeof process.stdin,
+		);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parsePackCommand(["safe query", "--json", "--internal-ledger"]);
+
+		expect(process.exitCode).toBe(0);
+		expect(buildMemoryPackWithTraceAsync).toHaveBeenCalledTimes(1);
+		expect(JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]))).toMatchObject({
+			pack_text: "## Summary\n[101] (decision) Safe output",
+			metrics: { total_items: 1 },
+			ledger_artifact_fingerprint: "a".repeat(64),
+		});
+	});
+
+	it("waits for internal ledger persistence before emitting instrumented pack output", async () => {
+		buildMemoryPackAsync.mockResolvedValue({
+			items: [{ id: 101, kind: "decision", title: "Early output", subtitle: null }],
+			metrics: {
+				total_items: 1,
+				pack_tokens: 20,
+				fallback_used: false,
+				sources: { fts: 1, semantic: 0, fuzzy: 0 },
+			},
+			pack_text: "## Summary\n[101] (decision) Early output",
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const stdin = new Readable({
+			read() {
+				expect(logSpy).not.toHaveBeenCalled();
+				this.push("not-json");
+				this.push(null);
+			},
+		});
+		vi.spyOn(process, "stdin", "get").mockReturnValue(stdin as unknown as typeof process.stdin);
+
+		await parsePackCommand(["safe query", "--json", "--internal-ledger"]);
+
+		expect(process.exitCode).toBe(0);
+		expect(JSON.parse(String(logSpy.mock.calls[0]?.[0]))).toMatchObject({
+			pack_text: "## Summary\n[101] (decision) Early output",
+		});
+	});
+
+	it("emits a stable ledger conflict outcome with the built pack JSON", async () => {
+		buildMemoryPackAsync.mockResolvedValue({
+			items: [{ id: 101, kind: "decision", title: "Conflicting output", subtitle: null }],
+			metrics: {
+				total_items: 1,
+				pack_tokens: 20,
+				fallback_used: false,
+				sources: { fts: 1, semantic: 0, fuzzy: 0 },
+			},
+			pack_text: "## Summary\n[101] (decision) Conflicting output",
+		});
+		recordPromptPackArtifacts.mockReturnValue({
+			ok: false,
+			errorCode: "retrieval_ledger_write_failed",
+			reason: "idempotency_conflict",
+		});
+		vi.spyOn(process, "stdin", "get").mockReturnValue(
+			Readable.from([
+				JSON.stringify({
+					attempt_id: "018f2db4-f9d3-7a22-8d18-000000000001",
+					request_id: "stable-request",
+				}),
+			]) as unknown as typeof process.stdin,
+		);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parsePackCommand(["safe query", "--json", "--internal-ledger"]);
+
+		expect(process.exitCode).toBe(0);
+		expect(JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]))).toMatchObject({
+			pack_text: "## Summary\n[101] (decision) Conflicting output",
+			ledger_outcome: {
+				ok: false,
+				errorCode: "retrieval_ledger_write_failed",
+				reason: "idempotency_conflict",
+			},
+		});
+	});
+
+	it("keeps storage-unavailable ledger failures fail-open", async () => {
+		buildMemoryPackAsync.mockResolvedValue({
+			items: [{ id: 101, kind: "decision", title: "Available output", subtitle: null }],
+			metrics: {
+				total_items: 1,
+				pack_tokens: 20,
+				fallback_used: false,
+				sources: { fts: 1, semantic: 0, fuzzy: 0 },
+			},
+			pack_text: "## Summary\n[101] (decision) Available output",
+		});
+		recordPromptPackArtifacts.mockReturnValue({
+			ok: false,
+			errorCode: "retrieval_ledger_write_failed",
+			reason: "storage_unavailable",
+		});
+		vi.spyOn(process, "stdin", "get").mockReturnValue(
+			Readable.from([
+				JSON.stringify({
+					attempt_id: "018f2db4-f9d3-7a22-8d18-000000000002",
+					request_id: "storage-request",
+				}),
+			]) as unknown as typeof process.stdin,
+		);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parsePackCommand(["safe query", "--json", "--internal-ledger"]);
+
+		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(output.pack_text).toContain("Available output");
+		expect(output).not.toHaveProperty("ledger_outcome");
+		expect(process.exitCode).toBe(0);
 	});
 
 	it("omits project filters for all-projects pack requests", async () => {

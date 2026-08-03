@@ -35,7 +35,7 @@ import {
 	rememberMemoryCommand,
 	showMemoryCommand,
 } from "./commands/memory.js";
-import { packCommand } from "./commands/pack.js";
+import { packCommand, promptPackLedgerCommand } from "./commands/pack.js";
 import { recentCommand } from "./commands/recent.js";
 import { searchCommand } from "./commands/search.js";
 import { serveCommand } from "./commands/serve.js";
@@ -212,6 +212,7 @@ program.addCommand(embedCommand);
 program.addCommand(recentCommand);
 program.addCommand(searchCommand);
 program.addCommand(packCommand);
+program.addCommand(promptPackLedgerCommand, { hidden: true });
 // Deprecated top-level aliases — use `memory show`, `memory forget`, `memory remember` instead.
 // These are hidden from --help and shell completion but still functional for backwards compat.
 program.addCommand(showMemoryCommand, { hidden: true });

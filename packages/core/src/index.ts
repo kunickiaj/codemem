@@ -536,11 +536,14 @@ export {
 	writeCodememConfigFile,
 	writeWorkspaceCodememConfigFile,
 } from "./observer-config.js";
+export type { PackArtifacts } from "./pack.js";
 export {
 	buildMemoryPack,
 	buildMemoryPackAsync,
 	buildMemoryPackTrace,
 	buildMemoryPackTraceAsync,
+	buildMemoryPackWithTrace,
+	buildMemoryPackWithTraceAsync,
 	estimateTokens,
 } from "./pack.js";
 export {
@@ -590,6 +593,7 @@ export {
 	reassignProjectScopeInventoryProject,
 	upsertProjectScopeSettingsMapping,
 } from "./project-scope-settings.js";
+export * from "./prompt-pack-ledger.js";
 export type { FlushRawEventsOptions } from "./raw-event-flush.js";
 export { buildSessionContext, flushRawEvents } from "./raw-event-flush.js";
 export { RawEventSweeper } from "./raw-event-sweeper.js";

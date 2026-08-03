@@ -41,6 +41,55 @@ const resolveInjectSurface = (value) => {
 
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value || {}, key);
 
+const deterministicUuid = (namespace, components) => {
+  const hex = createHash("sha256")
+    .update(JSON.stringify([namespace, ...components.map((value) => String(value ?? ""))]))
+    .digest("hex");
+  const bytes = Buffer.from(hex.slice(0, 32), "hex");
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const value = bytes.toString("hex");
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
+};
+
+const promptPackIdentity = ({
+  source = "opencode",
+  sessionID = "unknown",
+  requestKey,
+  surface,
+  promptNumber = 0,
+  queryHash,
+}) => {
+  const components = [source, sessionID, requestKey, surface, promptNumber, queryHash];
+  return {
+    attemptId: deterministicUuid("codemem.prompt-pack.attempt.v1", components),
+    requestId: deterministicUuid("codemem.prompt-pack.request.v1", components),
+  };
+};
+
+const hashPromptPackQuery = (query) =>
+  createHash("sha256").update(String(query || "")).digest("hex");
+
+const redactPackCommand = (runner, runnerArgs, packArgs) => {
+  const safePackArgs = [...packArgs];
+  if (safePackArgs[0] === "pack" && safePackArgs.length > 1) {
+    safePackArgs[1] = "[query-redacted]";
+  }
+  for (let index = 0; index < safePackArgs.length - 1; index += 1) {
+    if (safePackArgs[index] === "--working-set-file") {
+      safePackArgs[index + 1] = "[path-redacted]";
+    }
+  }
+  return [runner, ...runnerArgs, ...safePackArgs].join(" ");
+};
+
+const rejectsInternalLedgerFlag = (result) => {
+  if (!result || result.exitCode === 0) return false;
+  const diagnostics = `${result.stderr || ""}\n${result.stdout || ""}`;
+  return diagnostics.includes("--internal-ledger")
+    && /(?:unknown|unsupported|unrecognized|invalid)\s+(?:option|argument)/i.test(diagnostics);
+};
+
 const DEFAULT_LOG_PATH = (homeDir, cwd) => `${homeDir || cwd}/.codemem/plugin.log`;
 
 const resolveLogPath = (logPathEnvRaw, cwd, homeDir) => {
@@ -212,12 +261,15 @@ const buildInjectQuery = ({ firstPrompt, lastPromptText, projectName, filesModif
   return query.length > 500 ? query.slice(0, 500) : query;
 };
 
-const buildPackArgs = ({ query, filesModified, injectLimit, injectTokenBudget }) => {
+const buildPackArgs = ({ query, filesModified, injectLimit, injectTokenBudget, internalLedger = false }) => {
   const workingSetFiles = Array.from(filesModified || [])
     .slice(-8)
     .map((value) => String(value || "").trim())
     .filter(Boolean);
   const args = ["pack", query, "--json"];
+  if (internalLedger) {
+    args.push("--internal-ledger");
+  }
   if (injectLimit !== null && Number.isFinite(injectLimit) && injectLimit > 0) {
     args.push("--limit", String(injectLimit));
   }
@@ -255,6 +307,61 @@ const parsePackMetrics = (stdout) => {
   }
 };
 
+const parsePackOutput = (result) => {
+  const succeeded = result?.exitCode === 0;
+  let payload = null;
+  if (succeeded) {
+    try {
+      payload = JSON.parse(result.stdout);
+    } catch {
+      payload = null;
+    }
+  }
+  const ledgerConflict = payload?.ledger_outcome?.ok === false
+    && payload.ledger_outcome.errorCode === "retrieval_ledger_write_failed"
+    && payload.ledger_outcome.reason === "idempotency_conflict";
+  const metrics = succeeded ? payload?.metrics || null : null;
+  const itemCount = Number.isFinite(Number(metrics?.total_items))
+    ? Number(metrics.total_items)
+    : null;
+  return {
+    ledgerConflict,
+    metrics,
+    itemCount,
+    // The real builder renders section headings even when it selected no
+    // memories. Treat the structured count as authoritative so headings alone
+    // are never handed to the model as retrieved context.
+    packText: succeeded && !ledgerConflict && itemCount !== 0
+      ? String(payload?.pack_text || "").trim()
+      : "",
+  };
+};
+
+const canonicalJson = (value) => {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+
+const promptPackArtifactFingerprint = (stdout, packText) => {
+  try {
+    const payload = JSON.parse(stdout);
+    if (/^[0-9a-f]{64}$/i.test(payload?.ledger_artifact_fingerprint || "")) {
+      return payload.ledger_artifact_fingerprint.toLowerCase();
+    }
+    return createHash("sha256").update(canonicalJson(payload)).digest("hex");
+  } catch {
+    return createHash("sha256").update(packText).digest("hex");
+  }
+};
+
 const applyInjectedContextToOutput = async ({
   injectEnabled,
   input,
@@ -263,8 +370,11 @@ const applyInjectedContextToOutput = async ({
   showToast,
   resolveInjectQuery,
   buildInjectedContext,
+  confirmDelivery,
+  recordSkipped,
 }) => {
   if (!injectEnabled) {
+    recordSkipped?.("injection_disabled", input?.sessionID || null);
     return false;
   }
 
@@ -277,7 +387,12 @@ const applyInjectedContextToOutput = async ({
   // O(1) hit when the cache key isn't tied to the prompt that produced
   // the pack.
   const query = resolveInjectQuery();
-  const injected = await buildInjectedContext(query);
+  const sessionID = input?.sessionID || null;
+  const injected = await buildInjectedContext(query, {
+    sessionID,
+    requestKey: `system:${sessionID || "unknown"}`,
+    surface: "system",
+  });
   if (!injected?.text) {
     return false;
   }
@@ -291,10 +406,20 @@ const applyInjectedContextToOutput = async ({
     }
   }
 
-  if (!Array.isArray(output.system)) {
-    output.system = [];
+  try {
+    if (!Array.isArray(output.system)) {
+      output.system = [];
+    }
+    output.system.push(injected.text);
+  } catch (error) {
+    if (injected.attemptId) {
+      confirmDelivery?.(injected.attemptId, "failed");
+    }
+    throw error;
   }
-  output.system.push(injected.text);
+  if (injected.attemptId) {
+    confirmDelivery?.(injected.attemptId);
+  }
   return true;
 };
 
@@ -428,7 +553,7 @@ const normalizeInjectedMessageParts = (messages, sessionCache) => {
       }
     }
     if (existingText && sessionCache && messageId && !sessionCache.has(messageId)) {
-      sessionCache.set(messageId, existingText);
+      sessionCache.set(messageId, { text: existingText, attemptId: null, reconstructed: true });
       trimSessionMessageInjectionCache(sessionCache);
     }
     if (retainedParts.length !== entry.parts.length) {
@@ -450,7 +575,12 @@ const buildInjectedContextPart = (entry, index, text, options = {}) => {
   };
 };
 
-const appendCachedInjectedContextParts = (messages, sessionCache, sessionID = null) => {
+const appendCachedInjectedContextParts = async (
+  messages,
+  sessionCache,
+  sessionID = null,
+  options = {},
+) => {
   let appended = 0;
   for (let index = 0; index < messages.length; index += 1) {
     const entry = messages[index];
@@ -461,11 +591,49 @@ const appendCachedInjectedContextParts = (messages, sessionCache, sessionID = nu
     if (!messageId) {
       continue;
     }
-    const text = sessionCache.get(messageId);
+    const cached = sessionCache.get(messageId);
+    const text = typeof cached === "string" ? cached : cached?.text;
     if (!text) {
       continue;
     }
-    entry.parts.push(buildInjectedContextPart(entry, index, text, { messageId, sessionID }));
+    let attemptId = cached?.attemptId || null;
+    let cacheReuseReady = null;
+    if (
+      messageId === options.latestMessageId
+      && !options.latestWasBuilt
+      && attemptId
+      && options.recordCacheReuse
+    ) {
+      const reuse = options.recordCacheReuse(cached, {
+        messageId,
+        sessionID,
+      });
+      attemptId = typeof reuse === "string" ? reuse : reuse?.attemptId || null;
+      cacheReuseReady = typeof reuse === "object" ? reuse?.ready : null;
+    }
+    try {
+      entry.parts.push(buildInjectedContextPart(entry, index, text, { messageId, sessionID }));
+    } catch (error) {
+      if (messageId === options.latestMessageId && attemptId && options.confirmDelivery) {
+        if (cacheReuseReady) {
+          void Promise.resolve(cacheReuseReady)
+            .then(() => options.confirmDelivery(attemptId, "failed"))
+            .catch(() => {});
+        } else {
+          options.confirmDelivery(attemptId, "failed");
+        }
+      }
+      throw error;
+    }
+    if (messageId === options.latestMessageId && attemptId && options.confirmDelivery) {
+      if (cacheReuseReady) {
+        void Promise.resolve(cacheReuseReady)
+          .then(() => options.confirmDelivery(attemptId))
+          .catch(() => {});
+      } else {
+        options.confirmDelivery(attemptId);
+      }
+    }
     appended += 1;
   }
   return appended;
@@ -481,18 +649,26 @@ const applyInjectedContextToMessages = async ({
   buildInjectedContext,
   messageInjectionCache,
   compactionInjectionSkips,
+  confirmDelivery,
+  recordCacheReuse,
+  recordSkipped,
 }) => {
-  if (!injectEnabled || !Array.isArray(output?.messages)) {
-    return false;
-  }
-
-  const latestUser = findLatestUserMessage(output.messages);
+  const hasMessages = Array.isArray(output?.messages);
+  const latestUser = hasMessages ? findLatestUserMessage(output.messages) : null;
   const sessionID = latestUser
     ? resolveEntrySessionID(latestUser.entry) || input?.sessionID || null
     : input?.sessionID || null;
+  if (!injectEnabled) {
+    recordSkipped?.("injection_disabled", sessionID);
+    return false;
+  }
+  if (!hasMessages) {
+    return false;
+  }
 
   if (consumeCompactionInjectionSkip(compactionInjectionSkips, sessionID)) {
     normalizeInjectedMessageParts(output.messages, null);
+    recordSkipped?.("compaction_skipped", sessionID);
     return false;
   }
 
@@ -505,24 +681,49 @@ const applyInjectedContextToMessages = async ({
 
   const latestMessageId = resolveEntryMessageId(latestUser.entry);
   const canReplay = Boolean(sessionCache && latestMessageId);
-  if (!canReplay || !sessionCache.has(latestMessageId)) {
+  const latestCached = canReplay ? sessionCache.get(latestMessageId) : null;
+  const latestWasCached = Boolean(latestCached) && latestCached?.reconstructed !== true;
+  let latestWasBuilt = false;
+  if (!latestWasCached) {
     const firstUser = findFirstUserMessage(output.messages);
     const query = resolveInjectQuery({
       firstPrompt: firstUser ? extractMessageText(firstUser.entry) : null,
       lastPromptText: extractMessageText(latestUser.entry),
     });
-    const injected = await buildInjectedContext(query);
+    const injected = await buildInjectedContext(query, {
+      sessionID,
+      requestKey: latestMessageId || fallbackEntryMessageId(latestUser.entry, latestUser.index),
+      surface: "message",
+    });
     if (injected?.text) {
+      latestWasBuilt = true;
       if (canReplay) {
-        sessionCache.set(latestMessageId, injected.text);
+        sessionCache.set(latestMessageId, {
+          text: injected.text,
+          attemptId: injected.attemptId || null,
+          requestId: injected.requestId || null,
+          queryHash: injected.queryHash || null,
+          promptNumber: injected.promptNumber || 0,
+          reuseCount: 0,
+        });
         trimSessionMessageInjectionCache(sessionCache);
       } else if (Array.isArray(latestUser.entry.parts)) {
-        latestUser.entry.parts.push(
-          buildInjectedContextPart(latestUser.entry, latestUser.index, injected.text, {
-            messageId: latestMessageId || undefined,
-            sessionID: sessionID || undefined,
-          })
-        );
+        try {
+          latestUser.entry.parts.push(
+            buildInjectedContextPart(latestUser.entry, latestUser.index, injected.text, {
+              messageId: latestMessageId || undefined,
+              sessionID: sessionID || undefined,
+            })
+          );
+        } catch (error) {
+          if (injected.attemptId) {
+            confirmDelivery?.(injected.attemptId, "failed");
+          }
+          throw error;
+        }
+        if (injected.attemptId) {
+          confirmDelivery?.(injected.attemptId);
+        }
       }
 
       const toastKey = sessionID || latestMessageId || "unknown";
@@ -534,6 +735,8 @@ const applyInjectedContextToMessages = async ({
           // best-effort only
         }
       }
+    } else if (canReplay && latestCached?.reconstructed === true) {
+      sessionCache.delete(latestMessageId);
     }
   }
 
@@ -544,7 +747,12 @@ const applyInjectedContextToMessages = async ({
     );
   }
 
-  const appended = appendCachedInjectedContextParts(output.messages, sessionCache, sessionID);
+  const appended = await appendCachedInjectedContextParts(output.messages, sessionCache, sessionID, {
+    latestMessageId,
+    latestWasBuilt,
+    confirmDelivery,
+    recordCacheReuse,
+  });
   return appended > 0;
 };
 
@@ -1036,10 +1244,15 @@ export const OpencodeMemPlugin = async ({
   const injectionToastShown = new Set();
   const messageInjectionCache = new Map();
   const compactionInjectionSkips = new Map();
+  const disabledInjectionRecorded = new Set();
+  const attemptStartedAt = new Map();
+  const promptPackRetryCounts = new Map();
+  const successfulPromptPackArtifacts = new Map();
   let sessionStartedAt = null;
   let activeSessionID = null;
   let viewerStarted = false;
   let promptCounter = 0;
+  let skippedAttemptCounter = 0;
   let lastPromptText = null;
   let lastAssistantText = null;
   const assistantUsageCaptured = new Set();
@@ -1628,6 +1841,93 @@ export const OpencodeMemPlugin = async ({
   const runCli = async (args, options = {}) =>
     runCommand([runner, ...runnerArgs, ...args], options);
 
+  const attemptMetadata = (identity, sessionID = null, promptNumber = promptCounter) => ({
+    attempt_id: identity.attemptId,
+    started_at: (() => {
+      const existing = attemptStartedAt.get(identity.attemptId);
+      if (existing) return existing;
+      const created = new Date().toISOString();
+      attemptStartedAt.set(identity.attemptId, created);
+      while (attemptStartedAt.size > 2000) {
+        const oldest = attemptStartedAt.keys().next().value;
+        if (!oldest) break;
+        attemptStartedAt.delete(oldest);
+      }
+      return created;
+    })(),
+    source: "opencode",
+    ...(sessionID ? { stream_id: String(sessionID), source_session_id: String(sessionID) } : {}),
+    ...(promptNumber > 0 ? { prompt_number: promptNumber } : {}),
+    request_id: identity.requestId,
+  });
+
+  const runPromptPackLedger = async (payload) => {
+    try {
+      return await runCli(["prompt-pack-ledger"], {
+        stdinText: JSON.stringify(payload),
+      });
+    } catch {
+      return null;
+    }
+  };
+
+  const skippedIdentity = (failureCode, sessionID, surface, eventKey) =>
+    promptPackIdentity({
+      sessionID: sessionID || "unknown",
+      requestKey: `${failureCode}:${eventKey}`,
+      surface,
+      promptNumber: promptCounter,
+      queryHash: hashPromptPackQuery(""),
+    });
+
+  const recordSkippedPromptPack = (failureCode, sessionID = null, surface = injectSurface) => {
+    const sessionKey = String(sessionID || "unknown");
+    const memoKey = `${surface}:${sessionKey}`;
+    if (failureCode === "injection_disabled" && disabledInjectionRecorded.has(memoKey)) {
+      return null;
+    }
+    if (failureCode === "injection_disabled") disabledInjectionRecorded.add(memoKey);
+    const identity = skippedIdentity(
+      failureCode,
+      sessionID,
+      surface,
+      failureCode === "injection_disabled" ? "once" : `event-${++skippedAttemptCounter}`,
+    );
+    void runPromptPackLedger({
+      action: "record",
+      ...attemptMetadata(identity, sessionID),
+      retrieval_status: "skipped",
+      failure_code: failureCode,
+      failure_stage: "policy",
+    });
+    return identity.attemptId;
+  };
+
+  const recordCachedPromptPack = (cached, { messageId, sessionID } = {}) => {
+    cached.reuseCount = (cached.reuseCount || 0) + 1;
+    const identity = promptPackIdentity({
+      sessionID: sessionID || "unknown",
+      requestKey: `${messageId || "unknown"}:cache:${cached.reuseCount}`,
+      surface: "message",
+      promptNumber: cached.promptNumber || promptCounter,
+      queryHash: cached.queryHash || hashPromptPackQuery(""),
+    });
+    const ready = runPromptPackLedger({
+      action: "cache_reuse",
+      ...attemptMetadata(identity, sessionID, cached.promptNumber || promptCounter),
+      original_attempt_id: cached.attemptId,
+    });
+    return { attemptId: identity.attemptId, ready };
+  };
+
+  const confirmPromptPackDelivery = (attemptId, deliveryStatus = "handed_off") => {
+    void runPromptPackLedger({
+      action: "delivery",
+      attempt_id: attemptId,
+      delivery_status: deliveryStatus,
+    });
+  };
+
   const showToast = async (message, variant = "warning") => {
     if (backendUpdatePolicy === "off") {
       return;
@@ -1827,28 +2127,237 @@ export const OpencodeMemPlugin = async ({
     return masked.length > limit ? `${masked.slice(0, limit)}…` : masked;
   };
 
-  const buildInjectedContext = async (query) => {
-    const packArgs = buildPackArgs({
-      query,
-      filesModified: sessionContext.filesModified,
-      injectLimit,
-      injectTokenBudget,
+  const advancePromptPackRetryIdentity = (attemptKey) => {
+    promptPackRetryCounts.set(
+      attemptKey,
+      (promptPackRetryCounts.get(attemptKey) || 0) + 1
+    );
+    while (promptPackRetryCounts.size > 2000) {
+      const oldest = promptPackRetryCounts.keys().next().value;
+      if (!oldest) break;
+      promptPackRetryCounts.delete(oldest);
+    }
+  };
+
+  const rememberSuccessfulPromptPackArtifact = (
+    attemptKey,
+    retryCount,
+    fingerprint
+  ) => {
+    successfulPromptPackArtifacts.delete(attemptKey);
+    successfulPromptPackArtifacts.set(attemptKey, {
+      retryCount,
+      fingerprint,
     });
-    const result = await runCli(packArgs);
+    while (successfulPromptPackArtifacts.size > 2000) {
+      const oldest = successfulPromptPackArtifacts.keys().next().value;
+      if (!oldest) break;
+      successfulPromptPackArtifacts.delete(oldest);
+    }
+  };
+
+  const buildInjectedContext = async (query, context = {}) => {
+    const queryHash = hashPromptPackQuery(query);
+    const sessionID = context.sessionID || activeSessionID || "unknown";
+    const surface = context.surface || injectSurface;
+    const requestKey = context.requestKey || "unknown";
+    const attemptKey = JSON.stringify([
+      sessionID,
+      requestKey,
+      surface,
+      promptCounter,
+      queryHash,
+    ]);
+    let retryCount = promptPackRetryCounts.get(attemptKey) || 0;
+    const resolveIdentity = () => promptPackIdentity({
+      sessionID,
+      requestKey: retryCount > 0
+        ? `${requestKey}:empty-retry:${retryCount}`
+        : requestKey,
+      surface,
+      promptNumber: promptCounter,
+      queryHash,
+    });
+    let identity = resolveIdentity();
+    let metadata = attemptMetadata(
+      identity,
+      context.sessionID || activeSessionID || null,
+    );
+    const runPack = async () => {
+      let packArgs = buildPackArgs({
+        query,
+        filesModified: sessionContext.filesModified,
+        injectLimit,
+        injectTokenBudget,
+        internalLedger: true,
+      });
+      let result = await runCli(packArgs, { stdinText: JSON.stringify(metadata) });
+      if (rejectsInternalLedgerFlag(result)) {
+        packArgs = packArgs.filter((arg) => arg !== "--internal-ledger");
+        result = await runCli(packArgs);
+      }
+      return { packArgs, result };
+    };
+    let { packArgs, result } = await runPack();
+    let { packText, metrics, itemCount, ledgerConflict } = parsePackOutput(result);
+    let artifactFingerprint = packText
+      ? promptPackArtifactFingerprint(result.stdout, packText)
+      : "";
+    let injectedIdentity = identity;
+    let repairFallbackUsed = false;
+    if (ledgerConflict) {
+      // A restarted plugin has no artifact cache to predict this conflict. The
+      // CLI marker is authoritative: never hand off bytes associated with the
+      // stale identity, and retry once with a fresh deterministic identity.
+      await log("warn", "codemem prompt-pack ledger conflict; retrying with fresh identity", {
+        sessionID,
+        surface,
+      });
+      advancePromptPackRetryIdentity(attemptKey);
+      retryCount = promptPackRetryCounts.get(attemptKey) || 0;
+      identity = resolveIdentity();
+      metadata = attemptMetadata(
+        identity,
+        context.sessionID || activeSessionID || null,
+      );
+      ({ packArgs, result } = await runPack());
+      ({ packText, metrics, itemCount, ledgerConflict } = parsePackOutput(result));
+      artifactFingerprint = packText
+        ? promptPackArtifactFingerprint(result.stdout, packText)
+        : "";
+      injectedIdentity = identity;
+    }
+    if (packText) {
+      const previous = successfulPromptPackArtifacts.get(attemptKey);
+      if (
+        previous?.retryCount === retryCount
+        && previous.fingerprint !== artifactFingerprint
+      ) {
+        // The in-memory fingerprint detected a changed artifact before handoff.
+        // Defensively rebuild once with a fresh identity; older CLIs do not
+        // expose the persisted conflict marker used by the restart path above.
+        // Keep the usable changed bytes as a fail-open fallback: diagnostics
+        // identity repair must never suppress context injection.
+        const fallback = {
+          packArgs,
+          result,
+          packText,
+          metrics,
+          itemCount,
+          artifactFingerprint,
+          ledgerConflict,
+        };
+        advancePromptPackRetryIdentity(attemptKey);
+        retryCount = promptPackRetryCounts.get(attemptKey) || 0;
+        identity = resolveIdentity();
+        metadata = attemptMetadata(
+          identity,
+          context.sessionID || activeSessionID || null,
+        );
+        ({ packArgs, result } = await runPack());
+        ({ packText, metrics, itemCount, ledgerConflict } = parsePackOutput(result));
+        artifactFingerprint = packText
+          ? promptPackArtifactFingerprint(result.stdout, packText)
+          : "";
+
+        if (ledgerConflict) {
+          // The repair identity is also persisted with different artifacts.
+          // Preserve the marker for the fail-closed return below; never use the
+          // stale changed bytes as the transport-failure fallback.
+          injectedIdentity = identity;
+        } else if (result?.exitCode === 0 && itemCount === 0) {
+          // A fresh identity can legitimately resolve to no results if the
+          // underlying memory set changed between rebuilds. The CLI already
+          // recorded that terminal outcome; do not misclassify it as a decode
+          // failure or fall back to stale non-empty context.
+          injectedIdentity = identity;
+        } else if (!result || result.exitCode !== 0 || !packText) {
+          const malformedSuccess = result?.exitCode === 0;
+          const exitCode = result?.exitCode ?? "unknown";
+          const stderr = redactLog(result?.stderr ? result.stderr.trim() : "");
+          const cmd = redactPackCommand(runner, runnerArgs, packArgs);
+          await logLine(
+            `inject.pack.identity_repair_failed reason=${malformedSuccess ? "malformed_success" : "command_failed"} exit=${exitCode} cmd=${cmd}` +
+              `${stderr ? ` stderr=${stderr}` : ""}`
+          );
+          await log("warn", "codemem prompt-pack identity repair failed", {
+            reason: malformedSuccess ? "malformed_success" : "command_failed",
+            exitCode,
+          });
+          void runPromptPackLedger({
+            action: "record",
+            ...metadata,
+            retrieval_status: "failed",
+            failure_code: malformedSuccess
+              ? "pack_identity_repair_failed"
+              : "pack_command_failed",
+            failure_stage: malformedSuccess ? "decode" : "transport",
+          });
+          advancePromptPackRetryIdentity(attemptKey);
+
+          ({
+            packArgs,
+            result,
+            packText,
+            metrics,
+            itemCount,
+            artifactFingerprint,
+            ledgerConflict,
+          } = fallback);
+          // The stale attempt does not represent these changed bytes, and the
+          // fresh repair attempt failed. Inject without delivery attribution
+          // rather than falsely marking either ledger attempt handed off.
+          injectedIdentity = null;
+          repairFallbackUsed = true;
+        } else {
+          injectedIdentity = identity;
+        }
+      }
+    }
     if (!result || result.exitCode !== 0) {
       const exitCode = result?.exitCode ?? "unknown";
       const stderr = redactLog(result?.stderr ? result.stderr.trim() : "");
       const stdout = redactLog(result?.stdout ? result.stdout.trim() : "");
-      const cmd = [runner, ...runnerArgs, ...packArgs].join(" ");
+      const cmd = redactPackCommand(runner, runnerArgs, packArgs);
       await logLine(
         `inject.pack.error ${exitCode} cmd=${cmd}` +
           `${stderr ? ` stderr=${stderr}` : ""}` +
           `${stdout ? ` stdout=${stdout}` : ""}`
       );
-      return "";
+      void runPromptPackLedger({
+        action: "record",
+        ...metadata,
+        retrieval_status: "failed",
+        failure_code: "pack_command_failed",
+        failure_stage: "transport",
+      });
+      advancePromptPackRetryIdentity(attemptKey);
+      return {
+        text: "",
+        attemptId: identity.attemptId,
+        requestId: identity.requestId,
+        queryHash,
+        promptNumber: promptCounter,
+      };
     }
-    const packText = parsePackText(result.stdout);
+    if (ledgerConflict) {
+      await log("warn", "codemem prompt-pack fresh identity also conflicted", {
+        sessionID,
+        surface,
+      });
+      advancePromptPackRetryIdentity(attemptKey);
+      return {
+        text: "",
+        attemptId: identity.attemptId,
+        requestId: identity.requestId,
+        queryHash,
+        promptNumber: promptCounter,
+      };
+    }
     if (!packText) {
+      if (itemCount === 0) {
+        advancePromptPackRetryIdentity(attemptKey);
+      }
       if (debug) {
         const { safeQuery, firstPromptLen, lastPromptLen, projectName, filesModifiedCount } =
           describeInjectQuery(query);
@@ -1856,27 +2365,46 @@ export const OpencodeMemPlugin = async ({
           `inject.pack.empty query_len=${query ? query.length : 0} query=${JSON.stringify(safeQuery)} first_prompt_len=${firstPromptLen} last_prompt_len=${lastPromptLen} project=${JSON.stringify(projectName)} files_modified=${filesModifiedCount} stdout=${JSON.stringify(redactLog((result.stdout || "").trim(), 240))}`
         );
       }
-      return "";
+      return {
+        text: "",
+        attemptId: identity.attemptId,
+        requestId: identity.requestId,
+        queryHash,
+        promptNumber: promptCounter,
+      };
     }
-    const metrics = parsePackMetrics(result.stdout);
     // The pack JSON exposes the item count as `total_items`; `metrics.items`
     // does not exist on that payload, so reading it would always log 0.
-    const itemCount = Number.isFinite(Number(metrics?.total_items))
-      ? Number(metrics.total_items)
-      : 0;
     const packTokens = Number.isFinite(Number(metrics?.pack_tokens))
       ? Number(metrics.pack_tokens)
       : 0;
     await logLine(
-      `inject.pack.ok source=opencode items=${itemCount} pack_tokens=${packTokens} query_len=${query ? query.length : 0}`
+      `inject.pack.ok source=opencode items=${itemCount ?? 0} pack_tokens=${packTokens} query_len=${query ? query.length : 0}`
     );
+    if (!repairFallbackUsed) {
+      rememberSuccessfulPromptPackArtifact(
+        attemptKey,
+        retryCount,
+        artifactFingerprint || promptPackArtifactFingerprint(result.stdout, packText)
+      );
+    }
     if (metrics) {
       return {
         text: `[codemem context]\n${packText}`,
         metrics,
+        attemptId: injectedIdentity?.attemptId || null,
+        requestId: injectedIdentity?.requestId || null,
+        queryHash,
+        promptNumber: promptCounter,
       };
     }
-    return { text: `[codemem context]\n${packText}` };
+    return {
+      text: `[codemem context]\n${packText}`,
+      attemptId: injectedIdentity?.attemptId || null,
+      requestId: injectedIdentity?.requestId || null,
+      queryHash,
+      promptNumber: promptCounter,
+    };
   };
 
   const stopViewer = async () => {
@@ -2160,6 +2688,9 @@ export const OpencodeMemPlugin = async ({
           buildInjectedContext,
           messageInjectionCache,
           compactionInjectionSkips,
+          confirmDelivery: confirmPromptPackDelivery,
+          recordCacheReuse: recordCachedPromptPack,
+          recordSkipped: recordSkippedPromptPack,
         });
       } catch (err) {
         await logLine(
@@ -2184,6 +2715,7 @@ export const OpencodeMemPlugin = async ({
       }
       const hookSessionID = input?.sessionID || activeSessionID;
       if (consumeCompactionInjectionSkip(compactionInjectionSkips, hookSessionID)) {
+        recordSkippedPromptPack("compaction_skipped", hookSessionID, "system");
         if (debug) {
           await logLine(
             `inject.transform.skip_compaction sessionID=${hookSessionID || "unknown"}`
@@ -2224,6 +2756,8 @@ export const OpencodeMemPlugin = async ({
             : null,
           resolveInjectQuery,
           buildInjectedContext,
+          confirmDelivery: confirmPromptPackDelivery,
+          recordSkipped: recordSkippedPromptPack,
         });
       } catch (err) {
         await logLine(
@@ -2408,6 +2942,9 @@ export const OpencodeMemPlugin = async ({
         activeSessionID = sessionID || null;
         sessionStartedAt = new Date().toISOString();
         promptCounter = 0;
+        skippedAttemptCounter = 0;
+        disabledInjectionRecorded.delete("message:unknown");
+        disabledInjectionRecorded.delete("system:unknown");
         lastPromptText = null;
         lastAssistantText = null;
         resetSessionContext();
@@ -2419,6 +2956,8 @@ export const OpencodeMemPlugin = async ({
           injectionToastShown.delete(sessionID);
           messageInjectionCache.delete(sessionID);
           compactionInjectionSkips.delete(sessionID);
+          disabledInjectionRecorded.delete(`message:${sessionID}`);
+          disabledInjectionRecorded.delete(`system:${sessionID}`);
         }
         await stopViewer();
       }
@@ -2527,6 +3066,11 @@ export const __testUtils = {
   resolveProjectName,
   buildInjectQuery,
   buildPackArgs,
+  deterministicUuid,
+  promptPackIdentity,
+  hashPromptPackQuery,
+  redactPackCommand,
+  rejectsInternalLedgerFlag,
   parsePackText,
   parsePackMetrics,
   resolveInjectSurface,

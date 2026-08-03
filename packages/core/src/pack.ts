@@ -21,6 +21,7 @@ import { projectBasename } from "./project.js";
 import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap } from "./recap-policy.js";
 import { findByFile } from "./ref-queries.js";
+import { MAX_RETRIEVAL_DIAGNOSTIC_EXPOSURES } from "./retrieval-ledger.js";
 import type { StoreHandle } from "./search.js";
 import { ownershipFilterContext, rerankResults, scoreResult, search, timeline } from "./search.js";
 import {
@@ -71,7 +72,7 @@ const RECALL_HINT_QUERY = "session summary recap remember last time previous wor
 const PACK_BASELINE_BATCH_SIZE = 25;
 const MAX_PACK_BASELINE_SCAN_ROWS = 250;
 const MAX_SEMANTIC_REVALIDATION_IDS = 200;
-const TRACE_CANDIDATE_LIMIT = 20;
+const TRACE_CANDIDATE_LIMIT = Math.min(20, MAX_RETRIEVAL_DIAGNOSTIC_EXPOSURES);
 const TRACE_PREVIEW_LIMIT = 160;
 
 // ---------------------------------------------------------------------------
@@ -576,7 +577,7 @@ function candidateReasons(
 	return reasons.length > 0 ? reasons : ["included in retrieval pool"];
 }
 
-type PackArtifacts = {
+export type PackArtifacts = {
 	response: PackResponse;
 	trace: PackTrace;
 };
@@ -1148,7 +1149,13 @@ function mergeResults(
 	limit: number,
 	query: string,
 	filters?: MemoryFilters,
-): { merged: MemoryResult[]; ftsCount: number; semanticCount: number } {
+): {
+	merged: MemoryResult[];
+	candidates: MemoryResult[];
+	semanticCandidates: MemoryResult[];
+	ftsCount: number;
+	semanticCount: number;
+} {
 	const seen = new Map<number, MemoryResult>();
 	for (const r of ftsResults) {
 		const existing = seen.get(r.id);
@@ -1161,8 +1168,15 @@ function mergeResults(
 		const existing = seen.get(r.id);
 		if (!existing || r.score > existing.score) seen.set(r.id, r);
 	}
-	const merged = rerankResults(store, [...seen.values()], limit, filters, query);
-	return { merged, ftsCount: ftsResults.length, semanticCount };
+	const candidates = [...seen.values()];
+	const merged = rerankResults(store, candidates, limit, filters, query);
+	return {
+		merged,
+		candidates,
+		semanticCandidates: scopedSemanticResults,
+		ftsCount: ftsResults.length,
+		semanticCount,
+	};
 }
 
 function rehydrateScopedCandidateResults(
@@ -1298,7 +1312,22 @@ function buildPackArtifacts(
 	let fallbackUsed = false;
 	let ftsCount = 0;
 	let semanticCount = 0;
-	let retrievalResults: MemoryResult[] = [];
+	const candidatePool: Array<{ item: MemoryResult; query: string }> = [];
+	const candidateIds = new Set<number>();
+	const captureTraceCandidates = (
+		query: string,
+		...candidateSets: readonly (readonly MemoryResult[])[]
+	): void => {
+		for (const candidates of candidateSets) {
+			for (const item of candidates) {
+				if (candidateIds.has(item.id)) continue;
+				candidateIds.add(item.id);
+				// Candidate order and diagnostics both follow the first query that exposed the row.
+				candidatePool.push({ item, query });
+			}
+		}
+	};
+	let supplementalObservationCandidates: MemoryResult[] = [];
 	let retrievalQuery = retrievalContext;
 	let results: MemoryResult[];
 	const taskMode = queryLooksLikeTasks(retrievalContext);
@@ -1310,6 +1339,7 @@ function buildPackArtifacts(
 		let taskResults = search(store, taskQuery, effectiveLimit, filters);
 		ftsCount = taskResults.length;
 		if (semanticResults && semanticResults.length > 0) {
+			captureTraceCandidates(taskQuery, taskResults);
 			const merge = mergeResults(
 				store,
 				taskResults,
@@ -1320,12 +1350,14 @@ function buildPackArtifacts(
 			);
 			taskResults = merge.merged;
 			semanticCount = merge.semanticCount;
+			captureTraceCandidates(retrievalContext, merge.semanticCandidates);
 		}
 		taskResults = mergeFileRefCandidates(store, taskResults, filters, effectiveLimit);
-		retrievalResults = [...taskResults];
+		captureTraceCandidates(taskQuery, taskResults);
 		if (taskResults.length === 0) {
 			fallbackUsed = true;
 			results = taskFallbackRecent(store, effectiveLimit, filters);
+			captureTraceCandidates(taskQuery, results);
 		} else {
 			const actionableTaskResults = taskResults.filter((item) => !isSummaryLike(item));
 			const recentTaskResults = filterRecentResults(
@@ -1350,6 +1382,7 @@ function buildPackArtifacts(
 		const topicalRecallQuery = [...queryContentTokens(recallQuery)].join(" ");
 		let recallResults = search(store, recallQuery, effectiveLimit, filters);
 		ftsCount = recallResults.length;
+		captureTraceCandidates(recallQuery, recallResults);
 		if (!preferSummary && topicalRecallQuery) {
 			const needsTopicalRetry =
 				recallResults.length === 0 ||
@@ -1358,6 +1391,7 @@ function buildPackArtifacts(
 				);
 			if (needsTopicalRetry) {
 				const topicalResults = search(store, topicalRecallQuery, effectiveLimit, filters);
+				captureTraceCandidates(topicalRecallQuery, topicalResults);
 				if (topicalResults.length > 0) {
 					recallResults = topicalResults;
 					ftsCount = topicalResults.length;
@@ -1366,9 +1400,9 @@ function buildPackArtifacts(
 			}
 		}
 		if (recallResults.length === 0) {
-			recallResults = search(store, RECALL_HINT_QUERY, effectiveLimit, filters).filter(
-				isSummaryLike,
-			);
+			const hintResults = search(store, RECALL_HINT_QUERY, effectiveLimit, filters);
+			captureTraceCandidates(RECALL_HINT_QUERY, hintResults);
+			recallResults = hintResults.filter(isSummaryLike);
 			ftsCount = recallResults.length;
 			retrievalQuery = RECALL_HINT_QUERY;
 		}
@@ -1383,9 +1417,10 @@ function buildPackArtifacts(
 			);
 			recallResults = merge.merged;
 			semanticCount = merge.semanticCount;
+			captureTraceCandidates(retrievalContext, merge.semanticCandidates);
 		}
 		recallResults = mergeFileRefCandidates(store, recallResults, filters, effectiveLimit);
-		retrievalResults = [...recallResults];
+		captureTraceCandidates(retrievalQuery, recallResults);
 		results = prioritizeRecallResults(
 			recallResults,
 			effectiveLimit,
@@ -1395,6 +1430,7 @@ function buildPackArtifacts(
 		if (results.length === 0) {
 			fallbackUsed = true;
 			results = recallFallbackRecent(store, effectiveLimit, filters);
+			captureTraceCandidates(retrievalQuery, results);
 		}
 		const anchor = preferSummary
 			? results[0]
@@ -1412,7 +1448,9 @@ function buildPackArtifacts(
 				filters ?? null,
 			);
 			if (timelineRows.length > 0) {
-				results = timelineRows.map(toMemoryResult);
+				const timelineResults = timelineRows.map(toMemoryResult);
+				captureTraceCandidates(retrievalQuery, timelineResults);
+				results = timelineResults;
 			}
 		}
 	} else {
@@ -1429,18 +1467,20 @@ function buildPackArtifacts(
 			results = prioritizeDefaultResults(merge.merged, effectiveLimit, retrievalContext);
 			ftsCount = merge.ftsCount;
 			semanticCount = merge.semanticCount;
-			retrievalResults = [...merge.merged];
+			captureTraceCandidates(retrievalContext, merge.candidates);
 		} else {
 			results = prioritizeDefaultResults(ftsResults, effectiveLimit, retrievalContext);
 			ftsCount = results.length;
-			retrievalResults = [...ftsResults];
+			captureTraceCandidates(retrievalContext, ftsResults);
 		}
 		results = mergeFileRefCandidates(store, results, filters, effectiveLimit);
+		captureTraceCandidates(retrievalContext, results);
 		results = prioritizeDefaultResults(results, effectiveLimit, retrievalContext);
 
 		if (results.length === 0) {
 			fallbackUsed = true;
 			results = store.recent(effectiveLimit, filters ?? null).map(toMemoryResult);
+			captureTraceCandidates(retrievalContext, results);
 		}
 	}
 
@@ -1474,6 +1514,9 @@ function buildPackArtifacts(
 					facts: s.facts,
 				},
 			];
+			// The fallback was evaluated for assembly even if budgeting later removes it.
+			// Candidate capture is ID-deduplicated, so surviving fallbacks are not counted twice.
+			captureTraceCandidates(retrievalQuery, summaryItems);
 		}
 	}
 
@@ -1500,7 +1543,7 @@ function buildPackArtifacts(
 			Math.max(effectiveLimit * 3, 10),
 			filters ?? null,
 		);
-		observationItems = recentObs.map((row) => ({
+		supplementalObservationCandidates = recentObs.map((row) => ({
 			id: row.id,
 			kind: row.kind,
 			title: row.title,
@@ -1515,6 +1558,7 @@ function buildPackArtifacts(
 			narrative: row.narrative ?? null,
 			facts: row.facts ?? null,
 		}));
+		observationItems = supplementalObservationCandidates;
 	}
 
 	if (observationItems.length === 0) {
@@ -1523,6 +1567,12 @@ function buildPackArtifacts(
 
 	// Sort observations by tag overlap with context, then by kind priority
 	observationItems = sortByTagOverlap(observationItems, context);
+	if (supplementalObservationCandidates.length > 0) {
+		// Trace supplemental candidates in the same deterministic order used by
+		// section assembly, before dedupe/compression/budget dispositions apply.
+		supplementalObservationCandidates = [...observationItems];
+		captureTraceCandidates(retrievalQuery, supplementalObservationCandidates);
+	}
 
 	// Exact dedup across all sections
 	const dedupeState: DedupeState = {
@@ -1854,8 +1904,12 @@ function buildPackArtifacts(
 	const compressedIdSet = new Set(compressedIds);
 	const trimmedIdSet = new Set(trimmedIds);
 	const referenceNow = new Date();
-	const tracePool = retrievalResults.slice(0, TRACE_CANDIDATE_LIMIT);
-	const traceCandidates: PackTraceCandidate[] = tracePool.map((item, index) => {
+	const traceOwnership =
+		typeof store.buildOwnershipPredicate === "function"
+			? store.buildOwnershipPredicate()
+			: (item: MemoryResult) => store.memoryOwnedBySelf(item);
+	captureTraceCandidates(retrievalQuery, selectedItems);
+	const allTraceCandidates: PackTraceCandidate[] = candidatePool.map(({ item, query }, index) => {
 		const section = traceSection(item.id, sectionsById);
 		const disposition: PackTraceDisposition = section
 			? "selected"
@@ -1866,11 +1920,11 @@ function buildPackArtifacts(
 					: trimmedIdSet.has(item.id)
 						? "trimmed"
 						: "dropped";
-		const baseScores = scoreResult(store, item, filters, retrievalQuery, referenceNow);
+		const baseScores = scoreResult(store, item, filters, query, referenceNow, traceOwnership);
 		const scoredCandidate = {
 			...baseScores,
-			text_overlap: textOverlapScore(item, retrievalQuery),
-			tag_overlap: countOverlap(item.tags_text, queryContentTokens(retrievalQuery)),
+			text_overlap: textOverlapScore(item, query),
+			tag_overlap: countOverlap(item.tags_text, queryContentTokens(query)),
 		};
 		const roleInference = inferMemoryRole({
 			kind: item.kind,
@@ -1893,6 +1947,15 @@ function buildPackArtifacts(
 			role_reason: roleInference.reason,
 		};
 	});
+	const selectedTraceCandidates = allTraceCandidates.filter(
+		(candidate) => candidate.disposition === "selected",
+	);
+	const diagnosticTraceCandidates = allTraceCandidates
+		.filter((candidate) => candidate.disposition !== "selected")
+		.slice(0, TRACE_CANDIDATE_LIMIT);
+	const traceCandidates = [...selectedTraceCandidates, ...diagnosticTraceCandidates].sort(
+		(left, right) => left.rank - right.rank,
+	);
 
 	const trace: PackTrace = {
 		version: 1,
@@ -1909,7 +1972,7 @@ function buildPackArtifacts(
 			reasons: modeReasons(context, modeLabel, filters),
 		},
 		retrieval: {
-			candidate_count: traceCandidates.length,
+			candidate_count: candidatePool.length,
 			candidates: traceCandidates,
 		},
 		assembly: {
@@ -1957,6 +2020,23 @@ export function buildMemoryPack(
 		compactDetailCount: renderOptions?.compactDetailCount,
 		compressionMode: renderOptions?.compressionMode,
 	}).response;
+}
+
+export function buildMemoryPackWithTrace(
+	store: StoreHandle,
+	context: string,
+	limit = 10,
+	tokenBudget: number | null = null,
+	filters?: MemoryFilters,
+	semanticResults?: MemoryResult[],
+	renderOptions?: PackRenderOptions,
+): PackArtifacts {
+	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semanticResults, {
+		recordUsage: true,
+		compact: renderOptions?.compact,
+		compactDetailCount: renderOptions?.compactDetailCount,
+		compressionMode: renderOptions?.compressionMode,
+	});
 }
 
 export function buildMemoryPackTrace(
@@ -2021,6 +2101,37 @@ export async function buildMemoryPackAsync(
 		compactDetailCount: renderOptions?.compactDetailCount,
 		compressionMode: renderOptions?.compressionMode,
 	}).response;
+}
+
+export async function buildMemoryPackWithTraceAsync(
+	store: StoreHandle & { db: Database },
+	context: string,
+	limit = 10,
+	tokenBudget: number | null = null,
+	filters?: MemoryFilters,
+	renderOptions?: PackRenderOptions,
+): Promise<PackArtifacts> {
+	let semResults: MemoryResult[] = [];
+	const semanticQuery = sanitizeSearchQuery(context).clean_query;
+	try {
+		const raw = await semanticSearch(
+			store.db,
+			semanticQuery,
+			limit,
+			filters ?? null,
+			ownershipFilterContext(store),
+		);
+		semResults = semanticMemoryResults(raw);
+	} catch {
+		// Semantic search failure is non-fatal — fall through to FTS-only.
+	}
+
+	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semResults, {
+		recordUsage: true,
+		compact: renderOptions?.compact,
+		compactDetailCount: renderOptions?.compactDetailCount,
+		compressionMode: renderOptions?.compressionMode,
+	});
 }
 
 export async function buildMemoryPackTraceAsync(

@@ -31,11 +31,14 @@ import {
 import { buildFilterClausesWithContext, type OwnershipFilterContext } from "./filters.js";
 import { buildMemoryDedupKey, normalizeMemoryDedupTitle } from "./memory-dedup.js";
 import { readCodememConfigFile } from "./observer-config.js";
+import type { PackArtifacts } from "./pack.js";
 import {
 	buildMemoryPack,
 	buildMemoryPackAsync,
 	buildMemoryPackTrace,
 	buildMemoryPackTraceAsync,
+	buildMemoryPackWithTrace,
+	buildMemoryPackWithTraceAsync,
 } from "./pack.js";
 import { populateMemoryRefs } from "./ref-populate.js";
 import type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
@@ -1631,6 +1634,24 @@ export class MemoryStore {
 		return buildMemoryPackTrace(this, context, limit, tokenBudget ?? null, filters);
 	}
 
+	buildMemoryPackWithTrace(
+		context: string,
+		limit?: number,
+		tokenBudget?: number | null,
+		filters?: MemoryFilters,
+		renderOptions?: PackRenderOptions,
+	): PackArtifacts {
+		return buildMemoryPackWithTrace(
+			this,
+			context,
+			limit,
+			tokenBudget ?? null,
+			filters,
+			undefined,
+			renderOptions,
+		);
+	}
+
 	/**
 	 * Build a memory pack with semantic candidate merging.
 	 *
@@ -1646,6 +1667,23 @@ export class MemoryStore {
 		renderOptions?: PackRenderOptions,
 	): Promise<PackResponse> {
 		return buildMemoryPackAsync(this, context, limit, tokenBudget ?? null, filters, renderOptions);
+	}
+
+	async buildMemoryPackWithTraceAsync(
+		context: string,
+		limit?: number,
+		tokenBudget?: number | null,
+		filters?: MemoryFilters,
+		renderOptions?: PackRenderOptions,
+	): Promise<PackArtifacts> {
+		return buildMemoryPackWithTraceAsync(
+			this,
+			context,
+			limit,
+			tokenBudget ?? null,
+			filters,
+			renderOptions,
+		);
 	}
 
 	async buildMemoryPackTraceAsync(

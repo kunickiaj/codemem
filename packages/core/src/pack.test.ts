@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect } from "./db.js";
-import { buildMemoryPack, buildMemoryPackTrace, estimateTokens } from "./pack.js";
+import {
+	buildMemoryPack,
+	buildMemoryPackTrace,
+	buildMemoryPackWithTrace,
+	estimateTokens,
+} from "./pack.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import type { MemoryResult } from "./types.js";
@@ -725,6 +730,32 @@ describe("buildMemoryPack", () => {
 		expect(afterTrace.total).toBe(afterPack.total);
 	});
 
+	it("builds the legacy response and trace in one pass with one usage event", () => {
+		store.remember(sessionId, "feature", "Combined pack item", "Combined pack context", 0.8);
+		const before = store.db
+			.prepare("SELECT COUNT(*) AS total FROM usage_events WHERE event = 'pack'")
+			.get() as { total: number };
+
+		const artifacts = buildMemoryPackWithTrace(store, "combined pack item", 10);
+		const after = store.db
+			.prepare("SELECT COUNT(*) AS total FROM usage_events WHERE event = 'pack'")
+			.get() as { total: number };
+
+		expect(artifacts.trace.version).toBe(1);
+		expect(artifacts.trace.output.pack_text).toBe(artifacts.response.pack_text);
+		expect(
+			artifacts.trace.retrieval.candidates
+				.filter((candidate) => candidate.disposition === "selected")
+				.map((candidate) => candidate.id)
+				.sort((left, right) => left - right),
+		).toEqual(
+			[...new Set(Object.values(artifacts.trace.assembly.sections).flat())].sort(
+				(left, right) => left - right,
+			),
+		);
+		expect(after.total).toBe(before.total + 1);
+	});
+
 	it("uses the effective retrieval query in task-mode trace scoring", () => {
 		store.remember(
 			sessionId,
@@ -743,14 +774,122 @@ describe("buildMemoryPack", () => {
 		expect(candidate.reasons).toContain("matched query terms");
 	});
 
-	it("keeps retrieval candidates anchored to retrieval instead of fallback assembly", () => {
+	it("keeps the original query for semantic-only task trace candidates", () => {
+		store.remember(
+			sessionId,
+			"feature",
+			"Continue quasar migration task",
+			"Continue quasar migration task follow-up details",
+			0.9,
+		);
+		const semanticId = store.remember(
+			sessionId,
+			"feature",
+			"Todo zebra candidate",
+			"Todo zebra details",
+			0.8,
+		);
+		const semanticResults: MemoryResult[] = [
+			{
+				id: semanticId,
+				kind: "feature",
+				title: "Todo zebra candidate",
+				body_text: "Todo zebra details",
+				confidence: 0.8,
+				created_at: "2026-01-01T00:00:00.000Z",
+				updated_at: "2026-01-01T00:00:00.000Z",
+				tags_text: "",
+				score: 0.9,
+				session_id: sessionId,
+				metadata: {},
+				narrative: null,
+				facts: null,
+			},
+		];
+
+		const trace = buildMemoryPackTrace(
+			store,
+			"continue quasar",
+			1,
+			null,
+			undefined,
+			semanticResults,
+		);
+		const candidate = trace.retrieval.candidates.find((item) => item.id === semanticId);
+
+		expect(trace.mode.selected).toBe("task");
+		expect(candidate?.scores.text_overlap).toBe(0);
+		expect(candidate?.reasons).not.toContain("matched query terms");
+	});
+
+	it("snapshots ownership once for trace candidate scoring", () => {
 		store.remember(sessionId, "session_summary", "Latest summary", "Summary fallback text", 0.9);
+		store.remember(sessionId, "decision", "Quasar retrieval result", "Quasar evidence", 0.8);
+		const buildOwnershipPredicate = vi.spyOn(store, "buildOwnershipPredicate");
 
-		const trace = buildMemoryPackTrace(store, "zzz_nomatch_zzz", 10);
+		const trace = buildMemoryPackTrace(store, "quasar retrieval", 10);
 
-		expect(trace.retrieval.candidate_count).toBe(0);
+		expect(trace.retrieval.candidate_count).toBe(2);
+		// One ownership snapshot belongs to search reranking and one to trace scoring.
+		expect(buildOwnershipPredicate).toHaveBeenCalledTimes(2);
+	});
+
+	it("includes fallback selections in the trace so a produced result is not no-results", () => {
+		const summaryId = store.remember(
+			sessionId,
+			"session_summary",
+			"Latest summary",
+			"Summary fallback text",
+			0.9,
+		);
+		const resultId = store.remember(
+			sessionId,
+			"decision",
+			"Quasar retrieval result",
+			"Quasar retrieval evidence",
+			0.8,
+		);
+
+		const trace = buildMemoryPackTrace(store, "quasar retrieval", 10);
+		const candidateIds = trace.retrieval.candidates.map((candidate) => candidate.id);
+
+		expect(trace.retrieval.candidate_count).toBe(2);
+		expect(candidateIds).toEqual([resultId, summaryId]);
+		expect(new Set(candidateIds).size).toBe(2);
+		expect(trace.retrieval.candidates).toEqual([
+			expect.objectContaining({ id: resultId, disposition: "selected" }),
+			expect.objectContaining({ id: summaryId, disposition: "selected" }),
+		]);
 		expect(trace.output.pack_text).toContain("## Summary");
 		expect(trace.output.pack_text).toContain("Latest summary");
+	});
+
+	it("counts fallback candidates even when token budgeting selects none", () => {
+		const summaryId = store.remember(
+			sessionId,
+			"session_summary",
+			"Latest budget fallback",
+			"A summary fallback body that cannot fit into a one-token pack budget.",
+			0.9,
+		);
+		const resultId = store.remember(
+			sessionId,
+			"feature",
+			"Nebula retrieval result",
+			"A matching result body that also cannot fit into a one-token pack budget.",
+			0.8,
+		);
+
+		const trace = buildMemoryPackTrace(store, "nebula retrieval", 10, 1);
+
+		expect(trace.retrieval.candidate_count).toBe(2);
+		expect(trace.retrieval.candidates).toEqual([
+			expect.objectContaining({ id: resultId, disposition: "trimmed" }),
+			expect.objectContaining({ id: summaryId, disposition: "trimmed" }),
+		]);
+		expect(
+			trace.retrieval.candidates.filter((candidate) => candidate.disposition === "selected"),
+		).toHaveLength(0);
 	});
 
 	it("with tokenBudget=0 skips budget enforcement (treats as no budget)", () => {

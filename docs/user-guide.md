@@ -107,6 +107,7 @@ Command/file token caching notes:
   - `CODEMEM_INJECT_LIMIT` caps memory items (default 8).
   - `CODEMEM_INJECT_TOKEN_BUDGET` caps pack size (default 800).
 - Scope revocation affects newly built packs immediately, but already-injected context in the current OpenCode session is not retroactively scrubbed; start a new session after revoking access if you need a clean prompt history.
+- Retrieval, skipped injection, current-request cache reuse, and handoff status are recorded in the local evidence ledger. Records contain bounded memory identity, diagnostic codes, and safe repository-relative working-set paths, never prompt text, pack text, memory content, or absolute paths. Reattaching historical cached context does not create attempts, and ledger failures do not block injection.
 - Reuse savings estimate discovery work versus pack read size.
 
 ## Semantic recall

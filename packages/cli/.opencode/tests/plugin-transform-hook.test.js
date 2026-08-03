@@ -4,7 +4,15 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "../../../core/src/db.js";
+import { buildMemoryPackWithTrace } from "../../../core/src/pack.js";
+import { MemoryStore } from "../../../core/src/store.js";
+import { getRetrievalAttempt } from "../../../core/src/retrieval-ledger.js";
 import { initTestSchema } from "../../../core/src/test-utils.js";
+import {
+	handleInstrumentedPackLedger,
+	handlePromptPackLedger,
+	parseInternalLedgerPayload,
+} from "../../src/commands/pack.js";
 
 const spawnMock = vi.fn();
 const execSyncMock = vi.fn(() => "test-version");
@@ -59,7 +67,10 @@ const makeProcessFromPackCommand = (args, options = {}) => {
 			const packIndex = args.indexOf("pack");
 			if (packIndex < 0) throw new Error(`pack command missing from ${args.join(" ")}`);
 			const { packCommand } = await import("../../src/commands/pack.js");
-			await packCommand.parseAsync(args.slice(packIndex + 1), { from: "user" });
+			await packCommand.parseAsync(
+				args.slice(packIndex + 1).filter((arg) => arg !== "--internal-ledger"),
+				{ from: "user" },
+			);
 
 			const out = stdout.length > 0 ? `${stdout.join("\n")}\n` : "";
 			const err = stderr.length > 0 ? `${stderr.join("\n")}\n` : "";
@@ -150,16 +161,21 @@ describe("OpenCode transform-time injection", () => {
 	});
 
 	test("appends built memory pack to the latest user message by default", async () => {
+		const ledgerPayloads = [];
 		spawnMock.mockImplementation((_command, args) => {
 			if (Array.isArray(args) && args.includes("pack")) {
-				return makeProcess({
+				const proc = makeProcess({
 					stdout: JSON.stringify({
 						pack_text: "## Summary\n[1] (feature) Titanic artifact client shipped",
 						metrics: { total_items: 1, pack_tokens: 42 },
 					}),
 				});
+				proc.stdin.write = vi.fn((value) => ledgerPayloads.push(JSON.parse(String(value))));
+				return proc;
 			}
-			return makeProcess({ stdout: "" });
+			const proc = makeProcess({ stdout: "" });
+			proc.stdin.write = vi.fn((value) => ledgerPayloads.push(JSON.parse(String(value))));
+			return proc;
 		});
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
@@ -201,7 +217,252 @@ describe("OpenCode transform-time injection", () => {
 			text: "[codemem context]\n## Summary\n[1] (feature) Titanic artifact client shipped",
 			synthetic: true,
 		});
+		expect(spawnMock).toHaveBeenCalledTimes(2);
+		expect(ledgerPayloads).toHaveLength(2);
+		expect(ledgerPayloads[0].attempt_id).toMatch(/^[0-9a-f-]{36}$/);
+		expect(ledgerPayloads[0].request_id).toMatch(/^[0-9a-f-]{36}$/);
+		expect(ledgerPayloads[0].request_id).not.toBe(ledgerPayloads[0].attempt_id);
+		expect(ledgerPayloads[1]).toMatchObject({
+			action: "delivery",
+			attempt_id: ledgerPayloads[0].attempt_id,
+			delivery_status: "handed_off",
+		});
+	});
+
+	test("retries pack without --internal-ledger when an older backend rejects the flag", async () => {
+		const packArgs = [];
+		spawnMock.mockImplementation((_command, args) => {
+			if (Array.isArray(args) && args.includes("pack")) {
+				packArgs.push(args);
+				if (args.includes("--internal-ledger")) {
+					return makeProcess({
+						stderr: "error: unknown option '--internal-ledger'",
+						exitCode: 1,
+					});
+				}
+				return makeProcess({
+					stdout: JSON.stringify({
+						pack_text: "## Summary\n[1] (feature) Legacy backend context",
+						metrics: { total_items: 1, pack_tokens: 20 },
+					}),
+				});
+			}
+			return makeProcess({ stdout: "" });
+		});
+
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const output = {
+			messages: [
+				{
+					info: { id: "user-legacy-backend", sessionID: "sess-legacy-backend", role: "user" },
+					parts: [{ type: "text", text: "legacy backend", messageID: "user-legacy-backend" }],
+				},
+			],
+		};
+
+		await hooks["experimental.chat.messages.transform"]({}, output);
+
+		expect(packArgs).toHaveLength(2);
+		expect(packArgs[0]).toContain("--internal-ledger");
+		expect(packArgs[1]).not.toContain("--internal-ledger");
+		expect(output.messages[0].parts.at(-1).text).toContain("Legacy backend context");
+	});
+
+	test("suppresses real zero-result packs without advancing delivery", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-plugin-empty-pack-"));
+		tmpDirs.push(tmpDir);
+		const dbPath = join(tmpDir, "mem.sqlite");
+		const db = connect(dbPath);
+		initTestSchema(db);
+		db.close();
+		const store = new MemoryStore(dbPath);
+		process.env.CODEMEM_DB = dbPath;
+		const attempts = [];
+		const deliveryPayloads = [];
+		const packResponses = [];
+		spawnMock.mockImplementation((_command, args) => {
+			const proc = new EventEmitter();
+			proc.stdout = new EventEmitter();
+			proc.stderr = new EventEmitter();
+			let stdinText = "";
+			proc.stdin = {
+				write: vi.fn((value) => {
+					stdinText += String(value);
+				}),
+				end: vi.fn(),
+			};
+			queueMicrotask(() => {
+				try {
+					const payload = parseInternalLedgerPayload(stdinText);
+					if (Array.isArray(args) && args.includes("pack")) {
+						attempts.push(payload);
+						const context = args[args.indexOf("pack") + 1];
+						const artifacts = buildMemoryPackWithTrace(store, context, 10);
+						packResponses.push(artifacts.response);
+						handleInstrumentedPackLedger(
+							store.db,
+							payload,
+							context,
+							undefined,
+							artifacts,
+						);
+						proc.stdout.emit("data", JSON.stringify(artifacts.response));
+					} else {
+						deliveryPayloads.push(payload);
+						handlePromptPackLedger(store.db, payload);
+					}
+					proc.emit("exit", 0);
+				} catch (error) {
+					proc.stderr.emit("data", error instanceof Error ? error.message : String(error));
+					proc.emit("exit", 1);
+				}
+			});
+			return proc;
+		});
+
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const output = {
+			messages: [
+				{
+					info: { id: "user-empty", sessionID: "sess-empty", role: "user" },
+					parts: [{ type: "text", text: "nothing here", messageID: "user-empty" }],
+				},
+			],
+		};
+
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await hooks["experimental.chat.messages.transform"]({}, output);
+
+		expect(attempts).toHaveLength(2);
+		expect(attempts[1].attempt_id).not.toBe(attempts[0].attempt_id);
+		expect(attempts[1].request_id).not.toBe(attempts[0].request_id);
+		expect(packResponses).toHaveLength(2);
+		for (const response of packResponses) {
+			expect(response.metrics.total_items).toBe(0);
+			expect(response.pack_text).toContain("## Summary");
+		}
+		expect(output.messages[0].parts).toHaveLength(1);
+		expect(deliveryPayloads).toEqual([]);
+		for (const payload of attempts) {
+			expect(getRetrievalAttempt(store.db, payload.attempt_id)).toMatchObject({
+				retrievalStatus: "no_results",
+				deliveryStatus: "not_attempted",
+				candidateCount: 0,
+				selectedCount: 0,
+				exposures: [],
+			});
+		}
+		store.close();
+	});
+
+	test("allocates fresh IDs when a failed pack transport succeeds on transform retry", async () => {
+		const packPayloads = [];
+		const ledgerPayloads = [];
+		let packCalls = 0;
+		spawnMock.mockImplementation((_command, args) => {
+			if (Array.isArray(args) && args.includes("pack")) {
+				packCalls += 1;
+				const proc = makeProcess(
+					packCalls === 1
+						? { stderr: "pack transport failed", exitCode: 1 }
+						: {
+								stdout: JSON.stringify({
+									pack_text: "## Summary\n[1] (feature) Retry succeeded",
+									metrics: { total_items: 1, pack_tokens: 12 },
+								}),
+							},
+				);
+				proc.stdin.write = vi.fn((value) => packPayloads.push(JSON.parse(String(value))));
+				return proc;
+			}
+			const proc = makeProcess({ stdout: "" });
+			proc.stdin.write = vi.fn((value) => ledgerPayloads.push(JSON.parse(String(value))));
+			return proc;
+		});
+
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const output = {
+			messages: [
+				{
+					info: { id: "user-retry", sessionID: "sess-retry", role: "user" },
+					parts: [{ type: "text", text: "retry transport", messageID: "user-retry" }],
+				},
+			],
+		};
+
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		expect(output.messages[0].parts).toHaveLength(1);
+		expect(ledgerPayloads.filter((payload) => payload.action === "delivery")).toHaveLength(0);
+		await hooks["experimental.chat.messages.transform"]({}, output);
+
+		expect(packCalls).toBe(2);
+		expect(packPayloads).toHaveLength(2);
+		expect(packPayloads[1].attempt_id).not.toBe(packPayloads[0].attempt_id);
+		expect(packPayloads[1].request_id).not.toBe(packPayloads[0].request_id);
+		expect(ledgerPayloads.filter((payload) => payload.action === "record")).toHaveLength(1);
+		expect(ledgerPayloads).toContainEqual(
+			expect.objectContaining({
+				action: "record",
+				attempt_id: packPayloads[0].attempt_id,
+				request_id: packPayloads[0].request_id,
+				retrieval_status: "failed",
+				failure_stage: "transport",
+			}),
+		);
+		expect(ledgerPayloads).toContainEqual({
+			action: "delivery",
+			attempt_id: packPayloads[1].attempt_id,
+			delivery_status: "handed_off",
+		});
+		expect(output.messages[0].parts.at(-1).text).toContain("Retry succeeded");
+	});
+
+	test("records disabled injection once per session and surface until session deletion", async () => {
+		process.env.CODEMEM_INJECT_CONTEXT = "0";
+		spawnMock.mockImplementation(() => makeProcess({ stdout: "" }));
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const output = {
+			messages: [
+				{
+					info: { id: "user-disabled", sessionID: "sess-disabled", role: "user" },
+					parts: [{ type: "text", text: "disabled", messageID: "user-disabled" }],
+				},
+			],
+		};
+
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await hooks["experimental.chat.messages.transform"]({}, output);
 		expect(spawnMock).toHaveBeenCalledTimes(1);
+
+		await hooks.event({
+			event: { type: "session.deleted", properties: { sessionID: "sess-disabled" } },
+		});
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		expect(spawnMock).toHaveBeenCalledTimes(2);
 	});
 
 	test("skips message injection for the transform immediately following compaction", async () => {
@@ -252,13 +513,14 @@ describe("OpenCode transform-time injection", () => {
 
 		await hooks["experimental.chat.messages.transform"]({ sessionID: "sess-compact" }, output);
 		expect(output.messages[0].parts).toHaveLength(1);
-		expect(spawnMock).not.toHaveBeenCalled();
+		expect(spawnMock).toHaveBeenCalledTimes(1);
 
 		await hooks["experimental.chat.messages.transform"]({ sessionID: "sess-compact" }, output);
 		expect(output.messages[0].parts.at(-1).text).toBe(
 			"[codemem context]\n## Summary\n[1] (feature) Normal turn context",
 		);
 		expect(packQueries).toEqual(["summarize this session greenroom"]);
+		expect(spawnMock).toHaveBeenCalledTimes(3);
 	});
 
 	test("keeps legacy system prompt injection when CODEMEM_INJECT_SURFACE=system", async () => {
@@ -298,6 +560,441 @@ describe("OpenCode transform-time injection", () => {
 		]);
 	});
 
+	test("gives changed legacy system rebuilds fresh identity while exact retries stay idempotent", async () => {
+		process.env.CODEMEM_INJECT_SURFACE = "system";
+		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-plugin-system-rebuild-"));
+		tmpDirs.push(tmpDir);
+		const dbPath = join(tmpDir, "mem.sqlite");
+		const db = connect(dbPath);
+		initTestSchema(db);
+		db.close();
+		const store = new MemoryStore(dbPath);
+		const sessionId = insertSession(store.db, {
+			cwd: tmpDir,
+			project: "greenroom",
+		});
+		const firstMemoryId = store.remember(
+			sessionId,
+			"feature",
+			"Legacy rebuild first",
+			"legacy rebuild evidence first",
+			0.9,
+		);
+		process.env.CODEMEM_DB = dbPath;
+		const packPayloads = [];
+
+		spawnMock.mockImplementation((_command, args) => {
+			const proc = new EventEmitter();
+			proc.stdout = new EventEmitter();
+			proc.stderr = new EventEmitter();
+			let stdinText = "";
+			proc.stdin = {
+				write: vi.fn((value) => {
+					stdinText += String(value);
+				}),
+				end: vi.fn(),
+			};
+			queueMicrotask(() => {
+				try {
+					const payload = parseInternalLedgerPayload(stdinText);
+					if (Array.isArray(args) && args.includes("pack")) {
+						packPayloads.push(payload);
+						const context = args[args.indexOf("pack") + 1];
+						const artifacts = buildMemoryPackWithTrace(store, context, 10);
+						handleInstrumentedPackLedger(
+							store.db,
+							payload,
+							context,
+							undefined,
+							artifacts,
+						);
+						proc.stdout.emit("data", JSON.stringify(artifacts.response));
+					} else {
+						handlePromptPackLedger(store.db, payload);
+					}
+					proc.emit("exit", 0);
+				} catch (error) {
+					proc.stderr.emit("data", error instanceof Error ? error.message : String(error));
+					proc.emit("exit", 1);
+				}
+			});
+			return proc;
+		});
+
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: tmpDir,
+			worktree: tmpDir,
+		});
+		const transform = hooks["experimental.chat.system.transform"];
+		const input = { sessionID: "sess-legacy-rebuild", model: {} };
+		const firstOutput = { system: [] };
+		await transform(input, firstOutput);
+
+		const secondMemoryId = store.remember(
+			sessionId,
+			"decision",
+			"Legacy rebuild second",
+			"legacy rebuild evidence second",
+			0.95,
+		);
+		const changedOutput = { system: [] };
+		await transform(input, changedOutput);
+		const exactRetryOutput = { system: [] };
+		await transform(input, exactRetryOutput);
+
+		expect(packPayloads).toHaveLength(4);
+		expect(packPayloads[1].attempt_id).toBe(packPayloads[0].attempt_id);
+		expect(packPayloads[1].request_id).toBe(packPayloads[0].request_id);
+		expect(packPayloads[2].attempt_id).not.toBe(packPayloads[0].attempt_id);
+		expect(packPayloads[2].request_id).not.toBe(packPayloads[0].request_id);
+		expect(packPayloads[3].attempt_id).toBe(packPayloads[2].attempt_id);
+		expect(packPayloads[3].request_id).toBe(packPayloads[2].request_id);
+
+		const firstAttempt = getRetrievalAttempt(store.db, packPayloads[0].attempt_id);
+		const changedAttempt = getRetrievalAttempt(store.db, packPayloads[2].attempt_id);
+		expect(
+			store.db.prepare("SELECT COUNT(*) AS count FROM retrieval_attempts").get(),
+		).toEqual({ count: 2 });
+		expect(firstAttempt).toMatchObject({
+			requestId: packPayloads[0].request_id,
+			deliveryStatus: "handed_off",
+			selectedCount: 1,
+		});
+		expect(firstAttempt?.exposures.map((exposure) => exposure.memoryId)).toEqual([
+			firstMemoryId,
+		]);
+		expect(changedAttempt).toMatchObject({
+			requestId: packPayloads[2].request_id,
+			deliveryStatus: "handed_off",
+			selectedCount: 2,
+		});
+		expect(changedAttempt?.exposures.map((exposure) => exposure.memoryId)).toEqual(
+			expect.arrayContaining([firstMemoryId, secondMemoryId]),
+		);
+		expect(
+			changedAttempt?.exposures.every(
+				(exposure) => exposure.attemptId === packPayloads[2].attempt_id,
+			),
+		).toBe(true);
+		expect(firstOutput.system.join("\n")).toContain("Legacy rebuild first");
+		expect(firstOutput.system.join("\n")).not.toContain("Legacy rebuild second");
+		expect(changedOutput.system.join("\n")).toContain("Legacy rebuild second");
+		expect(exactRetryOutput.system).toEqual(changedOutput.system);
+		store.close();
+	});
+
+	test("uses the complete ledger artifact fingerprint for legacy system retry identity", async () => {
+		process.env.CODEMEM_INJECT_SURFACE = "system";
+		const packPayloads = [];
+		const ledgerPayloads = [];
+		const fingerprints = ["1".repeat(64), "2".repeat(64), "2".repeat(64), "2".repeat(64)];
+		spawnMock.mockImplementation((_command, args) => {
+			if (Array.isArray(args) && args.includes("pack")) {
+				const fingerprint = fingerprints[packPayloads.length];
+				const proc = makeProcess({
+					stdout: JSON.stringify({
+						pack_text: "## Summary\n[1] (feature) Identical rendered text",
+						metrics: { total_items: 1, pack_tokens: 12 },
+						ledger_artifact_fingerprint: fingerprint,
+					}),
+				});
+				proc.stdin.write = vi.fn((value) => packPayloads.push(JSON.parse(String(value))));
+				return proc;
+			}
+			const proc = makeProcess({ stdout: "" });
+			proc.stdin.write = vi.fn((value) => ledgerPayloads.push(JSON.parse(String(value))));
+			return proc;
+		});
+
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const transform = hooks["experimental.chat.system.transform"];
+		const input = { sessionID: "sess-ledger-fingerprint", model: {} };
+		const firstOutput = { system: [] };
+		const changedOutput = { system: [] };
+		const exactRetryOutput = { system: [] };
+
+		await transform(input, firstOutput);
+		await transform(input, changedOutput);
+		await transform(input, exactRetryOutput);
+
+		expect(packPayloads).toHaveLength(4);
+		expect(packPayloads[1].attempt_id).toBe(packPayloads[0].attempt_id);
+		expect(packPayloads[2].attempt_id).not.toBe(packPayloads[0].attempt_id);
+		expect(packPayloads[2].request_id).not.toBe(packPayloads[0].request_id);
+		expect(packPayloads[3].attempt_id).toBe(packPayloads[2].attempt_id);
+		expect(packPayloads[3].request_id).toBe(packPayloads[2].request_id);
+		expect(changedOutput.system).toEqual(firstOutput.system);
+		expect(exactRetryOutput.system).toEqual(changedOutput.system);
+		expect(
+			ledgerPayloads
+				.filter((payload) => payload.action === "delivery")
+				.map((payload) => payload.attempt_id),
+		).toEqual([packPayloads[0].attempt_id, packPayloads[2].attempt_id, packPayloads[2].attempt_id]);
+	});
+
+	test("keeps unchanged restart retries idempotent before repairing changed artifacts", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-plugin-restart-conflict-"));
+		tmpDirs.push(tmpDir);
+		const dbPath = join(tmpDir, "mem.sqlite");
+		const db = connect(dbPath);
+		initTestSchema(db);
+		const sessionId = insertSession(db, { cwd: tmpDir, project: "greenroom" });
+		db.close();
+		const store = new MemoryStore(dbPath);
+		const firstMemoryId = store.remember(
+			sessionId,
+			"feature",
+			"Restart conflict first",
+			"restart conflict evidence first",
+			0.9,
+		);
+		process.env.CODEMEM_DB = dbPath;
+		const packPayloads = [];
+		const deliveryPayloads = [];
+
+		spawnMock.mockImplementation((_command, args) => {
+			const proc = new EventEmitter();
+			proc.stdout = new EventEmitter();
+			proc.stderr = new EventEmitter();
+			let stdinText = "";
+			proc.stdin = {
+				write: vi.fn((value) => {
+					stdinText += String(value);
+				}),
+				end: vi.fn(),
+			};
+			queueMicrotask(() => {
+				try {
+					const payload = parseInternalLedgerPayload(stdinText);
+					if (Array.isArray(args) && args.includes("pack")) {
+						packPayloads.push(payload);
+						const context = args[args.indexOf("pack") + 1];
+						const artifacts = buildMemoryPackWithTrace(store, context, 10);
+						const ledgerOutcome = handleInstrumentedPackLedger(
+							store.db,
+							payload,
+							context,
+							undefined,
+							artifacts,
+						);
+						proc.stdout.emit(
+							"data",
+							JSON.stringify({
+								...artifacts.response,
+								...(ledgerOutcome.ok ? {} : { ledger_outcome: ledgerOutcome }),
+							}),
+						);
+					} else {
+						deliveryPayloads.push(payload);
+						handlePromptPackLedger(store.db, payload);
+					}
+					proc.emit("exit", 0);
+				} catch (error) {
+					proc.stderr.emit("data", error instanceof Error ? error.message : String(error));
+					proc.emit("exit", 1);
+				}
+			});
+			return proc;
+		});
+
+		const buildPlugin = async () => {
+			vi.resetModules();
+			const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+			return OpencodeMemPlugin({
+				project: { name: "greenroom" },
+				client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+				directory: tmpDir,
+				worktree: tmpDir,
+			});
+		};
+		const messageOutput = () => ({
+			messages: [
+				{
+					info: { id: "user-restart", sessionID: "sess-restart", role: "user" },
+					parts: [{ type: "text", text: "restart conflict", messageID: "user-restart" }],
+				},
+			],
+		});
+
+		const firstHooks = await buildPlugin();
+		const firstOutput = messageOutput();
+		await firstHooks["experimental.chat.messages.transform"]({}, firstOutput);
+		vi.advanceTimersByTime(100);
+		const unchangedRestartHooks = await buildPlugin();
+		const unchangedRestartOutput = messageOutput();
+		await unchangedRestartHooks["experimental.chat.messages.transform"](
+			{},
+			unchangedRestartOutput,
+		);
+
+		expect(packPayloads).toHaveLength(2);
+		expect(packPayloads[1].attempt_id).toBe(packPayloads[0].attempt_id);
+		expect(packPayloads[1].request_id).toBe(packPayloads[0].request_id);
+		expect(packPayloads[1].started_at).not.toBe(packPayloads[0].started_at);
+		expect(store.db.prepare("SELECT COUNT(*) AS count FROM retrieval_attempts").get()).toEqual({
+			count: 1,
+		});
+		expect(unchangedRestartOutput.messages[0].parts.at(-1).text).toContain(
+			"Restart conflict first",
+		);
+
+		const secondMemoryId = store.remember(
+			sessionId,
+			"decision",
+			"Restart conflict second",
+			"restart conflict evidence second",
+			0.95,
+		);
+		const changedRestartHooks = await buildPlugin();
+		const changedRestartOutput = messageOutput();
+		await changedRestartHooks["experimental.chat.messages.transform"]({}, changedRestartOutput);
+
+		expect(packPayloads).toHaveLength(4);
+		expect(packPayloads[1].attempt_id).toBe(packPayloads[0].attempt_id);
+		expect(packPayloads[2].attempt_id).toBe(packPayloads[0].attempt_id);
+		expect(packPayloads[3].attempt_id).not.toBe(packPayloads[0].attempt_id);
+		expect(
+			deliveryPayloads
+				.filter((payload) => payload.action === "delivery")
+				.map((payload) => payload.attempt_id),
+		).toEqual([
+			packPayloads[0].attempt_id,
+			packPayloads[0].attempt_id,
+			packPayloads[3].attempt_id,
+		]);
+		expect(changedRestartOutput.messages[0].parts.at(-1).text).toContain(
+			"Restart conflict second",
+		);
+		expect(getRetrievalAttempt(store.db, packPayloads[0].attempt_id)).toMatchObject({
+			deliveryStatus: "handed_off",
+			selectedCount: 1,
+		});
+		expect(getRetrievalAttempt(store.db, packPayloads[3].attempt_id)).toMatchObject({
+			deliveryStatus: "handed_off",
+			selectedCount: 2,
+		});
+		expect(
+			getRetrievalAttempt(store.db, packPayloads[3].attempt_id)?.exposures.map((row) => row.memoryId),
+		).toEqual(expect.arrayContaining([firstMemoryId, secondMemoryId]));
+		store.close();
+	});
+
+	test.each([
+		[
+			"timeout",
+			{ stderr: "timeout", exitCode: null },
+			"command_failed",
+			"pack_command_failed",
+		],
+		[
+			"nonzero exit",
+			{ stderr: "repair transport failed", exitCode: 7 },
+			"command_failed",
+			"pack_command_failed",
+		],
+		[
+			"malformed success",
+			{ stdout: "not-json", exitCode: 0 },
+			"malformed_success",
+			"pack_identity_repair_failed",
+		],
+	])(
+		"injects the first usable changed artifact when fresh-identity repair returns %s",
+		async (_label, repairResult, expectedReason, expectedFailureCode) => {
+			process.env.CODEMEM_INJECT_SURFACE = "system";
+			const packPayloads = [];
+			const ledgerPayloads = [];
+			const appLog = vi.fn().mockResolvedValue(undefined);
+			let packCalls = 0;
+			spawnMock.mockImplementation((_command, args) => {
+				if (Array.isArray(args) && args.includes("pack")) {
+					packCalls += 1;
+					const response = packCalls === 1
+						? {
+								stdout: JSON.stringify({
+									pack_text: "## Summary\n[1] (feature) Original artifact",
+									metrics: { total_items: 1, pack_tokens: 10 },
+									ledger_artifact_fingerprint: "1".repeat(64),
+								}),
+							}
+						: packCalls === 2
+							? {
+									stdout: JSON.stringify({
+										pack_text: "## Summary\n[2] (decision) Changed artifact fallback",
+										metrics: { total_items: 1, pack_tokens: 11 },
+										ledger_artifact_fingerprint: "2".repeat(64),
+									}),
+								}
+							: repairResult;
+					const proc = makeProcess(response);
+					proc.stdin.write = vi.fn((value) => packPayloads.push(JSON.parse(String(value))));
+					return proc;
+				}
+				const proc = makeProcess({ stdout: "" });
+				proc.stdin.write = vi.fn((value) => ledgerPayloads.push(JSON.parse(String(value))));
+				return proc;
+			});
+
+			const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+			const hooks = await OpencodeMemPlugin({
+				project: { name: "greenroom" },
+				client: { app: { log: appLog }, tui: {} },
+				directory: "/tmp/greenroom",
+				worktree: "/tmp/greenroom",
+			});
+			const transform = hooks["experimental.chat.system.transform"];
+			const input = { sessionID: `sess-repair-${expectedReason}`, model: {} };
+			const firstOutput = { system: [] };
+			const changedOutput = { system: [] };
+
+			await transform(input, firstOutput);
+			await transform(input, changedOutput);
+
+			expect(packPayloads).toHaveLength(3);
+			expect(packPayloads[1].attempt_id).toBe(packPayloads[0].attempt_id);
+			expect(packPayloads[2].attempt_id).not.toBe(packPayloads[0].attempt_id);
+			expect(packPayloads[2].request_id).not.toBe(packPayloads[0].request_id);
+			expect(firstOutput.system.join("\n")).toContain("Original artifact");
+			expect(changedOutput.system).toEqual([
+				"[codemem context]\n## Summary\n[2] (decision) Changed artifact fallback",
+			]);
+			expect(
+				ledgerPayloads.filter((payload) => payload.action === "delivery"),
+			).toEqual([
+				{
+					action: "delivery",
+					attempt_id: packPayloads[0].attempt_id,
+					delivery_status: "handed_off",
+				},
+			]);
+			expect(ledgerPayloads).toContainEqual(
+				expect.objectContaining({
+					action: "record",
+					attempt_id: packPayloads[2].attempt_id,
+					request_id: packPayloads[2].request_id,
+					retrieval_status: "failed",
+					failure_code: expectedFailureCode,
+				}),
+			);
+			expect(appLog).toHaveBeenCalledWith(
+				expect.objectContaining({
+					level: "warn",
+					message: "codemem prompt-pack identity repair failed",
+					extra: expect.objectContaining({ reason: expectedReason }),
+				}),
+			);
+		},
+	);
+
 	test("skips legacy system injection for the transform immediately following compaction", async () => {
 		process.env.CODEMEM_INJECT_SURFACE = "system";
 		spawnMock.mockImplementation((_command, args) => {
@@ -331,7 +1028,7 @@ describe("OpenCode transform-time injection", () => {
 			output,
 		);
 		expect(output.system).toEqual(["base system prompt"]);
-		expect(spawnMock).not.toHaveBeenCalled();
+		expect(spawnMock).toHaveBeenCalledTimes(1);
 
 		await hooks["experimental.chat.system.transform"](
 			{ sessionID: "sess-legacy-compact", model: {} },
@@ -341,7 +1038,7 @@ describe("OpenCode transform-time injection", () => {
 			"base system prompt",
 			"[codemem context]\n## Summary\n[1] (feature) Legacy context after compaction",
 		]);
-		expect(spawnMock).toHaveBeenCalledTimes(1);
+		expect(spawnMock).toHaveBeenCalledTimes(3);
 	});
 
 	test("does not inject into system prompt in default message mode", async () => {
