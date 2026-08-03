@@ -137,6 +137,48 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_retrieval_exposures_attempt_rank
 CREATE INDEX IF NOT EXISTS idx_retrieval_exposures_memory
 	ON retrieval_exposures(memory_id);
 
+CREATE TABLE IF NOT EXISTS outcome_evidence (
+	evidence_id TEXT PRIMARY KEY NOT NULL,
+	contract_version INTEGER NOT NULL,
+	dimension TEXT NOT NULL,
+	evidence_type TEXT NOT NULL,
+	source_class TEXT NOT NULL,
+	observed_at TEXT NOT NULL,
+	producer TEXT NOT NULL,
+	producer_version TEXT NOT NULL,
+	status TEXT NOT NULL,
+	value_type TEXT,
+	value_integer INTEGER,
+	value_real REAL,
+	value_unit TEXT,
+	session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+	source TEXT,
+	stream_id TEXT,
+	source_session_id TEXT,
+	prompt_number INTEGER,
+	raw_event_start_seq INTEGER,
+	raw_event_end_seq INTEGER,
+	experiment_id TEXT,
+	experiment_cell_id TEXT,
+	window_start_at TEXT,
+	window_end_at TEXT,
+	references_json TEXT,
+	retention_until TEXT,
+	retention_pinned INTEGER NOT NULL DEFAULT 0,
+	retention_finalized_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_outcome_evidence_observed_id
+	ON outcome_evidence(observed_at, evidence_id);
+CREATE INDEX IF NOT EXISTS idx_outcome_evidence_session_observed
+	ON outcome_evidence(session_id, observed_at);
+CREATE INDEX IF NOT EXISTS idx_outcome_evidence_source_stream_observed
+	ON outcome_evidence(source, stream_id, observed_at);
+CREATE INDEX IF NOT EXISTS idx_outcome_evidence_type_observed
+	ON outcome_evidence(evidence_type, observed_at);
+CREATE INDEX IF NOT EXISTS idx_outcome_evidence_retention
+	ON outcome_evidence(retention_pinned, retention_until);
+
 -- Intentionally handwritten: Drizzle models tables/indexes but not SQLite triggers.
 -- This keeps soft deletion aligned with the FK's physical-delete SET NULL behavior.
 CREATE TRIGGER IF NOT EXISTS trg_retrieval_exposures_detach_deleted_memory
@@ -189,6 +231,7 @@ END;
 const RETRIEVAL_LEDGER_SCHEMA_OBJECTS = [
 	"retrieval_attempts",
 	"retrieval_exposures",
+	"outcome_evidence",
 	"idx_retrieval_attempts_session_started",
 	"idx_retrieval_attempts_source_stream_started",
 	"idx_retrieval_attempts_retention",
@@ -197,6 +240,11 @@ const RETRIEVAL_LEDGER_SCHEMA_OBJECTS = [
 	"idx_retrieval_attempts_request_identity",
 	"idx_retrieval_exposures_attempt_rank",
 	"idx_retrieval_exposures_memory",
+	"idx_outcome_evidence_observed_id",
+	"idx_outcome_evidence_session_observed",
+	"idx_outcome_evidence_source_stream_observed",
+	"idx_outcome_evidence_type_observed",
+	"idx_outcome_evidence_retention",
 	"trg_retrieval_exposures_detach_deleted_memory",
 	"trg_retrieval_exposures_detach_unavailable_memory",
 	"trg_retrieval_exposures_detach_reused_memory_id",
@@ -565,6 +613,7 @@ export function bootstrapSchema(db: Database): void {
 		db.exec(TEST_SCHEMA_BASE_DDL);
 		db.exec(SCHEMA_AUX_DDL);
 		ensureRetrievalAttemptColumns(db);
+		ensureOutcomeEvidenceColumns(db);
 		assertBootstrapTablesCreated(db);
 		db.pragma(`user_version = ${SCHEMA_VERSION}`);
 	}).immediate();
@@ -595,6 +644,7 @@ export function ensureRetrievalLedgerSchema(db: Database): void {
 	}
 	ensureRetrievalExposureDetachUnavailableMemoryTrigger(db);
 	ensureRetrievalAttemptColumns(db);
+	ensureOutcomeEvidenceColumns(db);
 }
 
 function ensureRetrievalExposureDetachUnavailableMemoryTrigger(db: Database): void {
@@ -652,6 +702,22 @@ function ensureRetrievalAttemptColumns(db: Database): void {
 		if (exists === undefined) {
 			db.exec(`ALTER TABLE retrieval_attempts ADD COLUMN ${name} ${definition}`);
 		}
+	}
+}
+
+function ensureOutcomeEvidenceColumns(db: Database): void {
+	if (columnExists(db, "outcome_evidence", "retention_finalized_at")) return;
+	try {
+		db.exec("ALTER TABLE outcome_evidence ADD COLUMN retention_finalized_at TEXT");
+	} catch (error) {
+		const message = error instanceof Error ? error.message.toLowerCase() : "";
+		if (
+			message.includes("duplicate column name") &&
+			columnExists(db, "outcome_evidence", "retention_finalized_at")
+		) {
+			return;
+		}
+		throw error;
 	}
 }
 

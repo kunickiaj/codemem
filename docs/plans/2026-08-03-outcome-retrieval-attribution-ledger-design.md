@@ -526,6 +526,12 @@ Evaluation rows may be pinned from ordinary retention until the study is finaliz
 - Operators may configure a shorter or longer local window from 7 to 365 days.
 - Preregistered study rows may be pinned until the study is finalized; finalizing
   the study assigns a normal expiry unless explicitly archived as an artifact.
+  Pinned outcome evidence is finalized through an idempotent evidence-specific
+  operation: it records one stable finalization timestamp, clears the pin, and
+  derives expiry from that timestamp plus the configured 7-to-365-day retention
+  window. An identical retry is a no-op; conflicting retries, unsupported
+  contracts, unpinned rows, and finalization before the evidence observation are
+  rejected.
 - Cleanup deletes expired attempt rows and cascades their exposure and assessment
   links. Orphaned evidence is deleted when no retained assessment or experiment
   references it.

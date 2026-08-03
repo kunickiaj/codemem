@@ -536,6 +536,7 @@ export {
 	writeCodememConfigFile,
 	writeWorkspaceCodememConfigFile,
 } from "./observer-config.js";
+export * from "./outcome-evidence.js";
 export type { PackArtifacts } from "./pack.js";
 export {
 	buildMemoryPack,

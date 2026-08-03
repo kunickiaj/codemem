@@ -354,6 +354,54 @@ export const retrievalExposures = sqliteTable(
 export type RetrievalExposure = typeof retrievalExposures.$inferSelect;
 export type NewRetrievalExposure = typeof retrievalExposures.$inferInsert;
 
+export const outcomeEvidence = sqliteTable(
+	"outcome_evidence",
+	{
+		evidence_id: text("evidence_id").primaryKey(),
+		contract_version: integer("contract_version").notNull(),
+		dimension: text("dimension").notNull(),
+		evidence_type: text("evidence_type").notNull(),
+		source_class: text("source_class").notNull(),
+		observed_at: text("observed_at").notNull(),
+		producer: text("producer").notNull(),
+		producer_version: text("producer_version").notNull(),
+		status: text("status").notNull(),
+		value_type: text("value_type"),
+		value_integer: integer("value_integer"),
+		value_real: real("value_real"),
+		value_unit: text("value_unit"),
+		session_id: integer("session_id").references(() => sessions.id, { onDelete: "cascade" }),
+		source: text("source"),
+		stream_id: text("stream_id"),
+		source_session_id: text("source_session_id"),
+		prompt_number: integer("prompt_number"),
+		raw_event_start_seq: integer("raw_event_start_seq"),
+		raw_event_end_seq: integer("raw_event_end_seq"),
+		experiment_id: text("experiment_id"),
+		experiment_cell_id: text("experiment_cell_id"),
+		window_start_at: text("window_start_at"),
+		window_end_at: text("window_end_at"),
+		references_json: text("references_json"),
+		retention_until: text("retention_until"),
+		retention_pinned: integer("retention_pinned").notNull().default(0),
+		retention_finalized_at: text("retention_finalized_at"),
+	},
+	(table) => [
+		index("idx_outcome_evidence_observed_id").on(table.observed_at, table.evidence_id),
+		index("idx_outcome_evidence_session_observed").on(table.session_id, table.observed_at),
+		index("idx_outcome_evidence_source_stream_observed").on(
+			table.source,
+			table.stream_id,
+			table.observed_at,
+		),
+		index("idx_outcome_evidence_type_observed").on(table.evidence_type, table.observed_at),
+		index("idx_outcome_evidence_retention").on(table.retention_pinned, table.retention_until),
+	],
+);
+
+export type OutcomeEvidence = typeof outcomeEvidence.$inferSelect;
+export type NewOutcomeEvidence = typeof outcomeEvidence.$inferInsert;
+
 export const maintenanceJobs = sqliteTable(
 	"maintenance_jobs",
 	{
@@ -1115,6 +1163,7 @@ export const schema = {
 	usageEvents,
 	retrievalAttempts,
 	retrievalExposures,
+	outcomeEvidence,
 	rawEvents,
 	rawEventSessions,
 	opencodeSessions,

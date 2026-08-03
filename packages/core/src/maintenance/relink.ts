@@ -4,7 +4,7 @@
 
 import { inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import type { Database } from "../db.js";
+import { type Database, tableExists } from "../db.js";
 import * as schema from "../schema.js";
 import type {
 	RawEventRelinkAction,
@@ -234,6 +234,8 @@ export function applyRawEventRelinkPlanWithDb(
 	let memoryRepoints = 0;
 	let sessionCompactions = 0;
 	const now = new Date().toISOString();
+	const hasRetrievalAttempts = tableExists(db, "retrieval_attempts");
+	const hasOutcomeEvidence = tableExists(db, "outcome_evidence");
 
 	const reconcile = db.transaction(() => {
 		for (const group of report.groups) {
@@ -290,6 +292,18 @@ export function applyRawEventRelinkPlanWithDb(
 				.set({ session_id: group.canonical_session_id })
 				.where(inArray(schema.sessionSummaries.session_id, redundantSessionIds))
 				.run();
+			if (hasRetrievalAttempts) {
+				d.update(schema.retrievalAttempts)
+					.set({ session_id: group.canonical_session_id })
+					.where(inArray(schema.retrievalAttempts.session_id, redundantSessionIds))
+					.run();
+			}
+			if (hasOutcomeEvidence) {
+				d.update(schema.outcomeEvidence)
+					.set({ session_id: group.canonical_session_id })
+					.where(inArray(schema.outcomeEvidence.session_id, redundantSessionIds))
+					.run();
+			}
 			sessionCompactions += Number(
 				d.delete(schema.sessions).where(inArray(schema.sessions.id, redundantSessionIds)).run()
 					.changes ?? 0,

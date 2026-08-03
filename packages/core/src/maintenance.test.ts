@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
 	aiBackfillStructuredContent,
 	applyRawEventRelinkPlan,
+	applyRawEventRelinkPlanWithDb,
 	backfillMemoryDedupKeys,
 	backfillNarrativeFromBody,
 	backfillTagsText,
@@ -983,6 +984,22 @@ describe("maintenance", { timeout: 15_000 }, () => {
 					id, session_id, project, prompt_text, created_at, created_at_epoch, metadata_json, import_key
 				) VALUES
 				  (1, 2, 'codemem', 'repair me', '2026-03-01T10:12:30Z', 1740823950, '{}', 'prompt-1');
+				INSERT INTO retrieval_attempts(
+					attempt_id, contract_version, surface, trigger, started_at, retrieval_status,
+					delivery_status, candidate_count, selected_count, persisted_candidate_count,
+					recorder_version, session_id, retention_until, retention_pinned
+				) VALUES
+				  ('attempt-canonical', 1, 'mcp_search', 'automatic', '2026-03-01T10:05:00.000Z', 'succeeded', 'handed_off', 1, 1, 1, 'test', 1, '2026-03-31T10:05:00.000Z', 0),
+				  ('attempt-duplicate', 1, 'mcp_search', 'automatic', '2026-03-01T10:12:30.000Z', 'succeeded', 'handed_off', 1, 1, 1, 'test', 2, '2026-03-31T10:12:30.000Z', 0);
+				INSERT INTO retrieval_exposures(
+					attempt_id, rank, disposition, handoff_status
+				) VALUES ('attempt-duplicate', 1, 'selected', 'handed_off');
+				INSERT INTO outcome_evidence(
+					evidence_id, contract_version, dimension, evidence_type, source_class, observed_at,
+					producer, producer_version, status, session_id, references_json, retention_until, retention_pinned
+				) VALUES
+				  ('018f2db4-f9d3-7a22-8d18-000000000001', 1, 'quality', 'quality.test_result', 'observed', '2026-03-01T10:05:00.000Z', 'test', 'v1', 'pass', 1, '{"check_id":"canonical-check"}', '2026-03-31T10:05:00.000Z', 0),
+				  ('018f2db4-f9d3-7a22-8d18-000000000002', 1, 'quality', 'quality.test_result', 'observed', '2026-03-01T10:12:30.000Z', 'test', 'v1', 'fail', 2, '{"check_id":"duplicate-check"}', '2026-03-31T10:12:30.000Z', 0);
 			`);
 		} finally {
 			db.close();
@@ -1030,6 +1047,199 @@ describe("maintenance", { timeout: 15_000 }, () => {
 				.prepare("SELECT session_id FROM user_prompts WHERE id = 1")
 				.get() as { session_id: number };
 			expect(userPrompt.session_id).toBe(1);
+
+			const attempts = verify
+				.prepare("SELECT attempt_id, session_id FROM retrieval_attempts ORDER BY attempt_id")
+				.all();
+			expect(attempts).toEqual([
+				{ attempt_id: "attempt-canonical", session_id: 1 },
+				{ attempt_id: "attempt-duplicate", session_id: 1 },
+			]);
+			expect(verify.prepare("SELECT count(*) FROM retrieval_exposures").pluck().get()).toBe(1);
+
+			const evidence = verify
+				.prepare(
+					"SELECT evidence_id, status, session_id FROM outcome_evidence ORDER BY evidence_id",
+				)
+				.all();
+			expect(evidence).toEqual([
+				{
+					evidence_id: "018f2db4-f9d3-7a22-8d18-000000000001",
+					status: "pass",
+					session_id: 1,
+				},
+				{
+					evidence_id: "018f2db4-f9d3-7a22-8d18-000000000002",
+					status: "fail",
+					session_id: 1,
+				},
+			]);
+		} finally {
+			verify.close();
+		}
+	}, 15_000);
+
+	it("compacts duplicate sessions when optional ledger tables are absent or partial", () => {
+		for (const scenario of ["both-absent", "retrieval-only", "outcome-only"] as const) {
+			const db = new Database(":memory:");
+			try {
+				initTestSchema(db);
+				// Upstack attribution schemas reference outcome evidence. Remove optional dependents
+				// first so this fixture can still model partial ledger installations.
+				db.exec(`
+					DROP TABLE IF EXISTS attribution_assessment_evidence;
+					DROP TABLE IF EXISTS attribution_assessments;
+				`);
+				db.exec(`
+					INSERT INTO sessions(id, started_at, project, tool_version, metadata_json) VALUES
+					  (1, '2026-03-01T10:00:00Z', 'codemem', 'test', '{"session_context":{"source":"opencode","flusher":"raw_events","streamId":"ses-${scenario}"}}'),
+					  (2, '2026-03-01T10:12:00Z', 'codemem', 'test', '{"session_context":{"source":"opencode","flusher":"raw_events","streamId":"ses-${scenario}"}}');
+					INSERT INTO memory_items(
+						id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
+					) VALUES (1, 2, 'decision', 'Optional ledger', 'body', 1, '2026-03-01T10:13:00Z', '2026-03-01T10:13:00Z', '{}', 'memory-${scenario}');
+					INSERT INTO user_prompts(
+						id, session_id, project, prompt_text, created_at, created_at_epoch, metadata_json, import_key
+					) VALUES (1, 2, 'codemem', 'compact me', '2026-03-01T10:12:30Z', 1740823950, '{}', 'prompt-${scenario}');
+				`);
+
+				if (scenario === "retrieval-only") {
+					db.exec(`
+						INSERT INTO retrieval_attempts(
+							attempt_id, contract_version, surface, trigger, started_at, retrieval_status,
+							delivery_status, candidate_count, selected_count, persisted_candidate_count,
+							recorder_version, session_id, retention_until, retention_pinned
+						) VALUES ('attempt-partial', 1, 'mcp_search', 'automatic', '2026-03-01T10:12:30.000Z', 'no_results', 'not_attempted', 0, 0, 0, 'test', 2, '2026-03-31T10:12:30.000Z', 0);
+						DROP TABLE outcome_evidence;
+					`);
+				} else if (scenario === "outcome-only") {
+					db.exec(`
+						INSERT INTO outcome_evidence(
+							evidence_id, contract_version, dimension, evidence_type, source_class, observed_at,
+							producer, producer_version, status, session_id, references_json, retention_until, retention_pinned
+						) VALUES ('018f2db4-f9d3-7a22-8d18-000000000004', 1, 'quality', 'quality.test_result', 'observed', '2026-03-01T10:12:30.000Z', 'test', 'v1', 'pass', 2, '{"check_id":"partial-check"}', '2026-03-31T10:12:30.000Z', 0);
+						DROP TABLE retrieval_exposures;
+						DROP TABLE retrieval_attempts;
+					`);
+				} else {
+					db.exec(`
+						DROP TABLE outcome_evidence;
+						DROP TABLE retrieval_exposures;
+						DROP TABLE retrieval_attempts;
+					`);
+				}
+
+				const result = applyRawEventRelinkPlanWithDb(db, { limit: 10 });
+				expect(result.totals.session_compactions).toBe(1);
+				expect(db.prepare("SELECT id FROM sessions ORDER BY id").all()).toEqual([{ id: 1 }]);
+				expect(db.prepare("SELECT session_id FROM memory_items WHERE id = 1").pluck().get()).toBe(
+					1,
+				);
+				expect(db.prepare("SELECT session_id FROM user_prompts WHERE id = 1").pluck().get()).toBe(
+					1,
+				);
+				expect(
+					db
+						.prepare("SELECT session_id FROM opencode_sessions WHERE stream_id = ?")
+						.pluck()
+						.get(`ses-${scenario}`),
+				).toBe(1);
+
+				const tables = db
+					.prepare(
+						"SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('retrieval_attempts', 'outcome_evidence') ORDER BY name",
+					)
+					.pluck()
+					.all();
+				expect(tables).toEqual(
+					scenario === "retrieval-only"
+						? ["retrieval_attempts"]
+						: scenario === "outcome-only"
+							? ["outcome_evidence"]
+							: [],
+				);
+				if (scenario === "retrieval-only") {
+					expect(
+						db
+							.prepare("SELECT session_id FROM retrieval_attempts WHERE attempt_id = ?")
+							.pluck()
+							.get("attempt-partial"),
+					).toBe(1);
+				}
+				if (scenario === "outcome-only") {
+					expect(
+						db
+							.prepare("SELECT session_id FROM outcome_evidence WHERE evidence_id = ?")
+							.pluck()
+							.get("018f2db4-f9d3-7a22-8d18-000000000004"),
+					).toBe(1);
+				}
+			} finally {
+				db.close();
+			}
+		}
+	}, 15_000);
+
+	it("rolls back evidence relinks and neighboring changes when compaction fails", () => {
+		const dbPath = createDbPath("raw-event-relink-evidence-rollback");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, project, tool_version, metadata_json) VALUES
+				  (1, '2026-03-01T10:00:00Z', 'codemem', 'test', '{"session_context":{"source":"opencode","flusher":"raw_events","streamId":"ses-rollback"}}'),
+				  (2, '2026-03-01T10:12:00Z', 'codemem', 'test', '{"session_context":{"source":"opencode","flusher":"raw_events","streamId":"ses-rollback"}}');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
+				) VALUES (1, 2, 'decision', 'Rollback', 'body', 1, '2026-03-01T10:13:00Z', '2026-03-01T10:13:00Z', '{}', 'rollback-memory');
+				INSERT INTO user_prompts(
+					id, session_id, project, prompt_text, created_at, created_at_epoch, metadata_json, import_key
+				) VALUES (1, 2, 'codemem', 'rollback me', '2026-03-01T10:12:30Z', 1740823950, '{}', 'rollback-prompt');
+				INSERT INTO retrieval_attempts(
+					attempt_id, contract_version, surface, trigger, started_at, retrieval_status,
+					delivery_status, candidate_count, selected_count, persisted_candidate_count,
+					recorder_version, session_id, retention_until, retention_pinned
+				) VALUES ('attempt-rollback', 1, 'mcp_search', 'automatic', '2026-03-01T10:12:30.000Z', 'no_results', 'not_attempted', 0, 0, 0, 'test', 2, '2026-03-31T10:12:30.000Z', 0);
+				INSERT INTO outcome_evidence(
+					evidence_id, contract_version, dimension, evidence_type, source_class, observed_at,
+					producer, producer_version, status, session_id, references_json, retention_until, retention_pinned
+				) VALUES ('018f2db4-f9d3-7a22-8d18-000000000003', 1, 'quality', 'quality.test_result', 'observed', '2026-03-01T10:12:30.000Z', 'test', 'v1', 'pass', 2, '{"check_id":"rollback-check"}', '2026-03-31T10:12:30.000Z', 0);
+				CREATE TRIGGER fail_duplicate_session_delete
+				BEFORE DELETE ON sessions WHEN OLD.id = 2
+				BEGIN SELECT RAISE(ABORT, 'injected compaction failure'); END;
+			`);
+		} finally {
+			db.close();
+		}
+
+		expect(() => applyRawEventRelinkPlan(dbPath, { limit: 10 })).toThrow(
+			/injected compaction failure/,
+		);
+
+		const verify = new Database(dbPath, { readonly: true });
+		try {
+			expect(verify.prepare("SELECT id FROM sessions ORDER BY id").all()).toEqual([
+				{ id: 1 },
+				{ id: 2 },
+			]);
+			expect(verify.prepare("SELECT session_id FROM memory_items WHERE id = 1").pluck().get()).toBe(
+				2,
+			);
+			expect(verify.prepare("SELECT session_id FROM user_prompts WHERE id = 1").pluck().get()).toBe(
+				2,
+			);
+			expect(
+				verify
+					.prepare("SELECT session_id FROM retrieval_attempts WHERE attempt_id = ?")
+					.pluck()
+					.get("attempt-rollback"),
+			).toBe(2);
+			expect(
+				verify
+					.prepare("SELECT session_id FROM outcome_evidence WHERE evidence_id = ?")
+					.pluck()
+					.get("018f2db4-f9d3-7a22-8d18-000000000003"),
+			).toBe(2);
+			expect(verify.prepare("SELECT count(*) FROM opencode_sessions").pluck().get()).toBe(0);
 		} finally {
 			verify.close();
 		}
