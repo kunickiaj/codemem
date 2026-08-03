@@ -255,6 +255,105 @@ export const usageEvents = sqliteTable(
 export type UsageEvent = typeof usageEvents.$inferSelect;
 export type NewUsageEvent = typeof usageEvents.$inferInsert;
 
+export const retrievalAttempts = sqliteTable(
+	"retrieval_attempts",
+	{
+		attempt_id: text("attempt_id").primaryKey(),
+		contract_version: integer("contract_version").notNull(),
+		surface: text("surface").notNull(),
+		trigger: text("trigger").notNull(),
+		started_at: text("started_at").notNull(),
+		completed_at: text("completed_at"),
+		retrieval_status: text("retrieval_status").notNull(),
+		delivery_status: text("delivery_status").notNull(),
+		candidate_count: integer("candidate_count").notNull(),
+		selected_count: integer("selected_count").notNull(),
+		persisted_candidate_count: integer("persisted_candidate_count").notNull(),
+		recorder_version: text("recorder_version").notNull(),
+		session_id: integer("session_id").references(() => sessions.id, { onDelete: "cascade" }),
+		source: text("source"),
+		stream_id: text("stream_id"),
+		source_session_id: text("source_session_id"),
+		prompt_number: integer("prompt_number"),
+		request_id: text("request_id"),
+		raw_event_start_seq: integer("raw_event_start_seq"),
+		raw_event_end_seq: integer("raw_event_end_seq"),
+		experiment_id: text("experiment_id"),
+		experiment_cell_id: text("experiment_cell_id"),
+		evaluation_checkout_id: text("evaluation_checkout_id"),
+		evaluation_fixture_id: text("evaluation_fixture_id"),
+		evaluation_seed: integer("evaluation_seed"),
+		latency_ms: integer("latency_ms"),
+		project: text("project"),
+		scope_id: text("scope_id"),
+		mode: text("mode"),
+		limit_requested: integer("limit_requested"),
+		token_budget: integer("token_budget"),
+		output_tokens: integer("output_tokens"),
+		working_set_file_count: integer("working_set_file_count"),
+		working_set_files_json: text("working_set_files_json"),
+		query_hash_sha256: text("query_hash_sha256"),
+		query_char_count: integer("query_char_count"),
+		query_token_estimate: integer("query_token_estimate"),
+		filter_summary_json: text("filter_summary_json"),
+		failure_code: text("failure_code"),
+		failure_stage: text("failure_stage"),
+		trace_version: integer("trace_version"),
+		retention_until: text("retention_until"),
+		retention_pinned: integer("retention_pinned").notNull().default(0),
+		retention_finalized_at: text("retention_finalized_at"),
+	},
+	(table) => [
+		index("idx_retrieval_attempts_session_started").on(table.session_id, table.started_at),
+		index("idx_retrieval_attempts_source_stream_started").on(
+			table.source,
+			table.stream_id,
+			table.started_at,
+		),
+		index("idx_retrieval_attempts_retention").on(table.retention_pinned, table.retention_until),
+		index("idx_retrieval_attempts_started").on(table.started_at, table.attempt_id),
+		index("idx_retrieval_attempts_surface_started").on(table.surface, table.started_at),
+		uniqueIndex("idx_retrieval_attempts_request_identity")
+			.on(table.source, table.surface, table.request_id)
+			.where(sql`request_id IS NOT NULL`),
+	],
+);
+
+export type RetrievalAttempt = typeof retrievalAttempts.$inferSelect;
+export type NewRetrievalAttempt = typeof retrievalAttempts.$inferInsert;
+
+export const retrievalExposures = sqliteTable(
+	"retrieval_exposures",
+	{
+		exposure_id: integer("exposure_id").primaryKey({ autoIncrement: true }),
+		attempt_id: text("attempt_id")
+			.notNull()
+			.references(() => retrievalAttempts.attempt_id, { onDelete: "cascade" }),
+		memory_id: integer("memory_id").references(() => memoryItems.id, { onDelete: "set null" }),
+		memory_import_key: text("memory_import_key"),
+		origin_device_id: text("origin_device_id"),
+		rank: integer("rank").notNull(),
+		disposition: text("disposition").notNull(),
+		section: text("section"),
+		handoff_status: text("handoff_status").notNull(),
+		memory_rev: integer("memory_rev"),
+		memory_updated_at: text("memory_updated_at"),
+		memory_scope_id: text("memory_scope_id"),
+		memory_kind: text("memory_kind"),
+		memory_active: integer("memory_active"),
+		memory_deleted_at: text("memory_deleted_at"),
+		score_summary_json: text("score_summary_json"),
+		reason_codes_json: text("reason_codes_json"),
+	},
+	(table) => [
+		uniqueIndex("idx_retrieval_exposures_attempt_rank").on(table.attempt_id, table.rank),
+		index("idx_retrieval_exposures_memory").on(table.memory_id),
+	],
+);
+
+export type RetrievalExposure = typeof retrievalExposures.$inferSelect;
+export type NewRetrievalExposure = typeof retrievalExposures.$inferInsert;
+
 export const maintenanceJobs = sqliteTable(
 	"maintenance_jobs",
 	{
@@ -1014,6 +1113,8 @@ export const schema = {
 	memoryFileRefs,
 	memoryConceptRefs,
 	usageEvents,
+	retrievalAttempts,
+	retrievalExposures,
 	rawEvents,
 	rawEventSessions,
 	opencodeSessions,

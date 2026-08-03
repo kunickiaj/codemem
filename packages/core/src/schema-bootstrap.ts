@@ -8,7 +8,203 @@ import {
 } from "./db.js";
 import { TEST_SCHEMA_BASE_DDL } from "./test-schema.generated.js";
 
+const RETRIEVAL_EXPOSURE_DETACH_UNAVAILABLE_MEMORY_DDL = `
+CREATE TRIGGER IF NOT EXISTS trg_retrieval_exposures_detach_unavailable_memory
+AFTER INSERT ON retrieval_exposures
+WHEN NEW.memory_id IS NOT NULL AND NOT EXISTS (
+	SELECT 1 FROM memory_items
+	WHERE memory_items.id = NEW.memory_id
+	  AND memory_items.active != 0
+	  AND memory_items.deleted_at IS NULL
+	  AND (
+		(
+			NEW.memory_import_key IS NOT NULL
+			AND TRIM(NEW.memory_import_key) != ''
+			AND import_key IS NOT NULL
+			AND TRIM(import_key) != ''
+			AND NEW.memory_import_key = import_key
+			AND (
+				NEW.origin_device_id IS NULL
+				OR TRIM(NEW.origin_device_id) = ''
+				OR (
+					origin_device_id IS NOT NULL
+					AND TRIM(origin_device_id) != ''
+					AND NEW.origin_device_id = origin_device_id
+				)
+			)
+		)
+		OR (
+			(NEW.memory_import_key IS NULL OR TRIM(NEW.memory_import_key) = '')
+			AND NEW.memory_rev = rev
+			AND julianday(NEW.memory_updated_at) IS NOT NULL
+			AND julianday(updated_at) IS NOT NULL
+			AND julianday(NEW.memory_updated_at) = julianday(updated_at)
+			AND NEW.memory_scope_id IS scope_id
+			AND NEW.memory_kind = kind
+			AND NEW.memory_active = active
+			AND NEW.memory_deleted_at IS deleted_at
+		)
+	  )
+)
+BEGIN
+	UPDATE retrieval_exposures SET memory_id = NULL WHERE exposure_id = NEW.exposure_id;
+END;
+`;
+
+const RETRIEVAL_LEDGER_DDL = `
+CREATE TABLE IF NOT EXISTS retrieval_attempts (
+	attempt_id TEXT PRIMARY KEY NOT NULL,
+	contract_version INTEGER NOT NULL,
+	surface TEXT NOT NULL,
+	trigger TEXT NOT NULL,
+	started_at TEXT NOT NULL,
+	completed_at TEXT,
+	retrieval_status TEXT NOT NULL,
+	delivery_status TEXT NOT NULL,
+	candidate_count INTEGER NOT NULL,
+	selected_count INTEGER NOT NULL,
+	persisted_candidate_count INTEGER NOT NULL,
+	recorder_version TEXT NOT NULL,
+	session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+	source TEXT,
+	stream_id TEXT,
+	source_session_id TEXT,
+	prompt_number INTEGER,
+	request_id TEXT,
+	raw_event_start_seq INTEGER,
+	raw_event_end_seq INTEGER,
+	experiment_id TEXT,
+	experiment_cell_id TEXT,
+	evaluation_checkout_id TEXT,
+	evaluation_fixture_id TEXT,
+	evaluation_seed INTEGER,
+	latency_ms INTEGER,
+	project TEXT,
+	scope_id TEXT,
+	mode TEXT,
+	limit_requested INTEGER,
+	token_budget INTEGER,
+	output_tokens INTEGER,
+	working_set_file_count INTEGER,
+	working_set_files_json TEXT,
+	query_hash_sha256 TEXT,
+	query_char_count INTEGER,
+	query_token_estimate INTEGER,
+	filter_summary_json TEXT,
+	failure_code TEXT,
+	failure_stage TEXT,
+	trace_version INTEGER,
+	retention_until TEXT,
+	retention_pinned INTEGER NOT NULL DEFAULT 0,
+	retention_finalized_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_retrieval_attempts_session_started
+	ON retrieval_attempts(session_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_retrieval_attempts_source_stream_started
+	ON retrieval_attempts(source, stream_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_retrieval_attempts_retention
+	ON retrieval_attempts(retention_pinned, retention_until);
+CREATE INDEX IF NOT EXISTS idx_retrieval_attempts_started
+	ON retrieval_attempts(started_at, attempt_id);
+CREATE INDEX IF NOT EXISTS idx_retrieval_attempts_surface_started
+	ON retrieval_attempts(surface, started_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_retrieval_attempts_request_identity
+	ON retrieval_attempts(source, surface, request_id) WHERE request_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS retrieval_exposures (
+	exposure_id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+	attempt_id TEXT NOT NULL REFERENCES retrieval_attempts(attempt_id) ON DELETE CASCADE,
+	memory_id INTEGER REFERENCES memory_items(id) ON DELETE SET NULL,
+	memory_import_key TEXT,
+	origin_device_id TEXT,
+	rank INTEGER NOT NULL,
+	disposition TEXT NOT NULL,
+	section TEXT,
+	handoff_status TEXT NOT NULL,
+	memory_rev INTEGER,
+	memory_updated_at TEXT,
+	memory_scope_id TEXT,
+	memory_kind TEXT,
+	memory_active INTEGER,
+	memory_deleted_at TEXT,
+	score_summary_json TEXT,
+	reason_codes_json TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_retrieval_exposures_attempt_rank
+	ON retrieval_exposures(attempt_id, rank);
+CREATE INDEX IF NOT EXISTS idx_retrieval_exposures_memory
+	ON retrieval_exposures(memory_id);
+
+-- Intentionally handwritten: Drizzle models tables/indexes but not SQLite triggers.
+-- This keeps soft deletion aligned with the FK's physical-delete SET NULL behavior.
+CREATE TRIGGER IF NOT EXISTS trg_retrieval_exposures_detach_deleted_memory
+AFTER UPDATE OF active, deleted_at ON memory_items
+WHEN NEW.active = 0 OR NEW.deleted_at IS NOT NULL
+BEGIN
+	UPDATE retrieval_exposures SET memory_id = NULL WHERE memory_id = NEW.id;
+END;
+
+-- Foreign keys are checked when the INSERT statement finishes, after AFTER
+-- triggers run, so unavailable or identity-mismatched references can be detached
+-- without losing the immutable exposure snapshot.
+-- Keyless/privacy-redacted linkage requires every memory snapshot field to match.
+-- This narrows, but cannot eliminate, the risk of linking a reused numeric ID.
+${RETRIEVAL_EXPOSURE_DETACH_UNAVAILABLE_MEMORY_DDL}
+
+-- Defensive identity check for callers that disable foreign-key enforcement
+-- while replacing memory rows. Normal writable connections keep foreign keys on,
+-- so ON DELETE SET NULL detaches the link before an ID can be reused.
+-- There is intentionally no keyless fallback here: replacement cannot prove
+-- continuity with a previously linked memory.
+CREATE TRIGGER IF NOT EXISTS trg_retrieval_exposures_detach_reused_memory_id
+AFTER INSERT ON memory_items
+WHEN EXISTS (SELECT 1 FROM retrieval_exposures WHERE memory_id = NEW.id)
+BEGIN
+	UPDATE retrieval_exposures
+	SET memory_id = NULL
+	WHERE memory_id = NEW.id
+	  AND (
+		COALESCE(NEW.active, 0) = 0
+		OR NEW.deleted_at IS NOT NULL
+		OR memory_import_key IS NULL
+		OR TRIM(memory_import_key) = ''
+		OR NEW.import_key IS NULL
+		OR TRIM(NEW.import_key) = ''
+		OR memory_import_key != NEW.import_key
+		OR (
+			origin_device_id IS NOT NULL
+			AND TRIM(origin_device_id) != ''
+			AND (
+				NEW.origin_device_id IS NULL
+				OR TRIM(NEW.origin_device_id) = ''
+				OR origin_device_id != NEW.origin_device_id
+			)
+		)
+	  );
+END;
+`;
+
+const RETRIEVAL_LEDGER_SCHEMA_OBJECTS = [
+	"retrieval_attempts",
+	"retrieval_exposures",
+	"idx_retrieval_attempts_session_started",
+	"idx_retrieval_attempts_source_stream_started",
+	"idx_retrieval_attempts_retention",
+	"idx_retrieval_attempts_started",
+	"idx_retrieval_attempts_surface_started",
+	"idx_retrieval_attempts_request_identity",
+	"idx_retrieval_exposures_attempt_rank",
+	"idx_retrieval_exposures_memory",
+	"trg_retrieval_exposures_detach_deleted_memory",
+	"trg_retrieval_exposures_detach_unavailable_memory",
+	"trg_retrieval_exposures_detach_reused_memory_id",
+] as const;
+
 const SCHEMA_AUX_DDL = `
+${RETRIEVAL_LEDGER_DDL}
+
 CREATE INDEX IF NOT EXISTS idx_sync_peers_actor_id ON sync_peers(actor_id);
 
 CREATE TABLE IF NOT EXISTS coordinator_enrollment_reconciliation_issues (
@@ -368,6 +564,7 @@ export function bootstrapSchema(db: Database): void {
 	db.transaction(() => {
 		db.exec(TEST_SCHEMA_BASE_DDL);
 		db.exec(SCHEMA_AUX_DDL);
+		ensureRetrievalAttemptColumns(db);
 		assertBootstrapTablesCreated(db);
 		db.pragma(`user_version = ${SCHEMA_VERSION}`);
 	}).immediate();
@@ -376,6 +573,86 @@ export function bootstrapSchema(db: Database): void {
 	// bootstrap transaction so an unavailable extension cannot produce a
 	// half-successful core schema, and cannot prevent first-run stats/setup.
 	ensureVectorSchema(db);
+}
+
+/** Add the local-only retrieval ledger to an already initialized database. */
+export function ensureRetrievalLedgerSchema(db: Database): void {
+	if (!tableExists(db, "sessions") || !tableExists(db, "memory_items")) return;
+	ensureMemoryItemsDeletedAtColumn(db);
+	if (
+		!columnExists(db, "memory_items", "import_key") ||
+		!columnExists(db, "memory_items", "origin_device_id")
+	) {
+		return;
+	}
+	const placeholders = RETRIEVAL_LEDGER_SCHEMA_OBJECTS.map(() => "?").join(", ");
+	const row = db
+		.prepare(`SELECT COUNT(*) AS count FROM sqlite_master WHERE name IN (${placeholders})`)
+		.get(...RETRIEVAL_LEDGER_SCHEMA_OBJECTS) as { count?: number } | undefined;
+	if (row?.count !== RETRIEVAL_LEDGER_SCHEMA_OBJECTS.length) {
+		// Replay the idempotent DDL only after detecting an interrupted migration.
+		db.exec(RETRIEVAL_LEDGER_DDL);
+	}
+	ensureRetrievalExposureDetachUnavailableMemoryTrigger(db);
+	ensureRetrievalAttemptColumns(db);
+}
+
+function ensureRetrievalExposureDetachUnavailableMemoryTrigger(db: Database): void {
+	const sql = db
+		.prepare(
+			"SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_retrieval_exposures_detach_unavailable_memory'",
+		)
+		.pluck()
+		.get() as string | undefined;
+	if (
+		sql?.includes("NEW.memory_import_key IS NOT NULL") &&
+		sql.includes("NEW.memory_import_key = import_key") &&
+		sql.includes("NEW.origin_device_id = origin_device_id") &&
+		sql.includes("NEW.memory_rev = rev") &&
+		sql.includes("julianday(NEW.memory_updated_at) = julianday(updated_at)")
+	) {
+		return;
+	}
+	db.transaction(() => {
+		db.exec(`
+			DROP TRIGGER IF EXISTS trg_retrieval_exposures_detach_unavailable_memory;
+			${RETRIEVAL_EXPOSURE_DETACH_UNAVAILABLE_MEMORY_DDL}
+		`);
+	}).immediate();
+}
+
+function ensureMemoryItemsDeletedAtColumn(db: Database): void {
+	if (columnExists(db, "memory_items", "deleted_at")) return;
+	try {
+		// Existing rows become NULL, preserving active rows while leaving legacy
+		// active=0 rows unavailable without inventing a deletion timestamp.
+		db.exec("ALTER TABLE memory_items ADD COLUMN deleted_at TEXT");
+	} catch (error) {
+		const message = error instanceof Error ? error.message.toLowerCase() : "";
+		if (
+			message.includes("duplicate column name") &&
+			columnExists(db, "memory_items", "deleted_at")
+		) {
+			return;
+		}
+		throw error;
+	}
+}
+
+function ensureRetrievalAttemptColumns(db: Database): void {
+	for (const [name, definition] of [
+		["evaluation_checkout_id", "TEXT"],
+		["evaluation_fixture_id", "TEXT"],
+		["evaluation_seed", "INTEGER"],
+		["retention_finalized_at", "TEXT"],
+	] as const) {
+		const exists = db
+			.prepare("SELECT 1 FROM pragma_table_info('retrieval_attempts') WHERE name = ? LIMIT 1")
+			.get(name);
+		if (exists === undefined) {
+			db.exec(`ALTER TABLE retrieval_attempts ADD COLUMN ${name} ${definition}`);
+		}
+	}
 }
 
 function assertBootstrapTablesCreated(db: Database): void {
@@ -400,6 +677,13 @@ function tableExists(db: Database, table: string): boolean {
 	const row = db
 		.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1")
 		.get(table);
+	return row !== undefined;
+}
+
+function columnExists(db: Database, table: string, column: string): boolean {
+	const row = db
+		.prepare("SELECT 1 FROM pragma_table_info(?) WHERE name = ? LIMIT 1")
+		.get(table, column);
 	return row !== undefined;
 }
 

@@ -26,13 +26,17 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import { expandUserPath } from "./observer-config.js";
-import { canAutoBootstrapSchema, ensureSchemaBootstrapped } from "./schema-bootstrap.js";
+import {
+	canAutoBootstrapSchema,
+	ensureRetrievalLedgerSchema,
+	ensureSchemaBootstrapped,
+} from "./schema-bootstrap.js";
 
 // Re-export the Database type for consumers
 export type { DatabaseType as Database };
 
 /** Current schema version this TS runtime was built against. */
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 /**
  * Minimum schema version the TS runtime can operate with.
@@ -712,7 +716,23 @@ function repairShareOperationEffectIdIndex(db: DatabaseType): void {
 	`);
 }
 
+let retrievalLedgerSchemaWarningEmitted = false;
+
 export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
+	// This remains outside the compatibility marker gate so a partial legacy
+	// database can gain its base tables before a later open creates the ledger.
+	try {
+		ensureRetrievalLedgerSchema(db);
+	} catch {
+		// The ledger is optional local derived state. A malformed/locked optional
+		// ledger must not prevent the existing store from opening.
+		if (!retrievalLedgerSchemaWarningEmitted) {
+			retrievalLedgerSchemaWarningEmitted = true;
+			console.warn(
+				"[codemem] Retrieval evidence storage is unavailable; continuing without attribution data.",
+			);
+		}
+	}
 	const compatAlreadyApplied = schemaCompatAlreadyApplied(db);
 	if (!compatAlreadyApplied) {
 		// IMPORTANT: any NEW DDL added to this gated block REQUIRES bumping
@@ -731,7 +751,6 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		} catch {
 			// Keep compatibility shim fail-open for the marker table.
 		}
-
 		try {
 			db.exec(`
 			CREATE TABLE IF NOT EXISTS coordinator_enrollment_reconciliation_issues (

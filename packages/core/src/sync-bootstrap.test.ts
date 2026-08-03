@@ -62,6 +62,50 @@ function makeSnapshotItem(
 	};
 }
 
+function seedBootstrapExposure(
+	db: InstanceType<typeof Database>,
+	sessionId: number,
+	input: {
+		memoryImportKey: string;
+		exposureImportKey: string | null;
+		memoryOriginDeviceId: string;
+		exposureOriginDeviceId: string | null;
+	},
+): number {
+	const now = "2026-01-01T00:00:00Z";
+	const memory = db
+		.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, active, created_at, updated_at,
+				import_key, origin_device_id, rev, visibility, scope_id, metadata_json
+			 ) VALUES (?, 'discovery', 'old memory', 'old body', 1, ?, ?, ?, ?, 1, 'shared', 'acme-work', ?)`,
+		)
+		.run(
+			sessionId,
+			now,
+			now,
+			input.memoryImportKey,
+			input.memoryOriginDeviceId,
+			toJson({ clock_device_id: input.memoryOriginDeviceId }),
+		);
+	const memoryId = Number(memory.lastInsertRowid);
+	db.prepare(
+		`INSERT INTO retrieval_attempts(
+			attempt_id, contract_version, surface, trigger, started_at, retrieval_status,
+			delivery_status, candidate_count, selected_count, persisted_candidate_count,
+			recorder_version
+		 ) VALUES ('bootstrap-exposure', 1, 'prompt_pack', 'explicit', ?, 'succeeded',
+			'handed_off', 1, 1, 1, 'sync-bootstrap-test/1')`,
+	).run(now);
+	db.prepare(
+		`INSERT INTO retrieval_exposures(
+			attempt_id, memory_id, memory_import_key, origin_device_id, rank,
+			disposition, handoff_status, memory_rev, memory_active
+		 ) VALUES ('bootstrap-exposure', ?, ?, ?, 1, 'selected', 'handed_off', 1, 1)`,
+	).run(memoryId, input.exposureImportKey, input.exposureOriginDeviceId);
+	return memoryId;
+}
+
 describe("applyBootstrapSnapshot", () => {
 	let db: InstanceType<typeof Database>;
 	let sessionId: number;
@@ -108,6 +152,109 @@ describe("applyBootstrapSnapshot", () => {
 		expect(newA).toBeTruthy();
 		expect(newA.title).toBe("Title new-key-a");
 		expect(newA.visibility).toBe("shared");
+	});
+
+	it.each([
+		{
+			name: "a different import identity",
+			memoryImportKey: "old-key",
+			exposureImportKey: "old-key",
+			memoryOriginDeviceId: "peer-dev",
+			exposureOriginDeviceId: "peer-dev",
+			snapshotImportKey: "new-key",
+			snapshotOriginDeviceId: "peer-dev",
+			retainsMemoryId: false,
+		},
+		{
+			name: "a different origin identity",
+			memoryImportKey: "stable-key",
+			exposureImportKey: "stable-key",
+			memoryOriginDeviceId: "old-peer",
+			exposureOriginDeviceId: "old-peer",
+			snapshotImportKey: "stable-key",
+			snapshotOriginDeviceId: "new-peer",
+			retainsMemoryId: false,
+		},
+		{
+			name: "the same stable identity",
+			memoryImportKey: "stable-key",
+			exposureImportKey: "stable-key",
+			memoryOriginDeviceId: "peer-dev",
+			exposureOriginDeviceId: "peer-dev",
+			snapshotImportKey: "stable-key",
+			snapshotOriginDeviceId: "peer-dev",
+			retainsMemoryId: true,
+		},
+		{
+			name: "an exposure without stable identity",
+			memoryImportKey: "stable-key",
+			exposureImportKey: null,
+			memoryOriginDeviceId: "peer-dev",
+			exposureOriginDeviceId: null,
+			snapshotImportKey: "stable-key",
+			snapshotOriginDeviceId: "peer-dev",
+			retainsMemoryId: false,
+		},
+	])("validates exposure identity when bootstrap reuses a row ID for $name", (fixture) => {
+		db.pragma("foreign_keys = OFF");
+		const oldMemoryId = seedBootstrapExposure(db, sessionId, fixture);
+
+		const result = applyBootstrapSnapshot(
+			db,
+			"peer-1",
+			[
+				makeSnapshotItem(fixture.snapshotImportKey, {
+					clock_device_id: fixture.snapshotOriginDeviceId,
+					payload: { origin_device_id: fixture.snapshotOriginDeviceId },
+				}),
+			],
+			makeResetInfo(),
+		);
+
+		const newMemoryId = db
+			.prepare("SELECT id FROM memory_items WHERE import_key = ?")
+			.pluck()
+			.get(fixture.snapshotImportKey);
+		expect(result).toMatchObject({ ok: true, deleted: 1, applied: 1 });
+		expect(newMemoryId).toBe(oldMemoryId);
+		expect(
+			db
+				.prepare(
+					"SELECT memory_id FROM retrieval_exposures WHERE attempt_id = 'bootstrap-exposure'",
+				)
+				.pluck()
+				.get(),
+		).toBe(fixture.retainsMemoryId ? oldMemoryId : null);
+	});
+
+	it("relies on ON DELETE SET NULL during normal foreign-key-enforced bootstrap", () => {
+		db.pragma("foreign_keys = ON");
+		const oldMemoryId = seedBootstrapExposure(db, sessionId, {
+			memoryImportKey: "stable-key",
+			exposureImportKey: "stable-key",
+			memoryOriginDeviceId: "peer-dev",
+			exposureOriginDeviceId: "peer-dev",
+		});
+
+		const result = applyBootstrapSnapshot(
+			db,
+			"peer-1",
+			[makeSnapshotItem("stable-key")],
+			makeResetInfo(),
+		);
+
+		expect(result).toMatchObject({ ok: true, deleted: 1, applied: 1 });
+		expect(
+			db
+				.prepare(
+					"SELECT memory_id FROM retrieval_exposures WHERE attempt_id = 'bootstrap-exposure'",
+				)
+				.pluck()
+				.get(),
+		).toBeNull();
+		expect(
+			db.prepare("SELECT id FROM memory_items WHERE import_key = 'stable-key'").pluck().get(),
+		).toBe(oldMemoryId);
 	});
 
 	it("preserves snapshot payload scope_id on inserted memories", () => {
