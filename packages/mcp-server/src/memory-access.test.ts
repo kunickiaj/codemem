@@ -1,21 +1,38 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, initTestSchema, MemoryStore, seedMixedScopeFixture } from "@codemem/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+	connect,
+	getRetrievalAttempt,
+	initTestSchema,
+	MemoryStore,
+	purgeRetrievalAttemptsForPrivacy,
+	queryRetrievalAttempts,
+	seedMixedScopeFixture,
+} from "@codemem/core";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCodememMcpServer } from "./index.js";
+import { withMcpRetrieval } from "./mcp-retrieval-ledger.js";
 import {
 	forgetMemoryForMcp,
 	getManyForMcp,
 	getMemoryForMcp,
 	rememberMemoryForMcp,
 } from "./memory-access.js";
+import type { ToolRegistrationContext } from "./tool-context.js";
 
 type RegisteredTool = {
-	handler: (args: Record<string, unknown>) => Promise<{
+	handler: (
+		args: Record<string, unknown>,
+		extra?: { requestId: string | number; sessionId?: string; signal?: AbortSignal },
+	) => Promise<{
 		content: Array<{ type: string; text: string }>;
 	}>;
 };
+
+function requestExtra(requestId: string | number, sessionId?: string) {
+	return { requestId, sessionId, signal: new AbortController().signal };
+}
 
 function getTool(server: ReturnType<typeof createCodememMcpServer>, name: string): RegisteredTool {
 	const registry = (server as unknown as { _registeredTools: Record<string, RegisteredTool> })
@@ -52,6 +69,7 @@ describe("MCP memory access scope guards", () => {
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		store?.close();
 		rmSync(tmpDir, { recursive: true, force: true });
 		if (originalDeviceId === undefined) {
@@ -419,6 +437,712 @@ describe("MCP memory access scope guards", () => {
 			const mismatch = result.errors.find((err) => err.code === "PROJECT_MISMATCH");
 			expect(mismatch?.ids).toContain(otherProjectId);
 		});
+
+		it("records explicit MCP surfaces, effective filters, returned IDs, and delivery", async () => {
+			const hiddenId = insertScopedMemory(store, {
+				sessionId,
+				scopeId: "scope-b",
+				title: "Ledger scope target",
+			});
+			store.db
+				.prepare("UPDATE memory_items SET title = ? WHERE id = ?")
+				.run("Ledger scope target", greenroomId);
+			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const search = getTool(server, "memory_search");
+			const response = parseToolJson(
+				await search.handler(
+					{ query: "Ledger scope target", scope_id: "scope-a", limit: 10 },
+					{ requestId: "request-search-1", sessionId: "transport-session-1" },
+				),
+			) as { items: Array<{ id: number }> };
+
+			expect(response.items.map((item) => item.id)).toContain(greenroomId);
+			expect(response.items.map((item) => item.id)).not.toContain(hiddenId);
+			const attempt = queryRetrievalAttempts(store.db, { surface: "mcp_search", limit: 1 })[0];
+			if (!attempt) throw new Error("expected a recorded MCP search attempt");
+			expect(attempt).toMatchObject({
+				retrievalStatus: "succeeded",
+				deliveryStatus: "handed_off",
+				project: "greenroom",
+				scopeId: "scope-a",
+				mode: null,
+				streamId: "transport-session-1",
+				limitRequested: 10,
+				filterSummary: { project: "greenroom", scope_id: "scope-a" },
+			});
+			expect(attempt.latencyMs).toBeGreaterThanOrEqual(0);
+			expect(attempt.requestId).toMatch(/^[a-f0-9]{64}$/);
+			expect(attempt.requestId).not.toContain("request-search-1");
+			expect(attempt.exposures.map((exposure) => exposure.memoryId)).toContain(greenroomId);
+			expect(attempt.exposures.map((exposure) => exposure.memoryId)).not.toContain(hiddenId);
+			const persisted = JSON.stringify(
+				store.db
+					.prepare("SELECT * FROM retrieval_attempts WHERE attempt_id = ?")
+					.get(attempt.attemptId),
+			);
+			expect(persisted).not.toContain("Ledger scope target");
+			expect(persisted).not.toContain(`${tmpDir}/`);
+		});
+
+		it("records successful empty search, recent, and timeline calls as undelivered no-results", async () => {
+			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			await getTool(server, "memory_search").handler({
+				query: "no memory matches this exact query",
+				project: "missing-project",
+				limit: 5,
+			});
+			await getTool(server, "memory_recent").handler({ project: "missing-project", limit: 5 });
+			await getTool(server, "memory_timeline").handler({
+				query: "no timeline anchor matches this exact query",
+				project: "missing-project",
+				depth_before: 1,
+				depth_after: 1,
+			});
+
+			for (const surface of ["mcp_search", "mcp_recent", "mcp_timeline"] as const) {
+				const attempt = queryRetrievalAttempts(store.db, { surface, limit: 1 })[0];
+				expect(attempt, surface).toMatchObject({
+					retrievalStatus: "no_results",
+					deliveryStatus: "not_attempted",
+					candidateCount: 0,
+					selectedCount: 0,
+					exposures: [],
+				});
+			}
+		});
+
+		it("covers direct, observations, index, explain, recent, pack, timeline, and expand surfaces", async () => {
+			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			await getTool(server, "memory_get").handler({ memory_id: otherProjectId });
+			await getTool(server, "memory_get_observations").handler({
+				ids: [greenroomId, otherProjectId],
+			});
+			await getTool(server, "memory_search_index").handler({ query: "direct-ID note", limit: 8 });
+			await getTool(server, "memory_explain").handler({ ids: [greenroomId], limit: 10 });
+			await getTool(server, "memory_recent").handler({ limit: 8 });
+			await getTool(server, "memory_pack").handler({ context: "direct-ID note", limit: 5 });
+			await getTool(server, "memory_timeline").handler({
+				memory_id: greenroomId,
+				depth_before: 1,
+				depth_after: 1,
+			});
+			await getTool(server, "memory_expand").handler({
+				ids: [otherProjectId],
+				project: "",
+				depth_before: 1,
+				depth_after: 1,
+				include_observations: false,
+			});
+
+			for (const surface of [
+				"mcp_get",
+				"mcp_get_observations",
+				"mcp_search_index",
+				"mcp_explain",
+				"mcp_recent",
+				"mcp_pack",
+				"mcp_timeline",
+				"mcp_expand",
+			] as const) {
+				const attempt = queryRetrievalAttempts(store.db, { surface, limit: 1 })[0];
+				expect(attempt?.mode, surface).toBeNull();
+				expect(attempt?.deliveryStatus, surface).toBe("handed_off");
+			}
+
+			const direct = queryRetrievalAttempts(store.db, { surface: "mcp_get", limit: 1 })[0];
+			expect(direct?.project).toBeNull();
+			expect(direct?.filterSummary).toBeNull();
+			expect(direct?.exposures.map((exposure) => exposure.memoryId)).toEqual([otherProjectId]);
+			const expand = queryRetrievalAttempts(store.db, { surface: "mcp_expand", limit: 1 })[0];
+			expect(expand?.project).toBeNull();
+		});
+
+		it("keeps duplicate processing of one runtime invocation idempotent", async () => {
+			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const get = getTool(server, "memory_get");
+			const extra = requestExtra("retry-request-1", "transport-session-2");
+
+			const first = await get.handler({ memory_id: greenroomId }, extra);
+			const retry = await get.handler({ memory_id: greenroomId }, extra);
+			expect(retry).toEqual(first);
+			expect(queryRetrievalAttempts(store.db, { surface: "mcp_get" })).toHaveLength(1);
+			const secondServer = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			await getTool(secondServer, "memory_get").handler(
+				{ memory_id: greenroomId },
+				requestExtra("retry-request-1", "transport-session-3"),
+			);
+			expect(queryRetrievalAttempts(store.db, { surface: "mcp_get" })).toHaveLength(2);
+
+			expect(
+				purgeRetrievalAttemptsForPrivacy(store.db, { source: "mcp", surface: "mcp_get" }),
+			).toBe(2);
+			expect(queryRetrievalAttempts(store.db, { surface: "mcp_get" })).toEqual([]);
+		});
+
+		it("records repeated completed calls with identical IDs and arguments as new attempts", async () => {
+			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const get = getTool(server, "memory_get");
+
+			await get.handler(
+				{ memory_id: greenroomId },
+				requestExtra("reused-success-id", "long-lived-session"),
+			);
+			await get.handler(
+				{ memory_id: greenroomId },
+				requestExtra("reused-success-id", "long-lived-session"),
+			);
+			await get.handler(
+				{ memory_id: greenroomId },
+				requestExtra("different-success-id", "long-lived-session"),
+			);
+
+			const attempts = queryRetrievalAttempts(store.db, { surface: "mcp_get" });
+			expect(attempts).toHaveLength(3);
+			expect(new Set(attempts.map((attempt) => attempt.attemptId)).size).toBe(3);
+			expect(new Set(attempts.map((attempt) => attempt.requestId)).size).toBe(3);
+		});
+
+		it("records repeated completed no-results calls as new attempts", async () => {
+			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const search = getTool(server, "memory_search");
+			const args = { query: "no repeated result exists", project: "missing-project", limit: 5 };
+
+			await search.handler(args, requestExtra("reused-empty-id", "long-lived-empty-session"));
+			await search.handler(args, requestExtra("reused-empty-id", "long-lived-empty-session"));
+
+			const attempts = queryRetrievalAttempts(store.db, { surface: "mcp_search" });
+			expect(attempts).toHaveLength(2);
+			expect(attempts.every((attempt) => attempt.retrievalStatus === "no_results")).toBe(true);
+			expect(new Set(attempts.map((attempt) => attempt.requestId)).size).toBe(2);
+		});
+
+		it("includes canonical call content when a transport session reuses a request ID", async () => {
+			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const search = getTool(server, "memory_search");
+			const recent = getTool(server, "memory_recent");
+			const extra = requestExtra("reused-request-id", "long-lived-session");
+
+			await search.handler({ query: "direct-ID note", limit: 5, project: "greenroom" }, extra);
+			await search.handler({ project: "greenroom", limit: 5, query: "direct-ID note" }, extra);
+			expect(queryRetrievalAttempts(store.db, { surface: "mcp_search" })).toHaveLength(1);
+
+			await search.handler(
+				{ query: "different call content", limit: 5, project: "greenroom" },
+				extra,
+			);
+			const attempts = queryRetrievalAttempts(store.db, { surface: "mcp_search" });
+			expect(attempts).toHaveLength(2);
+			expect(new Set(attempts.map((attempt) => attempt.requestId)).size).toBe(2);
+
+			await recent.handler({ limit: 5, project: "greenroom" }, extra);
+			const recentAttempt = queryRetrievalAttempts(store.db, { surface: "mcp_recent" })[0];
+			expect(recentAttempt?.requestId).toMatch(/^[a-f0-9]{64}$/);
+			expect(attempts.map((attempt) => attempt.requestId)).not.toContain(recentAttempt?.requestId);
+			for (const attempt of attempts) {
+				expect(attempt.requestId).toMatch(/^[a-f0-9]{64}$/);
+				expect(attempt.requestId).not.toContain("direct-ID note");
+				expect(attempt.requestId).not.toContain("different call content");
+			}
+		});
+
+		it("does not capture when MCP retrieval ledger capture is disabled", async () => {
+			const server = createCodememMcpServer(store, {
+				defaultProject: "greenroom",
+				captureRetrievalLedger: false,
+			});
+			const result = parseToolJson(
+				await getTool(server, "memory_get").handler({ memory_id: greenroomId }),
+			) as { id: number };
+			expect(result.id).toBe(greenroomId);
+			expect(queryRetrievalAttempts(store.db, { surface: "mcp_get" })).toEqual([]);
+		});
+
+		it("records retrieval failures without changing the MCP error response", async () => {
+			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			vi.spyOn(store, "search").mockImplementationOnce(() => {
+				throw new Error("deterministic search failure");
+			});
+			const response = parseToolJson(
+				await getTool(server, "memory_search").handler({ query: "failure", limit: 5 }),
+			) as { error: string };
+			expect(response.error).toBe("deterministic search failure");
+			expect(
+				queryRetrievalAttempts(store.db, { surface: "mcp_search", limit: 1 })[0],
+			).toMatchObject({
+				retrievalStatus: "failed",
+				deliveryStatus: "not_attempted",
+				failureCode: "tool_failed",
+				filterSummary: { project: "greenroom" },
+			});
+		});
+
+		it("keeps filter resolution failures inside the MCP fail-open boundary", async () => {
+			const context = retrievalContext(store, "filter-resolution-scope");
+			const retrieve = vi.fn(() => ({ value: null, memoryIds: [] }));
+			const response = parseToolJson(
+				await withMcpRetrieval(
+					context,
+					{
+						surface: "mcp_search",
+						toolName: "memory_search",
+						toolArguments: { query: "failure" },
+						query: "failure",
+						resolveFilters: () => {
+							throw new Error("filter resolution failed");
+						},
+					},
+					retrieve,
+				),
+			) as { error: string };
+
+			expect(response.error).toBe("filter resolution failed");
+			expect(retrieve).not.toHaveBeenCalled();
+			expect(
+				queryRetrievalAttempts(store.db, { surface: "mcp_search", limit: 1 })[0],
+			).toMatchObject({
+				retrievalStatus: "failed",
+				deliveryStatus: "not_attempted",
+				filterSummary: null,
+				failureCode: "tool_failed",
+			});
+		});
+
+		it("reconciles a failed MCP request retry into the persisted handed-off success", async () => {
+			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const search = getTool(server, "memory_search");
+			const extra = requestExtra("failed-then-successful", "retry-session");
+			const searchSpy = vi.spyOn(store, "search");
+			searchSpy.mockImplementationOnce(() => {
+				throw new Error("transient retrieval failure");
+			});
+
+			await search.handler(
+				{ query: "direct-ID note", limit: 5 },
+				requestExtra("failed-then-successful", "retry-session"),
+			);
+			const failed = queryRetrievalAttempts(store.db, { surface: "mcp_search" })[0];
+			expect(failed).toMatchObject({
+				retrievalStatus: "failed",
+				deliveryStatus: "not_attempted",
+				exposures: [],
+			});
+
+			await search.handler({ query: "direct-ID note", limit: 5 }, extra);
+			const attempts = queryRetrievalAttempts(store.db, { surface: "mcp_search" });
+			expect(attempts).toHaveLength(1);
+			expect(attempts[0]).toMatchObject({
+				attemptId: failed?.attemptId,
+				retrievalStatus: "succeeded",
+				deliveryStatus: "handed_off",
+				failureCode: null,
+			});
+			expect(attempts[0]?.exposures.length).toBeGreaterThan(0);
+			expect(
+				attempts[0]?.exposures.every(
+					(exposure) =>
+						exposure.attemptId === attempts[0]?.attemptId &&
+						exposure.handoffStatus === "handed_off",
+				),
+			).toBe(true);
+
+			searchSpy.mockImplementationOnce(() => {
+				throw new Error("later retrieval failure");
+			});
+			await search.handler(
+				{ query: "direct-ID note", limit: 5 },
+				requestExtra("failed-then-successful", "retry-session"),
+			);
+			const afterLaterFailure = queryRetrievalAttempts(store.db, { surface: "mcp_search" });
+			expect(afterLaterFailure).toHaveLength(2);
+			expect(afterLaterFailure).toContainEqual(attempts[0]);
+			expect(afterLaterFailure.some((attempt) => attempt.retrievalStatus === "failed")).toBe(true);
+		});
+
+		it("reconciles a failed MCP request retry into one persisted no-results completion", async () => {
+			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const search = getTool(server, "memory_search");
+			const args = {
+				query: "no memory matches this exact retry query",
+				project: "missing-project",
+				limit: 5,
+			};
+			const extra = requestExtra("failed-then-empty", "empty-retry-session");
+			const searchSpy = vi.spyOn(store, "search");
+			searchSpy.mockImplementationOnce(() => {
+				throw new Error("transient empty retrieval failure");
+			});
+
+			await search.handler(args, extra);
+			const failed = queryRetrievalAttempts(store.db, { surface: "mcp_search" })[0];
+			expect(failed).toMatchObject({
+				retrievalStatus: "failed",
+				deliveryStatus: "not_attempted",
+				exposures: [],
+			});
+
+			await search.handler(args, requestExtra("failed-then-empty", "empty-retry-session"));
+			const attempts = queryRetrievalAttempts(store.db, { surface: "mcp_search" });
+			expect(attempts).toHaveLength(1);
+			expect(attempts[0]).toMatchObject({
+				attemptId: failed?.attemptId,
+				retrievalStatus: "no_results",
+				deliveryStatus: "not_attempted",
+				candidateCount: 0,
+				selectedCount: 0,
+				failureCode: null,
+				exposures: [],
+			});
+
+			searchSpy.mockImplementationOnce(() => {
+				throw new Error("later empty retrieval failure");
+			});
+			await search.handler(args, requestExtra("failed-then-empty", "empty-retry-session"));
+			const afterLaterFailure = queryRetrievalAttempts(store.db, { surface: "mcp_search" });
+			expect(afterLaterFailure).toHaveLength(2);
+			expect(afterLaterFailure).toContainEqual(attempts[0]);
+			expect(afterLaterFailure.some((attempt) => attempt.retrievalStatus === "failed")).toBe(true);
+		});
+
+		it("reconciles an exact failed retry when no results are encoded as not_found", async () => {
+			const context = retrievalContext(store, "not-found-error-retry-scope");
+			const args = { memory_id: 999_999 };
+			const retrySignal = new AbortController().signal;
+			const invoke = (
+				signal: AbortSignal,
+				retrieve: () => Promise<{ value: null; memoryIds: number[]; error?: string }>,
+			) =>
+				withMcpRetrieval(
+					context,
+					{
+						surface: "mcp_get",
+						toolName: "memory_get",
+						toolArguments: args,
+						requestId: "failed-then-not-found",
+						sourceSessionId: "not-found-error-retry-session",
+						invocationIdentity: signal,
+					},
+					retrieve,
+				);
+
+			await invoke(new AbortController().signal, async () => {
+				throw new Error("transient direct lookup failure");
+			});
+			const failed = queryRetrievalAttempts(store.db, { surface: "mcp_get" })[0];
+			expect(failed).toMatchObject({
+				retrievalStatus: "failed",
+				deliveryStatus: "not_attempted",
+			});
+
+			const notFound = async () => ({ value: null, memoryIds: [], error: "not_found" });
+			expect(parseToolJson(await invoke(retrySignal, notFound))).toEqual({ error: "not_found" });
+			expect(parseToolJson(await invoke(retrySignal, notFound))).toEqual({ error: "not_found" });
+
+			const attempts = queryRetrievalAttempts(store.db, { surface: "mcp_get" });
+			expect(attempts).toHaveLength(1);
+			expect(attempts[0]).toMatchObject({
+				attemptId: failed?.attemptId,
+				retrievalStatus: "no_results",
+				deliveryStatus: "not_attempted",
+				candidateCount: 0,
+				selectedCount: 0,
+				failureCode: null,
+				exposures: [],
+			});
+		});
+
+		it("preserves ordinary error content as a failed retrieval", async () => {
+			const context = retrievalContext(store, "error-content-scope");
+			const signal = new AbortController().signal;
+			const invoke = () =>
+				withMcpRetrieval(
+					context,
+					{
+						surface: "mcp_get",
+						toolName: "memory_get",
+						toolArguments: { memory_id: greenroomId },
+						requestId: "ordinary-error-content",
+						sourceSessionId: "ordinary-error-session",
+						invocationIdentity: signal,
+					},
+					async () => ({
+						value: null,
+						memoryIds: [],
+						error: "permission_denied",
+					}),
+				);
+
+			expect(parseToolJson(await invoke())).toEqual({ error: "permission_denied" });
+			expect(parseToolJson(await invoke())).toEqual({ error: "permission_denied" });
+
+			const attempts = queryRetrievalAttempts(store.db, { surface: "mcp_get" });
+			expect(attempts).toHaveLength(1);
+			expect(attempts[0]).toMatchObject({
+				retrievalStatus: "failed",
+				deliveryStatus: "not_attempted",
+				candidateCount: 0,
+				selectedCount: 0,
+				failureCode: "tool_failed",
+				failureStage: "retrieval",
+				exposures: [],
+			});
+		});
+
+		it("keeps concurrent identical successful invocations distinct", async () => {
+			const context: ToolRegistrationContext = {
+				store,
+				defaultProject: () => "greenroom",
+				envProject: () => null,
+				captureRetrievalLedger: true,
+				retrievalLedgerScopeId: "concurrent-ledger-scope",
+				retrievalLedgerIdentityMode: "session",
+			};
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const call = (signal: AbortSignal) =>
+				withMcpRetrieval(
+					context,
+					{
+						surface: "mcp_get",
+						toolName: "memory_get",
+						toolArguments: { memory_id: greenroomId },
+						requestId: "concurrent-reused-id",
+						sourceSessionId: "concurrent-session",
+						invocationIdentity: signal,
+					},
+					async () => {
+						await gate;
+						return { value: { id: greenroomId }, memoryIds: [greenroomId] };
+					},
+				);
+
+			const first = call(new AbortController().signal);
+			const second = call(new AbortController().signal);
+			release();
+			await Promise.all([first, second]);
+
+			const attempts = queryRetrievalAttempts(store.db, { surface: "mcp_get" });
+			expect(attempts).toHaveLength(2);
+			expect(new Set(attempts.map((attempt) => attempt.requestId)).size).toBe(2);
+		});
+
+		it("reconciles a concurrent failure after its successful sibling completes", async () => {
+			const context = retrievalContext(store, "failure-success-race-scope");
+			const args = { memory_id: greenroomId };
+			let rejectFailure!: (error: Error) => void;
+			let resolveSuccess!: () => void;
+			const failureGate = new Promise<never>((_resolve, reject) => {
+				rejectFailure = reject;
+			});
+			const successGate = new Promise<void>((resolve) => {
+				resolveSuccess = resolve;
+			});
+			const invoke = (
+				signal: AbortSignal,
+				retrieve: () => Promise<{ value: object; memoryIds: number[] }>,
+			) =>
+				withMcpRetrieval(
+					context,
+					{
+						surface: "mcp_get",
+						toolName: "memory_get",
+						toolArguments: args,
+						requestId: "failure-success-race",
+						sourceSessionId: "failure-success-session",
+						invocationIdentity: signal,
+					},
+					retrieve,
+				);
+
+			const failedCall = invoke(new AbortController().signal, () => failureGate);
+			const successfulSibling = invoke(new AbortController().signal, async () => {
+				await successGate;
+				return { value: { id: greenroomId }, memoryIds: [greenroomId] };
+			});
+			rejectFailure(new Error("concurrent transient failure"));
+			await failedCall;
+			const failedAttempt = queryRetrievalAttempts(store.db, { surface: "mcp_get" }).find(
+				(attempt) => attempt.retrievalStatus === "failed",
+			);
+			if (!failedAttempt) throw new Error("expected concurrent failed attempt");
+			resolveSuccess();
+			await successfulSibling;
+
+			await invoke(new AbortController().signal, async () => ({
+				value: { id: greenroomId },
+				memoryIds: [greenroomId],
+			}));
+
+			const attempts = queryRetrievalAttempts(store.db, { surface: "mcp_get" });
+			expect(attempts).toHaveLength(2);
+			expect(attempts.every((attempt) => attempt.retrievalStatus === "succeeded")).toBe(true);
+			expect(getRetrievalAttempt(store.db, failedAttempt.attemptId)).toMatchObject({
+				attemptId: failedAttempt.attemptId,
+				retrievalStatus: "succeeded",
+				deliveryStatus: "handed_off",
+			});
+		});
+
+		it("reconciles two concurrent failures one-for-one with sequential successes", async () => {
+			const context = retrievalContext(store, "two-failure-fifo-scope");
+			const args = { memory_id: greenroomId };
+			const invoke = (
+				signal: AbortSignal,
+				retrieve: () => Promise<{ value: object; memoryIds: number[] }>,
+			) =>
+				withMcpRetrieval(
+					context,
+					{
+						surface: "mcp_get",
+						toolName: "memory_get",
+						toolArguments: args,
+						requestId: "two-concurrent-failures",
+						sourceSessionId: "two-failure-session",
+						invocationIdentity: signal,
+					},
+					retrieve,
+				);
+			let rejectFirst!: (error: Error) => void;
+			let rejectSecond!: (error: Error) => void;
+			const firstGate = new Promise<never>((_resolve, reject) => {
+				rejectFirst = reject;
+			});
+			const secondGate = new Promise<never>((_resolve, reject) => {
+				rejectSecond = reject;
+			});
+
+			const firstFailure = invoke(new AbortController().signal, () => firstGate);
+			const secondFailure = invoke(new AbortController().signal, () => secondGate);
+			rejectFirst(new Error("first concurrent failure"));
+			await firstFailure;
+			const firstAttempt = queryRetrievalAttempts(store.db, { surface: "mcp_get" })[0];
+			if (!firstAttempt) throw new Error("expected first concurrent failed attempt");
+			rejectSecond(new Error("second concurrent failure"));
+			await secondFailure;
+			const secondAttempt = queryRetrievalAttempts(store.db, { surface: "mcp_get" }).find(
+				(attempt) => attempt.attemptId !== firstAttempt.attemptId,
+			);
+			if (!secondAttempt) throw new Error("expected second concurrent failed attempt");
+
+			const succeed = () =>
+				invoke(new AbortController().signal, async () => ({
+					value: { id: greenroomId },
+					memoryIds: [greenroomId],
+				}));
+			await succeed();
+			expect(getRetrievalAttempt(store.db, firstAttempt.attemptId)?.retrievalStatus).toBe(
+				"succeeded",
+			);
+			expect(getRetrievalAttempt(store.db, secondAttempt.attemptId)?.retrievalStatus).toBe(
+				"failed",
+			);
+			await succeed();
+
+			const attempts = queryRetrievalAttempts(store.db, { surface: "mcp_get" });
+			expect(attempts).toHaveLength(2);
+			expect(attempts.every((attempt) => attempt.retrievalStatus === "succeeded")).toBe(true);
+		});
+
+		it("does not let completed active siblings consume or erase a pending failure", async () => {
+			const context = retrievalContext(store, "pending-slot-ownership-scope");
+			const args = { memory_id: greenroomId };
+			let resolveSibling!: () => void;
+			const siblingGate = new Promise<void>((resolve) => {
+				resolveSibling = resolve;
+			});
+			const invoke = (retrieve: () => Promise<{ value: object; memoryIds: number[] }>) =>
+				withMcpRetrieval(
+					context,
+					{
+						surface: "mcp_get",
+						toolName: "memory_get",
+						toolArguments: args,
+						requestId: "pending-slot-ownership",
+						sourceSessionId: "pending-slot-session",
+						invocationIdentity: new AbortController().signal,
+					},
+					retrieve,
+				);
+
+			const activeSibling = invoke(async () => {
+				await siblingGate;
+				return { value: { id: greenroomId }, memoryIds: [greenroomId] };
+			});
+			await invoke(async () => {
+				throw new Error("failure while sibling active");
+			});
+			const failedAttempt = queryRetrievalAttempts(store.db, { surface: "mcp_get" }).find(
+				(attempt) => attempt.retrievalStatus === "failed",
+			);
+			if (!failedAttempt) throw new Error("expected pending failed attempt");
+			await invoke(async () => ({ value: { id: greenroomId }, memoryIds: [greenroomId] }));
+			resolveSibling();
+			await activeSibling;
+			expect(getRetrievalAttempt(store.db, failedAttempt.attemptId)?.retrievalStatus).toBe(
+				"failed",
+			);
+
+			await invoke(async () => ({ value: { id: greenroomId }, memoryIds: [greenroomId] }));
+			expect(getRetrievalAttempt(store.db, failedAttempt.attemptId)?.retrievalStatus).toBe(
+				"succeeded",
+			);
+			expect(queryRetrievalAttempts(store.db, { surface: "mcp_get" })).toHaveLength(3);
+		});
+
+		it("keeps successful MCP results fail-open when identity bookkeeping throws", async () => {
+			const context = retrievalContext(store, "hostile-identity-scope");
+			const circularArguments: { self?: unknown } = {};
+			circularArguments.self = circularArguments;
+			const result = parseToolJson(
+				await withMcpRetrieval(
+					context,
+					{
+						surface: "mcp_get",
+						toolName: "memory_get",
+						toolArguments: circularArguments,
+						requestId: "hostile-canonical-args",
+						sourceSessionId: "hostile-session",
+						invocationIdentity: new AbortController().signal,
+					},
+					async () => ({ value: { id: greenroomId }, memoryIds: [greenroomId] }),
+				),
+			) as { id: number };
+			expect(result.id).toBe(greenroomId);
+
+			Object.defineProperty(context, "retrievalLedgerIdentityMode", {
+				get: () => {
+					throw new Error("hostile tracker mode getter");
+				},
+			});
+			const second = parseToolJson(
+				await withMcpRetrieval(
+					context,
+					{
+						surface: "mcp_get",
+						toolName: "memory_get",
+						toolArguments: { memory_id: greenroomId },
+						requestId: "hostile-completion",
+						sourceSessionId: "hostile-session",
+					},
+					async () => ({ value: { id: greenroomId }, memoryIds: [greenroomId] }),
+				),
+			) as { id: number };
+			expect(second.id).toBe(greenroomId);
+			const attempts = queryRetrievalAttempts(store.db, { surface: "mcp_get" });
+			expect(attempts).toHaveLength(2);
+			expect(attempts.every((attempt) => attempt.retrievalStatus === "succeeded")).toBe(true);
+			expect(attempts.every((attempt) => attempt.failureCode === null)).toBe(true);
+		});
+
+		it("keeps MCP delivery fail-open when ledger tables are unavailable", async () => {
+			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			store.db.exec("DROP TABLE retrieval_exposures; DROP TABLE retrieval_attempts;");
+			const response = parseToolJson(
+				await getTool(server, "memory_get").handler({ memory_id: greenroomId }),
+			) as { id: number };
+			expect(response.id).toBe(greenroomId);
+		});
 	});
 });
 
@@ -433,6 +1157,17 @@ function insertSession(
 		)
 		.run(now, input.cwd, input.project, "mcp-test", "test");
 	return Number(info.lastInsertRowid);
+}
+
+function retrievalContext(store: MemoryStore, scopeId: string): ToolRegistrationContext {
+	return {
+		store,
+		defaultProject: () => "greenroom",
+		envProject: () => null,
+		captureRetrievalLedger: true,
+		retrievalLedgerScopeId: scopeId,
+		retrievalLedgerIdentityMode: "session",
+	};
 }
 
 function insertCoordinatorScope(db: ReturnType<typeof connect>, scopeId: string): void {

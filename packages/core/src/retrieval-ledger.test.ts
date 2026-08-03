@@ -21,16 +21,19 @@ import {
 	type RetrievalDeliveryStatus,
 	type RetrievalExposureInput,
 	type RetrievalStatus,
+	reconcileFailedRetrievalAttempt,
 	recordRetrievalAttempt,
 	tryFinalizeRetrievalAttemptRetention,
 	tryRecordRetrievalAttempt,
 	tryUpdateRetrievalDelivery,
 	updateRetrievalDelivery,
 } from "./retrieval-ledger.js";
+import { recordRetrievalSurface, sanitizeRetrievalFilters } from "./retrieval-surface-ledger.js";
 import { ensureRetrievalLedgerSchema } from "./schema-bootstrap.js";
 import { MemoryStore } from "./store.js";
 import { TEST_SCHEMA_BASE_DDL } from "./test-schema.generated.js";
 import { initTestSchema } from "./test-utils.js";
+import type { MemoryFilters } from "./types.js";
 
 const STARTED_AT = "2026-08-03T10:00:00.000Z";
 
@@ -970,6 +973,124 @@ describe("retrieval attribution ledger", () => {
 		).toBe(true);
 	});
 
+	it("replaces only a matching failed request with its handed-off success", () => {
+		const failed = input({
+			attemptId: attemptId(253),
+			requestId: "failed-request-retry",
+			surface: "mcp_search",
+			source: "mcp",
+			retrievalStatus: "failed",
+			deliveryStatus: "not_attempted",
+			candidateCount: 0,
+			selectedCount: 0,
+			exposures: [],
+			failureCode: "tool_failed",
+			failureStage: "retrieval",
+			retentionDays: 7,
+		});
+		recordRetrievalAttempt(db, failed);
+		const succeeded = {
+			...failed,
+			startedAt: "2026-08-03T10:00:00.100Z",
+			completedAt: "2026-08-03T10:00:00.250Z",
+			latencyMs: 150,
+			retentionDays: 7,
+			retrievalStatus: "succeeded" as const,
+			deliveryStatus: "handed_off" as const,
+			candidateCount: 1,
+			selectedCount: 1,
+			failureCode: null,
+			failureStage: null,
+			exposures: [
+				{
+					rank: 1,
+					disposition: "selected" as const,
+					handoffStatus: "handed_off" as const,
+					memoryImportKey: "retry-success",
+				},
+			],
+		};
+
+		expect(() =>
+			reconcileFailedRetrievalAttempt(db, {
+				...succeeded,
+				requestId: "unrelated-request-content",
+			}),
+		).toThrow(/conflicts/);
+		expect(() =>
+			reconcileFailedRetrievalAttempt(db, {
+				...succeeded,
+				startedAt: "2026-08-03T09:59:59.000Z",
+				completedAt: "2026-08-03T09:59:59.500Z",
+			}),
+		).toThrow(/conflicts/);
+		expect(() =>
+			reconcileFailedRetrievalAttempt(db, {
+				...succeeded,
+				retentionDays: 30,
+			}),
+		).toThrow(/conflicts/);
+		expect(getRetrievalAttempt(db, failed.attemptId)?.retrievalStatus).toBe("failed");
+		expect(reconcileFailedRetrievalAttempt(db, succeeded).attempt).toMatchObject({
+			attemptId: failed.attemptId,
+			retrievalStatus: "succeeded",
+			deliveryStatus: "handed_off",
+			failureCode: null,
+			exposures: [{ attemptId: failed.attemptId, handoffStatus: "handed_off" }],
+			startedAt: STARTED_AT,
+			latencyMs: 250,
+			retentionUntil: "2026-08-10T10:00:00.000Z",
+		});
+		expect(recordRetrievalAttempt(db, succeeded).inserted).toBe(false);
+		expect(() => reconcileFailedRetrievalAttempt(db, succeeded)).toThrow(/conflicts/);
+		expect(() => recordRetrievalAttempt(db, failed)).toThrow(/retry conflicts/);
+		expect(getRetrievalAttempt(db, failed.attemptId)?.retrievalStatus).toBe("succeeded");
+	});
+
+	it("replaces only a matching failed request with its empty successful completion", () => {
+		const failed = input({
+			attemptId: attemptId(254),
+			requestId: "failed-empty-request-retry",
+			surface: "mcp_search",
+			source: "mcp",
+			retrievalStatus: "failed",
+			deliveryStatus: "not_attempted",
+			candidateCount: 0,
+			selectedCount: 0,
+			exposures: [],
+			failureCode: "tool_failed",
+			failureStage: "retrieval",
+		});
+		recordRetrievalAttempt(db, failed);
+		const noResults = {
+			...failed,
+			completedAt: "2026-08-03T10:00:00.050Z",
+			retrievalStatus: "no_results" as const,
+			failureCode: null,
+			failureStage: null,
+		};
+
+		expect(() =>
+			reconcileFailedRetrievalAttempt(db, {
+				...noResults,
+				requestId: "unrelated-empty-request-content",
+			}),
+		).toThrow(/conflicts/);
+		expect(reconcileFailedRetrievalAttempt(db, noResults).attempt).toMatchObject({
+			attemptId: failed.attemptId,
+			retrievalStatus: "no_results",
+			deliveryStatus: "not_attempted",
+			candidateCount: 0,
+			selectedCount: 0,
+			failureCode: null,
+			exposures: [],
+		});
+		expect(recordRetrievalAttempt(db, noResults).inserted).toBe(false);
+		expect(() => recordRetrievalAttempt(db, failed)).toThrow(/retry conflicts/);
+		expect(queryRetrievalAttempts(db, { surface: "mcp_search" })).toHaveLength(1);
+		expect(getRetrievalAttempt(db, failed.attemptId)?.retrievalStatus).toBe("no_results");
+	});
+
 	it("keeps missing session and source correlation null", () => {
 		const recorded = recordRetrievalAttempt(
 			db,
@@ -1532,6 +1653,60 @@ describe("retrieval attribution ledger", () => {
 				.pluck()
 				.get(emptySelection.attemptId),
 		).toBe("not_attempted");
+	});
+
+	it("keeps returned selections beyond the persistence cap out of diagnostic rows", () => {
+		const selectedIds = Array.from({ length: 55 }, (_, index) => index + 1);
+		const outcome = recordRetrievalSurface(db, {
+			attemptId: attemptId(303),
+			surface: "mcp_get_observations",
+			trigger: "explicit",
+			startedAt: STARTED_AT,
+			retrievalStatus: "succeeded",
+			deliveryStatus: "handed_off",
+			selectedIds,
+			candidateIds: selectedIds,
+			recorderVersion: "test",
+			source: "mcp",
+		});
+
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		expect(outcome.value.attempt.selectedCount).toBe(55);
+		expect(outcome.value.attempt.exposures).toHaveLength(50);
+		expect(outcome.value.attempt.exposures.every((row) => row.disposition === "selected")).toBe(
+			true,
+		);
+		expect(
+			outcome.value.attempt.exposures.every((row) =>
+				row.reasonCodes.includes("surface.returned_truncated"),
+			),
+		).toBe(true);
+	});
+
+	it("drops filter strings outside the retrieval ledger bounds", () => {
+		expect(
+			sanitizeRetrievalFilters({
+				project: "x".repeat(513),
+				visibility: ["", "private", "x".repeat(513)],
+			}),
+		).toEqual({ visibility: ["private"] });
+		expect(
+			sanitizeRetrievalFilters({
+				kind: 42,
+				session_id: "wrong-type",
+				include_scope_ids: [7],
+				visibility: ["", "x".repeat(513)],
+			} as unknown as MemoryFilters),
+		).toBeNull();
+		const byteBounded = sanitizeRetrievalFilters({
+			include_scope_ids: Array.from({ length: 50 }, (_, index) => `${index}`.padEnd(512, "x")),
+		});
+		expect(byteBounded).not.toBeNull();
+		expect(Buffer.byteLength(JSON.stringify(byteBounded), "utf8")).toBeLessThanOrEqual(
+			MAX_RETRIEVAL_JSON_BYTES,
+		);
+		expect(byteBounded?.include_scope_ids?.length).toBeLessThan(50);
 	});
 
 	it("accepts JSON at 16 KiB and rejects one byte above", () => {
@@ -2282,6 +2457,16 @@ describe("retrieval attribution ledger", () => {
 				),
 			).toThrow(/retentionDays must be/);
 		}
+		expect(() =>
+			recordRetrievalAttempt(
+				db,
+				input({
+					attemptId: attemptId(898),
+					requestId: "invalid-null-retention",
+					retentionDays: null,
+				} as unknown as Partial<RecordRetrievalAttemptInput>),
+			),
+		).toThrow(/retentionDays must be/);
 		expect(() =>
 			recordRetrievalAttempt(
 				db,

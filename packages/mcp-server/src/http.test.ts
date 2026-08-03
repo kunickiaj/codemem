@@ -3,9 +3,11 @@ import { mkdtempSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { queryRetrievalAttempts } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OAuthAuditEvent } from "./audit.js";
 import {
+	authenticatedRetrievalPrincipal,
 	type CodememMcpHttpServer,
 	DEFAULT_MCP_HTTP_HOST,
 	DEFAULT_MCP_HTTP_PORT,
@@ -13,6 +15,8 @@ import {
 	isAllowedMcpHttpRequestOrigin,
 	isAllowedMcpHttpRequestRemoteAddress,
 	isUnsafePublicBindAllowed,
+	MCP_HTTP_MAX_JSON_BODY_BYTES,
+	MCP_HTTP_RETRIEVAL_RETRY_WINDOW_MS,
 	parseMcpHttpPort,
 	startCodememMcpHttpServer,
 	validateMcpHttpHost,
@@ -734,6 +738,294 @@ describe("MCP HTTP transport", () => {
 		expect(second.result?.serverInfo?.name).toBe("codemem");
 	});
 
+	it("accepts valid MCP JSON bodies larger than Express's default limit", async () => {
+		const server = await startCodememMcpHttpServer({ dbPath: tempDbPath(), port: 0 });
+		servers.push(server);
+
+		const response = await callTool(server.url, "large-valid-request", "memory_recent", {
+			limit: 1,
+			padding: "x".repeat(128 * 1024),
+		});
+
+		expect(response).toHaveProperty("result");
+	});
+
+	it("returns JSON-RPC errors for malformed and oversized MCP JSON bodies", async () => {
+		const server = await startCodememMcpHttpServer({ dbPath: tempDbPath(), port: 0 });
+		servers.push(server);
+
+		const malformed = await postRawMcpJson(server.url, '{"jsonrpc":"2.0",');
+		const oversized = await postRawMcpJson(
+			server.url,
+			JSON.stringify({
+				jsonrpc: "2.0",
+				id: "oversized-request",
+				method: "tools/call",
+				params: {
+					name: "memory_recent",
+					arguments: { padding: "x".repeat(MCP_HTTP_MAX_JSON_BODY_BYTES) },
+				},
+			}),
+		);
+
+		expect(malformed.status).toBe(400);
+		expect(malformed.headers.get("content-type")).toContain("application/json");
+		expect(await malformed.json()).toEqual({
+			jsonrpc: "2.0",
+			error: { code: -32_700, message: "Parse error" },
+			id: null,
+		});
+		expect(oversized.status).toBe(413);
+		expect(oversized.headers.get("content-type")).toContain("application/json");
+		expect(await oversized.json()).toEqual({
+			jsonrpc: "2.0",
+			error: { code: -32_000, message: "Request body too large" },
+			id: null,
+		});
+	});
+
+	it("records matching anonymous HTTP calls as separate retrieval attempts", async () => {
+		const server = await startCodememMcpHttpServer({ dbPath: tempDbPath(), port: 0 });
+		servers.push(server);
+
+		const first = await callTool(server.url, "retry-request-1", "memory_recent", { limit: 5 });
+		const second = await callTool(server.url, "retry-request-1", "memory_recent", { limit: 5 });
+
+		expect(second).toEqual(first);
+		const attempts = queryRetrievalAttempts(server.store.db, { surface: "mcp_recent" });
+		expect(attempts).toHaveLength(2);
+		expect(new Set(attempts.map((attempt) => attempt.requestId)).size).toBe(2);
+		expect(new Set(attempts.map((attempt) => attempt.streamId)).size).toBe(2);
+	});
+
+	it("deduplicates authenticated retries by principal, content, and JSON-RPC ID", async () => {
+		const tokenStore = createInMemoryOAuthAccessTokenStore();
+		const client = tokenStore.issueToken("stable-retry-client");
+		if (!client) throw new Error("expected access token");
+		const server = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test/mcp",
+			oauthAccessTokenStore: tokenStore,
+		});
+		servers.push(server);
+		const headers = { authorization: `Bearer ${client.token}` };
+
+		const first = await callTool(
+			server.url,
+			"retry-request-1",
+			"memory_recent",
+			{ limit: 5 },
+			headers,
+		);
+		const retry = await callTool(
+			server.url,
+			"retry-request-1",
+			"memory_recent",
+			{ limit: 5 },
+			headers,
+		);
+		const changedParams = await callTool(
+			server.url,
+			"retry-request-1",
+			"memory_recent",
+			{
+				limit: 6,
+			},
+			headers,
+		);
+		const distinct = await callTool(
+			server.url,
+			"request-2",
+			"memory_recent",
+			{ limit: 5 },
+			headers,
+		);
+
+		expect(retry).toEqual(first);
+		expect(changedParams).toHaveProperty("result");
+		expect(distinct).toHaveProperty("result");
+		const attempts = queryRetrievalAttempts(server.store.db, { surface: "mcp_recent" });
+		expect(attempts).toHaveLength(3);
+		expect(new Set(attempts.map((attempt) => attempt.requestId)).size).toBe(3);
+		expect(new Set(attempts.map((attempt) => attempt.streamId)).size).toBe(3);
+	});
+
+	it("separates authenticated retrieval principals by OAuth client", () => {
+		const first = authenticatedRetrievalPrincipal({
+			clientId: "client-a",
+			token: "token-a",
+			extra: { sub: "shared-subject" },
+		});
+		const retry = authenticatedRetrievalPrincipal({
+			clientId: "client-a",
+			token: "token-b",
+			extra: { sub: "shared-subject" },
+		});
+		const otherClient = authenticatedRetrievalPrincipal({
+			clientId: "client-b",
+			token: "token-c",
+			extra: { sub: "shared-subject" },
+		});
+
+		expect(retry).toBe(first);
+		expect(otherClient).not.toBe(first);
+	});
+
+	it("keeps stateless retries together across an aligned boundary until first-observation expiry", async () => {
+		const firstObservedAt = MCP_HTTP_RETRIEVAL_RETRY_WINDOW_MS * 100 - 1;
+		let now = firstObservedAt;
+		const tokenStore = createInMemoryOAuthAccessTokenStore();
+		const client = tokenStore.issueToken("boundary-retry-client");
+		if (!client) throw new Error("expected access token");
+		const server = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test/mcp",
+			oauthAccessTokenStore: tokenStore,
+			retrievalLedgerNow: () => now,
+		});
+		servers.push(server);
+		const headers = { authorization: `Bearer ${client.token}` };
+
+		await callTool(server.url, "reusable-request-id", "memory_recent", { limit: 5 }, headers);
+		now = MCP_HTTP_RETRIEVAL_RETRY_WINDOW_MS * 100 + 1;
+		await callTool(server.url, "reusable-request-id", "memory_recent", { limit: 5 }, headers);
+		now = firstObservedAt + MCP_HTTP_RETRIEVAL_RETRY_WINDOW_MS - 1;
+		await callTool(server.url, "reusable-request-id", "memory_recent", { limit: 5 }, headers);
+
+		let attempts = queryRetrievalAttempts(server.store.db, { surface: "mcp_recent" });
+		expect(attempts).toHaveLength(1);
+
+		now = firstObservedAt + MCP_HTTP_RETRIEVAL_RETRY_WINDOW_MS;
+		await callTool(server.url, "reusable-request-id", "memory_recent", { limit: 5 }, headers);
+
+		attempts = queryRetrievalAttempts(server.store.db, { surface: "mcp_recent" });
+		expect(attempts).toHaveLength(2);
+		expect(new Set(attempts.map((attempt) => attempt.streamId)).size).toBe(2);
+	});
+
+	it("canonicalizes stateless request object ordering within the retry window", async () => {
+		const tokenStore = createInMemoryOAuthAccessTokenStore();
+		const client = tokenStore.issueToken("canonical-retry-client");
+		if (!client) throw new Error("expected access token");
+		const server = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test/mcp",
+			oauthAccessTokenStore: tokenStore,
+		});
+		servers.push(server);
+		const headers = { authorization: `Bearer ${client.token}` };
+
+		await callTool(
+			server.url,
+			"canonical-request-id",
+			"memory_recent",
+			{
+				limit: 5,
+				project: "codemem",
+			},
+			headers,
+		);
+		await callTool(
+			server.url,
+			"canonical-request-id",
+			"memory_recent",
+			{
+				project: "codemem",
+				limit: 5,
+			},
+			headers,
+		);
+
+		expect(queryRetrievalAttempts(server.store.db, { surface: "mcp_recent" })).toHaveLength(1);
+	});
+
+	it("partitions retry identity by authenticated client without leaking request context", async () => {
+		const tokenStore = createInMemoryOAuthAccessTokenStore();
+		const firstClient = tokenStore.issueToken("private-client-one");
+		const secondClient = tokenStore.issueToken("private-client-two");
+		if (!firstClient || !secondClient) throw new Error("expected access tokens");
+		const server = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test/mcp",
+			oauthAccessTokenStore: tokenStore,
+		});
+		servers.push(server);
+		const query = "private query text must not leak";
+		const userAgent = "private-caller-agent/1.0";
+		const forwardedFor = "203.0.113.77";
+		const request = { query, limit: 5 };
+
+		await callTool(server.url, "shared-request-id", "memory_search", request, {
+			authorization: `Bearer ${firstClient.token}`,
+			"user-agent": userAgent,
+			"x-forwarded-for": forwardedFor,
+		});
+		await callTool(server.url, "shared-request-id", "memory_search", request, {
+			authorization: `Bearer ${secondClient.token}`,
+		});
+
+		const attempts = queryRetrievalAttempts(server.store.db, { surface: "mcp_search" });
+		expect(attempts).toHaveLength(2);
+		expect(new Set(attempts.map((attempt) => attempt.streamId)).size).toBe(2);
+		for (const attempt of attempts) {
+			expect(attempt.streamId).toMatch(/^mcp-http:[a-f0-9]{64}$/);
+		}
+		const persisted = JSON.stringify(attempts);
+		expect(persisted).not.toContain(query);
+		expect(persisted).not.toContain("private-client-one");
+		expect(persisted).not.toContain("private-client-two");
+		expect(persisted).not.toContain("codemem.example.test");
+		expect(persisted).not.toContain(firstClient.token);
+		expect(persisted).not.toContain(secondClient.token);
+		expect(persisted).not.toContain(userAgent);
+		expect(persisted).not.toContain(forwardedFor);
+	});
+
+	it("partitions retry identity for distinct tokens issued to the same authenticated client", async () => {
+		const tokenStore = createInMemoryOAuthAccessTokenStore();
+		const firstUser = tokenStore.issueToken("shared-team-client");
+		const secondUser = tokenStore.issueToken("shared-team-client");
+		if (!firstUser || !secondUser) throw new Error("expected access tokens");
+		const server = await startCodememMcpHttpServer({
+			dbPath: tempDbPath(),
+			port: 0,
+			publicUrl: "https://codemem.example.test/mcp",
+			oauthAccessTokenStore: tokenStore,
+		});
+		servers.push(server);
+
+		await callTool(
+			server.url,
+			"shared-request-id",
+			"memory_recent",
+			{ limit: 5 },
+			{
+				authorization: `Bearer ${firstUser.token}`,
+			},
+		);
+		await callTool(
+			server.url,
+			"shared-request-id",
+			"memory_recent",
+			{ limit: 5 },
+			{
+				authorization: `Bearer ${secondUser.token}`,
+			},
+		);
+
+		const attempts = queryRetrievalAttempts(server.store.db, { surface: "mcp_recent" });
+		expect(attempts).toHaveLength(2);
+		expect(new Set(attempts.map((attempt) => attempt.streamId)).size).toBe(2);
+		const persisted = JSON.stringify(attempts);
+		expect(persisted).not.toContain(firstUser.token);
+		expect(persisted).not.toContain(secondUser.token);
+		expect(persisted).not.toContain("shared-team-client");
+	});
+
 	it("rejects browser requests from non-loopback origins", async () => {
 		const server = await startCodememMcpHttpServer({ dbPath: tempDbPath(), port: 0 });
 		servers.push(server);
@@ -795,6 +1087,43 @@ function initializeBody(id: number): string {
 			capabilities: {},
 			clientInfo: { name: "codemem-test", version: "0.0.0" },
 		},
+	});
+}
+
+async function callTool(
+	url: string,
+	id: string | number,
+	name: string,
+	args: Record<string, unknown>,
+	extraHeaders: Record<string, string> = {},
+): Promise<unknown> {
+	const response = await fetch(url, {
+		method: "POST",
+		headers: {
+			accept: "application/json, text/event-stream",
+			"content-type": "application/json",
+			...extraHeaders,
+		},
+		body: JSON.stringify({
+			jsonrpc: "2.0",
+			id,
+			method: "tools/call",
+			params: { name, arguments: args },
+		}),
+	});
+
+	expect(response.status).toBe(200);
+	return parseSseJson(await response.text());
+}
+
+function postRawMcpJson(url: string, body: string): Promise<Response> {
+	return fetch(url, {
+		method: "POST",
+		headers: {
+			accept: "application/json, text/event-stream",
+			"content-type": "application/json",
+		},
+		body,
 	});
 }
 

@@ -1,7 +1,17 @@
+import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { MemoryStore, type RefQueryResult, resolveDbPath, resolveHookProject } from "@codemem/core";
+import {
+	MemoryStore,
+	type RefQueryResult,
+	type RetrievalSurfaceRecordInput,
+	recordRetrievalSurface,
+	resolveDbPath,
+	resolveHookProject,
+	resolveRetrievalSession,
+	tryUpdateRetrievalDelivery,
+} from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
 import { addDbOption, type DbOpts, resolveDbOpt } from "../shared-options.js";
@@ -22,6 +32,11 @@ type FileContextDeps = {
 	queryByFile?: typeof queryByFile;
 	resolveDb?: typeof resolveDbPath;
 	statFile?: typeof statFile;
+	createStore?: (dbPath: string) => MemoryStore;
+	recordAttempt?: (dbPath: string, input: RetrievalSurfaceRecordInput) => void;
+	updateDelivery?: (dbPath: string, attemptId: string, status: "handed_off" | "failed") => void;
+	now?: () => Date;
+	createAttemptId?: () => string;
 };
 
 const FILE_GATE_MIN_BYTES = 1500;
@@ -266,6 +281,11 @@ function resolveProject(payload: Record<string, unknown>): string | null {
 	return resolveHookProject(cwd, payload.project);
 }
 
+function sourceSessionId(payload: Record<string, unknown>): string | null {
+	const value = payload.session_id;
+	return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 export async function buildClaudeFileContext(
 	payload: Record<string, unknown>,
 	opts: FileContextOpts,
@@ -274,13 +294,89 @@ export async function buildClaudeFileContext(
 	if (envTruthy(process.env.CODEMEM_PLUGIN_IGNORE)) {
 		return continueResult();
 	}
-	if (!envNotDisabled(process.env.CODEMEM_FILE_CONTEXT || "1")) {
-		return continueResult();
-	}
 
 	const filePath = extractFilePath(payload);
 	if (!filePath) {
 		return continueResult();
+	}
+
+	const startedAt = (deps.now ?? (() => new Date()))();
+	const attemptId = (deps.createAttemptId ?? randomUUID)();
+	const resolveDb = deps.resolveDb ?? resolveDbPath;
+	let resolvedDbPath: string | null = null;
+	let activeStore: MemoryStore | null = null;
+	const getStore = (): MemoryStore => {
+		resolvedDbPath ??= resolveDb(resolveDbOpt(opts));
+		activeStore ??= (deps.createStore ?? ((dbPath) => new MemoryStore(dbPath)))(resolvedDbPath);
+		return activeStore;
+	};
+	const finish = (result: FileContextResult): FileContextResult => {
+		try {
+			activeStore?.close();
+		} catch {
+			// Cleanup happens after attribution and must not suppress valid hook output.
+		}
+		activeStore = null;
+		return result;
+	};
+	const record = (
+		attemptInput: Omit<
+			RetrievalSurfaceRecordInput,
+			"attemptId" | "surface" | "trigger" | "startedAt" | "completedAt" | "recorderVersion"
+		>,
+	): void => {
+		if (!envNotDisabled(process.env.CODEMEM_RETRIEVAL_LEDGER || "1")) return;
+		try {
+			resolvedDbPath ??= resolveDb(resolveDbOpt(opts));
+			const completedAt = (deps.now ?? (() => new Date()))();
+			const ledgerInput: RetrievalSurfaceRecordInput = {
+				...attemptInput,
+				attemptId,
+				surface: "file_context",
+				trigger: "automatic",
+				startedAt: startedAt.toISOString(),
+				completedAt: completedAt.toISOString(),
+				latencyMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
+				recorderVersion: "claude-file-context-v1",
+				source: "claude",
+				streamId: sourceSessionId(payload),
+				sourceSessionId: sourceSessionId(payload),
+				mode: "claude_pre_tool_use_read",
+			};
+			if (deps.recordAttempt) {
+				deps.recordAttempt(resolvedDbPath, ledgerInput);
+			} else {
+				const store = getStore();
+				recordRetrievalSurface(store.db, {
+					...ledgerInput,
+					sessionId: resolveRetrievalSession(store.db, "claude", ledgerInput.sourceSessionId),
+				});
+			}
+		} catch {
+			// Resolving or writing the local ledger must not affect hook output.
+		}
+	};
+	const updateDelivery = (status: "handed_off" | "failed"): void => {
+		if (!envNotDisabled(process.env.CODEMEM_RETRIEVAL_LEDGER || "1")) return;
+		try {
+			resolvedDbPath ??= resolveDb(resolveDbOpt(opts));
+			if (deps.updateDelivery) {
+				deps.updateDelivery(resolvedDbPath, attemptId, status);
+			} else {
+				tryUpdateRetrievalDelivery(getStore().db, attemptId, status);
+			}
+		} catch {
+			// Delivery remains successful even if local attribution cannot be updated.
+		}
+	};
+	if (!envNotDisabled(process.env.CODEMEM_FILE_CONTEXT || "1")) {
+		record({
+			retrievalStatus: "skipped",
+			deliveryStatus: "not_attempted",
+			failureCode: "file_context_disabled",
+			failureStage: "configuration",
+		});
+		return finish(continueResult());
 	}
 
 	const cwd = typeof payload.cwd === "string" && payload.cwd.trim() ? payload.cwd : process.cwd();
@@ -299,7 +395,13 @@ export async function buildClaudeFileContext(
 		logHookEvent(
 			`file_context.skip reason=outside_cwd path=${JSON.stringify(filePath)} cwd=${JSON.stringify(cwd)}`,
 		);
-		return continueResult();
+		record({
+			retrievalStatus: "skipped",
+			deliveryStatus: "not_attempted",
+			failureCode: "outside_cwd",
+			failureStage: "path_validation",
+		});
+		return finish(continueResult());
 	}
 
 	const minBytes = Number.parseInt(
@@ -312,36 +414,70 @@ export async function buildClaudeFileContext(
 	const stat = (deps.statFile ?? statFile)(absolutePath);
 	if (!stat) {
 		logHookEvent(`file_context.skip reason=stat_failed path=${JSON.stringify(relativePath)}`);
-		return continueResult();
+		record({
+			retrievalStatus: "skipped",
+			deliveryStatus: "not_attempted",
+			failureCode: "stat_failed",
+			failureStage: "file_access",
+			repositoryPaths: [relativePath],
+		});
+		return finish(continueResult());
 	}
 	const bypassSizeGate = SMALL_FILE_BYPASS_PATTERNS.some((p) => p.test(relativePath));
 	if (stat.sizeBytes < minBytesEffective && !bypassSizeGate) {
 		logHookEvent(
 			`file_context.skip reason=below_size_gate path=${JSON.stringify(relativePath)} size=${stat.sizeBytes} gate=${minBytesEffective}`,
 		);
-		return continueResult();
+		record({
+			retrievalStatus: "skipped",
+			deliveryStatus: "not_attempted",
+			failureCode: "below_size_gate",
+			failureStage: "size_gate",
+			repositoryPaths: [relativePath],
+		});
+		return finish(continueResult());
 	}
 
 	const project = resolveProject(payload);
-	const resolveDb = deps.resolveDb ?? resolveDbPath;
 	const queryFn = deps.queryByFile ?? queryByFile;
 
 	let rows: RefQueryResult[] = [];
 	try {
-		const dbPath = resolveDb(resolveDbOpt(opts));
-		rows = queryFn(dbPath, relativePath, project, FETCH_LIMIT);
+		resolvedDbPath ??= resolveDb(resolveDbOpt(opts));
+		rows = deps.queryByFile
+			? queryFn(resolvedDbPath, relativePath, project, FETCH_LIMIT)
+			: getStore().findByFile(relativePath, {
+					limit: FETCH_LIMIT,
+					...(project ? { project } : {}),
+				});
 	} catch (err) {
 		logHookEvent(
 			`codemem claude-hook-file-context query failed: ${err instanceof Error ? err.message : String(err)}`,
 		);
-		return continueResult();
+		record({
+			retrievalStatus: "failed",
+			deliveryStatus: "not_attempted",
+			failureCode: "query_failed",
+			failureStage: "retrieval",
+			project,
+			filters: project ? { project } : undefined,
+			repositoryPaths: [relativePath],
+		});
+		return finish(continueResult());
 	}
 
 	if (rows.length === 0) {
 		logHookEvent(
 			`file_context.skip reason=no_observations path=${JSON.stringify(relativePath)} project=${JSON.stringify(project ?? "")}`,
 		);
-		return continueResult();
+		record({
+			retrievalStatus: "no_results",
+			deliveryStatus: "not_attempted",
+			project,
+			filters: project ? { project } : undefined,
+			repositoryPaths: [relativePath],
+		});
+		return finish(continueResult());
 	}
 
 	const top = scoreAndDedupe(rows, relativePath, DISPLAY_LIMIT);
@@ -349,7 +485,19 @@ export async function buildClaudeFileContext(
 		logHookEvent(
 			`file_context.skip reason=no_top_after_dedupe path=${JSON.stringify(relativePath)} candidates=${rows.length}`,
 		);
-		return continueResult();
+		record({
+			retrievalStatus: "succeeded",
+			deliveryStatus: "not_attempted",
+			candidateIds: rows.map((row) => row.id),
+			candidateCount: rows.length,
+			selectedIds: [],
+			failureCode: "no_top_after_dedupe",
+			failureStage: "selection",
+			project,
+			filters: project ? { project } : undefined,
+			repositoryPaths: [relativePath],
+		});
+		return finish(continueResult());
 	}
 
 	let staleness: { fileMtimeMs: number; newestObservationMs: number } | null = null;
@@ -363,19 +511,37 @@ export async function buildClaudeFileContext(
 		}
 	}
 
-	const timeline = formatTimeline(top, relativePath, staleness);
+	record({
+		retrievalStatus: "succeeded",
+		deliveryStatus: "not_attempted",
+		candidateIds: rows.map((row) => row.id),
+		candidateCount: rows.length,
+		selectedIds: top.map((row) => row.id),
+		project,
+		filters: project ? { project } : undefined,
+		repositoryPaths: [relativePath],
+	});
+
+	let timeline: string;
+	try {
+		timeline = formatTimeline(top, relativePath, staleness);
+	} catch {
+		updateDelivery("failed");
+		return finish(continueResult());
+	}
 
 	logHookEvent(
 		`file_context.ok path=${JSON.stringify(relativePath)} candidates=${rows.length} surfaced=${top.length} project=${JSON.stringify(project ?? "")} stale=${staleness ? "true" : "false"}`,
 	);
+	updateDelivery("handed_off");
 
-	return {
+	return finish({
 		hookSpecificOutput: {
 			hookEventName: "PreToolUse",
 			permissionDecision: "allow",
 			additionalContext: timeline,
 		},
-	};
+	});
 }
 
 const claudeHookFileContextCmd = new Command("claude-hook-file-context")

@@ -2,6 +2,7 @@ import { storeVectors } from "@codemem/core";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { errorContent, jsonContent } from "../content.js";
+import { withMcpRetrieval } from "../mcp-retrieval-ledger.js";
 import {
 	forgetMemoryForMcp,
 	getManyForMcp,
@@ -22,16 +23,28 @@ export function registerItemTools(server: McpServer, context: ToolRegistrationCo
 			memory_id: z.number().int().describe("Memory ID"),
 			...filterSchema,
 		},
-		async (args) => {
-			try {
-				// Direct-ID ops do not inherit the server default project. Callers already
-				// have an exact ID; cwd/env should not silently scope the lookup.
-				const item = getMemoryForMcp(store, args.memory_id, buildFilters(args, null));
-				if (!item) return errorContent("not_found");
-				return jsonContent(item);
-			} catch (err) {
-				return errorContent(err instanceof Error ? err.message : String(err));
-			}
+		async (args, extra) => {
+			// Direct-ID ops do not inherit the server default project. Callers already
+			// have an exact ID; cwd/env should not silently scope the lookup.
+			return withMcpRetrieval(
+				context,
+				{
+					surface: "mcp_get",
+					toolName: "memory_get",
+					toolArguments: args,
+					limit: 1,
+					resolveFilters: () => buildFilters(args, null),
+					requestId: extra?.requestId,
+					sourceSessionId: extra?.sessionId,
+					invocationIdentity: extra?.signal,
+				},
+				(filters) => {
+					const item = getMemoryForMcp(store, args.memory_id, filters);
+					return item
+						? { value: item, memoryIds: [item.id], filters }
+						: { value: null, memoryIds: [], error: "not_found", filters };
+				},
+			);
 		},
 	);
 
@@ -42,13 +55,24 @@ export function registerItemTools(server: McpServer, context: ToolRegistrationCo
 			ids: z.array(z.number().int()).max(200).describe("Memory IDs to fetch"),
 			...filterSchema,
 		},
-		async (args) => {
-			try {
-				const items = getManyForMcp(store, args.ids, buildFilters(args, null));
-				return jsonContent({ items });
-			} catch (err) {
-				return errorContent(err instanceof Error ? err.message : String(err));
-			}
+		async (args, extra) => {
+			return withMcpRetrieval(
+				context,
+				{
+					surface: "mcp_get_observations",
+					toolName: "memory_get_observations",
+					toolArguments: args,
+					limit: args.ids.length,
+					resolveFilters: () => buildFilters(args, null),
+					requestId: extra?.requestId,
+					sourceSessionId: extra?.sessionId,
+					invocationIdentity: extra?.signal,
+				},
+				(filters) => {
+					const items = getManyForMcp(store, args.ids, filters);
+					return { value: { items }, memoryIds: items.map((item) => item.id), filters };
+				},
+			);
 		},
 	);
 

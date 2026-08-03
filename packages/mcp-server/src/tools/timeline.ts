@@ -1,7 +1,7 @@
 import { dedupeOrderedIds, type MemoryItemResponse, projectMatchesFilter } from "@codemem/core";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { errorContent, jsonContent } from "../content.js";
+import { withMcpRetrieval } from "../mcp-retrieval-ledger.js";
 import { getManyForMcp } from "../memory-access.js";
 import { buildFilters } from "../project-scope.js";
 import { filterSchema } from "../schemas.js";
@@ -20,20 +20,31 @@ export function registerTimelineTools(server: McpServer, context: ToolRegistrati
 			depth_after: z.number().int().min(0).default(3).describe("Items after anchor"),
 			...filterSchema,
 		},
-		async (args) => {
-			try {
-				const filters = buildFilters(args, defaultProject());
-				const items = store.timeline(
-					args.query ?? null,
-					args.memory_id ?? null,
-					args.depth_before,
-					args.depth_after,
-					filters,
-				);
-				return jsonContent({ items });
-			} catch (err) {
-				return errorContent(err instanceof Error ? err.message : String(err));
-			}
+		async (args, extra) => {
+			return withMcpRetrieval(
+				context,
+				{
+					surface: "mcp_timeline",
+					toolName: "memory_timeline",
+					toolArguments: args,
+					query: args.query,
+					limit: args.depth_before + args.depth_after + 1,
+					resolveFilters: () => buildFilters(args, defaultProject()),
+					requestId: extra?.requestId,
+					sourceSessionId: extra?.sessionId,
+					invocationIdentity: extra?.signal,
+				},
+				(filters) => {
+					const items = store.timeline(
+						args.query ?? null,
+						args.memory_id ?? null,
+						args.depth_before,
+						args.depth_after,
+						filters,
+					);
+					return { value: { items }, memoryIds: items.map((item) => item.id), filters };
+				},
+			);
 		},
 	);
 
@@ -50,140 +61,159 @@ export function registerTimelineTools(server: McpServer, context: ToolRegistrati
 			include_observations: z.boolean().default(false).describe("Include full observation details"),
 			...filterSchema,
 		},
-		async (args) => {
-			try {
-				// Explicit blank `project` clears scoping for cross-project expansion.
-				// Only fall back to the server default when `project` is omitted entirely.
-				const filterDefaultProject =
-					args.project !== undefined && !args.project.trim() ? null : defaultProject();
-				const filters = buildFilters(args, filterDefaultProject);
-				const resolvedProject = filters?.project ?? null;
-				const { ordered: orderedIds, invalid: invalidIds } = dedupeOrderedIds(args.ids);
-				const errors: Array<Record<string, unknown>> = [];
+		async (args, extra) => {
+			return withMcpRetrieval(
+				context,
+				{
+					surface: "mcp_expand",
+					toolName: "memory_expand",
+					toolArguments: args,
+					limit: args.ids.length,
+					resolveFilters: () => {
+						// Explicit blank `project` clears scoping for cross-project expansion.
+						// Only fall back to the server default when `project` is omitted entirely.
+						const filterDefaultProject =
+							args.project !== undefined && !args.project.trim() ? null : defaultProject();
+						return buildFilters(args, filterDefaultProject);
+					},
+					requestId: extra?.requestId,
+					sourceSessionId: extra?.sessionId,
+					invocationIdentity: extra?.signal,
+				},
+				(filters) => {
+					const resolvedProject = filters?.project ?? null;
+					const { ordered: orderedIds, invalid: invalidIds } = dedupeOrderedIds(args.ids);
+					const errors: Array<Record<string, unknown>> = [];
 
-				if (invalidIds.length > 0) {
-					errors.push({
-						code: "INVALID_ARGUMENT",
-						field: "ids",
-						message: "some ids are not valid integers",
-						ids: invalidIds,
-					});
-				}
-
-				const missingNotFound: number[] = [];
-				const missingProjectMismatch: number[] = [];
-				const missingFilterMismatch: number[] = [];
-				const anchors: MemoryItemResponse[] = [];
-				const timelineItems: MemoryItemResponse[] = [];
-				const timelineSeen = new Set<number>();
-				const sessionProjects = new Map<number, string | null>();
-
-				for (const memoryId of orderedIds) {
-					const item = store.get(memoryId);
-					if (!item?.active) {
-						missingNotFound.push(memoryId);
-						continue;
+					if (invalidIds.length > 0) {
+						errors.push({
+							code: "INVALID_ARGUMENT",
+							field: "ids",
+							message: "some ids are not valid integers",
+							ids: invalidIds,
+						});
 					}
 
-					const sessionId = item.session_id;
-					if (resolvedProject && sessionId > 0) {
-						if (!sessionProjects.has(sessionId)) {
-							const row = store.db
-								.prepare("SELECT project FROM sessions WHERE id = ? LIMIT 1")
-								.get(sessionId) as { project: string | null } | undefined;
-							sessionProjects.set(sessionId, typeof row?.project === "string" ? row.project : null);
+					const missingNotFound: number[] = [];
+					const missingProjectMismatch: number[] = [];
+					const missingFilterMismatch: number[] = [];
+					const anchors: MemoryItemResponse[] = [];
+					const timelineItems: MemoryItemResponse[] = [];
+					const timelineSeen = new Set<number>();
+					const sessionProjects = new Map<number, string | null>();
+
+					for (const memoryId of orderedIds) {
+						const item = store.get(memoryId);
+						if (!item?.active) {
+							missingNotFound.push(memoryId);
+							continue;
 						}
-						if (!projectMatchesFilter(resolvedProject, sessionProjects.get(sessionId) ?? null)) {
+
+						const sessionId = item.session_id;
+						if (resolvedProject && sessionId > 0) {
+							if (!sessionProjects.has(sessionId)) {
+								const row = store.db
+									.prepare("SELECT project FROM sessions WHERE id = ? LIMIT 1")
+									.get(sessionId) as { project: string | null } | undefined;
+								sessionProjects.set(
+									sessionId,
+									typeof row?.project === "string" ? row.project : null,
+								);
+							}
+							if (!projectMatchesFilter(resolvedProject, sessionProjects.get(sessionId) ?? null)) {
+								missingProjectMismatch.push(memoryId);
+								continue;
+							}
+						} else if (resolvedProject && sessionId <= 0) {
 							missingProjectMismatch.push(memoryId);
 							continue;
 						}
-					} else if (resolvedProject && sessionId <= 0) {
-						missingProjectMismatch.push(memoryId);
-						continue;
-					}
 
-					const expanded = store.timeline(
-						null,
-						memoryId,
-						args.depth_before,
-						args.depth_after,
-						filters,
-					);
-					const anchor = expanded.find((expandedItem) => expandedItem.id === memoryId);
-					if (!anchor) {
-						missingFilterMismatch.push(memoryId);
-						continue;
-					}
+						const expanded = store.timeline(
+							null,
+							memoryId,
+							args.depth_before,
+							args.depth_after,
+							filters,
+						);
+						const anchor = expanded.find((expandedItem) => expandedItem.id === memoryId);
+						if (!anchor) {
+							missingFilterMismatch.push(memoryId);
+							continue;
+						}
 
-					anchors.push(anchor);
-					for (const expandedItem of expanded) {
-						const expandedId = expandedItem.id;
-						if (expandedId <= 0 || timelineSeen.has(expandedId)) continue;
-						timelineSeen.add(expandedId);
-						timelineItems.push(expandedItem);
-					}
-				}
-
-				if (missingNotFound.length > 0) {
-					errors.push({
-						code: "NOT_FOUND",
-						field: "ids",
-						message: "some requested ids were not found",
-						ids: missingNotFound,
-					});
-				}
-				if (missingProjectMismatch.length > 0) {
-					errors.push({
-						code: "PROJECT_MISMATCH",
-						field: "project",
-						message: "some requested ids are outside the requested project scope",
-						ids: missingProjectMismatch,
-					});
-				}
-				if (missingFilterMismatch.length > 0) {
-					errors.push({
-						code: "FILTER_MISMATCH",
-						field: "filters",
-						message: "some requested ids are outside the requested filters",
-						ids: missingFilterMismatch,
-					});
-				}
-
-				let observations: MemoryItemResponse[] = [];
-				if (args.include_observations) {
-					const observationSeen = new Set<number>();
-					const observationIds: number[] = [];
-					for (const item of [...anchors, ...timelineItems]) {
-						if (item.id > 0 && !observationSeen.has(item.id)) {
-							observationSeen.add(item.id);
-							observationIds.push(item.id);
+						anchors.push(anchor);
+						for (const expandedItem of expanded) {
+							const expandedId = expandedItem.id;
+							if (expandedId <= 0 || timelineSeen.has(expandedId)) continue;
+							timelineSeen.add(expandedId);
+							timelineItems.push(expandedItem);
 						}
 					}
-					observations = getManyForMcp(store, observationIds, filters);
-				}
 
-				return jsonContent({
-					anchors,
-					timeline: timelineItems,
-					observations,
-					missing_ids: orderedIds.filter(
-						(memoryId: number) =>
-							missingNotFound.includes(memoryId) ||
-							missingProjectMismatch.includes(memoryId) ||
-							missingFilterMismatch.includes(memoryId),
-					),
-					errors,
-					metadata: {
-						project: resolvedProject,
-						requested_ids_count: orderedIds.length,
-						returned_anchor_count: anchors.length,
-						timeline_count: timelineItems.length,
-						include_observations: args.include_observations,
-					},
-				});
-			} catch (err) {
-				return errorContent(err instanceof Error ? err.message : String(err));
-			}
+					if (missingNotFound.length > 0) {
+						errors.push({
+							code: "NOT_FOUND",
+							field: "ids",
+							message: "some requested ids were not found",
+							ids: missingNotFound,
+						});
+					}
+					if (missingProjectMismatch.length > 0) {
+						errors.push({
+							code: "PROJECT_MISMATCH",
+							field: "project",
+							message: "some requested ids are outside the requested project scope",
+							ids: missingProjectMismatch,
+						});
+					}
+					if (missingFilterMismatch.length > 0) {
+						errors.push({
+							code: "FILTER_MISMATCH",
+							field: "filters",
+							message: "some requested ids are outside the requested filters",
+							ids: missingFilterMismatch,
+						});
+					}
+
+					let observations: MemoryItemResponse[] = [];
+					if (args.include_observations) {
+						const observationSeen = new Set<number>();
+						const observationIds: number[] = [];
+						for (const item of [...anchors, ...timelineItems]) {
+							if (item.id > 0 && !observationSeen.has(item.id)) {
+								observationSeen.add(item.id);
+								observationIds.push(item.id);
+							}
+						}
+						observations = getManyForMcp(store, observationIds, filters);
+					}
+
+					const value = {
+						anchors,
+						timeline: timelineItems,
+						observations,
+						missing_ids: orderedIds.filter(
+							(memoryId: number) =>
+								missingNotFound.includes(memoryId) ||
+								missingProjectMismatch.includes(memoryId) ||
+								missingFilterMismatch.includes(memoryId),
+						),
+						errors,
+						metadata: {
+							project: resolvedProject,
+							requested_ids_count: orderedIds.length,
+							returned_anchor_count: anchors.length,
+							timeline_count: timelineItems.length,
+							include_observations: args.include_observations,
+						},
+					};
+					const memoryIds = [
+						...new Set([...anchors, ...timelineItems, ...observations].map((item) => item.id)),
+					];
+					return { value, memoryIds, filters };
+				},
+			);
 		},
 	);
 }

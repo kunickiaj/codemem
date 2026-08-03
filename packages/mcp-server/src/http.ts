@@ -8,6 +8,7 @@
  * OAuth bearer tokens.
  */
 
+import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { isIP } from "node:net";
 import { pathToFileURL } from "node:url";
@@ -28,6 +29,7 @@ import {
 	resolveOAuthAuditEmitterFromEnv,
 	wrapAuditEmitterBestEffort,
 } from "./audit.js";
+import { canonicalJson } from "./canonical-json.js";
 import {
 	createInMemoryOAuthAccessTokenStore,
 	createInMemoryOAuthAuthorizationCodeStore,
@@ -59,6 +61,9 @@ const CORS_MAX_AGE_SECONDS = "600";
 const MAX_GUARD_LOG_FIELD_LENGTH = 256;
 const PUBLIC_MCP_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const PUBLIC_MCP_RATE_LIMIT_REQUESTS = 600;
+export const MCP_HTTP_MAX_JSON_BODY_BYTES = 4 * 1024 * 1024;
+export const MCP_HTTP_RETRIEVAL_RETRY_WINDOW_MS = 5 * 60 * 1000;
+const MCP_HTTP_RETRIEVAL_RETRY_MAX_ENTRIES = 2000;
 
 const VALID_HOSTNAME = /^[a-zA-Z0-9.-]+$/;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -76,6 +81,7 @@ export interface CodememMcpHttpOptions {
 	oauthAccessTokenStore?: OAuthAccessTokenStore;
 	oauthStatePath?: string;
 	auditEmitter?: OAuthAuditEmitter;
+	retrievalLedgerNow?: () => number;
 }
 
 export interface CodememMcpHttpServer {
@@ -83,6 +89,18 @@ export interface CodememMcpHttpServer {
 	store: MemoryStore;
 	url: string;
 	close: () => Promise<void>;
+}
+
+export function authenticatedRetrievalPrincipal(
+	auth: { clientId?: string; token?: string; extra?: Record<string, unknown> } | undefined,
+): string | undefined {
+	const authSubject = auth?.extra?.sub;
+	if (typeof authSubject === "string" && authSubject.trim().length > 0) {
+		const subject = authSubject.trim();
+		const clientId = auth?.clientId?.trim();
+		return clientId ? `subject-client:${canonicalJson([subject, clientId])}` : `subject:${subject}`;
+	}
+	return auth?.token ? `token:${auth.token}` : undefined;
 }
 
 export function validateMcpHttpHost(host: string | undefined, allowUnsafePublic = false): string {
@@ -220,6 +238,7 @@ export async function startCodememMcpHttpServer(
 		options.auditEmitter ?? resolveOAuthAuditEmitterFromEnv(),
 	);
 	const activeRequests = new Set<ActiveRequest>();
+	const resolveRetrievalLedgerScopeId = createHttpRetrievalLedgerScopeResolver();
 	let closePromise: Promise<void> | null = null;
 
 	const app = express();
@@ -398,28 +417,45 @@ export async function startCodememMcpHttpServer(
 	const bearerAuditMiddleware = shouldRequireMcpBearer
 		? auditBearerPreflight(auditEmit, tokenStore)
 		: (_req: Request, _res: Response, next: NextFunction) => next();
-	app.post("/mcp", bearerAuditMiddleware, bearerMiddleware, async (req, res) => {
-		if (req.auth) {
-			auditEmit(
-				buildOAuthAuditEvent("bearer", {
-					outcome: "success",
-					clientId: req.auth.clientId,
-					remoteAddress: req.socket.remoteAddress ?? undefined,
-				}),
-			);
-		}
-		const mcpServer = createCodememMcpServer(store);
-		const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-		const activeRequest = { mcpServer };
-		activeRequests.add(activeRequest);
-		try {
-			await mcpServer.connect(transport);
-			await transport.handleRequest(req, res);
-		} finally {
-			activeRequests.delete(activeRequest);
-			await mcpServer.close();
-		}
-	});
+	app.post(
+		"/mcp",
+		bearerAuditMiddleware,
+		bearerMiddleware,
+		express.json({ limit: MCP_HTTP_MAX_JSON_BODY_BYTES }),
+		async (req: Request, res: Response) => {
+			if (req.auth) {
+				auditEmit(
+					buildOAuthAuditEvent("bearer", {
+						outcome: "success",
+						clientId: req.auth.clientId,
+						remoteAddress: req.socket.remoteAddress ?? undefined,
+					}),
+				);
+			}
+			const retrievalPrincipal = authenticatedRetrievalPrincipal(req.auth);
+			const retrievalLedgerScopeId = resolveRetrievalLedgerScopeId({
+				endpoint: publicMcpUrlObject,
+				principal: retrievalPrincipal,
+				requestBody: req.body,
+				now: options.retrievalLedgerNow?.() ?? Date.now(),
+			});
+			const mcpServer = createCodememMcpServer(store, {
+				retrievalLedgerScopeId,
+				retrievalLedgerIdentityMode: "stateless",
+			});
+			const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+			const activeRequest = { mcpServer };
+			activeRequests.add(activeRequest);
+			try {
+				await mcpServer.connect(transport);
+				await transport.handleRequest(req, res, req.body);
+			} finally {
+				activeRequests.delete(activeRequest);
+				await mcpServer.close();
+			}
+		},
+		handleMcpJsonBodyError,
+	);
 	app.all("/mcp", (_req, res) => {
 		res.setHeader("Allow", "POST");
 		res.status(405).type("text/plain").send("Method not allowed");
@@ -588,6 +624,87 @@ function formatHostForUrl(host: string): string {
 
 function getServerUrl(server: Server, host: string): string {
 	return `http://${formatHostForUrl(host)}:${getBoundPort(server)}/mcp`;
+}
+
+function createHttpRetrievalLedgerScopeResolver(): (input: {
+	endpoint: URL;
+	principal: string | undefined;
+	requestBody: unknown;
+	now: number;
+}) => string {
+	const scopes = new Map<string, { scopeId: string; expiresAt: number }>();
+
+	return (input) => {
+		// Anonymous HTTP has no stable, trustworthy caller identity. Give each POST
+		// its own opaque scope rather than collapsing unrelated clients that reuse
+		// the same JSON-RPC id and payload. One POST still shares this scope across
+		// its server execution, preserving callback-level idempotency.
+		if (!input.principal) return createOpaqueHttpRetrievalLedgerScopeId(randomUUID());
+
+		for (const [key, scope] of scopes) {
+			if (scope.expiresAt <= input.now) scopes.delete(key);
+		}
+
+		// Stateless HTTP has no dispatch identity beyond the authenticated
+		// principal and request bytes. Exact repeats inside this bounded window
+		// are therefore treated as transport retries; an intentional repeat must
+		// use a new JSON-RPC id or arrive after expiry. Keep only an opaque digest,
+		// and do not slide the first-observation expiry on reads.
+		const contextDigest = createHash("sha256")
+			.update(
+				JSON.stringify([input.endpoint.href, input.principal, canonicalJson(input.requestBody)]),
+			)
+			.digest("hex");
+		const existing = scopes.get(contextDigest);
+		if (existing) return existing.scopeId;
+
+		const scopeId = createOpaqueHttpRetrievalLedgerScopeId(
+			JSON.stringify([contextDigest, input.now]),
+		);
+		scopes.set(contextDigest, {
+			scopeId,
+			expiresAt: input.now + MCP_HTTP_RETRIEVAL_RETRY_WINDOW_MS,
+		});
+		while (scopes.size > MCP_HTTP_RETRIEVAL_RETRY_MAX_ENTRIES) {
+			const oldestKey = scopes.keys().next().value;
+			if (oldestKey === undefined) break;
+			scopes.delete(oldestKey);
+		}
+		return scopeId;
+	};
+}
+
+function createOpaqueHttpRetrievalLedgerScopeId(seed: string): string {
+	return `mcp-http:${createHash("sha256").update(seed).digest("hex")}`;
+}
+
+function handleMcpJsonBodyError(
+	error: unknown,
+	_req: Request,
+	res: Response,
+	next: NextFunction,
+): void {
+	const status = mcpJsonBodyErrorStatus(error);
+	if (status === null) {
+		next(error);
+		return;
+	}
+	res.status(status).json({
+		jsonrpc: "2.0",
+		error: {
+			code: status === 413 ? -32_000 : -32_700,
+			message: status === 413 ? "Request body too large" : "Parse error",
+		},
+		id: null,
+	});
+}
+
+function mcpJsonBodyErrorStatus(error: unknown): 400 | 413 | null {
+	if (error === null || typeof error !== "object") return null;
+	const bodyError = error as { type?: unknown };
+	if (bodyError.type === "entity.too.large") return 413;
+	if (bodyError.type === "entity.parse.failed") return 400;
+	return null;
 }
 
 function getSdkIssuerUrl(publicMcpUrl: URL, port: number): URL {

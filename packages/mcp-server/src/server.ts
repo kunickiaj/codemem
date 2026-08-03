@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { type MemoryStore, VERSION } from "@codemem/core";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { resolveDefaultProject } from "./project-scope.js";
@@ -25,6 +26,9 @@ export function createCodememMcpServer(
 		},
 		envProject: () =>
 			options.envProject !== undefined ? options.envProject : (process.env.CODEMEM_PROJECT ?? null),
+		captureRetrievalLedger: options.captureRetrievalLedger !== false,
+		retrievalLedgerScopeId: options.retrievalLedgerScopeId ?? randomUUID(),
+		retrievalLedgerIdentityMode: options.retrievalLedgerIdentityMode ?? "session",
 	};
 
 	registerSearchTools(server, context);

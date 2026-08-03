@@ -1,7 +1,14 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+	connect,
+	initTestSchema,
+	MemoryStore,
+	queryRetrievalAttempts,
+	type RetrievalSurfaceRecordInput,
+} from "@codemem/core";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildClaudeFileContext,
 	claudeHookFileContextCommand,
@@ -500,5 +507,413 @@ describe("claude-hook-file-context command", () => {
 		expect(result).toEqual({ continue: true });
 		const log = readFileSync(pluginLogPath, "utf8");
 		expect(log).toContain("file_context.skip reason=no_observations");
+	});
+
+	it.each([
+		{
+			name: "outside-cwd",
+			filePath: "/private/forbidden.ts",
+			stat: { sizeBytes: 2000, mtimeMs: 0 },
+			status: "skipped",
+			code: "outside_cwd",
+			paths: undefined,
+		},
+		{
+			name: "below-size-gate",
+			filePath: "small.ts",
+			stat: { sizeBytes: 1, mtimeMs: 0 },
+			status: "skipped",
+			code: "below_size_gate",
+			paths: ["small.ts"],
+		},
+		{
+			name: "no-observations",
+			filePath: "empty.ts",
+			stat: { sizeBytes: 2000, mtimeMs: 0 },
+			status: "no_results",
+			code: undefined,
+			paths: ["empty.ts"],
+		},
+	])("records the $name lifecycle without absolute paths", async (fixture) => {
+		const attempts: RetrievalSurfaceRecordInput[] = [];
+		await buildClaudeFileContext(
+			{
+				hook_event_name: "PreToolUse",
+				tool_name: "Read",
+				tool_input: { file_path: fixture.filePath },
+				cwd: tmp,
+				session_id: "claude-session-1",
+			},
+			{},
+			{
+				queryByFile: () => [],
+				resolveDb: () => join(tmp, "ledger.sqlite"),
+				statFile: () => fixture.stat,
+				recordAttempt: (_path, attempt) => attempts.push(attempt),
+				now: () => new Date("2026-08-03T10:00:00.000Z"),
+				createAttemptId: () => "018f2db4-f9d3-7a22-8d18-000000000001",
+			},
+		);
+
+		expect(attempts).toHaveLength(1);
+		expect(attempts[0]).toMatchObject({
+			surface: "file_context",
+			retrievalStatus: fixture.status,
+			sourceSessionId: "claude-session-1",
+		});
+		expect(attempts[0]?.failureCode).toBe(fixture.code);
+		expect(attempts[0]?.repositoryPaths).toEqual(fixture.paths);
+		expect(JSON.stringify(attempts)).not.toContain("/private/forbidden.ts");
+		expect(JSON.stringify(attempts)).not.toContain(tmp);
+	});
+
+	it("records selected observations as handed off and correlates a known Claude session", async () => {
+		const dbPath = join(tmp, "ledger.sqlite");
+		const db = connect(dbPath);
+		initTestSchema(db);
+		const now = "2026-08-03T10:00:00.000Z";
+		const sessionId = Number(
+			db
+				.prepare(
+					"INSERT INTO sessions(started_at, cwd, project, user, tool_version) VALUES (?, ?, ?, ?, ?)",
+				)
+				.run(now, tmp, "codemem", "test", "test").lastInsertRowid,
+		);
+		db.prepare(
+			"INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES ('claude', ?, ?, ?, ?)",
+		).run("claude-session-2", "claude-session-2", sessionId, now);
+		db.prepare(
+			`INSERT INTO memory_items(
+				id, session_id, kind, title, body_text, created_at, updated_at,
+				import_key, rev, active, scope_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			41,
+			sessionId,
+			"decision",
+			"Selected observation",
+			"snapshot body",
+			now,
+			now,
+			"snapshot-41",
+			7,
+			1,
+			"scope-test",
+		);
+		db.close();
+		const file = join(tmp, "selected.ts");
+		writeFileSync(file, "x".repeat(2000));
+		const createStore = vi.fn((path: string) => new MemoryStore(path));
+
+		const result = await buildClaudeFileContext(
+			{
+				hook_event_name: "PreToolUse",
+				tool_name: "Read",
+				tool_input: { file_path: file },
+				cwd: tmp,
+				session_id: "claude-session-2",
+			},
+			{},
+			{
+				queryByFile: () => [
+					baseRow({
+						id: 41,
+						session_id: sessionId,
+						title: "Selected observation",
+						files_modified: '["selected.ts"]',
+					}),
+				],
+				resolveDb: () => dbPath,
+				createStore,
+				statFile: () => ({ sizeBytes: 2000, mtimeMs: 0 }),
+			},
+		);
+
+		const readDb = connect(dbPath);
+		const attempt = queryRetrievalAttempts(readDb, { surface: "file_context", limit: 1 })[0];
+		readDb.close();
+		expect(result.hookSpecificOutput?.additionalContext).toContain("Selected observation");
+		expect(createStore).toHaveBeenCalledTimes(1);
+		expect(attempt).toMatchObject({
+			retrievalStatus: "succeeded",
+			deliveryStatus: "handed_off",
+			sessionId,
+			sourceSessionId: "claude-session-2",
+			workingSetFiles: ["selected.ts"],
+		});
+		expect(attempt?.exposures[0]).toMatchObject({
+			memoryId: 41,
+			memoryImportKey: "snapshot-41",
+			memoryRev: 7,
+			memoryUpdatedAt: now,
+			memoryScopeId: "scope-test",
+			memoryKind: "decision",
+			memoryActive: true,
+		});
+	});
+
+	it("uses the production store retrieval path when no query dependency is injected", async () => {
+		const dbPath = join(tmp, "production.sqlite");
+		const db = connect(dbPath);
+		initTestSchema(db);
+		const sessionId = Number(
+			db
+				.prepare(
+					"INSERT INTO sessions(started_at, cwd, project, user, tool_version) VALUES (?, ?, ?, ?, ?)",
+				)
+				.run(new Date().toISOString(), tmp, "codemem", "test", "test").lastInsertRowid,
+		);
+		db.close();
+		const seedStore = new MemoryStore(dbPath);
+		seedStore.remember(
+			sessionId,
+			"decision",
+			"Production retrieval observation",
+			"Production retrieval body",
+			0.9,
+			[],
+			{ files_modified: ["production.ts"] },
+		);
+		seedStore.close();
+
+		const result = await buildClaudeFileContext(
+			{
+				tool_input: { file_path: "production.ts" },
+				cwd: tmp,
+				project: "codemem",
+			},
+			{},
+			{
+				resolveDb: () => dbPath,
+				statFile: () => ({ sizeBytes: 2000, mtimeMs: 0 }),
+			},
+		);
+
+		expect(result.hookSpecificOutput?.additionalContext).toContain(
+			"Production retrieval observation",
+		);
+	});
+
+	it("keeps successful delivery fail-open when the ledger recorder throws", async () => {
+		const file = join(tmp, "fail-open.ts");
+		writeFileSync(file, "x".repeat(2000));
+		const result = await buildClaudeFileContext(
+			{ tool_input: { file_path: file }, cwd: tmp },
+			{},
+			{
+				queryByFile: () => [baseRow({ id: 51, title: "Still delivered" })],
+				resolveDb: () => join(tmp, "ledger.sqlite"),
+				statFile: () => ({ sizeBytes: 2000, mtimeMs: 0 }),
+				recordAttempt: () => {
+					throw new Error("ledger unavailable");
+				},
+			},
+		);
+		expect(result.hookSpecificOutput?.additionalContext).toContain("Still delivered");
+	});
+
+	it("keeps successful hook output and handed-off delivery when store cleanup throws", async () => {
+		const dbPath = join(tmp, "close-failure.sqlite");
+		const db = connect(dbPath);
+		initTestSchema(db);
+		db.close();
+		const store = new MemoryStore(dbPath);
+		const close = vi.spyOn(store, "close").mockImplementation(() => {
+			throw new Error("close failed after success");
+		});
+
+		try {
+			const result = await buildClaudeFileContext(
+				{ tool_input: { file_path: "close-failure.ts" }, cwd: tmp },
+				{},
+				{
+					queryByFile: () => [baseRow({ id: 52, title: "Delivered before cleanup" })],
+					resolveDb: () => dbPath,
+					createStore: () => store,
+					statFile: () => ({ sizeBytes: 2000, mtimeMs: 0 }),
+					createAttemptId: () => "018f2db4-f9d3-7a22-8d18-000000000052",
+				},
+			);
+
+			const output = JSON.parse(JSON.stringify(result)) as typeof result;
+			expect(output.hookSpecificOutput).toMatchObject({
+				hookEventName: "PreToolUse",
+				permissionDecision: "allow",
+			});
+			expect(output.hookSpecificOutput?.additionalContext).toContain("Delivered before cleanup");
+			expect(close).toHaveBeenCalledTimes(1);
+			expect(
+				queryRetrievalAttempts(store.db, { surface: "file_context", limit: 1 })[0],
+			).toMatchObject({
+				attemptId: "018f2db4-f9d3-7a22-8d18-000000000052",
+				retrievalStatus: "succeeded",
+				deliveryStatus: "handed_off",
+			});
+		} finally {
+			close.mockRestore();
+			store.close();
+		}
+	});
+
+	it("records selection before formatting and confirms delivery afterward", async () => {
+		const attempts: RetrievalSurfaceRecordInput[] = [];
+		const deliveries: string[] = [];
+		const result = await buildClaudeFileContext(
+			{ tool_input: { file_path: "selected.ts" }, cwd: tmp },
+			{},
+			{
+				queryByFile: () => [baseRow({ id: 61, title: "Selected then delivered" })],
+				resolveDb: () => join(tmp, "ledger.sqlite"),
+				statFile: () => ({ sizeBytes: 2000, mtimeMs: 0 }),
+				recordAttempt: (_path, attempt) => attempts.push(attempt),
+				updateDelivery: (_path, attemptId, status) => deliveries.push(`${attemptId}:${status}`),
+				createAttemptId: () => "018f2db4-f9d3-7a22-8d18-000000000061",
+			},
+		);
+		expect(result.hookSpecificOutput?.additionalContext).toContain("Selected then delivered");
+		expect(attempts[0]).toMatchObject({
+			retrievalStatus: "succeeded",
+			deliveryStatus: "not_attempted",
+			candidateIds: [61],
+			selectedIds: [61],
+		});
+		expect(deliveries).toEqual(["018f2db4-f9d3-7a22-8d18-000000000061:handed_off"]);
+	});
+
+	it("records disabled file-context as one skipped attempt without changing hook output", async () => {
+		const original = process.env.CODEMEM_FILE_CONTEXT;
+		process.env.CODEMEM_FILE_CONTEXT = "0";
+		const dbPath = join(tmp, "ledger.sqlite");
+		const db = connect(dbPath);
+		initTestSchema(db);
+		db.close();
+		try {
+			const result = await buildClaudeFileContext(
+				{
+					tool_input: { file_path: "disabled.ts" },
+					cwd: tmp,
+					session_id: "claude-session-disabled",
+				},
+				{},
+				{
+					resolveDb: () => dbPath,
+					createAttemptId: () => "018f2db4-f9d3-7a22-8d18-000000000072",
+				},
+			);
+			expect(result).toEqual({ continue: true });
+
+			const readDb = connect(dbPath);
+			const attempts = queryRetrievalAttempts(readDb, { surface: "file_context" });
+			readDb.close();
+			expect(attempts).toHaveLength(1);
+			expect(attempts[0]).toMatchObject({
+				attemptId: "018f2db4-f9d3-7a22-8d18-000000000072",
+				retrievalStatus: "skipped",
+				deliveryStatus: "not_attempted",
+				failureCode: "file_context_disabled",
+				failureStage: "configuration",
+				candidateCount: 0,
+				selectedCount: 0,
+				exposures: [],
+			});
+		} finally {
+			if (original === undefined) delete process.env.CODEMEM_FILE_CONTEXT;
+			else process.env.CODEMEM_FILE_CONTEXT = original;
+		}
+	});
+
+	it("keeps disabled file-context fail-open when the database cannot be resolved", async () => {
+		const original = process.env.CODEMEM_FILE_CONTEXT;
+		process.env.CODEMEM_FILE_CONTEXT = "0";
+		const originalExitCode = process.exitCode;
+		const resolveDb = vi.fn(() => {
+			throw new Error("database unavailable");
+		});
+		try {
+			const result = await buildClaudeFileContext(
+				{ tool_input: { file_path: "disabled.ts" }, cwd: tmp },
+				{},
+				{ resolveDb },
+			);
+
+			expect(result).toEqual({ continue: true });
+			expect(resolveDb).toHaveBeenCalledTimes(1);
+			expect(process.exitCode).toBe(originalExitCode);
+		} finally {
+			if (original === undefined) delete process.env.CODEMEM_FILE_CONTEXT;
+			else process.env.CODEMEM_FILE_CONTEXT = original;
+		}
+	});
+
+	it("keeps disabled file-context fail-open when the ledger write fails", async () => {
+		const original = process.env.CODEMEM_FILE_CONTEXT;
+		process.env.CODEMEM_FILE_CONTEXT = "0";
+		const originalExitCode = process.exitCode;
+		const recordAttempt = vi.fn(() => {
+			throw new Error("ledger unavailable");
+		});
+		try {
+			const result = await buildClaudeFileContext(
+				{ tool_input: { file_path: "disabled.ts" }, cwd: tmp },
+				{},
+				{
+					resolveDb: () => join(tmp, "ledger.sqlite"),
+					recordAttempt,
+				},
+			);
+
+			expect(result).toEqual({ continue: true });
+			expect(recordAttempt).toHaveBeenCalledTimes(1);
+			expect(process.exitCode).toBe(originalExitCode);
+		} finally {
+			if (original === undefined) delete process.env.CODEMEM_FILE_CONTEXT;
+			else process.env.CODEMEM_FILE_CONTEXT = original;
+		}
+	});
+
+	it("delivers file context without recording when retrieval evidence capture is disabled", async () => {
+		const original = process.env.CODEMEM_RETRIEVAL_LEDGER;
+		process.env.CODEMEM_RETRIEVAL_LEDGER = "0";
+		const recordAttempt = vi.fn();
+		try {
+			const result = await buildClaudeFileContext(
+				{ tool_input: { file_path: "capture-disabled.ts" }, cwd: tmp },
+				{},
+				{
+					queryByFile: () => [baseRow({ id: 71, title: "Still delivered" })],
+					resolveDb: () => join(tmp, "ledger.sqlite"),
+					statFile: () => ({ sizeBytes: 2000, mtimeMs: 0 }),
+					recordAttempt,
+				},
+			);
+			expect(result.hookSpecificOutput?.additionalContext).toContain("Still delivered");
+			expect(recordAttempt).not.toHaveBeenCalled();
+		} finally {
+			if (original === undefined) delete process.env.CODEMEM_RETRIEVAL_LEDGER;
+			else process.env.CODEMEM_RETRIEVAL_LEDGER = original;
+		}
+	});
+
+	it("records file-context query failures with a stable code", async () => {
+		const attempts: RetrievalSurfaceRecordInput[] = [];
+		await buildClaudeFileContext(
+			{ tool_input: { file_path: "failed.ts" }, cwd: tmp },
+			{},
+			{
+				resolveDb: () => join(tmp, "ledger.sqlite"),
+				statFile: () => ({ sizeBytes: 2000, mtimeMs: 0 }),
+				queryByFile: () => {
+					throw new Error("raw private database error");
+				},
+				recordAttempt: (_path, attempt) => attempts.push(attempt),
+			},
+		);
+		expect(attempts[0]).toMatchObject({
+			retrievalStatus: "failed",
+			deliveryStatus: "not_attempted",
+			failureCode: "query_failed",
+			failureStage: "retrieval",
+		});
+		expect(JSON.stringify(attempts)).not.toContain("raw private database error");
 	});
 });

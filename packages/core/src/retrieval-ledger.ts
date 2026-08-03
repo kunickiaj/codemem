@@ -18,6 +18,8 @@ export type RetrievalSurface =
 	| "mcp_search_index"
 	| "mcp_pack"
 	| "mcp_get"
+	| "mcp_get_observations"
+	| "mcp_recent"
 	| "mcp_timeline"
 	| "mcp_expand"
 	| "mcp_explain"
@@ -254,6 +256,8 @@ const RETRIEVAL_SURFACES = new Set<RetrievalSurface>([
 	"mcp_search_index",
 	"mcp_pack",
 	"mcp_get",
+	"mcp_get_observations",
+	"mcp_recent",
 	"mcp_timeline",
 	"mcp_expand",
 	"mcp_explain",
@@ -452,7 +456,7 @@ function retentionUntil(
 	days: number | undefined,
 	pinned: boolean,
 ): string | null {
-	const retentionDays = days ?? DEFAULT_RETRIEVAL_LEDGER_RETENTION_DAYS;
+	const retentionDays = days === undefined ? DEFAULT_RETRIEVAL_LEDGER_RETENTION_DAYS : days;
 	if (!Number.isInteger(retentionDays) || retentionDays < 7 || retentionDays > 365) {
 		throw new Error("retentionDays must be an integer from 7 through 365");
 	}
@@ -674,6 +678,29 @@ function rowsEqual(expected: SqlRow, actual: SqlRow, ignoredKeys: string[] = [])
 	);
 }
 
+function hasSameRetryRetentionPolicy(expected: SqlRow, existing: SqlRow): boolean {
+	if (
+		expected.retention_pinned !== existing.retention_pinned ||
+		expected.retention_finalized_at !== existing.retention_finalized_at
+	) {
+		return false;
+	}
+	if (expected.retention_until == null || existing.retention_until == null) {
+		return expected.retention_until === existing.retention_until;
+	}
+	if (
+		typeof expected.retention_until !== "string" ||
+		typeof existing.retention_until !== "string" ||
+		typeof expected.started_at !== "string" ||
+		typeof existing.started_at !== "string"
+	) {
+		return false;
+	}
+	const expectedDuration = Date.parse(expected.retention_until) - Date.parse(expected.started_at);
+	const existingDuration = Date.parse(existing.retention_until) - Date.parse(existing.started_at);
+	return Number.isFinite(expectedDuration) && expectedDuration === existingDuration;
+}
+
 function memoryIdentityMatchesExposure(
 	exposure: SqlRow,
 	memory: { import_key: string | null; origin_device_id: string | null },
@@ -798,35 +825,39 @@ function isBoundedStringList(value: unknown): value is string[] {
 	return Array.isArray(value) && value.length <= 50 && value.every(isBoundedString);
 }
 
+export function isValidRetrievalFilterSummaryEntry(key: string, entry: unknown): boolean {
+	if (!FILTER_KEYS.has(key)) return false;
+	switch (key) {
+		case "kind":
+		case "since":
+		case "project":
+		case "ownership_scope":
+		case "trust_bias":
+			return isBoundedString(entry);
+		case "session_id":
+		case "widen_shared_min_personal_results":
+		case "widen_shared_min_personal_score":
+		case "widen_project_min_results":
+		case "widen_project_min_score":
+		case "widen_project_max_results":
+			return typeof entry === "number" && Number.isFinite(entry);
+		case "scope_id":
+		case "visibility":
+			return isBoundedString(entry) || isBoundedStringList(entry);
+		case "personal_first":
+		case "widen_shared_when_weak":
+		case "widen_project_when_weak":
+			return typeof entry === "boolean" || isBoundedString(entry);
+		default:
+			return isBoundedStringList(entry);
+	}
+}
+
 function isRetrievalFilterSummary(value: unknown): value is RetrievalFilterSummary {
 	if (!isRecord(value)) return false;
-	return Object.entries(value).every(([key, entry]) => {
-		if (!FILTER_KEYS.has(key)) return false;
-		switch (key) {
-			case "kind":
-			case "since":
-			case "project":
-			case "ownership_scope":
-			case "trust_bias":
-				return isBoundedString(entry);
-			case "session_id":
-			case "widen_shared_min_personal_results":
-			case "widen_shared_min_personal_score":
-			case "widen_project_min_results":
-			case "widen_project_min_score":
-			case "widen_project_max_results":
-				return typeof entry === "number" && Number.isFinite(entry);
-			case "scope_id":
-			case "visibility":
-				return isBoundedString(entry) || isBoundedStringList(entry);
-			case "personal_first":
-			case "widen_shared_when_weak":
-			case "widen_project_when_weak":
-				return typeof entry === "boolean" || isBoundedString(entry);
-			default:
-				return isBoundedStringList(entry);
-		}
-	});
+	return Object.entries(value).every(([key, entry]) =>
+		isValidRetrievalFilterSummaryEntry(key, entry),
+	);
 }
 
 function decodeFilterSummary(value: unknown): RetrievalFilterSummary | null {
@@ -1167,8 +1198,19 @@ export function recordRetrievalAttempt(
 					existing.retention_pinned === 0 &&
 					typeof existing.retention_until === "string" &&
 					decodeIsoTimestamp(existing.retention_finalized_at) != null;
+				const reconciledCompletionRetry =
+					existing.request_id != null &&
+					existing.request_id === attempt.request_id &&
+					existing.retrieval_status === attempt.retrieval_status &&
+					existing.delivery_status === attempt.delivery_status &&
+					((attempt.retrieval_status === "succeeded" && attempt.delivery_status === "handed_off") ||
+						(attempt.retrieval_status === "no_results" &&
+							attempt.delivery_status === "not_attempted"));
+				const sameRetryRetentionPolicy = hasSameRetryRetentionPolicy(attempt, existing);
 				const ignoredAttemptKeys = [
 					...(deliveryTransitioned ? ["delivery_status"] : []),
+					...(reconciledCompletionRetry ? ["started_at", "completed_at", "latency_ms"] : []),
+					...(reconciledCompletionRetry && sameRetryRetentionPolicy ? ["retention_until"] : []),
 					...(retentionFinalized
 						? ["retention_pinned", "retention_until", "retention_finalized_at"]
 						: []),
@@ -1207,6 +1249,82 @@ export function tryRecordRetrievalAttempt(
 ): RetrievalLedgerWriteOutcome {
 	try {
 		return { ok: true, value: recordRetrievalAttempt(db, input) };
+	} catch (error) {
+		return {
+			ok: false,
+			errorCode: "retrieval_ledger_write_failed",
+			reason: safeFailureReason(error),
+		};
+	}
+}
+
+export function reconcileFailedRetrievalAttempt(
+	db: Database,
+	input: RecordRetrievalAttemptInput,
+): RetrievalWriteResult {
+	const attempt = canonicalAttempt(input);
+	const attemptId = attempt.attempt_id as string;
+	const exposures = canonicalExposures(input, attemptId);
+	const isSuccessfulCompletion =
+		(attempt.retrieval_status === "succeeded" && attempt.delivery_status === "handed_off") ||
+		(attempt.retrieval_status === "no_results" && attempt.delivery_status === "not_attempted");
+	if (attempt.request_id == null || !isSuccessfulCompletion) {
+		throw new RetrievalLedgerValidationError(
+			"failed retrieval reconciliation requires a request-bound successful completion",
+		);
+	}
+	db.transaction(() => {
+		const existing = db
+			.prepare("SELECT * FROM retrieval_attempts WHERE attempt_id = ?")
+			.get(attemptId) as SqlRow | undefined;
+		if (
+			!existing ||
+			existing.contract_version !== RETRIEVAL_LEDGER_CONTRACT_VERSION ||
+			existing.source !== attempt.source ||
+			existing.surface !== attempt.surface ||
+			existing.request_id !== attempt.request_id ||
+			existing.retrieval_status !== "failed" ||
+			existing.delivery_status !== "not_attempted"
+		) {
+			throw new Error("failed retrieval reconciliation conflicts with persisted data");
+		}
+		const completedAt = attempt.completed_at as string | null;
+		const originalStartedAt = existing.started_at as string;
+		if (
+			!hasSameRetryRetentionPolicy(attempt, existing) ||
+			(completedAt != null && Date.parse(completedAt) < Date.parse(originalStartedAt))
+		) {
+			throw new Error("failed retrieval reconciliation conflicts with persisted data");
+		}
+		const reconciled = {
+			...attempt,
+			started_at: originalStartedAt,
+			latency_ms:
+				completedAt == null
+					? existing.latency_ms
+					: Math.max(0, Date.parse(completedAt) - Date.parse(originalStartedAt)),
+			retention_until: existing.retention_until,
+			retention_pinned: existing.retention_pinned,
+			retention_finalized_at: existing.retention_finalized_at,
+		};
+		const columns = Object.keys(reconciled).filter((column) => column !== "attempt_id");
+		db.prepare(
+			`UPDATE retrieval_attempts SET ${columns.map((column) => `${column} = @${column}`).join(", ")} WHERE attempt_id = @attempt_id`,
+		).run(reconciled);
+		db.prepare("DELETE FROM retrieval_exposures WHERE attempt_id = ?").run(attemptId);
+		for (const exposure of exposures) insertRow(db, "retrieval_exposures", exposure);
+	}).immediate();
+	const saved = readAttempt(db, attemptId);
+	if (!saved) throw new Error("reconciled retrieval attempt was not persisted");
+	return { attempt: saved, inserted: false };
+}
+
+export function tryReconcileFailedRetrievalAttempt(
+	db: Database,
+	input: RecordRetrievalAttemptInput,
+): RetrievalLedgerWriteOutcome {
+	try {
+		return { ok: true, value: reconcileFailedRetrievalAttempt(db, input) };
 	} catch (error) {
 		return {
 			ok: false,
@@ -1393,8 +1511,9 @@ export function purgeExpiredRetrievalAttempts(
 }
 
 export type RetrievalPrivacyPurgeSelector =
-	| { sessionId: number; source?: never; streamId?: never }
-	| { sessionId?: never; source: string; streamId: string };
+	| { sessionId: number; source?: never; streamId?: never; surface?: never }
+	| { sessionId?: never; source: string; streamId: string; surface?: never }
+	| { sessionId?: never; source: string; streamId?: never; surface: RetrievalSurface };
 
 export function purgeRetrievalAttemptsForPrivacy(
 	db: Database,
@@ -1406,6 +1525,15 @@ export function purgeRetrievalAttemptsForPrivacy(
 		return purgeRetrievalAttemptsWhere(db, "session_id = ?", [sessionId]);
 	}
 	const source = requiredString(selector.source, "source", 128);
+	if (selector.surface != null) {
+		if (!RETRIEVAL_SURFACES.has(selector.surface)) {
+			throw new Error("surface is invalid for contract version 1");
+		}
+		return purgeRetrievalAttemptsWhere(db, "source = ? AND surface = ?", [
+			source,
+			selector.surface,
+		]);
+	}
 	const streamId = requiredString(selector.streamId, "streamId");
 	return purgeRetrievalAttemptsWhere(db, "source = ? AND stream_id = ?", [source, streamId]);
 }
