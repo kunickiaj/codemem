@@ -111,6 +111,8 @@ CREATE INDEX IF NOT EXISTS idx_retrieval_attempts_surface_started
 	ON retrieval_attempts(surface, started_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_retrieval_attempts_request_identity
 	ON retrieval_attempts(source, surface, request_id) WHERE request_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_retrieval_attempts_experiment_cell
+	ON retrieval_attempts(experiment_id, experiment_cell_id);
 
 CREATE TABLE IF NOT EXISTS retrieval_exposures (
 	exposure_id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
@@ -179,6 +181,38 @@ CREATE INDEX IF NOT EXISTS idx_outcome_evidence_type_observed
 CREATE INDEX IF NOT EXISTS idx_outcome_evidence_retention
 	ON outcome_evidence(retention_pinned, retention_until);
 
+CREATE TABLE IF NOT EXISTS attribution_assessments (
+	assessment_id TEXT PRIMARY KEY NOT NULL,
+	contract_version INTEGER NOT NULL,
+	subject_type TEXT NOT NULL,
+	attempt_id TEXT NOT NULL REFERENCES retrieval_attempts(attempt_id) ON DELETE CASCADE,
+	exposure_id INTEGER REFERENCES retrieval_exposures(exposure_id) ON DELETE CASCADE,
+	dimension TEXT NOT NULL,
+	impact_label TEXT NOT NULL,
+	basis TEXT NOT NULL,
+	confidence_level TEXT NOT NULL,
+	method TEXT NOT NULL,
+	method_version TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	claim_type TEXT NOT NULL DEFAULT 'observational'
+);
+
+CREATE INDEX IF NOT EXISTS idx_attribution_assessments_attempt_created
+	ON attribution_assessments(attempt_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_attribution_assessments_label_created
+	ON attribution_assessments(impact_label, created_at);
+CREATE INDEX IF NOT EXISTS idx_attribution_assessments_exposure
+	ON attribution_assessments(exposure_id);
+
+CREATE TABLE IF NOT EXISTS attribution_assessment_evidence (
+	assessment_id TEXT NOT NULL REFERENCES attribution_assessments(assessment_id) ON DELETE CASCADE,
+	evidence_id TEXT NOT NULL REFERENCES outcome_evidence(evidence_id) ON DELETE CASCADE,
+	PRIMARY KEY (assessment_id, evidence_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_attribution_assessment_evidence_evidence
+	ON attribution_assessment_evidence(evidence_id, assessment_id);
+
 -- Intentionally handwritten: Drizzle models tables/indexes but not SQLite triggers.
 -- This keeps soft deletion aligned with the FK's physical-delete SET NULL behavior.
 CREATE TRIGGER IF NOT EXISTS trg_retrieval_exposures_detach_deleted_memory
@@ -232,12 +266,15 @@ const RETRIEVAL_LEDGER_SCHEMA_OBJECTS = [
 	"retrieval_attempts",
 	"retrieval_exposures",
 	"outcome_evidence",
+	"attribution_assessments",
+	"attribution_assessment_evidence",
 	"idx_retrieval_attempts_session_started",
 	"idx_retrieval_attempts_source_stream_started",
 	"idx_retrieval_attempts_retention",
 	"idx_retrieval_attempts_started",
 	"idx_retrieval_attempts_surface_started",
 	"idx_retrieval_attempts_request_identity",
+	"idx_retrieval_attempts_experiment_cell",
 	"idx_retrieval_exposures_attempt_rank",
 	"idx_retrieval_exposures_memory",
 	"idx_outcome_evidence_observed_id",
@@ -245,6 +282,10 @@ const RETRIEVAL_LEDGER_SCHEMA_OBJECTS = [
 	"idx_outcome_evidence_source_stream_observed",
 	"idx_outcome_evidence_type_observed",
 	"idx_outcome_evidence_retention",
+	"idx_attribution_assessments_attempt_created",
+	"idx_attribution_assessments_label_created",
+	"idx_attribution_assessments_exposure",
+	"idx_attribution_assessment_evidence_evidence",
 	"trg_retrieval_exposures_detach_deleted_memory",
 	"trg_retrieval_exposures_detach_unavailable_memory",
 	"trg_retrieval_exposures_detach_reused_memory_id",
@@ -628,6 +669,9 @@ export function bootstrapSchema(db: Database): void {
 export function ensureRetrievalLedgerSchema(db: Database): void {
 	if (!tableExists(db, "sessions") || !tableExists(db, "memory_items")) return;
 	ensureMemoryItemsDeletedAtColumn(db);
+	// Contract-v1 cleanup is explicit and bounded by retention/privacy selectors.
+	// Remove the earlier global orphan trigger even when every table/index already exists.
+	db.exec("DROP TRIGGER IF EXISTS trg_attribution_evidence_delete_orphan");
 	if (
 		!columnExists(db, "memory_items", "import_key") ||
 		!columnExists(db, "memory_items", "origin_device_id")

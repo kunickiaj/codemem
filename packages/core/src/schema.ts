@@ -316,6 +316,10 @@ export const retrievalAttempts = sqliteTable(
 		uniqueIndex("idx_retrieval_attempts_request_identity")
 			.on(table.source, table.surface, table.request_id)
 			.where(sql`request_id IS NOT NULL`),
+		index("idx_retrieval_attempts_experiment_cell").on(
+			table.experiment_id,
+			table.experiment_cell_id,
+		),
 	],
 );
 
@@ -401,6 +405,59 @@ export const outcomeEvidence = sqliteTable(
 
 export type OutcomeEvidence = typeof outcomeEvidence.$inferSelect;
 export type NewOutcomeEvidence = typeof outcomeEvidence.$inferInsert;
+
+export const attributionAssessments = sqliteTable(
+	"attribution_assessments",
+	{
+		assessment_id: text("assessment_id").primaryKey(),
+		contract_version: integer("contract_version").notNull(),
+		subject_type: text("subject_type").notNull(),
+		attempt_id: text("attempt_id")
+			.notNull()
+			.references(() => retrievalAttempts.attempt_id, { onDelete: "cascade" }),
+		exposure_id: integer("exposure_id").references(() => retrievalExposures.exposure_id, {
+			onDelete: "cascade",
+		}),
+		dimension: text("dimension").notNull(),
+		impact_label: text("impact_label").notNull(),
+		basis: text("basis").notNull(),
+		confidence_level: text("confidence_level").notNull(),
+		method: text("method").notNull(),
+		method_version: text("method_version").notNull(),
+		created_at: text("created_at").notNull(),
+		claim_type: text("claim_type").notNull().default("observational"),
+	},
+	(table) => [
+		index("idx_attribution_assessments_attempt_created").on(table.attempt_id, table.created_at),
+		index("idx_attribution_assessments_label_created").on(table.impact_label, table.created_at),
+		index("idx_attribution_assessments_exposure").on(table.exposure_id),
+	],
+);
+
+export type AttributionAssessment = typeof attributionAssessments.$inferSelect;
+export type NewAttributionAssessment = typeof attributionAssessments.$inferInsert;
+
+export const attributionAssessmentEvidence = sqliteTable(
+	"attribution_assessment_evidence",
+	{
+		assessment_id: text("assessment_id")
+			.notNull()
+			.references(() => attributionAssessments.assessment_id, { onDelete: "cascade" }),
+		evidence_id: text("evidence_id")
+			.notNull()
+			.references(() => outcomeEvidence.evidence_id, { onDelete: "cascade" }),
+	},
+	(table) => [
+		primaryKey({ columns: [table.assessment_id, table.evidence_id] }),
+		index("idx_attribution_assessment_evidence_evidence").on(
+			table.evidence_id,
+			table.assessment_id,
+		),
+	],
+);
+
+export type AttributionAssessmentEvidence = typeof attributionAssessmentEvidence.$inferSelect;
+export type NewAttributionAssessmentEvidence = typeof attributionAssessmentEvidence.$inferInsert;
 
 export const maintenanceJobs = sqliteTable(
 	"maintenance_jobs",
@@ -1164,6 +1221,8 @@ export const schema = {
 	retrievalAttempts,
 	retrievalExposures,
 	outcomeEvidence,
+	attributionAssessments,
+	attributionAssessmentEvidence,
 	rawEvents,
 	rawEventSessions,
 	opencodeSessions,

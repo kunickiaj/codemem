@@ -255,6 +255,9 @@ describe("retrieval attribution ledger", () => {
 		expect(db.pragma("user_version", { simple: true })).toBe(SCHEMA_VERSION);
 		expect(TEST_SCHEMA_BASE_DDL).toContain("CREATE TABLE IF NOT EXISTS `retrieval_attempts`");
 		expect(TEST_SCHEMA_BASE_DDL).toContain("CREATE TABLE IF NOT EXISTS `retrieval_exposures`");
+		expect(TEST_SCHEMA_BASE_DDL).toContain(
+			"CREATE INDEX IF NOT EXISTS `idx_retrieval_attempts_experiment_cell`",
+		);
 		const result = recordRetrievalAttempt(db, input());
 
 		expect(result.inserted).toBe(true);
@@ -278,6 +281,26 @@ describe("retrieval attribution ledger", () => {
 			scoreSummary: { combined_score: 0.8, recency: 0.2 },
 			reasonCodes: ["ranked.high"],
 		});
+	});
+
+	it("indexes randomized experiment-cell attempt lookup on fresh schemas", () => {
+		const columns = db
+			.prepare("PRAGMA index_info(idx_retrieval_attempts_experiment_cell)")
+			.all()
+			.map((row) => (row as { name: string }).name);
+		expect(columns).toEqual(["experiment_id", "experiment_cell_id"]);
+
+		const plan = db
+			.prepare(
+				`EXPLAIN QUERY PLAN
+				 SELECT attempt_id FROM retrieval_attempts
+				 WHERE experiment_id = ? AND experiment_cell_id = ?
+				 ORDER BY attempt_id`,
+			)
+			.all("experiment-1", "cell-control") as Array<{ detail: string }>;
+		expect(
+			plan.some(({ detail }) => detail.includes("idx_retrieval_attempts_experiment_cell")),
+		).toBe(true);
 	});
 
 	it("persists every retrieval and delivery status", () => {
@@ -545,7 +568,9 @@ describe("retrieval attribution ledger", () => {
 	});
 
 	it("migrates a version-16 database additively and idempotently", () => {
-		db.exec("DROP TABLE retrieval_exposures; DROP TABLE retrieval_attempts;");
+		db.exec(
+			"DROP TABLE attribution_assessment_evidence; DROP TABLE attribution_assessments; DROP TABLE retrieval_exposures; DROP TABLE retrieval_attempts;",
+		);
 		db.pragma("user_version = 16");
 		db.exec(`
 			CREATE TABLE IF NOT EXISTS schema_compat_state (
@@ -575,7 +600,7 @@ describe("retrieval attribution ledger", () => {
 				)
 				.pluck()
 				.get(),
-		).toBe(6);
+		).toBe(7);
 		expect(
 			db
 				.prepare(
@@ -659,6 +684,7 @@ describe("retrieval attribution ledger", () => {
 	it("repairs missing ledger indexes and the handwritten trigger when tables already exist", () => {
 		db.exec(`
 			DROP INDEX idx_retrieval_attempts_started;
+			DROP INDEX idx_retrieval_attempts_experiment_cell;
 			DROP INDEX idx_retrieval_exposures_memory;
 			DROP TRIGGER trg_retrieval_exposures_detach_deleted_memory;
 			DROP TRIGGER trg_retrieval_exposures_detach_unavailable_memory;
@@ -675,9 +701,11 @@ describe("retrieval attribution ledger", () => {
 		`);
 
 		ensureRetrievalLedgerSchema(db);
+		ensureRetrievalLedgerSchema(db);
 
 		for (const name of [
 			"idx_retrieval_attempts_started",
+			"idx_retrieval_attempts_experiment_cell",
 			"idx_retrieval_exposures_memory",
 			"trg_retrieval_exposures_detach_deleted_memory",
 			"trg_retrieval_exposures_detach_unavailable_memory",
@@ -695,6 +723,12 @@ describe("retrieval attribution ledger", () => {
 			.get();
 		expect(repairedTriggerSql).toContain("NEW.memory_import_key = import_key");
 		expect(repairedTriggerSql).toContain("NEW.memory_rev = rev");
+		expect(
+			db
+				.prepare("PRAGMA index_info(idx_retrieval_attempts_experiment_cell)")
+				.all()
+				.map((row) => (row as { name: string }).name),
+		).toEqual(["experiment_id", "experiment_cell_id"]);
 	});
 
 	it.each([
@@ -763,6 +797,8 @@ describe("retrieval attribution ledger", () => {
 			initTestSchema(fresh);
 			initTestSchema(legacy);
 			legacy.exec(`
+				DROP TABLE attribution_assessment_evidence;
+				DROP TABLE attribution_assessments;
 				DROP TRIGGER trg_retrieval_exposures_detach_deleted_memory;
 				DROP TRIGGER trg_retrieval_exposures_detach_reused_memory_id;
 				DROP TABLE retrieval_exposures;
@@ -2731,6 +2767,43 @@ describe("retrieval attribution ledger", () => {
 		).toBe(0);
 	});
 
+	it("purges retrieval attempts when optional attribution tables are absent", () => {
+		recordRetrievalAttempt(db, input({ retentionDays: 7 }));
+		db.exec("DROP TABLE attribution_assessment_evidence; DROP TABLE attribution_assessments;");
+		db.pragma("foreign_keys = OFF");
+
+		expect(purgeExpiredRetrievalAttempts(db, "2026-08-11T10:00:00.000Z")).toBe(1);
+		expect(db.prepare("SELECT count(*) FROM retrieval_attempts").pluck().get()).toBe(0);
+		expect(db.prepare("SELECT count(*) FROM retrieval_exposures").pluck().get()).toBe(0);
+
+		recordRetrievalAttempt(db, input({ requestId: "privacy-without-attribution" }));
+		expect(purgeRetrievalAttemptsForPrivacy(db, { sessionId: 1 })).toBe(1);
+		expect(db.prepare("SELECT count(*) FROM retrieval_attempts").pluck().get()).toBe(0);
+		expect(db.prepare("SELECT count(*) FROM retrieval_exposures").pluck().get()).toBe(0);
+	});
+
+	it("purges retrieval attempts when only the optional attribution link table is absent", () => {
+		const attempt = recordRetrievalAttempt(
+			db,
+			input({ requestId: "partial-attribution-schema" }),
+		).attempt;
+		db.prepare(
+			`INSERT INTO attribution_assessments (
+				assessment_id, contract_version, subject_type, attempt_id, exposure_id,
+				dimension, impact_label, basis, confidence_level, method, method_version,
+				created_at, claim_type
+			) VALUES (?, 1, 'attempt', ?, NULL, 'feedback', 'helpful', 'explicit_reference',
+				'medium', 'test', 'v1', ?, 'observational')`,
+		).run(attemptId(799), attempt.attemptId, STARTED_AT);
+		db.pragma("foreign_keys = OFF");
+		db.exec("DROP TABLE attribution_assessment_evidence;");
+
+		expect(purgeRetrievalAttemptsForPrivacy(db, { sessionId: 1 })).toBe(1);
+		expect(db.prepare("SELECT count(*) FROM attribution_assessments").pluck().get()).toBe(0);
+		expect(db.prepare("SELECT count(*) FROM retrieval_attempts").pluck().get()).toBe(0);
+		expect(db.prepare("SELECT count(*) FROM retrieval_exposures").pluck().get()).toBe(0);
+	});
+
 	it("rolls back explicit exposure deletion when attempt deletion fails", () => {
 		recordRetrievalAttempt(db, input());
 		db.pragma("foreign_keys = OFF");
@@ -3133,6 +3206,8 @@ describe("retrieval ledger data boundaries", () => {
 			seed(db);
 			db.pragma("user_version = 16");
 			db.exec(`
+				DROP TABLE attribution_assessment_evidence;
+				DROP TABLE attribution_assessments;
 				DROP TRIGGER trg_retrieval_exposures_detach_deleted_memory;
 				DROP TABLE retrieval_exposures;
 				DROP TABLE retrieval_attempts;

@@ -9,6 +9,8 @@ export const VERSION = "0.40.0-alpha.1";
 
 export * as Api from "./api-types.js";
 export { extractApplyPatchPaths, MUTATING_TOOL_NAMES } from "./apply-patch.js";
+export * from "./attribution-assessment.js";
+export * from "./attribution-diagnostics.js";
 export type { CreateBetterSqliteCoordinatorAppOptions } from "./better-sqlite-coordinator-runtime.js";
 export { createBetterSqliteCoordinatorApp } from "./better-sqlite-coordinator-runtime.js";
 export type { ClaudeHookAdapterEvent, ClaudeHookRawEventEnvelope } from "./claude-hooks.js";

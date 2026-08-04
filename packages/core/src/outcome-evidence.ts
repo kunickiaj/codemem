@@ -716,6 +716,18 @@ function validateReferences(
 			"matched source-location paths must come from repository_paths",
 		);
 	}
+	if (type === "mechanism.source_location_match" && value != null) {
+		if (value.type !== "integer" || value.unit !== "count") {
+			throw new OutcomeEvidenceValidationError(
+				"source-location evidence value must be an integer count",
+			);
+		}
+		if (value.value !== (references?.matched_paths?.length ?? 0)) {
+			throw new OutcomeEvidenceValidationError(
+				"source-location evidence count must equal matched_paths length",
+			);
+		}
+	}
 	if (
 		(type === "safety.stale_guidance" || type === "safety.contradicted_guidance") &&
 		references?.checkout_id == null &&
@@ -1340,11 +1352,11 @@ export function purgeExpiredOutcomeEvidence(
 ): number {
 	const canonicalNow = requiredTimestamp(now, "now");
 	// Contract v1 defines these retention fields; future versions own their expiry semantics.
-	return db
-		.prepare(
-			"DELETE FROM outcome_evidence WHERE contract_version = ? AND retention_pinned = 0 AND retention_until IS NOT NULL AND retention_until <= ?",
-		)
-		.run(OUTCOME_EVIDENCE_CONTRACT_VERSION, canonicalNow).changes;
+	return purgeOutcomeEvidenceWhere(
+		db,
+		"contract_version = ? AND retention_pinned = 0 AND retention_until IS NOT NULL AND retention_until <= ?",
+		[OUTCOME_EVIDENCE_CONTRACT_VERSION, canonicalNow],
+	);
 }
 
 export type OutcomeEvidencePrivacyPurgeSelector =
@@ -1357,13 +1369,66 @@ export function purgeOutcomeEvidenceForPrivacy(
 ): number {
 	// Explicit privacy deletion applies across versions, including rows this reader cannot interpret.
 	if (selector.sessionId != null) {
-		return db
-			.prepare("DELETE FROM outcome_evidence WHERE session_id = ?")
-			.run(nonNegativeInteger(selector.sessionId, "sessionId")).changes;
+		return purgeOutcomeEvidenceWhere(db, "session_id = ?", [
+			nonNegativeInteger(selector.sessionId, "sessionId") as number,
+		]);
 	}
+	return purgeOutcomeEvidenceWhere(db, "source = ? AND stream_id = ?", [
+		stableCode(selector.source, "source"),
+		stableCode(selector.streamId, "streamId"),
+	]);
+}
+
+function purgeOutcomeEvidenceWhere(
+	db: Database,
+	whereClause: string,
+	params: Array<string | number>,
+): number {
 	return db
-		.prepare("DELETE FROM outcome_evidence WHERE source = ? AND stream_id = ?")
-		.run(stableCode(selector.source, "source"), stableCode(selector.streamId, "streamId")).changes;
+		.transaction(() => {
+			const hasAssessments =
+				db
+					.prepare(
+						"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'attribution_assessments'",
+					)
+					.get() !== undefined;
+			const hasLinks =
+				db
+					.prepare(
+						"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'attribution_assessment_evidence'",
+					)
+					.get() !== undefined;
+			if (hasAssessments && hasLinks) {
+				const dependentAssessments = db
+					.prepare(
+						`SELECT DISTINCT links.assessment_id
+						 FROM attribution_assessment_evidence links
+						 WHERE links.evidence_id IN (
+							SELECT evidence_id FROM outcome_evidence WHERE ${whereClause}
+						 )`,
+					)
+					.all(...params) as Array<{ assessment_id: string }>;
+				const deleteAssessment = db.prepare(
+					"DELETE FROM attribution_assessments WHERE assessment_id = ?",
+				);
+				const deleteAssessmentLinks = db.prepare(
+					"DELETE FROM attribution_assessment_evidence WHERE assessment_id = ?",
+				);
+				for (const row of dependentAssessments) {
+					deleteAssessment.run(row.assessment_id);
+					deleteAssessmentLinks.run(row.assessment_id);
+				}
+			}
+			if (hasLinks) {
+				db.prepare(
+					`DELETE FROM attribution_assessment_evidence WHERE evidence_id IN (
+						SELECT evidence_id FROM outcome_evidence WHERE ${whereClause}
+					)`,
+				).run(...params);
+			}
+			return db.prepare(`DELETE FROM outcome_evidence WHERE ${whereClause}`).run(...params).changes;
+		})
+		.immediate();
 }
 
 interface CollectorBase {
@@ -1568,6 +1633,7 @@ export function explicitFeedbackEvidence(
 		feedback: "helpful" | "irrelevant" | "stale" | "harmful" | "correction";
 		actionId: string;
 		gate: "structured_action" | "unambiguous_instruction";
+		referenceCodes?: string[];
 	},
 ): RecordOutcomeEvidenceInput {
 	return {
@@ -1580,6 +1646,10 @@ export function explicitFeedbackEvidence(
 		producer: input.producer,
 		producerVersion: input.producerVersion,
 		status: "present",
-		references: { feedback_action_id: input.actionId, feedback_gate: input.gate },
+		references: {
+			feedback_action_id: input.actionId,
+			feedback_gate: input.gate,
+			reference_codes: input.referenceCodes,
+		},
 	};
 }

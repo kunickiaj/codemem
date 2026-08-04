@@ -137,6 +137,7 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | Group | Command | Description |
 |-------|---------|-------------|
 | **Core** | `codemem stats` | Database statistics |
+| | `codemem stats --attribution` | Bounded local retrieval-attribution diagnostics (`--json` supported) |
 | | `codemem recent` | Recent memories |
 | | `codemem search <query>` | Search memories |
 | | `codemem pack <context>` | Build a context-aware memory pack |

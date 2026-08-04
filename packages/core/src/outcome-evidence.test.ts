@@ -1687,6 +1687,53 @@ describe("outcome evidence ledger", () => {
 		expect(db.prepare("SELECT count(*) FROM outcome_evidence").pluck().get()).toBe(0);
 	});
 
+	it("uses normalized matched paths as the source of truth for source-location counts", () => {
+		const emptyMatch = sourceLocationOverlapEvidence({
+			evidenceId: id(125),
+			observedAt: OBSERVED_AT,
+			producer: "path-overlap",
+			producerVersion: "v1",
+			retrievedPaths: ["packages/core/src/schema.ts"],
+			downstreamPaths: ["packages/core/src/store.ts"],
+		});
+		const invalidEmptyMatch = {
+			...emptyMatch,
+			value: { type: "integer" as const, value: 1, unit: "count" as const },
+		};
+		expect(() => recordOutcomeEvidence(db, invalidEmptyMatch)).toThrow(/matched_paths length/);
+		expect(tryRecordOutcomeEvidence(db, invalidEmptyMatch)).toEqual({
+			ok: false,
+			errorCode: "outcome_evidence_write_failed",
+			reason: "invalid_input",
+		});
+
+		const oneMatch = sourceLocationOverlapEvidence({
+			evidenceId: id(126),
+			observedAt: OBSERVED_AT,
+			producer: "path-overlap",
+			producerVersion: "v1",
+			retrievedPaths: ["packages/core/src/schema.ts"],
+			downstreamPaths: ["packages/core/src/schema.ts"],
+		});
+		for (const [sequence, count] of [
+			[126, 0],
+			[127, 2],
+		] as const) {
+			expect(() =>
+				recordOutcomeEvidence(db, {
+					...oneMatch,
+					evidenceId: id(sequence),
+					value: { type: "integer", value: count, unit: "count" },
+				}),
+			).toThrow(/matched_paths length/);
+		}
+
+		const valid = recordOutcomeEvidence(db, { ...oneMatch, evidenceId: id(128) }).evidence;
+		expect(valid.value).toEqual({ type: "integer", value: 1, unit: "count" });
+		db.prepare("UPDATE outcome_evidence SET value_integer = 0 WHERE evidence_id = ?").run(id(128));
+		expect(getOutcomeEvidence(db, id(128))).toBeNull();
+	});
+
 	it("round-trips deterministic Windows source-location matching without compatibility folding", () => {
 		const collected = sourceLocationOverlapEvidence(
 			{

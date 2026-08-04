@@ -356,6 +356,14 @@ Stale or contradicted guidance requires a grounded source, such as repository
 state at the evaluated checkout or explicit human adjudication. Age alone is not
 staleness.
 
+Assessment-time qualification keeps diagnostic capture separate from impact
+classification. `safety.wrong_action_followup` supports `harmful` only when an
+observed or derived row names the evaluated checkout, or an evaluator row names
+a rubric or adjudication. `safety.retrieval_noise` supports `irrelevant` only
+when an evaluator row names a rubric or adjudication. Ungrounded rows remain
+linkable evidence for an `unknown` assessment, but cannot support a known impact
+label.
+
 #### Explicit feedback — supporting
 
 - `feedback.explicit_helpful`
@@ -412,9 +420,16 @@ copies of evidence payloads.
   the attempt or memory.
 - `content_overlap`: a bounded deterministic rule found a specific reused command
   or constraint.
-- `human_review`: a reviewer applied a published rubric.
+- `human_review`: a reviewer applied a published rubric or recorded an explicit
+  adjudication; the evaluator evidence must include that grounding identifier.
 - `blinded_evaluator`: an evaluator applied a versioned blinded rubric.
 - `randomized_contrast`: a preregistered experiment compared assigned cells.
+
+Repeated attempts sharing the same fixture within one cell are ambiguous by
+construction, so repeated-work experiments require `checkout_id` correlation.
+Evidence-side checkout or fixture identifiers are enforced only when attempts in
+that cell carry evaluation-replay identifiers; otherwise the singleton fallback
+preserves legacy experiment evidence.
 
 Temporal followup alone cannot produce `helpful`, `irrelevant`, or `harmful` with
 high confidence. It normally remains `unknown` and serves only as a joinable

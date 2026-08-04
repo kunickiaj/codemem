@@ -110,6 +110,22 @@ Command/file token caching notes:
 - Retrieval, skipped injection, current-request cache reuse, and handoff status are recorded in the local evidence ledger. Records contain bounded memory identity, diagnostic codes, and safe repository-relative working-set paths, never prompt text, pack text, memory content, or absolute paths. Reattaching historical cached context does not create attempts, and ledger failures do not block injection.
 - Reuse savings estimate discovery work versus pack read size.
 
+## Retrieval attribution diagnostics
+
+Use `codemem stats --attribution` to inspect local, bounded, observational retrieval diagnostics:
+
+```fish
+codemem stats --attribution
+codemem stats --json --attribution
+```
+
+- The report covers the 50 most recent retrieval attempts and at most 100 linked assessments; counts are a recent bounded window, not lifetime totals.
+- It includes lifecycle completeness: requested, selected, and handed-off attempts and exposures.
+- Evidence completeness distinguishes validated assessed attempts with known or unknown results (insufficient evidence) from unassessed attempts (no valid assessment row was inspected).
+- Invalid rows failed current fail-closed validation. Omitted-by-limit rows exceeded the assessment cap; affected attempts are reported with indeterminate status or incomplete assessment details instead of inferred from unvalidated raw rows.
+- Findings include counts of stale and harmful assessments.
+- It contains no raw transcript, per-memory ROI, or composite productivity score. It makes no causal claim absent a preregistered randomized contrast.
+
 ## Semantic recall
 - Embeddings are stored via sqlite-vec + fastembed.
 - Embeddings are written automatically for new memories.

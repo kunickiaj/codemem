@@ -1137,7 +1137,9 @@ describe("MCP memory access scope guards", () => {
 
 		it("keeps MCP delivery fail-open when ledger tables are unavailable", async () => {
 			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
-			store.db.exec("DROP TABLE retrieval_exposures; DROP TABLE retrieval_attempts;");
+			store.db.exec(
+				"DROP TABLE attribution_assessment_evidence; DROP TABLE attribution_assessments; DROP TABLE retrieval_exposures; DROP TABLE retrieval_attempts;",
+			);
 			const response = parseToolJson(
 				await getTool(server, "memory_get").handler({ memory_id: greenroomId }),
 			) as { id: number };

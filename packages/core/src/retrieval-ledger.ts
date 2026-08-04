@@ -1483,6 +1483,79 @@ function purgeRetrievalAttemptsWhere(
 ): number {
 	return db
 		.transaction(() => {
+			const attributionTables = new Set(
+				db
+					.prepare(
+						`SELECT name FROM sqlite_master
+							 WHERE type = 'table'
+							   AND name IN (
+								'attribution_assessments',
+								'attribution_assessment_evidence',
+								'outcome_evidence'
+							   )`,
+					)
+					.pluck()
+					.all() as string[],
+			);
+			if (attributionTables.has("attribution_assessments")) {
+				if (attributionTables.has("attribution_assessment_evidence")) {
+					const assessmentIds = new Set(
+						db
+							.prepare(
+								`SELECT assessment_id FROM attribution_assessments WHERE attempt_id IN (
+										SELECT attempt_id FROM retrieval_attempts WHERE ${whereClause}
+									)`,
+							)
+							.pluck()
+							.all(...params) as string[],
+					);
+					if (attributionTables.has("outcome_evidence")) {
+						// codemem-ysyh will persist exact randomized pairings. Until then, cell-level
+						// matching deliberately over-deletes when multiple attempts share a cell: fail
+						// closed rather than retain a potentially invalid contrast. Materialize IDs
+						// before deleting links because this selection itself joins the link table.
+						const dependentIds = db
+							.prepare(
+								`WITH purged_cells AS (
+									SELECT DISTINCT experiment_id, experiment_cell_id
+									FROM retrieval_attempts
+									WHERE ${whereClause}
+									  AND experiment_id IS NOT NULL
+									  AND experiment_cell_id IS NOT NULL
+								 )
+								 SELECT DISTINCT assessments.assessment_id
+								 FROM attribution_assessments assessments
+								 JOIN attribution_assessment_evidence links
+								   ON links.assessment_id = assessments.assessment_id
+								 JOIN outcome_evidence evidence ON evidence.evidence_id = links.evidence_id
+								 JOIN purged_cells cells
+								   ON cells.experiment_id = evidence.experiment_id
+								  AND cells.experiment_cell_id = evidence.experiment_cell_id
+								 WHERE assessments.basis = 'randomized_contrast'`,
+							)
+							.pluck()
+							.all(...params) as string[];
+						for (const assessmentId of dependentIds) assessmentIds.add(assessmentId);
+					}
+					const deleteLinks = db.prepare(
+						"DELETE FROM attribution_assessment_evidence WHERE assessment_id = ?",
+					);
+					const deleteAssessment = db.prepare(
+						"DELETE FROM attribution_assessments WHERE assessment_id = ?",
+					);
+					for (const assessmentId of assessmentIds) {
+						deleteLinks.run(assessmentId);
+						deleteAssessment.run(assessmentId);
+					}
+				} else {
+					// Without evidence links, only assessments bound directly to purged attempts are identifiable.
+					db.prepare(
+						`DELETE FROM attribution_assessments WHERE attempt_id IN (
+							SELECT attempt_id FROM retrieval_attempts WHERE ${whereClause}
+						)`,
+					).run(...params);
+				}
+			}
 			db.prepare(
 				`DELETE FROM retrieval_exposures WHERE attempt_id IN (
 					SELECT attempt_id FROM retrieval_attempts WHERE ${whereClause}
