@@ -15,10 +15,14 @@ services:
 
   peer-b:
     <<: *dogfood-viewer
+    environment:
+      CODEMEM_SYNC_ADVERTISE: http://peer-b:7337
     ports:
       - "127.0.0.1:38882:38888"
 
   peer-c:
     <<: *dogfood-viewer
+    environment:
+      CODEMEM_SYNC_ADVERTISE: http://peer-c:7337
     ports:
       - "127.0.0.1:38883:38888"

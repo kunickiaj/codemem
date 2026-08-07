@@ -29,7 +29,7 @@ Run one fixed Compose project, `codemem-dogfood`, with isolated named volumes:
 - `peer-b`: teammate profile, viewer at `http://127.0.0.1:38882`;
 - `peer-c`: the teammate's fresh second-device profile, viewer at `http://127.0.0.1:38883`.
 
-The dogfood Compose override publishes only loopback viewer ports. Peer sync and coordinator traffic remain on the Compose network.
+The dogfood Compose override publishes only loopback viewer ports. Peer sync and coordinator traffic remain on the Compose network, and recipient peers advertise their Compose-reachable service URLs.
 
 ## Initial state
 
@@ -50,12 +50,14 @@ The setup prints the three viewer URLs and an ordered checklist.
 The checklist guides the operator through the real UI:
 
 1. Assign the selected Project to the test Team.
-2. Create an exact-Project invitation on the owner and accept it on the teammate.
-3. Create a Team invitation and accept it on that same teammate profile.
-4. Create an add-device invitation for the teammate Identity and accept it on the fresh second-device profile.
-5. Add future selected and unrelated memories and verify exact delivery and isolation.
-6. Take the teammate offline, revoke access, observe a safe waiting state, restore it, and verify convergence.
-7. Restart recipient profiles and verify Identity and coordinator configuration persistence.
+2. Create a Team invitation on the owner and accept it on the teammate.
+3. If the teammate UI reports that restart is required, run `pnpm run dogfood -- restart teammate` before continuing.
+4. Create an exact-Project invitation on the owner and accept it on that same teammate profile.
+5. Create an add-device invitation for the teammate Identity in the teammate UI and accept it on the fresh second-device profile.
+6. Run `pnpm run dogfood -- restart second-device` after add-device acceptance.
+7. Add future selected and unrelated memories and verify exact delivery and isolation.
+8. Take the teammate offline, revoke access, observe a safe waiting state, restore it, and verify convergence.
+9. Restart recipient profiles and verify Identity and coordinator configuration persistence.
 
 The harness may seed infrastructure, identities, the empty Team, projects, and memories. It must not create, inspect, accept, or commit recipient invitations on the operator's behalf.
 
