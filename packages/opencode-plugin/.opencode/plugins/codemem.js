@@ -1,6 +1,6 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, posix, resolve, win32 } from "node:path";
 import { createHash } from "node:crypto";
 import { spawn as nodeSpawn, execSync } from "node:child_process";
 import { tool } from "@opencode-ai/plugin";
@@ -22,6 +22,7 @@ const CODEMEM_CONTEXT_PART_ID_PREFIX = "codemem-context-";
 const MAX_MESSAGE_INJECTION_CACHE_SESSIONS = 20;
 const MAX_MESSAGE_INJECTION_CACHE_MESSAGES = 100;
 const COMPACTION_INJECTION_SKIP_TTL_MS = 30 * 1000;
+const MAX_WORKING_SET_PATH_CHARS = 400;
 
 let compatCheckCache = null;
 
@@ -210,16 +211,82 @@ const extractApplyPatchPaths = (patchText) => {
   return paths;
 };
 
+const windowsPathFlavor = (value, doubleSlashIsUnc = true) =>
+  /^[A-Za-z]:[\\/]/.test(value)
+  || /^\\\\/.test(value)
+  || (doubleSlashIsUnc && /^\/\/[^/]+[\\/][^/]+/.test(value));
+
+const hasTraversalSegment = (value) =>
+  value.replaceAll("\\", "/").split("/").includes("..");
+
+const normalizeWorkingSetPath = (value, repositoryRoot) => {
+  if (typeof value !== "string" || typeof repositoryRoot !== "string") return null;
+  const candidate = value.trim();
+  if (
+    !candidate
+    || candidate.length > MAX_WORKING_SET_PATH_CHARS
+    || hasTraversalSegment(candidate)
+  ) {
+    return null;
+  }
+
+  const root = repositoryRoot.trim();
+  const candidateIsAbsolute = posix.isAbsolute(candidate) || win32.isAbsolute(candidate);
+  if (candidateIsAbsolute) {
+    if (!root || hasTraversalSegment(root)) return null;
+    const rootUsesWindows = windowsPathFlavor(root);
+    const candidateUsesWindows = windowsPathFlavor(candidate, rootUsesWindows);
+    if (candidateUsesWindows !== rootUsesWindows) return null;
+    const pathApi = candidateUsesWindows ? win32 : posix;
+    if (!pathApi.isAbsolute(root) || !pathApi.isAbsolute(candidate)) return null;
+    const relative = pathApi.relative(pathApi.normalize(root), pathApi.normalize(candidate));
+    if (
+      !relative
+      || relative === ".."
+      || relative.startsWith(`..${pathApi.sep}`)
+      || pathApi.isAbsolute(relative)
+    ) {
+      return null;
+    }
+    const normalized = relative.replaceAll("\\", "/");
+    return normalized.length <= MAX_WORKING_SET_PATH_CHARS ? normalized : null;
+  }
+
+  if (/^[A-Za-z]:/.test(candidate)) return null;
+  const normalized = posix.normalize(candidate.replaceAll("\\", "/")).replace(/^\.\//, "");
+  if (
+    !normalized
+    || normalized === "."
+    || normalized === ".."
+    || normalized.startsWith("../")
+    || posix.isAbsolute(normalized)
+    || normalized.length > MAX_WORKING_SET_PATH_CHARS
+  ) {
+    return null;
+  }
+  return normalized;
+};
+
+const addWorkingSetPath = (paths, value, repositoryRoot) => {
+  const normalized = normalizeWorkingSetPath(value, repositoryRoot);
+  if (!normalized) return null;
+  const duplicate = windowsPathFlavor(repositoryRoot)
+    ? Array.from(paths).some((existing) => existing.toLowerCase() === normalized.toLowerCase())
+    : paths.has(normalized);
+  if (!duplicate) paths.add(normalized);
+  return normalized;
+};
+
 const appendWorkingSetFileArgs = (args, workingSetFiles) => {
   if (!Array.isArray(workingSetFiles) || workingSetFiles.length === 0) {
     return args;
   }
   for (const file of workingSetFiles) {
     const normalized = String(file || "").trim();
-    if (!normalized) {
+    if (!normalized || normalized.length > MAX_WORKING_SET_PATH_CHARS) {
       continue;
     }
-    args.push("--working-set-file", normalized.slice(0, 400));
+    args.push("--working-set-file", normalized);
   }
   return args;
 };
@@ -3042,15 +3109,15 @@ export const OpencodeMemPlugin = async ({
       if (filePath) {
         const lowerTool = toolName.toLowerCase();
         if (lowerTool === "edit" || lowerTool === "write") {
-          sessionContext.filesModified.add(filePath);
+          addWorkingSetPath(sessionContext.filesModified, filePath, cwd);
         } else if (lowerTool === "read") {
-          sessionContext.filesRead.add(filePath);
+          addWorkingSetPath(sessionContext.filesRead, filePath, cwd);
         }
       }
       if (toolName.toLowerCase() === "apply_patch") {
         const patchPaths = extractApplyPatchPaths(args.patchText);
         for (const path of patchPaths) {
-          sessionContext.filesModified.add(path);
+          addWorkingSetPath(sessionContext.filesModified, path, cwd);
         }
       }
 
@@ -3146,6 +3213,8 @@ export const __testUtils = {
   buildRunnerArgs,
   appendWorkingSetFileArgs,
   extractApplyPatchPaths,
+  normalizeWorkingSetPath,
+  addWorkingSetPath,
   mapOpencodeEventTypeToAdapterType,
   buildOpencodeAdapterPayload,
   buildOpencodeAdapterEvent,

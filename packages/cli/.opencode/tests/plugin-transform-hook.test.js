@@ -1356,6 +1356,61 @@ describe("OpenCode transform-time injection", () => {
 		);
 	});
 
+	test("passes only normalized repository paths to pack retrieval and ledger recording", async () => {
+		const packArgs = [];
+		spawnMock.mockImplementation((_command, args) => {
+			if (Array.isArray(args) && args.includes("pack")) {
+				packArgs.push(args);
+				return makeProcess({
+					stdout: JSON.stringify({
+						pack_text: "## Summary\n[1] (feature) Normalized working set",
+						metrics: { total_items: 1, pack_tokens: 12 },
+					}),
+				});
+			}
+			return makeProcess({ stdout: "" });
+		});
+
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		for (const filePath of [
+			"/tmp/greenroom/src/inside.ts",
+			"src/relative.ts",
+			"/tmp/greenroom-private/prefix-secret.ts",
+			"/tmp/outside-secret.ts",
+			"../traversal-secret.ts",
+			"x".repeat(401),
+		]) {
+			await hooks["tool.execute.after"](
+				{ tool: "write", args: { filePath }, sessionID: "sess-paths" },
+				{},
+			);
+		}
+		const output = {
+			messages: [
+				{
+					info: { id: "user-paths", sessionID: "sess-paths", role: "user" },
+					parts: [{ type: "text", text: "normalize paths", messageID: "user-paths" }],
+				},
+			],
+		};
+
+		await hooks["experimental.chat.messages.transform"]({}, output);
+
+		const command = packArgs[0];
+		const workingSetFiles = command.flatMap((arg, index) =>
+			arg === "--working-set-file" ? [command[index + 1]] : [],
+		);
+		expect(workingSetFiles).toEqual(["src/inside.ts", "src/relative.ts"]);
+		expect(command.join(" ")).not.toContain("secret");
+		expect(command.join(" ")).not.toContain("/tmp/greenroom");
+	});
+
 	test("injects the CLI-scoped pack without unauthorized scope memories", async () => {
 		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-plugin-scope-"));
 		tmpDirs.push(tmpDir);
