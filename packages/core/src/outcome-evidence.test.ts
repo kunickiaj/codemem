@@ -315,8 +315,102 @@ describe("outcome evidence ledger", () => {
 		expect(db.prepare("SELECT count(*) FROM outcome_evidence").pluck().get()).toBe(1);
 	});
 
-	it("allows failed deterministic checks with omitted or positive failed counts", () => {
-		const omitted = deterministicCheckEvidence({
+	it("rejects fully accounted failures with omitted failed counts at every boundary", () => {
+		const contradictory = {
+			...check(930, "fail"),
+			references: {
+				check_id: "targeted-suite-930",
+				passed_count: 2,
+				skipped_count: 1,
+				total_count: 3,
+			},
+		};
+
+		expect(() => recordOutcomeEvidence(db, contradictory)).toThrow(
+			/cannot fully account for total_count without failed_count/,
+		);
+		expect(tryRecordOutcomeEvidence(db, contradictory)).toMatchObject({
+			ok: false,
+			reason: "invalid_input",
+		});
+		expect(() =>
+			deterministicCheckEvidence({
+				evidenceId: id(931),
+				observedAt: OBSERVED_AT,
+				producer: "core.test-collector",
+				producerVersion: "1.0.0",
+				check: "test_result",
+				checkId: "targeted-suite-931",
+				status: "fail",
+				counts: { passed: 2, skipped: 1, total: 3 },
+			}),
+		).toThrow(/cannot fully account for total_count without failed_count/);
+
+		const zeroTotal = {
+			...contradictory,
+			evidenceId: id(932),
+			references: {
+				check_id: "targeted-suite-932",
+				total_count: 0,
+			},
+		};
+		expect(() => recordOutcomeEvidence(db, zeroTotal)).toThrow(
+			/cannot fully account for total_count without failed_count/,
+		);
+		expect(tryRecordOutcomeEvidence(db, zeroTotal)).toMatchObject({
+			ok: false,
+			reason: "invalid_input",
+		});
+		expect(() =>
+			deterministicCheckEvidence({
+				evidenceId: id(934),
+				observedAt: OBSERVED_AT,
+				producer: "core.test-collector",
+				producerVersion: "1.0.0",
+				check: "test_result",
+				checkId: "targeted-suite-934",
+				status: "fail",
+				counts: { total: 0 },
+			}),
+		).toThrow(/cannot fully account for total_count without failed_count/);
+
+		const overflow = {
+			...check(935, "fail"),
+			references: {
+				check_id: "targeted-suite-935",
+				passed_count: 2,
+				skipped_count: 2,
+				total_count: 3,
+			},
+		};
+		expect(() => recordOutcomeEvidence(db, overflow)).toThrow(
+			/quality evidence counts cannot exceed total_count/,
+		);
+		expect(() =>
+			deterministicCheckEvidence({
+				evidenceId: id(936),
+				observedAt: OBSERVED_AT,
+				producer: "core.test-collector",
+				producerVersion: "1.0.0",
+				check: "test_result",
+				checkId: "targeted-suite-936",
+				status: "fail",
+				counts: { passed: 2, skipped: 2, total: 3 },
+			}),
+		).toThrow(/quality evidence counts cannot exceed total_count/);
+
+		recordOutcomeEvidence(db, check(933, "fail"));
+		db.prepare("UPDATE outcome_evidence SET references_json = ? WHERE evidence_id = ?").run(
+			JSON.stringify({ ...contradictory.references, check_id: "targeted-suite-933" }),
+			id(933),
+		);
+		expect(getOutcomeEvidence(db, id(933))).toBeNull();
+		expect(queryOutcomeEvidence(db, { evidenceType: "quality.test_result" })).toEqual([]);
+		expect(db.prepare("SELECT count(*) FROM outcome_evidence").pluck().get()).toBe(1);
+	});
+
+	it("preserves status-only, partial, no-total, and positive-count failures", () => {
+		const statusOnly = deterministicCheckEvidence({
 			evidenceId: id(263),
 			observedAt: OBSERVED_AT,
 			producer: "core.test-collector",
@@ -325,10 +419,28 @@ describe("outcome evidence ledger", () => {
 			checkId: "targeted-suite-263",
 			status: "fail",
 		});
-		const positive = check(264, "fail");
+		const partial = {
+			...statusOnly,
+			evidenceId: id(264),
+			references: { check_id: "targeted-suite-264", passed_count: 1, total_count: 3 },
+		};
+		const withoutTotal = {
+			...statusOnly,
+			evidenceId: id(265),
+			references: { check_id: "targeted-suite-265", passed_count: 2, skipped_count: 1 },
+		};
+		const positive = check(266, "fail");
 
-		expect(recordOutcomeEvidence(db, omitted).evidence.references).toEqual({
+		expect(recordOutcomeEvidence(db, statusOnly).evidence.references).toEqual({
 			check_id: "targeted-suite-263",
+		});
+		expect(recordOutcomeEvidence(db, partial).evidence.references).toMatchObject({
+			passed_count: 1,
+			total_count: 3,
+		});
+		expect(recordOutcomeEvidence(db, withoutTotal).evidence.references).toMatchObject({
+			passed_count: 2,
+			skipped_count: 1,
 		});
 		expect(recordOutcomeEvidence(db, positive).evidence.references?.failed_count).toBe(2);
 	});

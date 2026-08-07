@@ -562,6 +562,39 @@ function validateFailingCheckFailedCount(
 	}
 }
 
+function validateFailingCheckAccountedCounts(
+	status: OutcomeEvidenceStatus,
+	passedCount: number | undefined,
+	failedCount: number | undefined,
+	skippedCount: number | undefined,
+	totalCount: number | undefined,
+): void {
+	if (
+		status === "fail" &&
+		failedCount == null &&
+		totalCount != null &&
+		(passedCount ?? 0) + (skippedCount ?? 0) === totalCount
+	) {
+		throw new OutcomeEvidenceValidationError(
+			"failing deterministic quality evidence cannot fully account for total_count without failed_count",
+		);
+	}
+}
+
+function validateCheckCountsDoNotExceedTotal(
+	passedCount: number | undefined,
+	failedCount: number | undefined,
+	skippedCount: number | undefined,
+	totalCount: number | undefined,
+): void {
+	if (
+		totalCount != null &&
+		(passedCount ?? 0) + (failedCount ?? 0) + (skippedCount ?? 0) > totalCount
+	) {
+		throw new OutcomeEvidenceValidationError("quality evidence counts cannot exceed total_count");
+	}
+}
+
 function validateUnknownCheckOutcomeCounts(
 	status: OutcomeEvidenceStatus,
 	passedCount: number | undefined,
@@ -633,6 +666,19 @@ function validateReferences(
 		);
 		validatePassingCheckFailedCount(status, references.failed_count);
 		validateFailingCheckFailedCount(status, references.failed_count);
+		validateCheckCountsDoNotExceedTotal(
+			references.passed_count,
+			references.failed_count,
+			references.skipped_count,
+			references.total_count,
+		);
+		validateFailingCheckAccountedCounts(
+			status,
+			references.passed_count,
+			references.failed_count,
+			references.skipped_count,
+			references.total_count,
+		);
 		validateMixedCheckOutcomeCounts(
 			status,
 			references.passed_count,
@@ -640,17 +686,6 @@ function validateReferences(
 			references.skipped_count,
 			references.total_count,
 		);
-		const knownCounts = [
-			references.passed_count,
-			references.failed_count,
-			references.skipped_count,
-		].filter((count): count is number => count != null);
-		if (
-			references.total_count != null &&
-			knownCounts.reduce((sum, count) => sum + count, 0) > references.total_count
-		) {
-			throw new OutcomeEvidenceValidationError("quality evidence counts cannot exceed total_count");
-		}
 	}
 	if (type === "quality.blinded_evaluator") {
 		validateBlindedEvaluatorStatus(status);
@@ -1470,6 +1505,19 @@ export function deterministicCheckEvidence(
 	);
 	validatePassingCheckFailedCount(input.status, input.counts?.failed);
 	validateFailingCheckFailedCount(input.status, input.counts?.failed);
+	validateCheckCountsDoNotExceedTotal(
+		input.counts?.passed,
+		input.counts?.failed,
+		input.counts?.skipped,
+		input.counts?.total,
+	);
+	validateFailingCheckAccountedCounts(
+		input.status,
+		input.counts?.passed,
+		input.counts?.failed,
+		input.counts?.skipped,
+		input.counts?.total,
+	);
 	validateMixedCheckOutcomeCounts(
 		input.status,
 		input.counts?.passed,
