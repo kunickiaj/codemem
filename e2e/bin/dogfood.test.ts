@@ -521,7 +521,28 @@ describe("manual checklist", () => {
 		expect(checklist).toContain("http://127.0.0.1:38881");
 		expect(checklist).toContain("http://127.0.0.1:38882");
 		expect(checklist).toContain("http://127.0.0.1:38883");
-		expect(checklist).toContain("Create an exact-Project invitation in the owner UI");
-		expect(checklist).toContain("Accept the add-device invitation in the second-device UI");
+		const teamInvite = "Create a Team invitation in the owner UI";
+		const teammateRestart = "pnpm run dogfood -- restart teammate";
+		const projectInvite = "Create an exact-Project invitation in the owner UI";
+		const addDeviceInvite =
+			"Create an add-device invitation in the teammate UI for that Identity";
+		const addDeviceAccept = "Accept the add-device invitation in the second-device UI";
+		const secondDeviceRestart = "pnpm run dogfood -- restart second-device";
+		expect(checklist).toContain(teamInvite);
+		expect(checklist).toContain("If the teammate UI reports that restart is required");
+		expect(checklist).toContain(teammateRestart);
+		expect(checklist).toContain(projectInvite);
+		expect(checklist).toContain("accept it in the same teammate profile");
+		expect(checklist).toContain(addDeviceInvite);
+		expect(checklist).toContain(addDeviceAccept);
+		expect(checklist).toContain(secondDeviceRestart);
+		expect(checklist.indexOf(teamInvite)).toBeLessThan(checklist.indexOf(projectInvite));
+		expect(checklist.indexOf(teamInvite)).toBeLessThan(checklist.indexOf(teammateRestart));
+		expect(checklist.indexOf(teammateRestart)).toBeLessThan(checklist.indexOf(projectInvite));
+		expect(checklist.indexOf(projectInvite)).toBeLessThan(checklist.indexOf(addDeviceInvite));
+		expect(checklist.indexOf(addDeviceInvite)).toBeLessThan(checklist.indexOf(addDeviceAccept));
+		expect(checklist.indexOf(addDeviceAccept)).toBeLessThan(
+			checklist.indexOf(secondDeviceRestart),
+		);
 	});
 });

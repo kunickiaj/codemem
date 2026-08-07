@@ -261,12 +261,14 @@ export function buildManualChecklist(): string {
 
 Manual invitation checklist:
   1. Assign the selected Project to the test Team in the owner UI.
-  2. Create an exact-Project invitation in the owner UI and accept it in the teammate UI.
-  3. Create a Team invitation in the owner UI and accept it in the same teammate profile.
-  4. Create an add-device invitation for the teammate Identity.
-  5. Accept the add-device invitation in the second-device UI.
-  6. Add selected and unrelated future memories and verify exact delivery and isolation.
-  7. Exercise offline revocation, recovery, and restart persistence manually.`;
+  2. Create a Team invitation in the owner UI and accept it in the teammate UI.
+  3. If the teammate UI reports that restart is required, run: pnpm run dogfood -- restart teammate
+  4. Create an exact-Project invitation in the owner UI and accept it in the same teammate profile.
+  5. Create an add-device invitation in the teammate UI for that Identity.
+  6. Accept the add-device invitation in the second-device UI.
+  7. Restart the second device by running: pnpm run dogfood -- restart second-device
+  8. Add selected and unrelated future memories and verify exact delivery and isolation.
+  9. Exercise offline revocation, recovery, and restart persistence manually.`;
 }
 
 function requireState(dependencies: DogfoodDependencies): DogfoodState {

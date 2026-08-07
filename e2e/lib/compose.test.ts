@@ -231,6 +231,12 @@ describe("ComposeManager", () => {
 });
 
 describe("docker-compose.dogfood.yml", () => {
+	it("builds dogfood peers on the supported Node runtime", () => {
+		const contents = readFileSync(resolve("e2e/images/peer.Dockerfile"), "utf8");
+
+		expect(contents).toMatch(/^FROM node:24-bookworm-slim$/mu);
+	});
+
 	it("publishes exactly one loopback viewer port per peer", () => {
 		const contents = readFileSync(resolve("docker-compose.dogfood.yml"), "utf8");
 		const lines = contents.split("\n");
@@ -251,5 +257,16 @@ describe("docker-compose.dogfood.yml", () => {
 		]);
 		expect(contents).not.toMatch(/^\s*network_mode:\s*["']?host["']?\s*$/mu);
 		expect(contents).toContain("serve start --foreground");
+	});
+
+	it("advertises recipient peers by their Compose-reachable service URLs", () => {
+		const contents = readFileSync(resolve("docker-compose.dogfood.yml"), "utf8");
+		const peerA = contents.slice(contents.indexOf("  peer-a:"), contents.indexOf("  peer-b:"));
+		const peerB = contents.slice(contents.indexOf("  peer-b:"), contents.indexOf("  peer-c:"));
+		const peerC = contents.slice(contents.indexOf("  peer-c:"));
+
+		expect(peerA).not.toContain("CODEMEM_SYNC_ADVERTISE");
+		expect(peerB).toContain("CODEMEM_SYNC_ADVERTISE: http://peer-b:7337");
+		expect(peerC).toContain("CODEMEM_SYNC_ADVERTISE: http://peer-c:7337");
 	});
 });
