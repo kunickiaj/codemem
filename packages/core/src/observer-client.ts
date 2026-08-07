@@ -1143,8 +1143,10 @@ function buildCodexPayload(
 	model: string,
 	systemPrompt: string,
 	userPrompt: string,
+	reasoningEffort: string | null,
+	reasoningSummary: string | null,
 ): Record<string, unknown> {
-	return {
+	const payload: Record<string, unknown> = {
 		model,
 		instructions: systemPrompt,
 		input: [
@@ -1156,6 +1158,13 @@ function buildCodexPayload(
 		store: false,
 		stream: true,
 	};
+	if (reasoningEffort || reasoningSummary) {
+		const reasoning: Record<string, unknown> = {};
+		if (reasoningEffort) reasoning.effort = reasoningEffort;
+		if (reasoningSummary) reasoning.summary = reasoningSummary;
+		payload.reasoning = reasoning;
+	}
+	return payload;
 }
 
 // ---------------------------------------------------------------------------
@@ -1423,17 +1432,38 @@ export class ObserverClient {
 			Number.isFinite(cfg.observerRichMaxOutputTokens)
 				? cfg.observerRichMaxOutputTokens
 				: null;
-		this.openaiUseResponses = explicitConfigKeys.has("observerOpenAIUseResponses")
+		const configuredOpenAIUseResponses = explicitConfigKeys.has("observerOpenAIUseResponses")
 			? cfg.observerOpenAIUseResponses === true
 			: this.provider === "openai" && this.runtime === "api_http";
+		this.openaiUseResponses =
+			this.provider === "openai" && this.runtime === "api_http" && !hasCustomBaseUrl
+				? true
+				: configuredOpenAIUseResponses;
+		const usesCustomOpenAIChatCompletions =
+			this.provider === "openai" &&
+			this.runtime === "api_http" &&
+			hasCustomBaseUrl &&
+			!this.openaiUseResponses;
 		this.reasoningEffort =
-			typeof cfg.observerReasoningEffort === "string" && cfg.observerReasoningEffort.trim()
+			!usesCustomOpenAIChatCompletions &&
+			typeof cfg.observerReasoningEffort === "string" &&
+			cfg.observerReasoningEffort.trim()
 				? cfg.observerReasoningEffort.trim()
 				: null;
 		this.reasoningSummary =
-			typeof cfg.observerReasoningSummary === "string" && cfg.observerReasoningSummary.trim()
+			!usesCustomOpenAIChatCompletions &&
+			typeof cfg.observerReasoningSummary === "string" &&
+			cfg.observerReasoningSummary.trim()
 				? cfg.observerReasoningSummary.trim()
 				: null;
+		const usesActiveOpenAIReasoning =
+			this.openaiUseResponses &&
+			((this.reasoningEffort != null && this.reasoningEffort.toLowerCase() !== "none") ||
+				this.reasoningSummary != null);
+		// GPT-5.1+ Responses requests only accept sampling controls when
+		// reasoning effort is `none`; keep the effective config aligned with
+		// what the request can actually transmit.
+		if (usesActiveOpenAIReasoning) this.temperature = null;
 		this.maxChars = cfg.observerMaxChars;
 		this.maxTokens = cfg.observerMaxTokens;
 		this.maxOutputTokens =
@@ -1979,7 +2009,13 @@ export class ObserverClient {
 		}
 		headers["content-type"] = "application/json";
 
-		const payload = buildCodexPayload(this.model, systemPrompt, userPrompt);
+		const payload = buildCodexPayload(
+			this.model,
+			systemPrompt,
+			userPrompt,
+			this.reasoningEffort,
+			this.reasoningSummary,
+		);
 		const url = resolveCodexEndpoint();
 
 		return this._fetchSSE(url, headers, payload, extractCodexDelta, {

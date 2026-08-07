@@ -38,6 +38,8 @@ function baseProps(): SettingsPanelProps {
 			observerTierRoutingEnabled: false,
 			observerSimpleModel: "",
 			observerSimpleTemperature: "",
+			observerReasoningEffort: "",
+			observerReasoningSummary: "",
 			observerRichModel: "",
 			observerRichTemperature: "",
 			observerRichReasoningEffort: "",

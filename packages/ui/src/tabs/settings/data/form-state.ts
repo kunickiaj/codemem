@@ -55,6 +55,12 @@ export function formStateFromPayload(payload: ConfigPayload): SettingsFormState 
 		observerSimpleTemperature: asInputString(
 			effectiveOrConfigured(config, effective, "observer_simple_temperature"),
 		),
+		observerReasoningEffort: asInputString(
+			effectiveOrConfigured(config, effective, "observer_reasoning_effort"),
+		),
+		observerReasoningSummary: asInputString(
+			effectiveOrConfigured(config, effective, "observer_reasoning_summary"),
+		),
 		observerRichModel: asInputString(
 			effectiveOrConfigured(config, effective, "observer_rich_model"),
 		),

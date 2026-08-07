@@ -3,8 +3,12 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { buildRawEventEnvelopeFromHook } from "./claude-hooks.js";
-import { replayBatchExtraction } from "./extraction-replay.js";
-import type { ObserverClient } from "./observer-client.js";
+import { buildTierRoutedReplayObserverConfig, replayBatchExtraction } from "./extraction-replay.js";
+import {
+	type ObserverClient,
+	ObserverClient as ObserverClientImpl,
+	type ObserverConfig,
+} from "./observer-client.js";
 import { initTestSchema } from "./test-utils.js";
 
 function createDbPath(name: string): string {
@@ -14,7 +18,133 @@ function createDbPath(name: string): string {
 	);
 }
 
+function replayObserverConfig(overrides: Partial<ObserverConfig> = {}): ObserverConfig {
+	return {
+		observerProvider: "openai",
+		observerModel: "gpt-5.4-mini",
+		observerRuntime: "api_http",
+		observerApiKey: null,
+		observerBaseUrl: null,
+		observerTemperature: 0.2,
+		observerSimpleModel: null,
+		observerRichModel: null,
+		observerRichReasoningEffort: null,
+		observerRichReasoningSummary: null,
+		observerReasoningEffort: null,
+		observerReasoningSummary: null,
+		observerMaxChars: 12_000,
+		observerMaxTokens: 4_000,
+		observerHeaders: {},
+		observerAuthSource: "none",
+		observerAuthFile: null,
+		observerAuthCommand: [],
+		observerAuthTimeoutMs: 1_500,
+		observerAuthCacheTtlS: 300,
+		observerExplicitConfigKeys: [],
+		...overrides,
+	};
+}
+
 describe("extraction replay", () => {
+	it.each([
+		{ tier: "simple", eventSpan: 12, toolCount: 1, expectedModel: "gpt-5.6-luna" },
+		{ tier: "rich", eventSpan: 153, toolCount: 12, expectedModel: "gpt-5.6-terra" },
+	] as const)("preserves the CLI reasoning override for $tier tier routing", (scenario) => {
+		const routed = buildTierRoutedReplayObserverConfig(
+			new ObserverClientImpl(
+				replayObserverConfig({
+					observerReasoningEffort: "low",
+					observerReasoningSummary: "auto",
+				}),
+			),
+			{
+				batchId: 18503,
+				sessionId: 166405,
+				eventSpan: scenario.eventSpan,
+				promptCount: scenario.tier === "rich" ? 4 : 1,
+				toolCount: scenario.toolCount,
+				transcriptLength: scenario.tier === "rich" ? 2800 : 320,
+			},
+		);
+
+		expect(routed.tier).toBe(scenario.tier);
+		expect(routed.observer.observerModel).toBe(scenario.expectedModel);
+		expect(routed.observer.observerReasoningEffort).toBe("low");
+		expect(routed.observer.observerReasoningSummary).toBe("auto");
+	});
+
+	it("keeps rich-specific replay reasoning ahead of the global override", () => {
+		const routed = buildTierRoutedReplayObserverConfig(
+			new ObserverClientImpl(
+				replayObserverConfig({
+					observerReasoningEffort: "medium",
+					observerReasoningSummary: "auto",
+					observerRichReasoningEffort: "high",
+					observerRichReasoningSummary: "detailed",
+				}),
+			),
+			{
+				batchId: 18503,
+				sessionId: 166405,
+				eventSpan: 153,
+				promptCount: 4,
+				toolCount: 12,
+				transcriptLength: 2800,
+			},
+		);
+
+		expect(routed.observer.observerReasoningEffort).toBe("high");
+		expect(routed.observer.observerReasoningSummary).toBe("detailed");
+	});
+
+	it("routes with the resolved base provider", () => {
+		const routed = buildTierRoutedReplayObserverConfig(
+			new ObserverClientImpl(
+				replayObserverConfig({
+					observerProvider: null,
+					observerModel: null,
+				}),
+			),
+			{
+				batchId: 19001,
+				sessionId: 200001,
+				eventSpan: 12,
+				promptCount: 1,
+				toolCount: 1,
+				transcriptLength: 320,
+			},
+		);
+
+		expect(routed.tier).toBe("simple");
+		expect(routed.observer.observerProvider).toBe("openai");
+		expect(routed.observer.observerModel).toBe("gpt-5.6-luna");
+	});
+
+	it.each([
+		{ tier: "simple", eventSpan: 12, toolCount: 1 },
+		{ tier: "rich", eventSpan: 153, toolCount: 12 },
+	] as const)("preserves an explicit output-token override for the $tier tier", (scenario) => {
+		const routed = buildTierRoutedReplayObserverConfig(
+			new ObserverClientImpl(
+				replayObserverConfig({
+					observerMaxOutputTokens: 7_777,
+					observerExplicitConfigKeys: ["observerMaxOutputTokens"],
+				}),
+			),
+			{
+				batchId: scenario.tier === "rich" ? 18503 : 19001,
+				sessionId: scenario.tier === "rich" ? 166405 : 200001,
+				eventSpan: scenario.eventSpan,
+				promptCount: scenario.tier === "rich" ? 4 : 1,
+				toolCount: scenario.toolCount,
+				transcriptLength: scenario.tier === "rich" ? 2800 : 320,
+			},
+		);
+
+		expect(routed.tier).toBe(scenario.tier);
+		expect(routed.observer.observerMaxOutputTokens).toBe(7_777);
+	});
+
 	it("replays a historical batch through the current observer prompt without persisting", async () => {
 		const dbPath = createDbPath("extraction-replay");
 		const db = new Database(dbPath);
@@ -39,6 +169,10 @@ describe("extraction replay", () => {
 		const observer = {
 			model: "test-model",
 			requestedModel: "test-model-alias",
+			reasoningEffort: "medium",
+			reasoningSummary: "auto",
+			maxOutputTokens: 12_000,
+			temperature: 0.2,
 			observe: async () => {
 				callCount += 1;
 				if (callCount === 1) {
@@ -124,6 +258,10 @@ describe("extraction replay", () => {
 		expect(result.observer.requestedModel).toBe("test-model-alias");
 		expect(result.observer.resolvedModel).toBe("test-model");
 		expect(result.observer.transport).toBe("codex_consumer");
+		expect(result.observer.reasoningEffort).toBe("medium");
+		expect(result.observer.reasoningSummary).toBe("auto");
+		expect(result.observer.maxOutputTokens).toBeNull();
+		expect(result.observer.temperature).toBeNull();
 		expect(result.observer.modelFallbackApplied).toBe(false);
 		expect(result.observer.repairApplied).toBe(true);
 		expect(result.observer.initialRaw).toContain(
@@ -172,6 +310,9 @@ describe("extraction replay", () => {
 
 		let callCount = 0;
 		const observer = {
+			openaiUseResponses: false,
+			reasoningEffort: "medium",
+			reasoningSummary: "auto",
 			observe: async () => {
 				callCount += 1;
 				return {
@@ -203,6 +344,8 @@ describe("extraction replay", () => {
 		expect(result.observer.diagnostics).toEqual(result.observer.initialDiagnostics);
 		expect(result.observer.diagnostics.dataLoss).toBe(true);
 		expect(result.observer.repairedDiagnostics?.dataLoss).toBe(false);
+		expect(result.observer.reasoningEffort).toBeNull();
+		expect(result.observer.reasoningSummary).toBeNull();
 	});
 
 	it("retains usable initial replay output when the repair call throws", async () => {

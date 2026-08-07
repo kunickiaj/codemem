@@ -16,10 +16,10 @@ function baseConfig(overrides: Partial<ObserverConfig> = {}): ObserverConfig {
 		observerTemperature: 0.2,
 		observerTierRoutingEnabled: true,
 		observerSimpleProvider: null,
-		observerSimpleModel: "gpt-5.4-mini",
+		observerSimpleModel: null,
 		observerSimpleTemperature: 0.2,
 		observerRichProvider: null,
-		observerRichModel: "gpt-5.4",
+		observerRichModel: null,
 		observerRichTemperature: 0.2,
 		observerRichReasoningEffort: null,
 		observerRichReasoningSummary: null,
@@ -27,7 +27,7 @@ function baseConfig(overrides: Partial<ObserverConfig> = {}): ObserverConfig {
 		observerOpenAIUseResponses: false,
 		observerReasoningEffort: null,
 		observerReasoningSummary: null,
-		observerMaxOutputTokens: 4000,
+		observerMaxOutputTokens: 7000,
 		observerMaxChars: 12000,
 		observerMaxTokens: 4000,
 		observerHeaders: {},
@@ -36,6 +36,7 @@ function baseConfig(overrides: Partial<ObserverConfig> = {}): ObserverConfig {
 		observerAuthCommand: [],
 		observerAuthTimeoutMs: 1500,
 		observerAuthCacheTtlS: 300,
+		observerExplicitConfigKeys: [],
 		...overrides,
 	};
 }
@@ -52,8 +53,9 @@ describe("extraction tier routing", () => {
 		});
 
 		expect(decision.tier).toBe("rich");
-		expect(decision.observer.observerModel).toBe("gpt-5.4");
+		expect(decision.observer.observerModel).toBe("gpt-5.6-terra");
 		expect(decision.observer.observerOpenAIUseResponses).toBe(true);
+		expect(decision.observer.observerReasoningEffort).toBe("medium");
 		expect(decision.reasons.length).toBeGreaterThan(0);
 	});
 
@@ -68,8 +70,9 @@ describe("extraction tier routing", () => {
 		});
 
 		expect(decision.tier).toBe("simple");
-		expect(decision.observer.observerModel).toBe("gpt-5.4-mini");
+		expect(decision.observer.observerModel).toBe("gpt-5.6-luna");
 		expect(decision.observer.observerTemperature).toBe(0.2);
+		expect(decision.observer.observerReasoningEffort).toBe("medium");
 	});
 
 	it("uses Responses defaults for the simple OpenAI tier when transport is not explicitly set", () => {
@@ -83,6 +86,9 @@ describe("extraction tier routing", () => {
 		});
 		const config = buildTieredObserverConfig(baseConfig(), decision);
 		expect(config.observerOpenAIUseResponses).toBe(true);
+		expect(config.observerModel).toBe("gpt-5.6-luna");
+		expect(config.observerReasoningEffort).toBe("medium");
+		expect(config.observerMaxOutputTokens).toBe(7_000);
 	});
 
 	it("uses rich Responses defaults when rich-specific flag is unset", () => {
@@ -96,6 +102,95 @@ describe("extraction tier routing", () => {
 		});
 		const config = buildTieredObserverConfig(baseConfig(), decision);
 		expect(config.observerOpenAIUseResponses).toBe(true);
+		expect(config.observerModel).toBe("gpt-5.6-terra");
+		expect(config.observerReasoningEffort).toBe("medium");
+	});
+
+	it("prefers an explicit global output-token limit over the rich default", () => {
+		const decision = decideExtractionReplayTier({
+			batchId: 18503,
+			sessionId: 166405,
+			eventSpan: 153,
+			promptCount: 4,
+			toolCount: 12,
+			transcriptLength: 2800,
+		});
+		const config = buildTieredObserverConfig(
+			baseConfig({
+				observerRichMaxOutputTokens: null,
+				observerExplicitConfigKeys: ["observerMaxOutputTokens"],
+			}),
+			decision,
+		);
+
+		expect(config.observerMaxOutputTokens).toBe(7_000);
+	});
+
+	it("keeps the rich default when the global output-token limit was only resolved", () => {
+		const decision = decideExtractionReplayTier({
+			batchId: 18503,
+			sessionId: 166405,
+			eventSpan: 153,
+			promptCount: 4,
+			toolCount: 12,
+			transcriptLength: 2800,
+		});
+		const config = buildTieredObserverConfig(
+			baseConfig({ observerRichMaxOutputTokens: null }),
+			decision,
+		);
+
+		expect(config.observerMaxOutputTokens).toBe(12_000);
+	});
+
+	it.each([
+		["simple", 12, 1, "gpt-5.4-mini"],
+		["rich", 153, 12, "gpt-5.4"],
+	] as const)("prefers configured legacy OpenAI models and reasoning over %s-tier defaults", (tier, eventSpan, toolCount, expectedModel) => {
+		const decision = decideExtractionReplayTier({
+			batchId: 19001,
+			sessionId: 200001,
+			eventSpan,
+			promptCount: tier === "rich" ? 4 : 1,
+			toolCount,
+			transcriptLength: tier === "rich" ? 2800 : 320,
+		});
+		const config = buildTieredObserverConfig(
+			baseConfig({
+				observerSimpleModel: "gpt-5.4-mini",
+				observerRichModel: "gpt-5.4",
+				observerReasoningEffort: "low",
+				observerReasoningSummary: "auto",
+			}),
+			decision,
+		);
+
+		expect(config.observerModel).toBe(expectedModel);
+		expect(config.observerReasoningEffort).toBe("low");
+		expect(config.observerReasoningSummary).toBe("auto");
+	});
+
+	it("prefers the rich-tier reasoning override over the legacy base setting", () => {
+		const decision = decideExtractionReplayTier({
+			batchId: 18503,
+			sessionId: 166405,
+			eventSpan: 153,
+			promptCount: 4,
+			toolCount: 12,
+			transcriptLength: 2800,
+		});
+		const config = buildTieredObserverConfig(
+			baseConfig({
+				observerReasoningEffort: "low",
+				observerReasoningSummary: "auto",
+				observerRichReasoningEffort: "high",
+				observerRichReasoningSummary: "detailed",
+			}),
+			decision,
+		);
+
+		expect(config.observerReasoningEffort).toBe("high");
+		expect(config.observerReasoningSummary).toBe("detailed");
 	});
 
 	it("picks Claude rich defaults when base provider is anthropic", () => {
@@ -361,7 +456,7 @@ describe("extraction tier routing", () => {
 			expect.objectContaining({
 				requestedTier: "rich",
 				requestedProvider: "openai",
-				requestedModel: "gpt-5.4",
+				requestedModel: "gpt-5.6-terra",
 				requestedRuntime: "api_http",
 				requestedOpenAIResponses: true,
 				fallbackApplied: false,
@@ -390,7 +485,7 @@ describe("extraction tier routing", () => {
 		expect(selection.metadata.fallbackApplied).toBe(false);
 	});
 
-	it("honors explicit false for simple OpenAI Responses usage", () => {
+	it("keeps simple official OpenAI routing on Responses when base transport is explicitly false", () => {
 		const decision = decideExtractionReplayTier({
 			batchId: 19001,
 			sessionId: 200001,
@@ -406,7 +501,38 @@ describe("extraction tier routing", () => {
 			}),
 			decision,
 		);
+		expect(selection.observer.observerOpenAIUseResponses).toBe(true);
+		expect(selection.observer.observerReasoningEffort).toBe("medium");
+	});
+
+	it.each([
+		["simple", 12, 1],
+		["rich", 153, 12],
+	] as const)("uses chat completions without reasoning metadata for a custom OpenAI-compatible %s tier", (tier, eventSpan, toolCount) => {
+		const decision = decideExtractionReplayTier({
+			batchId: 19001,
+			sessionId: 200001,
+			eventSpan,
+			promptCount: tier === "rich" ? 4 : 1,
+			toolCount,
+			transcriptLength: tier === "rich" ? 2800 : 320,
+		});
+		const selection = buildTieredObserverSelection(
+			baseConfig({
+				observerBaseUrl: "https://gateway.example.test/v1",
+				observerOpenAIUseResponses: false,
+				observerReasoningEffort: "high",
+				observerReasoningSummary: "detailed",
+				observerRichReasoningEffort: "high",
+				observerRichReasoningSummary: "detailed",
+				observerExplicitConfigKeys: ["observerOpenAIUseResponses"],
+			}),
+			decision,
+		);
+
 		expect(selection.observer.observerOpenAIUseResponses).toBe(false);
+		expect(selection.observer.observerReasoningEffort).toBeNull();
+		expect(selection.observer.observerReasoningSummary).toBeNull();
 	});
 
 	it("does not record fallback on claude_sidecar when provider was not explicitly requested", () => {

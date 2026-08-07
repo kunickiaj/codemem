@@ -2539,6 +2539,8 @@ describe("viewer-server", () => {
 							observer_tier_routing_enabled: true,
 							observer_simple_model: "gpt-5.4-mini",
 							observer_simple_temperature: 0.2,
+							observer_reasoning_effort: "medium",
+							observer_reasoning_summary: "auto",
 							observer_rich_model: "gpt-5.4",
 							observer_rich_temperature: 0.1,
 							observer_rich_reasoning_effort: "medium",
@@ -2556,6 +2558,8 @@ describe("viewer-server", () => {
 				const saved = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
 				expect(saved).not.toHaveProperty("observer_rich_openai_use_responses");
 				expect(saved.observer_simple_temperature).toBe(0.2);
+				expect(saved.observer_reasoning_effort).toBe("medium");
+				expect(saved.observer_reasoning_summary).toBe("auto");
 				expect(saved.observer_rich_temperature).toBe(0.1);
 				expect(saved.observer_rich_max_output_tokens).toBe(12000);
 			} finally {

@@ -9,7 +9,9 @@ import {
 	memoryCommand,
 	reconcileExtractionBenchmarkStatus,
 	rememberMemoryCommand,
+	resolveOpenAIResponsesOverride,
 	showMemoryCommand,
+	summarizeBenchmarkReasoning,
 } from "./memory.js";
 
 vi.mock("../../../core/src/embeddings.js", async () => {
@@ -184,6 +186,40 @@ describe("memory command aliases", () => {
 		expect(longs).toContain("--all-projects");
 		expect(longs).toContain("--limit");
 		expect(longs).toContain("--json");
+	});
+});
+
+describe("benchmark reasoning summaries", () => {
+	it("preserves explicit null reasoning from tier-routed benchmark runs", () => {
+		expect(
+			summarizeBenchmarkReasoning([{ reasoningEffort: null, reasoningSummary: null }], {
+				reasoningEffort: "medium",
+				reasoningSummary: "auto",
+			}),
+		).toEqual({ reasoningEffort: null, reasoningSummary: null });
+		expect(
+			summarizeBenchmarkReasoning([], {
+				reasoningEffort: "medium",
+				reasoningSummary: "auto",
+			}),
+		).toEqual({ reasoningEffort: "medium", reasoningSummary: "auto" });
+		expect(
+			summarizeBenchmarkReasoning(
+				[
+					{ reasoningEffort: "low", reasoningSummary: null },
+					{ reasoningEffort: "medium", reasoningSummary: null },
+				],
+				{ reasoningEffort: "high", reasoningSummary: "auto" },
+			),
+		).toEqual({ reasoningEffort: "mixed", reasoningSummary: null });
+	});
+});
+
+describe("benchmark observer overrides", () => {
+	it("preserves configured Responses transport unless the CLI flag enables it", () => {
+		expect(resolveOpenAIResponsesOverride(undefined, true)).toBe(true);
+		expect(resolveOpenAIResponsesOverride(undefined, false)).toBe(false);
+		expect(resolveOpenAIResponsesOverride(true, false)).toBe(true);
 	});
 });
 

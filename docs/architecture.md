@@ -237,9 +237,10 @@ The observer turns raw session transcripts into typed, structured memories. It's
 - Supported runtime values are `api_http` and `claude_sidecar`.
 - `claude_sidecar` executes observer prompts through local Claude runtime auth and bypasses provider API-key client initialization.
 - `claude_sidecar` command launch is configurable with `claude_command` / `CODEMEM_CLAUDE_COMMAND` (JSON argv; default `["claude"]`).
-- Runtime defaults: `api_http` uses `gpt-5.1-codex-mini`; `claude_sidecar` uses `claude-4.5-haiku` unless explicitly overridden.
+- Runtime defaults: `api_http` uses `gpt-5.4-mini`; `claude_sidecar` uses `claude-4.5-haiku` unless explicitly overridden.
 - For capability-safe paths, tier routing can default on without an explicit user toggle. Current safe classes are OpenAI/Anthropic over `api_http` and Claude subscription usage over `claude_sidecar`.
-- OpenAI `api_http` observer calls are Responses-first by default unless the user explicitly overrides transport behavior.
+- OpenAI `api_http` tier routing defaults to `gpt-5.6-luna` for simple batches and `gpt-5.6-terra` for rich batches. Official OpenAI and OAuth `codex_consumer` requests always use Responses and send reasoning effort `medium` unless explicitly overridden. `observer_openai_use_responses: false` is reserved for an explicitly configured custom `observer_base_url`; both tiers then use chat completions and clear effective reasoning effort/summary because those controls are not transmitted. Official OpenAI cannot opt out of Responses.
+- Simple-tier reasoning uses the global `observer_reasoning_effort` / `observer_reasoning_summary` overrides; the corresponding `observer_rich_reasoning_*` settings take precedence for rich-tier requests.
 - If a configured `observer_model` is not available in Claude CLI, codemem retries once with Claude's default model.
 - When a tier-selected path cannot honor the requested runtime/provider/model combination, codemem records the requested-versus-actual details plus a visible fallback reason rather than silently masking the downgrade.
 - Supported auth sources are `auto`, `env`, `file`, `command`, `none`.

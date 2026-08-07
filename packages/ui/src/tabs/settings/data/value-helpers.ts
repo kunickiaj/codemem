@@ -110,6 +110,8 @@ export function configuredValueForKey(config: unknown, key: string): unknown {
 		case "observer_provider":
 		case "observer_model":
 		case "observer_simple_model":
+		case "observer_reasoning_effort":
+		case "observer_reasoning_summary":
 		case "observer_rich_model":
 		case "observer_rich_reasoning_effort":
 		case "observer_rich_reasoning_summary":

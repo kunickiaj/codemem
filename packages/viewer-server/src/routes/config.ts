@@ -49,6 +49,8 @@ const ALLOWED_KEYS = [
 	"observer_tier_routing_enabled",
 	"observer_simple_model",
 	"observer_simple_temperature",
+	"observer_reasoning_effort",
+	"observer_reasoning_summary",
 	"observer_rich_model",
 	"observer_rich_temperature",
 	"observer_rich_reasoning_effort",
@@ -308,6 +310,8 @@ function validateAndApplyUpdate(
 		key === "observer_base_url" ||
 		key === "observer_model" ||
 		key === "observer_simple_model" ||
+		key === "observer_reasoning_effort" ||
+		key === "observer_reasoning_summary" ||
 		key === "observer_rich_model" ||
 		key === "observer_rich_reasoning_effort" ||
 		key === "observer_rich_reasoning_summary" ||

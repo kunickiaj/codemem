@@ -18,7 +18,7 @@ export interface ExtractionModelCostEstimate {
 	totalCostUsd: number;
 }
 
-// Evaluation pricing snapshot supplied for the 2026-07-10 model-selection run.
+// Release/evaluation pricing snapshot recorded 2026-08-07.
 // Cost estimates intentionally use provider-reported input/output totals without
 // applying cache discounts because cache billing fields are not consistent
 // across the supported HTTP and sidecar transports.
@@ -40,6 +40,12 @@ const EXTRACTION_MODEL_PRICING: readonly ExtractionModelPricing[] = [
 		aliases: ["gpt-5.5"],
 		inputUsdPerMillionTokens: 5,
 		outputUsdPerMillionTokens: 30,
+	},
+	{
+		model: "gpt-5.6-luna",
+		aliases: ["gpt-5.6-luna", "luna"],
+		inputUsdPerMillionTokens: 1,
+		outputUsdPerMillionTokens: 6,
 	},
 	{
 		model: "gpt-5.6-terra",

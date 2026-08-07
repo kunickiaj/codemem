@@ -12,6 +12,8 @@ export type SettingsFormState = {
 	observerTierRoutingEnabled: boolean;
 	observerSimpleModel: string;
 	observerSimpleTemperature: string;
+	observerReasoningEffort: string;
+	observerReasoningSummary: string;
 	observerRichModel: string;
 	observerRichTemperature: string;
 	observerRichReasoningEffort: string;

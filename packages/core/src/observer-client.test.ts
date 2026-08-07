@@ -3,6 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	buildTieredObserverConfig,
+	type ExtractionReplayTierRoutingDecision,
+} from "./extraction-tier-routing.js";
+import {
 	isCodexSidecarAuthError,
 	isCodexSidecarModelError,
 	isSidecarAuthError,
@@ -202,6 +206,30 @@ describe("loadObserverConfig", () => {
 			process.env.CODEMEM_CONFIG = configPath;
 			const cfg = loadObserverConfig();
 			expect(cfg.observerOpenAIUseResponses).toBe(true);
+			expect(cfg.observerExplicitConfigKeys).toEqual(
+				expect.arrayContaining(["observerOpenAIUseResponses"]),
+			);
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves an explicit false Responses setting for custom-gateway compatibility", () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-config-test-"));
+		const configPath = join(tmpDir, "config.json");
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				observer_provider: "openai",
+				observer_base_url: "https://gateway.example.test/v1",
+				observer_openai_use_responses: false,
+			}),
+		);
+		try {
+			process.env.CODEMEM_CONFIG = configPath;
+			const cfg = loadObserverConfig();
+			expect(cfg.observerBaseUrl).toBe("https://gateway.example.test/v1");
+			expect(cfg.observerOpenAIUseResponses).toBe(false);
 			expect(cfg.observerExplicitConfigKeys).toEqual(
 				expect.arrayContaining(["observerOpenAIUseResponses"]),
 			);
@@ -442,7 +470,7 @@ describe("ObserverClient", () => {
 			expect(client.openaiUseResponses).toBe(true);
 		});
 
-		it("honors explicit false for OpenAI api_http Responses usage", () => {
+		it("ignores explicit false for official OpenAI api_http Responses usage", () => {
 			const observerApiKey = fixtureToken("openai-responses-disabled");
 			const client = new ObserverClient({
 				observerProvider: "openai",
@@ -462,7 +490,7 @@ describe("ObserverClient", () => {
 				observerAuthTimeoutMs: 1500,
 				observerAuthCacheTtlS: 300,
 			});
-			expect(client.openaiUseResponses).toBe(false);
+			expect(client.openaiUseResponses).toBe(true);
 		});
 
 		it("round-trips per-tier provider overrides through toConfig", () => {
@@ -917,7 +945,7 @@ describe("ObserverClient.observe()", () => {
 		});
 	});
 
-	it("routes OpenAI to chat/completions when user explicitly disables Responses", async () => {
+	it("keeps official OpenAI on Responses when legacy config explicitly disables it", async () => {
 		const observerApiKey = fixtureToken("openai-chat-completions");
 		let capturedUrl: string | undefined;
 
@@ -925,7 +953,12 @@ describe("ObserverClient.observe()", () => {
 			capturedUrl = String(input);
 			return new Response(
 				JSON.stringify({
-					choices: [{ message: { content: "chat completions response" } }],
+					output: [
+						{
+							type: "message",
+							content: [{ type: "output_text", text: "responses response" }],
+						},
+					],
 				}),
 				{ status: 200, headers: { "content-type": "application/json" } },
 			);
@@ -950,8 +983,50 @@ describe("ObserverClient.observe()", () => {
 		});
 		const result = await client.observe("system", "user");
 
-		expect(capturedUrl).toContain("/chat/completions");
-		expect(capturedUrl).not.toContain("/responses");
+		expect(capturedUrl).toContain("/responses");
+		expect(capturedUrl).not.toContain("/chat/completions");
+		expect(result.raw).toBe("responses response");
+	});
+
+	it("routes an explicit custom OpenAI-compatible base URL to chat without reasoning", async () => {
+		const observerApiKey = fixtureToken("custom-openai-chat-completions");
+		let capturedUrl: string | undefined;
+
+		globalThis.fetch = (async (input: string | URL | Request) => {
+			capturedUrl = String(input);
+			return new Response(
+				JSON.stringify({
+					choices: [{ message: { content: "chat completions response" } }],
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		}) as typeof globalThis.fetch;
+
+		const client = new ObserverClient({
+			observerProvider: "openai",
+			observerModel: "gateway-model",
+			observerRuntime: "api_http",
+			observerApiKey,
+			observerBaseUrl: "https://gateway.example.test/v1",
+			observerOpenAIUseResponses: false,
+			observerReasoningEffort: "high",
+			observerReasoningSummary: "detailed",
+			observerMaxChars: 12_000,
+			observerMaxTokens: 4_000,
+			observerHeaders: {},
+			observerAuthSource: "auto",
+			observerAuthFile: null,
+			observerAuthCommand: [],
+			observerAuthTimeoutMs: 1500,
+			observerAuthCacheTtlS: 300,
+			observerExplicitConfigKeys: ["observerOpenAIUseResponses"],
+		});
+		const result = await client.observe("system", "user");
+
+		expect(capturedUrl).toBe("https://gateway.example.test/v1/chat/completions");
+		expect(client.openaiUseResponses).toBe(false);
+		expect(client.reasoningEffort).toBeNull();
+		expect(client.reasoningSummary).toBeNull();
 		expect(result.raw).toBe("chat completions response");
 	});
 
@@ -972,6 +1047,7 @@ describe("ObserverClient.observe()", () => {
 			)) as typeof globalThis.fetch;
 		const client = new ObserverClient({
 			...makeClient("openai", observerApiKey).toConfig(),
+			observerBaseUrl: "https://gateway.example.test/v1",
 			observerOpenAIUseResponses: false,
 			observerExplicitConfigKeys: ["observerOpenAIUseResponses"],
 		});
@@ -1012,17 +1088,117 @@ describe("ObserverClient.observe()", () => {
 			);
 		}) as typeof globalThis.fetch;
 
-		const client = makeClient("openai", apiKey);
+		const client = new ObserverClient({
+			...makeClient("openai", apiKey).toConfig(),
+			observerReasoningEffort: "medium",
+		});
 		const result = await client.observe("system", "user");
 
 		expect(capturedUrl).toContain("openai.com");
 		expect(capturedUrl).toContain("/responses");
 		expect(capturedHeaders?.authorization).toBe(`Bearer ${apiKey}`);
 		expect(capturedBody?.input).toBeDefined();
+		expect(capturedBody?.reasoning).toEqual({ effort: "medium" });
+		expect(capturedBody?.temperature).toBeUndefined();
+		expect(client.temperature).toBeNull();
 		expect(result.raw).toBe("openai response text");
 		expect(result.provider).toBe("openai");
 		expect(result.elapsedMs).toBeGreaterThanOrEqual(0);
 		expect(result.usage).toEqual({ inputTokens: 211, outputTokens: 37, totalTokens: 248 });
+
+		const noReasoningClient = new ObserverClient({
+			...makeClient("openai", apiKey).toConfig(),
+			observerReasoningEffort: "none",
+		});
+		expect(noReasoningClient.temperature).toBe(0.2);
+	});
+
+	it.each([
+		{ tier: "simple", expectedModel: "gpt-5.6-luna" },
+		{ tier: "rich", expectedModel: "gpt-5.6-terra" },
+	] as const)("sends the shipped $tier tier over OAuth codex_consumer", async (scenario) => {
+		const prevHome = process.env.HOME;
+		const savedApiKeys = {
+			OPENCODE_API_KEY: process.env.OPENCODE_API_KEY,
+			OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+			CODEX_API_KEY: process.env.CODEX_API_KEY,
+		};
+		delete process.env.OPENCODE_API_KEY;
+		delete process.env.OPENAI_API_KEY;
+		delete process.env.CODEX_API_KEY;
+		const tmpDir = mkdtempSync(join(tmpdir(), `codemem-${scenario.tier}-oauth-tier-test-`));
+		mkdirSync(join(tmpDir, ".local", "share", "opencode"), { recursive: true });
+		writeFileSync(
+			join(tmpDir, ".local", "share", "opencode", "auth.json"),
+			JSON.stringify({
+				openai: {
+					access: "oauth-test-token",
+					accountId: "acct-test",
+					expires: Date.now() + 60_000,
+				},
+			}),
+		);
+		let capturedUrl: string | undefined;
+		let capturedBody: Record<string, unknown> | undefined;
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			capturedUrl = String(input);
+			capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+			return new Response(
+				['data: {"type":"response.output_text.delta","delta":"ok"}', ""].join("\n\n"),
+				{ status: 200, headers: { "content-type": "text/event-stream" } },
+			);
+		}) as typeof globalThis.fetch;
+		const decision: ExtractionReplayTierRoutingDecision = {
+			tier: scenario.tier,
+			reasons: ["test selection"],
+			observer: {},
+		};
+
+		try {
+			process.env.HOME = tmpDir;
+			const config = buildTieredObserverConfig(
+				{
+					observerProvider: "openai",
+					observerModel: "gpt-5.4-mini",
+					observerRuntime: "api_http",
+					observerApiKey: null,
+					observerBaseUrl: null,
+					observerTemperature: 0.2,
+					observerSimpleModel: null,
+					observerRichModel: null,
+					observerReasoningEffort: null,
+					observerRichReasoningEffort: null,
+					observerMaxChars: 12_000,
+					observerMaxTokens: 4_000,
+					observerHeaders: {},
+					observerAuthSource: "auto",
+					observerAuthFile: null,
+					observerAuthCommand: [],
+					observerAuthTimeoutMs: 1_500,
+					observerAuthCacheTtlS: 300,
+					observerExplicitConfigKeys: [],
+				},
+				decision,
+			);
+
+			const client = new ObserverClient(config);
+			await client.observe("system", "user");
+
+			expect(client.getStatus().auth.type).toBe("codex_consumer");
+			expect(capturedUrl).toContain("chatgpt.com/backend-api/codex/responses");
+			expect(capturedBody?.model).toBe(scenario.expectedModel);
+			expect(capturedBody?.reasoning).toEqual({ effort: "medium" });
+			expect(capturedBody?.max_output_tokens).toBeUndefined();
+			expect(capturedBody?.temperature).toBeUndefined();
+		} finally {
+			if (prevHome == null) delete process.env.HOME;
+			else process.env.HOME = prevHome;
+			for (const [key, value] of Object.entries(savedApiKeys)) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
 	});
 
 	it("normalizes unpaired UTF-16 surrogates after prompt clipping", async () => {
@@ -1145,7 +1321,7 @@ describe("ObserverClient.observe()", () => {
 			observerModel: "gpt-5.4-mini",
 			observerRuntime: "api_http",
 			observerApiKey,
-			observerBaseUrl: null,
+			observerBaseUrl: "https://gateway.example.test/v1",
 			observerOpenAIUseResponses: false,
 			observerMaxChars: 12_000,
 			observerMaxTokens: 4_000,
@@ -1446,7 +1622,7 @@ describe("ObserverClient.observe()", () => {
 		expect(result.raw).toBe("retry success");
 	});
 
-	it("passes the full system prompt to the codex consumer instructions field", async () => {
+	it("passes configured reasoning overrides to the codex consumer request", async () => {
 		const prevHome = process.env.HOME;
 		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-codex-consumer-test-"));
 		mkdirSync(join(tmpDir, ".local", "share", "opencode"), { recursive: true });
@@ -1482,6 +1658,8 @@ describe("ObserverClient.observe()", () => {
 				observerRuntime: null,
 				observerApiKey: null,
 				observerBaseUrl: null,
+				observerReasoningEffort: "medium",
+				observerReasoningSummary: "auto",
 				observerMaxChars: 12_000,
 				observerMaxTokens: 4_000,
 				observerHeaders: {},
@@ -1496,6 +1674,10 @@ describe("ObserverClient.observe()", () => {
 
 			expect(client.getStatus().auth.type).toBe("codex_consumer");
 			expect(capturedBody?.instructions).toBe("SYSTEM XML CONTRACT");
+			expect(capturedBody?.reasoning).toEqual({
+				effort: "medium",
+				summary: "auto",
+			});
 			expect(result.usage).toEqual({ inputTokens: 211, outputTokens: 37, totalTokens: 248 });
 		} finally {
 			if (prevHome == null) delete process.env.HOME;

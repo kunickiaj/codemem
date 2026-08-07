@@ -4,7 +4,11 @@ import {
 	evaluateSessionExtractionItems,
 	getSessionExtractionEvalScenario,
 } from "./extraction-eval.js";
-import { decideExtractionReplayTier } from "./extraction-tier-routing.js";
+import {
+	buildTieredObserverConfig,
+	decideExtractionReplayTier,
+	type ExtractionReplayTierRoutingInput,
+} from "./extraction-tier-routing.js";
 import {
 	budgetToolEvents,
 	eventToToolEvent,
@@ -241,7 +245,7 @@ export interface ExtractionReplayResult {
 		openaiUseResponses: boolean;
 		reasoningEffort: string | null;
 		reasoningSummary: string | null;
-		maxOutputTokens: number;
+		maxOutputTokens: number | null;
 		temperature: number | null;
 		repairApplied: boolean;
 		initialRaw: string | null;
@@ -715,6 +719,8 @@ async function replayPreparedBatch(
 		observerStatus.auth.type === "anthropic_consumer"
 			? observerStatus.auth.type
 			: observerStatus.runtime;
+	const reportsRequestLimits = transport !== "codex_consumer";
+	const reportsReasoning = observer.openaiUseResponses || transport === "codex_consumer";
 
 	return {
 		scenario: {
@@ -740,10 +746,10 @@ async function replayPreparedBatch(
 			tier,
 			tierReasons,
 			openaiUseResponses: observer.openaiUseResponses,
-			reasoningEffort: observer.reasoningEffort,
-			reasoningSummary: observer.reasoningSummary,
-			maxOutputTokens: observer.maxOutputTokens,
-			temperature: observer.temperature,
+			reasoningEffort: reportsReasoning ? observer.reasoningEffort : null,
+			reasoningSummary: reportsReasoning ? observer.reasoningSummary : null,
+			maxOutputTokens: reportsRequestLimits ? observer.maxOutputTokens : null,
+			temperature: reportsRequestLimits ? observer.temperature : null,
 			repairApplied: preferRepaired,
 			initialRaw: response.initial.raw,
 			initialElapsedMs: response.initial.elapsedMs,
@@ -790,6 +796,23 @@ export async function replayBatchExtraction(
 	return replayPreparedBatch(prepared, observer, null, []);
 }
 
+export function buildTierRoutedReplayObserverConfig(
+	baseObserver: Pick<ObserverClient, "toConfig">,
+	analysis: ExtractionReplayTierRoutingInput,
+): {
+	observer: ObserverConfig;
+	tier: "simple" | "rich";
+	reasons: string[];
+} {
+	const baseConfig = baseObserver.toConfig();
+	const decision = decideExtractionReplayTier(analysis);
+	return {
+		observer: buildTieredObserverConfig(baseConfig, decision),
+		tier: decision.tier,
+		reasons: decision.reasons,
+	};
+}
+
 export async function replayBatchExtractionWithTierRouting(
 	dbPath: string | undefined,
 	baseConfig: ObserverConfig,
@@ -806,10 +829,7 @@ export async function replayBatchExtractionWithTierRouting(
 		...opts,
 		observerMaxChars: opts.observerMaxChars ?? baseObserver.maxChars,
 	});
-	const decision = decideExtractionReplayTier(prepared.analysis);
-	const observer = new ObserverClientImpl({
-		...baseConfig,
-		...decision.observer,
-	});
-	return replayPreparedBatch(prepared, observer, decision.tier, decision.reasons);
+	const routed = buildTierRoutedReplayObserverConfig(baseObserver, prepared.analysis);
+	const observer = new ObserverClientImpl(routed.observer);
+	return replayPreparedBatch(prepared, observer, routed.tier, routed.reasons);
 }

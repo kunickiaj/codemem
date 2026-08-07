@@ -52,6 +52,13 @@ function parseStrictPositiveId(value: string): number | null {
 	return Number.isFinite(n) && n >= 1 && Number.isInteger(n) ? n : null;
 }
 
+export function resolveOpenAIResponsesOverride(
+	cliEnabled: boolean | undefined,
+	configured: boolean | undefined,
+): boolean | undefined {
+	return cliEnabled === true ? true : configured;
+}
+
 function showMemoryAction(idStr: string, opts: DbOpts & JsonOpts): void {
 	const memoryId = parseStrictPositiveId(idStr);
 	if (memoryId === null) {
@@ -848,10 +855,31 @@ function createMemoryExtractionReplayCommand(): Command {
 				const observerConfigWithOverrides = {
 					...observerConfig,
 					observerTemperature: observerTemperature ?? observerConfig.observerTemperature,
-					observerOpenAIUseResponses: opts.openaiResponses === true,
-					observerReasoningEffort: opts.reasoningEffort?.trim() || null,
-					observerReasoningSummary: opts.reasoningSummary?.trim() || null,
-					observerMaxOutputTokens: maxOutputTokens ?? observerConfig.observerMaxTokens,
+					observerOpenAIUseResponses: resolveOpenAIResponsesOverride(
+						opts.openaiResponses,
+						observerConfig.observerOpenAIUseResponses,
+					),
+					observerReasoningEffort:
+						opts.reasoningEffort === undefined
+							? observerConfig.observerReasoningEffort
+							: opts.reasoningEffort.trim() || null,
+					observerReasoningSummary:
+						opts.reasoningSummary === undefined
+							? observerConfig.observerReasoningSummary
+							: opts.reasoningSummary.trim() || null,
+					observerMaxOutputTokens:
+						maxOutputTokens ??
+						observerConfig.observerMaxOutputTokens ??
+						observerConfig.observerMaxTokens,
+					observerExplicitConfigKeys:
+						maxOutputTokens === null
+							? observerConfig.observerExplicitConfigKeys
+							: [
+									...new Set([
+										...(observerConfig.observerExplicitConfigKeys ?? []),
+										"observerMaxOutputTokens",
+									]),
+								],
 				};
 				const observer = new ObserverClient(observerConfigWithOverrides);
 				const result =
@@ -967,6 +995,24 @@ export function reconcileExtractionBenchmarkStatus<T extends BenchmarkDispositio
 	return { status, reason, quality, initialQuality: input.initialQuality };
 }
 
+interface BenchmarkReasoningSettings {
+	reasoningEffort: string | null;
+	reasoningSummary: string | null;
+}
+
+export function summarizeBenchmarkReasoning(
+	runs: readonly BenchmarkReasoningSettings[],
+	fallback: BenchmarkReasoningSettings,
+): BenchmarkReasoningSettings {
+	const source = runs[0] ?? fallback;
+	const reasoningEfforts = new Set(runs.map((run) => run.reasoningEffort));
+	const reasoningSummaries = new Set(runs.map((run) => run.reasoningSummary));
+	return {
+		reasoningEffort: reasoningEfforts.size > 1 ? "mixed" : source.reasoningEffort,
+		reasoningSummary: reasoningSummaries.size > 1 ? "mixed" : source.reasoningSummary,
+	};
+}
+
 function createMemoryExtractionBenchmarkCommand(): Command {
 	const cmd = new Command("extraction-benchmark")
 		.configureHelp(helpStyle)
@@ -1066,10 +1112,31 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					observerProvider: opts.observerProvider?.trim() || observerConfig.observerProvider,
 					observerModel: opts.observerModel?.trim() || observerConfig.observerModel,
 					observerTemperature: observerTemperature ?? observerConfig.observerTemperature,
-					observerOpenAIUseResponses: opts.openaiResponses === true,
-					observerReasoningEffort: opts.reasoningEffort?.trim() || null,
-					observerReasoningSummary: opts.reasoningSummary?.trim() || null,
-					observerMaxOutputTokens: maxOutputTokens ?? observerConfig.observerMaxTokens,
+					observerOpenAIUseResponses: resolveOpenAIResponsesOverride(
+						opts.openaiResponses,
+						observerConfig.observerOpenAIUseResponses,
+					),
+					observerReasoningEffort:
+						opts.reasoningEffort === undefined
+							? observerConfig.observerReasoningEffort
+							: opts.reasoningEffort.trim() || null,
+					observerReasoningSummary:
+						opts.reasoningSummary === undefined
+							? observerConfig.observerReasoningSummary
+							: opts.reasoningSummary.trim() || null,
+					observerMaxOutputTokens:
+						maxOutputTokens ??
+						observerConfig.observerMaxOutputTokens ??
+						observerConfig.observerMaxTokens,
+					observerExplicitConfigKeys:
+						maxOutputTokens === null
+							? observerConfig.observerExplicitConfigKeys
+							: [
+									...new Set([
+										...(observerConfig.observerExplicitConfigKeys ?? []),
+										"observerMaxOutputTokens",
+									]),
+								],
 				};
 				const observer = new ObserverClient(observerConfigWithOverrides);
 				const runs = [] as Array<{
@@ -1101,7 +1168,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					openaiUseResponses: boolean;
 					reasoningEffort: string | null;
 					reasoningSummary: string | null;
-					maxOutputTokens: number;
+					maxOutputTokens: number | null;
 					temperature: number | null;
 					summaries: number;
 					observations: number;
@@ -1367,6 +1434,10 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 				const uniqueObserverKeys = Array.from(
 					new Set(runs.map((run) => `${run.provider}::${run.model}::${run.transport}`)),
 				);
+				const benchmarkReasoning = summarizeBenchmarkReasoning(runs, {
+					reasoningEffort: observer.reasoningEffort,
+					reasoningSummary: observer.reasoningSummary,
+				});
 				const observerSummary =
 					opts.observerTierRouting === true
 						? {
@@ -1383,22 +1454,12 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 									uniqueObserverKeys.length === 1
 										? (runs[0]?.openaiUseResponses ?? observer.openaiUseResponses)
 										: null,
-								reasoningEffort:
-									uniqueObserverKeys.length === 1
-										? (runs[0]?.reasoningEffort ?? observer.reasoningEffort)
-										: "mixed",
-								reasoningSummary:
-									uniqueObserverKeys.length === 1
-										? (runs[0]?.reasoningSummary ?? observer.reasoningSummary)
-										: "mixed",
+								reasoningEffort: benchmarkReasoning.reasoningEffort,
+								reasoningSummary: benchmarkReasoning.reasoningSummary,
 								maxOutputTokens:
-									uniqueObserverKeys.length === 1
-										? (runs[0]?.maxOutputTokens ?? observer.maxOutputTokens)
-										: null,
+									uniqueObserverKeys.length === 1 ? (runs[0]?.maxOutputTokens ?? null) : null,
 								temperature:
-									uniqueObserverKeys.length === 1
-										? (runs[0]?.temperature ?? observer.temperature)
-										: null,
+									uniqueObserverKeys.length === 1 ? (runs[0]?.temperature ?? null) : null,
 								transcriptBudget: transcriptBudget ?? null,
 								selectedObservers: uniqueObserverKeys,
 							}
@@ -1408,10 +1469,10 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 								transport: runs[0]?.transport ?? observer.getStatus().runtime,
 								tierRouting: false,
 								openaiUseResponses: observer.openaiUseResponses,
-								reasoningEffort: observer.reasoningEffort,
-								reasoningSummary: observer.reasoningSummary,
-								maxOutputTokens: observer.maxOutputTokens,
-								temperature: observer.temperature,
+								reasoningEffort: benchmarkReasoning.reasoningEffort,
+								reasoningSummary: benchmarkReasoning.reasoningSummary,
+								maxOutputTokens: runs[0]?.maxOutputTokens ?? null,
+								temperature: runs[0]?.temperature ?? null,
 								transcriptBudget: transcriptBudget ?? null,
 								selectedObservers: uniqueObserverKeys,
 							};
@@ -1440,10 +1501,10 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						`Transport: ${observerSummary.transport}`,
 						`Tier routing: ${opts.observerTierRouting === true ? "yes" : "no"}`,
 						`OpenAI Responses: ${observerSummary.openaiUseResponses === null ? "mixed" : observerSummary.openaiUseResponses ? "yes" : "no"}`,
-						`Reasoning effort: ${observerSummary.reasoningEffort ?? "none"}`,
-						`Reasoning summary: ${observerSummary.reasoningSummary ?? "none"}`,
-						`Max output tokens: ${observerSummary.maxOutputTokens ?? "mixed"}`,
-						`Temperature: ${observerSummary.temperature ?? "mixed"}`,
+						`Reasoning effort: ${observerSummary.reasoningEffort ?? "not transmitted"}`,
+						`Reasoning summary: ${observerSummary.reasoningSummary ?? "not transmitted"}`,
+						`Max output tokens: ${observerSummary.transport === "codex_consumer" ? "not transmitted" : (observerSummary.maxOutputTokens ?? "mixed")}`,
+						`Temperature: ${observerSummary.transport === "mixed" ? "mixed" : (observerSummary.temperature ?? "not transmitted")}`,
 						`Transcript budget override: ${transcriptBudget ?? "default"}`,
 						`Repetitions: ${summary.repetitions}`,
 						`Shape-quality passes: ${summary.shapeQualityPasses}/${summary.shapeQualityTotal}`,

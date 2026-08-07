@@ -144,6 +144,8 @@ export function collectSettingsPayload(
 		observer_tier_routing_enabled: values.observerTierRoutingEnabled,
 		observer_simple_model: normalizeTextValue(values.observerSimpleModel),
 		observer_simple_temperature: simpleTemperature,
+		observer_reasoning_effort: normalizeTextValue(values.observerReasoningEffort),
+		observer_reasoning_summary: normalizeTextValue(values.observerReasoningSummary),
 		observer_rich_model: normalizeTextValue(values.observerRichModel),
 		observer_rich_temperature: richTemperature,
 		observer_rich_reasoning_effort: normalizeTextValue(values.observerRichReasoningEffort),

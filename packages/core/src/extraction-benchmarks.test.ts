@@ -18,6 +18,27 @@ describe("extraction benchmarks", () => {
 		expect(profile?.batches.filter((batch) => batch.purpose === "replay_robustness")).toEqual([
 			expect.objectContaining({ batchId: 18476 }),
 		]);
+		expect(profile?.recommendedTruthModel.model).toBe("gpt-5.4");
+		expect(profile?.cheapCandidate.model).toBe("gpt-5.6-luna");
+		expect(profile?.modelCandidates).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					model: "gpt-5.6-luna",
+					role: "simple_baseline",
+					reasoningEffort: "medium",
+				}),
+				expect.objectContaining({
+					model: "gpt-5.6-terra",
+					role: "rich_baseline",
+					reasoningEffort: "medium",
+				}),
+				expect.objectContaining({
+					model: "gpt-5.4-mini",
+					role: "legacy_simple_baseline",
+				}),
+				expect.objectContaining({ model: "gpt-5.4", role: "legacy_rich_baseline" }),
+			]),
+		);
 	});
 
 	it("routes all balanced zero-observation controls through the routine scenario", () => {

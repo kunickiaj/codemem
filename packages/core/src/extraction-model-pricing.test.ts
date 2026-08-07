@@ -23,12 +23,19 @@ describe("extraction model pricing", () => {
 				inputUsdPerMillionTokens: 5,
 				outputUsdPerMillionTokens: 30,
 			}),
+			expect.objectContaining({
+				model: "gpt-5.6-luna",
+				inputUsdPerMillionTokens: 1,
+				outputUsdPerMillionTokens: 6,
+			}),
 			expect.objectContaining({ model: "gpt-5.6-terra" }),
 			expect.objectContaining({ model: "gpt-5.6-sol" }),
 		]);
 	});
 
 	it.each([
+		["gpt-5.6-luna", "gpt-5.6-luna", 1, 6],
+		["Luna", "gpt-5.6-luna", 1, 6],
 		["gpt-5.6-terra", "gpt-5.6-terra", 2.5, 15],
 		["Terra", "gpt-5.6-terra", 2.5, 15],
 		["gpt-5.6-sol", "gpt-5.6-sol", 5, 30],

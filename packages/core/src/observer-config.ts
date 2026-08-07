@@ -189,6 +189,8 @@ export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
 	observer_provider: "CODEMEM_OBSERVER_PROVIDER",
 	observer_model: "CODEMEM_OBSERVER_MODEL",
 	observer_temperature: "CODEMEM_OBSERVER_TEMPERATURE",
+	observer_reasoning_effort: "CODEMEM_OBSERVER_REASONING_EFFORT",
+	observer_reasoning_summary: "CODEMEM_OBSERVER_REASONING_SUMMARY",
 	observer_tier_routing_enabled: "CODEMEM_OBSERVER_TIER_ROUTING_ENABLED",
 	observer_simple_model: "CODEMEM_OBSERVER_SIMPLE_MODEL",
 	observer_simple_temperature: "CODEMEM_OBSERVER_SIMPLE_TEMPERATURE",

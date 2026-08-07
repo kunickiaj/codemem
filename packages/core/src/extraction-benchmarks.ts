@@ -58,8 +58,14 @@ export interface ExtractionBenchmarkProfile {
 export interface ExtractionBenchmarkModelCandidate {
 	provider: string;
 	model: string;
-	role: "simple_baseline" | "rich_baseline" | "quality_ceiling" | "cost_matched_challenger";
-	reasoningEffort: "none";
+	role:
+		| "simple_baseline"
+		| "rich_baseline"
+		| "legacy_simple_baseline"
+		| "legacy_rich_baseline"
+		| "quality_ceiling"
+		| "cost_matched_challenger";
+	reasoningEffort: "none" | "medium";
 	notes: string;
 }
 
@@ -528,29 +534,44 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 			provider: "openai",
 			model: "gpt-5.4",
 			notes:
-				"Use as the current production baseline while the larger reviewed corpus is calibrated; do not treat it as immutable ground truth.",
+				"Independent legacy quality reference retained while Luna and Terra serve as the current tier baselines.",
 		},
 		cheapCandidate: {
 			provider: "openai",
-			model: "gpt-5.4-mini",
+			model: "gpt-5.6-luna",
 			temperature: 0.2,
-			notes:
-				"Simple-tier baseline to compare with Luna once the same transport and repeated-run protocol are available.",
+			notes: "Current simple-tier production baseline at medium reasoning effort.",
 		},
 		modelCandidates: [
 			{
 				provider: "openai",
-				model: "gpt-5.4-mini",
+				model: "gpt-5.6-luna",
 				role: "simple_baseline",
+				reasoningEffort: "medium",
+				notes:
+					"Current simple-tier baseline: medium led the corrected simple+working screen with 0.702 quality and 0.667 recall.",
+			},
+			{
+				provider: "openai",
+				model: "gpt-5.6-terra",
+				role: "rich_baseline",
+				reasoningEffort: "medium",
+				notes:
+					"Current rich-tier baseline: medium passed 6/6 corrected rich runs with 0.600 recall and 1.000 worthiness.",
+			},
+			{
+				provider: "openai",
+				model: "gpt-5.4-mini",
+				role: "legacy_simple_baseline",
 				reasoningEffort: "none",
-				notes: "Current simple-tier baseline.",
+				notes: "Legacy simple-tier baseline retained for release comparisons.",
 			},
 			{
 				provider: "openai",
 				model: "gpt-5.4",
-				role: "rich_baseline",
+				role: "legacy_rich_baseline",
 				reasoningEffort: "none",
-				notes: "Current rich-tier baseline.",
+				notes: "Legacy rich-tier baseline retained for release comparisons.",
 			},
 			{
 				provider: "openai",
@@ -558,14 +579,6 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				role: "quality_ceiling",
 				reasoningEffort: "none",
 				notes: "Higher-cost quality reference.",
-			},
-			{
-				provider: "openai",
-				model: "gpt-5.6-terra",
-				role: "cost_matched_challenger",
-				reasoningEffort: "none",
-				notes:
-					"Fast rich-tier finalist; require repeated runs because the earlier 18446 failure proved stochastic.",
 			},
 		],
 		batches: [
@@ -744,14 +757,14 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 			provider: "openai",
 			model: "gpt-5.4",
 			notes:
-				"Current best-performing benchmark model across the rich-batch set; use as the acceptance baseline for cheaper candidates.",
+				"Historical acceptance baseline for this profile; retain it for comparisons with the original rich-batch results.",
 		},
 		cheapCandidate: {
 			provider: "openai",
 			model: "gpt-5.4-mini",
 			temperature: 0.2,
 			notes:
-				"Current cheapest promising candidate. It can pass some hard batches at temperature 0.2, but remains less reliable than full gpt-5.4.",
+				"Historical lower-cost candidate. It passed some hard batches at temperature 0.2 but was less reliable than full GPT-5.4.",
 		},
 		modelCandidates: [
 			{
@@ -766,7 +779,7 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				model: "gpt-5.4",
 				role: "rich_baseline",
 				reasoningEffort: "none",
-				notes: "Current rich-tier production baseline and primary comparison for Terra.",
+				notes: "Legacy rich-tier production baseline and primary historical comparison for Terra.",
 			},
 			{
 				provider: "openai",
@@ -780,7 +793,8 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 				model: "gpt-5.6-terra",
 				role: "cost_matched_challenger",
 				reasoningEffort: "none",
-				notes: "Leading rich-tier challenger because it is price-matched with GPT-5.4.",
+				notes:
+					"Historical challenger in this profile; now the release rich-tier baseline at GPT-5.4-matched rates.",
 			},
 		],
 		batches: [
