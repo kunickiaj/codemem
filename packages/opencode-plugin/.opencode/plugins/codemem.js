@@ -324,16 +324,18 @@ const parsePackOutput = (result) => {
   const itemCount = Number.isFinite(Number(metrics?.total_items))
     ? Number(metrics.total_items)
     : null;
+  const candidatePackText = succeeded && itemCount !== 0
+    ? String(payload?.pack_text || "").trim()
+    : "";
   return {
+    conflictPackText: ledgerConflict ? candidatePackText : "",
     ledgerConflict,
     metrics,
     itemCount,
     // The real builder renders section headings even when it selected no
     // memories. Treat the structured count as authoritative so headings alone
     // are never handed to the model as retrieved context.
-    packText: succeeded && !ledgerConflict && itemCount !== 0
-      ? String(payload?.pack_text || "").trim()
-      : "",
+    packText: !ledgerConflict ? candidatePackText : "",
   };
 };
 
@@ -2199,7 +2201,7 @@ export const OpencodeMemPlugin = async ({
       return { packArgs, result };
     };
     let { packArgs, result } = await runPack();
-    let { packText, metrics, itemCount, ledgerConflict } = parsePackOutput(result);
+    let { packText, conflictPackText, metrics, itemCount, ledgerConflict } = parsePackOutput(result);
     let artifactFingerprint = packText
       ? promptPackArtifactFingerprint(result.stdout, packText)
       : "";
@@ -2207,12 +2209,23 @@ export const OpencodeMemPlugin = async ({
     let repairFallbackUsed = false;
     if (ledgerConflict) {
       // A restarted plugin has no artifact cache to predict this conflict. The
-      // CLI marker is authoritative: never hand off bytes associated with the
-      // stale identity, and retry once with a fresh deterministic identity.
+      // CLI marker is authoritative: never attribute delivery to the stale
+      // identity, and retry once with a fresh deterministic identity.
       await log("warn", "codemem prompt-pack ledger conflict; retrying with fresh identity", {
         sessionID,
         surface,
       });
+      const fallback = conflictPackText
+        ? {
+            packArgs,
+            result,
+            packText: conflictPackText,
+            metrics,
+            itemCount,
+            artifactFingerprint: promptPackArtifactFingerprint(result.stdout, conflictPackText),
+            ledgerConflict,
+          }
+        : null;
       advancePromptPackRetryIdentity(attemptKey);
       retryCount = promptPackRetryCounts.get(attemptKey) || 0;
       identity = resolveIdentity();
@@ -2221,11 +2234,63 @@ export const OpencodeMemPlugin = async ({
         context.sessionID || activeSessionID || null,
       );
       ({ packArgs, result } = await runPack());
+      // Repair-conflict bytes are never preferred over the original preserved pack.
       ({ packText, metrics, itemCount, ledgerConflict } = parsePackOutput(result));
       artifactFingerprint = packText
         ? promptPackArtifactFingerprint(result.stdout, packText)
         : "";
-      injectedIdentity = identity;
+      const repairFailed = ledgerConflict
+        || !result
+        || result.exitCode !== 0
+        || (!packText && itemCount !== 0);
+      if (fallback && repairFailed) {
+        if (ledgerConflict) {
+          await log("warn", "codemem prompt-pack fresh identity also conflicted", {
+            sessionID,
+            surface,
+          });
+        } else {
+          const malformedSuccess = result?.exitCode === 0;
+          const exitCode = result?.exitCode ?? "unknown";
+          const stderr = redactLog(result?.stderr ? result.stderr.trim() : "");
+          const cmd = redactPackCommand(runner, runnerArgs, packArgs);
+          await logLine(
+            `inject.pack.identity_repair_failed reason=${malformedSuccess ? "malformed_success" : "command_failed"} exit=${exitCode} cmd=${cmd}` +
+              `${stderr ? ` stderr=${stderr}` : ""}`
+          );
+          await log("warn", "codemem prompt-pack identity repair failed", {
+            reason: malformedSuccess ? "malformed_success" : "command_failed",
+            exitCode,
+          });
+          void runPromptPackLedger({
+            action: "record",
+            ...metadata,
+            retrieval_status: "failed",
+            failure_code: malformedSuccess
+              ? "pack_identity_repair_failed"
+              : "pack_command_failed",
+            failure_stage: malformedSuccess ? "decode" : "transport",
+          });
+        }
+        advancePromptPackRetryIdentity(attemptKey);
+        retryCount = promptPackRetryCounts.get(attemptKey) || 0;
+        ({
+          packArgs,
+          result,
+          packText,
+          metrics,
+          itemCount,
+          artifactFingerprint,
+          ledgerConflict,
+        } = fallback);
+        // Neither persisted identity represents fallback delivery: the first
+        // conflicted and the fresh repair failed. Keep the bytes fail-open but
+        // leave delivery and replay attribution empty.
+        injectedIdentity = null;
+        repairFallbackUsed = true;
+      } else {
+        injectedIdentity = identity;
+      }
     }
     if (packText) {
       const previous = successfulPromptPackArtifacts.get(attemptKey);
@@ -2340,7 +2405,7 @@ export const OpencodeMemPlugin = async ({
         promptNumber: promptCounter,
       };
     }
-    if (ledgerConflict) {
+    if (ledgerConflict && !repairFallbackUsed) {
       await log("warn", "codemem prompt-pack fresh identity also conflicted", {
         sessionID,
         surface,

@@ -891,6 +891,168 @@ describe("OpenCode transform-time injection", () => {
 	test.each([
 		[
 			"timeout",
+			{ stderr: "repair timed out", exitCode: null },
+			"Restart conflict fallback",
+			"pack_command_failed",
+			false,
+		],
+		[
+			"nonzero transport failure",
+			{ stderr: "repair transport failed", exitCode: 7 },
+			"Restart conflict fallback",
+			"pack_command_failed",
+			false,
+		],
+		[
+			"malformed success",
+			{ stdout: "not-json", exitCode: 0 },
+			"Restart conflict fallback",
+			"pack_identity_repair_failed",
+			false,
+		],
+		[
+			"repeated conflict",
+			{
+				stdout: JSON.stringify({
+					pack_text: "## Summary\n[2] (decision) Conflicting repair",
+					metrics: { total_items: 1, pack_tokens: 12 },
+					ledger_outcome: {
+						ok: false,
+						errorCode: "retrieval_ledger_write_failed",
+						reason: "idempotency_conflict",
+					},
+				}),
+			},
+			"Restart conflict fallback",
+			null,
+			false,
+		],
+		[
+			"successful replacement",
+			{
+				stdout: JSON.stringify({
+					pack_text: "## Summary\n[2] (decision) Fresh replacement",
+					metrics: { total_items: 1, pack_tokens: 12 },
+				}),
+			},
+			"Fresh replacement",
+			null,
+			true,
+		],
+		[
+			"successful zero results",
+			{
+				stdout: JSON.stringify({
+					pack_text: "## Summary",
+					metrics: { total_items: 0, pack_tokens: 0 },
+				}),
+			},
+			null,
+			null,
+			false,
+		],
+	])(
+		"handles restarted-plugin conflict repair with %s",
+		async (_label, repairResult, expectedText, expectedFailureCode, expectsFreshDelivery) => {
+			const packPayloads = [];
+			const ledgerPayloads = [];
+			let packCalls = 0;
+			spawnMock.mockImplementation((_command, args) => {
+				if (Array.isArray(args) && args.includes("pack")) {
+					packCalls += 1;
+					const response = packCalls === 1
+						? {
+								stdout: JSON.stringify({
+									pack_text: "## Summary\n[1] (feature) Restart conflict fallback",
+									metrics: { total_items: 1, pack_tokens: 10 },
+									ledger_outcome: {
+										ok: false,
+										errorCode: "retrieval_ledger_write_failed",
+										reason: "idempotency_conflict",
+									},
+								}),
+							}
+						: repairResult;
+					const proc = makeProcess(response);
+					proc.stdin.write = vi.fn((value) => packPayloads.push(JSON.parse(String(value))));
+					return proc;
+				}
+				const proc = makeProcess({ stdout: "" });
+				proc.stdin.write = vi.fn((value) => ledgerPayloads.push(JSON.parse(String(value))));
+				return proc;
+			});
+
+			const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+			const hooks = await OpencodeMemPlugin({
+				project: { name: "greenroom" },
+				client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+				directory: "/tmp/greenroom",
+				worktree: "/tmp/greenroom",
+			});
+			const transform = hooks["experimental.chat.messages.transform"];
+			const messageOutput = () => ({
+				messages: [
+					{
+						info: { id: "restart-fallback", sessionID: "sess-restart-fallback", role: "user" },
+						parts: [{ type: "text", text: "restart fallback", messageID: "restart-fallback" }],
+					},
+				],
+			});
+			const output = messageOutput();
+
+			await transform({}, output);
+
+			expect(packPayloads).toHaveLength(2);
+			expect(packPayloads[1].attempt_id).not.toBe(packPayloads[0].attempt_id);
+			expect(packPayloads[1].request_id).not.toBe(packPayloads[0].request_id);
+			const injectedText = output.messages[0].parts.find(
+				(part) => String(part.id || "").startsWith("codemem-context-"),
+			)?.text;
+			if (expectedText) {
+				expect(injectedText).toContain(expectedText);
+			} else {
+				expect(injectedText).toBeUndefined();
+			}
+			const deliveries = ledgerPayloads.filter((payload) => payload.action === "delivery");
+			if (expectsFreshDelivery) {
+				expect(deliveries).toEqual([
+					{
+						action: "delivery",
+						attempt_id: packPayloads[1].attempt_id,
+						delivery_status: "handed_off",
+					},
+				]);
+			} else {
+				expect(deliveries).toEqual([]);
+			}
+			if (expectedFailureCode) {
+				expect(ledgerPayloads).toContainEqual(
+					expect.objectContaining({
+						action: "record",
+						attempt_id: packPayloads[1].attempt_id,
+						retrieval_status: "failed",
+						failure_code: expectedFailureCode,
+					}),
+				);
+			}
+
+			if (expectedText === "Restart conflict fallback") {
+				const replayOutput = messageOutput();
+				await transform({}, replayOutput);
+				expect(packPayloads).toHaveLength(2);
+				expect(
+					replayOutput.messages[0].parts.find(
+						(part) => String(part.id || "").startsWith("codemem-context-"),
+					)?.text,
+				).toContain(expectedText);
+				expect(ledgerPayloads.filter((payload) => payload.action === "delivery")).toEqual([]);
+			}
+		},
+	);
+
+	test.each([
+		[
+			"timeout",
 			{ stderr: "timeout", exitCode: null },
 			"command_failed",
 			"pack_command_failed",
