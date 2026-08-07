@@ -511,6 +511,120 @@ describe("MCP memory access scope guards", () => {
 			}
 		});
 
+		it("records missing memory_explain input as failed without changing its structured payload", async () => {
+			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const response = parseToolJson(await getTool(server, "memory_explain").handler({}));
+
+			expect(response).toEqual({
+				items: [],
+				missing_ids: [],
+				errors: [
+					{
+						code: "INVALID_ARGUMENT",
+						field: "query",
+						message: "at least one of query or ids is required",
+					},
+				],
+				metadata: {
+					query: null,
+					project: null,
+					requested_ids_count: 0,
+					returned_items_count: 0,
+					include_pack_context: false,
+				},
+			});
+			expect(
+				queryRetrievalAttempts(store.db, { surface: "mcp_explain", limit: 1 })[0],
+			).toMatchObject({
+				retrievalStatus: "failed",
+				deliveryStatus: "not_attempted",
+				candidateCount: 0,
+				selectedCount: 0,
+				failureCode: "tool_failed",
+				failureStage: "retrieval",
+				exposures: [],
+			});
+		});
+
+		it("records a valid empty memory_explain result as no-results", async () => {
+			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const response = parseToolJson(
+				await getTool(server, "memory_explain").handler({ ids: [999_999] }),
+			) as { items: unknown[]; errors: Array<{ code: string }> };
+
+			expect(response.items).toEqual([]);
+			expect(response.errors.map((error) => error.code)).toEqual(["NOT_FOUND"]);
+			expect(
+				queryRetrievalAttempts(store.db, { surface: "mcp_explain", limit: 1 })[0],
+			).toMatchObject({
+				retrievalStatus: "no_results",
+				deliveryStatus: "not_attempted",
+				candidateCount: 0,
+				selectedCount: 0,
+				failureCode: null,
+				exposures: [],
+			});
+		});
+
+		it("records invalid-only memory_explain ids as failed", async () => {
+			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const response = parseToolJson(
+				await getTool(server, "memory_explain").handler({ ids: [-1] }),
+			) as { items: unknown[]; errors: Array<{ code: string; field: string }> };
+
+			expect(response.items).toEqual([]);
+			expect(response.errors).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ code: "INVALID_ARGUMENT", field: "ids" }),
+					expect.objectContaining({ code: "INVALID_ARGUMENT", field: "query" }),
+				]),
+			);
+			expect(
+				queryRetrievalAttempts(store.db, { surface: "mcp_explain", limit: 1 })[0],
+			).toMatchObject({
+				retrievalStatus: "failed",
+				deliveryStatus: "not_attempted",
+				candidateCount: 0,
+				selectedCount: 0,
+				failureCode: "tool_failed",
+				exposures: [],
+			});
+		});
+
+		it("keeps partial memory_explain errors nonfatal when a memory is delivered", async () => {
+			const filteredId = insertScopedMemory(store, {
+				sessionId,
+				scopeId: "scope-a",
+				title: "Filtered explain note",
+			});
+			store.db.prepare("UPDATE memory_items SET kind = 'decision' WHERE id = ?").run(greenroomId);
+			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const response = parseToolJson(
+				await getTool(server, "memory_explain").handler({
+					ids: [greenroomId, filteredId, otherProjectId, 999_999, -1],
+					kind: "decision",
+				}),
+			) as { items: Array<{ id: number }>; errors: Array<{ code: string }> };
+
+			expect(response.items.map((item) => item.id)).toEqual([greenroomId]);
+			expect(response.errors.map((error) => error.code)).toEqual([
+				"INVALID_ARGUMENT",
+				"NOT_FOUND",
+				"PROJECT_MISMATCH",
+				"FILTER_MISMATCH",
+			]);
+			expect(
+				queryRetrievalAttempts(store.db, { surface: "mcp_explain", limit: 1 })[0],
+			).toMatchObject({
+				retrievalStatus: "succeeded",
+				deliveryStatus: "handed_off",
+				candidateCount: 1,
+				selectedCount: 1,
+				failureCode: null,
+				exposures: [{ memoryId: greenroomId, handoffStatus: "handed_off" }],
+			});
+		});
+
 		it("covers direct, observations, index, explain, recent, pack, timeline, and expand surfaces", async () => {
 			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
 			await getTool(server, "memory_get").handler({ memory_id: otherProjectId });
@@ -884,6 +998,71 @@ describe("MCP memory access scope guards", () => {
 				failureCode: "tool_failed",
 				failureStage: "retrieval",
 				exposures: [],
+			});
+		});
+
+		it("records an explicit empty failed status independently from response rendering", async () => {
+			const context = retrievalContext(store, "explicit-failed-status-scope");
+			const response = parseToolJson(
+				await withMcpRetrieval(
+					context,
+					{
+						surface: "mcp_explain",
+						toolName: "memory_explain",
+						toolArguments: {},
+					},
+					async () => ({
+						value: { items: [], errors: [{ code: "INVALID_ARGUMENT", field: "query" }] },
+						memoryIds: [],
+						retrievalStatus: "failed",
+					}),
+				),
+			);
+
+			expect(response).toEqual({
+				items: [],
+				errors: [{ code: "INVALID_ARGUMENT", field: "query" }],
+			});
+			expect(
+				queryRetrievalAttempts(store.db, { surface: "mcp_explain", limit: 1 })[0],
+			).toMatchObject({
+				retrievalStatus: "failed",
+				deliveryStatus: "not_attempted",
+				candidateCount: 0,
+				selectedCount: 0,
+				failureCode: "tool_failed",
+				failureStage: "retrieval",
+				exposures: [],
+			});
+		});
+
+		it("does not let an explicit failed status override delivered memories", async () => {
+			const context = retrievalContext(store, "delivered-status-scope");
+			const response = parseToolJson(
+				await withMcpRetrieval(
+					context,
+					{
+						surface: "mcp_explain",
+						toolName: "memory_explain",
+						toolArguments: { ids: [greenroomId] },
+					},
+					async () => ({
+						value: { items: [{ id: greenroomId }] },
+						memoryIds: [greenroomId],
+						retrievalStatus: "failed",
+					}),
+				),
+			) as { items: Array<{ id: number }> };
+
+			expect(response.items).toEqual([{ id: greenroomId }]);
+			expect(
+				queryRetrievalAttempts(store.db, { surface: "mcp_explain", limit: 1 })[0],
+			).toMatchObject({
+				retrievalStatus: "succeeded",
+				deliveryStatus: "handed_off",
+				candidateCount: 1,
+				selectedCount: 1,
+				failureCode: null,
 			});
 		});
 

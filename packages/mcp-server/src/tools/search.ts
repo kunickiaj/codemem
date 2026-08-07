@@ -126,7 +126,15 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 					const result = store.explain(args.query ?? null, args.ids ?? null, args.limit, filters, {
 						includePackContext: args.include_pack_context,
 					});
-					return { value: result, memoryIds: result.items.map((item) => item.id), filters };
+					const fatalInputError = result.errors.some(
+						(error) => error.code === "INVALID_ARGUMENT" && error.field === "query",
+					);
+					return {
+						value: result,
+						memoryIds: result.items.map((item) => item.id),
+						filters,
+						retrievalStatus: fatalInputError ? ("failed" as const) : undefined,
+					};
 				},
 			);
 		},

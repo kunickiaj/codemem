@@ -326,8 +326,11 @@ export async function withMcpRetrieval<T>(
 		const streamId = input.sourceSessionId ?? context.retrievalLedgerScopeId;
 		const hasResults = output.memoryIds.length > 0;
 		const isNotFoundCompletion = output.error === "not_found" && !hasResults;
-		const isFailedResult = output.error != null && !isNotFoundCompletion;
+		const isFailedResult =
+			(output.error != null && !isNotFoundCompletion) ||
+			(output.retrievalStatus === "failed" && !hasResults);
 		const recordedMemoryIds = isFailedResult ? [] : output.memoryIds;
+		const deliveredRetrievalStatus = output.retrievalStatus === "unknown" ? "unknown" : "succeeded";
 		recordMcpRetrieval(
 			context,
 			{
@@ -339,7 +342,7 @@ export async function withMcpRetrieval<T>(
 				retrievalStatus: isFailedResult
 					? "failed"
 					: hasResults
-						? (output.retrievalStatus ?? "succeeded")
+						? deliveredRetrievalStatus
 						: "no_results",
 				deliveryStatus: isFailedResult || !hasResults ? "not_attempted" : "handed_off",
 				candidateIds: recordedMemoryIds,
