@@ -72,6 +72,7 @@ interface DogfoodOperations {
 	down(): void;
 	ps(): string;
 	fixture(service: DogfoodService, action: FixtureAction): unknown;
+	configureRecipientProfiles(): void;
 	configureAndEnrollOwner(): void;
 	waitForViewers(): Promise<void>;
 	stop(service: DogfoodService): void;
@@ -179,6 +180,25 @@ export function buildOwnerSetupPlan(identity: {
 	};
 }
 
+export function buildRecipientSetupPlans() {
+	return [
+		{
+			service: "peer-b" as const,
+			config: {
+				actor_display_name: "Dogfood Teammate",
+				sync_device_name: "Dogfood Teammate Device",
+			},
+		},
+		{
+			service: "peer-c" as const,
+			config: {
+				actor_display_name: "Dogfood Teammate Second Device",
+				sync_device_name: "Dogfood Teammate Second Device",
+			},
+		},
+	] as const;
+}
+
 const USAGE = `Usage: pnpm run dogfood -- <command>
 Commands:
   setup [--build] [--reset]
@@ -255,17 +275,17 @@ export function sanitizeDiagnosticText(text: string, repositoryRoot: string): st
 
 export function buildManualChecklist(): string {
 	return `Dogfood viewers:
-  Owner: ${VIEWER_URLS.owner}
-  Teammate: ${VIEWER_URLS.teammate}
-  Second device: ${VIEWER_URLS["second-device"]}
+  Owner A: ${VIEWER_URLS.owner}
+  Teammate B: ${VIEWER_URLS.teammate}
+  Second device C: ${VIEWER_URLS["second-device"]}
 
 Manual invitation checklist:
-  1. Assign the selected Project to the test Team in the owner UI.
-  2. Create a Team invitation in the owner UI and accept it in the teammate UI.
+  1. Assign the selected Project to the test Team in the Owner A UI (38881).
+  2. In the Owner A UI (38881), choose Create an invitation → Invite Team member. Do not choose Share exact Projects at this step. Accept it in the Teammate B UI (38882).
   3. If the teammate UI reports that restart is required, run: pnpm run dogfood -- restart teammate
-  4. Create an exact-Project invitation in the owner UI and accept it in the same teammate profile.
-  5. Create an add-device invitation in the teammate UI for that Identity.
-  6. Accept the add-device invitation in the second-device UI.
+  4. In the Owner A UI (38881), choose Create an invitation → Share exact Projects; accept it in the same Teammate B profile (38882).
+  5. In the Teammate B UI (38882), choose Create an invitation → Add a device for that Identity.
+  6. Accept the add-device invitation in the Second device C UI (38883).
   7. Restart the second device by running: pnpm run dogfood -- restart second-device
   8. Add selected and unrelated future memories and verify exact delivery and isolation.
   9. Exercise offline revocation, recovery, and restart persistence manually.`;
@@ -307,6 +327,7 @@ async function runSetup(
 		dependencies.operations.fixture("peer-c", "setup-second-device"),
 	];
 	assertDistinctFixtureIdentities(fixtureSummaries);
+	dependencies.operations.configureRecipientProfiles();
 	dependencies.operations.configureAndEnrollOwner();
 	await dependencies.operations.waitForViewers();
 	dependencies.state.write({
@@ -494,6 +515,17 @@ function createOperations(paths: RuntimePaths): DogfoodOperations {
 			);
 			assertStatus(result.status, 0, `${service} fixture action ${action} failed`);
 			return JSON.parse(result.stdout) as unknown;
+		},
+		configureRecipientProfiles: () => {
+			for (const plan of buildRecipientSetupPlans()) {
+				writePeerConfig(
+					context,
+					plan.service,
+					plan.config,
+					`configure-${plan.service}-profile`,
+				);
+				compose.restart(plan.service, `restart-configured-${plan.service}`);
+			}
 		},
 		configureAndEnrollOwner: () => {
 			const identity = readPeerIdentity(context, "peer-a", "read-owner-identity");
