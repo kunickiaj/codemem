@@ -21,6 +21,8 @@ the network boundary you care about (for example VPNs).
 - joining a coordinator group does not, by itself, create an active sync relationship
 - joining a coordinator group does not, by itself, grant access to any Sharing domain
 
+The normal viewer flow can still use the coordinator to complete a Team, direct-Project, or add-device invitation. Those flows create explicit identity, trust, and Project-access records; discovery-group membership alone does not.
+
 ## Config
 
 Set these to enable coordinator-backed discovery:
@@ -129,9 +131,24 @@ authorize a device to receive `acme-work`, `personal:<actor_id>`, or any other
 domain. The coordinator group is the administrative container. The Sharing
 domain grant is the data-access decision.
 
+In the normal viewer vocabulary, people join **Teams**, share exact **Projects**, and review inherited Projects when adding a **device**. **Spaces** are the user-facing access boundaries. Advanced coordinator commands expose the underlying group, Sharing-domain, grant, and `scope_id` records used to enforce those choices.
+
 ## Project-first sharing and advanced administration
 
-For a teammate, start in the viewer's **Projects** tab: choose a Person, choose the exact projects, review existing-memory counts and future sharing, then send one expiring invite. Acceptance links the Person and device, establishes the required trust and access, and starts initial sync.
+For an ongoing group, use two separate steps:
+
+1. Assign exact **Projects** to a **Team**.
+2. Send **Invite Team member**.
+
+That onboarding invitation does not create Project-to-Team assignments. It links the Identity and device, then inherits every current and future Project already assigned to the Team. Review those Projects before sending or accepting the invitation.
+
+For a direct share:
+
+1. Choose **Share exact Projects** and select one Identity and the exact Projects.
+2. Review existing-memory counts and future sharing, then send the expiring invitation.
+3. The recipient reviews and accepts it before initial sync starts.
+
+When an existing Identity adds another device, create an add-device invitation and review the exact Projects inherited from that Identity's direct and Team access. Acceptance cannot add unrelated Projects or remove existing exclusions.
 
 The coordinator remains the authority for the invite and access steps, but its groups, devices, Spaces, grants, and project mappings are advanced administration—not normal teammate setup. Legacy coordinator invites and manual pairing remain compatible, but do not grant project access by themselves.
 
@@ -156,6 +173,8 @@ Operational rules:
 - Membership epochs make cached grants stale after revocation or replacement.
 - Revocation stops future sync after peers refresh membership. It does not erase
   memories already copied to a revoked device.
+- Disabling a device enrollment revokes future delivery only for that coordinator group; merely being offline does not. The global identity device can remain active and retain access through other groups.
+- Re-enabling that group enrollment clears the disabled state. The next owner reconciliation pass restores only the Projects currently authorized through direct shares and Team policies for the group; unrelated Projects stay absent. A global identity-device revocation is separate and is not restored by re-enabling a group enrollment.
 - Project include/exclude filters can only narrow data after the Sharing-domain
   membership check passes.
 - Local-only domains and migration review domains are not valid broad sharing

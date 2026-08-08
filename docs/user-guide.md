@@ -159,15 +159,27 @@ Candidate mining is deterministic and review-first:
 
 ## Projects, Sharing, Devices, and Health
 
-### Share projects with a teammate
+### Choose a sharing flow
 
-The normal teammate flow is **Projects → Sharing → Devices → Health**, not pairing or Teams:
+The normal flow is **Projects → Sharing → Devices → Health**, not manual pairing. Inside **Sharing**, open **Teams** when you want to manage ongoing Team membership and inherited Project access:
 
-1. Choose **Share** for one project, or select projects and choose **Share projects**.
-2. Choose an existing **Person** or enter the teammate's name.
+- **Team onboarding** — create or join a Team when people will collaborate over time.
+  - Accepting the Team invitation links the recipient's Identity and device and inherits every current and future Project assigned to that Team.
+  - The invitation does not create Project-to-Team assignments. Manage those separately, and review the Team's Projects before sending or accepting the invitation.
+- **Direct Project sharing** — once Team sharing is configured, use **Share exact Projects** to invite one Identity to exact Projects without adding the recipient to the Team.
+- **Add device** — invite another device for an existing Identity and review the Projects it will inherit from that Identity's direct and Team access.
+
+Team membership organizes people and devices, but it is not permission to every Project—only Projects explicitly assigned to that Team. Project access remains explicit and uses canonical Project identity.
+
+### Share exact Projects
+
+For direct sharing, including after Team onboarding:
+
+1. Choose **Create an invitation → Share exact Projects**.
+2. Choose an existing **Identity** or enter the teammate's Identity display name.
 3. Select the exact projects and review their existing-memory counts.
 4. Confirm that the invite shares those existing memories and future activity, then send the one expiring invite.
-5. The recipient accepts once and confirms their name and device name. Codemem links the Person and device, establishes trust and project access, and starts initial sync.
+5. The recipient reviews the invitation, accepts once, and confirms their Identity and device display names. Codemem links the Identity and device, establishes trust and Project access, and starts initial sync.
 
 ```text
 Brian will receive:
@@ -178,11 +190,22 @@ No other projects will be shared.
 
 Project access uses canonical project identity, not a display name. Selecting `codemem` does not share a similarly named or sibling project in the same Space. **Only me** keeps a memory local, even when its project is shared.
 
-The invite is single-use, expires, and is limited to the reviewed projects. The recipient cannot add projects during acceptance. Existing and future selected-project memories arrive after setup; unrelated projects remain absent.
+The invite is single-use, expires, and is limited to the reviewed Projects. It names one Identity, not a Team, and the recipient cannot add Projects during acceptance. Existing and future selected-Project memories arrive after setup; unrelated Projects remain absent.
+
+### Add a device for an existing Identity
+
+Create an **Add device** invitation from the existing Identity. Before sending it, review the exact Projects the new device will receive:
+
+- Direct Projects come from access granted to that Identity.
+- Team Projects come from the Identity's Team membership.
+- Existing Project exclusions remain excluded.
+- The invitation cannot silently add unrelated Projects during acceptance.
+
+The recipient accepts on the new device. Codemem links it to the same Identity, establishes the required trust, and starts initial sync for the reviewed Projects.
 
 ### Devices, status, and recovery
 
-**Devices** is a read-only view of where Project access can arrive. A device belongs to one **Identity**. Its Projects are labeled **Direct** when shared with that Identity and **Team** when inherited through a Team; both are limited to the exact canonical Projects selected in Sharing.
+**Devices** is a read-only view of where Project access can arrive. Each device shows its **Owning Identity**. Projects are labeled **Direct** when shared with that Identity and **Team** when inherited through a Team policy; both are limited to exact canonical Projects selected in Sharing.
 
 **Availability** tells you whether the device can currently receive work. It does not change ownership or Project access:
 
@@ -193,9 +216,10 @@ The invite is single-use, expires, and is limited to the reviewed projects. The 
 | Waiting for device | The recipient device is offline. | Wait; sync continues when it reconnects. |
 | Up to date | The selected projects are syncing. | Nothing. |
 | Needs attention | A setup step reached a terminal failure. | Use **Retry setup**. |
-| Access removed | Future access has been removed. Previously copied memories may remain on the other device. | Share again if appropriate. |
 
-An offline device is a passive waiting state, not a failure. Retry only when codemem shows **Needs attention**; it preserves completed setup work and resumes from the failed step. Removing access prevents future delivery, but cannot delete memories already copied to a recipient device.
+An offline device is a passive waiting state, not a failure or revocation. It keeps its current access and catches up after reconnecting. Retry only when codemem shows **Needs attention**; retry preserves completed setup work and resumes from the failed step.
+
+Disabling a device enrollment for one coordinator group revokes future delivery only for Projects in that group. The global identity device remains active, stays in **Devices**, and can retain access granted through other groups. Use **Advanced → Team administration** to review or re-enable the affected group enrollment. Re-enabling clears the disabled state; the next owner reconciliation pass then restores only the Projects currently authorized through the Identity's direct shares and Team policies for that group. Delivery resumes without a broader re-invite, and unrelated Projects remain absent. A separate global identity-device revocation removes the device from the active list; it is not restored through the group enrollment action. Neither revocation nor disabling can delete memories already copied to a recipient device.
 
 ## Advanced operator and compatibility guidance
 
@@ -222,9 +246,17 @@ Optional legacy filters can narrow an already-authorized peer's data; they canno
 - `codemem sync pair --accept '<payload>' --include shared-repo-1,shared-repo-2`
 - `codemem sync pair --accept '<payload>' --exclude private-repo`
 
-### Sharing domains, Spaces, grants, and filters
+### Product terms and internal access boundaries
 
-A **Sharing domain** is an operator boundary that decides which devices may receive a memory. Internally this is stored as `scope_id`. Project filters narrow an already-authorized peer; they never grant Project access.
+Normal sharing uses product terms:
+
+- A **Team** organizes collaborating people and their devices. Team membership can supply inherited access only to Projects explicitly shared with that Team.
+- A **Project** is the exact canonical workspace selected for sharing, not every workspace with a similar display name.
+- A **Space** is the user-facing access boundary that groups related Projects.
+
+Advanced screens and diagnostics may call a Space a **Sharing domain**, a coordinator group an administrative container, and the stored boundary a `scope_id`. Those internal terms explain enforcement; users do not need them to share a Project or add a device. Coordinator-group membership alone never grants Project access.
+
+Project filters narrow an already-authorized peer; they never grant Project access.
 
 Use separate Sharing domains for personal, work, client, and OSS data on the
 same machine:
@@ -258,9 +290,7 @@ For a mixed personal/work laptop, start conservatively:
 5. Use project include/exclude filters only to narrow what an already-authorized
    peer receives.
 
-Do not treat coordinator group membership as data access. A coordinator group can
-help discover and administer peers, but a peer still needs an explicit Sharing
-domain grant before it can receive that domain's memories.
+Do not treat coordinator-group membership as data access. A coordinator group can help discover and administer devices, but a device still needs Project access through a direct recipient or Team policy before it can receive those memories.
 
 ### Upgrade maintenance / Sharing-domain backfill
 

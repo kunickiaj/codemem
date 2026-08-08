@@ -267,29 +267,42 @@ See `codemem memory export --help` and `codemem memory import --help` for full o
 
 ## Sharing and devices
 
-Share selected project memories with a teammate, or use the same Project-first model to understand your own devices. The viewer's normal workflow is **Projects → Sharing → Devices → Health**; sync internals live under **Advanced**.
+Share selected project memories with a teammate, or use the same Project-first model to understand your own devices. The viewer's normal workflow is **Projects → Sharing → Devices → Health**; open **Sharing → Teams** to manage ongoing Team membership and inherited Project access. Sync internals live under **Advanced**.
 
 ### Share projects with a teammate
 
-In the viewer, choose **Share** on a project (or select projects, then choose **Share projects**):
+For ongoing collaboration:
 
-1. Choose or enter the teammate's **Person** name.
+1. Assign exact Projects to a **Team**.
+2. Invite people to join it.
+
+Team onboarding links Identities and devices. The invitation does not assign Projects to the Team, but a new member inherits every current and future Project assigned to it. Review the Team's Projects before sending or accepting the invitation. Use **Share exact Projects** to send a separate direct Project invitation to one Identity. Team sharing must already be configured, but accepting the direct invitation does not add the recipient to the Team.
+
+For a direct share, choose **Create an invitation → Share exact Projects**:
+
+1. Choose or enter the teammate's **Identity display name**.
 2. Select the exact projects to share and review each existing-memory count.
 3. Confirm that existing memories **and future activity** from those projects will share, then send the one expiring invite.
-4. The recipient accepts once, confirms their name and device name, and codemem links the Person and device, establishes trust and access, and starts the first sync.
+4. The recipient reviews and accepts the invitation, then confirms their Identity and device display names. Codemem establishes trust and Project access, then starts the first sync.
 
 Only the reviewed canonical projects are shared—similarly named or sibling projects are not included. A memory marked **Only me** stays local even when its project is shared. Removing access stops future sharing; memories already copied to another device may remain there.
 
+### Add, disable, or restore devices
+
+When an Identity adds another device, codemem shows the exact Projects it will inherit from direct shares and Team policies. Existing exclusions stay excluded. Review that list before sending the add-device invitation; acceptance links the new device to the same Identity without widening Project access.
+
+Disabling a device's enrollment for one coordinator group revokes future delivery only for that group's Projects. The global identity device stays active in **Devices** and can retain access through other groups. In **Advanced → Team administration**, re-enable that group enrollment; the next owner reconciliation pass then restores only the Projects currently authorized through direct shares and Team policies for that group. An offline device simply waits: it keeps its access and catches up when it reconnects. A separate global identity-device revocation removes the device from the active **Devices** list. Neither action remotely erases copied memories.
+
 ### Check devices and health
 
-**Devices** is read-only. Each card shows the device's owning Identity, whether it is available, and the Projects it receives:
+**Devices** is read-only. Each card shows the device's **Owning Identity**, whether it is available, and the Projects it receives:
 
 - **Direct** — the Project was shared with that Identity.
-- **Team** — the Identity receives the Project through a Team.
-- **Waiting** — setup or delivery is waiting for an offline device; it resumes on reconnect.
+- **Team** — the Identity receives the Project through a Team policy.
+- **Waiting** — acceptance, setup, or delivery is waiting; an offline device resumes on reconnect.
 - **Needs attention** — setup reached a terminal failure; use the displayed retry action.
 
-Use **Health** for the current status. Removing access prevents future delivery, but cannot erase a copy already delivered to another device.
+Use **Health** for the current status. Globally revoked identity devices are omitted from the active Devices list. A device disabled only for one coordinator group remains listed; use **Advanced → Team administration** to review or re-enable that group enrollment. Removing access prevents future delivery, but cannot erase a copy already delivered to another device.
 
 ### Advanced and compatibility
 
