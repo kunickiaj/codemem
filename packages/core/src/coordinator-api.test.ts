@@ -1148,6 +1148,8 @@ describe("createCoordinatorApp dependency injection", () => {
 				device_id: "device-brian-2",
 				public_key: publicKey,
 				fingerprint: fingerprintPublicKey(publicKey),
+				recipient_display_name: "Brian Example",
+				device_display_name: "Brian's second device",
 			}),
 		});
 
@@ -1157,7 +1159,12 @@ describe("createCoordinatorApp dependency injection", () => {
 			kind: "add_device",
 			target_identity_id: "identity-brian",
 		});
-		expect(consumeRecipientInvite).toHaveBeenCalledOnce();
+		expect(consumeRecipientInvite).toHaveBeenCalledWith(
+			expect.objectContaining({
+				recipientDisplayName: "Brian Example",
+				deviceDisplayName: "Brian's second device",
+			}),
+		);
 	});
 
 	it("rejects add-device invites accepted by the inviter device", async () => {

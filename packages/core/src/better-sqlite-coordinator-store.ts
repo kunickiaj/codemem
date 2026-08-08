@@ -1217,10 +1217,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		opts: CoordinatorConsumeRecipientInviteInput,
 	): Promise<CoordinatorRecipientInviteAcceptance> {
 		const consumedAt = normalizeInviteExpiresAt(opts.now);
-		const recipientDisplayName =
-			opts.inviteKind === "team_member" ? (opts.recipientDisplayName ?? null) : null;
-		const deviceDisplayName =
-			opts.inviteKind === "team_member" ? (opts.deviceDisplayName ?? null) : null;
+		const recipientDisplayName = opts.recipientDisplayName ?? null;
+		const deviceDisplayName = opts.deviceDisplayName ?? null;
 		if (
 			!opts.identityId ||
 			!opts.deviceId ||

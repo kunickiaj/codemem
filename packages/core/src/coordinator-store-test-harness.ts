@@ -1204,9 +1204,17 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						deviceId: "device-brian-2",
 						publicKey: "add-device-key",
 						fingerprint: fingerprintPublicKey("add-device-key"),
+						recipientDisplayName: "Brian Example",
+						deviceDisplayName: "Brian's iPad",
 					};
 					const acceptedAddDevice = await store.consumeRecipientInvite(addDeviceInput);
-					expect(acceptedAddDevice.status).toBe("accepted");
+					expect(acceptedAddDevice).toMatchObject({
+						status: "accepted",
+						invite: {
+							recipient_display_name: "Brian Example",
+							recipient_device_display_name: "Brian's iPad",
+						},
+					});
 					expect(acceptedAddDevice.bootstrap_grant).toMatchObject({
 						seed_device_id: teamInput.deviceId,
 						worker_device_id: addDeviceInput.deviceId,
@@ -1215,7 +1223,19 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						"g1",
 						addDeviceInput.deviceId,
 					);
-					expect((await store.consumeRecipientInvite(addDeviceInput)).status).toBe("existing");
+					expect(
+						await store.consumeRecipientInvite({
+							...addDeviceInput,
+							recipientDisplayName: "Unexpected replay rename",
+							deviceDisplayName: "Unexpected replay device rename",
+						}),
+					).toMatchObject({
+						status: "existing",
+						invite: {
+							recipient_display_name: "Brian Example",
+							recipient_device_display_name: "Brian's iPad",
+						},
+					});
 					const replayedAddDeviceEnrollment = await store.getEnrollment(
 						"g1",
 						addDeviceInput.deviceId,
@@ -1250,12 +1270,12 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 							public_key: addDeviceInput.publicKey,
 							fingerprint: addDeviceInput.fingerprint,
 							identity_id: addDeviceInput.identityId,
-							display_name: null,
+							display_name: "Brian's iPad",
 							enabled: 1,
 						}),
 						expect.objectContaining({
 							identity_id: addDeviceInput.identityId,
-							display_name: null,
+							display_name: "Brian's iPad",
 						}),
 					]);
 					expect(await store.listScopeMemberships("scope-project")).toEqual([]);

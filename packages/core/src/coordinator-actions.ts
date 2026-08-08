@@ -2187,12 +2187,8 @@ export async function coordinatorImportInviteAction(opts: {
 			? {
 					invite_kind: payload.kind,
 					identity_id: recipientActorId,
-					...(payload.kind === "team_member"
-						? {
-								recipient_display_name: recipientDisplayName,
-								device_display_name: displayName,
-							}
-						: {}),
+					recipient_display_name: recipientDisplayName,
+					device_display_name: displayName,
 				}
 			: {}),
 		...(projectInvite

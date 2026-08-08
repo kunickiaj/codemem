@@ -2120,10 +2120,8 @@ export function createCoordinatorApp(
 						deviceId,
 						publicKey,
 						fingerprint,
-						recipientDisplayName:
-							invite.invite_kind === "team_member" ? normalizedRecipientDisplayName : null,
-						deviceDisplayName:
-							invite.invite_kind === "team_member" ? normalizedDeviceDisplayName : null,
+						recipientDisplayName: normalizedRecipientDisplayName,
+						deviceDisplayName: normalizedDeviceDisplayName,
 						now: runtime.now(),
 					});
 					return c.json({

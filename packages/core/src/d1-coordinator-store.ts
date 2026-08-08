@@ -1059,10 +1059,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		_opts: CoordinatorConsumeRecipientInviteInput,
 	): Promise<CoordinatorRecipientInviteAcceptance> {
 		const consumedAt = normalizeInviteExpiresAt(_opts.now);
-		const recipientDisplayName =
-			_opts.inviteKind === "team_member" ? (_opts.recipientDisplayName ?? null) : null;
-		const deviceDisplayName =
-			_opts.inviteKind === "team_member" ? (_opts.deviceDisplayName ?? null) : null;
+		const recipientDisplayName = _opts.recipientDisplayName ?? null;
+		const deviceDisplayName = _opts.deviceDisplayName ?? null;
 		if (
 			!_opts.identityId ||
 			!_opts.deviceId ||
