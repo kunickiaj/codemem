@@ -45,6 +45,8 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 					policy_team_id: "team-a",
 					assigned_identity_id: "identity-team",
 					recipient_actor_id: "identity-team",
+					recipient_display_name: "Brian Example",
+					recipient_device_display_name: "Brian's MacBook",
 					bound_device_id: "device-team",
 					consumed_at: NOW,
 				},
@@ -66,7 +68,7 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 					public_key: "pk-team",
 					fingerprint: "fp-team",
 					identity_id: "identity-team",
-					display_name: "Team laptop",
+					display_name: "Brian's MacBook",
 					enabled: 1,
 					created_at: NOW,
 				},
@@ -101,6 +103,15 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 			[{ identity_id: "identity-direct" }, { identity_id: "identity-team" }],
 		);
 		expect(db.prepare("SELECT actor_id FROM sync_peers ORDER BY peer_device_id").all()).toEqual([]);
+		expect(
+			db.prepare("SELECT display_name FROM actors WHERE actor_id = 'identity-team'").pluck().get(),
+		).toBe("Brian Example");
+		expect(
+			db
+				.prepare("SELECT display_name FROM identity_devices WHERE device_id = 'device-team'")
+				.pluck()
+				.get(),
+		).toBe("Brian's MacBook");
 		db.prepare(`INSERT INTO project_recipients(
 			canonical_project_identity, recipient_kind, recipient_id, status, provenance,
 			policy_revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at
@@ -114,6 +125,101 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 				(device) => device.deviceId,
 			),
 		).toEqual(["device-direct-2", "device-team"]);
+	});
+
+	it("uses legacy Team member and enrolled device fallbacks when names are absent", () => {
+		const result = reconcileCoordinatorEnrollmentSnapshot(db, {
+			coordinatorId: "https://coord.example.test",
+			groupId: "group-a",
+			now: NOW,
+			consumedTeamInvites: [
+				{
+					invite_id: "invite-legacy-names",
+					group_id: "group-a",
+					policy_team_id: "team-a",
+					assigned_identity_id: "identity-legacy",
+					recipient_actor_id: "identity-legacy",
+					bound_device_id: "device-legacy",
+					consumed_at: NOW,
+				},
+			],
+			enrollments: [
+				{
+					group_id: "group-a",
+					device_id: "device-legacy",
+					public_key: "pk-legacy",
+					fingerprint: "fp-legacy",
+					identity_id: "identity-legacy",
+					display_name: null,
+					enabled: 1,
+					created_at: NOW,
+				},
+			],
+		});
+
+		expect(result.issues).toEqual([]);
+		expect(
+			db
+				.prepare("SELECT display_name FROM actors WHERE actor_id = 'identity-legacy'")
+				.pluck()
+				.get(),
+		).toBe("Team member");
+		expect(
+			db
+				.prepare("SELECT display_name FROM identity_devices WHERE device_id = 'device-legacy'")
+				.pluck()
+				.get(),
+		).toBe("Enrolled device");
+	});
+
+	it("uses neutral fallbacks when optional presentation names are malformed", () => {
+		const result = reconcileCoordinatorEnrollmentSnapshot(db, {
+			coordinatorId: "https://coord.example.test",
+			groupId: "group-a",
+			now: NOW,
+			consumedTeamInvites: [
+				{
+					invite_id: "invite-malformed-names",
+					group_id: "group-a",
+					policy_team_id: "team-a",
+					assigned_identity_id: "identity-malformed-names",
+					recipient_actor_id: "identity-malformed-names",
+					recipient_display_name: "Brian\u0000",
+					recipient_device_display_name: "x".repeat(121),
+					bound_device_id: "device-malformed-names",
+					consumed_at: NOW,
+				},
+			],
+			enrollments: [
+				{
+					group_id: "group-a",
+					device_id: "device-malformed-names",
+					public_key: "pk-malformed-names",
+					fingerprint: "fp-malformed-names",
+					identity_id: "identity-malformed-names",
+					display_name: "x".repeat(121),
+					enabled: 1,
+					created_at: NOW,
+				},
+			],
+		});
+
+		expect(result).toMatchObject({ identitiesAdded: 1, membershipsAdded: 1, devicesAdded: 1 });
+		expect(result.issues).toEqual([]);
+		expect(
+			db
+				.prepare("SELECT display_name FROM actors WHERE actor_id = 'identity-malformed-names'")
+				.pluck()
+				.get(),
+		).toBe("Team member");
+		expect(
+			db
+				.prepare(
+					"SELECT display_name FROM identity_devices WHERE device_id = 'device-malformed-names'",
+				)
+				.pluck()
+				.get(),
+		).toBe("Enrolled device");
 	});
 
 	it("refreshes coordinator-managed device names without overwriting local names", () => {
@@ -155,6 +261,20 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 		input.enrollments[0].display_name = "Renamed device";
 		reconcileCoordinatorEnrollmentSnapshot(db, input);
 
+		expect(
+			db.prepare("SELECT device_id, display_name FROM identity_devices ORDER BY device_id").all(),
+		).toEqual([
+			{ device_id: "device-coordinator", display_name: "Renamed device" },
+			{ device_id: "device-local", display_name: "My custom name" },
+		]);
+
+		reconcileCoordinatorEnrollmentSnapshot(db, {
+			...input,
+			enrollments: input.enrollments.map((enrollment) => ({
+				...enrollment,
+				display_name: null,
+			})),
+		});
 		expect(
 			db.prepare("SELECT device_id, display_name FROM identity_devices ORDER BY device_id").all(),
 		).toEqual([

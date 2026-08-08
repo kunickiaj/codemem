@@ -3,6 +3,7 @@ import type { CoordinatorConsumedTeamInvite } from "./coordinator-actions.js";
 import { persistCoordinatorEnrollmentReconciliationIssues } from "./coordinator-enrollment-reconciliation-issues.js";
 import type { CoordinatorEnrollment } from "./coordinator-store-contract.js";
 import type { Database } from "./db.js";
+import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
 
 export interface CoordinatorEnrollmentReconcileIssue {
 	kind: "device" | "team_membership";
@@ -32,6 +33,26 @@ function strictId(value: unknown): value is string {
 		value.length <= 256 &&
 		!/[\p{Cc}\p{Cf}]/u.test(value)
 	);
+}
+
+function normalizedDisplayNameOrNull(
+	value: string | null | undefined,
+	field: string,
+): string | null {
+	if (value == null) return null;
+	try {
+		return normalizeIdentityDisplayName(value, field);
+	} catch {
+		return null;
+	}
+}
+
+function displayNameOrFallback(
+	value: string | null | undefined,
+	field: string,
+	fallback: string,
+): string {
+	return normalizedDisplayNameOrNull(value, field) ?? fallback;
 }
 
 export function reconcileCoordinatorEnrollmentSnapshot(
@@ -86,6 +107,11 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 	const apply = db.transaction(() => {
 		for (const invite of input.consumedTeamInvites) {
 			const identityId = invite.assigned_identity_id;
+			const recipientDisplayName = displayNameOrFallback(
+				invite.recipient_display_name,
+				"recipient_display_name",
+				"Team member",
+			);
 			if (
 				invite.group_id !== input.groupId ||
 				!strictId(identityId) ||
@@ -110,7 +136,7 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 			if (!actor) {
 				db.prepare(`INSERT INTO actors(
 					actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
-				) VALUES (?, 'Team member', 0, 'active', NULL, ?, ?)`).run(identityId, now, now);
+				) VALUES (?, ?, 0, 'active', NULL, ?, ?)`).run(identityId, recipientDisplayName, now, now);
 				result.identitiesAdded += 1;
 			} else if (
 				actor.is_local !== 0 ||
@@ -174,7 +200,11 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 				issue("device", enrollment.device_id, "identity_not_active");
 				continue;
 			}
-			const displayName = enrollment.display_name?.trim() || "";
+			const normalizedDisplayName = normalizedDisplayNameOrNull(
+				enrollment.display_name,
+				"device_display_name",
+			);
+			const displayName = normalizedDisplayName ?? "Enrolled device";
 			const existing = db
 				.prepare(
 					`SELECT identity_id, display_name, status, provenance
@@ -187,7 +217,7 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 				if (existing.identity_id === identityId && existing.status === "active") {
 					if (
 						existing.provenance === "coordinator_enrollment" &&
-						displayName &&
+						normalizedDisplayName != null &&
 						existing.display_name !== displayName
 					) {
 						db.prepare(
@@ -235,7 +265,7 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 			) VALUES (?, ?, ?, 'active', 'coordinator_enrollment', ?, 'user_managed', ?, ?, ?, ?)`).run(
 				enrollment.device_id,
 				identityId,
-				displayName || "Enrolled device",
+				displayName,
 				digest("coordinator-identity-device-revision-v1", stableBinding),
 				digest("coordinator-identity-device-source-v1", stableBinding),
 				digest("coordinator-identity-device-idempotency-v1", stableBinding),

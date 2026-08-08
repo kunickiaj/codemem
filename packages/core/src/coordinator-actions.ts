@@ -891,6 +891,8 @@ export interface CoordinatorConsumedTeamInvite {
 	policy_team_id: string;
 	assigned_identity_id: string;
 	recipient_actor_id: string;
+	recipient_display_name?: string | null;
+	recipient_device_display_name?: string | null;
 	bound_device_id: string;
 	consumed_at: string;
 }
@@ -915,6 +917,15 @@ function isCanonicalConsumedTeamInviteTimestamp(value: string): boolean {
 	return value === canonical || value === canonical.replace(/\.000Z$/u, "Z");
 }
 
+function optionalConsumedTeamInviteDisplayName(value: unknown, field: string): string | null {
+	if (value == null || typeof value !== "string") return null;
+	try {
+		return normalizeIdentityDisplayName(value, field);
+	} catch {
+		return null;
+	}
+}
+
 function consumedTeamInvites(
 	invites: Array<Partial<CoordinatorInvite>>,
 ): CoordinatorConsumedTeamInvite[] {
@@ -934,7 +945,15 @@ function consumedTeamInvites(
 			if (!isCanonicalConsumedTeamInviteTimestamp(consumedAt)) {
 				throw new Error("coordinator_consumed_team_invite_invalid");
 			}
-			const row = {
+			const recipientDisplayName = optionalConsumedTeamInviteDisplayName(
+				invite.recipient_display_name,
+				"recipient_display_name",
+			);
+			const recipientDeviceDisplayName = optionalConsumedTeamInviteDisplayName(
+				invite.recipient_device_display_name,
+				"device_display_name",
+			);
+			const row: CoordinatorConsumedTeamInvite = {
 				invite_id: requiredConsumedTeamInviteText(invite.invite_id),
 				group_id: requiredConsumedTeamInviteText(invite.group_id),
 				policy_team_id: requiredConsumedTeamInviteText(invite.policy_team_id, 256),
@@ -942,6 +961,10 @@ function consumedTeamInvites(
 				recipient_actor_id: recipientActorId,
 				bound_device_id: requiredConsumedTeamInviteText(invite.bound_device_id, 256),
 				consumed_at: consumedAt,
+				...(recipientDisplayName == null ? {} : { recipient_display_name: recipientDisplayName }),
+				...(recipientDeviceDisplayName == null
+					? {}
+					: { recipient_device_display_name: recipientDeviceDisplayName }),
 			};
 			if (Object.values(row).some((value) => !value)) {
 				throw new Error("coordinator_consumed_team_invite_invalid");
@@ -2154,37 +2177,62 @@ export async function coordinatorImportInviteAction(opts: {
 			reviewedOnboardingDigest,
 		});
 	}
+	const joinBody: Record<string, unknown> = {
+		token: String(payload.token),
+		device_id: deviceId,
+		public_key: publicKey,
+		fingerprint,
+		...(recipientInvite ? {} : { display_name: displayName }),
+		...(recipientInvite
+			? {
+					invite_kind: payload.kind,
+					identity_id: recipientActorId,
+					...(payload.kind === "team_member"
+						? {
+								recipient_display_name: recipientDisplayName,
+								device_display_name: displayName,
+							}
+						: {}),
+				}
+			: {}),
+		...(projectInvite
+			? {
+					operation_id: payload.operation_id,
+					recipient_actor_id: recipientActorId,
+					recipient_display_name: recipientDisplayName,
+					device_display_name: displayName,
+				}
+			: {}),
+	};
 	let status = 0;
 	let response: Record<string, unknown> | null = null;
 	try {
 		[status, response] = await requestJson(
 			"POST",
 			`${stripTrailingSlashes(coordinatorUrl)}/v1/join`,
-			{
-				body: {
-					token: String(payload.token),
-					device_id: deviceId,
-					public_key: publicKey,
-					fingerprint,
-					...(recipientInvite ? {} : { display_name: displayName }),
-					...(recipientInvite
-						? {
-								invite_kind: payload.kind,
-								identity_id: recipientActorId,
-							}
-						: {}),
-					...(projectInvite
-						? {
-								operation_id: payload.operation_id,
-								recipient_actor_id: recipientActorId,
-								recipient_display_name: recipientDisplayName,
-								device_display_name: displayName,
-							}
-						: {}),
-				},
-				timeoutS: INVITE_IMPORT_TIMEOUT_S,
-			},
+			{ body: joinBody, timeoutS: INVITE_IMPORT_TIMEOUT_S },
 		);
+		if (
+			recipientInvite &&
+			!projectInvite &&
+			"recipient_display_name" in joinBody &&
+			status === 400 &&
+			response?.error === "unexpected_recipient_invite_fields"
+		) {
+			const legacyJoinBody = Object.fromEntries(
+				Object.entries(joinBody).filter(
+					([key]) => key !== "recipient_display_name" && key !== "device_display_name",
+				),
+			);
+			[status, response] = await requestJson(
+				"POST",
+				`${stripTrailingSlashes(coordinatorUrl)}/v1/join`,
+				{
+					body: legacyJoinBody,
+					timeoutS: INVITE_IMPORT_TIMEOUT_S,
+				},
+			);
+		}
 	} catch (error) {
 		throw inviteImportTransportError(error, coordinatorUrl);
 	}

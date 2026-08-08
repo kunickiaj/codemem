@@ -324,6 +324,8 @@ export interface CoordinatorConsumeRecipientInviteInput {
 	deviceId: string;
 	publicKey: string;
 	fingerprint: string;
+	recipientDisplayName?: string | null;
+	deviceDisplayName?: string | null;
 	/** Runtime-authoritative timestamp used for expiry and binding. */
 	now: string;
 }

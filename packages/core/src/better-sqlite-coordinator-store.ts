@@ -1217,6 +1217,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		opts: CoordinatorConsumeRecipientInviteInput,
 	): Promise<CoordinatorRecipientInviteAcceptance> {
 		const consumedAt = normalizeInviteExpiresAt(opts.now);
+		const recipientDisplayName =
+			opts.inviteKind === "team_member" ? (opts.recipientDisplayName ?? null) : null;
+		const deviceDisplayName =
+			opts.inviteKind === "team_member" ? (opts.deviceDisplayName ?? null) : null;
 		if (
 			!opts.identityId ||
 			!opts.deviceId ||
@@ -1294,7 +1298,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				? 0
 				: this.db
 						.prepare(`UPDATE coordinator_invites SET token = ?, consumed_at = ?, bound_device_id = ?,
-							bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = ?
+							bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = ?,
+							recipient_display_name = ?, recipient_device_display_name = ?
 							WHERE invite_id = ? AND consumed_at IS NULL AND revoked_at IS NULL
 							AND expires_at > ? AND invite_kind = ?
 							AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id
@@ -1306,6 +1311,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 							opts.publicKey,
 							opts.fingerprint,
 							authoritativeIdentityId,
+							recipientDisplayName,
+							deviceDisplayName,
 							invite.invite_id,
 							consumedAt,
 							opts.inviteKind,
@@ -1326,11 +1333,12 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				this.db
 					.prepare(`INSERT INTO enrolled_devices(
 						group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
-					) VALUES (?, ?, ?, ?, ?, NULL, 1, ?)
+					) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
 					ON CONFLICT(group_id, device_id) DO UPDATE SET
 						public_key = excluded.public_key,
 						fingerprint = excluded.fingerprint,
 						identity_id = COALESCE(enrolled_devices.identity_id, excluded.identity_id),
+						display_name = COALESCE(enrolled_devices.display_name, excluded.display_name),
 						enabled = 1
 					WHERE enrolled_devices.identity_id IS NULL
 						OR enrolled_devices.identity_id = excluded.identity_id`)
@@ -1340,6 +1348,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 						opts.publicKey,
 						opts.fingerprint,
 						authoritativeIdentityId,
+						deviceDisplayName,
 						consumedAt,
 					);
 			} else {
