@@ -158,6 +158,91 @@ describe("coordinator local admin actions", () => {
 		]);
 	});
 
+	it("retries Team onboarding without optional display names for older coordinators", async () => {
+		const actionDbPath = join(tmpDir, "legacy-coordinator-team.sqlite");
+		const keysDir = join(tmpDir, "legacy-coordinator-team-keys");
+		const configPath = join(tmpDir, "legacy-coordinator-team-config.json");
+		const identityId = "identity-team";
+		const reviewedIntent = teamReviewedIntent("team-a");
+		const reviewedDigest = await recipientReviewedIntentDigest(reviewedIntent);
+		const capturedBodies: Record<string, unknown>[] = [];
+		const acceptedResponse = {
+			ok: true,
+			status: "accepted",
+			kind: "team_member",
+			group_id: "coordinator-a",
+			identity_id: identityId,
+			policy_team_id: "team-a",
+			assigned_identity_id: identityId,
+			reviewed_preview_digest: reviewedDigest,
+			reviewed_intent: reviewedIntent,
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_url: string, init?: RequestInit) => {
+				const body =
+					init?.body instanceof Uint8Array ? Buffer.from(init.body).toString("utf8") : "{}";
+				const parsed = JSON.parse(body) as Record<string, unknown>;
+				capturedBodies.push(parsed);
+				return parsed.recipient_display_name
+					? new Response(JSON.stringify({ error: "unexpected_recipient_invite_fields" }), {
+							status: 400,
+						})
+					: new Response(JSON.stringify(acceptedResponse), { status: 200 });
+			}),
+		);
+		const invite = encodeInvitePayload({
+			v: 1,
+			kind: "team_member",
+			coordinator_url: "https://coord.example.test",
+			group_id: "coordinator-a",
+			policy: "auto_admit",
+			token: "legacy-coordinator-team-token",
+			expires_at: "2099-01-01T00:00:00.000Z",
+			team_name: null,
+			policy_team_id: "team-a",
+			assigned_identity_id: identityId,
+			reviewed_preview_digest: reviewedDigest,
+		});
+		const reviewedOnboardingDigest = reviewedOnboardingDigestForRecipientInvite({
+			dbPath: actionDbPath,
+			keysDir,
+			invitationId: "legacy-coordinator-team-token",
+			identityId,
+			deviceDisplayName: "Recipient laptop",
+			reviewedIntent,
+		});
+
+		await expect(
+			coordinatorImportInviteAction({
+				inviteValue: invite,
+				dbPath: actionDbPath,
+				keysDir,
+				configPath,
+				recipientDisplayName: "Brian Example",
+				deviceDisplayName: "Recipient laptop",
+				reviewedOnboardingDigest,
+			}),
+		).resolves.toMatchObject({ status: "accepted", identity_id: identityId });
+		expect(capturedBodies).toHaveLength(3);
+		expect(capturedBodies[1]).toMatchObject({
+			invite_kind: "team_member",
+			identity_id: identityId,
+			recipient_display_name: "Brian Example",
+			device_display_name: "Recipient laptop",
+		});
+		expect(capturedBodies[2]).toMatchObject({
+			token: "legacy-coordinator-team-token",
+			device_id: capturedBodies[1]?.device_id,
+			public_key: capturedBodies[1]?.public_key,
+			fingerprint: capturedBodies[1]?.fingerprint,
+			invite_kind: "team_member",
+			identity_id: identityId,
+		});
+		expect(capturedBodies[2]).not.toHaveProperty("recipient_display_name");
+		expect(capturedBodies[2]).not.toHaveProperty("device_display_name");
+	});
+
 	it.each([
 		"operation",
 		"group",
@@ -299,6 +384,8 @@ describe("coordinator local admin actions", () => {
 				deviceId: "device-team-1",
 				publicKey,
 				fingerprint: fingerprintPublicKey(publicKey),
+				recipientDisplayName: "Brian Example",
+				deviceDisplayName: "Brian's MacBook",
 				now: "2026-07-26T00:00:00.000Z",
 			});
 		} finally {
@@ -312,6 +399,8 @@ describe("coordinator local admin actions", () => {
 				policy_team_id: "policy-team-1",
 				assigned_identity_id: identityId,
 				recipient_actor_id: identityId,
+				recipient_display_name: "Brian Example",
+				recipient_device_display_name: "Brian's MacBook",
 				bound_device_id: "device-team-1",
 				consumed_at: "2026-07-26T00:00:00.000Z",
 			},
@@ -610,6 +699,8 @@ describe("coordinator local admin actions", () => {
 			policy_team_id: "policy-team-1",
 			assigned_identity_id: "identity:abcdefghijklmnopqr",
 			recipient_actor_id: "identity:abcdefghijklmnopqr",
+			recipient_display_name: "Brian Example",
+			recipient_device_display_name: "Brian's MacBook",
 			bound_device_id: "device-team-1",
 			consumed_at: "2026-07-26T00:00:00.000Z",
 		};
@@ -619,6 +710,8 @@ describe("coordinator local admin actions", () => {
 			policy_team_id: valid.policy_team_id,
 			assigned_identity_id: valid.assigned_identity_id,
 			recipient_actor_id: valid.recipient_actor_id,
+			recipient_display_name: valid.recipient_display_name,
+			recipient_device_display_name: valid.recipient_device_display_name,
 			bound_device_id: valid.bound_device_id,
 			consumed_at: valid.consumed_at,
 		};
@@ -704,6 +797,42 @@ describe("coordinator local admin actions", () => {
 				}),
 			).rejects.toThrow("coordinator_consumed_team_invite_invalid");
 		}
+
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							items: [
+								{
+									...valid,
+									recipient_display_name: "Brian\u0000",
+									recipient_device_display_name: "x".repeat(121),
+								},
+							],
+						}),
+						{ status: 200, headers: { "content-type": "application/json" } },
+					),
+			),
+		);
+		await expect(
+			coordinatorListConsumedTeamInvitesAction({
+				groupId: "team-a",
+				remoteUrl: "https://coord.example.test",
+				adminSecret: "secret",
+			}),
+		).resolves.toEqual([
+			{
+				invite_id: valid.invite_id,
+				group_id: valid.group_id,
+				policy_team_id: valid.policy_team_id,
+				assigned_identity_id: valid.assigned_identity_id,
+				recipient_actor_id: valid.recipient_actor_id,
+				bound_device_id: valid.bound_device_id,
+				consumed_at: valid.consumed_at,
+			},
+		]);
 
 		for (const malformed of [{}, { items: null }, { items: "not-a-list" }, { items: [null] }]) {
 			vi.stubGlobal(
@@ -1759,31 +1888,34 @@ describe("coordinator local admin actions", () => {
 		const inviterPublicKey = "ssh-ed25519 authoritative-inviter-key";
 		const reviewedIntent = addDeviceReviewedIntent(targetIdentityId);
 		const reviewedDigest = await recipientReviewedIntentDigest(reviewedIntent);
+		const capturedBodies: Record<string, unknown>[] = [];
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(
-				async () =>
-					new Response(
-						JSON.stringify({
-							ok: true,
-							status: "accepted",
-							kind: "add_device",
-							group_id: "coordinator-a",
-							identity_id: targetIdentityId,
-							target_identity_id: targetIdentityId,
-							bootstrap_grant_id: "grant-authoritative",
-							inviter_device: {
-								device_id: "authoritative-inviter",
-								public_key: inviterPublicKey,
-								fingerprint: fingerprintPublicKey(inviterPublicKey),
-								display_name: "Existing laptop",
-							},
-							reviewed_preview_digest: reviewedDigest,
-							reviewed_intent: reviewedIntent,
-						}),
-						{ status: 200 },
-					),
-			),
+			vi.fn(async (_url: string, init?: RequestInit) => {
+				const body =
+					init?.body instanceof Uint8Array ? Buffer.from(init.body).toString("utf8") : "{}";
+				capturedBodies.push(JSON.parse(body) as Record<string, unknown>);
+				return new Response(
+					JSON.stringify({
+						ok: true,
+						status: "accepted",
+						kind: "add_device",
+						group_id: "coordinator-a",
+						identity_id: targetIdentityId,
+						target_identity_id: targetIdentityId,
+						bootstrap_grant_id: "grant-authoritative",
+						inviter_device: {
+							device_id: "authoritative-inviter",
+							public_key: inviterPublicKey,
+							fingerprint: fingerprintPublicKey(inviterPublicKey),
+							display_name: "Existing laptop",
+						},
+						reviewed_preview_digest: reviewedDigest,
+						reviewed_intent: reviewedIntent,
+					}),
+					{ status: 200 },
+				);
+			}),
 		);
 		const invite = encodeInvitePayload({
 			v: 1,
@@ -2220,26 +2352,29 @@ describe("coordinator local admin actions", () => {
 				? teamReviewedIntent("team-a")
 				: addDeviceReviewedIntent(testCase.identityId);
 		const reviewedDigest = await recipientReviewedIntentDigest(reviewedIntent);
+		const capturedBodies: Record<string, unknown>[] = [];
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(
-				async () =>
-					new Response(
-						JSON.stringify({
-							ok: true,
-							status: "accepted",
-							kind: testCase.kind,
-							group_id: "coordinator-a",
-							identity_id: testCase.identityId,
-							policy_team_id: testCase.kind === "team_member" ? "team-a" : null,
-							target_identity_id: testCase.kind === "add_device" ? testCase.identityId : null,
-							assigned_identity_id: testCase.kind === "team_member" ? testCase.identityId : null,
-							reviewed_preview_digest: reviewedDigest,
-							reviewed_intent: reviewedIntent,
-						}),
-						{ status: 200 },
-					),
-			),
+			vi.fn(async (_url: string, init?: RequestInit) => {
+				const body =
+					init?.body instanceof Uint8Array ? Buffer.from(init.body).toString("utf8") : "{}";
+				capturedBodies.push(JSON.parse(body) as Record<string, unknown>);
+				return new Response(
+					JSON.stringify({
+						ok: true,
+						status: "accepted",
+						kind: testCase.kind,
+						group_id: "coordinator-a",
+						identity_id: testCase.identityId,
+						policy_team_id: testCase.kind === "team_member" ? "team-a" : null,
+						target_identity_id: testCase.kind === "add_device" ? testCase.identityId : null,
+						assigned_identity_id: testCase.kind === "team_member" ? testCase.identityId : null,
+						reviewed_preview_digest: reviewedDigest,
+						reviewed_intent: reviewedIntent,
+					}),
+					{ status: 200 },
+				);
+			}),
 		);
 		const invite = encodeInvitePayload({
 			v: 1,
@@ -2270,6 +2405,7 @@ describe("coordinator local admin actions", () => {
 			keysDir,
 			configPath,
 			recipientActorId: testCase.identityId,
+			recipientDisplayName: "  Brian   Example  ",
 			deviceDisplayName: "Recipient laptop",
 			reviewedOnboardingDigest,
 		});
@@ -2280,9 +2416,21 @@ describe("coordinator local admin actions", () => {
 			keysDir,
 			configPath,
 			recipientActorId: testCase.identityId,
+			recipientDisplayName: "  Brian   Example  ",
 			deviceDisplayName: "Recipient laptop",
 			reviewedOnboardingDigest,
 		});
+		const joinBodies = capturedBodies.filter((body) => body.invite_kind === testCase.kind);
+		expect(joinBodies).toHaveLength(2);
+		if (testCase.kind === "team_member") {
+			expect(joinBodies[0]).toMatchObject({
+				recipient_display_name: "Brian Example",
+				device_display_name: "Recipient laptop",
+			});
+		} else {
+			expect(joinBodies[0]).not.toHaveProperty("recipient_display_name");
+			expect(joinBodies[0]).not.toHaveProperty("device_display_name");
+		}
 
 		const persistedConfig = readCodememConfigFileAtPath(configPath);
 		expect(persistedConfig).toMatchObject({

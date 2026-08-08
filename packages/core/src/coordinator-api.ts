@@ -2063,6 +2063,8 @@ export function createCoordinatorApp(
 					"device_id",
 					"public_key",
 					"fingerprint",
+					"recipient_display_name",
+					"device_display_name",
 				]);
 				if (Object.keys(data).some((key) => !allowedRecipientAcceptanceFields.has(key))) {
 					return c.json({ error: "unexpected_recipient_invite_fields" }, 400);
@@ -2074,6 +2076,35 @@ export function createCoordinatorApp(
 				}
 				if (identityId.length > 256 || /[\p{Cc}\p{Cf}]/u.test(identityId)) {
 					return c.json({ error: "identity_id_invalid" }, 400);
+				}
+				let normalizedRecipientDisplayName: string | null = null;
+				let normalizedDeviceDisplayName: string | null = null;
+				try {
+					if (data.recipient_display_name != null) {
+						if (typeof data.recipient_display_name !== "string") {
+							throw new Error("recipient_display_name_invalid");
+						}
+						normalizedRecipientDisplayName = normalizeIdentityDisplayName(
+							data.recipient_display_name,
+							"recipient_display_name",
+						);
+					}
+					if (data.device_display_name != null) {
+						if (typeof data.device_display_name !== "string") {
+							throw new Error("device_display_name_invalid");
+						}
+						normalizedDeviceDisplayName = normalizeIdentityDisplayName(
+							data.device_display_name,
+							"device_display_name",
+						);
+					}
+				} catch (error) {
+					return c.json(
+						{
+							error: error instanceof Error ? error.message : "recipient_invite_identity_invalid",
+						},
+						400,
+					);
 				}
 				if (
 					invite.invite_kind === "add_device" &&
@@ -2089,6 +2120,10 @@ export function createCoordinatorApp(
 						deviceId,
 						publicKey,
 						fingerprint,
+						recipientDisplayName:
+							invite.invite_kind === "team_member" ? normalizedRecipientDisplayName : null,
+						deviceDisplayName:
+							invite.invite_kind === "team_member" ? normalizedDeviceDisplayName : null,
 						now: runtime.now(),
 					});
 					return c.json({

@@ -1059,6 +1059,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		_opts: CoordinatorConsumeRecipientInviteInput,
 	): Promise<CoordinatorRecipientInviteAcceptance> {
 		const consumedAt = normalizeInviteExpiresAt(_opts.now);
+		const recipientDisplayName =
+			_opts.inviteKind === "team_member" ? (_opts.recipientDisplayName ?? null) : null;
+		const deviceDisplayName =
+			_opts.inviteKind === "team_member" ? (_opts.deviceDisplayName ?? null) : null;
 		if (
 			!_opts.identityId ||
 			!_opts.deviceId ||
@@ -1123,7 +1127,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			const results = await this.db.batch([
 				this.db
 					.prepare(`UPDATE coordinator_invites SET token = ?, consumed_at = ?, bound_device_id = ?,
-						bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = ?
+						bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = ?,
+						recipient_display_name = ?, recipient_device_display_name = ?
 						WHERE (token_digest = ? OR token = ?) AND consumed_at IS NULL
 						AND revoked_at IS NULL AND expires_at > ? AND invite_kind = ?
 						AND reviewed_intent_json = ? AND reviewed_preview_digest = ?
@@ -1144,6 +1149,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 						_opts.publicKey,
 						_opts.fingerprint,
 						authoritativeIdentityId,
+						recipientDisplayName,
+						deviceDisplayName,
 						digest,
 						_opts.token,
 						consumedAt,
@@ -1161,13 +1168,14 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					.prepare(`INSERT INTO enrolled_devices(
 						group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
 					) SELECT i.group_id, i.bound_device_id, i.bound_public_key, i.bound_fingerprint,
-						i.recipient_actor_id, NULL, 1, ? FROM coordinator_invites i
+						i.recipient_actor_id, i.recipient_device_display_name, 1, ? FROM coordinator_invites i
 					JOIN groups g ON g.group_id = i.group_id AND g.archived_at IS NULL
 					WHERE (i.token_digest = ? OR i.token = ?) AND i.bound_device_id = ?
 						AND i.bound_public_key = ? AND i.bound_fingerprint = ?
 						AND i.recipient_actor_id = ?
 					ON CONFLICT(group_id, device_id) DO UPDATE SET
 						identity_id = COALESCE(enrolled_devices.identity_id, excluded.identity_id),
+						display_name = COALESCE(enrolled_devices.display_name, excluded.display_name),
 						enabled = 1
 					WHERE enrolled_devices.identity_id IS NULL
 						OR enrolled_devices.identity_id = excluded.identity_id`)

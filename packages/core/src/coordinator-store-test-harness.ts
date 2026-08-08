@@ -1085,6 +1085,8 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						deviceId: "device-brian",
 						publicKey,
 						fingerprint: fingerprintPublicKey(publicKey),
+						recipientDisplayName: "Brian Example",
+						deviceDisplayName: "Brian's MacBook",
 						now: "2026-07-21T00:00:00.000Z",
 					};
 
@@ -1118,14 +1120,26 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					// Assert
 					expect(acceptedTeam).toMatchObject({
 						status: "accepted",
+						invite: {
+							recipient_display_name: "Brian Example",
+							recipient_device_display_name: "Brian's MacBook",
+						},
 						reviewed_intent: reviewedIntent,
 					});
 
-					const replayedTeam = await store.consumeRecipientInvite(teamInput);
+					const replayedTeam = await store.consumeRecipientInvite({
+						...teamInput,
+						recipientDisplayName: "Unexpected replay rename",
+						deviceDisplayName: "Unexpected replay device rename",
+					});
 					const replayedTeamEnrollment = await store.getEnrollment("g1", teamInput.deviceId);
 					expect(replayedTeam).toMatchObject({
 						status: "existing",
-						invite: { assigned_identity_id: assignedIdentityId },
+						invite: {
+							assigned_identity_id: assignedIdentityId,
+							recipient_display_name: "Brian Example",
+							recipient_device_display_name: "Brian's MacBook",
+						},
 						reviewed_intent: reviewedIntent,
 					});
 					await store.enrollDevice("g1", {
@@ -1219,9 +1233,13 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 							public_key: teamInput.publicKey,
 							fingerprint: teamInput.fingerprint,
 							identity_id: assignedIdentityId,
+							display_name: "Brian's MacBook",
 							enabled: 1,
 						}),
-						expect.objectContaining({ identity_id: assignedIdentityId }),
+						expect.objectContaining({
+							identity_id: assignedIdentityId,
+							display_name: "Brian's MacBook",
+						}),
 						expect.objectContaining({
 							identity_id: assignedIdentityId,
 							display_name: "Brian's renamed device",
@@ -1232,9 +1250,13 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 							public_key: addDeviceInput.publicKey,
 							fingerprint: addDeviceInput.fingerprint,
 							identity_id: addDeviceInput.identityId,
+							display_name: null,
 							enabled: 1,
 						}),
-						expect.objectContaining({ identity_id: addDeviceInput.identityId }),
+						expect.objectContaining({
+							identity_id: addDeviceInput.identityId,
+							display_name: null,
+						}),
 					]);
 					expect(await store.listScopeMemberships("scope-project")).toEqual([]);
 				});

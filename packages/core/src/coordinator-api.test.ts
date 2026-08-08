@@ -988,6 +988,8 @@ describe("createCoordinatorApp dependency injection", () => {
 				token: invite.token,
 				invite_kind: "team_member",
 				identity_id: assignedIdentityId,
+				recipient_display_name: "  Brian   Example  ",
+				device_display_name: "  Brian's   MacBook  ",
 				device_id: "device-brian",
 				public_key: publicKey,
 				fingerprint: fingerprintPublicKey(publicKey),
@@ -1006,8 +1008,62 @@ describe("createCoordinatorApp dependency injection", () => {
 			reviewed_intent: reviewedIntent,
 		});
 		expect(consumeRecipientInvite).toHaveBeenCalledTimes(2);
+		expect(consumeRecipientInvite).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				recipientDisplayName: "Brian Example",
+				deviceDisplayName: "Brian's MacBook",
+			}),
+		);
 		expect(store.enrollDevice).not.toHaveBeenCalled();
 		expect(store.grantScopeMembership).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["recipient_display_name", "Brian\u0000", "recipient_display_name_invalid"],
+		["device_display_name", "x".repeat(121), "device_display_name_too_long"],
+	])("rejects malformed Team invite %s values", async (field, value, expectedError) => {
+		const publicKey = "recipient-public-key";
+		const consumeRecipientInvite = vi.fn();
+		const store = createMockStore({
+			getInviteByTokenForInspection: vi.fn(async () => ({
+				invite_id: "invite-team-invalid-name",
+				group_id: "g1",
+				token: "team-token",
+				policy: "auto_admit",
+				expires_at: "2099-01-01T00:00:00Z",
+				created_at: "2026-03-28T00:00:00Z",
+				created_by: null,
+				team_name_snapshot: "Coordinator One",
+				revoked_at: null,
+				invite_kind: "team_member",
+				policy_team_id: "policy-team-1",
+				assigned_identity_id: "opaque-assigned-team-identity",
+			})),
+			consumeRecipientInvite,
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+
+		const response = await app.request("/v1/join", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				token: "team-token",
+				invite_kind: "team_member",
+				identity_id: "opaque-assigned-team-identity",
+				device_id: "device-brian",
+				public_key: publicKey,
+				fingerprint: fingerprintPublicKey(publicKey),
+				[field]: value,
+			}),
+		});
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ error: expectedError });
+		expect(consumeRecipientInvite).not.toHaveBeenCalled();
 	});
 
 	it("fails closed when project-first acceptance omits identity confirmation", async () => {
