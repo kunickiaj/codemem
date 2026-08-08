@@ -42,17 +42,17 @@ pnpm run dogfood -- setup --reset
 
 View the isolated peers at fixed loopback URLs:
 
-- Owner: `http://127.0.0.1:38881`
-- Teammate: `http://127.0.0.1:38882`
-- Second device: `http://127.0.0.1:38883`
+- Owner A: `http://127.0.0.1:38881`
+- Teammate B: `http://127.0.0.1:38882`
+- Second device C: `http://127.0.0.1:38883`
 
 Follow this order in the UI:
 
-1. Assign the selected Project to the test Team in the owner UI.
-2. Create a Team invitation in the owner UI and accept it in the teammate UI.
+1. Assign the selected Project to the test Team in the Owner A UI (`38881`).
+2. In the Owner A UI (`38881`), choose **Create an invitation → Invite Team member**. Do not choose **Share exact Projects** at this step. Accept it in the Teammate B UI (`38882`).
 3. If the teammate UI reports that restart is required, run `pnpm run dogfood -- restart teammate` before continuing.
-4. Create an exact-Project invitation in the owner UI and accept it on that same teammate.
-5. Create an add-device invitation for that Identity in the teammate UI, then accept it in the second-device UI.
+4. In the Owner A UI (`38881`), choose **Create an invitation → Share exact Projects**; accept it on that same Teammate B profile (`38882`).
+5. In the Teammate B UI (`38882`), choose **Create an invitation → Add a device** for that Identity, then accept it in the Second device C UI (`38883`).
 6. Run `pnpm run dogfood -- restart second-device` after add-device acceptance.
 7. Add selected and unrelated future memories, then verify delivery, isolation, offline revocation, recovery, and restart persistence.
 

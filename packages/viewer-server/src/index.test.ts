@@ -29,6 +29,7 @@ import Database from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
 import { createApp, createSyncApp } from "./index.js";
 import { __usageCacheTestHooks } from "./routes/stats.js";
+import { reconcileConfiguredCoordinatorEnrollment } from "./routes/sync.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -11537,6 +11538,291 @@ describe("viewer-server", () => {
 			} finally {
 				recipient?.cleanup();
 				owner.cleanup();
+				globalThis.fetch = previousFetch;
+				if (previousConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = previousConfig;
+				if (previousKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
+				if (previousAdminSecret == null) {
+					delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+				} else {
+					process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = previousAdminSecret;
+				}
+				rmSync(testDir, { recursive: true, force: true });
+			}
+		});
+
+		it("reuses a reconciled Team identity for a later exact-Project share", async () => {
+			// Arrange
+			const teammateName = "Dogfood Teammate";
+			const testDir = mkdtempSync(join(tmpdir(), "codemem-team-project-regression-"));
+			const coordinatorDbPath = join(testDir, "coordinator.sqlite");
+			const ownerConfigPath = join(testDir, "owner-config.json");
+			const ownerKeysDir = join(testDir, "owner-keys");
+			const recipientConfigPath = join(testDir, "recipient-config.json");
+			const recipientKeysDir = join(testDir, "recipient-keys");
+			const previousConfig = process.env.CODEMEM_CONFIG;
+			const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const previousAdminSecret = process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+			const previousFetch = globalThis.fetch;
+			const setupCoordinator = new core.BetterSqliteCoordinatorStore(coordinatorDbPath);
+			await setupCoordinator.createGroup("coordinator-a", "Coordinator A");
+			const coordinatorApp = core.createCoordinatorApp({
+				storeFactory: () => new core.BetterSqliteCoordinatorStore(coordinatorDbPath),
+				runtime: {
+					adminSecret: () => "secret",
+					now: () => "2026-08-07T12:00:00.000Z",
+				},
+				requestVerifier: async () => true,
+			});
+			globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+				coordinatorApp.request(String(input), init),
+			) as typeof fetch;
+			const useOwnerConfig = () => {
+				process.env.CODEMEM_CONFIG = ownerConfigPath;
+				process.env.CODEMEM_KEYS_DIR = ownerKeysDir;
+				process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = "secret";
+			};
+			const useRecipientConfig = () => {
+				process.env.CODEMEM_CONFIG = recipientConfigPath;
+				process.env.CODEMEM_KEYS_DIR = recipientKeysDir;
+				delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+			};
+			useOwnerConfig();
+			writeFileSync(
+				ownerConfigPath,
+				JSON.stringify({
+					actor_display_name: "Owner Identity",
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "coordinator-a",
+					sync_coordinator_admin_secret: "secret",
+				}),
+			);
+			const owner = createTestApp({ seedDevice: false });
+			let recipient: ReturnType<typeof createTestApp> | null = null;
+			try {
+				const ownerStore = owner.ensureStore();
+				const [ownerDeviceId] = ensureDeviceIdentity(ownerStore.db, { keysDir: ownerKeysDir });
+				ownerStore.adoptEnsuredDeviceIdentity(ownerDeviceId);
+				ownerStore.db
+					.prepare(`INSERT OR IGNORE INTO actors(
+						actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+					) VALUES (?, 'Owner Identity', 1, 'active', NULL, ?, ?)`)
+					.run(ownerStore.actorId, "2026-08-07T12:00:00.000Z", "2026-08-07T12:00:00.000Z");
+				const ownerDevice = ownerStore.db
+					.prepare("SELECT public_key, fingerprint FROM sync_device WHERE device_id = ?")
+					.get(ownerDeviceId) as { public_key: string; fingerprint: string };
+				await setupCoordinator.enrollDevice("coordinator-a", {
+					deviceId: ownerDeviceId,
+					publicKey: ownerDevice.public_key,
+					fingerprint: ownerDevice.fingerprint,
+					displayName: "Owner Laptop",
+					identityId: ownerStore.actorId,
+				});
+				const teamId = "policy-team-a";
+				const projectId = "https://git.example.invalid/acme/team-project.git";
+				const now = "2026-08-07T12:00:00.000Z";
+				ownerStore.db
+					.prepare(`INSERT INTO policy_teams(
+						team_id, display_name, status, provenance, revision, migration_state,
+						source_fingerprint, idempotency_key, created_at, updated_at
+					) VALUES (?, 'Policy Team A', 'active', 'user', 'r1', 'user_managed',
+						NULL, 'team-a', ?, ?)`)
+					.run(teamId, now, now);
+				const sessionId = insertTestSession(ownerStore.db);
+				ownerStore.db
+					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
+					.run(projectId, "team-project", sessionId);
+				insertTestMemory(ownerStore, {
+					sessionId,
+					kind: "discovery",
+					title: "shared project memory",
+					originDeviceId: ownerDeviceId,
+				});
+				ownerStore.db
+					.prepare(`INSERT INTO project_recipients(
+						canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+						policy_revision, migration_state, source_fingerprint, idempotency_key,
+						created_at, updated_at
+					) VALUES (?, 'team', ?, 'active', 'user', 'r1', 'user_managed', NULL,
+						'team-project', ?, ?)`)
+					.run(projectId, teamId, now, now);
+
+				const teamPreviewResponse = await owner.app.request(
+					"/api/sync/recipient-policy/v1/invites/preview",
+					{
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ kind: "team_member", policy_team_id: teamId }),
+					},
+				);
+				expect(teamPreviewResponse.status).toBe(200);
+				const teamPreview = (await teamPreviewResponse.json()) as {
+					preview: { reviewedOnboardingDigest: string };
+				};
+				const teamCreateResponse = await owner.app.request(
+					"/api/sync/recipient-policy/v1/invites",
+					{
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							kind: "team_member",
+							policy_team_id: teamId,
+							reviewed_onboarding_digest: teamPreview.preview.reviewedOnboardingDigest,
+						}),
+					},
+				);
+				expect(teamCreateResponse.status).toBe(200);
+				const teamCreated = (await teamCreateResponse.json()) as { invite: { encoded: string } };
+
+				useRecipientConfig();
+				writeFileSync(recipientConfigPath, JSON.stringify({ actor_display_name: teammateName }));
+				recipient = createTestApp({ seedDevice: false });
+				const recipientStore = recipient.ensureStore();
+				const inspectTeam = await recipient.app.request("/api/sync/invites/inspect", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						invite: teamCreated.invite.encoded,
+						device_name: "Teammate Laptop",
+					}),
+				});
+				expect(inspectTeam.status).toBe(200);
+				const teamInspection = (await inspectTeam.json()) as {
+					assigned_identity_id: string;
+					recipient_name: string;
+					onboarding: { reviewedOnboardingDigest: string };
+				};
+				expect(teamInspection.recipient_name).toBe(teammateName);
+
+				// Act
+				const acceptTeam = await recipient.app.request("/api/sync/invites/import", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						invite: teamCreated.invite.encoded,
+						recipient_name: teammateName,
+						device_name: "Teammate Laptop",
+						reviewed_onboarding_digest: teamInspection.onboarding.reviewedOnboardingDigest,
+					}),
+				});
+				expect(acceptTeam.status, JSON.stringify(await acceptTeam.clone().json())).toBe(200);
+				expect(recipientStore.actorId).toBe(teamInspection.assigned_identity_id);
+
+				useOwnerConfig();
+				const enrollmentReconciliation = await reconcileConfiguredCoordinatorEnrollment(ownerStore);
+				expect(enrollmentReconciliation).toMatchObject({
+					failedGroups: 0,
+					identitiesAdded: 1,
+					membershipsAdded: 1,
+					issues: 0,
+				});
+				expect(
+					ownerStore.db
+						.prepare("SELECT display_name, status FROM actors WHERE actor_id = ?")
+						.get(teamInspection.assigned_identity_id),
+				).toEqual({ display_name: teammateName, status: "active" });
+
+				const projectPreviewResponse = await owner.app.request(
+					"/api/sync/project-invites/preview",
+					{
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ teammate_name: teammateName, project_ids: [projectId] }),
+					},
+				);
+				expect(projectPreviewResponse.status).toBe(200);
+				const projectPreview = (await projectPreviewResponse.json()) as {
+					operation_id: string;
+					reviewed_project_set_digest: string;
+					teammate: { match: string; person_id: string };
+				};
+				expect(projectPreview.teammate).toEqual({
+					display_name: teammateName,
+					match: "existing",
+					person_id: teamInspection.assigned_identity_id,
+				});
+				const projectCreateResponse = await owner.app.request("/api/sync/project-invites", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						teammate_name: teammateName,
+						project_ids: [projectId],
+						reviewed_project_set_digest: projectPreview.reviewed_project_set_digest,
+					}),
+				});
+				expect(
+					projectCreateResponse.status,
+					JSON.stringify(await projectCreateResponse.clone().json()),
+				).toBe(200);
+				const projectCreated = (await projectCreateResponse.json()) as {
+					invite: { encoded: string };
+				};
+				expect(
+					ownerStore.db
+						.prepare("SELECT person_id, person_kind FROM share_operations WHERE operation_id = ?")
+						.get(projectPreview.operation_id),
+				).toEqual({ person_id: teamInspection.assigned_identity_id, person_kind: "existing" });
+
+				useRecipientConfig();
+				const inspectProject = await recipient.app.request("/api/sync/invites/inspect", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ invite: projectCreated.invite.encoded }),
+				});
+				expect(inspectProject.status).toBe(200);
+				const acceptProject = await recipient.app.request("/api/sync/invites/import", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						invite: projectCreated.invite.encoded,
+						device_name: "Teammate Laptop",
+					}),
+				});
+				expect(acceptProject.status, JSON.stringify(await acceptProject.clone().json())).toBe(200);
+
+				useOwnerConfig();
+				const reconcileProject = await owner.app.request(
+					`/api/sync/project-invites/${projectPreview.operation_id}/reconcile`,
+					{ method: "POST" },
+				);
+
+				// Assert
+				expect(reconcileProject.status, JSON.stringify(await reconcileProject.clone().json())).toBe(
+					200,
+				);
+				expect(await reconcileProject.json()).toMatchObject({
+					reconciled: true,
+					state: "pending_setup",
+				});
+				expect(
+					ownerStore.db
+						.prepare(
+							"SELECT state, person_id, person_kind, recipient_actor_id FROM share_operations WHERE operation_id = ?",
+						)
+						.get(projectPreview.operation_id),
+				).toEqual({
+					state: "provisioning",
+					person_id: teamInspection.assigned_identity_id,
+					person_kind: "existing",
+					recipient_actor_id: teamInspection.assigned_identity_id,
+				});
+				expect(
+					ownerStore.db
+						.prepare("SELECT COUNT(*) FROM actors WHERE display_name = ? AND status = 'pending'")
+						.pluck()
+						.get(teammateName),
+				).toBe(0);
+				expect(
+					ownerStore.db
+						.prepare("SELECT COUNT(*) FROM actors WHERE lower(display_name) = lower(?)")
+						.pluck()
+						.get(teammateName),
+				).toBe(1);
+			} finally {
+				recipient?.cleanup();
+				owner.cleanup();
+				await setupCoordinator.close();
 				globalThis.fetch = previousFetch;
 				if (previousConfig == null) delete process.env.CODEMEM_CONFIG;
 				else process.env.CODEMEM_CONFIG = previousConfig;

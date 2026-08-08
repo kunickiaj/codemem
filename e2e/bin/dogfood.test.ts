@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	buildManualChecklist,
 	buildOwnerSetupPlan,
+	buildRecipientSetupPlans,
 	createDogfoodRunner,
 	createRuntimePaths,
 	parseDogfoodCommand,
@@ -51,6 +52,7 @@ function createHarness(initialState: DogfoodState | null = null) {
 					identity_invariant: { active_local_count: 1, human_named: true },
 				},
 			})),
+			configureRecipientProfiles: vi.fn(),
 			configureAndEnrollOwner: vi.fn(),
 			waitForViewers: vi.fn(async () => undefined),
 			stop: vi.fn(),
@@ -150,6 +152,25 @@ describe("fixed runtime paths", () => {
 		expect(plan.enrollmentCommand).toContain("owner-device");
 		expect(JSON.stringify(plan)).not.toMatch(/peer-b|peer-c|invite/u);
 	});
+
+	it("builds human-named recipient profile setup plans", () => {
+		expect(buildRecipientSetupPlans()).toEqual([
+			{
+				service: "peer-b",
+				config: {
+					actor_display_name: "Dogfood Teammate",
+					sync_device_name: "Dogfood Teammate Device",
+				},
+			},
+			{
+				service: "peer-c",
+				config: {
+					actor_display_name: "Dogfood Teammate Second Device",
+					sync_device_name: "Dogfood Teammate Second Device",
+				},
+			},
+		]);
+	});
 });
 
 describe("dogfood runner", () => {
@@ -248,6 +269,7 @@ describe("dogfood runner", () => {
 			"peer-c",
 			"setup-second-device",
 		);
+		expect(dependencies.operations.configureRecipientProfiles).toHaveBeenCalledTimes(1);
 		expect(dependencies.operations.configureAndEnrollOwner).toHaveBeenCalledTimes(1);
 		expect(dependencies.operations.waitForViewers).toHaveBeenCalledTimes(1);
 		expect(getState()?.services).toEqual(INITIAL_STATE.services);
@@ -256,6 +278,7 @@ describe("dogfood runner", () => {
 			vi.mocked(dependencies.state.remove).mock.invocationCallOrder[0],
 			vi.mocked(dependencies.operations.up).mock.invocationCallOrder[0],
 			vi.mocked(dependencies.operations.fixture).mock.invocationCallOrder.at(-1),
+			vi.mocked(dependencies.operations.configureRecipientProfiles).mock.invocationCallOrder[0],
 			vi.mocked(dependencies.operations.configureAndEnrollOwner).mock.invocationCallOrder[0],
 			vi.mocked(dependencies.operations.waitForViewers).mock.invocationCallOrder[0],
 			vi.mocked(dependencies.state.write).mock.invocationCallOrder[0],
@@ -269,6 +292,7 @@ describe("dogfood runner", () => {
 		"owner-fixture",
 		"teammate-fixture",
 		"second-device-fixture",
+		"recipient-configuration",
 		"enrollment",
 		"readiness",
 	] as const)(
@@ -293,6 +317,11 @@ describe("dogfood runner", () => {
 						throw failure;
 					}
 					return { ok: true, action };
+				});
+			}
+			if (stage === "recipient-configuration") {
+				vi.mocked(dependencies.operations.configureRecipientProfiles).mockImplementation(() => {
+					throw failure;
 				});
 			}
 			if (stage === "enrollment") {
@@ -521,18 +550,23 @@ describe("manual checklist", () => {
 		expect(checklist).toContain("http://127.0.0.1:38881");
 		expect(checklist).toContain("http://127.0.0.1:38882");
 		expect(checklist).toContain("http://127.0.0.1:38883");
-		const teamInvite = "Create a Team invitation in the owner UI";
+		const teamInvite = "Create an invitation → Invite Team member";
 		const teammateRestart = "pnpm run dogfood -- restart teammate";
-		const projectInvite = "Create an exact-Project invitation in the owner UI";
+		const projectInvite = "Create an invitation → Share exact Projects";
 		const addDeviceInvite =
-			"Create an add-device invitation in the teammate UI for that Identity";
-		const addDeviceAccept = "Accept the add-device invitation in the second-device UI";
+			"In the Teammate B UI (38882), choose Create an invitation → Add a device for that Identity";
+		const addDeviceAccept = "Accept the add-device invitation in the Second device C UI (38883)";
 		const secondDeviceRestart = "pnpm run dogfood -- restart second-device";
+		expect(checklist).toContain("Owner A: http://127.0.0.1:38881");
+		expect(checklist).toContain("Teammate B: http://127.0.0.1:38882");
+		expect(checklist).toContain("Second device C: http://127.0.0.1:38883");
 		expect(checklist).toContain(teamInvite);
+		expect(checklist).toContain("Do not choose Share exact Projects at this step");
+		expect(checklist).not.toContain("Create a Team invitation");
 		expect(checklist).toContain("If the teammate UI reports that restart is required");
 		expect(checklist).toContain(teammateRestart);
 		expect(checklist).toContain(projectInvite);
-		expect(checklist).toContain("accept it in the same teammate profile");
+		expect(checklist).toContain("accept it in the same Teammate B profile (38882)");
 		expect(checklist).toContain(addDeviceInvite);
 		expect(checklist).toContain(addDeviceAccept);
 		expect(checklist).toContain(secondDeviceRestart);
