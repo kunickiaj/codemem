@@ -449,8 +449,36 @@ describe("scope membership cache", () => {
 				scopeId: "scope-acme",
 				now: new Date(now(2)),
 			}),
-		).toMatchObject({ authorized: false, state: "revoked", freshness: "fresh" });
+		).toMatchObject({ authorized: false, state: "scope_inactive", freshness: "fresh" });
 		expect(listCachedScopesForDevice(local, "device-a").memberships).toEqual([]);
+	});
+
+	it("restores unchanged peer memberships when an enrolled device regains scope visibility", async () => {
+		const local = setup();
+		const fetch = async (visible: boolean) =>
+			refreshScopeMembershipCache(local, {
+				groupIds: ["team-a"],
+				coordinatorId: "coord-a",
+				now: new Date(now(visible ? 2 : 1)),
+				fetchers: {
+					listScopes: async () => (visible ? [scope()] : []),
+					listMemberships: async () => [membership(), membership({ device_id: "device-peer" })],
+				},
+			});
+
+		await fetch(true);
+		await fetch(false);
+		await fetch(true);
+
+		expect(
+			getCachedScopeAuthorization(local, { deviceId: "device-a", scopeId: "scope-acme" }),
+		).toMatchObject({ authorized: true, state: "authorized" });
+		expect(
+			getCachedScopeAuthorization(local, {
+				deviceId: "device-peer",
+				scopeId: "scope-acme",
+			}),
+		).toMatchObject({ authorized: true, state: "authorized" });
 	});
 
 	it("does not let stale active grants resurrect revoked memberships", () => {

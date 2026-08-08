@@ -3119,6 +3119,16 @@ describe("applyReplicationOps", () => {
 	});
 
 	it("physically deletes matching peer-received rows when access cleanup arrives", () => {
+		setReplicationCursor(
+			db,
+			"dev-remote",
+			{ lastApplied: "scoped-applied", lastAcked: "scoped-acked" },
+			"acme-work",
+		);
+		setReplicationCursor(db, "dev-remote", {
+			lastApplied: "default-applied",
+			lastAcked: "default-acked",
+		});
 		const memoryId = insertReplicatedMemory({
 			importKey: "key:cleanup",
 			originDeviceId: "dev-remote",
@@ -3142,6 +3152,11 @@ describe("applyReplicationOps", () => {
 		expect(
 			db.prepare("SELECT op_type, scope_id FROM replication_ops WHERE op_id = ?").get(op.op_id),
 		).toMatchObject({ op_type: "access_cleanup", scope_id: DEFAULT_SYNC_SCOPE_ID });
+		expect(getReplicationCursor(db, "dev-remote", "acme-work")).toEqual([
+			"scoped-applied",
+			"scoped-acked",
+		]);
+		expect(getReplicationCursor(db, "dev-remote")).toEqual(["default-applied", "default-acked"]);
 	});
 
 	it("does not let access cleanup delete local or differently scoped rows", () => {
@@ -3185,6 +3200,12 @@ describe("applyReplicationOps", () => {
 
 	it("reconciles provably stale peer-received rows without deleting receiver-owned rows", () => {
 		grantScope("acme-work", ["dev-remote"]);
+		setReplicationCursor(
+			db,
+			"dev-remote",
+			{ lastApplied: "stale-applied", lastAcked: "stale-acked" },
+			"acme-work",
+		);
 		const stalePeerMemoryId = insertReplicatedMemory({
 			importKey: "key:stale-peer",
 			originDeviceId: "dev-remote",
@@ -3212,6 +3233,7 @@ describe("applyReplicationOps", () => {
 		expect(
 			db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(missingOriginMemoryId),
 		).toBeDefined();
+		expect(getReplicationCursor(db, "dev-remote", "acme-work")).toEqual([null, null]);
 		expect(result.ambiguous).toEqual([
 			expect.objectContaining({
 				memory_id: missingOriginMemoryId,
@@ -3221,6 +3243,10 @@ describe("applyReplicationOps", () => {
 	});
 
 	it("removes remote-origin local-only rows conservatively and idempotently", () => {
+		setReplicationCursor(db, "dev-remote", {
+			lastApplied: "default-applied",
+			lastAcked: "default-acked",
+		});
 		const remoteNullId = insertReplicatedMemory({
 			importKey: "key:remote-null",
 			originDeviceId: "dev-remote",
@@ -3280,6 +3306,7 @@ describe("applyReplicationOps", () => {
 		);
 		expect(second.deleted).toBe(0);
 		expect(second.deleted_memory_ids).toEqual([]);
+		expect(getReplicationCursor(db, "dev-remote")).toEqual(["default-applied", "default-acked"]);
 	});
 
 	it("limits local-only cleanup to rows proven to originate from the syncing peer", () => {

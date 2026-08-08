@@ -311,6 +311,8 @@ function reconcileScopeMembershipSnapshot(
 	authority: ScopeMembershipCacheAuthority,
 	timestamp: string,
 ): void {
+	// The authorized scope-members endpoint returns the complete membership list
+	// that is active at the current epoch, so absence is fail-closed here.
 	const deviceIds = memberships.map((membership) => membership.device_id);
 	const deviceFilter =
 		deviceIds.length > 0 ? `AND device_id NOT IN (${placeholders(deviceIds.length)})` : "";
@@ -368,21 +370,9 @@ function reconcileGroupScopeSnapshot(
 			 AND group_id = ?
 			 AND scope_id IN (${placeholders(missingScopeIds.length)})`,
 	).run(timestamp, authority.coordinatorId, authority.groupId, ...missingScopeIds);
-	db.prepare(
-		`UPDATE scope_memberships
-		 SET status = 'revoked', updated_at = ?
-		 WHERE COALESCE(coordinator_id, ?) = ?
-			 AND COALESCE(group_id, ?) = ?
-			 AND scope_id IN (${placeholders(missingScopeIds.length)})
-			 AND status != 'revoked'`,
-	).run(
-		timestamp,
-		authority.coordinatorId,
-		authority.coordinatorId,
-		authority.groupId,
-		authority.groupId,
-		...missingScopeIds,
-	);
+	// Enrolled-device scope listings are filtered by the requester's current access.
+	// Archiving the omitted scope fails closed without poisoning unchanged peer rows
+	// as revoked; a later visible snapshot can reconcile its full membership list.
 }
 
 export function upsertCachedScopeMemberships(

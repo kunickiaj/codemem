@@ -1114,21 +1114,21 @@ export async function reconcileRecipientPolicyProject(
 			)
 			.map((device) => device.deviceId)
 			.toSorted();
+		const grantEligibleSet = new Set(grantEligibleDeviceIds);
 		const expectedDeviceIds = [
 			...new Set([
 				...remainingCurrentDeviceIds.filter((deviceId) => policyDesiredSet.has(deviceId)),
 				...grantEligibleDeviceIds,
 			]),
 		].toSorted();
-		const expectedSet = new Set(expectedDeviceIds);
 		const expectedDigest = deviceDigest(expectedDeviceIds);
 		const grantDeviceIds = grantEligibleDeviceIds.filter((deviceId) => !currentSet.has(deviceId));
 		const passKey = digest("recipient-policy-pass-v1", {
 			fingerprint: initialSnapshot.fingerprint,
 			observedAt: initialSnapshot.observedAt,
 		});
-		// Keep the lease fence and prune atomic so a replacement worker cannot acquire
-		// the lease between them and lose its in-flight capability steps.
+		// Fence capability-step pruning and generation-verified deny cleanup together;
+		// a replacement worker must not lose its steps or race a stale overlay release.
 		db.transaction(() => {
 			assertLease(db, projectId, input.leaseOwner, effects.now());
 			activeGeneration = generation(db, projectId, expectedDigest);
@@ -1137,6 +1137,20 @@ export async function reconcileRecipientPolicyProject(
 				activeGeneration,
 				activePassKey: passKey,
 			});
+			for (const overlay of listRecipientPolicyDenyOverlays(db, projectId)) {
+				if (
+					overlay.scopeId === managedBoundary.scopeId &&
+					grantEligibleSet.has(overlay.deviceId) &&
+					currentSet.has(overlay.deviceId)
+				) {
+					clearRecipientPolicyDenyOverlay(db, {
+						canonicalProjectIdentity: projectId,
+						scopeId: overlay.scopeId,
+						deviceId: overlay.deviceId,
+						verifiedGeneration: activeGeneration,
+					});
+				}
+			}
 		}).immediate();
 		const revocations = [
 			...policyRevocations,
@@ -1332,7 +1346,7 @@ export async function reconcileRecipientPolicyProject(
 		for (const overlay of listRecipientPolicyDenyOverlays(db, projectId)) {
 			const revokeVerified = !verifiedSet.has(overlay.deviceId);
 			const desiredActiveVerified =
-				expectedSet.has(overlay.deviceId) && verifiedSet.has(overlay.deviceId);
+				grantEligibleSet.has(overlay.deviceId) && verifiedSet.has(overlay.deviceId);
 			if (
 				overlay.scopeId === managedBoundary.scopeId &&
 				(revokeVerified || desiredActiveVerified)
@@ -1345,14 +1359,26 @@ export async function reconcileRecipientPolicyProject(
 				});
 			}
 		}
-		const parity =
+		const deniedDeviceIds = new Set(
+			listRecipientPolicyDenyOverlays(db, projectId)
+				.filter((overlay) => overlay.scopeId === managedBoundary.scopeId)
+				.map((overlay) => overlay.deviceId),
+		);
+		const effectiveVerifiedDeviceIds = verifiedDeviceIds.filter(
+			(deviceId) => !deniedDeviceIds.has(deviceId),
+		);
+		const membershipParity =
 			verifiedDeviceIds.length === expectedDeviceIds.length &&
 			verifiedDeviceIds.every((deviceId, index) => deviceId === expectedDeviceIds[index]);
+		const parity =
+			membershipParity && !expectedDeviceIds.some((deviceId) => deniedDeviceIds.has(deviceId));
 		upsertRecipientPolicyAuthorityObservation(db, {
 			canonicalProjectIdentity: projectId,
 			generation: activeGeneration,
 			desiredDevicesDigest: expectedDigest,
-			currentDevicesDigest: parity ? expectedDigest : deviceDigest(verifiedDeviceIds),
+			currentDevicesDigest: parity
+				? expectedDigest
+				: deviceDigest(membershipParity ? effectiveVerifiedDeviceIds : verifiedDeviceIds),
 			freshSnapshotFingerprint: verifiedSnapshot.fingerprint,
 			freshSnapshotObservedAt: verifiedSnapshot.observedAt,
 			now: effects.now(),

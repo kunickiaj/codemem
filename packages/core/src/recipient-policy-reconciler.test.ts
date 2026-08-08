@@ -1415,6 +1415,170 @@ describe("recipient-policy reconciler executor", () => {
 		expect(listRecipientPolicyDenyOverlays(db, PROJECT)).toEqual([]);
 	});
 
+	it("clears a freshly active re-enabled device overlay before capability preflight", async () => {
+		insertActiveAuthority(db);
+		putRecipientPolicyDenyOverlay(db, {
+			canonicalProjectIdentity: PROJECT,
+			scopeId: SCOPE,
+			deviceId: "device-new",
+			generation: 2,
+			reasonCode: "enrollment_disabled",
+			now: new Date(BASE_TIME).toISOString(),
+		});
+		const { effects } = harness(["device-keep", "device-new"]);
+		vi.mocked(effects.snapshot).mockResolvedValue({
+			authoritative: true,
+			scopeId: SCOPE,
+			scopeMembershipEpoch: 3,
+			fingerprint: "snapshot:reenabled-epoch-3",
+			observedAt: new Date(BASE_TIME + 10_000).toISOString(),
+			memberships: ["device-keep", "device-new"].map((deviceId) => ({
+				deviceId,
+				status: "active" as const,
+				membershipEpoch: 3,
+			})),
+		});
+		vi.mocked(effects.probeCapability).mockResolvedValue("undetermined");
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-a" },
+			effects,
+		);
+
+		expect(outcome).toMatchObject({
+			status: "waiting",
+			safeErrorCode: "recipient_policy_capability_undetermined",
+		});
+		expect(listRecipientPolicyDenyOverlays(db, PROJECT)).toEqual([]);
+		expect(effects.grant).not.toHaveBeenCalled();
+		expect(effects.revoke).not.toHaveBeenCalled();
+	});
+
+	it("keeps a deny overlay when active membership lacks matching enabled enrollment proof", async () => {
+		insertActiveAuthority(db);
+		putRecipientPolicyDenyOverlay(db, {
+			canonicalProjectIdentity: PROJECT,
+			scopeId: SCOPE,
+			deviceId: "device-new",
+			generation: 2,
+			reasonCode: "enrollment_disabled",
+			now: new Date(BASE_TIME).toISOString(),
+		});
+		const { effects } = harness(["device-keep", "device-new"]);
+		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
+			{
+				deviceId: "device-keep",
+				identityId: "identity-a",
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+				enabled: true,
+			},
+		]);
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-a" },
+			effects,
+		);
+
+		expect(outcome).toMatchObject({
+			status: "waiting",
+			safeErrorCode: "recipient_policy_parity_incomplete",
+		});
+		expect(listRecipientPolicyDenyOverlays(db, PROJECT)).toEqual([
+			expect.objectContaining({ deviceId: "device-new", scopeId: SCOPE }),
+		]);
+	});
+
+	it("keeps a deny overlay when matching enrollment remains disabled", async () => {
+		insertActiveAuthority(db);
+		putRecipientPolicyDenyOverlay(db, {
+			canonicalProjectIdentity: PROJECT,
+			scopeId: SCOPE,
+			deviceId: "device-new",
+			generation: 2,
+			reasonCode: "enrollment_disabled",
+			now: new Date(BASE_TIME).toISOString(),
+		});
+		const { effects } = harness(["device-keep", "device-new"]);
+		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
+			{
+				deviceId: "device-keep",
+				identityId: "identity-a",
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+				enabled: true,
+			},
+			{
+				deviceId: "device-new",
+				identityId: "identity-a",
+				publicKey: "pk-new",
+				fingerprint: "fp-new",
+				enabled: false,
+			},
+		]);
+		vi.mocked(effects.probeCapability).mockResolvedValue("undetermined");
+
+		await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-a" },
+			effects,
+		);
+
+		expect(listRecipientPolicyDenyOverlays(db, PROJECT)).toEqual([
+			expect.objectContaining({ deviceId: "device-new", scopeId: SCOPE }),
+		]);
+	});
+
+	it("keeps a deny overlay without fresh active membership proof", async () => {
+		insertActiveAuthority(db);
+		putRecipientPolicyDenyOverlay(db, {
+			canonicalProjectIdentity: PROJECT,
+			scopeId: SCOPE,
+			deviceId: "device-new",
+			generation: 2,
+			reasonCode: "enrollment_disabled",
+			now: new Date(BASE_TIME).toISOString(),
+		});
+		const { effects } = harness(["device-keep"]);
+		vi.mocked(effects.probeCapability).mockResolvedValue("undetermined");
+
+		await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-a" },
+			effects,
+		);
+
+		expect(listRecipientPolicyDenyOverlays(db, PROJECT)).toEqual([
+			expect.objectContaining({ deviceId: "device-new", scopeId: SCOPE }),
+		]);
+	});
+
+	it("keeps a deny overlay outside the active managed boundary", async () => {
+		insertActiveAuthority(db);
+		putRecipientPolicyDenyOverlay(db, {
+			canonicalProjectIdentity: PROJECT,
+			scopeId: "other-managed-scope",
+			deviceId: "device-new",
+			generation: 2,
+			reasonCode: "enrollment_disabled",
+			now: new Date(BASE_TIME).toISOString(),
+		});
+		const { effects } = harness(["device-keep", "device-new"]);
+		vi.mocked(effects.probeCapability).mockResolvedValue("undetermined");
+
+		await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-a" },
+			effects,
+		);
+
+		expect(listRecipientPolicyDenyOverlays(db, PROJECT)).toEqual([
+			expect.objectContaining({ deviceId: "device-new", scopeId: "other-managed-scope" }),
+		]);
+	});
+
 	it("cancels a stale generation after revokes and before any grant", async () => {
 		const { effects, members } = harness(["device-old"]);
 		vi.mocked(effects.revoke).mockImplementation(async (input) => {

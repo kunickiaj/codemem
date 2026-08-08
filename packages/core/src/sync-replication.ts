@@ -2535,6 +2535,10 @@ function reconcileStalePeerReceivedRowsInternal(
 		ambiguous: [],
 	};
 	const deleteMemory = deleteRows ? db.prepare("DELETE FROM memory_items WHERE id = ?") : null;
+	const clearDeletedScopeCursor = (originDeviceId: string, scopeId: string): void => {
+		if (!deleteRows || scopeId === DEFAULT_SYNC_SCOPE_ID) return;
+		clearReplicationCursorLastApplied(db, originDeviceId, scopeId);
+	};
 	db.transaction(() => {
 		for (const row of rows) {
 			const memoryId = Number(row.id);
@@ -2599,6 +2603,7 @@ function reconcileStalePeerReceivedRowsInternal(
 				if (deleteRows) {
 					clearMemoryRefs(db, memoryId);
 					deleteMemory?.run(memoryId);
+					clearDeletedScopeCursor(originDeviceId, scopeId);
 				}
 				result.deleted += 1;
 				result.deleted_memory_ids.push(memoryId);
@@ -2619,6 +2624,7 @@ function reconcileStalePeerReceivedRowsInternal(
 			if (deleteRows) {
 				clearMemoryRefs(db, memoryId);
 				deleteMemory?.run(memoryId);
+				clearDeletedScopeCursor(originDeviceId, scopeId);
 			}
 			result.deleted += 1;
 			result.deleted_memory_ids.push(memoryId);
