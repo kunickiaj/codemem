@@ -10,6 +10,7 @@ type ReleaseEvalCommandResult = Pick<
 
 type Arguments =
 	| { command: "synthetic"; outputPath?: string }
+	| { command: "verify"; reportPath: string }
 	| {
 			command: "run";
 			manifestPath: string;
@@ -23,17 +24,20 @@ function usage(): string {
 		"Usage:",
 		"  pnpm run eval:release -- synthetic [--output <path>]",
 		"  pnpm run eval:release -- run --manifest <path> [--retrieval-corpus <path>] [--injection-corpus <path>] [--output <path>]",
+		"  pnpm run eval:release -- verify --report <path>",
 	].join("\n");
 }
 
 export function parseReleaseEvalArguments(argv: string[]): Arguments {
 	const normalized = argv[0] === "--" ? argv.slice(1) : argv;
 	const [command, ...rest] = normalized;
-	if (command !== "run" && command !== "synthetic") throw new TypeError(usage());
+	if (command !== "run" && command !== "synthetic" && command !== "verify")
+		throw new TypeError(usage());
 	let manifestPath: string | undefined;
 	let outputPath: string | undefined;
 	let retrievalCorpusPath: string | undefined;
 	let injectionCorpusPath: string | undefined;
+	let reportPath: string | undefined;
 	for (let index = 0; index < rest.length; index += 2) {
 		const flag = rest[index];
 		const value = rest[index + 1];
@@ -41,7 +45,8 @@ export function parseReleaseEvalArguments(argv: string[]): Arguments {
 			flag !== "--manifest" &&
 			flag !== "--output" &&
 			flag !== "--retrieval-corpus" &&
-			flag !== "--injection-corpus"
+			flag !== "--injection-corpus" &&
+			flag !== "--report"
 		)
 			throw new TypeError(`Unknown argument: ${flag}\n${usage()}`);
 		if (!value || value.startsWith("--")) throw new TypeError(`${flag} requires a path`);
@@ -54,11 +59,21 @@ export function parseReleaseEvalArguments(argv: string[]): Arguments {
 		} else if (flag === "--retrieval-corpus") {
 			if (retrievalCorpusPath) throw new TypeError("--retrieval-corpus may be supplied only once");
 			retrievalCorpusPath = value;
-		} else {
+		} else if (flag === "--injection-corpus") {
 			if (injectionCorpusPath) throw new TypeError("--injection-corpus may be supplied only once");
 			injectionCorpusPath = value;
+		} else {
+			if (reportPath) throw new TypeError("--report may be supplied only once");
+			reportPath = value;
 		}
 	}
+	if (command === "verify") {
+		if (!reportPath) throw new TypeError(`verify requires --report <path>\n${usage()}`);
+		if (manifestPath || outputPath || retrievalCorpusPath || injectionCorpusPath)
+			throw new TypeError("verify accepts only --report <path>");
+		return { command, reportPath };
+	}
+	if (reportPath) throw new TypeError(`${command} does not accept --report`);
 	if (command === "run") {
 		if (!manifestPath) throw new TypeError(`run requires --manifest <path>\n${usage()}`);
 		return {
@@ -87,15 +102,23 @@ export interface ReleaseEvalMainDependencies {
 		retrievalCorpusPath?: string;
 		injectionCorpusPath?: string;
 	}): Promise<ReleaseEvalCommandResult>;
+	verify(input: { repositoryRoot: string; reportPath: string }): Promise<{
+		status: "pass";
+		release_version: string;
+		profile_id: string;
+		candidate_commit: string;
+	}>;
 	writeStdout(value: string): void;
 }
 
 async function defaultDependencies(): Promise<ReleaseEvalMainDependencies> {
 	const { runReleaseEval, runSyntheticReleaseEval } = await import("./release/orchestrator.js");
+	const { verifyReleaseAttestation } = await import("./release/attestation.js");
 	return {
 		repositoryRoot: () => resolve(process.cwd()),
 		runSynthetic: runSyntheticReleaseEval,
 		run: runReleaseEval,
+		verify: verifyReleaseAttestation,
 		writeStdout: (value) => process.stdout.write(value),
 	};
 }
@@ -107,6 +130,11 @@ export async function main(
 	const args = parseReleaseEvalArguments(argv);
 	const deps = dependencies ?? (await defaultDependencies());
 	const repositoryRoot = deps.repositoryRoot();
+	if (args.command === "verify") {
+		const result = await deps.verify({ repositoryRoot, reportPath: args.reportPath });
+		deps.writeStdout(`${JSON.stringify(result, null, 2)}\n`);
+		return;
+	}
 	const result =
 		args.command === "synthetic"
 			? await deps.runSynthetic({ repositoryRoot, outputPath: args.outputPath })

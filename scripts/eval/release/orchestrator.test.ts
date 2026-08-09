@@ -13,7 +13,7 @@ import {
 	syntheticObserverCorpus,
 } from "./orchestrator.js";
 import type {
-	CandidateSemanticRetrievalEvidence,
+	CandidateSemanticRetrievalRunEvidence,
 	Digest,
 	ProjectedCorpusV1,
 	ReleaseEvalManifestV1,
@@ -24,23 +24,33 @@ const COMMIT = "a".repeat(40);
 const SHA = `sha256:${"b".repeat(64)}` as Digest;
 
 function semanticEvidence(
-	overrides: Partial<Extract<CandidateSemanticRetrievalEvidence, { status: "complete" }>> = {},
-): Extract<CandidateSemanticRetrievalEvidence, { status: "complete" }> {
+	overrides: Partial<CandidateSemanticRetrievalRunEvidence> = {},
+): CandidateSemanticRetrievalRunEvidence {
 	return {
-		status: "complete",
 		lane: "candidate_semantic",
 		candidate_commit: COMMIT,
+		repetition: 1,
 		probe_suite_digest: SHA,
 		source_corpus_digest: SHA,
 		retrieval_subject_digest: SHA,
+		probe_count: 1,
 		readiness: {
-			state: "ready",
+			state: "healthy",
 			mode: "semantic",
 			embedding_model: "fixture",
+			semantic_search_model: "fixture",
+			materialized_memory_count: 1,
 			active_memory_count: 1,
 			embeddable_memory_count: 1,
 			indexed_memory_count: 1,
 			pending_memory_count: 0,
+			tagged_memory_count: 1,
+			expected_file_ref_count: 0,
+			file_ref_count: 0,
+			expected_concept_ref_count: 0,
+			concept_ref_count: 0,
+			pending_ref_backfill: false,
+			blocking_maintenance_job_count: 0,
 		},
 		metrics: [{ id: "summary_share", value: 1, unit: "ratio" }],
 		...overrides,
@@ -108,14 +118,20 @@ describe("observer release orchestration", () => {
 		expect(() =>
 			aggregateCandidateSemanticEvidence([
 				semanticEvidence(),
-				semanticEvidence({ source_corpus_digest: `sha256:${"c".repeat(64)}` }),
+				semanticEvidence({
+					repetition: 2,
+					source_corpus_digest: `sha256:${"c".repeat(64)}`,
+				}),
 			]),
 		).toThrow("inconsistent identity");
 	});
 
 	it("rejects semantic evidence scored against a different historical probe suite", () => {
 		expect(() =>
-			assertMatchingProbeSuiteDigest(`sha256:${"c".repeat(64)}`, semanticEvidence()),
+			assertMatchingProbeSuiteDigest(
+				`sha256:${"c".repeat(64)}`,
+				aggregateCandidateSemanticEvidence([semanticEvidence()]),
+			),
 		).toThrow("probe-suite identity");
 	});
 

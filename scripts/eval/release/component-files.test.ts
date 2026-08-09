@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parseComponentFileSetManifest } from "./manifest.js";
 
 describe("release evaluator component file set", () => {
-	it("binds observer, retrieval, injection, and private-corpus behavior without attestation", async () => {
+	it("binds observer, retrieval, injection, private-corpus, and attestation behavior", async () => {
 		const manifest = parseComponentFileSetManifest(
 			JSON.parse(await readFile(new URL("./component-files.json", import.meta.url), "utf8")),
 		);
@@ -20,10 +20,11 @@ describe("release evaluator component file set", () => {
 				"scripts/eval/release/retrieval-matrix.ts",
 				"scripts/eval/release/semantic-retrieval.ts",
 				"scripts/eval/release/injection-benchmark.ts",
+				"scripts/eval/release/attestation.ts",
 			]),
 		);
 		expect(manifest.components.evaluator).toContain("packages/core/src/ingest-prompts.ts");
-		expect(manifest.components.evaluator.some((path) => path.includes("attestation"))).toBe(false);
+		expect(manifest.components.evaluator).toContain("scripts/eval/release/attestation.ts");
 		expect(manifest.components.evaluator).toContain(
 			"packages/opencode-plugin/.opencode/plugins/codemem.js",
 		);

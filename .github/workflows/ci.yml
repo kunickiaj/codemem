@@ -66,6 +66,9 @@ jobs:
       - name: Test
         run: pnpm run test
 
+      - name: Release version tests
+        run: pnpm run test:release-version
+
       - name: Release evaluation tests
         run: pnpm run eval:release:test
 

@@ -24,6 +24,7 @@ import { runRetrievalMatrix } from "./retrieval-matrix.js";
 import { runCandidateSemanticRetrieval } from "./semantic-retrieval.js";
 import type {
 	CandidateSemanticRetrievalEvidence,
+	CandidateSemanticRetrievalRunEvidence,
 	ComponentFileSetManifestV1,
 	CorpusTier,
 	Digest,
@@ -116,33 +117,43 @@ function dependencies(
 }
 
 export function aggregateCandidateSemanticEvidence(
-	runs: readonly CandidateSemanticRetrievalEvidence[],
+	runs: readonly CandidateSemanticRetrievalRunEvidence[],
 ): CandidateSemanticRetrievalEvidence {
 	const first = runs[0];
 	if (!first) return { status: "not_applicable", reason: "not_selected" };
-	if (first.status !== "complete")
-		throw new TypeError("selected candidate semantic lane returned not_applicable");
-	const completeRuns = runs.map((run) => {
-		if (run.status !== "complete")
-			throw new TypeError("candidate semantic repetitions have inconsistent status");
-		return run;
-	});
 	if (
-		completeRuns.some(
+		runs.some(
 			(run) =>
 				run.candidate_commit !== first.candidate_commit ||
 				run.probe_suite_digest !== first.probe_suite_digest ||
 				run.source_corpus_digest !== first.source_corpus_digest ||
-				run.retrieval_subject_digest !== first.retrieval_subject_digest,
+				run.retrieval_subject_digest !== first.retrieval_subject_digest ||
+				run.probe_count !== first.probe_count ||
+				run.readiness.embedding_model !== first.readiness.embedding_model,
 		)
 	)
 		throw new TypeError("candidate semantic repetitions have inconsistent identity");
-	if (completeRuns.some((run) => run.metrics.length !== first.metrics.length))
+	if (runs.some((run) => run.metrics.length !== first.metrics.length))
 		throw new TypeError("candidate semantic repetitions have inconsistent metric coverage");
+	const repetitions = runs.map((run) => run.repetition).toSorted((left, right) => left - right);
+	if (
+		new Set(repetitions).size !== repetitions.length ||
+		JSON.stringify(repetitions) !==
+			JSON.stringify(Array.from({ length: runs.length }, (_value, index) => index + 1))
+	)
+		throw new TypeError("candidate semantic repetitions are incomplete");
 	return {
-		...first,
-		metrics: first.metrics.map((metric) => {
-			const values = completeRuns.map((run) => {
+		status: "complete",
+		lane: "candidate_semantic",
+		candidate_commit: first.candidate_commit,
+		probe_suite_digest: first.probe_suite_digest,
+		source_corpus_digest: first.source_corpus_digest,
+		retrieval_subject_digest: first.retrieval_subject_digest,
+		embedding_model: first.readiness.embedding_model,
+		probe_count: first.probe_count,
+		repetition_count: runs.length,
+		aggregate_metrics: first.metrics.map((metric) => {
+			const values = runs.map((run) => {
 				const matching = run.metrics.filter((entry) => entry.id === metric.id);
 				const matched = matching[0];
 				if (matching.length !== 1 || !matched || matched.unit !== metric.unit)
@@ -156,6 +167,7 @@ export function aggregateCandidateSemanticEvidence(
 				value: values.reduce((sum, value) => sum + value, 0) / values.length,
 			};
 		}),
+		runs: [...runs],
 	};
 }
 
@@ -459,7 +471,7 @@ export async function runReleaseEval(input: {
 							mkdir: deps.mkdir,
 						})
 					: null;
-			const semanticRuns: CandidateSemanticRetrievalEvidence[] = [];
+			const semanticRuns: CandidateSemanticRetrievalRunEvidence[] = [];
 			if (
 				preflight.retrievalCorpus &&
 				preflight.retrievalCorpusDigest &&

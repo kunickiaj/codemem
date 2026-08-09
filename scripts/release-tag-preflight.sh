@@ -42,22 +42,7 @@ if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
 		echo "Tag only after the release commit is merged to ${EXPECTED_BRANCH} or a single release branch." >&2
 		exit 1
 	fi
-	if [[ "${qualified_branch}" == "${EXPECTED_BRANCH}" && "${tag_commit}" != "${main_commit}" ]]; then
-		echo "Release tag preflight passed for commit ${tag_commit} on ${qualified_branch}."
-		exit 0
-	fi
-	if [[ "${qualified_branch}" != "${EXPECTED_BRANCH}" ]]; then
-		echo "Release tag preflight passed for commit ${tag_commit} on ${qualified_branch}."
-		exit 0
-	fi
-	if [[ "${tag_commit}" != "${main_commit}" ]]; then
-		echo "Release tag preflight failed: local tag target is not origin/${EXPECTED_BRANCH} HEAD." >&2
-		echo "  tag commit:  ${tag_commit}" >&2
-		echo "  main commit: ${main_commit}" >&2
-		echo "Tag from updated ${EXPECTED_BRANCH} after the release PR merge commit is at HEAD." >&2
-		exit 1
-	fi
-	elif [[ -z "${qualified_branch}" ]]; then
+elif [[ -z "${qualified_branch}" ]]; then
 	echo "Release tag preflight failed: local tag target is not on origin/${EXPECTED_BRANCH} or a single origin/release/* branch." >&2
 	echo "  tag commit:  ${tag_commit}" >&2
 	echo "  main commit: ${main_commit}" >&2
@@ -78,6 +63,52 @@ if [[ -z "${GITHUB_ACTIONS:-}" && "${RELEASE_SKIP_LOCAL_GUARDS:-0}" != "1" ]]; t
 		echo "Release tag preflight failed: working tree is not clean." >&2
 		exit 1
 	fi
+fi
+
+node scripts/release-version.mjs check
+
+release_tag="${RELEASE_TAG:-}"
+if [[ -z "${release_tag}" ]]; then
+	package_version="$(node -p "require('./packages/core/package.json').version")"
+	release_tag="v${package_version}"
+fi
+
+policy_output="$(node scripts/release-version.mjs parse "${release_tag}")"
+release_version=""
+dist_tag=""
+prerelease=""
+attestation=""
+attestation_path=""
+while IFS='=' read -r key value; do
+	case "${key}" in
+		release-version) release_version="${value}" ;;
+		dist-tag) dist_tag="${value}" ;;
+		prerelease) prerelease="${value}" ;;
+		attestation) attestation="${value}" ;;
+		attestation-path) attestation_path="${value}" ;;
+	esac
+done <<< "${policy_output}"
+
+if [[ -z "${release_version}" || -z "${dist_tag}" || -z "${prerelease}" || -z "${attestation}" || -z "${attestation_path}" ]]; then
+	echo "Release tag preflight failed: release policy parser returned incomplete output." >&2
+	exit 1
+fi
+
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+	printf '%s\n' "${policy_output}" >> "${GITHUB_OUTPUT}"
+fi
+
+if [[ "${attestation}" == "required" ]]; then
+	if [[ ! -f "${attestation_path}" ]]; then
+		echo "Release tag preflight failed: stable release attestation is missing: ${attestation_path}" >&2
+		exit 1
+	fi
+	pnpm run eval:release -- verify --report "${attestation_path}"
+elif [[ "${attestation}" == "not_required" ]]; then
+	echo "Release evaluation attestation not_required for recognized ${dist_tag} prerelease ${release_version}."
+else
+	echo "Release tag preflight failed: unsupported attestation policy '${attestation}'." >&2
+	exit 1
 fi
 
 echo "Release tag preflight passed for commit ${tag_commit} on ${qualified_branch:-${EXPECTED_BRANCH}}."

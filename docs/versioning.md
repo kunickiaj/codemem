@@ -34,6 +34,11 @@ Use the release version helper to verify or apply the bump:
 
 - `pnpm run release:version -- check`
 - `pnpm run release:version -- set X.Y.Z`
+- `pnpm run release:version -- parse vX.Y.Z`
+
+`parse` validates exact package/tag alignment and prints the dist-tag,
+prerelease state, attestation policy, and deterministic attestation path used by
+release preflight and the publish workflow.
 
 Regenerate release artifacts before opening the release PR:
 
@@ -54,10 +59,40 @@ pnpm run release:preflight-tag
 
 This verifies release tagging safety in two contexts:
 
-- local preflight: target commit must match `origin/main` HEAD, and the working tree must be clean
-- CI tag workflow: tagged commit must be reachable from `origin/main` (avoids false failures if `main` advances after tag push)
+- local preflight: target commit must be reachable from `origin/main` or exactly one `origin/release/*` branch, the current branch must match that qualifying branch, and the working tree must be clean
+- CI tag workflow: tagged commit must be reachable from `origin/main` or exactly one `origin/release/*` branch (avoids false failures if `main` advances after tag push)
+
+It also parses the release tag with the same strict policy used by the publish
+workflow. Stable `vX.Y.Z` tags require offline verification of the exact
+candidate-bound release attestation at
+`scripts/eval/baselines/releases/vX.Y.Z/release-attestation-v1.json` before any
+package is published. The verifier derives no "newest" fallback, uses no
+network, and rejects missing, stale, future-dated, malformed, incomplete,
+failing, or mismatched evidence.
+The fixed freshness window is seven days with at most five minutes of future
+clock skew.
+Because freshness is verified on every run, a `workflow_dispatch` retry after
+the evidence expires requires newly generated and reviewed evidence. There is
+no stale-evidence bypass.
+
+Recognized `vX.Y.Z-alpha.N`, `vX.Y.Z-beta.N`, and `vX.Y.Z-rc.N` tags report the
+attestation policy as `not_required` and skip this stable-only gate. Any other
+prerelease syntax is rejected; it is never treated as `latest` or silently
+skipped.
 
 Tag only after the release PR has merged to `main` and you have verified that `HEAD` on `main` is the merged release commit. Do not tag the release branch tip directly.
+
+For a stable release, bump the version first and generate evaluation evidence
+afterward from the exact clean post-bump candidate. Review the fresh sanitized
+threshold profile and attestation separately before committing them. Partial
+evaluation reports are inputs for review, not release attestations. Until fresh
+evidence is present at the deterministic path, stable preflight is expected to
+fail closed.
+
+`RELEASE_SKIP_LOCAL_GUARDS=1` is only for controlled local testing of branch and
+clean-tree checks. CI ignores it, and it does not skip version parsing,
+attestation selection, freshness, or verification. It is not an attestation
+bypass.
 
 ## Compatibility check
 

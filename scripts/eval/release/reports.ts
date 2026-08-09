@@ -2,6 +2,7 @@ import { commitId, finiteNumber, safeInteger, sha256Digest } from "./json-shape.
 import { parseSanitizedSubjectIdentifier } from "./manifest.js";
 import type {
 	CandidateSemanticRetrievalEvidence,
+	CandidateSemanticRetrievalRunEvidence,
 	DetailedReleaseReportV1,
 	InjectionSubjectProvenance,
 	ObserverScopeReleaseSummaryV1,
@@ -82,14 +83,10 @@ function injectionProvenance(
 	};
 }
 
-function semanticEvidence(
-	value: CandidateSemanticRetrievalEvidence,
+function semanticRun(
+	value: CandidateSemanticRetrievalRunEvidence,
 	path: string,
-): CandidateSemanticRetrievalEvidence {
-	if (value.status === "not_applicable") {
-		if (value.reason !== "not_selected") throw new TypeError(`${path}.reason is not supported`);
-		return { status: "not_applicable", reason: "not_selected" };
-	}
+): CandidateSemanticRetrievalRunEvidence {
 	if (value.lane !== "candidate_semantic") throw new TypeError(`${path}.lane is not supported`);
 	const readiness = value.readiness;
 	if (!readiness.state || !readiness.mode || !readiness.embedding_model)
@@ -108,19 +105,25 @@ function semanticEvidence(
 	if (new Set(metrics.map((entry) => entry.id)).size !== metrics.length)
 		throw new TypeError(`${path}.metrics contains duplicate IDs`);
 	return {
-		status: "complete",
 		lane: "candidate_semantic",
 		candidate_commit: commitId(value.candidate_commit, `${path}.candidate_commit`),
+		repetition: safeInteger(value.repetition, `${path}.repetition`, 1),
 		probe_suite_digest: sha256Digest(value.probe_suite_digest, `${path}.probe_suite_digest`),
 		source_corpus_digest: sha256Digest(value.source_corpus_digest, `${path}.source_corpus_digest`),
 		retrieval_subject_digest: sha256Digest(
 			value.retrieval_subject_digest,
 			`${path}.retrieval_subject_digest`,
 		),
+		probe_count: safeInteger(value.probe_count, `${path}.probe_count`, 1),
 		readiness: {
 			state: readiness.state,
 			mode: readiness.mode,
 			embedding_model: readiness.embedding_model,
+			semantic_search_model: readiness.semantic_search_model,
+			materialized_memory_count: safeInteger(
+				readiness.materialized_memory_count,
+				`${path}.readiness.materialized_memory_count`,
+			),
 			active_memory_count: safeInteger(
 				readiness.active_memory_count,
 				`${path}.readiness.active_memory_count`,
@@ -137,8 +140,62 @@ function semanticEvidence(
 				readiness.pending_memory_count,
 				`${path}.readiness.pending_memory_count`,
 			),
+			tagged_memory_count: safeInteger(
+				readiness.tagged_memory_count,
+				`${path}.readiness.tagged_memory_count`,
+			),
+			expected_file_ref_count: safeInteger(
+				readiness.expected_file_ref_count,
+				`${path}.readiness.expected_file_ref_count`,
+			),
+			file_ref_count: safeInteger(readiness.file_ref_count, `${path}.readiness.file_ref_count`),
+			expected_concept_ref_count: safeInteger(
+				readiness.expected_concept_ref_count,
+				`${path}.readiness.expected_concept_ref_count`,
+			),
+			concept_ref_count: safeInteger(
+				readiness.concept_ref_count,
+				`${path}.readiness.concept_ref_count`,
+			),
+			pending_ref_backfill: readiness.pending_ref_backfill,
+			blocking_maintenance_job_count: safeInteger(
+				readiness.blocking_maintenance_job_count,
+				`${path}.readiness.blocking_maintenance_job_count`,
+			),
 		},
 		metrics,
+	};
+}
+
+function semanticEvidence(
+	value: CandidateSemanticRetrievalEvidence,
+	path: string,
+): CandidateSemanticRetrievalEvidence {
+	if (value.status === "not_applicable") {
+		if (value.reason !== "not_selected") throw new TypeError(`${path}.reason is not supported`);
+		return { status: "not_applicable", reason: "not_selected" };
+	}
+	const runs = value.runs.map((run, index) => semanticRun(run, `${path}.runs[${index}]`));
+	const firstRun = runs[0];
+	if (!firstRun) throw new TypeError(`${path}.runs must be non-empty`);
+	return {
+		status: "complete",
+		lane: "candidate_semantic",
+		candidate_commit: commitId(value.candidate_commit, `${path}.candidate_commit`),
+		probe_suite_digest: sha256Digest(value.probe_suite_digest, `${path}.probe_suite_digest`),
+		source_corpus_digest: sha256Digest(value.source_corpus_digest, `${path}.source_corpus_digest`),
+		retrieval_subject_digest: sha256Digest(
+			value.retrieval_subject_digest,
+			`${path}.retrieval_subject_digest`,
+		),
+		embedding_model: value.embedding_model,
+		probe_count: safeInteger(value.probe_count, `${path}.probe_count`, 1),
+		repetition_count: safeInteger(value.repetition_count, `${path}.repetition_count`, 1),
+		aggregate_metrics: semanticRun(
+			{ ...firstRun, metrics: value.aggregate_metrics },
+			`${path}.aggregate`,
+		).metrics,
+		runs,
 	};
 }
 

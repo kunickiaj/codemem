@@ -62,6 +62,8 @@
 			"scripts/eval/release/**/*.json",
 			"scripts/eval/release-eval.ts",
 			"scripts/eval/release-eval.test.ts",
+			"scripts/release-version.mjs",
+			"scripts/release-version.test.mjs",
 			"vitest.config.ts",
 			"tsconfig.base.json",
 			"tsconfig.json",

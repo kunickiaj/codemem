@@ -185,6 +185,8 @@ export interface ComponentFileSetManifestV1 {
 	};
 }
 
+export type ComponentDigests = Record<ReleaseComponent, Digest>;
+
 export const RETRIEVAL_METRIC_IDS = [
 	"relevant_placement_rate",
 	"mean_relevant_rank",
@@ -262,6 +264,37 @@ export interface DetailedInjectionSuite {
 	}>;
 }
 
+export interface SemanticRetrievalReadinessEvidence {
+	state: string;
+	mode: string;
+	embedding_model: string;
+	semantic_search_model: string | null;
+	materialized_memory_count: number;
+	active_memory_count: number;
+	embeddable_memory_count: number;
+	indexed_memory_count: number;
+	pending_memory_count: number;
+	tagged_memory_count: number;
+	expected_file_ref_count: number;
+	file_ref_count: number;
+	expected_concept_ref_count: number;
+	concept_ref_count: number;
+	pending_ref_backfill: boolean;
+	blocking_maintenance_job_count: number;
+}
+
+export interface CandidateSemanticRetrievalRunEvidence {
+	lane: "candidate_semantic";
+	candidate_commit: string;
+	repetition: number;
+	probe_suite_digest: Digest;
+	source_corpus_digest: Digest;
+	retrieval_subject_digest: Digest;
+	probe_count: number;
+	readiness: SemanticRetrievalReadinessEvidence;
+	metrics: Array<{ id: RetrievalMetricId; value: number; unit: RetrievalMetricUnit }>;
+}
+
 export type CandidateSemanticRetrievalEvidence =
 	| {
 			status: "complete";
@@ -270,16 +303,11 @@ export type CandidateSemanticRetrievalEvidence =
 			probe_suite_digest: Digest;
 			source_corpus_digest: Digest;
 			retrieval_subject_digest: Digest;
-			readiness: {
-				state: string;
-				mode: string;
-				embedding_model: string;
-				active_memory_count: number;
-				embeddable_memory_count: number;
-				indexed_memory_count: number;
-				pending_memory_count: number;
-			};
-			metrics: Array<{ id: RetrievalMetricId; value: number; unit: RetrievalMetricUnit }>;
+			embedding_model: string;
+			probe_count: number;
+			repetition_count: number;
+			aggregate_metrics: CandidateSemanticRetrievalRunEvidence["metrics"];
+			runs: CandidateSemanticRetrievalRunEvidence[];
 	  }
 	| { status: "not_applicable"; reason: "not_selected" };
 

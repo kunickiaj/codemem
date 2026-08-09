@@ -5,8 +5,16 @@ import { relative, resolve } from "node:path";
 
 // Plain X.Y.Z plus the prerelease tags the Release workflow already
 // recognizes for npm dist-tag routing (alpha/beta/rc; see .github/workflows/release.yml).
-const SEMVER_RE = /^\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?$/;
+const NUMERIC_IDENTIFIER = "(?:0|[1-9][0-9]*)";
+const SEMVER_RE = new RegExp(
+	`^${NUMERIC_IDENTIFIER}\\.${NUMERIC_IDENTIFIER}\\.${NUMERIC_IDENTIFIER}(?:-(?:alpha|beta|rc)\\.${NUMERIC_IDENTIFIER})?$`,
+);
+const RELEASE_TAG_RE = new RegExp(
+	`^v(${NUMERIC_IDENTIFIER}\\.${NUMERIC_IDENTIFIER}\\.${NUMERIC_IDENTIFIER}(?:-(alpha|beta|rc)\\.${NUMERIC_IDENTIFIER})?)$`,
+);
 const SEMVER_FORMAT = "X.Y.Z or X.Y.Z-{alpha,beta,rc}.N";
+const RELEASE_TAG_FORMAT = "vX.Y.Z or vX.Y.Z-{alpha,beta,rc}.N";
+const RELEASE_ATTESTATION_FILE = "release-attestation-v1.json";
 const CORE_VERSION_RE = /^(export\s+const\s+VERSION\s*=\s*")([^"]+)(";\s*)$/m;
 const CORE_TEST_VERSION_RE = /^(\s*expect\(VERSION\)\.toBe\(")([^"]+)("\);\s*)$/m;
 const PLUGIN_PIN_RE = /^(const\s+PINNED_BACKEND_VERSION\s*=\s*")([^"]+)(";\s*)$/m;
@@ -29,6 +37,23 @@ function validateSemver(version) {
 	if (!SEMVER_RE.test(version)) {
 		throw new Error(`Invalid version '${version}'. Expected format: ${SEMVER_FORMAT}`);
 	}
+}
+
+export function parseReleaseTag(tag) {
+	const match = typeof tag === "string" ? tag.match(RELEASE_TAG_RE) : null;
+	if (!match?.[1]) {
+		throw new Error(`Invalid release tag '${String(tag)}'. Expected format: ${RELEASE_TAG_FORMAT}`);
+	}
+	const version = match[1];
+	const prerelease = match[2] ?? null;
+	return {
+		tag,
+		version,
+		distTag: prerelease ?? "latest",
+		prerelease: prerelease !== null,
+		attestation: prerelease === null ? "required" : "not_required",
+		attestationPath: `scripts/eval/baselines/releases/v${version}/${RELEASE_ATTESTATION_FILE}`,
+	};
 }
 
 function isWithinRoot(root, candidate) {
@@ -149,16 +174,11 @@ export function readVersions(root) {
 		resolveManagedPath(repoRoot, "plugins/codex/.codex-plugin/plugin.json"),
 		"plugins/codex/.codex-plugin/plugin.json",
 	);
-	const metadata = expectObject(
-		marketplace.metadata,
-		".claude-plugin/marketplace.json metadata",
-	);
-	const plugins = expectArray(
-		marketplace.plugins,
-		".claude-plugin/marketplace.json plugins",
-	);
+	const metadata = expectObject(marketplace.metadata, ".claude-plugin/marketplace.json metadata");
+	const plugins = expectArray(marketplace.plugins, ".claude-plugin/marketplace.json plugins");
 	const codememPlugin = plugins.find(
-		(plugin) => plugin && !Array.isArray(plugin) && typeof plugin === "object" && plugin.name === "codemem",
+		(plugin) =>
+			plugin && !Array.isArray(plugin) && typeof plugin === "object" && plugin.name === "codemem",
 	);
 	if (!codememPlugin) {
 		throw new Error(".claude-plugin/marketplace.json missing codemem plugin entry");
@@ -167,7 +187,10 @@ export function readVersions(root) {
 	return {
 		core_package: extractPackageVersion(repoRoot, "packages/core/package.json"),
 		cli_package: extractPackageVersion(repoRoot, "packages/cli/package.json"),
-		opencode_plugin_package: extractPackageVersion(repoRoot, "packages/opencode-plugin/package.json"),
+		opencode_plugin_package: extractPackageVersion(
+			repoRoot,
+			"packages/opencode-plugin/package.json",
+		),
 		mcp_server_package: extractPackageVersion(repoRoot, "packages/mcp-server/package.json"),
 		viewer_server_package: extractPackageVersion(repoRoot, "packages/viewer-server/package.json"),
 		core_runtime: extractSingle(
@@ -186,7 +209,9 @@ export function readVersions(root) {
 			"Could not find PINNED_BACKEND_VERSION in .opencode/plugin/codemem.js",
 		),
 		opencode_plugin_pin: extractSingle(
-			readText(resolveManagedPath(repoRoot, "packages/opencode-plugin/.opencode/plugins/codemem.js")),
+			readText(
+				resolveManagedPath(repoRoot, "packages/opencode-plugin/.opencode/plugins/codemem.js"),
+			),
 			PLUGIN_PIN_RE,
 			"Could not find PINNED_BACKEND_VERSION in .opencode/plugin/codemem.js",
 		),
@@ -199,7 +224,9 @@ export function readVersions(root) {
 
 export function versionsAreAligned(snapshot) {
 	const entries = Object.entries(snapshot);
-	const invalid = entries.filter(([, value]) => typeof value !== "string" || !SEMVER_RE.test(value));
+	const invalid = entries.filter(
+		([, value]) => typeof value !== "string" || !SEMVER_RE.test(value),
+	);
 	const unique = [...new Set(entries.map(([, value]) => value))];
 	if (unique.length <= 1 && invalid.length === 0) {
 		return { aligned: true, details: [] };
@@ -267,7 +294,10 @@ export function setVersion(root, version, { dryRun = false } = {}) {
 		}
 	}
 
-	const claudePluginPath = resolveManagedPath(repoRoot, "plugins/claude/.claude-plugin/plugin.json");
+	const claudePluginPath = resolveManagedPath(
+		repoRoot,
+		"plugins/claude/.claude-plugin/plugin.json",
+	);
 	const claudePluginText = readText(claudePluginPath);
 	const claudePlugin = loadJson(claudePluginPath, "plugins/claude/.claude-plugin/plugin.json");
 	if (claudePlugin.version !== version) {
@@ -288,7 +318,12 @@ export function setVersion(root, version, { dryRun = false } = {}) {
 		marketplaceChanged = true;
 	}
 	for (const plugin of plugins) {
-		if (!plugin || Array.isArray(plugin) || typeof plugin !== "object" || plugin.name !== "codemem") {
+		if (
+			!plugin ||
+			Array.isArray(plugin) ||
+			typeof plugin !== "object" ||
+			plugin.name !== "codemem"
+		) {
 			continue;
 		}
 		codememEntries += 1;
@@ -331,10 +366,16 @@ export function buildParserArgs(argv) {
 	const root = ensureManagedRepoRoot(process.cwd());
 	const command = args[0];
 	if (!command) {
-		throw new Error("Usage: release-version.mjs <check|set> [version] [--dry-run]");
+		throw new Error("Usage: release-version.mjs <check|set|parse> [version-or-tag] [--dry-run]");
 	}
 	if (command === "check") {
+		if (args.length !== 1) throw new Error("Usage: release-version.mjs check");
 		return { root, command };
+	}
+	if (command === "parse") {
+		if (args.length !== 2 || !args[1])
+			throw new Error("Usage: release-version.mjs parse <release-tag>");
+		return { root, command, tag: args[1] };
 	}
 	if (command === "set") {
 		const version = args[1];
@@ -347,7 +388,11 @@ export function buildParserArgs(argv) {
 	throw new Error(`Unknown command: ${command}`);
 }
 
-export function main(argv = process.argv.slice(2), stdout = process.stdout, stderr = process.stderr) {
+export function main(
+	argv = process.argv.slice(2),
+	stdout = process.stdout,
+	stderr = process.stderr,
+) {
 	try {
 		const parsed = buildParserArgs(argv);
 		if (parsed.command === "check") {
@@ -362,8 +407,29 @@ export function main(argv = process.argv.slice(2), stdout = process.stdout, stde
 			}
 			return 1;
 		}
+		if (parsed.command === "parse") {
+			const snapshot = readVersions(parsed.root);
+			const alignment = versionsAreAligned(snapshot);
+			if (!alignment.aligned) {
+				for (const line of alignment.details) stdout.write(`${line}\n`);
+				return 1;
+			}
+			const policy = parseReleaseTag(parsed.tag);
+			if (policy.version !== snapshot.core_package)
+				throw new Error(
+					`Release tag/package mismatch: tag=${policy.version} package=${snapshot.core_package}`,
+				);
+			stdout.write(`release-version=${policy.version}\n`);
+			stdout.write(`dist-tag=${policy.distTag}\n`);
+			stdout.write(`prerelease=${policy.prerelease}\n`);
+			stdout.write(`attestation=${policy.attestation}\n`);
+			stdout.write(`attestation-path=${policy.attestationPath}\n`);
+			return 0;
+		}
 
-		const changed = setVersion(parsed.root, parsed.version, { dryRun: parsed.dryRun });
+		const changed = setVersion(parsed.root, parsed.version, {
+			dryRun: parsed.dryRun,
+		});
 		if (changed.length > 0) {
 			stdout.write(`${parsed.dryRun ? "would update" : "updated"} ${changed.length} file(s):\n`);
 			for (const path of changed) {

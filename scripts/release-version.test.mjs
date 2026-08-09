@@ -1,10 +1,16 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 
-import { main, readVersions, setVersion, versionsAreAligned } from "./release-version.mjs";
+import {
+	main,
+	parseReleaseTag,
+	readVersions,
+	setVersion,
+	versionsAreAligned,
+} from "./release-version.mjs";
 
 const tempRoots = [];
 
@@ -16,26 +22,41 @@ function write(path, content) {
 function makeRepo(version = "0.16.0") {
 	const root = mkdtempSync(join(tmpdir(), "codemem-release-version-"));
 	tempRoots.push(root);
-	write(join(root, "packages/core/package.json"), `{
+	write(
+		join(root, "packages/core/package.json"),
+		`{
 \t"version": "${version}"
 }
-`);
-	write(join(root, "packages/cli/package.json"), `{
+`,
+	);
+	write(
+		join(root, "packages/cli/package.json"),
+		`{
 \t"version": "${version}"
 }
-`);
-	write(join(root, "packages/opencode-plugin/package.json"), `{
+`,
+	);
+	write(
+		join(root, "packages/opencode-plugin/package.json"),
+		`{
 \t"version": "${version}"
 }
-`);
-	write(join(root, "packages/mcp-server/package.json"), `{
+`,
+	);
+	write(
+		join(root, "packages/mcp-server/package.json"),
+		`{
 \t"version": "${version}"
 }
-`);
-	write(join(root, "packages/viewer-server/package.json"), `{
+`,
+	);
+	write(
+		join(root, "packages/viewer-server/package.json"),
+		`{
 \t"version": "${version}"
 }
-`);
+`,
+	);
 	write(join(root, "packages/core/src/index.ts"), `export const VERSION = "${version}";\n`);
 	write(join(root, "packages/core/src/index.test.ts"), `expect(VERSION).toBe("${version}");\n`);
 	write(
@@ -86,7 +107,8 @@ function makeRepo(version = "0.16.0") {
 
 afterEach(() => {
 	while (tempRoots.length > 0) {
-		rmSync(tempRoots.pop(), { recursive: true, force: true });
+		const root = tempRoots.pop();
+		if (root) rmSync(root, { recursive: true, force: true });
 	}
 });
 
@@ -98,6 +120,27 @@ function withCwd(nextCwd, fn) {
 	} finally {
 		process.chdir(previous);
 	}
+}
+
+function runMain(root, args) {
+	let stdout = "";
+	let stderr = "";
+	const exitCode = withCwd(root, () =>
+		main(
+			args,
+			{
+				write: (chunk) => {
+					stdout += chunk;
+				},
+			},
+			{
+				write: (chunk) => {
+					stderr += chunk;
+				},
+			},
+		),
+	);
+	return { exitCode, stdout, stderr };
 }
 
 describe("release-version script", () => {
@@ -112,12 +155,18 @@ describe("release-version script", () => {
 		writeFileSync(join(root, "packages/core/package.json"), '{\n\t"version": "9.9.9"\n}\n');
 		const result = versionsAreAligned(readVersions(root));
 		assert.equal(result.aligned, false);
-		assert.equal(result.details.some((line) => line.includes("core_package")), true);
+		assert.equal(
+			result.details.some((line) => line.includes("core_package")),
+			true,
+		);
 	});
 
 	it("reports invalid version values", () => {
 		const root = makeRepo("1.2.3");
-		writeFileSync(join(root, "packages/core/package.json"), '{\n\t"version": "release-candidate"\n}\n');
+		writeFileSync(
+			join(root, "packages/core/package.json"),
+			'{\n\t"version": "release-candidate"\n}\n',
+		);
 		const result = versionsAreAligned(readVersions(root));
 		assert.equal(result.aligned, false);
 		assert.equal(result.details[0], "Invalid release version values detected:");
@@ -175,9 +224,52 @@ describe("release-version script", () => {
 		assert.throws(() => setVersion(root, "1.0.1-alpha"), /Expected format: X.Y.Z/);
 	});
 
+	it("routes stable tags to deterministic required attestation paths", () => {
+		assert.deepEqual(parseReleaseTag("v1.2.3"), {
+			tag: "v1.2.3",
+			version: "1.2.3",
+			distTag: "latest",
+			prerelease: false,
+			attestation: "required",
+			attestationPath: "scripts/eval/baselines/releases/v1.2.3/release-attestation-v1.json",
+		});
+	});
+
+	it("routes recognized prereleases as not_required", () => {
+		for (const identifier of ["alpha", "beta", "rc"]) {
+			const policy = parseReleaseTag(`v1.2.3-${identifier}.1`);
+			assert.equal(policy.distTag, identifier);
+			assert.equal(policy.prerelease, true);
+			assert.equal(policy.attestation, "not_required");
+		}
+	});
+
+	it("prints stable and prerelease policy from the actual parse command", () => {
+		const stable = runMain(makeRepo("1.2.3"), ["parse", "v1.2.3"]);
+		assert.equal(stable.exitCode, 0);
+		assert.match(stable.stdout, /^dist-tag=latest$/m);
+		assert.match(stable.stdout, /^attestation=required$/m);
+		assert.equal(stable.stderr, "");
+
+		const prerelease = runMain(makeRepo("1.2.3-rc.1"), ["parse", "v1.2.3-rc.1"]);
+		assert.equal(prerelease.exitCode, 0);
+		assert.match(prerelease.stdout, /^dist-tag=rc$/m);
+		assert.match(prerelease.stdout, /^attestation=not_required$/m);
+		assert.equal(prerelease.stderr, "");
+	});
+
+	it("rejects unknown or noncanonical release tag syntax", () => {
+		assert.throws(() => parseReleaseTag("v1.2.3-canary.1"), /Invalid release tag/);
+		assert.throws(() => parseReleaseTag("v1.2.3-alpha"), /Invalid release tag/);
+		assert.throws(() => parseReleaseTag("v01.2.3"), /Invalid release tag/);
+	});
+
 	it("does not write partial changes before validation failure", () => {
 		const root = makeRepo("1.0.0");
-		writeFileSync(join(root, ".claude-plugin/marketplace.json"), '{"metadata": {"version": "1.0.0"}, "plugins": []}\n');
+		writeFileSync(
+			join(root, ".claude-plugin/marketplace.json"),
+			'{"metadata": {"version": "1.0.0"}, "plugins": []}\n',
+		);
 		assert.throws(() => setVersion(root, "1.0.1"), /missing codemem plugin entry/);
 		assert.match(readFileSync(join(root, "packages/core/package.json"), "utf8"), /"1.0.0"/);
 		assert.match(
@@ -188,11 +280,26 @@ describe("release-version script", () => {
 
 	it("reports clean cli errors without stack traces", () => {
 		const root = makeRepo("1.0.0");
-		writeFileSync(join(root, ".claude-plugin/marketplace.json"), '{"metadata": {"version": "1.0.0"}, "plugins": []}\n');
+		writeFileSync(
+			join(root, ".claude-plugin/marketplace.json"),
+			'{"metadata": {"version": "1.0.0"}, "plugins": []}\n',
+		);
 		let stdout = "";
 		let stderr = "";
 		const code = withCwd(root, () =>
-			main(["set", "1.0.1"], { write: (chunk) => (stdout += chunk) }, { write: (chunk) => (stderr += chunk) }),
+			main(
+				["set", "1.0.1"],
+				{
+					write: (chunk) => {
+						stdout += chunk;
+					},
+				},
+				{
+					write: (chunk) => {
+						stderr += chunk;
+					},
+				},
+			),
 		);
 		assert.equal(code, 2);
 		assert.equal(stdout, "");

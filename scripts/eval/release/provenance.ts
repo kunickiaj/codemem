@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { compareCodePoints, digest } from "./canonical.js";
 import { parseComponentFileSetManifest } from "./manifest.js";
 import { isPathInside } from "./path-safety.js";
-import type { ComponentFileSetManifestV1, Digest, JsonValue } from "./types.js";
+import type { ComponentDigests, ComponentFileSetManifestV1, Digest, JsonValue } from "./types.js";
 
 export type EvaluatorComponentName = "evaluator" | "retrieval" | "injection";
 
@@ -62,4 +62,16 @@ export async function digestScopedEvaluatorComponent(
 		}),
 	);
 	return digestComponentContents(checked, Object.fromEntries(entries), component);
+}
+
+export async function digestReleaseComponents(
+	repositoryRoot: string,
+	manifest: ComponentFileSetManifestV1,
+): Promise<ComponentDigests> {
+	const [observer, retrieval, injection] = await Promise.all([
+		digestEvaluatorComponent(repositoryRoot, manifest),
+		digestScopedEvaluatorComponent(repositoryRoot, manifest, "retrieval"),
+		digestScopedEvaluatorComponent(repositoryRoot, manifest, "injection"),
+	]);
+	return { observer, retrieval, injection };
 }

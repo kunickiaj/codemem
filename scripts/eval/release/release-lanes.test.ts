@@ -411,6 +411,10 @@ describe("release retrieval and injection lanes", () => {
 			indexed_memory_count: 1,
 			pending_memory_count: 0,
 			tagged_memory_count: 2,
+			expected_file_ref_count: 0,
+			file_ref_count: 0,
+			expected_concept_ref_count: 0,
+			concept_ref_count: 0,
 			pending_ref_backfill: false,
 			blocking_maintenance_jobs: [],
 		};
@@ -459,6 +463,10 @@ describe("release retrieval and injection lanes", () => {
 				indexed_memory_count: 1,
 				pending_memory_count: 0,
 				tagged_memory_count: 1,
+				expected_file_ref_count: 0,
+				file_ref_count: 0,
+				expected_concept_ref_count: 0,
+				concept_ref_count: 0,
 				pending_ref_backfill: false,
 				blocking_maintenance_jobs: [],
 			}),
@@ -544,7 +552,6 @@ describe("release retrieval and injection lanes", () => {
 			kind: "session_summary",
 			metadata: { is_summary: true, source: "observer_summary" },
 		});
-		if (evidence.status !== "complete") throw new Error("semantic evidence incomplete");
 		expect(evidence.source_corpus_digest).toBe(SHA);
 		expect(evidence.metrics.map((metric) => metric.id)).toEqual([...RETRIEVAL_METRIC_IDS]);
 		for (const id of [

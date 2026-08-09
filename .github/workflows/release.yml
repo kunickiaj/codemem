@@ -26,6 +26,12 @@ jobs:
   preflight-tag:
     name: Release Tag Preflight
     runs-on: ubuntu-latest
+    outputs:
+      release-version: ${{ steps.release-policy.outputs['release-version'] }}
+      dist-tag: ${{ steps.release-policy.outputs['dist-tag'] }}
+      prerelease: ${{ steps.release-policy.outputs.prerelease }}
+      attestation: ${{ steps.release-policy.outputs.attestation }}
+      attestation-path: ${{ steps.release-policy.outputs['attestation-path'] }}
 
     steps:
       - name: Validate dispatch input
@@ -45,7 +51,20 @@ jobs:
           fetch-depth: 0
           ref: ${{ env.RELEASE_REF }}
 
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Verify tag points at merged main or release branch
+        id: release-policy
         env:
           IS_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
           PUSH_SHA: ${{ github.sha }}
@@ -79,12 +98,51 @@ jobs:
     if: github.event_name == 'push'
     uses: ./.github/workflows/ci.yml
 
+  verify-release-eval:
+    name: Verify Release Evaluation
+    needs: preflight-tag
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_REF }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify stable release attestation
+        env:
+          ATTESTATION: ${{ needs.preflight-tag.outputs.attestation }}
+          ATTESTATION_PATH: ${{ needs.preflight-tag.outputs.attestation-path }}
+        run: |
+          set -euo pipefail
+          if [[ "$ATTESTATION" == "not_required" ]]; then
+            echo "Release evaluation attestation not_required for recognized prerelease."
+            exit 0
+          fi
+          if [[ "$ATTESTATION" != "required" ]]; then
+            echo "Refusing release with unknown attestation policy '$ATTESTATION'." >&2
+            exit 1
+          fi
+          pnpm run eval:release -- verify --report "$ATTESTATION_PATH"
+
   publish-npm:
     name: Publish to npm
-    needs: [preflight-tag, ci]
+    needs: [preflight-tag, ci, verify-release-eval]
     if: |
       always() &&
       needs.preflight-tag.result == 'success' &&
+      needs.verify-release-eval.result == 'success' &&
       (github.event_name != 'push' || needs.ci.result == 'success')
     runs-on: ubuntu-latest
     environment: release
@@ -118,25 +176,10 @@ jobs:
       - name: Build
         run: pnpm run build
 
-      - name: Determine npm dist-tag
-        id: dist-tag
-        run: |
-          set -euo pipefail
-          TAG="${{ env.RELEASE_TAG }}"
-          if [[ "$TAG" == *"-alpha"* ]]; then
-            echo "tag=alpha" >> "$GITHUB_OUTPUT"
-          elif [[ "$TAG" == *"-beta"* ]]; then
-            echo "tag=beta" >> "$GITHUB_OUTPUT"
-          elif [[ "$TAG" == *"-rc"* ]]; then
-            echo "tag=rc" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=latest" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Publish packages
         env:
           NODE_AUTH_TOKEN: ""
-          DIST_TAG: ${{ steps.dist-tag.outputs.tag }}
+          DIST_TAG: ${{ needs.preflight-tag.outputs.dist-tag }}
         run: |
           set -euo pipefail
           # Idempotent publish: skip any package whose exact version is already on
@@ -170,12 +213,10 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [publish-npm]
-    # Use always() to bypass the implicit success() check, otherwise this job
-    # is skipped on workflow_dispatch reruns where the upstream `ci` job is
-    # skipped — the implicit success() requires all transitive needs to have
-    # succeeded, not just direct ones.
-    if: always() && needs.publish-npm.result == 'success'
+    needs: [preflight-tag, publish-npm]
+    # Use always() so the direct dependency results remain the explicit gate,
+    # including workflow_dispatch runs where the separate CI job is skipped.
+    if: always() && needs.preflight-tag.result == 'success' && needs.publish-npm.result == 'success'
     runs-on: ubuntu-latest
 
     steps:
@@ -187,14 +228,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ env.RELEASE_TAG }}
+          PRERELEASE: ${{ needs.preflight-tag.outputs.prerelease }}
         run: |
           set -euo pipefail
           PRERELEASE_FLAG=""
-          if [[ "$RELEASE_TAG" == *"-alpha"* ]] || \
-             [[ "$RELEASE_TAG" == *"-beta"* ]] || \
-             [[ "$RELEASE_TAG" == *"-rc"* ]]; then
-            PRERELEASE_FLAG="--prerelease"
-          fi
+          case "$PRERELEASE" in
+            true) PRERELEASE_FLAG="--prerelease" ;;
+            false) PRERELEASE_FLAG="" ;;
+            *)
+              echo "Refusing to create GitHub Release: invalid prerelease policy '$PRERELEASE'." >&2
+              exit 1
+              ;;
+          esac
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "Release $RELEASE_TAG already exists"
           else

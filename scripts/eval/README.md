@@ -201,6 +201,54 @@ counts, readiness counters, and aggregate metrics. Detailed prompts, outputs,
 pack text, traces, local paths, and private corpus content remain under ignored
 `.tmp/eval-results/release/`. These partial reports are not release attestations.
 
+### Stable release attestation
+
+Stable publication requires a separately reviewed, passing attestation at the
+deterministic path
+`scripts/eval/baselines/releases/vX.Y.Z/release-attestation-v1.json`. The
+verifier never searches for the newest report and performs no network access.
+Run it explicitly from the exact candidate checkout:
+
+```fish
+pnpm run eval:release -- verify \
+  --report scripts/eval/baselines/releases/vX.Y.Z/release-attestation-v1.json
+```
+
+The attestation references an approved threshold profile by canonical ID; the
+profile is loaded only from
+`scripts/eval/baselines/release-threshold-profiles/<profile-id>.json` and its
+canonical digest must match. Both formats reject unknown, missing, malformed,
+or unsupported fields. Verification recomputes every gate and semantic
+aggregate and rejects stale or future-dated evidence, incomplete repetitions or
+suites, unresolved execution, degraded semantic readiness, and any mismatch in
+version, tag, candidate/evaluator/subject commits, public/private corpus,
+configuration, probe identity, or component digests.
+Evidence is valid for seven days; timestamps more than five minutes ahead of
+the verifier clock are rejected.
+The corpus binding uses explicit current-lane keys:
+`observer_private`, `retrieval_private`, and `injection_public`; no sidecar is
+implicitly substituted for another tier.
+
+Component digest names have a fixed current mapping: `observer` is the full
+evaluator file set used to produce and validate observer output; `retrieval` is
+the production semantic/product-pack and retrieval-evaluation set; `injection`
+is the plugin/injection-evaluation set. The verifier implementation belongs to
+the `observer` evaluator set. The generated attestation and threshold profile
+do not belong to any component set, avoiding a digest that depends on the
+artifact that stores it. `component-files.json` remains in the hashed inventory,
+so inventory changes invalidate prior component digests.
+
+Do not promote a partial sanitized summary into this format. Partial summaries
+contain no enforced threshold result. After the final
+stable version bump, rerun all release lanes against that exact clean commit,
+create a fresh metrics-only profile and attestation from the reviewed evidence,
+review them separately, then run the offline verifier. No historical `0.40.0`
+attestation or measured profile is part of this change.
+
+Every verification, including a `workflow_dispatch` retry, enforces the same
+seven-day freshness window. If evidence expires before a retry, generate and
+review fresh post-bump evidence; there is no expiry bypass.
+
 Validate changes with:
 
 ```fish

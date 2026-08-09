@@ -29,6 +29,7 @@
 			"scripts/eval/lib.ts",
 			"scripts/eval/export-private-release-corpus.ts",
 			"scripts/eval/release-eval.ts",
+			"scripts/eval/release/attestation.ts",
 			"scripts/eval/release/canonical.ts",
 			"scripts/eval/release/component-files.json",
 			"scripts/eval/release/corpus.ts",
