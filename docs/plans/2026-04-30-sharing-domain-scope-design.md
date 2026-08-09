@@ -1,10 +1,10 @@
 # Sharing Domain / Replication Scope Design
 
 **Date:** 2026-04-30  
-**Status:** design / pre-implementation  
-**Related:** `2026-04-30-seed-and-mesh-architecture-converged.md`, `2026-04-30-seed-and-mesh-architecture-research.md`, `2026-04-22-multi-team-coordinator-groups-design.md`, `2026-03-08-shared-memory-trust-state-semantics.md`
+**Status:** accepted scope semantics; phased implementation in progress
+**Related:** `2026-04-30-seed-and-mesh-architecture-converged.md`, `2026-08-08-relay-assisted-sync-design.md`, `2026-05-25-scoped-sync-protocol.md`, `2026-04-30-seed-and-mesh-architecture-research.md`, `2026-04-22-multi-team-coordinator-groups-design.md`, `2026-03-08-shared-memory-trust-state-semantics.md`
 
-When this document conflicts with `2026-04-30-seed-and-mesh-architecture-research.md`, the converged Syncthing-shaped position wins: no quorum backbone, no coordinator-as-gateway, no coordinator data path, and no special seed protocol role.
+When this document conflicts with `2026-04-30-seed-and-mesh-architecture-research.md`, the converged Syncthing-shaped position wins: no quorum backbone, no coordinator-control-as-gateway, no coordinator control-plane data path, and no special seed protocol role. `2026-08-08-relay-assisted-sync-design.md` proposes a review-gated optional opaque relay data plane that is separate from coordinator control.
 
 ## Authoritative invariants (mirror)
 
@@ -13,7 +13,7 @@ These mirror the invariants in `2026-04-30-seed-and-mesh-architecture-converged.
 1. Sharing domain (`scope_id`) is the hard data boundary in Phase 2; legacy compatibility is an audited exception, not an exemption.
 2. Project include/exclude only narrows; basename matches are display-only.
 3. Coordinator group membership is not data access; scope grants are explicit and audited.
-4. Coordinator is never a data path.
+4. Coordinator control is not a data path. Discovery, presence, invitations, and membership authority do not store, decode, authorize, or proxy memory payloads. A deployment may co-host the optional, logically separate opaque RelayDataPlane governed by `2026-08-08-relay-assisted-sync-design.md`; it grants no access and owns no canonical state.
 5. Seed/anchor peers are deployment artifacts, not protocol roles.
 6. Visibility gates eligibility; scope membership gates destination.
 7. Revocation prevents future sync; outbound MUST re-validate membership per op batch; default cache TTL ≤ 60 s.
@@ -61,7 +61,7 @@ Peer project filters answer “what does this peer care about?” They should no
 
 - Make the sharing boundary explicit, durable, and visible.
 - Keep local-first behavior: writes remain durable locally before replication.
-- Preserve the converged peer-to-peer architecture: no coordinator data path, no quorum backbone.
+- Preserve the converged peer-to-peer architecture: no coordinator control-plane data path, no quorum backbone; any optional opaque relay remains a separately bounded data plane.
 - Support mixed personal/work machines safely.
 - Keep coordinator groups as discovery/admin containers, not data boundaries.
 - Preserve existing peer include/exclude filters as a compatibility and narrowing layer.
@@ -71,7 +71,7 @@ Peer project filters answer “what does this peer care about?” They should no
 
 ## Non-goals
 
-- No coordinator-as-gateway or coordinator-proxied memory payloads.
+- No coordinator-control-as-gateway or coordinator-control-plane proxying of memory payloads. Any optional relay follows the separate opaque data-plane contract in `2026-08-08-relay-assisted-sync-design.md`.
 - No quorum write semantics.
 - No libp2p or new transport stack.
 - No automatic deletion of data already copied to a revoked device.
@@ -452,24 +452,21 @@ Snapshot bootstrap should also be scope-aware. A peer joining `acme-work` should
 
 Snapshot generations, baselines, and retained floors should be tracked per scope so pruning or resetting one sharing domain does not force unrelated domains to resync.
 
-### Compatibility contract locked by `codemem-ov4g.4.1`
+### Current scoped compatibility contract
 
-Until per-scope cursors and scope-limited snapshots land, the wire protocol reserves `scope_id` without serving scoped data from the legacy singleton stream:
+The reservation-only compatibility slice from `codemem-ov4g.4.1` has been superseded by the shipped per-scope protocol whose design lineage is recorded in `2026-05-25-scoped-sync-protocol.md`:
 
-- Omitted `scope_id` means legacy compatibility mode. The peer uses the current singleton reset boundary and existing visibility/project filters. Responses include `scope_id: null` so aware peers can distinguish this from a scoped stream.
-- `GET /v1/ops` uses `scope_id` as a query parameter.
-- `POST /v1/ops` may carry `scope_id` in the JSON body alongside `ops`.
-- `GET /v1/snapshot` uses `scope_id` as a query parameter.
-- Present but empty `scope_id` returns HTTP 409 with `error: "reset_required"`, `reset_required: true`, `reason: "missing_scope"`, the current reset boundary, and `sync_capability: "aware"`.
-- Present non-empty `scope_id` returns HTTP 409 with `reason: "unsupported_scope"` until later `ov4g.4` work adds per-scope cursor/reset/snapshot state and scope-bounded queries.
-- Servers MUST NOT silently ignore an explicit `scope_id`; that would let a caller believe it received a bounded Sharing domain stream when it actually received the legacy unscoped stream.
-- This compatibility slice does not add membership enforcement. Phase 1 still treats `scope_id` metadata as informational and preserves legacy peers that omit `scope_id`.
+- `scoped` peers enumerate mutually authorized scopes and use per-scope cursor, reset, retention, ops, and snapshot state.
+- `GET /v1/ops` and `GET /v1/snapshot` carry `scope_id` as a query parameter; `POST /v1/ops` carries it in the signed body.
+- Scoped requests enforce active local and peer membership before serving or applying data.
+- Direct peers that negotiate below `scoped` retain only the constrained legacy compatibility behavior implemented for mixed versions. Servers MUST NOT silently ignore an explicit `scope_id`, and the compatibility path does not make `local-default` or missing scope metadata an authorization boundary.
+- Relay transport is stricter than direct compatibility: it requires negotiated `scoped` capability and rejects legacy, unscoped, or downgraded sessions rather than carrying a compatibility lane.
 
 ### Applying ops
 
 The receiver should reject ops when:
 
-- `scope_id` is missing after compatibility mode ends;
+- a peer negotiated `scoped` but the scoped stream op has no non-empty `scope_id`;
 - sender is not a member of the scope;
 - receiver is not a member of the scope;
 - membership epoch is stale relative to cached revocation data;
@@ -488,9 +485,9 @@ On inbound, `scope_id` is taken from the op row only. The receiver does NOT re-r
 
 Disagreement between op-row `scope_id` and embedded payload `scope_id` is a hard reject with `scope_mismatch`. Project field disagreement is logged but does not change scope routing; the op-row `scope_id` is authoritative.
 
-### Hinted handoff (deferred work) MUST verify membership at delivery time
+### Hinted handoff (unapproved future work) MUST verify membership at delivery time
 
-Hinted handoff is deferred until after the foundation tracks land, but its semantics are pinned now:
+Hinted handoff remains unapproved and requires a separate implementation decision. If pursued, its membership semantics are pinned now:
 
 - A hint stored on peer A targeting peer B is metadata only; the underlying op carries its own `scope_id` and authorization.
 - When peer C (or peer A) attempts to deliver the hint to peer B, C MUST re-validate B's membership in the op's `scope_id` at C's latest known epoch.
@@ -500,110 +497,35 @@ Hinted handoff is deferred until after the foundation tracks land, but its seman
 
 ### Private same-actor sync
 
-Current sync has a `claimed_local_actor` path that allows private memory sync between devices owned by the same actor. In Phase 2 this bypass is retracted (Invariant 9). Private same-actor sync MUST go through a `personal:<actor_id>` scope whose membership manifest is signed by an actor-controlled key. The actor's own devices are the only members. An org/work scope cannot receive private memories merely because a peer claims the same actor.
+`claimed_local_actor` is retracted as an authorization signal. It remains compatibility and onboarding metadata only and MUST NOT bypass scope or visibility checks on any path. Private same-actor sync MUST go through a `personal:<actor_id>` scope whose membership manifest is signed by an actor-controlled key. The actor's own devices are the only members. An org/work scope cannot receive private memories merely because a peer claims the same actor.
 
-Phase 1 → Phase 2 promotion fails closed if any `sync_peer` row still asserts `claimed_local_actor=1` without a corresponding `personal:` scope grant for the same device. Operators are guided to migrate by issuing a `personal:<actor_id>` scope and granting the same-actor devices to it before promotion.
+A peer that asserts `claimed_local_actor=1` without a corresponding `personal:` scope grant receives no private-sync authority from that flag. Operators migrate such peers by issuing a `personal:<actor_id>` scope and granting the same-actor devices to it.
 
-## Legacy peer compatibility and rollout gates
+## Legacy peer compatibility and current enforcement
 
-Scope enforcement cannot be turned on globally in one release. Older peers will not understand `scope_id`, and existing databases will not have scope membership populated. The rollout has explicit phases, signaled at the protocol level, with strict rules about when scope metadata becomes authoritative.
+The original rollout used Phase 0/1/2 language to stage schema, membership, and enforcement work across releases. That phase model was a planning scaffold and is not a runtime configuration or derived state. Current explicit scoped requests enforce active local and peer membership. References to “Phase 2” elsewhere in this document mean the shipped scoped-enforcement posture, not a global phase flag.
 
 ### Protocol versioning
 
-- Add a sync protocol capability advertisement (request header or capability field) so peers can discover one another's scope support: `unsupported`, `aware`, `enforcing`.
+- Peers advertise one sync capability: `unsupported`, `aware`, `enforcing`, or `scoped`, in increasing order of support.
+- `scoped` signals the shipped per-Space wire protocol: mutually authorized-scope enumeration plus signed explicit-scope ops and snapshots.
+- `enforcing` is a legacy negotiation rung retained for compatibility; it does not support explicit per-Space streams.
 - A peer's stance is observable per session and recorded in `sync_attempts` for diagnostics.
-- Capability downgrade is allowed (a peer that supports enforcing may speak `aware` to a legacy peer); capability upgrade is not.
-
-### Three-state per-deployment posture
-
-Each deployment has one of:
-
-- **Phase 0 — pre-scope.** Build does not yet include scope schema. No scope behavior. Existing peer/project filters apply.
-- **Phase 1 — aware.** Scope schema and resolver exist; new local writes stamp `scope_id`; outbound sync still uses legacy filters; inbound ops accept missing/unknown `scope_id` for backward compatibility. Scope metadata is informational only.
-- **Phase 2 — enforcing.** Scope membership is authoritative; outbound and inbound sync gate on scope; legacy peers are accepted only with explicit allowlists per peer.
-
-The transition from Phase 1 to Phase 2 is the gate at `codemem-ov4g.8`. Scope metadata MUST NOT be used for security decisions before Phase 2.
-
-#### Phase state is derived, not configured
-
-Phase state MUST be a derived value, not a config flag an operator can flip independently of system state. The derivation is:
-
-```
-phase = 0 if no scope schema is present
-      = 1 if scope schema is present AND any precondition for Phase 2 is unmet
-      = 2 if all of:
-          - every active scope has a current signed or coordinator-issued
-            membership manifest with a non-stale epoch
-          - no `sync_peer` row has `claimed_local_actor=1` without a matching
-            `personal:<actor_id>` scope grant for the same device
-          - the deployment is configured to enforce (operator opt-in flag,
-            but only consulted when the structural preconditions are met)
-          - capability negotiation has been live for at least one full
-            release window
-```
-
-The UI banner that shows "Scope metadata is informational only — boundaries are not yet enforced" reads from the same derived value. There is no path to display Phase 2 in the UI while running Phase 1 enforcement code, or vice versa.
-
-Phase 2 promotion fails closed with a structured error listing the unmet preconditions; the operator cannot bypass.
+- Direct peers negotiate to the lower capability and may retain constrained legacy compatibility behavior. Capability upgrade is never inferred. Relay does not permit this downgrade path and requires `scoped` on both sides.
 
 ### Behavior toward legacy peers
 
-When a peer advertises `unsupported`:
-
-- It still receives only `visibility=shared` memories that pass existing project filters.
-- In Phase 2, it additionally receives only memories whose resolved `scope_id` matches a per-peer "legacy compatibility scope" the operator has explicitly configured.
-- The default is no legacy compatibility scope, which means a legacy peer receives nothing once enforcing.
-- It cannot send memories that the receiver would have rejected by scope; receivers in Phase 2 reject inbound legacy ops unless the sender is on the legacy compatibility allowlist for the receiver.
-- UI marks the peer with a "legacy" badge and explains what changes when enforcement is enabled.
-
-#### Legacy compatibility scope is bounded
-
-To prevent operators from using legacy compatibility as an unbounded leak primitive, the following constraints are mandatory:
-
-- A scope is a valid legacy compatibility target ONLY IF the legacy peer was already an authorized recipient of that data under pre-Phase-2 rules. Operationally that means the legacy peer's existing `sync_peers` row must show prior successful sync attempts overlapping the project pattern that resolves to that scope.
-- A legacy compatibility scope MUST NOT include any scope created by `migration` source (`legacy-shared-review`, `local-default`, etc.).
-- A legacy compatibility scope MUST NOT include any scope whose `authority_type` is `local` (Invariant 10).
-- Configuring or changing a legacy compatibility scope is a privileged admin action that emits an audit event with reason "legacy-compat-grant", actor identity, target peer, target scope, and prior-sync evidence summary.
-- The UI MUST display "This peer cannot prove scope membership; you are granting it access without cryptographic authorization" each time the operator opens the configuration screen.
-
-If any of these constraints fail, the deployment refuses to set the legacy compatibility scope and reports a structured reason code.
-
-### When scope metadata becomes authoritative
-
-Scope metadata is authoritative if and only if all of the following are true:
-
-1. The local deployment is in Phase 2.
-2. The local membership cache has a current epoch from coordinator or signed manifest authority for the scopes in question.
-3. The op's `scope_id` is present, non-empty, and recognized.
-4. Sender and receiver both pass scope membership checks at the current epoch.
-
-If any condition fails, the op is handled per Phase 1 rules and a diagnostic reason code is recorded. The system MUST NOT silently authorize sync based on partial scope information.
+Direct peers below `scoped` may use the constrained legacy compatibility lane implemented for mixed versions. That lane does not turn missing scope metadata, project filters, `local-default`, migration-created local scopes, or `claimed_local_actor` into authorization. Explicit scoped requests require recognized scope metadata plus current sender and receiver membership. Relay has no legacy lane and fails closed unless both peers negotiate `scoped`.
 
 ### Backfill and review behavior
 
-Scope metadata added by migration is treated as classification metadata in Phase 1. It cannot promote a memory's reach beyond what existing peer filters and visibility already allowed. Migration biases toward under-sharing:
+Scope metadata added by migration cannot promote a memory's reach. Migration biases toward under-sharing:
 
 - private/personal visibility -> local-only scope
 - shared with clear workspace + existing peer reach -> migration-tagged shared scope (visible in Sync UI as "Migrated" until reviewed)
 - ambiguous shared -> `legacy-shared-review` scope; not eligible for outbound sync until a human or admin reassigns
 
-Operators must perform a review pass before enabling Phase 2; the UI surfaces an explicit list of unreviewed memories.
-
-### Rollback
-
-Phase 2 -> Phase 1 rollback is supported per-deployment by config. Rollback does not retract data already sent; it stops further enforcement. Rollback past Phase 1 (removing scope metadata) is not supported in v1.
-
-### Diagnostics and warnings
-
-While Phase 1 is active and any UI surface displays scope information, that surface MUST also display "Scope metadata is informational only — boundaries are not yet enforced" or equivalent. Operators must not be allowed to mistake Phase 1 visibility for enforcement.
-
-### Rollout sequencing
-
-The rollout phases map to Beads gates:
-
-- Phase 0 -> Phase 1: enabled when `codemem-ov4g.2.4` lands and scope stamping is correct.
-- Phase 1 -> Phase 2: enabled only after `codemem-ov4g.8` review checkpoint passes; gates outbound/inbound enforcement, snapshot scoping, retrieval/MCP filtering.
-- Phase 2 -> docs/release: gated on `codemem-ov4g.9` review checkpoint.
+Migration-created `legacy-shared-review` and local-authority scopes remain ineligible for outbound replication until explicitly and safely reassigned. UI diagnostics should identify peers below `scoped` and explain their constrained compatibility behavior without implying that scope labels alone grant access.
 
 ## Coordinator role
 
@@ -712,15 +634,17 @@ The product should assume mixed machines are normal. Useful guardrails:
 - Verify each peer receives only its domain.
 - Verify MCP/search on each peer sees only locally authorized scopes by default.
 
-## Rollout plan
+## Historical rollout plan and work tracks
 
-### Phase 0 — Design lock
+This section records the implementation decomposition used to deliver sharing domains; it is not a list of remaining prerequisites. The schema/resolver, membership foundation, and scoped sync-enforcement slices below are implemented. Product UX, diagnostics, and deployment documentation continue independently. Phase 5 remains unapproved future work.
+
+### Phase 0 — Design lock (completed)
 
 - Accept this design or revise it.
 - Record the architecture invariant in the seed/mesh converged plan or an ADR.
 - File Beads work tracks before implementation starts.
 
-### Phase 1 — Schema and resolver foundation
+### Phase 1 — Schema and resolver foundation (implemented)
 
 - Add tables and nullable `scope_id` columns.
 - Add project-to-scope resolver.
@@ -728,7 +652,7 @@ The product should assume mixed machines are normal. Useful guardrails:
 - Keep existing sync behavior unchanged except for stamping scope metadata.
 - Keep scope metadata non-authoritative and mostly invisible until membership authority exists.
 
-### Phase 2 — Membership authority and local cache
+### Phase 2 — Membership authority and local cache (implemented)
 
 - Add coordinator/local scope membership model.
 - Cache memberships locally.
@@ -736,7 +660,7 @@ The product should assume mixed machines are normal. Useful guardrails:
 - Keep group membership separate from scope grants.
 - Define legacy compatibility window for peers without `scope_id`.
 
-### Phase 3 — Sync enforcement
+### Phase 3 — Sync enforcement (implemented)
 
 - Add scope-aware outbound filtering.
 - Add scope-aware inbound validation.
@@ -744,16 +668,16 @@ The product should assume mixed machines are normal. Useful guardrails:
 - Add per-scope reset and retention boundaries.
 - Preserve compatibility for legacy peers during an explicit transition window.
 
-### Phase 4 — UX and diagnostics
+### Phase 4 — UX and diagnostics (ongoing)
 
 - Add sharing-domain settings.
 - Show project/domain mapping.
 - Show peer authorized domains and project filters.
 - Add sync rejection diagnostics.
 
-### Phase 5 — Mesh readiness
+### Phase 5 — Future mesh options (not required for current sync or initial relay)
 
-- Add per-scope anti-entropy inventory/digest.
+- Add per-scope anti-entropy inventory/digest only if evidence justifies it.
 - Add per-scope hinted handoff if needed.
 - Add seed/anchor-peer deployment docs.
 
@@ -831,7 +755,7 @@ Peers:
 - **personal-peer** — authorized scopes: `personal`. No project filter.
 - **work-peer** — authorized scopes: `acme-work`. Project filter: include `*` (intentionally broad to prove filters cannot widen authorization).
 - **oss-peer** — authorized scopes: `oss-codemem`. Project filter: include `oss/*`.
-- **legacy-peer** — `unsupported` capability. Default behavior: receives nothing once enforcing, unless explicit per-peer compatibility scope is set.
+- **legacy-peer** — `unsupported` capability. Constrained direct compatibility only; relay admission is rejected.
 - **malicious-peer** — adversarial fixture used to verify defensive behavior. Each test below MUST produce a specific reason code AND MUST NOT mutate the local DB.
 
 #### Hostile peer fixtures
@@ -841,12 +765,12 @@ Peers:
 | Sends op with `scope_id=acme-work` but is not a member of `acme-work`. | Reject before apply. | `sender_not_member` |
 | Sends op whose payload `workspace_id` says `personal` but op `scope_id` says `acme-work` (receiver does not re-resolve; payload mismatch detected). | Reject before apply. | `scope_mismatch` |
 | Sends an op_id seen a year ago after being revoked. | Reject; revoked. | `stale_epoch` |
-| Claims `claimed_local_actor` for `actor_id=owner` while presenting a device key not in `personal:owner` scope. | Reject (Phase 2: `claimed_local_actor` is no longer a bypass). | `sender_not_member` |
+| Claims `claimed_local_actor` for `actor_id=owner` while presenting a device key not in `personal:owner` scope. | Reject; `claimed_local_actor` is not an authorization signal. | `sender_not_member` |
 | `clock_rev=Number.MAX_SAFE_INTEGER` to force LWW domination. | Accept clock comparison logic but still gate on scope; if scope check fails, reject. | `sender_not_member` or `scope_mismatch` |
 | Sends an op for `local-default` scope. | Reject; local-only scopes never replicate. | `scope_mismatch` (per Invariant 10) |
 | Replays a snapshot for `acme-work` but local cache shows the snapshot generation has advanced. | Reject; reset required. | `boundary_mismatch` (existing) |
 | Sends a `reassign_scope` op to a scope the sender is not authorized for. | Reject. | `sender_not_member` |
-| Sends an inbound op with `scope_id` set but no membership manifest cached locally. | Reject in Phase 2; apply under Phase 1 informational rules. | `stale_epoch` |
+| Sends an inbound op with `scope_id` set but no current membership authority cached locally. | Reject before apply. | `stale_epoch` |
 
 ### Acceptance behaviors
 
@@ -863,19 +787,11 @@ Peers:
 | MCP tools | memory_search, timeline, pack, expand, recent, remember, forget enforce scope authorization; remember resolves scope safely. | ov4g.5.4 |
 | Viewer/CLI APIs | Memory list/search/detail/stats apply the same store-level scope filters; raw events/artifacts are not newly exposed across scopes. | ov4g.5.5 |
 | Coordinator admin | Adding Mixed owner to coordinator group `acme-eng` does not by itself grant `oss-codemem` or `personal`. Scope grants are explicit; revocations propagate to local cache. | ov4g.3.2, ov4g.3.4 |
-| UI guardrails | Broad org-domain patterns warn; basename collisions require review; scope reassignment warns about already-copied data. Phase 1 surfaces show "informational only" copy. | ov4g.6.4 |
-| Legacy peer behavior | legacy-peer in Phase 2 receives nothing by default. Operator can opt in to a per-peer compatibility scope; UI marks the peer "legacy" with explanation. | ov4g.4.1, ov4g.6.2 |
+| UI guardrails | Broad org-domain patterns warn; basename collisions require review; scope reassignment warns about already-copied data. | ov4g.6.4 |
+| Legacy peer behavior | legacy-peer is limited to constrained direct compatibility, cannot use relay, and is marked "legacy" with an explanation. | ov4g.4.1, ov4g.6.2 |
 | Revocation | Revoking work-peer mid-run stops future ops to that peer within one membership-cache refresh; UI/docs state already-copied data is not erased. | ov4g.3.4 |
 | Diagnostics | Scope-related rejections produce reason codes (`missing_scope`, `sender_not_member`, `receiver_not_member`, `stale_epoch`, `scope_mismatch`, `visibility_filter`, `project_filter`) visible by peer/scope without payload exposure. | ov4g.4.5, ov4g.6.5 |
 | E2E smoke | A single test fixture (Mixed owner + three peers + legacy-peer) exercises every row above and fails on the first leak. | ov4g.4.6, ov4g.5.6, ov4g.6.6 |
-
-### Rollout-phase acceptance
-
-| Phase transition | Required for green |
-|---|---|
-| Phase 0 -> Phase 1 | Schema present; resolver deterministic; backfill biased to under-sharing; new writes stamp scope_id; legacy peers unaffected. |
-| Phase 1 -> Phase 2 | All sync rows above pass; membership cache stable; revocation honored; review checkpoint `ov4g.8` signed off. |
-| Phase 2 -> release | Retrieval/MCP/UI rows pass; legacy-peer behavior explicit; docs updated; review checkpoint `ov4g.9` signed off. |
 
 ## Beads implementation plan
 
@@ -910,4 +826,4 @@ Agents should work the lowest ready bead, follow its dependencies, and avoid wid
 
 ## Recommended next step
 
-Treat this design as the scope semantics layer underneath the converged seed/mesh plan. Do not start anti-entropy, hinted handoff, or anchor-peer scaling work until Track B and Track C are at least partially implemented and validated.
+Treat this design as the scope semantics layer underneath the converged seed/mesh plan. Anti-entropy, hinted handoff, and anchor-peer scaling remain unapproved future work; each requires evidence, a bounded contract, and a separate implementation decision before coding starts.
