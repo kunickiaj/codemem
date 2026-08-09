@@ -7,6 +7,7 @@ import type {
 	HistoricalObserverSubject,
 } from "./historical-observer.js";
 import { executeCommand, withHistoricalObserverSubjects } from "./historical-observer.js";
+import { runInjectionBenchmark } from "./injection-benchmark.js";
 import { commitId, parseJson } from "./json-shape.js";
 import { parseComponentFileSetManifest, parseReleaseEvalManifest } from "./manifest.js";
 import { createRealObserverInvoker } from "./observer-invoker.js";
@@ -17,9 +18,12 @@ import {
 	runCurrentEvaluatorObserver,
 } from "./observer-runner.js";
 import { resolvePathWithinAllowedRoots } from "./path-safety.js";
-import { digestEvaluatorComponent } from "./provenance.js";
+import { digestEvaluatorComponent, digestScopedEvaluatorComponent } from "./provenance.js";
 import { buildDetailedReport, buildObserverScopeSummary } from "./reports.js";
+import { runRetrievalMatrix } from "./retrieval-matrix.js";
+import { runCandidateSemanticRetrieval } from "./semantic-retrieval.js";
 import type {
+	CandidateSemanticRetrievalEvidence,
 	ComponentFileSetManifestV1,
 	CorpusTier,
 	Digest,
@@ -48,12 +52,18 @@ export interface ReleaseEvalDependencies {
 		repositoryRoot: string,
 		manifest: ComponentFileSetManifestV1,
 	): Promise<Digest>;
+	digestScopedEvaluatorComponent(
+		repositoryRoot: string,
+		manifest: ComponentFileSetManifestV1,
+		component: "retrieval" | "injection",
+	): Promise<Digest>;
 	materializeSubjects: MaterializeSubjects;
 	createInvoker(
 		configuration: ReleaseEvalManifestV1["evaluator"]["configuration"],
 	): ObserverInvoker;
 	resolveProductVersion(repositoryRoot: string): Promise<string>;
 	now(): Date;
+	runSemanticRetrieval: typeof runCandidateSemanticRetrieval;
 }
 
 const DEFAULT_DEPENDENCIES: ReleaseEvalDependencies = {
@@ -83,6 +93,7 @@ const DEFAULT_DEPENDENCIES: ReleaseEvalDependencies = {
 		return result.stdout;
 	},
 	digestEvaluatorComponent,
+	digestScopedEvaluatorComponent,
 	materializeSubjects: withHistoricalObserverSubjects,
 	createInvoker: createRealObserverInvoker,
 	resolveProductVersion: async (repositoryRoot) => {
@@ -95,12 +106,71 @@ const DEFAULT_DEPENDENCIES: ReleaseEvalDependencies = {
 		return version;
 	},
 	now: () => new Date(),
+	runSemanticRetrieval: runCandidateSemanticRetrieval,
 };
 
 function dependencies(
 	overrides: Partial<ReleaseEvalDependencies> | undefined,
 ): ReleaseEvalDependencies {
 	return { ...DEFAULT_DEPENDENCIES, ...overrides };
+}
+
+export function aggregateCandidateSemanticEvidence(
+	runs: readonly CandidateSemanticRetrievalEvidence[],
+): CandidateSemanticRetrievalEvidence {
+	const first = runs[0];
+	if (!first) return { status: "not_applicable", reason: "not_selected" };
+	if (first.status !== "complete")
+		throw new TypeError("selected candidate semantic lane returned not_applicable");
+	const completeRuns = runs.map((run) => {
+		if (run.status !== "complete")
+			throw new TypeError("candidate semantic repetitions have inconsistent status");
+		return run;
+	});
+	if (
+		completeRuns.some(
+			(run) =>
+				run.candidate_commit !== first.candidate_commit ||
+				run.probe_suite_digest !== first.probe_suite_digest ||
+				run.source_corpus_digest !== first.source_corpus_digest ||
+				run.retrieval_subject_digest !== first.retrieval_subject_digest,
+		)
+	)
+		throw new TypeError("candidate semantic repetitions have inconsistent identity");
+	if (completeRuns.some((run) => run.metrics.length !== first.metrics.length))
+		throw new TypeError("candidate semantic repetitions have inconsistent metric coverage");
+	return {
+		...first,
+		metrics: first.metrics.map((metric) => {
+			const values = completeRuns.map((run) => {
+				const matching = run.metrics.filter((entry) => entry.id === metric.id);
+				const matched = matching[0];
+				if (matching.length !== 1 || !matched || matched.unit !== metric.unit)
+					throw new TypeError(
+						`candidate semantic metric ${metric.id} has inconsistent repetition coverage`,
+					);
+				return matched.value;
+			});
+			return {
+				...metric,
+				value: values.reduce((sum, value) => sum + value, 0) / values.length,
+			};
+		}),
+	};
+}
+
+export function assertMatchingProbeSuiteDigest(
+	historicalDigest: Digest | undefined,
+	semantic: CandidateSemanticRetrievalEvidence,
+): void {
+	if (
+		historicalDigest &&
+		semantic.status === "complete" &&
+		semantic.probe_suite_digest !== historicalDigest
+	)
+		throw new TypeError(
+			"candidate semantic probe-suite identity does not match historical retrieval",
+		);
 }
 
 export async function assertPrivateReportPath(
@@ -134,11 +204,71 @@ export interface ReleaseEvalPreflight {
 	configurationDigest: Digest;
 	evaluatorComponentDigest: Digest;
 	evaluatorCommit: string;
+	retrievalCorpus?: ProjectedCorpusV1;
+	retrievalCorpusPath?: string;
+	retrievalCorpusDigest?: Digest;
+	injectionCorpus?: ProjectedCorpusV1;
+	injectionCorpusPath?: string;
+	injectionCorpusDigest?: Digest;
+	retrievalComponentDigest?: Digest;
+	injectionComponentDigest?: Digest;
+}
+
+function subjectHasComponents(
+	manifest: ReleaseEvalManifestV1,
+	kind: "candidate" | "release",
+	version: string,
+	components: readonly ("observer" | "retrieval" | "injection")[],
+): boolean {
+	return manifest.subjects.some(
+		(subject) =>
+			subject.subject.kind === kind &&
+			subject.subject.version === version &&
+			components.every((component) => subject.components.includes(component)),
+	);
+}
+
+function assertLanePrerequisites(input: {
+	manifest: ReleaseEvalManifestV1;
+	retrievalSelected: boolean;
+	injectionSelected: boolean;
+}): void {
+	if (input.retrievalSelected) {
+		for (const version of ["0.37.1", "0.38.0"]) {
+			if (!subjectHasComponents(input.manifest, "release", version, ["observer", "retrieval"]))
+				throw new TypeError(
+					`retrieval sidecar requires release ${version} with observer and retrieval components`,
+				);
+		}
+		const candidate = input.manifest.subjects.find(
+			(subject) => subject.subject.kind === "candidate",
+		);
+		if (
+			!candidate ||
+			!subjectHasComponents(input.manifest, "candidate", candidate.subject.version, [
+				"observer",
+				"retrieval",
+			])
+		)
+			throw new TypeError(
+				"retrieval sidecar requires candidate with observer and retrieval components",
+			);
+	}
+	if (input.injectionSelected) {
+		for (const version of ["0.38.0", "0.39.0"]) {
+			if (!subjectHasComponents(input.manifest, "release", version, ["injection"]))
+				throw new TypeError(
+					`injection sidecar requires release ${version} with injection component`,
+				);
+		}
+	}
 }
 
 export async function preflightReleaseEval(input: {
 	repositoryRoot: string;
 	manifestPath: string;
+	retrievalCorpusPath?: string;
+	injectionCorpusPath?: string;
 	dependencies?: Partial<ReleaseEvalDependencies>;
 }): Promise<ReleaseEvalPreflight> {
 	const deps = dependencies(input.dependencies);
@@ -183,6 +313,27 @@ export async function preflightReleaseEval(input: {
 	const corpus: ProjectedCorpusV1 = { schema_version: 1, rows };
 	digestCorpus(corpus);
 	adaptProjectedObserverCases(corpus);
+	const sidecar = async (path: string | undefined, rowType: string) => {
+		if (!path) return undefined;
+		const resolvedPath = corpusPath(manifestPath, path);
+		const value = parseProjectedCorpusJson(await deps.readText(resolvedPath));
+		if (value.rows.length === 0 || value.rows.some((row) => row.row_type !== rowType))
+			throw new TypeError(`${rowType} sidecar must contain only ${rowType} rows`);
+		return { corpus: value, path: resolvedPath, digest: digestCorpus(value) };
+	};
+	const retrieval = await sidecar(input.retrievalCorpusPath, "retrieval_probe");
+	const injection = await sidecar(input.injectionCorpusPath, "injection_case");
+	assertLanePrerequisites({
+		manifest,
+		retrievalSelected: Boolean(retrieval),
+		injectionSelected: Boolean(injection),
+	});
+	const retrievalComponentDigest = retrieval
+		? await deps.digestScopedEvaluatorComponent(repositoryRoot, componentManifest, "retrieval")
+		: undefined;
+	const injectionComponentDigest = injection
+		? await deps.digestScopedEvaluatorComponent(repositoryRoot, componentManifest, "injection")
+		: undefined;
 	return {
 		manifest,
 		corpus,
@@ -191,6 +342,22 @@ export async function preflightReleaseEval(input: {
 		configurationDigest: digest(manifest.evaluator.configuration as unknown as JsonValue),
 		evaluatorComponentDigest,
 		evaluatorCommit,
+		...(retrieval
+			? {
+					retrievalCorpus: retrieval.corpus,
+					retrievalCorpusPath: retrieval.path,
+					retrievalCorpusDigest: retrieval.digest,
+				}
+			: {}),
+		...(injection
+			? {
+					injectionCorpus: injection.corpus,
+					injectionCorpusPath: injection.path,
+					injectionCorpusDigest: injection.digest,
+				}
+			: {}),
+		...(retrievalComponentDigest ? { retrievalComponentDigest } : {}),
+		...(injectionComponentDigest ? { injectionComponentDigest } : {}),
 	};
 }
 
@@ -215,6 +382,8 @@ export interface ReleaseEvalRunResult {
 export async function runReleaseEval(input: {
 	repositoryRoot: string;
 	manifestPath: string;
+	retrievalCorpusPath?: string;
+	injectionCorpusPath?: string;
 	outputPath?: string;
 	runId?: string;
 	dependencies?: Partial<ReleaseEvalDependencies>;
@@ -224,6 +393,8 @@ export async function runReleaseEval(input: {
 	const preflight = await preflightReleaseEval({
 		repositoryRoot: root,
 		manifestPath: input.manifestPath,
+		retrievalCorpusPath: input.retrievalCorpusPath,
+		injectionCorpusPath: input.injectionCorpusPath,
 		dependencies: deps,
 	});
 	const createdAt = deps.now().toISOString();
@@ -247,23 +418,87 @@ export async function runReleaseEval(input: {
 			repositoryRoot: root,
 			runRoot: PRIVATE_REPORT_ROOT,
 			runId,
-			subjects: preflight.manifest.subjects.map((subject) => ({
-				label: subject.label,
-				requestedRef: subject.requested_ref,
-				observerContextSchemaVersion: 1,
-				sanitizedSubject: subject.subject,
-			})),
+			subjects: preflight.manifest.subjects
+				.filter((subject) => {
+					if (subject.components.includes("observer")) return true;
+					if (preflight.retrievalCorpus && subject.components.includes("retrieval")) return true;
+					return Boolean(preflight.injectionCorpus && subject.components.includes("injection"));
+				})
+				.map((subject) => ({
+					label: subject.label,
+					requestedRef: subject.requested_ref,
+					observerContextSchemaVersion: 1,
+					sanitizedSubject: subject.subject,
+				})),
 		},
 		async (subjects) => {
+			const componentsByLabel = new Map(
+				preflight.manifest.subjects.map((subject) => [subject.label, subject.components]),
+			);
+			const observerSubjects = subjects.filter((subject) =>
+				componentsByLabel.get(subject.label)?.includes("observer"),
+			);
 			const observer = await runCurrentEvaluatorObserver({
 				corpus: preflight.corpus,
-				subjects,
+				subjects: observerSubjects,
 				repetitions: preflight.manifest.repetitions,
 				invoker: deps.createInvoker(preflight.manifest.evaluator.configuration),
 			});
 			const executionCounts = observerExecutionCounts(observer.runs);
+			const retrieval =
+				preflight.retrievalCorpus && preflight.retrievalCorpusDigest
+					? await runRetrievalMatrix({
+							corpus: preflight.retrievalCorpus,
+							observerRuns: observer.runs,
+							subjects: subjects.filter((subject) =>
+								componentsByLabel.get(subject.label)?.includes("retrieval"),
+							),
+							repetitions: preflight.manifest.repetitions,
+							sourceCorpusDigest: preflight.retrievalCorpusDigest,
+							storeRoot: resolve(root, PRIVATE_REPORT_ROOT, runId, "retrieval-stores"),
+							mkdir: deps.mkdir,
+						})
+					: null;
+			const semanticRuns: CandidateSemanticRetrievalEvidence[] = [];
+			if (
+				preflight.retrievalCorpus &&
+				preflight.retrievalCorpusDigest &&
+				preflight.retrievalComponentDigest
+			) {
+				for (let repetition = 1; repetition <= preflight.manifest.repetitions; repetition += 1) {
+					semanticRuns.push(
+						await deps.runSemanticRetrieval({
+							corpus: preflight.retrievalCorpus,
+							repositoryRoot: root,
+							observerRuns: observer.runs,
+							repetition,
+							storePath: resolve(
+								root,
+								PRIVATE_REPORT_ROOT,
+								runId,
+								"candidate-semantic",
+								`repetition-${repetition}`,
+								"store.sqlite",
+							),
+							sourceCorpusDigest: preflight.retrievalCorpusDigest,
+							retrievalSubjectDigest: preflight.retrievalComponentDigest,
+						}),
+					);
+				}
+			}
+			const candidateSemantic = aggregateCandidateSemanticEvidence(semanticRuns);
+			assertMatchingProbeSuiteDigest(retrieval?.probeSuiteDigest, candidateSemantic);
+			const injection = preflight.injectionCorpus
+				? await runInjectionBenchmark({
+						corpus: preflight.injectionCorpus,
+						subjects: subjects.filter((subject) =>
+							componentsByLabel.get(subject.label)?.includes("injection"),
+						),
+						repetitions: preflight.manifest.repetitions,
+					})
+				: null;
 			const casesExpected =
-				preflight.manifest.subjects.length *
+				observerSubjects.length *
 				adaptProjectedObserverCases(preflight.corpus).length *
 				preflight.manifest.repetitions;
 			const provenance = {
@@ -287,16 +522,23 @@ export async function runReleaseEval(input: {
 				},
 				metrics: observer.sanitizedMetrics,
 				case_results: observer.caseResults,
+				...(retrieval ? { retrieval_matrix: retrieval.detailed } : {}),
+				candidate_semantic_retrieval: candidateSemantic,
+				...(injection ? { injection_suite: injection.detailed } : {}),
 				local_artifacts: {
 					manifest_path: resolve(root, input.manifestPath),
-					corpus_paths: preflight.corpusPaths,
+					corpus_paths: [
+						...preflight.corpusPaths,
+						...(preflight.retrievalCorpusPath ? [preflight.retrievalCorpusPath] : []),
+						...(preflight.injectionCorpusPath ? [preflight.injectionCorpusPath] : []),
+					],
 				},
 			});
 			const summary = buildObserverScopeSummary({
 				benchmark_profile: "release-v1",
-				scope: "observer",
+				scope: retrieval || injection ? "release_layers" : "observer",
 				status: "partial",
-				partial_reason: "observer_scope_only",
+				partial_reason: retrieval || injection ? "thresholds_not_enforced" : "observer_scope_only",
 				evaluated_at: createdAt,
 				provenance: {
 					...provenance,
@@ -310,7 +552,14 @@ export async function runReleaseEval(input: {
 					cases_completed: executionCounts.completed,
 					cases_expected: casesExpected,
 				},
-				metrics: { observer: observer.sanitizedMetrics },
+				metrics: {
+					observer: observer.sanitizedMetrics,
+					...(retrieval ? { retrieval: retrieval.metrics } : {}),
+					...(injection ? { injection: injection.metrics } : {}),
+				},
+				...(retrieval ? { retrieval_cells: retrieval.provenance } : {}),
+				candidate_semantic_retrieval: candidateSemantic,
+				...(injection ? { injection_subjects: injection.provenance } : {}),
 				execution: subjects.map((subject) => {
 					const runs = observer.runs.filter(
 						(run) =>

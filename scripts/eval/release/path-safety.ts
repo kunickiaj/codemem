@@ -1,4 +1,4 @@
-import { realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 export function isPathInside(parent: string, candidate: string): boolean {
@@ -50,4 +50,26 @@ export async function resolvePathWithinAllowedRoots(
 		throw new TypeError("Path resolves outside the allowed release-eval output roots");
 	}
 	return lexicalCandidate;
+}
+
+export async function resolveFreshSqlitePathWithinAllowedRoots(
+	repositoryRoot: string,
+	candidatePath: string,
+	allowedRelativeRoots: readonly string[],
+): Promise<string> {
+	const resolved = await resolvePathWithinAllowedRoots(
+		repositoryRoot,
+		candidatePath,
+		allowedRelativeRoots,
+	);
+	for (const path of [resolved, `${resolved}-journal`, `${resolved}-wal`, `${resolved}-shm`]) {
+		try {
+			await lstat(path);
+			throw new TypeError("Candidate semantic SQLite path and sidecars must not already exist");
+		} catch (error) {
+			if (error instanceof TypeError) throw error;
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+	}
+	return resolved;
 }

@@ -11,7 +11,7 @@ live here instead of polluting the product CLI.
 
 ## Pack-eval corpus-quality gate
 
-Runs a probe battery through the pack trace path **once** on a DB and reports the
+Runs a probe battery through the product's asynchronous pack trace path **once** on a DB and reports the
 artifact-bucket shares per retrieval mode. Under the refocused dual-artifact
 model `derived_fact` is an in-place role (not a materialized row and not a
 ranking boost), so there is no A/B flag to toggle — this is a single-snapshot
@@ -75,6 +75,10 @@ when they carry no in-place marker.
 Baseline comparison flags drift: summary/telemetry share rising or durable share
 falling in non-recap, recap summary-first rate falling, or recap route
 mismatches rising are reported as `WORSE` and fail the run.
+Snapshots also carry a canonical SHA-256 identity for the ordered query/mode
+suite and requested top-N. Comparisons reject different identified suites even
+when their probe counts happen to match. Legacy baselines without this field
+retain the previous count-based compatibility check until rewritten.
 
 ### Caveats
 
@@ -148,9 +152,9 @@ pnpm run eval:release:export-private -- --db $db_path --output-dir $export_dir -
 ```
 
 The generated manifest binds only `private-corpus.json`, which contains observer
-cases accepted by the PR1 preflight. `private-retrieval-corpus.json` and the
-credential-free `public-injection-corpus.json` are unbound sidecars reserved for
-PR3. `export-metadata.json` records only digests and counts, including the reviewed
+cases accepted by the observer preflight. `private-retrieval-corpus.json` and the
+credential-free `public-injection-corpus.json` remain unbound sidecars and are
+selected explicitly for the retrieval/injection lanes. `export-metadata.json` records only digests and counts, including the reviewed
 profile digest. Private case/probe IDs are stable content-derived identifiers;
 they hide numeric source IDs but are not an anonymization or privacy boundary.
 The exporter rejects missing, incomplete, unreviewed, duplicate, or mismatched
@@ -168,9 +172,34 @@ the exporter will not fall back to a weaker replacement write.
 > or local paths into this repository. Do not log or commit the generated private
 > output path. The public synthetic injection fixture,
 > manifest, and metadata do not contain private source text, but the generated
-> set still belongs in external storage. The public injection rows are prepared
-> for the later injection-evaluation slice; this PR does not implement or enable
-> that lane in the observer-only runner.
+> set still belongs in external storage.
+
+### Retrieval, semantic, and injection lanes
+
+Pass the PR2 sidecars explicitly; they are intentionally not bound into the
+observer manifest:
+
+```fish
+pnpm run eval:release -- run \
+  --manifest /private/export/private-release-manifest.json \
+  --retrieval-corpus /private/export/private-retrieval-corpus.json \
+  --injection-corpus /private/export/public-injection-corpus.json
+```
+
+The historical retrieval matrix runs v0.37.1 and v0.38.0 with embeddings forced
+off and scores final assembled pack order. The separate candidate semantic lane
+materializes only candidate observer output into a fresh production
+`MemoryStore`, derives production tags, flushes/backfills vectors, requires full
+active/embeddable/current-model coverage, and then evaluates the asynchronous
+product pack path. Semantic failures are fatal rather than silently becoming a
+keyword result. Injection runs deterministic public fixtures against the
+v0.38.0 and v0.39.0 plugin hooks and verifies success, exact placement, answer
+use, disabled/error containment, and session survival.
+
+Sanitized output contains only structured subject identities, immutable digests,
+counts, readiness counters, and aggregate metrics. Detailed prompts, outputs,
+pack text, traces, local paths, and private corpus content remain under ignored
+`.tmp/eval-results/release/`. These partial reports are not release attestations.
 
 Validate changes with:
 

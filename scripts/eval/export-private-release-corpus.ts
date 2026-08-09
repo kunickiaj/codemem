@@ -413,13 +413,29 @@ export function buildPrivateReleaseManifest(input: {
 	privateDigest: ReleaseEvalManifestV1["corpora"][number]["expected_digest"];
 	repetitions?: number;
 }): ReleaseEvalManifestV1 {
-	const releases = ["0.37.1", "0.38.0", "0.39.0"].map((version) => ({
-		label: `v${version}`,
-		requested_ref: `v${version}`,
-		observer_context_schema_version: 1 as const,
-		subject: { kind: "release" as const, version },
-		components: ["observer"] as ["observer"],
-	}));
+	const releases: ReleaseEvalManifestV1["subjects"] = [
+		{
+			label: "v0.37.1",
+			requested_ref: "v0.37.1",
+			observer_context_schema_version: 1,
+			subject: { kind: "release", version: "0.37.1" },
+			components: ["observer", "retrieval"],
+		},
+		{
+			label: "v0.38.0",
+			requested_ref: "v0.38.0",
+			observer_context_schema_version: 1,
+			subject: { kind: "release", version: "0.38.0" },
+			components: ["observer", "retrieval", "injection"],
+		},
+		{
+			label: "v0.39.0",
+			requested_ref: "v0.39.0",
+			observer_context_schema_version: 1,
+			subject: { kind: "release", version: "0.39.0" },
+			components: ["observer", "injection"],
+		},
+	];
 	return parseReleaseEvalManifest({
 		schema_version: 1,
 		benchmark_profile: "release-v1",
@@ -439,7 +455,7 @@ export function buildPrivateReleaseManifest(input: {
 				requested_ref: input.commit,
 				observer_context_schema_version: 1,
 				subject: { kind: "candidate", version: input.candidateVersion },
-				components: ["observer"],
+				components: ["observer", "retrieval"],
 			},
 		],
 		repetitions: input.repetitions ?? 3,

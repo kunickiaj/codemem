@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ObserverSummaryInput } from "./reports.js";
 import { buildObserverScopeSummary } from "./reports.js";
+import type { CandidateSemanticRetrievalEvidence } from "./types.js";
 
 const SHA = `sha256:${"a".repeat(64)}` as const;
 const COMMIT = "b".repeat(40);
@@ -78,5 +79,76 @@ describe("sanitized observer summary", () => {
 		expect(() => buildObserverScopeSummary(expectedMismatch)).toThrow(
 			"expected count does not match",
 		);
+	});
+
+	it("reconstructs PR3 provenance and strips unknown detailed fields", () => {
+		const value = input();
+		value.scope = "release_layers";
+		value.partial_reason = "thresholds_not_enforced";
+		value.metrics.retrieval = [
+			{
+				lane: "historical_keyword",
+				cell: {
+					observer: { kind: "release", version: "0.37.1" },
+					pack: { kind: "release", version: "0.38.0" },
+				},
+				id: "relevant_placement_rate",
+				value: 1,
+				unit: "ratio",
+			},
+		];
+		value.metrics.injection = [
+			{
+				subject: { kind: "release", version: "0.38.0" },
+				id: "session_survival_rate",
+				value: 1,
+				unit: "ratio",
+				raw_trace: "private injection trace",
+			} as NonNullable<typeof value.metrics.injection>[number],
+		];
+		value.retrieval_cells = [
+			{
+				lane: "historical_keyword",
+				cell: {
+					observer: { kind: "release", version: "0.37.1" },
+					pack: { kind: "release", version: "0.38.0" },
+				},
+				repetition: 1,
+				source_corpus_digest: SHA,
+				materialized_corpus_digest: SHA,
+				observer_subject_digest: SHA,
+				retrieval_subject_digest: SHA,
+				store_path: "/private/store.sqlite",
+			} as NonNullable<typeof value.retrieval_cells>[number],
+		];
+		value.candidate_semantic_retrieval = {
+			status: "complete",
+			lane: "candidate_semantic",
+			candidate_commit: COMMIT,
+			probe_suite_digest: SHA,
+			source_corpus_digest: SHA,
+			retrieval_subject_digest: SHA,
+			readiness: {
+				state: "healthy",
+				mode: "semantic",
+				embedding_model: "fixture-model",
+				active_memory_count: 1,
+				embeddable_memory_count: 1,
+				indexed_memory_count: 1,
+				pending_memory_count: 0,
+				private_path: "/private/vector",
+			},
+			metrics: [{ id: "relevant_placement_rate", value: 1, unit: "ratio", raw_probe: "private" }],
+		} as unknown as CandidateSemanticRetrievalEvidence;
+		const summary = buildObserverScopeSummary(value);
+		const json = JSON.stringify(summary);
+		expect(summary.candidate_semantic_retrieval).toMatchObject({
+			source_corpus_digest: SHA,
+			retrieval_subject_digest: SHA,
+		});
+		expect(json).not.toContain("/private/store.sqlite");
+		expect(json).not.toContain("/private/vector");
+		expect(json).not.toContain("raw_probe");
+		expect(json).not.toContain("private injection trace");
 	});
 });

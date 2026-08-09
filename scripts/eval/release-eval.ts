@@ -10,13 +10,19 @@ type ReleaseEvalCommandResult = Pick<
 
 type Arguments =
 	| { command: "synthetic"; outputPath?: string }
-	| { command: "run"; manifestPath: string; outputPath?: string };
+	| {
+			command: "run";
+			manifestPath: string;
+			outputPath?: string;
+			retrievalCorpusPath?: string;
+			injectionCorpusPath?: string;
+	  };
 
 function usage(): string {
 	return [
 		"Usage:",
 		"  pnpm run eval:release -- synthetic [--output <path>]",
-		"  pnpm run eval:release -- run --manifest <path> [--output <path>]",
+		"  pnpm run eval:release -- run --manifest <path> [--retrieval-corpus <path>] [--injection-corpus <path>] [--output <path>]",
 	].join("\n");
 }
 
@@ -26,25 +32,45 @@ export function parseReleaseEvalArguments(argv: string[]): Arguments {
 	if (command !== "run" && command !== "synthetic") throw new TypeError(usage());
 	let manifestPath: string | undefined;
 	let outputPath: string | undefined;
+	let retrievalCorpusPath: string | undefined;
+	let injectionCorpusPath: string | undefined;
 	for (let index = 0; index < rest.length; index += 2) {
 		const flag = rest[index];
 		const value = rest[index + 1];
-		if (flag !== "--manifest" && flag !== "--output")
+		if (
+			flag !== "--manifest" &&
+			flag !== "--output" &&
+			flag !== "--retrieval-corpus" &&
+			flag !== "--injection-corpus"
+		)
 			throw new TypeError(`Unknown argument: ${flag}\n${usage()}`);
 		if (!value || value.startsWith("--")) throw new TypeError(`${flag} requires a path`);
 		if (flag === "--manifest") {
 			if (manifestPath) throw new TypeError("--manifest may be supplied only once");
 			manifestPath = value;
-		} else {
+		} else if (flag === "--output") {
 			if (outputPath) throw new TypeError("--output may be supplied only once");
 			outputPath = value;
+		} else if (flag === "--retrieval-corpus") {
+			if (retrievalCorpusPath) throw new TypeError("--retrieval-corpus may be supplied only once");
+			retrievalCorpusPath = value;
+		} else {
+			if (injectionCorpusPath) throw new TypeError("--injection-corpus may be supplied only once");
+			injectionCorpusPath = value;
 		}
 	}
 	if (command === "run") {
 		if (!manifestPath) throw new TypeError(`run requires --manifest <path>\n${usage()}`);
-		return { command, manifestPath, ...(outputPath ? { outputPath } : {}) };
+		return {
+			command,
+			manifestPath,
+			...(outputPath ? { outputPath } : {}),
+			...(retrievalCorpusPath ? { retrievalCorpusPath } : {}),
+			...(injectionCorpusPath ? { injectionCorpusPath } : {}),
+		};
 	}
-	if (manifestPath) throw new TypeError("synthetic does not accept --manifest");
+	if (manifestPath || retrievalCorpusPath || injectionCorpusPath)
+		throw new TypeError("synthetic does not accept corpus or manifest paths");
 	return { command, ...(outputPath ? { outputPath } : {}) };
 }
 
@@ -58,6 +84,8 @@ export interface ReleaseEvalMainDependencies {
 		repositoryRoot: string;
 		manifestPath: string;
 		outputPath?: string;
+		retrievalCorpusPath?: string;
+		injectionCorpusPath?: string;
 	}): Promise<ReleaseEvalCommandResult>;
 	writeStdout(value: string): void;
 }
@@ -86,6 +114,8 @@ export async function main(
 					repositoryRoot,
 					manifestPath: args.manifestPath,
 					outputPath: args.outputPath,
+					retrievalCorpusPath: args.retrievalCorpusPath,
+					injectionCorpusPath: args.injectionCorpusPath,
 				});
 	deps.writeStdout(
 		`${JSON.stringify({ status: result.summary.status, scope: result.summary.scope, run_id: result.runId, detailed_report: result.detailedPath, sanitized_summary: result.sanitizedPath }, null, 2)}\n`,

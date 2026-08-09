@@ -34,7 +34,7 @@ function manifest(): unknown {
 				requested_ref: "b".repeat(40),
 				observer_context_schema_version: 1,
 				subject: { kind: "candidate", version: "0.40.0" },
-				components: ["observer"],
+				components: ["observer", "retrieval", "injection"],
 			},
 		],
 		repetitions: 1,
@@ -44,7 +44,12 @@ function manifest(): unknown {
 describe("release eval manifest", () => {
 	it("strictly binds versioned subjects and evaluator configuration", () => {
 		expect(parseReleaseEvalManifest(manifest())).toMatchObject({
-			subjects: [{ subject: { kind: "candidate", version: "0.40.0" } }],
+			subjects: [
+				{
+					subject: { kind: "candidate", version: "0.40.0" },
+					components: ["observer", "retrieval", "injection"],
+				},
+			],
 		});
 	});
 
@@ -59,11 +64,23 @@ describe("release eval manifest", () => {
 		expect(() => parseReleaseEvalManifest(invalid)).toThrow("semantic version");
 	});
 
-	it("rejects non-observer components in PR1", () => {
-		const invalid = manifest() as { subjects: Array<{ components: string[] }> };
-		const subject = invalid.subjects[0];
-		if (!subject) throw new Error("fixture subject missing");
-		subject.components.push("retrieval");
-		expect(() => parseReleaseEvalManifest(invalid)).toThrow('exactly ["observer"]');
+	it("rejects unknown, duplicate, and invalid PR3 components", () => {
+		const withComponents = (components: unknown[]): unknown => {
+			const value = manifest() as { subjects: Array<{ components: unknown[] }> };
+			const subject = value.subjects[0];
+			if (!subject) throw new Error("fixture subject missing");
+			subject.components = components;
+			return value;
+		};
+		expect(() => parseReleaseEvalManifest(withComponents(["observer", "unsupported"]))).toThrow(
+			"is not supported",
+		);
+		expect(() => parseReleaseEvalManifest(withComponents(["observer", "observer"]))).toThrow(
+			"must not contain duplicates",
+		);
+		expect(() => parseReleaseEvalManifest(withComponents([]))).toThrow("must be non-empty");
+		expect(() => parseReleaseEvalManifest(withComponents(["observer", 1]))).toThrow(
+			"is not supported",
+		);
 	});
 });

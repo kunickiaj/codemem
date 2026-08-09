@@ -1,13 +1,21 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, realpath, rm, rmdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runHistoricalInjectionDriver } from "./historical-injection.js";
+import { runHistoricalPackDriver } from "./historical-pack.js";
 import { commitId, exactKeys, jsonObject, parseJson } from "./json-shape.js";
 import { parseSanitizedSubjectIdentifier } from "./manifest.js";
 import { isPathInside, isPathOutside, resolvePathWithinAllowedRoots } from "./path-safety.js";
 import type {
+	Digest,
+	HistoricalInjectionRequestV1,
+	HistoricalInjectionTraceV1,
 	HistoricalObserverFailureV1,
 	HistoricalObserverRequestV1,
+	HistoricalPackRequestV1,
+	HistoricalPackSuccessV1,
 	SanitizedSubjectIdentifier,
 } from "./types.js";
 
@@ -15,6 +23,21 @@ const EXPLICIT_REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 const SAFE_SEGMENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const OBSERVER_MODULE_PATH = "packages/core/src/ingest-prompts.ts";
 const DRIVER_PATH = fileURLToPath(new URL("./historical-observer-driver.ts", import.meta.url));
+const PACK_DRIVER_PATH = fileURLToPath(new URL("./historical-pack-driver.ts", import.meta.url));
+const INJECTION_DRIVER_PATH = fileURLToPath(
+	new URL("./historical-injection-driver.ts", import.meta.url),
+);
+const FAKE_PACK_RUNNER_PATH = fileURLToPath(new URL("./fake-pack-runner.mjs", import.meta.url));
+const PLUGIN_MODULE_PATH = "packages/opencode-plugin/.opencode/plugins/codemem.js";
+const SUBJECT_COMPONENT_FILES = {
+	observer: [OBSERVER_MODULE_PATH],
+	retrieval: [
+		"packages/core/src/pack.ts",
+		"packages/core/src/query-sanitizer.ts",
+		"packages/core/src/search.ts",
+	],
+	injection: [PLUGIN_MODULE_PATH],
+} as const;
 const HISTORICAL_ENV_KEYS = [
 	"COMSPEC",
 	"HOME",
@@ -60,6 +83,9 @@ export interface HistoricalObserverSubject extends HistoricalObserverSubjectSpec
 	buildObserverPrompt(
 		context: HistoricalObserverRequestV1["context"],
 	): Promise<{ system: string; user: string }>;
+	componentDigest?(component: "observer" | "retrieval" | "injection"): Promise<Digest>;
+	runPack?(request: HistoricalPackRequestV1): Promise<HistoricalPackSuccessV1["result"]>;
+	runInjection?(request: HistoricalInjectionRequestV1): Promise<HistoricalInjectionTraceV1>;
 }
 
 export interface HistoricalObserverRunOptions {
@@ -76,6 +102,9 @@ interface HistoricalObserverDependencies {
 	withRepositoryLock<T>(repositoryCommonDirectory: string, action: () => Promise<T>): Promise<T>;
 	nodeExecutable: string;
 	driverPath: string;
+	packDriverPath: string;
+	injectionDriverPath: string;
+	fakePackRunnerPath: string;
 }
 
 export class HistoricalObserverError extends Error {
@@ -150,7 +179,24 @@ const DEFAULT_DEPENDENCIES: HistoricalObserverDependencies = {
 	withRepositoryLock: defaultRepositoryLock,
 	nodeExecutable: process.execPath,
 	driverPath: DRIVER_PATH,
+	packDriverPath: PACK_DRIVER_PATH,
+	injectionDriverPath: INJECTION_DRIVER_PATH,
+	fakePackRunnerPath: FAKE_PACK_RUNNER_PATH,
 };
+
+async function digestSubjectComponent(
+	worktreePath: string,
+	component: keyof typeof SUBJECT_COMPONENT_FILES,
+): Promise<Digest> {
+	const hash = createHash("sha256");
+	for (const path of SUBJECT_COMPONENT_FILES[component].toSorted()) {
+		hash.update(path);
+		hash.update("\0");
+		hash.update(await readFile(resolve(worktreePath, path), "utf8"));
+		hash.update("\0");
+	}
+	return `sha256:${hash.digest("hex")}`;
+}
 
 function explicitRef(value: string): string {
 	if (
@@ -424,6 +470,9 @@ export async function withHistoricalObserverSubjects<T>(
 	const commonDirectory = await realpath(resolve(repositoryRoot, common.stdout.trim()));
 	const namespaceRoot = resolve(runRoot, runId, "subjects");
 	const driverPath = await realpath(deps.driverPath);
+	const packDriverPath = await realpath(deps.packDriverPath);
+	const injectionDriverPath = await realpath(deps.injectionDriverPath);
+	const fakePackRunnerPath = await realpath(deps.fakePackRunnerPath);
 	await resetRunNamespace(deps, repositoryRoot, commonDirectory, namespaceRoot);
 	const registered: string[] = [];
 	let cleanupAttempted = false;
@@ -455,6 +504,16 @@ export async function withHistoricalObserverSubjects<T>(
 				throw new HistoricalObserverError(
 					"invalid_input",
 					"driverPath must be outside the historical worktree",
+					{},
+				);
+			if (
+				[packDriverPath, injectionDriverPath, fakePackRunnerPath].some(
+					(path) => !isPathOutside(worktreePath, path),
+				)
+			)
+				throw new HistoricalObserverError(
+					"invalid_input",
+					"release evaluation drivers must be outside historical worktrees",
 					{},
 				);
 			await deps.withRepositoryLock(commonDirectory, async () => {
@@ -519,8 +578,17 @@ export async function withHistoricalObserverSubjects<T>(
 				resolvedCommit: item.commit,
 				worktreePath,
 			};
+			const componentDigests = new Map<keyof typeof SUBJECT_COMPONENT_FILES, Digest>();
+			let injectionRun = 0;
 			subjects.push({
 				...identity,
+				componentDigest: async (component) => {
+					const cached = componentDigests.get(component);
+					if (cached) return cached;
+					const value = await digestSubjectComponent(worktreePath, component);
+					componentDigests.set(component, value);
+					return value;
+				},
 				buildObserverPrompt: async (context) => {
 					const request: HistoricalObserverRequestV1 = {
 						schema_version: 1,
@@ -544,6 +612,29 @@ export async function withHistoricalObserverSubjects<T>(
 							{ ...identity, stderr: execution.stderr.trim() },
 						);
 					return parseProtocolResponse(execution.stdout, identity);
+				},
+				runPack: async (request) =>
+					await runHistoricalPackDriver({
+						execute: deps.execute,
+						nodeExecutable: deps.nodeExecutable,
+						driverPath: packDriverPath,
+						worktreePath,
+						repositoryRoot,
+						request,
+					}),
+				runInjection: async (request) => {
+					injectionRun += 1;
+					return await runHistoricalInjectionDriver({
+						execute: deps.execute,
+						nodeExecutable: deps.nodeExecutable,
+						driverPath: injectionDriverPath,
+						runnerPath: fakePackRunnerPath,
+						pluginPath: resolve(worktreePath, PLUGIN_MODULE_PATH),
+						tracePath: resolve(namespaceRoot, `${label}-injection-${injectionRun}.jsonl`),
+						worktreePath,
+						repositoryRoot,
+						request,
+					});
 				},
 			});
 		}

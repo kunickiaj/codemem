@@ -115,18 +115,22 @@ export function parseReleaseEvalManifest(value: unknown): ReleaseEvalManifestV1 
 		);
 		if (item.observer_context_schema_version !== 1)
 			throw new TypeError(`${path}.observer_context_schema_version must be 1`);
-		if (
-			!Array.isArray(item.components) ||
-			item.components.length !== 1 ||
-			item.components[0] !== "observer"
-		)
-			throw new TypeError(`${path}.components must be exactly ["observer"]`);
+		if (!Array.isArray(item.components) || item.components.length === 0)
+			throw new TypeError(`${path}.components must be non-empty`);
+		const components = unique(
+			item.components.map((component, componentIndex) => {
+				if (component !== "observer" && component !== "retrieval" && component !== "injection")
+					throw new TypeError(`${path}.components[${componentIndex}] is not supported`);
+				return component;
+			}),
+			`${path}.components`,
+		);
 		return {
 			label: nonEmptyTrimmedString(item.label, `${path}.label`),
 			requested_ref: nonEmptyTrimmedString(item.requested_ref, `${path}.requested_ref`),
 			observer_context_schema_version: 1 as const,
 			subject: parseSanitizedSubjectIdentifier(item.subject, `${path}.subject`),
-			components: ["observer"] as ["observer"],
+			components,
 		};
 	});
 	unique(
@@ -193,9 +197,29 @@ export function parseComponentFileSetManifest(value: unknown): ComponentFileSetM
 	exactKeys(root, ["schema_version", "components"], "component manifest");
 	if (root.schema_version !== 1) throw new TypeError("component manifest.schema_version must be 1");
 	const components = jsonObject(root.components, "component manifest.components");
-	exactKeys(components, ["evaluator"], "component manifest.components");
+	const unknownComponents = Object.keys(components).filter(
+		(key) => key !== "evaluator" && key !== "retrieval" && key !== "injection",
+	);
+	if (unknownComponents.length > 0)
+		throw new TypeError(
+			`component manifest.components contains unknown field(s): ${unknownComponents.join(", ")}`,
+		);
 	if (!Array.isArray(components.evaluator) || components.evaluator.length === 0)
 		throw new TypeError("component manifest.components.evaluator must be non-empty");
+	const optionalComponent = (name: "retrieval" | "injection"): string[] | undefined => {
+		const value = components[name];
+		if (value === undefined) return undefined;
+		if (!Array.isArray(value) || value.length === 0)
+			throw new TypeError(`component manifest.components.${name} must be non-empty`);
+		return unique(
+			value.map((entry, index) =>
+				filePath(entry, `component manifest.components.${name}[${index}]`),
+			),
+			`component manifest.components.${name}`,
+		);
+	};
+	const retrieval = optionalComponent("retrieval");
+	const injection = optionalComponent("injection");
 	return {
 		schema_version: 1,
 		components: {
@@ -205,6 +229,8 @@ export function parseComponentFileSetManifest(value: unknown): ComponentFileSetM
 				),
 				"component manifest.components.evaluator",
 			),
+			...(retrieval ? { retrieval } : {}),
+			...(injection ? { injection } : {}),
 		},
 	};
 }

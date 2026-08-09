@@ -267,13 +267,18 @@ describe("private release-corpus export", () => {
 		if (!profile) throw new Error("expected profile");
 
 		const unreviewed = structuredClone(profile);
-		unreviewed.batches[0]!.review = { status: "unreviewed", reviewerNotes: "pending" };
+		const unreviewedBatch = unreviewed.batches[0];
+		if (!unreviewedBatch) throw new Error("expected unreviewed fixture batch");
+		unreviewedBatch.review = { status: "unreviewed", reviewerNotes: "pending" };
 		await expect(exported(join(root, "unreviewed"), dependencies(unreviewed))).rejects.toThrow(
 			"missing reviewed labels",
 		);
 
 		const duplicate = structuredClone(profile);
-		duplicate.batches[1]!.batchId = duplicate.batches[0]!.batchId;
+		const duplicateSource = duplicate.batches[0];
+		const duplicateTarget = duplicate.batches[1];
+		if (!duplicateSource || !duplicateTarget) throw new Error("expected duplicate fixture batches");
+		duplicateTarget.batchId = duplicateSource.batchId;
 		await expect(exported(join(root, "duplicate"), dependencies(duplicate))).rejects.toThrow(
 			"batch IDs must be unique",
 		);
@@ -282,7 +287,9 @@ describe("private release-corpus export", () => {
 			(batch) => batch.review?.status === "reviewed" && batch.review.labels.length > 0,
 		);
 		if (labeledBatch?.review?.status !== "reviewed") throw new Error("expected labeled batch");
-		labeledBatch.review.labels.push(structuredClone(labeledBatch.review.labels[0]!));
+		const duplicateLabel = labeledBatch.review.labels[0];
+		if (!duplicateLabel) throw new Error("expected duplicate fixture label");
+		labeledBatch.review.labels.push(structuredClone(duplicateLabel));
 		await expect(
 			exported(join(root, "duplicate-labels"), dependencies(duplicateLabels)),
 		).rejects.toThrow("reviewed label IDs");
@@ -503,7 +510,7 @@ describe("private release-corpus export", () => {
 		}
 	});
 
-	it("emits unbound sidecars and an observer-only manifest that passes PR1 preflight", async () => {
+	it("emits unbound sidecars and lane-capable subjects while observer preflight stays independent", async () => {
 		const root = await externalRoot();
 		const output = join(root, "public");
 		await exported(output);
@@ -519,7 +526,12 @@ describe("private release-corpus export", () => {
 		expect(manifest.corpora).toHaveLength(1);
 		expect(manifest.corpora[0]).toMatchObject({ tier: "private", source_path: "private-corpus.json" });
 		expect(manifest.subjects.at(-1)?.subject).toEqual({ kind: "candidate", version: "0.40.0" });
-		expect(manifest.subjects.every((subject) => subject.components[0] === "observer")).toBe(true);
+		expect(manifest.subjects.map((subject) => subject.components)).toEqual([
+			["observer", "retrieval"],
+			["observer", "retrieval", "injection"],
+			["observer", "injection"],
+			["observer", "retrieval"],
+		]);
 		const profile = getExtractionBenchmarkProfile("balanced-observer-quality-v1");
 		if (!profile) throw new Error("expected profile");
 		const metadata = JSON.parse(await readFile(join(output, "export-metadata.json"), "utf8")) as {

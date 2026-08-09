@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parseComponentFileSetManifest } from "./manifest.js";
 
 describe("release evaluator component file set", () => {
-	it("binds current evaluator, observer scoring, and private-corpus generation behavior", async () => {
+	it("binds observer, retrieval, injection, and private-corpus behavior without attestation", async () => {
 		const manifest = parseComponentFileSetManifest(
 			JSON.parse(await readFile(new URL("./component-files.json", import.meta.url), "utf8")),
 		);
@@ -17,11 +17,29 @@ describe("release evaluator component file set", () => {
 				"scripts/eval/release/observer-runner.ts",
 				"scripts/eval/release/orchestrator.ts",
 				"scripts/eval/release/reports.ts",
+				"scripts/eval/release/retrieval-matrix.ts",
+				"scripts/eval/release/semantic-retrieval.ts",
+				"scripts/eval/release/injection-benchmark.ts",
 			]),
 		);
 		expect(manifest.components.evaluator).toContain("packages/core/src/ingest-prompts.ts");
 		expect(manifest.components.evaluator.some((path) => path.includes("attestation"))).toBe(false);
-		expect(manifest.components.evaluator.some((path) => path.includes("retrieval"))).toBe(false);
-		expect(manifest.components.evaluator.some((path) => path.includes("injection"))).toBe(false);
+		expect(manifest.components.evaluator).toContain(
+			"packages/opencode-plugin/.opencode/plugins/codemem.js",
+		);
+		expect(manifest.components.evaluator).toContain("scripts/eval/release/fake-pack-runner.mjs");
+		expect(manifest.components.retrieval).toEqual(
+			expect.arrayContaining([
+				"packages/core/src/pack.ts",
+				"scripts/eval/release/retrieval-scoring.ts",
+				"scripts/eval/release/semantic-retrieval.ts",
+			]),
+		);
+		expect(manifest.components.injection).toEqual(
+			expect.arrayContaining([
+				"packages/opencode-plugin/.opencode/plugins/codemem.js",
+				"scripts/eval/release/fake-pack-runner.mjs",
+			]),
+		);
 	});
 });

@@ -10,8 +10,9 @@
  * ordering) be gated on real-corpus drift instead of unit tests alone.
  */
 
+import { createHash } from "node:crypto";
 import {
-	buildMemoryPackTrace,
+	buildMemoryPackTraceAsync,
 	classifyMemoryWorthiness,
 	isSummaryLikeMemory,
 	type MemoryItemResponse,
@@ -47,6 +48,7 @@ export function bucketItem(item: {
 	if (decision.artifact === "telemetry") return "telemetry";
 	if (decision.artifact === "derived_fact") return "derived_fact";
 	if (decision.artifact === "session_summary") return "session_summary";
+	if (decision.action !== "store") return "telemetry";
 	return "durable_other";
 }
 
@@ -101,7 +103,13 @@ const EMPTY_MARKER_SHARES: Record<StoredArtifactMarker, number> = {
  * section (summary -> timeline -> observations) after prioritization, dedupe,
  * and trimming — i.e. the order the user actually sees — so we read from there.
  */
-function finalPackOrder(trace: ReturnType<typeof buildMemoryPackTrace>): number[] {
+export interface FinalAssemblyTrace {
+	assembly: {
+		sections: { summary: number[]; timeline: number[]; observations: number[] };
+	};
+}
+
+export function finalPackOrder(trace: FinalAssemblyTrace): number[] {
 	const { summary, timeline, observations } = trace.assembly.sections;
 	const ordered: number[] = [];
 	const seen = new Set<number>();
@@ -114,8 +122,8 @@ function finalPackOrder(trace: ReturnType<typeof buildMemoryPackTrace>): number[
 }
 
 /** Run one probe through the pack trace path (no usage-row writes). */
-export function runProbe(store: MemoryStore, probe: Probe, topN = 5): ProbeMetrics {
-	const trace = buildMemoryPackTrace(store, probe.query, Math.max(topN, 10));
+export async function runProbe(store: MemoryStore, probe: Probe, topN = 5): Promise<ProbeMetrics> {
+	const trace = await buildMemoryPackTraceAsync(store, probe.query, Math.max(topN, 10));
 	const top = finalPackOrder(trace)
 		.slice(0, topN)
 		.flatMap((id) => {
@@ -147,8 +155,19 @@ export function runProbe(store: MemoryStore, probe: Probe, topN = 5): ProbeMetri
 	};
 }
 
-export function runAll(store: MemoryStore, probes: Probe[], topN = 5): ProbeMetrics[] {
-	return probes.map((p) => runProbe(store, p, topN));
+export async function runAll(store: MemoryStore, probes: Probe[], topN = 5): Promise<ProbeMetrics[]> {
+	const metrics: ProbeMetrics[] = [];
+	for (const probe of probes) metrics.push(await runProbe(store, probe, topN));
+	return metrics;
+}
+
+export function probeSuiteDigest(probes: readonly Probe[], topN: number): `sha256:${string}` {
+	const canonical = JSON.stringify({
+		schema_version: 1,
+		top_n: topN,
+		probes: probes.map(({ query, mode }) => ({ mode, query })),
+	});
+	return `sha256:${createHash("sha256").update(canonical, "utf8").digest("hex")}`;
 }
 
 /** Average a share across a subset of probe metrics. */
@@ -168,6 +187,7 @@ function byMode(metrics: ProbeMetrics[], modes: ProbeMode[]): ProbeMetrics[] {
 
 export interface Snapshot {
 	probes: number;
+	probe_suite_digest?: `sha256:${string}`;
 	// Non-recap retrieval (default/task/debug) — durable content should lead.
 	nonRecap: {
 		summary_share: number;
@@ -187,13 +207,14 @@ export interface Snapshot {
 	};
 }
 
-export function snapshot(metrics: ProbeMetrics[]): Snapshot {
+export function snapshot(metrics: ProbeMetrics[], identity?: `sha256:${string}`): Snapshot {
 	const nonRecap = byMode(metrics, ["default", "task", "debug"]);
 	const recap = byMode(metrics, ["recap"]);
 	const recapTop1Summary = recap.filter((m) => m.top1 === "session_summary").length;
 	const recapRouteMismatches = recap.filter((m) => m.packMode !== "recall").length;
 	return {
 		probes: metrics.length,
+		...(identity ? { probe_suite_digest: identity } : {}),
 		nonRecap: {
 			summary_share: avgShare(nonRecap, "session_summary"),
 			telemetry_share: avgShare(nonRecap, "telemetry"),
@@ -242,6 +263,18 @@ export interface BaselineDrift {
  */
 export function compareToBaseline(prior: Snapshot, now: Snapshot, eps = 1e-6): BaselineDrift {
 	const notes: string[] = [];
+	if (
+		prior.probe_suite_digest &&
+		now.probe_suite_digest &&
+		prior.probe_suite_digest !== now.probe_suite_digest
+	) {
+		return {
+			ok: false,
+			notes: [
+				`WORSE probe suite identity changed: baseline=${prior.probe_suite_digest} current=${now.probe_suite_digest}. Rewrite the baseline for the new canonical probe suite before comparing.`,
+			],
+		};
+	}
 	// A baseline frozen against a different probe suite is not comparable: the
 	// averages mix different queries, so drift would be apples-to-oranges. Fail
 	// loudly and require rewriting the baseline instead of silently passing.
@@ -277,6 +310,7 @@ export function isSnapshot(value: unknown): value is Snapshot {
 	if (!value || typeof value !== "object") return false;
 	const s = value as Partial<Snapshot>;
 	return (
+		(s.probe_suite_digest === undefined || /^sha256:[0-9a-f]{64}$/.test(s.probe_suite_digest)) &&
 		typeof s.nonRecap?.summary_share === "number" &&
 		typeof s.nonRecap.telemetry_share === "number" &&
 		typeof s.nonRecap.durable_share === "number" &&

@@ -22,6 +22,7 @@ import {
 	compareToBaseline,
 	evaluateGate,
 	isSnapshot,
+	probeSuiteDigest,
 	runAll,
 	type Snapshot,
 	snapshot,
@@ -70,14 +71,14 @@ function printHuman(snap: Snapshot): void {
 	}
 }
 
-function main(): void {
+async function main(): Promise<void> {
 	const args = parseArgs(process.argv.slice(2));
 	const dbPath = resolveDbPath(args.db);
 	const store = new MemoryStore(dbPath);
 	let exitCode = 0;
 	try {
-		const metrics = runAll(store, DEFAULT_PROBES, args.top);
-		const snap = snapshot(metrics);
+		const metrics = await runAll(store, DEFAULT_PROBES, args.top);
+		const snap = snapshot(metrics, probeSuiteDigest(DEFAULT_PROBES, args.top));
 		const gate = evaluateGate(snap);
 
 		// Optional comparison against a committed metric baseline.
@@ -142,4 +143,7 @@ function main(): void {
 	process.exit(exitCode);
 }
 
-main();
+main().catch((error: unknown) => {
+	process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+	process.exitCode = 1;
+});

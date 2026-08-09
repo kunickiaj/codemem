@@ -5,18 +5,24 @@ import { parseComponentFileSetManifest } from "./manifest.js";
 import { isPathInside } from "./path-safety.js";
 import type { ComponentFileSetManifestV1, Digest, JsonValue } from "./types.js";
 
+export type EvaluatorComponentName = "evaluator" | "retrieval" | "injection";
+
 export function digestComponentContents(
 	manifest: ComponentFileSetManifestV1,
 	contents: Record<string, string>,
+	component: EvaluatorComponentName = "evaluator",
 ): Digest {
 	const checked = parseComponentFileSetManifest(manifest);
-	const files = checked.components.evaluator.toSorted(compareCodePoints).map((path) => {
+	const componentFiles = checked.components[component];
+	if (!componentFiles?.length)
+		throw new TypeError(`Component file-set manifest is missing ${component}`);
+	const files = componentFiles.toSorted(compareCodePoints).map((path) => {
 		if (!(path in contents)) throw new TypeError(`Missing content for component file: ${path}`);
 		return { path, content_digest: digest(contents[path] as string) };
 	});
 	return digest({
 		schema_version: checked.schema_version,
-		component: "evaluator",
+		component,
 		files,
 	} as JsonValue);
 }
@@ -36,4 +42,24 @@ export async function digestEvaluatorComponent(
 		}),
 	);
 	return digestComponentContents(checked, Object.fromEntries(entries));
+}
+
+export async function digestScopedEvaluatorComponent(
+	repositoryRoot: string,
+	manifest: ComponentFileSetManifestV1,
+	component: EvaluatorComponentName,
+): Promise<Digest> {
+	const checked = parseComponentFileSetManifest(manifest);
+	const paths = checked.components[component];
+	if (!paths?.length) throw new TypeError(`Component file-set manifest is missing ${component}`);
+	const root = await realpath(repositoryRoot);
+	const entries = await Promise.all(
+		paths.map(async (path) => {
+			const actual = await realpath(resolve(root, path));
+			if (!isPathInside(root, actual))
+				throw new TypeError(`Component file resolves outside the repository: ${path}`);
+			return [path, await readFile(actual, "utf8")] as const;
+		}),
+	);
+	return digestComponentContents(checked, Object.fromEntries(entries), component);
 }

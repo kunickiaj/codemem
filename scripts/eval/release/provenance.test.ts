@@ -31,4 +31,30 @@ describe("evaluator component provenance", () => {
 		);
 		expect(reordered).toBe(first);
 	});
+
+	it("binds retrieval provenance only to retrieval-scoped inputs", () => {
+		const manifest = {
+			schema_version: 1 as const,
+			components: {
+				evaluator: ["observer.ts"],
+				retrieval: ["pack.ts", "retrieval-scoring.ts"],
+			},
+		};
+		const contents = {
+			"observer.ts": "observer",
+			"pack.ts": "pack",
+			"retrieval-scoring.ts": "score",
+		};
+		const retrieval = digestComponentContents(manifest, contents, "retrieval");
+		expect(
+			digestComponentContents(
+				manifest,
+				{ ...contents, "observer.ts": "changed observer" },
+				"retrieval",
+			),
+		).toBe(retrieval);
+		expect(
+			digestComponentContents(manifest, { ...contents, "pack.ts": "changed pack" }, "retrieval"),
+		).not.toBe(retrieval);
+	});
 });

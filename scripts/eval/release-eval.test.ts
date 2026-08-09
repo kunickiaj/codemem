@@ -8,6 +8,22 @@ describe("release eval command parsing", () => {
 		expect(
 			parseReleaseEvalArguments(["run", "--manifest", "manifest.json", "--output", "summary.json"]),
 		).toEqual({ command: "run", manifestPath: "manifest.json", outputPath: "summary.json" });
+		expect(
+			parseReleaseEvalArguments([
+				"run",
+				"--manifest",
+				"manifest.json",
+				"--retrieval-corpus",
+				"private-retrieval-corpus.json",
+				"--injection-corpus",
+				"public-injection-corpus.json",
+			]),
+		).toEqual({
+			command: "run",
+			manifestPath: "manifest.json",
+			retrievalCorpusPath: "private-retrieval-corpus.json",
+			injectionCorpusPath: "public-injection-corpus.json",
+		});
 	});
 
 	it("rejects missing and duplicate arguments", () => {
