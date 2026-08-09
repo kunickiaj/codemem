@@ -1,0 +1,28 @@
+{
+	"schema_version": 1,
+	"components": {
+		"evaluator": [
+			"packages/core/src/extraction-benchmark-scoring.ts",
+			"packages/core/src/extraction-model-pricing.ts",
+			"packages/core/src/ingest-types.ts",
+			"packages/core/src/ingest-xml-parser.ts",
+			"packages/core/src/observer-client.ts",
+			"packages/core/src/observer-config.ts",
+			"scripts/eval/release-eval.ts",
+			"scripts/eval/release/canonical.ts",
+			"scripts/eval/release/component-files.json",
+			"scripts/eval/release/corpus.ts",
+			"scripts/eval/release/historical-observer-driver.ts",
+			"scripts/eval/release/historical-observer.ts",
+			"scripts/eval/release/json-shape.ts",
+			"scripts/eval/release/manifest.ts",
+			"scripts/eval/release/observer-invoker.ts",
+			"scripts/eval/release/observer-runner.ts",
+			"scripts/eval/release/orchestrator.ts",
+			"scripts/eval/release/path-safety.ts",
+			"scripts/eval/release/provenance.ts",
+			"scripts/eval/release/reports.ts",
+			"scripts/eval/release/types.ts"
+		]
+	}
+}

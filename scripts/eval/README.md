@@ -83,5 +83,57 @@ mismatches rising are reported as `WORSE` and fail the run.
   expected: the snapshot measures real corpus quality, not marker coverage.
 - Probes live in `scenarios.ts`; extend the battery there.
 - `baselines/` holds committed **metrics** (JSON), never corpus data.
-- Validate script changes with `pnpm run eval:pack:typecheck`; root `tsc` and
-  `lint` primarily cover `packages/`.
+- Validate pack-eval changes with `pnpm run eval:pack:typecheck`. Root tests and
+  lint include the release-evaluation tooling; CI also runs its standalone
+  typecheck.
+
+## Observer release evaluation
+
+The standalone observer release evaluator compares prompt behavior from exact
+historical commits while scoring every response with the evaluator checked out
+in the current worktree. It is not a product CLI command and does not change
+observer runtime behavior. Detailed output always stays under the ignored
+`.tmp/eval-results/release/` tree; optional in-repository output is a strictly
+allowlisted aggregate summary and remains explicitly `partial`.
+
+Run the deterministic, credential-free public fixture:
+
+```fish
+pnpm run eval:release -- synthetic
+```
+
+The fixture covers required durable-fact recall, routine silence, malformed XML
+repair, and model fallback for both an approved stable subject and a versioned
+candidate. It performs no network requests or model calls.
+
+Run an operator-supplied canonical projected corpus:
+
+```fish
+pnpm run eval:release -- run --manifest /path/to/release-manifest.json
+pnpm run eval:release -- run --manifest /path/to/release-manifest.json --output scripts/eval/baselines/release/candidate-observer.json
+```
+
+The manifest binds the evaluator commit and full transport configuration, each
+corpus tier and logical SHA-256 digest, every requested subject ref and semantic
+version, repetition count, and the committed evaluator component file set. The
+runner resolves all refs to immutable commits before creating the observer
+client. It also rejects tracked or untracked evaluator-worktree changes so the
+recorded commit and evaluator component digest describe one reproducible tree.
+Historical worktrees receive only a version-neutral prompt driver; all parsing
+and scoring uses current evaluator code.
+
+Private projected corpora, prompts, transcripts, raw output, local paths, and
+credentials must never be committed. Sanitized summaries include only structured
+version identities, immutable commits and digests, completeness counters, and
+aggregate metric IDs. Observer-only summaries cannot be release attestations.
+Explicit `--output` paths must be JSON files below `scripts/eval/baselines/release/` or
+`.tmp/eval-results/release/`; path traversal and symlink escapes are rejected.
+
+Validate changes with:
+
+```fish
+pnpm run eval:release:typecheck
+pnpm run eval:release:test
+pnpm run tsc
+pnpm run test
+```

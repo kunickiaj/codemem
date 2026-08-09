@@ -33,6 +33,9 @@ jobs:
       - name: TypeScript project reference check
         run: pnpm run tsc
 
+      - name: Evaluation tooling TypeScript check
+        run: pnpm run eval:release:typecheck
+
   ts-test:
     name: TypeScript Test
     runs-on: ubuntu-latest
@@ -62,6 +65,9 @@ jobs:
 
       - name: Test
         run: pnpm run test
+
+      - name: Release evaluation tests
+        run: pnpm run eval:release:test
 
   worker-test:
     name: Cloudflare Worker Test

@@ -5,6 +5,7 @@
 		"lib": ["ES2024"],
 		"module": "Node16",
 		"moduleResolution": "Node16",
+		"customConditions": ["source"],
 		"strict": true,
 		"esModuleInterop": true,
 		"skipLibCheck": true,
@@ -13,5 +14,5 @@
 		"noEmit": true,
 		"types": ["node"]
 	},
-	"include": ["*.ts"]
+	"include": ["*.ts", "release/**/*.ts"]
 }
