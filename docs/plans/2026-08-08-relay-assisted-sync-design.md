@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-08
 **Status:** Proposed — review required before implementation
-**Related:** `2026-04-30-seed-and-mesh-architecture-converged.md`, `2026-04-30-sharing-domain-scope-design.md`, `2026-05-25-scoped-sync-protocol.md`, `2026-01-24-p2p-sync-phase-1.md`, `2026-01-24-p2p-sync-phase-2.md`, `2026-03-08-identity-aware-sync-shared-memory-foundation.md`, `2026-03-12-coordinator-backed-cross-network-discovery.md`, `2026-03-12-optional-relay-coordinator-mode.md`, `2026-03-12-relay-and-buffered-delivery-follow-on.md`, `2026-07-21-project-recipient-sharing-identity-design.md`, `../architecture.md`
+**Related:** `2026-08-09-remote-workspace-connectivity-evidence-design.md`, `2026-04-30-seed-and-mesh-architecture-converged.md`, `2026-04-30-sharing-domain-scope-design.md`, `2026-05-25-scoped-sync-protocol.md`, `2026-01-24-p2p-sync-phase-1.md`, `2026-01-24-p2p-sync-phase-2.md`, `2026-03-08-identity-aware-sync-shared-memory-foundation.md`, `2026-03-12-coordinator-backed-cross-network-discovery.md`, `2026-03-12-optional-relay-coordinator-mode.md`, `2026-03-12-relay-and-buffered-delivery-follow-on.md`, `2026-07-21-project-recipient-sharing-identity-design.md`, `../architecture.md`
 
 ## Executive summary
 
@@ -213,7 +213,7 @@ Durable encrypted store-and-forward is gated on a separate design covering recip
 
 ## Observability, limits, and abuse controls
 
-Minimum non-payload telemetry:
+Once relay transport exists, minimum non-payload runtime telemetry:
 
 - chosen path and fallback reason per sync attempt;
 - direct-dial failure class and relay-attempt outcome;
@@ -230,7 +230,7 @@ The relay must contain no payload queue implementation; any observed non-zero du
 
 | Stage | Deliverable | Exit criteria |
 | --- | --- | --- |
-| 0 — evidence gate | Approve a measurement-only precursor, add minimal non-payload direct-dial failure/path telemetry because existing `sync_attempts` cannot classify the residual cohort, then preregister a threshold before inspecting newly retained results | The observed residual cohort justifies relay work after fresh discovery and LAN/known/Tailscale paths. Insufficient evidence cancels or defers the remaining stages. |
+| 0 — evidence gate | Run the bounded signed-sync, listener-lifecycle, address-churn, stable-endpoint, and route-unavailable tests in `2026-08-09-remote-workspace-connectivity-evidence-design.md` | Continue relay review only when signed direct sync is proven, at least one required peer network lacks a stable direct route, both peers overlap online with outbound WebSocket capability, and direct exposure/tunnels are unacceptable requirements. |
 | 1 — design gates | Resolve protocol, crypto, recipient-bound peer signatures, privacy, abuse, and standalone seams using the evidence result | Reviewers approve explicit contracts and the direct-sync signature prerequisite; no relay implementation starts before this. |
 | 2 — test-only transport | Contract-driven in-memory/local relay harness with fault injection; artifacts remain gated production protocol code | No change to scoped authorization or convergence under drop/duplicate/reorder tests; co-hosted and standalone harness modes use the same contract. |
 | 3 — opt-in dogfood | Live opaque forwarding for paired, simultaneously online devices | Direct fallback, limits, diagnostics, and kill switch validated. |
@@ -290,7 +290,7 @@ Extend the mixed-owner fixture from the sharing-domain design: personal, work, a
 
 Implementation is blocked until the live-relay gates have owners and recorded decisions:
 
-1. **Evidence threshold:** After an explicitly approved measurement-only precursor, what measured residual direct-dial failure/overlap threshold justifies relay implementation after fresh coordinator discovery and existing direct paths?
+1. **Connectivity evidence:** The targeted experiment in `2026-08-09-remote-workspace-connectivity-evidence-design.md` must separate signed-protocol correctness, listener lifecycle, ephemeral-address churn, stable private exposure, and a true route-unavailable/simultaneously-online case. A stopped listener or untested stable endpoint cannot justify relay.
 2. **Cryptographic envelope:** What is encrypted/authenticated, how are paired device identities bound, and how are replay, nonce, padding, and frame expiry handled?
 3. **Live key lifecycle:** How are encryption keys introduced alongside existing signing keys, bound to paired devices, rotated, recovered, and given an explicit forward-secrecy posture?
 4. **Recipient-bound peer signature (`codemem-zjvr.1.10`):** Version the canonical peer signature so direct and relayed requests bind the intended recipient before architecture approval. This is direct-sync hardening, not relay transport implementation.
@@ -306,10 +306,10 @@ Implementation is blocked until the live-relay gates have owners and recorded de
 
 | Epic / workstream | Scope | Primary gate |
 | --- | --- | --- |
-| `codemem-zjvr.1` — Evidence, decisions, and contracts | Residual-need evidence, refined invariant, threat model, encrypted envelope, routing metadata, peer-session protocol and standalone seams | `codemem-zjvr.1.5` architecture approval |
+| `codemem-zjvr.1` — Evidence, decisions, and contracts | Connectivity evidence, refined invariant, threat model, encrypted envelope, routing metadata, peer-session protocol and standalone seams | `codemem-zjvr.1.5` architecture approval |
 | `codemem-zjvr.2` — Live encrypted relay | Relay-session instrumentation, path selector, relay client/service, coordinator co-hosting, limits, fault tests, standalone compatibility, and dogfood | All production children depend on `codemem-zjvr.1.5`; `codemem-zjvr.2.10` gates controlled availability |
 | `codemem-zjvr.3` — Durable encrypted relay | Separate offline queue threat model, key lifecycle, encrypted storage contract, future vertical slice, and compromise testing | Begins after live-relay review; `codemem-zjvr.3.4` separately approves or rejects implementation |
 
-The evidence precursor is separately gated: `codemem-zjvr.1.8` approves measurement only, `codemem-zjvr.1.9` adds bounded local-only diagnostics, and `codemem-zjvr.1.6` evaluates the preregistered threshold. `codemem-zjvr.1.10` owns the recipient-bound canonical-signature prerequisite in direct peer sync and blocks architecture approval. No coordinator/relay transmission, export, or fleet aggregation of evidence is authorized. None of these beads authorizes relay transport.
+The evidence precursor is separately gated: `codemem-zjvr.1.8` approves the bounded experiment only, `codemem-zjvr.1.9` runs it without persistent telemetry or sync-behavior changes, and `codemem-zjvr.1.6` evaluates the result. `codemem-zjvr.1.10` owns the recipient-bound canonical-signature prerequisite in direct peer sync and blocks architecture approval. No coordinator/relay transmission, export, or fleet aggregation of evidence is authorized. None of these beads authorizes relay transport.
 
 The graph allows approved measurement, contract, and review work while blocking relay implementation on `codemem-zjvr.1.5`. Durable implementation is blocked again on successful live-relay evidence and the separate `codemem-zjvr.3.4` decision. These epics scope future execution; they do not themselves authorize production code.
