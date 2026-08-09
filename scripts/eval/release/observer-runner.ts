@@ -8,6 +8,7 @@ import {
 	shouldRepairObserverResponse,
 } from "../../../packages/core/src/ingest-xml-parser.js";
 import type { ObserverTokenUsage } from "../../../packages/core/src/observer-client.js";
+import { compareCodePoints } from "./canonical.js";
 import { parseProjectedCorpus } from "./corpus.js";
 import type { HistoricalObserverSubject } from "./historical-observer.js";
 import { exactKeys, jsonObject } from "./json-shape.js";
@@ -289,7 +290,7 @@ export function adaptProjectedObserverCases(input: unknown): ProjectedObserverCa
 	if (new Set(cases.map((entry) => entry.caseId)).size !== cases.length)
 		throw new TypeError("projected observer case IDs must be unique");
 	return cases.toSorted(
-		(left, right) => left.ordinal - right.ordinal || left.caseId.localeCompare(right.caseId),
+		(left, right) => left.ordinal - right.ordinal || compareCodePoints(left.caseId, right.caseId),
 	);
 }
 

@@ -2,6 +2,17 @@ import { createHash } from "node:crypto";
 import { parseProjectedCorpus } from "./corpus.js";
 import type { Digest, JsonValue, ProjectedCorpusV1 } from "./types.js";
 
+export function compareCodePoints(left: string, right: string): number {
+	const leftPoints = Array.from(left, (value) => value.codePointAt(0) ?? -1);
+	const rightPoints = Array.from(right, (value) => value.codePointAt(0) ?? -1);
+	const length = Math.min(leftPoints.length, rightPoints.length);
+	for (let index = 0; index < length; index += 1) {
+		const difference = (leftPoints[index] ?? -1) - (rightPoints[index] ?? -1);
+		if (difference !== 0) return difference;
+	}
+	return leftPoints.length - rightPoints.length;
+}
+
 function normalized(value: JsonValue): JsonValue {
 	if (typeof value === "string") return value.replaceAll("\r\n", "\n").normalize("NFC");
 	if (Array.isArray(value)) return value.map(normalized);
@@ -21,7 +32,7 @@ export function serialize(value: JsonValue): string {
 	if (Array.isArray(clean)) return `[${clean.map(serialize).join(",")}]`;
 	if (clean && typeof clean === "object")
 		return `{${Object.entries(clean)
-			.toSorted(([left], [right]) => left.localeCompare(right))
+			.toSorted(([left], [right]) => compareCodePoints(left, right))
 			.map(([key, child]) => `${JSON.stringify(key)}:${serialize(child)}`)
 			.join(",")}}`;
 	return JSON.stringify(clean) ?? "null";
@@ -42,9 +53,9 @@ export function project(value: unknown): ProjectedCorpusV1 {
 		}))
 		.toSorted(
 			(left, right) =>
-				left.case_id.localeCompare(right.case_id) ||
+				compareCodePoints(left.case_id, right.case_id) ||
 				left.ordinal - right.ordinal ||
-				left.row_type.localeCompare(right.row_type),
+				compareCodePoints(left.row_type, right.row_type),
 		);
 	for (let index = 1; index < rows.length; index += 1) {
 		const previous = rows[index - 1];

@@ -356,14 +356,10 @@ describe("extraction benchmark scoring", () => {
 	});
 
 	it("does not assign aggregate quality to an unreviewed batch", () => {
-		const batch = getExtractionBenchmarkProfile("rich-batch-shape-v1")?.batches.find(
-			(candidate) => candidate.batchId === 18476,
-		);
-		if (!batch) throw new Error("expected unreviewed benchmark batch 18476");
 		const result = scoreExtractionBenchmarkOutput({
 			parsed: parsed([]),
 			diagnostics: CLEAN_DIAGNOSTICS,
-			review: batch.review,
+			review: { status: "unreviewed", reviewerNotes: "Review pending." },
 			estimatedCostUsd: 0.1,
 		});
 

@@ -1,9 +1,14 @@
+import { chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { buildRawEventEnvelopeFromHook } from "./claude-hooks.js";
-import { buildTierRoutedReplayObserverConfig, replayBatchExtraction } from "./extraction-replay.js";
+import {
+	buildTierRoutedReplayObserverConfig,
+	projectReplayBatch,
+	replayBatchExtraction,
+} from "./extraction-replay.js";
 import {
 	type ObserverClient,
 	ObserverClient as ObserverClientImpl,
@@ -46,6 +51,40 @@ function replayObserverConfig(overrides: Partial<ObserverConfig> = {}): Observer
 }
 
 describe("extraction replay", () => {
+	it("projects a completed observer case from a read-only source database", async () => {
+		const dbPath = createDbPath("extraction-replay-projection-read-only");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version, metadata_json) VALUES
+				  (400001, '2026-04-10T09:00:00Z', '2026-04-10T09:00:10Z', '/tmp/repo', 'repo', 'test', 'test', '{}');
+				INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
+				  ('opencode', 'projection-session', 'projection-session', 400001, '2026-04-10T09:00:00Z');
+				INSERT INTO raw_event_flush_batches(id, source, stream_id, opencode_session_id, start_event_seq, end_event_seq, extractor_version, status, attempt_count, created_at, updated_at) VALUES
+				  (40001, 'opencode', 'projection-session', 'projection-session', 1, 1, 'raw_events_v1', 'completed', 1, '2026-04-10T09:00:00Z', '2026-04-10T09:00:10Z'),
+				  (40002, 'opencode', 'projection-session', 'projection-session', 2, 2, 'raw_events_v1', 'pending', 0, '2026-04-10T09:00:00Z', '2026-04-10T09:00:10Z');
+				INSERT INTO raw_events(id, source, stream_id, opencode_session_id, event_id, event_seq, event_type, ts_wall_ms, ts_mono_ms, payload_json, created_at) VALUES
+				  (40001, 'opencode', 'projection-session', 'projection-session', 'projection-event', 1, 'user_prompt', 1000, 1, '{"type":"user_prompt","prompt_text":"Project this reviewed batch"}', '2026-04-10T09:00:00Z');
+			`);
+		} finally {
+			db.close();
+		}
+
+		await chmod(dbPath, 0o444);
+		const projection = await projectReplayBatch(dbPath, {
+			batchId: 40001,
+			scenarioId: "simple-batch-shape",
+		}).finally(async () => await chmod(dbPath, 0o600));
+
+		expect(projection.analysis).toEqual({ batchId: 40001, sessionId: 400001 });
+		expect(projection.observerContext.userPrompt).toContain("Project this reviewed batch");
+		expect(Object.keys(projection).toSorted()).toEqual(["analysis", "observerContext"]);
+		await expect(
+			projectReplayBatch(dbPath, { batchId: 40002, scenarioId: "simple-batch-shape" }),
+		).rejects.toThrow("Flush batch 40002 not found");
+	});
+
 	it.each([
 		{ tier: "simple", eventSpan: 12, toolCount: 1, expectedModel: "gpt-5.6-luna" },
 		{ tier: "rich", eventSpan: 153, toolCount: 12, expectedModel: "gpt-5.6-terra" },

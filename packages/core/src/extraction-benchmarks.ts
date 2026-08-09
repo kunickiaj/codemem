@@ -75,6 +75,12 @@ const UNREVIEWED_BATCH: ExtractionBenchmarkReview = {
 };
 
 const REVIEWED_BATCHES: Readonly<Record<number, ExtractionBenchmarkReview>> = {
+	18476: {
+		status: "reviewed",
+		reviewerNotes:
+			"This separately scored robustness case checks whether replay returns structurally usable output; it establishes no additional durable-fact label.",
+		labels: [],
+	},
 	28350: {
 		status: "reviewed",
 		reviewerNotes:

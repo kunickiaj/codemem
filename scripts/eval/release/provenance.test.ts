@@ -18,4 +18,17 @@ describe("evaluator component provenance", () => {
 			digestComponentContents({ schema_version: 1, components: { evaluator: ["missing.ts"] } }, {}),
 		).toThrow("Missing content");
 	});
+
+	it("orders non-ASCII paths by deterministic code point", () => {
+		const contents = { "😀.ts": "emoji", "é.ts": "accent" };
+		const first = digestComponentContents(
+			{ schema_version: 1, components: { evaluator: ["😀.ts", "é.ts"] } },
+			contents,
+		);
+		const reordered = digestComponentContents(
+			{ schema_version: 1, components: { evaluator: ["é.ts", "😀.ts"] } },
+			contents,
+		);
+		expect(reordered).toBe(first);
+	});
 });

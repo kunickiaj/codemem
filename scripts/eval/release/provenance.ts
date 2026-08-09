@@ -1,6 +1,6 @@
 import { readFile, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
-import { digest } from "./canonical.js";
+import { compareCodePoints, digest } from "./canonical.js";
 import { parseComponentFileSetManifest } from "./manifest.js";
 import { isPathInside } from "./path-safety.js";
 import type { ComponentFileSetManifestV1, Digest, JsonValue } from "./types.js";
@@ -10,7 +10,7 @@ export function digestComponentContents(
 	contents: Record<string, string>,
 ): Digest {
 	const checked = parseComponentFileSetManifest(manifest);
-	const files = checked.components.evaluator.toSorted().map((path) => {
+	const files = checked.components.evaluator.toSorted(compareCodePoints).map((path) => {
 		if (!(path in contents)) throw new TypeError(`Missing content for component file: ${path}`);
 		return { path, content_digest: digest(contents[path] as string) };
 	});

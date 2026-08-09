@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
+import { EVAL_TEST_INCLUDE } from "../test-includes.js";
 
 export default defineConfig({
 	root: resolve(import.meta.dirname, "../../.."),
@@ -10,6 +11,6 @@ export default defineConfig({
 	test: {
 		name: "release-eval",
 		environment: "node",
-		include: ["scripts/eval/release/**/*.test.ts", "scripts/eval/release-eval.test.ts"],
+		include: EVAL_TEST_INCLUDE,
 	},
 });

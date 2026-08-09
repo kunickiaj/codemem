@@ -129,6 +129,49 @@ aggregate metric IDs. Observer-only summaries cannot be release attestations.
 Explicit `--output` paths must be JSON files below `scripts/eval/baselines/release/` or
 `.tmp/eval-results/release/`; path traversal and symlink escapes are rejected.
 
+### Private release-corpus export
+
+An authorized operator can project the reviewed
+`balanced-observer-quality-v1` completed flush batches into a canonical private
+release corpus. The exporter opens the source database read-only, performs no
+model calls, and writes only to a caller-selected absolute directory outside
+this repository. Its parent must already exist and resolve outside the repository;
+the final destination itself must not exist. The exporter creates only that final
+directory, with mode `0700`, and rejects final or intermediate symlink redirects.
+Candidate version/configuration and a clean evaluator worktree are validated
+before the destination is created or the source database is projected.
+
+```fish
+set db_path /Volumes/private-eval/codemem.sqlite
+set export_dir /Volumes/private-eval/v0.40-corpus
+pnpm run eval:release:export-private -- --db $db_path --output-dir $export_dir --candidate-version 0.40.0
+```
+
+The generated manifest binds only `private-corpus.json`, which contains observer
+cases accepted by the PR1 preflight. `private-retrieval-corpus.json` and the
+credential-free `public-injection-corpus.json` are unbound sidecars reserved for
+PR3. `export-metadata.json` records only digests and counts, including the reviewed
+profile digest. Private case/probe IDs are stable content-derived identifiers;
+they hide numeric source IDs but are not an anonymization or privacy boundary.
+The exporter rejects missing, incomplete, unreviewed, duplicate, or mismatched
+source/profile records and never overwrites an existing output set.
+
+Atomic publication uses a temporary file plus a same-directory hard link. The
+selected filesystem must support hard links. For `EPERM`, `ENOTSUP`, or `EXDEV`,
+choose an operator-controlled local/APFS/ext4 directory with hard-link support;
+the exporter will not fall back to a weaker replacement write.
+
+> **Privacy warning:** `private-corpus.json` contains projected real-session
+> observer context and reviewed evidence. Keep the entire output directory in
+> private operator-controlled storage. Never copy the corpus, source SQLite DB,
+> detailed model output, credentials, auth configuration, generated manifest,
+> or local paths into this repository. Do not log or commit the generated private
+> output path. The public synthetic injection fixture,
+> manifest, and metadata do not contain private source text, but the generated
+> set still belongs in external storage. The public injection rows are prepared
+> for the later injection-evaluation slice; this PR does not implement or enable
+> that lane in the observer-only runner.
+
 Validate changes with:
 
 ```fish

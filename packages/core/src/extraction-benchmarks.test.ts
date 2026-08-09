@@ -159,11 +159,13 @@ describe("extraction benchmarks", () => {
 		}
 	});
 
-	it("marks only robustness batches without known review as explicitly unreviewed", () => {
+	it("includes a separately reviewed robustness case", () => {
 		const profile = getExtractionBenchmarkProfile("rich-batch-shape-v1");
 		expect(profile?.batches.find((batch) => batch.batchId === 18476)?.review).toEqual({
-			status: "unreviewed",
-			reviewerNotes: "No durable-fact review has been recorded for this batch.",
+			status: "reviewed",
+			reviewerNotes:
+				"This separately scored robustness case checks whether replay returns structurally usable output; it establishes no additional durable-fact label.",
+			labels: [],
 		});
 	});
 

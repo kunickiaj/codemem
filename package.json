@@ -28,6 +28,7 @@
     "eval:pack": "tsx --conditions source scripts/eval/pack-eval.ts",
     "eval:pack:typecheck": "pnpm exec tsc --build packages/core && pnpm exec tsc --noEmit --project scripts/eval/tsconfig.json",
     "eval:release": "tsx --conditions source scripts/eval/release-eval.ts",
+    "eval:release:export-private": "tsx --conditions source scripts/eval/export-private-release-corpus.ts",
     "eval:release:test": "pnpm exec vitest run --config scripts/eval/release/vitest.config.ts",
     "eval:release:typecheck": "pnpm exec tsc --noEmit --project scripts/eval/tsconfig.json",
     "dev": "bash scripts/dev.sh",

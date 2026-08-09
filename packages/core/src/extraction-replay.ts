@@ -1,4 +1,4 @@
-import { connect, resolveDbPath } from "./db.js";
+import { connectReadOnly, resolveDbPath } from "./db.js";
 import {
 	evaluateExtractionStructure,
 	evaluateSessionExtractionItems,
@@ -284,6 +284,11 @@ export interface ReplayBatchAnalysis {
 	filesModified: string[];
 }
 
+export interface ExtractionReplayProjection {
+	observerContext: ObserverContext;
+	analysis: Pick<ReplayBatchAnalysis, "batchId" | "sessionId">;
+}
+
 interface PreparedReplayBatch {
 	scenario: ReturnType<typeof getSessionExtractionEvalScenario> extends infer T
 		? Exclude<T, null>
@@ -428,7 +433,7 @@ async function prepareReplayBatch(
 	const scenario = getSessionExtractionEvalScenario(opts.scenarioId);
 	if (!scenario) throw new Error(`Unknown extraction eval scenario: ${opts.scenarioId}`);
 
-	const db = connect(resolveDbPath(dbPath));
+	const db = connectReadOnly(resolveDbPath(dbPath));
 	try {
 		const batch = db
 			.prepare(
@@ -450,7 +455,7 @@ async function prepareReplayBatch(
 				 LEFT JOIN opencode_sessions os
 				   ON os.source = b.source AND os.stream_id = b.stream_id
 				 LEFT JOIN sessions s ON s.id = os.session_id
-				 WHERE b.id = ?`,
+				 WHERE b.id = ? AND b.status = 'completed'`,
 			)
 			.get(opts.batchId) as
 			| {
@@ -629,6 +634,30 @@ async function prepareReplayBatch(
 	} finally {
 		db.close();
 	}
+}
+
+/**
+ * Project one completed raw-event flush batch without invoking an observer or
+ * exposing raw database rows. The source database is opened strictly read-only.
+ */
+export async function projectReplayBatch(
+	dbPath: string,
+	opts: {
+		batchId: number;
+		scenarioId: string;
+		maxChars?: number;
+		observerMaxChars?: number;
+		transcriptBudget?: number;
+	},
+): Promise<ExtractionReplayProjection> {
+	const prepared = await prepareReplayBatch(dbPath, opts);
+	return {
+		observerContext: prepared.observerContext,
+		analysis: {
+			batchId: prepared.analysis.batchId,
+			sessionId: prepared.analysis.sessionId,
+		},
+	};
 }
 
 async function replayPreparedBatch(

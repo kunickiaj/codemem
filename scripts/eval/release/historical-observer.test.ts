@@ -23,6 +23,7 @@ async function repository(): Promise<{ root: string; commit: string }> {
 	await command(root, "git", "init", "--initial-branch=main");
 	await command(root, "git", "config", "user.name", "Codemem Test");
 	await command(root, "git", "config", "user.email", "codemem-test@example.invalid");
+	await command(root, "git", "config", "commit.gpgsign", "false");
 	await mkdir(join(root, "packages/core/src"), { recursive: true });
 	await writeFile(join(root, ".gitignore"), ".tmp/\n", "utf8");
 	await writeFile(join(root, "package.json"), '{"type":"module"}\n', "utf8");
