@@ -1,9 +1,23 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { UiTeamSyncPrimaryStatus } from "../../view-model";
-import { renderTeamSyncPrimaryStatus } from "./render-team-sync";
+import { needsCoordinatorGroupReview, renderTeamSyncPrimaryStatus } from "./render-team-sync";
 
 afterEach(() => {
 	document.body.innerHTML = "";
+});
+
+describe("needsCoordinatorGroupReview", () => {
+	it("keeps a paired device out of review when it belongs to multiple groups", () => {
+		expect(needsCoordinatorGroupReview(["sre", "oss"], true)).toBe(false);
+	});
+
+	it("keeps an unpaired multi-group device in review", () => {
+		expect(needsCoordinatorGroupReview(["sre", "oss"], false)).toBe(true);
+	});
+
+	it("keeps a paired multi-group device in review when local approval is pending", () => {
+		expect(needsCoordinatorGroupReview(["sre", "oss"], true, true)).toBe(true);
+	});
 });
 
 function renderStatus(primaryStatus: UiTeamSyncPrimaryStatus) {

@@ -56,6 +56,14 @@ import {
 
 const TEAM_SYNC_ACTIONS_MOUNT_ID = "syncTeamActionsMount";
 
+export function needsCoordinatorGroupReview(
+	groupIds: string[],
+	pairedLocally: boolean,
+	needsLocalApproval = false,
+): boolean {
+	return groupIds.length > 1 && (!pairedLocally || needsLocalApproval);
+}
+
 export function renderTeamSyncPrimaryStatus(
 	badge: HTMLElement,
 	meta: HTMLElement,
@@ -302,8 +310,12 @@ export function renderTeamSync() {
 		const groupIds = Array.isArray(device.groups)
 			? device.groups.map((value) => String(value || "").trim()).filter(Boolean)
 			: [];
-		const hasAmbiguousCoordinatorGroup = groupIds.length > 1;
 		const pairedPeer = localPeers.find((peer) => String(peer?.peer_device_id || "") === deviceId);
+		const hasAmbiguousCoordinatorGroup = needsCoordinatorGroupReview(
+			groupIds,
+			Boolean(pairedPeer),
+			device.needs_local_approval === true,
+		);
 		const approvalSummary = deriveCoordinatorApprovalSummary({
 			device,
 			pairedLocally: Boolean(pairedPeer),
@@ -350,7 +362,7 @@ export function renderTeamSync() {
 			mode = "setup-blocked";
 		} else if (hasAmbiguousCoordinatorGroup) {
 			actionMessage =
-				"This device appears in multiple coordinator groups. Review team setup first or ask an admin to clean up the duplicate enrollment before approving it here.";
+				"This device appears in multiple coordinator groups. Review the Team setup before approving it here.";
 			mode = "ambiguous";
 		} else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
 			actionMessage =
