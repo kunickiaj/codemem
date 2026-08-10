@@ -98,13 +98,17 @@ function insertLocalFixture(db: InstanceType<typeof Database>): void {
 	).run(sessionId, NOW, NOW);
 }
 
-function insertLegacyScope(db: InstanceType<typeof Database>, scopeId: string): void {
+function insertLegacyScope(
+	db: InstanceType<typeof Database>,
+	scopeId: string,
+	kind = "team",
+): void {
 	db.prepare(
 		`INSERT INTO replication_scopes(
 			scope_id, label, kind, authority_type, coordinator_id, group_id,
 			membership_epoch, status, created_at, updated_at
-		 ) VALUES (?, ?, 'team', 'coordinator', 'coordinator', 'group', 1, 'active', ?, ?)`,
-	).run(scopeId, scopeId, NOW, NOW);
+		 ) VALUES (?, ?, ?, 'coordinator', 'coordinator', 'group', 1, 'active', ?, ?)`,
+	).run(scopeId, scopeId, kind, NOW, NOW);
 }
 
 function mapProject(
@@ -120,10 +124,10 @@ function mapProject(
 	).run(projectId, projectPattern, scopeId, NOW, NOW);
 }
 
-function configureUmbrellaScope(db: InstanceType<typeof Database>): void {
+function configureUmbrellaScope(db: InstanceType<typeof Database>, kind = "team"): void {
 	const scopeId = "legacy-umbrella";
 	const secondProjectId = "https://git.example.invalid/acme/review-second.git";
-	insertLegacyScope(db, scopeId);
+	insertLegacyScope(db, scopeId, kind);
 	db.prepare("UPDATE memory_items SET scope_id = ?").run(scopeId);
 	mapProject(db, PROJECT_ID, PROJECT_ID, scopeId);
 	const sessionId = Number(
@@ -334,6 +338,32 @@ describe("recipient policy review persistence", () => {
 		});
 	});
 
+	it.each([
+		"managed_project",
+		"future_project_boundary",
+	])("keeps a %s multi-project scope repairable", (kind) => {
+		configureUmbrellaScope(db, kind);
+
+		const result = listRecipientPolicyReview(db, context);
+
+		expect(result).toMatchObject({
+			blockedItems: [
+				{
+					ownerLabel: "Local administrator",
+					repairAction:
+						"Assign each Project to its own managed scope and move its memories out of the shared boundary.",
+				},
+				{
+					ownerLabel: "Local administrator",
+					repairAction:
+						"Assign each Project to its own managed scope and move its memories out of the shared boundary.",
+				},
+			],
+			continuity: null,
+			reviewItems: [],
+		});
+	});
+
 	it("keeps a wildcard scope mapping as continuity without repair cards", () => {
 		const scopeId = "legacy-wildcard";
 		insertLegacyScope(db, scopeId);
@@ -369,6 +399,7 @@ describe("recipient policy review persistence", () => {
 				code: "ambiguous_multi_project_scope",
 				kind: "diagnostic",
 				message: "Scope contains multiple Projects.",
+				scopeKinds: ["team"],
 			},
 			...mixed.conditions,
 		];

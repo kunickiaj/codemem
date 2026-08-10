@@ -12,7 +12,7 @@ Accurately moving Projects into their existing umbrella scopes therefore creates
 
 ## Decision
 
-Keep `ambiguous_multi_project_scope` in the legacy projection and continue suppressing recipient inference and actionable migration decisions for affected Projects. Do not convert this diagnostic into a repairable blocked review item. Count it in the existing collapsed `legacy_access_preserved` continuity message instead, so the ambiguity remains observable without producing one false repair card per Project.
+Keep `ambiguous_multi_project_scope` in the legacy projection and continue suppressing recipient inference and actionable migration decisions for affected Projects. For known legacy umbrella scope kinds (`user`, `personal`, `team`, `team_default`, `org`, and `client`), do not convert this diagnostic into a repairable blocked review item. Count it in the existing collapsed `legacy_access_preserved` continuity message instead, so the ambiguity remains observable without producing one false repair card per Project. A collision in a project-specific `managed_project` scope remains repairable, and unknown future scope kinds fail closed as repairable rather than being assumed to be umbrellas.
 
 Treat `wildcard_scope_mapping` the same way: a deliberate catch-all mapping can be ambiguous for recipient migration without being broken. Continue producing blocked review items for source-state defects that have a concrete repair path, including noncanonical Project identities, conflicting Project-to-scope mappings, and inactive boundaries.
 
@@ -21,7 +21,7 @@ This changes presentation only. It does not create recipient intent, change curr
 ## Implementation
 
 - Add an exhaustive, typed presentation classification for every `LegacyRecipientPolicyConditionCodeV1`: actionable, repairable blocked, or preserved continuity. Adding a future condition code must fail compilation until its presentation is selected explicitly.
-- Classify exactly `ambiguous_multi_project_scope` and `wildcard_scope_mapping` as preserved continuity; classify noncanonical identities, conflicting mappings, and inactive boundaries as repairable blocked conditions.
+- Classify `ambiguous_multi_project_scope` as preserved continuity only for legacy umbrella scope kinds, and keep a `managed_project` collision repairable. Classify `wildcard_scope_mapping` as preserved continuity; classify noncanonical identities, conflicting mappings, and inactive boundaries as repairable blocked conditions.
 - Count suppressed diagnostics in the existing `continuity.findingCount` alongside unresolved deferred review items.
 - Preserve the existing `hasDiagnostic` gate so ambiguous Projects remain fail-closed and do not gain actionable review options.
 - When continuity and genuine blocked items coexist, title the surface `Sharing needs repair` and retain the deferred-finding count. Suppress the continuity-only `No action is required` introduction in this mixed state so the copy does not contradict the repair cards.
@@ -30,7 +30,7 @@ This changes presentation only. It does not create recipient intent, change curr
 - Preserve blocked-card coverage for a genuinely noncanonical Project identity and UI coverage for continuity-only and mixed states. The mixed-state test must intentionally replace its previous `Existing sharing kept as-is` and `No action is required` expectations.
 - Cover the exhaustive presentation classification so a newly added condition code cannot silently disappear from review.
 
-The response shape and contract version remain unchanged. `continuity` is already an additive V1 field; this patch only corrects which legacy findings contribute to it versus `blockedItems`.
+The review response shape and contract version remain unchanged. The legacy projection condition shape is additively extended with optional `scopeKinds` evidence. `continuity` is already an additive V1 field; this patch only corrects which legacy findings contribute to it versus `blockedItems`.
 
 ## Validation
 

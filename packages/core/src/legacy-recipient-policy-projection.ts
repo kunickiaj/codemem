@@ -86,6 +86,7 @@ export interface LegacyRecipientPolicyConditionV1 {
 	code: LegacyRecipientPolicyConditionCodeV1;
 	kind: "actionable" | "diagnostic";
 	message: string;
+	scopeKinds?: string[];
 }
 
 export interface LegacyRecipientPolicyProjectionV1 {
@@ -165,6 +166,19 @@ export interface LegacyRecipientPolicySnapshot {
 export interface ListLegacyRecipientPolicyProjectionsOptions {
 	localActorId: string;
 	localDeviceId: string;
+}
+
+const LEGACY_UMBRELLA_SCOPE_KINDS = new Set([
+	"user",
+	"personal",
+	"team",
+	"team_default",
+	"org",
+	"client",
+]);
+
+export function isLegacyUmbrellaScopeKind(kind: string): boolean {
+	return LEGACY_UMBRELLA_SCOPE_KINDS.has(kind);
 }
 
 function clean(value: unknown): string | null {
@@ -268,14 +282,21 @@ function condition(
 	code: LegacyRecipientPolicyConditionCodeV1,
 	kind: LegacyRecipientPolicyConditionV1["kind"],
 	message: string,
+	scopeKinds?: string[],
 ): LegacyRecipientPolicyConditionV1 {
-	return { version: RECIPIENT_POLICY_CONTRACT_VERSION, code, kind, message };
+	return {
+		version: RECIPIENT_POLICY_CONTRACT_VERSION,
+		code,
+		kind,
+		message,
+		...(scopeKinds?.length ? { scopeKinds } : {}),
+	};
 }
 
 function blockingConditions(input: {
 	ambiguousScopeMapping: boolean;
 	inactiveScopeBoundary: boolean;
-	multiProjectScope: boolean;
+	multiProjectScopeKinds: string[];
 	noncanonicalProjectIdentity: boolean;
 	wildcardMapping: boolean;
 }): LegacyRecipientPolicyConditionV1[] {
@@ -287,11 +308,12 @@ function blockingConditions(input: {
 					"This Project has no stable canonical identity, so no recipient is inferred.",
 				)
 			: null,
-		input.multiProjectScope
+		input.multiProjectScopeKinds.length > 0
 			? condition(
 					"ambiguous_multi_project_scope",
 					"diagnostic",
 					"Current enforcement contains multiple canonical Projects, so recipients remain unresolved.",
+					input.multiProjectScopeKinds,
 				)
 			: null,
 		input.wildcardMapping
@@ -537,11 +559,13 @@ export function projectLegacyRecipientPolicyProjections(
 			const inactiveScopeBoundary = scopeIds.some(
 				(scopeId) => scopeId !== LOCAL_DEFAULT_SCOPE_ID && !scopes.has(scopeId),
 			);
-			const multiProjectScope = relevantScopes.some(
+			const multiProjectScopes = relevantScopes.filter(
 				(scope) =>
 					scope.scopeId !== LOCAL_DEFAULT_SCOPE_ID &&
 					(projectsByScope.get(scope.scopeId)?.size ?? 0) > 1,
 			);
+			const multiProjectScope = multiProjectScopes.length > 0;
+			const multiProjectScopeKinds = uniqueSorted(multiProjectScopes.map((scope) => scope.kind));
 			const managedScopes = relevantScopes.filter((scope) => scope.kind === "managed_project");
 			const mappedScopeIds = uniqueSorted(exactMappings.map((mapping) => mapping.scopeId));
 			const multipleScopeBoundaries =
@@ -590,7 +614,7 @@ export function projectLegacyRecipientPolicyProjections(
 				ambiguousScopeMapping:
 					!managedExact && (exactMappings.length > 1 || multipleScopeBoundaries),
 				inactiveScopeBoundary,
-				multiProjectScope,
+				multiProjectScopeKinds,
 				noncanonicalProjectIdentity: project.identitySource === "unmapped",
 				wildcardMapping,
 			});
