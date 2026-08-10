@@ -22,7 +22,7 @@ import * as schema from "./schema.js";
 import { refreshConfiguredScopeMembershipCache } from "./scope-membership-cache.js";
 import type { SecretScanner } from "./secret-scanner.js";
 import { advertiseMdns, mdnsEnabled } from "./sync-discovery.js";
-import { ensureDeviceIdentity } from "./sync-identity.js";
+import { DeviceIdentityError, ensureDeviceIdentity } from "./sync-identity.js";
 import { runSyncPass, shouldSkipOfflinePeer, syncPassPreflight } from "./sync-pass.js";
 
 // ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ export function setSyncDaemonError(db: Database, error: string, traceback?: stri
 }
 
 /** Valid sync daemon phases for the rebootstrap safety gate. */
-export type SyncDaemonPhase = "needs_attention" | null;
+export type SyncDaemonPhase = "identity_error" | "needs_attention" | null;
 
 /**
  * Get the current sync daemon phase from sync_daemon_state.
@@ -142,7 +142,7 @@ export function getSyncDaemonPhase(db: Database): SyncDaemonPhase {
 		.where(eq(schema.syncDaemonState.id, 1))
 		.get();
 	const phase = row?.phase;
-	if (phase === "needs_attention") return phase;
+	if (phase === "identity_error" || phase === "needs_attention") return phase;
 	return null;
 }
 
@@ -168,7 +168,7 @@ export async function refreshCoordinatorPresenceForDaemon(
 	const config = readCoordinatorSyncConfig();
 	if (!coordinatorEnabled(config)) return false;
 	await registerCoordinatorPresence({ db, dbPath }, config, { keysDir });
-	await refreshConfiguredScopeMembershipCache(db, config, { keysDir });
+	await refreshConfiguredScopeMembershipCache(db, config, { keysDir, dbPath });
 	await refreshAuthorizedCoordinatorPeerTrust({ db, dbPath }, config, { keysDir });
 	return true;
 }
@@ -188,6 +188,7 @@ export async function syncDaemonTick(
 	keysDir?: string,
 	stalePeers?: Set<string>,
 	scanner?: SecretScanner,
+	dbPath?: string,
 ): Promise<SyncTickResult[]> {
 	const hasPinnedFingerprint = tableColumnExists(db, "sync_peers", "pinned_fingerprint");
 	const rows = db
@@ -230,6 +231,7 @@ export async function syncDaemonTick(
 
 		const result = await runSyncPass(db, peerDeviceId, {
 			keysDir,
+			dbPath,
 			limit: opsLimit,
 			scanner,
 		});
@@ -272,11 +274,17 @@ export async function runSyncDaemon(options?: SyncDaemonOptions): Promise<void> 
 	const db = connectDb(dbPath);
 	let mdnsHandle: { close(): void } | null = null;
 	try {
-		const [deviceId] = ensureDeviceIdentity(db, { keysDir });
+		try {
+			const [deviceId] = ensureDeviceIdentity(db, { keysDir });
 
-		// Start mDNS advertising if enabled
-		if (mdnsEnabled() && options?.port) {
-			mdnsHandle = advertiseMdns(deviceId, options.port);
+			// Start mDNS advertising if enabled
+			if (mdnsEnabled() && options?.port) {
+				mdnsHandle = advertiseMdns(deviceId, options.port);
+			}
+		} catch (error) {
+			if (!(error instanceof DeviceIdentityError)) throw error;
+			setSyncDaemonError(db, error.message, error.stack ?? "");
+			setSyncDaemonPhase(db, "identity_error");
 		}
 	} finally {
 		db.close();
@@ -352,6 +360,7 @@ export async function runTickOnce(
 	const db = connectDb(dbPath);
 	try {
 		ensureAdditiveSchemaCompatibility(db);
+		ensureDeviceIdentity(db, { keysDir: resolvedKeysDir });
 		try {
 			await refreshCoordinatorPresenceForDaemon(db, dbPath, resolvedKeysDir);
 		} catch {
@@ -370,7 +379,7 @@ export async function runTickOnce(
 		// Best-effort: skip peers the coordinator reports as offline.
 		// Returns empty set when coordinator is disabled or lookup fails.
 		const stalePeers = await fetchCoordinatorStalePeers(db, dbPath, resolvedKeysDir);
-		const results = await syncDaemonTick(db, resolvedKeysDir, stalePeers, scanner);
+		const results = await syncDaemonTick(db, resolvedKeysDir, stalePeers, scanner, dbPath);
 		const needsAttention = results.some((r) => !r.ok && r.error?.includes("needs_attention"));
 		if (needsAttention) {
 			setSyncDaemonPhase(db, "needs_attention");
@@ -382,6 +391,9 @@ export async function runTickOnce(
 		const message = err instanceof Error ? err.message : String(err);
 		const stack = err instanceof Error ? (err.stack ?? "") : "";
 		setSyncDaemonError(db, message, stack);
+		if (err instanceof DeviceIdentityError) {
+			setSyncDaemonPhase(db, "identity_error");
+		}
 	} finally {
 		db.close();
 	}

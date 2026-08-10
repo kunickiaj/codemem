@@ -64,6 +64,8 @@ export interface SignRequestOptions {
 	url: string;
 	bodyBytes: Buffer;
 	keysDir?: string;
+	deviceId?: string;
+	dbPath?: string;
 	timestamp?: string;
 	nonce?: string;
 }
@@ -86,7 +88,7 @@ export function signRequest(options: SignRequestOptions): Record<string, string>
 
 	const canonical = buildCanonicalRequest(options.method, path, ts, nonceValue, options.bodyBytes);
 
-	const keyData = loadPrivateKey(options.keysDir);
+	const keyData = loadPrivateKey(options.keysDir, options.dbPath, options.deviceId);
 	if (!keyData) {
 		throw new Error("private key missing");
 	}
@@ -222,6 +224,7 @@ export interface BuildAuthHeadersOptions {
 	bodyBytes: Buffer;
 	bootstrapGrantId?: string;
 	keysDir?: string;
+	dbPath?: string;
 	timestamp?: string;
 	nonce?: string;
 }
@@ -238,6 +241,8 @@ export function buildAuthHeaders(options: BuildAuthHeadersOptions): Record<strin
 			url: options.url,
 			bodyBytes: options.bodyBytes,
 			keysDir: options.keysDir,
+			deviceId: options.deviceId,
+			dbPath: options.dbPath,
 			timestamp: options.timestamp,
 			nonce: options.nonce,
 		}),

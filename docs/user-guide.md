@@ -369,6 +369,15 @@ When selected history may already have replicated, all participating owner devic
 - `codemem sync doctor` diagnoses sync configuration issues (keys, config, peer reachability).
 - `codemem sync bootstrap <peer-device-id>` bootstraps sync state from a peer's snapshot.
 - `codemem sync attempts` shows recent sync attempt history per peer.
+- A restored peer requires its SQLite database and original signing key together.
+  If no matching key exists in `device.key` or the configured platform keychain,
+  sync fails closed with a `device_identity_*` diagnostic instead of silently
+  replacing the enrolled key.
+- The daemon records an `identity_error` state and retries without blocking local
+  memory capture. Restore the original key, then restart the service if mDNS
+  advertisement also needs to be re-established.
+- See [Anchor-peer deployment](anchor-peer-deployment.md#storage-and-backups) for
+  the complete backup and restore contract.
 
 ### Service helpers
 
@@ -388,9 +397,16 @@ When selected history may already have replicated, all participating owner devic
 
 ### Keychain (optional)
 
-- `sync_key_store=keychain` (or `CODEMEM_SYNC_KEY_STORE=keychain`) stores the private key in Secret Service (Linux) or Keychain (macOS).
+- `CODEMEM_SYNC_KEY_STORE=keychain` stores the private key in Secret Service (Linux) or Keychain (macOS).
 - Falls back to file-based storage if the platform tooling is unavailable.
-- On macOS, the Keychain storage uses the `security` CLI and may expose the key in process arguments; use `sync_key_store=file` if that is a concern.
+- On macOS, the Keychain storage uses the `security` CLI and may expose the key in process arguments; use `CODEMEM_SYNC_KEY_STORE=file` if that is a concern.
+- Keep the protected `device.key` file as the portable restore artifact even in
+  keychain mode; codemem can repopulate the keychain from a matching restored
+  file. A matching private key that remains in the platform keychain can also
+  authenticate a local installation if `device.key` is missing, corrupt, or
+  belongs to another identity. That is not a portable migration: moving a
+  keychain-only credential requires platform-supported secure tooling. The
+  database and public-key file alone cannot authenticate the original identity.
 
 ## Troubleshooting
 - If sessions are missing, confirm the viewer and plugin share the same DB path.

@@ -38,21 +38,22 @@ import { reconcileConfiguredCoordinatorEnrollment } from "./routes/sync.js";
 function createTestStore(seedDevice = true): { store: MemoryStore; cleanup: () => void } {
 	const tmpDir = mkdtempSync(join(tmpdir(), "codemem-viewer-store-test-"));
 	const dbPath = join(tmpDir, "test.sqlite");
+	const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
+	const keysDir = previousKeysDir?.trim() || join(tmpDir, "keys");
 	const rawDb = new Database(dbPath);
 	initTestSchema(rawDb);
 	if (seedDevice) {
-		rawDb
-			.prepare(
-				"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
-			)
-			.run("test-device-001", "test-public-key", "test-fingerprint", new Date().toISOString());
+		ensureDeviceIdentity(rawDb, { keysDir, deviceId: "test-device-001" });
 	}
 	rawDb.close();
+	process.env.CODEMEM_KEYS_DIR = keysDir;
 	const store = new MemoryStore(dbPath);
 	return {
 		store,
 		cleanup: () => {
 			store.close();
+			if (previousKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
 			rmSync(tmpDir, { recursive: true, force: true });
 		},
 	};

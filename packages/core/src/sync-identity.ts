@@ -9,7 +9,6 @@ import { execFileSync } from "node:child_process";
 import { createPrivateKey, createPublicKey, generateKeyPairSync, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { connect as connectDb, resolveDbPath } from "./db.js";
@@ -164,33 +163,73 @@ export function loadPublicKey(keysDir?: string): string | null {
 	return content || null;
 }
 
-/** Read the private key from disk (with keychain fallback). Returns null if unavailable. */
-export function loadPrivateKey(keysDir?: string, dbPath?: string): Buffer | null {
+/**
+ * Read the private key from disk with keychain fallback. When dbPath identifies an
+ * enrolled device, only a key matching that stored identity is returned.
+ */
+export function loadPrivateKey(
+	keysDir?: string,
+	dbPath?: string,
+	deviceId?: string,
+): Buffer | null {
+	const [privatePath] = resolveKeyPaths(keysDir);
+	const privateKeyFile = readPrivateKeyFile(privatePath);
+	const privateKeyFromFile = isUsableEd25519PrivateKey(privateKeyFile.value)
+		? privateKeyFile.value
+		: null;
+	const storedIdentity = dbPath === undefined ? null : loadStoredDeviceIdentity(dbPath);
+	if (storedIdentity && deviceId && storedIdentity.deviceId !== deviceId) return null;
+	if (
+		privateKeyFromFile &&
+		(!storedIdentity || privateKeyMatchesStoredIdentity(privateKeyFromFile, storedIdentity))
+	) {
+		return privateKeyFromFile;
+	}
 	if (keyStoreMode() === "keychain") {
-		const deviceId = loadDeviceId(dbPath);
-		if (deviceId) {
-			const keychainValue = loadPrivateKeyKeychain(deviceId);
-			if (keychainValue) return keychainValue;
+		const keychainIdentity =
+			dbPath === undefined && !deviceId ? loadStoredDeviceIdentity() : storedIdentity;
+		const resolvedDeviceId = deviceId ?? keychainIdentity?.deviceId;
+		if (resolvedDeviceId) {
+			const keychainValue = loadPrivateKeyKeychain(resolvedDeviceId);
+			if (
+				isUsableEd25519PrivateKey(keychainValue) &&
+				(!keychainIdentity || privateKeyMatchesStoredIdentity(keychainValue, keychainIdentity))
+			) {
+				return keychainValue;
+			}
 		}
 	}
-	const [privatePath] = resolveKeyPaths(keysDir);
-	if (!existsSync(privatePath)) return null;
-	return readFileSync(privatePath);
+	return null;
 }
 
-/** Load device_id from the database (for keychain lookups). */
-function loadDeviceId(dbPath?: string): string | null {
+interface StoredDeviceIdentity {
+	deviceId: string;
+	publicKey: string;
+	fingerprint: string;
+}
+
+/** Load the enrolled identity from the database for identity-aware key selection. */
+function loadStoredDeviceIdentity(dbPath?: string): StoredDeviceIdentity | null {
 	const path = resolveDbPath(dbPath);
 	if (!existsSync(path)) return null;
 	const conn = connectDb(path);
 	try {
 		const d = drizzle(conn, { schema });
 		const row = d
-			.select({ device_id: schema.syncDevice.device_id })
+			.select({
+				device_id: schema.syncDevice.device_id,
+				public_key: schema.syncDevice.public_key,
+				fingerprint: schema.syncDevice.fingerprint,
+			})
 			.from(schema.syncDevice)
 			.limit(1)
 			.get();
-		return row?.device_id ?? null;
+		if (!row) return null;
+		return {
+			deviceId: row.device_id,
+			publicKey: row.public_key,
+			fingerprint: row.fingerprint,
+		};
 	} finally {
 		conn.close();
 	}
@@ -200,11 +239,14 @@ function loadDeviceId(dbPath?: string): string | null {
 // Key generation & validation
 // ---------------------------------------------------------------------------
 
+function canonicalEd25519PublicKey(publicKey: string): string | null {
+	const [keyType, keyData] = publicKey.trim().split(/\s+/);
+	if (keyType !== "ssh-ed25519" || !keyData) return null;
+	return `${keyType} ${keyData}`;
+}
+
 function publicKeyLooksValid(publicKey: string): boolean {
-	const value = publicKey.trim();
-	return (
-		value.startsWith("ssh-ed25519 ") || value.startsWith("ssh-rsa ") || value.startsWith("ecdsa-")
-	);
+	return canonicalEd25519PublicKey(publicKey) !== null;
 }
 
 function backupInvalidKeyFile(path: string, stamp: string): void {
@@ -261,7 +303,7 @@ export function generateKeypair(privatePath: string, publicPath: string): void {
  */
 function derToSshEd25519(spkiDer: Buffer): string | null {
 	// Ed25519 SPKI DER is 44 bytes: 12-byte header + 32-byte key
-	if (spkiDer.length < 32) return null;
+	if (spkiDer.length !== 44) return null;
 	const rawKey = spkiDer.subarray(spkiDer.length - 32);
 
 	// SSH wire format: string "ssh-ed25519" + string <32-byte key>
@@ -285,13 +327,87 @@ function derToSshEd25519(spkiDer: Buffer): string | null {
  * handles both transparently.
  */
 function loadPrivateKeyObject(privatePath: string): ReturnType<typeof createPrivateKey> {
-	const raw = readFileSync(privatePath);
+	return loadPrivateKeyObjectFromBytes(readFileSync(privatePath));
+}
+
+function loadPrivateKeyObjectFromBytes(raw: Buffer): ReturnType<typeof createPrivateKey> {
 	// Try PKCS8 PEM first (our generated format), then OpenSSH
 	try {
 		return createPrivateKey(raw);
 	} catch {
 		return createPrivateKey({ key: raw, format: "pem", type: "pkcs8" });
 	}
+}
+
+function derivePublicKey(privateKey: Buffer): string {
+	const privateKeyObject = loadPrivateKeyObjectFromBytes(privateKey);
+	if (privateKeyObject.asymmetricKeyType !== "ed25519") {
+		throw new Error("private key is not Ed25519");
+	}
+	const publicKeyObject = createPublicKey(privateKeyObject);
+	const publicKeyDer = publicKeyObject.export({ type: "spki", format: "der" });
+	const publicKey = derToSshEd25519(publicKeyDer);
+	if (!publicKey || !publicKeyLooksValid(publicKey)) {
+		throw new Error("failed to derive public key");
+	}
+	return publicKey;
+}
+
+function isUsableEd25519PrivateKey(privateKey: Buffer | null): privateKey is Buffer {
+	if (!privateKey) return false;
+	try {
+		derivePublicKey(privateKey);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+type PrivateKeyFileRead =
+	| { status: "available"; value: Buffer }
+	| { status: "missing" | "unreadable"; value: null };
+
+function readPrivateKeyFile(privatePath: string): PrivateKeyFileRead {
+	try {
+		if (!existsSync(privatePath)) return { status: "missing", value: null };
+		return { status: "available", value: readFileSync(privatePath) };
+	} catch {
+		return { status: "unreadable", value: null };
+	}
+}
+
+function privateKeyMatchesStoredIdentity(
+	privateKey: Buffer,
+	identity: StoredDeviceIdentity,
+): boolean {
+	const storedPublicKey = canonicalEd25519PublicKey(identity.publicKey);
+	if (!storedPublicKey || fingerprintPublicKey(identity.publicKey) !== identity.fingerprint) {
+		return false;
+	}
+	try {
+		return canonicalEd25519PublicKey(derivePublicKey(privateKey)) === storedPublicKey;
+	} catch {
+		return false;
+	}
+}
+
+export type DeviceIdentityErrorCode =
+	| "device_identity_private_key_missing"
+	| "device_identity_private_key_invalid"
+	| "device_identity_key_mismatch";
+
+export class DeviceIdentityError extends Error {
+	readonly code: DeviceIdentityErrorCode;
+
+	constructor(code: DeviceIdentityErrorCode, detail: string) {
+		super(`${code}: ${detail}`);
+		this.name = "DeviceIdentityError";
+		this.code = code;
+	}
+}
+
+function existingIdentityError(code: DeviceIdentityErrorCode, detail: string): DeviceIdentityError {
+	return new DeviceIdentityError(code, detail);
 }
 
 /** Validate that an existing keypair is consistent. */
@@ -306,7 +422,7 @@ export function validateExistingKeypair(privatePath: string, publicPath: string)
 		const derived = derToSshEd25519(pubDer);
 		if (!derived || !publicKeyLooksValid(derived)) return false;
 		// Auto-fix mismatched public key file
-		if (derived !== publicKey) {
+		if (canonicalEd25519PublicKey(derived) !== canonicalEd25519PublicKey(publicKey)) {
 			writeFileSync(publicPath, `${derived}\n`, "utf-8");
 		}
 		return true;
@@ -353,6 +469,84 @@ export function ensureDeviceIdentity(
 	const existingPublicKey = row?.public_key ?? "";
 	const existingFingerprint = row?.fingerprint ?? "";
 
+	if (existingDeviceId) {
+		const privateKeyFile = readPrivateKeyFile(privatePath);
+		const validPrivateKeyFromFile = isUsableEd25519PrivateKey(privateKeyFile.value)
+			? privateKeyFile.value
+			: null;
+		const storedIdentity: StoredDeviceIdentity = {
+			deviceId: existingDeviceId,
+			publicKey: existingPublicKey,
+			fingerprint: existingFingerprint,
+		};
+
+		const fileMatchesStoredIdentity =
+			validPrivateKeyFromFile !== null &&
+			privateKeyMatchesStoredIdentity(validPrivateKeyFromFile, storedIdentity);
+		const privateKeyFromKeychain =
+			!fileMatchesStoredIdentity && keyStoreMode() === "keychain"
+				? loadPrivateKeyKeychain(existingDeviceId)
+				: null;
+		const validPrivateKeyFromKeychain = isUsableEd25519PrivateKey(privateKeyFromKeychain)
+			? privateKeyFromKeychain
+			: null;
+		const keychainMatchesStoredIdentity =
+			validPrivateKeyFromKeychain !== null &&
+			privateKeyMatchesStoredIdentity(validPrivateKeyFromKeychain, storedIdentity);
+		const privateKey = fileMatchesStoredIdentity
+			? validPrivateKeyFromFile
+			: keychainMatchesStoredIdentity
+				? validPrivateKeyFromKeychain
+				: null;
+		if (!privateKey) {
+			if (validPrivateKeyFromFile || validPrivateKeyFromKeychain) {
+				throw existingIdentityError(
+					"device_identity_key_mismatch",
+					"the restored private key does not match the peer identity stored in the database",
+				);
+			}
+			throw existingIdentityError(
+				privateKeyFile.status !== "missing" || privateKeyFromKeychain
+					? "device_identity_private_key_invalid"
+					: "device_identity_private_key_missing",
+				privateKeyFile.status !== "missing" || privateKeyFromKeychain
+					? "the restored private key is unreadable or unsupported; restore the original Ed25519 key material"
+					: "the database contains an existing peer identity but its private key is unavailable; restore the original key material with the database",
+			);
+		}
+
+		let derivedPublicKey: string;
+		try {
+			derivedPublicKey = derivePublicKey(privateKey);
+		} catch {
+			throw existingIdentityError(
+				"device_identity_private_key_invalid",
+				"the restored private key is unreadable or unsupported; restore the original Ed25519 key material",
+			);
+		}
+		const storedPublicKey = canonicalEd25519PublicKey(existingPublicKey);
+		if (
+			!storedPublicKey ||
+			canonicalEd25519PublicKey(derivedPublicKey) !== storedPublicKey ||
+			fingerprintPublicKey(existingPublicKey) !== existingFingerprint
+		) {
+			throw existingIdentityError(
+				"device_identity_key_mismatch",
+				"the restored private key does not match the peer identity stored in the database",
+			);
+		}
+
+		const publicKeyOnDisk = loadPublicKey(keysDir);
+		if (publicKeyOnDisk !== existingPublicKey) {
+			mkdirSync(dirname(publicPath), { recursive: true });
+			writeFileSync(publicPath, `${existingPublicKey}\n`, { mode: 0o644 });
+		}
+		if (keyStoreMode() === "keychain" && fileMatchesStoredIdentity) {
+			storePrivateKeyKeychain(privateKey, existingDeviceId);
+		}
+		return [existingDeviceId, existingFingerprint];
+	}
+
 	// Validate or regenerate keys
 	let keysReady = existsSync(privatePath) && existsSync(publicPath);
 	if (keysReady && !validateExistingKeypair(privatePath, publicPath)) {
@@ -374,27 +568,6 @@ export function ensureDeviceIdentity(
 	}
 	const fingerprint = fingerprintPublicKey(publicKey);
 	const now = new Date().toISOString();
-
-	// Update existing device row if keys changed
-	if (existingDeviceId) {
-		if (existingPublicKey !== publicKey || existingFingerprint !== fingerprint) {
-			d.update(schema.syncDevice)
-				.set({ public_key: publicKey, fingerprint })
-				.where(eq(schema.syncDevice.device_id, existingDeviceId))
-				.run();
-		}
-		if (keyStoreMode() === "keychain") {
-			// Read key from file directly — don't go through loadPrivateKey
-			// which would resolve device ID from the default DB
-			const privateKey = existsSync(privatePath)
-				? readFileSync(privatePath)
-				: loadPrivateKeyKeychain(existingDeviceId);
-			if (privateKey) {
-				storePrivateKeyKeychain(privateKey, existingDeviceId);
-			}
-		}
-		return [existingDeviceId, fingerprint];
-	}
 
 	// Insert new device row
 	const resolvedDeviceId = options?.deviceId ?? randomUUID();

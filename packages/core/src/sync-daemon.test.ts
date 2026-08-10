@@ -1,20 +1,22 @@
-import { rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { columnExists } from "./db.js";
+import { columnExists, connect } from "./db.js";
 import {
 	createSerializedDaemonTickRunner,
 	getSyncDaemonPhase,
 	refreshCoordinatorPresenceForDaemon,
 	resolveSyncDaemonKeysDir,
+	runSyncDaemon,
 	runTickOnce,
 	setSyncDaemonError,
 	setSyncDaemonOk,
 	setSyncDaemonPhase,
 	syncDaemonTick,
 } from "./sync-daemon.js";
+import { ensureDeviceIdentity, resolveKeyPaths } from "./sync-identity.js";
 
 import { initTestSchema } from "./test-utils.js";
 
@@ -228,6 +230,96 @@ describe("resolveSyncDaemonKeysDir", () => {
 	});
 });
 
+describe("runSyncDaemon identity recovery", () => {
+	it("records identity_error and keeps retrying when restored private keys are missing", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "codemem-sync-daemon-identity-"));
+		const dbPath = join(tempDir, "mem.sqlite");
+		const keysDir = join(tempDir, "keys");
+		const db = connect(dbPath);
+		initTestSchema(db);
+		ensureDeviceIdentity(db, { keysDir });
+		const [privatePath] = resolveKeyPaths(keysDir);
+		const privateKey = readFileSync(privatePath);
+		rmSync(privatePath);
+		db.close();
+
+		const abort = new AbortController();
+		const daemon = runSyncDaemon({ dbPath, keysDir, intervalS: 0.01, signal: abort.signal });
+		try {
+			await vi.waitFor(() => {
+				const stateDb = connect(dbPath);
+				try {
+					expect(getSyncDaemonPhase(stateDb)).toBe("identity_error");
+					expect(
+						stateDb.prepare("SELECT last_error FROM sync_daemon_state WHERE id = 1").pluck().get(),
+					).toContain("device_identity_private_key_missing");
+				} finally {
+					stateDb.close();
+				}
+			});
+
+			writeFileSync(privatePath, privateKey, { mode: 0o600 });
+			await vi.waitFor(() => {
+				const stateDb = connect(dbPath);
+				try {
+					expect(getSyncDaemonPhase(stateDb)).toBeNull();
+				} finally {
+					stateDb.close();
+				}
+			});
+		} finally {
+			abort.abort();
+			await daemon;
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("records identity_error and recovers when device.key cannot be read", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "codemem-sync-daemon-unreadable-identity-"));
+		const dbPath = join(tempDir, "mem.sqlite");
+		const keysDir = join(tempDir, "keys");
+		const db = connect(dbPath);
+		initTestSchema(db);
+		ensureDeviceIdentity(db, { keysDir });
+		const [privatePath] = resolveKeyPaths(keysDir);
+		const privateKey = readFileSync(privatePath);
+		rmSync(privatePath);
+		mkdirSync(privatePath);
+		db.close();
+
+		const abort = new AbortController();
+		const daemon = runSyncDaemon({ dbPath, keysDir, intervalS: 0.01, signal: abort.signal });
+		try {
+			await vi.waitFor(() => {
+				const stateDb = connect(dbPath);
+				try {
+					expect(getSyncDaemonPhase(stateDb)).toBe("identity_error");
+					expect(
+						stateDb.prepare("SELECT last_error FROM sync_daemon_state WHERE id = 1").pluck().get(),
+					).toContain("device_identity_private_key_invalid");
+				} finally {
+					stateDb.close();
+				}
+			});
+
+			rmSync(privatePath, { recursive: true });
+			writeFileSync(privatePath, privateKey, { mode: 0o600 });
+			await vi.waitFor(() => {
+				const stateDb = connect(dbPath);
+				try {
+					expect(getSyncDaemonPhase(stateDb)).toBeNull();
+				} finally {
+					stateDb.close();
+				}
+			});
+		} finally {
+			abort.abort();
+			await daemon;
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("refreshCoordinatorPresenceForDaemon", () => {
 	let db: InstanceType<typeof Database>;
 
@@ -284,7 +376,7 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 				syncCoordinatorGroups: ["team"],
 				syncCoordinatorAdminSecret: "secret",
 			}),
-			{ keysDir: "/tmp/keys" },
+			{ keysDir: "/tmp/keys", dbPath: ":memory:" },
 		);
 		expect(refreshAuthorizedCoordinatorPeerTrust).toHaveBeenCalledWith(
 			{ db, dbPath: ":memory:" },
@@ -343,7 +435,9 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 
 	it("threads CODEMEM_KEYS_DIR through one-off ticks when keysDir is omitted", async () => {
 		const { runSyncPass } = await import("./sync-pass.js");
-		process.env.CODEMEM_KEYS_DIR = "/container/keys";
+		const tempDir = mkdtempSync(join(tmpdir(), "codemem-sync-daemon-env-keys-"));
+		const keysDir = join(tempDir, "keys");
+		process.env.CODEMEM_KEYS_DIR = keysDir;
 		const dbPath = join(tmpdir(), `codemem-sync-daemon-env-keys-${Date.now()}.sqlite`);
 		const fileDb = new Database(dbPath);
 		try {
@@ -358,16 +452,19 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 			expect(runSyncPass).toHaveBeenCalledWith(
 				expect.any(Database),
 				"peer-1",
-				expect.objectContaining({ keysDir: "/container/keys" }),
+				expect.objectContaining({ keysDir, dbPath }),
 			);
 		} finally {
 			fileDb.close();
 			rmSync(dbPath, { force: true });
+			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
 
 	it("applies additive schema compatibility before daemon tick state writes", async () => {
-		const dbPath = join(tmpdir(), `codemem-sync-daemon-legacy-${Date.now()}.sqlite`);
+		const tempDir = mkdtempSync(join(tmpdir(), "codemem-sync-daemon-legacy-"));
+		const dbPath = join(tempDir, "mem.sqlite");
+		const keysDir = join(tempDir, "keys");
 		const fileDb = new Database(dbPath);
 		try {
 			fileDb.exec(`
@@ -392,14 +489,21 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 					ops_out INTEGER NOT NULL DEFAULT 0,
 					error TEXT
 				);
+				CREATE TABLE sync_device (
+					device_id TEXT PRIMARY KEY,
+					public_key TEXT NOT NULL,
+					fingerprint TEXT NOT NULL,
+					created_at TEXT NOT NULL
+				);
 			`);
+			ensureDeviceIdentity(fileDb, { keysDir });
 			expect(columnExists(fileDb, "sync_daemon_state", "phase")).toBe(false);
 			expect(columnExists(fileDb, "sync_attempts", "local_sync_capability")).toBe(false);
 		} finally {
 			fileDb.close();
 		}
 
-		await runTickOnce(dbPath);
+		await runTickOnce(dbPath, keysDir);
 
 		const verified = new Database(dbPath);
 		try {
@@ -414,7 +518,7 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 			expect(row?.phase).toBeNull();
 		} finally {
 			verified.close();
-			rmSync(dbPath, { force: true });
+			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
 
@@ -666,6 +770,11 @@ describe("getSyncDaemonPhase / setSyncDaemonPhase", () => {
 	it("persists and retrieves needs_attention phase", () => {
 		setSyncDaemonPhase(db, "needs_attention");
 		expect(getSyncDaemonPhase(db)).toBe("needs_attention");
+	});
+
+	it("persists and retrieves identity_error phase", () => {
+		setSyncDaemonPhase(db, "identity_error");
+		expect(getSyncDaemonPhase(db)).toBe("identity_error");
 	});
 
 	it("clears phase when set to null", () => {

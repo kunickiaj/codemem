@@ -13,6 +13,7 @@ import {
 	applyBootstrapSnapshot,
 	buildAuthHeaders,
 	buildBaseUrl,
+	DeviceIdentityError,
 	ensureDeviceIdentity,
 	fetchAllSnapshotPages,
 	fingerprintPublicKey,
@@ -340,6 +341,7 @@ onceCmd.action(async (opts: { db?: string; dbPath?: string; peer?: string; json?
 		for (const row of rows) {
 			const result = await runSyncPass(store.db, row.peer_device_id, {
 				keysDir,
+				dbPath: store.dbPath,
 				scanner: store.scanner,
 			});
 			if (!result.ok) hadFailure = true;
@@ -629,6 +631,15 @@ pairCmd.action(async (opts: SyncPairOptions) => {
 		console.log(
 			"On the accepting device, --include/--exclude control both what it sends and what it accepts from that peer.",
 		);
+	} catch (error) {
+		const code = error instanceof DeviceIdentityError ? error.code : "pairing_failed";
+		const message = error instanceof Error ? error.message : "Pairing failed";
+		if (opts.json) {
+			emitJsonError(code, message);
+			return;
+		}
+		p.log.error(message);
+		process.exitCode = 1;
 	} finally {
 		store.close();
 	}
@@ -671,6 +682,7 @@ doctorCmd.action(
 				.all();
 
 			const issues: string[] = [];
+			let identityError: string | null = null;
 			const syncHost = typeof config.sync_host === "string" ? config.sync_host : "0.0.0.0";
 			const syncPort = typeof config.sync_port === "number" ? config.sync_port : 7337;
 			const viewerBinding = readViewerBinding(dbPath);
@@ -681,6 +693,16 @@ doctorCmd.action(
 
 			if (!reachable) issues.push("daemon not running");
 			if (!device) issues.push("identity missing");
+			if (device) {
+				try {
+					ensureDeviceIdentity(store.db, {
+						keysDir: process.env.CODEMEM_KEYS_DIR?.trim() || undefined,
+					});
+				} catch (error) {
+					identityError = error instanceof Error ? error.message : "device_identity_unavailable";
+					issues.push(identityError);
+				}
+			}
 			if (
 				daemonState?.last_error &&
 				(!daemonState.last_ok_at || daemonState.last_ok_at < (daemonState.last_error_at ?? ""))
@@ -736,6 +758,7 @@ doctorCmd.action(
 						mdns_source: mdnsSource,
 						daemon: reachable ? "running" : "not running",
 						identity: device?.device_id ?? null,
+						identity_error: identityError,
 						daemon_error: daemonState?.last_error ?? null,
 						peers: peerDetails,
 						issues: [...new Set(issues)],
@@ -755,6 +778,7 @@ doctorCmd.action(
 				console.log("- Identity: missing (run `codemem sync enable`)");
 			} else {
 				console.log(`- Identity: ${device.device_id}`);
+				if (identityError) console.log(`- Identity error: ${identityError}`);
 			}
 
 			if (
@@ -782,6 +806,15 @@ doctorCmd.action(
 			} else {
 				console.log("OK: sync looks healthy");
 			}
+		} catch (error) {
+			const code = error instanceof DeviceIdentityError ? error.code : "doctor_failed";
+			const message = error instanceof Error ? error.message : "Sync diagnostics failed";
+			if (opts.json) {
+				emitJsonError(code, message);
+				return;
+			}
+			p.log.error(message);
+			process.exitCode = 1;
 		} finally {
 			store.close();
 		}
@@ -1242,6 +1275,7 @@ bootstrapCmd.action(
 				const statusUrl = `${candidate}/v1/status`;
 				const headers = buildAuthHeaders({
 					deviceId,
+					dbPath: store.dbPath,
 					method: "GET",
 					url: statusUrl,
 					bodyBytes: Buffer.alloc(0),
@@ -1313,6 +1347,7 @@ bootstrapCmd.action(
 
 			const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, {
 				keysDir,
+				dbPath: store.dbPath,
 				bootstrapGrantId: opts.bootstrapGrant,
 				pageSize,
 			});
@@ -1343,6 +1378,15 @@ bootstrapCmd.action(
 				p.outro(result.ok ? "Bootstrap complete" : "Bootstrap failed");
 			}
 			if (!result.ok) process.exitCode = 1;
+		} catch (error) {
+			const code = error instanceof DeviceIdentityError ? error.code : "bootstrap_failed";
+			const message = error instanceof Error ? error.message : "Bootstrap failed";
+			if (opts.json) {
+				emitJsonError(code, message);
+				return;
+			}
+			p.log.error(message);
+			process.exitCode = 1;
 		} finally {
 			store.close();
 		}

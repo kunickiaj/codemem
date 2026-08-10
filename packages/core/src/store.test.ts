@@ -1412,6 +1412,20 @@ describe("MemoryStore", () => {
 			);
 		});
 
+		it("allows shared memory writes when only sync identity is impaired", () => {
+			setSyncDaemonPhase(store.db, "identity_error");
+			const sessionId = insertTestSession(store.db);
+
+			expect(() =>
+				store.remember(
+					sessionId,
+					"discovery",
+					"Local work continues",
+					"Identity recovery must not block local memory capture.",
+				),
+			).not.toThrow();
+		});
+
 		it("blocks updateMemoryVisibility() to shared when phase is needs_attention", () => {
 			const sessionId = insertTestSession(store.db);
 			const memId = store.remember(sessionId, "discovery", "Private", "Body", 0.5, [], {

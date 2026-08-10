@@ -56,6 +56,7 @@ interface ExistingSnapshotRow {
 
 export interface BootstrapOptions {
 	keysDir?: string;
+	dbPath?: string;
 	bootstrapGrantId?: string;
 	/** Max items per page request. Defaults to 200. */
 	pageSize?: number;
@@ -89,6 +90,7 @@ export async function fetchAllSnapshotPages(
 	const pageSize = options?.pageSize ?? 200;
 	const timeoutS = options?.timeoutS ?? 10;
 	const keysDir = options?.keysDir;
+	const dbPath = options?.dbPath;
 	const bootstrapGrantId = options?.bootstrapGrantId?.trim() || undefined;
 	const maxItems = options?.maxItems ?? 100_000;
 
@@ -122,6 +124,7 @@ export async function fetchAllSnapshotPages(
 				bodyBytes: Buffer.alloc(0),
 				bootstrapGrantId,
 				keysDir,
+				dbPath,
 			}),
 			[SYNC_CAPABILITY_HEADER]: LOCAL_SYNC_CAPABILITY,
 		};

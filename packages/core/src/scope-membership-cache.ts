@@ -82,6 +82,7 @@ export interface RefreshScopeMembershipCacheOptions {
 	/** @deprecated The refresh database is taken from refreshScopeMembershipCache(db, opts). */
 	db?: Database;
 	keysDir?: string | null;
+	dbPath?: string;
 	now?: Date;
 	fetchers?: ScopeMembershipCacheFetchers;
 }
@@ -172,6 +173,7 @@ function signedCoordinatorGet(
 	db: Database,
 	url: string,
 	keysDir?: string | null,
+	dbPath?: string,
 ): Promise<Record<string, unknown> | null> {
 	const [deviceId] = ensureDeviceIdentity(db, { keysDir: keysDir ?? undefined });
 	const bodyBytes = Buffer.alloc(0);
@@ -181,6 +183,7 @@ function signedCoordinatorGet(
 		url,
 		bodyBytes,
 		keysDir: keysDir ?? undefined,
+		dbPath,
 	});
 	return requestJson("GET", url, {
 		headers,
@@ -207,12 +210,14 @@ function authenticatedFetchers(
 	return {
 		listScopes: async (groupId) => {
 			const url = `${baseUrl}/v1/scopes?group_id=${encodeURIComponent(groupId)}`;
-			return payloadItems<CoordinatorScope>(await signedCoordinatorGet(db, url, opts.keysDir));
+			return payloadItems<CoordinatorScope>(
+				await signedCoordinatorGet(db, url, opts.keysDir, opts.dbPath),
+			);
 		},
 		listMemberships: async (groupId, scopeId) => {
 			const url = `${baseUrl}/v1/scopes/${encodeURIComponent(scopeId)}/members?group_id=${encodeURIComponent(groupId)}`;
 			return payloadItems<CoordinatorScopeMembership>(
-				await signedCoordinatorGet(db, url, opts.keysDir),
+				await signedCoordinatorGet(db, url, opts.keysDir, opts.dbPath),
 			);
 		},
 	};
@@ -654,7 +659,7 @@ export async function refreshScopeMembershipCache(
 export async function refreshConfiguredScopeMembershipCache(
 	db: Database,
 	config?: CoordinatorSyncConfig,
-	options?: { keysDir?: string | null },
+	options?: { keysDir?: string | null; dbPath?: string },
 ): Promise<RefreshScopeMembershipCacheResult> {
 	const syncConfig = config ?? readCoordinatorSyncConfig();
 	if (!coordinatorEnabled(syncConfig)) {
@@ -666,6 +671,7 @@ export async function refreshConfiguredScopeMembershipCache(
 		remoteUrl: syncConfig.syncCoordinatorUrl,
 		adminSecret: syncConfig.syncCoordinatorAdminSecret,
 		keysDir: options?.keysDir ?? null,
+		dbPath: options?.dbPath,
 	});
 }
 

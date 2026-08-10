@@ -73,17 +73,41 @@ domains, and bootstrapped from existing peers.
 
 ## Storage and backups
 
-Anchor peers are local-first peers, so their SQLite database matters. For VPS or
-k8s deployments:
+Anchor peers are local-first peers, so restoring their identity requires one
+coherent backup set:
 
-- Use a persistent disk or PVC for the codemem runtime directory.
-- Back up the SQLite database and device key material together.
-- Treat the device key as sensitive: a peer with the key can authenticate as that
-  anchor peer.
-- Prefer filesystem or volume snapshots taken while the process is stopped, or
-  use SQLite-safe backup tooling.
-- Test restore by starting a replacement peer from the backup and verifying it
-  still has the expected device identity and Sharing-domain membership.
+- the effective SQLite database selected by `--db-path` or `CODEMEM_DB`
+- `<keys-dir>/device.key`, the secret Ed25519 private key
+- `<keys-dir>/device.key.pub`, the corresponding public key
+- the effective config selected by `--config`, `CODEMEM_CONFIG`, or the configured
+  runtime root, or equivalent environment settings that select the same database,
+  key directory, coordinator, and listener configuration
+
+Protect the database and config as sensitive data and the private key as a
+credential. Never publish the private key, coordinator secrets, invite tokens, or
+an unredacted config snapshot as diagnostic artifacts.
+
+Use durable storage for the complete set. Prefer a filesystem or volume snapshot
+taken while codemem is stopped, or use SQLite-safe backup tooling. Copying only
+the main database file while it is active in WAL mode can omit committed state.
+`CODEMEM_RUNTIME_ROOT` selects workspace config; it does not automatically move
+the database or key directory, so set `CODEMEM_DB`, `CODEMEM_CONFIG`, and
+`CODEMEM_KEYS_DIR` explicitly when restoring to new paths.
+
+Before starting a restored peer, stop or isolate the old instance. Running two
+instances with the same private key clones one device identity. Then verify that
+the replacement reports the original device ID and fingerprint, refreshes
+coordinator presence, authenticates a signed peer request, and completes a direct
+sync. If the database is present but the private key is missing, invalid, or from
+another identity, codemem fails closed instead of silently rotating the key,
+unless the matching private key remains in the configured platform keychain.
+
+The protected `device.key` file is the portable restore artifact even when
+`CODEMEM_SYNC_KEY_STORE=keychain` is enabled; codemem can repopulate the keychain
+from a matching restored file. If an operator deliberately removes that file and
+keeps the credential only in the platform keychain, it can authenticate only on
+that local platform; migrate the credential with platform-supported secure tooling
+before moving the peer. The database and public-key file alone are never sufficient.
 
 If you use ephemeral storage, the peer can still be useful as a cache/backstop
 while it is running, but it must re-bootstrap after restart.

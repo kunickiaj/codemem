@@ -278,7 +278,14 @@ export async function registerCoordinatorPresence(
 		const groupPayload = { ...payload, group_id: groupId };
 		const bodyBytes = Buffer.from(JSON.stringify(groupPayload), "utf8");
 		const url = `${baseUrl}/v1/presence`;
-		const headers = buildAuthHeaders({ deviceId, method: "POST", url, bodyBytes, keysDir });
+		const headers = buildAuthHeaders({
+			deviceId,
+			dbPath: store.dbPath,
+			method: "POST",
+			url,
+			bodyBytes,
+			keysDir,
+		});
 		const [status, response] = await requestJson("POST", url, {
 			headers,
 			body: groupPayload,
@@ -308,6 +315,7 @@ export async function lookupCoordinatorPeers(
 		const url = `${baseUrl}/v1/peers?group_id=${encodeURIComponent(groupId)}`;
 		const headers = buildAuthHeaders({
 			deviceId,
+			dbPath: store.dbPath,
 			method: "GET",
 			url,
 			bodyBytes: Buffer.alloc(0),
@@ -748,6 +756,7 @@ export async function listCoordinatorReciprocalApprovals(
 		const url = `${baseUrl}/v1/reciprocal-approvals?${params.toString()}`;
 		const headers = buildAuthHeaders({
 			deviceId,
+			dbPath: store.dbPath,
 			method: "GET",
 			url,
 			bodyBytes: Buffer.alloc(0),
@@ -790,7 +799,14 @@ export async function createCoordinatorReciprocalApproval(
 	const url = `${baseUrl}/v1/reciprocal-approvals`;
 	const payload = { group_id: groupId, requested_device_id: requestedDeviceId };
 	const bodyBytes = Buffer.from(JSON.stringify(payload), "utf8");
-	const headers = buildAuthHeaders({ deviceId, method: "POST", url, bodyBytes, keysDir });
+	const headers = buildAuthHeaders({
+		deviceId,
+		dbPath: store.dbPath,
+		method: "POST",
+		url,
+		bodyBytes,
+		keysDir,
+	});
 	const [status, response] = await requestJson("POST", url, {
 		headers,
 		body: payload,

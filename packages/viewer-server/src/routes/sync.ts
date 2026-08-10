@@ -929,6 +929,7 @@ async function peerSupportsSyncRequirements(
 			const headers = {
 				...buildAuthHeaders({
 					deviceId: localDeviceId,
+					dbPath: store.dbPath,
 					method: "GET",
 					url,
 					bodyBytes: Buffer.alloc(0),
@@ -1407,6 +1408,7 @@ async function executeProjectShareProvisioning(store: MemoryStore, operationId: 
 				if (expectedGroupId !== groupId) throw new Error("operation_scope_mismatch");
 				const refreshed = await refreshConfiguredScopeMembershipCache(store.db, config, {
 					keysDir: syncKeysDir(),
+					dbPath: store.dbPath,
 				});
 				const group = refreshed.groups.find((item) => item.groupId === groupId);
 				if (group?.status !== "refreshed") throw new Error("authorization_refresh_failed");
@@ -1414,6 +1416,7 @@ async function executeProjectShareProvisioning(store: MemoryStore, operationId: 
 			runInitialSync: (recipientDeviceId) =>
 				runSyncPass(store.db, recipientDeviceId, {
 					keysDir: syncKeysDir(),
+					dbPath: store.dbPath,
 					scanner: store.scanner,
 					refreshAuthorization: true,
 				}),
@@ -2272,6 +2275,7 @@ export function createRecipientPolicyReconcilerEffects(
 			const boundary = target(scopeId);
 			const refreshed = await refreshConfiguredScopeMembershipCache(store.db, config, {
 				keysDir: syncKeysDir(),
+				dbPath: store.dbPath,
 			});
 			const group = refreshed.groups.find((item) => item.groupId === boundary.groupId);
 			if (group?.status !== "refreshed") throw new Error("recipient_policy_effect_failed");
@@ -2744,6 +2748,7 @@ async function authorizeBootstrapGrantRequest(
 				const [status, signedPayload] = await requestJson("GET", lookupUrl, {
 					headers: buildAuthHeaders({
 						deviceId: localDeviceId,
+						dbPath: store.dbPath,
 						method: "GET",
 						url: lookupUrl,
 						bodyBytes: Buffer.alloc(0),
@@ -4279,6 +4284,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 					// the same initial sync pass instead of waiting for the daemon interval.
 					await refreshConfiguredScopeMembershipCache(store.db, undefined, {
 						keysDir: syncKeysDir(),
+						dbPath: store.dbPath,
 					});
 				}
 				const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, {
@@ -5245,6 +5251,7 @@ export function syncRoutes(
 			// was set, so manual sync runs failed peer auth while daemon syncs worked.
 			const result = await runSyncPass(store.db, peerId, {
 				keysDir: syncKeysDir(),
+				dbPath: store.dbPath,
 				scanner: store.scanner,
 			});
 			items.push({

@@ -73,9 +73,16 @@ The workspace runtime must provide:
 
 For stable peers, the runtime must also provide durable persistence for:
 
-- keys
-- DB
-- config
+- the effective SQLite database selected by `db_path` / `CODEMEM_DB`
+- `<keys_path>/device.key` and `<keys_path>/device.key.pub`
+- the effective config selected by `config_path` / `CODEMEM_CONFIG`, or equivalent
+  environment settings that restore the coordinator and listener configuration
+
+These artifacts form one identity boundary and must be backed up and restored
+together. A database-only restore is invalid because the database stores the
+device ID and public identity while signed requests require the external private
+key. `CODEMEM_RUNTIME_ROOT` selects workspace config but does not implicitly
+relocate the database or keys.
 
 For ephemeral peers, persistence may be disposable as long as it survives long enough for the swarm run.
 
@@ -111,6 +118,12 @@ The adapter ensures the node has the correct identity behavior:
 
 - stable peers reuse durable keys
 - ephemeral peers create disposable keys
+
+For a stable peer with an existing database identity, initialization must fail
+closed when the original private key is missing, unreadable, or does not match
+the database public key and fingerprint. It must never rotate that identity
+implicitly. A matching private key may be used to recreate a missing public-key
+file because the public key is derivable and not a credential.
 
 Expected outcome:
 - a valid device identity exists before join/bootstrap begins
@@ -186,6 +199,9 @@ The seed peer must accept or pin the worker identity before serving bootstrap da
 Expected outcome:
 - the seed peer has a trusted `sync_peers` entry for the worker
 - the worker can authenticate when requesting bootstrap or sync data
+- restoring the same stable identity onto a replacement requires the old runtime
+  to be stopped or isolated first; two live copies of one private key are one
+  cloned device identity
 
 ### Phase 2: finish-bootstrap
 
@@ -246,6 +262,11 @@ Recommended minimum artifacts:
 
 Sensitive material such as private keys, coordinator admin secrets, invite tokens, and bootstrap tokens must never be copied into shared artifacts. Config snapshots should redact sensitive fields before publication.
 
+Backup storage is not a shared diagnostic artifact. It must preserve the private
+key with credential-grade access controls, while published identity summaries may
+include only the device ID, fingerprint, public key, selected path names, and
+secret-free health results.
+
 ## Cleanup contract
 
 ### Stable nodes
@@ -264,6 +285,8 @@ Sensitive material such as private keys, coordinator admin secrets, invite token
 - codemem install not available
 - configuration path not writable
 - keys path not writable
+- existing database identity has missing private key material
+- restored private key is invalid or does not match the database identity
 - coordinator join failure
 - bootstrap unreachable or refused
 - sync verification failure

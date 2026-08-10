@@ -1004,8 +1004,9 @@ export {
 } from "./sync-discovery.js";
 export type { RequestJsonOptions } from "./sync-http-client.js";
 export { buildBaseUrl, requestJson } from "./sync-http-client.js";
-export type { EnsureDeviceIdentityOptions } from "./sync-identity.js";
+export type { DeviceIdentityErrorCode, EnsureDeviceIdentityOptions } from "./sync-identity.js";
 export {
+	DeviceIdentityError,
 	ensureDeviceIdentity,
 	fingerprintPublicKey,
 	generateKeypair,

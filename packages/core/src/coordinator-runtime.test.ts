@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -319,6 +319,8 @@ describe("coordinatorStatusSnapshot", () => {
 			});
 			await coordinatorStatusSnapshot(store, changedAdvertiseConfig);
 			const changedAdvertisePresenceFetchCount = presenceFetchCount;
+			cpSync(join(keysDir, "device.key"), join(alternateKeysDir, "device.key"));
+			cpSync(join(keysDir, "device.key.pub"), join(alternateKeysDir, "device.key.pub"));
 			process.env.CODEMEM_KEYS_DIR = alternateKeysDir;
 			await coordinatorStatusSnapshot(store, changedAdvertiseConfig);
 
