@@ -829,13 +829,15 @@ export async function coordinatorListDevicesAction(opts: {
 				throw new Error("coordinator_device_list_malformed");
 			}
 			const record = row as Record<string, unknown>;
+			const identityId = record.identity_id ?? null;
+			const displayName = record.display_name ?? null;
 			if (
 				record.group_id !== groupId ||
 				!isCanonicalCoordinatorIdentifier(record.device_id) ||
 				typeof record.public_key !== "string" ||
 				typeof record.fingerprint !== "string" ||
-				(record.identity_id !== null && !isCanonicalCoordinatorIdentifier(record.identity_id)) ||
-				(record.display_name !== null && typeof record.display_name !== "string") ||
+				(identityId !== null && !isCanonicalCoordinatorIdentifier(identityId)) ||
+				(displayName !== null && typeof displayName !== "string") ||
 				typeof record.enabled !== "number" ||
 				typeof record.created_at !== "string"
 			) {
@@ -846,8 +848,8 @@ export async function coordinatorListDevicesAction(opts: {
 				device_id: record.device_id,
 				public_key: record.public_key,
 				fingerprint: record.fingerprint,
-				identity_id: record.identity_id,
-				display_name: record.display_name,
+				identity_id: identityId,
+				display_name: displayName,
 				enabled: record.enabled,
 				created_at: record.created_at,
 			};

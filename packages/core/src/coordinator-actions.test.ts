@@ -350,6 +350,125 @@ describe("coordinator local admin actions", () => {
 		).rejects.toThrow("coordinator_device_list_malformed");
 	});
 
+	it("normalizes omitted nullable fields from legacy remote device lists", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							items: [
+								{
+									group_id: "team-a",
+									device_id: "device-with-name",
+									public_key: "pk-with-name",
+									fingerprint: "fp-with-name",
+									display_name: "Legacy device",
+									enabled: 1,
+									created_at: "2026-07-26T00:00:00.000Z",
+								},
+								{
+									group_id: "team-a",
+									device_id: "device-without-name",
+									public_key: "pk-without-name",
+									fingerprint: "fp-without-name",
+									enabled: 1,
+									created_at: "2026-07-26T00:00:00.000Z",
+								},
+								{
+									group_id: "team-a",
+									device_id: "device-with-identity",
+									public_key: "pk-with-identity",
+									fingerprint: "fp-with-identity",
+									identity_id: "identity-1",
+									display_name: "Identified device",
+									enabled: 1,
+									created_at: "2026-07-26T00:00:00.000Z",
+								},
+							],
+						}),
+						{ status: 200, headers: { "content-type": "application/json" } },
+					),
+			),
+		);
+
+		await expect(
+			coordinatorListDevicesAction({
+				groupId: "team-a",
+				remoteUrl: "https://coord.example.test",
+				adminSecret: "secret",
+			}),
+		).resolves.toEqual([
+			{
+				group_id: "team-a",
+				device_id: "device-with-name",
+				public_key: "pk-with-name",
+				fingerprint: "fp-with-name",
+				identity_id: null,
+				display_name: "Legacy device",
+				enabled: 1,
+				created_at: "2026-07-26T00:00:00.000Z",
+			},
+			{
+				group_id: "team-a",
+				device_id: "device-without-name",
+				public_key: "pk-without-name",
+				fingerprint: "fp-without-name",
+				identity_id: null,
+				display_name: null,
+				enabled: 1,
+				created_at: "2026-07-26T00:00:00.000Z",
+			},
+			{
+				group_id: "team-a",
+				device_id: "device-with-identity",
+				public_key: "pk-with-identity",
+				fingerprint: "fp-with-identity",
+				identity_id: "identity-1",
+				display_name: "Identified device",
+				enabled: 1,
+				created_at: "2026-07-26T00:00:00.000Z",
+			},
+		]);
+	});
+
+	it.each([
+		{ identity_id: "" },
+		{ identity_id: 0 },
+		{ display_name: 0 },
+		{ display_name: false },
+	])("rejects malformed non-null nullable remote device fields: %j", async (override) => {
+		const device = {
+			group_id: "team-a",
+			device_id: "device-1",
+			public_key: "pk-1",
+			fingerprint: "fp-1",
+			identity_id: null,
+			display_name: null,
+			enabled: 1,
+			created_at: "2026-07-26T00:00:00.000Z",
+			...override,
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(JSON.stringify({ items: [device] }), {
+						status: 200,
+						headers: { "content-type": "application/json" },
+					}),
+			),
+		);
+
+		await expect(
+			coordinatorListDevicesAction({
+				groupId: "team-a",
+				remoteUrl: "https://coord.example.test",
+				adminSecret: "secret",
+			}),
+		).rejects.toThrow("coordinator_device_list_malformed");
+	});
+
 	it("lists only consumed Team invites without tokens", async () => {
 		await coordinatorCreateGroupAction({ groupId: "team-a", dbPath });
 		const reviewedIntent = teamReviewedIntent();
