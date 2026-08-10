@@ -71,12 +71,94 @@ describe("reconcileConfiguredCoordinatorEnrollment", () => {
 			skipped: false,
 			groupsProcessed: 2,
 			failedGroups: 0,
+			failures: [],
 			devicesAdded: 2,
 			membershipsAdded: 4,
 			identitiesAdded: 2,
 			unchanged: 6,
 			issues: 0,
 		});
+	});
+
+	it("reports sanitized failures for each coordinator fetch stage", async () => {
+		const result = await reconcileConfiguredCoordinatorEnrollment(
+			{ db: {}, deviceId: "device-local" } as MemoryStore,
+			{
+				config: {
+					syncCoordinatorUrl: "https://coord.example.test",
+					syncCoordinatorAdminSecret: "secret",
+					syncCoordinatorGroups: ["group-a"],
+				} as never,
+				listDevices: async () => {
+					throw new Error("Remote coordinator request failed (404): token=do-not-log");
+				},
+				listConsumedTeamInvites: async () => {
+					throw new Error("coordinator_consumed_team_invite_invalid");
+				},
+			},
+		);
+
+		expect(result).toMatchObject({ groupsProcessed: 0, failedGroups: 1 });
+		expect(result.failures).toEqual([
+			{ groupId: "group-a", stage: "list_devices", code: "http_404" },
+			{
+				groupId: "group-a",
+				stage: "list_consumed_team_invites",
+				code: "coordinator_consumed_team_invite_invalid",
+			},
+		]);
+		expect(JSON.stringify(result.failures)).not.toContain("do-not-log");
+	});
+
+	it("reports a sanitized local snapshot reconciliation failure", async () => {
+		const result = await reconcileConfiguredCoordinatorEnrollment(
+			{ db: {}, deviceId: "device-local" } as MemoryStore,
+			{
+				config: {
+					syncCoordinatorUrl: "https://coord.example.test",
+					syncCoordinatorAdminSecret: "secret",
+					syncCoordinatorGroups: ["group-a"],
+				} as never,
+				listDevices: async () => [],
+				listConsumedTeamInvites: async () => [],
+				reconcileSnapshot: () => {
+					throw new Error("database is locked at /private/path");
+				},
+			},
+		);
+
+		expect(result.failures).toEqual([
+			{ groupId: "group-a", stage: "reconcile_snapshot", code: "unexpected_error" },
+		]);
+	});
+
+	it("hashes unsafe group ids and never echoes arbitrary rejection text", async () => {
+		const unsafeGroupId = "group a/../private";
+		const result = await reconcileConfiguredCoordinatorEnrollment(
+			{ db: {}, deviceId: "device-local" } as MemoryStore,
+			{
+				config: {
+					syncCoordinatorUrl: "https://coord.example.test",
+					syncCoordinatorAdminSecret: "secret",
+					syncCoordinatorGroups: [unsafeGroupId],
+				} as never,
+				listDevices: async () => {
+					throw "https://private.example.test/path?token=secret";
+				},
+				listConsumedTeamInvites: async () => [],
+			},
+		);
+
+		expect(result.failures).toEqual([
+			{
+				groupId: expect.stringMatching(/^group_[0-9a-f]{12}$/u),
+				stage: "list_devices",
+				code: "unexpected_error",
+			},
+		]);
+		const serialized = JSON.stringify(result.failures);
+		expect(serialized).not.toContain(unsafeGroupId);
+		expect(serialized).not.toContain("private.example.test");
 	});
 
 	it("preserves issues on fetch failure and resolves them after a successful empty snapshot", async () => {

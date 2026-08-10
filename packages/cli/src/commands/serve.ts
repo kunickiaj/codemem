@@ -15,6 +15,7 @@ import {
 	resolveDbPath,
 	runSyncDaemon,
 } from "@codemem/core";
+import type { ReconcileConfiguredCoordinatorEnrollmentResult } from "@codemem/server";
 import { Command, Option } from "commander";
 import { helpStyle } from "../help-style.js";
 import {
@@ -517,7 +518,12 @@ export function sqliteVecFailureDiagnostics(error: unknown, dbPath: string): str
 
 export interface ServeCoordinatorMaintenanceResult {
 	projectShares: { processed: number; failed: number };
-	coordinatorEnrollment: { groupsProcessed: number; failedGroups: number; issues?: number };
+	coordinatorEnrollment: {
+		groupsProcessed: number;
+		failedGroups: number;
+		issues?: number;
+		failures?: ReconcileConfiguredCoordinatorEnrollmentResult["failures"];
+	};
 	recipientPolicies: { processed: number; failed: number };
 }
 
@@ -532,9 +538,12 @@ export async function runServeCoordinatorMaintenance(
 			store: MemoryStore,
 			options: { limit: number },
 		) => Promise<{ processed: number; failed: number }>;
-		reconcileConfiguredCoordinatorEnrollment: (
-			store: MemoryStore,
-		) => Promise<{ groupsProcessed: number; failedGroups: number; issues?: number }>;
+		reconcileConfiguredCoordinatorEnrollment: (store: MemoryStore) => Promise<{
+			groupsProcessed: number;
+			failedGroups: number;
+			issues?: number;
+			failures?: ReconcileConfiguredCoordinatorEnrollmentResult["failures"];
+		}>;
 	},
 ): Promise<ServeCoordinatorMaintenanceResult> {
 	const projectShares = await dependencies.advancePendingProjectShares(store, { limit: 3 });
@@ -548,11 +557,24 @@ export async function runServeCoordinatorMaintenance(
 			`share operation maintenance failed for ${projectShares.failed} of ${projectShares.processed} operations`,
 		);
 	}
-	if (coordinatorEnrollment.failedGroups > 0 || enrollmentIssues > 0) {
+	if (coordinatorEnrollment.failedGroups > 0) {
 		const groupLabel = coordinatorEnrollment.failedGroups === 1 ? "group" : "groups";
 		const issueLabel = enrollmentIssues === 1 ? "issue" : "issues";
+		const failures = coordinatorEnrollment.failures ?? [];
+		const failureDetail = failures.length
+			? ` [${failures
+					.slice(0, 3)
+					.map((failure) => `${failure.groupId}:${failure.stage}:${failure.code}`)
+					.join(", ")}${failures.length > 3 ? `, +${failures.length - 3} more` : ""}]`
+			: "";
 		throw new Error(
-			`coordinator enrollment maintenance failed for ${coordinatorEnrollment.failedGroups} ${groupLabel} with ${enrollmentIssues} reconciliation ${issueLabel}`,
+			`coordinator enrollment maintenance failed for ${coordinatorEnrollment.failedGroups} ${groupLabel} with ${enrollmentIssues} reconciliation ${issueLabel}${failureDetail}`,
+		);
+	}
+	if (enrollmentIssues > 0) {
+		const issueLabel = enrollmentIssues === 1 ? "issue" : "issues";
+		throw new Error(
+			`coordinator enrollment reconciliation found ${enrollmentIssues} ${issueLabel}`,
 		);
 	}
 	if (recipientPolicies.failed > 0) {

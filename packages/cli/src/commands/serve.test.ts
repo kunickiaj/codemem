@@ -238,13 +238,55 @@ describe("serve command option resolution", () => {
 					groupsProcessed: 1,
 					failedGroups: 1,
 					issues: 2,
+					failures: [
+						{
+							groupId: "group-a",
+							stage: "list_consumed_team_invites" as const,
+							code: "http_404",
+						},
+					],
 				})),
 				reconcileRecipientPolicyProjects,
 			}),
 		).rejects.toThrow(
-			"coordinator enrollment maintenance failed for 1 group with 2 reconciliation issues",
+			"coordinator enrollment maintenance failed for 1 group with 2 reconciliation issues [group-a:list_consumed_team_invites:http_404]",
 		);
 		expect(reconcileRecipientPolicyProjects).toHaveBeenCalledOnce();
+	});
+
+	it("bounds enrollment failure details", async () => {
+		await expect(
+			runServeCoordinatorMaintenance({} as MemoryStore, {
+				advancePendingProjectShares: vi.fn(async () => ({ processed: 0, failed: 0 })),
+				reconcileConfiguredCoordinatorEnrollment: vi.fn(async () => ({
+					groupsProcessed: 0,
+					failedGroups: 4,
+					issues: 0,
+					failures: ["a", "b", "c", "d"].map((groupId) => ({
+						groupId,
+						stage: "list_devices" as const,
+						code: "coordinator_device_list_malformed",
+					})),
+				})),
+				reconcileRecipientPolicyProjects: vi.fn(async () => ({ processed: 0, failed: 0 })),
+			}),
+		).rejects.toThrow(
+			"[a:list_devices:coordinator_device_list_malformed, b:list_devices:coordinator_device_list_malformed, c:list_devices:coordinator_device_list_malformed, +1 more]",
+		);
+	});
+
+	it("reports reconciliation issues without claiming a group failure", async () => {
+		await expect(
+			runServeCoordinatorMaintenance({} as MemoryStore, {
+				advancePendingProjectShares: vi.fn(async () => ({ processed: 0, failed: 0 })),
+				reconcileConfiguredCoordinatorEnrollment: vi.fn(async () => ({
+					groupsProcessed: 1,
+					failedGroups: 0,
+					issues: 1,
+				})),
+				reconcileRecipientPolicyProjects: vi.fn(async () => ({ processed: 0, failed: 0 })),
+			}),
+		).rejects.toThrow("coordinator enrollment reconciliation found 1 issue");
 	});
 
 	it("detects sqlite-vec load errors for viewer startup fallback", () => {

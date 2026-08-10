@@ -1764,11 +1764,56 @@ export interface ReconcileConfiguredCoordinatorEnrollmentResult {
 	skipped: boolean;
 	groupsProcessed: number;
 	failedGroups: number;
+	failures: CoordinatorEnrollmentMaintenanceFailure[];
 	devicesAdded: number;
 	membershipsAdded: number;
 	identitiesAdded: number;
 	unchanged: number;
 	issues: number;
+}
+
+export type CoordinatorEnrollmentMaintenanceStage =
+	| "list_devices"
+	| "list_consumed_team_invites"
+	| "reconcile_snapshot";
+
+export interface CoordinatorEnrollmentMaintenanceFailure {
+	groupId: string;
+	stage: CoordinatorEnrollmentMaintenanceStage;
+	code: string;
+}
+
+function coordinatorEnrollmentFailureCode(error: unknown): string {
+	const message = (error instanceof Error ? error.message : String(error)).trim();
+	const httpStatus = message.match(/\((\d{3})(?::|\))/u)?.[1];
+	if (httpStatus) return `http_${httpStatus}`;
+	if (
+		new Set([
+			"coordinator_consumed_team_invite_invalid",
+			"coordinator_device_list_malformed",
+			"coordinator_group_id_invalid",
+			"coordinator_id_invalid",
+			"coordinator_invite_group_mismatch",
+			"coordinator_invite_list_malformed",
+			"reconciliation_time_invalid",
+		]).has(message)
+	) {
+		return message;
+	}
+	if (/timeout|timed out|abort/iu.test(message)) return "request_timeout";
+	if (/fetch failed|network|econn|enotfound/iu.test(message)) return "network_error";
+	return "unexpected_error";
+}
+
+function coordinatorEnrollmentFailure(
+	groupId: string,
+	stage: CoordinatorEnrollmentMaintenanceStage,
+	error: unknown,
+): CoordinatorEnrollmentMaintenanceFailure {
+	const safeGroupId = /^[A-Za-z0-9._-]{1,64}$/u.test(groupId)
+		? groupId
+		: `group_${createHash("sha256").update(groupId).digest("hex").slice(0, 12)}`;
+	return { groupId: safeGroupId, stage, code: coordinatorEnrollmentFailureCode(error) };
 }
 
 export async function reconcileConfiguredCoordinatorEnrollment(
@@ -1798,6 +1843,7 @@ export async function reconcileConfiguredCoordinatorEnrollment(
 			skipped: true,
 			groupsProcessed: 0,
 			failedGroups: 0,
+			failures: [],
 			devicesAdded: 0,
 			membershipsAdded: 0,
 			identitiesAdded: 0,
@@ -1815,6 +1861,7 @@ export async function reconcileConfiguredCoordinatorEnrollment(
 		skipped: false,
 		groupsProcessed: 0,
 		failedGroups: 0,
+		failures: [],
 		devicesAdded: 0,
 		membershipsAdded: 0,
 		identitiesAdded: 0,
@@ -1822,16 +1869,37 @@ export async function reconcileConfiguredCoordinatorEnrollment(
 		issues: 0,
 	};
 	for (const groupId of config.syncCoordinatorGroups) {
+		const [enrollmentsResult, consumedTeamInvitesResult] = await Promise.allSettled([
+			listDevices({ groupId, remoteUrl, adminSecret }),
+			listConsumedTeamInvites({ groupId, remoteUrl, adminSecret }),
+		]);
+		if (enrollmentsResult.status === "rejected") {
+			total.failures.push(
+				coordinatorEnrollmentFailure(groupId, "list_devices", enrollmentsResult.reason),
+			);
+		}
+		if (consumedTeamInvitesResult.status === "rejected") {
+			total.failures.push(
+				coordinatorEnrollmentFailure(
+					groupId,
+					"list_consumed_team_invites",
+					consumedTeamInvitesResult.reason,
+				),
+			);
+		}
+		if (
+			enrollmentsResult.status === "rejected" ||
+			consumedTeamInvitesResult.status === "rejected"
+		) {
+			total.failedGroups += 1;
+			continue;
+		}
 		try {
-			const [enrollments, consumedTeamInvites] = await Promise.all([
-				listDevices({ groupId, remoteUrl, adminSecret }),
-				listConsumedTeamInvites({ groupId, remoteUrl, adminSecret }),
-			]);
 			const result = reconcileSnapshot({
 				coordinatorId: buildBaseUrl(remoteUrl),
 				groupId,
-				enrollments,
-				consumedTeamInvites,
+				enrollments: enrollmentsResult.value,
+				consumedTeamInvites: consumedTeamInvitesResult.value,
 				localDeviceId: store.deviceId,
 			});
 			total.groupsProcessed += 1;
@@ -1840,8 +1908,9 @@ export async function reconcileConfiguredCoordinatorEnrollment(
 			total.identitiesAdded += result.identitiesAdded;
 			total.unchanged += result.unchanged;
 			total.issues += result.issues.length;
-		} catch {
+		} catch (error) {
 			total.failedGroups += 1;
+			total.failures.push(coordinatorEnrollmentFailure(groupId, "reconcile_snapshot", error));
 		}
 	}
 	return total;
