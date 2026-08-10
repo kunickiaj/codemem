@@ -6,8 +6,8 @@
  */
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { brotliCompressSync } from "node:zlib";
 import * as core from "@codemem/core";
 import {
@@ -200,6 +200,21 @@ function createTestApp(opts?: {
 			storeCleanup = null;
 		},
 	};
+}
+
+function promptPackAttemptId(sequence: number): string {
+	return `018f2db4-f9d3-7a22-8d18-${sequence.toString(16).padStart(12, "0")}`;
+}
+
+function postViewerJson(app: ReturnType<typeof createApp>, path: string, body: unknown) {
+	return app.request(path, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			Origin: "http://127.0.0.1:38888",
+		},
+		body: JSON.stringify(body),
+	});
 }
 
 function createAuthenticatedSyncPeer(
@@ -2020,6 +2035,486 @@ describe("viewer-server", () => {
 				expect(body).toEqual(expected);
 				expect(asyncSpy).toHaveBeenCalledTimes(1);
 				expect(syncSpy).not.toHaveBeenCalled();
+			} finally {
+				cleanup();
+			}
+		});
+	});
+
+	describe("POST /api/pack", () => {
+		it("rejects requests from a different viewer identity target", async () => {
+			vi.stubEnv("CODEMEM_DEVICE_ID", "viewer-device");
+			vi.stubEnv("CODEMEM_ACTOR_ID", "viewer-actor");
+			vi.stubEnv("CODEMEM_CONFIG", "/tmp/viewer-config.json");
+			vi.stubEnv("CODEMEM_RUNTIME_ROOT", "/tmp/viewer-runtime");
+			vi.stubEnv("CODEMEM_WORKSPACE_ID", "viewer-workspace");
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const viewerIdentityTarget = {
+					device_id: "viewer-device",
+					actor_id_present: true,
+					actor_id: "viewer-actor",
+					config_path: "/tmp/viewer-config.json",
+					runtime_root: "/tmp/viewer-runtime",
+					workspace_id: "viewer-workspace",
+					home_dir: resolve(process.env.HOME || homedir()),
+					pack_compression: null,
+					embedding_disabled: false,
+					embedding_model: "Xenova/bge-small-en-v1.5",
+				};
+				const profile = await app.request("/api/prompt-pack-profile");
+				expect(profile.status).toBe(200);
+				expect(await profile.json()).toMatchObject({
+					service: "codemem-viewer",
+					protocol_version: 1,
+					db_path: resolve(ensureStore().dbPath),
+					identity_target: viewerIdentityTarget,
+				});
+				const res = await postViewerJson(app, "/api/pack", {
+					context: "viewer identity",
+					db_path: ensureStore().dbPath,
+					identity_target: {
+						...viewerIdentityTarget,
+						device_id: "request-device",
+					},
+				});
+				expect(res.status).toBe(409);
+				expect(await res.json()).toEqual({
+					error: {
+						code: "viewer_identity_mismatch",
+						message: "viewer identity does not match request",
+					},
+				});
+
+				const compressionMismatch = await postViewerJson(app, "/api/pack", {
+					context: "viewer identity",
+					db_path: ensureStore().dbPath,
+					identity_target: { ...viewerIdentityTarget, pack_compression: "ids" },
+				});
+				expect(compressionMismatch.status).toBe(409);
+
+				const embeddingMismatch = await postViewerJson(app, "/api/pack", {
+					context: "viewer identity",
+					db_path: ensureStore().dbPath,
+					identity_target: { ...viewerIdentityTarget, embedding_disabled: true },
+				});
+				expect(embeddingMismatch.status).toBe(409);
+
+				const unsupported = await postViewerJson(app, "/api/pack", {
+					context: "viewer identity",
+					db_path: ensureStore().dbPath,
+					identity_target: { ...viewerIdentityTarget, future_field: "new" },
+				});
+				expect(unsupported.status).toBe(409);
+				expect(await unsupported.json()).toMatchObject({
+					error: { code: "viewer_contract_unsupported" },
+				});
+			} finally {
+				cleanup();
+				vi.unstubAllEnvs();
+			}
+		});
+
+		it("rejects a viewer whose cached effective identity is stale", async () => {
+			const configDir = mkdtempSync(join(tmpdir(), "codemem-viewer-identity-"));
+			const configPath = join(configDir, "config.json");
+			const envKeys = [
+				"CODEMEM_DEVICE_ID",
+				"CODEMEM_ACTOR_ID",
+				"CODEMEM_CONFIG",
+				"CODEMEM_RUNTIME_ROOT",
+				"CODEMEM_WORKSPACE_ID",
+				"CODEMEM_PACK_COMPRESSION",
+				"CODEMEM_EMBEDDING_DISABLED",
+				"CODEMEM_EMBEDDING_MODEL",
+			] as const;
+			const previousEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+			for (const key of envKeys) delete process.env[key];
+			process.env.CODEMEM_CONFIG = configPath;
+			writeFileSync(configPath, JSON.stringify({ actor_id: "actor-before" }));
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const store = ensureStore();
+				expect(store.actorId).toBe("actor-before");
+				writeFileSync(configPath, JSON.stringify({ actor_id: "actor-after" }));
+				const res = await postViewerJson(app, "/api/pack", {
+					context: "stale viewer identity",
+					db_path: store.dbPath,
+					identity_target: {
+						device_id: null,
+						actor_id_present: false,
+						actor_id: null,
+						config_path: resolve(configPath),
+						runtime_root: null,
+						workspace_id: null,
+						home_dir: resolve(process.env.HOME || homedir()),
+						pack_compression: null,
+						embedding_disabled: false,
+						embedding_model: "Xenova/bge-small-en-v1.5",
+					},
+				});
+				expect(res.status).toBe(409);
+				expect(await res.json()).toMatchObject({
+					error: { code: "viewer_identity_mismatch" },
+				});
+			} finally {
+				cleanup();
+				rmSync(configDir, { recursive: true, force: true });
+				for (const key of envKeys) {
+					const value = previousEnv[key];
+					if (value == null) delete process.env[key];
+					else process.env[key] = value;
+				}
+			}
+		});
+
+		it("validates structured request fields", async () => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const invalidJson = await app.request("/api/pack", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: "{",
+				});
+				expect(invalidJson.status).toBe(400);
+				expect(await invalidJson.json()).toEqual({
+					error: { code: "invalid_request", message: "invalid json body" },
+				});
+
+				const invalidWorkingSet = await postViewerJson(app, "/api/pack", {
+					context: "viewer transport",
+					working_set_files: ["../private.txt"],
+				});
+				expect(invalidWorkingSet.status).toBe(400);
+				expect(await invalidWorkingSet.json()).toMatchObject({
+					error: {
+						code: "invalid_request",
+						message: "working_set_files contains an invalid repository-relative path",
+					},
+				});
+
+				const mismatchedDb = await postViewerJson(app, "/api/pack", {
+					context: "viewer transport",
+					db_path: `${ensureStore().dbPath}.other`,
+				});
+				expect(mismatchedDb.status).toBe(409);
+				expect(await mismatchedDb.json()).toEqual({
+					error: {
+						code: "viewer_db_mismatch",
+						message: "viewer database does not match request",
+					},
+				});
+
+				const equivalentDb = await postViewerJson(app, "/api/pack", {
+					context: "viewer transport",
+					db_path: `${dirname(ensureStore().dbPath)}/./${basename(ensureStore().dbPath)}`,
+				});
+				expect(equivalentDb.status).toBe(200);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("returns the same machine-readable pack as GET for equivalent inputs", async () => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const store = ensureStore();
+				const sessionId = insertTestSession(store.db);
+				store.remember(
+					sessionId,
+					"decision",
+					"Structured pack parity",
+					"Viewer POST uses the shared pack builder.",
+					0.9,
+				);
+
+				const getResponse = await app.request(
+					"/api/pack?context=structured%20pack%20parity&limit=5&token_budget=800",
+				);
+				const postResponse = await postViewerJson(app, "/api/pack", {
+					context: "structured pack parity",
+					limit: 5,
+					token_budget: 800,
+					all_projects: true,
+				});
+
+				expect(postResponse.status).toBe(200);
+				const postBody = (await postResponse.json()) as Record<string, unknown>;
+				const getBody = (await getResponse.json()) as Record<string, unknown>;
+				expect(postBody).toMatchObject({
+					pack_text: getBody.pack_text,
+					items: getBody.items,
+					item_ids: getBody.item_ids,
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("passes project, working-set, and render options to the shared builder", async () => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			const previousProject = process.env.CODEMEM_PROJECT;
+			process.env.CODEMEM_PROJECT = "stale-viewer-project";
+			try {
+				const store = ensureStore();
+				const builder = vi.spyOn(store, "buildMemoryPackAsync");
+				const response = await postViewerJson(app, "/api/pack", {
+					context: "focused viewer pack",
+					limit: 4,
+					token_budget: 600,
+					project: "viewer-project",
+					working_set_files: ["./packages/viewer-server/src/index.ts"],
+					compact: true,
+					compact_detail_count: 2,
+				});
+
+				expect(response.status).toBe(200);
+				expect(builder).toHaveBeenCalledWith(
+					"focused viewer pack",
+					4,
+					600,
+					{
+						project: "viewer-project",
+						working_set_paths: ["packages/viewer-server/src/index.ts"],
+					},
+					{ compact: true, compactDetailCount: 2 },
+				);
+			} finally {
+				if (previousProject == null) delete process.env.CODEMEM_PROJECT;
+				else process.env.CODEMEM_PROJECT = previousProject;
+				cleanup();
+			}
+		});
+
+		it("records attempts and reports changed-artifact conflicts without blocking pack delivery", async () => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const store = ensureStore();
+				const sessionId = insertTestSession(store.db);
+				store.remember(sessionId, "feature", "Viewer ledger candidate", "first artifact", 0.8);
+				const request = {
+					context: "viewer ledger candidate",
+					all_projects: true,
+					working_set_files: ["./packages/viewer-server/src/index.ts"],
+					attempt: {
+						attempt_id: promptPackAttemptId(1),
+						started_at: "2026-08-03T10:00:00.000Z",
+						source: "opencode",
+						request_id: "viewer-pack-request",
+					},
+				};
+
+				const first = await postViewerJson(app, "/api/pack", request);
+				expect(first.status).toBe(200);
+				const firstBody = (await first.json()) as Record<string, unknown>;
+				expect(firstBody.ledger_artifact_fingerprint).toMatch(/^[a-f0-9]{64}$/);
+				expect(firstBody).not.toHaveProperty("ledger_outcome");
+				expect(core.getRetrievalAttempt(store.db, promptPackAttemptId(1))).toMatchObject({
+					retrievalStatus: "succeeded",
+					workingSetFiles: ["packages/viewer-server/src/index.ts"],
+				});
+
+				const retry = await postViewerJson(app, "/api/pack", request);
+				expect(retry.status).toBe(200);
+				expect(await retry.json()).not.toHaveProperty("ledger_outcome");
+
+				store.remember(
+					sessionId,
+					"decision",
+					"Viewer ledger candidate changed",
+					"second artifact",
+					0.95,
+				);
+				const conflict = await postViewerJson(app, "/api/pack", request);
+				expect(conflict.status).toBe(200);
+				expect(await conflict.json()).toMatchObject({
+					ledger_outcome: {
+						ok: false,
+						errorCode: "retrieval_ledger_write_failed",
+						reason: "idempotency_conflict",
+					},
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("returns a stable structured error when pack construction fails", async () => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				vi.spyOn(ensureStore(), "buildMemoryPackAsync").mockRejectedValue(
+					new Error("private storage detail"),
+				);
+				const response = await postViewerJson(app, "/api/pack", {
+					context: "pack failure",
+					all_projects: true,
+				});
+				expect(response.status).toBe(500);
+				expect(await response.json()).toEqual({
+					error: { code: "pack_failed", message: "memory pack could not be built" },
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("delivers a built pack when ledger instrumentation fails", async () => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const store = ensureStore();
+				const sessionId = insertTestSession(store.db);
+				store.remember(sessionId, "feature", "Viewer pack survives", "ledger outage", 0.8);
+				const build = store.buildMemoryPackWithTraceAsync.bind(store);
+				vi.spyOn(store, "buildMemoryPackWithTraceAsync").mockImplementation(async (...args) => {
+					const artifacts = await build(...args);
+					store.db.exec("DROP TABLE retrieval_attempts");
+					return artifacts;
+				});
+
+				const response = await postViewerJson(app, "/api/pack", {
+					context: "viewer pack survives",
+					all_projects: true,
+					attempt: {
+						attempt_id: promptPackAttemptId(9),
+						started_at: "2026-08-03T10:00:00.000Z",
+						source: "opencode",
+					},
+				});
+
+				expect(response.status).toBe(200);
+				expect(await response.json()).toMatchObject({
+					pack_text: expect.stringContaining("Viewer pack survives"),
+				});
+			} finally {
+				cleanup();
+			}
+		});
+	});
+
+	describe("POST /api/prompt-pack-ledger", () => {
+		it("preserves record, delivery, and cache-reuse idempotency", async () => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const store = ensureStore();
+				const terminal = {
+					action: "record",
+					attempt_id: promptPackAttemptId(10),
+					started_at: "2026-08-03T10:00:00.000Z",
+					source: "opencode",
+					request_id: "skipped-request",
+					retrieval_status: "skipped",
+					failure_code: "injection_disabled",
+					failure_stage: "policy",
+				};
+				const record = await postViewerJson(app, "/api/prompt-pack-ledger", terminal);
+				expect(record.status).toBe(200);
+				expect(await record.json()).toMatchObject({ ok: true, value: { inserted: true } });
+				const recordRetry = await postViewerJson(app, "/api/prompt-pack-ledger", terminal);
+				expect(await recordRetry.json()).toMatchObject({
+					ok: true,
+					value: { inserted: false },
+				});
+				const recordConflict = await postViewerJson(app, "/api/prompt-pack-ledger", {
+					...terminal,
+					failure_code: "compaction_skipped",
+				});
+				expect(recordConflict.status).toBe(409);
+				expect(await recordConflict.json()).toEqual({
+					ok: false,
+					errorCode: "retrieval_ledger_write_failed",
+					reason: "idempotency_conflict",
+				});
+
+				const sessionId = insertTestSession(store.db);
+				store.remember(sessionId, "decision", "Ledger delivery candidate", "bounded body", 0.9);
+				const pack = await postViewerJson(app, "/api/pack", {
+					context: "ledger delivery candidate",
+					all_projects: true,
+					attempt: {
+						attempt_id: promptPackAttemptId(11),
+						started_at: "2026-08-03T10:00:00.500Z",
+						source: "opencode",
+						request_id: "delivery-request",
+					},
+				});
+				expect(pack.status).toBe(200);
+
+				const delivery = {
+					action: "delivery",
+					attempt_id: promptPackAttemptId(11),
+					delivery_status: "handed_off",
+				};
+				const delivered = await postViewerJson(app, "/api/prompt-pack-ledger", delivery);
+				expect(await delivered.json()).toMatchObject({ ok: true, value: { changed: true } });
+				const deliveryRetry = await postViewerJson(app, "/api/prompt-pack-ledger", delivery);
+				expect(await deliveryRetry.json()).toMatchObject({
+					ok: true,
+					value: { changed: false },
+				});
+
+				const cacheReuse = {
+					action: "cache_reuse",
+					attempt_id: promptPackAttemptId(12),
+					started_at: "2026-08-03T10:00:01.000Z",
+					source: "opencode",
+					request_id: "cache-request",
+					original_attempt_id: promptPackAttemptId(11),
+				};
+				const cloned = await postViewerJson(app, "/api/prompt-pack-ledger", cacheReuse);
+				expect(await cloned.json()).toMatchObject({ ok: true, value: { inserted: true } });
+				const cloneRetry = await postViewerJson(app, "/api/prompt-pack-ledger", cacheReuse);
+				expect(await cloneRetry.json()).toMatchObject({
+					ok: true,
+					value: { inserted: false },
+				});
+				expect(core.getRetrievalAttempt(store.db, promptPackAttemptId(12))).toMatchObject({
+					deliveryStatus: "not_attempted",
+					requestId: `cache_reuse:cache-request:from:${promptPackAttemptId(11)}`,
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("returns structured validation and core failure outcomes", async () => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const invalid = await postViewerJson(app, "/api/prompt-pack-ledger", {
+					action: "unknown",
+					attempt_id: promptPackAttemptId(20),
+				});
+				expect(invalid.status).toBe(400);
+				expect(await invalid.json()).toEqual({
+					error: { code: "invalid_request", message: "ledger action is invalid" },
+				});
+
+				const missing = await postViewerJson(app, "/api/prompt-pack-ledger", {
+					action: "cache_reuse",
+					attempt_id: promptPackAttemptId(21),
+					original_attempt_id: promptPackAttemptId(22),
+				});
+				expect(missing.status).toBe(422);
+				expect(await missing.json()).toEqual({
+					ok: false,
+					errorCode: "retrieval_ledger_write_failed",
+					reason: "attempt_not_found",
+				});
+
+				const mismatchedDb = await postViewerJson(app, "/api/prompt-pack-ledger", {
+					action: "record",
+					attempt_id: promptPackAttemptId(23),
+					retrieval_status: "skipped",
+					failure_code: "injection_disabled",
+					failure_stage: "policy",
+					db_path: `${ensureStore().dbPath}.other`,
+				});
+				expect(mismatchedDb.status).toBe(409);
+				expect(await mismatchedDb.json()).toMatchObject({
+					error: { code: "viewer_db_mismatch" },
+				});
 			} finally {
 				cleanup();
 			}

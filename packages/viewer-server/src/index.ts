@@ -22,6 +22,7 @@ import {
 import { configRoutes } from "./routes/config.js";
 import { memoryRoutes } from "./routes/memory.js";
 import { observerStatusRoutes } from "./routes/observer-status.js";
+import { packTransportRoutes } from "./routes/pack.js";
 import { rawEventsRoutes } from "./routes/raw-events.js";
 import { statsRoutes } from "./routes/stats.js";
 import { syncProtocolRoutes, syncRoutes } from "./routes/sync.js";
@@ -106,6 +107,7 @@ export function createApp(opts?: AppOptions) {
 	// API routes
 	app.route("/", statsRoutes(storeFactory));
 	app.route("/", memoryRoutes(storeFactory));
+	app.route("/", packTransportRoutes(storeFactory));
 	app.route(
 		"/",
 		observerStatusRoutes({

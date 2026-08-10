@@ -111,22 +111,25 @@ Adapters hook into runtime event systems (OpenCode plugin and Claude hooks). The
 sequenceDiagram
 participant OC as OpenCode
 participant PL as codemem plugin
+participant VW as viewer HTTP
 participant ST as MemoryStore
 participant DB as SQLite
 
 OC->>PL: tool.execute.after events
 OC->>PL: experimental.chat.messages.transform
-PL->>ST: build_memory_pack with shaped query
+PL->>VW: POST /api/pack with shaped query
+VW->>ST: build_memory_pack
 ST->>DB: FTS5 BM25 lexical search
 ST->>DB: sqlite vec semantic search
 ST->>ST: merge rerank and section assembly
-ST-->>PL: pack text
+ST-->>VW: pack text
+VW-->>PL: pack JSON
 PL->>OC: inject codemem context
 ```
 
 **Retrieval** combines two strategies: keyword search via SQLite FTS5 with BM25 scoring and semantic similarity via sqlite-vec embeddings. In the pack-building path, results from both are merged, exactly deduplicated, and re-ranked using recency and memory-kind boosts. Near-related memories stay fully rendered by default; use compact rendering or `CODEMEM_PACK_COMPRESSION=ids` only when you intentionally want ID-based expansion via `memory_get_observations`.
 
-**Injection** happens automatically. The plugin builds a query from the current session context (first prompt, latest prompt, project, recently modified files), calls `build_memory_pack`, and appends the result to the latest user message via `experimental.chat.messages.transform`. Prior injected message blocks are replayed byte-for-byte on later turns so provider prompt caches can keep the stable prefix. Set `CODEMEM_INJECT_SURFACE=system` to use the legacy system-prompt surface. OpenCode raw-event capture streams through the viewer and falls back to direct CLI enqueue; explicit SQLite busy/locked results and command timeouts receive one idempotent retry with the same event ID, while terminal failures are reported and dropped instead of requeued. Each retrieval and current-request cache reuse is recorded in the local evidence ledger with bounded memory identities, machine-readable reason codes, delivery status, and safe repository-relative working-set paths. Repository-contained absolute tool paths are converted to repository-relative `/` paths before retrieval; outside-repository, traversing, blank, and overlong paths are omitted. Prompts, pack text, memory content, and absolute paths are not copied into the ledger, historical message reconstruction creates no new attempts, and recording failures never block injection. After a plugin restart, usable context also remains fail-open when fresh ledger-identity repair fails; fallback bytes are injected without attributing delivery to either the conflicted or failed attempt.
+**Injection** happens automatically. The plugin builds a query from the current session context (first prompt, latest prompt, project, recently modified files), asks the long-lived local viewer to build the pack, and appends the result to the latest user message via `experimental.chat.messages.transform`. Before sending prompt-derived POST data, it performs a payload-free viewer/profile handshake and rejects redirects. Retryable viewer transport, version, database-target, effective identity/config-target, compression-setting, or embedding-setting mismatch failures fall back to the existing CLI path; only structured, validated request errors are terminal. Prior injected message blocks are replayed byte-for-byte on later turns so provider prompt caches can keep the stable prefix. Set `CODEMEM_INJECT_SURFACE=system` to use the legacy system-prompt surface. OpenCode raw-event capture streams through the viewer and falls back to direct CLI enqueue; explicit SQLite busy/locked results and command timeouts receive one idempotent retry with the same event ID, while terminal failures are reported and dropped instead of requeued. Each retrieval and current-request cache reuse is recorded through the viewer-backed local evidence ledger with bounded memory identities, machine-readable reason codes, delivery status, and safe repository-relative working-set paths; retryable ledger transport failures retain the CLI fallback. Repository-contained absolute tool paths are converted to repository-relative `/` paths before retrieval; outside-repository, traversing, blank, and overlong paths are omitted. Prompts, pack text, memory content, and absolute paths are not copied into the ledger, historical message reconstruction creates no new attempts, and recording failures never block injection. After a plugin restart, usable context also remains fail-open when fresh ledger-identity repair fails; fallback bytes are injected without attributing delivery to either the conflicted or failed attempt.
 
 **Memories** are typed — `bugfix`, `feature`, `refactor`, `change`, `discovery`, `decision`, `exploration` — with structured fields like `facts`, `concepts`, `files_read`, and `files_modified` that improve retrieval relevance. Low-signal events are filtered at multiple layers before persistence.
 

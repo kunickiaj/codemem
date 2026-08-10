@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { connect } from "../../../core/src/db.js";
 import { buildMemoryPackWithTrace } from "../../../core/src/pack.js";
 import { MemoryStore } from "../../../core/src/store.js";
@@ -37,6 +37,78 @@ const makeProcess = ({ stdout = "", stderr = "", exitCode = 0 }) => {
 	});
 	return proc;
 };
+
+const jsonResponse = (status, body) => ({
+	ok: status >= 200 && status < 300,
+	status,
+	json: vi.fn().mockResolvedValue(body),
+});
+
+const packResponse = (text = "## Summary\n[1] (feature) Viewer-backed context") => ({
+	pack_text: text,
+	metrics: { total_items: 1, pack_tokens: 24 },
+});
+
+const normalizeIdentityPath = (value, cwd = "/tmp/greenroom") => {
+	const trimmed = String(value || "").trim();
+	if (!trimmed) return null;
+	const expanded = trimmed.startsWith("~/")
+		? join(process.env.HOME?.trim() || homedir(), trimmed.slice(2))
+		: trimmed;
+	return resolve(cwd, expanded);
+};
+
+const viewerProfileResponse = () => jsonResponse(200, {
+	service: "codemem-viewer",
+	protocol_version: 1,
+	db_path: resolve(
+		normalizeIdentityPath(process.env.CODEMEM_DB) || join(homedir(), ".codemem", "mem.sqlite"),
+	),
+	identity_target: {
+		device_id: process.env.CODEMEM_DEVICE_ID?.trim() || null,
+		actor_id_present: Object.hasOwn(process.env, "CODEMEM_ACTOR_ID"),
+		actor_id: process.env.CODEMEM_ACTOR_ID?.trim() || null,
+		config_path: normalizeIdentityPath(process.env.CODEMEM_CONFIG),
+		runtime_root: normalizeIdentityPath(process.env.CODEMEM_RUNTIME_ROOT),
+		workspace_id: process.env.CODEMEM_WORKSPACE_ID?.trim() || null,
+		home_dir: normalizeIdentityPath(process.env.HOME || homedir()),
+		pack_compression: process.env.CODEMEM_PACK_COMPRESSION?.trim() || null,
+		embedding_disabled: ["1", "true", "yes"].includes(
+			String(process.env.CODEMEM_EMBEDDING_DISABLED || "").toLowerCase(),
+		),
+		embedding_model: process.env.CODEMEM_EMBEDDING_MODEL || "Xenova/bge-small-en-v1.5",
+	},
+});
+
+const messageOutput = ({
+	messageId = "user-viewer",
+	sessionID = "sess-viewer",
+	text = "use viewer transport",
+} = {}) => ({
+	messages: [
+		{
+			info: { id: messageId, sessionID, role: "user" },
+			parts: [
+				{
+					id: `${messageId}-text`,
+					sessionID,
+					messageID: messageId,
+					type: "text",
+					text,
+				},
+			],
+		},
+	],
+});
+
+const fetchPostCalls = (fetchMock) =>
+	fetchMock.mock.calls.filter(([, options]) => options?.method === "POST");
+
+const fetchBody = (fetchMock, callIndex) =>
+	JSON.parse(fetchPostCalls(fetchMock)[callIndex][1].body);
+
+const isPackOrLedgerSpawn = ([, args]) =>
+	Array.isArray(args) && (args.includes("pack") || args.includes("prompt-pack-ledger"));
 
 const makeProcessFromPackCommand = (args, options = {}) => {
 	const proc = new EventEmitter();
@@ -149,6 +221,19 @@ describe("OpenCode transform-time injection", () => {
 			CODEMEM_PLUGIN_LOG: "0",
 			CODEMEM_INJECT_CONTEXT: "1",
 		};
+		for (const key of [
+			"CODEMEM_DB",
+			"CODEMEM_DEVICE_ID",
+			"CODEMEM_ACTOR_ID",
+			"CODEMEM_CONFIG",
+			"CODEMEM_RUNTIME_ROOT",
+			"CODEMEM_WORKSPACE_ID",
+			"CODEMEM_PACK_COMPRESSION",
+			"CODEMEM_EMBEDDING_DISABLED",
+			"CODEMEM_EMBEDDING_MODEL",
+		]) {
+			delete process.env[key];
+		}
 	});
 
 	afterEach(() => {
@@ -1484,6 +1569,528 @@ describe("OpenCode transform-time injection", () => {
 		expect(userPrompt).not.toContain("forbidden payroll details");
 		expect(showToast).toHaveBeenCalledTimes(1);
 		expect(JSON.stringify(showToast.mock.calls)).not.toContain("forbidden payroll");
+	});
+
+	test.each(["::1", "[::1]"])("uses bracketed IPv6 viewer URLs for %s", async (viewerHost) => {
+		// Arrange
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		process.env.CODEMEM_VIEWER_HOST = viewerHost;
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
+			String(url).endsWith("/api/prompt-pack-profile")
+				? viewerProfileResponse()
+				: String(url).endsWith("/api/pack")
+				? jsonResponse(200, packResponse())
+				: jsonResponse(200, { ok: true }),
+		);
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const output = messageOutput();
+
+		// Act
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await vi.waitFor(() => expect(fetchPostCalls(fetchMock)).toHaveLength(2));
+
+		// Assert
+		expect(String(fetchMock.mock.calls[0][0])).toBe(
+			"http://[::1]:38888/api/prompt-pack-profile",
+		);
+		expect(fetchPostCalls(fetchMock).map(([url, options]) => [String(url), options.method])).toEqual([
+			["http://[::1]:38888/api/pack", "POST"],
+			["http://[::1]:38888/api/prompt-pack-ledger", "POST"],
+		]);
+		expect(fetchBody(fetchMock, 1)).toMatchObject({
+			action: "delivery",
+			attempt_id: fetchBody(fetchMock, 0).attempt.attempt_id,
+			delivery_status: "handed_off",
+		});
+		const defaultDbPath = join(homedir(), ".codemem", "mem.sqlite");
+		expect(fetchBody(fetchMock, 0).db_path).toBe(defaultDbPath);
+		expect(fetchBody(fetchMock, 1).db_path).toBe(defaultDbPath);
+		expect(output.messages[0].parts.at(-1).text).toBe(
+			"[codemem context]\n## Summary\n[1] (feature) Viewer-backed context",
+		);
+		expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)).toEqual([]);
+	});
+
+	test("records a skipped injection through the healthy viewer without spawning ledger CLI", async () => {
+		// Arrange
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		process.env.CODEMEM_INJECT_CONTEXT = "0";
+		process.env.CODEMEM_DB = "~/greenroom.sqlite";
+		process.env.CODEMEM_PACK_COMPRESSION = "off";
+		process.env.CODEMEM_EMBEDDING_DISABLED = "true";
+		process.env.CODEMEM_EMBEDDING_MODEL = "test-embedding-model";
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
+			String(url).endsWith("/api/prompt-pack-profile")
+				? viewerProfileResponse()
+				: jsonResponse(200, { ok: true }),
+		);
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const output = messageOutput({ messageId: "user-skipped", sessionID: "sess-skipped" });
+
+		// Act
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await vi.waitFor(() => expect(fetchPostCalls(fetchMock)).toHaveLength(1));
+
+		// Assert
+		expect(fetchPostCalls(fetchMock)[0][0]).toBe(
+			"http://127.0.0.1:38888/api/prompt-pack-ledger",
+		);
+			expect(fetchBody(fetchMock, 0)).toMatchObject({
+				action: "record",
+				db_path: join(process.env.HOME?.trim() || homedir(), "greenroom.sqlite"),
+				identity_target: {
+					pack_compression: "off",
+					embedding_disabled: true,
+					embedding_model: "test-embedding-model",
+				},
+			retrieval_status: "skipped",
+			failure_code: "injection_disabled",
+		});
+		expect(output.messages[0].parts).toHaveLength(1);
+		expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)).toEqual([]);
+	});
+
+	test("records cache reuse and delivery through the healthy viewer without spawning ledger CLI", async () => {
+		// Arrange
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		process.env.CODEMEM_DB = "relative.sqlite";
+		process.env.CODEMEM_CONFIG = "config/codemem.json";
+		process.env.CODEMEM_RUNTIME_ROOT = "runtime";
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
+			String(url).endsWith("/api/prompt-pack-profile")
+				? viewerProfileResponse()
+				: String(url).endsWith("/api/pack")
+				? jsonResponse(200, packResponse("## Summary\n[1] (decision) Cache-stable bytes"))
+				: jsonResponse(200, { ok: true }),
+		);
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const firstOutput = messageOutput({ messageId: "user-cache", sessionID: "sess-cache" });
+		await hooks["experimental.chat.messages.transform"]({}, firstOutput);
+		await vi.waitFor(() =>
+			expect(fetchPostCalls(fetchMock).some(([url]) => String(url).endsWith("/api/pack"))).toBe(true),
+		);
+		const packCall = fetchPostCalls(fetchMock).find(([url]) => String(url).endsWith("/api/pack"));
+		const originalAttemptId = JSON.parse(packCall[1].body).attempt.attempt_id;
+		const cachedOutput = messageOutput({ messageId: "user-cache", sessionID: "sess-cache" });
+
+		// Act
+		await hooks["experimental.chat.messages.transform"]({}, cachedOutput);
+		await vi.waitFor(() => {
+			const bodies = fetchPostCalls(fetchMock)
+				.filter(([url]) => String(url).endsWith("/api/prompt-pack-ledger"))
+				.map(([, options]) => JSON.parse(options.body));
+			const reuse = bodies.find((body) => body.action === "cache_reuse");
+			expect(reuse?.original_attempt_id).toBe(originalAttemptId);
+			expect(bodies.some((body) =>
+				body.action === "delivery" && body.attempt_id === reuse?.attempt_id)).toBe(true);
+		});
+
+		// Assert
+		const ledgerBodies = fetchPostCalls(fetchMock)
+			.filter(([url]) => String(url).endsWith("/api/prompt-pack-ledger"))
+			.map(([, options]) => JSON.parse(options.body));
+		const cacheReuse = ledgerBodies.find((body) => body.action === "cache_reuse");
+		const cacheDelivery = ledgerBodies.find((body) =>
+			body.action === "delivery" && body.attempt_id === cacheReuse.attempt_id);
+		expect(cacheReuse).toMatchObject({
+			action: "cache_reuse",
+			original_attempt_id: originalAttemptId,
+		});
+		expect(cacheReuse.attempt_id).not.toBe(originalAttemptId);
+		expect(cacheDelivery).toEqual({
+			action: "delivery",
+			attempt_id: cacheReuse.attempt_id,
+			db_path: "/tmp/greenroom/relative.sqlite",
+			delivery_status: "handed_off",
+			identity_target: {
+				device_id: null,
+				actor_id_present: false,
+				actor_id: null,
+				config_path: "/tmp/greenroom/config/codemem.json",
+				runtime_root: "/tmp/greenroom/runtime",
+				workspace_id: null,
+				home_dir: resolve(process.env.HOME?.trim() || homedir()),
+				pack_compression: null,
+				embedding_disabled: false,
+				embedding_model: "Xenova/bge-small-en-v1.5",
+			},
+		});
+		expect(cachedOutput.messages[0].parts.at(-1).text).toBe(
+			"[codemem context]\n## Summary\n[1] (decision) Cache-stable bytes",
+		);
+		expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)).toEqual([]);
+	});
+
+	test("repairs a viewer pack idempotency conflict over HTTP with fresh identity and no CLI", async () => {
+		// Arrange
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		let packCalls = 0;
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+			if (String(url).endsWith("/api/prompt-pack-profile")) return viewerProfileResponse();
+			if (String(url).endsWith("/api/pack")) {
+				packCalls += 1;
+				return jsonResponse(200, packCalls === 1
+					? {
+						...packResponse("## Summary\n[1] (feature) Stale conflict bytes"),
+						ledger_outcome: {
+							ok: false,
+							errorCode: "retrieval_ledger_write_failed",
+							reason: "idempotency_conflict",
+						},
+					}
+					: packResponse("## Summary\n[2] (decision) Fresh viewer identity"));
+			}
+			return jsonResponse(200, { ok: true });
+		});
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const output = messageOutput({ messageId: "user-conflict", sessionID: "sess-conflict" });
+
+		// Act
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await vi.waitFor(() => {
+			const packBodies = fetchPostCalls(fetchMock)
+				.filter(([url]) => String(url).endsWith("/api/pack"))
+				.map(([, options]) => JSON.parse(options.body))
+				.filter((body) => body.attempt?.stream_id === "sess-conflict");
+			expect(packBodies).toHaveLength(2);
+			const deliveries = fetchPostCalls(fetchMock)
+				.filter(([url]) => String(url).endsWith("/api/prompt-pack-ledger"))
+				.map(([, options]) => JSON.parse(options.body));
+			expect(deliveries.some((body) =>
+				body.action === "delivery" && body.attempt_id === packBodies[1].attempt.attempt_id)).toBe(true);
+		});
+
+		// Assert
+		const conflictPackBodies = fetchPostCalls(fetchMock)
+			.filter(([url]) => String(url).endsWith("/api/pack"))
+			.map(([, options]) => JSON.parse(options.body))
+			.filter((body) => body.attempt?.stream_id === "sess-conflict");
+		const firstAttempt = conflictPackBodies[0].attempt;
+		const repairedAttempt = conflictPackBodies[1].attempt;
+		expect(firstAttempt.attempt_id).not.toBe(repairedAttempt.attempt_id);
+		expect(firstAttempt.request_id).not.toBe(repairedAttempt.request_id);
+		const repairedDelivery = fetchPostCalls(fetchMock)
+			.filter(([url]) => String(url).endsWith("/api/prompt-pack-ledger"))
+			.map(([, options]) => JSON.parse(options.body))
+			.find((body) => body.action === "delivery" && body.attempt_id === repairedAttempt.attempt_id);
+		expect(repairedDelivery).toMatchObject({
+			action: "delivery",
+			attempt_id: repairedAttempt.attempt_id,
+		});
+		expect(output.messages[0].parts.at(-1).text).toContain("Fresh viewer identity");
+		expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)).toEqual([]);
+	});
+
+	test.each([
+		["foreign service", () => jsonResponse(200, { service: "not-codemem" })],
+		["untrusted invalid-request response", () => jsonResponse(400, {
+			error: { code: "invalid_request", message: "not your viewer" },
+		})],
+		["stale viewer identity", () => jsonResponse(409, {
+			error: { code: "viewer_identity_mismatch", message: "viewer identity does not match request" },
+		})],
+		["redirect", () => new Response(null, {
+			status: 307,
+			headers: { Location: "http://127.0.0.1:39999/capture" },
+		})],
+	])("falls back before sending prompt data when the viewer profile handshake hits a %s", async (
+		_label,
+		profileResult,
+	) => {
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+			if (String(url).endsWith("/api/prompt-pack-profile")) return profileResult();
+			throw new Error("prompt payload must not be sent before profile validation");
+		});
+		spawnMock.mockImplementation((_command, args) =>
+			Array.isArray(args) && args.includes("pack")
+				? makeProcess({ stdout: JSON.stringify(packResponse("## Summary\n[9] Safe CLI fallback")) })
+				: makeProcess({ stdout: "" }),
+		);
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const output = messageOutput({ messageId: "user-handshake", sessionID: "sess-handshake" });
+
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await vi.waitFor(() =>
+			expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)).toHaveLength(2),
+		);
+
+		expect(fetchPostCalls(fetchMock)).toEqual([]);
+		expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "GET", redirect: "manual" });
+		expect(output.messages[0].parts.at(-1).text).toContain("Safe CLI fallback");
+	});
+
+	test.each([
+		["connection failure", () => Promise.reject(new Error("ECONNREFUSED"))],
+		["timeout", () => Promise.reject(Object.assign(new Error("timed out"), { name: "TimeoutError" }))],
+		["404", () => Promise.resolve(jsonResponse(404, { error: "not_found" }))],
+		["405", () => Promise.resolve(jsonResponse(405, { error: "method_not_allowed" }))],
+		["5xx", () => Promise.resolve(jsonResponse(503, { error: "unavailable" }))],
+		["database mismatch", () => Promise.resolve(jsonResponse(409, {
+			error: { code: "viewer_db_mismatch", message: "viewer database does not match request" },
+		}))],
+		["identity mismatch", () => Promise.resolve(jsonResponse(409, {
+			error: { code: "viewer_identity_mismatch", message: "viewer identity does not match request" },
+		}))],
+		["contract mismatch", () => Promise.resolve(jsonResponse(409, {
+			error: { code: "viewer_contract_unsupported", message: "viewer request contract is incompatible" },
+		}))],
+		["unrecognized 400", () => Promise.resolve(jsonResponse(400, { error: "bad_request" }))],
+		["unrecognized 401", () => Promise.resolve(jsonResponse(401, { error: "unauthorized" }))],
+		["malformed 2xx", () => Promise.resolve(jsonResponse(200, { pack_text: 42 }))],
+	])("falls back to pack and ledger CLI after viewer %s while preserving output and ledger handoff", async (
+		_label,
+		viewerResult,
+	) => {
+		// Arrange
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		process.env.CODEMEM_DB = "/tmp/greenroom.sqlite";
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((url) =>
+			String(url).endsWith("/api/prompt-pack-profile")
+				? Promise.resolve(viewerProfileResponse())
+				: viewerResult(),
+		);
+		const packPayloads = [];
+		const ledgerPayloads = [];
+		spawnMock.mockImplementation((_command, args) => {
+			if (Array.isArray(args) && args.includes("pack")) {
+				const proc = makeProcess({
+					stdout: JSON.stringify(packResponse("## Summary\n[7] (feature) CLI fallback bytes")),
+				});
+				proc.stdin.write = vi.fn((value) => packPayloads.push(JSON.parse(String(value))));
+				return proc;
+			}
+			const proc = makeProcess({ stdout: "" });
+			if (Array.isArray(args) && args.includes("prompt-pack-ledger")) {
+				proc.stdin.write = vi.fn((value) => ledgerPayloads.push(JSON.parse(String(value))));
+			}
+			return proc;
+		});
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const output = messageOutput({ messageId: "user-fallback", sessionID: "sess-fallback" });
+
+		// Act
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await vi.waitFor(() => expect(ledgerPayloads).toHaveLength(1));
+
+		// Assert
+		expect(fetchPostCalls(fetchMock)).toHaveLength(1);
+		expect(packPayloads).toHaveLength(1);
+		expect(ledgerPayloads).toEqual([
+			{
+				action: "delivery",
+				attempt_id: packPayloads[0].attempt_id,
+				delivery_status: "handed_off",
+			},
+		]);
+		expect(output.messages[0].parts.at(-1).text).toBe(
+			"[codemem context]\n## Summary\n[7] (feature) CLI fallback bytes",
+		);
+		expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)).toHaveLength(2);
+	});
+
+	test.each([
+		["connection failure", () => Promise.reject(new Error("ECONNREFUSED"))],
+		["timeout", () => Promise.reject(Object.assign(new Error("timed out"), { name: "TimeoutError" }))],
+		["404", () => Promise.resolve(jsonResponse(404, { error: "not_found" }))],
+		["405", () => Promise.resolve(jsonResponse(405, { error: "method_not_allowed" }))],
+		["unrecognized 401", () => Promise.resolve(jsonResponse(401, { error: "unauthorized" }))],
+		["identity mismatch", () => Promise.resolve(jsonResponse(409, {
+			error: { code: "viewer_identity_mismatch", message: "viewer identity does not match request" },
+		}))],
+		["5xx", () => Promise.resolve(jsonResponse(503, { error: "unavailable" }))],
+		["malformed 2xx", () => Promise.resolve(jsonResponse(200, { ok: "yes" }))],
+	])("falls back only the ledger transition after viewer ledger %s", async (
+		_label,
+		viewerLedgerResult,
+	) => {
+		// Arrange
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((url) =>
+			String(url).endsWith("/api/prompt-pack-profile")
+				? Promise.resolve(viewerProfileResponse())
+				: String(url).endsWith("/api/pack")
+				? Promise.resolve(jsonResponse(200, packResponse()))
+				: viewerLedgerResult(),
+		);
+		const ledgerPayloads = [];
+		spawnMock.mockImplementation((_command, args) => {
+			const proc = makeProcess({ stdout: "" });
+			if (Array.isArray(args) && args.includes("prompt-pack-ledger")) {
+				proc.stdin.write = vi.fn((value) => ledgerPayloads.push(JSON.parse(String(value))));
+			}
+			return proc;
+		});
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const output = messageOutput({ messageId: "user-ledger-fallback", sessionID: "sess-ledger-fallback" });
+
+		// Act
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await vi.waitFor(() => expect(ledgerPayloads).toHaveLength(1));
+
+		// Assert
+		const viewerLedgerPayloads = fetchPostCalls(fetchMock)
+			.filter(([url]) => String(url).endsWith("/api/prompt-pack-ledger"))
+			.map(([, options]) => JSON.parse(options.body));
+		const deliveryPayload = viewerLedgerPayloads.find((body) => body.action === "delivery");
+		expect(deliveryPayload).toMatchObject({
+			action: "delivery",
+			delivery_status: "handed_off",
+		});
+		const {
+			db_path: _viewerDbPath,
+			identity_target: _viewerIdentityTarget,
+			...cliLedgerPayload
+		} = deliveryPayload;
+		expect(ledgerPayloads).toEqual([cliLedgerPayload]);
+		expect(output.messages[0].parts.at(-1).text).toContain("Viewer-backed context");
+		expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)).toHaveLength(1);
+		expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)[0][1]).toContain(
+			"prompt-pack-ledger",
+		);
+	});
+
+	test("treats viewer 400 responses as terminal without spawning pack or ledger CLI", async () => {
+		// Arrange
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+			if (String(url).endsWith("/api/prompt-pack-profile")) return viewerProfileResponse();
+			return String(url).endsWith("/api/pack")
+				? jsonResponse(400, { error: { code: "invalid_request", message: "context is required" } })
+				: jsonResponse(400, {
+						error: { code: "invalid_request", message: "attempt_id is required" },
+					});
+		});
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const output = messageOutput({ messageId: "user-invalid", sessionID: "sess-invalid" });
+
+		// Act
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await vi.waitFor(() => expect(fetchPostCalls(fetchMock)).toHaveLength(2));
+
+		// Assert
+		expect(fetchPostCalls(fetchMock).map(([url]) => String(url))).toEqual([
+			"http://127.0.0.1:38888/api/pack",
+			"http://127.0.0.1:38888/api/prompt-pack-ledger",
+		]);
+		expect(fetchBody(fetchMock, 1)).toMatchObject({
+			action: "record",
+			retrieval_status: "failed",
+			failure_code: "pack_command_failed",
+		});
+		expect(output.messages[0].parts).toHaveLength(1);
+		expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)).toEqual([]);
+	});
+
+	test.each([
+		["write 404", 404, "retrieval_ledger_write_failed", "attempt_not_found"],
+		["delivery 503", 503, "retrieval_ledger_delivery_write_failed", "storage_unavailable"],
+	])("treats a structured ledger %s as terminal without arming pack backoff", async (
+		_label,
+		status,
+		errorCode,
+		reason,
+	) => {
+		// Arrange
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		let postCount = 0;
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+			if (String(url).endsWith("/api/prompt-pack-profile")) return viewerProfileResponse();
+			postCount += 1;
+			if (postCount === 1) return jsonResponse(200, packResponse("## Summary\n[1] First pack"));
+			if (postCount === 2) return jsonResponse(status, { ok: false, errorCode, reason });
+			if (postCount === 3) return jsonResponse(200, packResponse("## Summary\n[2] Next pack"));
+			return jsonResponse(200, { ok: true });
+		});
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+
+		// Act
+		await hooks["experimental.chat.messages.transform"]({}, messageOutput({
+			messageId: "user-ledger-terminal",
+			sessionID: "sess-ledger-terminal",
+		}));
+		await vi.waitFor(() => expect(fetchPostCalls(fetchMock)).toHaveLength(2));
+		await hooks["experimental.chat.messages.transform"]({}, messageOutput({
+			messageId: "user-after-ledger-terminal",
+			sessionID: "sess-ledger-terminal",
+		}));
+		await vi.waitFor(() => expect(fetchPostCalls(fetchMock)).toHaveLength(4));
+
+		// Assert
+		expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/api/pack"))).toHaveLength(2);
+		expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)).toEqual([]);
 	});
 
 	test("retries one SQLite-locked raw-event fallback with the identical envelope and marks it delivered", async () => {

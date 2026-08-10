@@ -1,6 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join, posix, resolve, win32 } from "node:path";
+import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { spawn as nodeSpawn, execSync } from "node:child_process";
 import { tool } from "@opencode-ai/plugin";
@@ -445,6 +446,141 @@ const parsePackOutput = (result) => {
   };
 };
 
+const isRecord = (value) => value != null && typeof value === "object" && !Array.isArray(value);
+
+const isValidPackHttpPayload = (payload) => {
+  if (!isRecord(payload) || typeof payload.pack_text !== "string" || !isRecord(payload.metrics)) {
+    return false;
+  }
+  const itemCount = payload.metrics.total_items;
+  if (!Number.isInteger(itemCount) || itemCount < 0) {
+    return false;
+  }
+  if (
+    payload.ledger_artifact_fingerprint != null
+    && !/^[0-9a-f]{64}$/i.test(payload.ledger_artifact_fingerprint)
+  ) {
+    return false;
+  }
+  if (payload.ledger_outcome != null) {
+    return isRecord(payload.ledger_outcome)
+      && payload.ledger_outcome.ok === false
+      && payload.ledger_outcome.errorCode === "retrieval_ledger_write_failed"
+      && payload.ledger_outcome.reason === "idempotency_conflict";
+  }
+  return true;
+};
+
+const isValidLedgerHttpPayload = (payload) => isRecord(payload) && payload.ok === true;
+
+const isValidLedgerFailureHttpPayload = (payload) =>
+  isRecord(payload)
+  && payload.ok === false
+  && (
+    payload.errorCode === "retrieval_ledger_write_failed"
+    || payload.errorCode === "retrieval_ledger_delivery_write_failed"
+  )
+  && typeof payload.reason === "string";
+
+const isViewerDbMismatchPayload = (payload) =>
+  isRecord(payload)
+  && isRecord(payload.error)
+  && payload.error.code === "viewer_db_mismatch";
+
+const isViewerIdentityMismatchPayload = (payload) =>
+  isRecord(payload)
+  && isRecord(payload.error)
+  && payload.error.code === "viewer_identity_mismatch";
+
+const isViewerContractUnsupportedPayload = (payload) =>
+  isRecord(payload)
+  && isRecord(payload.error)
+  && payload.error.code === "viewer_contract_unsupported";
+
+const isViewerInvalidRequestPayload = (payload) =>
+  isRecord(payload)
+  && isRecord(payload.error)
+  && payload.error.code === "invalid_request"
+  && typeof payload.error.message === "string";
+
+const classifyViewerHttpFailure = ({
+  operation,
+  status = null,
+  error = null,
+  malformed = false,
+  body = null,
+}) => {
+  if (malformed) {
+    return { cause: `${operation} returned malformed success`, retryable: true };
+  }
+  if (
+    isViewerDbMismatchPayload(body)
+    || isViewerIdentityMismatchPayload(body)
+    || isViewerContractUnsupportedPayload(body)
+  ) {
+    return { cause: `${operation} viewer profile mismatch`, retryable: true };
+  }
+  if (operation === "prompt-pack-ledger" && isValidLedgerFailureHttpPayload(body)) {
+    return { cause: `${operation} request rejected (${status})`, retryable: false };
+  }
+  if (isViewerInvalidRequestPayload(body) && !operation.endsWith(" profile")) {
+    return { cause: `${operation} request rejected (${status})`, retryable: false };
+  }
+  if (status === 404 || status === 405) {
+    return { cause: `${operation} endpoint unavailable (${status})`, retryable: true };
+  }
+  if (Number.isInteger(status) && status >= 500) {
+    return { cause: `${operation} server failure (${status})`, retryable: true };
+  }
+  if (Number.isInteger(status)) {
+    return { cause: `${operation} unexpected response (${status})`, retryable: true };
+  }
+  const diagnostic = [
+    error?.name,
+    error?.code,
+    error?.cause?.code,
+    error?.message,
+    error,
+  ].filter(Boolean).join(" ");
+  const timedOut = /AbortError|TimeoutError|timeout|timed out|ETIMEDOUT/i.test(diagnostic);
+  return {
+    cause: timedOut ? `${operation} request timeout` : `${operation} connection failed`,
+    retryable: true,
+  };
+};
+
+const buildPackHttpBody = ({
+  query,
+  filesModified,
+  injectLimit,
+  injectTokenBudget,
+  projectName,
+  cwd,
+  dbPath,
+  identityTarget,
+  attempt,
+}) => ({
+  context: query,
+  limit: injectLimit !== null && Number.isFinite(injectLimit) && injectLimit > 0
+    ? Math.trunc(injectLimit)
+    : 10,
+  token_budget:
+    injectTokenBudget !== null
+    && Number.isFinite(injectTokenBudget)
+    && injectTokenBudget > 0
+      ? Math.trunc(injectTokenBudget)
+      : null,
+  ...(projectName ? { project: projectName } : {}),
+  ...(cwd ? { cwd } : {}),
+  db_path: dbPath,
+  identity_target: identityTarget,
+  working_set_files: Array.from(filesModified || [])
+    .slice(-8)
+    .map((value) => String(value || "").trim())
+    .filter((value) => value && value.length <= MAX_WORKING_SET_PATH_CHARS),
+  attempt,
+});
+
 const canonicalJson = (value) => {
   if (Array.isArray(value)) {
     return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
@@ -491,7 +627,7 @@ const applyInjectedContextToOutput = async ({
   // lastPromptText hadn't yet been captured by the time
   // experimental.chat.system.transform fired) would silently re-serve
   // the first turn's pack. Recompute on every call instead — the chat
-  // path tolerates the runCli round trip, and correctness beats the
+  // path tolerates the transport round trip, and correctness beats the
   // O(1) hit when the cache key isn't tied to the prompt that produced
   // the pack.
   const query = resolveInjectQuery();
@@ -1323,6 +1459,35 @@ export const OpencodeMemPlugin = async ({
   const viewerHost = process.env.CODEMEM_VIEWER_HOST || "127.0.0.1";
   const viewerPort = process.env.CODEMEM_VIEWER_PORT || "38888";
   const viewerDbPath = process.env.CODEMEM_DB || "";
+  const expandedViewerDbPath = viewerDbPath.startsWith("~/")
+    ? join(process.env.HOME?.trim() || homedir(), viewerDbPath.slice(2))
+    : viewerDbPath;
+  const promptPackDbPath = resolve(
+    cwd,
+    expandedViewerDbPath || join(homedir(), ".codemem", "mem.sqlite"),
+  );
+  const normalizeIdentityPath = (value) => {
+    const trimmed = String(value || "").trim();
+    if (!trimmed) return null;
+    const expanded = trimmed.startsWith("~/")
+      ? join(process.env.HOME?.trim() || homedir(), trimmed.slice(2))
+      : trimmed;
+    return resolve(cwd, expanded);
+  };
+  const promptPackIdentityTarget = {
+    device_id: process.env.CODEMEM_DEVICE_ID?.trim() || null,
+    actor_id_present: Object.hasOwn(process.env, "CODEMEM_ACTOR_ID"),
+    actor_id: process.env.CODEMEM_ACTOR_ID?.trim() || null,
+    config_path: normalizeIdentityPath(process.env.CODEMEM_CONFIG),
+    runtime_root: normalizeIdentityPath(process.env.CODEMEM_RUNTIME_ROOT),
+    workspace_id: process.env.CODEMEM_WORKSPACE_ID?.trim() || null,
+    home_dir: normalizeIdentityPath(process.env.HOME || homedir()),
+    pack_compression: process.env.CODEMEM_PACK_COMPRESSION?.trim() || null,
+    embedding_disabled: ["1", "true", "yes"].includes(
+      String(process.env.CODEMEM_EMBEDDING_DISABLED || "").toLowerCase(),
+    ),
+    embedding_model: process.env.CODEMEM_EMBEDDING_MODEL || "Xenova/bge-small-en-v1.5",
+  };
   const viewerConfigPath = process.env.CODEMEM_CONFIG || "";
   // A malformed value (e.g. "abc", "", "-1") falls back to the 20s default
   // instead of NaN, which would silently disable the timeout. An explicit "0"
@@ -1332,6 +1497,8 @@ export const OpencodeMemPlugin = async ({
   const rawCommandTimeout = String(process.env.CODEMEM_PLUGIN_CMD_TIMEOUT ?? "").trim();
   const commandTimeout =
     rawCommandTimeout === "0" ? 0 : parsePositiveInt(rawCommandTimeout, 20000);
+  const promptPackHttpTimeout =
+    parsePositiveInt(process.env.CODEMEM_INJECT_HTTP_MAX_TIME_S || "2", 2) * 1000;
   const backendUpdatePolicy = parseBackendUpdatePolicy(
     process.env.CODEMEM_BACKEND_UPDATE_POLICY || "notify"
   );
@@ -1373,8 +1540,14 @@ export const OpencodeMemPlugin = async ({
   const rawEventsEnabled = envNotDisabled(
     process.env.CODEMEM_RAW_EVENTS || "1"
   );
-  const rawEventsUrl = `http://${viewerHost}:${viewerPort}/api/raw-events`;
-  const rawEventsStatusUrl = `http://${viewerHost}:${viewerPort}/api/raw-events/status?limit=1`;
+  const viewerUrlHost = viewerHost.includes(":") && !viewerHost.startsWith("[")
+    ? `[${viewerHost}]`
+    : viewerHost;
+  const rawEventsUrl = `http://${viewerUrlHost}:${viewerPort}/api/raw-events`;
+  const rawEventsStatusUrl = `http://${viewerUrlHost}:${viewerPort}/api/raw-events/status?limit=1`;
+  const packUrl = `http://${viewerUrlHost}:${viewerPort}/api/pack`;
+  const promptPackProfileUrl = `http://${viewerUrlHost}:${viewerPort}/api/prompt-pack-profile`;
+  const promptPackLedgerUrl = `http://${viewerUrlHost}:${viewerPort}/api/prompt-pack-ledger`;
   const rawEventsBackoffMs = parseNumber(
     process.env.CODEMEM_RAW_EVENTS_BACKOFF_MS || "10000",
     10000
@@ -1392,6 +1565,7 @@ export const OpencodeMemPlugin = async ({
   let fallbackFailureNoted = false;
   let lastStatusCheckAt = 0;
   let lastStatusAvailable = true;
+  let promptPackTransportUnavailableUntil = 0;
 
   // Viewer health-check state
   const HEALTH_CHECK_INTERVAL_MS = 60_000;
@@ -1967,6 +2141,110 @@ export const OpencodeMemPlugin = async ({
   const runCli = async (args, options = {}) =>
     runCommand([runner, ...runnerArgs, ...args], options);
 
+  const postViewerJson = async ({ url, operation, payload, validate }) => {
+    if (!viewerEnabled) {
+      return {
+        ok: false,
+        classification: {
+          cause: `${operation} viewer transport disabled`,
+          retryable: true,
+        },
+      };
+    }
+    if (Date.now() < promptPackTransportUnavailableUntil) {
+      return {
+        ok: false,
+        classification: {
+          cause: `${operation} viewer transport in backoff`,
+          retryable: true,
+        },
+      };
+    }
+
+    let response;
+    try {
+      const profileResponse = await fetch(promptPackProfileUrl, {
+        method: "GET",
+        redirect: "manual",
+        signal: AbortSignal.timeout(promptPackHttpTimeout),
+      });
+      let profileBody;
+      try {
+        profileBody = await profileResponse.json();
+      } catch {
+        profileBody = null;
+      }
+      if (!profileResponse.ok) {
+        const classification = classifyViewerHttpFailure({
+          operation: `${operation} profile`,
+          status: profileResponse.status,
+          body: profileBody,
+        });
+        if (classification.retryable) {
+          promptPackTransportUnavailableUntil = Date.now() + Math.max(1000, rawEventsBackoffMs);
+        }
+        return { ok: false, classification };
+      }
+      if (
+        !isRecord(profileBody)
+        || profileBody.service !== "codemem-viewer"
+        || profileBody.protocol_version !== 1
+        || profileBody.db_path !== promptPackDbPath
+        || canonicalJson(profileBody.identity_target) !== canonicalJson(promptPackIdentityTarget)
+      ) {
+        promptPackTransportUnavailableUntil = Date.now() + Math.max(1000, rawEventsBackoffMs);
+        return {
+          ok: false,
+          classification: {
+            cause: `${operation} viewer profile handshake mismatch`,
+            retryable: true,
+          },
+        };
+      }
+      response = await fetch(url, {
+        method: "POST",
+        redirect: "manual",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(promptPackHttpTimeout),
+      });
+    } catch (error) {
+      const classification = classifyViewerHttpFailure({ operation, error });
+      promptPackTransportUnavailableUntil =
+        Date.now() + Math.max(1000, rawEventsBackoffMs);
+      return { ok: false, classification };
+    }
+
+    let body;
+    try {
+      body = await response.json();
+    } catch {
+      body = null;
+    }
+    if (!response.ok) {
+      const classification = classifyViewerHttpFailure({
+        operation,
+        status: response.status,
+        body,
+      });
+      if (classification.retryable) {
+        promptPackTransportUnavailableUntil =
+          Date.now() + Math.max(1000, rawEventsBackoffMs);
+      }
+      return { ok: false, classification };
+    }
+
+    if (!validate(body)) {
+      const classification = classifyViewerHttpFailure({ operation, malformed: true });
+      promptPackTransportUnavailableUntil =
+        Date.now() + Math.max(1000, rawEventsBackoffMs);
+      return { ok: false, classification };
+    }
+
+    promptPackTransportUnavailableUntil = 0;
+    return { ok: true, body };
+  };
+
   const attemptMetadata = (identity, sessionID = null, promptNumber = promptCounter) => ({
     attempt_id: identity.attemptId,
     started_at: (() => {
@@ -1988,10 +2266,39 @@ export const OpencodeMemPlugin = async ({
   });
 
   const runPromptPackLedger = async (payload) => {
+    const viewerPayload = {
+      ...payload,
+      db_path: promptPackDbPath,
+      identity_target: promptPackIdentityTarget,
+    };
+    const httpResult = await postViewerJson({
+      url: promptPackLedgerUrl,
+      operation: "prompt-pack-ledger",
+      payload: viewerPayload,
+      validate: isValidLedgerHttpPayload,
+    });
+    if (httpResult.ok) {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify(httpResult.body),
+        stderr: "",
+        transport: "viewer",
+      };
+    }
+
+    const { cause, retryable } = httpResult.classification;
+    await logLine(
+      `inject.ledger.http_error cause=${JSON.stringify(redactLog(cause, 200))} retryable=${retryable}`
+    );
+    if (!retryable) {
+      return { exitCode: 1, stdout: "", stderr: cause, transport: "viewer" };
+    }
+
     try {
-      return await runCli(["prompt-pack-ledger"], {
+      const result = await runCli(["prompt-pack-ledger"], {
         stdinText: JSON.stringify(payload),
       });
+      return { ...result, transport: "cli" };
     } catch {
       return null;
     }
@@ -2317,12 +2624,51 @@ export const OpencodeMemPlugin = async ({
         injectTokenBudget,
         internalLedger: true,
       });
+      const httpResult = await postViewerJson({
+        url: packUrl,
+        operation: "pack",
+        payload: buildPackHttpBody({
+          query,
+          filesModified: sessionContext.filesModified,
+          injectLimit,
+          injectTokenBudget,
+          projectName: normalizeProjectLabel(process.env.CODEMEM_PROJECT),
+          cwd,
+          dbPath: promptPackDbPath,
+          identityTarget: promptPackIdentityTarget,
+          attempt: metadata,
+        }),
+        validate: isValidPackHttpPayload,
+      });
+      if (httpResult.ok) {
+        return {
+          packArgs,
+          result: {
+            exitCode: 0,
+            stdout: JSON.stringify(httpResult.body),
+            stderr: "",
+            transport: "viewer",
+          },
+        };
+      }
+
+      const { cause, retryable } = httpResult.classification;
+      await logLine(
+        `inject.pack.http_error cause=${JSON.stringify(redactLog(cause, 200))} retryable=${retryable}`
+      );
+      if (!retryable) {
+        return {
+          packArgs,
+          result: { exitCode: 1, stdout: "", stderr: cause, transport: "viewer" },
+        };
+      }
+
       let result = await runCli(packArgs, { stdinText: JSON.stringify(metadata) });
       if (rejectsInternalLedgerFlag(result)) {
         packArgs = packArgs.filter((arg) => arg !== "--internal-ledger");
         result = await runCli(packArgs);
       }
-      return { packArgs, result };
+      return { packArgs, result: { ...result, transport: "cli" } };
     };
     let { packArgs, result } = await runPack();
     let { packText, conflictPackText, metrics, itemCount, ledgerConflict } = parsePackOutput(result);
@@ -2333,7 +2679,7 @@ export const OpencodeMemPlugin = async ({
     let repairFallbackUsed = false;
     if (ledgerConflict) {
       // A restarted plugin has no artifact cache to predict this conflict. The
-      // CLI marker is authoritative: never attribute delivery to the stale
+      // ledger marker is authoritative: never attribute delivery to the stale
       // identity, and retry once with a fresh deterministic identity.
       await log("warn", "codemem prompt-pack ledger conflict; retrying with fresh identity", {
         sessionID,
@@ -2937,9 +3283,9 @@ export const OpencodeMemPlugin = async ({
           } inject_enabled=${injectEnabled} tui_toast=${Boolean(client.tui?.showToast)} query=${JSON.stringify(safeQuery)} first_prompt_len=${firstPromptLen} last_prompt_len=${lastPromptLen} project=${JSON.stringify(projectName)} files_modified=${filesModifiedCount}`
         );
       }
-      // Without the old per-session cache, every transform call shells out
-      // through `runCli`. Swallow rejections here so a single failed pack
-      // build (CLI crash, sqlite locked, network blip on HTTP fallback)
+      // Without the old per-session cache, every transform call rebuilds the
+      // pack. Swallow rejections here so a single failed build (viewer failure,
+      // CLI fallback crash, sqlite lock, or network blip)
       // can't take down the chat path.
       let applied = false;
       try {
@@ -3217,7 +3563,7 @@ export const OpencodeMemPlugin = async ({
           const stats = await runCli(["stats"]);
           const recent = await runCli(["recent", "--limit", "5"]);
           const lines = [
-            `viewer: http://${viewerHost}:${viewerPort}`,
+            `viewer: http://${viewerUrlHost}:${viewerPort}`,
             `log: ${logPath || "disabled"}`,
           ];
           if (stats.exitCode === 0 && stats.stdout.trim()) {
@@ -3276,6 +3622,10 @@ export const __testUtils = {
   redactPackCommand,
   rejectsInternalLedgerFlag,
   classifyFallbackCommandResult,
+  classifyViewerHttpFailure,
+  isValidPackHttpPayload,
+  isValidLedgerHttpPayload,
+  buildPackHttpBody,
   parsePackText,
   parsePackMetrics,
   resolveInjectSurface,

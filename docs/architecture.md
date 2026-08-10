@@ -39,7 +39,7 @@ flowchart LR
 ```
 
 1. Adapters capture tool/conversation lifecycle events and normalize them into raw events with optional `_adapter` envelopes.
-2. OpenCode streams raw events to the viewer ingest API (`POST /api/raw-events`) with preflight checks (`GET /api/raw-events/status`) and can fall back to CLI queue enqueue when stream writes fail.
+2. OpenCode streams raw events to the viewer ingest API (`POST /api/raw-events`) with preflight checks (`GET /api/raw-events/status`) and can fall back to CLI queue enqueue when stream writes fail. Prompt-time packs and prompt-pack ledger transitions also use viewer POST APIs first, with CLI fallback only for retryable transport or version failures.
 3. Claude hook ingestion posts to `POST /api/claude-hooks` first and falls back to `codemem claude-hook-ingest` direct enqueue when the local viewer API is unavailable. Codex hook ingestion follows the same HTTP-first shape through `POST /api/codex-hooks`, then `codemem codex-hook-ingest` direct enqueue, with a Codex-specific on-disk spool as the last-resort fallback.
 4. The viewer/store persists raw events and queues durable flush batches.
 5. Idle and sweeper workers claim batches and run them through ingest.
@@ -203,12 +203,13 @@ In plugin mode, these can be overridden via `CODEMEM_INJECT_LIMIT` and `CODEMEM_
 
 The OpenCode plugin uses `experimental.chat.messages.transform` to append the current pack text to the latest user message. Earlier injected message blocks are cached by message ID and replayed byte-for-byte on later turns, preserving the stable prompt prefix for provider prompt caches while only the newest user turn receives volatile recall output. Scope revocation affects newly built packs, but historical injected blocks in the same OpenCode session are not retroactively scrubbed; start a new session after revoking access if prompt history must be clean. Set `CODEMEM_INJECT_SURFACE=system` to use the legacy `experimental.chat.system.transform` system-prompt surface. A toast notification shows injection stats on first inject per session.
 
-Before each pack build, the plugin derives stable attempt and request identities from safe request components so an exact adapter retry is idempotent. At the tool-event boundary, repository-contained absolute working-set paths are converted to repository-relative `/` paths; outside-repository, traversing, blank, and overlong paths are discarded. The same normalized set feeds pack retrieval and its ledger metadata. Pack assembly returns its legacy response and trace from the same retrieval pass, then the local evidence ledger stores at most 50 selected exposures and 20 diagnostics. Exposure snapshots contain bounded identity, revision, scope, score, and reason-code fields; working-set evidence is limited to normalized repository-relative paths. The plugin marks handoff after the exact context bytes are attached. A cache hit for the current request creates and delivers one new attempt without modifying the original, while byte-for-byte reconstruction of historical message parts creates no attempts. Ledger writes are fail-open and do not alter retrieval, rendering, or injection.
+Before each pack build, the plugin derives stable attempt and request identities from safe request components so an exact adapter retry is idempotent. At the tool-event boundary, repository-contained absolute working-set paths are converted to repository-relative `/` paths; outside-repository, traversing, blank, and overlong paths are discarded. The same normalized set feeds pack retrieval and its ledger metadata. Before sending prompt-derived POST data, the plugin performs a payload-free, redirect-disabled handshake that verifies the Codemem viewer marker plus resolved database, identity/config, compression, and embedding targets. The viewer also verifies that its cached store identity still matches current database/config resolution before retrieval or ledger writes. Connection failures, timeouts, unavailable endpoints, unrecognized responses, server failures, unusable success responses, and profile-target mismatches use the compatible CLI fallback, while structured validated request errors are terminal. Pack assembly returns its legacy response and trace from the same retrieval pass, then the local evidence ledger stores at most 50 selected exposures and 20 diagnostics. Exposure snapshots contain bounded identity, revision, scope, score, and reason-code fields; working-set evidence is limited to normalized repository-relative paths. Attempt recording, handoff, skipped attempts, and cache reuse use the viewer ledger dispatcher on healthy paths and retain classified CLI fallback. A cache hit for the current request creates and delivers one new attempt without modifying the original, while byte-for-byte reconstruction of historical message parts creates no attempts. Ledger writes are fail-open and do not alter retrieval, rendering, or injection.
 
 ```mermaid
 sequenceDiagram
 participant OC as OpenCode
 participant PL as codemem plugin
+participant VW as viewer HTTP
 participant CLI as codemem pack
 participant ST as MemoryStore
 participant DB as SQLite
@@ -217,13 +218,18 @@ OC->>PL: tool.execute.after events
 PL->>PL: update session context
 OC->>PL: experimental.chat.messages.transform
 PL->>PL: build injection query from working set
-PL->>CLI: codemem pack with query, limit, token budget
+PL->>VW: POST /api/pack with query, working set, render options, attempt
+alt retryable viewer failure
+PL->>CLI: codemem pack fallback
 CLI->>ST: build_memory_pack
+else healthy viewer
+VW->>ST: build_memory_pack
+end
 ST->>DB: FTS5 BM25 lexical search
 ST->>DB: sqlite-vec semantic search
 ST->>ST: merge, rerank, assemble sections
-ST-->>CLI: pack text and metrics
-CLI-->>PL: JSON result
+ST-->>PL: pack text and metrics through selected transport
+PL->>VW: POST /api/prompt-pack-ledger delivery
 PL->>OC: append codemem context to latest user message
 ```
 

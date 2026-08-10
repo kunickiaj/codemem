@@ -288,6 +288,30 @@ export class MemoryStore {
 		this.crossSessionDedupWindowMs = resolveCrossSessionDedupWindowMs();
 	}
 
+	hasCurrentIdentity(): boolean {
+		const envDeviceId = process.env.CODEMEM_DEVICE_ID?.trim();
+		let dbDeviceId: string | undefined;
+		if (!envDeviceId) {
+			try {
+				const row = this.d
+					.select({ device_id: schema.syncDevice.device_id })
+					.from(schema.syncDevice)
+					.limit(1)
+					.get();
+				dbDeviceId = row?.device_id;
+			} catch {
+				// Older/minimal schemas use the stable local fallback.
+			}
+		}
+		const deviceId = envDeviceId || dbDeviceId || "local";
+		const config = readCodememConfigFile();
+		const configActorId = Object.hasOwn(process.env, "CODEMEM_ACTOR_ID")
+			? cleanStr(process.env.CODEMEM_ACTOR_ID)
+			: (cleanStr(config.actor_id) ?? null);
+		const actorId = configActorId || `local:${deviceId}`;
+		return deviceId === this.deviceId && actorId === this.actorId;
+	}
+
 	refreshPersistedLocalIdentity(expectedActorId: string): boolean {
 		const actorId = cleanStr(expectedActorId);
 		if (!actorId) return false;

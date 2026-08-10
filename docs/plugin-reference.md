@@ -14,6 +14,20 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 4. Use `codemem stats` and `codemem recent` to confirm ingestion.
 5. Browse the viewer at the printed URL.
 
+OpenCode prompt-time pack construction and prompt-pack ledger transitions use the
+long-lived local viewer first. Retryable connection, timeout, endpoint-version,
+server, or malformed-response failures fall back to the compatible CLI path.
+Validated request errors are terminal and do not spawn a fallback command. The
+HTTP timeout uses `CODEMEM_INJECT_HTTP_MAX_TIME_S` (default: 2 seconds).
+Pack and ledger requests include their resolved default or explicit database,
+identity/config, compression, and embedding targets. The viewer also rejects a cached store
+identity that no longer matches current database/config resolution. A mismatch
+uses the CLI fallback instead of accepting context from another local profile.
+Arbitrary 4xx responses from a process on the viewer port also fall back; only
+structured Codemem validation errors are terminal. A payload-free profile
+handshake runs before each POST, and Fetch redirects are disabled so prompt-derived
+request bodies are not replayed to another endpoint.
+
 ## Claude marketplace install
 
 CodeMem's Claude integration is hook-first and distributed through a Claude plugin marketplace source in this repo (`.claude-plugin/marketplace.json`).
@@ -350,7 +364,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_CODEX_HOOK_LOCK_TTL_S` | Seconds before a Codex hook fallback lock is treated as stale (default `120`). |
 | `CODEMEM_CODEX_HOOK_SPOOL_DIR` | Codex hook fallback spool directory (default `~/.codemem/codex-hook-spool`). |
 | `CODEMEM_INJECT_HTTP_CONNECT_TIMEOUT_S` | `UserPromptSubmit` pack injection connect timeout in seconds (default `1`). |
-| `CODEMEM_INJECT_HTTP_MAX_TIME_S` | `UserPromptSubmit` pack injection total timeout in seconds (default `2`). |
+| `CODEMEM_INJECT_HTTP_MAX_TIME_S` | Viewer request timeout for OpenCode packs/ledger transitions and total HTTP pack timeout for Claude/Codex `UserPromptSubmit` (default `2` seconds). |
 | `CODEMEM_INJECT_HTTP_FALLBACK` | Set to `0` to disable HTTP `/api/pack` fallback for Claude/Codex prompt-time injection (default `1`). |
 | `CODEMEM_INJECT_MAX_CHARS` | Max chars returned as Claude/Codex `additionalContext` (default `16000`). |
 | `CODEMEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
