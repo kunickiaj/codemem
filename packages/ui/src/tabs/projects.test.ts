@@ -364,6 +364,115 @@ describe("Projects tab", () => {
 		expect(surface?.querySelector<HTMLButtonElement>("button")?.disabled).toBe(true);
 	});
 
+	it("preserves the recipient review DOM, draft decision, and focus across an unchanged refresh", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());
+
+		await loadProjectsData();
+		const firstSelect = document.querySelector(
+			".recipient-policy-review select",
+		) as HTMLSelectElement | null;
+		if (!firstSelect) throw new Error("review decision select missing");
+		firstSelect.value = "choose_recipients";
+		firstSelect.dispatchEvent(new Event("change"));
+		firstSelect.focus();
+
+		await loadProjectsData();
+
+		const refreshedSelect = document.querySelector(
+			".recipient-policy-review select",
+		) as HTMLSelectElement | null;
+		expect(refreshedSelect).toBe(firstSelect);
+		expect(refreshedSelect?.value).toBe("choose_recipients");
+		expect(document.activeElement).toBe(firstSelect);
+	});
+
+	it("rerenders changed recipient evidence while restoring focus and resetting the stale draft", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview)
+			.mockResolvedValueOnce(recipientReview())
+			.mockResolvedValueOnce(
+				recipientReview({
+					reviewItems: [
+						reviewItem({
+							finding: "Updated recipient evidence needs a decision.",
+							sourceFingerprint: "fingerprint-2",
+						}),
+					],
+				}),
+			);
+
+		await loadProjectsData();
+		const firstSelect = document.querySelector(
+			".recipient-policy-review select",
+		) as HTMLSelectElement | null;
+		if (!firstSelect) throw new Error("review decision select missing");
+		firstSelect.value = "choose_recipients";
+		firstSelect.dispatchEvent(new Event("change"));
+		firstSelect.focus();
+
+		await loadProjectsData();
+
+		const refreshedSelect = document.querySelector(
+			".recipient-policy-review select",
+		) as HTMLSelectElement | null;
+		expect(refreshedSelect).not.toBe(firstSelect);
+		expect(refreshedSelect?.value).toBe("keep_current_setup");
+		expect(document.activeElement).toBe(refreshedSelect);
+		expect(document.body.textContent).toContain("Updated recipient evidence needs a decision.");
+	});
+
+	it("restores focus to an unaffected apply button when other review evidence changes", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		const firstItem = reviewItem();
+		const secondItem = reviewItem({
+			finding: "Second recipient finding.",
+			reviewItemId: "review-2",
+			sourceFingerprint: "fingerprint-2",
+		});
+		vi.mocked(api.loadRecipientPolicyReview)
+			.mockResolvedValueOnce(recipientReview({ reviewItems: [firstItem, secondItem] }))
+			.mockResolvedValueOnce(
+				recipientReview({
+					reviewItems: [firstItem, { ...secondItem, finding: "Updated second recipient finding." }],
+				}),
+			);
+
+		await loadProjectsData();
+		const firstButton = document.querySelector<HTMLButtonElement>(
+			'button[data-recipient-policy-focus-key="review-1"]',
+		);
+		if (!firstButton) throw new Error("review apply button missing");
+		firstButton.focus();
+
+		await loadProjectsData();
+
+		const refreshedButton = document.querySelector<HTMLButtonElement>(
+			'button[data-recipient-policy-focus-key="review-1"]',
+		);
+		expect(refreshedButton).not.toBe(firstButton);
+		expect(document.activeElement).toBe(refreshedButton);
+		expect(document.body.textContent).toContain("Updated second recipient finding.");
+	});
+
 	it.each<RecipientPolicyReviewDecisionV1>([
 		"keep_current_setup",
 		"reject_suggestion",

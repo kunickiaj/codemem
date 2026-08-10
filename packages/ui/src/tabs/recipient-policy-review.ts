@@ -10,6 +10,8 @@ type RefreshReview = () => Promise<void>;
 
 const pendingReviewItems = new Set<string>();
 const staleReviewItems = new Set<string>();
+const renderedReviewSignatures = new WeakMap<HTMLElement, string>();
+const decisionDraftsByMount = new WeakMap<HTMLElement, Map<string, string>>();
 let surfaceMessage = "";
 
 function paragraph(text: string, className = ""): HTMLParagraphElement {
@@ -69,6 +71,7 @@ function renderActionableItem(
 	index: number,
 	status: HTMLElement,
 	onRefresh: RefreshReview,
+	decisionDrafts: Map<string, string>,
 ): HTMLElement {
 	const card = document.createElement("article");
 	card.className = "project-inventory-row recipient-policy-review-item";
@@ -88,20 +91,30 @@ function renderActionableItem(
 	const select = document.createElement("select");
 	select.id = selectId;
 	select.className = "project-filter recipient-policy-review-select";
+	const draftKey = `${item.reviewItemId}:${item.sourceFingerprint}`;
+	select.dataset.recipientPolicyFocusKey = item.reviewItemId;
+	select.dataset.recipientPolicyFocusTarget = "decision";
 	for (const reviewOption of item.options) {
 		const option = document.createElement("option");
 		option.value = reviewOption.decision;
 		option.textContent = reviewOption.label;
 		select.appendChild(option);
 	}
-	if (item.options.some((option) => option.decision === item.recommendedDecision)) {
-		select.value = item.recommendedDecision;
+	const draftDecision = decisionDrafts.get(draftKey);
+	const initialDecision =
+		draftDecision && item.options.some((option) => option.decision === draftDecision)
+			? draftDecision
+			: item.recommendedDecision;
+	if (item.options.some((option) => option.decision === initialDecision)) {
+		select.value = initialDecision;
 	}
 
 	const submit = document.createElement("button");
 	submit.className = "settings-button";
 	submit.type = "button";
 	submit.textContent = "Apply decision";
+	submit.dataset.recipientPolicyFocusKey = item.reviewItemId;
+	submit.dataset.recipientPolicyFocusTarget = "apply";
 	const deferred = paragraph("", "settings-note recipient-policy-deferred");
 	const previewMount = document.createElement("div");
 	previewMount.className = "recipient-policy-preview-mount";
@@ -120,7 +133,10 @@ function renderActionableItem(
 		submit.disabled =
 			current.preview.requiresDecisionInput || pendingReviewItems.has(item.reviewItemId);
 	};
-	select.addEventListener("change", updateSelection);
+	select.addEventListener("change", () => {
+		decisionDrafts.set(draftKey, select.value);
+		updateSelection();
+	});
 	updateSelection();
 
 	if (staleReviewItems.has(item.reviewItemId)) {
@@ -209,13 +225,26 @@ export function renderRecipientPolicyReview(
 	review: RecipientPolicyReviewListV1,
 	onRefresh: RefreshReview,
 ): void {
+	const signature = `review:${JSON.stringify({ review, surfaceMessage })}`;
+	if (renderedReviewSignatures.get(mount) === signature) return;
 	const actionable = review.reviewItems.filter((item) => item.options.length > 0);
 	if (actionable.length === 0 && review.blockedItems.length === 0) {
 		mount.replaceChildren();
 		mount.hidden = true;
+		renderedReviewSignatures.set(mount, signature);
 		return;
 	}
 
+	const decisionDrafts = decisionDraftsByMount.get(mount) ?? new Map<string, string>();
+	decisionDraftsByMount.set(mount, decisionDrafts);
+	const activeElement = document.activeElement;
+	const focusedReviewControl =
+		activeElement instanceof HTMLElement && mount.contains(activeElement)
+			? {
+					key: activeElement.dataset.recipientPolicyFocusKey,
+					target: activeElement.dataset.recipientPolicyFocusTarget,
+				}
+			: null;
 	mount.hidden = false;
 	const surface = document.createElement("section");
 	surface.className = "card recipient-policy-review";
@@ -240,7 +269,7 @@ export function renderRecipientPolicyReview(
 		const list = document.createElement("div");
 		list.className = "project-inventory-list recipient-policy-review-list";
 		actionable.forEach((item, index) => {
-			list.appendChild(renderActionableItem(item, index, status, onRefresh));
+			list.appendChild(renderActionableItem(item, index, status, onRefresh, decisionDrafts));
 		});
 		surface.append(heading, list);
 	}
@@ -254,19 +283,34 @@ export function renderRecipientPolicyReview(
 		surface.append(heading, list);
 	}
 	mount.replaceChildren(surface);
+	renderedReviewSignatures.set(mount, signature);
+	if (focusedReviewControl?.key && focusedReviewControl.target) {
+		const nextFocusedControl = Array.from(
+			mount.querySelectorAll<HTMLElement>(
+				"[data-recipient-policy-focus-key][data-recipient-policy-focus-target]",
+			),
+		).find(
+			(control) =>
+				control.dataset.recipientPolicyFocusKey === focusedReviewControl.key &&
+				control.dataset.recipientPolicyFocusTarget === focusedReviewControl.target,
+		);
+		nextFocusedControl?.focus();
+	}
 }
 
 export function renderRecipientPolicyReviewLoadError(mount: HTMLElement, error: unknown): void {
+	const errorMessage =
+		error instanceof Error ? error.message : "Unable to load recipient migration review.";
+	const signature = `error:${errorMessage}`;
+	if (renderedReviewSignatures.get(mount) === signature) return;
 	mount.hidden = false;
 	const surface = document.createElement("section");
 	surface.className = "card recipient-policy-review";
 	const title = document.createElement("h2");
 	title.textContent = "Recipient migration review";
-	const message = paragraph(
-		error instanceof Error ? error.message : "Unable to load recipient migration review.",
-		"settings-note project-attention-note",
-	);
+	const message = paragraph(errorMessage, "settings-note project-attention-note");
 	message.setAttribute("role", "status");
 	surface.append(title, message);
 	mount.replaceChildren(surface);
+	renderedReviewSignatures.set(mount, signature);
 }
