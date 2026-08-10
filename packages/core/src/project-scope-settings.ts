@@ -9,7 +9,7 @@ import {
 	type ScopeResolutionReason,
 	type WorkspaceIdentitySource,
 } from "./scope-resolution.js";
-import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap.js";
+import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 import { recordAccessCleanupOp, recordReplicationOp } from "./sync-replication.js";
 
 export interface SharingDomainSettingsScope {

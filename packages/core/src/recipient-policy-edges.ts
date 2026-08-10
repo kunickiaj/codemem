@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
-import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap.js";
+import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 
 export type RecipientPolicyEdgeRecipientRefV1 =
 	| { recipientKind: "identity"; identityId: string }

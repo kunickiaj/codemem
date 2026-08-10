@@ -12,7 +12,7 @@ import {
 	type WorkspaceIdentitySource,
 } from "./scope-resolution.js";
 import { shareProjectSetDigest } from "./share-operation.js";
-import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap.js";
+import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 
 export type LegacyRecipientPolicyConfidenceV1 = "high" | "medium" | "low";
 

@@ -7,7 +7,7 @@ import {
 } from "./recipient-reviewed-intent.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 import { managedProjectScopeId } from "./share-operation.js";
-import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap.js";
+import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { buildBaseUrl } from "./sync-http-client.js";
 

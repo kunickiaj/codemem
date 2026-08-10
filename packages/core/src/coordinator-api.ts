@@ -26,6 +26,7 @@ import {
 	normalizeIdentityDisplayName,
 	normalizeProjectInviteSummaries,
 } from "./project-invite-identity.js";
+import { acceptedProjectIntentDigest, parseAcceptedProjectIntent } from "./project-share-intent.js";
 import {
 	RecipientReviewedIntentError,
 	type RecipientReviewedIntentV1,
@@ -36,7 +37,6 @@ import {
 	type InMemoryRequestRateLimiter,
 } from "./request-rate-limit.js";
 import { explainScopeMembershipRevocation } from "./scope-membership-semantics.js";
-import { acceptedProjectIntentDigest, parseAcceptedProjectIntent } from "./share-operation.js";
 import { DEFAULT_TIME_WINDOW_S } from "./sync-auth-constants.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 

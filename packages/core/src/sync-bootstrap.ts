@@ -19,6 +19,7 @@ import { toJson } from "./db.js";
 import * as schema from "./schema.js";
 import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
 import { buildAuthHeaders } from "./sync-auth.js";
+import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 import { LOCAL_SYNC_CAPABILITY, SYNC_CAPABILITY_HEADER } from "./sync-capability.js";
 import { requestJson } from "./sync-http-client.js";
 import {
@@ -33,21 +34,7 @@ import {
 import type { SyncMemorySnapshotItem, SyncResetRequired } from "./types.js";
 import { queueVectorBackfillForSyncBootstrap } from "./vector-migration.js";
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/**
- * Synthetic placeholder cwd written for sessions created during bootstrap
- * snapshot apply. These sessions exist only to satisfy the NOT NULL FK on
- * memory_items.session_id for inbound memories that did not originate on
- * this device. They are not user-facing and should be filtered out of any
- * UI that lists projects or sessions by cwd.
- *
- * Format: `__sync_bootstrap__:<project>` or `__sync_bootstrap__` if no
- * project is associated.
- */
-export const SYNC_BOOTSTRAP_CWD_PREFIX = "__sync_bootstrap__";
+export { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 
 // ---------------------------------------------------------------------------
 // Types

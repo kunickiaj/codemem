@@ -48,7 +48,9 @@ These fields exist only on the originating device and are NEVER written to a rep
 
 When a memory arrives on a device that has never observed its originating session, the receiver creates a *synthetic placeholder session* (`sessions.cwd = "__sync_bootstrap__:<project>"`) just to satisfy the NOT NULL foreign key on `memory_items.session_id`. These placeholders are internal scaffolding and are filtered out of the Projects tab read model. They never carry any of the device-local fields above — only the `project` value that was carried on the wire.
 
-The shared prefix is exported as `SYNC_BOOTSTRAP_CWD_PREFIX` from `packages/core/src/sync-bootstrap.ts`; readers and writers reference the same constant.
+The shared prefix is defined as `SYNC_BOOTSTRAP_CWD_PREFIX` in the dependency-free
+`packages/core/src/sync-bootstrap-constants.ts` module and re-exported from `sync-bootstrap.ts` for compatibility;
+readers and writers reference the same constant without pulling the bootstrap runtime into unrelated bundles.
 
 ## How `memory_items.project` works
 

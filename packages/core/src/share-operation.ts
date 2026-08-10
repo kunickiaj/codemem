@@ -1,23 +1,28 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
+import type { AcceptedProjectIntent, ShareProjectIntent } from "./project-share-intent.js";
+import {
+	parseAcceptedProjectIntent,
+	SHARE_HISTORY_POLICY,
+	shareProjectSetDigest,
+} from "./project-share-intent.js";
 import { commitDirectProjectSharePolicyInTransaction } from "./recipient-policy-onboarding.js";
-import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
-export const SHARE_HISTORY_POLICY = "existing_and_future" as const;
+export type { AcceptedProjectIntent, ShareProjectIntent } from "./project-share-intent.js";
+export {
+	acceptedProjectIntentDigest,
+	parseAcceptedProjectIntent,
+	SHARE_HISTORY_POLICY,
+	shareProjectSetDigest,
+} from "./project-share-intent.js";
+
 export const SHARE_OPERATION_STATE = "waiting_for_acceptance" as const;
 
 export type SharePersonIntent =
 	| { kind: "existing"; personId: string; displayName: string }
 	| { kind: "pending"; personId?: string; displayName: string };
-
-export interface ShareProjectIntent {
-	canonicalIdentity: string;
-	displayName: string;
-	identitySource: string;
-	existingMemoryCount: number;
-}
 
 export interface ShareOperationStep {
 	stepKey: string;
@@ -66,27 +71,6 @@ export function normalizeTeammateName(value: string): string {
 	});
 	if (hasControlCharacter) throw new Error("teammate_name_invalid");
 	return normalized;
-}
-
-export function shareProjectSetDigest(projects: ShareProjectIntent[]): string {
-	const reviewedProjects = projects
-		.map((project) => ({
-			canonicalIdentity: project.canonicalIdentity,
-			existingMemoryCount: project.existingMemoryCount,
-		}))
-		.toSorted((left, right) => left.canonicalIdentity.localeCompare(right.canonicalIdentity));
-	return digest({ v: 1, historyPolicy: SHARE_HISTORY_POLICY, projects: reviewedProjects });
-}
-
-export function acceptedProjectIntentDigest(projects: AcceptedProjectIntent[]): string {
-	return shareProjectSetDigest(
-		projects.map((project) => ({
-			canonicalIdentity: project.canonical_identity,
-			displayName: project.display_name,
-			identitySource: "coordinator_acceptance",
-			existingMemoryCount: project.existing_memory_count,
-		})),
-	);
 }
 
 export function managedProjectScopeId(
@@ -424,12 +408,6 @@ export function persistShareOperation(
 	save();
 }
 
-export interface AcceptedProjectIntent {
-	canonical_identity: string;
-	display_name: string;
-	existing_memory_count: number;
-}
-
 export interface ShareOperationAcceptanceInput {
 	operationId: string;
 	localInviterActorId: string;
@@ -495,59 +473,6 @@ function inviterDeviceDisplayName(db: Database, deviceId: string): string {
 		.pluck()
 		.get(deviceId);
 	return validInviterDeviceDisplayName(peerName) ?? "Existing device";
-}
-
-export function parseAcceptedProjectIntent(value: unknown): AcceptedProjectIntent[] {
-	if (!Array.isArray(value) || value.length === 0 || value.length > 100) {
-		throw new Error("operation_intent_invalid");
-	}
-	const projects = value.map((item) => {
-		if (!item || typeof item !== "object" || Array.isArray(item)) {
-			throw new Error("operation_intent_invalid");
-		}
-		const record = item as Record<string, unknown>;
-		if (typeof record.canonical_identity !== "string" || typeof record.display_name !== "string") {
-			throw new Error("operation_intent_invalid");
-		}
-		const canonicalIdentityRaw = record.canonical_identity;
-		const canonicalIdentity = canonicalIdentityRaw.trim();
-		const displayNameRaw = record.display_name;
-		let displayName: string;
-		try {
-			displayName = normalizeIdentityDisplayName(displayNameRaw, "project_name");
-		} catch {
-			throw new Error("operation_intent_invalid");
-		}
-		const count = record.existing_memory_count;
-		const canonicalIdentityRoundTrip = canonicalWorkspaceIdentity({
-			gitRemote: canonicalIdentity,
-		}).value;
-		if (
-			!canonicalIdentity ||
-			canonicalIdentity !== canonicalIdentityRaw ||
-			canonicalIdentity.length > 2048 ||
-			canonicalIdentity.startsWith("unmapped:") ||
-			canonicalIdentityRoundTrip !== canonicalIdentity ||
-			displayName !== displayNameRaw ||
-			!Number.isSafeInteger(count) ||
-			Number(count) < 0 ||
-			/[\p{Cc}\p{Cf}]/u.test(canonicalIdentity) ||
-			/[\p{Cc}\p{Cf}]/u.test(displayName)
-		) {
-			throw new Error("operation_intent_invalid");
-		}
-		return {
-			canonical_identity: canonicalIdentity,
-			display_name: displayName,
-			existing_memory_count: Number(count),
-		};
-	});
-	if (new Set(projects.map((project) => project.canonical_identity)).size !== projects.length) {
-		throw new Error("operation_intent_invalid");
-	}
-	return projects.toSorted((left, right) =>
-		left.canonical_identity.localeCompare(right.canonical_identity),
-	);
 }
 
 export function reconcileShareOperationAcceptance(
