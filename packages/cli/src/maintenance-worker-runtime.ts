@@ -185,6 +185,9 @@ export function startMaintenanceWorkerRuntime(
 			new VectorModelMigrationRunner({
 				dbPath,
 				signal: options.signal,
+				// This worker cannot receive the viewer process's in-memory wake signal,
+				// so retain the short poll while bounding each pass with a smaller batch.
+				batchSize: 10,
 				idleIntervalMs: 5000,
 			}),
 		);

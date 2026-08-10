@@ -91,6 +91,45 @@ const rejectsInternalLedgerFlag = (result) => {
     && /(?:unknown|unsupported|unrecognized|invalid)\s+(?:option|argument)/i.test(diagnostics);
 };
 
+const parseFallbackStructuredError = (stdout) => {
+  const lines = String(stdout || "").trim().split(/\r?\n/).reverse();
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed === "object") {
+        return {
+          code: typeof parsed.error === "string" ? parsed.error : "",
+          message: typeof parsed.message === "string" ? parsed.message : "",
+        };
+      }
+    } catch {
+      // Continue past non-JSON CLI output.
+    }
+  }
+  return { code: "", message: "" };
+};
+
+const classifyFallbackCommandResult = (result) => {
+  const structured = parseFallbackStructuredError(result?.stdout);
+  const diagnostic = [structured.code, structured.message, result?.stderr, result?.stdout]
+    .filter(Boolean)
+    .join("\n");
+  if (/SQLITE_(?:BUSY|LOCKED)|database(?: table)? (?:is )?(?:busy|locked)/i.test(diagnostic)) {
+    return { retryable: true, cause: "SQLite database is locked" };
+  }
+  if (result?.exitCode == null && /(?:timeout|timed out|ETIMEDOUT)/i.test(diagnostic)) {
+    return { retryable: true, cause: "enqueue-raw-event command timeout" };
+  }
+  if (structured.code === "validation_error" || /invalid raw event|session id required/i.test(diagnostic)) {
+    return { retryable: false, cause: "enqueue-raw-event validation failed" };
+  }
+  if (/unknown command ['\"]?enqueue-raw-event|command not found|\bENOENT\b/i.test(diagnostic)) {
+    return { retryable: false, cause: "enqueue-raw-event command unavailable" };
+  }
+  const exitCode = result?.exitCode ?? "unknown";
+  return { retryable: false, cause: `enqueue-raw-event failed (${exitCode})` };
+};
+
 const DEFAULT_LOG_PATH = (homeDir, cwd) => `${homeDir || cwd}/.codemem/plugin.log`;
 
 const resolveLogPath = (logPathEnvRaw, cwd, homeDir) => {
@@ -1369,13 +1408,24 @@ export const OpencodeMemPlugin = async ({
   };
 
   const queueRawEventViaCli = async (body) => {
-    const result = await runCli(["enqueue-raw-event"], {
+    const runFallback = () => runCli(["enqueue-raw-event"], {
       stdinText: JSON.stringify(body),
     });
+    let result = await runFallback();
+    let classification = classifyFallbackCommandResult(result);
+    let attemptedRetry = false;
+    if (result?.exitCode !== 0 && classification.retryable) {
+      attemptedRetry = true;
+      result = await runFallback();
+      classification = classifyFallbackCommandResult(result);
+    }
     if (result?.exitCode !== 0) {
-      throw new Error(
-        `enqueue-raw-event failed (${result?.exitCode ?? "unknown"})`
+      const retryExhausted = attemptedRetry && classification.retryable;
+      const error = new Error(
+        retryExhausted ? `${classification.cause} after retry` : classification.cause
       );
+      error.retryable = classification.retryable && !attemptedRetry;
+      throw error;
     }
     return true;
   };
@@ -1434,6 +1484,9 @@ export const OpencodeMemPlugin = async ({
         }
         return true;
       } catch (fallbackErr) {
+        if (payload && typeof payload === "object") {
+          payload._raw_fallback_terminal = fallbackErr?.retryable !== true;
+        }
         await logLine(
           `raw_events.fallback.error sessionID=${sessionID} type=${type} err=${String(
             fallbackErr
@@ -1525,6 +1578,9 @@ export const OpencodeMemPlugin = async ({
         await queueRawEventViaCli(body);
         fallbackOk = true;
       } catch (fallbackErr) {
+        if (payload && typeof payload === "object") {
+          payload._raw_fallback_terminal = fallbackErr?.retryable !== true;
+        }
         await logLine(
           `raw_events.fallback.error sessionID=${sessionID} type=${type} err=${String(
             fallbackErr
@@ -1570,6 +1626,7 @@ export const OpencodeMemPlugin = async ({
 
       if (!streamErrorNoted) {
         streamErrorNoted = true;
+        fallbackFailureNoted = true;
         try {
           await client.app.log({
             service: "codemem",
@@ -2726,8 +2783,16 @@ export const OpencodeMemPlugin = async ({
     }
 
     const failed = [];
+    let droppedCount = 0;
     for (const queuedEvent of batch) {
       if (queuedEvent && typeof queuedEvent === "object" && queuedEvent._raw_enqueued) {
+        continue;
+      }
+      if (queuedEvent && typeof queuedEvent === "object" && queuedEvent._raw_fallback_terminal) {
+        droppedCount += 1;
+        await logLine(
+          `flush.drop terminal_fallback event_id=${queuedEvent?._raw_event_id || "unknown"}`
+        );
         continue;
       }
       const queuedSessionID =
@@ -2740,6 +2805,13 @@ export const OpencodeMemPlugin = async ({
         payload: queuedEvent,
       });
       if (!ok) {
+        if (queuedEvent?._raw_fallback_terminal) {
+          droppedCount += 1;
+          await logLine(
+            `flush.drop terminal_fallback event_id=${queuedEvent?._raw_event_id || "unknown"}`
+          );
+          continue;
+        }
         const currentRetry =
           typeof queuedEvent?._raw_retry_count === "number" && Number.isFinite(queuedEvent._raw_retry_count)
             ? queuedEvent._raw_retry_count
@@ -2764,7 +2836,7 @@ export const OpencodeMemPlugin = async ({
     await logLine(
       `flush.stream_only finalize count=${batch.length} tools=${sessionContext.toolCount} prompts=${sessionContext.promptCount} duration=${Math.round(durationMs / 1000)}s`
     );
-    await logLine(`flush.ok count=${batch.length}`);
+    await logLine(`flush.ok count=${batch.length - droppedCount} dropped=${droppedCount}`);
     sessionStartedAt = null;
     resetSessionContext();
   };
@@ -3203,6 +3275,7 @@ export const __testUtils = {
   hashPromptPackQuery,
   redactPackCommand,
   rejectsInternalLedgerFlag,
+  classifyFallbackCommandResult,
   parsePackText,
   parsePackMetrics,
   resolveInjectSurface,

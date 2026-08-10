@@ -269,6 +269,7 @@ Stream contract:
 - Non-2xx and network failures are treated as stream failures.
 - Raw events are delivered through the viewer ingest API.
 - Raw-event batches accepted by the viewer are retried by the sweeper flush workers.
+- If the direct CLI fallback reports an explicit SQLite busy/locked result or command timeout, the plugin retries it once with the same event ID. Other failures are reported and dropped rather than requeued or spooled, and logs retain only a bounded failure category rather than raw command output.
 
 Suggested settings:
 

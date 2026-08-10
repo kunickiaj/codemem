@@ -1,8 +1,15 @@
-import { connect, type Database, startMaintenanceJob, updateMaintenanceJob } from "@codemem/core";
+import {
+	connect,
+	type Database,
+	startMaintenanceJob,
+	updateMaintenanceJob,
+	VectorModelMigrationRunner,
+} from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createSequentialBackfillCoordinator,
 	type MaintenanceWorkerLogger,
+	startMaintenanceWorkerRuntime,
 } from "./maintenance-worker-runtime.js";
 
 describe("maintenance worker runtime", () => {
@@ -16,6 +23,7 @@ describe("maintenance worker runtime", () => {
 	afterEach(() => {
 		db.close();
 		vi.useRealTimers();
+		vi.unstubAllEnvs();
 		vi.restoreAllMocks();
 	});
 
@@ -58,5 +66,30 @@ describe("maintenance worker runtime", () => {
 		expect(logger.warn).toHaveBeenCalledWith(
 			"Test backfill failed and will be retried on a later startup",
 		);
+	});
+
+	it("constructs vector migration with the smaller worker-specific batch size", async () => {
+		// Arrange
+		vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "0");
+		let vectorRunner: VectorModelMigrationRunner | null = null;
+		const logger: MaintenanceWorkerLogger = {
+			step: vi.fn(),
+			warn: vi.fn(),
+			error: vi.fn(),
+		};
+		vi.spyOn(VectorModelMigrationRunner.prototype, "start").mockImplementation(function (
+			this: VectorModelMigrationRunner,
+		) {
+			vectorRunner = this;
+		});
+
+		// Act
+		const runtime = startMaintenanceWorkerRuntime({ dbPath: ":memory:", logger });
+		await runtime.stop();
+
+		// Assert
+		const configuredBatchSize = (vectorRunner as unknown as { batchSize: number } | null)
+			?.batchSize;
+		expect(configuredBatchSize).toBe(10);
 	});
 });

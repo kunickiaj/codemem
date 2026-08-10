@@ -124,6 +124,57 @@ describe("buildPackArgs", () => {
   });
 });
 
+describe("fallback command-result classification", () => {
+  test("keeps a bounded redacted SQLite lock cause and marks it retryable", () => {
+    // Arrange
+    const commandResult = {
+      exitCode: 1,
+      stdout: "",
+      stderr:
+        "SqliteError: database is locked at /Users/example/private/customer.sqlite query=super-secret",
+    };
+
+    // Act
+    const classification = __testUtils.classifyFallbackCommandResult(commandResult);
+
+    // Assert
+    expect(classification.retryable).toBe(true);
+    expect(classification.cause.toLowerCase()).toContain("database is locked");
+    expect(classification.cause.length).toBeLessThanOrEqual(200);
+    expect(classification.cause).not.toContain("/Users/example/private/customer.sqlite");
+    expect(classification.cause).not.toContain("super-secret");
+  });
+
+  test("marks a command timeout as retryable without inventing a lock cause", () => {
+    // Arrange
+    const commandResult = { exitCode: null, stdout: "", stderr: "timeout" };
+
+    // Act
+    const classification = __testUtils.classifyFallbackCommandResult(commandResult);
+
+    // Assert
+    expect(classification).toMatchObject({ retryable: true });
+    expect(classification.cause.toLowerCase()).toContain("timeout");
+    expect(classification.cause.toLowerCase()).not.toContain("locked");
+  });
+
+  test.each([
+    ["validation", "Invalid raw event: sessionID is required", "validation failed"],
+    ["incompatible command", "error: unknown command 'enqueue-raw-event'", "command unavailable"],
+    ["missing process", "spawn codemem ENOENT", "command unavailable"],
+  ])("keeps %s failures terminal", (_label, stderr, expectedCause) => {
+    // Arrange
+    const commandResult = { exitCode: 1, stdout: "", stderr };
+
+    // Act
+    const classification = __testUtils.classifyFallbackCommandResult(commandResult);
+
+    // Assert
+    expect(classification.retryable).toBe(false);
+    expect(classification.cause).toContain(expectedCause);
+  });
+});
+
 describe("prompt-pack request identity", () => {
   test("is deterministic for retries and distinct for new turns", () => {
     const base = {
