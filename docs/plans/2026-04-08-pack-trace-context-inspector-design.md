@@ -1,8 +1,19 @@
 # Pack Trace and Context Inspector Design
 
-**Status:** Approved design
+**Status:** Implemented through the viewer panel; compression rendering incomplete
 **Date:** 2026-04-08
 **Related bead:** `codemem-ei1c`
+
+## Implementation status (2026-08-10)
+
+PackTrace, `codemem pack trace`, `POST /api/pack/trace`, and the viewer Context
+Inspector are shipped. The panel lives in Feed rather than the originally
+proposed Search entry point.
+
+The current UI contract predates near-duplicate compression: it omits the
+`compressed` candidate disposition and `assembly.compressed_clusters`, so
+compressed candidates are not rendered. That narrow parity gap is tracked for
+0.41; the broader Doctor surface remains deferred.
 
 ## Context
 
@@ -38,8 +49,8 @@ first-class inspectable product. We should not copy noisy log spam.
 - Make pack generation inspectable for a manual query
 - Show a wider retrieval pool, not only final selected items
 - Preserve both machine-readable and human-readable diagnostics
-- Reuse one canonical trace object across CLI and future viewer surfaces
-- Prepare for a future viewer **Context Inspector** entered from Search
+- Reuse one canonical trace object across CLI and viewer surfaces
+- Prepare the viewer **Context Inspector** that ultimately shipped in Feed
 - Leave room for a broader future **Doctor** diagnostics surface
 
 ## Non-Goals
@@ -52,10 +63,12 @@ first-class inspectable product. We should not copy noisy log spam.
 
 ## Design Decision
 
-Add a canonical **PackTrace** diagnostic object in core, then expose it through:
+The original decision was to add a canonical **PackTrace** diagnostic object in
+core, then expose it through:
 
 1. **CLI first** via `codemem pack trace "<query>"`
-2. **Viewer later** via a Context Inspector panel entered from Search
+2. **Viewer later** via a Context Inspector panel; the shipped implementation
+   ultimately used Feed rather than Search
 
 The trace object is the source of truth. Human-readable output is derived from
 it rather than maintained as a separate logic path.
@@ -79,10 +92,10 @@ This should answer the practical questions quickly:
 - Did token-budget trimming remove it?
 - Did the final pack text actually contain it?
 
-### Future viewer workflow
+### Original viewer workflow proposal (superseded — shipped in Feed)
 
-The viewer gets a **Context Inspector** panel attached to Search rather than a
-new top-level tab.
+The original proposal placed a **Context Inspector** panel in Search rather than
+a new top-level tab. The shipped panel is embedded in Feed.
 
 That panel should support manual query inspection first. It can later expand to
 historical prompt inspection and broader doctor-style diagnostics.
@@ -211,6 +224,7 @@ Recommended default pool size: **top 20 candidates**.
   - `dropped`
   - `deduped`
   - `trimmed`
+  - `compressed`
 - `section` is present only when the candidate is selected into a final pack
   section
 
@@ -308,10 +322,11 @@ Final pack
 ...
 ```
 
-## Viewer Follow-On: Context Inspector
+## Viewer Follow-On: Context Inspector (shipped with a different entry point)
 
-The future viewer surface should be a **panel entered from Search**, not a new
-top-level tab.
+The design proposed a panel entered from Search. The shipped panel is embedded in
+Feed and consumes the same PackTrace JSON. This section records the original UX
+rationale rather than current placement.
 
 ### Why Search first
 
@@ -346,21 +361,21 @@ That broader doctor surface is intentionally out of scope for v1.
 
 ## Implementation Plan
 
-### Phase 1: Core trace contract
+### Phase 1: Core trace contract ✅ shipped
 
 - add PackTrace types to core
 - plumb trace capture through pack building without changing normal pack output
 - expose enough ranking and assembly metadata to explain outcomes
 
-### Phase 2: CLI trace command
+### Phase 2: CLI trace command ✅ shipped
 
 - add `codemem pack trace "<query>"`
 - support text and JSON output modes
 - keep normal pack command behavior unchanged
 
-### Phase 3: Viewer Context Inspector panel
+### Phase 3: Viewer Context Inspector panel ✅ shipped in Feed
 
-- add a Search entry point for manual query inspection
+- add a Feed entry point for manual query inspection (the shipped placement)
 - render canonical PackTrace JSON in the viewer
 - keep this as a panel/debug surface rather than a new primary tab
 
@@ -387,7 +402,7 @@ Minimum required coverage:
 
 ### Viewer follow-on tests
 
-- Search entry opens Context Inspector panel
+- Feed entry opens Context Inspector panel
 - manual query inspector renders candidate list and final pack text
 - viewer consumes the canonical JSON shape rather than recreating pack logic
 
@@ -405,7 +420,7 @@ Spin implementation out from `codemem-ei1c` into these follow-on tasks:
 
 1. `codemem-zm46` — core PackTrace contract and pack instrumentation
 2. `codemem-5prk` — CLI `codemem pack trace` command surface
-3. `codemem-b1wo` — viewer Context Inspector panel entered from Search
+3. `codemem-b1wo` — viewer Context Inspector panel (shipped in Feed)
 4. `codemem-dcho` — future doctor-style diagnostics follow-on
 
 These should be linked back to the parent design bead using

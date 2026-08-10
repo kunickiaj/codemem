@@ -1,6 +1,6 @@
 # Pack Usefulness Roadmap
 
-**Status:** Approved design
+**Status:** Shipped — Phases D, A, and B
 **Date:** 2026-04-08
 
 ## Context
@@ -86,8 +86,8 @@ access, inspired by claude-mem's `ID TIME TYPE TITLE` + `get_observations`.
 1. Add a "compact mode" pack option where the pack text contains:
    - a scannable index section with one line per item: `[ID] (kind) title`
    - full narrative/facts only for the top N items (configurable, default ~3)
-   - a footer note like: "Fetch details for any item via
-     `memory_search` or `memory_get`"
+   - the shipped footer guidance: "Use `memory_get` for one item, or
+     `memory_get_observations(ids=[...])` for related IDs shown in the index."
 2. The default pack mode continues to show full content for all items (the
    current behavior, improved by Phase D).
 3. Compact mode is useful for token-constrained injection where a broad overview
@@ -99,7 +99,15 @@ access, inspired by claude-mem's `ID TIME TYPE TITLE` + `get_observations`.
 - compact mode is opt-in via a flag or pack configuration
 - the index lines use the same `[ID] (kind) title` format as full mode headers
 
-### Phase B: Cross-memory synthesis
+### Phase B: Near-duplicate pack compression
+
+**Status:** Rendering-time cluster compression and ingestion-time near-dedup both
+shipped.
+
+The shipped implementation uses heuristic representative selection with a
+`(+N related)` suffix rather than synthesized summary blocks. The goal and design
+approach below are the original proposal, retained as historical rationale;
+`packages/core/src/pack.ts` and its tests are authoritative.
 
 **Goal:** When multiple retrieved memories point at the same recurring pattern,
 compress them into a concise operational summary instead of listing them
@@ -129,16 +137,19 @@ individually.
 - present synthesized sections before the individual memory listing
 - keep individual memories available for detail
 
-**This phase has been specified** based on a 30-trace empirical audit conducted
-after shipping D and A. See
+This phase was specified from a 30-trace empirical audit conducted after shipping
+D and A. The repository retains the aggregate audit results, but not a runnable
+copy of that historical corpus. See
 [Phase B design doc](./2026-04-08-phase-b-pack-dedup-design.md) for the full
-spec, audit data, and implementation plan.
+historical spec and audit data. Current behavior is authoritative in
+`packages/core/src/pack.ts` and its tests.
 
 ## Implementation Order
 
 1. **Phase D** — restore narrative/facts (quick win, high signal) ✅ shipped
 2. **Phase A** — compact index + fetch-more (token efficiency, broad context) ✅ shipped
-3. **Phase B** — cross-memory synthesis (differentiated product value) — [design ready](./2026-04-08-phase-b-pack-dedup-design.md)
+3. **Phase B Layer 2** — rendering-time near-duplicate compression ✅ shipped
+4. **Phase B Layer 1** — ingestion-time near-deduplication ✅ shipped
 
 ## Files Likely to Change
 
@@ -158,10 +169,15 @@ spec, audit data, and implementation plan.
 - `packages/mcp-server/src/index.ts` — expose compact mode in MCP pack tool
 - `packages/cli/src/commands/pack.ts` — add `--compact` flag
 
-### Phase B
-- `packages/core/src/pack.ts` — add cluster detection and synthesis rendering
-- potentially a new `packages/core/src/pack-synthesis.ts` module
-- test coverage for cluster detection heuristics
+### Phase B Layer 2 (shipped)
+- `packages/core/src/pack.ts` — cluster detection, representative selection, and
+  compressed rendering
+- `packages/core/src/types.ts` — compressed member and PackTrace metadata
+- `packages/core/src/pack.test.ts` — compression modes, task-mode skip, budgeting,
+  and trace coverage
+
+No `pack-synthesis.ts` or LLM synthesis call was added. Layer 1 added the
+`memory_items.dedup_key` column and supporting indexes.
 
 ## Testing Strategy
 
@@ -180,5 +196,7 @@ spec, audit data, and implementation plan.
 
 ### Phase B
 - cluster detection groups related memories correctly
-- synthesis produces concise operational summaries
-- individual memories remain accessible after synthesis
+- the representative is the highest-confidence cluster member and compressed
+  members are excluded from rendered text
+- compressed member IDs remain in `item_ids` when the representative survives
+  budgeting

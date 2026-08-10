@@ -1,10 +1,31 @@
 # Phase B: Pack near-duplicate compression
 
 **Parent:** [Pack usefulness roadmap](./2026-04-08-pack-usefulness-roadmap.md)
-**Status:** Design ready — pending approval
+**Status:** Shipped — Layer 2 pack compression and Layer 1 ingestion dedup
 **Prereqs:** Phase D (shipped), Phase A (shipped)
 
+## Implementation status (2026-08-10)
+
+The rendering-only Layer 2 design ships in `packages/core/src/pack.ts` with
+`off`, `compact`, and `ids` modes, compressed member IDs, and
+`PackTrace.assembly.compressed_clusters`. Task mode skips compression. The normal
+pack response excludes compressed-away members from `items` while retaining
+their IDs when the representative survives budgeting.
+
+Layer 1 ingestion-time near-deduplication ships in
+`packages/core/src/store.ts` through `findExistingDuplicateMemory`, backed by the
+`memory_items.dedup_key` column and indexes added in `packages/core/src/db.ts`.
+The shipped key is `sha256(normalize(title))`; session, scope, visibility, and
+workspace constraints are applied by the lookup rather than encoded in the key.
+Cross-session matching defaults to a one-hour window and can be tuned with
+`CODEMEM_MEMORY_CROSS_SESSION_DEDUP_WINDOW_MS`. There is no LLM synthesis path.
+The design below is retained as historical rationale; current source and tests
+are authoritative where its proposals differ from shipped behavior.
+
 ## Empirical findings
+
+**Historical 2026-04-08 audit; not reproducible from the current repository.** The
+aggregate numbers are retained as design rationale, not current release evidence.
 
 A 30-trace pack audit (spanning task, recall, and default modes across diverse
 queries) produced these results:
@@ -43,7 +64,7 @@ From the 27 all-selected clusters:
 | **Recurring failure** — same bug/fix described twice | 2 | Peer deletion cursor leak: two bugfix memories with near-identical titles |
 | **Thematic overlap** — same investigation from different angles | 2 | Python→TS port footguns: a discovery + an exploration |
 
-### Token savings estimate
+### Historical token savings estimate
 
 The most cluster-heavy traces (sync replication: 4 clusters in 10 items, viewer
 inspector: 5-item cluster) could drop 30–40% in token cost if clusters were
@@ -146,8 +167,10 @@ for each pair of selected items (i, j):
 
 **"Significant words"** = words with length > 2, excluding a stopword set
 (the, a, an, and, or, to, in, for, of, on, with, is, was, are, were, from,
-this, that, it, not, no). This is the exact heuristic used in the audit and it
-caught all 27 real clusters with zero false positives across 30 traces.
+this, that, it, not, no). This is the exact heuristic used in the historical
+audit, which reported all 27 clusters with zero false positives. The underlying
+corpus is not checked in, so current validation uses deterministic fixtures rather
+than repeating that claim.
 
 **Transitive closure:** If A clusters with B and B clusters with C, all three
 form one cluster. Use union-find for efficient grouping.
@@ -164,9 +187,10 @@ For each cluster of size ≥ 2:
    existing dedup `support_count` pattern) and a `compressed_ids` list of the
    other cluster members' IDs.
 
-3. **Remove non-representatives** from the rendered pack text. They remain in
-   `item_ids` and `items` (with a `compressed_into` field pointing to the
-   representative) so the model can still fetch them via `memory_get`.
+3. **Remove non-representatives** from the rendered pack text and `items`. They
+   remain in `item_ids` when the representative survives budgeting, and the
+   representative carries `compressed_ids`, so the model can still fetch them via
+   `memory_get`.
 
 4. **Format compressed items** with an indicator:
 
@@ -175,8 +199,8 @@ For each cluster of size ≥ 2:
    The sync pass orchestrator coordinates a complete synchronization exchange...
    ```
 
-   The `(+N related)` suffix signals that more detail exists without consuming
-   extra tokens.
+   The compact `(+N related)` suffix signals that more detail exists at low cost.
+   The shipped `ids` mode appends member IDs and therefore consumes some tokens.
 
 #### Interaction with compact mode
 
@@ -255,8 +279,11 @@ The trace should report compression:
 - Items with < 3 shared words remain separate
 - Representative is highest-confidence member
 - Compressed items get `(+N related)` suffix in pack text
-- `item_ids` still contains all original IDs (including compressed)
-- Compression reduces `pack_tokens` vs. uncompressed
+- `item_ids` retains compressed IDs only when their representative survives
+  budgeting
+- Compression token impact versus uncompressed is not covered by current tests;
+  the deterministic `off`-versus-`ids` net-reduction fixture is tracked in the
+  0.41 plan
 - Task mode skips compression
 - Compact mode: compressed items excluded from index, only representative shown
 - Trace reports `compressed_clusters`
@@ -302,10 +329,8 @@ PR), we can revisit.
 
 ### 3. Compressed items: exclude from `items`, keep in `item_ids`
 
-Compressed-away items are excluded from the `items` response array but remain
-in `item_ids`. The `pack_text` already shows `(+N related)` which signals
-more detail exists, and `item_ids` gives the model IDs to fetch via
-`memory_get`. Adding compressed items to `items` is dead weight in the common
-case where the model trusts the representative. If the "why was this
-compressed" signal is needed, `compressed_clusters` in the response metadata
-(parallel to the trace field) provides it without bloating every item.
+Compressed-away items are excluded from the `items` response array and remain in
+`item_ids` when their representative survives budgeting. The representative
+carries `compressed_ids`, and `pack_text` shows `(+N related)`, so the model can
+fetch details through `memory_get`. Full cluster reasons live in PackTrace only;
+the normal pack response has no top-level `compressed_clusters` field.
