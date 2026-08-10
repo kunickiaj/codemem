@@ -684,7 +684,7 @@ describe("recipient policy intent migration", () => {
 		expect(db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
 	});
 
-	it("never writes diagnostic-only blocked Projects", () => {
+	it("keeps preserved diagnostic-only Projects skipped without migration evidence", () => {
 		const scopeId = "ambiguous-scope";
 		for (const projectId of [
 			"https://git.example.invalid/acme/blocked-one.git",
@@ -708,9 +708,28 @@ describe("recipient policy intent migration", () => {
 			}
 		}
 
+		const projections = listLegacyRecipientPolicyProjections(db, context);
+		const review = listRecipientPolicyReview(db, context);
 		const result = migrateRecipientPolicyIntent(db, context);
 
-		expect(result.results.every((entry) => entry.status === "skipped")).toBe(true);
+		expect(
+			projections.every((projection) =>
+				projection.conditions.some(
+					(condition) => condition.code === "ambiguous_multi_project_scope",
+				),
+			),
+		).toBe(true);
+		expect(review).toMatchObject({
+			blockedItems: [],
+			continuity: { findingCount: 2, state: "legacy_access_preserved" },
+			reviewItems: [],
+		});
+		expect(result.results).toHaveLength(2);
+		expect(
+			result.results.every(
+				(entry) => entry.status === "skipped" && entry.errorCode === "migration_evidence_missing",
+			),
+		).toBe(true);
 		expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
 		expect(db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
 	});

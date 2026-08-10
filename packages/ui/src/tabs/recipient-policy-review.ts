@@ -49,14 +49,11 @@ export function renderRecipientPolicyReview(
 	surface.setAttribute("aria-labelledby", "recipientPolicyReviewTitle");
 	const title = document.createElement("h2");
 	title.id = "recipientPolicyReviewTitle";
-	title.textContent = review.continuity ? "Existing sharing kept as-is" : "Sharing needs repair";
+	title.textContent =
+		review.blockedItems.length > 0 ? "Sharing needs repair" : "Existing sharing kept as-is";
 	surface.appendChild(title);
 
 	if (review.continuity) {
-		const intro = paragraph(
-			"No action is required for this update. Codemem did not change your existing Team or local sharing configuration.",
-			"section-meta",
-		);
 		const findingCount = review.continuity.findingCount;
 		const detail = paragraph(
 			`${findingCount.toLocaleString()} older sharing finding${findingCount === 1 ? " was" : "s were"} not changed because Codemem could not safely translate ${findingCount === 1 ? "it" : "them"} automatically.`,
@@ -64,7 +61,15 @@ export function renderRecipientPolicyReview(
 		);
 		detail.setAttribute("role", "status");
 		detail.setAttribute("aria-live", "polite");
-		surface.append(intro, detail);
+		if (review.blockedItems.length === 0) {
+			surface.appendChild(
+				paragraph(
+					"No action is required for this update. Codemem did not change your existing Team or local sharing configuration.",
+					"section-meta",
+				),
+			);
+		}
+		surface.appendChild(detail);
 	}
 
 	if (review.blockedItems.length > 0) {

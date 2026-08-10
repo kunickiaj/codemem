@@ -1,7 +1,11 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { LegacyRecipientPolicyProjectionV1 } from "./legacy-recipient-policy-projection.js";
 import {
+	type LegacyRecipientPolicyProjectionV1,
+	listLegacyRecipientPolicyProjections,
+} from "./legacy-recipient-policy-projection.js";
+import {
+	deriveRecipientPolicyReviewState,
 	listRecipientPolicyReview,
 	recipientPolicyReviewSourceFingerprint,
 	resolveRecipientPolicyReview,
@@ -92,6 +96,51 @@ function insertLocalFixture(db: InstanceType<typeof Database>): void {
 			visibility, project, scope_id
 		 ) VALUES (?, 'discovery', 'Review fixture', 'body', 1, ?, ?, 'private', 'review', 'local-default')`,
 	).run(sessionId, NOW, NOW);
+}
+
+function insertLegacyScope(db: InstanceType<typeof Database>, scopeId: string): void {
+	db.prepare(
+		`INSERT INTO replication_scopes(
+			scope_id, label, kind, authority_type, coordinator_id, group_id,
+			membership_epoch, status, created_at, updated_at
+		 ) VALUES (?, ?, 'team', 'coordinator', 'coordinator', 'group', 1, 'active', ?, ?)`,
+	).run(scopeId, scopeId, NOW, NOW);
+}
+
+function mapProject(
+	db: InstanceType<typeof Database>,
+	projectId: string | null,
+	projectPattern: string,
+	scopeId: string,
+): void {
+	db.prepare(
+		`INSERT INTO project_scope_mappings(
+			workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+		 ) VALUES (?, ?, ?, 1000, 'test', ?, ?)`,
+	).run(projectId, projectPattern, scopeId, NOW, NOW);
+}
+
+function configureUmbrellaScope(db: InstanceType<typeof Database>): void {
+	const scopeId = "legacy-umbrella";
+	const secondProjectId = "https://git.example.invalid/acme/review-second.git";
+	insertLegacyScope(db, scopeId);
+	db.prepare("UPDATE memory_items SET scope_id = ?").run(scopeId);
+	mapProject(db, PROJECT_ID, PROJECT_ID, scopeId);
+	const sessionId = Number(
+		db
+			.prepare(
+				`INSERT INTO sessions(started_at, cwd, project, git_remote, git_branch)
+				 VALUES (?, '/workspace/review-second', 'review-second', ?, 'main')`,
+			)
+			.run(NOW, secondProjectId).lastInsertRowid,
+	);
+	db.prepare(
+		`INSERT INTO memory_items(
+			session_id, kind, title, body_text, active, created_at, updated_at,
+			visibility, project, scope_id
+		 ) VALUES (?, 'discovery', 'Second fixture', 'body', 1, ?, ?, 'shared', 'review-second', ?)`,
+	).run(sessionId, NOW, NOW, scopeId);
+	mapProject(db, secondProjectId, secondProjectId, scopeId);
 }
 
 function configureUnassignedDeviceReview(
@@ -262,6 +311,84 @@ describe("recipient policy review persistence", () => {
 			repairAction: expect.any(String),
 		});
 		expect(result.blockedItems[0]).not.toHaveProperty("options");
+	});
+
+	it("keeps an ambiguous umbrella scope as continuity without repair cards", () => {
+		configureUmbrellaScope(db);
+
+		const projections = listLegacyRecipientPolicyProjections(db, context);
+		const result = listRecipientPolicyReview(db, context);
+
+		expect(projections).toHaveLength(2);
+		expect(
+			projections.every(
+				(item) =>
+					item.enforcement.state === "ambiguous" &&
+					item.enforcement.safeErrorCode === "ambiguous_multi_project_scope",
+			),
+		).toBe(true);
+		expect(result).toMatchObject({
+			blockedItems: [],
+			continuity: { findingCount: 2, state: "legacy_access_preserved" },
+			reviewItems: [],
+		});
+	});
+
+	it("keeps a wildcard scope mapping as continuity without repair cards", () => {
+		const scopeId = "legacy-wildcard";
+		insertLegacyScope(db, scopeId);
+		db.prepare("UPDATE memory_items SET scope_id = ?").run(scopeId);
+		mapProject(db, null, "*", scopeId);
+
+		const [legacyProjection] = listLegacyRecipientPolicyProjections(db, context);
+		const result = listRecipientPolicyReview(db, context);
+
+		expect(legacyProjection?.enforcement).toMatchObject({
+			state: "ambiguous",
+			safeErrorCode: "wildcard_scope_mapping",
+		});
+		expect(result).toMatchObject({
+			blockedItems: [],
+			continuity: { findingCount: 1, state: "legacy_access_preserved" },
+			reviewItems: [],
+		});
+	});
+
+	it("emits only repairable cards for mixed diagnostics and keeps blocked IDs stable", () => {
+		const repairableCondition = {
+			version: 1 as const,
+			code: "noncanonical_project_identity" as const,
+			kind: "diagnostic" as const,
+			message: "Project identity is unstable.",
+		};
+		const mixed = projection();
+		mixed.conditions = [
+			repairableCondition,
+			{
+				version: 1,
+				code: "ambiguous_multi_project_scope",
+				kind: "diagnostic",
+				message: "Scope contains multiple Projects.",
+			},
+			...mixed.conditions,
+		];
+		const repairableOnly = projection();
+		repairableOnly.conditions = [repairableCondition];
+
+		const mixedState = deriveRecipientPolicyReviewState(db, context, [mixed]);
+		const repairableState = deriveRecipientPolicyReviewState(db, context, [repairableOnly]);
+
+		expect(mixedState.allReviewItems).toEqual([]);
+		expect(mixedState.preservedDiagnosticFindings).toEqual([
+			{
+				canonicalProjectIdentity: PROJECT_ID,
+				conditionCode: "ambiguous_multi_project_scope",
+			},
+		]);
+		expect(mixedState.blockedItems).toHaveLength(1);
+		expect(mixedState.blockedItems[0]?.blockedItemId).toBe(
+			repairableState.blockedItems[0]?.blockedItemId,
+		);
 	});
 
 	it("records only the immutable resolution with server-derived attribution", () => {

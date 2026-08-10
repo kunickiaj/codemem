@@ -335,7 +335,7 @@ describe("Projects tab", () => {
 		expect(document.getElementById("projectsInventorySkeleton")).toBeNull();
 	});
 
-	it("collapses deferred migration evidence into one continuity message without controls", async () => {
+	it("renders mixed continuity and repair state without contradictory copy", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
 			limit: 250,
@@ -361,8 +361,9 @@ describe("Projects tab", () => {
 		await loadProjectsData();
 
 		const surface = document.querySelector(".recipient-policy-review");
-		expect(surface?.textContent).toContain("Existing sharing kept as-is");
-		expect(surface?.textContent).toContain("No action is required for this update");
+		expect(surface?.textContent).toContain("Sharing needs repair");
+		expect(surface?.textContent).not.toContain("Existing sharing kept as-is");
+		expect(surface?.textContent).not.toContain("No action is required for this update");
 		expect(surface?.textContent).toContain("37 older sharing findings were not changed");
 		expect(surface?.textContent).toContain("current availability cannot be confirmed");
 		expect(surface?.textContent).not.toContain("Current access remains in place");
@@ -384,6 +385,8 @@ describe("Projects tab", () => {
 
 		await loadProjectsData();
 		const firstSurface = document.querySelector(".recipient-policy-review");
+		expect(firstSurface?.textContent).toContain("Existing sharing kept as-is");
+		expect(firstSurface?.textContent).toContain("No action is required for this update");
 
 		await loadProjectsData();
 

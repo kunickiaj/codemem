@@ -76,6 +76,10 @@ export interface RecipientPolicyReviewBulkResultV1 {
 export interface RecipientPolicyDerivedReviewState {
 	allReviewItems: RecipientPolicyActionableReviewItemV1[];
 	blockedItems: RecipientPolicyBlockedItemV1[];
+	preservedDiagnosticFindings: Array<{
+		canonicalProjectIdentity: string;
+		conditionCode: LegacyRecipientPolicyConditionCodeV1;
+	}>;
 }
 
 interface StoredResolution {
@@ -95,6 +99,25 @@ const DECISIONS = new Set<RecipientPolicyReviewDecisionV1>([
 	"create_identity",
 	"remove_stale_device",
 ]);
+
+type RecipientPolicyConditionPresentation =
+	| "actionable"
+	| "repairable_blocked"
+	| "preserved_continuity";
+
+const CONDITION_PRESENTATION = {
+	suggest_local_identity: "actionable",
+	suggest_team_candidate: "actionable",
+	unassigned_effective_device: "actionable",
+	ambiguous_multi_project_scope: "preserved_continuity",
+	wildcard_scope_mapping: "preserved_continuity",
+	noncanonical_project_identity: "repairable_blocked",
+	ambiguous_scope_mapping: "repairable_blocked",
+	inactive_scope_boundary: "repairable_blocked",
+} as const satisfies Record<
+	LegacyRecipientPolicyConditionCodeV1,
+	RecipientPolicyConditionPresentation
+>;
 
 function canonicalJson(value: unknown): string {
 	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -332,13 +355,23 @@ export function deriveRecipientPolicyReviewState(
 	const memoryCounts = memoryCountsByProject(db);
 	const allReviewItems: RecipientPolicyActionableReviewItemV1[] = [];
 	const blockedItems: RecipientPolicyBlockedItemV1[] = [];
+	const preservedDiagnosticFindings: RecipientPolicyDerivedReviewState["preservedDiagnosticFindings"] =
+		[];
 	for (const projection of projections) {
 		const memoryCount = memoryCounts.get(projection.project.canonicalIdentity) ?? 0;
 		const hasDiagnostic = projection.conditions.some(
 			(condition) => condition.kind === "diagnostic",
 		);
 		for (const condition of projection.conditions) {
-			if (condition.kind === "diagnostic") {
+			const presentation = CONDITION_PRESENTATION[condition.code];
+			if (presentation === "preserved_continuity") {
+				preservedDiagnosticFindings.push({
+					canonicalProjectIdentity: projection.project.canonicalIdentity,
+					conditionCode: condition.code,
+				});
+				continue;
+			}
+			if (presentation === "repairable_blocked") {
 				blockedItems.push({
 					version: RECIPIENT_POLICY_CONTRACT_VERSION,
 					blockedItemId: digest("recipient-policy-blocked-v1", [
@@ -391,7 +424,7 @@ export function deriveRecipientPolicyReviewState(
 			}
 		}
 	}
-	return { allReviewItems, blockedItems };
+	return { allReviewItems, blockedItems, preservedDiagnosticFindings };
 }
 
 function hasResolution(db: Database, item: RecipientPolicyActionableReviewItemV1): boolean {
@@ -411,7 +444,7 @@ export function listRecipientPolicyReview(
 ): RecipientPolicyReviewListV1 {
 	const state = deriveRecipientPolicyReviewState(db, context);
 	const reviewItems = state.allReviewItems.filter((item) => !hasResolution(db, item));
-	const findingCount = reviewItems.length;
+	const findingCount = reviewItems.length + state.preservedDiagnosticFindings.length;
 	return {
 		version: RECIPIENT_POLICY_CONTRACT_VERSION,
 		reviewItems,
