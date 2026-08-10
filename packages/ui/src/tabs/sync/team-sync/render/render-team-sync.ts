@@ -56,8 +56,12 @@ import {
 
 const TEAM_SYNC_ACTIONS_MOUNT_ID = "syncTeamActionsMount";
 
-export function needsCoordinatorGroupReview(groupIds: string[], pairedLocally: boolean): boolean {
-	return !pairedLocally && groupIds.length > 1;
+export function needsCoordinatorGroupReview(
+	groupIds: string[],
+	pairedLocally: boolean,
+	needsLocalApproval = false,
+): boolean {
+	return groupIds.length > 1 && (!pairedLocally || needsLocalApproval);
 }
 
 export function renderTeamSyncPrimaryStatus(
@@ -307,7 +311,11 @@ export function renderTeamSync() {
 			? device.groups.map((value) => String(value || "").trim()).filter(Boolean)
 			: [];
 		const pairedPeer = localPeers.find((peer) => String(peer?.peer_device_id || "") === deviceId);
-		const hasAmbiguousCoordinatorGroup = needsCoordinatorGroupReview(groupIds, Boolean(pairedPeer));
+		const hasAmbiguousCoordinatorGroup = needsCoordinatorGroupReview(
+			groupIds,
+			Boolean(pairedPeer),
+			device.needs_local_approval === true,
+		);
 		const approvalSummary = deriveCoordinatorApprovalSummary({
 			device,
 			pairedLocally: Boolean(pairedPeer),
@@ -354,7 +362,7 @@ export function renderTeamSync() {
 			mode = "setup-blocked";
 		} else if (hasAmbiguousCoordinatorGroup) {
 			actionMessage =
-				"This unpaired device appears in multiple coordinator groups. Review the Team setup before approving it here.";
+				"This device appears in multiple coordinator groups. Review the Team setup before approving it here.";
 			mode = "ambiguous";
 		} else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
 			actionMessage =

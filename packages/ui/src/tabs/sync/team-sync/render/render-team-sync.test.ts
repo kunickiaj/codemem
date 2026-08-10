@@ -14,6 +14,10 @@ describe("needsCoordinatorGroupReview", () => {
 	it("keeps an unpaired multi-group device in review", () => {
 		expect(needsCoordinatorGroupReview(["sre", "oss"], false)).toBe(true);
 	});
+
+	it("keeps a paired multi-group device in review when local approval is pending", () => {
+		expect(needsCoordinatorGroupReview(["sre", "oss"], true, true)).toBe(true);
+	});
 });
 
 function renderStatus(primaryStatus: UiTeamSyncPrimaryStatus) {
