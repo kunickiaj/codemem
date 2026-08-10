@@ -32,10 +32,18 @@ export type RecipientPolicyActionableReviewItemV1 = Omit<RecipientPolicyReviewIt
 	options: RecipientPolicyReviewActionOptionV1[];
 };
 
+export interface RecipientPolicyReviewContinuityV1 {
+	state: "legacy_access_preserved";
+	findingCount: number;
+}
+
+// Patch-level additive wire hint: existing v1 clients ignore the new field,
+// while current clients require it so absence cannot silently change UX mode.
 export interface RecipientPolicyReviewListV1 {
 	version: RecipientPolicyContractVersion;
 	reviewItems: RecipientPolicyActionableReviewItemV1[];
 	blockedItems: RecipientPolicyBlockedItemV1[];
+	continuity: RecipientPolicyReviewContinuityV1 | null;
 }
 
 export interface RecipientPolicyReviewResolveRequestV1 {
@@ -402,10 +410,19 @@ export function listRecipientPolicyReview(
 	context: RecipientPolicyReviewContext,
 ): RecipientPolicyReviewListV1 {
 	const state = deriveRecipientPolicyReviewState(db, context);
+	const reviewItems = state.allReviewItems.filter((item) => !hasResolution(db, item));
+	const findingCount = reviewItems.length;
 	return {
 		version: RECIPIENT_POLICY_CONTRACT_VERSION,
-		reviewItems: state.allReviewItems.filter((item) => !hasResolution(db, item)),
+		reviewItems,
 		blockedItems: state.blockedItems,
+		continuity:
+			findingCount > 0
+				? {
+						state: "legacy_access_preserved",
+						findingCount,
+					}
+				: null,
 	};
 }
 

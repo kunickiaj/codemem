@@ -216,6 +216,10 @@ describe("recipient policy review persistence", () => {
 
 		const result = listRecipientPolicyReview(db, context);
 
+		expect(result.continuity).toEqual({
+			findingCount: 1,
+			state: "legacy_access_preserved",
+		});
 		expect(result.reviewItems).toHaveLength(1);
 		const item = result.reviewItems[0];
 		expect(new Set(item?.options.map((option) => option.decision)).size).toBe(item?.options.length);
@@ -252,6 +256,7 @@ describe("recipient policy review persistence", () => {
 
 		const result = listRecipientPolicyReview(db, context);
 
+		expect(result.continuity).toBeNull();
 		expect(result.blockedItems[0]).toMatchObject({
 			ownerLabel: "Project owner",
 			repairAction: expect.any(String),
@@ -288,7 +293,9 @@ describe("recipient policy review persistence", () => {
 			requiresDecisionInput: false,
 		});
 		expect(protectedSnapshot(db)).toBe(before);
-		expect(listRecipientPolicyReview(db, context).reviewItems).toEqual([]);
+		const resolvedReview = listRecipientPolicyReview(db, context);
+		expect(resolvedReview.reviewItems).toEqual([]);
+		expect(resolvedReview.continuity).toBeNull();
 	});
 
 	it("rejects stale fingerprints without writing", () => {

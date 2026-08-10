@@ -14,6 +14,7 @@ import {
 	previewRecipientInvite,
 	previewRecipientPolicyEdges,
 	RecipientPolicyEdgesStaleError,
+	type RecipientPolicyReviewListV1,
 	RecipientPolicyReviewStaleError,
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
@@ -241,7 +242,12 @@ describe("share operation API", () => {
 
 describe("recipient policy review API", () => {
 	it("loads the camelCase review DTO and submits an input-free decision unchanged", async () => {
-		const review = { version: 1, reviewItems: [], blockedItems: [] } as const;
+		const review: RecipientPolicyReviewListV1 = {
+			version: 1,
+			reviewItems: [],
+			blockedItems: [],
+			continuity: null,
+		};
 		const applied = {
 			reviewItemId: "review-1",
 			sourceFingerprint: "fingerprint-1",
@@ -274,6 +280,24 @@ describe("recipient policy review API", () => {
 				method: "POST",
 			}),
 		);
+	});
+
+	it("keeps legacy review items visible when continuity is absent", async () => {
+		const legacyReview = {
+			version: 1,
+			reviewItems: [{ reviewItemId: "legacy-review" }],
+			blockedItems: [],
+		};
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify(legacyReview), { status: 200 }),
+			) as typeof fetch;
+
+		await expect(loadRecipientPolicyReview()).resolves.toEqual({
+			...legacyReview,
+			continuity: { findingCount: 1, state: "legacy_access_preserved" },
+		});
 	});
 
 	it("throws a typed stale error for a stale 409 result", async () => {

@@ -8212,6 +8212,7 @@ describe("viewer-server", () => {
 				).toBeUndefined();
 				const reviewResponse = await app.request("/api/sync/recipient-policy/v1/review");
 				const review = (await reviewResponse.json()) as {
+					continuity: { findingCount: number; state: string } | null;
 					reviewItems: Array<{
 						reviewItemId: string;
 						sourceFingerprint: string;
@@ -8223,6 +8224,10 @@ describe("viewer-server", () => {
 				const serialized = JSON.stringify(review);
 
 				expect(reviewResponse.status).toBe(200);
+				expect(review.continuity).toEqual({
+					findingCount: 1,
+					state: "legacy_access_preserved",
+				});
 				expect(
 					store.db
 						.prepare("SELECT status FROM actors WHERE actor_id = ? AND is_local = 1")
@@ -8348,6 +8353,11 @@ describe("viewer-server", () => {
 					decided_by_identity_id: store.actorId,
 					decided_by_device_id: store.deviceId,
 				});
+				const completedReviewResponse = await app.request("/api/sync/recipient-policy/v1/review");
+				const completedReview = (await completedReviewResponse.json()) as typeof review;
+				expect(completedReviewResponse.status).toBe(200);
+				expect(completedReview.continuity).toBeNull();
+				expect(completedReview).toHaveProperty("continuity");
 			} finally {
 				getStore()?.db.pragma("query_only = OFF");
 				cleanup();

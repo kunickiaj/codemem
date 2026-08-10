@@ -1318,7 +1318,7 @@ export async function loadProjectsData() {
 		const reviewMount = el<HTMLDivElement>("recipientPolicyReviewMount");
 		if (reviewMount) {
 			if ("review" in recipientPolicyReview) {
-				renderRecipientPolicyReview(reviewMount, recipientPolicyReview.review, loadProjectsData);
+				renderRecipientPolicyReview(reviewMount, recipientPolicyReview.review);
 			} else {
 				renderRecipientPolicyReviewLoadError(reviewMount, recipientPolicyReview.error);
 			}

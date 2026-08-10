@@ -591,6 +591,10 @@ export interface RecipientPolicyReviewListV1 {
 	version: 1;
 	reviewItems: RecipientPolicyReviewItemV1[];
 	blockedItems: RecipientPolicyBlockedItemV1[];
+	continuity: {
+		state: "legacy_access_preserved";
+		findingCount: number;
+	} | null;
 }
 
 export interface RecipientPolicyReviewResolveRequestV1 {
@@ -883,8 +887,20 @@ export function createRecipientInvite(
 	return recipientInviteRequest("/api/sync/recipient-policy/v1/invites", input);
 }
 
-export function loadRecipientPolicyReview(): Promise<RecipientPolicyReviewListV1> {
-	return fetchJson<RecipientPolicyReviewListV1>("/api/sync/recipient-policy/v1/review");
+export async function loadRecipientPolicyReview(): Promise<RecipientPolicyReviewListV1> {
+	const review = await fetchJson<
+		Omit<RecipientPolicyReviewListV1, "continuity"> & {
+			continuity?: RecipientPolicyReviewListV1["continuity"];
+		}
+	>("/api/sync/recipient-policy/v1/review");
+	if (review.continuity !== undefined) return { ...review, continuity: review.continuity };
+	return {
+		...review,
+		continuity:
+			review.reviewItems.length > 0
+				? { state: "legacy_access_preserved", findingCount: review.reviewItems.length }
+				: null,
+	};
 }
 
 export async function resolveRecipientPolicyReview(
