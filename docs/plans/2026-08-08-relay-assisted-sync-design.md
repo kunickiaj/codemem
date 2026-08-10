@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-08
 **Status:** Proposed — review required before implementation
-**Related:** `2026-08-09-remote-workspace-connectivity-evidence-design.md`, `2026-04-30-seed-and-mesh-architecture-converged.md`, `2026-04-30-sharing-domain-scope-design.md`, `2026-05-25-scoped-sync-protocol.md`, `2026-01-24-p2p-sync-phase-1.md`, `2026-01-24-p2p-sync-phase-2.md`, `2026-03-08-identity-aware-sync-shared-memory-foundation.md`, `2026-03-12-coordinator-backed-cross-network-discovery.md`, `2026-03-12-optional-relay-coordinator-mode.md`, `2026-03-12-relay-and-buffered-delivery-follow-on.md`, `2026-07-21-project-recipient-sharing-identity-design.md`, `../architecture.md`
+**Related:** `2026-08-09-remote-workspace-connectivity-evidence-design.md`, `2026-08-09-remote-workspace-connectivity-evidence-report.md`, `2026-04-30-seed-and-mesh-architecture-converged.md`, `2026-04-30-sharing-domain-scope-design.md`, `2026-05-25-scoped-sync-protocol.md`, `2026-01-24-p2p-sync-phase-1.md`, `2026-01-24-p2p-sync-phase-2.md`, `2026-03-08-identity-aware-sync-shared-memory-foundation.md`, `2026-03-12-coordinator-backed-cross-network-discovery.md`, `2026-03-12-optional-relay-coordinator-mode.md`, `2026-03-12-relay-and-buffered-delivery-follow-on.md`, `2026-07-21-project-recipient-sharing-identity-design.md`, `../architecture.md`
 
 ## Executive summary
 
@@ -237,6 +237,8 @@ The relay must contain no payload queue implementation; any observed non-zero du
 | 4 — controlled availability | Co-hosted default deployment plus standalone compatibility test | Relay is optional; relay-free and direct paths remain healthy. |
 | Later — durable delivery decision | Separate cryptographic/key-lifecycle proposal | No durable queue ships without its own approval. |
 
+**Current evidence result:** `2026-08-09-remote-workspace-connectivity-evidence-report.md` records **fix prerequisites first**. Direct signed sync worked on the tested ephemeral private route, but explicit multi-page bootstrap and complete identity restoration blocked two cases; no required route-unavailable peer network was observed. This result does not authorize relay implementation.
+
 ## Test strategy
 
 ### Unit and contract tests
@@ -290,7 +292,7 @@ Extend the mixed-owner fixture from the sharing-domain design: personal, work, a
 
 Implementation is blocked until the live-relay gates have owners and recorded decisions:
 
-1. **Connectivity evidence:** The targeted experiment in `2026-08-09-remote-workspace-connectivity-evidence-design.md` must separate signed-protocol correctness, listener lifecycle, ephemeral-address churn, stable private exposure, and a true route-unavailable/simultaneously-online case. A stopped listener or untested stable endpoint cannot justify relay.
+1. **Connectivity evidence:** The targeted experiment in `2026-08-09-remote-workspace-connectivity-evidence-design.md` separated signed-protocol correctness, listener lifecycle, ephemeral-address churn, stable private exposure, and a true route-unavailable/simultaneously-online case. Its report chose **fix prerequisites first**: direct signed sync worked, while bootstrap and identity restoration remained blocked and no route-unavailable peer network was observed.
 2. **Cryptographic envelope:** What is encrypted/authenticated, how are paired device identities bound, and how are replay, nonce, padding, and frame expiry handled?
 3. **Live key lifecycle:** How are encryption keys introduced alongside existing signing keys, bound to paired devices, rotated, recovered, and given an explicit forward-secrecy posture?
 4. **Recipient-bound peer signature (`codemem-zjvr.1.10`):** Version the canonical peer signature so direct and relayed requests bind the intended recipient before architecture approval. This is direct-sync hardening, not relay transport implementation.
@@ -310,6 +312,6 @@ Implementation is blocked until the live-relay gates have owners and recorded de
 | `codemem-zjvr.2` — Live encrypted relay | Relay-session instrumentation, path selector, relay client/service, coordinator co-hosting, limits, fault tests, standalone compatibility, and dogfood | All production children depend on `codemem-zjvr.1.5`; `codemem-zjvr.2.10` gates controlled availability |
 | `codemem-zjvr.3` — Durable encrypted relay | Separate offline queue threat model, key lifecycle, encrypted storage contract, future vertical slice, and compromise testing | Begins after live-relay review; `codemem-zjvr.3.4` separately approves or rejects implementation |
 
-The evidence precursor is separately gated: `codemem-zjvr.1.8` approves the bounded experiment only, `codemem-zjvr.1.9` runs it without persistent telemetry or sync-behavior changes, and `codemem-zjvr.1.6` evaluates the result. `codemem-zjvr.1.10` owns the recipient-bound canonical-signature prerequisite in direct peer sync and blocks architecture approval. No coordinator/relay transmission, export, or fleet aggregation of evidence is authorized. None of these beads authorizes relay transport.
+The evidence precursor is separately gated: `codemem-zjvr.1.8` approved the bounded experiment, `codemem-zjvr.1.9` ran it without persistent telemetry or sync-behavior changes, and `codemem-zjvr.1.6` recorded fix-prerequisites-first. `codemem-hdah` and `codemem-q71r` own the blocked bootstrap and identity-persistence prerequisites; `codemem-9dnf` owns the bounded rerun. `codemem-zjvr.1.10` owns the recipient-bound canonical-signature prerequisite in direct peer sync and blocks architecture approval. No coordinator/relay transmission, export, or fleet aggregation of evidence is authorized. None of these beads authorizes relay transport.
 
 The graph allows approved measurement, contract, and review work while blocking relay implementation on `codemem-zjvr.1.5`. Durable implementation is blocked again on successful live-relay evidence and the separate `codemem-zjvr.3.4` decision. These epics scope future execution; they do not themselves authorize production code.

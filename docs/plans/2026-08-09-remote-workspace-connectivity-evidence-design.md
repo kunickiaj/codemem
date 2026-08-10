@@ -1,9 +1,9 @@
 # Remote Workspace Connectivity Evidence Decision
 
 **Date:** 2026-08-09
-**Status:** Approved targeted experiment; relay implementation remains unauthorized
+**Status:** Experiment approved and executed; `.1.6` outcome is fix-prerequisites-first
 **Bead:** `codemem-zjvr.1.8`
-**Related:** `2026-08-08-relay-assisted-sync-design.md`, `2026-03-12-coordinator-backed-cross-network-discovery.md`, `2026-03-12-relay-and-buffered-delivery-follow-on.md`
+**Related:** `2026-08-09-remote-workspace-connectivity-evidence-report.md`, `2026-08-08-relay-assisted-sync-design.md`, `2026-03-12-coordinator-backed-cross-network-discovery.md`, `2026-03-12-relay-and-buffered-delivery-follow-on.md`
 
 ## Decision
 
@@ -105,11 +105,11 @@ An HTTP 401, 403, 409, 429, or other HTTP response proves reachability. Record 4
 
 The experiment report may record only:
 
-- test case identifier from the five cases above;
+- test case or explicit subcase identifier from the five cases above;
 - UTC date, not exact user activity timestamps;
 - `pass`, `fail`, `blocked`, or `not_applicable`;
 - bounded path class: `ephemeral_direct`, `stable_private_direct`, `outbound_websocket`, or `none`;
-- bounded result class: `http_reached`, `auth_failed`, `scope_failed`, `rate_limited`, `listener_stopped`, `dns_failed`, `connection_refused`, `connect_timeout`, `network_unreachable`, `no_candidate`, or `unknown`;
+- bounded result class: `http_reached`, `auth_failed`, `scope_failed`, `rate_limited`, `listener_stopped`, `dns_failed`, `connection_refused`, `connect_timeout`, `network_unreachable`, `no_candidate`, `precondition_violated`, `bootstrap_incomplete` (reserved for a precondition-valid rerun), or `unknown`;
 - whether the candidate set changed after normal recreation;
 - candidate-cache result after refresh: `replaced`, `merged_stale_retained`, `unchanged`, or `unknown`;
 - outbound overlap: `observed`, `inferred`, or `not_confirmed`; and
@@ -148,7 +148,10 @@ Choose this result when signed sync fails despite an HTTP-reachable listener, th
 
 ## Follow-on ownership
 
-- `codemem-zjvr.1.9` runs and records the targeted experiment without adding persistent telemetry or changing sync behavior.
-- `codemem-zjvr.1.6` evaluates the bounded report and recommends stable-direct, continue-relay-review, or fix-prerequisites-first. Its recommendation must state the single-deployment scope, untested networks and policies, blocked/unknown cases, and limits on generalization.
+- `codemem-zjvr.1.9` ran and recorded the targeted experiment without adding persistent telemetry or changing sync behavior.
+- `codemem-zjvr.1.6` evaluated the bounded report as fix-prerequisites-first, with the single-deployment scope, untested networks and policies, blocked cases, and limits on generalization recorded in the report.
+- `codemem-hdah` owns the explicit multi-page bootstrap rerun with the empty-receiver/no-cursor precondition enforced.
+- `codemem-q71r` owns complete database-plus-signing-key identity persistence across recreation.
+- `codemem-9dnf` owns rerunning blocked cases 1b and 3 after both prerequisites close.
 - Private deployment adapters own environment-specific Service/Ingress or mesh configuration.
 - Relay implementation remains blocked on the existing architecture and security gates.
