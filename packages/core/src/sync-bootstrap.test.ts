@@ -683,6 +683,70 @@ describe("applyBootstrapSnapshot", () => {
 });
 
 describe("fetchAllSnapshotPages", () => {
+	it("fetches and applies every page for an empty authorized scope", async () => {
+		const db = new Database(":memory:");
+		initTestSchema(db);
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-bootstrap-keys-"));
+		const [deviceId] = ensureDeviceIdentity(db, { keysDir });
+		const resetInfo = makeResetInfo();
+		const snapshotItems = Array.from({ length: 5 }, (_, index) =>
+			makeSnapshotItem(`scoped-key-${index + 1}`),
+		);
+		const requestedPageTokens: Array<string | null> = [];
+		const prevFetch = globalThis.fetch;
+		try {
+			expect(
+				db.prepare("SELECT COUNT(*) FROM memory_items WHERE import_key IS NOT NULL").pluck().get(),
+			).toBe(0);
+			expect(getReplicationCursor(db, "peer-1", "acme-work")).toEqual([null, null]);
+
+			globalThis.fetch = (async (input: RequestInfo | URL) => {
+				const url = new URL(String(input));
+				expect(url.searchParams.get("scope_id")).toBe("acme-work");
+				expect(url.searchParams.get("limit")).toBe("2");
+				const pageToken = url.searchParams.get("page_token");
+				requestedPageTokens.push(pageToken);
+				const pageIndex = pageToken === null ? 0 : Number(pageToken.replace("page-", "")) - 1;
+				const items = snapshotItems.slice(pageIndex * 2, pageIndex * 2 + 2);
+				const hasMore = pageIndex * 2 + items.length < snapshotItems.length;
+				return new Response(
+					JSON.stringify({
+						generation: resetInfo.generation,
+						snapshot_id: resetInfo.snapshot_id,
+						baseline_cursor: resetInfo.baseline_cursor,
+						retained_floor_cursor: null,
+						items,
+						next_page_token: hasMore ? `page-${pageIndex + 2}` : null,
+						has_more: hasMore,
+					}),
+					{ status: 200 },
+				);
+			}) as typeof fetch;
+
+			const snapshot = await fetchAllSnapshotPages(
+				"http://peer.example.test:47337",
+				resetInfo,
+				deviceId,
+				{ keysDir, pageSize: 2 },
+			);
+			const result = applyBootstrapSnapshot(db, "peer-1", snapshot.items, resetInfo);
+
+			expect(requestedPageTokens).toEqual([null, "page-2", "page-3"]);
+			expect(snapshot.items).toHaveLength(5);
+			expect(result).toMatchObject({ ok: true, applied: 5, deleted: 0 });
+			expect(
+				db
+					.prepare("SELECT import_key FROM memory_items WHERE scope_id = ? ORDER BY import_key")
+					.all("acme-work"),
+			).toEqual(snapshotItems.map((item) => ({ import_key: item.entity_id })));
+			expect(getReplicationCursor(db, "peer-1", "acme-work")[0]).toBe(resetInfo.baseline_cursor);
+		} finally {
+			globalThis.fetch = prevFetch;
+			db.close();
+			rmSync(keysDir, { recursive: true, force: true });
+		}
+	});
+
 	it("forwards bootstrap grant id as an auth header", async () => {
 		const db = new Database(":memory:");
 		initTestSchema(db);
