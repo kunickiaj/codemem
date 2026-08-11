@@ -3,6 +3,7 @@ import {
 	isLoopbackHost,
 	observeViewerRuntime,
 	parseViewerPidRecord,
+	probeCodememViewerLiveness,
 	type ViewerPidRecord,
 } from "./viewer-runtime.js";
 
@@ -37,6 +38,112 @@ describe("viewer PID records", () => {
 		expect(isLoopbackHost("127.0.0.2")).toBe(true);
 		expect(isLoopbackHost("[::1]")).toBe(true);
 		expect(isLoopbackHost("example.test")).toBe(false);
+	});
+});
+
+describe("probeCodememViewerLiveness", () => {
+	it("requires HTTP success and the codemem viewer discriminator", async () => {
+		const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response(healthy));
+
+		await expect(probeCodememViewerLiveness(record, { fetch: fetchMock })).resolves.toEqual({
+			state: "live",
+			degraded: false,
+		});
+	});
+
+	it("treats unready or database-unreachable health as degraded liveness", async () => {
+		for (const payload of [
+			{ ...healthy, ready: false },
+			{ ...healthy, database: { reachable: false } },
+		]) {
+			const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response(payload));
+			await expect(probeCodememViewerLiveness(record, { fetch: fetchMock })).resolves.toEqual({
+				state: "live",
+				degraded: true,
+			});
+		}
+	});
+
+	it("falls back to stats exactly once only when health returns 404", async () => {
+		const fetchMock = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(response(null, { status: 404 }))
+			.mockResolvedValueOnce(response({ viewer_pid: 1234 }));
+
+		await expect(probeCodememViewerLiveness(record, { fetch: fetchMock })).resolves.toEqual({
+			state: "live",
+			degraded: false,
+		});
+		expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+			"http://127.0.0.1:38888/api/health",
+			"http://127.0.0.1:38888/api/stats",
+		]);
+		expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+		expect(fetchMock.mock.calls[1]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+		// The fallback gets its own timeout budget rather than the residual
+		// budget of the health request.
+		expect(fetchMock.mock.calls[1]?.[1]?.signal).not.toBe(fetchMock.mock.calls[0]?.[1]?.signal);
+	});
+
+	it.each([
+		["a server error", response(null, { status: 500 })],
+		["a missing viewer_pid", response({ database: {}, usage: {} })],
+		["an invalid viewer_pid", response({ viewer_pid: "1234" })],
+		["malformed JSON", new Response("{", { status: 200 })],
+	])("reports unavailable when the legacy fallback returns %s", async (_case, statsResponse) => {
+		const fetchMock = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(response(null, { status: 404 }))
+			.mockResolvedValueOnce(statsResponse);
+
+		await expect(probeCodememViewerLiveness(record, { fetch: fetchMock })).resolves.toEqual({
+			state: "unavailable",
+			reason: "unexpected_response",
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("treats absent readiness fields as degraded liveness, not unavailability", async () => {
+		const fetchMock = vi
+			.fn<typeof fetch>()
+			.mockResolvedValue(response({ service: "codemem-viewer" }));
+
+		await expect(probeCodememViewerLiveness(record, { fetch: fetchMock })).resolves.toEqual({
+			state: "live",
+			degraded: true,
+		});
+	});
+
+	it("does not fall back for wrong-service, malformed, 500, or network failures", async () => {
+		const cases: Array<() => Promise<Response>> = [
+			async () => response({ ...healthy, service: "other-service" }),
+			async () => new Response("{", { status: 200 }),
+			async () => response(null, { status: 500 }),
+			async () => {
+				throw new Error("connection refused");
+			},
+		];
+
+		for (const result of cases) {
+			const fetchMock = vi.fn<typeof fetch>().mockImplementation(result);
+			const observed = await probeCodememViewerLiveness(record, { fetch: fetchMock });
+			expect(observed.state).toBe("unavailable");
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+		}
+	});
+
+	it("honors the caller-provided timeout", async () => {
+		const timeoutSignal = new AbortController().signal;
+		const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutSignal);
+		try {
+			const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response(healthy));
+			await probeCodememViewerLiveness(record, { fetch: fetchMock, timeoutMs: 25 });
+
+			expect(timeoutSpy).toHaveBeenCalledWith(25);
+			expect(fetchMock.mock.calls[0]?.[1]?.signal).toBe(timeoutSignal);
+		} finally {
+			timeoutSpy.mockRestore();
+		}
 	});
 });
 

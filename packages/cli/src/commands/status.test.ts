@@ -120,6 +120,22 @@ describe("status command", () => {
 		});
 	});
 
+	it("suppresses newer-schema compatibility warnings in JSON mode", async () => {
+		const close = vi.fn();
+		const { command, stdout, stderr } = harness({
+			connectReadOnly: (_path, options) => {
+				options?.warn?.("newer schema compatibility warning");
+				return { close } as unknown as Database;
+			},
+		});
+
+		await command.parseAsync(["--json"], { from: "user" });
+
+		expect(stdout).toHaveLength(1);
+		expect(stderr).toEqual([]);
+		expect(close).toHaveBeenCalledOnce();
+	});
+
 	it("keeps warnings successful and exits zero for degraded reports", async () => {
 		const snapshot = structuredClone(healthySnapshot);
 		snapshot.sync.peer_errors = 2;

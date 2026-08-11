@@ -353,7 +353,9 @@ export async function collectStatusReport(
 	if (deps.exists(dbPath)) {
 		let db: ReturnType<typeof connectReadOnly> | null = null;
 		try {
-			db = deps.connectReadOnly(dbPath);
+			db = deps.connectReadOnly(dbPath, {
+				warn: opts.json ? () => {} : deps.writeStderr,
+			});
 		} catch {
 			databaseState = "unavailable";
 		}

@@ -16,6 +16,7 @@ import {
 	maintenanceWorkerPidFilePath,
 	pickViewerPidCandidate,
 	prepareViewerDatabase,
+	respondsLikeCodememViewer,
 	runServeCoordinatorMaintenance,
 	sqliteVecFailureDiagnostics,
 	terminateTrustedMaintenanceWorker,
@@ -307,9 +308,55 @@ describe("serve command option resolution", () => {
 
 	it("extracts viewer_pid from stats payload", () => {
 		expect(extractViewerPid({ viewer_pid: 12345 })).toBe(12345);
+		expect(extractViewerPid({ pid: 54321 })).toBeNull();
 		expect(extractViewerPid({ viewer_pid: -1 })).toBeNull();
 		expect(extractViewerPid({ viewer_pid: "12345" })).toBeNull();
 		expect(extractViewerPid({})).toBeNull();
+	});
+
+	it("uses degraded health for liveness without treating health pid as a stop candidate", async () => {
+		const timeoutSpy = vi
+			.spyOn(AbortSignal, "timeout")
+			.mockReturnValue(new AbortController().signal);
+		const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					service: "codemem-viewer",
+					pid: 54321,
+					ready: false,
+					database: { reachable: false },
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			),
+		);
+
+		await expect(
+			respondsLikeCodememViewer({ pid: 12345, host: "127.0.0.1", port: 38_888 }, fetchMock),
+		).resolves.toBe(true);
+		expect(fetchMock).toHaveBeenCalledOnce();
+		expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:38888/api/health");
+		expect(timeoutSpy).toHaveBeenCalledWith(1000);
+		expect(extractViewerPid({ pid: 54321 })).toBeNull();
+	});
+
+	it("accepts an old viewer through the 404 stats fallback", async () => {
+		const fetchMock = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(new Response(null, { status: 404 }))
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ viewer_pid: 12345 }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				}),
+			);
+
+		await expect(
+			respondsLikeCodememViewer({ pid: 12345, host: "127.0.0.1", port: 38_888 }, fetchMock),
+		).resolves.toBe(true);
+		expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+			"http://127.0.0.1:38888/api/health",
+			"http://127.0.0.1:38888/api/stats",
+		]);
 	});
 
 	it("selects pid candidate from stats and listener with mismatch protection", () => {

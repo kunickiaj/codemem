@@ -2,10 +2,11 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Database } from "./db.js";
 import {
 	assertSchemaReady,
+	assertSchemaReadyReadOnly,
 	backupOnFirstAccess,
 	columnExists,
 	connect,
@@ -431,6 +432,15 @@ describe("assertSchemaReady", () => {
 	it("warns but continues for a newer schema version", () => {
 		db.pragma(`user_version = ${SCHEMA_VERSION + 1}`);
 		expect(() => assertSchemaReady(db)).not.toThrow();
+	});
+
+	it("routes newer read-only schema warnings through the caller-provided sink", () => {
+		const warn = vi.fn();
+		db.pragma(`user_version = ${SCHEMA_VERSION + 1}`);
+
+		expect(() => assertSchemaReadyReadOnly(db, warn)).not.toThrow();
+		expect(warn).toHaveBeenCalledOnce();
+		expect(warn.mock.calls[0]?.[0]).toContain("newer than this TS runtime");
 	});
 
 	it("throws when required tables are missing", () => {

@@ -30,9 +30,9 @@ confirmed gaps:
 - Completion omits `maintenance`; completion and registered-command parity is
   not tested as an assembled tree.
 - README and user-guide material still recommends `sync start`; coordinator
-  discovery examples omit required `--effect-id` arguments for membership
-  changes and retain legacy coordinator host/port forms despite the top-level
-  `coordinator` command.
+  discovery and anchor-peer deployment examples omit required `--effect-id`
+  arguments for membership changes and retain legacy coordinator host/port
+  forms despite the top-level `coordinator` command.
 - `config workspace` overlaps `sync enable`/`disable`/`connect`, memory CRUD and
   evaluation-oriented commands share one group, and JSON support is uneven
   across neighboring sync and database mutation commands.
@@ -120,6 +120,11 @@ Initial state values are:
 - `semantic_index.state`: `healthy | pending | degraded | failed | unknown`
 - `raw_events.state`: `healthy | backlogged | failing | unknown`
 - `observer.state`: `healthy | idle | backoff | failed | unconfigured | unknown`
+
+For this offline roll-up, observer `backoff` means the local database contains
+recent retryable observer batches. It does not claim to expose the viewer's
+in-memory authentication-backoff timer from `/api/observer-status`; that remains
+a detailed viewer diagnostic outside this command's bounded `/api/health` probe.
 
 Consumers must handle future state values as `unknown`/degraded. New values are
 additive; existing meanings remain stable. `attention` contains at most 20

@@ -66,8 +66,11 @@ Each PR is independently useful and keeps existing JSON contracts additive.
 - **Behavioral work:** Use shared `--db-path`, `--config`, and `--json` options.
   Collect local database readiness, runtime/viewer, sync, maintenance,
   semantic-index, raw-events, and observer summaries plus bounded attention
-  items. Emit stable JSON/error objects and `0` for collected degraded status,
-  `2` for usage, `1` for collection failure. Allow one bounded loopback
+  items. Derive observer `backoff` only from recent retryable batches persisted
+  in the local database; do not call `/api/observer-status` or claim the viewer's
+  in-memory auth-backoff timer.
+  Emit stable JSON/error objects and `0` for collected degraded status, `2` for
+  usage, `1` for collection failure. Allow one bounded loopback
   `/api/health` probe plus a `/api/stats` compatibility fallback only when an
   older viewer returns 404; otherwise use local fallback. Do not call
   registries, the coordinator, non-loopback endpoints, or update discovery.
@@ -119,7 +122,8 @@ Each PR is independently useful and keeps existing JSON contracts additive.
 - **Likely files:** `packages/cli/src/index.ts`, CLI tree/completion tests,
   `README.md`, `docs/user-guide.md`, `docs/coordinator-discovery.md`,
   `docs/coordinator-deployment.md`, `docs/coordinator-e2e-runbook.md`,
-  `docs/cloudflare-coordinator-deployment.md`, and affected command modules.
+  `docs/cloudflare-coordinator-deployment.md`, `docs/anchor-peer-deployment.md`,
+  and affected command modules.
 - **Behavioral work:** Hide the already-warned `sync coordinator` compatibility
   path. Add warnings to visible `export-memories`/`import-memories`, keep them
   visible and in completion for their first warned release, and record their

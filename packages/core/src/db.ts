@@ -251,7 +251,14 @@ export function connect(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
  * Read-tuning pragmas are still applied because they are per-connection and do
  * not write to the file. Schema readiness is validated read-only.
  */
-export function connectReadOnly(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
+export interface ReadOnlyConnectionOptions {
+	warn?: (message: string) => void;
+}
+
+export function connectReadOnly(
+	dbPath: string = DEFAULT_DB_PATH,
+	options: ReadOnlyConnectionOptions = {},
+): DatabaseType {
 	const db = new Database(dbPath, { readonly: true, fileMustExist: true });
 	try {
 		db.pragma("foreign_keys = ON");
@@ -260,7 +267,7 @@ export function connectReadOnly(dbPath: string = DEFAULT_DB_PATH): DatabaseType 
 		db.pragma("cache_size = -65536");
 		db.pragma("mmap_size = 1073741824");
 		db.pragma("temp_store = MEMORY");
-		assertSchemaReadyReadOnly(db);
+		assertSchemaReadyReadOnly(db, options.warn);
 		return db;
 	} catch (error) {
 		db.close();
@@ -272,7 +279,10 @@ export function connectReadOnly(dbPath: string = DEFAULT_DB_PATH): DatabaseType 
  * Validate schema readiness without any writes (no bootstrap, no migration).
  * Mirrors {@link assertSchemaReady} but is safe on read-only connections.
  */
-export function assertSchemaReadyReadOnly(db: DatabaseType): void {
+export function assertSchemaReadyReadOnly(
+	db: DatabaseType,
+	warn: (message: string) => void = console.warn,
+): void {
 	const version = getSchemaVersion(db);
 	if (version === 0) {
 		throw new Error(
@@ -286,7 +296,7 @@ export function assertSchemaReadyReadOnly(db: DatabaseType): void {
 		);
 	}
 	if (version > SCHEMA_VERSION) {
-		console.warn(
+		warn(
 			`Database schema version ${version} is newer than this TS runtime (${SCHEMA_VERSION}). ` +
 				"Running in read-only compatibility mode.",
 		);

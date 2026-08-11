@@ -24,6 +24,10 @@ const MAX_MESSAGE_INJECTION_CACHE_SESSIONS = 20;
 const MAX_MESSAGE_INJECTION_CACHE_MESSAGES = 100;
 const COMPACTION_INJECTION_SKIP_TTL_MS = 30 * 1000;
 const MAX_WORKING_SET_PATH_CHARS = 400;
+const VIEWER_HEALTH_CHECK_INTERVAL_MS = 60_000;
+const VIEWER_HEALTH_TIMEOUT_MS = 5_000;
+const VIEWER_HEALTH_RESTART_THRESHOLD = 3;
+const VIEWER_HEALTH_RESTART_COOLDOWN_MS = 5 * 60_000;
 
 let compatCheckCache = null;
 
@@ -32,6 +36,149 @@ const envHasValue = (value, truthyValues) =>
   truthyValues.includes(normalizeEnvValue(value));
 const envNotDisabled = (value) =>
   !DISABLED_VALUES.includes(normalizeEnvValue(value));
+
+const createViewerHealthMonitor = ({
+  viewerHealthUrl,
+  legacyStatusUrl,
+  isActive,
+  restartViewer,
+  logLine,
+  fetchFn = fetch,
+  now = Date.now,
+  setIntervalFn = setInterval,
+  clearIntervalFn = clearInterval,
+  timeoutSignal = (timeoutMs) => AbortSignal.timeout(timeoutMs),
+}) => {
+  let timer = null;
+  let consecutiveFailures = 0;
+  let lastRestartAttempt = 0;
+
+  const boundedFetch = (url) => fetchFn(url, {
+    method: "GET",
+    signal: timeoutSignal(VIEWER_HEALTH_TIMEOUT_MS),
+  });
+
+  const probe = async () => {
+    let response;
+    try {
+      response = await boundedFetch(viewerHealthUrl);
+    } catch (error) {
+      return { live: false, detail: `error: ${String(error).slice(0, 200)}` };
+    }
+
+    if (response.status === 404) {
+      void response.body?.cancel?.();
+      try {
+        // Old-viewer compatibility: released viewers serving this route
+        // always include the `ingest` availability object, so require that
+        // identifying evidence rather than trusting any 2xx from an
+        // arbitrary local service.
+        const fallbackResponse = await boundedFetch(legacyStatusUrl);
+        if (!fallbackResponse.ok) {
+          void fallbackResponse.body?.cancel?.();
+          return { live: false, detail: `fallback status=${fallbackResponse.status}` };
+        }
+        const fallbackPayload = await fallbackResponse.json();
+        const looksLikeViewer =
+          fallbackPayload &&
+          typeof fallbackPayload === "object" &&
+          fallbackPayload.ingest &&
+          typeof fallbackPayload.ingest === "object";
+        return looksLikeViewer
+          ? { live: true }
+          : { live: false, detail: "fallback unexpected payload" };
+      } catch (error) {
+        return { live: false, detail: `fallback error: ${String(error).slice(0, 200)}` };
+      }
+    }
+
+    if (!response.ok) {
+      // Release the unread body so a persistently failing viewer does not
+      // pin connections across the 60s monitor interval.
+      void response.body?.cancel?.();
+      return { live: false, detail: `status=${response.status}` };
+    }
+
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      return { live: false, detail: `invalid JSON: ${String(error).slice(0, 200)}` };
+    }
+    if (!payload || typeof payload !== "object" || payload.service !== "codemem-viewer") {
+      return { live: false, detail: "unexpected service" };
+    }
+    return { live: true };
+  };
+
+  const check = async () => {
+    if (!isActive()) return;
+    const result = await probe();
+    if (result.live) {
+      if (consecutiveFailures > 0) {
+        await logLine(`viewer.health recovered after ${consecutiveFailures} failure(s)`);
+      }
+      consecutiveFailures = 0;
+      return;
+    }
+
+    consecutiveFailures += 1;
+    await logLine(
+      `viewer.health check failed (${result.detail}, consecutive=${consecutiveFailures})`
+    );
+    if (
+      consecutiveFailures < VIEWER_HEALTH_RESTART_THRESHOLD ||
+      now() - lastRestartAttempt < VIEWER_HEALTH_RESTART_COOLDOWN_MS
+    ) {
+      return;
+    }
+
+    // Re-check after the awaited probe: a stop requested while the probe was
+    // in flight must not be undone by a restart.
+    if (!isActive()) return;
+
+    lastRestartAttempt = now();
+    await logLine(`viewer.health restarting viewer after ${consecutiveFailures} consecutive failures`);
+    try {
+      const restartResult = await restartViewer();
+      const restarted = restartResult?.exitCode === 0;
+      await logLine(
+        `viewer.health restart ${restarted ? "succeeded" : "failed"} (exit=${restartResult?.exitCode ?? "unknown"})`
+      );
+      if (restarted) consecutiveFailures = 0;
+    } catch (error) {
+      await logLine(`viewer.health restart error: ${String(error).slice(0, 200)}`);
+    }
+  };
+
+  const start = () => {
+    if (timer) return;
+    consecutiveFailures = 0;
+    timer = setIntervalFn(() => {
+      check().catch(() => {});
+    }, VIEWER_HEALTH_CHECK_INTERVAL_MS);
+    if (timer?.unref) timer.unref();
+  };
+
+  const stop = () => {
+    if (timer) {
+      clearIntervalFn(timer);
+      timer = null;
+    }
+    consecutiveFailures = 0;
+  };
+
+  return {
+    check,
+    start,
+    stop,
+    state: () => ({
+      consecutiveFailures,
+      lastRestartAttempt,
+      running: timer !== null,
+    }),
+  };
+};
 
 const resolveInjectSurface = (value) => {
   const normalized = String(value || "message").trim().toLowerCase();
@@ -1548,6 +1695,7 @@ export const OpencodeMemPlugin = async ({
   const packUrl = `http://${viewerUrlHost}:${viewerPort}/api/pack`;
   const promptPackProfileUrl = `http://${viewerUrlHost}:${viewerPort}/api/prompt-pack-profile`;
   const promptPackLedgerUrl = `http://${viewerUrlHost}:${viewerPort}/api/prompt-pack-ledger`;
+  const viewerHealthUrl = `http://${viewerUrlHost}:${viewerPort}/api/health`;
   const rawEventsBackoffMs = parseNumber(
     process.env.CODEMEM_RAW_EVENTS_BACKOFF_MS || "10000",
     10000
@@ -1567,13 +1715,6 @@ export const OpencodeMemPlugin = async ({
   let lastStatusAvailable = true;
   let promptPackTransportUnavailableUntil = 0;
 
-  // Viewer health-check state
-  const HEALTH_CHECK_INTERVAL_MS = 60_000;
-  const HEALTH_CONSECUTIVE_FAILURES_BEFORE_RESTART = 3;
-  const HEALTH_RESTART_COOLDOWN_MS = 5 * 60_000;
-  let healthCheckTimer = null;
-  let healthConsecutiveFailures = 0;
-  let healthLastRestartAttempt = 0;
   const nextEventId = () => {
     if (typeof crypto !== "undefined" && crypto.randomUUID) {
       return crypto.randomUUID();
@@ -2952,62 +3093,15 @@ export const OpencodeMemPlugin = async ({
     await runCli(buildViewerCliArgs("stop"));
   };
 
-  const checkViewerHealth = async () => {
-    if (!viewerStarted || !viewerEnabled) return;
-    try {
-      const resp = await fetch(rawEventsStatusUrl, {
-        method: "GET",
-        signal: AbortSignal.timeout(5000),
-      });
-      if (resp.ok) {
-        if (healthConsecutiveFailures > 0) {
-          await logLine(`viewer.health recovered after ${healthConsecutiveFailures} failure(s)`);
-        }
-        healthConsecutiveFailures = 0;
-        return;
-      }
-      healthConsecutiveFailures++;
-      await logLine(`viewer.health check failed (status=${resp.status}, consecutive=${healthConsecutiveFailures})`);
-    } catch (err) {
-      healthConsecutiveFailures++;
-      await logLine(`viewer.health check error (consecutive=${healthConsecutiveFailures}): ${String(err).slice(0, 200)}`);
-    }
-
-    if (
-      healthConsecutiveFailures >= HEALTH_CONSECUTIVE_FAILURES_BEFORE_RESTART &&
-      Date.now() - healthLastRestartAttempt >= HEALTH_RESTART_COOLDOWN_MS
-    ) {
-      healthLastRestartAttempt = Date.now();
-      await logLine(`viewer.health restarting viewer after ${healthConsecutiveFailures} consecutive failures`);
-      try {
-        const result = await runCli(buildViewerCliArgs("restart"));
-        const ok = result?.exitCode === 0;
-        await logLine(`viewer.health restart ${ok ? "succeeded" : "failed"} (exit=${result?.exitCode ?? "unknown"})`);
-        if (ok) {
-          healthConsecutiveFailures = 0;
-        }
-      } catch (restartErr) {
-        await logLine(`viewer.health restart error: ${String(restartErr).slice(0, 200)}`);
-      }
-    }
-  };
-
-  const startHealthCheck = () => {
-    if (healthCheckTimer) return;
-    healthConsecutiveFailures = 0;
-    healthCheckTimer = setInterval(() => {
-      checkViewerHealth().catch(() => {});
-    }, HEALTH_CHECK_INTERVAL_MS);
-    if (healthCheckTimer.unref) healthCheckTimer.unref();
-  };
-
-  const stopHealthCheck = () => {
-    if (healthCheckTimer) {
-      clearInterval(healthCheckTimer);
-      healthCheckTimer = null;
-    }
-    healthConsecutiveFailures = 0;
-  };
+  const viewerHealthMonitor = createViewerHealthMonitor({
+    viewerHealthUrl,
+    legacyStatusUrl: rawEventsStatusUrl,
+    isActive: () => viewerStarted && viewerEnabled,
+    restartViewer: () => runCli(buildViewerCliArgs("restart")),
+    logLine,
+  });
+  const startHealthCheck = viewerHealthMonitor.start;
+  const stopHealthCheck = viewerHealthMonitor.stop;
 
   // Get version info (commit hash) for debugging
   let version = "unknown";
@@ -3646,4 +3740,5 @@ export const __testUtils = {
   buildRawEventEnvelope,
   trimEventQueue,
   parsePositiveInt,
+  createViewerHealthMonitor,
 };
