@@ -1383,4 +1383,4 @@ syncCoordinatorAlias.hook("preAction", (_thisCmd: Command, actionCmd: Command) =
 	emitDeprecationWarning(`codemem sync coordinator ${subName}`, `codemem coordinator ${subName}`);
 });
 
-syncCommand.addCommand(syncCoordinatorAlias);
+syncCommand.addCommand(syncCoordinatorAlias, { hidden: true });

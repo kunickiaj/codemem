@@ -29,9 +29,9 @@ On the coordinator host:
 
 ```fish
 rm ~/.codemem/coordinator.sqlite
-codemem sync coordinator group-create my-team --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator group-create my-team --db-path ~/.codemem/coordinator.sqlite
 set -x CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET (openssl rand -base64 32)
-codemem sync coordinator serve --db-path ~/.codemem/coordinator.sqlite --host 0.0.0.0 --port 7347
+codemem coordinator serve --db-path ~/.codemem/coordinator.sqlite --coordinator-host 0.0.0.0 --coordinator-port 7347
 ```
 
 If you do not want to expose the raw host directly, put it behind Tailscale Funnel or Cloudflare Tunnel and use that
@@ -60,7 +60,7 @@ block you because private-network deployments can still be valid.
 On the admin device:
 
 ```fish
-codemem sync coordinator create-invite my-team --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator create-invite my-team --db-path ~/.codemem/coordinator.sqlite
 ```
 
 This returns:
@@ -76,7 +76,7 @@ Share the encoded invite with the teammate device.
 On the teammate device:
 
 ```fish
-codemem sync coordinator import-invite <encoded-invite>
+codemem coordinator import-invite <encoded-invite>
 ```
 
 Expected result:
@@ -94,8 +94,8 @@ out, check reachability of the invite’s `coordinator_url` from the teammate ma
 If the invite policy is `approval_required`, on the admin host:
 
 ```fish
-codemem sync coordinator list-join-requests my-team --db-path ~/.codemem/coordinator.sqlite
-codemem sync coordinator approve-join-request <request-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator list-join-requests my-team --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator approve-join-request <request-id> --db-path ~/.codemem/coordinator.sqlite
 ```
 
 ## 6. Inspect the discovered device (Advanced)

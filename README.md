@@ -174,7 +174,7 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | | `codemem codex-hook-ingest` | Codex hook event ingestion (stdin, experimental) |
 | | `codemem codex-hook-inject` | Codex prompt-time memory injection (stdin, experimental) |
 
-Run `codemem --help` for the full list. Legacy top-level aliases (`export-memories`, `import-memories`, `show`, `forget`, `remember`) still work but are hidden from help.
+Run `codemem --help` for the full list. `show`, `forget`, and `remember` still work as hidden top-level aliases. `export-memories` and `import-memories` remain visible but are deprecated — they warn on stderr and will be hidden from help and completion in a future release; use `codemem memory export` / `codemem memory import`.
 
 Use `codemem status` to answer whether the local database, viewer, sync, maintenance,
 semantic index, raw-event ingestion, and observer need attention. It is observational:
@@ -276,7 +276,7 @@ codemem memory export project.json
 codemem memory import project.json --remap-project ~/workspace/myproject
 ```
 
-See `codemem memory export --help` and `codemem memory import --help` for full options. Legacy top-level aliases still work but are hidden from help.
+See `codemem memory export --help` and `codemem memory import --help` for full options. The legacy top-level `export-memories` / `import-memories` forms still work but emit a deprecation warning.
 
 ## Sharing and devices
 
@@ -328,7 +328,7 @@ Use manual pairing only for a same-person device, an existing integration, or a 
 ```text
 codemem sync enable        # generate device keys
 codemem sync pair          # generate pairing payload
-codemem sync start         # start the viewer-backed sync runtime
+codemem serve start        # start it; use serve stop/restart for lifecycle management
 codemem sync once          # run one immediate sync pass
 ```
 

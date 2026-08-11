@@ -4,8 +4,14 @@ import { join } from "node:path";
 import * as p from "@clack/prompts";
 import { exportMemories, resolveDbPath } from "@codemem/core";
 import { Command } from "commander";
+import { invokedAsTopLevelAlias } from "../command-tree.js";
 import { helpStyle } from "../help-style.js";
-import { addDbOption, type DbOpts, resolveDbOpt } from "../shared-options.js";
+import {
+	addDbOption,
+	type DbOpts,
+	emitDeprecationWarning,
+	resolveDbOpt,
+} from "../shared-options.js";
 
 function expandUserPath(value: string): string {
 	return value.startsWith("~/") ? join(homedir(), value.slice(2)) : value;
@@ -32,6 +38,12 @@ cmd.action(
 			since?: string;
 		},
 	) => {
+		// Keep visible for this first warned release; hide the alias in a later release.
+		// Suppressed for stdout export: `-` streams machine-readable JSON, so
+		// stderr stays clean for piped automation.
+		if (output !== "-" && invokedAsTopLevelAlias("export-memories")) {
+			emitDeprecationWarning("codemem export-memories", "codemem memory export");
+		}
 		const payload = exportMemories({
 			dbPath: resolveDbPath(resolveDbOpt(opts)),
 			project: opts.project,

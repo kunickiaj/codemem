@@ -91,15 +91,16 @@ codemem coordinator enroll-device team-alpha <device-id> --fingerprint <fingerpr
 codemem coordinator list-devices team-alpha --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator list-scopes team-alpha --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator create-scope team-alpha acme-work --label "Acme Work" --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator update-scope team-alpha acme-work --label "Acme Work" --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator list-scope-members team-alpha acme-work --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator grant-scope-member team-alpha acme-work <device-id> --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator revoke-scope-member team-alpha acme-work <device-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator grant-scope-member team-alpha acme-work <device-id> --effect-id <effect-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator revoke-scope-member team-alpha acme-work <device-id> --effect-id <effect-id> --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator rename-device team-alpha <device-id> --name "work-laptop" --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator disable-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator remove-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator list-bootstrap-grants team-alpha --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator revoke-bootstrap-grant <grant-id> --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator serve --db-path ~/.codemem/coordinator.sqlite --host 0.0.0.0 --port 7347
+codemem coordinator serve --db-path ~/.codemem/coordinator.sqlite --coordinator-host 0.0.0.0 --coordinator-port 7347
 codemem coordinator create-invite team-alpha --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator import-invite <invite>
 codemem coordinator list-join-requests team-alpha --db-path ~/.codemem/coordinator.sqlite
@@ -163,12 +164,13 @@ Minimal flow:
 
 ```fish
 codemem coordinator create-scope team-alpha acme-work --label "Acme Work" --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator grant-scope-member team-alpha acme-work <device-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator grant-scope-member team-alpha acme-work <device-id> --effect-id <effect-id> --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator list-scope-members team-alpha acme-work --db-path ~/.codemem/coordinator.sqlite
 ```
 
 Operational rules:
 
+- Effect ids make membership mutations deterministic and idempotent; use a stable unique value for each intended mutation.
 - Grants and revocations are explicit per `(group, scope_id, device_id)`.
 - Membership epochs make cached grants stale after revocation or replacement.
 - Revocation stops future sync after peers refresh membership. It does not erase

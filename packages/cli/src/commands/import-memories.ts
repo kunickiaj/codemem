@@ -2,11 +2,13 @@ import * as p from "@clack/prompts";
 import type { ExportPayload } from "@codemem/core";
 import { importMemories, readImportPayload, resolveDbPath } from "@codemem/core";
 import { Command } from "commander";
+import { invokedAsTopLevelAlias } from "../command-tree.js";
 import { helpStyle } from "../help-style.js";
 import {
 	addDbOption,
 	addJsonOption,
 	type DbOpts,
+	emitDeprecationWarning,
 	emitJsonError,
 	type JsonOpts,
 	resolveDbOpt,
@@ -31,6 +33,12 @@ cmd.action(
 				dryRun?: boolean;
 			},
 	) => {
+		// Keep visible for this first warned release; hide the alias in a later release.
+		// Suppressed in --json mode: the automation contract keeps stderr clean
+		// for successful JSON invocations (docs/cli-design-conventions.md).
+		if (!opts.json && invokedAsTopLevelAlias("import-memories")) {
+			emitDeprecationWarning("codemem import-memories", "codemem memory import");
+		}
 		let payload: ExportPayload;
 		try {
 			payload = readImportPayload(inputFile);

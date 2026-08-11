@@ -25,7 +25,7 @@ export function seedPeer(
 		compose.copyToContainer(resolvedInput, containerPath, `${artifactName}-copy-local-import`);
 		compose.exec(
 			service,
-			[...CLI_PREFIX, "import-memories", `/tmp/${basename(resolvedInput)}`, "--db-path", dbPath],
+			[...CLI_PREFIX, "memory", "import", `/tmp/${basename(resolvedInput)}`, "--db-path", dbPath],
 			`${artifactName}-import-local-import`,
 			300_000,
 		);

@@ -3,7 +3,7 @@
 Use this runbook when you specifically want to deploy the coordinator discovery contract on Cloudflare Workers + D1.
 
 This is the canonical Cloudflare deployment reference for the current TypeScript worker path. It is still a secondary
-deployment target behind the built-in coordinator service in `codemem sync coordinator serve`, but if you are choosing
+deployment target behind the built-in coordinator service in `codemem coordinator serve`, but if you are choosing
 the Worker path, this document is the source of truth.
 
 ## What this deploys

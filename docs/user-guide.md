@@ -250,7 +250,7 @@ Legacy `#sync` and `#sync/diagnostics` viewer links remain valid Advanced routes
 ### Sync runtime
 
 - `codemem sync enable` generates keys and writes config.
-- `codemem sync start` starts the viewer-backed sync runtime.
+- `codemem serve start|stop|restart` manages the viewer-backed sync runtime.
 - `codemem sync status` shows device info and peer health.
 
 ### Manual pairing
