@@ -1313,6 +1313,14 @@ export function loadMemorySnapshotPageForPeer(
 	const scopeFilterRequested = options.scopeId !== undefined;
 	const effectiveScopeId = normalizeSyncStateScopeId(options.scopeId);
 	const boundary = getSyncResetState(db, scopeFilterRequested ? options.scopeId : undefined);
+	if (scopeFilterRequested) {
+		const scope = db
+			.prepare("SELECT authority_type FROM replication_scopes WHERE scope_id = ? LIMIT 1")
+			.get(effectiveScopeId) as { authority_type?: string | null } | undefined;
+		if (scope?.authority_type === "local") {
+			return { boundary, items: [], nextPageToken: null, hasMore: false };
+		}
+	}
 	if (options.generation !== boundary.generation) {
 		throw new Error("generation_mismatch");
 	}
@@ -2712,6 +2720,7 @@ function authorizationFailureReason(
 	auth: CachedScopeAuthorizationResult,
 	notMemberReason: "sender_not_member" | "receiver_not_member",
 ): InboundScopeRejectionReason | null {
+	if (auth.scope?.authority_type === "local") return "missing_scope";
 	if (auth.authorized) return null;
 	if (
 		!auth.scope ||
@@ -2796,12 +2805,14 @@ function validateInboundScopeOp(
 	}
 	let authorizationScopeId = opScopeId;
 	let requireReceiverMembership = true;
+	let allowLocalAuthorityRetraction = false;
 	if (opScopeId === DEFAULT_SYNC_SCOPE_ID) {
 		const validation = validateLocalDefaultOldSideReassignment(db, op, senderDeviceId);
 		if (!validation.ok) {
 			return inboundScopeRejection(op, validation.reason, peerDeviceId, opScopeId);
 		}
 		authorizationScopeId = validation.reassignment.new_scope_id;
+		allowLocalAuthorityRetraction = true;
 		// This side only retracts sender-origin data previously delivered through
 		// local-default. Prior recipients intentionally are not members of the new
 		// boundary, and the apply path cannot create a new-scope row for them.
@@ -2812,7 +2823,14 @@ function validateInboundScopeOp(
 		deviceId: senderDeviceId,
 		scopeId: authorizationScopeId,
 	});
-	const senderFailure = authorizationFailureReason(senderAuth, "sender_not_member");
+	// A validated old-side op only retracts a sender-owned local-default row;
+	// it cannot create data in the destination scope. Permit that removal when
+	// the receiver cannot know the sender's new device-local scope.
+	const senderFailure =
+		allowLocalAuthorityRetraction &&
+		(senderAuth.authorized || (senderAuth.state === "not_authorized" && !senderAuth.scope))
+			? null
+			: authorizationFailureReason(senderAuth, "sender_not_member");
 	if (senderFailure) return inboundScopeRejection(op, senderFailure, peerDeviceId, opScopeId);
 
 	if (requireReceiverMembership) {
@@ -2860,7 +2878,15 @@ function validateInboundLocalOnlyBatch(
 			rejections.push(inboundScopeRejection(op, "missing_scope", peerDeviceId, null));
 			continue;
 		}
-		if (scopeId !== DEFAULT_SYNC_SCOPE_ID) continue;
+		if (scopeId !== DEFAULT_SYNC_SCOPE_ID) {
+			const scope = db
+				.prepare("SELECT authority_type FROM replication_scopes WHERE scope_id = ? LIMIT 1")
+				.get(scopeId) as { authority_type?: string | null } | undefined;
+			if (scope?.authority_type === "local" || (!scope && options.enabled === false)) {
+				rejections.push(inboundScopeRejection(op, "missing_scope", peerDeviceId, scopeId));
+			}
+			continue;
+		}
 		if (op.op_type === REASSIGN_SCOPE_OP_TYPE) {
 			const validation = validateLocalDefaultOldSideReassignment(
 				db,

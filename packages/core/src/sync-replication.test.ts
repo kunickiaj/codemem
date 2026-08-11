@@ -1043,6 +1043,43 @@ describe("loadMemorySnapshotPageForPeer", () => {
 		expect(page.items).toEqual([]);
 	});
 
+	it("blocks custom local-authority snapshots while allowing coordinator siblings", () => {
+		for (const scopeId of ["local-notes", "team-notes"]) {
+			setSyncResetState(
+				db,
+				{
+					generation: 4,
+					snapshot_id: "snapshot-4",
+					baseline_cursor: "2026-01-01T00:00:01Z|base-op",
+					retained_floor_cursor: "2026-01-01T00:00:02Z|floor-op",
+				},
+				scopeId,
+			);
+		}
+		grantScope("local-notes", ["local-device", "peer-device"], "local");
+		grantScope("team-notes", ["local-device", "peer-device"]);
+		insertMemory("key-local", { scopeId: "local-notes" });
+		insertMemory("key-team", { scopeId: "team-notes" });
+
+		const localPage = loadMemorySnapshotPageForPeer(db, {
+			peerDeviceId: "peer-device",
+			scopeId: "local-notes",
+			generation: 4,
+			snapshotId: "snapshot-4",
+			baselineCursor: "2026-01-01T00:00:01Z|base-op",
+		});
+		const coordinatorPage = loadMemorySnapshotPageForPeer(db, {
+			peerDeviceId: "peer-device",
+			scopeId: "team-notes",
+			generation: 4,
+			snapshotId: "snapshot-4",
+			baselineCursor: "2026-01-01T00:00:01Z|base-op",
+		});
+
+		expect(localPage.items.map((item) => item.entity_id)).toEqual([]);
+		expect(coordinatorPage.items.map((item) => item.entity_id)).toEqual(["key-team"]);
+	});
+
 	it("requires a matching personal scope grant for claimed local actor snapshot rows", () => {
 		setSyncResetState(
 			db,
@@ -2491,19 +2528,25 @@ describe("applyReplicationOps", () => {
 	function grantScope(
 		scopeId: string,
 		deviceIds: string[],
-		overrides: { scopeEpoch?: number; membershipEpoch?: number; status?: string } = {},
+		overrides: {
+			authorityType?: "coordinator" | "local";
+			scopeEpoch?: number;
+			membershipEpoch?: number;
+			status?: string;
+		} = {},
 	): void {
 		const now = "2026-01-01T00:00:00Z";
 		const scopeEpoch = overrides.scopeEpoch ?? 1;
 		db.prepare(
 			`INSERT INTO replication_scopes(
 				scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
-			 ) VALUES (?, ?, 'team', 'coordinator', ?, 'active', ?, ?)
+			 ) VALUES (?, ?, 'team', ?, ?, 'active', ?, ?)
 			 ON CONFLICT(scope_id) DO UPDATE SET
+				authority_type = excluded.authority_type,
 				membership_epoch = excluded.membership_epoch,
 				status = excluded.status,
 				updated_at = excluded.updated_at`,
-		).run(scopeId, scopeId, scopeEpoch, now, now);
+		).run(scopeId, scopeId, overrides.authorityType ?? "coordinator", scopeEpoch, now, now);
 		for (const deviceId of deviceIds) {
 			db.prepare(
 				`INSERT INTO scope_memberships(
@@ -2737,6 +2780,53 @@ describe("applyReplicationOps", () => {
 		expect(memoryExists(op.entity_id)).toBe(true);
 	});
 
+	it("rejects inbound ops for local-authority scopes even when both devices are members", () => {
+		grantScope("local-notes", ["dev-remote", "dev-local"], { authorityType: "local" });
+		const op = makeReplicationOp({
+			scope_id: "local-notes",
+			payload_json: toJson({
+				kind: "discovery",
+				title: "Blocked local scope",
+				body_text: "Remote body",
+				scope_id: "local-notes",
+			}),
+		});
+
+		const result = applyWithScopeValidation(op);
+
+		expect(result.applied).toBe(0);
+		expect(result.rejected).toBe(1);
+		expect(result.rejections[0]).toMatchObject({ op_id: op.op_id, reason: "missing_scope" });
+		expect(memoryExists(op.entity_id)).toBe(false);
+	});
+
+	it("rejects inbound local-authority ops when strict scope validation is disabled", () => {
+		grantScope("local-notes", ["dev-remote", "dev-local"], { authorityType: "local" });
+		const op = makeReplicationOp({ scope_id: "local-notes" });
+
+		const result = applyReplicationOps(db, [op], "dev-local", undefined, {
+			inboundScopeValidation: { peerDeviceId: "dev-remote", enabled: false },
+		});
+
+		expect(result.applied).toBe(0);
+		expect(result.rejected).toBe(1);
+		expect(result.rejections[0]).toMatchObject({ op_id: op.op_id, reason: "missing_scope" });
+		expect(memoryExists(op.entity_id)).toBe(false);
+	});
+
+	it("rejects unknown non-default scopes when strict scope validation is disabled", () => {
+		const op = makeReplicationOp({ scope_id: "peer-local-unknown" });
+
+		const result = applyReplicationOps(db, [op], "dev-local", undefined, {
+			inboundScopeValidation: { peerDeviceId: "dev-remote", enabled: false },
+		});
+
+		expect(result.applied).toBe(0);
+		expect(result.rejected).toBe(1);
+		expect(result.rejections[0]).toMatchObject({ op_id: op.op_id, reason: "missing_scope" });
+		expect(memoryExists(op.entity_id)).toBe(false);
+	});
+
 	it.each([
 		{ name: "null scope", scopeId: null, reason: "missing_scope" },
 		{ name: "local-default scope", scopeId: DEFAULT_SYNC_SCOPE_ID, reason: "scope_mismatch" },
@@ -2885,6 +2975,85 @@ describe("applyReplicationOps", () => {
 				.prepare("SELECT COUNT(*) FROM memory_items WHERE import_key = ? AND scope_id = ?")
 				.pluck()
 				.get(importKey, "managed-project"),
+		).toBe(0);
+	});
+
+	it("allows sender-owned local-default cleanup into a local-authority destination", () => {
+		const importKey = "key:default-reassign-local-destination";
+		insertReplicatedMemory({
+			importKey,
+			originDeviceId: "dev-remote",
+			scopeId: DEFAULT_SYNC_SCOPE_ID,
+		});
+		grantScope("local-project", ["dev-remote"], { authorityType: "local" });
+		const op = makeReplicationOp({
+			op_id: "default-reassign-local-destination-old",
+			entity_id: importKey,
+			op_type: "reassign_scope",
+			payload_json: toJson({
+				operation_id: "share_local_destination",
+				memory_id: importKey,
+				old_scope_id: DEFAULT_SYNC_SCOPE_ID,
+				new_scope_id: "local-project",
+				revision: 2,
+				side: "old",
+			}),
+			clock_rev: 2,
+			clock_updated_at: "2026-01-01T00:00:01Z",
+			created_at: "2026-01-01T00:00:01Z",
+			scope_id: DEFAULT_SYNC_SCOPE_ID,
+		});
+
+		const result = applyWithScopeValidation(op);
+
+		expect(result).toMatchObject({ applied: 1, rejected: 0 });
+		expect(
+			db.prepare("SELECT active, scope_id FROM memory_items WHERE import_key = ?").get(importKey),
+		).toEqual({ active: 0, scope_id: DEFAULT_SYNC_SCOPE_ID });
+		expect(
+			db
+				.prepare("SELECT COUNT(*) FROM memory_items WHERE import_key = ? AND scope_id = ?")
+				.pluck()
+				.get(importKey, "local-project"),
+		).toBe(0);
+	});
+
+	it("allows sender-owned local-default cleanup into an unknown destination", () => {
+		const importKey = "key:default-reassign-unknown-destination";
+		insertReplicatedMemory({
+			importKey,
+			originDeviceId: "dev-remote",
+			scopeId: DEFAULT_SYNC_SCOPE_ID,
+		});
+		const op = makeReplicationOp({
+			op_id: "default-reassign-unknown-destination-old",
+			entity_id: importKey,
+			op_type: "reassign_scope",
+			payload_json: toJson({
+				operation_id: "share_unknown_destination",
+				memory_id: importKey,
+				old_scope_id: DEFAULT_SYNC_SCOPE_ID,
+				new_scope_id: "sender-local-project",
+				revision: 2,
+				side: "old",
+			}),
+			clock_rev: 2,
+			clock_updated_at: "2026-01-01T00:00:01Z",
+			created_at: "2026-01-01T00:00:01Z",
+			scope_id: DEFAULT_SYNC_SCOPE_ID,
+		});
+
+		const result = applyWithScopeValidation(op);
+
+		expect(result).toMatchObject({ applied: 1, rejected: 0 });
+		expect(
+			db.prepare("SELECT active, scope_id FROM memory_items WHERE import_key = ?").get(importKey),
+		).toEqual({ active: 0, scope_id: DEFAULT_SYNC_SCOPE_ID });
+		expect(
+			db
+				.prepare("SELECT COUNT(*) FROM memory_items WHERE import_key = ? AND scope_id = ?")
+				.pluck()
+				.get(importKey, "sender-local-project"),
 		).toBe(0);
 	});
 

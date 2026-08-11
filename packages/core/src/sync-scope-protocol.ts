@@ -127,6 +127,7 @@ export function parseSyncScopeRequest(
 export function scopeAuthorizationFailureReason(
 	authorization: CachedScopeAuthorization,
 ): SyncScopeResetReason | null {
+	if (authorization.scope?.authority_type === "local") return "missing_scope";
 	if (authorization.authorized) return null;
 
 	switch (authorization.state) {
@@ -190,9 +191,7 @@ export interface AuthorizedScopeEntry {
  * - it exists in `replication_scopes` with status `active`, and
  * - both the local device and the peer device have active membership rows
  *   in `scope_memberships`, and
- * - the scope's `authority_type` is either non-`local`, OR the local
- *   membership exists (which is how personal scope grants are modeled — the
- *   grant row is the membership).
+ * - the scope's `authority_type` is not `local`.
  *
  * The legacy `local-default` scope is intentionally excluded. Scoped peers
  * still run the legacy default-scope path alongside per-scope sync to handle
@@ -237,7 +236,7 @@ export function listAuthorizedScopesForPeer(
 			deviceId: localDeviceId,
 			scopeId: local.scope_id,
 		});
-		if (!localAuth.authorized) continue;
+		if (!localAuth.authorized || localAuth.scope?.authority_type === "local") continue;
 
 		// Peer must also be an active member of the same scope, at the same
 		// or higher membership_epoch as the local row, before we advertise.

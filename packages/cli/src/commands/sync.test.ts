@@ -516,7 +516,7 @@ describe("formatSyncAttempt", () => {
 				store.db
 					.prepare(
 						`INSERT INTO replication_scopes(scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at)
-						 VALUES (?, ?, 'user', 'local', 1, 'active', ?, ?)`,
+						 VALUES (?, ?, 'user', 'coordinator', 1, 'active', ?, ?)`,
 					)
 					.run(scopeId, label, now, now);
 				for (const deviceId of ["local-device", "peer-device"]) {

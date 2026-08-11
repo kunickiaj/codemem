@@ -6112,7 +6112,7 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("accepts non-empty legacy pushes from unsupported peers", async () => {
+		it("rejects unknown scoped pushes from unsupported peers", async () => {
 			const { syncApp, ensureStore, cleanup } = createTestApp();
 			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
@@ -6162,27 +6162,28 @@ describe("viewer-server", () => {
 					body: bodyText,
 				});
 
-				expect(res.status).toBe(200);
+				expect(res.status).toBe(403);
 				const body = (await res.json()) as Record<string, unknown>;
-				expect(body).toMatchObject({ applied: 1, skipped: 0, rejected: 0 });
+				expect(body).toMatchObject({ error: "scope_rejected", reason: "missing_scope" });
 				expect(
 					store.db
 						.prepare("SELECT title, scope_id FROM memory_items WHERE import_key = ?")
 						.get("legacy-push-key"),
-				).toMatchObject({ title: "Legacy push title", scope_id: "legacy-explicit" });
+				).toBeUndefined();
 			} finally {
 				peer?.cleanup();
 				cleanup();
 			}
 		});
 
-		it("does not outbound-scope-filter scoped pushes from unsupported peers", async () => {
+		it("accepts known authoritative scoped pushes from unsupported peers", async () => {
 			const { syncApp, ensureStore, cleanup } = createTestApp();
 			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
 				const store = ensureStore();
 				const url = "http://localhost/v1/ops";
 				peer = createAuthenticatedSyncPeer(store, { url, method: "POST" });
+				grantSyncScopeToDevices(store, "unsupported-explicit", []);
 				const now = "2026-01-01T00:00:00Z";
 				const payload = {
 					sync_capability: "unsupported",

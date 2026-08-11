@@ -159,6 +159,21 @@ describe("parseSyncScopeRequest scoped path", () => {
 		expect(result).toEqual({ ok: true, mode: "scoped", scope_id: SCOPE_ID });
 	});
 
+	it("rejects an active custom local-authority scope even when both devices are members", () => {
+		insertScope(SCOPE_ID, { authorityType: "local" });
+		grantMembership(SCOPE_ID, LOCAL_DEVICE);
+		grantMembership(SCOPE_ID, PEER_DEVICE);
+
+		const result = parseSyncScopeRequest(SCOPE_ID, true, {
+			db,
+			localDeviceId: LOCAL_DEVICE,
+			negotiatedCapability: "scoped",
+			peerDeviceId: PEER_DEVICE,
+		});
+
+		expect(result).toEqual({ ok: false, reason: "missing_scope" });
+	});
+
 	it("rejects with missing_scope when the scope does not exist", () => {
 		const result = parseSyncScopeRequest("does-not-exist", true, {
 			db,
@@ -384,6 +399,23 @@ describe("listAuthorizedScopesForPeer", () => {
 			peerDeviceId: PEER_DEVICE,
 		});
 		expect(scopes.map((s) => s.scope_id)).toEqual(["acme-work"]);
+	});
+
+	it("excludes custom local-authority scopes while keeping coordinator siblings", () => {
+		insertScope("local-notes", { authorityType: "local" });
+		insertScope("team-notes");
+		for (const scopeId of ["local-notes", "team-notes"]) {
+			grantMembership(scopeId, LOCAL_DEVICE);
+			grantMembership(scopeId, PEER_DEVICE);
+		}
+
+		const scopes = listAuthorizedScopesForPeer(db, {
+			localDeviceId: LOCAL_DEVICE,
+			peerDeviceId: PEER_DEVICE,
+		});
+
+		expect(scopes.map((scope) => scope.scope_id)).toEqual(["team-notes"]);
+		expect(scopes[0]?.authority_type).toBe("coordinator");
 	});
 
 	it("excludes scopes where the peer membership is revoked", () => {
