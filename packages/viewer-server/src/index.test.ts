@@ -156,6 +156,7 @@ function insertTestMemory(
 function createTestApp(opts?: {
 	seedDevice?: boolean;
 	sweeper?: unknown;
+	getUpdateStatus?: (options: core.GetUpdateStatusOptions) => Promise<core.UpdateStatus>;
 	syncRequestRateLimit?: {
 		readLimit?: number;
 		mutationLimit?: number;
@@ -179,11 +180,13 @@ function createTestApp(opts?: {
 		return store;
 	};
 
-	const app = createApp({
+	const appOptions = {
 		sweeper: (opts?.sweeper ?? null) as never,
 		storeFactory,
+		getUpdateStatus: opts?.getUpdateStatus,
 		getSyncRuntimeStatus: opts?.getSyncRuntimeStatus,
-	});
+	};
+	const app = createApp(appOptions);
 
 	const syncApp = createSyncApp({
 		storeFactory,
@@ -508,6 +511,132 @@ describe("viewer-server", () => {
 				expect(body).toEqual({ version: VERSION });
 			} finally {
 				cleanup();
+			}
+		});
+
+		it("does not invoke release discovery", async () => {
+			// Arrange
+			const getUpdateStatus = vi.fn();
+			const { app, cleanup } = createTestApp({ getUpdateStatus });
+
+			try {
+				// Act
+				const res = await app.request("/api/runtime");
+
+				// Assert
+				expect(res.status).toBe(200);
+				expect(getUpdateStatus).not.toHaveBeenCalled();
+			} finally {
+				cleanup();
+			}
+		});
+	});
+
+	describe("GET /api/update-status", () => {
+		const availableStatus: core.UpdateStatus = {
+			current_version: "0.40.2",
+			latest_version: "0.41.0",
+			update_available: true,
+			first_seen_at: "2026-08-10T12:00:00.000Z",
+			checked_at: "2026-08-10T12:00:00.000Z",
+			stale: false,
+			install_kind: "npm-global",
+			auto_update_eligible: false,
+			recommended_action: "npm install -g codemem@0.41.0",
+			error: null,
+		};
+
+		it.each([
+			{
+				label: "current",
+				status: {
+					...availableStatus,
+					latest_version: "0.40.2",
+					update_available: false,
+					recommended_action: "No action required; codemem is up to date.",
+				},
+			},
+			{ label: "available", status: availableStatus },
+			{
+				label: "stale",
+				status: {
+					...availableStatus,
+					stale: true,
+					error: "registry offline",
+				},
+			},
+			{
+				label: "unavailable",
+				status: {
+					...availableStatus,
+					latest_version: null,
+					update_available: false,
+					first_seen_at: null,
+					checked_at: null,
+					install_kind: "unknown" as const,
+					recommended_action: "Check network access and try again.",
+					error: "registry request timed out",
+				},
+			},
+		])("returns the dedicated $label update-status payload", async ({ status }) => {
+			// Arrange
+			const getUpdateStatus = vi.fn().mockResolvedValue(status);
+			const { app, cleanup } = createTestApp({ getUpdateStatus });
+
+			try {
+				// Act
+				const res = await app.request("/api/update-status");
+
+				// Assert
+				expect(res.status).toBe(200);
+				expect(await res.json()).toEqual(status);
+				expect(getUpdateStatus).toHaveBeenCalledOnce();
+				expect(getUpdateStatus).toHaveBeenCalledWith(
+					expect.objectContaining({ currentVersion: VERSION }),
+				);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("returns a bounded service error when release discovery throws", async () => {
+			// Arrange
+			const getUpdateStatus = vi.fn().mockRejectedValue(new Error("unexpected failure"));
+			const { app, cleanup } = createTestApp({ getUpdateStatus });
+
+			try {
+				// Act
+				const res = await app.request("/api/update-status");
+
+				// Assert
+				expect(res.status).toBe(503);
+				expect(await res.json()).toEqual({ error: "Update status unavailable." });
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("passes explicit Docker install detection to release discovery", async () => {
+			// Arrange
+			vi.stubEnv("CODEMEM_INSTALL_KIND", "docker");
+			const getUpdateStatus = vi.fn().mockResolvedValue({
+				...availableStatus,
+				install_kind: "docker",
+			});
+			const { app, cleanup } = createTestApp({ getUpdateStatus });
+
+			try {
+				// Act
+				const res = await app.request("/api/update-status");
+
+				// Assert
+				expect(res.status).toBe(200);
+				expect(getUpdateStatus).toHaveBeenCalledWith(
+					expect.objectContaining({ installKind: "docker" }),
+				);
+			} finally {
+				cleanup();
+				vi.unstubAllEnvs();
 			}
 		});
 	});

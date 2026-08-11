@@ -19,6 +19,11 @@ const DISABLED_VALUES = ["0", "false", "off"];
 const PINNED_BACKEND_VERSION = "0.40.2";
 const COMPAT_CHECK_DELAY_MS = 1500;
 const COMPAT_CHECK_CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_UPDATE_STATUS_BYTES = 16 * 1024;
+const MAX_UPDATE_ACTION_CHARS = 1000;
+const MAX_UPDATE_VERSION_CHARS = 128;
+const STABLE_RELEASE_VERSION =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const CODEMEM_CONTEXT_PART_ID_PREFIX = "codemem-context-";
 const MAX_MESSAGE_INJECTION_CACHE_SESSIONS = 20;
 const MAX_MESSAGE_INJECTION_CACHE_MESSAGES = 100;
@@ -31,6 +36,7 @@ const VIEWER_HEALTH_RESTART_COOLDOWN_MS = 5 * 60_000;
 const RAW_EVENTS_STATUS_TIMEOUT_MS = 5_000;
 
 let compatCheckCache = null;
+const notifiedReleaseVersions = new Set();
 
 // Release an unread response body without surfacing cancellation failures.
 const discardResponseBody = (response) => {
@@ -344,6 +350,39 @@ const writeCompatCheckCache = (cacheKey, value) => {
 
 const clearCompatCheckCache = () => {
   compatCheckCache = null;
+};
+
+const isStableReleaseVersion = (value) => {
+  if (typeof value !== "string" || value.length > MAX_UPDATE_VERSION_CHARS) return false;
+  const match = STABLE_RELEASE_VERSION.exec(value);
+  return Boolean(match && match.slice(1, 4).map(Number).every(Number.isSafeInteger));
+};
+
+const parseReleaseNotification = (result) => {
+  if (result?.exitCode !== 0) return null;
+  const stdout = String(result?.stdout || "").trim();
+  if (!stdout || Buffer.byteLength(stdout, "utf8") > MAX_UPDATE_STATUS_BYTES) return null;
+  try {
+    const status = JSON.parse(stdout);
+    if (!status || typeof status !== "object" || Array.isArray(status)) return null;
+    if (status.update_available !== true) return null;
+    if (!isStableReleaseVersion(status.latest_version)) {
+      return null;
+    }
+    if (
+      typeof status.recommended_action !== "string"
+      || !status.recommended_action.trim()
+      || status.recommended_action.length > MAX_UPDATE_ACTION_CHARS
+    ) {
+      return null;
+    }
+    return {
+      latestVersion: status.latest_version,
+      recommendedAction: status.recommended_action.trim(),
+    };
+  } catch {
+    return null;
+  }
 };
 
 const createLogLine = (logPath) => async (line) => {
@@ -2686,6 +2725,25 @@ export const OpencodeMemPlugin = async ({
     await showToast(`${message}. Suggested action: ${guidance.action}`, "warning");
   };
 
+  const checkForReleaseUpdate = async () => {
+    if (backendUpdatePolicy === "off") return;
+    const notification = parseReleaseNotification(
+      await runCli(["update", "check", "--json"])
+    );
+    if (
+      !notification
+      || !client.tui?.showToast
+      || notifiedReleaseVersions.has(notification.latestVersion)
+    ) {
+      return;
+    }
+    notifiedReleaseVersions.add(notification.latestVersion);
+    await showToast(
+      `codemem ${notification.latestVersion} is available. ${notification.recommendedAction}`,
+      "warning"
+    );
+  };
+
   const resolveInjectQuery = (overrides = {}) => {
     const firstPrompt = hasOwn(overrides, "firstPrompt")
       ? overrides.firstPrompt
@@ -3153,6 +3211,14 @@ export const OpencodeMemPlugin = async ({
     });
   }, COMPAT_CHECK_DELAY_MS);
   if (compatCheckTimer.unref) compatCheckTimer.unref();
+  const releaseCheckTimer = setTimeout(() => {
+    void checkForReleaseUpdate().catch(async (err) => {
+      await logLine(
+        `release.update_check_error message=${String(err?.message || err || "unknown")}`
+      );
+    });
+  }, COMPAT_CHECK_DELAY_MS);
+  if (releaseCheckTimer.unref) releaseCheckTimer.unref();
 
   const truncate = (value) => {
     if (value === undefined || value === null) {

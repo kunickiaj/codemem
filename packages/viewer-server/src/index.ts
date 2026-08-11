@@ -10,7 +10,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ObserverClient } from "@codemem/core";
+import type { GetUpdateStatusOptions, ObserverClient, UpdateStatus } from "@codemem/core";
 import { MemoryStore, type RawEventSweeper, resolveDbPath, VERSION } from "@codemem/core";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
@@ -27,6 +27,7 @@ import { packTransportRoutes } from "./routes/pack.js";
 import { rawEventsRoutes } from "./routes/raw-events.js";
 import { statsRoutes } from "./routes/stats.js";
 import { syncProtocolRoutes, syncRoutes } from "./routes/sync.js";
+import { updateStatusRoutes } from "./routes/update-status.js";
 
 export type {
 	AdvancePendingProjectSharesResult,
@@ -73,6 +74,7 @@ export interface AppOptions {
 	storeFactory?: () => MemoryStore;
 	sweeper?: RawEventSweeper | null;
 	observer?: ObserverClient | null;
+	getUpdateStatus?: (options: GetUpdateStatusOptions) => Promise<UpdateStatus>;
 	syncRequestRateLimit?: {
 		limiter?: InMemoryRequestRateLimiter;
 		readLimit?: number;
@@ -121,6 +123,7 @@ export function createApp(opts?: AppOptions) {
 	app.route("/", configRoutes({ getSweeper: () => sweeper }));
 	app.route("/", rawEventsRoutes(storeFactory, sweeper));
 	app.route("/", syncRoutes(storeFactory, getSyncRuntimeStatus));
+	app.route("/", updateStatusRoutes({ getUpdateStatus: opts?.getUpdateStatus }));
 
 	// Static assets — serve under /assets/*
 	// Resolves to packages/viewer-server/static/ both in dev and when installed from npm.

@@ -462,6 +462,20 @@ describe("release discovery cache contract", () => {
 		expect(deps.fetch).toHaveBeenCalledTimes(1);
 	});
 
+	it("forced refresh bypasses a fresh in-memory result", async () => {
+		// Arrange
+		const deps = dependencies();
+		const discovery = createReleaseDiscovery(deps);
+		const options = { currentVersion: "0.40.2", installKind: "npm-global" as const };
+
+		// Act
+		await discovery.check(options);
+		await discovery.check({ ...options, refresh: true });
+
+		// Assert
+		expect(deps.fetch).toHaveBeenCalledTimes(2);
+	});
+
 	it("ignores malformed cache content and refreshes from the registry", async () => {
 		// Arrange
 		const deps = dependencies({ cache: "{ definitely-not-json" });
@@ -554,6 +568,70 @@ describe("release discovery cache contract", () => {
 			stale: false,
 		});
 		expect(status.error).toMatch(/rename denied|cache/i);
+	});
+
+	it("reuses a fresh in-memory result when the cache cannot be written", async () => {
+		// Arrange
+		const deps = dependencies({ writeError: new Error("rename denied") });
+		const discovery = createReleaseDiscovery(deps);
+		const options = { currentVersion: "0.40.2", installKind: "npm-global" as const };
+
+		// Act
+		const first = await discovery.check(options);
+		const second = await discovery.check(options);
+
+		// Assert
+		expect(deps.fetch).toHaveBeenCalledTimes(1);
+		expect(second).toEqual(first);
+	});
+
+	it("backs off sequential registry failures when no cache exists", async () => {
+		// Arrange
+		const deps = dependencies({ fetchError: new Error("registry offline") });
+		const discovery = createReleaseDiscovery(deps);
+		const options = { currentVersion: "0.40.2", installKind: "npm-global" as const };
+
+		// Act
+		const first = await discovery.check(options);
+		const second = await discovery.check(options);
+
+		// Assert
+		expect(deps.fetch).toHaveBeenCalledTimes(1);
+		expect(second).toEqual(first);
+	});
+
+	it("retries registry discovery after the failure backoff expires", async () => {
+		// Arrange
+		let currentTime = NOW;
+		const deps = dependencies({ fetchError: new Error("registry offline") });
+		deps.now = () => currentTime;
+		const discovery = createReleaseDiscovery(deps);
+		const options = { currentVersion: "0.40.2", installKind: "npm-global" as const };
+
+		// Act
+		await discovery.check(options);
+		currentTime = new Date(NOW.getTime() + 15 * 60 * 1_000);
+		await discovery.check(options);
+
+		// Assert
+		expect(deps.fetch).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps backing off registry failures when the wall clock moves backwards", async () => {
+		// Arrange
+		let currentTime = NOW;
+		const deps = dependencies({ fetchError: new Error("registry offline") });
+		deps.now = () => currentTime;
+		const discovery = createReleaseDiscovery(deps);
+		const options = { currentVersion: "0.40.2", installKind: "npm-global" as const };
+
+		// Act
+		await discovery.check(options);
+		currentTime = new Date(NOW.getTime() - 60 * 1_000);
+		await discovery.check(options);
+
+		// Assert
+		expect(deps.fetch).toHaveBeenCalledTimes(1);
 	});
 
 	it("returns fresh status with a warning when reading the cache fails", async () => {

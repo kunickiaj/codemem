@@ -188,6 +188,11 @@ usage command; use `sync status`/`sync doctor`, `maintenance status`, and
 `codemem update check` is read-only: it reports the latest validated stable release and
 installation-specific guidance but never installs anything. Results are cached for six hours;
 pass `--refresh` to force a registry request or `--json` for one stable status object.
+The Viewer Health page reads the same status from `/api/update-status`. The OpenCode plugin
+checks it after startup and shows at most one best-effort notification for each newly discovered
+release. Set `CODEMEM_BACKEND_UPDATE_POLICY=off` to disable release checks; `notify` and `auto`
+both remain notification-only for release discovery in this delivery slice. Docker guidance is
+always rebuild-and-restart guidance, never an in-container update.
 
 Pack rendering defaults to self-contained context. For token-constrained experiments, `codemem pack <context> --compact` renders an index plus top details. Near-related compression is controlled by `--compression-mode off|compact|ids` (or `CODEMEM_PACK_COMPRESSION`); MCP `memory_pack` exposes the same setting as `compression_mode`. Use `ids` only when the agent can follow up with `memory_get_observations`.
 

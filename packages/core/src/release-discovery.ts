@@ -6,6 +6,7 @@ import { codememHomeDir } from "./home.js";
 const REGISTRY_URL = "https://registry.npmjs.org/codemem/latest";
 const REQUEST_TIMEOUT_MS = 2_000;
 const CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1_000;
+const FAILURE_RETRY_DELAY_MS = 15 * 60 * 1_000;
 const MAX_RESPONSE_BYTES = 16 * 1_024;
 const MAX_VERSION_LENGTH = 128;
 const MAX_RUNNER_SOURCE_LENGTH = 4_096;
@@ -274,6 +275,15 @@ function toStatus(resolution: ReleaseResolution, options: ReleaseCheckOptions): 
 
 export function createReleaseDiscovery(deps: ReleaseDiscoveryDependencies): ReleaseDiscovery {
 	let inFlight: Promise<ReleaseResolution> | null = null;
+	let memoryResolution: { resolution: ReleaseResolution; resolvedAtMs: number } | null = null;
+
+	function canReuseMemoryResolution(now: Date): boolean {
+		if (!memoryResolution) return false;
+		const ageMs = Math.max(0, now.getTime() - memoryResolution.resolvedAtMs);
+		const { resolution } = memoryResolution;
+		if (resolution.record && !resolution.stale && isFresh(resolution.record, now)) return true;
+		return resolution.error !== null && ageMs < FAILURE_RETRY_DELAY_MS;
+	}
 
 	async function refresh(cached: ReleaseCacheRecord | null, now: Date): Promise<ReleaseResolution> {
 		try {
@@ -313,12 +323,22 @@ export function createReleaseDiscovery(deps: ReleaseDiscoveryDependencies): Rele
 			if (!options.refresh && cached && isFresh(cached, now)) {
 				return toStatus({ record: cached, stale: false, error: null }, options);
 			}
+			if (!options.refresh && canReuseMemoryResolution(now) && memoryResolution) {
+				const resolution = memoryResolution.resolution;
+				return toStatus(
+					cacheReadError && !resolution.error
+						? { ...resolution, error: cacheReadError }
+						: resolution,
+					options,
+				);
+			}
 			if (!inFlight) {
 				inFlight = refresh(cached, now).finally(() => {
 					inFlight = null;
 				});
 			}
 			const resolution = await inFlight;
+			memoryResolution = { resolution, resolvedAtMs: deps.now().getTime() };
 			return toStatus(
 				cacheReadError && !resolution.error ? { ...resolution, error: cacheReadError } : resolution,
 				options,

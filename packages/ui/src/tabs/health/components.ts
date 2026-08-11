@@ -7,6 +7,7 @@
 
 import { Fragment, h, render } from "preact";
 import { Tooltip, TooltipProvider } from "../../components/primitives/tooltip";
+import type { UpdateStatus } from "../../lib/api";
 import { copyToClipboard } from "../../lib/dom";
 import type {
 	HealthAction,
@@ -16,8 +17,105 @@ import type {
 	StatItem,
 } from "./types";
 
+const STABLE_RELEASE_VERSION =
+	/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
+function isStableReleaseVersion(value: string): boolean {
+	const match = STABLE_RELEASE_VERSION.exec(value);
+	return Boolean(match?.slice(1, 4).map(Number).every(Number.isSafeInteger));
+}
+
 export function buildHealthCard(input: HealthCardInput): HealthCardInput {
 	return input;
+}
+
+function updateBannerCopy(status: UpdateStatus) {
+	if (!status.latest_version) {
+		return {
+			title: "Update check unavailable",
+			detail: status.error
+				? `Could not check for updates: ${status.error}`
+				: "Could not check for updates.",
+			tone: "unavailable",
+		};
+	}
+
+	if (status.stale) {
+		return {
+			title: status.update_available
+				? `Cached update status: Codemem ${status.latest_version} is available`
+				: `Cached update status for Codemem ${status.current_version}`,
+			detail: status.error
+				? `This result is stale because a fresh check failed: ${status.error}`
+				: "This result is cached and may be stale.",
+			tone: "stale",
+		};
+	}
+
+	if (status.update_available) {
+		return {
+			title: `Codemem ${status.latest_version} is available`,
+			detail: `Installed version: ${status.current_version}.`,
+			tone: "available",
+		};
+	}
+
+	if (!isStableReleaseVersion(status.current_version)) {
+		return {
+			title: `Unable to compare Codemem ${status.current_version} with ${status.latest_version}`,
+			detail: "The installed version is not a stable semantic version.",
+			tone: "unavailable",
+		};
+	}
+
+	return {
+		title: `Codemem ${status.current_version} is up to date`,
+		detail: "You are running the latest stable release.",
+		tone: "current",
+	};
+}
+
+function UpdateBanner({ status }: { status: UpdateStatus }) {
+	const copy = updateBannerCopy(status);
+	const showGuidance =
+		status.update_available ||
+		status.stale ||
+		!status.latest_version ||
+		!isStableReleaseVersion(status.current_version);
+	return h(
+		"section",
+		{
+			class: `health-update-banner health-update-banner--${copy.tone}`,
+			role: "status",
+			"aria-atomic": "true",
+			"aria-label": "Codemem update status",
+		},
+		h("i", {
+			"aria-hidden": "true",
+			"data-lucide": "circle-arrow-up",
+			class: "health-update-icon",
+		}),
+		h(
+			"div",
+			{ class: "health-update-copy" },
+			h("h2", null, copy.title),
+			h("p", null, copy.detail),
+			showGuidance && status.recommended_action
+				? h(
+						"p",
+						{ class: "health-update-guidance" },
+						h("span", { class: "health-update-guidance-label" }, "Recommended action"),
+						h("code", null, status.recommended_action),
+					)
+				: null,
+		),
+	);
+}
+
+export function renderUpdateBanner(container: HTMLElement | null, status: UpdateStatus | null) {
+	if (!container) return;
+	container.hidden = !status;
+	render(status ? h(UpdateBanner, { status }) : null, container);
 }
 
 export function HealthCard({ label, value, detail, icon, className, title }: HealthCardInput) {

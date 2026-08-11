@@ -12,16 +12,23 @@ import { renderStats } from "./render/stats";
 
 export async function loadHealthData() {
 	const previousActorId = state.lastStatsPayload?.identity?.actor_id || null;
-	const [statsPayload, usagePayload, _sessionsPayload, rawEventsPayload] = await Promise.all([
-		api.loadStats(),
-		api.loadUsage(state.currentProject),
-		api.loadSession(state.currentProject),
-		api.loadRawEvents(state.currentProject),
-	]);
+	const updateStatusPromise =
+		state.activeTab === "health" && !state.lastUpdateStatus
+			? api.loadUpdateStatus().catch(api.unavailableUpdateStatus)
+			: Promise.resolve(state.lastUpdateStatus);
+	const [statsPayload, usagePayload, _sessionsPayload, rawEventsPayload, updateStatus] =
+		await Promise.all([
+			api.loadStats(),
+			api.loadUsage(state.currentProject),
+			api.loadSession(state.currentProject),
+			api.loadRawEvents(state.currentProject),
+			updateStatusPromise,
+		]);
 
 	state.lastStatsPayload = statsPayload || {};
 	state.lastUsagePayload = usagePayload || {};
 	state.lastRawEventsPayload = rawEventsPayload || {};
+	state.lastUpdateStatus = updateStatus;
 	const nextActorId = state.lastStatsPayload?.identity?.actor_id || null;
 
 	renderStats();

@@ -1961,6 +1961,58 @@
 
       /* ── Health actions / sync actions ──────────────────────── */
 
+      .health-update-banner {
+        display: flex;
+        align-items: flex-start;
+        gap: var(--sp-3);
+        padding: var(--sp-4);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--surface-1);
+        box-shadow: var(--shadow-sm);
+      }
+      .health-update-banner--current {
+        border-color: color-mix(in srgb, var(--status-healthy) 34%, var(--border));
+        background: color-mix(in srgb, var(--status-healthy) 7%, var(--surface-1));
+      }
+      .health-update-banner--available,
+      .health-update-banner--stale {
+        border-color: color-mix(in srgb, var(--accent-warm) 34%, var(--border));
+        background: color-mix(in srgb, var(--accent-warm-subtle) 34%, var(--surface-1));
+      }
+      .health-update-banner--unavailable {
+        border-color: color-mix(in srgb, var(--status-attention) 34%, var(--border));
+        background: color-mix(in srgb, var(--status-attention) 7%, var(--surface-1));
+      }
+      .health-update-icon {
+        width: 20px;
+        height: 20px;
+        flex: 0 0 20px;
+        margin-top: 2px;
+        color: var(--accent);
+      }
+      .health-update-banner--current .health-update-icon { color: var(--status-healthy); }
+      .health-update-banner--available .health-update-icon,
+      .health-update-banner--stale .health-update-icon { color: var(--accent-warm); }
+      .health-update-banner--unavailable .health-update-icon { color: var(--status-attention); }
+      .health-update-copy { min-width: 0; }
+      .health-update-copy h2 { font-size: var(--font-size-lg); line-height: 1.3; }
+      .health-update-copy p { margin-top: var(--sp-1); color: var(--text-secondary); }
+      .health-update-guidance { display: grid; gap: 3px; }
+      .health-update-guidance-label {
+        color: var(--text-tertiary);
+        font-size: var(--font-size-xs);
+        font-weight: var(--font-weight-semibold);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .health-update-guidance code {
+        color: var(--text-primary);
+        font-family: var(--font-mono);
+        font-size: var(--font-size-sm);
+        overflow-wrap: anywhere;
+      }
+
       .health-actions, .sync-actions {
         display: grid;
         gap: var(--sp-2);
@@ -3896,6 +3948,7 @@
 
     <!-- ── Tab: Health ─────────────────────────────────────── -->
     <div class="tab-panel" id="tab-health" hidden>
+      <div id="healthUpdateBanner" hidden></div>
       <div class="card" style="animation-delay: 0s">
         <div class="section-header">
           <h2>System health</h2>

@@ -141,4 +141,6 @@ export type {
 	RuntimeInfo,
 	SyncRunItem,
 	SyncRunResponse,
+	UpdateStatus,
 } from "./api/types";
+export { loadUpdateStatus, unavailableUpdateStatus } from "./api/update-status";

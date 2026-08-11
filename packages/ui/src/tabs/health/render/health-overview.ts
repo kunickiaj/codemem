@@ -13,7 +13,13 @@ import {
 	titleCase,
 } from "../../../lib/format";
 import { state } from "../../../lib/state";
-import { buildHealthCard, renderActionList, renderHealthCards, renderIcons } from "../components";
+import {
+	buildHealthCard,
+	renderActionList,
+	renderHealthCards,
+	renderIcons,
+	renderUpdateBanner,
+} from "../components";
 import type { HealthAction, HealthCardInput } from "../types";
 
 const SCOPE_BACKFILL_JOB = "scope_id_backfill";
@@ -24,6 +30,7 @@ export function renderHealthOverview() {
 	const healthActions = document.getElementById("healthActions");
 	const healthDot = document.getElementById("healthDot");
 	if (!healthGrid || !healthMeta) return;
+	renderUpdateBanner(document.getElementById("healthUpdateBanner"), state.lastUpdateStatus);
 
 	const stats = state.lastStatsPayload || {};
 	const usagePayload = state.lastUsagePayload || {};

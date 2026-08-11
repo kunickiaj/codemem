@@ -6,6 +6,7 @@ import type {
 	UiSyncViewModel,
 } from "../tabs/sync/view-model";
 import type { ShareOperationReadModel } from "./api/sync";
+import type { UpdateStatus } from "./api/types";
 
 export type RefreshState = "idle" | "refreshing" | "paused" | "error";
 export type CanonicalTabId = "feed" | "projects" | "sharing" | "devices" | "health" | "advanced";
@@ -259,6 +260,7 @@ export const state = {
 	lastStatsPayload: null as CachedStatsPayload | null,
 	lastUsagePayload: null as CachedUsagePayload | null,
 	lastRawEventsPayload: null as CachedRawEventsPayload | null,
+	lastUpdateStatus: null as UpdateStatus | null,
 	lastSyncStatus: null as CachedSyncStatus | null,
 	lastSyncActors: [] as SyncActor[],
 	lastSyncPeers: [] as SyncPeer[],

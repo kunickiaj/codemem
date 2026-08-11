@@ -64,8 +64,9 @@ Tag only after the release PR has merged to `main` and you have verified that `H
 `codemem update check` queries the fixed public npm registry endpoint for the latest stable
 `codemem` release. Results are cached locally for six hours; use `--refresh` to bypass a fresh
 cache and `--json` for the stable automation contract. If a refresh fails, a previously validated
-cache may be returned as stale guidance. Release discovery is informational and does not install
-or execute anything.
+cache may be returned as stale guidance. A running process backs off failed registry checks for 15
+minutes, while `--refresh` bypasses that backoff. Release discovery is informational and does not
+install or execute anything.
 
 Release discovery compares the running product version with the latest published stable release.
 It is separate from the compatibility-floor check below: discovering a newer release does not
