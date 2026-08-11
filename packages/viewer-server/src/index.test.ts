@@ -504,8 +504,7 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/runtime");
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as Record<string, unknown>;
-				expect(body.version).toBe(VERSION);
-				expect(body).not.toHaveProperty("commit");
+				expect(body).toEqual({ version: VERSION });
 			} finally {
 				cleanup();
 			}

@@ -20,6 +20,7 @@ import {
 	type InMemoryRequestRateLimiter,
 } from "./request-rate-limit.js";
 import { configRoutes } from "./routes/config.js";
+import { healthRoutes } from "./routes/health.js";
 import { memoryRoutes } from "./routes/memory.js";
 import { observerStatusRoutes } from "./routes/observer-status.js";
 import { packTransportRoutes } from "./routes/pack.js";
@@ -105,6 +106,7 @@ export function createApp(opts?: AppOptions) {
 	app.use("*", originGuard());
 
 	// API routes
+	app.route("/", healthRoutes(storeFactory));
 	app.route("/", statsRoutes(storeFactory));
 	app.route("/", memoryRoutes(storeFactory));
 	app.route("/", packTransportRoutes(storeFactory));
