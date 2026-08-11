@@ -207,6 +207,22 @@ describe("maintenance", { timeout: 15_000 }, () => {
 		expect(metrics.counts.retry_depth_max).toBe(3);
 	});
 
+	it("counts gave-up raw-event batches as terminal reliability failures", () => {
+		const dbPath = createDbPath("gave-up-reliability");
+		seedMaintenanceDb(dbPath);
+		const db = new Database(dbPath);
+		try {
+			db.prepare("UPDATE raw_event_flush_batches SET status = 'gave_up'").run();
+		} finally {
+			db.close();
+		}
+
+		const metrics = getReliabilityMetrics(dbPath);
+		expect(metrics.counts.errored_batches).toBe(1);
+		expect(metrics.counts.terminal_batches).toBe(1);
+		expect(metrics.rates.flush_success_rate).toBe(0);
+	});
+
 	it("backfills tags_text for memories with empty tags", () => {
 		const dbPath = createDbPath("backfill-tags");
 		const db = new Database(dbPath);

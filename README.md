@@ -139,7 +139,8 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 
 | Group | Command | Description |
 |-------|---------|-------------|
-| **Core** | `codemem stats` | Database statistics |
+| **Core** | `codemem status` | Local operational roll-up (`--json` supported) |
+| | `codemem stats` | Database statistics |
 | | `codemem stats --attribution` | Bounded local retrieval-attribution diagnostics (`--json` supported) |
 | | `codemem recent` | Recent memories |
 | | `codemem search <query>` | Search memories |
@@ -174,6 +175,14 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | | `codemem codex-hook-inject` | Codex prompt-time memory injection (stdin, experimental) |
 
 Run `codemem --help` for the full list. Legacy top-level aliases (`export-memories`, `import-memories`, `show`, `forget`, `remember`) still work but are hidden from help.
+
+Use `codemem status` to answer whether the local database, viewer, sync, maintenance,
+semantic index, raw-event ingestion, and observer need attention. It is observational:
+it does not create a missing database, repair state, inspect credentials, or contact
+peers, coordinators, registries, or non-loopback hosts. Use `codemem status --json`
+for the stable machine-readable report. `codemem stats` remains the inventory and
+usage command; use `sync status`/`sync doctor`, `maintenance status`, and
+`db raw-events-status` for subsystem detail.
 
 Pack rendering defaults to self-contained context. For token-constrained experiments, `codemem pack <context> --compact` renders an index plus top details. Near-related compression is controlled by `--compression-mode off|compact|ids` (or `CODEMEM_PACK_COMPRESSION`); MCP `memory_pack` exposes the same setting as `compression_mode`. Use `ids` only when the agent can follow up with `memory_get_observations`.
 

@@ -158,6 +158,7 @@ export type { Database } from "./db.js";
 export {
 	assertSchemaReady,
 	connect,
+	connectReadOnly,
 	DEFAULT_DB_PATH,
 	fromJson,
 	fromJsonStrict,
@@ -538,6 +539,7 @@ export {
 	writeCodememConfigFile,
 	writeWorkspaceCodememConfigFile,
 } from "./observer-config.js";
+export * from "./operational-status.js";
 export * from "./outcome-evidence.js";
 export type { PackArtifacts } from "./pack.js";
 export {

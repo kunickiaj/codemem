@@ -41,6 +41,7 @@ import { searchCommand } from "./commands/search.js";
 import { serveCommand } from "./commands/serve.js";
 import { setupCommand } from "./commands/setup.js";
 import { statsCommand } from "./commands/stats.js";
+import { statusCommand } from "./commands/status.js";
 import { syncCommand } from "./commands/sync.js";
 import { versionCommand } from "./commands/version.js";
 import { helpStyle } from "./help-style.js";
@@ -75,6 +76,7 @@ completion.on("command", ({ reply }) => {
 		"serve",
 		"setup",
 		"stats",
+		"status",
 		"sync",
 		"version",
 		"help",
@@ -207,6 +209,7 @@ program.addCommand(distillCommand);
 program.addCommand(exportMemoriesCommand);
 program.addCommand(importMemoriesCommand);
 program.addCommand(statsCommand);
+program.addCommand(statusCommand);
 program.addCommand(maintenanceCommand);
 program.addCommand(embedCommand);
 program.addCommand(recentCommand);

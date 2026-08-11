@@ -14,6 +14,26 @@
 - Treat the viewer as a local tool. If you must expose it beyond loopback, add your own auth and network restrictions first.
 - This warning applies to the viewer HTTP service, not the separate sync/coordinator listeners documented elsewhere.
 
+## Check local operational status
+
+`codemem status` is the local operational roll-up. It reports database readiness,
+viewer state, sync, maintenance, semantic indexing, raw-event ingestion, and the
+observer without changing configuration or stored data.
+
+```fish
+codemem status
+codemem status --json
+codemem status --db-path ./codemem.sqlite --config ./codemem.json
+```
+
+- `status` answers whether codemem can do useful local work; `stats` reports database inventory and usage.
+- Collection is offline and local-only. It does not contact peers, coordinators, registries, update services, or non-loopback viewer hosts.
+- A missing database is reported without creating it. Existing databases are opened read-only.
+- With no viewer PID record, status probes the configured loopback viewer address; a malformed or non-loopback record reports `unknown` and is not fetched.
+- Warnings and errors appear in the bounded `attention` list. A collected report exits `0` even when `ok` is false; collection failures exit `1`, and usage errors exit `2`.
+- Terminal raw-event and observer failures affect `ok` for 24 hours; use `codemem db raw-events-gate` for the detailed reliability window.
+- Use `codemem sync status` or `codemem sync doctor`, `codemem maintenance status`, and `codemem db raw-events-status` for detailed subsystem diagnostics.
+
 ## Seeing UI changes
 - The viewer UI is built from `packages/ui/` and served by `packages/viewer-server/`.
 - Rebuild UI assets after frontend changes: `pnpm --filter @codemem/ui build`.

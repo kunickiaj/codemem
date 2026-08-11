@@ -44,7 +44,7 @@ export function getReliabilityMetrics(
 							started: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} IN ('started', 'pending') THEN 1 ELSE 0 END), 0)`,
 							running: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} IN ('running', 'claimed') THEN 1 ELSE 0 END), 0)`,
 							completed: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} = 'completed' THEN 1 ELSE 0 END), 0)`,
-							errored: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} IN ('error', 'failed') THEN 1 ELSE 0 END), 0)`,
+							errored: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} IN ('error', 'failed', 'gave_up') THEN 1 ELSE 0 END), 0)`,
 						})
 						.from(schema.rawEventFlushBatches)
 						.where(gte(schema.rawEventFlushBatches.updated_at, cutoffIso))
@@ -54,7 +54,7 @@ export function getReliabilityMetrics(
 							started: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} IN ('started', 'pending') THEN 1 ELSE 0 END), 0)`,
 							running: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} IN ('running', 'claimed') THEN 1 ELSE 0 END), 0)`,
 							completed: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} = 'completed' THEN 1 ELSE 0 END), 0)`,
-							errored: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} IN ('error', 'failed') THEN 1 ELSE 0 END), 0)`,
+							errored: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} IN ('error', 'failed', 'gave_up') THEN 1 ELSE 0 END), 0)`,
 						})
 						.from(schema.rawEventFlushBatches)
 						.get()
