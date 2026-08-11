@@ -799,6 +799,7 @@ export {
 export { clearMemoryRefs, normalizeConcept, populateMemoryRefs } from "./ref-populate.js";
 export type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
 export { findByConcept, findByFile } from "./ref-queries.js";
+export * from "./release-discovery.js";
 export * from "./retrieval-ledger.js";
 export * from "./retrieval-surface-ledger.js";
 export type {

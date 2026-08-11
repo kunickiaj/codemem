@@ -37,6 +37,7 @@ import { setupCommand } from "./commands/setup.js";
 import { statsCommand } from "./commands/stats.js";
 import { statusCommand } from "./commands/status.js";
 import { syncCommand } from "./commands/sync.js";
+import { updateCommand } from "./commands/update.js";
 import { versionCommand } from "./commands/version.js";
 import { helpStyle } from "./help-style.js";
 
@@ -65,6 +66,7 @@ export const ROOT_COMPLETION_COMMANDS = [
 	"stats",
 	"status",
 	"sync",
+	"update",
 	"version",
 	"help",
 	"--help",
@@ -194,6 +196,7 @@ export function registerRootCommands(program: Command): Command {
 	program.addCommand(syncCommand);
 	program.addCommand(setupCommand);
 	program.addCommand(enqueueRawEventCommand);
+	program.addCommand(updateCommand);
 	program.addCommand(versionCommand);
 	return program;
 }

@@ -3,6 +3,7 @@ FROM node:24-bookworm-slim
 ARG CODEMEM_VERSION=latest
 
 ENV NODE_ENV=production
+ENV CODEMEM_INSTALL_KIND=docker
 
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends ca-certificates make g++ python3 tini \

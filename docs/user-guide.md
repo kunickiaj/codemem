@@ -1,5 +1,23 @@
 # User Guide
 
+## Check for updates
+
+Use the read-only release check to compare the running CLI with the latest stable npm release:
+
+```fish
+codemem update check
+codemem update check --refresh
+codemem update check --json
+```
+
+- Results are cached locally for six hours; `--refresh` bypasses a fresh cache.
+- `--json` prints one stable status object and uses a non-zero exit code when no validated fresh
+  or stale status is available.
+- Stale validated cache data remains clearly labeled and may provide guidance when the registry is
+  unavailable.
+- This command never installs or executes an update. Release installation remains outside this
+  read-only check.
+
 ## Start or restart the viewer
 - `codemem serve` runs the viewer in the foreground.
 - `codemem serve start` runs it in the background.

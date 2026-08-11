@@ -161,6 +161,7 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | | `codemem sync once` | Run one immediate sync pass |
 | | `codemem sync doctor` | Diagnose sync configuration issues |
 | | `codemem sync bootstrap` | Bootstrap sync from a peer snapshot |
+| **Updates** | `codemem update check` | Check the npm registry for a newer stable release (`--json` and `--refresh` supported) |
 | **Coordinator** | `codemem coordinator` | Self-hosted coordinator admin (groups, devices, invites) |
 | **Database** | `codemem db prune-memories` | Deactivate low-signal memories (`--dry-run` to preview) |
 | | `codemem db prune-observations` | Deactivate low-signal observations |
@@ -183,6 +184,10 @@ peers, coordinators, registries, or non-loopback hosts. Use `codemem status --js
 for the stable machine-readable report. `codemem stats` remains the inventory and
 usage command; use `sync status`/`sync doctor`, `maintenance status`, and
 `db raw-events-status` for subsystem detail.
+
+`codemem update check` is read-only: it reports the latest validated stable release and
+installation-specific guidance but never installs anything. Results are cached for six hours;
+pass `--refresh` to force a registry request or `--json` for one stable status object.
 
 Pack rendering defaults to self-contained context. For token-constrained experiments, `codemem pack <context> --compact` renders an index plus top details. Near-related compression is controlled by `--compression-mode off|compact|ids` (or `CODEMEM_PACK_COMPRESSION`); MCP `memory_pack` exposes the same setting as `compression_mode`. Use `ids` only when the agent can follow up with `memory_get_observations`.
 
