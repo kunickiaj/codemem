@@ -11,6 +11,7 @@ import {
 	RecipientPolicyEdgeRequestError,
 } from "./recipient-policy-edges.js";
 import { listRecipientPolicyIntent } from "./recipient-policy-intent.js";
+import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-policy-reconciliation.js";
 import { initTestSchema } from "./test-utils.js";
 
 const NOW = "2026-07-21T12:00:00.000Z";
@@ -83,28 +84,55 @@ function insertTeam(
 	teamId: string,
 	displayName: string,
 	members: string[],
+	options: {
+		deviceEligibilityMode?: string;
+		membershipStatus?: string;
+	} = {},
 ): void {
 	db.prepare(
 		`INSERT INTO policy_teams(
-		 team_id, display_name, status, provenance, revision, migration_state,
+		 team_id, display_name, status, device_eligibility_mode, provenance, revision, migration_state,
 		 source_fingerprint, idempotency_key, created_at, updated_at
-		 ) VALUES (?, ?, 'active', 'user', ?, 'user_managed', NULL, ?, ?, ?)`,
-	).run(teamId, displayName, `revision-${teamId}`, `key-${teamId}`, NOW, NOW);
+		 ) VALUES (?, ?, 'active', ?, 'user', ?, 'user_managed', NULL, ?, ?, ?)`,
+	).run(
+		teamId,
+		displayName,
+		options.deviceEligibilityMode ?? "person_all_devices",
+		`revision-${teamId}`,
+		`key-${teamId}`,
+		NOW,
+		NOW,
+	);
 	for (const identityId of members) {
 		db.prepare(
 			`INSERT INTO policy_team_memberships(
 			 team_id, identity_id, role, status, provenance, revision, migration_state,
 			 source_fingerprint, idempotency_key, created_at, updated_at
-			 ) VALUES (?, ?, 'member', 'active', 'user', ?, 'user_managed', NULL, ?, ?, ?)`,
+			 ) VALUES (?, ?, 'member', ?, 'user', ?, 'user_managed', NULL, ?, ?, ?)`,
 		).run(
 			teamId,
 			identityId,
+			options.membershipStatus ?? "active",
 			`revision-${teamId}-${identityId}`,
 			`key-${teamId}-${identityId}`,
 			NOW,
 			NOW,
 		);
 	}
+}
+
+function insertTeamDeviceDecision(
+	db: InstanceType<typeof Database>,
+	teamId: string,
+	deviceId: string,
+	decision: string,
+	assignmentVersion = 0,
+): void {
+	db.prepare(
+		`INSERT INTO policy_team_device_decisions(
+		 team_id, device_id, decision, assignment_version, provenance, revision, created_at, updated_at
+		 ) VALUES (?, ?, ?, ?, 'reviewed_setup', ?, ?, ?)`,
+	).run(teamId, deviceId, decision, assignmentVersion, `revision-${teamId}-${deviceId}`, NOW, NOW);
 }
 
 function insertProjectRecipient(
@@ -134,7 +162,7 @@ function seedGraph(): InstanceType<typeof Database> {
 	insertProject(db, PROJECT_A, "alpha", 2);
 	insertProject(db, PROJECT_B, "beta", 1);
 	insertActor(db, "identity-a", "Ada");
-	insertActor(db, "identity-b", "Bea", "pending");
+	insertActor(db, "identity-b", "Bea");
 	insertActor(db, "identity-inactive", "Inactive", "deactivated");
 	insertDevice(db, "identity-a", "device-a", "Ada laptop");
 	insertDevice(db, "identity-b", "device-b", "Bea laptop");
@@ -487,6 +515,414 @@ describe("recipient-policy edge changes", () => {
 				displayName: "Bea laptop",
 			},
 		]);
+	});
+
+	it("keeps pending identities selectable as direct recipients", () => {
+		const db = seedGraph();
+		insertActor(db, "identity-pending", "Pending", "pending");
+
+		const preview = previewRecipientPolicyEdges(db, {
+			version: 1,
+			changes: [identityChange(PROJECT_A, "identity-pending")],
+		});
+
+		expect(preview.selectedRecipients).toEqual([
+			{
+				recipientKind: "identity",
+				identityId: "identity-pending",
+				displayName: "Pending",
+				verification: "local",
+			},
+		]);
+	});
+
+	it("keeps person_all_devices preview facts stable", () => {
+		const db = seedGraph();
+		const request = { version: 1 as const, changes: [teamChange(PROJECT_A, "team-a")] };
+		const preview = previewRecipientPolicyEdges(db, request);
+
+		expect(preview.reviewedPolicyDigest).toBe(
+			"edge-preview-v1:1cb30784a81aa7412c87f0e1dd01be186fb0562a3b7462629524af60cc2b6e0f",
+		);
+	});
+
+	it("keeps a person-wide Team digest stable when only assignment version changes", () => {
+		const db = seedGraph();
+		const request = { version: 1 as const, changes: [teamChange(PROJECT_A, "team-a")] };
+		const before = previewRecipientPolicyEdges(db, request);
+		db.prepare(
+			"UPDATE identity_devices SET assignment_version = 7 WHERE device_id = 'device-a'",
+		).run();
+
+		const after = previewRecipientPolicyEdges(db, request);
+
+		expect(after.reviewedPolicyDigest).toBe(before.reviewedPolicyDigest);
+	});
+
+	it("filters reviewed Teams to included active devices", () => {
+		const db = seedGraph();
+		db.prepare(
+			"UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist' WHERE team_id = 'team-a'",
+		).run();
+		db.prepare(
+			"UPDATE policy_team_memberships SET status = 'reviewed_active' WHERE team_id = 'team-a'",
+		).run();
+		insertTeamDeviceDecision(db, "team-a", "device-a", "included");
+		insertTeamDeviceDecision(db, "team-a", "device-b", "excluded");
+
+		const preview = previewRecipientPolicyEdges(db, {
+			version: 1,
+			changes: [teamChange(PROJECT_A, "team-a")],
+		});
+
+		expect(preview.effectiveDevices).toEqual([
+			{
+				canonicalProjectIdentity: PROJECT_A,
+				identityId: "identity-a",
+				deviceId: "device-a",
+				displayName: "Ada laptop",
+			},
+		]);
+	});
+
+	it("removes a reassigned device from a reviewed Team preview until it is reviewed again", () => {
+		const db = seedGraph();
+		db.prepare(
+			"UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist' WHERE team_id = 'team-a'",
+		).run();
+		db.prepare(
+			"UPDATE policy_team_memberships SET status = 'reviewed_active' WHERE team_id = 'team-a'",
+		).run();
+		insertTeamDeviceDecision(db, "team-a", "device-a", "included");
+		db.prepare(
+			"UPDATE identity_devices SET identity_id = 'identity-b' WHERE device_id = 'device-a'",
+		).run();
+
+		const preview = previewRecipientPolicyEdges(db, {
+			version: 1,
+			changes: [teamChange(PROJECT_A, "team-a")],
+		});
+
+		expect(preview.effectiveDevices).toEqual([]);
+	});
+
+	it("fails closed for unknown Team modes and decisions", () => {
+		for (const mutate of [
+			(db: InstanceType<typeof Database>) => {
+				db.prepare(
+					"UPDATE policy_teams SET device_eligibility_mode = 'future_mode' WHERE team_id = 'team-a'",
+				).run();
+			},
+			(db: InstanceType<typeof Database>) => {
+				db.prepare(
+					"UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist' WHERE team_id = 'team-a'",
+				).run();
+				db.prepare(
+					"UPDATE policy_team_memberships SET status = 'reviewed_active' WHERE team_id = 'team-a'",
+				).run();
+				insertTeamDeviceDecision(db, "team-a", "device-a", "future_decision");
+			},
+		]) {
+			const db = seedGraph();
+			mutate(db);
+			expect(() =>
+				previewRecipientPolicyEdges(db, {
+					version: 1,
+					changes: [teamChange(PROJECT_A, "team-a")],
+				}),
+			).toThrow(RecipientPolicyEdgeRequestError);
+		}
+	});
+
+	it.each([
+		["pending", "pending", null, "team_member_identity_not_active"],
+		["deactivated", "deactivated", null, "team_member_identity_not_active"],
+		["merged", "active", "identity-a", "team_member_identity_merged"],
+	] as const)("blocks $label Team members identically in preview and authoritative derivation", (_label, status, mergedIntoIdentityId, code) => {
+		const db = seedGraph();
+		insertProjectRecipient(db, PROJECT_A, "team-a", "team");
+		db.prepare(
+			`UPDATE actors SET status = ?, merged_into_actor_id = ?
+				 WHERE actor_id = 'identity-b'`,
+		).run(status, mergedIntoIdentityId);
+
+		const authoritative = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A);
+		let previewError: unknown;
+		try {
+			previewRecipientPolicyEdges(db, {
+				version: 1,
+				changes: [teamChange(PROJECT_A, "team-a")],
+			});
+		} catch (error) {
+			previewError = error;
+		}
+
+		expect(authoritative.status).toBe("blocked");
+		expect(authoritative.blocked[0]).toEqual({ code, referenceId: "identity-b" });
+		expect(previewError).toMatchObject({ status: "invalid", errorCode: code });
+	});
+
+	it.each([
+		"",
+		" device-a",
+		"device-a ",
+		"device-a\n",
+	])("blocks malformed Team device ID %j identically in preview and authoritative derivation", (deviceId) => {
+		const db = seedGraph();
+		insertProjectRecipient(db, PROJECT_A, "team-a", "team");
+		db.prepare("UPDATE identity_devices SET device_id = ? WHERE device_id = 'device-a'").run(
+			deviceId,
+		);
+
+		const authoritative = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A);
+		let previewError: unknown;
+		try {
+			previewRecipientPolicyEdges(db, {
+				version: 1,
+				changes: [teamChange(PROJECT_A, "team-a")],
+			});
+		} catch (error) {
+			previewError = error;
+		}
+
+		expect(authoritative.status).toBe("blocked");
+		expect(authoritative.blocked).toContainEqual({
+			code: "identity_device_invalid",
+			referenceId: deviceId,
+		});
+		expect(previewError).toMatchObject({
+			status: "invalid",
+			errorCode: "identity_device_invalid",
+		});
+	});
+
+	it.each([
+		"",
+		" device-a",
+		"device-a ",
+		"device-a\n",
+	])("blocks malformed direct-identity device ID %j identically in preview and authoritative derivation", (deviceId) => {
+		const db = seedGraph();
+		insertProjectRecipient(db, PROJECT_A, "identity-a");
+		db.prepare("UPDATE identity_devices SET device_id = ? WHERE device_id = 'device-a'").run(
+			deviceId,
+		);
+
+		const authoritative = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A);
+		let previewError: unknown;
+		try {
+			previewRecipientPolicyEdges(db, {
+				version: 1,
+				changes: [identityChange(PROJECT_A, "identity-a")],
+			});
+		} catch (error) {
+			previewError = error;
+		}
+
+		expect(authoritative.status).toBe("blocked");
+		expect(authoritative.blocked).toContainEqual({
+			code: "identity_device_invalid",
+			referenceId: deviceId,
+		});
+		expect(previewError).toMatchObject({
+			status: "invalid",
+			errorCode: "identity_device_invalid",
+		});
+	});
+
+	it("keeps indexed Team eligibility facts isolated across a large roster", () => {
+		const db = seedGraph();
+		for (let index = 0; index < 100; index += 1) {
+			const identityId = `identity-scale-${index}`;
+			const teamId = `team-scale-${index}`;
+			insertActor(db, identityId, `Scale ${index}`);
+			insertDevice(db, identityId, `device-scale-${index}`, `Scale device ${index}`);
+			insertTeam(db, teamId, `Scale Team ${index}`, [identityId], {
+				deviceEligibilityMode: "reviewed_allowlist",
+				membershipStatus: "reviewed_active",
+			});
+			insertTeamDeviceDecision(db, teamId, `device-scale-${index}`, "included");
+		}
+
+		const preview = previewRecipientPolicyEdges(db, {
+			version: 1,
+			changes: [teamChange(PROJECT_A, "team-a")],
+		});
+
+		expect(preview.effectiveDevices.map((device) => device.deviceId)).toEqual([
+			"device-a",
+			"device-b",
+		]);
+	});
+
+	it.each([
+		{
+			label: "eligibility mode",
+			code: "team_device_eligibility_mode_invalid",
+			mutate: (db: InstanceType<typeof Database>) => {
+				db.prepare(
+					"UPDATE policy_teams SET device_eligibility_mode = 'future_mode' WHERE team_id = 'team-a'",
+				).run();
+			},
+		},
+		{
+			label: "device decision",
+			code: "team_device_decision_invalid",
+			mutate: (db: InstanceType<typeof Database>) => {
+				insertTeamDeviceDecision(db, "team-a", "device-a", "included");
+			},
+		},
+		{
+			label: "membership mode",
+			code: "team_membership_mode_invalid",
+			mutate: (db: InstanceType<typeof Database>) => {
+				db.prepare(
+					"UPDATE policy_team_memberships SET status = 'reviewed_active' WHERE team_id = 'team-a'",
+				).run();
+			},
+		},
+		{
+			label: "device status",
+			code: "identity_device_invalid",
+			mutate: (db: InstanceType<typeof Database>) => {
+				db.prepare(
+					"UPDATE identity_devices SET status = 'future_status' WHERE device_id = 'device-a'",
+				).run();
+			},
+		},
+	] as const)("removes an exact active Team edge blocked by $label", ({ code, mutate }) => {
+		const db = seedGraph();
+		insertProjectRecipient(db, PROJECT_A, "team-a", "team");
+		mutate(db);
+		const changes = [teamChange(PROJECT_A, "team-a", "remove")];
+
+		const authoritative = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A);
+		expect(authoritative.blocked).toContainEqual(expect.objectContaining({ code }));
+		const preview = previewRecipientPolicyEdges(db, { version: 1, changes });
+		const result = commitRecipientPolicyEdges(db, {
+			version: 1,
+			changes,
+			reviewedPolicyDigest: preview.reviewedPolicyDigest,
+		});
+
+		expect(result).toMatchObject({ status: "applied", writeCount: 1 });
+		expect(
+			db
+				.prepare(
+					`SELECT status FROM project_recipients
+					 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
+				)
+				.pluck()
+				.get(PROJECT_A, "team-a"),
+		).toBe("revoked");
+	});
+
+	it("fails preview when an unchanged desired Team is blocked", () => {
+		const db = seedGraph();
+		insertProjectRecipient(db, PROJECT_A, "team-a", "team");
+		insertTeamDeviceDecision(db, "team-a", "device-a", "included");
+		const authoritative = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A);
+
+		expect(authoritative.status).toBe("blocked");
+		expect(authoritative.blocked).toContainEqual(
+			expect.objectContaining({ code: "team_device_decision_invalid" }),
+		);
+		let previewError: unknown;
+		try {
+			previewRecipientPolicyEdges(db, {
+				version: 1,
+				changes: [identityChange(PROJECT_A, "identity-b")],
+			});
+		} catch (error) {
+			previewError = error;
+		}
+		expect(previewError).toMatchObject({
+			status: "invalid",
+			errorCode: "team_device_decision_invalid",
+		});
+	});
+
+	it("includes unknown Team modes in removal digest facts", () => {
+		const db = seedGraph();
+		insertProjectRecipient(db, PROJECT_A, "team-a", "team");
+		const request = {
+			version: 1 as const,
+			changes: [teamChange(PROJECT_A, "team-a", "remove")],
+		};
+		db.prepare(
+			"UPDATE policy_teams SET device_eligibility_mode = 'future_mode_a' WHERE team_id = 'team-a'",
+		).run();
+		const before = previewRecipientPolicyEdges(db, request);
+		db.prepare(
+			"UPDATE policy_teams SET device_eligibility_mode = 'future_mode_b' WHERE team_id = 'team-a'",
+		).run();
+		const after = previewRecipientPolicyEdges(db, request);
+		insertTeamDeviceDecision(db, "team-a", "device-a", "included");
+		const withDecision = previewRecipientPolicyEdges(db, request);
+
+		expect(after.reviewedPolicyDigest).not.toBe(before.reviewedPolicyDigest);
+		expect(withDecision.reviewedPolicyDigest).not.toBe(after.reviewedPolicyDigest);
+	});
+
+	it("invalidates a reviewed preview when Team eligibility mode changes", () => {
+		const db = seedGraph();
+		const changes = [teamChange(PROJECT_A, "team-a")];
+		const preview = previewRecipientPolicyEdges(db, { version: 1, changes });
+
+		db.prepare(
+			"UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist' WHERE team_id = 'team-a'",
+		).run();
+		db.prepare(
+			"UPDATE policy_team_memberships SET status = 'reviewed_active' WHERE team_id = 'team-a'",
+		).run();
+		insertTeamDeviceDecision(db, "team-a", "device-a", "included");
+		insertTeamDeviceDecision(db, "team-a", "device-b", "included");
+
+		expect(
+			commitRecipientPolicyEdges(db, {
+				version: 1,
+				changes,
+				reviewedPolicyDigest: preview.reviewedPolicyDigest,
+			}),
+		).toMatchObject({ status: "stale", writeCount: 0 });
+	});
+
+	it("invalidates a direct-recipient preview when an unchanged Team eligibility mode changes", () => {
+		const db = seedGraph();
+		insertProjectRecipient(db, PROJECT_A, "team-a", "team");
+		const changes = [identityChange(PROJECT_A, "identity-a")];
+		const preview = previewRecipientPolicyEdges(db, { version: 1, changes });
+
+		db.prepare(
+			"UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist' WHERE team_id = 'team-a'",
+		).run();
+		db.prepare(
+			"UPDATE policy_team_memberships SET status = 'reviewed_active' WHERE team_id = 'team-a'",
+		).run();
+		insertTeamDeviceDecision(db, "team-a", "device-a", "included");
+		insertTeamDeviceDecision(db, "team-a", "device-b", "included");
+
+		expect(
+			commitRecipientPolicyEdges(db, {
+				version: 1,
+				changes,
+				reviewedPolicyDigest: preview.reviewedPolicyDigest,
+			}),
+		).toMatchObject({ status: "stale", writeCount: 0 });
+	});
+
+	it("keeps unchanged person-wide Team digest facts stable", () => {
+		const db = seedGraph();
+		insertProjectRecipient(db, PROJECT_A, "team-a", "team");
+
+		const preview = previewRecipientPolicyEdges(db, {
+			version: 1,
+			changes: [identityChange(PROJECT_A, "identity-a")],
+		});
+
+		expect(preview.reviewedPolicyDigest).toBe(
+			"edge-preview-v1:4cc99032a10feabc18d9320910a67731b09dbe7fc585813e075052689c5f6c39",
+		);
 	});
 
 	it("rejects stale digests after membership, device, memory, or other edge changes", () => {

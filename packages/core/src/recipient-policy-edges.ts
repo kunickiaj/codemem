@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
+import {
+	derivePolicyTeamDeviceEligibility,
+	type PolicyTeamDeviceEligibilityBlock,
+	type PolicyTeamDeviceEligibilityIdentity,
+} from "./policy-team-device-eligibility.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 
@@ -108,13 +113,19 @@ interface IdentityFact extends RecipientPolicyEdgeIdentitySummaryV1 {
 interface TeamFact {
 	teamId: string;
 	displayName: string;
+	deviceEligibilityMode: string;
 	currentMembers: IdentityFact[];
+	eligibleDeviceIds: Set<string>;
+	deviceDecisions: Array<{ deviceId: string; decision: string; assignmentVersion: number }>;
+	eligibilityBlocks: PolicyTeamDeviceEligibilityBlock[];
 }
 
 interface DeviceFact {
 	identityId: string;
 	deviceId: string;
 	displayName: string;
+	status: string;
+	assignmentVersion: number;
 }
 
 interface StoredEdge {
@@ -133,6 +144,7 @@ const CONTROL_CHARACTER = /\p{Cc}/u;
 const MAX_CHANGES = 500;
 const MAX_PROJECTS = 500;
 const MAX_RECIPIENTS = 200;
+const KNOWN_DEVICE_STATUSES = new Set(["active", "revoked"]);
 
 function compareText(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0;
@@ -161,7 +173,7 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 	);
 }
 
-function strictId(value: unknown, maxLength: number): string | null {
+function strictId(value: unknown, maxLength = Number.POSITIVE_INFINITY): string | null {
 	if (typeof value !== "string" || !value || value !== value.trim()) return null;
 	if (value.length > maxLength || CONTROL_CHARACTER.test(value)) return null;
 	return value;
@@ -358,25 +370,119 @@ function loadIdentityFacts(db: Database): Map<string, IdentityFact> {
 	return result;
 }
 
-function loadTeamFacts(db: Database, identities: Map<string, IdentityFact>): Map<string, TeamFact> {
+function loadTeamIdentityFacts(db: Database): PolicyTeamDeviceEligibilityIdentity[] {
+	return (
+		db
+			.prepare(
+				`SELECT actor_id, status, merged_into_actor_id FROM actors
+				 ORDER BY actor_id`,
+			)
+			.all() as Array<Record<string, unknown>>
+	).map((row) => ({
+		identityId: String(row.actor_id ?? ""),
+		status: String(row.status ?? ""),
+		mergedIntoIdentityId:
+			typeof row.merged_into_actor_id === "string" && row.merged_into_actor_id
+				? row.merged_into_actor_id
+				: null,
+	}));
+}
+
+function loadTeamFacts(
+	db: Database,
+	identities: Map<string, IdentityFact>,
+	teamIdentities: PolicyTeamDeviceEligibilityIdentity[],
+	devices: DeviceFact[],
+): Map<string, TeamFact> {
 	const teams = new Map<string, TeamFact>();
 	for (const row of db
 		.prepare(
-			"SELECT team_id, display_name FROM policy_teams WHERE status = 'active' ORDER BY team_id",
+			`SELECT team_id, display_name, device_eligibility_mode
+			 FROM policy_teams WHERE status = 'active' ORDER BY team_id`,
 		)
 		.all() as Array<Record<string, unknown>>) {
 		const teamId = String(row.team_id ?? "");
-		teams.set(teamId, { teamId, displayName: String(row.display_name ?? ""), currentMembers: [] });
+		teams.set(teamId, {
+			teamId,
+			displayName: String(row.display_name ?? ""),
+			deviceEligibilityMode: String(row.device_eligibility_mode ?? ""),
+			currentMembers: [],
+			eligibleDeviceIds: new Set(),
+			deviceDecisions: [],
+			eligibilityBlocks: [],
+		});
 	}
-	for (const row of db
+	const memberships = db
 		.prepare(
-			`SELECT team_id, identity_id FROM policy_team_memberships
-			 WHERE status = 'active' ORDER BY team_id, identity_id`,
+			`SELECT team_id, identity_id, status FROM policy_team_memberships
+			 ORDER BY team_id, identity_id`,
 		)
-		.all() as Array<Record<string, unknown>>) {
-		const team = teams.get(String(row.team_id ?? ""));
-		const identity = identities.get(String(row.identity_id ?? ""));
-		if (team && identity) team.currentMembers.push(identity);
+		.all() as Array<Record<string, unknown>>;
+	const decisions = db
+		.prepare(
+			`SELECT team_id, device_id, decision, assignment_version FROM policy_team_device_decisions
+			 ORDER BY team_id, device_id`,
+		)
+		.all() as Array<Record<string, unknown>>;
+	const membershipsByTeam = new Map<string, Array<{ identityId: string; status: string }>>();
+	for (const row of memberships) {
+		const teamId = String(row.team_id ?? "");
+		const current = membershipsByTeam.get(teamId) ?? [];
+		current.push({
+			identityId: String(row.identity_id ?? ""),
+			status: String(row.status ?? ""),
+		});
+		membershipsByTeam.set(teamId, current);
+	}
+	const decisionsByTeam = new Map<
+		string,
+		Array<{ deviceId: string; decision: string; assignmentVersion: number }>
+	>();
+	for (const row of decisions) {
+		const teamId = String(row.team_id ?? "");
+		const current = decisionsByTeam.get(teamId) ?? [];
+		current.push({
+			deviceId: String(row.device_id ?? ""),
+			decision: String(row.decision ?? ""),
+			assignmentVersion: Number(row.assignment_version),
+		});
+		decisionsByTeam.set(teamId, current);
+	}
+	const teamIdentityById = new Map(
+		teamIdentities.map((identity) => [identity.identityId, identity]),
+	);
+	const devicesByIdentity = new Map<string, DeviceFact[]>();
+	for (const device of devices) {
+		const current = devicesByIdentity.get(device.identityId) ?? [];
+		current.push(device);
+		devicesByIdentity.set(device.identityId, current);
+	}
+	for (const team of teams.values()) {
+		team.deviceDecisions = decisionsByTeam.get(team.teamId) ?? [];
+		const teamMemberships = membershipsByTeam.get(team.teamId) ?? [];
+		const memberIdentityIds = new Set(teamMemberships.map((membership) => membership.identityId));
+		const eligibilityIdentities = [...memberIdentityIds].flatMap((identityId) => {
+			const identity = teamIdentityById.get(identityId);
+			return identity ? [identity] : [];
+		});
+		const eligibilityDevices = [...memberIdentityIds].flatMap(
+			(identityId) => devicesByIdentity.get(identityId) ?? [],
+		);
+		const eligibility = derivePolicyTeamDeviceEligibility({
+			teamId: team.teamId,
+			mode: team.deviceEligibilityMode,
+			memberships: teamMemberships,
+			identities: eligibilityIdentities,
+			devices: eligibilityDevices,
+			decisions: team.deviceDecisions,
+		});
+		team.eligibilityBlocks = eligibility.blocked;
+		if (eligibility.status === "blocked") continue;
+		team.eligibleDeviceIds = new Set(eligibility.eligibleDeviceIds);
+		team.currentMembers = eligibility.activeMemberIdentityIds.flatMap((identityId) => {
+			const identity = identities.get(identityId);
+			return identity ? [identity] : [];
+		});
 	}
 	return teams;
 }
@@ -385,8 +491,9 @@ function loadDeviceFacts(db: Database, identities: Map<string, IdentityFact>): D
 	return (
 		db
 			.prepare(
-				`SELECT identity_id, device_id, display_name FROM identity_devices
-			 WHERE status = 'active' ORDER BY identity_id, device_id`,
+				`SELECT identity_id, device_id, display_name, status, assignment_version
+				 FROM identity_devices
+			 ORDER BY identity_id, device_id`,
 			)
 			.all() as Array<Record<string, unknown>>
 	).flatMap((row): DeviceFact[] => {
@@ -397,6 +504,8 @@ function loadDeviceFacts(db: Database, identities: Map<string, IdentityFact>): D
 						identityId,
 						deviceId: String(row.device_id ?? ""),
 						displayName: String(row.display_name ?? ""),
+						status: String(row.status ?? ""),
+						assignmentVersion: Number(row.assignment_version),
 					},
 				]
 			: [];
@@ -468,6 +577,13 @@ function selectedRecipients(
 				if (change.action === "remove" && current?.status === "active") continue;
 				throw new RecipientPolicyEdgeRequestError("not_found", "recipient_not_found");
 			}
+			const eligibilityBlock = team.eligibilityBlocks[0];
+			if (eligibilityBlock) {
+				// Removal is anchored to the exact persisted edge, not current Team
+				// eligibility. This keeps malformed or future policy state removable.
+				if (change.action === "remove" && current?.status === "active") continue;
+				throw new RecipientPolicyEdgeRequestError("invalid", eligibilityBlock.code);
+			}
 			recipients.set(recipientKey(change.recipient), {
 				recipientKind: "team",
 				teamId: team.teamId,
@@ -482,6 +598,38 @@ function selectedRecipients(
 		const rightId = right.recipientKind === "identity" ? right.identityId : right.teamId;
 		return compareText(left.recipientKind, right.recipientKind) || compareText(leftId, rightId);
 	});
+}
+
+function assertDesiredTeamEligibility(edges: StoredEdge[], teams: Map<string, TeamFact>): void {
+	for (const edge of edges) {
+		if (edge.recipientKind !== "team") continue;
+		const team = teams.get(edge.recipientId);
+		if (!team) {
+			throw new RecipientPolicyEdgeRequestError("not_found", "recipient_not_found");
+		}
+		const eligibilityBlock = team.eligibilityBlocks[0];
+		if (eligibilityBlock) {
+			throw new RecipientPolicyEdgeRequestError("invalid", eligibilityBlock.code);
+		}
+	}
+}
+
+function assertDesiredDirectIdentityEligibility(edges: StoredEdge[], devices: DeviceFact[]): void {
+	const directIdentityIds = new Set(
+		edges.filter((edge) => edge.recipientKind === "identity").map((edge) => edge.recipientId),
+	);
+	for (const device of devices) {
+		if (!directIdentityIds.has(device.identityId)) continue;
+		if (!KNOWN_DEVICE_STATUSES.has(device.status)) {
+			throw new RecipientPolicyEdgeRequestError("invalid", "identity_device_invalid");
+		}
+		if (
+			device.status === "active" &&
+			(!strictId(device.identityId) || !strictId(device.deviceId))
+		) {
+			throw new RecipientPolicyEdgeRequestError("invalid", "identity_device_invalid");
+		}
+	}
 }
 
 function desiredActiveEdges(
@@ -525,6 +673,7 @@ function effectiveDevices(
 ): RecipientPolicyEdgeEffectiveDeviceV1[] {
 	const devicesByIdentity = new Map<string, DeviceFact[]>();
 	for (const device of devices) {
+		if (device.status !== "active") continue;
 		const current = devicesByIdentity.get(device.identityId) ?? [];
 		current.push(device);
 		devicesByIdentity.set(device.identityId, current);
@@ -539,6 +688,12 @@ function effectiveDevices(
 				: (teams.get(edge.recipientId)?.currentMembers.map((member) => member.identityId) ?? []);
 		for (const identityId of identityIds) {
 			for (const device of devicesByIdentity.get(identityId) ?? []) {
+				if (
+					edge.recipientKind === "team" &&
+					!teams.get(edge.recipientId)?.eligibleDeviceIds.has(device.deviceId)
+				) {
+					continue;
+				}
 				const key = `${edge.canonicalProjectIdentity}\u0000${device.deviceId}`;
 				effective.set(key, {
 					canonicalProjectIdentity: edge.canonicalProjectIdentity,
@@ -559,17 +714,56 @@ function effectiveDevices(
 
 function selectedRecipientDigestFacts(
 	changes: RecipientPolicyEdgeChangeV1[],
+	desiredEdges: StoredEdge[],
 	identities: Map<string, IdentityFact>,
 	teams: Map<string, TeamFact>,
 	devices: DeviceFact[],
 ): unknown[] {
 	const devicesByIdentity = new Map<string, DeviceFact[]>();
 	for (const device of devices) {
+		if (device.status !== "active") continue;
 		const current = devicesByIdentity.get(device.identityId) ?? [];
 		current.push(device);
 		devicesByIdentity.set(device.identityId, current);
 	}
+	// Assignment versions invalidate reviewed-Team previews, but person-wide
+	// eligibility does not depend on them and must retain its legacy digest shape.
+	const digestDevices = (
+		identityId: string,
+	): Array<Omit<DeviceFact, "status" | "assignmentVersion">> =>
+		(devicesByIdentity.get(identityId) ?? []).map(
+			({ status: _status, assignmentVersion: _assignmentVersion, ...device }) => device,
+		);
+	const reviewedDigestDevices = (identityId: string): Array<Omit<DeviceFact, "status">> =>
+		(devicesByIdentity.get(identityId) ?? []).map(({ status: _status, ...device }) => device);
 	const facts = new Map<string, unknown>();
+	const addTeamFact = (team: TeamFact): void => {
+		const key = recipientKey({ recipientKind: "team", teamId: team.teamId });
+		if (facts.has(key)) return;
+		const legacyFact = {
+			recipientKind: "team",
+			teamId: team.teamId,
+			displayName: team.displayName,
+			currentMembers: team.currentMembers.map((identity) => ({
+				identity,
+				devices: digestDevices(identity.identityId),
+			})),
+		};
+		facts.set(
+			key,
+			team.deviceEligibilityMode !== "person_all_devices"
+				? {
+						...legacyFact,
+						deviceEligibilityMode: team.deviceEligibilityMode,
+						currentMembers: team.currentMembers.map((identity) => ({
+							identity,
+							devices: reviewedDigestDevices(identity.identityId),
+						})),
+						deviceDecisions: team.deviceDecisions,
+					}
+				: legacyFact,
+		);
+	};
 	for (const change of changes) {
 		if (change.recipient.recipientKind === "identity") {
 			const identity = identities.get(change.recipient.identityId);
@@ -577,21 +771,18 @@ function selectedRecipientDigestFacts(
 			facts.set(recipientKey(change.recipient), {
 				recipientKind: "identity",
 				identity,
-				devices: devicesByIdentity.get(identity.identityId) ?? [],
+				devices: digestDevices(identity.identityId),
 			});
 			continue;
 		}
 		const team = teams.get(change.recipient.teamId);
 		if (!team) continue;
-		facts.set(recipientKey(change.recipient), {
-			recipientKind: "team",
-			teamId: team.teamId,
-			displayName: team.displayName,
-			currentMembers: team.currentMembers.map((identity) => ({
-				identity,
-				devices: devicesByIdentity.get(identity.identityId) ?? [],
-			})),
-		});
+		addTeamFact(team);
+	}
+	for (const edge of desiredEdges) {
+		if (edge.recipientKind !== "team") continue;
+		const team = teams.get(edge.recipientId);
+		if (team) addTeamFact(team);
 	}
 	return [...facts.entries()]
 		.toSorted(([left], [right]) => compareText(left, right))
@@ -627,10 +818,13 @@ function buildPreview(db: Database, request: RecipientPolicyEdgePreviewRequestV1
 		};
 	});
 	const identities = loadIdentityFacts(db);
-	const teams = loadTeamFacts(db, identities);
+	const teamIdentities = loadTeamIdentityFacts(db);
 	const devices = loadDeviceFacts(db, identities);
+	const teams = loadTeamFacts(db, identities, teamIdentities, devices);
 	const recipients = selectedRecipients(request.changes, identities, teams, edgesByKey);
 	const desiredEdges = desiredActiveEdges(request.changes, edgesByKey);
+	assertDesiredTeamEligibility(desiredEdges, teams);
+	assertDesiredDirectIdentityEligibility(desiredEdges, devices);
 	const resultingDevices = effectiveDevices(desiredEdges, identities, teams, devices);
 	let addCount = 0;
 	let removeCount = 0;
@@ -665,6 +859,7 @@ function buildPreview(db: Database, request: RecipientPolicyEdgePreviewRequestV1
 		projects,
 		selectedRecipientFacts: selectedRecipientDigestFacts(
 			request.changes,
+			desiredEdges,
 			identities,
 			teams,
 			devices,
