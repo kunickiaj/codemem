@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
+import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
 
 export type RecipientPolicyAuthorityState = "legacy" | "eligible" | "active" | "rolled_back";
 
@@ -12,11 +13,34 @@ export type RecipientPolicyDerivationBlockCode =
 	| "team_missing"
 	| "team_not_active"
 	| "team_membership_invalid"
+	| "team_membership_mode_invalid"
+	| "team_device_eligibility_mode_invalid"
+	| "team_device_decision_invalid"
 	| "team_member_identity_missing"
 	| "team_member_identity_not_active"
 	| "team_member_identity_merged"
 	| "identity_device_invalid"
 	| "device_identity_conflict";
+
+// Keep first-block reporting stable and security-oriented rather than lexical.
+const DERIVATION_BLOCK_PRECEDENCE: Record<RecipientPolicyDerivationBlockCode, number> = {
+	canonical_project_identity_invalid: 0,
+	project_recipient_invalid: 1,
+	identity_missing: 2,
+	identity_merged: 3,
+	identity_not_active: 4,
+	team_missing: 5,
+	team_not_active: 6,
+	team_device_eligibility_mode_invalid: 7,
+	team_membership_invalid: 8,
+	team_membership_mode_invalid: 9,
+	team_member_identity_missing: 10,
+	team_member_identity_merged: 11,
+	team_member_identity_not_active: 12,
+	team_device_decision_invalid: 13,
+	device_identity_conflict: 14,
+	identity_device_invalid: 15,
+};
 
 export interface RecipientPolicyDerivationIdentity {
 	identityId: string;
@@ -27,6 +51,7 @@ export interface RecipientPolicyDerivationIdentity {
 export interface RecipientPolicyDerivationTeam {
 	teamId: string;
 	status: string;
+	deviceEligibilityMode?: string;
 }
 
 export interface RecipientPolicyDerivationTeamMembership {
@@ -39,6 +64,14 @@ export interface RecipientPolicyDerivationIdentityDevice {
 	identityId: string;
 	deviceId: string;
 	status: string;
+	assignmentVersion?: number;
+}
+
+export interface RecipientPolicyDerivationTeamDeviceDecision {
+	teamId: string;
+	deviceId: string;
+	decision: string;
+	assignmentVersion: number;
 }
 
 export interface RecipientPolicyDerivationProjectRecipient {
@@ -71,6 +104,7 @@ export interface DeriveRecipientPolicyEffectiveDevicesInput {
 	identities: RecipientPolicyDerivationIdentity[];
 	teams: RecipientPolicyDerivationTeam[];
 	teamMemberships: RecipientPolicyDerivationTeamMembership[];
+	teamDeviceDecisions?: RecipientPolicyDerivationTeamDeviceDecision[];
 	identityDevices: RecipientPolicyDerivationIdentityDevice[];
 }
 
@@ -207,7 +241,6 @@ export interface RecipientPolicyDenyOverlayRecord {
 }
 
 const CONTROL_CHARACTER = /\p{Cc}/u;
-const KNOWN_MEMBERSHIP_STATUSES = new Set(["active", "pending", "revoked"]);
 const KNOWN_DEVICE_STATUSES = new Set(["active", "revoked"]);
 const DEFAULT_COMPLETED_STEP_RETENTION_PER_KIND = 256;
 const MAX_PENDING_REVOCATION_REFRESH_STEPS = 64;
@@ -326,6 +359,11 @@ export function deriveRecipientPolicyEffectiveDevices(
 		block(blocked, "canonical_project_identity_invalid", input.canonicalProjectIdentity);
 	}
 	const identities = new Map(input.identities.map((identity) => [identity.identityId, identity]));
+	const eligibilityIdentities = input.identities.map((identity) => ({
+		identityId: identity.identityId,
+		status: identity.status,
+		mergedIntoIdentityId: identity.mergedIntoIdentityId ?? null,
+	}));
 	const teams = new Map(input.teams.map((team) => [team.teamId, team]));
 	const membershipsByTeam = new Map<string, RecipientPolicyDerivationTeamMembership[]>();
 	for (const membership of input.teamMemberships) {
@@ -333,12 +371,28 @@ export function deriveRecipientPolicyEffectiveDevices(
 		current.push(membership);
 		membershipsByTeam.set(membership.teamId, current);
 	}
+	const decisionsByTeam = new Map<string, RecipientPolicyDerivationTeamDeviceDecision[]>();
+	for (const decision of input.teamDeviceDecisions ?? []) {
+		const current = decisionsByTeam.get(decision.teamId) ?? [];
+		current.push(decision);
+		decisionsByTeam.set(decision.teamId, current);
+	}
 	const devicesByIdentity = new Map<string, RecipientPolicyDerivationIdentityDevice[]>();
 	for (const device of input.identityDevices) {
 		const current = devicesByIdentity.get(device.identityId) ?? [];
 		current.push(device);
 		devicesByIdentity.set(device.identityId, current);
 	}
+	const legacyEligibilityDevices = input.identityDevices.map((device) => ({
+		...device,
+		assignmentVersion: device.assignmentVersion ?? 0,
+	}));
+	const reviewedEligibilityDevices = input.identityDevices.map((device) => ({
+		...device,
+		// Reviewed access requires present assignment evidence. NaN deliberately
+		// fails the shared safe-integer validation instead of treating omission as v0.
+		assignmentVersion: device.assignmentVersion ?? Number.NaN,
+	}));
 	const effective = new Map<string, StrictRecipientPolicyEffectiveDevice>();
 	const deviceOwners = new Map<string, string>();
 	const expandIdentity = (
@@ -349,6 +403,7 @@ export function deriveRecipientPolicyEffectiveDevices(
 			RecipientPolicyDerivationBlockCode,
 			RecipientPolicyDerivationBlockCode,
 		],
+		allowedDeviceIds?: ReadonlySet<string>,
 	): void => {
 		const identityCode = activeIdentityCode(identities.get(identityId), ...codes);
 		if (identityCode) {
@@ -361,6 +416,7 @@ export function deriveRecipientPolicyEffectiveDevices(
 				continue;
 			}
 			if (device.status !== "active") continue;
+			if (allowedDeviceIds && !allowedDeviceIds.has(device.deviceId)) continue;
 			if (!strictId(device.identityId) || !strictId(device.deviceId)) {
 				block(blocked, "identity_device_invalid", device.deviceId);
 				continue;
@@ -410,26 +466,43 @@ export function deriveRecipientPolicyEffectiveDevices(
 			block(blocked, "team_not_active", recipient.recipientId);
 			continue;
 		}
-		for (const membership of membershipsByTeam.get(team.teamId) ?? []) {
-			if (!KNOWN_MEMBERSHIP_STATUSES.has(membership.status)) {
-				block(blocked, "team_membership_invalid", `${membership.teamId}:${membership.identityId}`);
-				continue;
-			}
-			if (membership.status !== "active") continue;
+		const memberships = membershipsByTeam.get(team.teamId) ?? [];
+		for (const membership of memberships) {
 			if (!strictId(membership.teamId) || !strictId(membership.identityId)) {
 				block(blocked, "team_membership_invalid", `${membership.teamId}:${membership.identityId}`);
-				continue;
 			}
-			expandIdentity(membership.identityId, { kind: "team_membership", teamId: team.teamId }, [
-				"team_member_identity_missing",
-				"team_member_identity_not_active",
-				"team_member_identity_merged",
-			]);
+		}
+		const eligibility = derivePolicyTeamDeviceEligibility({
+			teamId: team.teamId,
+			mode: team.deviceEligibilityMode ?? "person_all_devices",
+			memberships,
+			identities: eligibilityIdentities,
+			devices:
+				team.deviceEligibilityMode === "reviewed_allowlist"
+					? reviewedEligibilityDevices
+					: legacyEligibilityDevices,
+			decisions: decisionsByTeam.get(team.teamId) ?? [],
+		});
+		for (const item of eligibility.blocked) block(blocked, item.code, item.referenceId);
+		if (eligibility.status === "blocked") continue;
+		const eligibleDeviceIds = new Set(eligibility.eligibleDeviceIds);
+		for (const identityId of eligibility.activeMemberIdentityIds) {
+			expandIdentity(
+				identityId,
+				{ kind: "team_membership", teamId: team.teamId },
+				[
+					"team_member_identity_missing",
+					"team_member_identity_not_active",
+					"team_member_identity_merged",
+				],
+				eligibleDeviceIds,
+			);
 		}
 	}
 	const blockedItems = [...blocked.values()].toSorted(
 		(left, right) =>
-			compareText(left.code, right.code) || compareText(left.referenceId, right.referenceId),
+			DERIVATION_BLOCK_PRECEDENCE[left.code] - DERIVATION_BLOCK_PRECEDENCE[right.code] ||
+			compareText(left.referenceId, right.referenceId),
 	);
 	const devices = [...effective.values()].toSorted(
 		(left, right) =>
@@ -465,10 +538,11 @@ export function deriveRecipientPolicyEffectiveDevicesFromDatabase(
 		.prepare("SELECT actor_id, status, merged_into_actor_id FROM actors ORDER BY actor_id")
 		.all() as Array<{ actor_id: string; status: string; merged_into_actor_id: string | null }>;
 	const teams = db
-		.prepare("SELECT team_id, status FROM policy_teams ORDER BY team_id")
+		.prepare("SELECT team_id, status, device_eligibility_mode FROM policy_teams ORDER BY team_id")
 		.all() as Array<{
 		team_id: string;
 		status: string;
+		device_eligibility_mode: string;
 	}>;
 	const teamMemberships = db
 		.prepare(
@@ -477,9 +551,24 @@ export function deriveRecipientPolicyEffectiveDevicesFromDatabase(
 		.all() as Array<{ team_id: string; identity_id: string; status: string }>;
 	const identityDevices = db
 		.prepare(
-			"SELECT identity_id, device_id, status FROM identity_devices ORDER BY identity_id, device_id",
+			"SELECT identity_id, device_id, status, assignment_version FROM identity_devices ORDER BY identity_id, device_id",
 		)
-		.all() as Array<{ identity_id: string; device_id: string; status: string }>;
+		.all() as Array<{
+		identity_id: string;
+		device_id: string;
+		status: string;
+		assignment_version: number;
+	}>;
+	const teamDeviceDecisions = db
+		.prepare(
+			"SELECT team_id, device_id, decision, assignment_version FROM policy_team_device_decisions ORDER BY team_id, device_id",
+		)
+		.all() as Array<{
+		team_id: string;
+		device_id: string;
+		decision: string;
+		assignment_version: number;
+	}>;
 	return deriveRecipientPolicyEffectiveDevices({
 		canonicalProjectIdentity,
 		projectRecipients: projectRecipients.map((row) => ({
@@ -493,16 +582,27 @@ export function deriveRecipientPolicyEffectiveDevicesFromDatabase(
 			status: row.status,
 			mergedIntoIdentityId: row.merged_into_actor_id,
 		})),
-		teams: teams.map((row) => ({ teamId: row.team_id, status: row.status })),
+		teams: teams.map((row) => ({
+			teamId: row.team_id,
+			status: row.status,
+			deviceEligibilityMode: row.device_eligibility_mode,
+		})),
 		teamMemberships: teamMemberships.map((row) => ({
 			teamId: row.team_id,
 			identityId: row.identity_id,
 			status: row.status,
 		})),
+		teamDeviceDecisions: teamDeviceDecisions.map((row) => ({
+			teamId: row.team_id,
+			deviceId: row.device_id,
+			decision: row.decision,
+			assignmentVersion: row.assignment_version,
+		})),
 		identityDevices: identityDevices.map((row) => ({
 			identityId: row.identity_id,
 			deviceId: row.device_id,
 			status: row.status,
+			assignmentVersion: row.assignment_version,
 		})),
 	});
 }

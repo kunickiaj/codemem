@@ -122,7 +122,8 @@ discovered device again once the row refreshes.
 For the normal teammate workflow, share exact Projects in **Sharing**, then inspect **Devices** and **Health**:
 
 - the device has an owning **Identity**
-- each Project is labeled **Direct** or **Team** inheritance
+- Projects shared directly appear in **Devices** under **Direct Projects**
+- Team recipient intent appears in **Sharing**; authoritative per-device Team eligibility remains in Team policy administration
 - an unavailable device is **Waiting**, not failed
 - **Needs attention** means a terminal setup failure and exposes a retry action
 
@@ -188,7 +189,7 @@ Treat the Linux/Node path as validated only when all of this is true:
 - teammate can import the invite successfully
 - devices appear in coordinator discovery
 - discovered device can be accepted into `sync_peers`
-- Devices shows the owning Identity and Direct/Team Project inheritance
+- Devices shows the owning Identity and direct Project access; Sharing shows Team inheritance
 - Health distinguishes waiting from needs-attention recovery
 - a direct sync run is triggered successfully
 - data actually replicates between devices

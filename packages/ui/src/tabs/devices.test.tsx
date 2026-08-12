@@ -142,7 +142,7 @@ describe("read-only Devices", () => {
 		document.body.innerHTML = "";
 	});
 
-	it("purely projects active devices with direct and Team-inherited Projects", () => {
+	it("projects direct access without inferring per-device Team access from membership intent", () => {
 		const graph = intent();
 		const before = JSON.stringify(graph);
 
@@ -156,16 +156,49 @@ describe("read-only Devices", () => {
 			displayName: "Work Laptop",
 			identityName: "Adam & Co",
 			availabilityLabel: "Available",
-			statusState: "needs_attention",
-			action: { label: "Review sharing", target: "sharing" },
+			statusState: "active",
+			action: null,
 		});
 		expect(result.devices[0]?.directProjects.map((project) => project.displayName)).toEqual([
 			"API",
 		]);
-		expect(result.devices[0]?.inheritedProjects).toMatchObject([
-			{ displayName: "Codemem", teamNames: ["Platform Team"] },
-		]);
+		expect(result.devices[0]?.inheritedProjects).toEqual([]);
 		expect(JSON.stringify(graph)).toBe(before);
+	});
+
+	it("does not suggest per-device access through Team membership intent", () => {
+		const graph = intent({
+			projectRecipients: intent().projectRecipients.filter(
+				(recipient) => recipient.recipientKind === "team",
+			),
+		});
+
+		const result = projectDevices(graph, reconciliation(), projects, [
+			{ deviceId: "device-address-fingerprint-secret", state: "available" },
+		]);
+
+		expect(result.devices[0]).toMatchObject({
+			statusLabel: "No directly shared Projects",
+			statusCopy: "Team access is not shown here without authoritative per-device eligibility.",
+			action: null,
+		});
+	});
+
+	it("preserves the health action for unavailable devices with Team membership intent", () => {
+		const graph = intent({
+			projectRecipients: intent().projectRecipients.filter(
+				(recipient) => recipient.recipientKind === "team",
+			),
+		});
+
+		const result = projectDevices(graph, reconciliation(), projects, [
+			{ deviceId: "device-address-fingerprint-secret", state: "offline" },
+		]);
+
+		expect(result.devices[0]?.action).toEqual({
+			label: "Check device health",
+			target: "health",
+		});
 	});
 
 	it("excludes devices owned by pending or merged Identities", () => {
@@ -224,7 +257,7 @@ describe("read-only Devices", () => {
 		expect(result.revokedDeviceCount).toBe(1);
 	});
 
-	it("renders friendly semantic cards, safe copy, one contextual action, and revoked summary", () => {
+	it("renders friendly semantic cards, safe copy, and revoked summary", () => {
 		const onNavigate = vi.fn();
 		mount(intent(), reconciliation(), { onNavigate });
 
@@ -241,14 +274,12 @@ describe("read-only Devices", () => {
 		expect(article.textContent).toContain("Owning IdentityAdam & Co");
 		expect(article.textContent).toContain("Direct Projects");
 		expect(article.textContent).toContain("API — Up to date");
-		expect(article.textContent).toContain("Codemem through Platform Team");
-		expect(article.textContent).toContain("Changing access stops future delivery");
-		expect(article.querySelectorAll("button")).toHaveLength(1);
-		expect(article.querySelector("button")?.classList).toContain(
-			"recipient-policy-sharing-target-24",
+		expect(article.textContent).toContain(
+			"Per-device Team access is not shown because Team membership alone does not prove this device receives the Team’s Projects.",
 		);
-		act(() => (article.querySelector("button") as HTMLButtonElement).click());
-		expect(onNavigate).toHaveBeenCalledWith("sharing");
+		expect(article.textContent).toContain("Changing access stops future delivery");
+		expect(article.querySelectorAll("button")).toHaveLength(0);
+		expect(onNavigate).not.toHaveBeenCalled();
 		expect(document.body.textContent).toContain("1 revoked device is not included");
 	});
 
@@ -306,7 +337,18 @@ describe("read-only Devices", () => {
 					},
 				],
 			}),
-			reconciliation(),
+			reconciliation({
+				items: reconciliation().items.map((item) =>
+					item.canonicalProjectIdentity === "project-direct-filter-id"
+						? {
+								...item,
+								state: "needs_attention",
+								label: "Needs attention",
+								explanation: "Current access remains in place until it is safe to retry.",
+							}
+						: item,
+				),
+			}),
 			{ onNavigate: vi.fn() },
 		);
 

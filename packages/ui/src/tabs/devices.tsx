@@ -26,8 +26,8 @@ export interface DevicesRendererOptions {
 }
 
 export interface DeviceProjectProjection {
+	canonicalProjectIdentity: string;
 	displayName: string;
-	teamNames: string[];
 	state: RecipientPolicyReconciliationReadState;
 	statusLabel: string;
 	statusCopy: string;
@@ -124,11 +124,6 @@ export function projectDevices(
 			.filter((item) => item.status === "active" && item.mergedIntoIdentityId === null)
 			.map((item) => [item.identityId, item.displayName]),
 	);
-	const teamNames = new Map(
-		intent.teams
-			.filter((item) => item.status === "active")
-			.map((item) => [item.teamId, item.displayName]),
-	);
 	const projectNames = new Map(
 		projects.map((item) => [item.canonicalProjectIdentity, item.displayName]),
 	);
@@ -140,16 +135,6 @@ export function projectDevices(
 	const devices = intent.identityDevices
 		.filter((device) => device.status === "active" && identityNames.has(device.identityId))
 		.map((device): DeviceProjection => {
-			const activeTeamIds = new Set(
-				intent.teamMemberships
-					.filter(
-						(item) =>
-							item.status === "active" &&
-							item.identityId === device.identityId &&
-							teamNames.has(item.teamId),
-					)
-					.map((item) => item.teamId),
-			);
 			const directProjectIds = uniqueSorted(
 				intent.projectRecipients
 					.filter(
@@ -160,31 +145,13 @@ export function projectDevices(
 					)
 					.map((item) => item.canonicalProjectIdentity),
 			);
-			const inheritedTeamIdsByProject = new Map<string, Set<string>>();
-			for (const edge of intent.projectRecipients) {
-				if (
-					edge.status !== "active" ||
-					edge.recipientKind !== "team" ||
-					!activeTeamIds.has(edge.teamId)
-				) {
-					continue;
-				}
-				const ids = inheritedTeamIdsByProject.get(edge.canonicalProjectIdentity) ?? new Set();
-				ids.add(edge.teamId);
-				inheritedTeamIdsByProject.set(edge.canonicalProjectIdentity, ids);
-			}
-			const toProject = (projectId: string, inheritedTeamIds: Iterable<string> = []) => {
+			const toProject = (projectId: string) => {
 				const displayName = projectNames.get(projectId);
 				if (!displayName) return null;
 				const status = projectStatus(projectId, statuses);
 				return {
+					canonicalProjectIdentity: projectId,
 					displayName,
-					teamNames: uniqueSorted(
-						[...inheritedTeamIds].flatMap((teamId) => {
-							const name = teamNames.get(teamId);
-							return name ? [name] : [];
-						}),
-					),
 					state: status.state,
 					statusLabel: status.label,
 					statusCopy: status.explanation,
@@ -195,12 +162,9 @@ export function projectDevices(
 				const project = toProject(projectId);
 				return project ? [project] : [];
 			});
-			const inheritedProjects = uniqueSorted(inheritedTeamIdsByProject.keys()).flatMap(
-				(projectId) => {
-					const project = toProject(projectId, inheritedTeamIdsByProject.get(projectId));
-					return project ? [project] : [];
-				},
-			);
+			// Team eligibility is intentionally absent until this surface receives
+			// authoritative effective-device facts rather than membership intent.
+			const inheritedProjects: DeviceProjectProjection[] = [];
 			const allProjects = [...directProjects, ...inheritedProjects];
 			const status = overallStatus(allProjects);
 			const deviceAvailability = availability.get(device.deviceId) ?? "unknown";
@@ -212,11 +176,12 @@ export function projectDevices(
 				availabilityLabel: AVAILABILITY_LABELS[deviceAvailability],
 				directProjects,
 				inheritedProjects,
-				unavailableProjectCount:
-					directProjectIds.length + inheritedTeamIdsByProject.size - allProjects.length,
+				unavailableProjectCount: directProjectIds.length - directProjects.length,
 				statusState: status?.state ?? "no_projects",
-				statusLabel: status?.statusLabel ?? "No shared Projects",
-				statusCopy: status?.statusCopy ?? "This device has no current Project access.",
+				statusLabel: status?.statusLabel ?? "No directly shared Projects",
+				statusCopy:
+					status?.statusCopy ??
+					"Team access is not shown here without authoritative per-device eligibility.",
 				deliveredCopiesMayRemain: allProjects.some((project) => project.deliveredCopiesMayRemain),
 				action: actionForDevice(deviceAvailability, status?.state ?? "no_projects"),
 			};
@@ -239,9 +204,8 @@ function ProjectList({ empty, projects }: { empty: string; projects: DeviceProje
 	return (
 		<ul>
 			{projects.map((project) => (
-				<li key={`${project.displayName}:${project.teamNames.join(":")}`}>
+				<li key={project.canonicalProjectIdentity}>
 					<strong>{project.displayName}</strong>
-					{project.teamNames.length ? ` through ${project.teamNames.join(", ")}` : ""}
 					<span className="small">
 						{" "}
 						— {project.statusLabel}. {project.statusCopy}
@@ -334,7 +298,7 @@ function DevicesView({
 								<section aria-labelledby={`${titleId}-teams`}>
 									<h4 id={`${titleId}-teams`}>Projects through Teams</h4>
 									<ProjectList
-										empty="No Projects are inherited through Teams."
+										empty="Per-device Team access is not shown because Team membership alone does not prove this device receives the Team’s Projects."
 										projects={device.inheritedProjects}
 									/>
 								</section>

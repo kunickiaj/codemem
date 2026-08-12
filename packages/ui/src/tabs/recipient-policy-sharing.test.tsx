@@ -274,7 +274,7 @@ describe("recipient-focused Sharing", () => {
 		expect(text).not.toContain("Old Team");
 	});
 
-	it("separates direct Identity Projects from Projects inherited through active Teams", () => {
+	it("does not infer per-Identity Team access from membership intent", () => {
 		mount();
 		clickTab("Identities");
 		const adamCard = document.querySelector<HTMLElement>(".recipient-policy-sharing-identity-card");
@@ -284,8 +284,10 @@ describe("recipient-focused Sharing", () => {
 		expect(text).toContain("1 active registered device — Adam’s Mac");
 		expect(text).toContain("1 active Team membership — ExampleCo");
 		expect(text).toContain("1 directly shared active Project — API");
-		expect(text).toContain("1 Team-inherited Project — Codemem");
-		expect(text).toContain("not direct Identity shares");
+		expect(text).toContain("Team Projects are shown on Team cards");
+		expect(text).toContain("per-device eligibility cannot be inferred");
+		expect(text).not.toContain("Team-inherited Project");
+		expect(text).not.toContain("Codemem");
 		expect(text).not.toContain("directly shared active Project — Codemem");
 	});
 

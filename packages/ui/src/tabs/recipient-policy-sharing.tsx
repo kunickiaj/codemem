@@ -246,17 +246,6 @@ function IdentitiesView({
 						.map((edge) => edge.canonicalProjectIdentity),
 					projectsById,
 				);
-				const inheritedProjectNames = activeProjectNames(
-					intent.projectRecipients
-						.filter(
-							(edge) =>
-								edge.status === "active" &&
-								edge.recipientKind === "team" &&
-								teamIds.includes(edge.teamId),
-						)
-						.map((edge) => edge.canonicalProjectIdentity),
-					projectsById,
-				);
 				const titleId = `recipient-policy-sharing-identity-title-${index}`;
 				const addDescriptionId = `recipient-policy-sharing-identity-add-description-${index}`;
 				return (
@@ -298,16 +287,10 @@ function IdentitiesView({
 									{namesLabel(directProjectNames, "No Projects shared directly")}
 								</dd>
 							</div>
-							<div>
-								<dt>Projects through Teams</dt>
-								<dd>
-									{countLabel(inheritedProjectNames.length, "Team-inherited Project")} —{` `}
-									{namesLabel(inheritedProjectNames, "No Projects inherited through Teams")}
-								</dd>
-							</div>
 						</dl>
 						<p className="small">
-							Projects through Teams are shown separately and are not direct Identity shares.
+							Team Projects are shown on Team cards because per-device eligibility cannot be
+							inferred from Identity membership alone.
 						</p>
 						<RecipientActions
 							descriptionId={addDescriptionId}

@@ -225,7 +225,7 @@ The recipient accepts on the new device. Codemem links it to the same Identity, 
 
 ### Devices, status, and recovery
 
-**Devices** is a read-only view of where Project access can arrive. Each device shows its **Owning Identity**. Projects are labeled **Direct** when shared with that Identity and **Team** when inherited through a Team policy; both are limited to exact canonical Projects selected in Sharing.
+**Devices** is a read-only view of registered devices and Projects shared directly with their **Owning Identity**. It does not infer per-device Team access from Identity membership; use Team policy administration when you need to review authoritative device decisions. Both direct and Team access remain limited to exact canonical Projects selected in Sharing.
 
 **Availability** tells you whether the device can currently receive work. It does not change ownership or Project access:
 

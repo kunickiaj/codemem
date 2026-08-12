@@ -1,4 +1,5 @@
 import type { Database } from "./db.js";
+import { isPolicyTeamMembershipActiveForMode } from "./policy-team-device-eligibility.js";
 import {
 	RECIPIENT_POLICY_CONTRACT_VERSION,
 	type RecipientPolicyContractVersion,
@@ -19,7 +20,21 @@ export interface RecipientPolicyIntentGraphV1 {
 }
 
 function identityStatus(value: string): RecipientPolicyIdentityV1["status"] {
-	return value === "pending" || value === "merged" ? value : "active";
+	if (value === "active" || value === "pending" || value === "merged") return value;
+	return "pending";
+}
+
+function teamStatus(value: string): RecipientPolicyTeamV1["status"] {
+	return value === "active" ? "active" : "archived";
+}
+
+function membershipStatus(
+	value: string,
+	deviceEligibilityMode: string,
+): RecipientPolicyTeamMembershipV1["status"] {
+	if (value === "pending" || value === "revoked") return value;
+	if (isPolicyTeamMembershipActiveForMode(deviceEligibilityMode, value)) return "active";
+	return "revoked";
 }
 
 export function listRecipientPolicyIntent(db: Database): RecipientPolicyIntentGraphV1 {
@@ -38,7 +53,7 @@ export function listRecipientPolicyIntent(db: Database): RecipientPolicyIntentGr
 				displayName: String(value.display_name ?? ""),
 				kind: "other",
 				verification: "local",
-				status: identityStatus(String(value.status ?? "active")),
+				status: identityStatus(String(value.status ?? "")),
 				mergedIntoIdentityId:
 					typeof value.merged_into_actor_id === "string" && value.merged_into_actor_id
 						? value.merged_into_actor_id
@@ -56,24 +71,29 @@ export function listRecipientPolicyIntent(db: Database): RecipientPolicyIntentGr
 				version: RECIPIENT_POLICY_CONTRACT_VERSION,
 				teamId: String(value.team_id ?? ""),
 				displayName: String(value.display_name ?? ""),
-				status: value.status === "archived" ? "archived" : "active",
+				status: teamStatus(String(value.status ?? "")),
 			};
 		});
 	const teamMemberships = db
 		.prepare(
-			`SELECT team_id, identity_id, role, status FROM policy_team_memberships
-			 ORDER BY team_id, identity_id`,
+			`SELECT membership.team_id, membership.identity_id, membership.role, membership.status,
+				team.device_eligibility_mode
+			 FROM policy_team_memberships membership
+			 LEFT JOIN policy_teams team ON team.team_id = membership.team_id
+			 ORDER BY membership.team_id, membership.identity_id`,
 		)
 		.all()
 		.map((row): RecipientPolicyTeamMembershipV1 => {
 			const value = row as Record<string, unknown>;
-			const status = String(value.status ?? "active");
 			return {
 				version: RECIPIENT_POLICY_CONTRACT_VERSION,
 				teamId: String(value.team_id ?? ""),
 				identityId: String(value.identity_id ?? ""),
 				role: value.role === "admin" ? "admin" : "member",
-				status: status === "pending" || status === "revoked" ? status : "active",
+				status: membershipStatus(
+					String(value.status ?? ""),
+					String(value.device_eligibility_mode ?? ""),
+				),
 			};
 		});
 	const identityDevices = db
@@ -89,7 +109,7 @@ export function listRecipientPolicyIntent(db: Database): RecipientPolicyIntentGr
 				identityId: String(value.identity_id ?? ""),
 				deviceId: String(value.device_id ?? ""),
 				displayName: String(value.display_name ?? ""),
-				status: value.status === "revoked" ? "revoked" : "active",
+				status: value.status === "active" ? "active" : "revoked",
 			};
 		});
 	const projectRecipients = db
@@ -112,7 +132,7 @@ export function listRecipientPolicyIntent(db: Database): RecipientPolicyIntentGr
 							? ("legacy_project_invite" as const)
 							: ("migration" as const),
 				policyRevision: String(value.policy_revision ?? ""),
-				status: value.status === "revoked" ? ("revoked" as const) : ("active" as const),
+				status: value.status === "active" ? ("active" as const) : ("revoked" as const),
 			};
 			return value.recipient_kind === "team"
 				? { ...base, recipientKind: "team", teamId: String(value.recipient_id ?? "") }

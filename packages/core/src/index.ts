@@ -551,6 +551,26 @@ export {
 	buildMemoryPackWithTraceAsync,
 	estimateTokens,
 } from "./pack.js";
+export type {
+	BlockedPolicyTeamDeviceEligibilityResult,
+	DerivePolicyTeamDeviceEligibilityInput,
+	EligiblePolicyTeamDeviceEligibilityResult,
+	PolicyTeamDeviceDecision,
+	PolicyTeamDeviceEligibilityBlock,
+	PolicyTeamDeviceEligibilityBlockCode,
+	PolicyTeamDeviceEligibilityDecision,
+	PolicyTeamDeviceEligibilityDevice,
+	PolicyTeamDeviceEligibilityIdentity,
+	PolicyTeamDeviceEligibilityMembership,
+	PolicyTeamDeviceEligibilityMode,
+	PolicyTeamDeviceEligibilityResult,
+} from "./policy-team-device-eligibility.js";
+export {
+	derivePolicyTeamDeviceEligibility,
+	isPolicyTeamMembershipActiveForMode,
+	POLICY_TEAM_DEVICE_DECISIONS,
+	POLICY_TEAM_DEVICE_ELIGIBILITY_MODES,
+} from "./policy-team-device-eligibility.js";
 export {
 	projectBasename,
 	projectClause,
@@ -710,6 +730,7 @@ export type {
 	RecipientPolicyDerivationIdentityDevice,
 	RecipientPolicyDerivationProjectRecipient,
 	RecipientPolicyDerivationTeam,
+	RecipientPolicyDerivationTeamDeviceDecision,
 	RecipientPolicyDerivationTeamMembership,
 	RecipientPolicyEffectiveDeviceSource,
 	RecipientPolicyReconciliationStepRecord,
@@ -786,6 +807,7 @@ export type {
 	NewIdentityDevice,
 	NewMaintenanceJob,
 	NewPolicyTeam,
+	NewPolicyTeamDeviceDecisionRow,
 	NewPolicyTeamMembership,
 	NewProjectRecipient,
 	NewRecipientPolicyAuthorityStateRow,
@@ -793,6 +815,7 @@ export type {
 	NewRecipientPolicyReconciliationStep,
 	NewRecipientPolicyReviewResolution,
 	PolicyTeam,
+	PolicyTeamDeviceDecisionRow,
 	PolicyTeamMembership,
 	ProjectRecipient,
 	RecipientPolicyAuthorityStateRow,

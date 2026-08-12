@@ -158,6 +158,11 @@ describe("recipient policy V1 contract", () => {
 	});
 
 	it("keeps authorization shortcuts out of recipient intent", () => {
+		type ForbiddenTeamKey = Extract<
+			keyof RecipientPolicyTeamV1,
+			"deviceEligibilityMode" | "deviceDecisions"
+		>;
+		expectTypeOf<ForbiddenTeamKey>().toEqualTypeOf<never>();
 		type ForbiddenIntentKey = Extract<
 			keyof RecipientPolicyProjectRecipientV1,
 			"scopeId" | "deviceId" | "trusted" | "projectFilters"

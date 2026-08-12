@@ -44,11 +44,18 @@ function graph(): DeriveRecipientPolicyEffectiveDevicesInput {
 			{ identityId: "identity-a", status: "active", mergedIntoIdentityId: null },
 			{ identityId: "identity-b", status: "active", mergedIntoIdentityId: null },
 		],
-		teams: [{ teamId: "team-a", status: "active" }],
+		teams: [
+			{
+				teamId: "team-a",
+				status: "active",
+				deviceEligibilityMode: "person_all_devices",
+			},
+		],
 		teamMemberships: [{ teamId: "team-a", identityId: "identity-b", status: "active" }],
+		teamDeviceDecisions: [],
 		identityDevices: [
-			{ identityId: "identity-a", deviceId: "device-a", status: "active" },
-			{ identityId: "identity-b", deviceId: "device-b", status: "active" },
+			{ identityId: "identity-a", deviceId: "device-a", status: "active", assignmentVersion: 0 },
+			{ identityId: "identity-b", deviceId: "device-b", status: "active", assignmentVersion: 0 },
 		],
 	};
 }
@@ -72,6 +79,27 @@ describe("strict recipient-policy effective-device derivation", () => {
 				sources: [{ kind: "team_membership", teamId: "team-a" }],
 			},
 		]);
+	});
+
+	it("preserves the public input shape when Team decisions are omitted", () => {
+		const input = graph();
+		delete input.teamDeviceDecisions;
+
+		const result = deriveRecipientPolicyEffectiveDevices(input);
+
+		expect(result.status).toBe("eligible");
+		expect(result.devices.map((device) => device.deviceId)).toEqual(["device-a", "device-b"]);
+	});
+
+	it("preserves legacy Team inputs without eligibility mode or assignment versions", () => {
+		const input = graph();
+		delete input.teams[0]?.deviceEligibilityMode;
+		for (const device of input.identityDevices) delete device.assignmentVersion;
+
+		const result = deriveRecipientPolicyEffectiveDevices(input);
+
+		expect(result.status).toBe("eligible");
+		expect(result.devices.map((device) => device.deviceId)).toEqual(["device-a", "device-b"]);
 	});
 
 	it("deduplicates an exact device reached directly and through a team", () => {
@@ -138,6 +166,122 @@ describe("strict recipient-policy effective-device derivation", () => {
 
 		expect(result.status).toBe("eligible");
 		expect(result.devices.map((device) => device.deviceId)).toEqual(["device-a", "device-b"]);
+	});
+
+	it("applies reviewed Team decisions without narrowing direct recipients", () => {
+		const input = graph();
+		input.teams[0] = {
+			teamId: "team-a",
+			status: "active",
+			deviceEligibilityMode: "reviewed_allowlist",
+		};
+		input.teamMemberships[0] = {
+			teamId: "team-a",
+			identityId: "identity-b",
+			status: "reviewed_active",
+		};
+		input.teamMemberships.push({
+			teamId: "team-a",
+			identityId: "identity-a",
+			status: "reviewed_active",
+		});
+		input.teamDeviceDecisions = [
+			{ teamId: "team-a", deviceId: "device-a", decision: "excluded", assignmentVersion: 0 },
+			{ teamId: "team-a", deviceId: "device-b", decision: "excluded", assignmentVersion: 0 },
+		];
+
+		const result = deriveRecipientPolicyEffectiveDevices(input);
+
+		expect(result.status).toBe("eligible");
+		expect(result.devices.map((device) => device.deviceId)).toEqual(["device-a"]);
+		expect(result.devices[0]?.sources).toEqual([{ kind: "direct_identity" }]);
+	});
+
+	it.each([
+		["future_mode", "active", "included", "team_device_eligibility_mode_invalid"],
+		["person_all_devices", "reviewed_active", "included", "team_membership_mode_invalid"],
+		["reviewed_allowlist", "reviewed_active", "future_decision", "team_device_decision_invalid"],
+	] as const)("blocks invalid Team eligibility state (%s)", (mode, membershipStatus, decision, code) => {
+		const input = graph();
+		input.teams[0] = {
+			teamId: "team-a",
+			status: "active",
+			deviceEligibilityMode: mode,
+		};
+		input.teamMemberships[0] = {
+			teamId: "team-a",
+			identityId: "identity-b",
+			status: membershipStatus,
+		};
+		input.teamDeviceDecisions = [
+			{ teamId: "team-a", deviceId: "device-b", decision, assignmentVersion: 0 },
+		];
+
+		const result = deriveRecipientPolicyEffectiveDevices(input);
+
+		expect(result.status).toBe("blocked");
+		expect(result.devices).toEqual([]);
+		expect(result.blocked).toContainEqual(expect.objectContaining({ code }));
+	});
+
+	it("does not authorize a reviewed Team device with a stale assignment decision", () => {
+		const input = graph();
+		input.projectRecipients = input.projectRecipients.filter(
+			(recipient) => recipient.recipientKind !== "identity",
+		);
+		input.teams[0] = {
+			teamId: "team-a",
+			status: "active",
+			deviceEligibilityMode: "reviewed_allowlist",
+		};
+		input.teamMemberships[0] = {
+			teamId: "team-a",
+			identityId: "identity-b",
+			status: "reviewed_active",
+		};
+		input.identityDevices[1] = {
+			identityId: "identity-b",
+			deviceId: "device-b",
+			status: "active",
+			assignmentVersion: 1,
+		};
+		input.teamDeviceDecisions = [
+			{ teamId: "team-a", deviceId: "device-b", decision: "included", assignmentVersion: 0 },
+		];
+
+		const result = deriveRecipientPolicyEffectiveDevices(input);
+
+		expect(result).toMatchObject({ status: "eligible", devices: [], blocked: [] });
+	});
+
+	it("blocks a reviewed Team device when its assignment version is omitted", () => {
+		const input = graph();
+		input.projectRecipients = input.projectRecipients.filter(
+			(recipient) => recipient.recipientKind !== "identity",
+		);
+		input.teams[0] = {
+			teamId: "team-a",
+			status: "active",
+			deviceEligibilityMode: "reviewed_allowlist",
+		};
+		input.teamMemberships[0] = {
+			teamId: "team-a",
+			identityId: "identity-b",
+			status: "reviewed_active",
+		};
+		delete input.identityDevices[1]?.assignmentVersion;
+		input.teamDeviceDecisions = [
+			{ teamId: "team-a", deviceId: "device-b", decision: "included", assignmentVersion: 0 },
+		];
+
+		const result = deriveRecipientPolicyEffectiveDevices(input);
+
+		expect(result.status).toBe("blocked");
+		expect(result.devices).toEqual([]);
+		expect(result.blocked).toContainEqual({
+			code: "identity_device_invalid",
+			referenceId: "device-b",
+		});
 	});
 });
 

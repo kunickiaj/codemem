@@ -12,7 +12,7 @@ If you want the fastest clean validation path, use [the coordinator E2E runbook]
 
 - It enrolls devices in a coordinator group and advertises fresh peer addresses.
 - It does **not** grant a Project, create a direct peer relationship, or relay memory payloads.
-- Project access comes from **Sharing**. In **Devices**, delivery is shown as **Direct** or **Team** inheritance; **Health** distinguishes waiting from needs-attention recovery.
+- **Sharing** manages Project recipients, while authoritative Team policy determines which member devices are eligible. **Devices** shows registered devices and direct Project access without inferring Team access from membership; **Health** distinguishes waiting from needs-attention recovery.
 - Removing Project access stops future delivery but cannot erase a copy already delivered to a device.
 
 Use the controls below only when you operate a coordinator, diagnose compatibility, or maintain an existing integration. Internal identifiers, fingerprints, addresses, scopes/grants, filters, epochs, and cursors belong in this operator surface—not the normal sharing workflow.
