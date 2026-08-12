@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listRecipientPolicyIntent } from "./recipient-policy-intent.js";
 import {
 	commitDirectProjectSharePolicyInTransaction,
@@ -10,6 +10,7 @@ import {
 	type RecipientPolicyOnboardingPreviewRequestV1,
 	type RecipientPolicyReviewedIntentPreviewRequestV1,
 } from "./recipient-policy-onboarding.js";
+import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-policy-reconciliation.js";
 import type { RecipientReviewedIntentV1 } from "./recipient-reviewed-intent.js";
 import { managedProjectScopeId } from "./share-operation.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -908,6 +909,388 @@ describe("recipient-policy onboarding", () => {
 		]);
 		expect(addDevice.excludedProjects.map((project) => project.canonicalProjectIdentity)).toEqual([
 			PROJECT_C,
+		]);
+	});
+
+	it("does not preview Team inheritance for a revoked existing binding device", () => {
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 identity_id, device_id, display_name, status, provenance, revision,
+			 migration_state, idempotency_key, created_at, updated_at
+			 ) VALUES ('identity-a', 'device-new', 'Old laptop', 'revoked', 'user',
+			 'revision-device-new', 'user_managed', 'key-device-new', ?, ?)`,
+		).run(NOW, NOW);
+
+		const preview = previewRecipientPolicyOnboarding(db, baseRequest());
+
+		expect(preview.projects).toEqual([
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_B,
+				sources: [{ kind: "direct" }],
+			}),
+		]);
+		expect(preview.projects.some((project) => project.canonicalProjectIdentity === PROJECT_A)).toBe(
+			false,
+		);
+	});
+
+	it("does not preview reviewed Team inheritance for a revoked existing binding device", () => {
+		db.prepare(
+			"UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist' WHERE team_id = 'team-a'",
+		).run();
+		db.prepare(
+			`UPDATE policy_team_memberships SET status = 'reviewed_active'
+			 WHERE team_id = 'team-a' AND identity_id = 'identity-a'`,
+		).run();
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 identity_id, device_id, display_name, status, provenance, revision,
+			 migration_state, idempotency_key, created_at, updated_at
+			 ) VALUES ('identity-a', 'device-new', 'Old laptop', 'revoked', 'user',
+			 'revision-device-new', 'user_managed', 'key-device-new', ?, ?)`,
+		).run(NOW, NOW);
+		db.prepare(
+			`INSERT INTO policy_team_device_decisions(
+			 team_id, device_id, decision, assignment_version, provenance, revision,
+			 created_at, updated_at
+			 ) VALUES ('team-a', 'device-new', 'included', 0, 'reviewed_setup',
+			 'revision-device-new', ?, ?)`,
+		).run(NOW, NOW);
+
+		const preview = previewRecipientPolicyOnboarding(db, baseRequest());
+
+		expect(preview.projects).toEqual([
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_B,
+				sources: [{ kind: "direct" }],
+			}),
+		]);
+	});
+
+	it("loads inherited Team eligibility with a fixed number of queries", () => {
+		const previewWithQueryCount = () => {
+			const prepareSpy = vi.spyOn(db, "prepare");
+			try {
+				const preview = previewRecipientPolicyOnboarding(db, baseRequest());
+				return { preview, queryCount: prepareSpy.mock.calls.length };
+			} finally {
+				prepareSpy.mockRestore();
+			}
+		};
+		const baseline = previewWithQueryCount();
+		for (let index = 0; index < 20; index += 1) {
+			const teamId = `team-scale-${index}`;
+			insertTeam(db, teamId, `Scale Team ${index}`);
+			insertMembership(db, teamId, "identity-a");
+			insertRecipient(db, PROJECT_A, "team", teamId);
+		}
+
+		const scaled = previewWithQueryCount();
+		expect(baseline.queryCount).toBeGreaterThan(0);
+		expect(scaled.queryCount).toBe(baseline.queryCount);
+		expect(
+			scaled.preview.projects
+				.find((project) => project.canonicalProjectIdentity === PROJECT_A)
+				?.sources.filter((source) => source.kind === "team"),
+		).toHaveLength(21);
+	});
+
+	it("uses the recipient lookup index for inherited Team eligibility", () => {
+		const plan = db
+			.prepare(
+				`EXPLAIN QUERY PLAN
+				 SELECT pr.canonical_project_identity
+				 FROM policy_team_memberships tm
+				 JOIN policy_teams pt ON pt.team_id = tm.team_id AND pt.status = 'active'
+				 JOIN project_recipients pr ON pr.recipient_kind = 'team'
+				  AND pr.recipient_id = tm.team_id AND pr.status = 'active'
+				 WHERE tm.identity_id = ?
+				 ORDER BY pr.canonical_project_identity, pt.team_id`,
+			)
+			.all("identity-a") as Array<{ detail: string }>;
+
+		expect(plan.some((row) => row.detail.includes("idx_project_recipients_recipient_status"))).toBe(
+			true,
+		);
+		expect(plan.some((row) => /^SCAN\b.*\bpr\b/.test(row.detail))).toBe(false);
+	});
+
+	it("scopes inherited eligibility facts to referenced Team members and the binding device", () => {
+		const prepareSpy = vi.spyOn(db, "prepare");
+		let queries: string[] = [];
+		try {
+			previewRecipientPolicyOnboarding(db, baseRequest());
+			queries = prepareSpy.mock.calls.map(([query]) => query);
+		} finally {
+			prepareSpy.mockRestore();
+		}
+		const actorQuery = queries.find(
+			(query) => query.includes("FROM actors actor") && query.includes("referenced_members"),
+		);
+		const deviceQuery = queries.find(
+			(query) =>
+				query.includes("FROM identity_devices device") && query.includes("referenced_members"),
+		);
+
+		expect(actorQuery).toContain("JOIN referenced_members member");
+		expect(deviceQuery).toContain("FROM identity_devices WHERE device_id = ?");
+	});
+
+	it("inherits reviewed Team Projects only for explicitly included devices", () => {
+		db.prepare(
+			"UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist' WHERE team_id = 'team-a'",
+		).run();
+		db.prepare(
+			`UPDATE policy_team_memberships SET status = 'reviewed_active'
+			 WHERE team_id = 'team-a' AND identity_id = 'identity-a'`,
+		).run();
+
+		const unresolved = previewRecipientPolicyOnboarding(db, baseRequest());
+		expect(unresolved.projects).toEqual([
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_B,
+				sources: [{ kind: "direct" }],
+			}),
+		]);
+		db.prepare(
+			`INSERT INTO policy_team_device_decisions(
+			 team_id, device_id, decision, provenance, revision, created_at, updated_at
+			 ) VALUES ('team-a', 'device-other', 'included', 'reviewed_setup', 'revision-device-other', ?, ?)`,
+		).run(NOW, NOW);
+		expect(previewRecipientPolicyOnboarding(db, baseRequest()).projects).toEqual(
+			unresolved.projects,
+		);
+
+		db.prepare(
+			`INSERT INTO policy_team_device_decisions(
+			 team_id, device_id, decision, provenance, revision, created_at, updated_at
+			 ) VALUES ('team-a', 'device-new', 'included', 'reviewed_setup', 'revision-device-new', ?, ?)`,
+		).run(NOW, NOW);
+
+		const reviewed = previewRecipientPolicyOnboarding(db, baseRequest());
+		expect(reviewed.projects).toEqual([
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_A,
+				sources: [{ kind: "team", teamId: "team-a", displayName: "Core Team" }],
+			}),
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_B,
+				sources: [{ kind: "direct" }, { kind: "team", teamId: "team-a", displayName: "Core Team" }],
+			}),
+		]);
+		db.prepare(
+			`UPDATE policy_team_device_decisions SET decision = 'excluded'
+			 WHERE team_id = 'team-a' AND device_id = 'device-new'`,
+		).run();
+		expect(previewRecipientPolicyOnboarding(db, baseRequest()).projects).toEqual(
+			unresolved.projects,
+		);
+		db.prepare(
+			`UPDATE policy_team_device_decisions SET decision = 'included'
+			 WHERE team_id = 'team-a' AND device_id = 'device-new'`,
+		).run();
+
+		db.prepare(
+			`UPDATE policy_team_memberships SET status = 'active'
+			 WHERE team_id = 'team-a' AND identity_id = 'identity-a'`,
+		).run();
+		const mismatched = previewRecipientPolicyOnboarding(db, baseRequest());
+		expect(mismatched.projects).toEqual([
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_B,
+				sources: [{ kind: "direct" }],
+			}),
+		]);
+	});
+
+	it("omits reviewed Team sources when an add-device invite has no prospective device", () => {
+		db.prepare(
+			"UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist' WHERE team_id = 'team-a'",
+		).run();
+		db.prepare(
+			`UPDATE policy_team_memberships SET status = 'reviewed_active'
+			 WHERE team_id = 'team-a' AND identity_id = 'identity-a'`,
+		).run();
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 identity_id, device_id, display_name, status, provenance, revision,
+			 migration_state, idempotency_key, created_at, updated_at
+			 ) VALUES ('identity-a', 'device-new', 'Inviter laptop', 'active', 'user',
+			 'revision-device-new', 'user_managed', 'key-device-new', ?, ?)`,
+		).run(NOW, NOW);
+		db.prepare(
+			`INSERT INTO policy_team_device_decisions(
+			 team_id, device_id, decision, assignment_version, provenance, revision,
+			 created_at, updated_at
+			 ) VALUES ('team-a', 'device-new', 'included', 0, 'reviewed_setup',
+			 'revision-device-new', ?, ?)`,
+		).run(NOW, NOW);
+
+		const preview = previewRecipientPolicyOnboarding(db, baseRequest(), {
+			addDeviceTeamEligibility: "prospective_device",
+		});
+
+		expect(preview.projects).toEqual([
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_B,
+				sources: [{ kind: "direct" }],
+			}),
+		]);
+	});
+
+	it("retains person-wide Team sources for a prospective add-device binding", () => {
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 identity_id, device_id, display_name, status, provenance, revision,
+			 migration_state, idempotency_key, created_at, updated_at
+			 ) VALUES ('identity-a', 'device-new', 'Revoked inviter', 'revoked', 'user',
+			 'revision-device-new', 'user_managed', 'key-device-new', ?, ?)`,
+		).run(NOW, NOW);
+
+		const preview = previewRecipientPolicyOnboarding(db, baseRequest(), {
+			addDeviceTeamEligibility: "prospective_device",
+		});
+
+		expect(preview.projects).toEqual([
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_A,
+				sources: [{ kind: "team", teamId: "team-a", displayName: "Core Team" }],
+			}),
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_B,
+				sources: [{ kind: "direct" }, { kind: "team", teamId: "team-a", displayName: "Core Team" }],
+			}),
+		]);
+	});
+
+	it("blocks prospective Team sources when the inviter device fact is malformed", () => {
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 identity_id, device_id, display_name, status, provenance, revision,
+			 migration_state, assignment_version, idempotency_key, created_at, updated_at
+			 ) VALUES ('identity-a', 'device-new', 'Malformed inviter', 'active', 'user',
+			 'revision-device-new', 'user_managed', -1, 'key-device-new', ?, ?)`,
+		).run(NOW, NOW);
+
+		const preview = previewRecipientPolicyOnboarding(db, baseRequest(), {
+			addDeviceTeamEligibility: "prospective_device",
+		});
+
+		expect(preview.projects).toEqual([
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_B,
+				sources: [{ kind: "direct" }],
+			}),
+		]);
+	});
+
+	it("does not inherit reviewed Team Projects after the binding device is reassigned", () => {
+		db.prepare(
+			"UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist' WHERE team_id = 'team-a'",
+		).run();
+		db.prepare(
+			`UPDATE policy_team_memberships SET status = 'reviewed_active'
+			 WHERE team_id = 'team-a' AND identity_id = 'identity-a'`,
+		).run();
+		db.prepare(
+			`INSERT INTO policy_team_device_decisions(
+			 team_id, device_id, decision, assignment_version, provenance, revision, created_at, updated_at
+			 ) VALUES ('team-a', 'device-new', 'included', 0, 'reviewed_setup', 'revision-device-new', ?, ?)`,
+		).run(NOW, NOW);
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 device_id, identity_id, display_name, status, provenance, revision,
+			 migration_state, idempotency_key, created_at, updated_at
+			 ) VALUES ('device-new', 'identity-a', 'Old binding', 'active', 'user',
+			 'revision-old-binding', 'user_managed', 'key-old-binding', ?, ?)`,
+		).run(NOW, NOW);
+		db.prepare(
+			"UPDATE identity_devices SET identity_id = 'identity-other' WHERE device_id = 'device-new'",
+		).run();
+
+		const preview = previewRecipientPolicyOnboarding(db, baseRequest());
+
+		expect(preview.projects).toEqual([
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_B,
+				sources: [{ kind: "direct" }],
+			}),
+		]);
+	});
+
+	it("does not inherit Team Projects when the binding device belongs to another member", () => {
+		insertMembership(db, "team-a", "identity-b");
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 device_id, identity_id, display_name, status, provenance, revision,
+			 migration_state, idempotency_key, created_at, updated_at
+			 ) VALUES ('device-new', 'identity-b', 'Bea laptop', 'active', 'user',
+			 'revision-bea-device', 'user_managed', 'key-bea-device', ?, ?)`,
+		).run(NOW, NOW);
+
+		const preview = previewRecipientPolicyOnboarding(db, baseRequest());
+
+		expect(preview.projects).toEqual([
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_B,
+				sources: [{ kind: "direct" }],
+			}),
+		]);
+	});
+
+	it("does not inherit Projects when reviewed Team eligibility is blocked", () => {
+		db.prepare(
+			"UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist' WHERE team_id = 'team-a'",
+		).run();
+		db.prepare(
+			`UPDATE policy_team_memberships SET status = 'reviewed_active'
+			 WHERE team_id = 'team-a' AND identity_id = 'identity-a'`,
+		).run();
+		db.prepare(
+			`INSERT INTO policy_team_device_decisions(
+			 team_id, device_id, decision, provenance, revision, created_at, updated_at
+			 ) VALUES
+			 ('team-a', 'device-new', 'included', 'reviewed_setup', 'revision-device-new', ?, ?),
+			 ('team-a', 'device-other', 'future_decision', 'reviewed_setup', 'revision-device-other', ?, ?)`,
+		).run(NOW, NOW, NOW, NOW);
+
+		expect(previewRecipientPolicyOnboarding(db, baseRequest()).projects).toEqual([
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_B,
+				sources: [{ kind: "direct" }],
+			}),
+		]);
+	});
+
+	it("does not inherit Projects from a blocked person-wide Team", () => {
+		insertMembership(db, "team-a", "identity-b");
+		db.prepare("UPDATE actors SET status = 'deactivated' WHERE actor_id = 'identity-b'").run();
+
+		expect(previewRecipientPolicyOnboarding(db, baseRequest()).projects).toEqual([
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_B,
+				sources: [{ kind: "direct" }],
+			}),
+		]);
+		expect(deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A)).toMatchObject({
+			status: "blocked",
+			blocked: [
+				expect.objectContaining({
+					code: "team_member_identity_not_active",
+					referenceId: "identity-b",
+				}),
+			],
+		});
+	});
+
+	it("does not inherit Projects when a Team member identity row is missing", () => {
+		insertMembership(db, "team-a", "identity-missing");
+
+		expect(previewRecipientPolicyOnboarding(db, baseRequest()).projects).toEqual([
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_B,
+				sources: [{ kind: "direct" }],
+			}),
 		]);
 	});
 

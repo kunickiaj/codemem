@@ -36,7 +36,7 @@ import {
 export type { DatabaseType as Database };
 
 /** Current schema version this TS runtime was built against. */
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 /**
  * Minimum schema version the TS runtime can operate with.
@@ -999,6 +999,8 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 				ON identity_devices(identity_id, status);
 			CREATE INDEX IF NOT EXISTS idx_project_recipients_project_status
 				ON project_recipients(canonical_project_identity, status);
+			CREATE INDEX IF NOT EXISTS idx_project_recipients_recipient_status
+				ON project_recipients(recipient_kind, recipient_id, status);
 			CREATE TABLE IF NOT EXISTS recipient_managed_project_projections (
 				canonical_project_identity TEXT NOT NULL,
 				display_name TEXT NOT NULL,

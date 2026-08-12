@@ -1095,6 +1095,11 @@ export const projectRecipients = sqliteTable(
 			table.canonical_project_identity,
 			table.status,
 		),
+		recipientStatusIdx: index("idx_project_recipients_recipient_status").on(
+			table.recipient_kind,
+			table.recipient_id,
+			table.status,
+		),
 	}),
 );
 

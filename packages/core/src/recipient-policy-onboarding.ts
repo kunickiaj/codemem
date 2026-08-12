@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
+import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
 import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
 import {
 	normalizeRecipientReviewedIntent,
@@ -430,6 +431,8 @@ function sameCoordinatorBoundary(...values: Array<string | null>): boolean {
 function inheritedSources(
 	db: Database,
 	identityId: string,
+	deviceId: string,
+	options: { addDeviceTeamEligibility?: "binding_device" | "prospective_device" } = {},
 ): Map<string, RecipientPolicyOnboardingProjectSourceV1[]> {
 	const result = new Map<string, RecipientPolicyOnboardingProjectSourceV1[]>();
 	for (const row of db
@@ -528,21 +531,184 @@ function inheritedSources(
 		}
 		addSource(result, row.canonical_project_identity, { kind: "direct" });
 	}
-	for (const row of db
+	const teamProjectRows = db
 		.prepare(
-			`SELECT pr.canonical_project_identity, pt.team_id, pt.display_name
+			`SELECT pr.canonical_project_identity, pt.team_id, pt.display_name,
+			 pt.device_eligibility_mode
 			 FROM policy_team_memberships tm
 			 JOIN policy_teams pt ON pt.team_id = tm.team_id AND pt.status = 'active'
 			 JOIN project_recipients pr ON pr.recipient_kind = 'team'
 			  AND pr.recipient_id = tm.team_id AND pr.status = 'active'
-			 WHERE tm.identity_id = ? AND tm.status = 'active'
+			 WHERE tm.identity_id = ?
 			 ORDER BY pr.canonical_project_identity, pt.team_id`,
 		)
 		.all(identityId) as Array<{
 		canonical_project_identity: string;
 		team_id: string;
 		display_name: string;
+		device_eligibility_mode: string;
+	}>;
+	if (teamProjectRows.length === 0) return result;
+	const factsByTeam = new Map<
+		string,
+		{
+			memberships: Array<{ identityId: string; status: string }>;
+			decisions: Array<{ deviceId: string; decision: string; assignmentVersion: number }>;
+		}
+	>();
+	for (const row of db
+		.prepare(
+			`WITH referenced_teams AS (
+			 SELECT DISTINCT tm.team_id
+			 FROM policy_team_memberships tm
+			 JOIN policy_teams pt ON pt.team_id = tm.team_id AND pt.status = 'active'
+			 JOIN project_recipients pr ON pr.recipient_kind = 'team'
+			  AND pr.recipient_id = tm.team_id AND pr.status = 'active'
+			 WHERE tm.identity_id = ?
+			)
+			SELECT 'membership' AS fact_kind, membership.team_id,
+			 membership.identity_id AS reference_id, membership.status AS value,
+			 NULL AS assignment_version
+			FROM policy_team_memberships membership
+			JOIN referenced_teams referenced ON referenced.team_id = membership.team_id
+			UNION ALL
+			SELECT 'decision' AS fact_kind, decision.team_id,
+			 decision.device_id AS reference_id, decision.decision AS value,
+			 decision.assignment_version
+			FROM policy_team_device_decisions decision
+			JOIN referenced_teams referenced ON referenced.team_id = decision.team_id`,
+		)
+		.all(identityId) as Array<{
+		fact_kind: "membership" | "decision";
+		team_id: string;
+		reference_id: string;
+		value: string;
+		assignment_version: number | null;
 	}>) {
+		const facts = factsByTeam.get(row.team_id) ?? { memberships: [], decisions: [] };
+		if (row.fact_kind === "membership") {
+			facts.memberships.push({ identityId: row.reference_id, status: row.value });
+		} else {
+			facts.decisions.push({
+				deviceId: row.reference_id,
+				decision: row.value,
+				assignmentVersion: Number(row.assignment_version),
+			});
+		}
+		factsByTeam.set(row.team_id, facts);
+	}
+	const referencedMembersCte = `WITH referenced_teams AS (
+		SELECT DISTINCT tm.team_id
+		FROM policy_team_memberships tm
+		JOIN policy_teams pt ON pt.team_id = tm.team_id AND pt.status = 'active'
+		JOIN project_recipients pr ON pr.recipient_kind = 'team'
+		 AND pr.recipient_id = tm.team_id AND pr.status = 'active'
+		WHERE tm.identity_id = ?
+	), referenced_members AS (
+		SELECT DISTINCT membership.identity_id
+		FROM policy_team_memberships membership
+		JOIN referenced_teams referenced ON referenced.team_id = membership.team_id
+	)`;
+	const identities = (
+		db
+			.prepare(
+				`${referencedMembersCte}
+				 SELECT actor.actor_id, actor.status, actor.merged_into_actor_id
+				 FROM actors actor
+				 JOIN referenced_members member ON member.identity_id = actor.actor_id
+				 ORDER BY actor.actor_id`,
+			)
+			.all(identityId) as Array<Record<string, unknown>>
+	).map((identity) => ({
+		identityId: String(identity.actor_id ?? ""),
+		status: String(identity.status ?? ""),
+		mergedIntoIdentityId:
+			typeof identity.merged_into_actor_id === "string" && identity.merged_into_actor_id
+				? identity.merged_into_actor_id
+				: null,
+	}));
+	const identityById = new Map(identities.map((identity) => [identity.identityId, identity]));
+	const devicesByIdentity = new Map<
+		string,
+		Array<{ identityId: string; deviceId: string; status: string; assignmentVersion: number }>
+	>();
+	const deviceFacts = (
+		db
+			.prepare(
+				`${referencedMembersCte}
+				 SELECT device.identity_id, device.device_id, device.status, device.assignment_version
+				 FROM identity_devices device
+				 JOIN referenced_members member ON member.identity_id = device.identity_id
+				 UNION
+				 SELECT identity_id, device_id, status, assignment_version
+				 FROM identity_devices WHERE device_id = ?
+				 ORDER BY device_id`,
+			)
+			.all(identityId, deviceId) as Array<Record<string, unknown>>
+	).map((row) => ({
+		identityId: String(row.identity_id ?? ""),
+		deviceId: String(row.device_id ?? ""),
+		status: String(row.status ?? ""),
+		assignmentVersion: Number(row.assignment_version),
+	}));
+	for (const device of deviceFacts) {
+		const devices = devicesByIdentity.get(device.identityId) ?? [];
+		devices.push(device);
+		devicesByIdentity.set(device.identityId, devices);
+	}
+	const prospectiveDevice = options.addDeviceTeamEligibility === "prospective_device";
+	const eligibilityDeviceId = prospectiveDevice ? `prospective:${deviceId}` : deviceId;
+	const bindingDevice = prospectiveDevice
+		? undefined
+		: deviceFacts.find((device) => device.deviceId === deviceId);
+	const inheritableTeamIds = new Set<string>();
+	for (const row of new Map(teamProjectRows.map((team) => [team.team_id, team])).values()) {
+		if (prospectiveDevice && row.device_eligibility_mode === "reviewed_allowlist") {
+			continue;
+		}
+		if (bindingDevice && bindingDevice.identityId !== identityId) continue;
+		const facts = factsByTeam.get(row.team_id) ?? { memberships: [], decisions: [] };
+		const memberIdentityIds = new Set(facts.memberships.map((membership) => membership.identityId));
+		const teamIdentities = [...memberIdentityIds].flatMap((memberIdentityId) => {
+			const identity = identityById.get(memberIdentityId);
+			return identity ? [identity] : [];
+		});
+		const teamDevices = [...memberIdentityIds].flatMap(
+			(memberIdentityId) => devicesByIdentity.get(memberIdentityId) ?? [],
+		);
+		if (memberIdentityIds.has(identityId) && !bindingDevice) {
+			// No persisted binding exists for the onboarding device. Model it as a
+			// separate active v0 fact so real device facts still participate in blocking.
+			teamDevices.push({
+				identityId,
+				deviceId: eligibilityDeviceId,
+				status: "active",
+				assignmentVersion: 0,
+			});
+		}
+		const eligibility = derivePolicyTeamDeviceEligibility({
+			teamId: row.team_id,
+			mode: row.device_eligibility_mode,
+			memberships: facts.memberships,
+			identities: teamIdentities,
+			devices: teamDevices,
+			decisions: facts.decisions,
+		});
+		// Validate every decision before checking for the binding device. Duplicate
+		// or unknown decisions must block instead of being shadowed by a valid row.
+		if (
+			eligibility.status !== "eligible" ||
+			!eligibility.activeMemberIdentityIds.includes(identityId) ||
+			!eligibility.eligibleDeviceIds.includes(eligibilityDeviceId)
+		) {
+			// Onboarding recipients cannot repair Team policy drift. Omit blocked
+			// Team sources rather than exposing owner-facing policy diagnostics.
+			continue;
+		}
+		inheritableTeamIds.add(row.team_id);
+	}
+	for (const row of teamProjectRows) {
+		if (!inheritableTeamIds.has(row.team_id)) continue;
 		addSource(result, row.canonical_project_identity, {
 			kind: "team",
 			teamId: row.team_id,
@@ -555,6 +721,7 @@ function inheritedSources(
 function buildPreview(
 	db: Database,
 	request: NormalizedRequest,
+	options: { addDeviceTeamEligibility?: "binding_device" | "prospective_device" } = {},
 ): RecipientPolicyOnboardingPreviewV1 {
 	assertActiveIdentity(db, request.binding.identityId);
 	const facts = projectFacts(db);
@@ -574,7 +741,7 @@ function buildPreview(
 		}
 	}
 	if (request.journey === "add_device") {
-		sources = inheritedSources(db, request.binding.identityId);
+		sources = inheritedSources(db, request.binding.identityId, request.binding.deviceId, options);
 	}
 	const projects = [...sources.entries()]
 		.map(([projectId, projectSources]): RecipientPolicyOnboardingProjectV1 => {
@@ -621,8 +788,9 @@ function buildPreview(
 export function previewRecipientPolicyOnboarding(
 	db: Database,
 	request: RecipientPolicyOnboardingPreviewRequestV1,
+	options: { addDeviceTeamEligibility?: "binding_device" | "prospective_device" } = {},
 ): RecipientPolicyOnboardingPreviewV1 {
-	return buildPreview(db, normalizeRequest(request));
+	return buildPreview(db, normalizeRequest(request), options);
 }
 
 function reviewedIntentTarget(request: NormalizedRequest) {

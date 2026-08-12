@@ -788,13 +788,19 @@ function recipientInviteOnboardingPreview(
 		});
 	}
 	if (!targetIdentityId || teamId) throw new Error("recipient_invite_metadata_invalid");
-	return previewRecipientPolicyOnboarding(store.db, {
-		version: 1,
-		journey: "add_device",
-		invitationId,
-		identityId: targetIdentityId,
-		...binding,
-	});
+	return previewRecipientPolicyOnboarding(
+		store.db,
+		{
+			version: 1,
+			journey: "add_device",
+			invitationId,
+			identityId: targetIdentityId,
+			...binding,
+		},
+		{
+			addDeviceTeamEligibility: "prospective_device",
+		},
+	);
 }
 
 function recipientInviteReviewedIntent(

@@ -1318,6 +1318,7 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		expect(hasIndex(previous, "idx_coordinator_enrollment_issues_status_recent")).toBe(true);
 		expect(hasIndex(previous, "idx_recipient_managed_projects_identity_status")).toBe(true);
 		expect(hasIndex(previous, "idx_recipient_managed_projects_scope_authority")).toBe(true);
+		expect(hasIndex(previous, "idx_project_recipients_recipient_status")).toBe(true);
 		expect(hasIndex(previous, "idx_recipient_policy_reconciliation_steps_pending_refresh")).toBe(
 			true,
 		);
@@ -1355,6 +1356,29 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		).toBe(1);
 		expect(appliedSchemaVersion(reopened)).toBe(SCHEMA_VERSION);
 		reopened.close();
+		db = connect(join(tmpDir, "replacement.sqlite"));
+	});
+
+	it("adds recipient lookup indexes to a database already marked at schema version 18", () => {
+		db.close();
+		const dbPath = join(tmpDir, "schema-18-recipient-index.sqlite");
+		const previous = new BetterSqlite3(dbPath);
+		previous.exec(`
+			PRAGMA user_version = 18;
+			CREATE TABLE schema_compat_state (
+				id INTEGER PRIMARY KEY,
+				applied_schema_version INTEGER NOT NULL,
+				applied_at TEXT NOT NULL
+			);
+			INSERT INTO schema_compat_state VALUES (1, 18, '2026-08-12T00:00:00Z');
+		`);
+
+		ensureAdditiveSchemaCompatibility(previous);
+
+		expect(hasIndex(previous, "idx_project_recipients_recipient_status")).toBe(true);
+		expect(getSchemaVersion(previous)).toBe(SCHEMA_VERSION);
+		expect(appliedSchemaVersion(previous)).toBe(SCHEMA_VERSION);
+		previous.close();
 		db = connect(join(tmpDir, "replacement.sqlite"));
 	});
 
