@@ -28,8 +28,30 @@ const VIEWER_HEALTH_CHECK_INTERVAL_MS = 60_000;
 const VIEWER_HEALTH_TIMEOUT_MS = 5_000;
 const VIEWER_HEALTH_RESTART_THRESHOLD = 3;
 const VIEWER_HEALTH_RESTART_COOLDOWN_MS = 5 * 60_000;
+const RAW_EVENTS_STATUS_TIMEOUT_MS = 5_000;
 
 let compatCheckCache = null;
+
+// Release an unread response body without surfacing cancellation failures.
+const discardResponseBody = (response) => {
+  try {
+    const cancelled = response?.body?.cancel?.();
+    if (cancelled && typeof cancelled.catch === "function") {
+      cancelled.catch(() => {});
+    }
+  } catch {
+    // Best effort — a locked or already-errored stream is fine to abandon.
+  }
+};
+
+// Bounded ingest-availability preflight: a hung viewer socket must not stall
+// raw-event delivery indefinitely. Failures fall into the existing stream
+// backoff + CLI enqueue fallback path.
+const fetchRawEventsStatus = (url, fetchFn = fetch) =>
+  fetchFn(url, {
+    method: "GET",
+    signal: AbortSignal.timeout(RAW_EVENTS_STATUS_TIMEOUT_MS),
+  });
 
 const normalizeEnvValue = (value) => (value || "").toLowerCase();
 const envHasValue = (value, truthyValues) =>
@@ -67,7 +89,7 @@ const createViewerHealthMonitor = ({
     }
 
     if (response.status === 404) {
-      void response.body?.cancel?.();
+      discardResponseBody(response);
       try {
         // Old-viewer compatibility: released viewers serving this route
         // always include the `ingest` availability object, so require that
@@ -75,7 +97,7 @@ const createViewerHealthMonitor = ({
         // arbitrary local service.
         const fallbackResponse = await boundedFetch(legacyStatusUrl);
         if (!fallbackResponse.ok) {
-          void fallbackResponse.body?.cancel?.();
+          discardResponseBody(fallbackResponse);
           return { live: false, detail: `fallback status=${fallbackResponse.status}` };
         }
         const fallbackPayload = await fallbackResponse.json();
@@ -95,7 +117,7 @@ const createViewerHealthMonitor = ({
     if (!response.ok) {
       // Release the unread body so a persistently failing viewer does not
       // pin connections across the 60s monitor interval.
-      void response.body?.cancel?.();
+      discardResponseBody(response);
       return { live: false, detail: `status=${response.status}` };
     }
 
@@ -1840,8 +1862,10 @@ export const OpencodeMemPlugin = async ({
     }
     try {
       if (now - lastStatusCheckAt >= Math.max(1000, rawEventsStatusCheckMs)) {
-        const statusResp = await fetch(rawEventsStatusUrl, { method: "GET" });
+        const statusResp = await fetchRawEventsStatus(rawEventsStatusUrl);
         if (!statusResp.ok) {
+          // Release the unread body before bailing into the backoff path.
+          discardResponseBody(statusResp);
           throw new Error(`raw-events status failed (${statusResp.status})`);
         }
         const statusJson = await statusResp.json();
@@ -3705,6 +3729,7 @@ export const OpencodeMemPlugin = async ({
 export default OpencodeMemPlugin;
 export const __testUtils = {
   PINNED_BACKEND_VERSION,
+  fetchRawEventsStatus,
   inferProjectFromCwd,
   normalizeProjectLabel,
   resolveProjectName,

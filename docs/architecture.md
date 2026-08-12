@@ -330,7 +330,7 @@ events.
 - 10+ minutes of continuous work
 
 ### OpenCode stream reliability
-- Preflight check: `GET /api/raw-events/status` with periodic re-checks (`CODEMEM_RAW_EVENTS_STATUS_CHECK_MS`)
+- Preflight check: `GET /api/raw-events/status` with periodic re-checks (`CODEMEM_RAW_EVENTS_STATUS_CHECK_MS`), bounded by a 5-second timeout
 - Backoff on failure: configurable via `CODEMEM_RAW_EVENTS_BACKOFF_MS`; on stream failure the plugin can fall back to CLI enqueue for durable persistence
 - Once events are accepted by the viewer/store queue, flush workers handle retries
 

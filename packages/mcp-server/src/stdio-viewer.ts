@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { probeCodememViewerLiveness } from "@codemem/core";
 
 const DEFAULT_VIEWER_HOST = "127.0.0.1";
 const DEFAULT_VIEWER_PORT = "38888";
@@ -51,46 +52,22 @@ export function resolveCliPath(): string | null {
 	return "codemem";
 }
 
-/** Check for a live CodeMem viewer, with one old-viewer compatibility probe on health 404. */
+/** Check for a live CodeMem viewer via the shared core probe contract. */
 export async function isViewerHealthy(options: ViewerProbeOptions = {}): Promise<boolean> {
 	const host = options.host ?? process.env.CODEMEM_VIEWER_HOST ?? DEFAULT_VIEWER_HOST;
-	const port = options.port ?? process.env.CODEMEM_VIEWER_PORT ?? DEFAULT_VIEWER_PORT;
-	const fetchImpl = options.fetchImpl ?? fetch;
-	const baseUrl = `http://${host}:${port}`;
+	const rawPort = options.port ?? process.env.CODEMEM_VIEWER_PORT ?? DEFAULT_VIEWER_PORT;
+	// Strict parse: "38888abc" must not silently probe a different port than
+	// the `--port` value forwarded to `serve start`.
+	if (!/^\d+$/.test(rawPort.trim())) return false;
+	const port = Number.parseInt(rawPort, 10);
+	if (!Number.isInteger(port) || port <= 0 || port > 65_535) return false;
 
-	try {
-		const response = await fetchImpl(`${baseUrl}/api/health`, {
-			signal: AbortSignal.timeout(VIEWER_PROBE_TIMEOUT_MS),
-		});
-		if (response.status === 404) {
-			// Old-viewer compatibility: every released viewer's stats payload
-			// includes `viewer_pid`, so require that identifying evidence
-			// rather than trusting any 2xx from an arbitrary local service.
-			const compatibilityResponse = await fetchImpl(`${baseUrl}/api/stats`, {
-				signal: AbortSignal.timeout(VIEWER_PROBE_TIMEOUT_MS),
-			});
-			if (!compatibilityResponse.ok) return false;
-			try {
-				const stats: unknown = await compatibilityResponse.json();
-				if (!stats || typeof stats !== "object" || Array.isArray(stats)) return false;
-				const viewerPid = (stats as { viewer_pid?: unknown }).viewer_pid;
-				return typeof viewerPid === "number" && Number.isSafeInteger(viewerPid) && viewerPid > 0;
-			} catch {
-				return false;
-			}
-		}
-		if (!response.ok) return false;
-
-		const body: unknown = await response.json();
-		return (
-			typeof body === "object" &&
-			body !== null &&
-			"service" in body &&
-			body.service === "codemem-viewer"
-		);
-	} catch {
-		return false;
-	}
+	// A degraded-but-live viewer must not trigger redundant detached starts.
+	const probe = await probeCodememViewerLiveness(
+		{ host, port },
+		{ fetch: options.fetchImpl ?? fetch, timeoutMs: VIEWER_PROBE_TIMEOUT_MS },
+	);
+	return probe.state === "live";
 }
 
 /** Attempt to start the viewer as a detached, best-effort background process. */

@@ -1170,3 +1170,13 @@ export {
 	semanticSearch,
 	storeVectors,
 } from "./vectors.js";
+export type {
+	ViewerLivenessProbeDependencies,
+	ViewerLivenessProbeResult,
+	ViewerTarget,
+} from "./viewer-probe.js";
+export {
+	probeCodememViewerLiveness,
+	VIEWER_SERVICE_DISCRIMINATOR,
+	viewerUrl,
+} from "./viewer-probe.js";

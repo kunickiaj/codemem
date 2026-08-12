@@ -1,4 +1,4 @@
-import { type MemoryStore, VERSION } from "@codemem/core";
+import { type MemoryStore, VERSION, VIEWER_SERVICE_DISCRIMINATOR } from "@codemem/core";
 import { Hono } from "hono";
 
 type StoreFactory = () => MemoryStore;
@@ -19,7 +19,9 @@ export function healthRoutes(getStore: StoreFactory) {
 		const reachable = databaseReachable(getStore);
 		c.header("Cache-Control", "no-store");
 		return c.json({
-			service: "codemem-viewer",
+			// Bound to the shared probe contract so producer and clients
+			// cannot drift independently.
+			service: VIEWER_SERVICE_DISCRIMINATOR,
 			version: VERSION,
 			pid: process.pid,
 			uptime_ms: Math.max(0, Math.floor(process.uptime() * 1_000)),
