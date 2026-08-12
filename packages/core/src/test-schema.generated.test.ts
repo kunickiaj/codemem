@@ -20,4 +20,12 @@ describe("test schema generation", () => {
 
 		expect(TEST_SCHEMA_BASE_DDL).toBe(makeIdempotentStatements(statements).join("\n"));
 	});
+
+	it("contains Team device eligibility compatibility state", () => {
+		expect(TEST_SCHEMA_BASE_DDL).toContain("device_eligibility_mode");
+		expect(TEST_SCHEMA_BASE_DDL).toContain("policy_team_device_decisions");
+		expect(TEST_SCHEMA_BASE_DDL).toContain(
+			"`policy_team_device_decisions` (\n\t`team_id` text NOT NULL,\n\t`device_id` text NOT NULL,\n\t`decision` text NOT NULL,\n\t`assignment_version` integer DEFAULT 0 NOT NULL",
+		);
+	});
 });

@@ -1,6 +1,7 @@
 import type { Database } from "./db.js";
 import {
 	getSchemaVersion,
+	IDENTITY_DEVICE_ASSIGNMENT_TRIGGERS_DDL,
 	isEmbeddingDisabled,
 	loadSqliteVec,
 	REQUIRED_BOOTSTRAPPED_TABLES,
@@ -293,6 +294,20 @@ const RETRIEVAL_LEDGER_SCHEMA_OBJECTS = [
 
 const SCHEMA_AUX_DDL = `
 ${RETRIEVAL_LEDGER_DDL}
+
+CREATE TABLE IF NOT EXISTS policy_team_device_decisions (
+	team_id TEXT NOT NULL REFERENCES policy_teams(team_id) ON DELETE CASCADE,
+	device_id TEXT NOT NULL,
+	decision TEXT NOT NULL,
+	assignment_version INTEGER NOT NULL DEFAULT 0,
+	provenance TEXT NOT NULL,
+	revision TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (team_id, device_id)
+);
+CREATE INDEX IF NOT EXISTS idx_policy_team_device_decisions_device
+	ON policy_team_device_decisions(device_id);
 
 CREATE INDEX IF NOT EXISTS idx_sync_peers_actor_id ON sync_peers(actor_id);
 
@@ -653,6 +668,7 @@ export function bootstrapSchema(db: Database): void {
 	db.transaction(() => {
 		db.exec(TEST_SCHEMA_BASE_DDL);
 		db.exec(SCHEMA_AUX_DDL);
+		ensurePolicyTeamDeviceEligibilityColumns(db);
 		ensureRetrievalAttemptColumns(db);
 		ensureOutcomeEvidenceColumns(db);
 		assertBootstrapTablesCreated(db);
@@ -663,6 +679,29 @@ export function bootstrapSchema(db: Database): void {
 	// bootstrap transaction so an unavailable extension cannot produce a
 	// half-successful core schema, and cannot prevent first-run stats/setup.
 	ensureVectorSchema(db);
+}
+
+function ensurePolicyTeamDeviceEligibilityColumns(db: Database): void {
+	if (!columnExists(db, "policy_teams", "device_eligibility_mode")) {
+		db.exec(
+			"ALTER TABLE policy_teams ADD COLUMN device_eligibility_mode TEXT NOT NULL DEFAULT 'person_all_devices'",
+		);
+	}
+	if (!columnExists(db, "identity_devices", "assignment_version")) {
+		db.exec(
+			"ALTER TABLE identity_devices ADD COLUMN assignment_version INTEGER NOT NULL DEFAULT 0",
+		);
+	}
+	if (!columnExists(db, "policy_team_device_decisions", "assignment_version")) {
+		db.exec(
+			"ALTER TABLE policy_team_device_decisions ADD COLUMN assignment_version INTEGER NOT NULL DEFAULT 0",
+		);
+	}
+	ensureIdentityDeviceAssignmentVersionTriggers(db);
+}
+
+function ensureIdentityDeviceAssignmentVersionTriggers(db: Database): void {
+	db.exec(IDENTITY_DEVICE_ASSIGNMENT_TRIGGERS_DDL);
 }
 
 /** Add the local-only retrieval ledger to an already initialized database. */
