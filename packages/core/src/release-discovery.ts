@@ -11,6 +11,7 @@ const MAX_RESPONSE_BYTES = 16 * 1_024;
 const MAX_VERSION_LENGTH = 128;
 const MAX_RUNNER_SOURCE_LENGTH = 4_096;
 const RELEASE_CACHE_SCHEMA_VERSION = 1;
+const AUTO_UPDATE_DELAY_MS = 24 * 60 * 60 * 1_000;
 const STABLE_SEMVER =
 	/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
@@ -261,8 +262,14 @@ function toStatus(resolution: ReleaseResolution, options: ReleaseCheckOptions): 
 		checked_at: resolution.record?.checked_at ?? null,
 		stale: resolution.stale,
 		install_kind: options.installKind,
-		// PR1 is discovery-only. Installation eligibility is introduced behind its own guarded slice.
-		auto_update_eligible: false,
+		auto_update_eligible:
+			options.installKind === "npm-global" &&
+			updateAvailable &&
+			!resolution.stale &&
+			resolution.error === null &&
+			resolution.record !== null &&
+			Date.parse(resolution.record.checked_at) - Date.parse(resolution.record.first_seen_at) >=
+				AUTO_UPDATE_DELAY_MS,
 		recommended_action: recommendedAction(
 			options.installKind,
 			options.currentVersion,
@@ -417,6 +424,12 @@ function isPinnedSource(source: string): boolean {
 
 export function detectInstallKind(input: InstallDetectionInput): InstallKind {
 	const env = input.env ?? {};
+	const source = env.CODEMEM_RUNNER_FROM?.trim() ?? "";
+	if (isPinnedSource(source)) return "pinned";
+
+	const entryPath = input.entryPath.replaceAll("\\", "/");
+	if (/\/packages\/cli\/src\/index\.ts$/.test(entryPath)) return "repo-dev";
+
 	const explicit = env.CODEMEM_INSTALL_KIND?.trim().toLowerCase();
 	const knownKinds: readonly InstallKind[] = [
 		"npm-global",
@@ -427,17 +440,17 @@ export function detectInstallKind(input: InstallDetectionInput): InstallKind {
 		"unknown",
 	];
 	if (explicit) {
-		return knownKinds.includes(explicit as InstallKind) ? (explicit as InstallKind) : "unknown";
+		if (!knownKinds.includes(explicit as InstallKind)) return "unknown";
+		// An environment marker may safely narrow permissions, but it must never
+		// authorize process execution on its own.
+		if (["docker", "repo-dev", "pinned", "unknown"].includes(explicit)) {
+			return explicit as InstallKind;
+		}
 	}
 
-	const source = env.CODEMEM_RUNNER_FROM?.trim() ?? "";
-	if (isPinnedSource(source)) return "pinned";
 	const runner = env.CODEMEM_RUNNER?.trim().toLowerCase();
 	if (runner === "node" || runner === "uv") return "repo-dev";
-	if (runner === "npx") return "npx";
 
-	const entryPath = input.entryPath.replaceAll("\\", "/");
-	if (/\/packages\/cli\/src\/index\.ts$/.test(entryPath)) return "repo-dev";
 	if (/\/(?:_npx|\.pnpm\/dlx)\//.test(entryPath)) return "npx";
 	if (/\/lib\/node_modules\/codemem\/dist\/index\.js$/.test(entryPath)) {
 		return "npm-global";

@@ -91,6 +91,43 @@ describe("parseBackendUpdatePolicy", () => {
 });
 
 describe("resolveAutoUpdatePlan", () => {
+	test("allows the known global npm runner", () => {
+		const plan = resolveAutoUpdatePlan({ runner: "codemem", runnerFrom: "/tmp/project" });
+		expect(plan.allowed).toBe(true);
+		expect(plan.command).toEqual(["npm", "install", "-g", "codemem@latest"]);
+	});
+
+	test("blocks unknown runners", () => {
+		expect(resolveAutoUpdatePlan({ runner: "custom", runnerFrom: "/tmp/project" })).toMatchObject({
+			allowed: false,
+			reason: "unknown-runner",
+		});
+	});
+
+	test("blocks pinned npm sources before runner-specific allow paths", () => {
+		expect(
+			resolveAutoUpdatePlan({
+				runner: "npx",
+				runnerFrom: "codemem@0.40.2",
+				runnerFromExplicit: true,
+			}),
+		).toMatchObject({ allowed: false, reason: "pinned-source" });
+	});
+
+	test("allows npx only with an explicit generic package source", () => {
+		expect(
+			resolveAutoUpdatePlan({
+				runner: "npx",
+				runnerFrom: "codemem@latest",
+				runnerFromExplicit: true,
+			}),
+		).toMatchObject({ allowed: true });
+		expect(resolveAutoUpdatePlan({ runner: "npx", runnerFrom: "codemem@latest" })).toMatchObject({
+			allowed: false,
+			reason: "implicit-pinned-source",
+		});
+	});
+
   test("blocks auto-update in uv dev mode", () => {
     const plan = resolveAutoUpdatePlan({ runner: "uv", runnerFrom: "/tmp/codemem" });
     expect(plan.allowed).toBe(false);

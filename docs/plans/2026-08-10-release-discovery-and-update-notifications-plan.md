@@ -13,7 +13,7 @@ Deliver the approved updater design as four dependent Graphite pull requests. Ea
 
 ## PR 1: Release discovery
 
-**Bead:** `codemem-eiq9.1`  
+**Bead:** `codemem-eiq9.1`
 **Commit:** `feat(update): add release discovery`
 
 ### Tasks
@@ -46,8 +46,8 @@ pnpm run tsc
 
 ## PR 2: Plugin and Viewer notifications
 
-**Bead:** `codemem-eiq9.2`  
-**Depends on:** `codemem-eiq9.1`  
+**Bead:** `codemem-eiq9.2`
+**Depends on:** `codemem-eiq9.1`
 **Commit:** `feat(update): surface release notifications`
 
 ### Tasks
@@ -83,8 +83,8 @@ pnpm run tsc
 
 ## PR 3: Peer runtime versions
 
-**Bead:** `codemem-eiq9.3`  
-**Depends on:** `codemem-eiq9.2`  
+**Bead:** `codemem-eiq9.3`
+**Depends on:** `codemem-eiq9.2`
 **Commit:** `feat(sync): report peer runtime versions`
 
 ### Tasks
@@ -117,8 +117,8 @@ pnpm run tsc
 
 ## PR 4: Delayed opt-in npm upgrades
 
-**Bead:** `codemem-eiq9.4`  
-**Depends on:** `codemem-eiq9.3`  
+**Bead:** `codemem-eiq9.4`
+**Depends on:** `codemem-eiq9.3`
 **Commit:** `feat(update): enable opt-in npm upgrades`
 
 ### Tasks

@@ -65,8 +65,11 @@ Tag only after the release PR has merged to `main` and you have verified that `H
 `codemem` release. Results are cached locally for six hours; use `--refresh` to bypass a fresh
 cache and `--json` for the stable automation contract. If a refresh fails, a previously validated
 cache may be returned as stale guidance. A running process backs off failed registry checks for 15
-minutes, while `--refresh` bypasses that backoff. Release discovery is informational and does not
-install or execute anything.
+minutes, while `--refresh` bypasses that backoff. `codemem update check` remains informational.
+`codemem update install` separately requires fresh validated status, a 24-hour first-seen delay,
+and a proven eligible npm installation before it executes an argv-only npm command and verifies
+the active CLI version. It refuses pinned, prerelease, downgrade, development, stale, Docker, and
+unknown states.
 
 Release discovery compares the running product version with the latest published stable release.
 It is separate from the compatibility-floor check below: discovering a newer release does not
@@ -80,7 +83,7 @@ The OpenCode plugin performs a runtime CLI version check and warns if the local 
 The compatibility reaction is controlled by `CODEMEM_BACKEND_UPDATE_POLICY`:
 
 - `notify` (default): warn with an upgrade hint
-- `auto`: attempt a best-effort update for eligible runners, then re-check (skips dev runner mode and pinned git refs)
+- `auto`: attempt a best-effort update for eligible npm runners and delayed stable releases, then re-check
 - `off`: suppress compatibility toasts
 
 This check enforces a minimum supported CLI version. It does not query the npm registry or report

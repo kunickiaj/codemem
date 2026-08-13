@@ -420,17 +420,21 @@ When the plugin detects CLI/runtime version mismatch, it shows guidance based on
 Update policy:
 
 - `CODEMEM_BACKEND_UPDATE_POLICY=notify` (default): show warning toast with suggested action
-- `CODEMEM_BACKEND_UPDATE_POLICY=auto`: try a best-effort auto-update for eligible compatibility-floor mismatches, then warn if still outdated
-  - skipped for `node` dev-mode runners
-  - skipped when `CODEMEM_RUNNER_FROM` is pinned to a fixed package/version
+- `CODEMEM_BACKEND_UPDATE_POLICY=auto`: try a best-effort auto-update for eligible compatibility-floor mismatches and fresh stable releases observed for at least 24 hours, then warn if still outdated
+	- skipped for `node` dev-mode runners
+	- skipped when `CODEMEM_RUNNER_FROM` is pinned to a fixed package/version
+	- skipped for Docker, unknown, stale, prerelease, or downgrade states
 - `CODEMEM_BACKEND_UPDATE_POLICY=off`: no compatibility toast (logging still records mismatch)
 
 After its startup delay, the plugin also runs `codemem update check --json` through the same
 argv-based CLI runner. `notify` and `auto` show a best-effort toast at most once per latest stable
-release in the current OpenCode process; `off` skips this release check. This release-discovery
-path is read-only: `auto` does not install a discovered release. Current, unavailable, malformed,
-and timed-out results are ignored without delaying plugin startup. Compatibility-floor handling
-above remains separate and unchanged.
+release in the current OpenCode process; `off` skips this release check. Under explicit `auto`, an
+eligible result invokes the fail-closed `codemem update install` command and verifies the active CLI
+version before a plugin-owned Viewer is restarted. Current, unavailable, malformed, ineligible, and
+timed-out results are ignored or shown as guidance without delaying plugin startup.
+The installer uses a process-owned lock under `~/.codemem` so simultaneous OpenCode sessions cannot
+run competing global npm installations. A live lock causes later attempts to fail closed; a lock whose
+recorded process no longer exists is reclaimed.
 
 Docker images set `CODEMEM_INSTALL_KIND=docker` so release guidance cannot mistake the bundled
 global npm package for a host npm installation. Docker deployments never self-update; rebuild and

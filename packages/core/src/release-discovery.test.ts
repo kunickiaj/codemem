@@ -191,6 +191,48 @@ describe("release discovery registry contract", () => {
 		});
 	});
 
+	it("allows a fresh npm update only after the release has been observed for 24 hours", async () => {
+		const deps = dependencies({
+			cache: JSON.stringify(
+				cacheRecord({
+					first_seen_at: "2026-08-09T12:00:00.000Z",
+					checked_at: "2026-08-10T12:00:00.000Z",
+				}),
+			),
+		});
+
+		const status = await check(deps, { installKind: "npm-global" });
+
+		expect(status.auto_update_eligible).toBe(true);
+	});
+
+	it("refuses a release observed for less than 24 hours", async () => {
+		const deps = dependencies({
+			cache: JSON.stringify(
+				cacheRecord({ first_seen_at: "2026-08-09T12:00:00.001Z", checked_at: NOW.toISOString() }),
+			),
+		});
+
+		const status = await check(deps, { installKind: "npm-global" });
+
+		expect(status.auto_update_eligible).toBe(false);
+	});
+
+	it("never authorizes automatic installation for npx", async () => {
+		const deps = dependencies({
+			cache: JSON.stringify(
+				cacheRecord({
+					first_seen_at: "2026-08-09T12:00:00.000Z",
+					checked_at: NOW.toISOString(),
+				}),
+			),
+		});
+
+		const status = await check(deps, { installKind: "npx" });
+
+		expect(status.auto_update_eligible).toBe(false);
+	});
+
 	it.each([
 		"0.41.0-beta.1",
 		"0.41.0-rc.0",
@@ -813,6 +855,30 @@ describe("installation-kind detection", () => {
 				env: { CODEMEM_RUNNER_FROM: source },
 			}),
 		).toBe(expected);
+	});
+
+	it("does not let an environment marker override pinned or repository-development evidence", () => {
+		expect(
+			detectInstallKind({
+				entryPath: "/home/user/.npm/_npx/abc/node_modules/codemem/dist/index.js",
+				env: { CODEMEM_INSTALL_KIND: "npm-global", CODEMEM_RUNNER_FROM: "codemem@0.40.2" },
+			}),
+		).toBe("pinned");
+		expect(
+			detectInstallKind({
+				entryPath: "/workspace/codemem/packages/cli/src/index.ts",
+				env: { CODEMEM_INSTALL_KIND: "npm-global" },
+			}),
+		).toBe("repo-dev");
+	});
+
+	it("does not treat CODEMEM_RUNNER=npx as executable installation evidence", () => {
+		expect(
+			detectInstallKind({
+				entryPath: "/opt/custom/codemem-cli.js",
+				env: { CODEMEM_RUNNER: "npx" },
+			}),
+		).toBe("unknown");
 	});
 });
 

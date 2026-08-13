@@ -149,6 +149,15 @@ the local `.env`, Docker secrets, or the container manager's private environment
 
 ## Useful commands
 
+Containers never self-update and do not receive the Docker socket. To move to a specific release,
+set the durable `CODEMEM_VERSION` value in `.env`, then rebuild and restart:
+
+```fish
+set -lx CODEMEM_VERSION 0.41.0
+docker compose build --pull
+docker compose up -d
+```
+
 ```fish
 docker compose pull
 docker compose up -d --build

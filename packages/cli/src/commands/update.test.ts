@@ -1,9 +1,16 @@
+import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Command } from "commander";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getUpdateStatus } = vi.hoisted(() => ({
+const { getUpdateStatus, spawn } = vi.hoisted(() => ({
 	getUpdateStatus: vi.fn(),
+	spawn: vi.fn(),
 }));
+
+vi.mock("node:child_process", () => ({ spawn }));
 
 vi.mock("@codemem/core", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@codemem/core")>();
@@ -14,6 +21,9 @@ vi.mock("@codemem/core", async (importOriginal) => {
 });
 
 import { updateCommand } from "./update.js";
+
+const originalHome = process.env.HOME;
+let testHome = "";
 
 const availableStatus = {
 	current_version: "0.40.2",
@@ -54,11 +64,36 @@ async function parseUpdateCommand(args: string[]): Promise<void> {
 	await root.parseAsync(["update", ...args], { from: "user" });
 }
 
-afterEach(() => {
+beforeEach(async () => {
+	testHome = await mkdtemp(join(tmpdir(), "codemem-update-test-"));
+	process.env.HOME = testHome;
+});
+
+afterEach(async () => {
 	getUpdateStatus.mockReset();
+	spawn.mockReset();
 	process.exitCode = undefined;
+	process.env.HOME = originalHome;
+	await rm(testHome, { recursive: true, force: true });
 	vi.restoreAllMocks();
 });
+
+function commandProcess(options: { stdout?: string; stderr?: string; exitCode?: number } = {}) {
+	const child = new EventEmitter() as EventEmitter & {
+		kill: ReturnType<typeof vi.fn>;
+		stdout: EventEmitter & { setEncoding: () => void };
+		stderr: EventEmitter & { setEncoding: () => void };
+	};
+	child.stdout = Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
+	child.stderr = Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
+	child.kill = vi.fn();
+	queueMicrotask(() => {
+		if (options.stdout) child.stdout.emit("data", options.stdout);
+		if (options.stderr) child.stderr.emit("data", options.stderr);
+		child.emit("close", options.exitCode ?? 0);
+	});
+	return child;
+}
 
 describe("update check command", () => {
 	it("renders a concise human message for an available release and its guidance", async () => {
@@ -222,5 +257,93 @@ describe("update check command", () => {
 		// Assert
 		expect(error.mock.calls.flat().join("\n")).toContain("registry request timed out");
 		expect(process.exitCode).toBe(1);
+	});
+});
+
+describe("update install command", () => {
+	it("refuses before spawning when release status is not eligible", async () => {
+		getUpdateStatus.mockResolvedValue(availableStatus);
+		vi.spyOn(console, "error").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install"]);
+
+		expect(getUpdateStatus).toHaveBeenCalledWith(expect.objectContaining({ refresh: true }));
+		expect(spawn).not.toHaveBeenCalled();
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("installs the exact validated release without a shell and verifies it", async () => {
+		getUpdateStatus.mockResolvedValue({ ...availableStatus, auto_update_eligible: true });
+		spawn
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(spawn).toHaveBeenNthCalledWith(
+			1,
+			"npm",
+			["install", "-g", "--registry", "https://registry.npmjs.org/", "codemem@0.41.0"],
+			expect.objectContaining({ shell: false }),
+		);
+		expect(spawn).toHaveBeenNthCalledWith(
+			2,
+			"codemem",
+			["version"],
+			expect.objectContaining({ shell: false }),
+		);
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			previous_version: "0.40.2",
+			installed_version: "0.41.0",
+		});
+		expect(process.exitCode).toBeUndefined();
+	});
+
+	it("fails when the active CLI does not report the installed version", async () => {
+		getUpdateStatus.mockResolvedValue({ ...availableStatus, auto_update_eligible: true });
+		spawn
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.40.2\n" }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
+			error: "update_verification_failed",
+		});
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("refuses a concurrent installation while another process owns the update lock", async () => {
+		getUpdateStatus.mockResolvedValue({ ...availableStatus, auto_update_eligible: true });
+		const lockDirectory = join(testHome, ".codemem");
+		await mkdir(lockDirectory, { recursive: true });
+		await writeFile(join(lockDirectory, "update-install.lock"), `${process.pid}\n`, "utf8");
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(spawn).not.toHaveBeenCalled();
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
+			error: "update_install_locked",
+		});
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("reclaims a stale update lock before installing", async () => {
+		getUpdateStatus.mockResolvedValue({ ...availableStatus, auto_update_eligible: true });
+		const lockDirectory = join(testHome, ".codemem");
+		await mkdir(lockDirectory, { recursive: true });
+		await writeFile(join(lockDirectory, "update-install.lock"), "99999999\n", "utf8");
+		spawn
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(spawn).toHaveBeenCalledTimes(2);
+		expect(process.exitCode).toBeUndefined();
 	});
 });

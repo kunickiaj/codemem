@@ -106,9 +106,17 @@ const isPinnedGitSource = (runnerFrom) => {
   }
 };
 
-export const resolveAutoUpdatePlan = ({ runner, runnerFrom }) => {
-  const normalizedRunner = String(runner || "").trim();
-  const source = String(runnerFrom || "").trim();
+export const resolveAutoUpdatePlan = ({ runner, runnerFrom, runnerFromExplicit = false }) => {
+	const normalizedRunner = String(runner || "").trim();
+	const source = String(runnerFrom || "").trim();
+	if (isPinnedGitSource(source) || /^codemem@(?!latest$|next$|\*$)[^\s]+$/i.test(source)) {
+		return {
+			allowed: false,
+			reason: "pinned-source",
+			command: null,
+			commandText: null,
+		};
+	}
 
   if (normalizedRunner === "node") {
     return {
@@ -119,8 +127,16 @@ export const resolveAutoUpdatePlan = ({ runner, runnerFrom }) => {
     };
   }
 
-  if (normalizedRunner === "npx") {
-    return {
+	if (normalizedRunner === "npx") {
+		if (!runnerFromExplicit || !/^(?:codemem|codemem@(?:latest|next|\*))$/i.test(source)) {
+			return {
+				allowed: false,
+				reason: !runnerFromExplicit ? "implicit-pinned-source" : "custom-source",
+				command: null,
+				commandText: null,
+			};
+		}
+		return {
       allowed: true,
       reason: null,
       command: ["npm", "install", "-g", "codemem@latest"],
@@ -146,10 +162,14 @@ export const resolveAutoUpdatePlan = ({ runner, runnerFrom }) => {
     };
   }
 
-  return {
-    allowed: true,
-    reason: null,
-    command: ["npm", "install", "-g", "codemem@latest"],
-    commandText: "npm install -g codemem@latest",
-  };
+	if (normalizedRunner === "codemem") {
+		return {
+			allowed: true,
+			reason: null,
+			command: ["npm", "install", "-g", "codemem@latest"],
+			commandText: "npm install -g codemem@latest",
+		};
+	}
+
+	return { allowed: false, reason: "unknown-runner", command: null, commandText: null };
 };

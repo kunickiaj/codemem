@@ -185,10 +185,10 @@ describe("OpenCode startup release notifications", () => {
 		expect(showToast).not.toHaveBeenCalled();
 	});
 
-	test("auto remains read-only in PR2 while still notifying about an available release", async () => {
+	test("auto installs an eligible release through the guarded CLI command", async () => {
 		// Arrange
 		process.env.CODEMEM_BACKEND_UPDATE_POLICY = "auto";
-		installSpawnResult();
+		installSpawnResult({ ...availableStatus, auto_update_eligible: true });
 		const showToast = vi.fn().mockResolvedValue(undefined);
 
 		// Act
@@ -198,8 +198,38 @@ describe("OpenCode startup release notifications", () => {
 		// Assert
 		const args = spawnMock.mock.calls.map((call) => call[1]);
 		expect(args.some((value) => value?.includes("update") && value?.includes("check"))).toBe(true);
-		expect(args.some((value) => value?.includes("install"))).toBe(false);
+		expect(args.some((value) => value?.includes("update") && value?.includes("install"))).toBe(true);
 		expect(showToast).toHaveBeenCalledTimes(1);
+		expect(showToast.mock.calls[0]?.[0]?.body).toMatchObject({
+			message: "Updated codemem to 0.41.0.",
+			variant: "success",
+		});
+	});
+
+	test("auto remains notification-only until the 24-hour eligibility gate opens", async () => {
+		process.env.CODEMEM_BACKEND_UPDATE_POLICY = "auto";
+		installSpawnResult();
+		const showToast = vi.fn().mockResolvedValue(undefined);
+
+		await startPlugin(showToast);
+		await runStartupChecks();
+
+		expect(spawnMock.mock.calls.some((call) => call[1]?.includes("install"))).toBe(false);
+		expect(showToast.mock.calls[0]?.[0]?.body?.message).toMatch(/0\.41\.0.*npm install/i);
+	});
+
+	test("auto does not invoke installation when runner provenance is pinned", async () => {
+		process.env.CODEMEM_BACKEND_UPDATE_POLICY = "auto";
+		process.env.CODEMEM_RUNNER = "npx";
+		process.env.CODEMEM_RUNNER_FROM = "codemem@0.40.2";
+		installSpawnResult({ ...availableStatus, auto_update_eligible: true });
+		const showToast = vi.fn().mockResolvedValue(undefined);
+
+		await startPlugin(showToast);
+		await runStartupChecks();
+
+		expect(spawnMock.mock.calls.some((call) => call[1]?.includes("install"))).toBe(false);
+		expect(showToast.mock.calls.at(-1)?.[0]?.body?.message).toMatch(/0\.41\.0/);
 	});
 
 	test.each([

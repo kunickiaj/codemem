@@ -379,6 +379,7 @@ const parseReleaseNotification = (result) => {
     return {
       latestVersion: status.latest_version,
       recommendedAction: status.recommended_action.trim(),
+      autoUpdateEligible: status.auto_update_eligible === true,
     };
   } catch {
     return null;
@@ -1734,6 +1735,8 @@ export const OpencodeMemPlugin = async ({
   let sessionStartedAt = null;
   let activeSessionID = null;
   let viewerStarted = false;
+  let viewerStartInFlight = false;
+  let compatibilityAutoUpdateAttempted = false;
   let promptCounter = 0;
   let skippedAttemptCounter = 0;
   let lastPromptText = null;
@@ -2259,12 +2262,28 @@ export const OpencodeMemPlugin = async ({
     return { usage, id: info.id };
   };
 
-  const startViewer = () => {
-    if (!viewerEnabled || !viewerAutoStart || viewerStarted) {
+  const startViewer = async () => {
+    if (!viewerEnabled || !viewerAutoStart || viewerStarted || viewerStartInFlight) {
       if (viewerStarted) logLine("viewer already started, skipping auto-start").catch(() => {});
       return;
     }
-    viewerStarted = true;
+    viewerStartInFlight = true;
+    let existingViewer = false;
+    try {
+      const existing = await fetch(viewerHealthUrl, {
+        method: "GET",
+        redirect: "manual",
+        signal: AbortSignal.timeout(1_000),
+      });
+      existingViewer = existing.ok;
+    } catch {
+      // No live viewer responded; proceed with the plugin-owned start.
+    }
+    if (existingViewer) {
+      viewerStartInFlight = false;
+      logLine("viewer already running, skipping plugin-owned auto-start").catch(() => {});
+      return;
+    }
     const viewerArgs = buildViewerCliArgs("start");
     const cmd = [runner, ...runnerArgs, ...viewerArgs];
     logLine(`auto-starting viewer: ${cmd.join(" ")}`).catch(() => {});
@@ -2275,18 +2294,24 @@ export const OpencodeMemPlugin = async ({
         detached: true,
         stdio: "ignore",
       });
+      child.once("spawn", () => {
+        viewerStarted = true;
+        viewerStartInFlight = false;
+        startHealthCheck();
+      });
       child.on("error", (err) => {
+        viewerStartInFlight = false;
         logLine(`viewer spawn error: ${err.message}`).catch(() => {});
       });
       child.unref();
     } catch (err) {
+      viewerStartInFlight = false;
       logLine(`viewer spawn failed: ${err}`).catch(() => {});
     }
-    startHealthCheck();
   };
 
   const runCommand = async (cmd, options = {}) => {
-    const { stdinText = null } = options;
+    const { stdinText = null, timeoutMs = commandTimeout } = options;
     const [command, ...args] = cmd;
     return new Promise((resolve) => {
       const proc = nodeSpawn(command, args, {
@@ -2325,19 +2350,31 @@ export const OpencodeMemPlugin = async ({
         return;
       }
       let timer = null;
-      if (Number.isFinite(commandTimeout) && commandTimeout > 0) {
+      let killTimer = null;
+      let timedOut = false;
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
+        resolve(result);
+      };
+      if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
         timer = setTimeout(() => {
-          try { proc.kill(); } catch { /* ignore */ }
-          resolve({ exitCode: null, stdout, stderr: "timeout" });
-        }, commandTimeout);
+          timedOut = true;
+          try { proc.kill("SIGTERM"); } catch { /* ignore */ }
+          killTimer = setTimeout(() => {
+            try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+          }, 5_000);
+          if (killTimer.unref) killTimer.unref();
+        }, timeoutMs);
       }
       proc.once("exit", (exitCode) => {
-        if (timer) clearTimeout(timer);
-        resolve({ exitCode, stdout, stderr });
+        finish({ exitCode: timedOut ? null : exitCode, stdout, stderr: timedOut ? "timeout" : stderr });
       });
       proc.once("error", (err) => {
-        if (timer) clearTimeout(timer);
-        resolve({ exitCode: 1, stdout: "", stderr: String(err) });
+        finish({ exitCode: 1, stdout: "", stderr: String(err) });
       });
     });
   };
@@ -2588,7 +2625,7 @@ export const OpencodeMemPlugin = async ({
     if (!viewerEnabled || !viewerAutoStart || !viewerStarted) {
       return { attempted: false, ok: false };
     }
-    const restartResult = await runCli(buildViewerCliArgs("restart"));
+    const restartResult = await runCli(buildViewerCliArgs("restart"), { timeoutMs: 60_000 });
     if (restartResult?.exitCode === 0) {
       await logLine("compat.auto_update_viewer_restart ok");
       return { attempted: true, ok: true };
@@ -2668,12 +2705,14 @@ export const OpencodeMemPlugin = async ({
       `compat.version_mismatch current=${currentVersion} required=${minVersion} mode=${guidance.mode} note=${redactLog(guidance.note)}`
     );
 
-    const autoPlan = resolveAutoUpdatePlan({ runner, runnerFrom });
     if (backendUpdatePolicy === "auto") {
-      if (autoPlan.allowed && Array.isArray(autoPlan.command) && autoPlan.command.length > 0) {
-        const commandText = autoPlan.commandText || autoPlan.command.join(" ");
-        await logLine(`compat.auto_update_start cmd=${redactLog(commandText)}`);
-        const updateResult = await runCommand(autoPlan.command);
+      compatibilityAutoUpdateAttempted = true;
+      await logLine("compat.auto_update_start cmd=codemem update install --json");
+      const updateResult = await runCli(
+        ["update", "install", "--json"],
+        { timeoutMs: 420_000 }
+      );
+      if (updateResult?.exitCode === 0) {
         await logLine(
           `compat.auto_update_result exit=${updateResult?.exitCode ?? "unknown"} stderr=${redactLog(
             (updateResult?.stderr || "").trim()
@@ -2683,8 +2722,7 @@ export const OpencodeMemPlugin = async ({
         const refreshedResult = await runCli(["version"]);
         const refreshedVersion = (refreshedResult?.stdout || "").trim();
         if (
-          updateResult?.exitCode === 0
-          && refreshedResult?.exitCode === 0
+          refreshedResult?.exitCode === 0
           && isVersionAtLeast(refreshedVersion, minVersion)
         ) {
           writeCompatCheckCache(cacheKey, refreshedVersion);
@@ -2704,19 +2742,31 @@ export const OpencodeMemPlugin = async ({
           }
           return;
         }
-
+        await logLine(
+          `compat.auto_update_verification_failed current=${redactLog(refreshedVersion || "unknown")} required=${redactLog(minVersion)}`
+        );
         await showToast(
-          `${message}. Auto-update did not resolve it. Suggested action: ${guidance.action}`,
+          `${message}. Auto-update completed, but the active CLI failed verification. Suggested action: ${guidance.action}`,
           "warning"
         );
         return;
       }
-
+      let installError = null;
+      try {
+        installError = JSON.parse((updateResult?.stdout || "").trim())?.error || null;
+      } catch {
+        // Non-JSON output is treated as an installation failure.
+      }
+      const failureReason = installError === "update_install_locked"
+        ? "another update is already running"
+        : installError === "update_install_refused"
+          ? "not eligible"
+          : "installation failed";
       await logLine(
-        `compat.auto_update_skipped reason=${autoPlan.reason || "not-eligible"}`
+        `compat.auto_update_skipped reason=${installError || "update_install_failed"} exit=${updateResult?.exitCode ?? "unknown"} stderr=${redactLog((updateResult?.stderr || "").trim())}`
       );
       await showToast(
-        `${message}. Auto-update skipped (${autoPlan.reason || "not eligible"}). Suggested action: ${guidance.action}`,
+        `${message}. Auto-update skipped (${failureReason}). Suggested action: ${guidance.action}`,
         "warning"
       );
       return;
@@ -2732,12 +2782,40 @@ export const OpencodeMemPlugin = async ({
     );
     if (
       !notification
-      || !client.tui?.showToast
       || notifiedReleaseVersions.has(notification.latestVersion)
     ) {
       return;
     }
     notifiedReleaseVersions.add(notification.latestVersion);
+    if (
+      backendUpdatePolicy === "auto"
+      && notification.autoUpdateEligible
+      && !compatibilityAutoUpdateAttempted
+    ) {
+      const autoPlan = resolveAutoUpdatePlan({ runner, runnerFrom, runnerFromExplicit });
+      if (autoPlan.allowed) {
+        const installation = await runCli(
+          ["update", "install", "--json"],
+          { timeoutMs: 420_000 }
+        );
+        if (installation?.exitCode === 0) {
+          const viewerRestart = await restartViewerAfterAutoUpdate();
+          await showToast(`Updated codemem to ${notification.latestVersion}.`, "success");
+          if (viewerRestart.attempted && !viewerRestart.ok) {
+            await showToast(
+              "Backend updated, but viewer restart failed. Run `codemem serve restart`.",
+              "warning"
+            );
+          }
+          return;
+        }
+        await logLine(
+          `release.auto_update_failed exit=${installation?.exitCode ?? "unknown"} stderr=${redactLog(
+            (installation?.stderr || "").trim()
+          )}`
+        );
+      }
+    }
     await showToast(
       `codemem ${notification.latestVersion} is available. ${notification.recommendedAction}`,
       "warning"
@@ -3202,23 +3280,26 @@ export const OpencodeMemPlugin = async ({
 
   await log("info", "codemem plugin initialized", { cwd, version });
   await logLine(`plugin initialized cwd=${cwd} version=${version}`);
-  startViewer();
-  const compatCheckTimer = setTimeout(() => {
-    void verifyCliCompatibility().catch(async (err) => {
-      await logLine(
-        `compat.version_check_error message=${String(err?.message || err || "unknown")}`
-      );
-    });
+  void startViewer();
+  const updateCheckTimer = setTimeout(() => {
+    void (async () => {
+      try {
+        await verifyCliCompatibility();
+      } catch (err) {
+        await logLine(
+          `compat.version_check_error message=${String(err?.message || err || "unknown")}`
+        );
+      }
+      try {
+        await checkForReleaseUpdate();
+      } catch (err) {
+        await logLine(
+          `release.update_check_error message=${String(err?.message || err || "unknown")}`
+        );
+      }
+    })();
   }, COMPAT_CHECK_DELAY_MS);
-  if (compatCheckTimer.unref) compatCheckTimer.unref();
-  const releaseCheckTimer = setTimeout(() => {
-    void checkForReleaseUpdate().catch(async (err) => {
-      await logLine(
-        `release.update_check_error message=${String(err?.message || err || "unknown")}`
-      );
-    });
-  }, COMPAT_CHECK_DELAY_MS);
-  if (releaseCheckTimer.unref) releaseCheckTimer.unref();
+  if (updateCheckTimer.unref) updateCheckTimer.unref();
 
   const truncate = (value) => {
     if (value === undefined || value === null) {
