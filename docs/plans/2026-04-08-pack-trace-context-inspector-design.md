@@ -12,8 +12,9 @@ proposed Search entry point.
 
 The current UI contract predates near-duplicate compression: it omits the
 `compressed` candidate disposition and `assembly.compressed_clusters`, so
-compressed candidates are not rendered. That narrow parity gap is tracked for
-0.41; the broader Doctor surface remains deferred.
+compressed candidates are not rendered. That narrow parity gap is deferred
+outside 0.41 after the release was narrowed to validated performance and
+reliability work; the broader Doctor surface remains deferred.
 
 ## Context
 

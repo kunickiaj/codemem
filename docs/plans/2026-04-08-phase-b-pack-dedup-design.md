@@ -282,8 +282,8 @@ The trace should report compression:
 - `item_ids` retains compressed IDs only when their representative survives
   budgeting
 - Compression token impact versus uncompressed is not covered by current tests;
-  the deterministic `off`-versus-`ids` net-reduction fixture is tracked in the
-  0.41 plan
+  the deterministic `off`-versus-`ids` net-reduction fixture is deferred outside
+  0.41 with the automatic full-pack compression default
 - Task mode skips compression
 - Compact mode: compressed items excluded from index, only representative shown
 - Trace reports `compressed_clusters`
