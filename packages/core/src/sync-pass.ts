@@ -10,6 +10,7 @@ import { and, desc, eq, gt, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { ensureAdditiveSchemaCompatibility } from "./db.js";
+import { isStableReleaseVersion } from "./release-discovery.js";
 import * as schema from "./schema.js";
 import type { SecretScanner } from "./secret-scanner.js";
 import { buildAuthHeaders } from "./sync-auth.js";
@@ -285,6 +286,27 @@ function capabilityHeader(): Record<string, string> {
 
 function defaultCapabilityDiagnostics(): SyncCapabilityDiagnostics {
 	return capabilityDiagnostics("unsupported");
+}
+
+function persistPeerRuntimeVersion(
+	db: Database,
+	peerDeviceId: string,
+	statusPayload: Record<string, unknown>,
+): void {
+	const matchingDevice = statusPayload.device_id === peerDeviceId;
+	const runtimeVersion =
+		matchingDevice && isStableReleaseVersion(statusPayload.runtime_version)
+			? statusPayload.runtime_version
+			: null;
+	try {
+		db.prepare(
+			`UPDATE sync_peers
+			 SET runtime_version = ?, runtime_version_observed_at = ?
+			 WHERE peer_device_id = ?`,
+		).run(runtimeVersion, runtimeVersion ? new Date().toISOString() : null, peerDeviceId);
+	} catch {
+		// Informational metadata must never affect sync availability or trust.
+	}
 }
 
 async function reconcilePeerRowsBeforeExchange(
@@ -1230,6 +1252,7 @@ export async function syncOnce(
 			if (statusPayload.fingerprint !== pinnedFingerprint) {
 				throw new Error("peer fingerprint mismatch");
 			}
+			persistPeerRuntimeVersion(db, peerDeviceId, statusPayload);
 			lastCapabilityDiagnostics = capabilityDiagnostics(statusPayload.sync_capability);
 			if (String(statusPayload.protocol_version ?? "") !== EXPECTED_SYNC_PROTOCOL_VERSION) {
 				throw new Error(

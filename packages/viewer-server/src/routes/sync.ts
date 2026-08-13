@@ -159,6 +159,7 @@ import {
 	updatePeerAddresses,
 	upsertCoordinatorGroupPreference,
 	upsertProjectScopeSettingsMapping,
+	VERSION,
 	verifyRecipientReviewedIntent,
 	verifySignature,
 	writeCodememConfigFile,
@@ -3466,6 +3467,8 @@ function mapPeerRow(
 		last_seen_at: row.last_seen_at,
 		last_sync_at: row.last_sync_at,
 		last_error: showDiag ? row.last_error : null,
+		runtime_version: row.runtime_version ?? null,
+		runtime_version_observed_at: row.runtime_version_observed_at ?? null,
 		has_error: Boolean(row.last_error),
 		claimed_local_actor: Boolean(row.claimed_local_actor),
 		claimed_local_actor_scope: claimedLocalActorScopeStatus(store, row),
@@ -4162,6 +4165,7 @@ function readViewerBinding(dbPath: string): { host: string; port: number } | nul
 const PEERS_QUERY = `
 	SELECT p.peer_device_id, p.name, p.pinned_fingerprint, p.addresses_json,
 	       p.last_seen_at, p.last_sync_at, p.last_error,
+	       p.runtime_version, p.runtime_version_observed_at,
 	       p.projects_include_json, p.projects_exclude_json, p.claimed_local_actor,
 	       p.actor_id, p.discovered_via_coordinator_id, p.discovered_via_group_id,
 	       a.display_name AS actor_display_name
@@ -4308,6 +4312,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 					device_id: deviceId,
 					protocol_version: SYNC_PROTOCOL_VERSION,
 					fingerprint,
+					runtime_version: VERSION,
 					sync_reset: addSyncScopeToBoundary(syncReset, null),
 					sync_capability: LOCAL_SYNC_CAPABILITY,
 					sync_features: LOCAL_SYNC_FEATURES,

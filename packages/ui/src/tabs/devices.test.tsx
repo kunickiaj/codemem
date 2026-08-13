@@ -201,6 +201,102 @@ describe("read-only Devices", () => {
 		});
 	});
 
+	it("presents paired-peer runtime metadata without changing device behavior", () => {
+		const baseline = projectDevices(
+			intent(),
+			reconciliation(),
+			projects,
+			[{ deviceId: "device-address-fingerprint-secret", state: "available" }],
+			[
+				{
+					deviceId: "device-address-fingerprint-secret",
+					runtimeVersion: null,
+					runtimeVersionObservedAt: null,
+				},
+			],
+		);
+		const withVersion = projectDevices(
+			intent(),
+			reconciliation(),
+			projects,
+			[{ deviceId: "device-address-fingerprint-secret", state: "available" }],
+			[
+				{
+					deviceId: "device-address-fingerprint-secret",
+					runtimeVersion: "0.42.0",
+					runtimeVersionObservedAt: "2026-08-11T12:00:00.000Z",
+				},
+			],
+		);
+		const withChangedVersion = projectDevices(
+			intent(),
+			reconciliation(),
+			projects,
+			[{ deviceId: "device-address-fingerprint-secret", state: "available" }],
+			[
+				{
+					deviceId: "device-address-fingerprint-secret",
+					runtimeVersion: "0.43.1",
+					runtimeVersionObservedAt: "2026-08-11T13:00:00.000Z",
+				},
+			],
+		);
+		const withoutRuntimeMetadata = (projection: (typeof baseline.devices)[number]) => {
+			const { reportedRuntimeVersion, runtimeVersionObservedAt, ...deviceBehavior } = projection;
+			void reportedRuntimeVersion;
+			void runtimeVersionObservedAt;
+			return deviceBehavior;
+		};
+
+		expect(withVersion.devices[0]).toMatchObject({
+			deviceId: "device-address-fingerprint-secret",
+			displayName: "Work Laptop",
+			identityName: "Adam & Co",
+			availability: "available",
+			statusState: "active",
+			action: null,
+			reportedRuntimeVersion: "0.42.0",
+			runtimeVersionObservedAt: "2026-08-11T12:00:00.000Z",
+		});
+		expect(withoutRuntimeMetadata(withVersion.devices[0])).toEqual(
+			withoutRuntimeMetadata(baseline.devices[0]),
+		);
+		expect(withoutRuntimeMetadata(withChangedVersion.devices[0])).toEqual(
+			withoutRuntimeMetadata(baseline.devices[0]),
+		);
+	});
+
+	it("renders a reported Codemem version and falls back for legacy peers", () => {
+		mount(intent(), reconciliation(), {
+			peerRuntimeMetadata: [
+				{
+					deviceId: "device-address-fingerprint-secret",
+					runtimeVersion: "0.42.0",
+					runtimeVersionObservedAt: "2026-08-11T12:00:00.000Z",
+				},
+			],
+		});
+
+		const versionRow = [...document.querySelectorAll("dl > div")].find(
+			(row) => row.querySelector("dt")?.textContent === "Codemem version",
+		);
+		expect(versionRow?.querySelector("dd")?.textContent).toBe("0.42.0");
+
+		mount(intent(), reconciliation(), {
+			peerRuntimeMetadata: [
+				{
+					deviceId: "device-address-fingerprint-secret",
+					runtimeVersion: null,
+					runtimeVersionObservedAt: null,
+				},
+			],
+		});
+		const fallbackRow = [...document.querySelectorAll("dl > div")].find(
+			(row) => row.querySelector("dt")?.textContent === "Codemem version",
+		);
+		expect(fallbackRow?.querySelector("dd")?.textContent).toBe("Not reported");
+	});
+
 	it("excludes devices owned by pending or merged Identities", () => {
 		const graph = intent({
 			identities: [

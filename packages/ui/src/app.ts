@@ -33,6 +33,7 @@ import { getTheme, initThemeToggle, setTheme } from "./lib/theme";
 import { initCoordinatorAdminTab, loadCoordinatorAdminData } from "./tabs/coordinator-admin";
 import {
 	type DeviceAvailabilityInput,
+	type DevicePeerRuntimeMetadataInput,
 	type DevicesNavigationTarget,
 	type DevicesProjectInput,
 	mountDevices,
@@ -495,6 +496,7 @@ let lastDevicesData: {
 	intent: api.RecipientPolicyIntentGraphV1;
 	reconciliation: api.RecipientPolicyReconciliationStatusV1;
 	availability: DeviceAvailabilityInput[];
+	peerRuntimeMetadata: DevicePeerRuntimeMetadataInput[];
 } | null = null;
 
 async function loadRecipientPolicyProjects(): Promise<DevicesProjectInput[]> {
@@ -534,6 +536,20 @@ function deriveDeviceAvailability(): DeviceAvailabilityInput[] {
 	return [...availability].map(([deviceId, state]) => ({ deviceId, state }));
 }
 
+function deriveDevicePeerRuntimeMetadata(): DevicePeerRuntimeMetadataInput[] {
+	return state.lastSyncPeers.flatMap((peer) => {
+		const deviceId = String(peer.peer_device_id ?? "").trim();
+		if (!deviceId) return [];
+		return [
+			{
+				deviceId,
+				runtimeVersion: peer.runtime_version ?? null,
+				runtimeVersionObservedAt: peer.runtime_version_observed_at ?? null,
+			},
+		];
+	});
+}
+
 function navigateFromDevices(target: DevicesNavigationTarget) {
 	switchTab(target, { canonicalHash: true });
 	queueMicrotask(() => document.getElementById(`tabBtn-${target}`)?.focus());
@@ -555,10 +571,12 @@ async function loadDevicesData(): Promise<boolean> {
 			loadSyncData(),
 		]);
 		const availability = deriveDeviceAvailability();
+		const peerRuntimeMetadata = deriveDevicePeerRuntimeMetadata();
 		mountDevices(mount, intent, reconciliation, projects, availability, {
 			onNavigate: navigateFromDevices,
+			peerRuntimeMetadata,
 		});
-		lastDevicesData = { projects, intent, reconciliation, availability };
+		lastDevicesData = { projects, intent, reconciliation, availability, peerRuntimeMetadata };
 		devicesLoaded = true;
 		return true;
 	} catch {
@@ -571,6 +589,7 @@ async function loadDevicesData(): Promise<boolean> {
 				lastDevicesData.availability,
 				{
 					onNavigate: navigateFromDevices,
+					peerRuntimeMetadata: lastDevicesData.peerRuntimeMetadata,
 					refreshError: true,
 				},
 			);

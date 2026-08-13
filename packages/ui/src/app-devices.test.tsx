@@ -81,6 +81,13 @@ const intent = {
 			displayName: "Work Laptop",
 			status: "active" as const,
 		},
+		{
+			version: 1 as const,
+			identityId: "identity-private",
+			deviceId: "coordinator-only-device",
+			displayName: "Coordinator Tablet",
+			status: "active" as const,
+		},
 	],
 	projectRecipients: [
 		{
@@ -139,8 +146,28 @@ describe("Devices app integration", () => {
 		mocks.loadSyncData.mockImplementation(async () => {
 			const { state } = await import("./lib/state");
 			state.lastSyncPeers = [
-				{ peer_device_id: "device-private", status: { peer_state: "online", fresh: true } },
+				{
+					peer_device_id: "device-private",
+					runtime_version: "0.42.0",
+					runtime_version_observed_at: "2026-08-11T12:00:00.000Z",
+					status: { peer_state: "online", fresh: true },
+				},
+				{
+					peer_device_id: "unmatched-paired-device",
+					runtime_version: "9.9.9",
+					runtime_version_observed_at: "2026-08-11T12:00:00.000Z",
+					status: { peer_state: "online", fresh: true },
+				},
 			];
+			state.lastSyncCoordinator = {
+				discovered_devices: [
+					{
+						device_id: "coordinator-only-device",
+						display_name: "Coordinator Tablet",
+						stale: false,
+					},
+				],
+			};
 		});
 		await import("./app");
 		await act(async () => {
@@ -186,6 +213,21 @@ describe("Devices app integration", () => {
 		await Promise.resolve();
 		expect(window.location.hash).toBe("#sharing");
 		expect(document.activeElement).toBe(document.getElementById("tabBtn-sharing"));
+	});
+
+	it("joins runtime metadata only from the matched paired peer", () => {
+		const cards = [...document.querySelectorAll<HTMLElement>("#tab-devices article")];
+		const workLaptop = cards.find(
+			(card) => card.querySelector("h3")?.textContent === "Work Laptop",
+		);
+		const coordinatorTablet = cards.find(
+			(card) => card.querySelector("h3")?.textContent === "Coordinator Tablet",
+		);
+		if (!workLaptop || !coordinatorTablet) throw new Error("Expected device cards missing");
+
+		expect(workLaptop.textContent).toContain("Codemem version0.42.0");
+		expect(coordinatorTablet.textContent).not.toContain("Codemem version");
+		expect(document.getElementById("tab-devices")?.textContent).not.toContain("9.9.9");
 	});
 
 	it("preserves stale cards, announces post-load failures, and marks refresh aggregation failed", async () => {

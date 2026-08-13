@@ -124,6 +124,8 @@ export interface SyncPeer {
 	scope_label?: string;
 	status?: SyncPeerStatus;
 	last_error?: string;
+	runtime_version?: string | null;
+	runtime_version_observed_at?: string | null;
 }
 
 export interface SyncSharingReviewRow {

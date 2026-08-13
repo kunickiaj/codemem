@@ -310,6 +310,191 @@ describe("syncOnce", () => {
 		).toBe("grant-1");
 	});
 
+	it("persists a stable runtime version only for the requested peer identity", async () => {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-version", "abc123", new Date().toISOString());
+		db.prepare(
+			"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, updated_at) VALUES (?, ?, ?)",
+		).run("peer-version", "2025-12-31T00:00:00Z|local-op-0", new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([
+				200,
+				{
+					device_id: "peer-version",
+					fingerprint: "abc123",
+					protocol_version: "2",
+					runtime_version: "0.40.2",
+					sync_capability: "legacy",
+					sync_reset: {
+						generation: 1,
+						snapshot_id: "snap-1",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+				},
+			])
+			.mockResolvedValueOnce([500, { error: "stop_after_status" }]);
+
+		await syncOnce(db, "peer-version", ["http://127.0.0.1:9090"]);
+
+		const row = db
+			.prepare(
+				"SELECT runtime_version, runtime_version_observed_at FROM sync_peers WHERE peer_device_id = ?",
+			)
+			.get("peer-version") as {
+			runtime_version: string | null;
+			runtime_version_observed_at: string | null;
+		};
+		expect(row.runtime_version).toBe("0.40.2");
+		expect(new Date(row.runtime_version_observed_at ?? "").toISOString()).toBe(
+			row.runtime_version_observed_at,
+		);
+	});
+
+	it.each([
+		["missing", undefined],
+		["malformed", "not-a-version"],
+		["oversized", `1.2.3+${"a".repeat(129)}`],
+		["prerelease", "0.41.0-beta.1"],
+	])("clears peer runtime metadata when a matching status reports %s version data", async (_, value) => {
+		db.prepare(
+			`INSERT INTO sync_peers (
+				peer_device_id, pinned_fingerprint, runtime_version, runtime_version_observed_at, created_at
+			) VALUES (?, ?, ?, ?, ?)`,
+		).run("peer-version", "abc123", "0.40.1", "2026-08-01T00:00:00.000Z", new Date().toISOString());
+		db.prepare(
+			"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, updated_at) VALUES (?, ?, ?)",
+		).run("peer-version", "2025-12-31T00:00:00Z|local-op-0", new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([
+				200,
+				{
+					device_id: "peer-version",
+					fingerprint: "abc123",
+					protocol_version: "2",
+					...(value === undefined ? {} : { runtime_version: value }),
+					sync_capability: "legacy",
+					sync_reset: {
+						generation: 1,
+						snapshot_id: "snap-1",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+				},
+			])
+			.mockResolvedValueOnce([500, { error: "stop_after_status" }]);
+
+		await syncOnce(db, "peer-version", ["http://127.0.0.1:9090"]);
+
+		expect(
+			db
+				.prepare(
+					"SELECT runtime_version, runtime_version_observed_at FROM sync_peers WHERE peer_device_id = ?",
+				)
+				.get("peer-version"),
+		).toEqual({ runtime_version: null, runtime_version_observed_at: null });
+	});
+
+	it("keeps trusted runtime metadata when status fingerprint verification fails", async () => {
+		db.prepare(
+			`INSERT INTO sync_peers (
+				peer_device_id, pinned_fingerprint, runtime_version, runtime_version_observed_at, created_at
+			) VALUES (?, ?, ?, ?, ?)`,
+		).run(
+			"peer-version",
+			"expected",
+			"0.40.1",
+			"2026-08-01T00:00:00.000Z",
+			new Date().toISOString(),
+		);
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		vi.spyOn(syncHttpClient, "requestJson").mockResolvedValueOnce([
+			200,
+			{
+				device_id: "peer-version",
+				fingerprint: "unexpected",
+				protocol_version: "2",
+				runtime_version: "0.40.2",
+			},
+		]);
+
+		await syncOnce(db, "peer-version", ["http://127.0.0.1:9090"]);
+
+		expect(
+			db
+				.prepare(
+					"SELECT runtime_version, runtime_version_observed_at FROM sync_peers WHERE peer_device_id = ?",
+				)
+				.get("peer-version"),
+		).toEqual({
+			runtime_version: "0.40.1",
+			runtime_version_observed_at: "2026-08-01T00:00:00.000Z",
+		});
+	});
+
+	it.each([
+		["wrong", "different-peer"],
+		["missing", undefined],
+	])("clears runtime metadata for a %s status device without creating a trust failure", async (_, statusDeviceId) => {
+		db.prepare(
+			`INSERT INTO sync_peers (
+					peer_device_id, pinned_fingerprint, runtime_version, runtime_version_observed_at, created_at
+				) VALUES (?, ?, ?, ?, ?)`,
+		).run("peer-version", "abc123", "0.40.1", "2026-08-01T00:00:00.000Z", new Date().toISOString());
+		db.prepare(
+			"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, updated_at) VALUES (?, ?, ?)",
+		).run("peer-version", "2025-12-31T00:00:00Z|local-op-0", new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([
+				200,
+				{
+					...(statusDeviceId === undefined ? {} : { device_id: statusDeviceId }),
+					fingerprint: "abc123",
+					protocol_version: "2",
+					runtime_version: "0.40.2",
+					sync_capability: "legacy",
+					sync_reset: {
+						generation: 1,
+						snapshot_id: "snap-1",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+				},
+			])
+			.mockResolvedValueOnce([500, { error: "stop_after_status" }]);
+
+		const result = await syncOnce(db, "peer-version", ["http://127.0.0.1:9090"]);
+
+		expect(result.failureCategory).not.toBe("trust");
+		expect(
+			db
+				.prepare(
+					"SELECT runtime_version, runtime_version_observed_at FROM sync_peers WHERE peer_device_id = ?",
+				)
+				.get("peer-version"),
+		).toEqual({ runtime_version: null, runtime_version_observed_at: null });
+	});
+
 	it("queues durable vector catch-up after applying incremental inbound ops", async () => {
 		db.prepare(
 			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",

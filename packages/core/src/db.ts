@@ -660,6 +660,16 @@ function assertRecipientPolicyDeviceEligibilityCompatibility(db: DatabaseType): 
 }
 
 /**
+ * Repair display-only peer version metadata independently of the compatibility
+ * marker because these additive columns intentionally do not bump the schema.
+ */
+function ensureSyncPeerRuntimeVersionColumns(db: DatabaseType): void {
+	if (!tableExists(db, "sync_peers")) return;
+	addColumnIfMissing(db, "sync_peers", "runtime_version", "TEXT");
+	addColumnIfMissing(db, "sync_peers", "runtime_version_observed_at", "TEXT");
+}
+
+/**
  * Has the additive compatibility shim already run for the current SCHEMA_VERSION?
  *
  * Fail-safe: returns false on any error (including a missing
@@ -814,6 +824,9 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 			);
 		}
 	}
+	// Always run: current-marker databases may predate these no-version-bump
+	// columns, so the schema_compat_state gate cannot prove they exist.
+	ensureSyncPeerRuntimeVersionColumns(db);
 	const compatAlreadyApplied = schemaCompatAlreadyApplied(db);
 	if (!compatAlreadyApplied) {
 		// IMPORTANT: any NEW DDL added to this gated block REQUIRES bumping

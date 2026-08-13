@@ -425,6 +425,8 @@ export interface ApiSyncPeerItem {
 	last_seen_at: string | null;
 	last_sync_at: string | null;
 	last_error: string | null;
+	runtime_version: string | null;
+	runtime_version_observed_at: string | null;
 	has_error: boolean;
 	claimed_local_actor: boolean;
 	claimed_local_actor_scope: ApiClaimedLocalActorScopeStatus | null;
@@ -872,6 +874,7 @@ export interface ApiSyncProtocolStatusResponse {
 	device_id: string;
 	protocol_version: string;
 	fingerprint: string;
+	runtime_version?: string;
 	sync_reset: ApiSyncResetBoundary;
 	sync_capability: SyncCapability;
 	sync_features: SyncFeature[];

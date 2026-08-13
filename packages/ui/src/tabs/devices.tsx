@@ -13,6 +13,12 @@ export interface DeviceAvailabilityInput {
 	state: DeviceAvailabilityState;
 }
 
+export interface DevicePeerRuntimeMetadataInput {
+	deviceId: string;
+	runtimeVersion: string | null;
+	runtimeVersionObservedAt: string | null;
+}
+
 export interface DevicesProjectInput {
 	canonicalProjectIdentity: string;
 	displayName: string;
@@ -23,6 +29,7 @@ export interface DevicesRendererOptions {
 	loadError?: boolean;
 	refreshError?: boolean;
 	onNavigate?: (target: DevicesNavigationTarget) => void;
+	peerRuntimeMetadata?: DevicePeerRuntimeMetadataInput[];
 }
 
 export interface DeviceProjectProjection {
@@ -40,6 +47,9 @@ export interface DeviceProjection {
 	identityName: string;
 	availability: DeviceAvailabilityState;
 	availabilityLabel: string;
+	isPairedPeer: boolean;
+	reportedRuntimeVersion: string | null;
+	runtimeVersionObservedAt: string | null;
 	directProjects: DeviceProjectProjection[];
 	inheritedProjects: DeviceProjectProjection[];
 	unavailableProjectCount: number;
@@ -118,6 +128,7 @@ export function projectDevices(
 	reconciliation: RecipientPolicyReconciliationStatusV1,
 	projects: DevicesProjectInput[],
 	availabilityInput: DeviceAvailabilityInput[],
+	peerRuntimeMetadataInput: DevicePeerRuntimeMetadataInput[] = [],
 ): DevicesProjection {
 	const identityNames = new Map(
 		intent.identities
@@ -128,6 +139,9 @@ export function projectDevices(
 		projects.map((item) => [item.canonicalProjectIdentity, item.displayName]),
 	);
 	const availability = new Map(availabilityInput.map((item) => [item.deviceId, item.state]));
+	const peerRuntimeMetadata = new Map(
+		peerRuntimeMetadataInput.map((item) => [item.deviceId, item]),
+	);
 	const statuses = new Map(
 		reconciliation.items.map((item) => [item.canonicalProjectIdentity, item]),
 	);
@@ -135,6 +149,7 @@ export function projectDevices(
 	const devices = intent.identityDevices
 		.filter((device) => device.status === "active" && identityNames.has(device.identityId))
 		.map((device): DeviceProjection => {
+			const runtimeMetadata = peerRuntimeMetadata.get(device.deviceId);
 			const directProjectIds = uniqueSorted(
 				intent.projectRecipients
 					.filter(
@@ -174,6 +189,9 @@ export function projectDevices(
 				identityName: identityNames.get(device.identityId) ?? "Identity unavailable",
 				availability: deviceAvailability,
 				availabilityLabel: AVAILABILITY_LABELS[deviceAvailability],
+				isPairedPeer: runtimeMetadata !== undefined,
+				reportedRuntimeVersion: runtimeMetadata?.runtimeVersion ?? null,
+				runtimeVersionObservedAt: runtimeMetadata?.runtimeVersionObservedAt ?? null,
 				directProjects,
 				inheritedProjects,
 				unavailableProjectCount: directProjectIds.length - directProjects.length,
@@ -281,6 +299,12 @@ function DevicesView({
 										<dt>Availability</dt>
 										<dd>{device.availabilityLabel}</dd>
 									</div>
+									{device.isPairedPeer ? (
+										<div>
+											<dt>Codemem version</dt>
+											<dd>{device.reportedRuntimeVersion ?? "Not reported"}</dd>
+										</div>
+									) : null}
 									<div>
 										<dt>Sharing status</dt>
 										<dd>
@@ -360,7 +384,13 @@ export function mountDevices(
 		focusedElement instanceof HTMLElement && mount.contains(focusedElement)
 			? deviceActionFocusIdentities.get(focusedElement)
 			: undefined;
-	const projection = projectDevices(intent, reconciliation, projects, availability);
+	const projection = projectDevices(
+		intent,
+		reconciliation,
+		projects,
+		availability,
+		options.peerRuntimeMetadata,
+	);
 	render(
 		<section
 			aria-labelledby="devices-heading"

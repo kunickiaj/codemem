@@ -719,6 +719,8 @@ export const syncPeers = sqliteTable("sync_peers", {
 	last_seen_at: text("last_seen_at"),
 	last_sync_at: text("last_sync_at"),
 	last_error: text("last_error"),
+	runtime_version: text("runtime_version"),
+	runtime_version_observed_at: text("runtime_version_observed_at"),
 	discovered_via_coordinator_id: text("discovered_via_coordinator_id"),
 	discovered_via_group_id: text("discovered_via_group_id"),
 	trust_provenance: text("trust_provenance"),

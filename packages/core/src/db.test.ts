@@ -148,6 +148,10 @@ describe("connect", () => {
 		expect(columnExists(db, "identity_devices", "assignment_version")).toBe(true);
 		expect(columnExists(db, "policy_team_device_decisions", "assignment_version")).toBe(true);
 		expect(hasIndex(db, "idx_policy_team_device_decisions_device")).toBe(true);
+		expect(columnInfo(db, "sync_peers", "runtime_version")).toEqual({ is_not_null: 0 });
+		expect(columnInfo(db, "sync_peers", "runtime_version_observed_at")).toEqual({
+			is_not_null: 0,
+		});
 		expect(hasIndex(db, "idx_memory_items_origin_device_active")).toBe(true);
 		expect(hasIndex(db, "idx_memory_items_scope_visibility_created")).toBe(true);
 		expect(hasIndex(db, "idx_memory_items_scope_backfill_pending")).toBe(true);
@@ -773,7 +777,7 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(() => ensureAdditiveSchemaCompatibility(db)).not.toThrow();
 	});
 
-	it("adds sync_peers discovery-provenance columns and creates coordinator_group_preferences", () => {
+	it("adds sync_peers metadata columns and creates coordinator_group_preferences", () => {
 		db.exec(`
 			CREATE TABLE sync_peers (
 				peer_device_id TEXT PRIMARY KEY NOT NULL,
@@ -795,6 +799,8 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(columnExists(db, "sync_peers", "discovered_via_coordinator_id")).toBe(false);
 		expect(columnExists(db, "sync_peers", "discovered_via_group_id")).toBe(false);
 		expect(columnExists(db, "sync_peers", "trust_provenance")).toBe(false);
+		expect(columnExists(db, "sync_peers", "runtime_version")).toBe(false);
+		expect(columnExists(db, "sync_peers", "runtime_version_observed_at")).toBe(false);
 		expect(tableExists(db, "coordinator_group_preferences")).toBe(false);
 
 		ensureAdditiveSchemaCompatibility(db);
@@ -802,6 +808,10 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(columnExists(db, "sync_peers", "discovered_via_coordinator_id")).toBe(true);
 		expect(columnExists(db, "sync_peers", "discovered_via_group_id")).toBe(true);
 		expect(columnExists(db, "sync_peers", "trust_provenance")).toBe(true);
+		expect(columnInfo(db, "sync_peers", "runtime_version")).toEqual({ is_not_null: 0 });
+		expect(columnInfo(db, "sync_peers", "runtime_version_observed_at")).toEqual({
+			is_not_null: 0,
+		});
 		expect(tableExists(db, "coordinator_group_preferences")).toBe(true);
 		expect(columnExists(db, "coordinator_group_preferences", "default_space_scope_id")).toBe(true);
 		expect(
@@ -1656,6 +1666,24 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 
 		expect(columnExists(db, "memory_items", "project")).toBe(true);
 		expect(hasIndex(db, "idx_memory_items_project")).toBe(true);
+		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
+	});
+
+	it("always repairs missing peer runtime-version columns after the current marker is set", () => {
+		ensureAdditiveSchemaCompatibility(db);
+		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
+		db.exec("ALTER TABLE sync_peers DROP COLUMN runtime_version_observed_at");
+		db.exec("ALTER TABLE sync_peers DROP COLUMN runtime_version");
+		expect(columnExists(db, "sync_peers", "runtime_version")).toBe(false);
+		expect(columnExists(db, "sync_peers", "runtime_version_observed_at")).toBe(false);
+
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(columnInfo(db, "sync_peers", "runtime_version")).toEqual({ is_not_null: 0 });
+		expect(columnInfo(db, "sync_peers", "runtime_version_observed_at")).toEqual({
+			is_not_null: 0,
+		});
+		expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
 		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
 	});
 

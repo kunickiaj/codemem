@@ -3555,6 +3555,52 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("returns peer runtime metadata from peer and status read models while redacted", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				store.db
+					.prepare(
+						`INSERT INTO sync_peers (
+							peer_device_id, name, runtime_version, runtime_version_observed_at, created_at
+						) VALUES (?, ?, ?, ?, ?)`,
+					)
+					.run(
+						"peer-version",
+						"Versioned peer",
+						"0.40.2",
+						"2026-08-10T12:00:00.000Z",
+						"2026-08-10T00:00:00.000Z",
+					);
+
+				const peersResponse = await app.request("/api/sync/peers");
+				const peersBody = (await peersResponse.json()) as {
+					items: Array<Record<string, unknown>>;
+					redacted: boolean;
+				};
+				const statusResponse = await app.request("/api/sync/status");
+				const statusBody = (await statusResponse.json()) as {
+					peers: Array<Record<string, unknown>>;
+					redacted: boolean;
+				};
+
+				expect(peersBody.redacted).toBe(true);
+				expect(peersBody.items[0]).toMatchObject({
+					runtime_version: "0.40.2",
+					runtime_version_observed_at: "2026-08-10T12:00:00.000Z",
+				});
+				expect(statusBody.redacted).toBe(true);
+				expect(statusBody.peers[0]).toMatchObject({
+					runtime_version: "0.40.2",
+					runtime_version_observed_at: "2026-08-10T12:00:00.000Z",
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("returns 400 (not 500) when POST /api/sync/peers/rename gets a malformed body", async () => {
 			const { app, cleanup } = createTestApp();
 			try {
@@ -4568,7 +4614,35 @@ describe("viewer-server", () => {
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body.error).toBe("unauthorized");
 				expect(body.reason).toBeUndefined();
+				expect(body.runtime_version).toBeUndefined();
 			} finally {
+				cleanup();
+			}
+		});
+
+		it("includes the canonical runtime version in authenticated peer status", async () => {
+			const { syncApp, ensureStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				const store = ensureStore();
+				const url = "http://localhost/v1/status";
+				peer = createAuthenticatedSyncPeer(store, { url });
+				const res = await syncApp.request(url, {
+					headers: buildAuthHeaders({
+						deviceId: peer.peerDeviceId,
+						method: "GET",
+						url,
+						bodyBytes: Buffer.alloc(0),
+						keysDir: peer.keysDir,
+					}),
+				});
+
+				expect(res.status).toBe(200);
+				expect((await res.json()) as Record<string, unknown>).toMatchObject({
+					runtime_version: VERSION,
+				});
+			} finally {
+				peer?.cleanup();
 				cleanup();
 			}
 		});
