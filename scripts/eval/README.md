@@ -85,3 +85,44 @@ mismatches rising are reported as `WORSE` and fail the run.
 - `baselines/` holds committed **metrics** (JSON), never corpus data.
 - Validate script changes with `pnpm run eval:pack:typecheck`; root `tsc` and
   `lint` primarily cover `packages/`.
+
+## Prompt-path performance benchmark
+
+The development-only prompt-path harness compares the real source CLI with the
+canonical `CodememPlugin` using both a healthy foreground viewer and classified
+viewer-unavailable CLI fallback. It creates and removes an isolated three-memory
+synthetic database, discards one warm-up per path, and measures 30 repetitions by
+default:
+
+```fish
+pnpm exec tsx --conditions source scripts/eval/prompt-path.ts
+
+# lifecycle smoke only; not eligible for the release gate
+pnpm exec tsx --conditions source scripts/eval/prompt-path.ts --repetitions 1
+```
+
+The JSON report contains aggregate median/p95 latency, sorted unlabelled timing
+samples, failure counts by class, and started pack/ledger subprocess counts. The
+median averages the middle pair and p95 uses nearest rank. The harness never
+emits fixture text, prompts, memory IDs, database paths, or per-query results.
+
+This source-tree benchmark intentionally includes the `pnpm exec tsx` startup
+used by both direct CLI and fallback paths. It validates the benefit of avoiding
+development CLI process startup; its absolute latency and improvement ratio do
+not represent an installed built CLI. The small fixture emphasizes startup and
+transport cost rather than retrieval cost at realistic corpus size.
+
+The release gate requires a lower healthy-viewer median, a healthy-viewer p95 no
+higher than direct CLI, zero healthy pack/ledger subprocesses, and no failed
+repetitions. Any other healthy-path CLI command also invalidates the run. If p95
+regresses, repeat the complete 30-run comparison once; a second regression fails
+the gate. Fallback latency excludes asynchronous ledger settlement and is
+reported separately rather than gating the performance claim.
+
+Validate harness changes explicitly; this tooling remains outside the product
+test command and root CLI scripts:
+
+```fish
+pnpm run eval:pack:typecheck
+node --import tsx --test scripts/eval/prompt-path-lib.test.ts
+```
