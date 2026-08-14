@@ -70,7 +70,7 @@ try {
 	run(process.execPath, [
 		"--input-type=module",
 		"-e",
-		"const mod = await import('@codemem/opencode-plugin'); if (typeof mod.default !== 'function') throw new Error('default export is not a function'); if (typeof mod.OpencodeMemPlugin !== 'function') throw new Error('named export is not a function');",
+		"const mod = await import('@codemem/opencode-plugin'); if (typeof mod.default !== 'function') throw new Error('default export is not a function'); if (typeof mod.CodememPlugin !== 'function') throw new Error('canonical named export is not a function'); if (mod.default !== mod.CodememPlugin) throw new Error('default export is not canonical'); if (mod.OpencodeMemPlugin !== mod.CodememPlugin) throw new Error('legacy export is not a compatibility alias');",
 	], installDir);
 } finally {
 	rmSync(tempDir, { recursive: true, force: true });

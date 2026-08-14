@@ -70,7 +70,7 @@ export default defineConfig(({ command, mode }) => {
 					emptyOutDir: false,
 					lib: {
 						entry: resolve(__dirname, "src/app.ts"),
-						name: "OpencodeMemViewer",
+						name: "CodememViewer",
 						formats: ["iife"],
 						fileName: () => "app.js",
 					},

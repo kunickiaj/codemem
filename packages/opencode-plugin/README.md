@@ -21,6 +21,13 @@ Manual config also works. Add the package name to your OpenCode config:
 
 OpenCode installs npm plugins automatically with Bun at startup.
 
+## Exports
+
+`CodememPlugin` is the canonical named export and the package default export.
+`OpencodeMemPlugin` remains available as a deprecated, reference-identical alias
+for compatibility with integrations created before the Codemem rename. No removal
+version is currently scheduled.
+
 ## Documentation
 
 - Repository: https://github.com/kunickiaj/codemem

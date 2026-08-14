@@ -1,2 +1,5 @@
-export { OpencodeMemPlugin as default } from "./.opencode/plugins/codemem.js";
-export { OpencodeMemPlugin } from "./.opencode/plugins/codemem.js";
+export {
+	CodememPlugin as default,
+	CodememPlugin,
+	OpencodeMemPlugin,
+} from "./.opencode/plugins/codemem.js";

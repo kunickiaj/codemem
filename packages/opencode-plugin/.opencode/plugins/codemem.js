@@ -1609,7 +1609,7 @@ const buildRunnerArgs = ({ runner, runnerFrom, runnerFromExplicit }) => {
   return runnerFromExplicit ? [runnerFrom] : [];
 };
 
-export const OpencodeMemPlugin = async ({
+export const CodememPlugin = async ({
   project,
   client,
   directory,
@@ -3873,7 +3873,13 @@ export const OpencodeMemPlugin = async ({
   };
 };
 
-export default OpencodeMemPlugin;
+export default CodememPlugin;
+
+/**
+ * @deprecated Use CodememPlugin.
+ * Keep this reference-identical: OpenCode deduplicates plugin exports by identity.
+ */
+export const OpencodeMemPlugin = CodememPlugin;
 export const __testUtils = {
   PINNED_BACKEND_VERSION,
   fetchRawEventsStatus,

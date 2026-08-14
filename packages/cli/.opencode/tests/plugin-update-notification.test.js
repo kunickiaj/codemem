@@ -56,8 +56,8 @@ function installSpawnResult(status = availableStatus) {
 }
 
 async function startPlugin(showToast = vi.fn().mockResolvedValue(undefined)) {
-	const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
-	const hooks = await OpencodeMemPlugin({
+	const { CodememPlugin } = await import("../plugins/codemem.js");
+	const hooks = await CodememPlugin({
 		project: { name: "codemem" },
 		client: {
 			app: { log: vi.fn().mockResolvedValue(undefined) },
@@ -73,6 +73,15 @@ async function runStartupChecks() {
 	await vi.advanceTimersByTimeAsync(1_500);
 	await vi.runAllTicks();
 }
+
+describe("@codemem/opencode-plugin exports", () => {
+	test("exports CodememPlugin canonically while preserving the legacy alias", async () => {
+		const plugin = await import("../plugins/codemem.js");
+
+		expect(plugin.default).toBe(plugin.CodememPlugin);
+		expect(plugin.OpencodeMemPlugin).toBe(plugin.CodememPlugin);
+	});
+});
 
 describe("OpenCode startup release notifications", () => {
 	const originalEnv = { ...process.env };

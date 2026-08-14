@@ -2,6 +2,7 @@ const PINNED_BACKEND_VERSION = "0.40.2";
 
 export {
 	default,
+	CodememPlugin,
 	OpencodeMemPlugin,
 	__testUtils,
 	buildInjectionToastMessage,
