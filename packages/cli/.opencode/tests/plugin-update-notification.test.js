@@ -29,12 +29,16 @@ const availableStatus = {
 	recommended_action: "npm install -g codemem@0.41.0",
 };
 
-function makeProcess({ stdout = "", stderr = "", exitCode = 0, settle = true } = {}) {
+function makeProcess(
+	{ stdout = "", stderr = "", exitCode = 0, settle = true, emitSpawn = false } = {},
+) {
 	const proc = new EventEmitter();
 	proc.stdout = new EventEmitter();
 	proc.stderr = new EventEmitter();
 	proc.stdin = { write: vi.fn(), end: vi.fn() };
 	proc.kill = vi.fn();
+	proc.unref = vi.fn();
+	if (emitSpawn) queueMicrotask(() => proc.emit("spawn"));
 	if (settle) {
 		queueMicrotask(() => {
 			if (stdout) proc.stdout.emit("data", stdout);
@@ -213,6 +217,116 @@ describe("OpenCode startup release notifications", () => {
 			message: "Updated codemem to 0.41.0.",
 			variant: "success",
 		});
+	});
+
+	test("auto restarts the plugin-owned viewer after an eligible update succeeds", async () => {
+		// Arrange
+		process.env.CODEMEM_BACKEND_UPDATE_POLICY = "auto";
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "1";
+		process.env.CODEMEM_VIEWER_HOST = "127.0.0.9";
+		process.env.CODEMEM_VIEWER_PORT = "48765";
+		process.env.CODEMEM_DB = "/tmp/codemem/viewer.sqlite";
+		process.env.CODEMEM_CONFIG = "/tmp/codemem/config.json";
+		vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("viewer unavailable"));
+		spawnMock.mockImplementation((_command, args) => {
+			if (args?.includes("serve") && args?.includes("start")) {
+				return makeProcess({ emitSpawn: true });
+			}
+			if (args?.includes("update") && args?.includes("check")) {
+				return makeProcess({
+					stdout: JSON.stringify({ ...availableStatus, auto_update_eligible: true }),
+				});
+			}
+			if (args?.includes("version")) return makeProcess({ stdout: "0.40.2\n" });
+			return makeProcess();
+		});
+
+		// Act
+		await startPlugin();
+		await vi.advanceTimersByTimeAsync(0);
+		await runStartupChecks();
+
+		// Assert
+		expect(spawnMock).toHaveBeenCalledWith(
+			"codemem",
+			[
+				"serve",
+				"start",
+				"--host",
+				"127.0.0.9",
+				"--port",
+				"48765",
+				"--db-path",
+				"/tmp/codemem/viewer.sqlite",
+				"--config",
+				"/tmp/codemem/config.json",
+			],
+			expect.objectContaining({ cwd: "/tmp/codemem", detached: true }),
+		);
+		const installIndex = spawnMock.mock.calls.findIndex(
+			(call) => call[1]?.includes("update") && call[1]?.includes("install"),
+		);
+		const restartIndex = spawnMock.mock.calls.findIndex(
+			(call) => call[1]?.includes("serve") && call[1]?.includes("restart"),
+		);
+		expect(installIndex).toBeGreaterThanOrEqual(0);
+		expect(restartIndex).toBeGreaterThan(installIndex);
+		expect(spawnMock).toHaveBeenCalledWith(
+			"codemem",
+			[
+				"serve",
+				"restart",
+				"--host",
+				"127.0.0.9",
+				"--port",
+				"48765",
+				"--db-path",
+				"/tmp/codemem/viewer.sqlite",
+				"--config",
+				"/tmp/codemem/config.json",
+			],
+			expect.objectContaining({ cwd: "/tmp/codemem" }),
+		);
+		expect(
+			spawnMock.mock.calls.filter(
+				(call) => call[1]?.includes("serve") && call[1]?.includes("restart"),
+			),
+		).toHaveLength(1);
+	});
+
+	test("auto does not restart a viewer that was already running before plugin startup", async () => {
+		// Arrange
+		process.env.CODEMEM_BACKEND_UPDATE_POLICY = "auto";
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "1";
+		process.env.CODEMEM_VIEWER_HOST = "127.0.0.1";
+		process.env.CODEMEM_VIEWER_PORT = "38888";
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true });
+		installSpawnResult({ ...availableStatus, auto_update_eligible: true });
+
+		// Act
+		await startPlugin();
+		await vi.advanceTimersByTimeAsync(0);
+		await runStartupChecks();
+
+		// Assert
+		expect(fetchMock).toHaveBeenCalledWith(
+			"http://127.0.0.1:38888/api/health",
+			expect.objectContaining({ method: "GET", redirect: "manual" }),
+		);
+		expect(
+			spawnMock.mock.calls.some(
+				(call) => call[1]?.includes("update") && call[1]?.includes("install"),
+			),
+		).toBe(true);
+		expect(
+			spawnMock.mock.calls.some(
+				(call) =>
+					call[1]?.includes("serve") &&
+					["start", "restart"].some((action) => call[1]?.includes(action)),
+			),
+		).toBe(false);
 	});
 
 	test("auto remains notification-only until the 24-hour eligibility gate opens", async () => {
