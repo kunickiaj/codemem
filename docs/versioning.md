@@ -54,10 +54,10 @@ pnpm run release:preflight-tag
 
 This verifies release tagging safety in two contexts:
 
-- local preflight: target commit must match `origin/main` HEAD, and the working tree must be clean
+- local preflight: target commit must match `origin/main` HEAD, the current branch must be `main`, and the working tree must be clean
 - CI tag workflow: tagged commit must be reachable from `origin/main` (avoids false failures if `main` advances after tag push)
 
-Tag only after the release PR has merged to `main` and you have verified that `HEAD` on `main` is the merged release commit. Do not tag the release branch tip directly.
+Tag only after the release PR has merged to `main` and you have verified that `HEAD` on `main` is the merged release commit. Release and feature branch tips fail preflight and must not be tagged directly.
 
 ## Release discovery
 

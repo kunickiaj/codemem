@@ -17,6 +17,7 @@ vi.mock("@codemem/core", async (importOriginal) => {
 	return {
 		...actual,
 		getUpdateStatus,
+		VERSION: "0.40.2",
 	};
 });
 

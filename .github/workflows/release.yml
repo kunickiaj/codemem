@@ -26,6 +26,8 @@ jobs:
   preflight-tag:
     name: Release Tag Preflight
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Validate dispatch input
@@ -45,7 +47,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ env.RELEASE_REF }}
 
-      - name: Verify tag points at merged main or release branch
+      - name: Verify tag points at merged main
         env:
           IS_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
           PUSH_SHA: ${{ github.sha }}

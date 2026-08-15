@@ -5,7 +5,7 @@
  * and type definitions shared across the codemem TS backend.
  */
 
-export const VERSION = "0.40.2";
+export const VERSION = "0.41.0";
 
 export * as Api from "./api-types.js";
 export { extractApplyPatchPaths, MUTATING_TOOL_NAMES } from "./apply-patch.js";

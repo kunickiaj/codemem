@@ -85,9 +85,10 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-Verify release version alignment before tagging:
+Verify release version alignment and tag safety before tagging:
 
 ```text
+pnpm run release:version -- check
 pnpm run release:preflight-tag
 ```
 

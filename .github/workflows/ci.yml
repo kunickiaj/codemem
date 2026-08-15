@@ -61,7 +61,7 @@ jobs:
         run: pnpm run build
 
       - name: Test
-        run: pnpm run test
+        run: pnpm run test:release && pnpm run test
 
   worker-test:
     name: Cloudflare Worker Test
