@@ -2,12 +2,12 @@
 
 [![CI](https://github.com/kunickiaj/codemem/actions/workflows/ci.yml/badge.svg)](https://github.com/kunickiaj/codemem/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/kunickiaj/codemem/branch/main/graph/badge.svg)](https://codecov.io/gh/kunickiaj/codemem) [![Release](https://img.shields.io/github/v/release/kunickiaj/codemem)](https://github.com/kunickiaj/codemem/releases)
 
-Persistent memory for [OpenCode](https://opencode.ai) and [Claude Code](https://claude.ai/code). codemem captures what you work on across sessions, retrieves relevant context using hybrid search, and injects relevant context automatically in OpenCode.
+Persistent memory for [OpenCode](https://opencode.ai), [Claude Code](https://claude.ai/code), [Codex](https://openai.com/codex), and [pi](https://github.com/earendil-works/pi). codemem captures what you work on across sessions, retrieves relevant context using hybrid search, and injects relevant context automatically.
 
 - **Local-first** — everything lives in SQLite on your machine
 - **Hybrid retrieval** — FTS5 BM25 lexical search + sqlite-vec semantic search, merged and re-ranked
-- **Automatic injection** — the OpenCode plugin injects context into every prompt, no manual steps
-- **Claude Code plugin support** — install from the codemem marketplace source
+- **Automatic injection** — adapters inject context into every prompt, no manual steps
+- **Multi-agent** — OpenCode, Claude Code, Codex, and pi share one project-scoped store
 - **Built-in viewer** — browse memories, sessions, and observer output in a local web UI
 - **Peer-to-peer sync** — replicate memories across machines without a central service
 
@@ -101,11 +101,48 @@ This merges `[mcp_servers.codemem]` into `~/.codex/config.toml` and writes `~/.c
 
 Codex hook ingestion shares the same raw-event pipeline as Claude and OpenCode: HTTP enqueue-first (`POST /api/codex-hooks`), then `codemem codex-hook-ingest` direct enqueue, with a Codex-specific spool fallback. `UserPromptSubmit` runs capture ingest in the background and injects memory context via `additionalContext`; disable injection with `CODEMEM_INJECT_CONTEXT=0`. See [docs/plugin-reference.md](docs/plugin-reference.md) for details and troubleshooting.
 
+### Pi
+
+Pi support ships as the `@codemem/pi-extension` pi-package. Install the CLI, then let setup wire the extension:
+
+```text
+npm i -g codemem
+codemem setup
+```
+
+`codemem setup` auto-detects pi (`pi` on PATH or the agent dir; honors `PI_CODING_AGENT_DIR`) and appends `npm:@codemem/pi-extension@<version>` to `~/.pi/agent/settings.json` `packages`. Flags:
+
+| Flag | Purpose |
+|------|---------|
+| `--pi-only` | Only configure pi |
+| `--pi-mcp` | Opt into MCP via third-party `pi-mcp-adapter` (writes `mcp.json` only when the adapter is detected) |
+| `--pi-extension-path <path>` | Dev: write a local-path `packages` entry instead of the npm pin |
+
+Uninstall: remove the `@codemem/pi-extension` entry from pi's `packages` list and restart pi. The shared memory store is left intact.
+
+What you get:
+
+- **Ingest** — extension POSTs to `POST /api/pi-hooks` with `codemem pi-hook-ingest` CLI fallback (spool when offline)
+- **Injection** — turn-local `systemPrompt` append on `before_agent_start` (`## codemem memories`); never the persistent `message` channel
+- **Tools** — all 14 `memory_*` tools registered natively via `pi.registerTool` (HTTP preferred, CLI fallback). No `pi-mcp-adapter` required for tools
+- **Compaction** — pi-only observe-only boundary: `session_before_compact` flushes extraction before pi discards context; never replaces pi's summarizer
+- **Fork/resume** — stream identity re-keys on every `session_start`
+- **Dashboard** — pi rows appear in the source-agnostic feed/sessions/projects tabs with no extra setup
+
+Cross-agent: one shared store. Memories from OpenCode/Claude/Codex sessions inject into pi (and the reverse) because packs are project-scoped, never agent-scoped.
+
+Caveats (v1):
+
+- Observer extraction from pi config supports **API-key providers only**. OAuth-only installs get an explicit `unconfigured (oauth-only)` status — never a silent 401. Set `observer_provider` / `observer_model` explicitly when needed. Selection is cheap-model-first.
+- `--pi-mcp` requires the third-party `pi-mcp-adapter` package; without it setup writes nothing MCP-related and explains the prerequisite. Native tools remain the default surface (`pi.tools_mode: native`).
+
+See [`packages/pi-extension/README.md`](packages/pi-extension/README.md) and [docs/plugin-reference.md](docs/plugin-reference.md) for config knobs and lifecycle details.
+
 > Migrating from `opencode-mem`? See [docs/rename-migration.md](docs/rename-migration.md).
 
 ## How it works
 
-Adapters hook into runtime event systems (OpenCode plugin and Claude hooks). They capture tool calls and conversation messages, flush them through an observer pipeline that produces typed memories, and surface retrieval context for future prompts.
+Adapters hook into runtime event systems (OpenCode plugin, Claude/Codex hooks, and the pi extension). They capture tool calls and conversation messages, flush them through an observer pipeline that produces typed memories, and surface retrieval context for future prompts.
 
 ```mermaid
 sequenceDiagram
@@ -174,6 +211,8 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | | `codemem claude-hook-ingest` | Claude hook event ingestion (stdin) |
 | | `codemem codex-hook-ingest` | Codex hook event ingestion (stdin, experimental) |
 | | `codemem codex-hook-inject` | Codex prompt-time memory injection (stdin, experimental) |
+| | `codemem pi-hook-ingest` | Pi extension event ingestion (stdin) |
+| | `codemem pi-hook-inject` | Pi prompt-time memory injection (stdin / JSON) |
 
 Run `codemem --help` for the full list. `show`, `forget`, and `remember` still work as hidden top-level aliases. `export-memories` and `import-memories` remain visible but are deprecated — they warn on stderr and will be hidden from help and completion in a future release; use `codemem memory export` / `codemem memory import`.
 

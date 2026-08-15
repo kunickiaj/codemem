@@ -167,6 +167,7 @@ jobs:
           publish_if_missing "@codemem/server" "packages/viewer-server"
           publish_if_missing "codemem" "packages/cli"
           publish_if_missing "@codemem/opencode-plugin" "packages/opencode-plugin"
+          publish_if_missing "@codemem/pi-extension" "packages/pi-extension"
 
   release:
     name: Create GitHub Release

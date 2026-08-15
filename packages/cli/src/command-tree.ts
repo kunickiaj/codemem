@@ -30,6 +30,8 @@ import {
 	showMemoryCommand,
 } from "./commands/memory.js";
 import { packCommand, promptPackLedgerCommand } from "./commands/pack.js";
+import { piHookIngestCommand } from "./commands/pi-hook-ingest.js";
+import { piHookInjectCommand } from "./commands/pi-hook-inject.js";
 import { recentCommand } from "./commands/recent.js";
 import { searchCommand } from "./commands/search.js";
 import { serveCommand } from "./commands/serve.js";
@@ -47,6 +49,8 @@ export const ROOT_COMPLETION_COMMANDS = [
 	"claude-hook-ingest",
 	"codex-hook-inject",
 	"codex-hook-ingest",
+	"pi-hook-inject",
+	"pi-hook-ingest",
 	"config",
 	"coordinator",
 	"db",
@@ -172,6 +176,8 @@ export function registerRootCommands(program: Command): Command {
 	program.addCommand(claudeHookFileContextCommand);
 	program.addCommand(codexHookInjectCommand);
 	program.addCommand(codexHookIngestCommand);
+	program.addCommand(piHookInjectCommand);
+	program.addCommand(piHookIngestCommand);
 	program.addCommand(dbCommand);
 	program.addCommand(distillCommand);
 	// Warned compatibility aliases — visible for their first warned release;

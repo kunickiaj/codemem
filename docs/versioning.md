@@ -6,6 +6,7 @@ CodeMem uses one shared semantic version stream across its npm packages.
 
 - npm: `codemem` (CLI)
 - npm: `@codemem/opencode-plugin` (OpenCode plugin)
+- npm: `@codemem/pi-extension` (pi coding-agent extension)
 
 ## Policy
 
@@ -20,6 +21,7 @@ Version bumps are prepared on a release branch and touch these files:
 - `packages/core/package.json` (`version`)
 - `packages/cli/package.json` (`version`)
 - `packages/opencode-plugin/package.json` (`version`)
+- `packages/pi-extension/package.json` (`version`)
 - `packages/mcp-server/package.json` (`version`)
 - `packages/viewer-server/package.json` (`version`)
 - `packages/core/src/index.ts` (`VERSION` export)

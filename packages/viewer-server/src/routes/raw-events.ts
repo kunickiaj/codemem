@@ -1,6 +1,6 @@
 /**
  * Raw events routes — GET & POST /api/raw-events, GET /api/raw-events/status,
- * POST /api/claude-hooks, POST /api/codex-hooks.
+ * POST /api/claude-hooks, POST /api/codex-hooks, POST /api/pi-hooks.
  */
 
 import { createHash } from "node:crypto";
@@ -8,6 +8,7 @@ import type { MemoryStore, RawEventSweeper } from "@codemem/core";
 import {
 	buildRawEventEnvelopeFromCodexHook,
 	buildRawEventEnvelopeFromHook,
+	buildRawEventEnvelopeFromPiEvent,
 	schema,
 	stripPrivateObj,
 } from "@codemem/core";
@@ -472,6 +473,54 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 			});
 
 			nudgeSweeper(sweeper, [opencodeSessionId], source);
+
+			return c.json({ inserted: inserted ? 1 : 0, skipped: 0 });
+		} catch (err) {
+			const response: Record<string, unknown> = { error: "internal server error" };
+			if (process.env.CODEMEM_VIEWER_DEBUG === "1") {
+				response.detail = (err as Error).message;
+			}
+			return c.json(response, 500);
+		}
+	});
+
+	// POST /api/pi-hooks — ingest pi coding-agent extension events
+	app.post("/api/pi-hooks", async (c) => {
+		const result = await parseJsonObjectBody(c, MAX_RAW_EVENTS_BODY_BYTES);
+		if (result instanceof Response) return result;
+		const payload = result;
+
+		const envelope = buildRawEventEnvelopeFromPiEvent(payload);
+		if (envelope === null) {
+			return c.json({ inserted: 0, skipped: 1 });
+		}
+
+		const store = getStore();
+		try {
+			const sessionStreamId = envelope.session_stream_id;
+			// Assert/normalize source server-side — never trust a caller-supplied source.
+			const source = "pi";
+			const strippedPayload = stripPrivateObj(envelope.payload) as Record<string, unknown>;
+
+			const inserted = store.recordRawEvent({
+				opencodeSessionId: sessionStreamId,
+				source,
+				eventId: envelope.event_id,
+				eventType: envelope.event_type,
+				payload: strippedPayload,
+				tsWallMs: envelope.ts_wall_ms,
+			});
+
+			store.updateRawEventSessionMeta({
+				opencodeSessionId: sessionStreamId,
+				source,
+				cwd: envelope.cwd,
+				project: envelope.project,
+				startedAt: envelope.started_at,
+				lastSeenTsWallMs: envelope.ts_wall_ms,
+			});
+
+			nudgeSweeper(sweeper, [sessionStreamId], source);
 
 			return c.json({ inserted: inserted ? 1 : 0, skipped: 0 });
 		} catch (err) {

@@ -6,7 +6,7 @@ codemem has five main pieces: **adapters** that capture shell/runtime activity, 
 
 | Component | What it does | Key files |
 |-----------|-------------|-----------|
-| Adapters | Capture OpenCode/Claude events and enqueue raw events for ingest | `packages/opencode-plugin/.opencode/plugins/codemem.js`, `plugins/claude/scripts/ingest-hook.sh`, `packages/core/src/claude-hooks.ts` |
+| Adapters | Capture OpenCode/Claude/Codex/pi events and enqueue raw events for ingest | `packages/opencode-plugin/.opencode/plugins/codemem.js`, `plugins/claude/scripts/ingest-hook.sh`, `packages/core/src/claude-hooks.ts`, `packages/core/src/codex-hooks.ts`, `packages/core/src/pi-hooks.ts`, `packages/pi-extension/` |
 | Ingest pipeline | Extracts tool events, builds transcripts, runs the observer | `packages/core/src/ingest-pipeline.ts`, `packages/core/src/ingest-events.ts` |
 | Observer | Produces typed observations and session summaries from transcripts | `packages/core/src/ingest-prompts.ts`, `packages/core/src/ingest-xml-parser.ts` |
 | Store | SQLite persistence for sessions, memories, artifacts, embeddings | `packages/core/src/store.ts`, `packages/core/src/schema.ts` |
@@ -29,6 +29,8 @@ flowchart LR
     CH -->|fallback: claude-hook-ingest direct enqueue| DB
     CX["Codex hooks"] -->|POST /api/codex-hooks| VW
     CX -->|fallback: codex-hook-ingest direct enqueue/spool| DB
+    PI["pi extension"] -->|POST /api/pi-hooks| VW
+    PI -->|fallback: pi-hook-ingest direct enqueue/spool| DB
     VW --> DB["SQLite"]
     DB -->|flush batch claimed| IN["Ingest pipeline"]
     IN --> OB["Observer"]
@@ -40,7 +42,7 @@ flowchart LR
 
 1. Adapters capture tool/conversation lifecycle events and normalize them into raw events with optional `_adapter` envelopes.
 2. OpenCode streams raw events to the viewer ingest API (`POST /api/raw-events`) with preflight checks (`GET /api/raw-events/status`) and can fall back to CLI queue enqueue when stream writes fail. Prompt-time packs and prompt-pack ledger transitions also use viewer POST APIs first, with CLI fallback only for retryable transport or version failures.
-3. Claude hook ingestion posts to `POST /api/claude-hooks` first and falls back to `codemem claude-hook-ingest` direct enqueue when the local viewer API is unavailable. Codex hook ingestion follows the same HTTP-first shape through `POST /api/codex-hooks`, then `codemem codex-hook-ingest` direct enqueue, with a Codex-specific on-disk spool as the last-resort fallback.
+3. Claude hook ingestion posts to `POST /api/claude-hooks` first and falls back to `codemem claude-hook-ingest` direct enqueue when the local viewer API is unavailable. Codex hook ingestion follows the same HTTP-first shape through `POST /api/codex-hooks`, then `codemem codex-hook-ingest` direct enqueue, with a Codex-specific on-disk spool as the last-resort fallback. Pi extension ingestion posts to `POST /api/pi-hooks` first and falls back to `codemem pi-hook-ingest` (with spool) when the local viewer API is unavailable.
 4. The viewer/store persists raw events and queues durable flush batches.
 5. Idle and sweeper workers claim batches and run them through ingest.
 6. Before building session context, raw events are passed through `normalizeEventsForSessionContext` (in `ingest-transcript.ts`) which projects adapter-enveloped events (`_adapter` schema v1.0) into the flat `user_prompt` / `tool.execute.after` shapes that `buildSessionContext` scans. This is critical for Claude Code hook events which always arrive wrapped in the adapter envelope.
@@ -61,6 +63,7 @@ Support tiers describe operational expectations for each adapter path:
 |---|---|---|
 | OpenCode plugin | Supported | Primary reference adapter for lifecycle events and injection behavior. |
 | Claude hooks/plugin | Supported | Hook-first queue path with CLI/runtime fallback and parity slices tracked in adapter stack PRs. |
+| pi extension | Supported | Thin pi-package (`packages/pi-extension`, `packages/core/src/pi-hooks.ts`): extension → `POST /api/pi-hooks` → observer → memories; turn-local `systemPrompt` injection; 14 native `memory_*` tools; observe-only compaction boundary; fork/resume-aware streams. Observer derivation from pi config is API-key-only in v1 (OAuth → explicit unconfigured). |
 | Codex plugin (hooks + MCP) | Experimental (early beta) | Functional capture pipeline (`plugins/codex/`, `packages/core/src/codex-hooks.ts`) dogfooded end-to-end: hooks → `POST /api/codex-hooks` → observer → memories. Prompt-time injection present and env-gated but not fully validated on strict models. Not yet promoted to a stable support tier. |
 | Windsurf integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
 | Cursor integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |

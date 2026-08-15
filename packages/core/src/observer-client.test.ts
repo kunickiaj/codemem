@@ -53,15 +53,24 @@ describe("loadObserverConfig", () => {
 		"CODEMEM_OBSERVER_MAX_CHARS",
 		"CODEMEM_OBSERVER_MAX_TOKENS",
 		"CODEMEM_OBSERVER_HEADERS",
+		"HOME",
+		"PI_CODING_AGENT_DIR",
+		"CLAUDE_CODE_ENTRYPOINT",
+		"CLAUDE_CODE_SESSION",
 	];
 
 	const saved: Record<string, string | undefined> = {};
+	let isolatedHome: string | undefined;
 
 	beforeEach(() => {
 		for (const k of envKeys) {
 			saved[k] = process.env[k];
 			delete process.env[k];
 		}
+		// Isolate from the developer's real pi/opencode installs so D8 pi
+		// derivation does not fill defaults from ~/.pi/agent.
+		isolatedHome = mkdtempSync(join(tmpdir(), "codemem-obs-cfg-home-"));
+		process.env.HOME = isolatedHome;
 	});
 
 	afterEach(() => {
@@ -72,6 +81,8 @@ describe("loadObserverConfig", () => {
 				process.env[k] = saved[k];
 			}
 		}
+		if (isolatedHome) rmSync(isolatedHome, { recursive: true, force: true });
+		isolatedHome = undefined;
 	});
 
 	it("returns defaults when no config file exists", () => {
@@ -2208,5 +2219,256 @@ describe("shouldAutoSelectCodexSidecar", () => {
 
 	it("requires ~/.codex/auth.json to exist", () => {
 		expect(shouldAutoSelectCodexSidecar({ ...base, codexAuthExists: false })).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// D8: pi-derived observer credentials at point of use (C1)
+// ---------------------------------------------------------------------------
+
+const PI_FIXTURE_KEY = "sk-fixture-pi-client-auth-key-do-not-leak";
+
+describe("ObserverClient — pi-derived auth (D8)", () => {
+	const envKeys = [
+		"CODEMEM_CONFIG",
+		"CODEMEM_OBSERVER_PROVIDER",
+		"CODEMEM_OBSERVER_MODEL",
+		"CODEMEM_OBSERVER_RUNTIME",
+		"CODEMEM_OBSERVER_API_KEY",
+		"CODEMEM_OBSERVER_BASE_URL",
+		"CODEMEM_OBSERVER_OPENAI_USE_RESPONSES",
+		"CODEMEM_CODEX_COMMAND",
+		"ANTHROPIC_API_KEY",
+		"OPENAI_API_KEY",
+		"OPENCODE_API_KEY",
+		"CODEX_API_KEY",
+		"HOME",
+		"PI_CODING_AGENT_DIR",
+		"CLAUDE_CODE_ENTRYPOINT",
+		"CLAUDE_CODE_SESSION",
+	];
+	const saved: Record<string, string | undefined> = {};
+	let tmpHome: string | undefined;
+	let piDir: string | undefined;
+
+	beforeEach(() => {
+		for (const k of envKeys) {
+			saved[k] = process.env[k];
+			delete process.env[k];
+		}
+		// Isolate from the real home's pi / opencode / codex installs.
+		tmpHome = mkdtempSync(join(tmpdir(), "codemem-pi-auth-home-"));
+		process.env.HOME = tmpHome;
+		process.env.CODEMEM_CONFIG = join(tmpHome, "no-such-codemem-config.json");
+		piDir = join(tmpHome, ".pi", "agent");
+		mkdirSync(piDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		for (const k of envKeys) {
+			if (saved[k] === undefined) delete process.env[k];
+			else process.env[k] = saved[k];
+		}
+		if (tmpHome) rmSync(tmpHome, { recursive: true, force: true });
+		tmpHome = undefined;
+		piDir = undefined;
+	});
+
+	function writePiApiKeyFixture(opts?: { provider?: string; model?: string; baseUrl?: string }) {
+		const provider = opts?.provider ?? "acme";
+		const model = opts?.model ?? "gpt-mini";
+		const baseUrl = opts?.baseUrl ?? "https://api.acme.test/v1";
+		if (!piDir) throw new Error("piDir unset");
+		writeFileSync(
+			join(piDir, "settings.json"),
+			JSON.stringify({ defaultProvider: provider, defaultModel: `${provider}/${model}` }),
+		);
+		writeFileSync(
+			join(piDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					[provider]: {
+						baseUrl,
+						api: "openai-completions",
+						models: [{ id: model }, { id: "gpt-premium-ultra" }],
+					},
+				},
+			}),
+		);
+		writeFileSync(
+			join(piDir, "auth.json"),
+			JSON.stringify({ [provider]: { type: "api_key", key: PI_FIXTURE_KEY } }),
+		);
+	}
+
+	it("uses pi auth.json api key when no explicit observer key/env is set", () => {
+		writePiApiKeyFixture();
+		// Simulate setup having written provider/model/baseUrl but NEVER the key.
+		const client = new ObserverClient({
+			observerProvider: "acme",
+			observerModel: "gpt-mini",
+			observerBaseUrl: "https://api.acme.test/v1",
+			observerRuntime: "api_http",
+			observerApiKey: null,
+			observerMaxChars: 12_000,
+			observerMaxTokens: 4_000,
+			observerHeaders: {},
+			observerAuthSource: "auto",
+			observerAuthFile: null,
+			observerAuthCommand: [],
+			observerAuthTimeoutMs: 1500,
+			observerAuthCacheTtlS: 300,
+		});
+
+		const status = client.getStatus();
+		expect(status.auth.hasToken).toBe(true);
+		expect(status.auth.source).toBe("pi");
+		// Status must never echo the secret.
+		expect(JSON.stringify(status)).not.toContain(PI_FIXTURE_KEY);
+		// toConfig must not promote the pi key into observerApiKey (persist risk).
+		expect(client.toConfig().observerApiKey).toBeNull();
+	});
+
+	it("loadObserverConfig fills unset provider/model/baseUrl from pi without copying the key", () => {
+		writePiApiKeyFixture({
+			provider: "fw",
+			model: "flash-lite",
+			baseUrl: "https://api.fw.test/v1",
+		});
+		const cfg = loadObserverConfig();
+		expect(cfg.observerProvider).toBe("fw");
+		expect(cfg.observerModel).toBe("flash-lite");
+		expect(cfg.observerBaseUrl).toBe("https://api.fw.test/v1");
+		// Key stays off the config object — resolved only inside ObserverClient.
+		expect(cfg.observerApiKey).toBeNull();
+
+		const client = new ObserverClient(cfg);
+		expect(client.getStatus().auth.hasToken).toBe(true);
+		expect(client.getStatus().auth.source).toBe("pi");
+		expect(client.toConfig().observerApiKey).toBeNull();
+	});
+
+	it("explicit CODEMEM_OBSERVER_API_KEY wins over pi", () => {
+		writePiApiKeyFixture();
+		process.env.CODEMEM_OBSERVER_API_KEY = "tok-explicit-env";
+		const client = new ObserverClient({
+			observerProvider: "acme",
+			observerModel: "gpt-mini",
+			observerBaseUrl: "https://api.acme.test/v1",
+			observerRuntime: "api_http",
+			observerApiKey: null,
+			observerMaxChars: 12_000,
+			observerMaxTokens: 4_000,
+			observerHeaders: {},
+			observerAuthSource: "auto",
+			observerAuthFile: null,
+			observerAuthCommand: [],
+			observerAuthTimeoutMs: 1500,
+			observerAuthCacheTtlS: 300,
+		});
+		expect(client.getStatus().auth.source).toBe("env");
+		expect(client.auth.token).toBe("tok-explicit-env");
+	});
+
+	it("explicit observerApiKey on config wins over pi", () => {
+		writePiApiKeyFixture();
+		const client = new ObserverClient({
+			observerProvider: "acme",
+			observerModel: "gpt-mini",
+			observerBaseUrl: "https://api.acme.test/v1",
+			observerRuntime: "api_http",
+			observerApiKey: "tok-config-explicit",
+			observerMaxChars: 12_000,
+			observerMaxTokens: 4_000,
+			observerHeaders: {},
+			observerAuthSource: "auto",
+			observerAuthFile: null,
+			observerAuthCommand: [],
+			observerAuthTimeoutMs: 1500,
+			observerAuthCacheTtlS: 300,
+		});
+		expect(client.getStatus().auth.source).toBe("explicit");
+		expect(client.auth.token).toBe("tok-config-explicit");
+	});
+
+	it("oauth-only pi install does not invent a token (status stays clean)", () => {
+		if (!piDir) throw new Error("piDir unset");
+		writeFileSync(join(piDir, "settings.json"), JSON.stringify({ defaultModel: "openai/gpt-x" }));
+		writeFileSync(
+			join(piDir, "models-store.json"),
+			JSON.stringify({
+				openai: {
+					models: [
+						{
+							id: "gpt-x",
+							api: "openai-responses",
+							baseUrl: "https://api.openai.com/v1",
+						},
+					],
+				},
+			}),
+		);
+		writeFileSync(
+			join(piDir, "auth.json"),
+			JSON.stringify({ openai: { type: "oauth", access: "oauth-access-not-usable" } }),
+		);
+
+		const client = new ObserverClient({
+			observerProvider: "openai",
+			observerModel: "gpt-x",
+			observerRuntime: "api_http",
+			observerApiKey: null,
+			observerBaseUrl: null,
+			observerMaxChars: 12_000,
+			observerMaxTokens: 4_000,
+			observerHeaders: {},
+			observerAuthSource: "auto",
+			observerAuthFile: null,
+			observerAuthCommand: [],
+			observerAuthTimeoutMs: 1500,
+			observerAuthCacheTtlS: 300,
+		});
+		// No API-key path from pi; no env keys → no token (not a silent 401 with a bogus key).
+		expect(client.getStatus().auth.hasToken).toBe(false);
+		expect(client.getStatus().auth.source).toBe("none");
+		expect(JSON.stringify(client.getStatus())).not.toContain("oauth-access-not-usable");
+	});
+
+	it("does not suppress claude_sidecar auto-select when only a pi api key is present", () => {
+		// Dual-install: user runs Claude Code AND has pi auth.json with a key.
+		// The pi key feeds api_http credential resolution only — it must NOT gate
+		// sidecar auto-select (sidecar auth goes through the claude/codex CLI).
+		writePiApiKeyFixture();
+		process.env.CLAUDE_CODE_ENTRYPOINT = "cli";
+		// No explicit observer key / provider env keys (cleared in beforeEach).
+		const cfg = loadObserverConfig();
+		expect(cfg.observerRuntime).toBe("claude_sidecar");
+		// Key stays off the config object (api_http-only, resolved in-memory).
+		expect(cfg.observerApiKey).toBeNull();
+	});
+
+	it("still suppresses claude_sidecar auto-select when an explicit env API key is set", () => {
+		writePiApiKeyFixture();
+		process.env.CLAUDE_CODE_ENTRYPOINT = "cli";
+		process.env.ANTHROPIC_API_KEY = "sk-explicit-anthropic";
+		const cfg = loadObserverConfig();
+		expect(cfg.observerRuntime).not.toBe("claude_sidecar");
+	});
+
+	it("does not suppress codex_sidecar auto-select when only a pi api key is present", () => {
+		// Dual-install twin of the claude I4 case: pi auth.json key must not
+		// steal runtime toward api_http when codex sidecar preconditions hold.
+		writePiApiKeyFixture();
+		if (!tmpHome) throw new Error("tmpHome unset");
+		const codexDir = join(tmpHome, ".codex");
+		mkdirSync(codexDir, { recursive: true });
+		writeFileSync(join(codexDir, "auth.json"), JSON.stringify({ tokens: { access: "x" } }));
+		const fakeCodex = join(tmpHome, "fake-codex");
+		writeFileSync(fakeCodex, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+		process.env.CODEMEM_CODEX_COMMAND = fakeCodex;
+		// No CLAUDE_CODE_* markers, no explicit observer/provider env keys.
+		const cfg = loadObserverConfig();
+		expect(cfg.observerRuntime).toBe("codex_sidecar");
+		expect(cfg.observerApiKey).toBeNull();
 	});
 });

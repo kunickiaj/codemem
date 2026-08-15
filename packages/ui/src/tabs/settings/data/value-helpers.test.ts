@@ -3,7 +3,19 @@ import { collectSettingsPayload } from "./collect-payload";
 import { EMPTY_FORM_STATE } from "./constants";
 import { formStateFromPayload } from "./form-state";
 import { formatAuthMethod } from "./format";
-import { inferObserverModel, mergeOverrideBaseline } from "./value-helpers";
+import {
+	AGENT_CLIENT_SOURCES,
+	formatAgentClientList,
+	inferObserverModel,
+	mergeOverrideBaseline,
+} from "./value-helpers";
+
+describe("agent client enumerations", () => {
+	it("lists every supported agent client including pi", () => {
+		expect(AGENT_CLIENT_SOURCES).toEqual(["opencode", "claude", "codex", "pi"]);
+		expect(formatAgentClientList()).toBe("opencode, claude, codex, and pi");
+	});
+});
 
 describe("Codex sidecar settings helpers", () => {
 	it("infers the current Codex-sidecar default model", () => {

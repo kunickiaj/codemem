@@ -552,6 +552,32 @@ export {
 	estimateTokens,
 } from "./pack.js";
 export type {
+	PiFlushSignal,
+	PiHookAdapterEvent,
+	PiHookRawEventEnvelope,
+} from "./pi-hooks.js";
+export {
+	buildIngestPayloadFromPiEvent,
+	buildPiFlushSignalFromEvent,
+	buildRawEventEnvelopeFromPiEvent,
+	MAPPABLE_PI_EVENTS,
+	mapPiEventPayload,
+	PI_FLUSH_ONLY_EVENTS,
+} from "./pi-hooks.js";
+export type {
+	PiObserverResolveErr,
+	PiObserverResolveInput,
+	PiObserverResolveOk,
+	PiObserverResolveReason,
+	PiObserverResolveResult,
+} from "./pi-observer-config.js";
+export {
+	describePiObserverStatus,
+	hasExplicitObserverEnvOverride,
+	resolvePiAgentDir,
+	resolvePiObserverConfig,
+} from "./pi-observer-config.js";
+export type {
 	BlockedPolicyTeamDeviceEligibilityResult,
 	DerivePolicyTeamDeviceEligibilityInput,
 	EligiblePolicyTeamDeviceEligibilityResult,

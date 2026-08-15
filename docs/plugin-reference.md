@@ -159,6 +159,42 @@ Hooks loaded from the user config layer require a one-time trust approval in Cod
 - **Spool backlog drains automatically** on the next successful ingest; force it by piping any spooled payload back through `codemem codex-hook-ingest` while the viewer is up.
 - **A model rejects injected context** (for example "the conversation must end with a user message"): disable prompt-time injection with `CODEMEM_INJECT_CONTEXT=0`. Capture/ingest keeps working and recall is still available through the MCP tools.
 
+## Pi extension
+
+Pi support is the `@codemem/pi-extension` pi-package. Install once, then restart pi:
+
+```text
+npm i -g codemem
+codemem setup --pi-only
+```
+
+Setup appends `npm:@codemem/pi-extension@<version>` to `~/.pi/agent/settings.json` `packages` (JSONC-safe, idempotent). It also derives unset `observer_*` keys from pi's API-key providers (cheap-model-first) without copying secrets. Flags:
+
+- `--pi-mcp` — opt into MCP via third-party `pi-mcp-adapter` (writes `mcp.json` only when the adapter is present; flips `pi.tools_mode` to `mcp-adapter`)
+- `--pi-extension-path <path>` — dev local-path `packages` entry
+
+Uninstall by removing the packages entry and restarting pi.
+
+### Surfaces
+
+| Surface | Behavior |
+|---|---|
+| Ingest | Extension POSTs to `POST /api/pi-hooks` (`source: "pi"`); falls back to `codemem pi-hook-ingest` + spool |
+| Injection | `before_agent_start` appends a turn-local `systemPrompt` block (`## codemem memories`); never returns `message` |
+| Tools | 14 native `memory_*` tools via `pi.registerTool` (HTTP preferred, CLI fallback). Default `pi.tools_mode: native` — no adapter required |
+| Compaction | Observe-only: `session_before_compact` flushes extraction; never returns a custom `compaction` summary |
+| Fork/resume | Re-keys stream identity on every `session_start`; durable cursors via `pi.appendEntry` |
+
+Dashboard tabs are source-agnostic: pi rows appear alongside OpenCode/Claude/Codex with no extra setup. Packs are project-scoped, so memory crosses agents automatically.
+
+### Observer derivation caveats (v1)
+
+- API-key providers only (`openai-completions` / `openai-responses` / `anthropic-messages`). OAuth-only installs surface `unconfigured (oauth-only); set observer_provider/observer_model explicitly` — never silent 401s.
+- Explicit `observer_*` config/env always wins over pi-derived values.
+- `--pi-mcp` requires `pi-mcp-adapter`; without it setup explains the prerequisite and writes nothing MCP-related.
+
+See [`packages/pi-extension/README.md`](../packages/pi-extension/README.md) for env knobs and lifecycle rules.
+
 ## Post-restart config sanity checklist
 
 After restarting OpenCode or the viewer, run this quick check when behavior looks off:

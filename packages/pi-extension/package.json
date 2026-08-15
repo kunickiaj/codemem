@@ -1,0 +1,69 @@
+{
+	"name": "@codemem/pi-extension",
+	"version": "0.40.1",
+	"description": "CodeMem extension for the pi coding agent — ingest, injection, and native memory tools",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"source": "./src/index.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist/",
+		"README.md",
+		"LICENSE"
+	],
+	"scripts": {
+		"clean": "rm -rf dist tsconfig.tsbuildinfo",
+		"build": "pnpm exec vite build && pnpm exec tsc --build --force",
+		"typecheck": "pnpm exec tsc --noEmit",
+		"test": "pnpm exec vitest run"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=0.84.1 <1",
+		"typebox": "*"
+	},
+	"devDependencies": {
+		"@codemem/core": "workspace:^",
+		"@earendil-works/pi-coding-agent": "^0.84.1",
+		"@types/node": "^24.12.4",
+		"typebox": "^1.3.7",
+		"typescript": "catalog:",
+		"vite": "catalog:",
+		"vitest": "catalog:"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kunickiaj/codemem.git",
+		"directory": "packages/pi-extension"
+	},
+	"homepage": "https://github.com/kunickiaj/codemem",
+	"bugs": {
+		"url": "https://github.com/kunickiaj/codemem/issues"
+	},
+	"engines": {
+		"node": ">=24"
+	},
+	"license": "MIT",
+	"publishConfig": {
+		"access": "public"
+	},
+	"keywords": [
+		"codemem",
+		"memory",
+		"ai",
+		"coding",
+		"agent",
+		"pi",
+		"pi-package"
+	],
+	"pi": {
+		"extensions": [
+			"./dist/index.js"
+		]
+	}
+}

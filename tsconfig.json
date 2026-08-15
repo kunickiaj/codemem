@@ -6,6 +6,7 @@
 		{ "path": "packages/mcp-server" },
 		{ "path": "packages/viewer-server" },
 		{ "path": "packages/cli" },
-		{ "path": "packages/ui" }
+		{ "path": "packages/ui" },
+		{ "path": "packages/pi-extension" }
 	]
 }

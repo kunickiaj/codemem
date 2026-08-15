@@ -43,6 +43,7 @@ import {
 	stripJsonComments,
 	stripTrailingCommas,
 } from "./observer-config.js";
+import { resolvePiObserverConfig } from "./pi-observer-config.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -419,6 +420,58 @@ function codexCliAvailable(command: string): boolean {
 }
 
 /**
+ * Project unset observer fields from pi agent config (D8).
+ *
+ * When provider is entirely unset, fill provider/model/baseUrl/wire from pi.
+ * When provider is already set (setup or user), only fill a missing model if
+ * it matches the pi provider — never rewrite an explicit openai/anthropic
+ * baseUrl with a pi custom endpoint.
+ *
+ * Does NOT copy the api key onto the config object — credentials are resolved
+ * in-memory at point of use via {@link resolvePiApiKeyForObserver}.
+ * The pi API key is intentionally NOT surfaced here: it feeds api_http
+ * credential resolution only and must never gate claude/codex sidecar
+ * auto-selection (sidecar auth goes through the local CLI).
+ */
+function applyPiDerivedObserverFields(cfg: ObserverConfig): void {
+	let pi: ReturnType<typeof resolvePiObserverConfig>;
+	try {
+		pi = resolvePiObserverConfig();
+	} catch {
+		return;
+	}
+	if (!pi.ok) return;
+
+	if (!cfg.observerProvider) {
+		cfg.observerProvider = pi.provider;
+		if (!cfg.observerModel) cfg.observerModel = pi.model;
+		if (!cfg.observerBaseUrl && pi.baseUrl) cfg.observerBaseUrl = pi.baseUrl;
+		if (cfg.observerOpenAIUseResponses === undefined) {
+			cfg.observerOpenAIUseResponses = pi.openAIUseResponses;
+		}
+	} else if (
+		(cfg.observerProvider ?? "").toLowerCase() === pi.provider.toLowerCase() &&
+		!cfg.observerModel
+	) {
+		cfg.observerModel = pi.model;
+	}
+}
+
+/**
+ * Resolve a pi API-key credential in memory for the observer auth cascade.
+ * Returns null when pi is unconfigured, oauth-only, or has no API key.
+ * NEVER log or persist the returned value.
+ */
+function resolvePiApiKeyForObserver(): string | null {
+	try {
+		const pi = resolvePiObserverConfig();
+		return pi.ok && pi.apiKey ? pi.apiKey : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Load observer config from `~/.config/codemem/config.json{c}`.
  *
  * Reads the codemem config file (not OpenCode's) and extracts observer-related
@@ -645,6 +698,13 @@ export function loadObserverConfig(): ObserverConfig {
 
 	const envCodexCmd = coerceObserverCommand(process.env.CODEMEM_CODEX_COMMAND);
 	if (envCodexCmd) cfg.codexCommand = envCodexCmd;
+
+	// D8: fill unset observer provider/model/baseUrl/wire from pi. Credential is
+	// NOT copied onto cfg — resolved in-memory at ObserverClient auth time.
+	// Pi API keys must NOT participate in sidecar auto-select gates below: a
+	// dual-install user (Claude Code / Codex CLI + pi auth.json) should still
+	// get claude_sidecar / codex_sidecar. The pi key only feeds api_http auth.
+	applyPiDerivedObserverFields(cfg);
 
 	// Auto-detect Claude environment for runtime default.
 	// If running inside Claude Code (CLAUDE_CODE_ENTRYPOINT or CLAUDE_CODE_SESSION set),
@@ -1277,6 +1337,8 @@ export class ObserverClient {
 	private _customBaseUrl: string | null;
 	private _customBaseUrlAllowsNoAuth: boolean;
 	private readonly _apiKey: string | null;
+	/** In-memory pi auth.json key (D8). Never persisted or logged. */
+	private _piApiKey: string | null = null;
 
 	// Claude sidecar state
 	private readonly _claudeCommand: string[];
@@ -1492,6 +1554,31 @@ export class ObserverClient {
 			cacheTtlS: Math.max(0, cfg.observerAuthCacheTtlS),
 		});
 		this.auth = { token: null, authType: "none", source: "none" };
+
+		// D8: resolve pi credential in memory at point of use. Never assign onto
+		// cfg.observerApiKey (that would look "explicit" and could be persisted
+		// by callers of toConfig()). Only used as a lower-priority cascade source.
+		if (!this._apiKey) {
+			this._piApiKey = resolvePiApiKeyForObserver();
+		}
+		// Custom pi providers need a baseUrl. Only fill for non-builtin providers
+		// that match pi — never redirect official openai/anthropic endpoints.
+		if (
+			!this._customBaseUrl &&
+			this.provider !== "openai" &&
+			this.provider !== "anthropic" &&
+			this.provider !== "opencode"
+		) {
+			try {
+				const pi = resolvePiObserverConfig();
+				if (pi.ok && pi.baseUrl && pi.provider.toLowerCase() === this.provider.toLowerCase()) {
+					this._customBaseUrl = pi.baseUrl;
+					this._customBaseUrlAllowsNoAuth = false;
+				}
+			} catch {
+				/* ignore */
+			}
+		}
 
 		// Initialize provider client state — skip for sidecar runtimes (no API
 		// key needed; auth is delegated to the local Claude/Codex CLI).
@@ -1848,6 +1935,7 @@ export class ObserverClient {
 			this.auth = this.authAdapter.resolve({
 				explicitToken: apiKey,
 				envTokens: [process.env.CODEMEM_OBSERVER_API_KEY ?? ""],
+				piToken: this._piApiKey,
 				forceRefresh,
 			});
 		} else if (this.provider === "anthropic") {
@@ -1855,6 +1943,7 @@ export class ObserverClient {
 				explicitToken: this._apiKey,
 				envTokens: [process.env.ANTHROPIC_API_KEY ?? ""],
 				oauthToken: oauthAccess,
+				piToken: this._piApiKey,
 				forceRefresh,
 			});
 			if (this.auth.source === "oauth" && oauthAccess) {
@@ -1870,6 +1959,7 @@ export class ObserverClient {
 					process.env.CODEX_API_KEY ?? "",
 				],
 				oauthToken: oauthAccess,
+				piToken: this._piApiKey,
 				forceRefresh,
 			});
 			if (this.auth.source === "oauth" && oauthAccess) {

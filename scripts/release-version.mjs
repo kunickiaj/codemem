@@ -16,6 +16,7 @@ const REQUIRED_REPO_MARKERS = [
 	"packages/opencode-plugin/package.json",
 	"packages/mcp-server/package.json",
 	"packages/viewer-server/package.json",
+	"packages/pi-extension/package.json",
 	"packages/core/src/index.ts",
 	"packages/core/src/index.test.ts",
 	"packages/cli/.opencode/plugins/codemem.js",
@@ -170,6 +171,7 @@ export function readVersions(root) {
 		opencode_plugin_package: extractPackageVersion(repoRoot, "packages/opencode-plugin/package.json"),
 		mcp_server_package: extractPackageVersion(repoRoot, "packages/mcp-server/package.json"),
 		viewer_server_package: extractPackageVersion(repoRoot, "packages/viewer-server/package.json"),
+		pi_extension_package: extractPackageVersion(repoRoot, "packages/pi-extension/package.json"),
 		core_runtime: extractSingle(
 			readText(resolveManagedPath(repoRoot, "packages/core/src/index.ts")),
 			CORE_VERSION_RE,
@@ -233,6 +235,7 @@ export function setVersion(root, version, { dryRun = false } = {}) {
 	setPackageVersion(repoRoot, "packages/opencode-plugin/package.json", version, writes, changed);
 	setPackageVersion(repoRoot, "packages/mcp-server/package.json", version, writes, changed);
 	setPackageVersion(repoRoot, "packages/viewer-server/package.json", version, writes, changed);
+	setPackageVersion(repoRoot, "packages/pi-extension/package.json", version, writes, changed);
 
 	const textUpdates = [
 		{

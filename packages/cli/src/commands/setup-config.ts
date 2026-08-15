@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { stripJsonComments, stripTrailingCommas } from "@codemem/core";
 
@@ -24,4 +24,19 @@ export function loadJsoncConfig(path: string): Record<string, unknown> {
 export function writeJsonConfig(path: string, data: Record<string, unknown>): void {
 	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`, "utf-8");
+}
+
+/**
+ * Write JSON config after copying any existing file to `<path>.codemem.bak`.
+ * Backup failure is non-fatal (write still proceeds).
+ */
+export function writeJsonConfigWithBackup(path: string, data: Record<string, unknown>): void {
+	if (existsSync(path)) {
+		try {
+			copyFileSync(path, `${path}.codemem.bak`);
+		} catch {
+			// Non-fatal: continue without a backup rather than blocking install.
+		}
+	}
+	writeJsonConfig(path, data);
 }
