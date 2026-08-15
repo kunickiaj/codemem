@@ -102,22 +102,28 @@ pnpm exec tsx --conditions source scripts/eval/prompt-path.ts --repetitions 1
 ```
 
 The JSON report contains aggregate median/p95 latency, sorted unlabelled timing
-samples, failure counts by class, and started pack/ledger subprocess counts. The
-median averages the middle pair and p95 uses nearest rank. The harness never
-emits fixture text, prompts, memory IDs, database paths, or per-query results.
+samples, failure counts by class, and started pack, ledger, other, and failed
+subprocess counts. The median averages the middle pair and p95 uses nearest rank.
+The harness never emits fixture text, prompts, memory IDs, database paths, or
+per-query results.
 
-This source-tree benchmark intentionally includes the `pnpm exec tsx` startup
-used by both direct CLI and fallback paths. It validates the benefit of avoiding
-development CLI process startup; its absolute latency and improvement ratio do
-not represent an installed built CLI. The small fixture emphasizes startup and
-transport cost rather than retrieval cost at realistic corpus size.
+This source-tree benchmark intentionally includes an instrumentation shim process
+plus the `pnpm exec tsx` startup used by both direct CLI and fallback paths. The
+shim records subprocess starts and exits; its overhead is part of those timings.
+The comparison validates the benefit of avoiding development CLI process startup,
+but its absolute latency and improvement ratio do not represent an installed built
+CLI. The small fixture emphasizes startup and transport cost rather than retrieval
+cost at realistic corpus size.
 
 The release gate requires a lower healthy-viewer median, a healthy-viewer p95 no
 higher than direct CLI, zero healthy pack/ledger subprocesses, and no failed
-repetitions. Any other healthy-path CLI command also invalidates the run. If p95
-regresses, repeat the complete 30-run comparison once; a second regression fails
-the gate. Fallback latency excludes asynchronous ledger settlement and is
-reported separately rather than gating the performance claim.
+repetitions. The zero-subprocess check includes a bounded two-second
+post-measurement observation window; work that starts or completes in that window
+invalidates the run without affecting measured latency. Any other healthy-path CLI
+command also invalidates the run. If p95 regresses, repeat the complete 30-run
+comparison once; a second regression fails the gate. Fallback latency excludes
+asynchronous ledger settlement and is reported separately rather than gating the
+performance claim.
 
 Validate harness changes explicitly; this tooling remains outside the product
 test command and root CLI scripts:

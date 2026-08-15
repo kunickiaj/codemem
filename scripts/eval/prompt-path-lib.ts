@@ -32,6 +32,12 @@ export interface SubprocessLogSummary {
 	ended: number;
 }
 
+export function subprocessActivitySettled(
+	activity: Pick<SubprocessLogSummary, "started" | "ended">,
+): boolean {
+	return activity.started === activity.ended;
+}
+
 export interface GatePath {
 	attempted: number;
 	succeeded: number;

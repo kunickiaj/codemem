@@ -7,6 +7,7 @@ import {
 	nearestRank,
 	parseSubprocessLog,
 	PromptPathBenchmarkError,
+	subprocessActivitySettled,
 	summarizeTimings,
 	type GatePath,
 } from "./prompt-path-lib.js";
@@ -58,11 +59,17 @@ describe("prompt-path benchmark summaries", () => {
 	});
 
 	it("counts subprocess starts so in-flight work cannot pass the zero-subprocess gate", () => {
-		assert.deepEqual(parseSubprocessLog("start pack\nstart ledger\nend pack 0\nend ledger 1\n"), {
+		const complete = parseSubprocessLog("start pack\nstart ledger\nend pack 0\nend ledger 1\n");
+		const inFlight = parseSubprocessLog("start pack\n");
+
+		assert.deepEqual(complete, {
 			counts: { pack: 1, ledger: 1, other: 0, failed: 1 },
 			started: 2,
 			ended: 2,
 		});
+		assert.equal(subprocessActivitySettled(complete), true);
+		assert.equal(subprocessActivitySettled(inFlight), false);
+		assert.equal(subprocessActivitySettled({ started: 0, ended: 0 }), true);
 	});
 
 	it("passes only an eligible 30-run improvement with exact subprocess contracts", () => {

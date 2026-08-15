@@ -17,6 +17,7 @@ import {
 	parseSubprocessLog,
 	PromptPathBenchmarkError,
 	RELEASE_REPETITIONS,
+	subprocessActivitySettled,
 	summarizeTimings,
 	type SubprocessCounts,
 	type TimingSummary,
@@ -27,6 +28,8 @@ const PROJECT = "codemem-benchmark";
 const CLI_TIMEOUT_MS = 120_000;
 const VIEWER_START_TIMEOUT_MS = 30_000;
 const LEDGER_SETTLE_TIMEOUT_MS = 30_000;
+const STARTUP_SETTLE_TIMEOUT_MS = 30_000;
+const HEALTHY_POST_MEASURE_OBSERVE_MS = 2_000;
 const POLL_INTERVAL_MS = 25;
 const ownedChildren = new Set<ChildProcess>();
 
@@ -195,16 +198,28 @@ async function waitFor(
 }
 
 async function settlePluginStartupChecks(counterPath: string): Promise<void> {
-	// The plugin schedules compatibility verification at 1.5s. Let it start,
-	// then require every observed child to finish before resetting the counter.
-	await new Promise((resolveWait) => setTimeout(resolveWait, 2_000));
+	// Plugin initialization schedules verifyCliCompatibility, whose version CLI
+	// invocation is recorded as `other`; observe that causal event before reset.
 	await waitFor(
 		() => {
-			const activity = readSubprocessActivity(counterPath);
-			return activity.started === activity.ended;
+			const counts = readSubprocessCounts(counterPath);
+			return counts.other >= 1 && subprocessActivitySettled(readSubprocessActivity(counterPath));
 		},
+		STARTUP_SETTLE_TIMEOUT_MS,
+		"plugin compatibility version subprocess did not start and settle",
+	);
+}
+
+async function observeHealthySubprocessQuiescence(counterPath: string): Promise<void> {
+	// This bounded post-measurement window catches delayed work without adding it
+	// to measured latency. Two seconds is a defense-in-depth heuristic; the healthy
+	// path has no known per-request delayed spawn source. The aggregate count below
+	// still fails on completed work.
+	await new Promise((resolveWait) => setTimeout(resolveWait, HEALTHY_POST_MEASURE_OBSERVE_MS));
+	await waitFor(
+		() => subprocessActivitySettled(readSubprocessActivity(counterPath)),
 		CLI_TIMEOUT_MS,
-		"plugin startup checks did not settle",
+		"healthy path subprocesses did not settle",
 	);
 }
 
@@ -594,6 +609,7 @@ async function runBenchmark(repetitions: number): Promise<BenchmarkReport> {
 				},
 			},
 		);
+		await observeHealthySubprocessQuiescence(paths.counter);
 		const healthy = withSubprocesses(healthySummary, readSubprocessCounts(paths.counter));
 
 		const fallbackPort = await reservePort();
