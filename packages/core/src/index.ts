@@ -13,7 +13,11 @@ export * from "./attribution-assessment.js";
 export * from "./attribution-diagnostics.js";
 export type { CreateBetterSqliteCoordinatorAppOptions } from "./better-sqlite-coordinator-runtime.js";
 export { createBetterSqliteCoordinatorApp } from "./better-sqlite-coordinator-runtime.js";
-export type { ClaudeHookAdapterEvent, ClaudeHookRawEventEnvelope } from "./claude-hooks.js";
+export type {
+	ClaudeHookAdapterEvent,
+	ClaudeHookRawEventEnvelope,
+	HookMapperOptions,
+} from "./claude-hooks.js";
 export {
 	buildIngestPayloadFromHook,
 	buildRawEventEnvelopeFromHook,
@@ -21,6 +25,7 @@ export {
 	mapClaudeHookPayload,
 	normalizeProjectLabel,
 	resolveHookProject,
+	TRUSTED_HOOK_MAPPER_OPTIONS,
 } from "./claude-hooks.js";
 export type { CodexHookAdapterEvent, CodexHookRawEventEnvelope } from "./codex-hooks.js";
 export {
@@ -333,6 +338,12 @@ export {
 	SIMPLE_TIER_DEFAULTS,
 } from "./extraction-tier-routing.js";
 export { buildFilterClauses, buildFilterClausesWithContext } from "./filters.js";
+export type { HookTranscriptPolicy, HookTranscriptReadOptions } from "./hook-transcript.js";
+export {
+	extractHookTranscript,
+	MAX_HOOK_TRANSCRIPT_BYTES,
+	TRUSTED_HOOK_TRANSCRIPT_POLICY,
+} from "./hook-transcript.js";
 // Ingest pipeline
 export {
 	budgetToolEvents,

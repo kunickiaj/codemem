@@ -22,6 +22,7 @@ import {
 	ObserverClient,
 	resolveDbPath,
 	stripPrivateObj,
+	TRUSTED_HOOK_MAPPER_OPTIONS,
 } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
@@ -122,7 +123,7 @@ export function directEnqueue(
 	payload: Record<string, unknown>,
 	dbPath: string,
 ): { inserted: number; skipped: number } {
-	const envelope = buildRawEventEnvelopeFromHook(payload);
+	const envelope = buildRawEventEnvelopeFromHook(payload, TRUSTED_HOOK_MAPPER_OPTIONS);
 	if (!envelope) return { inserted: 0, skipped: 1 };
 
 	const db = connect(dbPath);
@@ -219,7 +220,7 @@ async function flushBoundaryRawEvents(
 	payload: Record<string, unknown>,
 	dbPath: string,
 ): Promise<void> {
-	const envelope = buildRawEventEnvelopeFromHook(payload);
+	const envelope = buildRawEventEnvelopeFromHook(payload, TRUSTED_HOOK_MAPPER_OPTIONS);
 	if (!envelope) return;
 
 	let observer: ObserverClient;

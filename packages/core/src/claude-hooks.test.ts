@@ -8,15 +8,191 @@
  *  - buildIngestPayloadFromHook: session context fields
  */
 
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	buildIngestPayloadFromHook,
-	buildRawEventEnvelopeFromHook,
-	mapClaudeHookPayload,
+	buildIngestPayloadFromHook as buildIngestPayloadFromHookWithPolicy,
+	buildRawEventEnvelopeFromHook as buildRawEventEnvelopeFromHookWithPolicy,
+	mapClaudeHookPayload as mapClaudeHookPayloadWithPolicy,
+	TRUSTED_HOOK_MAPPER_OPTIONS,
 } from "./claude-hooks.js";
+import { extractHookTranscript, MAX_HOOK_TRANSCRIPT_BYTES } from "./hook-transcript.js";
+
+function restrictedTranscriptPolicy(root: string) {
+	return { trust: "restricted" as const, approvedRoots: [root] };
+}
+
+const mapClaudeHookPayload = (payload: Record<string, unknown>) =>
+	mapClaudeHookPayloadWithPolicy(payload, TRUSTED_HOOK_MAPPER_OPTIONS);
+const buildRawEventEnvelopeFromHook = (payload: Record<string, unknown>) =>
+	buildRawEventEnvelopeFromHookWithPolicy(payload, TRUSTED_HOOK_MAPPER_OPTIONS);
+const buildIngestPayloadFromHook = (payload: Record<string, unknown>) =>
+	buildIngestPayloadFromHookWithPolicy(payload, TRUSTED_HOOK_MAPPER_OPTIONS);
+
+describe("extractHookTranscript", () => {
+	it("reads an absolute transcript beneath an approved root", () => {
+		const root = mkdtempSync(join(tmpdir(), "codemem-transcript-root-"));
+		try {
+			const path = join(root, "session.jsonl");
+			writeFileSync(path, '{"role":"assistant","content":"allowed"}\n');
+			expect(extractHookTranscript(path, { policy: restrictedTranscriptPolicy(root) })).toEqual([
+				"allowed",
+				null,
+			]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects a restricted relative transcript even beneath the real cwd", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "codemem-transcript-cwd-"));
+		try {
+			writeFileSync(join(cwd, "session.jsonl"), '{"role":"assistant","content":"relative"}\n');
+			expect(
+				extractHookTranscript("session.jsonl", {
+					policy: restrictedTranscriptPolicy(join(cwd, "unused-root")),
+					cwd,
+				}),
+			).toEqual([null, null]);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it.each([
+		"../outside.jsonl",
+		"../../outside.jsonl",
+	])("rejects relative traversal %s", (transcriptPath) => {
+		const parent = mkdtempSync(join(tmpdir(), "codemem-transcript-traversal-"));
+		const cwd = join(parent, "cwd");
+		mkdirSync(cwd);
+		writeFileSync(join(parent, "outside.jsonl"), '{"role":"assistant","content":"outside"}\n');
+		try {
+			expect(
+				extractHookTranscript(transcriptPath, {
+					policy: restrictedTranscriptPolicy(parent),
+					cwd,
+				}),
+			).toEqual([null, null]);
+		} finally {
+			rmSync(parent, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects an absolute path beneath a sibling with the same prefix", () => {
+		const parent = mkdtempSync(join(tmpdir(), "codemem-transcript-prefix-"));
+		const root = join(parent, "approved");
+		const sibling = join(parent, "approved-sibling");
+		mkdirSync(root);
+		mkdirSync(sibling);
+		const path = join(sibling, "session.jsonl");
+		writeFileSync(path, '{"role":"assistant","content":"outside"}\n');
+		try {
+			expect(extractHookTranscript(path, { policy: restrictedTranscriptPolicy(root) })).toEqual([
+				null,
+				null,
+			]);
+		} finally {
+			rmSync(parent, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects a relative symlink escape from cwd", () => {
+		const parent = mkdtempSync(join(tmpdir(), "codemem-transcript-symlink-"));
+		const cwd = join(parent, "cwd");
+		mkdirSync(cwd);
+		const outside = join(parent, "outside.jsonl");
+		writeFileSync(outside, '{"role":"assistant","content":"outside"}\n');
+		symlinkSync(outside, join(cwd, "linked.jsonl"));
+		try {
+			expect(
+				extractHookTranscript("linked.jsonl", {
+					policy: restrictedTranscriptPolicy(cwd),
+					cwd,
+				}),
+			).toEqual([null, null]);
+		} finally {
+			rmSync(parent, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects an absolute symlink beneath an approved root that escapes it", () => {
+		const parent = mkdtempSync(join(tmpdir(), "codemem-transcript-root-symlink-"));
+		const root = join(parent, "approved");
+		mkdirSync(root);
+		const outside = join(parent, "outside.jsonl");
+		writeFileSync(outside, '{"role":"assistant","content":"outside"}\n');
+		const linked = join(root, "linked.jsonl");
+		symlinkSync(outside, linked);
+		try {
+			expect(extractHookTranscript(linked, { policy: restrictedTranscriptPolicy(root) })).toEqual([
+				null,
+				null,
+			]);
+		} finally {
+			rmSync(parent, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects a non-file beneath an approved root", () => {
+		const root = mkdtempSync(join(tmpdir(), "codemem-transcript-directory-"));
+		const directory = join(root, "session.jsonl");
+		mkdirSync(directory);
+		try {
+			expect(
+				extractHookTranscript(directory, { policy: restrictedTranscriptPolicy(root) }),
+			).toEqual([null, null]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("returns no extraction for a missing file", () => {
+		const root = mkdtempSync(join(tmpdir(), "codemem-transcript-missing-"));
+		try {
+			expect(
+				extractHookTranscript(join(root, "missing.jsonl"), {
+					policy: restrictedTranscriptPolicy(root),
+				}),
+			).toEqual([null, null]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("finds the final assistant record in a transcript larger than 16 MiB", () => {
+		const root = mkdtempSync(join(tmpdir(), "codemem-transcript-tail-"));
+		try {
+			const path = join(root, "session.jsonl");
+			writeFileSync(
+				path,
+				`${"x".repeat(MAX_HOOK_TRANSCRIPT_BYTES + 1024)}\n{"role":"assistant","content":"tail record"}\n`,
+			);
+			expect(extractHookTranscript(path, { policy: restrictedTranscriptPolicy(root) })).toEqual([
+				"tail record",
+				null,
+			]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("returns no extraction when the retained tail contains no complete record", () => {
+		const root = mkdtempSync(join(tmpdir(), "codemem-transcript-oversized-"));
+		try {
+			const path = join(root, "session.jsonl");
+			writeFileSync(path, `${"x".repeat(MAX_HOOK_TRANSCRIPT_BYTES + 1024)}\n`);
+			expect(extractHookTranscript(path, { policy: restrictedTranscriptPolicy(root) })).toEqual([
+				null,
+				null,
+			]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
 
 // ---------------------------------------------------------------------------
 // mapClaudeHookPayload — event type mapping
@@ -758,7 +934,11 @@ describe("POST /api/claude-hooks via viewer-server", () => {
 		});
 
 		expect(res.status).toBe(200);
-		expect(await res.json()).toEqual({ inserted: 0, skipped: 1 });
+		expect(await res.json()).toEqual({
+			inserted: 0,
+			skipped: 1,
+			skip_reason: "unsupported_hook",
+		});
 	});
 
 	it("returns 400 for invalid JSON", async () => {
@@ -782,6 +962,10 @@ describe("POST /api/claude-hooks via viewer-server", () => {
 
 		// Should NOT be 403 — CLI callers don't send Origin
 		expect(res.status).toBe(200);
-		expect(await res.json()).toEqual({ inserted: 0, skipped: 1 });
+		expect(await res.json()).toEqual({
+			inserted: 0,
+			skipped: 1,
+			skip_reason: "unsupported_hook",
+		});
 	});
 });

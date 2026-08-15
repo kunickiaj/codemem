@@ -2,7 +2,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
-import { buildRawEventEnvelopeFromHook } from "./claude-hooks.js";
+import { buildRawEventEnvelopeFromHook, TRUSTED_HOOK_MAPPER_OPTIONS } from "./claude-hooks.js";
 import { buildTierRoutedReplayObserverConfig, replayBatchExtraction } from "./extraction-replay.js";
 import {
 	type ObserverClient,
@@ -670,7 +670,7 @@ describe("extraction replay", () => {
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			);
 			hookEvents.forEach((hook, index) => {
-				const envelope = buildRawEventEnvelopeFromHook(hook);
+				const envelope = buildRawEventEnvelopeFromHook(hook, TRUSTED_HOOK_MAPPER_OPTIONS);
 				if (envelope == null) throw new Error("expected envelope");
 				insertRaw.run(
 					envelope.source,

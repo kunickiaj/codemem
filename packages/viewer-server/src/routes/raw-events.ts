@@ -4,6 +4,8 @@
  */
 
 import { createHash } from "node:crypto";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { MemoryStore, RawEventSweeper } from "@codemem/core";
 import {
 	buildRawEventEnvelopeFromCodexHook,
@@ -20,6 +22,14 @@ type StoreFactory = () => MemoryStore;
 
 const MAX_RAW_EVENTS_BODY_BYTES =
 	Number.parseInt(process.env.CODEMEM_RAW_EVENTS_MAX_BODY_BYTES ?? "", 10) || 1048576;
+
+function claudeTranscriptRoot(): string {
+	return join(process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude"), "projects");
+}
+
+function codexTranscriptRoot(): string {
+	return join(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"), "sessions");
+}
 
 /** Keys to check (in priority order) when resolving a session stream id. */
 const SESSION_ID_KEYS = [
@@ -393,10 +403,16 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 		const payload = result;
 
 		// Map hook payload → raw event envelope
-		const envelope = buildRawEventEnvelopeFromHook(payload);
+		const envelope = buildRawEventEnvelopeFromHook(payload, {
+			transcriptPolicy: { trust: "restricted", approvedRoots: [claudeTranscriptRoot()] },
+		});
 		if (envelope === null) {
 			// Unsupported event type or missing required fields — skip gracefully
-			return c.json({ inserted: 0, skipped: 1 });
+			const skipReason =
+				payload.hook_event_name === "Stop" && typeof payload.transcript_path === "string"
+					? "transcript_unavailable"
+					: "unsupported_hook";
+			return c.json({ inserted: 0, skipped: 1, skip_reason: skipReason });
 		}
 
 		const store = getStore();
@@ -442,9 +458,15 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 		if (result instanceof Response) return result;
 		const payload = result;
 
-		const envelope = buildRawEventEnvelopeFromCodexHook(payload);
+		const envelope = buildRawEventEnvelopeFromCodexHook(payload, {
+			transcriptPolicy: { trust: "restricted", approvedRoots: [codexTranscriptRoot()] },
+		});
 		if (envelope === null) {
-			return c.json({ inserted: 0, skipped: 1 });
+			const skipReason =
+				payload.hook_event_name === "Stop" && typeof payload.transcript_path === "string"
+					? "transcript_unavailable"
+					: "unsupported_hook";
+			return c.json({ inserted: 0, skipped: 1, skip_reason: skipReason });
 		}
 
 		const store = getStore();

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildRawEventEnvelopeFromHook } from "./claude-hooks.js";
+import { buildRawEventEnvelopeFromHook, TRUSTED_HOOK_MAPPER_OPTIONS } from "./claude-hooks.js";
 import { connect } from "./db.js";
 import type { IngestOptions } from "./ingest-pipeline.js";
 import { flushRawEvents } from "./raw-event-flush.js";
@@ -423,7 +423,7 @@ describe("flushRawEvents max retry", () => {
 		];
 
 		for (const hook of hookEvents) {
-			const envelope = buildRawEventEnvelopeFromHook(hook);
+			const envelope = buildRawEventEnvelopeFromHook(hook, TRUSTED_HOOK_MAPPER_OPTIONS);
 			expect(envelope).not.toBeNull();
 			if (envelope == null) throw new Error("envelope");
 			store.recordRawEvent({

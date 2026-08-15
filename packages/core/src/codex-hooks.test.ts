@@ -2,11 +2,21 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { type HookMapperOptions, TRUSTED_HOOK_MAPPER_OPTIONS } from "./claude-hooks.js";
 import {
-	buildIngestPayloadFromCodexHook,
-	buildRawEventEnvelopeFromCodexHook,
-	mapCodexHookPayload,
+	buildIngestPayloadFromCodexHook as buildIngestPayloadFromCodexHookWithPolicy,
+	buildRawEventEnvelopeFromCodexHook as buildRawEventEnvelopeFromCodexHookWithPolicy,
+	mapCodexHookPayload as mapCodexHookPayloadWithPolicy,
 } from "./codex-hooks.js";
+
+const mapCodexHookPayload = (
+	payload: Record<string, unknown>,
+	options: HookMapperOptions = TRUSTED_HOOK_MAPPER_OPTIONS,
+) => mapCodexHookPayloadWithPolicy(payload, options);
+const buildRawEventEnvelopeFromCodexHook = (payload: Record<string, unknown>) =>
+	buildRawEventEnvelopeFromCodexHookWithPolicy(payload, TRUSTED_HOOK_MAPPER_OPTIONS);
+const buildIngestPayloadFromCodexHook = (payload: Record<string, unknown>) =>
+	buildIngestPayloadFromCodexHookWithPolicy(payload, TRUSTED_HOOK_MAPPER_OPTIONS);
 
 const tempDirs: string[] = [];
 
@@ -127,6 +137,25 @@ describe("mapCodexHookPayload", () => {
 		expect(event).not.toBeNull();
 		expect(event?.event_type).toBe("assistant");
 		expect(event?.payload.text).toBe("Finished the thing");
+	});
+
+	it("maps Stop via an explicitly approved transcript root", () => {
+		const transcriptPath = writeTranscript([{ role: "assistant", content: "Approved result" }]);
+		const event = mapCodexHookPayload(
+			{
+				hook_event_name: "Stop",
+				session_id: "codex-session",
+				transcript_path: transcriptPath,
+			},
+			{
+				transcriptPolicy: {
+					trust: "restricted",
+					approvedRoots: [join(transcriptPath, "..")],
+				},
+			},
+		);
+
+		expect(event?.payload.text).toBe("Approved result");
 	});
 
 	it("keeps Stop event IDs stable across transcript-fallback retries", () => {

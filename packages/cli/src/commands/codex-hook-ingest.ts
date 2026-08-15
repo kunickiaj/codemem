@@ -12,6 +12,7 @@ import {
 	loadSqliteVec,
 	resolveDbPath,
 	stripPrivateObj,
+	TRUSTED_HOOK_MAPPER_OPTIONS,
 } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
@@ -122,7 +123,7 @@ export function directEnqueueCodexHook(
 	payload: Record<string, unknown>,
 	dbPath: string,
 ): { inserted: number; skipped: number } {
-	const envelope = buildRawEventEnvelopeFromCodexHook(payload);
+	const envelope = buildRawEventEnvelopeFromCodexHook(payload, TRUSTED_HOOK_MAPPER_OPTIONS);
 	if (!envelope) return { inserted: 0, skipped: 1 };
 
 	const db = connect(dbPath);

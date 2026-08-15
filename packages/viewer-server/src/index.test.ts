@@ -416,6 +416,74 @@ describe("viewer-server", () => {
 		).toBe(true);
 	});
 
+	describe.each([
+		{
+			label: "Claude",
+			route: "/api/claude-hooks",
+			envName: "CLAUDE_CONFIG_DIR",
+			rootName: "projects",
+		},
+		{
+			label: "Codex",
+			route: "/api/codex-hooks",
+			envName: "CODEX_HOME",
+			rootName: "sessions",
+		},
+	])("legacy $label hook transcript containment", ({ route, envName, rootName }) => {
+		it("accepts configured-root transcripts and rejects outside files", async () => {
+			const parent = mkdtempSync(join(tmpdir(), "codemem-viewer-transcript-root-"));
+			const configuredHome = join(parent, "host-home");
+			const approvedRoot = join(configuredHome, rootName);
+			mkdirSync(approvedRoot, { recursive: true });
+			const allowedPath = join(approvedRoot, "allowed.jsonl");
+			const outsidePath = join(parent, "outside.jsonl");
+			writeFileSync(allowedPath, '{"role":"assistant","content":"allowed result"}\n');
+			writeFileSync(outsidePath, '{"role":"assistant","content":"outside result"}\n');
+			const previousValue = process.env[envName];
+			process.env[envName] = configuredHome;
+			const { app, cleanup } = createTestApp();
+			try {
+				const allowed = await postViewerJson(app, route, {
+					hook_event_name: "Stop",
+					session_id: "allowed-session",
+					transcript_path: allowedPath,
+				});
+				expect(allowed.status).toBe(200);
+				expect(await allowed.json()).toEqual({ inserted: 1, skipped: 0 });
+
+				const rejected = await postViewerJson(app, route, {
+					hook_event_name: "Stop",
+					session_id: "rejected-session",
+					transcript_path: outsidePath,
+				});
+				expect(rejected.status).toBe(200);
+				expect(await rejected.json()).toEqual({
+					inserted: 0,
+					skipped: 1,
+					skip_reason: "transcript_unavailable",
+				});
+
+				const relativeRejected = await postViewerJson(app, route, {
+					hook_event_name: "Stop",
+					session_id: "relative-rejected-session",
+					cwd: parent,
+					transcript_path: "outside.jsonl",
+				});
+				expect(relativeRejected.status).toBe(200);
+				expect(await relativeRejected.json()).toEqual({
+					inserted: 0,
+					skipped: 1,
+					skip_reason: "transcript_unavailable",
+				});
+			} finally {
+				cleanup();
+				if (previousValue == null) delete process.env[envName];
+				else process.env[envName] = previousValue;
+				rmSync(parent, { recursive: true, force: true });
+			}
+		});
+	});
+
 	describe("GET /api/stats", () => {
 		it("returns database stats", async () => {
 			const { app, cleanup } = createTestApp();

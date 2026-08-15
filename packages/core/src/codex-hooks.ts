@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import {
 	extractFromTranscript,
+	type HookMapperOptions,
 	normalizeProjectLabel,
 	resolveHookProject,
 } from "./claude-hooks.js";
@@ -86,6 +87,7 @@ export interface CodexHookAdapterEvent {
 
 export function mapCodexHookPayload(
 	payload: Record<string, unknown>,
+	options: HookMapperOptions,
 ): CodexHookAdapterEvent | null {
 	const hookEvent = coerceString(payload.hook_event_name);
 	if (!MAPPABLE_CODEX_HOOK_EVENTS.has(hookEvent)) return null;
@@ -175,7 +177,11 @@ export function mapCodexHookPayload(
 		let assistantText = rawAssistantText;
 		if (!assistantText) {
 			const cwd = typeof payload.cwd === "string" ? payload.cwd : null;
-			const [transcriptText] = extractFromTranscript(payload.transcript_path, cwd);
+			const [transcriptText] = extractFromTranscript(
+				payload.transcript_path,
+				cwd,
+				options.transcriptPolicy,
+			);
 			if (transcriptText) assistantText = transcriptText.trim();
 		}
 		if (!assistantText) return null;
@@ -264,8 +270,9 @@ export interface CodexHookRawEventEnvelope {
 
 export function buildRawEventEnvelopeFromCodexHook(
 	hookPayload: Record<string, unknown>,
+	options: HookMapperOptions,
 ): CodexHookRawEventEnvelope | null {
-	const adapterEvent = mapCodexHookPayload(hookPayload);
+	const adapterEvent = mapCodexHookPayload(hookPayload, options);
 	if (adapterEvent === null) return null;
 
 	const sessionId = adapterEvent.session_id.trim();
@@ -299,8 +306,9 @@ export function buildRawEventEnvelopeFromCodexHook(
 
 export function buildIngestPayloadFromCodexHook(
 	hookPayload: Record<string, unknown>,
+	options: HookMapperOptions,
 ): Record<string, unknown> | null {
-	const adapterEvent = mapCodexHookPayload(hookPayload);
+	const adapterEvent = mapCodexHookPayload(hookPayload, options);
 	if (adapterEvent === null) return null;
 	const sessionId = adapterEvent.session_id;
 	return {

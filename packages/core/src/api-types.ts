@@ -382,7 +382,11 @@ export interface ApiRawEventsPostResponse {
 export interface ApiClaudeHooksPostResponse {
 	inserted: number;
 	skipped: number;
+	skip_reason?: "transcript_unavailable" | "unsupported_hook";
 }
+
+/** POST /api/codex-hooks — response. */
+export type ApiCodexHooksPostResponse = ApiClaudeHooksPostResponse;
 
 // ---------------------------------------------------------------------------
 // Sync — sync.py
