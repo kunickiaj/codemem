@@ -35,22 +35,12 @@ export type PackResult = {
 
 const EMPTY_PACK: PackResult = { packText: "", items: 0, packTokens: 0 };
 
-type HttpPackResponse = {
-	pack_text?: string;
-	items?: unknown;
-	metrics?: { pack_tokens?: unknown };
-};
-
 type InjectDeps = {
 	buildLocalPack?: typeof buildLocalPack;
-	httpPack?: typeof tryHttpPack;
 	resolveDb?: typeof resolveDbPath;
 };
 
-const DEFAULT_VIEWER_HOST = "127.0.0.1";
-const DEFAULT_VIEWER_PORT = 38888;
 const DEFAULT_MAX_CHARS = 16000;
-const DEFAULT_HTTP_MAX_TIME_S = 2;
 
 function emitJson(value: InjectResult): void {
 	console.log(JSON.stringify(value));
@@ -58,7 +48,7 @@ function emitJson(value: InjectResult): void {
 
 function emitError(value: { error: string; message: string }): void {
 	// Errors go to stderr so a non-zero exit from `codemem` doesn't poison
-	// the bash hook's stdout when it falls back to `npx -y codemem ...`.
+	// the Node hook's stdout when its compatibility chain reaches `npx`.
 	process.stderr.write(`${JSON.stringify(value)}\n`);
 }
 
@@ -154,46 +144,6 @@ async function buildLocalPack(
 	}
 }
 
-async function tryHttpPack(
-	context: string,
-	project: string | null,
-	maxTimeMs = DEFAULT_HTTP_MAX_TIME_S * 1000,
-): Promise<PackResult> {
-	const empty: PackResult = { packText: "", items: 0, packTokens: 0 };
-	const host = process.env.CODEMEM_VIEWER_HOST || DEFAULT_VIEWER_HOST;
-	const port = parsePositiveInt(process.env.CODEMEM_VIEWER_PORT, DEFAULT_VIEWER_PORT);
-	const url = new URL(`http://${host}:${port}/api/pack`);
-	url.searchParams.set("context", context);
-	url.searchParams.set("limit", String(parsePositiveInt(process.env.CODEMEM_INJECT_LIMIT, 8)));
-	url.searchParams.set(
-		"token_budget",
-		String(parsePositiveInt(process.env.CODEMEM_INJECT_TOKEN_BUDGET, 800)),
-	);
-	if (project) {
-		url.searchParams.set("project", project);
-	}
-
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), maxTimeMs);
-	try {
-		const res = await fetch(url, { signal: controller.signal });
-		if (!res.ok) {
-			return empty;
-		}
-		const body = (await res.json()) as HttpPackResponse;
-		const packText = String(body.pack_text ?? "").trim();
-		const items = Array.isArray(body.items) ? body.items.length : 0;
-		const packTokens = Number.isFinite(Number(body.metrics?.pack_tokens))
-			? Number(body.metrics?.pack_tokens)
-			: 0;
-		return { packText, items, packTokens };
-	} catch {
-		return empty;
-	} finally {
-		clearTimeout(timeout);
-	}
-}
-
 export async function buildClaudeHookInjection(
 	payload: Record<string, unknown>,
 	opts: InjectOpts,
@@ -224,17 +174,14 @@ export async function buildClaudeHookInjection(
 	}
 
 	const buildPack = deps.buildLocalPack ?? buildLocalPack;
-	const httpPack = deps.httpPack ?? tryHttpPack;
 	const resolveDb = deps.resolveDb ?? resolveDbPath;
 	const project = resolveInjectProject(payload);
 	const query = buildInjectQuery({ prompt: promptText, project, state });
 	const workingSetPaths = workingSetPathsFromState(state);
 	const maxChars = parsePositiveInt(process.env.CODEMEM_INJECT_MAX_CHARS, DEFAULT_MAX_CHARS);
-	const httpMaxTimeMs =
-		parsePositiveInt(process.env.CODEMEM_INJECT_HTTP_MAX_TIME_S, DEFAULT_HTTP_MAX_TIME_S) * 1000;
 
 	let pack: PackResult = EMPTY_PACK;
-	let origin: "local" | "http" | "none" = "none";
+	let origin: "local" | "none" = "none";
 	try {
 		const dbPath = resolveDb(resolveDbOpt(opts));
 		pack = await buildPack(query, project, dbPath, workingSetPaths);
@@ -245,17 +192,6 @@ export async function buildClaudeHookInjection(
 		logHookEvent(
 			`codemem claude-hook-inject local pack failed: ${err instanceof Error ? err.message : String(err)}`,
 		);
-	}
-
-	if (!pack.packText && envNotDisabled(process.env.CODEMEM_INJECT_HTTP_FALLBACK || "1")) {
-		// tryHttpPack swallows its own network errors and returns an empty
-		// result on failure; don't wrap it here so tests that throw from a
-		// stub mock still surface as failures (the existing "should not run"
-		// assertions rely on this).
-		pack = await httpPack(query, project, httpMaxTimeMs);
-		if (pack.packText) {
-			origin = "http";
-		}
 	}
 
 	// `empty` reflects retrieval, not post-truncation delivery, so the metric
@@ -279,7 +215,7 @@ export async function buildClaudeHookInjection(
 
 const claudeHookInjectCmd = new Command("claude-hook-inject")
 	.configureHelp(helpStyle)
-	.description("Return Claude hook additionalContext from local pack generation");
+	.description("Compatibility fallback for Claude hook local additionalContext generation");
 
 addDbOption(claudeHookInjectCmd);
 

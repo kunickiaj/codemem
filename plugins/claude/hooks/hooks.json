@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/user-prompt-hook.sh"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/user-prompt-hook.mjs"
           }
         ]
       }

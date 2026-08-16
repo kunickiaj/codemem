@@ -68,8 +68,10 @@ Ingest one Claude hook payload through the installed wrapper:
 printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"sess-1"}' | node plugins/claude/scripts/ingest-hook.mjs
 ```
 
-`inject-context-hook.sh` is also a thin wrapper and delegates prompt-time context output to
-codemem's local pack-generation path, with optional HTTP `/api/pack` fallback.
+Prompt-time retrieval runs through the packaged dependency-free Node hook. It validates the
+Viewer protocol, database, and runtime identity before sending identity-gated `POST /api/pack`.
+Claude prompt retrieval and event ingestion accept only explicit loopback Viewer hosts
+(`localhost`, `127.0.0.0/8`, or IPv6 loopback); non-loopback hosts are never fetched.
 
 By default, `SessionEnd` triggers a boundary flush after enqueue to preserve progress without waiting for sweeper timing. Set `CODEMEM_CLAUDE_HOOK_FLUSH=0` to force enqueue-only behavior, and set `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` to include `Stop` boundary flush.
 
@@ -81,11 +83,15 @@ The packaged template currently registers these hook events in `plugins/claude/h
 - `Stop`
 - `SessionEnd`
 
-`UserPromptSubmit` runs `scripts/user-prompt-hook.sh`, which:
+`UserPromptSubmit` runs `scripts/user-prompt-hook.mjs`, which:
 - sends the hook payload into capture ingest (`ingest-hook.mjs`) in the background, and
-- returns `hookSpecificOutput.additionalContext` from local CLI/store pack generation for prompt-time memory injection.
+- returns `hookSpecificOutput.additionalContext` from direct Viewer pack retrieval, then records delivery best-effort with a 500 ms cap.
 
-Prompt-time Claude injection uses local pack generation first and falls back to `/api/pack` only when local generation fails and `CODEMEM_INJECT_HTTP_FALLBACK` is enabled.
+Healthy prompt-time Claude injection starts no `codemem`, `npx`, or shell helper child. Retryable
+transport/version failures and local database/runtime mismatches start one compatibility chain:
+`codemem claude-hook-inject`, then the plugin-version-pinned `npx` equivalent if needed. Valid
+request, policy, authorization, and compatible-profile contract failures do not fall back. Redirects
+are rejected. Ledger failure never retries inline or changes already-written hook output.
 
 For Claude hooks, project resolution precedence is:
 
@@ -373,9 +379,8 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_CODEX_HOOK_LOCK_TTL_S` | Seconds before a Codex hook fallback lock is treated as stale (default `120`). |
 | `CODEMEM_CODEX_HOOK_SPOOL_DIR` | Legacy native Codex hook fallback spool directory (default `~/.codemem/codex-hook-spool`); the normalized wrapper does not read or drain it. |
 | `CODEMEM_CODEX_RAW_EVENT_SPOOL_DIR` | Normalized Codex raw-event envelope spool directory (default `~/.codemem/codex-raw-event-spool`). |
-| `CODEMEM_INJECT_HTTP_CONNECT_TIMEOUT_S` | `UserPromptSubmit` pack injection connect timeout in seconds (default `1`). |
-| `CODEMEM_INJECT_HTTP_MAX_TIME_S` | Viewer request timeout for OpenCode packs/ledger transitions and total HTTP pack timeout for Claude/Codex `UserPromptSubmit` (default `2` seconds). |
-| `CODEMEM_INJECT_HTTP_FALLBACK` | Set to `0` to disable HTTP `/api/pack` fallback for Claude/Codex prompt-time injection (default `1`). |
+| `CODEMEM_INJECT_HTTP_MAX_TIME_S` | Viewer request timeout for OpenCode and Claude prompt retrieval, and the legacy Codex injection path (default `2` seconds). Claude ledger completion has a separate fixed 500 ms cap. |
+| `CODEMEM_INJECT_HTTP_FALLBACK` | Legacy Codex control for HTTP `/api/pack` fallback (default `1`); Claude now uses classified direct-HTTP-to-local fallback. |
 | `CODEMEM_INJECT_MAX_CHARS` | Max chars returned as Claude/Codex `additionalContext` (default `16000`). |
 | `CODEMEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
 | `CODEMEM_MIN_VERSION` | Minimum required CLI version for plugin compatibility warnings (default `0.9.20`). |

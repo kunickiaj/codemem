@@ -72,9 +72,11 @@ The Claude plugin starts MCP with the TS CLI (`codemem mcp`).
 
 Claude and Codex plugins normalize native hooks at the plugin edge and send the resulting envelope to the canonical `POST /api/raw-events` endpoint. A retryable Viewer failure sends that exact envelope to `codemem enqueue-raw-event`; Codex retains a durable normalized-envelope spool as its last resort. The checked-in dependency-free normalizers are generated from the TypeScript implementations in `packages/core/src/claude-hooks.ts` and `packages/core/src/codex-hooks.ts`. Older packaged clients remain compatible through the named Viewer hook routes.
 
-Claude hook events share the same raw-event queue pipeline used by OpenCode. `UserPromptSubmit` runs
-capture ingest in the background and injects memory context via Claude `additionalContext` using
-local pack generation by default, with optional HTTP `/api/pack` fallback.
+Claude hook events share the same raw-event queue pipeline used by OpenCode. `UserPromptSubmit` uses
+a dependency-free Node hook to validate the local Viewer profile, retrieve an identity-gated pack,
+write Claude `additionalContext`, and record delivery best-effort. Healthy prompt retrieval starts no
+`codemem`, `npx`, or shell helper child; classified compatibility failures use the local CLI fallback.
+Claude hook HTTP transport rejects configured non-loopback Viewer hosts without fetching them.
 
 ### Codex (early beta)
 

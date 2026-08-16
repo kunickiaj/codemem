@@ -23,7 +23,7 @@
     "test:adapter-normalizers": "node --test scripts/build-adapter-normalizers.test.mjs",
     "test:release-version": "node --test scripts/release-version.test.mjs",
     "test:release-tag-preflight": "node --test scripts/release-tag-preflight.test.mjs",
-    "lint": "pnpm exec biome check packages/",
+    "lint": "pnpm exec biome check .",
     "format": "pnpm exec biome check --write packages/",
     "tsc": "pnpm exec tsc --build",
     "typecheck": "pnpm run tsc",

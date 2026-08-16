@@ -30,11 +30,6 @@ type DepsOverride = {
 		dbPath: string,
 		workingSetPaths?: string[],
 	) => Promise<string> | string;
-	httpPack?: (
-		context: string,
-		project: string | null,
-		maxTimeMs?: number,
-	) => Promise<string> | string;
 };
 
 type Fixture = {
@@ -57,7 +52,6 @@ const fixtures: Fixture[] = [
 		},
 		deps: {
 			buildLocalPack: () => "GOLDEN_PACK_BODY",
-			httpPack: () => "",
 		},
 		expected: {
 			continue: true,
@@ -77,7 +71,6 @@ const fixtures: Fixture[] = [
 		},
 		deps: {
 			buildLocalPack: () => "INVARIANT_PACK",
-			httpPack: () => "",
 		},
 		expected: {
 			continue: true,
@@ -95,7 +88,6 @@ const fixtures: Fixture[] = [
 		},
 		deps: {
 			buildLocalPack: () => "RESILIENT_PACK",
-			httpPack: () => "",
 		},
 		expected: {
 			continue: true,
@@ -114,7 +106,6 @@ const fixtures: Fixture[] = [
 		},
 		deps: {
 			buildLocalPack: () => "should-not-be-emitted",
-			httpPack: () => "",
 		},
 		expected: { continue: true },
 	},
@@ -126,7 +117,6 @@ const fixtures: Fixture[] = [
 		},
 		deps: {
 			buildLocalPack: () => "should-not-be-emitted",
-			httpPack: () => "",
 		},
 		expected: { continue: true },
 	},
@@ -140,12 +130,11 @@ const fixtures: Fixture[] = [
 		envOverrides: { CODEMEM_INJECT_CONTEXT: "0" },
 		deps: {
 			buildLocalPack: () => "should-not-be-emitted",
-			httpPack: () => "",
 		},
 		expected: { continue: true },
 	},
 	{
-		name: "Local pack throws → HTTP fallback wins",
+		name: "Local compatibility pack failure returns bare continue",
 		payload: {
 			hook_event_name: "UserPromptSubmit",
 			session_id: "contract-fallback",
@@ -153,20 +142,12 @@ const fixtures: Fixture[] = [
 			cwd: "/tmp/contract",
 			project: "codemem",
 		},
-		envOverrides: { CODEMEM_INJECT_HTTP_FALLBACK: "1" },
 		deps: {
 			buildLocalPack: () => {
 				throw new Error("simulated local pack failure");
 			},
-			httpPack: () => "HTTP_FALLBACK_PACK",
 		},
-		expected: {
-			continue: true,
-			hookSpecificOutput: {
-				hookEventName: "UserPromptSubmit",
-				additionalContext: "HTTP_FALLBACK_PACK",
-			},
-		},
+		expected: { continue: true },
 	},
 	{
 		name: "Truncation: pack longer than CODEMEM_INJECT_MAX_CHARS gets [pack truncated] marker",
@@ -178,7 +159,6 @@ const fixtures: Fixture[] = [
 		envOverrides: { CODEMEM_INJECT_MAX_CHARS: "22" },
 		deps: {
 			buildLocalPack: () => "memory_one memory_two memory_three memory_four",
-			httpPack: () => "",
 		},
 		expected: {
 			continue: true,
@@ -197,7 +177,6 @@ const fixtures: Fixture[] = [
 		},
 		deps: {
 			buildLocalPack: () => "should-not-be-emitted",
-			httpPack: () => "",
 		},
 		expected: { continue: true },
 	},
@@ -211,7 +190,6 @@ const fixtures: Fixture[] = [
 		},
 		deps: {
 			buildLocalPack: () => "should-not-be-emitted",
-			httpPack: () => "",
 		},
 		expected: { continue: true },
 	},
@@ -223,7 +201,6 @@ const fixtures: Fixture[] = [
 		},
 		deps: {
 			buildLocalPack: () => "should-not-be-emitted",
-			httpPack: () => "",
 		},
 		expected: { continue: true },
 	},
@@ -290,19 +267,11 @@ describe("claude-hook-inject contract fixtures", () => {
 						return toPack(await Promise.resolve(result ?? ""));
 					}
 				: async () => toPack("");
-			const httpPack = deps?.httpPack
-				? async (context: string, project: string | null, maxTimeMs?: number) => {
-						const result = deps.httpPack?.(context, project, maxTimeMs);
-						return toPack(await Promise.resolve(result ?? ""));
-					}
-				: async () => toPack("");
-
 			const result = await buildClaudeHookInjection(
 				payload,
 				{},
 				{
 					buildLocalPack,
-					httpPack,
 					resolveDb: () => "/tmp/contract.sqlite",
 				},
 			);

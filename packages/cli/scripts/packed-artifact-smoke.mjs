@@ -70,6 +70,12 @@ async function smokeAdapterWrapper(source, isolatedRoot) {
 	const scriptsDirectory = join(isolatedRoot, relativeRoot, "scripts");
 	const wrapperPath = join(scriptsDirectory, "ingest-hook.mjs");
 	cpSync(resolve(workspaceRoot, relativeRoot, "scripts", "ingest-hook.mjs"), wrapperPath);
+	if (source === "claude") {
+		cpSync(
+			resolve(workspaceRoot, relativeRoot, "scripts", "user-prompt-hook.mjs"),
+			join(scriptsDirectory, "user-prompt-hook.mjs"),
+		);
+	}
 	cpSync(
 		resolve(workspaceRoot, relativeRoot, source === "claude" ? ".claude-plugin" : ".codex-plugin"),
 		join(isolatedRoot, relativeRoot, source === "claude" ? ".claude-plugin" : ".codex-plugin"),
@@ -137,12 +143,132 @@ async function smokeAdapterWrapper(source, isolatedRoot) {
 			JSON.stringify(nativePayload),
 		);
 		const child = result;
-		assert(child.status === 0, `${source} wrapper failed without workspace dependencies: ${child.stderr}`);
+		assert(
+			child.status === 0,
+			`${source} wrapper failed without workspace dependencies: ${child.stderr}`,
+		);
 		const received = JSON.parse(receivedBody);
 		assert(received.event_id === expected.event_id, `${source} transport changed event_id`);
-		assert(received.payload._adapter.meta.event_id_algo === `${source}/1`, `${source} algorithm discriminator missing`);
+		assert(
+			received.payload._adapter.meta.event_id_algo === `${source}/1`,
+			`${source} algorithm discriminator missing`,
+		);
 	} finally {
 		server.close();
+	}
+}
+
+async function smokeClaudePromptWrapper(isolatedRoot) {
+	const pluginRoot = join(isolatedRoot, "plugins", "claude");
+	const wrapperPath = join(pluginRoot, "scripts", "user-prompt-hook.mjs");
+	const home = join(isolatedRoot, "claude-home");
+	const dbPath = join(home, ".codemem", "mem.sqlite");
+	mkdirSync(home, { recursive: true });
+	const identityTarget = {
+		device_id: null,
+		actor_id_present: false,
+		actor_id: null,
+		config_path: null,
+		runtime_root: null,
+		workspace_id: null,
+		home_dir: home,
+		pack_compression: null,
+		embedding_disabled: false,
+		embedding_model: "Xenova/bge-small-en-v1.5",
+	};
+	const requestPaths = [];
+	const server = createServer((request, response) => {
+		let body = "";
+		request.setEncoding("utf8");
+		request.on("data", (chunk) => {
+			body += chunk;
+		});
+		request.on("end", () => {
+			requestPaths.push(request.url);
+			response.setHeader("Content-Type", "application/json");
+			if (request.url === "/api/prompt-pack-profile") {
+				response.end(
+					JSON.stringify({
+						service: "codemem-viewer",
+						protocol_version: 1,
+						min_supported_protocol_version: 1,
+						db_path: dbPath,
+						identity_target: identityTarget,
+					}),
+				);
+				return;
+			}
+			if (request.url === "/api/pack") {
+				const payload = JSON.parse(body);
+				assert(
+					payload.attempt?.source === "claude",
+					"Claude prompt request omitted attempt metadata",
+				);
+				response.end('{"pack_text":"PACKED_CLAUDE_CONTEXT","metrics":{"total_items":1}}');
+				return;
+			}
+			if (request.url === "/api/prompt-pack-ledger") {
+				const payload = JSON.parse(body);
+				assert(
+					payload.delivery_status === "handed_off",
+					"Claude prompt delivery was not recorded",
+				);
+				response.end('{"ok":true}');
+				return;
+			}
+			response.end('{"inserted":1,"skipped":0,"received":1}');
+		});
+	});
+	await new Promise((resolvePromise, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", resolvePromise);
+	});
+	try {
+		const address = server.address();
+		assert(
+			address && typeof address === "object",
+			"Claude prompt smoke server did not bind",
+		);
+		const result = await runAsync(
+			process.execPath,
+			[wrapperPath],
+			{
+				cwd: isolatedRoot,
+				env: {
+					...process.env,
+					PATH: join(isolatedRoot, "no-cli-on-path"),
+					HOME: home,
+					CLAUDE_PLUGIN_ROOT: pluginRoot,
+					CODEMEM_DB: dbPath,
+					CODEMEM_PROJECT: "codemem",
+					CODEMEM_VIEWER_HOST: "127.0.0.1",
+					CODEMEM_VIEWER_PORT: String(address.port),
+				},
+				stdio: ["pipe", "pipe", "pipe"],
+			},
+			JSON.stringify({
+				hook_event_name: "UserPromptSubmit",
+				session_id: "packed-claude-prompt",
+				prompt: "recall the packed hook contract",
+				cwd: isolatedRoot,
+			}),
+		);
+		assert(result.status === 0, `Claude prompt wrapper failed: ${result.stderr}`);
+		assert(
+			result.stdout ===
+				'{"continue":true,"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"PACKED_CLAUDE_CONTEXT"}}',
+			`Claude packed prompt output bytes changed: ${JSON.stringify(result.stdout)}`,
+		);
+		assert(
+			requestPaths.includes("/api/pack"),
+			"Claude packed prompt wrapper skipped direct pack HTTP",
+		);
+		assert(
+			requestPaths.includes("/api/prompt-pack-ledger"),
+			"Claude packed prompt wrapper skipped direct ledger HTTP",
+		);
+	} finally {
+		await new Promise((resolvePromise) => server.close(resolvePromise));
 	}
 }
 
@@ -351,6 +477,7 @@ try {
 		);
 		assert(existsSync(checkedInArtifact), `${source} plugin is missing its generated normalizer`);
 		await smokeAdapterWrapper(source, isolatedAdapters);
+		if (source === "claude") await smokeClaudePromptWrapper(isolatedAdapters);
 	}
 	await smokeCodexSpoolIsolation(isolatedAdapters);
 } finally {
