@@ -11,6 +11,7 @@ import type {
 } from "@codemem/core";
 import {
 	clonePromptPackAttempt,
+	PROMPT_TRANSPORT_PROTOCOL_RANGE,
 	promptPackArtifactFingerprint,
 	recordPromptPackArtifacts,
 	recordPromptPackTerminal,
@@ -414,7 +415,8 @@ export function packTransportRoutes(getStore: StoreFactory) {
 			if (!store.hasCurrentIdentity()) return c.json(viewerIdentityMismatch(), 409);
 			return c.json({
 				service: "codemem-viewer",
-				protocol_version: 1,
+				protocol_version: PROMPT_TRANSPORT_PROTOCOL_RANGE.protocolVersion,
+				min_supported_protocol_version: PROMPT_TRANSPORT_PROTOCOL_RANGE.minSupportedProtocolVersion,
 				db_path: resolvePath(store.dbPath),
 				identity_target: currentIdentityTarget(),
 			});

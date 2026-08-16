@@ -2601,6 +2601,9 @@ describe("viewer-server", () => {
 			vi.stubEnv("CODEMEM_WORKSPACE_ID", "viewer-workspace");
 			const { app, ensureStore, cleanup } = createTestApp();
 			try {
+				const store = ensureStore();
+				const asyncBuilder = vi.spyOn(store, "buildMemoryPackAsync");
+				const tracedBuilder = vi.spyOn(store, "buildMemoryPackWithTraceAsync");
 				const viewerIdentityTarget = {
 					device_id: "viewer-device",
 					actor_id_present: true,
@@ -2618,7 +2621,8 @@ describe("viewer-server", () => {
 				expect(await profile.json()).toMatchObject({
 					service: "codemem-viewer",
 					protocol_version: 1,
-					db_path: resolve(ensureStore().dbPath),
+					min_supported_protocol_version: 1,
+					db_path: resolve(store.dbPath),
 					identity_target: viewerIdentityTarget,
 				});
 				const res = await postViewerJson(app, "/api/pack", {
@@ -2660,6 +2664,8 @@ describe("viewer-server", () => {
 				expect(await unsupported.json()).toMatchObject({
 					error: { code: "viewer_contract_unsupported" },
 				});
+				expect(asyncBuilder).not.toHaveBeenCalled();
+				expect(tracedBuilder).not.toHaveBeenCalled();
 			} finally {
 				cleanup();
 				vi.unstubAllEnvs();
@@ -2722,6 +2728,8 @@ describe("viewer-server", () => {
 		it("validates structured request fields", async () => {
 			const { app, ensureStore, cleanup } = createTestApp();
 			try {
+				const store = ensureStore();
+				const builder = vi.spyOn(store, "buildMemoryPackAsync");
 				const invalidJson = await app.request("/api/pack", {
 					method: "POST",
 					headers: {
@@ -2749,7 +2757,7 @@ describe("viewer-server", () => {
 
 				const mismatchedDb = await postViewerJson(app, "/api/pack", {
 					context: "viewer transport",
-					db_path: `${ensureStore().dbPath}.other`,
+					db_path: `${store.dbPath}.other`,
 				});
 				expect(mismatchedDb.status).toBe(409);
 				expect(await mismatchedDb.json()).toEqual({
@@ -2758,10 +2766,11 @@ describe("viewer-server", () => {
 						message: "viewer database does not match request",
 					},
 				});
+				expect(builder).not.toHaveBeenCalled();
 
 				const equivalentDb = await postViewerJson(app, "/api/pack", {
 					context: "viewer transport",
-					db_path: `${dirname(ensureStore().dbPath)}/./${basename(ensureStore().dbPath)}`,
+					db_path: `${dirname(store.dbPath)}/./${basename(store.dbPath)}`,
 				});
 				expect(equivalentDb.status).toBe(200);
 			} finally {

@@ -1,5 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
 
+import {
+  arePromptTransportProtocolRangesCompatible as coreRangesCompatible,
+  classifyPromptTransportFailure as coreClassifyPromptTransportFailure,
+  normalizePromptTransportProtocolRange as coreNormalizeProtocolRange,
+  PROMPT_TRANSPORT_PROTOCOL_RANGE as CORE_PROMPT_TRANSPORT_PROTOCOL_RANGE,
+} from "../../../core/src/prompt-transport.js";
 import { __testUtils } from "../plugins/codemem.js";
 
 describe("buildInjectQuery", () => {
@@ -172,6 +178,59 @@ describe("fallback command-result classification", () => {
     // Assert
     expect(classification.retryable).toBe(false);
     expect(classification.cause).toContain(expectedCause);
+  });
+});
+
+describe("prompt transport compatibility", () => {
+  test("keeps the dependency-free plugin port aligned with core", () => {
+    expect(__testUtils.PROMPT_TRANSPORT_PROTOCOL_RANGE).toEqual(
+      CORE_PROMPT_TRANSPORT_PROTOCOL_RANGE,
+    );
+    expect(__testUtils.normalizePromptTransportProtocolRange(1)).toEqual(
+      coreNormalizeProtocolRange(1),
+    );
+    expect(__testUtils.normalizePromptTransportProtocolRange(2, 3)).toEqual(
+      coreNormalizeProtocolRange(2, 3),
+    );
+    for (const failure of [
+      { kind: "profile_absent" },
+      { kind: "database_mismatch" },
+      { kind: "authorization_failure" },
+      { kind: "viewer_contract_unsupported", compatibleProfile: false },
+      { kind: "viewer_contract_unsupported", compatibleProfile: true },
+    ]) {
+      expect(__testUtils.classifyPromptTransportFailure(failure)).toBe(
+        coreClassifyPromptTransportFailure(failure),
+      );
+    }
+  });
+
+  test.each([
+    [
+      "old client/new Viewer",
+      { minSupportedProtocolVersion: 1, protocolVersion: 1 },
+      { minSupportedProtocolVersion: 1, protocolVersion: 2 },
+    ],
+    [
+      "new client/old Viewer",
+      { minSupportedProtocolVersion: 1, protocolVersion: 2 },
+      __testUtils.normalizePromptTransportProtocolRange(1),
+    ],
+  ])("accepts the %s overlap matrix", (_label, client, viewer) => {
+    expect(__testUtils.arePromptTransportProtocolRangesCompatible(client, viewer)).toBe(true);
+    expect(__testUtils.arePromptTransportProtocolRangesCompatible(client, viewer)).toBe(
+      coreRangesCompatible(client, viewer),
+    );
+  });
+
+  test("falls back for malformed or non-overlapping Viewer ranges", () => {
+    expect(__testUtils.normalizePromptTransportProtocolRange(2, 3)).toBe(null);
+    expect(
+      __testUtils.arePromptTransportProtocolRangesCompatible(
+        __testUtils.PROMPT_TRANSPORT_PROTOCOL_RANGE,
+        { minSupportedProtocolVersion: 2, protocolVersion: 3 },
+      ),
+    ).toBe(false);
   });
 });
 

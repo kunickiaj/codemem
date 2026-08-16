@@ -17,16 +17,20 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 OpenCode prompt-time pack construction and prompt-pack ledger transitions use the
 long-lived local viewer first. Retryable connection, timeout, endpoint-version,
 server, or malformed-response failures fall back to the compatible CLI path.
-Validated request errors are terminal and do not spawn a fallback command. The
-HTTP timeout uses `CODEMEM_INJECT_HTTP_MAX_TIME_S` (default: 2 seconds).
+Validated request, policy, and authorization errors are terminal and do not spawn
+a fallback command. A `viewer_contract_unsupported` response is terminal after a
+compatible profile handshake; before a compatible profile it is treated as
+version skew and may fall back. The HTTP timeout uses
+`CODEMEM_INJECT_HTTP_MAX_TIME_S` (default: 2 seconds).
 Pack and ledger requests include their resolved default or explicit database,
 identity/config, compression, and embedding targets. The viewer also rejects a cached store
 identity that no longer matches current database/config resolution. A mismatch
-uses the CLI fallback instead of accepting context from another local profile.
-Arbitrary 4xx responses from a process on the viewer port also fall back; only
-structured Codemem validation errors are terminal. A payload-free profile
-handshake runs before each POST, and Fetch redirects are disabled so prompt-derived
-request bodies are not replayed to another endpoint.
+uses the local CLI fallback exactly once instead of reading or retrying another
+local profile. A payload-free profile handshake runs before each POST and returns
+`protocol_version` plus `min_supported_protocol_version`; clients accept
+overlapping ranges and interpret an older profile without the minimum as a
+single-version range. Fetch redirects are disabled so prompt-derived request
+bodies are not replayed to another endpoint.
 
 ## Claude marketplace install
 

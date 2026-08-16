@@ -712,37 +712,127 @@ const isViewerInvalidRequestPayload = (payload) =>
   && payload.error.code === "invalid_request"
   && typeof payload.error.message === "string";
 
+// Dependency-free port of @codemem/core prompt-transport semantics. Keep the
+// range and classifier parity pinned by the plugin injection tests.
+const PROMPT_TRANSPORT_PROTOCOL_RANGE = Object.freeze({
+  minSupportedProtocolVersion: 1,
+  protocolVersion: 1,
+});
+
+const normalizePromptTransportProtocolRange = (
+  protocolVersion,
+  minSupportedProtocolVersion = undefined,
+) => {
+  if (!Number.isSafeInteger(protocolVersion) || protocolVersion < 1) return null;
+  const minimum = minSupportedProtocolVersion === undefined
+    ? protocolVersion
+    : minSupportedProtocolVersion;
+  if (!Number.isSafeInteger(minimum) || minimum < 1 || minimum > protocolVersion) return null;
+  return { minSupportedProtocolVersion: minimum, protocolVersion };
+};
+
+const arePromptTransportProtocolRangesCompatible = (left, right) =>
+  left.minSupportedProtocolVersion <= right.protocolVersion
+  && right.minSupportedProtocolVersion <= left.protocolVersion;
+
+const classifyPromptTransportFailure = ({ kind, compatibleProfile = false }) => {
+  if (kind === "database_mismatch" || kind === "runtime_identity_mismatch") {
+    return "local_fallback";
+  }
+  if (
+    kind === "invalid_request"
+    || kind === "policy_failure"
+    || kind === "authorization_failure"
+  ) {
+    return "terminal";
+  }
+  if (kind === "viewer_contract_unsupported") {
+    return compatibleProfile ? "terminal" : "fallback";
+  }
+  return "fallback";
+};
+
+const isViewerPolicyOrAuthFailurePayload = (payload) => {
+  const code = isRecord(payload) && isRecord(payload.error)
+    ? payload.error.code
+    : isRecord(payload)
+    ? payload.error
+    : null;
+  return typeof code === "string" && [
+    "authorization_failed",
+    "forbidden",
+    "policy_denied",
+    "policy_disabled",
+    "unauthorized",
+  ].includes(code);
+};
+
+const viewerFailureClassification = (cause, disposition) => ({
+  cause,
+  disposition,
+  retryable: disposition !== "terminal",
+});
+
 const classifyViewerHttpFailure = ({
   operation,
   status = null,
   error = null,
   malformed = false,
   body = null,
+  compatibleProfile = false,
 }) => {
   if (malformed) {
-    return { cause: `${operation} returned malformed success`, retryable: true };
+    return viewerFailureClassification(
+      `${operation} returned malformed success`,
+      classifyPromptTransportFailure({ kind: "malformed_response" }),
+    );
   }
-  if (
-    isViewerDbMismatchPayload(body)
-    || isViewerIdentityMismatchPayload(body)
-    || isViewerContractUnsupportedPayload(body)
-  ) {
-    return { cause: `${operation} viewer profile mismatch`, retryable: true };
+  if (isViewerDbMismatchPayload(body)) {
+    return viewerFailureClassification(
+      `${operation} viewer database mismatch`,
+      classifyPromptTransportFailure({ kind: "database_mismatch" }),
+    );
+  }
+  if (isViewerIdentityMismatchPayload(body)) {
+    return viewerFailureClassification(
+      `${operation} viewer runtime identity mismatch`,
+      classifyPromptTransportFailure({ kind: "runtime_identity_mismatch" }),
+    );
+  }
+  if (isViewerContractUnsupportedPayload(body)) {
+    return viewerFailureClassification(
+      `${operation} viewer contract unsupported`,
+      classifyPromptTransportFailure({
+        kind: "viewer_contract_unsupported",
+        compatibleProfile,
+      }),
+    );
   }
   if (operation === "prompt-pack-ledger" && isValidLedgerFailureHttpPayload(body)) {
-    return { cause: `${operation} request rejected (${status})`, retryable: false };
+    return viewerFailureClassification(`${operation} request rejected (${status})`, "terminal");
   }
-  if (isViewerInvalidRequestPayload(body) && !operation.endsWith(" profile")) {
-    return { cause: `${operation} request rejected (${status})`, retryable: false };
+  if (isViewerInvalidRequestPayload(body)) {
+    return viewerFailureClassification(
+      `${operation} request rejected (${status})`,
+      classifyPromptTransportFailure({ kind: "invalid_request" }),
+    );
+  }
+  if (status === 401 || status === 403 || isViewerPolicyOrAuthFailurePayload(body)) {
+    return viewerFailureClassification(
+      `${operation} policy or authorization failure (${status})`,
+      classifyPromptTransportFailure({
+        kind: status === 401 || status === 403 ? "authorization_failure" : "policy_failure",
+      }),
+    );
   }
   if (status === 404 || status === 405) {
-    return { cause: `${operation} endpoint unavailable (${status})`, retryable: true };
+    return viewerFailureClassification(`${operation} endpoint unavailable (${status})`, "fallback");
   }
   if (Number.isInteger(status) && status >= 500) {
-    return { cause: `${operation} server failure (${status})`, retryable: true };
+    return viewerFailureClassification(`${operation} server failure (${status})`, "fallback");
   }
   if (Number.isInteger(status)) {
-    return { cause: `${operation} unexpected response (${status})`, retryable: true };
+    return viewerFailureClassification(`${operation} unexpected response (${status})`, "fallback");
   }
   const diagnostic = [
     error?.name,
@@ -752,10 +842,10 @@ const classifyViewerHttpFailure = ({
     error,
   ].filter(Boolean).join(" ");
   const timedOut = /AbortError|TimeoutError|timeout|timed out|ETIMEDOUT/i.test(diagnostic);
-  return {
-    cause: timedOut ? `${operation} request timeout` : `${operation} connection failed`,
-    retryable: true,
-  };
+  return viewerFailureClassification(
+    timedOut ? `${operation} request timeout` : `${operation} connection failed`,
+    "fallback",
+  );
 };
 
 const buildPackHttpBody = ({
@@ -2386,19 +2476,19 @@ export const CodememPlugin = async ({
     if (!viewerEnabled) {
       return {
         ok: false,
-        classification: {
-          cause: `${operation} viewer transport disabled`,
-          retryable: true,
-        },
+        classification: viewerFailureClassification(
+          `${operation} viewer transport disabled`,
+          "fallback",
+        ),
       };
     }
     if (Date.now() < promptPackTransportUnavailableUntil) {
       return {
         ok: false,
-        classification: {
-          cause: `${operation} viewer transport in backoff`,
-          retryable: true,
-        },
+        classification: viewerFailureClassification(
+          `${operation} viewer transport in backoff`,
+          "fallback",
+        ),
       };
     }
 
@@ -2426,20 +2516,49 @@ export const CodememPlugin = async ({
         }
         return { ok: false, classification };
       }
-      if (
-        !isRecord(profileBody)
-        || profileBody.service !== "codemem-viewer"
-        || profileBody.protocol_version !== 1
-        || profileBody.db_path !== promptPackDbPath
-        || canonicalJson(profileBody.identity_target) !== canonicalJson(promptPackIdentityTarget)
+      const viewerProtocolRange = isRecord(profileBody)
+        ? normalizePromptTransportProtocolRange(
+            profileBody.protocol_version,
+            profileBody.min_supported_protocol_version,
+          )
+        : null;
+      let profileFailure = null;
+      if (!isRecord(profileBody) || profileBody.service !== "codemem-viewer") {
+        profileFailure = viewerFailureClassification(
+          `${operation} viewer profile malformed`,
+          classifyPromptTransportFailure({ kind: "profile_malformed" }),
+        );
+      } else if (!viewerProtocolRange) {
+        profileFailure = viewerFailureClassification(
+          `${operation} viewer protocol range malformed`,
+          classifyPromptTransportFailure({ kind: "profile_malformed" }),
+        );
+      } else if (!arePromptTransportProtocolRangesCompatible(
+        PROMPT_TRANSPORT_PROTOCOL_RANGE,
+        viewerProtocolRange,
+      )) {
+        profileFailure = viewerFailureClassification(
+          `${operation} viewer protocol range unsupported`,
+          classifyPromptTransportFailure({ kind: "protocol_range_mismatch" }),
+        );
+      } else if (profileBody.db_path !== promptPackDbPath) {
+        profileFailure = viewerFailureClassification(
+          `${operation} viewer database mismatch`,
+          classifyPromptTransportFailure({ kind: "database_mismatch" }),
+        );
+      } else if (
+        canonicalJson(profileBody.identity_target) !== canonicalJson(promptPackIdentityTarget)
       ) {
+        profileFailure = viewerFailureClassification(
+          `${operation} viewer runtime identity mismatch`,
+          classifyPromptTransportFailure({ kind: "runtime_identity_mismatch" }),
+        );
+      }
+      if (profileFailure) {
         promptPackTransportUnavailableUntil = Date.now() + Math.max(1000, rawEventsBackoffMs);
         return {
           ok: false,
-          classification: {
-            cause: `${operation} viewer profile handshake mismatch`,
-            retryable: true,
-          },
+          classification: profileFailure,
         };
       }
       response = await fetch(url, {
@@ -2467,6 +2586,7 @@ export const CodememPlugin = async ({
         operation,
         status: response.status,
         body,
+        compatibleProfile: true,
       });
       if (classification.retryable) {
         promptPackTransportUnavailableUntil =
@@ -3894,6 +4014,10 @@ export const __testUtils = {
   redactPackCommand,
   rejectsInternalLedgerFlag,
   classifyFallbackCommandResult,
+  PROMPT_TRANSPORT_PROTOCOL_RANGE,
+  normalizePromptTransportProtocolRange,
+  arePromptTransportProtocolRangesCompatible,
+  classifyPromptTransportFailure,
   classifyViewerHttpFailure,
   isValidPackHttpPayload,
   isValidLedgerHttpPayload,

@@ -58,9 +58,10 @@ const normalizeIdentityPath = (value, cwd = "/tmp/greenroom") => {
 	return resolve(cwd, expanded);
 };
 
-const viewerProfileResponse = () => jsonResponse(200, {
+const viewerProfileResponse = (overrides = {}) => jsonResponse(200, {
 	service: "codemem-viewer",
 	protocol_version: 1,
+	min_supported_protocol_version: 1,
 	db_path: resolve(
 		normalizeIdentityPath(process.env.CODEMEM_DB) || join(homedir(), ".codemem", "mem.sqlite"),
 	),
@@ -78,6 +79,7 @@ const viewerProfileResponse = () => jsonResponse(200, {
 		),
 		embedding_model: process.env.CODEMEM_EMBEDDING_MODEL || "Xenova/bge-small-en-v1.5",
 	},
+	...overrides,
 });
 
 const messageOutput = ({
@@ -1619,6 +1621,38 @@ describe("OpenCode transform-time injection", () => {
 		expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)).toEqual([]);
 	});
 
+	test.each([
+		["old client/new Viewer", { protocol_version: 2, min_supported_protocol_version: 1 }],
+		["new client/old Viewer", { protocol_version: 1, min_supported_protocol_version: undefined }],
+	])("uses Viewer HTTP for the compatible %s profile matrix", async (_label, profileRange) => {
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
+			String(url).endsWith("/api/prompt-pack-profile")
+				? viewerProfileResponse(profileRange)
+				: String(url).endsWith("/api/pack")
+				? jsonResponse(200, packResponse("## Summary\n[1] (decision) Range-compatible bytes"))
+				: jsonResponse(200, { ok: true }),
+		);
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const output = messageOutput({ messageId: "user-range", sessionID: "sess-range" });
+
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await vi.waitFor(() => expect(fetchPostCalls(fetchMock)).toHaveLength(2));
+
+		expect(output.messages[0].parts.at(-1).text).toBe(
+			"[codemem context]\n## Summary\n[1] (decision) Range-compatible bytes",
+		);
+		expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)).toEqual([]);
+	});
+
 	test("records a skipped injection through the healthy viewer without spawning ledger CLI", async () => {
 		// Arrange
 		process.env.CODEMEM_VIEWER = "1";
@@ -1663,7 +1697,7 @@ describe("OpenCode transform-time injection", () => {
 			failure_code: "injection_disabled",
 		});
 		expect(output.messages[0].parts).toHaveLength(1);
-		expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)).toEqual([]);
+		expect(spawnMock).not.toHaveBeenCalled();
 	});
 
 	test("records cache reuse and delivery through the healthy viewer without spawning ledger CLI", async () => {
@@ -1814,12 +1848,25 @@ describe("OpenCode transform-time injection", () => {
 	});
 
 	test.each([
+		["absent endpoint", () => jsonResponse(404, { error: "not_found" })],
 		["foreign service", () => jsonResponse(200, { service: "not-codemem" })],
-		["untrusted invalid-request response", () => jsonResponse(400, {
-			error: { code: "invalid_request", message: "not your viewer" },
+		["malformed protocol range", () => viewerProfileResponse({
+			protocol_version: 2,
+			min_supported_protocol_version: 3,
 		})],
+		["non-overlapping protocol range", () => viewerProfileResponse({
+			protocol_version: 3,
+			min_supported_protocol_version: 2,
+		})],
+		["database target mismatch", () => viewerProfileResponse({ db_path: "/tmp/other.sqlite" })],
 		["stale viewer identity", () => jsonResponse(409, {
 			error: { code: "viewer_identity_mismatch", message: "viewer identity does not match request" },
+		})],
+		["pre-profile contract skew", () => jsonResponse(409, {
+			error: {
+				code: "viewer_contract_unsupported",
+				message: "viewer request contract is incompatible",
+			},
 		})],
 		["redirect", () => new Response(null, {
 			status: 307,
@@ -1857,26 +1904,25 @@ describe("OpenCode transform-time injection", () => {
 
 		expect(fetchPostCalls(fetchMock)).toEqual([]);
 		expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "GET", redirect: "manual" });
+		expect(spawnMock.mock.calls.filter(([, args]) => Array.isArray(args) && args.includes("pack")))
+			.toHaveLength(1);
 		expect(output.messages[0].parts.at(-1).text).toContain("Safe CLI fallback");
 	});
 
 	test.each([
 		["connection failure", () => Promise.reject(new Error("ECONNREFUSED"))],
+		["connection reset", () => Promise.reject(new Error("ECONNRESET"))],
 		["timeout", () => Promise.reject(Object.assign(new Error("timed out"), { name: "TimeoutError" }))],
 		["404", () => Promise.resolve(jsonResponse(404, { error: "not_found" }))],
 		["405", () => Promise.resolve(jsonResponse(405, { error: "method_not_allowed" }))],
-		["5xx", () => Promise.resolve(jsonResponse(503, { error: "unavailable" }))],
+		["viewer restart", () => Promise.resolve(jsonResponse(503, { error: "unavailable" }))],
 		["database mismatch", () => Promise.resolve(jsonResponse(409, {
 			error: { code: "viewer_db_mismatch", message: "viewer database does not match request" },
 		}))],
 		["identity mismatch", () => Promise.resolve(jsonResponse(409, {
 			error: { code: "viewer_identity_mismatch", message: "viewer identity does not match request" },
 		}))],
-		["contract mismatch", () => Promise.resolve(jsonResponse(409, {
-			error: { code: "viewer_contract_unsupported", message: "viewer request contract is incompatible" },
-		}))],
 		["unrecognized 400", () => Promise.resolve(jsonResponse(400, { error: "bad_request" }))],
-		["unrecognized 401", () => Promise.resolve(jsonResponse(401, { error: "unauthorized" }))],
 		["malformed 2xx", () => Promise.resolve(jsonResponse(200, { pack_text: 42 }))],
 	])("falls back to pack and ledger CLI after viewer %s while preserving output and ledger handoff", async (
 		_label,
@@ -1942,7 +1988,6 @@ describe("OpenCode transform-time injection", () => {
 		["timeout", () => Promise.reject(Object.assign(new Error("timed out"), { name: "TimeoutError" }))],
 		["404", () => Promise.resolve(jsonResponse(404, { error: "not_found" }))],
 		["405", () => Promise.resolve(jsonResponse(405, { error: "method_not_allowed" }))],
-		["unrecognized 401", () => Promise.resolve(jsonResponse(401, { error: "unauthorized" }))],
 		["identity mismatch", () => Promise.resolve(jsonResponse(409, {
 			error: { code: "viewer_identity_mismatch", message: "viewer identity does not match request" },
 		}))],
@@ -2006,7 +2051,20 @@ describe("OpenCode transform-time injection", () => {
 		);
 	});
 
-	test("treats viewer 400 responses as terminal without spawning pack or ledger CLI", async () => {
+	test.each([
+		[400, { error: { code: "invalid_request", message: "context is required" } }],
+		[401, { error: { code: "unauthorized" } }],
+		[403, { error: { code: "policy_denied" } }],
+		[409, {
+			error: {
+				code: "viewer_contract_unsupported",
+				message: "viewer request contract is incompatible",
+			},
+		}],
+	])("treats compatible-profile Viewer %s responses as terminal without CLI children", async (
+		status,
+		packFailure,
+	) => {
 		// Arrange
 		process.env.CODEMEM_VIEWER = "1";
 		process.env.CODEMEM_VIEWER_AUTO = "0";
@@ -2014,7 +2072,7 @@ describe("OpenCode transform-time injection", () => {
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
 			if (String(url).endsWith("/api/prompt-pack-profile")) return viewerProfileResponse();
 			return String(url).endsWith("/api/pack")
-				? jsonResponse(400, { error: { code: "invalid_request", message: "context is required" } })
+				? jsonResponse(status, packFailure)
 				: jsonResponse(400, {
 						error: { code: "invalid_request", message: "attempt_id is required" },
 					});
