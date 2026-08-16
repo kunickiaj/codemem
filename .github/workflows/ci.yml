@@ -61,7 +61,7 @@ jobs:
         run: pnpm run build
 
       - name: Test
-        run: pnpm run test:release && pnpm run test
+        run: pnpm run test:release && pnpm run test:adapter-normalizers && pnpm run test
 
   worker-test:
     name: Cloudflare Worker Test
@@ -162,7 +162,9 @@ jobs:
         run: pnpm run build
 
       - name: Run packed artifact smoke test
-        run: pnpm --filter @codemem/opencode-plugin test:packed-artifact
+        run: |
+          pnpm --filter @codemem/opencode-plugin test:packed-artifact
+          pnpm --filter codemem test:packed-artifact
 
   e2e:
     name: E2E ${{ matrix.name }}

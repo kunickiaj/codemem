@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +8,17 @@ import {
 	buildRawEventEnvelopeFromCodexHook as buildRawEventEnvelopeFromCodexHookWithPolicy,
 	mapCodexHookPayload as mapCodexHookPayloadWithPolicy,
 } from "./codex-hooks.js";
+
+const goldenFixtures = JSON.parse(
+	readFileSync(new URL("./fixtures/adapter-normalizer-golden.json", import.meta.url), "utf8"),
+) as {
+	codex: Array<{
+		name: string;
+		transcript?: string;
+		input: Record<string, unknown>;
+		expected: Record<string, unknown>;
+	}>;
+};
 
 const mapCodexHookPayload = (
 	payload: Record<string, unknown>,
@@ -35,6 +46,38 @@ afterEach(() => {
 });
 
 describe("mapCodexHookPayload", () => {
+	describe("frozen normalizer fixtures", () => {
+		it.each(goldenFixtures.codex)("matches $name", (fixture) => {
+			const transcriptPath = fixture.transcript
+				? writeTranscript(
+						fixture.transcript
+							.trim()
+							.split("\n")
+							.map((line) => JSON.parse(line) as Record<string, unknown>),
+					)
+				: null;
+			const payload = Object.fromEntries(
+				Object.entries(fixture.input).map(([key, value]) => [
+					key,
+					value === "$TRANSCRIPT" ? transcriptPath : value,
+				]),
+			);
+			const first = mapCodexHookPayload(payload);
+			const retry = mapCodexHookPayload(payload);
+			expect(first).not.toBeNull();
+			expect(retry?.event_id).toBe(first?.event_id);
+			expect(first?.source).toBe(fixture.expected.source);
+			expect(first?.event_type).toBe(fixture.expected.event_type);
+			expect(first?.meta.event_id_algo).toBe(fixture.expected.event_id_algo);
+			if (fixture.expected.payload) expect(first?.payload).toEqual(fixture.expected.payload);
+			if (fixture.expected.status) expect(first?.payload.status).toBe(fixture.expected.status);
+			if (fixture.expected.text) expect(first?.payload.text).toBe(fixture.expected.text);
+			if (fixture.expected.unknown_field) {
+				expect(first?.meta.hook_fields).toHaveProperty(String(fixture.expected.unknown_field));
+			}
+		});
+	});
+
 	it("maps UserPromptSubmit to prompt", () => {
 		const event = mapCodexHookPayload({
 			hook_event_name: "UserPromptSubmit",
@@ -51,6 +94,7 @@ describe("mapCodexHookPayload", () => {
 		expect(event?.session_id).toBe("codex-session");
 		expect(event?.payload.text).toBe("Run the tests");
 		expect(event?.meta.turn_id).toBe("turn-1");
+		expect(event?.meta.event_id_algo).toBe("codex/1");
 		expect((event?.meta.hook_fields as Record<string, unknown>).custom_field).toBe("preserve");
 	});
 

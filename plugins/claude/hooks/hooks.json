@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ingest-hook.sh"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/ingest-hook.mjs"
           }
         ]
       }
@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ingest-hook.sh"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/ingest-hook.mjs"
           }
         ]
       }
@@ -47,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ingest-hook.sh"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/ingest-hook.mjs"
           }
         ]
       }
@@ -57,7 +57,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ingest-hook.sh"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/ingest-hook.mjs"
           }
         ]
       }
@@ -67,7 +67,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ingest-hook.sh"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/ingest-hook.mjs"
           }
         ]
       }

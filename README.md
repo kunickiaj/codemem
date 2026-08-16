@@ -70,7 +70,7 @@ npx -y codemem setup --claude-only
 
 The Claude plugin starts MCP with the TS CLI (`codemem mcp`).
 
-Claude hook ingestion is HTTP enqueue-first (`POST /api/claude-hooks`) and falls back to direct local DB enqueue via `codemem claude-hook-ingest` when the local server path is unavailable. Experimental Codex hook ingestion follows the same shared raw-event pipeline through `POST /api/codex-hooks`, `codemem codex-hook-ingest`, and a Codex-specific fallback spool.
+Claude and Codex plugins normalize native hooks at the plugin edge and send the resulting envelope to the canonical `POST /api/raw-events` endpoint. A retryable Viewer failure sends that exact envelope to `codemem enqueue-raw-event`; Codex retains a durable normalized-envelope spool as its last resort. The checked-in dependency-free normalizers are generated from the TypeScript implementations in `packages/core/src/claude-hooks.ts` and `packages/core/src/codex-hooks.ts`. Older packaged clients remain compatible through the named Viewer hook routes.
 
 Claude hook events share the same raw-event queue pipeline used by OpenCode. `UserPromptSubmit` runs
 capture ingest in the background and injects memory context via Claude `additionalContext` using
@@ -89,7 +89,7 @@ codex plugin add codemem@codemem
 
 2. Restart Codex.
 
-The Codex plugin bundles its MCP config (`codemem mcp`) and hooks. Hooks call `codemem` from your `PATH` and fall back to `npx -y codemem@<version>`, so a global install is optional (installing `codemem` globally reduces hook latency). Validated targets are Codex CLI 0.135+ and current Desktop builds.
+The Codex plugin bundles its MCP config (`codemem mcp`), hooks, and generated normalizer. Healthy hook ingestion uses Viewer HTTP directly and starts no `codemem` or `npx` child; those commands are fallback-only. A global install remains optional and reduces fallback latency. Validated targets are Codex CLI 0.135+ and current Desktop builds.
 
 **API-key Codex Desktop (marketplace unavailable):** When plugin installation is greyed out (non-subscription / API-key Desktop), configure codemem without the plugin surface:
 
@@ -99,7 +99,7 @@ npx -y codemem setup --codex-only
 
 This merges `[mcp_servers.codemem]` into `~/.codex/config.toml` and writes `~/.codex/hooks.json` (SessionStart, UserPromptSubmit, PostToolUse, Stop) — backing up existing files and preserving unrelated entries. Restart Codex and approve the one-time prompt to trust the codemem hooks. MCP recall works immediately. If `codemem` is on your `PATH` the hooks call it directly; otherwise they fall back to `npx -y codemem`. Honors `CODEX_HOME`; re-runnable (use `--force` to refresh).
 
-Codex hook ingestion shares the same raw-event pipeline as Claude and OpenCode: HTTP enqueue-first (`POST /api/codex-hooks`), then `codemem codex-hook-ingest` direct enqueue, with a Codex-specific spool fallback. `UserPromptSubmit` runs capture ingest in the background and injects memory context via `additionalContext`; disable injection with `CODEMEM_INJECT_CONTEXT=0`. See [docs/plugin-reference.md](docs/plugin-reference.md) for details and troubleshooting.
+Codex hook ingestion shares the same raw-event pipeline as Claude and OpenCode through normalized `POST /api/raw-events`, then exact-envelope `codemem enqueue-raw-event` fallback and a dedicated normalized-envelope spool at `~/.codemem/codex-raw-event-spool`. That spool is separate from the legacy native-hook spool. `UserPromptSubmit` runs capture ingest in the background and injects memory context via `additionalContext`; disable injection with `CODEMEM_INJECT_CONTEXT=0`. See [docs/plugin-reference.md](docs/plugin-reference.md) for details and troubleshooting.
 
 > Migrating from `opencode-mem`? See [docs/rename-migration.md](docs/rename-migration.md).
 

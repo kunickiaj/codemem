@@ -1,106 +1,165 @@
-import process from "node:process";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+#!/usr/bin/env node
+
+import { randomInt, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
-import { randomInt, randomUUID } from "node:crypto";
+import {
+	buildRawEventEnvelopeFromCodexHook,
+	TRUSTED_HOOK_MAPPER_OPTIONS,
+} from "./codemem-normalizer.mjs";
+
+const MAX_BODY_BYTES = 1_048_576;
+const scriptDirectory = dirname(fileURLToPath(import.meta.url));
+const pluginRoot = process.env.PLUGIN_ROOT || process.env.CLAUDE_PLUGIN_ROOT || dirname(scriptDirectory);
+
+function isTruthy(value) {
+	return ["1", "true", "yes", "on"].includes(String(value ?? "").trim().toLowerCase());
+}
 
 async function readStdin() {
-  const chunks = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks).toString("utf8");
+	const chunks = [];
+	let bytes = 0;
+	for await (const chunk of process.stdin) {
+		const buffer = Buffer.from(chunk);
+		bytes += buffer.byteLength;
+		if (bytes > MAX_BODY_BYTES) throw new Error("payload too large");
+		chunks.push(buffer);
+	}
+	return Buffer.concat(chunks).toString("utf8");
 }
 
-let payload = await readStdin();
-if (!payload.trim()) {
-  process.exit(0);
+function normalizeTimestampAndNonce(payload) {
+	const hasTimestamp =
+		(typeof payload.timestamp === "string" && payload.timestamp.trim() !== "") ||
+		(typeof payload.ts === "string" && payload.ts.trim() !== "");
+	return hasTimestamp
+		? payload
+		: { ...payload, timestamp: new Date().toISOString(), codemem_generated_event_nonce: randomUUID() };
 }
 
-function normalizePayloadText(raw) {
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) return raw;
-    const hasTimestamp =
-      (typeof parsed.timestamp === "string" && parsed.timestamp.trim() !== "") ||
-      (typeof parsed.ts === "string" && parsed.ts.trim() !== "");
-    if (hasTimestamp) return raw;
-    return JSON.stringify({
-      ...parsed,
-      timestamp: new Date().toISOString(),
-      codemem_generated_event_nonce: randomUUID()
-    });
-  } catch {
-    return raw;
-  }
+function pinnedVersion() {
+	try {
+		const manifest = JSON.parse(readFileSync(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"));
+		return typeof manifest.version === "string" && manifest.version.trim() ? manifest.version.trim() : "latest";
+	} catch {
+		return "latest";
+	}
 }
 
-payload = normalizePayloadText(payload);
-let spooled = false;
-
-if (["1", "true", "yes", "on"].includes((process.env.CODEMEM_PLUGIN_IGNORE ?? "").toLowerCase())) {
-  process.exit(0);
+function httpTimeoutMs() {
+	const parsed = Number.parseInt(process.env.CODEMEM_CODEX_HOOK_HTTP_TIMEOUT_MS ?? "", 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : 1000;
 }
 
-const scriptDir = dirname(fileURLToPath(import.meta.url));
-const pluginRoot = process.env.PLUGIN_ROOT || process.env.CLAUDE_PLUGIN_ROOT || dirname(scriptDir);
-
-function resolvePinnedVersion() {
-  try {
-    const manifest = JSON.parse(readFileSync(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"));
-    return typeof manifest.version === "string" && manifest.version.trim() ? manifest.version.trim() : "latest";
-  } catch {
-    return "latest";
-  }
+async function postEnvelope(body) {
+	const host = process.env.CODEMEM_VIEWER_HOST?.trim() || "127.0.0.1";
+	const port = process.env.CODEMEM_VIEWER_PORT?.trim() || "38888";
+	const hostForUrl = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+	try {
+		const response = await fetch(`http://${hostForUrl}:${port}/api/raw-events`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body,
+			signal: AbortSignal.timeout(httpTimeoutMs()),
+		});
+		if (!response.ok) return false;
+		const result = await response.json();
+		return result != null && typeof result === "object" && typeof result.inserted === "number" && typeof result.skipped === "number";
+	} catch {
+		return false;
+	}
 }
 
-function run(command, args) {
-  const result = spawnSync(command, args, {
-    input: payload,
-    encoding: "utf8",
-    stdio: ["pipe", "ignore", "ignore"],
-    timeout: 2000
-  });
-  return result.status === 0;
+function runFallback(command, args, body) {
+	const result = spawnSync(command, args, {
+		input: body,
+		encoding: "utf8",
+		stdio: ["pipe", "ignore", "ignore"],
+		timeout: 2000,
+	});
+	return result.status === 0;
 }
 
-function expandHome(value) {
-  if (value === "~") return homedir();
-  if (value.startsWith("~/")) return join(homedir(), value.slice(2));
-  return value;
+function expandHome(path) {
+	if (path === "~") return homedir();
+	return path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
 }
 
-function spoolPayload() {
-  if (spooled) return;
-  try {
-    const dir = expandHome(process.env.CODEMEM_CODEX_HOOK_SPOOL_DIR?.trim() || "~/.codemem/codex-hook-spool");
-    mkdirSync(dir, { recursive: true });
-    const tmpPath = join(dir, `.hook-tmp-${process.pid}-${Date.now()}-${randomInt(1000, 10000)}.json`);
-    const finalPath = join(dir, `hook-${Math.floor(Date.now() / 1000)}-${process.pid}-${randomInt(1000, 10000)}.json`);
-    writeFileSync(tmpPath, payload, "utf8");
-    renameSync(tmpPath, finalPath);
-    spooled = true;
-  } catch {
-    // Best-effort last resort only.
-  }
+function spoolEnvelope(body) {
+	try {
+		const directory = spoolDirectory();
+		mkdirSync(directory, { recursive: true });
+		const suffix = `${process.pid}-${Date.now()}-${randomInt(1000, 10000)}`;
+		const temporaryPath = join(directory, `.raw-event-tmp-${suffix}.json`);
+		const finalPath = join(directory, `raw-event-${suffix}.json`);
+		writeFileSync(temporaryPath, body, "utf8");
+		renameSync(temporaryPath, finalPath);
+	} catch {
+		// Best-effort last resort only.
+	}
 }
 
-if (run("codemem", ["codex-hook-ingest"])) {
-  process.exit(0);
+function spoolDirectory() {
+	return expandHome(
+		process.env.CODEMEM_CODEX_RAW_EVENT_SPOOL_DIR?.trim() || "~/.codemem/codex-raw-event-spool",
+	);
 }
 
-// If the package-manager fallback cold-starts or gets killed by Codex's hook
-// timeout, this payload is already durable. A later drain deduplicates it if
-// the fallback succeeds too.
-spoolPayload();
-
-if (run("npx", ["-y", `codemem@${resolvePinnedVersion()}`, "codex-hook-ingest"])) {
-  process.exit(0);
+async function drainNormalizedSpool() {
+	let names;
+	try {
+		names = readdirSync(spoolDirectory())
+			.filter(
+				(name) => name.startsWith("raw-event-") && name.endsWith(".json"),
+			)
+			.sort();
+	} catch {
+		return;
+	}
+	for (const name of names.slice(0, 1)) {
+		const path = join(spoolDirectory(), name);
+		let body;
+		try {
+			body = readFileSync(path, "utf8");
+		} catch {
+			continue;
+		}
+		if (!(await postEnvelope(body))) continue;
+		try {
+			unlinkSync(path);
+		} catch {
+			// A later invocation can safely redeliver the stable event ID.
+		}
+	}
 }
 
-// Hook ingestion is best-effort. Never fail the active Codex session because
-// the local CLI or npm fallback is unavailable.
-spoolPayload();
-process.exit(0);
+try {
+	const raw = await readStdin();
+	if (raw.trim() && !isTruthy(process.env.CODEMEM_PLUGIN_IGNORE)) {
+		const parsed = JSON.parse(raw);
+		if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error("payload must be a JSON object");
+		}
+
+		const nativePayload = normalizeTimestampAndNonce(parsed);
+		const envelope = buildRawEventEnvelopeFromCodexHook(nativePayload, TRUSTED_HOOK_MAPPER_OPTIONS);
+		if (envelope !== null) {
+			const envelopeBody = JSON.stringify(envelope);
+			if (await postEnvelope(envelopeBody)) {
+				await drainNormalizedSpool();
+			} else {
+				const enqueued =
+					runFallback("codemem", ["enqueue-raw-event"], envelopeBody) ||
+					runFallback("npx", ["-y", `codemem@${pinnedVersion()}`, "enqueue-raw-event"], envelopeBody);
+				if (!enqueued) spoolEnvelope(envelopeBody);
+			}
+		}
+	}
+} catch {
+	// Hook ingestion is best-effort and must never block the Codex session.
+}
+
+process.stdout.write('{"continue":true}\n');

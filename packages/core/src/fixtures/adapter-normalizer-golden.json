@@ -1,0 +1,129 @@
+{
+	"claude": [
+		{
+			"name": "timestamp-less retry with unknown fields",
+			"now": "2026-08-15T12:00:00.000Z",
+			"input": {
+				"hook_event_name": "UserPromptSubmit",
+				"session_id": "claude-golden-session",
+				"prompt": "Preserve this retry",
+				"cwd": null,
+				"unknown_native_field": { "nested": true }
+			},
+			"expected": {
+				"source": "claude",
+				"event_type": "prompt",
+				"event_id_algo": "claude/1",
+				"payload": { "text": "Preserve this retry" },
+				"unknown_field": "unknown_native_field"
+			}
+		},
+		{
+			"name": "successful tool result",
+			"input": {
+				"hook_event_name": "PostToolUse",
+				"session_id": "claude-golden-session",
+				"timestamp": "2026-08-15T12:01:00Z",
+				"tool_use_id": "tool-success",
+				"tool_name": "Read",
+				"tool_input": { "file_path": "README.md" },
+				"tool_response": { "bytes": 128 }
+			},
+			"expected": {
+				"source": "claude",
+				"event_type": "tool_result",
+				"event_id_algo": "claude/1",
+				"status": "ok"
+			}
+		},
+		{
+			"name": "failed tool result",
+			"input": {
+				"hook_event_name": "PostToolUseFailure",
+				"session_id": "claude-golden-session",
+				"timestamp": "2026-08-15T12:02:00Z",
+				"tool_use_id": "tool-failure",
+				"tool_name": "Bash",
+				"tool_input": { "command": "exit 1" },
+				"error": { "message": "command failed" }
+			},
+			"expected": {
+				"source": "claude",
+				"event_type": "tool_result",
+				"event_id_algo": "claude/1",
+				"status": "error"
+			}
+		},
+		{
+			"name": "Stop transcript fallback",
+			"transcript": "{\"message\":{\"role\":\"assistant\",\"content\":\"Claude transcript result\",\"usage\":{\"input_tokens\":12,\"output_tokens\":4}}}\n",
+			"input": {
+				"hook_event_name": "Stop",
+				"session_id": "claude-golden-session",
+				"timestamp": "2026-08-15T12:03:00Z",
+				"transcript_path": "$TRANSCRIPT"
+			},
+			"expected": {
+				"source": "claude",
+				"event_type": "assistant",
+				"event_id_algo": "claude/1",
+				"text": "Claude transcript result"
+			}
+		}
+	],
+	"codex": [
+		{
+			"name": "generated timestamp and nonce retry",
+			"input": {
+				"hook_event_name": "UserPromptSubmit",
+				"session_id": "codex-golden-session",
+				"turn_id": "turn-1",
+				"prompt": "Preserve this nonce",
+				"timestamp": "2026-08-15T13:00:00.000Z",
+				"codemem_generated_event_nonce": "00000000-0000-4000-8000-000000000001"
+			},
+			"expected": {
+				"source": "codex",
+				"event_type": "prompt",
+				"event_id_algo": "codex/1",
+				"payload": { "text": "Preserve this nonce" }
+			}
+		},
+		{
+			"name": "tool result with unknown fields",
+			"input": {
+				"hook_event_name": "PostToolUse",
+				"session_id": "codex-golden-session",
+				"timestamp": "2026-08-15T13:01:00Z",
+				"tool_use_id": "tool-result",
+				"tool_name": "Read",
+				"tool_input": { "filePath": "README.md" },
+				"tool_response": { "content": "ok" },
+				"unknown_native_field": ["preserved"]
+			},
+			"expected": {
+				"source": "codex",
+				"event_type": "tool_result",
+				"event_id_algo": "codex/1",
+				"status": "ok",
+				"unknown_field": "unknown_native_field"
+			}
+		},
+		{
+			"name": "Stop transcript fallback",
+			"transcript": "{\"role\":\"assistant\",\"content\":\"Codex transcript result\"}\n",
+			"input": {
+				"hook_event_name": "Stop",
+				"session_id": "codex-golden-session",
+				"turn_id": "turn-stop",
+				"transcript_path": "$TRANSCRIPT"
+			},
+			"expected": {
+				"source": "codex",
+				"event_type": "assistant",
+				"event_id_algo": "codex/1",
+				"text": "Codex transcript result"
+			}
+		}
+	]
+}

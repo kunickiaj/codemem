@@ -11,7 +11,10 @@ import {
 	type HookMapperOptions,
 	normalizeProjectLabel,
 	resolveHookProject,
+	TRUSTED_HOOK_MAPPER_OPTIONS,
 } from "./claude-hooks.js";
+
+export { TRUSTED_HOOK_MAPPER_OPTIONS };
 
 export const MAPPABLE_CODEX_HOOK_EVENTS = new Set([
 	"SessionStart",
@@ -20,6 +23,9 @@ export const MAPPABLE_CODEX_HOOK_EVENTS = new Set([
 	"PostToolUse",
 	"Stop",
 ]);
+
+/** Frozen discriminator for Codex's derived event identity contract. */
+export const CODEX_EVENT_ID_ALGO = "codex/1";
 
 function nowIso(): string {
 	return new Date().toISOString().replace(/\.(\d{3})\d*Z$/, ".$1Z");
@@ -206,6 +212,7 @@ export function mapCodexHookPayload(
 	}
 
 	const meta: Record<string, unknown> = {
+		event_id_algo: CODEX_EVENT_ID_ALGO,
 		hook_event_name: hookEvent,
 		ordering_confidence: "low",
 	};

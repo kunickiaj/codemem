@@ -44,6 +44,9 @@ export const MAPPABLE_CLAUDE_HOOK_EVENTS = new Set([
 	"SessionEnd",
 ]);
 
+/** Frozen discriminator for Claude's derived event identity contract. */
+export const CLAUDE_EVENT_ID_ALGO = "claude/1";
+
 // ---------------------------------------------------------------------------
 // Timestamp helpers
 // ---------------------------------------------------------------------------
@@ -492,6 +495,7 @@ export function mapClaudeHookPayload(
 
 	// Build meta — forward unknown fields as hook_fields
 	const meta: Record<string, unknown> = {
+		event_id_algo: CLAUDE_EVENT_ID_ALGO,
 		hook_event_name: hookEvent,
 		ordering_confidence: "low",
 	};

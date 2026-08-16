@@ -8,7 +8,7 @@
  *  - buildIngestPayloadFromHook: session context fields
  */
 
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +19,18 @@ import {
 	TRUSTED_HOOK_MAPPER_OPTIONS,
 } from "./claude-hooks.js";
 import { extractHookTranscript, MAX_HOOK_TRANSCRIPT_BYTES } from "./hook-transcript.js";
+
+const goldenFixtures = JSON.parse(
+	readFileSync(new URL("./fixtures/adapter-normalizer-golden.json", import.meta.url), "utf8"),
+) as {
+	claude: Array<{
+		name: string;
+		now?: string;
+		transcript?: string;
+		input: Record<string, unknown>;
+		expected: Record<string, unknown>;
+	}>;
+};
 
 function restrictedTranscriptPolicy(root: string) {
 	return { trust: "restricted" as const, approvedRoots: [root] };
@@ -199,6 +211,44 @@ describe("extractHookTranscript", () => {
 // ---------------------------------------------------------------------------
 
 describe("mapClaudeHookPayload", () => {
+	describe("frozen normalizer fixtures", () => {
+		it.each(goldenFixtures.claude)("matches $name", (fixture) => {
+			const directory = fixture.transcript
+				? mkdtempSync(join(tmpdir(), "codemem-claude-golden-"))
+				: null;
+			try {
+				const transcriptPath = directory ? join(directory, "transcript.jsonl") : null;
+				if (transcriptPath && fixture.transcript) writeFileSync(transcriptPath, fixture.transcript);
+				const payload = Object.fromEntries(
+					Object.entries(fixture.input).map(([key, value]) => [
+						key,
+						value === "$TRANSCRIPT" ? transcriptPath : value,
+					]),
+				);
+				if (fixture.now) {
+					vi.useFakeTimers();
+					vi.setSystemTime(new Date(fixture.now));
+				}
+				const first = mapClaudeHookPayload(payload);
+				const retry = mapClaudeHookPayload(payload);
+				expect(first).not.toBeNull();
+				expect(retry?.event_id).toBe(first?.event_id);
+				expect(first?.source).toBe(fixture.expected.source);
+				expect(first?.event_type).toBe(fixture.expected.event_type);
+				expect(first?.meta.event_id_algo).toBe(fixture.expected.event_id_algo);
+				if (fixture.expected.payload) expect(first?.payload).toEqual(fixture.expected.payload);
+				if (fixture.expected.status) expect(first?.payload.status).toBe(fixture.expected.status);
+				if (fixture.expected.text) expect(first?.payload.text).toBe(fixture.expected.text);
+				if (fixture.expected.unknown_field) {
+					expect(first?.meta.hook_fields).toHaveProperty(String(fixture.expected.unknown_field));
+				}
+			} finally {
+				vi.useRealTimers();
+				if (directory) rmSync(directory, { recursive: true, force: true });
+			}
+		});
+	});
+
 	describe("UserPromptSubmit → prompt", () => {
 		it("maps prompt text and meta", () => {
 			const event = mapClaudeHookPayload({
@@ -616,6 +666,7 @@ describe("mapClaudeHookPayload", () => {
 
 			expect(event?.schema_version).toBe("1.0");
 			expect(event?.source).toBe("claude");
+			expect(event?.meta.event_id_algo).toBe("claude/1");
 		});
 	});
 });

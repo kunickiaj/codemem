@@ -43,11 +43,14 @@ The plugin starts MCP with the TS CLI:
 
 - `codemem mcp`
 
-Claude hook ingestion is HTTP enqueue-first (`POST /api/claude-hooks` to the local codemem server) with a CLI direct-enqueue fallback when the server path is unavailable:
+Claude's Node/ESM wrapper normalizes each native hook once, then sends the exact normalized envelope to the local server's canonical `POST /api/raw-events` endpoint. Healthy HTTP ingestion starts no `codemem` or `npx` child. On a retryable failure, the wrapper sends the same serialized envelope to:
 
-- `codemem claude-hook-ingest`
+- `codemem enqueue-raw-event`
+- `npx -y codemem@<plugin version> enqueue-raw-event`
 
-Contract note: fallback is direct local DB enqueue from the TS CLI. There is currently no file spool/lock durability path in the fallback contract.
+The wrapper never remaps the native payload during fallback, so event identity is identical across HTTP and direct enqueue. Named `POST /api/claude-hooks` remains available only for older packaged clients.
+
+Claude preserves its existing best-effort failure posture: if Viewer HTTP and both command fallbacks fail, the wrapper logs the failure and exits non-zero. It does not maintain a file spool; Codex's separately documented normalized-envelope spool is intentionally adapter-specific.
 
 You can update an existing marketplace install with:
 
@@ -55,10 +58,10 @@ You can update an existing marketplace install with:
 /plugin marketplace update codemem-marketplace
 ```
 
-Ingest one Claude hook payload from stdin (this is what the installed hook script calls):
+Ingest one Claude hook payload through the installed wrapper:
 
 ```bash
-printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"sess-1","cwd":"/tmp/demo"}' | codemem claude-hook-ingest
+printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"sess-1"}' | node plugins/claude/scripts/ingest-hook.mjs
 ```
 
 `inject-context-hook.sh` is also a thin wrapper and delegates prompt-time context output to
@@ -75,7 +78,7 @@ The packaged template currently registers these hook events in `plugins/claude/h
 - `SessionEnd`
 
 `UserPromptSubmit` runs `scripts/user-prompt-hook.sh`, which:
-- sends the hook payload into capture ingest (`ingest-hook.sh`) in the background, and
+- sends the hook payload into capture ingest (`ingest-hook.mjs`) in the background, and
 - returns `hookSpecificOutput.additionalContext` from local CLI/store pack generation for prompt-time memory injection.
 
 Prompt-time Claude injection uses local pack generation first and falls back to `/api/pack` only when local generation fails and `CODEMEM_INJECT_HTTP_FALLBACK` is enabled.
@@ -92,13 +95,15 @@ For Claude hooks, project resolution precedence is:
 
 Codex support is early beta — functional and dogfooded end-to-end, but not yet promoted to a stable support tier. The Codex plugin uses the same shared raw-event pipeline as Claude and OpenCode. It is packaged under `plugins/codex/` with `.codex-plugin/plugin.json`, bundled `.mcp.json`, and hook scripts under `plugins/codex/scripts/`.
 
-Codex hook ingestion is HTTP enqueue-first (`POST /api/codex-hooks`) with a CLI fallback chain:
+Codex's Node/ESM wrapper adds a timestamp and nonce when the host omitted a timestamp, normalizes exactly once, and sends the exact envelope to `POST /api/raw-events`. Healthy HTTP ingestion starts no `codemem` or `npx` child. Its fallback chain is:
 
-- `codemem codex-hook-ingest` — direct local DB enqueue when the viewer API is unavailable.
-- When both HTTP and direct enqueue fail, the payload is written to a Codex-specific on-disk spool (`~/.codemem/codex-hook-spool`) and drained on a later invocation.
+- `codemem enqueue-raw-event`, then the pinned `npx` equivalent.
+- If both fail, the normalized envelope is written to its dedicated on-disk spool (`~/.codemem/codex-raw-event-spool`). This is separate from the legacy native-hook spool.
+
+The same serialized envelope—and therefore the same event ID—is used by every transport. Named `POST /api/codex-hooks` remains available only for older packaged clients.
 
 ```bash
-printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"codex-1","cwd":"/tmp/demo"}' | codemem codex-hook-ingest
+printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"codex-1"}' | node plugins/codex/scripts/ingest-hook.mjs
 ```
 
 `UserPromptSubmit` runs `scripts/user-prompt-hook.mjs`, which:
@@ -134,7 +139,7 @@ codex plugin marketplace upgrade
 codex plugin remove codemem@codemem
 ```
 
-The plugin bundles `.mcp.json` (`npx -y codemem mcp`) and `hooks/hooks.json`. Hook scripts call `codemem` from `PATH` and fall back to `npx -y codemem@<plugin version>`, so a global CLI is optional but reduces hook latency. Validated targets: Codex CLI 0.135+ and current Desktop builds.
+The plugin bundles `.mcp.json` (`npx -y codemem mcp`), `hooks/hooks.json`, and a dependency-free generated normalizer. Ingest wrappers use Viewer HTTP without child processes when healthy; `codemem` and pinned `npx` are fallback-only. Generated files come from the TypeScript normalizers in `packages/core/src/` via `node scripts/build-adapter-normalizers.mjs` and are protected by a byte-drift test. Validated targets: Codex CLI 0.135+ and current Desktop builds.
 
 ### Plugin-free install (`codemem setup --codex-only`)
 
@@ -153,10 +158,10 @@ Hooks loaded from the user config layer require a one-time trust approval in Cod
 
 ### Troubleshooting
 
-- **No memories and no raw events captured.** Confirm the `codemem` the hooks resolve actually has the Codex commands: `codemem codex-hook-ingest </dev/null` should print a structured `{"error":"read_error",...}`, not `unknown command`. The Codex commands are first published in codemem 0.35.0; the `0.34.0` release on npm predates them, so an older global install (or the `npx -y codemem@<plugin version>` fallback while the plugin manifest still pins a pre-0.35 version) silently fails and spools. Inspect the backlog at `~/.codemem/codex-hook-spool/` and the plugin log at `~/.codemem/plugin.log`.
-- **`database locked` in the plugin log / payloads spooling.** The direct-DB fallback lost the writer lock (the viewer or maintenance worker held it). Keep the viewer running and current — it owns the single writer and serves `POST /api/codex-hooks`, so HTTP enqueue avoids cross-process lock contention.
-- **`POST /api/codex-hooks` returns 404.** The running viewer predates Codex support; restart or upgrade it to a build that serves the route.
-- **Spool backlog drains automatically** on the next successful ingest; force it by piping any spooled payload back through `codemem codex-hook-ingest` while the viewer is up.
+- **No memories and no raw events captured.** Confirm the `codemem` the hooks resolve actually has the Codex commands: `codemem codex-hook-ingest </dev/null` should print a structured `{"error":"read_error",...}`, not `unknown command`. The Codex commands are first published in codemem 0.35.0; the `0.34.0` release on npm predates them, so an older global install (or the `npx -y codemem@<plugin version>` fallback while the plugin manifest still pins a pre-0.35 version) silently fails and spools. Inspect normalized wrapper envelopes at `~/.codemem/codex-raw-event-spool/`, legacy native-hook payloads at `~/.codemem/codex-hook-spool/`, and the plugin log at `~/.codemem/plugin.log`.
+- **`database locked` in the plugin log / payloads spooling.** The direct-queue fallback lost the writer lock (the viewer or maintenance worker held it). Keep the viewer running and current so canonical `POST /api/raw-events` avoids cross-process lock contention.
+- **`POST /api/raw-events` returns 404.** The running viewer predates normalized edge ingress; restart or upgrade it. Older plugin packages may continue using the named compatibility route.
+- **Normalized spool backlog drains automatically** at one envelope per successful ingest. The wrapper never reads or removes files from the legacy native-hook spool.
 - **A model rejects injected context** (for example "the conversation must end with a user message"): disable prompt-time injection with `CODEMEM_INJECT_CONTEXT=0`. Capture/ingest keeps working and recall is still available through the MCP tools.
 
 ## Post-restart config sanity checklist
@@ -362,7 +367,8 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_CODEX_HOOK_HTTP_TIMEOUT_MS` | Codex hook HTTP enqueue timeout in milliseconds (default `1000`). |
 | `CODEMEM_CODEX_HOOK_LOCK_DIR` | Codex hook fallback lock path (default `~/.codemem/codex-hook-ingest.lock`). |
 | `CODEMEM_CODEX_HOOK_LOCK_TTL_S` | Seconds before a Codex hook fallback lock is treated as stale (default `120`). |
-| `CODEMEM_CODEX_HOOK_SPOOL_DIR` | Codex hook fallback spool directory (default `~/.codemem/codex-hook-spool`). |
+| `CODEMEM_CODEX_HOOK_SPOOL_DIR` | Legacy native Codex hook fallback spool directory (default `~/.codemem/codex-hook-spool`); the normalized wrapper does not read or drain it. |
+| `CODEMEM_CODEX_RAW_EVENT_SPOOL_DIR` | Normalized Codex raw-event envelope spool directory (default `~/.codemem/codex-raw-event-spool`). |
 | `CODEMEM_INJECT_HTTP_CONNECT_TIMEOUT_S` | `UserPromptSubmit` pack injection connect timeout in seconds (default `1`). |
 | `CODEMEM_INJECT_HTTP_MAX_TIME_S` | Viewer request timeout for OpenCode packs/ledger transitions and total HTTP pack timeout for Claude/Codex `UserPromptSubmit` (default `2` seconds). |
 | `CODEMEM_INJECT_HTTP_FALLBACK` | Set to `0` to disable HTTP `/api/pack` fallback for Claude/Codex prompt-time injection (default `1`). |

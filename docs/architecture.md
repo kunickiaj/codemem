@@ -6,7 +6,7 @@ codemem has five main pieces: **adapters** that capture shell/runtime activity, 
 
 | Component | What it does | Key files |
 |-----------|-------------|-----------|
-| Adapters | Capture OpenCode/Claude events and enqueue raw events for ingest | `packages/opencode-plugin/.opencode/plugins/codemem.js`, `plugins/claude/scripts/ingest-hook.sh`, `packages/core/src/claude-hooks.ts` |
+| Adapters | Capture and normalize agent events before enqueueing raw events | `packages/opencode-plugin/.opencode/plugins/codemem.js`, `plugins/claude/scripts/ingest-hook.mjs`, `plugins/codex/scripts/ingest-hook.mjs`, `packages/core/src/claude-hooks.ts`, `packages/core/src/codex-hooks.ts` |
 | Ingest pipeline | Extracts tool events, builds transcripts, runs the observer | `packages/core/src/ingest-pipeline.ts`, `packages/core/src/ingest-events.ts` |
 | Observer | Produces typed observations and session summaries from transcripts | `packages/core/src/ingest-prompts.ts`, `packages/core/src/ingest-xml-parser.ts` |
 | Store | SQLite persistence for sessions, memories, artifacts, embeddings | `packages/core/src/store.ts`, `packages/core/src/schema.ts` |
@@ -25,10 +25,10 @@ flowchart LR
     OC["OpenCode"] -->|tool/message events| OCA["OpenCode adapter"]
     OCA -->|POST /api/raw-events| VW["Viewer API"]
     OCA -->|fallback: enqueue-raw-event CLI| DB
-    CH["Claude hooks"] -->|POST /api/claude-hooks| VW
-    CH -->|fallback: claude-hook-ingest direct enqueue| DB
-    CX["Codex hooks"] -->|POST /api/codex-hooks| VW
-    CX -->|fallback: codex-hook-ingest direct enqueue/spool| DB
+    CH["Claude hooks"] -->|normalize once; POST /api/raw-events| VW
+    CH -->|same envelope: enqueue-raw-event| DB
+    CX["Codex hooks"] -->|normalize once; POST /api/raw-events| VW
+    CX -->|same envelope: enqueue-raw-event/spool| DB
     VW --> DB["SQLite"]
     DB -->|flush batch claimed| IN["Ingest pipeline"]
     IN --> OB["Observer"]
@@ -40,7 +40,7 @@ flowchart LR
 
 1. Adapters capture tool/conversation lifecycle events and normalize them into raw events with optional `_adapter` envelopes.
 2. OpenCode streams raw events to the viewer ingest API (`POST /api/raw-events`) with preflight checks (`GET /api/raw-events/status`) and can fall back to CLI queue enqueue when stream writes fail. Prompt-time packs and prompt-pack ledger transitions also use viewer POST APIs first, with CLI fallback only for retryable transport or version failures.
-3. Claude hook ingestion posts to `POST /api/claude-hooks` first and falls back to `codemem claude-hook-ingest` direct enqueue when the local viewer API is unavailable. Codex hook ingestion follows the same HTTP-first shape through `POST /api/codex-hooks`, then `codemem codex-hook-ingest` direct enqueue, with a Codex-specific on-disk spool as the last-resort fallback.
+3. Claude and Codex use checked-in, dependency-free normalizers generated from their core TypeScript implementations. Each wrapper normalizes once, posts the exact envelope to `POST /api/raw-events`, and reuses that serialization for `enqueue-raw-event` or durable spool fallback. The named hook routes remain compatibility aliases for older packaged clients.
 4. The viewer/store persists raw events and queues durable flush batches.
 5. Idle and sweeper workers claim batches and run them through ingest.
 6. Before building session context, raw events are passed through `normalizeEventsForSessionContext` (in `ingest-transcript.ts`) which projects adapter-enveloped events (`_adapter` schema v1.0) into the flat `user_prompt` / `tool.execute.after` shapes that `buildSessionContext` scans. This is critical for Claude Code hook events which always arrive wrapped in the adapter envelope.
@@ -61,7 +61,7 @@ Support tiers describe operational expectations for each adapter path:
 |---|---|---|
 | OpenCode plugin | Supported | Primary reference adapter for lifecycle events and injection behavior. |
 | Claude hooks/plugin | Supported | Hook-first queue path with CLI/runtime fallback and parity slices tracked in adapter stack PRs. |
-| Codex plugin (hooks + MCP) | Experimental (early beta) | Functional capture pipeline (`plugins/codex/`, `packages/core/src/codex-hooks.ts`) dogfooded end-to-end: hooks → `POST /api/codex-hooks` → observer → memories. Prompt-time injection present and env-gated but not fully validated on strict models. Not yet promoted to a stable support tier. |
+| Codex plugin (hooks + MCP) | Experimental (early beta) | Functional capture pipeline (`plugins/codex/`, `packages/core/src/codex-hooks.ts`) dogfooded end-to-end: edge normalization → `POST /api/raw-events` → observer → memories. Prompt-time injection present and env-gated but not fully validated on strict models. Not yet promoted to a stable support tier. |
 | Windsurf integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
 | Cursor integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
 
