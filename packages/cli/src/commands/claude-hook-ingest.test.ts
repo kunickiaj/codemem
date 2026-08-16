@@ -123,7 +123,7 @@ describe("claude-hook-ingest command", () => {
 			const second = directEnqueue(payload, dbPath);
 
 			expect(first).toEqual({ inserted: 1, skipped: 0 });
-			expect(second).toEqual({ inserted: 0, skipped: 0 });
+			expect(second).toEqual({ inserted: 0, skipped: 1 });
 
 			const db = connect(dbPath);
 			try {
@@ -133,6 +133,10 @@ describe("claude-hook-ingest command", () => {
 				};
 				expect(rawCount.c).toBe(1);
 				expect(sessionCount.c).toBe(1);
+				const row = db.prepare("SELECT event_seq FROM raw_events").get() as {
+					event_seq: number;
+				};
+				expect(row.event_seq).toBe(0);
 			} finally {
 				db.close();
 			}

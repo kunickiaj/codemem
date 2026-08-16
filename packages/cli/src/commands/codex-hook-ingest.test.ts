@@ -276,7 +276,7 @@ describe("codex-hook-ingest command", () => {
 			const second = directEnqueueCodexHook(payload, dbPath);
 
 			expect(first).toEqual({ inserted: 1, skipped: 0 });
-			expect(second).toEqual({ inserted: 0, skipped: 0 });
+			expect(second).toEqual({ inserted: 0, skipped: 1 });
 
 			const db = connect(dbPath);
 			try {

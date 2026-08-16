@@ -9,9 +9,9 @@ import {
 	buildRawEventEnvelopeFromCodexHook,
 	connect,
 	ensureSchemaBootstrapped,
+	ingestRawEvents,
 	loadSqliteVec,
 	resolveDbPath,
-	stripPrivateObj,
 	TRUSTED_HOOK_MAPPER_OPTIONS,
 } from "@codemem/core";
 import { Command } from "commander";
@@ -134,69 +134,8 @@ export function directEnqueueCodexHook(
 			// sqlite-vec is not required for raw-event enqueue.
 		}
 		ensureSchemaBootstrapped(db);
-		const strippedPayload = stripPrivateObj(envelope.payload) as Record<string, unknown>;
-		const existing = db
-			.prepare(
-				"SELECT 1 FROM raw_events WHERE source = ? AND stream_id = ? AND event_id = ? LIMIT 1",
-			)
-			.get(envelope.source, envelope.session_stream_id, envelope.event_id);
-		if (existing) return { inserted: 0, skipped: 0 };
-
-		// Seed event_seq from a -1 base so a fresh stream's first event is 0,
-		// matching store.recordRawEvent (which increments the session's
-		// last_received_event_seq default of -1). This keeps the direct-fallback
-		// path and the /api/codex-hooks HTTP path on the same sequence base so
-		// maintenance status math does not over/under-count for new streams.
-		db.prepare(
-			`INSERT INTO raw_events(
-				source, stream_id, opencode_session_id, event_id, event_seq,
-				event_type, ts_wall_ms, payload_json, created_at
-			) VALUES (?, ?, ?, ?, (
-				SELECT COALESCE(MAX(event_seq), -1) + 1
-				FROM raw_events WHERE source = ? AND stream_id = ?
-			), ?, ?, ?, datetime('now'))`,
-		).run(
-			envelope.source,
-			envelope.session_stream_id,
-			envelope.opencode_session_id,
-			envelope.event_id,
-			envelope.source,
-			envelope.session_stream_id,
-			envelope.event_type,
-			envelope.ts_wall_ms,
-			JSON.stringify(strippedPayload),
-		);
-
-		const maxSeqRow = db
-			.prepare(
-				"SELECT COALESCE(MAX(event_seq), 0) AS max_seq FROM raw_events WHERE source = ? AND stream_id = ?",
-			)
-			.get(envelope.source, envelope.session_stream_id) as { max_seq: number };
-
-		db.prepare(
-			`INSERT INTO raw_event_sessions(
-				source, stream_id, opencode_session_id, cwd, project, started_at,
-				last_seen_ts_wall_ms, last_received_event_seq, last_flushed_event_seq, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, -1, datetime('now'))
-			ON CONFLICT(source, stream_id) DO UPDATE SET
-				cwd = COALESCE(excluded.cwd, cwd),
-				project = COALESCE(excluded.project, project),
-				started_at = COALESCE(excluded.started_at, started_at),
-				last_seen_ts_wall_ms = MAX(COALESCE(excluded.last_seen_ts_wall_ms, 0), COALESCE(last_seen_ts_wall_ms, 0)),
-				last_received_event_seq = MAX(excluded.last_received_event_seq, last_received_event_seq),
-				updated_at = datetime('now')`,
-		).run(
-			envelope.source,
-			envelope.session_stream_id,
-			envelope.opencode_session_id,
-			envelope.cwd,
-			envelope.project,
-			envelope.started_at,
-			envelope.ts_wall_ms,
-			maxSeqRow.max_seq,
-		);
-
-		return { inserted: 1, skipped: 0 };
+		const result = ingestRawEvents({ db }, envelope);
+		return { inserted: result.inserted, skipped: result.skipped };
 	} finally {
 		db.close();
 	}

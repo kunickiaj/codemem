@@ -132,6 +132,7 @@ ingestion outcomes behind one core API.
   required.
 - Update `packages/core/src/index.ts` exports.
 - Update `packages/cli/src/commands/enqueue-raw-event.ts`.
+- Add `packages/cli/src/commands/enqueue-raw-event.test.ts`.
 - Update `packages/cli/src/commands/claude-hook-ingest.ts`.
 - Update `packages/cli/src/commands/codex-hook-ingest.ts`.
 - Update their existing test files.

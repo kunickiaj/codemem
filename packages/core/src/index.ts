@@ -632,6 +632,7 @@ export {
 export * from "./prompt-pack-ledger.js";
 export type { FlushRawEventsOptions } from "./raw-event-flush.js";
 export { buildSessionContext, flushRawEvents } from "./raw-event-flush.js";
+export * from "./raw-event-ingest.js";
 export { RawEventSweeper } from "./raw-event-sweeper.js";
 export type {
 	RecipientPolicyAuthorityV1,
