@@ -221,6 +221,25 @@ function postViewerJson(app: ReturnType<typeof createApp>, path: string, body: u
 	});
 }
 
+function rawEventState(store: MemoryStore): { events: unknown[]; sessions: unknown[] } {
+	return {
+		events: store.db
+			.prepare(
+				`SELECT source, stream_id, opencode_session_id, event_id, event_seq,
+					event_type, ts_wall_ms, ts_mono_ms, payload_json
+				 FROM raw_events ORDER BY source, stream_id, event_seq`,
+			)
+			.all(),
+		sessions: store.db
+			.prepare(
+				`SELECT source, stream_id, opencode_session_id, cwd, project, started_at,
+					last_seen_ts_wall_ms, last_received_event_seq, last_flushed_event_seq
+				 FROM raw_event_sessions ORDER BY source, stream_id`,
+			)
+			.all(),
+	};
+}
+
 function createAuthenticatedSyncPeer(
 	store: MemoryStore,
 	input: {
@@ -480,6 +499,341 @@ describe("viewer-server", () => {
 				if (previousValue == null) delete process.env[envName];
 				else process.env[envName] = previousValue;
 				rmSync(parent, { recursive: true, force: true });
+			}
+		});
+	});
+
+	describe("raw event HTTP ingestion", () => {
+		it("defaults omitted source to opencode and returns exactly the canonical result fields", async () => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const response = await postViewerJson(app, "/api/raw-events", {
+					session_id: "session-omitted-source",
+					event_id: "event-omitted-source",
+					event_type: "prompt",
+					payload: { text: "hello" },
+				});
+
+				expect(response.status).toBe(200);
+				expect(await response.json()).toEqual({
+					inserted: 1,
+					skipped: 0,
+					received: 1,
+				});
+				expect(rawEventState(ensureStore()).events).toMatchObject([
+					{ source: "opencode", stream_id: "session-omitted-source" },
+				]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects an oversized streaming body without Content-Length before writes", async () => {
+			const cancel = vi.fn();
+			const body = new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(new Uint8Array(1_048_577));
+				},
+				cancel,
+			});
+			type StreamingRequestInit = RequestInit & { duplex: "half" };
+			const request = new Request("http://localhost/api/raw-events", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Origin: "http://127.0.0.1:38888",
+				},
+				body,
+				duplex: "half",
+			} as StreamingRequestInit);
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				expect(request.headers.has("content-length")).toBe(false);
+				const response = await app.fetch(request);
+
+				expect(response.status).toBe(413);
+				expect(await response.json()).toEqual({
+					error: "payload too large",
+					max_bytes: 1_048_576,
+				});
+				expect(cancel).toHaveBeenCalledOnce();
+				expect(rawEventState(ensureStore())).toEqual({ events: [], sessions: [] });
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("keeps identical stream and event ids separate by source", async () => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				for (const source of ["opencode", "claude", "codex"]) {
+					const response = await postViewerJson(app, "/api/raw-events", {
+						source,
+						session_id: "shared-stream",
+						event_id: "shared-event",
+						event_type: "prompt",
+						payload: { text: "same" },
+					});
+					expect(await response.json()).toEqual({
+						inserted: 1,
+						skipped: 0,
+						received: 1,
+					});
+				}
+
+				expect(rawEventState(ensureStore()).events).toMatchObject([
+					{ source: "claude", stream_id: "shared-stream", event_id: "shared-event" },
+					{ source: "codex", stream_id: "shared-stream", event_id: "shared-event" },
+					{ source: "opencode", stream_id: "shared-stream", event_id: "shared-event" },
+				]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("reports duplicate skips and nudges every validated session on retries", async () => {
+			const nudge = vi.fn();
+			const { app, cleanup } = createTestApp({ sweeper: { nudge } });
+			const event = {
+				source: "claude",
+				session_id: "session-duplicate",
+				event_id: "event-duplicate",
+				event_type: "claude.hook",
+				payload: {},
+			};
+			try {
+				const first = await postViewerJson(app, "/api/raw-events", event);
+				const duplicate = await postViewerJson(app, "/api/raw-events", event);
+
+				expect(await first.json()).toEqual({ inserted: 1, skipped: 0, received: 1 });
+				expect(await duplicate.json()).toEqual({
+					inserted: 0,
+					skipped: 1,
+					received: 1,
+				});
+				expect(nudge.mock.calls).toEqual([
+					["session-duplicate", "claude"],
+					["session-duplicate", "claude"],
+				]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("persists multi-stream batches deterministically and nudges streams in first-seen order", async () => {
+			const nudge = vi.fn().mockImplementationOnce(() => {
+				throw new Error("simulated nudge failure");
+			});
+			const { app, ensureStore, cleanup } = createTestApp({ sweeper: { nudge } });
+			try {
+				const response = await postViewerJson(app, "/api/raw-events", {
+					source: "Codex",
+					events: [
+						{
+							session_id: "stream-b",
+							event_id: "event-b-1",
+							event_type: "prompt",
+							payload: { text: "b1" },
+						},
+						{
+							session_id: "stream-a",
+							event_id: "event-a-1",
+							event_type: "prompt",
+							payload: { text: "a1" },
+						},
+						{
+							session_id: "stream-b",
+							event_id: "event-b-2",
+							event_type: "assistant",
+							payload: { text: "b2" },
+						},
+					],
+				});
+
+				expect(await response.json()).toEqual({ inserted: 3, skipped: 0, received: 3 });
+				expect(rawEventState(ensureStore()).events).toMatchObject([
+					{ source: "codex", stream_id: "stream-a", event_id: "event-a-1", event_seq: 0 },
+					{ source: "codex", stream_id: "stream-b", event_id: "event-b-1", event_seq: 0 },
+					{ source: "codex", stream_id: "stream-b", event_id: "event-b-2", event_seq: 1 },
+				]);
+				expect(nudge.mock.calls).toEqual([
+					["stream-b", "codex"],
+					["stream-a", "codex"],
+				]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it.each([
+			{
+				source: "../claude",
+				error: "source must use 1-64 letters, digits, dots, underscores, or hyphens",
+			},
+			{ source: 42, error: "source must be string" },
+		])("rejects malformed source $source with a bounded error before writes", async ({
+			source,
+			error,
+		}) => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const response = await postViewerJson(app, "/api/raw-events", {
+					source,
+					session_id: "session-invalid-source",
+					event_id: "event-invalid-source",
+					event_type: "prompt",
+					payload: {},
+				});
+
+				expect(response.status).toBe(400);
+				expect(await response.json()).toEqual({ error });
+				expect(rawEventState(ensureStore())).toEqual({ events: [], sessions: [] });
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects a conflicting per-event source for the whole batch before writes", async () => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const response = await postViewerJson(app, "/api/raw-events", {
+					source: "claude",
+					session_id: "session-mixed-source",
+					events: [
+						{
+							event_id: "event-valid-first",
+							event_type: "prompt",
+							payload: { text: "must not persist" },
+						},
+						{
+							source: "codex",
+							event_id: "event-conflicting-second",
+							event_type: "assistant",
+							payload: { text: "conflict" },
+						},
+					],
+				});
+
+				expect(response.status).toBe(400);
+				expect(await response.json()).toEqual({
+					error: "event source conflicts with request source",
+				});
+				expect(rawEventState(ensureStore())).toEqual({ events: [], sessions: [] });
+			} finally {
+				cleanup();
+			}
+		});
+
+		it.each([
+			{
+				label: "Claude",
+				route: "/api/claude-hooks",
+				native: {
+					hook_event_name: "UserPromptSubmit",
+					session_id: "session-claude-parity",
+					prompt: "same Claude prompt",
+					ts: "2026-08-15T12:00:00Z",
+					cwd: "/tmp/claude-project",
+					project: "claude-project",
+				},
+				normalize: (payload: Record<string, unknown>) =>
+					core.buildRawEventEnvelopeFromHook(payload, core.TRUSTED_HOOK_MAPPER_OPTIONS),
+			},
+			{
+				label: "Codex",
+				route: "/api/codex-hooks",
+				native: {
+					hook_event_name: "UserPromptSubmit",
+					session_id: "session-codex-parity",
+					prompt: "same Codex prompt",
+					ts: "2026-08-15T12:00:00Z",
+					cwd: "/tmp/codex-project",
+					project: "codex-project",
+				},
+				normalize: (payload: Record<string, unknown>) =>
+					core.buildRawEventEnvelopeFromCodexHook(payload, core.TRUSTED_HOOK_MAPPER_OPTIONS),
+			},
+		])("produces identical rows through canonical and named $label routes", async ({
+			route,
+			native,
+			normalize,
+		}) => {
+			const canonical = createTestApp();
+			const compatibility = createTestApp();
+			try {
+				const envelope = normalize(native);
+				expect(envelope).not.toBeNull();
+
+				const canonicalResponse = await postViewerJson(canonical.app, "/api/raw-events", envelope);
+				const compatibilityResponse = await postViewerJson(compatibility.app, route, native);
+
+				expect(await canonicalResponse.json()).toEqual({
+					inserted: 1,
+					skipped: 0,
+					received: 1,
+				});
+				const compatibilityBody = await compatibilityResponse.json();
+				expect(compatibilityBody).toEqual({ inserted: 1, skipped: 0 });
+				expect(compatibilityBody).not.toHaveProperty("received");
+				expect(rawEventState(canonical.ensureStore())).toEqual(
+					rawEventState(compatibility.ensureStore()),
+				);
+			} finally {
+				canonical.cleanup();
+				compatibility.cleanup();
+			}
+		});
+
+		it.each([
+			"/api/claude-hooks",
+			"/api/codex-hooks",
+		])("returns bounded validation errors without writes on %s", async (route) => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const response = await postViewerJson(app, route, {
+					hook_event_name: "UserPromptSubmit",
+					session_id: "msg_client-controlled",
+					prompt: "must not persist",
+					ts: "2026-08-15T12:00:00Z",
+				});
+				const body = await response.json();
+
+				expect(response.status).toBe(400);
+				expect(body).toEqual({ error: "invalid session id" });
+				expect(body).not.toHaveProperty("received");
+				expect(rawEventState(ensureStore())).toEqual({ events: [], sessions: [] });
+			} finally {
+				cleanup();
+			}
+		});
+
+		it.each([
+			"/api/claude-hooks",
+			"/api/codex-hooks",
+		])("keeps native parse and payload-limit errors bounded on %s", async (route) => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const malformed = await app.request(route, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: "{",
+				});
+				expect(malformed.status).toBe(400);
+				expect(await malformed.json()).toEqual({ error: "invalid json" });
+
+				const oversized = await postViewerJson(app, route, {
+					payload: "x".repeat(1_048_576),
+				});
+				expect(oversized.status).toBe(413);
+				expect(await oversized.json()).toEqual({
+					error: "payload too large",
+					max_bytes: 1_048_576,
+				});
+			} finally {
+				cleanup();
 			}
 		});
 	});

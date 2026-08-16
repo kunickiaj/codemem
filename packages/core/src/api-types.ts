@@ -373,6 +373,7 @@ export interface ApiRawEventsStatusResponse {
  */
 export interface ApiRawEventsPostResponse {
 	inserted: number;
+	skipped: number;
 	received: number;
 }
 
