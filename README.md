@@ -184,11 +184,8 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | | `codemem setup` | Interactive first-run setup |
 | **Plumbing** | `codemem mcp` | MCP stdio server; best-effort starts the local viewer unless `CODEMEM_VIEWER=0` or `CODEMEM_VIEWER_AUTO=0` is set |
 | | `codemem mcp http` | Local Streamable HTTP MCP server (`POST /mcp`, loopback-only by default) |
-| | `codemem claude-hook-ingest` | Claude hook event ingestion (stdin) |
-| | `codemem codex-hook-ingest` | Codex hook event ingestion (stdin, experimental) |
-| | `codemem codex-hook-inject` | Codex prompt-time memory injection (stdin, experimental) |
 
-Run `codemem --help` for the full list. `show`, `forget`, and `remember` still work as hidden top-level aliases. `export-memories` and `import-memories` remain visible but are deprecated — they warn on stderr and will be hidden from help and completion in a future release; use `codemem memory export` / `codemem memory import`.
+Run `codemem --help` for the human-facing command list. Adapter plumbing commands (`claude-hook-*`, `codex-hook-*`, `enqueue-raw-event`, and `prompt-pack-ledger`) remain executable for packaged-plugin and stale-client compatibility but are hidden from help and shell completion. `show`, `forget`, and `remember` still work as hidden top-level aliases. `export-memories` and `import-memories` remain visible but are deprecated — they warn on stderr and will be hidden from help and completion in a future release; use `codemem memory export` / `codemem memory import`.
 
 Use `codemem status` to answer whether the local database, viewer, sync, maintenance,
 semantic index, raw-event ingestion, and observer need attention. It is observational:

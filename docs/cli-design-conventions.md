@@ -41,7 +41,7 @@ Do **not** create a group for:
 - **User-facing data operations** belong under their noun group: `memory show`, `memory export`, `memory import`, `db prune-memories`.
 - **Operator/admin surfaces** that expose a distinct trust boundary or deployment concern belong in their own top-level group (e.g., `coordinator` for coordinator admin, not nested under `sync`).
 - **Lifecycle/service management** belongs under the service noun: `serve start`, `serve stop`.
-- **Plumbing/adapter commands** that are called by other programs (not humans) may stay top-level with clear naming: `claude-hook-ingest`, `mcp`.
+- **Plumbing/adapter commands** that are called by other programs (not humans) may stay top-level with clear naming. Adapter-only commands such as `claude-hook-*`, `codex-hook-*`, `enqueue-raw-event`, and `prompt-pack-ledger` remain registered for packaged and stale-client compatibility but stay hidden from help and shell completion. User-configured entrypoints such as `mcp` remain visible.
 
 ### Naming
 
@@ -264,7 +264,7 @@ When a command is renamed or moved (e.g., `sync coordinator list-devices` → `c
 - Every new command, renamed command, or flag change must update user-facing docs
   (`README.md`, `docs/user-guide.md`, and any relevant docs under `docs/`) in the same change.
 - If a docs update is deferred, it must be tracked with an explicit issue linked to the implementation PR.
-- Shell completion lists (`packages/cli/src/index.ts` completion handler) must stay in sync with the registered command tree.
+- Shell completion lists (`ROOT_COMPLETION_COMMANDS` in `packages/cli/src/command-tree.ts`) must stay in sync with the registered command tree.
 
 ## Style notes
 

@@ -44,8 +44,19 @@ describe("root command tree", () => {
 			.map((command) => command.name())
 			.filter((name) => name !== "help" && !visibleNames.has(name));
 
-		expect(hiddenNames).toEqual(
-			expect.arrayContaining(["show", "forget", "remember", "prompt-pack-ledger"]),
+		expect(hiddenNames.sort()).toEqual(
+			[
+				"show",
+				"forget",
+				"remember",
+				"prompt-pack-ledger",
+				"claude-hook-file-context",
+				"claude-hook-inject",
+				"claude-hook-ingest",
+				"codex-hook-inject",
+				"codex-hook-ingest",
+				"enqueue-raw-event",
+			].sort(),
 		);
 		for (const hiddenName of hiddenNames) {
 			expect(ROOT_COMPLETION_COMMANDS).not.toContain(hiddenName);
@@ -57,7 +68,18 @@ describe("root command tree", () => {
 
 		expect(help).toMatch(/^\s+export-memories(?:\s|$)/m);
 		expect(help).toMatch(/^\s+import-memories(?:\s|$)/m);
-		for (const hiddenName of ["show", "forget", "remember", "prompt-pack-ledger"]) {
+		for (const hiddenName of [
+			"show",
+			"forget",
+			"remember",
+			"prompt-pack-ledger",
+			"claude-hook-file-context",
+			"claude-hook-inject",
+			"claude-hook-ingest",
+			"codex-hook-inject",
+			"codex-hook-ingest",
+			"enqueue-raw-event",
+		]) {
 			expect(help).not.toMatch(new RegExp(`^\\s+${hiddenName}(?:\\s|$)`, "m"));
 		}
 	});

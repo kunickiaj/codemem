@@ -42,17 +42,11 @@ import { versionCommand } from "./commands/version.js";
 import { helpStyle } from "./help-style.js";
 
 export const ROOT_COMPLETION_COMMANDS = [
-	"claude-hook-file-context",
-	"claude-hook-inject",
-	"claude-hook-ingest",
-	"codex-hook-inject",
-	"codex-hook-ingest",
 	"config",
 	"coordinator",
 	"db",
 	"distill",
 	"embed",
-	"enqueue-raw-event",
 	"export-memories",
 	"import-memories",
 	"maintenance",
@@ -167,11 +161,13 @@ export function registerRootCommands(program: Command): Command {
 	program.addCommand(configCommand);
 	program.addCommand(coordinatorCommand);
 	program.addCommand(mcpCommand);
-	program.addCommand(claudeHookInjectCommand);
-	program.addCommand(claudeHookIngestCommand);
-	program.addCommand(claudeHookFileContextCommand);
-	program.addCommand(codexHookInjectCommand);
-	program.addCommand(codexHookIngestCommand);
+	// Adapter plumbing remains executable for packaged and stale-client
+	// compatibility, but it is not part of the human-facing command surface.
+	program.addCommand(claudeHookInjectCommand, { hidden: true });
+	program.addCommand(claudeHookIngestCommand, { hidden: true });
+	program.addCommand(claudeHookFileContextCommand, { hidden: true });
+	program.addCommand(codexHookInjectCommand, { hidden: true });
+	program.addCommand(codexHookIngestCommand, { hidden: true });
 	program.addCommand(dbCommand);
 	program.addCommand(distillCommand);
 	// Warned compatibility aliases — visible for their first warned release;
@@ -195,7 +191,7 @@ export function registerRootCommands(program: Command): Command {
 	program.addCommand(memoryCommand);
 	program.addCommand(syncCommand);
 	program.addCommand(setupCommand);
-	program.addCommand(enqueueRawEventCommand);
+	program.addCommand(enqueueRawEventCommand, { hidden: true });
 	program.addCommand(updateCommand);
 	program.addCommand(versionCommand);
 	return program;
