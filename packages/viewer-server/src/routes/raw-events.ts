@@ -16,7 +16,7 @@ import {
 import { desc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { Hono } from "hono";
-import { queryInt } from "../helpers.js";
+import { parseJsonObjectBody, queryInt } from "../helpers.js";
 
 type StoreFactory = () => MemoryStore;
 type JsonResponder = {
@@ -38,73 +38,6 @@ function claudeTranscriptRoot(): string {
 
 function codexTranscriptRoot(): string {
 	return join(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"), "sessions");
-}
-
-/**
- * Parse and validate a JSON object body, enforcing size limits.
- * Returns the parsed payload or a Hono Response on error.
- */
-async function parseJsonObjectBody(
-	c: {
-		req: { header: (name: string) => string | undefined; raw: Request };
-		json: (data: unknown, status?: number) => Response;
-	},
-	maxBytes: number,
-): Promise<Record<string, unknown> | Response> {
-	const contentLength = Number.parseInt(c.req.header("content-length") ?? "0", 10);
-	if (Number.isNaN(contentLength) || contentLength < 0) {
-		return c.json({ error: "invalid content-length" }, 400);
-	}
-	if (contentLength > maxBytes) {
-		return c.json({ error: "payload too large", max_bytes: maxBytes }, 413);
-	}
-	let raw = "";
-	try {
-		const body = c.req.raw.body;
-		if (body !== null) {
-			const reader = body.getReader();
-			const chunks: Uint8Array[] = [];
-			let totalBytes = 0;
-			try {
-				while (true) {
-					const { done, value } = await reader.read();
-					if (done) break;
-					totalBytes += value.byteLength;
-					if (totalBytes > maxBytes) {
-						try {
-							await reader.cancel();
-						} catch {
-							// The size rejection is authoritative even if cancellation fails.
-						}
-						return c.json({ error: "payload too large", max_bytes: maxBytes }, 413);
-					}
-					chunks.push(value);
-				}
-			} finally {
-				reader.releaseLock();
-			}
-
-			const bytes = new Uint8Array(totalBytes);
-			let offset = 0;
-			for (const chunk of chunks) {
-				bytes.set(chunk, offset);
-				offset += chunk.byteLength;
-			}
-			raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-		}
-	} catch {
-		return c.json({ error: "invalid json" }, 400);
-	}
-	let parsed: unknown;
-	try {
-		parsed = raw ? JSON.parse(raw) : {};
-	} catch {
-		return c.json({ error: "invalid json" }, 400);
-	}
-	if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
-		return c.json({ error: "payload must be an object" }, 400);
-	}
-	return parsed as Record<string, unknown>;
 }
 
 /** Nudge the sweeper safely — never crashes the caller. */

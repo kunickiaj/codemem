@@ -308,8 +308,11 @@ export async function ingestClaudeHookPayload(
 	// 1. Unlocked HTTP attempt — fast path when the viewer is up.
 	const httpResult = await httpIngest(payload, opts.host, port);
 	if (httpResult.ok) {
-		await flushOnBoundaryIfRequested();
+		// Drain any spooled backlog before the boundary flush so the
+		// flush pass sees every queued payload of the session, not just
+		// this event.
 		await drainBacklogIfPresent();
+		await flushOnBoundaryIfRequested();
 		return { inserted: httpResult.inserted, skipped: httpResult.skipped, via: "http" };
 	}
 

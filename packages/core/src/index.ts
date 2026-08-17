@@ -475,6 +475,7 @@ export {
 	startMaintenanceJob,
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
+export * from "./memory-kinds.js";
 export type {
 	DerivedMemoryRole,
 	DerivedMemoryRoleResult,

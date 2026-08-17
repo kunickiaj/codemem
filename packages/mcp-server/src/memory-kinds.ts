@@ -1,9 +1,5 @@
-export const MEMORY_KINDS: Record<string, string> = {
-	discovery: "Something learned about the codebase, architecture, or tools",
-	change: "A code change that was made",
-	feature: "A new feature that was implemented",
-	bugfix: "A bug that was found and fixed",
-	refactor: "Code that was refactored or restructured",
-	decision: "A design or architecture decision",
-	exploration: "An experiment or investigation (may not have shipped)",
-};
+/**
+ * MCP memory-kind catalog — the seven kinds the remember tools accept.
+ * Re-exported from the shared core catalog so MCP and store never drift.
+ */
+export { MEMORY_KIND_DESCRIPTIONS as MEMORY_KINDS } from "@codemem/core";
