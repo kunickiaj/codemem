@@ -2029,6 +2029,12 @@ describe("buildFilterClauses", () => {
 		expect(result.params).toEqual(["discovery"]);
 	});
 
+	it("ignores a non-string kind instead of binding it", () => {
+		const result = buildFilterClauses({ kind: 5 as unknown as string });
+		expect(result.clauses).toEqual([]);
+		expect(result.params).toEqual([]);
+	});
+
 	it("builds include_visibility filter", () => {
 		const result = buildFilterClauses({ include_visibility: ["private", "shared"] });
 		expect(result.clauses).toHaveLength(1);
