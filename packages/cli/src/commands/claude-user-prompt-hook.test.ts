@@ -96,6 +96,232 @@ describe("dependency-free Claude user prompt hook", () => {
 		expect(requestInit?.redirect).toBe("manual");
 	});
 
+	it("marks only configured Claude boundary events for synchronous Viewer flushing", async () => {
+		expect(ingestHook.shouldForceBoundaryFlush({ hook_event_name: "SessionEnd" }, {})).toBe(true);
+		expect(
+			ingestHook.shouldForceBoundaryFlush(
+				{ hook_event_name: "SessionEnd" },
+				{ CODEMEM_CLAUDE_HOOK_FLUSH: "0" },
+			),
+		).toBe(false);
+		expect(
+			ingestHook.shouldForceBoundaryFlush(
+				{ hook_event_name: "Stop" },
+				{ CODEMEM_CLAUDE_HOOK_FLUSH: "1", CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP: "1" },
+			),
+		).toBe(true);
+		expect(
+			ingestHook.shouldForceBoundaryFlush(
+				{ hook_event_name: "SessionEnd" },
+				{ CODEMEM_CLAUDE_HOOK_FLUSH: "" },
+			),
+		).toBe(true);
+
+		let requestHeaders: Headers | undefined;
+		await expect(
+			ingestHook.postEnvelope("{}", {
+				env,
+				flushBoundary: true,
+				fetchImpl: async (_input: string | URL, init?: RequestInit) => {
+					requestHeaders = new Headers(init?.headers);
+					return jsonResponse({ inserted: 1, skipped: 0 });
+				},
+			}),
+		).resolves.toBe(true);
+		expect(requestHeaders?.get("x-codemem-boundary-flush")).toBe("1");
+		expect(ingestHook.boundaryTimeoutMs({ hook_event_name: "SessionEnd" }, {})).toBe(950);
+		expect(
+			ingestHook.boundaryTimeoutMs(
+				{ hook_event_name: "SessionEnd" },
+				{ CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS: "60000" },
+			),
+		).toBe(54_950);
+		expect(ingestHook.boundaryTimeoutMs({ hook_event_name: "Stop" }, {})).toBe(119_950);
+		expect(
+			ingestHook.boundaryTimeoutMs(
+				{ hook_event_name: "SessionEnd" },
+				{ CODEMEM_CLAUDE_HOOK_BOUNDARY_TIMEOUT_MS: "60000" },
+			),
+		).toBe(950);
+	});
+
+	it("keeps SessionEnd retries and command fallbacks inside the host execution budget", async () => {
+		let elapsedMs = 0;
+		const postTimeouts: number[] = [];
+		const fallbackTimeouts: number[] = [];
+		const result = await ingestHook.runClaudeIngestHook({
+			env: { ...env, CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS: "1500" },
+			readInput: async () =>
+				JSON.stringify({ hook_event_name: "SessionEnd", session_id: "claude-session", cwd: root }),
+			now: () => elapsedMs,
+			postEnvelope: async (_body: string, options: { timeoutMs: number }) => {
+				postTimeouts.push(options.timeoutMs);
+				elapsedMs += postTimeouts.length === 1 ? options.timeoutMs : 100;
+				return false;
+			},
+			runFallback: (_command: string, _args: string[], _body: string, timeoutMs: number) => {
+				fallbackTimeouts.push(timeoutMs);
+				elapsedMs += timeoutMs;
+				return false;
+			},
+		});
+
+		expect(result).toBe(1);
+		expect(postTimeouts).toEqual([950]);
+		expect(fallbackTimeouts).toEqual([500]);
+		expect(elapsedMs).toBe(1450);
+	});
+
+	it("reserves command fallback time when a boundary retry stalls", async () => {
+		let elapsedMs = 0;
+		const postTimeouts: number[] = [];
+		const fallbackTimeouts: number[] = [];
+		const result = await ingestHook.runClaudeIngestHook({
+			env: { ...env, CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS: "1500" },
+			readInput: async () =>
+				JSON.stringify({ hook_event_name: "SessionEnd", session_id: "claude-session", cwd: root }),
+			now: () => elapsedMs,
+			postEnvelope: async (_body: string, options: { timeoutMs: number }) => {
+				postTimeouts.push(options.timeoutMs);
+				elapsedMs += postTimeouts.length === 1 ? 100 : options.timeoutMs;
+				return false;
+			},
+			runFallback: (_command: string, _args: string[], _body: string, timeoutMs: number) => {
+				fallbackTimeouts.push(timeoutMs);
+				elapsedMs += timeoutMs;
+				return false;
+			},
+		});
+
+		expect(result).toBe(1);
+		expect(postTimeouts).toEqual([950, 850]);
+		expect(fallbackTimeouts).toEqual([500]);
+		expect(elapsedMs).toBe(1450);
+	});
+
+	it("reserves command fallback time after boundary preprocessing", async () => {
+		let elapsedMs = 0;
+		const postTimeouts: number[] = [];
+		const fallbackTimeouts: number[] = [];
+		const result = await ingestHook.runClaudeIngestHook({
+			env: { ...env, CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS: "1500" },
+			readInput: async () => {
+				elapsedMs += 400;
+				return JSON.stringify({
+					hook_event_name: "SessionEnd",
+					session_id: "claude-session",
+					cwd: root,
+				});
+			},
+			now: () => elapsedMs,
+			postEnvelope: async (_body: string, options: { timeoutMs: number }) => {
+				postTimeouts.push(options.timeoutMs);
+				elapsedMs += options.timeoutMs;
+				return false;
+			},
+			runFallback: (_command: string, _args: string[], _body: string, timeoutMs: number) => {
+				fallbackTimeouts.push(timeoutMs);
+				elapsedMs += timeoutMs;
+				return false;
+			},
+		});
+
+		expect(result).toBe(1);
+		expect(postTimeouts).toEqual([550]);
+		expect(fallbackTimeouts).toEqual([500]);
+		expect(elapsedMs).toBe(1450);
+	});
+
+	it("preserves command fallback time with a sub-500ms host budget", async () => {
+		let elapsedMs = 0;
+		const postTimeouts: number[] = [];
+		const fallbackTimeouts: number[] = [];
+		const result = await ingestHook.runClaudeIngestHook({
+			env: { ...env, CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS: "300" },
+			readInput: async () =>
+				JSON.stringify({ hook_event_name: "SessionEnd", session_id: "claude-session", cwd: root }),
+			now: () => elapsedMs,
+			postEnvelope: async (_body: string, options: { timeoutMs: number }) => {
+				postTimeouts.push(options.timeoutMs);
+				elapsedMs += options.timeoutMs;
+				return false;
+			},
+			runFallback: (_command: string, _args: string[], _body: string, timeoutMs: number) => {
+				fallbackTimeouts.push(timeoutMs);
+				elapsedMs += timeoutMs;
+				return false;
+			},
+		});
+
+		expect(result).toBe(1);
+		expect(postTimeouts).toEqual([125]);
+		expect(fallbackTimeouts).toEqual([125]);
+		expect(elapsedMs).toBe(250);
+	});
+
+	it("uses only one HTTP attempt for ordinary non-boundary events", async () => {
+		let postCalls = 0;
+		let fallbackCalls = 0;
+		const result = await ingestHook.runClaudeIngestHook({
+			env,
+			readInput: async () =>
+				JSON.stringify({
+					hook_event_name: "SessionStart",
+					session_id: "claude-session",
+					cwd: root,
+				}),
+			postEnvelope: async () => {
+				postCalls += 1;
+				return false;
+			},
+			runFallback: () => {
+				fallbackCalls += 1;
+				return true;
+			},
+		});
+
+		expect(result).toBe(0);
+		expect(postCalls).toBe(1);
+		expect(fallbackCalls).toBe(1);
+	});
+
+	it("keeps opt-in Stop retries and fallbacks inside one boundary budget", async () => {
+		let elapsedMs = 0;
+		const postTimeouts: number[] = [];
+		const fallbackTimeouts: number[] = [];
+		const result = await ingestHook.runClaudeIngestHook({
+			env: {
+				...env,
+				CODEMEM_CLAUDE_HOOK_FLUSH: "1",
+				CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP: "1",
+				CODEMEM_CLAUDE_HOOK_BOUNDARY_TIMEOUT_MS: "1000",
+			},
+			readInput: async () =>
+				JSON.stringify({
+					hook_event_name: "Stop",
+					session_id: "claude-session",
+					cwd: root,
+					last_assistant_message: "finished",
+				}),
+			now: () => elapsedMs,
+			postEnvelope: async (_body: string, options: { timeoutMs: number }) => {
+				postTimeouts.push(options.timeoutMs);
+				elapsedMs += options.timeoutMs;
+				return false;
+			},
+			runFallback: (_command: string, _args: string[], _body: string, timeoutMs: number) => {
+				fallbackTimeouts.push(timeoutMs);
+				elapsedMs += timeoutMs;
+				return false;
+			},
+		});
+
+		expect(result).toBe(1);
+		expect(postTimeouts).toEqual([475]);
+		expect(fallbackTimeouts).toEqual([475]);
+		expect(elapsedMs).toBe(950);
+	});
+
 	it("fails closed without fetching or falling back for a non-loopback Viewer host", async () => {
 		env.CODEMEM_VIEWER_HOST = "viewer.example.com";
 		const output: string[] = [];

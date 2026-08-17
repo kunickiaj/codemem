@@ -53,12 +53,14 @@ export class RawEventSweeper {
 	private store: MemoryStore;
 	private ingestOpts: IngestOptions;
 	private active = false;
+	private stopping = false;
 	private running = false; // reentrancy guard — prevents overlapping ticks
 	private currentTick: Promise<void> | null = null;
 	private wakeHandle: ReturnType<typeof setTimeout> | null = null;
 	private loopHandle: ReturnType<typeof setTimeout> | null = null;
 	private autoFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
-	private sessionFlushing = new Set<string>();
+	private sessionFlushPromises = new Map<string, Promise<void>>();
+	private sessionBoundaryWaiters = new Map<string, number>();
 	private autoFlushPending = new Set<string>();
 	private autoFlushPromises = new Set<Promise<void>>();
 	private authBackoffUntil = 0; // epoch seconds
@@ -183,6 +185,7 @@ export class RawEventSweeper {
 	 * No-op if sweeper is disabled or already running.
 	 */
 	start(): void {
+		this.stopping = false;
 		if (!this.enabled()) return;
 		if (this.active) return;
 		this.active = true;
@@ -194,6 +197,7 @@ export class RawEventSweeper {
 	 * in-progress tick to finish before returning.
 	 */
 	async stop(): Promise<void> {
+		this.stopping = true;
 		this.active = false;
 		if (this.loopHandle != null) {
 			clearTimeout(this.loopHandle);
@@ -205,10 +209,11 @@ export class RawEventSweeper {
 		}
 		for (const timer of this.autoFlushTimers.values()) clearTimeout(timer);
 		this.autoFlushTimers.clear();
+		this.autoFlushPending.clear();
 		if (this.currentTick != null) {
 			await this.currentTick;
 		}
-		if (this.autoFlushPromises.size > 0) {
+		while (this.autoFlushPromises.size > 0) {
 			await Promise.allSettled([...this.autoFlushPromises]);
 		}
 	}
@@ -226,13 +231,14 @@ export class RawEventSweeper {
 	 * Mirrors Python's RawEventAutoFlusher.note_activity() behavior.
 	 */
 	nudge(opencodeSessionId: string, source = "opencode"): void {
+		if (this.stopping) return;
 		if (!this.autoFlushEnabled()) return;
 		if (Date.now() / 1000 < this.authBackoffUntil) return;
 		const streamId = opencodeSessionId.trim();
 		if (!streamId) return;
 		const sourceNorm = source.trim().toLowerCase() || "opencode";
 		const key = `${sourceNorm}:${streamId}`;
-		if (this.sessionFlushing.has(key)) {
+		if (this.sessionFlushPromises.has(key)) {
 			this.autoFlushPending.add(key);
 			return;
 		}
@@ -251,6 +257,68 @@ export class RawEventSweeper {
 		this.autoFlushTimers.set(key, timer);
 	}
 
+	/** Flush one session immediately through the event visible at this boundary. */
+	async flushBoundary(opencodeSessionId: string, source = "opencode"): Promise<void> {
+		const streamId = opencodeSessionId.trim();
+		if (!streamId) return;
+		const sourceNorm = source.trim().toLowerCase() || "opencode";
+		const boundaryEventSeq = Number(
+			this.store.rawEventSessionMeta(streamId, sourceNorm).last_received_event_seq,
+		);
+		const drainThroughEventSeq =
+			Number.isSafeInteger(boundaryEventSeq) && boundaryEventSeq >= 0
+				? boundaryEventSeq
+				: undefined;
+		const flushing = this.flushNow(streamId, sourceNorm, {
+			waitForActive: true,
+			bypassAuthBackoff: true,
+			drain: drainThroughEventSeq != null,
+			drainThroughEventSeq,
+		});
+		this.trackAutoFlush(flushing);
+		await flushing;
+	}
+
+	private async acquireSessionFlush(
+		key: string,
+		waitForActive: boolean,
+	): Promise<(() => void) | null> {
+		if (waitForActive) {
+			this.sessionBoundaryWaiters.set(key, (this.sessionBoundaryWaiters.get(key) ?? 0) + 1);
+		}
+		try {
+			while (true) {
+				const active = this.sessionFlushPromises.get(key);
+				if (active) {
+					if (!waitForActive) return null;
+					await active;
+					continue;
+				}
+				// Ordinary work must also yield during the release-to-acquire gap after an
+				// active flush wakes an explicit boundary waiter.
+				if (!waitForActive && this.sessionBoundaryWaiters.has(key)) return null;
+
+				let markComplete!: () => void;
+				const completion = new Promise<void>((resolve) => {
+					markComplete = resolve;
+				});
+				this.sessionFlushPromises.set(key, completion);
+				return () => {
+					this.sessionFlushPromises.delete(key);
+					markComplete();
+				};
+			}
+		} finally {
+			if (waitForActive) {
+				// Decrement on acquisition: any remaining count represents boundaries
+				// still queued behind the lock holder and keeps ordinary work deferred.
+				const remaining = (this.sessionBoundaryWaiters.get(key) ?? 1) - 1;
+				if (remaining > 0) this.sessionBoundaryWaiters.set(key, remaining);
+				else this.sessionBoundaryWaiters.delete(key);
+			}
+		}
+	}
+
 	private trackAutoFlush(promise: Promise<void>): void {
 		this.autoFlushPromises.add(promise);
 		void promise.finally(() => {
@@ -259,8 +327,9 @@ export class RawEventSweeper {
 	}
 
 	private scheduleAutoFlush(opencodeSessionId: string, source: string): void {
+		if (this.stopping) return;
 		const key = `${source}:${opencodeSessionId}`;
-		if (this.sessionFlushing.has(key)) {
+		if (this.sessionFlushPromises.has(key)) {
 			this.autoFlushPending.add(key);
 			return;
 		}
@@ -279,14 +348,23 @@ export class RawEventSweeper {
 		this.autoFlushTimers.set(key, timer);
 	}
 
-	private async flushNow(opencodeSessionId: string, source: string): Promise<void> {
-		if (Date.now() / 1000 < this.authBackoffUntil) return;
+	private async flushNow(
+		opencodeSessionId: string,
+		source: string,
+		options: {
+			waitForActive?: boolean;
+			bypassAuthBackoff?: boolean;
+			drain?: boolean;
+			drainThroughEventSeq?: number;
+		} = {},
+	): Promise<void> {
+		if (!options.bypassAuthBackoff && Date.now() / 1000 < this.authBackoffUntil) return;
 		const key = `${source}:${opencodeSessionId}`;
-		if (this.sessionFlushing.has(key)) {
+		const finishSessionFlush = await this.acquireSessionFlush(key, options.waitForActive === true);
+		if (finishSessionFlush === null) {
 			this.autoFlushPending.add(key);
 			return;
 		}
-		this.sessionFlushing.add(key);
 		const existing = this.autoFlushTimers.get(key);
 		if (existing) {
 			clearTimeout(existing);
@@ -294,14 +372,24 @@ export class RawEventSweeper {
 		}
 		try {
 			const maxEvents = this.workerMaxEvents();
-			await flushRawEvents(this.store, this.ingestOpts, {
-				opencodeSessionId,
-				source,
-				cwd: null,
-				project: null,
-				startedAt: null,
-				maxEvents,
-			});
+			while (true) {
+				const result = await flushRawEvents(this.store, this.ingestOpts, {
+					opencodeSessionId,
+					source,
+					cwd: null,
+					project: null,
+					startedAt: null,
+					maxEvents,
+					throughEventSeq: options.drainThroughEventSeq,
+				});
+				if (!options.drain || result.updatedState === 0) break;
+				if (
+					options.drainThroughEventSeq != null &&
+					this.store.rawEventFlushState(opencodeSessionId, source) >= options.drainThroughEventSeq
+				) {
+					break;
+				}
+			}
 		} catch (exc) {
 			if (exc instanceof ObserverAuthError) {
 				this.handleAuthError(exc);
@@ -312,8 +400,10 @@ export class RawEventSweeper {
 				exc instanceof Error ? exc.message : exc,
 			);
 		} finally {
-			this.sessionFlushing.delete(key);
-			if (this.autoFlushPending.delete(key)) {
+			finishSessionFlush();
+			// Condition order is intentional: preserve the pending marker while any
+			// explicit boundary remains queued, then resume ordinary work afterward.
+			if (!this.sessionBoundaryWaiters.has(key) && this.autoFlushPending.delete(key)) {
 				this.scheduleAutoFlush(opencodeSessionId, source);
 			}
 		}
@@ -415,8 +505,8 @@ export class RawEventSweeper {
 			const { source, streamId } = item;
 			if (!streamId) continue;
 			const key = `${source}:${streamId}`;
-			if (this.sessionFlushing.has(key)) continue;
-			this.sessionFlushing.add(key);
+			const finishSessionFlush = await this.acquireSessionFlush(key, false);
+			if (finishSessionFlush === null) continue;
 
 			try {
 				await flushRawEvents(this.store, this.ingestOpts, {
@@ -438,7 +528,7 @@ export class RawEventSweeper {
 					exc instanceof Error ? exc.message : exc,
 				);
 			} finally {
-				this.sessionFlushing.delete(key);
+				finishSessionFlush();
 			}
 		}
 
@@ -449,8 +539,8 @@ export class RawEventSweeper {
 			if (!streamId) continue;
 			if (drained.has(`${source}:${streamId}`)) continue;
 			const key = `${source}:${streamId}`;
-			if (this.sessionFlushing.has(key)) continue;
-			this.sessionFlushing.add(key);
+			const finishSessionFlush = await this.acquireSessionFlush(key, false);
+			if (finishSessionFlush === null) continue;
 
 			try {
 				await flushRawEvents(this.store, this.ingestOpts, {
@@ -471,7 +561,7 @@ export class RawEventSweeper {
 					exc instanceof Error ? exc.message : exc,
 				);
 			} finally {
-				this.sessionFlushing.delete(key);
+				finishSessionFlush();
 			}
 		}
 	}

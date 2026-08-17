@@ -1995,6 +1995,7 @@ export class MemoryStore {
 				project: schema.rawEventSessions.project,
 				started_at: schema.rawEventSessions.started_at,
 				last_seen_ts_wall_ms: schema.rawEventSessions.last_seen_ts_wall_ms,
+				last_received_event_seq: schema.rawEventSessions.last_received_event_seq,
 				last_flushed_event_seq: schema.rawEventSessions.last_flushed_event_seq,
 			})
 			.from(schema.rawEventSessions)
@@ -2006,6 +2007,7 @@ export class MemoryStore {
 			project: row.project,
 			started_at: row.started_at,
 			last_seen_ts_wall_ms: row.last_seen_ts_wall_ms,
+			last_received_event_seq: row.last_received_event_seq,
 			last_flushed_event_seq: row.last_flushed_event_seq,
 		};
 	}
@@ -2035,6 +2037,7 @@ export class MemoryStore {
 		source = "opencode",
 		afterEventSeq = -1,
 		limit?: number | null,
+		throughEventSeq?: number | null,
 	): Record<string, unknown>[] {
 		const [s, sid] = this.normalizeStreamIdentity(source, opencodeSessionId);
 		const baseQuery = this.d
@@ -2052,6 +2055,7 @@ export class MemoryStore {
 					eq(schema.rawEvents.source, s),
 					eq(schema.rawEvents.stream_id, sid),
 					gt(schema.rawEvents.event_seq, afterEventSeq),
+					throughEventSeq == null ? undefined : lte(schema.rawEvents.event_seq, throughEventSeq),
 				),
 			)
 			.orderBy(schema.rawEvents.event_seq);

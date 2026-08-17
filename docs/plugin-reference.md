@@ -86,7 +86,7 @@ Viewer protocol, database, and runtime identity before sending identity-gated `P
 Claude prompt retrieval and event ingestion accept only explicit loopback Viewer hosts
 (`localhost`, `127.0.0.0/8`, or IPv6 loopback); non-loopback hosts are never fetched.
 
-By default, `SessionEnd` triggers a boundary flush after enqueue to preserve progress without waiting for sweeper timing. Set `CODEMEM_CLAUDE_HOOK_FLUSH=0` to force enqueue-only behavior, and set `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` to include `Stop` boundary flush.
+By default, `SessionEnd` requests a best-effort boundary flush after enqueue rather than waiting for sweeper timing. Set `CODEMEM_CLAUDE_HOOK_FLUSH=0` to force enqueue-only behavior, and set `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` to include `Stop` boundary flush. Direct Viewer transport keeps the boundary request, durable HTTP retry, and command fallbacks inside one Claude Code host budget (1.5 seconds by default, configurable with `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS`), preserves command-fallback time after preprocessing and across both HTTP attempts, and reserves a 50 ms exit margin. The fallback reserve is normally 10% of the host budget, clamped between 500 ms and 5 seconds, but never exceeds half of the post-margin budget. `Stop` uses one 125-second budget by default. Override the boundary budget with `CODEMEM_CLAUDE_HOOK_BOUNDARY_TIMEOUT_MS`; `SessionEnd` still clamps its request to the live remaining host budget.
 
 The packaged template currently registers these hook events in `plugins/claude/hooks/hooks.json`:
 - `SessionStart`
@@ -119,10 +119,10 @@ For Claude hooks, project resolution precedence is:
 
 Codex support is early beta — functional and dogfooded end-to-end, but not yet promoted to a stable support tier. The Codex plugin uses the same shared raw-event pipeline as Claude and OpenCode. It is packaged under `plugins/codex/` with `.codex-plugin/plugin.json`, bundled `.mcp.json`, and hook scripts under `plugins/codex/scripts/`.
 
-Codex's Node/ESM wrapper adds a timestamp and nonce when the host omitted a timestamp, normalizes exactly once, and sends the exact envelope to `POST /api/raw-events`. Healthy HTTP ingestion starts no `codemem` or `npx` child. Its fallback chain is:
+Codex's Node/ESM wrapper adds a timestamp and nonce when the host omitted a timestamp, normalizes exactly once, and sends the exact envelope to `POST /api/raw-events`. Healthy HTTP ingestion starts no `codemem` or `npx` child. After a retryable HTTP failure, it durably spools the normalized envelope before starting this fallback chain:
 
 - `codemem enqueue-raw-event`, then the pinned `npx` equivalent.
-- If both fail, the normalized envelope is written to its dedicated on-disk spool (`~/.codemem/codex-raw-event-spool`). This is separate from the legacy native-hook spool.
+- A successful fallback removes the envelope from `~/.codemem/codex-raw-event-spool`; if both fail, it remains there for a later HTTP drain. This is separate from the legacy native-hook spool.
 
 The same serialized envelope—and therefore the same event ID—is used by every transport. Named `POST /api/codex-hooks` remains a compatibility alias/caller for older packaged and plugin-free CLI paths.
 
@@ -445,6 +445,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_RAW_EVENTS_RETENTION_MS` | If >0, delete raw events older than this many ms (default `0`, keep forever). |
 | `CODEMEM_CLAUDE_HOOK_FLUSH` | Set to `0` to disable immediate `SessionEnd` boundary flush (default on for `SessionEnd`; `Stop` still requires `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1`). |
 | `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP` | Set to `1` to flush on Claude `Stop` hooks in addition to `SessionEnd` (default off). |
+| `CODEMEM_CLAUDE_HOOK_BOUNDARY_TIMEOUT_MS` | Override the direct Viewer request wait for `SessionEnd`, clamped inside `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS`. For opt-in `Stop` flushing, this sets the whole boundary budget; the first request reserves fallback time within it (default total: `125000` ms). |
 
 ## Compatibility guidance behavior
 

@@ -781,9 +781,9 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		p.outro("shutting down");
 		syncAbort.abort();
 		await stopMaintenanceWorkerProcess(maintenanceWorker, dbPath);
-		await sweeper.stop();
 
-		// Drain both listeners before closing the shared store.
+		// Stop accepting requests and drain both listeners before stopping workers
+		// or closing the shared store they may still need.
 		await new Promise<void>((resolve) => {
 			let remaining = syncServer ? 2 : 1;
 			const done = () => {
@@ -794,6 +794,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		}).catch(() => {
 			// Best-effort drain — proceed to cleanup.
 		});
+		await sweeper.stop();
 
 		try {
 			rmSync(pidPath);

@@ -127,8 +127,19 @@ function spoolEnvelope(body) {
 		const finalPath = join(directory, `raw-event-${suffix}.json`);
 		writeFileSync(temporaryPath, body, "utf8");
 		renameSync(temporaryPath, finalPath);
+		return finalPath;
 	} catch {
 		// Best-effort last resort only.
+		return null;
+	}
+}
+
+function removeSpooledEnvelope(path) {
+	if (!path) return;
+	try {
+		unlinkSync(path);
+	} catch {
+		// A later invocation can safely redeliver the stable event ID.
 	}
 }
 
@@ -164,9 +175,9 @@ async function drainNormalizedSpool() {
 	}
 }
 
-export async function runCodexIngestHook() {
+export async function runCodexIngestHook(overrides = {}) {
 	try {
-		const raw = await readStdin();
+		const raw = await (overrides.readInput ?? readStdin)();
 		if (raw.trim() && !isTruthy(process.env.CODEMEM_PLUGIN_IGNORE)) {
 			const parsed = JSON.parse(raw);
 			if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -180,17 +191,24 @@ export async function runCodexIngestHook() {
 			);
 			if (envelope !== null) {
 				const envelopeBody = JSON.stringify(envelope);
-				if (await postEnvelope(envelopeBody)) {
-					await drainNormalizedSpool();
+				if (await (overrides.postEnvelope ?? postEnvelope)(envelopeBody)) {
+					await (overrides.drainNormalizedSpool ?? drainNormalizedSpool)();
 				} else {
+					// Persist before spawning either fallback. Codex can terminate this
+					// hook at its deadline, so durability cannot depend on a child
+					// command returning before the remaining budget expires.
+					const spooledPath = (overrides.spoolEnvelope ?? spoolEnvelope)(envelopeBody);
+					const fallback = overrides.runFallback ?? runFallback;
 					const enqueued =
-						runFallback("codemem", ["enqueue-raw-event"], envelopeBody) ||
-						runFallback(
+						fallback("codemem", ["enqueue-raw-event"], envelopeBody) ||
+						fallback(
 							"npx",
 							["-y", `codemem@${pinnedVersion()}`, "enqueue-raw-event"],
 							envelopeBody,
 						);
-					if (!enqueued) spoolEnvelope(envelopeBody);
+					if (enqueued) {
+						(overrides.removeSpooledEnvelope ?? removeSpooledEnvelope)(spooledPath);
+					}
 				}
 			}
 		}
@@ -198,7 +216,7 @@ export async function runCodexIngestHook() {
 		// Hook ingestion is best-effort and must never block the Codex session.
 	}
 
-	process.stdout.write('{"continue":true}\n');
+	(overrides.writeOutput ?? process.stdout.write.bind(process.stdout))('{"continue":true}\n');
 }
 
 function isMainModule(argvPath = process.argv[1]) {

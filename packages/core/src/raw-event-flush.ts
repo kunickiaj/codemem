@@ -217,6 +217,7 @@ export interface FlushRawEventsOptions {
 	project?: string | null;
 	startedAt?: string | null;
 	maxEvents?: number | null;
+	throughEventSeq?: number | null;
 }
 
 /**
@@ -236,7 +237,7 @@ export async function flushRawEvents(
 	opts: FlushRawEventsOptions,
 ): Promise<{ flushed: number; updatedState: number }> {
 	let { source = "opencode", cwd, project, startedAt } = opts;
-	const { opencodeSessionId, maxEvents } = opts;
+	const { opencodeSessionId, maxEvents, throughEventSeq } = opts;
 
 	source = (source ?? "").trim().toLowerCase() || "opencode";
 
@@ -248,7 +249,13 @@ export async function flushRawEvents(
 
 	// Read unflushed events
 	const lastFlushed = store.rawEventFlushState(opencodeSessionId, source);
-	const events = store.rawEventsSinceBySeq(opencodeSessionId, source, lastFlushed, maxEvents);
+	const events = store.rawEventsSinceBySeq(
+		opencodeSessionId,
+		source,
+		lastFlushed,
+		maxEvents,
+		throughEventSeq,
+	);
 	if (events.length === 0) {
 		return { flushed: 0, updatedState: 0 };
 	}

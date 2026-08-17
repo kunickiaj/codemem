@@ -210,12 +210,18 @@ function promptPackAttemptId(sequence: number): string {
 	return `018f2db4-f9d3-7a22-8d18-${sequence.toString(16).padStart(12, "0")}`;
 }
 
-function postViewerJson(app: ReturnType<typeof createApp>, path: string, body: unknown) {
+function postViewerJson(
+	app: ReturnType<typeof createApp>,
+	path: string,
+	body: unknown,
+	headers: Record<string, string> = {},
+) {
 	return app.request(path, {
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
 			Origin: "http://127.0.0.1:38888",
+			...headers,
 		},
 		body: JSON.stringify(body),
 	});
@@ -677,6 +683,71 @@ describe("viewer-server", () => {
 					["session-duplicate", "claude"],
 					["session-duplicate", "claude"],
 				]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("awaits requested Claude boundary flushes before acknowledging ingestion", async () => {
+			const actions: string[] = [];
+			let releaseFlush: (() => void) | undefined;
+			const flushBlocked = new Promise<void>((resolve) => {
+				releaseFlush = resolve;
+			});
+			const sweeper = {
+				nudge: vi.fn(() => actions.push("nudge")),
+				flushBoundary: vi.fn(async () => {
+					actions.push("flush:start");
+					await flushBlocked;
+					actions.push("flush:end");
+				}),
+			};
+			const { app, cleanup } = createTestApp({ sweeper });
+			try {
+				const envelope = core.buildRawEventEnvelopeFromHook(
+					{ hook_event_name: "SessionEnd", session_id: "session-boundary" },
+					core.TRUSTED_HOOK_MAPPER_OPTIONS,
+				);
+				expect(envelope).not.toBeNull();
+				let acknowledged = false;
+				const responsePromise = postViewerJson(app, "/api/raw-events", envelope, {
+					"X-Codemem-Boundary-Flush": "1",
+				}).then((response) => {
+					acknowledged = true;
+					return response;
+				});
+
+				await vi.waitFor(() => expect(actions).toEqual(["nudge", "flush:start"]));
+				expect(acknowledged).toBe(false);
+				releaseFlush?.();
+				const response = await responsePromise;
+
+				expect(response.status).toBe(200);
+				expect(await response.json()).toEqual({ inserted: 1, skipped: 0, received: 1 });
+				expect(actions).toEqual(["nudge", "flush:start", "flush:end"]);
+				expect(sweeper.flushBoundary).toHaveBeenCalledWith("session-boundary", "claude");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("ignores boundary flush headers on non-boundary Claude events", async () => {
+			const sweeper = { nudge: vi.fn(), flushBoundary: vi.fn() };
+			const { app, cleanup } = createTestApp({ sweeper });
+			try {
+				const response = await postViewerJson(
+					app,
+					"/api/claude-hooks",
+					{
+						hook_event_name: "UserPromptSubmit",
+						session_id: "session-not-boundary",
+						prompt: "continue",
+					},
+					{ "X-Codemem-Boundary-Flush": "1" },
+				);
+
+				expect(response.status).toBe(200);
+				expect(sweeper.flushBoundary).not.toHaveBeenCalled();
 			} finally {
 				cleanup();
 			}

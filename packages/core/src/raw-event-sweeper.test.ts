@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect } from "./db.js";
 import type { IngestOptions } from "./ingest-pipeline.js";
 import { RawEventSweeper } from "./raw-event-sweeper.js";
@@ -19,11 +19,13 @@ describe("RawEventSweeper auto flush", () => {
 	let prevAutoFlush: string | undefined;
 	let prevDebounce: string | undefined;
 	let prevWorkerMaxEvents: string | undefined;
+	let prevSweeper: string | undefined;
 
 	beforeEach(() => {
 		prevAutoFlush = process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH;
 		prevDebounce = process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS;
 		prevWorkerMaxEvents = process.env.CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS;
+		prevSweeper = process.env.CODEMEM_RAW_EVENTS_SWEEPER;
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-raw-event-sweeper-test-"));
 		dbPath = join(tmpDir, "test.sqlite");
 		const db = connect(dbPath);
@@ -40,6 +42,8 @@ describe("RawEventSweeper auto flush", () => {
 		else process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS = prevDebounce;
 		if (prevWorkerMaxEvents == null) delete process.env.CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS;
 		else process.env.CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS = prevWorkerMaxEvents;
+		if (prevSweeper == null) delete process.env.CODEMEM_RAW_EVENTS_SWEEPER;
+		else process.env.CODEMEM_RAW_EVENTS_SWEEPER = prevSweeper;
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
@@ -233,6 +237,72 @@ describe("RawEventSweeper auto flush", () => {
 		expect(store.rawEventFlushState("sess-stop")).toBe(1);
 	});
 
+	it("does not reschedule pending auto flush work after stop begins", async () => {
+		process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = "1";
+		process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS = "0";
+		seedSession("sess-stop-pending");
+		let releaseFirst: (() => void) | undefined;
+		let observeCalls = 0;
+		const sweeper = new RawEventSweeper(store, {
+			observer: {
+				observe: async () => {
+					observeCalls += 1;
+					if (observeCalls === 1) {
+						await new Promise<void>((resolve) => {
+							releaseFirst = resolve;
+						});
+					}
+					return {
+						raw: `<summary><request>stop pending</request><completed>done</completed></summary>
+<observation><type>bugfix</type><title>Stop pending</title><narrative>Pending stop work completed.</narrative></observation>`,
+						parsed: null,
+						provider: "test",
+						model: "test",
+					};
+				},
+				getStatus: () => ({
+					provider: "test",
+					model: "test",
+					runtime: "api_http",
+					auth: { source: "test", type: "api_direct", hasToken: true },
+				}),
+			} as never,
+		});
+
+		sweeper.nudge("sess-stop-pending");
+		await vi.waitFor(() => expect(observeCalls).toBe(1));
+		store.recordRawEvent({
+			opencodeSessionId: "sess-stop-pending",
+			eventId: "evt-pending",
+			eventType: "assistant_message",
+			payload: { type: "assistant_message", assistant_text: "defer until restart" },
+			tsWallMs: 300,
+		});
+		sweeper.nudge("sess-stop-pending");
+		const stopping = sweeper.stop();
+		releaseFirst?.();
+		await stopping;
+		await sleep(20);
+
+		expect(observeCalls).toBe(1);
+		expect(store.rawEventFlushState("sess-stop-pending")).toBe(1);
+	});
+
+	it("re-enables auto flush nudges after restart when the periodic sweeper is disabled", async () => {
+		process.env.CODEMEM_RAW_EVENTS_SWEEPER = "0";
+		process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = "1";
+		process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS = "0";
+		seedSession("sess-restart-auto");
+		const sweeper = new RawEventSweeper(store, ingestOpts);
+
+		await sweeper.stop();
+		sweeper.start();
+		sweeper.nudge("sess-restart-auto");
+		await vi.waitFor(() => expect(store.rawEventFlushState("sess-restart-auto")).toBe(1));
+
+		await sweeper.stop();
+	});
+
 	it("requeues activity that arrives during an active auto flush", async () => {
 		process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = "1";
 		process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS = "0";
@@ -295,6 +365,281 @@ describe("RawEventSweeper auto flush", () => {
 		await sleep(150);
 
 		expect(store.rawEventFlushState("sess-disabled")).toBe(-1);
+	});
+
+	it("awaits explicit boundary flushes even when auto flush is disabled", async () => {
+		delete process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH;
+		seedSession("sess-boundary");
+		let releaseObserver: (() => void) | undefined;
+		const observerBlocked = new Promise<void>((resolve) => {
+			releaseObserver = resolve;
+		});
+		const sweeper = new RawEventSweeper(store, {
+			observer: {
+				observe: async () => {
+					await observerBlocked;
+					return {
+						raw: `<summary><request>boundary</request><completed>flushed</completed></summary>`,
+						parsed: null,
+						provider: "test",
+						model: "test",
+					};
+				},
+				getStatus: () => ({
+					provider: "test",
+					model: "test",
+					runtime: "api_http",
+					auth: { source: "test", type: "api_direct", hasToken: true },
+				}),
+			} as never,
+		});
+
+		let completed = false;
+		const flushing = sweeper.flushBoundary("sess-boundary").then(() => {
+			completed = true;
+		});
+		await sleep(20);
+		expect(completed).toBe(false);
+		releaseObserver?.();
+		await flushing;
+
+		expect(store.rawEventFlushState("sess-boundary")).toBe(1);
+	});
+
+	it("drains every capped batch during an explicit boundary flush", async () => {
+		delete process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH;
+		process.env.CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS = "2";
+		seedSession("sess-boundary-batches");
+		for (let index = 2; index < 5; index += 1) {
+			store.recordRawEvent({
+				opencodeSessionId: "sess-boundary-batches",
+				eventId: `evt-${index}`,
+				eventType: "assistant_message",
+				payload: { type: "assistant_message", assistant_text: `message ${index}` },
+				tsWallMs: (index + 1) * 100,
+			});
+		}
+
+		const sweeper = new RawEventSweeper(store, ingestOpts);
+		await sweeper.flushBoundary("sess-boundary-batches");
+
+		expect(store.rawEventFlushState("sess-boundary-batches")).toBe(4);
+	});
+
+	it("stops draining after the event visible at the explicit boundary", async () => {
+		delete process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH;
+		process.env.CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS = "2";
+		seedSession("sess-boundary-snapshot");
+		let observeCalls = 0;
+		const sweeper = new RawEventSweeper(store, {
+			observer: {
+				observe: async () => {
+					observeCalls += 1;
+					if (observeCalls === 1) {
+						store.recordRawEvent({
+							opencodeSessionId: "sess-boundary-snapshot",
+							eventId: "evt-after-boundary",
+							eventType: "assistant_message",
+							payload: { type: "assistant_message", assistant_text: "arrived later" },
+							tsWallMs: 300,
+						});
+					}
+					return {
+						raw: `<summary><request>snapshot</request><completed>flushed</completed></summary>`,
+						parsed: null,
+						provider: "test",
+						model: "test",
+					};
+				},
+				getStatus: () => ({
+					provider: "test",
+					model: "test",
+					runtime: "api_http",
+					auth: { source: "test", type: "api_direct", hasToken: true },
+				}),
+			} as never,
+		});
+
+		await sweeper.flushBoundary("sess-boundary-snapshot");
+
+		expect(store.rawEventFlushState("sess-boundary-snapshot")).toBe(1);
+		expect(store.rawEventsSinceBySeq("sess-boundary-snapshot", "opencode", 1)).toHaveLength(1);
+	});
+
+	it("waits for an in-flight boundary flush during shutdown", async () => {
+		delete process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH;
+		seedSession("sess-boundary-stop");
+		let releaseObserver: (() => void) | undefined;
+		const observerBlocked = new Promise<void>((resolve) => {
+			releaseObserver = resolve;
+		});
+		const sweeper = new RawEventSweeper(store, {
+			observer: {
+				observe: async () => {
+					await observerBlocked;
+					return {
+						raw: `<summary><request>stop</request><completed>flushed</completed></summary>`,
+						parsed: null,
+						provider: "test",
+						model: "test",
+					};
+				},
+				getStatus: () => ({
+					provider: "test",
+					model: "test",
+					runtime: "api_http",
+					auth: { source: "test", type: "api_direct", hasToken: true },
+				}),
+			} as never,
+		});
+
+		const boundary = sweeper.flushBoundary("sess-boundary-stop");
+		await sleep(20);
+		let stopped = false;
+		const stopping = sweeper.stop().then(() => {
+			stopped = true;
+		});
+		await sleep(20);
+		expect(stopped).toBe(false);
+		releaseObserver?.();
+		await Promise.all([boundary, stopping]);
+
+		expect(stopped).toBe(true);
+		expect(store.rawEventFlushState("sess-boundary-stop")).toBe(1);
+	});
+
+	it("waits for an active sweep before flushing a newly arrived boundary event", async () => {
+		delete process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH;
+		seedSession("sess-boundary-race");
+		const releases: Array<() => void> = [];
+		let observeCalls = 0;
+		const sweeper = new RawEventSweeper(store, {
+			observer: {
+				observe: async () => {
+					observeCalls += 1;
+					const call = observeCalls;
+					await new Promise<void>((resolve) => releases.push(resolve));
+					return {
+						raw: `<summary>
+  <request>Boundary race request ${call}</request>
+  <completed>Flushed boundary race ${call}</completed>
+</summary>
+<observation>
+  <type>bugfix</type>
+  <title>Boundary race ${call} preserved</title>
+  <narrative>The per-session flush lock preserved the newly arrived event during pass ${call}.</narrative>
+</observation>`,
+						parsed: null,
+						provider: "test",
+						model: "test",
+					};
+				},
+				getStatus: () => ({
+					provider: "test",
+					model: "test",
+					runtime: "api_http",
+					auth: { source: "test", type: "api_direct", hasToken: true },
+				}),
+			} as never,
+		});
+
+		const tick = sweeper.tick();
+		await vi.waitFor(() => expect(observeCalls).toBe(1));
+		store.recordRawEvent({
+			opencodeSessionId: "sess-boundary-race",
+			eventId: "evt-boundary",
+			eventType: "user_prompt",
+			payload: {
+				type: "user_prompt",
+				prompt_text: "Investigate the raw event boundary flush race and preserve every event",
+			},
+			tsWallMs: 300,
+		});
+		let boundaryCompleted = false;
+		const boundary = sweeper.flushBoundary("sess-boundary-race").then(() => {
+			boundaryCompleted = true;
+		});
+		expect(boundaryCompleted).toBe(false);
+		store.recordRawEvent({
+			opencodeSessionId: "sess-boundary-race",
+			eventId: "evt-after-boundary",
+			eventType: "assistant_message",
+			payload: { type: "assistant_message", assistant_text: "arrived after the boundary" },
+			tsWallMs: 400,
+		});
+
+		releases.shift()?.();
+		await vi.waitFor(() => expect(observeCalls).toBe(2));
+		expect(boundaryCompleted).toBe(false);
+		releases.shift()?.();
+		await Promise.all([tick, boundary]);
+
+		expect(boundaryCompleted).toBe(true);
+		expect(store.rawEventFlushState("sess-boundary-race")).toBe(2);
+		expect(store.rawEventsSinceBySeq("sess-boundary-race", "opencode", 2)).toHaveLength(1);
+	});
+
+	it("prioritizes a waiting boundary over pending zero-debounce auto flush work", async () => {
+		process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = "1";
+		process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS = "0";
+		seedSession("sess-boundary-priority");
+		const releases: Array<() => void> = [];
+		let observeCalls = 0;
+		const sweeper = new RawEventSweeper(store, {
+			observer: {
+				observe: async () => {
+					observeCalls += 1;
+					const call = observeCalls;
+					await new Promise<void>((resolve) => releases.push(resolve));
+					return {
+						raw: `<summary><request>priority ${call}</request><completed>flushed</completed></summary>
+<observation><type>bugfix</type><title>Priority ${call}</title><narrative>Boundary priority pass ${call} completed.</narrative></observation>`,
+						parsed: null,
+						provider: "test",
+						model: "test",
+					};
+				},
+				getStatus: () => ({
+					provider: "test",
+					model: "test",
+					runtime: "api_http",
+					auth: { source: "test", type: "api_direct", hasToken: true },
+				}),
+			} as never,
+		});
+
+		sweeper.nudge("sess-boundary-priority");
+		await vi.waitFor(() => expect(observeCalls).toBe(1));
+		store.recordRawEvent({
+			opencodeSessionId: "sess-boundary-priority",
+			eventId: "evt-boundary",
+			eventType: "user_prompt",
+			payload: { type: "user_prompt", prompt_text: "Flush through this boundary" },
+			tsWallMs: 300,
+		});
+		sweeper.nudge("sess-boundary-priority");
+		let boundaryFlushState = -1;
+		const boundary = sweeper.flushBoundary("sess-boundary-priority").then(() => {
+			boundaryFlushState = store.rawEventFlushState("sess-boundary-priority");
+		});
+		store.recordRawEvent({
+			opencodeSessionId: "sess-boundary-priority",
+			eventId: "evt-after-boundary",
+			eventType: "assistant_message",
+			payload: { type: "assistant_message", assistant_text: "arrived after the boundary" },
+			tsWallMs: 400,
+		});
+
+		releases.shift()?.();
+		await vi.waitFor(() => expect(observeCalls).toBe(2));
+		releases.shift()?.();
+		await boundary;
+
+		expect(boundaryFlushState).toBe(2);
+		await vi.waitFor(() => expect(observeCalls).toBe(3));
+		releases.shift()?.();
+		await sweeper.stop();
+		expect(store.rawEventFlushState("sess-boundary-priority")).toBe(3);
 	});
 
 	it("debounced auto flush advances flush state when enabled", async () => {

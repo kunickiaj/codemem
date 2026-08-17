@@ -354,8 +354,9 @@ behavior and `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` opt-in for `Stop` remain unch
 - Once events are accepted by the viewer/store queue, flush workers handle retries
 
 ### Claude hook flush boundaries
-- `CODEMEM_CLAUDE_HOOK_FLUSH=1` enables immediate `SessionEnd` boundary flush attempts
+- `SessionEnd` immediately flushes by default; `CODEMEM_CLAUDE_HOOK_FLUSH=0` disables the attempt
 - `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` extends immediate flush to `Stop` when boundary flush is enabled
+- Direct Viewer transport waits for boundary extraction while reserving command-fallback time from the live budget after preprocessing and across both HTTP attempts; `CODEMEM_CLAUDE_HOOK_BOUNDARY_TIMEOUT_MS` can override the derived request limit
 
 ## Bootstrap grant verification flow
 

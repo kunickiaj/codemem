@@ -468,6 +468,7 @@ export async function drainSpool(handler: SpoolHandler): Promise<SpoolDrainResul
  * are truthy.
  */
 export function shouldForceBoundaryFlush(payload: Record<string, unknown>): boolean {
+	// Keep this policy in sync with plugins/claude/scripts/ingest-hook.mjs.
 	const eventName =
 		typeof payload.hook_event_name === "string" ? payload.hook_event_name.trim() : "";
 	if (eventName !== "Stop" && eventName !== "SessionEnd") return false;

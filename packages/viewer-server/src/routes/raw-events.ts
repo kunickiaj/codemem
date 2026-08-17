@@ -121,6 +121,37 @@ function nudgeSweeper(
 	}
 }
 
+async function flushBoundarySessions(
+	sweeper: RawEventSweeper | null | undefined,
+	sessions: Iterable<{ source: string; streamId: string }>,
+): Promise<void> {
+	for (const session of sessions) {
+		try {
+			await sweeper?.flushBoundary(session.streamId, session.source);
+		} catch {
+			// Boundary extraction remains best-effort, matching the legacy CLI path.
+		}
+	}
+}
+
+function isClaudeBoundaryEnvelope(envelope: object): boolean {
+	const record = envelope as Record<string, unknown>;
+	if (
+		String(record.source ?? "")
+			.trim()
+			.toLowerCase() !== "claude"
+	)
+		return false;
+	const payload = record.payload;
+	if (payload == null || typeof payload !== "object" || Array.isArray(payload)) return false;
+	const adapter = (payload as Record<string, unknown>)._adapter;
+	if (adapter == null || typeof adapter !== "object" || Array.isArray(adapter)) return false;
+	const meta = (adapter as Record<string, unknown>).meta;
+	if (meta == null || typeof meta !== "object" || Array.isArray(meta)) return false;
+	const hookEventName = (meta as Record<string, unknown>).hook_event_name;
+	return hookEventName === "SessionEnd" || hookEventName === "Stop";
+}
+
 const SAFE_INGEST_VALIDATION_ERRORS = new Set([
 	"source must be string",
 	"source is required",
@@ -167,13 +198,17 @@ function boundedIngestErrorResponse(c: JsonResponder, error: unknown): Response 
 	return c.json(response, 500);
 }
 
-function ingestNormalizedEnvelope(
+async function ingestNormalizedEnvelope(
 	store: MemoryStore,
 	sweeper: RawEventSweeper | null | undefined,
 	envelope: object,
+	flushBoundary = false,
 ) {
 	const result = ingestRawEvents(store, envelope);
 	nudgeSweeper(sweeper, result.sessions);
+	if (flushBoundary && isClaudeBoundaryEnvelope(envelope)) {
+		await flushBoundarySessions(sweeper, result.sessions);
+	}
 	return result;
 }
 
@@ -234,7 +269,12 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 		const result = await parseJsonObjectBody(c, MAX_RAW_EVENTS_BODY_BYTES);
 		if (result instanceof Response) return result;
 		try {
-			const ingestResult = ingestNormalizedEnvelope(getStore(), sweeper, result);
+			const ingestResult = await ingestNormalizedEnvelope(
+				getStore(),
+				sweeper,
+				result,
+				c.req.header("x-codemem-boundary-flush") === "1",
+			);
 			return c.json({
 				inserted: ingestResult.inserted,
 				skipped: ingestResult.skipped,
@@ -262,7 +302,12 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 						: "unsupported_hook";
 				return c.json({ inserted: 0, skipped: 1, skip_reason: skipReason });
 			}
-			const ingestResult = ingestNormalizedEnvelope(getStore(), sweeper, envelope);
+			const ingestResult = await ingestNormalizedEnvelope(
+				getStore(),
+				sweeper,
+				envelope,
+				c.req.header("x-codemem-boundary-flush") === "1",
+			);
 			return c.json({ inserted: ingestResult.inserted, skipped: ingestResult.skipped });
 		} catch (err) {
 			return boundedIngestErrorResponse(c, err);
@@ -286,7 +331,7 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 						: "unsupported_hook";
 				return c.json({ inserted: 0, skipped: 1, skip_reason: skipReason });
 			}
-			const ingestResult = ingestNormalizedEnvelope(getStore(), sweeper, envelope);
+			const ingestResult = await ingestNormalizedEnvelope(getStore(), sweeper, envelope);
 			return c.json({ inserted: ingestResult.inserted, skipped: ingestResult.skipped });
 		} catch (err) {
 			return boundedIngestErrorResponse(c, err);

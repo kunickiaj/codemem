@@ -106,6 +106,47 @@ describe("dependency-free Codex user prompt hook", () => {
 		expect(eventFetchCalls).toBe(0);
 	});
 
+	it("spools normalized events before attempting command fallbacks", async () => {
+		const actions: string[] = [];
+		const output: string[] = [];
+		await ingestHook.runCodexIngestHook({
+			readInput: async () => JSON.stringify(payload),
+			postEnvelope: async () => false,
+			spoolEnvelope: () => {
+				actions.push("spool");
+				return "/tmp/raw-event.json";
+			},
+			runFallback: (command: string) => {
+				actions.push(`fallback:${command}`);
+				return false;
+			},
+			writeOutput: (value: string) => output.push(value),
+		});
+
+		expect(actions).toEqual(["spool", "fallback:codemem", "fallback:npx"]);
+		expect(output).toEqual(['{"continue":true}\n']);
+	});
+
+	it("removes the normalized spool only after a command fallback succeeds", async () => {
+		const actions: string[] = [];
+		await ingestHook.runCodexIngestHook({
+			readInput: async () => JSON.stringify(payload),
+			postEnvelope: async () => false,
+			spoolEnvelope: () => {
+				actions.push("spool");
+				return "/tmp/raw-event.json";
+			},
+			runFallback: (command: string) => {
+				actions.push(`fallback:${command}`);
+				return command === "codemem";
+			},
+			removeSpooledEnvelope: (path: string) => actions.push(`remove:${path}`),
+			writeOutput: () => {},
+		});
+
+		expect(actions).toEqual(["spool", "fallback:codemem", "remove:/tmp/raw-event.json"]);
+	});
+
 	it("fails closed without fetching or falling back for a non-loopback prompt target", async () => {
 		env.CODEMEM_VIEWER_HOST = "viewer.test";
 		const output: string[] = [];
