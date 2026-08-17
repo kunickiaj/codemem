@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -181,6 +182,35 @@ describe("ingestRawEvents", () => {
 			expect(rows[0]).toMatchObject({ event_seq: 0 });
 			expect(rows[0]?.event_id).toMatch(/^legacy-seq-7-/);
 			expect(rows[1]).toEqual({ event_id: "event-sequence-next", event_seq: 1 });
+		} finally {
+			store.close();
+		}
+	});
+
+	it("deduplicates a string sequence against its pre-cutover legacy event ID", () => {
+		const store = createStore();
+		try {
+			const payload = { text: "supplied" };
+			const digest = createHash("sha256")
+				.update(JSON.stringify({ p: payload, s: "7", t: "prompt" }), "utf8")
+				.digest("hex")
+				.slice(0, 16);
+			store.recordRawEvent({
+				opencodeSessionId: "session-legacy-string-sequence",
+				eventId: `legacy-seq-7-${digest}`,
+				eventType: "prompt",
+				payload,
+			});
+
+			expect(
+				ingestRawEvents(store, {
+					source: "opencode",
+					session_id: "session-legacy-string-sequence",
+					event_type: "prompt",
+					event_seq: "7",
+					payload,
+				}),
+			).toMatchObject({ inserted: 0, skipped: 1 });
 		} finally {
 			store.close();
 		}

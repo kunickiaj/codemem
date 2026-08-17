@@ -32,6 +32,7 @@ export interface RawEventIngestResult {
 interface NormalizedEvent {
 	streamId: string;
 	eventId: string;
+	eventIdAliases: string[];
 	eventType: string;
 	payload: Record<string, unknown>;
 	tsWallMs: number | null;
@@ -162,6 +163,18 @@ function generatedEventId(
 	return eventSeq == null ? `legacy-${digest}` : `legacy-seq-${eventSeq}-${digest}`;
 }
 
+function legacyStringSequenceEventId(
+	eventType: string,
+	payload: Record<string, unknown>,
+	eventSeq: string,
+): string {
+	const digest = createHash("sha256")
+		.update(stableStringify({ p: payload, s: eventSeq, t: eventType }), "utf8")
+		.digest("hex")
+		.slice(0, 16);
+	return `legacy-seq-${eventSeq}-${digest}`;
+}
+
 function normalizeEvent(
 	item: Record<string, unknown>,
 	defaultStreamId: string | null,
@@ -187,9 +200,15 @@ function normalizeEvent(
 		rawEventId == null || rawEventId === ""
 			? generatedEventId(eventType, payload, eventSeq, tsWallMs, tsMonoMs)
 			: validateEventField(rawEventId, "event_id");
+	const eventIdAliases = [eventId];
+	if ((rawEventId == null || rawEventId === "") && typeof item.event_seq === "string") {
+		const legacyEventId = legacyStringSequenceEventId(eventType, payload, item.event_seq);
+		if (legacyEventId !== eventId) eventIdAliases.push(legacyEventId);
+	}
 	return {
 		streamId,
 		eventId,
+		eventIdAliases,
 		eventType,
 		payload,
 		tsWallMs,
@@ -236,16 +255,17 @@ function persistStream(
 	let skippedDuplicate = 0;
 	const seenIds = new Set<string>();
 	const uniqueCandidates = events.filter((event) => {
-		if (seenIds.has(event.eventId)) {
+		if (event.eventIdAliases.some((eventId) => seenIds.has(eventId))) {
 			skippedDuplicate++;
 			return false;
 		}
-		seenIds.add(event.eventId);
+		for (const eventId of event.eventIdAliases) seenIds.add(eventId);
 		return true;
 	});
 	const existingIds = new Set<string>();
-	for (let offset = 0; offset < uniqueCandidates.length; offset += 500) {
-		const eventIds = uniqueCandidates.slice(offset, offset + 500).map((event) => event.eventId);
+	const candidateEventIds = [...new Set(uniqueCandidates.flatMap((event) => event.eventIdAliases))];
+	for (let offset = 0; offset < candidateEventIds.length; offset += 500) {
+		const eventIds = candidateEventIds.slice(offset, offset + 500);
 		const placeholders = eventIds.map(() => "?").join(", ");
 		const rows = store.db
 			.prepare(
@@ -257,7 +277,9 @@ function persistStream(
 			if (row.event_id) existingIds.add(row.event_id);
 		}
 	}
-	const candidates = uniqueCandidates.filter((event) => !existingIds.has(event.eventId));
+	const candidates = uniqueCandidates.filter(
+		(event) => !event.eventIdAliases.some((eventId) => existingIds.has(eventId)),
+	);
 	skippedDuplicate += uniqueCandidates.length - candidates.length;
 
 	const sessionRow = store.db
