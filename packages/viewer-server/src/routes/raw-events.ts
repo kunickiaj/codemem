@@ -1,6 +1,6 @@
 /**
  * Raw events routes — GET & POST /api/raw-events, GET /api/raw-events/status,
- * POST /api/claude-hooks, POST /api/codex-hooks.
+ * POST /api/claude-hooks, POST /api/codex-hooks, POST /api/pi-hooks.
  */
 
 import { homedir } from "node:os";
@@ -9,6 +9,7 @@ import type { HookTranscriptOutcome, MemoryStore, RawEventSweeper } from "@codem
 import {
 	buildRawEventEnvelopeFromCodexHook,
 	buildRawEventEnvelopeFromHook,
+	buildRawEventEnvelopeFromPiEvent,
 	ingestRawEvents,
 	RawEventIngestValidationError,
 	schema,
@@ -330,6 +331,27 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 				return c.json(transcriptSkipResponse(transcriptOutcome));
 			}
 			const ingestResult = await ingestNormalizedEnvelope(store, sweeper, envelope);
+			return c.json({ inserted: ingestResult.inserted, skipped: ingestResult.skipped });
+		} catch (err) {
+			return boundedIngestErrorResponse(c, err);
+		}
+	});
+
+	// POST /api/pi-hooks — ingest pi extension events (compat alias)
+	app.post("/api/pi-hooks", async (c) => {
+		const result = await parseJsonObjectBody(c, MAX_RAW_EVENTS_BODY_BYTES);
+		if (result instanceof Response) return result;
+		const payload = result;
+
+		try {
+			const envelope = buildRawEventEnvelopeFromPiEvent(payload);
+			if (envelope === null) {
+				return c.json({ inserted: 0, skipped: 1 });
+			}
+			const ingestResult = ingestNormalizedEnvelope(getStore(), sweeper, {
+				...envelope,
+				source: "pi",
+			});
 			return c.json({ inserted: ingestResult.inserted, skipped: ingestResult.skipped });
 		} catch (err) {
 			return boundedIngestErrorResponse(c, err);

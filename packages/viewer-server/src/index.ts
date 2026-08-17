@@ -28,6 +28,7 @@ import { configRoutes } from "./routes/config.js";
 import { diagnosticsRoutes } from "./routes/diagnostics.js";
 import { healthRoutes } from "./routes/health.js";
 import { memoryRoutes } from "./routes/memory.js";
+import { memoryToolRoutes } from "./routes/memory-tools.js";
 import { observerStatusRoutes } from "./routes/observer-status.js";
 import { packTransportRoutes } from "./routes/pack.js";
 import { rawEventsRoutes } from "./routes/raw-events.js";
@@ -179,6 +180,7 @@ export function createApp(opts?: AppOptions) {
 	app.route("/", diagnosticsRoutes(storeFactory));
 	app.route("/", statsRoutes(storeFactory));
 	app.route("/", memoryRoutes(storeFactory));
+	app.route("/", memoryToolRoutes(storeFactory));
 	app.route("/", packTransportRoutes(storeFactory));
 	app.route(
 		"/",
