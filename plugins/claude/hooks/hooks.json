@@ -57,7 +57,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/ingest-hook.mjs"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/ingest-hook.mjs",
+            "timeout": 130
           }
         ]
       }

@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
@@ -143,6 +143,25 @@ describe("dependency-free Claude user prompt hook", () => {
 				{ CODEMEM_CLAUDE_HOOK_BOUNDARY_TIMEOUT_MS: "60000" },
 			),
 		).toBe(950);
+	});
+
+	it("keeps the packaged Stop hook timeout above its boundary execution budget", () => {
+		const manifest = JSON.parse(
+			readFileSync(new URL("../../../../plugins/claude/hooks/hooks.json", import.meta.url), "utf8"),
+		) as {
+			hooks?: {
+				Stop?: Array<{ hooks?: Array<{ type?: string; timeout?: number }> }>;
+			};
+		};
+		const stopCommands =
+			manifest.hooks?.Stop?.flatMap((group) => group.hooks ?? []).filter(
+				(hook) => hook.type === "command",
+			) ?? [];
+
+		expect(stopCommands).toHaveLength(1);
+		expect(stopCommands[0]?.timeout).toBe(130);
+		const executionBudgetMs = ingestHook.boundaryExecutionBudgetMs({ hook_event_name: "Stop" }, {});
+		expect((stopCommands[0]?.timeout ?? 0) * 1000 - executionBudgetMs).toBeGreaterThanOrEqual(5000);
 	});
 
 	it("keeps SessionEnd retries and command fallbacks inside the host execution budget", async () => {
