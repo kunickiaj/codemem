@@ -68,12 +68,14 @@ function runAsync(command, args, options, input) {
 async function smokeAdapterWrapper(source, isolatedRoot) {
 	const relativeRoot = join("plugins", source);
 	const scriptsDirectory = join(isolatedRoot, relativeRoot, "scripts");
+	const sourceScriptsDirectory = resolve(workspaceRoot, relativeRoot, "scripts");
 	const wrapperPath = join(scriptsDirectory, "ingest-hook.mjs");
-	cpSync(resolve(workspaceRoot, relativeRoot, "scripts", "ingest-hook.mjs"), wrapperPath);
-	cpSync(
-		resolve(workspaceRoot, relativeRoot, "scripts", "user-prompt-hook.mjs"),
-		join(scriptsDirectory, "user-prompt-hook.mjs"),
-	);
+	for (const scriptName of readdirSync(sourceScriptsDirectory)) {
+		if (scriptName === "codemem-normalizer.mjs") continue;
+		cpSync(join(sourceScriptsDirectory, scriptName), join(scriptsDirectory, scriptName), {
+			recursive: true,
+		});
+	}
 	cpSync(
 		resolve(workspaceRoot, relativeRoot, source === "claude" ? ".claude-plugin" : ".codex-plugin"),
 		join(isolatedRoot, relativeRoot, source === "claude" ? ".claude-plugin" : ".codex-plugin"),
@@ -154,6 +156,23 @@ async function smokeAdapterWrapper(source, isolatedRoot) {
 	} finally {
 		server.close();
 	}
+}
+
+function auditIsolatedAdapterRoutes(source, isolatedRoot) {
+	const scriptsDirectory = join(isolatedRoot, "plugins", source, "scripts");
+	const wrapperContents = readdirSync(scriptsDirectory)
+		.filter((name) => name.endsWith(".mjs") || name.endsWith(".sh"))
+		.map((name) => readFileSync(join(scriptsDirectory, name), "utf8"));
+	for (const namedRoute of ["/api/claude-hooks", "/api/codex-hooks"]) {
+		assert(
+			wrapperContents.every((content) => !content.includes(namedRoute)),
+			`${source} isolated current wrappers still call compatibility route ${namedRoute}`,
+		);
+	}
+	assert(
+		wrapperContents.some((content) => content.includes("/api/raw-events")),
+		`${source} isolated current wrappers are missing canonical /api/raw-events transport`,
+	);
 }
 
 async function smokeClaudePromptWrapper(isolatedRoot) {
@@ -601,6 +620,7 @@ try {
 		);
 		assert(existsSync(checkedInArtifact), `${source} plugin is missing its generated normalizer`);
 		await smokeAdapterWrapper(source, isolatedAdapters);
+		auditIsolatedAdapterRoutes(source, isolatedAdapters);
 		if (source === "claude") await smokeClaudePromptWrapper(isolatedAdapters);
 		if (source === "codex") await smokeCodexPromptWrapper(isolatedAdapters);
 	}

@@ -591,6 +591,68 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("accepts additive adapter metadata without changing canonical raw-event rows", async () => {
+			const baseline = createTestApp();
+			const additive = createTestApp();
+			try {
+				const envelope = core.buildRawEventEnvelopeFromHook(
+					{
+						hook_event_name: "UserPromptSubmit",
+						session_id: "session-additive-adapter-meta",
+						prompt: "same normalized prompt",
+						ts: "2026-08-16T12:00:00Z",
+					},
+					core.TRUSTED_HOOK_MAPPER_OPTIONS,
+				);
+				expect(envelope).not.toBeNull();
+				if (!envelope) throw new Error("current Claude normalizer skipped prompt fixture");
+				const additiveEnvelope = structuredClone(envelope);
+				const adapter = additiveEnvelope.payload._adapter as {
+					meta: Record<string, unknown>;
+				};
+				adapter.meta.future_adapter_revision = 2;
+
+				const baselineResponse = await postViewerJson(baseline.app, "/api/raw-events", envelope);
+				const additiveResponse = await postViewerJson(
+					additive.app,
+					"/api/raw-events",
+					additiveEnvelope,
+				);
+				expect(await baselineResponse.json()).toEqual({
+					inserted: 1,
+					skipped: 0,
+					received: 1,
+				});
+				expect(await additiveResponse.json()).toEqual({
+					inserted: 1,
+					skipped: 0,
+					received: 1,
+				});
+
+				const baselineState = rawEventState(baseline.ensureStore());
+				const additiveState = rawEventState(additive.ensureStore());
+				expect(additiveState.sessions).toEqual(baselineState.sessions);
+				const baselineEvent = baselineState.events[0] as Record<string, unknown>;
+				const additiveEvent = additiveState.events[0] as Record<string, unknown>;
+				const { payload_json: baselinePayloadJson, ...baselineColumns } = baselineEvent;
+				const { payload_json: additivePayloadJson, ...additiveColumns } = additiveEvent;
+				expect(additiveColumns).toEqual(baselineColumns);
+				const baselinePayload = JSON.parse(String(baselinePayloadJson)) as Record<string, unknown>;
+				const additivePayload = JSON.parse(String(additivePayloadJson)) as Record<string, unknown>;
+				const additiveAdapter = additivePayload._adapter as { meta: Record<string, unknown> };
+				const { future_adapter_revision: futureAdapterRevision, ...compatibleMeta } =
+					additiveAdapter.meta;
+				expect(futureAdapterRevision).toBe(2);
+				expect({
+					...additivePayload,
+					_adapter: { ...additiveAdapter, meta: compatibleMeta },
+				}).toEqual(baselinePayload);
+			} finally {
+				baseline.cleanup();
+				additive.cleanup();
+			}
+		});
+
 		it("reports duplicate skips and nudges every validated session on retries", async () => {
 			const nudge = vi.fn();
 			const { app, cleanup } = createTestApp({ sweeper: { nudge } });

@@ -221,6 +221,60 @@ describe("dependency-free Claude user prompt hook", () => {
 		});
 	});
 
+	it.each([
+		{
+			label: "an old v1 client against a current Viewer range",
+			clientRange: { minSupportedProtocolVersion: 1, protocolVersion: 1 },
+			profile: { protocol_version: 2, min_supported_protocol_version: 1 },
+		},
+		{
+			label: "a newer v2 client against a stale single-version Viewer",
+			clientRange: { minSupportedProtocolVersion: 1, protocolVersion: 2 },
+			profile: { protocol_version: 1 },
+		},
+	])("uses direct pack and ledger transport for $label", async ({ clientRange, profile }) => {
+		const requestPaths: string[] = [];
+		const output: string[] = [];
+		let ledgerBody: Record<string, unknown> | null = null;
+		let fallbackCalls = 0;
+		await hook.runClaudeUserPromptHook(JSON.stringify(payload), {
+			env,
+			protocolRange: clientRange,
+			fetchImpl: async (input: string | URL, init?: RequestInit) => {
+				const path = new URL(String(input)).pathname;
+				requestPaths.push(path);
+				if (path.endsWith("profile")) {
+					return jsonResponse({
+						service: "codemem-viewer",
+						...profile,
+						db_path: dbPath,
+						identity_target: identity,
+					});
+				}
+				if (path.endsWith("pack")) {
+					return jsonResponse({ pack_text: "SKEW_PACK", metrics: { total_items: 1 } });
+				}
+				ledgerBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+				return jsonResponse({ ok: true });
+			},
+			writeOutput: (value: string) => output.push(value),
+			spawnIngestion: () => {},
+			runFallback: () => {
+				fallbackCalls += 1;
+				return { continue: true };
+			},
+		});
+
+		expect(requestPaths).toEqual([
+			"/api/prompt-pack-profile",
+			"/api/pack",
+			"/api/prompt-pack-ledger",
+		]);
+		expect(output[0]).toContain("SKEW_PACK");
+		expect(ledgerBody).toMatchObject({ action: "delivery", delivery_status: "handed_off" });
+		expect(fallbackCalls).toBe(0);
+	});
+
 	it("drops working-set paths that the Viewer would reject", async () => {
 		for (const filePath of ["a/../../b", String.raw`C:\foo\bar`]) {
 			hook.trackClaudeSessionState(
@@ -295,7 +349,7 @@ describe("dependency-free Claude user prompt hook", () => {
 		expect(ledgerBody).toMatchObject(expected);
 	});
 
-	it("starts one fallback chain for retryable failure and none for terminal failure", async () => {
+	it("falls back once for a stale profile and fails closed for a compatible contract defect", async () => {
 		const fallbackPayloads: string[] = [];
 		const output: string[] = [];
 		const profile = {
@@ -312,7 +366,7 @@ describe("dependency-free Claude user prompt hook", () => {
 
 		await hook.runClaudeUserPromptHook(JSON.stringify(payload), {
 			env,
-			fetchImpl: async () => jsonResponse({ error: { code: "profile_failed" } }, 503),
+			fetchImpl: async () => jsonResponse({ error: { code: "not_found" } }, 404),
 			writeOutput: (value: string) => output.push(value),
 			spawnIngestion: () => {},
 			runFallback,
@@ -325,9 +379,7 @@ describe("dependency-free Claude user prompt hook", () => {
 			fetchImpl: async (input: string | URL) =>
 				new URL(String(input)).pathname.endsWith("profile")
 					? jsonResponse(profile)
-					: new URL(String(input)).pathname.endsWith("ledger")
-						? jsonResponse({ ok: true })
-						: jsonResponse({ error: { code: "invalid_request", message: "bad request" } }, 400),
+					: jsonResponse({ error: { code: "viewer_contract_unsupported" } }, 409),
 			writeOutput: (value: string) => output.push(value),
 			spawnIngestion: () => {},
 			runFallback,
