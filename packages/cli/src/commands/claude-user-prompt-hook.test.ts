@@ -624,7 +624,8 @@ describe("dependency-free Claude user prompt hook", () => {
 		{ kind: "malformed_response" },
 		{ kind: "database_mismatch" },
 		{ kind: "runtime_identity_mismatch" },
-		{ kind: "invalid_request" },
+		{ kind: "invalid_request", compatibleProfile: false },
+		{ kind: "invalid_request", compatibleProfile: true },
 		{ kind: "policy_failure" },
 		{ kind: "authorization_failure" },
 		{ kind: "viewer_contract_unsupported", compatibleProfile: false },
@@ -633,6 +634,44 @@ describe("dependency-free Claude user prompt hook", () => {
 		expect(hook.classifyPromptTransportFailure(failure)).toBe(
 			classifyCorePromptTransportFailure(failure),
 		);
+	});
+
+	it.each([
+		["before", false, 1, ["/api/prompt-pack-profile"]],
+		["after", true, 0, ["/api/prompt-pack-profile", "/api/pack", "/api/prompt-pack-ledger"]],
+	] as const)("handles invalid_request %s a compatible profile", async (_label, compatibleProfile, expectedFallbackCalls, expectedRequestPaths) => {
+		// Arrange
+		const requestPaths: string[] = [];
+		let fallbackCalls = 0;
+
+		// Act
+		await hook.runClaudeUserPromptHook(JSON.stringify(payload), {
+			env,
+			fetchImpl: async (input: string | URL) => {
+				const path = new URL(String(input)).pathname;
+				requestPaths.push(path);
+				if (compatibleProfile && path.endsWith("profile")) {
+					return jsonResponse({
+						service: "codemem-viewer",
+						protocol_version: 1,
+						min_supported_protocol_version: 1,
+						db_path: dbPath,
+						identity_target: identity,
+					});
+				}
+				return jsonResponse({ error: { code: "invalid_request" } }, 400);
+			},
+			writeOutput: () => {},
+			spawnIngestion: () => {},
+			runFallback: () => {
+				fallbackCalls += 1;
+				return { continue: true };
+			},
+		});
+
+		// Assert
+		expect(requestPaths).toEqual(expectedRequestPaths);
+		expect(fallbackCalls).toBe(expectedFallbackCalls);
 	});
 
 	it("records disabled injection without probing the pack profile", async () => {

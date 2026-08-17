@@ -1868,6 +1868,9 @@ describe("OpenCode transform-time injection", () => {
 				message: "viewer request contract is incompatible",
 			},
 		})],
+		["structured invalid request", () => jsonResponse(400, {
+			error: { code: "invalid_request", message: "context is required" },
+		})],
 		["redirect", () => new Response(null, {
 			status: 307,
 			headers: { Location: "http://127.0.0.1:39999/capture" },

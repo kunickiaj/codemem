@@ -709,8 +709,7 @@ const isViewerContractUnsupportedPayload = (payload) =>
 const isViewerInvalidRequestPayload = (payload) =>
   isRecord(payload)
   && isRecord(payload.error)
-  && payload.error.code === "invalid_request"
-  && typeof payload.error.message === "string";
+  && payload.error.code === "invalid_request";
 
 // Dependency-free port of @codemem/core prompt-transport semantics. Keep the
 // range and classifier parity pinned by the plugin injection tests.
@@ -739,11 +738,10 @@ const classifyPromptTransportFailure = ({ kind, compatibleProfile = false }) => 
   if (kind === "database_mismatch" || kind === "runtime_identity_mismatch") {
     return "local_fallback";
   }
-  if (
-    kind === "invalid_request"
-    || kind === "policy_failure"
-    || kind === "authorization_failure"
-  ) {
+  if (kind === "invalid_request") {
+    return compatibleProfile ? "terminal" : "fallback";
+  }
+  if (kind === "policy_failure" || kind === "authorization_failure") {
     return "terminal";
   }
   if (kind === "viewer_contract_unsupported") {
@@ -811,18 +809,18 @@ const classifyViewerHttpFailure = ({
   if (operation === "prompt-pack-ledger" && isValidLedgerFailureHttpPayload(body)) {
     return viewerFailureClassification(`${operation} request rejected (${status})`, "terminal");
   }
-  if (isViewerInvalidRequestPayload(body)) {
-    return viewerFailureClassification(
-      `${operation} request rejected (${status})`,
-      classifyPromptTransportFailure({ kind: "invalid_request" }),
-    );
-  }
   if (status === 401 || status === 403 || isViewerPolicyOrAuthFailurePayload(body)) {
     return viewerFailureClassification(
       `${operation} policy or authorization failure (${status})`,
       classifyPromptTransportFailure({
         kind: status === 401 || status === 403 ? "authorization_failure" : "policy_failure",
       }),
+    );
+  }
+  if (isViewerInvalidRequestPayload(body)) {
+    return viewerFailureClassification(
+      `${operation} request rejected (${status})`,
+      classifyPromptTransportFailure({ kind: "invalid_request", compatibleProfile }),
     );
   }
   if (status === 404 || status === 405) {

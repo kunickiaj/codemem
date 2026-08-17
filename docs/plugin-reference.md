@@ -17,10 +17,11 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 OpenCode prompt-time pack construction and prompt-pack ledger transitions use the
 long-lived local viewer first. Retryable connection, timeout, endpoint-version,
 server, or malformed-response failures fall back to the compatible CLI path.
-Validated request, policy, and authorization errors are terminal and do not spawn
-a fallback command. A `viewer_contract_unsupported` response is terminal after a
-compatible profile handshake; before a compatible profile it is treated as
-version skew and may fall back. The HTTP timeout uses
+Validated request errors are terminal only after a compatible profile handshake;
+before compatibility is established, a structured request error may indicate a
+foreign or older process and uses the CLI fallback. Policy and authorization errors
+remain terminal. A `viewer_contract_unsupported` response is likewise terminal after
+a compatible profile handshake and may fall back before one. The HTTP timeout uses
 `CODEMEM_INJECT_HTTP_MAX_TIME_S` (default: 2 seconds).
 Pack and ledger requests include their resolved default or explicit database,
 identity/config, compression, and embedding targets. The viewer also rejects a cached store
@@ -103,7 +104,8 @@ The packaged template currently registers these hook events in `plugins/claude/h
 Healthy prompt-time Claude injection starts no `codemem` or `npx` prompt child. Retryable
 transport, version/profile, and local database/runtime identity mismatches start one compatibility chain:
 `codemem claude-hook-inject`, then the plugin-version-pinned `npx` equivalent if needed. Valid
-request, policy, authorization, and compatible-profile contract failures do not fall back. Non-loopback
+request failures after a compatible handshake, policy, authorization, and compatible-profile contract
+failures do not fall back. Pre-handshake structured request failures use the compatibility chain. Non-loopback
 Viewer hosts and redirects are rejected. Ledger failure never retries inline or changes already-written
 hook output.
 
@@ -137,7 +139,8 @@ printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"codex-1"}' | node
 
 The packaged Codex hook is a dependency-free direct Viewer client. Healthy prompt retrieval starts no
 `codemem` or `npx` child. Retryable Viewer transport, version/profile, and local database/runtime
-identity mismatches use one local compatibility chain; validated request, policy, authorization, and
+identity mismatches and pre-handshake structured request failures use one local compatibility chain;
+validated request failures after compatibility is established, policy, authorization, and
 compatible-profile contract failures fail closed. Prompt and event HTTP reject non-loopback Viewer hosts.
 The injected pack is framed as codemem reference data, not instructions. The hook has a total 4.5-second
 prompt-output budget within Codex's 5-second host timeout, and always emits `{"continue": true}` so a

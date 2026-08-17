@@ -43,6 +43,30 @@ describe("parsePackMetrics", () => {
 });
 
 describe("Viewer prompt transport failure classification", () => {
+  test.each([
+    ["pack profile", false, "fallback", true],
+    ["pack", true, "terminal", false],
+  ])(
+    "classifies invalid_request for %s with compatibleProfile=%s as %s",
+    (operation, compatibleProfile, disposition, retryable) => {
+      // Arrange
+      const body = {
+        error: { code: "invalid_request" },
+      };
+
+      // Act
+      const classification = __testUtils.classifyViewerHttpFailure({
+        operation,
+        status: 400,
+        body,
+        compatibleProfile,
+      });
+
+      // Assert
+      expect(classification).toMatchObject({ disposition, retryable });
+    },
+  );
+
   test("fails closed on contract 409 only after a compatible profile", () => {
     const body = {
       error: {

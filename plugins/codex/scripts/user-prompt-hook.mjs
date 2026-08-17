@@ -131,7 +131,10 @@ export function classifyPromptTransportFailure({ kind, compatibleProfile = false
 	if (kind === "database_mismatch" || kind === "runtime_identity_mismatch") {
 		return "local_fallback";
 	}
-	if (kind === "invalid_request" || kind === "policy_failure" || kind === "authorization_failure") {
+	if (kind === "invalid_request") {
+		return compatibleProfile ? "terminal" : "fallback";
+	}
+	if (kind === "policy_failure" || kind === "authorization_failure") {
 		return "terminal";
 	}
 	if (kind === "viewer_contract_unsupported") {
@@ -166,9 +169,6 @@ function classifyHttpFailure({
 			compatibleProfile,
 		});
 	}
-	if (code === "invalid_request") {
-		return classifyPromptTransportFailure({ kind: "invalid_request" });
-	}
 	if (
 		status === 401 ||
 		status === 403 ||
@@ -178,6 +178,9 @@ function classifyHttpFailure({
 	}
 	if (["policy_denied", "policy_disabled"].includes(code)) {
 		return classifyPromptTransportFailure({ kind: "policy_failure" });
+	}
+	if (code === "invalid_request") {
+		return classifyPromptTransportFailure({ kind: "invalid_request", compatibleProfile });
 	}
 	return "fallback";
 }

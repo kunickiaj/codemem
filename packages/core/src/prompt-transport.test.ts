@@ -64,11 +64,27 @@ describe("prompt transport failure classification", () => {
 	});
 
 	it.each([
-		"invalid_request",
 		"policy_failure",
 		"authorization_failure",
 	] as const)("classifies %s as terminal", (kind) => {
 		expect(classifyPromptTransportFailure({ kind })).toBe("terminal");
+	});
+
+	it.each([
+		[false, "fallback"],
+		[true, "terminal"],
+	] as const)("classifies invalid_request with compatibleProfile=%s as %s", (compatibleProfile, expected) => {
+		// Arrange
+		const failure = {
+			kind: "invalid_request",
+			compatibleProfile,
+		} as const;
+
+		// Act
+		const disposition = classifyPromptTransportFailure(failure);
+
+		// Assert
+		expect(disposition).toBe(expected);
 	});
 
 	it("distinguishes contract skew before and after a compatible profile", () => {

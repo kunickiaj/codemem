@@ -24,7 +24,8 @@ export type PromptTransportFailure =
 				| "malformed_response";
 	  }
 	| { kind: "database_mismatch" | "runtime_identity_mismatch" }
-	| { kind: "invalid_request" | "policy_failure" | "authorization_failure" }
+	| { kind: "invalid_request"; compatibleProfile: boolean }
+	| { kind: "policy_failure" | "authorization_failure" }
 	| { kind: "viewer_contract_unsupported"; compatibleProfile: boolean };
 
 function isProtocolVersion(value: unknown): value is number {
@@ -72,6 +73,7 @@ export function classifyPromptTransportFailure(
 		case "runtime_identity_mismatch":
 			return "local_fallback";
 		case "invalid_request":
+			return failure.compatibleProfile ? "terminal" : "fallback";
 		case "policy_failure":
 		case "authorization_failure":
 			return "terminal";
