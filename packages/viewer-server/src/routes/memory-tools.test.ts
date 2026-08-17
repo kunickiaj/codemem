@@ -512,6 +512,25 @@ describe("memory tool routes", () => {
 				cleanup();
 			}
 		});
+
+		it("rejects a non-string include_scope_ids filter with 400", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/memories/expand", {
+					method: "POST",
+					headers: jsonHeaders(),
+					body: JSON.stringify({
+						ids: [1],
+						include_scope_ids: { x: 1 },
+					}),
+				});
+				expect(res.status).toBe(400);
+				const body = (await res.json()) as { error: string };
+				expect(body.error).toMatch(/include_scope_ids/);
+			} finally {
+				cleanup();
+			}
+		});
 	});
 
 	describe("GET /api/memories/schema (memory_schema)", () => {

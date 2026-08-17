@@ -99,13 +99,30 @@ function resolveWriteProject(input: {
  * reliable client project signal. Callers (pi extension, CLI) pass project when
  * they want scope.
  */
+type FilterParse =
+	| { ok: true; filters: MemoryFilters | undefined }
+	| { ok: false; error: string };
+
+function isFilterScalar(value: unknown): boolean {
+	return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+}
+
+function isValidFilterValue(value: unknown): boolean {
+	if (isFilterScalar(value)) return true;
+	if (Array.isArray(value)) return value.every(isFilterScalar);
+	return false;
+}
+
 function buildFilters(
 	raw: Record<string, unknown>,
 	defaultProject: string | null = null,
-): MemoryFilters | undefined {
+): FilterParse {
 	const filters: MemoryFilters = {};
 	let hasAny = false;
 
+	if (raw.project != null && typeof raw.project !== "string") {
+		return { ok: false, error: "project must be a string" };
+	}
 	const explicitProject = typeof raw.project === "string" ? cleanProject(raw.project) : undefined;
 	// Only fall back to defaultProject when the caller omitted `project` entirely
 	// (expand uses defaultProject=null for blank-string clear; see expand route).
@@ -142,13 +159,18 @@ function buildFilters(
 		"widen_shared_min_personal_score",
 	] as const) {
 		const val = raw[key];
-		if (val !== undefined && val !== null) {
-			(filters as Record<string, unknown>)[key] = val;
-			hasAny = true;
+		if (val === undefined || val === null) continue;
+		if (key === "kind" && typeof val !== "string") {
+			return { ok: false, error: "kind must be a string" };
 		}
+		if (!isValidFilterValue(val)) {
+			return { ok: false, error: `${key} has an invalid type` };
+		}
+		(filters as Record<string, unknown>)[key] = val;
+		hasAny = true;
 	}
 
-	return hasAny ? filters : undefined;
+	return { ok: true, filters: hasAny ? filters : undefined };
 }
 
 /**
@@ -165,7 +187,7 @@ function buildFilters(
  */
 function parseGetFilters(
 	queryGetter: (name: string) => string | undefined,
-): { ok: true; filters: MemoryFilters | undefined } | { ok: false; error: string } {
+): FilterParse {
 	const filterRaw: Record<string, unknown> = {};
 
 	const filtersParam = queryGetter("filters");
@@ -188,11 +210,8 @@ function parseGetFilters(
 	if (project != null) filterRaw.project = project;
 	if (kind != null) filterRaw.kind = kind;
 
-	if (filterRaw.kind != null && typeof filterRaw.kind !== "string") {
-		return { ok: false, error: "kind must be a string" };
-	}
+	return buildFilters(filterRaw);
 
-	return { ok: true, filters: buildFilters(filterRaw) };
 }
 
 function getMemoryForAccess(
@@ -334,11 +353,12 @@ function shouldIncludeProjectContext(
 function buildDistillFilters(
 	args: { all_projects?: boolean } & Record<string, unknown>,
 	defaultProject: string | null,
-): MemoryFilters | undefined {
+): FilterParse {
 	if (args.all_projects && typeof args.project === "string" && args.project.trim()) {
-		throw new Error("project cannot be combined with all_projects");
+		return { ok: false, error: "project cannot be combined with all_projects" };
 	}
 	return buildFilters(args, args.all_projects ? null : defaultProject);
+
 }
 
 function mapSearchIndexItem(m: MemoryResult) {
@@ -599,14 +619,15 @@ export function memoryToolRoutes(getStore: StoreFactory) {
 		}
 		// Explicit blank project clears scoping (MCP expand parity). Viewer routes
 		// do not inject a cwd default project; only an explicit non-blank project scopes.
-		const filters = buildFilters(args, null);
+		const parsedFilters = buildFilters(args, null);
+		if (!parsedFilters.ok) return c.json({ error: parsedFilters.error }, 400);
 
 		const value = expandMemories(store, {
 			ids: args.ids,
 			depth_before: depthBefore,
 			depth_after: depthAfter,
 			include_observations: includeObservations === true,
-			filters,
+			filters: parsedFilters.filters,
 		});
 		return c.json(value);
 	});
@@ -664,9 +685,10 @@ export function memoryToolRoutes(getStore: StoreFactory) {
 		if (includePackContext === "invalid") {
 			return c.json({ error: "include_pack_context must be a boolean" }, 400);
 		}
-		const filters = buildFilters(args);
+		const parsedFilters = buildFilters(args);
+		if (!parsedFilters.ok) return c.json({ error: parsedFilters.error }, 400);
 
-		const result = store.explain(query, ids, limit, filters, {
+		const result = store.explain(query, ids, limit, parsedFilters.filters, {
 			includePackContext: includePackContext === true,
 		});
 		return c.json(result);
@@ -702,7 +724,8 @@ export function memoryToolRoutes(getStore: StoreFactory) {
 				cleanProject(typeof args.project === "string" ? args.project : null) ??
 				cleanProject(process.env.CODEMEM_PROJECT);
 			const filterArgs = { ...args, all_projects: allProjects };
-			const filters = buildDistillFilters(filterArgs, resolvedDefaultProject);
+			const parsedFilters = buildDistillFilters(filterArgs, resolvedDefaultProject);
+			if (!parsedFilters.ok) return c.json({ error: parsedFilters.error }, 400);
 			const kinds = typeof args.kind === "string" && args.kind.trim() ? [args.kind] : undefined;
 			const fetchLimit = judge ? Math.min(limit * 3, limit + 20) : limit;
 
@@ -717,7 +740,7 @@ export function memoryToolRoutes(getStore: StoreFactory) {
 						resolvedDefaultProject,
 					),
 				),
-				corpus: { filters: filters ?? null, kinds },
+				corpus: { filters: parsedFilters.filters ?? null, kinds },
 				limit: fetchLimit,
 				minRecurrence,
 			});
