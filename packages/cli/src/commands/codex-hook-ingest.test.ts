@@ -5,8 +5,10 @@ import { connect, initTestSchema } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	codexHookIngestCommand,
+	codexViewerBaseUrl,
 	directEnqueueCodexHook,
 	ingestCodexHookPayload,
+	tryHttpIngest,
 } from "./codex-hook-ingest.js";
 import { spoolCodexHookPayload } from "./codex-hook-ingest-spool.js";
 
@@ -41,12 +43,35 @@ describe("codex-hook-ingest command", () => {
 	});
 
 	afterEach(() => {
+		vi.unstubAllGlobals();
 		for (const [key, value] of Object.entries(savedEnv)) {
 			if (value === undefined) delete process.env[key];
 			else process.env[key] = value;
 			delete savedEnv[key];
 		}
 		rmSync(hermeticDir, { recursive: true, force: true });
+	});
+
+	it("allows only canonical loopback targets and never fetches non-loopback ingestion", async () => {
+		expect(codexViewerBaseUrl("localhost", 38888)).toBe("http://localhost:38888");
+		expect(codexViewerBaseUrl("127.9.8.7", 38888)).toBe("http://127.9.8.7:38888");
+		expect(codexViewerBaseUrl("::1", 38888)).toBe("http://[::1]:38888");
+		expect(codexViewerBaseUrl("127.1", 38888)).toBeNull();
+		expect(codexViewerBaseUrl("127.00.0.1", 38888)).toBeNull();
+		expect(codexViewerBaseUrl("viewer.test", 38888)).toBeNull();
+		expect(codexViewerBaseUrl("127.0.0.1", Number.NaN)).toBeNull();
+
+		let fetchCalls = 0;
+		vi.stubGlobal("fetch", async () => {
+			fetchCalls += 1;
+			return new Response(JSON.stringify({ inserted: 1, skipped: 0 }));
+		});
+		await expect(tryHttpIngest({}, "viewer.test", 38888)).resolves.toEqual({
+			ok: false,
+			inserted: 0,
+			skipped: 0,
+		});
+		expect(fetchCalls).toBe(0);
 	});
 
 	it("registers expected options and help text", () => {

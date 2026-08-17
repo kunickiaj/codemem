@@ -70,13 +70,15 @@ npx -y codemem setup --claude-only
 
 The Claude plugin starts MCP with the TS CLI (`codemem mcp`).
 
-Claude and Codex plugins normalize native hooks at the plugin edge and send the resulting envelope to the canonical `POST /api/raw-events` endpoint. A retryable Viewer failure sends that exact envelope to `codemem enqueue-raw-event`; Codex retains a durable normalized-envelope spool as its last resort. The checked-in dependency-free normalizers are generated from the TypeScript implementations in `packages/core/src/claude-hooks.ts` and `packages/core/src/codex-hooks.ts`. Older packaged clients remain compatible through the named Viewer hook routes.
+Claude and Codex plugins normalize native hooks at the plugin edge and send the resulting envelope to the canonical `POST /api/raw-events` endpoint. A retryable Viewer failure sends that exact envelope to `codemem enqueue-raw-event`; Codex retains a durable normalized-envelope spool as its last resort. The checked-in dependency-free normalizers are generated from the TypeScript implementations in `packages/core/src/claude-hooks.ts` and `packages/core/src/codex-hooks.ts`. Named Viewer hook routes remain compatibility aliases/callers for older packaged and plugin-free CLI paths.
 
-Claude hook events share the same raw-event queue pipeline used by OpenCode. `UserPromptSubmit` uses
-a dependency-free Node hook to validate the local Viewer profile, retrieve an identity-gated pack,
-write Claude `additionalContext`, and record delivery best-effort. Healthy prompt retrieval starts no
-`codemem`, `npx`, or shell helper child; classified compatibility failures use the local CLI fallback.
-Claude hook HTTP transport rejects configured non-loopback Viewer hosts without fetching them.
+Claude and Codex `UserPromptSubmit` hooks are dependency-free direct Viewer clients. They perform a
+payload-free compatible-profile check, retrieve an identity-gated `POST /api/pack` response, return
+host-compatible `additionalContext`, and record delivery best-effort (capped at 500 ms). Healthy retrieval
+starts no `codemem` or `npx` child. Retryable Viewer/version/profile failures use one local compatibility
+chain; validated request, policy, authorization, and compatible-profile contract failures fail closed.
+Prompt and event HTTP reject non-loopback Viewer hosts without fetching them. Codex reserves a total
+4.5-second prompt-output budget within its 5-second host timeout.
 
 ### Codex (early beta)
 

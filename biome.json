@@ -59,6 +59,8 @@
 			"packages/**/vite.config.ts",
 			"plugins/claude/scripts/ingest-hook.mjs",
 			"plugins/claude/scripts/user-prompt-hook.mjs",
+			"plugins/codex/scripts/ingest-hook.mjs",
+			"plugins/codex/scripts/user-prompt-hook.mjs",
 			"vitest.config.ts",
 			"tsconfig.base.json",
 			"tsconfig.json",

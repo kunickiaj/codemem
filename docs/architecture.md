@@ -40,7 +40,7 @@ flowchart LR
 
 1. Adapters capture tool/conversation lifecycle events and normalize them into raw events with optional `_adapter` envelopes.
 2. OpenCode streams raw events to the viewer ingest API (`POST /api/raw-events`) with preflight checks (`GET /api/raw-events/status`) and can fall back to CLI queue enqueue when stream writes fail. Prompt-time packs and prompt-pack ledger transitions also use viewer POST APIs first, with CLI fallback only for retryable transport or version failures.
-3. Claude and Codex use checked-in, dependency-free normalizers generated from their core TypeScript implementations. Each wrapper normalizes once, posts the exact envelope to `POST /api/raw-events`, and reuses that serialization for `enqueue-raw-event` or durable spool fallback. The named hook routes remain compatibility aliases for older packaged clients.
+3. Claude and Codex use checked-in, dependency-free normalizers generated from their core TypeScript implementations. Each detached event wrapper normalizes once, posts the exact envelope to `POST /api/raw-events`, and reuses that serialization for `enqueue-raw-event` or durable spool fallback. The canonical endpoint accepts additive adapter metadata. Named hook routes remain compatibility aliases used by older packaged or plugin-free CLI paths; the current packaged-wrapper audit found no named-route strings, so the aliases are not primary but cannot be removed yet.
 4. The viewer/store persists raw events and queues durable flush batches.
 5. Idle and sweeper workers claim batches and run them through ingest.
 6. Before building session context, raw events are passed through `normalizeEventsForSessionContext` (in `ingest-transcript.ts`) which projects adapter-enveloped events (`_adapter` schema v1.0) into the flat `user_prompt` / `tool.execute.after` shapes that `buildSessionContext` scans. This is critical for Claude Code hook events which always arrive wrapped in the adapter envelope.
@@ -164,6 +164,25 @@ flowchart TD
 ## Context injection
 
 The plugin injects a memory pack automatically on every turn. In OpenCode, volatile recall output is appended beside the latest user message by default so provider prompt caches can keep the stable system/history prefix.
+
+### Packaged Claude and Codex hooks
+
+The packaged `UserPromptSubmit` hooks are dependency-free direct Viewer clients. Each performs a
+payload-free profile handshake, accepts an overlapping protocol range (a missing minimum means a
+single-version legacy profile), then sends an identity-gated `POST /api/pack`. The returned pack is
+rendered as host-compatible `additionalContext`; delivery-ledger recording is best-effort and capped at
+500 ms. Prompt and event HTTP reject non-loopback Viewer hosts.
+
+Healthy retrieval starts no `codemem` or `npx` prompt child. Retryable Viewer transport, version, or
+profile mismatch uses one local compatibility chain. Validated request, policy, authorization, and
+compatible-profile contract defects fail closed. Codex applies a total 4.5-second prompt-output budget
+within its 5-second host timeout. Detached event ingest is independent of prompt retrieval: it normalizes
+once and posts the same envelope to `POST /api/raw-events`, reusing it for enqueue/spool fallback.
+
+Compatibility tests simulate both supported version-skew windows: a protocol-v1 client accepts a
+protocol-v2/min-v1 Viewer, and a current client interprets a legacy v1 profile without a minimum as a
+single-version profile. These are simulated compatibility windows, not execution against historical
+artifacts.
 
 Feed and retrieval surfaces can scope the corpus without splitting storage into separate pools:
 
@@ -314,10 +333,10 @@ The OpenCode adapter streams each captured event to the viewer API (`captureEven
 
 When stream delivery is unavailable, the adapter can enqueue raw events through the CLI fallback path (`enqueue-raw-event`) so events still enter durable queue processing.
 
-Claude hook ingestion is enqueue-first (`POST /api/claude-hooks`) with CLI fallback. The route nudges the raw-event
-sweeper after enqueue, but actual auto-flush still depends on `CODEMEM_RAW_EVENTS_AUTO_FLUSH=1`; otherwise processing
-waits for the normal idle/sweeper path. `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` remains a separate opt-in for `Stop`
-events.
+Claude detached hook ingest normalizes once and posts to canonical `POST /api/raw-events`; retryable
+delivery reuses the exact envelope for CLI enqueue fallback. The named `POST /api/claude-hooks` route
+remains a compatibility alias/caller for older packaged or plugin-free CLI paths. The queue/sweeper
+behavior and `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` opt-in for `Stop` remain unchanged.
 
 ### OpenCode session finalization triggers
 - `session.idle` — finalizes current local buffer

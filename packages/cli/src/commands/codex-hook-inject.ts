@@ -19,24 +19,14 @@ export type CodexPackResult = {
 	packTokens: number;
 };
 
-type HttpPackResponse = {
-	pack_text?: string;
-	items?: unknown;
-	metrics?: { pack_tokens?: unknown };
-};
-
 type InjectDeps = {
 	buildLocalPack?: typeof buildLocalPack;
-	httpPack?: typeof tryHttpPack;
 	resolveDb?: typeof resolveDbPath;
 };
 
 const HOOK_EVENT_NAME = "UserPromptSubmit" as const;
 const EMPTY_PACK: CodexPackResult = { packText: "", items: 0, packTokens: 0 };
-const DEFAULT_VIEWER_HOST = "127.0.0.1";
-const DEFAULT_VIEWER_PORT = 38888;
 const DEFAULT_MAX_CHARS = 16000;
-const DEFAULT_HTTP_MAX_TIME_S = 2;
 // Codex records UserPromptSubmit additionalContext as an unmarked developer
 // message. Frame the pack explicitly so the model treats memory text as
 // reference data, not ambient instructions or a generic markdown fragment.
@@ -141,42 +131,6 @@ async function buildLocalPack(
 	}
 }
 
-async function tryHttpPack(
-	context: string,
-	project: string | null,
-	maxTimeMs = DEFAULT_HTTP_MAX_TIME_S * 1000,
-): Promise<CodexPackResult> {
-	const host = process.env.CODEMEM_VIEWER_HOST || DEFAULT_VIEWER_HOST;
-	const port = parsePositiveInt(process.env.CODEMEM_VIEWER_PORT, DEFAULT_VIEWER_PORT);
-	const url = new URL(`http://${host}:${port}/api/pack`);
-	url.searchParams.set("context", context);
-	url.searchParams.set("limit", String(parsePositiveInt(process.env.CODEMEM_INJECT_LIMIT, 8)));
-	url.searchParams.set(
-		"token_budget",
-		String(parsePositiveInt(process.env.CODEMEM_INJECT_TOKEN_BUDGET, 800)),
-	);
-	if (project) url.searchParams.set("project", project);
-
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), maxTimeMs);
-	try {
-		const res = await fetch(url, { signal: controller.signal });
-		if (!res.ok) return EMPTY_PACK;
-		const body = (await res.json()) as HttpPackResponse;
-		return {
-			packText: String(body.pack_text ?? "").trim(),
-			items: Array.isArray(body.items) ? body.items.length : 0,
-			packTokens: Number.isFinite(Number(body.metrics?.pack_tokens))
-				? Number(body.metrics?.pack_tokens)
-				: 0,
-		};
-	} catch {
-		return EMPTY_PACK;
-	} finally {
-		clearTimeout(timeout);
-	}
-}
-
 export async function buildCodexHookInjection(
 	payload: Record<string, unknown>,
 	opts: DbOpts,
@@ -190,16 +144,13 @@ export async function buildCodexHookInjection(
 	if (!promptText) return continueResult();
 
 	const buildPack = deps.buildLocalPack ?? buildLocalPack;
-	const httpPack = deps.httpPack ?? tryHttpPack;
 	const resolveDb = deps.resolveDb ?? resolveDbPath;
 	const project = resolveInjectProject(payload);
 	const query = buildCodexInjectQuery(promptText, project);
 	const maxChars = parsePositiveInt(process.env.CODEMEM_INJECT_MAX_CHARS, DEFAULT_MAX_CHARS);
-	const httpMaxTimeMs =
-		parsePositiveInt(process.env.CODEMEM_INJECT_HTTP_MAX_TIME_S, DEFAULT_HTTP_MAX_TIME_S) * 1000;
 
 	let pack: CodexPackResult = EMPTY_PACK;
-	let origin: "local" | "http" | "none" = "none";
+	let origin: "local" | "none" = "none";
 	try {
 		pack = await buildPack(query, project, resolveDb(resolveDbOpt(opts)));
 		if (pack.packText) origin = "local";
@@ -207,11 +158,6 @@ export async function buildCodexHookInjection(
 		logHookEvent(
 			`codemem codex-hook-inject local pack failed: ${err instanceof Error ? err.message : String(err)}`,
 		);
-	}
-
-	if (!pack.packText && envNotDisabled(process.env.CODEMEM_INJECT_HTTP_FALLBACK || "1")) {
-		pack = await httpPack(query, project, httpMaxTimeMs);
-		if (pack.packText) origin = "http";
 	}
 
 	const fields = [
@@ -231,7 +177,7 @@ export async function buildCodexHookInjection(
 
 const codexHookInjectCmd = new Command("codex-hook-inject")
 	.configureHelp(helpStyle)
-	.description("Return Codex hook additionalContext from local pack generation");
+	.description("Compatibility fallback for Codex hook local additionalContext generation");
 
 addDbOption(codexHookInjectCmd);
 

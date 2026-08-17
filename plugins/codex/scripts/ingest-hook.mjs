@@ -1,22 +1,39 @@
 #!/usr/bin/env node
 
-import { randomInt, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomInt, randomUUID } from "node:crypto";
+import {
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	buildRawEventEnvelopeFromCodexHook,
 	TRUSTED_HOOK_MAPPER_OPTIONS,
 } from "./codemem-normalizer.mjs";
+import { viewerBaseUrl } from "./user-prompt-hook.mjs";
+
+export { viewerBaseUrl };
 
 const MAX_BODY_BYTES = 1_048_576;
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
-const pluginRoot = process.env.PLUGIN_ROOT || process.env.CLAUDE_PLUGIN_ROOT || dirname(scriptDirectory);
+const scriptPath = fileURLToPath(import.meta.url);
+const pluginRoot =
+	process.env.PLUGIN_ROOT || process.env.CLAUDE_PLUGIN_ROOT || dirname(scriptDirectory);
 
 function isTruthy(value) {
-	return ["1", "true", "yes", "on"].includes(String(value ?? "").trim().toLowerCase());
+	return ["1", "true", "yes", "on"].includes(
+		String(value ?? "")
+			.trim()
+			.toLowerCase(),
+	);
 }
 
 async function readStdin() {
@@ -37,13 +54,21 @@ function normalizeTimestampAndNonce(payload) {
 		(typeof payload.ts === "string" && payload.ts.trim() !== "");
 	return hasTimestamp
 		? payload
-		: { ...payload, timestamp: new Date().toISOString(), codemem_generated_event_nonce: randomUUID() };
+		: {
+				...payload,
+				timestamp: new Date().toISOString(),
+				codemem_generated_event_nonce: randomUUID(),
+			};
 }
 
 function pinnedVersion() {
 	try {
-		const manifest = JSON.parse(readFileSync(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"));
-		return typeof manifest.version === "string" && manifest.version.trim() ? manifest.version.trim() : "latest";
+		const manifest = JSON.parse(
+			readFileSync(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"),
+		);
+		return typeof manifest.version === "string" && manifest.version.trim()
+			? manifest.version.trim()
+			: "latest";
 	} catch {
 		return "latest";
 	}
@@ -54,20 +79,25 @@ function httpTimeoutMs() {
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : 1000;
 }
 
-async function postEnvelope(body) {
-	const host = process.env.CODEMEM_VIEWER_HOST?.trim() || "127.0.0.1";
-	const port = process.env.CODEMEM_VIEWER_PORT?.trim() || "38888";
-	const hostForUrl = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+export async function postEnvelope(body, overrides = {}) {
+	const baseUrl = viewerBaseUrl(overrides.env ?? process.env);
+	if (!baseUrl) return false;
 	try {
-		const response = await fetch(`http://${hostForUrl}:${port}/api/raw-events`, {
+		const response = await (overrides.fetchImpl ?? fetch)(`${baseUrl}/api/raw-events`, {
 			method: "POST",
+			redirect: "manual",
 			headers: { "Content-Type": "application/json" },
 			body,
-			signal: AbortSignal.timeout(httpTimeoutMs()),
+			signal: AbortSignal.timeout(overrides.timeoutMs ?? httpTimeoutMs()),
 		});
 		if (!response.ok) return false;
 		const result = await response.json();
-		return result != null && typeof result === "object" && typeof result.inserted === "number" && typeof result.skipped === "number";
+		return (
+			result != null &&
+			typeof result === "object" &&
+			typeof result.inserted === "number" &&
+			typeof result.skipped === "number"
+		);
 	} catch {
 		return false;
 	}
@@ -112,9 +142,7 @@ async function drainNormalizedSpool() {
 	let names;
 	try {
 		names = readdirSync(spoolDirectory())
-			.filter(
-				(name) => name.startsWith("raw-event-") && name.endsWith(".json"),
-			)
+			.filter((name) => name.startsWith("raw-event-") && name.endsWith(".json"))
 			.sort();
 	} catch {
 		return;
@@ -136,30 +164,52 @@ async function drainNormalizedSpool() {
 	}
 }
 
-try {
-	const raw = await readStdin();
-	if (raw.trim() && !isTruthy(process.env.CODEMEM_PLUGIN_IGNORE)) {
-		const parsed = JSON.parse(raw);
-		if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
-			throw new Error("payload must be a JSON object");
-		}
+export async function runCodexIngestHook() {
+	try {
+		const raw = await readStdin();
+		if (raw.trim() && !isTruthy(process.env.CODEMEM_PLUGIN_IGNORE)) {
+			const parsed = JSON.parse(raw);
+			if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+				throw new Error("payload must be a JSON object");
+			}
 
-		const nativePayload = normalizeTimestampAndNonce(parsed);
-		const envelope = buildRawEventEnvelopeFromCodexHook(nativePayload, TRUSTED_HOOK_MAPPER_OPTIONS);
-		if (envelope !== null) {
-			const envelopeBody = JSON.stringify(envelope);
-			if (await postEnvelope(envelopeBody)) {
-				await drainNormalizedSpool();
-			} else {
-				const enqueued =
-					runFallback("codemem", ["enqueue-raw-event"], envelopeBody) ||
-					runFallback("npx", ["-y", `codemem@${pinnedVersion()}`, "enqueue-raw-event"], envelopeBody);
-				if (!enqueued) spoolEnvelope(envelopeBody);
+			const nativePayload = normalizeTimestampAndNonce(parsed);
+			const envelope = buildRawEventEnvelopeFromCodexHook(
+				nativePayload,
+				TRUSTED_HOOK_MAPPER_OPTIONS,
+			);
+			if (envelope !== null) {
+				const envelopeBody = JSON.stringify(envelope);
+				if (await postEnvelope(envelopeBody)) {
+					await drainNormalizedSpool();
+				} else {
+					const enqueued =
+						runFallback("codemem", ["enqueue-raw-event"], envelopeBody) ||
+						runFallback(
+							"npx",
+							["-y", `codemem@${pinnedVersion()}`, "enqueue-raw-event"],
+							envelopeBody,
+						);
+					if (!enqueued) spoolEnvelope(envelopeBody);
+				}
 			}
 		}
+	} catch {
+		// Hook ingestion is best-effort and must never block the Codex session.
 	}
-} catch {
-	// Hook ingestion is best-effort and must never block the Codex session.
+
+	process.stdout.write('{"continue":true}\n');
 }
 
-process.stdout.write('{"continue":true}\n');
+function isMainModule(argvPath = process.argv[1]) {
+	if (!argvPath) return false;
+	try {
+		return realpathSync(resolve(argvPath)) === realpathSync(scriptPath);
+	} catch {
+		return false;
+	}
+}
+
+if (isMainModule()) {
+	await runCodexIngestHook();
+}

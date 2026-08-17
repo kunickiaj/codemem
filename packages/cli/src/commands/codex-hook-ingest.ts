@@ -84,17 +84,42 @@ function normalizePayloadForIngest(payload: Record<string, unknown>): Record<str
 	};
 }
 
-async function tryHttpIngest(
+export function codexViewerBaseUrl(host: string, port: number): string | null {
+	if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) return null;
+	const normalizedHost = host
+		.trim()
+		.toLowerCase()
+		.replace(/^\[(.*)\]$/, "$1");
+	const ipv4Parts = normalizedHost.split(".");
+	const isIpv4Loopback =
+		ipv4Parts.length === 4 &&
+		ipv4Parts[0] === "127" &&
+		ipv4Parts.every(
+			(part) => /^\d+$/.test(part) && String(Number(part)) === part && Number(part) <= 255,
+		);
+	const urlHost =
+		normalizedHost === "localhost" || isIpv4Loopback
+			? normalizedHost
+			: normalizedHost === "::1" || normalizedHost === "0:0:0:0:0:0:0:1"
+				? "[::1]"
+				: null;
+	return urlHost ? `http://${urlHost}:${port}` : null;
+}
+
+export async function tryHttpIngest(
 	payload: Record<string, unknown>,
 	host: string,
 	port: number,
 ): Promise<{ ok: boolean; inserted: number; skipped: number }> {
-	const url = `http://${host}:${port}/api/codex-hooks`;
+	const baseUrl = codexViewerBaseUrl(host, port);
+	if (!baseUrl) return { ok: false, inserted: 0, skipped: 0 };
+	const url = `${baseUrl}/api/codex-hooks`;
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), httpTimeoutMs());
 	try {
 		const res = await fetch(url, {
 			method: "POST",
+			redirect: "manual",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(payload),
 			signal: controller.signal,

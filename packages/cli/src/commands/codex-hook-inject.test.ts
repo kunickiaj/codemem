@@ -39,8 +39,6 @@ describe("codex-hook-inject command", () => {
 		for (const key of [
 			"CODEMEM_INJECT_CONTEXT",
 			"CODEMEM_INJECT_MAX_CHARS",
-			"CODEMEM_INJECT_HTTP_FALLBACK",
-			"CODEMEM_INJECT_HTTP_MAX_TIME_S",
 			"CODEMEM_PLUGIN_IGNORE",
 		]) {
 			delete process.env[key];
@@ -72,9 +70,6 @@ describe("codex-hook-inject command", () => {
 					expect(dbPath).toBe("/tmp/test.sqlite");
 					return pack("## Summary\n[1] (decision) Auth fix", 1, 42);
 				},
-				httpPack: async () => {
-					throw new Error("http fallback should not run");
-				},
 				resolveDb: () => "/tmp/test.sqlite",
 			},
 		);
@@ -88,37 +83,6 @@ describe("codex-hook-inject command", () => {
 		});
 	});
 
-	it("falls back to HTTP when local pack fails", async () => {
-		process.env.CODEMEM_INJECT_HTTP_FALLBACK = "1";
-		process.env.CODEMEM_INJECT_HTTP_MAX_TIME_S = "7";
-		const result = await buildCodexHookInjection(
-			{
-				hook_event_name: "UserPromptSubmit",
-				session_id: "codex-session",
-				prompt: "continue sync work",
-				cwd: "/tmp/codemem",
-				project: "codemem",
-			},
-			{},
-			{
-				buildLocalPack: async () => {
-					throw new Error("local failed");
-				},
-				httpPack: async (context, project, maxTimeMs) => {
-					expect(context).toBe("continue sync work codemem");
-					expect(project).toBe("codemem");
-					expect(maxTimeMs).toBe(7000);
-					return pack("## Timeline\n[4] (feature) Sync continuation", 1, 53);
-				},
-				resolveDb: () => "/tmp/test.sqlite",
-			},
-		);
-
-		expect(result.hookSpecificOutput?.additionalContext).toBe(
-			framed("## Timeline\n[4] (feature) Sync continuation"),
-		);
-	});
-
 	it("frames injected memories as reference data rather than instructions", async () => {
 		const result = await buildCodexHookInjection(
 			{
@@ -129,7 +93,6 @@ describe("codex-hook-inject command", () => {
 			{},
 			{
 				buildLocalPack: async () => pack("## Summary\n[7] (session_summary) Shipped setup fix"),
-				httpPack: async () => pack(""),
 				resolveDb: () => "/tmp/test.sqlite",
 			},
 		);
@@ -149,9 +112,6 @@ describe("codex-hook-inject command", () => {
 				buildLocalPack: async () => {
 					throw new Error("should not build local pack");
 				},
-				httpPack: async () => {
-					throw new Error("should not call http fallback");
-				},
 				resolveDb: () => "/tmp/test.sqlite",
 			},
 		);
@@ -166,9 +126,6 @@ describe("codex-hook-inject command", () => {
 			{
 				buildLocalPack: async () => {
 					throw new Error("should not build local pack");
-				},
-				httpPack: async () => {
-					throw new Error("should not call http fallback");
 				},
 				resolveDb: () => "/tmp/test.sqlite",
 			},
@@ -186,9 +143,6 @@ describe("codex-hook-inject command", () => {
 				buildLocalPack: async () => {
 					throw new Error("should not build local pack");
 				},
-				httpPack: async () => {
-					throw new Error("should not call http fallback");
-				},
 				resolveDb: () => "/tmp/test.sqlite",
 			},
 		);
@@ -203,7 +157,6 @@ describe("codex-hook-inject command", () => {
 			{},
 			{
 				buildLocalPack: async () => pack("12345678901234567890"),
-				httpPack: async () => pack(""),
 				resolveDb: () => "/tmp/test.sqlite",
 			},
 		);
@@ -221,7 +174,6 @@ describe("codex-hook-inject command", () => {
 			{},
 			{
 				buildLocalPack: async () => pack("12345678901234567890"),
-				httpPack: async () => pack(""),
 				resolveDb: () => "/tmp/test.sqlite",
 			},
 		);
@@ -232,8 +184,7 @@ describe("codex-hook-inject command", () => {
 		expect(ctx).toContain("123456789012\n\n[pack truncated]");
 	});
 
-	it("continues when all pack generation paths fail", async () => {
-		process.env.CODEMEM_INJECT_HTTP_FALLBACK = "1";
+	it("continues when local compatibility pack generation fails", async () => {
 		const result = await buildCodexHookInjection(
 			{
 				hook_event_name: "UserPromptSubmit",
@@ -245,7 +196,6 @@ describe("codex-hook-inject command", () => {
 				buildLocalPack: async () => {
 					throw new Error("local failed");
 				},
-				httpPack: async () => pack(""),
 				resolveDb: () => "/tmp/test.sqlite",
 			},
 		);
@@ -265,9 +215,6 @@ describe("codex-hook-inject command", () => {
 			{},
 			{
 				buildLocalPack: async () => pack("## Summary\nmemory pack body", 4, 137),
-				httpPack: async () => {
-					throw new Error("http fallback should not run");
-				},
 				resolveDb: () => "/tmp/test.sqlite",
 			},
 		);
