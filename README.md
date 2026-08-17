@@ -70,7 +70,7 @@ npx -y codemem setup --claude-only
 
 The Claude plugin starts MCP with the TS CLI (`codemem mcp`).
 
-Claude and Codex plugins normalize native hooks at the plugin edge and send the resulting envelope to the canonical `POST /api/raw-events` endpoint. A retryable Viewer failure sends that exact envelope to `codemem enqueue-raw-event`; Codex retains a durable normalized-envelope spool as its last resort. The checked-in dependency-free normalizers are generated from the TypeScript implementations in `packages/core/src/claude-hooks.ts` and `packages/core/src/codex-hooks.ts`. Named Viewer hook routes remain compatibility aliases/callers for older packaged and plugin-free CLI paths.
+Claude and Codex plugins normalize native hooks at the plugin edge and send the resulting envelope to the canonical `POST /api/raw-events` endpoint. A retryable Viewer failure sends that exact envelope to `codemem enqueue-raw-event`; Codex retains a durable normalized-envelope spool as its last resort. Transcript fallback reads at most the final 16 MiB: it preserves the first record when the tail starts immediately after a newline, but discards the first fragment when the tail starts in the middle of a record. The checked-in dependency-free normalizers are generated from the TypeScript implementations in `packages/core/src/claude-hooks.ts` and `packages/core/src/codex-hooks.ts`. Named Viewer hook routes remain compatibility aliases/callers for older packaged and plugin-free CLI paths.
 
 Claude and Codex `UserPromptSubmit` hooks are dependency-free direct Viewer clients. They perform a
 payload-free compatible-profile check, retrieve an identity-gated `POST /api/pack` response, return

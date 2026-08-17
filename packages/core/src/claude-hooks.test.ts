@@ -191,6 +191,21 @@ describe("extractHookTranscript", () => {
 		}
 	});
 
+	it("preserves a complete record that starts at the retained tail boundary", () => {
+		const root = mkdtempSync(join(tmpdir(), "codemem-transcript-tail-boundary-"));
+		try {
+			const path = join(root, "session.jsonl");
+			const record = '{"role":"assistant","content":"boundary record"}\n';
+			writeFileSync(path, `x\n${record}${" ".repeat(MAX_HOOK_TRANSCRIPT_BYTES - record.length)}`);
+			expect(extractHookTranscript(path, { policy: restrictedTranscriptPolicy(root) })).toEqual([
+				"boundary record",
+				null,
+			]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("returns no extraction when the retained tail contains no complete record", () => {
 		const root = mkdtempSync(join(tmpdir(), "codemem-transcript-oversized-"));
 		try {

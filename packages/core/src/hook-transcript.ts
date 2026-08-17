@@ -99,9 +99,13 @@ function readTranscriptTail(path: string): string | null {
 		}
 		let retained = buffer.subarray(0, offset);
 		if (start > 0) {
-			const firstNewline = retained.indexOf(0x0a);
-			if (firstNewline < 0) return null;
-			retained = retained.subarray(firstNewline + 1);
+			const precedingByte = Buffer.allocUnsafe(1);
+			const precedingByteRead = readSync(descriptor, precedingByte, 0, 1, start - 1);
+			if (precedingByteRead !== 1 || precedingByte[0] !== 0x0a) {
+				const firstNewline = retained.indexOf(0x0a);
+				if (firstNewline < 0) return null;
+				retained = retained.subarray(firstNewline + 1);
+			}
 		}
 		return retained.length > 0 ? retained.toString("utf8") : null;
 	} catch {

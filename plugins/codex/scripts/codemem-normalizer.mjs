@@ -58,9 +58,12 @@ function readTranscriptTail(path) {
 		}
 		let retained = buffer.subarray(0, offset);
 		if (start > 0) {
-			const firstNewline = retained.indexOf(10);
-			if (firstNewline < 0) return null;
-			retained = retained.subarray(firstNewline + 1);
+			const precedingByte = Buffer.allocUnsafe(1);
+			if (readSync(descriptor, precedingByte, 0, 1, start - 1) !== 1 || precedingByte[0] !== 10) {
+				const firstNewline = retained.indexOf(10);
+				if (firstNewline < 0) return null;
+				retained = retained.subarray(firstNewline + 1);
+			}
 		}
 		return retained.length > 0 ? retained.toString("utf8") : null;
 	} catch {

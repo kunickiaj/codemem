@@ -65,6 +65,8 @@ Claude's Node/ESM wrapper normalizes each native hook once, then sends the exact
 
 The wrapper never remaps the native payload during fallback, so event identity is identical across HTTP and direct enqueue. Named `POST /api/claude-hooks` remains a compatibility alias/caller for older packaged and plugin-free CLI paths.
 
+Transcript fallback reads at most the final 16 MiB. When that tail starts immediately after a newline, the first complete record is retained; when it starts in the middle of a record, the partial first record is discarded before parsing.
+
 Claude preserves its existing best-effort failure posture: if Viewer HTTP and both command fallbacks fail, the wrapper logs the failure and exits non-zero. It does not maintain a file spool; Codex's separately documented normalized-envelope spool is intentionally adapter-specific.
 
 You can update an existing marketplace install with:
