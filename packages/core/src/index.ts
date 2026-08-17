@@ -338,9 +338,16 @@ export {
 	SIMPLE_TIER_DEFAULTS,
 } from "./extraction-tier-routing.js";
 export { buildFilterClauses, buildFilterClausesWithContext } from "./filters.js";
-export type { HookTranscriptPolicy, HookTranscriptReadOptions } from "./hook-transcript.js";
+export type {
+	HookTranscriptExtraction,
+	HookTranscriptOutcome,
+	HookTranscriptPolicy,
+	HookTranscriptReadOptions,
+	HookTranscriptResult,
+} from "./hook-transcript.js";
 export {
 	extractHookTranscript,
+	extractHookTranscriptWithOutcome,
 	MAX_HOOK_TRANSCRIPT_BYTES,
 	TRUSTED_HOOK_TRANSCRIPT_POLICY,
 } from "./hook-transcript.js";

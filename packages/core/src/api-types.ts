@@ -11,6 +11,7 @@
  * Import existing store/entity types where shapes match.
  */
 
+import type { HookTranscriptOutcome } from "./hook-transcript.js";
 import type { SyncCapability, SyncFeature } from "./sync-capability.js";
 import type {
 	Actor,
@@ -366,6 +367,10 @@ export interface ApiRawEventsStatusResponse {
 	items: ApiRawEventBacklogItem[];
 	totals: ApiRawEventBacklogTotals;
 	ingest: ApiRawEventIngestInfo;
+	transcript_diagnostics: {
+		scope: "legacy_compatibility_routes";
+		counts: Record<"claude" | "codex", Record<HookTranscriptOutcome, number>>;
+	};
 }
 
 /**
@@ -384,6 +389,7 @@ export interface ApiClaudeHooksPostResponse {
 	inserted: number;
 	skipped: number;
 	skip_reason?: "transcript_unavailable" | "unsupported_hook";
+	skip_detail?: Exclude<HookTranscriptOutcome, "ok">;
 }
 
 /** POST /api/codex-hooks — response. */

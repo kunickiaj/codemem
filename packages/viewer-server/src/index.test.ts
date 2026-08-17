@@ -454,7 +454,7 @@ describe("viewer-server", () => {
 			envName: "CODEX_HOME",
 			rootName: "sessions",
 		},
-	])("legacy $label hook transcript containment", ({ route, envName, rootName }) => {
+	])("legacy $label hook transcript containment", ({ label, route, envName, rootName }) => {
 		it("accepts configured-root transcripts and rejects outside files", async () => {
 			const parent = mkdtempSync(join(tmpdir(), "codemem-viewer-transcript-root-"));
 			const configuredHome = join(parent, "host-home");
@@ -486,6 +486,7 @@ describe("viewer-server", () => {
 					inserted: 0,
 					skipped: 1,
 					skip_reason: "transcript_unavailable",
+					skip_detail: "path_rejected",
 				});
 
 				const relativeRejected = await postViewerJson(app, route, {
@@ -499,7 +500,65 @@ describe("viewer-server", () => {
 					inserted: 0,
 					skipped: 1,
 					skip_reason: "transcript_unavailable",
+					skip_detail: "path_rejected",
 				});
+
+				writeFileSync(allowedPath, '{"role":"user","content":"no assistant"}\n');
+				const noAssistant = await postViewerJson(app, route, {
+					hook_event_name: "Stop",
+					session_id: "no-assistant-session",
+					transcript_path: allowedPath,
+				});
+				expect(await noAssistant.json()).toEqual({
+					inserted: 0,
+					skipped: 1,
+					skip_reason: "transcript_unavailable",
+					skip_detail: "no_assistant_record",
+				});
+
+				const notProvided = await postViewerJson(app, route, {
+					hook_event_name: "Stop",
+					session_id: "missing-transcript-session",
+				});
+				expect(await notProvided.json()).toEqual({
+					inserted: 0,
+					skipped: 1,
+					skip_reason: "transcript_unavailable",
+					skip_detail: "not_provided",
+				});
+
+				const status = await app.request("/api/raw-events/status");
+				const statusBody = (await status.json()) as Record<string, unknown>;
+				const source = label.toLowerCase() as "claude" | "codex";
+				expect(statusBody.transcript_diagnostics).toMatchObject({
+					scope: "legacy_compatibility_routes",
+					counts: {
+						[source]: {
+							ok: 1,
+							not_provided: 1,
+							path_rejected: 2,
+							no_assistant_record: 1,
+						},
+					},
+				});
+
+				const isolated = createTestApp();
+				try {
+					const isolatedStatus = await isolated.app.request("/api/raw-events/status");
+					const isolatedBody = (await isolatedStatus.json()) as {
+						transcript_diagnostics: { counts: Record<string, Record<string, number>> };
+					};
+					expect(isolatedBody.transcript_diagnostics.counts[source]).toEqual({
+						ok: 0,
+						not_provided: 0,
+						path_rejected: 0,
+						unreadable: 0,
+						no_complete_record: 0,
+						no_assistant_record: 0,
+					});
+				} finally {
+					isolated.cleanup();
+				}
 			} finally {
 				cleanup();
 				if (previousValue == null) delete process.env[envName];

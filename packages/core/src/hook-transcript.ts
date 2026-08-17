@@ -11,6 +11,18 @@ import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 export const MAX_HOOK_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
+const HOOK_TRANSCRIPT_CHUNK_BYTES = 64 * 1024;
+
+const HOOK_TRANSCRIPT_OUTCOMES = [
+	"ok",
+	"not_provided",
+	"path_rejected",
+	"unreadable",
+	"no_complete_record",
+	"no_assistant_record",
+] as const;
+
+export type HookTranscriptOutcome = (typeof HOOK_TRANSCRIPT_OUTCOMES)[number];
 
 export type HookTranscriptPolicy =
 	| { trust: "trusted" }
@@ -21,9 +33,18 @@ export const TRUSTED_HOOK_TRANSCRIPT_POLICY: HookTranscriptPolicy = { trust: "tr
 export interface HookTranscriptReadOptions {
 	policy: HookTranscriptPolicy;
 	cwd?: string | null;
+	/** Optional instrumentation seam for deterministic bounded-read tests. */
+	onBytesRead?: (count: number) => void;
 }
 
-type TranscriptExtraction = [string | null, Record<string, number> | null];
+export type HookTranscriptExtraction = [string | null, Record<string, number> | null];
+
+export interface HookTranscriptResult {
+	extraction: HookTranscriptExtraction;
+	outcome: HookTranscriptOutcome;
+}
+
+type ResolvedTranscriptPath = { path: string } | { outcome: Exclude<HookTranscriptOutcome, "ok"> };
 
 function expandUser(path: string): string {
 	return path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : path;
@@ -40,85 +61,88 @@ function isContained(root: string, target: string): boolean {
 function resolveTranscriptPath(
 	transcriptPath: unknown,
 	options: HookTranscriptReadOptions,
-): string | null {
-	if (typeof transcriptPath !== "string") return null;
+): ResolvedTranscriptPath {
+	if (typeof transcriptPath !== "string") return { outcome: "not_provided" };
 	const requestedPath = expandUser(transcriptPath.trim());
-	if (!requestedPath) return null;
+	if (!requestedPath) return { outcome: "not_provided" };
+
+	if (!isAbsolute(requestedPath)) {
+		if (options.policy.trust !== "trusted") return { outcome: "path_rejected" };
+		if (typeof options.cwd !== "string") return { outcome: "path_rejected" };
+		try {
+			const cwd = expandUser(options.cwd.trim());
+			if (!isAbsolute(cwd)) return { outcome: "path_rejected" };
+			const realCwd = realpathSync(cwd);
+			if (!statSync(realCwd).isDirectory()) return { outcome: "path_rejected" };
+			const realTarget = realpathSync(resolve(realCwd, requestedPath));
+			return isContained(realCwd, realTarget) ? { path: realTarget } : { outcome: "path_rejected" };
+		} catch {
+			return { outcome: "unreadable" };
+		}
+	}
 
 	try {
-		if (!isAbsolute(requestedPath)) {
-			if (options.policy.trust !== "trusted") return null;
-			if (typeof options.cwd !== "string") return null;
-			const cwd = expandUser(options.cwd.trim());
-			if (!isAbsolute(cwd)) return null;
-			const realCwd = realpathSync(cwd);
-			if (!statSync(realCwd).isDirectory()) return null;
-			const realTarget = realpathSync(resolve(realCwd, requestedPath));
-			return isContained(realCwd, realTarget) ? realTarget : null;
-		}
-
 		const realTarget = realpathSync(requestedPath);
-		if (options.policy.trust === "trusted") return realTarget;
+		if (options.policy.trust === "trusted") return { path: realTarget };
 		for (const root of options.policy.approvedRoots) {
 			try {
 				const realRoot = realpathSync(expandUser(root));
 				if (statSync(realRoot).isDirectory() && isContained(realRoot, realTarget))
-					return realTarget;
+					return { path: realTarget };
 			} catch {
 				// Missing or unreadable approved roots are simply ineligible.
 			}
 		}
 	} catch {
-		return null;
+		return { outcome: "unreadable" };
 	}
-	return null;
+	return { outcome: "path_rejected" };
 }
 
-function readTranscriptTail(path: string): string | null {
-	let descriptor: number | null = null;
+function reportBytesRead(options: HookTranscriptReadOptions, count: number): void {
+	if (count <= 0) return;
 	try {
-		descriptor = openSync(
-			path,
-			constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0),
-		);
-		const stat = fstatSync(descriptor);
-		if (!stat.isFile()) return null;
-		const openedPath = realpathSync(path);
-		const openedPathStat = statSync(openedPath);
-		if (openedPath !== path || openedPathStat.dev !== stat.dev || openedPathStat.ino !== stat.ino) {
-			return null;
-		}
-		const bytesToRead = Math.min(stat.size, MAX_HOOK_TRANSCRIPT_BYTES);
-		const start = stat.size - bytesToRead;
-		const buffer = Buffer.allocUnsafe(bytesToRead);
-		let offset = 0;
-		while (offset < bytesToRead) {
-			const bytesRead = readSync(descriptor, buffer, offset, bytesToRead - offset, start + offset);
-			if (bytesRead === 0) break;
-			offset += bytesRead;
-		}
-		let retained = buffer.subarray(0, offset);
-		if (start > 0) {
-			const precedingByte = Buffer.allocUnsafe(1);
-			const precedingByteRead = readSync(descriptor, precedingByte, 0, 1, start - 1);
-			if (precedingByteRead !== 1 || precedingByte[0] !== 0x0a) {
-				const firstNewline = retained.indexOf(0x0a);
-				if (firstNewline < 0) return null;
-				retained = retained.subarray(firstNewline + 1);
-			}
-		}
-		return retained.length > 0 ? retained.toString("utf8") : null;
+		options.onBytesRead?.(count);
 	} catch {
-		return null;
-	} finally {
-		if (descriptor !== null) {
-			try {
-				closeSync(descriptor);
-			} catch {
-				// A close failure does not make transcript extraction fatal.
-			}
-		}
+		// Instrumentation is best-effort and must not affect extraction.
 	}
+}
+
+function readInto(
+	descriptor: number,
+	buffer: Buffer,
+	length: number,
+	position: number,
+	options: HookTranscriptReadOptions,
+): number {
+	let offset = 0;
+	while (offset < length) {
+		const count = readSync(descriptor, buffer, offset, length - offset, position + offset);
+		if (count === 0) break;
+		offset += count;
+		reportBytesRead(options, count);
+	}
+	return offset;
+}
+
+function decodeRecord(
+	descriptor: number,
+	buffer: Buffer,
+	start: number,
+	end: number,
+	options: HookTranscriptReadOptions,
+): string {
+	const decoder = new TextDecoder("utf-8", { fatal: false });
+	let position = start;
+	let text = "";
+	while (position < end) {
+		const length = Math.min(buffer.length, end - position);
+		const count = readInto(descriptor, buffer, length, position, options);
+		if (count === 0) break;
+		position += count;
+		text += decoder.decode(buffer.subarray(0, count), { stream: position < end });
+	}
+	return text;
 }
 
 function textFromContent(value: unknown): string {
@@ -153,67 +177,145 @@ function normalizeUsage(value: unknown): Record<string, number> | null {
 	return total > 0 ? normalized : null;
 }
 
-function parseTranscript(content: string): TranscriptExtraction {
-	let assistantText: string | null = null;
-	let assistantUsage: Record<string, number> | null = null;
-	for (const rawLine of content.split("\n")) {
-		const line = rawLine.trim();
-		if (!line) continue;
-		try {
-			const parsed: unknown = JSON.parse(line);
-			if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) continue;
-			const record = parsed as Record<string, unknown>;
-			const candidates = [record];
-			if (
-				record.message != null &&
-				typeof record.message === "object" &&
-				!Array.isArray(record.message)
-			) {
-				candidates.push(record.message as Record<string, unknown>);
+function assistantFromRecord(line: string): HookTranscriptExtraction | null {
+	const trimmed = line.trim();
+	if (!trimmed) return null;
+	try {
+		const parsed: unknown = JSON.parse(trimmed);
+		if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+		const record = parsed as Record<string, unknown>;
+		const candidates = [record];
+		if (
+			record.message != null &&
+			typeof record.message === "object" &&
+			!Array.isArray(record.message)
+		) {
+			candidates.push(record.message as Record<string, unknown>);
+		}
+		let role = "";
+		let contentValue: unknown = null;
+		let usageValue: unknown = null;
+		for (const candidate of candidates) {
+			if (!role) {
+				if (typeof candidate.role === "string") role = candidate.role.trim().toLowerCase();
+				else if (candidate.type === "assistant") role = "assistant";
 			}
-			let role = "";
-			let contentValue: unknown = null;
-			let usageValue: unknown = null;
-			for (const candidate of candidates) {
-				if (!role) {
-					if (typeof candidate.role === "string") role = candidate.role.trim().toLowerCase();
-					else if (candidate.type === "assistant") role = "assistant";
-				}
-				if (contentValue == null) {
-					for (const field of ["content", "text"]) {
-						if (field in candidate) {
-							contentValue = candidate[field];
-							break;
-						}
-					}
-				}
-				if (usageValue == null) {
-					for (const field of ["usage", "token_usage", "tokenUsage"]) {
-						if (field in candidate) {
-							usageValue = candidate[field];
-							break;
-						}
+			if (contentValue == null) {
+				for (const field of ["content", "text"]) {
+					if (field in candidate) {
+						contentValue = candidate[field];
+						break;
 					}
 				}
 			}
-			if (role !== "assistant") continue;
-			const text = textFromContent(contentValue);
-			if (!text) continue;
-			assistantText = text;
-			assistantUsage = normalizeUsage(usageValue);
-		} catch {
-			// Ignore malformed JSONL records and continue scanning the bounded tail.
+			if (usageValue == null) {
+				for (const field of ["usage", "token_usage", "tokenUsage"]) {
+					if (field in candidate) {
+						usageValue = candidate[field];
+						break;
+					}
+				}
+			}
+		}
+		if (role !== "assistant") return null;
+		const text = textFromContent(contentValue);
+		return text ? [text, normalizeUsage(usageValue)] : null;
+	} catch {
+		return null;
+	}
+}
+
+function scanTranscript(
+	descriptor: number,
+	size: number,
+	options: HookTranscriptReadOptions,
+): HookTranscriptResult {
+	const windowStart = Math.max(0, size - MAX_HOOK_TRANSCRIPT_BYTES);
+	const buffer = Buffer.allocUnsafe(HOOK_TRANSCRIPT_CHUNK_BYTES);
+	const decodeBuffer = Buffer.allocUnsafe(HOOK_TRANSCRIPT_CHUNK_BYTES);
+	let boundaryAligned = windowStart === 0;
+	if (!boundaryAligned) {
+		boundaryAligned =
+			readInto(descriptor, buffer, 1, windowStart - 1, options) === 1 && buffer[0] === 0x0a;
+	}
+
+	let lineEnd = size;
+	let scanEnd = size;
+	let hasCompleteRecord = false;
+	while (scanEnd > windowStart) {
+		const chunkStart = Math.max(windowStart, scanEnd - buffer.length);
+		const count = readInto(descriptor, buffer, scanEnd - chunkStart, chunkStart, options);
+		if (count === 0) break;
+		for (let index = count - 1; index >= 0; index -= 1) {
+			if (buffer[index] !== 0x0a) continue;
+			const lineStart = chunkStart + index + 1;
+			if (lineEnd > lineStart) {
+				hasCompleteRecord = true;
+				const line =
+					lineEnd <= chunkStart + count
+						? buffer.subarray(index + 1, lineEnd - chunkStart).toString("utf8")
+						: decodeRecord(descriptor, decodeBuffer, lineStart, lineEnd, options);
+				const extraction = assistantFromRecord(line);
+				if (extraction) return { extraction, outcome: "ok" };
+			}
+			lineEnd = chunkStart + index;
+		}
+		scanEnd = chunkStart;
+	}
+
+	if (boundaryAligned && lineEnd > windowStart) {
+		hasCompleteRecord = true;
+		const extraction = assistantFromRecord(
+			decodeRecord(descriptor, decodeBuffer, windowStart, lineEnd, options),
+		);
+		if (extraction) return { extraction, outcome: "ok" };
+	}
+	return {
+		extraction: [null, null],
+		outcome: hasCompleteRecord ? "no_assistant_record" : "no_complete_record",
+	};
+}
+
+function readTranscript(path: string, options: HookTranscriptReadOptions): HookTranscriptResult {
+	let descriptor: number | null = null;
+	try {
+		descriptor = openSync(
+			path,
+			constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0),
+		);
+		const stat = fstatSync(descriptor);
+		if (!stat.isFile()) return { extraction: [null, null], outcome: "unreadable" };
+		const openedPath = realpathSync(path);
+		const openedPathStat = statSync(openedPath);
+		if (openedPath !== path || openedPathStat.dev !== stat.dev || openedPathStat.ino !== stat.ino) {
+			return { extraction: [null, null], outcome: "path_rejected" };
+		}
+		return scanTranscript(descriptor, stat.size, options);
+	} catch {
+		return { extraction: [null, null], outcome: "unreadable" };
+	} finally {
+		if (descriptor !== null) {
+			try {
+				closeSync(descriptor);
+			} catch {
+				// A close failure does not make transcript extraction fatal.
+			}
 		}
 	}
-	return [assistantText, assistantUsage];
 }
 
 export function extractHookTranscript(
 	transcriptPath: unknown,
 	options: HookTranscriptReadOptions,
-): TranscriptExtraction {
-	const resolvedPath = resolveTranscriptPath(transcriptPath, options);
-	if (!resolvedPath) return [null, null];
-	const content = readTranscriptTail(resolvedPath);
-	return content === null ? [null, null] : parseTranscript(content);
+): HookTranscriptExtraction {
+	return extractHookTranscriptWithOutcome(transcriptPath, options).extraction;
+}
+
+export function extractHookTranscriptWithOutcome(
+	transcriptPath: unknown,
+	options: HookTranscriptReadOptions,
+): HookTranscriptResult {
+	const resolved = resolveTranscriptPath(transcriptPath, options);
+	if ("outcome" in resolved) return { extraction: [null, null], outcome: resolved.outcome };
+	return readTranscript(resolved.path, options);
 }

@@ -16,7 +16,8 @@ import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import {
-	extractHookTranscript,
+	extractHookTranscriptWithOutcome,
+	type HookTranscriptOutcome,
 	type HookTranscriptPolicy,
 	TRUSTED_HOOK_TRANSCRIPT_POLICY,
 } from "./hook-transcript.js";
@@ -305,12 +306,20 @@ export function extractFromTranscript(
 	transcriptPath: unknown,
 	cwdHint?: string | null,
 	policy: HookTranscriptPolicy = { trust: "restricted", approvedRoots: [] },
+	onTranscriptOutcome?: (outcome: HookTranscriptOutcome) => void,
 ): [string | null, Record<string, number> | null] {
-	return extractHookTranscript(transcriptPath, { policy, cwd: cwdHint });
+	const result = extractHookTranscriptWithOutcome(transcriptPath, { policy, cwd: cwdHint });
+	try {
+		onTranscriptOutcome?.(result.outcome);
+	} catch {
+		// Diagnostics are best-effort and must never change hook mapping.
+	}
+	return result.extraction;
 }
 
 export interface HookMapperOptions {
 	transcriptPolicy: HookTranscriptPolicy;
+	onTranscriptOutcome?: (outcome: HookTranscriptOutcome) => void;
 }
 
 export const TRUSTED_HOOK_MAPPER_OPTIONS: HookMapperOptions = {
@@ -463,6 +472,7 @@ export function mapClaudeHookPayload(
 				payload.transcript_path,
 				cwd,
 				options.transcriptPolicy,
+				options.onTranscriptOutcome,
 			);
 			if (!assistantText && transcriptText) assistantText = transcriptText;
 			if (usage === null && transcriptUsage !== null) usage = transcriptUsage;

@@ -5,7 +5,7 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { MemoryStore, RawEventSweeper } from "@codemem/core";
+import type { HookTranscriptOutcome, MemoryStore, RawEventSweeper } from "@codemem/core";
 import {
 	buildRawEventEnvelopeFromCodexHook,
 	buildRawEventEnvelopeFromHook,
@@ -31,6 +31,52 @@ function configuredMaxRawEventsBodyBytes(): number {
 }
 
 const MAX_RAW_EVENTS_BODY_BYTES = configuredMaxRawEventsBodyBytes();
+type LegacyTranscriptSource = "claude" | "codex";
+type TranscriptOutcomeCounts = Record<HookTranscriptOutcome, number>;
+
+function emptyTranscriptOutcomeCounts(): TranscriptOutcomeCounts {
+	return {
+		ok: 0,
+		not_provided: 0,
+		path_rejected: 0,
+		unreadable: 0,
+		no_complete_record: 0,
+		no_assistant_record: 0,
+	} satisfies TranscriptOutcomeCounts;
+}
+
+function createTranscriptDiagnostics() {
+	const counts: Record<LegacyTranscriptSource, TranscriptOutcomeCounts> = {
+		claude: emptyTranscriptOutcomeCounts(),
+		codex: emptyTranscriptOutcomeCounts(),
+	};
+	return {
+		record(source: LegacyTranscriptSource, outcome: HookTranscriptOutcome): void {
+			counts[source][outcome] += 1;
+		},
+		snapshot() {
+			return {
+				scope: "legacy_compatibility_routes" as const,
+				counts: {
+					claude: { ...counts.claude },
+					codex: { ...counts.codex },
+				},
+			};
+		},
+	};
+}
+
+function transcriptSkipResponse(outcome: HookTranscriptOutcome | null) {
+	if (outcome !== null && outcome !== "ok") {
+		return {
+			inserted: 0,
+			skipped: 1,
+			skip_reason: "transcript_unavailable" as const,
+			skip_detail: outcome,
+		};
+	}
+	return { inserted: 0, skipped: 1, skip_reason: "unsupported_hook" as const };
+}
 
 function claudeTranscriptRoot(): string {
 	return join(process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude"), "projects");
@@ -214,6 +260,7 @@ async function ingestNormalizedEnvelope(
 
 export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweeper | null) {
 	const app = new Hono();
+	const transcriptDiagnostics = createTranscriptDiagnostics();
 
 	// GET /api/raw-events (compat endpoint for stats panel)
 	app.get("/api/raw-events", (c) => {
@@ -261,6 +308,7 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 				mode: "stream_queue",
 				max_body_bytes: MAX_RAW_EVENTS_BODY_BYTES,
 			},
+			transcript_diagnostics: transcriptDiagnostics.snapshot(),
 		});
 	});
 
@@ -292,15 +340,16 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 		const payload = result;
 
 		try {
+			let transcriptOutcome: HookTranscriptOutcome | null = null;
 			const envelope = buildRawEventEnvelopeFromHook(payload, {
 				transcriptPolicy: { trust: "restricted", approvedRoots: [claudeTranscriptRoot()] },
+				onTranscriptOutcome: (outcome) => {
+					transcriptOutcome = outcome;
+					transcriptDiagnostics.record("claude", outcome);
+				},
 			});
 			if (envelope === null) {
-				const skipReason =
-					payload.hook_event_name === "Stop" && typeof payload.transcript_path === "string"
-						? "transcript_unavailable"
-						: "unsupported_hook";
-				return c.json({ inserted: 0, skipped: 1, skip_reason: skipReason });
+				return c.json(transcriptSkipResponse(transcriptOutcome));
 			}
 			const ingestResult = await ingestNormalizedEnvelope(
 				getStore(),
@@ -321,15 +370,16 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 		const payload = result;
 
 		try {
+			let transcriptOutcome: HookTranscriptOutcome | null = null;
 			const envelope = buildRawEventEnvelopeFromCodexHook(payload, {
 				transcriptPolicy: { trust: "restricted", approvedRoots: [codexTranscriptRoot()] },
+				onTranscriptOutcome: (outcome) => {
+					transcriptOutcome = outcome;
+					transcriptDiagnostics.record("codex", outcome);
+				},
 			});
 			if (envelope === null) {
-				const skipReason =
-					payload.hook_event_name === "Stop" && typeof payload.transcript_path === "string"
-						? "transcript_unavailable"
-						: "unsupported_hook";
-				return c.json({ inserted: 0, skipped: 1, skip_reason: skipReason });
+				return c.json(transcriptSkipResponse(transcriptOutcome));
 			}
 			const ingestResult = await ingestNormalizedEnvelope(getStore(), sweeper, envelope);
 			return c.json({ inserted: ingestResult.inserted, skipped: ingestResult.skipped });

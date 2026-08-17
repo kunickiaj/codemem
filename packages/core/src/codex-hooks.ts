@@ -187,6 +187,7 @@ export function mapCodexHookPayload(
 				payload.transcript_path,
 				cwd,
 				options.transcriptPolicy,
+				options.onTranscriptOutcome,
 			);
 			if (transcriptText) assistantText = transcriptText.trim();
 		}

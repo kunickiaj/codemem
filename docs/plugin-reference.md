@@ -66,7 +66,7 @@ Claude's Node/ESM wrapper normalizes each native hook once, then sends the exact
 
 The wrapper never remaps the native payload during fallback, so event identity is identical across HTTP and direct enqueue. Named `POST /api/claude-hooks` remains a compatibility alias/caller for older packaged and plugin-free CLI paths.
 
-Transcript fallback reads at most the final 16 MiB. When that tail starts immediately after a newline, the first complete record is retained; when it starts in the middle of a record, the partial first record is discarded before parsing.
+Transcript fallback scans backward through at most the final 16 MiB using a bounded reusable chunk buffer and stops at the latest qualifying assistant record. When that tail starts immediately after a newline, the first complete record is retained; when it starts in the middle of a record, the partial first record is discarded. JSONL records may use LF or CRLF, and UTF-8 characters remain valid across chunk boundaries.
 
 Claude preserves its existing best-effort failure posture: if Viewer HTTP and both command fallbacks fail, the wrapper logs the failure and exits non-zero. It does not maintain a file spool; Codex's separately documented normalized-envelope spool is intentionally adapter-specific.
 
@@ -159,7 +159,7 @@ For Codex hooks, project resolution precedence matches the Claude hook path:
 2. repo/cwd-derived project name
 3. payload `project` fallback (only when cwd is unavailable)
 
-`Stop` events map the inline `last_assistant_message` when present, and fall back to the last assistant message in `transcript_path` so final responses are captured even when the inline field is omitted.
+`Stop` events map the inline `last_assistant_message` when present, and fall back to the last assistant message in `transcript_path` so final responses are captured even when the inline field is omitted. This fallback uses the same backward, bounded 16 MiB JSONL scan and record-boundary rules as Claude.
 
 The packaged Codex template registers `SessionStart`, `UserPromptSubmit`, `PostToolUse`, and `Stop` in `plugins/codex/hooks/hooks.json`. Codex support is early beta; see `docs/plans/2026-05-28-codex-first-class-integration.md` for the rollout plan and validation gates.
 
@@ -326,6 +326,8 @@ Stream contract:
 - Raw events are delivered through the viewer ingest API.
 - Raw-event batches accepted by the viewer are retried by the sweeper flush workers.
 - If the direct CLI fallback reports an explicit SQLite busy/locked result or command timeout, the plugin retries it once with the same event ID. Other failures are reported and dropped rather than requeued or spooled, and logs retain only a bounded failure category rather than raw command output.
+
+`GET /api/raw-events/status` also includes `transcript_diagnostics`, a per-Viewer-process, per-router-instance counter block scoped explicitly to `legacy_compatibility_routes`. It counts Claude and Codex compatibility-route transcript reads by the fixed outcomes `ok`, `not_provided`, `path_rejected`, `unreadable`, `no_complete_record`, and `no_assistant_record`. These counters are not persisted, do not include paths or transcript content, and do not describe the normal generated-adapter path through `POST /api/raw-events`. A skipped legacy `Stop` response keeps `skip_reason: "transcript_unavailable"` and may include one of the non-`ok` outcomes as `skip_detail`; other mapping skips remain `skip_reason: "unsupported_hook"`.
 
 Suggested settings:
 

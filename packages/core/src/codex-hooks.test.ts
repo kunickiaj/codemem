@@ -183,6 +183,28 @@ describe("mapCodexHookPayload", () => {
 		expect(event?.payload.text).toBe("Finished the thing");
 	});
 
+	it("reports transcript outcomes without allowing callback failures to affect Stop mapping", () => {
+		const transcriptPath = writeTranscript([{ role: "assistant", content: "Still finished" }]);
+		const outcomes: string[] = [];
+		const event = mapCodexHookPayload(
+			{
+				hook_event_name: "Stop",
+				session_id: "codex-session",
+				transcript_path: transcriptPath,
+			},
+			{
+				...TRUSTED_HOOK_MAPPER_OPTIONS,
+				onTranscriptOutcome: (outcome) => {
+					outcomes.push(outcome);
+					throw new Error("diagnostics unavailable");
+				},
+			},
+		);
+
+		expect(event?.payload.text).toBe("Still finished");
+		expect(outcomes).toEqual(["ok"]);
+	});
+
 	it("maps Stop via an explicitly approved transcript root", () => {
 		const transcriptPath = writeTranscript([{ role: "assistant", content: "Approved result" }]);
 		const event = mapCodexHookPayload(
