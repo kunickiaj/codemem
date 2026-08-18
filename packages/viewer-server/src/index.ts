@@ -10,7 +10,12 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { GetUpdateStatusOptions, ObserverClient, UpdateStatus } from "@codemem/core";
+import type {
+	DeviceIdentityCoordinatorEvidence,
+	GetUpdateStatusOptions,
+	ObserverClient,
+	UpdateStatus,
+} from "@codemem/core";
 import { MemoryStore, type RawEventSweeper, resolveDbPath, VERSION } from "@codemem/core";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
@@ -75,6 +80,7 @@ export interface AppOptions {
 	sweeper?: RawEventSweeper | null;
 	observer?: ObserverClient | null;
 	getUpdateStatus?: (options: GetUpdateStatusOptions) => Promise<UpdateStatus>;
+	loadDeviceIdentityCoordinatorEvidence?: () => Promise<DeviceIdentityCoordinatorEvidence>;
 	syncRequestRateLimit?: {
 		limiter?: InMemoryRequestRateLimiter;
 		readLimit?: number;
@@ -122,7 +128,12 @@ export function createApp(opts?: AppOptions) {
 	);
 	app.route("/", configRoutes({ getSweeper: () => sweeper }));
 	app.route("/", rawEventsRoutes(storeFactory, sweeper));
-	app.route("/", syncRoutes(storeFactory, getSyncRuntimeStatus));
+	app.route(
+		"/",
+		syncRoutes(storeFactory, getSyncRuntimeStatus, {
+			loadDeviceIdentityCoordinatorEvidence: opts?.loadDeviceIdentityCoordinatorEvidence,
+		}),
+	);
 	app.route("/", updateStatusRoutes({ getUpdateStatus: opts?.getUpdateStatus }));
 
 	// Static assets — serve under /assets/*

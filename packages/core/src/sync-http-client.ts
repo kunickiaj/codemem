@@ -51,6 +51,7 @@ export interface RequestJsonOptions {
 	body?: Record<string, unknown>;
 	bodyBytes?: Uint8Array;
 	timeoutS?: number;
+	maxResponseBytes?: number;
 }
 
 /**
@@ -90,7 +91,35 @@ export async function requestJson(
 		signal: AbortSignal.timeout(timeoutS * 1000),
 	});
 
-	const raw = await response.text();
+	let raw: string;
+	if (options.maxResponseBytes != null && response.body) {
+		const declaredLength = Number(response.headers.get("content-length"));
+		if (Number.isFinite(declaredLength) && declaredLength > options.maxResponseBytes) {
+			await response.body.cancel();
+			return [response.status, { error: "response_too_large" }];
+		}
+		const reader = response.body.getReader();
+		const decoder = new TextDecoder();
+		let totalBytes = 0;
+		raw = "";
+		try {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				totalBytes += value.byteLength;
+				if (totalBytes > options.maxResponseBytes) {
+					await reader.cancel();
+					return [response.status, { error: "response_too_large" }];
+				}
+				raw += decoder.decode(value, { stream: true });
+			}
+			raw += decoder.decode();
+		} finally {
+			reader.releaseLock();
+		}
+	} else {
+		raw = await response.text();
+	}
 	if (!raw) return [response.status, null];
 
 	let payload: unknown;

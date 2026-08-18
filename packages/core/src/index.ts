@@ -185,6 +185,25 @@ export {
 	runDedupKeyBackfillPass,
 } from "./dedup-key-backfill.js";
 export type {
+	DeviceIdentityBindingEvidence,
+	DeviceIdentityCoordinatorEvidence,
+	DeviceIdentityInventoryInput,
+	DeviceIdentityInventoryItemV1,
+	DeviceIdentityInventorySnapshot,
+	DeviceIdentityInventorySource,
+	DeviceIdentityInventoryState,
+	DeviceIdentityInventoryV1,
+	DeviceIdentityLocalDeviceEvidence,
+	DeviceIdentityPeerEvidence,
+} from "./device-identity-inventory.js";
+export {
+	DEVICE_IDENTITY_INVENTORY_LIMIT,
+	DEVICE_IDENTITY_INVENTORY_VERSION,
+	listDeviceIdentityInventory,
+	loadDeviceIdentityInventorySnapshot,
+	projectDeviceIdentityInventory,
+} from "./device-identity-inventory.js";
+export type {
 	ArtifactKind,
 	ContextFactFeature,
 	DistillCandidate,

@@ -131,11 +131,13 @@ async function remoteRequest(
 		headers,
 		body,
 		timeoutS: 3,
+		maxResponseBytes: 2_000_000,
 	});
 	if (status < 200 || status >= 300) {
 		const detail = typeof payload?.error === "string" ? payload.error : "unknown";
 		throw new Error(`Remote coordinator request failed (${status}): ${detail}`);
 	}
+	if (payload?.error === "response_too_large") throw new Error("coordinator_response_too_large");
 	return payload;
 }
 
@@ -828,6 +830,7 @@ export async function coordinatorListDevicesAction(opts: {
 		if (!Array.isArray(payload?.items)) {
 			throw new Error("coordinator_device_list_malformed");
 		}
+		if (payload.items.length > 500) throw new Error("coordinator_response_too_large");
 		return payload.items.map((row) => {
 			if (!row || typeof row !== "object" || Array.isArray(row)) {
 				throw new Error("coordinator_device_list_malformed");

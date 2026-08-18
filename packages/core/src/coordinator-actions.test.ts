@@ -432,6 +432,24 @@ describe("coordinator local admin actions", () => {
 		).rejects.toThrow("coordinator_device_list_malformed");
 	});
 
+	it("rejects remote device lists above the enrollment evidence limit", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(JSON.stringify({ items: Array.from({ length: 501 }, () => ({})) })),
+			),
+		);
+
+		await expect(
+			coordinatorListDevicesAction({
+				groupId: "team-a",
+				remoteUrl: "https://coord.example.test",
+				adminSecret: "secret",
+			}),
+		).rejects.toThrow("coordinator_response_too_large");
+	});
+
 	it("normalizes omitted nullable fields from legacy remote device lists", async () => {
 		vi.stubGlobal(
 			"fetch",

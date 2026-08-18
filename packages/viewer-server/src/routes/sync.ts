@@ -13,6 +13,7 @@ import type {
 	CoordinatorEnrollmentReconcileResult,
 	CoordinatorScope,
 	CoordinatorScopeMembership,
+	DeviceIdentityCoordinatorEvidence,
 	MaintenanceJobSnapshot,
 	MemoryStore,
 	ProjectScopeGuardrailWarning,
@@ -100,6 +101,7 @@ import {
 	LOCAL_SYNC_FEATURES,
 	listAuthorizedScopesForPeer,
 	listCoordinatorJoinRequests,
+	listDeviceIdentityInventory,
 	listInboundScopeRejections,
 	listLegacyRecipientPolicyProjections,
 	listMaintenanceJobs,
@@ -172,6 +174,8 @@ import { queryBool, queryInt, safeJsonList } from "../helpers.js";
 import type { InMemoryRequestRateLimiter } from "../request-rate-limit.js";
 
 type StoreFactory = () => MemoryStore;
+export type DeviceIdentityCoordinatorEvidenceLoader =
+	() => Promise<DeviceIdentityCoordinatorEvidence>;
 type SyncRuntimeStatus = {
 	phase:
 		| "starting"
@@ -4689,6 +4693,57 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 	return app;
 }
 
+async function loadConfiguredDeviceIdentityCoordinatorEvidence(): Promise<DeviceIdentityCoordinatorEvidence> {
+	const config = readCoordinatorSyncConfig();
+	const remoteUrl = config.syncCoordinatorUrl.trim();
+	const adminSecret = config.syncCoordinatorAdminSecret.trim();
+	const groupIds = [
+		...new Set(config.syncCoordinatorGroups.map((groupId) => groupId.trim())),
+	].filter(Boolean);
+	if (!remoteUrl || !adminSecret || groupIds.length === 0) {
+		return {
+			availability: "unavailable",
+			safeErrorCode: "coordinator_not_configured",
+			enrollments: [],
+		};
+	}
+	if (groupIds.length > 25) {
+		return {
+			availability: "unavailable",
+			safeErrorCode: "coordinator_evidence_too_large",
+			enrollments: [],
+		};
+	}
+	try {
+		const enrollments = (
+			await Promise.all(
+				groupIds.map((groupId) =>
+					coordinatorListDevicesAction({
+						groupId,
+						includeDisabled: true,
+						remoteUrl,
+						adminSecret,
+					}),
+				),
+			)
+		).flat();
+		if (enrollments.length > 500) {
+			return {
+				availability: "unavailable",
+				safeErrorCode: "coordinator_evidence_too_large",
+				enrollments: [],
+			};
+		}
+		return { availability: "available", safeErrorCode: null, enrollments };
+	} catch {
+		return {
+			availability: "unavailable",
+			safeErrorCode: "coordinator_unavailable",
+			enrollments: [],
+		};
+	}
+}
+
 /**
  * Viewer-facing sync management routes (/api/sync/*).
  *
@@ -4699,8 +4754,43 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 export function syncRoutes(
 	getStore: StoreFactory,
 	getSyncRuntimeStatus?: () => SyncRuntimeStatus | null,
+	options: { loadDeviceIdentityCoordinatorEvidence?: DeviceIdentityCoordinatorEvidenceLoader } = {},
 ) {
 	const app = new Hono();
+	const loadCoordinatorEvidence =
+		options.loadDeviceIdentityCoordinatorEvidence ??
+		loadConfiguredDeviceIdentityCoordinatorEvidence;
+
+	app.get("/api/sync/recipient-policy/v1/device-inventory", async (c) => {
+		const store = getStore();
+		let coordinator: DeviceIdentityCoordinatorEvidence;
+		try {
+			coordinator = await loadCoordinatorEvidence();
+		} catch {
+			coordinator = {
+				availability: "unavailable",
+				safeErrorCode: "coordinator_unavailable",
+				enrollments: [],
+			};
+		}
+		let explicitDeviceName = "";
+		try {
+			explicitDeviceName = String(readCodememConfigFile().sync_device_name ?? "");
+		} catch {
+			explicitDeviceName = "";
+		}
+		return c.json(
+			listDeviceIdentityInventory(store.db, {
+				localDeviceId: store.deviceId,
+				localDisplayName: friendlyDeviceName({
+					explicitName: explicitDeviceName,
+					osName: hostname(),
+					fallbackSeed: store.deviceId,
+				}),
+				coordinator,
+			}),
+		);
+	});
 
 	// GET /api/sync/status
 	app.get("/api/sync/status", async (c) => {

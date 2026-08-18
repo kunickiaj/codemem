@@ -122,4 +122,33 @@ describe("requestJson", () => {
 		const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
 		expect(call[1].headers.Authorization).toBe("Bearer tok");
 	});
+
+	it("rejects a declared response larger than the configured limit", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response("{}", {
+				status: 200,
+				headers: { "content-length": "100" },
+			}),
+		);
+
+		await expect(
+			requestJson("GET", "http://localhost:8080/info", { maxResponseBytes: 10 }),
+		).resolves.toEqual([200, { error: "response_too_large" }]);
+	});
+
+	it("stops reading a streamed response after the configured limit", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(new Response("123456", { status: 200 }));
+
+		await expect(
+			requestJson("GET", "http://localhost:8080/info", { maxResponseBytes: 5 }),
+		).resolves.toEqual([200, { error: "response_too_large" }]);
+	});
+
+	it("accepts a response exactly at the configured limit", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+
+		await expect(
+			requestJson("GET", "http://localhost:8080/info", { maxResponseBytes: 2 }),
+		).resolves.toEqual([200, {}]);
+	});
 });
