@@ -117,6 +117,7 @@ import {
 	migrateRecipientPolicyIntent,
 	negotiateSyncCapability,
 	normalizeAddress,
+	normalizeHumanPresentationName,
 	normalizeSyncCapability,
 	normalizeSyncFeatures,
 	normalizeTeammateName,
@@ -674,6 +675,14 @@ function projectInviteAcceptanceFailure(error: unknown): {
 			"The owner's device is not ready to establish trust yet. Retry once, then ask the owner to review the share.",
 		project_invite_trust_state_invalid:
 			"The owner's trust setup could not be verified. Ask the owner to review the share.",
+		recipient_display_name_invalid:
+			"Enter a human-readable Identity name instead of an internal identifier.",
+		recipient_display_name_required: "Enter an Identity display name.",
+		recipient_display_name_too_long: "Use an Identity display name with 120 characters or fewer.",
+		device_display_name_invalid:
+			"Enter a human-readable device name instead of an internal identifier.",
+		device_display_name_required: "Enter a device display name.",
+		device_display_name_too_long: "Use a device display name with 120 characters or fewer.",
 	};
 	const safeCode = Object.hasOwn(detailByCode, code) ? code : "project_invite_acceptance_failed";
 	return {
@@ -5202,9 +5211,15 @@ export function syncRoutes(
 				return c.json({ error: "invalid json" }, 400);
 			}
 			const peerDeviceId = String(body.peer_device_id ?? "").trim();
-			const name = String(body.name ?? "").trim();
+			const rawName = String(body.name ?? "");
 			if (!peerDeviceId) return c.json({ error: "peer_device_id required" }, 400);
-			if (!name) return c.json({ error: "name required" }, 400);
+			if (!rawName.trim()) return c.json({ error: "name required" }, 400);
+			let name: string;
+			try {
+				name = normalizeHumanPresentationName(rawName, "name");
+			} catch (error) {
+				return c.json({ error: error instanceof Error ? error.message : "name_invalid" }, 400);
+			}
 			const exists = d
 				.select({ peer_device_id: schema.syncPeers.peer_device_id })
 				.from(schema.syncPeers)
@@ -6171,8 +6186,17 @@ export function syncRoutes(
 		} catch {
 			return c.json({ error: "invalid json" }, 400);
 		}
-		const displayName = String(body.display_name ?? "").trim();
-		if (!displayName) return c.json({ error: "display_name required" }, 400);
+		const rawDisplayName = String(body.display_name ?? "");
+		if (!rawDisplayName.trim()) return c.json({ error: "display_name required" }, 400);
+		let displayName: string;
+		try {
+			displayName = normalizeHumanPresentationName(rawDisplayName, "display_name");
+		} catch (error) {
+			return c.json(
+				{ error: error instanceof Error ? error.message : "display_name_invalid" },
+				400,
+			);
+		}
 		const d = drizzle(store.db, { schema });
 		const now = new Date().toISOString();
 		const actor = {
@@ -6198,9 +6222,16 @@ export function syncRoutes(
 			return c.json({ error: "invalid json" }, 400);
 		}
 		const actorId = String(body.actor_id ?? "").trim();
-		const displayName = String(body.display_name ?? "").trim();
 		if (!actorId) return c.json({ error: "actor_id required" }, 400);
-		if (!displayName) return c.json({ error: "display_name required" }, 400);
+		let displayName: string;
+		try {
+			displayName = normalizeHumanPresentationName(String(body.display_name ?? ""), "display_name");
+		} catch (error) {
+			return c.json(
+				{ error: error instanceof Error ? error.message : "display_name_invalid" },
+				400,
+			);
+		}
 		const d = drizzle(store.db, { schema });
 		const actor = d.select().from(schema.actors).where(eq(schema.actors.actor_id, actorId)).get();
 		if (!actor) return c.json({ error: "actor not found" }, 404);
@@ -7232,9 +7263,16 @@ export function syncRoutes(
 			return c.json({ error: "invalid json", status }, 400);
 		}
 		const groupId = resolveCoordinatorAdminGroup(String(body.group_id ?? "").trim(), status);
-		const displayName = String(body.display_name ?? "").trim();
 		if (!groupId) return c.json({ error: "group_id required", status }, 400);
-		if (!displayName) return c.json({ error: "display_name required", status }, 400);
+		let displayName: string;
+		try {
+			displayName = normalizeHumanPresentationName(String(body.display_name ?? ""), "display_name");
+		} catch (error) {
+			return c.json(
+				{ error: error instanceof Error ? error.message : "display_name_invalid", status },
+				400,
+			);
+		}
 		try {
 			const device = await coordinatorRenameDeviceAction({
 				groupId,

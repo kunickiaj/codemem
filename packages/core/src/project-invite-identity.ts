@@ -1,4 +1,9 @@
 const MAX_IDENTITY_DISPLAY_LENGTH = 120;
+// Keep machine-shaped cases synchronized with ui/src/lib/identity-presentation.ts.
+const UUID_NAME = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu;
+const MACHINE_PREFIX_NAME = /^(?:actor|device|identity|local):\S+$/iu;
+const MACHINE_SLUG_NAME = /^(?:actor|device|identity)[_-][a-z0-9][a-z0-9._:-]{4,}$/iu;
+const HEX_HOSTNAME = /^[a-f0-9]{12,64}$/iu;
 
 export interface ProjectInviteSummary {
 	display_name: string;
@@ -17,6 +22,25 @@ export function normalizeIdentityDisplayName(value: string, field: string): stri
 	return normalized;
 }
 
+export function isHumanPresentationName(value: unknown): boolean {
+	if (typeof value !== "string") return false;
+	let normalized: string;
+	try {
+		normalized = normalizeIdentityDisplayName(value, "display_name");
+	} catch {
+		return false;
+	}
+	return ![UUID_NAME, MACHINE_PREFIX_NAME, MACHINE_SLUG_NAME, HEX_HOSTNAME].some((pattern) =>
+		pattern.test(normalized),
+	);
+}
+
+export function normalizeHumanPresentationName(value: string, field: string): string {
+	const normalized = normalizeIdentityDisplayName(value, field);
+	if (!isHumanPresentationName(normalized)) throw new Error(`${field}_invalid`);
+	return normalized;
+}
+
 export function normalizeDeviceNameHint(value: string | null | undefined): string | null {
 	const raw = String(value ?? "").replace(/\.local$/iu, "");
 	if (!raw.trim()) return null;
@@ -30,8 +54,18 @@ export function friendlyDeviceName(input: {
 	fallbackSeed?: string | null;
 }): string {
 	for (const candidate of [input.explicitName, input.osName, input.coordinatorName]) {
-		const normalized = normalizeDeviceNameHint(candidate);
-		if (normalized) return normalized;
+		const raw = String(candidate ?? "")
+			.replace(/\.local$/iu, "")
+			.trim();
+		// Classify before separator normalization so UUIDs and machine slugs cannot
+		// be disguised as human labels by replacing hyphens or underscores.
+		if (!raw || !isHumanPresentationName(raw)) continue;
+		try {
+			const normalized = normalizeDeviceNameHint(candidate);
+			if (normalized && isHumanPresentationName(normalized)) return normalized;
+		} catch {
+			// Unusable automatic hints must degrade to the generated fallback.
+		}
 	}
 	const seed = String(input.fallbackSeed ?? "")
 		.replace(/[^a-z0-9]/giu, "")

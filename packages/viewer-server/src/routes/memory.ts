@@ -8,6 +8,7 @@ import {
 	canonicalMemoryKind,
 	fromJson,
 	isSummaryLikeMemory as isCoreSummaryLikeMemory,
+	normalizeHumanPresentationName,
 	parseStrictInteger,
 	schema,
 } from "@codemem/core";
@@ -19,6 +20,151 @@ import { queryInt } from "../helpers.js";
 type StoreFactory = () => MemoryStore;
 
 type OwnershipPredicate = (item: Record<string, unknown>) => boolean;
+
+interface ActorPresentationRow {
+	actor_id: string;
+	display_name: string;
+	status: string;
+	merged_into_actor_id: string | null;
+}
+
+interface DevicePresentationRow {
+	device_id: string;
+	display_name: string;
+}
+
+interface PeerPresentationRow {
+	peer_device_id: string;
+	name: string | null;
+	actor_id: string | null;
+}
+
+const IDENTITY_LOOKUP_BATCH_SIZE = 500;
+
+function uniqueStrings(items: Record<string, unknown>[], key: string): string[] {
+	return [
+		...new Set(
+			items.map((item) => String(item[key] ?? "").trim()).filter((value) => value.length > 0),
+		),
+	];
+}
+
+function batchedLookup<T>(
+	store: MemoryStore,
+	values: string[],
+	query: (placeholders: string) => string,
+): T[] {
+	const rows: T[] = [];
+	for (let offset = 0; offset < values.length; offset += IDENTITY_LOOKUP_BATCH_SIZE) {
+		const batch = values.slice(offset, offset + IDENTITY_LOOKUP_BATCH_SIZE);
+		const placeholders = batch.map(() => "?").join(", ");
+		rows.push(...(store.db.prepare(query(placeholders)).all(...batch) as T[]));
+	}
+	return rows;
+}
+
+function humanName(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	try {
+		return normalizeHumanPresentationName(value, "display_name");
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Add presentation-only identity labels without changing persisted provenance.
+ */
+function attachResolvedIdentityFieldsUnsafe(
+	store: MemoryStore,
+	items: Record<string, unknown>[],
+): void {
+	const actorIds = uniqueStrings(items, "actor_id");
+	const deviceIds = uniqueStrings(items, "origin_device_id");
+	const peers = batchedLookup<PeerPresentationRow>(
+		store,
+		deviceIds,
+		(placeholders) =>
+			`SELECT peer_device_id, name, actor_id FROM sync_peers
+		 WHERE peer_device_id IN (${placeholders})
+		   AND TRIM(COALESCE(pinned_fingerprint, '')) <> ''`,
+	);
+	const peerByDevice = new Map(peers.map((peer) => [peer.peer_device_id, peer]));
+	const peerActorIds = peers
+		.map((peer) => String(peer.actor_id ?? "").trim())
+		.filter((actorId) => actorId.length > 0);
+	const actorRows = batchedLookup<ActorPresentationRow>(
+		store,
+		[...new Set([...actorIds, ...peerActorIds])],
+		(placeholders) =>
+			`SELECT actor_id, display_name, status, merged_into_actor_id FROM actors
+			 WHERE actor_id IN (${placeholders})`,
+	);
+	const mergedActorIds = actorRows
+		.map((actor) => String(actor.merged_into_actor_id ?? "").trim())
+		.filter((actorId) => actorId.length > 0);
+	const mergedActorRows = batchedLookup<ActorPresentationRow>(
+		store,
+		[...new Set(mergedActorIds)],
+		(placeholders) =>
+			`SELECT actor_id, display_name, status, merged_into_actor_id FROM actors
+			 WHERE actor_id IN (${placeholders})`,
+	);
+	const devices = batchedLookup<DevicePresentationRow>(
+		store,
+		deviceIds,
+		(placeholders) =>
+			`SELECT device_id, display_name FROM identity_devices
+		 WHERE device_id IN (${placeholders}) AND status = 'active'`,
+	);
+	const actorById = new Map(
+		[...actorRows, ...mergedActorRows].map((actor) => [actor.actor_id, actor] as const),
+	);
+	const activeActorName = (actorId: string): string | undefined => {
+		const actor = actorById.get(actorId);
+		if (actor?.status !== "active" || actor.merged_into_actor_id !== null) {
+			return undefined;
+		}
+		return humanName(actor.display_name);
+	};
+	const resolvedActorName = (actorId: string): string | undefined => {
+		const actor = actorById.get(actorId);
+		if (!actor) return undefined;
+		if (actor.status === "active" && actor.merged_into_actor_id === null) {
+			return humanName(actor.display_name);
+		}
+		const mergedIntoActorId = String(actor.merged_into_actor_id ?? "").trim();
+		return mergedIntoActorId ? activeActorName(mergedIntoActorId) : undefined;
+	};
+	const deviceNameById = new Map(
+		devices
+			.map((device) => [device.device_id, humanName(device.display_name)] as const)
+			.filter((entry): entry is readonly [string, string] => entry[1] !== undefined),
+	);
+
+	for (const item of items) {
+		const actorId = String(item.actor_id ?? "").trim();
+		const deviceId = String(item.origin_device_id ?? "").trim();
+		const peer = peerByDevice.get(deviceId);
+		const peerActorId = String(peer?.actor_id ?? "").trim();
+		const knownMemoryActor = actorById.has(actorId);
+		const actorName = knownMemoryActor
+			? (resolvedActorName(actorId) ?? humanName(item.actor_display_name))
+			: (resolvedActorName(peerActorId) ?? humanName(item.actor_display_name));
+		const deviceName = deviceNameById.get(deviceId) ?? humanName(peer?.name);
+		if (actorName) item.resolved_actor_display_name = actorName;
+		if (deviceName) item.resolved_device_display_name = deviceName;
+	}
+}
+
+function attachResolvedIdentityFields(store: MemoryStore, items: Record<string, unknown>[]): void {
+	try {
+		attachResolvedIdentityFieldsUnsafe(store, items);
+	} catch {
+		// Presentation enrichment is optional; neutral Feed fallbacks must remain
+		// available for legacy or partially initialized databases.
+	}
+}
 
 function serializeMemoryRow(
 	ownedBySelf: OwnershipPredicate,
@@ -357,6 +503,7 @@ export function memoryRoutes(getStore: StoreFactory) {
 			const result = hasMore ? items.slice(0, limit) : items;
 			const asRecords = result as unknown as Record<string, unknown>[];
 			attachSessionFields(store, asRecords);
+			attachResolvedIdentityFields(store, asRecords);
 			return c.json({
 				items: asRecords,
 				pagination: {
@@ -388,6 +535,7 @@ export function memoryRoutes(getStore: StoreFactory) {
 			const result = hasMore ? items.slice(0, limit) : items;
 			const asRecords = result as unknown as Record<string, unknown>[];
 			attachSessionFields(store, asRecords);
+			attachResolvedIdentityFields(store, asRecords);
 			return c.json({
 				items: asRecords,
 				pagination: {
@@ -518,6 +666,7 @@ export function memoryRoutes(getStore: StoreFactory) {
 			const items = store.recent(limit, filters);
 			const asRecords = items as unknown as Record<string, unknown>[];
 			attachSessionFields(store, asRecords);
+			attachResolvedIdentityFields(store, asRecords);
 			return c.json({ items: asRecords });
 		}
 	});

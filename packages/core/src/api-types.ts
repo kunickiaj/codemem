@@ -106,6 +106,10 @@ export interface ApiMemoryItem extends MemoryItemResponse {
 	project: string | null;
 	cwd?: string;
 	owned_by_self?: boolean;
+	/** Presentation-only actor label resolved from trusted local identity data. */
+	resolved_actor_display_name?: string;
+	/** Presentation-only device label resolved from trusted local identity data. */
+	resolved_device_display_name?: string;
 }
 
 /**

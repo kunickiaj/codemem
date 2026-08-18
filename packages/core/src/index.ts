@@ -608,6 +608,7 @@ export type { ProjectInviteSummary } from "./project-invite-identity.js";
 export {
 	friendlyDeviceName,
 	normalizeDeviceNameHint,
+	normalizeHumanPresentationName,
 	normalizeIdentityDisplayName,
 	normalizeProjectInviteSummaries,
 } from "./project-invite-identity.js";

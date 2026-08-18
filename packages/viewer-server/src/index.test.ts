@@ -1906,6 +1906,247 @@ describe("viewer-server", () => {
 	});
 
 	describe("memory feed routes", () => {
+		it("keeps memory list routes available when identity tables are unavailable", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Legacy schema identity",
+					actorId: "actor:legacy",
+					originDeviceId: "device:legacy",
+				});
+				store.db.exec("DROP TABLE identity_devices");
+
+				const response = await app.request("/api/observations?limit=10");
+				expect(response.status).toBe(200);
+				const payload = (await response.json()) as { items: Array<Record<string, unknown>> };
+				expect(payload.items[0]?.title).toBe("Legacy schema identity");
+				expect(payload.items[0]).not.toHaveProperty("resolved_actor_display_name");
+				expect(payload.items[0]).not.toHaveProperty("resolved_device_display_name");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("resolves trusted actor and device names across memory list routes", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = "2026-08-18T12:00:00.000Z";
+				const malformedId = "123e4567-e89b-12d3-a456-426614174000";
+				store.db
+					.prepare(
+						`INSERT INTO actors(actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at)
+						 VALUES (?, ?, 0, 'active', NULL, ?, ?), (?, ?, 0, 'active', NULL, ?, ?),
+						        (?, ?, 0, 'active', NULL, ?, ?)`,
+					)
+					.run(
+						"actor:direct",
+						"Trusted Actor",
+						now,
+						now,
+						"actor:peer",
+						"Peer Actor",
+						now,
+						now,
+						"actor:legacy",
+						malformedId,
+						now,
+						now,
+					);
+				store.db
+					.prepare(
+						`INSERT INTO actors(actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at)
+						 VALUES (?, ?, 0, 'active', NULL, ?, ?), (?, ?, 0, 'merged', ?, ?, ?)`,
+					)
+					.run(
+						"actor:merged-target",
+						"Merged Actor",
+						now,
+						now,
+						"actor:merged",
+						"Old Actor",
+						"actor:merged-target",
+						now,
+						now,
+					);
+				store.db
+					.prepare(
+						`INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, actor_id, created_at)
+						 VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)`,
+					)
+					.run(
+						"device:direct",
+						"Lower-priority Device",
+						"direct-fingerprint",
+						"actor:peer",
+						now,
+						"device:peer",
+						"Peer Device",
+						"peer-fingerprint",
+						"actor:peer",
+						now,
+						"device:legacy",
+						malformedId,
+						"legacy-fingerprint",
+						"actor:legacy",
+						now,
+					);
+				store.db
+					.prepare(
+						`INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, actor_id, created_at)
+						 VALUES (?, ?, ?, ?, ?), (?, ?, NULL, ?, ?)`,
+					)
+					.run(
+						"device:merged",
+						"Merged Device",
+						"merged-fingerprint",
+						"actor:peer",
+						now,
+						"device:unpinned",
+						"Unpinned Device",
+						"actor:peer",
+						now,
+					);
+				store.db
+					.prepare(
+						`INSERT INTO identity_devices(
+							device_id, identity_id, display_name, status, provenance, revision,
+							migration_state, assignment_version, source_fingerprint, idempotency_key,
+							created_at, updated_at
+						 ) VALUES (?, ?, ?, 'active', 'test', '1', 'user_managed', 1, NULL, ?, ?, ?)`,
+					)
+					.run("device:direct", "actor:direct", "Trusted Device", "identity-device-test", now, now);
+
+				const sessionId = insertTestSession(store.db);
+				const directId = insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Direct identity",
+					actorId: "actor:direct",
+					originDeviceId: "device:direct",
+					createdAt: "2026-08-18T12:03:00.000Z",
+				});
+				const peerId = insertTestMemory(store, {
+					sessionId,
+					kind: "session_summary",
+					title: "Peer identity",
+					actorId: "actor:missing",
+					originDeviceId: "device:peer",
+					createdAt: "2026-08-18T12:02:00.000Z",
+				});
+				const legacyId = insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Legacy identity",
+					actorId: "actor:legacy",
+					originDeviceId: "device:legacy",
+					createdAt: "2026-08-18T12:01:00.000Z",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Merged identity",
+					actorId: "actor:merged",
+					originDeviceId: "device:merged",
+					createdAt: "2026-08-18T12:00:00.000Z",
+				});
+				const unpinnedId = insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Unpinned identity",
+					actorId: "actor:missing-unpinned",
+					originDeviceId: "device:unpinned",
+					createdAt: "2026-08-18T11:59:00.000Z",
+				});
+				store.db
+					.prepare("UPDATE memory_items SET actor_display_name = ? WHERE id = ?")
+					.run("Raw direct provenance", directId);
+				store.db
+					.prepare("UPDATE memory_items SET actor_display_name = ? WHERE id = ?")
+					.run("Raw peer provenance", peerId);
+				store.db
+					.prepare("UPDATE memory_items SET actor_display_name = ? WHERE id = ?")
+					.run("Legacy teammate", legacyId);
+				store.db
+					.prepare("UPDATE memory_items SET actor_display_name = ? WHERE id = ?")
+					.run(malformedId, unpinnedId);
+
+				type IdentityItem = {
+					title: string;
+					actor_id: string;
+					actor_display_name: string;
+					origin_device_id: string;
+					resolved_actor_display_name?: string;
+					resolved_device_display_name?: string;
+				};
+				const load = async (path: string) => {
+					const response = await app.request(path);
+					expect(response.status).toBe(200);
+					return ((await response.json()) as { items: IdentityItem[] }).items;
+				};
+				const observations = await load("/api/observations?limit=10");
+				const summaries = await load("/api/summaries?limit=10");
+				const memories = await load("/api/memory?limit=10");
+				const direct = observations.find((item) => item.title === "Direct identity");
+				const peer = summaries.find((item) => item.title === "Peer identity");
+				const legacy = observations.find((item) => item.title === "Legacy identity");
+				const merged = observations.find((item) => item.title === "Merged identity");
+				const unpinned = observations.find((item) => item.title === "Unpinned identity");
+
+				expect(direct).toMatchObject({
+					actor_id: "actor:direct",
+					actor_display_name: "Raw direct provenance",
+					origin_device_id: "device:direct",
+					resolved_actor_display_name: "Trusted Actor",
+					resolved_device_display_name: "Trusted Device",
+				});
+				expect(peer).toMatchObject({
+					actor_id: "actor:missing",
+					actor_display_name: "Raw peer provenance",
+					origin_device_id: "device:peer",
+					resolved_actor_display_name: "Peer Actor",
+					resolved_device_display_name: "Peer Device",
+				});
+				expect(legacy).toMatchObject({
+					actor_id: "actor:legacy",
+					actor_display_name: "Legacy teammate",
+					origin_device_id: "device:legacy",
+					resolved_actor_display_name: "Legacy teammate",
+				});
+				expect(legacy).not.toHaveProperty("resolved_device_display_name");
+				expect(merged).toMatchObject({
+					actor_id: "actor:merged",
+					resolved_actor_display_name: "Merged Actor",
+					resolved_device_display_name: "Merged Device",
+				});
+				expect(merged?.resolved_actor_display_name).not.toBe("Peer Actor");
+				expect(unpinned).not.toHaveProperty("resolved_actor_display_name");
+				expect(unpinned).not.toHaveProperty("resolved_device_display_name");
+				expect(memories.find((item) => item.title === "Direct identity")).toMatchObject({
+					resolved_actor_display_name: "Trusted Actor",
+					resolved_device_display_name: "Trusted Device",
+				});
+				expect(memories.find((item) => item.title === "Peer identity")).toMatchObject({
+					resolved_actor_display_name: "Peer Actor",
+					resolved_device_display_name: "Peer Device",
+				});
+				expect(memories.find((item) => item.title === "Legacy identity")).toMatchObject({
+					actor_display_name: "Legacy teammate",
+					resolved_actor_display_name: "Legacy teammate",
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("applies sharing-domain visibility to memory list endpoints", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
@@ -8917,7 +9158,7 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/peers/rename", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ peer_device_id: "peer-rename", name: "Desk Mini" }),
+					body: JSON.stringify({ peer_device_id: "peer-rename", name: "  Desk   Mini  " }),
 				});
 
 				expect(res.status).toBe(200);
@@ -8927,6 +9168,23 @@ describe("viewer-server", () => {
 					.prepare("SELECT name FROM sync_peers WHERE peer_device_id = ?")
 					.get("peer-rename") as { name: string } | undefined;
 				expect(peerRow?.name).toBe("Desk Mini");
+
+				const invalidRes = await app.request("/api/sync/peers/rename", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						peer_device_id: "peer-rename",
+						name: "123e4567-e89b-12d3-a456-426614174000",
+					}),
+				});
+				expect(invalidRes.status).toBe(400);
+				expect(await invalidRes.json()).toEqual({ error: "name_invalid" });
+				expect(
+					store.db
+						.prepare("SELECT name FROM sync_peers WHERE peer_device_id = ?")
+						.pluck()
+						.get("peer-rename"),
+				).toBe("Desk Mini");
 			} finally {
 				cleanup();
 			}
@@ -11011,16 +11269,48 @@ describe("viewer-server", () => {
 				const createRes = await app.request("/api/sync/actors", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ display_name: "Fixture shadow" }),
+					body: JSON.stringify({ display_name: "  Fixture   shadow  " }),
 				});
 				expect(createRes.status).toBe(200);
 				const created = (await createRes.json()) as { actor_id: string; display_name: string };
 				expect(created.display_name).toBe("Fixture shadow");
 
+				const actorCount = store.db.prepare("SELECT COUNT(*) FROM actors").pluck().get();
+				const invalidCreateRes = await app.request("/api/sync/actors", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ display_name: "local:a57f7c7c-d531-4148-9917-78acb586caad" }),
+				});
+				expect(invalidCreateRes.status).toBe(400);
+				expect(await invalidCreateRes.json()).toEqual({ error: "display_name_invalid" });
+				expect(store.db.prepare("SELECT COUNT(*) FROM actors").pluck().get()).toBe(actorCount);
+
+				const invalidRenameRes = await app.request("/api/sync/actors/rename", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						actor_id: created.actor_id,
+						display_name: "123e4567-e89b-12d3-a456-426614174000",
+					}),
+				});
+				expect(invalidRenameRes.status).toBe(400);
+				expect(await invalidRenameRes.json()).toEqual({
+					error: "display_name_invalid",
+				});
+				expect(
+					store.db
+						.prepare("SELECT display_name FROM actors WHERE actor_id = ?")
+						.pluck()
+						.get(created.actor_id),
+				).toBe("Fixture shadow");
+
 				const renameRes = await app.request("/api/sync/actors/rename", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ actor_id: created.actor_id, display_name: "Fixture remote" }),
+					body: JSON.stringify({
+						actor_id: created.actor_id,
+						display_name: "  Fixture   remote  ",
+					}),
 				});
 				expect(renameRes.status).toBe(200);
 				expect((await renameRes.json()).display_name).toBe("Fixture remote");
@@ -15957,6 +16247,20 @@ describe("viewer-server", () => {
 				globalThis.fetch = fetchMock as typeof fetch;
 				const { app, cleanup } = createTestApp();
 				try {
+					const invalidRename = await app.request(
+						"/api/coordinator/admin/devices/device-1/rename",
+						{
+							method: "POST",
+							headers: { "Content-Type": "application/json" },
+							body: JSON.stringify({ display_name: "device:123e4567" }),
+						},
+					);
+					expect(invalidRename.status).toBe(400);
+					expect(await invalidRename.json()).toMatchObject({
+						error: "display_name_invalid",
+					});
+					expect(fetchMock).not.toHaveBeenCalled();
+
 					const renamed = await app.request("/api/coordinator/admin/devices/device-1/rename", {
 						method: "POST",
 						headers: { "Content-Type": "application/json" },

@@ -556,6 +556,13 @@ describe("recipient-policy invitations", () => {
 
 	it.each([
 		["empty names", "project-share-recipient-name", "   ", "Identity display name is required"],
+		["machine actor names", "project-share-recipient-name", "actor:peer", "human-readable name"],
+		[
+			"machine device names",
+			"project-share-device-name",
+			"device_abc123def",
+			"human-readable name",
+		],
 		[
 			"names over 120 Unicode code points",
 			"project-share-recipient-name",

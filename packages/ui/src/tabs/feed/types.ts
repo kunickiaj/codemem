@@ -40,11 +40,13 @@ export interface FeedItem {
 	project?: string;
 	actor_id?: string;
 	actor_display_name?: string;
+	resolved_actor_display_name?: string;
 	owned_by_self?: boolean;
 	visibility?: string;
 	workspace_kind?: string;
 	origin_source?: string;
 	origin_device_id?: string;
+	resolved_device_display_name?: string;
 	trust_state?: string;
 	metadata_json?: FeedItemMetadata;
 	summary?: unknown;

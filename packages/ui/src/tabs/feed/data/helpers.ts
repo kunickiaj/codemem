@@ -2,8 +2,15 @@
  */
 
 import { normalize } from "../../../lib/format";
+import { humanPresentationLabel } from "../../../lib/identity-presentation";
 import { state } from "../../../lib/state";
 import type { FeedItem, FeedItemMetadata } from "../types";
+
+function isOwnedBySelf(item: FeedItem): boolean {
+	if (item.owned_by_self === true) return true;
+	const actorId = String(item.actor_id || "").trim();
+	return Boolean(actorId && actorId === state.lastStatsPayload?.identity?.actor_id);
+}
 
 export function mergeMetadata(metadata: unknown): FeedItemMetadata {
 	if (!metadata || typeof metadata !== "object") return {};
@@ -86,11 +93,19 @@ export function trustStateLabel(trustState: string): string {
 }
 
 export function authorLabel(item: FeedItem): string {
-	if (item?.owned_by_self === true) return "You";
+	if (isOwnedBySelf(item)) return "You";
 	const actorId = String(item.actor_id || "").trim();
-	const actorName = String(item.actor_display_name || "").trim();
-	if (actorId && actorId === state.lastStatsPayload?.identity?.actor_id) return "You";
-	return actorName || actorId || "Unknown author";
+	const actorName = humanPresentationLabel(item.resolved_actor_display_name);
+	if (actorName) return actorName;
+	return actorId || item.actor_display_name ? "Teammate" : "Unknown author";
+}
+
+export function deviceLabel(item: FeedItem, metadata: FeedItemMetadata = {}): string {
+	if (isOwnedBySelf(item)) return "";
+	const deviceId = String(item.origin_device_id || metadata.origin_device_id || "").trim();
+	if (!deviceId) return "";
+	const deviceName = humanPresentationLabel(item.resolved_device_display_name);
+	return deviceName ? `Device ${deviceName}` : "Shared device";
 }
 
 export function mergeFeedItems(currentItems: FeedItem[], incomingItems: FeedItem[]): FeedItem[] {

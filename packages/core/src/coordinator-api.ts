@@ -23,7 +23,7 @@ import type {
 } from "./coordinator-store-contract.js";
 import { PROJECT_INVITE_PENDING_STATUS } from "./project-invite-acceptance.js";
 import {
-	normalizeIdentityDisplayName,
+	normalizeHumanPresentationName,
 	normalizeProjectInviteSummaries,
 } from "./project-invite-identity.js";
 import { acceptedProjectIntentDigest, parseAcceptedProjectIntent } from "./project-share-intent.js";
@@ -1580,7 +1580,7 @@ export function createCoordinatorApp(
 				return c.json({ error: "project_invite_identity_context_invalid" }, 400);
 			}
 			try {
-				normalizeIdentityDisplayName(inviterDisplayName, "inviter_display_name");
+				normalizeHumanPresentationName(inviterDisplayName, "inviter_display_name");
 				projectSummaries = normalizeProjectInviteSummaries(data.project_summaries);
 				if (
 					!Array.isArray(data.project_intent) ||
@@ -2084,7 +2084,7 @@ export function createCoordinatorApp(
 						if (typeof data.recipient_display_name !== "string") {
 							throw new Error("recipient_display_name_invalid");
 						}
-						normalizedRecipientDisplayName = normalizeIdentityDisplayName(
+						normalizedRecipientDisplayName = normalizeHumanPresentationName(
 							data.recipient_display_name,
 							"recipient_display_name",
 						);
@@ -2093,7 +2093,7 @@ export function createCoordinatorApp(
 						if (typeof data.device_display_name !== "string") {
 							throw new Error("device_display_name_invalid");
 						}
-						normalizedDeviceDisplayName = normalizeIdentityDisplayName(
+						normalizedDeviceDisplayName = normalizeHumanPresentationName(
 							data.device_display_name,
 							"device_display_name",
 						);
@@ -2176,11 +2176,11 @@ export function createCoordinatorApp(
 				let normalizedRecipientName: string;
 				let normalizedDeviceName: string;
 				try {
-					normalizedRecipientName = normalizeIdentityDisplayName(
+					normalizedRecipientName = normalizeHumanPresentationName(
 						recipientDisplayName,
 						"recipient_display_name",
 					);
-					normalizedDeviceName = normalizeIdentityDisplayName(
+					normalizedDeviceName = normalizeHumanPresentationName(
 						deviceDisplayName,
 						"device_display_name",
 					);

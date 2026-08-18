@@ -521,6 +521,27 @@ describe("share-operation persistence", () => {
 		).toEqual(protectedBefore);
 	});
 
+	it("preserves the trusted pending Person name over a machine-shaped acceptance fallback", () => {
+		const operation = plan({ person: { kind: "pending", displayName: "Dogfood Teammate" } });
+		persistShareOperation(db, operation, {
+			inviteId: "invite-1",
+			tokenDigest: inviteTokenDigest("token-1"),
+		});
+
+		const input = acceptanceInput(operation, {
+			recipientDisplayName: "local:a57f7c7c-d531-4148-9917-78acb586caad",
+		});
+		reconcileShareOperationAcceptance(db, input);
+		reconcileShareOperationAcceptance(db, input);
+
+		expect(
+			db.prepare("SELECT display_name FROM actors WHERE actor_id = 'actor-brian'").pluck().get(),
+		).toBe("Dogfood Teammate");
+		expect(db.prepare("SELECT recipient_display_name FROM share_operations").pluck().get()).toBe(
+			"Dogfood Teammate",
+		);
+	});
+
 	it("accepts compatible migrated inviter policy without rewriting its metadata", () => {
 		const project = projects[0];
 		if (!project) throw new Error("project fixture missing");

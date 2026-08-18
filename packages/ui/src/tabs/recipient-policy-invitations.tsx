@@ -10,6 +10,7 @@ import type {
 	RecipientPolicyIntentGraphV1,
 } from "../lib/api/sync";
 import type { ImportInviteResult } from "../lib/api/types";
+import { humanPresentationLabel, isMachinePresentationLabel } from "../lib/identity-presentation";
 import { openProjectShareFlow } from "./project-sharing";
 
 type CreateKind = "team_member" | "add_device";
@@ -29,10 +30,6 @@ type RecipientAcceptance = {
 	deliveryPending: boolean;
 };
 
-const MACHINE_NAME_PREFIX = /^(?:local:|identity:|pending_)/iu;
-const UUID_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-const HEX_FRAGMENT_NAME = /^[0-9a-f]{12,}$/iu;
-
 /**
  * Machine identifiers (device ids, identity ids, uuid fragments) make terrible
  * display names. Seed the name fields empty instead so the required-field
@@ -40,10 +37,8 @@ const HEX_FRAGMENT_NAME = /^[0-9a-f]{12,}$/iu;
  */
 function humanProvidedNameOrEmpty(value: string | null | undefined): string {
 	const reviewed = String(value ?? "").trim();
-	if (!reviewed) return "";
-	if (MACHINE_NAME_PREFIX.test(reviewed)) return "";
-	if (UUID_NAME.test(reviewed) || HEX_FRAGMENT_NAME.test(reviewed)) return "";
-	return reviewed;
+	if (/^pending_/iu.test(reviewed)) return "";
+	return humanPresentationLabel(reviewed);
 }
 
 function displayNameError(value: string, label: string): string {
@@ -52,6 +47,9 @@ function displayNameError(value: string, label: string): string {
 	if ([...reviewed].length > 120) return `${label} must use 120 characters or fewer.`;
 	if ([...reviewed].some((character) => /[\p{Cc}\p{Cf}]/u.test(character))) {
 		return `${label} cannot include control or format characters.`;
+	}
+	if (/^pending_/iu.test(reviewed) || isMachinePresentationLabel(reviewed)) {
+		return `${label} must use a human-readable name.`;
 	}
 	return "";
 }

@@ -19,7 +19,7 @@ import {
 	renderNarrativeContent,
 	renderSummarySections,
 } from "../data/body-renderers";
-import { authorLabel, itemKey, mergeMetadata, trustStateLabel } from "../data/helpers";
+import { authorLabel, deviceLabel, itemKey, mergeMetadata, trustStateLabel } from "../data/helpers";
 import {
 	clampClass,
 	defaultObservationView,
@@ -61,10 +61,10 @@ export function FeedItemCard({
 	const files = parseJsonArray(item.files || []);
 	const project = item.project || "";
 	const actor = authorLabel(item);
+	const device = deviceLabel(item, metadata);
 	const visibility = String(item.visibility || metadata?.visibility || "private").trim();
 	const workspaceKind = String(item.workspace_kind || metadata?.workspace_kind || "").trim();
 	const originSource = String(item.origin_source || metadata?.origin_source || "").trim();
-	const originDeviceId = String(item.origin_device_id || metadata?.origin_device_id || "").trim();
 	const trustState = String(item.trust_state || metadata?.trust_state || "").trim();
 	const tagContent = tags.length ? ` · ${tags.map((t) => formatTagLabel(t)).join(", ")}` : "";
 	const fileContent = files.length ? ` · ${formatFileList(files)}` : "";
@@ -134,7 +134,7 @@ export function FeedItemCard({
 	const provenanceDetails = [
 		workspaceKind && workspaceKind !== visibility ? `Workspace ${workspaceKind}` : "",
 		originSource ? `From ${originSource}` : "",
-		originDeviceId && actor !== "You" ? `Device ${originDeviceId}` : "",
+		device,
 		trustState && trustState !== "trusted" ? trustStateLabel(trustState) : "",
 	]
 		.filter(Boolean)

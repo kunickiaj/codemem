@@ -2243,6 +2243,12 @@ export async function coordinatorImportInviteAction(opts: {
 				"invite_expired",
 				"invite_identity_conflict",
 				"invite_invalid",
+				"recipient_display_name_invalid",
+				"recipient_display_name_required",
+				"recipient_display_name_too_long",
+				"device_display_name_invalid",
+				"device_display_name_required",
+				"device_display_name_too_long",
 				"recipient_invite_intent_mismatch",
 				"recipient_invite_review_unavailable",
 			].includes(detail)

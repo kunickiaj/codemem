@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
-import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
+import {
+	isHumanPresentationName,
+	normalizeIdentityDisplayName,
+} from "./project-invite-identity.js";
 import type { AcceptedProjectIntent, ShareProjectIntent } from "./project-share-intent.js";
 import {
 	parseAcceptedProjectIntent,
@@ -550,10 +553,20 @@ export function reconcileShareOperationAcceptance(
 			throw new Error("recipient_device_identity_conflict");
 		}
 		const recipientActor = db
-			.prepare("SELECT actor_id, is_local, status FROM actors WHERE actor_id = ?")
+			.prepare("SELECT actor_id, display_name, is_local, status FROM actors WHERE actor_id = ?")
 			.get(input.recipientActorId) as
-			| { actor_id: string; is_local: number; status: string }
+			| { actor_id: string; display_name: string; is_local: number; status: string }
 			| undefined;
+		const pendingDisplayName = db
+			.prepare("SELECT display_name FROM actors WHERE actor_id = ? AND status = 'pending'")
+			.pluck()
+			.get(operation.person_id);
+		const trustedDisplayName = [recipientActor?.display_name, pendingDisplayName].find(
+			(name): name is string => isHumanPresentationName(name),
+		);
+		const recipientDisplayName = isHumanPresentationName(input.recipientDisplayName)
+			? input.recipientDisplayName
+			: (trustedDisplayName ?? input.recipientDisplayName);
 		const pendingRecipientActorConflict =
 			operation.person_kind === "pending" &&
 			recipientActor != null &&
@@ -576,7 +589,7 @@ export function reconcileShareOperationAcceptance(
 			ON CONFLICT(actor_id) DO UPDATE SET display_name = excluded.display_name,
 				status = 'active', merged_into_actor_id = NULL, updated_at = excluded.updated_at`).run(
 			input.recipientActorId,
-			input.recipientDisplayName,
+			recipientDisplayName,
 			input.consumedAt,
 			input.consumedAt,
 		);
@@ -596,7 +609,7 @@ export function reconcileShareOperationAcceptance(
 				bootstrap_grant_id = ?, updated_at = ? WHERE operation_id = ?`).run(
 			input.recipientActorId,
 			input.recipientActorId,
-			input.recipientDisplayName,
+			recipientDisplayName,
 			input.recipientDeviceId,
 			input.recipientDeviceDisplayName,
 			input.recipientPublicKey,
