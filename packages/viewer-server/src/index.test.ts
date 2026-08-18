@@ -1964,16 +1964,22 @@ describe("viewer-server", () => {
 				store.db
 					.prepare(
 						`INSERT INTO actors(actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at)
-						 VALUES (?, ?, 0, 'active', NULL, ?, ?), (?, ?, 0, 'merged', ?, ?, ?)`,
+						 VALUES (?, ?, 0, 'active', NULL, ?, ?), (?, ?, 0, 'merged', ?, ?, ?),
+						        (?, ?, 0, 'merged', ?, ?, ?)`,
 					)
 					.run(
 						"actor:merged-target",
 						"Merged Actor",
 						now,
 						now,
+						"actor:merged-middle",
+						"Middle Actor",
+						"actor:merged-target",
+						now,
+						now,
 						"actor:merged",
 						"Old Actor",
-						"actor:merged-target",
+						"actor:merged-middle",
 						now,
 						now,
 					);
@@ -13067,6 +13073,18 @@ describe("viewer-server", () => {
 					device_name: "Recipient Laptop",
 					reviewed_onboarding_digest: inspection.onboarding.reviewedOnboardingDigest,
 				};
+				if (testCase.kind === "team_member") {
+					const invalidName = await recipient.app.request("/api/sync/invites/import", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							...importBody,
+							recipient_name: "local:0ea043cc-c61c-427d-8b77-572331b9855c",
+						}),
+					});
+					expect(invalidName.status).toBe(400);
+					expect(await invalidName.json()).toEqual({ error: "recipient_display_name_invalid" });
+				}
 				const stale = await recipient.app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },

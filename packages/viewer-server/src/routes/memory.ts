@@ -107,16 +107,6 @@ function attachResolvedIdentityFieldsUnsafe(
 			`SELECT actor_id, display_name, status, merged_into_actor_id FROM actors
 			 WHERE actor_id IN (${placeholders})`,
 	);
-	const mergedActorIds = actorRows
-		.map((actor) => String(actor.merged_into_actor_id ?? "").trim())
-		.filter((actorId) => actorId.length > 0);
-	const mergedActorRows = batchedLookup<ActorPresentationRow>(
-		store,
-		[...new Set(mergedActorIds)],
-		(placeholders) =>
-			`SELECT actor_id, display_name, status, merged_into_actor_id FROM actors
-			 WHERE actor_id IN (${placeholders})`,
-	);
 	const devices = batchedLookup<DevicePresentationRow>(
 		store,
 		deviceIds,
@@ -124,24 +114,44 @@ function attachResolvedIdentityFieldsUnsafe(
 			`SELECT device_id, display_name FROM identity_devices
 		 WHERE device_id IN (${placeholders}) AND status = 'active'`,
 	);
-	const actorById = new Map(
-		[...actorRows, ...mergedActorRows].map((actor) => [actor.actor_id, actor] as const),
-	);
-	const activeActorName = (actorId: string): string | undefined => {
-		const actor = actorById.get(actorId);
-		if (actor?.status !== "active" || actor.merged_into_actor_id !== null) {
-			return undefined;
-		}
-		return humanName(actor.display_name);
-	};
+	const actorById = new Map(actorRows.map((actor) => [actor.actor_id, actor] as const));
+	let pendingMergeTargets = [
+		...new Set(
+			actorRows
+				.map((actor) => String(actor.merged_into_actor_id ?? "").trim())
+				.filter((actorId) => actorId && !actorById.has(actorId)),
+		),
+	];
+	while (pendingMergeTargets.length > 0) {
+		const targetRows = batchedLookup<ActorPresentationRow>(
+			store,
+			pendingMergeTargets,
+			(placeholders) =>
+				`SELECT actor_id, display_name, status, merged_into_actor_id FROM actors
+				 WHERE actor_id IN (${placeholders})`,
+		);
+		for (const actor of targetRows) actorById.set(actor.actor_id, actor);
+		pendingMergeTargets = [
+			...new Set(
+				targetRows
+					.map((actor) => String(actor.merged_into_actor_id ?? "").trim())
+					.filter((actorId) => actorId && !actorById.has(actorId)),
+			),
+		];
+	}
 	const resolvedActorName = (actorId: string): string | undefined => {
-		const actor = actorById.get(actorId);
-		if (!actor) return undefined;
-		if (actor.status === "active" && actor.merged_into_actor_id === null) {
-			return humanName(actor.display_name);
+		const seen = new Set<string>();
+		let currentActorId = actorId;
+		while (currentActorId && !seen.has(currentActorId)) {
+			seen.add(currentActorId);
+			const actor = actorById.get(currentActorId);
+			if (!actor) return undefined;
+			if (actor.status === "active" && actor.merged_into_actor_id === null) {
+				return humanName(actor.display_name);
+			}
+			currentActorId = String(actor.merged_into_actor_id ?? "").trim();
 		}
-		const mergedIntoActorId = String(actor.merged_into_actor_id ?? "").trim();
-		return mergedIntoActorId ? activeActorName(mergedIntoActorId) : undefined;
+		return undefined;
 	};
 	const deviceNameById = new Map(
 		devices

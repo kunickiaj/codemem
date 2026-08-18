@@ -889,10 +889,16 @@ function recipientInviteOnboardingPreviewFromReviewedIntent(
 }
 
 const SAFE_RECIPIENT_INVITE_ERRORS = new Set([
+	"device_display_name_invalid",
+	"device_display_name_required",
+	"device_display_name_too_long",
 	"invite_already_bound",
 	"invite_expired",
 	"invite_identity_conflict",
 	"invite_invalid",
+	"recipient_display_name_invalid",
+	"recipient_display_name_required",
+	"recipient_display_name_too_long",
 	"recipient_invite_intent_mismatch",
 	"recipient_invite_review_unavailable",
 	"reviewed_onboarding_stale",

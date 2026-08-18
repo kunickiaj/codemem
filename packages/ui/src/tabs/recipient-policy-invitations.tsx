@@ -80,6 +80,15 @@ function errorMessage(cause: unknown, fallback: string): string {
 	if (cause.message === "invite_identity_conflict") {
 		return "This device already belongs to a different Identity. Use a fresh device or ask the owner for the correct invitation.";
 	}
+	if (cause.message === "recipient_display_name_invalid") {
+		return "Enter a human-readable Identity name instead of an internal identifier.";
+	}
+	if (cause.message === "recipient_display_name_required") {
+		return "Enter an Identity display name before accepting.";
+	}
+	if (cause.message === "recipient_display_name_too_long") {
+		return "Use an Identity display name with 120 characters or fewer.";
+	}
 	return fallback;
 }
 
@@ -194,6 +203,38 @@ function Confirmation({ preview }: { preview: RecipientOnboardingPreviewV1 }) {
 		<TeamConfirmation preview={preview} />
 	) : (
 		<AddDeviceConfirmation preview={preview} />
+	);
+}
+
+function RecipientNameConfirmation({
+	error,
+	name,
+	onChange,
+}: {
+	error: string;
+	name: string;
+	onChange: (value: string) => void;
+}) {
+	return (
+		<section aria-labelledby="recipient-onboarding-name-title">
+			<h3 id="recipient-onboarding-name-title">Who will receive access</h3>
+			<label className="field" htmlFor="recipient-onboarding-name">
+				<span>Identity display name</span>
+				<input
+					aria-describedby={error ? "recipient-onboarding-name-error" : undefined}
+					aria-invalid={Boolean(error)}
+					id="recipient-onboarding-name"
+					onInput={(event) => onChange(event.currentTarget.value)}
+					placeholder="Your name — e.g. Alex Rivera"
+					value={name}
+				/>
+			</label>
+			{error ? (
+				<p className="small" id="recipient-onboarding-name-error" role="alert">
+					{error}
+				</p>
+			) : null}
+		</section>
 	);
 }
 
@@ -369,6 +410,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 	const [inspected, setInspected] = useState<InspectInviteResult | null>(null);
 	const [projectAcceptance, setProjectAcceptance] = useState<ProjectShareAcceptance | null>(null);
 	const [recipientAcceptance, setRecipientAcceptance] = useState<RecipientAcceptance | null>(null);
+	const [recipientName, setRecipientName] = useState("");
 	const [projectRecipientName, setProjectRecipientName] = useState("");
 	const [projectDeviceName, setProjectDeviceName] = useState("");
 	const [created, setCreated] = useState<CreatedRecipientInvite | null>(null);
@@ -403,6 +445,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 		setInspected(null);
 		setProjectAcceptance(null);
 		setRecipientAcceptance(null);
+		setRecipientName("");
 		setProjectRecipientName("");
 		setProjectDeviceName("");
 		setCreated(null);
@@ -485,7 +528,9 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 			const result = await api.inspectCoordinatorInvite(reviewedInvite);
 			if (!isCurrentInspection()) return;
 			setInspected(result);
-			if (result.kind === "project_share_invite") {
+			if (result.kind === "team_member") {
+				setRecipientName(humanProvidedNameOrEmpty(result.recipient_name));
+			} else if (result.kind === "project_share_invite") {
 				setProjectRecipientName(humanProvidedNameOrEmpty(result.recipient_name));
 				setProjectDeviceName(humanProvidedNameOrEmpty(result.device_name));
 			}
@@ -519,6 +564,12 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 		) {
 			return;
 		}
+		if (
+			inspected.kind === "team_member" &&
+			displayNameError(recipientName, "Identity display name")
+		) {
+			return;
+		}
 		accepting.current = true;
 		setBusy(true);
 		setError("");
@@ -531,7 +582,8 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 							device_name: projectDeviceName.trim(),
 						})
 					: await api.importCoordinatorInvite(invite.trim(), {
-							recipient_name: inspected.recipient_name,
+							recipient_name:
+								inspected.kind === "team_member" ? recipientName.trim() : inspected.recipient_name,
 							device_name: inspected.device_name,
 							reviewed_onboarding_digest: inspected.onboarding.reviewedOnboardingDigest,
 						});
@@ -584,6 +636,10 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 			? inspected.onboarding
 			: null;
 	const projectShareInvite = inspected?.kind === "project_share_invite" ? inspected : null;
+	const recipientNameError =
+		inspected?.kind === "team_member"
+			? displayNameError(recipientName, "Identity display name")
+			: "";
 	const projectRecipientNameError = projectShareInvite
 		? displayNameError(projectRecipientName, "Identity display name")
 		: "";
@@ -729,6 +785,16 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 							{recipientPreview && !recipientAcceptance ? (
 								<Confirmation preview={recipientPreview} />
 							) : null}
+							{inspected?.kind === "team_member" && !recipientAcceptance ? (
+								<RecipientNameConfirmation
+									error={recipientNameError}
+									name={recipientName}
+									onChange={(value) => {
+										setRecipientName(value);
+										setError("");
+									}}
+								/>
+							) : null}
 							{projectShareInvite && !projectAcceptance ? (
 								<ProjectShareConfirmation
 									deviceName={projectDeviceName}
@@ -798,6 +864,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 									className="settings-button sync-dialog-confirm"
 									disabled={
 										busy ||
+										Boolean(inspected?.kind === "team_member" && recipientNameError) ||
 										Boolean(
 											projectShareInvite &&
 												(!projectShareInvite.projects?.length ||
