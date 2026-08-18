@@ -6611,7 +6611,11 @@ export function syncRoutes(
 				dbPath: store.dbPath,
 				recipientActorId: recipientInvite ? null : store.actorId,
 				recipientDisplayName:
-					typeof body.recipient_name === "string" ? body.recipient_name : store.actorDisplayName,
+					decoded.kind === "add_device"
+						? null
+						: typeof body.recipient_name === "string"
+							? body.recipient_name
+							: store.actorDisplayName,
 				deviceDisplayName: typeof body.device_name === "string" ? body.device_name : null,
 				reviewedOnboardingDigest: reviewedOnboardingDigest || null,
 			});

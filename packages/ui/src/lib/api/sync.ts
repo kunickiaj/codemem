@@ -84,7 +84,7 @@ type CoordinatorInviteIdentity =
 			reviewed_onboarding_digest?: never;
 	  }
 	| {
-			recipient_name: string;
+			recipient_name?: string;
 			device_name: string;
 			reviewed_onboarding_digest: string;
 	  };

@@ -1988,9 +1988,9 @@ describe("coordinator local admin actions", () => {
 		expect(capturedBodies[0]).toEqual({ token: "fresh-add-device-token" });
 		expect(capturedBodies[1]).toMatchObject({
 			identity_id: targetIdentityId,
-			recipient_display_name: "Existing Person",
 			device_display_name: "Recipient laptop",
 		});
+		expect(capturedBodies[1]).not.toHaveProperty("recipient_display_name");
 		expect(readCodememConfigFileAtPath(configPath)).toMatchObject({
 			actor_id: targetIdentityId,
 		});
@@ -2529,7 +2529,10 @@ describe("coordinator local admin actions", () => {
 			keysDir,
 			configPath,
 			recipientActorId: testCase.identityId,
-			recipientDisplayName: "  Brian   Example  ",
+			recipientDisplayName:
+				testCase.kind === "team_member"
+					? "  Brian   Example  "
+					: "local:0ea043cc-c61c-427d-8b77-572331b9855c",
 			deviceDisplayName: "Recipient laptop",
 			reviewedOnboardingDigest,
 		});
@@ -2540,16 +2543,21 @@ describe("coordinator local admin actions", () => {
 			keysDir,
 			configPath,
 			recipientActorId: testCase.identityId,
-			recipientDisplayName: "  Brian   Example  ",
+			recipientDisplayName:
+				testCase.kind === "team_member"
+					? "  Brian   Example  "
+					: "local:0ea043cc-c61c-427d-8b77-572331b9855c",
 			deviceDisplayName: "Recipient laptop",
 			reviewedOnboardingDigest,
 		});
 		const joinBodies = capturedBodies.filter((body) => body.invite_kind === testCase.kind);
 		expect(joinBodies).toHaveLength(2);
-		expect(joinBodies[0]).toMatchObject({
-			recipient_display_name: "Brian Example",
-			device_display_name: "Recipient laptop",
-		});
+		expect(joinBodies[0]).toMatchObject({ device_display_name: "Recipient laptop" });
+		if (testCase.kind === "team_member") {
+			expect(joinBodies[0]).toMatchObject({ recipient_display_name: "Brian Example" });
+		} else {
+			expect(joinBodies[0]).not.toHaveProperty("recipient_display_name");
+		}
 
 		const persistedConfig = readCodememConfigFileAtPath(configPath);
 		expect(persistedConfig).toMatchObject({

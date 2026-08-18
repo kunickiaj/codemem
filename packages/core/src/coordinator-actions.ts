@@ -2107,12 +2107,14 @@ export async function coordinatorImportInviteAction(opts: {
 		recipientActorId = recipientInviteIdentityId;
 	}
 	const recipientDisplayName =
-		projectInvite || recipientInvite
-			? normalizeIdentityDisplayName(
-					String(opts.recipientDisplayName ?? config.actor_display_name ?? fallbackDeviceName),
-					"recipient_display_name",
-				)
-			: String(config.actor_display_name ?? deviceId).trim() || deviceId;
+		payload.kind === "add_device"
+			? ""
+			: projectInvite || recipientInvite
+				? normalizeIdentityDisplayName(
+						String(opts.recipientDisplayName ?? config.actor_display_name ?? fallbackDeviceName),
+						"recipient_display_name",
+					)
+				: String(config.actor_display_name ?? deviceId).trim() || deviceId;
 	const displayName =
 		projectInvite || recipientInvite
 			? normalizeIdentityDisplayName(
@@ -2189,7 +2191,9 @@ export async function coordinatorImportInviteAction(opts: {
 			? {
 					invite_kind: payload.kind,
 					identity_id: recipientActorId,
-					recipient_display_name: recipientDisplayName,
+					...(payload.kind === "team_member"
+						? { recipient_display_name: recipientDisplayName }
+						: {}),
 					device_display_name: displayName,
 				}
 			: {}),

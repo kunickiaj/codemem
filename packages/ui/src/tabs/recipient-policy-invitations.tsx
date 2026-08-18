@@ -582,8 +582,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 							device_name: projectDeviceName.trim(),
 						})
 					: await api.importCoordinatorInvite(invite.trim(), {
-							recipient_name:
-								inspected.kind === "team_member" ? recipientName.trim() : inspected.recipient_name,
+							...(inspected.kind === "team_member" ? { recipient_name: recipientName.trim() } : {}),
 							device_name: inspected.device_name,
 							reviewed_onboarding_digest: inspected.onboarding.reviewedOnboardingDigest,
 						});

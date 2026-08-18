@@ -198,7 +198,7 @@ describe("recipient-policy invitations", () => {
 	it("inspects and accepts add-device access with direct, inherited, and excluded Projects", async () => {
 		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
 			kind: "add_device",
-			recipient_name: "Local Identity",
+			recipient_name: "local:0ea043cc-c61c-427d-8b77-572331b9855c",
 			device_name: "Travel Laptop",
 			onboarding: addDevicePreview,
 		});
@@ -232,7 +232,6 @@ describe("recipient-policy invitations", () => {
 		act(() => button("Accept invitation", dialog).click());
 		await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledOnce());
 		expect(api.importCoordinatorInvite).toHaveBeenCalledWith("recipient-invite", {
-			recipient_name: "Local Identity",
 			device_name: "Travel Laptop",
 			reviewed_onboarding_digest: addDevicePreview.reviewedOnboardingDigest,
 		});
