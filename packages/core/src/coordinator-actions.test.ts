@@ -243,6 +243,88 @@ describe("coordinator local admin actions", () => {
 		expect(capturedBodies[2]).not.toHaveProperty("device_display_name");
 	});
 
+	it("retries add-device onboarding without optional display names for older coordinators", async () => {
+		const actionDbPath = join(tmpDir, "legacy-coordinator-add-device.sqlite");
+		const keysDir = join(tmpDir, "legacy-coordinator-add-device-keys");
+		const configPath = join(tmpDir, "legacy-coordinator-add-device-config.json");
+		const identityId = "identity-owner";
+		const reviewedIntent = addDeviceReviewedIntent(identityId);
+		const reviewedDigest = await recipientReviewedIntentDigest(reviewedIntent);
+		const capturedBodies: Record<string, unknown>[] = [];
+		const acceptedResponse = {
+			ok: true,
+			status: "accepted",
+			kind: "add_device",
+			group_id: "coordinator-a",
+			identity_id: identityId,
+			target_identity_id: identityId,
+			reviewed_preview_digest: reviewedDigest,
+			reviewed_intent: reviewedIntent,
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_url: string, init?: RequestInit) => {
+				const body =
+					init?.body instanceof Uint8Array ? Buffer.from(init.body).toString("utf8") : "{}";
+				const parsed = JSON.parse(body) as Record<string, unknown>;
+				capturedBodies.push(parsed);
+				return parsed.device_display_name
+					? new Response(JSON.stringify({ error: "unexpected_recipient_invite_fields" }), {
+							status: 400,
+						})
+					: new Response(JSON.stringify(acceptedResponse), { status: 200 });
+			}),
+		);
+		const invite = encodeInvitePayload({
+			v: 1,
+			kind: "add_device",
+			coordinator_url: "https://coord.example.test",
+			group_id: "coordinator-a",
+			policy: "auto_admit",
+			token: "legacy-coordinator-add-device-token",
+			expires_at: "2099-01-01T00:00:00.000Z",
+			team_name: null,
+			target_identity_id: identityId,
+			reviewed_preview_digest: reviewedDigest,
+		});
+		const reviewedOnboardingDigest = reviewedOnboardingDigestForRecipientInvite({
+			dbPath: actionDbPath,
+			keysDir,
+			invitationId: "legacy-coordinator-add-device-token",
+			identityId,
+			deviceDisplayName: "Owner's new laptop",
+			reviewedIntent,
+		});
+
+		await expect(
+			coordinatorImportInviteAction({
+				inviteValue: invite,
+				dbPath: actionDbPath,
+				keysDir,
+				configPath,
+				deviceDisplayName: "Owner's new laptop",
+				reviewedOnboardingDigest,
+			}),
+		).resolves.toMatchObject({ status: "accepted", identity_id: identityId });
+		expect(capturedBodies).toHaveLength(3);
+		expect(capturedBodies[1]).toMatchObject({
+			invite_kind: "add_device",
+			identity_id: identityId,
+			device_display_name: "Owner's new laptop",
+		});
+		expect(capturedBodies[1]).not.toHaveProperty("recipient_display_name");
+		expect(capturedBodies[2]).toMatchObject({
+			token: "legacy-coordinator-add-device-token",
+			device_id: capturedBodies[1]?.device_id,
+			public_key: capturedBodies[1]?.public_key,
+			fingerprint: capturedBodies[1]?.fingerprint,
+			invite_kind: "add_device",
+			identity_id: identityId,
+		});
+		expect(capturedBodies[2]).not.toHaveProperty("recipient_display_name");
+		expect(capturedBodies[2]).not.toHaveProperty("device_display_name");
+	});
+
 	it.each([
 		"operation",
 		"group",
@@ -987,7 +1069,7 @@ describe("coordinator local admin actions", () => {
 			await coordinatorRenameDeviceAction({
 				groupId: "team-a",
 				deviceId: "device-1",
-				displayName: "Work Laptop",
+				displayName: "  Work   Laptop  ",
 				dbPath,
 			}),
 		).toEqual(expect.objectContaining({ display_name: "Work Laptop" }));
@@ -1004,6 +1086,29 @@ describe("coordinator local admin actions", () => {
 		expect(
 			await coordinatorListDevicesAction({ groupId: "team-a", includeDisabled: true, dbPath }),
 		).toEqual([]);
+	});
+
+	it("rejects machine-shaped names before a local device rename", async () => {
+		await coordinatorCreateGroupAction({ groupId: "team-a", dbPath });
+		await coordinatorEnrollDeviceAction({
+			groupId: "team-a",
+			deviceId: "device-1",
+			fingerprint: "fp-1",
+			publicKey: "pk-1",
+			dbPath,
+		});
+
+		await expect(
+			coordinatorRenameDeviceAction({
+				groupId: "team-a",
+				deviceId: "device-1",
+				displayName: "local:0ea043cc-c61c-427d-8b77-572331b9855c",
+				dbPath,
+			}),
+		).rejects.toThrow("display_name_invalid");
+		expect(await coordinatorListDevicesAction({ groupId: "team-a", dbPath })).toEqual([
+			expect.objectContaining({ device_id: "device-1", display_name: null }),
+		]);
 	});
 
 	it("returns the renamed disabled device instead of null", async () => {
@@ -1871,6 +1976,8 @@ describe("coordinator local admin actions", () => {
 	])("requires a reviewed onboarding digest before consuming a $kind invite", async (testCase) => {
 		const actionDbPath = join(tmpDir, `${testCase.kind}-missing-review.sqlite`);
 		const keysDir = join(tmpDir, `${testCase.kind}-missing-review-keys`);
+		const configPath = join(tmpDir, `${testCase.kind}-missing-review-config.json`);
+		writeFileSync(configPath, JSON.stringify({ actor_display_name: "local:\u0000machine" }));
 		const reviewedIntent =
 			testCase.kind === "team_member"
 				? teamReviewedIntent(testCase.targetId)
@@ -1898,6 +2005,7 @@ describe("coordinator local admin actions", () => {
 				inviteValue: invite,
 				dbPath: actionDbPath,
 				keysDir,
+				configPath,
 			}),
 		).rejects.toThrow("reviewed_onboarding_digest_required");
 		expect(fetchMock).not.toHaveBeenCalled();

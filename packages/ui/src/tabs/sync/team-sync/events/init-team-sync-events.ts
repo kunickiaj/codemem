@@ -6,6 +6,7 @@
 
 import * as api from "../../../../lib/api";
 import { clearFieldError, friendlyError, markFieldError } from "../../../../lib/form";
+import { humanPresentationLabel } from "../../../../lib/identity-presentation";
 import { handlePrimaryActionKeyboard } from "../../../../lib/keyboard";
 import { showGlobalNotice } from "../../../../lib/notice";
 import { state } from "../../../../lib/state";
@@ -82,8 +83,8 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 		if (projectInviteContext) {
 			projectInviteContext.textContent = `${inspected.inviter_name || "A teammate"} invited you${inspected.team_name ? ` through ${inspected.team_name}` : ""} to share ${projectNames || "selected projects"}.`;
 		}
-		recipientName.value = inspected.recipient_name ?? "";
-		recipientDeviceName.value = inspected.device_name ?? "";
+		recipientName.value = humanPresentationLabel(inspected.recipient_name);
+		recipientDeviceName.value = humanPresentationLabel(inspected.device_name);
 		projectInviteReview.hidden = false;
 		inspectedInviteValue = inviteValue;
 		if (syncJoinButton) syncJoinButton.textContent = "Accept and start syncing";
@@ -197,20 +198,20 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 					}
 				: undefined;
 		if (identity) {
-			const invalid = (value: string) =>
-				!value ||
-				[...value].length > 120 ||
-				[...value].some((character) => /[\p{Cc}\p{Cf}]/u.test(character));
+			const invalid = (value: string) => humanPresentationLabel(value) === "";
 			if (invalid(identity.recipient_name)) {
 				if (recipientName)
-					markFieldError(recipientName, "Enter a valid name using 120 characters or fewer.");
+					markFieldError(
+						recipientName,
+						"Enter a human-readable name using 120 characters or fewer.",
+					);
 				return;
 			}
 			if (invalid(identity.device_name)) {
 				if (recipientDeviceName)
 					markFieldError(
 						recipientDeviceName,
-						"Enter a valid device name using 120 characters or fewer.",
+						"Enter a human-readable device name using 120 characters or fewer.",
 					);
 				return;
 			}

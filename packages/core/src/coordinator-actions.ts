@@ -42,7 +42,11 @@ import {
 	PROJECT_INVITE_PENDING_STATUS,
 	ProjectSyncEnablementError,
 } from "./project-invite-acceptance.js";
-import { friendlyDeviceName, normalizeIdentityDisplayName } from "./project-invite-identity.js";
+import {
+	friendlyDeviceName,
+	normalizeHumanPresentationName,
+	normalizeIdentityDisplayName,
+} from "./project-invite-identity.js";
 import {
 	assertAddDeviceIdentityAdoptionAllowed,
 	commitRecipientPolicyOnboardingFromReviewedIntent,
@@ -1186,10 +1190,11 @@ export async function coordinatorRenameDeviceAction(opts: {
 }): Promise<CoordinatorEnrollment | null> {
 	const groupId = String(opts.groupId ?? "").trim();
 	const deviceId = String(opts.deviceId ?? "").trim();
-	const displayName = String(opts.displayName ?? "").trim();
-	if (!groupId || !deviceId || !displayName) {
+	const requestedDisplayName = String(opts.displayName ?? "").trim();
+	if (!groupId || !deviceId || !requestedDisplayName) {
 		throw new Error("group_id, device_id, and display_name are required.");
 	}
+	const displayName = normalizeHumanPresentationName(requestedDisplayName, "display_name");
 	const remote = opts.remoteUrl ?? coordinatorRemoteTarget().remoteUrl;
 	const adminSecret = opts.adminSecret ?? coordinatorRemoteTarget().adminSecret;
 	if (remote) {
@@ -2106,6 +2111,10 @@ export async function coordinatorImportInviteAction(opts: {
 		}
 		recipientActorId = recipientInviteIdentityId;
 	}
+	const reviewedOnboardingDigest = String(opts.reviewedOnboardingDigest ?? "").trim();
+	if (recipientInvite && !reviewedOnboardingDigest) {
+		throw new Error("reviewed_onboarding_digest_required");
+	}
 	const recipientDisplayName =
 		payload.kind === "add_device"
 			? ""
@@ -2136,10 +2145,6 @@ export async function coordinatorImportInviteAction(opts: {
 		throw new Error(
 			`This device is already enrolled with coordinator ${existingCoordinator}. Multi-team joining is only supported across groups on the same coordinator.`,
 		);
-	}
-	const reviewedOnboardingDigest = String(opts.reviewedOnboardingDigest ?? "").trim();
-	if (recipientInvite && !reviewedOnboardingDigest) {
-		throw new Error("reviewed_onboarding_digest_required");
 	}
 	if (recipientInvite) {
 		let inspectStatus = 0;
@@ -2217,7 +2222,7 @@ export async function coordinatorImportInviteAction(opts: {
 		if (
 			recipientInvite &&
 			!projectInvite &&
-			"recipient_display_name" in joinBody &&
+			("recipient_display_name" in joinBody || "device_display_name" in joinBody) &&
 			status === 400 &&
 			response?.error === "unexpected_recipient_invite_fields"
 		) {

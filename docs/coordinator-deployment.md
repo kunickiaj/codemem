@@ -232,6 +232,11 @@ codemem coordinator import-invite <encoded-invite>
 
 Or paste the invite in the viewer UI under **Advanced → Team sync → Join team**.
 
+For an exact-Project invitation, use `--recipient-name "Your name"` or
+`--device-name "Your device"` to replace legacy configured names that look like internal
+identifiers. Team-member and add-device recipient invitations must be accepted in the viewer
+because codemem must show and confirm their reviewed access details before joining.
+
 If the invite policy is `approval_required`, the teammate's join request will appear in the admin's pending queue. The
 admin approves it from the CLI or the viewer UI.
 

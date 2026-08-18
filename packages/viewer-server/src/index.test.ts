@@ -13837,6 +13837,7 @@ describe("viewer-server", () => {
 						reviewed_project_set_digest: updatedPreview.reviewed_project_set_digest,
 					}),
 				};
+				store.actorDisplayName = "local:a57f7c7c-d531-4148-9917-78acb586caad";
 				const legacyCoordinatorResponse = await app.request(
 					"/api/sync/project-invites",
 					createRequest,
@@ -13878,6 +13879,7 @@ describe("viewer-server", () => {
 				expect(coordinatorBody).toMatchObject({
 					operation_id: updatedPreview.operation_id,
 					reviewed_project_set_digest: updatedPreview.reviewed_project_set_digest,
+					inviter_display_name: "Project owner",
 					inviter_device_id: localDeviceId,
 				});
 				expect(coordinatorBody).not.toHaveProperty("scope_ids");

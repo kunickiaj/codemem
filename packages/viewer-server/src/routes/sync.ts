@@ -694,11 +694,20 @@ function projectInviteAcceptanceFailure(error: unknown): {
 }
 
 const PROJECT_INVITE_TTL_HOURS = 7 * 24;
+const PROJECT_INVITE_OWNER_FALLBACK = "Project owner";
 const PROJECT_INVITE_BODY_KEYS = new Set([
 	"teammate_name",
 	"project_ids",
 	"reviewed_project_set_digest",
 ]);
+
+function projectInviteInviterDisplayName(value: string): string {
+	try {
+		return normalizeHumanPresentationName(value, "inviter_display_name");
+	} catch {
+		return PROJECT_INVITE_OWNER_FALLBACK;
+	}
+}
 
 function projectInviteStringList(body: Record<string, unknown>, key: string): string[] {
 	const value = body[key];
@@ -5784,7 +5793,7 @@ export function syncRoutes(
 				operationId: plan.operationId,
 				reviewedProjectSetDigest: plan.reviewedProjectSetDigest,
 				inviterActorId: plan.inviterActorId,
-				inviterDisplayName: store.actorDisplayName,
+				inviterDisplayName: projectInviteInviterDisplayName(store.actorDisplayName),
 				inviterDeviceId: plan.inviterDeviceIds[0],
 				pendingPersonId: plan.personId,
 				projectSummaries: plan.projects.map((project) => ({

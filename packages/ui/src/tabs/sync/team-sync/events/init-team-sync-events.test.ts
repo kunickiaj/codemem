@@ -25,6 +25,7 @@ vi.mock("../helpers/invite-panel-dom", () => ({
 vi.mock("../../../project-sharing", () => ({ openProjectShareFlow: vi.fn() }));
 
 import * as api from "../../../../lib/api";
+import { markFieldError } from "../../../../lib/form";
 import { showGlobalNotice } from "../../../../lib/notice";
 import { state } from "../../../../lib/state";
 import { openProjectShareFlow } from "../../../project-sharing";
@@ -113,6 +114,51 @@ describe("project invite review events", () => {
 		invite.dispatchEvent(new Event("input", { bubbles: true }));
 		expect(review.hidden).toBe(true);
 		expect(button.textContent).toBe("Review invite");
+	});
+
+	it("does not prefill project invite identity fields with machine labels", async () => {
+		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValueOnce({
+			device_name: "device_abc123def",
+			inviter_name: "Adam",
+			kind: "project_share_invite",
+			projects: [{ display_name: "codemem", existing_memory_count: 3 }],
+			recipient_name: "local:0ea043cc-c61c-427d-8b77-572331b9855c",
+		});
+		initTeamSyncEvents(
+			() => {},
+			async () => {},
+		);
+		const invite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement;
+		const button = document.getElementById("syncJoinButton") as HTMLButtonElement;
+		invite.value = "project-invite";
+
+		button.click();
+		await vi.waitFor(() => expect(button.textContent).toBe("Accept and start syncing"));
+
+		expect((document.getElementById("syncRecipientName") as HTMLInputElement).value).toBe("");
+		expect((document.getElementById("syncRecipientDeviceName") as HTMLInputElement).value).toBe("");
+	});
+
+	it.each([
+		["Identity", "syncRecipientName", "local:0ea043cc-c61c-427d-8b77-572331b9855c"],
+		["device", "syncRecipientDeviceName", "device_abc123def"],
+	])("rejects a machine-shaped project invite %s name", async (_label, inputId, value) => {
+		initTeamSyncEvents(
+			() => {},
+			async () => {},
+		);
+		const invite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement;
+		const button = document.getElementById("syncJoinButton") as HTMLButtonElement;
+		invite.value = "project-invite";
+		button.click();
+		await vi.waitFor(() => expect(button.textContent).toBe("Accept and start syncing"));
+		const input = document.getElementById(inputId) as HTMLInputElement;
+		input.value = value;
+
+		button.click();
+
+		expect(markFieldError).toHaveBeenCalledWith(input, expect.stringContaining("human-readable"));
+		expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
 	});
 
 	it("ignores stale inspection results after the invite input changes", async () => {

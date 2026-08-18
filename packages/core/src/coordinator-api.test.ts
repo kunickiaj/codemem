@@ -272,6 +272,54 @@ describe("createCoordinatorApp dependency injection", () => {
 		expect(store.close).toHaveBeenCalledTimes(1);
 	});
 
+	it("validates human device names at the coordinator rename boundary", async () => {
+		const renameDevice = vi.fn(async () => true);
+		const store = createMockStore({
+			renameDevice,
+			getEnrollment: vi.fn(async () => ({
+				...enrolledDevice(),
+				display_name: "Desk laptop",
+			})),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: {
+				adminSecret: () => "test-secret",
+				now: () => "2026-03-28T00:00:00Z",
+			},
+			requestVerifier: allowRequest,
+		});
+		const headers = {
+			"X-Codemem-Coordinator-Admin": "test-secret",
+			"Content-Type": "application/json",
+		};
+
+		const invalid = await app.request("/v1/admin/devices/rename", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({
+				group_id: "g1",
+				device_id: "device-a",
+				display_name: "local:a57f7c7c-d531-4148-9917-78acb586caad",
+			}),
+		});
+		expect(invalid.status).toBe(400);
+		expect(await invalid.json()).toEqual({ error: "display_name_invalid" });
+		expect(renameDevice).not.toHaveBeenCalled();
+
+		const valid = await app.request("/v1/admin/devices/rename", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({
+				group_id: "g1",
+				device_id: "device-a",
+				display_name: "  Desk   laptop  ",
+			}),
+		});
+		expect(valid.status).toBe(200);
+		expect(renameDevice).toHaveBeenCalledWith("g1", "device-a", "Desk laptop");
+	});
+
 	it("rejects an invalid invite expires_at with 400 instead of a 500", async () => {
 		const store = createMockStore({});
 		const app = createCoordinatorApp({

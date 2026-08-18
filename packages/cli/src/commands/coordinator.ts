@@ -69,6 +69,40 @@ function parseOptionalInteger(value: string | undefined, name: string): number |
 	return parsed;
 }
 
+function formatImportInviteError(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	const recipientInviteViewerGuidance =
+		"Accept Team/add-device recipient invitations through the Viewer: run `codemem serve`, review the access details, and confirm the invitation there.";
+	switch (message) {
+		case "invite_already_bound":
+			return "This invite was already used. Ask the sender for a new one.";
+		case "invite_expired":
+			return "This invite has expired. Ask the sender for a new one.";
+		case "invite_invalid":
+			return "This invite is invalid. Copy the full invite and try again.";
+		case "recipient_display_name_invalid":
+			return "Recipient Identity name is invalid. Rerun with --recipient-name <name>.";
+		case "recipient_display_name_required":
+			return "Recipient Identity name is required. Rerun with --recipient-name <name>.";
+		case "recipient_display_name_too_long":
+			return "Recipient Identity name is too long. Rerun with --recipient-name <name> using 120 characters or fewer.";
+		case "device_display_name_invalid":
+			return "Device name is invalid. Rerun with --device-name <name>.";
+		case "device_display_name_required":
+			return "Device name is required. Rerun with --device-name <name>.";
+		case "device_display_name_too_long":
+			return "Device name is too long. Rerun with --device-name <name> using 120 characters or fewer.";
+		case "add_device_invite_self_acceptance_forbidden":
+		case "invite_identity_conflict":
+		case "recipient_invite_intent_mismatch":
+		case "recipient_invite_review_unavailable":
+		case "reviewed_onboarding_digest_required":
+			return recipientInviteViewerGuidance;
+		default:
+			return message;
+	}
+}
+
 /**
  * Build a fresh coordinator command tree. Each call returns independent
  * Commander instances so the tree can be mounted under multiple parents.
@@ -1113,6 +1147,8 @@ export function buildCoordinatorCommand(): Command {
 		.configureHelp(helpStyle)
 		.description("Import a coordinator invite")
 		.argument("<invite>", "invite value or link")
+		.option("-R, --recipient-name <name>", "recipient Identity display name")
+		.option("-N, --device-name <name>", "device display name")
 		.option("--keys-dir <path>", "keys directory");
 	addDbOption(importInviteCmd);
 	addConfigOption(importInviteCmd);
@@ -1125,6 +1161,8 @@ export function buildCoordinatorCommand(): Command {
 				dbPath?: string;
 				keysDir?: string;
 				config?: string;
+				recipientName?: string;
+				deviceName?: string;
 				json?: boolean;
 			},
 		) => {
@@ -1134,6 +1172,8 @@ export function buildCoordinatorCommand(): Command {
 					dbPath: resolveDbOpt(opts) ?? null,
 					keysDir: opts.keysDir ?? null,
 					configPath: opts.config ?? null,
+					recipientDisplayName: opts.recipientName?.trim() || null,
+					deviceDisplayName: opts.deviceName?.trim() || null,
 				});
 				if (opts.json) {
 					console.log(JSON.stringify(result, null, 2));
@@ -1145,11 +1185,12 @@ export function buildCoordinatorCommand(): Command {
 				p.log.message(`- status: ${result.status}`);
 				p.outro("Coordinator config updated");
 			} catch (err) {
+				const message = formatImportInviteError(err);
 				if (opts.json) {
-					emitJsonError("import_invite_failed", err instanceof Error ? err.message : String(err));
+					emitJsonError("import_invite_failed", message);
 					return;
 				}
-				p.log.error(err instanceof Error ? err.message : String(err));
+				p.log.error(message);
 				process.exitCode = 1;
 			}
 		},

@@ -1343,10 +1343,19 @@ export function createCoordinatorApp(
 		if (!displayName) {
 			return c.json({ error: "display_name_required" }, 400);
 		}
+		let normalizedDisplayName: string;
+		try {
+			normalizedDisplayName = normalizeHumanPresentationName(displayName, "display_name");
+		} catch (error) {
+			return c.json(
+				{ error: error instanceof Error ? error.message : "display_name_invalid" },
+				400,
+			);
+		}
 
 		const store = createStore();
 		try {
-			const ok = await store.renameDevice(groupId, deviceId, displayName);
+			const ok = await store.renameDevice(groupId, deviceId, normalizedDisplayName);
 			if (!ok) return c.json({ error: "device_not_found" }, 404);
 			const device = await store.getEnrollment(groupId, deviceId);
 			return c.json({ ok: true, device });
