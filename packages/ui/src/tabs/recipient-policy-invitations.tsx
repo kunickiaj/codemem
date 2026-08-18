@@ -36,9 +36,7 @@ type RecipientAcceptance = {
  * validation asks the person for a real name, with placeholder text as the hint.
  */
 function humanProvidedNameOrEmpty(value: string | null | undefined): string {
-	const reviewed = String(value ?? "").trim();
-	if (/^pending_/iu.test(reviewed)) return "";
-	return humanPresentationLabel(reviewed);
+	return humanPresentationLabel(String(value ?? "").trim());
 }
 
 function displayNameError(value: string, label: string): string {
@@ -48,7 +46,7 @@ function displayNameError(value: string, label: string): string {
 	if ([...reviewed].some((character) => /[\p{Cc}\p{Cf}]/u.test(character))) {
 		return `${label} cannot include control or format characters.`;
 	}
-	if (/^pending_/iu.test(reviewed) || isMachinePresentationLabel(reviewed)) {
+	if (isMachinePresentationLabel(reviewed)) {
 		return `${label} must use a human-readable name.`;
 	}
 	return "";

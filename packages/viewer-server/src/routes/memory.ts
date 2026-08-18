@@ -41,12 +41,17 @@ interface PeerPresentationRow {
 
 const IDENTITY_LOOKUP_BATCH_SIZE = 500;
 
+function identityValue(item: Record<string, unknown>, key: string): string {
+	const direct = String(item[key] ?? "").trim();
+	if (direct) return direct;
+	const rawMetadata = item.metadata ?? item.metadata_json;
+	const metadata = typeof rawMetadata === "string" ? fromJson(rawMetadata) : rawMetadata;
+	if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return "";
+	return String((metadata as Record<string, unknown>)[key] ?? "").trim();
+}
+
 function uniqueStrings(items: Record<string, unknown>[], key: string): string[] {
-	return [
-		...new Set(
-			items.map((item) => String(item[key] ?? "").trim()).filter((value) => value.length > 0),
-		),
-	];
+	return [...new Set(items.map((item) => identityValue(item, key)).filter(Boolean))];
 }
 
 function batchedLookup<T>(
@@ -74,6 +79,8 @@ function humanName(value: unknown): string | undefined {
 
 /**
  * Add presentation-only identity labels without changing persisted provenance.
+ * Resolved names are display hints, not authority or ownership evidence; legacy
+ * metadata receives the same top-level-first fallback as existing read paths.
  */
 function attachResolvedIdentityFieldsUnsafe(
 	store: MemoryStore,
@@ -143,8 +150,8 @@ function attachResolvedIdentityFieldsUnsafe(
 	);
 
 	for (const item of items) {
-		const actorId = String(item.actor_id ?? "").trim();
-		const deviceId = String(item.origin_device_id ?? "").trim();
+		const actorId = identityValue(item, "actor_id");
+		const deviceId = identityValue(item, "origin_device_id");
 		const peer = peerByDevice.get(deviceId);
 		const peerActorId = String(peer?.actor_id ?? "").trim();
 		const knownMemoryActor = actorById.has(actorId);

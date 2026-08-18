@@ -2066,6 +2066,30 @@ describe("viewer-server", () => {
 					originDeviceId: "device:unpinned",
 					createdAt: "2026-08-18T11:59:00.000Z",
 				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Metadata-only identity",
+					actorId: null,
+					originDeviceId: null,
+					metadata: {
+						actor_id: "actor:direct",
+						origin_device_id: "device:direct",
+					},
+					createdAt: "2026-08-18T11:58:00.000Z",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "session_summary",
+					title: "Metadata-only summary identity",
+					actorId: null,
+					originDeviceId: null,
+					metadata: {
+						actor_id: "actor:direct",
+						origin_device_id: "device:direct",
+					},
+					createdAt: "2026-08-18T11:57:00.000Z",
+				});
 				store.db
 					.prepare("UPDATE memory_items SET actor_display_name = ? WHERE id = ?")
 					.run("Raw direct provenance", directId);
@@ -2100,6 +2124,10 @@ describe("viewer-server", () => {
 				const legacy = observations.find((item) => item.title === "Legacy identity");
 				const merged = observations.find((item) => item.title === "Merged identity");
 				const unpinned = observations.find((item) => item.title === "Unpinned identity");
+				const metadataOnly = observations.find((item) => item.title === "Metadata-only identity");
+				const metadataOnlySummary = summaries.find(
+					(item) => item.title === "Metadata-only summary identity",
+				);
 
 				expect(direct).toMatchObject({
 					actor_id: "actor:direct",
@@ -2130,6 +2158,18 @@ describe("viewer-server", () => {
 				expect(merged?.resolved_actor_display_name).not.toBe("Peer Actor");
 				expect(unpinned).not.toHaveProperty("resolved_actor_display_name");
 				expect(unpinned).not.toHaveProperty("resolved_device_display_name");
+				expect(metadataOnly).toMatchObject({
+					resolved_actor_display_name: "Trusted Actor",
+					resolved_device_display_name: "Trusted Device",
+				});
+				expect(metadataOnlySummary).toMatchObject({
+					resolved_actor_display_name: "Trusted Actor",
+					resolved_device_display_name: "Trusted Device",
+				});
+				expect(memories.find((item) => item.title === "Metadata-only identity")).toMatchObject({
+					resolved_actor_display_name: "Trusted Actor",
+					resolved_device_display_name: "Trusted Device",
+				});
 				expect(memories.find((item) => item.title === "Direct identity")).toMatchObject({
 					resolved_actor_display_name: "Trusted Actor",
 					resolved_device_display_name: "Trusted Device",

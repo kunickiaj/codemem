@@ -3,6 +3,7 @@ const MAX_IDENTITY_DISPLAY_LENGTH = 120;
 const UUID_NAME = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu;
 const MACHINE_PREFIX_NAME = /^(?:actor|device|identity|local):\S+$/iu;
 const MACHINE_SLUG_NAME = /^(?:actor|device|identity)[_-][a-z0-9][a-z0-9._:-]{4,}$/iu;
+const PENDING_PERSON_NAME = /^pending[_-]\S+$/iu;
 const HEX_HOSTNAME = /^[a-f0-9]{12,64}$/iu;
 
 export interface ProjectInviteSummary {
@@ -30,9 +31,13 @@ export function isHumanPresentationName(value: unknown): boolean {
 	} catch {
 		return false;
 	}
-	return ![UUID_NAME, MACHINE_PREFIX_NAME, MACHINE_SLUG_NAME, HEX_HOSTNAME].some((pattern) =>
-		pattern.test(normalized),
-	);
+	return ![
+		UUID_NAME,
+		MACHINE_PREFIX_NAME,
+		MACHINE_SLUG_NAME,
+		PENDING_PERSON_NAME,
+		HEX_HOSTNAME,
+	].some((pattern) => pattern.test(normalized));
 }
 
 export function normalizeHumanPresentationName(value: string, field: string): string {

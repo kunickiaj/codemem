@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+// Deliberately exercise the browser classifier from the core suite so shared
+// fixtures cannot pass while either package's implementation drifts.
 import {
 	humanPresentationLabel,
+	isMachinePresentationLabel,
 	MACHINE_PRESENTATION_LABEL_FIXTURES,
 } from "../../ui/src/lib/identity-presentation.js";
 import {
@@ -75,6 +78,7 @@ describe("project invite identity", () => {
 		MACHINE_PRESENTATION_LABEL_FIXTURES,
 	)("keeps core and browser presentation classifiers aligned for %s", (value) => {
 		expect(isHumanPresentationName(value)).toBe(false);
+		expect(isMachinePresentationLabel(value)).toBe(true);
 		expect(humanPresentationLabel(value)).toBe("");
 	});
 
