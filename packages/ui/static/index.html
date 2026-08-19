@@ -1309,6 +1309,41 @@
         padding-left: var(--sp-5);
       }
       #devicesMount .recipient-policy-sharing-card > .settings-button { margin-top: var(--sp-4); }
+      .device-identity-setup-summary,
+      .recipient-policy-sharing-attention {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-3);
+        margin-bottom: var(--sp-4);
+      }
+      .recipient-policy-sharing-attention {
+        display: block;
+        border-color: color-mix(in srgb, var(--status-warning) 45%, var(--border));
+        background: color-mix(in srgb, var(--status-warning) 8%, var(--surface-1));
+      }
+      .recipient-policy-sharing-attention p { margin-top: var(--sp-2); }
+      .recipient-policy-sharing-attention .settings-button { margin-top: var(--sp-3); }
+      .device-identity-setup-card fieldset,
+      .device-identity-rebind fieldset {
+        display: grid;
+        gap: var(--sp-3);
+        margin-top: var(--sp-4);
+        padding: var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+      }
+      .device-identity-setup-card legend,
+      .device-identity-rebind legend { padding: 0 var(--sp-2); font-weight: var(--font-weight-semibold); }
+      .device-identity-setup-card label,
+      .device-identity-rebind label { display: flex; align-items: center; gap: var(--sp-2); }
+      .device-identity-setup-card select,
+      .device-identity-rebind select { width: 100%; min-height: 36px; }
+      .device-identity-rebind { margin-top: var(--sp-4); }
+      .device-identity-rebind-review { display: grid; gap: var(--sp-3); padding-top: var(--sp-2); }
+      .device-identity-review-panel { margin-top: var(--sp-4); }
+      .device-identity-review-panel ul { margin: var(--sp-3) 0; padding-left: var(--sp-5); }
+      .device-identity-review-panel .peer-actions { margin-top: var(--sp-4); }
 
       @media (max-width: 720px) {
         .project-inventory-row-header { align-items: center; flex-wrap: wrap; }
@@ -1326,6 +1361,9 @@
           min-height: 44px;
           width: 100%;
         }
+        .device-identity-setup-summary { align-items: stretch; flex-direction: column; }
+        .device-identity-setup-summary .settings-button,
+        .device-identity-review-panel .settings-button { min-height: 44px; width: 100%; }
       }
 
       /* 36×36 square icon buttons — theme toggle, settings gear. */

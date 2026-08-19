@@ -60,6 +60,16 @@ function button(label: string): HTMLButtonElement {
 	return match;
 }
 
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+		resolve = resolvePromise;
+		reject = rejectPromise;
+	});
+	return { promise, reject, resolve };
+}
+
 afterEach(() => {
 	for (const id of ["recipientPolicySharingMount", "recipientPolicyManagementMount"]) {
 		const mount = document.getElementById(id);
@@ -75,16 +85,33 @@ describe("Sharing app data refresh", () => {
 			'<div id="recipientPolicySharingMount"></div><div id="recipientPolicyManagementMount"></div>';
 		const loadProjects = vi.fn().mockResolvedValue({ manageable: projects, received: [] });
 		const loadIntent = vi.fn().mockResolvedValue(intent);
-		const load = createRecipientPolicySharingLoader({ loadIntent, loadProjects });
+		const loadDeviceInventory = vi.fn().mockResolvedValue({
+			version: 1,
+			items: [],
+			coordinatorEvidence: { availability: "available", safeErrorCode: null },
+			truncated: false,
+		});
+		const load = createRecipientPolicySharingLoader({
+			loadDeviceInventory,
+			loadIntent,
+			loadProjects,
+		});
 
-		await act(async () => load());
+		let refreshResult: boolean | undefined;
+		await act(async () => {
+			refreshResult = await load();
+		});
+		expect(refreshResult).toBe(true);
 		act(() => button("Identities").click());
 		expect(document.body.textContent).toContain("Manage projects");
 		act(() => button("Manage projects").click());
 		expect(document.body.textContent).toContain("Review changes");
 
 		loadIntent.mockRejectedValueOnce(new Error("refresh failed"));
-		await act(async () => load());
+		await act(async () => {
+			refreshResult = await load();
+		});
+		expect(refreshResult).toBe(false);
 		expect(document.body.textContent).toContain(
 			"Sharing details are unavailable. Refresh and try again.",
 		);
@@ -94,9 +121,93 @@ describe("Sharing app data refresh", () => {
 		expect(document.body.textContent).not.toContain("Manage projects");
 		expect(document.body.textContent).not.toContain("Review changes");
 
-		await act(async () => load());
+		await act(async () => {
+			await load();
+		});
 		expect(document.body.textContent).toContain("Manage projects");
 		expect(document.body.textContent).toContain("Review changes");
 		expect(document.body.textContent).not.toContain("Sharing details are unavailable");
+	});
+
+	it("keeps Sharing usable when only device inventory is unavailable", async () => {
+		document.body.innerHTML =
+			'<div id="recipientPolicySharingMount"></div><div id="recipientPolicyManagementMount"></div>';
+		const loadIntent = vi
+			.fn()
+			.mockResolvedValueOnce(intent)
+			.mockRejectedValueOnce(new Error("intent unavailable"));
+		const load = createRecipientPolicySharingLoader({
+			loadDeviceInventory: vi.fn().mockRejectedValue(new Error("inventory unavailable")),
+			loadIntent,
+			loadProjects: vi.fn().mockResolvedValue({ manageable: projects, received: [] }),
+		});
+
+		await act(async () => {
+			await load();
+		});
+
+		expect(document.body.textContent).toContain("Manage projects");
+		expect(document.body.textContent).not.toContain("Sharing details are unavailable");
+		expect(document.body.textContent).toContain(
+			"Device Identity information is unavailable. Devices needing setup or review cannot be shown until a refresh succeeds.",
+		);
+
+		await act(async () => {
+			await load();
+		});
+		expect(document.body.textContent).toContain("Sharing details are unavailable");
+		expect(document.body.textContent).toContain("Device Identity information is unavailable");
+	});
+
+	it("waits for delayed device inventory failure before rendering a broader load error", async () => {
+		document.body.innerHTML =
+			'<div id="recipientPolicySharingMount"></div><div id="recipientPolicyManagementMount"></div>';
+		const inventoryResult = deferred<never>();
+		const load = createRecipientPolicySharingLoader({
+			loadDeviceInventory: vi.fn(() => inventoryResult.promise),
+			loadIntent: vi.fn().mockRejectedValue(new Error("intent unavailable")),
+			loadProjects: vi.fn().mockResolvedValue({ manageable: projects, received: [] }),
+		});
+
+		const result = load();
+		await Promise.resolve();
+		expect(document.body.textContent).not.toContain("Sharing details are unavailable");
+		inventoryResult.reject(new Error("inventory unavailable"));
+		await expect(result).resolves.toBe(false);
+		expect(document.body.textContent).toContain("Sharing details are unavailable");
+		expect(document.body.textContent).toContain("Device Identity information is unavailable");
+	});
+
+	it("lets the newest overlapping refresh own the final mount and result", async () => {
+		document.body.innerHTML =
+			'<div id="recipientPolicySharingMount"></div><div id="recipientPolicyManagementMount"></div>';
+		const firstIntent = deferred<RecipientPolicyIntentGraphV1>();
+		const secondIntent = deferred<RecipientPolicyIntentGraphV1>();
+		const mountSharing = vi.fn();
+		const load = createRecipientPolicySharingLoader({
+			loadDeviceInventory: vi.fn().mockResolvedValue({ version: 1, items: [], truncated: false }),
+			loadIntent: vi
+				.fn()
+				.mockReturnValueOnce(firstIntent.promise)
+				.mockReturnValueOnce(secondIntent.promise),
+			loadProjects: vi.fn().mockResolvedValue({ manageable: projects, received: [] }),
+			mountManagement: vi.fn(),
+			mountSharing,
+		});
+
+		const first = load();
+		const second = load();
+		const newestIntent = {
+			...intent,
+			identities: [{ ...intent.identities[0], displayName: "Newest" }],
+		};
+		secondIntent.resolve(newestIntent);
+		await expect(second).resolves.toBe(true);
+		firstIntent.resolve(intent);
+		await expect(first).resolves.toBe(true);
+
+		const completedMounts = mountSharing.mock.calls.filter((call) => call[3]?.loading !== true);
+		expect(completedMounts).toHaveLength(1);
+		expect(completedMounts[0]?.[2]).toBe(newestIntent);
 	});
 });

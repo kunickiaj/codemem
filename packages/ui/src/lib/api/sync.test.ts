@@ -2,15 +2,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
 	advanceShareOperation,
+	commitDeviceIdentityBindings,
 	commitRecipientPolicyEdges,
 	createRecipientInvite,
 	importCoordinatorInvite,
 	inspectCoordinatorInvite,
+	loadDeviceIdentityInventory,
 	loadRecipientPolicyIntent,
 	loadRecipientPolicyReconciliationStatus,
 	loadRecipientPolicyReview,
 	loadShareOperation,
 	loadShareOperations,
+	previewDeviceIdentityBindings,
 	previewRecipientInvite,
 	previewRecipientPolicyEdges,
 	RecipientPolicyEdgesStaleError,
@@ -20,6 +23,62 @@ import {
 	resolveRecipientPolicyReviewBulk,
 	triggerSync,
 } from "./sync";
+
+describe("device Identity setup API", () => {
+	it("loads inventory and sends exact preview and commit contracts", async () => {
+		const inventory = {
+			version: 1,
+			items: [],
+			coordinatorEvidence: { availability: "available", safeErrorCode: null },
+			truncated: false,
+		};
+		const preview = {
+			version: 1,
+			status: "ready",
+			reviewedInventoryDigest: "digest",
+			errorCode: null,
+			outcomes: [],
+			writeCount: 1,
+		};
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(new Response(JSON.stringify(inventory), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify(preview), { status: 200 }))
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ ...preview, status: "applied", idempotent: false }), {
+					status: 200,
+				}),
+			);
+		globalThis.fetch = fetchMock as typeof fetch;
+		const request = {
+			bindings: [{ deviceId: "device-one", targetIdentityId: "identity-one", confirmed: true }],
+		};
+
+		await loadDeviceIdentityInventory();
+		await previewDeviceIdentityBindings(request);
+		await commitDeviceIdentityBindings({ ...request, reviewedInventoryDigest: "digest" });
+
+		expect(fetchMock.mock.calls).toEqual([
+			["/api/sync/recipient-policy/v1/device-inventory"],
+			[
+				"/api/sync/recipient-policy/v1/device-bindings/preview",
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(request),
+				},
+			],
+			[
+				"/api/sync/recipient-policy/v1/device-bindings/commit",
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ ...request, reviewedInventoryDigest: "digest" }),
+				},
+			],
+		]);
+	});
+});
 
 const originalFetch = globalThis.fetch;
 

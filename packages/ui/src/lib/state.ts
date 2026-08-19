@@ -264,6 +264,7 @@ export const state = {
 	lastRawEventsPayload: null as CachedRawEventsPayload | null,
 	lastUpdateStatus: null as UpdateStatus | null,
 	lastSyncStatus: null as CachedSyncStatus | null,
+	pendingDeviceIdentityFocus: undefined as string | null | undefined,
 	lastSyncActors: [] as SyncActor[],
 	lastSyncPeers: [] as SyncPeer[],
 	lastShareOperations: [] as ShareOperationReadModel[],

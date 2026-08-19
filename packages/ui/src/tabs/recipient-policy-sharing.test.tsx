@@ -194,6 +194,71 @@ describe("recipient-focused Sharing", () => {
 		);
 	});
 
+	it("selects Teams when the first successfully loaded intent has active Teams", () => {
+		mount(intent({ teams: [] }), { loading: true });
+		expect(tab("Identities").getAttribute("aria-selected")).toBe("true");
+
+		mount(intent(), { loading: false });
+		expect(tab("Teams").getAttribute("aria-selected")).toBe("true");
+
+		clickTab("Identities");
+		mount(intent(), { loading: false });
+		expect(tab("Identities").getAttribute("aria-selected")).toBe("true");
+	});
+
+	it("discloses when device setup attention cannot be loaded", () => {
+		mount(intent(), { deviceInventoryUnavailable: true });
+
+		expect(document.querySelector('[role="status"]')?.textContent).toContain(
+			"Device Identity information is unavailable",
+		);
+		expect(document.body.textContent).toContain("Manage projects");
+	});
+
+	it("counts only the same nonconfigured inventory states that Devices sends to setup", () => {
+		const item = (
+			deviceId: string,
+			state: "configured" | "setup_required" | "pairing_required",
+		) => ({
+			version: 1 as const,
+			deviceId,
+			evidenceDeviceIds: [deviceId],
+			displayName: deviceId,
+			state,
+			identityId: state === "configured" ? "identity-adam" : null,
+			suggestedIdentityId: null,
+			validatedFingerprint: null,
+			isLocal: false,
+			sources: ["sync_peer" as const],
+			conflictCodes: [],
+		});
+		const onReviewDevices = vi.fn();
+		mount(intent(), {
+			deviceInventory: {
+				version: 1,
+				items: [
+					item("configured", "configured"),
+					item("setup", "setup_required"),
+					item("pair", "pairing_required"),
+				],
+				coordinatorEvidence: { availability: "available", safeErrorCode: null },
+				truncated: false,
+			},
+			onReviewDevices,
+		});
+		expect(
+			document.getElementById("sharing-device-setup-heading")?.parentElement?.textContent,
+		).toContain("2 devices need");
+		act(() =>
+			(
+				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
+					(button) => button.textContent === "Review Devices",
+				) as HTMLButtonElement
+			).click(),
+		);
+		expect(onReviewDevices).toHaveBeenCalledWith("setup");
+	});
+
 	it("lists received Projects with counts, activity, and read-only guidance", () => {
 		mount(intent(), {
 			received: [
@@ -354,9 +419,46 @@ describe("recipient-focused Sharing", () => {
 				projectRecipients: [],
 			}),
 		);
-		expect(visiblePanel().textContent).toContain("No active Teams are available");
-		clickTab("Identities");
+		expect(tab("Identities").getAttribute("aria-selected")).toBe("true");
 		expect(visiblePanel().textContent).toContain("No active Identities are available");
+		clickTab("Teams");
+		expect(visiblePanel().textContent).toContain("No active Teams are available");
+	});
+
+	it("surfaces device setup attention without implying access and links to Devices", () => {
+		const onReviewDevices = vi.fn();
+		mount(intent(), {
+			deviceInventory: {
+				version: 1,
+				items: [
+					{
+						version: 1,
+						deviceId: "device-setup",
+						evidenceDeviceIds: ["device-setup"],
+						displayName: "Home Laptop",
+						state: "setup_required",
+						identityId: null,
+						suggestedIdentityId: "identity-adam",
+						validatedFingerprint: null,
+						isLocal: false,
+						sources: ["sync_peer"],
+						conflictCodes: [],
+					},
+				],
+				coordinatorEvidence: { availability: "available", safeErrorCode: null },
+				truncated: false,
+			},
+			onReviewDevices,
+		});
+
+		const attention = document.querySelector<HTMLElement>(".recipient-policy-sharing-attention");
+		expect(attention?.getAttribute("aria-labelledby")).toBe("sharing-device-setup-heading");
+		expect(attention?.textContent).toContain("1 device needs setup");
+		expect(attention?.textContent).toContain(
+			"does not grant Projects, Team membership, or sync access",
+		);
+		act(() => (attention?.querySelector("button") as HTMLButtonElement).click());
+		expect(onReviewDevices).toHaveBeenCalledWith("device-setup");
 	});
 
 	it("uses visible labels, responsive and target hooks, and no prohibited internal copy", () => {

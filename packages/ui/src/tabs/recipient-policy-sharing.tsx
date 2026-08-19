@@ -1,6 +1,7 @@
 import { render } from "preact";
-import { useRef, useState } from "preact/hooks";
-import type { RecipientPolicyIntentGraphV1 } from "../lib/api/sync";
+import { useEffect, useRef, useState } from "preact/hooks";
+import type { DeviceIdentityInventoryV1, RecipientPolicyIntentGraphV1 } from "../lib/api/sync";
+import { deviceIdentityAttentionItems } from "../lib/device-identity-inventory";
 import { RecipientPolicyInvitations } from "./recipient-policy-invitations";
 import {
 	openRecipientPolicyManagement,
@@ -11,7 +12,10 @@ import type { ReceivedProjectShare } from "./recipient-policy-projects";
 export interface RecipientPolicySharingOptions {
 	loading?: boolean;
 	loadError?: boolean;
+	deviceInventoryUnavailable?: boolean;
 	received?: ReceivedProjectShare[];
+	deviceInventory?: DeviceIdentityInventoryV1;
+	onReviewDevices?: (deviceId?: string) => void;
 }
 
 type SharingTab = "teams" | "identities" | "received" | "invitations";
@@ -361,8 +365,22 @@ function RecipientPolicySharing({
 	options: RecipientPolicySharingOptions;
 	projects: RecipientPolicyManagementProject[];
 }) {
-	const [activeTab, setActiveTab] = useState<SharingTab>("teams");
+	const [activeTab, setActiveTab] = useState<SharingTab>(() =>
+		intent.teams.some((team) => team.status === "active") ? "teams" : "identities",
+	);
+	const initialSelectionPending = useRef(options.loading === true || options.loadError === true);
 	const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+	const setupAttentionItems = deviceIdentityAttentionItems(options.deviceInventory);
+	const setupAttentionCount = setupAttentionItems.length;
+	const hasActiveTeams = intent.teams.some((team) => team.status === "active");
+	useEffect(() => {
+		if (initialSelectionPending.current && !options.loading && !options.loadError) {
+			initialSelectionPending.current = false;
+			setActiveTab(hasActiveTeams ? "teams" : "identities");
+			return;
+		}
+		if (!hasActiveTeams) setActiveTab((current) => (current === "teams" ? "identities" : current));
+	}, [hasActiveTeams, options.loadError, options.loading]);
 
 	const activateTab = (index: number) => {
 		const tab = SHARING_TABS[index];
@@ -391,6 +409,38 @@ function RecipientPolicySharing({
 					changes.
 				</p>
 			</header>
+			{options.deviceInventoryUnavailable ? (
+				<p aria-live="polite" className="small recipient-policy-sharing-empty" role="status">
+					Device Identity information is unavailable. Devices needing setup or review cannot be
+					shown until a refresh succeeds.
+				</p>
+			) : null}
+			{setupAttentionCount > 0 ? (
+				<aside
+					aria-labelledby="sharing-device-setup-heading"
+					className="peer-card peer-card--padded recipient-policy-sharing-attention"
+				>
+					<h3 id="sharing-device-setup-heading">Identity setup needed</h3>
+					<p>
+						{setupAttentionCount.toLocaleString()}{" "}
+						{setupAttentionCount === 1 ? "device needs" : "devices need"} setup, pairing, or review
+						before ownership can be shown accurately.
+					</p>
+					<p className="small">
+						Identity setup records device ownership only. It does not grant Projects, Team
+						membership, or sync access.
+					</p>
+					{options.onReviewDevices ? (
+						<button
+							className="settings-button recipient-policy-sharing-target-24"
+							onClick={() => options.onReviewDevices?.(setupAttentionItems[0]?.deviceId)}
+							type="button"
+						>
+							Review Devices
+						</button>
+					) : null}
+				</aside>
+			) : null}
 			<div
 				aria-label="Sharing views"
 				className="recipient-policy-sharing-tabs recipient-policy-sharing-responsive-tabs"

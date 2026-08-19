@@ -6,6 +6,7 @@ import html from "../static/index.html?raw";
 
 const mocks = vi.hoisted(() => ({
 	loadProjectScopeInventory: vi.fn(),
+	loadDeviceIdentityInventory: vi.fn(),
 	loadRecipientPolicyIntent: vi.fn(),
 	loadRecipientPolicyReconciliationStatus: vi.fn(),
 	loadSyncData: vi.fn(),
@@ -14,6 +15,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("./components/primitives/toast", () => ({ mountToastHost: vi.fn() }));
 vi.mock("./lib/api", () => ({
 	loadCoordinatorAdminStatus: vi.fn(async () => ({ has_admin_secret: false })),
+	loadDeviceIdentityInventory: mocks.loadDeviceIdentityInventory,
 	loadProjectScopeInventory: mocks.loadProjectScopeInventory,
 	loadProjects: vi.fn(async () => ["Codemem"]),
 	loadRecipientPolicyIntent: mocks.loadRecipientPolicyIntent,
@@ -102,6 +104,27 @@ const intent = {
 	],
 };
 
+function configuredDeviceInventory() {
+	return {
+		version: 1 as const,
+		items: intent.identityDevices.map((device) => ({
+			version: 1 as const,
+			deviceId: device.deviceId,
+			evidenceDeviceIds: [device.deviceId],
+			displayName: device.displayName,
+			state: "configured" as const,
+			identityId: device.identityId,
+			suggestedIdentityId: null,
+			validatedFingerprint: null,
+			isLocal: device.deviceId === "device-private",
+			sources: ["identity_binding"] as const,
+			conflictCodes: [],
+		})),
+		coordinatorEvidence: { availability: "available" as const, safeErrorCode: null },
+		truncated: false,
+	};
+}
+
 function bodyMarkup(): string {
 	return html.match(/<body[^>]*>([\s\S]*?)<\/body>/)?.[1] ?? "";
 }
@@ -130,6 +153,11 @@ describe("Devices app integration", () => {
 			offset: 0,
 		});
 		mocks.loadRecipientPolicyIntent.mockResolvedValue(intent);
+		if (expect.getState().currentTestName?.includes("first Devices load")) {
+			mocks.loadDeviceIdentityInventory.mockRejectedValue(new Error("inventory unavailable"));
+		} else {
+			mocks.loadDeviceIdentityInventory.mockResolvedValue(configuredDeviceInventory());
+		}
 		mocks.loadRecipientPolicyReconciliationStatus.mockResolvedValue({
 			version: 1,
 			items: [
@@ -215,6 +243,60 @@ describe("Devices app integration", () => {
 		expect(document.activeElement).toBe(document.getElementById("tabBtn-sharing"));
 	});
 
+	it("keeps existing device details usable when inventory fails on the first Devices load", () => {
+		const panel = document.getElementById("tab-devices");
+		expect(panel?.textContent).toContain("Work Laptop");
+		expect(panel?.textContent).toContain("Needs attention");
+		expect(panel?.textContent).toContain("Device ownership information is temporarily unavailable");
+		expect(panel?.textContent).not.toContain("Devices are unavailable");
+		expect(mocks.loadRecipientPolicyIntent).toHaveBeenCalled();
+		expect(mocks.loadRecipientPolicyReconciliationStatus).toHaveBeenCalled();
+	});
+
+	it("restores Identity controls after a first Devices load inventory failure", async () => {
+		mocks.loadDeviceIdentityInventory.mockResolvedValueOnce(configuredDeviceInventory());
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+
+		const panel = document.getElementById("tab-devices");
+		expect(panel?.textContent).not.toContain(
+			"Device ownership information is temporarily unavailable",
+		);
+		const rebind = [...(panel?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+			(button) => button.textContent === "Change Identity…",
+		);
+		expect(rebind?.disabled).toBe(false);
+	});
+
+	it("retains cached inventory but disables Identity controls during a later inventory outage", async () => {
+		mocks.loadDeviceIdentityInventory.mockRejectedValueOnce(new Error("inventory unavailable"));
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+
+		const panel = document.getElementById("tab-devices");
+		expect(panel?.textContent).toContain("Device ownership information is temporarily unavailable");
+		const staleRebind = [...(panel?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+			(button) => button.textContent === "Change Identity…",
+		);
+		expect(staleRebind?.disabled).toBe(true);
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+
+		expect(panel?.textContent).not.toContain(
+			"Device ownership information is temporarily unavailable",
+		);
+		const refreshedRebind = [...(panel?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+			(button) => button.textContent === "Change Identity…",
+		);
+		expect(refreshedRebind?.disabled).toBe(false);
+	});
+
 	it("joins runtime metadata only from the matched paired peer", () => {
 		const cards = [...document.querySelectorAll<HTMLElement>("#tab-devices article")];
 		const workLaptop = cards.find(
@@ -228,6 +310,45 @@ describe("Devices app integration", () => {
 		expect(workLaptop.textContent).toContain("Codemem version0.42.0");
 		expect(coordinatorTablet.textContent).not.toContain("Codemem version");
 		expect(document.getElementById("tab-devices")?.textContent).not.toContain("9.9.9");
+	});
+
+	it("routes pairing recovery to Advanced Sync even when Teams was selected", async () => {
+		const { state } = await import("./lib/state");
+		state.advancedSection = "teams";
+		mocks.loadDeviceIdentityInventory.mockResolvedValueOnce({
+			version: 1,
+			items: [
+				{
+					version: 1,
+					deviceId: "pair-device",
+					evidenceDeviceIds: ["pair-device"],
+					displayName: "Pairing laptop",
+					state: "pairing_required",
+					identityId: null,
+					suggestedIdentityId: null,
+					validatedFingerprint: null,
+					isLocal: false,
+					sources: ["coordinator_enrollment"],
+					conflictCodes: [],
+				},
+			],
+			coordinatorEvidence: { availability: "available", safeErrorCode: null },
+			truncated: false,
+		});
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+		const pairingAction = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Go to pairing",
+		);
+		if (!pairingAction) throw new Error("Pairing action missing");
+
+		act(() => pairingAction.click());
+		await Promise.resolve();
+
+		expect(window.location.hash).toBe("#advanced/sync");
+		expect(document.getElementById("advancedSyncContent")?.hidden).toBe(false);
+		expect(document.getElementById("advancedTeamsContent")?.hidden).toBe(true);
 	});
 
 	it("preserves stale cards, announces post-load failures, and marks refresh aggregation failed", async () => {
@@ -259,6 +380,12 @@ describe("Devices app integration", () => {
 				...device,
 				status: "revoked" as const,
 			})),
+		});
+		mocks.loadDeviceIdentityInventory.mockResolvedValueOnce({
+			version: 1,
+			items: [],
+			coordinatorEvidence: { availability: "available", safeErrorCode: null },
+			truncated: false,
 		});
 
 		await act(async () => {

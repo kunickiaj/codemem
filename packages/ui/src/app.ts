@@ -481,7 +481,17 @@ async function loadProjects() {
 	} catch {}
 }
 
-const loadRecipientPolicySharingData = createRecipientPolicySharingLoader();
+function reviewDevicesFromSharing(deviceId?: string) {
+	state.pendingDeviceIdentityFocus = deviceId?.trim() || null;
+	switchTab("devices", { canonicalHash: true });
+}
+
+const loadRecipientPolicySharingData = createRecipientPolicySharingLoader(
+	{},
+	{
+		onReviewDevices: reviewDevicesFromSharing,
+	},
+);
 const emptyRecipientPolicyIntent: api.RecipientPolicyIntentGraphV1 = {
 	version: 1,
 	identities: [],
@@ -491,12 +501,16 @@ const emptyRecipientPolicyIntent: api.RecipientPolicyIntentGraphV1 = {
 	projectRecipients: [],
 };
 let devicesLoaded = false;
+let devicesLoadRevision = 0;
+let latestDevicesLoad: Promise<boolean> | null = null;
 let lastDevicesData: {
 	projects: DevicesProjectInput[];
 	intent: api.RecipientPolicyIntentGraphV1;
 	reconciliation: api.RecipientPolicyReconciliationStatusV1;
 	availability: DeviceAvailabilityInput[];
 	peerRuntimeMetadata: DevicePeerRuntimeMetadataInput[];
+	inventory: api.DeviceIdentityInventoryV1 | undefined;
+	inventoryUnavailable: boolean;
 } | null = null;
 
 async function loadRecipientPolicyProjects(): Promise<DevicesProjectInput[]> {
@@ -551,35 +565,70 @@ function deriveDevicePeerRuntimeMetadata(): DevicePeerRuntimeMetadataInput[] {
 }
 
 function navigateFromDevices(target: DevicesNavigationTarget) {
+	if (target === "advanced_sync") {
+		switchTab("advanced", { advancedSection: "sync" });
+		queueMicrotask(() => document.getElementById("tabBtn-advanced")?.focus());
+		return;
+	}
 	switchTab(target, { canonicalHash: true });
 	queueMicrotask(() => document.getElementById(`tabBtn-${target}`)?.focus());
 }
 
-async function loadDevicesData(): Promise<boolean> {
+function loadDevicesData(): Promise<boolean> {
 	const mount = document.getElementById("devicesMount");
-	if (!mount) return true;
+	if (!mount) return Promise.resolve(true);
+	const revision = ++devicesLoadRevision;
+	const operation = runLoadDevicesData(mount, revision);
+	latestDevicesLoad = operation;
+	return operation;
+}
+
+async function runLoadDevicesData(mount: HTMLElement, revision: number): Promise<boolean> {
 	if (!devicesLoaded) {
 		mountDevices(mount, emptyRecipientPolicyIntent, { version: 1, items: [] }, [], [], {
 			loading: true,
 		});
 	}
 	try {
-		const [projects, intent, reconciliation] = await Promise.all([
+		const [projects, intent, reconciliation, inventoryResult] = await Promise.all([
 			loadRecipientPolicyProjects(),
 			api.loadRecipientPolicyIntent(),
 			api.loadRecipientPolicyReconciliationStatus(),
+			api
+				.loadDeviceIdentityInventory()
+				.then((inventory) => ({ inventory, unavailable: false }))
+				.catch(() => ({ inventory: lastDevicesData?.inventory, unavailable: true })),
 			loadSyncData(),
 		]);
+		if (revision !== devicesLoadRevision) return latestDevicesLoad ?? false;
 		const availability = deriveDeviceAvailability();
 		const peerRuntimeMetadata = deriveDevicePeerRuntimeMetadata();
 		mountDevices(mount, intent, reconciliation, projects, availability, {
+			inventory: inventoryResult.inventory,
+			inventoryUnavailable: inventoryResult.unavailable,
+			onCommitted: async () => {
+				const [devicesRefreshed, sharingRefreshed] = await Promise.all([
+					loadDevicesData(),
+					loadRecipientPolicySharingData(),
+				]);
+				return devicesRefreshed && sharingRefreshed;
+			},
 			onNavigate: navigateFromDevices,
 			peerRuntimeMetadata,
 		});
-		lastDevicesData = { projects, intent, reconciliation, availability, peerRuntimeMetadata };
+		lastDevicesData = {
+			projects,
+			intent,
+			reconciliation,
+			availability,
+			peerRuntimeMetadata,
+			inventory: inventoryResult.inventory,
+			inventoryUnavailable: inventoryResult.unavailable,
+		};
 		devicesLoaded = true;
 		return true;
 	} catch {
+		if (revision !== devicesLoadRevision) return latestDevicesLoad ?? false;
 		if (lastDevicesData) {
 			mountDevices(
 				mount,
@@ -588,6 +637,15 @@ async function loadDevicesData(): Promise<boolean> {
 				lastDevicesData.projects,
 				lastDevicesData.availability,
 				{
+					inventory: lastDevicesData.inventory,
+					inventoryUnavailable: lastDevicesData.inventoryUnavailable,
+					onCommitted: async () => {
+						const [devicesRefreshed, sharingRefreshed] = await Promise.all([
+							loadDevicesData(),
+							loadRecipientPolicySharingData(),
+						]);
+						return devicesRefreshed && sharingRefreshed;
+					},
 					onNavigate: navigateFromDevices,
 					peerRuntimeMetadata: lastDevicesData.peerRuntimeMetadata,
 					refreshError: true,

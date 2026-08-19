@@ -692,6 +692,86 @@ export interface RecipientPolicyIntentGraphV1 {
 	projectRecipients: RecipientPolicyProjectRecipientV1[];
 }
 
+export type DeviceIdentityInventoryStateV1 =
+	| "configured"
+	| "setup_required"
+	| "pairing_required"
+	| "conflicted";
+
+export interface DeviceIdentityInventoryItemV1 {
+	version: 1;
+	deviceId: string;
+	evidenceDeviceIds: string[];
+	displayName: string;
+	state: DeviceIdentityInventoryStateV1;
+	identityId: string | null;
+	suggestedIdentityId: string | null;
+	validatedFingerprint: string | null;
+	isLocal: boolean;
+	sources: Array<"local_device" | "sync_peer" | "coordinator_enrollment" | "identity_binding">;
+	conflictCodes: string[];
+}
+
+export interface DeviceIdentityInventoryV1 {
+	version: 1;
+	items: DeviceIdentityInventoryItemV1[];
+	coordinatorEvidence: {
+		availability: "available" | "unavailable";
+		safeErrorCode: string | null;
+	};
+	truncated: boolean;
+}
+
+export interface DeviceIdentityBindingSelectionV1 {
+	deviceId: string;
+	targetIdentityId: string;
+	confirmed: boolean;
+	allowRebind?: boolean;
+}
+
+export interface DeviceIdentityBindingPreviewRequestV1 {
+	bindings: DeviceIdentityBindingSelectionV1[];
+}
+
+export interface DeviceIdentityBindingOutcomeV1 {
+	deviceId: string;
+	displayName: string;
+	targetIdentityId: string;
+	previousIdentityId: string | null;
+	action: "bind" | "rebind" | "unchanged";
+	isLocal: boolean;
+}
+
+export interface DeviceIdentityBindingPreviewV1 {
+	version: 1;
+	status: "ready" | "invalid" | "not_found" | "conflict";
+	reviewedInventoryDigest: string;
+	errorCode: string | null;
+	outcomes: DeviceIdentityBindingOutcomeV1[];
+	writeCount: number;
+}
+
+export interface DeviceIdentityBindingCommitV1 {
+	version: 1;
+	status: "applied" | "invalid" | "not_found" | "stale" | "conflict";
+	reviewedInventoryDigest: string;
+	errorCode: string | null;
+	outcomes: DeviceIdentityBindingOutcomeV1[];
+	writeCount: number;
+	idempotent: boolean;
+}
+
+export class DeviceIdentityBindingApiError extends Error {
+	constructor(
+		readonly statusCode: number,
+		readonly errorCode: string,
+		readonly result: DeviceIdentityBindingPreviewV1 | DeviceIdentityBindingCommitV1 | null,
+	) {
+		super(errorCode);
+		this.name = "DeviceIdentityBindingApiError";
+	}
+}
+
 export type RecipientPolicyReconciliationReadState =
 	| "active"
 	| "needs_attention"
@@ -803,6 +883,49 @@ export class RecipientPolicyEdgesStaleError extends Error {
 
 export function loadRecipientPolicyIntent(): Promise<RecipientPolicyIntentGraphV1> {
 	return fetchJson<RecipientPolicyIntentGraphV1>("/api/sync/recipient-policy/v1/intent");
+}
+
+export function loadDeviceIdentityInventory(): Promise<DeviceIdentityInventoryV1> {
+	return fetchJson<DeviceIdentityInventoryV1>("/api/sync/recipient-policy/v1/device-inventory");
+}
+
+async function deviceIdentityBindingRequest<T>(
+	path: string,
+	input: DeviceIdentityBindingPreviewRequestV1 & { reviewedInventoryDigest?: string },
+): Promise<T> {
+	const resp = await fetch(path, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(input),
+	});
+	const { text, payload } = await readJsonPayload<
+		(DeviceIdentityBindingPreviewV1 | DeviceIdentityBindingCommitV1) & { error?: string }
+	>(resp);
+	if (!resp.ok) {
+		const errorCode =
+			payload?.errorCode || payload?.error || payloadError(payload) || text || "request_failed";
+		const result = payload && "status" in payload ? payload : null;
+		throw new DeviceIdentityBindingApiError(resp.status, errorCode, result);
+	}
+	return payload as T;
+}
+
+export function previewDeviceIdentityBindings(
+	input: DeviceIdentityBindingPreviewRequestV1,
+): Promise<DeviceIdentityBindingPreviewV1> {
+	return deviceIdentityBindingRequest(
+		"/api/sync/recipient-policy/v1/device-bindings/preview",
+		input,
+	);
+}
+
+export function commitDeviceIdentityBindings(
+	input: DeviceIdentityBindingPreviewRequestV1 & { reviewedInventoryDigest: string },
+): Promise<DeviceIdentityBindingCommitV1> {
+	return deviceIdentityBindingRequest(
+		"/api/sync/recipient-policy/v1/device-bindings/commit",
+		input,
+	);
 }
 
 export function loadRecipientPolicyReconciliationStatus(): Promise<RecipientPolicyReconciliationStatusV1> {

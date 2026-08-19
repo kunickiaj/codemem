@@ -41,6 +41,7 @@ async function loadRecipientPolicyProjects(): Promise<RecipientPolicyProjectInve
 }
 
 interface RecipientPolicySharingLoaderDependencies {
+	loadDeviceInventory: typeof api.loadDeviceIdentityInventory;
 	loadIntent: typeof api.loadRecipientPolicyIntent;
 	loadProjects: () => Promise<RecipientPolicyProjectInventory>;
 	mountManagement: typeof mountRecipientPolicyManagement;
@@ -48,6 +49,7 @@ interface RecipientPolicySharingLoaderDependencies {
 }
 
 const defaultDependencies: RecipientPolicySharingLoaderDependencies = {
+	loadDeviceInventory: api.loadDeviceIdentityInventory,
 	loadIntent: api.loadRecipientPolicyIntent,
 	loadProjects: loadRecipientPolicyProjects,
 	mountManagement: mountRecipientPolicyManagement,
@@ -56,42 +58,68 @@ const defaultDependencies: RecipientPolicySharingLoaderDependencies = {
 
 export function createRecipientPolicySharingLoader(
 	overrides: Partial<RecipientPolicySharingLoaderDependencies> = {},
-): () => Promise<void> {
+	options: { onReviewDevices?: (deviceId?: string) => void } = {},
+): () => Promise<boolean> {
 	const dependencies = { ...defaultDependencies, ...overrides };
 	let loaded = false;
+	let loadRevision = 0;
+	let latestLoad: Promise<boolean> | null = null;
 
-	return async function loadRecipientPolicySharingData(): Promise<void> {
+	const loadRecipientPolicySharingData = (): Promise<boolean> => {
+		const revision = ++loadRevision;
+		const operation = load(revision);
+		latestLoad = operation;
+		return operation;
+	};
+
+	async function load(revision: number): Promise<boolean> {
 		const sharingMount = document.getElementById("recipientPolicySharingMount");
-		if (!sharingMount) return;
+		if (!sharingMount) return true;
 		const managementMount = document.getElementById("recipientPolicyManagementMount");
 		if (!loaded) {
 			dependencies.mountSharing(sharingMount, [], EMPTY_RECIPIENT_POLICY_INTENT, {
 				loading: true,
 			});
 		}
-		try {
-			const [inventory, intent] = await Promise.all([
-				dependencies.loadProjects(),
-				dependencies.loadIntent(),
-			]);
+		const [inventoryResult, intentResult, deviceInventoryResult] = await Promise.allSettled([
+			dependencies.loadProjects(),
+			dependencies.loadIntent(),
+			dependencies.loadDeviceInventory(),
+		]);
+		if (revision !== loadRevision) return latestLoad ?? false;
+		const deviceInventoryUnavailable = deviceInventoryResult.status === "rejected";
+		if (inventoryResult.status === "fulfilled" && intentResult.status === "fulfilled") {
+			const inventory = inventoryResult.value;
+			const intent = intentResult.value;
+			const deviceInventory =
+				deviceInventoryResult.status === "fulfilled" ? deviceInventoryResult.value : undefined;
 			dependencies.mountSharing(sharingMount, inventory.manageable, intent, {
+				deviceInventory,
+				deviceInventoryUnavailable,
+				onReviewDevices: options.onReviewDevices,
 				received: inventory.received,
 			});
 			loaded = true;
 			if (managementMount) {
 				dependencies.mountManagement(managementMount, inventory.manageable, intent, {
-					onCommitted: loadRecipientPolicySharingData,
+					onCommitted: async () => {
+						await loadRecipientPolicySharingData();
+					},
 				});
 			}
-		} catch {
-			dependencies.mountSharing(sharingMount, [], EMPTY_RECIPIENT_POLICY_INTENT, {
+			return true;
+		}
+		dependencies.mountSharing(sharingMount, [], EMPTY_RECIPIENT_POLICY_INTENT, {
+			deviceInventoryUnavailable,
+			loadError: true,
+		});
+		if (managementMount) {
+			dependencies.mountManagement(managementMount, [], EMPTY_RECIPIENT_POLICY_INTENT, {
 				loadError: true,
 			});
-			if (managementMount) {
-				dependencies.mountManagement(managementMount, [], EMPTY_RECIPIENT_POLICY_INTENT, {
-					loadError: true,
-				});
-			}
 		}
-	};
+		return false;
+	}
+
+	return loadRecipientPolicySharingData;
 }

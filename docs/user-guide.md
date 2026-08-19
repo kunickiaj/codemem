@@ -247,7 +247,20 @@ The recipient accepts on the new device. Codemem links it to the same Identity, 
 
 ### Devices, status, and recovery
 
-**Devices** is a read-only view of registered devices and Projects shared directly with their **Owning Identity**. It does not infer per-device Team access from Identity membership; use Team policy administration when you need to review authoritative device decisions. Both direct and Team access remain limited to exact canonical Projects selected in Sharing.
+**Devices** shows every known device and whether its Identity ownership is configured. It does not infer ownership from pairing, coordinator membership, device names, or historical associations. It also does not infer per-device Team access from Identity membership; use Team policy administration when you need to review authoritative device decisions. Both direct and Team access remain limited to exact canonical Projects selected in Sharing.
+
+| Identity setup state | Meaning | What to do |
+| --- | --- | --- |
+| Configured | One active Identity binding is authoritative. | Nothing, unless you deliberately need to change the Identity. |
+| Setup required | The local or paired device has no authoritative Identity. | Choose an existing active Identity, explicitly confirm the device, and review the change. |
+| Pairing required | The device is visible through the coordinator but is not paired locally. | Pair it first, then return to Devices. Pairing does not choose an Identity. |
+| Review required | Device or ownership evidence conflicts. | Use the Advanced review path; normal setup cannot resolve conflicts. |
+
+For several setup-ready devices, select each device, choose an Identity for each one, and confirm each choice. Codemem never bulk-assigns an Identity from a suggestion. The review step lists every device and target Identity before the atomic commit. A prefilled local or suggested Identity is still unconfirmed until you select the confirmation checkbox.
+
+Changing a configured device's Identity is a separate rebind flow. It shows both the previous and target Identities and requires another reviewed confirmation. If device evidence changes after preview, refresh Devices and review the current information before retrying.
+
+The **Sharing** tab shows an attention notice while device setup, pairing, or repair remains. **Review Devices** focuses this workflow. Identity setup records ownership only: it does not grant Projects, add Team membership, change recipient policy, or enable sync access. When no policy Teams exist, Sharing opens the Identities view rather than implying that coordinator groups are Teams.
 
 **Availability** tells you whether the device can currently receive work. It does not change ownership or Project access:
 
