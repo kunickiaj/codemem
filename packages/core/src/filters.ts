@@ -248,8 +248,10 @@ export function buildFilterClausesWithContext(
 	addScopeVisibilityFilter(clauses, params, ownership);
 	if (!filters) return result;
 
-	// Single kind filter
-	if (filters.kind) {
+	// Single kind filter — guard against non-string kinds from untyped
+	// JSON request bodies (a number/bool would otherwise become a broken
+	// bound parameter).
+	if (typeof filters.kind === "string" && filters.kind) {
 		clauses.push("memory_items.kind = ?");
 		params.push(filters.kind);
 	}
