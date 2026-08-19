@@ -99,9 +99,7 @@ function resolveWriteProject(input: {
  * reliable client project signal. Callers (pi extension, CLI) pass project when
  * they want scope.
  */
-type FilterParse =
-	| { ok: true; filters: MemoryFilters | undefined }
-	| { ok: false; error: string };
+type FilterParse = { ok: true; filters: MemoryFilters | undefined } | { ok: false; error: string };
 
 function isFilterScalar(value: unknown): boolean {
 	return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
@@ -185,9 +183,7 @@ function buildFilters(
  * Example:
  *   /api/memories/search_index?query=foo&filters={"include_visibility":["private"]}
  */
-function parseGetFilters(
-	queryGetter: (name: string) => string | undefined,
-): FilterParse {
+function parseGetFilters(queryGetter: (name: string) => string | undefined): FilterParse {
 	const filterRaw: Record<string, unknown> = {};
 
 	const filtersParam = queryGetter("filters");
@@ -211,7 +207,6 @@ function parseGetFilters(
 	if (kind != null) filterRaw.kind = kind;
 
 	return buildFilters(filterRaw);
-
 }
 
 function getMemoryForAccess(
@@ -358,7 +353,6 @@ function buildDistillFilters(
 		return { ok: false, error: "project cannot be combined with all_projects" };
 	}
 	return buildFilters(args, args.all_projects ? null : defaultProject);
-
 }
 
 function mapSearchIndexItem(m: MemoryResult) {
