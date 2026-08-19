@@ -13,6 +13,7 @@ import { createRecipientPolicySharingLoader } from "./app-sharing";
 import { mountToastHost } from "./components/primitives/toast";
 import * as api from "./lib/api";
 import type { ProjectScopeInventoryProject } from "./lib/api/sync";
+import { coordinatorEnrollmentOpenIssueCount } from "./lib/coordinator-enrollment-attention";
 import { $, $button, $select } from "./lib/dom";
 import { handlePrimaryActionKeyboard } from "./lib/keyboard";
 import {
@@ -511,6 +512,7 @@ let lastDevicesData: {
 	peerRuntimeMetadata: DevicePeerRuntimeMetadataInput[];
 	inventory: api.DeviceIdentityInventoryV1 | undefined;
 	inventoryUnavailable: boolean;
+	coordinatorEnrollmentIssueCount: number;
 } | null = null;
 
 async function loadRecipientPolicyProjects(): Promise<DevicesProjectInput[]> {
@@ -603,9 +605,17 @@ async function runLoadDevicesData(mount: HTMLElement, revision: number): Promise
 		if (revision !== devicesLoadRevision) return latestDevicesLoad ?? false;
 		const availability = deriveDeviceAvailability();
 		const peerRuntimeMetadata = deriveDevicePeerRuntimeMetadata();
+		const coordinatorEnrollmentIssueCount = coordinatorEnrollmentOpenIssueCount(
+			state.lastSyncStatus,
+		);
+		if (!inventoryResult.unavailable && inventoryResult.inventory) {
+			state.lastDeviceIdentityInventory = inventoryResult.inventory;
+		}
+		state.deviceIdentityInventoryLoadError = inventoryResult.unavailable;
 		mountDevices(mount, intent, reconciliation, projects, availability, {
 			inventory: inventoryResult.inventory,
 			inventoryUnavailable: inventoryResult.unavailable,
+			coordinatorEnrollmentIssueCount,
 			onCommitted: async () => {
 				const [devicesRefreshed, sharingRefreshed] = await Promise.all([
 					loadDevicesData(),
@@ -624,6 +634,7 @@ async function runLoadDevicesData(mount: HTMLElement, revision: number): Promise
 			peerRuntimeMetadata,
 			inventory: inventoryResult.inventory,
 			inventoryUnavailable: inventoryResult.unavailable,
+			coordinatorEnrollmentIssueCount,
 		};
 		devicesLoaded = true;
 		return true;
@@ -637,6 +648,7 @@ async function runLoadDevicesData(mount: HTMLElement, revision: number): Promise
 				lastDevicesData.projects,
 				lastDevicesData.availability,
 				{
+					coordinatorEnrollmentIssueCount: lastDevicesData.coordinatorEnrollmentIssueCount,
 					inventory: lastDevicesData.inventory,
 					inventoryUnavailable: lastDevicesData.inventoryUnavailable,
 					onCommitted: async () => {

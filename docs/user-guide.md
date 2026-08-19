@@ -260,7 +260,7 @@ For several setup-ready devices, select each device, choose an Identity for each
 
 Changing a configured device's Identity is a separate rebind flow. It shows both the previous and target Identities and requires another reviewed confirmation. If device evidence changes after preview, refresh Devices and review the current information before retrying.
 
-The **Sharing** tab shows an attention notice while device setup, pairing, or repair remains. **Review Devices** focuses this workflow. Identity setup records ownership only: it does not grant Projects, add Team membership, change recipient policy, or enable sync access. When no policy Teams exist, Sharing opens the Identities view rather than implying that coordinator groups are Teams.
+The **Sharing** tab shows an attention notice while device setup, pairing, repair, or coordinator enrollment reconciliation remains. **Review Devices** focuses the authoritative ownership workflow. Devices and Sharing show only a safe affected-enrollment count. Identity setup records ownership only: it does not grant Projects, add Team membership, change recipient policy, or enable sync access. When no policy Teams exist, Sharing opens the Identities view rather than implying that coordinator groups are Teams.
 
 **Availability** tells you whether the device can currently receive work. It does not change ownership or Project access:
 
@@ -367,17 +367,17 @@ codemem maintenance status
 
 ### Same-person device recovery
 
-- In **Advanced → Sync**, use `Assigned actor` to map a peer to your local actor when that machine should count as part of your identity.
-- Actor assignment preserves provenance and same-person UI continuity. Private sync still requires membership in a personal Sharing domain; actor assignment is not an access grant.
+- In **Advanced → Sync**, ownership summaries come from active `identity_devices` bindings. Use the device card's **Set up Identity in Devices** or **Review or rebind in Devices** action to confirm or change ownership.
+- A legacy `sync_peers.actor_id` value may appear as a suggested Identity, but it is only a hint. It does not become ownership until you explicitly review and confirm the binding in Devices.
+- Identity setup preserves the distinction between ownership, provenance, pairing, and access. Private sync still requires membership in a personal Sharing domain; an Identity binding is not an access grant.
 - If a machine is replaced or re-paired, use `Claim old device as mine` to reconnect older synced history to your local actor.
 
 ### Advanced actor management
 
 - The Sync panel now has an `Actors` section for creating and renaming non-local actors.
-- The same section can merge a duplicate actor into another actor; this immediately moves assigned peers, while already-stamped historical memories keep their current provenance until a later follow-on flow changes them.
-- Assign each paired peer below to `Unassigned actor`, your local actor, or a named actor.
-- Assigning a peer changes how older synced memories from that peer are attributed.
-- Assigning a peer to a non-local actor keeps that peer's history attributed to that actor; assigning it to your local actor keeps provenance tied to you.
+- The same section can merge a duplicate actor into another actor. This immediately moves assigned peers, device bindings, Team memberships, and direct or received Project access to the target Identity, while already-stamped historical memories keep their current provenance until a later follow-on flow changes them.
+- Historical actor records and `sync_peers.actor_id` remain available to explain provenance and supply setup suggestions. They do not establish device ownership.
+- Create or rename an actor label here when maintaining legacy provenance, then complete any device ownership choice in Devices.
 - Non-local peers receive memories only after Sharing-domain authorization succeeds. Their include/exclude filters can narrow that set, but cannot grant access.
 - Use `Only me` on a memory when it should stay local and not sync to non-local actors.
 - The Sync panel also shows a teammate review card with per-peer counts for memories that will share by default versus memories marked `Only me`, plus a one-click jump into `My memories` in the Feed for review.
@@ -509,8 +509,8 @@ The wire error is intentionally generic. Check the peer serving the bootstrap sn
 - For non-local peers, Sharing-domain membership is the access boundary. Project and per-peer sync filters narrow the eligible set, and `Only me` acts as a per-memory override.
 
 ## Advanced Sync panel
-- The `Actors` section gives actor creation/rename one home, while peer cards keep assignment close to the peer being changed.
-- `Assigned actor` replaces the older `Belongs to me` language in the peer cards.
+- The `Actors` section keeps legacy provenance-label creation and rename controls in one place.
+- Peer cards show authoritative Identity ownership from Devices. Legacy actor values remain suggestions or provenance and cannot be saved as ownership from Advanced.
 - Feed cards you own include a visibility control so shared/private intent can be changed without editing raw metadata.
 - `Redact sensitive details` lives above Recent sync attempts so it is easier to find before you inspect peer addresses and attempt history.
 - Recent sync attempts intentionally show only the latest few rows in the viewer; use CLI diagnostics for deeper history if needed.

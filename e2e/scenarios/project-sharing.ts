@@ -46,6 +46,7 @@ interface FixtureSummary {
 			attempt_count: number;
 		}>;
 		team_memberships: Array<{ team_id: string; identity_id: string; status: string }>;
+		teams: Array<{ team_id: string; display_name: string; status: string }>;
 		identity_devices: Array<{
 			identity_id: string;
 			device_id: string;
@@ -69,6 +70,24 @@ interface FixtureSummary {
 		}>;
 	};
 	action_result?: Record<string, unknown> | null;
+}
+
+interface DeviceIdentityInventory {
+	truncated: boolean;
+	items: Array<{
+		deviceId: string;
+		state: "configured" | "setup_required" | "pairing_required" | "conflicted";
+		identityId: string | null;
+		suggestedIdentityId: string | null;
+	}>;
+}
+
+interface DeviceIdentityBindingResult {
+	status: string;
+	reviewedInventoryDigest: string;
+	writeCount: number;
+	idempotent?: boolean;
+	errorCode?: string | null;
 }
 
 interface RecipientPolicyIntentGraph {
@@ -1447,6 +1466,253 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 				item.explanation.includes("Legacy scope enforcement remains in control"),
 		),
 		"rollback was not visible through the safe reconciliation API",
+	);
+
+	// Arrange: seed legacy peers whose actor_id values are suggestions, including stale and conflicting evidence.
+	const legacyBefore = fixture(ctx, "peer-a", "summary", "54-legacy-device-identity-before");
+	fixture(ctx, "peer-a", "seed-legacy-device-identities", "55-seed-legacy-device-identities");
+	const legacyInventoryBefore = await request<DeviceIdentityInventory>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/device-inventory",
+		"56-legacy-device-inventory-before",
+	);
+	const legacyAdvancedBefore = await request<{
+		peers: Array<{ peer_device_id: string; actor_id: string | null }>;
+	}>(ctx, "peer-a", "/api/sync/status", "57-legacy-advanced-before");
+	const legacySharingBefore = await request<{
+		identityDevices: Array<{ identityId: string; deviceId: string; status: string }>;
+	}>(ctx, "peer-a", "/api/sync/recipient-policy/v1/intent", "58-legacy-sharing-before");
+	for (const deviceId of ["legacy-device-valid-a", "legacy-device-valid-b", "legacy-device-stale"]) {
+		const item = legacyInventoryBefore.body.items.find((candidate) => candidate.deviceId === deviceId);
+		assert(
+			item?.state === "setup_required" &&
+				item.identityId === null &&
+				item.suggestedIdentityId === "identity-direct-personal",
+			`${deviceId} actor_id was not kept as an unconfirmed suggestion`,
+		);
+		assert(
+			!legacySharingBefore.body.identityDevices.some((device) => device.deviceId === deviceId),
+			`${deviceId} actor_id materialized an Identity binding before review`,
+		);
+		assert(
+			legacyAdvancedBefore.body.peers.some(
+				(peer) => peer.peer_device_id === deviceId && peer.actor_id === "identity-direct-personal",
+			),
+			`${deviceId} legacy Advanced provenance hint disappeared`,
+		);
+	}
+	const conflictItem = legacyInventoryBefore.body.items.find(
+		(item) => item.deviceId === "legacy-device-conflict",
+	);
+	assert(conflictItem?.state === "conflicted", "conflicting legacy evidence did not fail closed");
+
+	// Act: review and atomically commit two authoritative bindings through the viewer API.
+	const bindingSelections = ["legacy-device-valid-a", "legacy-device-valid-b"].map((deviceId) => ({
+		deviceId,
+		targetIdentityId: "identity-direct-personal",
+		confirmed: true,
+	}));
+	const legacyPreview = await request<DeviceIdentityBindingResult>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/device-bindings/preview",
+		"59-preview-legacy-device-bindings",
+		{ bindings: bindingSelections },
+	);
+	assert(legacyPreview.status === 200 && legacyPreview.body.status === "ready", "legacy binding preview failed");
+	const legacyCommitBody = {
+		bindings: bindingSelections,
+		reviewedInventoryDigest: legacyPreview.body.reviewedInventoryDigest,
+	};
+	const legacyCommit = await request<DeviceIdentityBindingResult>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/device-bindings/commit",
+		"60-commit-legacy-device-bindings",
+		legacyCommitBody,
+	);
+	assert(
+		legacyCommit.status === 200 &&
+			legacyCommit.body.status === "applied" &&
+			legacyCommit.body.writeCount === 2,
+		"reviewed legacy device bindings were not committed atomically",
+	);
+	const legacyRetry = await request<DeviceIdentityBindingResult>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/device-bindings/commit",
+		"61-retry-legacy-device-bindings",
+		legacyCommitBody,
+	);
+	assert(
+		legacyRetry.status === 200 &&
+			legacyRetry.body.status === "applied" &&
+			legacyRetry.body.writeCount === 0 &&
+			legacyRetry.body.idempotent === true,
+		"legacy device binding retry was not idempotent",
+	);
+
+	// Assert: Devices, Sharing, and Advanced refresh consistently without mutating access policy.
+	const legacyInventoryAfter = await request<DeviceIdentityInventory>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/device-inventory",
+		"62-legacy-device-inventory-after",
+	);
+	const legacySharingAfter = await request<{
+		identityDevices: Array<{ identityId: string; deviceId: string; status: string }>;
+	}>(ctx, "peer-a", "/api/sync/recipient-policy/v1/intent", "63-legacy-sharing-after");
+	const legacyAdvancedAfter = await request<{
+		peers: Array<{ peer_device_id: string; actor_id: string | null }>;
+	}>(ctx, "peer-a", "/api/sync/status", "64-legacy-advanced-after");
+	for (const deviceId of ["legacy-device-valid-a", "legacy-device-valid-b"]) {
+		assert(
+			legacyInventoryAfter.body.items.some(
+				(item) =>
+					item.deviceId === deviceId &&
+					item.state === "configured" &&
+					item.identityId === "identity-direct-personal",
+			),
+			`${deviceId} was not configured after refresh`,
+		);
+		assert(
+			legacySharingAfter.body.identityDevices.some(
+				(device) =>
+					device.deviceId === deviceId &&
+					device.identityId === "identity-direct-personal" &&
+					device.status === "active",
+			),
+			`${deviceId} authoritative binding was missing from Sharing refresh`,
+		);
+		assert(
+			legacyAdvancedAfter.body.peers.some(
+				(peer) => peer.peer_device_id === deviceId && peer.actor_id === "identity-direct-personal",
+			),
+			`${deviceId} disappeared from Advanced refresh`,
+		);
+	}
+	const legacyAfter = fixture(ctx, "peer-a", "summary", "65-legacy-device-identity-after");
+	const previousBindingsAfter = legacyAfter.policy.identity_devices.filter(
+		(device) => !device.device_id.startsWith("legacy-device-valid-"),
+	);
+	assert(
+		JSON.stringify(previousBindingsAfter) === JSON.stringify(legacyBefore.policy.identity_devices),
+		"legacy setup changed an existing invitation or policy Identity binding",
+	);
+	for (const [label, before, after] of [
+		["Teams", legacyBefore.policy.teams, legacyAfter.policy.teams],
+		["Team memberships", legacyBefore.policy.team_memberships, legacyAfter.policy.team_memberships],
+		["Project recipients", legacyBefore.policy.project_recipients, legacyAfter.policy.project_recipients],
+		["managed scope grants", legacyBefore.managed_memberships, legacyAfter.managed_memberships],
+		["source scope grants", legacyBefore.source_memberships, legacyAfter.source_memberships],
+	] as const) {
+		assert(JSON.stringify(after) === JSON.stringify(before), `legacy setup changed ${label}`);
+	}
+
+	// Arrange/Act/Assert: changed evidence stales review, while conflicting evidence cannot be previewed.
+	const staleSelection = {
+		deviceId: "legacy-device-stale",
+		targetIdentityId: "identity-direct-personal",
+		confirmed: true,
+	};
+	const staleLegacyPreview = await request<DeviceIdentityBindingResult>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/device-bindings/preview",
+		"66-preview-stale-legacy-device",
+		{ bindings: [staleSelection] },
+	);
+	assert(staleLegacyPreview.status === 200, "stale legacy fixture could not be previewed");
+	fixture(ctx, "peer-a", "stale-legacy-device-evidence", "67-change-legacy-device-evidence");
+	const staleLegacyCommit = await request<DeviceIdentityBindingResult>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/device-bindings/commit",
+		"68-reject-stale-legacy-device",
+		{
+			bindings: [staleSelection],
+			reviewedInventoryDigest: staleLegacyPreview.body.reviewedInventoryDigest,
+		},
+	);
+	assert(
+		staleLegacyCommit.status === 409 &&
+			staleLegacyCommit.body.status === "stale" &&
+			staleLegacyCommit.body.writeCount === 0,
+		"stale legacy device evidence did not fail closed",
+	);
+	const conflictLegacyPreview = await request<DeviceIdentityBindingResult>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/device-bindings/preview",
+		"69-reject-conflicting-legacy-device",
+		{
+			bindings: [
+				{
+					deviceId: "legacy-device-conflict",
+					targetIdentityId: "identity-direct-personal",
+					confirmed: true,
+				},
+			],
+		},
+	);
+	assert(
+		conflictLegacyPreview.status === 409 && conflictLegacyPreview.body.status === "conflict",
+		"conflicting legacy device evidence did not fail closed at preview",
+	);
+	const legacyRejected = fixture(ctx, "peer-a", "summary", "70-legacy-rejected-bindings");
+	assert(
+		!legacyRejected.policy.identity_devices.some(
+			(device) =>
+				device.device_id === "legacy-device-stale" || device.device_id === "legacy-device-conflict",
+		),
+		"failed legacy review materialized an Identity binding",
+	);
+
+	// Arrange/Act/Assert: a bounded inventory rejects both preview and commit at the API boundary.
+	fixture(ctx, "peer-a", "truncate-legacy-device-evidence", "71-truncate-legacy-device-evidence");
+	const truncatedInventory = await request<DeviceIdentityInventory>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/device-inventory",
+		"72-truncated-legacy-device-inventory",
+	);
+	assert(truncatedInventory.body.truncated === true, "legacy fixture did not truncate inventory");
+	const truncatedPreview = await request<DeviceIdentityBindingResult>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/device-bindings/preview",
+		"73-reject-truncated-legacy-preview",
+		{ bindings: [staleSelection] },
+	);
+	assert(
+		truncatedPreview.status === 409 &&
+			truncatedPreview.body.errorCode === "device_inventory_truncated" &&
+			truncatedPreview.body.writeCount === 0,
+		"truncated legacy inventory did not fail closed at preview",
+	);
+	const truncatedCommit = await request<DeviceIdentityBindingResult>(
+		ctx,
+		"peer-a",
+		"/api/sync/recipient-policy/v1/device-bindings/commit",
+		"74-reject-truncated-legacy-commit",
+		{
+			bindings: [staleSelection],
+			reviewedInventoryDigest: staleLegacyPreview.body.reviewedInventoryDigest,
+		},
+	);
+	assert(
+		truncatedCommit.status === 409 &&
+			truncatedCommit.body.errorCode === "device_inventory_truncated" &&
+			truncatedCommit.body.writeCount === 0,
+		"truncated legacy inventory did not fail closed at commit",
+	);
+	const truncatedRejected = fixture(ctx, "peer-a", "summary", "75-truncated-legacy-rejected");
+	assert(
+		!truncatedRejected.policy.identity_devices.some(
+			(device) => device.device_id === "legacy-device-stale",
+		),
+		"truncated legacy review materialized an Identity binding",
 	);
 
 	ctx.compose.copyFromContainer(

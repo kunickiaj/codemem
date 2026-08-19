@@ -6,6 +6,7 @@ import { connect, tableExists } from "./db.js";
 import { buildFilterClauses, buildFilterClausesWithContext } from "./filters.js";
 import { MemoryStore } from "./store.js";
 import { setSyncDaemonPhase } from "./sync-daemon.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { loadReplicationOpsSince } from "./sync-replication.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import * as vectors from "./vectors.js";
@@ -1203,6 +1204,263 @@ describe("MemoryStore", () => {
 			).toBe(false);
 		});
 
+		it("uses active device bindings as authoritative same-actor evidence", () => {
+			const now = "2026-01-01T00:00:00Z";
+			store.db
+				.prepare(
+					`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+					 VALUES (?, 'Local', 1, 'active', ?, ?)`,
+				)
+				.run(store.actorId, now, now);
+			for (const provenance of [
+				"user_confirmed_identity_setup",
+				"recipient_invite",
+				"exact_project_invite",
+				"review_resolution",
+			]) {
+				const deviceId = `bound-local-${provenance}`;
+				store.db
+					.prepare(
+						`INSERT INTO identity_devices(
+						 device_id, identity_id, display_name, status, provenance, revision, migration_state,
+						 idempotency_key, created_at, updated_at
+						 ) VALUES (?, ?, ?, 'active', ?, ?, 'user_managed', ?, ?, ?)`,
+					)
+					.run(
+						deviceId,
+						store.actorId,
+						deviceId,
+						provenance,
+						`revision-${provenance}`,
+						`key-${provenance}`,
+						now,
+						now,
+					);
+
+				expect(
+					store.memoryOwnedBySelf({ actor_id: null, origin_device_id: deviceId, metadata: {} }),
+				).toBe(true);
+			}
+
+			store.db
+				.prepare(
+					"INSERT INTO sync_peers(peer_device_id, actor_id, claimed_local_actor, created_at) VALUES ('legacy-unbound-peer', ?, 1, ?)",
+				)
+				.run(store.actorId, now);
+			expect(
+				store.memoryOwnedBySelf({
+					actor_id: "legacy-sync:legacy-unbound-peer",
+					origin_device_id: null,
+					metadata: {},
+				}),
+			).toBe(true);
+		});
+
+		it("does not let stale legacy claims override an authoritative binding", () => {
+			const now = "2026-01-01T00:00:00Z";
+			store.db
+				.prepare(
+					`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+					 VALUES (?, 'Local', 1, 'active', ?, ?),
+					        ('identity-other', 'Other', 0, 'active', ?, ?)`,
+				)
+				.run(store.actorId, now, now, now, now);
+			for (const [deviceId, identityId, status, provenance] of [
+				["bound-other-peer", "identity-other", "active", "user_confirmed_identity_setup"],
+				["revoked-local-peer", store.actorId, "revoked", "user_confirmed_identity_setup"],
+				["coordinator-local-peer", store.actorId, "active", "coordinator_enrollment"],
+			] as const) {
+				store.db
+					.prepare(
+						"INSERT INTO sync_peers(peer_device_id, actor_id, claimed_local_actor, created_at) VALUES (?, ?, 1, ?)",
+					)
+					.run(deviceId, store.actorId, now);
+				store.db
+					.prepare(
+						`INSERT INTO identity_devices(
+						 device_id, identity_id, display_name, status, provenance, revision, migration_state,
+						 idempotency_key, created_at, updated_at
+						 ) VALUES (?, ?, ?, ?, ?, ?, 'user_managed', ?, ?, ?)`,
+					)
+					.run(
+						deviceId,
+						identityId,
+						deviceId,
+						status,
+						provenance,
+						`revision-${deviceId}`,
+						`key-${deviceId}`,
+						now,
+						now,
+					);
+			}
+
+			for (const deviceId of ["bound-other-peer", "revoked-local-peer", "coordinator-local-peer"]) {
+				expect(
+					store.memoryOwnedBySelf({ actor_id: null, origin_device_id: deviceId, metadata: {} }),
+				).toBe(false);
+				expect(
+					store.memoryOwnedBySelf({
+						actor_id: `legacy-sync:${deviceId}`,
+						origin_device_id: null,
+						metadata: {},
+					}),
+				).toBe(false);
+			}
+		});
+
+		it("suppresses legacy claims for fingerprint aliases of an authoritative binding", () => {
+			const now = "2026-01-01T00:00:00Z";
+			const publicKey = "shared-device-public-key";
+			const fingerprint = fingerprintPublicKey(publicKey);
+			store.db
+				.prepare(
+					`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+					 VALUES (?, 'Local', 1, 'active', ?, ?),
+					        ('identity-other', 'Other', 0, 'active', ?, ?)`,
+				)
+				.run(store.actorId, now, now, now, now);
+			store.db
+				.prepare(`INSERT INTO sync_peers(
+					peer_device_id, public_key, pinned_fingerprint, actor_id, claimed_local_actor, created_at
+				) VALUES ('bound-canonical', ?, ?, ?, 0, ?), ('stale-alias', ?, ?, ?, 1, ?)`)
+				.run(
+					publicKey,
+					fingerprint,
+					"identity-other",
+					now,
+					publicKey,
+					fingerprint,
+					store.actorId,
+					now,
+				);
+			store.db
+				.prepare(`INSERT INTO identity_devices(
+					device_id, identity_id, display_name, status, provenance, revision, migration_state,
+					idempotency_key, created_at, updated_at
+				) VALUES ('bound-canonical', 'identity-other', 'Bound device', 'active',
+					'user_confirmed_identity_setup', 'r1', 'user_managed', 'alias-binding', ?, ?)`)
+				.run(now, now);
+
+			expect(store.sameActorPeerIds()).toEqual([]);
+			expect(
+				store.memoryOwnedBySelf({
+					actor_id: "legacy-sync:stale-alias",
+					origin_device_id: "stale-alias",
+					metadata: {},
+				}),
+			).toBe(false);
+		});
+
+		it("propagates local bindings only across aliases with public-key evidence", () => {
+			const now = "2026-01-01T00:00:00Z";
+			const publicKey = "local-shared-device-public-key";
+			const fingerprint = fingerprintPublicKey(publicKey);
+			store.db
+				.prepare(
+					`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+					 VALUES (?, 'Local', 1, 'active', ?, ?)`,
+				)
+				.run(store.actorId, now, now);
+			store.db
+				.prepare(`INSERT INTO sync_peers(
+					peer_device_id, public_key, pinned_fingerprint, created_at
+				) VALUES ('local-canonical', ?, ?, ?), ('proven-alias', ?, ?, ?),
+					('pinned-only-alias', NULL, ?, ?), ('local-pinned-bound', NULL, ?, ?)`)
+				.run(
+					publicKey,
+					fingerprint,
+					now,
+					publicKey,
+					fingerprint,
+					now,
+					fingerprint,
+					now,
+					fingerprint,
+					now,
+				);
+			store.db
+				.prepare(`INSERT INTO identity_devices(
+					device_id, identity_id, display_name, status, provenance, revision, migration_state,
+					idempotency_key, created_at, updated_at
+				) VALUES ('local-canonical', ?, 'Local device', 'active',
+					'user_confirmed_identity_setup', 'r1', 'user_managed', 'local-alias-binding', ?, ?),
+					('local-pinned-bound', ?, 'Local pinned device', 'active',
+					'user_confirmed_identity_setup', 'r2', 'user_managed', 'local-pinned-binding', ?, ?)`)
+				.run(store.actorId, now, now, store.actorId, now, now);
+
+			expect(store.sameActorPeerIds()).toEqual([
+				"local-canonical",
+				"local-pinned-bound",
+				"proven-alias",
+			]);
+		});
+
+		it("does not propagate ownership across fingerprints with conflicting bindings", () => {
+			const now = "2026-01-01T00:00:00Z";
+			const publicKey = "conflicting-shared-device-public-key";
+			const fingerprint = fingerprintPublicKey(publicKey);
+			store.db
+				.prepare(
+					`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+					 VALUES (?, 'Local', 1, 'active', ?, ?),
+					        ('identity-other', 'Other', 0, 'active', ?, ?)`,
+				)
+				.run(store.actorId, now, now, now, now);
+			store.db
+				.prepare(`INSERT INTO sync_peers(
+					peer_device_id, public_key, pinned_fingerprint, created_at
+				) VALUES ('local-canonical', ?, ?, ?), ('unbound-alias', ?, ?, ?),
+					('conflicting-bound-alias', ?, ?, ?)`)
+				.run(publicKey, fingerprint, now, publicKey, fingerprint, now, publicKey, fingerprint, now);
+			store.db
+				.prepare(`INSERT INTO identity_devices(
+					device_id, identity_id, display_name, status, provenance, revision, migration_state,
+					idempotency_key, created_at, updated_at
+				) VALUES ('local-canonical', ?, 'Local device', 'active',
+					'user_confirmed_identity_setup', 'r1', 'user_managed', 'local-conflict-binding', ?, ?),
+					('conflicting-bound-alias', 'identity-other', 'Other device', 'active',
+					'user_confirmed_identity_setup', 'r2', 'user_managed', 'other-conflict-binding', ?, ?)`)
+				.run(store.actorId, now, now, now, now);
+
+			expect(store.sameActorPeerIds()).toEqual(["local-canonical"]);
+		});
+
+		it("fails closed without throwing for a partial identity binding schema", () => {
+			store.db.prepare("DROP TABLE identity_devices").run();
+			store.db.prepare("CREATE TABLE identity_devices(device_id TEXT PRIMARY KEY)").run();
+			store.db
+				.prepare(
+					"INSERT INTO sync_peers(peer_device_id, actor_id, claimed_local_actor, created_at) VALUES ('partial-binding-peer', ?, 1, ?)",
+				)
+				.run(store.actorId, "2026-01-01T00:00:00Z");
+
+			expect(() => store.sameActorPeerIds()).not.toThrow();
+			expect(store.sameActorPeerIds()).toEqual([]);
+		});
+
+		it("fails closed without throwing when actor identity state is unavailable", () => {
+			store.db.prepare("DROP TABLE identity_devices").run();
+			store.db.prepare("DROP TABLE actors").run();
+			store.db
+				.prepare(
+					`CREATE TABLE identity_devices(
+					 device_id TEXT PRIMARY KEY, identity_id TEXT NOT NULL, status TEXT NOT NULL,
+					 provenance TEXT NOT NULL
+					 )`,
+				)
+				.run();
+			store.db
+				.prepare(
+					`INSERT INTO identity_devices(device_id, identity_id, status, provenance)
+					 VALUES ('missing-actor-peer', ?, 'active', 'user_confirmed_identity_setup')`,
+				)
+				.run(store.actorId);
+
+			expect(() => store.sameActorPeerIds()).not.toThrow();
+			expect(store.sameActorPeerIds()).toEqual([]);
+		});
+
 		it("returns true for claimed same-actor peer origin_device_id", () => {
 			store.db
 				.prepare(
@@ -1579,6 +1837,55 @@ describe("MemoryStore", () => {
 			expect(theirsIds).not.toContain(metadataDeviceId);
 			expect(theirsIds).not.toContain(metadataLegacyActorId);
 			expect(theirsIds).toContain(otherId);
+		});
+
+		it("uses authoritative bindings for SQL ownership filters", () => {
+			const sessionId = insertTestSession(store.db);
+			const now = "2026-01-01T00:00:00Z";
+			store.db
+				.prepare(
+					`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+					 VALUES (?, 'Local', 1, 'active', ?, ?),
+					        ('identity-other-filter', 'Other', 0, 'active', ?, ?)`,
+				)
+				.run(store.actorId, now, now, now, now);
+			for (const [deviceId, identityId] of [
+				["bound-local-filter", store.actorId],
+				["bound-other-filter", "identity-other-filter"],
+			] as const) {
+				store.db
+					.prepare(
+						`INSERT INTO identity_devices(
+						 device_id, identity_id, display_name, status, provenance, revision, migration_state,
+						 idempotency_key, created_at, updated_at
+						 ) VALUES (?, ?, ?, 'active', 'user_confirmed_identity_setup', ?,
+						 'user_managed', ?, ?, ?)`,
+					)
+					.run(deviceId, identityId, deviceId, `revision-${deviceId}`, `key-${deviceId}`, now, now);
+			}
+			store.db
+				.prepare(
+					"INSERT INTO sync_peers(peer_device_id, actor_id, claimed_local_actor, created_at) VALUES ('bound-other-filter', ?, 1, ?)",
+				)
+				.run(store.actorId, now);
+			const insertMemory = (title: string, deviceId: string) =>
+				Number(
+					store.db
+						.prepare(
+							`INSERT INTO memory_items(
+							 session_id, kind, title, body_text, confidence, tags_text, active,
+							 created_at, updated_at, metadata_json, rev, scope_id, origin_device_id
+							 ) VALUES (?, 'discovery', ?, 'Body', 0.5, '', 1, ?, ?, '{}', 1,
+							 'local-default', ?)`,
+						)
+						.run(sessionId, title, now, now, deviceId).lastInsertRowid,
+				);
+			const localId = insertMemory("Authoritatively local", "bound-local-filter");
+			const otherId = insertMemory("Authoritatively other", "bound-other-filter");
+
+			const mineIds = store.recent(10, { ownership_scope: "mine" }).map((item) => item.id);
+			expect(mineIds).toContain(localId);
+			expect(mineIds).not.toContain(otherId);
 		});
 
 		it("intersects explicit scope filters with local authorization", () => {

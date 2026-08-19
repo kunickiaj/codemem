@@ -11370,6 +11370,144 @@ describe("viewer-server", () => {
 						"INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, actor_id, created_at) VALUES (?, ?, ?, ?, ?)",
 					)
 					.run("peer-merge", "Peer Merge", "fp-merge", created.actor_id, new Date().toISOString());
+				const bindingTimestamp = new Date().toISOString();
+				store.db
+					.prepare(`INSERT INTO identity_devices(
+						device_id, identity_id, display_name, status, provenance, revision, migration_state,
+						assignment_version, source_fingerprint, idempotency_key, created_at, updated_at
+					) VALUES (?, ?, ?, 'active', 'user_confirmed_identity_setup', 'r1', 'user_managed',
+						0, NULL, ?, ?, ?)`)
+					.run(
+						"bound-device",
+						created.actor_id,
+						"Bound device",
+						"binding-before-merge",
+						bindingTimestamp,
+						bindingTimestamp,
+					);
+				store.db
+					.prepare(`INSERT INTO policy_teams(
+						team_id, display_name, status, device_eligibility_mode, provenance, revision,
+						migration_state, source_fingerprint, idempotency_key, created_at, updated_at
+					) VALUES (?, ?, 'active', 'reviewed_allowlist', 'user', 'r1', 'user_managed',
+						NULL, ?, ?, ?)`)
+					.run("merge-team", "Merge team", "merge-team-key", bindingTimestamp, bindingTimestamp);
+				store.db
+					.prepare(`INSERT INTO policy_team_device_decisions(
+						team_id, device_id, decision, assignment_version, provenance, revision,
+						created_at, updated_at
+					) VALUES (?, ?, 'included', 0, 'user', 'r1', ?, ?)`)
+					.run("merge-team", "bound-device", bindingTimestamp, bindingTimestamp);
+				store.db
+					.prepare(`INSERT INTO policy_team_memberships(
+						team_id, identity_id, role, status, provenance, revision, migration_state,
+						source_fingerprint, idempotency_key, created_at, updated_at
+					) VALUES (?, ?, 'member', 'reviewed_active', 'user', 'r1', 'user_managed',
+						NULL, ?, ?, ?)`)
+					.run(
+						"merge-team",
+						created.actor_id,
+						"merge-membership-key",
+						bindingTimestamp,
+						bindingTimestamp,
+					);
+				store.db
+					.prepare(`INSERT INTO project_recipients(
+						canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+						policy_revision, migration_state, source_fingerprint, idempotency_key,
+						created_at, updated_at
+					) VALUES (?, 'identity', ?, 'active', 'user', 'r1', 'user_managed', NULL, ?, ?, ?)`)
+					.run(
+						"project-for-merge",
+						created.actor_id,
+						"merge-project-recipient-key",
+						bindingTimestamp,
+						bindingTimestamp,
+					);
+				store.db
+					.prepare(`INSERT INTO recipient_managed_project_projections(
+						canonical_project_identity, display_name, managed_scope_id, coordinator_id,
+						group_id, recipient_identity_id, accepting_device_id, source_operation_id,
+						reviewed_project_set_digest, status, accepted_at, created_at, updated_at
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`)
+					.run(
+						"received-project-for-merge",
+						"Received project for merge",
+						"managed-project:merge-team:received-project-for-merge",
+						"https://coordinator.example.test",
+						"merge-team",
+						created.actor_id,
+						"bound-device",
+						"merge-received-project-operation",
+						"merge-reviewed-project-set",
+						bindingTimestamp,
+						bindingTimestamp,
+						bindingTimestamp,
+					);
+				store.db
+					.prepare(`INSERT INTO share_operations(
+						operation_id, state, inviter_actor_id, inviter_device_ids_json, person_id,
+						person_kind, teammate_name, history_policy, reviewed_project_set_digest,
+						coordinator_group_id, invite_token_digest, invite_expires_at,
+						recipient_actor_id, recipient_device_id, created_at, updated_at
+					) VALUES (?, 'completed', ?, '[]', ?, 'existing', ?, 'selected', ?, ?, ?, ?, ?, ?, ?, ?)`)
+					.run(
+						"merge-share-operation",
+						localActor.actor_id,
+						created.actor_id,
+						"Fixture remote",
+						"merge-reviewed-project-set",
+						"merge-team",
+						"merge-invite-token-digest",
+						"2099-01-01T00:00:00.000Z",
+						created.actor_id,
+						"bound-device",
+						bindingTimestamp,
+						bindingTimestamp,
+					);
+				store.db
+					.prepare(`INSERT INTO actors(
+						actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+					) VALUES ('identity-unrelated', 'Unrelated', 0, 'active', NULL, ?, ?)`)
+					.run(bindingTimestamp, bindingTimestamp);
+				store.db
+					.prepare(`INSERT INTO share_operations(
+						operation_id, state, inviter_actor_id, inviter_device_ids_json, person_id,
+						person_kind, teammate_name, history_policy, reviewed_project_set_digest,
+						coordinator_group_id, invite_token_digest, invite_expires_at,
+						recipient_actor_id, recipient_device_id, created_at, updated_at
+					) VALUES (?, 'pending_recipient', ?, '[]', 'identity-unrelated', 'existing', ?,
+						'selected', ?, ?, ?, ?, 'identity-unrelated', 'unrelated-device', ?, ?)`)
+					.run(
+						"merge-inviter-share-operation",
+						created.actor_id,
+						"Unrelated",
+						"merge-inviter-reviewed-project-set",
+						"merge-team",
+						"merge-inviter-token-digest",
+						"2099-01-01T00:00:00.000Z",
+						bindingTimestamp,
+						bindingTimestamp,
+					);
+				store.db
+					.prepare(`INSERT INTO recipient_managed_project_projections(
+						canonical_project_identity, display_name, managed_scope_id, coordinator_id,
+						group_id, recipient_identity_id, accepting_device_id, source_operation_id,
+						reviewed_project_set_digest, status, accepted_at, created_at, updated_at
+					) VALUES (?, ?, ?, ?, ?, 'identity-unrelated', ?, ?, ?, 'active', ?, ?, ?)`)
+					.run(
+						"unrelated-received-project",
+						"Unrelated received project",
+						"managed-project:merge-team:unrelated-received-project",
+						"https://coordinator.example.test",
+						"merge-team",
+						"unrelated-device",
+						"unrelated-received-project-operation",
+						"unrelated-reviewed-project-set",
+						bindingTimestamp,
+						bindingTimestamp,
+						bindingTimestamp,
+					);
 
 				const mergeRes = await app.request("/api/sync/actors/merge", {
 					method: "POST",
@@ -11390,6 +11528,76 @@ describe("viewer-server", () => {
 				expect(mergedActor).toEqual({
 					status: "merged",
 					merged_into_actor_id: localActor.actor_id,
+				});
+				expect(
+					store.db
+						.prepare(
+							"SELECT identity_id, assignment_version FROM identity_devices WHERE device_id = ?",
+						)
+						.get("bound-device"),
+				).toEqual({ identity_id: localActor.actor_id, assignment_version: 1 });
+				expect(
+					store.db
+						.prepare("SELECT COUNT(*) FROM policy_team_device_decisions WHERE device_id = ?")
+						.pluck()
+						.get("bound-device"),
+				).toBe(0);
+				expect(
+					store.db
+						.prepare("SELECT identity_id FROM policy_team_memberships WHERE team_id = ?")
+						.all("merge-team"),
+				).toEqual([{ identity_id: localActor.actor_id }]);
+				expect(
+					store.db
+						.prepare(
+							"SELECT recipient_id FROM project_recipients WHERE canonical_project_identity = ? AND recipient_kind = 'identity'",
+						)
+						.all("project-for-merge"),
+				).toEqual([{ recipient_id: localActor.actor_id }]);
+				expect(
+					store.db
+						.prepare(
+							"SELECT recipient_identity_id FROM recipient_managed_project_projections WHERE canonical_project_identity = ?",
+						)
+						.get("received-project-for-merge"),
+				).toEqual({ recipient_identity_id: localActor.actor_id });
+				expect(
+					store.db
+						.prepare(
+							"SELECT recipient_identity_id FROM recipient_managed_project_projections WHERE canonical_project_identity = ?",
+						)
+						.get("unrelated-received-project"),
+				).toEqual({ recipient_identity_id: "identity-unrelated" });
+				expect(
+					store.db
+						.prepare(
+							"SELECT person_id, recipient_actor_id FROM share_operations WHERE operation_id = ?",
+						)
+						.get("merge-share-operation"),
+				).toEqual({ person_id: localActor.actor_id, recipient_actor_id: localActor.actor_id });
+				expect(
+					store.db
+						.prepare(
+							"SELECT inviter_actor_id, person_id, recipient_actor_id FROM share_operations WHERE operation_id = ?",
+						)
+						.get("merge-inviter-share-operation"),
+				).toEqual({
+					inviter_actor_id: localActor.actor_id,
+					person_id: "identity-unrelated",
+					recipient_actor_id: "identity-unrelated",
+				});
+				expect(
+					store.db
+						.prepare(`SELECT previous_identity_id, target_identity_id, action,
+							previous_assignment_version, resulting_assignment_version
+						 FROM device_identity_binding_audit WHERE device_id = ?`)
+						.get("bound-device"),
+				).toEqual({
+					previous_identity_id: created.actor_id,
+					target_identity_id: localActor.actor_id,
+					action: "rebind",
+					previous_assignment_version: 0,
+					resulting_assignment_version: 1,
 				});
 			} finally {
 				cleanup();

@@ -1,5 +1,6 @@
 import * as api from "./lib/api";
 import type { ProjectScopeInventoryProject } from "./lib/api/sync";
+import { coordinatorEnrollmentOpenIssueCount } from "./lib/coordinator-enrollment-attention";
 import {
 	mountRecipientPolicyManagement,
 	type RecipientPolicyManagementProject,
@@ -44,6 +45,7 @@ interface RecipientPolicySharingLoaderDependencies {
 	loadDeviceInventory: typeof api.loadDeviceIdentityInventory;
 	loadIntent: typeof api.loadRecipientPolicyIntent;
 	loadProjects: () => Promise<RecipientPolicyProjectInventory>;
+	loadSyncStatus: typeof api.loadSyncStatus;
 	mountManagement: typeof mountRecipientPolicyManagement;
 	mountSharing: typeof mountRecipientPolicySharing;
 }
@@ -52,6 +54,7 @@ const defaultDependencies: RecipientPolicySharingLoaderDependencies = {
 	loadDeviceInventory: api.loadDeviceIdentityInventory,
 	loadIntent: api.loadRecipientPolicyIntent,
 	loadProjects: loadRecipientPolicyProjects,
+	loadSyncStatus: api.loadSyncStatus,
 	mountManagement: mountRecipientPolicyManagement,
 	mountSharing: mountRecipientPolicySharing,
 };
@@ -64,6 +67,7 @@ export function createRecipientPolicySharingLoader(
 	let loaded = false;
 	let loadRevision = 0;
 	let latestLoad: Promise<boolean> | null = null;
+	let coordinatorEnrollmentIssueCount = 0;
 
 	const loadRecipientPolicySharingData = (): Promise<boolean> => {
 		const revision = ++loadRevision;
@@ -81,19 +85,25 @@ export function createRecipientPolicySharingLoader(
 				loading: true,
 			});
 		}
-		const [inventoryResult, intentResult, deviceInventoryResult] = await Promise.allSettled([
-			dependencies.loadProjects(),
-			dependencies.loadIntent(),
-			dependencies.loadDeviceInventory(),
-		]);
+		const [inventoryResult, intentResult, deviceInventoryResult, syncStatusResult] =
+			await Promise.allSettled([
+				dependencies.loadProjects(),
+				dependencies.loadIntent(),
+				dependencies.loadDeviceInventory(),
+				dependencies.loadSyncStatus(false, "", { includeJoinRequests: false }),
+			]);
 		if (revision !== loadRevision) return latestLoad ?? false;
 		const deviceInventoryUnavailable = deviceInventoryResult.status === "rejected";
+		if (syncStatusResult.status === "fulfilled") {
+			coordinatorEnrollmentIssueCount = coordinatorEnrollmentOpenIssueCount(syncStatusResult.value);
+		}
 		if (inventoryResult.status === "fulfilled" && intentResult.status === "fulfilled") {
 			const inventory = inventoryResult.value;
 			const intent = intentResult.value;
 			const deviceInventory =
 				deviceInventoryResult.status === "fulfilled" ? deviceInventoryResult.value : undefined;
 			dependencies.mountSharing(sharingMount, inventory.manageable, intent, {
+				coordinatorEnrollmentIssueCount,
 				deviceInventory,
 				deviceInventoryUnavailable,
 				onReviewDevices: options.onReviewDevices,

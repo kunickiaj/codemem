@@ -16,6 +16,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import {
 	assertSchemaReady,
+	columnExists,
 	connect,
 	DEFAULT_DB_PATH,
 	ensureAdditiveSchemaCompatibility,
@@ -58,6 +59,7 @@ import {
 	type ScanDetection,
 	SecretScanner,
 } from "./secret-scanner.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { recordReplicationOp } from "./sync-replication.js";
 import type {
 	ExplainResponse,
@@ -84,6 +86,15 @@ const ALLOWED_MEMORY_KINDS = new Set([
 	"decision",
 	"exploration",
 	"session_summary",
+]);
+
+// Locally reviewed flows that can establish same-person ownership. Coordinator
+// enrollment remains discovery evidence and must never grant write authority.
+const SAME_PERSON_BINDING_PROVENANCE = new Set([
+	"user_confirmed_identity_setup",
+	"recipient_invite",
+	"exact_project_invite",
+	"review_resolution",
 ]);
 
 /** Normalize and validate a memory kind. Throws on invalid kinds. */
@@ -2713,19 +2724,127 @@ export class MemoryStore {
 	}
 
 	sameActorPeerIds(): string[] {
-		if (!tableExists(this.db, "sync_peers")) return [];
-		const rows = this.d
-			.select({ peer_device_id: schema.syncPeers.peer_device_id })
-			.from(schema.syncPeers)
-			.where(
-				or(
-					eq(schema.syncPeers.claimed_local_actor, 1),
-					eq(schema.syncPeers.actor_id, this.actorId),
-				),
-			)
-			.orderBy(schema.syncPeers.peer_device_id)
-			.all();
-		return rows.map((row) => String(row.peer_device_id ?? "").trim()).filter(Boolean);
+		const deviceIds = new Set<string>();
+		const boundDeviceIds = new Set<string>();
+		const locallyBoundDeviceIds = new Set<string>();
+		const hasIdentityBindings =
+			tableExists(this.db, "identity_devices") &&
+			["device_id", "identity_id", "status", "provenance"].every((column) =>
+				columnExists(this.db, "identity_devices", column),
+			);
+		if (tableExists(this.db, "identity_devices") && !hasIdentityBindings) {
+			// A partial binding schema cannot safely distinguish authoritative evidence.
+			return [];
+		}
+		if (hasIdentityBindings) {
+			const bindings = this.db
+				.prepare("SELECT device_id, identity_id, status, provenance FROM identity_devices")
+				.all() as Array<{
+				device_id: string;
+				identity_id: string;
+				status: string;
+				provenance: string;
+			}>;
+			const hasActorIdentityState =
+				bindings.length > 0 &&
+				tableExists(this.db, "actors") &&
+				["actor_id", "status", "merged_into_actor_id"].every((column) =>
+					columnExists(this.db, "actors", column),
+				);
+			const localActor = hasActorIdentityState
+				? (this.db
+						.prepare("SELECT status, merged_into_actor_id FROM actors WHERE actor_id = ?")
+						.get(this.actorId) as
+						| { status: string; merged_into_actor_id: string | null }
+						| undefined)
+				: undefined;
+			const localActorIsActive =
+				localActor?.status === "active" && !localActor.merged_into_actor_id;
+			for (const binding of bindings) {
+				const deviceId = String(binding.device_id ?? "").trim();
+				if (!deviceId) continue;
+				boundDeviceIds.add(deviceId);
+				if (
+					localActorIsActive &&
+					String(binding.identity_id ?? "").trim() === this.actorId &&
+					binding.status === "active" &&
+					SAME_PERSON_BINDING_PROVENANCE.has(binding.provenance)
+				) {
+					deviceIds.add(deviceId);
+					locallyBoundDeviceIds.add(deviceId);
+				}
+			}
+		}
+		if (tableExists(this.db, "sync_peers")) {
+			const hasAliasEvidence = ["peer_device_id", "public_key", "pinned_fingerprint"].every(
+				(column) => columnExists(this.db, "sync_peers", column),
+			);
+			if (boundDeviceIds.size > 0 && !hasAliasEvidence) return [...deviceIds].sort();
+			if (boundDeviceIds.size > 0 && hasAliasEvidence) {
+				const peerEvidence = this.db
+					.prepare("SELECT peer_device_id, public_key, pinned_fingerprint FROM sync_peers")
+					.all() as Array<{
+					peer_device_id: string;
+					public_key: string | null;
+					pinned_fingerprint: string | null;
+				}>;
+				const validatedFingerprint = (row: (typeof peerEvidence)[number]): string | null => {
+					const publicKey = String(row.public_key ?? "").trim();
+					const pinned = String(row.pinned_fingerprint ?? "").trim();
+					if (!publicKey) return pinned || null;
+					const derived = fingerprintPublicKey(publicKey);
+					return pinned && pinned !== derived ? null : pinned || derived;
+				};
+				const provenFingerprint = (row: (typeof peerEvidence)[number]): string | null =>
+					String(row.public_key ?? "").trim() ? validatedFingerprint(row) : null;
+				const boundFingerprints = new Set<string>();
+				const locallyBoundFingerprints = new Set<string>();
+				const conflictingBoundFingerprints = new Set<string>();
+				for (const row of peerEvidence) {
+					const deviceId = String(row.peer_device_id ?? "").trim();
+					const fingerprint = validatedFingerprint(row);
+					if (!deviceId || !fingerprint || !boundDeviceIds.has(deviceId)) continue;
+					boundFingerprints.add(fingerprint);
+					if (locallyBoundDeviceIds.has(deviceId)) {
+						if (provenFingerprint(row)) locallyBoundFingerprints.add(fingerprint);
+					} else {
+						conflictingBoundFingerprints.add(fingerprint);
+					}
+				}
+				for (const fingerprint of conflictingBoundFingerprints) {
+					locallyBoundFingerprints.delete(fingerprint);
+				}
+				for (const row of peerEvidence) {
+					const deviceId = String(row.peer_device_id ?? "").trim();
+					const fingerprint = validatedFingerprint(row);
+					if (!deviceId || !fingerprint || !boundFingerprints.has(fingerprint)) continue;
+					const hasAuthoritativeBinding = boundDeviceIds.has(deviceId);
+					boundDeviceIds.add(deviceId);
+					if (
+						!hasAuthoritativeBinding &&
+						locallyBoundFingerprints.has(fingerprint) &&
+						provenFingerprint(row)
+					) {
+						deviceIds.add(deviceId);
+					}
+				}
+			}
+			const legacyRows = this.d
+				.select({ peer_device_id: schema.syncPeers.peer_device_id })
+				.from(schema.syncPeers)
+				.where(
+					or(
+						eq(schema.syncPeers.claimed_local_actor, 1),
+						eq(schema.syncPeers.actor_id, this.actorId),
+					),
+				)
+				.all();
+			for (const row of legacyRows) {
+				const deviceId = String(row.peer_device_id ?? "").trim();
+				if (deviceId && !boundDeviceIds.has(deviceId)) deviceIds.add(deviceId);
+			}
+		}
+		return [...deviceIds].sort();
 	}
 
 	claimedSameActorLegacyActorIds(): string[] {

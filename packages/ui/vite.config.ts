@@ -100,6 +100,7 @@ export default defineConfig(({ command, mode }) => {
 			server: {
 				deps: {
 					inline: [
+						"@radix-ui/react-collapsible",
 						"@radix-ui/react-compose-refs",
 						"@radix-ui/react-context",
 						"@radix-ui/react-dialog",

@@ -1,13 +1,12 @@
 import * as Collapsible from "@radix-ui/react-collapsible";
 import type { TargetedInputEvent } from "preact";
-import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { PresencePip, type PresenceState } from "../../../components/primitives/presence-pip";
-import { RadixSelect } from "../../../components/primitives/radix-select";
 import { TextInput } from "../../../components/primitives/text-input";
+import type { DeviceIdentityInventoryItemV1 } from "../../../lib/api/sync";
 import { formatTimestamp } from "../../../lib/format";
-import { isSyncRedactionEnabled, state } from "../../../lib/state";
+import { isSyncRedactionEnabled, type SyncActor, state } from "../../../lib/state";
 import {
-	buildActorSelectOptions,
 	clearPeerScopeReview,
 	consumePeerScopeReviewRequest,
 	isPeerScopeReviewPending,
@@ -126,11 +125,92 @@ type SyncPeerStatus = NonNullable<SyncPeer["status"]> & {
 
 type SyncPeerCardProps = {
 	peer: SyncPeer;
-	onAssignActor: (peerId: string, actorId: string | null) => Promise<SyncActionFeedback>;
 	onRemove: (peerId: string, label: string) => Promise<SyncActionFeedback>;
 	onRename: (peerId: string, name: string) => Promise<SyncActionFeedback>;
 	onSync: (peer: SyncPeer, address: string | undefined) => Promise<SyncActionFeedback | null>;
 };
+
+export interface AdvancedDeviceIdentityView {
+	status: "configured" | "setup_required" | "pairing_required" | "conflicted" | "unavailable";
+	summary: string;
+	detail: string;
+	actionLabel: string;
+}
+
+function identityName(identityId: string | null, actors: SyncActor[]): string {
+	if (!identityId) return "the selected Identity";
+	const actor = actors.find((candidate) => candidate.actor_id === identityId);
+	return String(actor?.display_name || actor?.actor_display_name || "the selected Identity");
+}
+
+export function advancedDeviceIdentityView(
+	item: DeviceIdentityInventoryItemV1 | undefined,
+	actorHintId: string | null,
+	actors: SyncActor[],
+	inventoryUnavailable = false,
+	inventoryTruncated = false,
+	coordinatorUnavailable = false,
+): AdvancedDeviceIdentityView {
+	if (inventoryTruncated) {
+		return {
+			status: "unavailable",
+			summary: "Authoritative Identity status is unavailable because the inventory is incomplete.",
+			detail:
+				"This installation has more device evidence than Advanced can safely classify. Ownership is not shown from a partial inventory.",
+			actionLabel: "Review Identity inventory in Devices",
+		};
+	}
+	if (inventoryUnavailable || (coordinatorUnavailable && !item)) {
+		return {
+			status: "unavailable",
+			summary: "Authoritative Identity status is temporarily unavailable.",
+			detail:
+				"Refresh before relying on ownership details. Advanced actor_id values remain suggestions or provenance only.",
+			actionLabel: "Review Identity in Devices",
+		};
+	}
+	if (item?.state === "configured") {
+		return {
+			status: "configured",
+			summary: `Authoritative Identity: ${identityName(item.identityId, actors)}.`,
+			detail:
+				"This result comes from an active identity_devices binding. Advanced actor_id values are not authoritative ownership.",
+			actionLabel: "Review or rebind in Devices",
+		};
+	}
+	if (item?.state === "pairing_required") {
+		return {
+			status: "pairing_required",
+			summary: "Identity setup is blocked until pairing is complete.",
+			detail: "Pairing establishes sync trust; it does not establish device ownership.",
+			actionLabel: "Review setup in Devices",
+		};
+	}
+	if (item?.state === "conflicted") {
+		return {
+			status: "conflicted",
+			summary: "Identity ownership needs review.",
+			detail:
+				"Conflicting device evidence failed closed. Advanced actor_id values cannot resolve ownership.",
+			actionLabel: "Review conflict in Devices",
+		};
+	}
+	const suggestedIdentityId = item?.suggestedIdentityId ?? actorHintId;
+	return {
+		status: item?.state ?? "unavailable",
+		summary: suggestedIdentityId
+			? `Suggested Identity: ${identityName(suggestedIdentityId, actors)}.`
+			: "No authoritative Identity binding is configured.",
+		detail:
+			"sync_peers.actor_id is only a suggestion or hint until you confirm an identity_devices binding in Devices.",
+		actionLabel: "Set up Identity in Devices",
+	};
+}
+
+export function openDeviceIdentitySetup(deviceId?: string): void {
+	state.pendingDeviceIdentityFocus = deviceId?.trim() || null;
+	window.location.hash = "devices";
+}
 
 type SyncPeersListProps = Omit<SyncPeerCardProps, "peer"> & {
 	peers: SyncPeer[];
@@ -156,7 +236,7 @@ export function canManageSpacesInTeams(status = state.lastCoordinatorAdminStatus
 	return status?.readiness === "ready" && status.has_admin_secret === true;
 }
 
-function SyncPeerCard({ peer, onAssignActor, onRemove, onRename, onSync }: SyncPeerCardProps) {
+function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
 	const peerId = String(peer.peer_device_id || "");
 	const displayName = peer.name || (peerId ? peerId.slice(0, 8) : "unknown");
 	const destructiveLabel = peer.name || peerId || displayName;
@@ -185,9 +265,17 @@ function SyncPeerCard({ peer, onAssignActor, onRemove, onRename, onSync }: SyncP
 		: hiddenAddressCount > 0
 			? `${hiddenAddressCount} ${hiddenAddressCount === 1 ? "address" : "addresses"} hidden`
 			: "No addresses";
-	const assignmentSummary = peer.actor_display_name
-		? `This device belongs to ${peer.claimed_local_actor ? "you" : String(peer.actor_display_name)}.`
-		: "This device is not assigned to anyone yet.";
+	const inventoryItem = state.lastDeviceIdentityInventory?.items.find(
+		(item) => item.deviceId === peerId || item.evidenceDeviceIds.includes(peerId),
+	);
+	const ownership = advancedDeviceIdentityView(
+		inventoryItem,
+		String(peer.actor_id || "") || null,
+		state.lastSyncActors,
+		state.deviceIdentityInventoryLoadError,
+		state.lastDeviceIdentityInventory?.truncated === true,
+		state.lastDeviceIdentityInventory?.coordinatorEvidence.availability === "unavailable",
+	);
 	const lastSyncAt = String(peerStatus.last_sync_at || peerStatus.last_sync_at_utc || "");
 	const lastPingAt = String(peerStatus.last_ping_at || peerStatus.last_ping_at_utc || "");
 	const discoverySummary = peer.discovered_via_group_id
@@ -207,29 +295,6 @@ function SyncPeerCard({ peer, onAssignActor, onRemove, onRename, onSync }: SyncP
 	const [syncBusy, setSyncBusy] = useState(false);
 	const [removeBusy, setRemoveBusy] = useState(false);
 	const [removeLabel, setRemoveLabel] = useState("Remove device");
-	const [selectedActorId, setSelectedActorId] = useState(String(peer.actor_id || ""));
-	const [applyActorBusy, setApplyActorBusy] = useState(false);
-	const [applyActorLabel, setApplyActorLabel] = useState("Save assignment");
-	const actorSelectOptions = useMemo(() => {
-		const options = buildActorSelectOptions(selectedActorId);
-		const hasSelected = options.some((option) => option.value === selectedActorId);
-		if (selectedActorId && !hasSelected) {
-			options.push({
-				value: selectedActorId,
-				label: peer.claimed_local_actor
-					? "You"
-					: String(peer.actor_display_name || "Current assignment"),
-			});
-		}
-		return options;
-	}, [
-		peer.actor_display_name,
-		peer.claimed_local_actor,
-		selectedActorId,
-		state.lastSyncActors,
-		state.lastSyncPeers,
-		state.lastSyncViewModel,
-	]);
 
 	useEffect(() => {
 		if (rawPendingScopeReview && authorizedDomains.total > 0) clearPeerScopeReview(peerId);
@@ -243,9 +308,6 @@ function SyncPeerCard({ peer, onAssignActor, onRemove, onRename, onSync }: SyncP
 		setSyncBusy(false);
 		setRemoveBusy(false);
 		setRemoveLabel("Remove device");
-		setSelectedActorId(String(peer.actor_id || ""));
-		setApplyActorBusy(false);
-		setApplyActorLabel("Save assignment");
 	}, [displayName, peer.actor_id, peerId]);
 
 	useEffect(() => {
@@ -332,22 +394,6 @@ function SyncPeerCard({ peer, onAssignActor, onRemove, onRename, onSync }: SyncP
 		} finally {
 			setRemoveBusy(false);
 			if (ok) setRemoveLabel("Remove device");
-		}
-	}
-
-	async function savePerson() {
-		if (!peerId) return;
-		setApplyActorBusy(true);
-		setApplyActorLabel("Saving…");
-		try {
-			const nextFeedback = await onAssignActor(peerId, selectedActorId || null);
-			setFeedback(nextFeedback);
-			state.syncPeerFeedbackById.set(peerId, nextFeedback);
-			setApplyActorLabel("Save assignment");
-		} catch {
-			setApplyActorLabel("Retry");
-		} finally {
-			setApplyActorBusy(false);
 		}
 	}
 
@@ -602,35 +648,21 @@ function SyncPeerCard({ peer, onAssignActor, onRemove, onRename, onSync }: SyncP
 							</div>
 						) : null}
 
-						<div className="peer-scope-summary">Who this device belongs to</div>
-						<div className="peer-meta">{assignmentSummary}</div>
+						<div className="peer-scope-summary">Authoritative Identity ownership</div>
+						<div className="peer-meta">{ownership.summary}</div>
+						<div className="peer-meta">{ownership.detail}</div>
 						{peer.claimed_local_actor ? (
 							<div className="peer-meta">
 								{claimedLocalActorScopeMessage(peer.claimed_local_actor_scope)}
 							</div>
 						) : null}
 						<div className="peer-actor-row">
-							<div className="sync-radix-select-host sync-actor-select-host">
-								<RadixSelect
-									ariaLabel={`Assigned person for ${displayName}`}
-									contentClassName="sync-radix-select-content sync-actor-select-content"
-									disabled={applyActorBusy}
-									itemClassName="sync-radix-select-item"
-									onValueChange={setSelectedActorId}
-									options={actorSelectOptions}
-									placeholder="No person assigned yet"
-									triggerClassName="sync-radix-select-trigger sync-actor-select"
-									value={selectedActorId}
-									viewportClassName="sync-radix-select-viewport"
-								/>
-							</div>
 							<button
 								type="button"
 								className="settings-button"
-								disabled={applyActorBusy}
-								onClick={() => void savePerson()}
+								onClick={() => openDeviceIdentitySetup(inventoryItem?.deviceId ?? peerId)}
 							>
-								{applyActorLabel}
+								{ownership.actionLabel}
 							</button>
 						</div>
 

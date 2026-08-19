@@ -142,9 +142,11 @@ export async function loadSyncData() {
 
 		let actorsPayload: SyncActorListResponseLike | null = null;
 		let coordinatorAdminStatus: Record<string, unknown> | null = null;
+		let deviceIdentityInventory = state.lastDeviceIdentityInventory;
 		let shareOperations = state.lastShareOperations;
 		let actorLoadError = false;
 		let coordinatorAdminLoadError = false;
+		let deviceIdentityInventoryLoadError = state.deviceIdentityInventoryLoadError;
 		let shareOperationsLoadError = false;
 		const duplicatePersonDecisions = readDuplicatePersonDecisions();
 		try {
@@ -156,6 +158,14 @@ export async function loadSyncData() {
 			coordinatorAdminStatus = (await api.loadCoordinatorAdminStatus()) as Record<string, unknown>;
 		} catch {
 			coordinatorAdminLoadError = true;
+		}
+		if (state.activeTab === "advanced") {
+			deviceIdentityInventoryLoadError = false;
+			try {
+				deviceIdentityInventory = await api.loadDeviceIdentityInventory();
+			} catch {
+				deviceIdentityInventoryLoadError = true;
+			}
 		}
 		try {
 			const sharePayload = await api.loadShareOperations();
@@ -175,6 +185,8 @@ export async function loadSyncData() {
 			payload,
 			actorsPayload,
 			coordinatorAdminStatus,
+			deviceIdentityInventory,
+			deviceIdentityInventoryLoadError,
 			shareOperations,
 			shareOperationsLoadError,
 			duplicatePersonDecisions,
@@ -204,6 +216,10 @@ export async function loadSyncData() {
 			: [];
 		state.pendingAcceptedSyncPeers = pendingPeers;
 		state.lastSyncPeers = [...payloadPeers, ...pendingPeers];
+		if (!deviceIdentityInventoryLoadError) {
+			state.lastDeviceIdentityInventory = deviceIdentityInventory;
+		}
+		state.deviceIdentityInventoryLoadError = deviceIdentityInventoryLoadError;
 		state.lastShareOperations = shareOperations;
 		state.shareOperationsLoadError = shareOperationsLoadError;
 		state.lastSyncSharingReview = payload.sharing_review || [];
@@ -250,6 +266,7 @@ export async function loadSyncData() {
 	} catch {
 		if (requestId !== latestSyncLoadRequestId) return;
 		lastSyncHash = "";
+		state.deviceIdentityInventoryLoadError = true;
 		// Clear all skeletons so the error state is visible, not masked by loading placeholders
 		hideSkeleton("syncTeamSkeleton");
 		hideSkeleton("syncActorsSkeleton");

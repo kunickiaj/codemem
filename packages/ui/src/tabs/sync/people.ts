@@ -52,8 +52,8 @@ export function renderSyncActors() {
 	const actors = actorVisibility.visibleActors;
 	if (actorMeta) {
 		actorMeta.textContent = actors.length
-			? "Manage people here, then assign devices below."
-			: "No named people yet. Create a person here, then assign devices below so sync ownership is easier to review.";
+			? "Manage Identity names here. Confirm authoritative device ownership in Devices."
+			: "No named people yet. Create an Identity here, then confirm device ownership in Devices.";
 		if (actorVisibility.hiddenLocalDuplicateCount > 0) {
 			actorMeta.textContent += ` ${actorVisibility.hiddenLocalDuplicateCount} unresolved duplicate ${actorVisibility.hiddenLocalDuplicateCount === 1 ? "entry is" : "entries are"} hidden here until reviewed in Needs attention.`;
 		}
@@ -215,24 +215,6 @@ export function renderSyncPeers() {
 				} satisfies SyncActionFeedback;
 			}
 		},
-		onAssignActor: async (peerId, actorId) => {
-			try {
-				await api.assignPeerActor(peerId, actorId);
-				await _loadSyncData();
-				return {
-					message: actorId ? "Device assignment updated." : "Device assignment cleared.",
-					tone: "success",
-				} satisfies SyncActionFeedback;
-			} catch (error) {
-				return {
-					message: friendlyError(
-						error,
-						"Failed to update device assignment. The current assignment is unchanged.",
-					),
-					tone: "warning",
-				} satisfies SyncActionFeedback;
-			}
-		},
 	});
 }
 
@@ -256,7 +238,7 @@ export function renderSyncPeopleUnavailable() {
 		renderSyncEmptyState(syncPeers, {
 			title: "Devices unavailable right now.",
 			detail:
-				"Refresh this page to retry. When sync is reachable again, paired devices will reload here so you can rename, assign, or re-pair them.",
+				"Refresh this page to retry. When sync is reachable again, paired devices will reload here so you can rename, inspect, or re-pair them.",
 		});
 	}
 }

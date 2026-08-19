@@ -263,6 +263,96 @@ describe("read-only Devices", () => {
 		expect(document.body.textContent).not.toContain("No configured devices are registered.");
 	});
 
+	it("surfaces safe coordinator reconciliation attention without inferring ownership", () => {
+		mount(intent(), reconciliation(), {
+			coordinatorEnrollmentIssueCount: 1,
+			inventory: inventory([]),
+		});
+
+		const attention = document.querySelector<HTMLElement>(
+			'[aria-labelledby="devices-coordinator-reconciliation-heading"]',
+		);
+		expect(attention?.textContent).toContain(
+			"1 coordinator enrollment could not be safely reconciled",
+		);
+		expect(attention?.textContent).toContain("No ownership was inferred");
+		expect(attention?.textContent).toContain("No device on this page can be corrected from here");
+		expect(attention?.textContent).not.toContain("Advanced diagnostics");
+		expect(attention?.textContent).not.toMatch(/fingerprint|group[_ -]?id|coordinator[_ -]?id/i);
+	});
+
+	it("keeps coordinator reconciliation attention visible when inventory is unavailable", () => {
+		mount(intent(), reconciliation(), {
+			coordinatorEnrollmentIssueCount: 1,
+			inventoryUnavailable: true,
+		});
+
+		const attention = document.querySelector<HTMLElement>(
+			'[aria-labelledby="devices-coordinator-reconciliation-heading"]',
+		);
+		expect(attention?.textContent).toContain(
+			"1 coordinator enrollment could not be safely reconciled",
+		);
+		expect(attention?.textContent).toContain("No ownership was inferred");
+	});
+
+	it("points coordinator reconciliation attention at rendered setup recovery", () => {
+		mount(intent(), reconciliation(), {
+			coordinatorEnrollmentIssueCount: 1,
+			inventory: inventory([inventoryItem("setup-device", "Setup device", "setup_required")]),
+		});
+
+		const attention = document.querySelector<HTMLElement>(
+			'[aria-labelledby="devices-coordinator-reconciliation-heading"]',
+		);
+		expect(attention?.textContent).toContain(
+			"Review the affected device setup or pairing state here",
+		);
+	});
+
+	it("focuses a projected configured-device card from its canonical inventory ID", () => {
+		state.pendingDeviceIdentityFocus = "canonical-alias";
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("canonical-alias", "Work Laptop", "configured", {
+					evidenceDeviceIds: ["canonical-alias", "device-address-fingerprint-secret"],
+				}),
+			]),
+		});
+
+		expect(document.activeElement).toBe(
+			document.getElementById("device-identity-card-device-address-fingerprint-secret"),
+		);
+		expect(state.pendingDeviceIdentityFocus).toBeUndefined();
+	});
+
+	it("does not apply delayed setup focus after the user moves focus within Devices", () => {
+		const needsAttention = reconciliation({
+			items: reconciliation().items.map((item) =>
+				item.canonicalProjectIdentity === "project-direct-filter-id"
+					? { ...item, state: "needs_attention", label: "Needs attention" }
+					: item,
+			),
+		});
+		mount(intent(), needsAttention, { inventoryUnavailable: true, onNavigate: vi.fn() });
+		const action = document.querySelector<HTMLButtonElement>(
+			'button[aria-label="Review sharing for Work Laptop"]',
+		);
+		if (!action) throw new Error("Devices action missing");
+		action.focus();
+		state.pendingDeviceIdentityFocus = "setup-device";
+
+		mount(intent(), needsAttention, {
+			inventory: inventory([inventoryItem("setup-device", "Setup device", "setup_required")]),
+			onNavigate: vi.fn(),
+		});
+
+		expect(document.activeElement).not.toBe(
+			document.getElementById("device-identity-card-setup-device"),
+		);
+		expect(state.pendingDeviceIdentityFocus).toBeUndefined();
+	});
+
 	it("projects direct access without inferring per-device Team access from membership intent", () => {
 		const graph = intent();
 		const before = JSON.stringify(graph);

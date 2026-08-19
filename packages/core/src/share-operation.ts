@@ -540,16 +540,26 @@ export function reconcileShareOperationAcceptance(
 					claimed_local_actor: number;
 			  }
 			| undefined;
-		if (
-			existingPeer &&
+		const authoritativeBinding = db
+			.prepare(`SELECT identity_id FROM identity_devices
+				WHERE device_id = ? AND status = 'active'
+				AND provenance IN (
+					'user_confirmed_identity_setup', 'recipient_invite',
+					'exact_project_invite', 'review_resolution'
+				)`)
+			.get(input.recipientDeviceId) as { identity_id: string } | undefined;
+		const peerIdentityConflict = authoritativeBinding
+			? authoritativeBinding.identity_id !== input.recipientActorId
+			: existingPeer?.claimed_local_actor === 1 ||
+				(existingPeer?.actor_id != null &&
+					existingPeer.actor_id !== input.recipientActorId &&
+					existingPeer.actor_id !== operation.person_id);
+		const peerKeyConflict =
+			existingPeer != null &&
 			((existingPeer.public_key && existingPeer.public_key !== input.recipientPublicKey) ||
 				(existingPeer.pinned_fingerprint &&
-					existingPeer.pinned_fingerprint !== input.recipientFingerprint) ||
-				existingPeer.claimed_local_actor === 1 ||
-				(existingPeer.actor_id != null &&
-					existingPeer.actor_id !== input.recipientActorId &&
-					existingPeer.actor_id !== operation.person_id))
-		) {
+					existingPeer.pinned_fingerprint !== input.recipientFingerprint));
+		if (peerKeyConflict || peerIdentityConflict) {
 			throw new Error("recipient_device_identity_conflict");
 		}
 		const recipientActor = db

@@ -210,4 +210,73 @@ describe("Sharing app data refresh", () => {
 		expect(completedMounts).toHaveLength(1);
 		expect(completedMounts[0]?.[2]).toBe(newestIntent);
 	});
+
+	it("loads the redacted coordinator reconciliation count into normal Sharing", async () => {
+		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
+		const mountSharing = vi.fn();
+		const load = createRecipientPolicySharingLoader({
+			loadDeviceInventory: vi.fn().mockResolvedValue({
+				version: 1,
+				items: [],
+				coordinatorEvidence: { availability: "available", safeErrorCode: null },
+				truncated: false,
+			}),
+			loadIntent: vi.fn().mockResolvedValue(intent),
+			loadProjects: vi.fn().mockResolvedValue({ manageable: projects, received: [] }),
+			loadSyncStatus: vi.fn().mockResolvedValue({
+				status: {
+					coordinator_enrollment_reconciliation_issues: {
+						counts: { open: 3, resolved: 8 },
+						issues: [{ coordinator_id: "must-not-reach-normal-sharing" }],
+					},
+				},
+			}),
+			mountSharing,
+		});
+
+		await load();
+
+		expect(mountSharing).toHaveBeenLastCalledWith(
+			document.getElementById("recipientPolicySharingMount"),
+			projects,
+			intent,
+			expect.objectContaining({ coordinatorEnrollmentIssueCount: 3 }),
+		);
+		expect(JSON.stringify(mountSharing.mock.calls.at(-1)?.[3])).not.toContain("coordinator_id");
+	});
+
+	it("preserves reconciliation attention across a transient sync-status failure", async () => {
+		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
+		const mountSharing = vi.fn();
+		const loadSyncStatus = vi
+			.fn()
+			.mockResolvedValueOnce({
+				status: {
+					coordinator_enrollment_reconciliation_issues: {
+						counts: { open: 2, resolved: 0 },
+						issues: [],
+					},
+				},
+			})
+			.mockRejectedValueOnce(new Error("temporarily unavailable"));
+		const load = createRecipientPolicySharingLoader({
+			loadDeviceInventory: vi.fn().mockResolvedValue({
+				version: 1,
+				items: [],
+				coordinatorEvidence: { availability: "available", safeErrorCode: null },
+				truncated: false,
+			}),
+			loadIntent: vi.fn().mockResolvedValue(intent),
+			loadProjects: vi.fn().mockResolvedValue({ manageable: projects, received: [] }),
+			loadSyncStatus,
+			mountSharing,
+		});
+
+		await load();
+		await load();
+
+		expect(mountSharing.mock.calls.at(-1)?.[3]).toEqual(
+			expect.objectContaining({ coordinatorEnrollmentIssueCount: 2 }),
+		);
+	});
 });

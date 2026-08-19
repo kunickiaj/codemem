@@ -16,6 +16,7 @@ export interface RecipientPolicySharingOptions {
 	received?: ReceivedProjectShare[];
 	deviceInventory?: DeviceIdentityInventoryV1;
 	onReviewDevices?: (deviceId?: string) => void;
+	coordinatorEnrollmentIssueCount?: number;
 }
 
 type SharingTab = "teams" | "identities" | "received" | "invitations";
@@ -372,6 +373,7 @@ function RecipientPolicySharing({
 	const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 	const setupAttentionItems = deviceIdentityAttentionItems(options.deviceInventory);
 	const setupAttentionCount = setupAttentionItems.length;
+	const reconciliationIssueCount = options.coordinatorEnrollmentIssueCount ?? 0;
 	const hasActiveTeams = intent.teams.some((team) => team.status === "active");
 	useEffect(() => {
 		if (initialSelectionPending.current && !options.loading && !options.loadError) {
@@ -434,6 +436,34 @@ function RecipientPolicySharing({
 						<button
 							className="settings-button recipient-policy-sharing-target-24"
 							onClick={() => options.onReviewDevices?.(setupAttentionItems[0]?.deviceId)}
+							type="button"
+						>
+							Review Devices
+						</button>
+					) : null}
+				</aside>
+			) : null}
+			{reconciliationIssueCount > 0 ? (
+				<aside
+					aria-labelledby="sharing-coordinator-reconciliation-heading"
+					className="peer-card peer-card--padded recipient-policy-sharing-attention"
+				>
+					<h3 id="sharing-coordinator-reconciliation-heading">
+						Device setup reconciliation needs attention
+					</h3>
+					<p>
+						{reconciliationIssueCount.toLocaleString()} coordinator enrollment
+						{reconciliationIssueCount === 1 ? " could" : "s could"} not be safely reconciled.
+						Sharing remains unchanged until the device evidence is valid.
+					</p>
+					<p className="small">
+						Coordinator groups are discovery boundaries, not policy Teams, and do not prove device
+						ownership.
+					</p>
+					{options.onReviewDevices ? (
+						<button
+							className="settings-button recipient-policy-sharing-target-24"
+							onClick={() => options.onReviewDevices?.()}
 							type="button"
 						>
 							Review Devices

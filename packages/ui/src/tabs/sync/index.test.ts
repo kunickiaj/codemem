@@ -5,6 +5,7 @@ vi.mock("../../lib/api", () => ({
 	loadSyncActors: vi.fn(),
 	loadShareOperations: vi.fn(),
 	loadCoordinatorAdminStatus: vi.fn(),
+	loadDeviceIdentityInventory: vi.fn(),
 }));
 
 vi.mock("../health", () => ({ renderHealthOverview: vi.fn() }));
@@ -60,7 +61,7 @@ describe("loadSyncData", () => {
 		const { state } = await import("../../lib/state");
 		const { resetSyncLoadStateForTests } = await import("./index");
 		resetSyncLoadStateForTests();
-		state.activeTab = "sync";
+		state.activeTab = "advanced";
 		state.currentProject = "";
 		state.lastSyncPeers = [];
 		state.pendingAcceptedSyncPeers = [];
@@ -69,6 +70,8 @@ describe("loadSyncData", () => {
 		state.shareOperationsLoadError = false;
 		state.lastSyncCoordinator = null;
 		state.lastSyncViewModel = null;
+		state.lastDeviceIdentityInventory = null;
+		state.deviceIdentityInventoryLoadError = false;
 	});
 
 	it("ignores stale out-of-order sync payloads from older refreshes", async () => {
@@ -76,6 +79,12 @@ describe("loadSyncData", () => {
 		const { state } = await import("../../lib/state");
 		const { loadSyncData } = await import("./index");
 		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadDeviceIdentityInventory).mockResolvedValue({
+			version: 1,
+			items: [],
+			coordinatorEvidence: { availability: "available", safeErrorCode: null },
+			truncated: false,
+		});
 
 		const first = deferred<{
 			peers: Array<{ peer_device_id: string }>;
@@ -148,14 +157,26 @@ describe("loadSyncData", () => {
 
 	it("does not request secondary sync data when status fails", async () => {
 		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
 		const { loadSyncData } = await import("./index");
 
+		state.activeTab = "devices";
+		state.lastDeviceIdentityInventory = {
+			version: 1,
+			items: [],
+			coordinatorEvidence: { availability: "available", safeErrorCode: null },
+			truncated: false,
+		};
+		state.deviceIdentityInventoryLoadError = false;
 		vi.mocked(api.loadSyncStatus).mockRejectedValue(new Error("status unavailable"));
 		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
 
 		await loadSyncData();
 
 		expect(api.loadSyncActors).not.toHaveBeenCalled();
+		expect(api.loadDeviceIdentityInventory).not.toHaveBeenCalled();
+		expect(state.lastDeviceIdentityInventory).not.toBeNull();
+		expect(state.deviceIdentityInventoryLoadError).toBe(true);
 	});
 
 	it("keeps peer diagnostics when project sharing lifecycle loading fails", async () => {
@@ -192,5 +213,105 @@ describe("loadSyncData", () => {
 			badgeLabel: "Refresh needed",
 			nextAction: expect.stringMatching(/Refresh.*retry/),
 		});
+	});
+
+	it("refreshes authoritative device Identity inventory for Advanced", async () => {
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadSyncData } = await import("./index");
+		state.deviceIdentityInventoryLoadError = true;
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({ peers: [] } as never);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadDeviceIdentityInventory).mockResolvedValue({
+			version: 1,
+			items: [
+				{
+					version: 1,
+					deviceId: "peer-bound",
+					evidenceDeviceIds: ["peer-bound"],
+					displayName: "Bound peer",
+					state: "configured",
+					identityId: "identity-reviewed",
+					suggestedIdentityId: null,
+					validatedFingerprint: null,
+					isLocal: false,
+					sources: ["identity_binding"],
+					conflictCodes: [],
+				},
+			],
+			coordinatorEvidence: { availability: "available", safeErrorCode: null },
+			truncated: false,
+		});
+
+		await loadSyncData();
+
+		expect(state.lastDeviceIdentityInventory?.items[0]).toMatchObject({
+			deviceId: "peer-bound",
+			state: "configured",
+			identityId: "identity-reviewed",
+		});
+		expect(state.deviceIdentityInventoryLoadError).toBe(false);
+	});
+
+	it("leaves device Identity inventory refreshes to the Devices loader on Devices", async () => {
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadSyncData } = await import("./index");
+		state.activeTab = "devices";
+		state.lastDeviceIdentityInventory = {
+			version: 1,
+			items: [],
+			coordinatorEvidence: { availability: "available", safeErrorCode: null },
+			truncated: false,
+		};
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({ peers: [] } as never);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+
+		await loadSyncData();
+
+		expect(api.loadDeviceIdentityInventory).not.toHaveBeenCalled();
+		expect(state.lastDeviceIdentityInventory).not.toBeNull();
+	});
+
+	it("marks authoritative ownership unavailable when its refresh fails", async () => {
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadSyncData } = await import("./index");
+		state.lastDeviceIdentityInventory = {
+			version: 1,
+			items: [],
+			coordinatorEvidence: { availability: "available", safeErrorCode: null },
+			truncated: false,
+		};
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({ peers: [] } as never);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadDeviceIdentityInventory).mockRejectedValue(
+			new Error("inventory unavailable"),
+		);
+
+		await loadSyncData();
+
+		expect(state.deviceIdentityInventoryLoadError).toBe(true);
+		expect(state.lastDeviceIdentityInventory).not.toBeNull();
+	});
+
+	it("does not load device Identity inventory for Health-only sync refreshes", async () => {
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadSyncData } = await import("./index");
+		state.activeTab = "health";
+		state.deviceIdentityInventoryLoadError = true;
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({ peers: [] } as never);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadCoordinatorAdminStatus).mockResolvedValue({});
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+
+		await loadSyncData();
+
+		expect(api.loadDeviceIdentityInventory).not.toHaveBeenCalled();
+		expect(state.deviceIdentityInventoryLoadError).toBe(true);
 	});
 });

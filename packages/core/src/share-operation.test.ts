@@ -727,6 +727,56 @@ describe("share-operation persistence", () => {
 		).toBe("pending");
 	});
 
+	it("lets an authoritative device binding override stale legacy peer identity hints", () => {
+		const operation = plan();
+		persistShareOperation(db, operation, {
+			inviteId: "invite-1",
+			tokenDigest: inviteTokenDigest("token-1"),
+		});
+		db.prepare(`INSERT INTO sync_peers(
+				peer_device_id, actor_id, claimed_local_actor, created_at
+			) VALUES ('device-brian', 'actor-adam', 1, ?)`).run(createdAt);
+		db.prepare(`INSERT INTO identity_devices(
+				identity_id, device_id, display_name, status, provenance, revision, migration_state,
+				source_fingerprint, idempotency_key, created_at, updated_at
+			) VALUES ('actor-brian', 'device-brian', 'Brian device', 'active',
+				'user_confirmed_identity_setup', 'reviewed-revision', 'user_managed',
+				'reviewed-source', 'reviewed-key', ?, ?)`).run(createdAt, createdAt);
+
+		expect(() => reconcileShareOperationAcceptance(db, acceptanceInput(operation))).not.toThrow();
+		expect(
+			db
+				.prepare("SELECT state, recipient_actor_id FROM share_operations WHERE operation_id = ?")
+				.get(operation.operationId),
+		).toEqual({ state: "provisioning", recipient_actor_id: "actor-brian" });
+	});
+
+	it("rejects acceptance that conflicts with an authoritative recipient device binding", () => {
+		const operation = plan();
+		persistShareOperation(db, operation, {
+			inviteId: "invite-1",
+			tokenDigest: inviteTokenDigest("token-1"),
+		});
+		db.prepare(`INSERT INTO sync_peers(
+				peer_device_id, actor_id, claimed_local_actor, created_at
+			) VALUES ('device-brian', 'actor-brian', 0, ?)`).run(createdAt);
+		db.prepare(`INSERT INTO identity_devices(
+				identity_id, device_id, display_name, status, provenance, revision, migration_state,
+				source_fingerprint, idempotency_key, created_at, updated_at
+			) VALUES ('actor-alex', 'device-brian', 'Alex device', 'active',
+				'user_confirmed_identity_setup', 'reviewed-revision', 'user_managed',
+				'reviewed-source', 'reviewed-key', ?, ?)`).run(createdAt, createdAt);
+
+		expect(() => reconcileShareOperationAcceptance(db, acceptanceInput(operation))).toThrow(
+			"recipient_device_identity_conflict",
+		);
+		expect(
+			db
+				.prepare("SELECT state, recipient_actor_id FROM share_operations WHERE operation_id = ?")
+				.get(operation.operationId),
+		).toEqual({ state: "waiting_for_acceptance", recipient_actor_id: null });
+	});
+
 	it("does not regress a provisioning lifecycle on authoritative acceptance replay", () => {
 		const operation = plan();
 		persistShareOperation(db, operation, {

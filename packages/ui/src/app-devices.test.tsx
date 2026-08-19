@@ -173,6 +173,9 @@ describe("Devices app integration", () => {
 		});
 		mocks.loadSyncData.mockImplementation(async () => {
 			const { state } = await import("./lib/state");
+			state.lastSyncStatus = {
+				coordinator_enrollment_reconciliation_issues: { counts: { open: 2, resolved: 1 } },
+			};
 			state.lastSyncPeers = [
 				{
 					peer_device_id: "device-private",
@@ -216,9 +219,13 @@ describe("Devices app integration", () => {
 		expect(panel?.textContent).toContain("Work Laptop");
 		expect(panel?.textContent).toContain("Available");
 		expect(panel?.textContent).toContain("Needs attention");
+		expect(panel?.textContent).toContain(
+			"2 coordinator enrollments could not be safely reconciled",
+		);
 		expect(mocks.loadRecipientPolicyIntent).toHaveBeenCalledOnce();
 		expect(mocks.loadRecipientPolicyReconciliationStatus).toHaveBeenCalledOnce();
 		expect(mocks.loadSyncData).toHaveBeenCalledOnce();
+		expect(mocks.loadDeviceIdentityInventory).toHaveBeenCalledOnce();
 		expect(panel?.textContent).not.toMatch(
 			/identity-private|device-private|project-private|revision-private|internal warning/i,
 		);
@@ -366,6 +373,43 @@ describe("Devices app integration", () => {
 		expect(document.getElementById("refreshStatus")?.textContent).toBe("refresh failed");
 		expect(document.getElementById("refreshAnnouncer")?.textContent).toBe("Refresh failed.");
 		expect(document.getElementById("refreshStatus")?.textContent).not.toContain("updated");
+	});
+
+	it("uses a fresh Devices inventory instead of accepting cached Sync ownership", async () => {
+		const { state } = await import("./lib/state");
+		state.lastDeviceIdentityInventory = {
+			version: 1,
+			items: intent.identityDevices.map((device) => ({
+				version: 1,
+				deviceId: device.deviceId,
+				evidenceDeviceIds: [device.deviceId],
+				displayName: device.displayName,
+				state: "configured" as const,
+				identityId: device.identityId,
+				suggestedIdentityId: null,
+				validatedFingerprint: null,
+				isLocal: device.deviceId === "device-private",
+				sources: ["identity_binding" as const],
+				conflictCodes: [],
+			})),
+			coordinatorEvidence: { availability: "available", safeErrorCode: null },
+			truncated: false,
+		};
+		mocks.loadDeviceIdentityInventory.mockClear();
+		mocks.loadSyncData.mockImplementationOnce(async () => {
+			state.deviceIdentityInventoryLoadError = true;
+		});
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+
+		expect(mocks.loadDeviceIdentityInventory).toHaveBeenCalledOnce();
+		expect(document.getElementById("tab-devices")?.textContent).toContain("Work Laptop");
+		expect(document.querySelector('#tab-devices [role="alert"]')).toBeNull();
+		expect(document.getElementById("refreshStatus")?.textContent).not.toBe("refresh failed");
+		expect(state.lastDeviceIdentityInventory).toEqual(configuredDeviceInventory());
+		expect(state.deviceIdentityInventoryLoadError).toBe(false);
 	});
 
 	it("moves focus to the Devices tab when a focused device action is removed", async () => {

@@ -1,6 +1,7 @@
 import {
 	commitRecipientPolicyOnboarding,
 	deriveRecipientPolicyEffectiveDevicesFromDatabase,
+	fingerprintPublicKey,
 	getRecipientPolicyAuthorityState,
 	initDatabase,
 	listRecipientPolicyDenyOverlays,
@@ -39,6 +40,9 @@ type Action =
 	| "revoke-policy"
 	| "add-stale-memory"
 	| "keep-current"
+	| "seed-legacy-device-identities"
+	| "stale-legacy-device-evidence"
+	| "truncate-legacy-device-evidence"
 	| "reconciliation-proof";
 
 const ACTIONS: Action[] = [
@@ -53,6 +57,9 @@ const ACTIONS: Action[] = [
 	"revoke-policy",
 	"add-stale-memory",
 	"keep-current",
+	"seed-legacy-device-identities",
+	"stale-legacy-device-evidence",
+	"truncate-legacy-device-evidence",
 	"reconciliation-proof",
 ];
 
@@ -179,6 +186,51 @@ function revokeDirectRecipient(store: MemoryStore): void {
 			 WHERE canonical_project_identity = ? AND recipient_kind = 'identity' AND recipient_id = ?`,
 		)
 		.run(NOW, POLICY_SELECTED_REMOTE, DIRECT_IDENTITY);
+}
+
+function seedLegacyDeviceIdentities(store: MemoryStore): void {
+	const insert = store.db.prepare(
+		`INSERT OR REPLACE INTO sync_peers(
+		 peer_device_id, name, actor_id, public_key, pinned_fingerprint, created_at
+		 ) VALUES (?, ?, ?, ?, ?, ?)`,
+	);
+	for (const [deviceId, name, publicKey, pinnedPublicKey] of [
+		["legacy-device-valid-a", "Legacy valid device A", "legacy-valid-key-a", "legacy-valid-key-a"],
+		["legacy-device-valid-b", "Legacy valid device B", "legacy-valid-key-b", "legacy-valid-key-b"],
+		["legacy-device-stale", "Legacy stale device", "legacy-stale-key", "legacy-stale-key"],
+		["legacy-device-conflict", "Legacy conflict device", "legacy-conflict-key-a", "legacy-conflict-key-b"],
+	] as const) {
+		insert.run(
+			deviceId,
+			name,
+			DIRECT_IDENTITY,
+			publicKey,
+			fingerprintPublicKey(pinnedPublicKey),
+			NOW,
+		);
+	}
+}
+
+function staleLegacyDeviceEvidence(store: MemoryStore): void {
+	store.db
+		.prepare(
+			`UPDATE sync_peers
+			 SET public_key = ?, pinned_fingerprint = ?
+			 WHERE peer_device_id = 'legacy-device-stale'`,
+		)
+		.run("legacy-stale-key-replaced", fingerprintPublicKey("legacy-stale-key-replaced"));
+}
+
+function truncateLegacyDeviceEvidence(store: MemoryStore): void {
+	const insert = store.db.prepare(
+		`INSERT OR REPLACE INTO sync_peers(peer_device_id, name, actor_id, created_at)
+		 VALUES (?, ?, ?, ?)`,
+	);
+	store.db.transaction(() => {
+		for (let index = 0; index <= 2_000; index += 1) {
+			insert.run(`legacy-overflow-${index}`, `Legacy overflow ${index}`, DIRECT_IDENTITY, NOW);
+		}
+	})();
 }
 
 function session(store: MemoryStore, project: string, remote: string): number {
@@ -636,6 +688,9 @@ async function main(): Promise<void> {
 		if (selectedAction === "add-device-future") addDeviceFuture(store);
 		if (selectedAction === "add-after-revocation") addAfterRevocation(store);
 		if (selectedAction === "seed-policy") seedRecipientPolicy(store);
+		if (selectedAction === "seed-legacy-device-identities") seedLegacyDeviceIdentities(store);
+		if (selectedAction === "stale-legacy-device-evidence") staleLegacyDeviceEvidence(store);
+		if (selectedAction === "truncate-legacy-device-evidence") truncateLegacyDeviceEvidence(store);
 		const actionResult =
 			selectedAction === "inherit-policy"
 				? inheritRecipientPolicy(store)

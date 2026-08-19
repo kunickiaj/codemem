@@ -50,6 +50,7 @@ export interface DevicesRendererOptions {
 	onCommitted?: () => boolean | undefined | Promise<boolean | undefined>;
 	previewBindings?: typeof previewDeviceIdentityBindings;
 	commitBindings?: typeof commitDeviceIdentityBindings;
+	coordinatorEnrollmentIssueCount?: number;
 }
 
 export interface DeviceProjectProjection {
@@ -1127,6 +1128,26 @@ function DevicesView({
 			})}
 		</ul>
 	) : null;
+	const coordinatorAttention =
+		(options.coordinatorEnrollmentIssueCount ?? 0) > 0 ? (
+			<aside
+				aria-labelledby="devices-coordinator-reconciliation-heading"
+				className="peer-card peer-card--padded recipient-policy-sharing-attention"
+			>
+				<h3 id="devices-coordinator-reconciliation-heading">Coordinator setup needs attention</h3>
+				<p>
+					{options.coordinatorEnrollmentIssueCount?.toLocaleString()} coordinator enrollment
+					{options.coordinatorEnrollmentIssueCount === 1 ? " could" : "s could"} not be safely
+					reconciled with device Identity setup.
+				</p>
+				<p className="small">
+					No ownership was inferred.{" "}
+					{setupItems.length > 0
+						? "Review the affected device setup or pairing state here, then retry after coordinator data is corrected."
+						: "No device on this page can be corrected from here. Retry after coordinator data is corrected."}
+				</p>
+			</aside>
+		) : null;
 	const inventoryWorkflow = options.inventory ? (
 		<>
 			{options.inventory.truncated ? (
@@ -1154,6 +1175,7 @@ function DevicesView({
 			<>
 				{refreshError}
 				{inventoryUnavailable}
+				{coordinatorAttention}
 				{inventoryWorkflow}
 				{configuredFallbackWorkflow}
 				<p className="small" role="status">
@@ -1173,6 +1195,7 @@ function DevicesView({
 		<>
 			{refreshError}
 			{inventoryUnavailable}
+			{coordinatorAttention}
 			{inventoryWorkflow}
 			{configuredFallbackWorkflow}
 			<ul className="recipient-policy-sharing-grid recipient-policy-sharing-responsive-grid">
@@ -1298,10 +1321,10 @@ export function mountDevices(
 	options: DevicesRendererOptions = {},
 ): void {
 	const focusedElement = document.activeElement;
-	const focusedAction =
-		focusedElement instanceof HTMLElement && mount.contains(focusedElement)
-			? deviceActionFocusIdentities.get(focusedElement)
-			: undefined;
+	const hadDevicesFocus = focusedElement instanceof HTMLElement && mount.contains(focusedElement);
+	const focusedAction = hadDevicesFocus
+		? deviceActionFocusIdentities.get(focusedElement)
+		: undefined;
 	const projection = projectDevices(
 		intent,
 		reconciliation,
@@ -1333,13 +1356,18 @@ export function mountDevices(
 		const inventoryItem = options.inventory?.items.find(
 			(item) => item.deviceId === deviceId || item.evidenceDeviceIds.includes(deviceId ?? ""),
 		);
-		const target =
-			(deviceId ? document.getElementById(`device-identity-card-${deviceId}`) : null) ??
-			(inventoryItem
-				? document.getElementById(`device-identity-card-${inventoryItem.deviceId}`)
-				: null) ??
-			document.getElementById("device-identity-review-heading");
-		if (target) {
+		const focusedCard = [
+			...(deviceId ? [deviceId] : []),
+			...(inventoryItem ? [inventoryItem.deviceId, ...inventoryItem.evidenceDeviceIds] : []),
+		]
+			.map((candidateDeviceId) =>
+				document.getElementById(`device-identity-card-${candidateDeviceId}`),
+			)
+			.find((element): element is HTMLElement => element instanceof HTMLElement);
+		const target = focusedCard ?? document.getElementById("device-identity-review-heading");
+		if (hadDevicesFocus) {
+			state.pendingDeviceIdentityFocus = undefined;
+		} else if (target) {
 			state.pendingDeviceIdentityFocus = undefined;
 			target.focus();
 			return;

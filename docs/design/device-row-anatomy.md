@@ -29,9 +29,9 @@ drawer, use a plain `.peer-card` instead.
   │  No addresses                                           │
   │  Sync: 2:31PM · Ping: 2:31PM                            │
   │                                                         │
-  │  Who this device belongs to                             │
-  │  This device belongs to you.                            │
-  │  [You ▾]  [Save assignment]                             │
+   │  Authoritative Identity ownership                       │
+   │  Authoritative Identity: You.                           │
+   │  [Review or rebind in Devices]                          │
   │                                                         │
   │  Advanced sharing scope ▸                               │
   └─────────────────────────────────────────────────────────┘
@@ -50,6 +50,11 @@ Left to right in the compact row:
    review", etc. Each uses `.badge` styling.
 6. **Meta** — T5 (12px / 400 / text-tertiary). Sync timestamp.
 7. **Chevron** — ▸ collapsed / ▾ expanded. Decorative (aria-hidden).
+
+The ownership region is read-only in Advanced. It reports active
+`identity_devices` bindings as authoritative and may show
+`sync_peers.actor_id` only as a suggestion. Setup and rebind actions hand off
+to Devices; pairing and Advanced sharing-scope controls remain separate.
 
 Row height: **56px minimum** (hits the 44px touch target with 10px
 top/bottom padding).

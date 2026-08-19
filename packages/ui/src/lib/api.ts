@@ -93,7 +93,6 @@ export type {
 export {
 	acceptDiscoveredPeer,
 	advanceShareOperation,
-	assignPeerActor,
 	claimLegacyDeviceIdentity,
 	commitDeviceIdentityBindings,
 	commitRecipientPolicyEdges,

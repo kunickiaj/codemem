@@ -461,6 +461,24 @@ describe("recipient-focused Sharing", () => {
 		expect(onReviewDevices).toHaveBeenCalledWith("device-setup");
 	});
 
+	it("surfaces a safe coordinator reconciliation count without converting groups to Teams", () => {
+		const onReviewDevices = vi.fn();
+		mount(intent(), { coordinatorEnrollmentIssueCount: 2, onReviewDevices });
+
+		const attention = document.querySelector<HTMLElement>(
+			'[aria-labelledby="sharing-coordinator-reconciliation-heading"]',
+		);
+		expect(attention?.textContent).toContain(
+			"2 coordinator enrollments could not be safely reconciled",
+		);
+		expect(attention?.textContent).toContain(
+			"Coordinator groups are discovery boundaries, not policy Teams",
+		);
+		expect(attention?.textContent).not.toMatch(/fingerprint|group[_ -]?id|coordinator[_ -]?id/i);
+		act(() => (attention?.querySelector("button") as HTMLButtonElement).click());
+		expect(onReviewDevices).toHaveBeenCalledOnce();
+	});
+
 	it("uses visible labels, responsive and target hooks, and no prohibited internal copy", () => {
 		mount();
 		expect(document.querySelector("h2")?.textContent).toBe("Sharing");

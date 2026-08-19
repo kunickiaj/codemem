@@ -6470,42 +6470,317 @@ export function syncRoutes(
 		if (!secondaryActorId) return c.json({ error: "secondary_actor_id required" }, 400);
 		if (primaryActorId === secondaryActorId) return c.json({ error: "actor ids must differ" }, 400);
 		const d = drizzle(store.db, { schema });
-		const primary = d
-			.select()
-			.from(schema.actors)
-			.where(eq(schema.actors.actor_id, primaryActorId))
-			.get();
-		const secondary = d
-			.select()
-			.from(schema.actors)
-			.where(eq(schema.actors.actor_id, secondaryActorId))
-			.get();
-		if (!primary || !secondary) return c.json({ error: "actor not found" }, 404);
-		if (primary.status !== "active") return c.json({ error: "primary actor not active" }, 409);
-		if (secondary.status !== "active") return c.json({ error: "secondary actor not active" }, 409);
-		if (secondary.is_local && secondary.actor_id === store.actorId) {
-			return c.json({ error: "cannot merge this device's own local actor" }, 409);
-		}
 		const now = new Date().toISOString();
-		const mergedCount = store.db.transaction(() => {
-			const peerUpdate = d
-				.update(schema.syncPeers)
-				.set({ actor_id: primaryActorId })
-				.where(eq(schema.syncPeers.actor_id, secondaryActorId))
-				.run();
-			if (primary.is_local) {
-				d.update(schema.syncPeers)
-					.set({ claimed_local_actor: 1 })
-					.where(eq(schema.syncPeers.actor_id, primaryActorId))
+		const result = store.db
+			.transaction(() => {
+				const primary = d
+					.select()
+					.from(schema.actors)
+					.where(eq(schema.actors.actor_id, primaryActorId))
+					.get();
+				const secondary = d
+					.select()
+					.from(schema.actors)
+					.where(eq(schema.actors.actor_id, secondaryActorId))
+					.get();
+				if (!primary || !secondary) return { error: "actor not found", status: 404 as const };
+				if (primary.status !== "active") {
+					return { error: "primary actor not active", status: 409 as const };
+				}
+				if (secondary.status !== "active") {
+					return { error: "secondary actor not active", status: 409 as const };
+				}
+				if (secondary.is_local && secondary.actor_id === store.actorId) {
+					return { error: "cannot merge this device's own local actor", status: 409 as const };
+				}
+				const memberships = d
+					.select()
+					.from(schema.policyTeamMemberships)
+					.where(eq(schema.policyTeamMemberships.identity_id, secondaryActorId))
+					.all();
+				const primaryMemberships = new Map<string, (typeof memberships)[number] | undefined>();
+				for (const membership of memberships) {
+					const primaryMembership = d
+						.select()
+						.from(schema.policyTeamMemberships)
+						.where(
+							and(
+								eq(schema.policyTeamMemberships.team_id, membership.team_id),
+								eq(schema.policyTeamMemberships.identity_id, primaryActorId),
+							),
+						)
+						.get();
+					if (
+						primaryMembership &&
+						(primaryMembership.role !== membership.role ||
+							primaryMembership.status !== membership.status)
+					) {
+						return { error: "actor team memberships conflict", status: 409 as const };
+					}
+					primaryMemberships.set(membership.team_id, primaryMembership);
+				}
+				const directRecipients = d
+					.select()
+					.from(schema.projectRecipients)
+					.where(
+						and(
+							eq(schema.projectRecipients.recipient_kind, "identity"),
+							eq(schema.projectRecipients.recipient_id, secondaryActorId),
+						),
+					)
+					.all();
+				const primaryRecipients = new Map<string, (typeof directRecipients)[number] | undefined>();
+				for (const recipient of directRecipients) {
+					const primaryRecipient = d
+						.select()
+						.from(schema.projectRecipients)
+						.where(
+							and(
+								eq(
+									schema.projectRecipients.canonical_project_identity,
+									recipient.canonical_project_identity,
+								),
+								eq(schema.projectRecipients.recipient_kind, "identity"),
+								eq(schema.projectRecipients.recipient_id, primaryActorId),
+							),
+						)
+						.get();
+					if (primaryRecipient && primaryRecipient.status !== recipient.status) {
+						return { error: "actor project recipients conflict", status: 409 as const };
+					}
+					primaryRecipients.set(recipient.canonical_project_identity, primaryRecipient);
+				}
+
+				const mergeDigest = createHash("sha256")
+					.update(
+						JSON.stringify({
+							kind: "identity-merge-v1",
+							primaryActorId,
+							secondaryActorId,
+							nonce: randomUUID(),
+						}),
+					)
+					.digest("hex");
+				const bindings = d
+					.select({
+						deviceId: schema.identityDevices.device_id,
+						assignmentVersion: schema.identityDevices.assignment_version,
+					})
+					.from(schema.identityDevices)
+					.where(eq(schema.identityDevices.identity_id, secondaryActorId))
+					.all();
+				if (bindings.length > 0) {
+					const commitDigest = mergeDigest;
+					const outcomes = bindings.map((binding) => ({
+						deviceId: binding.deviceId,
+						previousIdentityId: secondaryActorId,
+						targetIdentityId: primaryActorId,
+						action: "rebind",
+					}));
+					store.db
+						.prepare(`INSERT INTO device_identity_binding_commits(
+						commit_digest, reviewed_inventory_digest, request_json, outcomes_json, write_count,
+						decided_by_identity_id, decided_by_device_id, created_at
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+						.run(
+							commitDigest,
+							`identity-merge:${secondaryActorId}:${primaryActorId}`,
+							JSON.stringify({ primaryActorId, secondaryActorId }),
+							JSON.stringify(outcomes),
+							bindings.length,
+							store.actorId,
+							store.deviceId,
+							now,
+						);
+
+					for (const binding of bindings) {
+						const revision = createHash("sha256")
+							.update(`identity-merge-revision-v1\0${commitDigest}\0${binding.deviceId}`)
+							.digest("hex");
+						const idempotencyKey = createHash("sha256")
+							.update(`identity-merge-row-v1\0${commitDigest}\0${binding.deviceId}`)
+							.digest("hex");
+						const bindingUpdate = store.db
+							.prepare(`UPDATE identity_devices SET
+							identity_id = ?, provenance = 'review_resolution', revision = ?,
+							migration_state = 'user_managed', source_fingerprint = ?,
+							idempotency_key = ?, updated_at = ?
+						 WHERE device_id = ? AND identity_id = ?`)
+							.run(
+								primaryActorId,
+								revision,
+								commitDigest,
+								idempotencyKey,
+								now,
+								binding.deviceId,
+								secondaryActorId,
+							);
+						if (bindingUpdate.changes !== 1)
+							throw new Error("identity_merge_binding_update_failed");
+						const rebound = store.db
+							.prepare("SELECT assignment_version FROM identity_devices WHERE device_id = ?")
+							.get(binding.deviceId) as { assignment_version: number } | undefined;
+						if (!rebound || rebound.assignment_version !== binding.assignmentVersion + 1) {
+							throw new Error("identity_merge_assignment_version_unexpected");
+						}
+						store.db
+							.prepare("DELETE FROM policy_team_device_decisions WHERE device_id = ?")
+							.run(binding.deviceId);
+						store.db
+							.prepare(`INSERT INTO device_identity_binding_audit(
+							event_id, commit_digest, device_id, previous_identity_id, target_identity_id,
+							action, previous_assignment_version, resulting_assignment_version,
+							decided_by_identity_id, decided_by_device_id, created_at
+						) VALUES (?, ?, ?, ?, ?, 'rebind', ?, ?, ?, ?, ?)`)
+							.run(
+								createHash("sha256")
+									.update(`identity-merge-event-v1\0${commitDigest}\0${binding.deviceId}`)
+									.digest("hex"),
+								commitDigest,
+								binding.deviceId,
+								secondaryActorId,
+								primaryActorId,
+								binding.assignmentVersion,
+								rebound.assignment_version,
+								store.actorId,
+								store.deviceId,
+								now,
+							);
+					}
+				}
+
+				for (const membership of memberships) {
+					const primaryMembership = primaryMemberships.get(membership.team_id);
+					if (primaryMembership) {
+						d.delete(schema.policyTeamMemberships)
+							.where(
+								and(
+									eq(schema.policyTeamMemberships.team_id, membership.team_id),
+									eq(schema.policyTeamMemberships.identity_id, secondaryActorId),
+								),
+							)
+							.run();
+						continue;
+					}
+					const revision = createHash("sha256")
+						.update(`identity-merge-membership-revision-v1\0${mergeDigest}\0${membership.team_id}`)
+						.digest("hex");
+					const idempotencyKey = createHash("sha256")
+						.update(`identity-merge-membership-row-v1\0${mergeDigest}\0${membership.team_id}`)
+						.digest("hex");
+					d.update(schema.policyTeamMemberships)
+						.set({
+							identity_id: primaryActorId,
+							provenance: "review_resolution",
+							revision,
+							migration_state: "user_managed",
+							source_fingerprint: mergeDigest,
+							idempotency_key: idempotencyKey,
+							updated_at: now,
+						})
+						.where(
+							and(
+								eq(schema.policyTeamMemberships.team_id, membership.team_id),
+								eq(schema.policyTeamMemberships.identity_id, secondaryActorId),
+							),
+						)
+						.run();
+				}
+				for (const recipient of directRecipients) {
+					const primaryRecipient = primaryRecipients.get(recipient.canonical_project_identity);
+					if (primaryRecipient) {
+						d.delete(schema.projectRecipients)
+							.where(
+								and(
+									eq(
+										schema.projectRecipients.canonical_project_identity,
+										recipient.canonical_project_identity,
+									),
+									eq(schema.projectRecipients.recipient_kind, "identity"),
+									eq(schema.projectRecipients.recipient_id, secondaryActorId),
+								),
+							)
+							.run();
+						continue;
+					}
+					const policyRevision = createHash("sha256")
+						.update(
+							`identity-merge-recipient-revision-v1\0${mergeDigest}\0${recipient.canonical_project_identity}`,
+						)
+						.digest("hex");
+					const idempotencyKey = createHash("sha256")
+						.update(
+							`identity-merge-recipient-row-v1\0${mergeDigest}\0${recipient.canonical_project_identity}`,
+						)
+						.digest("hex");
+					d.update(schema.projectRecipients)
+						.set({
+							recipient_id: primaryActorId,
+							provenance: "review_resolution",
+							policy_revision: policyRevision,
+							migration_state: "user_managed",
+							source_fingerprint: mergeDigest,
+							idempotency_key: idempotencyKey,
+							updated_at: now,
+						})
+						.where(
+							and(
+								eq(
+									schema.projectRecipients.canonical_project_identity,
+									recipient.canonical_project_identity,
+								),
+								eq(schema.projectRecipients.recipient_kind, "identity"),
+								eq(schema.projectRecipients.recipient_id, secondaryActorId),
+							),
+						)
+						.run();
+				}
+				d.update(schema.recipientManagedProjectProjections)
+					.set({ recipient_identity_id: primaryActorId, updated_at: now })
+					.where(
+						eq(schema.recipientManagedProjectProjections.recipient_identity_id, secondaryActorId),
+					)
 					.run();
-			}
-			d.update(schema.actors)
-				.set({ status: "merged", merged_into_actor_id: primaryActorId, updated_at: now })
-				.where(eq(schema.actors.actor_id, secondaryActorId))
-				.run();
-			return Number(peerUpdate.changes ?? 0);
-		})();
-		return c.json({ merged_count: mergedCount });
+				store.db
+					.prepare(`UPDATE share_operations SET
+						inviter_actor_id = CASE WHEN inviter_actor_id = ? THEN ? ELSE inviter_actor_id END,
+						recipient_actor_id = CASE WHEN recipient_actor_id = ? THEN ? ELSE recipient_actor_id END,
+						person_id = CASE WHEN person_id = ? THEN ? ELSE person_id END,
+						updated_at = ?
+					 WHERE inviter_actor_id = ? OR recipient_actor_id = ? OR person_id = ?`)
+					.run(
+						secondaryActorId,
+						primaryActorId,
+						secondaryActorId,
+						primaryActorId,
+						secondaryActorId,
+						primaryActorId,
+						now,
+						secondaryActorId,
+						secondaryActorId,
+						secondaryActorId,
+					);
+
+				const peerUpdate = d
+					.update(schema.syncPeers)
+					.set({ actor_id: primaryActorId })
+					.where(eq(schema.syncPeers.actor_id, secondaryActorId))
+					.run();
+				if (primary.is_local) {
+					d.update(schema.syncPeers)
+						.set({ claimed_local_actor: 1 })
+						.where(eq(schema.syncPeers.actor_id, primaryActorId))
+						.run();
+				}
+				d.update(schema.actors)
+					.set({ status: "merged", merged_into_actor_id: primaryActorId, updated_at: now })
+					.where(eq(schema.actors.actor_id, secondaryActorId))
+					.run();
+				return { mergedCount: Number(peerUpdate.changes ?? 0) };
+			})
+			.immediate();
+		if ("error" in result) return c.json({ error: result.error }, result.status);
+		return c.json({ merged_count: result.mergedCount });
 	});
 
 	app.post("/api/sync/actors/deactivate", async (c) => {

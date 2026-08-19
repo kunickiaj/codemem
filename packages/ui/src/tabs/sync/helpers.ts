@@ -1,6 +1,5 @@
 /* Shared helpers for the Sync tab sub-modules. */
 
-import type { RadixSelectOption } from "../../components/primitives/radix-select";
 import { copyToClipboard, el } from "../../lib/dom";
 import { type SyncActor, state } from "../../lib/state";
 import { deriveVisiblePeopleActors } from "./view-model";
@@ -170,68 +169,12 @@ export function assignedActorCount(actorId: string): number {
 	return peers.filter((peer) => String(peer?.actor_id || "") === actorId).length;
 }
 
-export function assignmentNote(actorId: string): string {
-	if (!actorId)
-		return "Unassigned devices keep legacy fallback attribution until you choose a person.";
-	const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
-	const actor = actors.find((item) => String(item?.actor_id || "") === actorId);
-	if (actor?.is_local) {
-		return "Assigning this device to you keeps it in your identity across your devices, including private sync.";
-	}
-	return "This person receives memories from allowed projects by default. Use Only me on a memory when it should stay local.";
-}
-
 export function visibleSyncActors() {
 	return deriveVisiblePeopleActors({
 		actors: state.lastSyncActors,
 		peers: state.lastSyncPeers,
 		duplicatePeople: state.lastSyncViewModel?.duplicatePeople,
 	}).visibleActors;
-}
-
-export function buildActorSelectOptions(selectedActorId = ""): RadixSelectOption[] {
-	const options: RadixSelectOption[] = [{ value: "", label: "No person assigned" }];
-	const visibleActors = visibleSyncActors();
-	const allActors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
-	const selectedActor = allActors.find(
-		(actor) => String(actor?.actor_id || "") === selectedActorId,
-	);
-	const actors =
-		selectedActor &&
-		!visibleActors.some((actor) => String(actor?.actor_id || "") === selectedActorId)
-			? [...visibleActors, selectedActor]
-			: visibleActors;
-
-	actors.forEach((actor) => {
-		const actorId = String(actor?.actor_id || "").trim();
-		if (!actorId) return;
-		options.push({ value: actorId, label: actorDisplayLabel(actor) });
-	});
-
-	return options.filter(
-		(option, index, all) =>
-			index === all.findIndex((candidate) => candidate.value === option.value),
-	);
-}
-
-export function buildActorOptions(selectedActorId: string): HTMLOptionElement[] {
-	const options: HTMLOptionElement[] = [];
-	const unassigned = document.createElement("option");
-	unassigned.value = "";
-	unassigned.textContent = "No person assigned";
-	options.push(unassigned);
-
-	buildActorSelectOptions(selectedActorId)
-		.filter((option) => option.value)
-		.forEach((selectOption) => {
-			const option = document.createElement("option");
-			option.value = selectOption.value;
-			option.textContent = selectOption.label;
-			option.selected = option.value === selectedActorId;
-			options.push(option);
-		});
-	if (!selectedActorId) options[0].selected = true;
-	return options;
 }
 
 export function mergeTargetActors(actorId: string): SyncActor[] {

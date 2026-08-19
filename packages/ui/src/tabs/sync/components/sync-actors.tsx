@@ -252,7 +252,7 @@ function SyncActorsList({
 	if (!actors.length) {
 		return (
 			<SyncEmptyState
-				detail="Create a named person here, then assign devices below so team ownership stays readable."
+				detail="Create a named person here for legacy provenance, then confirm device Identity ownership in Devices."
 				title="No people set up yet."
 			/>
 		);

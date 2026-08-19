@@ -5,7 +5,7 @@ import type {
 	TeamSyncPresenceState,
 	UiSyncViewModel,
 } from "../tabs/sync/view-model";
-import type { ShareOperationReadModel } from "./api/sync";
+import type { DeviceIdentityInventoryV1, ShareOperationReadModel } from "./api/sync";
 import type { UpdateStatus } from "./api/types";
 
 export type RefreshState = "idle" | "refreshing" | "paused" | "error";
@@ -94,6 +94,9 @@ export interface CachedSyncStatus {
 	summary?: unknown;
 	discovered_devices?: unknown[];
 	paired_peer_count?: number;
+	coordinator_enrollment_reconciliation_issues?: {
+		counts?: { open?: number; resolved?: number };
+	};
 }
 
 export interface SyncActor {
@@ -264,6 +267,8 @@ export const state = {
 	lastRawEventsPayload: null as CachedRawEventsPayload | null,
 	lastUpdateStatus: null as UpdateStatus | null,
 	lastSyncStatus: null as CachedSyncStatus | null,
+	lastDeviceIdentityInventory: null as DeviceIdentityInventoryV1 | null,
+	deviceIdentityInventoryLoadError: false,
 	pendingDeviceIdentityFocus: undefined as string | null | undefined,
 	lastSyncActors: [] as SyncActor[],
 	lastSyncPeers: [] as SyncPeer[],
