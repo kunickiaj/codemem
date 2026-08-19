@@ -28,4 +28,12 @@ describe("test schema generation", () => {
 			"`policy_team_device_decisions` (\n\t`team_id` text NOT NULL,\n\t`device_id` text NOT NULL,\n\t`decision` text NOT NULL,\n\t`assignment_version` integer DEFAULT 0 NOT NULL",
 		);
 	});
+
+	it("contains device Identity binding commit and audit state", () => {
+		expect(drizzleSchema.deviceIdentityBindingCommits).toBeDefined();
+		expect(drizzleSchema.deviceIdentityBindingAudit).toBeDefined();
+		expect(TEST_SCHEMA_BASE_DDL).toContain("device_identity_binding_commits");
+		expect(TEST_SCHEMA_BASE_DDL).toContain("device_identity_binding_audit");
+		expect(TEST_SCHEMA_BASE_DDL).toContain("idx_device_identity_binding_audit_commit_device");
+	});
 });

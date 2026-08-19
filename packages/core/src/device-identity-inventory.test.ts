@@ -460,7 +460,7 @@ describe("device Identity inventory database projection", () => {
 		).toMatchObject({ state: "setup_required" });
 	});
 
-	it("loads an existing reviewed-invitation binding as configured without rewriting it", () => {
+	it("keeps an invitation-materialized coordinator enrollment binding configured", () => {
 		db.prepare(
 			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
 			 VALUES ('identity-a', 'Ada', 0, 'active', ?, ?)`,
@@ -486,6 +486,7 @@ describe("device Identity inventory database projection", () => {
 		expect(result.items.find((item) => item.deviceId === "invited-device")).toMatchObject({
 			state: "configured",
 			identityId: "identity-a",
+			suggestedIdentityId: null,
 		});
 		expect(db.prepare("SELECT * FROM identity_devices").all()).toEqual(before);
 	});

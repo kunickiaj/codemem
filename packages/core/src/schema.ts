@@ -1074,6 +1074,47 @@ export const identityDevices = sqliteTable(
 export type IdentityDevice = typeof identityDevices.$inferSelect;
 export type NewIdentityDevice = typeof identityDevices.$inferInsert;
 
+export const deviceIdentityBindingCommits = sqliteTable("device_identity_binding_commits", {
+	commit_digest: text("commit_digest").primaryKey(),
+	reviewed_inventory_digest: text("reviewed_inventory_digest").notNull(),
+	request_json: text("request_json").notNull(),
+	outcomes_json: text("outcomes_json").notNull(),
+	write_count: integer("write_count").notNull(),
+	decided_by_identity_id: text("decided_by_identity_id").notNull(),
+	decided_by_device_id: text("decided_by_device_id").notNull(),
+	created_at: text("created_at").notNull(),
+});
+
+export const deviceIdentityBindingAudit = sqliteTable(
+	"device_identity_binding_audit",
+	{
+		event_id: text("event_id").primaryKey(),
+		commit_digest: text("commit_digest")
+			.notNull()
+			.references(() => deviceIdentityBindingCommits.commit_digest),
+		device_id: text("device_id").notNull(),
+		previous_identity_id: text("previous_identity_id"),
+		target_identity_id: text("target_identity_id").notNull(),
+		action: text("action").notNull(),
+		previous_assignment_version: integer("previous_assignment_version"),
+		resulting_assignment_version: integer("resulting_assignment_version").notNull(),
+		decided_by_identity_id: text("decided_by_identity_id").notNull(),
+		decided_by_device_id: text("decided_by_device_id").notNull(),
+		created_at: text("created_at").notNull(),
+	},
+	(table) => [
+		uniqueIndex("idx_device_identity_binding_audit_commit_device").on(
+			table.commit_digest,
+			table.device_id,
+		),
+		index("idx_device_identity_binding_audit_device_created").on(
+			table.device_id,
+			table.created_at,
+			table.event_id,
+		),
+	],
+);
+
 export const projectRecipients = sqliteTable(
 	"project_recipients",
 	{
@@ -1241,6 +1282,8 @@ export type RecipientPolicyDenyOverlay = typeof recipientPolicyDenyOverlays.$inf
 export type NewRecipientPolicyDenyOverlay = typeof recipientPolicyDenyOverlays.$inferInsert;
 
 export const schema = {
+	deviceIdentityBindingCommits,
+	deviceIdentityBindingAudit,
 	sessions,
 	replicationScopes,
 	projectScopeMappings,

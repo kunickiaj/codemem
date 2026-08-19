@@ -344,6 +344,35 @@ CREATE TABLE IF NOT EXISTS recipient_policy_review_resolutions (
 	PRIMARY KEY (review_item_id, source_fingerprint)
 );
 
+CREATE TABLE IF NOT EXISTS device_identity_binding_commits (
+	commit_digest TEXT PRIMARY KEY NOT NULL,
+	reviewed_inventory_digest TEXT NOT NULL,
+	request_json TEXT NOT NULL,
+	outcomes_json TEXT NOT NULL,
+	write_count INTEGER NOT NULL,
+	decided_by_identity_id TEXT NOT NULL,
+	decided_by_device_id TEXT NOT NULL,
+	created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS device_identity_binding_audit (
+	event_id TEXT PRIMARY KEY NOT NULL,
+	commit_digest TEXT NOT NULL REFERENCES device_identity_binding_commits(commit_digest),
+	device_id TEXT NOT NULL,
+	previous_identity_id TEXT,
+	target_identity_id TEXT NOT NULL,
+	action TEXT NOT NULL,
+	previous_assignment_version INTEGER,
+	resulting_assignment_version INTEGER NOT NULL,
+	decided_by_identity_id TEXT NOT NULL,
+	decided_by_device_id TEXT NOT NULL,
+	created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_device_identity_binding_audit_commit_device
+	ON device_identity_binding_audit(commit_digest, device_id);
+CREATE INDEX IF NOT EXISTS idx_device_identity_binding_audit_device_created
+	ON device_identity_binding_audit(device_id, created_at, event_id);
+
 CREATE TABLE IF NOT EXISTS recipient_policy_authority_states (
 	canonical_project_identity TEXT PRIMARY KEY NOT NULL,
 	authority_state TEXT NOT NULL DEFAULT 'legacy',

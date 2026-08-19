@@ -185,6 +185,22 @@ export {
 	runDedupKeyBackfillPass,
 } from "./dedup-key-backfill.js";
 export type {
+	DeviceIdentityBindingActionV1,
+	DeviceIdentityBindingCommitRequestV1,
+	DeviceIdentityBindingCommitV1,
+	DeviceIdentityBindingContext,
+	DeviceIdentityBindingOutcomeV1,
+	DeviceIdentityBindingPreviewRequestV1,
+	DeviceIdentityBindingPreviewV1,
+	DeviceIdentityBindingSelectionV1,
+	DeviceIdentityBindingStatusV1,
+} from "./device-identity-binding.js";
+export {
+	commitDeviceIdentityBindings,
+	DEVICE_IDENTITY_BINDING_VERSION,
+	previewDeviceIdentityBindings,
+} from "./device-identity-binding.js";
+export type {
 	DeviceIdentityBindingEvidence,
 	DeviceIdentityCoordinatorEvidence,
 	DeviceIdentityInventoryInput,

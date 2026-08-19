@@ -1258,6 +1258,8 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		expect(tableExists(db, "share_operation_projects")).toBe(true);
 		expect(tableExists(db, "share_operation_steps")).toBe(true);
 		expect(tableExists(db, "recipient_policy_review_resolutions")).toBe(true);
+		expect(tableExists(db, "device_identity_binding_commits")).toBe(true);
+		expect(tableExists(db, "device_identity_binding_audit")).toBe(true);
 		for (const table of [
 			"coordinator_enrollment_reconciliation_issues",
 			"policy_teams",
@@ -1300,6 +1302,8 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 			expect(tableExists(previous, table)).toBe(true);
 		}
 		expect(tableExists(previous, "recipient_policy_review_resolutions")).toBe(true);
+		expect(tableExists(previous, "device_identity_binding_commits")).toBe(true);
+		expect(tableExists(previous, "device_identity_binding_audit")).toBe(true);
 		for (const table of [
 			"coordinator_enrollment_reconciliation_issues",
 			"policy_teams",

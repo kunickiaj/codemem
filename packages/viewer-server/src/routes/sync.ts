@@ -13,6 +13,8 @@ import type {
 	CoordinatorEnrollmentReconcileResult,
 	CoordinatorScope,
 	CoordinatorScopeMembership,
+	DeviceIdentityBindingCommitRequestV1,
+	DeviceIdentityBindingPreviewRequestV1,
 	DeviceIdentityCoordinatorEvidence,
 	MaintenanceJobSnapshot,
 	MemoryStore,
@@ -42,6 +44,7 @@ import {
 	buildBaseUrl,
 	canonicalWorkspaceIdentity,
 	cleanupNonces,
+	commitDeviceIdentityBindings,
 	commitRecipientPolicyEdges,
 	coordinatorArchiveGroupAction,
 	coordinatorCreateAddDeviceInviteAction,
@@ -129,6 +132,7 @@ import {
 	persistShareOperation,
 	personalScopeGrantStatusForPeer,
 	planShareOperation,
+	previewDeviceIdentityBindings,
 	previewRecipientPolicyEdges,
 	previewRecipientPolicyOnboarding,
 	previewRecipientPolicyOnboardingFromReviewedIntent,
@@ -4695,15 +4699,24 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 
 async function loadConfiguredDeviceIdentityCoordinatorEvidence(): Promise<DeviceIdentityCoordinatorEvidence> {
 	const config = readCoordinatorSyncConfig();
+	const hasCoordinatorConfiguration =
+		config.syncCoordinatorUrl.length > 0 || config.syncCoordinatorGroups.length > 0;
 	const remoteUrl = config.syncCoordinatorUrl.trim();
 	const adminSecret = config.syncCoordinatorAdminSecret.trim();
 	const groupIds = [
 		...new Set(config.syncCoordinatorGroups.map((groupId) => groupId.trim())),
 	].filter(Boolean);
-	if (!remoteUrl || !adminSecret || groupIds.length === 0) {
+	if (!hasCoordinatorConfiguration) {
 		return {
 			availability: "unavailable",
 			safeErrorCode: "coordinator_not_configured",
+			enrollments: [],
+		};
+	}
+	if (!remoteUrl || !adminSecret || groupIds.length === 0) {
+		return {
+			availability: "unavailable",
+			safeErrorCode: "coordinator_unavailable",
 			enrollments: [],
 		};
 	}
@@ -4760,36 +4773,130 @@ export function syncRoutes(
 	const loadCoordinatorEvidence =
 		options.loadDeviceIdentityCoordinatorEvidence ??
 		loadConfiguredDeviceIdentityCoordinatorEvidence;
-
-	app.get("/api/sync/recipient-policy/v1/device-inventory", async (c) => {
-		const store = getStore();
-		let coordinator: DeviceIdentityCoordinatorEvidence;
+	const currentCoordinatorEvidence = async (): Promise<DeviceIdentityCoordinatorEvidence> => {
 		try {
-			coordinator = await loadCoordinatorEvidence();
+			return await loadCoordinatorEvidence();
 		} catch {
-			coordinator = {
+			return {
 				availability: "unavailable",
 				safeErrorCode: "coordinator_unavailable",
 				enrollments: [],
 			};
 		}
+	};
+	const localInventoryInput = async (store: MemoryStore) => {
 		let explicitDeviceName = "";
 		try {
 			explicitDeviceName = String(readCodememConfigFile().sync_device_name ?? "");
 		} catch {
 			explicitDeviceName = "";
 		}
-		return c.json(
-			listDeviceIdentityInventory(store.db, {
-				localDeviceId: store.deviceId,
-				localDisplayName: friendlyDeviceName({
-					explicitName: explicitDeviceName,
-					osName: hostname(),
-					fallbackSeed: store.deviceId,
-				}),
-				coordinator,
+		return {
+			localDeviceId: store.deviceId,
+			localDisplayName: friendlyDeviceName({
+				explicitName: explicitDeviceName,
+				osName: hostname(),
+				fallbackSeed: store.deviceId,
 			}),
-		);
+			coordinator: await currentCoordinatorEvidence(),
+		};
+	};
+
+	app.get("/api/sync/recipient-policy/v1/device-inventory", async (c) => {
+		const store = getStore();
+		ensureStableStoreIdentity(store);
+		return c.json(listDeviceIdentityInventory(store.db, await localInventoryInput(store)));
+	});
+
+	const parseDeviceBindingRequest = (
+		value: unknown,
+		commit: boolean,
+	): DeviceIdentityBindingPreviewRequestV1 | DeviceIdentityBindingCommitRequestV1 | null => {
+		if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+		const body = value as Record<string, unknown>;
+		const allowed = new Set(commit ? ["bindings", "reviewedInventoryDigest"] : ["bindings"]);
+		if (Object.keys(body).some((key) => !allowed.has(key)) || !Array.isArray(body.bindings)) {
+			return null;
+		}
+		const bindings = body.bindings.map((value) => {
+			if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+			const binding = value as Record<string, unknown>;
+			const bindingKeys = new Set(["deviceId", "targetIdentityId", "confirmed", "allowRebind"]);
+			if (
+				Object.keys(binding).some((key) => !bindingKeys.has(key)) ||
+				typeof binding.deviceId !== "string" ||
+				typeof binding.targetIdentityId !== "string" ||
+				typeof binding.confirmed !== "boolean" ||
+				(Object.hasOwn(binding, "allowRebind") && typeof binding.allowRebind !== "boolean")
+			) {
+				return null;
+			}
+			return {
+				deviceId: binding.deviceId,
+				targetIdentityId: binding.targetIdentityId,
+				confirmed: binding.confirmed,
+				...(typeof binding.allowRebind === "boolean" ? { allowRebind: binding.allowRebind } : {}),
+			};
+		});
+		if (bindings.some((binding) => binding == null)) return null;
+		if (commit && typeof body.reviewedInventoryDigest !== "string") return null;
+		return {
+			bindings: bindings as DeviceIdentityBindingPreviewRequestV1["bindings"],
+			...(commit ? { reviewedInventoryDigest: body.reviewedInventoryDigest as string } : {}),
+		};
+	};
+
+	app.post("/api/sync/recipient-policy/v1/device-bindings/preview", async (c) => {
+		const body = parseDeviceBindingRequest(await parseViewerJsonBody(c), false);
+		if (!body) return c.json({ error: "binding_request_invalid" }, 400);
+		const store = getStore();
+		try {
+			ensureStableStoreIdentity(store);
+			const result = previewDeviceIdentityBindings(
+				store.db,
+				await localInventoryInput(store),
+				body,
+			);
+			if (result.status === "invalid") return c.json(result, 400);
+			if (result.status === "not_found") return c.json(result, 404);
+			if (result.status === "conflict") return c.json(result, 409);
+			return c.json(result);
+		} catch (error) {
+			if (isSqliteBusy(error)) {
+				c.header("Retry-After", "1");
+				return c.json({ error: "binding_preview_busy" }, 503);
+			}
+			return c.json({ error: "binding_preview_failed" }, 500);
+		}
+	});
+
+	app.post("/api/sync/recipient-policy/v1/device-bindings/commit", async (c) => {
+		const body = parseDeviceBindingRequest(await parseViewerJsonBody(c), true);
+		if (!body || !("reviewedInventoryDigest" in body)) {
+			return c.json({ error: "binding_request_invalid" }, 400);
+		}
+		const store = getStore();
+		try {
+			ensureStableStoreIdentity(store);
+			const result = commitDeviceIdentityBindings(
+				store.db,
+				{ localActorId: store.actorId, localDeviceId: store.deviceId },
+				await localInventoryInput(store),
+				body,
+			);
+			if (result.status === "invalid") return c.json(result, 400);
+			if (result.status === "not_found") return c.json(result, 404);
+			if (result.status === "stale" || result.status === "conflict") {
+				return c.json(result, 409);
+			}
+			return c.json(result);
+		} catch (error) {
+			if (isSqliteBusy(error)) {
+				c.header("Retry-After", "1");
+				return c.json({ error: "binding_commit_busy" }, 503);
+			}
+			return c.json({ error: "binding_commit_failed" }, 500);
+		}
 	});
 
 	// GET /api/sync/status

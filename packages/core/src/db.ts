@@ -622,6 +622,38 @@ function ensureIdentityDeviceAssignmentVersionTriggers(db: DatabaseType): void {
 	db.transaction(() => db.exec(IDENTITY_DEVICE_ASSIGNMENT_TRIGGERS_DDL)).immediate();
 }
 
+function ensureDeviceIdentityBindingAuditSchema(db: DatabaseType): void {
+	db.exec(`
+		CREATE TABLE IF NOT EXISTS device_identity_binding_commits (
+			commit_digest TEXT PRIMARY KEY NOT NULL,
+			reviewed_inventory_digest TEXT NOT NULL,
+			request_json TEXT NOT NULL,
+			outcomes_json TEXT NOT NULL,
+			write_count INTEGER NOT NULL,
+			decided_by_identity_id TEXT NOT NULL,
+			decided_by_device_id TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS device_identity_binding_audit (
+			event_id TEXT PRIMARY KEY NOT NULL,
+			commit_digest TEXT NOT NULL REFERENCES device_identity_binding_commits(commit_digest),
+			device_id TEXT NOT NULL,
+			previous_identity_id TEXT,
+			target_identity_id TEXT NOT NULL,
+			action TEXT NOT NULL,
+			previous_assignment_version INTEGER,
+			resulting_assignment_version INTEGER NOT NULL,
+			decided_by_identity_id TEXT NOT NULL,
+			decided_by_device_id TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_device_identity_binding_audit_commit_device
+			ON device_identity_binding_audit(commit_digest, device_id);
+		CREATE INDEX IF NOT EXISTS idx_device_identity_binding_audit_device_created
+			ON device_identity_binding_audit(device_id, created_at, event_id);
+	`);
+}
+
 function assertRecipientPolicyDeviceEligibilityCompatibility(db: DatabaseType): void {
 	const recipientPolicySchemaPresent = [
 		"policy_teams",
@@ -827,6 +859,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	// Always run: current-marker databases may predate these no-version-bump
 	// columns, so the schema_compat_state gate cannot prove they exist.
 	ensureSyncPeerRuntimeVersionColumns(db);
+	ensureDeviceIdentityBindingAuditSchema(db);
 	const compatAlreadyApplied = schemaCompatAlreadyApplied(db);
 	if (!compatAlreadyApplied) {
 		// IMPORTANT: any NEW DDL added to this gated block REQUIRES bumping

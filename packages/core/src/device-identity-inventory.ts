@@ -95,6 +95,7 @@ interface Evidence {
 	bindingIdentityId: string | null;
 	bindingStatus: string | null;
 	bindingIdentityStatus: string | null;
+	bindingAuthoritative: boolean;
 	enrollmentEnabled: boolean | null;
 	pairingProof: boolean;
 }
@@ -129,6 +130,7 @@ function localEvidence(value: DeviceIdentityLocalDeviceEvidence): Evidence {
 		bindingIdentityId: null,
 		bindingStatus: null,
 		bindingIdentityStatus: null,
+		bindingAuthoritative: false,
 		enrollmentEnabled: null,
 		pairingProof: true,
 	};
@@ -147,6 +149,7 @@ function peerEvidence(value: DeviceIdentityPeerEvidence): Evidence {
 		bindingIdentityId: null,
 		bindingStatus: null,
 		bindingIdentityStatus: null,
+		bindingAuthoritative: false,
 		enrollmentEnabled: null,
 		pairingProof: clean(value.trustProvenance) !== "coordinator_policy" || value.claimedLocalActor,
 	};
@@ -164,6 +167,7 @@ function bindingEvidence(value: DeviceIdentityBindingEvidence): Evidence {
 		bindingIdentityId: value.identityId,
 		bindingStatus: value.status,
 		bindingIdentityStatus: value.identityStatus,
+		bindingAuthoritative: true,
 		enrollmentEnabled: null,
 		pairingProof: false,
 	};
@@ -182,6 +186,7 @@ function enrollmentEvidence(value: CoordinatorEnrollment): Evidence {
 		bindingIdentityId: null,
 		bindingStatus: null,
 		bindingIdentityStatus: null,
+		bindingAuthoritative: false,
 		enrollmentEnabled: value.enabled === 1,
 		pairingProof: false,
 	};
@@ -249,7 +254,10 @@ function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
 		),
 	);
 	const activeBindings = group.filter(
-		(item) => item.source === "identity_binding" && item.bindingStatus === "active",
+		(item) =>
+			item.source === "identity_binding" &&
+			item.bindingAuthoritative &&
+			item.bindingStatus === "active",
 	);
 	const bindingIdentityIds = new Set(
 		activeBindings.flatMap((item) => (item.bindingIdentityId ? [item.bindingIdentityId] : [])),
@@ -264,12 +272,18 @@ function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
 		group.some(
 			(item) =>
 				item.source === "identity_binding" &&
+				item.bindingAuthoritative &&
 				item.bindingStatus === "active" &&
 				item.bindingIdentityStatus !== "active",
 		)
 			? "identity_inactive"
 			: null,
-		group.some((item) => item.source === "identity_binding" && item.bindingStatus !== "active")
+		group.some(
+			(item) =>
+				item.source === "identity_binding" &&
+				item.bindingAuthoritative &&
+				item.bindingStatus !== "active",
+		)
 			? "identity_binding_revoked"
 			: null,
 		group.some(
