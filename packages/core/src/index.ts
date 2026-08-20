@@ -1016,17 +1016,30 @@ export {
 } from "./summary-dedup-backfill.js";
 export { canonicalMemoryKind, getSummaryMetadata, isSummaryLikeMemory } from "./summary-memory.js";
 export type {
+	AuthHeaders,
 	BuildAuthHeadersOptions,
+	BuildDirectPeerAuthHeadersOptions,
+	DirectPeerAuthHeaders,
+	DirectPeerSignatureHeaders,
+	DirectPeerSignatureVerification,
+	SignDirectPeerRequestOptions,
+	SignedRequestHeaders,
 	SignRequestOptions,
+	VerifyDirectPeerSignatureOptions,
 	VerifySignatureOptions,
 } from "./sync-auth.js";
 export {
 	buildAuthHeaders,
 	buildCanonicalRequest,
+	buildDirectPeerAuthHeaders,
+	buildDirectPeerCanonicalRequest,
 	cleanupNonces,
+	DIRECT_PEER_SIGNATURE_VERSION,
 	recordNonce,
 	SIGNATURE_VERSION,
+	signDirectPeerRequest,
 	signRequest,
+	verifyDirectPeerSignature,
 	verifySignature,
 } from "./sync-auth.js";
 export { DEFAULT_TIME_WINDOW_S } from "./sync-auth-constants.js";

@@ -8,9 +8,13 @@ import { connect } from "./db.js";
 import {
 	buildAuthHeaders,
 	buildCanonicalRequest,
+	buildDirectPeerAuthHeaders,
+	buildDirectPeerCanonicalRequest,
 	cleanupNonces,
 	recordNonce,
+	signDirectPeerRequest,
 	signRequest,
+	verifyDirectPeerSignature,
 	verifySignature,
 } from "./sync-auth.js";
 import {
@@ -100,6 +104,20 @@ describe("sync-auth", () => {
 	// -- buildCanonicalRequest ----------------------------------------------
 
 	describe("buildCanonicalRequest", () => {
+		it("preserves the legacy v2 canonical bytes", () => {
+			const result = buildCanonicalRequest(
+				"get",
+				"/api/sync/status?scope=all",
+				"1700000000",
+				"fixture-nonce",
+				Buffer.alloc(0),
+			);
+
+			expect(result.toString("utf-8")).toBe(
+				"GET\n/api/sync/status?scope=all\n1700000000\nfixture-nonce\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			);
+		});
+
 		it("produces deterministic output", () => {
 			const body = Buffer.from('{"hello":"world"}');
 			const r1 = buildCanonicalRequest("POST", "/api/sync", "1700000000", "abc123", body);
@@ -125,6 +143,224 @@ describe("sync-auth", () => {
 			expect(lines[3]).toBe("n1");
 			// Line 4 is the SHA-256 hex digest of "test-body"
 			expect(lines[4]).toMatch(/^[0-9a-f]{64}$/);
+		});
+	});
+
+	describe("direct-peer v3 authentication", () => {
+		function setupIdentity() {
+			const keysDir = join(tmpDir, "direct-peer-keys");
+			const dbPath = join(tmpDir, "direct-peer.sqlite");
+			const db = connect(dbPath);
+			initTestSchema(db);
+			const [deviceId] = ensureDeviceIdentity(db, { keysDir });
+			const publicKey = loadPublicKey(keysDir);
+			if (!publicKey) throw new Error("expected public key after ensureDeviceIdentity");
+			return { db, deviceId, publicKey, keysDir };
+		}
+
+		it("appends the recipient to the unchanged five-field canonical request", () => {
+			const result = buildDirectPeerCanonicalRequest(
+				"get",
+				"/api/sync/status?scope=all",
+				"1700000000",
+				"fixture-nonce",
+				Buffer.alloc(0),
+				"recipient-device",
+			);
+
+			expect(result.toString("utf-8")).toBe(
+				"GET\n/api/sync/status?scope=all\n1700000000\nfixture-nonce\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nrecipient-device",
+			);
+		});
+
+		it("signs and verifies only the matching recipient", () => {
+			const { db, deviceId, publicKey, keysDir } = setupIdentity();
+			try {
+				const timestamp = String(Math.floor(Date.now() / 1000));
+				const headers = signDirectPeerRequest({
+					method: "POST",
+					url: "https://peer.example.test/api/sync/ops?limit=10",
+					bodyBytes: Buffer.from("{}"),
+					recipientId: "recipient-a",
+					keysDir,
+					deviceId,
+					timestamp,
+					nonce: "v3-round-trip",
+				});
+
+				expect(
+					verifyDirectPeerSignature({
+						method: "POST",
+						pathWithQuery: "/api/sync/ops?limit=10",
+						bodyBytes: Buffer.from("{}"),
+						timestamp,
+						nonce: "v3-round-trip",
+						recipientId: headers["X-Codemem-Recipient"],
+						expectedRecipientId: "recipient-a",
+						signature: headers["X-Codemem-Signature"],
+						publicKey,
+					}),
+				).toEqual({ status: "valid", version: "v3" });
+
+				expect(
+					verifyDirectPeerSignature({
+						method: "POST",
+						pathWithQuery: "/api/sync/ops?limit=10",
+						bodyBytes: Buffer.from("{}"),
+						timestamp,
+						nonce: "v3-round-trip",
+						recipientId: headers["X-Codemem-Recipient"],
+						expectedRecipientId: "recipient-b",
+						signature: headers["X-Codemem-Signature"],
+						publicKey,
+					}),
+				).toEqual({ status: "invalid", reason: "recipient_mismatch" });
+			} finally {
+				db.close();
+			}
+		});
+
+		it("distinguishes absent v3 material from invalid present material", () => {
+			const { db, publicKey } = setupIdentity();
+			try {
+				const base = {
+					method: "GET",
+					pathWithQuery: "/api/sync/status",
+					bodyBytes: Buffer.alloc(0),
+					timestamp: String(Math.floor(Date.now() / 1000)),
+					nonce: "typed-verification",
+					expectedRecipientId: "recipient-a",
+					publicKey,
+				};
+
+				expect(verifyDirectPeerSignature(base)).toEqual({ status: "absent" });
+				expect(verifyDirectPeerSignature({ ...base, recipientId: "", signature: "" })).toEqual({
+					status: "absent",
+				});
+				expect(verifyDirectPeerSignature({ ...base, recipientId: "recipient-a" })).toEqual({
+					status: "invalid",
+					reason: "incomplete_material",
+				});
+				expect(
+					verifyDirectPeerSignature({
+						...base,
+						recipientId: "recipient-a",
+						signature: "v3:not-a-signature",
+					}),
+				).toEqual({ status: "invalid", reason: "invalid_signature" });
+				expect(
+					verifyDirectPeerSignature({
+						...base,
+						recipientId: "recipient-a",
+						signature: "v2:AAAA",
+					}),
+				).toEqual({ status: "invalid", reason: "unsupported_version" });
+				expect(
+					verifyDirectPeerSignature({
+						...base,
+						timestamp: "1",
+						recipientId: "recipient-a",
+						signature: "v3:AAAA",
+					}),
+				).toEqual({ status: "invalid", reason: "invalid_timestamp" });
+			} finally {
+				db.close();
+			}
+		});
+
+		it.each([
+			["method", { method: "PUT" }],
+			["path", { pathWithQuery: "/v1/ops?limit=1" }],
+			["body", { bodyBytes: Buffer.from('{"changed":true}') }],
+			["nonce", { nonce: "changed-nonce" }],
+			["timestamp", { timestamp: "1", timeWindowS: Number.MAX_SAFE_INTEGER }],
+		])("rejects a signature with a mutated %s", (_field, changes) => {
+			const { db, deviceId, publicKey, keysDir } = setupIdentity();
+			try {
+				const timestamp = String(Math.floor(Date.now() / 1000));
+				const headers = signDirectPeerRequest({
+					method: "POST",
+					url: "https://peer.example.test/v1/ops",
+					bodyBytes: Buffer.from("{}"),
+					recipientId: "recipient-a",
+					keysDir,
+					deviceId,
+					timestamp,
+					nonce: "original-nonce",
+				});
+				const result = verifyDirectPeerSignature({
+					method: "POST",
+					pathWithQuery: "/v1/ops",
+					bodyBytes: Buffer.from("{}"),
+					timestamp,
+					nonce: "original-nonce",
+					recipientId: "recipient-a",
+					expectedRecipientId: "recipient-a",
+					signature: headers["X-Codemem-Signature"],
+					publicKey,
+					...changes,
+				});
+
+				expect(result).toEqual({ status: "invalid", reason: "invalid_signature" });
+			} finally {
+				db.close();
+			}
+		});
+
+		it("rejects empty or multiline recipients before signing", () => {
+			const { db, deviceId, keysDir } = setupIdentity();
+			try {
+				const options = {
+					method: "GET",
+					url: "https://peer.example.test/v1/status",
+					bodyBytes: Buffer.alloc(0),
+					keysDir,
+					deviceId,
+					timestamp: String(Math.floor(Date.now() / 1000)),
+					nonce: "recipient-validation",
+				};
+
+				expect(() => signDirectPeerRequest({ ...options, recipientId: "" })).toThrow(
+					"recipientId must be a non-empty single-line value",
+				);
+				expect(() => signDirectPeerRequest({ ...options, recipientId: "peer-a\npeer-b" })).toThrow(
+					"recipientId must be a non-empty single-line value",
+				);
+			} finally {
+				db.close();
+			}
+		});
+
+		it("adds v3 headers without replacing any legacy v2 auth header", () => {
+			const { db, deviceId, keysDir } = setupIdentity();
+			try {
+				const options = {
+					deviceId,
+					method: "GET",
+					url: "https://peer.example.test/api/sync/status",
+					bodyBytes: Buffer.alloc(0),
+					keysDir,
+					timestamp: String(Math.floor(Date.now() / 1000)),
+					nonce: "dual-signature-fixture",
+				};
+				const legacyHeaders = buildAuthHeaders(options);
+				const directHeaders = buildDirectPeerAuthHeaders({
+					...options,
+					recipientId: "recipient-a",
+				});
+
+				expect({
+					"X-Opencode-Device": directHeaders["X-Opencode-Device"],
+					"X-Opencode-Timestamp": directHeaders["X-Opencode-Timestamp"],
+					"X-Opencode-Nonce": directHeaders["X-Opencode-Nonce"],
+					"X-Opencode-Signature": directHeaders["X-Opencode-Signature"],
+				}).toEqual(legacyHeaders);
+				expect(directHeaders["X-Opencode-Signature"]).toMatch(/^v2:/);
+				expect(directHeaders["X-Codemem-Recipient"]).toBe("recipient-a");
+				expect(directHeaders["X-Codemem-Signature"]).toMatch(/^v3:/);
+			} finally {
+				db.close();
+			}
 		});
 	});
 

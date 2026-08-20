@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createBetterSqliteCoordinatorApp } from "./better-sqlite-coordinator-runtime.js";
+import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
 import {
 	advertisedSyncAddresses,
 	coordinatorStatusSnapshot,
@@ -16,6 +18,7 @@ import {
 	trustCoordinatorPeersWithSharedManagedScopes,
 } from "./coordinator-runtime.js";
 import type { MemoryStore } from "./store.js";
+import { buildAuthHeaders } from "./sync-auth.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 import { initTestSchema } from "./test-utils.js";
@@ -140,13 +143,16 @@ describe("advertisedSyncAddresses", () => {
 });
 
 describe("lookupCoordinatorPeers", () => {
-	it("merges multi-group device groups as plain strings", async () => {
+	it("merges multi-group device groups while emitting only coordinator v2 auth headers", async () => {
+		// Arrange
 		const db = new Database(":memory:");
 		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-runtime-keys-"));
 		const prevFetch = globalThis.fetch;
+		const requestHeaders: Headers[] = [];
 		try {
 			initTestSchema(db);
-			globalThis.fetch = (async (input: RequestInfo | URL) => {
+			globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+				requestHeaders.push(new Headers(init?.headers));
 				const url = new URL(String(input));
 				const groupId = url.searchParams.get("group_id") || "";
 				return new Response(
@@ -165,6 +171,7 @@ describe("lookupCoordinatorPeers", () => {
 				);
 			}) as typeof fetch;
 
+			// Act
 			const peers = await lookupCoordinatorPeers(
 				{ db, dbPath: ":memory:" },
 				readCoordinatorSyncConfig({
@@ -174,10 +181,17 @@ describe("lookupCoordinatorPeers", () => {
 				{ keysDir },
 			);
 
+			// Assert
 			expect(peers).toHaveLength(1);
 			expect(peers[0]?.coordinator_id).toBe("https://coord.example.test");
 			expect(peers[0]?.groups).toEqual(["team-a", "team-b"]);
 			expect(peers[0]?.fresh_groups).toEqual(["team-a", "team-b"]);
+			expect(requestHeaders).toHaveLength(2);
+			for (const headers of requestHeaders) {
+				expect(headers.get("X-Opencode-Signature")).toMatch(/^v2:/u);
+				expect(headers.has("X-Codemem-Recipient")).toBe(false);
+				expect(headers.has("X-Codemem-Signature")).toBe(false);
+			}
 		} finally {
 			globalThis.fetch = prevFetch;
 			db.close();
@@ -231,6 +245,72 @@ describe("lookupCoordinatorPeers", () => {
 			globalThis.fetch = prevFetch;
 			db.close();
 			rmSync(keysDir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("Node coordinator signature invariance", () => {
+	it("accepts the legacy v2 canonical request and rejects v3 in its signature slot", async () => {
+		// Arrange
+		const coordinatorDir = mkdtempSync(join(tmpdir(), "codemem-node-coordinator-"));
+		const coordinatorDbPath = join(coordinatorDir, "coordinator.sqlite");
+		const deviceDb = new Database(":memory:");
+		const keysDir = join(coordinatorDir, "device-keys");
+		try {
+			initTestSchema(deviceDb);
+			const [deviceId, fingerprint] = ensureDeviceIdentity(deviceDb, { keysDir });
+			const publicKey = loadPublicKey(keysDir);
+			if (!publicKey) throw new Error("expected device public key");
+
+			const setupStore = new BetterSqliteCoordinatorStore(coordinatorDbPath);
+			await setupStore.createGroup("g1", "Team One");
+			await setupStore.enrollDevice("g1", {
+				deviceId,
+				fingerprint,
+				publicKey,
+			});
+			await setupStore.close();
+
+			const app = createBetterSqliteCoordinatorApp({ dbPath: coordinatorDbPath });
+			const body = JSON.stringify({
+				group_id: "g1",
+				fingerprint,
+				addresses: ["http://127.0.0.1:7337"],
+				ttl_s: 180,
+			});
+			const headers = buildAuthHeaders({
+				deviceId,
+				method: "POST",
+				url: "https://coordinator.example.test/v1/presence",
+				bodyBytes: Buffer.from(body),
+				keysDir,
+				timestamp: String(Math.floor(Date.now() / 1000)),
+				nonce: "node-coordinator-v2-fixture",
+			});
+
+			// Act
+			const accepted = await app.request("https://coordinator.example.test/v1/presence", {
+				method: "POST",
+				headers: { ...headers, "Content-Type": "application/json" },
+				body,
+			});
+			const rejected = await app.request("https://coordinator.example.test/v1/presence", {
+				method: "POST",
+				headers: {
+					...headers,
+					"Content-Type": "application/json",
+					"X-Opencode-Signature": headers["X-Opencode-Signature"].replace(/^v2:/u, "v3:"),
+				},
+				body,
+			});
+
+			// Assert
+			expect(accepted.status).toBe(200);
+			expect(rejected.status).toBe(401);
+			expect(await rejected.json()).toEqual({ error: "invalid_signature" });
+		} finally {
+			deviceDb.close();
+			rmSync(coordinatorDir, { recursive: true, force: true });
 		}
 	});
 });

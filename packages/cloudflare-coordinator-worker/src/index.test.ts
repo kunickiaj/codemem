@@ -471,6 +471,73 @@ describe("createCloudflareCoordinatorWorker", () => {
 		expect(await res.json()).toEqual({ error: "body_too_large" });
 	});
 
+	it("accepts the legacy v2 canonical request and rejects v3 in its signature slot", async () => {
+		// Arrange
+		const identityDb = connect(join(tmpDir, "signature-invariance.sqlite"));
+		const keysDir = join(tmpDir, "signature-invariance-keys");
+		try {
+			initTestSchema(identityDb);
+			const [deviceId, fingerprint] = ensureDeviceIdentity(identityDb, { keysDir });
+			const publicKey = loadPublicKey(keysDir);
+			if (!publicKey) throw new Error("expected device public key");
+
+			const store = new D1CoordinatorStore(d1db);
+			await store.createGroup("g1", "Team One");
+			await store.enrollDevice("g1", { deviceId, fingerprint, publicKey });
+			await store.close();
+
+			const worker = createCloudflareCoordinatorWorker();
+			const body = JSON.stringify({
+				group_id: "g1",
+				fingerprint,
+				addresses: ["http://127.0.0.1:7337"],
+				ttl_s: 180,
+			});
+			const headers = buildAuthHeaders({
+				deviceId,
+				method: "POST",
+				url: "https://coord.example.test/v1/presence",
+				bodyBytes: Buffer.from(body),
+				keysDir,
+				timestamp: String(Math.floor(Date.now() / 1000)),
+				nonce: "worker-coordinator-v2-fixture",
+			});
+			const env = {
+				COORDINATOR_DB: d1db,
+				CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret",
+			};
+
+			// Act
+			const accepted = await worker.fetch(
+				new Request("https://coord.example.test/v1/presence", {
+					method: "POST",
+					headers: { ...headers, "Content-Type": "application/json" },
+					body,
+				}),
+				env,
+			);
+			const rejected = await worker.fetch(
+				new Request("https://coord.example.test/v1/presence", {
+					method: "POST",
+					headers: {
+						...headers,
+						"Content-Type": "application/json",
+						"X-Opencode-Signature": headers["X-Opencode-Signature"].replace(/^v2:/u, "v3:"),
+					},
+					body,
+				}),
+				env,
+			);
+
+			// Assert
+			expect(accepted.status).toBe(200);
+			expect(rejected.status).toBe(401);
+			expect(await rejected.json()).toEqual({ error: "invalid_signature" });
+		} finally {
+			identityDb.close();
+		}
+	});
+
 	it("supports invite, join approval, signed presence, and signed peer lookup through the worker entrypoint", async () => {
 		const worker = createCloudflareCoordinatorWorker({
 			now: () => "2026-03-28T00:00:00Z",

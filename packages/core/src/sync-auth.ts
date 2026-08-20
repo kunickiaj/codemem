@@ -33,6 +33,15 @@ import { loadPrivateKey } from "./sync-identity.js";
  */
 export const SIGNATURE_VERSION = "v2";
 
+/** Direct-peer-only recipient-bound signature version. */
+export const DIRECT_PEER_SIGNATURE_VERSION = "v3";
+
+function isValidRecipientId(recipientId: string): boolean {
+	return (
+		Boolean(recipientId.trim()) && recipientId === recipientId.trim() && !/[\r\n]/.test(recipientId)
+	);
+}
+
 // ---------------------------------------------------------------------------
 // Canonical request
 // ---------------------------------------------------------------------------
@@ -55,6 +64,28 @@ export function buildCanonicalRequest(
 	return Buffer.from(canonical, "utf-8");
 }
 
+/**
+ * Build the direct-peer v3 canonical request without changing the v2 bytes.
+ * The recipient is the sixth field so the signature cannot be replayed to a
+ * different peer.
+ */
+export function buildDirectPeerCanonicalRequest(
+	method: string,
+	pathWithQuery: string,
+	timestamp: string,
+	nonce: string,
+	bodyBytes: Buffer,
+	recipientId: string,
+): Buffer {
+	if (!isValidRecipientId(recipientId)) {
+		throw new Error("recipientId must be a non-empty single-line value");
+	}
+	return Buffer.concat([
+		buildCanonicalRequest(method, pathWithQuery, timestamp, nonce, bodyBytes),
+		Buffer.from(`\n${recipientId}`, "utf-8"),
+	]);
+}
+
 // ---------------------------------------------------------------------------
 // Sign
 // ---------------------------------------------------------------------------
@@ -70,43 +101,87 @@ export interface SignRequestOptions {
 	nonce?: string;
 }
 
-/**
- * Sign an HTTP request and return the auth headers.
- *
- * Uses Node's native Ed25519 crypto.sign() — no ssh-keygen shelling.
- * Returns X-Opencode-Timestamp, X-Opencode-Nonce, X-Opencode-Signature headers.
- */
-export function signRequest(options: SignRequestOptions): Record<string, string> {
-	const ts = options.timestamp ?? String(Math.floor(Date.now() / 1000));
-	const nonceValue = options.nonce ?? randomBytes(16).toString("hex");
+export interface SignedRequestHeaders {
+	"X-Opencode-Timestamp": string;
+	"X-Opencode-Nonce": string;
+	"X-Opencode-Signature": string;
+}
 
-	const parsed = new URL(options.url);
-	let path = parsed.pathname || "/";
-	if (parsed.search) {
-		path = `${path}${parsed.search}`;
-	}
+interface SigningKeyOptions {
+	keysDir?: string;
+	deviceId?: string;
+	dbPath?: string;
+}
 
-	const canonical = buildCanonicalRequest(options.method, path, ts, nonceValue, options.bodyBytes);
+function requestPath(url: string): string {
+	const parsed = new URL(url);
+	return `${parsed.pathname || "/"}${parsed.search}`;
+}
 
+function signCanonicalRequest(canonical: Buffer, options: SigningKeyOptions): string {
 	const keyData = loadPrivateKey(options.keysDir, options.dbPath, options.deviceId);
-	if (!keyData) {
-		throw new Error("private key missing");
-	}
+	if (!keyData) throw new Error("private key missing");
 
-	// Handle both OpenSSH format (existing keys) and PKCS8 PEM (newly generated)
 	let privateKeyObj: ReturnType<typeof createPrivateKey>;
 	try {
 		privateKeyObj = createPrivateKey(keyData);
 	} catch {
 		privateKeyObj = createPrivateKey({ key: keyData, format: "pem", type: "pkcs8" });
 	}
-	const signatureBytes = sign(null, canonical, privateKeyObj);
-	const signature = signatureBytes.toString("base64");
+	return sign(null, canonical, privateKeyObj).toString("base64");
+}
+
+/**
+ * Sign an HTTP request and return the auth headers.
+ *
+ * Uses Node's native Ed25519 crypto.sign() — no ssh-keygen shelling.
+ * Returns X-Opencode-Timestamp, X-Opencode-Nonce, X-Opencode-Signature headers.
+ */
+export function signRequest(options: SignRequestOptions): SignedRequestHeaders {
+	const ts = options.timestamp ?? String(Math.floor(Date.now() / 1000));
+	const nonceValue = options.nonce ?? randomBytes(16).toString("hex");
+
+	const path = requestPath(options.url);
+	const canonical = buildCanonicalRequest(options.method, path, ts, nonceValue, options.bodyBytes);
+	const signature = signCanonicalRequest(canonical, options);
 
 	return {
 		"X-Opencode-Timestamp": ts,
 		"X-Opencode-Nonce": nonceValue,
 		"X-Opencode-Signature": `${SIGNATURE_VERSION}:${signature}`,
+	};
+}
+
+export interface SignDirectPeerRequestOptions
+	extends Omit<SignRequestOptions, "timestamp" | "nonce"> {
+	recipientId: string;
+	timestamp: string;
+	nonce: string;
+}
+
+export interface DirectPeerSignatureHeaders {
+	"X-Codemem-Recipient": string;
+	"X-Codemem-Signature": string;
+}
+
+/** Sign the isolated recipient-bound v3 material for a direct-peer request. */
+export function signDirectPeerRequest(
+	options: SignDirectPeerRequestOptions,
+): DirectPeerSignatureHeaders {
+	const path = requestPath(options.url);
+	const canonical = buildDirectPeerCanonicalRequest(
+		options.method,
+		path,
+		options.timestamp,
+		options.nonce,
+		options.bodyBytes,
+		options.recipientId,
+	);
+	const signature = signCanonicalRequest(canonical, options);
+
+	return {
+		"X-Codemem-Recipient": options.recipientId,
+		"X-Codemem-Signature": `${DIRECT_PEER_SIGNATURE_VERSION}:${signature}`,
 	};
 }
 
@@ -126,6 +201,18 @@ export interface VerifySignatureOptions {
 	timeWindowS?: number;
 }
 
+function isFreshTimestamp(timestamp: string, timeWindowS: number): boolean {
+	if (!/^\d+$/.test(timestamp)) return false;
+	const seconds = Number.parseInt(timestamp, 10);
+	return Math.abs(Math.floor(Date.now() / 1000) - seconds) <= timeWindowS;
+}
+
+function decodeStrictBase64(encoded: string): Buffer | undefined {
+	if (!encoded) return undefined;
+	const decoded = Buffer.from(encoded, "base64");
+	return decoded.toString("base64") === encoded ? decoded : undefined;
+}
+
 /**
  * Verify a signed request.
  *
@@ -135,13 +222,7 @@ export interface VerifySignatureOptions {
 export function verifySignature(options: VerifySignatureOptions): boolean {
 	const timeWindow = options.timeWindowS ?? DEFAULT_TIME_WINDOW_S;
 
-	// Parse and validate timestamp — reject non-numeric strings (matches Python's int())
-	if (!/^\d+$/.test(options.timestamp)) return false;
-	const tsInt = Number.parseInt(options.timestamp, 10);
-	if (Number.isNaN(tsInt)) return false;
-
-	const now = Math.floor(Date.now() / 1000);
-	if (Math.abs(now - tsInt) > timeWindow) return false;
+	if (!isFreshTimestamp(options.timestamp, timeWindow)) return false;
 
 	// Validate signature version prefix — accept both v1 and v2 during migration
 	const ACCEPTED_VERSIONS = ["v1", "v2"];
@@ -150,17 +231,8 @@ export function verifySignature(options: VerifySignatureOptions): boolean {
 	const sigVersion = options.signature.slice(0, colonIdx);
 	if (!ACCEPTED_VERSIONS.includes(sigVersion)) return false;
 
-	const encoded = options.signature.slice(colonIdx + 1);
-	if (!encoded) return false;
-
-	let signatureBytes: Buffer;
-	try {
-		signatureBytes = Buffer.from(encoded, "base64");
-		// Verify it was valid base64 by round-tripping
-		if (signatureBytes.toString("base64") !== encoded) return false;
-	} catch {
-		return false;
-	}
+	const signatureBytes = decodeStrictBase64(options.signature.slice(colonIdx + 1));
+	if (!signatureBytes) return false;
 
 	const canonical = buildCanonicalRequest(
 		options.method,
@@ -176,6 +248,91 @@ export function verifySignature(options: VerifySignatureOptions): boolean {
 	} catch {
 		return false;
 	}
+}
+
+export interface VerifyDirectPeerSignatureOptions {
+	method: string;
+	pathWithQuery: string;
+	bodyBytes: Buffer;
+	timestamp: string;
+	nonce: string;
+	recipientId?: string;
+	expectedRecipientId: string;
+	signature?: string;
+	publicKey: string;
+	timeWindowS?: number;
+}
+
+export type DirectPeerSignatureVerification =
+	| { status: "absent" }
+	| {
+			status: "invalid";
+			reason:
+				| "incomplete_material"
+				| "malformed_recipient"
+				| "invalid_timestamp"
+				| "unsupported_version"
+				| "invalid_signature"
+				| "recipient_mismatch";
+	  }
+	| { status: "valid"; version: "v3" };
+
+/**
+ * Verify direct-peer v3 material with an explicit absent/invalid distinction.
+ * Callers may permit legacy v2 only for `absent`; any `invalid` result must fail
+ * closed rather than falling back to the accompanying v2 signature.
+ */
+export function verifyDirectPeerSignature(
+	options: VerifyDirectPeerSignatureOptions,
+): DirectPeerSignatureVerification {
+	const recipientId = options.recipientId === "" ? undefined : options.recipientId;
+	const signature = options.signature === "" ? undefined : options.signature;
+	if (recipientId === undefined && signature === undefined) {
+		return { status: "absent" };
+	}
+	if (!recipientId || !signature) {
+		return { status: "invalid", reason: "incomplete_material" };
+	}
+	if (!isValidRecipientId(recipientId)) {
+		return { status: "invalid", reason: "malformed_recipient" };
+	}
+	const timeWindow = options.timeWindowS ?? DEFAULT_TIME_WINDOW_S;
+	if (!isFreshTimestamp(options.timestamp, timeWindow)) {
+		return { status: "invalid", reason: "invalid_timestamp" };
+	}
+
+	const prefix = `${DIRECT_PEER_SIGNATURE_VERSION}:`;
+	if (!signature.startsWith(prefix)) {
+		return { status: "invalid", reason: "unsupported_version" };
+	}
+	const signatureBytes = decodeStrictBase64(signature.slice(prefix.length));
+	if (!signatureBytes) {
+		return { status: "invalid", reason: "invalid_signature" };
+	}
+
+	const canonical = buildDirectPeerCanonicalRequest(
+		options.method,
+		options.pathWithQuery,
+		options.timestamp,
+		options.nonce,
+		options.bodyBytes,
+		recipientId,
+	);
+	try {
+		const publicKeyObj = sshEd25519ToPublicKey(options.publicKey);
+		if (!verify(null, canonical, publicKeyObj, signatureBytes)) {
+			return { status: "invalid", reason: "invalid_signature" };
+		}
+	} catch {
+		return { status: "invalid", reason: "invalid_signature" };
+	}
+	if (recipientId !== options.expectedRecipientId) {
+		return { status: "invalid", reason: "recipient_mismatch" };
+	}
+	return {
+		status: "valid",
+		version: DIRECT_PEER_SIGNATURE_VERSION,
+	};
 }
 
 /**
@@ -229,10 +386,15 @@ export interface BuildAuthHeadersOptions {
 	nonce?: string;
 }
 
+export type AuthHeaders = Record<string, string> &
+	SignedRequestHeaders & {
+		"X-Opencode-Device": string;
+	};
+
 /**
  * Build full auth headers including device ID and request signature.
  */
-export function buildAuthHeaders(options: BuildAuthHeadersOptions): Record<string, string> {
+export function buildAuthHeaders(options: BuildAuthHeadersOptions): AuthHeaders {
 	return {
 		"X-Opencode-Device": options.deviceId,
 		...(options.bootstrapGrantId ? { "X-Codemem-Bootstrap-Grant": options.bootstrapGrantId } : {}),
@@ -246,6 +408,35 @@ export function buildAuthHeaders(options: BuildAuthHeadersOptions): Record<strin
 			timestamp: options.timestamp,
 			nonce: options.nonce,
 		}),
+	};
+}
+
+export interface BuildDirectPeerAuthHeadersOptions extends BuildAuthHeadersOptions {
+	recipientId: string;
+}
+
+export type DirectPeerAuthHeaders = AuthHeaders & DirectPeerSignatureHeaders;
+
+/** Build dual v2 + recipient-bound v3 headers for direct-peer requests only. */
+export function buildDirectPeerAuthHeaders(
+	options: BuildDirectPeerAuthHeadersOptions,
+): DirectPeerAuthHeaders {
+	const legacyHeaders = buildAuthHeaders(options);
+	const directHeaders = signDirectPeerRequest({
+		method: options.method,
+		url: options.url,
+		bodyBytes: options.bodyBytes,
+		recipientId: options.recipientId,
+		keysDir: options.keysDir,
+		deviceId: options.deviceId,
+		dbPath: options.dbPath,
+		timestamp: legacyHeaders["X-Opencode-Timestamp"],
+		nonce: legacyHeaders["X-Opencode-Nonce"],
+	});
+
+	return {
+		...legacyHeaders,
+		...directHeaders,
 	};
 }
 
