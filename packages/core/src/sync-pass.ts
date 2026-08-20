@@ -13,7 +13,7 @@ import { ensureAdditiveSchemaCompatibility } from "./db.js";
 import { isStableReleaseVersion } from "./release-discovery.js";
 import * as schema from "./schema.js";
 import type { SecretScanner } from "./secret-scanner.js";
-import { buildAuthHeaders } from "./sync-auth.js";
+import { buildDirectPeerAuthHeaders } from "./sync-auth.js";
 import {
 	applyBootstrapSnapshot,
 	fetchAllSnapshotPages,
@@ -429,6 +429,7 @@ const MAX_PUSH_SPLIT_DEPTH = 8;
 async function pushOps(
 	postUrl: string,
 	deviceId: string,
+	recipientId: string,
 	ops: ReplicationOp[],
 	keysDir?: string,
 	dbPath?: string,
@@ -443,8 +444,9 @@ async function pushOps(
 	};
 	const bodyBytes = Buffer.from(JSON.stringify(body), "utf-8");
 	const headers = {
-		...buildAuthHeaders({
+		...buildDirectPeerAuthHeaders({
 			deviceId,
+			recipientId,
 			method: "POST",
 			url: postUrl,
 			bodyBytes,
@@ -469,8 +471,8 @@ async function pushOps(
 		(detail === "payload_too_large" || detail === "too_many_ops")
 	) {
 		const mid = Math.floor(ops.length / 2);
-		await pushOps(postUrl, deviceId, ops.slice(0, mid), keysDir, dbPath, depth + 1);
-		await pushOps(postUrl, deviceId, ops.slice(mid), keysDir, dbPath, depth + 1);
+		await pushOps(postUrl, deviceId, recipientId, ops.slice(0, mid), keysDir, dbPath, depth + 1);
+		await pushOps(postUrl, deviceId, recipientId, ops.slice(mid), keysDir, dbPath, depth + 1);
 		return;
 	}
 
@@ -799,6 +801,7 @@ async function syncOneScope(
 			const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, {
 				keysDir,
 				dbPath,
+				recipientId: peerDeviceId,
 				pageSize: BOOTSTRAP_PAGE_SIZE,
 				timeoutS: BOOTSTRAP_REQUEST_TIMEOUT_S,
 			});
@@ -857,6 +860,7 @@ async function syncOneScope(
 			const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, {
 				keysDir,
 				dbPath,
+				recipientId: peerDeviceId,
 				pageSize: BOOTSTRAP_PAGE_SIZE,
 				timeoutS: BOOTSTRAP_REQUEST_TIMEOUT_S,
 			});
@@ -932,8 +936,9 @@ async function syncOneScope(
 		}
 		const url = `${baseUrl}/v1/ops?${queryParams.toString()}`;
 		const headers = {
-			...buildAuthHeaders({
+			...buildDirectPeerAuthHeaders({
 				deviceId,
+				recipientId: peerDeviceId,
 				method: "GET",
 				url,
 				bodyBytes: Buffer.alloc(0),
@@ -1229,8 +1234,9 @@ export async function syncOnce(
 			// -- 1. Verify peer identity via /v1/status --
 			const statusUrl = `${baseUrl}/v1/status`;
 			const statusHeaders = {
-				...buildAuthHeaders({
+				...buildDirectPeerAuthHeaders({
 					deviceId,
+					recipientId: peerDeviceId,
 					method: "GET",
 					url: statusUrl,
 					bodyBytes: Buffer.alloc(0),
@@ -1317,6 +1323,7 @@ export async function syncOnce(
 						const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, {
 							keysDir,
 							dbPath,
+							recipientId: peerDeviceId,
 							pageSize: BOOTSTRAP_PAGE_SIZE,
 							timeoutS: BOOTSTRAP_REQUEST_TIMEOUT_S,
 						});
@@ -1422,8 +1429,9 @@ export async function syncOnce(
 			const query = queryParams.toString();
 			const getUrl = `${baseUrl}/v1/ops?${query}`;
 			const getHeaders = {
-				...buildAuthHeaders({
+				...buildDirectPeerAuthHeaders({
 					deviceId,
+					recipientId: peerDeviceId,
 					method: "GET",
 					url: getUrl,
 					bodyBytes: Buffer.alloc(0),
@@ -1499,6 +1507,7 @@ export async function syncOnce(
 					const { items } = await fetchAllSnapshotPages(baseUrl, resetRequired, deviceId, {
 						keysDir,
 						dbPath,
+						recipientId: peerDeviceId,
 						timeoutS: BOOTSTRAP_REQUEST_TIMEOUT_S,
 					});
 
@@ -1641,7 +1650,7 @@ export async function syncOnce(
 			if (outboundOps.length > 0) {
 				const batches = chunkOpsBySize(outboundOps, MAX_SYNC_BODY_BYTES);
 				for (const batch of batches) {
-					await pushOps(postUrl, deviceId, batch, keysDir, dbPath);
+					await pushOps(postUrl, deviceId, peerDeviceId, batch, keysDir, dbPath);
 				}
 			}
 			const ackCursor = filteredOutboundCursor ?? outboundCursor;

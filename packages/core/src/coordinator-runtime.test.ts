@@ -17,6 +17,7 @@ import {
 	revokeUnauthorizedCoordinatorPeerTrust,
 	trustCoordinatorPeersWithSharedManagedScopes,
 } from "./coordinator-runtime.js";
+import { recordHighestObservedDirectSignatureVersion } from "./db.js";
 import type { MemoryStore } from "./store.js";
 import { buildAuthHeaders } from "./sync-auth.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -810,6 +811,7 @@ describe("trustCoordinatorPeersWithSharedManagedScopes", () => {
 				discovered_via_group_id: "group-1",
 				trust_provenance: "coordinator_policy",
 			});
+			expect(recordHighestObservedDirectSignatureVersion(db, peerDeviceId, 3)).toBe(true);
 
 			db.prepare(
 				"UPDATE scope_memberships SET status = 'revoked' WHERE scope_id = 'scope-1' AND device_id = ?",
@@ -833,6 +835,28 @@ describe("trustCoordinatorPeersWithSharedManagedScopes", () => {
 					.prepare("SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?")
 					.get(peerDeviceId),
 			).toBeUndefined();
+			expect(
+				db
+					.prepare(
+						`SELECT highest_observed_direct_signature_version
+						 FROM sync_peer_signature_state WHERE peer_device_id = ?`,
+					)
+					.pluck()
+					.get(peerDeviceId),
+			).toBe(3);
+			db.prepare(
+				`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
+				 VALUES (?, ?, ?, ?)`,
+			).run(peerDeviceId, fingerprintPublicKey(peerPublicKey), peerPublicKey, now);
+			expect(
+				db
+					.prepare(
+						`SELECT highest_observed_direct_signature_version
+						 FROM sync_peer_signature_state WHERE peer_device_id = ?`,
+					)
+					.pluck()
+					.get(peerDeviceId),
+			).toBe(3);
 		} finally {
 			globalThis.fetch = prevFetch;
 			db.close();

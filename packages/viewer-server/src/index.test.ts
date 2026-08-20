@@ -12,6 +12,7 @@ import { brotliCompressSync } from "node:zlib";
 import * as core from "@codemem/core";
 import {
 	buildAuthHeaders,
+	buildDirectPeerAuthHeaders,
 	connect,
 	ensureDeviceIdentity,
 	fingerprintPublicKey,
@@ -35,7 +36,10 @@ import { reconcileConfiguredCoordinatorEnrollment } from "./routes/sync.js";
 // Test helpers
 // ---------------------------------------------------------------------------
 
-function createTestStore(seedDevice = true): { store: MemoryStore; cleanup: () => void } {
+function createTestStore(
+	seedDevice = true,
+	deviceId = "test-device-001",
+): { store: MemoryStore; cleanup: () => void } {
 	const tmpDir = mkdtempSync(join(tmpdir(), "codemem-viewer-store-test-"));
 	const dbPath = join(tmpDir, "test.sqlite");
 	const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
@@ -43,7 +47,7 @@ function createTestStore(seedDevice = true): { store: MemoryStore; cleanup: () =
 	const rawDb = new Database(dbPath);
 	initTestSchema(rawDb);
 	if (seedDevice) {
-		ensureDeviceIdentity(rawDb, { keysDir, deviceId: "test-device-001" });
+		ensureDeviceIdentity(rawDb, { keysDir, deviceId });
 	}
 	rawDb.close();
 	process.env.CODEMEM_KEYS_DIR = keysDir;
@@ -155,6 +159,7 @@ function insertTestMemory(
 /** Create a test Hono app backed by a fresh in-memory DB. */
 function createTestApp(opts?: {
 	seedDevice?: boolean;
+	deviceId?: string;
 	sweeper?: unknown;
 	getUpdateStatus?: (options: core.GetUpdateStatusOptions) => Promise<core.UpdateStatus>;
 	syncRequestRateLimit?: {
@@ -173,7 +178,7 @@ function createTestApp(opts?: {
 
 	const storeFactory = () => {
 		if (!store) {
-			const created = createTestStore(opts?.seedDevice);
+			const created = createTestStore(opts?.seedDevice, opts?.deviceId);
 			store = created.store;
 			storeCleanup = created.cleanup;
 		}
@@ -5557,6 +5562,375 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("accepts recipient-bound v3 auth and records sticky peer adoption", async () => {
+			const { syncApp, ensureStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				const store = ensureStore();
+				const url = "http://localhost/v1/status";
+				peer = createAuthenticatedSyncPeer(store, { url });
+				const headers = buildDirectPeerAuthHeaders({
+					deviceId: peer.peerDeviceId,
+					recipientId: "test-device-001",
+					method: "GET",
+					url,
+					bodyBytes: Buffer.alloc(0),
+					keysDir: peer.keysDir,
+				});
+
+				const response = await syncApp.request(url, { headers });
+
+				expect(response.status).toBe(200);
+				expect(
+					store.db
+						.prepare(
+							`SELECT highest_observed_direct_signature_version
+							 FROM sync_peer_signature_state WHERE peer_device_id = ?`,
+						)
+						.pluck()
+						.get(peer.peerDeviceId),
+				).toBe(3);
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("rejects a valid v3 signature for another recipient without exposing the reason", async () => {
+			const { syncApp, ensureStore, cleanup } = createTestApp();
+			const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				const store = ensureStore();
+				const url = "http://localhost/v1/status";
+				peer = createAuthenticatedSyncPeer(store, { url });
+				const headers = buildDirectPeerAuthHeaders({
+					deviceId: peer.peerDeviceId,
+					recipientId: "another-device",
+					method: "GET",
+					url,
+					bodyBytes: Buffer.alloc(0),
+					keysDir: peer.keysDir,
+				});
+
+				const response = await syncApp.request(url, { headers });
+
+				expect(response.status).toBe(401);
+				expect(await response.json()).toEqual({ error: "unauthorized" });
+				expect(warning).toHaveBeenCalledWith(expect.stringContaining("reason=recipient_mismatch"));
+				expect(
+					store.db
+						.prepare(
+							`SELECT highest_observed_direct_signature_version
+						 FROM sync_peer_signature_state WHERE peer_device_id = ?`,
+						)
+						.pluck()
+						.get(peer.peerDeviceId),
+				).toBeUndefined();
+			} finally {
+				warning.mockRestore();
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("rejects unchanged recipient-bound requests replayed to another direct peer", async () => {
+			// Arrange
+			const recipientA = createTestApp({ deviceId: "recipient-a" });
+			const storeA = recipientA.ensureStore();
+			const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+			let recipientB: ReturnType<typeof createTestApp> | null = null;
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				core.setSyncResetState(storeA.db, {
+					generation: 1,
+					snapshot_id: "snapshot-1",
+					baseline_cursor: null,
+					retained_floor_cursor: null,
+				});
+				peer = createAuthenticatedSyncPeer(storeA, { url: "http://localhost/v1/status" });
+				const peerPublicKey = loadPublicKey(peer.keysDir);
+				if (!peerPublicKey) throw new Error("peer public key missing");
+				recipientB = createTestApp({ deviceId: "recipient-b" });
+				const storeB = recipientB.ensureStore();
+				storeB.db
+					.prepare(
+						`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
+						 VALUES (?, ?, ?, ?)`,
+					)
+					.run(
+						peer.peerDeviceId,
+						fingerprintPublicKey(peerPublicKey),
+						peerPublicKey,
+						new Date().toISOString(),
+					);
+				const cases: Array<{
+					name: string;
+					method: "GET" | "POST";
+					url: string;
+					bodyText?: string;
+					assertAccepted: (response: Response) => Promise<void>;
+				}> = [
+					{
+						name: "status",
+						method: "GET",
+						url: "http://localhost/v1/status",
+						assertAccepted: async (response) => {
+							expect((await response.json()) as Record<string, unknown>).toMatchObject({
+								device_id: "recipient-a",
+								protocol_version: "2",
+							});
+						},
+					},
+					{
+						name: "ops GET",
+						method: "GET",
+						url: "http://localhost/v1/ops?since=&limit=1&generation=1&snapshot_id=snapshot-1",
+						assertAccepted: async (response) => {
+							expect((await response.json()) as Record<string, unknown>).toMatchObject({
+								reset_required: false,
+								ops: [],
+							});
+						},
+					},
+					{
+						name: "ops POST",
+						method: "POST",
+						url: "http://localhost/v1/ops",
+						bodyText: JSON.stringify({ ops: [] }),
+						assertAccepted: async (response) => {
+							expect((await response.json()) as Record<string, unknown>).toMatchObject({
+								applied: 0,
+								rejected: 0,
+							});
+						},
+					},
+					{
+						name: "snapshot",
+						method: "GET",
+						url: "http://localhost/v1/snapshot?generation=1&snapshot_id=snapshot-1&limit=1",
+						assertAccepted: async (response) => {
+							expect((await response.json()) as Record<string, unknown>).toMatchObject({
+								generation: 1,
+								snapshot_id: "snapshot-1",
+								items: [],
+							});
+						},
+					},
+				];
+
+				for (const scenario of cases) {
+					const bodyBytes = Buffer.from(scenario.bodyText ?? "");
+					const headers = buildDirectPeerAuthHeaders({
+						deviceId: peer.peerDeviceId,
+						recipientId: "recipient-a",
+						method: scenario.method,
+						url: scenario.url,
+						bodyBytes,
+						keysDir: peer.keysDir,
+					});
+					if (scenario.bodyText !== undefined) headers["Content-Type"] = "application/json";
+					const request = {
+						method: scenario.method,
+						headers,
+						body: scenario.bodyText,
+					};
+
+					// Act
+					const accepted = await recipientA.syncApp.request(scenario.url, request);
+					const replayed = await recipientB.syncApp.request(scenario.url, request);
+
+					// Assert
+					expect(accepted.status, `${scenario.name} at recipient A`).toBe(200);
+					await scenario.assertAccepted(accepted);
+					expect(replayed.status, `${scenario.name} replayed at recipient B`).toBe(401);
+					expect(await replayed.json()).toEqual({ error: "unauthorized" });
+				}
+				expect(
+					storeB.db
+						.prepare("SELECT COUNT(*) FROM sync_nonces WHERE device_id = ?")
+						.pluck()
+						.get(peer.peerDeviceId),
+				).toBe(0);
+				expect(
+					storeB.db
+						.prepare(
+							`SELECT highest_observed_direct_signature_version
+							 FROM sync_peer_signature_state WHERE peer_device_id = ?`,
+						)
+						.pluck()
+						.get(peer.peerDeviceId),
+				).toBeUndefined();
+				expect(warning).toHaveBeenCalledWith(expect.stringContaining("reason=recipient_mismatch"));
+			} finally {
+				warning.mockRestore();
+				peer?.cleanup();
+				recipientB?.cleanup();
+				recipientA.cleanup();
+			}
+		});
+
+		it("does not fall back to valid v2 when supplied v3 material is invalid", async () => {
+			const { syncApp, ensureStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				const store = ensureStore();
+				const url = "http://localhost/v1/status";
+				peer = createAuthenticatedSyncPeer(store, { url });
+				const headers = buildDirectPeerAuthHeaders({
+					deviceId: peer.peerDeviceId,
+					recipientId: "test-device-001",
+					method: "GET",
+					url,
+					bodyBytes: Buffer.alloc(0),
+					keysDir: peer.keysDir,
+				});
+				headers["X-Codemem-Signature"] = "v3:invalid";
+
+				const response = await syncApp.request(url, { headers });
+
+				expect(response.status).toBe(401);
+				expect(await response.json()).toEqual({ error: "unauthorized" });
+				expect(
+					store.db
+						.prepare(
+							`SELECT highest_observed_direct_signature_version
+							 FROM sync_peer_signature_state WHERE peer_device_id = ?`,
+						)
+						.pluck()
+						.get(peer.peerDeviceId),
+				).toBeUndefined();
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("does not fall back to valid v2 when v3 material is incomplete", async () => {
+			const { syncApp, ensureStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				const store = ensureStore();
+				const url = "http://localhost/v1/status";
+				peer = createAuthenticatedSyncPeer(store, { url });
+				const headers = {
+					...buildAuthHeaders({
+						deviceId: peer.peerDeviceId,
+						method: "GET",
+						url,
+						bodyBytes: Buffer.alloc(0),
+						keysDir: peer.keysDir,
+					}),
+					"X-Codemem-Recipient": "test-device-001",
+				};
+
+				const response = await syncApp.request(url, { headers });
+
+				expect(response.status).toBe(401);
+				expect(await response.json()).toEqual({ error: "unauthorized" });
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("rejects v2 after v3 adoption, trust deletion, and peer recreation", async () => {
+			const { syncApp, ensureStore, cleanup } = createTestApp();
+			const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				const store = ensureStore();
+				const url = "http://localhost/v1/status";
+				peer = createAuthenticatedSyncPeer(store, { url });
+				const legacy = buildAuthHeaders({
+					deviceId: peer.peerDeviceId,
+					method: "GET",
+					url,
+					bodyBytes: Buffer.alloc(0),
+					keysDir: peer.keysDir,
+				});
+
+				// Act
+				const beforeAdoption = await syncApp.request(url, { headers: legacy });
+
+				// Assert
+				expect(beforeAdoption.status).toBe(200);
+				expect(
+					store.db
+						.prepare(
+							`SELECT highest_observed_direct_signature_version
+							 FROM sync_peer_signature_state WHERE peer_device_id = ?`,
+						)
+						.pluck()
+						.get(peer.peerDeviceId),
+				).toBeUndefined();
+				const v3 = buildDirectPeerAuthHeaders({
+					deviceId: peer.peerDeviceId,
+					recipientId: "test-device-001",
+					method: "GET",
+					url,
+					bodyBytes: Buffer.alloc(0),
+					keysDir: peer.keysDir,
+				});
+
+				// Act
+				const adoption = await syncApp.request(url, { headers: v3 });
+
+				// Assert
+				expect(adoption.status).toBe(200);
+				expect(
+					store.db
+						.prepare(
+							`SELECT highest_observed_direct_signature_version
+							 FROM sync_peer_signature_state WHERE peer_device_id = ?`,
+						)
+						.pluck()
+						.get(peer.peerDeviceId),
+				).toBe(3);
+				const peerPublicKey = loadPublicKey(peer.keysDir);
+				if (!peerPublicKey) throw new Error("peer public key missing");
+				store.db.prepare("DELETE FROM sync_peers WHERE peer_device_id = ?").run(peer.peerDeviceId);
+				store.db
+					.prepare(
+						`INSERT INTO sync_peers(
+							peer_device_id, pinned_fingerprint, public_key, created_at
+						 ) VALUES (?, ?, ?, ?)`,
+					)
+					.run(
+						peer.peerDeviceId,
+						fingerprintPublicKey(peerPublicKey),
+						peerPublicKey,
+						new Date().toISOString(),
+					);
+				const v2 = buildAuthHeaders({
+					deviceId: peer.peerDeviceId,
+					method: "GET",
+					url,
+					bodyBytes: Buffer.alloc(0),
+					keysDir: peer.keysDir,
+				});
+
+				const response = await syncApp.request(url, { headers: v2 });
+
+				expect(response.status).toBe(401);
+				expect(await response.json()).toEqual({ error: "unauthorized" });
+				expect(warning).toHaveBeenCalledWith(expect.stringContaining("reason=signature_downgrade"));
+				expect(
+					store.db
+						.prepare(
+							`SELECT highest_observed_direct_signature_version
+							 FROM sync_peer_signature_state WHERE peer_device_id = ?`,
+						)
+						.pluck()
+						.get(peer.peerDeviceId),
+				).toBe(3);
+			} finally {
+				warning.mockRestore();
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
 		it("advertises reassign_scope and refreshes authorization only on explicit feature-aware status requests", async () => {
 			// Arrange
 			const configDir = mkdtempSync(join(tmpdir(), "codemem-status-refresh-test-"));
@@ -5631,7 +6005,7 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("exposes sync auth failure reasons only when diagnostics are explicitly enabled", async () => {
+		it("keeps sync auth failures generic even when diagnostics are enabled", async () => {
 			const previous = process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS;
 			process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS = "1";
 			const { syncApp, cleanup } = createTestApp();
@@ -5639,10 +6013,7 @@ describe("viewer-server", () => {
 				const res = await syncApp.request("/v1/status");
 				expect(res.status).toBe(401);
 				const body = (await res.json()) as Record<string, unknown>;
-				// Grant-less callers get the truthful device-auth reason; the generic
-				// bootstrap_grant_invalid masking applies only when a grant header
-				// was actually presented.
-				expect(body).toMatchObject({ error: "unauthorized", reason: "missing_headers" });
+				expect(body).toEqual({ error: "unauthorized" });
 			} finally {
 				if (previous === undefined) delete process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS;
 				else process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS = previous;
@@ -5932,8 +6303,9 @@ describe("viewer-server", () => {
 						.get() as { fingerprint: string } | undefined;
 					peerFingerprintValue = peerFingerprint?.fingerprint ?? "";
 					const url = "http://localhost/v1/status";
-					const headers = buildAuthHeaders({
+					const headers = buildDirectPeerAuthHeaders({
 						deviceId: peerDeviceId,
+						recipientId: "test-device-001",
 						method: "GET",
 						url,
 						bodyBytes: Buffer.alloc(0),
@@ -5945,12 +6317,15 @@ describe("viewer-server", () => {
 					expect(
 						store.db
 							.prepare(
-								"SELECT pinned_fingerprint, public_key FROM sync_peers WHERE peer_device_id = ?",
+								`SELECT pinned_fingerprint, public_key,
+								        highest_observed_direct_signature_version
+								 FROM sync_peers WHERE peer_device_id = ?`,
 							)
 							.get(peerDeviceId),
 					).toEqual({
 						pinned_fingerprint: peerFingerprintValue,
 						public_key: peerPublicKeyValue,
+						highest_observed_direct_signature_version: 3,
 					});
 					const now = new Date().toISOString();
 					store.db

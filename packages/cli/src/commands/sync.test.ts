@@ -489,6 +489,86 @@ describe("formatSyncAttempt", () => {
 		}
 	});
 
+	it("signs bootstrap status and snapshot requests for the selected peer", async () => {
+		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-bootstrap-auth-test-"));
+		const dbPath = join(tmpDbDir, "mem.sqlite");
+		const keysDir = join(tmpDbDir, "keys");
+		const rawDb = connect(dbPath);
+		initTestSchema(rawDb);
+		ensureDeviceIdentity(rawDb, { keysDir });
+		rawDb
+			.prepare(
+				`INSERT INTO sync_peers(
+					peer_device_id, name, pinned_fingerprint, addresses_json, created_at
+				 ) VALUES (?, ?, ?, ?, ?)`,
+			)
+			.run(
+				"peer-bootstrap",
+				"Bootstrap peer",
+				"peer-fingerprint",
+				JSON.stringify(["http://127.0.0.1:47337"]),
+				new Date().toISOString(),
+			);
+		rawDb.close();
+		const previousFetch = globalThis.fetch;
+		const requestedPaths: string[] = [];
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+				const url = new URL(String(input));
+				requestedPaths.push(url.pathname);
+				expect(init?.headers).toMatchObject({
+					"X-Codemem-Recipient": "peer-bootstrap",
+					"X-Codemem-Signature": expect.stringMatching(/^v3:/),
+				});
+				if (url.pathname === "/v1/status") {
+					return new Response(
+						JSON.stringify({
+							fingerprint: "peer-fingerprint",
+							sync_reset: {
+								generation: 1,
+								snapshot_id: "snapshot-1",
+								baseline_cursor: null,
+							},
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(
+					JSON.stringify({
+						generation: 1,
+						snapshot_id: "snapshot-1",
+						baseline_cursor: null,
+						items: [],
+						next_page_token: null,
+						has_more: false,
+					}),
+					{ status: 200 },
+				);
+			}) as typeof fetch;
+
+			await syncCommand.parseAsync(
+				[
+					"bootstrap",
+					"peer-bootstrap",
+					"--db-path",
+					dbPath,
+					"--keys-dir",
+					keysDir,
+					"--force",
+					"--json",
+				],
+				{ from: "user" },
+			);
+
+			expect(requestedPaths).toEqual(["/v1/status", "/v1/snapshot"]);
+		} finally {
+			globalThis.fetch = previousFetch;
+			logSpy.mockRestore();
+			rmSync(tmpDbDir, { recursive: true, force: true });
+		}
+	});
+
 	it("reports per-Space sync progress in sync status output", async () => {
 		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-status-scopes-test-"));
 		const dbPath = join(tmpDbDir, "mem.sqlite");

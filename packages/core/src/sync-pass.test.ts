@@ -26,6 +26,10 @@ import * as vectorMigration from "./vector-migration.js";
 import { VECTOR_MODEL_MIGRATION_JOB } from "./vector-migration.js";
 import * as vectors from "./vectors.js";
 
+beforeEach(() => {
+	vi.spyOn(syncAuth, "buildDirectPeerAuthHeaders").mockReturnValue({});
+});
+
 // ---------------------------------------------------------------------------
 // Schema helper — adds sync tables not in base test schema
 // ---------------------------------------------------------------------------
@@ -246,7 +250,10 @@ describe("syncOnce", () => {
 			"local-device-id",
 			"ed25519 AAAA",
 		]);
-		const auth = vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		const auth = vi.spyOn(syncAuth, "buildDirectPeerAuthHeaders").mockReturnValue({
+			"X-Codemem-Recipient": "peer-bootstrap",
+			"X-Codemem-Signature": "v3:test-signature",
+		});
 		vi.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([
 				200,
@@ -266,7 +273,14 @@ describe("syncOnce", () => {
 
 		await syncOnce(db, "peer-bootstrap", ["http://127.0.0.1:9090"]);
 
-		expect(auth.mock.calls[0]?.[0]).toMatchObject({ bootstrapGrantId: "grant-1" });
+		expect(auth.mock.calls[0]?.[0]).toMatchObject({
+			bootstrapGrantId: "grant-1",
+			recipientId: "peer-bootstrap",
+		});
+		expect(vi.mocked(syncHttpClient.requestJson).mock.calls[0]?.[2]?.headers).toMatchObject({
+			"X-Codemem-Recipient": "peer-bootstrap",
+			"X-Codemem-Signature": "v3:test-signature",
+		});
 		expect(
 			db
 				.prepare("SELECT pending_bootstrap_grant_id FROM sync_peers WHERE peer_device_id = ?")
@@ -283,7 +297,7 @@ describe("syncOnce", () => {
 			"local-device-id",
 			"ed25519 AAAA",
 		]);
-		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		vi.spyOn(syncAuth, "buildDirectPeerAuthHeaders").mockReturnValue({});
 		vi.spyOn(syncHttpClient, "requestJson").mockResolvedValueOnce([
 			200,
 			{
@@ -310,6 +324,89 @@ describe("syncOnce", () => {
 		).toBe("grant-1");
 	});
 
+	it("preserves recipient-bound headers when an ops push splits recursively", async () => {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-push", "fp-push", new Date().toISOString());
+		syncReplication.setReplicationCursor(db, "peer-push", {
+			lastApplied: "2025-12-31T00:00:00Z|remote-baseline",
+		});
+		grantScopeForSyncPass(db, "acme-work", ["peer-push", "local-device-id"]);
+		for (const index of [1, 2]) {
+			db.prepare(
+				`INSERT INTO replication_ops(
+					op_id, entity_type, entity_id, op_type, payload_json, clock_rev,
+					clock_updated_at, clock_device_id, device_id, created_at, scope_id
+				 ) VALUES (?, 'memory_item', ?, 'upsert', ?, 1, ?, ?, ?, ?, ?)`,
+			).run(
+				`local-op-${index}`,
+				`memory:${index}`,
+				JSON.stringify({ visibility: "shared", scope_id: "acme-work" }),
+				`2026-01-01T00:00:0${index}Z`,
+				"local-device-id",
+				"local-device-id",
+				`2026-01-01T00:00:0${index}Z`,
+				"acme-work",
+			);
+		}
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildDirectPeerAuthHeaders").mockReturnValue({
+			"X-Codemem-Recipient": "peer-push",
+			"X-Codemem-Signature": "v3:test-signature",
+		});
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([
+				200,
+				{
+					fingerprint: "fp-push",
+					protocol_version: "2",
+					sync_capability: "enforcing",
+					sync_reset: {
+						generation: 1,
+						snapshot_id: "snap-push",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+				},
+			])
+			.mockResolvedValueOnce([
+				200,
+				{
+					reset_required: false,
+					generation: 1,
+					snapshot_id: "snap-push",
+					baseline_cursor: null,
+					retained_floor_cursor: null,
+					ops: [],
+					next_cursor: null,
+					skipped: 0,
+				},
+			])
+			.mockResolvedValueOnce([413, { error: "too_many_ops" }])
+			.mockResolvedValueOnce([200, {}])
+			.mockResolvedValueOnce([200, {}]);
+
+		const result = await syncOnce(db, "peer-push", ["http://127.0.0.1:9090"]);
+
+		expect(result).toMatchObject({ ok: true, opsOut: 2 });
+		const pushCalls = vi
+			.mocked(syncHttpClient.requestJson)
+			.mock.calls.filter(([method]) => method === "POST");
+		expect(pushCalls).toHaveLength(3);
+		expect(
+			pushCalls.map(([, , options]) => (options?.body as { ops: unknown[] }).ops.length),
+		).toEqual([2, 1, 1]);
+		for (const [, , request] of pushCalls) {
+			expect(request?.headers).toMatchObject({
+				"X-Codemem-Recipient": "peer-push",
+				"X-Codemem-Signature": "v3:test-signature",
+			});
+		}
+	});
+
 	it("persists a stable runtime version only for the requested peer identity", async () => {
 		db.prepare(
 			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
@@ -321,7 +418,7 @@ describe("syncOnce", () => {
 			"local-device-id",
 			"ed25519 AAAA",
 		]);
-		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		vi.spyOn(syncAuth, "buildDirectPeerAuthHeaders").mockReturnValue({});
 		vi.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([
 				200,
@@ -967,7 +1064,7 @@ describe("syncOnce", () => {
 			"http://127.0.0.1:9090",
 			expect.objectContaining({ scope_id: "acme-work", snapshot_id: "snap-acme-1" }),
 			"local-device-id",
-			expect.objectContaining({ pageSize: 2000 }),
+			expect.objectContaining({ pageSize: 2000, recipientId: "peer-scoped-merge" }),
 		);
 		const requestedUrls = requestSpy.mock.calls.map(([method, url]) => `${method} ${url}`);
 		expect(
@@ -1534,7 +1631,10 @@ describe("syncOnce", () => {
 			"local-device-id",
 			"ed25519 AAAA",
 		]);
-		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		vi.spyOn(syncAuth, "buildDirectPeerAuthHeaders").mockReturnValue({
+			"X-Codemem-Recipient": "peer-cursor",
+			"X-Codemem-Signature": "v3:test-signature",
+		});
 		grantScopeForSyncPass(db, "acme-work", ["peer-cursor", "local-device-id"]);
 
 		const statusResponse = {
@@ -1612,6 +1712,12 @@ describe("syncOnce", () => {
 
 		const result = await syncOnce(db, "peer-cursor", ["http://127.0.0.1:9090"]);
 		expect(result.ok).toBe(true);
+		for (const request of vi.mocked(syncHttpClient.requestJson).mock.calls) {
+			expect(request[2]?.headers).toMatchObject({
+				"X-Codemem-Recipient": "peer-cursor",
+				"X-Codemem-Signature": "v3:test-signature",
+			});
+		}
 		// Default-scope cursor is unchanged: no default-scope ops returned.
 		expect(syncReplication.getReplicationCursor(db, "peer-cursor")).toEqual([
 			"2025-12-31T00:00:00Z|default-baseline",
@@ -2082,7 +2188,7 @@ describe("syncOnce", () => {
 				scope_id: "empty-work",
 			}),
 			"local-device-id",
-			expect.objectContaining({ pageSize: 2000 }),
+			expect.objectContaining({ pageSize: 2000, recipientId: "peer-empty-baseline" }),
 		);
 	});
 
@@ -2864,6 +2970,7 @@ describe("syncOnce auto-bootstrap", () => {
 		// Verify the elevated page size was used
 		const fetchCall = vi.mocked(syncBootstrap.fetchAllSnapshotPages).mock.calls[0];
 		expect(fetchCall?.[1]).toMatchObject({ scope_id: "acme-work" });
+		expect(fetchCall?.[3]?.recipientId).toBe(peerDeviceId);
 		expect(fetchCall?.[3]?.pageSize).toBe(2000);
 	});
 

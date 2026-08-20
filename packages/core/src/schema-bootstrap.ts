@@ -311,6 +311,11 @@ CREATE INDEX IF NOT EXISTS idx_policy_team_device_decisions_device
 
 CREATE INDEX IF NOT EXISTS idx_sync_peers_actor_id ON sync_peers(actor_id);
 
+CREATE TABLE IF NOT EXISTS sync_peer_signature_state (
+	peer_device_id TEXT PRIMARY KEY NOT NULL,
+	highest_observed_direct_signature_version INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS coordinator_enrollment_reconciliation_issues (
 	coordinator_id TEXT NOT NULL,
 	group_id TEXT NOT NULL,
@@ -698,6 +703,7 @@ export function bootstrapSchema(db: Database): void {
 		db.exec(TEST_SCHEMA_BASE_DDL);
 		db.exec(SCHEMA_AUX_DDL);
 		ensurePolicyTeamDeviceEligibilityColumns(db);
+		ensureSyncPeerSignatureStateSchema(db);
 		ensureRetrievalAttemptColumns(db);
 		ensureOutcomeEvidenceColumns(db);
 		assertBootstrapTablesCreated(db);
@@ -727,6 +733,51 @@ function ensurePolicyTeamDeviceEligibilityColumns(db: Database): void {
 		);
 	}
 	ensureIdentityDeviceAssignmentVersionTriggers(db);
+}
+
+/** Add sticky direct-peer signature state without requiring a schema-version bump. */
+export function ensureSyncPeerDirectSignatureVersionColumn(db: Database): void {
+	if (!tableExists(db, "sync_peers")) return;
+	if (columnExists(db, "sync_peers", "highest_observed_direct_signature_version")) return;
+	try {
+		db.exec("ALTER TABLE sync_peers ADD COLUMN highest_observed_direct_signature_version INTEGER");
+	} catch (error) {
+		const message = error instanceof Error ? error.message.toLowerCase() : "";
+		if (
+			message.includes("duplicate column name") &&
+			columnExists(db, "sync_peers", "highest_observed_direct_signature_version")
+		) {
+			return;
+		}
+		throw error;
+	}
+}
+
+/**
+ * Keep signature downgrade protection outside deletable peer trust rows.
+ *
+ * The copy is advancing-only so this repair can run on every open, including
+ * databases whose compatibility marker was written before this table existed.
+ */
+export function ensureSyncPeerSignatureStateSchema(db: Database): void {
+	if (!tableExists(db, "sync_peers")) return;
+	ensureSyncPeerDirectSignatureVersionColumn(db);
+	db.exec(`
+		CREATE TABLE IF NOT EXISTS sync_peer_signature_state (
+			peer_device_id TEXT PRIMARY KEY NOT NULL,
+			highest_observed_direct_signature_version INTEGER NOT NULL
+		);
+		INSERT INTO sync_peer_signature_state(
+			peer_device_id, highest_observed_direct_signature_version
+		)
+		SELECT peer_device_id, highest_observed_direct_signature_version
+		FROM sync_peers
+		WHERE highest_observed_direct_signature_version IS NOT NULL
+		ON CONFLICT(peer_device_id) DO UPDATE SET
+			highest_observed_direct_signature_version = excluded.highest_observed_direct_signature_version
+		WHERE sync_peer_signature_state.highest_observed_direct_signature_version
+			< excluded.highest_observed_direct_signature_version;
+	`);
 }
 
 function ensureIdentityDeviceAssignmentVersionTriggers(db: Database): void {

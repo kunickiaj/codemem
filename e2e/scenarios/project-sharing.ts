@@ -1152,14 +1152,15 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		ok: boolean;
 		results: Array<{ peer_device_id: string; ok: boolean; error?: string }>;
 	}>(revokedSync.stdout, "39-sync-peer-c-after-revocation");
+	const revokedOwnerResult = revokedSyncResult.results.find(
+		(result) => result.peer_device_id === peerA.device_id,
+	);
+	const revokedOwnerError = String(revokedOwnerResult?.error ?? "");
 	assert(
 		revokedSyncResult.ok === false &&
-			revokedSyncResult.results.some(
-				(result) =>
-					result.peer_device_id === peerA.device_id &&
-					result.ok === false &&
-					String(result.error ?? "").includes("unauthorized:unknown_peer"),
-			),
+			revokedOwnerResult?.ok === false &&
+			revokedOwnerError.includes("401: unauthorized") &&
+			!revokedOwnerError.includes("unknown_peer"),
 		"revoked peer-c sync did not fail through the owner's trust boundary",
 	);
 	const peerCAfterRevocation = fixture(

@@ -42,6 +42,7 @@ import {
 	applyReplicationOps,
 	buildAuthHeaders,
 	buildBaseUrl,
+	buildDirectPeerAuthHeaders,
 	canonicalWorkspaceIdentity,
 	cleanupNonces,
 	commitDeviceIdentityBindings,
@@ -146,6 +147,7 @@ import {
 	reconcileCoordinatorEnrollmentSnapshot,
 	reconcileRecipientPolicyProject,
 	reconcileShareOperationAcceptance,
+	recordHighestObservedDirectSignatureVersion,
 	recordNonce,
 	refreshAuthorizedCoordinatorPeerTrust,
 	refreshConfiguredScopeMembershipCache,
@@ -167,6 +169,7 @@ import {
 	upsertCoordinatorGroupPreference,
 	upsertProjectScopeSettingsMapping,
 	VERSION,
+	verifyDirectPeerSignature,
 	verifyRecipientReviewedIntent,
 	verifySignature,
 	writeCodememConfigFile,
@@ -940,7 +943,7 @@ export function recipientPolicyCapabilityFromStatus(payload: {
 	return supportsSyncFeature(payload.sync_features, "reassign_scope") ? "supported" : "unsupported";
 }
 
-async function peerSupportsSyncRequirements(
+export async function peerSupportsSyncRequirements(
 	store: MemoryStore,
 	deviceId: string,
 	requirements: { scoped: boolean; reassignScope: boolean },
@@ -966,8 +969,9 @@ async function peerSupportsSyncRequirements(
 		try {
 			const url = `${buildBaseUrl(address)}/v1/status`;
 			const headers = {
-				...buildAuthHeaders({
+				...buildDirectPeerAuthHeaders({
 					deviceId: localDeviceId,
+					recipientId: deviceId,
 					dbPath: store.dbPath,
 					method: "GET",
 					url,
@@ -2636,16 +2640,23 @@ function pathWithQuery(url: string): string {
 	return parsed.search ? `${parsed.pathname}${parsed.search}` : parsed.pathname;
 }
 
-function unauthorizedPayload(reason: string, exposeReason = false): Record<string, string> {
-	if (exposeReason && process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS === "1") {
-		return { error: "unauthorized", reason };
-	}
+function unauthorizedPayload(): Record<string, string> {
 	return { error: "unauthorized" };
 }
 
 const SYNC_AUTH_STORE_BUSY_REASON = "sync_auth_store_busy";
 
 type SyncAuthResult = { ok: boolean; reason: string; deviceId: string };
+type VerifiedDirectPeerSignature = { ok: true; version: 2 | 3 } | { ok: false; reason: string };
+
+const DIRECT_PEER_SIGNATURE_VERSION_NUMBER = 3;
+
+function logDirectPeerAuthDiagnostic(...reasons: Array<string | null>): void {
+	const reason = reasons.find(
+		(candidate) => candidate === "recipient_mismatch" || candidate === "signature_downgrade",
+	);
+	if (reason) console.warn(`[sync] peer auth failed: reason=${reason}`);
+}
 
 function isSqliteBusy(err: unknown): boolean {
 	if (!err || typeof err !== "object") return false;
@@ -2691,6 +2702,91 @@ function syncAuthStoreBusyResponse(c: Context) {
 	return c.json({ error: SYNC_AUTH_STORE_BUSY_REASON }, 503);
 }
 
+function verifyDirectPeerRequestSignature(
+	request: { method: string; url: string; header(name: string): string | undefined },
+	body: Buffer,
+	options: {
+		deviceId: string;
+		publicKey: string;
+		expectedRecipientId: string;
+		highestObservedVersion: number | null;
+	},
+): VerifiedDirectPeerSignature {
+	const timestamp = request.header("X-Opencode-Timestamp") ?? "";
+	const nonce = request.header("X-Opencode-Nonce") ?? "";
+	const legacySignature = request.header("X-Opencode-Signature") ?? "";
+	const recipientHeader = request.header("X-Codemem-Recipient");
+	const directSignatureHeader = request.header("X-Codemem-Signature");
+	const hasDirectMaterial = recipientHeader !== undefined || directSignatureHeader !== undefined;
+	const direct = verifyDirectPeerSignature({
+		method: request.method,
+		pathWithQuery: pathWithQuery(request.url),
+		bodyBytes: body,
+		timestamp,
+		nonce,
+		recipientId: recipientHeader,
+		expectedRecipientId: options.expectedRecipientId,
+		signature: directSignatureHeader,
+		publicKey: options.publicKey,
+	});
+	if (hasDirectMaterial && direct.status === "absent") {
+		return { ok: false, reason: "invalid_direct_signature" };
+	}
+	if (direct.status === "invalid") {
+		return {
+			ok: false,
+			reason: direct.reason === "recipient_mismatch" ? direct.reason : "invalid_direct_signature",
+		};
+	}
+
+	const legacyValid = verifySignature({
+		method: request.method,
+		pathWithQuery: pathWithQuery(request.url),
+		bodyBytes: body,
+		timestamp,
+		nonce,
+		signature: legacySignature,
+		publicKey: options.publicKey,
+		deviceId: options.deviceId,
+	});
+	if (!legacyValid) return { ok: false, reason: "invalid_signature" };
+	if (
+		direct.status === "absent" &&
+		(options.highestObservedVersion ?? 0) >= DIRECT_PEER_SIGNATURE_VERSION_NUMBER
+	) {
+		return { ok: false, reason: "signature_downgrade" };
+	}
+	return { ok: true, version: direct.status === "valid" ? 3 : 2 };
+}
+
+function recordDirectPeerSignatureVersion(
+	store: MemoryStore,
+	deviceId: string,
+	version: 3,
+): SyncAuthResult | null {
+	try {
+		const advanced = recordHighestObservedDirectSignatureVersion(store.db, deviceId, version);
+		if (!advanced) {
+			const observed = store.db
+				.prepare(
+					`SELECT sync_peer_signature_state.highest_observed_direct_signature_version
+					 FROM sync_peers
+					 LEFT JOIN sync_peer_signature_state USING (peer_device_id)
+					 WHERE sync_peers.peer_device_id = ? LIMIT 1`,
+				)
+				.pluck()
+				.get(deviceId);
+			if (observed === undefined) return { ok: false, reason: "unknown_peer", deviceId };
+		}
+		return null;
+	} catch (err) {
+		if (isSqliteBusy(err)) {
+			return { ok: false, reason: SYNC_AUTH_STORE_BUSY_REASON, deviceId };
+		}
+		throw err;
+	}
+}
+
 function authorizeSyncRequest(
 	store: MemoryStore,
 	request: { method: string; url: string; header(name: string): string | undefined },
@@ -2706,9 +2802,19 @@ function authorizeSyncRequest(
 
 	const peerRow = store.db
 		.prepare(
-			"SELECT pinned_fingerprint, public_key FROM sync_peers WHERE peer_device_id = ? LIMIT 1",
+			`SELECT sync_peers.pinned_fingerprint, sync_peers.public_key,
+			 sync_peer_signature_state.highest_observed_direct_signature_version
+			 FROM sync_peers
+			 LEFT JOIN sync_peer_signature_state USING (peer_device_id)
+			 WHERE sync_peers.peer_device_id = ? LIMIT 1`,
 		)
-		.get(deviceId) as { pinned_fingerprint: string | null; public_key: string | null } | undefined;
+		.get(deviceId) as
+		| {
+				pinned_fingerprint: string | null;
+				public_key: string | null;
+				highest_observed_direct_signature_version: number | null;
+		  }
+		| undefined;
 	if (!peerRow) {
 		return { ok: false, reason: "unknown_peer", deviceId };
 	}
@@ -2722,29 +2828,29 @@ function authorizeSyncRequest(
 		return { ok: false, reason: "fingerprint_mismatch", deviceId };
 	}
 
-	let valid = false;
+	let verification: VerifiedDirectPeerSignature;
 	try {
-		valid = verifySignature({
-			method: request.method,
-			pathWithQuery: pathWithQuery(request.url),
-			bodyBytes: body,
-			timestamp,
-			nonce,
-			signature,
-			publicKey,
+		const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+		verification = verifyDirectPeerRequestSignature(request, body, {
 			deviceId,
+			publicKey,
+			expectedRecipientId: localDeviceId,
+			highestObservedVersion: peerRow.highest_observed_direct_signature_version,
 		});
 	} catch {
 		return { ok: false, reason: "signature_verification_error", deviceId };
 	}
-
-	if (!valid) {
-		return { ok: false, reason: "invalid_signature", deviceId };
+	if (!verification.ok) {
+		return { ok: false, reason: verification.reason, deviceId };
 	}
 
 	const createdAt = new Date().toISOString();
 	const nonceResult = recordSyncAuthNonce(store, deviceId, nonce, createdAt);
 	if (nonceResult) return nonceResult;
+	if (verification.version === DIRECT_PEER_SIGNATURE_VERSION_NUMBER) {
+		const versionResult = recordDirectPeerSignatureVersion(store, deviceId, verification.version);
+		if (versionResult) return versionResult;
+	}
 	return { ok: true, reason: "ok", deviceId };
 }
 
@@ -2843,23 +2949,25 @@ async function authorizeBootstrapGrantRequest(
 		return { ok: false, reason: "bootstrap_grant_expired", deviceId };
 	}
 
-	let valid = false;
+	const existingPeer = store.db
+		.prepare(
+			`SELECT highest_observed_direct_signature_version
+			 FROM sync_peer_signature_state WHERE peer_device_id = ? LIMIT 1`,
+		)
+		.get(deviceId) as { highest_observed_direct_signature_version: number | null } | undefined;
+	let signatureVerification: VerifiedDirectPeerSignature;
 	try {
-		valid = verifySignature({
-			method: request.method,
-			pathWithQuery: pathWithQuery(request.url),
-			bodyBytes: body,
-			timestamp,
-			nonce,
-			signature,
-			publicKey: workerPublicKey,
+		signatureVerification = verifyDirectPeerRequestSignature(request, body, {
 			deviceId,
+			publicKey: workerPublicKey,
+			expectedRecipientId: localDeviceId,
+			highestObservedVersion: existingPeer?.highest_observed_direct_signature_version ?? null,
 		});
 	} catch {
 		return { ok: false, reason: "bootstrap_grant_signature_verification_error", deviceId };
 	}
-	if (!valid) {
-		return { ok: false, reason: "bootstrap_grant_invalid_signature", deviceId };
+	if (!signatureVerification.ok) {
+		return { ok: false, reason: signatureVerification.reason, deviceId };
 	}
 	if (!isPeerTrustBindingCompatible(store.db, deviceId, workerPublicKey, workerFingerprint)) {
 		return { ok: false, reason: "bootstrap_grant_peer_trust_conflict", deviceId };
@@ -2874,6 +2982,14 @@ async function authorizeBootstrapGrantRequest(
 		publicKey: workerPublicKey,
 		replaceTrust: true,
 	});
+	if (signatureVerification.version === DIRECT_PEER_SIGNATURE_VERSION_NUMBER) {
+		const versionResult = recordDirectPeerSignatureVersion(
+			store,
+			deviceId,
+			signatureVerification.version,
+		);
+		if (versionResult) return versionResult;
+	}
 	return { ok: true, reason: "ok", deviceId };
 }
 
@@ -4288,8 +4404,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			}
 			if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 			if (!auth.ok) {
-				// Specific reasons are logged server-side; wire responses use a generic
-				// reason to prevent info-disclosure.
+				// Specific reasons stay server-side; wire responses remain generic.
 				const grantPresent = Boolean((c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim());
 				// Warn only when the caller actually attempted authentication (a
 				// grant or signed device headers); bare probes and health checks
@@ -4300,17 +4415,12 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 					console.warn(
 						`[sync] peer auth failed: reason=${auth.reason} device_auth_reason=${deviceAuthReason ?? "none"} grant_present=${grantPresent} path=${c.req.path} device=${loggableHeaderValue(c.req.header("X-Opencode-Device"))}`,
 					);
+				} else {
+					logDirectPeerAuthDiagnostic(deviceAuthReason, auth.reason);
 				}
-				// Mask grant details only when a grant was actually presented; a
-				// grant-less caller gets its device-auth failure reason so signature
-				// and clock issues stay diagnosable from the client side.
-				const wireReason =
-					bootstrapAttempted && grantPresent
-						? "bootstrap_grant_invalid"
-						: (deviceAuthReason ?? auth.reason);
 				return (
 					(preauthChecked ? null : rateLimitedResponse(c, c.req.path, false)) ??
-					c.json(unauthorizedPayload(wireReason, true), 401)
+					c.json(unauthorizedPayload(), 401)
 				);
 			}
 			const limited = rateLimitedResponse(c, auth.deviceId, true);
@@ -4364,11 +4474,10 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		const store = getStore();
 		const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
 		if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
-		if (!auth.ok)
-			return (
-				rateLimitedResponse(c, c.req.path, false) ??
-				c.json(unauthorizedPayload(auth.reason, true), 401)
-			);
+		if (!auth.ok) {
+			logDirectPeerAuthDiagnostic(auth.reason);
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json(unauthorizedPayload(), 401);
+		}
 		const limited = rateLimitedResponse(c, auth.deviceId, true);
 		if (limited) return limited;
 		const peerDeviceId = auth.deviceId;
@@ -4476,8 +4585,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			}
 			if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 			if (!auth.ok) {
-				// Specific reasons are logged server-side; wire responses use a generic
-				// reason to prevent info-disclosure.
+				// Specific reasons stay server-side; wire responses remain generic.
 				const grantPresent = Boolean((c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim());
 				// Warn only when the caller actually attempted authentication (a
 				// grant or signed device headers); bare probes and health checks
@@ -4488,17 +4596,12 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 					console.warn(
 						`[sync] peer auth failed: reason=${auth.reason} device_auth_reason=${deviceAuthReason ?? "none"} grant_present=${grantPresent} path=${c.req.path} device=${loggableHeaderValue(c.req.header("X-Opencode-Device"))}`,
 					);
+				} else {
+					logDirectPeerAuthDiagnostic(deviceAuthReason, auth.reason);
 				}
-				// Mask grant details only when a grant was actually presented; a
-				// grant-less caller gets its device-auth failure reason so signature
-				// and clock issues stay diagnosable from the client side.
-				const wireReason =
-					bootstrapAttempted && grantPresent
-						? "bootstrap_grant_invalid"
-						: (deviceAuthReason ?? auth.reason);
 				return (
 					(preauthChecked ? null : rateLimitedResponse(c, c.req.path, false)) ??
-					c.json(unauthorizedPayload(wireReason, true), 401)
+					c.json(unauthorizedPayload(), 401)
 				);
 			}
 			const limited = rateLimitedResponse(c, auth.deviceId, true);
@@ -4585,11 +4688,10 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 
 		const auth = authorizeSyncRequest(store, c.req, raw);
 		if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
-		if (!auth.ok)
-			return (
-				rateLimitedResponse(c, c.req.path, false) ??
-				c.json(unauthorizedPayload(auth.reason, true), 401)
-			);
+		if (!auth.ok) {
+			logDirectPeerAuthDiagnostic(auth.reason);
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json(unauthorizedPayload(), 401);
+		}
 		const limited = rateLimitedResponse(c, auth.deviceId, true);
 		if (limited) return limited;
 		const peerDeviceId = auth.deviceId;

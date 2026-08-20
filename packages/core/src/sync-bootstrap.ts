@@ -18,7 +18,7 @@ import type { Database } from "./db.js";
 import { toJson } from "./db.js";
 import * as schema from "./schema.js";
 import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
-import { buildAuthHeaders } from "./sync-auth.js";
+import { buildAuthHeaders, buildDirectPeerAuthHeaders } from "./sync-auth.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 import { LOCAL_SYNC_CAPABILITY, SYNC_CAPABILITY_HEADER } from "./sync-capability.js";
 import { requestJson } from "./sync-http-client.js";
@@ -58,6 +58,8 @@ export interface BootstrapOptions {
 	keysDir?: string;
 	dbPath?: string;
 	bootstrapGrantId?: string;
+	/** Direct peer identity used to add recipient-bound v3 auth headers. */
+	recipientId?: string;
 	/** Max items per page request. Defaults to 200. */
 	pageSize?: number;
 	/** Timeout per HTTP request in seconds. Defaults to 10. */
@@ -92,6 +94,7 @@ export async function fetchAllSnapshotPages(
 	const keysDir = options?.keysDir;
 	const dbPath = options?.dbPath;
 	const bootstrapGrantId = options?.bootstrapGrantId?.trim() || undefined;
+	const recipientId = options?.recipientId?.trim() || undefined;
 	const maxItems = options?.maxItems ?? 100_000;
 
 	const allItems: SyncMemorySnapshotItem[] = [];
@@ -116,16 +119,21 @@ export async function fetchAllSnapshotPages(
 		}
 
 		const url = `${baseUrl}/v1/snapshot?${params.toString()}`;
+		const authOptions = {
+			deviceId,
+			method: "GET",
+			url,
+			bodyBytes: Buffer.alloc(0),
+			bootstrapGrantId,
+			keysDir,
+			dbPath,
+		};
 		const headers = {
-			...buildAuthHeaders({
-				deviceId,
-				method: "GET",
-				url,
-				bodyBytes: Buffer.alloc(0),
-				bootstrapGrantId,
-				keysDir,
-				dbPath,
-			}),
+			// Public callers that omit a recipient retain the legacy v2 wire contract. All
+			// in-repo direct-peer callers provide recipientId and therefore emit v3.
+			...(recipientId === undefined
+				? buildAuthHeaders(authOptions)
+				: buildDirectPeerAuthHeaders({ ...authOptions, recipientId })),
 			[SYNC_CAPABILITY_HEADER]: LOCAL_SYNC_CAPABILITY,
 		};
 

@@ -56,7 +56,6 @@ services:
       CODEMEM_CONFIG: /config/codemem.json
       CODEMEM_KEYS_DIR: /keys
       CODEMEM_EMBEDDING_DISABLED: "1"
-      CODEMEM_SYNC_AUTH_DIAGNOSTICS: "1"
     depends_on:
       coordinator:
         condition: service_healthy
@@ -77,7 +76,6 @@ services:
       CODEMEM_CONFIG: /config/codemem.json
       CODEMEM_KEYS_DIR: /keys
       CODEMEM_EMBEDDING_DISABLED: "1"
-      CODEMEM_SYNC_AUTH_DIAGNOSTICS: "1"
     depends_on:
       coordinator:
         condition: service_healthy
@@ -98,7 +96,6 @@ services:
       CODEMEM_CONFIG: /config/codemem.json
       CODEMEM_KEYS_DIR: /keys
       CODEMEM_EMBEDDING_DISABLED: "1"
-      CODEMEM_SYNC_AUTH_DIAGNOSTICS: "1"
     depends_on:
       coordinator:
         condition: service_healthy

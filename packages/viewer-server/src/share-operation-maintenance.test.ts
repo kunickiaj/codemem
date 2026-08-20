@@ -1,5 +1,9 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	assertLegacyShareGrantAllowed,
+	ensureDeviceIdentity,
 	fingerprintPublicKey,
 	initTestSchema,
 	type MemoryStore,
@@ -11,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	advancePendingProjectShares,
 	createRecipientPolicyReconcilerEffects,
+	peerSupportsSyncRequirements,
 	recipientPolicyCapabilityFromStatus,
 	reconcileConfiguredCoordinatorEnrollment,
 	reconcileRecipientPolicyProjects,
@@ -543,6 +548,54 @@ describe("advancePendingProjectShares", () => {
 				sync_features: ["reassign_scope"],
 			}),
 		).toBe("supported");
+	});
+
+	it("recipient-binds outbound peer capability probes", async () => {
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-probe-keys-"));
+		const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
+		const previousFetch = globalThis.fetch;
+		try {
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			ensureDeviceIdentity(db, { keysDir });
+			db.prepare(
+				`INSERT INTO sync_peers(
+					peer_device_id, pinned_fingerprint, addresses_json, created_at
+				 ) VALUES (?, ?, ?, ?)`,
+			).run(
+				"peer-probe",
+				"peer-fingerprint",
+				JSON.stringify(["http://127.0.0.1:47337"]),
+				new Date().toISOString(),
+			);
+			globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+				expect(init?.headers).toMatchObject({
+					"X-Codemem-Recipient": "peer-probe",
+					"X-Codemem-Signature": expect.stringMatching(/^v3:/),
+				});
+				return new Response(
+					JSON.stringify({
+						device_id: "peer-probe",
+						fingerprint: "peer-fingerprint",
+						sync_capability: "scoped",
+						sync_features: ["reassign_scope"],
+					}),
+					{ status: 200 },
+				);
+			}) as typeof fetch;
+
+			await expect(
+				peerSupportsSyncRequirements(
+					{ ...store, dbPath: ":memory:" } as MemoryStore,
+					"peer-probe",
+					{ scoped: true, reassignScope: true },
+				),
+			).resolves.toBe("supported");
+		} finally {
+			globalThis.fetch = previousFetch;
+			if (previousKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
+			rmSync(keysDir, { recursive: true, force: true });
+		}
 	});
 
 	it("processes a bounded oldest-first locally owned set and isolates failures", async () => {

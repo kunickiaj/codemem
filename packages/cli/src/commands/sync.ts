@@ -11,8 +11,8 @@ import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
 import {
 	applyBootstrapSnapshot,
-	buildAuthHeaders,
 	buildBaseUrl,
+	buildDirectPeerAuthHeaders,
 	DeviceIdentityError,
 	ensureDeviceIdentity,
 	fetchAllSnapshotPages,
@@ -1273,8 +1273,9 @@ bootstrapCmd.action(
 				const candidate = buildBaseUrl(address);
 				if (!candidate) continue;
 				const statusUrl = `${candidate}/v1/status`;
-				const headers = buildAuthHeaders({
+				const headers = buildDirectPeerAuthHeaders({
 					deviceId,
+					recipientId: peerDeviceId,
 					dbPath: store.dbPath,
 					method: "GET",
 					url: statusUrl,
@@ -1349,6 +1350,7 @@ bootstrapCmd.action(
 				keysDir,
 				dbPath: store.dbPath,
 				bootstrapGrantId: opts.bootstrapGrant,
+				recipientId: peerDeviceId,
 				pageSize,
 			});
 

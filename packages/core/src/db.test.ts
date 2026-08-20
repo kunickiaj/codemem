@@ -17,6 +17,7 @@ import {
 	isEmbeddingDisabled,
 	loadSqliteVec,
 	migrateLegacyDbPath,
+	recordHighestObservedDirectSignatureVersion,
 	resolveDbPath,
 	SCHEMA_VERSION,
 	tableExists,
@@ -152,6 +153,16 @@ describe("connect", () => {
 		expect(columnInfo(db, "sync_peers", "runtime_version_observed_at")).toEqual({
 			is_not_null: 0,
 		});
+		expect(columnInfo(db, "sync_peers", "highest_observed_direct_signature_version")).toEqual({
+			is_not_null: 0,
+		});
+		expect(tableExists(db, "sync_peer_signature_state")).toBe(true);
+		expect(columnInfo(db, "sync_peer_signature_state", "peer_device_id")).toEqual({
+			is_not_null: 1,
+		});
+		expect(
+			columnInfo(db, "sync_peer_signature_state", "highest_observed_direct_signature_version"),
+		).toEqual({ is_not_null: 1 });
 		expect(hasIndex(db, "idx_memory_items_origin_device_active")).toBe(true);
 		expect(hasIndex(db, "idx_memory_items_scope_visibility_created")).toBe(true);
 		expect(hasIndex(db, "idx_memory_items_scope_backfill_pending")).toBe(true);
@@ -801,6 +812,7 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(columnExists(db, "sync_peers", "trust_provenance")).toBe(false);
 		expect(columnExists(db, "sync_peers", "runtime_version")).toBe(false);
 		expect(columnExists(db, "sync_peers", "runtime_version_observed_at")).toBe(false);
+		expect(columnExists(db, "sync_peers", "highest_observed_direct_signature_version")).toBe(false);
 		expect(tableExists(db, "coordinator_group_preferences")).toBe(false);
 
 		ensureAdditiveSchemaCompatibility(db);
@@ -810,6 +822,9 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(columnExists(db, "sync_peers", "trust_provenance")).toBe(true);
 		expect(columnInfo(db, "sync_peers", "runtime_version")).toEqual({ is_not_null: 0 });
 		expect(columnInfo(db, "sync_peers", "runtime_version_observed_at")).toEqual({
+			is_not_null: 0,
+		});
+		expect(columnInfo(db, "sync_peers", "highest_observed_direct_signature_version")).toEqual({
 			is_not_null: 0,
 		});
 		expect(tableExists(db, "coordinator_group_preferences")).toBe(true);
@@ -1689,6 +1704,109 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		});
 		expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
 		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
+	});
+
+	it("keeps the compatibility mirror repair independent of the current marker", () => {
+		ensureAdditiveSchemaCompatibility(db);
+		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
+		db.exec("ALTER TABLE sync_peers DROP COLUMN highest_observed_direct_signature_version");
+		expect(columnExists(db, "sync_peers", "highest_observed_direct_signature_version")).toBe(false);
+
+		ensureAdditiveSchemaCompatibility(db);
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(columnInfo(db, "sync_peers", "highest_observed_direct_signature_version")).toEqual({
+			is_not_null: 0,
+		});
+		expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
+		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
+	});
+
+	it("repairs and migrates durable direct-signature state after the current marker is set", () => {
+		ensureAdditiveSchemaCompatibility(db);
+		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
+		db.prepare("INSERT INTO sync_peers (peer_device_id, created_at) VALUES (?, ?)").run(
+			"peer-migrated",
+			"2026-08-20T00:00:00Z",
+		);
+		db.prepare(
+			`UPDATE sync_peers SET highest_observed_direct_signature_version = 3
+			 WHERE peer_device_id = 'peer-migrated'`,
+		).run();
+		db.exec("DROP TABLE sync_peer_signature_state");
+		expect(tableExists(db, "sync_peer_signature_state")).toBe(false);
+
+		ensureAdditiveSchemaCompatibility(db);
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(tableExists(db, "sync_peer_signature_state")).toBe(true);
+		expect(
+			db
+				.prepare(
+					`SELECT highest_observed_direct_signature_version
+					 FROM sync_peer_signature_state WHERE peer_device_id = 'peer-migrated'`,
+				)
+				.pluck()
+				.get(),
+		).toBe(3);
+		db.prepare(
+			`UPDATE sync_peer_signature_state SET highest_observed_direct_signature_version = 4
+			 WHERE peer_device_id = 'peer-migrated'`,
+		).run();
+		ensureAdditiveSchemaCompatibility(db);
+		expect(
+			db
+				.prepare(
+					`SELECT highest_observed_direct_signature_version
+					 FROM sync_peer_signature_state WHERE peer_device_id = 'peer-migrated'`,
+				)
+				.pluck()
+				.get(),
+		).toBe(4);
+		expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
+		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
+	});
+
+	it("records direct-signature versions monotonically for an existing peer", () => {
+		ensureAdditiveSchemaCompatibility(db);
+		db.prepare("INSERT INTO sync_peers (peer_device_id, created_at) VALUES (?, ?)").run(
+			"peer-signature",
+			"2026-08-20T00:00:00Z",
+		);
+
+		expect(recordHighestObservedDirectSignatureVersion(db, "peer-signature", 3)).toBe(true);
+		expect(recordHighestObservedDirectSignatureVersion(db, "peer-signature", 2)).toBe(false);
+		expect(recordHighestObservedDirectSignatureVersion(db, "peer-signature", 3)).toBe(false);
+		expect(recordHighestObservedDirectSignatureVersion(db, "peer-signature", 4)).toBe(true);
+		expect(
+			db
+				.prepare(
+					`SELECT highest_observed_direct_signature_version
+					 FROM sync_peer_signature_state WHERE peer_device_id = ?`,
+				)
+				.pluck()
+				.get("peer-signature"),
+		).toBe(4);
+		expect(
+			db
+				.prepare(
+					"SELECT highest_observed_direct_signature_version FROM sync_peers WHERE peer_device_id = ?",
+				)
+				.pluck()
+				.get("peer-signature"),
+		).toBe(4);
+	});
+
+	it("does not record direct-signature state for an unknown peer", () => {
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(recordHighestObservedDirectSignatureVersion(db, "never-enrolled", 3)).toBe(false);
+		expect(
+			db
+				.prepare("SELECT 1 FROM sync_peer_signature_state WHERE peer_device_id = ?")
+				.pluck()
+				.get("never-enrolled"),
+		).toBeUndefined();
 	});
 
 	it("schemaCompatAlreadyApplied-style probe is fail-safe without the table", () => {

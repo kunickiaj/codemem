@@ -721,6 +721,7 @@ export const syncPeers = sqliteTable("sync_peers", {
 	last_error: text("last_error"),
 	runtime_version: text("runtime_version"),
 	runtime_version_observed_at: text("runtime_version_observed_at"),
+	highest_observed_direct_signature_version: integer("highest_observed_direct_signature_version"),
 	discovered_via_coordinator_id: text("discovered_via_coordinator_id"),
 	discovered_via_group_id: text("discovered_via_group_id"),
 	trust_provenance: text("trust_provenance"),
@@ -729,6 +730,16 @@ export const syncPeers = sqliteTable("sync_peers", {
 
 export type SyncPeer = typeof syncPeers.$inferSelect;
 export type NewSyncPeer = typeof syncPeers.$inferInsert;
+
+export const syncPeerSignatureState = sqliteTable("sync_peer_signature_state", {
+	peer_device_id: text("peer_device_id").primaryKey(),
+	highest_observed_direct_signature_version: integer(
+		"highest_observed_direct_signature_version",
+	).notNull(),
+});
+
+export type SyncPeerSignatureState = typeof syncPeerSignatureState.$inferSelect;
+export type NewSyncPeerSignatureState = typeof syncPeerSignatureState.$inferInsert;
 
 export const syncNonces = sqliteTable("sync_nonces", {
 	nonce: text("nonce").primaryKey(),

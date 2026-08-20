@@ -220,9 +220,9 @@ not accumulate as mixed `host:port` and `http://host:port` variants in local pee
 - enrollment is explicit per device/group
 - there is no username/password or codemem-operated account layer in this model
 
-For local debugging only, `CODEMEM_SYNC_AUTH_DIAGNOSTICS=1` makes direct sync `401` responses include the auth failure
-reason, such as `unknown_peer`, `peer_record_incomplete`, `fingerprint_mismatch`, or `invalid_signature`. Do not enable
-this on publicly reachable sync listeners; it is intended for trusted development or private Tailnet troubleshooting.
+Direct sync authentication failures always return a generic `401 unauthorized` response. Recipient mismatches and
+signature downgrades are recorded only in server-side diagnostics so publicly reachable listeners do not disclose peer
+enrollment or signature-validation details.
 
 ## Remote admin flow
 

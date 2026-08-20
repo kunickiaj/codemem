@@ -172,6 +172,7 @@ export {
 	loadSqliteVec,
 	MIN_COMPATIBLE_SCHEMA,
 	migrateLegacyDbPath,
+	recordHighestObservedDirectSignatureVersion,
 	resolveDbPath,
 	SCHEMA_VERSION,
 	tableExists,

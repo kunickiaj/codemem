@@ -30,6 +30,7 @@ import {
 	canAutoBootstrapSchema,
 	ensureRetrievalLedgerSchema,
 	ensureSchemaBootstrapped,
+	ensureSyncPeerSignatureStateSchema,
 } from "./schema-bootstrap.js";
 
 // Re-export the Database type for consumers
@@ -701,6 +702,45 @@ function ensureSyncPeerRuntimeVersionColumns(db: DatabaseType): void {
 	addColumnIfMissing(db, "sync_peers", "runtime_version_observed_at", "TEXT");
 }
 
+/** Persist a direct-peer signature version only when it advances the peer's observed maximum. */
+export function recordHighestObservedDirectSignatureVersion(
+	db: DatabaseType,
+	peerDeviceId: string,
+	version: number,
+): boolean {
+	if (!Number.isSafeInteger(version) || version < 1) {
+		throw new RangeError("Direct signature version must be a positive safe integer");
+	}
+	return db.transaction(() => {
+		const result = db
+			.prepare(
+				`INSERT INTO sync_peer_signature_state(
+					peer_device_id, highest_observed_direct_signature_version
+				 )
+				 SELECT ?, ?
+				 WHERE EXISTS (
+					SELECT 1 FROM sync_peers WHERE peer_device_id = ?
+				 )
+				 ON CONFLICT(peer_device_id) DO UPDATE SET
+					highest_observed_direct_signature_version = excluded.highest_observed_direct_signature_version
+				 WHERE sync_peer_signature_state.highest_observed_direct_signature_version
+					< excluded.highest_observed_direct_signature_version`,
+			)
+			.run(peerDeviceId, version, peerDeviceId);
+		// Retain the additive column as a compatibility mirror for older runtimes.
+		db.prepare(
+			`UPDATE sync_peers
+			 SET highest_observed_direct_signature_version = ?
+			 WHERE peer_device_id = ?
+			   AND (
+				 highest_observed_direct_signature_version IS NULL
+				 OR highest_observed_direct_signature_version < ?
+			   )`,
+		).run(version, peerDeviceId, version);
+		return result.changes > 0;
+	})();
+}
+
 /**
  * Has the additive compatibility shim already run for the current SCHEMA_VERSION?
  *
@@ -859,6 +899,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	// Always run: current-marker databases may predate these no-version-bump
 	// columns, so the schema_compat_state gate cannot prove they exist.
 	ensureSyncPeerRuntimeVersionColumns(db);
+	ensureSyncPeerSignatureStateSchema(db);
 	ensureDeviceIdentityBindingAuditSchema(db);
 	const compatAlreadyApplied = schemaCompatAlreadyApplied(db);
 	if (!compatAlreadyApplied) {
