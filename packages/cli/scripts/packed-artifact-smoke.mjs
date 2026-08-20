@@ -506,6 +506,16 @@ async function smokeCodexSpoolIsolation(isolatedRoot) {
 	writeFileSync(seededPath, seededBody, "utf8");
 
 	const deliveredBodies = [];
+	const assertTargetedDelivery = (body, envelope, label) => {
+		const delivered = JSON.parse(body);
+		const { db_path: dbPath, identity_target: identityTarget, ...deliveredEnvelope } = delivered;
+		assert(typeof dbPath === "string" && dbPath.length > 0, `${label} omitted database target`);
+		assert(
+			identityTarget != null && typeof identityTarget === "object" && !Array.isArray(identityTarget),
+			`${label} omitted identity target`,
+		);
+		assert(JSON.stringify(deliveredEnvelope) === JSON.stringify(envelope), `${label} envelope changed`);
+	};
 	const server = createServer((request, response) => {
 		let body = "";
 		request.setEncoding("utf8");
@@ -543,8 +553,8 @@ async function smokeCodexSpoolIsolation(isolatedRoot) {
 		);
 		assert(drained.status === 0, `codex bounded spool drain failed: ${drained.stderr}`);
 		assert(deliveredBodies.length === 2, "codex wrapper must drain at most one queued envelope per invocation");
-		assert(deliveredBodies[0] === JSON.stringify(currentEnvelope), "codex current delivery bytes changed");
-		assert(deliveredBodies[1] === expectedBody, "codex queued delivery bytes changed");
+		assertTargetedDelivery(deliveredBodies[0], currentEnvelope, "codex current delivery");
+		assertTargetedDelivery(deliveredBodies[1], expected, "codex queued delivery");
 		assert(readdirSync(normalizedSpool).filter((name) => name.endsWith(".json")).length === 1, "codex drain was not bounded to one queued envelope");
 		assert(readFileSync(seededPath, "utf8") === seededBody, "codex bounded drain removed the second queued envelope");
 		assert(readFileSync(legacyPath, "utf8") === legacyBody, "codex drain modified the legacy native spool");

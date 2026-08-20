@@ -87,21 +87,50 @@ describe("codex-hook-ingest command", () => {
 	});
 
 	it("returns HTTP result when viewer ingest succeeds", async () => {
+		let httpPayload: Record<string, unknown> | undefined;
 		const result = await ingestCodexHookPayload(
 			{ hook_event_name: "SessionStart", session_id: "sess-http", cwd: "/tmp/demo" },
 			{ host: "127.0.0.1", port: 38888 },
 			{
-				httpIngest: async () => ({ ok: true, inserted: 2, skipped: 1 }),
+				httpIngest: async (request) => {
+					httpPayload = request;
+					return { ok: true, inserted: 2, skipped: 1 };
+				},
 				directIngest: () => {
 					throw new Error("direct ingest should not be called");
 				},
-				resolveDb: () => {
-					throw new Error("resolveDb should not be called");
-				},
+				resolveDb: () => "/tmp/resolved.sqlite",
 			},
 		);
 
 		expect(result).toEqual({ inserted: 2, skipped: 1, via: "http" });
+		expect(httpPayload).toMatchObject({
+			db_path: "/tmp/resolved.sqlite",
+			identity_target: expect.any(Object),
+		});
+	});
+
+	it("falls back directly exactly once on a generic Viewer failure", async () => {
+		let httpCalls = 0;
+		let directCalls = 0;
+		const result = await ingestCodexHookPayload(
+			{ hook_event_name: "SessionStart", session_id: "sess-viewer-failure", cwd: "/tmp/demo" },
+			{ host: "127.0.0.1", port: 38888, db: "/tmp/custom.sqlite" },
+			{
+				httpIngest: async () => {
+					httpCalls += 1;
+					return { ok: false, inserted: 0, skipped: 0 };
+				},
+				directIngest: () => {
+					directCalls += 1;
+					return { inserted: 1, skipped: 0 };
+				},
+				resolveDb: () => "/tmp/resolved.sqlite",
+			},
+		);
+
+		expect(result).toEqual({ inserted: 1, skipped: 0, via: "direct" });
+		expect({ httpCalls, directCalls }).toEqual({ httpCalls: 1, directCalls: 1 });
 	});
 
 	it("falls back to direct ingest when HTTP path fails", async () => {

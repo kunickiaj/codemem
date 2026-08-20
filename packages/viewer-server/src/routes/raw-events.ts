@@ -17,6 +17,7 @@ import { desc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { Hono } from "hono";
 import { queryInt } from "../helpers.js";
+import { validateViewerTarget } from "./target-validation.js";
 
 type StoreFactory = () => MemoryStore;
 type JsonResponder = {
@@ -244,6 +245,11 @@ function boundedIngestErrorResponse(c: JsonResponder, error: unknown): Response 
 	return c.json(response, 500);
 }
 
+function untargetedPayload(payload: Record<string, unknown>): Record<string, unknown> {
+	const { db_path: _dbPath, identity_target: _identityTarget, ...body } = payload;
+	return body;
+}
+
 async function ingestNormalizedEnvelope(
 	store: MemoryStore,
 	sweeper: RawEventSweeper | null | undefined,
@@ -317,10 +323,13 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 		const result = await parseJsonObjectBody(c, MAX_RAW_EVENTS_BODY_BYTES);
 		if (result instanceof Response) return result;
 		try {
+			const store = getStore();
+			const target = validateViewerTarget(store, result, { requirePairedTargets: true });
+			if (!target.ok) return c.json(target.body, target.status);
 			const ingestResult = await ingestNormalizedEnvelope(
-				getStore(),
+				store,
 				sweeper,
-				result,
+				untargetedPayload(result),
 				c.req.header("x-codemem-boundary-flush") === "1",
 			);
 			return c.json({
@@ -340,8 +349,11 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 		const payload = result;
 
 		try {
+			const store = getStore();
+			const target = validateViewerTarget(store, payload, { requirePairedTargets: true });
+			if (!target.ok) return c.json(target.body, target.status);
 			let transcriptOutcome: HookTranscriptOutcome | null = null;
-			const envelope = buildRawEventEnvelopeFromHook(payload, {
+			const envelope = buildRawEventEnvelopeFromHook(untargetedPayload(payload), {
 				transcriptPolicy: { trust: "restricted", approvedRoots: [claudeTranscriptRoot()] },
 				onTranscriptOutcome: (outcome) => {
 					transcriptOutcome = outcome;
@@ -352,7 +364,7 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 				return c.json(transcriptSkipResponse(transcriptOutcome));
 			}
 			const ingestResult = await ingestNormalizedEnvelope(
-				getStore(),
+				store,
 				sweeper,
 				envelope,
 				c.req.header("x-codemem-boundary-flush") === "1",
@@ -370,8 +382,11 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 		const payload = result;
 
 		try {
+			const store = getStore();
+			const target = validateViewerTarget(store, payload, { requirePairedTargets: true });
+			if (!target.ok) return c.json(target.body, target.status);
 			let transcriptOutcome: HookTranscriptOutcome | null = null;
-			const envelope = buildRawEventEnvelopeFromCodexHook(payload, {
+			const envelope = buildRawEventEnvelopeFromCodexHook(untargetedPayload(payload), {
 				transcriptPolicy: { trust: "restricted", approvedRoots: [codexTranscriptRoot()] },
 				onTranscriptOutcome: (outcome) => {
 					transcriptOutcome = outcome;
@@ -381,7 +396,7 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 			if (envelope === null) {
 				return c.json(transcriptSkipResponse(transcriptOutcome));
 			}
-			const ingestResult = await ingestNormalizedEnvelope(getStore(), sweeper, envelope);
+			const ingestResult = await ingestNormalizedEnvelope(store, sweeper, envelope);
 			return c.json({ inserted: ingestResult.inserted, skipped: ingestResult.skipped });
 		} catch (err) {
 			return boundedIngestErrorResponse(c, err);

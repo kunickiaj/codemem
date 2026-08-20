@@ -1,4 +1,3 @@
-import { homedir } from "node:os";
 import { isAbsolute, posix, resolve as resolvePath, win32 } from "node:path";
 import type {
 	MemoryFilters,
@@ -15,11 +14,11 @@ import {
 	promptPackArtifactFingerprint,
 	recordPromptPackArtifacts,
 	recordPromptPackTerminal,
-	resolveDbPath,
 	resolveProject,
 	tryUpdateRetrievalDelivery,
 } from "@codemem/core";
 import { Hono } from "hono";
+import { currentIdentityTarget, validateViewerTarget } from "./target-validation.js";
 
 type StoreFactory = () => MemoryStore;
 type LedgerOutcome = RetrievalLedgerWriteOutcome | RetrievalLedgerDeliveryOutcome;
@@ -61,19 +60,6 @@ const LEDGER_KEYS = new Set([
 	"db_path",
 	"identity_target",
 ]);
-const IDENTITY_TARGET_KEYS = new Set([
-	"device_id",
-	"actor_id_present",
-	"actor_id",
-	"config_path",
-	"runtime_root",
-	"workspace_id",
-	"home_dir",
-	"pack_compression",
-	"embedding_disabled",
-	"embedding_model",
-]);
-const BOOLEAN_IDENTITY_TARGET_KEYS = new Set(["actor_id_present", "embedding_disabled"]);
 const ATTEMPT_KEYS = new Set([
 	"attempt_id",
 	"started_at",
@@ -107,15 +93,6 @@ type ValidatedPackRequest = {
 
 function invalidRequest(message: string) {
 	return { error: { code: "invalid_request", message } };
-}
-
-function viewerDbMismatch() {
-	return {
-		error: {
-			code: "viewer_db_mismatch",
-			message: "viewer database does not match request",
-		},
-	};
 }
 
 function viewerIdentityMismatch() {
@@ -154,55 +131,6 @@ function normalizeWorkingSetPath(value: string): string | null {
 		return null;
 	}
 	return normalized;
-}
-
-function requestedDbMatches(store: MemoryStore, value: unknown): boolean | null {
-	if (value == null) return true;
-	if (typeof value !== "string" || !value.trim()) return null;
-	return resolvePath(resolveDbPath(value)) === resolvePath(store.dbPath);
-}
-
-function normalizeIdentityPath(value: string | undefined): string | null {
-	if (!value?.trim()) return null;
-	return resolvePath(resolveDbPath(value.trim()));
-}
-
-function currentIdentityTarget(): Record<string, string | boolean | null> {
-	return {
-		device_id: process.env.CODEMEM_DEVICE_ID?.trim() || null,
-		actor_id_present: Object.hasOwn(process.env, "CODEMEM_ACTOR_ID"),
-		actor_id: process.env.CODEMEM_ACTOR_ID?.trim() || null,
-		config_path: normalizeIdentityPath(process.env.CODEMEM_CONFIG),
-		runtime_root: normalizeIdentityPath(process.env.CODEMEM_RUNTIME_ROOT),
-		workspace_id: process.env.CODEMEM_WORKSPACE_ID?.trim() || null,
-		home_dir: normalizeIdentityPath(process.env.HOME || homedir()),
-		pack_compression: process.env.CODEMEM_PACK_COMPRESSION?.trim() || null,
-		embedding_disabled: ["1", "true", "yes"].includes(
-			String(process.env.CODEMEM_EMBEDDING_DISABLED || "").toLowerCase(),
-		),
-		embedding_model: process.env.CODEMEM_EMBEDDING_MODEL || "Xenova/bge-small-en-v1.5",
-	};
-}
-
-function requestedIdentityMatches(value: unknown): boolean | null | "unsupported" {
-	if (value == null) return true;
-	if (!isRecord(value)) return null;
-	if (
-		Object.keys(value).length !== IDENTITY_TARGET_KEYS.size ||
-		Object.keys(value).some((key) => !IDENTITY_TARGET_KEYS.has(key))
-	)
-		return "unsupported";
-	const expected = currentIdentityTarget();
-	for (const key of IDENTITY_TARGET_KEYS) {
-		const requested = value[key];
-		if (BOOLEAN_IDENTITY_TARGET_KEYS.has(key)) {
-			if (typeof requested !== "boolean") return null;
-		} else if (requested !== null && typeof requested !== "string") {
-			return null;
-		}
-		if (requested !== expected[key]) return false;
-	}
-	return true;
 }
 
 function validateMetadataFields(
@@ -439,15 +367,8 @@ export function packTransportRoutes(getStore: StoreFactory) {
 		}
 		try {
 			const store = getStore();
-			const dbMatches = requestedDbMatches(store, parsed.db_path);
-			if (dbMatches == null)
-				return c.json(invalidRequest("db_path must be a non-empty string"), 400);
-			if (!dbMatches) return c.json(viewerDbMismatch(), 409);
-			const identityMatches = requestedIdentityMatches(parsed.identity_target);
-			if (identityMatches === "unsupported") return c.json(viewerContractUnsupported(), 409);
-			if (identityMatches == null) return c.json(invalidRequest("identity_target is invalid"), 400);
-			if (!identityMatches) return c.json(viewerIdentityMismatch(), 409);
-			if (!store.hasCurrentIdentity()) return c.json(viewerIdentityMismatch(), 409);
+			const target = validateViewerTarget(store, parsed, { requireCurrentIdentity: true });
+			if (!target.ok) return c.json(target.body, target.status);
 			if (!request.attempt) {
 				const pack = await store.buildMemoryPackAsync(
 					request.context,
@@ -517,15 +438,8 @@ export function packTransportRoutes(getStore: StoreFactory) {
 		}
 		try {
 			const store = getStore();
-			const dbMatches = requestedDbMatches(store, parsed.db_path);
-			if (dbMatches == null)
-				return c.json(invalidRequest("db_path must be a non-empty string"), 400);
-			if (!dbMatches) return c.json(viewerDbMismatch(), 409);
-			const identityMatches = requestedIdentityMatches(parsed.identity_target);
-			if (identityMatches === "unsupported") return c.json(viewerContractUnsupported(), 409);
-			if (identityMatches == null) return c.json(invalidRequest("identity_target is invalid"), 400);
-			if (!identityMatches) return c.json(viewerIdentityMismatch(), 409);
-			if (!store.hasCurrentIdentity()) return c.json(viewerIdentityMismatch(), 409);
+			const target = validateViewerTarget(store, parsed, { requireCurrentIdentity: true });
+			if (!target.ok) return c.json(target.body, target.status);
 			const outcome = dispatchLedger(store, parsed);
 			if (typeof outcome === "string") return c.json(invalidRequest(outcome), 400);
 			if (outcome.ok) return c.json(outcome);

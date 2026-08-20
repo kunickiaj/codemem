@@ -39,6 +39,7 @@ import {
 } from "./claude-hook-ingest-spool.js";
 import { logHookEvent } from "./claude-hook-plugin-log.js";
 import { trackHookSessionState } from "./claude-hook-session-state.js";
+import { isViewerTargetConflict, rawEventTarget } from "./raw-event-target.js";
 
 type IngestVia = "http" | "direct" | "spool" | "spool_lock_busy";
 
@@ -54,6 +55,13 @@ type IngestDeps = {
 	directIngest?: typeof directEnqueue;
 	resolveDb?: typeof resolveDbPath;
 	boundaryFlush?: (payload: Record<string, unknown>, dbPath: string) => Promise<void> | void;
+};
+
+type HttpIngestResult = {
+	ok: boolean;
+	inserted: number;
+	skipped: number;
+	targetMismatch?: boolean;
 };
 
 function emitStructuredError(errorCode: string, message: string): void {
@@ -81,7 +89,7 @@ async function tryHttpIngest(
 	payload: Record<string, unknown>,
 	host: string,
 	port: number,
-): Promise<{ ok: boolean; inserted: number; skipped: number }> {
+): Promise<HttpIngestResult> {
 	const url = `http://${host}:${port}/api/claude-hooks`;
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), 5000);
@@ -92,7 +100,15 @@ async function tryHttpIngest(
 			body: JSON.stringify(payload),
 			signal: controller.signal,
 		});
-		if (!res.ok) return { ok: false, inserted: 0, skipped: 0 };
+		if (!res.ok) {
+			const body = await res.json().catch(() => null);
+			return {
+				ok: false,
+				inserted: 0,
+				skipped: 0,
+				targetMismatch: isViewerTargetConflict(res.status, body),
+			};
+		}
 
 		let body: unknown;
 		try {
@@ -239,6 +255,10 @@ export async function ingestClaudeHookPayload(
 		if (cachedDbPath === null) cachedDbPath = resolveDb(resolveDbOpt(opts));
 		return cachedDbPath;
 	};
+	const httpPayload = (queued: Record<string, unknown>): Record<string, unknown> => ({
+		...queued,
+		...rawEventTarget(getDbPath()),
+	});
 
 	const tryDirectFallback = (
 		queued: Record<string, unknown>,
@@ -289,7 +309,7 @@ export async function ingestClaudeHookPayload(
 			await withClaudeHookIngestLock(async () => {
 				recoverStaleTmpSpool(lockTtlSeconds());
 				await drainSpool(async (queuedPayload) => {
-					const queuedHttp = await httpIngest(queuedPayload, opts.host, port);
+					const queuedHttp = await httpIngest(httpPayload(queuedPayload), opts.host, port);
 					if (queuedHttp.ok) return true;
 					return tryDirectFallback(queuedPayload).ok;
 				});
@@ -306,7 +326,7 @@ export async function ingestClaudeHookPayload(
 	};
 
 	// 1. Unlocked HTTP attempt — fast path when the viewer is up.
-	const httpResult = await httpIngest(payload, opts.host, port);
+	const httpResult = await httpIngest(httpPayload(payload), opts.host, port);
 	if (httpResult.ok) {
 		await flushOnBoundaryIfRequested();
 		await drainBacklogIfPresent();
@@ -320,14 +340,16 @@ export async function ingestClaudeHookPayload(
 			recoverStaleTmpSpool(lockTtlSeconds());
 
 			await drainSpool(async (queuedPayload) => {
-				const queuedHttp = await httpIngest(queuedPayload, opts.host, port);
+				if (httpResult.targetMismatch) return tryDirectFallback(queuedPayload).ok;
+				const queuedHttp = await httpIngest(httpPayload(queuedPayload), opts.host, port);
 				if (queuedHttp.ok) return true;
-				const direct = tryDirectFallback(queuedPayload);
-				return direct.ok;
+				return tryDirectFallback(queuedPayload).ok;
 			});
 
-			const secondHttp = await httpIngest(payload, opts.host, port);
-			if (secondHttp.ok) {
+			const secondHttp = httpResult.targetMismatch
+				? null
+				: await httpIngest(httpPayload(payload), opts.host, port);
+			if (secondHttp?.ok) {
 				await flushOnBoundaryIfRequested();
 				return {
 					inserted: secondHttp.inserted,

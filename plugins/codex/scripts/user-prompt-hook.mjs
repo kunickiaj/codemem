@@ -80,11 +80,11 @@ function normalizeIdentityPath(value, cwd, env) {
 	return trimmed ? resolve(cwd, expandHome(trimmed, env)) : null;
 }
 
-function resolveDbPath(cwd, env) {
+export function resolveDbPath(cwd, env) {
 	return resolve(cwd, expandHome(env.CODEMEM_DB?.trim() || "~/.codemem/mem.sqlite", env));
 }
 
-function identityTarget(cwd, env) {
+export function identityTarget(cwd, env) {
 	return {
 		device_id: env.CODEMEM_DEVICE_ID?.trim() || null,
 		actor_id_present: Object.hasOwn(env, "CODEMEM_ACTOR_ID"),

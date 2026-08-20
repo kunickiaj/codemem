@@ -9,7 +9,12 @@ import {
 	buildRawEventEnvelopeFromHook,
 	TRUSTED_HOOK_MAPPER_OPTIONS,
 } from "./codemem-normalizer.mjs";
-import { trackClaudeSessionState, viewerBaseUrl } from "./user-prompt-hook.mjs";
+import {
+	identityTarget,
+	resolveDbPath,
+	trackClaudeSessionState,
+	viewerBaseUrl,
+} from "./user-prompt-hook.mjs";
 
 const MAX_BODY_BYTES = 1_048_576;
 const BOUNDARY_DEADLINE_MARGIN_MS = 50;
@@ -123,6 +128,9 @@ export async function postEnvelope(body, overrides = {}) {
 	const baseUrl = viewerBaseUrl(env);
 	if (!baseUrl) return false;
 	try {
+		const envelope = JSON.parse(body);
+		const cwd =
+			typeof envelope.cwd === "string" && envelope.cwd.trim() ? envelope.cwd : process.cwd();
 		const response = await (overrides.fetchImpl ?? fetch)(`${baseUrl}/api/raw-events`, {
 			method: "POST",
 			redirect: "manual",
@@ -130,11 +138,26 @@ export async function postEnvelope(body, overrides = {}) {
 				"Content-Type": "application/json",
 				...(overrides.flushBoundary ? { "X-Codemem-Boundary-Flush": "1" } : {}),
 			},
-			body,
+			body: JSON.stringify({
+				...envelope,
+				db_path: resolveDbPath(cwd, env),
+				identity_target: identityTarget(cwd, env),
+			}),
 			signal: AbortSignal.timeout(overrides.timeoutMs ?? 5000),
 		});
 		if (response.status >= 300 && response.status < 400) return false;
-		if (!response.ok) return false;
+		if (!response.ok) {
+			if (response.status !== 409) return false;
+			const errorBody = await response.json().catch(() => null);
+			const code = errorBody?.error?.code;
+			return [
+				"viewer_db_mismatch",
+				"viewer_identity_mismatch",
+				"viewer_contract_unsupported",
+			].includes(code)
+				? "target_mismatch"
+				: false;
+		}
 		const result = await response.json();
 		return (
 			result != null &&
@@ -217,10 +240,16 @@ export async function runClaudeIngestHook(overrides = {}) {
 			timeoutMs: flushBoundary ? boundaryTimeoutMs(nativePayload, env) : undefined,
 		};
 
-		if (await postWithinBudget(postOptions, fallbackReserveMs)) return 0;
+		const firstPost = await postWithinBudget(postOptions, fallbackReserveMs);
+		if (firstPost === true) return 0;
 		// A timed-out boundary request may still be extracting server-side.
 		// Retry only the durable enqueue so it cannot multiply observer work.
-		if (flushBoundary && (await postWithinBudget({}, fallbackReserveMs))) return 0;
+		if (
+			firstPost !== "target_mismatch" &&
+			flushBoundary &&
+			(await postWithinBudget({}, fallbackReserveMs)) === true
+		)
+			return 0;
 		if (fallbackWithinBudget("codemem", ["enqueue-raw-event"])) return 0;
 		if (fallbackWithinBudget("npx", ["-y", `codemem@${pinnedVersion()}`, "enqueue-raw-event"]))
 			return 0;

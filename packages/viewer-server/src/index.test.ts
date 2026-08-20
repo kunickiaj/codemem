@@ -574,6 +574,172 @@ describe("viewer-server", () => {
 	});
 
 	describe("raw event HTTP ingestion", () => {
+		const targetedIngestCases = [
+			{
+				route: "/api/raw-events",
+				payload: {
+					session_id: "targeted-canonical",
+					event_id: "targeted-canonical-event",
+					event_type: "prompt",
+					payload: { text: "targeted canonical event" },
+				},
+			},
+			{
+				route: "/api/claude-hooks",
+				payload: {
+					hook_event_name: "UserPromptSubmit",
+					session_id: "targeted-claude",
+					prompt: "targeted Claude event",
+				},
+			},
+			{
+				route: "/api/codex-hooks",
+				payload: {
+					hook_event_name: "UserPromptSubmit",
+					session_id: "targeted-codex",
+					prompt: "targeted Codex event",
+				},
+			},
+		] as const;
+
+		it.each(
+			targetedIngestCases,
+		)("rejects database, identity, and contract mismatches before writes on $route", async ({
+			route,
+			payload,
+		}) => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const store = ensureStore();
+				const profile = (await (await app.request("/api/prompt-pack-profile")).json()) as {
+					identity_target: Record<string, unknown>;
+				};
+				const diagnosticsBefore = (await (await app.request("/api/raw-events/status")).json()) as {
+					transcript_diagnostics: unknown;
+				};
+				const requests = [
+					{
+						db_path: `${store.dbPath}.other`,
+						identity_target: profile.identity_target,
+						expectedCode: "viewer_db_mismatch",
+					},
+					{
+						db_path: store.dbPath,
+						identity_target: { ...profile.identity_target, device_id: "other-device" },
+						expectedCode: "viewer_identity_mismatch",
+					},
+					{
+						db_path: store.dbPath,
+						identity_target: { ...profile.identity_target, future_field: "unsupported" },
+						expectedCode: "viewer_contract_unsupported",
+					},
+				];
+
+				for (const request of requests) {
+					const { expectedCode, ...target } = request;
+					const response = await postViewerJson(app, route, { ...payload, ...target });
+					expect(response.status).toBe(409);
+					expect(await response.json()).toMatchObject({
+						error: { code: expectedCode },
+					});
+					expect(rawEventState(store)).toEqual({ events: [], sessions: [] });
+					const diagnosticsAfter = (await (await app.request("/api/raw-events/status")).json()) as {
+						transcript_diagnostics: unknown;
+					};
+					expect(diagnosticsAfter.transcript_diagnostics).toEqual(
+						diagnosticsBefore.transcript_diagnostics,
+					);
+				}
+			} finally {
+				cleanup();
+			}
+		});
+
+		it.each(targetedIngestCases)("rejects partial targeting on $route", async ({
+			route,
+			payload,
+		}) => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const store = ensureStore();
+				const profile = (await (await app.request("/api/prompt-pack-profile")).json()) as {
+					identity_target: Record<string, unknown>;
+				};
+				for (const partialTarget of [
+					{ db_path: store.dbPath },
+					{ identity_target: profile.identity_target },
+				]) {
+					const response = await postViewerJson(app, route, { ...payload, ...partialTarget });
+					expect(response.status).toBe(400);
+					expect(await response.json()).toMatchObject({ error: { code: "invalid_request" } });
+					expect(rawEventState(store)).toEqual({ events: [], sessions: [] });
+				}
+			} finally {
+				cleanup();
+			}
+		});
+
+		it.each(targetedIngestCases)("rejects invalid target types on $route", async ({
+			route,
+			payload,
+		}) => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const store = ensureStore();
+				const profile = (await (await app.request("/api/prompt-pack-profile")).json()) as {
+					identity_target: Record<string, unknown>;
+				};
+				for (const invalidTarget of [
+					{ db_path: 42, identity_target: profile.identity_target },
+					{ db_path: store.dbPath, identity_target: "wrong-type" },
+				]) {
+					const response = await postViewerJson(app, route, { ...payload, ...invalidTarget });
+					expect(response.status).toBe(400);
+					expect(await response.json()).toMatchObject({ error: { code: "invalid_request" } });
+					expect(rawEventState(store)).toEqual({ events: [], sessions: [] });
+				}
+			} finally {
+				cleanup();
+			}
+		});
+
+		it.each(targetedIngestCases)("accepts omitted targeting fields on $route", async ({
+			route,
+			payload,
+		}) => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const response = await postViewerJson(app, route, payload);
+				expect(response.status).toBe(200);
+				expect(rawEventState(ensureStore()).events).toHaveLength(1);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it.each(targetedIngestCases)("accepts path-equivalent database targets on $route", async ({
+			route,
+			payload,
+		}) => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const store = ensureStore();
+				const profile = (await (await app.request("/api/prompt-pack-profile")).json()) as {
+					identity_target: Record<string, unknown>;
+				};
+				const response = await postViewerJson(app, route, {
+					...payload,
+					db_path: `  ${dirname(store.dbPath)}/./${basename(store.dbPath)}  `,
+					identity_target: profile.identity_target,
+				});
+
+				expect(response.status).toBe(200);
+				expect(rawEventState(store).events).toHaveLength(1);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("defaults omitted source to opencode and returns exactly the canonical result fields", async () => {
 			const { app, ensureStore, cleanup } = createTestApp();
 			try {

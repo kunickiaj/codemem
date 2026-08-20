@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	buildViewerIdentityTarget,
 	classifyPromptTransportFailure as classifyCorePromptTransportFailure,
 	type PromptTransportFailure,
 } from "@codemem/core";
@@ -69,6 +70,23 @@ describe("dependency-free Codex user prompt hook", () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
+	it("matches the core identity-target contract for absolute paths", () => {
+		const controlledEnv = {
+			HOME: join(root, "home"),
+			CODEMEM_DEVICE_ID: "device-1",
+			CODEMEM_ACTOR_ID: "actor-1",
+			CODEMEM_CONFIG: join(root, "config.toml"),
+			CODEMEM_RUNTIME_ROOT: join(root, "runtime"),
+			CODEMEM_WORKSPACE_ID: "workspace-1",
+			CODEMEM_PACK_COMPRESSION: "ids",
+			CODEMEM_EMBEDDING_DISABLED: "true",
+			CODEMEM_EMBEDDING_MODEL: "model-1",
+		};
+		expect(hook.identityTarget(root, controlledEnv)).toEqual(
+			buildViewerIdentityTarget(controlledEnv),
+		);
+	});
+
 	it("accepts only canonical loopback Viewer hosts for prompt and event HTTP", async () => {
 		for (const [host, expected] of [
 			["localhost", "http://localhost:4000"],
@@ -104,6 +122,41 @@ describe("dependency-free Codex user prompt hook", () => {
 			}),
 		).resolves.toBe(false);
 		expect(eventFetchCalls).toBe(0);
+	});
+
+	it("targets Codex raw-event requests at the configured database identity", async () => {
+		let requestBody: Record<string, unknown> | undefined;
+		await expect(
+			ingestHook.postEnvelope(JSON.stringify({ cwd: root, event_type: "prompt" }), {
+				env,
+				fetchImpl: async (_input: string | URL, init?: RequestInit) => {
+					requestBody = JSON.parse(String(init?.body));
+					return jsonResponse({ inserted: 1, skipped: 0 });
+				},
+			}),
+		).resolves.toBe(true);
+		expect(requestBody).toMatchObject({ db_path: dbPath, identity_target: identity });
+	});
+
+	it("uses the Codex command fallback once for a mismatched Viewer", async () => {
+		const actions: string[] = [];
+		await ingestHook.runCodexIngestHook({
+			env,
+			readInput: async () => JSON.stringify(payload),
+			postEnvelope: async () => "target_mismatch",
+			spoolEnvelope: () => {
+				actions.push("spool");
+				return "/tmp/raw-event.json";
+			},
+			runFallback: (command: string) => {
+				actions.push(`fallback:${command}`);
+				return true;
+			},
+			removeSpooledEnvelope: () => actions.push("remove"),
+			writeOutput: () => {},
+		});
+
+		expect(actions).toEqual(["spool", "fallback:codemem", "remove"]);
 	});
 
 	it("spools normalized events before attempting command fallbacks", async () => {

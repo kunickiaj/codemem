@@ -8,6 +8,7 @@ import { buildMemoryPackWithTrace } from "../../../core/src/pack.js";
 import { MemoryStore } from "../../../core/src/store.js";
 import { getRetrievalAttempt } from "../../../core/src/retrieval-ledger.js";
 import { initTestSchema } from "../../../core/src/test-utils.js";
+import { buildViewerIdentityTarget } from "../../../core/src/identity-target.js";
 import {
 	handleInstrumentedPackLedger,
 	handlePromptPackLedger,
@@ -47,6 +48,23 @@ const jsonResponse = (status, body) => ({
 const packResponse = (text = "## Summary\n[1] (feature) Viewer-backed context") => ({
 	pack_text: text,
 	metrics: { total_items: 1, pack_tokens: 24 },
+});
+
+test("OpenCode identity targeting matches the core contract for absolute paths", async () => {
+	const root = resolve("/tmp/codemem-opencode-identity-parity");
+	const env = {
+		HOME: join(root, "home"),
+		CODEMEM_DEVICE_ID: "device-1",
+		CODEMEM_ACTOR_ID: "actor-1",
+		CODEMEM_CONFIG: join(root, "config.toml"),
+		CODEMEM_RUNTIME_ROOT: join(root, "runtime"),
+		CODEMEM_WORKSPACE_ID: "workspace-1",
+		CODEMEM_PACK_COMPRESSION: "ids",
+		CODEMEM_EMBEDDING_DISABLED: "yes",
+		CODEMEM_EMBEDDING_MODEL: "model-1",
+	};
+	const { __testUtils } = await import("../plugins/codemem.js");
+	expect(__testUtils.buildViewerIdentityTarget(env, root)).toEqual(buildViewerIdentityTarget(env));
 });
 
 const normalizeIdentityPath = (value, cwd = "/tmp/greenroom") => {
@@ -2152,6 +2170,63 @@ describe("OpenCode transform-time injection", () => {
 		// Assert
 		expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/api/pack"))).toHaveLength(2);
 		expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)).toEqual([]);
+	});
+
+	test.each([
+		"viewer_db_mismatch",
+		"viewer_identity_mismatch",
+		"viewer_contract_unsupported",
+	])("targets raw-event HTTP and invokes the CLI fallback once on %s", async (errorCode) => {
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "1";
+		const postedBodies = [];
+		const fallbackBodies = [];
+		const appLog = vi.fn().mockResolvedValue(undefined);
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+			if (String(url).includes("/api/raw-events/status")) {
+				return jsonResponse(200, { ingest: { available: true } });
+			}
+			if (String(url).endsWith("/api/raw-events") && init?.method === "POST") {
+				postedBodies.push(JSON.parse(String(init.body)));
+				return jsonResponse(409, {
+					error: { code: errorCode, message: "viewer target does not match request" },
+				});
+			}
+			return jsonResponse(200, {});
+		});
+		spawnMock.mockImplementation((_command, args) => {
+			const proc = makeProcess({ exitCode: 0 });
+			if (Array.isArray(args) && args.includes("enqueue-raw-event")) {
+				proc.stdin.write = vi.fn((value) => fallbackBodies.push(JSON.parse(String(value))));
+			}
+			return proc;
+		});
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: appLog }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+
+		await hooks["tool.execute.after"](
+			{ tool: "read", args: { filePath: "src/raw-event.ts" }, sessionID: "sess-target" },
+			{},
+		);
+		await vi.waitFor(() => expect(fallbackBodies).toHaveLength(1));
+		const expectedProfile = await viewerProfileResponse().json();
+
+		expect(postedBodies).toHaveLength(1);
+		expect(postedBodies[0]).toMatchObject({
+			db_path: expectedProfile.db_path,
+			identity_target: expectedProfile.identity_target,
+		});
+		expect(fallbackBodies[0]).not.toHaveProperty("db_path");
+		expect(fallbackBodies[0]).not.toHaveProperty("identity_target");
+		expect(appLog).toHaveBeenCalledWith(expect.objectContaining({
+			extra: expect.objectContaining({ viewerTargetMismatch: true }),
+		}));
 	});
 
 	test("retries one SQLite-locked raw-event fallback with the identical envelope and marks it delivered", async () => {

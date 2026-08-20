@@ -27,6 +27,7 @@ import {
 	spoolCodexHookPayload,
 	withCodexHookIngestLock,
 } from "./codex-hook-ingest-spool.js";
+import { rawEventTarget } from "./raw-event-target.js";
 
 type IngestVia = "http" | "direct" | "spool" | "spool_lock_busy";
 type IngestResult = { inserted: number; skipped: number; via: IngestVia };
@@ -36,6 +37,11 @@ type IngestDeps = {
 	httpIngest?: typeof tryHttpIngest;
 	directIngest?: typeof directEnqueueCodexHook;
 	resolveDb?: typeof resolveDbPath;
+};
+type HttpIngestResult = {
+	ok: boolean;
+	inserted: number;
+	skipped: number;
 };
 
 // Codex hooks run under a tight wrapper budget (see plugins/codex/scripts/
@@ -110,7 +116,7 @@ export async function tryHttpIngest(
 	payload: Record<string, unknown>,
 	host: string,
 	port: number,
-): Promise<{ ok: boolean; inserted: number; skipped: number }> {
+): Promise<HttpIngestResult> {
 	const baseUrl = codexViewerBaseUrl(host, port);
 	if (!baseUrl) return { ok: false, inserted: 0, skipped: 0 };
 	const url = `${baseUrl}/api/codex-hooks`;
@@ -124,7 +130,10 @@ export async function tryHttpIngest(
 			body: JSON.stringify(payload),
 			signal: controller.signal,
 		});
-		if (!res.ok) return { ok: false, inserted: 0, skipped: 0 };
+		if (!res.ok) {
+			await res.json().catch(() => null);
+			return { ok: false, inserted: 0, skipped: 0 };
+		}
 
 		const body = (await res.json()) as unknown;
 		if (body == null || typeof body !== "object" || Array.isArray(body)) {
@@ -181,6 +190,10 @@ export async function ingestCodexHookPayload(
 		if (cachedDbPath === null) cachedDbPath = resolveDb(resolveDbOpt(opts));
 		return cachedDbPath;
 	};
+	const httpPayload = (queuedPayload: Record<string, unknown>): Record<string, unknown> => ({
+		...queuedPayload,
+		...rawEventTarget(getDbPath()),
+	});
 	const tryDirectFallback = (queuedPayload: Record<string, unknown>): boolean => {
 		try {
 			directIngest(queuedPayload, getDbPath());
@@ -198,7 +211,7 @@ export async function ingestCodexHookPayload(
 			await withCodexHookIngestLock(async () => {
 				recoverStaleCodexHookTmpSpool(codexHookLockTtlSeconds());
 				await drainCodexHookSpool(async (queuedPayload) => {
-					const queuedHttp = await httpIngest(queuedPayload, opts.host, port);
+					const queuedHttp = await httpIngest(httpPayload(queuedPayload), opts.host, port);
 					return queuedHttp.ok || tryDirectFallback(queuedPayload);
 				});
 			});
@@ -210,7 +223,7 @@ export async function ingestCodexHookPayload(
 		}
 	};
 
-	const httpResult = await httpIngest(ingestPayload, opts.host, port);
+	const httpResult = await httpIngest(httpPayload(ingestPayload), opts.host, port);
 	if (httpResult.ok) {
 		await drainBacklogIfPresent();
 		return { inserted: httpResult.inserted, skipped: httpResult.skipped, via: "http" };

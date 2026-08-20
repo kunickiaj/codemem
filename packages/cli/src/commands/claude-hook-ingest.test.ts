@@ -78,21 +78,63 @@ describe("claude-hook-ingest command", () => {
 	});
 
 	it("returns HTTP result when viewer ingest succeeds", async () => {
+		let httpPayload: Record<string, unknown> | undefined;
 		const result = await ingestClaudeHookPayload(
 			{ hook_event_name: "SessionStart", session_id: "sess-http", cwd: "/tmp/demo" },
 			{ host: "127.0.0.1", port: 38888 },
 			{
-				httpIngest: async () => ({ ok: true, inserted: 2, skipped: 1 }),
+				httpIngest: async (request) => {
+					httpPayload = request;
+					return { ok: true, inserted: 2, skipped: 1 };
+				},
 				directIngest: () => {
 					throw new Error("direct ingest should not be called");
 				},
-				resolveDb: () => {
-					throw new Error("resolveDb should not be called");
-				},
+				resolveDb: () => "/tmp/resolved.sqlite",
 			},
 		);
 
 		expect(result).toEqual({ inserted: 2, skipped: 1, via: "http" });
+		expect(httpPayload).toMatchObject({
+			db_path: "/tmp/resolved.sqlite",
+			identity_target: expect.any(Object),
+		});
+	});
+
+	it("does not re-probe a mismatched Viewer while draining backlog", async () => {
+		mkdirSync(queueDir, { recursive: true });
+		writeFileSync(
+			join(queueDir, "hook-0000000001-pid-1.json"),
+			JSON.stringify({ hook_event_name: "Stop", session_id: "queued", tag: "queued" }),
+			"utf8",
+		);
+		let httpCalls = 0;
+		const directCalls: Array<Record<string, unknown>> = [];
+		const result = await ingestClaudeHookPayload(
+			{
+				hook_event_name: "SessionStart",
+				session_id: "sess-mismatch",
+				cwd: "/tmp/demo",
+				tag: "fresh",
+			},
+			{ host: "127.0.0.1", port: 38888, db: "/tmp/custom.sqlite" },
+			{
+				httpIngest: async () => {
+					httpCalls += 1;
+					return { ok: false, inserted: 0, skipped: 0, targetMismatch: true };
+				},
+				directIngest: (payload) => {
+					directCalls.push(payload);
+					return { inserted: 1, skipped: 0 };
+				},
+				resolveDb: () => "/tmp/resolved.sqlite",
+			},
+		);
+
+		expect(result).toEqual({ inserted: 1, skipped: 0, via: "direct" });
+		expect(httpCalls).toBe(1);
+		expect(directCalls.map((payload) => payload.tag)).toEqual(["queued", "fresh"]);
+		expect(readdirSync(queueDir)).toHaveLength(0);
 	});
 
 	it("falls back to direct ingest when HTTP path fails", async () => {

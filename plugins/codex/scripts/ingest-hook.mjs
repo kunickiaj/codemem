@@ -18,7 +18,7 @@ import {
 	buildRawEventEnvelopeFromCodexHook,
 	TRUSTED_HOOK_MAPPER_OPTIONS,
 } from "./codemem-normalizer.mjs";
-import { viewerBaseUrl } from "./user-prompt-hook.mjs";
+import { identityTarget, resolveDbPath, viewerBaseUrl } from "./user-prompt-hook.mjs";
 
 export { viewerBaseUrl };
 
@@ -80,17 +80,36 @@ function httpTimeoutMs() {
 }
 
 export async function postEnvelope(body, overrides = {}) {
-	const baseUrl = viewerBaseUrl(overrides.env ?? process.env);
+	const env = overrides.env ?? process.env;
+	const baseUrl = viewerBaseUrl(env);
 	if (!baseUrl) return false;
 	try {
+		const envelope = JSON.parse(body);
+		const cwd =
+			typeof envelope.cwd === "string" && envelope.cwd.trim() ? envelope.cwd : process.cwd();
 		const response = await (overrides.fetchImpl ?? fetch)(`${baseUrl}/api/raw-events`, {
 			method: "POST",
 			redirect: "manual",
 			headers: { "Content-Type": "application/json" },
-			body,
+			body: JSON.stringify({
+				...envelope,
+				db_path: resolveDbPath(cwd, env),
+				identity_target: identityTarget(cwd, env),
+			}),
 			signal: AbortSignal.timeout(overrides.timeoutMs ?? httpTimeoutMs()),
 		});
-		if (!response.ok) return false;
+		if (!response.ok) {
+			if (response.status !== 409) return false;
+			const errorBody = await response.json().catch(() => null);
+			const code = errorBody?.error?.code;
+			return [
+				"viewer_db_mismatch",
+				"viewer_identity_mismatch",
+				"viewer_contract_unsupported",
+			].includes(code)
+				? "target_mismatch"
+				: false;
+		}
 		const result = await response.json();
 		return (
 			result != null &&
@@ -166,7 +185,7 @@ async function drainNormalizedSpool() {
 		} catch {
 			continue;
 		}
-		if (!(await postEnvelope(body))) continue;
+		if ((await postEnvelope(body)) !== true) continue;
 		try {
 			unlinkSync(path);
 		} catch {
@@ -191,7 +210,10 @@ export async function runCodexIngestHook(overrides = {}) {
 			);
 			if (envelope !== null) {
 				const envelopeBody = JSON.stringify(envelope);
-				if (await (overrides.postEnvelope ?? postEnvelope)(envelopeBody)) {
+				if (
+					(await (overrides.postEnvelope ?? postEnvelope)(envelopeBody, { env: overrides.env })) ===
+					true
+				) {
 					await (overrides.drainNormalizedSpool ?? drainNormalizedSpool)();
 				} else {
 					// Persist before spawning either fallback. Codex can terminate this

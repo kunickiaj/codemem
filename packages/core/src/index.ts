@@ -387,6 +387,8 @@ export {
 	MAX_HOOK_TRANSCRIPT_BYTES,
 	TRUSTED_HOOK_TRANSCRIPT_POLICY,
 } from "./hook-transcript.js";
+export type { ViewerIdentityTarget, ViewerIdentityTargetKey } from "./identity-target.js";
+export { buildViewerIdentityTarget, VIEWER_IDENTITY_TARGET_KEYS } from "./identity-target.js";
 // Ingest pipeline
 export {
 	budgetToolEvents,

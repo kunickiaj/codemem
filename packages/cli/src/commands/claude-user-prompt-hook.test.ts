@@ -2,6 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
+	buildViewerIdentityTarget,
 	classifyPromptTransportFailure as classifyCorePromptTransportFailure,
 	type PromptTransportFailure,
 } from "@codemem/core";
@@ -79,6 +80,23 @@ describe("dependency-free Claude user prompt hook", () => {
 		expect(hook.viewerBaseUrl({ CODEMEM_VIEWER_HOST: "viewer.example.com" })).toBeNull();
 	});
 
+	it("matches the core identity-target contract for absolute paths", () => {
+		const controlledEnv = {
+			HOME: join(root, "home"),
+			CODEMEM_DEVICE_ID: "device-1",
+			CODEMEM_ACTOR_ID: "actor-1",
+			CODEMEM_CONFIG: join(root, "config.toml"),
+			CODEMEM_RUNTIME_ROOT: join(root, "runtime"),
+			CODEMEM_WORKSPACE_ID: "workspace-1",
+			CODEMEM_PACK_COMPRESSION: "ids",
+			CODEMEM_EMBEDDING_DISABLED: "true",
+			CODEMEM_EMBEDDING_MODEL: "model-1",
+		};
+		expect(hook.identityTarget(root, controlledEnv)).toEqual(
+			buildViewerIdentityTarget(controlledEnv),
+		);
+	});
+
 	it("rejects event-ingest redirects without following them", async () => {
 		let requestInit: RequestInit | undefined;
 		await expect(
@@ -94,6 +112,41 @@ describe("dependency-free Claude user prompt hook", () => {
 			}),
 		).resolves.toBe(false);
 		expect(requestInit?.redirect).toBe("manual");
+	});
+
+	it("targets Claude raw-event requests at the configured database identity", async () => {
+		let requestBody: Record<string, unknown> | undefined;
+		await expect(
+			ingestHook.postEnvelope(JSON.stringify({ cwd: root, event_type: "prompt" }), {
+				env,
+				fetchImpl: async (_input: string | URL, init?: RequestInit) => {
+					requestBody = JSON.parse(String(init?.body));
+					return jsonResponse({ inserted: 1, skipped: 0 });
+				},
+			}),
+		).resolves.toBe(true);
+		expect(requestBody).toMatchObject({ db_path: dbPath, identity_target: identity });
+	});
+
+	it("uses the Claude command fallback once without retrying a mismatched Viewer", async () => {
+		let postCalls = 0;
+		let fallbackCalls = 0;
+		const result = await ingestHook.runClaudeIngestHook({
+			env,
+			readInput: async () =>
+				JSON.stringify({ hook_event_name: "SessionEnd", session_id: "claude-session", cwd: root }),
+			postEnvelope: async () => {
+				postCalls += 1;
+				return "target_mismatch";
+			},
+			runFallback: () => {
+				fallbackCalls += 1;
+				return true;
+			},
+		});
+
+		expect(result).toBe(0);
+		expect({ postCalls, fallbackCalls }).toEqual({ postCalls: 1, fallbackCalls: 1 });
 	});
 
 	it("marks only configured Claude boundary events for synchronous Viewer flushing", async () => {

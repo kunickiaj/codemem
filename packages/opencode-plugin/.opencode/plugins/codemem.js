@@ -623,6 +623,31 @@ const parsePackMetrics = (stdout) => {
   }
 };
 
+const buildViewerIdentityTarget = (env = process.env, cwd = process.cwd()) => {
+  const normalizeIdentityPath = (value) => {
+    const trimmed = String(value || "").trim();
+    if (!trimmed) return null;
+    const expanded = trimmed.startsWith("~/")
+      ? join(env.HOME?.trim() || homedir(), trimmed.slice(2))
+      : trimmed;
+    return resolve(cwd, expanded);
+  };
+  return {
+    device_id: env.CODEMEM_DEVICE_ID?.trim() || null,
+    actor_id_present: Object.hasOwn(env, "CODEMEM_ACTOR_ID"),
+    actor_id: env.CODEMEM_ACTOR_ID?.trim() || null,
+    config_path: normalizeIdentityPath(env.CODEMEM_CONFIG),
+    runtime_root: normalizeIdentityPath(env.CODEMEM_RUNTIME_ROOT),
+    workspace_id: env.CODEMEM_WORKSPACE_ID?.trim() || null,
+    home_dir: normalizeIdentityPath(env.HOME || homedir()),
+    pack_compression: env.CODEMEM_PACK_COMPRESSION?.trim() || null,
+    embedding_disabled: ["1", "true", "yes"].includes(
+      String(env.CODEMEM_EMBEDDING_DISABLED || "").toLowerCase(),
+    ),
+    embedding_model: env.CODEMEM_EMBEDDING_MODEL || "Xenova/bge-small-en-v1.5",
+  };
+};
+
 const parsePackOutput = (result) => {
   const succeeded = result?.exitCode === 0;
   let payload = null;
@@ -1763,28 +1788,7 @@ export const CodememPlugin = async ({
     cwd,
     expandedViewerDbPath || join(homedir(), ".codemem", "mem.sqlite"),
   );
-  const normalizeIdentityPath = (value) => {
-    const trimmed = String(value || "").trim();
-    if (!trimmed) return null;
-    const expanded = trimmed.startsWith("~/")
-      ? join(process.env.HOME?.trim() || homedir(), trimmed.slice(2))
-      : trimmed;
-    return resolve(cwd, expanded);
-  };
-  const promptPackIdentityTarget = {
-    device_id: process.env.CODEMEM_DEVICE_ID?.trim() || null,
-    actor_id_present: Object.hasOwn(process.env, "CODEMEM_ACTOR_ID"),
-    actor_id: process.env.CODEMEM_ACTOR_ID?.trim() || null,
-    config_path: normalizeIdentityPath(process.env.CODEMEM_CONFIG),
-    runtime_root: normalizeIdentityPath(process.env.CODEMEM_RUNTIME_ROOT),
-    workspace_id: process.env.CODEMEM_WORKSPACE_ID?.trim() || null,
-    home_dir: normalizeIdentityPath(process.env.HOME || homedir()),
-    pack_compression: process.env.CODEMEM_PACK_COMPRESSION?.trim() || null,
-    embedding_disabled: ["1", "true", "yes"].includes(
-      String(process.env.CODEMEM_EMBEDDING_DISABLED || "").toLowerCase(),
-    ),
-    embedding_model: process.env.CODEMEM_EMBEDDING_MODEL || "Xenova/bge-small-en-v1.5",
-  };
+  const promptPackIdentityTarget = buildViewerIdentityTarget(process.env, cwd);
   const viewerConfigPath = process.env.CODEMEM_CONFIG || "";
   // A malformed value (e.g. "abc", "", "-1") falls back to the 20s default
   // instead of NaN, which would silently disable the timeout. An explicit "0"
@@ -2009,10 +2013,27 @@ export const CodememPlugin = async ({
       const postResp = await fetch(rawEventsUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          ...body,
+          db_path: promptPackDbPath,
+          identity_target: promptPackIdentityTarget,
+        }),
       });
       if (!postResp.ok) {
-        throw new Error(`raw-events post failed (${postResp.status})`);
+        let responseBody = null;
+        if (postResp.status === 409) {
+          try {
+            responseBody = await postResp.json();
+          } catch {
+            // Generic failure handling below remains the safe fallback.
+          }
+        }
+        const targetMismatch = isViewerDbMismatchPayload(responseBody)
+          || isViewerIdentityMismatchPayload(responseBody)
+          || isViewerContractUnsupportedPayload(responseBody);
+        const postError = new Error(`raw-events post failed (${postResp.status})`);
+        postError.viewerTargetMismatch = targetMismatch;
+        throw postError;
       }
       streamUnavailableUntil = 0;
       streamErrorNoted = false;
@@ -2035,6 +2056,7 @@ export const CodememPlugin = async ({
             type,
             viewerHost,
             viewerPort,
+            viewerTargetMismatch: err?.viewerTargetMismatch === true,
             error: String(err),
           },
         });
@@ -4022,6 +4044,7 @@ export const __testUtils = {
   buildPackHttpBody,
   parsePackText,
   parsePackMetrics,
+  buildViewerIdentityTarget,
   resolveInjectSurface,
   applyInjectedContextToOutput,
   applyInjectedContextToMessages,
