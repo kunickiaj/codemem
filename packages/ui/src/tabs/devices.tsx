@@ -257,7 +257,6 @@ function ProjectList({ empty, projects }: { empty: string; projects: DeviceProje
 
 interface SetupChoice {
 	targetIdentityId: string;
-	confirmed: boolean;
 	selected: boolean;
 	explicit: boolean;
 	itemSignature: string;
@@ -325,7 +324,6 @@ function newSetupChoice(
 			identityIds.has(item.suggestedIdentityId)
 				? item.suggestedIdentityId
 				: "",
-		confirmed: false,
 		selected: false,
 		explicit: false,
 		itemSignature: setupItemSignature(item),
@@ -445,11 +443,7 @@ function SetupWorkflow({
 					}
 					const targetStillActive =
 						existing.targetIdentityId !== "" && identityIds.has(existing.targetIdentityId);
-					if (
-						existing.itemSignature === setupItemSignature(item) &&
-						existing.explicit &&
-						targetStillActive
-					) {
+					if (existing.itemSignature === setupItemSignature(item) && targetStillActive) {
 						return [item.deviceId, existing];
 					}
 					if (existing.explicit && targetStillActive) {
@@ -457,7 +451,6 @@ function SetupWorkflow({
 							item.deviceId,
 							{
 								...existing,
-								confirmed: false,
 								selected: false,
 								itemSignature: setupItemSignature(item),
 							},
@@ -492,7 +485,9 @@ function SetupWorkflow({
 			return {
 				deviceId: item.deviceId,
 				targetIdentityId: choice?.targetIdentityId ?? "",
-				confirmed: choice?.confirmed === true,
+				// The API requires this marker to preview a binding. Final consent remains gated by
+				// the reviewed digest and the confirmation control shown after the server preview.
+				confirmed: true,
 			};
 		}),
 	});
@@ -515,14 +510,9 @@ function SetupWorkflow({
 		}
 		if (
 			selected.length === 0 ||
-			selected.some((item) => {
-				const choice = choices[item.deviceId];
-				return !choice?.targetIdentityId || !choice.confirmed;
-			})
+			selected.some((item) => !choices[item.deviceId]?.targetIdentityId)
 		) {
-			setErrorMessage(
-				"Choose and explicitly confirm an Identity for every selected device before review.",
-			);
+			setErrorMessage("Choose an Identity for every selected device before review.");
 			return;
 		}
 		setBusy(true);
@@ -595,9 +585,6 @@ function SetupWorkflow({
 					const choice = choices[item.deviceId];
 					const gate = deviceIdentitySetupGate(inventory, item);
 					const setupBlocked = gate.blocked || inventoryUnavailable;
-					const targetIdentity = choice?.targetIdentityId
-						? (identityNames.get(choice.targetIdentityId) ?? "Unavailable Identity")
-						: "";
 					const titleId = `device-inventory-title-${index}`;
 					return (
 						<li key={item.deviceId}>
@@ -623,111 +610,111 @@ function SetupWorkflow({
 									</span>
 								</div>
 								{item.state === "setup_required" ? (
-									<fieldset>
-										<legend>Assign an existing Identity</legend>
-										{identities.length === 0 ? (
-											<>
+									<>
+										<fieldset>
+											<legend>Assign an existing Identity</legend>
+											{identities.length === 0 ? (
 												<p>
 													No active Identity is available. Create or restore an Identity before
 													setup.
 												</p>
+											) : null}
+											{setupRequired.length > 1 ? (
+												<label>
+													<input
+														aria-label={`Select for setup: ${item.displayName}`}
+														checked={choice?.selected ?? false}
+														disabled={setupBlocked}
+														onInput={(event) =>
+															update(item.deviceId, { selected: event.currentTarget.checked })
+														}
+														type="checkbox"
+													/>{" "}
+													Select for setup
+												</label>
+											) : null}
+											<label htmlFor={`${titleId}-identity`}>Identity</label>
+											<select
+												aria-label={`Choose an Identity for ${item.displayName}`}
+												disabled={setupBlocked}
+												id={`${titleId}-identity`}
+												onInput={(event) =>
+													update(item.deviceId, {
+														targetIdentityId: event.currentTarget.value,
+														explicit: true,
+													})
+												}
+												value={choice?.targetIdentityId ?? ""}
+											>
+												<option value="">Choose Identity…</option>
+												{identities.map((identity) => (
+													<option key={identity.identityId} value={identity.identityId}>
+														{identity.displayName}
+													</option>
+												))}
+											</select>
+											{item.suggestedIdentityId && identityNames.has(item.suggestedIdentityId) ? (
+												<p className="small">
+													Suggested from historical device information. Review it before applying
+													setup.
+												</p>
+											) : null}
+											{gate.recovery ? <p className="small">{gate.recovery}</p> : null}
+										</fieldset>
+										<div className="device-identity-card-actions">
+											{identities.length === 0 ? (
 												<button
+													aria-label={`Open Identity administration for ${item.displayName}`}
 													className="settings-button"
 													onClick={() => options.onNavigate?.("advanced_sync")}
 													type="button"
 												>
 													Open Identity administration
 												</button>
-											</>
-										) : null}
-										<label>
-											<input
-												checked={choice?.selected ?? false}
-												disabled={setupBlocked}
-												onInput={(event) =>
-													update(item.deviceId, { selected: event.currentTarget.checked })
-												}
-												type="checkbox"
-											/>{" "}
-											Include in reviewed setup
-										</label>
-										<label htmlFor={`${titleId}-identity`}>Identity</label>
-										<select
-											disabled={setupBlocked}
-											id={`${titleId}-identity`}
-											onInput={(event) =>
-												update(item.deviceId, {
-													targetIdentityId: event.currentTarget.value,
-													confirmed: false,
-													explicit: true,
-												})
-											}
-											value={choice?.targetIdentityId ?? ""}
-										>
-											<option value="">Choose Identity…</option>
-											{identities.map((identity) => (
-												<option key={identity.identityId} value={identity.identityId}>
-													{identity.displayName}
-												</option>
-											))}
-										</select>
-										{item.suggestedIdentityId && identityNames.has(item.suggestedIdentityId) ? (
-											<p className="small">
-												Suggested from historical device information. Confirm it before setup.
-											</p>
-										) : null}
-										<label>
-											<input
-												checked={choice?.confirmed ?? false}
-												disabled={setupBlocked || !choice?.targetIdentityId}
-												onInput={(event) =>
-													update(item.deviceId, {
-														confirmed: event.currentTarget.checked,
-														selected: event.currentTarget.checked || choice?.selected === true,
-														explicit: event.currentTarget.checked || choice?.explicit === true,
-													})
-												}
-												type="checkbox"
-											/>{" "}
-											Confirm {item.displayName} belongs to{" "}
-											{targetIdentity || "the selected Identity"}
-										</label>
-										<button
-											className="settings-button"
-											disabled={busy || setupBlocked}
-											onClick={() => void review([item])}
-											type="button"
-										>
-											Review setup
-										</button>
-										{gate.recovery ? <p className="small">{gate.recovery}</p> : null}
-									</fieldset>
+											) : null}
+											<button
+												aria-label={`Review this device: ${item.displayName}`}
+												className="settings-button"
+												disabled={busy || setupBlocked || !choice?.targetIdentityId}
+												onClick={() => void review([item])}
+												type="button"
+											>
+												Review this device
+											</button>
+										</div>
+									</>
 								) : item.state === "pairing_required" ? (
 									<>
 										<p>
 											Pair this device first. Pairing establishes trust but does not choose its
 											Identity.
 										</p>
-										<button
-											className="settings-button"
-											onClick={() => options.onNavigate?.("advanced_sync")}
-											type="button"
-										>
-											Go to pairing
-										</button>
+										<div className="device-identity-card-actions">
+											<button
+												aria-label={`Go to pairing for ${item.displayName}`}
+												className="settings-button"
+												onClick={() => options.onNavigate?.("advanced_sync")}
+												type="button"
+											>
+												Go to pairing
+											</button>
+										</div>
 									</>
 								) : item.state === "conflicted" ? (
 									<>
 										<p>
 											Device evidence conflicts. Review and repair it before assigning an Identity.
 										</p>
-										<button
-											className="settings-button"
-											onClick={() => options.onNavigate?.("advanced_sync")}
-											type="button"
-										>
-											Open Advanced review
-										</button>
+										<div className="device-identity-card-actions">
+											<button
+												aria-label={`Open Advanced review for ${item.displayName}`}
+												className="settings-button"
+												onClick={() => options.onNavigate?.("advanced_sync")}
+												type="button"
+											>
+												Open Advanced review
+											</button>
+										</div>
 									</>
 								) : null}
 							</article>
@@ -785,7 +772,8 @@ function SetupWorkflow({
 							onClick={() => void commit()}
 							type="button"
 						>
-							Confirm Identity setup
+							Apply setup to {reviewed.request.bindings.length.toLocaleString()}{" "}
+							{reviewed.request.bindings.length === 1 ? "device" : "devices"}
 						</button>
 					</div>
 				</section>

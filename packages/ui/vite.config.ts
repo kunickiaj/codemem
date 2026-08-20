@@ -95,6 +95,9 @@ export default defineConfig(({ command, mode }) => {
 					]),
 		],
 		test: {
+			css: {
+				include: [/\/static\/(?:controls|themes|tokens)\.css(?:\?inline)?$/],
+			},
 			environment: "jsdom",
 			name: "ui",
 			server: {

@@ -729,6 +729,23 @@ describe("read-only Devices", () => {
 		expect(text).toContain("Pair this device first");
 		expect(text).toContain("Device evidence conflicts");
 		expect(document.querySelectorAll(".device-identity-setup-card select")).toHaveLength(1);
+		for (const label of ["Review this device", "Go to pairing", "Open Advanced review"]) {
+			const action = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+				(button) => button.textContent === label,
+			);
+			expect(action?.parentElement?.classList.contains("device-identity-card-actions")).toBe(true);
+			expect(action?.closest(".device-identity-setup-card")).not.toBeNull();
+		}
+		expect(document.querySelectorAll(".device-identity-setup-card > fieldset button")).toHaveLength(
+			0,
+		);
+		expect(deviceCard("Home Laptop").querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
+		expect(
+			deviceCard("Home Laptop")
+				.querySelector<HTMLSelectElement>("select")
+				?.getAttribute("aria-label"),
+		).toBe("Choose an Identity for Home Laptop");
+		expect(text).not.toContain("Confirm Home Laptop belongs");
 		expect([...document.querySelectorAll("button")].map((button) => button.textContent)).toContain(
 			"Go to pairing",
 		);
@@ -769,7 +786,7 @@ describe("read-only Devices", () => {
 		expect(onNavigate).toHaveBeenCalledWith("advanced_sync");
 	});
 
-	it("requires an explicit Identity and per-device confirmation before batch review", async () => {
+	it("reviews exactly the selected devices without per-device confirmation", async () => {
 		const previewBindings = vi.fn().mockResolvedValue({
 			version: 1,
 			status: "ready",
@@ -779,7 +796,15 @@ describe("read-only Devices", () => {
 				{
 					deviceId: "one",
 					displayName: "One",
-					targetIdentityId: "identity-target",
+					targetIdentityId: "identity-scope-secret",
+					previousIdentityId: null,
+					action: "bind",
+					isLocal: false,
+				},
+				{
+					deviceId: "two",
+					displayName: "Two",
+					targetIdentityId: "identity-scope-secret",
 					previousIdentityId: null,
 					action: "bind",
 					isLocal: false,
@@ -795,36 +820,29 @@ describe("read-only Devices", () => {
 				inventoryItem("two", "Two", "setup_required", {
 					suggestedIdentityId: "identity-scope-secret",
 				}),
+				inventoryItem("three", "Three", "setup_required", {
+					suggestedIdentityId: "identity-scope-secret",
+				}),
 			]),
 			previewBindings,
 		});
-		const selected = [
-			...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
-		].filter((input) => input.parentElement?.textContent?.includes("Include in reviewed setup"));
-		for (const input of selected) {
-			input.checked = true;
-			act(() => {
-				input.dispatchEvent(new Event("input", { bubbles: true }));
-			});
+		const setupCards = [...document.querySelectorAll<HTMLElement>(".device-identity-setup-card")];
+		expect(setupCards).toHaveLength(3);
+		for (const [index, card] of setupCards.entries()) {
+			const name = ["One", "Two", "Three"][index];
+			expect(card.querySelectorAll('input[type="checkbox"]')).toHaveLength(1);
+			expect(card.textContent).toContain("Select for setup");
+			expect(card.textContent).not.toContain("Confirm ");
+			expect(
+				card.querySelector<HTMLInputElement>('input[type="checkbox"]')?.getAttribute("aria-label"),
+			).toBe(`Select for setup: ${name}`);
+			expect(card.querySelector<HTMLSelectElement>("select")?.getAttribute("aria-label")).toBe(
+				`Choose an Identity for ${name}`,
+			);
 		}
-		await act(async () => {
-			(
-				[...document.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
-					button.textContent?.startsWith("Review 2 selected"),
-				) as HTMLButtonElement
-			).click();
-		});
-		expect(previewBindings).not.toHaveBeenCalled();
-		expect(document.querySelector('[role="alert"]')?.textContent).toContain("explicitly confirm");
-
-		const confirmations = [
-			...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
-		].filter((input) => input.parentElement?.textContent?.startsWith(" Confirm"));
-		for (const input of confirmations) {
-			input.checked = true;
-			act(() => {
-				input.dispatchEvent(new Event("input", { bubbles: true }));
-			});
+		const selected = setupCards.slice(0, 2).map((card) => cardCheckbox(card, "Select for setup"));
+		for (const input of selected) {
+			setCheckbox(input);
 		}
 		await act(async () => {
 			(
@@ -839,28 +857,77 @@ describe("read-only Devices", () => {
 				{ deviceId: "two", targetIdentityId: "identity-scope-secret", confirmed: true },
 			],
 		});
+		expect(document.body.textContent).toContain("Review Identity setup");
+		expect(document.body.textContent).toContain("I reviewed every device and target Identity");
+		expect(
+			[...document.querySelectorAll<HTMLButtonElement>("button")].find(
+				(button) => button.textContent === "Apply setup to 2 devices",
+			),
+		).toBeTruthy();
 	});
 
-	it("does not guess an Identity for a local device without an authoritative suggestion", () => {
+	it("blocks bulk review when a selected device has no Identity", async () => {
+		const previewBindings = vi.fn();
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("one", "One", "setup_required", {
+					suggestedIdentityId: "identity-scope-secret",
+				}),
+				inventoryItem("two", "Two", "setup_required", {
+					suggestedIdentityId: "identity-scope-secret",
+				}),
+			]),
+			previewBindings,
+		});
+		setCheckbox(cardCheckbox(deviceCard("One"), "Select for setup"));
+		setCheckbox(cardCheckbox(deviceCard("Two"), "Select for setup"));
+		const secondIdentity = deviceCard("Two").querySelector<HTMLSelectElement>("select");
+		if (!secondIdentity) throw new Error("Identity select missing");
+		secondIdentity.value = "";
+		act(() => {
+			secondIdentity.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+
+		await act(async () => {
+			(
+				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
+					(button) => button.textContent === "Review 2 selected",
+				) as HTMLButtonElement
+			).click();
+		});
+
+		expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+			"Choose an Identity for every selected device before review.",
+		);
+		expect(previewBindings).not.toHaveBeenCalled();
+	});
+
+	it("does not guess an Identity or allow review for a local device without a target", () => {
 		mount(intent(), reconciliation(), {
 			inventory: inventory([inventoryItem("local", "Local", "setup_required", { isLocal: true })]),
 		});
 		const select = document.querySelector<HTMLSelectElement>(".device-identity-setup-card select");
-		const confirmation = [
-			...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
-		].find((input) => input.parentElement?.textContent?.includes("Confirm Local belongs"));
 		expect(select?.value).toBe("");
-		expect(confirmation?.disabled).toBe(true);
+		expect(select?.getAttribute("aria-label")).toBe("Choose an Identity for Local");
+		expect(deviceCard("Local").querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
+		expect(
+			[...deviceCard("Local").querySelectorAll<HTMLButtonElement>("button")].find(
+				(button) => button.textContent === "Review this device",
+			)?.disabled,
+		).toBe(true);
 	});
 
 	it("blocks incomplete and unavailable remote inventory but permits local-only setup when unconfigured", () => {
-		const local = inventoryItem("local", "Local", "setup_required", { isLocal: true });
+		const local = inventoryItem("local", "Local", "setup_required", {
+			isLocal: true,
+			suggestedIdentityId: "identity-scope-secret",
+		});
 		mount(intent(), reconciliation(), {
 			inventory: { ...inventory([local]), truncated: true },
 		});
 		expect(
 			[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-				(button) => button.textContent === "Review setup",
+				(button) => button.textContent === "Review this device",
 			)?.disabled,
 		).toBe(true);
 		mount(intent(), reconciliation(), {
@@ -888,7 +955,7 @@ describe("read-only Devices", () => {
 		});
 		expect(
 			[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-				(button) => button.textContent === "Review setup",
+				(button) => button.textContent === "Review this device",
 			)?.disabled,
 		).toBe(false);
 
@@ -903,7 +970,7 @@ describe("read-only Devices", () => {
 		});
 		expect(
 			[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-				(button) => button.textContent === "Review setup",
+				(button) => button.textContent === "Review this device",
 			)?.disabled,
 		).toBe(true);
 	});
@@ -942,15 +1009,12 @@ describe("read-only Devices", () => {
 		});
 		const commitBindings = vi.fn();
 		mount(graph, reconciliation(), { inventory: setupInventory, previewBindings, commitBindings });
-		const firstConfirmation = [
-			...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
-		].find((input) => input.parentElement?.textContent?.includes("Confirm One belongs"));
-		if (!firstConfirmation) throw new Error("confirmation missing");
-		setCheckbox(firstConfirmation);
+		const firstSelection = cardCheckbox(deviceCard("One"), "Select for setup");
+		setCheckbox(firstSelection);
 		await act(async () => {
 			(
 				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Review setup" && !button.disabled,
+					(button) => button.textContent === "Review this device" && !button.disabled,
 				) as HTMLButtonElement
 			).click();
 		});
@@ -963,7 +1027,7 @@ describe("read-only Devices", () => {
 			commitBindings,
 		});
 
-		expect(firstConfirmation.checked).toBe(true);
+		expect(firstSelection.checked).toBe(true);
 		expect(document.body.textContent).toContain("Review Identity setup");
 		for (const control of document.querySelectorAll<
 			HTMLButtonElement | HTMLInputElement | HTMLSelectElement
@@ -976,11 +1040,11 @@ describe("read-only Devices", () => {
 		expect(commitBindings).not.toHaveBeenCalled();
 
 		mount(graph, reconciliation(), { inventory: setupInventory, previewBindings, commitBindings });
-		expect(firstConfirmation.checked).toBe(true);
+		expect(firstSelection.checked).toBe(true);
 		expect(document.body.textContent).toContain("Review Identity setup");
 		expect(
 			[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-				(button) => button.textContent === "Review setup",
+				(button) => button.textContent === "Review this device",
 			)?.disabled,
 		).toBe(false);
 	});
@@ -1013,18 +1077,10 @@ describe("read-only Devices", () => {
 			writeCount: 1,
 		});
 		mount(graph, reconciliation(), { inventory: inventory([item]), previewBindings });
-		const confirmation = [
-			...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
-		].find((input) => input.parentElement?.textContent?.includes("Confirm One belongs"));
-		if (!confirmation) throw new Error("confirmation missing");
-		confirmation.checked = true;
-		act(() => {
-			confirmation.dispatchEvent(new Event("input", { bubbles: true }));
-		});
 		await act(async () => {
 			(
 				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Review setup",
+					(button) => button.textContent === "Review this device",
 				) as HTMLButtonElement
 			).click();
 		});
@@ -1084,7 +1140,7 @@ describe("read-only Devices", () => {
 		);
 		const previewBindings = vi.fn();
 		mount(intent(), reconciliation(), { inventory: inventory(setupItems), previewBindings });
-		setCheckbox(cardCheckbox(deviceCard("One"), "Confirm One belongs"));
+		setCheckbox(cardCheckbox(deviceCard("One"), "Select for setup"));
 		expect(document.body.textContent).toContain("Review 1 selected");
 
 		mount(intent(), reconciliation(), {
@@ -1100,7 +1156,7 @@ describe("read-only Devices", () => {
 		expect(previewBindings).not.toHaveBeenCalled();
 	});
 
-	it("retains an explicit target but clears confirmation and selection when its evidence changes", () => {
+	it("retains an explicit target but clears selection when its evidence changes", () => {
 		const graph = intent({
 			identities: [
 				...intent().identities,
@@ -1126,7 +1182,7 @@ describe("read-only Devices", () => {
 		act(() => {
 			select.dispatchEvent(new Event("input", { bubbles: true }));
 		});
-		setCheckbox(cardCheckbox(card, "Confirm One belongs"));
+		setCheckbox(cardCheckbox(card, "Select for setup"));
 
 		mount(graph, reconciliation(), {
 			inventory: inventory([
@@ -1144,12 +1200,12 @@ describe("read-only Devices", () => {
 		expect(updatedCard.querySelector<HTMLSelectElement>("select")?.value).toBe(
 			"identity-scope-secret",
 		);
-		expect(cardCheckbox(updatedCard, "Confirm One belongs").checked).toBe(false);
-		expect(cardCheckbox(updatedCard, "Include in reviewed setup").checked).toBe(false);
+		expect(updatedCard.querySelectorAll('input[type="checkbox"]')).toHaveLength(1);
+		expect(cardCheckbox(updatedCard, "Select for setup").checked).toBe(false);
 		expect(document.body.textContent).toContain("Review 0 selected");
 	});
 
-	it("preserves an unchanged device confirmation when unrelated device evidence changes", () => {
+	it("preserves selection for an unchanged active target when unrelated evidence changes", () => {
 		const one = inventoryItem("one", "One", "setup_required", {
 			suggestedIdentityId: "identity-scope-secret",
 			validatedFingerprint: "one-fingerprint",
@@ -1159,13 +1215,16 @@ describe("read-only Devices", () => {
 			validatedFingerprint: "two-fingerprint",
 		});
 		mount(intent(), reconciliation(), { inventory: inventory([one, two]) });
-		setCheckbox(cardCheckbox(deviceCard("One"), "Confirm One belongs"));
+		setCheckbox(cardCheckbox(deviceCard("One"), "Select for setup"));
 
 		mount(intent(), reconciliation(), {
 			inventory: inventory([one, { ...two, validatedFingerprint: "two-fingerprint-updated" }]),
 		});
-		expect(cardCheckbox(deviceCard("One"), "Confirm One belongs").checked).toBe(true);
-		expect(cardCheckbox(deviceCard("One"), "Include in reviewed setup").checked).toBe(true);
+		expect(deviceCard("One").querySelectorAll('input[type="checkbox"]')).toHaveLength(1);
+		expect(deviceCard("One").querySelector<HTMLSelectElement>("select")?.value).toBe(
+			"identity-scope-secret",
+		);
+		expect(cardCheckbox(deviceCard("One"), "Select for setup").checked).toBe(true);
 		expect(document.body.textContent).toContain("Review 1 selected");
 	});
 
@@ -1199,19 +1258,24 @@ describe("read-only Devices", () => {
 			commitBindings,
 		});
 		for (const name of ["One", "Two", "Three"]) {
-			setCheckbox(cardCheckbox(deviceCard(name), `Confirm ${name} belongs`));
+			setCheckbox(cardCheckbox(deviceCard(name), "Select for setup"));
 		}
 		expect(document.body.textContent).toContain("Review 3 selected");
 		await act(async () => {
 			(
 				[...deviceCard("Three").querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Review setup",
+					(button) => button.textContent === "Review this device",
 				) as HTMLButtonElement
 			).click();
 		});
 		expect(previewBindings).toHaveBeenCalledWith({
 			bindings: [{ deviceId: "three", targetIdentityId: "identity-scope-secret", confirmed: true }],
 		});
+		expect(
+			[...document.querySelectorAll<HTMLButtonElement>("button")].find(
+				(button) => button.textContent === "Apply setup to 1 device",
+			),
+		).toBeTruthy();
 		setCheckbox(
 			[...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((input) =>
 				input.parentElement?.textContent?.includes("I reviewed every device"),
@@ -1220,7 +1284,7 @@ describe("read-only Devices", () => {
 		await act(async () => {
 			(
 				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Confirm Identity setup",
+					(button) => button.textContent === "Apply setup to 1 device",
 				) as HTMLButtonElement
 			).click();
 		});
@@ -1291,15 +1355,10 @@ describe("read-only Devices", () => {
 			previewBindings,
 			commitBindings,
 		});
-		const confirmation = [
-			...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
-		].find((input) => input.parentElement?.textContent?.includes("Confirm One belongs"));
-		if (!confirmation) throw new Error("confirmation missing");
-		setCheckbox(confirmation);
 		await act(async () => {
 			(
 				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Review setup",
+					(button) => button.textContent === "Review this device",
 				) as HTMLButtonElement
 			).click();
 		});
@@ -1326,18 +1385,10 @@ describe("read-only Devices", () => {
 			]),
 			previewBindings,
 		});
-		const confirmation = [
-			...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
-		].find((input) => input.parentElement?.textContent?.includes("Confirm One belongs"));
-		if (!confirmation) throw new Error("confirmation missing");
-		confirmation.checked = true;
-		act(() => {
-			confirmation.dispatchEvent(new Event("input", { bubbles: true }));
-		});
 		act(() => {
 			(
 				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Review setup",
+					(button) => button.textContent === "Review this device",
 				) as HTMLButtonElement
 			).click();
 		});
@@ -1722,21 +1773,18 @@ describe("read-only Devices", () => {
 		act(() => {
 			identitySelect.dispatchEvent(new Event("input", { bubbles: true }));
 		});
-		const confirmation = [
-			...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
-		].find((input) => input.parentElement?.textContent?.includes("Confirm One belongs"));
-		if (!confirmation) throw new Error("confirmation missing");
-		confirmation.checked = true;
-		act(() => {
-			confirmation.dispatchEvent(new Event("input", { bubbles: true }));
-		});
 		await act(async () =>
 			(
 				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Review setup",
+					(button) => button.textContent === "Review this device",
 				) as HTMLButtonElement
 			).click(),
 		);
+		expect(
+			[...document.querySelectorAll<HTMLButtonElement>("button")].find(
+				(button) => button.textContent === "Apply setup to 1 device",
+			),
+		).toBeTruthy();
 		const finalConfirmation = [
 			...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
 		].find((input) => input.parentElement?.textContent?.includes("I reviewed every device"));
@@ -1748,7 +1796,7 @@ describe("read-only Devices", () => {
 		await act(async () => {
 			(
 				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Confirm Identity setup",
+					(button) => button.textContent === "Apply setup to 1 device",
 				) as HTMLButtonElement
 			).click();
 			await Promise.resolve();

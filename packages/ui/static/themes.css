@@ -11,6 +11,8 @@
  * trivially auditable without depending on extra cascade tricks. */
 
 [data-theme="light"] {
+  color-scheme: light;
+
   /* Surface */
   --surface-0: #f7faf8;
   --surface-1: #ffffff;
@@ -81,6 +83,8 @@
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
+    color-scheme: light;
+
     --surface-0: #f7faf8;
     --surface-1: #ffffff;
     --surface-2: #eef5f1;

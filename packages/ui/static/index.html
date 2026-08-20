@@ -22,6 +22,7 @@
     </script>
     <link rel="stylesheet" href="/assets/tokens.css" />
     <link rel="stylesheet" href="/assets/themes.css" />
+    <link rel="stylesheet" href="/assets/controls.css" />
     <style>
       /* Design tokens (color, surface, accent, status, chrome, body bg,
          inputs, toggles, spacing, radii, typography, motion) and the light
@@ -30,10 +31,12 @@
            1. Dark defaults from tokens.css (:root).
            2. Light overrides from themes.css ([data-theme="light"] +
               @media (prefers-color-scheme: light)).
-           3. The component-level rules below, which reference the tokens
+           3. Low-specificity native controls from controls.css.
+           4. The component-level rules below, which reference the tokens
               via var(--...).
          Edit packages/ui/static/tokens.css and themes.css to change the
-         token surface. Edit this <style> block for per-component styling. */
+         token surface, controls.css for native-control defaults, and this
+         <style> block for per-component styling. */
 
       /* ── Reset & base ──────────────────────────────────────── */
 
@@ -1308,7 +1311,17 @@
         margin-top: var(--sp-2);
         padding-left: var(--sp-5);
       }
-      #devicesMount .recipient-policy-sharing-card > .settings-button { margin-top: var(--sp-4); }
+      #devicesMount .recipient-policy-sharing-card > .settings-button {
+        align-self: end;
+        margin-top: var(--sp-4);
+      }
+
+      #devicesMount .device-identity-card-actions {
+        align-self: end;
+        display: grid;
+        gap: var(--sp-2);
+        margin-top: var(--sp-4);
+      }
       .device-identity-setup-summary,
       .recipient-policy-sharing-attention {
         display: flex;
@@ -1357,7 +1370,8 @@
         .recipient-policy-sharing-responsive-tabs { overflow-x: auto; }
         .recipient-policy-sharing-details div { grid-template-columns: 1fr; gap: var(--sp-1); }
         .recipient-policy-invitation-result { padding: var(--sp-3); }
-        #devicesMount .recipient-policy-sharing-card > .settings-button {
+        #devicesMount .recipient-policy-sharing-card > .settings-button,
+        #devicesMount .device-identity-card-actions .settings-button {
           min-height: 44px;
           width: 100%;
         }
@@ -3385,35 +3399,6 @@
         transform: translateX(14px);
         background: color-mix(in srgb, var(--accent) 88%, white);
         border-color: color-mix(in srgb, var(--accent) 42%, transparent);
-      }
-      .cm-checkbox {
-        appearance: none;
-        width: 16px;
-        height: 16px;
-        border: 1px solid var(--border-hover);
-        border-radius: 4px;
-        background: var(--surface-1);
-        position: relative;
-        cursor: pointer;
-      }
-      .cm-checkbox:checked {
-        background: var(--accent);
-        border-color: var(--accent);
-      }
-      .cm-checkbox:checked::after {
-        content: "";
-        position: absolute;
-        left: 4px;
-        top: 1px;
-        width: 4px;
-        height: 8px;
-        border: solid var(--text-inverse);
-        border-width: 0 2px 2px 0;
-        transform: rotate(45deg);
-      }
-      .cm-checkbox:focus-visible {
-        outline: 2px solid var(--focus-ring);
-        outline-offset: 1px;
       }
       .field textarea { resize: vertical; min-height: 84px; }
       .settings-save {

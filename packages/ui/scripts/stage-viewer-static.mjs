@@ -39,7 +39,7 @@ for (const entry of readdirSync(sourceStaticDir, { withFileTypes: true })) {
 // of the freshly rebuilt bundle. In that mode we instead STRIP any existing
 // sidecars so the server falls back to the live raw asset.
 const precompress = process.argv.includes("--precompress");
-for (const name of ["app.js", "themes.css", "tokens.css"]) {
+for (const name of ["app.js", "controls.css", "themes.css", "tokens.css"]) {
 	const filePath = join(viewerStaticDir, name);
 	const gzPath = `${filePath}.gz`;
 	const brPath = `${filePath}.br`;

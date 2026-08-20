@@ -10,6 +10,8 @@
  * Values come from the codemem design handoff (tokens/colors_and_type.css). */
 
 :root {
+  color-scheme: dark;
+
   /* Surface — deep ink */
   --surface-0: #0b1016;
   --surface-1: #0f1720;

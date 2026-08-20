@@ -1,0 +1,196 @@
+/* Global native-control baseline. Keep selectors low-specificity so component
+ * styles can refine layout and variants without opting out of theme safety. */
+
+:where(button, input, select, textarea) {
+  color: var(--text-primary);
+  font: inherit;
+}
+
+:where(
+  button,
+  input[type="button"],
+  input[type="reset"],
+  input[type="submit"]
+) {
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--control-text);
+  cursor: pointer;
+  padding: var(--sp-2) var(--sp-3);
+}
+
+:where(
+  input:not([type]),
+  input[type="date"],
+  input[type="datetime-local"],
+  input[type="email"],
+  input[type="month"],
+  input[type="number"],
+  input[type="password"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="text"],
+  input[type="time"],
+  input[type="url"],
+  input[type="week"],
+  select,
+  textarea
+) {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+:where(select) {
+  cursor: pointer;
+}
+
+:where(textarea) {
+  resize: vertical;
+}
+
+:where(input, textarea)::placeholder {
+  color: var(--text-tertiary);
+  opacity: 1;
+}
+
+:where(
+  button:hover:not(:disabled),
+  input[type="button"]:hover:not(:disabled),
+  input[type="reset"]:hover:not(:disabled),
+  input[type="submit"]:hover:not(:disabled)
+) {
+  border-color: var(--control-hover-border);
+  background: var(--control-hover-bg);
+}
+
+:where(
+  input:not([type]):hover:not(:disabled),
+  input[type="date"]:hover:not(:disabled),
+  input[type="datetime-local"]:hover:not(:disabled),
+  input[type="email"]:hover:not(:disabled),
+  input[type="month"]:hover:not(:disabled),
+  input[type="number"]:hover:not(:disabled),
+  input[type="password"]:hover:not(:disabled),
+  input[type="search"]:hover:not(:disabled),
+  input[type="tel"]:hover:not(:disabled),
+  input[type="text"]:hover:not(:disabled),
+  input[type="time"]:hover:not(:disabled),
+  input[type="url"]:hover:not(:disabled),
+  input[type="week"]:hover:not(:disabled),
+  select:hover:not(:disabled),
+  textarea:hover:not(:disabled)
+) {
+  border-color: var(--border-hover);
+}
+
+:where(button, input, select, textarea):focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--focus-ring);
+}
+
+:where(input[type="checkbox"], input[type="radio"]) {
+  appearance: none;
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  margin: 0;
+  place-content: center;
+  border: 1px solid color-mix(in srgb, var(--text-tertiary) 85%, var(--surface-1));
+  background: var(--surface-1);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+:where(input[type="checkbox"]) {
+  border-radius: 4px;
+}
+
+:where(input[type="radio"]) {
+  border-radius: 50%;
+}
+
+:where(input[type="checkbox"]):checked,
+:where(input[type="checkbox"]):indeterminate,
+:where(input[type="radio"]):checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+:where(input[type="checkbox"])::before {
+  width: 4px;
+  height: 8px;
+  border: solid var(--text-inverse);
+  border-width: 0 2px 2px 0;
+  content: "";
+  transform: scale(0) rotate(45deg);
+}
+
+:where(input[type="checkbox"]):checked::before {
+  transform: scale(1) rotate(45deg);
+}
+
+:where(input[type="checkbox"]):indeterminate::before {
+  width: 8px;
+  height: 2px;
+  border: 0;
+  background: var(--text-inverse);
+  transform: scale(1);
+}
+
+:where(input[type="radio"])::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-inverse);
+  content: "";
+  transform: scale(0);
+}
+
+:where(input[type="radio"]):checked::before {
+  transform: scale(1);
+}
+
+:where(input[type="range"], progress) {
+  accent-color: var(--accent);
+}
+
+:where(input[type="file"])::file-selector-button {
+  margin-right: var(--sp-3);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--control-text);
+  cursor: pointer;
+  font: inherit;
+  padding: var(--sp-2) var(--sp-3);
+}
+
+:where(input[type="file"]:not(:disabled))::file-selector-button:hover {
+  border-color: var(--control-hover-border);
+  background: var(--control-hover-bg);
+}
+
+:where(input[type="file"]:disabled)::file-selector-button {
+  cursor: not-allowed;
+}
+
+:where(button, input, select, textarea):disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+@media (forced-colors: active) {
+  :where(input[type="checkbox"], input[type="radio"]) {
+    appearance: auto;
+  }
+
+  :where(button, input, select, textarea):focus-visible {
+    outline: 2px solid CanvasText;
+  }
+}
