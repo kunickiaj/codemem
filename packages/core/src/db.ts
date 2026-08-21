@@ -28,6 +28,7 @@ import * as sqliteVec from "sqlite-vec";
 import { expandUserPath } from "./observer-config.js";
 import {
 	canAutoBootstrapSchema,
+	ensureLegacyTeamSetupDraftSchema,
 	ensureRetrievalLedgerSchema,
 	ensureSchemaBootstrapped,
 	ensureSyncPeerSignatureStateSchema,
@@ -37,7 +38,7 @@ import {
 export type { DatabaseType as Database };
 
 /** Current schema version this TS runtime was built against. */
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 /**
  * Minimum schema version the TS runtime can operate with.
@@ -61,6 +62,11 @@ export const REQUIRED_BOOTSTRAPPED_TABLES = [
 	...REQUIRED_TABLES,
 	"memory_fts",
 	"coordinator_enrollment_reconciliation_issues",
+	// The legacy_team_setup_* tables are deliberately NOT listed: they are
+	// created additively by `ensureLegacyTeamSetupDraftSchema` on every
+	// connection path. Listing them would make a valid older bootstrapped
+	// schema look partial and skip WAL/pragma connection setup for the first
+	// post-upgrade connection.
 ] as const;
 
 /** Marker file written after the first successful TS access to a DB. */
@@ -901,6 +907,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	ensureSyncPeerRuntimeVersionColumns(db);
 	ensureSyncPeerSignatureStateSchema(db);
 	ensureDeviceIdentityBindingAuditSchema(db);
+	ensureLegacyTeamSetupDraftSchema(db);
 	const compatAlreadyApplied = schemaCompatAlreadyApplied(db);
 	if (!compatAlreadyApplied) {
 		// IMPORTANT: any NEW DDL added to this gated block REQUIRES bumping

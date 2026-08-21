@@ -140,6 +140,14 @@ describe("connect", () => {
 		expect(tableExists(db, "recipient_policy_deny_overlays")).toBe(true);
 		expect(tableExists(db, "policy_team_device_decisions")).toBe(true);
 		expect(tableExists(db, "coordinator_enrollment_reconciliation_issues")).toBe(true);
+		expect(tableExists(db, "legacy_team_setup_drafts")).toBe(true);
+		expect(tableExists(db, "legacy_team_setup_draft_devices")).toBe(true);
+		expect(tableExists(db, "legacy_team_setup_draft_projects")).toBe(true);
+		expect(columnExists(db, "legacy_team_setup_drafts", "safe_error_code")).toBe(true);
+		expect(columnExists(db, "legacy_team_setup_drafts", "completed_team_id")).toBe(true);
+		expect(columnExists(db, "legacy_team_setup_draft_devices", "verified_evidence_kind")).toBe(
+			true,
+		);
 		expect(tableExists(db, "recipient_managed_project_projections")).toBe(true);
 		expect(hasIndex(db, "idx_recipient_managed_projects_identity_status")).toBe(true);
 		expect(hasIndex(db, "idx_recipient_managed_projects_scope_authority")).toBe(true);
@@ -1277,6 +1285,9 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		expect(tableExists(db, "device_identity_binding_audit")).toBe(true);
 		for (const table of [
 			"coordinator_enrollment_reconciliation_issues",
+			"legacy_team_setup_drafts",
+			"legacy_team_setup_draft_devices",
+			"legacy_team_setup_draft_projects",
 			"policy_teams",
 			"policy_team_memberships",
 			"policy_team_device_decisions",
@@ -1321,6 +1332,9 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		expect(tableExists(previous, "device_identity_binding_audit")).toBe(true);
 		for (const table of [
 			"coordinator_enrollment_reconciliation_issues",
+			"legacy_team_setup_drafts",
+			"legacy_team_setup_draft_devices",
+			"legacy_team_setup_draft_projects",
 			"policy_teams",
 			"policy_team_memberships",
 			"policy_team_device_decisions",
@@ -1537,6 +1551,33 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		} finally {
 			stale.close();
 		}
+	});
+
+	it("replaces the legacy unique setup finish-digest index", () => {
+		db.exec(`
+			DROP INDEX idx_legacy_team_setup_drafts_finish_digest;
+			CREATE UNIQUE INDEX idx_legacy_team_setup_drafts_finish_digest
+				ON legacy_team_setup_drafts(finish_digest);
+		`);
+
+		ensureAdditiveSchemaCompatibility(db);
+
+		const index = db
+			.prepare(
+				`SELECT "unique" AS is_unique
+				 FROM pragma_index_list('legacy_team_setup_drafts')
+				 WHERE name = 'idx_legacy_team_setup_drafts_finish_digest'`,
+			)
+			.get() as { is_unique: number };
+		expect(index.is_unique).toBe(0);
+		const insert = db.prepare(`INSERT INTO legacy_team_setup_drafts(
+			attempt_id, candidate_id, coordinator_id, group_id, display_name,
+			roster_fingerprint, projection_fingerprint, finish_digest, created_at, updated_at
+		) VALUES (?, ?, 'coordinator', 'group', 'Team', 'roster', 'projects', 'same-digest', ?, ?)`);
+		insert.run("attempt-1", "candidate-1", "2026-08-21T00:00:00Z", "2026-08-21T00:00:00Z");
+		expect(() =>
+			insert.run("attempt-2", "candidate-1", "2026-08-21T00:01:00Z", "2026-08-21T00:01:00Z"),
+		).not.toThrow();
 	});
 
 	it("skips gated DDL once marked and re-applies on version mismatch", () => {

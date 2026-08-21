@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 import {
 	isLegacyUmbrellaScopeKind,
@@ -9,6 +8,10 @@ import {
 	resolveLegacyRecipientPolicyLocalIdentity,
 } from "./legacy-recipient-policy-projection.js";
 import {
+	isLegacyTeamCandidateSelectable,
+	legacyTeamCandidateProjectInventory,
+} from "./legacy-team-candidate.js";
+import {
 	RECIPIENT_POLICY_CONTRACT_VERSION,
 	type RecipientPolicyBlockedItemV1,
 	type RecipientPolicyContractVersion,
@@ -17,6 +20,12 @@ import {
 	type RecipientPolicyReviewOptionV1,
 	type RecipientPolicyReviewPreviewV1,
 } from "./recipient-policy-contract.js";
+import {
+	canonicalRecipientPolicyJson,
+	compareCodepoints,
+	deterministicPolicyTeamId,
+	recipientPolicyDigest,
+} from "./recipient-policy-identifiers.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 
 export interface RecipientPolicyReviewContext {
@@ -134,20 +143,8 @@ function conditionPresentation(
 	return CONDITION_PRESENTATION[condition.code];
 }
 
-function canonicalJson(value: unknown): string {
-	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-	if (value && typeof value === "object") {
-		return `{${Object.entries(value as Record<string, unknown>)
-			.toSorted(([left], [right]) => left.localeCompare(right))
-			.map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
-			.join(",")}}`;
-	}
-	return JSON.stringify(value) ?? "null";
-}
-
-function digest(prefix: string, value: unknown): string {
-	return `${prefix}:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
-}
+const canonicalJson = canonicalRecipientPolicyJson;
+const digest = recipientPolicyDigest;
 
 function semanticProjection(
 	projection: LegacyRecipientPolicyProjectionV1,
@@ -166,14 +163,14 @@ function semanticProjection(
 				confidence: candidate.confidence,
 				provenance: candidate.provenance.toSorted(),
 			}))
-			.toSorted((left, right) => left.identityId.localeCompare(right.identityId)),
+			.toSorted((left, right) => compareCodepoints(left.identityId, right.identityId)),
 		teamCandidates: projection.teamCandidates
 			.map((candidate) => ({
 				teamCandidateId: candidate.teamCandidateId,
 				confidence: candidate.confidence,
 				provenance: candidate.provenance.toSorted(),
 			}))
-			.toSorted((left, right) => left.teamCandidateId.localeCompare(right.teamCandidateId)),
+			.toSorted((left, right) => compareCodepoints(left.teamCandidateId, right.teamCandidateId)),
 		effectiveDevices: projection.effectiveDevices
 			.map((device) => ({
 				deviceId: device.deviceId,
@@ -182,7 +179,7 @@ function semanticProjection(
 				access: device.access,
 				provenance: device.provenance,
 			}))
-			.toSorted((left, right) => left.deviceId.localeCompare(right.deviceId)),
+			.toSorted((left, right) => compareCodepoints(left.deviceId, right.deviceId)),
 		enforcement: {
 			authority: projection.enforcement.authority,
 			parity: projection.enforcement.parity,
@@ -500,11 +497,15 @@ function invalid(
 }
 
 function normalizeDecisionInput(
+	db: Database,
 	projection: LegacyRecipientPolicyProjectionV1,
 	request: RecipientPolicyReviewResolveRequestV1,
 	decisionDeviceIds: ReadonlySet<string>,
+	context: RecipientPolicyReviewContext,
 ): { ok: true; json: string } | { ok: false; errorCode: string } {
-	const candidates = deriveCandidateIds(projection);
+	const candidates = deriveSelectableRecipientIds(db, projection, {
+		localIdentity: { localActorId: context.localActorId, localDeviceId: context.localDeviceId },
+	});
 	const unassignedDeviceIds = new Set(
 		projection.effectiveDevices
 			.filter(
@@ -580,19 +581,66 @@ function normalizeDecisionInput(
 		: { ok: false, errorCode: "decision_input_unexpected" };
 }
 
-function deriveCandidateIds(projection: LegacyRecipientPolicyProjectionV1): {
+export function deriveSelectableRecipientIds(
+	db: Database,
+	projection: LegacyRecipientPolicyProjectionV1,
+	freshness?: {
+		/**
+		 * Local identity used to recompute each candidate's current Project
+		 * inventory; inventory drift the next discovery would reopen setup
+		 * for must also block selection.
+		 */
+		localIdentity?: { localActorId: string; localDeviceId: string };
+		/** Current coordinator roster fingerprints by candidate ID, when the caller holds a snapshot. */
+		rosterFingerprints?: ReadonlyMap<string, string>;
+	},
+): {
 	all: Set<string>;
 	identities: Set<string>;
+	teams: Set<string>;
 } {
 	const identities = new Set(
 		projection.identityCandidates.map((candidate) => candidate.identityId),
 	);
+	// Legacy candidate materializations are excluded globally, not just for the
+	// candidates visible in this projection: an unreviewed broad-access Team for
+	// another candidate must never be selectable here. Ready guided-setup Teams
+	// are re-admitted through their candidate's completed-draft check below.
+	const teams = new Set(
+		(
+			db
+				.prepare(
+					`SELECT team_id FROM policy_teams
+					 WHERE status = 'active' AND provenance <> 'reviewed_team_candidate'
+					 ORDER BY team_id`,
+				)
+				.all() as Array<{ team_id: string }>
+		).map((row) => row.team_id),
+	);
+	for (const candidate of projection.teamCandidates) {
+		const expectedTeamId = deterministicPolicyTeamId(candidate.teamCandidateId);
+		teams.delete(expectedTeamId);
+		// The full completion-bound compatibility check guards against stale
+		// completed Teams whose canonical decisions, memberships, mappings, or
+		// recipient edges drifted without clearing the header fingerprint.
+		const current = {
+			rosterFingerprint: freshness?.rosterFingerprints?.get(candidate.teamCandidateId),
+			projects: freshness?.localIdentity
+				? legacyTeamCandidateProjectInventory(
+						db,
+						freshness.localIdentity,
+						candidate.teamCandidateId,
+					)
+				: undefined,
+		};
+		if (isLegacyTeamCandidateSelectable(db, candidate.teamCandidateId, current)) {
+			teams.add(expectedTeamId);
+		}
+	}
 	return {
 		identities,
-		all: new Set([
-			...identities,
-			...projection.teamCandidates.map((candidate) => candidate.teamCandidateId),
-		]),
+		teams,
+		all: new Set([...identities, ...teams]),
 	};
 }
 
@@ -627,9 +675,11 @@ function resolveInTransaction(
 	);
 	if (!projection) return { ...invalid(request, "review_item_not_found"), status: "not_found" };
 	const normalizedInput = normalizeDecisionInput(
+		db,
 		projection,
 		request,
 		new Set(selectedOption.preview.effectiveDevices.map((device) => device.deviceId)),
+		context,
 	);
 	if (!normalizedInput.ok) return invalid(request, normalizedInput.errorCode);
 	const existing = db

@@ -4,8 +4,10 @@ import {
 	type LegacyRecipientPolicyProjectionV1,
 	listLegacyRecipientPolicyProjections,
 } from "./legacy-recipient-policy-projection.js";
+import { deterministicPolicyTeamId } from "./recipient-policy-identifiers.js";
 import {
 	deriveRecipientPolicyReviewState,
+	deriveSelectableRecipientIds,
 	listRecipientPolicyReview,
 	recipientPolicyReviewSourceFingerprint,
 	resolveRecipientPolicyReview,
@@ -180,6 +182,19 @@ function configureUnassignedDeviceReview(
 			 ) VALUES ('managed-review', ?, 'member', 'active', 1, ?)`,
 		).run(deviceId, NOW);
 	}
+}
+
+function insertPolicyTeam(
+	db: InstanceType<typeof Database>,
+	teamId: string,
+	status = "active",
+): void {
+	db.prepare(
+		`INSERT INTO policy_teams(
+		 team_id, display_name, status, provenance, revision, migration_state,
+		 idempotency_key, created_at, updated_at
+		 ) VALUES (?, 'Canonical Team', ?, 'test', 'revision', 'projected', ?, ?, ?)`,
+	).run(teamId, status, `idempotency-${teamId}`, NOW, NOW);
 }
 
 function protectedSnapshot(db: InstanceType<typeof Database>): string {
@@ -582,6 +597,105 @@ describe("recipient policy review persistence", () => {
 		expect(
 			db.prepare("SELECT COUNT(*) FROM recipient_policy_review_resolutions").pluck().get(),
 		).toBe(1);
+	});
+
+	it("rejects unresolved legacy Team candidates but accepts active canonical Teams", () => {
+		const scopeId = "legacy-team-review";
+		insertLegacyScope(db, scopeId);
+		db.prepare("UPDATE memory_items SET scope_id = ?").run(scopeId);
+		mapProject(db, PROJECT_ID, PROJECT_ID, scopeId);
+		db.prepare(
+			`INSERT INTO sync_peers(peer_device_id, name, actor_id, created_at)
+			 VALUES ('legacy-team-device', 'Legacy Team device', ?, ?)`,
+		).run(LOCAL_ACTOR_ID, NOW);
+		db.prepare(
+			`INSERT INTO scope_memberships(scope_id, device_id, status, membership_epoch, updated_at)
+			 VALUES (?, 'legacy-team-device', 'active', 1, ?)`,
+		).run(scopeId, NOW);
+		const projection = listLegacyRecipientPolicyProjections(db, context)[0];
+		const teamCandidateId = projection?.teamCandidates[0]?.teamCandidateId;
+		const item = listRecipientPolicyReview(db, context).reviewItems.find((candidate) =>
+			candidate.options.some((option) => option.decision === "choose_recipients"),
+		);
+		if (!teamCandidateId || !item) throw new Error("legacy Team review fixture incomplete");
+
+		expect(
+			resolveRecipientPolicyReview(db, context, {
+				reviewItemId: item.reviewItemId,
+				sourceFingerprint: item.sourceFingerprint,
+				decision: "choose_recipients",
+				decisionInput: { recipientIds: [teamCandidateId] },
+			}),
+		).toMatchObject({ status: "invalid", errorCode: "decision_input_invalid" });
+
+		const readyTeamId = deterministicPolicyTeamId(teamCandidateId);
+		insertPolicyTeam(db, readyTeamId);
+		expect(
+			resolveRecipientPolicyReview(db, context, {
+				reviewItemId: item.reviewItemId,
+				sourceFingerprint: item.sourceFingerprint,
+				decision: "choose_recipients",
+				decisionInput: { recipientIds: [readyTeamId] },
+			}),
+		).toMatchObject({ status: "invalid", errorCode: "decision_input_invalid" });
+		db.prepare(
+			`UPDATE policy_teams
+			 SET device_eligibility_mode = 'reviewed_allowlist', source_fingerprint = 'roster-ready'
+			 WHERE team_id = ?`,
+		).run(readyTeamId);
+		db.prepare(
+			`INSERT INTO legacy_team_setup_drafts(
+			 attempt_id, candidate_id, coordinator_id, group_id, state, display_name,
+			 roster_fingerprint, projection_fingerprint, finish_digest, completed_team_id,
+			 created_at, updated_at, completed_at
+			 ) VALUES ('ready-attempt', ?, 'coordinator', 'group', 'completed', 'Ready Team',
+			 'roster-ready', 'projection-ready', 'finish-ready', ?, ?, ?, ?)`,
+		).run(teamCandidateId, readyTeamId, NOW, NOW, NOW);
+		expect(deriveSelectableRecipientIds(db, projection).teams.has(readyTeamId)).toBe(true);
+
+		// Canonical drift after completion (a decision row the completed draft
+		// never reviewed) makes the Team unselectable even though the header
+		// fingerprint still matches.
+		db.prepare(
+			`INSERT INTO policy_team_device_decisions(
+			 team_id, device_id, decision, assignment_version, provenance, revision,
+			 created_at, updated_at
+			 ) VALUES (?, 'device-drifted', 'included', 0, 'test', 'r1', ?, ?)`,
+		).run(readyTeamId, NOW, NOW);
+		expect(deriveSelectableRecipientIds(db, projection).teams.has(readyTeamId)).toBe(false);
+		db.prepare("DELETE FROM policy_team_device_decisions WHERE team_id = ?").run(readyTeamId);
+		expect(deriveSelectableRecipientIds(db, projection).teams.has(readyTeamId)).toBe(true);
+
+		// A legacy materialization for a different candidate is excluded globally
+		// even though it is an active Team and absent from this projection.
+		const foreignLegacyTeamId = deterministicPolicyTeamId("legacy-team-candidate:other");
+		db.prepare(
+			`INSERT INTO policy_teams(
+			 team_id, display_name, status, device_eligibility_mode, provenance, revision,
+			 migration_state, source_fingerprint, idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'Foreign Legacy Team', 'active', 'person_all_devices',
+			 'reviewed_team_candidate', 'r1', 'projected', 'foreign-source', 'foreign-team', ?, ?)`,
+		).run(foreignLegacyTeamId, NOW, NOW);
+		const selectable = deriveSelectableRecipientIds(db, projection);
+		expect(selectable.teams.has(foreignLegacyTeamId)).toBe(false);
+		expect(
+			resolveRecipientPolicyReview(db, context, {
+				reviewItemId: item.reviewItemId,
+				sourceFingerprint: item.sourceFingerprint,
+				decision: "choose_recipients",
+				decisionInput: { recipientIds: [foreignLegacyTeamId] },
+			}),
+		).toMatchObject({ status: "invalid", errorCode: "decision_input_invalid" });
+
+		insertPolicyTeam(db, "canonical-team");
+		expect(
+			resolveRecipientPolicyReview(db, context, {
+				reviewItemId: item.reviewItemId,
+				sourceFingerprint: item.sourceFingerprint,
+				decision: "choose_recipients",
+				decisionInput: { recipientIds: ["canonical-team"] },
+			}),
+		).toMatchObject({ status: "applied", errorCode: null });
 	});
 
 	it.each([

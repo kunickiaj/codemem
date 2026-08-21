@@ -15,6 +15,7 @@ Users should not need to understand migration, reconciliation, coordinator inter
 ## Goals
 
 - Turn a configured pre-identity coordinator group into a reviewed Team.
+- Migrate every displayed coordinator-backed Project associated with that Team in the same reviewed confirmation.
 - Require every enrolled device to be handled before activation.
 - Reuse one confirmed device-to-person assignment across Teams.
 - Allow a device to be excluded from one Team without excluding it globally.
@@ -28,7 +29,7 @@ Users should not need to understand migration, reconciliation, coordinator inter
 - Automatically activating a partially reviewed Team.
 - Changing current sharing while a draft is incomplete.
 - Replacing normal Team invitations for newly created Teams.
-- Repairing unrelated Project, workspace, or mixed-scope findings.
+- Repairing unrelated, undisplayed Project, workspace, or mixed-scope findings.
 - Providing device-key recovery or principal account linking.
 
 ## Evidence and Safety Boundary
@@ -107,7 +108,8 @@ The review shows:
 - included devices grouped by person;
 - devices excluded from this Team;
 - other Teams that reuse newly confirmed assignments.
-- every Project/device access change this setup would make through existing sharing, including reviewed Teams, whether caused by assignments, Team-mode conversion, membership reconciliation, device decisions, or access preserved from an existing Team.
+- every displayed associated coordinator-backed Project, including its deterministic identity repair or required explicit mapping;
+- every Project/device effective-access change this setup would make, including Team membership, device eligibility/allowlist, Project identity repairs, Project recipient changes, assignments, Team-mode conversion, membership reconciliation, device decisions, and preserved recipient edges.
 
 When finishing would change existing sharing for any reason, the user must explicitly confirm the complete additions and removals before finishing. An empty delta is shown explicitly and still bound to confirmation by its digest.
 
@@ -126,7 +128,7 @@ Every active roster device must have exactly one decision:
 1. assigned to an active person and included; or
 2. excluded from this Team.
 
-The Team cannot activate while any device is unresolved, any identity evidence conflicts, or the draft targets an outdated roster.
+The Team cannot activate while any device or `unmapped:*` Project is unresolved, any identity evidence conflicts, or the draft targets an outdated roster, Project inventory, mapping, or canonical policy state.
 
 On confirmation, one database transaction materializes:
 
@@ -135,6 +137,8 @@ On confirmation, one database transaction materializes:
 - active Team memberships for people with at least one included device;
 - confirmed global device-to-person assignments;
 - Team-specific device decisions;
+- confirmed deterministic Project identity repairs or explicit mappings for every displayed associated coordinator-backed Project;
+- Team Project recipients for those confirmed mappings;
 - the completed setup state and provenance metadata.
 
 The membership write is provenance-aware reconciliation, not an append. Setup-managed `reviewed_active` memberships contain only active identities that own at least one final **Included** device. If exclusion, removal, or reassignment leaves a person with no included device, confirmation revokes that obsolete setup-managed membership in the same transaction. Explicit invitation-provenance memberships are preserved even when the invitee currently has only unresolved or no roster devices; membership alone does not grant device eligibility.
@@ -177,6 +181,8 @@ Draft state is durable and local. It stores:
 - deterministic candidate Team identity derived from coordinator and group identity;
 - sanitized display name;
 - roster fingerprint;
+- displayed associated-Project inventory fingerprint and deterministic Project identity-repair mappings;
+- expected canonical policy state for the Team, displayed Projects, mappings, and recipients;
 - per-device assignment confirmation or Team exclusion;
 - expected canonical assignment revision for every confirmed global assignment;
 - evidence type for suggestions;
@@ -187,17 +193,19 @@ The candidate's **Ready** status is derived from a completed draft plus compatib
 
 Draft rows do not participate in authorization. Only confirmed canonical policy rows do.
 
+Candidate discovery inventories every displayed coordinator-backed Project associated with the Team and records its deterministic repair mapping in the draft without changing access. A deterministic canonical Project identity may be repaired automatically. An `unmapped:*` Project is ambiguous: the user must choose an explicit mapping before activation, and no Project recipient or access change occurs while it remains unresolved.
+
 Saving or finishing a draft compares each expected assignment revision with the canonical assignment. If another Team setup confirmed a different person first, the stale draft is not rebased or overwritten automatically. It becomes blocked until the user accepts the canonical assignment or explicitly chooses another non-conflicting device.
 
 The roster fingerprint covers stable security-relevant fields, including device ID, public-key fingerprint, enabled state, and existing assigned identity when present. Display-name-only changes do not invalidate a draft.
 
 ## Roster Changes and Recovery
 
-Before confirmation, Codemem fetches and validates a fresh roster without holding the SQLite write lock. After the fetch completes, the finish transaction acquires `BEGIN IMMEDIATE`, rechecks an exact completion for replay, verifies the fetched fingerprint against the attempt, and rechecks all local assignment and canonical Team compare-and-set facts before writing. Coordinator or other network I/O never occurs inside the write transaction.
+Before confirmation, Codemem fetches and validates a fresh roster without holding the SQLite write lock. After the fetch completes, the finish transaction acquires `BEGIN IMMEDIATE`, rechecks an exact completion for replay, verifies the fetched roster and displayed-Project inventory fingerprints against the attempt, and rechecks all local assignment and canonical Team/Project/recipient compare-and-set facts before writing. Coordinator or other network I/O never occurs inside the write transaction.
 
-If the fingerprint changed, confirmation stops and the UI says:
+If the roster, displayed Project inventory, mapping, or canonical policy snapshot changed, confirmation stops and the UI says:
 
-> This Team’s devices changed. Review the updates before finishing.
+> This Team’s setup changed. Review the updates before finishing.
 
 Behavior:
 
@@ -206,6 +214,7 @@ Behavior:
 - changed identity or key evidence creates a blocking conflict;
 - existing canonical assignments are never overwritten silently;
 - saved decisions for unchanged devices remain intact.
+- stale Project inventory, mappings, or canonical Team/Project/recipient state block rather than partially migrating.
 
 Assignment conflicts use a compare-and-set boundary. The API returns `team_setup_assignment_changed`; the UI says:
 
@@ -218,6 +227,7 @@ Completed setup issues clear automatically only after a successful fresh-roster 
 ### Core
 
 - Discover configured groups requiring setup.
+- Inventory their displayed coordinator-backed Projects and prepare deterministic identity-repair mappings.
 - Build sanitized, deterministic Team candidates.
 - Compute and validate roster fingerprints.
 - Validate draft completeness and evidence.
@@ -243,7 +253,7 @@ Stable finish errors are:
 - `team_setup_roster_changed` — the fresh roster fingerprint differs;
 - `team_setup_assignment_changed` — a canonical global assignment changed;
 - `team_setup_roster_unavailable` — a fresh roster could not be validated;
-- `team_setup_conflict` — canonical Team state conflicts with the draft;
+- `team_setup_conflict` — canonical Team, Project, mapping, or recipient state conflicts with the draft;
 - `team_setup_confirmation_stale` — the submitted attempt, finish, or access-delta confirmation no longer matches the current detail response;
 - `team_setup_failed` — bounded fallback for unexpected local failure.
 
@@ -251,11 +261,11 @@ Stable finish errors are:
 
 Finish uses a deterministic idempotency key. If a client loses the response after activation commits, an exact retry returns the immutable stored completion result rather than reapplying writes, reconstructing a response from current Team state, or reporting a conflict. Later setup attempts retain their own completion records and never replace an earlier retry result.
 
-Finish validates the opaque candidate route reference and required confirmation fields, then checks for that completion before activation. If no completion matches, it fetches and validates the fresh coordinator roster before acquiring the SQLite write lock. After acquiring `BEGIN IMMEDIATE`, it repeats the completion lookup, verifies the fetched roster fingerprint against the attempt, and rechecks local compare-and-set facts before any canonical write. Every replay lookup requires both the completion's immutable candidate reference and stored confirmed access-delta digest to match the route and submitted request. Concurrent identical requests therefore serialize onto one immutable record: the first request writes it, while the second replays the exact stored response before validating changed canonical state. If the roster fetch fails after the optimistic miss, finish briefly acquires `BEGIN IMMEDIATE` without network I/O and performs the same exact lookup, replaying an overlapping winner or otherwise returning `team_setup_roster_unavailable`. If insertion encounters a completion-key uniqueness race, the loser loads and returns the committed winner only after verifying the same candidate and confirmation binding. Completion tokens submitted through another candidate route or without the exact confirmed representation never replay success.
+Finish validates the opaque candidate route reference and required confirmation fields, then checks for that completion before activation. If no completion matches, it fetches and validates the fresh coordinator roster before acquiring the SQLite write lock. After acquiring `BEGIN IMMEDIATE`, it repeats the completion lookup, verifies the fetched roster and displayed-Project inventory fingerprints against the attempt, and rechecks local assignment plus canonical Team/Project/recipient compare-and-set facts before any canonical write. Every replay lookup requires both the completion's immutable candidate reference and stored confirmed access-delta digest to match the route and submitted request. Concurrent identical requests therefore serialize onto one immutable record: the first request writes it, while the second replays the exact stored response before validating changed canonical state. If the roster fetch fails after the optimistic miss, finish briefly acquires `BEGIN IMMEDIATE` without network I/O and performs the same exact lookup, replaying an overlapping winner or otherwise returning `team_setup_roster_unavailable`. If insertion encounters a completion-key uniqueness race, the loser loads and returns the committed winner only after verifying the same candidate and confirmation binding. Completion tokens submitted through another candidate route or without the exact confirmed representation never replay success.
 
-The finish key is `(attempt_id, finish_digest)`. The immutable completion also retains the attempt's candidate reference and confirmed access-delta digest, and replay lookup uses `(candidate_ref, attempt_id, finish_digest, confirmed_access_delta_digest)` so route and confirmation validation do not depend on trusting digest contents alone. The digest covers the attempt ID, candidate reference, fresh roster fingerprint, normalized decisions and assignments, expected assignment versions, the complete validated canonical Team snapshot, and the confirmed complete access-delta digest. Therefore a later setup attempt cannot collide with an earlier completion even when its visible roster and decisions are identical, another candidate route cannot replay the stored result, and a request that did not echo the exact confirmed representation is not an exact retry.
+The finish key is `(attempt_id, finish_digest)`. The immutable completion also retains the attempt's candidate reference and confirmed access-delta digest, and replay lookup uses `(candidate_ref, attempt_id, finish_digest, confirmed_access_delta_digest)` so route and confirmation validation do not depend on trusting digest contents alone. The digest covers the attempt ID, candidate reference, fresh roster and displayed-Project inventory fingerprints, normalized decisions, assignments, and Project mappings, expected assignment versions, the complete validated canonical Team/Project/recipient snapshot, and the confirmed complete access-delta digest. Therefore a later setup attempt cannot collide with an earlier completion even when its visible roster and decisions are identical, another candidate route cannot replay the stored result, and a request that did not echo the exact confirmed representation is not an exact retry.
 
-The detail response includes Project/device access additions and removals caused by assignments, Team-mode conversion, membership reconciliation, final decisions, and preserved recipient edges. The shape and entry count are bounded at the request boundary, but the accepted response is never truncated, paginated, or sampled: the displayed entries exactly match the entries covered by `access_delta_digest`. It also includes an opaque `attempt_id` and current `finish_digest`. Finish must echo the attempt ID and finish digest and submit `confirmed_access_delta_digest`. Missing or mismatched values return `team_setup_confirmation_stale` and cause no writes. The UI never derives or confirms access changes independently.
+The detail response includes every displayed associated Project's identity repair or mapping, recipient change, and Project/device access addition or removal caused by Team membership, device eligibility/allowlist, assignments, Team-mode conversion, membership reconciliation, final decisions, and preserved recipient edges. The shape and entry count are bounded at the request boundary, but the accepted response is never truncated, paginated, or sampled: the displayed entries exactly match the entries covered by `access_delta_digest`. It also includes an opaque `attempt_id` and current `finish_digest`. Finish must echo the attempt ID and finish digest and submit `confirmed_access_delta_digest`. Missing or mismatched values return `team_setup_confirmation_stale` and cause no writes. The UI never derives or confirms access changes independently.
 
 For changed assignments, the transaction writes the canonical assignment first, reads its incremented `assignment_version`, and writes that post-change version on the final Team decision. An included decision never stores the draft's pre-change expected version.
 
@@ -279,6 +289,7 @@ Use:
 - “Which devices belong to this Team?”
 - “Not part of this Team”
 - “This Team’s devices changed”
+- “This Team’s setup changed”
 
 Do not use:
 
@@ -305,6 +316,10 @@ Do not use:
 - unchanged decisions survive roster refresh;
 - reassignment immediately invalidates prior inclusion until the roster device is reviewed again;
 - suggestions require strong evidence and explicit confirmation.
+- candidate discovery records every displayed associated Project and deterministic repair mapping without changing access;
+- deterministic Project identities repair automatically, while unresolved `unmapped:*` Projects block activation until explicitly mapped;
+- stale Project inventory, mappings, or canonical Team/Project/recipient state block activation with no partial migration;
+- activation atomically writes confirmed Project mappings and Team Project recipients with the reviewed Team state;
 
 ### API tests
 
@@ -317,7 +332,9 @@ Do not use:
 - coordinator roster fetching completes before `BEGIN IMMEDIATE`; after a failed fetch, a lock-scoped exact completion recheck replays an overlapping winner or returns availability failure without writes;
 - completed requests replay only when the submitted `confirmed_access_delta_digest` matches the immutable stored confirmation;
 - identical visible inputs in separate setup attempts cannot collide because attempt identity is part of the completion key;
+- stale Project inventory, mapping, or canonical Team/Project/recipient state returns a bounded conflict and writes nothing;
 - access-delta responses and finish requests use matching server-derived confirmation digests;
+- access-delta responses include complete Project identity-repair, Project-recipient, Team-membership, and device-eligibility changes for every displayed associated Project;
 - compatible `choose_recipients` Teams selected for one or more Projects are adopted against the aggregate matching saved resolutions without dropping justified recipient edges, while mismatched legacy rows fail closed;
 - obsolete setup-managed memberships are revoked when their identity has no final included device, while explicit invitation memberships remain;
 - newly assigned included devices are immediately eligible because decisions carry post-write assignment versions;
@@ -328,6 +345,8 @@ Do not use:
 - all three steps support keyboard and screen-reader navigation;
 - progress resumes after reload;
 - the primary action remains disabled while unresolved devices exist;
+- the primary action remains disabled while any `unmapped:*` Project lacks an explicit mapping;
+- Step 3 renders every displayed Project's server-derived identity repair, mapping, recipient, and effective-access delta without client-side filtering;
 - suggestions are visually distinct from confirmed assignments;
 - copy contains no internal migration terminology or identifiers.
 
@@ -342,8 +361,10 @@ Exercise two overlapping legacy groups:
 5. verify memberships and per-Team device eligibility;
 6. add another active device for an included person outside one Team’s reviewed roster and verify it remains ineligible;
 7. verify current sharing is unchanged before confirmation;
-8. add a roster device mid-draft and verify stale confirmation is blocked;
-9. simulate a lost finish response and verify retry returns the completed result.
+8. verify deterministic Project identity repair and Project recipient migration occur only in the confirmed atomic finish;
+9. leave an `unmapped:*` Project unresolved and verify activation is blocked until explicitly mapped;
+10. change the Project inventory, mapping, or canonical policy state mid-draft and verify stale confirmation is blocked;
+11. simulate a lost finish response and verify retry returns the completed result.
 
 ## Rollout
 

@@ -36,4 +36,16 @@ describe("test schema generation", () => {
 		expect(TEST_SCHEMA_BASE_DDL).toContain("device_identity_binding_audit");
 		expect(TEST_SCHEMA_BASE_DDL).toContain("idx_device_identity_binding_audit_commit_device");
 	});
+
+	it("contains durable legacy Team setup draft state", () => {
+		expect(drizzleSchema.legacyTeamSetupDrafts).toBeDefined();
+		expect(drizzleSchema.legacyTeamSetupDraftDevices).toBeDefined();
+		expect(drizzleSchema.legacyTeamSetupDraftProjects).toBeDefined();
+		expect(TEST_SCHEMA_BASE_DDL).toContain("legacy_team_setup_drafts");
+		expect(TEST_SCHEMA_BASE_DDL).toContain("legacy_team_setup_draft_devices");
+		expect(TEST_SCHEMA_BASE_DDL).toContain("legacy_team_setup_draft_projects");
+		expect(drizzleSchema.legacyTeamSetupDrafts.safe_error_code).toBeDefined();
+		expect(drizzleSchema.legacyTeamSetupDrafts.completed_team_id).toBeDefined();
+		expect(drizzleSchema.legacyTeamSetupDraftDevices.verified_evidence_kind).toBeDefined();
+	});
 });
