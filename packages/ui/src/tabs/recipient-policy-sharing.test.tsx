@@ -207,12 +207,37 @@ describe("recipient-focused Sharing", () => {
 	});
 
 	it("discloses when device setup attention cannot be loaded", () => {
-		mount(intent(), { deviceInventoryUnavailable: true });
+		mount(intent(), {
+			deviceInventory: {
+				version: 1,
+				items: [
+					{
+						version: 1,
+						deviceId: "stale-device",
+						evidenceDeviceIds: ["stale-device"],
+						displayName: "Stale Device",
+						state: "setup_required",
+						identityId: null,
+						suggestedIdentityId: null,
+						validatedFingerprint: null,
+						isLocal: false,
+						sources: ["sync_peer"],
+						conflictCodes: [],
+					},
+				],
+				coordinatorEvidence: { availability: "available", safeErrorCode: null },
+				truncated: false,
+			},
+			deviceInventoryUnavailable: true,
+		});
 
 		expect(document.querySelector('[role="status"]')?.textContent).toContain(
 			"Device Identity information is unavailable",
 		);
 		expect(document.body.textContent).toContain("Manage projects");
+		expect(document.getElementById("sharing-device-setup-heading")).toBeNull();
+		expect(document.body.textContent).not.toContain("Identity setup needed");
+		expect(document.body.textContent).not.toContain("Review Devices");
 	});
 
 	it("counts only the same nonconfigured inventory states that Devices sends to setup", () => {
@@ -401,14 +426,25 @@ describe("recipient-focused Sharing", () => {
 
 	it("renders loading, error, and empty states with live-region semantics", () => {
 		mount(intent(), { loading: true });
-		expect(document.querySelector('[role="status"]')?.textContent).toContain(
-			"Loading Sharing details",
-		);
+		const loading = visiblePanel().querySelector<HTMLElement>('[role="status"]');
+		const skeleton = visiblePanel().querySelector<HTMLElement>(".loading-card-list");
+		expect(loading?.textContent).toBe("Loading Sharing details");
+		expect(loading?.hasAttribute("aria-busy")).toBe(false);
+		expect(
+			[...document.querySelectorAll('[role="status"]')].filter(
+				(status) => status.textContent === "Loading Sharing details",
+			),
+		).toHaveLength(1);
+		expect(skeleton?.getAttribute("aria-busy")).toBe("true");
+		expect(skeleton?.querySelectorAll(".loading-card")).toHaveLength(2);
+		expect(skeleton?.querySelector(".loading-card")?.getAttribute("aria-hidden")).toBe("true");
 
 		mount(intent(), { loadError: true });
-		expect(document.querySelector('[role="alert"]')?.textContent).toContain(
-			"Sharing details are unavailable",
-		);
+		expect(document.querySelector(".loading-card-list")).toBeNull();
+		const alerts = document.querySelectorAll<HTMLElement>('[role="alert"]');
+		expect(alerts).toHaveLength(1);
+		expect(alerts[0]?.textContent).toContain("Sharing details are unavailable");
+		expect(visiblePanel().contains(alerts[0] ?? null)).toBe(true);
 
 		mount(
 			intent({
@@ -423,6 +459,23 @@ describe("recipient-focused Sharing", () => {
 		expect(visiblePanel().textContent).toContain("No active Identities are available");
 		clickTab("Teams");
 		expect(visiblePanel().textContent).toContain("No active Teams are available");
+	});
+
+	it("keeps loaded Sharing cards visible during a failed background refresh", () => {
+		mount(intent(), { refreshError: true });
+
+		expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+			"Refresh failed; showing previous Sharing details. Team and Identity Project changes are disabled until a refresh succeeds.",
+		);
+		expect(visiblePanel().textContent).toContain("ExampleCo");
+		expect(document.querySelector(".loading-card-list")).toBeNull();
+		const mutationButtons = visiblePanel().querySelectorAll<HTMLButtonElement>(
+			".recipient-policy-sharing-actions button",
+		);
+		expect(mutationButtons).toHaveLength(2);
+		for (const button of mutationButtons) {
+			expect(button.disabled).toBe(true);
+		}
 	});
 
 	it("surfaces device setup attention without implying access and links to Devices", () => {

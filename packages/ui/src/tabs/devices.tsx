@@ -1,5 +1,6 @@
 import { render } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { LoadingCardList } from "../components/LoadingCardList";
 import type {
 	RecipientPolicyIntentGraphV1,
 	RecipientPolicyReconciliationReadState,
@@ -51,6 +52,10 @@ export interface DevicesRendererOptions {
 	previewBindings?: typeof previewDeviceIdentityBindings;
 	commitBindings?: typeof commitDeviceIdentityBindings;
 	coordinatorEnrollmentIssueCount?: number;
+}
+
+function identityMutationsBlocked(options: DevicesRendererOptions): boolean {
+	return options.inventoryUnavailable === true || options.refreshError === true;
 }
 
 export interface DeviceProjectProjection {
@@ -408,7 +413,7 @@ function SetupWorkflow({
 	const reviewRevision = useRef(0);
 	const previewApi = options.previewBindings ?? previewDeviceIdentityBindings;
 	const commitApi = options.commitBindings ?? commitDeviceIdentityBindings;
-	const inventoryUnavailable = options.inventoryUnavailable === true;
+	const mutationsBlocked = identityMutationsBlocked(options);
 	const previewReady =
 		reviewed !== null && previewMatchesBindings(reviewed.preview, reviewed.request, items, "bind");
 	const selectedItems = useMemo(
@@ -493,8 +498,8 @@ function SetupWorkflow({
 	});
 
 	const review = async (selected: DeviceIdentityInventoryItemV1[]) => {
-		if (inventoryUnavailable) {
-			setErrorMessage("Refresh device ownership information before reviewing Identity setup.");
+		if (mutationsBlocked) {
+			setErrorMessage("Refresh Devices before reviewing Identity setup.");
 			return;
 		}
 		if (selected.some((item) => item.state !== "setup_required")) {
@@ -536,7 +541,7 @@ function SetupWorkflow({
 	};
 
 	const commit = async () => {
-		if (!reviewed || !reviewConfirmed || inventoryUnavailable || !previewReady) return;
+		if (!reviewed || !reviewConfirmed || mutationsBlocked || !previewReady) return;
 		setBusy(true);
 		setErrorMessage("");
 		try {
@@ -572,7 +577,7 @@ function SetupWorkflow({
 					<strong>{setupRequired.length.toLocaleString()} devices need Identity setup</strong>
 					<button
 						className="settings-button"
-						disabled={busy || inventoryUnavailable || selectedItems.length === 0}
+						disabled={busy || mutationsBlocked || selectedItems.length === 0}
 						onClick={() => void review(selectedItems)}
 						type="button"
 					>
@@ -584,7 +589,7 @@ function SetupWorkflow({
 				{items.map((item, index) => {
 					const choice = choices[item.deviceId];
 					const gate = deviceIdentitySetupGate(inventory, item);
-					const setupBlocked = gate.blocked || inventoryUnavailable;
+					const setupBlocked = gate.blocked || mutationsBlocked;
 					const titleId = `device-inventory-title-${index}`;
 					return (
 						<li key={item.deviceId}>
@@ -748,7 +753,7 @@ function SetupWorkflow({
 					<label>
 						<input
 							checked={reviewConfirmed}
-							disabled={inventoryUnavailable}
+							disabled={mutationsBlocked}
 							onInput={(event) => setReviewConfirmed(event.currentTarget.checked)}
 							type="checkbox"
 						/>{" "}
@@ -768,7 +773,7 @@ function SetupWorkflow({
 						</button>
 						<button
 							className="settings-button sync-dialog-confirm"
-							disabled={busy || inventoryUnavailable || !reviewConfirmed || !previewReady}
+							disabled={busy || mutationsBlocked || !reviewConfirmed || !previewReady}
 							onClick={() => void commit()}
 							type="button"
 						>
@@ -824,7 +829,7 @@ function ConfiguredRebind({
 		reviewed !== null &&
 		previewMatchesBindings(reviewed.preview, reviewed.request, [item], "rebind");
 	const gate = deviceIdentitySetupGate(inventory, item);
-	const rebindBlocked = gate.blocked || options.inventoryUnavailable === true;
+	const rebindBlocked = gate.blocked || identityMutationsBlocked(options);
 	const triggerId = `configured-rebind-trigger-${item.deviceId}`;
 	const targetIdentity =
 		identities.find((identity) => identity.identityId === targetIdentityId)?.displayName ?? "";
@@ -1043,11 +1048,7 @@ function DevicesView({
 	projection: DevicesProjection;
 }) {
 	if (options.loading) {
-		return (
-			<p aria-live="polite" className="small" role="status">
-				Loading Devices…
-			</p>
-		);
+		return <LoadingCardList label="Loading Devices" />;
 	}
 	if (options.loadError) {
 		return (
@@ -1058,7 +1059,8 @@ function DevicesView({
 	}
 	const refreshError = options.refreshError ? (
 		<p aria-live="assertive" role="alert">
-			Refresh failed; showing previous device information.
+			Refresh failed; showing previous device information. Identity setup is disabled until a
+			refresh succeeds.
 		</p>
 	) : null;
 	const visibleProjectedDevices = projection.devices.filter(
@@ -1206,7 +1208,7 @@ function DevicesView({
 								<div className="peer-title recipient-policy-sharing-card-title">
 									<h3 id={titleId}>{device.displayName}</h3>
 									<span className="badge actor-badge">
-										{options.inventoryUnavailable ? "Device" : "Configured"} ·{" "}
+										{identityMutationsBlocked(options) ? "Device" : "Configured"} ·{" "}
 										{device.availabilityLabel}
 									</span>
 								</div>
@@ -1359,7 +1361,7 @@ export function mountDevices(
 			state.pendingDeviceIdentityFocus = undefined;
 			target.focus();
 			return;
-		} else if (!options.inventoryUnavailable) {
+		} else if (!options.inventoryUnavailable && !options.refreshError) {
 			state.pendingDeviceIdentityFocus = undefined;
 			(
 				document.getElementById("devices-heading") ?? document.getElementById("tabBtn-devices")

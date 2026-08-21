@@ -80,7 +80,7 @@ afterEach(() => {
 });
 
 describe("Sharing app data refresh", () => {
-	it("replaces stale actions after a refresh failure and restores them after recovery", async () => {
+	it("keeps stale Sharing cards after a refresh failure and restores fresh state after recovery", async () => {
 		document.body.innerHTML =
 			'<div id="recipientPolicySharingMount"></div><div id="recipientPolicyManagementMount"></div>';
 		const loadProjects = vi.fn().mockResolvedValue({ manageable: projects, received: [] });
@@ -113,12 +113,12 @@ describe("Sharing app data refresh", () => {
 		});
 		expect(refreshResult).toBe(false);
 		expect(document.body.textContent).toContain(
-			"Sharing details are unavailable. Refresh and try again.",
+			"Refresh failed; showing previous Sharing details.",
 		);
 		expect(document.body.textContent).toContain(
 			"The complete recipient access inventory is unavailable. Refresh and try again.",
 		);
-		expect(document.body.textContent).not.toContain("Manage projects");
+		expect(document.body.textContent).toContain("Manage projects");
 		expect(document.body.textContent).not.toContain("Review changes");
 
 		await act(async () => {
@@ -126,7 +126,9 @@ describe("Sharing app data refresh", () => {
 		});
 		expect(document.body.textContent).toContain("Manage projects");
 		expect(document.body.textContent).toContain("Review changes");
-		expect(document.body.textContent).not.toContain("Sharing details are unavailable");
+		expect(document.body.textContent).not.toContain(
+			"Refresh failed; showing previous Sharing details",
+		);
 	});
 
 	it("keeps Sharing usable when only device inventory is unavailable", async () => {
@@ -155,8 +157,51 @@ describe("Sharing app data refresh", () => {
 		await act(async () => {
 			await load();
 		});
-		expect(document.body.textContent).toContain("Sharing details are unavailable");
+		expect(document.body.textContent).toContain(
+			"Refresh failed; showing previous Sharing details.",
+		);
+		expect(document.body.textContent).toContain("Manage projects");
 		expect(document.body.textContent).toContain("Device Identity information is unavailable");
+	});
+
+	it("uses current inventory availability while preserving stale Sharing content", async () => {
+		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
+		const firstInventory = {
+			version: 1 as const,
+			items: [],
+			coordinatorEvidence: { availability: "available" as const, safeErrorCode: null },
+			truncated: false,
+		};
+		const loadDeviceInventory = vi
+			.fn()
+			.mockResolvedValueOnce(firstInventory)
+			.mockRejectedValueOnce(new Error("inventory unavailable"));
+		const loadIntent = vi
+			.fn()
+			.mockResolvedValueOnce(intent)
+			.mockRejectedValueOnce(new Error("intent unavailable"));
+		const mountSharing = vi.fn();
+		const load = createRecipientPolicySharingLoader({
+			loadDeviceInventory,
+			loadIntent,
+			loadProjects: vi.fn().mockResolvedValue({ manageable: projects, received: [] }),
+			mountSharing,
+		});
+
+		await load();
+		await load();
+
+		expect(mountSharing).toHaveBeenLastCalledWith(
+			document.getElementById("recipientPolicySharingMount"),
+			projects,
+			intent,
+			expect.objectContaining({
+				deviceInventory: firstInventory,
+				deviceInventoryUnavailable: true,
+				refreshError: true,
+			}),
+		);
+		expect(mountSharing.mock.calls.filter((call) => call[3]?.loading === true)).toHaveLength(1);
 	});
 
 	it("waits for delayed device inventory failure before rendering a broader load error", async () => {

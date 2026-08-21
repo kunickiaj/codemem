@@ -64,10 +64,14 @@ export function createRecipientPolicySharingLoader(
 	options: { onReviewDevices?: (deviceId?: string) => void } = {},
 ): () => Promise<boolean> {
 	const dependencies = { ...defaultDependencies, ...overrides };
-	let loaded = false;
 	let loadRevision = 0;
 	let latestLoad: Promise<boolean> | null = null;
 	let coordinatorEnrollmentIssueCount = 0;
+	let lastDeviceInventory: Awaited<ReturnType<typeof dependencies.loadDeviceInventory>> | undefined;
+	let lastSuccessfulData: {
+		inventory: RecipientPolicyProjectInventory;
+		intent: api.RecipientPolicyIntentGraphV1;
+	} | null = null;
 
 	const loadRecipientPolicySharingData = (): Promise<boolean> => {
 		const revision = ++loadRevision;
@@ -80,7 +84,7 @@ export function createRecipientPolicySharingLoader(
 		const sharingMount = document.getElementById("recipientPolicySharingMount");
 		if (!sharingMount) return true;
 		const managementMount = document.getElementById("recipientPolicyManagementMount");
-		if (!loaded) {
+		if (!lastSuccessfulData) {
 			dependencies.mountSharing(sharingMount, [], EMPTY_RECIPIENT_POLICY_INTENT, {
 				loading: true,
 			});
@@ -94,22 +98,26 @@ export function createRecipientPolicySharingLoader(
 			]);
 		if (revision !== loadRevision) return latestLoad ?? false;
 		const deviceInventoryUnavailable = deviceInventoryResult.status === "rejected";
+		if (deviceInventoryResult.status === "fulfilled") {
+			lastDeviceInventory = deviceInventoryResult.value;
+		}
 		if (syncStatusResult.status === "fulfilled") {
 			coordinatorEnrollmentIssueCount = coordinatorEnrollmentOpenIssueCount(syncStatusResult.value);
 		}
 		if (inventoryResult.status === "fulfilled" && intentResult.status === "fulfilled") {
 			const inventory = inventoryResult.value;
 			const intent = intentResult.value;
-			const deviceInventory =
-				deviceInventoryResult.status === "fulfilled" ? deviceInventoryResult.value : undefined;
+			lastSuccessfulData = {
+				intent,
+				inventory,
+			};
 			dependencies.mountSharing(sharingMount, inventory.manageable, intent, {
 				coordinatorEnrollmentIssueCount,
-				deviceInventory,
+				deviceInventory: lastDeviceInventory,
 				deviceInventoryUnavailable,
 				onReviewDevices: options.onReviewDevices,
 				received: inventory.received,
 			});
-			loaded = true;
 			if (managementMount) {
 				dependencies.mountManagement(managementMount, inventory.manageable, intent, {
 					onCommitted: async () => {
@@ -119,10 +127,26 @@ export function createRecipientPolicySharingLoader(
 			}
 			return true;
 		}
-		dependencies.mountSharing(sharingMount, [], EMPTY_RECIPIENT_POLICY_INTENT, {
-			deviceInventoryUnavailable,
-			loadError: true,
-		});
+		if (lastSuccessfulData) {
+			dependencies.mountSharing(
+				sharingMount,
+				lastSuccessfulData.inventory.manageable,
+				lastSuccessfulData.intent,
+				{
+					coordinatorEnrollmentIssueCount,
+					deviceInventory: lastDeviceInventory,
+					deviceInventoryUnavailable,
+					onReviewDevices: options.onReviewDevices,
+					received: lastSuccessfulData.inventory.received,
+					refreshError: true,
+				},
+			);
+		} else {
+			dependencies.mountSharing(sharingMount, [], EMPTY_RECIPIENT_POLICY_INTENT, {
+				deviceInventoryUnavailable,
+				loadError: true,
+			});
+		}
 		if (managementMount) {
 			dependencies.mountManagement(managementMount, [], EMPTY_RECIPIENT_POLICY_INTENT, {
 				loadError: true,

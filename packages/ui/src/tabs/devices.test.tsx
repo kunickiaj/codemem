@@ -353,6 +353,17 @@ describe("read-only Devices", () => {
 		expect(state.pendingDeviceIdentityFocus).toBeUndefined();
 	});
 
+	it("retains requested device focus while a refresh is showing stale inventory", () => {
+		state.pendingDeviceIdentityFocus = "new-device";
+
+		mount(intent(), reconciliation(), {
+			inventory: inventory([]),
+			refreshError: true,
+		});
+
+		expect(state.pendingDeviceIdentityFocus).toBe("new-device");
+	});
+
 	it("projects direct access without inferring per-device Team access from membership intent", () => {
 		const graph = intent();
 		const before = JSON.stringify(graph);
@@ -592,9 +603,18 @@ describe("read-only Devices", () => {
 
 	it("renders loading, error, and active-device empty states with live-region semantics", () => {
 		mount(intent(), reconciliation(), { loading: true });
-		expect(document.querySelector('[role="status"]')?.textContent).toContain("Loading Devices");
+		const loading = [...document.querySelectorAll<HTMLElement>('[role="status"]')].find(
+			(status) => status.textContent === "Loading Devices",
+		);
+		const skeleton = document.querySelector<HTMLElement>(".loading-card-list");
+		expect(loading?.textContent).toBe("Loading Devices");
+		expect(loading?.hasAttribute("aria-busy")).toBe(false);
+		expect(skeleton?.getAttribute("aria-busy")).toBe("true");
+		expect(skeleton?.querySelectorAll(".loading-card")).toHaveLength(2);
+		expect(skeleton?.querySelector(".loading-card")?.getAttribute("aria-hidden")).toBe("true");
 
 		mount(intent(), reconciliation(), { loadError: true });
+		expect(document.querySelector(".loading-card-list")).toBeNull();
 		expect(document.querySelector('[role="alert"]')?.textContent).toContain(
 			"Devices are unavailable",
 		);
@@ -626,8 +646,24 @@ describe("read-only Devices", () => {
 
 		expect(document.querySelector("article h3")?.textContent).toBe("Work Laptop");
 		expect(document.querySelector('[role="alert"]')?.textContent).toBe(
-			"Refresh failed; showing previous device information.",
+			"Refresh failed; showing previous device information. Identity setup is disabled until a refresh succeeds.",
 		);
+	});
+
+	it("disables Identity mutations while showing stale cards after a refresh failure", () => {
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured"),
+			]),
+			refreshError: true,
+		});
+
+		expect(document.querySelector("article h3")?.textContent).toBe("Work Laptop");
+		expect(
+			[...document.querySelectorAll<HTMLButtonElement>("button")].find(
+				(button) => button.textContent === "Change Identity…",
+			)?.disabled,
+		).toBe(true);
 	});
 
 	it("gives repeated actions unique device-specific accessible names", () => {

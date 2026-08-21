@@ -277,6 +277,20 @@ describe("Devices app integration", () => {
 		expect(rebind?.disabled).toBe(false);
 	});
 
+	it("retains the inventory-unavailable explanation after a failed refresh following the first Devices load", async () => {
+		mocks.loadRecipientPolicyIntent.mockRejectedValueOnce(new Error("refresh failed"));
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+
+		const panel = document.getElementById("tab-devices");
+		expect(panel?.textContent).toContain(
+			"Refresh failed; showing previous device information. Identity setup is disabled until a refresh succeeds.",
+		);
+		expect(panel?.textContent).toContain("Device ownership information is temporarily unavailable");
+	});
+
 	it("retains cached inventory but disables Identity controls during a later inventory outage", async () => {
 		mocks.loadDeviceIdentityInventory.mockRejectedValueOnce(new Error("inventory unavailable"));
 
@@ -302,6 +316,28 @@ describe("Devices app integration", () => {
 			(button) => button.textContent === "Change Identity…",
 		);
 		expect(refreshedRebind?.disabled).toBe(false);
+	});
+
+	it("preserves inventory unavailability when the next required refresh fails", async () => {
+		mocks.loadDeviceIdentityInventory.mockRejectedValueOnce(new Error("inventory unavailable"));
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+		expect(document.getElementById("tab-devices")?.textContent).toContain(
+			"Device ownership information is temporarily unavailable",
+		);
+
+		mocks.loadRecipientPolicyIntent.mockRejectedValueOnce(new Error("intent unavailable"));
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+
+		const panel = document.getElementById("tab-devices");
+		expect(panel?.textContent).toContain(
+			"Refresh failed; showing previous device information. Identity setup is disabled until a refresh succeeds.",
+		);
+		expect(panel?.textContent).toContain("Device ownership information is temporarily unavailable");
 	});
 
 	it("joins runtime metadata only from the matched paired peer", () => {
@@ -368,7 +404,10 @@ describe("Devices app integration", () => {
 		const panel = document.getElementById("tab-devices");
 		expect(panel?.textContent).toContain("Work Laptop");
 		expect(panel?.querySelector('[role="alert"]')?.textContent).toBe(
-			"Refresh failed; showing previous device information.",
+			"Refresh failed; showing previous device information. Identity setup is disabled until a refresh succeeds.",
+		);
+		expect(panel?.textContent).not.toContain(
+			"Device ownership information is temporarily unavailable",
 		);
 		expect(document.getElementById("refreshStatus")?.textContent).toBe("refresh failed");
 		expect(document.getElementById("refreshAnnouncer")?.textContent).toBe("Refresh failed.");

@@ -1263,6 +1263,35 @@
       }
       .recipient-policy-sharing-details dt { color: var(--text-secondary); }
       .recipient-policy-sharing-details dd { margin: 0; color: var(--text-primary); }
+
+      .loading-card-list { display: grid; gap: var(--sp-3); }
+      .loading-card {
+        padding: var(--sp-4);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-1);
+      }
+      .loading-card-header,
+      .loading-card-detail {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-3);
+      }
+      .loading-card-details { display: grid; gap: var(--sp-3); margin-top: var(--sp-4); }
+      .loading-card-line,
+      .loading-card-badge {
+        display: block;
+        background: linear-gradient(90deg, var(--border) 25%, var(--surface-2) 50%, var(--border) 75%);
+        background-size: 400px 100%;
+        animation: sync-shimmer var(--duration-shimmer) var(--ease-in-out) infinite;
+      }
+      .loading-card-line { height: 12px; border-radius: var(--radius-pill); }
+      .loading-card-title { height: 16px; }
+      .loading-card-badge { width: 72px; height: 20px; border-radius: var(--radius-pill); }
+      .loading-card-label { width: 28%; }
+      .loading-card .w-45 { width: 45%; }
+      .loading-card .w-60 { width: 60%; }
       .recipient-policy-invitation-result {
         display: flex;
         align-items: flex-start;

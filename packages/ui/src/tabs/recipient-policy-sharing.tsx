@@ -1,5 +1,6 @@
 import { render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
+import { LoadingCardList } from "../components/LoadingCardList";
 import type { DeviceIdentityInventoryV1, RecipientPolicyIntentGraphV1 } from "../lib/api/sync";
 import { deviceIdentityAttentionItems } from "../lib/device-identity-inventory";
 import { RecipientPolicyInvitations } from "./recipient-policy-invitations";
@@ -12,6 +13,7 @@ import type { ReceivedProjectShare } from "./recipient-policy-projects";
 export interface RecipientPolicySharingOptions {
 	loading?: boolean;
 	loadError?: boolean;
+	refreshError?: boolean;
 	deviceInventoryUnavailable?: boolean;
 	received?: ReceivedProjectShare[];
 	deviceInventory?: DeviceIdentityInventoryV1;
@@ -48,10 +50,12 @@ function activeProjectNames(
 
 function RecipientActions({
 	descriptionId,
+	disabled,
 	displayName,
 	recipient,
 }: {
 	descriptionId: string;
+	disabled: boolean;
 	displayName: string;
 	recipient:
 		| { recipientKind: "team"; teamId: string }
@@ -70,6 +74,7 @@ function RecipientActions({
 					aria-describedby={descriptionId}
 					aria-label={`Add Projects for ${displayName}`}
 					className="settings-button recipient-policy-sharing-target recipient-policy-sharing-target-24"
+					disabled={disabled}
 					onClick={openAdd}
 					type="button"
 				>
@@ -78,6 +83,7 @@ function RecipientActions({
 				<button
 					aria-label={`Manage Projects for ${displayName}`}
 					className="settings-button recipient-policy-sharing-target recipient-policy-sharing-target-24"
+					disabled={disabled}
 					onClick={openManagement}
 					type="button"
 				>
@@ -85,16 +91,20 @@ function RecipientActions({
 				</button>
 			</div>
 			<p className="small" id={descriptionId}>
-				Add projects only adds the selected Projects after you preview the exact changes.
+				{disabled
+					? "Team and Identity Project changes are disabled until a refresh succeeds."
+					: "Add projects only adds the selected Projects after you preview the exact changes."}
 			</p>
 		</>
 	);
 }
 
 function TeamsView({
+	disableMutations,
 	intent,
 	projects,
 }: {
+	disableMutations: boolean;
 	intent: RecipientPolicyIntentGraphV1;
 	projects: RecipientPolicyManagementProject[];
 }) {
@@ -188,6 +198,7 @@ function TeamsView({
 						</dl>
 						<RecipientActions
 							descriptionId={addDescriptionId}
+							disabled={disableMutations}
 							displayName={team.displayName}
 							recipient={{ recipientKind: "team", teamId: team.teamId }}
 						/>
@@ -199,9 +210,11 @@ function TeamsView({
 }
 
 function IdentitiesView({
+	disableMutations,
 	intent,
 	projects,
 }: {
+	disableMutations: boolean;
 	intent: RecipientPolicyIntentGraphV1;
 	projects: RecipientPolicyManagementProject[];
 }) {
@@ -299,6 +312,7 @@ function IdentitiesView({
 						</p>
 						<RecipientActions
 							descriptionId={addDescriptionId}
+							disabled={disableMutations}
 							displayName={identity.displayName}
 							recipient={{ recipientKind: "identity", identityId: identity.identityId }}
 						/>
@@ -417,7 +431,7 @@ function RecipientPolicySharing({
 					shown until a refresh succeeds.
 				</p>
 			) : null}
-			{setupAttentionCount > 0 ? (
+			{setupAttentionCount > 0 && !options.deviceInventoryUnavailable ? (
 				<aside
 					aria-labelledby="sharing-device-setup-heading"
 					className="peer-card peer-card--padded recipient-policy-sharing-attention"
@@ -471,6 +485,12 @@ function RecipientPolicySharing({
 					) : null}
 				</aside>
 			) : null}
+			{options.refreshError ? (
+				<p aria-live="assertive" role="alert">
+					Refresh failed; showing previous Sharing details. Team and Identity Project changes are
+					disabled until a refresh succeeds.
+				</p>
+			) : null}
 			<div
 				aria-label="Sharing views"
 				className="recipient-policy-sharing-tabs recipient-policy-sharing-responsive-tabs"
@@ -506,17 +526,27 @@ function RecipientPolicySharing({
 					role="tabpanel"
 				>
 					{options.loading ? (
-						<p aria-live="polite" className="small" role="status">
-							Loading Sharing details…
-						</p>
+						activeTab === tab.id ? (
+							<LoadingCardList detailRowCount={4} label="Loading Sharing details" />
+						) : null
 					) : options.loadError ? (
-						<p aria-live="assertive" role="alert">
-							Sharing details are unavailable. Refresh and try again.
-						</p>
+						activeTab === tab.id ? (
+							<p aria-live="assertive" role="alert">
+								Sharing details are unavailable. Refresh and try again.
+							</p>
+						) : null
 					) : tab.id === "teams" ? (
-						<TeamsView intent={intent} projects={projects} />
+						<TeamsView
+							disableMutations={options.refreshError === true}
+							intent={intent}
+							projects={projects}
+						/>
 					) : tab.id === "identities" ? (
-						<IdentitiesView intent={intent} projects={projects} />
+						<IdentitiesView
+							disableMutations={options.refreshError === true}
+							intent={intent}
+							projects={projects}
+						/>
 					) : tab.id === "received" ? (
 						<ReceivedView received={options.received ?? []} />
 					) : (

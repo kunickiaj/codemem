@@ -501,7 +501,6 @@ const emptyRecipientPolicyIntent: api.RecipientPolicyIntentGraphV1 = {
 	identityDevices: [],
 	projectRecipients: [],
 };
-let devicesLoaded = false;
 let devicesLoadRevision = 0;
 let latestDevicesLoad: Promise<boolean> | null = null;
 let lastDevicesData: {
@@ -586,7 +585,7 @@ function loadDevicesData(): Promise<boolean> {
 }
 
 async function runLoadDevicesData(mount: HTMLElement, revision: number): Promise<boolean> {
-	if (!devicesLoaded) {
+	if (!lastDevicesData) {
 		mountDevices(mount, emptyRecipientPolicyIntent, { version: 1, items: [] }, [], [], {
 			loading: true,
 		});
@@ -636,7 +635,6 @@ async function runLoadDevicesData(mount: HTMLElement, revision: number): Promise
 			inventoryUnavailable: inventoryResult.unavailable,
 			coordinatorEnrollmentIssueCount,
 		};
-		devicesLoaded = true;
 		return true;
 	} catch {
 		if (revision !== devicesLoadRevision) return latestDevicesLoad ?? false;
