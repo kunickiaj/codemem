@@ -36,6 +36,7 @@ export interface FeedItem {
 	narrative?: string;
 	facts?: unknown;
 	tags?: unknown;
+	tags_text?: unknown;
 	files?: unknown;
 	project?: string;
 	actor_id?: string;
@@ -66,5 +67,6 @@ export interface FeedViewOps {
 	removeFeedItem: (memoryId: number) => void;
 	updateFeedView: (force?: boolean) => void;
 	loadFeedData: () => Promise<void>;
+	updateFeedQuery: (query: string) => void;
 	hasMorePages: () => boolean;
 }

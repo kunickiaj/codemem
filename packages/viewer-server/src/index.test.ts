@@ -116,6 +116,10 @@ function insertTestMemory(
 		kind: string;
 		title: string;
 		bodyText?: string;
+		subtitle?: string;
+		tagsText?: string;
+		facts?: unknown;
+		narrative?: string;
 		metadata?: Record<string, unknown>;
 		actorId?: string | null;
 		originDeviceId?: string | null;
@@ -153,7 +157,21 @@ function insertTestMemory(
 			`${options.kind}-${options.title}-${now}`,
 			options.scopeId ?? null,
 		);
-	return Number(result.lastInsertRowid);
+	const memoryId = Number(result.lastInsertRowid);
+	store.db
+		.prepare(
+			`UPDATE memory_items
+			 SET subtitle = ?, tags_text = ?, facts = ?, narrative = ?
+			 WHERE id = ?`,
+		)
+		.run(
+			options.subtitle ?? null,
+			options.tagsText ?? "",
+			options.facts == null ? null : JSON.stringify(options.facts),
+			options.narrative ?? null,
+			memoryId,
+		);
+	return memoryId;
 }
 
 /** Create a test Hono app backed by a fresh in-memory DB. */
@@ -2077,6 +2095,496 @@ describe("viewer-server", () => {
 	});
 
 	describe("memory feed routes", () => {
+		it("searches eligible observations before pagination and keeps chronological pages stable", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "session_summary",
+					title: "Global needle summary must not consume observation pagination",
+					createdAt: "2026-08-20T12:04:00.000Z",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Newest unrelated observation",
+					createdAt: "2026-08-20T12:03:00.000Z",
+				});
+				const firstId = insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Global needle newest match",
+					createdAt: "2026-08-20T12:02:00.000Z",
+				});
+				const secondId = insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Global needle oldest match",
+					createdAt: "2026-08-20T12:02:00.000Z",
+				});
+
+				const firstPage = (await (
+					await app.request("/api/observations?q=GLOBAL%20NEEDLE&limit=1&offset=0")
+				).json()) as {
+					items: Array<{ id: number }>;
+					pagination: { has_more: boolean; next_offset: number | null };
+				};
+				const secondPage = (await (
+					await app.request(
+						`/api/observations?q=global%20needle&limit=1&offset=${firstPage.pagination.next_offset}`,
+					)
+				).json()) as { items: Array<{ id: number }>; pagination: { has_more: boolean } };
+
+				expect(firstPage.items.map((item) => item.id)).toEqual([secondId]);
+				expect(firstPage.pagination).toMatchObject({ has_more: true, next_offset: 1 });
+				expect(secondPage.items.map((item) => item.id)).toEqual([firstId]);
+				expect(secondPage.pagination.has_more).toBe(false);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("searches observations and summaries by their displayed project", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionProjectId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET project = ? WHERE id = ?")
+					.run("/tmp/Project Phoenix Observatory", sessionProjectId);
+				const observationId = insertTestMemory(store, {
+					sessionId: sessionProjectId,
+					kind: "change",
+					title: "Unrelated observation",
+				});
+				const summaryId = insertTestMemory(store, {
+					sessionId: sessionProjectId,
+					kind: "session_summary",
+					title: "Unrelated summary",
+				});
+				store.db
+					.prepare("UPDATE memory_items SET project = NULL WHERE id IN (?, ?)")
+					.run(observationId, summaryId);
+
+				const itemProjectSessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET project = ? WHERE id = ?")
+					.run("/tmp/Hidden Artemis Project", itemProjectSessionId);
+				const itemProjectObservationId = insertTestMemory(store, {
+					sessionId: itemProjectSessionId,
+					kind: "change",
+					title: "Another unrelated observation",
+				});
+				const itemProjectSummaryId = insertTestMemory(store, {
+					sessionId: itemProjectSessionId,
+					kind: "session_summary",
+					title: "Another unrelated summary",
+				});
+				store.db
+					.prepare("UPDATE memory_items SET project = ? WHERE id IN (?, ?)")
+					.run("Displayed Apollo Project", itemProjectObservationId, itemProjectSummaryId);
+
+				const controlSessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId: controlSessionId,
+					kind: "change",
+					title: "Negative control observation",
+				});
+				insertTestMemory(store, {
+					sessionId: controlSessionId,
+					kind: "session_summary",
+					title: "Negative control summary",
+				});
+
+				const observations = (await (
+					await app.request("/api/observations?q=phoenix%20observatory")
+				).json()) as { items: Array<{ id: number; project: string }> };
+				const summaries = (await (
+					await app.request("/api/summaries?q=phoenix%20observatory")
+				).json()) as { items: Array<{ id: number; project: string }> };
+
+				expect(observations.items).toMatchObject([
+					{ id: observationId, project: "Project Phoenix Observatory" },
+				]);
+				expect(summaries.items).toMatchObject([
+					{ id: summaryId, project: "Project Phoenix Observatory" },
+				]);
+
+				const itemProjectObservations = (await (
+					await app.request("/api/observations?q=displayed%20apollo")
+				).json()) as { items: Array<{ id: number; project: string }> };
+				const itemProjectSummaries = (await (
+					await app.request("/api/summaries?q=displayed%20apollo")
+				).json()) as { items: Array<{ id: number; project: string }> };
+				expect(itemProjectObservations.items).toEqual([
+					expect.objectContaining({
+						id: itemProjectObservationId,
+						project: "Displayed Apollo Project",
+					}),
+				]);
+				expect(itemProjectSummaries.items).toEqual([
+					expect.objectContaining({
+						id: itemProjectSummaryId,
+						project: "Displayed Apollo Project",
+					}),
+				]);
+
+				const hiddenSessionProject = (await (
+					await app.request("/api/observations?q=hidden%20artemis")
+				).json()) as { items: unknown[] };
+				expect(hiddenSessionProject.items).toEqual([]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("searches exact positive IDs, tags, structured fields, and summary metadata", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				const idMatch = insertTestMemory(store, {
+					sessionId,
+					kind: "decision",
+					title: "x",
+				});
+				const numericTextId = insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Numeric textual match",
+					bodyText: `References memory ${idMatch} without being that row`,
+				});
+				const structuredId = insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Structured observation",
+					bodyText: "Body-only cormorant",
+					subtitle: "Subtitle falcon",
+					tagsText: "release-hotfix searchable-tag",
+					facts: ["Fact albatross"],
+					narrative: "Narrative kingfisher",
+				});
+				const summaryId = insertTestMemory(store, {
+					sessionId,
+					kind: "session_summary",
+					title: "Summary",
+					subtitle: "Summary subtitle heron",
+					tagsText: "summary-tag",
+					facts: ["Summary fact ibis"],
+					narrative: "Summary narrative tern",
+					metadata: {
+						request: "Metadata osprey",
+						subtitle: "Metadata swan",
+						narrative: "Metadata loon",
+						facts: ["Metadata crane"],
+						summary: "Metadata auk",
+						internal_marker: "Metadata secret",
+					},
+				});
+				const plusAliasId = insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "x",
+				});
+				insertTestMemory(store, { sessionId, kind: "change", title: "filler" });
+				const leadingZeroAliasId = insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "x",
+				});
+				const plusTextId = insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Literal +5 marker",
+				});
+				const leadingZeroTextId = insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Literal 007 marker",
+				});
+				expect(plusAliasId).toBe(5);
+				expect(leadingZeroAliasId).toBe(7);
+
+				for (const q of [
+					"structured observation",
+					"body-only cormorant",
+					"falcon",
+					"searchable-tag",
+					"albatross",
+					"kingfisher",
+					"discovery",
+				]) {
+					const payload = (await (
+						await app.request(`/api/observations?q=${encodeURIComponent(q)}`)
+					).json()) as { items: Array<{ id: number }> };
+					expect(payload.items.map((item) => item.id)).toEqual([structuredId]);
+				}
+				const idPayload = (await (await app.request(`/api/observations?q=${idMatch}`)).json()) as {
+					items: Array<{ id: number }>;
+				};
+				expect(idPayload.items.map((item) => item.id)).toEqual([numericTextId, idMatch]);
+				const plusPayload = (await (await app.request("/api/observations?q=%2B5")).json()) as {
+					items: Array<{ id: number }>;
+				};
+				expect(plusPayload.items.map((item) => item.id)).toEqual([plusTextId]);
+				const leadingZeroPayload = (await (
+					await app.request("/api/observations?q=007")
+				).json()) as { items: Array<{ id: number }> };
+				expect(leadingZeroPayload.items.map((item) => item.id)).toEqual([leadingZeroTextId]);
+
+				for (const q of [
+					"metadata osprey",
+					"metadata swan",
+					"metadata loon",
+					"metadata crane",
+					"metadata auk",
+					"summary subtitle heron",
+					"summary-tag",
+					"summary fact ibis",
+					"summary narrative tern",
+				]) {
+					const summaryPayload = (await (
+						await app.request(`/api/summaries?q=${encodeURIComponent(q)}`)
+					).json()) as { items: Array<{ id: number }> };
+					expect(summaryPayload.items.map((item) => item.id)).toEqual([summaryId]);
+				}
+				const internalMetadataPayload = (await (
+					await app.request("/api/summaries?q=metadata%20secret")
+				).json()) as { items: Array<{ id: number }> };
+				expect(internalMetadataPayload.items).toEqual([]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("casefolds Unicode search without locale-dependent rules", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				const cafeId = insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "CAFÉ rollout",
+				});
+				const cyrillicId = insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "ПРИВЕТ мир",
+				});
+
+				const cafe = (await (
+					await app.request(`/api/observations?q=${encodeURIComponent("café")}`)
+				).json()) as { items: Array<{ id: number }> };
+				const cyrillic = (await (
+					await app.request(`/api/observations?q=${encodeURIComponent("привет")}`)
+				).json()) as { items: Array<{ id: number }> };
+
+				expect(cafe.items.map((item) => item.id)).toEqual([cafeId]);
+				expect(cyrillic.items.map((item) => item.id)).toEqual([cyrillicId]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("caps normalized Feed queries at 256 code units", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				const prefix = "x".repeat(256);
+				const matchingId = insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: prefix,
+				});
+
+				const payload = (await (
+					await app.request(`/api/observations?q=${encodeURIComponent(`${prefix}TAIL`)}`)
+				).json()) as { items: Array<{ id: number }> };
+
+				expect(payload.items.map((item) => item.id)).toEqual([matchingId]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("searches summaries beyond the first unfiltered page", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Pelican needle observation must not consume summary pagination",
+					createdAt: "2026-08-20T12:04:00.000Z",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "session_summary",
+					title: "Newest unrelated summary",
+					createdAt: "2026-08-20T12:03:00.000Z",
+				});
+				const matchingId = insertTestMemory(store, {
+					sessionId,
+					kind: "session_summary",
+					title: "Older summary with pelican needle",
+					createdAt: "2026-08-20T12:01:00.000Z",
+				});
+
+				const payload = (await (
+					await app.request("/api/summaries?q=pelican%20needle&limit=1&offset=0")
+				).json()) as { items: Array<{ id: number }>; pagination: { has_more: boolean } };
+				expect(payload.items.map((item) => item.id)).toEqual([matchingId]);
+				expect(payload.pagination.has_more).toBe(false);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("searches metadata-classified summaries by their canonical displayed kind", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				const summaryId = insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Flag classified summary",
+					metadata: { is_summary: true },
+				});
+				const sourceSummaryId = insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Source classified summary",
+					metadata: { source: "observer_summary" },
+				});
+				const observationId = insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Metadata classified observation",
+				});
+
+				const summaries = (await (
+					await app.request("/api/summaries?q=session_summary")
+				).json()) as { items: Array<{ id: number; kind: string }> };
+				const observations = (await (
+					await app.request("/api/observations?q=session_summary")
+				).json()) as { items: Array<{ id: number }> };
+				const changeSummaries = (await (await app.request("/api/summaries?q=change")).json()) as {
+					items: Array<{ id: number }>;
+				};
+				const changeObservations = (await (
+					await app.request("/api/observations?q=change")
+				).json()) as { items: Array<{ id: number; kind: string }> };
+				expect(new Set(summaries.items.map((item) => item.id))).toEqual(
+					new Set([summaryId, sourceSummaryId]),
+				);
+				expect(summaries.items.every((item) => item.kind === "session_summary")).toBe(true);
+				expect(observations.items).toEqual([]);
+				expect(changeSummaries.items).toEqual([]);
+				expect(changeObservations.items).toMatchObject([{ id: observationId, kind: "change" }]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("intersects search with project, ownership, sharing-domain, active, and type filters", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+				const projectSessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET project = ? WHERE id = ?")
+					.run("search-project", projectSessionId);
+				const otherSessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET project = ? WHERE id = ?")
+					.run("other-project", otherSessionId);
+				const visibleId = insertTestMemory(store, {
+					sessionId: projectSessionId,
+					kind: "bugfix",
+					title: "Boundary keyword visible",
+					scopeId: "authorized-team",
+				});
+				const hiddenId = insertTestMemory(store, {
+					sessionId: projectSessionId,
+					kind: "bugfix",
+					title: "Boundary keyword hidden domain",
+					scopeId: "unauthorized-team",
+				});
+				const theirsId = insertTestMemory(store, {
+					sessionId: projectSessionId,
+					kind: "bugfix",
+					title: "Boundary keyword theirs",
+					actorId: "peer:other",
+					originDeviceId: "peer-device-002",
+					scopeId: "authorized-team",
+				});
+				insertTestMemory(store, {
+					sessionId: projectSessionId,
+					kind: "bugfix",
+					title: "Boundary keyword inactive",
+					active: false,
+					scopeId: "authorized-team",
+				});
+				insertTestMemory(store, {
+					sessionId: projectSessionId,
+					kind: "session_summary",
+					title: "Boundary keyword summary",
+					scopeId: "authorized-team",
+				});
+				insertTestMemory(store, {
+					sessionId: otherSessionId,
+					kind: "bugfix",
+					title: "Boundary keyword other project",
+					scopeId: "authorized-team",
+				});
+
+				const payload = (await (
+					await app.request(
+						"/api/observations?q=boundary%20keyword&project=search-project&scope=mine",
+					)
+				).json()) as { items: Array<{ id: number }> };
+				expect(payload.items.map((item) => item.id)).toEqual([visibleId]);
+
+				const theirsPayload = (await (
+					await app.request(
+						"/api/observations?q=boundary%20keyword&project=search-project&scope=theirs",
+					)
+				).json()) as { items: Array<{ id: number }> };
+				expect(theirsPayload.items.map((item) => item.id)).toEqual([theirsId]);
+
+				const hiddenIdPayload = (await (
+					await app.request(`/api/observations?q=${hiddenId}`)
+				).json()) as { items: Array<{ id: number }> };
+				expect(hiddenIdPayload.items).toEqual([]);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("keeps memory list routes available when identity tables are unavailable", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
@@ -2943,6 +3451,39 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("does not classify numeric is_summary metadata as a summary", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Numeric summary flag",
+					metadata: { is_summary: 1 },
+				});
+
+				const summariesRes = await app.request("/api/summaries");
+				expect(summariesRes.status).toBe(200);
+				const summaries = ((await summariesRes.json()) as { items: Array<{ title: string }> })
+					.items;
+				expect(summaries.map((item) => item.title)).not.toContain("Numeric summary flag");
+
+				const observationsRes = await app.request("/api/observations");
+				expect(observationsRes.status).toBe(200);
+				const observations = (
+					(await observationsRes.json()) as { items: Array<{ title: string; kind: string }> }
+				).items;
+				expect(observations).toContainEqual(
+					expect.objectContaining({ title: "Numeric summary flag", kind: "change" }),
+				);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("keeps session observation counts aligned with active feed items", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
@@ -3071,7 +3612,7 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("tolerates malformed metadata when classifying summaries", async () => {
+		it("tolerates malformed metadata during classification and search", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
 				await app.request("/api/stats");
@@ -3088,13 +3629,13 @@ describe("viewer-server", () => {
 					.prepare("UPDATE memory_items SET metadata_json = ? WHERE title = ?")
 					.run("{not-json", "Broken metadata row");
 
-				const observationsRes = await app.request("/api/observations");
+				const observationsRes = await app.request("/api/observations?q=broken%20metadata");
 				expect(observationsRes.status).toBe(200);
 				const observations = ((await observationsRes.json()) as { items: Array<{ title: string }> })
 					.items;
 				expect(observations.map((item) => item.title)).toContain("Broken metadata row");
 
-				const summariesRes = await app.request("/api/summaries");
+				const summariesRes = await app.request("/api/summaries?q=broken%20metadata");
 				expect(summariesRes.status).toBe(200);
 			} finally {
 				cleanup();

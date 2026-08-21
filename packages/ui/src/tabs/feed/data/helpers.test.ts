@@ -1,10 +1,23 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { MACHINE_PRESENTATION_LABEL_FIXTURES } from "../../../lib/identity-presentation";
 import { state } from "../../../lib/state";
-import { authorLabel, deviceLabel } from "./helpers";
+import { authorLabel, deviceLabel, itemTags } from "./helpers";
 
 beforeEach(() => {
 	state.lastStatsPayload = null;
+});
+
+describe("itemTags", () => {
+	it("uses persisted tags_text when the legacy tags field is absent", () => {
+		expect(itemTags({ tags_text: "release-hotfix searchable-tag" })).toEqual([
+			"release-hotfix",
+			"searchable-tag",
+		]);
+	});
+
+	it("prefers an explicit tags field when both shapes are present", () => {
+		expect(itemTags({ tags: ["legacy"], tags_text: "persisted" })).toEqual(["legacy"]);
+	});
 });
 
 describe("Feed identity labels", () => {

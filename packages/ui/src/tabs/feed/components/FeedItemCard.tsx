@@ -19,7 +19,14 @@ import {
 	renderNarrativeContent,
 	renderSummarySections,
 } from "../data/body-renderers";
-import { authorLabel, deviceLabel, itemKey, mergeMetadata, trustStateLabel } from "../data/helpers";
+import {
+	authorLabel,
+	deviceLabel,
+	itemKey,
+	itemTags,
+	mergeMetadata,
+	trustStateLabel,
+} from "../data/helpers";
 import {
 	clampClass,
 	defaultObservationView,
@@ -57,7 +64,7 @@ export function FeedItemCard({
 	const displayTitle = isSessionSummary && metadata?.request ? metadata.request : defaultTitle;
 	const createdAtRaw = item.created_at || item.created_at_utc;
 	const relative = formatRelativeTime(createdAtRaw);
-	const tags = parseJsonArray(item.tags || []);
+	const tags = itemTags(item);
 	const files = parseJsonArray(item.files || []);
 	const project = item.project || "";
 	const actor = authorLabel(item);

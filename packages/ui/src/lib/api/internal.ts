@@ -32,11 +32,13 @@ export function buildProjectParams(
 	limit?: number,
 	offset?: number,
 	scope?: string,
+	q?: string,
 ): string {
 	const params = new URLSearchParams();
 	params.set("project", project || "");
 	if (typeof limit === "number") params.set("limit", String(limit));
 	if (typeof offset === "number") params.set("offset", String(offset));
 	if (scope) params.set("scope", scope);
+	if (q) params.set("q", q);
 	return params.toString();
 }

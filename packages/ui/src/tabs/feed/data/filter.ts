@@ -1,8 +1,8 @@
-/* Feed filtering — by-type / by-query / signature helpers.
+/* Feed filtering — by-type and signature helpers.
  * Reads the feed-tab globals from lib/state directly so callers can stay
  * declarative. */
 
-import { normalize, parseJsonArray } from "../../../lib/format";
+import { normalize } from "../../../lib/format";
 import { state } from "../../../lib/state";
 import type { FeedItem } from "../types";
 import { itemSignature, mergeMetadata } from "./helpers";
@@ -14,25 +14,6 @@ export function filterByType(items: FeedItem[]): FeedItem[] {
 	if (state.feedTypeFilter === "summaries")
 		return items.filter((i) => isSummaryLikeItem(i, mergeMetadata(i?.metadata_json)));
 	return items;
-}
-
-export function filterByQuery(items: FeedItem[]): FeedItem[] {
-	const query = normalize(state.feedQuery);
-	if (!query) return items;
-	return items.filter((item) => {
-		const hay = [
-			normalize(item?.title),
-			normalize(item?.body_text),
-			normalize(item?.kind),
-			parseJsonArray(item?.tags || [])
-				.map((t) => normalize(t))
-				.join(" "),
-			normalize(item?.project),
-		]
-			.join(" ")
-			.trim();
-		return hay.includes(query);
-	});
 }
 
 export function computeSignature(items: FeedItem[]): string {

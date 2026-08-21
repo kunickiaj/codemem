@@ -7,8 +7,8 @@ import {
 	buildFilterClausesWithContext,
 	canonicalMemoryKind,
 	fromJson,
-	isSummaryLikeMemory as isCoreSummaryLikeMemory,
 	normalizeHumanPresentationName,
+	parsePositiveMemoryId,
 	parseStrictInteger,
 	schema,
 } from "@codemem/core";
@@ -20,6 +20,27 @@ import { queryInt } from "../helpers.js";
 type StoreFactory = () => MemoryStore;
 
 type OwnershipPredicate = (item: Record<string, unknown>) => boolean;
+
+const MAX_FEED_QUERY_CODE_UNITS = 256;
+const searchFunctionsRegisteredStores = new WeakSet<MemoryStore>();
+
+function casefold(value: unknown): string {
+	return String(value ?? "").toLowerCase();
+}
+
+function normalizeMemorySearchQuery(value: string | undefined): string | undefined {
+	const normalized = casefold(value?.trim()).slice(0, MAX_FEED_QUERY_CODE_UNITS);
+	return normalized || undefined;
+}
+
+function ensureMemorySearchFunctions(store: MemoryStore): void {
+	if (searchFunctionsRegisteredStores.has(store)) return;
+	store.db.function("codemem_casefold", { deterministic: true }, casefold);
+	store.db.function("codemem_project_basename", { deterministic: true }, (value: unknown) =>
+		projectBasename(String(value ?? "").trim()),
+	);
+	searchFunctionsRegisteredStores.add(store);
+}
 
 interface ActorPresentationRow {
 	actor_id: string;
@@ -284,11 +305,46 @@ function summaryLikeSqlPredicate(): string {
 		OR (
 			json_valid(COALESCE(memory_items.metadata_json, ''))
 			AND (
-				COALESCE(json_extract(memory_items.metadata_json, '$.is_summary') = 1, 0)
+				COALESCE(json_type(memory_items.metadata_json, '$.is_summary') = 'true', 0)
 				OR LOWER(TRIM(COALESCE(json_extract(memory_items.metadata_json, '$.source'), ''))) = 'observer_summary'
 			)
 		)
 	)`;
+}
+
+function memorySearchSql(query: string): { clause: string; params: unknown[] } {
+	const textClause = `INSTR(codemem_casefold(
+		COALESCE(memory_items.title, '') || CHAR(10) ||
+		COALESCE(memory_items.body_text, '') || CHAR(10) ||
+		CASE WHEN ${summaryLikeSqlPredicate()} THEN 'session_summary' ELSE
+			COALESCE(NULLIF(LOWER(TRIM(COALESCE(memory_items.kind, ''))), ''), 'change')
+		END || CHAR(10) ||
+		COALESCE(
+			memory_items.project,
+			codemem_project_basename(
+				(SELECT sessions.project FROM sessions WHERE sessions.id = memory_items.session_id)
+			),
+			''
+		) || CHAR(10) ||
+		COALESCE(memory_items.tags_text, '') || CHAR(10) ||
+		COALESCE(memory_items.facts, '') || CHAR(10) ||
+		COALESCE(memory_items.subtitle, '') || CHAR(10) ||
+		COALESCE(memory_items.narrative, '') || CHAR(10) ||
+		CASE WHEN json_valid(COALESCE(memory_items.metadata_json, '')) THEN
+			COALESCE(json_extract(memory_items.metadata_json, '$.request'), '') || CHAR(10) ||
+			COALESCE(json_extract(memory_items.metadata_json, '$.subtitle'), '') || CHAR(10) ||
+			COALESCE(json_extract(memory_items.metadata_json, '$.narrative'), '') || CHAR(10) ||
+			COALESCE(json_extract(memory_items.metadata_json, '$.facts'), '') || CHAR(10) ||
+			COALESCE(json_extract(memory_items.metadata_json, '$.summary'), '')
+		ELSE '' END
+	), codemem_casefold(?)) > 0`;
+	const parsedMemoryId = parsePositiveMemoryId(query);
+	const memoryId =
+		parsedMemoryId != null && String(parsedMemoryId) === query ? parsedMemoryId : null;
+	if (memoryId != null) {
+		return { clause: `(memory_items.id = ? OR ${textClause})`, params: [memoryId, query] };
+	}
+	return { clause: textClause, params: [query] };
 }
 
 function countVisibleObservationRows(store: MemoryStore, filters?: MemoryFilters | null): number {
@@ -372,14 +428,28 @@ function queryMemoryPage(
 		offset: number;
 		project?: string;
 		scope?: "mine" | "theirs";
+		q?: string;
+		classification: "observation" | "summary";
 	},
 ): Record<string, unknown>[] {
+	ensureMemorySearchFunctions(store);
 	const filters: MemoryFilters = {};
 	if (options.project) filters.project = options.project;
 	if (options.scope) filters.ownership_scope = options.scope;
 
 	const filterResult = buildViewerMemoryFilters(store, filters);
-	const clauses = ["memory_items.active = 1", ...filterResult.clauses];
+	const summaryPredicate = summaryLikeSqlPredicate();
+	const clauses = [
+		"memory_items.active = 1",
+		options.classification === "summary" ? summaryPredicate : `NOT ${summaryPredicate}`,
+		...filterResult.clauses,
+	];
+	const params: unknown[] = [...filterResult.params];
+	if (options.q) {
+		const search = memorySearchSql(options.q);
+		clauses.push(search.clause);
+		params.push(...search.params);
+	}
 	const where = clauses.join(" AND ");
 	const from = filterResult.joinSessions
 		? "memory_items JOIN sessions ON sessions.id = memory_items.session_id"
@@ -389,50 +459,13 @@ function queryMemoryPage(
 		.prepare(
 			`SELECT memory_items.* FROM ${from}
 			 WHERE ${where}
-			 ORDER BY memory_items.created_at DESC
+			 ORDER BY memory_items.created_at DESC, memory_items.id DESC
 			 LIMIT ? OFFSET ?`,
 		)
-		.all(...filterResult.params, options.limit + 1, options.offset) as Record<string, unknown>[];
+		.all(...params, options.limit + 1, options.offset) as Record<string, unknown>[];
 
 	const ownedBySelf = store.buildOwnershipPredicate();
 	return rows.map((row) => serializeMemoryRow(ownedBySelf, row));
-}
-
-function isSummaryLikeMemory(item: Record<string, unknown>): boolean {
-	return isCoreSummaryLikeMemory({
-		kind: item.kind as string | null | undefined,
-		metadata: item.metadata_json,
-	});
-}
-
-function selectMemoryPage(
-	store: MemoryStore,
-	options: {
-		limit: number;
-		offset: number;
-		project?: string;
-		scope?: "mine" | "theirs";
-		matcher: (item: Record<string, unknown>) => boolean;
-	},
-): Record<string, unknown>[] {
-	const pageSize = Math.max(options.limit + options.offset + 10, 50);
-	let rawOffset = 0;
-	const matched: Record<string, unknown>[] = [];
-
-	while (matched.length < options.offset + options.limit + 1) {
-		const page = queryMemoryPage(store, {
-			limit: pageSize,
-			offset: rawOffset,
-			project: options.project,
-			scope: options.scope,
-		});
-		if (page.length === 0) break;
-		matched.push(...page.filter(options.matcher));
-		if (page.length < pageSize) break;
-		rawOffset += page.length;
-	}
-
-	return matched.slice(options.offset, options.offset + options.limit + 1);
 }
 
 export function memoryRoutes(getStore: StoreFactory) {
@@ -509,12 +542,14 @@ export function memoryRoutes(getStore: StoreFactory) {
 			const offset = Math.max(0, queryInt(c.req.query("offset"), 0));
 			const project = c.req.query("project") || undefined;
 			const scope = normalizeScope(c.req.query("scope"));
-			const items = selectMemoryPage(store, {
+			const q = normalizeMemorySearchQuery(c.req.query("q"));
+			const items = queryMemoryPage(store, {
 				limit,
 				offset,
 				project,
 				scope,
-				matcher: (item) => !isSummaryLikeMemory(item),
+				q,
+				classification: "observation",
 			});
 			const hasMore = items.length > limit;
 			const result = hasMore ? items.slice(0, limit) : items;
@@ -541,12 +576,14 @@ export function memoryRoutes(getStore: StoreFactory) {
 			const offset = Math.max(0, queryInt(c.req.query("offset"), 0));
 			const project = c.req.query("project") || undefined;
 			const scope = normalizeScope(c.req.query("scope"));
-			const items = selectMemoryPage(store, {
+			const q = normalizeMemorySearchQuery(c.req.query("q"));
+			const items = queryMemoryPage(store, {
 				limit,
 				offset,
 				project,
 				scope,
-				matcher: (item) => isSummaryLikeMemory(item),
+				q,
+				classification: "summary",
 			});
 			const hasMore = items.length > limit;
 			const result = hasMore ? items.slice(0, limit) : items;

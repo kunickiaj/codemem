@@ -1,7 +1,7 @@
 /* Pure helper functions for the Feed tab — no rendering, no state mutation.
  */
 
-import { normalize } from "../../../lib/format";
+import { normalize, parseJsonArray } from "../../../lib/format";
 import { humanPresentationLabel } from "../../../lib/identity-presentation";
 import { state } from "../../../lib/state";
 import type { FeedItem, FeedItemMetadata } from "../types";
@@ -78,6 +78,14 @@ export function itemSignature(item: FeedItem): string {
 
 export function itemKey(item: FeedItem): string {
 	return `${String(item.kind || "").toLowerCase()}:${itemSignature(item)}`;
+}
+
+export function itemTags(item: FeedItem): unknown[] {
+	if (item.tags != null) return parseJsonArray(item.tags);
+	const parsed = parseJsonArray(item.tags_text);
+	if (parsed.length > 0) return parsed;
+	if (typeof item.tags_text !== "string") return [];
+	return item.tags_text.trim().split(/\s+/).filter(Boolean);
 }
 
 export function feedScopeLabel(scope: string): string {
