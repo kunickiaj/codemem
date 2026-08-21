@@ -187,3 +187,62 @@ export interface RecipientPolicyReconciliationStatusV1 {
 	lastCompletedAt: string | null;
 	safeErrorCode: string | null;
 }
+
+export type LegacyTeamSetupActivationChangeV1 = "add" | "update" | "remove";
+
+export interface LegacyTeamSetupTeamChangeV1 {
+	teamId: string;
+	change: LegacyTeamSetupActivationChangeV1;
+	fromDeviceEligibilityMode: "person_all_devices" | "reviewed_allowlist" | null;
+	toDeviceEligibilityMode: "reviewed_allowlist";
+}
+
+export interface LegacyTeamSetupMembershipChangeV1 {
+	teamId: string;
+	identityId: string;
+	change: LegacyTeamSetupActivationChangeV1;
+}
+
+export interface LegacyTeamSetupProjectChangeV1 {
+	projectRef: string;
+	fromProjectIdentity: string | null;
+	toProjectIdentity: string;
+	change: LegacyTeamSetupActivationChangeV1;
+}
+
+export interface LegacyTeamSetupRecipientChangeV1 {
+	canonicalProjectIdentity: string;
+	recipientKind: "team";
+	recipientId: string;
+	change: LegacyTeamSetupActivationChangeV1;
+}
+
+export interface LegacyTeamSetupDeviceAccessChangeV1 {
+	canonicalProjectIdentity: string;
+	deviceId: string;
+	change: "add" | "remove";
+}
+
+export interface LegacyTeamSetupAccessDeltaV1 {
+	teamChanges: LegacyTeamSetupTeamChangeV1[];
+	membershipChanges: LegacyTeamSetupMembershipChangeV1[];
+	projectChanges: LegacyTeamSetupProjectChangeV1[];
+	recipientChanges: LegacyTeamSetupRecipientChangeV1[];
+	deviceAccessChanges: LegacyTeamSetupDeviceAccessChangeV1[];
+}
+
+export interface LegacyTeamSetupActivationPreviewV1 {
+	candidateRef: string;
+	attemptId: string;
+	finishDigest: string;
+	accessDeltaDigest: string;
+	accessDelta: LegacyTeamSetupAccessDeltaV1;
+}
+
+export interface LegacyTeamSetupActivationResultV1 {
+	status: "completed";
+	teamId: string;
+	attemptId: string;
+	accessDeltaDigest: string;
+	completedAt: string;
+}

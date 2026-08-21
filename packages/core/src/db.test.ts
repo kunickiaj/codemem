@@ -89,6 +89,22 @@ describe("connect", () => {
 		expect(db.pragma("temp_store", { simple: true })).toBe(2);
 	});
 
+	it("applies connection pragmas when additive setup tables are missing", () => {
+		const dbPath = join(tmpDir, "legacy-additive.sqlite");
+		db = connect(dbPath);
+		db.exec("DROP TABLE legacy_team_setup_completions");
+		db.close();
+		db = undefined;
+
+		db = connect(dbPath);
+
+		expect(tableExists(db, "legacy_team_setup_completions")).toBe(false);
+		expect(db.pragma("synchronous", { simple: true })).toBe(1);
+		expect(db.pragma("cache_size", { simple: true })).toBe(-65536);
+		expect(db.pragma("mmap_size", { simple: true })).toBeGreaterThan(0);
+		expect(db.pragma("temp_store", { simple: true })).toBe(2);
+	});
+
 	it("drops legacy memory_items indexes via additive compatibility", () => {
 		db = connect(join(tmpDir, "legacy-idx.sqlite"));
 		// Simulate a database created by an older schema that carried the
@@ -141,10 +157,18 @@ describe("connect", () => {
 		expect(tableExists(db, "policy_team_device_decisions")).toBe(true);
 		expect(tableExists(db, "coordinator_enrollment_reconciliation_issues")).toBe(true);
 		expect(tableExists(db, "legacy_team_setup_drafts")).toBe(true);
+		expect(tableExists(db, "legacy_team_setup_completions")).toBe(true);
 		expect(tableExists(db, "legacy_team_setup_draft_devices")).toBe(true);
 		expect(tableExists(db, "legacy_team_setup_draft_projects")).toBe(true);
 		expect(columnExists(db, "legacy_team_setup_drafts", "safe_error_code")).toBe(true);
 		expect(columnExists(db, "legacy_team_setup_drafts", "completed_team_id")).toBe(true);
+		expect(columnExists(db, "legacy_team_setup_completions", "candidate_ref")).toBe(true);
+		expect(columnExists(db, "legacy_team_setup_completions", "confirmed_access_delta_digest")).toBe(
+			true,
+		);
+		expect(columnExists(db, "legacy_team_setup_completions", "response_json")).toBe(true);
+		expect(hasIndex(db, "idx_legacy_team_setup_completions_attempt_finish")).toBe(true);
+		expect(hasIndex(db, "idx_legacy_team_setup_completions_exact_replay")).toBe(true);
 		expect(columnExists(db, "legacy_team_setup_draft_devices", "verified_evidence_kind")).toBe(
 			true,
 		);
@@ -1286,6 +1310,7 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		for (const table of [
 			"coordinator_enrollment_reconciliation_issues",
 			"legacy_team_setup_drafts",
+			"legacy_team_setup_completions",
 			"legacy_team_setup_draft_devices",
 			"legacy_team_setup_draft_projects",
 			"policy_teams",
@@ -1333,6 +1358,7 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		for (const table of [
 			"coordinator_enrollment_reconciliation_issues",
 			"legacy_team_setup_drafts",
+			"legacy_team_setup_completions",
 			"legacy_team_setup_draft_devices",
 			"legacy_team_setup_draft_projects",
 			"policy_teams",
@@ -1578,6 +1604,68 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		expect(() =>
 			insert.run("attempt-2", "candidate-1", "2026-08-21T00:01:00Z", "2026-08-21T00:01:00Z"),
 		).not.toThrow();
+	});
+
+	it("restores immutable setup completions after the current compatibility marker", () => {
+		ensureAdditiveSchemaCompatibility(db);
+		expect(appliedSchemaVersion(db)).toBe(SCHEMA_VERSION);
+		db.exec("DROP TABLE legacy_team_setup_completions");
+
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(tableExists(db, "legacy_team_setup_completions")).toBe(true);
+		expect(hasIndex(db, "idx_legacy_team_setup_completions_attempt_finish")).toBe(true);
+		expect(hasIndex(db, "idx_legacy_team_setup_completions_exact_replay")).toBe(true);
+		expect(
+			db
+				.prepare(
+					"SELECT name FROM pragma_index_info('idx_legacy_team_setup_completions_exact_replay') ORDER BY seqno",
+				)
+				.pluck()
+				.all(),
+		).toEqual(["candidate_ref", "attempt_id", "finish_digest", "confirmed_access_delta_digest"]);
+		const insert = db.prepare(`INSERT INTO legacy_team_setup_completions(
+			attempt_id, finish_digest, candidate_ref, confirmed_access_delta_digest,
+			completed_team_id, response_json, completed_at, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+		const completedAt = "2026-08-21T00:00:00Z";
+		insert.run(
+			"attempt-1",
+			"finish-1",
+			"candidate-1",
+			"access-delta-1",
+			"team-1",
+			'{"team_id":"team-1"}',
+			completedAt,
+			completedAt,
+		);
+		expect(() =>
+			insert.run(
+				"attempt-1",
+				"finish-1",
+				"candidate-2",
+				"access-delta-2",
+				"team-2",
+				'{"team_id":"team-2"}',
+				completedAt,
+				completedAt,
+			),
+		).toThrow(/UNIQUE constraint failed/);
+		expect(
+			db
+				.prepare(
+					`SELECT candidate_ref, confirmed_access_delta_digest, completed_team_id, response_json
+					 FROM legacy_team_setup_completions
+					 WHERE candidate_ref = ? AND attempt_id = ? AND finish_digest = ?
+					   AND confirmed_access_delta_digest = ?`,
+				)
+				.get("candidate-1", "attempt-1", "finish-1", "access-delta-1"),
+		).toEqual({
+			candidate_ref: "candidate-1",
+			confirmed_access_delta_digest: "access-delta-1",
+			completed_team_id: "team-1",
+			response_json: '{"team_id":"team-1"}',
+		});
 	});
 
 	it("skips gated DDL once marked and re-applies on version mismatch", () => {

@@ -125,6 +125,332 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 				(device) => device.deviceId,
 			),
 		).toEqual(["device-direct-2", "device-team"]);
+		expect(
+			db
+				.prepare(
+					`SELECT status, provenance FROM policy_team_memberships
+					 WHERE team_id = 'team-a' AND identity_id = 'identity-team'`,
+				)
+				.get(),
+		).toEqual({ status: "active", provenance: "coordinator_invite" });
+		expect(db.prepare("SELECT COUNT(*) FROM policy_team_device_decisions").pluck().get()).toBe(0);
+		expect(
+			db
+				.prepare("SELECT source_fingerprint FROM policy_teams WHERE team_id = 'team-a'")
+				.pluck()
+				.get(),
+		).toBe("s1");
+	});
+
+	it("normalizes a legacy active invite membership on a reviewed Team", () => {
+		db.prepare(
+			"UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist' WHERE team_id = 'team-a'",
+		).run();
+		db.prepare(`INSERT INTO actors(
+			actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+		) VALUES ('identity-team', 'Brian Example', 0, 'active', NULL, ?, ?)`).run(NOW, NOW);
+		db.prepare(`INSERT INTO policy_team_memberships(
+			team_id, identity_id, role, status, provenance, revision, migration_state,
+			idempotency_key, created_at, updated_at
+		) VALUES ('team-a', 'identity-team', 'member', 'active', 'coordinator_invite',
+			'legacy-r1', 'user_managed', 'legacy-active-membership', ?, ?)`).run(NOW, NOW);
+
+		const result = reconcileCoordinatorEnrollmentSnapshot(db, {
+			coordinatorId: "https://coord.example.test",
+			groupId: "group-a",
+			now: NOW,
+			consumedTeamInvites: [
+				{
+					invite_id: "invite-legacy-active",
+					group_id: "group-a",
+					policy_team_id: "team-a",
+					assigned_identity_id: "identity-team",
+					recipient_actor_id: "identity-team",
+					recipient_display_name: "Brian Example",
+					recipient_device_display_name: "Brian's MacBook",
+					bound_device_id: "device-team",
+					consumed_at: NOW,
+				},
+			],
+			enrollments: [],
+		});
+
+		expect(result.issues).toEqual([]);
+		expect(
+			db
+				.prepare(
+					`SELECT status, provenance FROM policy_team_memberships
+					 WHERE team_id = 'team-a' AND identity_id = 'identity-team'`,
+				)
+				.get(),
+		).toEqual({ status: "reviewed_active", provenance: "coordinator_invite" });
+	});
+
+	it("reactivates a setup-revoked membership when a new invite is consumed", () => {
+		db.prepare(
+			"UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist' WHERE team_id = 'team-a'",
+		).run();
+		db.prepare(`INSERT INTO actors(
+			actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+		) VALUES ('identity-team', 'Brian Example', 0, 'active', NULL, ?, ?)`).run(NOW, NOW);
+		db.prepare(`INSERT INTO policy_team_memberships(
+			team_id, identity_id, role, status, provenance, revision, migration_state,
+			idempotency_key, created_at, updated_at
+		) VALUES ('team-a', 'identity-team', 'member', 'revoked', 'reviewed_active',
+			'setup-r1', 'completed', 'setup-revoked-membership', ?, ?)`).run(NOW, NOW);
+
+		const result = reconcileCoordinatorEnrollmentSnapshot(db, {
+			coordinatorId: "https://coord.example.test",
+			groupId: "group-a",
+			now: NOW,
+			consumedTeamInvites: [
+				{
+					invite_id: "invite-revoked",
+					group_id: "group-a",
+					policy_team_id: "team-a",
+					assigned_identity_id: "identity-team",
+					recipient_actor_id: "identity-team",
+					recipient_display_name: "Brian Example",
+					recipient_device_display_name: "Brian's MacBook",
+					bound_device_id: "device-team",
+					consumed_at: NOW,
+				},
+			],
+			enrollments: [],
+		});
+
+		expect(result.issues).toEqual([]);
+		expect(result.membershipsAdded).toBe(1);
+		expect(
+			db
+				.prepare(
+					`SELECT status, provenance FROM policy_team_memberships
+					 WHERE team_id = 'team-a' AND identity_id = 'identity-team'`,
+				)
+				.get(),
+		).toEqual({ status: "reviewed_active", provenance: "coordinator_invite" });
+		expect(
+			db
+				.prepare("SELECT source_fingerprint FROM policy_teams WHERE team_id = 'team-a'")
+				.pluck()
+				.get(),
+		).toBeNull();
+	});
+
+	it("promotes existing setup-owned access without invalidating reviewed readiness", () => {
+		db.prepare(
+			"UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist' WHERE team_id = 'team-a'",
+		).run();
+		db.prepare(`INSERT INTO actors(
+			actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+		) VALUES ('identity-team', 'Brian Example', 0, 'active', NULL, ?, ?)`).run(NOW, NOW);
+		db.prepare(`INSERT INTO policy_team_memberships(
+			team_id, identity_id, role, status, provenance, revision, migration_state,
+			idempotency_key, created_at, updated_at
+		) VALUES ('team-a', 'identity-team', 'member', 'reviewed_active', 'reviewed_active',
+			'setup-r1', 'completed', 'setup-membership', ?, ?)`).run(NOW, NOW);
+		const enrollment = {
+			group_id: "group-a",
+			device_id: "device-team",
+			public_key: "pk-team",
+			fingerprint: "fp-team",
+			identity_id: "identity-team",
+			display_name: "Brian's MacBook",
+			enabled: 1,
+			created_at: NOW,
+		};
+		reconcileCoordinatorEnrollmentSnapshot(db, {
+			coordinatorId: "https://coord.example.test",
+			groupId: "group-a",
+			now: NOW,
+			consumedTeamInvites: [],
+			enrollments: [enrollment],
+		});
+		db.prepare(`INSERT INTO policy_team_device_decisions(
+			team_id, device_id, decision, assignment_version, provenance, revision, created_at, updated_at
+		) VALUES ('team-a', 'device-team', 'included', 0, 'reviewed_team_setup', 'setup-r1', ?, ?)`).run(
+			NOW,
+			NOW,
+		);
+
+		const result = reconcileCoordinatorEnrollmentSnapshot(db, {
+			coordinatorId: "https://coord.example.test",
+			groupId: "group-a",
+			now: NOW,
+			consumedTeamInvites: [
+				{
+					invite_id: "invite-existing",
+					group_id: "group-a",
+					policy_team_id: "team-a",
+					assigned_identity_id: "identity-team",
+					recipient_actor_id: "identity-team",
+					recipient_display_name: "Brian Example",
+					recipient_device_display_name: "Brian's MacBook",
+					bound_device_id: "device-team",
+					consumed_at: NOW,
+				},
+			],
+			enrollments: [enrollment],
+		});
+
+		expect(result.issues).toEqual([]);
+		expect(
+			db
+				.prepare(
+					`SELECT status, provenance FROM policy_team_memberships
+					 WHERE team_id = 'team-a' AND identity_id = 'identity-team'`,
+				)
+				.get(),
+		).toEqual({ status: "reviewed_active", provenance: "coordinator_invite" });
+		expect(
+			db
+				.prepare(
+					`SELECT decision, provenance FROM policy_team_device_decisions
+					 WHERE team_id = 'team-a' AND device_id = 'device-team'`,
+				)
+				.get(),
+		).toEqual({ decision: "included", provenance: "coordinator_invite" });
+		expect(
+			db
+				.prepare("SELECT source_fingerprint FROM policy_teams WHERE team_id = 'team-a'")
+				.pluck()
+				.get(),
+		).toBe("s1");
+	});
+
+	it("adds reviewed Team invitees without granting their active roster devices", () => {
+		db.prepare(
+			"UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist' WHERE team_id = 'team-a'",
+		).run();
+		const input = {
+			coordinatorId: "https://coord.example.test",
+			groupId: "group-a",
+			now: NOW,
+			consumedTeamInvites: [
+				{
+					invite_id: "invite-reviewed",
+					group_id: "group-a",
+					policy_team_id: "team-a",
+					assigned_identity_id: "identity-reviewed",
+					recipient_actor_id: "identity-reviewed",
+					recipient_display_name: "Reviewed member",
+					bound_device_id: "device-reviewed-a",
+					consumed_at: NOW,
+				},
+				{
+					invite_id: "invite-reviewed-no-device",
+					group_id: "group-a",
+					policy_team_id: "team-a",
+					assigned_identity_id: "identity-reviewed-no-device",
+					recipient_actor_id: "identity-reviewed-no-device",
+					bound_device_id: "device-not-in-roster",
+					consumed_at: NOW,
+				},
+			],
+			enrollments: [
+				{
+					group_id: "group-a",
+					device_id: "device-reviewed-a",
+					public_key: "pk-reviewed-a",
+					fingerprint: "fp-reviewed-a",
+					identity_id: "identity-reviewed",
+					display_name: "Reviewed laptop",
+					enabled: 1,
+					created_at: NOW,
+				},
+				{
+					group_id: "group-a",
+					device_id: "device-reviewed-b",
+					public_key: "pk-reviewed-b",
+					fingerprint: "fp-reviewed-b",
+					identity_id: "identity-reviewed",
+					display_name: "Reviewed phone",
+					enabled: 1,
+					created_at: NOW,
+				},
+			],
+		};
+
+		expect(reconcileCoordinatorEnrollmentSnapshot(db, input)).toEqual({
+			devicesAdded: 2,
+			membershipsAdded: 2,
+			identitiesAdded: 2,
+			unchanged: 0,
+			issues: [],
+		});
+		expect(
+			db
+				.prepare(
+					`SELECT identity_id, status, provenance FROM policy_team_memberships
+					 WHERE team_id = 'team-a' ORDER BY identity_id`,
+				)
+				.all(),
+		).toEqual([
+			{
+				identity_id: "identity-reviewed",
+				status: "reviewed_active",
+				provenance: "coordinator_invite",
+			},
+			{
+				identity_id: "identity-reviewed-no-device",
+				status: "reviewed_active",
+				provenance: "coordinator_invite",
+			},
+		]);
+		expect(
+			db
+				.prepare(
+					`SELECT device_id, decision, assignment_version, provenance
+					 FROM policy_team_device_decisions ORDER BY device_id`,
+				)
+				.all(),
+		).toEqual([
+			{
+				device_id: "device-reviewed-a",
+				decision: "unresolved",
+				assignment_version: 0,
+				provenance: "coordinator_invite",
+			},
+			{
+				device_id: "device-reviewed-b",
+				decision: "unresolved",
+				assignment_version: 0,
+				provenance: "coordinator_invite",
+			},
+		]);
+		expect(
+			db
+				.prepare("SELECT source_fingerprint FROM policy_teams WHERE team_id = 'team-a'")
+				.pluck()
+				.get(),
+		).toBeNull();
+
+		db.prepare(`INSERT INTO project_recipients(
+			canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			policy_revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at
+		) VALUES ('project-reviewed', 'team', 'team-a', 'active', 'test', 'r1', 'user_managed',
+			'project-reviewed', 'project-reviewed', ?, ?)`).run(NOW, NOW);
+		expect(
+			deriveRecipientPolicyEffectiveDevicesFromDatabase(db, "project-reviewed").devices,
+		).toEqual([]);
+
+		db.prepare(
+			`UPDATE policy_team_device_decisions SET decision = 'included'
+			 WHERE team_id = 'team-a' AND device_id = 'device-reviewed-a'`,
+		).run();
+		expect(reconcileCoordinatorEnrollmentSnapshot(db, input)).toMatchObject({
+			devicesAdded: 0,
+			membershipsAdded: 0,
+			identitiesAdded: 0,
+			unchanged: 4,
+			issues: [],
+		});
+		expect(
+			db
+				.prepare("SELECT decision FROM policy_team_device_decisions ORDER BY device_id")
+				.pluck()
+				.all(),
+		).toEqual(["included", "unresolved"]);
 	});
 
 	it("uses legacy Team member and enrolled device fallbacks when names are absent", () => {

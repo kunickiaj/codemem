@@ -721,6 +721,7 @@ describe("recipient-policy onboarding", () => {
 			expect(commitRecipientPolicyOnboardingFromReviewedIntent(fresh, commitRequest)).toMatchObject(
 				{
 					status: "conflict",
+					errorCode: "device_binding_conflict",
 					writeCount: 0,
 				},
 			);
@@ -1359,6 +1360,148 @@ describe("recipient-policy onboarding", () => {
 		expect(protectedSnapshot(db)).toBe(protectedBefore);
 	});
 
+	it("commits reviewed-mode membership and an unresolved decision for reviewed Teams", () => {
+		db.prepare(
+			`UPDATE policy_teams
+			 SET device_eligibility_mode = 'reviewed_allowlist', source_fingerprint = 'reviewed-roster'
+			 WHERE team_id = 'team-a'`,
+		).run();
+		db.prepare(
+			"UPDATE policy_team_memberships SET status = 'reviewed_active' WHERE team_id = 'team-a'",
+		).run();
+		const request = baseRequest({
+			journey: "team",
+			invitationId: "invite-team-reviewed",
+			identityId: "identity-b",
+			teamId: "team-a",
+		});
+		const preview = previewRecipientPolicyOnboarding(db, request);
+
+		const result = commitRecipientPolicyOnboarding(
+			db,
+			{ ...request, reviewedOnboardingDigest: preview.reviewedOnboardingDigest },
+			{ now: () => NOW },
+		);
+
+		expect(result).toMatchObject({ status: "applied" });
+		expect(
+			db
+				.prepare(
+					`SELECT status, provenance FROM policy_team_memberships
+					 WHERE team_id = 'team-a' AND identity_id = 'identity-b'`,
+				)
+				.get(),
+		).toEqual({ status: "reviewed_active", provenance: "team_invite" });
+		expect(
+			db
+				.prepare(
+					`SELECT decision, provenance FROM policy_team_device_decisions
+					 WHERE team_id = 'team-a' AND device_id = 'device-new'`,
+				)
+				.get(),
+		).toEqual({ decision: "unresolved", provenance: "team_invite" });
+		expect(
+			db
+				.prepare("SELECT source_fingerprint FROM policy_teams WHERE team_id = 'team-a'")
+				.pluck()
+				.get(),
+		).toBeNull();
+	});
+
+	it("transitions a setup-owned device decision to invite ownership without changing it", () => {
+		db.prepare(
+			`UPDATE policy_teams
+			 SET device_eligibility_mode = 'reviewed_allowlist', source_fingerprint = 'reviewed-roster'
+			 WHERE team_id = 'team-a'`,
+		).run();
+		db.prepare(
+			"UPDATE policy_team_memberships SET status = 'reviewed_active' WHERE team_id = 'team-a'",
+		).run();
+		db.prepare(
+			`INSERT INTO policy_team_device_decisions(
+			 team_id, device_id, decision, assignment_version, provenance, revision,
+			 created_at, updated_at
+			 ) VALUES ('team-a', 'device-new', 'included', 0, 'reviewed_team_setup', 'setup-r1', ?, ?)`,
+		).run(NOW, NOW);
+		const request = baseRequest({
+			journey: "team",
+			invitationId: "invite-adopt-decision",
+			identityId: "identity-b",
+			teamId: "team-a",
+		});
+		const preview = previewRecipientPolicyOnboarding(db, request);
+
+		const result = commitRecipientPolicyOnboarding(
+			db,
+			{ ...request, reviewedOnboardingDigest: preview.reviewedOnboardingDigest },
+			{ now: () => NOW },
+		);
+
+		expect(result).toMatchObject({ status: "applied", errorCode: null });
+		expect(
+			db
+				.prepare(
+					`SELECT decision, provenance FROM policy_team_device_decisions
+					 WHERE team_id = 'team-a' AND device_id = 'device-new'`,
+				)
+				.get(),
+		).toEqual({ decision: "included", provenance: "team_invite" });
+		expect(
+			db
+				.prepare("SELECT source_fingerprint FROM policy_teams WHERE team_id = 'team-a'")
+				.pluck()
+				.get(),
+		).toBe("reviewed-roster");
+	});
+
+	it("adopts an existing setup-owned membership when onboarding an invited member", () => {
+		db.prepare(
+			`UPDATE policy_teams
+			 SET device_eligibility_mode = 'reviewed_allowlist', source_fingerprint = 'reviewed-roster'
+			 WHERE team_id = 'team-a'`,
+		).run();
+		db.prepare(
+			"UPDATE policy_team_memberships SET status = 'reviewed_active' WHERE team_id = 'team-a'",
+		).run();
+		// identity-b is already a roster member from guided setup.
+		db.prepare(
+			`INSERT INTO policy_team_memberships(
+			 team_id, identity_id, role, status, provenance, revision, migration_state,
+			 idempotency_key, created_at, updated_at
+			 ) VALUES ('team-a', 'identity-b', 'member', 'reviewed_active', 'reviewed_active',
+				'setup-r1', 'completed', 'setup-owned-membership', ?, ?)`,
+		).run(NOW, NOW);
+		const request = baseRequest({
+			journey: "team",
+			invitationId: "invite-existing-member",
+			identityId: "identity-b",
+			teamId: "team-a",
+		});
+		const preview = previewRecipientPolicyOnboarding(db, request);
+
+		const result = commitRecipientPolicyOnboarding(
+			db,
+			{ ...request, reviewedOnboardingDigest: preview.reviewedOnboardingDigest },
+			{ now: () => NOW },
+		);
+
+		expect(result).toMatchObject({ status: "applied", errorCode: null });
+		expect(
+			db
+				.prepare(
+					`SELECT status, provenance FROM policy_team_memberships
+					 WHERE team_id = 'team-a' AND identity_id = 'identity-b'`,
+				)
+				.get(),
+		).toEqual({ status: "reviewed_active", provenance: "team_invite" });
+		expect(
+			db
+				.prepare(`SELECT identity_id FROM identity_devices WHERE device_id = 'device-new'`)
+				.pluck()
+				.get(),
+		).toBe("identity-b");
+	});
+
 	it("commits exact direct recipients plus device without Team membership", () => {
 		const request = baseRequest({
 			journey: "direct_project",
@@ -1692,6 +1835,55 @@ describe("recipient-policy onboarding", () => {
 		).toEqual(originalBinding);
 	});
 
+	it("re-keys a reviewed-cleared binding and rejects later changed keys", () => {
+		const first = baseRequest({ invitationId: "invite-cleared-first" });
+		const firstPreview = previewRecipientPolicyOnboarding(db, first);
+		commitRecipientPolicyOnboarding(
+			db,
+			{ ...first, reviewedOnboardingDigest: firstPreview.reviewedOnboardingDigest },
+			{ now: () => NOW },
+		);
+		// A reviewed setup reassignment cleared the invite binding metadata.
+		db.prepare("UPDATE identity_devices SET source_fingerprint = NULL WHERE device_id = ?").run(
+			first.deviceId,
+		);
+
+		// The next valid invite may key the row afresh — and MUST persist its
+		// fingerprint, or the row would stay unkeyed and every future invite
+		// with a different public key would bypass the changed-key rejection.
+		const second = baseRequest({
+			invitationId: "invite-cleared-second",
+			devicePublicKey: "public-key-b",
+		});
+		const secondPreview = previewRecipientPolicyOnboarding(db, second);
+		expect(
+			commitRecipientPolicyOnboarding(
+				db,
+				{ ...second, reviewedOnboardingDigest: secondPreview.reviewedOnboardingDigest },
+				{ now: () => NOW },
+			),
+		).toMatchObject({ status: "applied" });
+		expect(
+			db
+				.prepare("SELECT source_fingerprint FROM identity_devices WHERE device_id = ?")
+				.pluck()
+				.get(first.deviceId),
+		).not.toBeNull();
+
+		const third = baseRequest({
+			invitationId: "invite-cleared-third",
+			devicePublicKey: "public-key-c",
+		});
+		const thirdPreview = previewRecipientPolicyOnboarding(db, third);
+		expect(
+			commitRecipientPolicyOnboarding(
+				db,
+				{ ...third, reviewedOnboardingDigest: thirdPreview.reviewedOnboardingDigest },
+				{ now: () => NOW },
+			),
+		).toMatchObject({ status: "conflict", errorCode: "device_binding_conflict" });
+	});
+
 	it("key-binds a compatible exact-Project inviter device on recipient onboarding", () => {
 		db.prepare(
 			`INSERT INTO sync_device(device_id, public_key, fingerprint, created_at)
@@ -1704,6 +1896,17 @@ describe("recipient-policy onboarding", () => {
 			 ) VALUES ('identity-a', 'device-new', 'Original device', 'active',
 			 'exact_project_invite', 'exact-project-revision', 'user_managed',
 			 'exact-project-source', 'exact-project-idempotency', ?, ?)`,
+		).run(NOW, NOW);
+		db.prepare(
+			`UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist',
+			 source_fingerprint = 'reviewed-fingerprint' WHERE team_id = 'team-a'`,
+		).run();
+		db.prepare(
+			`INSERT INTO policy_team_device_decisions(
+			 team_id, device_id, decision, assignment_version, provenance, revision,
+			 created_at, updated_at
+			 ) VALUES ('team-a', 'device-new', 'included', 0, 'reviewed_setup',
+			 'reviewed-revision', ?, ?)`,
 		).run(NOW, NOW);
 		const request = baseRequest({ invitationId: "invite-key-binding-transition" });
 		const preview = previewRecipientPolicyOnboarding(db, request);
@@ -1733,6 +1936,26 @@ describe("recipient-policy onboarding", () => {
 			created_at: NOW,
 			updated_at: "2026-07-21T12:01:00.000Z",
 		});
+		expect(
+			db
+				.prepare("SELECT assignment_version FROM identity_devices WHERE device_id = 'device-new'")
+				.pluck()
+				.get(),
+		).toBe(0);
+		expect(
+			db
+				.prepare(
+					`SELECT decision, assignment_version FROM policy_team_device_decisions
+					 WHERE team_id = 'team-a' AND device_id = 'device-new'`,
+				)
+				.get(),
+		).toEqual({ decision: "included", assignment_version: 0 });
+		expect(
+			db
+				.prepare("SELECT source_fingerprint FROM policy_teams WHERE team_id = 'team-a'")
+				.pluck()
+				.get(),
+		).toBe("reviewed-fingerprint");
 
 		const changed = baseRequest({
 			invitationId: "invite-after-key-binding-transition",
@@ -1752,6 +1975,139 @@ describe("recipient-policy onboarding", () => {
 		expect(
 			db.prepare("SELECT * FROM identity_devices WHERE device_id = 'device-new'").get(),
 		).toEqual(bindingAfterTransition);
+	});
+
+	it("invalidates reviewed Team decisions when an exact-Project device changes Identity", () => {
+		db.prepare(
+			`INSERT INTO sync_device(device_id, public_key, fingerprint, created_at)
+			 VALUES ('device-new', 'public-key-a', ?, ?)`,
+		).run(fingerprintPublicKey("public-key-a"), NOW);
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 identity_id, device_id, display_name, status, provenance, revision, migration_state,
+			 source_fingerprint, idempotency_key, created_at, updated_at
+			 ) VALUES ('identity-a', 'device-new', 'Original device', 'active',
+			 'exact_project_invite', 'exact-project-revision', 'user_managed',
+			 'exact-project-source', 'exact-project-idempotency', ?, ?)`,
+		).run(NOW, NOW);
+		db.prepare(
+			`UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist',
+			 source_fingerprint = 'reviewed-fingerprint' WHERE team_id = 'team-a'`,
+		).run();
+		db.prepare(
+			`INSERT INTO policy_team_device_decisions(
+			 team_id, device_id, decision, assignment_version, provenance, revision,
+			 created_at, updated_at
+			 ) VALUES ('team-a', 'device-new', 'included', 0, 'reviewed_setup',
+			 'reviewed-revision', ?, ?)`,
+		).run(NOW, NOW);
+		const request = baseRequest({
+			invitationId: "invite-identity-transition",
+			identityId: "identity-b",
+		});
+		const preview = previewRecipientPolicyOnboarding(db, request);
+
+		expect(
+			commitRecipientPolicyOnboarding(
+				db,
+				{ ...request, reviewedOnboardingDigest: preview.reviewedOnboardingDigest },
+				{ now: () => "2026-07-21T12:01:00.000Z" },
+			),
+		).toMatchObject({ status: "applied", writeCount: 1, idempotent: false });
+		expect(
+			db
+				.prepare(
+					`SELECT identity_id, assignment_version, provenance
+					 FROM identity_devices WHERE device_id = 'device-new'`,
+				)
+				.get(),
+		).toEqual({
+			identity_id: "identity-b",
+			assignment_version: 1,
+			provenance: "recipient_invite",
+		});
+		expect(
+			db
+				.prepare(
+					`SELECT decision, assignment_version FROM policy_team_device_decisions
+					 WHERE team_id = 'team-a' AND device_id = 'device-new'`,
+				)
+				.get(),
+		).toEqual({ decision: "unresolved", assignment_version: 0 });
+		expect(
+			db
+				.prepare("SELECT source_fingerprint FROM policy_teams WHERE team_id = 'team-a'")
+				.pluck()
+				.get(),
+		).toBeNull();
+	});
+
+	it("rolls back assignment invalidation when the exact-Project transition fails", () => {
+		db.prepare(
+			`INSERT INTO sync_device(device_id, public_key, fingerprint, created_at)
+			 VALUES ('device-new', 'public-key-a', ?, ?)`,
+		).run(fingerprintPublicKey("public-key-a"), NOW);
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 identity_id, device_id, display_name, status, provenance, revision, migration_state,
+			 source_fingerprint, idempotency_key, created_at, updated_at
+			 ) VALUES ('identity-a', 'device-new', 'Original device', 'active',
+			 'exact_project_invite', 'exact-project-revision', 'user_managed',
+			 'exact-project-source', 'exact-project-idempotency', ?, ?)`,
+		).run(NOW, NOW);
+		db.prepare(
+			`UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist',
+			 source_fingerprint = 'reviewed-fingerprint' WHERE team_id = 'team-a'`,
+		).run();
+		db.prepare(
+			`INSERT INTO policy_team_device_decisions(
+			 team_id, device_id, decision, assignment_version, provenance, revision,
+			 created_at, updated_at
+			 ) VALUES ('team-a', 'device-new', 'included', 0, 'reviewed_setup',
+			 'reviewed-revision', ?, ?)`,
+		).run(NOW, NOW);
+		db.exec(`CREATE TRIGGER fail_exact_project_transition
+			BEFORE UPDATE OF provenance ON identity_devices
+			WHEN NEW.provenance = 'recipient_invite'
+			BEGIN SELECT RAISE(ABORT, 'test exact-project transition failure'); END`);
+		const request = baseRequest({
+			invitationId: "invite-rollback-identity-transition",
+			identityId: "identity-b",
+		});
+		const preview = previewRecipientPolicyOnboarding(db, request);
+
+		expect(
+			commitRecipientPolicyOnboarding(db, {
+				...request,
+				reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
+			}),
+		).toMatchObject({ status: "conflict", writeCount: 0 });
+		expect(
+			db
+				.prepare(
+					`SELECT identity_id, assignment_version, provenance
+					 FROM identity_devices WHERE device_id = 'device-new'`,
+				)
+				.get(),
+		).toEqual({
+			identity_id: "identity-a",
+			assignment_version: 0,
+			provenance: "exact_project_invite",
+		});
+		expect(
+			db
+				.prepare(
+					`SELECT decision, assignment_version FROM policy_team_device_decisions
+					 WHERE team_id = 'team-a' AND device_id = 'device-new'`,
+				)
+				.get(),
+		).toEqual({ decision: "included", assignment_version: 0 });
+		expect(
+			db
+				.prepare("SELECT source_fingerprint FROM policy_teams WHERE team_id = 'team-a'")
+				.pluck()
+				.get(),
+		).toBe("reviewed-fingerprint");
 	});
 
 	it.each([

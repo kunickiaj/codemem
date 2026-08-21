@@ -1,4 +1,5 @@
 import type { Database } from "./db.js";
+import { assignIdentityDeviceInTransaction } from "./identity-device-assignment.js";
 import {
 	type LegacyRecipientPolicyProjectionV1,
 	listLegacyRecipientPolicyProjections,
@@ -510,24 +511,135 @@ function validateOrWriteActor(db: Database, actor: ActorRow, now: string, write:
 	return true;
 }
 
+function requiredIntentValue(row: IntentRow, column: string): string {
+	const value = row.values[column];
+	if (typeof value !== "string") throw new Error("intent_conflict");
+	return value;
+}
+
+/**
+ * Guided setup can reassign a pre-existing device row, which preserves that
+ * row's original provenance and revision (`assignIdentityDeviceInTransaction`
+ * changes only the assignment). Completion-bound draft evidence — an
+ * `included` decision targeting this identity on a completed attempt — is the
+ * authoritative signal that setup reviewed the assignment, so it satisfies
+ * the migration intent exactly like a setup-created row does.
+ */
+function hasCompletedSetupAssignmentEvidence(
+	db: Database,
+	deviceId: string,
+	identityId: string,
+): boolean {
+	return Boolean(
+		db
+			.prepare(
+				`SELECT 1 FROM legacy_team_setup_draft_devices dd
+				 JOIN legacy_team_setup_drafts d ON d.attempt_id = dd.attempt_id
+				 WHERE dd.device_id = ? AND dd.decision = 'included'
+				   AND dd.target_identity_id = ?
+				   AND d.state = 'completed' AND d.completed_team_id IS NOT NULL
+				 LIMIT 1`,
+			)
+			.get(deviceId, identityId),
+	);
+}
+
+function validateOrAssignIdentityDevice(db: Database, row: IntentRow, write: boolean): boolean {
+	const deviceId = row.key.device_id;
+	if (!deviceId) throw new Error("intent_conflict");
+	const identityId = requiredIntentValue(row, "identity_id");
+	const existing = db
+		.prepare(
+			`SELECT identity_id, assignment_version, status, revision, provenance
+			 FROM identity_devices WHERE device_id = ?`,
+		)
+		.get(deviceId) as
+		| {
+				identity_id: string;
+				assignment_version: number;
+				status: string;
+				revision: string;
+				provenance: string;
+		  }
+		| undefined;
+	if (existing) {
+		// Guided setup owns its device rows and stamps them with the Team
+		// activation revision; a matching assignment written by setup satisfies
+		// the migration intent without requiring the migration revision. Setup
+		// may also have reassigned a row created by another flow — that row
+		// keeps its old provenance and revision, so completion-bound draft
+		// evidence is what proves the assignment was reviewed.
+		const revisionCompatible =
+			existing.revision === requiredIntentValue(row, "revision") ||
+			existing.provenance === "reviewed_team_setup" ||
+			hasCompletedSetupAssignmentEvidence(db, deviceId, identityId);
+		if (
+			existing.identity_id !== identityId ||
+			existing.status !== requiredIntentValue(row, "status") ||
+			!revisionCompatible
+		) {
+			throw new Error("device_identity_conflict");
+		}
+		if (write) {
+			assignIdentityDeviceInTransaction(db, {
+				deviceId,
+				targetIdentityId: identityId,
+				expectation: {
+					kind: "existing",
+					assignmentVersion: existing.assignment_version,
+					identityId: existing.identity_id,
+				},
+				now: requiredIntentValue(row, "updated_at"),
+			});
+		}
+		return false;
+	}
+	if (write) {
+		assignIdentityDeviceInTransaction(db, {
+			deviceId,
+			targetIdentityId: identityId,
+			expectation: { kind: "absent" },
+			insert: {
+				displayName: requiredIntentValue(row, "display_name"),
+				provenance: requiredIntentValue(row, "provenance"),
+				revision: requiredIntentValue(row, "revision"),
+				migrationState: requiredIntentValue(row, "migration_state"),
+				sourceFingerprint: row.values.source_fingerprint,
+				idempotencyKey: requiredIntentValue(row, "idempotency_key"),
+			},
+			now: requiredIntentValue(row, "updated_at"),
+		});
+	}
+	return true;
+}
+
 function validateOrWriteRow(db: Database, row: IntentRow, write: boolean): boolean {
+	if (row.table === "identity_devices") throw new Error("intent_conflict");
 	const where = rowWhere(row.key);
 	const existing = db
 		.prepare(`SELECT * FROM ${row.table} WHERE ${where.clause}`)
 		.get(...where.parameters) as Record<string, unknown> | undefined;
 	if (existing) {
+		// Guided setup owns its recipient edges and stamps them with the Team
+		// activation revision; an active setup-owned edge for the same key
+		// satisfies the migration intent without requiring the migration
+		// revision, matching the device-row handling above.
+		if (
+			row.table === "project_recipients" &&
+			existing.provenance === "reviewed_team_setup" &&
+			existing.status === "active" &&
+			row.values.status === "active"
+		) {
+			return false;
+		}
 		const relationshipColumns =
-			row.table === "identity_devices"
-				? ["identity_id", "status", "revision"]
-				: row.table === "project_recipients"
-					? ["status", "policy_revision"]
-					: row.table === "policy_team_memberships"
-						? ["role", "status", "revision"]
-						: ["status", "revision"];
+			row.table === "project_recipients"
+				? ["status", "policy_revision"]
+				: row.table === "policy_team_memberships"
+					? ["role", "status", "revision"]
+					: ["status", "revision"];
 		if (relationshipColumns.some((column) => existing[column] !== row.values[column])) {
-			throw new Error(
-				row.table === "identity_devices" ? "device_identity_conflict" : "intent_conflict",
-			);
+			throw new Error("intent_conflict");
 		}
 		return false;
 	}
@@ -589,6 +701,7 @@ function safeMigrationErrorCode(error: unknown): string {
 	]);
 	const message = error instanceof Error ? error.message : "";
 	if (allowed.has(message)) return message;
+	if (message === "team_setup_assignment_changed") return "device_identity_conflict";
 	const code =
 		error && typeof error === "object" && "code" in error
 			? String((error as { code?: unknown }).code ?? "")
@@ -733,7 +846,11 @@ export function migrateRecipientPolicyIntent(
 					if (validateOrWriteActor(db, actor, now, write)) plannedWriteCount += 1;
 				}
 				for (const row of plan.rows) {
-					if (validateOrWriteRow(db, row, write)) plannedWriteCount += 1;
+					const changed =
+						row.table === "identity_devices"
+							? validateOrAssignIdentityDevice(db, row, write)
+							: validateOrWriteRow(db, row, write);
+					if (changed) plannedWriteCount += 1;
 				}
 			};
 			if (dryRun) apply(false);

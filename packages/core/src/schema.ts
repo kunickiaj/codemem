@@ -1193,6 +1193,35 @@ export const legacyTeamSetupDrafts = sqliteTable(
 export type LegacyTeamSetupDraft = typeof legacyTeamSetupDrafts.$inferSelect;
 export type NewLegacyTeamSetupDraft = typeof legacyTeamSetupDrafts.$inferInsert;
 
+export const legacyTeamSetupCompletions = sqliteTable(
+	"legacy_team_setup_completions",
+	{
+		attempt_id: text("attempt_id").notNull(),
+		finish_digest: text("finish_digest").notNull(),
+		candidate_ref: text("candidate_ref").notNull(),
+		confirmed_access_delta_digest: text("confirmed_access_delta_digest").notNull(),
+		completed_team_id: text("completed_team_id").notNull(),
+		response_json: text("response_json").notNull(),
+		completed_at: text("completed_at").notNull(),
+		created_at: text("created_at").notNull(),
+	},
+	(table) => [
+		uniqueIndex("idx_legacy_team_setup_completions_attempt_finish").on(
+			table.attempt_id,
+			table.finish_digest,
+		),
+		index("idx_legacy_team_setup_completions_exact_replay").on(
+			table.candidate_ref,
+			table.attempt_id,
+			table.finish_digest,
+			table.confirmed_access_delta_digest,
+		),
+	],
+);
+
+export type LegacyTeamSetupCompletion = typeof legacyTeamSetupCompletions.$inferSelect;
+export type NewLegacyTeamSetupCompletion = typeof legacyTeamSetupCompletions.$inferInsert;
+
 export const legacyTeamSetupDraftDevices = sqliteTable(
 	"legacy_team_setup_draft_devices",
 	{
@@ -1428,6 +1457,7 @@ export const schema = {
 	identityDevices,
 	projectRecipients,
 	legacyTeamSetupDrafts,
+	legacyTeamSetupCompletions,
 	legacyTeamSetupDraftDevices,
 	legacyTeamSetupDraftProjects,
 	recipientManagedProjectProjections,

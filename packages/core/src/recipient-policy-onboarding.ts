@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
+import {
+	assignIdentityDeviceInTransaction,
+	IdentityDeviceAssignmentError,
+} from "./identity-device-assignment.js";
 import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
 import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
 import {
@@ -897,7 +901,11 @@ function deviceRow(request: NormalizedRequest, now: string): IntentRow {
 	};
 }
 
-function membershipRow(request: NormalizedRequest & { journey: "team" }, now: string): IntentRow {
+function membershipRow(
+	request: NormalizedRequest & { journey: "team" },
+	now: string,
+	membershipStatus: "active" | "reviewed_active",
+): IntentRow {
 	const identity = [request.journey, request.binding, request.teamId];
 	const metadata = relationshipMetadata("team-membership", identity, [
 		request.journey,
@@ -916,8 +924,89 @@ function membershipRow(request: NormalizedRequest & { journey: "team" }, now: st
 				sourceFingerprint: digest("recipient-onboarding-binding-v1", identity),
 				now,
 			}),
+			// Reviewed Teams accept only reviewed-mode membership statuses; a
+			// plain `active` row would block eligibility for the whole Team.
+			status: membershipStatus,
 		},
 	};
+}
+
+function teamDeviceEligibilityMode(db: Database, teamId: string): string {
+	return (
+		(db
+			.prepare("SELECT device_eligibility_mode FROM policy_teams WHERE team_id = ?")
+			.pluck()
+			.get(teamId) as string | undefined) ?? "person_all_devices"
+	);
+}
+
+/**
+ * Mirrors the coordinator reconciler for reviewed Teams: the invited device
+ * enters as an unresolved decision that review must include explicitly, and
+ * the cleared Team fingerprint sends the guided candidate back through setup.
+ */
+function applyReviewedTeamInviteDecision(
+	db: Database,
+	request: NormalizedRequest & { journey: "team" },
+	now: string,
+): number {
+	const assignmentVersion = db
+		.prepare(
+			`SELECT assignment_version FROM identity_devices
+			 WHERE device_id = ? AND identity_id = ? AND status = 'active'`,
+		)
+		.pluck()
+		.get(request.binding.deviceId, request.binding.identityId) as number | undefined;
+	if (assignmentVersion == null) return 0;
+	const stableDecision = {
+		teamId: request.teamId,
+		identityId: request.binding.identityId,
+		invitationId: request.binding.invitationId,
+		deviceId: request.binding.deviceId,
+		assignmentVersion,
+	};
+	const existingDecision = db
+		.prepare(
+			`SELECT decision, provenance FROM policy_team_device_decisions
+			 WHERE team_id = ? AND device_id = ?`,
+		)
+		.get(request.teamId, request.binding.deviceId) as
+		| { decision: string; provenance: string }
+		| undefined;
+	// An existing setup-owned decision transitions to invite ownership without
+	// changing its reviewed decision: otherwise a later refreshed setup roster
+	// that omits the device would reconcile the decision away and silently
+	// revoke invite-managed access.
+	const inserted = db
+		.prepare(
+			`INSERT INTO policy_team_device_decisions(
+			 team_id, device_id, decision, assignment_version, provenance, revision,
+			 created_at, updated_at
+			 ) VALUES (?, ?, 'unresolved', ?, 'team_invite', ?, ?, ?)
+			 ON CONFLICT(team_id, device_id) DO UPDATE SET
+			 provenance = excluded.provenance, revision = excluded.revision,
+			 updated_at = excluded.updated_at
+			 WHERE policy_team_device_decisions.provenance = 'reviewed_team_setup'`,
+		)
+		.run(
+			request.teamId,
+			request.binding.deviceId,
+			assignmentVersion,
+			digest("recipient-onboarding-device-decision-revision-v1", stableDecision),
+			now,
+			now,
+		);
+	const introducedUnresolvedDecision =
+		!existingDecision ||
+		(existingDecision.provenance === "reviewed_team_setup" &&
+			existingDecision.decision === "unresolved");
+	if (inserted.changes > 0 && introducedUnresolvedDecision) {
+		db.prepare(
+			`UPDATE policy_teams SET source_fingerprint = NULL, updated_at = ?
+			 WHERE team_id = ? AND device_eligibility_mode = 'reviewed_allowlist'`,
+		).run(now, request.teamId);
+	}
+	return inserted.changes;
 }
 
 function projectRow(
@@ -1014,15 +1103,71 @@ function inviterProjectRow(input: {
 	};
 }
 
-function planRows(request: NormalizedRequest, now: string): IntentRow[] {
+function planRows(db: Database, request: NormalizedRequest, now: string): IntentRow[] {
 	const rows = [deviceRow(request, now)];
-	if (request.journey === "team") rows.push(membershipRow(request, now));
+	if (request.journey === "team") {
+		const reviewedTeam = teamDeviceEligibilityMode(db, request.teamId) === "reviewed_allowlist";
+		rows.push(membershipRow(request, now, reviewedTeam ? "reviewed_active" : "active"));
+	}
 	if (request.journey === "direct_project") {
 		rows.push(
 			...request.canonicalProjectIdentities.map((projectId) => projectRow(request, projectId, now)),
 		);
 	}
 	return rows;
+}
+
+function applyTeamJourneySideEffects(
+	db: Database,
+	request: NormalizedRequest,
+	now: string,
+): number {
+	if (request.journey !== "team") return 0;
+	if (teamDeviceEligibilityMode(db, request.teamId) !== "reviewed_allowlist") return 0;
+	return applyReviewedTeamInviteDecision(db, request, now);
+}
+
+/**
+ * A consumed invite owns the recipient's membership from now on. When guided
+ * setup already materialized the row with setup-owned provenance, transition
+ * it to the exact invite-owned row before intent validation: otherwise the
+ * exact-row comparison rejects onboarding for an existing roster member, and a
+ * later setup omitting the identity would revoke the invitee's access.
+ */
+function adoptSetupOwnedTeamMembership(
+	db: Database,
+	request: NormalizedRequest,
+	now: string,
+): void {
+	if (request.journey !== "team") return;
+	const existing = db
+		.prepare(
+			`SELECT provenance FROM policy_team_memberships
+			 WHERE team_id = ? AND identity_id = ?`,
+		)
+		.get(request.teamId, request.binding.identityId) as { provenance: string } | undefined;
+	if (!existing || !["reviewed_active", "reviewed_team_candidate"].includes(existing.provenance)) {
+		return;
+	}
+	const reviewedTeam = teamDeviceEligibilityMode(db, request.teamId) === "reviewed_allowlist";
+	const row = membershipRow(request, now, reviewedTeam ? "reviewed_active" : "active");
+	db.prepare(
+		`UPDATE policy_team_memberships
+		 SET role = ?, status = ?, provenance = ?, revision = ?, migration_state = ?,
+		     source_fingerprint = ?, idempotency_key = ?, updated_at = ?
+		 WHERE team_id = ? AND identity_id = ?`,
+	).run(
+		row.values.role,
+		row.values.status,
+		row.values.provenance,
+		row.values.revision,
+		row.values.migration_state,
+		row.values.source_fingerprint,
+		row.values.idempotency_key,
+		now,
+		request.teamId,
+		request.binding.identityId,
+	);
 }
 
 function isPristineBootstrapIdentity(
@@ -1231,7 +1376,9 @@ function transitionExactProjectDevice(
 	row: IntentRow,
 	where: { clause: string; parameters: string[] },
 ): void {
-	const entries = Object.entries(row.values).filter(([column]) => column !== "created_at");
+	const entries = Object.entries(row.values).filter(
+		([column]) => column !== "created_at" && column !== "identity_id",
+	);
 	const result = db
 		.prepare(
 			`UPDATE identity_devices SET ${entries.map(([column]) => `${column} = ?`).join(", ")}
@@ -1239,6 +1386,108 @@ function transitionExactProjectDevice(
 		)
 		.run(...entries.map(([, value]) => value), ...where.parameters);
 	if (result.changes !== 1) throw new Error("device_binding_conflict");
+}
+
+function applyIdentityDeviceAssignment(
+	db: Database,
+	row: IntentRow,
+	keyMatch: Record<string, unknown> | undefined,
+	where: { clause: string; parameters: string[] },
+): boolean {
+	const expected = { ...row.key, ...row.values };
+	const deviceId = expected.device_id;
+	const targetIdentityId = expected.identity_id;
+	if (typeof deviceId !== "string" || typeof targetIdentityId !== "string") {
+		throw new Error("device_binding_conflict");
+	}
+
+	try {
+		if (!keyMatch) {
+			const result = assignIdentityDeviceInTransaction(db, {
+				deviceId,
+				targetIdentityId,
+				expectation: { kind: "absent" },
+				insert: {
+					displayName: String(expected.display_name),
+					provenance: String(expected.provenance),
+					revision: String(expected.revision),
+					migrationState: String(expected.migration_state),
+					sourceFingerprint:
+						typeof expected.source_fingerprint === "string" ? expected.source_fingerprint : null,
+					idempotencyKey: String(expected.idempotency_key),
+				},
+				now: String(expected.created_at),
+			});
+			return result.changed;
+		}
+
+		const existingIdentityId = keyMatch.identity_id;
+		const assignmentVersion = keyMatch.assignment_version;
+		if (
+			typeof existingIdentityId !== "string" ||
+			typeof assignmentVersion !== "number" ||
+			keyMatch.status !== "active"
+		) {
+			throw new Error("device_binding_conflict");
+		}
+		const recipientKeyBinding =
+			keyMatch.provenance === "recipient_invite" && expected.provenance === "recipient_invite";
+		// A NULL stored fingerprint means a reviewed reassignment cleared the
+		// former invite binding; the new invite may key the row afresh instead
+		// of being rejected against stale metadata forever.
+		if (
+			recipientKeyBinding &&
+			keyMatch.source_fingerprint != null &&
+			keyMatch.source_fingerprint !== expected.source_fingerprint
+		) {
+			throw new Error("device_binding_conflict");
+		}
+		const exactProjectTransition =
+			keyMatch.provenance === "exact_project_invite" && expected.provenance === "recipient_invite";
+		if (existingIdentityId !== targetIdentityId && !exactProjectTransition) {
+			throw new Error("device_binding_conflict");
+		}
+		if (exactProjectTransition && !hasMatchingLocalDeviceKey(db, expected)) {
+			throw new Error("device_binding_conflict");
+		}
+
+		const result = assignIdentityDeviceInTransaction(db, {
+			deviceId,
+			targetIdentityId,
+			expectation: {
+				kind: "existing",
+				identityId: existingIdentityId,
+				assignmentVersion,
+			},
+			now: String(expected.updated_at),
+		});
+		if (exactProjectTransition) {
+			transitionExactProjectDevice(db, row, where);
+			return true;
+		}
+		// A reviewed-cleared binding (NULL stored fingerprint) that accepted
+		// this invite must be RE-KEYED with the invite's fingerprint: leaving
+		// it unkeyed would let a future invite carrying a different public key
+		// bypass the changed-key rejection as well.
+		if (
+			recipientKeyBinding &&
+			keyMatch.source_fingerprint == null &&
+			typeof expected.source_fingerprint === "string" &&
+			expected.source_fingerprint.length > 0
+		) {
+			db.prepare(
+				`UPDATE identity_devices SET source_fingerprint = ?, updated_at = ?
+				 WHERE device_id = ? AND identity_id = ?`,
+			).run(expected.source_fingerprint, String(expected.updated_at), deviceId, targetIdentityId);
+			return true;
+		}
+		return result.changed;
+	} catch (error) {
+		if (error instanceof IdentityDeviceAssignmentError || isSqliteConstraint(error)) {
+			throw new Error("device_binding_conflict");
+		}
+		throw error;
+	}
 }
 
 function validateOrWriteRow(db: Database, row: IntentRow): boolean {
@@ -1249,33 +1498,12 @@ function validateOrWriteRow(db: Database, row: IntentRow): boolean {
 	const keyMatch = db
 		.prepare(`SELECT * FROM ${row.table} WHERE ${where.clause}`)
 		.get(...where.parameters) as Record<string, unknown> | undefined;
+	if (row.table === "identity_devices" && !idempotencyMatch) {
+		return applyIdentityDeviceAssignment(db, row, keyMatch, where);
+	}
 	const existing = idempotencyMatch ?? keyMatch;
 	if (existing) {
 		const expected = { ...row.key, ...row.values };
-		if (row.table === "identity_devices" && keyMatch && !idempotencyMatch) {
-			const hasRecipientKeyBinding =
-				keyMatch.provenance === "recipient_invite" && expected.provenance === "recipient_invite";
-			const hasConflictingFingerprint =
-				hasRecipientKeyBinding && keyMatch.source_fingerprint !== expected.source_fingerprint;
-			if (
-				keyMatch.identity_id !== expected.identity_id ||
-				keyMatch.status !== "active" ||
-				hasConflictingFingerprint
-			) {
-				throw new Error("device_binding_conflict");
-			}
-			if (
-				keyMatch.provenance === "exact_project_invite" &&
-				expected.provenance === "recipient_invite"
-			) {
-				if (!hasMatchingLocalDeviceKey(db, expected)) {
-					throw new Error("device_binding_conflict");
-				}
-				transitionExactProjectDevice(db, row, where);
-				return true;
-			}
-			return false;
-		}
 		if (row.table === "project_recipients" && keyMatch && !idempotencyMatch) {
 			if (keyMatch.status !== "active") throw new Error("intent_conflict");
 			return false;
@@ -1337,7 +1565,7 @@ export function commitDirectProjectSharePolicyInTransaction(
 		...normalized.canonicalProjectIdentities.map((projectId) =>
 			inviterProjectRow({ identityId: input.inviterIdentityId, projectId, now: input.now }),
 		),
-		...planRows(normalized, input.now),
+		...planRows(db, normalized, input.now),
 	];
 	let writeCount = 0;
 	for (const row of rows) {
@@ -1372,6 +1600,12 @@ function isSqliteBusy(error: unknown): boolean {
 	);
 }
 
+function isSqliteConstraint(error: unknown): boolean {
+	if (!error || typeof error !== "object") return false;
+	const code = "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
+	return code.startsWith("SQLITE_CONSTRAINT");
+}
+
 export function commitRecipientPolicyOnboarding(
 	db: Database,
 	request: RecipientPolicyOnboardingCommitRequestV1,
@@ -1404,9 +1638,11 @@ export function commitRecipientPolicyOnboarding(
 			}
 			const now = (options.now ?? (() => new Date().toISOString()))();
 			let writeCount = 0;
-			for (const row of planRows(normalized, now)) {
+			adoptSetupOwnedTeamMembership(db, normalized, now);
+			for (const row of planRows(db, normalized, now)) {
 				if (validateOrWriteRow(db, row)) writeCount += 1;
 			}
+			writeCount += applyTeamJourneySideEffects(db, normalized, now);
 			db.exec("COMMIT");
 			return {
 				version: 1,
@@ -1498,9 +1734,11 @@ export function commitRecipientPolicyOnboardingFromReviewedIntent(
 				if (reviewedIntent.journey !== "team") throw new Error("intent_conflict");
 				if (materializeReviewedTeam(db, reviewedIntent.team, now)) writeCount += 1;
 			}
-			for (const row of planRows(normalized, now)) {
+			adoptSetupOwnedTeamMembership(db, normalized, now);
+			for (const row of planRows(db, normalized, now)) {
 				if (validateOrWriteRow(db, row)) writeCount += 1;
 			}
+			writeCount += applyTeamJourneySideEffects(db, normalized, now);
 			db.exec("COMMIT");
 			return {
 				version: 1,
