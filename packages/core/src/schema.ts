@@ -1160,6 +1160,95 @@ export const projectRecipients = sqliteTable(
 export type ProjectRecipient = typeof projectRecipients.$inferSelect;
 export type NewProjectRecipient = typeof projectRecipients.$inferInsert;
 
+export const legacyTeamSetupDrafts = sqliteTable(
+	"legacy_team_setup_drafts",
+	{
+		attempt_id: text("attempt_id").primaryKey(),
+		candidate_id: text("candidate_id").notNull(),
+		coordinator_id: text("coordinator_id").notNull(),
+		group_id: text("group_id").notNull(),
+		state: text("state").notNull().default("needs_setup"),
+		display_name: text("display_name").notNull(),
+		roster_fingerprint: text("roster_fingerprint").notNull(),
+		projection_fingerprint: text("projection_fingerprint").notNull(),
+		finish_digest: text("finish_digest"),
+		safe_error_code: text("safe_error_code"),
+		completed_team_id: text("completed_team_id"),
+		created_at: text("created_at").notNull(),
+		updated_at: text("updated_at").notNull(),
+		completed_at: text("completed_at"),
+		superseded_at: text("superseded_at"),
+	},
+	(table) => [
+		index("idx_legacy_team_setup_drafts_candidate_state").on(
+			table.candidate_id,
+			table.state,
+			table.created_at,
+		),
+		index("idx_legacy_team_setup_drafts_state_updated").on(table.state, table.updated_at),
+		index("idx_legacy_team_setup_drafts_finish_digest").on(table.finish_digest),
+	],
+);
+
+export type LegacyTeamSetupDraft = typeof legacyTeamSetupDrafts.$inferSelect;
+export type NewLegacyTeamSetupDraft = typeof legacyTeamSetupDrafts.$inferInsert;
+
+export const legacyTeamSetupDraftDevices = sqliteTable(
+	"legacy_team_setup_draft_devices",
+	{
+		attempt_id: text("attempt_id")
+			.notNull()
+			.references(() => legacyTeamSetupDrafts.attempt_id, { onDelete: "cascade" }),
+		device_id: text("device_id").notNull(),
+		device_ref: text("device_ref").notNull(),
+		key_fingerprint: text("key_fingerprint").notNull(),
+		display_name: text("display_name").notNull(),
+		enabled: integer("enabled", { mode: "boolean" }).notNull(),
+		existing_identity_id: text("existing_identity_id"),
+		existing_assignment_version: integer("existing_assignment_version"),
+		verified_evidence_kind: text("verified_evidence_kind"),
+		decision: text("decision").notNull().default("unresolved"),
+		target_identity_id: text("target_identity_id"),
+		expected_assignment_kind: text("expected_assignment_kind"),
+		expected_assignment_version: integer("expected_assignment_version"),
+		updated_at: text("updated_at").notNull(),
+	},
+	(table) => [
+		primaryKey({ columns: [table.attempt_id, table.device_id] }),
+		uniqueIndex("idx_legacy_team_setup_devices_attempt_ref").on(table.attempt_id, table.device_ref),
+		index("idx_legacy_team_setup_devices_attempt_decision").on(table.attempt_id, table.decision),
+	],
+);
+
+export type LegacyTeamSetupDraftDevice = typeof legacyTeamSetupDraftDevices.$inferSelect;
+export type NewLegacyTeamSetupDraftDevice = typeof legacyTeamSetupDraftDevices.$inferInsert;
+
+export const legacyTeamSetupDraftProjects = sqliteTable(
+	"legacy_team_setup_draft_projects",
+	{
+		attempt_id: text("attempt_id")
+			.notNull()
+			.references(() => legacyTeamSetupDrafts.attempt_id, { onDelete: "cascade" }),
+		project_ref: text("project_ref").notNull(),
+		source_project_identity: text("source_project_identity").notNull(),
+		display_name: text("display_name").notNull(),
+		source_fingerprint: text("source_fingerprint").notNull(),
+		resolution_kind: text("resolution_kind").notNull().default("unresolved"),
+		resolved_project_identity: text("resolved_project_identity"),
+		updated_at: text("updated_at").notNull(),
+	},
+	(table) => [
+		primaryKey({ columns: [table.attempt_id, table.project_ref] }),
+		index("idx_legacy_team_setup_projects_attempt_resolution").on(
+			table.attempt_id,
+			table.resolution_kind,
+		),
+	],
+);
+
+export type LegacyTeamSetupDraftProject = typeof legacyTeamSetupDraftProjects.$inferSelect;
+export type NewLegacyTeamSetupDraftProject = typeof legacyTeamSetupDraftProjects.$inferInsert;
+
 export const recipientManagedProjectProjections = sqliteTable(
 	"recipient_managed_project_projections",
 	{
@@ -1338,6 +1427,9 @@ export const schema = {
 	policyTeamDeviceDecisions,
 	identityDevices,
 	projectRecipients,
+	legacyTeamSetupDrafts,
+	legacyTeamSetupDraftDevices,
+	legacyTeamSetupDraftProjects,
 	recipientManagedProjectProjections,
 	recipientPolicyAuthorityStates,
 	recipientPolicyReconciliationSteps,

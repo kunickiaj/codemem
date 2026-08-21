@@ -2,10 +2,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { listLegacyRecipientPolicyProjections } from "./legacy-recipient-policy-projection.js";
 import { listRecipientPolicyIntent } from "./recipient-policy-intent.js";
-import {
-	deterministicPolicyTeamId,
-	migrateRecipientPolicyIntent,
-} from "./recipient-policy-migration.js";
+import { migrateRecipientPolicyIntent } from "./recipient-policy-migration.js";
 import {
 	listRecipientPolicyReview,
 	resolveRecipientPolicyReview,
@@ -465,7 +462,6 @@ describe("recipient policy intent migration", () => {
 			displayName: "api",
 			recipientActorId: "identity-work",
 		});
-
 		migrateRecipientPolicyIntent(db, context);
 		const recipients = listRecipientPolicyIntent(db).projectRecipients;
 
@@ -965,7 +961,7 @@ describe("recipient policy intent migration", () => {
 		).toBeUndefined();
 	});
 
-	it("mints a policy Team distinct from a coordinator group and projects memberships", () => {
+	it("blocks stale saved recipient choices targeting unresolved legacy Team candidates", () => {
 		const projectId = "https://git.example.invalid/acme/team-docs.git";
 		const scopeId = "legacy-team-scope";
 		insertActor(db, "identity-member", "Member");
@@ -993,57 +989,68 @@ describe("recipient policy intent migration", () => {
 		const teamCandidate = projection?.teamCandidates[0];
 		const item = listRecipientPolicyReview(db, context).reviewItems[0];
 		if (!teamCandidate || !item) throw new Error("team review fixture incomplete");
-		resolveRecipientPolicyReview(db, context, {
-			reviewItemId: item.reviewItemId,
-			sourceFingerprint: item.sourceFingerprint,
-			decision: "choose_recipients",
-			decisionInput: { recipientIds: [teamCandidate.teamCandidateId] },
-		});
-		const previewJson = db
-			.prepare(
-				`SELECT preview_json FROM recipient_policy_review_resolutions
-				 WHERE review_item_id = ? AND source_fingerprint = ?`,
-			)
-			.pluck()
-			.get(item.reviewItemId, item.sourceFingerprint) as string;
-		const preview = JSON.parse(previewJson) as { effectiveDevices: unknown[] };
+		const chooseOption = item.options.find((option) => option.decision === "choose_recipients");
+		if (!chooseOption) throw new Error("choose recipients option missing");
 		db.prepare(
-			`UPDATE recipient_policy_review_resolutions SET preview_json = ?
-			 WHERE review_item_id = ? AND source_fingerprint = ?`,
+			`INSERT INTO recipient_policy_review_resolutions(
+			 review_item_id, source_fingerprint, decision, decision_input_json, preview_json,
+			 decided_by_identity_id, decided_by_device_id, resolved_at
+			 ) VALUES (?, ?, 'choose_recipients', ?, ?, ?, ?, ?)`,
 		).run(
-			JSON.stringify({ ...preview, effectiveDevices: preview.effectiveDevices.slice(0, 1) }),
 			item.reviewItemId,
 			item.sourceFingerprint,
+			JSON.stringify({ recipientIds: [teamCandidate.teamCandidateId] }),
+			JSON.stringify(chooseOption.preview),
+			LOCAL_ACTOR_ID,
+			LOCAL_DEVICE_ID,
+			NOW,
 		);
-		const stalePreview = migrateRecipientPolicyIntent(db, context);
-		expect(stalePreview.results).toContainEqual(
-			expect.objectContaining({ status: "blocked", errorCode: "review_preview_stale" }),
+
+		const result = migrateRecipientPolicyIntent(db, context);
+
+		expect(result.results).toContainEqual(
+			expect.objectContaining({ status: "blocked", errorCode: "review_recipient_stale" }),
 		);
 		expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+		expect(db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
+	});
+
+	it("migrates an active canonical Team recipient without materializing a candidate", () => {
+		const fixture = reviewDeviceFixture({
+			projectId: "https://git.example.invalid/acme/canonical-team.git",
+			displayName: "canonical-team",
+			unassignedDeviceId: "device-canonical-team-unassigned",
+		});
 		db.prepare(
-			`UPDATE recipient_policy_review_resolutions SET preview_json = ?
-			 WHERE review_item_id = ? AND source_fingerprint = ?`,
-		).run(previewJson, item.reviewItemId, item.sourceFingerprint);
+			`INSERT INTO policy_teams(
+			 team_id, display_name, status, provenance, revision, migration_state,
+			 idempotency_key, created_at, updated_at
+			 ) VALUES ('canonical-team', 'Canonical Team', 'active', 'test', 'revision',
+			 'projected', 'canonical-team-idempotency', ?, ?)`,
+		).run(NOW, NOW);
+		const item = listRecipientPolicyReview(db, context).reviewItems.find((candidate) =>
+			candidate.options.some((option) => option.decision === "choose_recipients"),
+		);
+		if (!item) throw new Error("canonical Team review item missing");
+		expect(
+			resolveRecipientPolicyReview(db, context, {
+				reviewItemId: item.reviewItemId,
+				sourceFingerprint: item.sourceFingerprint,
+				decision: "choose_recipients",
+				decisionInput: { recipientIds: ["canonical-team"] },
+			}).status,
+		).toBe("applied");
 
-		migrateRecipientPolicyIntent(db, context);
-		const intent = listRecipientPolicyIntent(db);
-		const teamId = deterministicPolicyTeamId(teamCandidate.teamCandidateId);
+		const result = migrateRecipientPolicyIntent(db, context);
 
-		expect(teamId).not.toBe("coordinator-group-private");
-		expect(intent.teams).toContainEqual(
-			expect.objectContaining({ teamId, displayName: "Docs Team" }),
+		expect(result.results).toContainEqual(
+			expect.objectContaining({ canonicalProjectIdentity: fixture.projectId, status: "migrated" }),
 		);
-		expect(intent.teamMemberships).toContainEqual(
-			expect.objectContaining({ teamId, identityId: "identity-member" }),
-		);
-		expect(intent.teamMemberships).toContainEqual(
-			expect.objectContaining({ teamId, identityId: "identity-second-member" }),
-		);
-		expect(intent.projectRecipients).toContainEqual(
+		expect(listRecipientPolicyIntent(db).projectRecipients).toContainEqual(
 			expect.objectContaining({
-				canonicalProjectIdentity: projectId,
+				canonicalProjectIdentity: fixture.projectId,
 				recipientKind: "team",
-				teamId,
+				teamId: "canonical-team",
 			}),
 		);
 	});

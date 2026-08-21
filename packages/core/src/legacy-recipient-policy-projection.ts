@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 import {
 	RECIPIENT_POLICY_CONTRACT_VERSION,
@@ -6,6 +5,11 @@ import {
 	type RecipientPolicyProjectRecipientV1,
 	type RecipientPolicyProjectV1,
 } from "./recipient-policy-contract.js";
+import {
+	compareCodepoints,
+	legacyTeamCandidateId,
+	recipientPolicyDigest,
+} from "./recipient-policy-identifiers.js";
 import {
 	canonicalWorkspaceIdentity,
 	LOCAL_DEFAULT_SCOPE_ID,
@@ -168,6 +172,14 @@ export interface ListLegacyRecipientPolicyProjectionsOptions {
 	localDeviceId: string;
 }
 
+/** Internal setup evidence; never use this to infer public recipient intent. */
+export interface LegacyTeamProjectEvidence {
+	project: RecipientPolicyProjectV1;
+	teamCandidateIds: string[];
+	sourceFingerprint: string;
+	deterministicProjectIdentity: string | null;
+}
+
 const LEGACY_UMBRELLA_SCOPE_KINDS = new Set([
 	"user",
 	"personal",
@@ -219,9 +231,58 @@ function bestMapping(
 				specificity(right) - specificity(left) ||
 				mappingUpdatedAt(right) - mappingUpdatedAt(left) ||
 				(right.id ?? 0) - (left.id ?? 0) ||
-				left.scopeId.localeCompare(right.scopeId),
+				// The selected mapping is hashed into source fingerprints, so the
+				// tie-break must be locale-independent.
+				compareCodepoints(left.scopeId, right.scopeId),
 		)[0] ?? null
 	);
+}
+
+function loadProjectScopeMappings(db: Database): LegacyMappingSnapshot[] {
+	return db
+		.prepare(
+			`SELECT id, workspace_identity, project_pattern, scope_id, priority, updated_at
+			 FROM project_scope_mappings
+			 ORDER BY priority DESC, updated_at DESC, id DESC`,
+		)
+		.all()
+		.map((row) => {
+			const record = row as Record<string, unknown>;
+			return {
+				id: Number(record.id ?? 0),
+				workspaceIdentity: clean(record.workspace_identity),
+				projectPattern: String(record.project_pattern ?? ""),
+				scopeId: String(record.scope_id ?? ""),
+				priority: Number(record.priority ?? 0),
+				updatedAt: clean(record.updated_at),
+			};
+		});
+}
+
+/**
+ * The authoritative mapping for a Project identity, using the exact selection
+ * rule projection applies (exact workspace match first, then priority,
+ * specificity, recency). Readiness checks must validate the SELECTED mapping:
+ * a shadowed setup-created row still exists after a higher-priority mapping
+ * redirects the Project to another scope, so mere existence is not evidence
+ * that the completion still governs enforcement.
+ */
+export function selectedProjectScopeMapping(
+	db: Database,
+	canonicalProjectIdentity: string,
+): { scopeId: string; projectPattern: string; workspaceIdentity: string | null } | null {
+	const selected = selectedMapping(loadProjectScopeMappings(db), {
+		canonicalIdentity: canonicalProjectIdentity,
+		displayName: canonicalProjectIdentity,
+		identitySource: "workspace_id",
+		scopeIds: [],
+	});
+	if (!selected) return null;
+	return {
+		scopeId: selected.scopeId,
+		projectPattern: selected.projectPattern,
+		workspaceIdentity: selected.workspaceIdentity ?? null,
+	};
 }
 
 function selectedMapping(
@@ -248,6 +309,23 @@ function selectedMapping(
 	);
 }
 
+/** Stable mapping facts for fingerprints: excludes row ids and timestamps. */
+function stableMappingEvidence(mapping: LegacyMappingSnapshot | null): {
+	workspaceIdentity: string | null;
+	projectPattern: string;
+	scopeId: string;
+	priority: number | null;
+} | null {
+	return mapping
+		? {
+				workspaceIdentity: mapping.workspaceIdentity,
+				projectPattern: mapping.projectPattern,
+				scopeId: mapping.scopeId,
+				priority: mapping.priority ?? null,
+			}
+		: null;
+}
+
 function isExactMapping(mapping: LegacyMappingSnapshot, project: LegacyProjectSnapshot): boolean {
 	if (
 		mapping.workspaceIdentity != null &&
@@ -261,21 +339,18 @@ function isExactMapping(mapping: LegacyMappingSnapshot, project: LegacyProjectSn
 	);
 }
 
-function candidateId(coordinatorId: string, groupId: string): string {
-	const digest = createHash("sha256")
-		.update(JSON.stringify([coordinatorId, groupId]))
-		.digest("hex")
-		.slice(0, 32);
-	return `legacy-team-candidate:${digest}`;
-}
-
 function identityStatus(value: string): "active" | "pending" | "merged" {
 	if (value === "pending" || value === "merged") return value;
 	return "active";
 }
 
+/**
+ * Codepoint ordering, never `localeCompare`: these arrays (scope ids, device
+ * ids, provenance) flow into `sourceFingerprint` digests, so identical
+ * evidence must hash identically across locales and ICU versions.
+ */
 function uniqueSorted(values: Iterable<string>): string[] {
-	return [...new Set(values)].toSorted((left, right) => left.localeCompare(right));
+	return [...new Set(values)].toSorted(compareCodepoints);
 }
 
 function condition(
@@ -483,11 +558,12 @@ function identityCandidates(
 function teamCandidates(
 	scopes: LegacyScopeSnapshot[],
 	shareOperations: LegacyShareOperationSnapshot[],
+	allScopes: LegacyScopeSnapshot[] = scopes,
 ): LegacyRecipientPolicyTeamCandidateV1[] {
 	const byId = new Map<string, LegacyRecipientPolicyTeamCandidateV1>();
 	for (const scope of scopes) {
 		if (scope.authorityType !== "coordinator" || !scope.coordinatorId || !scope.groupId) continue;
-		const teamCandidateId = candidateId(scope.coordinatorId, scope.groupId);
+		const teamCandidateId = legacyTeamCandidateId(scope.coordinatorId, scope.groupId);
 		const teamLikeLabel = ["team", "team_default", "org", "client"].includes(scope.kind)
 			? scope.label
 			: "Legacy Team candidate";
@@ -503,13 +579,43 @@ function teamCandidates(
 		}
 	}
 	for (const operation of shareOperations) {
-		const matchingScope = scopes.find(
-			(scope) => scope.groupId === operation.coordinatorGroupId && scope.coordinatorId,
+		// Resolve the operation's group against every known coordinator scope:
+		// an invite-only Project has no relevant replication scope, but its
+		// candidate must still match the configured group's real coordinator.
+		// Group IDs are coordinator-scoped, so an ambiguous global match (two
+		// coordinators sharing a group ID) derives no candidate rather than
+		// guessing; a fabricated coordinator ID never matches configured groups.
+		// Only coordinator-authority scopes are coordinator evidence: a local
+		// scope that happens to carry coordinator/group columns must neither
+		// resolve the candidate nor suppress a legitimate global match.
+		const relevantCoordinatorIds = new Set(
+			scopes
+				.filter(
+					(scope) =>
+						scope.authorityType === "coordinator" &&
+						scope.groupId === operation.coordinatorGroupId &&
+						scope.coordinatorId,
+				)
+				.map((scope) => scope.coordinatorId as string),
 		);
-		const teamCandidateId = candidateId(
-			matchingScope?.coordinatorId ?? "legacy-share-operation",
-			operation.coordinatorGroupId,
+		const globalCoordinatorIds = new Set(
+			allScopes
+				.filter(
+					(scope) =>
+						scope.authorityType === "coordinator" &&
+						scope.groupId === operation.coordinatorGroupId &&
+						scope.coordinatorId,
+				)
+				.map((scope) => scope.coordinatorId as string),
 		);
+		const coordinatorId =
+			relevantCoordinatorIds.size === 1
+				? [...relevantCoordinatorIds][0]
+				: relevantCoordinatorIds.size === 0 && globalCoordinatorIds.size === 1
+					? [...globalCoordinatorIds][0]
+					: null;
+		if (!coordinatorId) continue;
+		const teamCandidateId = legacyTeamCandidateId(coordinatorId, operation.coordinatorGroupId);
 		const current = byId.get(teamCandidateId);
 		byId.set(teamCandidateId, {
 			version: RECIPIENT_POLICY_CONTRACT_VERSION,
@@ -673,6 +779,11 @@ export function projectLegacyRecipientPolicyProjections(
 								options,
 								personalSuggestion,
 							),
+				// The review/migration surface derives candidates from relevant
+				// scopes only. Invite-only associations (resolved via the global
+				// scope list) surface exclusively through guided-setup evidence so
+				// the legacy migration path can never materialize a pre-identity
+				// Team for them without the guided review.
 				teamCandidates:
 					state === "ambiguous" ? [] : teamCandidates(relevantScopes, projectShareOperations),
 				effectiveDevices: devices,
@@ -685,7 +796,9 @@ export function projectLegacyRecipientPolicyProjections(
 					currentDeviceIds: devices.map((device) => device.deviceId),
 					safeErrorCode,
 				},
-				conditions: conditions.toSorted((left, right) => left.code.localeCompare(right.code)),
+				// Enforcement is hashed into source fingerprints; keep the order
+				// locale-independent.
+				conditions: conditions.toSorted((left, right) => compareCodepoints(left.code, right.code)),
 			};
 		})
 		.toSorted(
@@ -719,6 +832,24 @@ function loadSnapshot(
 		workspace_id: string | null;
 		scope_id: string | null;
 	}>;
+	const mappings = loadProjectScopeMappings(db);
+	// Guided setup materializes an explicit Project resolution as a mapping
+	// whose pattern is the original `unmapped:` identity and whose workspace
+	// identity is the reviewed target. Session rows still canonicalize to the
+	// original identity, so without collapsing the resolution here the source
+	// and target would both surface as candidate Projects and every completed
+	// setup would look permanently drifted. Mapping order is authoritative
+	// (priority, recency), so the first resolution per pattern wins.
+	const explicitResolutions = new Map<string, string>();
+	for (const mapping of mappings) {
+		if (!mapping.workspaceIdentity) continue;
+		if (!mapping.projectPattern.startsWith("unmapped:")) continue;
+		const resolved = normalizedIdentity(mapping.workspaceIdentity);
+		if (resolved === mapping.projectPattern || resolved.startsWith("unmapped:")) continue;
+		if (!explicitResolutions.has(mapping.projectPattern)) {
+			explicitResolutions.set(mapping.projectPattern, resolved);
+		}
+	}
 	const projects = new Map<string, LegacyProjectSnapshot>();
 	for (const row of projectRows) {
 		const identity = canonicalWorkspaceIdentity({
@@ -728,37 +859,22 @@ function loadSnapshot(
 			gitBranch: row.git_branch,
 			workspaceId: row.workspace_id,
 		});
-		const existing = projects.get(identity.value);
+		const resolvedIdentity =
+			identity.source === "unmapped" ? explicitResolutions.get(identity.value) : undefined;
+		const canonicalIdentity = resolvedIdentity ?? identity.value;
+		const existing = projects.get(canonicalIdentity);
 		const scopeId = row.memory_id == null ? null : (clean(row.scope_id) ?? LOCAL_DEFAULT_SCOPE_ID);
 		if (existing) {
 			if (scopeId) existing.scopeIds = uniqueSorted([...existing.scopeIds, scopeId]);
 			continue;
 		}
-		projects.set(identity.value, {
-			canonicalIdentity: identity.value,
-			displayName: clean(identity.displayProject) ?? identity.value,
-			identitySource: identity.source,
+		projects.set(canonicalIdentity, {
+			canonicalIdentity,
+			displayName: clean(identity.displayProject) ?? canonicalIdentity,
+			identitySource: resolvedIdentity ? "workspace_id" : identity.source,
 			scopeIds: scopeId ? [scopeId] : [],
 		});
 	}
-	const mappings = db
-		.prepare(
-			`SELECT id, workspace_identity, project_pattern, scope_id, priority, updated_at
-			 FROM project_scope_mappings
-			 ORDER BY priority DESC, updated_at DESC, id DESC`,
-		)
-		.all()
-		.map((row) => {
-			const record = row as Record<string, unknown>;
-			return {
-				id: Number(record.id ?? 0),
-				workspaceIdentity: clean(record.workspace_identity),
-				projectPattern: String(record.project_pattern ?? ""),
-				scopeId: String(record.scope_id ?? ""),
-				priority: Number(record.priority ?? 0),
-				updatedAt: clean(record.updated_at),
-			};
-		});
 	for (const mapping of mappings) {
 		if (!mapping.workspaceIdentity || projects.has(normalizedIdentity(mapping.workspaceIdentity)))
 			continue;
@@ -983,4 +1099,73 @@ export function listLegacyRecipientPolicyProjections(
 		loadSnapshot(db, normalizedOptions),
 		normalizedOptions,
 	);
+}
+
+/**
+ * Returns coordinator-backed Project associations for setup inventory without
+ * promoting ambiguous legacy evidence into public recipient candidates.
+ */
+export function listLegacyTeamProjectEvidence(
+	db: Database,
+	options: ListLegacyRecipientPolicyProjectionsOptions,
+): LegacyTeamProjectEvidence[] {
+	const localActorId = options.localActorId.trim();
+	const localDeviceId = options.localDeviceId.trim();
+	if (!localActorId || !localDeviceId) throw new Error("legacy_projection_local_identity_required");
+	const normalizedOptions = resolveLegacyRecipientPolicyLocalIdentity(db, {
+		localActorId,
+		localDeviceId,
+	});
+	const snapshot = loadSnapshot(db, normalizedOptions);
+	const projections = projectLegacyRecipientPolicyProjections(snapshot, normalizedOptions);
+	const projects = new Map(
+		snapshot.projects.map((project) => [project.canonicalIdentity, project]),
+	);
+	const scopes = new Map(snapshot.scopes.map((scope) => [scope.scopeId, scope]));
+
+	return projections.map((projection) => {
+		const project = projects.get(projection.project.canonicalIdentity);
+		if (!project) throw new Error("legacy_projection_project_evidence_missing");
+		const scopeIds = relevantScopeIds(project, snapshot.mappings);
+		const relevantScopes = scopeIds.flatMap((scopeId) => {
+			const scope = scopes.get(scopeId);
+			return scope ? [scope] : [];
+		});
+		const projectShareOperations = snapshot.shareOperations.filter(
+			(operation) => operation.canonicalProjectIdentity === project.canonicalIdentity,
+		);
+		return {
+			project: projection.project,
+			teamCandidateIds: teamCandidates(relevantScopes, projectShareOperations, snapshot.scopes).map(
+				(candidate) => candidate.teamCandidateId,
+			),
+			// Hash only stable identifiers and enforcement facts. Display labels
+			// and row timestamps refresh independently and are not security
+			// evidence, so they must not invalidate open setup drafts.
+			sourceFingerprint: recipientPolicyDigest("legacy-team-project-source-v1", {
+				project: {
+					canonicalIdentity: project.canonicalIdentity,
+					identitySource: project.identitySource,
+					scopeIds,
+				},
+				mapping: stableMappingEvidence(selectedMapping(snapshot.mappings, project)),
+				scopes: relevantScopes.map((scope) => ({
+					scopeId: scope.scopeId,
+					kind: scope.kind,
+					authorityType: scope.authorityType,
+					coordinatorId: scope.coordinatorId,
+					groupId: scope.groupId,
+				})),
+				shareOperations: projectShareOperations.map((operation) => ({
+					canonicalProjectIdentity: operation.canonicalProjectIdentity,
+					identityId: operation.identityId,
+					coordinatorGroupId: operation.coordinatorGroupId,
+					state: operation.state,
+				})),
+				enforcement: projection.enforcement,
+			}),
+			deterministicProjectIdentity:
+				project.identitySource === "unmapped" ? null : project.canonicalIdentity,
+		};
+	});
 }
