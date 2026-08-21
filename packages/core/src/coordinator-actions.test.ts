@@ -2491,7 +2491,7 @@ describe("coordinator local admin actions", () => {
 				deviceDisplayName: "Recipient laptop",
 				reviewedOnboardingDigest,
 			}),
-		).rejects.toThrow("onboarding_intent_conflict");
+		).rejects.toThrow("device_binding_conflict");
 		expect(readCodememConfigFileAtPath(configPath)).toEqual(originalConfig);
 		const failed = connect(actionDbPath);
 		try {

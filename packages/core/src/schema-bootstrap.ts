@@ -317,6 +317,26 @@ CREATE INDEX IF NOT EXISTS idx_legacy_team_setup_drafts_state_updated
 CREATE INDEX IF NOT EXISTS idx_legacy_team_setup_drafts_finish_digest
 	ON legacy_team_setup_drafts(finish_digest);
 
+CREATE TABLE IF NOT EXISTS legacy_team_setup_completions (
+	attempt_id TEXT NOT NULL,
+	finish_digest TEXT NOT NULL,
+	candidate_ref TEXT NOT NULL,
+	confirmed_access_delta_digest TEXT NOT NULL,
+	completed_team_id TEXT NOT NULL,
+	response_json TEXT NOT NULL,
+	completed_at TEXT NOT NULL,
+	created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_legacy_team_setup_completions_attempt_finish
+	ON legacy_team_setup_completions(attempt_id, finish_digest);
+CREATE INDEX IF NOT EXISTS idx_legacy_team_setup_completions_exact_replay
+	ON legacy_team_setup_completions(
+		candidate_ref,
+		attempt_id,
+		finish_digest,
+		confirmed_access_delta_digest
+	);
+
 CREATE TABLE IF NOT EXISTS legacy_team_setup_draft_devices (
 	attempt_id TEXT NOT NULL REFERENCES legacy_team_setup_drafts(attempt_id) ON DELETE CASCADE,
 	device_id TEXT NOT NULL,

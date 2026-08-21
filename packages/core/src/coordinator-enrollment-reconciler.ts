@@ -3,6 +3,7 @@ import type { CoordinatorConsumedTeamInvite } from "./coordinator-actions.js";
 import { persistCoordinatorEnrollmentReconciliationIssues } from "./coordinator-enrollment-reconciliation-issues.js";
 import type { CoordinatorEnrollment } from "./coordinator-store-contract.js";
 import type { Database } from "./db.js";
+import { assignIdentityDeviceInTransaction } from "./identity-device-assignment.js";
 import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
 
 export interface CoordinatorEnrollmentReconcileIssue {
@@ -105,6 +106,27 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 		localEnrollmentIdentityIds.size === 1 ? [...localEnrollmentIdentityIds][0] : undefined;
 
 	const apply = db.transaction(() => {
+		const reviewedInviteMemberships = new Map<
+			string,
+			{ identityId: string; inviteId: string; newlyAdded: boolean; teamId: string }
+		>();
+		const activeRosterDevicesByIdentity = new Map<
+			string,
+			Map<string, { assignmentVersion: number; deviceId: string }>
+		>();
+		const recordActiveRosterDevice = (
+			identityId: string,
+			deviceId: string,
+			assignmentVersion: number,
+		): void => {
+			let devices = activeRosterDevicesByIdentity.get(identityId);
+			if (!devices) {
+				devices = new Map();
+				activeRosterDevicesByIdentity.set(identityId, devices);
+			}
+			devices.set(deviceId, { assignmentVersion, deviceId });
+		};
+
 		for (const invite of input.consumedTeamInvites) {
 			const identityId = invite.assigned_identity_id;
 			const recipientDisplayName = displayNameOrFallback(
@@ -122,8 +144,10 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 				continue;
 			}
 			const team = db
-				.prepare("SELECT status FROM policy_teams WHERE team_id = ?")
-				.get(invite.policy_team_id) as { status: string } | undefined;
+				.prepare("SELECT status, device_eligibility_mode FROM policy_teams WHERE team_id = ?")
+				.get(invite.policy_team_id) as
+				| { device_eligibility_mode: string; status: string }
+				| undefined;
 			if (team?.status !== "active") {
 				issue("team_membership", invite.invite_id, "policy_team_not_active");
 				continue;
@@ -147,11 +171,103 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 				continue;
 			}
 			const membership = db
-				.prepare("SELECT status FROM policy_team_memberships WHERE team_id = ? AND identity_id = ?")
-				.get(invite.policy_team_id, identityId) as { status: string } | undefined;
+				.prepare(
+					`SELECT status, provenance FROM policy_team_memberships
+					 WHERE team_id = ? AND identity_id = ?`,
+				)
+				.get(invite.policy_team_id, identityId) as
+				| { status: string; provenance: string }
+				| undefined;
+			const reviewedTeam = team.device_eligibility_mode === "reviewed_allowlist";
+			const activeMembershipStatus = reviewedTeam ? "reviewed_active" : "active";
 			if (membership) {
-				if (membership.status === "active") result.unchanged += 1;
-				else issue("team_membership", invite.invite_id, "membership_not_active");
+				if (membership.status === activeMembershipStatus) {
+					// A consumed invite owns this membership from now on. Leaving
+					// setup-owned provenance in place would let a later guided setup
+					// that omits the identity revoke the invitee's access.
+					if (["reviewed_active", "reviewed_team_candidate"].includes(membership.provenance)) {
+						db.prepare(
+							`UPDATE policy_team_memberships
+							 SET provenance = 'coordinator_invite', updated_at = ?
+							 WHERE team_id = ? AND identity_id = ?`,
+						).run(now, invite.policy_team_id, identityId);
+					}
+					result.unchanged += 1;
+					if (reviewedTeam) {
+						const key = `${invite.policy_team_id}\u0000${identityId}`;
+						if (!reviewedInviteMemberships.has(key)) {
+							reviewedInviteMemberships.set(key, {
+								teamId: invite.policy_team_id,
+								identityId,
+								inviteId: invite.invite_id,
+								newlyAdded: false,
+							});
+						}
+					}
+				} else if (
+					reviewedTeam &&
+					membership.status === "active" &&
+					["team_invite", "coordinator_invite"].includes(membership.provenance)
+				) {
+					// The pre-reviewed reconciler wrote invite memberships as
+					// `active`; normalize to the reviewed-mode status so the row
+					// stops blocking authoritative eligibility.
+					db.prepare(
+						`UPDATE policy_team_memberships
+						 SET status = 'reviewed_active', updated_at = ?
+						 WHERE team_id = ? AND identity_id = ?`,
+					).run(now, invite.policy_team_id, identityId);
+					result.unchanged += 1;
+					const key = `${invite.policy_team_id}\u0000${identityId}`;
+					if (!reviewedInviteMemberships.has(key)) {
+						reviewedInviteMemberships.set(key, {
+							teamId: invite.policy_team_id,
+							identityId,
+							inviteId: invite.invite_id,
+							newlyAdded: false,
+						});
+					}
+				} else if (
+					membership.status === "revoked" &&
+					["reviewed_active", "reviewed_team_candidate"].includes(membership.provenance)
+				) {
+					// Guided setup revoked this person; a newly consumed invite is
+					// explicit re-authorization and adopts the row.
+					const stableBinding = {
+						groupId: input.groupId,
+						inviteId: invite.invite_id,
+						teamId: invite.policy_team_id,
+						identityId,
+					};
+					db.prepare(
+						`UPDATE policy_team_memberships
+						 SET role = 'member', status = ?, provenance = 'coordinator_invite',
+						     revision = ?, migration_state = 'user_managed',
+						     source_fingerprint = ?, idempotency_key = ?, updated_at = ?
+						 WHERE team_id = ? AND identity_id = ?`,
+					).run(
+						activeMembershipStatus,
+						digest("coordinator-team-membership-revision-v1", stableBinding),
+						digest("coordinator-team-membership-source-v1", stableBinding),
+						digest("coordinator-team-membership-idempotency-v1", stableBinding),
+						now,
+						invite.policy_team_id,
+						identityId,
+					);
+					result.membershipsAdded += 1;
+					if (reviewedTeam) {
+						reviewedInviteMemberships.set(`${invite.policy_team_id}\u0000${identityId}`, {
+							teamId: invite.policy_team_id,
+							identityId,
+							inviteId: invite.invite_id,
+							newlyAdded: true,
+						});
+						db.prepare(
+							`UPDATE policy_teams SET source_fingerprint = NULL, updated_at = ?
+							 WHERE team_id = ? AND device_eligibility_mode = 'reviewed_allowlist'`,
+						).run(now, invite.policy_team_id);
+					}
+				} else issue("team_membership", invite.invite_id, "membership_not_active");
 				continue;
 			}
 			const stableBinding = {
@@ -163,9 +279,10 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 			db.prepare(`INSERT INTO policy_team_memberships(
 				team_id, identity_id, role, status, provenance, revision, migration_state,
 				source_fingerprint, idempotency_key, created_at, updated_at
-			) VALUES (?, ?, 'member', 'active', 'coordinator_invite', ?, 'user_managed', ?, ?, ?, ?)`).run(
+			) VALUES (?, ?, 'member', ?, 'coordinator_invite', ?, 'user_managed', ?, ?, ?, ?)`).run(
 				invite.policy_team_id,
 				identityId,
+				activeMembershipStatus,
 				digest("coordinator-team-membership-revision-v1", stableBinding),
 				digest("coordinator-team-membership-source-v1", stableBinding),
 				digest("coordinator-team-membership-idempotency-v1", stableBinding),
@@ -173,6 +290,18 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 				now,
 			);
 			result.membershipsAdded += 1;
+			if (reviewedTeam) {
+				reviewedInviteMemberships.set(`${invite.policy_team_id}\u0000${identityId}`, {
+					teamId: invite.policy_team_id,
+					identityId,
+					inviteId: invite.invite_id,
+					newlyAdded: true,
+				});
+				db.prepare(
+					`UPDATE policy_teams SET source_fingerprint = NULL, updated_at = ?
+					 WHERE team_id = ? AND device_eligibility_mode = 'reviewed_allowlist'`,
+				).run(now, invite.policy_team_id);
+			}
 		}
 
 		for (const enrollment of input.enrollments) {
@@ -207,14 +336,30 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 			const displayName = normalizedDisplayName ?? "Enrolled device";
 			const existing = db
 				.prepare(
-					`SELECT identity_id, display_name, status, provenance
+					`SELECT identity_id, display_name, status, provenance, assignment_version
 					 FROM identity_devices WHERE device_id = ?`,
 				)
 				.get(enrollment.device_id) as
-				| { identity_id: string; display_name: string; status: string; provenance: string }
+				| {
+						assignment_version: number;
+						display_name: string;
+						identity_id: string;
+						provenance: string;
+						status: string;
+				  }
 				| undefined;
 			if (existing) {
 				if (existing.identity_id === identityId && existing.status === "active") {
+					const assignment = assignIdentityDeviceInTransaction(db, {
+						deviceId: enrollment.device_id,
+						targetIdentityId: identityId,
+						expectation: {
+							kind: "existing",
+							identityId,
+							assignmentVersion: existing.assignment_version,
+						},
+						now,
+					});
 					if (
 						existing.provenance === "coordinator_enrollment" &&
 						normalizedDisplayName != null &&
@@ -225,6 +370,7 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 							 WHERE device_id = ? AND provenance = 'coordinator_enrollment'`,
 						).run(displayName, now, enrollment.device_id);
 					}
+					recordActiveRosterDevice(identityId, enrollment.device_id, assignment.assignmentVersion);
 					result.unchanged += 1;
 				} else {
 					issue("device", enrollment.device_id, "device_identity_conflict");
@@ -259,20 +405,96 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 				deviceId: enrollment.device_id,
 				fingerprint: enrollment.fingerprint,
 			};
-			db.prepare(`INSERT INTO identity_devices(
-				device_id, identity_id, display_name, status, provenance, revision, migration_state,
-				source_fingerprint, idempotency_key, created_at, updated_at
-			) VALUES (?, ?, ?, 'active', 'coordinator_enrollment', ?, 'user_managed', ?, ?, ?, ?)`).run(
-				enrollment.device_id,
-				identityId,
-				displayName,
-				digest("coordinator-identity-device-revision-v1", stableBinding),
-				digest("coordinator-identity-device-source-v1", stableBinding),
-				digest("coordinator-identity-device-idempotency-v1", stableBinding),
+			const assignment = assignIdentityDeviceInTransaction(db, {
+				deviceId: enrollment.device_id,
+				targetIdentityId: identityId,
+				expectation: { kind: "absent" },
+				insert: {
+					displayName,
+					provenance: "coordinator_enrollment",
+					revision: digest("coordinator-identity-device-revision-v1", stableBinding),
+					migrationState: "user_managed",
+					sourceFingerprint: digest("coordinator-identity-device-source-v1", stableBinding),
+					idempotencyKey: digest("coordinator-identity-device-idempotency-v1", stableBinding),
+				},
 				now,
-				now,
-			);
+			});
+			recordActiveRosterDevice(identityId, enrollment.device_id, assignment.assignmentVersion);
 			result.devicesAdded += 1;
+		}
+
+		for (const membership of reviewedInviteMemberships.values()) {
+			const devices = activeRosterDevicesByIdentity.get(membership.identityId);
+			if (!devices) continue;
+			for (const device of devices.values()) {
+				const stableDecision = {
+					teamId: membership.teamId,
+					identityId: membership.identityId,
+					inviteId: membership.inviteId,
+					deviceId: device.deviceId,
+					assignmentVersion: device.assignmentVersion,
+				};
+				// Existing setup-owned decisions transition to invite ownership
+				// while keeping their reviewed decision, so a later refreshed
+				// setup roster omitting the device cannot silently revoke
+				// invite-managed access.
+				const inserted = membership.newlyAdded
+					? db
+							.prepare(`INSERT INTO policy_team_device_decisions(
+								team_id, device_id, decision, assignment_version, provenance, revision,
+								created_at, updated_at
+							) VALUES (?, ?, 'unresolved', ?, 'coordinator_invite', ?, ?, ?)
+							ON CONFLICT(team_id, device_id) DO UPDATE SET
+								decision = CASE
+									WHEN policy_team_device_decisions.provenance = 'reviewed_team_setup'
+									THEN policy_team_device_decisions.decision
+									ELSE 'unresolved'
+								END,
+								assignment_version = CASE
+									WHEN policy_team_device_decisions.provenance = 'reviewed_team_setup'
+									THEN policy_team_device_decisions.assignment_version
+									ELSE excluded.assignment_version
+								END,
+								provenance = excluded.provenance,
+								revision = excluded.revision,
+								updated_at = excluded.updated_at`)
+							.run(
+								membership.teamId,
+								device.deviceId,
+								device.assignmentVersion,
+								digest("coordinator-team-device-decision-revision-v1", stableDecision),
+								now,
+								now,
+							)
+					: db
+							.prepare(`INSERT INTO policy_team_device_decisions(
+								team_id, device_id, decision, assignment_version, provenance, revision,
+								created_at, updated_at
+							) VALUES (?, ?, 'unresolved', ?, 'coordinator_invite', ?, ?, ?)
+							ON CONFLICT(team_id, device_id) DO UPDATE SET
+								provenance = excluded.provenance,
+								revision = excluded.revision,
+								updated_at = excluded.updated_at
+							WHERE policy_team_device_decisions.provenance = 'reviewed_team_setup'`)
+							.run(
+								membership.teamId,
+								device.deviceId,
+								device.assignmentVersion,
+								digest("coordinator-team-device-decision-revision-v1", stableDecision),
+								now,
+								now,
+							);
+				if (inserted.changes > 0) {
+					db.prepare(
+						`UPDATE policy_teams SET source_fingerprint = NULL, updated_at = ?
+						 WHERE team_id = ? AND device_eligibility_mode = 'reviewed_allowlist'
+						   AND EXISTS (
+							   SELECT 1 FROM policy_team_device_decisions
+							   WHERE team_id = ? AND device_id = ? AND decision = 'unresolved'
+						   )`,
+					).run(now, membership.teamId, membership.teamId, device.deviceId);
+				}
+			}
 		}
 
 		const issueSet = new Map(

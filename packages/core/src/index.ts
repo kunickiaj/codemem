@@ -459,6 +459,7 @@ export {
 	resolveLegacyRecipientPolicyLocalIdentity,
 } from "./legacy-recipient-policy-projection.js";
 export * from "./legacy-team-candidate.js";
+export * from "./legacy-team-setup-activation.js";
 export * from "./legacy-team-setup-draft.js";
 export type {
 	BackfillTagsTextOptions,
@@ -684,6 +685,15 @@ export { buildSessionContext, flushRawEvents } from "./raw-event-flush.js";
 export * from "./raw-event-ingest.js";
 export { RawEventSweeper } from "./raw-event-sweeper.js";
 export type {
+	LegacyTeamSetupAccessDeltaV1,
+	LegacyTeamSetupActivationChangeV1,
+	LegacyTeamSetupActivationPreviewV1,
+	LegacyTeamSetupActivationResultV1,
+	LegacyTeamSetupDeviceAccessChangeV1,
+	LegacyTeamSetupMembershipChangeV1,
+	LegacyTeamSetupProjectChangeV1,
+	LegacyTeamSetupRecipientChangeV1,
+	LegacyTeamSetupTeamChangeV1,
 	RecipientPolicyAuthorityV1,
 	RecipientPolicyBlockedItemV1,
 	RecipientPolicyContractVersion,
