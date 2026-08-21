@@ -287,7 +287,12 @@ describe("dependency-free Codex user prompt hook", () => {
 	it("caps HTTP and compatibility fallback timeouts within the prompt output budget", async () => {
 		let elapsedMs = 0;
 		const httpTimeouts: number[] = [];
-		const childCalls: Array<{ command: string; args: string[]; timeout: number }> = [];
+		const childCalls: Array<{
+			command: string;
+			args: string[];
+			localPackOnly: string | undefined;
+			timeout: number;
+		}> = [];
 		const outputAt: number[] = [];
 
 		await hook.runCodexUserPromptHook(JSON.stringify(payload), {
@@ -305,10 +310,15 @@ describe("dependency-free Codex user prompt hook", () => {
 				command: string,
 				args: string[],
 				_raw: string,
-				_env: Record<string, string>,
+				childEnv: Record<string, string>,
 				timeout: number,
 			) => {
-				childCalls.push({ command, args, timeout });
+				childCalls.push({
+					command,
+					args,
+					localPackOnly: childEnv.CODEMEM_CODEX_LOCAL_PACK_ONLY,
+					timeout,
+				});
 				elapsedMs += timeout;
 				return null;
 			},
@@ -318,10 +328,16 @@ describe("dependency-free Codex user prompt hook", () => {
 
 		expect(httpTimeouts).toEqual([2_000]);
 		expect(childCalls).toEqual([
-			{ command: "codemem", args: ["codex-hook-inject"], timeout: 2_500 },
+			{
+				command: "codemem",
+				args: ["codex-hook-inject"],
+				localPackOnly: "1",
+				timeout: 2_500,
+			},
 			{
 				command: "npx",
 				args: ["-y", expect.stringMatching(/^codemem@\d+\.\d+\.\d+$/), "codex-hook-inject"],
+				localPackOnly: "1",
 				timeout: 800,
 			},
 		]);

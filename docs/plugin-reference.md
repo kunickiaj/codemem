@@ -150,8 +150,11 @@ hook failure does not block a session.
 printf '%s\n' '{"hook_event_name":"UserPromptSubmit","session_id":"codex-1","prompt":"what did we change","cwd":"/tmp/demo"}' | codemem codex-hook-inject
 ```
 
-`codemem codex-hook-inject` is retained for compatibility and plugin-free setup; it is not the packaged
-hook's healthy prompt path.
+`codemem codex-hook-inject` is retained for compatibility and plugin-free setup. It now uses the same
+profile-validated, identity-gated Viewer HTTP retrieval before falling back to its local database pack.
+Like the packaged hook, it rejects non-loopback prompt retrieval and fails closed on policy,
+authorization, and compatible-profile contract errors; local packing is limited to classified
+compatibility failures. The packaged hook remains the zero-child healthy path.
 
 For Codex hooks, project resolution precedence matches the Claude hook path:
 
@@ -189,7 +192,7 @@ npx -y codemem setup --codex-only   # or, with a global install: codemem setup -
 What it does (idempotent; honors `CODEX_HOME`; backs up existing files; `--force` to refresh):
 
 - **MCP:** appends `[mcp_servers.codemem]` (`command = "npx"`, `args = ["-y", "codemem", "mcp"]`) to `<CODEX_HOME>/config.toml` if not already present. The file is never reparsed or reformatted — only appended — so comments and unrelated servers (including secrets) are preserved.
-- **Hooks:** merges `SessionStart`, `UserPromptSubmit` (ingest + inject), `PostToolUse`, and `Stop` into `<CODEX_HOME>/hooks.json`, preserving any unrelated user hooks. Hook commands resolve to a direct `codemem codex-hook-*` call when `codemem` is on `PATH`, otherwise `npx -y codemem codex-hook-*`.
+- **Hooks:** merges `SessionStart`, `UserPromptSubmit` (ingest + inject), `PostToolUse`, and `Stop` into `<CODEX_HOME>/hooks.json`, preserving any unrelated user hooks. Hook commands resolve to a direct `codemem codex-hook-*` call when `codemem` is on `PATH`, otherwise `npx -y codemem codex-hook-*`. Prompt injection validates the loopback Viewer profile and retrieves with `POST /api/pack` first, using the local database only for classified compatibility fallback.
 
 Hooks loaded from the user config layer require a one-time trust approval in Codex (you'll be prompted on first run; MCP recall needs no trust). Codex setup also runs automatically in a plain `codemem setup` when a Codex home (`~/.codex` or `$CODEX_HOME`) is detected.
 
@@ -396,7 +399,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_RUNNER` | Override auto-detected runner: `codemem` (global), `npx`, `node` (repo/dev), or custom binary name. |
 | `CODEMEM_RUNNER_FROM` | Runner source override: npm package spec for `npx` (for example `codemem@0.20.0-alpha.7`), or repo/CLI entry path for `node`. |
 | `CODEMEM_VIEWER` | Set to `0`, `false`, or `off` to disable the viewer entirely. |
-| `CODEMEM_VIEWER_HOST`, `CODEMEM_VIEWER_PORT` | Explicit host/port the plugin-managed viewer should start, probe, stop, and restart. |
+| `CODEMEM_VIEWER_HOST`, `CODEMEM_VIEWER_PORT` | Explicit host/port the plugin-managed viewer should start, probe, stop, and restart. Prompt retrieval accepts loopback hosts only. |
 | `CODEMEM_VIEWER_AUTO` | Set to `0`/`false`/`off` to disable auto-start (default on). |
 | `CODEMEM_VIEWER_AUTO_STOP` | Set to `0`/`false`/`off` to keep the viewer running after OpenCode exits (default on). |
 | `CODEMEM_PLUGIN_LOG` | Path for the plugin log file (set `1`/`true`/`yes` for `~/.codemem/plugin.log`; Claude hook failures are logged to this path by default). |
@@ -408,7 +411,8 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_CODEX_HOOK_LOCK_TTL_S` | Seconds before a Codex hook fallback lock is treated as stale (default `120`). |
 | `CODEMEM_CODEX_HOOK_SPOOL_DIR` | Legacy native Codex hook fallback spool directory (default `~/.codemem/codex-hook-spool`); the normalized wrapper does not read or drain it. |
 | `CODEMEM_CODEX_RAW_EVENT_SPOOL_DIR` | Normalized Codex raw-event envelope spool directory (default `~/.codemem/codex-raw-event-spool`). |
-| `CODEMEM_INJECT_HTTP_MAX_TIME_S` | Viewer request timeout for OpenCode and Claude prompt retrieval, and the per-request cap for Codex (default `2` seconds). Claude and Codex ledger completion has a separate fixed 500 ms cap; packaged Codex also enforces a total 4.5-second output budget. |
+| `CODEMEM_CODEX_LOCAL_PACK_ONLY` | Internal coordination flag set by the packaged Codex wrapper when it invokes the CLI compatibility fallback; skips duplicate Viewer retrieval. Not intended for manual use. |
+| `CODEMEM_INJECT_HTTP_MAX_TIME_S` | Viewer request timeout for OpenCode and Claude prompt retrieval, the per-request cap for packaged Codex, and the total profile-plus-pack HTTP budget for plugin-free Codex (default and maximum `2` seconds for plugin-free Codex). Claude and Codex ledger completion has a separate fixed 500 ms cap; packaged Codex also enforces a total 4.5-second output budget. |
 | `CODEMEM_INJECT_MAX_CHARS` | Max chars returned as Claude/Codex `additionalContext` (default `16000`). |
 | `CODEMEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
 | `CODEMEM_MIN_VERSION` | Minimum required CLI version for plugin compatibility warnings (default `0.9.20`). |

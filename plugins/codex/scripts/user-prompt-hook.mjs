@@ -535,9 +535,16 @@ function requestTimeoutSignal(maximumMs, deadline, monotonicNow, createTimeoutSi
 export function runCompatibilityFallback(raw, env, deadline, overrides = {}) {
 	const monotonicNow = overrides.monotonicNow ?? (() => performance.now());
 	const runInjectImpl = overrides.runInjectImpl ?? runInject;
+	const fallbackEnv = { ...env, CODEMEM_CODEX_LOCAL_PACK_ONLY: "1" };
 	const codememTimeoutMs = Math.min(2_500, remainingPromptBudgetMs(deadline, monotonicNow));
 	if (codememTimeoutMs <= 0) return null;
-	const direct = runInjectImpl("codemem", ["codex-hook-inject"], raw, env, codememTimeoutMs);
+	const direct = runInjectImpl(
+		"codemem",
+		["codex-hook-inject"],
+		raw,
+		fallbackEnv,
+		codememTimeoutMs,
+	);
 	if (direct) return direct;
 
 	const npxTimeoutMs = Math.min(1_500, remainingPromptBudgetMs(deadline, monotonicNow));
@@ -546,7 +553,7 @@ export function runCompatibilityFallback(raw, env, deadline, overrides = {}) {
 		"npx",
 		["-y", `codemem@${pinnedVersion(env)}`, "codex-hook-inject"],
 		raw,
-		env,
+		fallbackEnv,
 		npxTimeoutMs,
 	);
 }
