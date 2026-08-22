@@ -458,6 +458,8 @@ export {
 	listLegacyRecipientPolicyProjections,
 	resolveLegacyRecipientPolicyLocalIdentity,
 } from "./legacy-recipient-policy-projection.js";
+export * from "./legacy-team-candidate.js";
+export * from "./legacy-team-setup-draft.js";
 export type {
 	BackfillTagsTextOptions,
 	BackfillTagsTextResult,
@@ -729,6 +731,13 @@ export {
 	previewRecipientPolicyEdges,
 	RecipientPolicyEdgeRequestError,
 } from "./recipient-policy-edges.js";
+export {
+	canonicalRecipientPolicyJson,
+	deterministicPolicyTeamId,
+	legacyTeamCandidateId,
+	legacyTeamRosterFingerprint,
+	recipientPolicyDigest,
+} from "./recipient-policy-identifiers.js";
 export type { RecipientPolicyIntentGraphV1 } from "./recipient-policy-intent.js";
 export { listRecipientPolicyIntent } from "./recipient-policy-intent.js";
 export type {
@@ -737,10 +746,7 @@ export type {
 	RecipientPolicyMigrationProjectStatus,
 	RecipientPolicyMigrationResultV1,
 } from "./recipient-policy-migration.js";
-export {
-	deterministicPolicyTeamId,
-	migrateRecipientPolicyIntent,
-} from "./recipient-policy-migration.js";
+export { migrateRecipientPolicyIntent } from "./recipient-policy-migration.js";
 export type {
 	RecipientPolicyAddDeviceOnboardingRequestV1,
 	RecipientPolicyDirectProjectOnboardingRequestV1,

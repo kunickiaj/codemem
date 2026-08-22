@@ -8,7 +8,7 @@ approved [Legacy Team Guided Setup Design](../specs/2026-08-10-legacy-team-guide
 
 ## Outcome
 
-Configured pre-identity coordinator groups appear as resumable Team setup candidates. A user must review every active roster device before activation. Activation creates one canonical Team with reviewed memberships and a Team-specific device allowlist without changing current Project recipients. Normal invitation-created Teams retain person-level device expansion.
+Configured pre-identity coordinator groups appear as resumable Team setup candidates. A user must review every active roster device and every displayed associated coordinator-backed Project before activation. One confirmation atomically creates or updates the reviewed Team, memberships, Team-specific device allowlist, confirmed Project identity repairs or mappings, and Team Project recipients. Normal invitation-created Teams retain person-level device expansion.
 
 ## Non-negotiable safety rules
 
@@ -19,6 +19,8 @@ Configured pre-identity coordinator groups appear as resumable Team setup candid
 - A Team exclusion narrows only that Team path. A direct identity recipient or another Team may still grant the same device.
 - Candidate and API payloads use opaque references and sanitized labels. They never expose coordinator URLs, group IDs, public keys, local paths, or raw database errors.
 - No existing Team is silently converted to a different eligibility mode.
+- Deterministic canonical Project identities may be repaired automatically; ambiguous `unmapped:*` Projects require explicit mappings and block activation.
+- Stale roster, Project inventory, mappings, or canonical Team/Project/recipient state blocks activation rather than partially migrating.
 
 ## Settled implementation decisions
 
@@ -37,7 +39,7 @@ Reviewed Teams store canonical memberships with status `reviewed_active`. The ne
 
 ### Draft records
 
-Use a draft header plus one row per roster device. Every transition into **Needs setup** creates a new immutable, opaque, non-enumerable `attempt_id`; the header owns that attempt ID, the opaque candidate reference, coordinator/group lookup data, roster fingerprint, persisted state, safe error code, finish digest, completed Team ID, and timestamps. Device rows own sanitized display data, stable key fingerprint, enabled state, decision, proposed identity, expected assignment version, and verified evidence kind. Persisted draft states are `needs_setup`, `in_progress`, `stale`, and `completed`; candidate status derives `ready` from a compatible completed canonical Team rather than storing `ready` as a draft state.
+Use a draft header plus one row per roster device and displayed associated Project. Every transition into **Needs setup** creates a new immutable, opaque, non-enumerable `attempt_id`; the header owns that attempt ID, the opaque candidate reference, coordinator/group lookup data, roster and Project-inventory fingerprints, expected canonical Team/Project/recipient state, persisted state, safe error code, finish digest, completed Team ID, and timestamps. Device rows own sanitized display data, stable key fingerprint, enabled state, decision, proposed identity, expected assignment version, and verified evidence kind. Project rows own sanitized labels, deterministic identity-repair mappings, and any required explicit mapping. Persisted draft states are `needs_setup`, `in_progress`, `stale`, and `completed`; candidate status derives `ready` from a compatible completed canonical Team rather than storing `ready` as a draft state.
 
 Coordinator and group identifiers may be retained only in local database columns needed to refresh the roster. They must not appear in responses, fixtures, diagnostics, or logs.
 
@@ -69,11 +71,13 @@ Compute the roster fingerprint from sorted records containing only:
 
 Exclude display name, presence expiry, presence capabilities, and ordering. Treat `enabled === 1` as active. A public-key/fingerprint mismatch is a blocking roster error, not a suggestion.
 
-### Existing legacy recipient review
+### Associated Project migration
+
+Candidate discovery inventories every displayed coordinator-backed Project associated with the Team and persists deterministic Project identity-repair mappings in its draft. This discovery changes neither access nor recipients. Deterministic canonical Project identities are repaired automatically. Ambiguous `unmapped:*` Projects require an explicit mapping and keep the candidate blocked until resolved.
 
 Pre-identity Team candidates must no longer be materialized through `choose_recipients`. That path can create a Team and Project recipient before device review. Replace the selectable legacy candidate with the guided setup entry point, and fail closed if a stale saved resolution still targets it.
 
-Guided activation creates the Team and memberships only. It does not create `project_recipients`; users select the ready Team through the normal Sharing flow afterward.
+Guided activation creates or updates the Team, memberships, device decisions, confirmed Project mappings, and Team Project recipients together. It may not activate a subset of the displayed Project inventory.
 
 If the deterministic Team row already exists:
 
@@ -86,17 +90,15 @@ Do not rewrite existing `policy_teams` modes during additive schema upgrade.
 
 ### Idempotent finish
 
-Each setup attempt stores a deterministic finish digest derived from its immutable `attempt_id`, candidate reference, fresh roster fingerprint, normalized decisions, normalized proposed identity assignments, expected assignment versions, the complete validated canonical Team snapshot, and the confirmed complete access-delta digest. The activation transaction persists an immutable successful completion record keyed by `(attempt_id, finish_digest)`, including the attempt's immutable candidate reference, confirmed access-delta digest, completed Team ID, completion timestamp, and exact response. Every replay lookup also requires that stored candidate reference equal the validated `:candidateRef` route parameter and that the submitted `confirmed_access_delta_digest` equal the immutable stored confirmation; missing or mismatched confirmation is not an exact retry. Submitting one candidate's completion tokens through another candidate route never replays success. An exact retry for that candidate, attempt, and confirmed representation returns the stored response without replaying writes or reconstructing it from later Team state. A later **Needs setup** cycle has a distinct attempt ID and completion record even when every roster and decision input is otherwise identical. A request that changes any canonical input, including a proposed identity, is a different finish operation.
+Each setup attempt stores a deterministic finish digest derived from its immutable `attempt_id`, candidate reference, fresh roster and Project-inventory fingerprints, normalized decisions, proposed identity assignments, and Project mappings, expected assignment versions, the complete validated canonical Team/Project/recipient snapshot, and the confirmed complete access-delta digest. The activation transaction persists an immutable successful completion record keyed by `(attempt_id, finish_digest)`, including the attempt's immutable candidate reference, confirmed access-delta digest, completed Team ID, completion timestamp, and exact response. Every replay lookup also requires that stored candidate reference equal the validated `:candidateRef` route parameter and that the submitted `confirmed_access_delta_digest` equal the immutable stored confirmation; missing or mismatched confirmation is not an exact retry. Submitting one candidate's completion tokens through another candidate route never replays success. An exact retry for that candidate, attempt, and confirmed representation returns the stored response without replaying writes or reconstructing it from later Team state. A later **Needs setup** cycle has a distinct attempt ID and completion record even when every roster and decision input is otherwise identical. A request that changes any canonical input, including a proposed identity or Project mapping, is a different finish operation.
 
 ### Display-name behavior
 
 Display labels are not security evidence and are excluded from fingerprints and idempotency keys. Refresh the sanitized candidate label independently. A label change alone does not stale a draft or conflict with an otherwise compatible Team.
 
-## Proposed Graphite stack
+## Approved five-PR Graphite stack
 
-The remaining implementation should use focused PRs. Each PR must be independently
-safe; guided activation must not change effective sharing before its finish
-transaction commits.
+The delivered eligibility foundation is a prerequisite, not part of this stack. The five PRs below must land in order: each depends on every preceding PR, and guided activation must not change effective sharing before its finish transaction commits.
 
 ### Delivered foundation: Add fail-closed Team device eligibility
 
@@ -157,9 +159,9 @@ pnpm run tsc
 pnpm run lint
 ```
 
-### PR 2: Add candidate discovery and durable drafts
+### PR 1: Add candidate discovery, durable drafts, and Project repair mappings
 
-**Purpose:** Represent setup progress without affecting authorization.
+**Purpose:** Represent Team and associated-Project migration progress without affecting authorization.
 
 **Files:**
 
@@ -183,14 +185,16 @@ pnpm run lint
 1. Add draft header and device tables with foreign keys, uniqueness, and indexes for state and finish digest.
 2. Extract deterministic candidate identity and stable roster fingerprint helpers.
 3. Discover candidates from configured coordinator groups and validated roster snapshots.
-4. Derive candidate-facing status as `needs_setup`, `in_progress`, `stale`, or `ready` without exposing lookup identifiers.
-5. Persist assignment confirmation and Team decisions with compare-and-set semantics against either an explicit absent-row token or the existing row's assignment version and identity.
-6. Preserve unchanged decisions across refresh; mark new devices unresolved and removed or disabled devices pending review. Confirmed finish retires those removed or disabled devices' Team-specific decision rows instead of carrying them into the refreshed roster.
-7. Permit an excluded device to remain globally unassigned.
+4. Inventory every displayed coordinator-backed Project associated with each candidate and persist its deterministic identity-repair mapping; require an explicit mapping for every ambiguous `unmapped:*` Project.
+5. Derive candidate-facing status as `needs_setup`, `in_progress`, `stale`, or `ready` without exposing lookup identifiers.
+6. Persist assignment confirmation and Team decisions with compare-and-set semantics against either an explicit absent-row token or the existing row's assignment version and identity.
+7. Preserve unchanged decisions across refresh; mark new devices unresolved and removed or disabled devices pending review. Confirmed finish retires those removed or disabled devices' Team-specific decision rows instead of carrying them into the refreshed roster.
+8. Permit an excluded device to remain globally unassigned.
 
 **Acceptance:**
 
 - Opening and saving a draft causes no policy, membership, assignment, or Project-recipient writes.
+- Candidate discovery persists complete displayed Project inventory and deterministic repair mappings without changing access; unresolved `unmapped:*` mappings block finish.
 - Display-name and presence-only changes preserve the roster fingerprint.
 - Key, enabled-state, identity, addition, or removal changes stale the draft.
 - Suggestions are emitted only for exact, verified local assignment evidence and remain unselected.
@@ -204,7 +208,7 @@ pnpm run tsc
 pnpm run lint
 ```
 
-### PR 3: Add atomic activation and assignment invalidation
+### PR 2: Add atomic Team activation and access-delta validation
 
 **Purpose:** Materialize a complete reviewed draft without unreviewed access widening.
 
@@ -233,12 +237,12 @@ pnpm run lint
 1. Add the canonical assignment mutation boundary over the assignment-version column introduced in PR 1.
 2. Route every production assignment insert or update through it, including coordinator enrollment reconciliation, reviewed onboarding, and recipient-policy migration; invalidate prior included decisions atomically.
 3. Validate draft completeness, expected assignment versions, active identities, compatible Team state, and the exact proposed identity for every assignment. Fetch and validate the fresh coordinator roster before opening the write transaction; no coordinator or other network I/O may occur while holding the SQLite write lock.
-4. Before finish, use authoritative recipient derivation to compute the complete before/after effective-device graph for every affected existing direct-identity or Team recipient. Cover every cause in the proposed transaction: assignment writes and invalidations, Team-mode conversion, final device decisions, guided-setup membership reconciliation, and preserved recipient edges on an adopted Team. Include every added and removed Project/device edge in the review payload and finish digest; no access change is exempt from explicit confirmation.
-5. After the fresh roster fetch completes, open one `BEGIN IMMEDIATE` transaction and recheck `(candidate_ref, attempt_id, finish_digest, confirmed_access_delta_digest)` before any canonical write; if another request already committed that exact completion for the validated route candidate and confirmed representation, return its exact stored response and commit no new work. A completion for any other candidate or confirmation digest is not a replay match. Otherwise verify that the fetched roster fingerprint still matches the attempt's expected fingerprint, recheck every local compare-and-set fact and canonical Team input under the lock, and rederive and compare the confirmed complete access delta before writing assignments, Team mode, device decisions, provenance, and the immutable completion result. Reconcile only memberships owned by this guided-setup provenance: insert or retain setup-managed `reviewed_active` memberships for active identities owning at least one final `included` device and revoke obsolete setup-managed memberships. Preserve explicit invitation-provenance memberships even when they currently have only unresolved or no roster decisions. Retire confirmed removed or disabled roster-device decisions in the same transaction. If completion insertion loses a uniqueness race, load and replay the winner only after verifying its stored candidate reference and confirmed access-delta digest match the submitted request; otherwise fail closed rather than returning a different result.
+4. Before finish, use authoritative recipient derivation to compute the complete before/after effective-access delta for every displayed associated Project. Cover every cause in the proposed transaction: Team membership, device eligibility/allowlist, confirmed Project identity repairs or mappings, Team Project recipient writes, assignment writes and invalidations, Team-mode conversion, final device decisions, guided-setup membership reconciliation, and preserved recipient edges on an adopted Team. Include every Project identity, recipient, and Project/device access addition or removal in the review payload and finish digest; no access change is exempt from explicit confirmation.
+5. After the fresh roster fetch completes, open one `BEGIN IMMEDIATE` transaction and recheck `(candidate_ref, attempt_id, finish_digest, confirmed_access_delta_digest)` before any canonical write; if another request already committed that exact completion for the validated route candidate and confirmed representation, return its exact stored response and commit no new work. A completion for any other candidate or confirmation digest is not a replay match. Otherwise verify that the fetched roster fingerprint, displayed Project inventory, Project mappings, and canonical Team/Project/recipient snapshot still match the attempt; recheck every local compare-and-set fact under the lock; and rederive and compare the confirmed complete access delta before writing assignments, Team mode, memberships, device decisions, confirmed Project mappings, Team Project recipients, provenance, and the immutable completion result. Reconcile only memberships owned by this guided-setup provenance: insert or retain setup-managed `reviewed_active` memberships for active identities owning at least one final `included` device and revoke obsolete setup-managed memberships. Preserve explicit invitation-provenance memberships even when they currently have only unresolved or no roster decisions. Retire confirmed removed or disabled roster-device decisions in the same transaction. If completion insertion loses a uniqueness race, load and replay the winner only after verifying its stored candidate reference and confirmed access-delta digest match the submitted request; otherwise fail closed rather than returning a different result.
 6. Apply each changed assignment before writing its Team decision, read the resulting canonical `assignment_version`, and persist that post-write version on the final decision row. Never copy the draft's pre-write expected version into an `included` decision.
 7. Store and replay the completed finish result only when the proposed identities and every other canonical write input match the completed digest.
 8. Remove unresolved legacy Team candidates from recipient selection and reject stale resolutions that target them.
-9. Leave all `project_recipients` rows unchanged; do not treat row stability as proof that effective access is unchanged.
+9. Write confirmed Project identity repairs or mappings and Team Project recipients for the complete displayed inventory in this transaction; do not treat row stability as proof that effective access is unchanged.
 10. When a consumed invite adds a person to a reviewed Team, store an invitation-provenance `reviewed_active` membership, create unresolved decisions for that person's active roster devices, and return the Team to **Needs setup** without granting a device. Preserve that explicit membership through later setup even when the invitee has no roster device; membership alone never grants eligibility.
 11. Add a constrained adoption path for canonical Teams already materialized by historical `choose_recipients`: require exact deterministic identity, provenance, source fingerprint, memberships, and aggregate saved-resolution linkage. Collect every matching saved resolution across Projects and require the canonical Team's complete recipient-edge set to equal the union of edges justified by those resolutions; preserve that full set and include every resulting effective-access change in review. Never adopt an arbitrary, partially matching, or unexplained Team.
 
@@ -251,6 +255,7 @@ pnpm run lint
 - Reconfirming an unchanged canonical assignment preserves its version, reviewed decisions, Team readiness, and effective access.
 - Finishing reconciles setup-managed memberships to exactly the identities represented by final included devices; excluding, removing, or reassigning a person's last included device revokes that obsolete setup-managed membership atomically, while explicit invitation memberships remain.
 - Every access addition or removal caused by assignments, mode conversion, memberships, decisions, or preserved recipient edges is shown and explicitly confirmed before finish; an unconfirmed change is not written.
+- Every displayed associated Project has a deterministic repair or explicit mapping, and activation atomically writes its confirmed mapping and Team recipient; an unresolved `unmapped:*` Project, stale Project inventory, mapping, or canonical Project state blocks all writes.
 - A newly assigned included device is immediately eligible after finish because its decision stores the canonical post-write assignment version.
 - Two overlapping Teams reuse one confirmed global assignment.
 - A device absent when the draft was created conflicts if enrollment maintenance binds it before finish.
@@ -258,7 +263,7 @@ pnpm run lint
 - The same canonical reviewed Team can complete setup repeatedly after reassignment, roster growth, or invitation changes without recreating the Team or dropping its recipient edges.
 - A compatible Team previously materialized by `choose_recipients` for one or more Projects is adopted without dropping any edge justified by the aggregate matching saved resolutions; incompatible, unexplained, or ambiguous legacy rows fail closed.
 - Finish retries through the same candidate route return the original completed result; another candidate route cannot replay it.
-- Existing sharing rows are byte-for-byte unchanged. Effective access is unchanged before finish and every change afterward is present in the explicitly confirmed complete access delta.
+- Before finish, existing sharing rows and effective access are unchanged. Every committed change is present in the explicitly confirmed complete access delta.
 
 **Validate:**
 
@@ -269,9 +274,9 @@ pnpm run tsc
 pnpm run lint
 ```
 
-### PR 4: Add bounded viewer API
+### PR 3: Add bounded viewer API and migration orchestration
 
-**Purpose:** Expose setup operations without leaking coordinator or database details.
+**Purpose:** Expose setup operations and the server-owned Project migration orchestration without leaking coordinator or database details.
 
 **Files:**
 
@@ -294,9 +299,9 @@ pnpm run lint
 
 1. Register a focused route module under the existing same-origin guard.
 2. Validate opaque references and bounded JSON bodies at the boundary.
-3. Map domain failures to the seven approved stable error codes and appropriate 400/404/409/503 statuses. Validate the opaque `:candidateRef` and require the submitted confirmation fields, then perform an optimistic immutable-completion lookup constrained by candidate reference and `confirmed_access_delta_digest`. If no completion matches, fetch and validate the fresh coordinator roster before entering activation; never hold the SQLite write lock across that network request. After acquiring `BEGIN IMMEDIATE`, repeat the candidate-and-confirmation-constrained completion lookup, then verify the fetched fingerprint against the attempt and recheck local assignment and canonical Team compare-and-set facts before any write. An exact completed retry for that route candidate and confirmed representation replays its stored result before changed canonical-state validation. Completion tokens belonging to another candidate or submitted without the exact stored confirmation never replay and instead follow the normal bounded request-validation path. If roster fetching fails after the optimistic miss, briefly acquire `BEGIN IMMEDIATE` without network I/O and repeat the same exact completion lookup before returning `team_setup_roster_unavailable`; this lets an overlapping winner replay while preserving the availability error when no completion committed. Otherwise `team_setup_roster_changed` and `team_setup_assignment_changed` take precedence over confirmation staleness. Use `team_setup_confirmation_stale` with HTTP 409 when the attempt, finish, or access-delta confirmation token is missing or no longer matches the current detail representation. A completion-record uniqueness race replays the committed winner only when its immutable candidate reference and confirmed access-delta digest match the submitted request.
+3. Map domain failures to the seven approved stable error codes and appropriate 400/404/409/503 statuses. Validate the opaque `:candidateRef` and require the submitted confirmation fields, then perform an optimistic immutable-completion lookup constrained by candidate reference and `confirmed_access_delta_digest`. If no completion matches, fetch and validate the fresh coordinator roster before entering activation; never hold the SQLite write lock across that network request. After acquiring `BEGIN IMMEDIATE`, repeat the candidate-and-confirmation-constrained completion lookup, then verify the fetched roster and Project-inventory fingerprints against the attempt and recheck local assignment plus canonical Team/Project/recipient compare-and-set facts before any write. An exact completed retry for that route candidate and confirmed representation replays its stored result before changed canonical-state validation. Completion tokens belonging to another candidate or submitted without the exact stored confirmation never replay and instead follow the normal bounded request-validation path. If roster fetching fails after the optimistic miss, briefly acquire `BEGIN IMMEDIATE` without network I/O and repeat the same exact completion lookup before returning `team_setup_roster_unavailable`; this lets an overlapping winner replay while preserving the availability error when no completion committed. Otherwise `team_setup_roster_changed` and `team_setup_assignment_changed` take precedence over confirmation staleness. Use `team_setup_confirmation_stale` with HTTP 409 when the attempt, finish, or access-delta confirmation token is missing or no longer matches the current detail representation. A completion-record uniqueness race replays the committed winner only when its immutable candidate reference and confirmed access-delta digest match the submitted request.
 4. Return server-derived `can_finish`, unresolved counts, conflict state, and safe evidence labels.
-5. The detail response returns the complete server-derived access delta across every transaction cause as bounded additions and removals plus `access_delta_digest`, opaque `attempt_id`, and `finish_digest`. The finish request must submit the same `attempt_id`, `finish_digest`, and `confirmed_access_delta_digest`; absence or mismatch returns `team_setup_confirmation_stale` with HTTP 409 and performs no writes. Empty deltas still have a deterministic digest, so confirmation is bound to one exact server representation.
+5. The detail response returns every displayed associated Project, its deterministic repair or required explicit mapping, and the complete server-derived access delta across Team membership, device eligibility/allowlist, Project identity repairs, Project recipient writes, and every other transaction cause as bounded additions and removals plus `access_delta_digest`, opaque `attempt_id`, and `finish_digest`. The finish request must submit the same `attempt_id`, `finish_digest`, and `confirmed_access_delta_digest`; absence or mismatch returns `team_setup_confirmation_stale` with HTTP 409 and performs no writes. Empty deltas still have a deterministic digest, so confirmation is bound to one exact server representation.
 6. Redact coordinator URLs, raw group/device IDs, public keys, paths, SQL text, and exception messages.
 7. Make an exact `(candidate_ref, attempt_id, finish_digest, confirmed_access_delta_digest)` retry return its immutable stored successful representation, including after later setup attempts or Team changes. Never replay that representation through a different candidate route or for a missing or mismatched confirmation digest.
 
@@ -306,6 +311,7 @@ pnpm run lint
 - No response or diagnostic contains prohibited values.
 - Unknown failures return `team_setup_failed` and no raw message.
 - Detail and finish contracts bind confirmation to the exact server-derived access delta; stale, missing, or mismatched digests cannot finish.
+- Stale Project inventory, mapping, or canonical Team/Project/recipient state returns a bounded conflict and makes no writes.
 - Concurrent identical finish requests converge on one completion record and return the same immutable response; the loser never reports a canonical-state conflict.
 - Reusing candidate A's valid completion tokens on candidate B's finish route never returns candidate A's completion response.
 - A slow or unavailable coordinator cannot hold the SQLite write lock during network I/O; after a failed fetch, a lock-scoped exact completion recheck replays an overlapping winner or otherwise returns `team_setup_roster_unavailable` without writes.
@@ -320,7 +326,7 @@ pnpm --filter @codemem/server run typecheck
 pnpm run lint
 ```
 
-### PR 5: Add the guided Sharing UI
+### PR 4: Add the guided Project Sharing UI
 
 **Purpose:** Provide the approved three-step, resumable setup experience.
 
@@ -351,7 +357,7 @@ pnpm run lint
 9. Render reviewed-Team eligible-device counts and labels only from server-derived eligibility fields; do not infer them from roster membership or client-side decisions.
 10. Use reviewed-Team future-member copy that explains that membership alone does not make every device eligible and that only reviewed, included devices receive Team sharing.
 11. Show that exclusion affects only this Team and does not suppress other sharing paths.
-12. Render the complete server-derived Project/device access delta in Step 3 exactly as returned by the detail response, separating additions from removals and covering assignments, Team-mode conversion, membership reconciliation, final decisions, and preserved recipient edges. Disable **Finish Team setup** until the user explicitly confirms that displayed delta; never derive, filter, or summarize it client-side. Render an explicit no-access-changes state for an empty delta and still confirm its digest.
+12. Render every displayed associated Project, its identity repair or mapping, and the complete server-derived Project/device access delta in Step 3 exactly as returned by the detail response, separating additions from removals and covering Team membership, device eligibility/allowlist, Project recipient writes, assignments, Team-mode conversion, membership reconciliation, final decisions, and preserved recipient edges. Require explicit mappings for `unmapped:*` Projects. Disable **Finish Team setup** until the user explicitly confirms that displayed delta; never derive, filter, or summarize it client-side. Render an explicit no-access-changes state for an empty delta and still confirm its digest.
 13. Add semantic headings, `aria-current`, fieldsets/legends, status/alert live regions, focus restoration, first-error focus, keyboard operation, and `aria-busy`.
 14. Add styles only to UI source assets; never edit generated viewer-server static files.
 
@@ -363,6 +369,7 @@ pnpm run lint
 - Reviewed-Team future-member copy does not claim normal person-level device inheritance; it states that only reviewed, included devices become eligible.
 - Whenever the server reports any access addition or removal—from assignments, mode conversion, membership reconciliation, decisions, or preserved recipient edges—Step 3 shows the complete server-derived additions and removals and requires explicit confirmation before finish.
 - A finish with no assignment write still displays and confirms access changes caused by mode conversion, setup-managed membership revocation, decisions, or adopted recipient edges.
+- Step 3 renders every displayed associated Project's server-derived identity repair or mapping and recipient change; unresolved `unmapped:*` Projects keep finish disabled.
 - An empty server-derived access delta is displayed explicitly and its digest is still confirmed.
 - All steps are keyboard and screen-reader operable.
 - User copy contains none of the prohibited internal terms or identifiers.
@@ -377,7 +384,7 @@ pnpm --filter @codemem/ui build
 pnpm run lint
 ```
 
-### PR 6: Add overlapping-Team E2E coverage and user docs
+### PR 5: Add migration E2E coverage and user documentation
 
 **Purpose:** Prove the end-to-end safety boundary and document the user-visible behavior.
 
@@ -397,11 +404,12 @@ pnpm run lint
 2. Confirm one shared device assignment once and reuse it in both drafts.
 3. Exclude a second device from one Team only.
 4. Assert current sharing is unchanged before each finish.
-5. Finish both Teams and verify memberships and path-specific device eligibility.
-6. Add an off-roster device to an included person and verify it remains ineligible.
-7. Add a roster device mid-draft and verify finish returns `team_setup_roster_changed`.
-8. Reassign an included device and verify it immediately becomes unresolved and ineligible.
-9. Simulate a lost finish response and verify retry returns the same completed result.
+5. Verify deterministic Project repairs and explicit `unmapped:*` mappings are visible in review, with unresolved mappings blocking finish.
+6. Finish both Teams and verify memberships, Project recipients, Project identity repairs, and path-specific device eligibility commit atomically.
+7. Add an off-roster device to an included person and verify it remains ineligible.
+8. Change roster, Project inventory, mapping, or canonical policy state mid-draft and verify finish blocks without partial migration.
+9. Reassign an included device and verify it immediately becomes unresolved and ineligible.
+10. Simulate a lost finish response and verify retry returns the same completed result.
 
 Register the scenario in the static E2E runner and add a dedicated `e2e:legacy-team-setup` root script. The scenario is not complete unless the validation command invokes that registry entry.
 
@@ -424,7 +432,7 @@ Before submitting the complete stack:
 3. Run `pnpm run e2e:legacy-team-setup -- --json` with `CODEMEM_E2E_BUILD=1` and `CODEMEM_E2E_JSON=1`.
 4. Inspect `git status --short --branch`; generated `packages/viewer-server/static/` content must remain ignored.
 5. Review every PR for accidental coordinator identifiers, URLs, key material, local paths, or raw error messages.
-6. Use a security-focused CodeReviewer on PRs 1, 3, and 4, and an accessibility review on PR 5.
+6. Use a security-focused CodeReviewer on PRs 1, 2, and 3, and an accessibility review on PR 4.
 
 ## Rollback behavior
 

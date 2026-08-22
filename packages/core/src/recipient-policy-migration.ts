@@ -1,15 +1,22 @@
-import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 import {
 	type LegacyRecipientPolicyProjectionV1,
 	listLegacyRecipientPolicyProjections,
 } from "./legacy-recipient-policy-projection.js";
 import { RECIPIENT_POLICY_CONTRACT_VERSION } from "./recipient-policy-contract.js";
+import {
+	canonicalRecipientPolicyJson,
+	deterministicPolicyTeamId,
+	recipientPolicyDigest,
+} from "./recipient-policy-identifiers.js";
 import type {
 	RecipientPolicyActionableReviewItemV1,
 	RecipientPolicyReviewContext,
 } from "./recipient-policy-review.js";
-import { deriveRecipientPolicyReviewState } from "./recipient-policy-review.js";
+import {
+	deriveRecipientPolicyReviewState,
+	deriveSelectableRecipientIds,
+} from "./recipient-policy-review.js";
 import { shareProjectSetDigest } from "./share-operation.js";
 
 export interface RecipientPolicyMigrationOptions {
@@ -78,24 +85,11 @@ const NO_OP_DECISIONS = new Set([
 	"remove_stale_device",
 ]);
 
-function canonicalJson(value: unknown): string {
-	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-	if (value && typeof value === "object") {
-		return `{${Object.entries(value as Record<string, unknown>)
-			.toSorted(([left], [right]) => left.localeCompare(right))
-			.map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
-			.join(",")}}`;
-	}
-	return JSON.stringify(value) ?? "null";
-}
-
 function digest(prefix: string, value: unknown): string {
-	return `${prefix}:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
+	return recipientPolicyDigest(prefix, value);
 }
 
-export function deterministicPolicyTeamId(teamCandidateId: string): string {
-	return digest("policy-team-v1", teamCandidateId);
-}
+export { deterministicPolicyTeamId } from "./recipient-policy-identifiers.js";
 
 function relationshipMetadata(
 	kind: string,
@@ -184,62 +178,6 @@ function identityDeviceRow(input: {
 	};
 }
 
-function teamRows(input: {
-	projectId: string;
-	teamCandidateId: string;
-	displayName: string;
-	members: string[];
-	sourceFingerprint: string;
-	now: string;
-}): IntentRow[] {
-	const teamId = deterministicPolicyTeamId(input.teamCandidateId);
-	const teamMetadata = relationshipMetadata("team", teamId);
-	const rows: IntentRow[] = [
-		{
-			table: "policy_teams",
-			key: { team_id: teamId },
-			values: {
-				display_name: input.displayName,
-				...baseValues({
-					provenance: "reviewed_team_candidate",
-					revision: teamMetadata.revision,
-					idempotencyKey: teamMetadata.idempotencyKey,
-					sourceFingerprint: input.sourceFingerprint,
-					now: input.now,
-				}),
-			},
-		},
-	];
-	for (const identityId of input.members.toSorted()) {
-		const metadata = relationshipMetadata("team-membership", [teamId, identityId]);
-		rows.push({
-			table: "policy_team_memberships",
-			key: { team_id: teamId, identity_id: identityId },
-			values: {
-				role: "member",
-				...baseValues({
-					provenance: "reviewed_team_candidate",
-					revision: metadata.revision,
-					idempotencyKey: metadata.idempotencyKey,
-					sourceFingerprint: input.sourceFingerprint,
-					now: input.now,
-				}),
-			},
-		});
-	}
-	rows.push(
-		projectRecipientRow({
-			projectId: input.projectId,
-			recipientKind: "team",
-			recipientId: teamId,
-			provenance: "reviewed_team_candidate",
-			sourceFingerprint: input.sourceFingerprint,
-			now: input.now,
-		}),
-	);
-	return rows;
-}
-
 function projectIdForReviewItem(item: {
 	options: Array<{ preview: { projects: Array<{ canonicalIdentity: string }> } }>;
 }): string | null {
@@ -255,21 +193,6 @@ function parseDecisionInput(json: string): Record<string, unknown> | null {
 	} catch {
 		return null;
 	}
-}
-
-function assignedIdentityIdsFromPreview(value: unknown): string[] | null {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-	const preview = value as Record<string, unknown>;
-	if (!Array.isArray(preview.effectiveDevices)) return null;
-	const identityIds = new Set<string>();
-	for (const value of preview.effectiveDevices) {
-		if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-		const device = value as Record<string, unknown>;
-		if (device.assignment === "assigned" && typeof device.identityId === "string") {
-			identityIds.add(device.identityId);
-		}
-	}
-	return [...identityIds].toSorted();
 }
 
 function addProjectedDevices(
@@ -396,7 +319,8 @@ function addReviewDecision(
 	if (
 		!currentOption ||
 		!reviewedPreview ||
-		canonicalJson(reviewedPreview) !== canonicalJson(currentOption.preview)
+		canonicalRecipientPolicyJson(reviewedPreview) !==
+			canonicalRecipientPolicyJson(currentOption.preview)
 	) {
 		return "review_preview_stale";
 	}
@@ -431,16 +355,9 @@ function addReviewDecision(
 		) {
 			return "review_decision_input_invalid";
 		}
-		const identities = new Map(
-			projection.identityCandidates.map((candidate) => [candidate.identityId, candidate]),
-		);
-		const teams = new Map(
-			projection.teamCandidates.map((candidate) => [candidate.teamCandidateId, candidate]),
-		);
-		const reviewedAssignedMembers = assignedIdentityIdsFromPreview(currentOption.preview);
-		if (!reviewedAssignedMembers) return "review_preview_stale";
+		const selectableRecipients = deriveSelectableRecipientIds(db, projection);
 		for (const recipientId of recipientIds as string[]) {
-			if (identities.has(recipientId)) {
+			if (selectableRecipients.identities.has(recipientId)) {
 				plan.rows.push(
 					projectRecipientRow({
 						projectId: projection.project.canonicalIdentity,
@@ -453,14 +370,22 @@ function addReviewDecision(
 				);
 				continue;
 			}
-			const team = teams.get(recipientId);
-			if (!team) return "review_recipient_stale";
+			// Resolutions saved by the previous migration path reference the legacy
+			// `teamCandidateId`; once guided setup materializes that candidate's
+			// deterministic Team, the saved selection must translate to it instead
+			// of remaining permanently stale.
+			const translatedTeamId = selectableRecipients.teams.has(recipientId)
+				? recipientId
+				: selectableRecipients.teams.has(deterministicPolicyTeamId(recipientId))
+					? deterministicPolicyTeamId(recipientId)
+					: null;
+			if (!translatedTeamId) return "review_recipient_stale";
 			plan.rows.push(
-				...teamRows({
+				projectRecipientRow({
 					projectId: projection.project.canonicalIdentity,
-					teamCandidateId: team.teamCandidateId,
-					displayName: team.displayName,
-					members: reviewedAssignedMembers,
+					recipientKind: "team",
+					recipientId: translatedTeamId,
+					provenance: "review_resolution",
 					sourceFingerprint: resolution.source_fingerprint,
 					now,
 				}),
@@ -613,7 +538,7 @@ function validateOrWriteRow(db: Database, row: IntentRow, write: boolean): boole
 function deduplicatePlan(plan: ProjectPlan): ProjectPlan {
 	const rows = new Map<string, IntentRow>();
 	for (const row of plan.rows) {
-		const key = `${row.table}:${canonicalJson(row.key)}`;
+		const key = `${row.table}:${canonicalRecipientPolicyJson(row.key)}`;
 		const existing = rows.get(key);
 		if (existing) {
 			const relationshipColumns =

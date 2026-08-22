@@ -261,6 +261,15 @@ function strictId(value: string): boolean {
 	return value.length > 0 && value === value.trim() && !CONTROL_CHARACTER.test(value);
 }
 
+/**
+ * The identifier rule authoritative eligibility applies to every canonical
+ * row. Sibling layers (for example readiness compatibility checks) must use
+ * this exact predicate rather than re-implementing it with drifted semantics.
+ */
+export function isStrictRecipientPolicyId(value: string): boolean {
+	return strictId(value);
+}
+
 function canonicalJson(value: unknown): string {
 	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
 	if (value && typeof value === "object") {

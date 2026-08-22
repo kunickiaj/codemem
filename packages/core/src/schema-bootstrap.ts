@@ -292,8 +292,100 @@ const RETRIEVAL_LEDGER_SCHEMA_OBJECTS = [
 	"trg_retrieval_exposures_detach_reused_memory_id",
 ] as const;
 
+const LEGACY_TEAM_SETUP_DRAFT_DDL = `
+CREATE TABLE IF NOT EXISTS legacy_team_setup_drafts (
+	attempt_id TEXT PRIMARY KEY NOT NULL,
+	candidate_id TEXT NOT NULL,
+	coordinator_id TEXT NOT NULL,
+	group_id TEXT NOT NULL,
+	state TEXT NOT NULL DEFAULT 'needs_setup',
+	display_name TEXT NOT NULL,
+	roster_fingerprint TEXT NOT NULL,
+	projection_fingerprint TEXT NOT NULL,
+	finish_digest TEXT,
+	safe_error_code TEXT,
+	completed_team_id TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	completed_at TEXT,
+	superseded_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_legacy_team_setup_drafts_candidate_state
+	ON legacy_team_setup_drafts(candidate_id, state, created_at);
+CREATE INDEX IF NOT EXISTS idx_legacy_team_setup_drafts_state_updated
+	ON legacy_team_setup_drafts(state, updated_at);
+CREATE INDEX IF NOT EXISTS idx_legacy_team_setup_drafts_finish_digest
+	ON legacy_team_setup_drafts(finish_digest);
+
+CREATE TABLE IF NOT EXISTS legacy_team_setup_draft_devices (
+	attempt_id TEXT NOT NULL REFERENCES legacy_team_setup_drafts(attempt_id) ON DELETE CASCADE,
+	device_id TEXT NOT NULL,
+	device_ref TEXT NOT NULL,
+	key_fingerprint TEXT NOT NULL,
+	display_name TEXT NOT NULL,
+	enabled INTEGER NOT NULL,
+	existing_identity_id TEXT,
+	existing_assignment_version INTEGER,
+	verified_evidence_kind TEXT,
+	decision TEXT NOT NULL DEFAULT 'unresolved',
+	target_identity_id TEXT,
+	expected_assignment_kind TEXT,
+	expected_assignment_version INTEGER,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (attempt_id, device_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_legacy_team_setup_devices_attempt_ref
+	ON legacy_team_setup_draft_devices(attempt_id, device_ref);
+CREATE INDEX IF NOT EXISTS idx_legacy_team_setup_devices_attempt_decision
+	ON legacy_team_setup_draft_devices(attempt_id, decision);
+
+CREATE TABLE IF NOT EXISTS legacy_team_setup_draft_projects (
+	attempt_id TEXT NOT NULL REFERENCES legacy_team_setup_drafts(attempt_id) ON DELETE CASCADE,
+	project_ref TEXT NOT NULL,
+	source_project_identity TEXT NOT NULL,
+	display_name TEXT NOT NULL,
+	source_fingerprint TEXT NOT NULL,
+	resolution_kind TEXT NOT NULL DEFAULT 'unresolved',
+	resolved_project_identity TEXT,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (attempt_id, project_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_legacy_team_setup_projects_attempt_resolution
+	ON legacy_team_setup_draft_projects(attempt_id, resolution_kind);
+`;
+
+export function ensureLegacyTeamSetupDraftSchema(db: Database): void {
+	db.exec(LEGACY_TEAM_SETUP_DRAFT_DDL);
+	const finishDigestIndex = db
+		.prepare(
+			`SELECT "unique" AS is_unique
+			 FROM pragma_index_list('legacy_team_setup_drafts')
+			 WHERE name = 'idx_legacy_team_setup_drafts_finish_digest'
+			 LIMIT 1`,
+		)
+		.get() as { is_unique?: number } | undefined;
+	if (finishDigestIndex?.is_unique === 1) {
+		db.exec(`
+			DROP INDEX idx_legacy_team_setup_drafts_finish_digest;
+			CREATE INDEX idx_legacy_team_setup_drafts_finish_digest
+				ON legacy_team_setup_drafts(finish_digest);
+		`);
+	}
+	for (const [table, column, definition] of [
+		["legacy_team_setup_drafts", "safe_error_code", "TEXT"],
+		["legacy_team_setup_drafts", "completed_team_id", "TEXT"],
+		["legacy_team_setup_draft_devices", "verified_evidence_kind", "TEXT"],
+	] as const) {
+		if (!columnExists(db, table, column)) {
+			db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+		}
+	}
+}
+
 const SCHEMA_AUX_DDL = `
 ${RETRIEVAL_LEDGER_DDL}
+
+${LEGACY_TEAM_SETUP_DRAFT_DDL}
 
 CREATE TABLE IF NOT EXISTS policy_team_device_decisions (
 	team_id TEXT NOT NULL REFERENCES policy_teams(team_id) ON DELETE CASCADE,
@@ -702,6 +794,7 @@ export function bootstrapSchema(db: Database): void {
 	db.transaction(() => {
 		db.exec(TEST_SCHEMA_BASE_DDL);
 		db.exec(SCHEMA_AUX_DDL);
+		ensureLegacyTeamSetupDraftSchema(db);
 		ensurePolicyTeamDeviceEligibilityColumns(db);
 		ensureSyncPeerSignatureStateSchema(db);
 		ensureRetrievalAttemptColumns(db);
