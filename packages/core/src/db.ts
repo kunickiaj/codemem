@@ -62,9 +62,6 @@ export const REQUIRED_BOOTSTRAPPED_TABLES = [
 	...REQUIRED_TABLES,
 	"memory_fts",
 	"coordinator_enrollment_reconciliation_issues",
-	"legacy_team_setup_drafts",
-	"legacy_team_setup_draft_devices",
-	"legacy_team_setup_draft_projects",
 ] as const;
 
 /** Marker file written after the first successful TS access to a DB. */

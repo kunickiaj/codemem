@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { listLegacyRecipientPolicyProjections } from "./legacy-recipient-policy-projection.js";
+import { deterministicPolicyTeamId } from "./recipient-policy-identifiers.js";
 import { listRecipientPolicyIntent } from "./recipient-policy-intent.js";
 import { migrateRecipientPolicyIntent } from "./recipient-policy-migration.js";
 import {
@@ -1013,6 +1014,213 @@ describe("recipient policy intent migration", () => {
 		);
 		expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
 		expect(db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
+	});
+
+	it("translates saved candidate selections to the completed guided-setup Team", () => {
+		const projectId = "https://git.example.invalid/acme/team-translated.git";
+		const scopeId = "legacy-team-translated-scope";
+		insertActor(db, "identity-member", "Member");
+		insertProject(db, { projectId, displayName: "translated", scopeId });
+		insertScope(db, {
+			scopeId,
+			projectId,
+			kind: "team",
+			label: "Translated Team",
+			coordinatorId: "coordinator-private",
+			groupId: "coordinator-group-private",
+		});
+		assignDevice(db, {
+			scopeId,
+			deviceId: "device-member",
+			actorId: "identity-member",
+		});
+		const projection = listLegacyRecipientPolicyProjections(db, context)[0];
+		const teamCandidate = projection?.teamCandidates[0];
+		const item = listRecipientPolicyReview(db, context).reviewItems[0];
+		if (!teamCandidate || !item) throw new Error("team review fixture incomplete");
+		const chooseOption = item.options.find((option) => option.decision === "choose_recipients");
+		if (!chooseOption) throw new Error("choose recipients option missing");
+		db.prepare(
+			`INSERT INTO recipient_policy_review_resolutions(
+			 review_item_id, source_fingerprint, decision, decision_input_json, preview_json,
+			 decided_by_identity_id, decided_by_device_id, resolved_at
+			 ) VALUES (?, ?, 'choose_recipients', ?, ?, ?, ?, ?)`,
+		).run(
+			item.reviewItemId,
+			item.sourceFingerprint,
+			JSON.stringify({ recipientIds: [teamCandidate.teamCandidateId] }),
+			JSON.stringify(chooseOption.preview),
+			LOCAL_ACTOR_ID,
+			LOCAL_DEVICE_ID,
+			NOW,
+		);
+		// Guided setup already materialized the roster device with its own
+		// activation revision; migration must accept it as satisfied.
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 device_id, identity_id, display_name, status, provenance, revision,
+			 migration_state, assignment_version, source_fingerprint, idempotency_key,
+			 created_at, updated_at
+			 ) VALUES ('device-member', 'identity-member', 'Member laptop', 'active',
+			 'reviewed_team_setup', 'activation-revision', 'completed', 0, 'key-member',
+			 'setup-device-member', ?, ?)`,
+		).run(NOW, NOW);
+		const completedTeamId = deterministicPolicyTeamId(teamCandidate.teamCandidateId);
+		db.prepare(
+			`INSERT INTO policy_teams(
+			 team_id, display_name, status, device_eligibility_mode, provenance, revision,
+			 migration_state, source_fingerprint, idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'Translated Team', 'active', 'reviewed_allowlist', 'reviewed_team_candidate',
+			 'setup-r1', 'completed', 'roster-translated', 'translated-team', ?, ?)`,
+		).run(completedTeamId, NOW, NOW);
+		db.prepare(
+			`INSERT INTO legacy_team_setup_drafts(
+			 attempt_id, candidate_id, coordinator_id, group_id, state, display_name,
+			 roster_fingerprint, projection_fingerprint, finish_digest, completed_team_id,
+			 created_at, updated_at, completed_at
+			 ) VALUES ('translated-attempt', ?, 'coordinator-private', 'coordinator-group-private',
+			 'completed', 'Translated Team', 'roster-translated', 'projection-translated',
+			 'finish-translated', ?, ?, ?, ?)`,
+		).run(teamCandidate.teamCandidateId, completedTeamId, NOW, NOW, NOW);
+		// Activation always creates the Team/project recipient edge with its own
+		// revision; migration must treat it as satisfying the translated intent.
+		db.prepare(
+			`INSERT INTO project_recipients(
+			 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			 policy_revision, migration_state, idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'team', ?, 'active', 'reviewed_team_setup', 'activation-revision',
+			 'completed', 'setup-recipient-edge', ?, ?)`,
+		).run(projectId, completedTeamId, NOW, NOW);
+
+		const result = migrateRecipientPolicyIntent(db, context);
+
+		// The setup-created edge already satisfies the translated selection, so
+		// the Project completes without conflict (idempotently unchanged).
+		expect(result.results).toContainEqual(
+			expect.objectContaining({
+				canonicalProjectIdentity: projectId,
+				status: "unchanged",
+				errorCode: null,
+			}),
+		);
+		expect(
+			db
+				.prepare(
+					`SELECT recipient_id FROM project_recipients
+					 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND status = 'active'`,
+				)
+				.pluck()
+				.get(projectId),
+		).toBe(completedTeamId);
+	});
+
+	it("accepts a device reassigned by completed setup despite foreign provenance", () => {
+		const projectId = "https://git.example.invalid/acme/team-reassigned.git";
+		const scopeId = "legacy-team-reassigned-scope";
+		insertActor(db, "identity-member", "Member");
+		insertProject(db, { projectId, displayName: "reassigned", scopeId });
+		insertScope(db, {
+			scopeId,
+			projectId,
+			kind: "team",
+			label: "Reassigned Team",
+			coordinatorId: "coordinator-private",
+			groupId: "coordinator-group-private",
+		});
+		assignDevice(db, {
+			scopeId,
+			deviceId: "device-member",
+			actorId: "identity-member",
+		});
+		const projection = listLegacyRecipientPolicyProjections(db, context)[0];
+		const teamCandidate = projection?.teamCandidates[0];
+		const item = listRecipientPolicyReview(db, context).reviewItems[0];
+		if (!teamCandidate || !item) throw new Error("team review fixture incomplete");
+		const chooseOption = item.options.find((option) => option.decision === "choose_recipients");
+		if (!chooseOption) throw new Error("choose recipients option missing");
+		db.prepare(
+			`INSERT INTO recipient_policy_review_resolutions(
+			 review_item_id, source_fingerprint, decision, decision_input_json, preview_json,
+			 decided_by_identity_id, decided_by_device_id, resolved_at
+			 ) VALUES (?, ?, 'choose_recipients', ?, ?, ?, ?, ?)`,
+		).run(
+			item.reviewItemId,
+			item.sourceFingerprint,
+			JSON.stringify({ recipientIds: [teamCandidate.teamCandidateId] }),
+			JSON.stringify(chooseOption.preview),
+			LOCAL_ACTOR_ID,
+			LOCAL_DEVICE_ID,
+			NOW,
+		);
+		// Guided setup reassigned a pre-existing enrollment row: the assignment
+		// write preserves the original provenance and revision, so neither
+		// matches the migration intent nor `reviewed_team_setup`.
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 device_id, identity_id, display_name, status, provenance, revision,
+			 migration_state, assignment_version, source_fingerprint, idempotency_key,
+			 created_at, updated_at
+			 ) VALUES ('device-member', 'identity-member', 'Member laptop', 'active',
+			 'coordinator_enrollment', 'enrollment-revision', 'completed', 3, 'key-member',
+			 'enrollment-device-member', ?, ?)`,
+		).run(NOW, NOW);
+		const completedTeamId = deterministicPolicyTeamId(teamCandidate.teamCandidateId);
+		db.prepare(
+			`INSERT INTO policy_teams(
+			 team_id, display_name, status, device_eligibility_mode, provenance, revision,
+			 migration_state, source_fingerprint, idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'Reassigned Team', 'active', 'reviewed_allowlist', 'reviewed_team_candidate',
+			 'setup-r1', 'completed', 'roster-reassigned', 'reassigned-team', ?, ?)`,
+		).run(completedTeamId, NOW, NOW);
+		db.prepare(
+			`INSERT INTO legacy_team_setup_drafts(
+			 attempt_id, candidate_id, coordinator_id, group_id, state, display_name,
+			 roster_fingerprint, projection_fingerprint, finish_digest, completed_team_id,
+			 created_at, updated_at, completed_at
+			 ) VALUES ('reassigned-attempt', ?, 'coordinator-private', 'coordinator-group-private',
+			 'completed', 'Reassigned Team', 'roster-reassigned', 'projection-reassigned',
+			 'finish-reassigned', ?, ?, ?, ?)`,
+		).run(teamCandidate.teamCandidateId, completedTeamId, NOW, NOW, NOW);
+		// Completion-bound draft evidence proves setup reviewed this assignment.
+		db.prepare(
+			`INSERT INTO legacy_team_setup_draft_devices(
+			 attempt_id, device_id, device_ref, key_fingerprint, display_name, enabled,
+			 decision, target_identity_id, updated_at
+			 ) VALUES ('reassigned-attempt', 'device-member', 'device-ref-member', 'key-member',
+			 'Member laptop', 1, 'included', 'identity-member', ?)`,
+		).run(NOW);
+		db.prepare(
+			`INSERT INTO policy_team_device_decisions(
+			 team_id, device_id, decision, assignment_version, provenance, revision,
+			 created_at, updated_at
+			 ) VALUES (?, 'device-member', 'included', 3, 'reviewed_team_setup', 'setup-r1', ?, ?)`,
+		).run(completedTeamId, NOW, NOW);
+		db.prepare(
+			`INSERT INTO policy_team_memberships(
+			 team_id, identity_id, role, status, provenance, revision, migration_state,
+			 idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'identity-member', 'member', 'reviewed_active', 'reviewed_team_setup',
+			 'setup-r1', 'completed', 'reassigned-membership', ?, ?)`,
+		).run(completedTeamId, NOW, NOW);
+		db.prepare(
+			`INSERT INTO project_recipients(
+			 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			 policy_revision, migration_state, idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'team', ?, 'active', 'reviewed_team_setup', 'activation-revision',
+			 'completed', 'setup-recipient-edge-reassigned', ?, ?)`,
+		).run(projectId, completedTeamId, NOW, NOW);
+
+		const result = migrateRecipientPolicyIntent(db, context);
+
+		// The reviewed assignment must satisfy the migration intent instead of
+		// permanently blocking with device_identity_conflict.
+		expect(result.results).toContainEqual(
+			expect.objectContaining({
+				canonicalProjectIdentity: projectId,
+				status: "unchanged",
+				errorCode: null,
+			}),
+		);
 	});
 
 	it("migrates an active canonical Team recipient without materializing a candidate", () => {
