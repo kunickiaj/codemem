@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { previewLegacyTeamSetupActivation } from "./legacy-team-setup-activation.js";
 import {
 	getLegacyTeamSetupDraft,
 	legacyTeamResolvedProjectRef,
@@ -775,6 +776,46 @@ describe("legacy Team setup drafts", () => {
 		).toBe("removed");
 	});
 
+	it("preserves an unconfirmed identity selection across an unrelated Project replacement", () => {
+		// Arrange
+		let draft = refreshLegacyTeamSetupDraft(db, snapshot());
+		const device = draft.devices[0];
+		if (!device) throw new Error("invalid test fixture");
+		draft = setLegacyTeamSetupDeviceAssignment(db, {
+			attemptId: draft.attemptId,
+			deviceRef: device.deviceRef,
+			targetIdentityId: "identity-a",
+			expectation: device.expectation,
+			now: NOW,
+		});
+		expect(draft.devices[0]).toMatchObject({
+			decision: "unresolved",
+			targetIdentityId: "identity-a",
+		});
+
+		// Act
+		const replacement = refreshLegacyTeamSetupDraft(db, {
+			...snapshot(),
+			projects: [
+				...snapshot().projects,
+				{
+					projectRef: "project-ref-c",
+					sourceProjectIdentity: "https://example.invalid/repo-c.git",
+					displayName: "Repo C",
+					sourceFingerprint: "source-c",
+					deterministicProjectIdentity: "https://example.invalid/repo-c.git",
+				},
+			],
+		});
+
+		// Assert
+		expect(replacement.attemptId).not.toBe(draft.attemptId);
+		expect(replacement.devices[0]).toMatchObject({
+			decision: "unresolved",
+			targetIdentityId: "identity-a",
+		});
+	});
+
 	it("replaces the attempt when a carried removed device's assignment changes", () => {
 		const first = refreshLegacyTeamSetupDraft(db, {
 			...snapshot(),
@@ -1043,6 +1084,170 @@ describe("legacy Team setup drafts", () => {
 	});
 
 	it.each([
+		["missing kind", null, 3],
+		["missing version", "existing", null],
+		["negative version", "existing", -1],
+		["fractional version", "existing", 1.5],
+		["unsafe version", "existing", Number.MAX_SAFE_INTEGER + 1],
+		["stale but well-formed version", "existing", 2],
+	] as const)("replaces an existing expectation with %s using normalized evidence", (_variant, expectedKind, expectedVersion) => {
+		// Arrange
+		db.prepare(
+			`INSERT INTO identity_devices(
+				 device_id, identity_id, display_name, status, provenance, revision,
+				 migration_state, assignment_version, idempotency_key, created_at, updated_at
+				 ) VALUES ('device-a', 'identity-a', 'Laptop', 'active', 'test', 'r1',
+				 'complete', 3, 'device-a', ?, ?)`,
+		).run(NOW, NOW);
+		const current = readyDraft(db);
+		expect(current.canFinish).toBe(true);
+		const deviceRef = current.devices[0]?.deviceRef as string;
+		db.prepare(
+			`UPDATE legacy_team_setup_draft_devices
+			 SET expected_assignment_kind = ?, expected_assignment_version = ?
+			 WHERE attempt_id = ? AND device_ref = ?`,
+		).run(expectedKind, expectedVersion, current.attemptId, deviceRef);
+
+		// Act
+		const corrupt = getLegacyTeamSetupDraft(db, CANDIDATE);
+		const cannotFinish = () =>
+			previewLegacyTeamSetupActivation(db, {
+				candidateRef: current.candidateRef,
+				attemptId: current.attemptId,
+			});
+		expect(corrupt?.canFinish).toBe(false);
+		expect(cannotFinish).toThrow(/team_setup_(?:assignment_changed|incomplete)/u);
+		const replacement = refreshLegacyTeamSetupDraft(db, snapshot());
+
+		// Assert
+		expect(replacement).toMatchObject({
+			state: "needs_setup",
+			devices: [
+				{
+					decision: "unresolved",
+					targetIdentityId: null,
+					expectation: { kind: "existing", identityId: "identity-a", assignmentVersion: 3 },
+				},
+			],
+		});
+		expect(replacement.attemptId).not.toBe(current.attemptId);
+		expect(refreshLegacyTeamSetupDraft(db, snapshot()).attemptId).toBe(replacement.attemptId);
+		expect(
+			db
+				.prepare(
+					`SELECT draft.state, device.expected_assignment_kind, device.expected_assignment_version
+						 FROM legacy_team_setup_drafts AS draft
+						 JOIN legacy_team_setup_draft_devices AS device USING(attempt_id)
+						 WHERE draft.attempt_id = ? AND device.device_ref = ?`,
+				)
+				.get(current.attemptId, deviceRef),
+		).toEqual({
+			state: "stale",
+			expected_assignment_kind: expectedKind,
+			expected_assignment_version: expectedVersion,
+		});
+	});
+
+	it("replaces a contradictory absent expectation with normalized evidence", () => {
+		// Arrange
+		const current = readyDraft(db);
+		expect(current.canFinish).toBe(true);
+		const deviceRef = current.devices[0]?.deviceRef as string;
+		db.prepare(
+			`UPDATE legacy_team_setup_draft_devices SET expected_assignment_version = 0
+			 WHERE attempt_id = ? AND device_ref = ?`,
+		).run(current.attemptId, deviceRef);
+
+		// Act
+		const corrupt = getLegacyTeamSetupDraft(db, CANDIDATE);
+		const cannotFinish = () =>
+			previewLegacyTeamSetupActivation(db, {
+				candidateRef: current.candidateRef,
+				attemptId: current.attemptId,
+			});
+		expect(corrupt?.canFinish).toBe(false);
+		expect(cannotFinish).toThrow("team_setup_incomplete");
+		const replacement = refreshLegacyTeamSetupDraft(db, snapshot());
+
+		// Assert
+		expect(replacement.attemptId).not.toBe(current.attemptId);
+		expect(refreshLegacyTeamSetupDraft(db, snapshot()).attemptId).toBe(replacement.attemptId);
+		expect(replacement.devices[0]).toMatchObject({
+			decision: "unresolved",
+			targetIdentityId: null,
+			expectation: { kind: "absent" },
+		});
+		expect(
+			db
+				.prepare(
+					`SELECT draft.state, device.expected_assignment_kind, device.expected_assignment_version
+					 FROM legacy_team_setup_drafts AS draft
+					 JOIN legacy_team_setup_draft_devices AS device USING(attempt_id)
+					 WHERE draft.attempt_id = ? AND device.device_ref = ?`,
+				)
+				.get(current.attemptId, deviceRef),
+		).toEqual({
+			state: "stale",
+			expected_assignment_kind: "absent",
+			expected_assignment_version: 0,
+		});
+	});
+
+	it.each([
+		["excluded", true],
+		["removed", false],
+	] as const)("clears %s targets and produces a deterministic target-free finish digest", (decision, enabled) => {
+		// Arrange
+		db.prepare(
+			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+			 VALUES ('identity-b', 'Person B', 0, 'active', ?, ?)`,
+		).run(NOW, NOW);
+		let draft = refreshLegacyTeamSetupDraft(db, snapshot());
+		const deviceRef = draft.devices[0]?.deviceRef as string;
+		draft = setLegacyTeamSetupDeviceAssignment(db, {
+			attemptId: draft.attemptId,
+			deviceRef,
+			targetIdentityId: "identity-a",
+			expectation: { kind: "absent" },
+			now: NOW,
+		});
+		db.prepare(
+			`UPDATE legacy_team_setup_draft_devices SET enabled = ?
+			 WHERE attempt_id = ? AND device_ref = ?`,
+		).run(enabled ? 1 : 0, draft.attemptId, deviceRef);
+
+		// Act
+		const decisionAfterA = setLegacyTeamSetupDeviceDecision(db, {
+			attemptId: draft.attemptId,
+			deviceRef,
+			decision,
+			now: NOW,
+		});
+		db.prepare(
+			`UPDATE legacy_team_setup_draft_devices
+			 SET decision = 'unresolved', target_identity_id = 'identity-b'
+			 WHERE attempt_id = ? AND device_ref = ?`,
+		).run(draft.attemptId, deviceRef);
+		const decisionAfterB = setLegacyTeamSetupDeviceDecision(db, {
+			attemptId: draft.attemptId,
+			deviceRef,
+			decision,
+			now: NOW,
+		});
+
+		// Assert
+		expect(decisionAfterA.devices[0]).toMatchObject({
+			decision,
+			targetIdentityId: null,
+		});
+		expect(decisionAfterB.devices[0]).toMatchObject({
+			decision,
+			targetIdentityId: null,
+		});
+		expect(decisionAfterB.finishDigest).toBe(decisionAfterA.finishDigest);
+	});
+
+	it.each([
 		-1,
 		1.5,
 		Number.MAX_SAFE_INTEGER + 1,
@@ -1081,6 +1286,8 @@ describe("legacy Team setup drafts", () => {
 		});
 
 		expect(draft.canFinish).toBe(false);
+		expect(refreshLegacyTeamSetupDraft(db, snapshot()).attemptId).toBe(draft.attemptId);
+		expect(refreshLegacyTeamSetupDraft(db, snapshot()).attemptId).toBe(draft.attemptId);
 	});
 
 	it("reports canFinish false when an included person is later deactivated", () => {

@@ -4,6 +4,7 @@ import {
 	IdentityDeviceAssignmentError,
 } from "./identity-device-assignment.js";
 import { selectedProjectScopeMapping } from "./legacy-recipient-policy-projection.js";
+import { isStoredLegacyTeamAssignmentExpectationWellFormed } from "./legacy-team-assignment-expectation.js";
 import { isLegacyTeamProjectCanonicalStateValid } from "./legacy-team-project-canonical-preflight.js";
 import {
 	type LegacyTeamSetupProjectInput,
@@ -673,16 +674,18 @@ function validateAssignmentExpectations(model: ActivationModel): void {
 	const assignments = new Map(model.assignments.map((row) => [row.device_id, row]));
 	for (const device of model.devices) {
 		const assignment = assignments.get(device.device_id);
+		if (
+			!isStoredLegacyTeamAssignmentExpectationWellFormed({
+				kind: device.expected_assignment_kind,
+				identityId: device.existing_identity_id,
+				assignmentVersion: device.expected_assignment_version,
+			})
+		) {
+			activationError("team_setup_incomplete");
+		}
 		if (device.expected_assignment_kind === "absent") {
 			if (assignment) activationError("team_setup_assignment_changed");
 			continue;
-		}
-		if (
-			device.expected_assignment_kind !== "existing" ||
-			!device.existing_identity_id ||
-			device.expected_assignment_version == null
-		) {
-			activationError("team_setup_incomplete");
 		}
 		if (
 			!assignment ||

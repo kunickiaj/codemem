@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "./db.js";
+import {
+	isStoredLegacyTeamAssignmentExpectationWellFormed,
+	isValidLegacyTeamAssignmentVersion,
+	type StoredLegacyTeamAssignmentExpectation,
+} from "./legacy-team-assignment-expectation.js";
 import { isLegacyTeamProjectCanonicalStateValid } from "./legacy-team-project-canonical-preflight.js";
 import {
 	requireLegacyTeamSetupEffectiveDevicesWithinLimit,
@@ -271,10 +276,6 @@ interface DeviceAssignmentSnapshot {
 	active: boolean;
 }
 
-function isValidAssignmentVersion(value: number | null): value is number {
-	return value != null && Number.isSafeInteger(value) && value >= 0;
-}
-
 /**
  * Reads the device's assignment row regardless of status. Canonical assignment
  * CAS treats any existing row as evidence, so an inactive row must never be
@@ -309,11 +310,7 @@ function assignmentForDevice(db: Database, deviceId: string): DeviceAssignmentSn
  */
 function assignmentMatchesExpectation(
 	assignment: DeviceAssignmentSnapshot | null,
-	expectation: {
-		kind: "absent" | "existing" | null;
-		identityId: string | null;
-		assignmentVersion: number | null;
-	},
+	expectation: StoredLegacyTeamAssignmentExpectation,
 ): boolean {
 	if (expectation.kind === "absent") return assignment == null;
 	return (
@@ -321,6 +318,42 @@ function assignmentMatchesExpectation(
 		assignment != null &&
 		assignment.identityId === expectation.identityId &&
 		assignment.assignmentVersion === expectation.assignmentVersion
+	);
+}
+
+function storedAssignmentRowMatchesLive(
+	stored: {
+		existing_identity_id: string | null;
+		existing_assignment_version: number | null;
+		verified_evidence_kind: "active_assignment" | null;
+		expected_assignment_kind: "absent" | "existing" | null;
+		expected_assignment_version: number | null;
+	},
+	assignment: DeviceAssignmentSnapshot | null,
+	allowUnrepresentableLiveVersion: boolean,
+): boolean {
+	const copiedEvidenceMatches =
+		stored.existing_identity_id === (assignment?.identityId ?? null) &&
+		stored.existing_assignment_version === (assignment?.assignmentVersion ?? null) &&
+		stored.verified_evidence_kind === (assignment?.active ? "active_assignment" : null);
+	if (!copiedEvidenceMatches) return false;
+	if (
+		allowUnrepresentableLiveVersion &&
+		assignment != null &&
+		!isValidLegacyTeamAssignmentVersion(assignment.assignmentVersion)
+	) {
+		// Replacing the attempt can only copy the same malformed canonical
+		// version. Keep it stable and fail closed until canonical data is fixed.
+		return true;
+	}
+	const expectation = {
+		kind: stored.expected_assignment_kind,
+		identityId: stored.existing_identity_id,
+		assignmentVersion: stored.expected_assignment_version,
+	};
+	return (
+		isStoredLegacyTeamAssignmentExpectationWellFormed(expectation) &&
+		assignmentMatchesExpectation(assignment, expectation)
 	);
 }
 
@@ -434,9 +467,7 @@ function createAttempt(
 		const assignmentEvidenceUnchanged =
 			previous != null &&
 			previous.key_fingerprint === device.fingerprint &&
-			previous.existing_identity_id === (assignment?.identityId ?? null) &&
-			previous.existing_assignment_version === (assignment?.assignmentVersion ?? null) &&
-			previous.verified_evidence_kind === (assignment?.active ? "active_assignment" : null);
+			storedAssignmentRowMatchesLive(previous, assignment, true);
 		const unchanged =
 			assignmentEvidenceUnchanged &&
 			previous != null &&
@@ -444,9 +475,9 @@ function createAttempt(
 			currentDeviceIds.has(device.deviceId) &&
 			previous.enabled === (device.enabled ? 1 : 0) &&
 			device.enabled;
-		// A reviewed removal survives replacement attempts triggered by other
-		// devices or Projects: while the device stays disabled or absent with
-		// unchanged assignment evidence, the user does not re-confirm it.
+		// Reviewed decisions and pending identity selections survive replacement
+		// attempts triggered by other devices or Projects while this device's
+		// assignment evidence remains unchanged. Removed rows stay target-free.
 		const removedCarry =
 			assignmentEvidenceUnchanged &&
 			previous != null &&
@@ -588,14 +619,8 @@ function loadDraftView(db: Database, attemptId: string): LegacyTeamSetupDraftVie
 	const assignmentExpectationsValid = deviceRows.every((row) => {
 		const live = assignmentForDevice(db, row.device_id);
 		return (
-			(row.expected_assignment_kind !== "existing" ||
-				isValidAssignmentVersion(row.expected_assignment_version)) &&
 			(row.decision !== "included" || live == null || live.active) &&
-			assignmentMatchesExpectation(live, {
-				kind: row.expected_assignment_kind,
-				identityId: row.existing_identity_id,
-				assignmentVersion: row.expected_assignment_version,
-			})
+			storedAssignmentRowMatchesLive(row, live, false)
 		);
 	});
 	const finishDigest = recipientPolicyDigest("legacy-team-finish-v1", {
@@ -706,7 +731,8 @@ function storedAssignmentEvidenceMatches(
 ): boolean {
 	const storedRows = db
 		.prepare(
-			`SELECT device_id, existing_identity_id, existing_assignment_version, verified_evidence_kind
+			`SELECT device_id, existing_identity_id, existing_assignment_version, verified_evidence_kind,
+			        expected_assignment_kind, expected_assignment_version
 			 FROM legacy_team_setup_draft_devices WHERE attempt_id = ?`,
 		)
 		.all(attemptId) as Array<{
@@ -714,16 +740,13 @@ function storedAssignmentEvidenceMatches(
 		existing_identity_id: string | null;
 		existing_assignment_version: number | null;
 		verified_evidence_kind: "active_assignment" | null;
+		expected_assignment_kind: "absent" | "existing" | null;
+		expected_assignment_version: number | null;
 	}>;
 	const storedByDevice = new Map(storedRows.map((row) => [row.device_id, row]));
 	const currentMatches = snapshots.every(({ device, assignment }) => {
 		const stored = storedByDevice.get(device.deviceId);
-		return (
-			stored != null &&
-			stored.existing_identity_id === (assignment?.identityId ?? null) &&
-			stored.existing_assignment_version === (assignment?.assignmentVersion ?? null) &&
-			stored.verified_evidence_kind === (assignment?.active ? "active_assignment" : null)
-		);
+		return stored != null && storedAssignmentRowMatchesLive(stored, assignment, true);
 	});
 	if (!currentMatches) return false;
 	// Devices carried into the attempt as removed roster rows keep CAS
@@ -734,11 +757,7 @@ function storedAssignmentEvidenceMatches(
 		.filter((row) => !snapshotDeviceIds.has(row.device_id))
 		.every((row) => {
 			const assignment = assignmentForDevice(db, row.device_id);
-			return (
-				row.existing_identity_id === (assignment?.identityId ?? null) &&
-				row.existing_assignment_version === (assignment?.assignmentVersion ?? null) &&
-				row.verified_evidence_kind === (assignment?.active ? "active_assignment" : null)
-			);
+			return storedAssignmentRowMatchesLive(row, assignment, true);
 		});
 }
 
@@ -1105,7 +1124,7 @@ export function setLegacyTeamSetupDeviceDecision(
 		}
 		db.prepare(
 			`UPDATE legacy_team_setup_draft_devices
-			 SET decision = ?, target_identity_id = CASE WHEN ? = 'excluded' THEN NULL ELSE target_identity_id END,
+			 SET decision = ?, target_identity_id = CASE WHEN ? IN ('excluded', 'removed') THEN NULL ELSE target_identity_id END,
 			     updated_at = ?
 			 WHERE attempt_id = ? AND device_ref = ?`,
 		).run(input.decision, input.decision, now, input.attemptId, input.deviceRef);
