@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "./db.js";
+import { isLegacyTeamProjectCanonicalStateValid } from "./legacy-team-project-canonical-preflight.js";
 import {
 	compareCodepoints,
+	deterministicPolicyTeamId,
 	legacyTeamRosterFingerprint,
 	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
@@ -113,10 +115,95 @@ interface DeviceRow {
 
 interface ProjectRow {
 	project_ref: string;
+	source_project_identity: string;
 	display_name: string;
 	source_fingerprint: string;
 	resolution_kind: LegacyTeamProjectResolution;
 	resolved_project_identity: string | null;
+}
+
+function projectCanonicalStateValid(
+	db: Database,
+	draft: { candidate_id: string; coordinator_id: string; group_id: string },
+	projects: ProjectRow[],
+): boolean {
+	if (projects.length === 0) return true;
+	const sourceProjectIdentities = [
+		...new Set(projects.map((project) => project.source_project_identity)),
+	];
+	const resolvedProjectIdentities = [
+		...new Set(
+			projects.flatMap((project) =>
+				project.resolved_project_identity ? [project.resolved_project_identity] : [],
+			),
+		),
+	];
+	const scopeIds = db
+		.prepare(
+			`SELECT scope_id FROM replication_scopes
+			 WHERE coordinator_id = ? AND group_id = ? AND status = 'active'
+			 ORDER BY scope_id`,
+		)
+		.pluck()
+		.all(draft.coordinator_id, draft.group_id) as string[];
+	const groupScopeIds = db
+		.prepare(
+			`SELECT scope_id FROM replication_scopes
+			 WHERE coordinator_id = ? AND group_id = ? ORDER BY scope_id`,
+		)
+		.pluck()
+		.all(draft.coordinator_id, draft.group_id) as string[];
+	const mappings = db
+		.prepare(
+			`SELECT workspace_identity, project_pattern, scope_id, source
+			 FROM project_scope_mappings
+			 WHERE project_pattern IN (${sourceProjectIdentities.map(() => "?").join(", ")})
+			 ORDER BY id`,
+		)
+		.all(...sourceProjectIdentities) as Array<{
+		workspace_identity: string | null;
+		project_pattern: string;
+		scope_id: string;
+		source: string | null;
+	}>;
+	const recipients =
+		resolvedProjectIdentities.length === 0
+			? []
+			: (db
+					.prepare(
+						`SELECT canonical_project_identity, recipient_kind, recipient_id, status
+						 FROM project_recipients
+						 WHERE canonical_project_identity IN (${resolvedProjectIdentities.map(() => "?").join(", ")})
+						 ORDER BY canonical_project_identity, recipient_kind, recipient_id`,
+					)
+					.all(...resolvedProjectIdentities) as Array<{
+					canonical_project_identity: string;
+					recipient_kind: string;
+					recipient_id: string;
+					status: string;
+				}>);
+
+	return isLegacyTeamProjectCanonicalStateValid({
+		teamId: deterministicPolicyTeamId(draft.candidate_id),
+		scopeIds,
+		groupScopeIds,
+		projects: projects.map((project) => ({
+			sourceProjectIdentity: project.source_project_identity,
+			resolvedProjectIdentity: project.resolved_project_identity,
+		})),
+		mappings: mappings.map((mapping) => ({
+			workspaceIdentity: mapping.workspace_identity,
+			projectPattern: mapping.project_pattern,
+			scopeId: mapping.scope_id,
+			source: mapping.source,
+		})),
+		recipients: recipients.map((recipient) => ({
+			canonicalProjectIdentity: recipient.canonical_project_identity,
+			recipientKind: recipient.recipient_kind,
+			recipientId: recipient.recipient_id,
+			status: recipient.status,
+		})),
+	});
 }
 
 /**
@@ -387,7 +474,8 @@ function createAttempt(
 	const previousProjects = previousAttemptId
 		? (db
 				.prepare(
-					`SELECT project_ref, display_name, source_fingerprint, resolution_kind,
+					`SELECT project_ref, source_project_identity, display_name, source_fingerprint,
+					        resolution_kind,
 					        resolved_project_identity
 					 FROM legacy_team_setup_draft_projects WHERE attempt_id = ?`,
 				)
@@ -463,7 +551,7 @@ function loadDraftView(db: Database, attemptId: string): LegacyTeamSetupDraftVie
 		.all(attemptId) as DeviceRow[];
 	const projectRows = db
 		.prepare(
-			`SELECT project_ref, display_name, source_fingerprint, resolution_kind,
+			`SELECT project_ref, source_project_identity, display_name, source_fingerprint, resolution_kind,
 			        resolved_project_identity
 			 FROM legacy_team_setup_draft_projects WHERE attempt_id = ? ORDER BY project_ref`,
 		)
@@ -528,32 +616,29 @@ function loadDraftView(db: Database, attemptId: string): LegacyTeamSetupDraftVie
 			resolvedProjectIdentity: row.resolved_project_identity,
 		})),
 	});
-	// Activation refuses to write mappings without an active scope for the
-	// group; advertising a finishable draft that activation will always reject
-	// would discard the user's review when the conflict stales the attempt.
-	const scopeAuthorityValid =
-		projectRows.length === 0 ||
-		Boolean(
-			db
-				.prepare(
-					`SELECT 1 FROM replication_scopes
-					 WHERE coordinator_id = ? AND group_id = ? AND status = 'active' LIMIT 1`,
-				)
-				.get(draft.coordinator_id, draft.group_id),
-		);
+	const reviewComplete =
+		(draft.state === "needs_setup" || draft.state === "in_progress") &&
+		unresolvedDeviceCount === 0 &&
+		unresolvedProjectCount === 0 &&
+		includedTargetsValid &&
+		assignmentExpectationsValid &&
+		(projectRows.length === 0 ||
+			Boolean(
+				db
+					.prepare(
+						`SELECT 1 FROM replication_scopes
+						 WHERE coordinator_id = ? AND group_id = ? AND status = 'active' LIMIT 1`,
+					)
+					.get(draft.coordinator_id, draft.group_id),
+			)) &&
+		projectCanonicalStateValid(db, draft, projectRows);
 	return {
 		attemptId,
 		candidateRef: draft.candidate_id,
 		state: draft.state,
 		displayName: draft.display_name,
 		finishDigest,
-		canFinish:
-			(draft.state === "needs_setup" || draft.state === "in_progress") &&
-			unresolvedDeviceCount === 0 &&
-			unresolvedProjectCount === 0 &&
-			includedTargetsValid &&
-			assignmentExpectationsValid &&
-			scopeAuthorityValid,
+		canFinish: reviewComplete,
 		unresolvedDeviceCount,
 		unresolvedProjectCount,
 		// The coordinator key fingerprint stays in persisted CAS state only:

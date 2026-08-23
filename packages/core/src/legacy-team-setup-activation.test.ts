@@ -669,6 +669,37 @@ describe("legacy Team setup activation", () => {
 		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_completions").pluck().get()).toBe(0);
 	});
 
+	it("revalidates Project canonical state after the pre-lock model was accepted", async () => {
+		// Arrange: preview and the finish's initial model are valid. The external
+		// roster fetch yields control before BEGIN IMMEDIATE, during which another
+		// writer can add a conflicting claim. The locked loadModel must reject it
+		// before inventory derivation or any setup write.
+		const draft = readyDraft();
+		const review = preview(draft);
+		const loadFreshRoster = vi.fn(async () => {
+			expect(db.inTransaction).toBe(false);
+			db.prepare(
+				`INSERT INTO project_recipients(
+				 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+				 policy_revision, migration_state, idempotency_key, created_at, updated_at
+				 ) VALUES (?, 'team', 'policy-team-v1:foreign', 'active', 'user', 'r1',
+				 'completed', 'late-foreign-team-claim', ?, ?)`,
+			).run(PROJECT_A, NOW, NOW);
+			return roster;
+		});
+		const loadProjectInventory = vi.fn(() => draftProjectInventory(draft.attemptId));
+
+		// Act
+		const operation = finish(draft, review, loadFreshRoster, loadProjectInventory);
+
+		// Assert
+		await expect(operation).rejects.toThrow("team_setup_conflict");
+		expect(loadFreshRoster).toHaveBeenCalledOnce();
+		expect(loadProjectInventory).not.toHaveBeenCalled();
+		expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_completions").pluck().get()).toBe(0);
+	});
+
 	it("replays the exact immutable response only for the same candidate route and confirmation", async () => {
 		// Arrange
 		const draft = readyDraft();

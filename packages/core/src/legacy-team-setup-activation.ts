@@ -4,6 +4,7 @@ import {
 	IdentityDeviceAssignmentError,
 } from "./identity-device-assignment.js";
 import { selectedProjectScopeMapping } from "./legacy-recipient-policy-projection.js";
+import { isLegacyTeamProjectCanonicalStateValid } from "./legacy-team-project-canonical-preflight.js";
 import {
 	type LegacyTeamSetupProjectInput,
 	legacyTeamProjectionFingerprint,
@@ -579,53 +580,30 @@ function validateCanonicalState(model: ActivationModel): void {
 		}
 	}
 
-	for (const project of projects) {
-		const resolvedIdentity = project.resolved_project_identity as string;
-		const relatedMappings = model.mappings.filter(
-			(mapping) => mapping.project_pattern === project.source_project_identity,
-		);
-		// A setup-owned mapping whose target differs is a prior activation's
-		// resolution that this reviewed re-resolution supersedes — but ONLY
-		// when that mapping belongs to THIS group's scopes. A same-pattern
-		// mapping owned by another flow or another coordinator group is an
-		// unresolvable conflict: retargeting it would silently reroute the
-		// other group's Project and break its completed Team.
-		if (
-			relatedMappings.some((mapping) => {
-				const ownSetupMapping =
-					mapping.source === "reviewed_team_setup" && groupScopeIds.includes(mapping.scope_id);
-				return (
-					!ownSetupMapping &&
-					(!scopeIds.includes(mapping.scope_id) || mapping.workspace_identity !== resolvedIdentity)
-				);
-			})
-		) {
-			activationError("team_setup_conflict");
-		}
-		// Creating or re-targeting a mapping requires an unambiguous scope.
-		const hasCurrentMapping = relatedMappings.some(
-			(mapping) =>
-				mapping.workspace_identity === resolvedIdentity && scopeIds.includes(mapping.scope_id),
-		);
-		if (!hasCurrentMapping && scopeIds.length > 1) {
-			activationError("team_setup_conflict");
-		}
-		const activeRecipients = recipients.filter(
-			(row) => row.canonical_project_identity === resolvedIdentity && row.status === "active",
-		);
-		// Direct identity shares can legitimately coexist with the Team edge
-		// (for example from a historical choose_recipients resolution that
-		// selected both) and the confirmed delta models every recipient path.
-		// Only another Team claiming the project is an unexplained conflict.
-		if (
-			activeRecipients.some(
-				(row) =>
-					(row.recipient_kind === "team" && row.recipient_id !== teamId) ||
-					(row.recipient_kind !== "team" && row.recipient_kind !== "identity"),
-			)
-		) {
-			activationError("team_setup_conflict");
-		}
+	if (
+		!isLegacyTeamProjectCanonicalStateValid({
+			teamId,
+			scopeIds,
+			groupScopeIds,
+			projects: projects.map((project) => ({
+				sourceProjectIdentity: project.source_project_identity,
+				resolvedProjectIdentity: project.resolved_project_identity,
+			})),
+			mappings: model.mappings.map((mapping) => ({
+				workspaceIdentity: mapping.workspace_identity,
+				projectPattern: mapping.project_pattern,
+				scopeId: mapping.scope_id,
+				source: mapping.source,
+			})),
+			recipients: recipients.map((recipient) => ({
+				canonicalProjectIdentity: recipient.canonical_project_identity,
+				recipientKind: recipient.recipient_kind,
+				recipientId: recipient.recipient_id,
+				status: recipient.status,
+			})),
+		})
+	) {
+		activationError("team_setup_conflict");
 	}
 }
 

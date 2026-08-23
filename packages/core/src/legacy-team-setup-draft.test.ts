@@ -47,6 +47,31 @@ function snapshot(overrides: { fingerprint?: string; deviceName?: string } = {})
 	};
 }
 
+function readyDraft(db: InstanceType<typeof Database>) {
+	let draft = refreshLegacyTeamSetupDraft(db, snapshot());
+	const device = draft.devices[0];
+	if (!device) throw new Error("invalid test fixture");
+	draft = setLegacyTeamSetupDeviceAssignment(db, {
+		attemptId: draft.attemptId,
+		deviceRef: device.deviceRef,
+		targetIdentityId: "identity-a",
+		expectation: device.expectation,
+		now: NOW,
+	});
+	draft = setLegacyTeamSetupDeviceDecision(db, {
+		attemptId: draft.attemptId,
+		deviceRef: device.deviceRef,
+		decision: "included",
+		now: NOW,
+	});
+	return setLegacyTeamSetupProjectMapping(db, {
+		attemptId: draft.attemptId,
+		projectRef: "project-ref-b",
+		resolvedProjectIdentity: "https://example.invalid/repo-b.git",
+		now: NOW,
+	});
+}
+
 describe("legacy Team setup drafts", () => {
 	let db: InstanceType<typeof Database>;
 
@@ -866,6 +891,108 @@ describe("legacy Team setup drafts", () => {
 		db.prepare("UPDATE actors SET status = 'deactivated' WHERE actor_id = 'identity-a'").run();
 
 		expect(getLegacyTeamSetupDraft(db, CANDIDATE)?.canFinish).toBe(false);
+	});
+
+	it.each([
+		[
+			"the coordinator group has no active scope",
+			() => {
+				db.prepare("UPDATE replication_scopes SET status = 'retired'").run();
+			},
+		],
+		[
+			"a new mapping is ambiguous across active scopes",
+			() => {
+				db.prepare(
+					`INSERT INTO replication_scopes(
+					 scope_id, label, kind, authority_type, coordinator_id, group_id,
+					 membership_epoch, status, created_at, updated_at
+					 ) VALUES ('scope-draft-2', 'Engineering 2', 'managed_project', 'coordinator',
+					 'coordinator-private', 'group-private', 1, 'active', ?, ?)`,
+				).run(NOW, NOW);
+			},
+		],
+		[
+			"a foreign mapping conflicts with the source pattern",
+			() => {
+				db.prepare(
+					`INSERT INTO project_scope_mappings(
+					 workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+					 ) VALUES ('https://example.invalid/foreign.git', 'unmapped:repo-b',
+					 'scope-foreign', 1000, 'user', ?, ?)`,
+				).run(NOW, NOW);
+			},
+		],
+		[
+			"another active Team claims the Project",
+			() => {
+				db.prepare(
+					`INSERT INTO project_recipients(
+					 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+					 policy_revision, migration_state, idempotency_key, created_at, updated_at
+					 ) VALUES ('https://example.invalid/repo-a.git', 'team', 'policy-team-v1:foreign',
+					 'active', 'user', 'r1', 'completed', 'foreign-team-claim', ?, ?)`,
+				).run(NOW, NOW);
+			},
+		],
+		[
+			"an active Project recipient has an unsupported kind",
+			() => {
+				db.prepare(
+					`INSERT INTO project_recipients(
+					 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+					 policy_revision, migration_state, idempotency_key, created_at, updated_at
+					 ) VALUES ('https://example.invalid/repo-a.git', 'service', 'service-a',
+					 'active', 'user', 'r1', 'completed', 'unsupported-recipient', ?, ?)`,
+				).run(NOW, NOW);
+			},
+		],
+	] as const)("reports canFinish false when %s", (_label, createConflict) => {
+		createConflict();
+
+		const draft = readyDraft(db);
+
+		expect(draft.canFinish).toBe(false);
+	});
+
+	it("keeps canFinish true for selected mappings across scopes and a direct Identity recipient", () => {
+		db.prepare(
+			`INSERT INTO replication_scopes(
+			 scope_id, label, kind, authority_type, coordinator_id, group_id,
+			 membership_epoch, status, created_at, updated_at
+			 ) VALUES ('scope-draft-2', 'Engineering 2', 'managed_project', 'coordinator',
+			 'coordinator-private', 'group-private', 1, 'active', ?, ?)`,
+		).run(NOW, NOW);
+		const insertMapping = db.prepare(
+			`INSERT INTO project_scope_mappings(
+			 workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+			 ) VALUES (?, ?, ?, 1000, 'user', ?, ?)`,
+		);
+		insertMapping.run(
+			"https://example.invalid/repo-a.git",
+			"https://example.invalid/repo-a.git",
+			"scope-draft",
+			NOW,
+			NOW,
+		);
+		insertMapping.run(
+			"https://example.invalid/repo-b.git",
+			"unmapped:repo-b",
+			"scope-draft-2",
+			NOW,
+			NOW,
+		);
+		db.prepare(
+			`INSERT INTO project_recipients(
+			 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			 policy_revision, migration_state, idempotency_key, created_at, updated_at
+			 ) VALUES ('https://example.invalid/repo-a.git', 'identity', 'identity-a',
+			 'active', 'user', 'r1', 'completed', 'direct-identity-recipient', ?, ?)`,
+		).run(NOW, NOW);
+
+		const draft = readyDraft(db);
+
+		expect(draft.canFinish).toBe(true);
 	});
 
 	it("revalidates the selected identity when saving an included decision", () => {
