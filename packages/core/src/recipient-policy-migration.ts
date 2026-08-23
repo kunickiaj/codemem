@@ -8,7 +8,7 @@ import { RECIPIENT_POLICY_CONTRACT_VERSION } from "./recipient-policy-contract.j
 import {
 	canonicalRecipientPolicyJson,
 	deterministicPolicyTeamId,
-	recipientPolicyDigest,
+	legacyRecipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
 import type {
 	RecipientPolicyActionableReviewItemV1,
@@ -87,7 +87,7 @@ const NO_OP_DECISIONS = new Set([
 ]);
 
 function digest(prefix: string, value: unknown): string {
-	return recipientPolicyDigest(prefix, value);
+	return legacyRecipientPolicyDigest(prefix, value);
 }
 
 export { deterministicPolicyTeamId } from "./recipient-policy-identifiers.js";

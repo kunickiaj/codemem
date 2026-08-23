@@ -1,28 +1,97 @@
 import { createHash } from "node:crypto";
 
 /**
- * Locale-independent codepoint comparison. Every fingerprint and digest in the
- * recipient-policy feature relies on byte-identical ordering across machines,
- * so `localeCompare` (ICU-collation dependent) must never feed a digest.
+ * Locale-independent UTF-16 code-unit comparison. Every fingerprint and digest
+ * in the recipient-policy feature relies on byte-identical ordering across
+ * machines, so `localeCompare` (ICU-collation dependent) must never feed a
+ * digest.
  */
 export function compareCodepoints(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0;
 }
 
-export function canonicalRecipientPolicyJson(value: unknown): string {
-	if (Array.isArray(value)) return `[${value.map(canonicalRecipientPolicyJson).join(",")}]`;
-	if (value && typeof value === "object") {
-		return `{${Object.entries(value as Record<string, unknown>)
-			.toSorted(([left], [right]) => compareCodepoints(left, right))
-			.map(([key, child]) => `${JSON.stringify(key)}:${canonicalRecipientPolicyJson(child)}`)
-			.join(",")}}`;
+const INVALID_CANONICAL_JSON_MESSAGE = "Recipient policy value must be strict JSON data";
+
+function invalidCanonicalJson(): never {
+	throw new TypeError(INVALID_CANONICAL_JSON_MESSAGE);
+}
+
+function serializeJsonString(value: string): string {
+	const serialized = JSON.stringify(value);
+	if (serialized === undefined) return invalidCanonicalJson();
+	return serialized;
+}
+
+function canonicalJson(value: unknown, ancestors: WeakSet<object>): string {
+	if (value === null) return "null";
+	if (typeof value === "boolean") return value ? "true" : "false";
+	if (typeof value === "string") return serializeJsonString(value);
+	if (typeof value === "number") {
+		if (!Number.isFinite(value) || Object.is(value, -0)) return invalidCanonicalJson();
+		return String(value);
 	}
-	return JSON.stringify(value) ?? "null";
+	if (typeof value !== "object") return invalidCanonicalJson();
+	if (ancestors.has(value)) return invalidCanonicalJson();
+
+	ancestors.add(value);
+	try {
+		if (Array.isArray(value)) {
+			if (Object.getPrototypeOf(value) !== Array.prototype) return invalidCanonicalJson();
+			const keys = Reflect.ownKeys(value);
+			if (keys.length !== value.length + 1 || keys.some((key) => typeof key !== "string")) {
+				return invalidCanonicalJson();
+			}
+			const children: string[] = [];
+			for (let index = 0; index < value.length; index += 1) {
+				const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+				if (!descriptor?.enumerable || !("value" in descriptor)) return invalidCanonicalJson();
+				children.push(canonicalJson(descriptor.value, ancestors));
+			}
+			return `[${children.join(",")}]`;
+		}
+
+		const prototype = Object.getPrototypeOf(value);
+		if (prototype !== Object.prototype && prototype !== null) return invalidCanonicalJson();
+		const entries = Reflect.ownKeys(value).map((key): [string, unknown] => {
+			if (typeof key !== "string") return invalidCanonicalJson();
+			const descriptor = Object.getOwnPropertyDescriptor(value, key);
+			if (!descriptor?.enumerable || !("value" in descriptor)) return invalidCanonicalJson();
+			return [key, descriptor.value];
+		});
+		return `{${entries
+			.toSorted(([left], [right]) => compareCodepoints(left, right))
+			.map(([key, child]) => `${serializeJsonString(key)}:${canonicalJson(child, ancestors)}`)
+			.join(",")}}`;
+	} finally {
+		ancestors.delete(value);
+	}
+}
+
+export function canonicalRecipientPolicyJson(value: unknown): string {
+	return canonicalJson(value, new WeakSet());
 }
 
 export function recipientPolicyDigest(prefix: string, value: unknown): string {
+	// Node replaces unpaired UTF-16 surrogates with U+FFFD during UTF-8
+	// encoding, so accepting them would make distinct domains hash identically.
+	if (prefix.includes("\0") || !prefix.isWellFormed()) {
+		throw new TypeError("Recipient policy digest prefix must be well-formed without NUL");
+	}
 	return `${prefix}:${createHash("sha256")
-		.update(canonicalRecipientPolicyJson(value))
+		.update(prefix, "utf8")
+		.update("\0", "utf8")
+		.update(canonicalRecipientPolicyJson(value), "utf8")
+		.digest("hex")}`;
+}
+
+/**
+ * Compatibility digest for identifiers persisted by released recipient-policy
+ * flows before domain separation was introduced. New digest domains must use
+ * `recipientPolicyDigest`; changing these bytes requires an explicit DB rekey.
+ */
+export function legacyRecipientPolicyDigest(prefix: string, value: unknown): string {
+	return `${prefix}:${createHash("sha256")
+		.update(canonicalRecipientPolicyJson(value), "utf8")
 		.digest("hex")}`;
 }
 
@@ -44,7 +113,7 @@ export function legacyTeamCandidateId(coordinatorId: string, groupId: string): s
 }
 
 export function deterministicPolicyTeamId(teamCandidateId: string): string {
-	return recipientPolicyDigest("policy-team-v1", teamCandidateId);
+	return legacyRecipientPolicyDigest("policy-team-v1", teamCandidateId);
 }
 
 export function legacyTeamRosterFingerprint(

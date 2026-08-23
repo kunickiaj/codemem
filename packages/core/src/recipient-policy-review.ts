@@ -24,7 +24,7 @@ import {
 	canonicalRecipientPolicyJson,
 	compareCodepoints,
 	deterministicPolicyTeamId,
-	recipientPolicyDigest,
+	legacyRecipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 
@@ -144,7 +144,7 @@ function conditionPresentation(
 }
 
 const canonicalJson = canonicalRecipientPolicyJson;
-const digest = recipientPolicyDigest;
+const digest = legacyRecipientPolicyDigest;
 
 function semanticProjection(
 	projection: LegacyRecipientPolicyProjectionV1,
