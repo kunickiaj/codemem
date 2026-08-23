@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listLegacyRecipientPolicyProjections } from "./legacy-recipient-policy-projection.js";
 import {
 	type DiscoverLegacyTeamCandidatesOptions,
@@ -463,7 +463,7 @@ describe("legacy Team candidate discovery", () => {
 	});
 
 	it("keeps Ready when merged resolutions share one selected mapping", () => {
-		const { teamId, attemptId } = completeCandidate();
+		const { attemptId } = completeCandidate();
 		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
 
 		// A second confirmed source resolved to the same canonical identity:
@@ -481,8 +481,15 @@ describe("legacy Team candidate discovery", () => {
 				workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
 			 ) VALUES (?, 'unmapped:mirror', 'scope-api', 1000, 'reviewed_team_setup', ?, ?)`,
 		).run(PROJECT_ID, NOW, NOW);
-		expect(teamId).toBeTruthy();
-		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
+		const prepareSpy = vi.spyOn(db, "prepare");
+		try {
+			expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
+			expect(
+				prepareSpy.mock.calls.filter(([sql]) => /FROM actors ORDER BY actor_id/.test(String(sql))),
+			).toHaveLength(1);
+		} finally {
+			prepareSpy.mockRestore();
+		}
 	});
 
 	it("drops Ready when a removed device keeps a granting invite decision", () => {
@@ -1080,9 +1087,31 @@ describe("legacy Team candidate discovery", () => {
 					.run(teamId),
 		],
 		[
+			"the completed draft loses its included target",
+			(db2: InstanceType<typeof Database>) =>
+				db2
+					.prepare(
+						"UPDATE legacy_team_setup_draft_devices SET target_identity_id = NULL WHERE decision = 'included'",
+					)
+					.run(),
+		],
+		[
 			"the included member identity is deactivated",
 			(db2: InstanceType<typeof Database>) =>
 				db2.prepare("UPDATE actors SET status = 'deactivated' WHERE actor_id = 'identity-a'").run(),
+		],
+		[
+			"canonical Project effective-device derivation is blocked",
+			(db2: InstanceType<typeof Database>) =>
+				db2
+					.prepare(
+						`INSERT INTO project_recipients(
+						 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+						 policy_revision, migration_state, idempotency_key, created_at, updated_at
+						 ) VALUES (?, 'identity', 'identity-missing', 'active', 'test', 'r1', 'completed',
+						 'missing-identity-recipient', ?, ?)`,
+					)
+					.run(PROJECT_ID, NOW, NOW),
 		],
 		[
 			"a membership status invalid for reviewed mode appears",

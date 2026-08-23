@@ -12,6 +12,7 @@ import {
 	refreshLegacyTeamSetupDraft,
 	refreshLegacyTeamSetupDraftLabels,
 } from "./legacy-team-setup-draft.js";
+import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
 import {
 	compareCodepoints,
 	deterministicPolicyTeamId,
@@ -20,7 +21,10 @@ import {
 	legacyTeamRosterFingerprint,
 	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
-import { isStrictRecipientPolicyId } from "./recipient-policy-reconciliation.js";
+import {
+	deriveRecipientPolicyEffectiveDevicesFromDatabase,
+	type StrictRecipientPolicyEffectiveDeviceDerivation,
+} from "./recipient-policy-reconciliation.js";
 
 export interface LegacyTeamRosterDeviceSnapshot {
 	deviceId: string;
@@ -296,68 +300,27 @@ function isCompatibleReadyTeam(
 		.pluck()
 		.all(draftRow.coordinator_id, draftRow.group_id) as string[];
 	if (completionProjectRows.length > 0 && setupScopeIds.length === 0) return false;
-	const teamCompatible = Boolean(
-		db
-			.prepare(
-				`SELECT 1 FROM policy_teams
-				 WHERE team_id = ?
-				   AND status = 'active'
-				   AND device_eligibility_mode = 'reviewed_allowlist'
-				   AND source_fingerprint = ?
-				 LIMIT 1`,
-			)
-			.get(completedTeamId, rosterFingerprint),
-	);
-	if (!teamCompatible) return false;
-	// Authoritative eligibility validates every membership row: the strict
-	// identifier rule applies to every row regardless of status, a status that
-	// is invalid for reviewed mode (for example a pre-normalization `active`
-	// invite row) blocks the whole Team, and a deactivated or merged member —
-	// including invite-provenance members with no roster device — does too.
-	// Ready must recheck them all with the same predicates.
+	const team = db
+		.prepare(
+			`SELECT status, device_eligibility_mode, source_fingerprint
+			 FROM policy_teams WHERE team_id = ? LIMIT 1`,
+		)
+		.get(completedTeamId) as
+		| { status: string; device_eligibility_mode: string; source_fingerprint: string }
+		| undefined;
+	if (
+		team?.status !== "active" ||
+		team.device_eligibility_mode !== "reviewed_allowlist" ||
+		team.source_fingerprint !== rosterFingerprint
+	) {
+		return false;
+	}
 	const membershipRows = db
 		.prepare(
 			`SELECT identity_id, status FROM policy_team_memberships
 			 WHERE team_id = ?`,
 		)
 		.all(completedTeamId) as Array<{ identity_id: string; status: string }>;
-	for (const membership of membershipRows) {
-		if (!isStrictRecipientPolicyId(membership.identity_id)) return false;
-		if (!["reviewed_active", "pending", "revoked"].includes(membership.status)) return false;
-		if (membership.status !== "reviewed_active") continue;
-		const identityValid = db
-			.prepare(
-				`SELECT 1 FROM actors
-				 WHERE actor_id = ? AND status = 'active' AND merged_into_actor_id IS NULL LIMIT 1`,
-			)
-			.get(membership.identity_id);
-		if (!identityValid) return false;
-		// Authoritative eligibility validates every device row of every active
-		// member — an unknown status or a malformed id/version on ANY of the
-		// member's devices blocks the whole Team — so Ready must run the same
-		// member-device pass instead of stopping at the person.
-		const memberDevices = db
-			.prepare(
-				`SELECT device_id, status, assignment_version FROM identity_devices
-				 WHERE identity_id = ?`,
-			)
-			.all(membership.identity_id) as Array<{
-			device_id: string;
-			status: string;
-			assignment_version: number;
-		}>;
-		for (const device of memberDevices) {
-			if (!["active", "revoked"].includes(device.status)) return false;
-			if (device.status !== "active") continue;
-			if (
-				!isStrictRecipientPolicyId(device.device_id) ||
-				!Number.isSafeInteger(device.assignment_version) ||
-				device.assignment_version < 0
-			) {
-				return false;
-			}
-		}
-	}
 	const deviceRows = db
 		.prepare(
 			`SELECT device_id, decision, target_identity_id
@@ -389,68 +352,83 @@ function isCompatibleReadyTeam(
 		decision: string;
 		assignment_version: number;
 	}>;
-	// Authoritative eligibility applies the strict identifier rule to every
-	// canonical decision row before considering its content; a malformed
-	// device ID blocks the whole Team, so Ready must reject it up front
-	// rather than letting an otherwise well-shaped row pass the branches
-	// below.
-	if (!canonicalDecisions.every((row) => isStrictRecipientPolicyId(row.device_id))) {
-		return false;
-	}
+	const identities = db
+		.prepare(
+			`SELECT actor.actor_id, actor.status, actor.merged_into_actor_id
+			 FROM actors AS actor
+			 JOIN policy_team_memberships AS membership ON membership.identity_id = actor.actor_id
+			 WHERE membership.team_id = ?`,
+		)
+		.all(completedTeamId) as Array<{
+		actor_id: string;
+		status: string;
+		merged_into_actor_id: string | null;
+	}>;
+	const identityDevices = db
+		.prepare(
+			`SELECT device.identity_id, device.device_id, device.status, device.assignment_version
+			 FROM identity_devices AS device
+			 JOIN policy_team_memberships AS membership ON membership.identity_id = device.identity_id
+			 WHERE membership.team_id = ?`,
+		)
+		.all(completedTeamId) as Array<{
+		identity_id: string;
+		device_id: string;
+		status: string;
+		assignment_version: number;
+	}>;
+	const eligibility = derivePolicyTeamDeviceEligibility({
+		teamId: completedTeamId,
+		mode: team.device_eligibility_mode,
+		memberships: membershipRows.map((row) => ({
+			identityId: row.identity_id,
+			status: row.status,
+		})),
+		identities: identities.map((row) => ({
+			identityId: row.actor_id,
+			status: row.status,
+			mergedIntoIdentityId: row.merged_into_actor_id,
+		})),
+		devices: identityDevices.map((row) => ({
+			identityId: row.identity_id,
+			deviceId: row.device_id,
+			status: row.status,
+			assignmentVersion: row.assignment_version,
+		})),
+		decisions: canonicalDecisions.map((row) => ({
+			deviceId: row.device_id,
+			decision: row.decision,
+			assignmentVersion: row.assignment_version,
+		})),
+	});
+	if (eligibility.status === "blocked") return false;
+	const eligibleDeviceIds = new Set(eligibility.eligibleDeviceIds);
+	const decisionsByDeviceId = new Map(canonicalDecisions.map((row) => [row.device_id, row]));
+	const expectedEffectiveDevices = new Map<string, string>();
 	const hasUnexplainedDecision = canonicalDecisions.some((row) => {
 		if (expectedDecisionDeviceIds.has(row.device_id)) return false;
 		if (!(INVITE_DECISION_PROVENANCES as readonly string[]).includes(row.provenance)) return true;
-		// Sanctioned invite additions must still satisfy the canonical decision
-		// contract; a malformed row blocks authoritative eligibility entirely.
-		// An `unresolved` invite decision is valid canonical data, but it is
-		// itself the signal that the invited device awaits review, so the Team
-		// reopens for setup instead of staying Ready with no review flow.
-		if (
-			!["included", "excluded"].includes(row.decision) ||
-			!Number.isSafeInteger(row.assignment_version) ||
-			row.assignment_version < 0
-		) {
-			return true;
-		}
-		// A preserved invite `included` decision grants access only while the
-		// device's live active assignment still matches the reviewed version.
-		// A later reassignment advances the version and authoritative
-		// eligibility silently drops the device — while the roster fingerprint
-		// is unchanged because the device is outside the roster — so Ready
-		// must recheck the live binding and reopen setup on drift.
-		if (row.decision === "included") {
-			const liveAssignment = db
-				.prepare(
-					`SELECT assignment_version FROM identity_devices
-					 WHERE device_id = ? AND status = 'active' LIMIT 1`,
-				)
-				.get(row.device_id) as { assignment_version: number } | undefined;
-			if (!liveAssignment || liveAssignment.assignment_version !== row.assignment_version) {
-				return true;
-			}
-		}
-		return false;
+		// An unresolved invite is review work, not a compatible completion.
+		if (!["included", "excluded"].includes(row.decision)) return true;
+		if (row.decision === "excluded") return false;
+		// Invite-owned decisions can precede canonical Team membership. Their
+		// completion binding is therefore the live assignment version rather
+		// than membership-derived eligibility.
+		const liveAssignment = db
+			.prepare(
+				`SELECT assignment_version FROM identity_devices
+				 WHERE device_id = ? AND status = 'active' LIMIT 1`,
+			)
+			.get(row.device_id) as { assignment_version: number } | undefined;
+		return !liveAssignment || liveAssignment.assignment_version !== row.assignment_version;
 	});
 	if (hasUnexplainedDecision) return false;
 	for (const device of deviceRows) {
-		const decision = db
-			.prepare(
-				`SELECT decision, assignment_version, provenance FROM policy_team_device_decisions
-				 WHERE team_id = ? AND device_id = ?`,
-			)
-			.get(completedTeamId, device.device_id) as
-			| { decision: string; assignment_version: number; provenance: string }
-			| undefined;
+		const decision = decisionsByDeviceId.get(device.device_id);
 		// Excluded and removed reviews must also hold canonically: a decision
 		// row drifting to `included` could grant access contrary to the review.
 		if (device.decision === "excluded") {
-			if (
-				decision?.decision !== "excluded" ||
-				!Number.isSafeInteger(decision.assignment_version) ||
-				decision.assignment_version < 0
-			) {
-				return false;
-			}
+			if (decision?.decision !== "excluded") return false;
 			continue;
 		}
 		if (device.decision === "removed") {
@@ -472,40 +450,17 @@ function isCompatibleReadyTeam(
 			}
 			continue;
 		}
-		if (device.decision !== "included" || !device.target_identity_id) continue;
+		if (device.decision === "included" && !device.target_identity_id) return false;
+		if (device.decision !== "included") continue;
 		const assignment = db
 			.prepare(
-				`SELECT identity_id, assignment_version FROM identity_devices
+				`SELECT identity_id FROM identity_devices
 				 WHERE device_id = ? AND status = 'active' LIMIT 1`,
 			)
-			.get(device.device_id) as { identity_id: string; assignment_version: number } | undefined;
+			.get(device.device_id) as { identity_id: string } | undefined;
 		if (!assignment || assignment.identity_id !== device.target_identity_id) return false;
-		if (
-			decision?.decision !== "included" ||
-			decision.assignment_version !== assignment.assignment_version ||
-			// Authoritative eligibility rejects malformed versions even when the
-			// decision and assignment agree on them.
-			!Number.isSafeInteger(assignment.assignment_version) ||
-			assignment.assignment_version < 0
-		) {
-			return false;
-		}
-		const membershipActive = db
-			.prepare(
-				`SELECT 1 FROM policy_team_memberships
-				 WHERE team_id = ? AND identity_id = ? AND status = 'reviewed_active' LIMIT 1`,
-			)
-			.get(completedTeamId, device.target_identity_id);
-		if (!membershipActive) return false;
-		// Authoritative eligibility blocks non-active or merged member
-		// identities, so Ready must recheck the person's canonical status too.
-		const identityActive = db
-			.prepare(
-				`SELECT 1 FROM actors
-				 WHERE actor_id = ? AND status = 'active' AND merged_into_actor_id IS NULL LIMIT 1`,
-			)
-			.get(device.target_identity_id);
-		if (!identityActive) return false;
+		if (decision?.decision !== "included" || !eligibleDeviceIds.has(device.device_id)) return false;
+		expectedEffectiveDevices.set(device.device_id, device.target_identity_id);
 	}
 	// Merged resolutions map several confirmed source patterns onto one
 	// canonical identity; selection can pick only one of those mappings, so
@@ -518,6 +473,14 @@ function isCompatibleReadyTeam(
 		sources.add(project.source_project_identity);
 		confirmedSourcesByResolved.set(project.resolved_project_identity, sources);
 	}
+	// Several confirmed sources may resolve to the same canonical Project. Keep
+	// the expensive live-policy derivation scoped to this compatibility check so
+	// those sources share one result without retaining authorization state across
+	// calls that may observe later membership, decision, or assignment changes.
+	const effectiveDevicesByProject = new Map<
+		string,
+		StrictRecipientPolicyEffectiveDeviceDerivation
+	>();
 	for (const project of completionProjectRows) {
 		const resolvedIdentity = project.resolved_project_identity as string;
 		const recipientActive = db
@@ -528,6 +491,21 @@ function isCompatibleReadyTeam(
 			)
 			.get(resolvedIdentity, completedTeamId);
 		if (!recipientActive) return false;
+		let effectiveDevices = effectiveDevicesByProject.get(resolvedIdentity);
+		if (!effectiveDevices) {
+			effectiveDevices = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, resolvedIdentity);
+			effectiveDevicesByProject.set(resolvedIdentity, effectiveDevices);
+		}
+		if (effectiveDevices.status === "blocked") return false;
+		for (const [deviceId, identityId] of expectedEffectiveDevices) {
+			if (
+				!effectiveDevices.devices.some(
+					(device) => device.deviceId === deviceId && device.identityId === identityId,
+				)
+			) {
+				return false;
+			}
+		}
 		// The completion-bound mapping must still be the SELECTED mapping for
 		// the Project. A later higher-priority mapping pointing outside the
 		// group leaves the setup-created row in the table but redirects
