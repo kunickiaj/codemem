@@ -47,6 +47,28 @@ function snapshot(overrides: { fingerprint?: string; deviceName?: string } = {})
 	};
 }
 
+function devices(count: number, start = 0) {
+	return Array.from({ length: count }, (_, index) => {
+		const id = index + start;
+		return {
+			deviceId: `device-${id}`,
+			fingerprint: `key-${id}`,
+			displayName: `Device ${id}`,
+			enabled: true,
+		};
+	});
+}
+
+function projects(count: number) {
+	return Array.from({ length: count }, (_, index) => ({
+		projectRef: `project-ref-${index}`,
+		sourceProjectIdentity: `https://example.invalid/repo-${index}.git`,
+		displayName: `Project ${index}`,
+		sourceFingerprint: `source-${index}`,
+		deterministicProjectIdentity: `https://example.invalid/repo-${index}.git`,
+	}));
+}
+
 function readyDraft(db: InstanceType<typeof Database>) {
 	let draft = refreshLegacyTeamSetupDraft(db, snapshot());
 	const device = draft.devices[0];
@@ -463,6 +485,103 @@ describe("legacy Team setup drafts", () => {
 			"legacy_team_setup_time_invalid",
 		);
 		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(0);
+	});
+
+	it("accepts exactly 500 Devices", () => {
+		const draft = refreshLegacyTeamSetupDraft(db, { ...snapshot(), devices: devices(500) });
+
+		expect(draft.devices).toHaveLength(500);
+		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(1);
+	});
+
+	it("rejects 501 Devices without creating partial attempt rows", () => {
+		expect(() => refreshLegacyTeamSetupDraft(db, { ...snapshot(), devices: devices(501) })).toThrow(
+			"legacy_team_setup_roster_too_large",
+		);
+		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(0);
+		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_draft_devices").pluck().get()).toBe(
+			0,
+		);
+	});
+
+	it("preserves the current reviewed attempt after raw snapshot overflow", () => {
+		const reviewed = readyDraft(db);
+		const before = getLegacyTeamSetupDraft(db, CANDIDATE);
+
+		expect(() => refreshLegacyTeamSetupDraft(db, { ...snapshot(), devices: devices(501) })).toThrow(
+			"legacy_team_setup_roster_too_large",
+		);
+		expect(getLegacyTeamSetupDraft(db, CANDIDATE)).toEqual(before);
+		expect(getLegacyTeamSetupDraft(db, CANDIDATE)?.attemptId).toBe(reviewed.attemptId);
+		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(1);
+	});
+
+	it("accepts exactly 500 Projects", () => {
+		const draft = refreshLegacyTeamSetupDraft(db, { ...snapshot(), projects: projects(500) });
+
+		expect(draft.projects).toHaveLength(500);
+		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(1);
+	});
+
+	it("rejects 501 Projects without creating partial attempt rows", () => {
+		expect(() =>
+			refreshLegacyTeamSetupDraft(db, { ...snapshot(), projects: projects(501) }),
+		).toThrow("legacy_team_setup_roster_too_large");
+		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(0);
+		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_draft_projects").pluck().get()).toBe(
+			0,
+		);
+	});
+
+	it("rejects carried-device overflow and preserves the reviewed attempt", () => {
+		const current = refreshLegacyTeamSetupDraft(db, { ...snapshot(), devices: devices(500) });
+		db.prepare(
+			"UPDATE legacy_team_setup_drafts SET state = 'in_progress' WHERE attempt_id = ?",
+		).run(current.attemptId);
+		const before = db
+			.prepare(
+				`SELECT attempt_id, state, finish_digest, superseded_at, updated_at
+				 FROM legacy_team_setup_drafts WHERE attempt_id = ?`,
+			)
+			.get(current.attemptId);
+
+		expect(() =>
+			refreshLegacyTeamSetupDraft(db, { ...snapshot(), devices: devices(500, 1) }),
+		).toThrow("legacy_team_setup_roster_too_large");
+		expect(
+			db
+				.prepare(
+					`SELECT attempt_id, state, finish_digest, superseded_at, updated_at
+					 FROM legacy_team_setup_drafts WHERE attempt_id = ?`,
+				)
+				.get(current.attemptId),
+		).toEqual(before);
+		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(1);
+		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_draft_devices").pluck().get()).toBe(
+			500,
+		);
+	});
+
+	it("rejects oversized attempts created before draft limits", () => {
+		const current = refreshLegacyTeamSetupDraft(db, { ...snapshot(), devices: devices(500) });
+		db.prepare(
+			`INSERT INTO legacy_team_setup_draft_devices(
+				attempt_id, device_id, device_ref, key_fingerprint, display_name, enabled,
+				existing_identity_id, existing_assignment_version, verified_evidence_kind,
+				decision, target_identity_id, expected_assignment_kind,
+				expected_assignment_version, updated_at
+			 ) VALUES (?, 'legacy-extra', 'legacy-extra-ref', 'legacy-extra-key',
+			           'Legacy extra', 0, NULL, NULL, NULL, 'unresolved', NULL,
+			           'absent', NULL, ?)`,
+		).run(current.attemptId, NOW);
+
+		expect(() => refreshLegacyTeamSetupDraft(db, { ...snapshot(), devices: [] })).toThrow(
+			"legacy_team_setup_roster_too_large",
+		);
+		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(1);
+		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_draft_devices").pluck().get()).toBe(
+			501,
+		);
 	});
 
 	it("rejects non-canonical explicit Project resolution targets", () => {

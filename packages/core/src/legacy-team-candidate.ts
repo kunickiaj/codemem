@@ -12,6 +12,10 @@ import {
 	refreshLegacyTeamSetupDraft,
 	refreshLegacyTeamSetupDraftLabels,
 } from "./legacy-team-setup-draft.js";
+import {
+	requireLegacyTeamSetupEffectiveDevicesWithinLimit,
+	requireLegacyTeamSetupSnapshotWithinLimits,
+} from "./legacy-team-setup-limits.js";
 import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
 import {
 	compareCodepoints,
@@ -567,6 +571,10 @@ function candidateStatus(
 	return "needs_setup";
 }
 
+function isRosterTooLargeError(error: unknown): boolean {
+	return error instanceof Error && error.message === "legacy_team_setup_roster_too_large";
+}
+
 export function discoverLegacyTeamCandidates(
 	db: Database,
 	options: DiscoverLegacyTeamCandidatesOptions,
@@ -586,62 +594,72 @@ export function discoverLegacyTeamCandidates(
 		// currently displayed Project still needs a reviewable roster so the
 		// Team can become ready for future sharing.
 		const projects = projectInventory(candidateId, evidence);
-		const rosterFingerprint = legacyTeamRosterFingerprint(
-			rosterDevices.map((device) => ({
-				deviceId: device.deviceId,
-				fingerprint: device.fingerprint,
-				enabled: device.enabled,
-				identityId: activeAssignmentIdentity(db, device.deviceId),
-			})),
-		);
-		const expectedProjectionFingerprint = legacyTeamProjectionFingerprint(projects);
 		const row = currentDraftRow(db, candidateId);
-		const ready =
-			row?.state === "completed" &&
-			row.roster_fingerprint === rosterFingerprint &&
-			completedInventoryCompatible(db, row.attempt_id, projects) &&
-			isCompatibleReadyTeam(db, candidateId, row, rosterFingerprint);
 		let draft: LegacyTeamSetupDraftView;
-		if (!row || (row.state === "completed" && !ready)) {
-			draft = refreshLegacyTeamSetupDraft(db, {
-				candidateId,
-				coordinatorId,
-				groupId,
-				displayName: group.displayName,
-				devices: rosterDevices,
-				projects,
-				now,
-			});
-		} else if (row.state === "completed") {
-			draft = refreshLegacyTeamSetupDraftLabels(db, row.attempt_id, {
-				displayName: group.displayName,
-				devices: rosterDevices,
-				projects,
-				now,
-			});
-		} else if (row.state === "stale") {
-			draft = requireLegacyTeamSetupDraft(db, candidateId);
-		} else if (
-			row.roster_fingerprint !== rosterFingerprint ||
-			row.projection_fingerprint !== expectedProjectionFingerprint
-		) {
-			if (row.state === "needs_setup" || row.state === "in_progress") {
-				db.prepare(
-					`UPDATE legacy_team_setup_drafts SET state = 'stale', updated_at = ?
-					 WHERE attempt_id = ?`,
-				).run(now, row.attempt_id);
+		let ready = false;
+		try {
+			requireLegacyTeamSetupSnapshotWithinLimits({ devices: rosterDevices, projects });
+			requireLegacyTeamSetupEffectiveDevicesWithinLimit(db, rosterDevices, row?.attempt_id ?? null);
+			const rosterFingerprint = legacyTeamRosterFingerprint(
+				rosterDevices.map((device) => ({
+					deviceId: device.deviceId,
+					fingerprint: device.fingerprint,
+					enabled: device.enabled,
+					identityId: activeAssignmentIdentity(db, device.deviceId),
+				})),
+			);
+			const expectedProjectionFingerprint = legacyTeamProjectionFingerprint(projects);
+			ready =
+				row?.state === "completed" &&
+				row.roster_fingerprint === rosterFingerprint &&
+				completedInventoryCompatible(db, row.attempt_id, projects) &&
+				isCompatibleReadyTeam(db, candidateId, row, rosterFingerprint);
+			if (!row || (row.state === "completed" && !ready)) {
+				draft = refreshLegacyTeamSetupDraft(db, {
+					candidateId,
+					coordinatorId,
+					groupId,
+					displayName: group.displayName,
+					devices: rosterDevices,
+					projects,
+					now,
+				});
+			} else if (row.state === "completed") {
+				draft = refreshLegacyTeamSetupDraftLabels(db, row.attempt_id, {
+					displayName: group.displayName,
+					devices: rosterDevices,
+					projects,
+					now,
+				});
+			} else if (row.state === "stale") {
+				draft = requireLegacyTeamSetupDraft(db, candidateId);
+			} else if (
+				row.roster_fingerprint !== rosterFingerprint ||
+				row.projection_fingerprint !== expectedProjectionFingerprint
+			) {
+				if (row.state === "needs_setup" || row.state === "in_progress") {
+					db.prepare(
+						`UPDATE legacy_team_setup_drafts SET state = 'stale', updated_at = ?
+						 WHERE attempt_id = ?`,
+					).run(now, row.attempt_id);
+				}
+				draft = requireLegacyTeamSetupDraft(db, candidateId);
+			} else {
+				draft = refreshLegacyTeamSetupDraft(db, {
+					candidateId,
+					coordinatorId,
+					groupId,
+					displayName: group.displayName,
+					devices: rosterDevices,
+					projects,
+					now,
+				});
 			}
-			draft = requireLegacyTeamSetupDraft(db, candidateId);
-		} else {
-			draft = refreshLegacyTeamSetupDraft(db, {
-				candidateId,
-				coordinatorId,
-				groupId,
-				displayName: group.displayName,
-				devices: rosterDevices,
-				projects,
-				now,
-			});
+		} catch (error) {
+			// Oversized evidence is local to this coordinator group. It must not
+			// hide otherwise reviewable candidates discovered in the same pass.
+			if (isRosterTooLargeError(error)) continue;
+			throw error;
 		}
 		candidates.push({
 			candidateRef: candidateId,
@@ -687,6 +705,9 @@ export function refreshLegacyTeamCandidate(
 		const { candidateId, coordinatorId, groupId, devices: rosterDevices } = group;
 		if (candidateId !== candidateRef) continue;
 		const projects = projectInventory(candidateId, evidence);
+		const row = currentDraftRow(db, candidateId);
+		requireLegacyTeamSetupSnapshotWithinLimits({ devices: rosterDevices, projects });
+		requireLegacyTeamSetupEffectiveDevicesWithinLimit(db, rosterDevices, row?.attempt_id ?? null);
 		// A compatible Ready completion with unchanged evidence survives an
 		// explicit refresh: only labels update. Creating a replacement attempt
 		// here would immediately drop Ready and force a redundant review cycle.
@@ -698,7 +719,6 @@ export function refreshLegacyTeamCandidate(
 				identityId: activeAssignmentIdentity(db, device.deviceId),
 			})),
 		);
-		const row = currentDraftRow(db, candidateId);
 		if (
 			row?.state === "completed" &&
 			row.roster_fingerprint === rosterFingerprint &&

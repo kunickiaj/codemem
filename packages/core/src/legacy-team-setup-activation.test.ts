@@ -579,6 +579,12 @@ describe("legacy Team setup activation", () => {
 		await expect(operation).rejects.toThrow("team_setup_roster_changed");
 		expect(loadFreshRoster).toHaveBeenCalledOnce();
 		expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+		expect(
+			db
+				.prepare("SELECT state FROM legacy_team_setup_drafts WHERE attempt_id = ?")
+				.pluck()
+				.get(draft.attemptId),
+		).toBe("stale");
 	});
 
 	it("returns roster unavailable after a failed pre-lock fetch without canonical writes", async () => {
@@ -625,6 +631,12 @@ describe("legacy Team setup activation", () => {
 				.get(),
 		).toBe("identity-b");
 		expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+		expect(
+			db
+				.prepare("SELECT state FROM legacy_team_setup_drafts WHERE attempt_id = ?")
+				.pluck()
+				.get(draft.attemptId),
+		).toBe("stale");
 	});
 
 	it.each([
@@ -667,6 +679,11 @@ describe("legacy Team setup activation", () => {
 		// Assert
 		await expect(operation).rejects.toThrow("team_setup_conflict");
 		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_completions").pluck().get()).toBe(0);
+		expect(
+			db
+				.prepare("SELECT state, safe_error_code FROM legacy_team_setup_drafts WHERE attempt_id = ?")
+				.get(draft.attemptId),
+		).toEqual({ state: "in_progress", safe_error_code: "team_setup_conflict" });
 	});
 
 	it("revalidates Project canonical state after the pre-lock model was accepted", async () => {

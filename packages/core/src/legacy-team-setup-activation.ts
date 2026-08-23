@@ -9,6 +9,10 @@ import {
 	type LegacyTeamSetupProjectInput,
 	legacyTeamProjectionFingerprint,
 } from "./legacy-team-setup-draft.js";
+import {
+	LEGACY_TEAM_SETUP_MAX_DEVICES,
+	LEGACY_TEAM_SETUP_MAX_PROJECTS,
+} from "./legacy-team-setup-limits.js";
 import type {
 	LegacyTeamSetupAccessDeltaV1,
 	LegacyTeamSetupActivationPreviewV1,
@@ -225,8 +229,6 @@ interface CompletionRow {
 const SETUP_MEMBERSHIP_PROVENANCE = "reviewed_active";
 /** Provenance written by the historical `choose_recipients` migration path. */
 const HISTORICAL_TEAM_PROVENANCE = "reviewed_team_candidate";
-const MAX_ACTIVATION_DEVICES = 500;
-const MAX_ACTIVATION_PROJECTS = 500;
 
 function parseJsonObject(json: string): Record<string, unknown> | null {
 	try {
@@ -319,12 +321,12 @@ function persistSafeError(
 ): void {
 	// Confirmation staleness is a property of the caller's tokens (for example
 	// a stale tab), not of the draft: the attempt stays valid and retryable
-	// with fresh tokens. Only real canonical-evidence changes stale the draft.
+	// with fresh tokens. Retryable canonical conflicts can clear externally;
+	// only changes to evidence captured by this review stale the draft.
 	const stale = [
 		"team_setup_roster_changed",
 		"team_setup_projection_changed",
 		"team_setup_assignment_changed",
-		"team_setup_conflict",
 	].includes(error.code);
 	try {
 		db.prepare(
@@ -374,10 +376,10 @@ function loadModel(db: Database, input: PreviewLegacyTeamSetupActivationInput): 
 		.all(input.attemptId) as DraftProjectRow[];
 	if (
 		devices.length === 0 ||
-		devices.length > MAX_ACTIVATION_DEVICES ||
+		devices.length > LEGACY_TEAM_SETUP_MAX_DEVICES ||
 		// A configured group without displayed Projects is a valid setup: the
 		// reviewed Team becomes ready for future sharing with no mappings yet.
-		projects.length > MAX_ACTIVATION_PROJECTS ||
+		projects.length > LEGACY_TEAM_SETUP_MAX_PROJECTS ||
 		devices.some(
 			(device) =>
 				device.decision === "unresolved" ||
@@ -1206,7 +1208,9 @@ function validateFreshRoster(
 	model: ActivationModel,
 	freshRoster: Awaited<ReturnType<FinishLegacyTeamSetupActivationInput["loadFreshRoster"]>>,
 ): void {
-	if (freshRoster.length > MAX_ACTIVATION_DEVICES) activationError("team_setup_roster_changed");
+	if (freshRoster.length > LEGACY_TEAM_SETUP_MAX_DEVICES) {
+		activationError("team_setup_roster_changed");
+	}
 	// Draft creation fingerprints a device's identity only from an active
 	// assignment (`identityId: assignment?.active ? ... : null`). An inactive
 	// row's stored identity must not contribute here, or an unchanged fresh

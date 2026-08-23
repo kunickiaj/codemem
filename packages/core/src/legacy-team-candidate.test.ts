@@ -8,7 +8,10 @@ import {
 	legacyTeamCandidateProjectInventory,
 	refreshLegacyTeamCandidate,
 } from "./legacy-team-candidate.js";
-import { deterministicPolicyTeamId } from "./recipient-policy-identifiers.js";
+import {
+	deterministicPolicyTeamId,
+	legacyTeamCandidateId,
+} from "./recipient-policy-identifiers.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 import { shareProjectSetDigest } from "./share-operation.js";
 import { initTestSchema } from "./test-utils.js";
@@ -95,6 +98,81 @@ describe("legacy Team candidate discovery", () => {
 		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_draft_projects").pluck().get()).toBe(
 			1,
 		);
+	});
+
+	it("skips an oversized group without aborting other candidate discovery", () => {
+		const input = options();
+		input.groups.unshift({
+			coordinatorId: "coordinator-oversized",
+			groupId: "group-oversized",
+			displayName: "Oversized",
+			devices: Array.from({ length: 501 }, (_, index) => ({
+				deviceId: `oversized-device-${index}`,
+				fingerprint: `oversized-key-${index}`,
+				displayName: `Oversized Device ${index}`,
+				enabled: true,
+			})),
+		});
+
+		const candidates = discoverLegacyTeamCandidates(db, input);
+
+		expect(candidates).toHaveLength(1);
+		expect(candidates[0]?.displayName).toBe("Engineering");
+		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(1);
+	});
+
+	it("skips oversized existing candidates before changing their state", () => {
+		const initial = options();
+		const [candidate] = discoverLegacyTeamCandidates(db, initial);
+		const oversized = options();
+		const [oversizedGroup] = oversized.groups;
+		if (!oversizedGroup) throw new Error("test_fixture_missing_group");
+		oversizedGroup.devices = Array.from({ length: 501 }, (_, index) => ({
+			deviceId: `oversized-device-${index}`,
+			fingerprint: `oversized-key-${index}`,
+			displayName: `Oversized Device ${index}`,
+			enabled: true,
+		}));
+
+		expect(discoverLegacyTeamCandidates(db, oversized)).toEqual([]);
+		expect(
+			db
+				.prepare("SELECT state FROM legacy_team_setup_drafts WHERE candidate_id = ?")
+				.pluck()
+				.get(candidate?.candidateRef),
+		).toBe("needs_setup");
+
+		db.prepare("UPDATE legacy_team_setup_drafts SET state = 'stale'").run();
+
+		expect(discoverLegacyTeamCandidates(db, oversized)).toEqual([]);
+		expect(db.prepare("SELECT state FROM legacy_team_setup_drafts").pluck().get()).toBe("stale");
+	});
+
+	it("rejects oversized single-candidate refreshes before assignment reads", () => {
+		const input = options();
+		const [group] = input.groups;
+		if (!group) throw new Error("test_fixture_missing_group");
+		group.devices = Array.from({ length: 501 }, (_, index) => ({
+			deviceId: `oversized-device-${index}`,
+			fingerprint: `oversized-key-${index}`,
+			displayName: `Oversized Device ${index}`,
+			enabled: true,
+		}));
+		const prepare = vi.spyOn(db, "prepare");
+
+		expect(() =>
+			refreshLegacyTeamCandidate(
+				db,
+				input,
+				legacyTeamCandidateId(group.coordinatorId, group.groupId),
+			),
+		).toThrow("legacy_team_setup_roster_too_large");
+		expect(
+			prepare.mock.calls.some(([sql]) =>
+				String(sql).includes("SELECT identity_id FROM identity_devices"),
+			),
+		).toBe(false);
+		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(0);
 	});
 
 	it("retains coordinator-backed ambiguous Projects without exposing public Team intent", () => {

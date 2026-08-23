@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { Database } from "./db.js";
 import { isLegacyTeamProjectCanonicalStateValid } from "./legacy-team-project-canonical-preflight.js";
 import {
+	requireLegacyTeamSetupEffectiveDevicesWithinLimit,
+	requireLegacyTeamSetupSnapshotWithinLimits,
+} from "./legacy-team-setup-limits.js";
+import {
 	compareCodepoints,
 	deterministicPolicyTeamId,
 	legacyTeamRosterFingerprint,
@@ -738,12 +742,26 @@ function storedAssignmentEvidenceMatches(
 		});
 }
 
+/**
+ * Creates or refreshes a bounded setup attempt.
+ *
+ * @throws `legacy_team_setup_roster_too_large` when the supplied snapshot or
+ * its effective Device union exceeds the shared activation limits.
+ * @throws `legacy_team_setup_time_invalid` when `now` is not a valid timestamp.
+ */
 export function refreshLegacyTeamSetupDraft(
 	db: Database,
 	input: LegacyTeamSetupDraftSnapshotInput,
 ): LegacyTeamSetupDraftView {
+	requireLegacyTeamSetupSnapshotWithinLimits(input);
 	const now = validatedNow(input.now);
 	return db.transaction(() => {
+		const existing = currentDraft(db, input.candidateId);
+		requireLegacyTeamSetupEffectiveDevicesWithinLimit(
+			db,
+			input.devices,
+			existing?.attempt_id ?? null,
+		);
 		const assignmentSnapshots = input.devices.map((device) => ({
 			device,
 			assignment: assignmentForDevice(db, device.deviceId),
@@ -758,7 +776,6 @@ export function refreshLegacyTeamSetupDraft(
 		}));
 		const rosterFingerprint = legacyTeamRosterFingerprint(assignments);
 		const projectFingerprint = legacyTeamProjectionFingerprint(input.projects);
-		const existing = currentDraft(db, input.candidateId);
 		if (
 			existing &&
 			(existing.state === "needs_setup" || existing.state === "in_progress") &&
