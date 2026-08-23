@@ -563,6 +563,35 @@ describe("legacy Team setup activation", () => {
 		await expect(finish(draft, review)).resolves.toMatchObject({ status: "completed" });
 	});
 
+	it("rejects preview and finish for a mutable attempt superseded by a newer row", async () => {
+		// Arrange
+		const draft = readyDraft();
+		const review = preview(draft);
+		const replacement = refreshLegacyTeamSetupDraft(db, {
+			...snapshot(),
+			projects: [
+				...snapshot().projects,
+				{
+					projectRef: "project-ref-c",
+					sourceProjectIdentity: "https://git.example.invalid/acme/worker.git",
+					displayName: "Worker",
+					sourceFingerprint: "source-c",
+					deterministicProjectIdentity: "https://git.example.invalid/acme/worker.git",
+				},
+			],
+		});
+		expect(replacement.attemptId).not.toBe(draft.attemptId);
+		db.prepare(
+			"UPDATE legacy_team_setup_drafts SET state = 'in_progress' WHERE attempt_id = ?",
+		).run(draft.attemptId);
+
+		// Act / Assert
+		expect(() => preview(draft)).toThrow("team_setup_confirmation_stale");
+		await expect(finish(draft, review)).rejects.toThrow("team_setup_confirmation_stale");
+		expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_completions").pluck().get()).toBe(0);
+	});
+
 	it("rejects a changed roster and fetches it before opening the SQLite write transaction", async () => {
 		// Arrange
 		const draft = readyDraft();

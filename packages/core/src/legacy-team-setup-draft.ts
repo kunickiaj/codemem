@@ -755,7 +755,7 @@ export function refreshLegacyTeamSetupDraft(
 ): LegacyTeamSetupDraftView {
 	requireLegacyTeamSetupSnapshotWithinLimits(input);
 	const now = validatedNow(input.now);
-	return db.transaction(() => {
+	const refresh = db.transaction(() => {
 		const existing = currentDraft(db, input.candidateId);
 		requireLegacyTeamSetupEffectiveDevicesWithinLimit(
 			db,
@@ -837,6 +837,13 @@ export function refreshLegacyTeamSetupDraft(
 				 SET state = 'stale', superseded_at = ?, updated_at = ?
 				 WHERE attempt_id = ?`,
 			).run(now, now, existing.attempt_id);
+		} else if (existing?.state === "completed") {
+			// Completion remains historical authorization evidence for migration
+			// validation; insertion order makes the replacement authoritative.
+			db.prepare(
+				`UPDATE legacy_team_setup_drafts
+				 SET superseded_at = ?, updated_at = ? WHERE attempt_id = ?`,
+			).run(now, now, existing.attempt_id);
 		}
 		const attemptId = createAttempt(
 			db,
@@ -847,7 +854,8 @@ export function refreshLegacyTeamSetupDraft(
 			now,
 		);
 		return persistFinishDigest(db, attemptId);
-	})();
+	});
+	return refresh.immediate();
 }
 
 export function getLegacyTeamSetupDraft(
@@ -870,7 +878,7 @@ export function refreshLegacyTeamSetupDraftLabels(
 	input: Pick<LegacyTeamSetupDraftSnapshotInput, "displayName" | "devices" | "projects" | "now">,
 ): LegacyTeamSetupDraftView {
 	const now = validatedNow(input.now);
-	return db.transaction(() => {
+	const refreshLabels = db.transaction(() => {
 		const context = db
 			.prepare(
 				"SELECT candidate_id, coordinator_id, group_id FROM legacy_team_setup_drafts WHERE attempt_id = ?",
@@ -919,15 +927,25 @@ export function refreshLegacyTeamSetupDraftLabels(
 			);
 		}
 		return loadDraftView(db, attemptId);
-	})();
+	});
+	return refreshLabels.immediate();
 }
 
 function requireMutableAttempt(db: Database, attemptId: string): void {
 	const row = db
-		.prepare(`SELECT state FROM legacy_team_setup_drafts WHERE attempt_id = ?`)
-		.get(attemptId) as { state: LegacyTeamSetupDraftState } | undefined;
+		.prepare(
+			`SELECT draft.state,
+			        NOT EXISTS (
+			          SELECT 1 FROM legacy_team_setup_drafts AS newer
+			          WHERE newer.candidate_id = draft.candidate_id
+			            AND newer.rowid > draft.rowid
+			        ) AS is_current
+			 FROM legacy_team_setup_drafts AS draft
+			 WHERE draft.attempt_id = ?`,
+		)
+		.get(attemptId) as { state: LegacyTeamSetupDraftState; is_current: number } | undefined;
 	if (!row) throw new Error("legacy_team_setup_draft_not_found");
-	if (row.state !== "needs_setup" && row.state !== "in_progress") {
+	if (row.is_current === 0 || (row.state !== "needs_setup" && row.state !== "in_progress")) {
 		throw new Error("legacy_team_setup_draft_stale");
 	}
 }
@@ -943,7 +961,7 @@ export function setLegacyTeamSetupDeviceAssignment(
 	},
 ): LegacyTeamSetupDraftView {
 	const now = validatedNow(input.now);
-	return db.transaction(() => {
+	const mutateAssignment = db.transaction(() => {
 		requireMutableAttempt(db, input.attemptId);
 		const device = db
 			.prepare(
@@ -1011,7 +1029,8 @@ export function setLegacyTeamSetupDeviceAssignment(
 			`UPDATE legacy_team_setup_drafts SET state = 'in_progress', updated_at = ? WHERE attempt_id = ?`,
 		).run(now, input.attemptId);
 		return persistFinishDigest(db, input.attemptId);
-	})();
+	});
+	return mutateAssignment.immediate();
 }
 
 export function setLegacyTeamSetupDeviceDecision(
@@ -1031,7 +1050,7 @@ export function setLegacyTeamSetupDeviceDecision(
 		throw new Error("legacy_team_setup_decision_invalid");
 	}
 	const now = validatedNow(input.now);
-	return db.transaction(() => {
+	const mutateDecision = db.transaction(() => {
 		requireMutableAttempt(db, input.attemptId);
 		const device = db
 			.prepare(
@@ -1094,7 +1113,8 @@ export function setLegacyTeamSetupDeviceDecision(
 			`UPDATE legacy_team_setup_drafts SET state = 'in_progress', updated_at = ? WHERE attempt_id = ?`,
 		).run(now, input.attemptId);
 		return persistFinishDigest(db, input.attemptId);
-	})();
+	});
+	return mutateDecision.immediate();
 }
 
 export function setLegacyTeamSetupProjectMapping(
@@ -1140,7 +1160,7 @@ export function setLegacyTeamSetupProjectMapping(
 		throw new Error("legacy_team_setup_project_mapping_invalid");
 	}
 	const now = validatedNow(input.now);
-	return db.transaction(() => {
+	const mutateMapping = db.transaction(() => {
 		requireMutableAttempt(db, input.attemptId);
 		const project = db
 			.prepare(
@@ -1168,5 +1188,6 @@ export function setLegacyTeamSetupProjectMapping(
 			`UPDATE legacy_team_setup_drafts SET state = 'in_progress', updated_at = ? WHERE attempt_id = ?`,
 		).run(now, input.attemptId);
 		return persistFinishDigest(db, input.attemptId);
-	})();
+	});
+	return mutateMapping.immediate();
 }

@@ -199,6 +199,7 @@ describe("legacy Team setup drafts", () => {
 	});
 
 	it("binds the finish digest to its attempt even for equivalent replacements", () => {
+		// Arrange
 		const first = refreshLegacyTeamSetupDraft(db, snapshot());
 		db.prepare(
 			`UPDATE legacy_team_setup_drafts
@@ -206,13 +207,107 @@ describe("legacy Team setup drafts", () => {
 			 WHERE attempt_id = ?`,
 		).run(NOW, NOW, first.attemptId);
 
+		// Act
 		const second = refreshLegacyTeamSetupDraft(db, snapshot());
 
+		// Assert
 		expect(second.attemptId).not.toBe(first.attemptId);
 		// A confirmation token from the prior attempt is never valid for the
 		// replacement review cycle.
 		expect(second.finishDigest).not.toBe(first.finishDigest);
+		expect(
+			db
+				.prepare(
+					`SELECT state, superseded_at FROM legacy_team_setup_drafts
+					 WHERE attempt_id = ?`,
+				)
+				.get(first.attemptId),
+		).toEqual({ state: "completed", superseded_at: NOW });
 		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(2);
+	});
+
+	describe.each([
+		"needs_setup",
+		"in_progress",
+	] as const)("with an older non-current attempt manually left %s", (state) => {
+		it.each([
+			[
+				"device assignment",
+				(draft: ReturnType<typeof refreshLegacyTeamSetupDraft>) =>
+					setLegacyTeamSetupDeviceAssignment(db, {
+						attemptId: draft.attemptId,
+						deviceRef: draft.devices[0]?.deviceRef as string,
+						targetIdentityId: "identity-a",
+						expectation: { kind: "absent" },
+						now: NOW,
+					}),
+			],
+			[
+				"device decision",
+				(draft: ReturnType<typeof refreshLegacyTeamSetupDraft>) =>
+					setLegacyTeamSetupDeviceDecision(db, {
+						attemptId: draft.attemptId,
+						deviceRef: draft.devices[0]?.deviceRef as string,
+						decision: "excluded",
+						now: NOW,
+					}),
+			],
+			[
+				"Project mapping",
+				(draft: ReturnType<typeof refreshLegacyTeamSetupDraft>) =>
+					setLegacyTeamSetupProjectMapping(db, {
+						attemptId: draft.attemptId,
+						projectRef: "project-ref-b",
+						resolvedProjectIdentity: "https://example.invalid/repo-b.git",
+						now: NOW,
+					}),
+			],
+		] as const)("rejects %s mutations", (_label, mutate) => {
+			// Arrange
+			const older = refreshLegacyTeamSetupDraft(db, snapshot());
+			const current = refreshLegacyTeamSetupDraft(db, snapshot({ fingerprint: `key-${state}` }));
+			db.prepare("UPDATE legacy_team_setup_drafts SET state = ? WHERE attempt_id = ?").run(
+				state,
+				older.attemptId,
+			);
+			const before = {
+				device: db
+					.prepare(
+						`SELECT decision, target_identity_id FROM legacy_team_setup_draft_devices
+						 WHERE attempt_id = ? AND device_ref = ?`,
+					)
+					.get(older.attemptId, older.devices[0]?.deviceRef),
+				project: db
+					.prepare(
+						`SELECT resolution_kind, resolved_project_identity
+						 FROM legacy_team_setup_draft_projects
+						 WHERE attempt_id = ? AND project_ref = 'project-ref-b'`,
+					)
+					.get(older.attemptId),
+			};
+
+			// Act
+			const act = () => mutate(older);
+
+			// Assert
+			expect(act).toThrow("legacy_team_setup_draft_stale");
+			expect(getLegacyTeamSetupDraft(db, CANDIDATE)?.attemptId).toBe(current.attemptId);
+			expect({
+				device: db
+					.prepare(
+						`SELECT decision, target_identity_id FROM legacy_team_setup_draft_devices
+						 WHERE attempt_id = ? AND device_ref = ?`,
+					)
+					.get(older.attemptId, older.devices[0]?.deviceRef),
+				project: db
+					.prepare(
+						`SELECT resolution_kind, resolved_project_identity
+						 FROM legacy_team_setup_draft_projects
+						 WHERE attempt_id = ? AND project_ref = 'project-ref-b'`,
+					)
+					.get(older.attemptId),
+			}).toEqual(before);
+		});
 	});
 
 	it.each([
@@ -359,7 +454,12 @@ describe("legacy Team setup drafts", () => {
 
 		const second = refreshLegacyTeamSetupDraft(db, snapshot());
 
-		expect(second.rosterFingerprint).toBe(first.rosterFingerprint);
+		const rosterFingerprint = (attemptId: string) =>
+			db
+				.prepare("SELECT roster_fingerprint FROM legacy_team_setup_drafts WHERE attempt_id = ?")
+				.pluck()
+				.get(attemptId);
+		expect(rosterFingerprint(second.attemptId)).toBe(rosterFingerprint(first.attemptId));
 		expect(second.attemptId).not.toBe(first.attemptId);
 		expect(second.devices[0]?.expectation).toEqual({
 			kind: "existing",

@@ -346,15 +346,20 @@ function compareText(left: string, right: string): number {
 function loadModel(db: Database, input: PreviewLegacyTeamSetupActivationInput): ActivationModel {
 	const draft = db
 		.prepare(
-			`SELECT attempt_id, candidate_id, coordinator_id, group_id, state, display_name,
-			        roster_fingerprint, projection_fingerprint, finish_digest
-			 FROM legacy_team_setup_drafts WHERE attempt_id = ?`,
+			`SELECT draft.attempt_id, draft.candidate_id, draft.coordinator_id, draft.group_id,
+			        draft.state, draft.display_name, draft.roster_fingerprint,
+			        draft.projection_fingerprint, draft.finish_digest,
+			        NOT EXISTS (
+			          SELECT 1 FROM legacy_team_setup_drafts AS newer
+			          WHERE newer.candidate_id = draft.candidate_id AND newer.rowid > draft.rowid
+			        ) AS is_current
+			 FROM legacy_team_setup_drafts AS draft WHERE draft.attempt_id = ?`,
 		)
-		.get(input.attemptId) as DraftRow | undefined;
+		.get(input.attemptId) as (DraftRow & { is_current: number }) | undefined;
 	if (!draft || draft.candidate_id !== input.candidateRef) {
 		activationError("team_setup_confirmation_stale");
 	}
-	if (draft.state !== "needs_setup" && draft.state !== "in_progress") {
+	if (draft.is_current === 0 || (draft.state !== "needs_setup" && draft.state !== "in_progress")) {
 		activationError("team_setup_confirmation_stale");
 	}
 
