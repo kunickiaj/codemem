@@ -7,6 +7,7 @@ import {
 import { RECIPIENT_POLICY_CONTRACT_VERSION } from "./recipient-policy-contract.js";
 import {
 	canonicalRecipientPolicyJson,
+	compareCodepoints,
 	deterministicPolicyTeamId,
 	legacyRecipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
@@ -54,9 +55,14 @@ interface StoredResolution {
 }
 
 interface IntentRow {
-	table: "policy_teams" | "policy_team_memberships" | "identity_devices" | "project_recipients";
+	table: "identity_devices" | "project_recipients";
 	key: Record<string, string>;
 	values: Record<string, string | null>;
+	compatibleEvidence?: IntentRow[];
+	releasedV1Metadata?: {
+		revision: string;
+		idempotencyKey: string;
+	};
 }
 
 interface ActorRow {
@@ -86,6 +92,52 @@ const NO_OP_DECISIONS = new Set([
 	"remove_stale_device",
 ]);
 
+const INTENT_ROW_SCHEMAS: Record<
+	IntentRow["table"],
+	{
+		keyColumns: readonly string[];
+		valueColumns: ReadonlySet<string>;
+		semanticColumns: readonly string[];
+	}
+> = {
+	identity_devices: {
+		keyColumns: ["device_id"],
+		valueColumns: new Set([
+			"identity_id",
+			"display_name",
+			"status",
+			"provenance",
+			"revision",
+			"migration_state",
+			"source_fingerprint",
+			"idempotency_key",
+			"created_at",
+			"updated_at",
+		]),
+		semanticColumns: ["identity_id", "display_name", "status"],
+	},
+	project_recipients: {
+		keyColumns: ["canonical_project_identity", "recipient_kind", "recipient_id"],
+		valueColumns: new Set([
+			"status",
+			"provenance",
+			"policy_revision",
+			"migration_state",
+			"source_fingerprint",
+			"idempotency_key",
+			"created_at",
+			"updated_at",
+		]),
+		semanticColumns: ["status"],
+	},
+};
+
+const MIGRATION_EVIDENCE_PROVENANCE_RANK = new Map([
+	["exact_project_invite", 0],
+	["managed_exact_project", 0],
+	["review_resolution", 1],
+]);
+
 function digest(prefix: string, value: unknown): string {
 	return legacyRecipientPolicyDigest(prefix, value);
 }
@@ -95,13 +147,25 @@ export { deterministicPolicyTeamId } from "./recipient-policy-identifiers.js";
 function relationshipMetadata(
 	kind: string,
 	identity: unknown,
+	provenance: string,
+	sourceFingerprint: string | null,
 ): {
 	revision: string;
 	idempotencyKey: string;
+	releasedV1Metadata: { revision: string; idempotencyKey: string };
 } {
+	const evidenceBoundIdentity = {
+		identity,
+		provenance,
+		sourceFingerprint,
+	};
 	return {
-		revision: digest(`recipient-policy-${kind}-revision-v1`, identity),
-		idempotencyKey: digest(`recipient-policy-${kind}-idempotency-v1`, identity),
+		revision: digest(`recipient-policy-${kind}-revision-v2`, evidenceBoundIdentity),
+		idempotencyKey: digest(`recipient-policy-${kind}-idempotency-v2`, evidenceBoundIdentity),
+		releasedV1Metadata: {
+			revision: digest(`recipient-policy-${kind}-revision-v1`, identity),
+			idempotencyKey: digest(`recipient-policy-${kind}-idempotency-v1`, identity),
+		},
 	};
 }
 
@@ -133,12 +197,18 @@ function projectRecipientRow(input: {
 	now: string;
 }): IntentRow {
 	const identity = [input.projectId, input.recipientKind, input.recipientId];
-	const metadata = relationshipMetadata("project-recipient", identity);
+	const sourceFingerprint = input.sourceFingerprint ?? null;
+	const metadata = relationshipMetadata(
+		"project-recipient",
+		identity,
+		input.provenance,
+		sourceFingerprint,
+	);
 	const values = baseValues({
 		provenance: input.provenance,
 		revision: metadata.revision,
 		idempotencyKey: metadata.idempotencyKey,
-		sourceFingerprint: input.sourceFingerprint,
+		sourceFingerprint,
 		now: input.now,
 	});
 	const { revision, ...withoutRevision } = values;
@@ -150,6 +220,7 @@ function projectRecipientRow(input: {
 			recipient_id: input.recipientId,
 		},
 		values: { ...withoutRevision, policy_revision: revision },
+		releasedV1Metadata: metadata.releasedV1Metadata,
 	};
 }
 
@@ -161,7 +232,16 @@ function identityDeviceRow(input: {
 	sourceFingerprint?: string | null;
 	now: string;
 }): IntentRow {
-	const metadata = relationshipMetadata("identity-device", [input.deviceId, input.identityId]);
+	const sourceFingerprint = input.sourceFingerprint ?? null;
+	const metadata = relationshipMetadata(
+		"identity-device",
+		[input.deviceId, input.identityId],
+		input.provenance,
+		// Device assignment is global and may be authorized by more than one
+		// Project resolution. Project-specific source evidence remains stored for
+		// audit, but cannot define the global relationship's stable metadata.
+		null,
+	);
 	return {
 		table: "identity_devices",
 		key: { device_id: input.deviceId },
@@ -172,10 +252,11 @@ function identityDeviceRow(input: {
 				provenance: input.provenance,
 				revision: metadata.revision,
 				idempotencyKey: metadata.idempotencyKey,
-				sourceFingerprint: input.sourceFingerprint,
+				sourceFingerprint,
 				now: input.now,
 			}),
 		},
+		releasedV1Metadata: metadata.releasedV1Metadata,
 	};
 }
 
@@ -470,11 +551,133 @@ function addReviewDecision(
 	return "review_decision_unsupported";
 }
 
-function rowWhere(key: Record<string, string>): { clause: string; parameters: string[] } {
-	const entries = Object.entries(key);
+function collectCompatibleDeviceEvidence(input: {
+	db: Database;
+	context: RecipientPolicyReviewContext;
+	projections: LegacyRecipientPolicyProjectionV1[];
+	currentItemsByProject: ReadonlyMap<string, RecipientPolicyActionableReviewItemV1[]>;
+	resolutionBySource: ReadonlyMap<string, StoredResolution>;
+	now: string;
+}): Map<string, IntentRow[]> {
+	const evidence = new Map<string, IntentRow[]>();
+	for (const projection of input.projections) {
+		const currentItems =
+			input.currentItemsByProject.get(projection.project.canonicalIdentity) ?? [];
+		const matchingResolutions = currentItems.map((currentItem) =>
+			input.resolutionBySource.get(
+				`${currentItem.reviewItemId}\u0000${currentItem.sourceFingerprint}`,
+			),
+		);
+		if (
+			matchingResolutions.some((resolution) => !resolution) ||
+			matchingResolutions.some((resolution) => resolution?.decision === "preserve_current_access")
+		) {
+			continue;
+		}
+		const plan: ProjectPlan = { rows: [], actors: [], hadApplicableEvidence: false };
+		try {
+			if (
+				addAutomaticOperationEvidence(
+					input.db,
+					plan,
+					projection,
+					input.context.localActorId,
+					input.now,
+				) !== null
+			) {
+				continue;
+			}
+			let reviewEvidenceValid = true;
+			for (const [index, resolution] of matchingResolutions.entries()) {
+				const currentItem = currentItems[index];
+				if (
+					!resolution ||
+					!currentItem?.options.some((option) => option.decision === resolution.decision) ||
+					addReviewDecision(
+						input.db,
+						plan,
+						projection,
+						currentItem,
+						resolution,
+						input.context,
+						input.now,
+					) !== null
+				) {
+					reviewEvidenceValid = false;
+					break;
+				}
+			}
+			if (!reviewEvidenceValid) continue;
+		} catch (error) {
+			// Evidence indexing is fail-closed; project migration still reports
+			// the authoritative validation error from its savepoint below.
+			if (projectMigrationErrorCode(error) === null) throw error;
+			continue;
+		}
+		let viablePlan: ProjectPlan;
+		try {
+			viablePlan = deduplicatePlan(plan);
+		} catch (error) {
+			if (projectMigrationErrorCode(error) === null) throw error;
+			continue;
+		}
+		for (const row of viablePlan.rows) {
+			if (row.table !== "identity_devices") continue;
+			const deviceId = row.key.device_id;
+			const identityId = row.values.identity_id;
+			if (typeof deviceId !== "string" || typeof identityId !== "string") continue;
+			const key = deviceRelationshipKey(deviceId, identityId);
+			const candidates = evidence.get(key) ?? [];
+			candidates.push(...intentEvidenceCandidates(row));
+			evidence.set(key, candidates);
+		}
+	}
+	return evidence;
+}
+
+/** Internal module boundary exported for direct security regression coverage. */
+export function assertAllowedRecipientPolicyIntentRow(row: IntentRow): void {
+	if (!Object.hasOwn(INTENT_ROW_SCHEMAS, row.table)) throw new Error("intent_conflict");
+	const schema = INTENT_ROW_SCHEMAS[row.table];
+	const keyColumns = Object.keys(row.key);
+	const valueColumns = Object.keys(row.values);
+	if (
+		keyColumns.length !== schema.keyColumns.length ||
+		schema.keyColumns.some((column) => !Object.hasOwn(row.key, column)) ||
+		keyColumns.some((column) => typeof row.key[column] !== "string") ||
+		valueColumns.length === 0 ||
+		valueColumns.some((column) => !schema.valueColumns.has(column)) ||
+		keyColumns.some((column) => Object.hasOwn(row.values, column))
+	) {
+		throw new Error("intent_conflict");
+	}
+	const provenance = row.values.provenance;
+	const sourceFingerprint = row.values.source_fingerprint;
+	const automaticProvenance =
+		row.table === "identity_devices" ? "managed_exact_project" : "exact_project_invite";
+	if (
+		(provenance !== automaticProvenance && provenance !== "review_resolution") ||
+		(provenance === "review_resolution"
+			? typeof sourceFingerprint !== "string"
+			: sourceFingerprint !== null)
+	) {
+		throw new Error(
+			row.table === "identity_devices" ? "device_identity_conflict" : "intent_conflict",
+		);
+	}
+}
+
+function rowWhere(row: IntentRow): { clause: string; parameters: string[] } {
+	assertAllowedRecipientPolicyIntentRow(row);
+	const entries = INTENT_ROW_SCHEMAS[row.table].keyColumns.map(
+		(column) => [column, row.key[column]] as const,
+	);
 	return {
 		clause: entries.map(([column]) => `${column} = ?`).join(" AND "),
-		parameters: entries.map(([, value]) => value),
+		parameters: entries.map(([, value]) => {
+			if (typeof value !== "string") throw new Error("intent_conflict");
+			return value;
+		}),
 	};
 }
 
@@ -517,6 +720,44 @@ function requiredIntentValue(row: IntentRow, column: string): string {
 	return value;
 }
 
+function intentEvidenceCandidates(row: IntentRow): IntentRow[] {
+	const { compatibleEvidence, ...primary } = row;
+	return [primary, ...(compatibleEvidence ?? [])];
+}
+
+function deviceRelationshipKey(deviceId: string, identityId: string): string {
+	return canonicalRecipientPolicyJson({ deviceId, identityId });
+}
+
+function relationshipMetadataMatches(
+	existing: Record<string, unknown>,
+	row: IntentRow,
+	revisionColumn: "revision" | "policy_revision",
+): boolean {
+	const evidenceMatches =
+		existing.provenance === row.values.provenance &&
+		(existing.source_fingerprint ?? null) === (row.values.source_fingerprint ?? null);
+	if (!evidenceMatches) return false;
+	const currentMetadataMatches =
+		existing[revisionColumn] === row.values[revisionColumn] &&
+		existing.idempotency_key === row.values.idempotency_key;
+	const releasedV1MetadataMatches =
+		row.releasedV1Metadata !== undefined &&
+		existing[revisionColumn] === row.releasedV1Metadata.revision &&
+		existing.idempotency_key === row.releasedV1Metadata.idempotencyKey;
+	return currentMetadataMatches || releasedV1MetadataMatches;
+}
+
+function relationshipMetadataMatchesAny(
+	existing: Record<string, unknown>,
+	row: IntentRow,
+	revisionColumn: "revision" | "policy_revision",
+): boolean {
+	return intentEvidenceCandidates(row).some((candidate) =>
+		relationshipMetadataMatches(existing, candidate, revisionColumn),
+	);
+}
+
 /**
  * Guided setup can reassign a pre-existing device row, which preserves that
  * row's original provenance and revision (`assignIdentityDeviceInTransaction`
@@ -544,13 +785,21 @@ function hasCompletedSetupAssignmentEvidence(
 	);
 }
 
-function validateOrAssignIdentityDevice(db: Database, row: IntentRow, write: boolean): boolean {
+function validateOrAssignIdentityDevice(
+	db: Database,
+	row: IntentRow,
+	write: boolean,
+	compatibleDeviceEvidence: ReadonlyMap<string, IntentRow[]>,
+): boolean {
+	if (row.table !== "identity_devices") throw new Error("intent_conflict");
+	assertAllowedRecipientPolicyIntentRow(row);
 	const deviceId = row.key.device_id;
 	if (!deviceId) throw new Error("intent_conflict");
 	const identityId = requiredIntentValue(row, "identity_id");
 	const existing = db
 		.prepare(
-			`SELECT identity_id, assignment_version, status, revision, provenance
+			`SELECT identity_id, assignment_version, status, revision, provenance,
+			        source_fingerprint, idempotency_key
 			 FROM identity_devices WHERE device_id = ?`,
 		)
 		.get(deviceId) as
@@ -560,6 +809,8 @@ function validateOrAssignIdentityDevice(db: Database, row: IntentRow, write: boo
 				status: string;
 				revision: string;
 				provenance: string;
+				source_fingerprint: string | null;
+				idempotency_key: string;
 		  }
 		| undefined;
 	if (existing) {
@@ -569,14 +820,16 @@ function validateOrAssignIdentityDevice(db: Database, row: IntentRow, write: boo
 		// may also have reassigned a row created by another flow — that row
 		// keeps its old provenance and revision, so completion-bound draft
 		// evidence is what proves the assignment was reviewed.
-		const revisionCompatible =
-			existing.revision === requiredIntentValue(row, "revision") ||
+		const setupCompatible =
 			existing.provenance === "reviewed_team_setup" ||
 			hasCompletedSetupAssignmentEvidence(db, deviceId, identityId);
+		const currentEvidenceMatches = (
+			compatibleDeviceEvidence.get(deviceRelationshipKey(deviceId, identityId)) ?? []
+		).some((candidate) => relationshipMetadataMatches(existing, candidate, "revision"));
 		if (
 			existing.identity_id !== identityId ||
 			existing.status !== requiredIntentValue(row, "status") ||
-			!revisionCompatible
+			(!setupCompatible && !currentEvidenceMatches)
 		) {
 			throw new Error("device_identity_conflict");
 		}
@@ -614,8 +867,8 @@ function validateOrAssignIdentityDevice(db: Database, row: IntentRow, write: boo
 }
 
 function validateOrWriteRow(db: Database, row: IntentRow, write: boolean): boolean {
-	if (row.table === "identity_devices") throw new Error("intent_conflict");
-	const where = rowWhere(row.key);
+	if (row.table !== "project_recipients") throw new Error("intent_conflict");
+	const where = rowWhere(row);
 	const existing = db
 		.prepare(`SELECT * FROM ${row.table} WHERE ${where.clause}`)
 		.get(...where.parameters) as Record<string, unknown> | undefined;
@@ -625,20 +878,16 @@ function validateOrWriteRow(db: Database, row: IntentRow, write: boolean): boole
 		// satisfies the migration intent without requiring the migration
 		// revision, matching the device-row handling above.
 		if (
-			row.table === "project_recipients" &&
 			existing.provenance === "reviewed_team_setup" &&
 			existing.status === "active" &&
 			row.values.status === "active"
 		) {
 			return false;
 		}
-		const relationshipColumns =
-			row.table === "project_recipients"
-				? ["status", "policy_revision"]
-				: row.table === "policy_team_memberships"
-					? ["role", "status", "revision"]
-					: ["status", "revision"];
-		if (relationshipColumns.some((column) => existing[column] !== row.values[column])) {
+		if (
+			existing.status !== row.values.status ||
+			!relationshipMetadataMatchesAny(existing, row, "policy_revision")
+		) {
 			throw new Error("intent_conflict");
 		}
 		return false;
@@ -653,27 +902,79 @@ function validateOrWriteRow(db: Database, row: IntentRow, write: boolean): boole
 	return true;
 }
 
+function intentRowConflict(row: IntentRow): string {
+	return row.table === "identity_devices" ? "device_identity_conflict" : "intent_conflict";
+}
+
+function intentEvidenceKey(row: IntentRow): string {
+	const revisionColumn = row.table === "identity_devices" ? "revision" : "policy_revision";
+	return canonicalRecipientPolicyJson({
+		provenance: requiredIntentValue(row, "provenance"),
+		sourceFingerprint: row.values.source_fingerprint,
+		revision: requiredIntentValue(row, revisionColumn),
+		idempotencyKey: requiredIntentValue(row, "idempotency_key"),
+	});
+}
+
+function preferredIntentEvidence(left: IntentRow, right: IntentRow): IntentRow {
+	const conflict = intentRowConflict(left);
+	const leftProvenance = requiredIntentValue(left, "provenance");
+	const rightProvenance = requiredIntentValue(right, "provenance");
+	const leftRank = MIGRATION_EVIDENCE_PROVENANCE_RANK.get(leftProvenance);
+	const rightRank = MIGRATION_EVIDENCE_PROVENANCE_RANK.get(rightProvenance);
+	if (leftRank === undefined || rightRank === undefined) throw new Error(conflict);
+	if (leftRank !== rightRank) return leftRank < rightRank ? left : right;
+
+	const leftFingerprint = left.values.source_fingerprint as string | null;
+	const rightFingerprint = right.values.source_fingerprint as string | null;
+	if (leftFingerprint !== rightFingerprint) {
+		// The row-boundary provenance check makes this unreachable; retain the
+		// guard so future provenance additions cannot weaken selection silently.
+		if (leftFingerprint === null || rightFingerprint === null) throw new Error(conflict);
+		return compareCodepoints(leftFingerprint, rightFingerprint) < 0 ? left : right;
+	}
+
+	const idempotencyOrder = compareCodepoints(
+		requiredIntentValue(left, "idempotency_key"),
+		requiredIntentValue(right, "idempotency_key"),
+	);
+	if (idempotencyOrder !== 0) return idempotencyOrder < 0 ? left : right;
+	return compareCodepoints(intentEvidenceKey(left), intentEvidenceKey(right)) <= 0 ? left : right;
+}
+
+function mergeCompatibleIntentEvidence(left: IntentRow, right: IntentRow): IntentRow {
+	const candidatesByEvidence = new Map<string, IntentRow>();
+	for (const candidate of [...intentEvidenceCandidates(left), ...intentEvidenceCandidates(right)]) {
+		candidatesByEvidence.set(intentEvidenceKey(candidate), candidate);
+	}
+	const candidates = [...candidatesByEvidence.values()];
+	const preferred = candidates.reduce(preferredIntentEvidence);
+	return {
+		...preferred,
+		compatibleEvidence: candidates.filter((candidate) => candidate !== preferred),
+	};
+}
+
 function deduplicatePlan(plan: ProjectPlan): ProjectPlan {
 	const rows = new Map<string, IntentRow>();
 	for (const row of plan.rows) {
+		assertAllowedRecipientPolicyIntentRow(row);
 		const key = `${row.table}:${canonicalRecipientPolicyJson(row.key)}`;
 		const existing = rows.get(key);
 		if (existing) {
-			const relationshipColumns =
-				row.table === "identity_devices"
-					? ["identity_id", "status", "revision"]
-					: row.table === "project_recipients"
-						? ["status", "policy_revision"]
-						: row.table === "policy_team_memberships"
-							? ["role", "status", "revision"]
-							: ["status", "revision"];
-			if (relationshipColumns.some((column) => existing.values[column] !== row.values[column])) {
-				throw new Error(
-					row.table === "identity_devices" ? "device_identity_conflict" : "intent_conflict",
-				);
+			if (
+				INTENT_ROW_SCHEMAS[row.table].semanticColumns.some(
+					(column) => existing.values[column] !== row.values[column],
+				)
+			) {
+				throw new Error(intentRowConflict(row));
 			}
 		}
-		rows.set(key, existing ?? row);
+		// Keep one complete, valid authorization record rather than synthesizing
+		// metadata that no source actually authorized. Automatic operation evidence
+		// is stable across review churn; matching reviews use fingerprint then
+		// idempotency-key order.
+		rows.set(key, existing ? mergeCompatibleIntentEvidence(existing, row) : row);
 	}
 	const actors = new Map<string, ActorRow>();
 	for (const actor of plan.actors) {
@@ -685,7 +986,7 @@ function deduplicatePlan(plan: ProjectPlan): ProjectPlan {
 	return { ...plan, rows: [...rows.values()], actors: [...actors.values()] };
 }
 
-function safeMigrationErrorCode(error: unknown): string {
+function projectMigrationErrorCode(error: unknown): string | null {
 	const allowed = new Set([
 		"reviewed_project_set_digest_mismatch",
 		"linked_identity_invalid",
@@ -702,22 +1003,149 @@ function safeMigrationErrorCode(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
 	if (allowed.has(message)) return message;
 	if (message === "team_setup_assignment_changed") return "device_identity_conflict";
-	const code =
-		error && typeof error === "object" && "code" in error
-			? String((error as { code?: unknown }).code ?? "")
-			: "";
-	if (code === "SQLITE_BUSY") return "migration_busy";
-	if (code.startsWith("SQLITE_CONSTRAINT")) return "intent_conflict";
-	return "migration_failed";
+	return null;
 }
 
-export function migrateRecipientPolicyIntent(
+function migrateProjectInTransaction(input: {
+	db: Database;
+	context: RecipientPolicyReviewContext;
+	projection: LegacyRecipientPolicyProjectionV1;
+	currentItems: RecipientPolicyActionableReviewItemV1[];
+	resolutions: StoredResolution[];
+	resolutionBySource: Map<string, StoredResolution>;
+	compatibleDeviceEvidence: ReadonlyMap<string, IntentRow[]>;
+	now: string;
+	write: boolean;
+}): RecipientPolicyMigrationProjectResultV1 {
+	const {
+		db,
+		context,
+		projection,
+		currentItems,
+		resolutions,
+		resolutionBySource,
+		compatibleDeviceEvidence,
+		now,
+		write,
+	} = input;
+	const projectId = projection.project.canonicalIdentity;
+	const matchingResolutions = currentItems.map((item) =>
+		resolutionBySource.get(`${item.reviewItemId}\u0000${item.sourceFingerprint}`),
+	);
+	if (matchingResolutions.some((resolution) => !resolution)) {
+		const hasStaleResolution = currentItems.some((item) =>
+			resolutions.some(
+				(resolution) =>
+					resolution.review_item_id === item.reviewItemId &&
+					resolution.source_fingerprint !== item.sourceFingerprint,
+			),
+		);
+		return {
+			canonicalProjectIdentity: projectId,
+			status: "skipped",
+			writeCount: 0,
+			idempotent: false,
+			errorCode: hasStaleResolution ? "review_resolution_stale" : "review_resolution_missing",
+		};
+	}
+	let plan: ProjectPlan = { rows: [], actors: [], hadApplicableEvidence: false };
+	const preserveResolutions = matchingResolutions
+		.map((resolution, index) => ({ resolution, currentItem: currentItems[index] }))
+		.filter(
+			(
+				entry,
+			): entry is {
+				resolution: StoredResolution;
+				currentItem: RecipientPolicyActionableReviewItemV1;
+			} => entry.resolution?.decision === "preserve_current_access" && entry.currentItem != null,
+		);
+	for (const { resolution, currentItem } of preserveResolutions) {
+		if (!currentItem.options.some((option) => option.decision === resolution.decision)) {
+			throw new Error("review_decision_unsupported");
+		}
+		const reviewError = addReviewDecision(
+			db,
+			plan,
+			projection,
+			currentItem,
+			resolution,
+			context,
+			now,
+		);
+		if (reviewError !== "review_preserves_legacy_access") {
+			throw new Error(reviewError ?? "review_decision_unsupported");
+		}
+	}
+	if (preserveResolutions.length > 0) {
+		return {
+			canonicalProjectIdentity: projectId,
+			status: "skipped",
+			writeCount: 0,
+			idempotent: true,
+			errorCode: "review_preserves_legacy_access",
+		};
+	}
+	const operationError = addAutomaticOperationEvidence(
+		db,
+		plan,
+		projection,
+		context.localActorId,
+		now,
+	);
+	if (operationError) throw new Error(operationError);
+	for (const [index, resolution] of matchingResolutions.entries()) {
+		if (!resolution) continue;
+		const currentItem = currentItems[index];
+		if (!currentItem?.options.some((option) => option.decision === resolution.decision)) {
+			throw new Error("review_decision_unsupported");
+		}
+		const reviewError = addReviewDecision(
+			db,
+			plan,
+			projection,
+			currentItem,
+			resolution,
+			context,
+			now,
+		);
+		if (reviewError) throw new Error(reviewError);
+	}
+	plan = deduplicatePlan(plan);
+	if (!plan.hadApplicableEvidence) {
+		return {
+			canonicalProjectIdentity: projectId,
+			status: "skipped",
+			writeCount: 0,
+			idempotent: false,
+			errorCode: "migration_evidence_missing",
+		};
+	}
+	let plannedWriteCount = 0;
+	for (const actor of plan.actors) {
+		if (validateOrWriteActor(db, actor, now, write)) plannedWriteCount += 1;
+	}
+	for (const row of plan.rows) {
+		const changed =
+			row.table === "identity_devices"
+				? validateOrAssignIdentityDevice(db, row, write, compatibleDeviceEvidence)
+				: validateOrWriteRow(db, row, write);
+		if (changed) plannedWriteCount += 1;
+	}
+	return {
+		canonicalProjectIdentity: projectId,
+		status: plannedWriteCount === 0 ? "unchanged" : write ? "migrated" : "would_migrate",
+		writeCount: write ? plannedWriteCount : 0,
+		idempotent: plannedWriteCount === 0,
+		errorCode: null,
+	};
+}
+
+function migrateRecipientPolicyIntentInTransaction(
 	db: Database,
 	context: RecipientPolicyReviewContext,
-	options: RecipientPolicyMigrationOptions = {},
+	dryRun: boolean,
+	now: string,
 ): RecipientPolicyMigrationResultV1 {
-	const dryRun = options.dryRun === true;
-	const now = (context.now ?? (() => new Date().toISOString()))();
 	const projections = listLegacyRecipientPolicyProjections(db, context);
 	const reviewState = deriveRecipientPolicyReviewState(db, context, projections);
 	const resolutions = db
@@ -732,7 +1160,7 @@ export function migrateRecipientPolicyIntent(
 			resolution,
 		]),
 	);
-	const currentItemsByProject = new Map<string, typeof reviewState.allReviewItems>();
+	const currentItemsByProject = new Map<string, RecipientPolicyActionableReviewItemV1[]>();
 	for (const item of reviewState.allReviewItems) {
 		const projectId = projectIdForReviewItem(item);
 		if (!projectId) continue;
@@ -740,137 +1168,61 @@ export function migrateRecipientPolicyIntent(
 		items.push(item);
 		currentItemsByProject.set(projectId, items);
 	}
+	// This index depends only on the stable review snapshot, never on writes made
+	// while individual Projects migrate below.
+	const compatibleDeviceEvidence = collectCompatibleDeviceEvidence({
+		db,
+		context,
+		projections,
+		currentItemsByProject,
+		resolutionBySource,
+		now,
+	});
 	const results: RecipientPolicyMigrationProjectResultV1[] = [];
 	for (const projection of projections) {
 		const projectId = projection.project.canonicalIdentity;
-		const currentItems = currentItemsByProject.get(projectId) ?? [];
-		const matchingResolutions = currentItems.map((item) =>
-			resolutionBySource.get(`${item.reviewItemId}\u0000${item.sourceFingerprint}`),
-		);
-		if (matchingResolutions.some((resolution) => !resolution)) {
-			const hasStaleResolution = currentItems.some((item) =>
-				resolutions.some(
-					(resolution) =>
-						resolution.review_item_id === item.reviewItemId &&
-						resolution.source_fingerprint !== item.sourceFingerprint,
-				),
-			);
-			results.push({
-				canonicalProjectIdentity: projectId,
-				status: "skipped",
-				writeCount: 0,
-				idempotent: false,
-				errorCode: hasStaleResolution ? "review_resolution_stale" : "review_resolution_missing",
-			});
-			continue;
-		}
 		try {
-			let plan: ProjectPlan = { rows: [], actors: [], hadApplicableEvidence: false };
-			const preserveResolutions = matchingResolutions
-				.map((resolution, index) => ({ resolution, currentItem: currentItems[index] }))
-				.filter(
-					(
-						entry,
-					): entry is {
-						resolution: StoredResolution;
-						currentItem: RecipientPolicyActionableReviewItemV1;
-					} =>
-						entry.resolution?.decision === "preserve_current_access" && entry.currentItem != null,
-				);
-			for (const { resolution, currentItem } of preserveResolutions) {
-				if (!currentItem.options.some((option) => option.decision === resolution.decision)) {
-					throw new Error("review_decision_unsupported");
-				}
-				const reviewError = addReviewDecision(
+			const migrateProject = db.transaction(() =>
+				migrateProjectInTransaction({
 					db,
-					plan,
-					projection,
-					currentItem,
-					resolution,
 					context,
+					projection,
+					currentItems: currentItemsByProject.get(projectId) ?? [],
+					resolutions,
+					resolutionBySource,
+					compatibleDeviceEvidence,
 					now,
-				);
-				if (reviewError !== "review_preserves_legacy_access") {
-					throw new Error(reviewError ?? "review_decision_unsupported");
-				}
-			}
-			if (preserveResolutions.length > 0) {
-				results.push({
-					canonicalProjectIdentity: projectId,
-					status: "skipped",
-					writeCount: 0,
-					idempotent: true,
-					errorCode: "review_preserves_legacy_access",
-				});
-				continue;
-			}
-			const operationError = addAutomaticOperationEvidence(
-				db,
-				plan,
-				projection,
-				context.localActorId,
-				now,
+					write: !dryRun,
+				}),
 			);
-			if (operationError) throw new Error(operationError);
-			for (const [index, resolution] of matchingResolutions.entries()) {
-				if (!resolution) continue;
-				const currentItem = currentItems[index];
-				if (!currentItem?.options.some((option) => option.decision === resolution.decision)) {
-					throw new Error("review_decision_unsupported");
-				}
-				const reviewError = addReviewDecision(
-					db,
-					plan,
-					projection,
-					currentItem,
-					resolution,
-					context,
-					now,
-				);
-				if (reviewError) throw new Error(reviewError);
-			}
-			plan = deduplicatePlan(plan);
-			if (!plan.hadApplicableEvidence) {
-				results.push({
-					canonicalProjectIdentity: projectId,
-					status: "skipped",
-					writeCount: 0,
-					idempotent: false,
-					errorCode: "migration_evidence_missing",
-				});
-				continue;
-			}
-			let plannedWriteCount = 0;
-			const apply = (write: boolean) => {
-				for (const actor of plan.actors) {
-					if (validateOrWriteActor(db, actor, now, write)) plannedWriteCount += 1;
-				}
-				for (const row of plan.rows) {
-					const changed =
-						row.table === "identity_devices"
-							? validateOrAssignIdentityDevice(db, row, write)
-							: validateOrWriteRow(db, row, write);
-					if (changed) plannedWriteCount += 1;
-				}
-			};
-			if (dryRun) apply(false);
-			else db.transaction(() => apply(true)).immediate();
-			results.push({
-				canonicalProjectIdentity: projectId,
-				status: plannedWriteCount === 0 ? "unchanged" : dryRun ? "would_migrate" : "migrated",
-				writeCount: dryRun ? 0 : plannedWriteCount,
-				idempotent: plannedWriteCount === 0,
-				errorCode: null,
-			});
+			results.push(migrateProject());
 		} catch (error) {
+			// Some SQLite failures abort the outer transaction, not only the
+			// savepoint. Never continue in autocommit after losing authority.
+			if (!db.inTransaction) throw error;
+			const errorCode = projectMigrationErrorCode(error);
+			if (!errorCode) throw error;
 			results.push({
 				canonicalProjectIdentity: projectId,
 				status: "blocked",
 				writeCount: 0,
 				idempotent: false,
-				errorCode: safeMigrationErrorCode(error),
+				errorCode,
 			});
 		}
 	}
 	return { version: RECIPIENT_POLICY_CONTRACT_VERSION, dryRun, results };
+}
+
+export function migrateRecipientPolicyIntent(
+	db: Database,
+	context: RecipientPolicyReviewContext,
+	options: RecipientPolicyMigrationOptions = {},
+): RecipientPolicyMigrationResultV1 {
+	const dryRun = options.dryRun === true;
+	const now = (context.now ?? (() => new Date().toISOString()))();
+	const migrate = db.transaction(() =>
+		migrateRecipientPolicyIntentInTransaction(db, context, dryRun, now),
+	);
+	return dryRun ? migrate.deferred() : migrate.immediate();
 }

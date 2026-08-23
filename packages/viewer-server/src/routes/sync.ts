@@ -5866,13 +5866,21 @@ export function syncRoutes(
 		) {
 			return c.json({ error: "request_invalid" }, 400);
 		}
-		return c.json(
-			migrateRecipientPolicyIntent(
-				store.db,
-				{ localActorId: store.actorId, localDeviceId: store.deviceId },
-				{ dryRun: body.dryRun === true },
-			),
-		);
+		try {
+			return c.json(
+				migrateRecipientPolicyIntent(
+					store.db,
+					{ localActorId: store.actorId, localDeviceId: store.deviceId },
+					{ dryRun: body.dryRun === true },
+				),
+			);
+		} catch (error) {
+			if (isSqliteBusy(error)) {
+				c.header("Retry-After", "1");
+				return c.json({ error: "migration_busy" }, 503);
+			}
+			return c.json({ error: "migration_failed" }, 500);
+		}
 	});
 
 	const parseReviewRequest = (value: unknown): RecipientPolicyReviewResolveRequestV1 | null => {

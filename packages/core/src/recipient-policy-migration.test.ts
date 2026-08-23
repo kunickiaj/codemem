@@ -1,9 +1,19 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { listLegacyRecipientPolicyProjections } from "./legacy-recipient-policy-projection.js";
-import { deterministicPolicyTeamId } from "./recipient-policy-identifiers.js";
+import {
+	compareCodepoints,
+	deterministicPolicyTeamId,
+	legacyRecipientPolicyDigest,
+} from "./recipient-policy-identifiers.js";
 import { listRecipientPolicyIntent } from "./recipient-policy-intent.js";
-import { migrateRecipientPolicyIntent } from "./recipient-policy-migration.js";
+import {
+	assertAllowedRecipientPolicyIntentRow,
+	migrateRecipientPolicyIntent,
+} from "./recipient-policy-migration.js";
 import {
 	listRecipientPolicyReview,
 	resolveRecipientPolicyReview,
@@ -115,6 +125,7 @@ function insertLinkedOperation(
 		projectId: string;
 		displayName: string;
 		recipientActorId: string;
+		recipientDeviceId?: string;
 		digestOverride?: string;
 		inviterActorId?: string;
 		accepted?: boolean;
@@ -146,7 +157,7 @@ function insertLinkedOperation(
 		reviewedDigest,
 		`invite-${input.operationId}`,
 		input.recipientActorId,
-		`device-${input.recipientActorId}`,
+		input.recipientDeviceId ?? `device-${input.recipientActorId}`,
 		input.accepted === false ? null : NOW,
 		NOW,
 		NOW,
@@ -178,17 +189,21 @@ function protectedSnapshot(db: InstanceType<typeof Database>): string {
 	);
 }
 
+function initializeMigrationDb(db: InstanceType<typeof Database>): void {
+	initTestSchema(db);
+	insertActor(db, LOCAL_ACTOR_ID, "Personal", true);
+	db.prepare(
+		`INSERT INTO sync_device(device_id, public_key, fingerprint, created_at)
+		 VALUES (?, 'local-key', 'transport-fingerprint', ?)`,
+	).run(LOCAL_DEVICE_ID, NOW);
+}
+
 describe("recipient policy intent migration", () => {
 	let db: InstanceType<typeof Database>;
 
 	beforeEach(() => {
 		db = new Database(":memory:");
-		initTestSchema(db);
-		insertActor(db, LOCAL_ACTOR_ID, "Personal", true);
-		db.prepare(
-			`INSERT INTO sync_device(device_id, public_key, fingerprint, created_at)
-			 VALUES (?, 'local-key', 'transport-fingerprint', ?)`,
-		).run(LOCAL_DEVICE_ID, NOW);
+		initializeMigrationDb(db);
 	});
 
 	afterEach(() => db.close());
@@ -198,23 +213,30 @@ describe("recipient policy intent migration", () => {
 		displayName?: string;
 		recipientActorId?: string;
 		digestOverride?: string;
+		targetDb?: InstanceType<typeof Database>;
 	}): { projectId: string; recipientActorId: string; deviceId: string } {
+		const targetDb = input?.targetDb ?? db;
 		const projectId = input?.projectId ?? "https://git.example.invalid/acme/api.git";
 		const displayName = input?.displayName ?? "api";
 		const recipientActorId = input?.recipientActorId ?? "identity-work";
 		const scopeId = `scope-${recipientActorId}`;
 		const deviceId = `device-${recipientActorId}`;
-		if (!db.prepare("SELECT 1 FROM actors WHERE actor_id = ?").get(recipientActorId)) {
+		if (!targetDb.prepare("SELECT 1 FROM actors WHERE actor_id = ?").get(recipientActorId)) {
 			insertActor(
-				db,
+				targetDb,
 				recipientActorId,
 				recipientActorId === "identity-work" ? "Work" : "Recipient",
 			);
 		}
-		insertProject(db, { projectId, displayName, scopeId });
-		insertScope(db, { scopeId, projectId });
-		assignDevice(db, { scopeId, deviceId, actorId: recipientActorId, displayName: "Work laptop" });
-		insertLinkedOperation(db, {
+		insertProject(targetDb, { projectId, displayName, scopeId });
+		insertScope(targetDb, { scopeId, projectId });
+		assignDevice(targetDb, {
+			scopeId,
+			deviceId,
+			actorId: recipientActorId,
+			displayName: "Work laptop",
+		});
+		insertLinkedOperation(targetDb, {
 			operationId: `operation-${scopeId}`,
 			projectId,
 			displayName,
@@ -263,6 +285,38 @@ describe("recipient policy intent migration", () => {
 			projectId: input.projectId,
 			recipientActorId,
 			unassignedDeviceId: input.unassignedDeviceId,
+		};
+	}
+
+	function resolvedAttachFixture(input?: { projectId?: string; deviceId?: string }): {
+		projectId: string;
+		recipientActorId: string;
+		deviceId: string;
+		sourceFingerprint: string;
+	} {
+		const fixture = reviewDeviceFixture({
+			projectId: input?.projectId ?? "https://git.example.invalid/acme/evidence.git",
+			displayName: "evidence",
+			unassignedDeviceId: input?.deviceId ?? "device-evidence",
+		});
+		const item = listRecipientPolicyReview(db, context).reviewItems.find((candidate) =>
+			candidate.options.some((option) => option.decision === "attach_device_to_identity"),
+		);
+		if (!item) throw new Error("attach-device review item missing");
+		resolveRecipientPolicyReview(db, context, {
+			reviewItemId: item.reviewItemId,
+			sourceFingerprint: item.sourceFingerprint,
+			decision: "attach_device_to_identity",
+			decisionInput: {
+				deviceId: fixture.unassignedDeviceId,
+				identityId: fixture.recipientActorId,
+			},
+		});
+		return {
+			projectId: fixture.projectId,
+			recipientActorId: fixture.recipientActorId,
+			deviceId: fixture.unassignedDeviceId,
+			sourceFingerprint: item.sourceFingerprint,
 		};
 	}
 
@@ -431,6 +485,100 @@ describe("recipient policy intent migration", () => {
 		expect(protectedSnapshot(db)).toBe(before);
 	});
 
+	it("acquires immediate write authority before its first migration read", () => {
+		// Arrange: intercept the first read and synchronously attempt a write from another connection.
+		const directory = mkdtempSync(join(tmpdir(), "codemem-recipient-policy-migration-"));
+		const path = join(directory, "migration.sqlite");
+		const primary = new Database(path);
+		const competing = new Database(path);
+		let competingError: unknown;
+		let attempted = false;
+		let firstPreparedSql: string | null = null;
+		try {
+			initializeMigrationDb(primary);
+			const fixture = exactFixture({ targetDb: primary });
+			competing.pragma("busy_timeout = 1");
+			const prepare = primary.prepare.bind(primary);
+			primary.prepare = ((sql: string) => {
+				if (!attempted) {
+					attempted = true;
+					firstPreparedSql = sql;
+					try {
+						competing
+							.prepare("UPDATE share_operations SET reviewed_project_set_digest = 'tampered'")
+							.run();
+					} catch (error) {
+						competingError = error;
+					}
+				}
+				return prepare(sql);
+			}) as typeof primary.prepare;
+
+			// Act
+			const result = migrateRecipientPolicyIntent(primary, context);
+
+			// Assert: the contender observed the lock before any projection/evidence read ran.
+			expect(attempted).toBe(true);
+			expect(firstPreparedSql?.trimStart()).toMatch(/^SELECT/u);
+			expect(competingError).toMatchObject({ code: "SQLITE_BUSY" });
+			expect(result.results).toContainEqual(
+				expect.objectContaining({
+					canonicalProjectIdentity: fixture.projectId,
+					status: "migrated",
+				}),
+			);
+		} finally {
+			primary.close();
+			competing.close();
+			rmSync(directory, { force: true, recursive: true });
+		}
+	});
+
+	it("keeps dry-run on a read transaction without taking writer authority", () => {
+		// Arrange
+		const directory = mkdtempSync(join(tmpdir(), "codemem-recipient-policy-dry-run-"));
+		const path = join(directory, "migration.sqlite");
+		const primary = new Database(path);
+		const competing = new Database(path);
+		let competingError: unknown;
+		let attempted = false;
+		let firstPreparedSql: string | null = null;
+		try {
+			initializeMigrationDb(primary);
+			exactFixture({ targetDb: primary });
+			competing.pragma("busy_timeout = 1");
+			const prepare = primary.prepare.bind(primary);
+			primary.prepare = ((sql: string) => {
+				if (!attempted) {
+					attempted = true;
+					firstPreparedSql = sql;
+					try {
+						competing.prepare("UPDATE share_operations SET updated_at = '2026-07-22'").run();
+					} catch (error) {
+						competingError = error;
+					}
+				}
+				return prepare(sql);
+			}) as typeof primary.prepare;
+
+			// Act
+			const result = migrateRecipientPolicyIntent(primary, context, { dryRun: true });
+
+			// Assert
+			expect(attempted).toBe(true);
+			expect(firstPreparedSql?.trimStart()).toMatch(/^SELECT/u);
+			expect(competingError).toBeUndefined();
+			expect(result.results).toContainEqual(
+				expect.objectContaining({ status: "would_migrate", writeCount: 0 }),
+			);
+			expect(primary.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
+		} finally {
+			primary.close();
+			competing.close();
+			rmSync(directory, { force: true, recursive: true });
+		}
+	});
+
 	it("fails closed when one device is already assigned to another Identity", () => {
 		const fixture = exactFixture();
 		const metadata = {
@@ -450,6 +598,337 @@ describe("recipient policy intent migration", () => {
 			expect.objectContaining({ status: "blocked", errorCode: "device_identity_conflict" }),
 		);
 		expect(db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
+	});
+
+	it("rolls back one conflicting Project savepoint while another Project commits", () => {
+		// Arrange
+		const blocked = resolvedAttachFixture({
+			projectId: "https://git.example.invalid/acme/a-blocked.git",
+			deviceId: "device-project-rollback",
+		});
+		const committed = exactFixture({
+			projectId: "https://git.example.invalid/acme/z-committed.git",
+			displayName: "committed",
+			recipientActorId: "identity-committed",
+		});
+		db.prepare(
+			`INSERT INTO project_recipients(
+			 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			 policy_revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'identity', ?, 'revoked', 'tampered', 'tampered', 'projected', ?,
+			 'tampered', ?, ?)`,
+		).run(blocked.projectId, blocked.recipientActorId, blocked.sourceFingerprint, NOW, NOW);
+
+		// Act
+		const result = migrateRecipientPolicyIntent(db, context);
+
+		// Assert: identity-device was staged before the conflicting recipient and must be gone.
+		expect(result.results).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					canonicalProjectIdentity: blocked.projectId,
+					status: "blocked",
+					errorCode: "intent_conflict",
+				}),
+				expect.objectContaining({
+					canonicalProjectIdentity: committed.projectId,
+					status: "migrated",
+				}),
+			]),
+		);
+		expect(
+			db.prepare("SELECT 1 FROM identity_devices WHERE device_id = ?").get(blocked.deviceId),
+		).toBeUndefined();
+		expect(
+			db
+				.prepare(
+					`SELECT 1 FROM project_recipients
+					 WHERE canonical_project_identity = ? AND recipient_id = ? AND status = 'active'`,
+				)
+				.get(committed.projectId, committed.recipientActorId),
+		).toBeDefined();
+	});
+
+	it("rolls back all pending Projects when SQLite aborts the outer transaction", () => {
+		// Arrange
+		const first = exactFixture({
+			projectId: "https://git.example.invalid/acme/a-first.git",
+			displayName: "a-first",
+			recipientActorId: "identity-first",
+		});
+		const aborting = exactFixture({
+			projectId: "https://git.example.invalid/acme/m-aborting.git",
+			displayName: "m-aborting",
+			recipientActorId: "identity-aborting",
+		});
+		const later = exactFixture({
+			projectId: "https://git.example.invalid/acme/z-later.git",
+			displayName: "z-later",
+			recipientActorId: "identity-later",
+		});
+		expect(
+			listLegacyRecipientPolicyProjections(db, context).map(
+				(projection) => projection.project.canonicalIdentity,
+			),
+		).toEqual([first.projectId, aborting.projectId, later.projectId]);
+		db.exec(`CREATE TRIGGER abort_recipient_policy_migration
+			BEFORE INSERT ON project_recipients
+			WHEN NEW.canonical_project_identity = '${aborting.projectId}'
+			BEGIN
+				SELECT RAISE(ROLLBACK, 'forced_outer_abort');
+			END`);
+
+		// Act
+		const migrate = () => migrateRecipientPolicyIntent(db, context);
+
+		// Assert
+		expect(migrate).toThrow("forced_outer_abort");
+		expect(db.inTransaction).toBe(false);
+		expect(
+			db
+				.prepare(
+					`SELECT COUNT(*) FROM project_recipients
+					 WHERE canonical_project_identity IN (?, ?, ?)`,
+				)
+				.pluck()
+				.get(first.projectId, aborting.projectId, later.projectId),
+		).toBe(0);
+	});
+
+	it("propagates an unknown live-transaction failure and rolls back pending Projects", () => {
+		// Arrange
+		const first = exactFixture({
+			projectId: "https://git.example.invalid/acme/a-unknown-first.git",
+			displayName: "a-unknown-first",
+			recipientActorId: "identity-unknown-first",
+		});
+		exactFixture({
+			projectId: "https://git.example.invalid/acme/z-unknown-failure.git",
+			displayName: "z-unknown-failure",
+			recipientActorId: "identity-unknown-failure",
+		});
+		const prepare = db.prepare.bind(db);
+		let recipientInsertCount = 0;
+		db.prepare = ((sql: string) => {
+			if (sql.trimStart().startsWith("INSERT INTO project_recipients")) {
+				recipientInsertCount += 1;
+				if (recipientInsertCount === 2) throw new TypeError("forced_unknown_failure");
+			}
+			return prepare(sql);
+		}) as typeof db.prepare;
+
+		// Act / Assert
+		try {
+			expect(() => migrateRecipientPolicyIntent(db, context)).toThrow("forced_unknown_failure");
+		} finally {
+			db.prepare = prepare;
+		}
+		expect(recipientInsertCount).toBe(2);
+		expect(db.inTransaction).toBe(false);
+		expect(
+			db
+				.prepare("SELECT 1 FROM project_recipients WHERE canonical_project_identity = ?")
+				.get(first.projectId),
+		).toBeUndefined();
+	});
+
+	it.each([
+		{ table: "not_a_table", key: { device_id: "device-a" }, values: { status: "active" } },
+		{
+			table: "identity_devices",
+			key: { device_id: "device-a", injected: "x" },
+			values: { status: "active" },
+		},
+		{ table: "identity_devices", key: { wrong_id: "device-a" }, values: { status: "active" } },
+		{ table: "identity_devices", key: { device_id: 1 }, values: { status: "active" } },
+		{
+			table: "project_recipients",
+			key: {
+				canonical_project_identity: "project-a",
+				recipient_kind: "identity",
+				wrong_recipient_id: "identity-a",
+			},
+			values: { status: "active" },
+		},
+		{
+			table: "identity_devices",
+			key: { device_id: "device-a" },
+			values: { injected: "x" },
+		},
+		{ table: "identity_devices", key: { device_id: "device-a" }, values: {} },
+		{
+			table: "identity_devices",
+			key: { device_id: "device-a" },
+			values: { device_id: "device-a", status: "active" },
+		},
+	] as const)("rejects invalid dynamic intent identifiers before SQL preparation", (row) => {
+		expect(() => assertAllowedRecipientPolicyIntentRow(row as never)).toThrow("intent_conflict");
+	});
+
+	it("rejects an unknown intent provenance before SQL preparation", () => {
+		expect(() =>
+			assertAllowedRecipientPolicyIntentRow({
+				table: "project_recipients",
+				key: {
+					canonical_project_identity: "project-a",
+					recipient_kind: "identity",
+					recipient_id: "identity-a",
+				},
+				values: {
+					status: "active",
+					provenance: "unknown_provenance",
+					migration_state: "projected",
+					source_fingerprint: null,
+					policy_revision: "revision-a",
+					idempotency_key: "idempotency-a",
+					created_at: NOW,
+					updated_at: NOW,
+				},
+				releasedV1Metadata: { revision: "revision-v1", idempotencyKey: "idempotency-v1" },
+			}),
+		).toThrow("intent_conflict");
+	});
+
+	it("rejects review device evidence without a source fingerprint", () => {
+		expect(() =>
+			assertAllowedRecipientPolicyIntentRow({
+				table: "identity_devices",
+				key: { device_id: "device-a" },
+				values: {
+					identity_id: "identity-a",
+					display_name: "Laptop",
+					status: "active",
+					provenance: "review_resolution",
+					migration_state: "projected",
+					source_fingerprint: null,
+					revision: "revision-a",
+					idempotency_key: "idempotency-a",
+					created_at: NOW,
+					updated_at: NOW,
+				},
+				releasedV1Metadata: { revision: "revision-v1", idempotencyKey: "idempotency-v1" },
+			}),
+		).toThrow("device_identity_conflict");
+	});
+
+	it.each([
+		["provenance", "tampered-provenance"],
+		["source_fingerprint", "tampered-source"],
+		["policy_revision", "tampered-revision"],
+		["idempotency_key", "tampered-idempotency"],
+	] as const)("blocks replay when stored %s evidence is tampered", (column, tamperedValue) => {
+		// Arrange
+		const fixture = resolvedAttachFixture();
+		migrateRecipientPolicyIntent(db, context);
+		db.prepare(
+			`UPDATE project_recipients SET ${column} = ?
+			 WHERE canonical_project_identity = ? AND recipient_kind = 'identity' AND recipient_id = ?`,
+		).run(tamperedValue, fixture.projectId, fixture.recipientActorId);
+
+		// Act
+		const replay = migrateRecipientPolicyIntent(db, context);
+
+		// Assert
+		expect(replay.results).toContainEqual(
+			expect.objectContaining({
+				canonicalProjectIdentity: fixture.projectId,
+				status: "blocked",
+				errorCode: "intent_conflict",
+			}),
+		);
+	});
+
+	it("replays released v1 metadata when provenance and source evidence still match", () => {
+		// Arrange
+		const fixture = resolvedAttachFixture();
+		const recipientIdentity = [fixture.projectId, "identity", fixture.recipientActorId];
+		const deviceIdentity = [fixture.deviceId, fixture.recipientActorId];
+		db.prepare(
+			`INSERT INTO project_recipients(
+			 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			 policy_revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'identity', ?, 'active', 'review_resolution', ?, 'projected', ?, ?, ?, ?)`,
+		).run(
+			fixture.projectId,
+			fixture.recipientActorId,
+			legacyRecipientPolicyDigest(
+				"recipient-policy-project-recipient-revision-v1",
+				recipientIdentity,
+			),
+			fixture.sourceFingerprint,
+			legacyRecipientPolicyDigest(
+				"recipient-policy-project-recipient-idempotency-v1",
+				recipientIdentity,
+			),
+			NOW,
+			NOW,
+		);
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 device_id, identity_id, display_name, status, provenance, revision, migration_state,
+			 source_fingerprint, idempotency_key, created_at, updated_at
+			 ) VALUES (?, ?, 'Unassigned laptop', 'active', 'review_resolution', ?, 'projected', ?, ?, ?, ?)`,
+		).run(
+			fixture.deviceId,
+			fixture.recipientActorId,
+			legacyRecipientPolicyDigest("recipient-policy-identity-device-revision-v1", deviceIdentity),
+			fixture.sourceFingerprint,
+			legacyRecipientPolicyDigest(
+				"recipient-policy-identity-device-idempotency-v1",
+				deviceIdentity,
+			),
+			NOW,
+			NOW,
+		);
+
+		// Act
+		const result = migrateRecipientPolicyIntent(db, context);
+
+		// Assert
+		expect(result.results).toContainEqual(
+			expect.objectContaining({
+				canonicalProjectIdentity: fixture.projectId,
+				status: "unchanged",
+				writeCount: 0,
+				idempotent: true,
+			}),
+		);
+	});
+
+	it("writes v2 metadata bound to provenance and source evidence", () => {
+		// Arrange
+		const fixture = resolvedAttachFixture();
+
+		// Act
+		const result = migrateRecipientPolicyIntent(db, context);
+		const recipient = db
+			.prepare(
+				`SELECT provenance, source_fingerprint, policy_revision, idempotency_key
+				 FROM project_recipients
+				 WHERE canonical_project_identity = ? AND recipient_kind = 'identity' AND recipient_id = ?`,
+			)
+			.get(fixture.projectId, fixture.recipientActorId) as Record<string, string>;
+		const device = db
+			.prepare(
+				`SELECT provenance, source_fingerprint, revision, idempotency_key
+				 FROM identity_devices WHERE device_id = ?`,
+			)
+			.get(fixture.deviceId) as Record<string, string>;
+
+		// Assert
+		expect(result.results).toContainEqual(expect.objectContaining({ status: "migrated" }));
+		expect(recipient).toMatchObject({
+			provenance: "review_resolution",
+			source_fingerprint: fixture.sourceFingerprint,
+		});
+		expect(recipient.policy_revision).toContain("-v2:");
+		expect(recipient.idempotency_key).toContain("-v2:");
+		expect(device).toMatchObject({
+			provenance: "review_resolution",
+			source_fingerprint: fixture.sourceFingerprint,
+		});
+		expect(device.revision).toContain("-v2:");
+		expect(device.idempotency_key).toContain("-v2:");
 	});
 
 	it("keeps Personal and Work actor IDs and same-name canonical Projects isolated", () => {
@@ -560,6 +1039,401 @@ describe("recipient policy intent migration", () => {
 			expect.objectContaining({
 				canonicalProjectIdentity: projectId,
 				identityId: "identity-assigned",
+			}),
+		);
+	});
+
+	it("prefers automatic evidence when a matching review selects the same recipient", () => {
+		// Arrange
+		const fixture = exactFixture();
+		const scopeId = `scope-${fixture.recipientActorId}`;
+		db.prepare(
+			`INSERT INTO sync_peers(peer_device_id, name, actor_id, created_at)
+			 VALUES ('device-review-extra', 'Review laptop', NULL, ?)`,
+		).run(NOW);
+		db.prepare(
+			`INSERT INTO scope_memberships(scope_id, device_id, status, membership_epoch, updated_at)
+			 VALUES (?, 'device-review-extra', 'active', 1, ?)`,
+		).run(scopeId, NOW);
+		const item = listRecipientPolicyReview(db, context).reviewItems.find((candidate) =>
+			candidate.options.some((option) => option.decision === "choose_recipients"),
+		);
+		if (!item) throw new Error("matching review item missing");
+		resolveRecipientPolicyReview(db, context, {
+			reviewItemId: item.reviewItemId,
+			sourceFingerprint: item.sourceFingerprint,
+			decision: "choose_recipients",
+			decisionInput: { recipientIds: [fixture.recipientActorId] },
+		});
+
+		// Act
+		const result = migrateRecipientPolicyIntent(db, context);
+		const replay = migrateRecipientPolicyIntent(db, context);
+
+		// Assert
+		expect(result.results).toContainEqual(expect.objectContaining({ status: "migrated" }));
+		expect(replay.results).toContainEqual(
+			expect.objectContaining({ status: "unchanged", idempotent: true }),
+		);
+		expect(
+			db
+				.prepare(
+					`SELECT provenance, source_fingerprint FROM project_recipients
+					 WHERE canonical_project_identity = ? AND recipient_kind = 'identity'
+					   AND recipient_id = ?`,
+				)
+				.get(fixture.projectId, fixture.recipientActorId),
+		).toEqual({ provenance: "exact_project_invite", source_fingerprint: null });
+		expect(
+			db
+				.prepare("SELECT provenance, source_fingerprint FROM identity_devices WHERE device_id = ?")
+				.get(fixture.deviceId),
+		).toEqual({ provenance: "managed_exact_project", source_fingerprint: null });
+	});
+
+	it("accepts review device evidence when matching automatic evidence is preferred", () => {
+		// Arrange
+		const fixture = exactFixture({
+			projectId: "https://git.example.invalid/acme/device-replay.git",
+		});
+		const scopeId = `scope-${fixture.recipientActorId}`;
+		db.prepare(
+			`INSERT INTO sync_peers(peer_device_id, name, actor_id, created_at)
+			 VALUES ('device-review-replay', 'Review replay laptop', NULL, ?)`,
+		).run(NOW);
+		db.prepare(
+			`INSERT INTO scope_memberships(scope_id, device_id, status, membership_epoch, updated_at)
+			 VALUES (?, 'device-review-replay', 'active', 1, ?)`,
+		).run(scopeId, NOW);
+		const item = listRecipientPolicyReview(db, context).reviewItems.find((candidate) =>
+			candidate.options.some((option) => option.decision === "choose_recipients"),
+		);
+		if (!item) throw new Error("device replay review item missing");
+		resolveRecipientPolicyReview(db, context, {
+			reviewItemId: item.reviewItemId,
+			sourceFingerprint: item.sourceFingerprint,
+			decision: "choose_recipients",
+			decisionInput: { recipientIds: [fixture.recipientActorId] },
+		});
+		const evidenceIdentity = {
+			identity: [fixture.deviceId, fixture.recipientActorId],
+			provenance: "review_resolution",
+			sourceFingerprint: null,
+		};
+		db.prepare(
+			`INSERT INTO identity_devices(
+			 device_id, identity_id, display_name, status, provenance, revision, migration_state,
+			 source_fingerprint, idempotency_key, created_at, updated_at
+			 ) VALUES (?, ?, 'Work laptop', 'active', 'review_resolution', ?, 'projected', ?, ?, ?, ?)`,
+		).run(
+			fixture.deviceId,
+			fixture.recipientActorId,
+			legacyRecipientPolicyDigest("recipient-policy-identity-device-revision-v2", evidenceIdentity),
+			item.sourceFingerprint,
+			legacyRecipientPolicyDigest(
+				"recipient-policy-identity-device-idempotency-v2",
+				evidenceIdentity,
+			),
+			NOW,
+			NOW,
+		);
+
+		// Act
+		const result = migrateRecipientPolicyIntent(db, context);
+		const replay = migrateRecipientPolicyIntent(db, context);
+
+		// Assert
+		expect(result.results).toContainEqual(
+			expect.objectContaining({
+				canonicalProjectIdentity: fixture.projectId,
+				status: "migrated",
+				errorCode: null,
+			}),
+		);
+		expect(replay.results).toContainEqual(
+			expect.objectContaining({ status: "unchanged", idempotent: true }),
+		);
+		expect(
+			db
+				.prepare("SELECT provenance FROM identity_devices WHERE device_id = ?")
+				.pluck()
+				.get(fixture.deviceId),
+		).toBe("review_resolution");
+
+		db.prepare(
+			"UPDATE identity_devices SET source_fingerprint = 'not-a-current-review' WHERE device_id = ?",
+		).run(fixture.deviceId);
+		const rejected = migrateRecipientPolicyIntent(db, context);
+		expect(rejected.results).toContainEqual(
+			expect.objectContaining({
+				canonicalProjectIdentity: fixture.projectId,
+				status: "blocked",
+				errorCode: "device_identity_conflict",
+			}),
+		);
+	});
+
+	it("accepts current cross-Project device evidence with a different provenance", () => {
+		const fixture = reviewDeviceFixture({
+			projectId: "https://git.example.invalid/acme/review-device-source.git",
+			displayName: "review-device-source",
+			unassignedDeviceId: "device-review-trigger",
+			recipientActorId: "identity-cross-provenance",
+		});
+		const reviewItem = listRecipientPolicyReview(db, context).reviewItems.find((candidate) =>
+			candidate.options.some((option) => option.decision === "choose_recipients"),
+		);
+		if (!reviewItem) throw new Error("cross-provenance review item missing");
+		resolveRecipientPolicyReview(db, context, {
+			reviewItemId: reviewItem.reviewItemId,
+			sourceFingerprint: reviewItem.sourceFingerprint,
+			decision: "choose_recipients",
+			decisionInput: { recipientIds: [fixture.recipientActorId] },
+		});
+		const assignedDeviceId = `device-${fixture.recipientActorId}`;
+		const first = migrateRecipientPolicyIntent(db, context);
+		expect(first.results).toContainEqual(
+			expect.objectContaining({
+				canonicalProjectIdentity: fixture.projectId,
+				status: "migrated",
+			}),
+		);
+
+		const automaticProjectId = "https://git.example.invalid/acme/automatic-device-source.git";
+		const automaticScopeId = "scope-automatic-device-source";
+		insertProject(db, {
+			projectId: automaticProjectId,
+			displayName: "automatic-device-source",
+			scopeId: automaticScopeId,
+		});
+		insertScope(db, { scopeId: automaticScopeId, projectId: automaticProjectId });
+		db.prepare(
+			`INSERT INTO scope_memberships(scope_id, device_id, status, membership_epoch, updated_at)
+			 VALUES (?, ?, 'active', 1, ?)`,
+		).run(automaticScopeId, assignedDeviceId, NOW);
+		insertLinkedOperation(db, {
+			operationId: "operation-automatic-device-source",
+			projectId: automaticProjectId,
+			displayName: "automatic-device-source",
+			recipientActorId: fixture.recipientActorId,
+			recipientDeviceId: assignedDeviceId,
+		});
+
+		const second = migrateRecipientPolicyIntent(db, context);
+		expect(second.results).toContainEqual(
+			expect.objectContaining({
+				canonicalProjectIdentity: automaticProjectId,
+				status: "migrated",
+				errorCode: null,
+			}),
+		);
+		expect(
+			db
+				.prepare("SELECT provenance, source_fingerprint FROM identity_devices WHERE device_id = ?")
+				.get(assignedDeviceId),
+		).toEqual({
+			provenance: "review_resolution",
+			source_fingerprint: reviewItem.sourceFingerprint,
+		});
+	});
+
+	it("deterministically selects one compatible source from two matching reviews", () => {
+		// Arrange
+		const projectId = "https://git.example.invalid/acme/multi-review.git";
+		const scopeId = "scope-multi-review";
+		const recipientId = "identity-multi-review";
+		insertActor(db, recipientId, "Multi-review recipient");
+		insertProject(db, { projectId, displayName: "multi-review", scopeId });
+		insertScope(db, { scopeId, projectId });
+		assignDevice(db, { scopeId, deviceId: "device-multi-assigned", actorId: recipientId });
+		for (const deviceId of ["device-multi-a", "device-multi-b"]) {
+			db.prepare(
+				`INSERT INTO sync_peers(peer_device_id, name, actor_id, created_at)
+				 VALUES (?, ?, NULL, ?)`,
+			).run(deviceId, deviceId, NOW);
+			db.prepare(
+				`INSERT INTO scope_memberships(scope_id, device_id, status, membership_epoch, updated_at)
+				 VALUES (?, ?, 'active', 1, ?)`,
+			).run(scopeId, deviceId, NOW);
+		}
+		const items = listRecipientPolicyReview(db, context).reviewItems.filter((candidate) =>
+			candidate.options.some((option) => option.decision === "choose_recipients"),
+		);
+		expect(items).toHaveLength(2);
+		expect(new Set(items.map((item) => item.sourceFingerprint)).size).toBe(2);
+		for (const item of items) {
+			resolveRecipientPolicyReview(db, context, {
+				reviewItemId: item.reviewItemId,
+				sourceFingerprint: item.sourceFingerprint,
+				decision: "choose_recipients",
+				decisionInput: { recipientIds: [recipientId] },
+			});
+		}
+		const [expectedFingerprint] = items
+			.map((item) => item.sourceFingerprint)
+			.toSorted(compareCodepoints);
+		if (!expectedFingerprint) throw new Error("review fingerprint missing");
+
+		// Act
+		const result = migrateRecipientPolicyIntent(db, context);
+		const replay = migrateRecipientPolicyIntent(db, context);
+
+		// Assert
+		expect(result.results).toContainEqual(expect.objectContaining({ status: "migrated" }));
+		expect(replay.results).toContainEqual(
+			expect.objectContaining({ status: "unchanged", idempotent: true }),
+		);
+		expect(
+			db
+				.prepare(
+					`SELECT source_fingerprint FROM project_recipients
+					 WHERE canonical_project_identity = ? AND recipient_kind = 'identity'
+					   AND recipient_id = ?`,
+				)
+				.pluck()
+				.get(projectId, recipientId),
+		).toBe(expectedFingerprint);
+		expect(
+			db
+				.prepare("SELECT source_fingerprint FROM identity_devices WHERE device_id = ?")
+				.pluck()
+				.get("device-multi-assigned"),
+		).toBe(expectedFingerprint);
+		expect(
+			db
+				.prepare("SELECT COUNT(*) FROM project_recipients WHERE canonical_project_identity = ?")
+				.pluck()
+				.get(projectId),
+		).toBe(1);
+	});
+
+	it.each([
+		"v1",
+		"v2",
+	] as const)("accepts a stored %s recipient edge authorized by a non-preferred current review", (metadataVersion) => {
+		// Arrange
+		const projectId = `https://git.example.invalid/acme/replay-${metadataVersion}.git`;
+		const scopeId = `scope-replay-${metadataVersion}`;
+		const recipientId = `identity-replay-${metadataVersion}`;
+		insertActor(db, recipientId, "Replay recipient");
+		insertProject(db, { projectId, displayName: `replay-${metadataVersion}`, scopeId });
+		insertScope(db, { scopeId, projectId });
+		assignDevice(db, {
+			scopeId,
+			deviceId: `device-replay-assigned-${metadataVersion}`,
+			actorId: recipientId,
+		});
+		for (const deviceId of [
+			`device-replay-${metadataVersion}-a`,
+			`device-replay-${metadataVersion}-b`,
+		]) {
+			db.prepare(
+				`INSERT INTO sync_peers(peer_device_id, name, actor_id, created_at)
+					 VALUES (?, ?, NULL, ?)`,
+			).run(deviceId, deviceId, NOW);
+			db.prepare(
+				`INSERT INTO scope_memberships(scope_id, device_id, status, membership_epoch, updated_at)
+					 VALUES (?, ?, 'active', 1, ?)`,
+			).run(scopeId, deviceId, NOW);
+		}
+		const items = listRecipientPolicyReview(db, context).reviewItems.filter((candidate) =>
+			candidate.options.some((option) => option.decision === "choose_recipients"),
+		);
+		expect(items).toHaveLength(2);
+		expect(new Set(items.map((item) => item.sourceFingerprint)).size).toBe(2);
+		for (const item of items) {
+			resolveRecipientPolicyReview(db, context, {
+				reviewItemId: item.reviewItemId,
+				sourceFingerprint: item.sourceFingerprint,
+				decision: "choose_recipients",
+				decisionInput: { recipientIds: [recipientId] },
+			});
+		}
+		const [, storedFingerprint] = items
+			.map((item) => item.sourceFingerprint)
+			.toSorted(compareCodepoints);
+		if (!storedFingerprint) throw new Error("stored review fingerprint missing");
+		const identity = [projectId, "identity", recipientId];
+		const evidenceIdentity = {
+			identity,
+			provenance: "review_resolution",
+			sourceFingerprint: storedFingerprint,
+		};
+		const metadataIdentity = metadataVersion === "v1" ? identity : evidenceIdentity;
+		db.prepare(
+			`INSERT INTO project_recipients(
+				 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+				 policy_revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at
+				 ) VALUES (?, 'identity', ?, 'active', 'review_resolution', ?, 'projected', ?, ?, ?, ?)`,
+		).run(
+			projectId,
+			recipientId,
+			legacyRecipientPolicyDigest(
+				`recipient-policy-project-recipient-revision-${metadataVersion}`,
+				metadataIdentity,
+			),
+			storedFingerprint,
+			legacyRecipientPolicyDigest(
+				`recipient-policy-project-recipient-idempotency-${metadataVersion}`,
+				metadataIdentity,
+			),
+			NOW,
+			NOW,
+		);
+
+		// Act
+		const result = migrateRecipientPolicyIntent(db, context);
+		const replay = migrateRecipientPolicyIntent(db, context);
+
+		// Assert
+		expect(result.results).toContainEqual(
+			expect.objectContaining({
+				canonicalProjectIdentity: projectId,
+				status: "migrated",
+				errorCode: null,
+			}),
+		);
+		expect(replay.results).toContainEqual(
+			expect.objectContaining({
+				canonicalProjectIdentity: projectId,
+				status: "unchanged",
+				idempotent: true,
+			}),
+		);
+		expect(
+			db
+				.prepare(
+					`SELECT source_fingerprint FROM project_recipients
+						 WHERE canonical_project_identity = ? AND recipient_kind = 'identity'
+						   AND recipient_id = ?`,
+				)
+				.pluck()
+				.get(projectId, recipientId),
+		).toBe(storedFingerprint);
+
+		db.prepare(
+			`UPDATE project_recipients SET source_fingerprint = 'not-a-current-review'
+				 WHERE canonical_project_identity = ? AND recipient_kind = 'identity' AND recipient_id = ?`,
+		).run(projectId, recipientId);
+		const rejected = migrateRecipientPolicyIntent(db, context);
+		expect(rejected.results).toContainEqual(
+			expect.objectContaining({
+				canonicalProjectIdentity: projectId,
+				status: "blocked",
+				errorCode: "intent_conflict",
+			}),
+		);
+
+		db.prepare(
+			`UPDATE project_recipients SET source_fingerprint = ?, policy_revision = 'tampered-revision'
+			 WHERE canonical_project_identity = ? AND recipient_kind = 'identity' AND recipient_id = ?`,
+		).run(storedFingerprint, projectId, recipientId);
+		const metadataRejected = migrateRecipientPolicyIntent(db, context);
+		expect(metadataRejected.results).toContainEqual(
+			expect.objectContaining({
+				canonicalProjectIdentity: projectId,
+				status: "blocked",
+				errorCode: "intent_conflict",
 			}),
 		);
 	});

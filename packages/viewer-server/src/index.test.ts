@@ -11224,6 +11224,60 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("returns a structured response when recipient-policy migration cannot acquire its writer lock", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			let competing: InstanceType<typeof Database> | null = null;
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				store.db.pragma("busy_timeout = 1");
+				competing = new Database(store.db.name);
+				competing.exec("BEGIN IMMEDIATE");
+
+				const response = await app.request("/api/sync/recipient-policy/v1/migrate", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({}),
+				});
+
+				expect(response.status).toBe(503);
+				expect(response.headers.get("Retry-After")).toBe("1");
+				expect(await response.json()).toEqual({ error: "migration_busy" });
+			} finally {
+				if (competing?.inTransaction) competing.exec("ROLLBACK");
+				competing?.close();
+				cleanup();
+			}
+		});
+
+		it("returns a generic recipient-policy migration failure without leaking details", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const prepare = store.db.prepare.bind(store.db);
+				store.db.prepare = (() => {
+					throw new Error("private SQLite migration detail");
+				}) as typeof store.db.prepare;
+
+				const response = await app.request("/api/sync/recipient-policy/v1/migrate", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({}),
+				});
+				store.db.prepare = prepare;
+				const text = await response.text();
+
+				expect(response.status).toBe(500);
+				expect(JSON.parse(text)).toEqual({ error: "migration_failed" });
+				expect(text).not.toContain("private SQLite migration detail");
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("strictly previews and commits safe recipient-policy edge changes", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
