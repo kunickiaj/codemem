@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listLegacyRecipientPolicyProjections } from "./legacy-recipient-policy-projection.js";
@@ -44,42 +47,54 @@ function options(
 	};
 }
 
+function seedCandidateFixture(targetDb: InstanceType<typeof Database>): void {
+	initTestSchema(targetDb);
+	targetDb
+		.prepare(
+			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+			 VALUES ('actor-local', 'Local Person', 1, 'active', ?, ?)`,
+		)
+		.run(NOW, NOW);
+	targetDb
+		.prepare(
+			`INSERT INTO replication_scopes(
+				scope_id, label, kind, authority_type, coordinator_id, group_id,
+				membership_epoch, status, created_at, updated_at
+			 ) VALUES ('scope-api', 'Engineering', 'team', 'coordinator',
+			 'coordinator-private', 'group-private', 1, 'active', ?, ?)`,
+		)
+		.run(NOW, NOW);
+	targetDb
+		.prepare(
+			`INSERT INTO project_scope_mappings(
+				workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+			 ) VALUES (?, ?, 'scope-api', 1000, 'test', ?, ?)`,
+		)
+		.run(PROJECT_ID, PROJECT_ID, NOW, NOW);
+	const sessionId = Number(
+		targetDb
+			.prepare(
+				`INSERT INTO sessions(started_at, project, git_remote, git_branch)
+				 VALUES (?, 'api', ?, 'main')`,
+			)
+			.run(NOW, PROJECT_ID).lastInsertRowid,
+	);
+	targetDb
+		.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, active, created_at, updated_at,
+				visibility, project, scope_id
+			 ) VALUES (?, 'discovery', 'api', 'body', 1, ?, ?, 'shared', 'api', 'scope-api')`,
+		)
+		.run(sessionId, NOW, NOW);
+}
+
 describe("legacy Team candidate discovery", () => {
 	let db: InstanceType<typeof Database>;
 
 	beforeEach(() => {
 		db = new Database(":memory:");
-		initTestSchema(db);
-		db.prepare(
-			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
-			 VALUES ('actor-local', 'Local Person', 1, 'active', ?, ?)`,
-		).run(NOW, NOW);
-		db.prepare(
-			`INSERT INTO replication_scopes(
-				scope_id, label, kind, authority_type, coordinator_id, group_id,
-				membership_epoch, status, created_at, updated_at
-			 ) VALUES ('scope-api', 'Engineering', 'team', 'coordinator',
-				'coordinator-private', 'group-private', 1, 'active', ?, ?)`,
-		).run(NOW, NOW);
-		db.prepare(
-			`INSERT INTO project_scope_mappings(
-				workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
-			 ) VALUES (?, ?, 'scope-api', 1000, 'test', ?, ?)`,
-		).run(PROJECT_ID, PROJECT_ID, NOW, NOW);
-		const sessionId = Number(
-			db
-				.prepare(
-					`INSERT INTO sessions(started_at, project, git_remote, git_branch)
-					 VALUES (?, 'api', ?, 'main')`,
-				)
-				.run(NOW, PROJECT_ID).lastInsertRowid,
-		);
-		db.prepare(
-			`INSERT INTO memory_items(
-				session_id, kind, title, body_text, active, created_at, updated_at,
-				visibility, project, scope_id
-			 ) VALUES (?, 'discovery', 'api', 'body', 1, ?, ?, 'shared', 'api', 'scope-api')`,
-		).run(sessionId, NOW, NOW);
+		seedCandidateFixture(db);
 	});
 
 	afterEach(() => db.close());
@@ -1030,6 +1045,69 @@ describe("legacy Team candidate discovery", () => {
 		expect(refreshed.devices[0]?.displayName).toBe("Renamed Laptop");
 		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(1);
 		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
+	});
+
+	it("serializes a competing refresh before reading candidate authority", () => {
+		// Arrange
+		const directory = mkdtempSync(join(tmpdir(), "codemem-legacy-team-authority-"));
+		const path = join(directory, "candidate.sqlite");
+		const primary = new Database(path);
+		const competing = new Database(path);
+		try {
+			seedCandidateFixture(primary);
+			const initial = refreshLegacyTeamCandidate(
+				primary,
+				options(),
+				legacyTeamCandidateId("coordinator-private", "group-private"),
+			);
+			primary.pragma("busy_timeout = 1");
+			const prepare = vi.spyOn(primary, "prepare");
+			const draftReadProbe = () =>
+				prepare.mock.calls.some(([sql]) => String(sql).includes("FROM legacy_team_setup_drafts"));
+			const projectReadProbe = () =>
+				prepare.mock.calls.some(([sql]) => String(sql).includes("FROM project_scope_mappings"));
+			competing.exec("BEGIN IMMEDIATE");
+			competing
+				.prepare("UPDATE legacy_team_setup_drafts SET updated_at = ? WHERE attempt_id = ?")
+				.run("2026-08-21T12:00:01.000Z", initial.attemptId);
+
+			// Act
+			const blockedRefresh = () =>
+				refreshLegacyTeamCandidate(
+					primary,
+					options("key-b"),
+					legacyTeamCandidateId("coordinator-private", "group-private"),
+				);
+
+			// Assert
+			expect(blockedRefresh).toThrow(/SQLITE_BUSY|database is locked/i);
+			expect(draftReadProbe()).toBe(false);
+			expect(projectReadProbe()).toBe(false);
+			competing.exec("ROLLBACK");
+
+			const current = refreshLegacyTeamCandidate(
+				primary,
+				options("key-b"),
+				legacyTeamCandidateId("coordinator-private", "group-private"),
+			);
+			expect(draftReadProbe()).toBe(true);
+			expect(projectReadProbe()).toBe(true);
+			const attempts = primary
+				.prepare(
+					`SELECT attempt_id, state, superseded_at FROM legacy_team_setup_drafts
+					 ORDER BY rowid`,
+				)
+				.all() as Array<{ attempt_id: string; state: string; superseded_at: string | null }>;
+			expect(attempts).toEqual([
+				{ attempt_id: initial.attemptId, state: "stale", superseded_at: NOW },
+				{ attempt_id: current.attemptId, state: "needs_setup", superseded_at: null },
+			]);
+		} finally {
+			if (competing.inTransaction) competing.exec("ROLLBACK");
+			competing.close();
+			primary.close();
+			rmSync(directory, { recursive: true, force: true });
+		}
 	});
 
 	it("keeps Ready when a group exposes multiple scopes and mappings use their own", () => {

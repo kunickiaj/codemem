@@ -575,11 +575,100 @@ function isRosterTooLargeError(error: unknown): boolean {
 	return error instanceof Error && error.message === "legacy_team_setup_roster_too_large";
 }
 
+// Must run under the caller's top-level immediate transaction. Guard ordering
+// is intentional: reject oversized evidence before fingerprint assignment reads.
+function candidateAuthority(
+	db: Database,
+	candidateId: string,
+	rosterDevices: LegacyTeamRosterDeviceSnapshot[],
+	projects: LegacyTeamSetupProjectInput[],
+): { row: DraftFreshnessRow | null; rosterFingerprint: string; ready: boolean } {
+	const row = currentDraftRow(db, candidateId);
+	requireLegacyTeamSetupSnapshotWithinLimits({ devices: rosterDevices, projects });
+	requireLegacyTeamSetupEffectiveDevicesWithinLimit(db, rosterDevices, row?.attempt_id ?? null);
+	const rosterFingerprint = legacyTeamRosterFingerprint(
+		rosterDevices.map((device) => ({
+			deviceId: device.deviceId,
+			fingerprint: device.fingerprint,
+			enabled: device.enabled,
+			identityId: activeAssignmentIdentity(db, device.deviceId),
+		})),
+	);
+	const ready =
+		row?.state === "completed" &&
+		row.roster_fingerprint === rosterFingerprint &&
+		completedInventoryCompatible(db, row.attempt_id, projects) &&
+		isCompatibleReadyTeam(db, candidateId, row, rosterFingerprint);
+	return { row, rosterFingerprint, ready };
+}
+
+function resolveDiscoveredCandidate(
+	db: Database,
+	group: EffectiveGroupSnapshot,
+	projection: ListLegacyRecipientPolicyProjectionsOptions,
+	now: string,
+): { draft: LegacyTeamSetupDraftView; ready: boolean; projectCount: number } {
+	const discover = db.transaction(() => {
+		const { candidateId, coordinatorId, groupId, devices: rosterDevices } = group;
+		const projects = legacyTeamCandidateProjectInventory(db, projection, candidateId);
+		const { row, rosterFingerprint, ready } = candidateAuthority(
+			db,
+			candidateId,
+			rosterDevices,
+			projects,
+		);
+		let draft: LegacyTeamSetupDraftView;
+		const expectedProjectionFingerprint = legacyTeamProjectionFingerprint(projects);
+		if (!row || (row.state === "completed" && !ready)) {
+			draft = refreshLegacyTeamSetupDraft(db, {
+				candidateId,
+				coordinatorId,
+				groupId,
+				displayName: group.displayName,
+				devices: rosterDevices,
+				projects,
+				now,
+			});
+		} else if (row.state === "completed") {
+			draft = refreshLegacyTeamSetupDraftLabels(db, row.attempt_id, {
+				displayName: group.displayName,
+				devices: rosterDevices,
+				projects,
+				now,
+			});
+		} else if (row.state === "stale") {
+			draft = requireLegacyTeamSetupDraft(db, candidateId);
+		} else if (
+			row.roster_fingerprint !== rosterFingerprint ||
+			row.projection_fingerprint !== expectedProjectionFingerprint
+		) {
+			if (row.state === "needs_setup" || row.state === "in_progress") {
+				db.prepare(
+					`UPDATE legacy_team_setup_drafts SET state = 'stale', updated_at = ?
+					 WHERE attempt_id = ?`,
+				).run(now, row.attempt_id);
+			}
+			draft = requireLegacyTeamSetupDraft(db, candidateId);
+		} else {
+			draft = refreshLegacyTeamSetupDraft(db, {
+				candidateId,
+				coordinatorId,
+				groupId,
+				displayName: group.displayName,
+				devices: rosterDevices,
+				projects,
+				now,
+			});
+		}
+		return { draft, ready, projectCount: projects.length };
+	});
+	return discover.immediate();
+}
+
 export function discoverLegacyTeamCandidates(
 	db: Database,
 	options: DiscoverLegacyTeamCandidatesOptions,
 ): LegacyTeamCandidateView[] {
-	const evidence = listLegacyTeamProjectEvidence(db, options.projection);
 	const now = options.now ?? new Date().toISOString();
 	// Discovery persists this timestamp directly (stale transitions) and
 	// forwards it to every draft write; garbage here corrupts ordering columns.
@@ -589,72 +678,13 @@ export function discoverLegacyTeamCandidates(
 	// are dropped rather than aborting discovery for every other group.
 	const { snapshots } = effectiveGroupSnapshots(options.groups);
 	for (const group of snapshots) {
-		const { candidateId, coordinatorId, groupId, devices: rosterDevices } = group;
+		const { candidateId } = group;
 		// Candidate discovery is driven by configured groups: a group with no
 		// currently displayed Project still needs a reviewable roster so the
 		// Team can become ready for future sharing.
-		const projects = projectInventory(candidateId, evidence);
-		const row = currentDraftRow(db, candidateId);
-		let draft: LegacyTeamSetupDraftView;
-		let ready = false;
+		let result: { draft: LegacyTeamSetupDraftView; ready: boolean; projectCount: number };
 		try {
-			requireLegacyTeamSetupSnapshotWithinLimits({ devices: rosterDevices, projects });
-			requireLegacyTeamSetupEffectiveDevicesWithinLimit(db, rosterDevices, row?.attempt_id ?? null);
-			const rosterFingerprint = legacyTeamRosterFingerprint(
-				rosterDevices.map((device) => ({
-					deviceId: device.deviceId,
-					fingerprint: device.fingerprint,
-					enabled: device.enabled,
-					identityId: activeAssignmentIdentity(db, device.deviceId),
-				})),
-			);
-			const expectedProjectionFingerprint = legacyTeamProjectionFingerprint(projects);
-			ready =
-				row?.state === "completed" &&
-				row.roster_fingerprint === rosterFingerprint &&
-				completedInventoryCompatible(db, row.attempt_id, projects) &&
-				isCompatibleReadyTeam(db, candidateId, row, rosterFingerprint);
-			if (!row || (row.state === "completed" && !ready)) {
-				draft = refreshLegacyTeamSetupDraft(db, {
-					candidateId,
-					coordinatorId,
-					groupId,
-					displayName: group.displayName,
-					devices: rosterDevices,
-					projects,
-					now,
-				});
-			} else if (row.state === "completed") {
-				draft = refreshLegacyTeamSetupDraftLabels(db, row.attempt_id, {
-					displayName: group.displayName,
-					devices: rosterDevices,
-					projects,
-					now,
-				});
-			} else if (row.state === "stale") {
-				draft = requireLegacyTeamSetupDraft(db, candidateId);
-			} else if (
-				row.roster_fingerprint !== rosterFingerprint ||
-				row.projection_fingerprint !== expectedProjectionFingerprint
-			) {
-				if (row.state === "needs_setup" || row.state === "in_progress") {
-					db.prepare(
-						`UPDATE legacy_team_setup_drafts SET state = 'stale', updated_at = ?
-						 WHERE attempt_id = ?`,
-					).run(now, row.attempt_id);
-				}
-				draft = requireLegacyTeamSetupDraft(db, candidateId);
-			} else {
-				draft = refreshLegacyTeamSetupDraft(db, {
-					candidateId,
-					coordinatorId,
-					groupId,
-					displayName: group.displayName,
-					devices: rosterDevices,
-					projects,
-					now,
-				});
-			}
+			result = resolveDiscoveredCandidate(db, group, options.projection, now);
 		} catch (error) {
 			// Oversized evidence is local to this coordinator group. It must not
 			// hide otherwise reviewable candidates discovered in the same pass.
@@ -663,12 +693,12 @@ export function discoverLegacyTeamCandidates(
 		}
 		candidates.push({
 			candidateRef: candidateId,
-			displayName: draft.displayName,
-			status: candidateStatus(draft, ready),
-			deviceCount: draft.devices.length,
-			projectCount: projects.length,
-			unresolvedDeviceCount: draft.unresolvedDeviceCount,
-			unresolvedProjectCount: draft.unresolvedProjectCount,
+			displayName: result.draft.displayName,
+			status: candidateStatus(result.draft, result.ready),
+			deviceCount: result.draft.devices.length,
+			projectCount: result.projectCount,
+			unresolvedDeviceCount: result.draft.unresolvedDeviceCount,
+			unresolvedProjectCount: result.draft.unresolvedProjectCount,
 		});
 	}
 	return candidates.toSorted((left, right) => left.candidateRef.localeCompare(right.candidateRef));
@@ -696,7 +726,6 @@ export function refreshLegacyTeamCandidate(
 	options: DiscoverLegacyTeamCandidatesOptions,
 	candidateRef: string,
 ): LegacyTeamSetupDraftView {
-	const evidence = listLegacyTeamProjectEvidence(db, options.projection);
 	const { snapshots, conflictedCandidateIds } = effectiveGroupSnapshots(options.groups);
 	if (conflictedCandidateIds.has(candidateRef)) {
 		throw new Error("legacy_team_setup_roster_conflict");
@@ -704,43 +733,31 @@ export function refreshLegacyTeamCandidate(
 	for (const group of snapshots) {
 		const { candidateId, coordinatorId, groupId, devices: rosterDevices } = group;
 		if (candidateId !== candidateRef) continue;
-		const projects = projectInventory(candidateId, evidence);
-		const row = currentDraftRow(db, candidateId);
-		requireLegacyTeamSetupSnapshotWithinLimits({ devices: rosterDevices, projects });
-		requireLegacyTeamSetupEffectiveDevicesWithinLimit(db, rosterDevices, row?.attempt_id ?? null);
-		// A compatible Ready completion with unchanged evidence survives an
-		// explicit refresh: only labels update. Creating a replacement attempt
-		// here would immediately drop Ready and force a redundant review cycle.
-		const rosterFingerprint = legacyTeamRosterFingerprint(
-			rosterDevices.map((device) => ({
-				deviceId: device.deviceId,
-				fingerprint: device.fingerprint,
-				enabled: device.enabled,
-				identityId: activeAssignmentIdentity(db, device.deviceId),
-			})),
-		);
-		if (
-			row?.state === "completed" &&
-			row.roster_fingerprint === rosterFingerprint &&
-			completedInventoryCompatible(db, row.attempt_id, projects) &&
-			isCompatibleReadyTeam(db, candidateId, row, rosterFingerprint)
-		) {
-			return refreshLegacyTeamSetupDraftLabels(db, row.attempt_id, {
+		const refresh = db.transaction(() => {
+			const projects = legacyTeamCandidateProjectInventory(db, options.projection, candidateId);
+			const { row, ready } = candidateAuthority(db, candidateId, rosterDevices, projects);
+			// A compatible Ready completion with unchanged evidence survives an
+			// explicit refresh: only labels update. Creating a replacement attempt
+			// here would immediately drop Ready and force a redundant review cycle.
+			if (row?.state === "completed" && ready) {
+				return refreshLegacyTeamSetupDraftLabels(db, row.attempt_id, {
+					displayName: group.displayName,
+					devices: rosterDevices,
+					projects,
+					now: options.now,
+				});
+			}
+			return refreshLegacyTeamSetupDraft(db, {
+				candidateId,
+				coordinatorId,
+				groupId,
 				displayName: group.displayName,
 				devices: rosterDevices,
 				projects,
 				now: options.now,
 			});
-		}
-		return refreshLegacyTeamSetupDraft(db, {
-			candidateId,
-			coordinatorId,
-			groupId,
-			displayName: group.displayName,
-			devices: rosterDevices,
-			projects,
-			now: options.now,
 		});
+		return refresh.immediate();
 	}
 	throw new Error("legacy_team_candidate_not_found");
 }
