@@ -945,6 +945,11 @@ describe("legacy Team setup activation", () => {
 				toDeviceEligibilityMode: "reviewed_allowlist",
 			}),
 		]);
+		expect(review.accessDelta.membershipChanges).toContainEqual({
+			teamId,
+			identityId: "identity-invited",
+			change: "update",
+		});
 		expect(review.accessDelta.deviceAccessChanges).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
@@ -983,6 +988,20 @@ describe("legacy Team setup activation", () => {
 				)
 				.get(),
 		).toEqual({ status: "reviewed_active", provenance: "reviewed_active" });
+		expect(
+			db
+				.prepare(
+					`SELECT status, provenance, revision, migration_state, idempotency_key
+					 FROM policy_team_memberships WHERE identity_id = 'identity-invited'`,
+				)
+				.get(),
+		).toEqual({
+			status: "reviewed_active",
+			provenance: "coordinator_invite",
+			revision: "invite-r1",
+			migration_state: "user_managed",
+			idempotency_key: "historical-invite-membership",
+		});
 	});
 
 	it.each([

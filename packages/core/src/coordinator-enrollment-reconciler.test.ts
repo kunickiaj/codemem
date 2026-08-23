@@ -196,7 +196,7 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 		db.prepare(`INSERT INTO policy_team_memberships(
 			team_id, identity_id, role, status, provenance, revision, migration_state,
 			idempotency_key, created_at, updated_at
-		) VALUES ('team-a', 'identity-team', 'member', 'revoked', 'reviewed_active',
+		) VALUES ('team-a', 'identity-team', 'member', 'revoked', 'reviewed_team_setup',
 			'setup-r1', 'completed', 'setup-revoked-membership', ?, ?)`).run(NOW, NOW);
 
 		const result = reconcileCoordinatorEnrollmentSnapshot(db, {

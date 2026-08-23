@@ -5,6 +5,10 @@ import type { CoordinatorEnrollment } from "./coordinator-store-contract.js";
 import type { Database } from "./db.js";
 import { assignIdentityDeviceInTransaction } from "./identity-device-assignment.js";
 import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
+import {
+	planInviteDeviceDecisionTransition,
+	planInviteMembershipTransition,
+} from "./team-ownership-transitions.js";
 
 export interface CoordinatorEnrollmentReconcileIssue {
 	kind: "device" | "team_membership";
@@ -180,17 +184,18 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 				| undefined;
 			const reviewedTeam = team.device_eligibility_mode === "reviewed_allowlist";
 			const activeMembershipStatus = reviewedTeam ? "reviewed_active" : "active";
+			const membershipTransition = planInviteMembershipTransition(
+				membership,
+				activeMembershipStatus,
+			);
 			if (membership) {
-				if (membership.status === activeMembershipStatus) {
-					// A consumed invite owns this membership from now on. Leaving
-					// setup-owned provenance in place would let a later guided setup
-					// that omits the identity revoke the invitee's access.
-					if (["reviewed_active", "reviewed_team_candidate"].includes(membership.provenance)) {
+				if (membershipTransition === "preserve" || membershipTransition === "adopt_setup") {
+					if (membershipTransition === "adopt_setup") {
 						db.prepare(
 							`UPDATE policy_team_memberships
-							 SET provenance = 'coordinator_invite', updated_at = ?
+							 SET status = ?, provenance = 'coordinator_invite', updated_at = ?
 							 WHERE team_id = ? AND identity_id = ?`,
-						).run(now, invite.policy_team_id, identityId);
+						).run(activeMembershipStatus, now, invite.policy_team_id, identityId);
 					}
 					result.unchanged += 1;
 					if (reviewedTeam) {
@@ -204,19 +209,12 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 							});
 						}
 					}
-				} else if (
-					reviewedTeam &&
-					membership.status === "active" &&
-					["team_invite", "coordinator_invite"].includes(membership.provenance)
-				) {
-					// The pre-reviewed reconciler wrote invite memberships as
-					// `active`; normalize to the reviewed-mode status so the row
-					// stops blocking authoritative eligibility.
+				} else if (membershipTransition === "normalize_invite") {
 					db.prepare(
 						`UPDATE policy_team_memberships
-						 SET status = 'reviewed_active', updated_at = ?
+						 SET status = ?, updated_at = ?
 						 WHERE team_id = ? AND identity_id = ?`,
-					).run(now, invite.policy_team_id, identityId);
+					).run(activeMembershipStatus, now, invite.policy_team_id, identityId);
 					result.unchanged += 1;
 					const key = `${invite.policy_team_id}\u0000${identityId}`;
 					if (!reviewedInviteMemberships.has(key)) {
@@ -227,12 +225,7 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 							newlyAdded: false,
 						});
 					}
-				} else if (
-					membership.status === "revoked" &&
-					["reviewed_active", "reviewed_team_candidate"].includes(membership.provenance)
-				) {
-					// Guided setup revoked this person; a newly consumed invite is
-					// explicit re-authorization and adopts the row.
+				} else if (membershipTransition === "reauthorize_setup") {
 					const stableBinding = {
 						groupId: input.groupId,
 						inviteId: invite.invite_id,
@@ -434,57 +427,52 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 					deviceId: device.deviceId,
 					assignmentVersion: device.assignmentVersion,
 				};
-				// Existing setup-owned decisions transition to invite ownership
-				// while keeping their reviewed decision, so a later refreshed
-				// setup roster omitting the device cannot silently revoke
-				// invite-managed access.
-				const inserted = membership.newlyAdded
-					? db
-							.prepare(`INSERT INTO policy_team_device_decisions(
-								team_id, device_id, decision, assignment_version, provenance, revision,
-								created_at, updated_at
-							) VALUES (?, ?, 'unresolved', ?, 'coordinator_invite', ?, ?, ?)
-							ON CONFLICT(team_id, device_id) DO UPDATE SET
-								decision = CASE
-									WHEN policy_team_device_decisions.provenance = 'reviewed_team_setup'
-									THEN policy_team_device_decisions.decision
-									ELSE 'unresolved'
-								END,
-								assignment_version = CASE
-									WHEN policy_team_device_decisions.provenance = 'reviewed_team_setup'
-									THEN policy_team_device_decisions.assignment_version
-									ELSE excluded.assignment_version
-								END,
-								provenance = excluded.provenance,
-								revision = excluded.revision,
-								updated_at = excluded.updated_at`)
-							.run(
-								membership.teamId,
-								device.deviceId,
-								device.assignmentVersion,
-								digest("coordinator-team-device-decision-revision-v1", stableDecision),
-								now,
-								now,
-							)
-					: db
-							.prepare(`INSERT INTO policy_team_device_decisions(
-								team_id, device_id, decision, assignment_version, provenance, revision,
-								created_at, updated_at
-							) VALUES (?, ?, 'unresolved', ?, 'coordinator_invite', ?, ?, ?)
-							ON CONFLICT(team_id, device_id) DO UPDATE SET
-								provenance = excluded.provenance,
-								revision = excluded.revision,
-								updated_at = excluded.updated_at
-							WHERE policy_team_device_decisions.provenance = 'reviewed_team_setup'`)
-							.run(
-								membership.teamId,
-								device.deviceId,
-								device.assignmentVersion,
-								digest("coordinator-team-device-decision-revision-v1", stableDecision),
-								now,
-								now,
-							);
-				if (inserted.changes > 0) {
+				const existingDecision = db
+					.prepare(
+						`SELECT decision, provenance FROM policy_team_device_decisions
+						 WHERE team_id = ? AND device_id = ?`,
+					)
+					.get(membership.teamId, device.deviceId) as
+					| { decision: string; provenance: string }
+					| undefined;
+				const transition = planInviteDeviceDecisionTransition(
+					existingDecision,
+					membership.newlyAdded,
+				);
+				if (transition === "preserve") continue;
+				const revision = digest("coordinator-team-device-decision-revision-v1", stableDecision);
+				const changed =
+					transition === "insert_unresolved"
+						? db
+								.prepare(`INSERT INTO policy_team_device_decisions(
+									team_id, device_id, decision, assignment_version, provenance, revision,
+									created_at, updated_at
+								) VALUES (?, ?, 'unresolved', ?, 'coordinator_invite', ?, ?, ?)`)
+								.run(
+									membership.teamId,
+									device.deviceId,
+									device.assignmentVersion,
+									revision,
+									now,
+									now,
+								)
+						: transition === "adopt_setup"
+							? db
+									.prepare(
+										`UPDATE policy_team_device_decisions
+										 SET provenance = 'coordinator_invite', revision = ?, updated_at = ?
+										 WHERE team_id = ? AND device_id = ?`,
+									)
+									.run(revision, now, membership.teamId, device.deviceId)
+							: db
+									.prepare(
+										`UPDATE policy_team_device_decisions
+										 SET decision = 'unresolved', assignment_version = ?,
+										     provenance = 'coordinator_invite', revision = ?, updated_at = ?
+										 WHERE team_id = ? AND device_id = ?`,
+									)
+									.run(device.assignmentVersion, revision, now, membership.teamId, device.deviceId);
+				if (changed.changes > 0) {
 					db.prepare(
 						`UPDATE policy_teams SET source_fingerprint = NULL, updated_at = ?
 						 WHERE team_id = ? AND device_eligibility_mode = 'reviewed_allowlist'

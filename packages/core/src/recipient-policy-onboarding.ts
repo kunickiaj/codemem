@@ -15,6 +15,10 @@ import { managedProjectScopeId } from "./share-operation.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { buildBaseUrl } from "./sync-http-client.js";
+import {
+	planInviteDeviceDecisionTransition,
+	planInviteMembershipTransition,
+} from "./team-ownership-transitions.js";
 
 export type RecipientPolicyOnboardingJourneyV1 = "team" | "direct_project" | "add_device";
 
@@ -973,40 +977,36 @@ function applyReviewedTeamInviteDecision(
 		.get(request.teamId, request.binding.deviceId) as
 		| { decision: string; provenance: string }
 		| undefined;
-	// An existing setup-owned decision transitions to invite ownership without
-	// changing its reviewed decision: otherwise a later refreshed setup roster
-	// that omits the device would reconcile the decision away and silently
-	// revoke invite-managed access.
-	const inserted = db
-		.prepare(
-			`INSERT INTO policy_team_device_decisions(
-			 team_id, device_id, decision, assignment_version, provenance, revision,
-			 created_at, updated_at
-			 ) VALUES (?, ?, 'unresolved', ?, 'team_invite', ?, ?, ?)
-			 ON CONFLICT(team_id, device_id) DO UPDATE SET
-			 provenance = excluded.provenance, revision = excluded.revision,
-			 updated_at = excluded.updated_at
-			 WHERE policy_team_device_decisions.provenance = 'reviewed_team_setup'`,
-		)
-		.run(
-			request.teamId,
-			request.binding.deviceId,
-			assignmentVersion,
-			digest("recipient-onboarding-device-decision-revision-v1", stableDecision),
-			now,
-			now,
-		);
+	const transition = planInviteDeviceDecisionTransition(existingDecision, false);
+	if (transition === "preserve") return 0;
+	const revision = digest("recipient-onboarding-device-decision-revision-v1", stableDecision);
+	const result =
+		transition === "insert_unresolved"
+			? db
+					.prepare(
+						`INSERT INTO policy_team_device_decisions(
+						 team_id, device_id, decision, assignment_version, provenance, revision,
+						 created_at, updated_at
+						 ) VALUES (?, ?, 'unresolved', ?, 'team_invite', ?, ?, ?)`,
+					)
+					.run(request.teamId, request.binding.deviceId, assignmentVersion, revision, now, now)
+			: db
+					.prepare(
+						`UPDATE policy_team_device_decisions
+						 SET provenance = 'team_invite', revision = ?, updated_at = ?
+						 WHERE team_id = ? AND device_id = ?`,
+					)
+					.run(revision, now, request.teamId, request.binding.deviceId);
 	const introducedUnresolvedDecision =
 		!existingDecision ||
-		(existingDecision.provenance === "reviewed_team_setup" &&
-			existingDecision.decision === "unresolved");
-	if (inserted.changes > 0 && introducedUnresolvedDecision) {
+		(transition === "adopt_setup" && existingDecision.decision === "unresolved");
+	if (result.changes > 0 && introducedUnresolvedDecision) {
 		db.prepare(
 			`UPDATE policy_teams SET source_fingerprint = NULL, updated_at = ?
 			 WHERE team_id = ? AND device_eligibility_mode = 'reviewed_allowlist'`,
 		).run(now, request.teamId);
 	}
-	return inserted.changes;
+	return result.changes;
 }
 
 function projectRow(
@@ -1103,9 +1103,14 @@ function inviterProjectRow(input: {
 	};
 }
 
-function planRows(db: Database, request: NormalizedRequest, now: string): IntentRow[] {
+function planRows(
+	db: Database,
+	request: NormalizedRequest,
+	now: string,
+	options: { preserveInviteMembership?: boolean } = {},
+): IntentRow[] {
 	const rows = [deviceRow(request, now)];
-	if (request.journey === "team") {
+	if (request.journey === "team" && !options.preserveInviteMembership) {
 		const reviewedTeam = teamDeviceEligibilityMode(db, request.teamId) === "reviewed_allowlist";
 		rows.push(membershipRow(request, now, reviewedTeam ? "reviewed_active" : "active"));
 	}
@@ -1128,46 +1133,77 @@ function applyTeamJourneySideEffects(
 }
 
 /**
- * A consumed invite owns the recipient's membership from now on. When guided
- * setup already materialized the row with setup-owned provenance, transition
- * it to the exact invite-owned row before intent validation: otherwise the
- * exact-row comparison rejects onboarding for an existing roster member, and a
- * later setup omitting the identity would revoke the invitee's access.
+ * A consumed invite owns the recipient's membership from now on. Setup-owned
+ * rows transition to this invite's exact intent before validation. Existing
+ * invite-owned rows retain their original invite metadata; reviewed Teams may
+ * normalize only their active status. Without that distinction, exact-row
+ * validation either rejects a valid invite-owned member or replaces metadata
+ * owned by an earlier invite flow.
  */
-function adoptSetupOwnedTeamMembership(
+function applyInviteOwnedTeamMembershipTransition(
 	db: Database,
 	request: NormalizedRequest,
 	now: string,
-): void {
-	if (request.journey !== "team") return;
+): {
+	preserveInviteMembership: boolean;
+	writes: 0 | 1;
+} {
+	if (request.journey !== "team") {
+		return { preserveInviteMembership: false, writes: 0 };
+	}
 	const existing = db
 		.prepare(
-			`SELECT provenance FROM policy_team_memberships
+			`SELECT provenance, status FROM policy_team_memberships
 			 WHERE team_id = ? AND identity_id = ?`,
 		)
-		.get(request.teamId, request.binding.identityId) as { provenance: string } | undefined;
-	if (!existing || !["reviewed_active", "reviewed_team_candidate"].includes(existing.provenance)) {
-		return;
-	}
+		.get(request.teamId, request.binding.identityId) as
+		| { provenance: string; status: string }
+		| undefined;
 	const reviewedTeam = teamDeviceEligibilityMode(db, request.teamId) === "reviewed_allowlist";
-	const row = membershipRow(request, now, reviewedTeam ? "reviewed_active" : "active");
-	db.prepare(
-		`UPDATE policy_team_memberships
+	const targetStatus = reviewedTeam ? "reviewed_active" : "active";
+	const transition = planInviteMembershipTransition(existing, targetStatus);
+	if (!["adopt_setup", "reauthorize_setup", "normalize_invite"].includes(transition)) {
+		return {
+			preserveInviteMembership: transition === "preserve",
+			writes: 0,
+		};
+	}
+	if (transition === "normalize_invite") {
+		const result = db
+			.prepare(
+				`UPDATE policy_team_memberships SET status = ?, updated_at = ?
+			 WHERE team_id = ? AND identity_id = ?`,
+			)
+			.run(targetStatus, now, request.teamId, request.binding.identityId);
+		return {
+			preserveInviteMembership: true,
+			writes: result.changes > 0 ? 1 : 0,
+		};
+	}
+	const row = membershipRow(request, now, targetStatus);
+	const result = db
+		.prepare(
+			`UPDATE policy_team_memberships
 		 SET role = ?, status = ?, provenance = ?, revision = ?, migration_state = ?,
 		     source_fingerprint = ?, idempotency_key = ?, updated_at = ?
 		 WHERE team_id = ? AND identity_id = ?`,
-	).run(
-		row.values.role,
-		row.values.status,
-		row.values.provenance,
-		row.values.revision,
-		row.values.migration_state,
-		row.values.source_fingerprint,
-		row.values.idempotency_key,
-		now,
-		request.teamId,
-		request.binding.identityId,
-	);
+		)
+		.run(
+			row.values.role,
+			row.values.status,
+			row.values.provenance,
+			row.values.revision,
+			row.values.migration_state,
+			row.values.source_fingerprint,
+			row.values.idempotency_key,
+			now,
+			request.teamId,
+			request.binding.identityId,
+		);
+	return {
+		preserveInviteMembership: false,
+		writes: result.changes > 0 ? 1 : 0,
+	};
 }
 
 function isPristineBootstrapIdentity(
@@ -1638,8 +1674,11 @@ export function commitRecipientPolicyOnboarding(
 			}
 			const now = (options.now ?? (() => new Date().toISOString()))();
 			let writeCount = 0;
-			adoptSetupOwnedTeamMembership(db, normalized, now);
-			for (const row of planRows(db, normalized, now)) {
+			const membershipTransition = applyInviteOwnedTeamMembershipTransition(db, normalized, now);
+			writeCount += membershipTransition.writes;
+			for (const row of planRows(db, normalized, now, {
+				preserveInviteMembership: membershipTransition.preserveInviteMembership,
+			})) {
 				if (validateOrWriteRow(db, row)) writeCount += 1;
 			}
 			writeCount += applyTeamJourneySideEffects(db, normalized, now);
@@ -1734,8 +1773,11 @@ export function commitRecipientPolicyOnboardingFromReviewedIntent(
 				if (reviewedIntent.journey !== "team") throw new Error("intent_conflict");
 				if (materializeReviewedTeam(db, reviewedIntent.team, now)) writeCount += 1;
 			}
-			adoptSetupOwnedTeamMembership(db, normalized, now);
-			for (const row of planRows(db, normalized, now)) {
+			const membershipTransition = applyInviteOwnedTeamMembershipTransition(db, normalized, now);
+			writeCount += membershipTransition.writes;
+			for (const row of planRows(db, normalized, now, {
+				preserveInviteMembership: membershipTransition.preserveInviteMembership,
+			})) {
 				if (validateOrWriteRow(db, row)) writeCount += 1;
 			}
 			writeCount += applyTeamJourneySideEffects(db, normalized, now);

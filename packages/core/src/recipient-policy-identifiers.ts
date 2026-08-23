@@ -27,11 +27,11 @@ export function recipientPolicyDigest(prefix: string, value: unknown): string {
 }
 
 /**
- * Decision provenances owned by the invite flows. Activation deliberately
- * preserves these rows and readiness must tolerate them; every layer that
- * classifies decision ownership must use this single set — hand-repeated
- * literals with opposite polarity (allowlist vs denylist) are how the two
- * sides drift apart.
+ * Decision and membership provenances owned by the invite flows. Activation
+ * deliberately preserves these rows and readiness must tolerate them; every
+ * layer that classifies invite ownership must use this single set —
+ * hand-repeated literals with opposite polarity (allowlist vs denylist) are
+ * how the two sides drift apart.
  */
 export const INVITE_DECISION_PROVENANCES = ["team_invite", "coordinator_invite"] as const;
 

@@ -19,6 +19,11 @@ import {
 	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
 import { deriveRecipientPolicyEffectiveDevices } from "./recipient-policy-reconciliation.js";
+import {
+	classifyTeamPolicyOwnership,
+	planSetupDeviceDecisionTransition,
+	planSetupMembershipTransition,
+} from "./team-ownership-transitions.js";
 
 export type LegacyTeamSetupActivationErrorCode =
 	| "team_setup_incomplete"
@@ -219,14 +224,8 @@ interface CompletionRow {
 const SETUP_MEMBERSHIP_PROVENANCE = "reviewed_active";
 /** Provenance written by the historical `choose_recipients` migration path. */
 const HISTORICAL_TEAM_PROVENANCE = "reviewed_team_candidate";
-/** Membership provenance values written by the production invite flows. */
-const INVITE_MEMBERSHIP_PROVENANCES = ["team_invite", "coordinator_invite"] as const;
 const MAX_ACTIVATION_DEVICES = 500;
 const MAX_ACTIVATION_PROJECTS = 500;
-
-function isInviteMembershipProvenance(provenance: string): boolean {
-	return (INVITE_MEMBERSHIP_PROVENANCES as readonly string[]).includes(provenance);
-}
 
 function parseJsonObject(json: string): Record<string, unknown> | null {
 	try {
@@ -554,7 +553,7 @@ function validateCanonicalState(model: ActivationModel): void {
 					row.status !== "revoked" &&
 					// Pre-reviewed production invite paths wrote `active` rows; the
 					// activation sweep normalizes them to `reviewed_active`.
-					!(row.status === "active" && isInviteMembershipProvenance(row.provenance)),
+					!(row.status === "active" && classifyTeamPolicyOwnership(row.provenance) === "invite"),
 			)
 		) {
 			activationError("team_setup_conflict");
@@ -571,7 +570,7 @@ function validateCanonicalState(model: ActivationModel): void {
 		if (
 			memberships.some(
 				(row) =>
-					isInviteMembershipProvenance(row.provenance) &&
+					classifyTeamPolicyOwnership(row.provenance) === "invite" &&
 					(row.status === "active" || row.status === "reviewed_active") &&
 					!validIdentityIds.has(row.identity_id),
 			)
@@ -658,7 +657,7 @@ function validateHistoricalTeamAdoption(model: ActivationModel): void {
 				(row.status !== "active" && row.status !== "revoked" && row.status !== "reviewed_active") ||
 				((row.status === "active" || row.status === "reviewed_active") &&
 					row.provenance !== HISTORICAL_TEAM_PROVENANCE &&
-					!isInviteMembershipProvenance(row.provenance)),
+					classifyTeamPolicyOwnership(row.provenance) !== "invite"),
 		)
 	) {
 		activationError("team_setup_conflict");
@@ -714,12 +713,18 @@ function validateAssignmentExpectations(model: ActivationModel): void {
 interface DerivationRows {
 	identities: Array<{ identityId: string; status: string; mergedIntoIdentityId: string | null }>;
 	teams: Array<{ teamId: string; status: string; deviceEligibilityMode: string }>;
-	teamMemberships: Array<{ teamId: string; identityId: string; status: string }>;
+	teamMemberships: Array<{
+		teamId: string;
+		identityId: string;
+		status: string;
+		provenance: string;
+	}>;
 	teamDeviceDecisions: Array<{
 		teamId: string;
 		deviceId: string;
 		decision: string;
 		assignmentVersion: number;
+		provenance: string;
 	}>;
 	identityDevices: Array<{
 		identityId: string;
@@ -752,12 +757,14 @@ function currentDerivationRows(model: ActivationModel): DerivationRows {
 			teamId: row.team_id,
 			identityId: row.identity_id,
 			status: row.status,
+			provenance: row.provenance,
 		})),
 		teamDeviceDecisions: model.allDecisions.map((row) => ({
 			teamId: row.team_id,
 			deviceId: row.device_id,
 			decision: row.decision,
 			assignmentVersion: row.assignment_version,
+			provenance: row.provenance,
 		})),
 		identityDevices: model.assignments.map((row) => ({
 			identityId: row.identity_id,
@@ -825,29 +832,33 @@ function simulatedDerivationRows(model: ActivationModel): DerivationRows {
 				teamId: row.team_id,
 				identityId: row.identity_id,
 				status: row.status,
+				provenance: row.provenance,
 			});
 			continue;
 		}
 		seenThisTeamMembers.add(row.identity_id);
-		let status = row.status;
-		if (desired.has(row.identity_id)) {
-			status = "reviewed_active";
-		} else if (
-			isInviteMembershipProvenance(row.provenance) &&
-			(row.status === "active" || row.status === "reviewed_active")
-		) {
-			status = "reviewed_active";
-		} else if (
-			[SETUP_MEMBERSHIP_PROVENANCE, HISTORICAL_TEAM_PROVENANCE].includes(row.provenance) &&
-			(row.status === "active" || row.status === "reviewed_active")
-		) {
-			status = "revoked";
-		}
-		teamMemberships.push({ teamId: model.teamId, identityId: row.identity_id, status });
+		const transition = planSetupMembershipTransition(row, desired.has(row.identity_id));
+		const status =
+			transition === "upsert_setup" || transition === "normalize_invite"
+				? "reviewed_active"
+				: transition === "revoke_setup"
+					? "revoked"
+					: row.status;
+		teamMemberships.push({
+			teamId: model.teamId,
+			identityId: row.identity_id,
+			status,
+			provenance: row.provenance,
+		});
 	}
 	for (const identityId of model.desiredIdentityIds) {
 		if (!seenThisTeamMembers.has(identityId)) {
-			teamMemberships.push({ teamId: model.teamId, identityId, status: "reviewed_active" });
+			teamMemberships.push({
+				teamId: model.teamId,
+				identityId,
+				status: "reviewed_active",
+				provenance: SETUP_MEMBERSHIP_PROVENANCE,
+			});
 		}
 	}
 
@@ -865,49 +876,40 @@ function simulatedDerivationRows(model: ActivationModel): DerivationRows {
 			row.decision = "unresolved";
 		}
 	}
-	// Decisions for devices dropped from the refreshed roster are reconciled
-	// away unless invite-owned; the invite allowlist is the single sanctioned
-	// survivor set, mirroring the apply-side reconcile exactly.
-	const draftDeviceIds = new Set(model.devices.map((device) => device.device_id));
-	const inviteOwnedDecisionDeviceIds = new Set(
-		model.allDecisions
-			.filter(
-				(row) =>
-					row.team_id === model.teamId &&
-					["team_invite", "coordinator_invite"].includes(row.provenance),
-			)
-			.map((row) => row.device_id),
-	);
+	const draftDevices = new Map(model.devices.map((device) => [device.device_id, device]));
 	for (const row of model.allDecisions) {
-		if (row.team_id !== model.teamId || draftDeviceIds.has(row.device_id)) continue;
-		if (!["team_invite", "coordinator_invite"].includes(row.provenance)) {
-			teamDeviceDecisions.delete(decisionKey(row.team_id, row.device_id));
-			continue;
+		if (row.team_id !== model.teamId) continue;
+		const draftDevice = draftDevices.get(row.device_id);
+		if (draftDevice && draftDevice.decision !== "removed") continue;
+		const transition = planSetupDeviceDecisionTransition(row, {
+			belongsToRoster: Boolean(draftDevice),
+		});
+		const key = decisionKey(row.team_id, row.device_id);
+		if (transition === "delete_setup") teamDeviceDecisions.delete(key);
+		if (transition === "settle_invite_excluded") {
+			const preserved = teamDeviceDecisions.get(key);
+			if (preserved) preserved.decision = "excluded";
 		}
-		// Mirrors the apply-side reconcile: an invite-owned unresolved decision
-		// for a device absent from the roster settles to `excluded`.
-		const preserved = teamDeviceDecisions.get(decisionKey(row.team_id, row.device_id));
-		if (preserved?.decision === "unresolved") preserved.decision = "excluded";
 	}
 	for (const device of model.devices) {
+		if (device.decision === "removed") continue;
 		const key = decisionKey(model.teamId, device.device_id);
-		if (device.decision === "removed") {
-			// Mirrors the apply-side removed reconcile: any surviving
-			// invite-owned decision settles to the non-granting `excluded`
-			// state — the reviewed removal retires the device's access.
-			if (!inviteOwnedDecisionDeviceIds.has(device.device_id)) {
-				teamDeviceDecisions.delete(key);
-			} else {
-				const preserved = teamDeviceDecisions.get(key);
-				if (preserved && preserved.decision !== "excluded") preserved.decision = "excluded";
-			}
-			continue;
-		}
+		const existing = teamDeviceDecisions.get(key);
+		const desiredDecision = device.decision === "included" ? "included" : "excluded";
+		const transition = planSetupDeviceDecisionTransition(existing, {
+			desiredDecision,
+			belongsToRoster: true,
+		});
+		if (transition === "preserve") continue;
 		teamDeviceDecisions.set(key, {
 			teamId: model.teamId,
 			deviceId: device.device_id,
-			decision: device.decision === "included" ? "included" : "excluded",
+			decision: desiredDecision,
 			assignmentVersion: identityDevices.get(device.device_id)?.assignmentVersion ?? 0,
+			provenance:
+				transition === "upsert_preserving_invite"
+					? (existing?.provenance ?? "team_invite")
+					: "reviewed_team_setup",
 		});
 	}
 
@@ -999,27 +1001,29 @@ function buildAccessDelta(model: ActivationModel): LegacyTeamSetupAccessDeltaV1 
 	const memberships = new Map(model.memberships.map((row) => [row.identity_id, row]));
 	for (const identityId of model.desiredIdentityIds) {
 		const current = memberships.get(identityId);
-		if (!current || !["active", "reviewed_active"].includes(current.status)) {
+		const transition = planSetupMembershipTransition(current, true);
+		if (
+			transition === "upsert_setup" &&
+			(!current || !["active", "reviewed_active"].includes(current.status))
+		) {
 			accessDelta.membershipChanges.push({ teamId: model.teamId, identityId, change: "add" });
-		} else if (current.status === "active") {
+		} else if (
+			(transition === "upsert_setup" || transition === "normalize_invite") &&
+			current?.status === "active"
+		) {
 			accessDelta.membershipChanges.push({ teamId: model.teamId, identityId, change: "update" });
 		}
 	}
 	for (const membership of model.memberships) {
 		if (model.desiredIdentityIds.includes(membership.identity_id)) continue;
-		if (
-			[SETUP_MEMBERSHIP_PROVENANCE, HISTORICAL_TEAM_PROVENANCE].includes(membership.provenance) &&
-			["active", "reviewed_active"].includes(membership.status)
-		) {
+		const transition = planSetupMembershipTransition(membership, false);
+		if (transition === "revoke_setup") {
 			accessDelta.membershipChanges.push({
 				teamId: model.teamId,
 				identityId: membership.identity_id,
 				change: "remove",
 			});
-		} else if (
-			isInviteMembershipProvenance(membership.provenance) &&
-			membership.status === "active"
-		) {
+		} else if (transition === "normalize_invite") {
 			accessDelta.membershipChanges.push({
 				teamId: model.teamId,
 				identityId: membership.identity_id,
@@ -1336,34 +1340,24 @@ function applyActivation(
 	db.prepare(
 		"UPDATE policy_teams SET source_fingerprint = ?, updated_at = ? WHERE team_id = ?",
 	).run(postRosterFingerprint, now, model.teamId);
+	const existingMemberships = new Map(
+		model.allMemberships
+			.filter((row) => row.team_id === model.teamId)
+			.map((row) => [row.identity_id, row]),
+	);
+	const desiredIdentityIds = new Set(model.desiredIdentityIds);
 	for (const identityId of model.desiredIdentityIds) {
+		const transition = planSetupMembershipTransition(existingMemberships.get(identityId), true);
+		if (transition !== "upsert_setup") continue;
 		db.prepare(
 			`INSERT INTO policy_team_memberships(
 			 team_id, identity_id, role, status, provenance, revision, migration_state,
 			 source_fingerprint, idempotency_key, created_at, updated_at
 			 ) VALUES (?, ?, 'member', 'reviewed_active', ?, ?, 'completed', ?, ?, ?, ?)
 			 ON CONFLICT(team_id, identity_id) DO UPDATE SET
-			 role = 'member', status = 'reviewed_active',
-			 provenance = CASE
-			   WHEN policy_team_memberships.provenance IN ('team_invite', 'coordinator_invite')
-			     THEN policy_team_memberships.provenance
-			   ELSE excluded.provenance
-			 END,
-			 revision = CASE
-			   WHEN policy_team_memberships.provenance IN ('team_invite', 'coordinator_invite')
-			     THEN policy_team_memberships.revision
-			   ELSE excluded.revision
-			 END,
-			 migration_state = CASE
-			   WHEN policy_team_memberships.provenance IN ('team_invite', 'coordinator_invite')
-			     THEN policy_team_memberships.migration_state
-			   ELSE 'completed'
-			 END,
-			 source_fingerprint = CASE
-			   WHEN policy_team_memberships.provenance IN ('team_invite', 'coordinator_invite')
-			     THEN policy_team_memberships.source_fingerprint
-			   ELSE excluded.source_fingerprint
-			 END,
+			 role = 'member', status = 'reviewed_active', provenance = excluded.provenance,
+			 revision = excluded.revision, migration_state = 'completed',
+			 source_fingerprint = excluded.source_fingerprint,
 			 updated_at = excluded.updated_at`,
 		).run(
 			model.teamId,
@@ -1376,86 +1370,58 @@ function applyActivation(
 			now,
 		);
 	}
-	db.prepare(
-		`UPDATE policy_team_memberships
-		 SET status = 'reviewed_active', updated_at = ?
-		 WHERE team_id = ? AND provenance IN ('team_invite', 'coordinator_invite')
-		   AND status IN ('active', 'reviewed_active')`,
-	).run(now, model.teamId);
-	// Reconcile memberships owned by guided setup, including the historical
-	// `reviewed_team_candidate` rows adopted by this activation. Invite-managed
-	// memberships are never revoked here.
-	db.prepare(
-		`UPDATE policy_team_memberships
-		 SET status = 'revoked', revision = ?, updated_at = ?
-		 WHERE team_id = ? AND provenance IN (?, ?) AND status IN ('active', 'reviewed_active')
-		   AND identity_id NOT IN (
-		     SELECT DISTINCT target_identity_id FROM legacy_team_setup_draft_devices
-		     WHERE attempt_id = ? AND decision = 'included' AND target_identity_id IS NOT NULL
-		   )`,
-	).run(
-		revision,
-		now,
-		model.teamId,
-		SETUP_MEMBERSHIP_PROVENANCE,
-		HISTORICAL_TEAM_PROVENANCE,
-		model.draft.attempt_id,
-	);
-
-	// A device dropped from the refreshed roster has no draft row, but its
-	// stale decision would keep granting project access. Invite-owned
-	// decisions are the only sanctioned survivors — readiness classifies
-	// anything else outside the completed draft as unexplained — so the
-	// reconcile scope is the complement of the invite allowlist, never a
-	// provenance denylist that a third writer could silently escape.
-	db.prepare(
-		`DELETE FROM policy_team_device_decisions
-		 WHERE team_id = ? AND provenance NOT IN ('team_invite', 'coordinator_invite')
-		   AND device_id NOT IN (
-		     SELECT device_id FROM legacy_team_setup_draft_devices WHERE attempt_id = ?
-		   )`,
-	).run(model.teamId, model.draft.attempt_id);
-	// An invite-owned UNRESOLVED decision for a device the refreshed roster no
-	// longer contains has no draft row through which the user could ever
-	// resolve it — readiness would reopen setup forever with no actionable
-	// device. It settles to the non-granting `excluded` state; invite flows
-	// can still update their own decision if the device later enrolls.
-	// Preserved `included` invite decisions outside the roster remain the
-	// sanctioned effective-access case and are untouched.
-	db.prepare(
-		`UPDATE policy_team_device_decisions
-		 SET decision = 'excluded', updated_at = ?
-		 WHERE team_id = ? AND decision = 'unresolved'
-		   AND provenance IN ('team_invite', 'coordinator_invite')
-		   AND device_id NOT IN (
-		     SELECT device_id FROM legacy_team_setup_draft_devices WHERE attempt_id = ?
-		   )`,
-	).run(now, model.teamId, model.draft.attempt_id);
-	for (const device of model.devices) {
-		if (device.decision === "removed") {
-			// Reviewed removals revoke setup-owned access, but invite flows own
-			// their decisions even for removed roster devices: both invite
-			// writers transition setup decisions to invite ownership precisely
-			// so a refreshed roster cannot silently revoke invite-managed
-			// MEMBERSHIP. The decision itself is different: the reviewed
-			// removal retires this device's access, so any surviving invite
-			// decision settles to the non-granting `excluded` state — an
-			// `included` decision would keep granting Project access to the
-			// removed device, and an `unresolved` one would reopen setup
-			// forever.
+	for (const membership of existingMemberships.values()) {
+		const transition = planSetupMembershipTransition(
+			membership,
+			desiredIdentityIds.has(membership.identity_id),
+		);
+		if (transition === "normalize_invite") {
 			db.prepare(
-				`DELETE FROM policy_team_device_decisions
-				 WHERE team_id = ? AND device_id = ?
-				   AND provenance NOT IN ('team_invite', 'coordinator_invite')`,
-			).run(model.teamId, device.device_id);
-			db.prepare(
-				`UPDATE policy_team_device_decisions
-				 SET decision = 'excluded', updated_at = ?
-				 WHERE team_id = ? AND device_id = ? AND decision <> 'excluded'
-				   AND provenance IN ('team_invite', 'coordinator_invite')`,
-			).run(now, model.teamId, device.device_id);
-			continue;
+				`UPDATE policy_team_memberships SET status = 'reviewed_active', updated_at = ?
+				 WHERE team_id = ? AND identity_id = ?`,
+			).run(now, model.teamId, membership.identity_id);
 		}
+		if (transition === "revoke_setup") {
+			db.prepare(
+				`UPDATE policy_team_memberships SET status = 'revoked', revision = ?, updated_at = ?
+				 WHERE team_id = ? AND identity_id = ?`,
+			).run(revision, now, model.teamId, membership.identity_id);
+		}
+	}
+
+	const existingDecisions = new Map(
+		model.allDecisions
+			.filter((row) => row.team_id === model.teamId)
+			.map((row) => [row.device_id, row]),
+	);
+	const draftDevices = new Map(model.devices.map((device) => [device.device_id, device]));
+	for (const decision of existingDecisions.values()) {
+		const draftDevice = draftDevices.get(decision.device_id);
+		if (draftDevice && draftDevice.decision !== "removed") continue;
+		const transition = planSetupDeviceDecisionTransition(decision, {
+			belongsToRoster: Boolean(draftDevice),
+		});
+		if (transition === "delete_setup") {
+			db.prepare(
+				"DELETE FROM policy_team_device_decisions WHERE team_id = ? AND device_id = ?",
+			).run(model.teamId, decision.device_id);
+		}
+		if (transition === "settle_invite_excluded") {
+			db.prepare(
+				`UPDATE policy_team_device_decisions SET decision = 'excluded', updated_at = ?
+				 WHERE team_id = ? AND device_id = ? AND decision <> 'excluded'`,
+			).run(now, model.teamId, decision.device_id);
+		}
+	}
+	for (const device of model.devices) {
+		if (device.decision === "removed") continue;
+		const desiredDecision = device.decision === "included" ? "included" : "excluded";
+		const transition = planSetupDeviceDecisionTransition(existingDecisions.get(device.device_id), {
+			desiredDecision,
+			belongsToRoster: true,
+		});
+		if (transition === "preserve") continue;
+		const preserveInviteOwnership = transition === "upsert_preserving_invite" ? 1 : 0;
 		const assignmentVersion =
 			device.decision === "included"
 				? assignmentVersions.get(device.device_id)
@@ -1469,17 +1435,27 @@ function applyActivation(
 			 ON CONFLICT(team_id, device_id) DO UPDATE SET
 			 decision = excluded.decision, assignment_version = excluded.assignment_version,
 			 provenance = CASE
-			   WHEN policy_team_device_decisions.provenance IN ('team_invite', 'coordinator_invite')
+			   WHEN ? = 1
 			     THEN policy_team_device_decisions.provenance
 			   ELSE excluded.provenance
 			 END,
 			 revision = CASE
-			   WHEN policy_team_device_decisions.provenance IN ('team_invite', 'coordinator_invite')
+			   WHEN ? = 1
 			     THEN policy_team_device_decisions.revision
 			   ELSE excluded.revision
 			 END,
 			 updated_at = excluded.updated_at`,
-		).run(model.teamId, device.device_id, device.decision, assignmentVersion, revision, now, now);
+		).run(
+			model.teamId,
+			device.device_id,
+			desiredDecision,
+			assignmentVersion,
+			revision,
+			now,
+			now,
+			preserveInviteOwnership,
+			preserveInviteOwnership,
+		);
 	}
 
 	for (const project of model.projects) {

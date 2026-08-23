@@ -1437,7 +1437,12 @@ describe("recipient-policy onboarding", () => {
 			{ now: () => NOW },
 		);
 
-		expect(result).toMatchObject({ status: "applied", errorCode: null });
+		expect(result).toMatchObject({
+			status: "applied",
+			errorCode: null,
+			writeCount: 3,
+			idempotent: false,
+		});
 		expect(
 			db
 				.prepare(
@@ -1452,6 +1457,60 @@ describe("recipient-policy onboarding", () => {
 				.pluck()
 				.get(),
 		).toBe("reviewed-roster");
+	});
+
+	it("normalizes an invite-owned membership without replacing its invite metadata", () => {
+		db.prepare(
+			`UPDATE policy_teams
+			 SET device_eligibility_mode = 'reviewed_allowlist', source_fingerprint = 'reviewed-roster'
+			 WHERE team_id = 'team-a'`,
+		).run();
+		db.prepare(
+			"UPDATE policy_team_memberships SET status = 'reviewed_active' WHERE team_id = 'team-a'",
+		).run();
+		db.prepare(
+			`INSERT INTO policy_team_memberships(
+			 team_id, identity_id, role, status, provenance, revision, migration_state,
+			 source_fingerprint, idempotency_key, created_at, updated_at
+			 ) VALUES ('team-a', 'identity-b', 'member', 'active', 'coordinator_invite',
+			 'coordinator-r1', 'user_managed', 'coordinator-source', 'coordinator-membership', ?, ?)`,
+		).run(NOW, NOW);
+		const request = baseRequest({
+			journey: "team",
+			invitationId: "invite-normalize-member",
+			identityId: "identity-b",
+			teamId: "team-a",
+		});
+		const preview = previewRecipientPolicyOnboarding(db, request);
+
+		const result = commitRecipientPolicyOnboarding(
+			db,
+			{ ...request, reviewedOnboardingDigest: preview.reviewedOnboardingDigest },
+			{ now: () => NOW },
+		);
+
+		expect(result).toMatchObject({
+			status: "applied",
+			errorCode: null,
+			writeCount: 3,
+			idempotent: false,
+		});
+		expect(
+			db
+				.prepare(
+					`SELECT status, provenance, revision, migration_state, source_fingerprint, idempotency_key
+					 FROM policy_team_memberships
+					 WHERE team_id = 'team-a' AND identity_id = 'identity-b'`,
+				)
+				.get(),
+		).toEqual({
+			status: "reviewed_active",
+			provenance: "coordinator_invite",
+			revision: "coordinator-r1",
+			migration_state: "user_managed",
+			source_fingerprint: "coordinator-source",
+			idempotency_key: "coordinator-membership",
+		});
 	});
 
 	it("adopts an existing setup-owned membership when onboarding an invited member", () => {
@@ -1485,7 +1544,12 @@ describe("recipient-policy onboarding", () => {
 			{ now: () => NOW },
 		);
 
-		expect(result).toMatchObject({ status: "applied", errorCode: null });
+		expect(result).toMatchObject({
+			status: "applied",
+			errorCode: null,
+			writeCount: 3,
+			idempotent: false,
+		});
 		expect(
 			db
 				.prepare(
@@ -1500,6 +1564,55 @@ describe("recipient-policy onboarding", () => {
 				.pluck()
 				.get(),
 		).toBe("identity-b");
+	});
+
+	it("counts reauthorizing a revoked setup-owned membership and replays idempotently", () => {
+		db.prepare(
+			`UPDATE policy_teams
+			 SET device_eligibility_mode = 'reviewed_allowlist', source_fingerprint = 'reviewed-roster'
+			 WHERE team_id = 'team-a'`,
+		).run();
+		db.prepare(
+			"UPDATE policy_team_memberships SET status = 'reviewed_active' WHERE team_id = 'team-a'",
+		).run();
+		db.prepare(
+			`INSERT INTO policy_team_memberships(
+			 team_id, identity_id, role, status, provenance, revision, migration_state,
+			 idempotency_key, created_at, updated_at
+			 ) VALUES ('team-a', 'identity-b', 'member', 'revoked', 'reviewed_team_setup',
+			 'setup-r1', 'completed', 'setup-owned-membership', ?, ?)`,
+		).run(NOW, NOW);
+		const request = baseRequest({
+			journey: "team",
+			invitationId: "invite-revoked-member",
+			identityId: "identity-b",
+			teamId: "team-a",
+		});
+		const preview = previewRecipientPolicyOnboarding(db, request);
+		const commitRequest = {
+			...request,
+			reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
+		};
+
+		const result = commitRecipientPolicyOnboarding(db, commitRequest, { now: () => NOW });
+		const replay = commitRecipientPolicyOnboarding(db, commitRequest, {
+			now: () => "2026-07-21T13:00:00.000Z",
+		});
+
+		expect(result).toMatchObject({
+			status: "applied",
+			writeCount: 3,
+			idempotent: false,
+		});
+		expect(replay).toMatchObject({ status: "applied", writeCount: 0, idempotent: true });
+		expect(
+			db
+				.prepare(
+					`SELECT status, provenance FROM policy_team_memberships
+					 WHERE team_id = 'team-a' AND identity_id = 'identity-b'`,
+				)
+				.get(),
+		).toEqual({ status: "reviewed_active", provenance: "team_invite" });
 	});
 
 	it("commits exact direct recipients plus device without Team membership", () => {
