@@ -112,6 +112,10 @@ export function legacyTeamCandidateId(coordinatorId: string, groupId: string): s
 	return `legacy-team-candidate:${digest}`;
 }
 
+export function legacyTeamProjectRef(candidateId: string, sourceProjectIdentity: string): string {
+	return recipientPolicyDigest("legacy-team-project-ref-v1", [candidateId, sourceProjectIdentity]);
+}
+
 export function deterministicPolicyTeamId(teamCandidateId: string): string {
 	return legacyRecipientPolicyDigest("policy-team-v1", teamCandidateId);
 }

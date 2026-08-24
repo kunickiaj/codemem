@@ -15,6 +15,7 @@ import {
 	deterministicPolicyTeamId,
 	legacyTeamCandidateId,
 	legacyTeamRosterFingerprint,
+	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
 import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-policy-reconciliation.js";
 import { initTestSchema } from "./test-utils.js";
@@ -1585,7 +1586,7 @@ describe("legacy Team setup activation", () => {
 		);
 	});
 
-	it("revokes stale setup-owned recipient edges when repeat setup drops a Project", async () => {
+	it("confirms and applies setup-owned mapping removal when repeat setup drops a Project", async () => {
 		// Arrange: first setup authorizes PROJECT_A and PROJECT_B; the
 		// refreshed inventory then drops PROJECT_B entirely.
 		await finish(readyDraft());
@@ -1623,6 +1624,15 @@ describe("legacy Team setup activation", () => {
 			recipientId: deterministicPolicyTeamId(CANDIDATE),
 			change: "remove",
 		});
+		expect(review.accessDelta.projectChanges).toContainEqual({
+			projectRef: expect.stringMatching(/^legacy-team-project-ref-v1:/u),
+			fromProjectIdentity: PROJECT_B,
+			toProjectIdentity: null,
+			change: "remove",
+		});
+		expect(review.accessDeltaDigest).toBe(
+			recipientPolicyDigest("legacy-team-access-delta", review.accessDelta),
+		);
 		expect(result).toMatchObject({ status: "completed" });
 		expect(
 			db
@@ -1658,6 +1668,71 @@ describe("legacy Team setup activation", () => {
 				.pluck()
 				.get(PROJECT_A),
 		).toBe(1);
+	});
+
+	it("preserves a dropped-pattern setup mapping owned by another coordinator group", async () => {
+		// Arrange: establish this group's setup, then add a setup-owned mapping
+		// for another group whose pattern is absent from the repeat draft. The
+		// canonical preflight only examines current draft patterns, so cleanup's
+		// ownership filter is the protection under test.
+		await finish(readyDraft());
+		db.prepare(
+			`INSERT INTO replication_scopes(
+			 scope_id, label, kind, authority_type, coordinator_id, group_id,
+			 membership_epoch, status, created_at, updated_at
+			 ) VALUES ('scope-other-group-dropped', 'Other Group', 'team', 'coordinator',
+			 'coordinator-other', 'group-other', 1, 'active', ?, ?)`,
+		).run(NOW, NOW);
+		const foreignProject = "https://git.example.invalid/other/dropped.git";
+		db.prepare(
+			`INSERT INTO project_scope_mappings(
+			 workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+			 ) VALUES (?, 'unmapped:other-dropped', 'scope-other-group-dropped', 1000,
+			 'reviewed_team_setup', ?, ?)`,
+		).run(foreignProject, NOW, NOW);
+		let draft = refreshLegacyTeamSetupDraft(db, {
+			...snapshot(),
+			projects: [snapshot().projects[0] as ReturnType<typeof snapshot>["projects"][number]],
+		});
+		for (const device of draft.devices) {
+			const identityId = device.displayName === "Laptop" ? "identity-a" : "identity-b";
+			draft = setLegacyTeamSetupDeviceAssignment(db, {
+				attemptId: draft.attemptId,
+				deviceRef: device.deviceRef,
+				targetIdentityId: identityId,
+				expectation: device.expectation,
+				now: NOW,
+			});
+			draft = setLegacyTeamSetupDeviceDecision(db, {
+				attemptId: draft.attemptId,
+				deviceRef: device.deviceRef,
+				decision: "included",
+				now: NOW,
+			});
+		}
+		const review = preview(draft);
+
+		// Act
+		await finish(draft, review);
+
+		// Assert: neither simulation nor commit treats another group's mapping
+		// as this setup's dropped mapping.
+		expect(review.accessDelta.projectChanges).not.toContainEqual(
+			expect.objectContaining({ fromProjectIdentity: foreignProject, change: "remove" }),
+		);
+		expect(
+			db
+				.prepare(
+					`SELECT workspace_identity, project_pattern, scope_id, source
+					 FROM project_scope_mappings WHERE scope_id = 'scope-other-group-dropped'`,
+				)
+				.get(),
+		).toEqual({
+			workspace_identity: foreignProject,
+			project_pattern: "unmapped:other-dropped",
+			scope_id: "scope-other-group-dropped",
+			source: "reviewed_team_setup",
+		});
 	});
 
 	it("finishes when an excluded device carries a revoked assignment", async () => {

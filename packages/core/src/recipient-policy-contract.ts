@@ -206,7 +206,7 @@ export interface LegacyTeamSetupMembershipChangeV1 {
 export interface LegacyTeamSetupProjectChangeV1 {
 	projectRef: string;
 	fromProjectIdentity: string | null;
-	toProjectIdentity: string;
+	toProjectIdentity: string | null;
 	change: LegacyTeamSetupActivationChangeV1;
 }
 

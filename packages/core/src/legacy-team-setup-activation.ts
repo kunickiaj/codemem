@@ -21,6 +21,7 @@ import type {
 } from "./recipient-policy-contract.js";
 import {
 	deterministicPolicyTeamId,
+	legacyTeamProjectRef,
 	legacyTeamRosterFingerprint,
 	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
@@ -342,6 +343,18 @@ function persistSafeError(
 
 function compareText(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function droppedSetupMappings(model: ActivationModel): MappingRow[] {
+	const committedSourceIdentities = new Set(
+		model.projects.map((project) => project.source_project_identity),
+	);
+	return model.mappings.filter(
+		(mapping) =>
+			mapping.source === "reviewed_team_setup" &&
+			model.groupScopeIds.includes(mapping.scope_id) &&
+			!committedSourceIdentities.has(mapping.project_pattern),
+	);
 }
 
 function loadModel(db: Database, input: PreviewLegacyTeamSetupActivationInput): ActivationModel {
@@ -1041,6 +1054,7 @@ function buildAccessDelta(model: ActivationModel): LegacyTeamSetupAccessDeltaV1 
 				(row) =>
 					row.project_pattern === project.source_project_identity &&
 					row.source === "reviewed_team_setup" &&
+					model.groupScopeIds.includes(row.scope_id) &&
 					row.workspace_identity != null,
 			);
 			accessDelta.projectChanges.push({
@@ -1066,6 +1080,18 @@ function buildAccessDelta(model: ActivationModel): LegacyTeamSetupAccessDeltaV1 
 				change: "add",
 			});
 		}
+	}
+	// Mapping cleanup is independently authorization-relevant: scope stamping
+	// consults these rows without considering recipient status. Represent every
+	// setup-owned deletion in the server-derived payload so it participates in
+	// the same confirmation digest as the mutation it simulates.
+	for (const mapping of droppedSetupMappings(model)) {
+		accessDelta.projectChanges.push({
+			projectRef: legacyTeamProjectRef(model.draft.candidate_id, mapping.project_pattern),
+			fromProjectIdentity: mapping.workspace_identity,
+			toProjectIdentity: null,
+			change: "remove",
+		});
 	}
 	// Stale setup-owned edges are revoked by this activation; the confirmed
 	// delta must list the removal, or the user would approve a payload that
@@ -1127,7 +1153,13 @@ function buildAccessDelta(model: ActivationModel): LegacyTeamSetupAccessDeltaV1 
 		(left, right) =>
 			compareText(left.identityId, right.identityId) || compareText(left.change, right.change),
 	);
-	accessDelta.projectChanges.sort((left, right) => compareText(left.projectRef, right.projectRef));
+	accessDelta.projectChanges.sort(
+		(left, right) =>
+			compareText(left.projectRef, right.projectRef) ||
+			compareText(left.fromProjectIdentity ?? "", right.fromProjectIdentity ?? "") ||
+			compareText(left.toProjectIdentity ?? "", right.toProjectIdentity ?? "") ||
+			compareText(left.change, right.change),
+	);
 	accessDelta.recipientChanges.sort((left, right) =>
 		compareText(left.canonicalProjectIdentity, right.canonicalProjectIdentity),
 	);
@@ -1543,26 +1575,16 @@ function applyActivation(
 	// would keep routing new sessions and memories for the dropped Project
 	// into the Team's coordinator scope despite the confirmed removal — and
 	// could shadow mappings retained by merged resolutions.
-	const committedSourceIdentities = model.projects.map(
-		(project) => project.source_project_identity,
-	);
-	// The scope subquery covers EVERY scope the group has ever exposed, not
-	// only currently active ones: a mapping pointing at a retired or replaced
-	// scope still routes new sessions there because scope stamping never
-	// checks the referenced scope's status.
-	db.prepare(
-		`DELETE FROM project_scope_mappings
-		 WHERE source = 'reviewed_team_setup'
-		   AND scope_id IN (
-		     SELECT scope_id FROM replication_scopes
-		     WHERE coordinator_id = ? AND group_id = ?
-		   )
-		   ${
-					committedSourceIdentities.length > 0
-						? `AND project_pattern NOT IN (${committedSourceIdentities.map(() => "?").join(", ")})`
-						: ""
-}`,
-	).run(model.draft.coordinator_id, model.draft.group_id, ...committedSourceIdentities);
+	// Use the same locked-snapshot plan as the confirmation simulation. It
+	// includes mappings on retired group scopes, while excluding every row not
+	// owned by this setup/group.
+	const droppedMappingIds = droppedSetupMappings(model).map((mapping) => mapping.id);
+	if (droppedMappingIds.length > 0) {
+		db.prepare(
+			`DELETE FROM project_scope_mappings
+			 WHERE id IN (${droppedMappingIds.map(() => "?").join(", ")})`,
+		).run(...droppedMappingIds);
+	}
 
 	// The completion-bound mapping must be the SELECTED mapping. A
 	// pre-existing higher-priority exact mapping for the resolved identity

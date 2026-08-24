@@ -22,8 +22,8 @@ import {
 	deterministicPolicyTeamId,
 	INVITE_DECISION_PROVENANCES,
 	legacyTeamCandidateId,
+	legacyTeamProjectRef,
 	legacyTeamRosterFingerprint,
-	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
 import {
 	deriveRecipientPolicyEffectiveDevicesFromDatabase,
@@ -183,10 +183,7 @@ function projectInventory(
 		.map((project) => {
 			const sourceProjectIdentity = project.project.canonicalIdentity;
 			return {
-				projectRef: recipientPolicyDigest("legacy-team-project-ref-v1", [
-					candidateId,
-					sourceProjectIdentity,
-				]),
+				projectRef: legacyTeamProjectRef(candidateId, sourceProjectIdentity),
 				sourceProjectIdentity,
 				displayName: project.project.displayName,
 				sourceFingerprint: project.sourceFingerprint,
