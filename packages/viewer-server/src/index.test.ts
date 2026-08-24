@@ -31,7 +31,11 @@ import { describe, expect, it, vi } from "vitest";
 import { createApp, createSyncApp } from "./index.js";
 import { __usageCacheTestHooks } from "./routes/stats.js";
 import { reconcileConfiguredCoordinatorEnrollment } from "./routes/sync.js";
-import { __teamSetupTestHooks, TEAM_SETUP_ROUTE_PREFIX } from "./routes/team-setup.js";
+import {
+	__teamSetupTestHooks,
+	type LegacyTeamConfiguredGroupSnapshotLoader,
+	TEAM_SETUP_ROUTE_PREFIX,
+} from "./routes/team-setup.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -181,7 +185,7 @@ function createTestApp(opts?: {
 	deviceId?: string;
 	sweeper?: unknown;
 	getUpdateStatus?: (options: core.GetUpdateStatusOptions) => Promise<core.UpdateStatus>;
-	loadLegacyTeamConfiguredGroupSnapshots?: () => Promise<core.LegacyTeamConfiguredGroupSnapshot[]>;
+	loadLegacyTeamConfiguredGroupSnapshots?: LegacyTeamConfiguredGroupSnapshotLoader;
 	syncRequestRateLimit?: {
 		readLimit?: number;
 		mutationLimit?: number;
@@ -466,6 +470,15 @@ describe("viewer-server", () => {
 		).toBe(true);
 		expect(concreteServerRoutes).toContain("/api/sync/team-setup/v1");
 		expect(concreteServerRoutes).toContain("/api/sync/team-setup/v1/:candidateRef");
+		expect(concreteServerRoutes).toEqual(
+			expect.arrayContaining([
+				"/api/sync/team-setup/v1/:candidateRef/devices/:deviceRef/assignment",
+				"/api/sync/team-setup/v1/:candidateRef/devices/:deviceRef/decision",
+				"/api/sync/team-setup/v1/:candidateRef/projects/:projectRef/mapping",
+				"/api/sync/team-setup/v1/:candidateRef/refresh",
+				"/api/sync/team-setup/v1/:candidateRef/finish",
+			]),
+		);
 		expect(
 			concreteServerRoutes
 				.filter((route) => route.includes("/team-setup/"))
@@ -473,7 +486,7 @@ describe("viewer-server", () => {
 		).toBe(true);
 	});
 
-	describe("Team setup read API", () => {
+	describe("Team setup API", () => {
 		const coordinatorId = "localhost:8787/";
 		const groupId = "group-alpha";
 		const rawDeviceId = "device-secret-id";
@@ -497,9 +510,9 @@ describe("viewer-server", () => {
 		];
 
 		it("returns versioned summaries and a redacted detail with preview only when finishable", async () => {
-			const loadLegacyTeamConfiguredGroupSnapshots = vi.fn(async () => snapshots);
+			const loadSnapshots = vi.fn(async () => snapshots);
 			const { app, ensureStore, cleanup } = createTestApp({
-				loadLegacyTeamConfiguredGroupSnapshots,
+				loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
 			});
 			try {
 				const store = ensureStore();
@@ -587,17 +600,116 @@ describe("viewer-server", () => {
 						 VALUES (?, 'Private Person', 0, 'active', ?, ?)`,
 					)
 					.run(rawIdentityId, "2026-08-24T00:00:00.000Z", "2026-08-24T00:00:00.000Z");
-				core.setLegacyTeamSetupDeviceAssignment(store.db, {
-					attemptId: draft?.attemptId ?? "",
-					deviceRef: draft?.devices[0]?.deviceRef ?? "",
-					targetIdentityId: rawIdentityId,
-					expectation: { kind: "absent" },
+				const replacementIdentityId = "replacement-identity-secret-id";
+				store.db
+					.prepare(
+						`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+						 VALUES (?, 'Replacement Person', 0, 'active', ?, ?)`,
+					)
+					.run(replacementIdentityId, now, now);
+				const deviceRef = draft?.devices[0]?.deviceRef ?? "";
+				const targetIdentityRef = core.recipientPolicyDigest("legacy-team-viewer-identity-ref-v1", [
+					candidateRef,
+					rawIdentityId,
+				]);
+				const replacementIdentityRef = core.recipientPolicyDigest(
+					"legacy-team-viewer-identity-ref-v1",
+					[candidateRef, replacementIdentityId],
+				);
+				const assignmentResponse = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/devices/${deviceRef}/assignment`,
+					{
+						method: "PUT",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							attemptId: draft?.attemptId,
+							targetIdentityRef,
+							expectation: { kind: "absent" },
+						}),
+					},
+				);
+				expect(assignmentResponse.status).toBe(200);
+				const replacementAssignmentResponse = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/devices/${deviceRef}/assignment`,
+					{
+						method: "PUT",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							attemptId: draft?.attemptId,
+							targetIdentityRef: replacementIdentityRef,
+							expectation: { kind: "absent" },
+						}),
+					},
+				);
+				expect(replacementAssignmentResponse.status).toBe(200);
+				const staleDecisionResponse = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/devices/${deviceRef}/decision`,
+					{
+						method: "PUT",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							attemptId: draft?.attemptId,
+							decision: "included",
+							expectedTargetIdentityRef: targetIdentityRef,
+						}),
+					},
+				);
+				expect(staleDecisionResponse.status).toBe(409);
+				expect(await staleDecisionResponse.json()).toEqual({
+					error: "team_setup_assignment_changed",
 				});
-				core.setLegacyTeamSetupDeviceDecision(store.db, {
-					attemptId: draft?.attemptId ?? "",
-					deviceRef: draft?.devices[0]?.deviceRef ?? "",
-					decision: "included",
+				const restoredAssignmentResponse = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/devices/${deviceRef}/assignment`,
+					{
+						method: "PUT",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							attemptId: draft?.attemptId,
+							targetIdentityRef,
+							expectation: { kind: "absent" },
+						}),
+					},
+				);
+				expect(restoredAssignmentResponse.status).toBe(200);
+				const decisionResponse = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/devices/${deviceRef}/decision`,
+					{
+						method: "PUT",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							attemptId: draft?.attemptId,
+							decision: "included",
+							expectedTargetIdentityRef: targetIdentityRef,
+						}),
+					},
+				);
+				expect(decisionResponse.status).toBe(200);
+				const clearResponse = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/devices/${deviceRef}/decision`,
+					{
+						method: "DELETE",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ attemptId: draft?.attemptId }),
+					},
+				);
+				expect(clearResponse.status).toBe(200);
+				expect(await clearResponse.json()).toMatchObject({
+					canFinish: false,
+					unresolvedDeviceCount: 1,
 				});
+				const restoredDecisionResponse = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/devices/${deviceRef}/decision`,
+					{
+						method: "PUT",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							attemptId: draft?.attemptId,
+							decision: "included",
+							expectedTargetIdentityRef: targetIdentityRef,
+						}),
+					},
+				);
+				expect(restoredDecisionResponse.status).toBe(200);
 				const rawPreview = core.previewLegacyTeamSetupActivation(store.db, {
 					candidateRef,
 					attemptId: draft?.attemptId ?? "",
@@ -624,6 +736,11 @@ describe("viewer-server", () => {
 				expect(detail).toHaveProperty("accessDelta.teamChanges.0.teamRef");
 				expect(detail).toHaveProperty("accessDelta.membershipChanges.0.identityRef");
 				expect(detail).toHaveProperty("devices.0.deviceRef");
+				expect(detail.identityChoices).toEqual(
+					expect.arrayContaining([
+						{ identityRef: targetIdentityRef, displayName: "Private Person" },
+					]),
+				);
 				expect((detail.devices as Array<{ deviceRef: string }>)[0]?.deviceRef).toBe(
 					core.legacyTeamDeviceRef(candidateRef, rawDeviceId),
 				);
@@ -662,19 +779,87 @@ describe("viewer-server", () => {
 					);
 				}
 
-				await core.finishLegacyTeamSetupActivation(store.db, {
-					candidateRef,
-					attemptId: draft?.attemptId ?? "",
+				const finishRequest = {
+					attemptId: draft?.attemptId,
 					finishDigest: rawPreview.finishDigest,
 					confirmedAccessDeltaDigest: rawPreview.accessDeltaDigest,
-					loadFreshRoster: async () => snapshots[0]?.devices ?? [],
-					loadProjectInventory: () =>
-						core.legacyTeamCandidateProjectInventory(
-							store.db,
-							{ localActorId: store.actorId, localDeviceId: store.deviceId },
-							candidateRef,
-						),
-					now: "2026-08-24T00:01:00.000Z",
+				};
+				loadSnapshots.mockClear();
+				const finishResponse = await app.request(`/api/sync/team-setup/v1/${candidateRef}/finish`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify(finishRequest),
+				});
+				expect(finishResponse.status).toBe(200);
+				expect(loadSnapshots).toHaveBeenCalledTimes(1);
+				expect(loadSnapshots).toHaveBeenCalledWith({ candidateRef });
+				const finished = await finishResponse.json();
+				expect(finished).toMatchObject({
+					version: 1,
+					status: "completed",
+					attemptId: draft?.attemptId,
+					accessDeltaDigest: rawPreview.accessDeltaDigest,
+				});
+				expect(finished).toHaveProperty("teamRef");
+				expect(JSON.stringify(finished)).not.toContain(
+					rawPreview.accessDelta.teamChanges[0]?.teamId,
+				);
+				const replayResponse = await app.request(`/api/sync/team-setup/v1/${candidateRef}/finish`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify(finishRequest),
+				});
+				expect(await replayResponse.json()).toEqual(finished);
+				const missingConfirmation = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/finish`,
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							attemptId: draft?.attemptId,
+							finishDigest: rawPreview.finishDigest,
+						}),
+					},
+				);
+				expect(missingConfirmation.status).toBe(409);
+				expect(await missingConfirmation.json()).toEqual({
+					error: "team_setup_confirmation_stale",
+				});
+				const otherCandidateRef = core.legacyTeamCandidateId(coordinatorId, "group-beta");
+				loadSnapshots.mockResolvedValue([
+					...snapshots,
+					{
+						coordinatorId,
+						groupId: "group-beta",
+						displayName: "Other Migration Team",
+						devices: [
+							{
+								deviceId: "other-device-secret-id",
+								fingerprint: "other-fingerprint-secret",
+								displayName: "Other Review Laptop",
+								enabled: true,
+							},
+						],
+					},
+				]);
+				const otherDetailResponse = await app.request(
+					`/api/sync/team-setup/v1/${otherCandidateRef}`,
+				);
+				expect(otherDetailResponse.status).toBe(200);
+				const otherDraft = core.getLegacyTeamSetupDraft(store.db, otherCandidateRef);
+				expect(otherDraft).not.toBeNull();
+				expect(otherDraft?.attemptId).not.toBe(finishRequest.attemptId);
+				const crossCandidate = await app.request(
+					`/api/sync/team-setup/v1/${otherCandidateRef}/finish`,
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify(finishRequest),
+					},
+				);
+				expect(crossCandidate.status).toBe(409);
+				expect(await crossCandidate.json()).toEqual({
+					error: "team_setup_confirmation_stale",
 				});
 				const insertUnrelatedActor = store.db.prepare(
 					`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
@@ -683,7 +868,26 @@ describe("viewer-server", () => {
 				for (let index = 0; index < 501; index += 1) {
 					insertUnrelatedActor.run(`unrelated-${index}`, `Unrelated ${index}`, now, now);
 				}
-				loadLegacyTeamConfiguredGroupSnapshots.mockClear();
+				const insertRemovedDraftDevice = store.db.prepare(
+					`INSERT INTO legacy_team_setup_draft_devices(
+					 attempt_id, device_id, device_ref, key_fingerprint, display_name, enabled,
+					 existing_identity_id, decision, target_identity_id, updated_at
+					 ) VALUES (?, ?, ?, ?, ?, 0, ?, 'removed', ?, ?)`,
+				);
+				for (let index = 0; index < 250; index += 1) {
+					const deviceId = `removed-device-${index}`;
+					insertRemovedDraftDevice.run(
+						draft?.attemptId,
+						deviceId,
+						core.legacyTeamDeviceRef(candidateRef, deviceId),
+						`removed-key-${index}`,
+						`Removed device ${index}`,
+						`unrelated-${index * 2}`,
+						`unrelated-${index * 2 + 1}`,
+						now,
+					);
+				}
+				loadSnapshots.mockClear();
 				const readyResponse = await app.request(`/api/sync/team-setup/v1/${candidateRef}`);
 				expect(readyResponse.status).toBe(200);
 				const ready = (await readyResponse.json()) as Record<string, unknown>;
@@ -696,7 +900,24 @@ describe("viewer-server", () => {
 				expect(ready).not.toHaveProperty("finishDigest");
 				expect(ready).not.toHaveProperty("accessDeltaDigest");
 				expect(ready).not.toHaveProperty("accessDelta");
-				expect(loadLegacyTeamConfiguredGroupSnapshots).not.toHaveBeenCalled();
+				expect(ready.identityChoices).toHaveLength(501);
+				expect(loadSnapshots).not.toHaveBeenCalled();
+
+				store.db.prepare("DELETE FROM actors WHERE actor_id LIKE 'unrelated-%'").run();
+				store.db
+					.prepare(
+						`UPDATE policy_team_device_decisions SET decision = 'unresolved'
+						 WHERE team_id = ? AND device_id = ?`,
+					)
+					.run(core.deterministicPolicyTeamId(candidateRef), rawDeviceId);
+				loadSnapshots.mockClear();
+				const reopenedResponse = await app.request(`/api/sync/team-setup/v1/${candidateRef}`);
+				expect(reopenedResponse.status).toBe(200);
+				const reopened = (await reopenedResponse.json()) as Record<string, unknown>;
+				expect(reopened).toMatchObject({ candidate: { candidateRef } });
+				expect((reopened.candidate as { status: string }).status).not.toBe("ready");
+				expect(reopened.draftState).not.toBe("completed");
+				expect(loadSnapshots).toHaveBeenCalledWith({ candidateRef });
 			} finally {
 				cleanup();
 			}
@@ -728,6 +949,313 @@ describe("viewer-server", () => {
 				toResolvedProjectRef: core.legacyTeamResolvedProjectRef(projectRef, toIdentity),
 				change: "update",
 			});
+		});
+
+		it("fails closed when active identity choices exceed their response cap", async () => {
+			const { app, ensureStore, cleanup } = createTestApp({
+				loadLegacyTeamConfiguredGroupSnapshots: async () => snapshots,
+			});
+			try {
+				ensureStore()
+					.db.prepare(
+						`WITH RECURSIVE sequence(value) AS (
+							SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value < 501
+						 )
+						 INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+						 SELECT printf('overflow-person-%03d', value), printf('Person %03d', value),
+						        0, 'active', '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z'
+						 FROM sequence`,
+					)
+					.run();
+
+				const response = await app.request(`/api/sync/team-setup/v1/${candidateRef}`);
+				expect(response.status).toBe(503);
+				expect(await response.json()).toEqual({ error: "team_setup_roster_unavailable" });
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("resolves an older Project choice beyond 500 newer duplicate sessions", async () => {
+			const { app, ensureStore, cleanup } = createTestApp({
+				loadLegacyTeamConfiguredGroupSnapshots: async () => snapshots,
+			});
+			try {
+				const store = ensureStore();
+				store.db
+					.prepare(
+						`WITH RECURSIVE sequence(value) AS (
+							SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value < 600
+						 )
+						 INSERT INTO sessions(started_at, project, git_remote, git_branch)
+						 SELECT '2026-08-24T00:00:00.000Z', 'Repeated Project',
+						        CASE WHEN value <= 100
+						          THEN 'https://example.invalid/project-a.git'
+						          ELSE 'https://example.invalid/project-b.git'
+						        END, 'main'
+						 FROM sequence`,
+					)
+					.run();
+				const sourceIdentity = "unmapped:source-project";
+				const projectRef = core.recipientPolicyDigest("legacy-team-project-ref-v1", [
+					candidateRef,
+					sourceIdentity,
+				]);
+				const draft = core.refreshLegacyTeamSetupDraft(store.db, {
+					candidateId: candidateRef,
+					coordinatorId,
+					groupId,
+					displayName: "Migration Team",
+					devices: snapshots[0]?.devices ?? [],
+					projects: [
+						{
+							projectRef,
+							sourceProjectIdentity: sourceIdentity,
+							displayName: "Source Project",
+							sourceFingerprint: "source-fingerprint",
+							deterministicProjectIdentity: null,
+						},
+					],
+				});
+				const targetIdentity = core.canonicalWorkspaceIdentity({
+					gitRemote: "https://example.invalid/project-a.git",
+				}).value;
+				const response = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/projects/${projectRef}/mapping`,
+					{
+						method: "PUT",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							attemptId: draft.attemptId,
+							resolvedProjectRef: core.legacyTeamResolvedProjectRef(projectRef, targetIdentity),
+						}),
+					},
+				);
+				expect(response.status).toBe(200);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("fails closed when 501 distinct Project mapping choices remain", async () => {
+			const { app, ensureStore, cleanup } = createTestApp({
+				loadLegacyTeamConfiguredGroupSnapshots: async () => snapshots,
+			});
+			try {
+				const store = ensureStore();
+				store.db
+					.prepare(
+						`WITH RECURSIVE sequence(value) AS (
+							SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value < 501
+						 )
+						 INSERT INTO sessions(started_at, project, git_remote, git_branch)
+						 SELECT '2026-08-24T00:00:00.000Z', printf('Project %03d', value),
+						        printf('https://example.invalid/project-%03d.git', value), 'main'
+						 FROM sequence`,
+					)
+					.run();
+				const sourceIdentity = "unmapped:source-project";
+				const projectRef = core.recipientPolicyDigest("legacy-team-project-ref-v1", [
+					candidateRef,
+					sourceIdentity,
+				]);
+				const draft = core.refreshLegacyTeamSetupDraft(store.db, {
+					candidateId: candidateRef,
+					coordinatorId,
+					groupId,
+					displayName: "Migration Team",
+					devices: snapshots[0]?.devices ?? [],
+					projects: [
+						{
+							projectRef,
+							sourceProjectIdentity: sourceIdentity,
+							displayName: "Source Project",
+							sourceFingerprint: "source-fingerprint",
+							deterministicProjectIdentity: null,
+						},
+					],
+				});
+				const targetIdentity = core.canonicalWorkspaceIdentity({
+					gitRemote: "https://example.invalid/project-001.git",
+				}).value;
+
+				const response = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/projects/${projectRef}/mapping`,
+					{
+						method: "PUT",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							attemptId: draft.attemptId,
+							resolvedProjectRef: core.legacyTeamResolvedProjectRef(projectRef, targetIdentity),
+						}),
+					},
+				);
+				expect(response.status).toBe(503);
+				expect(await response.json()).toEqual({ error: "team_setup_roster_unavailable" });
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("does not enumerate mapping choices for deterministic-only drafts", async () => {
+			const { app, ensureStore, cleanup } = createTestApp({
+				loadLegacyTeamConfiguredGroupSnapshots: async () => snapshots,
+			});
+			try {
+				const store = ensureStore();
+				const now = "2026-08-24T00:00:00.000Z";
+				const projectRemote = "https://example.invalid/deterministic.git";
+				const projectIdentity = core.canonicalWorkspaceIdentity({ gitRemote: projectRemote }).value;
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, coordinator_id, group_id,
+							membership_epoch, status, created_at, updated_at
+						 ) VALUES ('scope-deterministic', 'Migration Team', 'team', 'coordinator',
+						 ?, ?, 1, 'active', ?, ?)`,
+					)
+					.run(coordinatorId, groupId, now, now);
+				store.db
+					.prepare(
+						`INSERT INTO project_scope_mappings(
+							workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+						 ) VALUES (?, ?, 'scope-deterministic', 1000, 'test', ?, ?)`,
+					)
+					.run(projectIdentity, projectIdentity, now, now);
+				const sessionId = Number(
+					store.db
+						.prepare(
+							`INSERT INTO sessions(started_at, project, git_remote, git_branch)
+							 VALUES (?, 'Deterministic Project', ?, 'main')`,
+						)
+						.run(now, projectRemote).lastInsertRowid,
+				);
+				store.db
+					.prepare(
+						`INSERT INTO memory_items(
+							session_id, kind, title, body_text, active, created_at, updated_at,
+							visibility, project, scope_id
+						 ) VALUES (?, 'discovery', 'Deterministic Project', 'body', 1, ?, ?, 'shared',
+						 'Deterministic Project', 'scope-deterministic')`,
+					)
+					.run(sessionId, now, now);
+				store.db
+					.prepare(
+						`WITH RECURSIVE sequence(value) AS (
+							SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value < 501
+						 )
+						 INSERT INTO sessions(started_at, project, git_remote, git_branch)
+						 SELECT '2026-08-24T00:00:00.000Z', printf('Noise %03d', value),
+						        printf('https://example.invalid/noise-%03d.git', value), 'main'
+						 FROM sequence`,
+					)
+					.run();
+
+				const response = await app.request(`/api/sync/team-setup/v1/${candidateRef}`);
+				expect(response.status).toBe(200);
+				const detail = (await response.json()) as {
+					projects: Array<{ resolution: string; mappingChoices: unknown[] }>;
+				};
+				expect(detail.projects).toEqual([
+					expect.objectContaining({ resolution: "deterministic", mappingChoices: [] }),
+				]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("maps duplicate conflicting refresh snapshots to a conflict", async () => {
+			const conflictingSnapshots: core.LegacyTeamConfiguredGroupSnapshot[] = [
+				...snapshots,
+				{
+					coordinatorId,
+					groupId,
+					displayName: "Migration Team duplicate",
+					devices:
+						snapshots[0]?.devices.map((device) => ({
+							...device,
+							fingerprint: "different-fingerprint",
+						})) ?? [],
+				},
+			];
+			const { app, cleanup } = createTestApp({
+				loadLegacyTeamConfiguredGroupSnapshots: async () => conflictingSnapshots,
+			});
+			try {
+				const response = await app.request(`/api/sync/team-setup/v1/${candidateRef}/refresh`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: "{}",
+				});
+				expect(response.status).toBe(409);
+				expect(await response.json()).toEqual({ error: "team_setup_conflict" });
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("sets an explicit ambiguous Project mapping using only opaque refs", async () => {
+			const { app, ensureStore, cleanup } = createTestApp({
+				loadLegacyTeamConfiguredGroupSnapshots: async () => snapshots,
+			});
+			try {
+				const store = ensureStore();
+				const now = "2026-08-24T00:00:00.000Z";
+				const targetRemote = "https://example.invalid/target.git";
+				const targetIdentity = core.canonicalWorkspaceIdentity({ gitRemote: targetRemote }).value;
+				store.db
+					.prepare(
+						`INSERT INTO sessions(started_at, project, git_remote, git_branch)
+						 VALUES (?, 'Target Project', ?, 'main')`,
+					)
+					.run(now, targetRemote);
+				const sourceIdentity = "unmapped:source-project";
+				const projectRef = core.recipientPolicyDigest("legacy-team-project-ref-v1", [
+					candidateRef,
+					sourceIdentity,
+				]);
+				const draft = core.refreshLegacyTeamSetupDraft(store.db, {
+					candidateId: candidateRef,
+					coordinatorId,
+					groupId,
+					displayName: "Migration Team",
+					devices: snapshots[0]?.devices ?? [],
+					projects: [
+						{
+							projectRef,
+							sourceProjectIdentity: sourceIdentity,
+							displayName: "Source Project",
+							sourceFingerprint: "source-fingerprint",
+							deterministicProjectIdentity: null,
+						},
+					],
+				});
+				const resolvedProjectRef = core.legacyTeamResolvedProjectRef(projectRef, targetIdentity);
+				const response = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/projects/${projectRef}/mapping`,
+					{
+						method: "PUT",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ attemptId: draft.attemptId, resolvedProjectRef }),
+					},
+				);
+				expect(response.status).toBe(200);
+				const payload = await response.json();
+				expect(payload).toMatchObject({
+					candidateRef,
+					attemptId: draft.attemptId,
+					unresolvedProjectCount: 0,
+				});
+				const saved = core.getLegacyTeamSetupDraft(store.db, candidateRef);
+				expect(saved?.projects[0]).toMatchObject({
+					projectRef,
+					resolution: "explicit",
+					resolvedProjectRef,
+				});
+				expect(JSON.stringify(payload)).not.toContain(targetIdentity);
+			} finally {
+				cleanup();
+			}
 		});
 
 		it("normalizes scheme-less coordinator URLs before admin roster requests", async () => {
@@ -968,12 +1496,120 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("invalidates cached summary rosters after candidate refresh", async () => {
+			let currentSnapshots = snapshots;
+			let resolveRefresh!: () => void;
+			const loadSnapshots = vi.fn((options?: { candidateRef?: string }) =>
+				options?.candidateRef
+					? new Promise<core.LegacyTeamConfiguredGroupSnapshot[]>((resolve) => {
+							resolveRefresh = () => resolve(currentSnapshots);
+						})
+					: Promise.resolve(currentSnapshots),
+			);
+			const { app, ensureStore, cleanup } = createTestApp({
+				loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
+			});
+			try {
+				expect((await app.request("/api/sync/team-setup/v1")).status).toBe(200);
+				const initialAttemptId = core.getLegacyTeamSetupDraft(
+					ensureStore().db,
+					candidateRef,
+				)?.attemptId;
+				currentSnapshots = [
+					{
+						...snapshots[0],
+						devices: snapshots[0].devices.map((device) => ({
+							...device,
+							fingerprint: "refreshed-fingerprint",
+						})),
+					},
+				];
+				const refreshPromise = app.request(`/api/sync/team-setup/v1/${candidateRef}/refresh`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: "{}",
+				});
+				await vi.waitFor(() => expect(loadSnapshots).toHaveBeenCalledTimes(2));
+				expect((await app.request("/api/sync/team-setup/v1")).status).toBe(200);
+				resolveRefresh();
+				const refresh = await refreshPromise;
+				expect(refresh.status).toBe(200);
+				const refreshedAttemptId = core.getLegacyTeamSetupDraft(
+					ensureStore().db,
+					candidateRef,
+				)?.attemptId;
+				expect(refreshedAttemptId).not.toBe(initialAttemptId);
+
+				expect((await app.request("/api/sync/team-setup/v1")).status).toBe(200);
+				expect(core.getLegacyTeamSetupDraft(ensureStore().db, candidateRef)?.attemptId).toBe(
+					refreshedAttemptId,
+				);
+				expect(loadSnapshots).toHaveBeenCalledTimes(4);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("returns bounded validation, unknown-candidate, roster, and size errors", async () => {
 			const loadSnapshots = vi.fn(async () => snapshots);
 			const testApp = createTestApp({
 				loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
 			});
 			try {
+				const deviceRef = core.legacyTeamDeviceRef(candidateRef, rawDeviceId);
+				expect((await testApp.app.request(`/api/sync/team-setup/v1/${candidateRef}`)).status).toBe(
+					200,
+				);
+				const validAttemptId = core.getLegacyTeamSetupDraft(
+					testApp.ensureStore().db,
+					candidateRef,
+				)?.attemptId;
+				expect(validAttemptId).toBeDefined();
+				loadSnapshots.mockClear();
+				for (const body of [
+					"{not-json",
+					JSON.stringify({ attemptId: validAttemptId, decision: "excluded", rawDeviceId }),
+				]) {
+					const invalidBody = await testApp.app.request(
+						`/api/sync/team-setup/v1/${candidateRef}/devices/${deviceRef}/decision`,
+						{
+							method: "PUT",
+							headers: { "content-type": "application/json" },
+							body,
+						},
+					);
+					expect(invalidBody.status).toBe(400);
+					expect(await invalidBody.json()).toEqual({ error: "team_setup_incomplete" });
+				}
+				let streamReads = 0;
+				let streamCancelled = false;
+				const oversizedStream = new ReadableStream<Uint8Array>(
+					{
+						pull(controller) {
+							streamReads += 1;
+							controller.enqueue(new Uint8Array(4_096));
+						},
+						cancel() {
+							streamCancelled = true;
+						},
+					},
+					{ highWaterMark: 0 },
+				);
+				const oversizedBody = await testApp.app.request(
+					new Request(
+						`http://localhost/api/sync/team-setup/v1/${candidateRef}/devices/${deviceRef}/decision`,
+						{
+							method: "PUT",
+							headers: { "content-type": "application/json" },
+							body: oversizedStream,
+							duplex: "half",
+						} as RequestInit & { duplex: "half" },
+					),
+				);
+				expect(oversizedBody.status).toBe(400);
+				expect(await oversizedBody.json()).toEqual({ error: "team_setup_incomplete" });
+				expect(streamReads).toBe(3);
+				expect(streamCancelled).toBe(true);
 				const malformed = await testApp.app.request(
 					"/api/sync/team-setup/v1/legacy-team-candidate:not-hex",
 				);
@@ -1017,6 +1653,27 @@ describe("viewer-server", () => {
 			} finally {
 				oversized.cleanup();
 			}
+
+			const directOversized = createTestApp({
+				loadLegacyTeamConfiguredGroupSnapshots: async (options) => {
+					if (options?.candidateRef) throw new Error("legacy_team_setup_roster_too_large");
+					return snapshots;
+				},
+			});
+			try {
+				const response = await directOversized.app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/refresh`,
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: "{}",
+					},
+				);
+				expect(response.status).toBe(503);
+				expect(await response.json()).toEqual({ error: "team_setup_roster_unavailable" });
+			} finally {
+				directOversized.cleanup();
+			}
 		});
 
 		it("inherits createApp origin handling and is absent from createSyncApp", async () => {
@@ -1046,6 +1703,26 @@ describe("viewer-server", () => {
 					headers: { Origin: "http://[::1]:38888" },
 				});
 				expect(ipv6ViewerResponse.status).toBe(200);
+				const preflight = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/devices/${core.legacyTeamDeviceRef(candidateRef, rawDeviceId)}/decision`,
+					{
+						method: "OPTIONS",
+						headers: { Origin: "http://127.0.0.1:38888" },
+					},
+				);
+				expect(preflight.headers.get("Access-Control-Allow-Methods")).toContain("PUT");
+				const crossOriginPut = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/devices/${core.legacyTeamDeviceRef(candidateRef, rawDeviceId)}/decision`,
+					{
+						method: "PUT",
+						headers: {
+							Origin: "https://evil.example.com",
+							"content-type": "application/json",
+						},
+						body: "{}",
+					},
+				);
+				expect(crossOriginPut.status).toBe(403);
 				expect((await syncApp.request("/api/sync/team-setup/v1")).status).toBe(404);
 			} finally {
 				cleanup();
