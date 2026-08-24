@@ -6,6 +6,7 @@ vi.mock("../lib/api", () => ({
 	loadProjects: vi.fn(),
 	loadCoordinatorAdminGroupsFiltered: vi.fn(),
 	loadCoordinatorAdminStatus: vi.fn(),
+	loadLegacyTeamSetupSummary: vi.fn(),
 	loadProjectScopeInventory: vi.fn(),
 	loadRecipientPolicyIntent: vi.fn(),
 	loadRecipientPolicyReview: vi.fn(),
@@ -68,6 +69,7 @@ vi.mock("./sync/sync-dialogs", () => ({ openSyncInputDialog: vi.fn() }));
 
 import * as api from "../lib/api";
 import type {
+	LegacyTeamSetupSummaryResponseV1,
 	ProjectScopeInventoryProject,
 	ProjectScopeInventoryResult,
 	RecipientPolicyIntentGraphV1,
@@ -282,6 +284,7 @@ describe("Projects tab", () => {
 			version: 1,
 		});
 		vi.mocked(api.loadRecipientPolicyIntent).mockResolvedValue(recipientIntent());
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockResolvedValue({ version: 1, candidates: [] });
 		vi.mocked(api.resolveRecipientPolicyReview).mockResolvedValue({
 			errorCode: null,
 			idempotent: false,
@@ -371,6 +374,200 @@ describe("Projects tab", () => {
 		expect(surface?.textContent).toContain("Assign a stable canonical Project identity");
 		expect(surface?.querySelector("button, select")).toBeNull();
 		expect(document.querySelectorAll(".recipient-policy-review-item")).toHaveLength(0);
+	});
+
+	it("routes an unfinished server Team candidate into guided setup without resolving recipient review", async () => {
+		const onOpenTeamSetup = vi.fn();
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockResolvedValue({
+			version: 1,
+			candidates: [
+				{
+					candidateRef: "opaque-candidate-ref",
+					displayName: "Example Team",
+					status: "in_progress",
+					deviceCount: 2,
+					projectCount: 1,
+					unresolvedDeviceCount: 1,
+					unresolvedProjectCount: 0,
+				},
+			],
+		});
+
+		initProjectsTab(() => {}, { onOpenTeamSetup });
+		await loadProjectsData();
+		const entry = document.querySelector<HTMLElement>(".project-team-setup-entry");
+		expect(entry?.textContent).toContain("Finish setting up this Team");
+		expect(entry?.textContent).toContain("Example Team");
+		expect(entry?.querySelector("button")?.getAttribute("aria-label")).toBe(
+			"Finish setting up Example Team",
+		);
+		entry?.querySelector<HTMLButtonElement>("button")?.click();
+
+		expect(onOpenTeamSetup).toHaveBeenCalledWith("opaque-candidate-ref");
+		expect(api.resolveRecipientPolicyReview).not.toHaveBeenCalled();
+		expect(recipientPolicyManagement.openRecipientPolicyManagement).not.toHaveBeenCalled();
+	});
+
+	it("preserves the focused Team setup action while a refresh discovery is pending", async () => {
+		const summary = {
+			version: 1 as const,
+			candidates: [
+				{
+					candidateRef: "opaque-candidate-ref",
+					displayName: "Example Team",
+					status: "in_progress" as const,
+					deviceCount: 2,
+					projectCount: 1,
+					unresolvedDeviceCount: 1,
+					unresolvedProjectCount: 0,
+				},
+			],
+		};
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockResolvedValueOnce(summary);
+		initProjectsTab(() => {}, { onOpenTeamSetup: vi.fn() });
+
+		await loadProjectsData();
+		const entry = document.querySelector<HTMLElement>(".project-team-setup-entry");
+		const button = entry?.querySelector<HTMLButtonElement>("button");
+		button?.focus();
+		let resolveSummary!: (value: typeof summary) => void;
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockImplementationOnce(
+			() => new Promise((resolve) => (resolveSummary = resolve)),
+		);
+
+		await loadProjectsData();
+
+		expect(document.querySelector(".project-team-setup-entry")).toBe(entry);
+		expect(button?.isConnected).toBe(true);
+		expect(document.activeElement).toBe(button);
+
+		resolveSummary(summary);
+		await vi.waitFor(() => expect(api.loadLegacyTeamSetupSummary).toHaveBeenCalledTimes(2));
+		await flushAsyncWork();
+		expect(document.querySelector(".project-team-setup-entry")).toBe(entry);
+		expect(document.activeElement).toBe(button);
+
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockRejectedValueOnce(
+			new Error("temporary discovery failure"),
+		);
+		await loadProjectsData();
+		await vi.waitFor(() => expect(api.loadLegacyTeamSetupSummary).toHaveBeenCalledTimes(3));
+		await flushAsyncWork();
+		expect(document.querySelector(".project-team-setup-entry")).toBe(entry);
+		expect(entry?.querySelector('[role="status"]')?.textContent).toBe(
+			"Team setup status is temporarily unavailable. The previous Team setup status is being shown.",
+		);
+		expect(document.activeElement).toBe(button);
+
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockResolvedValueOnce({
+			version: 1,
+			candidates: [],
+		});
+		await loadProjectsData();
+		await vi.waitFor(() => expect(document.querySelector(".project-team-setup-entry")).toBeNull());
+		expect(document.activeElement).toBe(document.getElementById("projectsSearch"));
+	});
+
+	it("keeps Projects usable when guided Team setup discovery is unavailable", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		});
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockRejectedValue(new Error("setup unavailable"));
+
+		await loadProjectsData();
+
+		expect(document.body.textContent).toContain("api");
+		expect(document.querySelector(".project-team-setup-entry")).toBeNull();
+		expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain(
+			"1 project identity found",
+		);
+	});
+
+	it("renders Projects before optional Team setup discovery finishes", async () => {
+		let resolveTeamSetup!: (value: { version: 1; candidates: [] }) => void;
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		});
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					resolveTeamSetup = resolve;
+				}),
+		);
+
+		const loading = loadProjectsData();
+		await vi.waitFor(() =>
+			expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain(
+				"1 project identity found",
+			),
+		);
+		await loading;
+		expect(document.querySelector(".project-team-setup-entry")).toBeNull();
+
+		resolveTeamSetup({ version: 1, candidates: [] });
+	});
+
+	it("reuses slow Team setup discovery across polling generations", async () => {
+		let resolveTeamSetup!: (value: LegacyTeamSetupSummaryResponseV1) => void;
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		});
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockImplementation(
+			() => new Promise((resolve) => (resolveTeamSetup = resolve)),
+		);
+
+		await loadProjectsData();
+		await loadProjectsData();
+		await loadProjectsData();
+		expect(api.loadLegacyTeamSetupSummary).toHaveBeenCalledTimes(1);
+
+		resolveTeamSetup({
+			version: 1,
+			candidates: [
+				{
+					candidateRef: "opaque-candidate-ref",
+					displayName: "Slow Team",
+					status: "needs_setup",
+					deviceCount: 1,
+					projectCount: 1,
+					unresolvedDeviceCount: 1,
+					unresolvedProjectCount: 0,
+				},
+			],
+		});
+		await vi.waitFor(() =>
+			expect(document.querySelector(".project-team-setup-entry")?.textContent).toContain(
+				"Slow Team",
+			),
+		);
 	});
 
 	it("preserves the continuity surface across an unchanged refresh", async () => {

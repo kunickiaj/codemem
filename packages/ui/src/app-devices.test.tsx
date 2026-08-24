@@ -251,6 +251,19 @@ describe("Devices app integration", () => {
 		expect(document.activeElement).toBe(document.getElementById("tabBtn-sharing"));
 	});
 
+	it("injects Projects navigation to the canonical Sharing setup overview", async () => {
+		const { initProjectsTab } = await import("./tabs/projects");
+		const options = vi.mocked(initProjectsTab).mock.calls[0]?.[1];
+		expect(options?.onOpenTeamSetup).toEqual(expect.any(Function));
+
+		act(() => options?.onOpenTeamSetup?.("opaque-candidate-ref"));
+		await Promise.resolve();
+
+		expect(window.location.hash).toBe("#sharing");
+		expect(document.getElementById("tab-sharing")?.hidden).toBe(false);
+		expect(document.activeElement).toBe(document.getElementById("tabBtn-sharing"));
+	});
+
 	it("keeps existing device details usable when inventory fails on the first Devices load", () => {
 		const panel = document.getElementById("tab-devices");
 		expect(panel?.textContent).toContain("Work Laptop");

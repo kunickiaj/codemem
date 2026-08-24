@@ -487,6 +487,13 @@ function reviewDevicesFromSharing(deviceId?: string) {
 	switchTab("devices", { canonicalHash: true });
 }
 
+function openTeamSetupOverviewFromProjects() {
+	switchTab("sharing", { canonicalHash: true });
+	queueMicrotask(() => document.getElementById("tabBtn-sharing")?.focus());
+}
+
+// The Projects entry routes to Sharing's server-derived status overview. The
+// Sharing-to-dialog callback remains intentionally unwired until .7.
 const loadRecipientPolicySharingData = createRecipientPolicySharingLoader(
 	{},
 	{
@@ -794,7 +801,7 @@ initTabs();
 // Tab modules
 initFeedTab();
 initHealthTab();
-initProjectsTab(() => refresh());
+initProjectsTab(() => refresh(), { onOpenTeamSetup: openTeamSetupOverviewFromProjects });
 initSyncTab(() => refresh());
 initCoordinatorAdminTab();
 initSettings(stopPolling, startPolling, () => refresh());

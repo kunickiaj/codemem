@@ -1,5 +1,6 @@
 import * as api from "../lib/api";
 import type {
+	LegacyTeamSetupSummaryResponseV1,
 	ProjectScopeGuardrailWarning,
 	ProjectScopeInventoryProject,
 	RecipientPolicyIntentGraphV1,
@@ -55,6 +56,10 @@ let skippedProjectRefreshForActiveSelect = false;
 let coordinatorGroupNamesCurrent = false;
 let projectShareInventoryReady = false;
 let projectsLoadGeneration = 0;
+type TeamSetupSummaryResult =
+	| { ok: true; summary: LegacyTeamSetupSummaryResponseV1 }
+	| { ok: false };
+let teamSetupSummaryInFlight: Promise<TeamSetupSummaryResult> | null = null;
 const selectedProjectIds = new Set<string>();
 const selectionIdsByCheckbox = new WeakMap<HTMLInputElement, string[]>();
 const emptyRecipientPolicyIntent: RecipientPolicyIntentGraphV1 = {
@@ -67,6 +72,20 @@ const emptyRecipientPolicyIntent: RecipientPolicyIntentGraphV1 = {
 };
 let recipientPolicyIntent = emptyRecipientPolicyIntent;
 let recipientPolicyIntentReady = false;
+let openTeamSetup: ((candidateRef: string) => void) | undefined;
+
+function loadTeamSetupSummaryOnce(): Promise<TeamSetupSummaryResult> {
+	if (teamSetupSummaryInFlight) return teamSetupSummaryInFlight;
+	const request = api
+		.loadLegacyTeamSetupSummary()
+		.then((summary) => ({ ok: true as const, summary }))
+		.catch(() => ({ ok: false as const }));
+	teamSetupSummaryInFlight = request;
+	void request.then(() => {
+		if (teamSetupSummaryInFlight === request) teamSetupSummaryInFlight = null;
+	});
+	return request;
+}
 
 function el<T extends HTMLElement>(id: string): T | null {
 	return document.getElementById(id) as T | null;
@@ -1257,6 +1276,104 @@ function mountProjectRecipientManagement(
 	});
 }
 
+function renderProjectTeamSetupEntry(
+	mount: HTMLElement,
+	summary: LegacyTeamSetupSummaryResponseV1 | undefined,
+) {
+	const candidates = summary?.candidates.filter((candidate) => candidate.status !== "ready") ?? [];
+	const existingEntry = mount.querySelector<HTMLElement>(":scope > .project-team-setup-entry");
+	existingEntry?.querySelector(".project-team-setup-status")?.remove();
+	const focusedCandidateRef = existingEntry?.contains(document.activeElement)
+		? document.activeElement instanceof HTMLButtonElement
+			? document.activeElement.dataset.teamSetupCandidateRef
+			: undefined
+		: undefined;
+	if (candidates.length === 0) {
+		existingEntry?.remove();
+		const reviewContent = mount.querySelector<HTMLElement>(
+			":scope > .project-recipient-policy-review-content",
+		);
+		mount.hidden = reviewContent?.hidden !== false;
+		if (focusedCandidateRef) el<HTMLInputElement>("projectsSearch")?.focus();
+		return;
+	}
+	const signature = JSON.stringify(
+		candidates.map((candidate) => [candidate.candidateRef, candidate.displayName]),
+	);
+	if (existingEntry?.dataset.teamSetupSignature === signature) {
+		mount.hidden = false;
+		return;
+	}
+	existingEntry?.remove();
+	mount.hidden = false;
+	const surface = document.createElement("section");
+	surface.className = "card project-team-setup-entry";
+	surface.dataset.teamSetupSignature = signature;
+	const heading = document.createElement("h2");
+	heading.textContent = "Finish setting up this Team";
+	const detail = document.createElement("p");
+	detail.className = "section-meta";
+	detail.textContent =
+		"Tell Codemem who uses each device before using this Team for Project sharing.";
+	surface.append(heading, detail);
+	for (const candidate of candidates) {
+		const row = document.createElement("div");
+		row.className = "project-inventory-actions";
+		const label = document.createElement("strong");
+		label.textContent = candidate.displayName;
+		row.appendChild(label);
+		if (openTeamSetup) {
+			const button = document.createElement("button");
+			button.setAttribute("aria-label", `Finish setting up ${candidate.displayName}`);
+			button.className = "settings-button";
+			button.type = "button";
+			button.textContent = "Finish setting up this Team";
+			button.dataset.teamSetupCandidateRef = candidate.candidateRef;
+			button.addEventListener("click", () => openTeamSetup?.(candidate.candidateRef));
+			row.appendChild(button);
+		}
+		surface.appendChild(row);
+	}
+	mount.appendChild(surface);
+	if (focusedCandidateRef) {
+		let restored = false;
+		for (const button of surface.querySelectorAll<HTMLButtonElement>("button")) {
+			if (button.dataset.teamSetupCandidateRef === focusedCandidateRef) {
+				button.focus();
+				restored = true;
+				break;
+			}
+		}
+		if (!restored) el<HTMLInputElement>("projectsSearch")?.focus();
+	}
+}
+
+function markProjectTeamSetupEntryUnavailable(mount: HTMLElement) {
+	const existingEntry = mount.querySelector<HTMLElement>(":scope > .project-team-setup-entry");
+	if (!existingEntry) return;
+	let status = existingEntry.querySelector<HTMLElement>(".project-team-setup-status");
+	if (!status) {
+		status = document.createElement("p");
+		status.className = "section-meta project-team-setup-status";
+		status.setAttribute("role", "status");
+		existingEntry.appendChild(status);
+	}
+	status.textContent =
+		"Team setup status is temporarily unavailable. The previous Team setup status is being shown.";
+	mount.hidden = false;
+}
+
+function recipientPolicyReviewContentMount(mount: HTMLElement): HTMLElement {
+	const existing = mount.querySelector<HTMLElement>(
+		":scope > .project-recipient-policy-review-content",
+	);
+	if (existing) return existing;
+	const content = document.createElement("div");
+	content.className = "project-recipient-policy-review-content";
+	mount.prepend(content);
+	return content;
+}
+
 export async function loadProjectsData() {
 	const meta = el<HTMLDivElement>("projectsInventoryMeta");
 	const list = el<HTMLDivElement>("projectsInventoryList");
@@ -1272,6 +1389,7 @@ export async function loadProjectsData() {
 	updateSelectionControls();
 	meta.textContent = "Loading project inventory…";
 	try {
+		const teamSetupSummaryPromise = loadTeamSetupSummaryOnce();
 		const [result, settings, shareInventory, recipientPolicyReview, intentResult] =
 			await Promise.all([
 				api.loadProjectScopeInventory({
@@ -1317,11 +1435,14 @@ export async function loadProjectsData() {
 		}
 		const reviewMount = el<HTMLDivElement>("recipientPolicyReviewMount");
 		if (reviewMount) {
+			const reviewContent = recipientPolicyReviewContentMount(reviewMount);
 			if ("review" in recipientPolicyReview) {
-				renderRecipientPolicyReview(reviewMount, recipientPolicyReview.review);
+				renderRecipientPolicyReview(reviewContent, recipientPolicyReview.review);
 			} else {
-				renderRecipientPolicyReviewLoadError(reviewMount, recipientPolicyReview.error);
+				renderRecipientPolicyReviewLoadError(reviewContent, recipientPolicyReview.error);
 			}
+			reviewMount.hidden =
+				reviewContent.hidden && !reviewMount.querySelector(".project-team-setup-entry");
 		}
 		mountProjectRecipientManagement(
 			shareInventory.projects,
@@ -1330,6 +1451,16 @@ export async function loadProjectsData() {
 		);
 		renderProjectInventory(result);
 		refreshProjectCoordinatorGroupNamesInBackground(result, loadGeneration);
+		void teamSetupSummaryPromise.then((teamSetupSummary) => {
+			if (loadGeneration !== projectsLoadGeneration) return;
+			const currentReviewMount = el<HTMLDivElement>("recipientPolicyReviewMount");
+			if (!currentReviewMount) return;
+			if (!teamSetupSummary.ok) {
+				markProjectTeamSetupEntryUnavailable(currentReviewMount);
+				return;
+			}
+			renderProjectTeamSetupEntry(currentReviewMount, teamSetupSummary.summary);
+		});
 	} catch (error) {
 		if (loadGeneration !== projectsLoadGeneration) return;
 		projectShareInventoryReady = false;
@@ -1345,8 +1476,12 @@ export async function loadProjectsData() {
 	}
 }
 
-export function initProjectsTab(refresh: RefreshFn) {
+export function initProjectsTab(
+	refresh: RefreshFn,
+	options: { onOpenTeamSetup?: (candidateRef: string) => void } = {},
+) {
 	refreshProjects = refresh;
+	openTeamSetup = options.onOpenTeamSetup;
 	selectedProjectIds.clear();
 	const status = el<HTMLSelectElement>("projectsStatusFilter");
 	if (status && status.options.length === 0) {
