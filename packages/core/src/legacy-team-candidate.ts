@@ -2,7 +2,7 @@ import type { Database } from "./db.js";
 import {
 	type ListLegacyRecipientPolicyProjectionsOptions,
 	listLegacyTeamProjectEvidence,
-	selectedProjectScopeMapping,
+	selectedProjectScopeMappings,
 } from "./legacy-recipient-policy-projection.js";
 import {
 	getLegacyTeamSetupDraft,
@@ -168,16 +168,14 @@ function effectiveGroupSnapshots(groups: LegacyTeamConfiguredGroupSnapshot[]): {
 	return { snapshots: [...byCandidate.values()], conflictedCandidateIds };
 }
 
-function activeAssignmentIdentity(db: Database, deviceId: string): string | null {
-	return (
-		(db
-			.prepare(
-				`SELECT identity_id FROM identity_devices
-				 WHERE device_id = ? AND status = 'active' LIMIT 1`,
-			)
-			.pluck()
-			.get(deviceId) as string | undefined) ?? null
-	);
+function activeAssignmentIdentityLookup(db: Database): (deviceId: string) => string | null {
+	const statement = db
+		.prepare(
+			`SELECT identity_id FROM identity_devices
+			 WHERE device_id = ? AND status = 'active' LIMIT 1`,
+		)
+		.pluck();
+	return (deviceId) => (statement.get(deviceId) as string | undefined) ?? null;
 }
 
 function projectInventory(
@@ -412,6 +410,10 @@ function isCompatibleReadyTeam(
 	const eligibleDeviceIds = new Set(eligibility.eligibleDeviceIds);
 	const decisionsByDeviceId = new Map(canonicalDecisions.map((row) => [row.device_id, row]));
 	const expectedEffectiveDevices = new Map<string, string>();
+	const activeAssignment = db.prepare(
+		`SELECT identity_id, assignment_version FROM identity_devices
+		 WHERE device_id = ? AND status = 'active' LIMIT 1`,
+	);
 	const hasUnexplainedDecision = canonicalDecisions.some((row) => {
 		if (expectedDecisionDeviceIds.has(row.device_id)) return false;
 		if (!(INVITE_DECISION_PROVENANCES as readonly string[]).includes(row.provenance)) return true;
@@ -421,12 +423,9 @@ function isCompatibleReadyTeam(
 		// Invite-owned decisions can precede canonical Team membership. Their
 		// completion binding is therefore the live assignment version rather
 		// than membership-derived eligibility.
-		const liveAssignment = db
-			.prepare(
-				`SELECT assignment_version FROM identity_devices
-				 WHERE device_id = ? AND status = 'active' LIMIT 1`,
-			)
-			.get(row.device_id) as { assignment_version: number } | undefined;
+		const liveAssignment = activeAssignment.get(row.device_id) as
+			| { assignment_version: number }
+			| undefined;
 		return !liveAssignment || liveAssignment.assignment_version !== row.assignment_version;
 	});
 	if (hasUnexplainedDecision) return false;
@@ -459,12 +458,9 @@ function isCompatibleReadyTeam(
 		}
 		if (device.decision === "included" && !device.target_identity_id) return false;
 		if (device.decision !== "included") continue;
-		const assignment = db
-			.prepare(
-				`SELECT identity_id FROM identity_devices
-				 WHERE device_id = ? AND status = 'active' LIMIT 1`,
-			)
-			.get(device.device_id) as { identity_id: string } | undefined;
+		const assignment = activeAssignment.get(device.device_id) as
+			| { identity_id: string }
+			| undefined;
 		if (!assignment || assignment.identity_id !== device.target_identity_id) return false;
 		if (decision?.decision !== "included" || !eligibleDeviceIds.has(device.device_id)) return false;
 		expectedEffectiveDevices.set(device.device_id, device.target_identity_id);
@@ -488,15 +484,15 @@ function isCompatibleReadyTeam(
 		string,
 		StrictRecipientPolicyEffectiveDeviceDerivation
 	>();
+	const activeTeamRecipient = db.prepare(
+		`SELECT 1 FROM project_recipients
+		 WHERE canonical_project_identity = ? AND recipient_kind = 'team'
+		   AND recipient_id = ? AND status = 'active' LIMIT 1`,
+	);
+	const selectedMappings = selectedProjectScopeMappings(db, [...confirmedSourcesByResolved.keys()]);
 	for (const project of completionProjectRows) {
 		const resolvedIdentity = project.resolved_project_identity as string;
-		const recipientActive = db
-			.prepare(
-				`SELECT 1 FROM project_recipients
-				 WHERE canonical_project_identity = ? AND recipient_kind = 'team'
-				   AND recipient_id = ? AND status = 'active' LIMIT 1`,
-			)
-			.get(resolvedIdentity, completedTeamId);
+		const recipientActive = activeTeamRecipient.get(resolvedIdentity, completedTeamId);
 		if (!recipientActive) return false;
 		let effectiveDevices = effectiveDevicesByProject.get(resolvedIdentity);
 		if (!effectiveDevices) {
@@ -518,7 +514,7 @@ function isCompatibleReadyTeam(
 		// group leaves the setup-created row in the table but redirects
 		// enforcement to another boundary; mere existence of the shadowed row
 		// is not evidence that the completion still governs the Project.
-		const selected = selectedProjectScopeMapping(db, resolvedIdentity);
+		const selected = selectedMappings.get(resolvedIdentity);
 		if (
 			!selected ||
 			selected.workspaceIdentity == null ||
@@ -589,12 +585,13 @@ function candidateAuthority(
 	const row = currentDraftRow(db, candidateId);
 	requireLegacyTeamSetupSnapshotWithinLimits({ devices: rosterDevices, projects });
 	requireLegacyTeamSetupEffectiveDevicesWithinLimit(db, rosterDevices, row?.attempt_id ?? null);
+	const activeAssignmentIdentity = activeAssignmentIdentityLookup(db);
 	const rosterFingerprint = legacyTeamRosterFingerprint(
 		rosterDevices.map((device) => ({
 			deviceId: device.deviceId,
 			fingerprint: device.fingerprint,
 			enabled: device.enabled,
-			identityId: activeAssignmentIdentity(db, device.deviceId),
+			identityId: activeAssignmentIdentity(device.deviceId),
 		})),
 	);
 	const ready =

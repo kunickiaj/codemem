@@ -1,5 +1,8 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type LegacyRecipientPolicyProjectionV1,
 	listLegacyRecipientPolicyProjections,
@@ -9,6 +12,7 @@ import {
 	deriveRecipientPolicyReviewState,
 	deriveSelectableRecipientIds,
 	listRecipientPolicyReview,
+	type RecipientPolicyReviewResolveRequestV1,
 	recipientPolicyReviewSourceFingerprint,
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
@@ -487,6 +491,60 @@ describe("recipient policy review persistence", () => {
 		).toBe(0);
 	});
 
+	it("rejects malformed requests before deriving review state", () => {
+		const prepare = vi.spyOn(db, "prepare");
+		const malformed = [
+			{
+				reviewItemId: " ",
+				sourceFingerprint: "source-fingerprint",
+				decision: "keep_current_setup",
+			},
+			{
+				reviewItemId: "review-item",
+				sourceFingerprint: "source-fingerprint",
+				decision: "unsupported",
+			} as RecipientPolicyReviewResolveRequestV1,
+		];
+
+		try {
+			expect(
+				malformed.map((request) => resolveRecipientPolicyReview(db, context, request)),
+			).toEqual([
+				expect.objectContaining({ status: "invalid", errorCode: "request_invalid" }),
+				expect.objectContaining({ status: "invalid", errorCode: "request_invalid" }),
+			]);
+			expect(prepare).not.toHaveBeenCalled();
+		} finally {
+			prepare.mockRestore();
+		}
+	});
+
+	it("rejects malformed bulk requests before deriving shared review state", () => {
+		const prepare = vi.spyOn(db, "prepare");
+		const malformed = [
+			{
+				reviewItemId: " ",
+				sourceFingerprint: "source-fingerprint",
+				decision: "keep_current_setup",
+			},
+			{
+				reviewItemId: "review-item",
+				sourceFingerprint: "source-fingerprint",
+				decision: "unsupported",
+			} as RecipientPolicyReviewResolveRequestV1,
+		];
+
+		try {
+			expect(resolveRecipientPolicyReviewBulk(db, context, malformed).results).toEqual([
+				expect.objectContaining({ status: "invalid", errorCode: "request_invalid" }),
+				expect.objectContaining({ status: "invalid", errorCode: "request_invalid" }),
+			]);
+			expect(prepare).not.toHaveBeenCalled();
+		} finally {
+			prepare.mockRestore();
+		}
+	});
+
 	it("fails closed when the deciding local Identity is unavailable", () => {
 		db.prepare("UPDATE actors SET status = 'deactivated' WHERE actor_id = ?").run(LOCAL_ACTOR_ID);
 		const item = listRecipientPolicyReview(db, context).reviewItems[0];
@@ -597,6 +655,276 @@ describe("recipient policy review persistence", () => {
 		expect(
 			db.prepare("SELECT COUNT(*) FROM recipient_policy_review_resolutions").pluck().get(),
 		).toBe(1);
+	});
+
+	it("batches saved-resolution existence checks while preserving open-item order", () => {
+		configureUnassignedDeviceReview(db, [
+			"device-unassigned-a",
+			"device-unassigned-b",
+			"device-unassigned-c",
+		]);
+		const initial = listRecipientPolicyReview(db, context).reviewItems;
+		const resolved = initial[1];
+		if (!resolved) throw new Error("saved resolution fixture incomplete");
+		db.prepare(
+			`INSERT INTO recipient_policy_review_resolutions(
+			 review_item_id, source_fingerprint, decision, decision_input_json, preview_json,
+			 decided_by_identity_id, decided_by_device_id, resolved_at
+			 ) VALUES (?, ?, 'keep_current_setup', '{}', '{}', ?, ?, ?)`,
+		).run(resolved.reviewItemId, resolved.sourceFingerprint, LOCAL_ACTOR_ID, LOCAL_DEVICE_ID, NOW);
+		const prepare = vi.spyOn(db, "prepare");
+		try {
+			const listed = listRecipientPolicyReview(db, context);
+
+			expect(listed.reviewItems.map((item) => item.reviewItemId)).toEqual([
+				initial[0]?.reviewItemId,
+				initial[2]?.reviewItemId,
+			]);
+			expect(
+				prepare.mock.calls.filter(([sql]) =>
+					/SELECT review_item_id, source_fingerprint, decision, decision_input_json\s+FROM recipient_policy_review_resolutions/u.test(
+						String(sql),
+					),
+				),
+			).toHaveLength(1);
+		} finally {
+			prepare.mockRestore();
+		}
+	});
+
+	it("derives bulk review state once and isolates constraint failures by request", () => {
+		configureUnassignedDeviceReview(db, [
+			"device-unassigned-a",
+			"device-unassigned-b",
+			"device-unassigned-c",
+		]);
+		const items = listRecipientPolicyReview(db, context).reviewItems;
+		const [first, blocked, third] = items;
+		if (!first || !blocked || !third) throw new Error("bulk review fixture incomplete");
+		db.exec(`CREATE TRIGGER reject_one_review_resolution
+			BEFORE INSERT ON recipient_policy_review_resolutions
+			WHEN NEW.review_item_id = '${blocked.reviewItemId.replaceAll("'", "''")}'
+			BEGIN SELECT RAISE(ABORT, 'test conflict'); END;`);
+		const prepare = vi.spyOn(db, "prepare");
+		try {
+			const result = resolveRecipientPolicyReviewBulk(
+				db,
+				context,
+				[first, blocked, third].map((item) => ({
+					reviewItemId: item.reviewItemId,
+					sourceFingerprint: item.sourceFingerprint,
+					decision: "keep_current_setup" as const,
+				})),
+			);
+
+			expect(
+				result.results.map(({ reviewItemId, status, errorCode }) => ({
+					reviewItemId,
+					status,
+					errorCode,
+				})),
+			).toEqual([
+				{ reviewItemId: first.reviewItemId, status: "applied", errorCode: null },
+				{
+					reviewItemId: blocked.reviewItemId,
+					status: "conflict",
+					errorCode: "review_resolution_conflict",
+				},
+				{ reviewItemId: third.reviewItemId, status: "applied", errorCode: null },
+			]);
+			expect(
+				db
+					.prepare("SELECT review_item_id FROM recipient_policy_review_resolutions ORDER BY rowid")
+					.pluck()
+					.all(),
+			).toEqual([first.reviewItemId, third.reviewItemId]);
+			expect(
+				prepare.mock.calls.filter(([sql]) =>
+					/FROM memory_items mi\s+JOIN sessions s ON s.id = mi.session_id/u.test(String(sql)),
+				),
+			).toHaveLength(1);
+			expect(
+				prepare.mock.calls.filter(([sql]) =>
+					/SELECT review_item_id, source_fingerprint, decision, decision_input_json\s+FROM recipient_policy_review_resolutions/u.test(
+						String(sql),
+					),
+				),
+			).toHaveLength(1);
+		} finally {
+			prepare.mockRestore();
+		}
+	});
+
+	it("rolls back all savepoint writes when the outer bulk commit loses its lock", () => {
+		const directory = mkdtempSync(join(tmpdir(), "codemem-recipient-review-bulk-"));
+		const path = join(directory, "review.sqlite");
+		const primary = new Database(path);
+		const competing = new Database(path);
+		try {
+			primary.pragma("journal_mode = DELETE");
+			primary.pragma("busy_timeout = 1");
+			initTestSchema(primary);
+			insertLocalFixture(primary);
+			configureUnassignedDeviceReview(primary, [
+				"device-unassigned-a",
+				"device-unassigned-b",
+				"device-unassigned-c",
+			]);
+			const items = listRecipientPolicyReview(primary, context).reviewItems;
+			const [first, second, third] = items;
+			if (!first || !second || !third) throw new Error("bulk lock fixture incomplete");
+			primary
+				.prepare(
+					`INSERT INTO recipient_policy_review_resolutions(
+					 review_item_id, source_fingerprint, decision, decision_input_json, preview_json,
+					 decided_by_identity_id, decided_by_device_id, resolved_at
+					 ) VALUES (?, ?, 'keep_current_setup', '{}', '{}', ?, ?, ?)`,
+				)
+				.run(third.reviewItemId, third.sourceFingerprint, LOCAL_ACTOR_ID, LOCAL_DEVICE_ID, NOW);
+			const duplicate = {
+				reviewItemId: "duplicate-review-item",
+				sourceFingerprint: "duplicate-source",
+				decision: "keep_current_setup" as const,
+			};
+			const requests: RecipientPolicyReviewResolveRequestV1[] = [
+				{
+					reviewItemId: first.reviewItemId,
+					sourceFingerprint: first.sourceFingerprint,
+					decision: "keep_current_setup",
+				},
+				duplicate,
+				{
+					reviewItemId: second.reviewItemId,
+					sourceFingerprint: "stale-fingerprint",
+					decision: "keep_current_setup",
+				},
+				duplicate,
+				{
+					reviewItemId: "missing-review-item",
+					sourceFingerprint: "missing-source",
+					decision: "keep_current_setup",
+				},
+				{
+					reviewItemId: "invalid-review-item",
+					sourceFingerprint: "invalid-source",
+					decision: "unsupported",
+				} as RecipientPolicyReviewResolveRequestV1,
+				{
+					reviewItemId: third.reviewItemId,
+					sourceFingerprint: third.sourceFingerprint,
+					decision: "keep_current_setup",
+				},
+			];
+			competing.exec("BEGIN");
+			competing.prepare("SELECT COUNT(*) FROM recipient_policy_review_resolutions").get();
+			const changesBefore = Number(primary.prepare("SELECT total_changes()").pluck().get());
+
+			const result = resolveRecipientPolicyReviewBulk(primary, context, requests);
+
+			expect(result.results.map((entry) => [entry.status, entry.errorCode])).toEqual([
+				["conflict", "review_resolution_conflict"],
+				["invalid", "duplicate_review_item_id"],
+				["stale", "source_fingerprint_stale"],
+				["invalid", "duplicate_review_item_id"],
+				["not_found", "review_item_not_found"],
+				["invalid", "request_invalid"],
+				["applied", null],
+			]);
+			expect(result.results.at(-1)?.idempotent).toBe(true);
+			// SQLite counts executed writes even when the enclosing transaction is
+			// rolled back, proving the write request completed before COMMIT
+			// lost the competing reader lock.
+			expect(Number(primary.prepare("SELECT total_changes()").pluck().get()) - changesBefore).toBe(
+				1,
+			);
+			expect(primary.inTransaction).toBe(false);
+			competing.exec("ROLLBACK");
+			expect(
+				primary.prepare("SELECT COUNT(*) FROM recipient_policy_review_resolutions").pluck().get(),
+			).toBe(1);
+		} finally {
+			if (competing.inTransaction) competing.exec("ROLLBACK");
+			primary.close();
+			competing.close();
+			rmSync(directory, { force: true, recursive: true });
+		}
+	});
+
+	it("retains earlier non-write results when a later request aborts the outer transaction", () => {
+		configureUnassignedDeviceReview(db, ["device-unassigned-a", "device-unassigned-b"]);
+		const [first, second] = listRecipientPolicyReview(db, context).reviewItems;
+		if (!first || !second) throw new Error("bulk rollback fixture incomplete");
+		db.exec(`CREATE TRIGGER rollback_second_review
+			BEFORE INSERT ON recipient_policy_review_resolutions
+			WHEN NEW.review_item_id = '${second.reviewItemId}'
+			BEGIN
+				SELECT RAISE(ROLLBACK, 'forced rollback');
+			END`);
+
+		const result = resolveRecipientPolicyReviewBulk(db, context, [
+			{
+				reviewItemId: first.reviewItemId,
+				sourceFingerprint: "stale-fingerprint",
+				decision: "keep_current_setup",
+			},
+			{
+				reviewItemId: second.reviewItemId,
+				sourceFingerprint: second.sourceFingerprint,
+				decision: "keep_current_setup",
+			},
+		]);
+
+		expect(result.results.map((entry) => [entry.status, entry.errorCode])).toEqual([
+			["stale", "source_fingerprint_stale"],
+			["conflict", "review_resolution_conflict"],
+		]);
+		expect(db.inTransaction).toBe(false);
+		expect(
+			db.prepare("SELECT COUNT(*) FROM recipient_policy_review_resolutions").pluck().get(),
+		).toBe(0);
+	});
+
+	it("preserves invalid preflight results when the outer bulk begin is busy", () => {
+		const directory = mkdtempSync(join(tmpdir(), "codemem-recipient-review-bulk-begin-"));
+		const path = join(directory, "review.sqlite");
+		const primary = new Database(path);
+		const competing = new Database(path);
+		try {
+			primary.pragma("busy_timeout = 1");
+			initTestSchema(primary);
+			insertLocalFixture(primary);
+			configureUnassignedDeviceReview(primary, ["device-unassigned-a"]);
+			const item = listRecipientPolicyReview(primary, context).reviewItems[0];
+			if (!item) throw new Error("bulk begin lock fixture incomplete");
+			competing.exec("BEGIN IMMEDIATE");
+
+			const result = resolveRecipientPolicyReviewBulk(primary, context, [
+				{
+					reviewItemId: "invalid-review-item",
+					sourceFingerprint: "invalid-source",
+					decision: "unsupported",
+				} as RecipientPolicyReviewResolveRequestV1,
+				{
+					reviewItemId: item.reviewItemId,
+					sourceFingerprint: item.sourceFingerprint,
+					decision: "keep_current_setup",
+				},
+			]);
+
+			expect(result.results.map((entry) => [entry.status, entry.errorCode])).toEqual([
+				["invalid", "request_invalid"],
+				["conflict", "review_resolution_conflict"],
+			]);
+			expect(primary.inTransaction).toBe(false);
+			expect(
+				primary.prepare("SELECT COUNT(*) FROM recipient_policy_review_resolutions").pluck().get(),
+			).toBe(0);
+		} finally {
+			if (competing.inTransaction) competing.exec("ROLLBACK");
+			primary.close();
+			competing.close();
+			rmSync(directory, { force: true, recursive: true });
+		}
 	});
 
 	it("rejects unresolved legacy Team candidates but accepts active canonical Teams", () => {

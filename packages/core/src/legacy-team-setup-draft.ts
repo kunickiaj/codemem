@@ -282,24 +282,29 @@ interface DeviceAssignmentSnapshot {
  * CAS treats any existing row as evidence, so an inactive row must never be
  * reported as an absent assignment.
  */
+function assignmentLookup(db: Database): (deviceId: string) => DeviceAssignmentSnapshot | null {
+	const statement = db.prepare(
+		`SELECT identity_id, assignment_version, status
+		 FROM identity_devices
+		 WHERE device_id = ?
+		 LIMIT 1`,
+	);
+	return (deviceId) => {
+		const row = statement.get(deviceId) as
+			| { identity_id: string; assignment_version: number; status: string }
+			| undefined;
+		return row
+			? {
+					identityId: row.identity_id,
+					assignmentVersion: row.assignment_version,
+					active: row.status === "active",
+				}
+			: null;
+	};
+}
+
 function assignmentForDevice(db: Database, deviceId: string): DeviceAssignmentSnapshot | null {
-	const row = db
-		.prepare(
-			`SELECT identity_id, assignment_version, status
-			 FROM identity_devices
-			 WHERE device_id = ?
-			 LIMIT 1`,
-		)
-		.get(deviceId) as
-		| { identity_id: string; assignment_version: number; status: string }
-		| undefined;
-	return row
-		? {
-				identityId: row.identity_id,
-				assignmentVersion: row.assignment_version,
-				active: row.status === "active",
-			}
-		: null;
+	return assignmentLookup(db)(deviceId);
 }
 
 /**
@@ -462,8 +467,9 @@ function createAttempt(
 			expected_assignment_kind, expected_assignment_version, updated_at
 		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	);
+	const loadAssignment = assignmentLookup(db);
 	for (const device of devices) {
-		const assignment = assignmentForDevice(db, device.deviceId);
+		const assignment = loadAssignment(device.deviceId);
 		const previous = previousByDevice.get(device.deviceId);
 		const assignmentEvidenceUnchanged =
 			previous != null &&
@@ -606,19 +612,21 @@ function loadDraftView(db: Database, attemptId: string): LegacyTeamSetupDraftVie
 				.map((row) => row.target_identity_id as string),
 		),
 	];
-	const includedTargetsValid = includedTargetIds.every((identityId) =>
-		db
-			.prepare(
+	const includedTargetsValid =
+		includedTargetIds.length === 0 ||
+		(() => {
+			const activeActor = db.prepare(
 				`SELECT 1 FROM actors
 				 WHERE actor_id = ? AND status = 'active' AND merged_into_actor_id IS NULL LIMIT 1`,
-			)
-			.get(identityId),
-	);
+			);
+			return includedTargetIds.every((identityId) => activeActor.get(identityId));
+		})();
 	// Activation compares every stored assignment expectation, including
 	// exclusions. The detail view must report the same condition instead of
 	// advertising a finishable draft whose CAS evidence no longer matches.
+	const loadAssignment = assignmentLookup(db);
 	const assignmentExpectationsValid = deviceRows.every((row) => {
-		const live = assignmentForDevice(db, row.device_id);
+		const live = loadAssignment(row.device_id);
 		return (
 			(row.decision !== "included" || live == null || live.active) &&
 			storedAssignmentRowMatchesLive(row, live, false)
@@ -754,12 +762,13 @@ function storedAssignmentEvidenceMatches(
 	// expectations too; a stale expectation would make their `removed`
 	// decision unsavable while every refresh keeps reusing the attempt.
 	const snapshotDeviceIds = new Set(snapshots.map(({ device }) => device.deviceId));
-	return storedRows
-		.filter((row) => !snapshotDeviceIds.has(row.device_id))
-		.every((row) => {
-			const assignment = assignmentForDevice(db, row.device_id);
-			return storedAssignmentRowMatchesLive(row, assignment, true);
-		});
+	const carriedRows = storedRows.filter((row) => !snapshotDeviceIds.has(row.device_id));
+	if (carriedRows.length === 0) return true;
+	const loadAssignment = assignmentLookup(db);
+	return carriedRows.every((row) => {
+		const assignment = loadAssignment(row.device_id);
+		return storedAssignmentRowMatchesLive(row, assignment, true);
+	});
 }
 
 /**
@@ -782,9 +791,10 @@ export function refreshLegacyTeamSetupDraft(
 			input.devices,
 			existing?.attempt_id ?? null,
 		);
+		const loadAssignment = assignmentLookup(db);
 		const assignmentSnapshots = input.devices.map((device) => ({
 			device,
-			assignment: assignmentForDevice(db, device.deviceId),
+			assignment: loadAssignment(device.deviceId),
 		}));
 		const assignments = assignmentSnapshots.map(({ device, assignment }) => ({
 			deviceId: device.deviceId,
@@ -814,12 +824,13 @@ export function refreshLegacyTeamSetupDraft(
 				now,
 				existing.attempt_id,
 			);
+			const updateDeviceLabel = db.prepare(
+				`UPDATE legacy_team_setup_draft_devices
+				 SET display_name = ?, updated_at = ?
+				 WHERE attempt_id = ? AND device_id = ?`,
+			);
 			for (const device of input.devices) {
-				db.prepare(
-					`UPDATE legacy_team_setup_draft_devices
-					 SET display_name = ?, updated_at = ?
-					 WHERE attempt_id = ? AND device_id = ?`,
-				).run(
+				updateDeviceLabel.run(
 					safeLabel(device.displayName, "Device", [
 						device.deviceId,
 						device.fingerprint,
@@ -831,12 +842,13 @@ export function refreshLegacyTeamSetupDraft(
 					device.deviceId,
 				);
 			}
+			const updateProjectLabel = db.prepare(
+				`UPDATE legacy_team_setup_draft_projects
+				 SET display_name = ?, updated_at = ?
+				 WHERE attempt_id = ? AND project_ref = ?`,
+			);
 			for (const project of input.projects) {
-				db.prepare(
-					`UPDATE legacy_team_setup_draft_projects
-					 SET display_name = ?, updated_at = ?
-					 WHERE attempt_id = ? AND project_ref = ?`,
-				).run(
+				updateProjectLabel.run(
 					safeLabel(project.displayName, "Project", [
 						project.projectRef,
 						project.sourceProjectIdentity,

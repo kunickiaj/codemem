@@ -251,20 +251,48 @@ describe("legacy Team candidate discovery", () => {
 			enabled: true,
 		}));
 		const prepare = vi.spyOn(db, "prepare");
+		try {
+			expect(() =>
+				refreshLegacyTeamCandidate(
+					db,
+					input,
+					legacyTeamCandidateId(group.coordinatorId, group.groupId),
+				),
+			).toThrow("legacy_team_setup_roster_too_large");
+			expect(
+				prepare.mock.calls.some(([sql]) =>
+					String(sql).includes("SELECT identity_id FROM identity_devices"),
+				),
+			).toBe(false);
+			expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(0);
+		} finally {
+			prepare.mockRestore();
+		}
+	});
 
-		expect(() =>
-			refreshLegacyTeamCandidate(
-				db,
-				input,
-				legacyTeamCandidateId(group.coordinatorId, group.groupId),
-			),
-		).toThrow("legacy_team_setup_roster_too_large");
-		expect(
-			prepare.mock.calls.some(([sql]) =>
-				String(sql).includes("SELECT identity_id FROM identity_devices"),
-			),
-		).toBe(false);
-		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(0);
+	it("bounds assignment statement preparation for multi-device candidate authority", () => {
+		const input = options();
+		const group = input.groups[0];
+		if (!group) throw new Error("test_fixture_missing_group");
+		group.devices = Array.from({ length: 8 }, (_, index) => ({
+			deviceId: `device-${index}`,
+			fingerprint: `key-${index}`,
+			displayName: `Device ${index}`,
+			enabled: true,
+		}));
+		const prepare = vi.spyOn(db, "prepare");
+		try {
+			const [candidate] = discoverLegacyTeamCandidates(db, input);
+
+			expect(candidate?.deviceCount).toBe(8);
+			expect(
+				prepare.mock.calls.filter(([sql]) =>
+					/^\s*SELECT identity_id FROM identity_devices\s+WHERE device_id/u.test(String(sql)),
+				),
+			).toHaveLength(1);
+		} finally {
+			prepare.mockRestore();
+		}
 	});
 
 	it("retains coordinator-backed ambiguous Projects without exposing public Team intent", () => {
@@ -539,7 +567,7 @@ describe("legacy Team candidate discovery", () => {
 		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("needs_setup");
 	});
 
-	function completeCandidate(): { teamId: string; attemptId: string } {
+	function completeCandidate(): { teamId: string; attemptId: string; candidateId: string } {
 		const [initial] = discoverLegacyTeamCandidates(db, options());
 		const draft = db
 			.prepare(
@@ -571,7 +599,7 @@ describe("legacy Team candidate discovery", () => {
 			 SET state = 'completed', completed_team_id = ?, completed_at = ?, updated_at = ?
 			 WHERE attempt_id = ?`,
 		).run(teamId, NOW, NOW, draft.attempt_id);
-		return { teamId, attemptId: draft.attempt_id };
+		return { teamId, attemptId: draft.attempt_id, candidateId: draft.candidate_id };
 	}
 
 	it("drops Ready when a higher-priority mapping shadows the completion mapping", () => {
@@ -633,7 +661,7 @@ describe("legacy Team candidate discovery", () => {
 	});
 
 	it("keeps Ready when merged resolutions share one selected mapping", () => {
-		const { attemptId } = completeCandidate();
+		const { attemptId, candidateId } = completeCandidate();
 		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
 
 		// A second confirmed source resolved to the same canonical identity:
@@ -653,12 +681,91 @@ describe("legacy Team candidate discovery", () => {
 		).run(PROJECT_ID, NOW, NOW);
 		const prepareSpy = vi.spyOn(db, "prepare");
 		try {
-			expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
+			expect(isLegacyTeamCandidateSelectable(db, candidateId)).toBe(true);
 			expect(
 				prepareSpy.mock.calls.filter(([sql]) => /FROM actors ORDER BY actor_id/.test(String(sql))),
 			).toHaveLength(1);
+			expect(
+				prepareSpy.mock.calls.filter(([sql]) =>
+					/SELECT 1 FROM project_recipients\s+WHERE canonical_project_identity/u.test(String(sql)),
+				),
+			).toHaveLength(1);
+			expect(
+				prepareSpy.mock.calls.filter(([sql]) =>
+					/FROM project_scope_mappings\s+ORDER BY priority DESC/u.test(String(sql)),
+				),
+			).toHaveLength(1);
 		} finally {
 			prepareSpy.mockRestore();
+		}
+	});
+
+	it("bounds active assignment statement preparation across completion-bound devices", () => {
+		const { teamId, attemptId, candidateId } = completeCandidate();
+		const insertActor = db.prepare(
+			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+			 VALUES (?, ?, 0, 'active', ?, ?)`,
+		);
+		const insertMembership = db.prepare(
+			`INSERT INTO policy_team_memberships(
+			 team_id, identity_id, role, status, provenance, revision, migration_state,
+			 idempotency_key, created_at, updated_at
+			 ) VALUES (?, ?, 'member', 'reviewed_active', 'reviewed_team_setup', 'r1',
+			 'completed', ?, ?, ?)`,
+		);
+		const insertAssignment = db.prepare(
+			`INSERT INTO identity_devices(
+			 device_id, identity_id, display_name, status, provenance, revision,
+			 migration_state, assignment_version, idempotency_key, created_at, updated_at
+			 ) VALUES (?, ?, ?, 'active', 'reviewed_team_setup', 'r1', 'completed', 1, ?, ?, ?)`,
+		);
+		const insertDraftDevice = db.prepare(
+			`INSERT INTO legacy_team_setup_draft_devices(
+			 attempt_id, device_id, device_ref, key_fingerprint, display_name, enabled,
+			 decision, target_identity_id, updated_at
+			 ) VALUES (?, ?, ?, ?, ?, 1, 'included', ?, ?)`,
+		);
+		const insertDecision = db.prepare(
+			`INSERT INTO policy_team_device_decisions(
+			 team_id, device_id, decision, assignment_version, provenance, revision, created_at, updated_at
+			 ) VALUES (?, ?, 'included', 1, 'reviewed_team_setup', 'r1', ?, ?)`,
+		);
+		for (let index = 0; index < 8; index += 1) {
+			const actorId = `identity-ready-${index}`;
+			const deviceId = `device-ready-${index}`;
+			insertActor.run(actorId, `Ready Person ${index}`, NOW, NOW);
+			insertMembership.run(teamId, actorId, `membership-ready-${index}`, NOW, NOW);
+			insertAssignment.run(
+				deviceId,
+				actorId,
+				`Ready Device ${index}`,
+				`assignment-ready-${index}`,
+				NOW,
+				NOW,
+			);
+			insertDraftDevice.run(
+				attemptId,
+				deviceId,
+				`device-ref-ready-${index}`,
+				`key-ready-${index}`,
+				`Ready Device ${index}`,
+				actorId,
+				NOW,
+			);
+			insertDecision.run(teamId, deviceId, NOW, NOW);
+		}
+		const prepare = vi.spyOn(db, "prepare");
+		try {
+			expect(isLegacyTeamCandidateSelectable(db, candidateId)).toBe(true);
+			expect(
+				prepare.mock.calls.filter(([sql]) =>
+					/SELECT identity_id, assignment_version FROM identity_devices\s+WHERE device_id/u.test(
+						String(sql),
+					),
+				),
+			).toHaveLength(1);
+		} finally {
+			prepare.mockRestore();
 		}
 	});
 
@@ -1130,6 +1237,7 @@ describe("legacy Team candidate discovery", () => {
 		const path = join(directory, "candidate.sqlite");
 		const primary = new Database(path);
 		const competing = new Database(path);
+		let restorePrepare: (() => void) | undefined;
 		try {
 			seedCandidateFixture(primary);
 			const initial = refreshLegacyTeamCandidate(
@@ -1139,6 +1247,7 @@ describe("legacy Team candidate discovery", () => {
 			);
 			primary.pragma("busy_timeout = 1");
 			const prepare = vi.spyOn(primary, "prepare");
+			restorePrepare = () => prepare.mockRestore();
 			const draftReadProbe = () =>
 				prepare.mock.calls.some(([sql]) => String(sql).includes("FROM legacy_team_setup_drafts"));
 			const projectReadProbe = () =>
@@ -1180,6 +1289,7 @@ describe("legacy Team candidate discovery", () => {
 				{ attempt_id: current.attemptId, state: "needs_setup", superseded_at: null },
 			]);
 		} finally {
+			restorePrepare?.();
 			if (competing.inTransaction) competing.exec("ROLLBACK");
 			competing.close();
 			primary.close();

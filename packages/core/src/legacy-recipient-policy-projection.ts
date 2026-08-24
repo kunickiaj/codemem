@@ -271,18 +271,42 @@ export function selectedProjectScopeMapping(
 	db: Database,
 	canonicalProjectIdentity: string,
 ): { scopeId: string; projectPattern: string; workspaceIdentity: string | null } | null {
-	const selected = selectedMapping(loadProjectScopeMappings(db), {
-		canonicalIdentity: canonicalProjectIdentity,
-		displayName: canonicalProjectIdentity,
-		identitySource: "workspace_id",
-		scopeIds: [],
-	});
-	if (!selected) return null;
-	return {
-		scopeId: selected.scopeId,
-		projectPattern: selected.projectPattern,
-		workspaceIdentity: selected.workspaceIdentity ?? null,
-	};
+	return (
+		selectedProjectScopeMappings(db, [canonicalProjectIdentity]).get(canonicalProjectIdentity) ??
+		null
+	);
+}
+
+/** Resolve several Projects against one immutable mapping snapshot. */
+export function selectedProjectScopeMappings(
+	db: Database,
+	canonicalProjectIdentities: readonly string[],
+): Map<string, { scopeId: string; projectPattern: string; workspaceIdentity: string | null }> {
+	const identities = [...new Set(canonicalProjectIdentities)];
+	if (identities.length === 0) return new Map();
+	const mappings = loadProjectScopeMappings(db);
+	return new Map(
+		identities.flatMap((canonicalProjectIdentity) => {
+			const selected = selectedMapping(mappings, {
+				canonicalIdentity: canonicalProjectIdentity,
+				displayName: canonicalProjectIdentity,
+				identitySource: "workspace_id",
+				scopeIds: [],
+			});
+			return selected
+				? [
+						[
+							canonicalProjectIdentity,
+							{
+								scopeId: selected.scopeId,
+								projectPattern: selected.projectPattern,
+								workspaceIdentity: selected.workspaceIdentity ?? null,
+							},
+						] as const,
+					]
+				: [];
+		}),
+	);
 }
 
 function selectedMapping(

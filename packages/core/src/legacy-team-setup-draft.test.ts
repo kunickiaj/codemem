@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { previewLegacyTeamSetupActivation } from "./legacy-team-setup-activation.js";
 import {
 	getLegacyTeamSetupDraft,
@@ -160,6 +160,63 @@ describe("legacy Team setup drafts", () => {
 				.get(second.attemptId),
 		).toBeTruthy();
 		expect(second.devices[0]?.displayName).toBe("Renamed Laptop");
+	});
+
+	it("bounds assignment, actor, and label statement preparation for multi-row refreshes", () => {
+		const input = { ...snapshot(), devices: devices(8), projects: projects(8) };
+		const first = refreshLegacyTeamSetupDraft(db, input);
+		const insertActor = db.prepare(
+			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+			 VALUES (?, ?, 0, 'active', ?, ?)`,
+		);
+		const includeDevice = db.prepare(
+			`UPDATE legacy_team_setup_draft_devices
+			 SET decision = 'included', target_identity_id = ?
+			 WHERE attempt_id = ? AND device_id = ?`,
+		);
+		for (const [index, device] of input.devices.entries()) {
+			const actorId = `identity-${index}`;
+			insertActor.run(actorId, `Person ${index}`, NOW, NOW);
+			includeDevice.run(actorId, first.attemptId, device.deviceId);
+		}
+		const prepare = vi.spyOn(db, "prepare");
+		try {
+			const refreshed = refreshLegacyTeamSetupDraft(db, {
+				...input,
+				displayName: "Renamed Team",
+				devices: input.devices.map((device) => ({
+					...device,
+					displayName: `Renamed ${device.deviceId}`,
+				})),
+				projects: input.projects.map((project) => ({
+					...project,
+					displayName: `Renamed ${project.projectRef}`,
+				})),
+			});
+
+			expect(refreshed.attemptId).toBe(first.attemptId);
+			expect(refreshed.devices).toHaveLength(8);
+			expect(refreshed.projects).toHaveLength(8);
+			const prepared = prepare.mock.calls.map(([sql]) => String(sql));
+			expect(
+				prepared.filter((sql) => /FROM identity_devices\s+WHERE device_id = \?/u.test(sql)),
+			).toHaveLength(2);
+			expect(
+				prepared.filter((sql) => /SELECT 1 FROM actors\s+WHERE actor_id = \?/u.test(sql)),
+			).toHaveLength(1);
+			expect(
+				prepared.filter((sql) =>
+					/UPDATE legacy_team_setup_draft_devices\s+SET display_name/u.test(sql),
+				),
+			).toHaveLength(1);
+			expect(
+				prepared.filter((sql) =>
+					/UPDATE legacy_team_setup_draft_projects\s+SET display_name/u.test(sql),
+				),
+			).toHaveLength(1);
+		} finally {
+			prepare.mockRestore();
+		}
 	});
 
 	it("keeps reads side-effect-free when a persisted digest is absent", () => {

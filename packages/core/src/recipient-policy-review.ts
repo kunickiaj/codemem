@@ -97,6 +97,11 @@ interface StoredResolution {
 	decision_input_json: string;
 }
 
+interface StoredResolutionRow extends StoredResolution {
+	review_item_id: string;
+	source_fingerprint: string;
+}
+
 const DECISIONS = new Set<RecipientPolicyReviewDecisionV1>([
 	"apply_recommendation",
 	"choose_recipients",
@@ -451,14 +456,56 @@ export function deriveRecipientPolicyReviewState(
 	return { allReviewItems, blockedItems, preservedDiagnosticFindings };
 }
 
-function hasResolution(db: Database, item: RecipientPolicyActionableReviewItemV1): boolean {
-	return Boolean(
-		db
-			.prepare(
-				`SELECT 1 FROM recipient_policy_review_resolutions
-				 WHERE review_item_id = ? AND source_fingerprint = ? LIMIT 1`,
-			)
-			.get(item.reviewItemId, item.sourceFingerprint),
+function resolutionKey(reviewItemId: string, sourceFingerprint: string): string {
+	return `${reviewItemId}\u0000${sourceFingerprint}`;
+}
+
+// Each row binds two variables, so 250 rows use 500 variables: safely below
+// SQLite's historical 999-variable default while also keeping the VALUES list
+// modest on runtimes compiled with tighter parser/resource limits.
+const RESOLUTION_LOOKUP_BATCH_SIZE = 250;
+
+function storedResolutions(
+	db: Database,
+	items: ReadonlyArray<
+		Pick<RecipientPolicyActionableReviewItemV1, "reviewItemId" | "sourceFingerprint">
+	>,
+): Map<string, StoredResolution> {
+	const pairs = [
+		...new Map(
+			items.map((item) => [resolutionKey(item.reviewItemId, item.sourceFingerprint), item]),
+		).values(),
+	];
+	if (pairs.length === 0) return new Map();
+	const query = (count: number) =>
+		`SELECT review_item_id, source_fingerprint, decision, decision_input_json
+		 FROM recipient_policy_review_resolutions
+		 WHERE (review_item_id, source_fingerprint) IN (VALUES ${Array.from(
+				{ length: count },
+				() => "(?, ?)",
+			).join(", ")})`;
+	const fullBatch =
+		pairs.length > RESOLUTION_LOOKUP_BATCH_SIZE
+			? db.prepare(query(RESOLUTION_LOOKUP_BATCH_SIZE))
+			: null;
+	const rows: StoredResolutionRow[] = [];
+	for (let offset = 0; offset < pairs.length; offset += RESOLUTION_LOOKUP_BATCH_SIZE) {
+		const batch = pairs.slice(offset, offset + RESOLUTION_LOOKUP_BATCH_SIZE);
+		const statement =
+			batch.length === RESOLUTION_LOOKUP_BATCH_SIZE && fullBatch
+				? fullBatch
+				: db.prepare(query(batch.length));
+		rows.push(
+			...(statement.all(
+				...batch.flatMap((item) => [item.reviewItemId, item.sourceFingerprint]),
+			) as StoredResolutionRow[]),
+		);
+	}
+	return new Map(
+		rows.map((row) => [
+			resolutionKey(row.review_item_id, row.source_fingerprint),
+			{ decision: row.decision, decision_input_json: row.decision_input_json },
+		]),
 	);
 }
 
@@ -467,7 +514,10 @@ export function listRecipientPolicyReview(
 	context: RecipientPolicyReviewContext,
 ): RecipientPolicyReviewListV1 {
 	const state = deriveRecipientPolicyReviewState(db, context);
-	const reviewItems = state.allReviewItems.filter((item) => !hasResolution(db, item));
+	const resolutions = storedResolutions(db, state.allReviewItems);
+	const reviewItems = state.allReviewItems.filter(
+		(item) => !resolutions.has(resolutionKey(item.reviewItemId, item.sourceFingerprint)),
+	);
 	const findingCount = reviewItems.length + state.preservedDiagnosticFindings.length;
 	return {
 		version: RECIPIENT_POLICY_CONTRACT_VERSION,
@@ -644,21 +694,43 @@ export function deriveSelectableRecipientIds(
 	};
 }
 
+interface RecipientPolicyResolutionOperation {
+	projections: LegacyRecipientPolicyProjectionV1[];
+	state: RecipientPolicyDerivedReviewState;
+	resolutions: Map<string, StoredResolution>;
+}
+
+function deriveResolutionOperation(
+	db: Database,
+	context: RecipientPolicyReviewContext,
+): RecipientPolicyResolutionOperation {
+	const projections = listLegacyRecipientPolicyProjections(db, context);
+	const state = deriveRecipientPolicyReviewState(db, context, projections);
+	return {
+		projections,
+		state,
+		resolutions: storedResolutions(db, state.allReviewItems),
+	};
+}
+
+function isValidResolveRequest(request: RecipientPolicyReviewResolveRequestV1): boolean {
+	return Boolean(
+		request.reviewItemId?.trim() &&
+			request.sourceFingerprint?.trim() &&
+			DECISIONS.has(request.decision),
+	);
+}
+
 function resolveInTransaction(
 	db: Database,
 	context: RecipientPolicyReviewContext,
 	request: RecipientPolicyReviewResolveRequestV1,
+	operation: RecipientPolicyResolutionOperation,
 ): RecipientPolicyReviewResolveResultV1 {
-	if (
-		!request.reviewItemId?.trim() ||
-		!request.sourceFingerprint?.trim() ||
-		!DECISIONS.has(request.decision)
-	) {
+	if (!isValidResolveRequest(request)) {
 		return invalid(request, "request_invalid");
 	}
-	const projections = listLegacyRecipientPolicyProjections(db, context);
-	const state = deriveRecipientPolicyReviewState(db, context, projections);
-	const item = state.allReviewItems.find(
+	const item = operation.state.allReviewItems.find(
 		(candidate) => candidate.reviewItemId === request.reviewItemId,
 	);
 	if (!item) {
@@ -670,7 +742,7 @@ function resolveInTransaction(
 	const selectedOption = item.options.find((candidate) => candidate.decision === request.decision);
 	if (!selectedOption?.preview) return invalid(request, "decision_invalid");
 	const projectId = selectedOption.preview.projects[0]?.canonicalIdentity;
-	const projection = projections.find(
+	const projection = operation.projections.find(
 		(candidate) => candidate.project.canonicalIdentity === projectId,
 	);
 	if (!projection) return { ...invalid(request, "review_item_not_found"), status: "not_found" };
@@ -682,12 +754,8 @@ function resolveInTransaction(
 		context,
 	);
 	if (!normalizedInput.ok) return invalid(request, normalizedInput.errorCode);
-	const existing = db
-		.prepare(
-			`SELECT decision, decision_input_json FROM recipient_policy_review_resolutions
-			 WHERE review_item_id = ? AND source_fingerprint = ?`,
-		)
-		.get(item.reviewItemId, item.sourceFingerprint) as StoredResolution | undefined;
+	const key = resolutionKey(item.reviewItemId, item.sourceFingerprint);
+	const existing = operation.resolutions.get(key);
 	if (existing) {
 		const same =
 			existing.decision === request.decision &&
@@ -726,6 +794,10 @@ function resolveInTransaction(
 		attribution.localDeviceId,
 		(context.now ?? (() => new Date().toISOString()))(),
 	);
+	operation.resolutions.set(key, {
+		decision: request.decision,
+		decision_input_json: normalizedInput.json,
+	});
 	return {
 		reviewItemId: item.reviewItemId,
 		sourceFingerprint: item.sourceFingerprint,
@@ -735,27 +807,43 @@ function resolveInTransaction(
 	};
 }
 
+function conflictResult(
+	error: unknown,
+	request: RecipientPolicyReviewResolveRequestV1,
+): RecipientPolicyReviewResolveResultV1 | null {
+	const code =
+		error && typeof error === "object" && "code" in error
+			? String((error as { code?: unknown }).code ?? "")
+			: "";
+	if (code !== "SQLITE_BUSY" && !code.startsWith("SQLITE_CONSTRAINT")) return null;
+	// Lock loss and uniqueness/trigger races are deliberately indistinguishable
+	// at the contract boundary. Both mean this resolution was not durably
+	// applied, and the existing stable code keeps callers fail-closed without
+	// exposing SQLite details or introducing a new public error vocabulary.
+	return {
+		reviewItemId: request.reviewItemId,
+		sourceFingerprint: request.sourceFingerprint,
+		status: "conflict",
+		errorCode: "review_resolution_conflict",
+		idempotent: false,
+	};
+}
+
 export function resolveRecipientPolicyReview(
 	db: Database,
 	context: RecipientPolicyReviewContext,
 	request: RecipientPolicyReviewResolveRequestV1,
 ): RecipientPolicyReviewResolveResultV1 {
+	if (!isValidResolveRequest(request)) return invalid(request, "request_invalid");
 	try {
-		return db.transaction(() => resolveInTransaction(db, context, request)).immediate();
+		return db
+			.transaction(() =>
+				resolveInTransaction(db, context, request, deriveResolutionOperation(db, context)),
+			)
+			.immediate();
 	} catch (error) {
-		const code =
-			error && typeof error === "object" && "code" in error
-				? String((error as { code?: unknown }).code ?? "")
-				: "";
-		if (code === "SQLITE_BUSY" || code.startsWith("SQLITE_CONSTRAINT")) {
-			return {
-				reviewItemId: request.reviewItemId,
-				sourceFingerprint: request.sourceFingerprint,
-				status: "conflict",
-				errorCode: "review_resolution_conflict",
-				idempotent: false,
-			};
-		}
+		const conflict = conflictResult(error, request);
+		if (conflict) return conflict;
 		throw error;
 	}
 }
@@ -769,12 +857,62 @@ export function resolveRecipientPolicyReviewBulk(
 	for (const request of requests) {
 		counts.set(request.reviewItemId, (counts.get(request.reviewItemId) ?? 0) + 1);
 	}
-	return {
-		version: RECIPIENT_POLICY_CONTRACT_VERSION,
-		results: requests.map((request) =>
-			(counts.get(request.reviewItemId) ?? 0) > 1
-				? invalid(request, "duplicate_review_item_id")
-				: resolveRecipientPolicyReview(db, context, request),
-		),
-	};
+	const duplicateResult = (request: RecipientPolicyReviewResolveRequestV1) =>
+		invalid(request, "duplicate_review_item_id");
+	const preflightResults = requests.map((request) => {
+		if ((counts.get(request.reviewItemId) ?? 0) > 1) return duplicateResult(request);
+		return isValidResolveRequest(request) ? null : invalid(request, "request_invalid");
+	});
+	if (preflightResults.every((result) => result !== null)) {
+		return {
+			version: RECIPIENT_POLICY_CONTRACT_VERSION,
+			results: preflightResults as RecipientPolicyReviewResolveResultV1[],
+		};
+	}
+	const attemptedResults: RecipientPolicyReviewResolveResultV1[] = [];
+	const resolveBulk = db.transaction(() => {
+		const operation = deriveResolutionOperation(db, context);
+		const resolveOne = db.transaction((request: RecipientPolicyReviewResolveRequestV1) =>
+			resolveInTransaction(db, context, request, operation),
+		);
+		for (const [index, request] of requests.entries()) {
+			const preflight = preflightResults[index];
+			if (preflight) {
+				attemptedResults.push(preflight);
+				continue;
+			}
+			try {
+				attemptedResults.push(resolveOne(request));
+			} catch (error) {
+				// Some SQLite errors abort the outer transaction, not only the
+				// request savepoint. Never continue after losing the write lock.
+				if (!db.inTransaction) throw error;
+				const conflict = conflictResult(error, request);
+				if (conflict) {
+					attemptedResults.push(conflict);
+					continue;
+				}
+				throw error;
+			}
+		}
+		return attemptedResults;
+	});
+	try {
+		return { version: RECIPIENT_POLICY_CONTRACT_VERSION, results: resolveBulk.immediate() };
+	} catch (error) {
+		const conflict = requests.find((request) => (counts.get(request.reviewItemId) ?? 0) === 1);
+		if (!conflict || !conflictResult(error, conflict)) throw error;
+		return {
+			version: RECIPIENT_POLICY_CONTRACT_VERSION,
+			results: requests.map((request, index) => {
+				const preflight = preflightResults[index];
+				if (preflight) return preflight;
+				const attempted = attemptedResults[index];
+				if (attempted && (attempted.status !== "applied" || attempted.idempotent)) {
+					return attempted;
+				}
+				return conflictResult(error, request) as RecipientPolicyReviewResolveResultV1;
+			}),
+		};
+	}
 }
