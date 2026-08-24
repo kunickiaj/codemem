@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 import {
 	derivePolicyTeamDeviceEligibility,
@@ -8,6 +7,7 @@ import {
 import {
 	isStrictRecipientPolicyId,
 	isStrictRecipientPolicyProjectIdentity,
+	legacyRecipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
@@ -154,20 +154,7 @@ function compareText(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function canonicalJson(value: unknown): string {
-	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-	if (value && typeof value === "object") {
-		return `{${Object.entries(value as Record<string, unknown>)
-			.toSorted(([left], [right]) => compareText(left, right))
-			.map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
-			.join(",")}}`;
-	}
-	return JSON.stringify(value) ?? "null";
-}
-
-function digest(prefix: string, value: unknown): string {
-	return `${prefix}:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
-}
+const digest = legacyRecipientPolicyDigest;
 
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
 	const expected = new Set(keys);

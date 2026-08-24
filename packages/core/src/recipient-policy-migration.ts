@@ -4,7 +4,10 @@ import {
 	type LegacyRecipientPolicyProjectionV1,
 	listLegacyRecipientPolicyProjections,
 } from "./legacy-recipient-policy-projection.js";
-import { RECIPIENT_POLICY_CONTRACT_VERSION } from "./recipient-policy-contract.js";
+import {
+	isRecipientPolicyNoOpDecision,
+	RECIPIENT_POLICY_CONTRACT_VERSION,
+} from "./recipient-policy-contract.js";
 import {
 	canonicalRecipientPolicyJson,
 	compareCodepoints,
@@ -82,14 +85,6 @@ const VALID_LINKED_OPERATION_STATES = new Set([
 	"initial_sync",
 	"active",
 	"needs_attention",
-]);
-
-const NO_OP_DECISIONS = new Set([
-	"keep_current_setup",
-	"reject_suggestion",
-	"keep_project_local",
-	"keep_identities_separate",
-	"remove_stale_device",
 ]);
 
 const INTENT_ROW_SCHEMAS: Record<
@@ -410,7 +405,7 @@ function addReviewDecision(
 	if (resolution.decision === "preserve_current_access") {
 		return "review_preserves_legacy_access";
 	}
-	if (NO_OP_DECISIONS.has(resolution.decision)) return null;
+	if (isRecipientPolicyNoOpDecision(resolution.decision)) return null;
 	const input = parseDecisionInput(resolution.decision_input_json);
 	if (!input) return "review_decision_input_invalid";
 	if (resolution.decision === "apply_recommendation") {

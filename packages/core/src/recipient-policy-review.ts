@@ -11,7 +11,9 @@ import {
 	isLegacyTeamCandidateSelectable,
 	legacyTeamCandidateProjectInventory,
 } from "./legacy-team-candidate.js";
+import { isActiveUnmergedLocalActor } from "./recipient-policy-actor-eligibility.js";
 import {
+	isRecipientPolicyNoOpDecision,
 	RECIPIENT_POLICY_CONTRACT_VERSION,
 	type RecipientPolicyBlockedItemV1,
 	type RecipientPolicyContractVersion,
@@ -266,9 +268,7 @@ function option(
 	label: string,
 	requiresDecisionInput = false,
 ): RecipientPolicyReviewActionOptionV1 {
-	const effect = ["keep_current_setup", "reject_suggestion"].includes(decision)
-		? "none"
-		: "metadata_only";
+	const effect = isRecipientPolicyNoOpDecision(decision) ? "none" : "metadata_only";
 	const exactPreview = preview(projection, memoryCount, effect, requiresDecisionInput);
 	return {
 		decision,
@@ -769,15 +769,7 @@ function resolveInTransaction(
 		};
 	}
 	const attribution = resolveLegacyRecipientPolicyLocalIdentity(db, context);
-	const decidingIdentityExists = Boolean(
-		db
-			.prepare(
-				`SELECT 1 FROM actors
-				 WHERE actor_id = ? AND is_local = 1 AND status = 'active'
-				 LIMIT 1`,
-			)
-			.get(attribution.localActorId),
-	);
+	const decidingIdentityExists = isActiveUnmergedLocalActor(db, attribution.localActorId);
 	if (!decidingIdentityExists) return invalid(request, "local_identity_unavailable");
 	db.prepare(
 		`INSERT INTO recipient_policy_review_resolutions(

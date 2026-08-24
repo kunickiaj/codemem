@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
 import {
 	isStrictRecipientPolicyId,
 	isStrictRecipientPolicyProjectIdentity,
+	legacyRecipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
 
 // Preserve the established module-level import path while sharing one grammar.
@@ -275,20 +275,7 @@ function isStrictRecipientPolicyReconciliationStepKey(value: unknown): value is 
 	);
 }
 
-function canonicalJson(value: unknown): string {
-	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-	if (value && typeof value === "object") {
-		return `{${Object.entries(value as Record<string, unknown>)
-			.toSorted(([left], [right]) => compareText(left, right))
-			.map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
-			.join(",")}}`;
-	}
-	return JSON.stringify(value) ?? "null";
-}
-
-function digest(prefix: string, value: unknown): string {
-	return `${prefix}:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
-}
+const digest = legacyRecipientPolicyDigest;
 
 function sourceKey(source: RecipientPolicyEffectiveDeviceSource): string {
 	return source.kind === "direct_identity" ? source.kind : `${source.kind}\u0000${source.teamId}`;

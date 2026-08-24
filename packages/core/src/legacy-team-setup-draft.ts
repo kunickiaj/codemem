@@ -7,9 +7,17 @@ import {
 } from "./legacy-team-assignment-expectation.js";
 import { isLegacyTeamProjectCanonicalStateValid } from "./legacy-team-project-canonical-preflight.js";
 import {
+	latestLegacyTeamSetupAttempt,
+	legacyTeamSetupAttemptCurrentness,
+} from "./legacy-team-setup-attempt.js";
+import {
 	requireLegacyTeamSetupEffectiveDevicesWithinLimit,
 	requireLegacyTeamSetupSnapshotWithinLimits,
 } from "./legacy-team-setup-limits.js";
+import {
+	activeUnmergedActorIdsFor,
+	isActiveUnmergedActor,
+} from "./recipient-policy-actor-eligibility.js";
 import {
 	compareCodepoints,
 	deterministicPolicyTeamId,
@@ -391,17 +399,17 @@ export function legacyTeamProjectionFingerprint(projects: LegacyTeamSetupProject
  * earlier `now` on a replacement attempt must not hide the newer draft.
  */
 function currentDraft(db: Database, candidateId: string): DraftRow | null {
+	const current = latestLegacyTeamSetupAttempt(db, candidateId);
+	if (!current) return null;
 	return (
 		(db
 			.prepare(
 				`SELECT attempt_id, candidate_id, state, display_name, roster_fingerprint,
 				        projection_fingerprint
 				 FROM legacy_team_setup_drafts
-				 WHERE candidate_id = ?
-				 ORDER BY rowid DESC
-				 LIMIT 1`,
+				 WHERE attempt_id = ?`,
 			)
-			.get(candidateId) as DraftRow | undefined) ?? null
+			.get(current.attemptId) as DraftRow | undefined) ?? null
 	);
 }
 
@@ -615,11 +623,8 @@ function loadDraftView(db: Database, attemptId: string): LegacyTeamSetupDraftVie
 	const includedTargetsValid =
 		includedTargetIds.length === 0 ||
 		(() => {
-			const activeActor = db.prepare(
-				`SELECT 1 FROM actors
-				 WHERE actor_id = ? AND status = 'active' AND merged_into_actor_id IS NULL LIMIT 1`,
-			);
-			return includedTargetIds.every((identityId) => activeActor.get(identityId));
+			const activeIdentityIds = new Set(activeUnmergedActorIdsFor(db, includedTargetIds));
+			return includedTargetIds.every((identityId) => activeIdentityIds.has(identityId));
 		})();
 	// Activation compares every stored assignment expectation, including
 	// exclusions. The detail view must report the same condition instead of
@@ -894,14 +899,8 @@ export function getLegacyTeamSetupDraft(
 	db: Database,
 	candidateRef: string,
 ): LegacyTeamSetupDraftView | null {
-	const row = db
-		.prepare(
-			`SELECT attempt_id FROM legacy_team_setup_drafts
-			 WHERE candidate_id = ?
-			 ORDER BY rowid DESC LIMIT 1`,
-		)
-		.get(candidateRef) as { attempt_id: string } | undefined;
-	return row ? loadDraftView(db, row.attempt_id) : null;
+	const current = latestLegacyTeamSetupAttempt(db, candidateRef);
+	return current ? loadDraftView(db, current.attemptId) : null;
 }
 
 export function refreshLegacyTeamSetupDraftLabels(
@@ -964,20 +963,12 @@ export function refreshLegacyTeamSetupDraftLabels(
 }
 
 function requireMutableAttempt(db: Database, attemptId: string): void {
+	const currentness = legacyTeamSetupAttemptCurrentness(db, attemptId);
 	const row = db
-		.prepare(
-			`SELECT draft.state,
-			        NOT EXISTS (
-			          SELECT 1 FROM legacy_team_setup_drafts AS newer
-			          WHERE newer.candidate_id = draft.candidate_id
-			            AND newer.rowid > draft.rowid
-			        ) AS is_current
-			 FROM legacy_team_setup_drafts AS draft
-			 WHERE draft.attempt_id = ?`,
-		)
-		.get(attemptId) as { state: LegacyTeamSetupDraftState; is_current: number } | undefined;
+		.prepare("SELECT state FROM legacy_team_setup_drafts WHERE attempt_id = ?")
+		.get(attemptId) as { state: LegacyTeamSetupDraftState } | undefined;
 	if (!row) throw new Error("legacy_team_setup_draft_not_found");
-	if (row.is_current === 0 || (row.state !== "needs_setup" && row.state !== "in_progress")) {
+	if (!currentness?.isCurrent || (row.state !== "needs_setup" && row.state !== "in_progress")) {
 		throw new Error("legacy_team_setup_draft_stale");
 	}
 }
@@ -1029,13 +1020,9 @@ export function setLegacyTeamSetupDeviceAssignment(
 				input.expectation.kind === "existing" ? input.expectation.assignmentVersion : null,
 		});
 		if (!matches) throw new Error("legacy_team_setup_assignment_changed");
-		const identity = db
-			.prepare(
-				`SELECT 1 FROM actors
-				 WHERE actor_id = ? AND status = 'active' AND merged_into_actor_id IS NULL LIMIT 1`,
-			)
-			.get(input.targetIdentityId);
-		if (!identity) throw new Error("legacy_team_setup_identity_invalid");
+		if (!isActiveUnmergedActor(db, input.targetIdentityId)) {
+			throw new Error("legacy_team_setup_identity_invalid");
+		}
 		// Changing the selected person invalidates any prior inclusion review:
 		// the new target was never explicitly included.
 		const result = db
@@ -1118,19 +1105,16 @@ export function setLegacyTeamSetupDeviceDecision(
 		if (input.decision === "included" && assignment != null && !assignment.active) {
 			throw new Error("legacy_team_setup_device_not_eligible");
 		}
-		if (input.decision === "included" && !device.target_identity_id) {
-			throw new Error("legacy_team_setup_identity_required");
-		}
 		if (input.decision === "included") {
+			const targetIdentityId = device.target_identity_id;
+			if (!targetIdentityId) {
+				throw new Error("legacy_team_setup_identity_required");
+			}
 			// The person may have been deactivated or merged after the assignment
 			// was saved; activation requires an active, unmerged member.
-			const identityActive = db
-				.prepare(
-					`SELECT 1 FROM actors
-					 WHERE actor_id = ? AND status = 'active' AND merged_into_actor_id IS NULL LIMIT 1`,
-				)
-				.get(device.target_identity_id);
-			if (!identityActive) throw new Error("legacy_team_setup_identity_invalid");
+			if (!isActiveUnmergedActor(db, targetIdentityId)) {
+				throw new Error("legacy_team_setup_identity_invalid");
+			}
 		}
 		if (input.decision === "removed" && device.enabled !== 0) {
 			throw new Error("legacy_team_setup_device_not_removed");

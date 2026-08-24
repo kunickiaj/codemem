@@ -462,6 +462,14 @@ export * from "./legacy-team-candidate.js";
 export * from "./legacy-team-setup-activation.js";
 export * from "./legacy-team-setup-draft.js";
 export type {
+	LegacyTeamSetupCoreErrorCode,
+	LegacyTeamSetupDraftErrorCode,
+} from "./legacy-team-setup-errors.js";
+export {
+	LEGACY_TEAM_SETUP_API_ERROR_BY_CORE_ERROR,
+	legacyTeamSetupApiErrorCode,
+} from "./legacy-team-setup-errors.js";
+export type {
 	BackfillTagsTextOptions,
 	BackfillTagsTextResult,
 	DeactivateLowSignalMemoriesOptions,

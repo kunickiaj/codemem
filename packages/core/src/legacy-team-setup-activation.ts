@@ -10,10 +10,15 @@ import {
 	type LegacyTeamSetupProjectInput,
 	legacyTeamProjectionFingerprint,
 } from "./legacy-team-setup-draft.js";
+import type { LegacyTeamSetupActivationErrorCode } from "./legacy-team-setup-errors.js";
 import {
 	LEGACY_TEAM_SETUP_MAX_DEVICES,
 	LEGACY_TEAM_SETUP_MAX_PROJECTS,
 } from "./legacy-team-setup-limits.js";
+import {
+	activeUnmergedActorIds,
+	isActiveUnmergedActorState,
+} from "./recipient-policy-actor-eligibility.js";
 import type {
 	LegacyTeamSetupAccessDeltaV1,
 	LegacyTeamSetupActivationPreviewV1,
@@ -32,15 +37,7 @@ import {
 	planSetupMembershipTransition,
 } from "./team-ownership-transitions.js";
 
-export type LegacyTeamSetupActivationErrorCode =
-	| "team_setup_incomplete"
-	| "team_setup_roster_changed"
-	| "team_setup_projection_changed"
-	| "team_setup_assignment_changed"
-	| "team_setup_roster_unavailable"
-	| "team_setup_conflict"
-	| "team_setup_confirmation_stale"
-	| "team_setup_failed";
+export type { LegacyTeamSetupActivationErrorCode } from "./legacy-team-setup-errors.js";
 
 export class LegacyTeamSetupActivationError extends Error {
 	readonly code: LegacyTeamSetupActivationErrorCode;
@@ -93,6 +90,7 @@ interface DraftRow {
 	roster_fingerprint: string;
 	projection_fingerprint: string;
 	finish_digest: string | null;
+	is_current: number;
 }
 
 interface DraftDeviceRow {
@@ -369,7 +367,7 @@ function loadModel(db: Database, input: PreviewLegacyTeamSetupActivationInput): 
 			        ) AS is_current
 			 FROM legacy_team_setup_drafts AS draft WHERE draft.attempt_id = ?`,
 		)
-		.get(input.attemptId) as (DraftRow & { is_current: number }) | undefined;
+		.get(input.attemptId) as DraftRow | undefined;
 	if (!draft || draft.candidate_id !== input.candidateRef) {
 		activationError("team_setup_confirmation_stale");
 	}
@@ -415,15 +413,7 @@ function loadModel(db: Database, input: PreviewLegacyTeamSetupActivationInput): 
 		activationError("team_setup_incomplete");
 	}
 
-	const activeIdentityIds = new Set(
-		(
-			db
-				.prepare(
-					"SELECT actor_id FROM actors WHERE status = 'active' AND merged_into_actor_id IS NULL",
-				)
-				.all() as Array<{ actor_id: string }>
-		).map((row) => row.actor_id),
-	);
+	const activeIdentityIds = new Set(activeUnmergedActorIds(db));
 	const desiredIdentityIds = [
 		...new Set(
 			devices
@@ -586,7 +576,12 @@ function validateCanonicalState(model: ActivationModel): void {
 		// Team in authoritative eligibility and strand discovery in needs_setup.
 		const validIdentityIds = new Set(
 			model.identities
-				.filter((row) => row.status === "active" && row.merged_into_actor_id == null)
+				.filter((row) =>
+					isActiveUnmergedActorState({
+						status: row.status,
+						mergedIntoActorId: row.merged_into_actor_id,
+					}),
+				)
 				.map((row) => row.actor_id),
 		);
 		if (

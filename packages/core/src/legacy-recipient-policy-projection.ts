@@ -1,4 +1,5 @@
 import type { Database } from "./db.js";
+import { preferredActiveUnmergedLocalActorId } from "./recipient-policy-actor-eligibility.js";
 import {
 	RECIPIENT_POLICY_CONTRACT_VERSION,
 	type RecipientPolicyContractVersion,
@@ -1117,17 +1118,10 @@ export function resolveLegacyRecipientPolicyLocalIdentity(
 			.get(),
 	);
 	const localDeviceId = storedDeviceId ?? options.localDeviceId;
-	const storedActorId = clean(
-		db
-			.prepare(
-				`SELECT actor_id FROM actors
-				 WHERE is_local = 1 AND status = 'active'
-				 ORDER BY CASE WHEN actor_id = ? THEN 0 WHEN actor_id = ? THEN 1 ELSE 2 END,
-					actor_id
-				 LIMIT 1`,
-			)
-			.pluck()
-			.get(options.localActorId, `local:${localDeviceId}`),
+	const storedActorId = preferredActiveUnmergedLocalActorId(
+		db,
+		options.localActorId,
+		`local:${localDeviceId}`,
 	);
 	return {
 		localActorId: storedActorId ?? options.localActorId,

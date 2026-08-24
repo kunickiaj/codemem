@@ -160,6 +160,16 @@ describe("recipient policy identifiers", () => {
 		).toBe(
 			"recipient-policy-test-v1:eca8cfb31ab74533e1eb2f4c74d2d55dfe3c79ac704787e54be8647ea7777eb1",
 		);
+		for (const prefix of [
+			"device-identity-binding-preview-v1",
+			"edge-preview-v1",
+			"recipient-onboarding-preview-v1",
+			"recipient-policy-devices-v1",
+		]) {
+			expect(legacyRecipientPolicyDigest(prefix, { b: [true, null, "x"], a: 1 })).toBe(
+				`${prefix}:eca8cfb31ab74533e1eb2f4c74d2d55dfe3c79ac704787e54be8647ea7777eb1`,
+			);
+		}
 		expect(deterministicPolicyTeamId("legacy-team-candidate:test")).toBe(
 			"policy-team-v1:61e1813516059b6f1a1bc74aa7dc1f7a70560dd0b396df5eaccb3b26c1bdebbd",
 		);

@@ -700,6 +700,25 @@ describe("legacy Team candidate discovery", () => {
 		}
 	});
 
+	it("loads the current selectable draft in one authoritative query", () => {
+		const { candidateId } = completeCandidate();
+		const prepare = vi.spyOn(db, "prepare");
+		try {
+			expect(isLegacyTeamCandidateSelectable(db, candidateId)).toBe(true);
+			const authorityReads = prepare.mock.calls
+				.map(([sql]) => String(sql))
+				.filter(
+					(sql) =>
+						sql.includes("FROM legacy_team_setup_drafts") && sql.includes("completed_team_id"),
+				);
+			expect(authorityReads).toHaveLength(1);
+			expect(authorityReads[0]).toMatch(/WHERE candidate_id = \?\s+ORDER BY rowid DESC LIMIT 1/u);
+			expect(authorityReads[0]).not.toMatch(/WHERE attempt_id = \?/u);
+		} finally {
+			prepare.mockRestore();
+		}
+	});
+
 	it("bounds active assignment statement preparation across completion-bound devices", () => {
 		const { teamId, attemptId, candidateId } = completeCandidate();
 		const insertActor = db.prepare(

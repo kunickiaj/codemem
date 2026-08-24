@@ -315,6 +315,36 @@ describe("device Identity binding", () => {
 		expect(db.prepare("SELECT COUNT(*) FROM device_identity_binding_audit").pluck().get()).toBe(1);
 	});
 
+	it("fails closed when the deciding local actor is active but merged", () => {
+		const request = {
+			bindings: [
+				{
+					deviceId: "device-peer",
+					targetIdentityId: "identity-other",
+					confirmed: true,
+				},
+			],
+		};
+		const preview = previewDeviceIdentityBindings(db, inventoryInput, request);
+		db.prepare(
+			"UPDATE actors SET merged_into_actor_id = 'identity-other' WHERE actor_id = 'identity-local'",
+		).run();
+
+		expect(
+			commitDeviceIdentityBindings(db, context, inventoryInput, {
+				...request,
+				reviewedInventoryDigest: preview.reviewedInventoryDigest,
+			}),
+		).toMatchObject({
+			status: "invalid",
+			errorCode: "deciding_identity_unavailable",
+			writeCount: 0,
+		});
+		expect(db.prepare("SELECT COUNT(*) FROM device_identity_binding_commits").pluck().get()).toBe(
+			0,
+		);
+	});
+
 	it.each([
 		{ status: "deactivated", mergedIntoIdentityId: null },
 		{ status: "merged", mergedIntoIdentityId: "identity-local" },

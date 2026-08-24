@@ -107,6 +107,24 @@ export type RecipientPolicyReviewDecisionV1 =
 	| "create_identity"
 	| "remove_stale_device";
 
+export const RECIPIENT_POLICY_NO_OP_DECISIONS = [
+	"keep_current_setup",
+	"reject_suggestion",
+	"keep_project_local",
+	"keep_identities_separate",
+	"remove_stale_device",
+] as const satisfies readonly RecipientPolicyReviewDecisionV1[];
+
+const RECIPIENT_POLICY_NO_OP_DECISION_SET = new Set<RecipientPolicyReviewDecisionV1>(
+	RECIPIENT_POLICY_NO_OP_DECISIONS,
+);
+
+export function isRecipientPolicyNoOpDecision(
+	decision: RecipientPolicyReviewDecisionV1 | string,
+): decision is (typeof RECIPIENT_POLICY_NO_OP_DECISIONS)[number] {
+	return RECIPIENT_POLICY_NO_OP_DECISION_SET.has(decision as RecipientPolicyReviewDecisionV1);
+}
+
 export interface RecipientPolicyReviewOptionV1 {
 	decision: RecipientPolicyReviewDecisionV1;
 	label: string;

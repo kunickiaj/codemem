@@ -545,8 +545,15 @@ describe("recipient policy review persistence", () => {
 		}
 	});
 
-	it("fails closed when the deciding local Identity is unavailable", () => {
-		db.prepare("UPDATE actors SET status = 'deactivated' WHERE actor_id = ?").run(LOCAL_ACTOR_ID);
+	it.each([
+		["deactivated", null],
+		["active", "actor-survivor"],
+	] as const)("fails closed when the deciding local Identity is %s or merged", (status, merged) => {
+		db.prepare("UPDATE actors SET status = ?, merged_into_actor_id = ? WHERE actor_id = ?").run(
+			status,
+			merged,
+			LOCAL_ACTOR_ID,
+		);
 		const item = listRecipientPolicyReview(db, context).reviewItems[0];
 		if (!item) throw new Error("review item missing");
 
@@ -560,6 +567,40 @@ describe("recipient policy review persistence", () => {
 		expect(
 			db.prepare("SELECT COUNT(*) FROM recipient_policy_review_resolutions").pluck().get(),
 		).toBe(0);
+	});
+
+	it("uses the shared no-op vocabulary for exact review previews", () => {
+		const base = projection();
+		const firstDevice = base.effectiveDevices[0];
+		if (!firstDevice) throw new Error("effective device fixture missing");
+		const unassignedProjection: LegacyRecipientPolicyProjectionV1 = {
+			...base,
+			effectiveDevices: [{ ...firstDevice, identityId: null, assignment: "unassigned" }],
+			conditions: [
+				{
+					version: 1,
+					code: "unassigned_effective_device",
+					kind: "actionable",
+					message: "Review unassigned device",
+				},
+			],
+		};
+		const state = deriveRecipientPolicyReviewState(db, context, [base, unassignedProjection]);
+		const effects = new Map(
+			state.allReviewItems.flatMap((item) =>
+				item.options.map((option) => [option.decision, option.effect] as const),
+			),
+		);
+
+		for (const decision of [
+			"keep_current_setup",
+			"reject_suggestion",
+			"keep_project_local",
+			"keep_identities_separate",
+			"remove_stale_device",
+		] as const) {
+			expect(effects.get(decision)).toBe("none");
+		}
 	});
 
 	it("is idempotent for matching input and fails closed for conflicting re-resolution", () => {

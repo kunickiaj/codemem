@@ -202,8 +202,17 @@ describe("legacy Team setup drafts", () => {
 				prepared.filter((sql) => /FROM identity_devices\s+WHERE device_id = \?/u.test(sql)),
 			).toHaveLength(2);
 			expect(
-				prepared.filter((sql) => /SELECT 1 FROM actors\s+WHERE actor_id = \?/u.test(sql)),
+				prepared.filter((sql) =>
+					/SELECT actor_id FROM actors\s+WHERE actor_id IN \([^)]*\)\s+AND status = 'active'/u.test(
+						sql,
+					),
+				),
 			).toHaveLength(1);
+			expect(
+				prepared.filter((sql) =>
+					/SELECT actor_id FROM actors\s+WHERE status = 'active'/u.test(sql),
+				),
+			).toHaveLength(0);
 			expect(
 				prepared.filter((sql) =>
 					/UPDATE legacy_team_setup_draft_devices\s+SET display_name/u.test(sql),

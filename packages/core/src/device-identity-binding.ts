@@ -1,10 +1,17 @@
-import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 import {
 	type DeviceIdentityInventoryInput,
 	type DeviceIdentityInventoryItemV1,
 	listDeviceIdentityInventory,
 } from "./device-identity-inventory.js";
+import {
+	isActiveUnmergedActor,
+	isActiveUnmergedLocalActor,
+} from "./recipient-policy-actor-eligibility.js";
+import {
+	canonicalRecipientPolicyJson,
+	legacyRecipientPolicyDigest,
+} from "./recipient-policy-identifiers.js";
 
 export const DEVICE_IDENTITY_BINDING_VERSION = 1 as const;
 const BINDING_LIMIT = 100;
@@ -89,20 +96,8 @@ class BindingWriteBoundaryError extends Error {
 	}
 }
 
-function canonicalJson(value: unknown): string {
-	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-	if (value && typeof value === "object") {
-		return `{${Object.entries(value as Record<string, unknown>)
-			.toSorted(([left], [right]) => left.localeCompare(right))
-			.map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
-			.join(",")}}`;
-	}
-	return JSON.stringify(value) ?? "null";
-}
-
-function digest(prefix: string, value: unknown): string {
-	return `${prefix}:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
-}
+const canonicalJson = canonicalRecipientPolicyJson;
+const digest = legacyRecipientPolicyDigest;
 
 function normalizedRequest(request: DeviceIdentityBindingPreviewRequestV1): string {
 	return canonicalJson({
@@ -139,17 +134,6 @@ function validSelection(value: DeviceIdentityBindingSelectionV1): boolean {
 		value.targetIdentityId.length > 0 &&
 		value.confirmed === true &&
 		(value.allowRebind === undefined || typeof value.allowRebind === "boolean")
-	);
-}
-
-function activeIdentity(db: Database, identityId: string): boolean {
-	return Boolean(
-		db
-			.prepare(
-				`SELECT 1 FROM actors
-				 WHERE actor_id = ? AND status = 'active' AND merged_into_actor_id IS NULL LIMIT 1`,
-			)
-			.get(identityId),
 	);
 }
 
@@ -233,7 +217,7 @@ export function previewDeviceIdentityBindings(
 	}
 	const outcomes: DeviceIdentityBindingOutcomeV1[] = [];
 	for (const [index, selection] of request.bindings.entries()) {
-		if (!activeIdentity(db, selection.targetIdentityId)) {
+		if (!isActiveUnmergedActor(db, selection.targetIdentityId)) {
 			return failure("not_found", "target_identity_unavailable");
 		}
 		const item = selectedItems[index];
@@ -305,7 +289,7 @@ function exactRetry(
 		return (
 			binding?.status === "active" &&
 			binding.identity_id === item.targetIdentityId &&
-			activeIdentity(db, item.targetIdentityId)
+			isActiveUnmergedActor(db, item.targetIdentityId)
 		);
 	});
 	if (!stillApplied) {
@@ -474,7 +458,7 @@ function commitInTransaction(
 			idempotent: false,
 		};
 	}
-	if (!activeIdentity(db, context.localActorId)) {
+	if (!isActiveUnmergedLocalActor(db, context.localActorId)) {
 		return {
 			...preview,
 			status: "invalid",

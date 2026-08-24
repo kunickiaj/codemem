@@ -1,6 +1,8 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import {
+	isRecipientPolicyNoOpDecision,
 	RECIPIENT_POLICY_CONTRACT_VERSION,
+	RECIPIENT_POLICY_NO_OP_DECISIONS,
 	type RecipientPolicyIdentityDeviceV1,
 	type RecipientPolicyIdentityV1,
 	type RecipientPolicyProjectionV1,
@@ -120,6 +122,18 @@ const KEEP_CURRENT_REVIEW = {
 describe("recipient policy V1 contract", () => {
 	it("uses a fixed contract version", () => {
 		expect(RECIPIENT_POLICY_CONTRACT_VERSION).toBe(1);
+	});
+
+	it("defines the five migration no-op decisions once", () => {
+		expect(RECIPIENT_POLICY_NO_OP_DECISIONS).toEqual([
+			"keep_current_setup",
+			"reject_suggestion",
+			"keep_project_local",
+			"keep_identities_separate",
+			"remove_stale_device",
+		]);
+		expect(RECIPIENT_POLICY_NO_OP_DECISIONS.every(isRecipientPolicyNoOpDecision)).toBe(true);
+		expect(isRecipientPolicyNoOpDecision("apply_recommendation")).toBe(false);
 	});
 
 	it("keeps Personal and Work as distinct Identities", () => {
