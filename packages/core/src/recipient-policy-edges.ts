@@ -5,6 +5,10 @@ import {
 	type PolicyTeamDeviceEligibilityBlock,
 	type PolicyTeamDeviceEligibilityIdentity,
 } from "./policy-team-device-eligibility.js";
+import {
+	isStrictRecipientPolicyId,
+	isStrictRecipientPolicyProjectIdentity,
+} from "./recipient-policy-identifiers.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 
@@ -213,11 +217,11 @@ function parseRecipient(value: unknown): RecipientPolicyEdgeRecipientRefV1 | nul
 	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 	const record = value as Record<string, unknown>;
 	if (record.recipientKind === "identity" && exactKeys(record, ["recipientKind", "identityId"])) {
-		const identityId = strictId(record.identityId, 256);
+		const identityId = isStrictRecipientPolicyId(record.identityId) ? record.identityId : null;
 		return identityId ? { recipientKind: "identity", identityId } : null;
 	}
 	if (record.recipientKind === "team" && exactKeys(record, ["recipientKind", "teamId"])) {
-		const teamId = strictId(record.teamId, 256);
+		const teamId = isStrictRecipientPolicyId(record.teamId) ? record.teamId : null;
 		return teamId ? { recipientKind: "team", teamId } : null;
 	}
 	return null;
@@ -233,7 +237,11 @@ function parseChanges(value: unknown): RecipientPolicyEdgeChangeV1[] | null {
 		if (!item || typeof item !== "object" || Array.isArray(item)) return null;
 		const record = item as Record<string, unknown>;
 		if (!exactKeys(record, ["canonicalProjectIdentity", "recipient", "action"])) return null;
-		const canonicalProjectIdentity = strictId(record.canonicalProjectIdentity, 512);
+		const canonicalProjectIdentity = isStrictRecipientPolicyProjectIdentity(
+			record.canonicalProjectIdentity,
+		)
+			? record.canonicalProjectIdentity
+			: null;
 		const recipient = parseRecipient(record.recipient);
 		if (
 			!canonicalProjectIdentity ||
@@ -625,7 +633,7 @@ function assertDesiredDirectIdentityEligibility(edges: StoredEdge[], devices: De
 		}
 		if (
 			device.status === "active" &&
-			(!strictId(device.identityId) || !strictId(device.deviceId))
+			(!isStrictRecipientPolicyId(device.identityId) || !isStrictRecipientPolicyId(device.deviceId))
 		) {
 			throw new RecipientPolicyEdgeRequestError("invalid", "identity_device_invalid");
 		}

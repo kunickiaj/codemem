@@ -10,6 +10,26 @@ export function compareCodepoints(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0;
 }
 
+const RECIPIENT_POLICY_ID_CONTROL_OR_FORMAT_CHARACTER = /[\p{Cc}\p{Cf}]/u;
+
+function isStrictRecipientPolicyText(value: unknown, maxUtf16Units: number): value is string {
+	return (
+		typeof value === "string" &&
+		value.length > 0 &&
+		value === value.trim() &&
+		value.length <= maxUtf16Units &&
+		!RECIPIENT_POLICY_ID_CONTROL_OR_FORMAT_CHARACTER.test(value)
+	);
+}
+
+export function isStrictRecipientPolicyId(value: unknown): value is string {
+	return isStrictRecipientPolicyText(value, 256);
+}
+
+export function isStrictRecipientPolicyProjectIdentity(value: unknown): value is string {
+	return isStrictRecipientPolicyText(value, 2_048);
+}
+
 const INVALID_CANONICAL_JSON_MESSAGE = "Recipient policy value must be strict JSON data";
 
 function invalidCanonicalJson(): never {
@@ -104,6 +124,10 @@ export function legacyRecipientPolicyDigest(prefix: string, value: unknown): str
  */
 export const INVITE_DECISION_PROVENANCES = ["team_invite", "coordinator_invite"] as const;
 
+/**
+ * Frozen compatibility identifier persisted by released legacy Team drafts.
+ * Changing the JSON tuple bytes or truncation requires an explicit DB rekey.
+ */
 export function legacyTeamCandidateId(coordinatorId: string, groupId: string): string {
 	const digest = createHash("sha256")
 		.update(JSON.stringify([coordinatorId, groupId]))

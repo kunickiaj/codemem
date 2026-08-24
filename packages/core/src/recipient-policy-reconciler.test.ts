@@ -179,6 +179,39 @@ describe("recipient-policy reconciler executor", () => {
 		expect(getRecipientPolicyAuthorityState(db, PROJECT)?.authorityState).toBe("active");
 	});
 
+	it.each([
+		["oversized", "x".repeat(257)],
+		["format-character", "device-\u200Bbad"],
+	])("rejects %s snapshot device IDs before revocation", async (_label, malformedDeviceId) => {
+		insertActiveAuthority(db);
+		const { effects } = harness(["device-keep"]);
+		vi.mocked(effects.snapshot).mockResolvedValue({
+			authoritative: true,
+			scopeId: SCOPE,
+			fingerprint: "snapshot:malformed-device",
+			observedAt: new Date(BASE_TIME + 1_000).toISOString(),
+			memberships: [
+				{ deviceId: "device-keep", status: "active" },
+				{ deviceId: malformedDeviceId, status: "active" },
+			],
+		});
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-invalid-snapshot" },
+			effects,
+		);
+
+		expect(outcome).toMatchObject({
+			status: "needs_attention",
+			safeErrorCode: "recipient_policy_snapshot_invalid",
+		});
+		expect(effects.revoke).not.toHaveBeenCalled();
+		expect(effects.grant).not.toHaveBeenCalled();
+		expect(listRecipientPolicyDenyOverlays(db, PROJECT)).toEqual([]);
+		expect(getRecipientPolicyAuthorityState(db, PROJECT)?.authorityState).toBe("rolled_back");
+	});
+
 	it("does not grant a policy device that is not enrolled in the boundary group", async () => {
 		const { effects } = harness(["device-keep"]);
 		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([

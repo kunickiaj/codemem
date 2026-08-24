@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
+import { isStrictRecipientPolicyId } from "./recipient-policy-identifiers.js";
 import {
 	clearRecipientPolicyDenyOverlay,
 	deriveRecipientPolicyEffectiveDevicesFromDatabase,
@@ -314,7 +315,7 @@ function activeSnapshotDevices(
 	for (const membership of snapshot.memberships) {
 		const membershipEpoch = membership.membershipEpoch ?? 0;
 		if (
-			!validId(membership.deviceId) ||
+			!isStrictRecipientPolicyId(membership.deviceId) ||
 			!(["active", "revoked"] as const).includes(membership.status) ||
 			!Number.isSafeInteger(membershipEpoch) ||
 			membershipEpoch < 0 ||

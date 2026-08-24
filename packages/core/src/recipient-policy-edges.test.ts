@@ -235,7 +235,10 @@ describe("recipient-policy edge changes", () => {
 				],
 			},
 			{ version: 1, changes: [identityChange(` ${PROJECT_A}`, "identity-a")] },
+			{ version: 1, changes: [identityChange(`${PROJECT_A}\u200b`, "identity-a")] },
 			{ version: 1, changes: [identityChange(PROJECT_A, "identity-a\n")] },
+			{ version: 1, changes: [identityChange(PROJECT_A, "identity\u200b-a")] },
+			{ version: 1, changes: [teamChange(PROJECT_A, "team\u200b-a")] },
 			{
 				version: 1,
 				changes: [
@@ -248,6 +251,13 @@ describe("recipient-policy edge changes", () => {
 		]) {
 			expect(parseRecipientPolicyEdgePreviewRequest(invalid)).toBeNull();
 		}
+		expect(
+			parseRecipientPolicyEdgeCommitRequest({
+				version: 1,
+				changes: [identityChange(`${PROJECT_A}\u200b`, "identity-a")],
+				reviewedPolicyDigest: `edge-preview-v1:${"0".repeat(64)}`,
+			}),
+		).toBeNull();
 	});
 
 	it("normalizes project-first and recipient-first ordering identically and writes identical rows", () => {
@@ -701,6 +711,8 @@ describe("recipient-policy edge changes", () => {
 		" device-a",
 		"device-a ",
 		"device-a\n",
+		"device-\u200B-a",
+		"a".repeat(257),
 	])("blocks malformed direct-identity device ID %j identically in preview and authoritative derivation", (deviceId) => {
 		const db = seedGraph();
 		insertProjectRecipient(db, PROJECT_A, "identity-a");

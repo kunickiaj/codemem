@@ -147,6 +147,8 @@ describe("Team device eligibility", () => {
 		" device-a",
 		"device-a ",
 		"device-a\n",
+		"device-\u200B-a",
+		"d".repeat(257),
 	])("blocks malformed reviewed decision device ID %j", (deviceId) => {
 		const result = derivePolicyTeamDeviceEligibility({
 			teamId: "team-a",
@@ -161,6 +163,20 @@ describe("Team device eligibility", () => {
 			status: "blocked",
 			blocked: [{ code: "team_device_decision_invalid", referenceId: `team-a:${deviceId}` }],
 		});
+	});
+
+	it("accepts a canonical device ID at the 256 UTF-16-unit boundary", () => {
+		const deviceId = "d".repeat(256);
+		const result = derivePolicyTeamDeviceEligibility({
+			teamId: "team-a",
+			mode: "person_all_devices",
+			identities,
+			memberships: [{ identityId: "identity-a", status: "active" }],
+			devices: [{ identityId: "identity-a", deviceId, status: "active", assignmentVersion: 0 }],
+			decisions: [],
+		});
+
+		expect(result).toMatchObject({ status: "eligible", eligibleDeviceIds: [deviceId] });
 	});
 
 	it("accepts reviewed_active membership only for reviewed_allowlist", () => {

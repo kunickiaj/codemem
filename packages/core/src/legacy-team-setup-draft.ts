@@ -13,6 +13,7 @@ import {
 import {
 	compareCodepoints,
 	deterministicPolicyTeamId,
+	isStrictRecipientPolicyProjectIdentity,
 	legacyTeamRosterFingerprint,
 	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
@@ -1168,8 +1169,7 @@ export function setLegacyTeamSetupProjectMapping(
 		/^[^/\\@\s]+@[^/\\:\s]+:\S+$/u.test(identity) ||
 		/^[^/\\:\s.]+(?:\.[^/\\:\s.]+)+:\S+$/u.test(identity);
 	if (
-		!identity ||
-		identity.length > 2048 ||
+		!isStrictRecipientPolicyProjectIdentity(identity) ||
 		identity.startsWith("unmapped:") ||
 		/\s/u.test(identity) ||
 		(/[/\\]/u.test(identity) && !isRemoteForm) ||

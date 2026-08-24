@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { reconcileCoordinatorEnrollmentSnapshot } from "./coordinator-enrollment-reconciler.js";
+import {
+	coordinatorEnrollmentDigest,
+	reconcileCoordinatorEnrollmentSnapshot,
+} from "./coordinator-enrollment-reconciler.js";
 import { connect } from "./db.js";
 import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-policy-reconciliation.js";
 
@@ -31,6 +34,86 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 	afterEach(() => {
 		db.close();
 		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("pins a canonical reconciliation digest vector with domain separation", () => {
+		const first = coordinatorEnrollmentDigest("recipient-policy-test-v1", {
+			b: [true, null, "x"],
+			a: 1,
+		});
+		const reordered = coordinatorEnrollmentDigest("recipient-policy-test-v1", {
+			a: 1,
+			b: [true, null, "x"],
+		});
+		const changed = coordinatorEnrollmentDigest("recipient-policy-test-v1", {
+			a: 2,
+			b: [true, null, "x"],
+		});
+
+		expect(first).toMatch(/^[a-f0-9]{64}$/u);
+		// These bytes are persisted evidence; changing this vector requires an explicit DB rekey.
+		expect(first).toBe("3ccd3e1ed08f09bd3923eadc07eb9dc45f49284ab51fe49c674a0f46c574c06e");
+		expect(reordered).toBe(first);
+		expect(changed).not.toBe(first);
+		expect(
+			coordinatorEnrollmentDigest("coordinator-identity-device-idempotency-v1", {
+				groupId: "group-a",
+				identityId: "identity-a",
+				deviceId: "device-a",
+				fingerprint: "fp-a",
+			}),
+		).toBe("ead3486605d3bfa1e0ad0b991f0294ee08f1fcf24b3b42e0cd7db984766930b5");
+		expect(
+			coordinatorEnrollmentDigest("recipient-policy-test-b-v1", {
+				a: 1,
+				b: [true, null, "x"],
+			}),
+		).not.toBe(first);
+	});
+
+	it("isolates a runtime-invalid enrollment fingerprint and continues valid work", () => {
+		const result = reconcileCoordinatorEnrollmentSnapshot(db, {
+			coordinatorId: "https://coord.example.test",
+			groupId: "group-a",
+			now: NOW,
+			consumedTeamInvites: [],
+			enrollments: [
+				{
+					group_id: "group-a",
+					device_id: "device-invalid-fingerprint",
+					public_key: "pk-invalid-fingerprint",
+					fingerprint: undefined as unknown as string,
+					identity_id: "identity-direct",
+					display_name: "Invalid fingerprint",
+					enabled: 1,
+					created_at: NOW,
+				},
+				{
+					group_id: "group-a",
+					device_id: "device-valid",
+					public_key: "pk-valid",
+					fingerprint: "fp-valid",
+					identity_id: "identity-direct",
+					display_name: "Valid device",
+					enabled: 1,
+					created_at: NOW,
+				},
+			],
+		});
+
+		expect(result).toMatchObject({
+			devicesAdded: 1,
+			issues: [
+				{
+					kind: "device",
+					referenceId: "device-invalid-fingerprint",
+					code: "enrollment_invalid",
+				},
+			],
+		});
+		expect(db.prepare("SELECT device_id FROM identity_devices").pluck().all()).toEqual([
+			"device-valid",
+		]);
 	});
 
 	it("materializes accepted Team membership and new devices idempotently", () => {
@@ -1091,5 +1174,90 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 			.get();
 		expect(persistedReferenceId).toBe(result.issues[0]?.referenceId);
 		expect(String(persistedReferenceId)).not.toContain("secret");
+	});
+
+	it("hashes missing runtime reference IDs without rolling back valid enrollment work", () => {
+		const result = reconcileCoordinatorEnrollmentSnapshot(db, {
+			coordinatorId: "https://coord.example.test",
+			groupId: "group-a",
+			now: NOW,
+			consumedTeamInvites: [
+				{
+					invite_id: undefined as unknown as string,
+					group_id: "group-a",
+					policy_team_id: "team-a",
+					assigned_identity_id: "identity-direct",
+					recipient_actor_id: "identity-direct",
+					bound_device_id: "device-invalid-invite",
+					consumed_at: NOW,
+				},
+			],
+			enrollments: [
+				{
+					group_id: "group-a",
+					device_id: undefined as unknown as string,
+					public_key: "pk-invalid",
+					fingerprint: "fp-invalid",
+					identity_id: "identity-direct",
+					display_name: null,
+					enabled: 1,
+					created_at: NOW,
+				},
+				{
+					group_id: "group-a",
+					device_id: "device-valid",
+					public_key: "pk-valid",
+					fingerprint: "fp-valid",
+					identity_id: "identity-direct",
+					display_name: "Valid device",
+					enabled: 1,
+					created_at: NOW,
+				},
+			],
+		});
+
+		expect(result).toMatchObject({
+			devicesAdded: 1,
+			membershipsAdded: 0,
+			issues: [
+				{
+					kind: "device",
+					referenceId: expect.stringMatching(/^invalid-reference:[a-f0-9]{64}$/u),
+					code: "enrollment_invalid",
+				},
+				{
+					kind: "team_membership",
+					referenceId: expect.stringMatching(/^invalid-reference:[a-f0-9]{64}$/u),
+					code: "team_invite_invalid",
+				},
+			],
+		});
+		expect(db.prepare("SELECT device_id FROM identity_devices").pluck().all()).toEqual([
+			"device-valid",
+		]);
+		expect(db.prepare("SELECT COUNT(*) FROM policy_team_memberships").pluck().get()).toBe(0);
+	});
+
+	it("orders persisted reconciliation issues by locale-independent code units", () => {
+		const enrollment = (deviceId: string) => ({
+			group_id: "group-a",
+			device_id: deviceId,
+			public_key: `pk-${deviceId}`,
+			fingerprint: `fp-${deviceId}`,
+			identity_id: "identity-missing",
+			display_name: null,
+			enabled: 1,
+			created_at: NOW,
+		});
+
+		const result = reconcileCoordinatorEnrollmentSnapshot(db, {
+			coordinatorId: "https://coord.example.test",
+			groupId: "group-a",
+			now: NOW,
+			consumedTeamInvites: [],
+			enrollments: [enrollment("ä-device"), enrollment("z-device")],
+		});
+
+		expect(result.issues.map((issue) => issue.referenceId)).toEqual(["z-device", "ä-device"]);
 	});
 });

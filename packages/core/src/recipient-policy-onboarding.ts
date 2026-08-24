@@ -7,6 +7,10 @@ import {
 import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
 import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
 import {
+	isStrictRecipientPolicyId,
+	isStrictRecipientPolicyProjectIdentity,
+} from "./recipient-policy-identifiers.js";
+import {
 	normalizeRecipientReviewedIntent,
 	type RecipientReviewedIntentV1,
 } from "./recipient-reviewed-intent.js";
@@ -198,13 +202,20 @@ function strictId(value: unknown, field: string, maxLength = 512): string {
 	return value;
 }
 
+function strictPrincipalId(value: unknown, field: string): string {
+	if (!isStrictRecipientPolicyId(value)) {
+		throw new RecipientPolicyOnboardingRequestError("invalid", `${field}_invalid`);
+	}
+	return value;
+}
+
 function normalizeRequest(request: RecipientPolicyOnboardingPreviewRequestV1): NormalizedRequest {
 	if (request?.version !== 1) {
 		throw new RecipientPolicyOnboardingRequestError("invalid", "request_invalid");
 	}
 	const invitationId = strictId(request.invitationId, "invitation_id", 256);
-	const identityId = strictId(request.identityId, "identity_id", 256);
-	const deviceId = strictId(request.deviceId, "device_id", 256);
+	const identityId = strictPrincipalId(request.identityId, "identity_id");
+	const deviceId = strictPrincipalId(request.deviceId, "device_id");
 	const publicKey = String(request.devicePublicKey ?? "").trim();
 	if (!publicKey || publicKey.length > 16_384) {
 		throw new RecipientPolicyOnboardingRequestError("invalid", "device_public_key_invalid");
@@ -233,7 +244,7 @@ function normalizeRequest(request: RecipientPolicyOnboardingPreviewRequestV1): N
 			version: 1,
 			journey: "team",
 			binding,
-			teamId: strictId(request.teamId, "team_id", 256),
+			teamId: strictPrincipalId(request.teamId, "team_id"),
 		};
 	}
 	if (request.journey === "direct_project") {
@@ -244,9 +255,15 @@ function normalizeRequest(request: RecipientPolicyOnboardingPreviewRequestV1): N
 		) {
 			throw new RecipientPolicyOnboardingRequestError("invalid", "project_set_invalid");
 		}
-		const projects = request.canonicalProjectIdentities.map((projectId) =>
-			strictId(projectId, "canonical_project_identity"),
-		);
+		const projects = request.canonicalProjectIdentities.map((projectId) => {
+			if (!isStrictRecipientPolicyProjectIdentity(projectId)) {
+				throw new RecipientPolicyOnboardingRequestError(
+					"invalid",
+					"canonical_project_identity_invalid",
+				);
+			}
+			return projectId;
+		});
 		if (new Set(projects).size !== projects.length) {
 			throw new RecipientPolicyOnboardingRequestError("invalid", "project_set_invalid");
 		}
@@ -1281,8 +1298,8 @@ export function assertAddDeviceIdentityAdoptionAllowed(
 	targetIdentityId: string,
 	deviceId: string,
 ): void {
-	const targetId = strictId(targetIdentityId, "identity_id", 256);
-	const localDeviceId = strictId(deviceId, "device_id", 256);
+	const targetId = strictPrincipalId(targetIdentityId, "identity_id");
+	const localDeviceId = strictPrincipalId(deviceId, "device_id");
 	const localIdentities = new Set([
 		...(db
 			.prepare(
@@ -1582,7 +1599,7 @@ export function commitDirectProjectSharePolicyInTransaction(
 	if (input.inviterDevices.length === 0) throw new Error("inviter_device_binding_missing");
 	const inviterDevices = input.inviterDevices
 		.map((device) => ({
-			deviceId: strictId(device.deviceId, "inviter_device_id", 256),
+			deviceId: strictPrincipalId(device.deviceId, "inviter_device_id"),
 			displayName: normalizeIdentityDisplayName(device.displayName, "device_display_name"),
 		}))
 		.toSorted((left, right) => compareText(left.deviceId, right.deviceId));

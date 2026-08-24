@@ -987,6 +987,7 @@ describe("coordinator local admin actions", () => {
 			{ ...valid, assigned_identity_id: ` ${valid.assigned_identity_id}` },
 			{ ...valid, recipient_actor_id: `${valid.recipient_actor_id} ` },
 			{ ...valid, invite_id: ` ${valid.invite_id}` },
+			{ ...valid, invite_id: "i".repeat(257) },
 			{ ...valid, policy_team_id: `${valid.policy_team_id} ` },
 			{ ...valid, policy_team_id: "p".repeat(257) },
 			{ ...valid, bound_device_id: ` ${valid.bound_device_id}` },

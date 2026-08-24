@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
 	canonicalRecipientPolicyJson,
 	deterministicPolicyTeamId,
+	isStrictRecipientPolicyId,
+	isStrictRecipientPolicyProjectIdentity,
 	legacyRecipientPolicyDigest,
 	legacyTeamCandidateId,
 	legacyTeamRosterFingerprint,
@@ -9,6 +11,31 @@ import {
 } from "./recipient-policy-identifiers.js";
 
 describe("recipient policy identifiers", () => {
+	it.each([
+		["ordinary ID", "device-a", true],
+		["256 UTF-16 units", "a".repeat(256), true],
+		["256 astral UTF-16 units", "😀".repeat(128), true],
+		["empty ID", "", false],
+		["leading whitespace", " device-a", false],
+		["trailing whitespace", "device-a ", false],
+		["Cc character", "device-a\n", false],
+		["Cf character", "device-\u200B-a", false],
+		["257 UTF-16 units", "a".repeat(257), false],
+		["258 astral UTF-16 units", "😀".repeat(129), false],
+		["non-string runtime value", undefined, false],
+	] as const)("validates the shared strict grammar for %s", (_label, value, expected) => {
+		expect(isStrictRecipientPolicyId(value)).toBe(expected);
+	});
+
+	it.each([
+		["257 UTF-16 units", "p".repeat(257), true],
+		["2048 UTF-16 units", "p".repeat(2_048), true],
+		["2049 UTF-16 units", "p".repeat(2_049), false],
+		["format character", `project-\u200B${"p".repeat(257)}`, false],
+	] as const)("validates canonical Project identity limits for %s", (_label, value, expected) => {
+		expect(isStrictRecipientPolicyProjectIdentity(value)).toBe(expected);
+	});
+
 	it.each([
 		["null", null, "null"],
 		["boolean", true, "true"],

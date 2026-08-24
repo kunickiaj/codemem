@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
+import {
+	isStrictRecipientPolicyId,
+	isStrictRecipientPolicyProjectIdentity,
+} from "./recipient-policy-identifiers.js";
+
+// Preserve the established module-level import path while sharing one grammar.
+export { isStrictRecipientPolicyId };
 
 export type RecipientPolicyAuthorityState = "legacy" | "eligible" | "active" | "rolled_back";
 
@@ -240,10 +247,11 @@ export interface RecipientPolicyDenyOverlayRecord {
 	updatedAt: string;
 }
 
-const CONTROL_CHARACTER = /\p{Cc}/u;
 const KNOWN_DEVICE_STATUSES = new Set(["active", "revoked"]);
 const DEFAULT_COMPLETED_STEP_RETENTION_PER_KIND = 256;
 const MAX_PENDING_REVOCATION_REFRESH_STEPS = 64;
+const MAX_RECONCILIATION_STEP_KEY_UTF16_UNITS = 1_024;
+const RECONCILIATION_STEP_KEY_CONTROL_OR_FORMAT_CHARACTER = /[\p{Cc}\p{Cf}]/u;
 const PRUNABLE_COMPLETED_STEP_PATTERNS = ["capability:*", "refresh:*"] as const;
 export const PENDING_RECIPIENT_POLICY_REVOCATION_REFRESH_STEPS_SQL = `SELECT generation, step_key FROM recipient_policy_reconciliation_steps
 	 WHERE canonical_project_identity = ?
@@ -257,17 +265,14 @@ function compareText(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function strictId(value: string): boolean {
-	return value.length > 0 && value === value.trim() && !CONTROL_CHARACTER.test(value);
-}
-
-/**
- * The identifier rule authoritative eligibility applies to every canonical
- * row. Sibling layers (for example readiness compatibility checks) must use
- * this exact predicate rather than re-implementing it with drifted semantics.
- */
-export function isStrictRecipientPolicyId(value: string): boolean {
-	return strictId(value);
+function isStrictRecipientPolicyReconciliationStepKey(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value.length > 0 &&
+		value === value.trim() &&
+		value.length <= MAX_RECONCILIATION_STEP_KEY_UTF16_UNITS &&
+		!RECONCILIATION_STEP_KEY_CONTROL_OR_FORMAT_CHARACTER.test(value)
+	);
 }
 
 function canonicalJson(value: unknown): string {
@@ -364,7 +369,7 @@ export function deriveRecipientPolicyEffectiveDevices(
 	input: DeriveRecipientPolicyEffectiveDevicesInput,
 ): StrictRecipientPolicyEffectiveDeviceDerivation {
 	const blocked = new Map<string, RecipientPolicyDerivationBlock>();
-	if (!strictId(input.canonicalProjectIdentity)) {
+	if (!isStrictRecipientPolicyProjectIdentity(input.canonicalProjectIdentity)) {
 		block(blocked, "canonical_project_identity_invalid", input.canonicalProjectIdentity);
 	}
 	const identities = new Map(input.identities.map((identity) => [identity.identityId, identity]));
@@ -426,7 +431,10 @@ export function deriveRecipientPolicyEffectiveDevices(
 			}
 			if (device.status !== "active") continue;
 			if (allowedDeviceIds && !allowedDeviceIds.has(device.deviceId)) continue;
-			if (!strictId(device.identityId) || !strictId(device.deviceId)) {
+			if (
+				!isStrictRecipientPolicyId(device.identityId) ||
+				!isStrictRecipientPolicyId(device.deviceId)
+			) {
 				block(blocked, "identity_device_invalid", device.deviceId);
 				continue;
 			}
@@ -450,7 +458,7 @@ export function deriveRecipientPolicyEffectiveDevices(
 			continue;
 		}
 		if (recipient.status !== "active") continue;
-		if (!strictId(recipient.recipientId)) {
+		if (!isStrictRecipientPolicyId(recipient.recipientId)) {
 			block(blocked, "project_recipient_invalid", recipient.recipientId);
 			continue;
 		}
@@ -477,7 +485,10 @@ export function deriveRecipientPolicyEffectiveDevices(
 		}
 		const memberships = membershipsByTeam.get(team.teamId) ?? [];
 		for (const membership of memberships) {
-			if (!strictId(membership.teamId) || !strictId(membership.identityId)) {
+			if (
+				!isStrictRecipientPolicyId(membership.teamId) ||
+				!isStrictRecipientPolicyId(membership.identityId)
+			) {
 				block(blocked, "team_membership_invalid", `${membership.teamId}:${membership.identityId}`);
 			}
 		}
@@ -656,7 +667,7 @@ export function upsertRecipientPolicyAuthorityObservation(
 	input: UpsertRecipientPolicyAuthorityObservationInput,
 ): RecipientPolicyAuthorityStateRecord {
 	if (
-		!strictId(input.canonicalProjectIdentity) ||
+		!isStrictRecipientPolicyProjectIdentity(input.canonicalProjectIdentity) ||
 		!Number.isSafeInteger(input.generation) ||
 		input.generation < 0
 	) {
@@ -822,7 +833,7 @@ export function listPendingRecipientPolicyRevocationRefreshSteps(
 	limit = MAX_PENDING_REVOCATION_REFRESH_STEPS,
 ): PendingRecipientPolicyRevocationRefreshStep[] {
 	if (
-		!strictId(canonicalProjectIdentity) ||
+		!isStrictRecipientPolicyProjectIdentity(canonicalProjectIdentity) ||
 		!Number.isSafeInteger(limit) ||
 		limit < 1 ||
 		limit > MAX_PENDING_REVOCATION_REFRESH_STEPS
@@ -841,7 +852,7 @@ export function listPendingRecipientPolicyRefreshSteps(
 	limit = MAX_PENDING_REVOCATION_REFRESH_STEPS,
 ): PendingRecipientPolicyRefreshStep[] {
 	if (
-		!strictId(canonicalProjectIdentity) ||
+		!isStrictRecipientPolicyProjectIdentity(canonicalProjectIdentity) ||
 		!Number.isSafeInteger(limit) ||
 		limit < 1 ||
 		limit > MAX_PENDING_REVOCATION_REFRESH_STEPS
@@ -868,7 +879,7 @@ export function pruneRecipientPolicyReconciliationSteps(
 	const retainCompletedPerKind =
 		input.retainCompletedPerKind ?? DEFAULT_COMPLETED_STEP_RETENTION_PER_KIND;
 	if (
-		!strictId(input.canonicalProjectIdentity) ||
+		!isStrictRecipientPolicyProjectIdentity(input.canonicalProjectIdentity) ||
 		!Number.isSafeInteger(retainCompletedPerKind) ||
 		retainCompletedPerKind < 0
 	) {
@@ -906,10 +917,10 @@ export function pruneSupersededRecipientPolicyCapabilitySteps(
 	input: PruneSupersededRecipientPolicyCapabilityStepsInput,
 ): number {
 	if (
-		!strictId(input.canonicalProjectIdentity) ||
+		!isStrictRecipientPolicyProjectIdentity(input.canonicalProjectIdentity) ||
 		!Number.isSafeInteger(input.activeGeneration) ||
 		input.activeGeneration < 0 ||
-		!strictId(input.activePassKey)
+		!isStrictRecipientPolicyId(input.activePassKey)
 	) {
 		throw new Error("recipient_policy_reconciliation_step_invalid");
 	}
@@ -931,8 +942,8 @@ export function ensureRecipientPolicyReconciliationStep(
 	input: EnsureRecipientPolicyReconciliationStepInput,
 ): RecipientPolicyReconciliationStepRecord {
 	if (
-		!strictId(input.canonicalProjectIdentity) ||
-		!strictId(input.stepKey) ||
+		!isStrictRecipientPolicyProjectIdentity(input.canonicalProjectIdentity) ||
+		!isStrictRecipientPolicyReconciliationStepKey(input.stepKey) ||
 		!Number.isSafeInteger(input.generation) ||
 		input.generation < 0
 	) {
@@ -1059,9 +1070,8 @@ export function putRecipientPolicyDenyOverlay(
 	},
 ): RecipientPolicyDenyOverlayRecord {
 	if (
-		![input.canonicalProjectIdentity, input.scopeId, input.deviceId, input.reasonCode].every(
-			strictId,
-		) ||
+		!isStrictRecipientPolicyProjectIdentity(input.canonicalProjectIdentity) ||
+		![input.scopeId, input.deviceId, input.reasonCode].every(isStrictRecipientPolicyId) ||
 		!Number.isSafeInteger(input.generation) ||
 		input.generation < 0
 	) {

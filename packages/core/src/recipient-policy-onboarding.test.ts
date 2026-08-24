@@ -301,6 +301,14 @@ describe("recipient-policy onboarding", () => {
 
 	afterEach(() => db.close());
 
+	it.each([
+		["Identity", { identityId: "identity-\u200Bbad" }, "identity_id_invalid"],
+		["device", { deviceId: "device-\u200Bbad" }, "device_id_invalid"],
+		["Team", { journey: "team" as const, teamId: "team-\u200Bbad" }, "team_id_invalid"],
+	] as const)("rejects a format character in the onboarding %s ID", (_label, overrides, error) => {
+		expect(() => previewRecipientPolicyOnboarding(db, baseRequest(overrides))).toThrow(error);
+	});
+
 	it("builds fresh Team and add-device previews only from reviewed intent and local binding", () => {
 		const fresh = new Database(":memory:");
 		initTestSchema(fresh);
@@ -911,6 +919,19 @@ describe("recipient-policy onboarding", () => {
 		expect(addDevice.excludedProjects.map((project) => project.canonicalProjectIdentity)).toEqual([
 			PROJECT_C,
 		]);
+	});
+
+	it("rejects non-canonical direct Project identities at the request boundary", () => {
+		expect(() =>
+			previewRecipientPolicyOnboarding(
+				db,
+				baseRequest({
+					journey: "direct_project",
+					invitationId: "invite-direct-invalid-project",
+					canonicalProjectIdentities: [`${PROJECT_A}\u200b`],
+				}),
+			),
+		).toThrow("canonical_project_identity_invalid");
 	});
 
 	it("does not preview Team inheritance for a revoked existing binding device", () => {

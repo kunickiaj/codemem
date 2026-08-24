@@ -115,6 +115,83 @@ describe("legacy Team candidate discovery", () => {
 		);
 	});
 
+	it("rejects malformed discovery identities without hiding independent valid groups", () => {
+		const input = options();
+		const validGroup = input.groups[0];
+		if (!validGroup) throw new Error("invalid test fixture");
+		input.groups = [
+			{
+				...validGroup,
+				coordinatorId: " coordinator-padded",
+				groupId: "group-padded-coordinator",
+				displayName: "Padded coordinator",
+			},
+			{
+				...validGroup,
+				coordinatorId: "coordinator-control-group",
+				groupId: "group-control\n",
+				displayName: "Control group",
+			},
+			{
+				...validGroup,
+				coordinatorId: "coordinator-malformed-roster",
+				groupId: "group-malformed-roster",
+				displayName: "Malformed roster",
+				devices: [
+					...validGroup.devices,
+					{
+						deviceId: "device-padded ",
+						fingerprint: "key-padded",
+						displayName: "Padded device",
+						enabled: true,
+					},
+				],
+			},
+			validGroup,
+		];
+
+		const candidates = discoverLegacyTeamCandidates(db, input);
+
+		expect(candidates).toHaveLength(1);
+		expect(candidates[0]?.displayName).toBe("Engineering");
+		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(1);
+	});
+
+	it.each([
+		["device ID", (device: { deviceId: string }) => (device.deviceId = "device-\u200B-a")],
+		["fingerprint", (device: { fingerprint: string }) => (device.fingerprint = "key-\u200B-a")],
+	] as const)("rejects refresh with a malformed roster %s before writes", (_label, mutate) => {
+		const initialOptions = options();
+		const [candidate] = discoverLegacyTeamCandidates(db, initialOptions);
+		const candidateRef = candidate?.candidateRef as string;
+		const initialDraft = db
+			.prepare(
+				`SELECT attempt_id, updated_at FROM legacy_team_setup_drafts
+				 WHERE candidate_id = ?`,
+			)
+			.get(candidateRef);
+		const malformedOptions = options();
+		const malformedGroup = malformedOptions.groups[0];
+		const malformedDevice = malformedGroup?.devices[0];
+		if (!malformedGroup || !malformedDevice) throw new Error("invalid test fixture");
+		mutate(malformedDevice);
+
+		expect(() => refreshLegacyTeamCandidate(db, malformedOptions, candidateRef)).toThrow(
+			"legacy_team_setup_roster_conflict",
+		);
+		expect(
+			db
+				.prepare(
+					`SELECT attempt_id, updated_at FROM legacy_team_setup_drafts
+					 WHERE candidate_id = ?`,
+				)
+				.get(candidateRef),
+		).toEqual(initialDraft);
+		expect(
+			db.prepare("SELECT device_id FROM legacy_team_setup_draft_devices").pluck().all(),
+		).toEqual(["device-a"]);
+	});
+
 	it("skips an oversized group without aborting other candidate discovery", () => {
 		const input = options();
 		input.groups.unshift({

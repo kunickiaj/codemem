@@ -6,6 +6,11 @@ import type { Database } from "./db.js";
 import { assignIdentityDeviceInTransaction } from "./identity-device-assignment.js";
 import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
 import {
+	canonicalRecipientPolicyJson,
+	compareCodepoints,
+	isStrictRecipientPolicyId,
+} from "./recipient-policy-identifiers.js";
+import {
 	planInviteDeviceDecisionTransition,
 	planInviteMembershipTransition,
 } from "./team-ownership-transitions.js";
@@ -24,20 +29,31 @@ export interface CoordinatorEnrollmentReconcileResult {
 	issues: CoordinatorEnrollmentReconcileIssue[];
 }
 
-function digest(kind: string, value: unknown): string {
+export function coordinatorEnrollmentDigest(kind: string, value: unknown): string {
+	if (kind.includes("\0") || !kind.isWellFormed()) {
+		throw new TypeError("Coordinator enrollment digest kind must be well-formed without NUL");
+	}
 	return createHash("sha256")
-		.update(JSON.stringify([kind, value]))
+		.update(kind, "utf8")
+		.update("\0", "utf8")
+		.update(canonicalRecipientPolicyJson(value), "utf8")
 		.digest("hex");
 }
 
-function strictId(value: unknown): value is string {
-	return (
-		typeof value === "string" &&
-		value.length > 0 &&
-		value === value.trim() &&
-		value.length <= 256 &&
-		!/[\p{Cc}\p{Cf}]/u.test(value)
-	);
+function invalidIssueReferenceEvidence(
+	kind: CoordinatorEnrollmentReconcileIssue["kind"],
+	referenceId: unknown,
+): Record<string, string | null> {
+	if (typeof referenceId === "string") return { kind, referenceId };
+	const referenceType = referenceId === null ? "null" : typeof referenceId;
+	const referenceValue =
+		typeof referenceId === "number" ||
+		typeof referenceId === "boolean" ||
+		typeof referenceId === "bigint" ||
+		typeof referenceId === "symbol"
+			? String(referenceId)
+			: null;
+	return { kind, referenceType, referenceValue };
 }
 
 function normalizedDisplayNameOrNull(
@@ -71,8 +87,8 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 		now?: string;
 	},
 ): CoordinatorEnrollmentReconcileResult {
-	if (!strictId(input.coordinatorId)) throw new Error("coordinator_id_invalid");
-	if (!strictId(input.groupId)) throw new Error("coordinator_group_id_invalid");
+	if (!isStrictRecipientPolicyId(input.coordinatorId)) throw new Error("coordinator_id_invalid");
+	if (!isStrictRecipientPolicyId(input.groupId)) throw new Error("coordinator_group_id_invalid");
 	const now = input.now ?? new Date().toISOString();
 	if (Number.isNaN(new Date(now).getTime())) throw new Error("reconciliation_time_invalid");
 	const result: CoordinatorEnrollmentReconcileResult = {
@@ -84,15 +100,15 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 	};
 	const issue = (
 		kind: CoordinatorEnrollmentReconcileIssue["kind"],
-		referenceId: string,
+		referenceId: unknown,
 		code: string,
 	): void => {
-		const safeReferenceId = strictId(referenceId)
+		const safeReferenceId = isStrictRecipientPolicyId(referenceId)
 			? referenceId
-			: `invalid-reference:${digest("coordinator-enrollment-issue-reference-v1", {
-					kind,
-					referenceId,
-				})}`;
+			: `invalid-reference:${coordinatorEnrollmentDigest(
+					"coordinator-enrollment-issue-reference-v1",
+					invalidIssueReferenceEvidence(kind, referenceId),
+				)}`;
 		result.issues.push({ kind, referenceId: safeReferenceId, code });
 	};
 	const localEnrollmentIdentityIds = new Set(
@@ -102,7 +118,9 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 					enrollment.group_id === input.groupId &&
 					enrollment.enabled === 1 &&
 					enrollment.device_id === input.localDeviceId &&
-					strictId(enrollment.identity_id),
+					isStrictRecipientPolicyId(enrollment.device_id) &&
+					isStrictRecipientPolicyId(enrollment.identity_id) &&
+					isStrictRecipientPolicyId(enrollment.fingerprint),
 			)
 			.map((enrollment) => enrollment.identity_id as string),
 	);
@@ -140,9 +158,10 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 			);
 			if (
 				invite.group_id !== input.groupId ||
-				!strictId(identityId) ||
+				!isStrictRecipientPolicyId(invite.invite_id) ||
+				!isStrictRecipientPolicyId(identityId) ||
 				identityId !== invite.recipient_actor_id ||
-				!strictId(invite.policy_team_id)
+				!isStrictRecipientPolicyId(invite.policy_team_id)
 			) {
 				issue("team_membership", invite.invite_id, "team_invite_invalid");
 				continue;
@@ -240,9 +259,12 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 						 WHERE team_id = ? AND identity_id = ?`,
 					).run(
 						activeMembershipStatus,
-						digest("coordinator-team-membership-revision-v1", stableBinding),
-						digest("coordinator-team-membership-source-v1", stableBinding),
-						digest("coordinator-team-membership-idempotency-v1", stableBinding),
+						coordinatorEnrollmentDigest("coordinator-team-membership-revision-v1", stableBinding),
+						coordinatorEnrollmentDigest("coordinator-team-membership-source-v1", stableBinding),
+						coordinatorEnrollmentDigest(
+							"coordinator-team-membership-idempotency-v1",
+							stableBinding,
+						),
 						now,
 						invite.policy_team_id,
 						identityId,
@@ -276,9 +298,9 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 				invite.policy_team_id,
 				identityId,
 				activeMembershipStatus,
-				digest("coordinator-team-membership-revision-v1", stableBinding),
-				digest("coordinator-team-membership-source-v1", stableBinding),
-				digest("coordinator-team-membership-idempotency-v1", stableBinding),
+				coordinatorEnrollmentDigest("coordinator-team-membership-revision-v1", stableBinding),
+				coordinatorEnrollmentDigest("coordinator-team-membership-source-v1", stableBinding),
+				coordinatorEnrollmentDigest("coordinator-team-membership-idempotency-v1", stableBinding),
 				now,
 				now,
 			);
@@ -303,8 +325,9 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 			if (
 				enrollment.group_id !== input.groupId ||
 				enrollment.enabled !== 1 ||
-				!strictId(enrollment.device_id) ||
-				!strictId(identityId)
+				!isStrictRecipientPolicyId(enrollment.device_id) ||
+				!isStrictRecipientPolicyId(identityId) ||
+				!isStrictRecipientPolicyId(enrollment.fingerprint)
 			) {
 				issue("device", enrollment.device_id, "enrollment_invalid");
 				continue;
@@ -405,10 +428,19 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 				insert: {
 					displayName,
 					provenance: "coordinator_enrollment",
-					revision: digest("coordinator-identity-device-revision-v1", stableBinding),
+					revision: coordinatorEnrollmentDigest(
+						"coordinator-identity-device-revision-v1",
+						stableBinding,
+					),
 					migrationState: "user_managed",
-					sourceFingerprint: digest("coordinator-identity-device-source-v1", stableBinding),
-					idempotencyKey: digest("coordinator-identity-device-idempotency-v1", stableBinding),
+					sourceFingerprint: coordinatorEnrollmentDigest(
+						"coordinator-identity-device-source-v1",
+						stableBinding,
+					),
+					idempotencyKey: coordinatorEnrollmentDigest(
+						"coordinator-identity-device-idempotency-v1",
+						stableBinding,
+					),
 				},
 				now,
 			});
@@ -440,7 +472,10 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 					membership.newlyAdded,
 				);
 				if (transition === "preserve") continue;
-				const revision = digest("coordinator-team-device-decision-revision-v1", stableDecision);
+				const revision = coordinatorEnrollmentDigest(
+					"coordinator-team-device-decision-revision-v1",
+					stableDecision,
+				);
 				const changed =
 					transition === "insert_unresolved"
 						? db
@@ -493,9 +528,9 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 		);
 		result.issues = [...issueSet.values()].sort(
 			(left, right) =>
-				left.kind.localeCompare(right.kind) ||
-				left.referenceId.localeCompare(right.referenceId) ||
-				left.code.localeCompare(right.code),
+				compareCodepoints(left.kind, right.kind) ||
+				compareCodepoints(left.referenceId, right.referenceId) ||
+				compareCodepoints(left.code, right.code),
 		);
 		persistCoordinatorEnrollmentReconciliationIssues(db, {
 			coordinatorId: input.coordinatorId,

@@ -692,6 +692,7 @@ describe("legacy Team setup drafts", () => {
 		for (const target of [
 			"C:\\repos\\acme",
 			"https://git.example.invalid/acme/web.git/",
+			"https://git.example.invalid/acme/web\u200b.git",
 			`https://git.example.invalid/${"a".repeat(2100)}`,
 			// Local paths round-trip unchanged through canonicalWorkspaceIdentity,
 			// so they must be rejected by shape.

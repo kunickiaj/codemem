@@ -963,7 +963,7 @@ function consumedTeamInvites(
 				"device_display_name",
 			);
 			const row: CoordinatorConsumedTeamInvite = {
-				invite_id: requiredConsumedTeamInviteText(invite.invite_id),
+				invite_id: requiredConsumedTeamInviteText(invite.invite_id, 256),
 				group_id: requiredConsumedTeamInviteText(invite.group_id),
 				policy_team_id: requiredConsumedTeamInviteText(invite.policy_team_id, 256),
 				assigned_identity_id: assignedIdentityId,

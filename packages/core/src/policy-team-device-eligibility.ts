@@ -1,3 +1,5 @@
+import { isStrictRecipientPolicyId } from "./recipient-policy-identifiers.js";
+
 export const POLICY_TEAM_DEVICE_ELIGIBILITY_MODES = [
 	"person_all_devices",
 	"reviewed_allowlist",
@@ -77,7 +79,6 @@ const MODES = new Set<string>(POLICY_TEAM_DEVICE_ELIGIBILITY_MODES);
 const DECISIONS = new Set<string>(POLICY_TEAM_DEVICE_DECISIONS);
 const DEVICE_STATUSES = new Set(["active", "revoked"]);
 const INACTIVE_MEMBERSHIP_STATUSES = new Set(["pending", "revoked"]);
-const CONTROL_CHARACTER = /\p{Cc}/u;
 // Surface authority-shape and principal-integrity failures before mutable
 // decision/device facts so callers expose the most security-relevant cause.
 const BLOCK_PRECEDENCE: Record<PolicyTeamDeviceEligibilityBlockCode, number> = {
@@ -93,10 +94,6 @@ const BLOCK_PRECEDENCE: Record<PolicyTeamDeviceEligibilityBlockCode, number> = {
 
 function compareText(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function strictId(value: string): boolean {
-	return value.length > 0 && value === value.trim() && !CONTROL_CHARACTER.test(value);
 }
 
 export function isPolicyTeamMembershipActiveForMode(mode: string, status: string): boolean {
@@ -139,7 +136,7 @@ export function derivePolicyTeamDeviceEligibility(
 	const mode = input.mode as PolicyTeamDeviceEligibilityMode;
 	const activeMembers = new Set<string>();
 	for (const membership of input.memberships) {
-		if (!strictId(membership.identityId)) {
+		if (!isStrictRecipientPolicyId(membership.identityId)) {
 			addBlock("team_membership_invalid", `${input.teamId}:${membership.identityId}`);
 			continue;
 		}
@@ -173,7 +170,7 @@ export function derivePolicyTeamDeviceEligibility(
 			continue;
 		}
 		if (
-			!strictId(decision.deviceId) ||
+			!isStrictRecipientPolicyId(decision.deviceId) ||
 			!DECISIONS.has(decision.decision) ||
 			!Number.isSafeInteger(decision.assignmentVersion) ||
 			decision.assignmentVersion < 0 ||
@@ -193,8 +190,8 @@ export function derivePolicyTeamDeviceEligibility(
 		}
 		if (device.status !== "active") continue;
 		if (
-			!strictId(device.identityId) ||
-			!strictId(device.deviceId) ||
+			!isStrictRecipientPolicyId(device.identityId) ||
+			!isStrictRecipientPolicyId(device.deviceId) ||
 			!Number.isSafeInteger(device.assignmentVersion) ||
 			device.assignmentVersion < 0
 		) {

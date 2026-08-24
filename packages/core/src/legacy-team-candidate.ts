@@ -21,6 +21,7 @@ import {
 	compareCodepoints,
 	deterministicPolicyTeamId,
 	INVITE_DECISION_PROVENANCES,
+	isStrictRecipientPolicyId,
 	legacyTeamCandidateId,
 	legacyTeamProjectRef,
 	legacyTeamRosterFingerprint,
@@ -87,6 +88,12 @@ function dedupedRosterDevices(
 ): LegacyTeamRosterDeviceSnapshot[] | null {
 	const byId = new Map<string, LegacyTeamRosterDeviceSnapshot>();
 	for (const device of devices) {
+		if (
+			!isStrictRecipientPolicyId(device.deviceId) ||
+			!isStrictRecipientPolicyId(device.fingerprint)
+		) {
+			return null;
+		}
 		const existing = byId.get(device.deviceId);
 		if (!existing) {
 			byId.set(device.deviceId, device);
@@ -136,9 +143,8 @@ function effectiveGroupSnapshots(groups: LegacyTeamConfiguredGroupSnapshot[]): {
 	const byCandidate = new Map<string, EffectiveGroupSnapshot>();
 	const conflictedCandidateIds = new Set<string>();
 	for (const group of groups) {
-		const coordinatorId = group.coordinatorId.trim();
-		const groupId = group.groupId.trim();
-		if (!coordinatorId || !groupId) continue;
+		const { coordinatorId, groupId } = group;
+		if (!isStrictRecipientPolicyId(coordinatorId) || !isStrictRecipientPolicyId(groupId)) continue;
 		const candidateId = legacyTeamCandidateId(coordinatorId, groupId);
 		const devices = dedupedRosterDevices(group.devices);
 		if (!devices) {
@@ -698,7 +704,9 @@ export function discoverLegacyTeamCandidates(
 			unresolvedProjectCount: result.draft.unresolvedProjectCount,
 		});
 	}
-	return candidates.toSorted((left, right) => left.candidateRef.localeCompare(right.candidateRef));
+	return candidates.toSorted((left, right) =>
+		compareCodepoints(left.candidateRef, right.candidateRef),
+	);
 }
 
 /**

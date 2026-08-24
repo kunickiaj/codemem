@@ -91,6 +91,21 @@ describe("strict recipient-policy effective-device derivation", () => {
 		expect(result.devices.map((device) => device.deviceId)).toEqual(["device-a", "device-b"]);
 	});
 
+	it("accepts canonical Project identities above the principal-ID limit", () => {
+		const input = graph();
+		const canonicalProjectIdentity = "p".repeat(257);
+		input.canonicalProjectIdentity = canonicalProjectIdentity;
+		input.projectRecipients = input.projectRecipients.map((recipient) => ({
+			...recipient,
+			canonicalProjectIdentity,
+		}));
+
+		const result = deriveRecipientPolicyEffectiveDevices(input);
+
+		expect(result.status).toBe("eligible");
+		expect(result.devices.map((device) => device.deviceId)).toEqual(["device-a", "device-b"]);
+	});
+
 	it("preserves legacy Team inputs without eligibility mode or assignment versions", () => {
 		const input = graph();
 		delete input.teams[0]?.deviceEligibilityMode;
@@ -414,6 +429,22 @@ describe("recipient-policy reconciliation persistence", () => {
 		expect(() =>
 			ensureRecipientPolicyReconciliationStep(db, { ...input, payloadDigest: "payload:changed" }),
 		).toThrow("recipient_policy_reconciliation_step_conflict");
+	});
+
+	it("accepts bounded composite step keys longer than principal identifiers", () => {
+		const digest = "a".repeat(96);
+		const stepKey = `refresh-after-revocations-v2:${digest}:steady_state:${digest}:${digest}`;
+
+		const step = ensureRecipientPolicyReconciliationStep(db, {
+			canonicalProjectIdentity: PROJECT,
+			generation: 3,
+			stepKey,
+			payloadDigest: "payload:composite",
+			now: NOW,
+		});
+
+		expect(step.stepKey).toBe(stepKey);
+		expect(stepKey.length).toBeGreaterThan(256);
 	});
 
 	it("prunes only old completed capability and refresh bookkeeping", () => {
