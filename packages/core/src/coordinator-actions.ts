@@ -123,6 +123,7 @@ async function remoteRequest(
 	adminSecret: string,
 	body?: Record<string, unknown>,
 	actorId?: string | null,
+	timeoutS = 3,
 ): Promise<Record<string, unknown> | null> {
 	const headers: Record<string, string> = { "X-Codemem-Coordinator-Admin": adminSecret };
 	const normalizedActorId = String(actorId ?? "").trim();
@@ -130,7 +131,7 @@ async function remoteRequest(
 	const [status, payload] = await requestJson(method, url, {
 		headers,
 		body,
-		timeoutS: 3,
+		timeoutS,
 		maxResponseBytes: 2_000_000,
 	});
 	if (status < 200 || status >= 300) {
@@ -415,6 +416,7 @@ export async function coordinatorListGroupsAction(opts?: {
 	remoteUrl?: string | null;
 	adminSecret?: string | null;
 	includeArchived?: boolean;
+	timeoutS?: number;
 }): Promise<CoordinatorGroup[]> {
 	const remote = opts?.remoteUrl ?? null;
 	const adminSecret = opts?.adminSecret ?? null;
@@ -425,6 +427,9 @@ export async function coordinatorListGroupsAction(opts?: {
 			"GET",
 			`${stripTrailingSlashes(remote)}/v1/admin/groups${includeArchived ? "?include_archived=1" : ""}`,
 			adminSecret,
+			undefined,
+			undefined,
+			opts?.timeoutS,
 		);
 		return Array.isArray(payload?.items)
 			? payload.items.filter(
@@ -815,6 +820,7 @@ export async function coordinatorListDevicesAction(opts: {
 	dbPath?: string | null;
 	remoteUrl?: string | null;
 	adminSecret?: string | null;
+	timeoutS?: number;
 }): Promise<CoordinatorEnrollment[]> {
 	const groupId = String(opts.groupId ?? "").trim();
 	if (!groupId) throw new Error("Group id required.");
@@ -826,6 +832,9 @@ export async function coordinatorListDevicesAction(opts: {
 			"GET",
 			`${stripTrailingSlashes(remote)}/v1/admin/devices?group_id=${encodeURIComponent(groupId)}&include_disabled=${opts.includeDisabled ? "1" : "0"}`,
 			adminSecret,
+			undefined,
+			undefined,
+			opts.timeoutS,
 		);
 		if (!Array.isArray(payload?.items)) {
 			throw new Error("coordinator_device_list_malformed");

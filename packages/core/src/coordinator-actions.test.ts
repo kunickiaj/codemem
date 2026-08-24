@@ -432,6 +432,58 @@ describe("coordinator local admin actions", () => {
 		).rejects.toThrow("coordinator_device_list_malformed");
 	});
 
+	it("honors caller-provided remote list timeouts", async () => {
+		const timeoutSignal = new AbortController().signal;
+		const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutSignal);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request) => {
+				const url = String(input);
+				const items = url.includes("/v1/admin/groups")
+					? []
+					: [
+							{
+								group_id: "team-a",
+								device_id: "device-a",
+								public_key: "pk-a",
+								fingerprint: "fp-a",
+								identity_id: null,
+								display_name: null,
+								enabled: 1,
+								created_at: "2026-08-24T00:00:00.000Z",
+							},
+						];
+				return new Response(JSON.stringify({ items }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				});
+			}),
+		);
+
+		try {
+			await coordinatorListGroupsAction({
+				remoteUrl: "https://coord.example.test",
+				adminSecret: "secret",
+				timeoutS: 9,
+			});
+			await coordinatorListDevicesAction({
+				groupId: "team-a",
+				remoteUrl: "https://coord.example.test",
+				adminSecret: "secret",
+				timeoutS: 11,
+			});
+			await coordinatorListGroupsAction({
+				remoteUrl: "https://coord.example.test",
+				adminSecret: "secret",
+			});
+			expect(timeoutSpy).toHaveBeenNthCalledWith(1, 9_000);
+			expect(timeoutSpy).toHaveBeenNthCalledWith(2, 11_000);
+			expect(timeoutSpy).toHaveBeenNthCalledWith(3, 3_000);
+		} finally {
+			timeoutSpy.mockRestore();
+		}
+	});
+
 	it("rejects remote device lists above the enrollment evidence limit", async () => {
 		vi.stubGlobal(
 			"fetch",
