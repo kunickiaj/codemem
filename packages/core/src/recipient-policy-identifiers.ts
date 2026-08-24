@@ -140,6 +140,20 @@ export function legacyTeamProjectRef(candidateId: string, sourceProjectIdentity:
 	return recipientPolicyDigest("legacy-team-project-ref-v1", [candidateId, sourceProjectIdentity]);
 }
 
+export function legacyTeamCanonicalProjectRef(
+	candidateId: string,
+	canonicalProjectIdentity: string,
+): string {
+	return recipientPolicyDigest("legacy-team-canonical-project-ref-v1", [
+		candidateId,
+		canonicalProjectIdentity,
+	]);
+}
+
+export function legacyTeamDeviceRef(candidateId: string, deviceId: string): string {
+	return recipientPolicyDigest("legacy-team-device-ref-v1", [candidateId, deviceId]);
+}
+
 export function deterministicPolicyTeamId(teamCandidateId: string): string {
 	return legacyRecipientPolicyDigest("policy-team-v1", teamCandidateId);
 }

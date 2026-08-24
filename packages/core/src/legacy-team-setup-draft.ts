@@ -22,6 +22,8 @@ import {
 	compareCodepoints,
 	deterministicPolicyTeamId,
 	isStrictRecipientPolicyProjectIdentity,
+	legacyTeamCanonicalProjectRef,
+	legacyTeamDeviceRef,
 	legacyTeamRosterFingerprint,
 	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
@@ -39,6 +41,7 @@ export interface LegacyTeamSetupRosterDeviceInput {
 	fingerprint: string;
 	displayName: string;
 	enabled: boolean;
+	labelRedactionIds?: readonly string[];
 }
 
 export interface LegacyTeamSetupProjectInput {
@@ -75,6 +78,7 @@ export interface LegacyTeamSetupDraftProjectView {
 	projectRef: string;
 	displayName: string;
 	resolution: LegacyTeamProjectResolution;
+	canonicalProjectRef: string | null;
 	/**
 	 * Opaque reference to the persisted migration target. Resumed clients can
 	 * confirm and distinguish saved mappings by recomputing the digest for a
@@ -232,6 +236,24 @@ function projectCanonicalStateValid(
  */
 const SAFE_LABEL_PATTERN = /^[\p{L}\p{N} '&,.()_-]*$/u;
 
+function normalizeLabelText(value: string): string {
+	return (
+		value
+			.normalize("NFKC")
+			// Format characters (zero-width joiners, bidi controls) are removed
+			// entirely so they cannot split an address or identifier into innocent
+			// halves; control characters become word separators.
+			.replace(/\p{Cf}/gu, "")
+			.replace(/\p{Cc}/gu, " ")
+			.replace(/\s+/gu, " ")
+			.trim()
+	);
+}
+
+function labelComparisonForm(value: string): string {
+	return normalizeLabelText(value).toLowerCase();
+}
+
 /**
  * Coordinator-supplied display labels are sanitized with an allowlist, not a
  * denylist: multiple review rounds each found one more denylisted shape (bare
@@ -252,37 +274,83 @@ const SAFE_LABEL_PATTERN = /^[\p{L}\p{N} '&,.()_-]*$/u;
  * - Reject labels embedding opaque lookup identifiers (coordinator, group,
  *   device, project references).
  */
-function safeLabel(value: string, fallback: string, forbiddenIds: string[] = []): string {
-	const sanitized = value
-		.slice(0, 512)
-		.normalize("NFKC")
-		// Format characters (zero-width joiners, bidi controls) are removed
-		// entirely so they cannot split an address or identifier into innocent
-		// halves; control characters become word separators.
-		.replace(/\p{Cf}/gu, "")
-		.replace(/\p{Cc}/gu, " ")
-		.replace(/\s+/gu, " ")
-		.trim()
-		.slice(0, 120)
-		.trim();
+function safeLabel(value: string, fallback: string, forbiddenIds: ReadonlySet<string>): string {
+	const boundedValue = value.slice(0, 512);
+	const normalized = normalizeLabelText(boundedValue);
+	const sanitized = normalized.slice(0, 120).trim();
 	if (!sanitized) return fallback;
 	if (!SAFE_LABEL_PATTERN.test(sanitized)) return fallback;
 	if (/[\p{L}\p{N}]\.[\p{L}\p{N}]/u.test(sanitized)) return fallback;
 	// Key-material markers are pure letters/hyphens, so the grammar alone
 	// would keep surrounding text; fail closed on the markers themselves.
 	if (/-----|\b(?:ssh|ecdsa|sk)-[\p{L}\p{N}-]+ /iu.test(sanitized)) return fallback;
-	// Case-insensitively: identifiers such as key fingerprints are the same
-	// identifier in any casing, and the coordinator controls the casing of
-	// both the label and the identifier it embeds.
-	const comparable = sanitized.toLowerCase();
-	if (forbiddenIds.some((id) => id && comparable.includes(id.toLowerCase()))) return fallback;
+	// Compare the complete bounded input before display truncation so an
+	// identifier cannot be hidden just past the visible label boundary.
+	const comparable = normalized.toLowerCase();
+	for (const forbiddenId of forbiddenIds) {
+		if (comparable.includes(forbiddenId)) return fallback;
+	}
 	return sanitized;
+}
+
+function setupLabelForbiddenIds(
+	contextIds: ReadonlyArray<string>,
+	devices: ReadonlyArray<LegacyTeamSetupRosterDeviceInput>,
+	projects: ReadonlyArray<LegacyTeamSetupProjectInput>,
+	persistedDevices: ReadonlyArray<{
+		deviceId: string;
+		fingerprint: string;
+		existingIdentityId: string | null;
+		targetIdentityId: string | null;
+	}>,
+	persistedProjects: ReadonlyArray<{
+		projectRef: string;
+		sourceProjectIdentity: string;
+		sourceFingerprint: string;
+		resolvedProjectIdentity: string | null;
+	}>,
+): ReadonlySet<string> {
+	return new Set(
+		[
+			...contextIds,
+			...devices.flatMap((device) => [
+				device.deviceId,
+				device.fingerprint,
+				...(device.labelRedactionIds ?? []),
+			]),
+			...persistedDevices.flatMap((device) => [
+				device.deviceId,
+				device.fingerprint,
+				device.existingIdentityId ?? "",
+				device.targetIdentityId ?? "",
+			]),
+			...projects.flatMap((project) => [
+				project.projectRef,
+				project.sourceProjectIdentity,
+				project.sourceFingerprint,
+				project.deterministicProjectIdentity ?? "",
+			]),
+			...persistedProjects.flatMap((project) => [
+				project.projectRef,
+				project.sourceProjectIdentity,
+				project.sourceFingerprint,
+				project.resolvedProjectIdentity ?? "",
+			]),
+		]
+			.map(labelComparisonForm)
+			.filter(Boolean),
+	);
 }
 
 interface DeviceAssignmentSnapshot {
 	identityId: string;
 	assignmentVersion: number;
 	active: boolean;
+}
+
+interface DeviceAssignmentInputSnapshot {
+	device: LegacyTeamSetupRosterDeviceInput;
+	assignment: DeviceAssignmentSnapshot | null;
 }
 
 /**
@@ -371,10 +439,6 @@ function storedAssignmentRowMatchesLive(
 	);
 }
 
-function deviceReference(candidateId: string, deviceId: string): string {
-	return recipientPolicyDigest("legacy-team-device-ref-v1", [candidateId, deviceId]);
-}
-
 /**
  * Fingerprint of the completion-bound Project inventory. Discovery compares
  * this against the persisted `projection_fingerprint`, so there must be exactly
@@ -419,30 +483,10 @@ function createAttempt(
 	rosterFingerprint: string,
 	projectFingerprint: string,
 	previousAttemptId: string | null,
+	assignmentSnapshots: ReadonlyArray<DeviceAssignmentInputSnapshot>,
 	now: string,
 ): string {
 	const attemptId = `legacy-team-attempt:${randomUUID()}`;
-	db.prepare(
-		`INSERT INTO legacy_team_setup_drafts(
-			attempt_id, candidate_id, coordinator_id, group_id, state, display_name,
-			roster_fingerprint, projection_fingerprint, created_at, updated_at
-		 ) VALUES (?, ?, ?, ?, 'needs_setup', ?, ?, ?, ?, ?)`,
-	).run(
-		attemptId,
-		input.candidateId,
-		input.coordinatorId,
-		input.groupId,
-		safeLabel(input.displayName, "Legacy Team", [
-			input.candidateId,
-			input.coordinatorId,
-			input.groupId,
-		]),
-		rosterFingerprint,
-		projectFingerprint,
-		now,
-		now,
-	);
-
 	const previousDevices = previousAttemptId
 		? (db
 				.prepare(
@@ -454,8 +498,79 @@ function createAttempt(
 				)
 				.all(previousAttemptId) as DeviceRow[])
 		: [];
+	const previousProjects = previousAttemptId
+		? (db
+				.prepare(
+					`SELECT project_ref, source_project_identity, display_name, source_fingerprint,
+					        resolution_kind, resolved_project_identity
+					 FROM legacy_team_setup_draft_projects WHERE attempt_id = ?`,
+				)
+				.all(previousAttemptId) as ProjectRow[])
+		: [];
+	const currentProjectByRef = new Map(
+		input.projects.map((project) => [project.projectRef, project]),
+	);
+	const carriedProjects = previousProjects.filter((project) => {
+		const current = currentProjectByRef.get(project.project_ref);
+		return (
+			current != null &&
+			current.deterministicProjectIdentity == null &&
+			current.sourceFingerprint === project.source_fingerprint &&
+			project.resolution_kind === "explicit"
+		);
+	});
 	const previousByDevice = new Map(previousDevices.map((device) => [device.device_id, device]));
 	const currentDeviceIds = new Set(input.devices.map((device) => device.deviceId));
+	const loadAssignment = assignmentLookup(db);
+	const assignmentByDevice = new Map(
+		assignmentSnapshots.map(({ device, assignment }) => [device.deviceId, assignment]),
+	);
+	for (const previousDevice of previousDevices) {
+		if (!assignmentByDevice.has(previousDevice.device_id)) {
+			assignmentByDevice.set(previousDevice.device_id, loadAssignment(previousDevice.device_id));
+		}
+	}
+	const forbiddenIds = setupLabelForbiddenIds(
+		[
+			input.candidateId,
+			input.coordinatorId,
+			input.groupId,
+			...Array.from(assignmentByDevice.values()).flatMap((assignment) =>
+				assignment ? [assignment.identityId] : [],
+			),
+		],
+		input.devices,
+		input.projects,
+		previousDevices.map((device) => ({
+			deviceId: device.device_id,
+			fingerprint: device.key_fingerprint,
+			existingIdentityId: device.existing_identity_id,
+			targetIdentityId: device.target_identity_id,
+		})),
+		carriedProjects.map((project) => ({
+			projectRef: project.project_ref,
+			sourceProjectIdentity: project.source_project_identity,
+			sourceFingerprint: project.source_fingerprint,
+			resolvedProjectIdentity: project.resolved_project_identity,
+		})),
+	);
+	db.prepare(
+		`INSERT INTO legacy_team_setup_drafts(
+			attempt_id, candidate_id, coordinator_id, group_id, state, display_name,
+			roster_fingerprint, projection_fingerprint, created_at, updated_at
+		 ) VALUES (?, ?, ?, ?, 'needs_setup', ?, ?, ?, ?, ?)`,
+	).run(
+		attemptId,
+		input.candidateId,
+		input.coordinatorId,
+		input.groupId,
+		safeLabel(input.displayName, "Legacy Team", forbiddenIds),
+		rosterFingerprint,
+		projectFingerprint,
+		now,
+		now,
+	);
+
 	const devices = [
 		...input.devices,
 		...previousDevices
@@ -475,9 +590,8 @@ function createAttempt(
 			expected_assignment_kind, expected_assignment_version, updated_at
 		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	);
-	const loadAssignment = assignmentLookup(db);
 	for (const device of devices) {
-		const assignment = loadAssignment(device.deviceId);
+		const assignment = assignmentByDevice.get(device.deviceId) ?? null;
 		const previous = previousByDevice.get(device.deviceId);
 		const assignmentEvidenceUnchanged =
 			previous != null &&
@@ -501,14 +615,9 @@ function createAttempt(
 		insertDevice.run(
 			attemptId,
 			device.deviceId,
-			deviceReference(input.candidateId, device.deviceId),
+			legacyTeamDeviceRef(input.candidateId, device.deviceId),
 			device.fingerprint,
-			safeLabel(device.displayName, "Device", [
-				device.deviceId,
-				device.fingerprint,
-				input.coordinatorId,
-				input.groupId,
-			]),
+			safeLabel(device.displayName, "Device", forbiddenIds),
 			device.enabled ? 1 : 0,
 			assignment?.identityId ?? null,
 			assignment?.assignmentVersion ?? null,
@@ -521,16 +630,6 @@ function createAttempt(
 		);
 	}
 
-	const previousProjects = previousAttemptId
-		? (db
-				.prepare(
-					`SELECT project_ref, source_project_identity, display_name, source_fingerprint,
-					        resolution_kind,
-					        resolved_project_identity
-					 FROM legacy_team_setup_draft_projects WHERE attempt_id = ?`,
-				)
-				.all(previousAttemptId) as ProjectRow[])
-		: [];
 	const previousByProject = new Map(
 		previousProjects.map((project) => [project.project_ref, project]),
 	);
@@ -552,13 +651,7 @@ function createAttempt(
 			attemptId,
 			project.projectRef,
 			project.sourceProjectIdentity,
-			safeLabel(project.displayName, "Project", [
-				project.projectRef,
-				project.sourceProjectIdentity,
-				input.candidateId,
-				input.coordinatorId,
-				input.groupId,
-			]),
+			safeLabel(project.displayName, "Project", forbiddenIds),
 			project.sourceFingerprint,
 			resolution,
 			project.deterministicProjectIdentity ??
@@ -712,6 +805,9 @@ function loadDraftView(db: Database, attemptId: string): LegacyTeamSetupDraftVie
 			projectRef: row.project_ref,
 			displayName: row.display_name,
 			resolution: row.resolution_kind,
+			canonicalProjectRef: row.resolved_project_identity
+				? legacyTeamCanonicalProjectRef(draft.candidate_id, row.resolved_project_identity)
+				: null,
 			resolvedProjectRef: row.resolved_project_identity
 				? legacyTeamResolvedProjectRef(row.project_ref, row.resolved_project_identity)
 				: null,
@@ -818,55 +914,7 @@ export function refreshLegacyTeamSetupDraft(
 			existing.projection_fingerprint === projectFingerprint &&
 			storedAssignmentEvidenceMatches(db, existing.attempt_id, assignmentSnapshots)
 		) {
-			db.prepare(
-				`UPDATE legacy_team_setup_drafts SET display_name = ?, updated_at = ? WHERE attempt_id = ?`,
-			).run(
-				safeLabel(input.displayName, "Legacy Team", [
-					input.candidateId,
-					input.coordinatorId,
-					input.groupId,
-				]),
-				now,
-				existing.attempt_id,
-			);
-			const updateDeviceLabel = db.prepare(
-				`UPDATE legacy_team_setup_draft_devices
-				 SET display_name = ?, updated_at = ?
-				 WHERE attempt_id = ? AND device_id = ?`,
-			);
-			for (const device of input.devices) {
-				updateDeviceLabel.run(
-					safeLabel(device.displayName, "Device", [
-						device.deviceId,
-						device.fingerprint,
-						input.coordinatorId,
-						input.groupId,
-					]),
-					now,
-					existing.attempt_id,
-					device.deviceId,
-				);
-			}
-			const updateProjectLabel = db.prepare(
-				`UPDATE legacy_team_setup_draft_projects
-				 SET display_name = ?, updated_at = ?
-				 WHERE attempt_id = ? AND project_ref = ?`,
-			);
-			for (const project of input.projects) {
-				updateProjectLabel.run(
-					safeLabel(project.displayName, "Project", [
-						project.projectRef,
-						project.sourceProjectIdentity,
-						input.candidateId,
-						input.coordinatorId,
-						input.groupId,
-					]),
-					now,
-					existing.attempt_id,
-					project.projectRef,
-				);
-			}
-			return loadDraftView(db, existing.attempt_id);
+			return refreshLegacyTeamSetupDraftLabels(db, existing.attempt_id, input);
 		}
 		if (existing && (existing.state === "needs_setup" || existing.state === "in_progress")) {
 			db.prepare(
@@ -888,6 +936,7 @@ export function refreshLegacyTeamSetupDraft(
 			rosterFingerprint,
 			projectFingerprint,
 			existing?.attempt_id ?? null,
+			assignmentSnapshots,
 			now,
 		);
 		return persistFinishDigest(db, attemptId);
@@ -919,42 +968,96 @@ export function refreshLegacyTeamSetupDraftLabels(
 			| undefined;
 		if (!context) throw new Error("legacy_team_setup_draft_not_found");
 		const contextIds = [context.candidate_id, context.coordinator_id, context.group_id];
+		const persistedDevices = db
+			.prepare(
+				`SELECT device_id, key_fingerprint, display_name, existing_identity_id,
+				        target_identity_id
+				 FROM legacy_team_setup_draft_devices WHERE attempt_id = ?`,
+			)
+			.all(attemptId) as Array<{
+			device_id: string;
+			key_fingerprint: string;
+			display_name: string;
+			existing_identity_id: string | null;
+			target_identity_id: string | null;
+		}>;
+		const loadAssignment = assignmentLookup(db);
+		const liveAssignmentIds = [
+			...new Set([
+				...input.devices.map((device) => device.deviceId),
+				...persistedDevices.map((device) => device.device_id),
+			]),
+		].flatMap((deviceId) => {
+			const assignment = loadAssignment(deviceId);
+			return assignment ? [assignment.identityId] : [];
+		});
+		const persistedProjects = db
+			.prepare(
+				`SELECT project_ref, source_project_identity, display_name, source_fingerprint,
+				        resolved_project_identity
+				 FROM legacy_team_setup_draft_projects WHERE attempt_id = ?`,
+			)
+			.all(attemptId) as Array<{
+			project_ref: string;
+			source_project_identity: string;
+			display_name: string;
+			source_fingerprint: string;
+			resolved_project_identity: string | null;
+		}>;
+		const forbiddenIds = setupLabelForbiddenIds(
+			[...contextIds, ...liveAssignmentIds],
+			input.devices,
+			input.projects,
+			persistedDevices.map((device) => ({
+				deviceId: device.device_id,
+				fingerprint: device.key_fingerprint,
+				existingIdentityId: device.existing_identity_id,
+				targetIdentityId: device.target_identity_id,
+			})),
+			persistedProjects.map((project) => ({
+				projectRef: project.project_ref,
+				sourceProjectIdentity: project.source_project_identity,
+				sourceFingerprint: project.source_fingerprint,
+				resolvedProjectIdentity: project.resolved_project_identity,
+			})),
+		);
 		const result = db
 			.prepare(
 				"UPDATE legacy_team_setup_drafts SET display_name = ?, updated_at = ? WHERE attempt_id = ?",
 			)
-			.run(safeLabel(input.displayName, "Legacy Team", contextIds), now, attemptId);
+			.run(safeLabel(input.displayName, "Legacy Team", forbiddenIds), now, attemptId);
 		if (result.changes !== 1) throw new Error("legacy_team_setup_draft_not_found");
 		const updateDevice = db.prepare(
 			`UPDATE legacy_team_setup_draft_devices SET display_name = ?, updated_at = ?
 			 WHERE attempt_id = ? AND device_id = ?`,
 		);
-		for (const device of input.devices) {
+		const inputDeviceById = new Map(input.devices.map((device) => [device.deviceId, device]));
+		for (const persistedDevice of persistedDevices) {
+			const displayName =
+				inputDeviceById.get(persistedDevice.device_id)?.displayName ?? persistedDevice.display_name;
 			updateDevice.run(
-				safeLabel(device.displayName, "Device", [
-					device.deviceId,
-					device.fingerprint,
-					...contextIds,
-				]),
+				safeLabel(displayName, "Device", forbiddenIds),
 				now,
 				attemptId,
-				device.deviceId,
+				persistedDevice.device_id,
 			);
 		}
 		const updateProject = db.prepare(
 			`UPDATE legacy_team_setup_draft_projects SET display_name = ?, updated_at = ?
 			 WHERE attempt_id = ? AND project_ref = ?`,
 		);
-		for (const project of input.projects) {
+		const inputProjectByRef = new Map(
+			input.projects.map((project) => [project.projectRef, project]),
+		);
+		for (const persistedProject of persistedProjects) {
+			const displayName =
+				inputProjectByRef.get(persistedProject.project_ref)?.displayName ??
+				persistedProject.display_name;
 			updateProject.run(
-				safeLabel(project.displayName, "Project", [
-					project.projectRef,
-					project.sourceProjectIdentity,
-					...contextIds,
-				]),
+				safeLabel(displayName, "Project", forbiddenIds),
 				now,
 				attemptId,
-				project.projectRef,
+				persistedProject.project_ref,
 			);
 		}
 		return loadDraftView(db, attemptId);

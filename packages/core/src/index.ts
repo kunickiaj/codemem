@@ -753,6 +753,8 @@ export {
 	canonicalRecipientPolicyJson,
 	deterministicPolicyTeamId,
 	legacyTeamCandidateId,
+	legacyTeamCanonicalProjectRef,
+	legacyTeamDeviceRef,
 	legacyTeamRosterFingerprint,
 	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";

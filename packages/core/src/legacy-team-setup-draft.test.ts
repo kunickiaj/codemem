@@ -5,6 +5,7 @@ import {
 	getLegacyTeamSetupDraft,
 	legacyTeamResolvedProjectRef,
 	refreshLegacyTeamSetupDraft,
+	refreshLegacyTeamSetupDraftLabels,
 	setLegacyTeamSetupDeviceAssignment,
 	setLegacyTeamSetupDeviceDecision,
 	setLegacyTeamSetupProjectMapping,
@@ -200,7 +201,7 @@ describe("legacy Team setup drafts", () => {
 			const prepared = prepare.mock.calls.map(([sql]) => String(sql));
 			expect(
 				prepared.filter((sql) => /FROM identity_devices\s+WHERE device_id = \?/u.test(sql)),
-			).toHaveLength(2);
+			).toHaveLength(3);
 			expect(
 				prepared.filter((sql) =>
 					/SELECT actor_id FROM actors\s+WHERE actor_id IN \([^)]*\)\s+AND status = 'active'/u.test(
@@ -943,6 +944,327 @@ describe("legacy Team setup drafts", () => {
 			],
 		});
 		expect(withFingerprint.devices[0]?.displayName).toBe("Device");
+	});
+
+	it("sanitizes every label against all roster identifiers", () => {
+		const input = snapshot();
+		const firstDevice = input.devices[0];
+		const project = input.projects[0];
+		if (!firstDevice || !project) throw new Error("invalid test fixture");
+		const secondDevice = {
+			deviceId: "device-private-b",
+			fingerprint: "fingerprint-private-b",
+			displayName: `Laptop ${firstDevice.deviceId}`,
+			enabled: true,
+		};
+		input.devices.push(secondDevice);
+		input.displayName = `Team ${secondDevice.deviceId}`;
+		firstDevice.displayName = `Laptop ${secondDevice.fingerprint}`;
+		project.displayName = `Project ${secondDevice.deviceId}`;
+
+		const draft = refreshLegacyTeamSetupDraft(db, input);
+
+		expect(draft.displayName).toBe("Legacy Team");
+		expect(draft.devices.map((device) => device.displayName)).toEqual(["Device", "Device"]);
+		expect(draft.projects[0]?.displayName).toBe("Project");
+	});
+
+	it("sanitizes labels against carried device IDs and fingerprints", () => {
+		const withRemovedDevice = {
+			...snapshot(),
+			devices: [
+				...snapshot().devices,
+				{
+					deviceId: "device-gone",
+					fingerprint: "key-gone",
+					displayName: "Old Laptop",
+					enabled: true,
+				},
+			],
+		};
+		refreshLegacyTeamSetupDraft(db, withRemovedDevice);
+		const replacementInput = snapshot();
+		const currentDevice = replacementInput.devices[0];
+		if (!currentDevice) throw new Error("invalid test fixture");
+		replacementInput.displayName = "Team device-gone";
+		currentDevice.displayName = "Laptop key-gone";
+
+		const replacement = refreshLegacyTeamSetupDraft(db, replacementInput);
+
+		expect(replacement.displayName).toBe("Legacy Team");
+		expect(replacement.devices.find((device) => device.enabled)?.displayName).toBe("Device");
+		expect(replacement.devices.find((device) => !device.enabled)?.displayName).toBe(
+			"Removed device",
+		);
+		const carriedDevice = replacement.devices.find((device) => !device.enabled);
+		if (!carriedDevice) throw new Error("invalid test fixture");
+		setLegacyTeamSetupDeviceDecision(db, {
+			attemptId: replacement.attemptId,
+			deviceRef: carriedDevice.deviceRef,
+			decision: "removed",
+			now: NOW,
+		});
+
+		const retryInput = snapshot();
+		const retryDevice = retryInput.devices[0];
+		if (!retryDevice) throw new Error("invalid test fixture");
+		retryInput.displayName = "Team key-gone";
+		retryDevice.displayName = "Laptop device-gone";
+
+		const retry = refreshLegacyTeamSetupDraft(db, retryInput);
+
+		expect(retry.attemptId).toBe(replacement.attemptId);
+		expect(retry.displayName).toBe("Legacy Team");
+		expect(retry.devices.find((device) => device.enabled)?.displayName).toBe("Device");
+	});
+
+	it("matches forbidden identifiers by their NFKC-equivalent form", () => {
+		const input = snapshot();
+		const device = input.devices[0];
+		if (!device) throw new Error("invalid test fixture");
+		device.deviceId = "device-\uff41";
+		input.displayName = "Team device-a";
+
+		const draft = refreshLegacyTeamSetupDraft(db, input);
+
+		expect(draft.displayName).toBe("Legacy Team");
+	});
+
+	it("matches forbidden identifiers after format and whitespace normalization", () => {
+		const input = snapshot();
+		const device = input.devices[0];
+		if (!device) throw new Error("invalid test fixture");
+		device.fingerprint = "key\u200b-\t  private";
+		device.displayName = "Laptop KEY-\nPRIVATE";
+
+		const draft = refreshLegacyTeamSetupDraft(db, input);
+
+		expect(draft.devices[0]?.displayName).toBe("Device");
+	});
+
+	it.each([
+		["coordinator identity", "opaque-person-alpha"],
+		["coordinator public key", "public-key-private"],
+	] as const)("redacts labels containing a %s", (_label, forbiddenId) => {
+		const input = snapshot();
+		const device = input.devices[0];
+		const project = input.projects[0];
+		if (!device || !project) throw new Error("invalid test fixture");
+		Object.assign(device, {
+			labelRedactionIds: ["opaque-person-alpha", "public-key-private"],
+		});
+		input.displayName = `Team ${forbiddenId}`;
+		device.displayName = `Laptop ${forbiddenId}`;
+		project.displayName = `Project ${forbiddenId}`;
+
+		const draft = refreshLegacyTeamSetupDraft(db, input);
+
+		expect(draft).toMatchObject({
+			displayName: "Legacy Team",
+			devices: [{ displayName: "Device" }],
+			projects: [{ displayName: "Project" }, {}],
+		});
+	});
+
+	it("redacts persisted explicit Project identities on replacement and label refresh", () => {
+		let draft = refreshLegacyTeamSetupDraft(db, snapshot());
+		draft = setLegacyTeamSetupProjectMapping(db, {
+			attemptId: draft.attemptId,
+			projectRef: "project-ref-b",
+			resolvedProjectIdentity: "workspace-private",
+			now: NOW,
+		});
+		const replacementInput = snapshot({ fingerprint: "key-replaced" });
+		replacementInput.displayName = "Team workspace-private";
+
+		const replacement = refreshLegacyTeamSetupDraft(db, replacementInput);
+
+		expect(replacement.attemptId).not.toBe(draft.attemptId);
+		expect(replacement.displayName).toBe("Legacy Team");
+		expect(
+			replacement.projects.find((project) => project.projectRef === "project-ref-b")?.resolution,
+		).toBe("explicit");
+
+		const project = replacementInput.projects.find(
+			(candidate) => candidate.projectRef === "project-ref-b",
+		);
+		if (!project) throw new Error("invalid test fixture");
+		project.displayName = "Project workspace-private";
+		const refreshed = refreshLegacyTeamSetupDraftLabels(
+			db,
+			replacement.attemptId,
+			replacementInput,
+		);
+
+		expect(refreshed.displayName).toBe("Legacy Team");
+		expect(
+			refreshed.projects.find((candidate) => candidate.projectRef === "project-ref-b")?.displayName,
+		).toBe("Project");
+	});
+
+	it("redacts existing and selected assignment identities from labels", () => {
+		db.prepare(
+			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+			 VALUES ('identity-existing-private', 'Existing Person', 0, 'active', ?, ?),
+			        ('identity-live-private', 'Live Person', 0, 'active', ?, ?)`,
+		).run(NOW, NOW, NOW, NOW);
+		db.prepare(
+			`INSERT INTO identity_devices(
+				device_id, identity_id, display_name, status, provenance, revision,
+				migration_state, assignment_version, idempotency_key, created_at, updated_at
+			 ) VALUES ('device-a', 'identity-existing-private', 'Laptop', 'active', 'test', 'r1',
+				'complete', 1, 'device-a', ?, ?)`,
+		).run(NOW, NOW);
+		const input = snapshot();
+		const inputDevice = input.devices[0];
+		const inputProject = input.projects[0];
+		if (!inputDevice || !inputProject) throw new Error("invalid test fixture");
+		input.displayName = "Team identity-existing-private";
+		inputDevice.displayName = "Laptop identity-existing-private";
+		inputProject.displayName = "Project identity-existing-private";
+
+		let draft = refreshLegacyTeamSetupDraft(db, input);
+
+		expect(draft).toMatchObject({
+			displayName: "Legacy Team",
+			devices: [{ displayName: "Device" }],
+			projects: [{ displayName: "Project" }, {}],
+		});
+		const device = draft.devices[0];
+		if (!device) throw new Error("invalid test fixture");
+		draft = setLegacyTeamSetupDeviceAssignment(db, {
+			attemptId: draft.attemptId,
+			deviceRef: device.deviceRef,
+			targetIdentityId: "identity-a",
+			expectation: device.expectation,
+			now: NOW,
+		});
+		const refreshInput = snapshot();
+		const refreshDevice = refreshInput.devices[0];
+		const refreshProject = refreshInput.projects[0];
+		if (!refreshDevice || !refreshProject) throw new Error("invalid test fixture");
+		db.prepare(
+			"UPDATE identity_devices SET identity_id = 'identity-live-private' WHERE device_id = 'device-a'",
+		).run();
+		refreshInput.displayName = "Team identity-live-private";
+		refreshDevice.displayName = "Laptop identity-live-private";
+		refreshProject.displayName = "Project identity-live-private";
+
+		const refreshed = refreshLegacyTeamSetupDraftLabels(db, draft.attemptId, refreshInput);
+
+		expect(refreshed).toMatchObject({
+			displayName: "Legacy Team",
+			devices: [{ displayName: "Device" }],
+			projects: [{ displayName: "Project" }, {}],
+		});
+	});
+
+	it("redacts a carried removed device's live reassigned identity on replacement", () => {
+		db.prepare(
+			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+			 VALUES ('identity-existing-private', 'Existing Person', 0, 'active', ?, ?),
+			        ('identity-reassigned-private', 'Reassigned Person', 0, 'active', ?, ?)`,
+		).run(NOW, NOW, NOW, NOW);
+		db.prepare(
+			`INSERT INTO identity_devices(
+				device_id, identity_id, display_name, status, provenance, revision,
+				migration_state, assignment_version, idempotency_key, created_at, updated_at
+			 ) VALUES ('device-gone', 'identity-existing-private', 'Old Laptop', 'active', 'test',
+				'r1', 'complete', 1, 'device-gone', ?, ?)`,
+		).run(NOW, NOW);
+		refreshLegacyTeamSetupDraft(db, {
+			...snapshot(),
+			devices: [
+				...snapshot().devices,
+				{
+					deviceId: "device-gone",
+					fingerprint: "key-gone",
+					displayName: "Old Laptop",
+					enabled: true,
+				},
+			],
+		});
+		db.prepare(
+			`UPDATE identity_devices
+			 SET identity_id = 'identity-reassigned-private', assignment_version = 2
+			 WHERE device_id = 'device-gone'`,
+		).run();
+		const replacementInput = snapshot();
+		replacementInput.displayName = "Team identity-reassigned-private";
+
+		const replacement = refreshLegacyTeamSetupDraft(db, replacementInput);
+
+		expect(replacement.displayName).toBe("Legacy Team");
+		expect(replacement.devices.find((device) => !device.enabled)).toMatchObject({
+			displayName: "Removed device",
+			expectation: {
+				kind: "existing",
+				identityId: "identity-reassigned-private",
+				assignmentVersion: 2,
+			},
+		});
+	});
+
+	it("does not redact an explicit Project identity that is not carried into the replacement", () => {
+		let draft = refreshLegacyTeamSetupDraft(db, snapshot());
+		draft = setLegacyTeamSetupProjectMapping(db, {
+			attemptId: draft.attemptId,
+			projectRef: "project-ref-b",
+			resolvedProjectIdentity: "workspace-private",
+			now: NOW,
+		});
+		const replacementInput = snapshot();
+		const project = replacementInput.projects.find(
+			(candidate) => candidate.projectRef === "project-ref-b",
+		);
+		if (!project) throw new Error("invalid test fixture");
+		project.sourceFingerprint = "source-b-replaced";
+		replacementInput.displayName = "Team workspace-private";
+
+		const replacement = refreshLegacyTeamSetupDraft(db, replacementInput);
+
+		expect(replacement.displayName).toBe("Team workspace-private");
+		expect(
+			replacement.projects.find((candidate) => candidate.projectRef === "project-ref-b")
+				?.resolution,
+		).toBe("unresolved");
+	});
+
+	it("replaces a draft when a previously mapped Project leaves the inventory", () => {
+		let draft = refreshLegacyTeamSetupDraft(db, snapshot());
+		draft = setLegacyTeamSetupProjectMapping(db, {
+			attemptId: draft.attemptId,
+			projectRef: "project-ref-b",
+			resolvedProjectIdentity: "workspace-private",
+			now: NOW,
+		});
+		const replacementInput = snapshot();
+		replacementInput.projects = replacementInput.projects.filter(
+			(project) => project.projectRef !== "project-ref-b",
+		);
+		replacementInput.displayName = "Team workspace-private";
+
+		const replacement = refreshLegacyTeamSetupDraft(db, replacementInput);
+
+		expect(replacement.attemptId).not.toBe(draft.attemptId);
+		expect(replacement.displayName).toBe("Team workspace-private");
+		expect(replacement.projects.some((project) => project.projectRef === "project-ref-b")).toBe(
+			false,
+		);
+	});
+
+	it("checks identifiers after the display truncation boundary while preserving the limit", () => {
+		const input = snapshot();
+		input.displayName = `${"A".repeat(120)} device-a`;
+
+		const draft = refreshLegacyTeamSetupDraft(db, input);
+		const safeLongLabel = refreshLegacyTeamSetupDraft(db, {
+			...snapshot(),
+			displayName: "B".repeat(130),
+		});
+
+		expect(draft.displayName).toBe("Legacy Team");
+		expect(safeLongLabel.displayName).toBe("B".repeat(120));
 	});
 
 	it("falls back to generic labels for scheme-less hostnames", () => {
