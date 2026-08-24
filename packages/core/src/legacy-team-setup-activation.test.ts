@@ -5,6 +5,7 @@ import {
 	finishLegacyTeamSetupActivation,
 	previewLegacyTeamSetupActivation,
 } from "./legacy-team-setup-activation.js";
+import { latestLegacyTeamSetupAttempt } from "./legacy-team-setup-attempt.js";
 import {
 	refreshLegacyTeamSetupDraft,
 	setLegacyTeamSetupDeviceAssignment,
@@ -1893,7 +1894,7 @@ describe("legacy Team setup activation", () => {
 		// Assert
 		expect(result).toMatchObject({ status: "completed" });
 		expect(candidate).toMatchObject({ status: "ready", projectCount: 2 });
-		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(1);
+		expect(latestLegacyTeamSetupAttempt(db, candidateId)?.attemptId).toBe(draft.attemptId);
 	});
 
 	it("completes setup for a configured group without displayed Projects", async () => {

@@ -11,6 +11,7 @@ import {
 	legacyTeamCandidateProjectInventory,
 	refreshLegacyTeamCandidate,
 } from "./legacy-team-candidate.js";
+import { latestLegacyTeamSetupAttempt } from "./legacy-team-setup-attempt.js";
 import {
 	deterministicPolicyTeamId,
 	legacyTeamCandidateId,
@@ -154,6 +155,12 @@ describe("legacy Team candidate discovery", () => {
 
 		expect(candidates).toHaveLength(1);
 		expect(candidates[0]?.displayName).toBe("Engineering");
+		expect(
+			latestLegacyTeamSetupAttempt(
+				db,
+				legacyTeamCandidateId("coordinator-private", "group-private"),
+			)?.candidateId,
+		).toBe(candidates[0]?.candidateRef);
 		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(1);
 	});
 
@@ -210,6 +217,12 @@ describe("legacy Team candidate discovery", () => {
 
 		expect(candidates).toHaveLength(1);
 		expect(candidates[0]?.displayName).toBe("Engineering");
+		expect(
+			latestLegacyTeamSetupAttempt(
+				db,
+				legacyTeamCandidateId("coordinator-private", "group-private"),
+			)?.candidateId,
+		).toBe(candidates[0]?.candidateRef);
 		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(1);
 	});
 
@@ -264,6 +277,9 @@ describe("legacy Team candidate discovery", () => {
 					String(sql).includes("SELECT identity_id FROM identity_devices"),
 				),
 			).toBe(false);
+			expect(
+				latestLegacyTeamSetupAttempt(db, legacyTeamCandidateId(group.coordinatorId, group.groupId)),
+			).toBeNull();
 			expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(0);
 		} finally {
 			prepare.mockRestore();
@@ -336,11 +352,16 @@ describe("legacy Team candidate discovery", () => {
 
 	it("does not stale a candidate for display-only roster changes", () => {
 		const [first] = discoverLegacyTeamCandidates(db, options());
+		const firstAttempt = latestLegacyTeamSetupAttempt(db, first?.candidateRef as string);
+		expect(firstAttempt).not.toBeNull();
+		if (!firstAttempt) throw new Error("initial display-change attempt missing");
 		const [second] = discoverLegacyTeamCandidates(db, options("key-a", "Renamed Laptop"));
 
 		expect(second?.status).toBe("needs_setup");
 		expect(second?.candidateRef).toBe(first?.candidateRef);
-		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(1);
+		expect(latestLegacyTeamSetupAttempt(db, second?.candidateRef as string)?.attemptId).toBe(
+			firstAttempt.attemptId,
+		);
 	});
 
 	it("keeps configured groups discoverable without displayed Projects", () => {
@@ -399,22 +420,30 @@ describe("legacy Team candidate discovery", () => {
 			projectCount: 0,
 			status: "ready",
 		});
-		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(1);
+		expect(latestLegacyTeamSetupAttempt(db, draft.candidate_id)?.attemptId).toBe(draft.attempt_id);
 	});
 
 	it("does not stale a candidate when a scope label changes", () => {
 		const [first] = discoverLegacyTeamCandidates(db, options());
+		const firstAttempt = latestLegacyTeamSetupAttempt(db, first?.candidateRef as string);
+		expect(firstAttempt).not.toBeNull();
+		if (!firstAttempt) throw new Error("initial scope-label attempt missing");
 		db.prepare("UPDATE replication_scopes SET label = 'Renamed Engineering'").run();
 
 		const [second] = discoverLegacyTeamCandidates(db, options());
 
 		expect(second?.status).toBe("needs_setup");
 		expect(second?.candidateRef).toBe(first?.candidateRef);
-		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(1);
+		expect(latestLegacyTeamSetupAttempt(db, second?.candidateRef as string)?.attemptId).toBe(
+			firstAttempt.attemptId,
+		);
 	});
 
 	it("marks changed roster evidence stale until explicit refresh", () => {
 		const [first] = discoverLegacyTeamCandidates(db, options());
+		const firstAttempt = latestLegacyTeamSetupAttempt(db, first?.candidateRef as string);
+		expect(firstAttempt).not.toBeNull();
+		if (!firstAttempt) throw new Error("initial refresh attempt missing");
 		const [stale] = discoverLegacyTeamCandidates(db, options("key-b"));
 
 		expect(stale?.status).toBe("stale");
@@ -424,17 +453,31 @@ describe("legacy Team candidate discovery", () => {
 			first?.candidateRef as string,
 		);
 		expect(refreshed.state).toBe("needs_setup");
-		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(2);
+		expect(latestLegacyTeamSetupAttempt(db, first?.candidateRef as string)?.attemptId).toBe(
+			refreshed.attemptId,
+		);
+		expect(refreshed.attemptId).not.toBe(firstAttempt.attemptId);
+		expect(
+			db
+				.prepare("SELECT attempt_id FROM legacy_team_setup_drafts WHERE attempt_id = ?")
+				.pluck()
+				.get(firstAttempt.attemptId),
+		).toBe(firstAttempt.attemptId);
 	});
 
 	it("keeps a stale attempt blocked if roster evidence reverts", () => {
-		discoverLegacyTeamCandidates(db, options());
+		const [first] = discoverLegacyTeamCandidates(db, options());
+		const firstAttempt = latestLegacyTeamSetupAttempt(db, first?.candidateRef as string);
+		expect(firstAttempt).not.toBeNull();
+		if (!firstAttempt) throw new Error("initial stale-reversion attempt missing");
 		discoverLegacyTeamCandidates(db, options("key-b"));
 
 		const [reverted] = discoverLegacyTeamCandidates(db, options("key-a"));
 
 		expect(reverted?.status).toBe("stale");
-		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(1);
+		expect(latestLegacyTeamSetupAttempt(db, reverted?.candidateRef as string)?.attemptId).toBe(
+			firstAttempt.attemptId,
+		);
 	});
 
 	it("derives ready only from a current completed draft and compatible canonical Team", () => {
@@ -551,7 +594,7 @@ describe("legacy Team candidate discovery", () => {
 			status: "ready",
 			projectCount: 2,
 		});
-		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(1);
+		expect(latestLegacyTeamSetupAttempt(db, draft.candidate_id)?.attemptId).toBe(draft.attempt_id);
 
 		// A genuinely new Project still reopens setup for review.
 		const newSession = Number(
@@ -1246,7 +1289,7 @@ describe("legacy Team candidate discovery", () => {
 		expect(refreshed.attemptId).toBe(draft.attempt_id);
 		expect(refreshed.state).toBe("completed");
 		expect(refreshed.devices[0]?.displayName).toBe("Renamed Laptop");
-		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(1);
+		expect(latestLegacyTeamSetupAttempt(db, draft.candidate_id)?.attemptId).toBe(draft.attempt_id);
 		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
 	});
 
@@ -1596,15 +1639,27 @@ describe("legacy Team candidate discovery", () => {
 
 	it("reopens a completed candidate when its Project inventory fingerprint is stale", () => {
 		const [initial] = discoverLegacyTeamCandidates(db, options());
+		if (!initial) throw new Error("initial candidate missing");
+		const initialAttempt = latestLegacyTeamSetupAttempt(db, initial.candidateRef);
+		if (!initialAttempt) throw new Error("initial attempt missing");
 		db.prepare(
 			`UPDATE legacy_team_setup_drafts
 			 SET state = 'completed', projection_fingerprint = 'stale-projects', completed_at = ?
 			 WHERE candidate_id = ?`,
-		).run(NOW, initial?.candidateRef);
+		).run(NOW, initial.candidateRef);
 
 		const [reopened] = discoverLegacyTeamCandidates(db, options());
+		if (!reopened) throw new Error("reopened candidate missing");
+		const reopenedAttempt = latestLegacyTeamSetupAttempt(db, reopened.candidateRef);
 
-		expect(reopened?.status).toBe("needs_setup");
-		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(2);
+		expect(reopened.status).toBe("needs_setup");
+		expect(reopenedAttempt).toMatchObject({ candidateId: initial.candidateRef, isCurrent: true });
+		expect(reopenedAttempt?.attemptId).not.toBe(initialAttempt.attemptId);
+		expect(
+			db
+				.prepare("SELECT state FROM legacy_team_setup_drafts WHERE attempt_id = ?")
+				.pluck()
+				.get(initialAttempt.attemptId),
+		).toBe("completed");
 	});
 });
