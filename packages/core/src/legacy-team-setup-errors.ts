@@ -47,7 +47,7 @@ export const LEGACY_TEAM_SETUP_API_ERROR_BY_CORE_ERROR = {
 	legacy_team_setup_project_mapping_invalid: "team_setup_incomplete",
 	legacy_team_setup_project_not_found: "team_setup_confirmation_stale",
 	legacy_team_setup_project_not_ambiguous: "team_setup_incomplete",
-	legacy_team_setup_roster_too_large: "team_setup_incomplete",
+	legacy_team_setup_roster_too_large: "team_setup_roster_unavailable",
 	legacy_team_setup_roster_conflict: "team_setup_conflict",
 	team_setup_incomplete: "team_setup_incomplete",
 	team_setup_roster_changed: "team_setup_roster_changed",

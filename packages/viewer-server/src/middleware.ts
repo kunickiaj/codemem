@@ -84,7 +84,7 @@ export function originGuard(options?: { unsafeGetPathPrefixes?: readonly string[
 				}
 				// Valid loopback origin — echo it for CORS
 				c.header("Access-Control-Allow-Origin", origin);
-				c.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+				c.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
 				c.header("Access-Control-Allow-Headers", "Content-Type");
 			} else {
 				// No Origin — reject only if browser signals indicate cross-site
@@ -97,7 +97,7 @@ export function originGuard(options?: { unsafeGetPathPrefixes?: readonly string[
 		} else if (origin && isLoopbackOrigin(origin)) {
 			// Safe method with valid origin — echo for preflight
 			c.header("Access-Control-Allow-Origin", origin);
-			c.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+			c.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
 			c.header("Access-Control-Allow-Headers", "Content-Type");
 		}
 		// No origin or non-loopback on safe method: no ACAO header set.
@@ -120,7 +120,7 @@ export function preflightHandler() {
 		const origin = c.req.header("Origin");
 		if (origin && isLoopbackOrigin(origin)) {
 			c.header("Access-Control-Allow-Origin", origin);
-			c.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+			c.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
 			c.header("Access-Control-Allow-Headers", "Content-Type");
 			c.header("Access-Control-Max-Age", "86400");
 			return c.body(null, 204);

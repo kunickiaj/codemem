@@ -1236,16 +1236,40 @@ export function setLegacyTeamSetupDeviceDecision(
 	return mutateDecision.immediate();
 }
 
-export function setLegacyTeamSetupProjectMapping(
+/**
+ * Removes a saved Team-specific decision without discarding a reviewed person
+ * selection. The device becomes unresolved (and therefore ineligible) until a
+ * later explicit include or exclude decision is saved.
+ */
+export function clearLegacyTeamSetupDeviceDecision(
 	db: Database,
 	input: {
 		attemptId: string;
-		projectRef: string;
-		resolvedProjectIdentity: string;
+		deviceRef: string;
 		now?: string;
 	},
 ): LegacyTeamSetupDraftView {
-	const identity = input.resolvedProjectIdentity.trim();
+	const now = validatedNow(input.now);
+	const clearDecision = db.transaction(() => {
+		requireMutableAttempt(db, input.attemptId);
+		const result = db
+			.prepare(
+				`UPDATE legacy_team_setup_draft_devices
+				 SET decision = 'unresolved', updated_at = ?
+				 WHERE attempt_id = ? AND device_ref = ?`,
+			)
+			.run(now, input.attemptId, input.deviceRef);
+		if (result.changes !== 1) throw new Error("legacy_team_setup_device_not_found");
+		db.prepare(
+			`UPDATE legacy_team_setup_drafts SET state = 'in_progress', updated_at = ? WHERE attempt_id = ?`,
+		).run(now, input.attemptId);
+		return persistFinishDigest(db, input.attemptId);
+	});
+	return clearDecision.immediate();
+}
+
+export function isLegacyTeamSetupProjectMappingIdentity(value: string): boolean {
+	const identity = value.trim();
 	// The repair target becomes a mapping workspace identity and an active
 	// recipient edge at activation; anything that is not itself a shareable
 	// canonical identity would grant the Team access to a Project the review
@@ -1267,14 +1291,27 @@ export function setLegacyTeamSetupProjectMapping(
 		/^(?:https?|ssh|git):\/\/[^/\\\s]\S*$/iu.test(identity) ||
 		/^[^/\\@\s]+@[^/\\:\s]+:\S+$/u.test(identity) ||
 		/^[^/\\:\s.]+(?:\.[^/\\:\s.]+)+:\S+$/u.test(identity);
-	if (
+	return !(
 		!isStrictRecipientPolicyProjectIdentity(identity) ||
 		identity.startsWith("unmapped:") ||
 		/\s/u.test(identity) ||
 		(/[/\\]/u.test(identity) && !isRemoteForm) ||
 		/^(?:[~.$%]|[A-Za-z]:[\\/])/.test(identity) ||
 		canonicalWorkspaceIdentity({ gitRemote: identity }).value !== identity
-	) {
+	);
+}
+
+export function setLegacyTeamSetupProjectMapping(
+	db: Database,
+	input: {
+		attemptId: string;
+		projectRef: string;
+		resolvedProjectIdentity: string;
+		now?: string;
+	},
+): LegacyTeamSetupDraftView {
+	const identity = input.resolvedProjectIdentity.trim();
+	if (!isLegacyTeamSetupProjectMappingIdentity(identity)) {
 		throw new Error("legacy_team_setup_project_mapping_invalid");
 	}
 	const now = validatedNow(input.now);

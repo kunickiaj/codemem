@@ -881,12 +881,26 @@ export function analyzeProjectScopeMappingChangeGuardrails(
 
 export function listProjectScopeCandidates(
 	db: Database,
-	options: { limit?: number | null } = {},
+	options: {
+		limit?: number | null;
+		maxScannedRows?: number;
+		excludePeerReceived?: boolean;
+	} = {},
 ): ProjectScopeCandidate[] {
 	ensureScopeBackfillScopes(db);
 	const limit = options.limit === null ? null : Math.max(1, Math.min(options.limit ?? 250, 1000));
+	const maxScannedRows =
+		options.maxScannedRows == null ? null : Math.max(1, Math.floor(options.maxScannedRows));
+	if (
+		maxScannedRows != null &&
+		db.prepare("SELECT 1 FROM sessions ORDER BY id DESC LIMIT 1 OFFSET ?").get(maxScannedRows)
+	) {
+		throw new Error("project_scope_candidate_scan_too_large");
+	}
+	const queryLimit = limit;
 	const mappings = listProjectScopeSettingsMappings(db);
 	const scopes = listSharingDomainSettingsScopes(db);
+	const excludePeerReceived = options.excludePeerReceived === true;
 	const sql = `SELECT
 				s.id,
 				s.started_at,
@@ -904,12 +918,22 @@ export function listProjectScopeCandidates(
 					LIMIT 1
 				) AS workspace_id
 			 FROM sessions s
-			 WHERE COALESCE(TRIM(s.git_remote), TRIM(s.cwd), TRIM(s.project), '') <> ''
+			 WHERE (
+			       COALESCE(TRIM(s.git_remote), TRIM(s.cwd), TRIM(s.project), '') <> ''
 			    OR EXISTS (SELECT 1 FROM memory_items mi_candidate WHERE mi_candidate.session_id = s.id)
-			 ORDER BY s.started_at DESC, s.id DESC${limit == null ? "" : "\n\t\t\t LIMIT ?"}`;
-	const rows = (
-		limit == null ? db.prepare(sql).all() : db.prepare(sql).all(limit)
-	) as ProjectScopeCandidateRow[];
+			 )${
+					excludePeerReceived
+						? `
+			   AND (s.cwd IS NULL OR substr(s.cwd, 1, length(?)) <> ?)
+			   AND COALESCE(s.tool_version, '') <> 'sync_replication'`
+						: ""
+}
+			 ORDER BY s.started_at DESC, s.id DESC${queryLimit == null ? "" : "\n\t\t\t LIMIT ?"}`;
+	const queryParameters: Array<string | number> = excludePeerReceived
+		? [SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX]
+		: [];
+	if (queryLimit != null) queryParameters.push(queryLimit);
+	const rows = db.prepare(sql).all(...queryParameters) as ProjectScopeCandidateRow[];
 
 	const seen = new Set<string>();
 	const candidates: ProjectScopeCandidate[] = [];

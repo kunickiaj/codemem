@@ -497,8 +497,9 @@ describe("viewer-server", () => {
 		];
 
 		it("returns versioned summaries and a redacted detail with preview only when finishable", async () => {
+			const loadLegacyTeamConfiguredGroupSnapshots = vi.fn(async () => snapshots);
 			const { app, ensureStore, cleanup } = createTestApp({
-				loadLegacyTeamConfiguredGroupSnapshots: async () => snapshots,
+				loadLegacyTeamConfiguredGroupSnapshots,
 			});
 			try {
 				const store = ensureStore();
@@ -675,6 +676,14 @@ describe("viewer-server", () => {
 						),
 					now: "2026-08-24T00:01:00.000Z",
 				});
+				const insertUnrelatedActor = store.db.prepare(
+					`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+					 VALUES (?, ?, 0, 'active', ?, ?)`,
+				);
+				for (let index = 0; index < 501; index += 1) {
+					insertUnrelatedActor.run(`unrelated-${index}`, `Unrelated ${index}`, now, now);
+				}
+				loadLegacyTeamConfiguredGroupSnapshots.mockClear();
 				const readyResponse = await app.request(`/api/sync/team-setup/v1/${candidateRef}`);
 				expect(readyResponse.status).toBe(200);
 				const ready = (await readyResponse.json()) as Record<string, unknown>;
@@ -687,6 +696,7 @@ describe("viewer-server", () => {
 				expect(ready).not.toHaveProperty("finishDigest");
 				expect(ready).not.toHaveProperty("accessDeltaDigest");
 				expect(ready).not.toHaveProperty("accessDelta");
+				expect(loadLegacyTeamConfiguredGroupSnapshots).not.toHaveBeenCalled();
 			} finally {
 				cleanup();
 			}
@@ -1002,8 +1012,8 @@ describe("viewer-server", () => {
 			});
 			try {
 				const response = await oversized.app.request("/api/sync/team-setup/v1");
-				expect(response.status).toBe(400);
-				expect(await response.json()).toEqual({ error: "team_setup_incomplete" });
+				expect(response.status).toBe(503);
+				expect(await response.json()).toEqual({ error: "team_setup_roster_unavailable" });
 			} finally {
 				oversized.cleanup();
 			}

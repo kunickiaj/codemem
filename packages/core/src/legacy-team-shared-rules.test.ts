@@ -113,6 +113,9 @@ describe("legacy Team shared setup rules", () => {
 		expect(legacyTeamSetupApiErrorCode(new Error("team_setup_roster_unavailable"))).toBe(
 			"team_setup_roster_unavailable",
 		);
+		expect(legacyTeamSetupApiErrorCode(new Error("legacy_team_setup_roster_too_large"))).toBe(
+			"team_setup_roster_unavailable",
+		);
 		expect(legacyTeamSetupApiErrorCode({ code: "legacy_team_setup_roster_conflict" })).toBe(
 			"team_setup_conflict",
 		);

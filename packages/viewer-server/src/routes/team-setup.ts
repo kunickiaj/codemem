@@ -3,38 +3,67 @@ import type {
 	LegacyTeamConfiguredGroupSnapshot,
 	LegacyTeamSetupAccessDeltaV1,
 	LegacyTeamSetupActivationErrorCode,
+	LegacyTeamSetupActivationResultV1,
 	LegacyTeamSetupDraftView,
 	MemoryStore,
 } from "@codemem/core";
 import {
 	buildBaseUrl,
+	clearLegacyTeamSetupDeviceDecision,
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
 	discoverLegacyTeamCandidates,
 	fingerprintPublicKey,
+	finishLegacyTeamSetupActivation,
 	getLegacyTeamSetupDraft,
+	isLegacyTeamCandidateSelectable,
+	isLegacyTeamSetupProjectMappingIdentity,
 	legacyTeamCandidateId,
+	legacyTeamCandidateProjectInventory,
 	legacyTeamCanonicalProjectRef,
 	legacyTeamDeviceRef,
 	legacyTeamResolvedProjectRef,
 	legacyTeamSetupApiErrorCode,
+	listProjectScopeCandidates,
 	previewLegacyTeamSetupActivation,
 	readCoordinatorSyncConfig,
 	recipientPolicyDigest,
+	refreshLegacyTeamCandidate,
+	setLegacyTeamSetupDeviceAssignment,
+	setLegacyTeamSetupDeviceDecision,
+	setLegacyTeamSetupProjectMapping,
 } from "@codemem/core";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 
 const TEAM_SETUP_VERSION = 1 as const;
 const MAX_CONFIGURED_GROUPS = 25;
 const MAX_DEVICES = 500;
 const MAX_PROJECTS = 500;
 const MAX_ACCESS_DELTA_ENTRIES = 10_000;
+const MAX_IDENTITY_CHOICES = 500;
+const MAX_COMPLETED_IDENTITY_CHOICES = MAX_DEVICES * 4;
+const MAX_PROJECT_MAPPING_CHOICES = 500;
+const MAX_TOTAL_PROJECT_MAPPING_CHOICES = 10_000;
+const MAX_PROJECT_MAPPING_SCAN_ROWS = 10_000;
+const MAX_MUTATION_BODY_BYTES = 8_192;
+const SUMMARY_SNAPSHOT_CACHE_TTL_MS = 30_000;
 export const TEAM_SETUP_ROUTE_PREFIX = "/api/sync/team-setup/v1";
 const CANDIDATE_REF_PATTERN = /^legacy-team-candidate:[0-9a-f]{32}$/u;
+const DEVICE_REF_PATTERN = /^legacy-team-device-ref-v1:[0-9a-f]{64}$/u;
+const PROJECT_REF_PATTERN = /^legacy-team-project-ref-v1:[0-9a-f]{64}$/u;
+const IDENTITY_REF_PATTERN = /^legacy-team-viewer-identity-ref-v1:[0-9a-f]{64}$/u;
+const RESOLVED_PROJECT_REF_PATTERN = /^legacy-team-resolved-project-ref-v1:[0-9a-f]{64}$/u;
+const ATTEMPT_ID_PATTERN = /^legacy-team-attempt:[0-9a-f-]{36}$/u;
+const FINISH_DIGEST_PATTERN = /^legacy-team-activation-finish-v1:[0-9a-f]{64}$/u;
+const ACCESS_DELTA_DIGEST_PATTERN = /^legacy-team-access-delta:[0-9a-f]{64}$/u;
 
-export type LegacyTeamConfiguredGroupSnapshotLoader = () => Promise<
-	LegacyTeamConfiguredGroupSnapshot[]
->;
+interface LegacyTeamConfiguredGroupSnapshotLoadOptions {
+	candidateRef?: string;
+}
+
+export type LegacyTeamConfiguredGroupSnapshotLoader = (
+	options?: LegacyTeamConfiguredGroupSnapshotLoadOptions,
+) => Promise<LegacyTeamConfiguredGroupSnapshot[]>;
 
 export interface LegacyTeamSetupCandidateSummaryV1 {
 	candidateRef: string;
@@ -71,6 +100,12 @@ export interface LegacyTeamSetupProjectV1 {
 	resolution: "unresolved" | "deterministic" | "explicit";
 	canonicalProjectRef: string | null;
 	resolvedProjectRef: string | null;
+	mappingChoices: Array<{ resolvedProjectRef: string; displayName: string }>;
+}
+
+export interface LegacyTeamSetupIdentityChoiceV1 {
+	identityRef: string;
+	displayName: string;
 }
 
 export interface LegacyTeamSetupViewerAccessDeltaV1 {
@@ -113,6 +148,7 @@ interface LegacyTeamSetupDetailBaseV1 {
 	unresolvedProjectCount: number;
 	devices: LegacyTeamSetupDeviceV1[];
 	projects: LegacyTeamSetupProjectV1[];
+	identityChoices: LegacyTeamSetupIdentityChoiceV1[];
 }
 
 export type LegacyTeamSetupDetailResponseV1 = LegacyTeamSetupDetailBaseV1 &
@@ -132,6 +168,25 @@ export type LegacyTeamSetupDetailResponseV1 = LegacyTeamSetupDetailBaseV1 &
 
 export interface LegacyTeamSetupErrorResponseV1 {
 	error: LegacyTeamSetupActivationErrorCode;
+}
+
+export interface LegacyTeamSetupMutationResponseV1 {
+	version: 1;
+	candidateRef: string;
+	attemptId: string;
+	draftState: LegacyTeamSetupDraftView["state"];
+	canFinish: boolean;
+	unresolvedDeviceCount: number;
+	unresolvedProjectCount: number;
+}
+
+export interface LegacyTeamSetupFinishResponseV1 {
+	version: 1;
+	status: "completed";
+	teamRef: string;
+	attemptId: string;
+	accessDeltaDigest: string;
+	completedAt: string;
 }
 
 interface TeamSetupRoutesOptions {
@@ -167,6 +222,7 @@ function configuredGroupIds(groups: string[]): string[] {
 
 async function loadConfiguredLegacyTeamGroupSnapshotsWith(
 	dependencies: LegacyTeamSnapshotLoaderDependencies,
+	options: LegacyTeamConfiguredGroupSnapshotLoadOptions = {},
 ): Promise<LegacyTeamConfiguredGroupSnapshot[]> {
 	let config: ReturnType<typeof readCoordinatorSyncConfig>;
 	try {
@@ -184,6 +240,11 @@ async function loadConfiguredLegacyTeamGroupSnapshotsWith(
 		const remoteUrl = buildBaseUrl(config.syncCoordinatorUrl);
 		const coordinatorId = remoteUrl;
 		const timeoutS = Math.max(1, config.syncCoordinatorTimeoutS);
+		const requestedGroupIds = options.candidateRef
+			? groupIds.filter(
+					(groupId) => legacyTeamCandidateId(coordinatorId, groupId) === options.candidateRef,
+				)
+			: groupIds;
 		const groups = await dependencies.listGroups({
 			remoteUrl,
 			adminSecret: config.syncCoordinatorAdminSecret,
@@ -192,7 +253,7 @@ async function loadConfiguredLegacyTeamGroupSnapshotsWith(
 		});
 		const groupById = new Map(groups.map((group) => [group.group_id, group]));
 		const snapshots = await Promise.all(
-			groupIds.map(async (groupId) => {
+			requestedGroupIds.map(async (groupId) => {
 				const group = groupById.get(groupId);
 				if (
 					!group ||
@@ -212,10 +273,16 @@ async function loadConfiguredLegacyTeamGroupSnapshotsWith(
 						timeoutS,
 					});
 				} catch (error) {
-					if (isCoordinatorRosterTooLargeError(error)) return null;
+					if (isCoordinatorRosterTooLargeError(error)) {
+						if (options.candidateRef) throw new Error("legacy_team_setup_roster_too_large");
+						return null;
+					}
 					throw error;
 				}
-				if (devices.length > MAX_DEVICES) return null;
+				if (devices.length > MAX_DEVICES) {
+					if (options.candidateRef) throw new Error("legacy_team_setup_roster_too_large");
+					return null;
+				}
 				if (
 					devices.some(
 						(device) =>
@@ -240,15 +307,18 @@ async function loadConfiguredLegacyTeamGroupSnapshotsWith(
 			}),
 		);
 		return snapshots.filter((snapshot) => snapshot !== null);
-	} catch {
+	} catch (error) {
+		if (error instanceof Error && error.message === "legacy_team_setup_roster_too_large") {
+			throw error;
+		}
 		throw safeCoordinatorError();
 	}
 }
 
-export async function loadConfiguredLegacyTeamGroupSnapshots(): Promise<
-	LegacyTeamConfiguredGroupSnapshot[]
-> {
-	return loadConfiguredLegacyTeamGroupSnapshotsWith(defaultSnapshotLoaderDependencies);
+export async function loadConfiguredLegacyTeamGroupSnapshots(
+	options: LegacyTeamConfiguredGroupSnapshotLoadOptions = {},
+): Promise<LegacyTeamConfiguredGroupSnapshot[]> {
+	return loadConfiguredLegacyTeamGroupSnapshotsWith(defaultSnapshotLoaderDependencies, options);
 }
 
 function requireBoundedSnapshots(groups: LegacyTeamConfiguredGroupSnapshot[]): void {
@@ -291,6 +361,18 @@ function candidateSummaryForDraft(
 	return {
 		...candidateSummary(candidate),
 		status: draft.state === "completed" ? "ready" : draft.state,
+		unresolvedDeviceCount: draft.unresolvedDeviceCount,
+		unresolvedProjectCount: draft.unresolvedProjectCount,
+	};
+}
+
+function completedCandidateFromDraft(draft: LegacyTeamSetupDraftView): LegacyTeamCandidateView {
+	return {
+		candidateRef: draft.candidateRef,
+		displayName: draft.displayName,
+		status: "ready",
+		deviceCount: draft.devices.length,
+		projectCount: draft.projects.length,
 		unresolvedDeviceCount: draft.unresolvedDeviceCount,
 		unresolvedProjectCount: draft.unresolvedProjectCount,
 	};
@@ -356,11 +438,6 @@ function viewerSafeAccessDelta(
 	};
 }
 
-export const __teamSetupTestHooks = {
-	loadConfiguredLegacyTeamGroupSnapshotsWith,
-	viewerSafeAccessDelta,
-};
-
 function requireBoundedAccessDelta(delta: LegacyTeamSetupAccessDeltaV1): void {
 	const total =
 		delta.teamChanges.length +
@@ -380,13 +457,255 @@ function requireBoundedAccessDelta(delta: LegacyTeamSetupAccessDeltaV1): void {
 	}
 }
 
-function viewerSafeDraft(draft: LegacyTeamSetupDraftView): {
+const SAFE_CHOICE_LABEL_PATTERN = /^[\p{L}\p{N} '&,.()_-]*$/u;
+
+// Keep this byte-for-byte equivalent in behavior to the core setup-label
+// normalization without exporting a presentation-only core implementation.
+function normalizeChoiceLabelText(value: string): string {
+	return value
+		.normalize("NFKC")
+		.replace(/\p{Cf}/gu, "")
+		.replace(/\p{Cc}/gu, " ")
+		.replace(/\s+/gu, " ")
+		.trim();
+}
+
+function safeChoiceLabel(
+	value: string,
+	fallback: string,
+	forbiddenIds: readonly string[],
+	opaqueRef?: string,
+): string {
+	const normalized = normalizeChoiceLabelText(value.slice(0, 512));
+	const label = normalized.slice(0, 120).trim();
+	const forbiddenComparisons = forbiddenIds
+		.map((forbiddenId) => normalizeChoiceLabelText(forbiddenId).toLowerCase())
+		.filter(Boolean);
+	const comparable = normalized.toLowerCase();
+	if (
+		!label ||
+		!SAFE_CHOICE_LABEL_PATTERN.test(label) ||
+		/[\p{L}\p{N}]\.[\p{L}\p{N}]/u.test(label) ||
+		/-----|\b(?:ssh|ecdsa|sk)-[\p{L}\p{N}-]+ /iu.test(label) ||
+		forbiddenComparisons.some((forbiddenComparison) => comparable.includes(forbiddenComparison))
+	) {
+		const suffix = opaqueRef?.slice(-6);
+		return suffix ? `${fallback} ${suffix}` : fallback;
+	}
+	return label;
+}
+
+function disambiguateChoiceLabels<T extends { displayName: string }>(
+	choices: readonly T[],
+	choiceRef: (choice: T) => string,
+): T[] {
+	const counts = new Map<string, number>();
+	const originalLabels = new Set<string>();
+	for (const choice of choices) {
+		const comparable = normalizeChoiceLabelText(choice.displayName).toLowerCase();
+		counts.set(comparable, (counts.get(comparable) ?? 0) + 1);
+		originalLabels.add(comparable);
+	}
+	const usedLabels = new Set<string>();
+	return choices.map((choice, index) => {
+		const comparable = normalizeChoiceLabelText(choice.displayName).toLowerCase();
+		if ((counts.get(comparable) ?? 0) < 2 && !usedLabels.has(comparable)) {
+			usedLabels.add(comparable);
+			return choice;
+		}
+		const ref = choiceRef(choice);
+		let suffixLength = Math.min(6, ref.length);
+		let suffix = ref.slice(-suffixLength);
+		let displayName = "";
+		let finalComparable = "";
+		while (true) {
+			const baseLength = Math.max(0, 119 - suffix.length);
+			const base = choice.displayName.slice(0, baseLength).trimEnd();
+			displayName = base ? `${base} ${suffix}` : suffix.slice(-120);
+			finalComparable = normalizeChoiceLabelText(displayName).toLowerCase();
+			if (!usedLabels.has(finalComparable) && !originalLabels.has(finalComparable)) break;
+			if (suffixLength < ref.length) {
+				suffixLength = Math.min(ref.length, suffixLength + 2);
+				suffix = ref.slice(-suffixLength);
+				continue;
+			}
+			suffix = `${ref.slice(-Math.min(100, ref.length))}-${index + 1}`;
+		}
+		usedLabels.add(finalComparable);
+		return {
+			...choice,
+			displayName,
+		};
+	});
+}
+
+function requireCompleteMappingChoices(projectCount: number, choiceCount: number): void {
+	if (projectCount * choiceCount > MAX_TOTAL_PROJECT_MAPPING_CHOICES) {
+		throw new Error("legacy_team_setup_roster_too_large");
+	}
+}
+
+function createCachedSnapshotLoader(
+	load: () => Promise<LegacyTeamConfiguredGroupSnapshot[]>,
+	ttlMs: number,
+	now: () => number = Date.now,
+): (() => Promise<LegacyTeamConfiguredGroupSnapshot[]>) & { invalidate: () => void } {
+	let cached: { expiresAt: number; snapshots: LegacyTeamConfiguredGroupSnapshot[] } | null = null;
+	let inFlight: Promise<LegacyTeamConfiguredGroupSnapshot[]> | null = null;
+	let generation = 0;
+	const cachedLoad = () => {
+		if (cached && now() < cached.expiresAt) return Promise.resolve(cached.snapshots);
+		if (inFlight) return inFlight;
+		const operationGeneration = generation;
+		let operation: Promise<LegacyTeamConfiguredGroupSnapshot[]>;
+		operation = load()
+			.then((snapshots) => {
+				if (generation !== operationGeneration) return cachedLoad();
+				cached = { expiresAt: now() + ttlMs, snapshots };
+				return snapshots;
+			})
+			.finally(() => {
+				if (inFlight === operation) inFlight = null;
+			});
+		inFlight = operation;
+		return operation;
+	};
+	cachedLoad.invalidate = () => {
+		generation += 1;
+		cached = null;
+		inFlight = null;
+	};
+	return cachedLoad;
+}
+
+export const __teamSetupTestHooks = {
+	createCachedSnapshotLoader,
+	loadConfiguredLegacyTeamGroupSnapshotsWith,
+	requireCompleteMappingChoices,
+	disambiguateChoiceLabels,
+	safeChoiceLabel,
+	viewerSafeAccessDelta,
+};
+
+interface IdentityChoiceInternal extends LegacyTeamSetupIdentityChoiceV1 {
+	identityId: string;
+}
+
+type IdentityChoiceRow = { actor_id: string; display_name: string };
+
+function identityChoicesFromRows(
+	rows: IdentityChoiceRow[],
+	candidateRef: string,
+	maxChoices = MAX_IDENTITY_CHOICES,
+): IdentityChoiceInternal[] {
+	if (rows.length > maxChoices) {
+		throw new Error("legacy_team_setup_roster_too_large");
+	}
+	const actorIds = rows.map((row) => row.actor_id);
+	return disambiguateChoiceLabels(
+		rows.map((row) => {
+			const opaqueIdentityRef = requiredIdentityRef(candidateRef, row.actor_id);
+			return {
+				identityId: row.actor_id,
+				identityRef: opaqueIdentityRef,
+				displayName: safeChoiceLabel(row.display_name, "Person", actorIds, opaqueIdentityRef),
+			};
+		}),
+		(choice) => choice.identityRef,
+	);
+}
+
+function identityChoices(store: MemoryStore, candidateRef: string): IdentityChoiceInternal[] {
+	const rows = store.db
+		.prepare(
+			`SELECT actor_id, display_name FROM actors
+			 WHERE status = 'active' AND merged_into_actor_id IS NULL
+			 ORDER BY display_name, actor_id LIMIT ?`,
+		)
+		.all(MAX_IDENTITY_CHOICES + 1) as IdentityChoiceRow[];
+	return identityChoicesFromRows(rows, candidateRef);
+}
+
+function completedDraftIdentityChoices(
+	store: MemoryStore,
+	draft: LegacyTeamSetupDraftView,
+): IdentityChoiceInternal[] {
+	const actorIds = [
+		...new Set(
+			draft.devices.flatMap((device) => [
+				device.existingIdentityId,
+				device.suggestedIdentityId,
+				device.targetIdentityId,
+				device.expectation.kind === "existing" ? device.expectation.identityId : null,
+			]),
+		),
+	].filter((actorId): actorId is string => actorId !== null);
+	if (actorIds.length === 0) return [];
+	const placeholders = actorIds.map(() => "?").join(", ");
+	const rows = store.db
+		.prepare(
+			`SELECT actor_id, display_name FROM actors
+			 WHERE status = 'active' AND merged_into_actor_id IS NULL
+			   AND actor_id IN (${placeholders})
+			 ORDER BY display_name, actor_id`,
+		)
+		.all(...actorIds) as IdentityChoiceRow[];
+	return identityChoicesFromRows(rows, draft.candidateRef, MAX_COMPLETED_IDENTITY_CHOICES);
+}
+
+interface ProjectMappingChoiceInternal {
+	projectIdentity: string;
+	sourceDisplayName: string;
+}
+
+function projectMappingChoices(store: MemoryStore): ProjectMappingChoiceInternal[] {
+	let candidates: ReturnType<typeof listProjectScopeCandidates>;
+	try {
+		candidates = listProjectScopeCandidates(store.db, {
+			limit: null,
+			maxScannedRows: MAX_PROJECT_MAPPING_SCAN_ROWS,
+			excludePeerReceived: true,
+		}).filter(
+			(candidate) =>
+				!candidate.read_only &&
+				isLegacyTeamSetupProjectMappingIdentity(candidate.workspace_identity),
+		);
+	} catch (error) {
+		if (error instanceof Error && error.message === "project_scope_candidate_scan_too_large") {
+			throw new Error("legacy_team_setup_roster_too_large");
+		}
+		throw error;
+	}
+	if (candidates.length > MAX_PROJECT_MAPPING_CHOICES) {
+		throw new Error("legacy_team_setup_roster_too_large");
+	}
+	return candidates.map((candidate) => ({
+		projectIdentity: candidate.workspace_identity,
+		sourceDisplayName: candidate.display_project,
+	}));
+}
+
+function viewerSafeDraft(
+	store: MemoryStore,
+	draft: LegacyTeamSetupDraftView,
+): {
 	devices: LegacyTeamSetupDeviceV1[];
 	projects: LegacyTeamSetupProjectV1[];
+	identityChoices: LegacyTeamSetupIdentityChoiceV1[];
 } {
 	if (draft.devices.length > MAX_DEVICES || draft.projects.length > MAX_PROJECTS) {
 		throw new Error("legacy_team_setup_roster_too_large");
 	}
+	const completed = draft.state === "completed";
+	const identities = completed
+		? completedDraftIdentityChoices(store, draft)
+		: identityChoices(store, draft.candidateRef);
+	const mappableProjectCount = completed
+		? 0
+		: draft.projects.filter((project) => project.resolution !== "deterministic").length;
+	const mappingChoices = mappableProjectCount === 0 ? [] : projectMappingChoices(store);
+	requireCompleteMappingChoices(mappableProjectCount, mappingChoices.length);
+	const mappingChoiceIdentities = mappingChoices.map((choice) => choice.projectIdentity);
 	return {
 		devices: draft.devices.map((device) => ({
 			deviceRef: device.deviceRef,
@@ -412,15 +731,124 @@ function viewerSafeDraft(draft: LegacyTeamSetupDraftView): {
 			resolution: project.resolution,
 			canonicalProjectRef: project.canonicalProjectRef,
 			resolvedProjectRef: project.resolvedProjectRef,
+			mappingChoices:
+				project.resolution === "deterministic"
+					? []
+					: disambiguateChoiceLabels(
+							mappingChoices.map((choice) => {
+								const opaqueResolvedProjectRef = legacyTeamResolvedProjectRef(
+									project.projectRef,
+									choice.projectIdentity,
+								);
+								return {
+									resolvedProjectRef: opaqueResolvedProjectRef,
+									displayName: safeChoiceLabel(
+										choice.sourceDisplayName,
+										"Project",
+										mappingChoiceIdentities,
+										opaqueResolvedProjectRef,
+									),
+								};
+							}),
+							(choice) => choice.resolvedProjectRef,
+						),
+		})),
+		identityChoices: identities.map(({ identityRef, displayName }) => ({
+			identityRef,
+			displayName,
 		})),
 	};
 }
 
-function errorStatus(code: LegacyTeamSetupActivationErrorCode): 400 | 409 | 500 | 503 {
+function errorStatus(code: LegacyTeamSetupActivationErrorCode): 400 | 409 | 503 {
 	if (code === "team_setup_roster_unavailable") return 503;
-	if (code === "team_setup_failed") return 500;
+	if (code === "team_setup_failed") return 503;
 	if (code === "team_setup_incomplete") return 400;
 	return 409;
+}
+
+function apiErrorCode(error: unknown): LegacyTeamSetupActivationErrorCode {
+	const code = legacyTeamSetupApiErrorCode(error);
+	return code === "team_setup_projection_changed" ? "team_setup_conflict" : code;
+}
+
+type BoundedJsonResult = { ok: true; value: Record<string, unknown> } | { ok: false };
+
+async function parseBoundedJsonObject(c: Context): Promise<BoundedJsonResult> {
+	const contentType = c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+	if (contentType !== "application/json") return { ok: false };
+	const lengthHeader = c.req.header("content-length");
+	if (lengthHeader != null && !/^\d+$/u.test(lengthHeader.trim())) return { ok: false };
+	const contentLength = lengthHeader == null ? null : Number(lengthHeader);
+	if (contentLength != null && contentLength > MAX_MUTATION_BODY_BYTES) return { ok: false };
+	const body = c.req.raw.body;
+	if (!body) return { ok: false };
+	const reader = body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value) continue;
+			total += value.byteLength;
+			if (total > MAX_MUTATION_BODY_BYTES) {
+				await reader.cancel().catch(() => undefined);
+				return { ok: false };
+			}
+			chunks.push(value);
+		}
+	} catch {
+		return { ok: false };
+	} finally {
+		reader.releaseLock();
+	}
+	try {
+		const bytes = new Uint8Array(total);
+		let offset = 0;
+		for (const chunk of chunks) {
+			bytes.set(chunk, offset);
+			offset += chunk.byteLength;
+		}
+		const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+			? { ok: true, value: parsed as Record<string, unknown> }
+			: { ok: false };
+	} catch {
+		return { ok: false };
+	}
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+	const actual = Object.keys(value).toSorted();
+	const expected = keys.toSorted();
+	return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function mutationResponse(draft: LegacyTeamSetupDraftView): LegacyTeamSetupMutationResponseV1 {
+	return {
+		version: TEAM_SETUP_VERSION,
+		candidateRef: draft.candidateRef,
+		attemptId: draft.attemptId,
+		draftState: draft.state,
+		canFinish: draft.canFinish,
+		unresolvedDeviceCount: draft.unresolvedDeviceCount,
+		unresolvedProjectCount: draft.unresolvedProjectCount,
+	};
+}
+
+function finishResponse(
+	candidateRef: string,
+	result: LegacyTeamSetupActivationResultV1,
+): LegacyTeamSetupFinishResponseV1 {
+	return {
+		version: TEAM_SETUP_VERSION,
+		status: result.status,
+		teamRef: teamRef(candidateRef, result.teamId),
+		attemptId: result.attemptId,
+		accessDeltaDigest: result.accessDeltaDigest,
+		completedAt: result.completedAt,
+	};
 }
 
 export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
@@ -428,20 +856,40 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 	const loadSnapshots =
 		options.loadLegacyTeamConfiguredGroupSnapshots ?? loadConfiguredLegacyTeamGroupSnapshots;
 
-	async function loadedSnapshots(): Promise<LegacyTeamConfiguredGroupSnapshot[]> {
+	async function loadedSnapshots(
+		candidateRef?: string,
+	): Promise<LegacyTeamConfiguredGroupSnapshot[]> {
 		try {
-			return await loadSnapshots();
-		} catch {
+			return await loadSnapshots(candidateRef ? { candidateRef } : undefined);
+		} catch (error) {
+			if (error instanceof Error && error.message === "legacy_team_setup_roster_too_large") {
+				throw error;
+			}
 			throw safeCoordinatorError();
+		}
+	}
+	const loadedSummarySnapshots = createCachedSnapshotLoader(
+		() => loadedSnapshots(),
+		SUMMARY_SNAPSHOT_CACHE_TTL_MS,
+	);
+	async function loadedCandidateSnapshots(
+		candidateRef: string,
+	): Promise<LegacyTeamConfiguredGroupSnapshot[]> {
+		loadedSummarySnapshots.invalidate();
+		try {
+			return await loadedSnapshots(candidateRef);
+		} finally {
+			loadedSummarySnapshots.invalidate();
 		}
 	}
 
 	app.get("/api/sync/team-setup/v1", async (c) => {
 		let groups: LegacyTeamConfiguredGroupSnapshot[];
 		try {
-			groups = await loadedSnapshots();
-		} catch {
-			return c.json({ error: "team_setup_roster_unavailable" as const }, 503);
+			groups = await loadedSummarySnapshots();
+		} catch (error) {
+			const code = apiErrorCode(error);
+			return c.json({ error: code }, errorStatus(code));
 		}
 		try {
 			const response = {
@@ -450,7 +898,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			} satisfies LegacyTeamSetupSummaryResponseV1;
 			return c.json(response);
 		} catch (error) {
-			const code = legacyTeamSetupApiErrorCode(error);
+			const code = apiErrorCode(error);
 			return c.json({ error: code }, errorStatus(code));
 		}
 	});
@@ -461,25 +909,35 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			return c.json({ error: "team_setup_incomplete" as const }, 400);
 		}
 
-		let groups: LegacyTeamConfiguredGroupSnapshot[];
-		try {
-			groups = await loadedSnapshots();
-		} catch {
-			return c.json({ error: "team_setup_roster_unavailable" as const }, 503);
-		}
-
 		try {
 			const store = options.getStore();
-			const candidateGroups = groups.filter(
-				(group) => legacyTeamCandidateId(group.coordinatorId, group.groupId) === candidateRef,
-			);
-			const candidate = discoverCandidates(store, candidateGroups).find(
-				(item) => item.candidateRef === candidateRef,
-			);
-			if (!candidate) {
-				return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			let draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+			let candidate: LegacyTeamCandidateView;
+			if (
+				draft?.state === "completed" &&
+				isLegacyTeamCandidateSelectable(store.db, candidateRef, {
+					projects: legacyTeamCandidateProjectInventory(
+						store.db,
+						projectionOptions(store),
+						candidateRef,
+					),
+				})
+			) {
+				candidate = completedCandidateFromDraft(draft);
+			} else {
+				const groups = await loadedCandidateSnapshots(candidateRef);
+				const candidateGroups = groups.filter(
+					(group) => legacyTeamCandidateId(group.coordinatorId, group.groupId) === candidateRef,
+				);
+				const discoveredCandidate = discoverCandidates(store, candidateGroups).find(
+					(item) => item.candidateRef === candidateRef,
+				);
+				if (!discoveredCandidate) {
+					return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+				}
+				candidate = discoveredCandidate;
+				draft = getLegacyTeamSetupDraft(store.db, candidateRef);
 			}
-			const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
 			if (!draft) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
 
 			let conflictState: LegacyTeamSetupActivationErrorCode | null = null;
@@ -491,8 +949,8 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 						attemptId: draft.attemptId,
 					});
 				} catch (error) {
-					const code = legacyTeamSetupApiErrorCode(error);
-					if (code === "team_setup_failed") return c.json({ error: code }, 500);
+					const code = apiErrorCode(error);
+					if (code === "team_setup_failed") return c.json({ error: code }, 503);
 					preview = null;
 					conflictState = code;
 				}
@@ -502,7 +960,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			const viewDraft = conflictState
 				? (getLegacyTeamSetupDraft(store.db, candidateRef) ?? draft)
 				: draft;
-			const safeDraft = viewerSafeDraft(viewDraft);
+			const safeDraft = viewerSafeDraft(store, viewDraft);
 			const responseBase = {
 				version: TEAM_SETUP_VERSION,
 				candidate: candidateSummaryForDraft(candidate, viewDraft),
@@ -530,7 +988,310 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			} satisfies LegacyTeamSetupDetailResponseV1;
 			return c.json(response);
 		} catch (error) {
-			const code = legacyTeamSetupApiErrorCode(error);
+			const code = apiErrorCode(error);
+			return c.json({ error: code }, errorStatus(code));
+		}
+	});
+
+	app.put("/api/sync/team-setup/v1/:candidateRef/devices/:deviceRef/assignment", async (c) => {
+		const candidateRef = c.req.param("candidateRef");
+		const deviceRef = c.req.param("deviceRef");
+		if (!CANDIDATE_REF_PATTERN.test(candidateRef) || !DEVICE_REF_PATTERN.test(deviceRef)) {
+			return c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		const parsed = await parseBoundedJsonObject(c);
+		if (
+			!parsed.ok ||
+			!hasExactKeys(parsed.value, ["attemptId", "expectation", "targetIdentityRef"])
+		) {
+			return c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		const { attemptId, expectation, targetIdentityRef } = parsed.value;
+		if (
+			typeof attemptId !== "string" ||
+			!ATTEMPT_ID_PATTERN.test(attemptId) ||
+			typeof targetIdentityRef !== "string" ||
+			!IDENTITY_REF_PATTERN.test(targetIdentityRef) ||
+			!expectation ||
+			typeof expectation !== "object" ||
+			Array.isArray(expectation)
+		) {
+			return c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		try {
+			const store = options.getStore();
+			const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+			if (!draft) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			if (draft.attemptId !== attemptId) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
+			const device = draft.devices.find((item) => item.deviceRef === deviceRef);
+			if (!device) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			const submittedExpectation = expectation as Record<string, unknown>;
+			const expectationMatches =
+				device.expectation.kind === "absent"
+					? hasExactKeys(submittedExpectation, ["kind"]) && submittedExpectation.kind === "absent"
+					: hasExactKeys(submittedExpectation, ["assignmentVersion", "identityRef", "kind"]) &&
+						submittedExpectation.kind === "existing" &&
+						submittedExpectation.assignmentVersion === device.expectation.assignmentVersion &&
+						submittedExpectation.identityRef ===
+							requiredIdentityRef(candidateRef, device.expectation.identityId);
+			if (!expectationMatches) {
+				return c.json({ error: "team_setup_assignment_changed" as const }, 409);
+			}
+			const target = identityChoices(store, candidateRef).find(
+				(choice) => choice.identityRef === targetIdentityRef,
+			);
+			if (!target) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			return c.json(
+				mutationResponse(
+					setLegacyTeamSetupDeviceAssignment(store.db, {
+						attemptId,
+						deviceRef,
+						targetIdentityId: target.identityId,
+						expectation: device.expectation,
+					}),
+				),
+			);
+		} catch (error) {
+			const code = apiErrorCode(error);
+			return c.json({ error: code }, errorStatus(code));
+		}
+	});
+
+	app.put("/api/sync/team-setup/v1/:candidateRef/devices/:deviceRef/decision", async (c) => {
+		const candidateRef = c.req.param("candidateRef");
+		const deviceRef = c.req.param("deviceRef");
+		if (!CANDIDATE_REF_PATTERN.test(candidateRef) || !DEVICE_REF_PATTERN.test(deviceRef)) {
+			return c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		const parsed = await parseBoundedJsonObject(c);
+		if (!parsed.ok) {
+			return c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		const { attemptId, decision, expectedTargetIdentityRef } = parsed.value;
+		if (
+			typeof attemptId !== "string" ||
+			!ATTEMPT_ID_PATTERN.test(attemptId) ||
+			!(["included", "excluded", "removed"] as unknown[]).includes(decision) ||
+			(decision === "included"
+				? !hasExactKeys(parsed.value, ["attemptId", "decision", "expectedTargetIdentityRef"]) ||
+					typeof expectedTargetIdentityRef !== "string" ||
+					!IDENTITY_REF_PATTERN.test(expectedTargetIdentityRef)
+				: !hasExactKeys(parsed.value, ["attemptId", "decision"]))
+		) {
+			return c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		try {
+			const store = options.getStore();
+			const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+			if (!draft) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			if (draft.attemptId !== attemptId) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
+			const device = draft.devices.find((item) => item.deviceRef === deviceRef);
+			if (!device) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			}
+			if (
+				decision === "included" &&
+				(device.targetIdentityId === null ||
+					requiredIdentityRef(candidateRef, device.targetIdentityId) !== expectedTargetIdentityRef)
+			) {
+				return c.json({ error: "team_setup_assignment_changed" as const }, 409);
+			}
+			return c.json(
+				mutationResponse(
+					setLegacyTeamSetupDeviceDecision(store.db, {
+						attemptId,
+						deviceRef,
+						decision: decision as "included" | "excluded" | "removed",
+					}),
+				),
+			);
+		} catch (error) {
+			const code = apiErrorCode(error);
+			return c.json({ error: code }, errorStatus(code));
+		}
+	});
+
+	app.delete("/api/sync/team-setup/v1/:candidateRef/devices/:deviceRef/decision", async (c) => {
+		const candidateRef = c.req.param("candidateRef");
+		const deviceRef = c.req.param("deviceRef");
+		if (!CANDIDATE_REF_PATTERN.test(candidateRef) || !DEVICE_REF_PATTERN.test(deviceRef)) {
+			return c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		const parsed = await parseBoundedJsonObject(c);
+		if (!parsed.ok || !hasExactKeys(parsed.value, ["attemptId"])) {
+			return c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		const { attemptId } = parsed.value;
+		if (typeof attemptId !== "string" || !ATTEMPT_ID_PATTERN.test(attemptId)) {
+			return c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		try {
+			const store = options.getStore();
+			const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+			if (!draft) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			if (draft.attemptId !== attemptId) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
+			if (!draft.devices.some((item) => item.deviceRef === deviceRef)) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			}
+			return c.json(
+				mutationResponse(clearLegacyTeamSetupDeviceDecision(store.db, { attemptId, deviceRef })),
+			);
+		} catch (error) {
+			const code = apiErrorCode(error);
+			return c.json({ error: code }, errorStatus(code));
+		}
+	});
+
+	app.put("/api/sync/team-setup/v1/:candidateRef/projects/:projectRef/mapping", async (c) => {
+		const candidateRef = c.req.param("candidateRef");
+		const projectRef = c.req.param("projectRef");
+		if (!CANDIDATE_REF_PATTERN.test(candidateRef) || !PROJECT_REF_PATTERN.test(projectRef)) {
+			return c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		const parsed = await parseBoundedJsonObject(c);
+		if (!parsed.ok || !hasExactKeys(parsed.value, ["attemptId", "resolvedProjectRef"])) {
+			return c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		const { attemptId, resolvedProjectRef } = parsed.value;
+		if (
+			typeof attemptId !== "string" ||
+			!ATTEMPT_ID_PATTERN.test(attemptId) ||
+			typeof resolvedProjectRef !== "string" ||
+			!RESOLVED_PROJECT_REF_PATTERN.test(resolvedProjectRef)
+		) {
+			return c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		try {
+			const store = options.getStore();
+			const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+			if (!draft) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			if (draft.attemptId !== attemptId) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
+			const project = draft.projects.find((item) => item.projectRef === projectRef);
+			if (!project) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			}
+			if (project.resolution === "deterministic") {
+				return c.json({ error: "team_setup_incomplete" as const }, 400);
+			}
+			const target = projectMappingChoices(store).find(
+				(choice) =>
+					legacyTeamResolvedProjectRef(projectRef, choice.projectIdentity) === resolvedProjectRef,
+			);
+			if (!target) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			return c.json(
+				mutationResponse(
+					setLegacyTeamSetupProjectMapping(store.db, {
+						attemptId,
+						projectRef,
+						resolvedProjectIdentity: target.projectIdentity,
+					}),
+				),
+			);
+		} catch (error) {
+			const code = apiErrorCode(error);
+			return c.json({ error: code }, errorStatus(code));
+		}
+	});
+
+	app.post("/api/sync/team-setup/v1/:candidateRef/refresh", async (c) => {
+		const candidateRef = c.req.param("candidateRef");
+		if (!CANDIDATE_REF_PATTERN.test(candidateRef)) {
+			return c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		const parsed = await parseBoundedJsonObject(c);
+		if (!parsed.ok || !hasExactKeys(parsed.value, [])) {
+			return c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		let groups: LegacyTeamConfiguredGroupSnapshot[];
+		try {
+			groups = await loadedCandidateSnapshots(candidateRef);
+		} catch (error) {
+			const code = apiErrorCode(error);
+			return c.json({ error: code }, errorStatus(code));
+		}
+		if (
+			groups.filter(
+				(group) => legacyTeamCandidateId(group.coordinatorId, group.groupId) === candidateRef,
+			).length === 0
+		) {
+			return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+		}
+		try {
+			const store = options.getStore();
+			return c.json(
+				mutationResponse(
+					refreshLegacyTeamCandidate(
+						store.db,
+						{ projection: projectionOptions(store), groups },
+						candidateRef,
+					),
+				),
+			);
+		} catch (error) {
+			const code = apiErrorCode(error);
+			return c.json({ error: code }, errorStatus(code));
+		}
+	});
+
+	app.post("/api/sync/team-setup/v1/:candidateRef/finish", async (c) => {
+		const candidateRef = c.req.param("candidateRef");
+		if (!CANDIDATE_REF_PATTERN.test(candidateRef)) {
+			return c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		const parsed = await parseBoundedJsonObject(c);
+		if (!parsed.ok) {
+			return c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		const finishKeys = ["attemptId", "confirmedAccessDeltaDigest", "finishDigest"] as const;
+		if (!hasExactKeys(parsed.value, finishKeys)) {
+			return Object.keys(parsed.value).every((key) =>
+				finishKeys.includes(key as (typeof finishKeys)[number]),
+			)
+				? c.json({ error: "team_setup_confirmation_stale" as const }, 409)
+				: c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		const { attemptId, confirmedAccessDeltaDigest, finishDigest } = parsed.value;
+		if (
+			typeof attemptId !== "string" ||
+			!ATTEMPT_ID_PATTERN.test(attemptId) ||
+			typeof finishDigest !== "string" ||
+			!FINISH_DIGEST_PATTERN.test(finishDigest) ||
+			typeof confirmedAccessDeltaDigest !== "string" ||
+			!ACCESS_DELTA_DIGEST_PATTERN.test(confirmedAccessDeltaDigest)
+		) {
+			return c.json({ error: "team_setup_incomplete" as const }, 400);
+		}
+		try {
+			const store = options.getStore();
+			const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+			if (!draft) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			const result = await finishLegacyTeamSetupActivation(store.db, {
+				candidateRef,
+				attemptId,
+				finishDigest,
+				confirmedAccessDeltaDigest,
+				loadFreshRoster: async () => {
+					const groups = await loadedCandidateSnapshots(candidateRef);
+					const matching = groups.filter(
+						(group) => legacyTeamCandidateId(group.coordinatorId, group.groupId) === candidateRef,
+					);
+					if (matching.length !== 1) throw safeCoordinatorError();
+					return matching[0]?.devices ?? [];
+				},
+				loadProjectInventory: () =>
+					legacyTeamCandidateProjectInventory(store.db, projectionOptions(store), candidateRef),
+			});
+			return c.json(finishResponse(candidateRef, result));
+		} catch (error) {
+			const code = apiErrorCode(error);
 			return c.json({ error: code }, errorStatus(code));
 		}
 	});

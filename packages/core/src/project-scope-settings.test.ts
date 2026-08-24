@@ -137,6 +137,46 @@ describe("project scope settings", () => {
 		]);
 	});
 
+	it("fails closed when a bounded candidate scan exceeds its row budget", () => {
+		insertSession(db, { cwd: "/workspace/one", gitRemote: null, project: "one" });
+		insertSession(db, { cwd: "/workspace/two", gitRemote: null, project: "two" });
+
+		expect(() => listProjectScopeCandidates(db, { limit: null, maxScannedRows: 1 })).toThrow(
+			"project_scope_candidate_scan_too_large",
+		);
+	});
+
+	it("counts filtered-out sessions toward the bounded candidate scan budget", () => {
+		insertSession(db, { cwd: null, gitRemote: null, project: null });
+		insertSession(db, { cwd: null, gitRemote: null, project: null });
+		insertSession(db);
+
+		expect(() => listProjectScopeCandidates(db, { limit: null, maxScannedRows: 2 })).toThrow(
+			"project_scope_candidate_scan_too_large",
+		);
+	});
+
+	it("excludes peer-received sessions from locally manageable candidates", () => {
+		insertSession(db, { project: "local", gitRemote: "https://example.invalid/local.git" });
+		insertSession(db, {
+			cwd: null,
+			project: "replicated",
+			gitRemote: "https://example.invalid/replicated.git",
+			toolVersion: "sync_replication",
+		});
+		insertSession(db, {
+			cwd: "__sync_bootstrap__/peer-a",
+			project: "bootstrap",
+			gitRemote: "https://example.invalid/bootstrap.git",
+		});
+
+		expect(
+			listProjectScopeCandidates(db, { limit: null, excludePeerReceived: true }).map(
+				(candidate) => candidate.display_project,
+			),
+		).toEqual(["local"]);
+	});
+
 	it("counts only active memories in project inventory", () => {
 		const sessionId = insertSession(db);
 		insertMemory(db, sessionId);
