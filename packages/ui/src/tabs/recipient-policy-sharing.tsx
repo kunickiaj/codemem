@@ -1,7 +1,13 @@
 import { render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { LoadingCardList } from "../components/LoadingCardList";
-import type { DeviceIdentityInventoryV1, RecipientPolicyIntentGraphV1 } from "../lib/api/sync";
+import type {
+	DeviceIdentityInventoryV1,
+	LegacyTeamSetupCandidateSummaryV1,
+	LegacyTeamSetupStatusV1,
+	LegacyTeamSetupSummaryResponseV1,
+	RecipientPolicyIntentGraphV1,
+} from "../lib/api/sync";
 import { deviceIdentityAttentionItems } from "../lib/device-identity-inventory";
 import { RecipientPolicyInvitations } from "./recipient-policy-invitations";
 import {
@@ -17,8 +23,86 @@ export interface RecipientPolicySharingOptions {
 	deviceInventoryUnavailable?: boolean;
 	received?: ReceivedProjectShare[];
 	deviceInventory?: DeviceIdentityInventoryV1;
+	onOpenTeamSetup?: (candidateRef: string) => void;
 	onReviewDevices?: (deviceId?: string) => void;
 	coordinatorEnrollmentIssueCount?: number;
+	teamSetupSummary?: LegacyTeamSetupSummaryResponseV1;
+	teamSetupLoading?: boolean;
+	teamSetupUnavailable?: boolean;
+}
+
+const TEAM_SETUP_STATUS_LABELS: Record<LegacyTeamSetupStatusV1, string> = {
+	needs_setup: "Needs setup",
+	in_progress: "In progress",
+	stale: "Needs setup",
+	ready: "Ready",
+};
+
+const TEAM_SETUP_STATUS_CLASSES: Record<LegacyTeamSetupStatusV1, string> = {
+	needs_setup: "needs_attention",
+	in_progress: "suggested",
+	stale: "needs_attention",
+	ready: "",
+};
+
+function teamSetupStatusLabel(status: unknown): string {
+	return typeof status === "string" && Object.hasOwn(TEAM_SETUP_STATUS_LABELS, status)
+		? TEAM_SETUP_STATUS_LABELS[status as LegacyTeamSetupStatusV1]
+		: "Needs setup";
+}
+
+function teamSetupStatusClass(status: unknown): string {
+	return typeof status === "string" && Object.hasOwn(TEAM_SETUP_STATUS_CLASSES, status)
+		? TEAM_SETUP_STATUS_CLASSES[status as LegacyTeamSetupStatusV1]
+		: "needs_attention";
+}
+
+function TeamSetupOverview({
+	candidates,
+	onOpenTeamSetup,
+}: {
+	candidates: LegacyTeamSetupCandidateSummaryV1[];
+	onOpenTeamSetup?: (candidateRef: string) => void;
+}) {
+	if (candidates.length === 0) return null;
+	const pending = candidates.filter((candidate) => candidate.status !== "ready");
+	return (
+		<aside
+			aria-labelledby="sharing-team-setup-heading"
+			className="peer-card peer-card--padded recipient-policy-sharing-attention"
+		>
+			<h3 id="sharing-team-setup-heading">
+				{pending.length > 0
+					? `${pending.length} ${pending.length === 1 ? "Team needs" : "Teams need"} setup`
+					: "Team setup"}
+			</h3>
+			{pending.length > 0 ? (
+				<p>Tell Codemem who uses each device before using these Teams for sharing.</p>
+			) : null}
+			<ul className="recipient-policy-sharing-details" aria-label="Team setup status">
+				{candidates.map((candidate) => (
+					<li key={candidate.candidateRef}>
+						<strong>{candidate.displayName}</strong> —{` `}
+						<span
+							className={`project-status-badge ${teamSetupStatusClass(candidate.status)}`.trim()}
+						>
+							{teamSetupStatusLabel(candidate.status)}
+						</span>
+						{candidate.status !== "ready" && onOpenTeamSetup ? (
+							<button
+								aria-label={`Continue setup for ${candidate.displayName}`}
+								className="settings-button recipient-policy-sharing-target-24"
+								onClick={() => onOpenTeamSetup(candidate.candidateRef)}
+								type="button"
+							>
+								Continue setup
+							</button>
+						) : null}
+					</li>
+				))}
+			</ul>
+		</aside>
+	);
 }
 
 type SharingTab = "teams" | "identities" | "received" | "invitations";
@@ -425,6 +509,24 @@ function RecipientPolicySharing({
 					changes.
 				</p>
 			</header>
+			<TeamSetupOverview
+				candidates={options.teamSetupSummary?.candidates ?? []}
+				onOpenTeamSetup={options.onOpenTeamSetup}
+			/>
+			{options.teamSetupLoading ? (
+				<p aria-live="polite" className="small recipient-policy-sharing-empty" role="status">
+					{options.teamSetupSummary
+						? "Team setup status is being refreshed. The previous Team setup status is being shown."
+						: "Team setup status is loading."}
+				</p>
+			) : null}
+			{options.teamSetupUnavailable ? (
+				<p aria-live="polite" className="small recipient-policy-sharing-empty" role="status">
+					{options.teamSetupSummary
+						? "Team setup status is temporarily unavailable. The previous Team setup status is being shown."
+						: "Team setup status is temporarily unavailable."}
+				</p>
+			) : null}
 			{options.deviceInventoryUnavailable ? (
 				<p aria-live="polite" className="small recipient-policy-sharing-empty" role="status">
 					Device Identity information is unavailable. Devices needing setup or review cannot be

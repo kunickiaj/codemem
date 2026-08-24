@@ -10,7 +10,10 @@ import {
 	toReceivedProjectShares,
 	toRecipientPolicyManagementProjects,
 } from "./tabs/recipient-policy-projects";
-import { mountRecipientPolicySharing } from "./tabs/recipient-policy-sharing";
+import {
+	mountRecipientPolicySharing,
+	type RecipientPolicySharingOptions,
+} from "./tabs/recipient-policy-sharing";
 
 const EMPTY_RECIPIENT_POLICY_INTENT: api.RecipientPolicyIntentGraphV1 = {
 	version: 1,
@@ -46,6 +49,7 @@ interface RecipientPolicySharingLoaderDependencies {
 	loadIntent: typeof api.loadRecipientPolicyIntent;
 	loadProjects: () => Promise<RecipientPolicyProjectInventory>;
 	loadSyncStatus: typeof api.loadSyncStatus;
+	loadTeamSetupSummary: typeof api.loadLegacyTeamSetupSummary;
 	mountManagement: typeof mountRecipientPolicyManagement;
 	mountSharing: typeof mountRecipientPolicySharing;
 }
@@ -55,19 +59,28 @@ const defaultDependencies: RecipientPolicySharingLoaderDependencies = {
 	loadIntent: api.loadRecipientPolicyIntent,
 	loadProjects: loadRecipientPolicyProjects,
 	loadSyncStatus: api.loadSyncStatus,
+	loadTeamSetupSummary: api.loadLegacyTeamSetupSummary,
 	mountManagement: mountRecipientPolicyManagement,
 	mountSharing: mountRecipientPolicySharing,
 };
 
 export function createRecipientPolicySharingLoader(
 	overrides: Partial<RecipientPolicySharingLoaderDependencies> = {},
-	options: { onReviewDevices?: (deviceId?: string) => void } = {},
-): () => Promise<boolean> {
+	options: {
+		onOpenTeamSetup?: (candidateRef: string) => void;
+		onReviewDevices?: (deviceId?: string) => void;
+	} = {},
+): RecipientPolicySharingRefresh {
 	const dependencies = { ...defaultDependencies, ...overrides };
 	let loadRevision = 0;
 	let latestLoad: Promise<boolean> | null = null;
 	let coordinatorEnrollmentIssueCount = 0;
 	let lastDeviceInventory: Awaited<ReturnType<typeof dependencies.loadDeviceInventory>> | undefined;
+	let teamSetupSummary: api.LegacyTeamSetupSummaryResponseV1 | undefined;
+	let teamSetupLoading = false;
+	let teamSetupUnavailable = false;
+	let lastRequiredRefreshError = false;
+	let lastDeviceInventoryUnavailable = false;
 	let lastSuccessfulData: {
 		inventory: RecipientPolicyProjectInventory;
 		intent: api.RecipientPolicyIntentGraphV1;
@@ -84,11 +97,53 @@ export function createRecipientPolicySharingLoader(
 		const sharingMount = document.getElementById("recipientPolicySharingMount");
 		if (!sharingMount) return true;
 		const managementMount = document.getElementById("recipientPolicyManagementMount");
-		if (!lastSuccessfulData) {
-			dependencies.mountSharing(sharingMount, [], EMPTY_RECIPIENT_POLICY_INTENT, {
-				loading: true,
-			});
-		}
+		teamSetupLoading = true;
+		teamSetupUnavailable = false;
+		let renderTeamSetupUpdate = () => {
+			const cached = lastSuccessfulData;
+			dependencies.mountSharing(
+				sharingMount,
+				cached?.inventory.manageable ?? [],
+				cached?.intent ?? EMPTY_RECIPIENT_POLICY_INTENT,
+				cached
+					? {
+							coordinatorEnrollmentIssueCount,
+							deviceInventory: lastDeviceInventory,
+							deviceInventoryUnavailable: lastDeviceInventoryUnavailable,
+							onOpenTeamSetup: options.onOpenTeamSetup,
+							onReviewDevices: options.onReviewDevices,
+							received: cached.inventory.received,
+							...(lastRequiredRefreshError ? { refreshError: true } : {}),
+							teamSetupSummary,
+							teamSetupLoading,
+							teamSetupUnavailable,
+						}
+					: {
+							loading: true,
+							teamSetupSummary,
+							teamSetupLoading,
+							teamSetupUnavailable,
+						},
+			);
+		};
+		renderTeamSetupUpdate();
+		void Promise.resolve()
+			.then(() => dependencies.loadTeamSetupSummary())
+			.then(
+				(summary) => {
+					if (revision !== loadRevision) return;
+					teamSetupSummary = summary;
+					teamSetupLoading = false;
+					teamSetupUnavailable = false;
+					renderTeamSetupUpdate();
+				},
+				() => {
+					if (revision !== loadRevision) return;
+					teamSetupLoading = false;
+					teamSetupUnavailable = true;
+					renderTeamSetupUpdate();
+				},
+			);
 		const [inventoryResult, intentResult, deviceInventoryResult, syncStatusResult] =
 			await Promise.allSettled([
 				dependencies.loadProjects(),
@@ -104,20 +159,30 @@ export function createRecipientPolicySharingLoader(
 		if (syncStatusResult.status === "fulfilled") {
 			coordinatorEnrollmentIssueCount = coordinatorEnrollmentOpenIssueCount(syncStatusResult.value);
 		}
-		if (inventoryResult.status === "fulfilled" && intentResult.status === "fulfilled") {
+		let sharingProjects: RecipientPolicyManagementProject[];
+		let sharingIntent: api.RecipientPolicyIntentGraphV1;
+		let sharingOptions: RecipientPolicySharingOptions;
+		const loadSucceeded =
+			inventoryResult.status === "fulfilled" && intentResult.status === "fulfilled";
+		lastRequiredRefreshError = !loadSucceeded;
+		lastDeviceInventoryUnavailable = deviceInventoryUnavailable;
+		if (loadSucceeded) {
 			const inventory = inventoryResult.value;
 			const intent = intentResult.value;
 			lastSuccessfulData = {
 				intent,
 				inventory,
 			};
-			dependencies.mountSharing(sharingMount, inventory.manageable, intent, {
+			sharingProjects = inventory.manageable;
+			sharingIntent = intent;
+			sharingOptions = {
 				coordinatorEnrollmentIssueCount,
 				deviceInventory: lastDeviceInventory,
 				deviceInventoryUnavailable,
+				onOpenTeamSetup: options.onOpenTeamSetup,
 				onReviewDevices: options.onReviewDevices,
 				received: inventory.received,
-			});
+			};
 			if (managementMount) {
 				dependencies.mountManagement(managementMount, inventory.manageable, intent, {
 					onCommitted: async () => {
@@ -125,35 +190,48 @@ export function createRecipientPolicySharingLoader(
 					},
 				});
 			}
-			return true;
-		}
-		if (lastSuccessfulData) {
-			dependencies.mountSharing(
-				sharingMount,
-				lastSuccessfulData.inventory.manageable,
-				lastSuccessfulData.intent,
-				{
-					coordinatorEnrollmentIssueCount,
-					deviceInventory: lastDeviceInventory,
-					deviceInventoryUnavailable,
-					onReviewDevices: options.onReviewDevices,
-					received: lastSuccessfulData.inventory.received,
-					refreshError: true,
-				},
-			);
+		} else if (lastSuccessfulData) {
+			const cached = lastSuccessfulData;
+			sharingProjects = cached.inventory.manageable;
+			sharingIntent = cached.intent;
+			sharingOptions = {
+				coordinatorEnrollmentIssueCount,
+				deviceInventory: lastDeviceInventory,
+				deviceInventoryUnavailable,
+				onOpenTeamSetup: options.onOpenTeamSetup,
+				onReviewDevices: options.onReviewDevices,
+				received: cached.inventory.received,
+				refreshError: true,
+			};
 		} else {
-			dependencies.mountSharing(sharingMount, [], EMPTY_RECIPIENT_POLICY_INTENT, {
+			sharingProjects = [];
+			sharingIntent = EMPTY_RECIPIENT_POLICY_INTENT;
+			sharingOptions = {
 				deviceInventoryUnavailable,
 				loadError: true,
-			});
+			};
 		}
-		if (managementMount) {
+
+		const renderSharing = () => {
+			dependencies.mountSharing(sharingMount, sharingProjects, sharingIntent, {
+				...sharingOptions,
+				teamSetupSummary,
+				teamSetupLoading,
+				teamSetupUnavailable,
+			});
+		};
+		renderSharing();
+		renderTeamSetupUpdate = renderSharing;
+
+		if (!loadSucceeded && managementMount) {
 			dependencies.mountManagement(managementMount, [], EMPTY_RECIPIENT_POLICY_INTENT, {
 				loadError: true,
 			});
 		}
-		return false;
+		return loadSucceeded;
 	}
 
 	return loadRecipientPolicySharingData;
 }
+
+export type RecipientPolicySharingRefresh = () => Promise<boolean>;

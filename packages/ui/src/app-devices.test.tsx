@@ -16,6 +16,7 @@ vi.mock("./components/primitives/toast", () => ({ mountToastHost: vi.fn() }));
 vi.mock("./lib/api", () => ({
 	loadCoordinatorAdminStatus: vi.fn(async () => ({ has_admin_secret: false })),
 	loadDeviceIdentityInventory: mocks.loadDeviceIdentityInventory,
+	loadLegacyTeamSetupSummary: vi.fn(async () => ({ version: 1, candidates: [] })),
 	loadProjectScopeInventory: mocks.loadProjectScopeInventory,
 	loadProjects: vi.fn(async () => ["Codemem"]),
 	loadRecipientPolicyIntent: mocks.loadRecipientPolicyIntent,

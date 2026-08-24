@@ -9,7 +9,10 @@ vi.mock("./recipient-policy-management", async (importOriginal) => {
 	return { ...original, openRecipientPolicyManagement: openManagement };
 });
 
-import type { RecipientPolicyIntentGraphV1 } from "../lib/api/sync";
+import type {
+	LegacyTeamSetupSummaryResponseV1,
+	RecipientPolicyIntentGraphV1,
+} from "../lib/api/sync";
 import type { RecipientPolicyManagementProject } from "./recipient-policy-management";
 import { mountRecipientPolicySharing } from "./recipient-policy-sharing";
 
@@ -530,6 +533,140 @@ describe("recipient-focused Sharing", () => {
 		expect(attention?.textContent).not.toMatch(/fingerprint|group[_ -]?id|coordinator[_ -]?id/i);
 		act(() => (attention?.querySelector("button") as HTMLButtonElement).click());
 		expect(onReviewDevices).toHaveBeenCalledOnce();
+	});
+
+	it("renders only server-provided Team setup statuses and opens the selected opaque candidate", () => {
+		const onOpenTeamSetup = vi.fn();
+		mount(intent(), {
+			onOpenTeamSetup,
+			teamSetupUnavailable: true,
+			teamSetupSummary: {
+				version: 1,
+				candidates: [
+					{
+						candidateRef: "candidate-needs",
+						displayName: "Needs Team",
+						status: "stale",
+						deviceCount: 8,
+						projectCount: 2,
+						unresolvedDeviceCount: 0,
+						unresolvedProjectCount: 0,
+					},
+					{
+						candidateRef: "candidate-progress",
+						displayName: "Progress Team",
+						status: "in_progress",
+						deviceCount: 0,
+						projectCount: 0,
+						unresolvedDeviceCount: 0,
+						unresolvedProjectCount: 0,
+					},
+					{
+						candidateRef: "candidate-ready",
+						displayName: "Ready Team",
+						status: "ready",
+						deviceCount: 0,
+						projectCount: 0,
+						unresolvedDeviceCount: 5,
+						unresolvedProjectCount: 5,
+					},
+				],
+			},
+		});
+
+		const overview = document.querySelector<HTMLElement>(
+			'[aria-labelledby="sharing-team-setup-heading"]',
+		);
+		expect(overview?.textContent).toContain("2 Teams need setup");
+		expect(overview?.textContent).toContain(
+			"Tell Codemem who uses each device before using these Teams for sharing.",
+		);
+		expect(document.body.textContent).toContain(
+			"Team setup status is temporarily unavailable. The previous Team setup status is being shown.",
+		);
+		expect(overview?.textContent).toContain("Needs Team — Needs setup");
+		expect(overview?.textContent).toContain("Progress Team — In progress");
+		expect(overview?.textContent).toContain("Ready Team — Ready");
+		expect(overview?.textContent).not.toContain("5 unresolved");
+		expect(
+			[...document.querySelectorAll<HTMLElement>(".project-status-badge")].map((badge) => [
+				badge.textContent,
+				badge.className,
+			]),
+		).toEqual([
+			["Needs setup", "project-status-badge needs_attention"],
+			["In progress", "project-status-badge suggested"],
+			["Ready", "project-status-badge"],
+		]);
+		const buttons = overview?.querySelectorAll<HTMLButtonElement>("button") ?? [];
+		expect(buttons).toHaveLength(2);
+		expect([...buttons].map((button) => button.getAttribute("aria-label"))).toEqual([
+			"Continue setup for Needs Team",
+			"Continue setup for Progress Team",
+		]);
+		act(() => buttons[1]?.click());
+		expect(onOpenTeamSetup).toHaveBeenCalledWith("candidate-progress");
+	});
+
+	it("shows Team setup unavailability without inventing candidates on first load", () => {
+		mount(intent(), { teamSetupUnavailable: true });
+
+		const status = [...document.querySelectorAll<HTMLElement>('[role="status"]')].find(
+			(item) => item.textContent === "Team setup status is temporarily unavailable.",
+		);
+		expect(status?.getAttribute("aria-live")).toBe("polite");
+		expect(document.getElementById("sharing-team-setup-heading")).toBeNull();
+		expect(document.querySelector(".project-status-badge")).toBeNull();
+	});
+
+	it("labels cached Team setup status as previous while refreshing", () => {
+		mount(intent(), {
+			teamSetupLoading: true,
+			teamSetupSummary: { version: 1, candidates: [] },
+		});
+
+		const status = [...document.querySelectorAll<HTMLElement>('[role="status"]')].find(
+			(item) =>
+				item.textContent ===
+				"Team setup status is being refreshed. The previous Team setup status is being shown.",
+		);
+		expect(status?.getAttribute("aria-live")).toBe("polite");
+	});
+
+	it("labels first-load Team setup discovery as loading without claiming stale status", () => {
+		mount(intent(), { teamSetupLoading: true });
+
+		const status = [...document.querySelectorAll<HTMLElement>('[role="status"]')].find(
+			(item) => item.textContent === "Team setup status is loading.",
+		);
+		expect(status?.getAttribute("aria-live")).toBe("polite");
+		expect(document.body.textContent).not.toContain("previous Team setup status");
+	});
+
+	it("fails an unknown runtime Team setup status closed to Needs setup", () => {
+		const teamSetupSummary = {
+			version: 1,
+			candidates: [
+				{
+					candidateRef: "candidate-future",
+					displayName: "Future Team",
+					status: "future_status",
+					deviceCount: 1,
+					projectCount: 1,
+					unresolvedDeviceCount: 0,
+					unresolvedProjectCount: 0,
+				},
+			],
+		} as unknown as LegacyTeamSetupSummaryResponseV1;
+
+		mount(intent(), { teamSetupSummary });
+
+		const badge = document.querySelector<HTMLElement>(".project-status-badge");
+		expect(badge?.textContent).toBe("Needs setup");
+		expect(badge?.className).toBe("project-status-badge needs_attention");
+		expect(document.getElementById("sharing-team-setup-heading")?.textContent).toBe(
+			"1 Team needs setup",
+		);
 	});
 
 	it("uses visible labels, responsive and target hooks, and no prohibited internal copy", () => {
