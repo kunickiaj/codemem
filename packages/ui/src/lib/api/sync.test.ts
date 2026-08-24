@@ -2,12 +2,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
 	advanceShareOperation,
+	clearLegacyTeamSetupDecision,
 	commitDeviceIdentityBindings,
 	commitRecipientPolicyEdges,
 	createRecipientInvite,
+	finishLegacyTeamSetup,
 	importCoordinatorInvite,
 	inspectCoordinatorInvite,
+	LegacyTeamSetupApiError,
 	loadDeviceIdentityInventory,
+	loadLegacyTeamSetupDetail,
+	loadLegacyTeamSetupSummary,
 	loadRecipientPolicyIntent,
 	loadRecipientPolicyReconciliationStatus,
 	loadRecipientPolicyReview,
@@ -19,8 +24,12 @@ import {
 	RecipientPolicyEdgesStaleError,
 	type RecipientPolicyReviewListV1,
 	RecipientPolicyReviewStaleError,
+	refreshLegacyTeamSetupCandidate,
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
+	saveLegacyTeamSetupAssignment,
+	saveLegacyTeamSetupDecision,
+	saveLegacyTeamSetupProjectMapping,
 	triggerSync,
 } from "./sync";
 
@@ -233,6 +242,286 @@ describe("recipient invitation API", () => {
 		await expect(inspectCoordinatorInvite("tampered-invite")).rejects.toThrow(
 			"recipient_invite_intent_mismatch",
 		);
+	});
+});
+
+describe("legacy Team setup API", () => {
+	it("preserves exactly the seven stable design error codes", async () => {
+		const errorCodes = [
+			"team_setup_incomplete",
+			"team_setup_roster_changed",
+			"team_setup_assignment_changed",
+			"team_setup_roster_unavailable",
+			"team_setup_conflict",
+			"team_setup_confirmation_stale",
+			"team_setup_failed",
+		] as const;
+		const responses = [...errorCodes];
+		globalThis.fetch = vi.fn(async () => {
+			const error = responses.shift();
+			return new Response(JSON.stringify({ error }), { status: 409 });
+		}) as typeof fetch;
+
+		for (const errorCode of errorCodes) {
+			await expect(loadLegacyTeamSetupSummary()).rejects.toMatchObject({ errorCode });
+		}
+	});
+
+	it("mirrors summary, detail, and all mutation routes without changing payloads", async () => {
+		const summary = { version: 1, candidates: [] } as const;
+		const detail = {
+			version: 1,
+			candidate: {
+				candidateRef: "candidate/ref",
+				displayName: "Example Team",
+				status: "in_progress",
+				deviceCount: 1,
+				projectCount: 1,
+				unresolvedDeviceCount: 1,
+				unresolvedProjectCount: 0,
+			},
+			attemptId: "attempt-one",
+			draftState: "in_progress",
+			unresolvedDeviceCount: 1,
+			unresolvedProjectCount: 0,
+			devices: [],
+			projects: [],
+			identityChoices: [],
+			canFinish: false,
+			conflictState: null,
+		} as const;
+		const mutation = {
+			version: 1,
+			candidateRef: "candidate/ref",
+			attemptId: "attempt-one",
+			draftState: "in_progress",
+			canFinish: false,
+			unresolvedDeviceCount: 1,
+			unresolvedProjectCount: 0,
+		} as const;
+		const finished = {
+			version: 1,
+			status: "completed",
+			teamRef: "team-ref",
+			attemptId: "attempt-one",
+			accessDeltaDigest: "access-digest",
+			completedAt: "2026-08-24T00:00:00Z",
+		} as const;
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(new Response(JSON.stringify(summary), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify(detail), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify(mutation), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify(mutation), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify(mutation), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify(mutation), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify(mutation), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify(finished), { status: 200 }));
+		globalThis.fetch = fetchMock as typeof fetch;
+		const assignment = {
+			attemptId: "attempt-one",
+			targetIdentityRef: "identity-ref",
+			expectation: { kind: "absent" as const },
+		};
+		const decision = {
+			attemptId: "attempt-one",
+			decision: "included" as const,
+			expectedTargetIdentityRef: "identity-ref",
+		};
+		const clear = { attemptId: "attempt-one" };
+		const mapping = { attemptId: "attempt-one", resolvedProjectRef: "resolved-project" };
+		const finish = {
+			attemptId: "attempt-one",
+			finishDigest: "finish-digest",
+			confirmedAccessDeltaDigest: "access-digest",
+		};
+
+		await loadLegacyTeamSetupSummary();
+		await loadLegacyTeamSetupDetail("candidate/ref");
+		await saveLegacyTeamSetupAssignment("candidate/ref", "device/ref", assignment);
+		await saveLegacyTeamSetupDecision("candidate/ref", "device/ref", decision);
+		await clearLegacyTeamSetupDecision("candidate/ref", "device/ref", clear);
+		await saveLegacyTeamSetupProjectMapping("candidate/ref", "project/ref", mapping);
+		await refreshLegacyTeamSetupCandidate("candidate/ref");
+		await finishLegacyTeamSetup("candidate/ref", finish);
+
+		expect(fetchMock.mock.calls).toEqual([
+			["/api/sync/team-setup/v1", undefined],
+			["/api/sync/team-setup/v1/candidate%2Fref", undefined],
+			[
+				"/api/sync/team-setup/v1/candidate%2Fref/devices/device%2Fref/assignment",
+				{
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(assignment),
+				},
+			],
+			[
+				"/api/sync/team-setup/v1/candidate%2Fref/devices/device%2Fref/decision",
+				{
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(decision),
+				},
+			],
+			[
+				"/api/sync/team-setup/v1/candidate%2Fref/devices/device%2Fref/decision",
+				{
+					method: "DELETE",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(clear),
+				},
+			],
+			[
+				"/api/sync/team-setup/v1/candidate%2Fref/projects/project%2Fref/mapping",
+				{
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(mapping),
+				},
+			],
+			[
+				"/api/sync/team-setup/v1/candidate%2Fref/refresh",
+				{ method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+			],
+			[
+				"/api/sync/team-setup/v1/candidate%2Fref/finish",
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(finish),
+				},
+			],
+		]);
+	});
+
+	it("preserves only stable bounded error codes and never exposes raw response text", async () => {
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ error: "team_setup_roster_changed", detail: "secret" }), {
+					status: 409,
+				}),
+			)
+			.mockResolvedValueOnce(new Response("private coordinator failure", { status: 500 }))
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						error: "team_setup_projection_changed",
+						detail: "private projection state",
+					}),
+					{ status: 409 },
+				),
+			)
+			.mockRejectedValueOnce(new Error("private network failure")) as typeof fetch;
+
+		const stable = loadLegacyTeamSetupSummary();
+		await expect(stable).rejects.toMatchObject({
+			statusCode: 409,
+			errorCode: "team_setup_roster_changed",
+			message: "team_setup_roster_changed",
+		});
+		await expect(stable).rejects.toBeInstanceOf(LegacyTeamSetupApiError);
+		const unknown = loadLegacyTeamSetupSummary();
+		await expect(unknown).rejects.toMatchObject({
+			statusCode: 500,
+			errorCode: "team_setup_failed",
+			message: "team_setup_failed",
+		});
+		await expect(unknown).rejects.not.toMatchObject({ message: "private coordinator failure" });
+		const unexpected = loadLegacyTeamSetupSummary();
+		await expect(unexpected).rejects.toMatchObject({
+			statusCode: 409,
+			errorCode: "team_setup_failed",
+			message: "team_setup_failed",
+		});
+		await expect(unexpected).rejects.not.toMatchObject({ message: "private projection state" });
+		await expect(loadLegacyTeamSetupSummary()).rejects.toMatchObject({
+			statusCode: 0,
+			errorCode: "team_setup_failed",
+			message: "team_setup_failed",
+		});
+	});
+
+	it.each([
+		"",
+		"not json",
+		"{}",
+		"[]",
+	])("rejects malformed successful Team setup payload %j", async (body) => {
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(new Response(body, { status: 200 })) as typeof fetch;
+
+		await expect(loadLegacyTeamSetupSummary()).rejects.toMatchObject({
+			statusCode: 200,
+			errorCode: "team_setup_failed",
+			message: "team_setup_failed",
+		});
+	});
+
+	it.each([
+		["summary", () => loadLegacyTeamSetupSummary()],
+		["detail", () => loadLegacyTeamSetupDetail("candidate/ref")],
+		[
+			"mutation",
+			() =>
+				saveLegacyTeamSetupDecision("candidate/ref", "device/ref", {
+					attemptId: "attempt-one",
+					decision: "included",
+					expectedTargetIdentityRef: "identity-ref",
+				}),
+		],
+		[
+			"finish",
+			() =>
+				finishLegacyTeamSetup("candidate/ref", {
+					attemptId: "attempt-one",
+					finishDigest: "finish-digest",
+					confirmedAccessDeltaDigest: "access-digest",
+				}),
+		],
+	] as const)("rejects a version-only successful %s DTO", async (_name, request) => {
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify({ version: 1 }), { status: 200 }),
+			) as typeof fetch;
+
+		await expect(request()).rejects.toMatchObject({
+			statusCode: 200,
+			errorCode: "team_setup_failed",
+			message: "team_setup_failed",
+		});
+	});
+
+	it("rejects non-string enum values in successful Team setup DTOs", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					version: 1,
+					candidateRef: "candidate/ref",
+					attemptId: "attempt-one",
+					draftState: ["in_progress"],
+					canFinish: false,
+					unresolvedDeviceCount: 1,
+					unresolvedProjectCount: 0,
+				}),
+				{ status: 200 },
+			),
+		) as typeof fetch;
+
+		await expect(
+			saveLegacyTeamSetupDecision("candidate/ref", "device/ref", {
+				attemptId: "attempt-one",
+				decision: "included",
+				expectedTargetIdentityRef: "identity-ref",
+			}),
+		).rejects.toMatchObject({
+			statusCode: 200,
+			errorCode: "team_setup_failed",
+			message: "team_setup_failed",
+		});
 	});
 });
 

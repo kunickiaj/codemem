@@ -780,6 +780,518 @@ export class DeviceIdentityBindingApiError extends Error {
 	}
 }
 
+export type LegacyTeamSetupStatusV1 = "needs_setup" | "in_progress" | "stale" | "ready";
+
+export interface LegacyTeamSetupCandidateSummaryV1 {
+	candidateRef: string;
+	displayName: string;
+	status: LegacyTeamSetupStatusV1;
+	deviceCount: number;
+	projectCount: number;
+	unresolvedDeviceCount: number;
+	unresolvedProjectCount: number;
+}
+
+export interface LegacyTeamSetupSummaryResponseV1 {
+	version: 1;
+	candidates: LegacyTeamSetupCandidateSummaryV1[];
+}
+
+export type LegacyTeamSetupAssignmentExpectationV1 =
+	| { kind: "absent" }
+	| { kind: "existing"; assignmentVersion: number; identityRef: string };
+
+export interface LegacyTeamSetupDeviceV1 {
+	deviceRef: string;
+	displayName: string;
+	enabled: boolean;
+	existingIdentityRef: string | null;
+	suggestedIdentityRef: string | null;
+	verifiedEvidenceKind: "active_assignment" | null;
+	decision: "unresolved" | "included" | "excluded" | "removed";
+	targetIdentityRef: string | null;
+	expectation: LegacyTeamSetupAssignmentExpectationV1;
+}
+
+export interface LegacyTeamSetupProjectV1 {
+	projectRef: string;
+	displayName: string;
+	resolution: "unresolved" | "deterministic" | "explicit";
+	canonicalProjectRef: string | null;
+	resolvedProjectRef: string | null;
+	mappingChoices: Array<{ resolvedProjectRef: string; displayName: string }>;
+}
+
+export interface LegacyTeamSetupIdentityChoiceV1 {
+	identityRef: string;
+	displayName: string;
+}
+
+export interface LegacyTeamSetupAccessDeltaV1 {
+	teamChanges: Array<{
+		teamRef: string;
+		change: "add" | "update" | "remove";
+		fromDeviceEligibilityMode: "person_all_devices" | "reviewed_allowlist" | null;
+		toDeviceEligibilityMode: "reviewed_allowlist";
+	}>;
+	membershipChanges: Array<{
+		teamRef: string;
+		identityRef: string;
+		change: "add" | "update" | "remove";
+	}>;
+	projectChanges: Array<{
+		projectRef: string;
+		fromResolvedProjectRef: string | null;
+		toResolvedProjectRef: string | null;
+		change: "add" | "update" | "remove";
+	}>;
+	recipientChanges: Array<{
+		canonicalProjectRef: string;
+		recipientKind: "team";
+		recipientRef: string;
+		change: "add" | "update" | "remove";
+	}>;
+	deviceAccessChanges: Array<{
+		canonicalProjectRef: string;
+		deviceRef: string;
+		change: "add" | "remove";
+	}>;
+}
+
+interface LegacyTeamSetupDetailBaseV1 {
+	version: 1;
+	candidate: LegacyTeamSetupCandidateSummaryV1;
+	attemptId: string;
+	draftState: "needs_setup" | "in_progress" | "stale" | "completed";
+	unresolvedDeviceCount: number;
+	unresolvedProjectCount: number;
+	devices: LegacyTeamSetupDeviceV1[];
+	projects: LegacyTeamSetupProjectV1[];
+	identityChoices: LegacyTeamSetupIdentityChoiceV1[];
+}
+
+export type LegacyTeamSetupDetailResponseV1 = LegacyTeamSetupDetailBaseV1 &
+	(
+		| {
+				canFinish: true;
+				conflictState: null;
+				finishDigest: string;
+				accessDeltaDigest: string;
+				accessDelta: LegacyTeamSetupAccessDeltaV1;
+		  }
+		| {
+				canFinish: false;
+				conflictState: LegacyTeamSetupErrorCode | null;
+		  }
+	);
+
+export interface LegacyTeamSetupMutationResponseV1 {
+	version: 1;
+	candidateRef: string;
+	attemptId: string;
+	draftState: "needs_setup" | "in_progress" | "stale" | "completed";
+	canFinish: boolean;
+	unresolvedDeviceCount: number;
+	unresolvedProjectCount: number;
+}
+
+export interface LegacyTeamSetupFinishResponseV1 {
+	version: 1;
+	status: "completed";
+	teamRef: string;
+	attemptId: string;
+	accessDeltaDigest: string;
+	completedAt: string;
+}
+
+export type LegacyTeamSetupErrorCode =
+	| "team_setup_incomplete"
+	| "team_setup_roster_changed"
+	| "team_setup_assignment_changed"
+	| "team_setup_roster_unavailable"
+	| "team_setup_conflict"
+	| "team_setup_confirmation_stale"
+	| "team_setup_failed";
+
+const LEGACY_TEAM_SETUP_VERSION = 1;
+const LEGACY_TEAM_SETUP_ERROR_CODES = new Set<LegacyTeamSetupErrorCode>([
+	"team_setup_incomplete",
+	"team_setup_roster_changed",
+	"team_setup_assignment_changed",
+	"team_setup_roster_unavailable",
+	"team_setup_conflict",
+	"team_setup_confirmation_stale",
+	"team_setup_failed",
+]);
+const LEGACY_TEAM_SETUP_STATUSES = new Set<LegacyTeamSetupStatusV1>([
+	"needs_setup",
+	"in_progress",
+	"stale",
+	"ready",
+]);
+const LEGACY_TEAM_SETUP_DRAFT_STATES = new Set([
+	"needs_setup",
+	"in_progress",
+	"stale",
+	"completed",
+]);
+
+type JsonRecord = Record<string, unknown>;
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStringOrNull(value: unknown): value is string | null {
+	return typeof value === "string" || value === null;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isArrayOf<T>(value: unknown, predicate: (item: unknown) => item is T): value is T[] {
+	return Array.isArray(value) && value.every(predicate);
+}
+
+function isLegacyTeamSetupCandidateSummary(
+	value: unknown,
+): value is LegacyTeamSetupCandidateSummaryV1 {
+	if (!isJsonRecord(value)) return false;
+	return (
+		typeof value.candidateRef === "string" &&
+		typeof value.displayName === "string" &&
+		typeof value.status === "string" &&
+		LEGACY_TEAM_SETUP_STATUSES.has(value.status as LegacyTeamSetupStatusV1) &&
+		isNonNegativeInteger(value.deviceCount) &&
+		isNonNegativeInteger(value.projectCount) &&
+		isNonNegativeInteger(value.unresolvedDeviceCount) &&
+		isNonNegativeInteger(value.unresolvedProjectCount)
+	);
+}
+
+function isLegacyTeamSetupSummary(value: unknown): value is LegacyTeamSetupSummaryResponseV1 {
+	return (
+		isJsonRecord(value) &&
+		value.version === LEGACY_TEAM_SETUP_VERSION &&
+		isArrayOf(value.candidates, isLegacyTeamSetupCandidateSummary)
+	);
+}
+
+function isLegacyTeamSetupExpectation(
+	value: unknown,
+): value is LegacyTeamSetupAssignmentExpectationV1 {
+	if (!isJsonRecord(value)) return false;
+	return (
+		value.kind === "absent" ||
+		(value.kind === "existing" &&
+			isNonNegativeInteger(value.assignmentVersion) &&
+			typeof value.identityRef === "string")
+	);
+}
+
+function isLegacyTeamSetupDevice(value: unknown): value is LegacyTeamSetupDeviceV1 {
+	if (!isJsonRecord(value)) return false;
+	return (
+		typeof value.deviceRef === "string" &&
+		typeof value.displayName === "string" &&
+		typeof value.enabled === "boolean" &&
+		isStringOrNull(value.existingIdentityRef) &&
+		isStringOrNull(value.suggestedIdentityRef) &&
+		(value.verifiedEvidenceKind === "active_assignment" || value.verifiedEvidenceKind === null) &&
+		typeof value.decision === "string" &&
+		["unresolved", "included", "excluded", "removed"].includes(value.decision) &&
+		isStringOrNull(value.targetIdentityRef) &&
+		isLegacyTeamSetupExpectation(value.expectation)
+	);
+}
+
+function isLegacyTeamSetupProject(value: unknown): value is LegacyTeamSetupProjectV1 {
+	if (!isJsonRecord(value)) return false;
+	return (
+		typeof value.projectRef === "string" &&
+		typeof value.displayName === "string" &&
+		typeof value.resolution === "string" &&
+		["unresolved", "deterministic", "explicit"].includes(value.resolution) &&
+		isStringOrNull(value.canonicalProjectRef) &&
+		isStringOrNull(value.resolvedProjectRef) &&
+		isArrayOf(
+			value.mappingChoices,
+			(item): item is { resolvedProjectRef: string; displayName: string } =>
+				isJsonRecord(item) &&
+				typeof item.resolvedProjectRef === "string" &&
+				typeof item.displayName === "string",
+		)
+	);
+}
+
+function isLegacyTeamSetupAccessDelta(value: unknown): value is LegacyTeamSetupAccessDeltaV1 {
+	if (!isJsonRecord(value)) return false;
+	const validChange = (change: unknown) =>
+		typeof change === "string" && ["add", "update", "remove"].includes(change);
+	return (
+		isArrayOf(
+			value.teamChanges,
+			(item): item is LegacyTeamSetupAccessDeltaV1["teamChanges"][number] =>
+				isJsonRecord(item) &&
+				typeof item.teamRef === "string" &&
+				validChange(item.change) &&
+				[null, "person_all_devices", "reviewed_allowlist"].includes(
+					item.fromDeviceEligibilityMode as null | string,
+				) &&
+				item.toDeviceEligibilityMode === "reviewed_allowlist",
+		) &&
+		isArrayOf(
+			value.membershipChanges,
+			(item): item is LegacyTeamSetupAccessDeltaV1["membershipChanges"][number] =>
+				isJsonRecord(item) &&
+				typeof item.teamRef === "string" &&
+				typeof item.identityRef === "string" &&
+				validChange(item.change),
+		) &&
+		isArrayOf(
+			value.projectChanges,
+			(item): item is LegacyTeamSetupAccessDeltaV1["projectChanges"][number] =>
+				isJsonRecord(item) &&
+				typeof item.projectRef === "string" &&
+				isStringOrNull(item.fromResolvedProjectRef) &&
+				isStringOrNull(item.toResolvedProjectRef) &&
+				validChange(item.change),
+		) &&
+		isArrayOf(
+			value.recipientChanges,
+			(item): item is LegacyTeamSetupAccessDeltaV1["recipientChanges"][number] =>
+				isJsonRecord(item) &&
+				typeof item.canonicalProjectRef === "string" &&
+				item.recipientKind === "team" &&
+				typeof item.recipientRef === "string" &&
+				validChange(item.change),
+		) &&
+		isArrayOf(
+			value.deviceAccessChanges,
+			(item): item is LegacyTeamSetupAccessDeltaV1["deviceAccessChanges"][number] =>
+				isJsonRecord(item) &&
+				typeof item.canonicalProjectRef === "string" &&
+				typeof item.deviceRef === "string" &&
+				typeof item.change === "string" &&
+				["add", "remove"].includes(item.change),
+		)
+	);
+}
+
+function isLegacyTeamSetupDetail(value: unknown): value is LegacyTeamSetupDetailResponseV1 {
+	if (!isJsonRecord(value)) return false;
+	const validBase =
+		value.version === LEGACY_TEAM_SETUP_VERSION &&
+		isLegacyTeamSetupCandidateSummary(value.candidate) &&
+		typeof value.attemptId === "string" &&
+		typeof value.draftState === "string" &&
+		LEGACY_TEAM_SETUP_DRAFT_STATES.has(value.draftState) &&
+		isNonNegativeInteger(value.unresolvedDeviceCount) &&
+		isNonNegativeInteger(value.unresolvedProjectCount) &&
+		isArrayOf(value.devices, isLegacyTeamSetupDevice) &&
+		isArrayOf(value.projects, isLegacyTeamSetupProject) &&
+		isArrayOf(
+			value.identityChoices,
+			(item): item is LegacyTeamSetupIdentityChoiceV1 =>
+				isJsonRecord(item) &&
+				typeof item.identityRef === "string" &&
+				typeof item.displayName === "string",
+		);
+	if (!validBase) return false;
+	if (value.canFinish === true) {
+		return (
+			value.conflictState === null &&
+			typeof value.finishDigest === "string" &&
+			typeof value.accessDeltaDigest === "string" &&
+			isLegacyTeamSetupAccessDelta(value.accessDelta)
+		);
+	}
+	return (
+		value.canFinish === false &&
+		(value.conflictState === null ||
+			(typeof value.conflictState === "string" &&
+				LEGACY_TEAM_SETUP_ERROR_CODES.has(value.conflictState as LegacyTeamSetupErrorCode)))
+	);
+}
+
+function isLegacyTeamSetupMutation(value: unknown): value is LegacyTeamSetupMutationResponseV1 {
+	return (
+		isJsonRecord(value) &&
+		value.version === LEGACY_TEAM_SETUP_VERSION &&
+		typeof value.candidateRef === "string" &&
+		typeof value.attemptId === "string" &&
+		typeof value.draftState === "string" &&
+		LEGACY_TEAM_SETUP_DRAFT_STATES.has(value.draftState) &&
+		typeof value.canFinish === "boolean" &&
+		isNonNegativeInteger(value.unresolvedDeviceCount) &&
+		isNonNegativeInteger(value.unresolvedProjectCount)
+	);
+}
+
+function isLegacyTeamSetupFinish(value: unknown): value is LegacyTeamSetupFinishResponseV1 {
+	return (
+		isJsonRecord(value) &&
+		value.version === LEGACY_TEAM_SETUP_VERSION &&
+		value.status === "completed" &&
+		typeof value.teamRef === "string" &&
+		typeof value.attemptId === "string" &&
+		typeof value.accessDeltaDigest === "string" &&
+		typeof value.completedAt === "string"
+	);
+}
+
+export class LegacyTeamSetupApiError extends Error {
+	constructor(
+		readonly statusCode: number,
+		readonly errorCode: LegacyTeamSetupErrorCode,
+	) {
+		super(errorCode);
+		this.name = "LegacyTeamSetupApiError";
+	}
+}
+
+function legacyTeamSetupPath(candidateRef?: string): string {
+	return candidateRef
+		? `/api/sync/team-setup/v1/${encodeURIComponent(candidateRef)}`
+		: "/api/sync/team-setup/v1";
+}
+
+async function legacyTeamSetupRequest<T>(
+	path: string,
+	isPayload: (value: unknown) => value is T,
+	init?: RequestInit,
+): Promise<T> {
+	let response: Response;
+	try {
+		response = await fetch(path, init);
+	} catch {
+		throw new LegacyTeamSetupApiError(0, "team_setup_failed");
+	}
+	let payload: unknown;
+	try {
+		const text = await response.text();
+		if (!text) throw new Error("empty Team setup response");
+		payload = JSON.parse(text) as unknown;
+	} catch {
+		throw new LegacyTeamSetupApiError(response.status, "team_setup_failed");
+	}
+	if (!response.ok) {
+		const submittedCode =
+			payload &&
+			typeof payload === "object" &&
+			"error" in payload &&
+			typeof payload.error === "string"
+				? payload.error
+				: "";
+		const errorCode = LEGACY_TEAM_SETUP_ERROR_CODES.has(submittedCode as LegacyTeamSetupErrorCode)
+			? (submittedCode as LegacyTeamSetupErrorCode)
+			: "team_setup_failed";
+		throw new LegacyTeamSetupApiError(response.status, errorCode);
+	}
+	if (!isPayload(payload)) {
+		throw new LegacyTeamSetupApiError(response.status, "team_setup_failed");
+	}
+	return payload;
+}
+
+function legacyTeamSetupJson(method: "PUT" | "POST" | "DELETE", body: unknown): RequestInit {
+	return {
+		method,
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+	};
+}
+
+export function loadLegacyTeamSetupSummary(): Promise<LegacyTeamSetupSummaryResponseV1> {
+	return legacyTeamSetupRequest(legacyTeamSetupPath(), isLegacyTeamSetupSummary);
+}
+
+export function loadLegacyTeamSetupDetail(
+	candidateRef: string,
+): Promise<LegacyTeamSetupDetailResponseV1> {
+	return legacyTeamSetupRequest(legacyTeamSetupPath(candidateRef), isLegacyTeamSetupDetail);
+}
+
+export function saveLegacyTeamSetupAssignment(
+	candidateRef: string,
+	deviceRef: string,
+	input: {
+		attemptId: string;
+		targetIdentityRef: string;
+		expectation: LegacyTeamSetupAssignmentExpectationV1;
+	},
+): Promise<LegacyTeamSetupMutationResponseV1> {
+	return legacyTeamSetupRequest(
+		`${legacyTeamSetupPath(candidateRef)}/devices/${encodeURIComponent(deviceRef)}/assignment`,
+		isLegacyTeamSetupMutation,
+		legacyTeamSetupJson("PUT", input),
+	);
+}
+
+export function saveLegacyTeamSetupDecision(
+	candidateRef: string,
+	deviceRef: string,
+	input:
+		| { attemptId: string; decision: "included"; expectedTargetIdentityRef: string }
+		| { attemptId: string; decision: "excluded" | "removed" },
+): Promise<LegacyTeamSetupMutationResponseV1> {
+	return legacyTeamSetupRequest(
+		`${legacyTeamSetupPath(candidateRef)}/devices/${encodeURIComponent(deviceRef)}/decision`,
+		isLegacyTeamSetupMutation,
+		legacyTeamSetupJson("PUT", input),
+	);
+}
+
+export function clearLegacyTeamSetupDecision(
+	candidateRef: string,
+	deviceRef: string,
+	input: { attemptId: string },
+): Promise<LegacyTeamSetupMutationResponseV1> {
+	return legacyTeamSetupRequest(
+		`${legacyTeamSetupPath(candidateRef)}/devices/${encodeURIComponent(deviceRef)}/decision`,
+		isLegacyTeamSetupMutation,
+		legacyTeamSetupJson("DELETE", input),
+	);
+}
+
+export function saveLegacyTeamSetupProjectMapping(
+	candidateRef: string,
+	projectRef: string,
+	input: { attemptId: string; resolvedProjectRef: string },
+): Promise<LegacyTeamSetupMutationResponseV1> {
+	return legacyTeamSetupRequest(
+		`${legacyTeamSetupPath(candidateRef)}/projects/${encodeURIComponent(projectRef)}/mapping`,
+		isLegacyTeamSetupMutation,
+		legacyTeamSetupJson("PUT", input),
+	);
+}
+
+export function refreshLegacyTeamSetupCandidate(
+	candidateRef: string,
+): Promise<LegacyTeamSetupMutationResponseV1> {
+	return legacyTeamSetupRequest(
+		`${legacyTeamSetupPath(candidateRef)}/refresh`,
+		isLegacyTeamSetupMutation,
+		legacyTeamSetupJson("POST", {}),
+	);
+}
+
+export function finishLegacyTeamSetup(
+	candidateRef: string,
+	input: {
+		attemptId: string;
+		finishDigest: string;
+		confirmedAccessDeltaDigest: string;
+	},
+): Promise<LegacyTeamSetupFinishResponseV1> {
+	return legacyTeamSetupRequest(
+		`${legacyTeamSetupPath(candidateRef)}/finish`,
+		isLegacyTeamSetupFinish,
+		legacyTeamSetupJson("POST", input),
+	);
+}
+
 export type RecipientPolicyReconciliationReadState =
 	| "active"
 	| "needs_attention"
