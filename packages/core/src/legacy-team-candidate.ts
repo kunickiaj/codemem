@@ -5,7 +5,6 @@ import {
 	selectedProjectScopeMappings,
 } from "./legacy-recipient-policy-projection.js";
 import {
-	getLegacyTeamSetupDraft,
 	type LegacyTeamSetupDraftView,
 	type LegacyTeamSetupProjectInput,
 	legacyTeamProjectionFingerprint,
@@ -36,6 +35,7 @@ export interface LegacyTeamRosterDeviceSnapshot {
 	fingerprint: string;
 	displayName: string;
 	enabled: boolean;
+	labelRedactionIds?: readonly string[];
 }
 
 export interface LegacyTeamConfiguredGroupSnapshot {
@@ -102,6 +102,12 @@ function dedupedRosterDevices(
 		if (existing.fingerprint !== device.fingerprint || existing.enabled !== device.enabled) {
 			return null;
 		}
+		byId.set(device.deviceId, {
+			...existing,
+			labelRedactionIds: [
+				...new Set([...(existing.labelRedactionIds ?? []), ...(device.labelRedactionIds ?? [])]),
+			],
+		});
 	}
 	return [...byId.values()];
 }
@@ -126,6 +132,22 @@ function rosterDevicesAgree(
 			other != null && other.fingerprint === device.fingerprint && other.enabled === device.enabled
 		);
 	});
+}
+
+function mergeRosterLabelRedactionIds(
+	left: LegacyTeamRosterDeviceSnapshot[],
+	right: LegacyTeamRosterDeviceSnapshot[],
+): LegacyTeamRosterDeviceSnapshot[] {
+	const rightById = new Map(right.map((device) => [device.deviceId, device]));
+	return left.map((device) => ({
+		...device,
+		labelRedactionIds: [
+			...new Set([
+				...(device.labelRedactionIds ?? []),
+				...(rightById.get(device.deviceId)?.labelRedactionIds ?? []),
+			]),
+		],
+	}));
 }
 
 /**
@@ -162,7 +184,11 @@ function effectiveGroupSnapshots(groups: LegacyTeamConfiguredGroupSnapshot[]): {
 			});
 			continue;
 		}
-		if (!rosterDevicesAgree(existing.devices, devices)) conflictedCandidateIds.add(candidateId);
+		if (!rosterDevicesAgree(existing.devices, devices)) {
+			conflictedCandidateIds.add(candidateId);
+		} else {
+			existing.devices = mergeRosterLabelRedactionIds(existing.devices, devices);
+		}
 	}
 	for (const candidateId of conflictedCandidateIds) byCandidate.delete(candidateId);
 	return { snapshots: [...byCandidate.values()], conflictedCandidateIds };
@@ -241,14 +267,6 @@ function completedInventoryCompatible(
 		}
 	}
 	return true;
-}
-
-function requireLegacyTeamSetupDraft(db: Database, candidateId: string): LegacyTeamSetupDraftView {
-	const draft = getLegacyTeamSetupDraft(db, candidateId);
-	// The row was just observed by discovery; its disappearance mid-pass is
-	// drifted state, not a valid empty result.
-	if (!draft) throw new Error("legacy_team_setup_draft_not_found");
-	return draft;
 }
 
 function currentDraftRow(db: Database, candidateId: string): DraftFreshnessRow | null {
@@ -637,7 +655,12 @@ function resolveDiscoveredCandidate(
 				now,
 			});
 		} else if (row.state === "stale") {
-			draft = requireLegacyTeamSetupDraft(db, candidateId);
+			draft = refreshLegacyTeamSetupDraftLabels(db, row.attempt_id, {
+				displayName: group.displayName,
+				devices: rosterDevices,
+				projects,
+				now,
+			});
 		} else if (
 			row.roster_fingerprint !== rosterFingerprint ||
 			row.projection_fingerprint !== expectedProjectionFingerprint
@@ -648,7 +671,12 @@ function resolveDiscoveredCandidate(
 					 WHERE attempt_id = ?`,
 				).run(now, row.attempt_id);
 			}
-			draft = requireLegacyTeamSetupDraft(db, candidateId);
+			draft = refreshLegacyTeamSetupDraftLabels(db, row.attempt_id, {
+				displayName: group.displayName,
+				devices: rosterDevices,
+				projects,
+				now,
+			});
 		} else {
 			draft = refreshLegacyTeamSetupDraft(db, {
 				candidateId,

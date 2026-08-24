@@ -12,6 +12,7 @@ import {
 	refreshLegacyTeamCandidate,
 } from "./legacy-team-candidate.js";
 import { latestLegacyTeamSetupAttempt } from "./legacy-team-setup-attempt.js";
+import { getLegacyTeamSetupDraft } from "./legacy-team-setup-draft.js";
 import {
 	deterministicPolicyTeamId,
 	legacyTeamCandidateId,
@@ -463,6 +464,58 @@ describe("legacy Team candidate discovery", () => {
 				.pluck()
 				.get(firstAttempt.attemptId),
 		).toBe(firstAttempt.attemptId);
+	});
+
+	it.each([
+		["newly stale", false],
+		["already stale", true],
+	] as const)("re-sanitizes persisted labels for a %s attempt", (_label, staleFirst) => {
+		const initialOptions = options("key-a", "api");
+		const initialGroup = initialOptions.groups[0];
+		if (!initialGroup) throw new Error("invalid test fixture");
+		initialGroup.displayName = "api";
+		const [initial] = discoverLegacyTeamCandidates(db, initialOptions);
+		const attemptId = latestLegacyTeamSetupAttempt(db, initial?.candidateRef as string)?.attemptId;
+		if (!attemptId) throw new Error("initial sanitization attempt missing");
+		expect(getLegacyTeamSetupDraft(db, initial?.candidateRef as string)).toMatchObject({
+			displayName: "api",
+			devices: [{ displayName: "api" }],
+			projects: [{ displayName: "api" }],
+		});
+
+		if (staleFirst) {
+			const staleOptions = options("key-b", "api");
+			const staleGroup = staleOptions.groups[0];
+			if (!staleGroup) throw new Error("invalid test fixture");
+			staleGroup.displayName = "api";
+			expect(discoverLegacyTeamCandidates(db, staleOptions)[0]?.status).toBe("stale");
+		}
+
+		const changedOptions = options(staleFirst ? "key-b" : "key-a", "api");
+		const changedGroup = changedOptions.groups[0];
+		if (!changedGroup) throw new Error("invalid test fixture");
+		changedGroup.displayName = "api";
+		changedGroup.devices = [
+			{ deviceId: "api", fingerprint: "key-new", displayName: "New Device", enabled: true },
+		];
+		db.prepare("DELETE FROM memory_items").run();
+		db.prepare("DELETE FROM sessions").run();
+		db.prepare("DELETE FROM project_scope_mappings").run();
+
+		const [stale] = discoverLegacyTeamCandidates(db, changedOptions);
+		const staleDraft = getLegacyTeamSetupDraft(db, initial?.candidateRef as string);
+
+		expect(stale).toMatchObject({ displayName: "Legacy Team", status: "stale" });
+		expect(staleDraft).toMatchObject({
+			attemptId,
+			state: "stale",
+			displayName: "Legacy Team",
+			devices: [{ displayName: "Device" }],
+			projects: [{ displayName: "Project" }],
+		});
+		expect(latestLegacyTeamSetupAttempt(db, stale?.candidateRef as string)?.attemptId).toBe(
+			attemptId,
+		);
 	});
 
 	it("keeps a stale attempt blocked if roster evidence reverts", () => {
@@ -1007,12 +1060,25 @@ describe("legacy Team candidate discovery", () => {
 		if (!group) throw new Error("invalid test fixture");
 		// Exact duplicates collapse; the candidate stays discoverable.
 		group.devices = [
-			{ deviceId: "device-a", fingerprint: "key-a", displayName: "Laptop", enabled: true },
-			{ deviceId: "device-a", fingerprint: "key-a", displayName: "Laptop copy", enabled: true },
+			{
+				deviceId: "device-a",
+				fingerprint: "key-a",
+				displayName: "Laptop opaque-duplicate-private",
+				enabled: true,
+				labelRedactionIds: ["opaque-first-private"],
+			},
+			{
+				deviceId: "device-a",
+				fingerprint: "key-a",
+				displayName: "Laptop copy",
+				enabled: true,
+				labelRedactionIds: ["opaque-duplicate-private"],
+			},
 		];
 		const [collapsed] = discoverLegacyTeamCandidates(db, base);
 		expect(collapsed).toMatchObject({ deviceCount: 1 });
 		const candidateRef = collapsed?.candidateRef as string;
+		expect(getLegacyTeamSetupDraft(db, candidateRef)?.devices[0]?.displayName).toBe("Device");
 
 		// A fingerprint conflict is not reviewable evidence: silently keeping
 		// either row would authorize review against arbitrary key material.
@@ -1045,9 +1111,28 @@ describe("legacy Team candidate discovery", () => {
 			"legacy_team_setup_roster_conflict",
 		);
 
-		// Identical twin snapshots still merge.
-		twin.groups = [first, { ...first, displayName: "Engineering copy" }];
+		// Identical twin snapshots still merge and retain the union of their
+		// transient label-redaction identifiers.
+		const firstDevice = first.devices[0];
+		if (!firstDevice) throw new Error("invalid test fixture");
+		firstDevice.displayName = "Laptop opaque-twin-private";
+		firstDevice.labelRedactionIds = ["opaque-first-private"];
+		twin.groups = [
+			first,
+			{
+				...first,
+				displayName: "Engineering copy",
+				devices: [
+					{
+						...firstDevice,
+						displayName: "Laptop copy",
+						labelRedactionIds: ["opaque-twin-private"],
+					},
+				],
+			},
+		];
 		expect(discoverLegacyTeamCandidates(db, twin)).toHaveLength(1);
+		expect(getLegacyTeamSetupDraft(db, candidateRef)?.devices[0]?.displayName).toBe("Device");
 	});
 
 	it("collapses invite-operation identities through explicit resolutions", () => {
