@@ -358,6 +358,19 @@ export interface CoordinatorCreateReciprocalApprovalInput {
 	groupId: string;
 	requestingDeviceId: string;
 	requestedDeviceId: string;
+	/** Complete only this exact pending request in the reverse direction. */
+	expectedIncomingRequestId?: string;
+}
+
+export const RECIPROCAL_APPROVAL_REQUEST_CHANGED = "reciprocal_approval_request_changed" as const;
+
+export class CoordinatorReciprocalApprovalRequestChangedError extends Error {
+	readonly code = RECIPROCAL_APPROVAL_REQUEST_CHANGED;
+
+	constructor() {
+		super(RECIPROCAL_APPROVAL_REQUEST_CHANGED);
+		this.name = "CoordinatorReciprocalApprovalRequestChangedError";
+	}
 }
 
 export interface CoordinatorCreateBootstrapGrantInput {

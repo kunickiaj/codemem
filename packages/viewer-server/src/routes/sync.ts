@@ -43,6 +43,7 @@ import {
 	buildAuthHeaders,
 	buildBaseUrl,
 	buildDirectPeerAuthHeaders,
+	CoordinatorReciprocalApprovalRequestChangedError,
 	canonicalWorkspaceIdentity,
 	cleanupNonces,
 	commitDeviceIdentityBindings,
@@ -3261,6 +3262,9 @@ interface AcceptDiscoveredPeerOptions {
 	// /api/sync/peers/accept-discovered path) the match must belong to
 	// exactly one group and that one is used.
 	expectedGroupId?: string;
+	// When provided, complete only the exact incoming reciprocal approval that
+	// the caller reviewed instead of accepting a replacement request.
+	expectedIncomingRequestId?: string;
 }
 
 type AcceptDiscoveredPeerNotConfiguredReason =
@@ -3461,6 +3465,9 @@ async function acceptDiscoveredPeer(
 	await createCoordinatorReciprocalApproval(store, config, {
 		groupId,
 		requestedDeviceId: input.peerDeviceId,
+		...(input.expectedIncomingRequestId
+			? { expectedIncomingRequestId: input.expectedIncomingRequestId }
+			: {}),
 	});
 
 	// Resolve project-scope seed. On first enrollment (no existing row), apply
@@ -6947,11 +6954,22 @@ export function syncRoutes(
 		}
 		const peerDeviceId = String(body.peer_device_id ?? "").trim();
 		const fingerprint = String(body.fingerprint ?? "").trim();
+		const expectedGroupId = String(body.expected_group_id ?? "").trim();
+		const hasExpectedIncomingRequestId = Object.hasOwn(body, "expected_incoming_request_id");
+		const expectedIncomingRequestId = String(body.expected_incoming_request_id ?? "").trim();
 		if (!peerDeviceId) return c.json({ error: "peer_device_id required" }, 400);
+		if (hasExpectedIncomingRequestId && !expectedIncomingRequestId) {
+			return c.json({ error: "expected_incoming_request_id must not be empty" }, 400);
+		}
+		if (expectedIncomingRequestId && !expectedGroupId) {
+			return c.json({ error: "expected_group_id required" }, 400);
+		}
 		try {
 			const result = await acceptDiscoveredPeer(store, {
 				peerDeviceId,
 				fingerprint: fingerprint || undefined,
+				expectedGroupId: expectedGroupId || undefined,
+				expectedIncomingRequestId: expectedIncomingRequestId || undefined,
 			});
 			if (!result.ok) {
 				return c.json(
@@ -6972,6 +6990,16 @@ export function syncRoutes(
 				needs_scope_review: true,
 			});
 		} catch (error) {
+			if (error instanceof CoordinatorReciprocalApprovalRequestChangedError) {
+				return c.json(
+					{
+						error: error.code,
+						detail:
+							"This approval request changed before it was submitted. Refresh sync status and review the current request.",
+					},
+					{ status: 409 },
+				);
+			}
 			return c.json(
 				{
 					error: "coordinator_lookup_failed",

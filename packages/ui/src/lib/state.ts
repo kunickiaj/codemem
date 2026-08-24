@@ -154,13 +154,20 @@ export interface CachedLegacySharedReview {
 export interface DiscoveredDevice {
 	device_id?: string;
 	display_name?: string;
-	fingerprint?: string;
+	fingerprint?: string | null;
 	groups?: string[];
 	stale?: boolean;
 	address_count?: number;
 	addresses?: string[];
 	needs_local_approval?: boolean;
 	waiting_for_peer_approval?: boolean;
+	incoming_reciprocal_request_id?: string | null;
+	outgoing_reciprocal_request_id?: string | null;
+}
+
+export interface PendingCoordinatorApproval {
+	coordinatorUrl: string;
+	incomingRequestId: string;
 }
 
 export interface CachedSyncCoordinator {
@@ -169,6 +176,8 @@ export interface CachedSyncCoordinator {
 	groups?: unknown[];
 	coordinator_url?: string | null;
 	discovered_devices?: DiscoveredDevice[];
+	lookup_error?: string | null;
+	reciprocal_approval_error?: string | null;
 	presence_status?: TeamSyncPresenceState;
 	paired_peer_count?: number;
 }
@@ -305,6 +314,7 @@ export const state = {
 	} | null,
 	syncJoinRequestsFeedback: null as { message: string; tone: "success" | "warning" } | null,
 	syncDiscoveredFeedback: null as { message: string; tone: "success" | "warning" } | null,
+	pendingCoordinatorApprovalsByDeviceId: new Map<string, PendingCoordinatorApproval>(),
 	lastSyncAttempts: [] as unknown[],
 	lastSyncLegacyDevices: [] as unknown[],
 	lastSyncViewModel: null as UiSyncViewModel | null,

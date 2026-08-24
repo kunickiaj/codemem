@@ -5,6 +5,10 @@ import type {
 	CoordinatorStore,
 } from "./coordinator-store-contract.js";
 import {
+	CoordinatorReciprocalApprovalRequestChangedError,
+	RECIPROCAL_APPROVAL_REQUEST_CHANGED,
+} from "./coordinator-store-contract.js";
+import {
 	canonicalRecipientReviewedIntentJson,
 	recipientReviewedIntentDigest,
 } from "./recipient-reviewed-intent.js";
@@ -2454,6 +2458,116 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 							groupId: "g1",
 							deviceId: "d2",
 							direction: "incoming",
+						}),
+					).toEqual([]);
+				});
+			});
+
+			it("completes only the expected reverse pending approval", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1");
+					const incoming = await store.createReciprocalApproval({
+						groupId: "g1",
+						requestingDeviceId: "d1",
+						requestedDeviceId: "d2",
+					});
+
+					const completed = await store.createReciprocalApproval({
+						groupId: "g1",
+						requestingDeviceId: "d2",
+						requestedDeviceId: "d1",
+						expectedIncomingRequestId: incoming.request_id,
+					});
+
+					expect(completed).toEqual(
+						expect.objectContaining({ request_id: incoming.request_id, status: "completed" }),
+					);
+				});
+			});
+
+			it("rejects a changed expected request without creating an outgoing request", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1");
+					const incoming = await store.createReciprocalApproval({
+						groupId: "g1",
+						requestingDeviceId: "d1",
+						requestedDeviceId: "d2",
+					});
+
+					await expect(
+						store.createReciprocalApproval({
+							groupId: "g1",
+							requestingDeviceId: "d2",
+							requestedDeviceId: "d1",
+							expectedIncomingRequestId: "changed-request-id",
+						}),
+					).rejects.toMatchObject({
+						code: RECIPROCAL_APPROVAL_REQUEST_CHANGED,
+						name: CoordinatorReciprocalApprovalRequestChangedError.name,
+					});
+					expect(
+						await store.listReciprocalApprovals({
+							groupId: "g1",
+							deviceId: "d2",
+							direction: "outgoing",
+						}),
+					).toEqual([]);
+					expect(
+						await store.listReciprocalApprovals({
+							groupId: "g1",
+							deviceId: "d2",
+							direction: "incoming",
+						}),
+					).toEqual([
+						expect.objectContaining({ request_id: incoming.request_id, status: "pending" }),
+					]);
+				});
+			});
+
+			it("rejects an expected request that is completed or belongs to another pair or group", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1");
+					await store.createGroup("g2");
+					const completedIncoming = await store.createReciprocalApproval({
+						groupId: "g1",
+						requestingDeviceId: "d1",
+						requestedDeviceId: "d2",
+					});
+					await store.createReciprocalApproval({
+						groupId: "g1",
+						requestingDeviceId: "d2",
+						requestedDeviceId: "d1",
+					});
+					const otherGroup = await store.createReciprocalApproval({
+						groupId: "g2",
+						requestingDeviceId: "d1",
+						requestedDeviceId: "d2",
+					});
+					const otherPair = await store.createReciprocalApproval({
+						groupId: "g1",
+						requestingDeviceId: "d3",
+						requestedDeviceId: "d4",
+					});
+
+					for (const expectedIncomingRequestId of [
+						completedIncoming.request_id,
+						otherGroup.request_id,
+						otherPair.request_id,
+					]) {
+						await expect(
+							store.createReciprocalApproval({
+								groupId: "g1",
+								requestingDeviceId: "d2",
+								requestedDeviceId: "d1",
+								expectedIncomingRequestId,
+							}),
+						).rejects.toMatchObject({ code: RECIPROCAL_APPROVAL_REQUEST_CHANGED });
+					}
+					expect(
+						await store.listReciprocalApprovals({
+							groupId: "g1",
+							deviceId: "d2",
+							direction: "outgoing",
 						}),
 					).toEqual([]);
 				});

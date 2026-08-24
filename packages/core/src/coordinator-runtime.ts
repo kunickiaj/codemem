@@ -5,7 +5,10 @@ import {
 	mergeAddressesPreferCandidates,
 	normalizeAddress,
 } from "./address-utils.js";
-import type { CoordinatorReciprocalApproval } from "./coordinator-store-contract.js";
+import {
+	type CoordinatorReciprocalApproval,
+	CoordinatorReciprocalApprovalRequestChangedError,
+} from "./coordinator-store-contract.js";
 import type { Database } from "./db.js";
 import { getCodememEnvOverrides, readCodememConfigFile } from "./observer-config.js";
 import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
@@ -69,6 +72,14 @@ function mergeStringLists(existing: string[], candidates: string[]): string[] {
 	return merged;
 }
 
+function earliestValidExpiry(existing: unknown, candidate: unknown): unknown {
+	const existingMs = Date.parse(clean(existing));
+	const candidateMs = Date.parse(clean(candidate));
+	if (!Number.isFinite(existingMs)) return Number.isFinite(candidateMs) ? candidate : existing;
+	if (!Number.isFinite(candidateMs)) return existing;
+	return candidateMs < existingMs ? candidate : existing;
+}
+
 export interface CoordinatorSyncConfig {
 	syncEnabled: boolean;
 	syncHost: string;
@@ -115,7 +126,29 @@ interface CoordinatorStatusCacheEntry {
 
 const coordinatorPresenceCache = new Map<string, PresenceSnapshot>();
 const coordinatorStatusCache = new Map<string, CoordinatorStatusCacheEntry>();
-const COORDINATOR_STATUS_SNAPSHOT_CACHE_MS = 5_000;
+const coordinatorStatusCacheGenerations = new Map<string, number>();
+const COORDINATOR_STATUS_SNAPSHOT_CACHE_MS = 30_000;
+
+function coordinatorStatusRefreshDeadline(now: number, peers: Record<string, unknown>[]): number {
+	let deadline = now + COORDINATOR_STATUS_SNAPSHOT_CACHE_MS;
+	for (const peer of peers) {
+		if (peer.stale) continue;
+		const expiresAtMs = Date.parse(clean(peer.expires_at));
+		if (!Number.isFinite(expiresAtMs)) continue;
+		// Never re-serve an expired peer, even if local clock skew disables this cache.
+		if (expiresAtMs <= now) return now;
+		deadline = Math.min(deadline, expiresAtMs);
+	}
+	return deadline;
+}
+
+function invalidateCoordinatorStatusCache(cacheKey: string): void {
+	coordinatorStatusCache.delete(cacheKey);
+	coordinatorStatusCacheGenerations.set(
+		cacheKey,
+		(coordinatorStatusCacheGenerations.get(cacheKey) ?? 0) + 1,
+	);
+}
 
 function presenceCacheKey(store: PresenceStoreLike, config: CoordinatorSyncConfig): string {
 	const groups = [...config.syncCoordinatorGroups].sort().join(",");
@@ -176,6 +209,52 @@ function presenceRefreshIntervalMs(config: CoordinatorSyncConfig): number {
 
 function presenceRetryIntervalMs(): number {
 	return 30_000;
+}
+
+async function refreshCoordinatorPresenceStatus(
+	store: PresenceStoreLike,
+	config: CoordinatorSyncConfig,
+	snapshot: Record<string, unknown>,
+	now: number,
+): Promise<void> {
+	const presenceKey = presenceCacheKey(store, config);
+	const cachedPresence = coordinatorPresenceCache.get(presenceKey);
+	if (cachedPresence && now < cachedPresence.nextRefreshAtMs) {
+		snapshot.presence_status = cachedPresence.status;
+		snapshot.presence_error = cachedPresence.error;
+		snapshot.advertised_addresses = cachedPresence.advertisedAddresses;
+		return;
+	}
+	try {
+		const registration = await registerCoordinatorPresence(store, config);
+		const first = registration?.responses?.[0];
+		const advertisedAddresses =
+			first && typeof first === "object"
+				? ((first as Record<string, unknown>).addresses ?? [])
+				: [];
+		snapshot.presence_status = "posted";
+		snapshot.presence_error = null;
+		snapshot.advertised_addresses = advertisedAddresses;
+		coordinatorPresenceCache.set(presenceKey, {
+			status: "posted",
+			error: null,
+			advertisedAddresses,
+			nextRefreshAtMs: now + presenceRefreshIntervalMs(config),
+		});
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		const status: PresenceStatus = message.includes("unknown_device") ? "not_enrolled" : "error";
+		const nextRefreshAtMs = status === "not_enrolled" ? now : now + presenceRetryIntervalMs();
+		snapshot.presence_status = status;
+		snapshot.presence_error = message;
+		snapshot.advertised_addresses = [];
+		coordinatorPresenceCache.set(presenceKey, {
+			status,
+			error: message,
+			advertisedAddresses: [],
+			nextRefreshAtMs,
+		});
+	}
 }
 
 export function readCoordinatorSyncConfig(config?: ConfigRecord): CoordinatorSyncConfig {
@@ -373,6 +452,13 @@ export async function lookupCoordinatorPeers(
 				(isStale && wasStale && clean(record.last_seen_at) > clean(existing.last_seen_at));
 			if (shouldUpdateFreshnessMetadata) {
 				existing.last_seen_at = record.last_seen_at;
+			}
+			// Unioned fresh addresses are valid only until the earliest group expiry.
+			if (!isStale) {
+				existing.expires_at = wasStale
+					? record.expires_at
+					: earliestValidExpiry(existing.expires_at, record.expires_at);
+			} else if (wasStale && shouldUpdateFreshnessMetadata) {
 				existing.expires_at = record.expires_at;
 			}
 		}
@@ -785,19 +871,33 @@ export async function listCoordinatorReciprocalApprovals(
 export async function createCoordinatorReciprocalApproval(
 	store: MemoryStore,
 	config: CoordinatorSyncConfig,
-	options: { groupId: string; requestedDeviceId: string },
+	options: {
+		groupId: string;
+		requestedDeviceId: string;
+		expectedIncomingRequestId?: string;
+	},
 ): Promise<CoordinatorReciprocalApproval> {
 	if (!coordinatorEnabled(config)) throw new Error("Coordinator not configured.");
 	const groupId = options.groupId.trim();
 	const requestedDeviceId = options.requestedDeviceId.trim();
+	const expectedIncomingRequestId = options.expectedIncomingRequestId?.trim();
 	if (!groupId || !requestedDeviceId) {
 		throw new Error("groupId and requestedDeviceId are required.");
+	}
+	if (options.expectedIncomingRequestId !== undefined && !expectedIncomingRequestId) {
+		throw new Error("expectedIncomingRequestId must not be empty when provided.");
 	}
 	const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
 	const [deviceId] = ensureDeviceIdentity(store.db, { keysDir });
 	const baseUrl = buildBaseUrl(config.syncCoordinatorUrl);
 	const url = `${baseUrl}/v1/reciprocal-approvals`;
-	const payload = { group_id: groupId, requested_device_id: requestedDeviceId };
+	const payload = {
+		group_id: groupId,
+		requested_device_id: requestedDeviceId,
+		...(expectedIncomingRequestId !== undefined
+			? { expected_incoming_request_id: expectedIncomingRequestId }
+			: {}),
+	};
 	const bodyBytes = Buffer.from(JSON.stringify(payload), "utf8");
 	const headers = buildAuthHeaders({
 		deviceId,
@@ -815,8 +915,13 @@ export async function createCoordinatorReciprocalApproval(
 	});
 	if (status !== 200 || !response || !response.request || typeof response.request !== "object") {
 		const detail = typeof response?.error === "string" ? response.error : "unknown";
+		if (status === 409 && detail === "reciprocal_approval_request_changed") {
+			invalidateCoordinatorStatusCache(coordinatorStatusCacheKey(store, config));
+			throw new CoordinatorReciprocalApprovalRequestChangedError();
+		}
 		throw new Error(`coordinator reciprocal approval create failed (${status}: ${detail})`);
 	}
+	invalidateCoordinatorStatusCache(coordinatorStatusCacheKey(store, config));
 	return response.request as CoordinatorReciprocalApproval;
 }
 
@@ -851,18 +956,37 @@ export async function coordinatorStatusSnapshot(
 	const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
 	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir });
 	const cacheKey = coordinatorStatusCacheKey(store, config);
-	const now = Date.now();
+	const cacheGeneration = coordinatorStatusCacheGenerations.get(cacheKey) ?? 0;
+	let now = Date.now();
 	const cachedSnapshot = coordinatorStatusCache.get(cacheKey);
 	if (cachedSnapshot && now < cachedSnapshot.nextRefreshAtMs) {
-		trustCoordinatorPeersWithSharedManagedScopes(
-			store.db,
-			localDeviceId,
-			cachedSnapshot.discoveredPeers,
-		);
-		return {
-			...structuredClone(cachedSnapshot.snapshot),
-			paired_peer_count: pairedPeerCount(store),
-		};
+		const snapshot = structuredClone(cachedSnapshot.snapshot);
+		await refreshCoordinatorPresenceStatus(store, config, snapshot, now);
+		now = Date.now();
+		if (snapshot.presence_status === "not_enrolled") {
+			invalidateCoordinatorStatusCache(cacheKey);
+			snapshot.fresh_peer_count = 0;
+			snapshot.stale_peer_count = 0;
+			snapshot.discovered_peer_count = 0;
+			snapshot.discovered_devices = [];
+			snapshot.reciprocal_approvals = { incoming: [], outgoing: [] };
+			return {
+				...snapshot,
+				paired_peer_count: pairedPeerCount(store),
+			};
+		}
+		if (now < cachedSnapshot.nextRefreshAtMs) {
+			trustCoordinatorPeersWithSharedManagedScopes(
+				store.db,
+				localDeviceId,
+				cachedSnapshot.discoveredPeers,
+			);
+			revokeUnauthorizedCoordinatorPeerTrust(store.db, localDeviceId);
+			return {
+				...snapshot,
+				paired_peer_count: pairedPeerCount(store),
+			};
+		}
 	}
 	const snapshot: Record<string, unknown> = {
 		enabled: true,
@@ -879,42 +1003,7 @@ export async function coordinatorStatusSnapshot(
 		discovered_peer_count: 0,
 		discovered_devices: [],
 	};
-	const presenceKey = presenceCacheKey(store, config);
-	const cachedPresence = coordinatorPresenceCache.get(presenceKey);
-	if (cachedPresence && now < cachedPresence.nextRefreshAtMs) {
-		snapshot.presence_status = cachedPresence.status;
-		snapshot.presence_error = cachedPresence.error;
-		snapshot.advertised_addresses = cachedPresence.advertisedAddresses;
-	} else {
-		try {
-			const registration = await registerCoordinatorPresence(store, config);
-			const first = registration?.responses?.[0];
-			const advertisedAddresses =
-				first && typeof first === "object"
-					? ((first as Record<string, unknown>).addresses ?? [])
-					: [];
-			snapshot.presence_status = "posted";
-			snapshot.advertised_addresses = advertisedAddresses;
-			coordinatorPresenceCache.set(presenceKey, {
-				status: "posted",
-				error: null,
-				advertisedAddresses,
-				nextRefreshAtMs: now + presenceRefreshIntervalMs(config),
-			});
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			const status: PresenceStatus = message.includes("unknown_device") ? "not_enrolled" : "error";
-			const nextRefreshAtMs = status === "not_enrolled" ? now : now + presenceRetryIntervalMs();
-			snapshot.presence_status = status;
-			snapshot.presence_error = message;
-			coordinatorPresenceCache.set(presenceKey, {
-				status,
-				error: message,
-				advertisedAddresses: [],
-				nextRefreshAtMs,
-			});
-		}
-	}
+	await refreshCoordinatorPresenceStatus(store, config, snapshot, now);
 	let discoveredPeers: Record<string, unknown>[] = [];
 	try {
 		const { peers } = await refreshAuthorizedCoordinatorPeerTrust(store, config, { keysDir });
@@ -960,11 +1049,16 @@ export async function coordinatorStatusSnapshot(
 	} catch (error) {
 		snapshot.lookup_error = error instanceof Error ? error.message : String(error);
 	}
-	if (snapshot.presence_status !== "not_enrolled") {
+	if (
+		snapshot.presence_status !== "not_enrolled" &&
+		!snapshot.lookup_error &&
+		!snapshot.reciprocal_approval_error &&
+		(coordinatorStatusCacheGenerations.get(cacheKey) ?? 0) === cacheGeneration
+	) {
 		coordinatorStatusCache.set(cacheKey, {
 			snapshot: structuredClone(snapshot),
 			discoveredPeers,
-			nextRefreshAtMs: Date.now() + COORDINATOR_STATUS_SNAPSHOT_CACHE_MS,
+			nextRefreshAtMs: coordinatorStatusRefreshDeadline(Date.now(), discoveredPeers),
 		});
 	}
 	return snapshot;

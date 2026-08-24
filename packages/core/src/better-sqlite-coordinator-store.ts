@@ -63,6 +63,7 @@ import type {
 	CoordinatorUpsertPresenceInput,
 } from "./coordinator-store-contract.js";
 import {
+	CoordinatorReciprocalApprovalRequestChangedError,
 	isCoordinatorAssignedIdentityId,
 	normalizeInviteExpiresAt,
 	recipientInviteAuthoritativeIdentityId,
@@ -1724,6 +1725,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		const groupId = String(opts.groupId ?? "").trim();
 		const requestingDeviceId = String(opts.requestingDeviceId ?? "").trim();
 		const requestedDeviceId = String(opts.requestedDeviceId ?? "").trim();
+		const hasExpectedIncomingRequestId = opts.expectedIncomingRequestId !== undefined;
+		const expectedIncomingRequestId = opts.expectedIncomingRequestId?.trim() ?? "";
 		if (!groupId || !requestingDeviceId || !requestedDeviceId) {
 			throw new Error("groupId, requestingDeviceId, and requestedDeviceId are required.");
 		}
@@ -1732,6 +1735,25 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		}
 		return this.db.transaction(() => {
 			const now = nowISO();
+			if (hasExpectedIncomingRequestId) {
+				const result = this.db
+					.prepare(`UPDATE coordinator_reciprocal_approvals
+						 SET status = 'completed', resolved_at = ?
+						 WHERE request_id = ?
+						   AND group_id = ?
+						   AND requesting_device_id = ?
+						   AND requested_device_id = ?
+						   AND status = 'pending'`)
+					.run(now, expectedIncomingRequestId, groupId, requestedDeviceId, requestingDeviceId);
+				if (result.changes !== 1) {
+					throw new CoordinatorReciprocalApprovalRequestChangedError();
+				}
+				const completed = this.db
+					.prepare(`SELECT request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
+						 FROM coordinator_reciprocal_approvals WHERE request_id = ?`)
+					.get(expectedIncomingRequestId);
+				return rowToRecord<CoordinatorReciprocalApproval>(completed);
+			}
 			const existing = this.db
 				.prepare(`SELECT request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
 					 FROM coordinator_reciprocal_approvals

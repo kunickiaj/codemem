@@ -69,9 +69,271 @@ describe("loadSyncData", () => {
 		state.lastShareOperations = [];
 		state.shareOperationsLoadError = false;
 		state.lastSyncCoordinator = null;
+		state.pendingCoordinatorApprovalsByDeviceId.clear();
 		state.lastSyncViewModel = null;
 		state.lastDeviceIdentityInventory = null;
 		state.deviceIdentityInventoryLoadError = false;
+	});
+
+	it("retains pending approval when the matching device still needs local approval", async () => {
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadSyncData } = await import("./index");
+		state.pendingCoordinatorApprovalsByDeviceId.set("device-a", {
+			coordinatorUrl: "https://coord.example.test",
+			incomingRequestId: "request-a",
+		});
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({
+			coordinator: {
+				coordinator_url: "https://coord.example.test",
+				groups: ["team-a"],
+				discovered_devices: [
+					{
+						device_id: "device-a",
+						fingerprint: null,
+						groups: ["team-a"],
+						needs_local_approval: true,
+						incoming_reciprocal_request_id: "request-a",
+					},
+				],
+			},
+			peers: [],
+		} as never);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+
+		await loadSyncData();
+
+		expect(state.pendingCoordinatorApprovalsByDeviceId.get("device-a")).toEqual({
+			coordinatorUrl: "https://coord.example.test",
+			incomingRequestId: "request-a",
+		});
+	});
+
+	it("clears pending approval when the matching device no longer needs local approval", async () => {
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadSyncData } = await import("./index");
+		state.pendingCoordinatorApprovalsByDeviceId.set("device-a", {
+			coordinatorUrl: "https://coord.example.test",
+			incomingRequestId: "request-a",
+		});
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({
+			coordinator: {
+				coordinator_url: "https://coord.example.test",
+				groups: ["team-a"],
+				discovered_devices: [
+					{
+						device_id: "device-a",
+						fingerprint: "fingerprint-a",
+						groups: ["team-a"],
+						needs_local_approval: false,
+						incoming_reciprocal_request_id: "request-a",
+					},
+				],
+			},
+			peers: [],
+		} as never);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+
+		await loadSyncData();
+
+		expect(state.pendingCoordinatorApprovalsByDeviceId.has("device-a")).toBe(false);
+	});
+
+	it("retains pending approval when the device is absent from the snapshot", async () => {
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadSyncData } = await import("./index");
+		state.pendingCoordinatorApprovalsByDeviceId.set("device-a", {
+			coordinatorUrl: "https://coord.example.test",
+			incomingRequestId: "request-a",
+		});
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({
+			coordinator: {
+				coordinator_url: "https://coord.example.test",
+				groups: ["team-a"],
+				discovered_devices: [],
+			},
+			peers: [],
+		} as never);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+
+		await loadSyncData();
+
+		expect(state.pendingCoordinatorApprovalsByDeviceId.has("device-a")).toBe(true);
+	});
+
+	it("retains pending approval when reciprocal approval data is incomplete", async () => {
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadSyncData } = await import("./index");
+		state.pendingCoordinatorApprovalsByDeviceId.set("device-a", {
+			coordinatorUrl: "https://coord.example.test",
+			incomingRequestId: "request-a",
+		});
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({
+			coordinator: {
+				coordinator_url: "https://coord.example.test",
+				reciprocal_approval_error: "coordinator request timed out",
+				discovered_devices: [
+					{
+						device_id: "device-a",
+						needs_local_approval: false,
+						incoming_reciprocal_request_id: null,
+					},
+				],
+			},
+			peers: [],
+		} as never);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+
+		await loadSyncData();
+
+		expect(state.pendingCoordinatorApprovalsByDeviceId.has("device-a")).toBe(true);
+	});
+
+	it("clears pending approval when the device ID has a replacement request", async () => {
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadSyncData } = await import("./index");
+		state.pendingCoordinatorApprovalsByDeviceId.set("device-a", {
+			coordinatorUrl: "https://coord.example.test",
+			incomingRequestId: "request-reviewed",
+		});
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({
+			coordinator: {
+				coordinator_url: "https://coord.example.test",
+				groups: ["team-a"],
+				discovered_devices: [
+					{
+						device_id: "device-a",
+						fingerprint: "fingerprint-replacement",
+						groups: ["team-a"],
+						needs_local_approval: true,
+						incoming_reciprocal_request_id: "request-replacement",
+					},
+				],
+			},
+			peers: [],
+		} as never);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+
+		await loadSyncData();
+
+		expect(state.pendingCoordinatorApprovalsByDeviceId.has("device-a")).toBe(false);
+	});
+
+	it("retains pending approval when one duplicate device entry still matches", async () => {
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadSyncData } = await import("./index");
+		state.pendingCoordinatorApprovalsByDeviceId.set("device-a", {
+			coordinatorUrl: "https://coord.example.test",
+			incomingRequestId: "request-reviewed",
+		});
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({
+			coordinator: {
+				coordinator_url: "https://coord.example.test",
+				groups: ["team-a"],
+				discovered_devices: [
+					{
+						device_id: "device-a",
+						fingerprint: "fingerprint-reviewed",
+						groups: ["team-a"],
+						needs_local_approval: true,
+						incoming_reciprocal_request_id: "request-reviewed",
+					},
+					{
+						device_id: "device-a",
+						fingerprint: "fingerprint-replacement",
+						groups: ["team-a"],
+						needs_local_approval: true,
+						incoming_reciprocal_request_id: "request-replacement",
+					},
+				],
+			},
+			peers: [],
+		} as never);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+
+		await loadSyncData();
+
+		expect(state.pendingCoordinatorApprovalsByDeviceId.has("device-a")).toBe(true);
+	});
+
+	it.each([
+		["coordinator URL", "https://other-coord.example.test", "request-a"],
+		["reciprocal request", "https://coord.example.test", "request-b"],
+	])("clears pending approval when the %s changes", async (_label, coordinatorUrl, requestId) => {
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadSyncData } = await import("./index");
+		state.pendingCoordinatorApprovalsByDeviceId.set("device-a", {
+			coordinatorUrl: "https://coord.example.test",
+			incomingRequestId: "request-a",
+		});
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({
+			coordinator: {
+				coordinator_url: coordinatorUrl,
+				groups: ["team-a"],
+				discovered_devices: [
+					{
+						device_id: "device-a",
+						fingerprint: "fingerprint-a",
+						groups: ["team-a"],
+						needs_local_approval: true,
+						incoming_reciprocal_request_id: requestId,
+					},
+				],
+			},
+			peers: [],
+		} as never);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+
+		await loadSyncData();
+
+		expect(state.pendingCoordinatorApprovalsByDeviceId.has("device-a")).toBe(false);
+	});
+
+	it("rerenders when local pending approval state changes without a payload change", async () => {
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadSyncData } = await import("./index");
+		const { renderTeamSync } = await import("./team-sync");
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({
+			coordinator: {
+				coordinator_url: "https://coord.example.test",
+				groups: ["team-a"],
+				discovered_devices: [
+					{
+						device_id: "device-a",
+						fingerprint: "fingerprint-a",
+						groups: ["team-a"],
+						needs_local_approval: true,
+						incoming_reciprocal_request_id: "request-a",
+					},
+				],
+			},
+			peers: [],
+		} as never);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+
+		await loadSyncData();
+		state.pendingCoordinatorApprovalsByDeviceId.set("device-a", {
+			coordinatorUrl: "https://coord.example.test",
+			incomingRequestId: "request-a",
+		});
+		await loadSyncData();
+
+		expect(renderTeamSync).toHaveBeenCalledTimes(2);
 	});
 
 	it("ignores stale out-of-order sync payloads from older refreshes", async () => {

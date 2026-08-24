@@ -156,7 +156,9 @@ export {
 	DEFAULT_COORDINATOR_DB_PATH,
 } from "./coordinator-store.js";
 export {
+	CoordinatorReciprocalApprovalRequestChangedError,
 	isCoordinatorAssignedIdentityId,
+	RECIPROCAL_APPROVAL_REQUEST_CHANGED,
 	recipientInviteAuthoritativeIdentityId,
 } from "./coordinator-store-contract.js";
 export type { Database } from "./db.js";

@@ -23,6 +23,7 @@ import {
 	type CoordinatorPeerRecord,
 	type CoordinatorPresenceRecord,
 	type CoordinatorReciprocalApproval,
+	CoordinatorReciprocalApprovalRequestChangedError,
 	type CoordinatorRequestVerifier,
 	type CoordinatorReviewJoinRequestInput,
 	type CoordinatorRevokeScopeMembershipInput,
@@ -2196,6 +2197,122 @@ describe("createCoordinatorApp dependency injection", () => {
 			requestingDeviceId: "local-device",
 			requestedDeviceId: "peer-a",
 		});
+	});
+
+	it("passes the expected incoming request id when completing a reciprocal approval", async () => {
+		const createReciprocalApproval = vi.fn(async () => ({
+			request_id: "req-1",
+			group_id: "g1",
+			requesting_device_id: "peer-a",
+			requested_device_id: "local-device",
+			status: "completed",
+			created_at: "2026-03-28T00:00:00Z",
+			resolved_at: "2026-03-28T00:01:00Z",
+		}));
+		const store = createMockStore({
+			getGroup: vi.fn(async () => ({
+				group_id: "g1",
+				display_name: "Group 1",
+				archived_at: null,
+				created_at: "2026-03-28T00:00:00Z",
+			})),
+			getEnrollment: vi.fn(async (groupId: string, deviceId: string) =>
+				groupId === "g1" && (deviceId === "local-device" || deviceId === "peer-a")
+					? {
+							group_id: "g1",
+							device_id: deviceId,
+							public_key: `pk-${deviceId}`,
+							fingerprint: `fp-${deviceId}`,
+							identity_id: null,
+							display_name: deviceId,
+							enabled: 1,
+							created_at: "2026-03-28T00:00:00Z",
+						}
+					: null,
+			),
+			createReciprocalApproval,
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+
+		const res = await app.request("/v1/reciprocal-approvals", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Opencode-Device": "local-device",
+				"X-Opencode-Signature": "v1:test",
+				"X-Opencode-Timestamp": "123",
+				"X-Opencode-Nonce": "nonce-expected",
+			},
+			body: JSON.stringify({
+				group_id: "g1",
+				requested_device_id: "peer-a",
+				expected_incoming_request_id: "req-1",
+			}),
+		});
+
+		expect(res.status).toBe(200);
+		expect(createReciprocalApproval).toHaveBeenCalledWith({
+			groupId: "g1",
+			requestingDeviceId: "local-device",
+			requestedDeviceId: "peer-a",
+			expectedIncomingRequestId: "req-1",
+		});
+	});
+
+	it("returns a stable conflict when the expected incoming request changed", async () => {
+		const store = createMockStore({
+			getGroup: vi.fn(async () => ({
+				group_id: "g1",
+				display_name: "Group 1",
+				archived_at: null,
+				created_at: "2026-03-28T00:00:00Z",
+			})),
+			getEnrollment: vi.fn(async (groupId: string, deviceId: string) =>
+				groupId === "g1" && (deviceId === "local-device" || deviceId === "peer-a")
+					? {
+							group_id: "g1",
+							device_id: deviceId,
+							public_key: `pk-${deviceId}`,
+							fingerprint: `fp-${deviceId}`,
+							identity_id: null,
+							display_name: deviceId,
+							enabled: 1,
+							created_at: "2026-03-28T00:00:00Z",
+						}
+					: null,
+			),
+			createReciprocalApproval: vi.fn(async () => {
+				throw new CoordinatorReciprocalApprovalRequestChangedError();
+			}),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+
+		const res = await app.request("/v1/reciprocal-approvals", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Opencode-Device": "local-device",
+				"X-Opencode-Signature": "v1:test",
+				"X-Opencode-Timestamp": "123",
+				"X-Opencode-Nonce": "nonce-conflict",
+			},
+			body: JSON.stringify({
+				group_id: "g1",
+				requested_device_id: "peer-a",
+				expected_incoming_request_id: "stale-req",
+			}),
+		});
+
+		expect(res.status).toBe(409);
+		expect(await res.json()).toEqual({ error: "reciprocal_approval_request_changed" });
 	});
 
 	it("lists Sharing domains for an admin-authenticated group", async () => {

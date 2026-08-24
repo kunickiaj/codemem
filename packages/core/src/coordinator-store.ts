@@ -36,3 +36,7 @@ export type {
 	CoordinatorUpdateScopeInput,
 	CoordinatorUpsertPresenceInput,
 } from "./coordinator-store-contract.js";
+export {
+	CoordinatorReciprocalApprovalRequestChangedError,
+	RECIPROCAL_APPROVAL_REQUEST_CHANGED,
+} from "./coordinator-store-contract.js";

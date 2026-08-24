@@ -2,7 +2,7 @@ import { render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, describe, expect, it } from "vitest";
 import { deriveTeamSyncPrimaryStatus } from "../view-model";
-import { TeamSyncPanel } from "./team-sync-panel";
+import { type TeamSyncDiscoveredRow, TeamSyncPanel } from "./team-sync-panel";
 
 let mount: HTMLDivElement | null = null;
 
@@ -31,6 +31,72 @@ function renderPrimaryStatus(primaryStatus: ReturnType<typeof deriveTeamSyncPrim
 		);
 	});
 	return mount;
+}
+
+function discoveredRow(overrides: Partial<TeamSyncDiscoveredRow> = {}): TeamSyncDiscoveredRow {
+	return {
+		actionMessage: null,
+		actionLabel: "Approve on this device",
+		approvalBadgeLabel: "Needs your approval",
+		approvalState: "needs-local-approval",
+		availabilityLabel: "Available",
+		connectionLabel: "Paired on this device",
+		coordinatorUrl: "https://coord.example.test",
+		deviceId: "device-a",
+		displayName: "Desk Mini",
+		displayTitle: "device-a",
+		fingerprint: "fingerprint-a",
+		groupId: "team-a",
+		incomingRequestId: "request-a",
+		mode: "accept",
+		note: "No fresh addresses",
+		pairedMessage: null,
+		...overrides,
+	};
+}
+
+function renderDiscoveredRows(
+	rows: TeamSyncDiscoveredRow[],
+	onReviewDiscoveredDevice: (row: TeamSyncDiscoveredRow) => Promise<{
+		message: string;
+		tone: "success" | "warning";
+	} | null> = async () => null,
+) {
+	const discoveredListMount = document.createElement("div");
+	document.body.appendChild(discoveredListMount);
+	mount = document.createElement("div");
+	document.body.appendChild(mount);
+	act(() => {
+		render(
+			<TeamSyncPanel
+				actionItems={[]}
+				actionableCount={rows.filter((row) => row.mode === "accept").length}
+				discoveredListMount={discoveredListMount}
+				discoveredRows={rows}
+				joinRequestsMount={null}
+				onApproveJoinRequest={async () => null}
+				onAttentionAction={async () => {}}
+				onDenyJoinRequest={async () => null}
+				onInspectConflict={() => {}}
+				onRemoveConflict={async () => null}
+				onReviewDiscoveredDevice={onReviewDiscoveredDevice}
+				pendingJoinRequests={[]}
+				presenceStatus="posted"
+				primaryStatus={deriveTeamSyncPrimaryStatus({
+					status: { enabled: true, daemon_state: "ok", daemon_running: true },
+					coordinator: {
+						configured: true,
+						sync_enabled: true,
+						groups: ["Acme"],
+						presence_status: "posted",
+					},
+					peers: [{ peer_device_id: "device-a", status: { peer_state: "online" } }],
+				})}
+			/>,
+			mount as HTMLDivElement,
+		);
+	});
+	return discoveredListMount;
 }
 
 afterEach(() => {
@@ -156,5 +222,43 @@ describe("TeamSyncPanel primary status", () => {
 
 		expect(root.textContent).toContain("No urgent team work right now.");
 		expect(root.querySelector("[data-primary-sync-state]")).toBeNull();
+	});
+});
+
+describe("TeamSyncPanel discovered approval rows", () => {
+	it("renders approval pending as ordinary status without another approval action", () => {
+		const discovered = renderDiscoveredRows([
+			discoveredRow({
+				actionMessage:
+					"Waiting for refreshed coordinator status. You do not need to approve again.",
+				actionLabel: null,
+				approvalBadgeLabel: "Approval sent",
+				approvalState: "approval-pending",
+				mode: "approval-pending",
+			}),
+		]);
+
+		expect(discovered.textContent).toContain("Approval sent");
+		expect(discovered.textContent).toContain(
+			"Waiting for refreshed coordinator status. You do not need to approve again.",
+		);
+		expect(discovered.querySelector("button")).toBeNull();
+		expect(discovered.querySelector('[role="status"]')).toBeNull();
+	});
+
+	it("keeps a failed approval action retryable", async () => {
+		const discovered = renderDiscoveredRows([discoveredRow()], async () => ({
+			message: "Approval failed before submission. Try again.",
+			tone: "warning",
+		}));
+		const button = discovered.querySelector("button") as HTMLButtonElement;
+
+		await act(async () => button.click());
+
+		expect(button.textContent).toBe("Retry");
+		expect(button.disabled).toBe(false);
+		expect(discovered.querySelector('[role="alert"]')?.textContent).toContain(
+			"Approval failed before submission",
+		);
 	});
 });

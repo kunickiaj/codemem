@@ -229,10 +229,18 @@ export async function renamePeer(peerDeviceId: string, name: string): Promise<un
 
 export async function acceptDiscoveredPeer(
 	peerDeviceId: string,
-	fingerprint?: string,
+	options?: {
+		fingerprint?: string | null;
+		expectedGroupId?: string;
+		expectedIncomingRequestId?: string;
+	},
 ): Promise<AcceptDiscoveredPeerResult> {
 	const body: Record<string, string> = { peer_device_id: peerDeviceId };
-	if (fingerprint) body.fingerprint = fingerprint;
+	if (options?.fingerprint) body.fingerprint = options.fingerprint;
+	if (options?.expectedGroupId) body.expected_group_id = options.expectedGroupId;
+	if (options?.expectedIncomingRequestId) {
+		body.expected_incoming_request_id = options.expectedIncomingRequestId;
+	}
 	const resp = await fetch("/api/sync/peers/accept-discovered", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },

@@ -9,14 +9,19 @@ import { SyncInlineFeedback } from "./sync-inline-feedback";
 export interface TeamSyncDiscoveredRow {
 	actionMessage: string | null;
 	actionLabel: string | null;
+	approvalState: "needs-local-approval" | "approval-pending" | "not-required";
 	approvalBadgeLabel: string | null;
 	availabilityLabel: string;
+	coordinatorUrl: string;
 	deviceId: string;
 	displayName: string;
 	displayTitle: string | null;
 	fingerprint: string;
+	groupId: string;
+	incomingRequestId: string;
 	mode:
 		| "accept"
+		| "approval-pending"
 		| "ambiguous"
 		| "conflict"
 		| "none"
@@ -212,8 +217,13 @@ function DiscoveredDeviceRow({
 								tone: "success",
 							});
 							try {
-								setFeedback((await onReview(row)) || null);
-								setReviewLabel(row.actionLabel || defaultReviewLabel);
+								const nextFeedback = (await onReview(row)) || null;
+								setFeedback(nextFeedback);
+								setReviewLabel(
+									nextFeedback?.tone === "warning"
+										? "Retry"
+										: row.actionLabel || defaultReviewLabel,
+								);
 							} catch {
 								setFeedback({
 									message: `Pairing ${row.displayName} failed. Try again.`,
@@ -229,6 +239,7 @@ function DiscoveredDeviceRow({
 					</button>
 				) : null}
 				{(row.mode === "stale" ||
+					row.mode === "approval-pending" ||
 					row.mode === "ambiguous" ||
 					row.mode === "scope-pending" ||
 					row.mode === "setup-blocked") &&
@@ -355,7 +366,7 @@ function DiscoveredPortal({
 			<SyncInlineFeedback feedback={state.syncDiscoveredFeedback} />
 			{rows.map((row) => (
 				<DiscoveredDeviceRow
-					key={row.deviceId}
+					key={`${row.deviceId}:${row.incomingRequestId}:${row.fingerprint}`}
 					row={row}
 					onInspectConflict={onInspectConflict}
 					onRemoveConflict={onRemoveConflict}

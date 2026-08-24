@@ -3,12 +3,13 @@ import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBetterSqliteCoordinatorApp } from "./better-sqlite-coordinator-runtime.js";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
 import {
 	advertisedSyncAddresses,
 	coordinatorStatusSnapshot,
+	createCoordinatorReciprocalApproval,
 	fetchCoordinatorStalePeers,
 	lookupCoordinatorPeers,
 	readCoordinatorSyncConfig,
@@ -248,6 +249,57 @@ describe("lookupCoordinatorPeers", () => {
 			rmSync(keysDir, { recursive: true, force: true });
 		}
 	});
+
+	it("keeps the earliest expiry when merging fresh sightings across groups", async () => {
+		const db = new Database(":memory:");
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-runtime-keys-"));
+		const prevFetch = globalThis.fetch;
+		try {
+			initTestSchema(db);
+			globalThis.fetch = (async (input: RequestInfo | URL) => {
+				const groupId = new URL(String(input)).searchParams.get("group_id") || "";
+				const isLaterGroup = groupId === "team-b";
+				return new Response(
+					JSON.stringify({
+						items: [
+							{
+								device_id: "peer-1",
+								fingerprint: "fp-1",
+								public_key: "pk-1",
+								addresses: [`${groupId}.example.test:7337`],
+								last_seen_at: isLaterGroup
+									? "2026-08-24T00:00:10.000Z"
+									: "2026-08-24T00:00:00.000Z",
+								expires_at: isLaterGroup ? "2026-08-24T00:01:10.000Z" : "2026-08-24T00:01:00.000Z",
+								stale: false,
+							},
+						],
+					}),
+					{ status: 200 },
+				);
+			}) as typeof fetch;
+
+			const peers = await lookupCoordinatorPeers(
+				{ db, dbPath: ":memory:" },
+				readCoordinatorSyncConfig({
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_groups: ["team-a", "team-b"],
+				}),
+				{ keysDir },
+			);
+
+			expect(peers[0]?.addresses).toEqual([
+				"http://team-a.example.test:7337",
+				"http://team-b.example.test:7337",
+			]);
+			expect(peers[0]?.last_seen_at).toBe("2026-08-24T00:00:10.000Z");
+			expect(peers[0]?.expires_at).toBe("2026-08-24T00:01:00.000Z");
+		} finally {
+			globalThis.fetch = prevFetch;
+			db.close();
+			rmSync(keysDir, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("Node coordinator signature invariance", () => {
@@ -317,6 +369,668 @@ describe("Node coordinator signature invariance", () => {
 });
 
 describe("coordinatorStatusSnapshot", () => {
+	it("reuses remote status for 30 seconds and refreshes at the cache boundary", async () => {
+		const db = new Database(":memory:");
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-runtime-keys-"));
+		const prevFetch = globalThis.fetch;
+		const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+		const requestsByPath = new Map<string, number>();
+		try {
+			initTestSchema(db);
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date("2026-08-24T00:00:00.000Z"));
+			globalThis.fetch = (async (input: RequestInfo | URL) => {
+				const pathname = new URL(String(input)).pathname;
+				requestsByPath.set(pathname, (requestsByPath.get(pathname) ?? 0) + 1);
+				if (pathname === "/v1/presence") {
+					return new Response(JSON.stringify({ addresses: [] }), { status: 200 });
+				}
+				if (pathname === "/v1/peers" || pathname === "/v1/reciprocal-approvals") {
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+			}) as typeof fetch;
+			const config = readCoordinatorSyncConfig({
+				sync_enabled: true,
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_group: "team-a",
+			});
+			const store = {
+				db,
+				dbPath: `:memory:-${randomUUID()}`,
+			} as unknown as MemoryStore;
+
+			await coordinatorStatusSnapshot(store, config);
+			const initialRequests = new Map(requestsByPath);
+			vi.advanceTimersByTime(29_999);
+			await coordinatorStatusSnapshot(store, config);
+
+			expect(requestsByPath).toEqual(initialRequests);
+
+			vi.advanceTimersByTime(1);
+			await coordinatorStatusSnapshot(store, config);
+
+			expect(requestsByPath.get("/v1/peers")).toBe(2);
+			expect(requestsByPath.get("/v1/reciprocal-approvals")).toBe(4);
+			expect(requestsByPath.get("/v1/presence")).toBe(1);
+		} finally {
+			vi.useRealTimers();
+			globalThis.fetch = prevFetch;
+			if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			db.close();
+			rmSync(keysDir, { recursive: true, force: true });
+		}
+	});
+
+	it("refreshes short-lived presence independently while reusing the status snapshot", async () => {
+		const db = new Database(":memory:");
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-runtime-keys-"));
+		const prevFetch = globalThis.fetch;
+		const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+		const requestsByPath = new Map<string, number>();
+		try {
+			initTestSchema(db);
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date("2026-08-24T00:00:00.000Z"));
+			globalThis.fetch = (async (input: RequestInfo | URL) => {
+				const pathname = new URL(String(input)).pathname;
+				requestsByPath.set(pathname, (requestsByPath.get(pathname) ?? 0) + 1);
+				if (pathname === "/v1/presence") {
+					return new Response(JSON.stringify({ addresses: [] }), { status: 200 });
+				}
+				if (pathname === "/v1/peers" || pathname === "/v1/reciprocal-approvals") {
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+			}) as typeof fetch;
+			const config = readCoordinatorSyncConfig({
+				sync_enabled: true,
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_group: "team-a",
+				sync_coordinator_presence_ttl_s: 20,
+			});
+			const store = {
+				db,
+				dbPath: `:memory:-${randomUUID()}`,
+			} as unknown as MemoryStore;
+
+			await coordinatorStatusSnapshot(store, config);
+			vi.advanceTimersByTime(9_999);
+			await coordinatorStatusSnapshot(store, config);
+			expect(requestsByPath.get("/v1/presence")).toBe(1);
+
+			vi.advanceTimersByTime(1);
+			await coordinatorStatusSnapshot(store, config);
+
+			expect(requestsByPath.get("/v1/presence")).toBe(2);
+			expect(requestsByPath.get("/v1/peers")).toBe(1);
+			expect(requestsByPath.get("/v1/reciprocal-approvals")).toBe(2);
+		} finally {
+			vi.useRealTimers();
+			globalThis.fetch = prevFetch;
+			if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			db.close();
+			rmSync(keysDir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not reuse cached peers after a presence refresh detects enrollment loss", async () => {
+		const db = new Database(":memory:");
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-runtime-keys-"));
+		const prevFetch = globalThis.fetch;
+		const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+		let peerRequests = 0;
+		let presenceRequests = 0;
+		try {
+			initTestSchema(db);
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date("2026-08-24T00:00:00.000Z"));
+			globalThis.fetch = (async (input: RequestInfo | URL) => {
+				const pathname = new URL(String(input)).pathname;
+				if (pathname === "/v1/presence") {
+					presenceRequests += 1;
+					if (presenceRequests > 1) {
+						return new Response(JSON.stringify({ error: "unknown_device" }), { status: 404 });
+					}
+					return new Response(JSON.stringify({ addresses: [] }), { status: 200 });
+				}
+				if (pathname === "/v1/peers") {
+					peerRequests += 1;
+					if (presenceRequests > 1) {
+						return new Response(JSON.stringify({ error: "unknown_device" }), { status: 404 });
+					}
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-before-revocation",
+									expires_at: "2026-08-24T00:00:30.000Z",
+									stale: false,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (pathname === "/v1/reciprocal-approvals") {
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+			}) as typeof fetch;
+			const config = readCoordinatorSyncConfig({
+				sync_enabled: true,
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_group: "team-a",
+				sync_coordinator_presence_ttl_s: 20,
+			});
+			const store = {
+				db,
+				dbPath: `:memory:-${randomUUID()}`,
+			} as unknown as MemoryStore;
+
+			await coordinatorStatusSnapshot(store, config);
+			vi.advanceTimersByTime(10_000);
+			const revoked = await coordinatorStatusSnapshot(store, config);
+
+			expect(revoked.presence_status).toBe("not_enrolled");
+			expect(revoked.discovered_devices).toEqual([]);
+			expect(peerRequests).toBe(1);
+		} finally {
+			vi.useRealTimers();
+			globalThis.fetch = prevFetch;
+			if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			db.close();
+			rmSync(keysDir, { recursive: true, force: true });
+		}
+	});
+
+	it("refreshes peers when their cache deadline passes during a presence refresh", async () => {
+		const db = new Database(":memory:");
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-runtime-keys-"));
+		const prevFetch = globalThis.fetch;
+		const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+		let peerRequests = 0;
+		let presenceRequests = 0;
+		try {
+			initTestSchema(db);
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date("2026-08-24T00:00:00.000Z"));
+			globalThis.fetch = (async (input: RequestInfo | URL) => {
+				const pathname = new URL(String(input)).pathname;
+				if (pathname === "/v1/presence") {
+					presenceRequests += 1;
+					if (presenceRequests === 2) vi.advanceTimersByTime(1);
+					return new Response(JSON.stringify({ addresses: [] }), { status: 200 });
+				}
+				if (pathname === "/v1/peers") {
+					peerRequests += 1;
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-expiring-during-presence-refresh",
+									expires_at: "2026-08-24T00:00:15.000Z",
+									stale: peerRequests > 1,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (pathname === "/v1/reciprocal-approvals") {
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+			}) as typeof fetch;
+			const config = readCoordinatorSyncConfig({
+				sync_enabled: true,
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_group: "team-a",
+				sync_coordinator_presence_ttl_s: 20,
+			});
+			const store = {
+				db,
+				dbPath: `:memory:-${randomUUID()}`,
+			} as unknown as MemoryStore;
+
+			await coordinatorStatusSnapshot(store, config);
+			vi.advanceTimersByTime(14_999);
+			await coordinatorStatusSnapshot(store, config);
+
+			expect(presenceRequests).toBe(2);
+			expect(peerRequests).toBe(2);
+		} finally {
+			vi.useRealTimers();
+			globalThis.fetch = prevFetch;
+			if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			db.close();
+			rmSync(keysDir, { recursive: true, force: true });
+		}
+	});
+
+	it("refreshes the status snapshot when its earliest peer presence expires", async () => {
+		const db = new Database(":memory:");
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-runtime-keys-"));
+		const prevFetch = globalThis.fetch;
+		const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+		let peerRequests = 0;
+		try {
+			initTestSchema(db);
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date("2026-08-24T00:00:00.000Z"));
+			globalThis.fetch = (async (input: RequestInfo | URL) => {
+				const pathname = new URL(String(input)).pathname;
+				if (pathname === "/v1/presence") {
+					return new Response(JSON.stringify({ addresses: [] }), { status: 200 });
+				}
+				if (pathname === "/v1/peers") {
+					peerRequests += 1;
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-expiring",
+									fingerprint: "peer-fingerprint",
+									public_key: "peer-public-key",
+									addresses: ["http://10.0.0.5:7337"],
+									expires_at: "2026-08-24T00:00:15.000Z",
+									stale: peerRequests > 1,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (pathname === "/v1/reciprocal-approvals") {
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+			}) as typeof fetch;
+			const config = readCoordinatorSyncConfig({
+				sync_enabled: true,
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_group: "team-a",
+			});
+			const store = {
+				db,
+				dbPath: `:memory:-${randomUUID()}`,
+			} as unknown as MemoryStore;
+
+			await coordinatorStatusSnapshot(store, config);
+			vi.advanceTimersByTime(14_999);
+			await coordinatorStatusSnapshot(store, config);
+			expect(peerRequests).toBe(1);
+
+			vi.advanceTimersByTime(1);
+			const refreshed = await coordinatorStatusSnapshot(store, config);
+
+			expect(peerRequests).toBe(2);
+			expect(refreshed.discovered_devices).toEqual([
+				expect.objectContaining({ device_id: "peer-expiring", stale: true }),
+			]);
+
+			vi.advanceTimersByTime(1_000);
+			await coordinatorStatusSnapshot(store, config);
+			expect(peerRequests).toBe(2);
+		} finally {
+			vi.useRealTimers();
+			globalThis.fetch = prevFetch;
+			if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			db.close();
+			rmSync(keysDir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not cache a status snapshot whose peer expires while approvals load", async () => {
+		const db = new Database(":memory:");
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-runtime-keys-"));
+		const prevFetch = globalThis.fetch;
+		const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+		let peerRequests = 0;
+		let approvalRequests = 0;
+		try {
+			initTestSchema(db);
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date("2026-08-24T00:00:00.000Z"));
+			globalThis.fetch = (async (input: RequestInfo | URL) => {
+				const pathname = new URL(String(input)).pathname;
+				if (pathname === "/v1/presence") {
+					return new Response(JSON.stringify({ addresses: [] }), { status: 200 });
+				}
+				if (pathname === "/v1/peers") {
+					peerRequests += 1;
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-expiring-during-load",
+									expires_at: "2026-08-24T00:00:01.000Z",
+									stale: peerRequests > 1,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (pathname === "/v1/reciprocal-approvals") {
+					approvalRequests += 1;
+					if (approvalRequests === 1) vi.advanceTimersByTime(1_000);
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+			}) as typeof fetch;
+			const config = readCoordinatorSyncConfig({
+				sync_enabled: true,
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_group: "team-a",
+			});
+			const store = {
+				db,
+				dbPath: `:memory:-${randomUUID()}`,
+			} as unknown as MemoryStore;
+
+			await coordinatorStatusSnapshot(store, config);
+			expect(Date.now()).toBe(Date.parse("2026-08-24T00:00:01.000Z"));
+			await coordinatorStatusSnapshot(store, config);
+			await coordinatorStatusSnapshot(store, config);
+
+			expect(peerRequests).toBe(2);
+		} finally {
+			vi.useRealTimers();
+			globalThis.fetch = prevFetch;
+			if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			db.close();
+			rmSync(keysDir, { recursive: true, force: true });
+		}
+	});
+
+	it("invalidates cached status after a reciprocal approval succeeds", async () => {
+		const db = new Database(":memory:");
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-runtime-keys-"));
+		const prevFetch = globalThis.fetch;
+		const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+		let peerRequests = 0;
+		let reciprocalApprovalPayload: Record<string, unknown> | null = null;
+		try {
+			initTestSchema(db);
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+				const pathname = new URL(String(input)).pathname;
+				const method = String(init?.method || "GET").toUpperCase();
+				if (pathname === "/v1/presence") {
+					return new Response(JSON.stringify({ addresses: [] }), { status: 200 });
+				}
+				if (pathname === "/v1/peers") {
+					peerRequests += 1;
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				if (pathname === "/v1/reciprocal-approvals" && method === "POST") {
+					reciprocalApprovalPayload = JSON.parse(String(init?.body ?? "{}"));
+					return new Response(
+						JSON.stringify({
+							request: {
+								request_id: "approval-1",
+								group_id: "team-a",
+								requesting_device_id: "local-device",
+								requested_device_id: "peer-a",
+								status: "pending",
+							},
+						}),
+						{ status: 200 },
+					);
+				}
+				if (pathname === "/v1/reciprocal-approvals") {
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+			}) as typeof fetch;
+			const config = readCoordinatorSyncConfig({
+				sync_enabled: true,
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_group: "team-a",
+			});
+			const store = {
+				db,
+				dbPath: `:memory:-${randomUUID()}`,
+			} as unknown as MemoryStore;
+
+			await coordinatorStatusSnapshot(store, config);
+			await coordinatorStatusSnapshot(store, config);
+			expect(peerRequests).toBe(1);
+
+			await createCoordinatorReciprocalApproval(store, config, {
+				groupId: "team-a",
+				requestedDeviceId: "peer-a",
+				expectedIncomingRequestId: "incoming-approval-1",
+			});
+			await coordinatorStatusSnapshot(store, config);
+
+			expect(peerRequests).toBe(2);
+			expect(reciprocalApprovalPayload).toEqual({
+				group_id: "team-a",
+				requested_device_id: "peer-a",
+				expected_incoming_request_id: "incoming-approval-1",
+			});
+		} finally {
+			globalThis.fetch = prevFetch;
+			if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			db.close();
+			rmSync(keysDir, { recursive: true, force: true });
+		}
+	});
+
+	it("invalidates cached status when the reviewed reciprocal approval changed", async () => {
+		const db = new Database(":memory:");
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-runtime-keys-"));
+		const prevFetch = globalThis.fetch;
+		const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+		let peerRequests = 0;
+		try {
+			initTestSchema(db);
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+				const pathname = new URL(String(input)).pathname;
+				const method = String(init?.method || "GET").toUpperCase();
+				if (pathname === "/v1/presence") {
+					return new Response(JSON.stringify({ addresses: [] }), { status: 200 });
+				}
+				if (pathname === "/v1/peers") {
+					peerRequests += 1;
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				if (pathname === "/v1/reciprocal-approvals" && method === "POST") {
+					return new Response(JSON.stringify({ error: "reciprocal_approval_request_changed" }), {
+						status: 409,
+					});
+				}
+				if (pathname === "/v1/reciprocal-approvals") {
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+			}) as typeof fetch;
+			const config = readCoordinatorSyncConfig({
+				sync_enabled: true,
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_group: "team-a",
+			});
+			const store = {
+				db,
+				dbPath: `:memory:-${randomUUID()}`,
+			} as unknown as MemoryStore;
+
+			await coordinatorStatusSnapshot(store, config);
+			await expect(
+				createCoordinatorReciprocalApproval(store, config, {
+					groupId: "team-a",
+					requestedDeviceId: "peer-a",
+					expectedIncomingRequestId: "stale-request",
+				}),
+			).rejects.toThrow("reciprocal_approval_request_changed");
+			await coordinatorStatusSnapshot(store, config);
+
+			expect(peerRequests).toBe(2);
+		} finally {
+			globalThis.fetch = prevFetch;
+			if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			db.close();
+			rmSync(keysDir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not cache a status request that started before reciprocal approval invalidation", async () => {
+		const db = new Database(":memory:");
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-runtime-keys-"));
+		const prevFetch = globalThis.fetch;
+		const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+		let peerRequests = 0;
+		let markFirstPeerRequestStarted!: () => void;
+		let releaseFirstPeerRequest!: () => void;
+		const firstPeerRequestStarted = new Promise<void>((resolve) => {
+			markFirstPeerRequestStarted = resolve;
+		});
+		const firstPeerRequestBlocked = new Promise<void>((resolve) => {
+			releaseFirstPeerRequest = resolve;
+		});
+		try {
+			initTestSchema(db);
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+				const pathname = new URL(String(input)).pathname;
+				const method = String(init?.method || "GET").toUpperCase();
+				if (pathname === "/v1/presence") {
+					return new Response(JSON.stringify({ addresses: [] }), { status: 200 });
+				}
+				if (pathname === "/v1/peers") {
+					peerRequests += 1;
+					if (peerRequests === 1) {
+						markFirstPeerRequestStarted();
+						await firstPeerRequestBlocked;
+					}
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				if (pathname === "/v1/reciprocal-approvals" && method === "POST") {
+					return new Response(
+						JSON.stringify({
+							request: {
+								request_id: "approval-race",
+								group_id: "team-a",
+								requesting_device_id: "local-device",
+								requested_device_id: "peer-a",
+								status: "pending",
+							},
+						}),
+						{ status: 200 },
+					);
+				}
+				if (pathname === "/v1/reciprocal-approvals") {
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+			}) as typeof fetch;
+			const config = readCoordinatorSyncConfig({
+				sync_enabled: true,
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_group: "team-a",
+			});
+			const store = {
+				db,
+				dbPath: `:memory:-${randomUUID()}`,
+			} as unknown as MemoryStore;
+
+			const staleStatusRequest = coordinatorStatusSnapshot(store, config);
+			await firstPeerRequestStarted;
+			await createCoordinatorReciprocalApproval(store, config, {
+				groupId: "team-a",
+				requestedDeviceId: "peer-a",
+			});
+			releaseFirstPeerRequest();
+			await staleStatusRequest;
+			await coordinatorStatusSnapshot(store, config);
+
+			expect(peerRequests).toBe(2);
+		} finally {
+			releaseFirstPeerRequest();
+			globalThis.fetch = prevFetch;
+			if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			db.close();
+			rmSync(keysDir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not cache a snapshot with incomplete reciprocal approval data", async () => {
+		const db = new Database(":memory:");
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-runtime-keys-"));
+		const prevFetch = globalThis.fetch;
+		const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+		let peerRequests = 0;
+		try {
+			initTestSchema(db);
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			globalThis.fetch = (async (input: RequestInfo | URL) => {
+				const pathname = new URL(String(input)).pathname;
+				if (pathname === "/v1/presence") {
+					return new Response(JSON.stringify({ addresses: [] }), { status: 200 });
+				}
+				if (pathname === "/v1/peers") {
+					peerRequests += 1;
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-a",
+									groups: ["team-a"],
+									stale: false,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (pathname === "/v1/reciprocal-approvals") {
+					return new Response(JSON.stringify({ error: "temporary failure" }), { status: 503 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+			}) as typeof fetch;
+			const config = readCoordinatorSyncConfig({
+				sync_enabled: true,
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_group: "team-a",
+			});
+			const store = {
+				db,
+				dbPath: `:memory:-${randomUUID()}`,
+			} as unknown as MemoryStore;
+
+			const first = await coordinatorStatusSnapshot(store, config);
+			const second = await coordinatorStatusSnapshot(store, config);
+
+			expect(first.reciprocal_approval_error).toContain("503");
+			expect(second.reciprocal_approval_error).toContain("503");
+			expect(peerRequests).toBe(2);
+		} finally {
+			globalThis.fetch = prevFetch;
+			if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			db.close();
+			rmSync(keysDir, { recursive: true, force: true });
+		}
+	});
+
 	it("reuses a short-lived coordinator snapshot instead of polling remote status on every viewer refresh", async () => {
 		const db = new Database(":memory:");
 		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-runtime-keys-"));

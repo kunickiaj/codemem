@@ -55,6 +55,8 @@ import {
 } from "../helpers/invite-panel-dom";
 
 const TEAM_SYNC_ACTIONS_MOUNT_ID = "syncTeamActionsMount";
+const APPROVAL_SENT_MESSAGE =
+	"Approval sent for this device. This screen may take up to 30 seconds to confirm two-way trust.";
 
 export function needsCoordinatorGroupReview(
 	groupIds: string[],
@@ -299,6 +301,7 @@ export function renderTeamSync() {
 	const discoveredDevices = Array.isArray(coordinator.discovered_devices)
 		? coordinator.discovered_devices
 		: [];
+	const coordinatorUrl = String(coordinator.coordinator_url || "").trim();
 	const discoveredRows: TeamSyncDiscoveredRow[] = discoveredDevices.map((device) => {
 		const deviceId = String(device.device_id || "").trim();
 		const rawCoordinatorName = String(device.display_name || "").trim();
@@ -307,6 +310,7 @@ export function renderTeamSync() {
 			"Discovered device";
 		const displayTitle = deviceId && displayName !== deviceId ? deviceId : null;
 		const fingerprint = String(device.fingerprint || "").trim();
+		const incomingRequestId = String(device.incoming_reciprocal_request_id || "").trim();
 		const groupIds = Array.isArray(device.groups)
 			? device.groups.map((value) => String(value || "").trim()).filter(Boolean)
 			: [];
@@ -326,7 +330,18 @@ export function renderTeamSync() {
 			Boolean(fingerprint) &&
 			Boolean(pairedFingerprint) &&
 			pairedFingerprint !== fingerprint;
+		const pendingApproval = state.pendingCoordinatorApprovalsByDeviceId.get(deviceId);
+		const approvalPending =
+			device.needs_local_approval === true &&
+			pendingApproval?.coordinatorUrl === coordinatorUrl &&
+			pendingApproval?.incomingRequestId === incomingRequestId;
+		const approvalState: TeamSyncDiscoveredRow["approvalState"] = approvalPending
+			? "approval-pending"
+			: device.needs_local_approval === true
+				? "needs-local-approval"
+				: "not-required";
 		const canAccept =
+			!approvalPending &&
 			!setupBlocker &&
 			shouldShowCoordinatorReviewAction({
 				device,
@@ -357,6 +372,9 @@ export function renderTeamSync() {
 
 		if (hasConflict) {
 			mode = "conflict";
+		} else if (approvalPending) {
+			actionMessage = "Waiting for refreshed coordinator status. You do not need to approve again.";
+			mode = "approval-pending";
 		} else if (setupBlocker && (!pairedPeer || approvalSummary.state === "needs-your-approval")) {
 			actionMessage = setupBlocker.message;
 			mode = "setup-blocked";
@@ -402,22 +420,34 @@ export function renderTeamSync() {
 			// their approval-specific label (e.g. "Approve on this device").
 			actionLabel:
 				approvalSummary.actionLabel || (pairedPeer ? "Review device" : "Pair with this device"),
-			approvalBadgeLabel: approvalSummary.badgeLabel,
+			approvalBadgeLabel: approvalPending ? "Approval sent" : approvalSummary.badgeLabel,
+			approvalState,
 			availabilityLabel: device.stale ? "Offline" : "Available",
 			connectionLabel: hasConflict
 				? SYNC_TERMINOLOGY.conflicts
 				: pairedPeer
 					? SYNC_TERMINOLOGY.pairedLocally
 					: "Not connected on this device",
+			coordinatorUrl,
 			deviceId,
 			displayName,
 			displayTitle,
 			fingerprint,
+			groupId: groupIds[0] ?? "",
+			incomingRequestId,
 			mode,
 			note: noteParts.join(" · "),
 			pairedMessage,
 		};
 	});
+	const pendingApprovalDeviceIds = new Set(
+		discoveredRows
+			.filter((row) => row.approvalState === "approval-pending")
+			.map((row) => row.deviceId),
+	);
+	const visibleAttentionItems = attentionItems.filter(
+		(item) => !item.deviceId || !pendingApprovalDeviceIds.has(item.deviceId),
+	);
 
 	const pendingJoinRequests: TeamSyncPendingJoinRequest[] = [];
 	const visibleDiscoveredRows = discoveredRows.filter(
@@ -430,7 +460,7 @@ export function renderTeamSync() {
 		(row) => row.mode === "accept" || row.mode === "scope-pending",
 	).length;
 	const actionableCount =
-		attentionItems.length + pendingJoinRequests.length + discoveredActionableCount;
+		visibleAttentionItems.length + pendingJoinRequests.length + discoveredActionableCount;
 	if (discoveredPanel) {
 		discoveredPanel.hidden = visibleDiscoveredRows.length === 0 && !state.syncDiscoveredFeedback;
 	}
@@ -451,7 +481,7 @@ export function renderTeamSync() {
 	renderIntoSyncMount(
 		actionMount,
 		h(TeamSyncPanel, {
-			actionItems: attentionItems,
+			actionItems: visibleAttentionItems,
 			actionableCount,
 			children: h(SyncInviteJoinPanels, {
 				invitePanel,
@@ -535,67 +565,7 @@ export function renderTeamSync() {
 				try {
 					const reviewedName = await reviewDiscoveredDeviceName(row.displayName);
 					if (!reviewedName) return null;
-					const result = await api.acceptDiscoveredPeer(row.deviceId, row.fingerprint);
-					const optimisticName =
-						String(result?.name || row.displayName || "").trim() || row.displayName;
-					const pendingPeers = Array.isArray(state.pendingAcceptedSyncPeers)
-						? state.pendingAcceptedSyncPeers.filter(
-								(peer) => String(peer?.peer_device_id || "").trim() !== row.deviceId,
-							)
-						: [];
-					state.pendingAcceptedSyncPeers = [
-						...pendingPeers,
-						{
-							peer_device_id: row.deviceId,
-							name: optimisticName,
-							fingerprint: row.fingerprint,
-							addresses: [],
-							claimed_local_actor: false,
-							status: { peer_state: "degraded" },
-							last_error: "Waiting for the other device to approve this one.",
-						},
-					];
-					requestPeerScopeReview(row.deviceId);
-					let feedback: SyncActionFeedback = {
-						message:
-							row.approvalBadgeLabel === "Needs your approval"
-								? `Approved ${row.displayName} on this device. Two-way trust should be ready once both devices refresh.`
-								: `Step 1 complete on this device for ${row.displayName}. Finish onboarding on the other device so both sides trust each other for sync.`,
-						tone: "success",
-					};
-					try {
-						if (reviewedName.trim() !== optimisticName.trim()) {
-							await api.renamePeer(row.deviceId, reviewedName.trim());
-							state.pendingAcceptedSyncPeers = state.pendingAcceptedSyncPeers.map((peer) =>
-								String(peer?.peer_device_id || "").trim() === row.deviceId
-									? { ...peer, name: reviewedName.trim() }
-									: peer,
-							);
-							feedback = {
-								message: `Connected ${reviewedName.trim()} and saved its name.`,
-								tone: "success",
-							};
-						}
-					} catch (error) {
-						feedback = {
-							message: friendlyError(error, "Device connected, but naming did not finish."),
-							tone: "warning",
-						};
-					}
-					state.syncDiscoveredFeedback = feedback;
-					try {
-						await teamSyncState.loadSyncData();
-					} catch (error) {
-						feedback = {
-							message: friendlyError(
-								error,
-								"Device connected, but the screen did not refresh yet. Refresh this page before trying the next step.",
-							),
-							tone: "warning",
-						};
-						state.syncDiscoveredFeedback = feedback;
-					}
-					return feedback;
+					return await submitDiscoveredDeviceReview(row, reviewedName);
 				} catch (error) {
 					return {
 						message: friendlyError(
@@ -611,4 +581,101 @@ export function renderTeamSync() {
 			primaryStatus: syncView.primaryStatus,
 		}),
 	);
+}
+
+export async function submitDiscoveredDeviceReview(
+	row: TeamSyncDiscoveredRow,
+	reviewedName: string,
+): Promise<SyncActionFeedback> {
+	const finalLocalApproval = row.approvalState === "needs-local-approval";
+	const reviewedDeviceId = row.deviceId.trim();
+	const reviewedCoordinatorUrl = row.coordinatorUrl.trim();
+	const reviewedGroupId = row.groupId.trim();
+	const reviewedIncomingRequestId = row.incomingRequestId.trim();
+	if (
+		finalLocalApproval &&
+		(!reviewedDeviceId || !reviewedCoordinatorUrl || !reviewedGroupId || !reviewedIncomingRequestId)
+	) {
+		throw new Error("Device identity is incomplete. Refresh the screen and try approval again.");
+	}
+	const result = await api.acceptDiscoveredPeer(row.deviceId, {
+		fingerprint: row.fingerprint,
+		expectedGroupId: reviewedGroupId || undefined,
+		expectedIncomingRequestId: finalLocalApproval ? reviewedIncomingRequestId : undefined,
+	});
+	const optimisticName = String(result?.name || row.displayName || "").trim() || row.displayName;
+	if (finalLocalApproval) {
+		state.pendingCoordinatorApprovalsByDeviceId.set(reviewedDeviceId, {
+			coordinatorUrl: reviewedCoordinatorUrl,
+			incomingRequestId: reviewedIncomingRequestId,
+		});
+	}
+
+	const pendingPeers = Array.isArray(state.pendingAcceptedSyncPeers)
+		? state.pendingAcceptedSyncPeers.filter(
+				(peer) => String(peer?.peer_device_id || "").trim() !== row.deviceId,
+			)
+		: [];
+	state.pendingAcceptedSyncPeers = [
+		...pendingPeers,
+		{
+			peer_device_id: row.deviceId,
+			name: optimisticName,
+			fingerprint: row.fingerprint,
+			addresses: [],
+			claimed_local_actor: false,
+			status: { peer_state: "degraded" },
+			last_error: "Waiting for the other device to approve this one.",
+		},
+	];
+	requestPeerScopeReview(row.deviceId);
+	let feedback: SyncActionFeedback = finalLocalApproval
+		? { message: APPROVAL_SENT_MESSAGE, tone: "success" }
+		: {
+				message: `Step 1 complete on this device for ${row.displayName}. Finish onboarding on the other device so both sides trust each other for sync.`,
+				tone: "success",
+			};
+	state.syncDiscoveredFeedback = feedback;
+	if (finalLocalApproval) renderTeamSync();
+
+	try {
+		if (reviewedName.trim() !== optimisticName.trim()) {
+			await api.renamePeer(row.deviceId, reviewedName.trim());
+			state.pendingAcceptedSyncPeers = state.pendingAcceptedSyncPeers.map((peer) =>
+				String(peer?.peer_device_id || "").trim() === row.deviceId
+					? { ...peer, name: reviewedName.trim() }
+					: peer,
+			);
+			if (!finalLocalApproval) {
+				feedback = {
+					message: `Connected ${reviewedName.trim()} and saved its name.`,
+					tone: "success",
+				};
+			}
+		}
+	} catch (error) {
+		feedback = {
+			message: finalLocalApproval
+				? "Approval was sent, but naming did not finish. You do not need to approve again."
+				: friendlyError(error, "Device connected, but naming did not finish."),
+			tone: "warning",
+		};
+	}
+	state.syncDiscoveredFeedback = feedback;
+
+	try {
+		await teamSyncState.loadSyncData();
+	} catch (error) {
+		feedback = {
+			message: finalLocalApproval
+				? "Approval was sent. Confirmation may take up to 30 seconds, and you do not need to approve again."
+				: friendlyError(
+						error,
+						"Device connected, but the screen did not refresh yet. Refresh this page before trying the next step.",
+					),
+			tone: "warning",
+		};
+		state.syncDiscoveredFeedback = feedback;
+	}
+	return feedback;
 }

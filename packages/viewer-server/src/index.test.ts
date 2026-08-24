@@ -10521,6 +10521,7 @@ describe("viewer-server", () => {
 					expect(requestBody).toEqual({
 						group_id: "team-a",
 						requested_device_id: "peer-fresh",
+						expected_incoming_request_id: "req-reviewed",
 					});
 					return new Response(
 						JSON.stringify({
@@ -10563,6 +10564,8 @@ describe("viewer-server", () => {
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({
 						peer_device_id: "peer-fresh",
+						expected_group_id: "team-a",
+						expected_incoming_request_id: "req-reviewed",
 					}),
 				});
 				expect(res.status).toBe(200);
@@ -10598,6 +10601,28 @@ describe("viewer-server", () => {
 				else process.env.CODEMEM_CONFIG = prevConfig;
 				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
 				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			}
+		});
+
+		it("rejects an explicitly empty reviewed reciprocal approval request", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/sync/peers/accept-discovered", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						peer_device_id: "peer-fresh",
+						expected_group_id: "team-a",
+						expected_incoming_request_id: " ",
+					}),
+				});
+
+				expect(res.status).toBe(400);
+				expect(await res.json()).toEqual({
+					error: "expected_incoming_request_id must not be empty",
+				});
+			} finally {
+				cleanup();
 			}
 		});
 

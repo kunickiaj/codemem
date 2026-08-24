@@ -8,11 +8,13 @@ Authenticated coordinator calls also maintain replay-protection nonces. Reducing
 
 ## Decision
 
-Keep the five-second local UI refresh, but reuse each remote coordinator status snapshot for 30 seconds. Presence continues to refresh on its existing schedule.
+Keep the five-second local UI refresh, but reuse each remote coordinator peer and approval snapshot for up to 30 seconds. A snapshot expires sooner at its earliest discovered peer presence expiry so cached availability and addresses cannot outlive coordinator presence. Local presence continues to refresh independently on its existing schedule, including while the peer and approval snapshot remains cached.
 
-Successful reciprocal-approval mutations invalidate the affected status snapshot. The next refresh must observe the post-action coordinator state instead of reusing a pre-action snapshot, including after a page reload or in another browser.
+Successful reciprocal-approval mutations invalidate the affected status snapshot. Invalidation increments a per-cache-key generation so a status request that started before the mutation cannot repopulate the cache after it finishes. The next refresh must observe the post-action coordinator state instead of reusing a pre-action snapshot, including after a page reload or in another browser.
 
-This first optimization deliberately does not change nonce retention, add indexes, or alter coordinator API contracts. The smaller change should reduce the principal source of traffic by roughly five-sixths while minimizing operational and security risk.
+Final reciprocal approval carries the group and incoming request ID that the user reviewed. The coordinator completes that exact pending reverse request atomically. If it has disappeared, changed direction, changed group, or already completed, the mutation returns HTTP 409 with `reciprocal_approval_request_changed`; it never silently approves a replacement request. That conflict also invalidates the local status cache so the requested refresh can expose the replacement immediately. Omitting the precondition preserves first-side request creation.
+
+This first optimization deliberately does not change nonce retention or add indexes. The smaller change should reduce the principal source of traffic by roughly five-sixths while minimizing operational and security risk.
 
 ## Approval feedback
 
@@ -24,7 +26,7 @@ When the cached snapshot said this device still needed to approve and the coordi
 2. Keep the device row visible with an **Approval sent** badge.
 3. Explain: **Waiting for refreshed coordinator status. You do not need to approve again.**
 4. Remove the approval button while confirmation is pending.
-5. Clear the pending state when the next uncached coordinator snapshot no longer says that local approval is required.
+5. Clear the pending state when the next complete coordinator snapshot no longer contains the exact incoming reciprocal request that was reviewed. This confirms that request is no longer pending; a replacement request is shown as new work rather than inheriting the old success state.
 
 When this device initiates the first side of reciprocal approval, cache invalidation makes the next refresh expose the coordinator's outgoing pending request. That flow does not use the final-approval marker because its pre-action snapshot did not require local approval.
 
@@ -36,8 +38,8 @@ The pending approval is global optimistic UI state keyed by device ID. Component
 
 The marker is created only after the approval request succeeds and before optional rename or screen-refresh work. Normal sync-data refreshes reconcile that state against coordinator device data before payload-hash short-circuiting:
 
-- matching device and incoming reciprocal request with `needs_local_approval = true`: retain the pending state because the snapshot may still be cached.
-- the reviewed incoming request is observed without `needs_local_approval`: remove the pending state because propagation is confirmed.
+- matching device and incoming reciprocal request: retain the pending state because the snapshot may still be cached.
+- the reviewed incoming request no longer appears in a complete snapshot: remove the pending state because that exact request is no longer pending.
 - the device is absent from the snapshot: retain the pending state rather than claiming success from incomplete data.
 - peer lookup or reciprocal-approval data is incomplete: retain the pending state and do not cache the partial coordinator snapshot.
 - the device ID appears with a different incoming reciprocal request: clear the success marker and require fresh review rather than applying approval feedback to a replacement request.

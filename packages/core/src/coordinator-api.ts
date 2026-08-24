@@ -21,6 +21,7 @@ import type {
 	CoordinatorScopeMembership,
 	CoordinatorStore,
 } from "./coordinator-store-contract.js";
+import { CoordinatorReciprocalApprovalRequestChangedError } from "./coordinator-store-contract.js";
 import { PROJECT_INVITE_PENDING_STATUS } from "./project-invite-acceptance.js";
 import {
 	normalizeHumanPresentationName,
@@ -683,6 +684,9 @@ export function createCoordinatorApp(
 
 		const groupId = String(data.group_id ?? "").trim();
 		const requestedDeviceId = String(data.requested_device_id ?? "").trim();
+		const expectedIncomingRequestId = Object.hasOwn(data, "expected_incoming_request_id")
+			? String(data.expected_incoming_request_id ?? "").trim()
+			: undefined;
 		if (!groupId || !requestedDeviceId) {
 			return c.json({ error: "group_id_and_requested_device_id_required" }, 400);
 		}
@@ -714,12 +718,20 @@ export function createCoordinatorApp(
 			if (!targetEnrollment) {
 				return c.json({ error: "requested_device_not_found" }, 404);
 			}
-			const request = await store.createReciprocalApproval({
-				groupId,
-				requestingDeviceId: String(auth.enrollment.device_id),
-				requestedDeviceId,
-			});
-			return c.json({ ok: true, request });
+			try {
+				const request = await store.createReciprocalApproval({
+					groupId,
+					requestingDeviceId: String(auth.enrollment.device_id),
+					requestedDeviceId,
+					...(expectedIncomingRequestId !== undefined ? { expectedIncomingRequestId } : {}),
+				});
+				return c.json({ ok: true, request });
+			} catch (error) {
+				if (error instanceof CoordinatorReciprocalApprovalRequestChangedError) {
+					return c.json({ error: error.code }, 409);
+				}
+				throw error;
+			}
 		} finally {
 			await store.close();
 		}
