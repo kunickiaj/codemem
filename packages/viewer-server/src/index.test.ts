@@ -31,6 +31,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createApp, createSyncApp } from "./index.js";
 import { __usageCacheTestHooks } from "./routes/stats.js";
 import { reconcileConfiguredCoordinatorEnrollment } from "./routes/sync.js";
+import { __teamSetupTestHooks, TEAM_SETUP_ROUTE_PREFIX } from "./routes/team-setup.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -180,6 +181,7 @@ function createTestApp(opts?: {
 	deviceId?: string;
 	sweeper?: unknown;
 	getUpdateStatus?: (options: core.GetUpdateStatusOptions) => Promise<core.UpdateStatus>;
+	loadLegacyTeamConfiguredGroupSnapshots?: () => Promise<core.LegacyTeamConfiguredGroupSnapshot[]>;
 	syncRequestRateLimit?: {
 		readLimit?: number;
 		mutationLimit?: number;
@@ -208,6 +210,7 @@ function createTestApp(opts?: {
 		storeFactory,
 		getUpdateStatus: opts?.getUpdateStatus,
 		getSyncRuntimeStatus: opts?.getSyncRuntimeStatus,
+		loadLegacyTeamConfiguredGroupSnapshots: opts?.loadLegacyTeamConfiguredGroupSnapshots,
 	};
 	const app = createApp(appOptions);
 
@@ -442,16 +445,15 @@ describe("viewer-server", () => {
 	it("sync UI api routes all exist in the viewer sync router", () => {
 		const root = join(import.meta.dirname, "../../..");
 		const apiSource = readFileSync(join(root, "packages/ui/src/lib/api.ts"), "utf8");
-		const routeSource = readFileSync(
-			join(root, "packages/viewer-server/src/routes/sync.ts"),
-			"utf8",
-		);
+		const routeSource = ["sync.ts", "team-setup.ts"]
+			.map((file) => readFileSync(join(root, "packages/viewer-server/src/routes", file), "utf8"))
+			.join("\n");
 		const uiRoutes = [
 			...apiSource.matchAll(/fetch\('(\/api\/sync\/[^']+)'/g),
 			...apiSource.matchAll(/fetchJson\('(\/api\/sync\/[^']+)'/g),
 		].map((match) => match[1]);
 		const concreteServerRoutes = [
-			...routeSource.matchAll(/app\.(?:get|post|delete)\("(\/api\/sync\/[^"]+)"/g),
+			...routeSource.matchAll(/app\.(?:get|post|put|delete)\("(\/api\/sync\/[^"]+)"/g),
 		].map((match) => match[1]);
 		const normalizedServerRoutes = new Set(
 			concreteServerRoutes.map((route) => route.replace(/:\w+/g, "__param__")),
@@ -462,6 +464,583 @@ describe("viewer-server", () => {
 				.map((route) => route.replace(/`\$\{[^}]+\}`/g, "__param__"))
 				.every((route) => normalizedServerRoutes.has(route)),
 		).toBe(true);
+		expect(concreteServerRoutes).toContain("/api/sync/team-setup/v1");
+		expect(concreteServerRoutes).toContain("/api/sync/team-setup/v1/:candidateRef");
+		expect(
+			concreteServerRoutes
+				.filter((route) => route.includes("/team-setup/"))
+				.every((route) => route.startsWith(TEAM_SETUP_ROUTE_PREFIX)),
+		).toBe(true);
+	});
+
+	describe("Team setup read API", () => {
+		const coordinatorId = "localhost:8787/";
+		const groupId = "group-alpha";
+		const rawDeviceId = "device-secret-id";
+		const rawIdentityId = "identity-secret-id";
+		const rawProjectIdentity = "https://private.example.invalid/secret/repo.git";
+		const candidateRef = core.legacyTeamCandidateId(coordinatorId, groupId);
+		const snapshots: core.LegacyTeamConfiguredGroupSnapshot[] = [
+			{
+				coordinatorId,
+				groupId,
+				displayName: "Migration Team",
+				devices: [
+					{
+						deviceId: rawDeviceId,
+						fingerprint: "fingerprint-secret",
+						displayName: "Review Laptop",
+						enabled: true,
+					},
+				],
+			},
+		];
+
+		it("returns versioned summaries and a redacted detail with preview only when finishable", async () => {
+			const { app, ensureStore, cleanup } = createTestApp({
+				loadLegacyTeamConfiguredGroupSnapshots: async () => snapshots,
+			});
+			try {
+				const store = ensureStore();
+				const now = "2026-08-24T00:00:00.000Z";
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, coordinator_id, group_id,
+							membership_epoch, status, created_at, updated_at
+						 ) VALUES ('scope-team-setup', 'Migration Team', 'team', 'coordinator',
+						 ?, ?, 1, 'active', ?, ?)`,
+					)
+					.run(coordinatorId, groupId, now, now);
+				store.db
+					.prepare(
+						`INSERT INTO project_scope_mappings(
+							workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+						 ) VALUES (?, ?, 'scope-team-setup', 1000, 'test', ?, ?)`,
+					)
+					.run(rawProjectIdentity, rawProjectIdentity, now, now);
+				const sessionId = Number(
+					store.db
+						.prepare(
+							`INSERT INTO sessions(started_at, project, git_remote, git_branch)
+							 VALUES (?, 'secret-repo', ?, 'main')`,
+						)
+						.run(now, rawProjectIdentity).lastInsertRowid,
+				);
+				store.db
+					.prepare(
+						`INSERT INTO memory_items(
+							session_id, kind, title, body_text, active, created_at, updated_at,
+							visibility, project, scope_id
+						 ) VALUES (?, 'discovery', 'secret-repo', 'body', 1, ?, ?, 'shared',
+						 'secret-repo', 'scope-team-setup')`,
+					)
+					.run(sessionId, now, now);
+				const summaryResponse = await app.request("/api/sync/team-setup/v1");
+				expect(summaryResponse.status).toBe(200);
+				const summary = (await summaryResponse.json()) as {
+					version: number;
+					candidates: Array<Record<string, unknown>>;
+				};
+				expect(summary.version).toBe(1);
+				expect(Object.keys(summary.candidates[0] ?? {}).toSorted()).toEqual(
+					[
+						"candidateRef",
+						"deviceCount",
+						"displayName",
+						"projectCount",
+						"status",
+						"unresolvedDeviceCount",
+						"unresolvedProjectCount",
+					].toSorted(),
+				);
+				expect(summary.candidates[0]).toMatchObject({
+					candidateRef,
+					displayName: "Migration Team",
+					status: "needs_setup",
+					deviceCount: 1,
+					projectCount: 1,
+					unresolvedDeviceCount: 1,
+					unresolvedProjectCount: 0,
+				});
+
+				const incompleteResponse = await app.request(`/api/sync/team-setup/v1/${candidateRef}`);
+				expect(incompleteResponse.status).toBe(200);
+				const incomplete = (await incompleteResponse.json()) as Record<string, unknown>;
+				expect(incomplete).toMatchObject({
+					version: 1,
+					candidate: { candidateRef },
+					draftState: "needs_setup",
+					conflictState: "team_setup_incomplete",
+					canFinish: false,
+				});
+				expect(incomplete).not.toHaveProperty("finishDigest");
+				expect(incomplete).not.toHaveProperty("accessDeltaDigest");
+				expect(incomplete).not.toHaveProperty("accessDelta");
+
+				const draft = core.getLegacyTeamSetupDraft(store.db, candidateRef);
+				expect(draft).not.toBeNull();
+				store.db
+					.prepare(
+						`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+						 VALUES (?, 'Private Person', 0, 'active', ?, ?)`,
+					)
+					.run(rawIdentityId, "2026-08-24T00:00:00.000Z", "2026-08-24T00:00:00.000Z");
+				core.setLegacyTeamSetupDeviceAssignment(store.db, {
+					attemptId: draft?.attemptId ?? "",
+					deviceRef: draft?.devices[0]?.deviceRef ?? "",
+					targetIdentityId: rawIdentityId,
+					expectation: { kind: "absent" },
+				});
+				core.setLegacyTeamSetupDeviceDecision(store.db, {
+					attemptId: draft?.attemptId ?? "",
+					deviceRef: draft?.devices[0]?.deviceRef ?? "",
+					decision: "included",
+				});
+				const rawPreview = core.previewLegacyTeamSetupActivation(store.db, {
+					candidateRef,
+					attemptId: draft?.attemptId ?? "",
+				});
+
+				const detailResponse = await app.request(`/api/sync/team-setup/v1/${candidateRef}`);
+				expect(detailResponse.status).toBe(200);
+				const detail = (await detailResponse.json()) as Record<string, unknown>;
+				expect(detail).toMatchObject({
+					version: 1,
+					attemptId: draft?.attemptId,
+					finishDigest: rawPreview.finishDigest,
+					canFinish: true,
+					conflictState: null,
+					accessDeltaDigest: rawPreview.accessDeltaDigest,
+				});
+				expect(JSON.stringify(detail)).not.toContain(coordinatorId);
+				expect(JSON.stringify(detail)).not.toContain(groupId);
+				expect(JSON.stringify(detail)).not.toContain(rawDeviceId);
+				expect(JSON.stringify(detail)).not.toContain(rawIdentityId);
+				expect(JSON.stringify(detail)).not.toContain("fingerprint-secret");
+				expect(JSON.stringify(detail)).not.toContain(rawProjectIdentity);
+				expect(JSON.stringify(detail)).not.toContain(rawPreview.accessDelta.teamChanges[0]?.teamId);
+				expect(detail).toHaveProperty("accessDelta.teamChanges.0.teamRef");
+				expect(detail).toHaveProperty("accessDelta.membershipChanges.0.identityRef");
+				expect(detail).toHaveProperty("devices.0.deviceRef");
+				expect((detail.devices as Array<{ deviceRef: string }>)[0]?.deviceRef).toBe(
+					core.legacyTeamDeviceRef(candidateRef, rawDeviceId),
+				);
+				const projects = detail.projects as Array<{
+					projectRef: string;
+					canonicalProjectRef: string;
+					resolvedProjectRef: string;
+				}>;
+				const accessDelta = detail.accessDelta as {
+					projectChanges: Array<{
+						projectRef: string;
+						toResolvedProjectRef: string | null;
+					}>;
+					recipientChanges: Array<{ canonicalProjectRef: string }>;
+					deviceAccessChanges: Array<{ canonicalProjectRef: string; deviceRef: string }>;
+				};
+				expect(accessDelta.recipientChanges.length).toBeGreaterThan(0);
+				expect(accessDelta.deviceAccessChanges.length).toBeGreaterThan(0);
+				for (const change of accessDelta.projectChanges) {
+					const project = projects.find((item) => item.projectRef === change.projectRef);
+					expect(project).toBeDefined();
+					if (change.toResolvedProjectRef !== null) {
+						expect(change.toResolvedProjectRef).toBe(project?.resolvedProjectRef);
+					}
+				}
+				const displayedCanonicalRefs = new Set(
+					projects.map((project) => project.canonicalProjectRef),
+				);
+				for (const change of accessDelta.recipientChanges) {
+					expect(displayedCanonicalRefs.has(change.canonicalProjectRef)).toBe(true);
+				}
+				for (const change of accessDelta.deviceAccessChanges) {
+					expect(displayedCanonicalRefs.has(change.canonicalProjectRef)).toBe(true);
+					expect(change.deviceRef).toBe(
+						(detail.devices as Array<{ deviceRef: string }>)[0]?.deviceRef,
+					);
+				}
+
+				await core.finishLegacyTeamSetupActivation(store.db, {
+					candidateRef,
+					attemptId: draft?.attemptId ?? "",
+					finishDigest: rawPreview.finishDigest,
+					confirmedAccessDeltaDigest: rawPreview.accessDeltaDigest,
+					loadFreshRoster: async () => snapshots[0]?.devices ?? [],
+					loadProjectInventory: () =>
+						core.legacyTeamCandidateProjectInventory(
+							store.db,
+							{ localActorId: store.actorId, localDeviceId: store.deviceId },
+							candidateRef,
+						),
+					now: "2026-08-24T00:01:00.000Z",
+				});
+				const readyResponse = await app.request(`/api/sync/team-setup/v1/${candidateRef}`);
+				expect(readyResponse.status).toBe(200);
+				const ready = (await readyResponse.json()) as Record<string, unknown>;
+				expect(ready).toMatchObject({
+					candidate: { candidateRef, status: "ready" },
+					draftState: "completed",
+					canFinish: false,
+					conflictState: null,
+				});
+				expect(ready).not.toHaveProperty("finishDigest");
+				expect(ready).not.toHaveProperty("accessDeltaDigest");
+				expect(ready).not.toHaveProperty("accessDelta");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("redacts Project change identities into refs that join displayed Projects", () => {
+			const projectRef = "legacy-team-project-ref-v1:test";
+			const fromIdentity = "file:///Users/private/old-project";
+			const toIdentity = rawProjectIdentity;
+			const safe = __teamSetupTestHooks.viewerSafeAccessDelta(candidateRef, {
+				teamChanges: [],
+				membershipChanges: [],
+				projectChanges: [
+					{
+						projectRef,
+						fromProjectIdentity: fromIdentity,
+						toProjectIdentity: toIdentity,
+						change: "update",
+					},
+				],
+				recipientChanges: [],
+				deviceAccessChanges: [],
+			});
+			expect(JSON.stringify(safe)).not.toContain(fromIdentity);
+			expect(JSON.stringify(safe)).not.toContain(toIdentity);
+			expect(safe.projectChanges[0]).toEqual({
+				projectRef,
+				fromResolvedProjectRef: core.legacyTeamResolvedProjectRef(projectRef, fromIdentity),
+				toResolvedProjectRef: core.legacyTeamResolvedProjectRef(projectRef, toIdentity),
+				change: "update",
+			});
+		});
+
+		it("normalizes scheme-less coordinator URLs before admin roster requests", async () => {
+			const config = {
+				...core.readCoordinatorSyncConfig({}),
+				syncCoordinatorUrl: "localhost:8787/",
+				syncCoordinatorGroups: [groupId],
+				syncCoordinatorAdminSecret: "private-admin-secret",
+			};
+			const listGroups = vi.fn(async () => [
+				{
+					group_id: groupId,
+					display_name: "Migration Team",
+					archived_at: null,
+					created_at: "2026-08-24T00:00:00.000Z",
+				},
+			]);
+			const listDevices = vi.fn(async () => []);
+			const loaded = await __teamSetupTestHooks.loadConfiguredLegacyTeamGroupSnapshotsWith({
+				readConfig: () => config,
+				listGroups,
+				listDevices,
+			});
+
+			expect(loaded[0]?.coordinatorId).toBe("http://localhost:8787");
+			expect(listGroups).toHaveBeenCalledWith(
+				expect.objectContaining({ remoteUrl: "http://localhost:8787" }),
+			);
+			expect(listDevices).toHaveBeenCalledWith(
+				expect.objectContaining({ remoteUrl: "http://localhost:8787" }),
+			);
+		});
+
+		it("isolates oversized coordinator rosters from valid configured groups", async () => {
+			const oversizedGroupId = "oversized-group";
+			const config = {
+				...core.readCoordinatorSyncConfig({}),
+				syncCoordinatorUrl: "http://localhost:8787",
+				syncCoordinatorGroups: [oversizedGroupId, groupId],
+				syncCoordinatorAdminSecret: "private-admin-secret",
+			};
+			const loaded = await __teamSetupTestHooks.loadConfiguredLegacyTeamGroupSnapshotsWith({
+				readConfig: () => config,
+				listGroups: async () => [
+					{
+						group_id: oversizedGroupId,
+						display_name: "Oversized Team",
+						archived_at: null,
+						created_at: "2026-08-24T00:00:00.000Z",
+					},
+					{
+						group_id: groupId,
+						display_name: "Migration Team",
+						archived_at: null,
+						created_at: "2026-08-24T00:00:00.000Z",
+					},
+				],
+				listDevices: async ({ groupId: requestedGroupId }) => {
+					if (requestedGroupId === oversizedGroupId) {
+						throw new Error("coordinator_response_too_large");
+					}
+					return [];
+				},
+			});
+
+			expect(loaded).toEqual([
+				expect.objectContaining({ groupId, displayName: "Migration Team", devices: [] }),
+			]);
+		});
+
+		it("fails closed for non-size coordinator roster errors", async () => {
+			const config = {
+				...core.readCoordinatorSyncConfig({}),
+				syncCoordinatorUrl: "http://localhost:8787",
+				syncCoordinatorGroups: [groupId],
+				syncCoordinatorAdminSecret: "private-admin-secret",
+			};
+			await expect(
+				__teamSetupTestHooks.loadConfiguredLegacyTeamGroupSnapshotsWith({
+					readConfig: () => config,
+					listGroups: async () => [
+						{
+							group_id: groupId,
+							display_name: "Migration Team",
+							archived_at: null,
+							created_at: "2026-08-24T00:00:00.000Z",
+						},
+					],
+					listDevices: async () => {
+						throw new Error("private upstream body");
+					},
+				}),
+			).rejects.toThrow("team_setup_roster_unavailable");
+		});
+
+		it("rejects coordinator roster fingerprints that do not match their public keys", async () => {
+			const config = {
+				...core.readCoordinatorSyncConfig({}),
+				syncCoordinatorUrl: "http://localhost:8787",
+				syncCoordinatorGroups: [groupId],
+				syncCoordinatorAdminSecret: "private-admin-secret",
+			};
+			await expect(
+				__teamSetupTestHooks.loadConfiguredLegacyTeamGroupSnapshotsWith({
+					readConfig: () => config,
+					listGroups: async () => [
+						{
+							group_id: groupId,
+							display_name: "Migration Team",
+							archived_at: null,
+							created_at: "2026-08-24T00:00:00.000Z",
+						},
+					],
+					listDevices: async () => [
+						{
+							group_id: groupId,
+							device_id: "device-a",
+							public_key: "public-key-a",
+							fingerprint: "mismatched-fingerprint",
+							identity_id: null,
+							display_name: "Laptop",
+							enabled: 1,
+							created_at: "2026-08-24T00:00:00.000Z",
+						},
+					],
+				}),
+			).rejects.toThrow("team_setup_roster_unavailable");
+		});
+
+		it.each([2, -1])("rejects invalid coordinator enabled value %i", async (enabled) => {
+			const publicKey = "public-key-a";
+			const config = {
+				...core.readCoordinatorSyncConfig({}),
+				syncCoordinatorUrl: "http://localhost:8787",
+				syncCoordinatorGroups: [groupId],
+				syncCoordinatorAdminSecret: "private-admin-secret",
+			};
+			await expect(
+				__teamSetupTestHooks.loadConfiguredLegacyTeamGroupSnapshotsWith({
+					readConfig: () => config,
+					listGroups: async () => [
+						{
+							group_id: groupId,
+							display_name: "Migration Team",
+							archived_at: null,
+							created_at: "2026-08-24T00:00:00.000Z",
+						},
+					],
+					listDevices: async () => [
+						{
+							group_id: groupId,
+							device_id: "device-a",
+							public_key: publicKey,
+							fingerprint: fingerprintPublicKey(publicKey),
+							identity_id: null,
+							display_name: "Laptop",
+							enabled,
+							created_at: "2026-08-24T00:00:00.000Z",
+						},
+					],
+				}),
+			).rejects.toThrow("team_setup_roster_unavailable");
+		});
+
+		it("accepts matching roster keys and retains redaction-only coordinator identifiers", async () => {
+			const publicKey = "public-key-a";
+			const fingerprint = fingerprintPublicKey(publicKey);
+			const identityId = "opaque-person-alpha";
+			const config = {
+				...core.readCoordinatorSyncConfig({}),
+				syncCoordinatorUrl: "http://localhost:8787",
+				syncCoordinatorGroups: [groupId],
+				syncCoordinatorAdminSecret: "private-admin-secret",
+			};
+
+			const loaded = await __teamSetupTestHooks.loadConfiguredLegacyTeamGroupSnapshotsWith({
+				readConfig: () => config,
+				listGroups: async () => [
+					{
+						group_id: groupId,
+						display_name: "Migration Team",
+						archived_at: null,
+						created_at: "2026-08-24T00:00:00.000Z",
+					},
+				],
+				listDevices: async () => [
+					{
+						group_id: groupId,
+						device_id: "device-a",
+						public_key: publicKey,
+						fingerprint,
+						identity_id: identityId,
+						display_name: "Laptop",
+						enabled: 1,
+						created_at: "2026-08-24T00:00:00.000Z",
+					},
+				],
+			});
+
+			expect(loaded).toEqual([
+				expect.objectContaining({
+					groupId,
+					displayName: "Migration Team",
+					devices: [
+						{
+							deviceId: "device-a",
+							fingerprint,
+							displayName: "Laptop",
+							enabled: true,
+							labelRedactionIds: [identityId, publicKey],
+						},
+					],
+				}),
+			]);
+		});
+
+		it("limits detail discovery side effects to the requested candidate", async () => {
+			const otherGroupId = "group-beta";
+			const otherCandidateRef = core.legacyTeamCandidateId(coordinatorId, otherGroupId);
+			const { app, ensureStore, cleanup } = createTestApp({
+				loadLegacyTeamConfiguredGroupSnapshots: async () => [
+					...snapshots,
+					{
+						coordinatorId,
+						groupId: otherGroupId,
+						displayName: "Other Team",
+						devices: [],
+					},
+				],
+			});
+			try {
+				const response = await app.request(`/api/sync/team-setup/v1/${candidateRef}`);
+				expect(response.status).toBe(200);
+				expect(core.getLegacyTeamSetupDraft(ensureStore().db, candidateRef)).not.toBeNull();
+				expect(core.getLegacyTeamSetupDraft(ensureStore().db, otherCandidateRef)).toBeNull();
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("returns bounded validation, unknown-candidate, roster, and size errors", async () => {
+			const loadSnapshots = vi.fn(async () => snapshots);
+			const testApp = createTestApp({
+				loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
+			});
+			try {
+				const malformed = await testApp.app.request(
+					"/api/sync/team-setup/v1/legacy-team-candidate:not-hex",
+				);
+				expect(malformed.status).toBe(400);
+				expect(await malformed.json()).toEqual({ error: "team_setup_incomplete" });
+				expect(loadSnapshots).not.toHaveBeenCalled();
+
+				const unknown = await testApp.app.request(
+					"/api/sync/team-setup/v1/legacy-team-candidate:00000000000000000000000000000000",
+				);
+				expect(unknown.status).toBe(404);
+				expect(await unknown.json()).toEqual({ error: "team_setup_confirmation_stale" });
+			} finally {
+				testApp.cleanup();
+			}
+
+			const unavailable = createTestApp({
+				loadLegacyTeamConfiguredGroupSnapshots: async () => {
+					throw new Error("private upstream body");
+				},
+			});
+			try {
+				const response = await unavailable.app.request("/api/sync/team-setup/v1");
+				expect(response.status).toBe(503);
+				expect(await response.json()).toEqual({ error: "team_setup_roster_unavailable" });
+			} finally {
+				unavailable.cleanup();
+			}
+
+			const oversized = createTestApp({
+				loadLegacyTeamConfiguredGroupSnapshots: async () =>
+					Array.from({ length: 26 }, (_, index) => ({
+						...snapshots[0],
+						groupId: `group-${index}`,
+					})),
+			});
+			try {
+				const response = await oversized.app.request("/api/sync/team-setup/v1");
+				expect(response.status).toBe(400);
+				expect(await response.json()).toEqual({ error: "team_setup_incomplete" });
+			} finally {
+				oversized.cleanup();
+			}
+		});
+
+		it("inherits createApp origin handling and is absent from createSyncApp", async () => {
+			const { app, syncApp, cleanup } = createTestApp({
+				loadLegacyTeamConfiguredGroupSnapshots: async () => snapshots,
+			});
+			try {
+				const crossOriginResponse = await app.request("/api/sync/team-setup/v1", {
+					headers: { Origin: "https://evil.example.com" },
+				});
+				expect(crossOriginResponse.status).toBe(403);
+				expect(await crossOriginResponse.json()).toEqual({ error: "forbidden" });
+				const crossOriginHeadResponse = await app.request("/api/sync/team-setup/v1", {
+					method: "HEAD",
+					headers: { Origin: "https://evil.example.com" },
+				});
+				expect(crossOriginHeadResponse.status).toBe(403);
+				const missingOriginCrossSite = await app.request("/api/sync/team-setup/v1", {
+					headers: { "Sec-Fetch-Site": "cross-site" },
+				});
+				expect(missingOriginCrossSite.status).toBe(403);
+				const viewerResponse = await app.request("/api/sync/team-setup/v1", {
+					headers: { Origin: "http://127.0.0.1:38888" },
+				});
+				expect(viewerResponse.status).toBe(200);
+				const ipv6ViewerResponse = await app.request("/api/sync/team-setup/v1", {
+					headers: { Origin: "http://[::1]:38888" },
+				});
+				expect(ipv6ViewerResponse.status).toBe(200);
+				expect((await syncApp.request("/api/sync/team-setup/v1")).status).toBe(404);
+			} finally {
+				cleanup();
+			}
+		});
 	});
 
 	describe.each([

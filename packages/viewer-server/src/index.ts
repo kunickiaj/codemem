@@ -32,6 +32,11 @@ import { packTransportRoutes } from "./routes/pack.js";
 import { rawEventsRoutes } from "./routes/raw-events.js";
 import { statsRoutes } from "./routes/stats.js";
 import { syncProtocolRoutes, syncRoutes } from "./routes/sync.js";
+import {
+	type LegacyTeamConfiguredGroupSnapshotLoader,
+	TEAM_SETUP_ROUTE_PREFIX,
+	teamSetupRoutes,
+} from "./routes/team-setup.js";
 import { updateStatusRoutes } from "./routes/update-status.js";
 
 export type {
@@ -51,6 +56,15 @@ export {
 	reconcileConfiguredCoordinatorEnrollment,
 	reconcileRecipientPolicyProjects,
 } from "./routes/sync.js";
+export type {
+	LegacyTeamSetupCandidateSummaryV1,
+	LegacyTeamSetupDetailResponseV1,
+	LegacyTeamSetupDeviceV1,
+	LegacyTeamSetupErrorResponseV1,
+	LegacyTeamSetupProjectV1,
+	LegacyTeamSetupSummaryResponseV1,
+	LegacyTeamSetupViewerAccessDeltaV1,
+} from "./routes/team-setup.js";
 
 export { VERSION };
 
@@ -81,6 +95,7 @@ export interface AppOptions {
 	observer?: ObserverClient | null;
 	getUpdateStatus?: (options: GetUpdateStatusOptions) => Promise<UpdateStatus>;
 	loadDeviceIdentityCoordinatorEvidence?: () => Promise<DeviceIdentityCoordinatorEvidence>;
+	loadLegacyTeamConfiguredGroupSnapshots?: LegacyTeamConfiguredGroupSnapshotLoader;
 	syncRequestRateLimit?: {
 		limiter?: InMemoryRequestRateLimiter;
 		readLimit?: number;
@@ -111,7 +126,7 @@ export function createApp(opts?: AppOptions) {
 
 	// CORS / origin guard
 	app.use("*", preflightHandler());
-	app.use("*", originGuard());
+	app.use("*", originGuard({ unsafeGetPathPrefixes: [TEAM_SETUP_ROUTE_PREFIX] }));
 
 	// API routes
 	app.route("/", healthRoutes(storeFactory));
@@ -132,6 +147,13 @@ export function createApp(opts?: AppOptions) {
 		"/",
 		syncRoutes(storeFactory, getSyncRuntimeStatus, {
 			loadDeviceIdentityCoordinatorEvidence: opts?.loadDeviceIdentityCoordinatorEvidence,
+		}),
+	);
+	app.route(
+		"/",
+		teamSetupRoutes({
+			getStore: storeFactory,
+			loadLegacyTeamConfiguredGroupSnapshots: opts?.loadLegacyTeamConfiguredGroupSnapshots,
 		}),
 	);
 	app.route("/", updateStatusRoutes({ getUpdateStatus: opts?.getUpdateStatus }));

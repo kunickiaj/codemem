@@ -2,7 +2,8 @@
  * CORS and cross-origin protection middleware.
  *
  * Ports Python's reject_cross_origin() logic from codemem/viewer_http.py.
- * GETs are allowed from any origin (viewer is local-only).
+ * GETs are allowed from any origin by default (viewer is local-only).
+ * Callers can mark side-effecting GET path prefixes as unsafe.
  * Mutations (POST/DELETE/PATCH/PUT) require an Origin header matching a
  * loopback address, or are rejected with 403.
  */
@@ -25,7 +26,8 @@ function isLoopbackOrigin(origin: string): boolean {
 	}
 	if (url.protocol !== "http:" && url.protocol !== "https:") return false;
 	if (url.username || url.password) return false;
-	return LOOPBACK_HOSTS.has(url.hostname);
+	const hostname = url.hostname.startsWith("[") ? url.hostname.slice(1, -1) : url.hostname;
+	return LOOPBACK_HOSTS.has(hostname);
 }
 
 /** HTTP methods that mutate state and require origin validation. */
@@ -54,7 +56,8 @@ function isUnsafeMissingOrigin(c: Context): boolean {
  *
  * Ports Python's `reject_cross_origin(missing_origin_policy="reject_if_unsafe")`:
  *
- * - GET/HEAD/OPTIONS: allowed from any origin (viewer is local-only).
+ * - GET/HEAD/OPTIONS: allowed from any origin unless the caller marks a
+ *   side-effecting GET path prefix as unsafe.
  * - POST/DELETE/PATCH/PUT:
  *   - Origin present + loopback → allowed (browser on localhost)
  *   - Origin present + non-loopback → rejected 403
@@ -65,12 +68,15 @@ function isUnsafeMissingOrigin(c: Context): boolean {
  * Access-Control-Allow-Origin is set — the browser doesn't need it.
  * For valid loopback origins, ACAO is echoed back.
  */
-export function originGuard() {
+export function originGuard(options?: { unsafeGetPathPrefixes?: readonly string[] }) {
 	return createMiddleware(async (c: Context, next: Next) => {
 		const origin = c.req.header("Origin");
 		const method = c.req.method;
+		const unsafeGet =
+			(method === "GET" || method === "HEAD") &&
+			options?.unsafeGetPathPrefixes?.some((prefix) => c.req.path.startsWith(prefix));
 
-		if (UNSAFE_METHODS.has(method)) {
+		if (UNSAFE_METHODS.has(method) || unsafeGet) {
 			if (origin) {
 				// Origin present — must be loopback
 				if (!isLoopbackOrigin(origin)) {
