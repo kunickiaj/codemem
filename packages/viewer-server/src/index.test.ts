@@ -809,6 +809,7 @@ describe("viewer-server", () => {
 					headers: { "content-type": "application/json" },
 					body: JSON.stringify(finishRequest),
 				});
+				expect(replayResponse.status).toBe(200);
 				expect(await replayResponse.json()).toEqual(finished);
 				const missingConfirmation = await app.request(
 					`/api/sync/team-setup/v1/${candidateRef}/finish`,
@@ -1203,12 +1204,19 @@ describe("viewer-server", () => {
 				const now = "2026-08-24T00:00:00.000Z";
 				const targetRemote = "https://example.invalid/target.git";
 				const targetIdentity = core.canonicalWorkspaceIdentity({ gitRemote: targetRemote }).value;
+				const firstRemote = "https://example.invalid/alpha.git";
 				store.db
 					.prepare(
 						`INSERT INTO sessions(started_at, project, git_remote, git_branch)
 						 VALUES (?, 'Target Project', ?, 'main')`,
 					)
 					.run(now, targetRemote);
+				store.db
+					.prepare(
+						`INSERT INTO sessions(started_at, project, git_remote, git_branch)
+						 VALUES (?, 'Alpha Project', ?, 'main')`,
+					)
+					.run(now, firstRemote);
 				const sourceIdentity = "unmapped:source-project";
 				const projectRef = core.recipientPolicyDigest("legacy-team-project-ref-v1", [
 					candidateRef,
@@ -1230,6 +1238,11 @@ describe("viewer-server", () => {
 						},
 					],
 				});
+				const mappingChoices = core.listProjectScopeCandidates(store.db);
+				expect(mappingChoices.map((choice) => choice.display_project)).toEqual([
+					"Alpha Project",
+					"Target Project",
+				]);
 				const resolvedProjectRef = core.legacyTeamResolvedProjectRef(projectRef, targetIdentity);
 				const response = await app.request(
 					`/api/sync/team-setup/v1/${candidateRef}/projects/${projectRef}/mapping`,
@@ -1710,6 +1723,8 @@ describe("viewer-server", () => {
 						headers: { Origin: "http://127.0.0.1:38888" },
 					},
 				);
+				expect(preflight.status).toBe(204);
+				expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe("http://127.0.0.1:38888");
 				expect(preflight.headers.get("Access-Control-Allow-Methods")).toContain("PUT");
 				const crossOriginPut = await app.request(
 					`/api/sync/team-setup/v1/${candidateRef}/devices/${core.legacyTeamDeviceRef(candidateRef, rawDeviceId)}/decision`,
