@@ -6,6 +6,7 @@ import {
 	type LegacyTeamSetupDetailResponseV1,
 	type LegacyTeamSetupDeviceV1,
 	type LegacyTeamSetupIdentityChoiceV1,
+	type LegacyTeamSetupProjectV1,
 } from "../lib/api";
 
 const dialogControls = vi.hoisted(() => ({
@@ -60,6 +61,21 @@ function device(overrides: Partial<LegacyTeamSetupDeviceV1> = {}): LegacyTeamSet
 	};
 }
 
+function project(overrides: Partial<LegacyTeamSetupProjectV1> = {}): LegacyTeamSetupProjectV1 {
+	return {
+		projectRef: "project-ref-one",
+		displayName: "Legacy Project",
+		resolution: "unresolved",
+		canonicalProjectRef: null,
+		resolvedProjectRef: null,
+		mappingChoices: [
+			{ resolvedProjectRef: "resolved-project-alpha", displayName: "Project Alpha" },
+			{ resolvedProjectRef: "resolved-project-beta", displayName: "Project Beta" },
+		],
+		...overrides,
+	};
+}
+
 function detail({
 	canFinish = false,
 	conflictState = null,
@@ -67,6 +83,7 @@ function detail({
 	attemptId = "opaque-attempt",
 	devices,
 	identityChoices = [],
+	projects,
 	unresolvedDeviceCount = 0,
 	unresolvedProjectCount = 0,
 }: {
@@ -76,6 +93,7 @@ function detail({
 	attemptId?: string;
 	devices?: LegacyTeamSetupDeviceV1[];
 	identityChoices?: LegacyTeamSetupIdentityChoiceV1[];
+	projects?: LegacyTeamSetupProjectV1[];
 	unresolvedDeviceCount?: number;
 	unresolvedProjectCount?: number;
 } = {}): LegacyTeamSetupDetailResponseV1 {
@@ -86,7 +104,7 @@ function detail({
 			displayName: "Example Team",
 			status: "in_progress" as const,
 			deviceCount: devices?.length ?? 3,
-			projectCount: 2,
+			projectCount: projects?.length ?? 2,
 			unresolvedDeviceCount,
 			unresolvedProjectCount,
 		},
@@ -95,7 +113,7 @@ function detail({
 		unresolvedDeviceCount,
 		unresolvedProjectCount,
 		devices: devices ?? [],
-		projects: [],
+		projects: projects ?? [],
 		identityChoices,
 	};
 	return canFinish
@@ -194,7 +212,17 @@ describe("legacy Team setup dialog", () => {
 			"true",
 		);
 
-		pending.resolve(detail({ unresolvedDeviceCount: 2, unresolvedProjectCount: 1 }));
+		pending.resolve(
+			detail({
+				devices: [
+					device(),
+					device({ deviceRef: "device-ref-two", displayName: "Second laptop" }),
+					device({ deviceRef: "device-ref-three", decision: "excluded" }),
+				],
+				unresolvedDeviceCount: 2,
+				unresolvedProjectCount: 1,
+			}),
+		);
 		await vi.waitFor(() => {
 			expect(document.body.textContent).toContain("Set up Example Team");
 			expect(document.body.textContent).toContain("2 of 3 Team devices");
@@ -214,6 +242,28 @@ describe("legacy Team setup dialog", () => {
 		);
 		act(() => projectsButton?.click());
 		expect(document.querySelector('button[aria-current="step"]')?.textContent).toBe("Devices");
+		expect(document.activeElement?.id).toBe("legacy-team-device-row-0");
+		expect(document.body.textContent).toContain(
+			"Finish the device decisions before mapping Projects.",
+		);
+	});
+
+	it("moves blocked Review navigation to the unresolved Projects step", async () => {
+		setup(vi.fn().mockResolvedValue(detail({ projects: [project()], unresolvedProjectCount: 1 })));
+		await vi.waitFor(() => {
+			expect(document.querySelector('button[aria-current="step"]')?.textContent).toBe("Projects");
+		});
+		act(() => button("Devices").click());
+		expect(document.querySelector('button[aria-current="step"]')?.textContent).toBe("Devices");
+
+		act(() => button("Review").click());
+		await vi.waitFor(() => {
+			expect(document.querySelector('button[aria-current="step"]')?.textContent).toBe("Projects");
+			expect(document.activeElement?.id).toBe("legacy-team-project-row-0");
+		});
+		expect(document.body.textContent).toContain(
+			"Finish the Project mappings before reviewing access.",
+		);
 	});
 
 	it("treats incomplete setup as normal progress rather than changed state", async () => {
@@ -642,7 +692,7 @@ describe("legacy Team setup dialog", () => {
 		act(() => dialogControls.onOpenChange?.(false));
 		expect(document.getElementById("legacyTeamSetupDialog")).not.toBeNull();
 		expect(document.body.textContent).toContain(
-			"Team setup will stay open while this device change saves",
+			"Team setup will stay open while this change saves",
 		);
 
 		pendingDecision.resolve(mutationResult());
@@ -925,6 +975,165 @@ describe("legacy Team setup dialog", () => {
 		expect(refreshCandidate.mock.invocationCallOrder[0]).toBeLessThan(
 			loadDetail.mock.invocationCallOrder[2],
 		);
+	});
+
+	it("shows deterministic Project mappings as read-only server evidence", async () => {
+		const deterministic = project({
+			canonicalProjectRef: "opaque-canonical-project",
+			mappingChoices: [],
+			resolution: "deterministic",
+			resolvedProjectRef: "opaque-resolved-project",
+		});
+		const unresolved = project({ projectRef: "project-ref-two", displayName: "Needs mapping" });
+		const loadDetail = vi.fn().mockResolvedValue(
+			detail({
+				projects: [deterministic, unresolved],
+				unresolvedProjectCount: 1,
+			}),
+		);
+		setup({ loadDetail });
+
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Mapped automatically"));
+		expect(document.body.textContent).toContain("Legacy Project");
+		expect(document.body.textContent).not.toContain("opaque-canonical-project");
+		expect(document.querySelectorAll(".legacy-team-project-select")).toHaveLength(1);
+	});
+
+	it("persists one explicit Project mapping and advances after authoritative reload", async () => {
+		const initialProject = project();
+		const mappedProject = project({
+			resolution: "explicit",
+			resolvedProjectRef: "resolved-project-beta",
+		});
+		const loadDetail = vi
+			.fn()
+			.mockResolvedValueOnce(detail({ projects: [initialProject], unresolvedProjectCount: 1 }))
+			.mockResolvedValueOnce(detail({ projects: [mappedProject] }));
+		const saveProjectMapping = vi.fn().mockResolvedValue(mutationResult());
+		setup({ loadDetail, saveProjectMapping });
+
+		const select = await vi.waitFor(() => {
+			const match = document.querySelector<HTMLSelectElement>(".legacy-team-project-select");
+			if (!match) throw new Error("Project mapping select missing");
+			return match;
+		});
+		expect([...select.options].map((option) => option.textContent)).toEqual([
+			"Choose a Project",
+			"Project Alpha",
+			"Project Beta",
+		]);
+		select.value = "resolved-project-beta";
+		act(() => {
+			select.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		expect(saveProjectMapping).not.toHaveBeenCalled();
+		act(() => {
+			button("Save mapping").click();
+			button("Save mapping").click();
+		});
+
+		expect(saveProjectMapping).toHaveBeenCalledTimes(1);
+		expect(saveProjectMapping).toHaveBeenCalledWith("opaque-candidate", "project-ref-one", {
+			attemptId: "opaque-attempt",
+			resolvedProjectRef: "resolved-project-beta",
+		});
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Review and finish"));
+		expect(document.activeElement?.id).toBe("legacy-team-setup-step-review");
+		expect(loadDetail).toHaveBeenCalledTimes(2);
+	});
+
+	it("reloads stale Project mapping evidence and keeps safe recovery copy", async () => {
+		const initialProject = project();
+		const refreshedProject = project({
+			mappingChoices: [
+				{ resolvedProjectRef: "resolved-project-gamma", displayName: "Project Gamma" },
+			],
+		});
+		const loadDetail = vi
+			.fn()
+			.mockResolvedValueOnce(detail({ projects: [initialProject], unresolvedProjectCount: 1 }))
+			.mockResolvedValueOnce(
+				detail({
+					attemptId: "fresh-attempt",
+					projects: [refreshedProject],
+					unresolvedProjectCount: 1,
+				}),
+			)
+			.mockResolvedValue(
+				detail({
+					attemptId: "fresh-attempt",
+					projects: [refreshedProject],
+					unresolvedProjectCount: 1,
+				}),
+			);
+		const saveProjectMapping = vi
+			.fn()
+			.mockRejectedValue(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"));
+		const refreshCandidate = vi.fn().mockResolvedValue({});
+		setup({ loadDetail, refreshCandidate, saveProjectMapping });
+
+		const select = await vi.waitFor(() => {
+			const match = document.querySelector<HTMLSelectElement>(".legacy-team-project-select");
+			if (!match) throw new Error("Project mapping select missing");
+			return match;
+		});
+		select.value = "resolved-project-alpha";
+		act(() => {
+			select.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		act(() => button("Save mapping").click());
+
+		await vi.waitFor(() => {
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+				"changed since it was last reviewed",
+			);
+			expect(document.body.textContent).toContain("Project Gamma");
+			expect(document.querySelector<HTMLSelectElement>(".legacy-team-project-select")?.value).toBe(
+				"",
+			);
+		});
+		expect(document.body.textContent).not.toContain("team_setup_confirmation_stale");
+		expect(loadDetail).toHaveBeenCalledTimes(2);
+		expect(button("Save mapping").getAttribute("aria-disabled")).toBe("true");
+
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).toBeNull());
+		expect(document.querySelector<HTMLSelectElement>(".legacy-team-project-select")?.value).toBe(
+			"",
+		);
+		expect(button("Save mapping").getAttribute("aria-disabled")).toBe("true");
+		expect(loadDetail).toHaveBeenCalledTimes(3);
+		expect(refreshCandidate).toHaveBeenCalledWith("opaque-candidate");
+	});
+
+	it("reports a saved mapping separately when its authoritative reload fails", async () => {
+		const loadDetail = vi
+			.fn()
+			.mockResolvedValueOnce(detail({ projects: [project()], unresolvedProjectCount: 1 }))
+			.mockRejectedValueOnce(new Error("private reload failure"));
+		const saveProjectMapping = vi.fn().mockResolvedValue(mutationResult());
+		setup({ loadDetail, saveProjectMapping });
+
+		const select = await vi.waitFor(() => {
+			const match = document.querySelector<HTMLSelectElement>(".legacy-team-project-select");
+			if (!match) throw new Error("Project mapping select missing");
+			return match;
+		});
+		select.value = "resolved-project-alpha";
+		act(() => {
+			select.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		act(() => button("Save mapping").click());
+
+		await vi.waitFor(() => {
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+				"was saved, but the latest Team setup details could not be loaded",
+			);
+		});
+		expect(document.body.textContent).not.toContain("private reload failure");
+		expect(document.body.textContent).not.toContain("mapping could not be saved");
+		expect(saveProjectMapping).toHaveBeenCalledTimes(1);
+		expect(loadDetail).toHaveBeenCalledTimes(2);
 	});
 
 	it("focuses explicit step navigation and restores the connected trigger on dismissal", async () => {

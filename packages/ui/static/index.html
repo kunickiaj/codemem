@@ -1248,6 +1248,25 @@
       .legacy-team-device-select { width: 100%; margin: 0; }
       .legacy-team-device-select:disabled { opacity: 0.55; cursor: not-allowed; }
       .legacy-team-device-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+      .legacy-team-project-list { display: grid; gap: var(--sp-3); margin-top: var(--sp-3); }
+      .legacy-team-project-row {
+        display: grid;
+        gap: var(--sp-2);
+        min-width: 0;
+        margin: 0;
+        padding: var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-2);
+      }
+      .legacy-team-project-row legend {
+        padding: 0 var(--sp-1);
+        color: var(--text-primary);
+        font-weight: var(--font-weight-semibold);
+      }
+      .legacy-team-project-row label { font-size: var(--font-size-sm); font-weight: var(--font-weight-semibold); }
+      .legacy-team-project-select { width: 100%; margin: 0; }
+      .legacy-team-project-select:disabled { opacity: 0.55; cursor: not-allowed; }
       .recipient-policy-management-selection fieldset { border: 0; padding: 0; margin: var(--sp-4) 0 0; }
       .recipient-policy-management-selection legend { font-weight: var(--font-weight-semibold); }
       .recipient-policy-management-review section + section { margin-top: var(--sp-4); }

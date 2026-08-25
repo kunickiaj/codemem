@@ -4,6 +4,7 @@ import { DialogCloseButton } from "../components/primitives/dialog-close-button"
 import { RadixDialog } from "../components/primitives/radix-dialog";
 import * as api from "../lib/api";
 import { LegacyTeamSetupDevices } from "./legacy-team-setup-devices";
+import { LegacyTeamSetupProjects } from "./legacy-team-setup-projects";
 
 type TeamSetupStep = "devices" | "projects" | "review" | "completed";
 const CHANGED_STATE_ERROR =
@@ -23,6 +24,7 @@ export interface LegacyTeamSetupDialogDependencies {
 	refreshCandidate: typeof api.refreshLegacyTeamSetupCandidate;
 	saveAssignment: typeof api.saveLegacyTeamSetupAssignment;
 	saveDecision: typeof api.saveLegacyTeamSetupDecision;
+	saveProjectMapping: typeof api.saveLegacyTeamSetupProjectMapping;
 }
 
 const defaultDependencies: LegacyTeamSetupDialogDependencies = {
@@ -31,6 +33,7 @@ const defaultDependencies: LegacyTeamSetupDialogDependencies = {
 	refreshCandidate: api.refreshLegacyTeamSetupCandidate,
 	saveAssignment: api.saveLegacyTeamSetupAssignment,
 	saveDecision: api.saveLegacyTeamSetupDecision,
+	saveProjectMapping: api.saveLegacyTeamSetupProjectMapping,
 };
 
 let pendingCandidateRef: string | null = null;
@@ -107,6 +110,13 @@ function safeMutationError(cause: unknown): string {
 	return "This device change could not be saved. Reload the latest details before trying again.";
 }
 
+function safeProjectMutationError(cause: unknown): string {
+	if (cause instanceof api.LegacyTeamSetupApiError && RELOAD_ERROR_CODES.has(cause.errorCode)) {
+		return CHANGED_STATE_ERROR;
+	}
+	return "This Project mapping could not be saved. Reload the latest details before trying again.";
+}
+
 function StepContent({
 	detail,
 	step,
@@ -125,23 +135,7 @@ function StepContent({
 		);
 	}
 	if (step === "devices") return null;
-	if (step === "projects") {
-		return (
-			<section aria-labelledby="legacy-team-setup-step-projects">
-				<h3 id="legacy-team-setup-step-projects" tabIndex={-1}>
-					Review Projects
-				</h3>
-				<p>
-					{detail.unresolvedProjectCount.toLocaleString()} of{" "}
-					{detail.candidate.projectCount.toLocaleString()} Team Projects still need a mapping
-					decision.
-				</p>
-				<p className="small">
-					Next setup action: map each unresolved Project using the server-provided choices.
-				</p>
-			</section>
-		);
-	}
+	if (step === "projects") return null;
 	return (
 		<section aria-labelledby="legacy-team-setup-step-review">
 			<h3 id="legacy-team-setup-step-review" tabIndex={-1}>
@@ -171,9 +165,11 @@ function LegacyTeamSetupDialogHost({
 	const [error, setError] = useState<string | null>(null);
 	const [loadRevision, setLoadRevision] = useState(0);
 	const [busyDeviceRef, setBusyDeviceRef] = useState<string | null>(null);
+	const [busyProjectRef, setBusyProjectRef] = useState<string | null>(null);
 	const [operationStatus, setOperationStatus] = useState("");
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const focusAfterLoad = useRef(false);
+	const focusControlAfterRender = useRef<string | null>(null);
 	const focusStepAfterRender = useRef(false);
 	const refreshBeforeLoad = useRef(false);
 	const retryNeedsRefresh = useRef(false);
@@ -231,6 +227,13 @@ function LegacyTeamSetupDialogHost({
 	}, [candidateRef, dependencies, loadRevision]);
 
 	useEffect(() => {
+		if (focusControlAfterRender.current) {
+			const targetId = focusControlAfterRender.current;
+			focusControlAfterRender.current = null;
+			focusStepAfterRender.current = false;
+			document.getElementById(targetId)?.focus();
+			return;
+		}
 		if (!focusStepAfterRender.current) return;
 		focusStepAfterRender.current = false;
 		document.getElementById(`legacy-team-setup-step-${step}`)?.focus();
@@ -251,11 +254,12 @@ function LegacyTeamSetupDialogHost({
 	const close = () => {
 		if (submitting.current) {
 			setOperationStatus(
-				"Team setup will stay open while this device change saves. Close it after saving finishes.",
+				"Team setup will stay open while this change saves. Close it after saving finishes.",
 			);
 			return;
 		}
 		focusAfterLoad.current = false;
+		focusControlAfterRender.current = null;
 		focusStepAfterRender.current = false;
 		refreshBeforeLoad.current = false;
 		retryNeedsRefresh.current = false;
@@ -264,6 +268,7 @@ function LegacyTeamSetupDialogHost({
 		setError(null);
 		setLoading(false);
 		setBusyDeviceRef(null);
+		setBusyProjectRef(null);
 		setOperationStatus("");
 		setStep("devices");
 	};
@@ -274,6 +279,25 @@ function LegacyTeamSetupDialogHost({
 		}
 		focusStepAfterRender.current = true;
 		setStep(nextStep);
+	};
+	const explainBlockedStep = (blockedStep: "devices" | "projects", message: string) => {
+		setOperationStatus(message);
+		const unresolvedIndex =
+			blockedStep === "devices"
+				? detail?.devices.findIndex((device) => device.decision === "unresolved")
+				: detail?.projects.findIndex((project) => project.resolution === "unresolved");
+		const targetId =
+			unresolvedIndex !== undefined && unresolvedIndex >= 0
+				? blockedStep === "devices"
+					? `legacy-team-device-row-${unresolvedIndex}`
+					: `legacy-team-project-row-${unresolvedIndex}`
+				: null;
+		if (targetId && blockedStep === step) {
+			document.getElementById(targetId)?.focus();
+			return;
+		}
+		focusControlAfterRender.current = targetId;
+		navigate(blockedStep);
 	};
 	const devicesBlockProgress = detail ? detail.unresolvedDeviceCount > 0 : false;
 	const projectsBlockReview = detail ? detail.unresolvedProjectCount > 0 : false;
@@ -299,8 +323,8 @@ function LegacyTeamSetupDialogHost({
 		applyAuthoritativeDetail(nextDetail, true);
 		return nextDetail;
 	};
-	const recoverMutation = async (cause: unknown) => {
-		const message = safeMutationError(cause);
+	const recoverMutation = async (cause: unknown, getMessage = safeMutationError) => {
+		const message = getMessage(cause);
 		setOperationStatus("");
 		setError(message);
 		if (
@@ -319,27 +343,30 @@ function LegacyTeamSetupDialogHost({
 		}
 		setError(message);
 	};
-	const runDeviceMutation = async (
-		device: api.LegacyTeamSetupDeviceV1,
+	const runMutation = async (
+		itemRef: string,
 		status: string,
-		operation: () => Promise<void>,
+		savedStatus: string,
+		setBusyRef: (value: string | null) => void,
+		getError: (cause: unknown) => string,
+		operation: () => Promise<unknown>,
 	) => {
 		if (mutationsBlocked || submitting.current) return;
 		submitting.current = true;
 		setIsSubmitting(true);
-		setBusyDeviceRef(device.deviceRef);
+		setBusyRef(itemRef);
 		setOperationStatus(status);
 		setError(null);
 		try {
 			try {
 				await operation();
 			} catch (cause) {
-				await recoverMutation(cause);
+				await recoverMutation(cause, getError);
 				return;
 			}
 			try {
 				await reloadAfterMutation();
-				setOperationStatus(`${device.displayName} saved.`);
+				setOperationStatus(savedStatus);
 			} catch {
 				setOperationStatus("");
 				setError(SAVED_RELOAD_ERROR);
@@ -347,19 +374,25 @@ function LegacyTeamSetupDialogHost({
 		} finally {
 			submitting.current = false;
 			setIsSubmitting(false);
-			setBusyDeviceRef(null);
+			setBusyRef(null);
 		}
 	};
 	const assignDevice = (device: api.LegacyTeamSetupDeviceV1, targetIdentityRef: string) => {
 		const currentDetail = detail;
 		if (!currentDetail) return;
-		void runDeviceMutation(device, `Saving the assignment for ${device.displayName}.`, async () => {
-			await dependencies.saveAssignment(candidateRef, device.deviceRef, {
-				attemptId: currentDetail.attemptId,
-				targetIdentityRef,
-				expectation: device.expectation,
-			});
-		});
+		void runMutation(
+			device.deviceRef,
+			`Saving the assignment for ${device.displayName}.`,
+			`${device.displayName} saved.`,
+			setBusyDeviceRef,
+			safeMutationError,
+			() =>
+				dependencies.saveAssignment(candidateRef, device.deviceRef, {
+					attemptId: currentDetail.attemptId,
+					targetIdentityRef,
+					expectation: device.expectation,
+				}),
+		);
 	};
 	const decideDevice = (
 		device: api.LegacyTeamSetupDeviceV1,
@@ -372,29 +405,58 @@ function LegacyTeamSetupDialogHost({
 			setOperationStatus(`Save a person assignment before including ${device.displayName}.`);
 			return;
 		}
-		void runDeviceMutation(device, `Saving the decision for ${device.displayName}.`, async () => {
-			if (decision === "included" && targetIdentityRef) {
-				await dependencies.saveDecision(candidateRef, device.deviceRef, {
-					attemptId: currentDetail.attemptId,
-					decision: "included",
-					expectedTargetIdentityRef: targetIdentityRef,
-				});
-			} else if (decision !== "included") {
-				await dependencies.saveDecision(candidateRef, device.deviceRef, {
-					attemptId: currentDetail.attemptId,
-					decision,
-				});
-			}
-		});
+		void runMutation(
+			device.deviceRef,
+			`Saving the decision for ${device.displayName}.`,
+			`${device.displayName} saved.`,
+			setBusyDeviceRef,
+			safeMutationError,
+			async () => {
+				if (decision === "included" && targetIdentityRef) {
+					await dependencies.saveDecision(candidateRef, device.deviceRef, {
+						attemptId: currentDetail.attemptId,
+						decision: "included",
+						expectedTargetIdentityRef: targetIdentityRef,
+					});
+				} else if (decision !== "included") {
+					await dependencies.saveDecision(candidateRef, device.deviceRef, {
+						attemptId: currentDetail.attemptId,
+						decision,
+					});
+				}
+			},
+		);
 	};
 	const clearDevice = (device: api.LegacyTeamSetupDeviceV1) => {
 		const currentDetail = detail;
 		if (!currentDetail) return;
-		void runDeviceMutation(device, `Clearing the decision for ${device.displayName}.`, async () => {
-			await dependencies.clearDecision(candidateRef, device.deviceRef, {
-				attemptId: currentDetail.attemptId,
-			});
-		});
+		void runMutation(
+			device.deviceRef,
+			`Clearing the decision for ${device.displayName}.`,
+			`${device.displayName} saved.`,
+			setBusyDeviceRef,
+			safeMutationError,
+			() =>
+				dependencies.clearDecision(candidateRef, device.deviceRef, {
+					attemptId: currentDetail.attemptId,
+				}),
+		);
+	};
+	const mapProject = (project: api.LegacyTeamSetupProjectV1, resolvedProjectRef: string) => {
+		const currentDetail = detail;
+		if (!currentDetail) return;
+		void runMutation(
+			project.projectRef,
+			`Saving the mapping for ${project.displayName}.`,
+			`${project.displayName} saved.`,
+			setBusyProjectRef,
+			safeProjectMutationError,
+			() =>
+				dependencies.saveProjectMapping(candidateRef, project.projectRef, {
+					attemptId: currentDetail.attemptId,
+					resolvedProjectRef,
+				}),
+		);
 	};
 
 	return (
@@ -488,7 +550,12 @@ function LegacyTeamSetupDialogHost({
 												aria-disabled={devicesBlockProgress ? "true" : undefined}
 												className="settings-button legacy-team-setup-target"
 												onClick={() => {
-													if (!devicesBlockProgress) navigate("projects");
+													if (devicesBlockProgress) {
+														explainBlockedStep(
+															"devices",
+															"Finish the device decisions before mapping Projects.",
+														);
+													} else navigate("projects");
 												}}
 												type="button"
 											>
@@ -510,7 +577,17 @@ function LegacyTeamSetupDialogHost({
 												}
 												className="settings-button legacy-team-setup-target"
 												onClick={() => {
-													if (!devicesBlockProgress && !projectsBlockReview) navigate("review");
+													if (devicesBlockProgress) {
+														explainBlockedStep(
+															"devices",
+															"Finish the device decisions before reviewing access.",
+														);
+													} else if (projectsBlockReview) {
+														explainBlockedStep(
+															"projects",
+															"Finish the Project mappings before reviewing access.",
+														);
+													} else navigate("review");
 												}}
 												type="button"
 											>
@@ -546,6 +623,13 @@ function LegacyTeamSetupDialogHost({
 									onAssign={assignDevice}
 									onClear={clearDevice}
 									onDecision={decideDevice}
+								/>
+							) : step === "projects" ? (
+								<LegacyTeamSetupProjects
+									blocked={mutationsBlocked}
+									busyProjectRef={busyProjectRef}
+									detail={detail}
+									onMap={mapProject}
 								/>
 							) : (
 								<StepContent detail={detail} step={step} />

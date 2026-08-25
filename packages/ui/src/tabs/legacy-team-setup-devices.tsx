@@ -80,7 +80,12 @@ function DeviceRow({
 		draftIdentityRef === savedIdentity;
 
 	return (
-		<fieldset aria-busy={busy ? "true" : "false"} className="legacy-team-device-row">
+		<fieldset
+			aria-busy={busy ? "true" : "false"}
+			className="legacy-team-device-row"
+			id={`legacy-team-device-row-${index}`}
+			tabIndex={device.decision === "unresolved" ? -1 : undefined}
+		>
 			<legend>{device.displayName}</legend>
 			<div className="small legacy-team-device-evidence" id={evidenceId}>
 				<span>
