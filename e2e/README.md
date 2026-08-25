@@ -119,6 +119,21 @@ This scenario reuses one two-peer setup to prove:
 - durable ambiguous-migration `Keep current` decisions
 - rollback visibility through the safe reconciliation API
 
+## Run the Team setup scenario
+
+```fish
+pnpm run e2e:legacy-team-migration -- --json
+```
+
+This scenario proves that reviewed Team setup:
+
+- keeps existing access unchanged until **Finish Team setup**;
+- persists device choices, supports shared assignments across Teams, and keeps a Team-specific exclusion scoped to that Team;
+- blocks incomplete, stale, conflicting, or unmapped Project reviews without changing access;
+- applies confirmed device decisions, Project mappings, and access changes together at finish;
+- keeps a later unreviewed device ineligible; and
+- returns the same completed result when a finish response is lost and retried.
+
 ## Run the sharing-domain scenario
 
 ```fish
@@ -131,7 +146,7 @@ This scenario verifies hard sharing-domain boundaries, Project filters that only
 
 ## CI promotion gates
 
-CI runs `smoke`, `project-sharing`, and `sharing-domains` as separate matrix entries. Each entry uploads its `.tmp/e2e-artifacts/` directory on failure, so a failing promotion gate remains independently identifiable and diagnosable. The Cloudflare Worker integration job remains a separate gate.
+CI runs `smoke`, `legacy-team-migration`, `project-sharing`, and `sharing-domains` as separate matrix entries. Each entry uploads its `.tmp/e2e-artifacts/` directory on failure, so a failing promotion gate remains independently identifiable and diagnosable. The Cloudflare Worker integration job remains a separate gate.
 
 ## Run the fleet smoke scenario
 

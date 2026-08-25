@@ -213,6 +213,20 @@ The normal flow is **Projects → Sharing → Devices → Health**, not manual p
 
 Team membership organizes people and devices, but it is not permission to every Project—only Projects explicitly assigned to that Team. Project access remains explicit and uses canonical Project identity.
 
+### Set up an existing Team
+
+If a Team needs device setup, **Sharing** shows a notice and **Continue setup**. The Teams list shows **Needs setup**, **In progress**, or **Ready**.
+
+1. In **Review devices**, confirm a suggested person or choose an existing person. To add a missing person, open **Advanced → Manual device and identity controls**, choose **Create person**, then return to setup. Each confirmed assignment saves immediately and resumes if you leave or reload the page. A suggestion is never selected for you.
+2. Still in **Review devices**, include each device with its confirmed person, choose **Exclude**, or clear an earlier choice to review it again. An exclusion applies only to this Team; a confirmed person assignment can be reused by another Team.
+3. In **Review Projects**, check every Project. Codemem can recognize some Projects automatically; choose an explicit Project mapping for any it cannot. Unresolved Projects prevent finishing.
+4. In the final review, check the server-provided list of people, included and excluded devices, Project mappings, and every access change. Nothing changes while you are reviewing or saving choices.
+5. Choose **Finish Team setup** only when the review is correct. Codemem applies the confirmed Team, device decisions, Project mappings, and access changes together. If it cannot complete every change, it applies none.
+
+Setup can become stale when devices, Project mappings, or access change while you are reviewing. Refresh the Team, review the updates, and finish again; new or changed devices need a fresh decision. Your unchanged saved choices remain available for review.
+
+If the page closes or the finish response is lost, refresh **Sharing** and open the Team again. A completed Team appears **Ready**; retrying the same finish request returns the completed result instead of applying access changes again.
+
 ### Share exact Projects
 
 For direct sharing, including after Team onboarding:

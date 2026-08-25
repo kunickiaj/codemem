@@ -177,6 +177,9 @@ jobs:
           - name: Smoke
             script: e2e:smoke
             artifact: smoke
+          - name: Legacy Team Migration
+            script: e2e:legacy-team-migration
+            artifact: legacy-team-migration
           - name: Project Sharing
             script: e2e:project-sharing
             artifact: project-sharing
