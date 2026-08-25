@@ -71,7 +71,7 @@ The user cannot advance while `unresolvedProjectCount` is nonzero.
 
 ## Step 3: Review and finish
 
-Review is available only when `canFinish` is true and the detail includes `accessDelta`, `finishDigest`, and `accessDeltaDigest`.
+Review is available only when `canFinish` is true and the detail includes `accessDelta`, `finishDigest`, `accessDeltaDigest`, and `viewerAccessDeltaDigest`. The viewer digest binds the complete viewer-safe delta, including the display labels presented for confirmation.
 
 The UI renders every entry from the server-provided delta:
 
@@ -81,9 +81,11 @@ The UI renders every entry from the server-provided delta:
 - recipient changes;
 - device-access changes.
 
+Entries outside the current setup inventory use distinct, non-identifying labels that disclose they are outside the setup and cannot collide with displayed inventory labels.
+
 Large deltas remain inside the dialog's scrollable body. No delta entry is silently collapsed or omitted from the accessible DOM.
 
-Finish requires an explicit confirmation control. Submission sends the exact `attemptId`, `finishDigest`, and confirmed access-delta digest from the currently displayed detail. Success announces completion, refreshes Sharing and Projects state, and offers a single close action.
+Finish requires an explicit confirmation control. Submission sends the exact `attemptId`, `finishDigest`, confirmed access-delta digest, and confirmed viewer access-delta digest from the currently displayed detail. Success announces completion, refreshes Sharing and Projects state, and offers a single close action.
 
 ## Error and recovery behavior
 

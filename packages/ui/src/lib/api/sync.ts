@@ -830,30 +830,40 @@ export interface LegacyTeamSetupIdentityChoiceV1 {
 export interface LegacyTeamSetupAccessDeltaV1 {
 	teamChanges: Array<{
 		teamRef: string;
+		teamDisplayName: string;
 		change: "add" | "update" | "remove";
 		fromDeviceEligibilityMode: "person_all_devices" | "reviewed_allowlist" | null;
 		toDeviceEligibilityMode: "reviewed_allowlist";
 	}>;
 	membershipChanges: Array<{
 		teamRef: string;
+		teamDisplayName: string;
 		identityRef: string;
+		identityDisplayName: string;
 		change: "add" | "update" | "remove";
 	}>;
 	projectChanges: Array<{
 		projectRef: string;
+		projectDisplayName: string;
 		fromResolvedProjectRef: string | null;
+		fromResolvedProjectDisplayName: string | null;
 		toResolvedProjectRef: string | null;
+		toResolvedProjectDisplayName: string | null;
 		change: "add" | "update" | "remove";
 	}>;
 	recipientChanges: Array<{
 		canonicalProjectRef: string;
+		canonicalProjectDisplayName: string;
 		recipientKind: "team";
 		recipientRef: string;
+		recipientDisplayName: string;
 		change: "add" | "update" | "remove";
 	}>;
 	deviceAccessChanges: Array<{
 		canonicalProjectRef: string;
+		canonicalProjectDisplayName: string;
 		deviceRef: string;
+		deviceDisplayName: string;
 		change: "add" | "remove";
 	}>;
 }
@@ -877,6 +887,7 @@ export type LegacyTeamSetupDetailResponseV1 = LegacyTeamSetupDetailBaseV1 &
 				conflictState: null;
 				finishDigest: string;
 				accessDeltaDigest: string;
+				viewerAccessDeltaDigest: string;
 				accessDelta: LegacyTeamSetupAccessDeltaV1;
 		  }
 		| {
@@ -1035,6 +1046,7 @@ function isLegacyTeamSetupAccessDelta(value: unknown): value is LegacyTeamSetupA
 			(item): item is LegacyTeamSetupAccessDeltaV1["teamChanges"][number] =>
 				isJsonRecord(item) &&
 				typeof item.teamRef === "string" &&
+				typeof item.teamDisplayName === "string" &&
 				validChange(item.change) &&
 				[null, "person_all_devices", "reviewed_allowlist"].includes(
 					item.fromDeviceEligibilityMode as null | string,
@@ -1046,7 +1058,9 @@ function isLegacyTeamSetupAccessDelta(value: unknown): value is LegacyTeamSetupA
 			(item): item is LegacyTeamSetupAccessDeltaV1["membershipChanges"][number] =>
 				isJsonRecord(item) &&
 				typeof item.teamRef === "string" &&
+				typeof item.teamDisplayName === "string" &&
 				typeof item.identityRef === "string" &&
+				typeof item.identityDisplayName === "string" &&
 				validChange(item.change),
 		) &&
 		isArrayOf(
@@ -1054,8 +1068,11 @@ function isLegacyTeamSetupAccessDelta(value: unknown): value is LegacyTeamSetupA
 			(item): item is LegacyTeamSetupAccessDeltaV1["projectChanges"][number] =>
 				isJsonRecord(item) &&
 				typeof item.projectRef === "string" &&
+				typeof item.projectDisplayName === "string" &&
 				isStringOrNull(item.fromResolvedProjectRef) &&
+				isStringOrNull(item.fromResolvedProjectDisplayName) &&
 				isStringOrNull(item.toResolvedProjectRef) &&
+				isStringOrNull(item.toResolvedProjectDisplayName) &&
 				validChange(item.change),
 		) &&
 		isArrayOf(
@@ -1063,8 +1080,10 @@ function isLegacyTeamSetupAccessDelta(value: unknown): value is LegacyTeamSetupA
 			(item): item is LegacyTeamSetupAccessDeltaV1["recipientChanges"][number] =>
 				isJsonRecord(item) &&
 				typeof item.canonicalProjectRef === "string" &&
+				typeof item.canonicalProjectDisplayName === "string" &&
 				item.recipientKind === "team" &&
 				typeof item.recipientRef === "string" &&
+				typeof item.recipientDisplayName === "string" &&
 				validChange(item.change),
 		) &&
 		isArrayOf(
@@ -1072,7 +1091,9 @@ function isLegacyTeamSetupAccessDelta(value: unknown): value is LegacyTeamSetupA
 			(item): item is LegacyTeamSetupAccessDeltaV1["deviceAccessChanges"][number] =>
 				isJsonRecord(item) &&
 				typeof item.canonicalProjectRef === "string" &&
+				typeof item.canonicalProjectDisplayName === "string" &&
 				typeof item.deviceRef === "string" &&
+				typeof item.deviceDisplayName === "string" &&
 				typeof item.change === "string" &&
 				["add", "remove"].includes(item.change),
 		)
@@ -1104,6 +1125,7 @@ function isLegacyTeamSetupDetail(value: unknown): value is LegacyTeamSetupDetail
 			value.conflictState === null &&
 			typeof value.finishDigest === "string" &&
 			typeof value.accessDeltaDigest === "string" &&
+			typeof value.viewerAccessDeltaDigest === "string" &&
 			isLegacyTeamSetupAccessDelta(value.accessDelta)
 		);
 	}
@@ -1283,6 +1305,7 @@ export function finishLegacyTeamSetup(
 		attemptId: string;
 		finishDigest: string;
 		confirmedAccessDeltaDigest: string;
+		confirmedViewerAccessDeltaDigest: string;
 	},
 ): Promise<LegacyTeamSetupFinishResponseV1> {
 	return legacyTeamSetupRequest(

@@ -166,6 +166,7 @@ describe("legacy Team setup activation", () => {
 			confirmedAccessDeltaDigest: review.accessDeltaDigest,
 			loadFreshRoster,
 			loadProjectInventory,
+			validateLockedPreview: () => true,
 			now: NOW,
 		});
 	}
@@ -547,6 +548,7 @@ describe("legacy Team setup activation", () => {
 			confirmedAccessDeltaDigest: review.accessDeltaDigest,
 			loadFreshRoster: vi.fn(async () => roster),
 			loadProjectInventory: vi.fn(() => draftProjectInventory(draft.attemptId)),
+			validateLockedPreview: () => true,
 			now: NOW,
 			...override,
 		});
@@ -767,6 +769,7 @@ describe("legacy Team setup activation", () => {
 			confirmedAccessDeltaDigest: review.accessDeltaDigest,
 			loadFreshRoster,
 			loadProjectInventory: vi.fn(() => draftProjectInventory(draft.attemptId)),
+			validateLockedPreview: () => true,
 			now: NOW,
 		});
 

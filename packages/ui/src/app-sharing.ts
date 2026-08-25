@@ -86,16 +86,29 @@ export function createRecipientPolicySharingLoader(
 		intent: api.RecipientPolicyIntentGraphV1;
 	} | null = null;
 
-	const loadRecipientPolicySharingData = (): Promise<boolean> => {
+	const loadRecipientPolicySharingData = (
+		refreshOptions: RecipientPolicySharingRefreshOptions = {},
+	): Promise<boolean> => {
 		const revision = ++loadRevision;
-		const operation = load(revision);
+		const operation = load(revision, refreshOptions);
 		latestLoad = operation;
 		return operation;
 	};
 
-	async function load(revision: number): Promise<boolean> {
+	async function load(
+		revision: number,
+		refreshOptions: RecipientPolicySharingRefreshOptions,
+	): Promise<boolean> {
 		const sharingMount = document.getElementById("recipientPolicySharingMount");
-		if (!sharingMount) return true;
+		if (!sharingMount) {
+			if (!refreshOptions.requireTeamSetupSummary) return true;
+			try {
+				await dependencies.loadTeamSetupSummary();
+				return true;
+			} catch {
+				return false;
+			}
+		}
 		const managementMount = document.getElementById("recipientPolicyManagementMount");
 		teamSetupLoading = true;
 		teamSetupUnavailable = false;
@@ -127,21 +140,23 @@ export function createRecipientPolicySharingLoader(
 			);
 		};
 		renderTeamSetupUpdate();
-		void Promise.resolve()
+		const teamSetupSummaryPromise = Promise.resolve()
 			.then(() => dependencies.loadTeamSetupSummary())
 			.then(
 				(summary) => {
-					if (revision !== loadRevision) return;
+					if (revision !== loadRevision) return true;
 					teamSetupSummary = summary;
 					teamSetupLoading = false;
 					teamSetupUnavailable = false;
 					renderTeamSetupUpdate();
+					return true;
 				},
 				() => {
-					if (revision !== loadRevision) return;
+					if (revision !== loadRevision) return false;
 					teamSetupLoading = false;
 					teamSetupUnavailable = true;
 					renderTeamSetupUpdate();
+					return false;
 				},
 			);
 		const [inventoryResult, intentResult, deviceInventoryResult, syncStatusResult] =
@@ -151,7 +166,11 @@ export function createRecipientPolicySharingLoader(
 				dependencies.loadDeviceInventory(),
 				dependencies.loadSyncStatus(false, "", { includeJoinRequests: false }),
 			]);
-		if (revision !== loadRevision) return latestLoad ?? false;
+		if (revision !== loadRevision) {
+			if (!refreshOptions.requireTeamSetupSummary) return latestLoad ?? false;
+			await teamSetupSummaryPromise;
+			return false;
+		}
 		const deviceInventoryUnavailable = deviceInventoryResult.status === "rejected";
 		if (deviceInventoryResult.status === "fulfilled") {
 			lastDeviceInventory = deviceInventoryResult.value;
@@ -228,10 +247,19 @@ export function createRecipientPolicySharingLoader(
 				loadError: true,
 			});
 		}
-		return loadSucceeded;
+		if (!refreshOptions.requireTeamSetupSummary) return loadSucceeded;
+		const teamSetupSucceeded = await teamSetupSummaryPromise;
+		if (revision !== loadRevision) return false;
+		return loadSucceeded && teamSetupSucceeded;
 	}
 
 	return loadRecipientPolicySharingData;
 }
 
-export type RecipientPolicySharingRefresh = () => Promise<boolean>;
+export interface RecipientPolicySharingRefreshOptions {
+	requireTeamSetupSummary?: boolean;
+}
+
+export type RecipientPolicySharingRefresh = (
+	options?: RecipientPolicySharingRefreshOptions,
+) => Promise<boolean>;

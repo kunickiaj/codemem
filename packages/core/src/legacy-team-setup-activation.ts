@@ -77,6 +77,12 @@ export interface FinishLegacyTeamSetupActivationInput
 	 * database and must not await.
 	 */
 	loadProjectInventory: () => LegacyTeamSetupProjectInput[];
+	/**
+	 * Revalidates adapter-specific confirmation evidence against the final
+	 * preview while the activation transaction holds its immediate lock.
+	 * Implementations must be synchronous and read from the same database.
+	 */
+	validateLockedPreview: (preview: LegacyTeamSetupActivationPreviewV1) => boolean;
 	now?: string;
 }
 
@@ -1717,6 +1723,9 @@ export async function finishLegacyTeamSetupActivation(
 					lockedPreview.finishDigest !== input.finishDigest ||
 					lockedPreview.accessDeltaDigest !== input.confirmedAccessDeltaDigest
 				) {
+					activationError("team_setup_confirmation_stale");
+				}
+				if (!input.validateLockedPreview(lockedPreview)) {
 					activationError("team_setup_confirmation_stale");
 				}
 				return applyActivation(db, model, lockedPreview, freshRoster, now);

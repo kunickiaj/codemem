@@ -786,7 +786,23 @@ initState();
 const toastRoot = document.getElementById("toastRoot");
 if (toastRoot) mountToastHost(toastRoot);
 const legacyTeamSetupRoot = document.getElementById("legacyTeamSetupMount");
-if (legacyTeamSetupRoot) mountLegacyTeamSetupDialog(legacyTeamSetupRoot);
+if (legacyTeamSetupRoot) {
+	mountLegacyTeamSetupDialog(legacyTeamSetupRoot, {
+		onCompleted: async () => {
+			let sharingUpdated: boolean;
+			let projectsUpdated: boolean;
+			const refreshOptions = { requireTeamSetupSummary: true };
+			if (state.activeTab === "sharing") {
+				projectsUpdated = await loadProjectsData(refreshOptions);
+				sharingUpdated = await loadRecipientPolicySharingData(refreshOptions);
+			} else {
+				sharingUpdated = await loadRecipientPolicySharingData(refreshOptions);
+				projectsUpdated = await loadProjectsData(refreshOptions);
+			}
+			if (!sharingUpdated || !projectsUpdated) throw new Error("team_setup_refresh_failed");
+		},
+	});
+}
 
 // Theme
 initThemeToggle($button("themeToggle"));

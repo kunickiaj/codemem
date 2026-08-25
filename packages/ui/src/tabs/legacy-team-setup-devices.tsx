@@ -5,6 +5,7 @@ type DeviceDecision = "included" | "excluded" | "removed";
 
 export interface LegacyTeamSetupDevicesProps {
 	blocked: boolean;
+	blockedDescriptionId?: string;
 	busyDeviceRef: string | null;
 	detail: LegacyTeamSetupDetailResponseV1;
 	onAssign: (device: LegacyTeamSetupDeviceV1, identityRef: string) => void;
@@ -37,6 +38,7 @@ function initialIdentityRef(device: LegacyTeamSetupDeviceV1): string {
 
 function DeviceRow({
 	blocked,
+	blockedDescriptionId,
 	busy,
 	detail,
 	device,
@@ -78,6 +80,16 @@ function DeviceRow({
 		assignmentEvidenceInactive ||
 		assignmentIdentityUnavailable ||
 		draftIdentityRef === savedIdentity;
+	const assignmentNeedsHelp = !device.enabled || includeNeedsHelp;
+	const globalBlockedDescription = blocked ? blockedDescriptionId : undefined;
+	const assignmentDescription = [
+		evidenceId,
+		assignmentNeedsHelp ? assignmentHelpId : undefined,
+		globalBlockedDescription,
+	]
+		.filter(Boolean)
+		.join(" ");
+	const actionDescription = [evidenceId, globalBlockedDescription].filter(Boolean).join(" ");
 
 	return (
 		<fieldset
@@ -104,7 +116,7 @@ function DeviceRow({
 			</div>
 			<label htmlFor={controlId}>Person using this device</label>
 			<select
-				aria-describedby={`${evidenceId}${includeNeedsHelp ? ` ${assignmentHelpId}` : ""}`}
+				aria-describedby={assignmentDescription}
 				className="feed-search legacy-team-device-select"
 				disabled={assignmentControlsBlocked}
 				id={controlId}
@@ -144,7 +156,7 @@ function DeviceRow({
 			) : null}
 			<div className="legacy-team-device-actions">
 				<button
-					aria-describedby={!draftIdentityRef ? assignmentHelpId : evidenceId}
+					aria-describedby={assignmentDescription}
 					aria-disabled={assignmentBlocked ? "true" : undefined}
 					className="settings-button legacy-team-setup-target"
 					onClick={() => {
@@ -157,7 +169,7 @@ function DeviceRow({
 				{device.enabled ? (
 					<>
 						<button
-							aria-describedby={includeNeedsHelp ? assignmentHelpId : evidenceId}
+							aria-describedby={assignmentDescription}
 							aria-disabled={includeBlocked ? "true" : undefined}
 							className="settings-button legacy-team-setup-target"
 							onClick={() => {
@@ -168,6 +180,7 @@ function DeviceRow({
 							Include
 						</button>
 						<button
+							aria-describedby={actionDescription}
 							aria-disabled={controlsBlocked ? "true" : undefined}
 							className="settings-button legacy-team-setup-target"
 							onClick={() => {
@@ -180,6 +193,7 @@ function DeviceRow({
 					</>
 				) : (
 					<button
+						aria-describedby={actionDescription}
 						aria-disabled={controlsBlocked ? "true" : undefined}
 						className="settings-button legacy-team-setup-target"
 						onClick={() => {
@@ -192,6 +206,7 @@ function DeviceRow({
 				)}
 				{device.decision !== "unresolved" ? (
 					<button
+						aria-describedby={actionDescription}
 						aria-disabled={controlsBlocked ? "true" : undefined}
 						className="settings-button legacy-team-setup-target"
 						onClick={() => {

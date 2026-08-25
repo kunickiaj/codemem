@@ -334,6 +334,7 @@ describe("legacy Team setup API", () => {
 			attemptId: "attempt-one",
 			finishDigest: "finish-digest",
 			confirmedAccessDeltaDigest: "access-digest",
+			confirmedViewerAccessDeltaDigest: "viewer-access-digest",
 		};
 
 		await loadLegacyTeamSetupSummary();
@@ -460,6 +461,49 @@ describe("legacy Team setup API", () => {
 		});
 	});
 
+	it("rejects finishable detail without viewer-bound confirmation evidence", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					version: 1,
+					candidate: {
+						candidateRef: "candidate/ref",
+						displayName: "Example Team",
+						status: "in_progress",
+						deviceCount: 0,
+						projectCount: 0,
+						unresolvedDeviceCount: 0,
+						unresolvedProjectCount: 0,
+					},
+					attemptId: "attempt-one",
+					draftState: "in_progress",
+					unresolvedDeviceCount: 0,
+					unresolvedProjectCount: 0,
+					devices: [],
+					projects: [],
+					identityChoices: [],
+					canFinish: true,
+					conflictState: null,
+					finishDigest: "finish-digest",
+					accessDeltaDigest: "access-digest",
+					accessDelta: {
+						teamChanges: [],
+						membershipChanges: [],
+						projectChanges: [],
+						recipientChanges: [],
+						deviceAccessChanges: [],
+					},
+				}),
+				{ status: 200 },
+			),
+		) as typeof fetch;
+
+		await expect(loadLegacyTeamSetupDetail("candidate/ref")).rejects.toMatchObject({
+			statusCode: 200,
+			errorCode: "team_setup_failed",
+		});
+	});
+
 	it.each([
 		["summary", () => loadLegacyTeamSetupSummary()],
 		["detail", () => loadLegacyTeamSetupDetail("candidate/ref")],
@@ -479,6 +523,7 @@ describe("legacy Team setup API", () => {
 					attemptId: "attempt-one",
 					finishDigest: "finish-digest",
 					confirmedAccessDeltaDigest: "access-digest",
+					confirmedViewerAccessDeltaDigest: "viewer-access-digest",
 				}),
 		],
 	] as const)("rejects a version-only successful %s DTO", async (_name, request) => {

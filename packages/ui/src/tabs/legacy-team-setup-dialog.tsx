@@ -5,6 +5,7 @@ import { RadixDialog } from "../components/primitives/radix-dialog";
 import * as api from "../lib/api";
 import { LegacyTeamSetupDevices } from "./legacy-team-setup-devices";
 import { LegacyTeamSetupProjects } from "./legacy-team-setup-projects";
+import { LegacyTeamSetupReview } from "./legacy-team-setup-review";
 
 type TeamSetupStep = "devices" | "projects" | "review" | "completed";
 const CHANGED_STATE_ERROR =
@@ -20,7 +21,9 @@ const RELOAD_ERROR_CODES = new Set<api.LegacyTeamSetupErrorCode>([
 
 export interface LegacyTeamSetupDialogDependencies {
 	clearDecision: typeof api.clearLegacyTeamSetupDecision;
+	finish: typeof api.finishLegacyTeamSetup;
 	loadDetail: typeof api.loadLegacyTeamSetupDetail;
+	onCompleted: () => void | Promise<void>;
 	refreshCandidate: typeof api.refreshLegacyTeamSetupCandidate;
 	saveAssignment: typeof api.saveLegacyTeamSetupAssignment;
 	saveDecision: typeof api.saveLegacyTeamSetupDecision;
@@ -29,7 +32,9 @@ export interface LegacyTeamSetupDialogDependencies {
 
 const defaultDependencies: LegacyTeamSetupDialogDependencies = {
 	clearDecision: api.clearLegacyTeamSetupDecision,
+	finish: api.finishLegacyTeamSetup,
 	loadDetail: api.loadLegacyTeamSetupDetail,
+	onCompleted: () => {},
 	refreshCandidate: api.refreshLegacyTeamSetupCandidate,
 	saveAssignment: api.saveLegacyTeamSetupAssignment,
 	saveDecision: api.saveLegacyTeamSetupDecision,
@@ -78,6 +83,7 @@ function initialStep(detail: api.LegacyTeamSetupDetailResponseV1): TeamSetupStep
 }
 
 function detailNeedsRecovery(detail: api.LegacyTeamSetupDetailResponseV1): boolean {
+	if (detail.draftState === "completed") return false;
 	return (
 		detail.draftState === "stale" ||
 		(!detail.canFinish &&
@@ -115,6 +121,20 @@ function safeProjectMutationError(cause: unknown): string {
 		return CHANGED_STATE_ERROR;
 	}
 	return "This Project mapping could not be saved. Reload the latest details before trying again.";
+}
+
+function safeRefreshError(cause: unknown): string {
+	if (cause instanceof api.LegacyTeamSetupApiError && RELOAD_ERROR_CODES.has(cause.errorCode)) {
+		return CHANGED_STATE_ERROR;
+	}
+	return "Team setup could not be refreshed. Retry to load the latest server details.";
+}
+
+function safeFinishError(cause: unknown): string {
+	if (cause instanceof api.LegacyTeamSetupApiError && RELOAD_ERROR_CODES.has(cause.errorCode)) {
+		return CHANGED_STATE_ERROR;
+	}
+	return "Team setup could not be finished. Reload the latest details before trying again.";
 }
 
 function StepContent({
@@ -174,14 +194,61 @@ function LegacyTeamSetupDialogHost({
 	const refreshBeforeLoad = useRef(false);
 	const retryNeedsRefresh = useRef(false);
 	const submitting = useRef(false);
+	const dialogGeneration = useRef(0);
+	const completedSurfaceRefresh = useRef<{
+		attemptId: string;
+		candidateRef: string;
+		promise: Promise<void>;
+	} | null>(null);
+	const refreshCompletedSurfaces = (attemptId: string): Promise<void> => {
+		const currentRefresh = completedSurfaceRefresh.current;
+		if (currentRefresh?.attemptId === attemptId && currentRefresh.candidateRef === candidateRef) {
+			return currentRefresh.promise;
+		}
+		const refreshPromise = Promise.resolve().then(() => dependencies.onCompleted());
+		const forgetRefresh = () => {
+			if (completedSurfaceRefresh.current?.promise === trackedPromise) {
+				completedSurfaceRefresh.current = null;
+			}
+		};
+		const trackedPromise = refreshPromise.then(forgetRefresh, (cause: unknown) => {
+			forgetRefresh();
+			throw cause;
+		});
+		completedSurfaceRefresh.current = { attemptId, candidateRef, promise: trackedPromise };
+		return trackedPromise;
+	};
+	const reportCompletedRefresh = (attemptId: string, completionGeneration: number): void => {
+		setOperationStatus("Team setup complete. Sharing and Projects are refreshing.");
+		void refreshCompletedSurfaces(attemptId).then(
+			() => {
+				if (dialogGeneration.current !== completionGeneration) return;
+				setOperationStatus("Team setup complete. Sharing and Projects are up to date.");
+			},
+			() => {
+				if (dialogGeneration.current !== completionGeneration) return;
+				setOperationStatus(
+					"Team setup complete. Sharing or Projects could not be refreshed; use that view's Refresh control.",
+				);
+			},
+		);
+	};
 
 	useEffect(() => {
 		requestOpen = (nextCandidateRef) => {
+			if (submitting.current) {
+				setOperationStatus(
+					"Wait for the current Team setup change to finish before opening another Team.",
+				);
+				return;
+			}
+			dialogGeneration.current += 1;
 			refreshBeforeLoad.current = false;
 			retryNeedsRefresh.current = false;
 			setCandidateRef(nextCandidateRef);
 			setDetail(null);
 			setError(null);
+			setOperationStatus("");
 			setLoadRevision((current) => current + 1);
 		};
 		if (pendingCandidateRef) {
@@ -213,6 +280,9 @@ function LegacyTeamSetupDialogHost({
 				setStep(initialStep(nextDetail));
 				setError(detailNeedsRecovery(nextDetail) ? CHANGED_STATE_ERROR : null);
 				setLoading(false);
+				if (nextDetail.draftState === "completed") {
+					reportCompletedRefresh(nextDetail.attemptId, dialogGeneration.current);
+				}
 			},
 			(cause: unknown) => {
 				if (!current) return;
@@ -243,7 +313,10 @@ function LegacyTeamSetupDialogHost({
 		if (loading || !focusAfterLoad.current) return;
 		focusAfterLoad.current = false;
 		if (error) {
-			document.getElementById("legacy-team-setup-retry")?.focus();
+			(
+				document.getElementById("legacy-team-setup-retry") ??
+				document.getElementById("legacy-team-setup-refresh")
+			)?.focus();
 			return;
 		}
 		document.getElementById(`legacy-team-setup-step-${step}`)?.focus();
@@ -263,6 +336,7 @@ function LegacyTeamSetupDialogHost({
 		focusStepAfterRender.current = false;
 		refreshBeforeLoad.current = false;
 		retryNeedsRefresh.current = false;
+		dialogGeneration.current += 1;
 		setCandidateRef(null);
 		setDetail(null);
 		setError(null);
@@ -301,7 +375,15 @@ function LegacyTeamSetupDialogHost({
 	};
 	const devicesBlockProgress = detail ? detail.unresolvedDeviceCount > 0 : false;
 	const projectsBlockReview = detail ? detail.unresolvedProjectCount > 0 : false;
+	const recoveryRequired = detail ? detailNeedsRecovery(detail) : false;
 	const mutationsBlocked = loading || isSubmitting || Boolean(error);
+	const mutationBlockDescriptionId = error
+		? "legacy-team-setup-error"
+		: loading
+			? "legacy-team-setup-refresh-status"
+			: isSubmitting
+				? "legacy-team-setup-operation-status"
+				: undefined;
 	const applyAuthoritativeDetail = (
 		nextDetail: api.LegacyTeamSetupDetailResponseV1,
 		preserveDevicesStep: boolean,
@@ -310,7 +392,10 @@ function LegacyTeamSetupDialogHost({
 		setDetail(nextDetail);
 		setStep((current) => {
 			const nextStep =
-				preserveDevicesStep && current === "devices" && nextDetail.unresolvedDeviceCount > 0
+				preserveDevicesStep &&
+				current === "devices" &&
+				nextDetail.draftState !== "completed" &&
+				nextDetail.unresolvedDeviceCount > 0
 					? "devices"
 					: initialStep(nextDetail);
 			if (nextStep !== current) focusStepAfterRender.current = true;
@@ -336,6 +421,11 @@ function LegacyTeamSetupDialogHost({
 		try {
 			const nextDetail = await dependencies.loadDetail(candidateRef);
 			applyAuthoritativeDetail(nextDetail, true);
+			if (nextDetail.draftState === "completed") {
+				setError(null);
+				reportCompletedRefresh(nextDetail.attemptId, dialogGeneration.current);
+				return;
+			}
 			retryNeedsRefresh.current = true;
 		} catch {
 			retryNeedsRefresh.current = true;
@@ -458,6 +548,56 @@ function LegacyTeamSetupDialogHost({
 				}),
 		);
 	};
+	const refreshSetup = () => {
+		if (loading || isSubmitting || submitting.current) return;
+		const completionGeneration = dialogGeneration.current;
+		submitting.current = true;
+		setIsSubmitting(true);
+		setOperationStatus("Refreshing Team setup from the latest server state.");
+		setError(null);
+		void dependencies
+			.refreshCandidate(candidateRef)
+			.then(reloadAfterMutation)
+			.then((nextDetail) => {
+				if (nextDetail.draftState === "completed") {
+					reportCompletedRefresh(nextDetail.attemptId, completionGeneration);
+					return;
+				}
+				setOperationStatus("Team setup refreshed.");
+			})
+			.catch((cause: unknown) => recoverMutation(cause, safeRefreshError))
+			.finally(() => {
+				submitting.current = false;
+				setIsSubmitting(false);
+			});
+	};
+	const finishSetup = (finishDetail: api.LegacyTeamSetupDetailResponseV1 & { canFinish: true }) => {
+		if (mutationsBlocked || submitting.current) return;
+		const completionGeneration = dialogGeneration.current;
+		submitting.current = true;
+		setIsSubmitting(true);
+		setOperationStatus("Finishing Team setup.");
+		setError(null);
+		void dependencies
+			.finish(candidateRef, {
+				attemptId: finishDetail.attemptId,
+				finishDigest: finishDetail.finishDigest,
+				confirmedAccessDeltaDigest: finishDetail.accessDeltaDigest,
+				confirmedViewerAccessDeltaDigest: finishDetail.viewerAccessDeltaDigest,
+			})
+			.then(
+				() => {
+					focusStepAfterRender.current = true;
+					setStep("completed");
+					reportCompletedRefresh(finishDetail.attemptId, completionGeneration);
+				},
+				(cause: unknown) => recoverMutation(cause, safeFinishError),
+			)
+			.finally(() => {
+				submitting.current = false;
+				setIsSubmitting(false);
+			});
+	};
 
 	return (
 		<RadixDialog
@@ -507,23 +647,25 @@ function LegacyTeamSetupDialogHost({
 					{loading && !detail ? <p role="status">Loading the latest Team setup details…</p> : null}
 					{error ? (
 						<div className="legacy-team-setup-error">
-							<p aria-live="assertive" role="alert">
+							<p aria-live="assertive" id="legacy-team-setup-error" role="alert">
 								{error}
 							</p>
-							<button
-								aria-disabled={loading || isSubmitting ? "true" : undefined}
-								className="settings-button legacy-team-setup-target"
-								id="legacy-team-setup-retry"
-								onClick={() => {
-									if (loading || isSubmitting) return;
-									focusAfterLoad.current = true;
-									refreshBeforeLoad.current = retryNeedsRefresh.current;
-									setLoadRevision((current) => current + 1);
-								}}
-								type="button"
-							>
-								{loading ? "Retrying…" : "Retry"}
-							</button>
+							{!detail || !recoveryRequired ? (
+								<button
+									aria-disabled={loading || isSubmitting ? "true" : undefined}
+									className="settings-button legacy-team-setup-target"
+									id="legacy-team-setup-retry"
+									onClick={() => {
+										if (loading || isSubmitting) return;
+										focusAfterLoad.current = true;
+										refreshBeforeLoad.current = retryNeedsRefresh.current;
+										setLoadRevision((current) => current + 1);
+									}}
+									type="button"
+								>
+									{loading ? "Retrying…" : "Retry"}
+								</button>
+							) : null}
 						</div>
 					) : null}
 					{detail ? (
@@ -608,16 +750,38 @@ function LegacyTeamSetupDialogHost({
 								</>
 							) : null}
 							{loading ? (
-								<p aria-live="polite" className="small" role="status">
+								<p
+									aria-live="polite"
+									className="small"
+									id="legacy-team-setup-refresh-status"
+									role="status"
+								>
 									Refreshing Team setup details…
 								</p>
 							) : null}
-							<p aria-live="polite" className="small" role="status">
+							<p
+								aria-live="polite"
+								className="small"
+								id="legacy-team-setup-operation-status"
+								role="status"
+							>
 								{operationStatus}
 							</p>
+							{recoveryRequired ? (
+								<button
+									aria-disabled={loading || isSubmitting ? "true" : undefined}
+									className="settings-button legacy-team-setup-target"
+									id="legacy-team-setup-refresh"
+									onClick={refreshSetup}
+									type="button"
+								>
+									Refresh Team setup
+								</button>
+							) : null}
 							{step === "devices" ? (
 								<LegacyTeamSetupDevices
 									blocked={mutationsBlocked}
+									blockedDescriptionId={mutationBlockDescriptionId}
 									busyDeviceRef={busyDeviceRef}
 									detail={detail}
 									onAssign={assignDevice}
@@ -627,12 +791,32 @@ function LegacyTeamSetupDialogHost({
 							) : step === "projects" ? (
 								<LegacyTeamSetupProjects
 									blocked={mutationsBlocked}
+									blockedDescriptionId={mutationBlockDescriptionId}
 									busyProjectRef={busyProjectRef}
 									detail={detail}
 									onMap={mapProject}
 								/>
+							) : step === "review" && detail.canFinish ? (
+								<LegacyTeamSetupReview
+									blocked={mutationsBlocked}
+									blockedDescriptionId={mutationBlockDescriptionId}
+									detail={detail}
+									onFinish={finishSetup}
+								/>
 							) : (
-								<StepContent detail={detail} step={step} />
+								<>
+									<StepContent detail={detail} step={step} />
+									{step === "review" && !detail.canFinish && !recoveryRequired ? (
+										<button
+											aria-disabled={loading || isSubmitting ? "true" : undefined}
+											className="settings-button legacy-team-setup-target"
+											onClick={refreshSetup}
+											type="button"
+										>
+											Refresh Team setup
+										</button>
+									) : null}
+								</>
 							)}
 						</>
 					) : null}

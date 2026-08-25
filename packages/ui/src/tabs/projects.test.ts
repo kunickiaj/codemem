@@ -531,6 +531,65 @@ describe("Projects tab", () => {
 		resolveTeamSetup({ version: 1, candidates: [] });
 	});
 
+	it("renders Projects but reports strict refresh failure after Team setup discovery fails", async () => {
+		let rejectTeamSetup!: (reason?: unknown) => void;
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		});
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockImplementation(
+			() =>
+				new Promise<LegacyTeamSetupSummaryResponseV1>((_, reject) => {
+					rejectTeamSetup = reject;
+				}),
+		);
+
+		const loading = loadProjectsData({ requireTeamSetupSummary: true });
+		await vi.waitFor(() =>
+			expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain(
+				"1 project identity found",
+			),
+		);
+		let settled = false;
+		void loading.then(() => {
+			settled = true;
+		});
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		rejectTeamSetup(new Error("setup unavailable"));
+		await expect(loading).resolves.toBe(false);
+	});
+
+	it("requires a fresh Team setup summary for a strict refresh", async () => {
+		let resolveFirst!: (value: LegacyTeamSetupSummaryResponseV1) => void;
+		let resolveSecond!: (value: LegacyTeamSetupSummaryResponseV1) => void;
+		vi.mocked(api.loadLegacyTeamSetupSummary)
+			.mockImplementationOnce(() => new Promise((resolve) => (resolveFirst = resolve)))
+			.mockImplementationOnce(() => new Promise((resolve) => (resolveSecond = resolve)));
+
+		await expect(loadProjectsData()).resolves.toBe(true);
+		const strictRefresh = loadProjectsData({ requireTeamSetupSummary: true });
+		await vi.waitFor(() => expect(api.loadLegacyTeamSetupSummary).toHaveBeenCalledTimes(2));
+
+		resolveSecond({ version: 1, candidates: [] });
+		await expect(strictRefresh).resolves.toBe(true);
+		resolveFirst({ version: 1, candidates: [] });
+	});
+
+	it("fails a strict refresh while a Project domain selection is active", async () => {
+		const select = document.createElement("select");
+		select.className = "project-domain-select";
+		document.body.appendChild(select);
+		select.focus();
+
+		await expect(loadProjectsData({ requireTeamSetupSummary: true })).resolves.toBe(false);
+		expect(api.loadLegacyTeamSetupSummary).not.toHaveBeenCalled();
+	});
+
 	it("reuses slow Team setup discovery across polling generations", async () => {
 		let resolveTeamSetup!: (value: LegacyTeamSetupSummaryResponseV1) => void;
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({

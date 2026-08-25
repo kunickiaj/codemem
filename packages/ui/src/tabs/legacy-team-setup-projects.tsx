@@ -3,6 +3,7 @@ import type { LegacyTeamSetupDetailResponseV1, LegacyTeamSetupProjectV1 } from "
 
 export interface LegacyTeamSetupProjectsProps {
 	blocked: boolean;
+	blockedDescriptionId?: string;
 	busyProjectRef: string | null;
 	detail: LegacyTeamSetupDetailResponseV1;
 	onMap: (project: LegacyTeamSetupProjectV1, resolvedProjectRef: string) => void;
@@ -19,11 +20,12 @@ function mappingName(project: LegacyTeamSetupProjectV1): string | null {
 
 function ProjectRow({
 	blocked,
+	blockedDescriptionId,
 	busy,
 	index,
 	onMap,
 	project,
-}: Pick<LegacyTeamSetupProjectsProps, "blocked" | "onMap"> & {
+}: Pick<LegacyTeamSetupProjectsProps, "blocked" | "blockedDescriptionId" | "onMap"> & {
 	busy: boolean;
 	index: number;
 	project: LegacyTeamSetupProjectV1;
@@ -45,6 +47,12 @@ function ProjectRow({
 	const controlsBlocked = blocked || busy;
 	const saveBlocked = controlsBlocked || !draftMapping || draftMapping === savedMapping;
 	const savedName = mappingName(project);
+	const controlDescription = [
+		!draftMapping ? helpId : undefined,
+		blocked ? blockedDescriptionId : undefined,
+	]
+		.filter(Boolean)
+		.join(" ");
 
 	return (
 		<fieldset
@@ -63,7 +71,7 @@ function ProjectRow({
 					</p>
 					<label htmlFor={controlId}>Canonical Project</label>
 					<select
-						aria-describedby={!draftMapping ? helpId : undefined}
+						aria-describedby={controlDescription || undefined}
 						className="feed-search legacy-team-project-select"
 						disabled={controlsBlocked}
 						id={controlId}
@@ -83,6 +91,7 @@ function ProjectRow({
 						</p>
 					) : null}
 					<button
+						aria-describedby={controlDescription || undefined}
 						aria-disabled={saveBlocked ? "true" : undefined}
 						className="settings-button legacy-team-setup-target"
 						onClick={() => {
@@ -112,6 +121,7 @@ export function LegacyTeamSetupProjects(props: LegacyTeamSetupProjectsProps) {
 				{props.detail.projects.map((project, index) => (
 					<ProjectRow
 						blocked={props.blocked}
+						blockedDescriptionId={props.blockedDescriptionId}
 						busy={props.busyProjectRef === project.projectRef}
 						index={index}
 						key={project.projectRef}

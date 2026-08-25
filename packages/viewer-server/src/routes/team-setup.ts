@@ -57,6 +57,7 @@ const RESOLVED_PROJECT_REF_PATTERN = /^legacy-team-resolved-project-ref-v1:[0-9a
 const ATTEMPT_ID_PATTERN = /^legacy-team-attempt:[0-9a-f-]{36}$/u;
 const FINISH_DIGEST_PATTERN = /^legacy-team-activation-finish-v1:[0-9a-f]{64}$/u;
 const ACCESS_DELTA_DIGEST_PATTERN = /^legacy-team-access-delta:[0-9a-f]{64}$/u;
+const VIEWER_ACCESS_DELTA_DIGEST_PATTERN = /^legacy-team-viewer-access-delta-v1:[0-9a-f]{64}$/u;
 
 interface LegacyTeamConfiguredGroupSnapshotLoadOptions {
 	candidateRef?: string;
@@ -112,30 +113,40 @@ export interface LegacyTeamSetupIdentityChoiceV1 {
 export interface LegacyTeamSetupViewerAccessDeltaV1 {
 	teamChanges: Array<{
 		teamRef: string;
+		teamDisplayName: string;
 		change: "add" | "update" | "remove";
 		fromDeviceEligibilityMode: "person_all_devices" | "reviewed_allowlist" | null;
 		toDeviceEligibilityMode: "reviewed_allowlist";
 	}>;
 	membershipChanges: Array<{
 		teamRef: string;
+		teamDisplayName: string;
 		identityRef: string;
+		identityDisplayName: string;
 		change: "add" | "update" | "remove";
 	}>;
 	projectChanges: Array<{
 		projectRef: string;
+		projectDisplayName: string;
 		fromResolvedProjectRef: string | null;
+		fromResolvedProjectDisplayName: string | null;
 		toResolvedProjectRef: string | null;
+		toResolvedProjectDisplayName: string | null;
 		change: "add" | "update" | "remove";
 	}>;
 	recipientChanges: Array<{
 		canonicalProjectRef: string;
+		canonicalProjectDisplayName: string;
 		recipientKind: "team";
 		recipientRef: string;
+		recipientDisplayName: string;
 		change: "add" | "update" | "remove";
 	}>;
 	deviceAccessChanges: Array<{
 		canonicalProjectRef: string;
+		canonicalProjectDisplayName: string;
 		deviceRef: string;
+		deviceDisplayName: string;
 		change: "add" | "remove";
 	}>;
 }
@@ -159,6 +170,7 @@ export type LegacyTeamSetupDetailResponseV1 = LegacyTeamSetupDetailBaseV1 &
 				conflictState: null;
 				finishDigest: string;
 				accessDeltaDigest: string;
+				viewerAccessDeltaDigest: string;
 				accessDelta: LegacyTeamSetupViewerAccessDeltaV1;
 		  }
 		| {
@@ -400,43 +412,138 @@ function resolvedProjectRef(projectRef: string, projectIdentity: string | null):
 function viewerSafeAccessDelta(
 	candidateRef: string,
 	delta: LegacyTeamSetupAccessDeltaV1,
+	labels?: {
+		teamDisplayName: string;
+		devices: LegacyTeamSetupDeviceV1[];
+		projects: LegacyTeamSetupProjectV1[];
+		identityChoices: LegacyTeamSetupIdentityChoiceV1[];
+	},
 ): LegacyTeamSetupViewerAccessDeltaV1 {
+	const fallbackLabels = new Map<string, string>();
+	const fallbackLabelCounts = new Map<string, number>();
+	const reservedLabels = new Set(
+		[
+			labels?.teamDisplayName,
+			...(labels?.devices.map((device) => device.displayName) ?? []),
+			...(labels?.projects.flatMap((project) => [
+				project.displayName,
+				...project.mappingChoices.map((choice) => choice.displayName),
+			]) ?? []),
+			...(labels?.identityChoices.map((identity) => identity.displayName) ?? []),
+		]
+			.filter((label): label is string => Boolean(label))
+			.map((label) => normalizeChoiceLabelText(label).toLowerCase()),
+	);
+	const fallbackLabel = (kind: string, ref: string) => {
+		const key = `${kind}:${ref}`;
+		const existing = fallbackLabels.get(key);
+		if (existing) return existing;
+		let index = (fallbackLabelCounts.get(kind) ?? 0) + 1;
+		let label = `${kind} outside this setup (${index})`;
+		while (reservedLabels.has(normalizeChoiceLabelText(label).toLowerCase())) {
+			index += 1;
+			label = `${kind} outside this setup (${index})`;
+		}
+		fallbackLabelCounts.set(kind, index);
+		reservedLabels.add(normalizeChoiceLabelText(label).toLowerCase());
+		fallbackLabels.set(key, label);
+		return label;
+	};
+	const projectsByRef = new Map(labels?.projects.map((project) => [project.projectRef, project]));
+	const projectsByCanonicalRef = new Map(
+		labels?.projects.flatMap((project) =>
+			project.canonicalProjectRef ? [[project.canonicalProjectRef, project] as const] : [],
+		),
+	);
+	const identitiesByRef = new Map(
+		labels?.identityChoices.map((identity) => [identity.identityRef, identity]),
+	);
+	const devicesByRef = new Map(labels?.devices.map((device) => [device.deviceRef, device]));
+	const resolvedDisplayName = (projectRef: string, ref: string | null): string | null => {
+		if (!ref) return null;
+		const project = projectsByRef.get(projectRef);
+		const choice = project?.mappingChoices.find((item) => item.resolvedProjectRef === ref);
+		if (choice) return choice.displayName;
+		if (project?.resolvedProjectRef === ref && project.resolution === "deterministic") {
+			return `${project.displayName} (automatic match)`;
+		}
+		return fallbackLabel("Project", ref);
+	};
 	return {
 		teamChanges: delta.teamChanges.map((change) => ({
 			teamRef: teamRef(candidateRef, change.teamId),
+			teamDisplayName:
+				labels?.teamDisplayName ?? fallbackLabel("Team", teamRef(candidateRef, change.teamId)),
 			change: change.change,
 			fromDeviceEligibilityMode: change.fromDeviceEligibilityMode,
 			toDeviceEligibilityMode: change.toDeviceEligibilityMode,
 		})),
-		membershipChanges: delta.membershipChanges.map((change) => ({
-			teamRef: teamRef(candidateRef, change.teamId),
-			identityRef: requiredIdentityRef(candidateRef, change.identityId),
-			change: change.change,
-		})),
-		projectChanges: delta.projectChanges.map((change) => ({
-			projectRef: change.projectRef,
-			fromResolvedProjectRef: resolvedProjectRef(change.projectRef, change.fromProjectIdentity),
-			toResolvedProjectRef: resolvedProjectRef(change.projectRef, change.toProjectIdentity),
-			change: change.change,
-		})),
-		recipientChanges: delta.recipientChanges.map((change) => ({
-			canonicalProjectRef: legacyTeamCanonicalProjectRef(
+		membershipChanges: delta.membershipChanges.map((change) => {
+			const identityRef = requiredIdentityRef(candidateRef, change.identityId);
+			const membershipTeamRef = teamRef(candidateRef, change.teamId);
+			return {
+				teamRef: membershipTeamRef,
+				teamDisplayName: labels?.teamDisplayName ?? fallbackLabel("Team", membershipTeamRef),
+				identityRef,
+				identityDisplayName:
+					identitiesByRef.get(identityRef)?.displayName ?? fallbackLabel("Person", identityRef),
+				change: change.change,
+			};
+		}),
+		projectChanges: delta.projectChanges.map((change) => {
+			const fromRef = resolvedProjectRef(change.projectRef, change.fromProjectIdentity);
+			const toRef = resolvedProjectRef(change.projectRef, change.toProjectIdentity);
+			return {
+				projectRef: change.projectRef,
+				projectDisplayName:
+					projectsByRef.get(change.projectRef)?.displayName ??
+					fallbackLabel("Project", change.projectRef),
+				fromResolvedProjectRef: fromRef,
+				fromResolvedProjectDisplayName: resolvedDisplayName(change.projectRef, fromRef),
+				toResolvedProjectRef: toRef,
+				toResolvedProjectDisplayName: resolvedDisplayName(change.projectRef, toRef),
+				change: change.change,
+			};
+		}),
+		recipientChanges: delta.recipientChanges.map((change) => {
+			const canonicalProjectRef = legacyTeamCanonicalProjectRef(
 				candidateRef,
 				change.canonicalProjectIdentity,
-			),
-			recipientKind: change.recipientKind,
-			recipientRef: teamRef(candidateRef, change.recipientId),
-			change: change.change,
-		})),
-		deviceAccessChanges: delta.deviceAccessChanges.map((change) => ({
-			canonicalProjectRef: legacyTeamCanonicalProjectRef(
+			);
+			const recipientRef = teamRef(candidateRef, change.recipientId);
+			return {
+				canonicalProjectRef,
+				canonicalProjectDisplayName:
+					projectsByCanonicalRef.get(canonicalProjectRef)?.displayName ??
+					fallbackLabel("Project", canonicalProjectRef),
+				recipientKind: change.recipientKind,
+				recipientRef,
+				recipientDisplayName: labels?.teamDisplayName ?? fallbackLabel("Team", recipientRef),
+				change: change.change,
+			};
+		}),
+		deviceAccessChanges: delta.deviceAccessChanges.map((change) => {
+			const canonicalProjectRef = legacyTeamCanonicalProjectRef(
 				candidateRef,
 				change.canonicalProjectIdentity,
-			),
-			deviceRef: legacyTeamDeviceRef(candidateRef, change.deviceId),
-			change: change.change,
-		})),
+			);
+			const deviceRef = legacyTeamDeviceRef(candidateRef, change.deviceId);
+			return {
+				canonicalProjectRef,
+				canonicalProjectDisplayName:
+					projectsByCanonicalRef.get(canonicalProjectRef)?.displayName ??
+					fallbackLabel("Project", canonicalProjectRef),
+				deviceRef,
+				deviceDisplayName:
+					devicesByRef.get(deviceRef)?.displayName ?? fallbackLabel("Device", deviceRef),
+				change: change.change,
+			};
+		}),
 	};
+}
+
+function viewerAccessDeltaDigest(delta: LegacyTeamSetupViewerAccessDeltaV1): string {
+	return recipientPolicyDigest("legacy-team-viewer-access-delta-v1", delta);
 }
 
 function requireBoundedAccessDelta(delta: LegacyTeamSetupAccessDeltaV1): void {
@@ -517,26 +624,24 @@ function disambiguateChoiceLabels<T extends { displayName: string }>(
 		const ref = choiceRef(choice);
 		let suffixLength = Math.min(6, ref.length);
 		let suffix = ref.slice(-suffixLength);
-		let displayName = "";
-		let finalComparable = "";
-		while (true) {
+		const maxAttempts = ref.length + originalLabels.size + usedLabels.size + 2;
+		for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
 			const baseLength = Math.max(0, 119 - suffix.length);
 			const base = choice.displayName.slice(0, baseLength).trimEnd();
-			displayName = base ? `${base} ${suffix}` : suffix.slice(-120);
-			finalComparable = normalizeChoiceLabelText(displayName).toLowerCase();
-			if (!usedLabels.has(finalComparable) && !originalLabels.has(finalComparable)) break;
+			const displayName = base ? `${base} ${suffix}` : suffix.slice(-120);
+			const finalComparable = normalizeChoiceLabelText(displayName).toLowerCase();
+			if (!usedLabels.has(finalComparable) && !originalLabels.has(finalComparable)) {
+				usedLabels.add(finalComparable);
+				return { ...choice, displayName };
+			}
 			if (suffixLength < ref.length) {
 				suffixLength = Math.min(ref.length, suffixLength + 2);
 				suffix = ref.slice(-suffixLength);
 				continue;
 			}
-			suffix = `${ref.slice(-Math.min(100, ref.length))}-${index + 1}`;
+			suffix = `${ref.slice(-Math.min(96, ref.length))}-${index + 1}-${attempt + 1}`;
 		}
-		usedLabels.add(finalComparable);
-		return {
-			...choice,
-			displayName,
-		};
+		throw new Error("legacy_team_setup_roster_too_large");
 	});
 }
 
@@ -984,13 +1089,18 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 				} satisfies LegacyTeamSetupDetailResponseV1;
 				return c.json(response);
 			}
+			const accessDelta = viewerSafeAccessDelta(candidateRef, preview.accessDelta, {
+				teamDisplayName: viewDraft.displayName,
+				...safeDraft,
+			});
 			const response = {
 				...responseBase,
 				canFinish: true,
 				conflictState: null,
 				finishDigest: preview.finishDigest,
 				accessDeltaDigest: preview.accessDeltaDigest,
-				accessDelta: viewerSafeAccessDelta(candidateRef, preview.accessDelta),
+				viewerAccessDeltaDigest: viewerAccessDeltaDigest(accessDelta),
+				accessDelta,
 			} satisfies LegacyTeamSetupDetailResponseV1;
 			return c.json(response);
 		} catch (error) {
@@ -1256,7 +1366,12 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		if (!parsed.ok) {
 			return c.json({ error: "team_setup_incomplete" as const }, 400);
 		}
-		const finishKeys = ["attemptId", "confirmedAccessDeltaDigest", "finishDigest"] as const;
+		const finishKeys = [
+			"attemptId",
+			"confirmedAccessDeltaDigest",
+			"confirmedViewerAccessDeltaDigest",
+			"finishDigest",
+		] as const;
 		if (!hasExactKeys(parsed.value, finishKeys)) {
 			return Object.keys(parsed.value).every((key) =>
 				finishKeys.includes(key as (typeof finishKeys)[number]),
@@ -1264,14 +1379,21 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 				? c.json({ error: "team_setup_confirmation_stale" as const }, 409)
 				: c.json({ error: "team_setup_incomplete" as const }, 400);
 		}
-		const { attemptId, confirmedAccessDeltaDigest, finishDigest } = parsed.value;
+		const {
+			attemptId,
+			confirmedAccessDeltaDigest,
+			confirmedViewerAccessDeltaDigest,
+			finishDigest,
+		} = parsed.value;
 		if (
 			typeof attemptId !== "string" ||
 			!ATTEMPT_ID_PATTERN.test(attemptId) ||
 			typeof finishDigest !== "string" ||
 			!FINISH_DIGEST_PATTERN.test(finishDigest) ||
 			typeof confirmedAccessDeltaDigest !== "string" ||
-			!ACCESS_DELTA_DIGEST_PATTERN.test(confirmedAccessDeltaDigest)
+			!ACCESS_DELTA_DIGEST_PATTERN.test(confirmedAccessDeltaDigest) ||
+			typeof confirmedViewerAccessDeltaDigest !== "string" ||
+			!VIEWER_ACCESS_DELTA_DIGEST_PATTERN.test(confirmedViewerAccessDeltaDigest)
 		) {
 			return c.json({ error: "team_setup_incomplete" as const }, 400);
 		}
@@ -1279,6 +1401,26 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			const store = options.getStore();
 			const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
 			if (!draft) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			if (draft.attemptId !== attemptId) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
+			if (draft.state !== "completed") {
+				const preview = previewLegacyTeamSetupActivation(store.db, {
+					candidateRef,
+					attemptId: draft.attemptId,
+				});
+				requireBoundedAccessDelta(preview.accessDelta);
+				const safeDraft = viewerSafeDraft(store, draft);
+				const currentViewerDigest = viewerAccessDeltaDigest(
+					viewerSafeAccessDelta(candidateRef, preview.accessDelta, {
+						teamDisplayName: draft.displayName,
+						...safeDraft,
+					}),
+				);
+				if (currentViewerDigest !== confirmedViewerAccessDeltaDigest) {
+					return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+				}
+			}
 			const result = await finishLegacyTeamSetupActivation(store.db, {
 				candidateRef,
 				attemptId,
@@ -1294,6 +1436,20 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 				},
 				loadProjectInventory: () =>
 					legacyTeamCandidateProjectInventory(store.db, projectionOptions(store), candidateRef),
+				validateLockedPreview: (lockedPreview) => {
+					requireBoundedAccessDelta(lockedPreview.accessDelta);
+					const lockedDraft = getLegacyTeamSetupDraft(store.db, candidateRef);
+					if (!lockedDraft || lockedDraft.attemptId !== attemptId) return false;
+					const safeDraft = viewerSafeDraft(store, lockedDraft);
+					return (
+						viewerAccessDeltaDigest(
+							viewerSafeAccessDelta(candidateRef, lockedPreview.accessDelta, {
+								teamDisplayName: lockedDraft.displayName,
+								...safeDraft,
+							}),
+						) === confirmedViewerAccessDeltaDigest
+					);
+				},
 			});
 			return c.json(finishResponse(candidateRef, result));
 		} catch (error) {

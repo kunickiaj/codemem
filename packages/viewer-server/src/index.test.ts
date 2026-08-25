@@ -783,7 +783,48 @@ describe("viewer-server", () => {
 					attemptId: draft?.attemptId,
 					finishDigest: rawPreview.finishDigest,
 					confirmedAccessDeltaDigest: rawPreview.accessDeltaDigest,
+					confirmedViewerAccessDeltaDigest: detail.viewerAccessDeltaDigest,
 				};
+				store.db
+					.prepare("UPDATE actors SET display_name = ? WHERE actor_id = ?")
+					.run("Renamed Person", rawIdentityId);
+				const staleLabelResponse = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/finish`,
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify(finishRequest),
+					},
+				);
+				expect(staleLabelResponse.status).toBe(409);
+				expect(await staleLabelResponse.json()).toEqual({
+					error: "team_setup_confirmation_stale",
+				});
+				store.db
+					.prepare("UPDATE actors SET display_name = ? WHERE actor_id = ?")
+					.run("Private Person", rawIdentityId);
+				loadSnapshots.mockImplementationOnce(async () => {
+					store.db
+						.prepare("UPDATE actors SET display_name = ? WHERE actor_id = ?")
+						.run("Raced Person", rawIdentityId);
+					return snapshots;
+				});
+				const racedLabelResponse = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/finish`,
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify(finishRequest),
+					},
+				);
+				expect(racedLabelResponse.status).toBe(409);
+				expect(await racedLabelResponse.json()).toEqual({
+					error: "team_setup_confirmation_stale",
+				});
+				expect(core.getLegacyTeamSetupDraft(store.db, candidateRef)?.state).not.toBe("completed");
+				store.db
+					.prepare("UPDATE actors SET display_name = ? WHERE actor_id = ?")
+					.run("Private Person", rawIdentityId);
 				loadSnapshots.mockClear();
 				const finishResponse = await app.request(`/api/sync/team-setup/v1/${candidateRef}/finish`, {
 					method: "POST",
@@ -944,12 +985,79 @@ describe("viewer-server", () => {
 			});
 			expect(JSON.stringify(safe)).not.toContain(fromIdentity);
 			expect(JSON.stringify(safe)).not.toContain(toIdentity);
+			const fromRef = core.legacyTeamResolvedProjectRef(projectRef, fromIdentity);
+			const toRef = core.legacyTeamResolvedProjectRef(projectRef, toIdentity);
 			expect(safe.projectChanges[0]).toEqual({
 				projectRef,
-				fromResolvedProjectRef: core.legacyTeamResolvedProjectRef(projectRef, fromIdentity),
-				toResolvedProjectRef: core.legacyTeamResolvedProjectRef(projectRef, toIdentity),
+				projectDisplayName: "Project outside this setup (1)",
+				fromResolvedProjectRef: fromRef,
+				fromResolvedProjectDisplayName: "Project outside this setup (2)",
+				toResolvedProjectRef: toRef,
+				toResolvedProjectDisplayName: "Project outside this setup (3)",
 				change: "update",
 			});
+		});
+
+		it("gives external delta entries distinct viewer-safe fallback labels", () => {
+			const safe = __teamSetupTestHooks.viewerSafeAccessDelta(
+				candidateRef,
+				{
+					teamChanges: [],
+					membershipChanges: [],
+					projectChanges: [],
+					recipientChanges: [],
+					deviceAccessChanges: [
+						{
+							canonicalProjectIdentity: "file:///private/external-one",
+							deviceId: "external-device-one",
+							change: "add",
+						},
+						{
+							canonicalProjectIdentity: "file:///private/external-two",
+							deviceId: "external-device-two",
+							change: "remove",
+						},
+					],
+				},
+				{
+					teamDisplayName: "Example Team",
+					devices: [
+						{
+							deviceRef: core.legacyTeamDeviceRef(candidateRef, "known-device"),
+							displayName: "Device outside this setup (1)",
+							enabled: true,
+							existingIdentityRef: null,
+							suggestedIdentityRef: null,
+							verifiedEvidenceKind: null,
+							decision: "excluded",
+							targetIdentityRef: null,
+							expectation: { kind: "absent" },
+						},
+					],
+					projects: [
+						{
+							projectRef: "known-project-ref",
+							displayName: "Project outside this setup (1)",
+							resolution: "unresolved",
+							canonicalProjectRef: null,
+							resolvedProjectRef: null,
+							mappingChoices: [],
+						},
+					],
+					identityChoices: [],
+				},
+			);
+
+			expect(safe.deviceAccessChanges.map((change) => change.deviceDisplayName)).toEqual([
+				"Device outside this setup (2)",
+				"Device outside this setup (3)",
+			]);
+			expect(safe.deviceAccessChanges.map((change) => change.canonicalProjectDisplayName)).toEqual([
+				"Project outside this setup (2)",
+				"Project outside this setup (3)",
+			]);
+			expect(JSON.stringify(safe)).not.toContain("external-device");
+			expect(JSON.stringify(safe)).not.toContain("file:///private");
 		});
 
 		it("fails closed when active identity choices exceed their response cap", async () => {

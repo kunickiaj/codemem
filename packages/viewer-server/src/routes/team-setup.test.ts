@@ -181,6 +181,25 @@ describe("Team setup roster loading", () => {
 		]);
 	});
 
+	it("terminates when full-ref disambiguators collide with original labels", () => {
+		expect(
+			__teamSetupTestHooks.disambiguateChoiceLabels(
+				[
+					{ displayName: "Alex", identityRef: "a" },
+					{ displayName: "Alex", identityRef: "b" },
+					{ displayName: "Alex a", identityRef: "c" },
+					{ displayName: "Alex a-1-1", identityRef: "d" },
+				],
+				(choice) => choice.identityRef,
+			),
+		).toEqual([
+			{ displayName: "Alex a-1-2", identityRef: "a" },
+			{ displayName: "Alex b", identityRef: "b" },
+			{ displayName: "Alex a", identityRef: "c" },
+			{ displayName: "Alex a-1-1", identityRef: "d" },
+		]);
+	});
+
 	it("preserves oversized-roster errors for a direct candidate load", async () => {
 		const coordinatorId = "http://localhost:8787";
 		const groupId = "group-alpha";

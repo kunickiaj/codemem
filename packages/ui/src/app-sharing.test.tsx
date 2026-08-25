@@ -530,6 +530,41 @@ describe("Sharing app data refresh", () => {
 		);
 	});
 
+	it("renders required Sharing data but reports strict refresh failure after Team setup discovery fails", async () => {
+		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
+		const teamSetupResult = deferred<LegacyTeamSetupSummaryResponseV1>();
+		const mountSharing = vi.fn();
+		const load = createRecipientPolicySharingLoader({
+			loadDeviceInventory: vi.fn().mockResolvedValue({ version: 1, items: [], truncated: false }),
+			loadIntent: vi.fn().mockResolvedValue(intent),
+			loadProjects: vi.fn().mockResolvedValue({ manageable: projects, received: [] }),
+			loadTeamSetupSummary: vi.fn(() => teamSetupResult.promise),
+			mountSharing,
+		});
+
+		const operation = load({ requireTeamSetupSummary: true });
+		await vi.waitFor(() =>
+			expect(mountSharing).toHaveBeenLastCalledWith(
+				document.getElementById("recipientPolicySharingMount"),
+				projects,
+				intent,
+				expect.objectContaining({ teamSetupLoading: true }),
+			),
+		);
+		let settled = false;
+		void operation.then(() => {
+			settled = true;
+		});
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		teamSetupResult.reject(new Error("setup unavailable"));
+		await expect(operation).resolves.toBe(false);
+		expect(mountSharing.mock.calls.at(-1)?.[3]).toEqual(
+			expect.objectContaining({ teamSetupLoading: false, teamSetupUnavailable: true }),
+		);
+	});
+
 	it("renders fresh Team setup status before a required Sharing refresh settles", async () => {
 		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
 		const projectRefresh = deferred<{ manageable: typeof projects; received: [] }>();

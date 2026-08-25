@@ -8,11 +8,17 @@ const mocks = vi.hoisted(() => ({
 	loadProjectScopeInventory: vi.fn(),
 	loadDeviceIdentityInventory: vi.fn(),
 	loadLegacyTeamSetupDetail: vi.fn(),
+	loadProjectsData: vi.fn(),
 	loadRecipientPolicyIntent: vi.fn(),
 	loadRecipientPolicyReconciliationStatus: vi.fn(),
+	loadRecipientPolicySharingData: vi.fn(),
 	loadSyncData: vi.fn(),
+	mountLegacyTeamSetupDialog: vi.fn(),
 }));
 
+vi.mock("./app-sharing", () => ({
+	createRecipientPolicySharingLoader: vi.fn(() => mocks.loadRecipientPolicySharingData),
+}));
 vi.mock("./components/primitives/toast", () => ({ mountToastHost: vi.fn() }));
 vi.mock("./lib/api", () => ({
 	clearLegacyTeamSetupDecision: vi.fn(),
@@ -47,12 +53,12 @@ vi.mock("./tabs/health", () => ({
 	loadHealthData: vi.fn(async () => undefined),
 }));
 vi.mock("./tabs/legacy-team-setup-dialog", () => ({
-	mountLegacyTeamSetupDialog: vi.fn(),
+	mountLegacyTeamSetupDialog: mocks.mountLegacyTeamSetupDialog,
 	openLegacyTeamSetup: vi.fn(() => true),
 }));
 vi.mock("./tabs/projects", () => ({
 	initProjectsTab: vi.fn(),
-	loadProjectsData: vi.fn(async () => undefined),
+	loadProjectsData: mocks.loadProjectsData,
 }));
 vi.mock("./tabs/recipient-policy-management", () => ({
 	mountRecipientPolicyManagement: vi.fn(),
@@ -166,6 +172,8 @@ describe("Devices app integration", () => {
 			offset: 0,
 		});
 		mocks.loadRecipientPolicyIntent.mockResolvedValue(intent);
+		mocks.loadProjectsData.mockResolvedValue(true);
+		mocks.loadRecipientPolicySharingData.mockResolvedValue(true);
 		mocks.loadLegacyTeamSetupDetail.mockResolvedValue({
 			version: 1,
 			candidate: {
@@ -296,6 +304,46 @@ describe("Devices app integration", () => {
 		expect(openLegacyTeamSetup).toHaveBeenCalledWith("opaque-candidate-ref");
 		expect(window.location.hash).toBe("#devices");
 		expect(document.getElementById("tab-devices")?.hidden).toBe(false);
+	});
+
+	it("refreshes Sharing and Projects with the active surface mounting last", async () => {
+		const options = mocks.mountLegacyTeamSetupDialog.mock.calls[0]?.[1];
+		expect(options?.onCompleted).toEqual(expect.any(Function));
+		const { state } = await import("./lib/state");
+		const refreshOrder: string[] = [];
+		mocks.loadProjectsData.mockImplementation(async () => {
+			refreshOrder.push("projects");
+			return true;
+		});
+		mocks.loadRecipientPolicySharingData.mockImplementation(async () => {
+			refreshOrder.push("sharing");
+			return true;
+		});
+
+		state.activeTab = "sharing";
+		await expect(options?.onCompleted?.("opaque-attempt")).resolves.toBeUndefined();
+		expect(refreshOrder).toEqual(["projects", "sharing"]);
+		expect(mocks.loadProjectsData).toHaveBeenLastCalledWith({ requireTeamSetupSummary: true });
+		expect(mocks.loadRecipientPolicySharingData).toHaveBeenLastCalledWith({
+			requireTeamSetupSummary: true,
+		});
+
+		refreshOrder.length = 0;
+		state.activeTab = "projects";
+		await expect(options?.onCompleted?.("opaque-attempt")).resolves.toBeUndefined();
+		expect(refreshOrder).toEqual(["sharing", "projects"]);
+		expect(mocks.loadProjectsData).toHaveBeenLastCalledWith({ requireTeamSetupSummary: true });
+		expect(mocks.loadRecipientPolicySharingData).toHaveBeenLastCalledWith({
+			requireTeamSetupSummary: true,
+		});
+	});
+
+	it("reports a partial Team setup completion refresh failure", async () => {
+		const options = mocks.mountLegacyTeamSetupDialog.mock.calls[0]?.[1];
+		mocks.loadProjectsData.mockResolvedValueOnce(false);
+		await expect(options?.onCompleted?.("opaque-attempt")).rejects.toThrow(
+			"team_setup_refresh_failed",
+		);
 	});
 
 	it("keeps existing device details usable when inventory fails on the first Devices load", () => {

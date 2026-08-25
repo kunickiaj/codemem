@@ -74,8 +74,8 @@ let recipientPolicyIntent = emptyRecipientPolicyIntent;
 let recipientPolicyIntentReady = false;
 let openTeamSetup: ((candidateRef: string) => void) | undefined;
 
-function loadTeamSetupSummaryOnce(): Promise<TeamSetupSummaryResult> {
-	if (teamSetupSummaryInFlight) return teamSetupSummaryInFlight;
+function loadTeamSetupSummaryOnce(forceFresh = false): Promise<TeamSetupSummaryResult> {
+	if (!forceFresh && teamSetupSummaryInFlight) return teamSetupSummaryInFlight;
 	const request = api
 		.loadLegacyTeamSetupSummary()
 		.then((summary) => ({ ok: true as const, summary }))
@@ -1374,13 +1374,21 @@ function recipientPolicyReviewContentMount(mount: HTMLElement): HTMLElement {
 	return content;
 }
 
-export async function loadProjectsData() {
+export interface ProjectsDataLoadOptions {
+	requireTeamSetupSummary?: boolean;
+}
+
+export async function loadProjectsData(options: ProjectsDataLoadOptions = {}) {
 	const meta = el<HTMLDivElement>("projectsInventoryMeta");
 	const list = el<HTMLDivElement>("projectsInventoryList");
-	if (!meta || !list) return;
+	if (!meta || !list) {
+		if (!options.requireTeamSetupSummary) return true;
+		return (await loadTeamSetupSummaryOnce(true)).ok;
+	}
 	if (isProjectSpaceSelectActive()) {
 		skippedProjectRefreshForActiveSelect = true;
-		return;
+		if (!options.requireTeamSetupSummary) return true;
+		return false;
 	}
 	skippedProjectRefreshForActiveSelect = false;
 	const loadGeneration = ++projectsLoadGeneration;
@@ -1389,7 +1397,9 @@ export async function loadProjectsData() {
 	updateSelectionControls();
 	meta.textContent = "Loading project inventory…";
 	try {
-		const teamSetupSummaryPromise = loadTeamSetupSummaryOnce();
+		const teamSetupSummaryPromise = loadTeamSetupSummaryOnce(
+			options.requireTeamSetupSummary === true,
+		);
 		const [result, settings, shareInventory, recipientPolicyReview, intentResult] =
 			await Promise.all([
 				api.loadProjectScopeInventory({
@@ -1411,7 +1421,10 @@ export async function loadProjectsData() {
 					.then((intent) => ({ ok: true as const, intent }))
 					.catch((error: unknown) => ({ ok: false as const, error })),
 			]);
-		if (loadGeneration !== projectsLoadGeneration) return;
+		if (loadGeneration !== projectsLoadGeneration) {
+			if (options.requireTeamSetupSummary) await teamSetupSummaryPromise;
+			return false;
+		}
 		scopes = settings.scopes;
 		projectShareInventoryReady = shareInventory.ok;
 		recipientPolicyIntentReady = intentResult.ok;
@@ -1461,8 +1474,14 @@ export async function loadProjectsData() {
 			}
 			renderProjectTeamSetupEntry(currentReviewMount, teamSetupSummary.summary);
 		});
+		const requiredLoadSucceeded =
+			shareInventory.ok && "review" in recipientPolicyReview && intentResult.ok;
+		if (!options.requireTeamSetupSummary) return requiredLoadSucceeded;
+		const teamSetupSummary = await teamSetupSummaryPromise;
+		if (loadGeneration !== projectsLoadGeneration) return false;
+		return requiredLoadSucceeded && teamSetupSummary.ok;
 	} catch (error) {
-		if (loadGeneration !== projectsLoadGeneration) return;
+		if (loadGeneration !== projectsLoadGeneration) return false;
 		projectShareInventoryReady = false;
 		recipientPolicyIntentReady = false;
 		recipientPolicyIntent = emptyRecipientPolicyIntent;
@@ -1473,6 +1492,7 @@ export async function loadProjectsData() {
 		hideProjectInventorySkeleton();
 		meta.textContent = "Project inventory failed to load.";
 		renderEmpty(error instanceof Error ? error.message : "Unable to load project inventory.");
+		return false;
 	}
 }
 

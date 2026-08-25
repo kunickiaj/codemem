@@ -2,6 +2,7 @@ import { type ComponentChildren, render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	type LegacyTeamSetupAccessDeltaV1,
 	LegacyTeamSetupApiError,
 	type LegacyTeamSetupDetailResponseV1,
 	type LegacyTeamSetupDeviceV1,
@@ -81,21 +82,25 @@ function detail({
 	conflictState = null,
 	draftState = "in_progress",
 	attemptId = "opaque-attempt",
+	accessDelta,
 	devices,
 	identityChoices = [],
 	projects,
 	unresolvedDeviceCount = 0,
 	unresolvedProjectCount = 0,
+	viewerAccessDeltaDigest = "opaque-viewer-access-digest",
 }: {
 	canFinish?: boolean;
 	conflictState?: LegacyTeamSetupDetailResponseV1["conflictState"];
 	draftState?: "needs_setup" | "in_progress" | "stale" | "completed";
 	attemptId?: string;
+	accessDelta?: LegacyTeamSetupAccessDeltaV1;
 	devices?: LegacyTeamSetupDeviceV1[];
 	identityChoices?: LegacyTeamSetupIdentityChoiceV1[];
 	projects?: LegacyTeamSetupProjectV1[];
 	unresolvedDeviceCount?: number;
 	unresolvedProjectCount?: number;
+	viewerAccessDeltaDigest?: string;
 } = {}): LegacyTeamSetupDetailResponseV1 {
 	const base = {
 		version: 1 as const,
@@ -123,7 +128,8 @@ function detail({
 				conflictState: null,
 				finishDigest: "opaque-finish-digest",
 				accessDeltaDigest: "opaque-access-digest",
-				accessDelta: {
+				viewerAccessDeltaDigest,
+				accessDelta: accessDelta ?? {
 					teamChanges: [],
 					membershipChanges: [],
 					projectChanges: [],
@@ -283,12 +289,13 @@ describe("legacy Team setup dialog", () => {
 	});
 
 	it("selects Projects, Review, and completion from fresh server state", async () => {
+		const onCompleted = vi.fn().mockRejectedValue(new Error("private refresh failure"));
 		const loadDetail = vi
 			.fn()
 			.mockResolvedValueOnce(detail({ unresolvedProjectCount: 1 }))
 			.mockResolvedValueOnce(detail({ canFinish: true }))
 			.mockResolvedValueOnce(detail({ draftState: "completed" }));
-		const { trigger } = setup(loadDetail);
+		const { trigger } = setup({ loadDetail, onCompleted });
 
 		await vi.waitFor(() => {
 			expect(document.querySelector('button[aria-current="step"]')?.textContent).toBe("Projects");
@@ -312,9 +319,14 @@ describe("legacy Team setup dialog", () => {
 		});
 		await vi.waitFor(() => {
 			expect(document.body.textContent).toContain("Team setup complete");
+			expect(document.body.textContent).toContain(
+				"Sharing or Projects could not be refreshed; use that view's Refresh control.",
+			);
 		});
 		expect(document.querySelector(".legacy-team-setup-steps")).toBeNull();
 		expect(loadDetail).toHaveBeenCalledTimes(3);
+		expect(onCompleted).toHaveBeenCalledTimes(1);
+		expect(document.body.textContent).not.toContain("private refresh failure");
 	});
 
 	it("shows safe error copy and retries without exposing exception text", async () => {
@@ -360,11 +372,10 @@ describe("legacy Team setup dialog", () => {
 		const refreshCandidate = vi.fn().mockResolvedValue({});
 		setup({ loadDetail, refreshCandidate });
 
-		await vi.waitFor(() => {
-			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
-				"changed since it was last reviewed",
-			);
-		});
+		await vi.waitFor(() =>
+			expect(document.body.textContent).toContain("changed since it was last reviewed"),
+		);
+		expect(document.querySelector('[role="alert"]')).not.toBeNull();
 		act(() => {
 			document.getElementById("legacy-team-setup-retry")?.click();
 		});
@@ -378,8 +389,10 @@ describe("legacy Team setup dialog", () => {
 		expect(document.querySelector('[role="alert"]')?.textContent).toContain(
 			"changed since it was last reviewed",
 		);
+		expect(document.getElementById("legacy-team-setup-retry")).toBeNull();
+		expect(document.activeElement?.id).toBe("legacy-team-setup-refresh");
 		act(() => {
-			document.getElementById("legacy-team-setup-retry")?.click();
+			button("Refresh Team setup").click();
 		});
 		await vi.waitFor(() => {
 			expect(document.querySelector('[role="alert"]')).toBeNull();
@@ -694,6 +707,13 @@ describe("legacy Team setup dialog", () => {
 		expect(document.body.textContent).toContain(
 			"Team setup will stay open while this change saves",
 		);
+		act(() => {
+			openLegacyTeamSetup("another-candidate");
+		});
+		expect(document.body.textContent).toContain(
+			"Wait for the current Team setup change to finish before opening another Team",
+		);
+		expect(loadDetail).toHaveBeenCalledTimes(1);
 
 		pendingDecision.resolve(mutationResult());
 		await vi.waitFor(() => {
@@ -816,9 +836,14 @@ describe("legacy Team setup dialog", () => {
 		const saveAssignment = vi.fn();
 		setup({ loadDetail, saveAssignment, saveDecision });
 		await vi.waitFor(() => expect(document.body.textContent).toContain("Device no longer active"));
-		expect(document.querySelector<HTMLSelectElement>(".legacy-team-device-select")?.disabled).toBe(
-			true,
-		);
+		const inactiveSelect = document.querySelector<HTMLSelectElement>(".legacy-team-device-select");
+		expect(inactiveSelect?.disabled).toBe(true);
+		expect(
+			(inactiveSelect?.getAttribute("aria-describedby") ?? "")
+				.split(" ")
+				.map((id) => document.getElementById(id)?.textContent)
+				.join(" "),
+		).toContain("Inactive devices can only be removed");
 		expect(button("Save assignment").getAttribute("aria-disabled")).toBe("true");
 		act(() => button("Save assignment").click());
 		expect(saveAssignment).not.toHaveBeenCalled();
@@ -919,11 +944,12 @@ describe("legacy Team setup dialog", () => {
 
 		act(() => button("Exclude").click());
 		await vi.waitFor(() => {
-			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
-				"changed since it was last reviewed",
-			);
+			expect(document.body.textContent).toContain("changed since it was last reviewed");
 			expect(document.body.textContent).toContain("Current assignment: Sam");
 		});
+		expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+			"changed since it was last reviewed",
+		);
 		expect(loadDetail).toHaveBeenCalledTimes(2);
 		const exclude = button("Exclude");
 		expect(exclude.disabled).toBe(false);
@@ -968,7 +994,7 @@ describe("legacy Team setup dialog", () => {
 				"changed since it was last reviewed",
 			),
 		);
-		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		act(() => document.getElementById("legacy-team-setup-refresh")?.click());
 
 		await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).toBeNull());
 		expect(refreshCandidate).toHaveBeenCalledWith("opaque-candidate");
@@ -1094,6 +1120,9 @@ describe("legacy Team setup dialog", () => {
 		});
 		expect(document.body.textContent).not.toContain("team_setup_confirmation_stale");
 		expect(loadDetail).toHaveBeenCalledTimes(2);
+		expect(document.querySelector<HTMLSelectElement>(".legacy-team-project-select")?.disabled).toBe(
+			true,
+		);
 		expect(button("Save mapping").getAttribute("aria-disabled")).toBe("true");
 
 		act(() => document.getElementById("legacy-team-setup-retry")?.click());
@@ -1130,10 +1159,462 @@ describe("legacy Team setup dialog", () => {
 				"was saved, but the latest Team setup details could not be loaded",
 			);
 		});
+		const blockedDescription = button("Save mapping").getAttribute("aria-describedby") ?? "";
+		expect(
+			blockedDescription
+				.split(" ")
+				.map((id) => document.getElementById(id)?.textContent)
+				.join(" "),
+		).toContain("latest Team setup details could not be loaded");
 		expect(document.body.textContent).not.toContain("private reload failure");
 		expect(document.body.textContent).not.toContain("mapping could not be saved");
 		expect(saveProjectMapping).toHaveBeenCalledTimes(1);
 		expect(loadDetail).toHaveBeenCalledTimes(2);
+	});
+
+	it("renders every server access-delta entry with human labels and no opaque refs", async () => {
+		const reviewedDevice = device({
+			decision: "included",
+			existingIdentityRef: "identity-ref-alex",
+			targetIdentityRef: "identity-ref-alex",
+		});
+		const reviewedProject = project({
+			canonicalProjectRef: "canonical-project-ref",
+			resolution: "explicit",
+			resolvedProjectRef: "resolved-project-beta",
+		});
+		const loadDetail = vi.fn().mockResolvedValue(
+			detail({
+				canFinish: true,
+				devices: [reviewedDevice],
+				identityChoices: identities,
+				projects: [reviewedProject],
+				accessDelta: {
+					teamChanges: [
+						{
+							teamRef: "opaque-team-ref",
+							teamDisplayName: "Example Team",
+							change: "update",
+							fromDeviceEligibilityMode: "person_all_devices",
+							toDeviceEligibilityMode: "reviewed_allowlist",
+						},
+					],
+					membershipChanges: [
+						{
+							teamRef: "opaque-team-ref",
+							teamDisplayName: "Example Team",
+							identityRef: "identity-ref-alex",
+							identityDisplayName: "Alex",
+							change: "add",
+						},
+					],
+					projectChanges: [
+						{
+							projectRef: "project-ref-one",
+							projectDisplayName: "Legacy Project",
+							fromResolvedProjectRef: "resolved-project-old",
+							fromResolvedProjectDisplayName: "Previous Project",
+							toResolvedProjectRef: "resolved-project-beta",
+							toResolvedProjectDisplayName: "Project Beta",
+							change: "update",
+						},
+					],
+					recipientChanges: [
+						{
+							canonicalProjectRef: "canonical-project-ref",
+							canonicalProjectDisplayName: "Legacy Project",
+							recipientKind: "team",
+							recipientRef: "opaque-team-ref",
+							recipientDisplayName: "Example Team",
+							change: "add",
+						},
+					],
+					deviceAccessChanges: [
+						{
+							canonicalProjectRef: "canonical-project-ref",
+							canonicalProjectDisplayName: "Legacy Project",
+							deviceRef: "device-ref-one",
+							deviceDisplayName: "Work laptop",
+							change: "add",
+						},
+						{
+							canonicalProjectRef: "external-canonical-project-ref",
+							canonicalProjectDisplayName: "External Project",
+							deviceRef: "external-device-ref",
+							deviceDisplayName: "External laptop",
+							change: "remove",
+						},
+					],
+				},
+			}),
+		);
+		setup({ loadDetail });
+
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Review every"));
+		const text = document.body.textContent ?? "";
+		expect(text).toContain(
+			"Update Example Team: change device access from all devices assigned to each person to the reviewed device list.",
+		);
+		expect(text).toContain("Add Alex to Example Team.");
+		expect(text).toContain("Update Legacy Project: Previous Project to Project Beta.");
+		expect(text).toContain("Add Example Team as a recipient for Legacy Project.");
+		expect(text).toContain("Add Work laptop access to Legacy Project.");
+		expect(text).toContain("Remove External laptop access from External Project.");
+		expect(text).toContain("6 access changes to review.");
+		expect(text).not.toContain("opaque-team-ref");
+		expect(text).not.toContain("resolved-project-old");
+		expect(document.querySelectorAll(".legacy-team-setup-delta li")).toHaveLength(6);
+	});
+
+	it("requires explicit confirmation and submits exact displayed finish evidence once", async () => {
+		const pendingFinish = deferred<{
+			version: 1;
+			status: "completed";
+			teamRef: string;
+			attemptId: string;
+			accessDeltaDigest: string;
+			completedAt: string;
+		}>();
+		const finish = vi.fn().mockReturnValue(pendingFinish.promise);
+		const onCompleted = vi.fn();
+		setup({
+			finish,
+			loadDetail: vi.fn().mockResolvedValue(detail({ canFinish: true })),
+			onCompleted,
+		});
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
+
+		const finishButton = button("Finish Team setup");
+		expect(finishButton.getAttribute("aria-disabled")).toBe("true");
+		act(() => finishButton.click());
+		expect(finish).not.toHaveBeenCalled();
+		const confirmation = document.querySelector<HTMLInputElement>(
+			".legacy-team-setup-confirmation input",
+		);
+		if (!confirmation) throw new Error("finish confirmation missing");
+		confirmation.checked = true;
+		act(() => {
+			confirmation.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		act(() => {
+			finishButton.click();
+			finishButton.click();
+		});
+		expect(finish).toHaveBeenCalledTimes(1);
+		expect(finish).toHaveBeenCalledWith("opaque-candidate", {
+			attemptId: "opaque-attempt",
+			finishDigest: "opaque-finish-digest",
+			confirmedAccessDeltaDigest: "opaque-access-digest",
+			confirmedViewerAccessDeltaDigest: "opaque-viewer-access-digest",
+		});
+
+		pendingFinish.resolve({
+			version: 1,
+			status: "completed",
+			teamRef: "opaque-team-ref",
+			attemptId: "opaque-attempt",
+			accessDeltaDigest: "opaque-access-digest",
+			completedAt: "2026-08-25T00:00:00.000Z",
+		});
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Team setup complete"));
+		expect(document.activeElement?.id).toBe("legacy-team-setup-step-completed");
+		expect(onCompleted).toHaveBeenCalledTimes(1);
+	});
+
+	it("ignores a completion refresh after closing and opening another Team", async () => {
+		const completedRefresh = deferred<void>();
+		const loadDetail = vi
+			.fn()
+			.mockResolvedValueOnce(detail({ canFinish: true }))
+			.mockResolvedValueOnce(detail({ devices: [device()], unresolvedDeviceCount: 1 }));
+		setup({
+			finish: vi.fn().mockResolvedValue({
+				version: 1,
+				status: "completed",
+				teamRef: "opaque-team-ref",
+				attemptId: "opaque-attempt",
+				accessDeltaDigest: "opaque-access-digest",
+				completedAt: "2026-08-25T00:00:00.000Z",
+			}),
+			loadDetail,
+			onCompleted: vi.fn().mockReturnValue(completedRefresh.promise),
+		});
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
+		const confirmation = document.querySelector<HTMLInputElement>(
+			".legacy-team-setup-confirmation input",
+		);
+		if (!confirmation) throw new Error("finish confirmation missing");
+		confirmation.checked = true;
+		act(() => {
+			confirmation.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		act(() => button("Finish Team setup").click());
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Team setup complete"));
+
+		act(() => dialogControls.onOpenChange?.(false));
+		act(() => {
+			openLegacyTeamSetup("another-candidate");
+		});
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Review devices"));
+		expect(document.body.textContent).not.toContain("Team setup complete. Sharing and Projects");
+
+		await act(async () => {
+			completedRefresh.resolve();
+			await Promise.resolve();
+		});
+		expect(document.body.textContent).not.toContain("Sharing and Projects are up to date");
+	});
+
+	it("reuses an in-flight completion refresh when reopening the same attempt", async () => {
+		const completedRefresh = deferred<void>();
+		const completedDetail = detail({ draftState: "completed" });
+		const onCompleted = vi.fn().mockReturnValue(completedRefresh.promise);
+		setup({
+			finish: vi.fn().mockResolvedValue({
+				version: 1,
+				status: "completed",
+				teamRef: "opaque-team-ref",
+				attemptId: "opaque-attempt",
+				accessDeltaDigest: "opaque-access-digest",
+				completedAt: "2026-08-25T00:00:00.000Z",
+			}),
+			loadDetail: vi
+				.fn()
+				.mockResolvedValueOnce(detail({ canFinish: true }))
+				.mockResolvedValueOnce(completedDetail),
+			onCompleted,
+		});
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
+		const confirmation = document.querySelector<HTMLInputElement>(
+			".legacy-team-setup-confirmation input",
+		);
+		if (!confirmation) throw new Error("finish confirmation missing");
+		confirmation.checked = true;
+		act(() => {
+			confirmation.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		act(() => button("Finish Team setup").click());
+		await vi.waitFor(() => expect(onCompleted).toHaveBeenCalledTimes(1));
+		await vi.waitFor(() => expect(button("Close").getAttribute("aria-disabled")).toBeNull());
+
+		act(() => dialogControls.onOpenChange?.(false));
+		act(() => {
+			openLegacyTeamSetup("opaque-candidate");
+		});
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Team setup complete"));
+		expect(onCompleted).toHaveBeenCalledTimes(1);
+
+		await act(async () => {
+			completedRefresh.reject(new Error("private refresh failure"));
+			await Promise.resolve();
+		});
+		await vi.waitFor(() =>
+			expect(document.body.textContent).toContain(
+				"Sharing or Projects could not be refreshed; use that view's Refresh control.",
+			),
+		);
+		expect(document.body.textContent).not.toContain("private refresh failure");
+	});
+
+	it("refreshes completed surfaces again after the previous refresh settles", async () => {
+		const onCompleted = vi.fn().mockResolvedValue(undefined);
+		setup({
+			loadDetail: vi.fn().mockResolvedValue(detail({ draftState: "completed" })),
+			onCompleted,
+		});
+		await vi.waitFor(() =>
+			expect(document.body.textContent).toContain(
+				"Team setup complete. Sharing and Projects are up to date.",
+			),
+		);
+		expect(onCompleted).toHaveBeenCalledTimes(1);
+
+		act(() => dialogControls.onOpenChange?.(false));
+		act(() => {
+			openLegacyTeamSetup("opaque-candidate");
+		});
+
+		await vi.waitFor(() => expect(onCompleted).toHaveBeenCalledTimes(2));
+	});
+
+	it("offers an explicit server refresh when final confirmation is not ready", async () => {
+		const refreshCandidate = vi.fn().mockResolvedValue({});
+		const loadDetail = vi
+			.fn()
+			.mockResolvedValueOnce(detail())
+			.mockResolvedValueOnce(detail({ canFinish: true }));
+		setup({ loadDetail, refreshCandidate });
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Refresh Team setup"));
+		expect(document.getElementById("legacy-team-setup-retry")).toBeNull();
+
+		act(() => button("Refresh Team setup").click());
+
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
+		expect(refreshCandidate).toHaveBeenCalledWith("opaque-candidate");
+		expect(loadDetail).toHaveBeenCalledTimes(2);
+	});
+
+	it("refreshes dependent views when an explicit refresh discovers completion", async () => {
+		const onCompleted = vi.fn();
+		const refreshCandidate = vi.fn().mockResolvedValue({});
+		const loadDetail = vi
+			.fn()
+			.mockResolvedValueOnce(detail())
+			.mockResolvedValueOnce(
+				detail({
+					conflictState: "team_setup_conflict",
+					draftState: "completed",
+					devices: [device()],
+					unresolvedDeviceCount: 1,
+				}),
+			);
+		setup({ loadDetail, onCompleted, refreshCandidate });
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Refresh Team setup"));
+
+		act(() => button("Refresh Team setup").click());
+
+		await vi.waitFor(() =>
+			expect(document.body.textContent).toContain(
+				"Team setup complete. Sharing and Projects are up to date.",
+			),
+		);
+		expect(onCompleted).toHaveBeenCalledTimes(1);
+		expect(document.querySelector('[role="alert"]')).toBeNull();
+		expect(document.body.textContent).not.toContain("Review devices");
+	});
+
+	it("allows an unresolved stale draft to refresh from its current step", async () => {
+		const refreshCandidate = vi.fn().mockResolvedValue({});
+		const loadDetail = vi
+			.fn()
+			.mockResolvedValueOnce(
+				detail({ draftState: "stale", devices: [device()], unresolvedDeviceCount: 1 }),
+			)
+			.mockResolvedValueOnce(detail({ devices: [device()], unresolvedDeviceCount: 1 }));
+		setup({ loadDetail, refreshCandidate });
+
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Refresh Team setup"));
+		expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+			"changed since it was last reviewed",
+		);
+		expect(document.getElementById("legacy-team-setup-retry")).toBeNull();
+		expect(document.querySelector('button[aria-current="step"]')?.textContent).toBe("Devices");
+
+		act(() => button("Refresh Team setup").click());
+
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Team setup refreshed."));
+		expect(refreshCandidate).toHaveBeenCalledWith("opaque-candidate");
+		expect(loadDetail).toHaveBeenCalledTimes(2);
+		expect(document.querySelector('[role="alert"]')).toBeNull();
+	});
+
+	it("reports a refresh failure as a refresh failure without private details", async () => {
+		const refreshCandidate = vi.fn().mockRejectedValue(new Error("private refresh response"));
+		setup({ loadDetail: vi.fn().mockResolvedValue(detail()), refreshCandidate });
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Refresh Team setup"));
+
+		act(() => button("Refresh Team setup").click());
+
+		await vi.waitFor(() => {
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+				"Team setup could not be refreshed",
+			);
+		});
+		expect(document.body.textContent).not.toContain("private refresh response");
+		expect(document.body.textContent).not.toContain("device change could not be saved");
+	});
+
+	it("fails closed and resets confirmation when finish evidence becomes stale", async () => {
+		const accessDelta = (identityDisplayName: string): LegacyTeamSetupAccessDeltaV1 => ({
+			teamChanges: [],
+			membershipChanges: [
+				{
+					teamRef: "opaque-team-ref",
+					teamDisplayName: "Example Team",
+					identityRef: "opaque-identity-ref",
+					identityDisplayName,
+					change: "add",
+				},
+			],
+			projectChanges: [],
+			recipientChanges: [],
+			deviceAccessChanges: [],
+		});
+		const initial = detail({ canFinish: true, accessDelta: accessDelta("Alex") });
+		const refreshed = detail({
+			canFinish: true,
+			accessDelta: accessDelta("Sam"),
+			viewerAccessDeltaDigest: "fresh-viewer-access-digest",
+		});
+		const loadDetail = vi.fn().mockResolvedValueOnce(initial).mockResolvedValueOnce(refreshed);
+		const finish = vi
+			.fn()
+			.mockRejectedValue(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"));
+		setup({ finish, loadDetail });
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
+		const confirmation = document.querySelector<HTMLInputElement>(
+			".legacy-team-setup-confirmation input",
+		);
+		if (!confirmation) throw new Error("finish confirmation missing");
+		confirmation.checked = true;
+		act(() => {
+			confirmation.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		act(() => button("Finish Team setup").click());
+
+		await vi.waitFor(() =>
+			expect(document.body.textContent).toContain("changed since it was last reviewed"),
+		);
+		expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+			"changed since it was last reviewed",
+		);
+		expect(loadDetail).toHaveBeenCalledTimes(2);
+		expect(finish).toHaveBeenCalledWith("opaque-candidate", {
+			attemptId: "opaque-attempt",
+			finishDigest: "opaque-finish-digest",
+			confirmedAccessDeltaDigest: "opaque-access-digest",
+			confirmedViewerAccessDeltaDigest: "opaque-viewer-access-digest",
+		});
+		expect(
+			document.querySelector<HTMLInputElement>(".legacy-team-setup-confirmation input")?.checked,
+		).toBe(false);
+		expect(document.body.textContent).toContain("Add Sam to Example Team.");
+		expect(button("Finish Team setup").getAttribute("aria-disabled")).toBe("true");
+	});
+
+	it("treats a stale finish recovery that is already completed as success", async () => {
+		const onCompleted = vi.fn().mockRejectedValue(new Error("private refresh failure"));
+		const loadDetail = vi
+			.fn()
+			.mockResolvedValueOnce(detail({ canFinish: true }))
+			.mockResolvedValueOnce(detail({ draftState: "completed" }));
+		setup({
+			finish: vi
+				.fn()
+				.mockRejectedValue(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale")),
+			loadDetail,
+			onCompleted,
+		});
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
+		const confirmation = document.querySelector<HTMLInputElement>(
+			".legacy-team-setup-confirmation input",
+		);
+		if (!confirmation) throw new Error("finish confirmation missing");
+		confirmation.checked = true;
+		act(() => {
+			confirmation.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		act(() => button("Finish Team setup").click());
+
+		await vi.waitFor(() => {
+			expect(document.body.textContent).toContain("Team setup complete");
+			expect(document.body.textContent).toContain(
+				"Sharing or Projects could not be refreshed; use that view's Refresh control.",
+			);
+		});
+		expect(document.querySelector('[role="alert"]')).toBeNull();
+		expect(onCompleted).toHaveBeenCalledTimes(1);
+		expect(document.body.textContent).not.toContain("private refresh failure");
 	});
 
 	it("focuses explicit step navigation and restores the connected trigger on dismissal", async () => {
