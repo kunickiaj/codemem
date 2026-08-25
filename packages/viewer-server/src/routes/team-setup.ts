@@ -45,6 +45,7 @@ const MAX_COMPLETED_IDENTITY_CHOICES = MAX_DEVICES * 4;
 const MAX_PROJECT_MAPPING_CHOICES = 500;
 const MAX_TOTAL_PROJECT_MAPPING_CHOICES = 10_000;
 const MAX_PROJECT_MAPPING_SCAN_ROWS = 10_000;
+const MAX_PROJECT_MAPPING_METADATA_ROWS = 10_000;
 const MAX_MUTATION_BODY_BYTES = 8_192;
 const SUMMARY_SNAPSHOT_CACHE_TTL_MS = 30_000;
 export const TEAM_SETUP_ROUTE_PREFIX = "/api/sync/team-setup/v1";
@@ -664,6 +665,7 @@ function projectMappingChoices(store: MemoryStore): ProjectMappingChoiceInternal
 		candidates = listProjectScopeCandidates(store.db, {
 			limit: null,
 			maxScannedRows: MAX_PROJECT_MAPPING_SCAN_ROWS,
+			maxMetadataRows: MAX_PROJECT_MAPPING_METADATA_ROWS,
 			excludePeerReceived: true,
 		}).filter(
 			(candidate) =>
@@ -671,7 +673,11 @@ function projectMappingChoices(store: MemoryStore): ProjectMappingChoiceInternal
 				isLegacyTeamSetupProjectMappingIdentity(candidate.workspace_identity),
 		);
 	} catch (error) {
-		if (error instanceof Error && error.message === "project_scope_candidate_scan_too_large") {
+		if (
+			error instanceof Error &&
+			(error.message === "project_scope_candidate_scan_too_large" ||
+				error.message === "project_scope_candidate_metadata_too_large")
+		) {
 			throw new Error("legacy_team_setup_roster_too_large");
 		}
 		throw error;

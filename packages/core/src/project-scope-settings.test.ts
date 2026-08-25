@@ -156,6 +156,35 @@ describe("project scope settings", () => {
 		);
 	});
 
+	it("fails closed when candidate mapping metadata exceeds its row budget", () => {
+		const insert = db.prepare(
+			`INSERT INTO project_scope_mappings(
+				workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+			 ) VALUES (?, ?, ?, 1000, 'user', ?, ?)`,
+		);
+		for (const name of ["one", "two", "three"]) {
+			insert.run(
+				`unmapped:${name}`,
+				name,
+				LOCAL_DEFAULT_SCOPE_ID,
+				"2026-05-06T00:00:00Z",
+				"2026-05-06T00:00:00Z",
+			);
+		}
+
+		expect(() => listProjectScopeCandidates(db, { maxMetadataRows: 2 })).toThrow(
+			"project_scope_candidate_metadata_too_large",
+		);
+	});
+
+	it("fails closed when active Sharing-domain metadata exceeds its row budget", () => {
+		insertScope(db, { scopeId: "scope-extra", label: "Extra" });
+
+		expect(() => listProjectScopeCandidates(db, { maxMetadataRows: 2 })).toThrow(
+			"project_scope_candidate_metadata_too_large",
+		);
+	});
+
 	it("excludes peer-received sessions from locally manageable candidates", () => {
 		insertSession(db, { project: "local", gitRemote: "https://example.invalid/local.git" });
 		insertSession(db, {

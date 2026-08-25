@@ -593,7 +593,14 @@ export function listSharingDomainSettingsScopes(db: Database): SharingDomainSett
 
 export function listProjectScopeSettingsMappings(db: Database): ProjectScopeSettingsMapping[] {
 	ensureScopeBackfillScopes(db);
-	const scopesById = scopeLookup(listSharingDomainSettingsScopes(db));
+	return listProjectScopeSettingsMappingsForScopes(db, listSharingDomainSettingsScopes(db));
+}
+
+function listProjectScopeSettingsMappingsForScopes(
+	db: Database,
+	scopes: SharingDomainSettingsScope[],
+): ProjectScopeSettingsMapping[] {
+	const scopesById = scopeLookup(scopes);
 	return db
 		.prepare(
 			`SELECT id, workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
@@ -884,6 +891,7 @@ export function listProjectScopeCandidates(
 	options: {
 		limit?: number | null;
 		maxScannedRows?: number;
+		maxMetadataRows?: number;
 		excludePeerReceived?: boolean;
 	} = {},
 ): ProjectScopeCandidate[] {
@@ -897,9 +905,20 @@ export function listProjectScopeCandidates(
 	) {
 		throw new Error("project_scope_candidate_scan_too_large");
 	}
+	const maxMetadataRows =
+		options.maxMetadataRows == null ? null : Math.max(1, Math.floor(options.maxMetadataRows));
+	if (
+		maxMetadataRows != null &&
+		(db.prepare("SELECT 1 FROM project_scope_mappings LIMIT 1 OFFSET ?").get(maxMetadataRows) ||
+			db
+				.prepare("SELECT 1 FROM replication_scopes WHERE status = 'active' LIMIT 1 OFFSET ?")
+				.get(maxMetadataRows))
+	) {
+		throw new Error("project_scope_candidate_metadata_too_large");
+	}
 	const queryLimit = limit;
-	const mappings = listProjectScopeSettingsMappings(db);
 	const scopes = listSharingDomainSettingsScopes(db);
+	const mappings = listProjectScopeSettingsMappingsForScopes(db, scopes);
 	const excludePeerReceived = options.excludePeerReceived === true;
 	const sql = `SELECT
 				s.id,

@@ -1271,6 +1271,74 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("fails closed when Project mapping metadata exceeds its row budget", async () => {
+			const { app, ensureStore, cleanup } = createTestApp({
+				loadLegacyTeamConfiguredGroupSnapshots: async () => snapshots,
+			});
+			try {
+				const store = ensureStore();
+				core.listSharingDomainSettingsScopes(store.db);
+				const insert = store.db.prepare(
+					`INSERT INTO project_scope_mappings(
+						workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+					 ) VALUES (?, ?, ?, 1000, 'user', ?, ?)`,
+				);
+				store.db.transaction(() => {
+					for (let index = 0; index < 10_001; index += 1) {
+						const identity = `unmapped:overflow-${index}`;
+						insert.run(
+							identity,
+							identity,
+							core.LOCAL_DEFAULT_SCOPE_ID,
+							"2026-08-24T00:00:00.000Z",
+							"2026-08-24T00:00:00.000Z",
+						);
+					}
+				})();
+				const sourceIdentity = "unmapped:source-project";
+				const projectRef = core.recipientPolicyDigest("legacy-team-project-ref-v1", [
+					candidateRef,
+					sourceIdentity,
+				]);
+				const draft = core.refreshLegacyTeamSetupDraft(store.db, {
+					candidateId: candidateRef,
+					coordinatorId,
+					groupId,
+					displayName: "Migration Team",
+					devices: snapshots[0]?.devices ?? [],
+					projects: [
+						{
+							projectRef,
+							sourceProjectIdentity: sourceIdentity,
+							displayName: "Source Project",
+							sourceFingerprint: "source-fingerprint",
+							deterministicProjectIdentity: null,
+						},
+					],
+				});
+
+				const response = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/projects/${projectRef}/mapping`,
+					{
+						method: "PUT",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							attemptId: draft.attemptId,
+							resolvedProjectRef: core.legacyTeamResolvedProjectRef(
+								projectRef,
+								"unmapped:overflow-0",
+							),
+						}),
+					},
+				);
+
+				expect(response.status).toBe(503);
+				expect(await response.json()).toEqual({ error: "team_setup_roster_unavailable" });
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("normalizes scheme-less coordinator URLs before admin roster requests", async () => {
 			const config = {
 				...core.readCoordinatorSyncConfig({}),
