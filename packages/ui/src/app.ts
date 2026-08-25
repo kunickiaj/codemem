@@ -41,6 +41,7 @@ import {
 } from "./tabs/devices";
 import { initFeedTab, loadFeedData, updateFeedView } from "./tabs/feed";
 import { initHealthTab, loadHealthData } from "./tabs/health";
+import { mountLegacyTeamSetupDialog, openLegacyTeamSetup } from "./tabs/legacy-team-setup-dialog";
 import { initProjectsTab, loadProjectsData } from "./tabs/projects";
 import { toRecipientPolicyManagementProjects } from "./tabs/recipient-policy-projects";
 import { initSettings, isSettingsOpen, loadConfigData } from "./tabs/settings";
@@ -487,16 +488,10 @@ function reviewDevicesFromSharing(deviceId?: string) {
 	switchTab("devices", { canonicalHash: true });
 }
 
-function openTeamSetupOverviewFromProjects() {
-	switchTab("sharing", { canonicalHash: true });
-	queueMicrotask(() => document.getElementById("tabBtn-sharing")?.focus());
-}
-
-// The Projects entry routes to Sharing's server-derived status overview. The
-// Sharing-to-dialog callback remains intentionally unwired until .7.
 const loadRecipientPolicySharingData = createRecipientPolicySharingLoader(
 	{},
 	{
+		onOpenTeamSetup: openLegacyTeamSetup,
 		onReviewDevices: reviewDevicesFromSharing,
 	},
 );
@@ -790,6 +785,8 @@ initState();
 // Toast host — mount first so early notices (from tab init etc.) land.
 const toastRoot = document.getElementById("toastRoot");
 if (toastRoot) mountToastHost(toastRoot);
+const legacyTeamSetupRoot = document.getElementById("legacyTeamSetupMount");
+if (legacyTeamSetupRoot) mountLegacyTeamSetupDialog(legacyTeamSetupRoot);
 
 // Theme
 initThemeToggle($button("themeToggle"));
@@ -801,7 +798,7 @@ initTabs();
 // Tab modules
 initFeedTab();
 initHealthTab();
-initProjectsTab(() => refresh(), { onOpenTeamSetup: openTeamSetupOverviewFromProjects });
+initProjectsTab(() => refresh(), { onOpenTeamSetup: openLegacyTeamSetup });
 initSyncTab(() => refresh());
 initCoordinatorAdminTab();
 initSettings(stopPolling, startPolling, () => refresh());

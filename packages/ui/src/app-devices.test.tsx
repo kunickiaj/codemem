@@ -7,6 +7,7 @@ import html from "../static/index.html?raw";
 const mocks = vi.hoisted(() => ({
 	loadProjectScopeInventory: vi.fn(),
 	loadDeviceIdentityInventory: vi.fn(),
+	loadLegacyTeamSetupDetail: vi.fn(),
 	loadRecipientPolicyIntent: vi.fn(),
 	loadRecipientPolicyReconciliationStatus: vi.fn(),
 	loadSyncData: vi.fn(),
@@ -14,9 +15,12 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("./components/primitives/toast", () => ({ mountToastHost: vi.fn() }));
 vi.mock("./lib/api", () => ({
+	clearLegacyTeamSetupDecision: vi.fn(),
+	finishLegacyTeamSetup: vi.fn(),
 	loadCoordinatorAdminStatus: vi.fn(async () => ({ has_admin_secret: false })),
 	loadDeviceIdentityInventory: mocks.loadDeviceIdentityInventory,
 	loadLegacyTeamSetupSummary: vi.fn(async () => ({ version: 1, candidates: [] })),
+	loadLegacyTeamSetupDetail: mocks.loadLegacyTeamSetupDetail,
 	loadProjectScopeInventory: mocks.loadProjectScopeInventory,
 	loadProjects: vi.fn(async () => ["Codemem"]),
 	loadRecipientPolicyIntent: mocks.loadRecipientPolicyIntent,
@@ -24,6 +28,10 @@ vi.mock("./lib/api", () => ({
 	loadRuntimeInfo: vi.fn(async () => ({ version: "test" })),
 	loadSyncStatus: vi.fn(async () => ({})),
 	pingViewerReady: vi.fn(async () => true),
+	refreshLegacyTeamSetupCandidate: vi.fn(),
+	saveLegacyTeamSetupAssignment: vi.fn(),
+	saveLegacyTeamSetupDecision: vi.fn(),
+	saveLegacyTeamSetupProjectMapping: vi.fn(),
 }));
 vi.mock("./tabs/coordinator-admin", () => ({
 	initCoordinatorAdminTab: vi.fn(),
@@ -37,6 +45,10 @@ vi.mock("./tabs/feed", () => ({
 vi.mock("./tabs/health", () => ({
 	initHealthTab: vi.fn(),
 	loadHealthData: vi.fn(async () => undefined),
+}));
+vi.mock("./tabs/legacy-team-setup-dialog", () => ({
+	mountLegacyTeamSetupDialog: vi.fn(),
+	openLegacyTeamSetup: vi.fn(() => true),
 }));
 vi.mock("./tabs/projects", () => ({
 	initProjectsTab: vi.fn(),
@@ -154,6 +166,27 @@ describe("Devices app integration", () => {
 			offset: 0,
 		});
 		mocks.loadRecipientPolicyIntent.mockResolvedValue(intent);
+		mocks.loadLegacyTeamSetupDetail.mockResolvedValue({
+			version: 1,
+			candidate: {
+				candidateRef: "opaque-candidate-ref",
+				displayName: "Example Team",
+				status: "in_progress",
+				deviceCount: 0,
+				projectCount: 0,
+				unresolvedDeviceCount: 0,
+				unresolvedProjectCount: 0,
+			},
+			attemptId: "opaque-attempt",
+			draftState: "in_progress",
+			unresolvedDeviceCount: 0,
+			unresolvedProjectCount: 0,
+			devices: [],
+			projects: [],
+			identityChoices: [],
+			canFinish: false,
+			conflictState: null,
+		});
 		if (expect.getState().currentTestName?.includes("first Devices load")) {
 			mocks.loadDeviceIdentityInventory.mockRejectedValue(new Error("inventory unavailable"));
 		} else {
@@ -251,17 +284,18 @@ describe("Devices app integration", () => {
 		expect(document.activeElement).toBe(document.getElementById("tabBtn-sharing"));
 	});
 
-	it("injects Projects navigation to the canonical Sharing setup overview", async () => {
+	it("opens the global Team setup dialog from Projects without changing tabs", async () => {
 		const { initProjectsTab } = await import("./tabs/projects");
+		const { openLegacyTeamSetup } = await import("./tabs/legacy-team-setup-dialog");
 		const options = vi.mocked(initProjectsTab).mock.calls[0]?.[1];
 		expect(options?.onOpenTeamSetup).toEqual(expect.any(Function));
 
 		act(() => options?.onOpenTeamSetup?.("opaque-candidate-ref"));
 		await Promise.resolve();
 
-		expect(window.location.hash).toBe("#sharing");
-		expect(document.getElementById("tab-sharing")?.hidden).toBe(false);
-		expect(document.activeElement).toBe(document.getElementById("tabBtn-sharing"));
+		expect(openLegacyTeamSetup).toHaveBeenCalledWith("opaque-candidate-ref");
+		expect(window.location.hash).toBe("#devices");
+		expect(document.getElementById("tab-devices")?.hidden).toBe(false);
 	});
 
 	it("keeps existing device details usable when inventory fails on the first Devices load", () => {

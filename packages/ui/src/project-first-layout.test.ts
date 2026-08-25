@@ -8,6 +8,12 @@ describe("project-first navigation layout", () => {
 	it("includes the Projects share-flow mount used by row-level Share actions", () => {
 		expect(html).toContain('id="projectShareFlowMount"');
 		expect(html).toContain('id="recipientPolicyManagementMount"');
+		expect(html).toContain('id="legacyTeamSetupMount"');
+	});
+
+	it("wires the global Team setup dialog to Sharing and Projects", () => {
+		expect(appSource).toContain("mountLegacyTeamSetupDialog");
+		expect(appSource.match(/onOpenTeamSetup: openLegacyTeamSetup/g)).toHaveLength(2);
 	});
 
 	it("orders the visible navigation as Feed, Projects, Sharing, Devices, Health, Advanced", () => {
