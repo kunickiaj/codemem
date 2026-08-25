@@ -1,4 +1,5 @@
 type DialogCloseButtonProps = {
+	ariaDisabled?: boolean;
 	ariaLabel: string;
 	className?: string;
 	disabled?: boolean;
@@ -7,6 +8,7 @@ type DialogCloseButtonProps = {
 };
 
 export function DialogCloseButton({
+	ariaDisabled = false,
 	ariaLabel,
 	className = "modal-close-button",
 	disabled = false,
@@ -15,10 +17,13 @@ export function DialogCloseButton({
 }: DialogCloseButtonProps) {
 	return (
 		<button
+			aria-disabled={ariaDisabled ? "true" : undefined}
 			aria-label={ariaLabel}
 			className={className}
 			disabled={disabled}
-			onClick={onClick}
+			onClick={() => {
+				if (!ariaDisabled) onClick();
+			}}
 			type="button"
 		>
 			<i aria-hidden="true" className="modal-close-button-icon" data-lucide="x" />

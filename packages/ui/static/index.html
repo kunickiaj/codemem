@@ -1227,6 +1227,27 @@
       .legacy-team-setup-error { display: grid; gap: var(--sp-2); justify-items: start; }
       .legacy-team-setup-actions { justify-content: flex-end; }
       .legacy-team-setup-target { min-width: 24px; min-height: 24px; }
+      .legacy-team-device-list { display: grid; gap: var(--sp-3); margin-top: var(--sp-3); }
+      .legacy-team-device-row {
+        display: grid;
+        gap: var(--sp-2);
+        min-width: 0;
+        margin: 0;
+        padding: var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-2);
+      }
+      .legacy-team-device-row legend {
+        padding: 0 var(--sp-1);
+        color: var(--text-primary);
+        font-weight: var(--font-weight-semibold);
+      }
+      .legacy-team-device-row label { font-size: var(--font-size-sm); font-weight: var(--font-weight-semibold); }
+      .legacy-team-device-evidence { display: grid; gap: var(--sp-1); }
+      .legacy-team-device-select { width: 100%; margin: 0; }
+      .legacy-team-device-select:disabled { opacity: 0.55; cursor: not-allowed; }
+      .legacy-team-device-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
       .recipient-policy-management-selection fieldset { border: 0; padding: 0; margin: var(--sp-4) 0 0; }
       .recipient-policy-management-selection legend { font-weight: var(--font-weight-semibold); }
       .recipient-policy-management-review section + section { margin-top: var(--sp-4); }

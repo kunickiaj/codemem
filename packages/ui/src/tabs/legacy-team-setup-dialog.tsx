@@ -3,10 +3,13 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { DialogCloseButton } from "../components/primitives/dialog-close-button";
 import { RadixDialog } from "../components/primitives/radix-dialog";
 import * as api from "../lib/api";
+import { LegacyTeamSetupDevices } from "./legacy-team-setup-devices";
 
 type TeamSetupStep = "devices" | "projects" | "review" | "completed";
 const CHANGED_STATE_ERROR =
 	"Team setup changed since it was last reviewed. Reload the latest details to continue.";
+const SAVED_RELOAD_ERROR =
+	"The change was saved, but the latest Team setup details could not be loaded. Reload before continuing.";
 const RELOAD_ERROR_CODES = new Set<api.LegacyTeamSetupErrorCode>([
 	"team_setup_roster_changed",
 	"team_setup_assignment_changed",
@@ -14,14 +17,20 @@ const RELOAD_ERROR_CODES = new Set<api.LegacyTeamSetupErrorCode>([
 	"team_setup_confirmation_stale",
 ]);
 
-interface LegacyTeamSetupDialogDependencies {
+export interface LegacyTeamSetupDialogDependencies {
+	clearDecision: typeof api.clearLegacyTeamSetupDecision;
 	loadDetail: typeof api.loadLegacyTeamSetupDetail;
 	refreshCandidate: typeof api.refreshLegacyTeamSetupCandidate;
+	saveAssignment: typeof api.saveLegacyTeamSetupAssignment;
+	saveDecision: typeof api.saveLegacyTeamSetupDecision;
 }
 
 const defaultDependencies: LegacyTeamSetupDialogDependencies = {
+	clearDecision: api.clearLegacyTeamSetupDecision,
 	loadDetail: api.loadLegacyTeamSetupDetail,
 	refreshCandidate: api.refreshLegacyTeamSetupCandidate,
+	saveAssignment: api.saveLegacyTeamSetupAssignment,
+	saveDecision: api.saveLegacyTeamSetupDecision,
 };
 
 let pendingCandidateRef: string | null = null;
@@ -85,6 +94,19 @@ function isChangedStateError(cause: unknown): boolean {
 	return cause instanceof api.LegacyTeamSetupApiError && RELOAD_ERROR_CODES.has(cause.errorCode);
 }
 
+function safeMutationError(cause: unknown): string {
+	if (isChangedStateError(cause)) {
+		return CHANGED_STATE_ERROR;
+	}
+	if (
+		cause instanceof api.LegacyTeamSetupApiError &&
+		cause.errorCode === "team_setup_roster_unavailable"
+	) {
+		return "Team device details are temporarily unavailable. Reload the latest details before trying again.";
+	}
+	return "This device change could not be saved. Reload the latest details before trying again.";
+}
+
 function StepContent({
 	detail,
 	step,
@@ -102,23 +124,7 @@ function StepContent({
 			</section>
 		);
 	}
-	if (step === "devices") {
-		return (
-			<section aria-labelledby="legacy-team-setup-step-devices">
-				<h3 id="legacy-team-setup-step-devices" tabIndex={-1}>
-					Review devices
-				</h3>
-				<p>
-					{detail.unresolvedDeviceCount.toLocaleString()} of{" "}
-					{detail.candidate.deviceCount.toLocaleString()} Team devices still need a person or
-					exclusion decision.
-				</p>
-				<p className="small">
-					Next setup action: assign each unresolved device to a person or exclude it from this Team.
-				</p>
-			</section>
-		);
-	}
+	if (step === "devices") return null;
 	if (step === "projects") {
 		return (
 			<section aria-labelledby="legacy-team-setup-step-projects">
@@ -164,10 +170,14 @@ function LegacyTeamSetupDialogHost({
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [loadRevision, setLoadRevision] = useState(0);
+	const [busyDeviceRef, setBusyDeviceRef] = useState<string | null>(null);
+	const [operationStatus, setOperationStatus] = useState("");
+	const [isSubmitting, setIsSubmitting] = useState(false);
 	const focusAfterLoad = useRef(false);
 	const focusStepAfterRender = useRef(false);
 	const refreshBeforeLoad = useRef(false);
 	const retryNeedsRefresh = useRef(false);
+	const submitting = useRef(false);
 
 	useEffect(() => {
 		requestOpen = (nextCandidateRef) => {
@@ -239,6 +249,12 @@ function LegacyTeamSetupDialogHost({
 	if (!candidateRef) return null;
 	const title = detail ? `Set up ${detail.candidate.displayName}` : "Set up Team";
 	const close = () => {
+		if (submitting.current) {
+			setOperationStatus(
+				"Team setup will stay open while this device change saves. Close it after saving finishes.",
+			);
+			return;
+		}
 		focusAfterLoad.current = false;
 		focusStepAfterRender.current = false;
 		refreshBeforeLoad.current = false;
@@ -247,6 +263,9 @@ function LegacyTeamSetupDialogHost({
 		setDetail(null);
 		setError(null);
 		setLoading(false);
+		setBusyDeviceRef(null);
+		setOperationStatus("");
+		setStep("devices");
 	};
 	const navigate = (nextStep: TeamSetupStep) => {
 		if (nextStep === step) {
@@ -258,6 +277,125 @@ function LegacyTeamSetupDialogHost({
 	};
 	const devicesBlockProgress = detail ? detail.unresolvedDeviceCount > 0 : false;
 	const projectsBlockReview = detail ? detail.unresolvedProjectCount > 0 : false;
+	const mutationsBlocked = loading || isSubmitting || Boolean(error);
+	const applyAuthoritativeDetail = (
+		nextDetail: api.LegacyTeamSetupDetailResponseV1,
+		preserveDevicesStep: boolean,
+	) => {
+		retryNeedsRefresh.current = detailNeedsRecovery(nextDetail);
+		setDetail(nextDetail);
+		setStep((current) => {
+			const nextStep =
+				preserveDevicesStep && current === "devices" && nextDetail.unresolvedDeviceCount > 0
+					? "devices"
+					: initialStep(nextDetail);
+			if (nextStep !== current) focusStepAfterRender.current = true;
+			return nextStep;
+		});
+		setError(detailNeedsRecovery(nextDetail) ? CHANGED_STATE_ERROR : null);
+	};
+	const reloadAfterMutation = async () => {
+		const nextDetail = await dependencies.loadDetail(candidateRef);
+		applyAuthoritativeDetail(nextDetail, true);
+		return nextDetail;
+	};
+	const recoverMutation = async (cause: unknown) => {
+		const message = safeMutationError(cause);
+		setOperationStatus("");
+		setError(message);
+		if (
+			!(cause instanceof api.LegacyTeamSetupApiError) ||
+			!RELOAD_ERROR_CODES.has(cause.errorCode)
+		) {
+			return;
+		}
+		try {
+			const nextDetail = await dependencies.loadDetail(candidateRef);
+			applyAuthoritativeDetail(nextDetail, true);
+			retryNeedsRefresh.current = true;
+		} catch {
+			retryNeedsRefresh.current = true;
+			// Keep the stable mutation error when the best-effort recovery reload also fails.
+		}
+		setError(message);
+	};
+	const runDeviceMutation = async (
+		device: api.LegacyTeamSetupDeviceV1,
+		status: string,
+		operation: () => Promise<void>,
+	) => {
+		if (mutationsBlocked || submitting.current) return;
+		submitting.current = true;
+		setIsSubmitting(true);
+		setBusyDeviceRef(device.deviceRef);
+		setOperationStatus(status);
+		setError(null);
+		try {
+			try {
+				await operation();
+			} catch (cause) {
+				await recoverMutation(cause);
+				return;
+			}
+			try {
+				await reloadAfterMutation();
+				setOperationStatus(`${device.displayName} saved.`);
+			} catch {
+				setOperationStatus("");
+				setError(SAVED_RELOAD_ERROR);
+			}
+		} finally {
+			submitting.current = false;
+			setIsSubmitting(false);
+			setBusyDeviceRef(null);
+		}
+	};
+	const assignDevice = (device: api.LegacyTeamSetupDeviceV1, targetIdentityRef: string) => {
+		const currentDetail = detail;
+		if (!currentDetail) return;
+		void runDeviceMutation(device, `Saving the assignment for ${device.displayName}.`, async () => {
+			await dependencies.saveAssignment(candidateRef, device.deviceRef, {
+				attemptId: currentDetail.attemptId,
+				targetIdentityRef,
+				expectation: device.expectation,
+			});
+		});
+	};
+	const decideDevice = (
+		device: api.LegacyTeamSetupDeviceV1,
+		decision: "included" | "excluded" | "removed",
+		targetIdentityRef?: string,
+	) => {
+		const currentDetail = detail;
+		if (!currentDetail) return;
+		if (decision === "included" && !targetIdentityRef) {
+			setOperationStatus(`Save a person assignment before including ${device.displayName}.`);
+			return;
+		}
+		void runDeviceMutation(device, `Saving the decision for ${device.displayName}.`, async () => {
+			if (decision === "included" && targetIdentityRef) {
+				await dependencies.saveDecision(candidateRef, device.deviceRef, {
+					attemptId: currentDetail.attemptId,
+					decision: "included",
+					expectedTargetIdentityRef: targetIdentityRef,
+				});
+			} else if (decision !== "included") {
+				await dependencies.saveDecision(candidateRef, device.deviceRef, {
+					attemptId: currentDetail.attemptId,
+					decision,
+				});
+			}
+		});
+	};
+	const clearDevice = (device: api.LegacyTeamSetupDeviceV1) => {
+		const currentDetail = detail;
+		if (!currentDetail) return;
+		void runDeviceMutation(device, `Clearing the decision for ${device.displayName}.`, async () => {
+			await dependencies.clearDecision(candidateRef, device.deviceRef, {
+				attemptId: currentDetail.attemptId,
+			});
+		});
+	};
 
 	return (
 		<RadixDialog
@@ -285,12 +423,19 @@ function LegacyTeamSetupDialogHost({
 			overlayClassName="modal-backdrop"
 			overlayId="legacyTeamSetupDialogBackdrop"
 		>
-			<div aria-busy={loading ? "true" : "false"} className="modal-card legacy-team-setup-card">
+			<div
+				aria-busy={loading || isSubmitting ? "true" : "false"}
+				className="modal-card legacy-team-setup-card"
+			>
 				<div className="modal-header">
 					<h2 id="legacy-team-setup-title" tabIndex={-1}>
 						{title}
 					</h2>
-					<DialogCloseButton ariaLabel={`Close ${title}`} onClick={close} />
+					<DialogCloseButton
+						ariaDisabled={isSubmitting}
+						ariaLabel={`Close ${title}`}
+						onClick={close}
+					/>
 				</div>
 				<div className="modal-body legacy-team-setup-body">
 					<p className="small" id="legacy-team-setup-description">
@@ -304,11 +449,11 @@ function LegacyTeamSetupDialogHost({
 								{error}
 							</p>
 							<button
-								aria-disabled={loading ? "true" : undefined}
+								aria-disabled={loading || isSubmitting ? "true" : undefined}
 								className="settings-button legacy-team-setup-target"
 								id="legacy-team-setup-retry"
 								onClick={() => {
-									if (loading) return;
+									if (loading || isSubmitting) return;
 									focusAfterLoad.current = true;
 									refreshBeforeLoad.current = retryNeedsRefresh.current;
 									setLoadRevision((current) => current + 1);
@@ -390,12 +535,27 @@ function LegacyTeamSetupDialogHost({
 									Refreshing Team setup details…
 								</p>
 							) : null}
-							<StepContent detail={detail} step={step} />
+							<p aria-live="polite" className="small" role="status">
+								{operationStatus}
+							</p>
+							{step === "devices" ? (
+								<LegacyTeamSetupDevices
+									blocked={mutationsBlocked}
+									busyDeviceRef={busyDeviceRef}
+									detail={detail}
+									onAssign={assignDevice}
+									onClear={clearDevice}
+									onDecision={decideDevice}
+								/>
+							) : (
+								<StepContent detail={detail} step={step} />
+							)}
 						</>
 					) : null}
 				</div>
 				<div className="modal-footer legacy-team-setup-actions">
 					<button
+						aria-disabled={isSubmitting ? "true" : undefined}
 						className="settings-button legacy-team-setup-target"
 						onClick={close}
 						type="button"
