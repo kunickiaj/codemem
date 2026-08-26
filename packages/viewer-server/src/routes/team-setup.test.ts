@@ -1,5 +1,6 @@
 import {
 	canonicalWorkspaceIdentity,
+	deterministicPolicyTeamId,
 	fingerprintPublicKey,
 	getLegacyTeamSetupDraft,
 	legacyTeamCandidateId,
@@ -7,6 +8,7 @@ import {
 	readCoordinatorSyncConfig,
 } from "@codemem/core";
 import { describe, expect, it, vi } from "vitest";
+import { syncRoutes } from "./sync.js";
 import { __teamSetupTestHooks, teamSetupRoutes } from "./team-setup.js";
 
 function createRouteStore(): { store: MemoryStore; close: () => void } {
@@ -983,5 +985,406 @@ describe("Team setup roster loading", () => {
 		]);
 		expect(listDevices).toHaveBeenCalledTimes(1);
 		expect(listDevices).toHaveBeenCalledWith(expect.objectContaining({ groupId: targetGroupId }));
+	});
+});
+
+describe("Team metadata route", () => {
+	function fixture(linked = false) {
+		const store = new MemoryStore(":memory:");
+		const candidateId = "legacy-team-candidate:22222222222222222222222222222222";
+		const teamId = linked ? deterministicPolicyTeamId(candidateId) : "team-local";
+		store.db
+			.prepare(
+				`INSERT INTO policy_teams(
+				 team_id, display_name, status, provenance, revision, migration_state,
+				 idempotency_key, created_at, updated_at
+				 ) VALUES (?, 'Old Team', 'active', 'user', 'revision-1', 'user_managed',
+				 'team-key', '2026-08-26T00:00:00.000Z', '2026-08-26T00:00:00.000Z')`,
+			)
+			.run(teamId);
+		if (linked) {
+			store.db
+				.prepare(
+					`INSERT INTO legacy_team_setup_drafts(
+					 attempt_id, candidate_id, coordinator_id, group_id, state, display_name,
+					 roster_fingerprint, projection_fingerprint, finish_digest, completed_team_id,
+					 created_at, updated_at, completed_at
+					 ) VALUES ('attempt-route', ?, 'https://coordinator.example.test', 'group-one',
+					 'completed', 'Old Team', 'roster', 'projection', 'finish', ?,
+					 '2026-08-26T00:00:00.000Z', '2026-08-26T00:00:00.000Z',
+					 '2026-08-26T00:00:00.000Z')`,
+				)
+				.run(candidateId, teamId);
+			store.db
+				.prepare(
+					`INSERT INTO legacy_team_setup_completions(
+					 attempt_id, finish_digest, candidate_ref, confirmed_access_delta_digest,
+					 completed_team_id, response_json, completed_at, created_at
+					 ) VALUES ('attempt-route', 'finish', ?, 'access', ?, '{}',
+					 '2026-08-26T00:00:00.000Z', '2026-08-26T00:00:00.000Z')`,
+				)
+				.run(candidateId, teamId);
+		}
+		return { store, teamId };
+	}
+
+	it("renames a local Team and returns only bounded metadata", async () => {
+		const { store, teamId } = fixture();
+		const onRecipientPolicyTeamRenamed = vi.fn();
+		try {
+			const app = syncRoutes(() => store, undefined, {
+				onRecipientPolicyTeamRenamed,
+				readCoordinatorConfig: () => readCoordinatorSyncConfig({}),
+			});
+			const response = await app.request(`/api/sync/recipient-policy/v1/teams/${teamId}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ displayName: "New Team", expectedDisplayName: "Old Team" }),
+			});
+
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual(
+				expect.objectContaining({
+					version: 1,
+					teamId,
+					displayName: "New Team",
+					linkedCoordinatorGroupRenamed: false,
+				}),
+			);
+			expect(onRecipientPolicyTeamRenamed).toHaveBeenCalledOnce();
+		} finally {
+			store.close();
+		}
+	});
+
+	it("uses a safe coordinator failure and leaves linked local metadata unchanged", async () => {
+		const { store, teamId } = fixture(true);
+		try {
+			const app = syncRoutes(() => store, undefined, {
+				readCoordinatorConfig: () => ({
+					...readCoordinatorSyncConfig({}),
+					syncCoordinatorUrl: "https://coordinator.example.test",
+					syncCoordinatorGroups: ["group-one"],
+					syncCoordinatorAdminSecret: "test-secret",
+				}),
+				renameCoordinatorGroup: vi.fn().mockRejectedValue(new Error("raw remote failure")),
+			});
+			const response = await app.request(`/api/sync/recipient-policy/v1/teams/${teamId}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ displayName: "New Team", expectedDisplayName: "Old Team" }),
+			});
+
+			expect(response.status).toBe(503);
+			expect(await response.json()).toEqual({ error: "team_coordinator_rename_failed" });
+			expect(store.db.prepare("SELECT display_name FROM policy_teams").pluck().get()).toBe(
+				"Old Team",
+			);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("keeps linked policy and completed setup names consistent after coordinator success", async () => {
+		const { store, teamId } = fixture(true);
+		const renameCoordinatorGroup = vi.fn().mockResolvedValue({
+			group_id: "group-one",
+			display_name: "New Team",
+			archived_at: null,
+			created_at: "2026-08-26T00:00:00.000Z",
+		});
+		try {
+			const app = syncRoutes(() => store, undefined, {
+				readCoordinatorConfig: () => ({
+					...readCoordinatorSyncConfig({}),
+					syncCoordinatorUrl: "https://coordinator.example.test",
+					syncCoordinatorGroups: ["group-one"],
+					syncCoordinatorAdminSecret: "test-secret",
+				}),
+				renameCoordinatorGroup,
+			});
+			const response = await app.request(`/api/sync/recipient-policy/v1/teams/${teamId}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ displayName: "New Team", expectedDisplayName: "Old Team" }),
+			});
+
+			expect(response.status).toBe(200);
+			expect(renameCoordinatorGroup).toHaveBeenCalledWith(
+				expect.objectContaining({ groupId: "group-one", displayName: "New Team" }),
+			);
+			expect(store.db.prepare("SELECT display_name FROM policy_teams").pluck().get()).toBe(
+				"New Team",
+			);
+			expect(
+				store.db.prepare("SELECT display_name FROM legacy_team_setup_drafts").pluck().get(),
+			).toBe("New Team");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("renames a Team linked through equivalent scope-backed coordinator evidence", async () => {
+		const { store, teamId } = fixture(true);
+		const scopeCoordinatorId = "https://COORDINATOR.example.test/";
+		store.db
+			.prepare("UPDATE legacy_team_setup_drafts SET coordinator_id = ?")
+			.run(scopeCoordinatorId);
+		store.db
+			.prepare(
+				`INSERT INTO replication_scopes(
+				 scope_id, label, kind, authority_type, coordinator_id, group_id,
+				 membership_epoch, status, created_at, updated_at
+				 ) VALUES ('scope-linked', 'Old Team', 'team', 'coordinator', ?, 'group-one',
+				 1, 'active', '2026-08-26T00:00:00.000Z', '2026-08-26T00:00:00.000Z')`,
+			)
+			.run(scopeCoordinatorId);
+		const renameCoordinatorGroup = vi.fn().mockResolvedValue({
+			group_id: "group-one",
+			display_name: "Scope Team",
+			archived_at: null,
+			created_at: "2026-08-26T00:00:00.000Z",
+		});
+		try {
+			const app = syncRoutes(() => store, undefined, {
+				readCoordinatorConfig: () => ({
+					...readCoordinatorSyncConfig({}),
+					syncCoordinatorUrl: "https://coordinator.example.test",
+					syncCoordinatorGroups: [],
+					syncCoordinatorAdminSecret: "test-secret",
+				}),
+				renameCoordinatorGroup,
+			});
+			const response = await app.request(`/api/sync/recipient-policy/v1/teams/${teamId}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ displayName: "Scope Team", expectedDisplayName: "Old Team" }),
+			});
+
+			expect(response.status).toBe(200);
+			expect(renameCoordinatorGroup).toHaveBeenCalledWith(
+				expect.objectContaining({ groupId: "group-one", displayName: "Scope Team" }),
+			);
+			expect(store.db.prepare("SELECT display_name FROM policy_teams").pluck().get()).toBe(
+				"Scope Team",
+			);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("renames a zero-Project Team through an equivalent configured coordinator URL", async () => {
+		const { store, teamId } = fixture(true);
+		store.db
+			.prepare("UPDATE legacy_team_setup_drafts SET coordinator_id = ?")
+			.run("https://COORDINATOR.example.test/");
+		const renameCoordinatorGroup = vi.fn().mockResolvedValue({
+			group_id: "group-one",
+			display_name: "Equivalent Team",
+			archived_at: null,
+			created_at: "2026-08-26T00:00:00.000Z",
+		});
+		try {
+			const app = syncRoutes(() => store, undefined, {
+				readCoordinatorConfig: () => ({
+					...readCoordinatorSyncConfig({}),
+					syncCoordinatorUrl: "https://coordinator.example.test",
+					syncCoordinatorGroups: ["group-one"],
+					syncCoordinatorAdminSecret: "test-secret",
+				}),
+				renameCoordinatorGroup,
+			});
+			const response = await app.request(`/api/sync/recipient-policy/v1/teams/${teamId}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ displayName: "Equivalent Team", expectedDisplayName: "Old Team" }),
+			});
+
+			expect(response.status).toBe(200);
+			expect(renameCoordinatorGroup).toHaveBeenCalledWith(
+				expect.objectContaining({ groupId: "group-one", displayName: "Equivalent Team" }),
+			);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("rejects active Teams linked to the same normalized coordinator group", async () => {
+		const { store, teamId } = fixture(true);
+		const aliasCandidateId = "legacy-team-candidate:11111111111111111111111111111111";
+		const aliasTeamId = deterministicPolicyTeamId(aliasCandidateId);
+		store.db
+			.prepare(
+				`INSERT INTO policy_teams(
+				 team_id, display_name, status, provenance, revision, migration_state,
+				 idempotency_key, created_at, updated_at
+				 ) VALUES (?, 'Alias Team', 'active', 'user', 'revision-alias', 'user_managed',
+				 'team-key-alias', '2026-08-26T00:00:00.000Z', '2026-08-26T00:00:00.000Z')`,
+			)
+			.run(aliasTeamId);
+		store.db
+			.prepare(
+				`INSERT INTO legacy_team_setup_drafts(
+				 attempt_id, candidate_id, coordinator_id, group_id, state, display_name,
+				 roster_fingerprint, projection_fingerprint, finish_digest, completed_team_id,
+				 created_at, updated_at, completed_at
+				 ) VALUES ('attempt-route-alias', ?, 'HTTPS://COORDINATOR.example.test/', 'group-one',
+				 'completed', 'Alias Team', 'roster-alias', 'projection-alias', 'finish-alias', ?,
+				 '2026-08-26T00:00:00.000Z', '2026-08-26T00:00:00.000Z',
+				 '2026-08-26T00:00:00.000Z')`,
+			)
+			.run(aliasCandidateId, aliasTeamId);
+		store.db
+			.prepare(
+				`INSERT INTO legacy_team_setup_completions(
+				 attempt_id, finish_digest, candidate_ref, confirmed_access_delta_digest,
+				 completed_team_id, response_json, completed_at, created_at
+				 ) VALUES ('attempt-route-alias', 'finish-alias', ?, 'access-alias', ?, '{}',
+				 '2026-08-26T00:00:00.000Z', '2026-08-26T00:00:00.000Z')`,
+			)
+			.run(aliasCandidateId, aliasTeamId);
+		const renameCoordinatorGroup = vi.fn();
+		try {
+			const app = syncRoutes(() => store, undefined, {
+				readCoordinatorConfig: () => ({
+					...readCoordinatorSyncConfig({}),
+					syncCoordinatorUrl: "https://coordinator.example.test",
+					syncCoordinatorGroups: ["group-one"],
+					syncCoordinatorAdminSecret: "test-secret",
+				}),
+				renameCoordinatorGroup,
+			});
+			const response = await app.request(`/api/sync/recipient-policy/v1/teams/${teamId}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ displayName: "New Team", expectedDisplayName: "Old Team" }),
+			});
+
+			expect(response.status).toBe(409);
+			expect(await response.json()).toEqual({ error: "team_link_ambiguous" });
+			expect(renameCoordinatorGroup).not.toHaveBeenCalled();
+			expect(
+				store.db
+					.prepare("SELECT display_name FROM policy_teams WHERE team_id = ?")
+					.pluck()
+					.get(teamId),
+			).toBe("Old Team");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("does not infer a coordinator rename from scope evidence without completed setup proof", async () => {
+		const { store, teamId } = fixture();
+		store.db
+			.prepare(
+				`INSERT INTO replication_scopes(
+				 scope_id, label, kind, authority_type, coordinator_id, group_id,
+				 membership_epoch, status, created_at, updated_at
+				 ) VALUES ('scope-unproven', 'Unproven', 'team', 'coordinator',
+				 'https://coordinator.example.test', 'group-one', 1, 'active',
+				 '2026-08-26T00:00:00.000Z', '2026-08-26T00:00:00.000Z')`,
+			)
+			.run();
+		const renameCoordinatorGroup = vi.fn();
+		try {
+			const app = syncRoutes(() => store, undefined, {
+				readCoordinatorConfig: () => ({
+					...readCoordinatorSyncConfig({}),
+					syncCoordinatorUrl: "https://coordinator.example.test",
+					syncCoordinatorGroups: [],
+					syncCoordinatorAdminSecret: "test-secret",
+				}),
+				renameCoordinatorGroup,
+			});
+			const response = await app.request(`/api/sync/recipient-policy/v1/teams/${teamId}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ displayName: "Local Team", expectedDisplayName: "Old Team" }),
+			});
+
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual(
+				expect.objectContaining({ linkedCoordinatorGroupRenamed: false }),
+			);
+			expect(renameCoordinatorGroup).not.toHaveBeenCalled();
+		} finally {
+			store.close();
+		}
+	});
+
+	it("keeps local Team renames available when coordinator evidence is invalid", async () => {
+		const { store, teamId } = fixture();
+		const renameCoordinatorGroup = vi.fn();
+		try {
+			const app = syncRoutes(() => store, undefined, {
+				readCoordinatorConfig: () => ({
+					...readCoordinatorSyncConfig({}),
+					syncCoordinatorUrl: "https://coordinator.example.test",
+					syncCoordinatorGroups: Array.from({ length: 26 }, (_, index) => `group-${index}`),
+					syncCoordinatorAdminSecret: "test-secret",
+				}),
+				renameCoordinatorGroup,
+			});
+			const response = await app.request(`/api/sync/recipient-policy/v1/teams/${teamId}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ displayName: "Local Team", expectedDisplayName: "Old Team" }),
+			});
+
+			expect(response.status).toBe(200);
+			expect(renameCoordinatorGroup).not.toHaveBeenCalled();
+		} finally {
+			store.close();
+		}
+	});
+
+	it("fails closed for a linked Team when coordinator evidence is invalid", async () => {
+		const { store, teamId } = fixture(true);
+		const renameCoordinatorGroup = vi.fn();
+		try {
+			const app = syncRoutes(() => store, undefined, {
+				readCoordinatorConfig: () => ({
+					...readCoordinatorSyncConfig({}),
+					syncCoordinatorUrl: "https://coordinator.example.test",
+					syncCoordinatorGroups: Array.from({ length: 26 }, (_, index) => `group-${index}`),
+					syncCoordinatorAdminSecret: "test-secret",
+				}),
+				renameCoordinatorGroup,
+			});
+			const response = await app.request(`/api/sync/recipient-policy/v1/teams/${teamId}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ displayName: "Blocked Team", expectedDisplayName: "Old Team" }),
+			});
+
+			expect(response.status).toBe(409);
+			expect(await response.json()).toEqual({ error: "team_link_stale" });
+			expect(renameCoordinatorGroup).not.toHaveBeenCalled();
+		} finally {
+			store.close();
+		}
+	});
+
+	it.each([
+		["missing", "Old Team", "New Team", 404, "team_not_found"],
+		["team-local", "Stale Team", "New Team", 409, "team_rename_stale"],
+		["team-local", "Old Team", "actor:machine", 400, "team_name_invalid"],
+	])("returns safe errors for invalid or stale Team changes", async (teamId, expectedDisplayName, displayName, status, error) => {
+		const { store } = fixture();
+		try {
+			const app = syncRoutes(() => store, undefined, {
+				readCoordinatorConfig: () => readCoordinatorSyncConfig({}),
+			});
+			const response = await app.request(`/api/sync/recipient-policy/v1/teams/${teamId}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ displayName, expectedDisplayName }),
+			});
+			expect(response.status).toBe(status);
+			expect(await response.json()).toEqual({ error });
+		} finally {
+			store.close();
+		}
 	});
 });

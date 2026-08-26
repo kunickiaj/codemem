@@ -19,6 +19,10 @@ import {
 	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
 import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-policy-reconciliation.js";
+import {
+	serializeRecipientPolicyCoordinatorGroupMutation,
+	serializeRecipientPolicyTeamMutation,
+} from "./recipient-policy-team-metadata.js";
 import { initTestSchema } from "./test-utils.js";
 
 const NOW = "2026-08-21T12:00:00.000Z";
@@ -565,6 +569,60 @@ describe("legacy Team setup activation", () => {
 				.get(draft.attemptId),
 		).not.toBe("stale");
 		await expect(finish(draft, review)).resolves.toMatchObject({ status: "completed" });
+	});
+
+	it("waits for an in-flight Team metadata mutation before writing the activation revision", async () => {
+		const draft = readyDraft();
+		const review = preview(draft);
+		const teamId = deterministicPolicyTeamId(CANDIDATE);
+		let releaseMutation = () => undefined;
+		const mutationPending = new Promise<void>((resolve) => {
+			releaseMutation = resolve;
+		});
+		let mutationStarted = false;
+		const mutation = serializeRecipientPolicyTeamMutation(db, teamId, async () => {
+			mutationStarted = true;
+			await mutationPending;
+		});
+		await vi.waitFor(() => expect(mutationStarted).toBe(true));
+
+		const activation = finish(draft, review);
+		await Promise.resolve();
+		expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+
+		releaseMutation();
+		await mutation;
+		await expect(activation).resolves.toMatchObject({ status: "completed", teamId });
+	});
+
+	it("waits for an in-flight coordinator group mutation before activating the Team", async () => {
+		const draft = readyDraft();
+		const review = preview(draft);
+		let releaseMutation = () => undefined;
+		const mutationPending = new Promise<void>((resolve) => {
+			releaseMutation = resolve;
+		});
+		let mutationStarted = false;
+		const mutation = serializeRecipientPolicyCoordinatorGroupMutation(
+			db,
+			"group-private",
+			async () => {
+				mutationStarted = true;
+				await mutationPending;
+			},
+		);
+		await vi.waitFor(() => expect(mutationStarted).toBe(true));
+
+		const activation = finish(draft, review);
+		await Promise.resolve();
+		expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+
+		releaseMutation();
+		await mutation;
+		await expect(activation).resolves.toMatchObject({
+			status: "completed",
+			teamId: deterministicPolicyTeamId(CANDIDATE),
+		});
 	});
 
 	it("rejects preview and finish for a mutable attempt superseded by a newer row", async () => {

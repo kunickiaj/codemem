@@ -140,6 +140,7 @@ import {
 	previewRecipientPolicyOnboardingFromReviewedIntent,
 	projectShareLifecycle,
 	RecipientPolicyEdgeRequestError,
+	RecipientPolicyTeamRenameError,
 	readCodememConfigFile,
 	readCoordinatorSyncConfig,
 	reassignProjectScopeInventoryProject,
@@ -153,6 +154,7 @@ import {
 	refreshAuthorizedCoordinatorPeerTrust,
 	refreshConfiguredScopeMembershipCache,
 	rejectInboundScopeFailures,
+	renameRecipientPolicyTeam,
 	requestJson,
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
@@ -180,10 +182,17 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { type Context, Hono } from "hono";
 import { queryBool, queryInt, safeJsonList } from "../helpers.js";
 import type { InMemoryRequestRateLimiter } from "../request-rate-limit.js";
+import { legacyTeamCandidateGroupDescriptors, normalizedCoordinatorId } from "./team-setup.js";
 
 type StoreFactory = () => MemoryStore;
 export type DeviceIdentityCoordinatorEvidenceLoader =
 	() => Promise<DeviceIdentityCoordinatorEvidence>;
+export interface SyncRoutesOptions {
+	loadDeviceIdentityCoordinatorEvidence?: DeviceIdentityCoordinatorEvidenceLoader;
+	onRecipientPolicyTeamRenamed?: () => void;
+	readCoordinatorConfig?: typeof readCoordinatorSyncConfig;
+	renameCoordinatorGroup?: typeof coordinatorRenameGroupAction;
+}
 type SyncRuntimeStatus = {
 	phase:
 		| "starting"
@@ -4876,9 +4885,11 @@ async function loadConfiguredDeviceIdentityCoordinatorEvidence(): Promise<Device
 export function syncRoutes(
 	getStore: StoreFactory,
 	getSyncRuntimeStatus?: () => SyncRuntimeStatus | null,
-	options: { loadDeviceIdentityCoordinatorEvidence?: DeviceIdentityCoordinatorEvidenceLoader } = {},
+	options: SyncRoutesOptions = {},
 ) {
 	const app = new Hono();
+	const readCoordinatorConfig = options.readCoordinatorConfig ?? readCoordinatorSyncConfig;
+	const renameCoordinatorGroup = options.renameCoordinatorGroup ?? coordinatorRenameGroupAction;
 	const loadCoordinatorEvidence =
 		options.loadDeviceIdentityCoordinatorEvidence ??
 		loadConfiguredDeviceIdentityCoordinatorEvidence;
@@ -4915,6 +4926,109 @@ export function syncRoutes(
 		const store = getStore();
 		ensureStableStoreIdentity(store);
 		return c.json(listDeviceIdentityInventory(store.db, await localInventoryInput(store)));
+	});
+
+	app.patch("/api/sync/recipient-policy/v1/teams/:teamId", async (c) => {
+		const raw = await readBoundedRequestBytes(c.req.raw, 8_192);
+		if (!raw) return c.json({ error: "team_name_invalid" as const }, 400);
+		let body: Record<string, unknown>;
+		try {
+			const parsed = JSON.parse(raw.toString("utf8")) as unknown;
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+				return c.json({ error: "team_name_invalid" as const }, 400);
+			}
+			body = parsed as Record<string, unknown>;
+		} catch {
+			return c.json({ error: "team_name_invalid" as const }, 400);
+		}
+		if (
+			Object.keys(body).length !== 2 ||
+			!Object.hasOwn(body, "displayName") ||
+			!Object.hasOwn(body, "expectedDisplayName") ||
+			typeof body.displayName !== "string" ||
+			typeof body.expectedDisplayName !== "string"
+		) {
+			return c.json({ error: "team_name_invalid" as const }, 400);
+		}
+		try {
+			const store = getStore();
+			const config = readCoordinatorConfig();
+			const coordinatorId = config.syncCoordinatorUrl
+				? buildBaseUrl(config.syncCoordinatorUrl)
+				: null;
+			const normalizedConfiguredCoordinatorId = coordinatorId
+				? normalizedCoordinatorId(coordinatorId)
+				: null;
+			let configuredCoordinatorGroups: ReturnType<typeof legacyTeamCandidateGroupDescriptors> = [];
+			if (coordinatorId) {
+				try {
+					// Scope-backed descriptors widen rename eligibility only when
+					// linkedGroup() also proves exact completed-setup history.
+					configuredCoordinatorGroups = legacyTeamCandidateGroupDescriptors(
+						store,
+						config.syncCoordinatorUrl,
+						config.syncCoordinatorGroups,
+					);
+				} catch {
+					// Bad coordinator evidence must not block a local-only rename.
+					// Proven linked Teams still fail closed as team_link_stale.
+					configuredCoordinatorGroups = [];
+				}
+			}
+			const result = await renameRecipientPolicyTeam(store.db, {
+				teamId: c.req.param("teamId"),
+				displayName: body.displayName,
+				expectedDisplayName: body.expectedDisplayName,
+				configuredCoordinatorGroups,
+				coordinatorIdsEquivalent: (left, right) => {
+					const normalizedLeft = normalizedCoordinatorId(left);
+					const normalizedRight = normalizedCoordinatorId(right);
+					return normalizedLeft !== null && normalizedLeft === normalizedRight;
+				},
+				renameCoordinatorGroup: async (group, normalizedDisplayName) => {
+					const normalizedLinkedCoordinatorId = normalizedCoordinatorId(group.coordinatorId);
+					if (
+						!config.syncCoordinatorUrl ||
+						!config.syncCoordinatorAdminSecret ||
+						!normalizedConfiguredCoordinatorId ||
+						!normalizedLinkedCoordinatorId ||
+						normalizedLinkedCoordinatorId !== normalizedConfiguredCoordinatorId
+					) {
+						return false;
+					}
+					const renamed = await renameCoordinatorGroup({
+						groupId: group.groupId,
+						displayName: normalizedDisplayName,
+						remoteUrl: config.syncCoordinatorUrl,
+						adminSecret: config.syncCoordinatorAdminSecret,
+					});
+					return (
+						renamed?.group_id === group.groupId && renamed.display_name === normalizedDisplayName
+					);
+				},
+			});
+			try {
+				options.onRecipientPolicyTeamRenamed?.();
+			} catch {
+				// Cache invalidation is best-effort after the authoritative rename commits.
+			}
+			return c.json(result);
+		} catch (error) {
+			if (!(error instanceof RecipientPolicyTeamRenameError)) {
+				return c.json({ error: "team_rename_failed" as const }, 503);
+			}
+			const status =
+				error.code === "team_name_invalid"
+					? 400
+					: error.code === "team_not_found"
+						? 404
+						: error.code === "team_coordinator_rename_failed" ||
+								error.code === "team_local_rename_pending" ||
+								error.code === "team_rename_failed"
+							? 503
+							: 409;
+			return c.json({ error: error.code }, status);
+		}
 	});
 
 	const parseDeviceBindingRequest = (

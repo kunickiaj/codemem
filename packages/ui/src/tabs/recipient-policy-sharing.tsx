@@ -19,6 +19,7 @@ import {
 	type RecipientPolicyManagementProject,
 } from "./recipient-policy-management";
 import type { ReceivedProjectShare } from "./recipient-policy-projects";
+import { RecipientPolicyTeamSettings } from "./recipient-policy-team-settings";
 
 export interface RecipientPolicySharingOptions {
 	loading?: boolean;
@@ -29,6 +30,8 @@ export interface RecipientPolicySharingOptions {
 	deviceInventory?: DeviceIdentityInventoryV1;
 	onOpenTeamSetup?: (candidateRef: string) => void;
 	onReviewDevices?: (deviceId?: string) => void;
+	onTeamRenamed?: () => Promise<unknown> | unknown;
+	renameTeam?: typeof import("../lib/api/sync").renameRecipientPolicyTeam;
 	coordinatorEnrollmentIssueCount?: number;
 	teamSetupSummary?: LegacyTeamSetupSummaryResponseV1;
 	teamSetupLoading?: boolean;
@@ -316,11 +319,15 @@ function RecipientActions({
 function TeamsView({
 	disableMutations,
 	intent,
+	onTeamRenamed,
 	projects,
+	renameTeam,
 }: {
 	disableMutations: boolean;
 	intent: RecipientPolicyIntentGraphV1;
+	onTeamRenamed?: () => Promise<unknown> | unknown;
 	projects: RecipientPolicyManagementProject[];
+	renameTeam?: typeof import("../lib/api/sync").renameRecipientPolicyTeam;
 }) {
 	const activeTeams = intent.teams.filter((team) => team.status === "active");
 	const activeIdentitiesById = new Map(
@@ -419,6 +426,15 @@ function TeamsView({
 							displayName={team.displayName}
 							recipient={{ recipientKind: "team", teamId: team.teamId }}
 						/>
+						<div className="peer-actions recipient-policy-sharing-actions recipient-policy-sharing-responsive-actions">
+							<RecipientPolicyTeamSettings
+								disabled={disableMutations}
+								displayName={team.displayName}
+								onRenamed={onTeamRenamed}
+								renameTeam={renameTeam}
+								teamId={team.teamId}
+							/>
+						</div>
 					</article>
 				);
 			})}
@@ -777,7 +793,9 @@ function RecipientPolicySharing({
 						<TeamsView
 							disableMutations={options.refreshError === true}
 							intent={intent}
+							onTeamRenamed={options.onTeamRenamed}
 							projects={projects}
+							renameTeam={options.renameTeam}
 						/>
 					) : tab.id === "identities" ? (
 						<IdentitiesView

@@ -213,6 +213,8 @@ The normal flow is **Projects → Sharing → Devices → Health**, not manual p
 
 Team membership organizes people and devices, but it is not permission to every Project—only Projects explicitly assigned to that Team. Project access remains explicit and uses canonical Project identity.
 
+To rename an active Team, open **Sharing → Teams**, choose **Team settings**, and save a human-readable Team name. For Teams completed through legacy setup and still linked to the configured coordinator group, this one action updates both names; local Teams update only their policy metadata. If that exact Team and coordinator group has repeated completed setup records, all of those historical summaries receive the new name while remaining completed. Renaming never changes Team membership, device decisions, or Project access. If the connected service cannot be updated, the local name remains unchanged; retry the same name after the connection recovers.
+
 ### Set up an existing Team
 
 If a Team needs device setup, **Sharing** shows a notice and **Continue setup**. The Teams list shows **Needs setup**, **In progress**, or **Ready**.

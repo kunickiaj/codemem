@@ -862,6 +862,15 @@ export {
 	resolveRecipientPolicyReviewBulk,
 } from "./recipient-policy-review.js";
 export type {
+	ConfiguredCoordinatorGroupV1,
+	RecipientPolicyTeamRenameErrorCode,
+	RecipientPolicyTeamRenameResultV1,
+} from "./recipient-policy-team-metadata.js";
+export {
+	RecipientPolicyTeamRenameError,
+	renameRecipientPolicyTeam,
+} from "./recipient-policy-team-metadata.js";
+export type {
 	RecipientReviewedIntentExcludedProjectV1,
 	RecipientReviewedIntentProjectSourceV1,
 	RecipientReviewedIntentProjectV1,

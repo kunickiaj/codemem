@@ -100,6 +100,8 @@ export type {
 	RecipientPolicyReviewResolveResultV1,
 	RecipientPolicyReviewResolveStatusV1,
 	RecipientPolicyTeamMembershipV1,
+	RecipientPolicyTeamRenameErrorCode,
+	RecipientPolicyTeamRenameResultV1,
 	RecipientPolicyTeamV1,
 } from "./api/sync";
 export {
@@ -146,11 +148,13 @@ export {
 	previewRecipientPolicyEdges,
 	RecipientPolicyEdgesStaleError,
 	RecipientPolicyReviewStaleError,
+	RecipientPolicyTeamRenameApiError,
 	reassignLegacySharedReviewGroup,
 	reassignProjectInventoryProject,
 	refreshLegacyTeamSetupCandidate,
 	renameActor,
 	renamePeer,
+	renameRecipientPolicyTeam,
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
 	SharingDomainGuardrailConfirmationError,

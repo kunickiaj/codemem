@@ -1378,6 +1378,38 @@ describe("legacy Team candidate discovery", () => {
 		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
 	});
 
+	it("keeps the active Team name when stale coordinator evidence creates a replacement draft", () => {
+		const [initial] = discoverLegacyTeamCandidates(db, options());
+		const draft = db
+			.prepare(
+				`SELECT attempt_id, candidate_id, roster_fingerprint
+				 FROM legacy_team_setup_drafts WHERE candidate_id = ?`,
+			)
+			.get(initial?.candidateRef) as {
+			attempt_id: string;
+			candidate_id: string;
+			roster_fingerprint: string;
+		};
+		const teamId = deterministicPolicyTeamId(draft.candidate_id);
+		db.prepare(
+			`INSERT INTO policy_teams(
+			 team_id, display_name, status, device_eligibility_mode, provenance,
+			 revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'Renamed Engineering', 'active', 'reviewed_allowlist',
+			 'reviewed_team_candidate', 'revision-1', 'completed', ?, 'team-setup-test', ?, ?)`,
+		).run(teamId, draft.roster_fingerprint, NOW, NOW);
+		db.prepare(
+			`UPDATE legacy_team_setup_drafts
+			 SET state = 'completed', completed_team_id = ?, completed_at = ?, updated_at = ?
+			 WHERE attempt_id = ?`,
+		).run(teamId, NOW, NOW, draft.attempt_id);
+
+		const refreshed = refreshLegacyTeamCandidate(db, options("changed-key"), draft.candidate_id);
+
+		expect(refreshed.attemptId).not.toBe(draft.attempt_id);
+		expect(refreshed.displayName).toBe("Renamed Engineering");
+	});
+
 	it("serializes a competing refresh before reading candidate authority", () => {
 		// Arrange
 		const directory = mkdtempSync(join(tmpdir(), "codemem-legacy-team-authority-"));

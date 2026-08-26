@@ -26,6 +26,7 @@ import {
 	type RecipientPolicyReviewListV1,
 	RecipientPolicyReviewStaleError,
 	refreshLegacyTeamSetupCandidate,
+	renameRecipientPolicyTeam,
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
 	saveLegacyTeamSetupAssignment,
@@ -95,6 +96,51 @@ const originalFetch = globalThis.fetch;
 afterEach(() => {
 	globalThis.fetch = originalFetch;
 	vi.restoreAllMocks();
+});
+
+describe("recipient policy Team metadata API", () => {
+	it("sends the bounded rename contract and validates the response", async () => {
+		const result = {
+			version: 1 as const,
+			teamId: "team-one",
+			displayName: "New Team",
+			revision: "revision-two",
+			linkedCoordinatorGroupRenamed: true,
+		};
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValue(new Response(JSON.stringify(result), { status: 200 }));
+		globalThis.fetch = fetchMock as typeof fetch;
+
+		await expect(
+			renameRecipientPolicyTeam({
+				teamId: "team/one",
+				displayName: "New Team",
+				expectedDisplayName: "Old Team",
+			}),
+		).resolves.toEqual(result);
+		expect(fetchMock).toHaveBeenCalledWith("/api/sync/recipient-policy/v1/teams/team%2Fone", {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ displayName: "New Team", expectedDisplayName: "Old Team" }),
+		});
+	});
+
+	it("maps unknown server failures to a safe typed error", async () => {
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify({ error: "private_remote_detail" }), { status: 503 }),
+			) as typeof fetch;
+
+		await expect(
+			renameRecipientPolicyTeam({
+				teamId: "team-one",
+				displayName: "New Team",
+				expectedDisplayName: "Old Team",
+			}),
+		).rejects.toMatchObject({ statusCode: 503, errorCode: "team_rename_failed" });
+	});
 });
 
 describe("recipient invitation API", () => {

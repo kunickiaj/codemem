@@ -83,6 +83,65 @@ afterEach(() => {
 });
 
 describe("Sharing app data refresh", () => {
+	it("refreshes Sharing and setup names after a Team rename", async () => {
+		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
+		const oldIntent = {
+			...intent,
+			teams: [
+				{
+					version: 1 as const,
+					teamId: "team-one",
+					displayName: "Old Team",
+					status: "active" as const,
+				},
+			],
+		};
+		const newIntent = {
+			...oldIntent,
+			teams: [{ ...oldIntent.teams[0], displayName: "New Team" }],
+		};
+		const oldSummary: LegacyTeamSetupSummaryResponseV1 = {
+			version: 1,
+			candidates: [
+				{
+					candidateRef: "candidate-one",
+					displayName: "Old Team",
+					status: "ready",
+					deviceCount: 1,
+					projectCount: 1,
+					unresolvedDeviceCount: 0,
+					unresolvedProjectCount: 0,
+				},
+			],
+		};
+		const newSummary = {
+			...oldSummary,
+			candidates: [{ ...oldSummary.candidates[0], displayName: "New Team" }],
+		};
+		const mountSharing = vi.fn();
+		const load = createRecipientPolicySharingLoader({
+			loadDeviceInventory: vi.fn().mockResolvedValue({ version: 1, items: [], truncated: false }),
+			loadIntent: vi.fn().mockResolvedValueOnce(oldIntent).mockResolvedValueOnce(newIntent),
+			loadProjects: vi.fn().mockResolvedValue({ manageable: projects, received: [] }),
+			loadTeamSetupSummary: vi
+				.fn()
+				.mockResolvedValueOnce(oldSummary)
+				.mockResolvedValueOnce(newSummary),
+			mountSharing,
+		});
+
+		await load();
+		const onTeamRenamed = mountSharing.mock.calls.at(-1)?.[3]?.onTeamRenamed;
+		await onTeamRenamed?.();
+
+		expect(mountSharing).toHaveBeenLastCalledWith(
+			document.getElementById("recipientPolicySharingMount"),
+			projects,
+			newIntent,
+			expect.objectContaining({ teamSetupSummary: newSummary }),
+		);
+	});
+
 	it("keeps stale Sharing cards after a refresh failure and restores fresh state after recovery", async () => {
 		document.body.innerHTML =
 			'<div id="recipientPolicySharingMount"></div><div id="recipientPolicyManagementMount"></div>';

@@ -31,7 +31,7 @@ import { observerStatusRoutes } from "./routes/observer-status.js";
 import { packTransportRoutes } from "./routes/pack.js";
 import { rawEventsRoutes } from "./routes/raw-events.js";
 import { statsRoutes } from "./routes/stats.js";
-import { syncProtocolRoutes, syncRoutes } from "./routes/sync.js";
+import { type SyncRoutesOptions, syncProtocolRoutes, syncRoutes } from "./routes/sync.js";
 import {
 	type LegacyTeamConfiguredGroupSnapshotLoader,
 	TEAM_SETUP_ROUTE_PREFIX,
@@ -99,6 +99,8 @@ export interface AppOptions {
 	getUpdateStatus?: (options: GetUpdateStatusOptions) => Promise<UpdateStatus>;
 	loadDeviceIdentityCoordinatorEvidence?: () => Promise<DeviceIdentityCoordinatorEvidence>;
 	loadLegacyTeamConfiguredGroupSnapshots?: LegacyTeamConfiguredGroupSnapshotLoader;
+	readCoordinatorConfig?: SyncRoutesOptions["readCoordinatorConfig"];
+	renameCoordinatorGroup?: SyncRoutesOptions["renameCoordinatorGroup"];
 	syncRequestRateLimit?: {
 		limiter?: InMemoryRequestRateLimiter;
 		readLimit?: number;
@@ -125,6 +127,7 @@ export function createApp(opts?: AppOptions) {
 	const sweeper = opts?.sweeper ?? null;
 	const observer = opts?.observer ?? null;
 	const getSyncRuntimeStatus = opts?.getSyncRuntimeStatus ?? (() => null);
+	let invalidateTeamSetupSummary = () => {};
 	const app = new Hono();
 
 	// CORS / origin guard
@@ -150,6 +153,9 @@ export function createApp(opts?: AppOptions) {
 		"/",
 		syncRoutes(storeFactory, getSyncRuntimeStatus, {
 			loadDeviceIdentityCoordinatorEvidence: opts?.loadDeviceIdentityCoordinatorEvidence,
+			onRecipientPolicyTeamRenamed: () => invalidateTeamSetupSummary(),
+			readCoordinatorConfig: opts?.readCoordinatorConfig,
+			renameCoordinatorGroup: opts?.renameCoordinatorGroup,
 		}),
 	);
 	app.route(
@@ -157,6 +163,9 @@ export function createApp(opts?: AppOptions) {
 		teamSetupRoutes({
 			getStore: storeFactory,
 			loadLegacyTeamConfiguredGroupSnapshots: opts?.loadLegacyTeamConfiguredGroupSnapshots,
+			registerSummaryInvalidator: (invalidate) => {
+				invalidateTeamSetupSummary = invalidate;
+			},
 		}),
 	);
 	app.route("/", updateStatusRoutes({ getUpdateStatus: opts?.getUpdateStatus }));

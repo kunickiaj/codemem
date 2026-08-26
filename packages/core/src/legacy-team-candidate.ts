@@ -620,6 +620,13 @@ function candidateAuthority(
 	return { row, rosterFingerprint, ready };
 }
 
+function candidateDisplayName(db: Database, candidateId: string, fallback: string): string {
+	const team = db
+		.prepare("SELECT display_name FROM policy_teams WHERE team_id = ? AND status = 'active'")
+		.get(deterministicPolicyTeamId(candidateId)) as { display_name: string } | undefined;
+	return team?.display_name ?? fallback;
+}
+
 function resolveDiscoveredCandidate(
 	db: Database,
 	group: EffectiveGroupSnapshot,
@@ -635,6 +642,7 @@ function resolveDiscoveredCandidate(
 			rosterDevices,
 			projects,
 		);
+		const displayName = candidateDisplayName(db, candidateId, group.displayName);
 		let draft: LegacyTeamSetupDraftView;
 		const expectedProjectionFingerprint = legacyTeamProjectionFingerprint(projects);
 		if (!row || (row.state === "completed" && !ready)) {
@@ -642,21 +650,21 @@ function resolveDiscoveredCandidate(
 				candidateId,
 				coordinatorId,
 				groupId,
-				displayName: group.displayName,
+				displayName,
 				devices: rosterDevices,
 				projects,
 				now,
 			});
 		} else if (row.state === "completed") {
 			draft = refreshLegacyTeamSetupDraftLabels(db, row.attempt_id, {
-				displayName: group.displayName,
+				displayName,
 				devices: rosterDevices,
 				projects,
 				now,
 			});
 		} else if (row.state === "stale") {
 			draft = refreshLegacyTeamSetupDraftLabels(db, row.attempt_id, {
-				displayName: group.displayName,
+				displayName,
 				devices: rosterDevices,
 				projects,
 				now,
@@ -672,7 +680,7 @@ function resolveDiscoveredCandidate(
 				).run(now, row.attempt_id);
 			}
 			draft = refreshLegacyTeamSetupDraftLabels(db, row.attempt_id, {
-				displayName: group.displayName,
+				displayName,
 				devices: rosterDevices,
 				projects,
 				now,
@@ -682,7 +690,7 @@ function resolveDiscoveredCandidate(
 				candidateId,
 				coordinatorId,
 				groupId,
-				displayName: group.displayName,
+				displayName,
 				devices: rosterDevices,
 				projects,
 				now,
@@ -766,12 +774,13 @@ export function refreshLegacyTeamCandidate(
 		const refresh = db.transaction(() => {
 			const projects = legacyTeamCandidateProjectInventory(db, options.projection, candidateId);
 			const { row, ready } = candidateAuthority(db, candidateId, rosterDevices, projects);
+			const displayName = candidateDisplayName(db, candidateId, group.displayName);
 			// A compatible Ready completion with unchanged evidence survives an
 			// explicit refresh: only labels update. Creating a replacement attempt
 			// here would immediately drop Ready and force a redundant review cycle.
 			if (row?.state === "completed" && ready) {
 				return refreshLegacyTeamSetupDraftLabels(db, row.attempt_id, {
-					displayName: group.displayName,
+					displayName,
 					devices: rosterDevices,
 					projects,
 					now: options.now,
@@ -781,7 +790,7 @@ export function refreshLegacyTeamCandidate(
 				candidateId,
 				coordinatorId,
 				groupId,
-				displayName: group.displayName,
+				displayName,
 				devices: rosterDevices,
 				projects,
 				now: options.now,

@@ -68,6 +68,89 @@ export interface RecipientInvitePreviewResult {
 	preview: RecipientOnboardingPreviewV1;
 }
 
+export type RecipientPolicyTeamRenameErrorCode =
+	| "team_name_invalid"
+	| "team_not_found"
+	| "team_rename_stale"
+	| "team_link_stale"
+	| "team_link_ambiguous"
+	| "team_coordinator_rename_failed"
+	| "team_local_rename_pending"
+	| "team_rename_failed";
+
+export interface RecipientPolicyTeamRenameResultV1 {
+	version: 1;
+	teamId: string;
+	displayName: string;
+	revision: string;
+	linkedCoordinatorGroupRenamed: boolean;
+}
+
+export class RecipientPolicyTeamRenameApiError extends Error {
+	constructor(
+		readonly statusCode: number,
+		readonly errorCode: RecipientPolicyTeamRenameErrorCode,
+	) {
+		super(errorCode);
+		this.name = "RecipientPolicyTeamRenameApiError";
+	}
+}
+
+const TEAM_RENAME_ERROR_CODES = new Set<RecipientPolicyTeamRenameErrorCode>([
+	"team_name_invalid",
+	"team_not_found",
+	"team_rename_stale",
+	"team_link_stale",
+	"team_link_ambiguous",
+	"team_coordinator_rename_failed",
+	"team_local_rename_pending",
+	"team_rename_failed",
+]);
+
+export async function renameRecipientPolicyTeam(input: {
+	teamId: string;
+	displayName: string;
+	expectedDisplayName: string;
+}): Promise<RecipientPolicyTeamRenameResultV1> {
+	let response: Response;
+	try {
+		response = await fetch(
+			`/api/sync/recipient-policy/v1/teams/${encodeURIComponent(input.teamId)}`,
+			{
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					displayName: input.displayName,
+					expectedDisplayName: input.expectedDisplayName,
+				}),
+			},
+		);
+	} catch {
+		throw new RecipientPolicyTeamRenameApiError(0, "team_rename_failed");
+	}
+	const { payload } = await readJsonPayload<RecipientPolicyTeamRenameResultV1>(response);
+	if (!response.ok) {
+		const code =
+			payload && typeof payload === "object" && "error" in payload ? String(payload.error) : "";
+		throw new RecipientPolicyTeamRenameApiError(
+			response.status,
+			TEAM_RENAME_ERROR_CODES.has(code as RecipientPolicyTeamRenameErrorCode)
+				? (code as RecipientPolicyTeamRenameErrorCode)
+				: "team_rename_failed",
+		);
+	}
+	if (
+		payload?.version !== 1 ||
+		typeof payload.teamId !== "string" ||
+		typeof payload.displayName !== "string" ||
+		typeof payload.revision !== "string" ||
+		typeof payload.linkedCoordinatorGroupRenamed !== "boolean"
+	) {
+		throw new RecipientPolicyTeamRenameApiError(response.status, "team_rename_failed");
+	}
+	return payload;
+}
+
 export interface CreatedRecipientInvite extends RecipientInvitePreviewResult {
 	ok: true;
 	invite: {

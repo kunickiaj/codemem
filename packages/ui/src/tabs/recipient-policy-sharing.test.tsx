@@ -1,8 +1,50 @@
-import { render } from "preact";
+import { type ComponentChildren, render } from "preact";
+import { useEffect, useRef } from "preact/hooks";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const openManagement = vi.hoisted(() => vi.fn());
+
+vi.mock("../components/primitives/radix-dialog", () => ({
+	RadixDialog: ({
+		ariaDescribedby,
+		ariaLabelledby,
+		children,
+		contentClassName,
+		contentId,
+		onCloseAutoFocus,
+		onOpenAutoFocus,
+		open,
+	}: {
+		ariaDescribedby?: string;
+		ariaLabelledby?: string;
+		children?: ComponentChildren;
+		contentClassName?: string;
+		contentId: string;
+		onCloseAutoFocus?: (event: { preventDefault: () => void }) => void;
+		onOpenAutoFocus?: (event: { preventDefault: () => void }) => void;
+		open: boolean;
+	}) => {
+		const wasOpen = useRef(false);
+		useEffect(() => {
+			const event = { preventDefault: () => undefined };
+			if (open && !wasOpen.current) onOpenAutoFocus?.(event);
+			if (!open && wasOpen.current) onCloseAutoFocus?.(event);
+			wasOpen.current = open;
+		}, [onCloseAutoFocus, onOpenAutoFocus, open]);
+		return open ? (
+			<div
+				aria-describedby={ariaDescribedby}
+				aria-labelledby={ariaLabelledby}
+				className={contentClassName}
+				id={contentId}
+				role="dialog"
+			>
+				{children}
+			</div>
+		) : null;
+	},
+}));
 
 vi.mock("./recipient-policy-management", async (importOriginal) => {
 	const original = await importOriginal<typeof import("./recipient-policy-management")>();
@@ -13,6 +55,7 @@ import type {
 	LegacyTeamSetupSummaryResponseV1,
 	RecipientPolicyIntentGraphV1,
 } from "../lib/api/sync";
+import { RecipientPolicyTeamRenameApiError } from "../lib/api/sync";
 import type { RecipientPolicyManagementProject } from "./recipient-policy-management";
 import { mountRecipientPolicySharing } from "./recipient-policy-sharing";
 
@@ -439,7 +482,7 @@ describe("recipient-focused Sharing", () => {
 	it("opens exact recipient management requests from both action labels", () => {
 		mount();
 		for (const button of visiblePanel().querySelectorAll<HTMLButtonElement>("button")) {
-			act(() => button.click());
+			if (button.textContent !== "Team settings") act(() => button.click());
 		}
 		clickTab("Identities");
 		const adamCard = document.querySelector<HTMLElement>(".recipient-policy-sharing-identity-card");
@@ -477,6 +520,154 @@ describe("recipient-focused Sharing", () => {
 		expect(document.body.textContent).toContain(
 			"Add projects only adds the selected Projects after you preview the exact changes",
 		);
+	});
+
+	it("opens a narrow focused Team settings dialog with the current name and restores focus", async () => {
+		const renameTeam = vi.fn().mockResolvedValue({
+			version: 1,
+			teamId: "team-example",
+			displayName: "Renamed Team",
+			revision: "revision-two",
+			linkedCoordinatorGroupRenamed: false,
+		});
+		const onTeamRenamed = vi.fn();
+		mount(intent(), { onTeamRenamed, renameTeam });
+		const trigger = [...visiblePanel().querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Team settings",
+		);
+		if (!trigger) throw new Error("Team settings trigger missing");
+
+		act(() => trigger.click());
+		const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+		const input = document.getElementById(
+			"recipient-policy-team-settings-name",
+		) as HTMLInputElement;
+		expect(dialog?.classList.contains("recipient-policy-team-settings-dialog")).toBe(true);
+		expect(dialog?.getAttribute("aria-labelledby")).toBe("recipient-policy-team-settings-title");
+		expect(input.value).toBe("ExampleCo");
+		await vi.waitFor(() => expect(document.activeElement).toBe(input));
+
+		act(() => {
+			input.value = "Renamed Team";
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		const save = [...(dialog?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+			(button) => button.textContent === "Save",
+		);
+		await act(async () => save?.click());
+		expect(renameTeam).toHaveBeenCalledWith({
+			teamId: "team-example",
+			displayName: "Renamed Team",
+			expectedDisplayName: "ExampleCo",
+		});
+		expect(onTeamRenamed).toHaveBeenCalledOnce();
+		await vi.waitFor(() =>
+			expect(document.querySelector('[role="status"]')?.textContent).toContain(
+				"Team renamed to Renamed Team",
+			),
+		);
+		const done = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Done",
+		);
+		await vi.waitFor(() => expect(document.activeElement).toBe(done));
+		act(() => done?.click());
+		await vi.waitFor(() => expect(document.activeElement).toBe(trigger));
+	});
+
+	it("validates Team names before save without exposing identifiers", () => {
+		const renameTeam = vi.fn();
+		mount(intent(), { renameTeam });
+		const trigger = [...visiblePanel().querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Team settings",
+		);
+		act(() => trigger?.click());
+		const input = document.getElementById(
+			"recipient-policy-team-settings-name",
+		) as HTMLInputElement;
+		act(() => {
+			input.value = "actor:machine";
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		const save = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Save",
+		);
+		act(() => save?.click());
+
+		expect(renameTeam).not.toHaveBeenCalled();
+		expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+			"Enter a human-readable Team name.",
+		);
+		expect(document.body.textContent).not.toContain("team-example");
+	});
+
+	it("keeps coordinator failure visible and retries the same explicit rename", async () => {
+		const renameTeam = vi
+			.fn()
+			.mockRejectedValueOnce(
+				new RecipientPolicyTeamRenameApiError(503, "team_coordinator_rename_failed"),
+			)
+			.mockResolvedValueOnce({
+				version: 1,
+				teamId: "team-example",
+				displayName: "Retry Team",
+				revision: "revision-two",
+				linkedCoordinatorGroupRenamed: true,
+			});
+		mount(intent(), { renameTeam });
+		const trigger = [...visiblePanel().querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Team settings",
+		);
+		act(() => trigger?.click());
+		const input = document.getElementById(
+			"recipient-policy-team-settings-name",
+		) as HTMLInputElement;
+		act(() => {
+			input.value = "Retry Team";
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		const click = async (label: string) => {
+			const target = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+				(button) => button.textContent === label,
+			);
+			await act(async () => target?.click());
+		};
+
+		await click("Save");
+		expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+			"The connected Team service could not be updated. Nothing changed locally. Try again.",
+		);
+		expect(document.body.textContent).not.toContain("team_coordinator_rename_failed");
+		await click("Try again");
+		expect(renameTeam).toHaveBeenCalledTimes(2);
+		expect(document.body.textContent).toContain("Team renamed to Retry Team");
+	});
+
+	it("shows a bounded fail-closed message for ambiguous connected Team history", async () => {
+		const renameTeam = vi
+			.fn()
+			.mockRejectedValue(new RecipientPolicyTeamRenameApiError(409, "team_link_ambiguous"));
+		mount(intent(), { renameTeam });
+		const trigger = [...visiblePanel().querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Team settings",
+		);
+		act(() => trigger?.click());
+		const input = document.getElementById(
+			"recipient-policy-team-settings-name",
+		) as HTMLInputElement;
+		act(() => {
+			input.value = "Ambiguous Team";
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		const save = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Save",
+		);
+
+		await act(async () => save?.click());
+
+		expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+			"This Team has conflicting connected setup records. Nothing was changed. Review the Team setup before retrying.",
+		);
+		expect(document.body.textContent).not.toContain("team_link_ambiguous");
 	});
 
 	it("renders loading, error, and empty states with live-region semantics", () => {
@@ -527,7 +718,7 @@ describe("recipient-focused Sharing", () => {
 		const mutationButtons = visiblePanel().querySelectorAll<HTMLButtonElement>(
 			".recipient-policy-sharing-actions button",
 		);
-		expect(mutationButtons).toHaveLength(2);
+		expect(mutationButtons).toHaveLength(3);
 		for (const button of mutationButtons) {
 			expect(button.disabled).toBe(true);
 		}

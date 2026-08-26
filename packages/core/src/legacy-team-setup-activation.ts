@@ -32,6 +32,10 @@ import {
 } from "./recipient-policy-identifiers.js";
 import { deriveRecipientPolicyEffectiveDevices } from "./recipient-policy-reconciliation.js";
 import {
+	serializeRecipientPolicyCoordinatorGroupMutation,
+	serializeRecipientPolicyTeamMutation,
+} from "./recipient-policy-team-metadata.js";
+import {
 	classifyTeamPolicyOwnership,
 	planSetupDeviceDecisionTransition,
 	planSetupMembershipTransition,
@@ -1697,43 +1701,47 @@ export async function finishLegacyTeamSetupActivation(
 		throw error;
 	}
 
-	const now = input.now ?? new Date().toISOString();
-	try {
-		return db
-			.transaction(() => {
-				const lockedReplay = exactReplay(db, input);
-				if (lockedReplay) return lockedReplay;
-				const model = loadModel(db, input);
-				validateFreshRoster(model, freshRoster);
-				// Displayed Project evidence that changed after preview would
-				// produce a confirmed digest for an inventory the user never
-				// saw. The inventory is derived inside this lock so ingestion
-				// between an earlier read and the transaction cannot slip a
-				// Project past the check; the roster, by contrast, is external
-				// coordinator evidence and is re-validated against the locked
-				// model above.
-				const liveProjectionFingerprint = legacyTeamProjectionFingerprint(
-					input.loadProjectInventory(),
-				);
-				if (liveProjectionFingerprint !== model.draft.projection_fingerprint) {
-					activationError("team_setup_projection_changed");
-				}
-				const lockedPreview = buildPreview(model);
-				if (
-					lockedPreview.finishDigest !== input.finishDigest ||
-					lockedPreview.accessDeltaDigest !== input.confirmedAccessDeltaDigest
-				) {
-					activationError("team_setup_confirmation_stale");
-				}
-				if (!input.validateLockedPreview(lockedPreview)) {
-					activationError("team_setup_confirmation_stale");
-				}
-				return applyActivation(db, model, lockedPreview, freshRoster, now);
-			})
-			.immediate();
-	} catch (error) {
-		const normalized = normalizedActivationError(error);
-		persistSafeError(db, input, normalized);
-		throw normalized;
-	}
+	return serializeRecipientPolicyTeamMutation(db, initialModel.teamId, () =>
+		serializeRecipientPolicyCoordinatorGroupMutation(db, initialModel.draft.group_id, async () => {
+			const now = input.now ?? new Date().toISOString();
+			try {
+				return db
+					.transaction(() => {
+						const lockedReplay = exactReplay(db, input);
+						if (lockedReplay) return lockedReplay;
+						const model = loadModel(db, input);
+						validateFreshRoster(model, freshRoster);
+						// Displayed Project evidence that changed after preview would
+						// produce a confirmed digest for an inventory the user never
+						// saw. The inventory is derived inside this lock so ingestion
+						// between an earlier read and the transaction cannot slip a
+						// Project past the check; the roster, by contrast, is external
+						// coordinator evidence and is re-validated against the locked
+						// model above.
+						const liveProjectionFingerprint = legacyTeamProjectionFingerprint(
+							input.loadProjectInventory(),
+						);
+						if (liveProjectionFingerprint !== model.draft.projection_fingerprint) {
+							activationError("team_setup_projection_changed");
+						}
+						const lockedPreview = buildPreview(model);
+						if (
+							lockedPreview.finishDigest !== input.finishDigest ||
+							lockedPreview.accessDeltaDigest !== input.confirmedAccessDeltaDigest
+						) {
+							activationError("team_setup_confirmation_stale");
+						}
+						if (!input.validateLockedPreview(lockedPreview)) {
+							activationError("team_setup_confirmation_stale");
+						}
+						return applyActivation(db, model, lockedPreview, freshRoster, now);
+					})
+					.immediate();
+			} catch (error) {
+				const normalized = normalizedActivationError(error);
+				persistSafeError(db, input, normalized);
+				throw normalized;
+			}
+		}),
+	);
 }

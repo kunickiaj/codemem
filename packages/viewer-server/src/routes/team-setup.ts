@@ -64,7 +64,7 @@ interface LegacyTeamConfiguredGroupSnapshotLoadOptions {
 	candidateRef?: string;
 }
 
-interface LegacyTeamCandidateGroupDescriptor {
+export interface LegacyTeamCandidateGroupDescriptor {
 	groupId: string;
 	coordinatorId: string;
 }
@@ -208,10 +208,11 @@ export interface LegacyTeamSetupFinishResponseV1 {
 	completedAt: string;
 }
 
-interface TeamSetupRoutesOptions {
+export interface TeamSetupRoutesOptions {
 	getStore: () => MemoryStore;
 	loadLegacyTeamConfiguredGroupSnapshots?: LegacyTeamConfiguredGroupSnapshotLoader;
 	snapshotLoaderDependencies?: LegacyTeamSnapshotLoaderDependencies;
+	registerSummaryInvalidator?: (invalidate: () => void) => void;
 }
 
 interface LegacyTeamSnapshotLoaderDependencies {
@@ -240,7 +241,7 @@ function configuredGroupIds(groups: string[]): string[] {
 	return unique;
 }
 
-function normalizedCoordinatorId(value: string): string | null {
+export function normalizedCoordinatorId(value: string): string | null {
 	try {
 		const normalized = buildBaseUrl(value);
 		if (!normalized) return null;
@@ -258,6 +259,36 @@ function normalizedCoordinatorId(value: string): string | null {
 	} catch {
 		return null;
 	}
+}
+
+export function legacyTeamCandidateGroupDescriptors(
+	store: MemoryStore | undefined,
+	coordinatorUrl: string,
+	groups: string[],
+): LegacyTeamCandidateGroupDescriptor[] {
+	const configuredIds = configuredGroupIds(groups);
+	const configuredCoordinatorId = buildBaseUrl(coordinatorUrl);
+	const normalizedConfiguredCoordinatorId = normalizedCoordinatorId(configuredCoordinatorId);
+	if (!configuredCoordinatorId || !normalizedConfiguredCoordinatorId) throw safeCoordinatorError();
+	let scopeBackedDescriptors: LegacyTeamCandidateGroupDescriptor[] = [];
+	if (store) {
+		try {
+			scopeBackedDescriptors = scopeBackedGroupDescriptors(
+				store,
+				normalizedConfiguredCoordinatorId,
+				MAX_CONFIGURED_GROUPS - configuredIds.length,
+				configuredIds,
+			);
+		} catch {
+			// Scope discovery is additive. Preserve configured coordinator candidates
+			// when local evidence cannot be read.
+			scopeBackedDescriptors = [];
+		}
+	}
+	return [
+		...configuredIds.map((groupId) => ({ groupId, coordinatorId: configuredCoordinatorId })),
+		...scopeBackedDescriptors,
+	];
 }
 
 function scopeBackedGroupDescriptors(
@@ -343,39 +374,28 @@ async function loadConfiguredLegacyTeamGroupSnapshotsWith(
 	} catch {
 		throw safeCoordinatorError();
 	}
-	const configuredIds = configuredGroupIds(config.syncCoordinatorGroups);
 	const hasUrl = Boolean(config.syncCoordinatorUrl);
 	const hasSecret = Boolean(config.syncCoordinatorAdminSecret);
-	if (!hasUrl && !hasSecret && configuredIds.length === 0) return [];
+	if (!hasUrl && !hasSecret && config.syncCoordinatorGroups.length === 0) return [];
 	if (!hasUrl || !hasSecret) throw safeCoordinatorError();
 
 	try {
 		const configuredCoordinatorId = buildBaseUrl(config.syncCoordinatorUrl);
-		const normalizedConfiguredCoordinatorId = normalizedCoordinatorId(configuredCoordinatorId);
-		if (!configuredCoordinatorId || !normalizedConfiguredCoordinatorId) {
-			throw safeCoordinatorError();
-		}
+		if (!configuredCoordinatorId) throw safeCoordinatorError();
 		const remoteUrl = configuredCoordinatorId;
-		const remainingEvidenceSlots = MAX_CONFIGURED_GROUPS - configuredIds.length;
-		let scopeBackedDescriptors: LegacyTeamCandidateGroupDescriptor[] = [];
-		if (getStore) {
-			try {
-				scopeBackedDescriptors = scopeBackedGroupDescriptors(
-					getStore(),
-					normalizedConfiguredCoordinatorId,
-					remainingEvidenceSlots,
-					configuredIds,
-				);
-			} catch {
-				// Scope discovery is additive. Preserve configured coordinator
-				// candidates when local evidence cannot be read.
-				scopeBackedDescriptors = [];
-			}
+		let store: MemoryStore | undefined;
+		try {
+			store = getStore?.();
+		} catch {
+			// Scope discovery is additive. Preserve configured coordinator candidates
+			// when local evidence cannot be read.
+			store = undefined;
 		}
-		const groupDescriptors: LegacyTeamCandidateGroupDescriptor[] = [
-			...configuredIds.map((groupId) => ({ groupId, coordinatorId: configuredCoordinatorId })),
-			...scopeBackedDescriptors,
-		];
+		const groupDescriptors = legacyTeamCandidateGroupDescriptors(
+			store,
+			config.syncCoordinatorUrl,
+			config.syncCoordinatorGroups,
+		);
 		if (groupDescriptors.length === 0) throw safeCoordinatorError();
 		const timeoutS = Math.max(1, config.syncCoordinatorTimeoutS);
 		const requestedGroupDescriptors = options.candidateRef
@@ -1125,6 +1145,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		() => loadedSnapshots(),
 		SUMMARY_SNAPSHOT_CACHE_TTL_MS,
 	);
+	options.registerSummaryInvalidator?.(() => loadedSummarySnapshots.invalidate());
 	async function loadedCandidateSnapshots(
 		candidateRef: string,
 	): Promise<LegacyTeamConfiguredGroupSnapshot[]> {

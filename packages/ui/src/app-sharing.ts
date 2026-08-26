@@ -125,6 +125,8 @@ export function createRecipientPolicySharingLoader(
 							deviceInventoryUnavailable: lastDeviceInventoryUnavailable,
 							onOpenTeamSetup: options.onOpenTeamSetup,
 							onReviewDevices: options.onReviewDevices,
+							onTeamRenamed: () =>
+								loadRecipientPolicySharingData({ requireTeamSetupSummary: true }),
 							received: cached.inventory.received,
 							...(lastRequiredRefreshError ? { refreshError: true } : {}),
 							teamSetupSummary,
@@ -200,6 +202,7 @@ export function createRecipientPolicySharingLoader(
 				deviceInventoryUnavailable,
 				onOpenTeamSetup: options.onOpenTeamSetup,
 				onReviewDevices: options.onReviewDevices,
+				onTeamRenamed: () => loadRecipientPolicySharingData({ requireTeamSetupSummary: true }),
 				received: inventory.received,
 			};
 			if (managementMount) {
@@ -219,6 +222,7 @@ export function createRecipientPolicySharingLoader(
 				deviceInventoryUnavailable,
 				onOpenTeamSetup: options.onOpenTeamSetup,
 				onReviewDevices: options.onReviewDevices,
+				onTeamRenamed: () => loadRecipientPolicySharingData({ requireTeamSetupSummary: true }),
 				received: cached.inventory.received,
 				refreshError: true,
 			};

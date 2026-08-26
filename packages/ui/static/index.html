@@ -1203,6 +1203,11 @@
         font-weight: var(--font-weight-semibold);
       }
       .recipient-policy-management-dialog .modal-card { width: min(720px, calc(100vw - 32px)); }
+      .recipient-policy-team-settings-dialog .modal-card { width: min(440px, calc(100vw - 32px)); }
+      .recipient-policy-team-settings-dialog .form-field { display: grid; gap: var(--sp-2); margin-top: var(--sp-4); }
+      .recipient-policy-team-settings-dialog .form-field span { font-weight: var(--font-weight-semibold); }
+      .recipient-policy-team-settings-dialog input { width: 100%; }
+      .recipient-policy-team-settings-actions { justify-content: flex-end; flex-wrap: wrap; }
       .legacy-team-setup-dialog .modal-card { width: min(680px, calc(100vw - 32px)); }
       .legacy-team-setup-steps {
         display: grid;
@@ -1365,6 +1370,9 @@
       }
       .recipient-policy-sharing-details dt { color: var(--text-secondary); }
       .recipient-policy-sharing-details dd { margin: 0; color: var(--text-primary); }
+      .recipient-policy-sharing-team-card > .recipient-policy-sharing-actions + .recipient-policy-sharing-actions {
+        margin-top: var(--sp-2);
+      }
 
       .loading-card-list { display: grid; gap: var(--sp-3); }
       .loading-card {
