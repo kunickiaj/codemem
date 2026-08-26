@@ -1429,10 +1429,188 @@ describe("legacy Team setup dialog", () => {
 		expect(text).toContain("Add Example Team as a recipient for Legacy Project.");
 		expect(text).toContain("Add Work laptop access to Legacy Project.");
 		expect(text).toContain("Remove External laptop access from External Project.");
-		expect(text).toContain("6 access changes to review.");
+		expect(text).toContain("6 exact access changes to review.");
 		expect(text).not.toContain("opaque-team-ref");
 		expect(text).not.toContain("resolved-project-old");
-		expect(document.querySelectorAll(".legacy-team-setup-delta li")).toHaveLength(6);
+		expect(document.querySelectorAll(".legacy-team-setup-exact-list li")).toHaveLength(6);
+		expect(document.querySelectorAll(".legacy-team-setup-delta details")).toHaveLength(0);
+	});
+
+	it("summarizes a 63 Project by 6 device migration while preserving all 509 exact rows", async () => {
+		const devices = Array.from({ length: 6 }, (_, index) =>
+			device({
+				deviceRef: `internal-device-ref-${index + 1}`,
+				displayName: index < 2 ? "Work laptop" : `Device ${index + 1}`,
+				decision: "included",
+				existingIdentityRef: `internal-identity-ref-${index + 1}`,
+				suggestedIdentityRef: null,
+				targetIdentityRef: `internal-identity-ref-${index + 1}`,
+			}),
+		);
+		const projects = Array.from({ length: 63 }, (_, index) => {
+			const displayName = index < 34 ? "greenroom" : `Project ${index + 1}`;
+			return project({
+				projectRef: `internal-project-ref-${index + 1}`,
+				displayName,
+				resolution: "deterministic",
+				canonicalProjectRef: `internal-canonical-ref-${index + 1}`,
+				resolvedProjectRef: `internal-resolved-ref-${index + 1}`,
+				mappingChoices: [],
+			});
+		});
+		const accessDelta: LegacyTeamSetupAccessDeltaV1 = {
+			teamChanges: [
+				{
+					teamRef: "internal-team-ref",
+					teamDisplayName: "Example Team",
+					change: "update",
+					fromDeviceEligibilityMode: "person_all_devices",
+					toDeviceEligibilityMode: "reviewed_allowlist",
+				},
+			],
+			membershipChanges: Array.from({ length: 4 }, (_, index) => ({
+				teamRef: "internal-team-ref",
+				teamDisplayName: "Example Team",
+				identityRef: `internal-member-ref-${index + 1}`,
+				identityDisplayName: `Person ${index + 1}`,
+				change: "add" as const,
+			})),
+			projectChanges: projects.map((entry) => ({
+				projectRef: entry.projectRef,
+				projectDisplayName: entry.displayName,
+				fromResolvedProjectRef: null,
+				fromResolvedProjectDisplayName: null,
+				toResolvedProjectRef: entry.resolvedProjectRef,
+				toResolvedProjectDisplayName: entry.displayName,
+				change: "add" as const,
+			})),
+			recipientChanges: projects.map((entry) => ({
+				canonicalProjectRef: entry.canonicalProjectRef ?? "",
+				canonicalProjectDisplayName: entry.displayName,
+				recipientKind: "team" as const,
+				recipientRef: "internal-team-ref",
+				recipientDisplayName: "Example Team",
+				change: "add" as const,
+			})),
+			deviceAccessChanges: projects.flatMap((entry) =>
+				devices.map((entryDevice) => ({
+					canonicalProjectRef: entry.canonicalProjectRef ?? "",
+					canonicalProjectDisplayName: entry.displayName,
+					deviceRef: entryDevice.deviceRef,
+					deviceDisplayName: entryDevice.displayName,
+					change: "add" as const,
+				})),
+			),
+		};
+		setup({
+			loadDetail: vi.fn().mockResolvedValue(
+				detail({
+					canFinish: true,
+					devices,
+					projects,
+					accessDelta,
+				}),
+			),
+		});
+
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Review Projects"));
+		act(() => button("Review").click());
+		const review = document.querySelector<HTMLElement>(
+			'[aria-labelledby="legacy-team-setup-step-review"]',
+		);
+		if (!review) throw new Error("Review step missing");
+		const section = (title: string) => {
+			const heading = [...review.querySelectorAll("h4")].find(
+				(candidate) => candidate.textContent === title,
+			);
+			if (!(heading?.parentElement instanceof HTMLElement)) {
+				throw new Error(`${title} section missing`);
+			}
+			return heading.parentElement;
+		};
+
+		expect(review.textContent).toContain("509 exact access changes");
+		expect(review.textContent).toContain("1 Team policy change");
+		expect(review.textContent).toContain("4 membership changes");
+		expect(review.textContent).toContain("63 Project changes");
+		expect(review.textContent).toContain("63 recipient changes");
+		expect(review.textContent).toContain("63 Projects included");
+		expect(review.textContent).toContain("6 included devices");
+		expect(review.textContent).toContain("378 device-access changes");
+		expect(section("Projects").textContent).toContain(
+			"greenroom — 34 Projects with this name, 34 Project changes",
+		);
+		expect(section("Recipients").textContent).toContain(
+			"greenroom — 34 Projects with this name, 34 recipient changes",
+		);
+		expect(section("Device access").textContent).toContain(
+			"greenroom — 34 Projects with this name, 204 device-access changes",
+		);
+		expect(review.textContent).not.toContain("internal-");
+
+		const expectedExactRows = new Map([
+			["Team policy", 1],
+			["Memberships", 4],
+			["Projects", 63],
+			["Recipients", 63],
+			["Device access", 378],
+		]);
+		for (const [title, expectedCount] of expectedExactRows) {
+			expect(section(title).querySelectorAll(".legacy-team-setup-exact-list > li")).toHaveLength(
+				expectedCount,
+			);
+		}
+		expect(review.querySelectorAll(".legacy-team-setup-exact-list > li")).toHaveLength(509);
+		expect(
+			[...review.querySelectorAll("details > summary")].map((summary) => summary.textContent),
+		).toEqual([
+			"Show all 63 exact Project changes",
+			"Show all 63 exact recipient changes",
+			"Show all 378 exact device-access changes",
+		]);
+		expect(review.querySelectorAll("details")).toHaveLength(3);
+		expect([...review.querySelectorAll("details")].every((details) => !details.open)).toBe(true);
+		expect(
+			[...section("Projects").querySelectorAll(".legacy-team-setup-exact-list > li")].filter(
+				(row) => row.textContent === "Add greenroom: no Project to greenroom.",
+			),
+		).toHaveLength(34);
+		expect(
+			[...section("Device access").querySelectorAll(".legacy-team-setup-exact-list > li")].filter(
+				(row) => row.textContent === "Add Work laptop access to greenroom.",
+			),
+		).toHaveLength(68);
+	});
+
+	it("keeps a large exact section visible when its labels cannot be usefully grouped", async () => {
+		const accessDelta: LegacyTeamSetupAccessDeltaV1 = {
+			teamChanges: [],
+			membershipChanges: [],
+			projectChanges: Array.from({ length: 11 }, (_, index) => ({
+				projectRef: `opaque-project-${index}`,
+				projectDisplayName: `Project ${index + 1}`,
+				fromResolvedProjectRef: null,
+				fromResolvedProjectDisplayName: null,
+				toResolvedProjectRef: `opaque-resolved-project-${index}`,
+				toResolvedProjectDisplayName: `Project ${index + 1}`,
+				change: "add" as const,
+			})),
+			recipientChanges: [],
+			deviceAccessChanges: [],
+		};
+		setup({
+			loadDetail: vi.fn().mockResolvedValue(detail({ canFinish: true, accessDelta })),
+		});
+		await vi.waitFor(() => expect(document.body.textContent).toContain("11 exact access changes"));
+
+		const heading = [...document.querySelectorAll(".legacy-team-setup-delta h4")].find(
+			(candidate) => candidate.textContent === "Projects",
+		);
+		const projects = heading?.parentElement;
+		if (!projects) throw new Error("Projects section missing");
+		expect(projects.querySelector("details")).toBeNull();
+		expect(projects.querySelector(".legacy-team-setup-delta-summary")).toBeNull();
+		expect(projects.querySelectorAll(".legacy-team-setup-exact-list > li")).toHaveLength(11);
 	});
 
 	it("requires explicit confirmation and submits exact displayed finish evidence once", async () => {
@@ -1446,9 +1624,24 @@ describe("legacy Team setup dialog", () => {
 		}>();
 		const finish = vi.fn().mockReturnValue(pendingFinish.promise);
 		const onCompleted = vi.fn();
+		const accessDelta: LegacyTeamSetupAccessDeltaV1 = {
+			teamChanges: [],
+			membershipChanges: [],
+			projectChanges: Array.from({ length: 11 }, (_, index) => ({
+				projectRef: "opaque-project-ref",
+				projectDisplayName: "Legacy Project",
+				fromResolvedProjectRef: null,
+				fromResolvedProjectDisplayName: null,
+				toResolvedProjectRef: "opaque-resolved-project-ref",
+				toResolvedProjectDisplayName: "Canonical Project",
+				change: index % 2 === 0 ? ("add" as const) : ("remove" as const),
+			})),
+			recipientChanges: [],
+			deviceAccessChanges: [],
+		};
 		setup({
 			finish,
-			loadDetail: vi.fn().mockResolvedValue(detail({ canFinish: true })),
+			loadDetail: vi.fn().mockResolvedValue(detail({ canFinish: true, accessDelta })),
 			onCompleted,
 		});
 		await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
@@ -1457,6 +1650,13 @@ describe("legacy Team setup dialog", () => {
 		expect(finishButton.getAttribute("aria-disabled")).toBe("true");
 		act(() => finishButton.click());
 		expect(finish).not.toHaveBeenCalled();
+		const summaries = [...document.querySelectorAll<HTMLElement>("details > summary")];
+		expect(summaries).toHaveLength(1);
+		expect(document.body.textContent).toContain(
+			"Legacy Project — 1 Project with this name, 11 Project changes",
+		);
+		for (const summary of summaries) act(() => summary.click());
+		expect(finishButton.getAttribute("aria-disabled")).toBe("true");
 		const confirmation = document.querySelector<HTMLInputElement>(
 			".legacy-team-setup-confirmation input",
 		);
@@ -1465,6 +1665,12 @@ describe("legacy Team setup dialog", () => {
 		act(() => {
 			confirmation.dispatchEvent(new Event("change", { bubbles: true }));
 		});
+		for (const summary of summaries) {
+			act(() => summary.click());
+			act(() => summary.click());
+		}
+		expect(confirmation.checked).toBe(true);
+		expect(finishButton.getAttribute("aria-disabled")).toBeNull();
 		act(() => {
 			finishButton.click();
 			finishButton.click();
@@ -1476,6 +1682,10 @@ describe("legacy Team setup dialog", () => {
 			confirmedAccessDeltaDigest: "opaque-access-digest",
 			confirmedViewerAccessDeltaDigest: "opaque-viewer-access-digest",
 		});
+		expect(confirmation.getAttribute("aria-disabled")).toBe("true");
+		expect(confirmation.getAttribute("aria-describedby")).toBeTruthy();
+		act(() => confirmation.click());
+		expect(confirmation.checked).toBe(true);
 
 		pendingFinish.resolve({
 			version: 1,

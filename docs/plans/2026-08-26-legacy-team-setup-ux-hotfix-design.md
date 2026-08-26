@@ -40,14 +40,15 @@ When multiple candidates have the same normalized display label, the overview gr
 
 ### Review summary
 
-The Review step leads with the effective result rather than the raw mutation count:
+The Review step reconciles the raw mutation count across the five exact change categories:
 
-- Team policy and membership totals;
-- number of Projects included;
-- number of included devices;
-- number of resulting device-access changes.
+- Team policy changes;
+- membership changes;
+- Project mapping changes;
+- recipient changes;
+- device-access changes.
 
-Repeated labels are grouped with counts, for example `greenroom — 34 Project identities`. Project mapping, recipient, and device-access sections show grouped summaries by default. Native `details` and `summary` disclosures expose the exact server-provided rows for users who need the full audit trail.
+Project and device inventory counts appear separately as migration scope. Repeated labels are grouped with counts, for example `greenroom — 34 Projects with this name, 34 Project changes`. When grouping reduces a large Project mapping, recipient, or device-access section, the grouped summary appears by default and native `details` and `summary` disclosures expose every exact server-provided row. Small sections and large sections whose labels cannot be usefully grouped keep their exact rows visible.
 
 The confirmation checkbox continues to bind to the attempt, finish, access-delta, and viewer-access-delta digests. Expanding or collapsing details does not alter evidence or the finish request.
 

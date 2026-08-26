@@ -1281,9 +1281,28 @@
       .legacy-team-project-select { width: 100%; margin: 0; }
       .legacy-team-project-select:disabled { opacity: 0.55; cursor: not-allowed; }
       .legacy-team-setup-delta { display: grid; gap: var(--sp-3); }
+      .legacy-team-setup-review-summary {
+        display: grid;
+        gap: var(--sp-2);
+        margin-block: var(--sp-3);
+        padding: var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
+      }
+      .legacy-team-setup-review-summary p,
+      .legacy-team-setup-review-summary ul { margin: 0; }
       .legacy-team-setup-delta section { padding-block: var(--sp-2); border-bottom: 1px solid var(--border); }
       .legacy-team-setup-delta h4 { margin: 0 0 var(--sp-2); }
       .legacy-team-setup-delta ul { display: grid; gap: var(--sp-1); margin: 0; padding-inline-start: var(--sp-5); }
+      .legacy-team-setup-delta-summary { font-weight: var(--font-weight-semibold); }
+      .legacy-team-setup-delta details { margin-top: var(--sp-2); }
+      .legacy-team-setup-delta summary { cursor: pointer; font-weight: var(--font-weight-semibold); }
+      .legacy-team-setup-delta .legacy-team-setup-exact-list {
+        margin-top: var(--sp-2);
+        padding-block: var(--sp-2);
+        border-top: 1px solid var(--border);
+      }
       .legacy-team-setup-confirmation { display: flex; gap: var(--sp-2); align-items: flex-start; margin-block: var(--sp-4); }
       .legacy-team-setup-confirmation input { flex: 0 0 auto; margin-top: 0.2em; min-width: 24px; min-height: 24px; }
       .recipient-policy-management-selection fieldset { border: 0; padding: 0; margin: var(--sp-4) 0 0; }
