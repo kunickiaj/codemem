@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { recipientPolicyDigest } from "../../packages/core/src/recipient-policy-identifiers.js";
 import { assert, assertStatus } from "../lib/assert.js";
 import {
 	ADMIN_SECRET,
@@ -14,6 +16,9 @@ const GROUP_BETA = "legacy-team-beta";
 const ALPHA_PROJECT = "https://example.invalid/e2e/alpha.git";
 const BETA_PROJECT = "https://example.invalid/e2e/beta.git";
 const WEB_PROJECT = "https://example.invalid/e2e/web.git";
+const LEGACY_WEB_SOURCE_PROJECT = `unmapped:${createHash("sha256")
+	.update("legacy-web", "utf8")
+	.digest("hex")}`;
 const API = "/api/sync/team-setup/v1";
 
 interface FixtureSummary {
@@ -124,6 +129,14 @@ interface FinishResponse {
 	version: 1;
 	status: "completed";
 	teamRef: string;
+	attemptId: string;
+	accessDeltaDigest: string;
+	completedAt: string;
+}
+
+interface StoredCompletionResponse {
+	status: "completed";
+	teamId: string;
 	attemptId: string;
 	accessDeltaDigest: string;
 	completedAt: string;
@@ -513,6 +526,18 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 	assert(afterAlpha.policies.teams.length === 1, "Alpha finish was not atomic");
 	assert(afterAlpha.policies.memberships.length === 1, "Alpha memberships were incomplete");
 	assert(afterAlpha.policies.recipients.length === 2, "Alpha Project recipients were incomplete");
+	assertExactRows(
+		afterAlpha.policies.devices,
+		[
+			{
+				device_id: seeded.roster.shared.deviceId,
+				identity_id: "identity-shared",
+				status: "active",
+				assignment_version: 0,
+			},
+		],
+		"Alpha finish assigned a device outside its reviewed inclusion",
+	);
 	assert(
 		afterAlpha.policies.reviewedMappings.length === 1,
 		"explicit Project repair was not committed with Alpha",
@@ -636,40 +661,67 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		"41-finish-beta-drop-response",
 	);
 	assert(lostStatus === 200, "Beta finish did not complete before the response was dropped");
-	const afterLostResponse = fixture(ctx, "summary", "42-after-lost-beta-finish");
+	const recoveredSummary = await request<{ version: 1; candidates: CandidateSummary[] }>(
+		ctx,
+		"GET",
+		API,
+		"42-summary-after-lost-beta-finish",
+	);
+	const recoveredBetaSummary = recoveredSummary.body.candidates.find(
+		(candidate) => candidate.candidateRef === betaCandidate.candidateRef,
+	);
+	assert(
+		recoveredSummary.status === 200 && recoveredBetaSummary?.status === "ready",
+		"summary did not recover Beta as ready after the dropped finish response",
+	);
+	const recoveredBetaDetail = await loadDetail(
+		ctx,
+		betaCandidate.candidateRef,
+		"43-detail-after-lost-beta-finish",
+	);
+	assert(
+		recoveredBetaDetail.candidate.status === "ready" &&
+			recoveredBetaDetail.draftState === "completed" &&
+			!recoveredBetaDetail.canFinish,
+		"detail did not recover Beta as completed after the dropped finish response",
+	);
+	const afterLostResponse = fixture(ctx, "summary", "44-after-lost-beta-finish");
 	const storedBetaCompletion = afterLostResponse.completions.find(
 		(completion) => completion.candidate_ref === betaCandidate.candidateRef,
 	);
 	assert(storedBetaCompletion, "lost Beta finish did not persist a completion");
-	const storedBetaResponse = JSON.parse(storedBetaCompletion.response_json) as {
-		status: string;
-		attemptId: string;
-		accessDeltaDigest: string;
-		completedAt: string;
+	const storedBetaResponse = JSON.parse(
+		storedBetaCompletion.response_json,
+	) as StoredCompletionResponse;
+	const expectedBetaResponse: FinishResponse = {
+		version: 1,
+		status: storedBetaResponse.status,
+		teamRef: recipientPolicyDigest("legacy-team-viewer-team-ref-v1", [
+			betaCandidate.candidateRef,
+			storedBetaResponse.teamId,
+		]),
+		attemptId: storedBetaResponse.attemptId,
+		accessDeltaDigest: storedBetaResponse.accessDeltaDigest,
+		completedAt: storedBetaResponse.completedAt,
 	};
 	const retryOne = await request<FinishResponse>(
 		ctx,
 		"POST",
 		`${candidatePath(betaCandidate.candidateRef)}/finish`,
-		"43-retry-beta-finish-one",
+		"45-retry-beta-finish-one",
 		betaFinishBody,
 	);
 	const retryTwo = await request<FinishResponse>(
 		ctx,
 		"POST",
 		`${candidatePath(betaCandidate.candidateRef)}/finish`,
-		"44-retry-beta-finish-two",
+		"46-retry-beta-finish-two",
 		betaFinishBody,
 	);
 	assert(retryOne.status === 200 && retryTwo.status === 200, "completed Beta retry failed");
-	assert(
-		[retryOne.body, retryTwo.body].every(
-			(retry) =>
-				retry.status === storedBetaResponse.status &&
-				retry.attemptId === storedBetaResponse.attemptId &&
-				retry.accessDeltaDigest === storedBetaResponse.accessDeltaDigest &&
-				retry.completedAt === storedBetaResponse.completedAt,
-		),
+	assertExactRows(
+		[retryOne.body, retryTwo.body],
+		[expectedBetaResponse, expectedBetaResponse],
 		"completed retry did not return the committed result",
 	);
 	assert(
@@ -678,10 +730,22 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 	);
 
 	// Arrange: a later active device assigned to a reviewed person was never part of either roster.
-	fixture(ctx, "add-off-roster-device", "45-add-off-roster-device");
+	fixture(ctx, "add-off-roster-device", "47-add-off-roster-device");
 
 	// Assert: both Teams are exact reviewed allowlists; Optional differs by Team; off-roster stays out.
-	const final = fixture(ctx, "summary", "46-final-summary");
+	const final = fixture(ctx, "summary", "48-final-summary");
+	assertExactRows(
+		final.policies.devices.filter((device) => device.device_id === final.offRosterDeviceId),
+		[
+			{
+				device_id: final.offRosterDeviceId,
+				identity_id: "identity-shared",
+				status: "active",
+				assignment_version: 1,
+			},
+		],
+		"off-roster device fixture was not inserted exactly",
+	);
 	const alphaTeam = final.policies.teams.find((team) => team.display_name === "Legacy Alpha");
 	const betaTeam = final.policies.teams.find((team) => team.display_name === "Legacy Beta");
 	assert(alphaTeam && betaTeam, "both canonical Teams were not activated");
@@ -778,7 +842,7 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 	assert(
 		reviewedMapping?.workspace_identity === WEB_PROJECT &&
 			reviewedMapping.scope_id === "scope-legacy-alpha" &&
-			reviewedMapping.project_pattern.startsWith("unmapped:"),
+			reviewedMapping.project_pattern === LEGACY_WEB_SOURCE_PROJECT,
 		"the explicit legacy-web Project repair was not exact",
 	);
 	assertExactRows(
@@ -825,12 +889,12 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 	ctx.compose.copyFromContainer(
 		"peer-a:/data/mem.sqlite",
 		`${ctx.artifactsDir}/db/peer-a-legacy-team-migration.sqlite`,
-		"47-copy-peer-db",
+		"49-copy-peer-db",
 	);
 	ctx.compose.copyFromContainer(
 		"coordinator:/data/coordinator.sqlite",
 		`${ctx.artifactsDir}/db/coordinator-legacy-team-migration.sqlite`,
-		"48-copy-coordinator-db",
+		"50-copy-coordinator-db",
 	);
-	if (!ctx.keepStackOnFailure) ctx.compose.down("49-compose-down-post");
+	if (!ctx.keepStackOnFailure) ctx.compose.down("51-compose-down-post");
 }
