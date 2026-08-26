@@ -254,6 +254,15 @@ function labelComparisonForm(value: string): string {
 	return normalizeLabelText(value).toLowerCase();
 }
 
+// A coordinator display name is affirmative evidence that a compact alphabetic
+// group slug is a human label alias. Separators, digits, long values, or a
+// mismatched display name remain opaque and stay in the redaction set.
+function humanGroupLabelAlias(groupId: string, displayName: string): string | null {
+	const comparableGroupId = labelComparisonForm(groupId);
+	if (!/^[a-z]{2,24}$/u.test(comparableGroupId)) return null;
+	return labelComparisonForm(displayName) === comparableGroupId ? comparableGroupId : null;
+}
+
 /**
  * Coordinator-supplied display labels are sanitized with an allowlist, not a
  * denylist: multiple review rounds each found one more denylisted shape (bare
@@ -271,8 +280,8 @@ function labelComparisonForm(value: string): string {
  * - Reject `.` squeezed between letters/numbers on both sides: that single
  *   rule removes hostnames, IPs, and dotted file names while keeping ordinary
  *   sentence punctuation like `v2 release.` intact.
- * - Reject labels embedding opaque lookup identifiers (coordinator, group,
- *   device, project references).
+ * - Reject labels embedding opaque lookup identifiers (coordinator, device,
+ *   project, and non-display group references).
  */
 function safeLabel(value: string, fallback: string, forbiddenIds: ReadonlySet<string>): string {
 	const boundedValue = value.slice(0, 512);
@@ -295,6 +304,8 @@ function safeLabel(value: string, fallback: string, forbiddenIds: ReadonlySet<st
 
 function setupLabelForbiddenIds(
 	contextIds: ReadonlyArray<string>,
+	groupId: string,
+	humanGroupAlias: string | null,
 	devices: ReadonlyArray<LegacyTeamSetupRosterDeviceInput>,
 	projects: ReadonlyArray<LegacyTeamSetupProjectInput>,
 	persistedDevices: ReadonlyArray<{
@@ -313,6 +324,7 @@ function setupLabelForbiddenIds(
 	return new Set(
 		[
 			...contextIds,
+			...(humanGroupAlias ? [] : [groupId]),
 			...devices.flatMap((device) => [
 				device.deviceId,
 				device.fingerprint,
@@ -534,11 +546,12 @@ function createAttempt(
 		[
 			input.candidateId,
 			input.coordinatorId,
-			input.groupId,
 			...Array.from(assignmentByDevice.values()).flatMap((assignment) =>
 				assignment ? [assignment.identityId] : [],
 			),
 		],
+		input.groupId,
+		humanGroupLabelAlias(input.groupId, input.displayName),
 		input.devices,
 		input.projects,
 		previousDevices.map((device) => ({
@@ -967,7 +980,7 @@ export function refreshLegacyTeamSetupDraftLabels(
 			| { candidate_id: string; coordinator_id: string; group_id: string }
 			| undefined;
 		if (!context) throw new Error("legacy_team_setup_draft_not_found");
-		const contextIds = [context.candidate_id, context.coordinator_id, context.group_id];
+		const contextIds = [context.candidate_id, context.coordinator_id];
 		const persistedDevices = db
 			.prepare(
 				`SELECT device_id, key_fingerprint, display_name, existing_identity_id,
@@ -1006,6 +1019,8 @@ export function refreshLegacyTeamSetupDraftLabels(
 		}>;
 		const forbiddenIds = setupLabelForbiddenIds(
 			[...contextIds, ...liveAssignmentIds],
+			context.group_id,
+			humanGroupLabelAlias(context.group_id, input.displayName),
 			input.devices,
 			input.projects,
 			persistedDevices.map((device) => ({

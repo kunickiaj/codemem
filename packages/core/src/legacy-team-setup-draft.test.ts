@@ -448,6 +448,69 @@ describe("legacy Team setup drafts", () => {
 		expect(draft.displayName).toBe(label);
 	});
 
+	it.each([
+		{
+			groupId: "sre",
+			teamLabel: "SRE",
+			deviceLabel: "SRE laptop",
+			projectLabel: "SRE Project",
+		},
+		{
+			groupId: "nerdworld",
+			teamLabel: "Nerdworld",
+			deviceLabel: "Nerdworld workstation",
+			projectLabel: "Nerdworld tools",
+		},
+	])("keeps human group alias labels for $teamLabel", (labels) => {
+		const input = snapshot();
+		const device = input.devices[0];
+		const project = input.projects[0];
+		if (!device || !project) throw new Error("invalid test fixture");
+		input.groupId = labels.groupId;
+		input.displayName = labels.teamLabel;
+		device.displayName = labels.deviceLabel;
+		project.displayName = labels.projectLabel;
+
+		const draft = refreshLegacyTeamSetupDraft(db, input);
+		const refreshed = refreshLegacyTeamSetupDraftLabels(db, draft.attemptId, input);
+
+		expect(refreshed.displayName).toBe(labels.teamLabel);
+		expect(refreshed.devices[0]?.displayName).toBe(labels.deviceLabel);
+		expect(refreshed.projects[0]?.displayName).toBe(labels.projectLabel);
+	});
+
+	it("keeps opaque identifiers redacted when a human group alias is allowed", () => {
+		const input = snapshot();
+		const device = input.devices[0];
+		const project = input.projects[0];
+		if (!device || !project) throw new Error("invalid test fixture");
+		input.groupId = "nerdworld";
+		input.displayName = "Nerdworld";
+		device.labelRedactionIds = ["opaquepersonalpha"];
+		device.displayName = "Nerdworld opaquepersonalpha";
+		project.displayName = `Nerdworld ${project.projectRef}`;
+
+		const draft = refreshLegacyTeamSetupDraft(db, input);
+
+		expect(draft.displayName).toBe("Nerdworld");
+		expect(draft.devices[0]?.displayName).toBe("Device");
+		expect(draft.projects[0]?.displayName).toBe("Project");
+	});
+
+	it("keeps a human-shaped group id redacted when its display name does not match", () => {
+		const input = snapshot();
+		const device = input.devices[0];
+		if (!device) throw new Error("invalid test fixture");
+		input.groupId = "sre";
+		input.displayName = "Platform Team";
+		device.displayName = "SRE laptop";
+
+		const draft = refreshLegacyTeamSetupDraft(db, input);
+
+		expect(draft.displayName).toBe("Platform Team");
+		expect(draft.devices[0]?.displayName).toBe("Device");
+	});
+
 	it("keeps devices with inactive assignment rows reviewable but never includable", () => {
 		db.prepare(
 			`INSERT INTO identity_devices(

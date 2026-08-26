@@ -486,6 +486,19 @@ describe("legacy Team setup dialog", () => {
 		expect(loadDetail).toHaveBeenCalledTimes(2);
 	});
 
+	it("directs roster-unavailable recovery to coordinator connection and settings", async () => {
+		setup(
+			vi.fn().mockRejectedValue(new LegacyTeamSetupApiError(503, "team_setup_roster_unavailable")),
+		);
+
+		await vi.waitFor(() => {
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+				"Check the coordinator connection and settings, then retry.",
+			);
+		});
+		expect(document.body.textContent).not.toContain("team_setup_roster_unavailable");
+	});
+
 	it("uses changed-state copy for stale API errors and stale detail", async () => {
 		const loadDetail = vi
 			.fn()

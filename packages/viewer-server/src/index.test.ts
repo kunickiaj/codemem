@@ -1515,7 +1515,7 @@ describe("viewer-server", () => {
 			]);
 		});
 
-		it("fails closed for non-size coordinator roster errors", async () => {
+		it("fails closed when the only summary roster is unavailable", async () => {
 			const config = {
 				...core.readCoordinatorSyncConfig({}),
 				syncCoordinatorUrl: "http://localhost:8787",
@@ -1540,7 +1540,7 @@ describe("viewer-server", () => {
 			).rejects.toThrow("team_setup_roster_unavailable");
 		});
 
-		it("rejects coordinator roster fingerprints that do not match their public keys", async () => {
+		it("fails closed when the only summary roster has a mismatched fingerprint", async () => {
 			const config = {
 				...core.readCoordinatorSyncConfig({}),
 				syncCoordinatorUrl: "http://localhost:8787",
@@ -1574,7 +1574,9 @@ describe("viewer-server", () => {
 			).rejects.toThrow("team_setup_roster_unavailable");
 		});
 
-		it.each([2, -1])("rejects invalid coordinator enabled value %i", async (enabled) => {
+		it.each([
+			2, -1,
+		])("fails closed on sole invalid coordinator enabled value %i", async (enabled) => {
 			const publicKey = "public-key-a";
 			const config = {
 				...core.readCoordinatorSyncConfig({}),

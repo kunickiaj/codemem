@@ -9,6 +9,8 @@ The `0.43.0` legacy Team setup flow preserves access safety, but dogfooding expo
 
 The same pass exposed overlapping numbered step labels and excessive spacing in the Team setup candidate list. Multiple distinct legacy groups can also share the fallback label `Legacy Team`, making their actions difficult to distinguish.
 
+Dogfooding after the initial hotfix found a more fundamental discovery gap. A coordinator group can still back active replication scopes and current access without appearing in `sync_coordinator_groups`. The existing loader considers only configured groups, so this production-shaped legacy Team never reaches the otherwise complete guided migration flow.
+
 ## Goals
 
 - Make automatic Project inclusion explicit without changing which Projects migrate.
@@ -16,6 +18,8 @@ The same pass exposed overlapping numbered step labels and excessive spacing in 
 - Safely group repeated human-readable labels without exposing coordinator, group, device, or canonical Project identifiers.
 - Repair the wizard stepper and Team setup candidate layout across supported widths.
 - Preserve server-authoritative refresh, confirmation digests, atomic activation, and fail-closed behavior.
+- Discover a legacy group when this node has active coordinator-backed scope evidence for it, even if another group is the only configured sync group.
+- Present scope-backed roster devices as proposed migration decisions that require review; never infer Team membership directly from scope membership.
 
 ## Non-goals
 
@@ -23,6 +27,8 @@ The same pass exposed overlapping numbered step labels and excessive spacing in 
 - Change device decisions, Team membership, recipient policy, or activation semantics.
 - Recompute or replace the server-provided access delta in the browser.
 - Expose opaque identifiers to disambiguate repeated labels.
+- Enumerate every administrator-visible coordinator group without local access evidence.
+- Automatically admit scope members to a Sharing Team.
 
 ## Design
 
@@ -37,6 +43,14 @@ The stepper uses explicit number elements inside equal-width step items rather t
 Candidate entries use compact rows with three aligned areas: Team label, status, and action. Native bullets are removed. Narrow layouts stack the status and action beneath the label.
 
 When multiple candidates have the same normalized display label, the overview groups them under one label and reports the count. Each underlying candidate keeps its own setup action and opaque candidate reference, but visible action labels include a safe ordinal such as `Continue setup for Legacy Team 1 of 2`. No coordinator or group identifier is rendered.
+
+The overview names unfinished candidates as `Legacy groups to migrate` and uses `Review and migrate` for the primary action. This makes the existing setup dialog the explicit bridge into Sharing rather than presenting legacy and Sharing Teams as unrelated inventories.
+
+### Scope-backed discovery
+
+Candidate loading uses the bounded union of configured sync groups and group IDs from active coordinator-authoritative replication scopes whose coordinator matches the configured coordinator. The loader then applies the existing current-group and current-roster validation to every candidate. Groups visible only through coordinator administration remain excluded.
+
+Scope membership is discovery evidence, not reviewed Team membership. The current coordinator roster supplies the migration's device inventory, and each device must still be assigned to an identity and explicitly included, excluded, or removed in the guided workflow. Finish continues to create or update the Sharing Team, reviewed memberships, Project recipients, and setup-owned scope mappings atomically from the confirmed preview.
 
 ### Review summary
 
@@ -63,8 +77,11 @@ The confirmation checkbox continues to bind to the attempt, finish, access-delta
 ## Validation
 
 - Add failing component tests for automatic Project progression, duplicate candidate labels, stepper hooks, and responsive candidate-row structure.
+- Add a production-shaped server regression where configuration contains only one group while a second current group has an active coordinator-backed scope and roster. Both groups must be discoverable, and unrelated administrator-visible groups must remain absent.
+- Assert that scope-backed devices remain unresolved until reviewed and are not converted directly into Team memberships.
 - Add review tests modeling 63 Projects, six devices, repeated labels, 509 exact changes, grouped summaries, and expandable exact details.
 - Assert that confirmation evidence and the finish request remain unchanged.
+- Extend the legacy Team migration E2E fixture so the migrated group is scope-backed but absent from `sync_coordinator_groups`.
 - Run targeted Vitest files, TypeScript, lint, the full workspace test suite, UI build, and legacy Team migration E2E.
 
 ## Delivery

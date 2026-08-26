@@ -100,10 +100,21 @@ function detailNeedsRecovery(detail: api.LegacyTeamSetupDetailResponseV1): boole
 	);
 }
 
+const ROSTER_UNAVAILABLE_ERROR =
+	"Team device details are temporarily unavailable. Check the coordinator connection and settings, then retry.";
+
+function isRosterUnavailableError(cause: unknown): boolean {
+	return (
+		cause instanceof api.LegacyTeamSetupApiError &&
+		cause.errorCode === "team_setup_roster_unavailable"
+	);
+}
+
 function safeLoadError(cause: unknown): string {
 	if (isChangedStateError(cause)) {
 		return CHANGED_STATE_ERROR;
 	}
+	if (isRosterUnavailableError(cause)) return ROSTER_UNAVAILABLE_ERROR;
 	return "Team setup details are temporarily unavailable. Retry to load the latest details.";
 }
 
@@ -115,12 +126,7 @@ function safeMutationError(cause: unknown): string {
 	if (isChangedStateError(cause)) {
 		return CHANGED_STATE_ERROR;
 	}
-	if (
-		cause instanceof api.LegacyTeamSetupApiError &&
-		cause.errorCode === "team_setup_roster_unavailable"
-	) {
-		return "Team device details are temporarily unavailable. Reload the latest details before trying again.";
-	}
+	if (isRosterUnavailableError(cause)) return ROSTER_UNAVAILABLE_ERROR;
 	return "This device change could not be saved. Reload the latest details before trying again.";
 }
 
@@ -128,6 +134,7 @@ function safeProjectMutationError(cause: unknown): string {
 	if (cause instanceof api.LegacyTeamSetupApiError && RELOAD_ERROR_CODES.has(cause.errorCode)) {
 		return CHANGED_STATE_ERROR;
 	}
+	if (isRosterUnavailableError(cause)) return ROSTER_UNAVAILABLE_ERROR;
 	return "This Project mapping could not be saved. Reload the latest details before trying again.";
 }
 
@@ -135,6 +142,7 @@ function safeRefreshError(cause: unknown): string {
 	if (cause instanceof api.LegacyTeamSetupApiError && RELOAD_ERROR_CODES.has(cause.errorCode)) {
 		return CHANGED_STATE_ERROR;
 	}
+	if (isRosterUnavailableError(cause)) return ROSTER_UNAVAILABLE_ERROR;
 	return "Team setup could not be refreshed. Retry to load the latest server details.";
 }
 
@@ -142,6 +150,7 @@ function safeFinishError(cause: unknown): string {
 	if (cause instanceof api.LegacyTeamSetupApiError && RELOAD_ERROR_CODES.has(cause.errorCode)) {
 		return CHANGED_STATE_ERROR;
 	}
+	if (isRosterUnavailableError(cause)) return ROSTER_UNAVAILABLE_ERROR;
 	return "Team setup could not be finished. Reload the latest details before trying again.";
 }
 

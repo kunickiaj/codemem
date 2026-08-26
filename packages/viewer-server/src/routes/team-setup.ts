@@ -37,6 +37,7 @@ import { type Context, Hono } from "hono";
 
 const TEAM_SETUP_VERSION = 1 as const;
 const MAX_CONFIGURED_GROUPS = 25;
+const MAX_SCOPE_EVIDENCE_COORDINATORS = 100;
 const MAX_DEVICES = 500;
 const MAX_PROJECTS = 500;
 const MAX_ACCESS_DELTA_ENTRIES = 10_000;
@@ -61,6 +62,11 @@ const VIEWER_ACCESS_DELTA_DIGEST_PATTERN = /^legacy-team-viewer-access-delta-v1:
 
 interface LegacyTeamConfiguredGroupSnapshotLoadOptions {
 	candidateRef?: string;
+}
+
+interface LegacyTeamCandidateGroupDescriptor {
+	groupId: string;
+	coordinatorId: string;
 }
 
 export type LegacyTeamConfiguredGroupSnapshotLoader = (
@@ -205,6 +211,7 @@ export interface LegacyTeamSetupFinishResponseV1 {
 interface TeamSetupRoutesOptions {
 	getStore: () => MemoryStore;
 	loadLegacyTeamConfiguredGroupSnapshots?: LegacyTeamConfiguredGroupSnapshotLoader;
+	snapshotLoaderDependencies?: LegacyTeamSnapshotLoaderDependencies;
 }
 
 interface LegacyTeamSnapshotLoaderDependencies {
@@ -233,9 +240,102 @@ function configuredGroupIds(groups: string[]): string[] {
 	return unique;
 }
 
+function normalizedCoordinatorId(value: string): string | null {
+	try {
+		const normalized = buildBaseUrl(value);
+		if (!normalized) return null;
+		const parsed = new URL(normalized);
+		if (
+			(parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+			!parsed.host ||
+			parsed.username ||
+			parsed.password
+		) {
+			return null;
+		}
+		const path = parsed.pathname === "/" ? "" : parsed.pathname;
+		return `${parsed.protocol}//${parsed.host}${path}${parsed.search}`;
+	} catch {
+		return null;
+	}
+}
+
+function scopeBackedGroupDescriptors(
+	store: MemoryStore,
+	normalizedConfiguredCoordinatorId: string,
+	limit: number,
+	excludedGroupIds: string[],
+): LegacyTeamCandidateGroupDescriptor[] {
+	if (limit <= 0) return [];
+	const textualCoordinatorIds = store.db
+		.prepare(
+			`SELECT DISTINCT coordinator_id FROM replication_scopes
+			 WHERE status = 'active' AND authority_type = 'coordinator'
+			   AND kind IN ('team', 'team_default', 'org', 'client')
+			   AND coordinator_id IS NOT NULL
+			   AND group_id IS NOT NULL AND TRIM(group_id) <> ''
+			 ORDER BY coordinator_id LIMIT ?`,
+		)
+		.pluck()
+		.all(MAX_SCOPE_EVIDENCE_COORDINATORS + 1) as string[];
+	if (textualCoordinatorIds.length > MAX_SCOPE_EVIDENCE_COORDINATORS) {
+		return [];
+	}
+	const matchingTextualIds = textualCoordinatorIds.filter(
+		(value) => normalizedCoordinatorId(value) === normalizedConfiguredCoordinatorId,
+	);
+	if (matchingTextualIds.length === 0) return [];
+	const coordinatorPlaceholders = matchingTextualIds.map(() => "?").join(", ");
+	const excludedGroupClause =
+		excludedGroupIds.length === 0
+			? ""
+			: `AND TRIM(group_id) NOT IN (${excludedGroupIds.map(() => "?").join(", ")})`;
+	const groupIds = store.db
+		.prepare(
+			`SELECT DISTINCT TRIM(group_id) AS group_id FROM replication_scopes
+			 WHERE status = 'active' AND authority_type = 'coordinator'
+			   AND kind IN ('team', 'team_default', 'org', 'client')
+			   AND coordinator_id IN (${coordinatorPlaceholders})
+			   AND group_id IS NOT NULL AND TRIM(group_id) <> ''
+			   ${excludedGroupClause}
+			 ORDER BY TRIM(group_id) LIMIT ?`,
+		)
+		.pluck()
+		.all(...matchingTextualIds, ...excludedGroupIds, limit) as string[];
+	if (groupIds.length === 0) return [];
+	const groupPlaceholders = groupIds.map(() => "?").join(", ");
+	const records = store.db
+		.prepare(
+			`SELECT DISTINCT TRIM(group_id) AS group_id, coordinator_id FROM replication_scopes
+			 WHERE status = 'active' AND authority_type = 'coordinator'
+			   AND kind IN ('team', 'team_default', 'org', 'client')
+			   AND coordinator_id IN (${coordinatorPlaceholders})
+			   AND TRIM(group_id) IN (${groupPlaceholders})
+			 ORDER BY TRIM(group_id), coordinator_id`,
+		)
+		.all(...matchingTextualIds, ...groupIds) as Array<{
+		group_id: string;
+		coordinator_id: string;
+	}>;
+	const coordinatorIdsByGroup = new Map<string, string[]>();
+	for (const record of records) {
+		const coordinatorIds = coordinatorIdsByGroup.get(record.group_id) ?? [];
+		coordinatorIds.push(record.coordinator_id);
+		coordinatorIdsByGroup.set(record.group_id, coordinatorIds);
+	}
+	return groupIds.flatMap((groupId) => {
+		const coordinatorIds = coordinatorIdsByGroup.get(groupId) ?? [];
+		// Equivalent textual coordinator IDs still represent distinct persisted
+		// candidate identities. Never merge their authorization evidence by label.
+		const coordinatorId = coordinatorIds[0];
+		return coordinatorIds.length === 1 && coordinatorId ? [{ groupId, coordinatorId }] : [];
+	});
+}
+
 async function loadConfiguredLegacyTeamGroupSnapshotsWith(
 	dependencies: LegacyTeamSnapshotLoaderDependencies,
 	options: LegacyTeamConfiguredGroupSnapshotLoadOptions = {},
+	getStore?: () => MemoryStore,
 ): Promise<LegacyTeamConfiguredGroupSnapshot[]> {
 	let config: ReturnType<typeof readCoordinatorSyncConfig>;
 	try {
@@ -243,21 +343,47 @@ async function loadConfiguredLegacyTeamGroupSnapshotsWith(
 	} catch {
 		throw safeCoordinatorError();
 	}
-	const groupIds = configuredGroupIds(config.syncCoordinatorGroups);
+	const configuredIds = configuredGroupIds(config.syncCoordinatorGroups);
 	const hasUrl = Boolean(config.syncCoordinatorUrl);
 	const hasSecret = Boolean(config.syncCoordinatorAdminSecret);
-	if (!hasUrl && !hasSecret && groupIds.length === 0) return [];
-	if (!hasUrl || !hasSecret || groupIds.length === 0) throw safeCoordinatorError();
+	if (!hasUrl && !hasSecret && configuredIds.length === 0) return [];
+	if (!hasUrl || !hasSecret) throw safeCoordinatorError();
 
 	try {
-		const remoteUrl = buildBaseUrl(config.syncCoordinatorUrl);
-		const coordinatorId = remoteUrl;
+		const configuredCoordinatorId = buildBaseUrl(config.syncCoordinatorUrl);
+		const normalizedConfiguredCoordinatorId = normalizedCoordinatorId(configuredCoordinatorId);
+		if (!configuredCoordinatorId || !normalizedConfiguredCoordinatorId) {
+			throw safeCoordinatorError();
+		}
+		const remoteUrl = configuredCoordinatorId;
+		const remainingEvidenceSlots = MAX_CONFIGURED_GROUPS - configuredIds.length;
+		let scopeBackedDescriptors: LegacyTeamCandidateGroupDescriptor[] = [];
+		if (getStore) {
+			try {
+				scopeBackedDescriptors = scopeBackedGroupDescriptors(
+					getStore(),
+					normalizedConfiguredCoordinatorId,
+					remainingEvidenceSlots,
+					configuredIds,
+				);
+			} catch {
+				// Scope discovery is additive. Preserve configured coordinator
+				// candidates when local evidence cannot be read.
+				scopeBackedDescriptors = [];
+			}
+		}
+		const groupDescriptors: LegacyTeamCandidateGroupDescriptor[] = [
+			...configuredIds.map((groupId) => ({ groupId, coordinatorId: configuredCoordinatorId })),
+			...scopeBackedDescriptors,
+		];
+		if (groupDescriptors.length === 0) throw safeCoordinatorError();
 		const timeoutS = Math.max(1, config.syncCoordinatorTimeoutS);
-		const requestedGroupIds = options.candidateRef
-			? groupIds.filter(
-					(groupId) => legacyTeamCandidateId(coordinatorId, groupId) === options.candidateRef,
+		const requestedGroupDescriptors = options.candidateRef
+			? groupDescriptors.filter(
+					({ coordinatorId, groupId }) =>
+						legacyTeamCandidateId(coordinatorId, groupId) === options.candidateRef,
 				)
-			: groupIds;
+			: groupDescriptors;
 		const groups = await dependencies.listGroups({
 			remoteUrl,
 			adminSecret: config.syncCoordinatorAdminSecret,
@@ -265,16 +391,21 @@ async function loadConfiguredLegacyTeamGroupSnapshotsWith(
 			timeoutS,
 		});
 		const groupById = new Map(groups.map((group) => [group.group_id, group]));
-		const snapshots = await Promise.all(
-			requestedGroupIds.map(async (groupId) => {
+		const outcomes = await Promise.all(
+			requestedGroupDescriptors.map(async ({ coordinatorId, groupId }) => {
+				// Authoritative absence is stale state, while malformed or unavailable
+				// evidence stays fail-closed. Summary mode may isolate the latter only
+				// when another requested group remains healthy.
 				const group = groupById.get(groupId);
+				if (!group || group.archived_at != null) {
+					return { kind: "absent" as const };
+				}
 				if (
-					!group ||
 					group.group_id !== groupId ||
-					(group.display_name !== null && typeof group.display_name !== "string") ||
-					group.archived_at != null
+					(group.display_name !== null && typeof group.display_name !== "string")
 				) {
-					throw safeCoordinatorError();
+					if (options.candidateRef) throw safeCoordinatorError();
+					return { kind: "unavailable" as const };
 				}
 				let devices: Awaited<ReturnType<typeof coordinatorListDevicesAction>>;
 				try {
@@ -286,15 +417,15 @@ async function loadConfiguredLegacyTeamGroupSnapshotsWith(
 						timeoutS,
 					});
 				} catch (error) {
+					if (!options.candidateRef) return { kind: "unavailable" as const };
 					if (isCoordinatorRosterTooLargeError(error)) {
-						if (options.candidateRef) throw new Error("legacy_team_setup_roster_too_large");
-						return null;
+						throw new Error("legacy_team_setup_roster_too_large");
 					}
-					throw error;
+					throw safeCoordinatorError();
 				}
 				if (devices.length > MAX_DEVICES) {
 					if (options.candidateRef) throw new Error("legacy_team_setup_roster_too_large");
-					return null;
+					return { kind: "unavailable" as const };
 				}
 				if (
 					devices.some(
@@ -303,35 +434,39 @@ async function loadConfiguredLegacyTeamGroupSnapshotsWith(
 							(device.enabled !== 0 && device.enabled !== 1),
 					)
 				) {
-					throw safeCoordinatorError();
+					if (options.candidateRef) throw safeCoordinatorError();
+					return { kind: "unavailable" as const };
 				}
 				return {
-					coordinatorId,
-					groupId,
-					displayName: group.display_name ?? "Legacy Team",
-					devices: devices.map((device) => ({
-						deviceId: device.device_id,
-						fingerprint: device.fingerprint,
-						displayName: device.display_name ?? "Device",
-						enabled: device.enabled === 1,
-						labelRedactionIds: [device.identity_id ?? "", device.public_key].filter(Boolean),
-					})),
+					kind: "snapshot" as const,
+					snapshot: {
+						coordinatorId,
+						groupId,
+						displayName: group.display_name ?? "Legacy Team",
+						devices: devices.map((device) => ({
+							deviceId: device.device_id,
+							fingerprint: device.fingerprint,
+							displayName: device.display_name ?? "Device",
+							enabled: device.enabled === 1,
+							labelRedactionIds: [device.identity_id ?? "", device.public_key].filter(Boolean),
+						})),
+					},
 				};
 			}),
 		);
-		return snapshots.filter((snapshot) => snapshot !== null);
+		const validSnapshots = outcomes.flatMap((outcome) =>
+			outcome.kind === "snapshot" ? [outcome.snapshot] : [],
+		);
+		if (validSnapshots.length === 0 && outcomes.some((outcome) => outcome.kind === "unavailable")) {
+			throw safeCoordinatorError();
+		}
+		return validSnapshots;
 	} catch (error) {
 		if (error instanceof Error && error.message === "legacy_team_setup_roster_too_large") {
 			throw error;
 		}
 		throw safeCoordinatorError();
 	}
-}
-
-export async function loadConfiguredLegacyTeamGroupSnapshots(
-	options: LegacyTeamConfiguredGroupSnapshotLoadOptions = {},
-): Promise<LegacyTeamConfiguredGroupSnapshot[]> {
-	return loadConfiguredLegacyTeamGroupSnapshotsWith(defaultSnapshotLoaderDependencies, options);
 }
 
 function requireBoundedSnapshots(groups: LegacyTeamConfiguredGroupSnapshot[]): void {
@@ -687,6 +822,7 @@ function createCachedSnapshotLoader(
 export const __teamSetupTestHooks = {
 	createCachedSnapshotLoader,
 	loadConfiguredLegacyTeamGroupSnapshotsWith,
+	normalizedCoordinatorId,
 	requireCompleteMappingChoices,
 	disambiguateChoiceLabels,
 	safeChoiceLabel,
@@ -965,7 +1101,13 @@ function finishResponse(
 export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 	const app = new Hono();
 	const loadSnapshots =
-		options.loadLegacyTeamConfiguredGroupSnapshots ?? loadConfiguredLegacyTeamGroupSnapshots;
+		options.loadLegacyTeamConfiguredGroupSnapshots ??
+		((loadOptions?: LegacyTeamConfiguredGroupSnapshotLoadOptions) =>
+			loadConfiguredLegacyTeamGroupSnapshotsWith(
+				options.snapshotLoaderDependencies ?? defaultSnapshotLoaderDependencies,
+				loadOptions,
+				options.getStore,
+			));
 
 	async function loadedSnapshots(
 		candidateRef?: string,
