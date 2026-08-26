@@ -1209,9 +1209,22 @@
         grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: var(--sp-2);
         margin: var(--sp-2) 0;
-        padding-left: var(--sp-5);
+        padding: 0;
+        list-style: none;
       }
-      .legacy-team-setup-steps button { width: 100%; }
+      .legacy-team-setup-step {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: center;
+        gap: var(--sp-2);
+        min-width: 0;
+      }
+      .legacy-team-setup-step-number {
+        color: var(--text-secondary);
+        font-weight: var(--font-weight-semibold);
+        font-variant-numeric: tabular-nums;
+      }
+      .legacy-team-setup-steps button { width: 100%; min-width: 0; }
       .legacy-team-setup-steps button[aria-current="step"] {
         border-color: var(--accent);
         background: var(--accent-subtle);
@@ -1436,6 +1449,32 @@
       }
       .recipient-policy-sharing-attention p { margin-top: var(--sp-2); }
       .recipient-policy-sharing-attention .settings-button { margin-top: var(--sp-3); }
+      .recipient-policy-sharing-team-setup-list {
+        display: grid;
+        gap: var(--sp-3);
+        margin: var(--sp-3) 0 0;
+        padding: 0;
+        list-style: none;
+      }
+      .recipient-policy-sharing-team-setup-group,
+      .recipient-policy-sharing-team-setup-rows { display: grid; gap: var(--sp-2); }
+      .recipient-policy-sharing-team-setup-group-title {
+        display: flex;
+        align-items: baseline;
+        gap: var(--sp-2);
+        min-width: 0;
+        overflow-wrap: anywhere;
+        flex-wrap: wrap;
+      }
+      .recipient-policy-sharing-team-setup-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        align-items: center;
+        gap: var(--sp-2);
+        min-width: 0;
+      }
+      .recipient-policy-sharing-team-setup-label { min-width: 0; overflow-wrap: anywhere; }
+      .recipient-policy-sharing-team-setup-action .settings-button { margin-top: 0; }
       .device-identity-setup-card fieldset,
       .device-identity-rebind fieldset {
         display: grid;
@@ -3716,6 +3755,9 @@
         .modal-card { padding: var(--sp-4); border-radius: var(--radius-lg); }
         .legacy-team-setup-dialog .modal-card { width: calc(100vw - 16px); }
         .legacy-team-setup-steps { grid-template-columns: 1fr; }
+        .recipient-policy-sharing-team-setup-row { grid-template-columns: 1fr auto; }
+        .recipient-policy-sharing-team-setup-label { grid-column: 1 / -1; }
+        .recipient-policy-sharing-team-setup-separator { display: none; }
       }
 
       /* ──────────────────────────────────────────────────────────────────

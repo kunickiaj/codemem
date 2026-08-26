@@ -109,7 +109,7 @@ function detail({
 			displayName: "Example Team",
 			status: "in_progress" as const,
 			deviceCount: devices?.length ?? 3,
-			projectCount: projects?.length ?? 2,
+			projectCount: projects?.length ?? 0,
 			unresolvedDeviceCount,
 			unresolvedProjectCount,
 		},
@@ -270,6 +270,129 @@ describe("legacy Team setup dialog", () => {
 		expect(document.body.textContent).toContain(
 			"Finish the Project mappings before reviewing access.",
 		);
+	});
+
+	it("moves to Projects after the final device decision when deterministic Projects remain", async () => {
+		// Arrange
+		const deterministicProject = project({
+			canonicalProjectRef: "opaque-canonical-project",
+			mappingChoices: [],
+			resolution: "deterministic",
+			resolvedProjectRef: "opaque-resolved-project",
+		});
+		const loadDetail = vi
+			.fn()
+			.mockResolvedValueOnce(
+				detail({ devices: [device()], identityChoices: identities, unresolvedDeviceCount: 1 }),
+			)
+			.mockResolvedValueOnce(
+				detail({
+					devices: [device({ decision: "excluded", suggestedIdentityRef: null })],
+					projects: [deterministicProject],
+					unresolvedProjectCount: 0,
+				}),
+			);
+		setup({ loadDetail, saveDecision: vi.fn().mockResolvedValue(mutationResult()) });
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Work laptop"));
+
+		// Act
+		act(() => button("Exclude").click());
+
+		// Assert
+		await vi.waitFor(() => {
+			expect(document.querySelector('button[aria-current="step"]')?.textContent).toBe("Projects");
+		});
+		expect(document.body.textContent).toContain("Review Projects");
+		expect(document.body.textContent).not.toContain("Review and finish");
+		expect(loadDetail).toHaveBeenCalledTimes(2);
+	});
+
+	it("renders explicit numbered step hooks with list and current-step semantics", async () => {
+		// Arrange
+		setup(vi.fn().mockResolvedValue(detail({ devices: [device()], unresolvedDeviceCount: 1 })));
+
+		// Act
+		const steps = await vi.waitFor(() => {
+			const match = document.querySelector<HTMLElement>(".legacy-team-setup-steps");
+			if (!match) throw new Error("ordered Team setup steps missing");
+			return match;
+		});
+
+		// Assert
+		expect(steps.getAttribute("aria-label")).toBe("Team setup steps");
+		expect(steps.getAttribute("role")).toBe("list");
+		const items = [...steps.children];
+		expect(items).toHaveLength(3);
+		expect(items.every((item) => item.classList.contains("legacy-team-setup-step"))).toBe(true);
+		expect(items.every((item) => item.getAttribute("role") === "listitem")).toBe(true);
+		expect(
+			items.map((item) =>
+				item.querySelector(".legacy-team-setup-step-number")?.textContent?.trim(),
+			),
+		).toEqual(["1", "2", "3"]);
+		expect(steps.querySelectorAll('button[aria-current="step"]')).toHaveLength(1);
+		expect(steps.querySelector('button[aria-current="step"]')?.textContent).toContain("Devices");
+		expect(
+			[...steps.querySelectorAll<HTMLButtonElement>("button")].map((step) =>
+				step.getAttribute("aria-label"),
+			),
+		).toEqual(["Step 1: Devices", "Step 2: Projects", "Step 3: Review"]);
+	});
+
+	it("opens an unfinished ready draft on Projects before Review", async () => {
+		const deterministicProject = project({
+			canonicalProjectRef: "opaque-canonical-project",
+			mappingChoices: [],
+			resolution: "deterministic",
+			resolvedProjectRef: "opaque-resolved-project",
+		});
+		setup(
+			vi.fn().mockResolvedValue(
+				detail({
+					canFinish: true,
+					projects: [deterministicProject],
+					unresolvedDeviceCount: 0,
+					unresolvedProjectCount: 0,
+				}),
+			),
+		);
+
+		await vi.waitFor(() => {
+			expect(document.querySelector('button[aria-current="step"]')?.textContent).toBe("Projects");
+		});
+		expect(document.body.textContent).toContain("Review Projects");
+		expect(document.body.textContent).not.toContain("Review and finish");
+		act(() => button("Continue to Review").click());
+		expect(document.querySelector('button[aria-current="step"]')?.textContent).toBe("Review");
+		expect(document.body.textContent).toContain("Review and finish");
+	});
+
+	it("returns a ready draft to Projects when the dialog is reopened", async () => {
+		const readyDetail = detail({
+			canFinish: true,
+			projects: [
+				project({
+					mappingChoices: [],
+					resolution: "deterministic",
+					resolvedProjectRef: "opaque-resolved-project",
+				}),
+			],
+		});
+		const loadDetail = vi.fn().mockResolvedValue(readyDetail);
+		setup({ loadDetail });
+
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Review Projects"));
+		act(() => button("Continue to Review").click());
+		expect(document.body.textContent).toContain("Review and finish");
+		act(() => button("Close").click());
+		act(() => {
+			openLegacyTeamSetup("opaque-candidate");
+		});
+
+		await vi.waitFor(() => {
+			expect(document.querySelector('button[aria-current="step"]')?.textContent).toBe("Projects");
+		});
+		expect(loadDetail).toHaveBeenCalledTimes(2);
 	});
 
 	it("treats incomplete setup as normal progress rather than changed state", async () => {
@@ -1025,6 +1148,50 @@ describe("legacy Team setup dialog", () => {
 		expect(document.querySelectorAll(".legacy-team-project-select")).toHaveLength(1);
 	});
 
+	it("states that every automatically mapped Project will be included", async () => {
+		// Arrange
+		const deterministic = project({
+			canonicalProjectRef: "opaque-canonical-project",
+			mappingChoices: [],
+			resolution: "deterministic",
+			resolvedProjectRef: "opaque-resolved-project",
+		});
+		setup({
+			loadDetail: vi.fn().mockResolvedValue(
+				detail({
+					projects: [
+						deterministic,
+						project({ projectRef: "project-ref-two", displayName: "Needs mapping" }),
+					],
+					unresolvedProjectCount: 1,
+				}),
+			),
+		});
+
+		// Act
+		const projectsStep = await vi.waitFor(() => {
+			const match = document.querySelector<HTMLElement>(
+				'[aria-labelledby="legacy-team-setup-step-projects"]',
+			);
+			if (!match) throw new Error("Projects step missing");
+			return match;
+		});
+
+		// Assert
+		expect(projectsStep.textContent).toContain(
+			"Automatically mapped Projects are part of this draft and appear in the final access review before activation.",
+		);
+		expect(projectsStep.textContent).toContain(
+			"1 automatic mapping was resolved from server evidence and is listed below for review.",
+		);
+		expect(projectsStep.textContent).not.toMatch(/confirm the automatic/i);
+		expect(projectsStep.textContent).not.toContain("1 of 0 Team Projects");
+		expect(projectsStep.textContent).not.toMatch(
+			/choose (?:or|and) exclude automatically mapped Projects/i,
+		);
+		expect(projectsStep.querySelectorAll(".legacy-team-project-select")).toHaveLength(1);
+	});
+
 	it("persists one explicit Project mapping and advances after authoritative reload", async () => {
 		const initialProject = project();
 		const mappedProject = project({
@@ -1250,7 +1417,9 @@ describe("legacy Team setup dialog", () => {
 		);
 		setup({ loadDetail });
 
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Review every"));
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Review Projects"));
+		act(() => button("Review").click());
+		expect(document.body.textContent).toContain("Review every");
 		const text = document.body.textContent ?? "";
 		expect(text).toContain(
 			"Update Example Team: change device access from all devices assigned to each person to the reviewed device list.",
@@ -1506,6 +1675,43 @@ describe("legacy Team setup dialog", () => {
 		expect(refreshCandidate).toHaveBeenCalledWith("opaque-candidate");
 		expect(loadDetail).toHaveBeenCalledTimes(2);
 		expect(document.querySelector('[role="alert"]')).toBeNull();
+	});
+
+	it("shows Projects again when refresh returns a new setup attempt", async () => {
+		const refreshCandidate = vi.fn().mockResolvedValue(undefined);
+		const oldProject = project({
+			displayName: "Old automatic Project",
+			resolution: "deterministic",
+		});
+		const newProject = project({
+			displayName: "New automatic Project",
+			projectRef: "new-project-ref",
+			resolution: "deterministic",
+		});
+		const loadDetail = vi
+			.fn()
+			.mockResolvedValueOnce(
+				detail({
+					attemptId: "old-attempt",
+					draftState: "stale",
+					projects: [oldProject],
+				}),
+			)
+			.mockResolvedValueOnce(
+				detail({
+					attemptId: "new-attempt",
+					canFinish: true,
+					projects: [newProject],
+				}),
+			);
+		setup({ loadDetail, refreshCandidate });
+
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Old automatic Project"));
+		act(() => button("Refresh Team setup").click());
+
+		await vi.waitFor(() => expect(document.body.textContent).toContain("New automatic Project"));
+		expect(document.querySelector('button[aria-current="step"]')?.textContent).toBe("Projects");
+		expect(document.body.textContent).not.toContain("Review and finish");
 	});
 
 	it("reports a refresh failure as a refresh failure without private details", async () => {

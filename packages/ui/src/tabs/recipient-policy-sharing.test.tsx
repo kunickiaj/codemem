@@ -608,6 +608,74 @@ describe("recipient-focused Sharing", () => {
 		expect(onOpenTeamSetup).toHaveBeenCalledWith("candidate-progress");
 	});
 
+	it("groups duplicate Team labels into compact rows with unique safe setup actions", () => {
+		// Arrange
+		const onOpenTeamSetup = vi.fn();
+		mount(intent(), {
+			onOpenTeamSetup,
+			teamSetupSummary: {
+				version: 1,
+				candidates: (
+					[
+						{
+							candidateRef: "opaque-candidate-one",
+							displayName: "Legacy Team",
+							status: "needs_setup",
+							deviceCount: 2,
+							projectCount: 3,
+							unresolvedDeviceCount: 1,
+							unresolvedProjectCount: 0,
+						},
+						{
+							candidateRef: "opaque-candidate-two",
+							displayName: "Legacy Team",
+							status: "in_progress",
+							deviceCount: 4,
+							projectCount: 5,
+							unresolvedDeviceCount: 0,
+							unresolvedProjectCount: 1,
+						},
+					] satisfies LegacyTeamSetupSummaryResponseV1["candidates"]
+				).reverse(),
+			},
+		});
+
+		// Act
+		const duplicateGroup = document.querySelector<HTMLElement>(
+			".recipient-policy-sharing-team-setup-group",
+		);
+		expect(
+			document.querySelector(".recipient-policy-sharing-team-setup-list")?.getAttribute("role"),
+		).toBe("list");
+		expect(duplicateGroup?.getAttribute("role")).toBe("listitem");
+		const rows = [
+			...(duplicateGroup?.querySelectorAll<HTMLElement>(
+				".recipient-policy-sharing-team-setup-row",
+			) ?? []),
+		];
+		const buttons = rows.flatMap((row) => [...row.querySelectorAll<HTMLButtonElement>("button")]);
+
+		// Assert
+		expect(duplicateGroup?.textContent).toContain("Legacy Team");
+		expect(duplicateGroup?.textContent).toContain("2 Teams");
+		expect(duplicateGroup?.textContent).toContain("2 devices, 3 Projects");
+		expect(duplicateGroup?.textContent).toContain("4 devices, 5 Projects");
+		expect(rows).toHaveLength(2);
+		for (const row of rows) {
+			expect(row.querySelector(".recipient-policy-sharing-team-setup-status")).not.toBeNull();
+			expect(row.querySelector(".recipient-policy-sharing-team-setup-action")).not.toBeNull();
+		}
+		expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
+			"Continue setup for Legacy Team 1 of 2: 2 devices, 3 Projects",
+			"Continue setup for Legacy Team 2 of 2: 4 devices, 5 Projects",
+		]);
+		expect(new Set(buttons.map((button) => button.getAttribute("aria-label"))).size).toBe(2);
+		expect(duplicateGroup?.textContent).not.toMatch(/opaque-candidate|coordinator|group[_ -]?id/i);
+
+		act(() => buttons[1]?.click());
+		expect(onOpenTeamSetup).toHaveBeenCalledWith("opaque-candidate-two");
+	});
+
 	it("shows Team setup unavailability without inventing candidates on first load", () => {
 		mount(intent(), { teamSetupUnavailable: true });
 

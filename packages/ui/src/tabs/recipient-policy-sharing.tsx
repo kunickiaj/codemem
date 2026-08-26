@@ -45,6 +45,10 @@ const TEAM_SETUP_STATUS_CLASSES: Record<LegacyTeamSetupStatusV1, string> = {
 	ready: "",
 };
 
+// Safari/VoiceOver can drop list semantics when CSS removes native markers.
+const EXPLICIT_LIST_ROLE = { role: "list" } as const;
+const EXPLICIT_LIST_ITEM_ROLE = { role: "listitem" } as const;
+
 function teamSetupStatusLabel(status: unknown): string {
 	return typeof status === "string" && Object.hasOwn(TEAM_SETUP_STATUS_LABELS, status)
 		? TEAM_SETUP_STATUS_LABELS[status as LegacyTeamSetupStatusV1]
@@ -57,6 +61,29 @@ function teamSetupStatusClass(status: unknown): string {
 		: "needs_attention";
 }
 
+interface TeamSetupCandidateGroup {
+	displayName: string;
+	candidates: LegacyTeamSetupCandidateSummaryV1[];
+}
+
+function teamSetupCandidateGroups(
+	candidates: LegacyTeamSetupCandidateSummaryV1[],
+): TeamSetupCandidateGroup[] {
+	const groups = new Map<string, TeamSetupCandidateGroup>();
+	for (const candidate of candidates) {
+		const key = candidate.displayName.trim().toLowerCase();
+		const group = groups.get(key);
+		if (group) groups.set(key, { ...group, candidates: [...group.candidates, candidate] });
+		else groups.set(key, { displayName: candidate.displayName, candidates: [candidate] });
+	}
+	return [...groups.values()].map((group) => ({
+		...group,
+		candidates: [...group.candidates].sort((left, right) =>
+			left.candidateRef < right.candidateRef ? -1 : left.candidateRef > right.candidateRef ? 1 : 0,
+		),
+	}));
+}
+
 function TeamSetupOverview({
 	candidates,
 	onOpenTeamSetup,
@@ -66,6 +93,7 @@ function TeamSetupOverview({
 }) {
 	if (candidates.length === 0) return null;
 	const pending = candidates.filter((candidate) => candidate.status !== "ready");
+	const groups = teamSetupCandidateGroups(candidates);
 	return (
 		<aside
 			aria-labelledby="sharing-team-setup-heading"
@@ -79,25 +107,75 @@ function TeamSetupOverview({
 			{pending.length > 0 ? (
 				<p>Tell Codemem who uses each device before using these Teams for sharing.</p>
 			) : null}
-			<ul className="recipient-policy-sharing-details" aria-label="Team setup status">
-				{candidates.map((candidate) => (
-					<li key={candidate.candidateRef}>
-						<strong>{candidate.displayName}</strong> —{` `}
-						<span
-							className={`project-status-badge ${teamSetupStatusClass(candidate.status)}`.trim()}
-						>
-							{teamSetupStatusLabel(candidate.status)}
-						</span>
-						{candidate.status !== "ready" && onOpenTeamSetup ? (
-							<button
-								aria-label={`Continue setup for ${candidate.displayName}`}
-								className="settings-button recipient-policy-sharing-target-24"
-								onClick={() => onOpenTeamSetup(candidate.candidateRef)}
-								type="button"
-							>
-								Continue setup
-							</button>
+			<ul
+				{...EXPLICIT_LIST_ROLE}
+				className="recipient-policy-sharing-team-setup-list"
+				aria-label="Team setup status"
+			>
+				{groups.map((group) => (
+					<li
+						{...EXPLICIT_LIST_ITEM_ROLE}
+						className="recipient-policy-sharing-team-setup-group"
+						key={group.displayName}
+					>
+						{group.candidates.length > 1 ? (
+							<div className="recipient-policy-sharing-team-setup-group-title">
+								<strong>{group.displayName}</strong>
+								<span className="small">{group.candidates.length} Teams</span>
+							</div>
 						) : null}
+						<div className="recipient-policy-sharing-team-setup-rows">
+							{group.candidates.map((candidate, index) => {
+								const ordinal = `${index + 1} of ${group.candidates.length}`;
+								const safeSummary = `${countLabel(candidate.deviceCount, "device")}, ${countLabel(candidate.projectCount, "Project")}`;
+								const actionLabel =
+									group.candidates.length > 1
+										? `Continue setup for ${group.displayName} ${ordinal}: ${safeSummary}`
+										: `Continue setup for ${candidate.displayName}`;
+								return (
+									<div
+										className="recipient-policy-sharing-team-setup-row"
+										key={candidate.candidateRef}
+									>
+										<span className="recipient-policy-sharing-team-setup-label">
+											{group.candidates.length > 1 ? (
+												<span className="small">
+													Team {ordinal} · {safeSummary}
+												</span>
+											) : (
+												<strong>{candidate.displayName}</strong>
+											)}
+											<span
+												aria-hidden="true"
+												className="recipient-policy-sharing-team-setup-separator"
+											>
+												{" "}
+												—{" "}
+											</span>
+										</span>
+										<span className="recipient-policy-sharing-team-setup-status">
+											<span
+												className={`project-status-badge ${teamSetupStatusClass(candidate.status)}`.trim()}
+											>
+												{teamSetupStatusLabel(candidate.status)}
+											</span>
+										</span>
+										<span className="recipient-policy-sharing-team-setup-action">
+											{candidate.status !== "ready" && onOpenTeamSetup ? (
+												<button
+													aria-label={actionLabel}
+													className="settings-button recipient-policy-sharing-target-24"
+													onClick={() => onOpenTeamSetup(candidate.candidateRef)}
+													type="button"
+												>
+													Continue setup
+												</button>
+											) : null}
+										</span>
+									</div>
+								);
+							})}
+						</div>
 					</li>
 				))}
 			</ul>

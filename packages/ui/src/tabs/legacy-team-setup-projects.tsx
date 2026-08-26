@@ -6,6 +6,7 @@ export interface LegacyTeamSetupProjectsProps {
 	blockedDescriptionId?: string;
 	busyProjectRef: string | null;
 	detail: LegacyTeamSetupDetailResponseV1;
+	onContinue: () => void;
 	onMap: (project: LegacyTeamSetupProjectV1, resolvedProjectRef: string) => void;
 }
 
@@ -108,15 +109,31 @@ function ProjectRow({
 }
 
 export function LegacyTeamSetupProjects(props: LegacyTeamSetupProjectsProps) {
+	const automaticallyMappedCount = props.detail.projects.filter(
+		(project) => project.resolution === "deterministic",
+	).length;
+	const projectCount = Math.max(
+		props.detail.candidate.projectCount,
+		props.detail.projects.length,
+		props.detail.unresolvedProjectCount,
+	);
 	return (
 		<section aria-labelledby="legacy-team-setup-step-projects">
 			<h3 id="legacy-team-setup-step-projects" tabIndex={-1}>
 				Review Projects
 			</h3>
 			<p>
-				{props.detail.unresolvedProjectCount.toLocaleString()} of{" "}
-				{props.detail.candidate.projectCount.toLocaleString()} Team Projects still need a mapping.
+				{props.detail.unresolvedProjectCount.toLocaleString()} of {projectCount.toLocaleString()}{" "}
+				Team Projects still need a mapping.
 			</p>
+			{automaticallyMappedCount > 0 ? (
+				<p className="small">
+					Automatically mapped Projects are part of this draft and appear in the final access review
+					before activation. The {automaticallyMappedCount.toLocaleString()} automatic{" "}
+					{automaticallyMappedCount === 1 ? "mapping was" : "mappings were"} resolved from server
+					evidence and {automaticallyMappedCount === 1 ? "is" : "are"} listed below for review.
+				</p>
+			) : null}
 			<div className="legacy-team-project-list">
 				{props.detail.projects.map((project, index) => (
 					<ProjectRow
@@ -130,6 +147,19 @@ export function LegacyTeamSetupProjects(props: LegacyTeamSetupProjectsProps) {
 					/>
 				))}
 			</div>
+			{props.detail.unresolvedProjectCount === 0 ? (
+				<button
+					aria-describedby={props.blocked ? props.blockedDescriptionId : undefined}
+					aria-disabled={props.blocked ? "true" : undefined}
+					className="settings-button legacy-team-setup-target"
+					onClick={() => {
+						if (!props.blocked) props.onContinue();
+					}}
+					type="button"
+				>
+					Continue to Review
+				</button>
+			) : null}
 		</section>
 	);
 }
