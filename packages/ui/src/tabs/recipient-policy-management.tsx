@@ -11,6 +11,7 @@ import type {
 	RecipientPolicyEdgeRecipientRefV1,
 	RecipientPolicyIntentGraphV1,
 } from "../lib/api/sync";
+import { stableProjectPresentationLabels } from "../lib/project-identity-presentation";
 
 export interface RecipientPolicyManagementProject {
 	canonicalProjectIdentity: string;
@@ -253,12 +254,19 @@ function projectChoices(
 	initial: string[],
 	unavailableLabels: ReadonlyMap<string, string>,
 ): Array<RecipientPolicyManagementProject & { description: string }> {
+	const presentationLabels = stableProjectPresentationLabels(
+		projects.map((project) => ({
+			canonicalId: project.canonicalProjectIdentity,
+			displayName: project.displayName,
+		})),
+	);
 	const visibleProjects =
 		request.mode === "recipient-add"
 			? projects.filter((project) => !initial.includes(project.canonicalProjectIdentity))
 			: projects;
 	const choices = visibleProjects.map((project) => ({
 		...project,
+		displayName: presentationLabels.get(project.canonicalProjectIdentity) ?? project.displayName,
 		description: `${project.existingMemoryCount.toLocaleString()} existing memories`,
 	}));
 	if (request.mode !== "recipient-manage") return choices;
@@ -650,11 +658,19 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 		() => unavailableProjectLabels(projects, request, initial),
 		[initial, projects, request],
 	);
-	const projectLabels = useMemo(() => new Map(unavailableProjects), [unavailableProjects]);
 	const projectIds = useMemo(
 		() => new Set(projects.map((project) => project.canonicalProjectIdentity)),
 		[projects],
 	);
+	const projectLabels = useMemo(() => {
+		const labels = stableProjectPresentationLabels(
+			projects.map((project) => ({
+				canonicalId: project.canonicalProjectIdentity,
+				displayName: project.displayName,
+			})),
+		);
+		return new Map([...labels, ...unavailableProjects]);
+	}, [projects, unavailableProjects]);
 
 	useEffect(() => {
 		requestOpen = (nextRequest) => {

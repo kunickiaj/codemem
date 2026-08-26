@@ -1228,7 +1228,7 @@ describe("legacy Team setup dialog", () => {
 			"Project Alpha",
 			"Project Beta",
 		]);
-		select.value = "resolved-project-beta";
+		select.value = "project-choice-2";
 		act(() => {
 			select.dispatchEvent(new Event("change", { bubbles: true }));
 		});
@@ -1246,6 +1246,59 @@ describe("legacy Team setup dialog", () => {
 		await vi.waitFor(() => expect(document.body.textContent).toContain("Review and finish"));
 		expect(document.activeElement?.id).toBe("legacy-team-setup-step-review");
 		expect(loadDetail).toHaveBeenCalledTimes(2);
+	});
+
+	it("gives reversed same-label mapping choices stable private labels and saves the exact choice", async () => {
+		const privatePath = "/private/worktrees/codemem";
+		const privateRemote = "ssh://git@private.example.test/codemem.git";
+		const mappingChoices = [
+			{ resolvedProjectRef: privateRemote, displayName: "codemem" },
+			{ resolvedProjectRef: privatePath, displayName: "codemem" },
+		];
+		const initialProject = project({ mappingChoices });
+		const mappedProject = project({
+			mappingChoices,
+			resolution: "explicit",
+			resolvedProjectRef: privatePath,
+		});
+		const loadDetail = vi
+			.fn()
+			.mockResolvedValueOnce(detail({ projects: [initialProject], unresolvedProjectCount: 1 }))
+			.mockResolvedValueOnce(detail({ projects: [mappedProject] }));
+		const saveProjectMapping = vi.fn().mockResolvedValue(mutationResult());
+		setup({ loadDetail, saveProjectMapping });
+
+		const select = await vi.waitFor(() => {
+			const match = document.querySelector<HTMLSelectElement>(".legacy-team-project-select");
+			if (!match) throw new Error("Project mapping select missing");
+			return match;
+		});
+		expect([...select.options].map((option) => option.textContent)).toEqual([
+			"Choose a Project",
+			"codemem — Project 2 of 2",
+			"codemem — Project 1 of 2",
+		]);
+		expect([...select.options].map((option) => option.value)).toEqual([
+			"",
+			"project-choice-2",
+			"project-choice-1",
+		]);
+		expect(document.body.outerHTML).not.toContain(privatePath);
+		expect(document.body.outerHTML).not.toContain(privateRemote);
+
+		select.value = "project-choice-1";
+		act(() => {
+			select.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		act(() => button("Save mapping").click());
+
+		expect(saveProjectMapping).toHaveBeenCalledWith("opaque-candidate", "project-ref-one", {
+			attemptId: "opaque-attempt",
+			resolvedProjectRef: privatePath,
+		});
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Review and finish"));
+		expect(document.body.outerHTML).not.toContain(privatePath);
+		expect(document.body.outerHTML).not.toContain(privateRemote);
 	});
 
 	it("reloads stale Project mapping evidence and keeps safe recovery copy", async () => {
@@ -1283,7 +1336,7 @@ describe("legacy Team setup dialog", () => {
 			if (!match) throw new Error("Project mapping select missing");
 			return match;
 		});
-		select.value = "resolved-project-alpha";
+		select.value = "project-choice-1";
 		act(() => {
 			select.dispatchEvent(new Event("change", { bubbles: true }));
 		});
@@ -1328,7 +1381,7 @@ describe("legacy Team setup dialog", () => {
 			if (!match) throw new Error("Project mapping select missing");
 			return match;
 		});
-		select.value = "resolved-project-alpha";
+		select.value = "project-choice-1";
 		act(() => {
 			select.dispatchEvent(new Event("change", { bubbles: true }));
 		});

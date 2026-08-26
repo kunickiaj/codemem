@@ -512,6 +512,58 @@ describe("recipient policy management dialog", () => {
 		});
 	});
 
+	it("keeps same-label Project choices separate, stable, and private while selecting exact identities", async () => {
+		const privatePath = "/private/worktrees/codemem";
+		const privateRemote = "ssh://git@private.example.test/codemem.git";
+		vi.mocked(api.previewRecipientPolicyEdges).mockImplementationOnce(async (request) => ({
+			...preview(request.changes),
+			projects: [
+				{
+					canonicalProjectIdentity: privatePath,
+					displayName: "codemem",
+					existingMemoryCount: 1,
+					futureMemoriesShared: true,
+				},
+			],
+		}));
+		mount(intent({ projectRecipients: [] }), {}, [
+			{ canonicalProjectIdentity: privateRemote, displayName: "codemem", existingMemoryCount: 2 },
+			{ canonicalProjectIdentity: privatePath, displayName: "codemem", existingMemoryCount: 1 },
+		]);
+		act(() => {
+			openRecipientPolicyManagement({
+				mode: "recipient-add",
+				recipient: { recipientKind: "identity", identityId: "identity-adam" },
+			});
+		});
+
+		const labels = [...document.querySelectorAll(".recipient-policy-management-name")].map(
+			(label) => label.textContent,
+		);
+		expect(labels).toEqual(["codemem — Project 2 of 2", "codemem — Project 1 of 2"]);
+		expect(document.body.outerHTML).not.toContain(privatePath);
+		expect(document.body.outerHTML).not.toContain(privateRemote);
+
+		act(() => checkbox("codemem — Project 1 of 2").click());
+		await reviewSelection();
+
+		expect(api.previewRecipientPolicyEdges).toHaveBeenCalledWith({
+			version: 1,
+			changes: [
+				{
+					canonicalProjectIdentity: privatePath,
+					recipient: { recipientKind: "identity", identityId: "identity-adam" },
+					action: "add",
+				},
+			],
+		});
+		expect(document.body.textContent).toContain(
+			"codemem — Project 1 of 2 — Access changes affect 1 existing memories",
+		);
+		expect(document.body.outerHTML).not.toContain(privatePath);
+		expect(document.body.outerHTML).not.toContain(privateRemote);
+	});
+
 	it("labels one recipient with mixed changes across selected Projects", async () => {
 		vi.mocked(api.previewRecipientPolicyEdges).mockImplementationOnce(async (request) => ({
 			...preview(request.changes),
@@ -982,6 +1034,7 @@ describe("recipient policy management dialog", () => {
 
 	it("marks long Project, Team, Identity, member, and device names as wrappable", async () => {
 		const longProject = "Project-with-a-very-long-unbroken-name-that-must-wrap";
+		const longProjectLabel = `${longProject} — Project 1 of 2`;
 		const longTeam = "Team-with-a-very-long-unbroken-name-that-must-wrap";
 		const longIdentity = "Identity-with-a-very-long-unbroken-name-that-must-wrap";
 		const longMember = "Member-with-a-very-long-unbroken-name-that-must-wrap";
@@ -1025,6 +1078,19 @@ describe("recipient policy management dialog", () => {
 					displayName: index === 0 ? longMember : longIdentity,
 				})),
 			}),
+			{},
+			[
+				{
+					canonicalProjectIdentity: "git:codemem",
+					displayName: longProject,
+					existingMemoryCount: 436,
+				},
+				{
+					canonicalProjectIdentity: "git:duplicate-long-project",
+					displayName: longProject,
+					existingMemoryCount: 1,
+				},
+			],
 		);
 		act(() => {
 			openRecipientPolicyManagement({ mode: "project-add", projectIds: ["git:codemem"] });
@@ -1037,7 +1103,7 @@ describe("recipient policy management dialog", () => {
 		act(() => checkbox("ExampleCo").click());
 		await reviewSelection();
 
-		for (const name of [longProject, longTeam, longIdentity, longDevice]) {
+		for (const name of [longProjectLabel, longTeam, longIdentity, longDevice]) {
 			const node = [...document.querySelectorAll(".recipient-policy-management-name")].find(
 				(candidate) => candidate.textContent === name,
 			);

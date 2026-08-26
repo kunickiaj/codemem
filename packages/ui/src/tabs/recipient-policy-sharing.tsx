@@ -9,6 +9,10 @@ import type {
 	RecipientPolicyIntentGraphV1,
 } from "../lib/api/sync";
 import { deviceIdentityAttentionItems } from "../lib/device-identity-inventory";
+import {
+	type ProjectIdentityPresentationItem,
+	projectIdentitySummaryGroups,
+} from "../lib/project-identity-presentation";
 import { RecipientPolicyInvitations } from "./recipient-policy-invitations";
 import {
 	openRecipientPolicyManagement,
@@ -200,14 +204,62 @@ function namesLabel(names: string[], empty: string): string {
 	return names.length ? names.join(", ") : empty;
 }
 
-function activeProjectNames(
+function activeProjectIdentities(
 	projectIds: Iterable<string>,
 	projectsById: Map<string, RecipientPolicyManagementProject>,
-): string[] {
-	return [...new Set(projectIds)].flatMap((projectId) => {
+): ProjectIdentityPresentationItem[] {
+	return [...new Set(projectIds)].map((projectId) => {
 		const project = projectsById.get(projectId);
-		return project ? [project.displayName] : [];
+		return {
+			canonicalId: projectId,
+			displayName: project?.displayName ?? "Unavailable Project",
+		};
 	});
+}
+
+const PROJECT_GROUP_PREVIEW_LIMIT = 3;
+
+function ProjectIdentitySummary({
+	empty,
+	identities,
+	qualifier,
+}: {
+	empty: string;
+	identities: ProjectIdentityPresentationItem[];
+	qualifier: string;
+}) {
+	if (identities.length === 0) return <>{empty}</>;
+	const groups = projectIdentitySummaryGroups(identities);
+	const groupLabel = (group: (typeof groups)[number]) =>
+		group.identityCount > 1
+			? `${group.displayName} (${countLabel(group.identityCount, "identity", "identities")})`
+			: group.displayName;
+	const preview = groups.slice(0, PROJECT_GROUP_PREVIEW_LIMIT);
+	return (
+		<>
+			{countLabel(
+				identities.length,
+				`${qualifier} Project identity`,
+				`${qualifier} Project identities`,
+			)}{" "}
+			— {preview.map(groupLabel).join(", ")}
+			{groups.length > PROJECT_GROUP_PREVIEW_LIMIT ? (
+				<>
+					<span aria-hidden="true">, …</span>
+					<details className="recipient-policy-sharing-project-details">
+						<summary>View all {countLabel(groups.length, "Project name group")}</summary>
+						<ul {...EXPLICIT_LIST_ROLE} aria-label={`All ${qualifier} Project identity groups`}>
+							{groups.map((group) => (
+								<li {...EXPLICIT_LIST_ITEM_ROLE} key={group.displayName}>
+									{groupLabel(group)}
+								</li>
+							))}
+						</ul>
+					</details>
+				</>
+			) : null}
+		</>
+	);
 }
 
 function RecipientActions({
@@ -311,7 +363,7 @@ function TeamsView({
 						.filter((device) => device.status === "active" && memberIds.includes(device.identityId))
 						.map((device) => device.deviceId),
 				).size;
-				const projectNames = activeProjectNames(
+				const projectIdentities = activeProjectIdentities(
 					intent.projectRecipients
 						.filter(
 							(edge) =>
@@ -349,8 +401,11 @@ function TeamsView({
 							<div>
 								<dt>Shared Projects</dt>
 								<dd>
-									{countLabel(projectNames.length, "active shared Project")} —{` `}
-									{namesLabel(projectNames, "No Projects shared")}
+									<ProjectIdentitySummary
+										empty="No Projects shared"
+										identities={projectIdentities}
+										qualifier="active shared"
+									/>
 								</dd>
 							</div>
 							<div>
@@ -415,7 +470,7 @@ function IdentitiesView({
 					),
 				];
 				const teamNames = teamIds.map((teamId) => activeTeamsById.get(teamId)?.displayName ?? "");
-				const directProjectNames = activeProjectNames(
+				const directProjectIdentities = activeProjectIdentities(
 					intent.projectRecipients
 						.filter(
 							(edge) =>
@@ -463,8 +518,11 @@ function IdentitiesView({
 							<div>
 								<dt>Directly shared Projects</dt>
 								<dd>
-									{countLabel(directProjectNames.length, "directly shared active Project")} —{` `}
-									{namesLabel(directProjectNames, "No Projects shared directly")}
+									<ProjectIdentitySummary
+										empty="No Projects shared directly"
+										identities={directProjectIdentities}
+										qualifier="directly shared active"
+									/>
 								</dd>
 							</div>
 						</dl>

@@ -1,5 +1,6 @@
 import { useEffect, useId, useState } from "preact/hooks";
 import type { LegacyTeamSetupDetailResponseV1, LegacyTeamSetupProjectV1 } from "../lib/api";
+import { stableProjectPresentationLabels } from "../lib/project-identity-presentation";
 
 export interface LegacyTeamSetupProjectsProps {
 	blocked: boolean;
@@ -10,13 +11,12 @@ export interface LegacyTeamSetupProjectsProps {
 	onMap: (project: LegacyTeamSetupProjectV1, resolvedProjectRef: string) => void;
 }
 
-function mappingName(project: LegacyTeamSetupProjectV1): string | null {
+function mappingName(
+	project: LegacyTeamSetupProjectV1,
+	labels: ReadonlyMap<string, string>,
+): string | null {
 	if (!project.resolvedProjectRef) return null;
-	return (
-		project.mappingChoices.find(
-			(choice) => choice.resolvedProjectRef === project.resolvedProjectRef,
-		)?.displayName ?? "Unavailable Project"
-	);
+	return labels.get(project.resolvedProjectRef) ?? "Unavailable Project";
 }
 
 function ProjectRow({
@@ -35,19 +35,50 @@ function ProjectRow({
 	const controlId = `${generatedId}-mapping`;
 	const helpId = `${generatedId}-help`;
 	const savedMapping = project.resolvedProjectRef ?? "";
-	const availableSavedMapping = project.mappingChoices.some(
-		(choice) => choice.resolvedProjectRef === savedMapping,
-	)
-		? savedMapping
-		: "";
-	const choiceKey = JSON.stringify(
-		project.mappingChoices.map((choice) => choice.resolvedProjectRef),
+	const labels = stableProjectPresentationLabels(
+		project.mappingChoices.map((choice) => ({
+			canonicalId: choice.resolvedProjectRef,
+			displayName: choice.displayName,
+		})),
 	);
+	const choiceRefs = [
+		...new Set(project.mappingChoices.map((choice) => choice.resolvedProjectRef)),
+	];
+	const sortedChoiceRefs = [...choiceRefs].sort((left, right) =>
+		left < right ? -1 : left > right ? 1 : 0,
+	);
+	const choiceTokens = new Map(
+		sortedChoiceRefs.map((resolvedProjectRef, index) => [
+			resolvedProjectRef,
+			`project-choice-${index + 1}`,
+		]),
+	);
+	const choiceByRef = new Map(
+		project.mappingChoices.map((choice) => [choice.resolvedProjectRef, choice]),
+	);
+	const choices = choiceRefs.flatMap((resolvedProjectRef) => {
+		const choice = choiceByRef.get(resolvedProjectRef);
+		return choice
+			? [
+					{
+						...choice,
+						label: labels.get(resolvedProjectRef) ?? choice.displayName,
+						token: choiceTokens.get(resolvedProjectRef) ?? "",
+					},
+				]
+			: [];
+	});
+	const availableSavedMapping =
+		choices.find((choice) => choice.resolvedProjectRef === savedMapping)?.token ?? "";
+	const choiceKey = JSON.stringify(sortedChoiceRefs);
 	const [draftMapping, setDraftMapping] = useState(availableSavedMapping);
 	useEffect(() => setDraftMapping(availableSavedMapping), [availableSavedMapping, choiceKey]);
+	const selectedMapping = choices.find(
+		(choice) => choice.token === draftMapping,
+	)?.resolvedProjectRef;
 	const controlsBlocked = blocked || busy;
-	const saveBlocked = controlsBlocked || !draftMapping || draftMapping === savedMapping;
-	const savedName = mappingName(project);
+	const saveBlocked = controlsBlocked || !selectedMapping || selectedMapping === savedMapping;
+	const savedName = mappingName(project, labels);
 	const controlDescription = [
 		!draftMapping ? helpId : undefined,
 		blocked ? blockedDescriptionId : undefined,
@@ -80,9 +111,9 @@ function ProjectRow({
 						value={draftMapping}
 					>
 						<option value="">Choose a Project</option>
-						{project.mappingChoices.map((choice) => (
-							<option key={choice.resolvedProjectRef} value={choice.resolvedProjectRef}>
-								{choice.displayName}
+						{choices.map((choice) => (
+							<option key={choice.resolvedProjectRef} value={choice.token}>
+								{choice.label}
 							</option>
 						))}
 					</select>
@@ -96,7 +127,7 @@ function ProjectRow({
 						aria-disabled={saveBlocked ? "true" : undefined}
 						className="settings-button legacy-team-setup-target"
 						onClick={() => {
-							if (!saveBlocked) onMap(project, draftMapping);
+							if (!saveBlocked && selectedMapping) onMap(project, selectedMapping);
 						}}
 						type="button"
 					>

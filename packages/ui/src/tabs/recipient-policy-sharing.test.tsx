@@ -132,10 +132,14 @@ function intent(
 	};
 }
 
-function mount(graph = intent(), options: Parameters<typeof mountRecipientPolicySharing>[3] = {}) {
+function mount(
+	graph = intent(),
+	options: Parameters<typeof mountRecipientPolicySharing>[3] = {},
+	projectInventory = projects,
+) {
 	const element = document.getElementById("mount");
 	if (!element) throw new Error("mount missing");
-	act(() => mountRecipientPolicySharing(element, projects, graph, options));
+	act(() => mountRecipientPolicySharing(element, projectInventory, graph, options));
 }
 
 function tab(label: string): HTMLButtonElement {
@@ -362,7 +366,7 @@ describe("recipient-focused Sharing", () => {
 		expect(text).toContain("ExampleCo");
 		expect(text).toContain("2 active members — Adam, Brian");
 		expect(text).toContain("2 active registered devices");
-		expect(text).toContain("1 active shared Project — Codemem");
+		expect(text).toContain("1 active shared Project identity — Codemem");
 		expect(text).toContain("Yes — future Team members inherit the Team’s shared Projects");
 		expect(text).not.toContain("Old Team");
 	});
@@ -376,12 +380,60 @@ describe("recipient-focused Sharing", () => {
 		expect(text).toContain("Local identity");
 		expect(text).toContain("1 active registered device — Adam’s Mac");
 		expect(text).toContain("1 active Team membership — ExampleCo");
-		expect(text).toContain("1 directly shared active Project — API");
+		expect(text).toContain("1 directly shared active Project identity — API");
 		expect(text).toContain("Team Projects are shown on Team cards");
 		expect(text).toContain("per-device eligibility cannot be inferred");
 		expect(text).not.toContain("Team-inherited Project");
 		expect(text).not.toContain("Codemem");
 		expect(text).not.toContain("directly shared active Project — Codemem");
+	});
+
+	it("groups exact same-label Project identities with a bounded accessible preview", () => {
+		const privatePath = "/private/worktrees/codemem";
+		const privateRemote = "ssh://git@private.example.test/codemem.git";
+		const repeatedProjects: RecipientPolicyManagementProject[] = [
+			{ canonicalProjectIdentity: privateRemote, displayName: "Codemem", existingMemoryCount: 2 },
+			{ canonicalProjectIdentity: "git:docs", displayName: "Docs", existingMemoryCount: 3 },
+			{ canonicalProjectIdentity: privatePath, displayName: "Codemem", existingMemoryCount: 1 },
+			{ canonicalProjectIdentity: "git:api", displayName: "API", existingMemoryCount: 4 },
+			{ canonicalProjectIdentity: "git:tools", displayName: "Tools", existingMemoryCount: 5 },
+		];
+		const teamEdges = repeatedProjects.map((project, index) => ({
+			version: 1 as const,
+			canonicalProjectIdentity: project.canonicalProjectIdentity,
+			recipientKind: "team" as const,
+			teamId: "team-example",
+			intentSource: "user" as const,
+			policyRevision: `team-${index}`,
+			status: "active" as const,
+		}));
+		const identityEdges = repeatedProjects.map((project, index) => ({
+			version: 1 as const,
+			canonicalProjectIdentity: project.canonicalProjectIdentity,
+			recipientKind: "identity" as const,
+			identityId: "identity-adam",
+			intentSource: "user" as const,
+			policyRevision: `identity-${index}`,
+			status: "active" as const,
+		}));
+
+		mount(intent({ projectRecipients: [...teamEdges, ...identityEdges] }), {}, repeatedProjects);
+
+		expect(visiblePanel().textContent).toContain("5 active shared Project identities");
+		expect(visiblePanel().textContent).toContain("Codemem (2 identities)");
+		const disclosure = visiblePanel().querySelector<HTMLDetailsElement>(
+			".recipient-policy-sharing-project-details",
+		);
+		expect(disclosure?.open).toBe(false);
+		expect(disclosure?.querySelector("summary")?.textContent).toBe(
+			"View all 4 Project name groups",
+		);
+		expect(disclosure?.querySelector("ul")?.getAttribute("role")).toBe("list");
+		clickTab("Identities");
+		expect(visiblePanel().textContent).toContain("5 directly shared active Project identities");
+		expect(visiblePanel().textContent).toContain("Codemem (2 identities)");
+		expect(document.body.outerHTML).not.toContain(privatePath);
+		expect(document.body.outerHTML).not.toContain(privateRemote);
 	});
 
 	it("opens exact recipient management requests from both action labels", () => {
