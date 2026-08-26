@@ -1,0 +1,75 @@
+# Legacy Team setup UX hotfix design
+
+## Context
+
+The `0.43.0` legacy Team setup flow preserves access safety, but dogfooding exposed two usability failures for a valid large migration:
+
+- a Team with 63 automatically mapped Projects skips directly from Devices to Review;
+- six included devices produce 509 exact changes, including a 63-by-6 device-access cross-product that is technically correct but not reviewable as a flat list.
+
+The same pass exposed overlapping numbered step labels and excessive spacing in the Team setup candidate list. Multiple distinct legacy groups can also share the fallback label `Legacy Team`, making their actions difficult to distinguish.
+
+## Goals
+
+- Make automatic Project inclusion explicit without changing which Projects migrate.
+- Keep the exact server-confirmed access delta available while presenting a useful summary first.
+- Safely group repeated human-readable labels without exposing coordinator, group, device, or canonical Project identifiers.
+- Repair the wizard stepper and Team setup candidate layout across supported widths.
+- Preserve server-authoritative refresh, confirmation digests, atomic activation, and fail-closed behavior.
+
+## Non-goals
+
+- Add Project inclusion or exclusion controls.
+- Change device decisions, Team membership, recipient policy, or activation semantics.
+- Recompute or replace the server-provided access delta in the browser.
+- Expose opaque identifiers to disambiguate repeated labels.
+
+## Design
+
+### Wizard progression
+
+An unfinished setup visits Devices, Projects, then Review even when all Project mappings are deterministic. The Projects step explains that all mapped Projects will be included and shows resolved and unresolved totals. Deterministic rows remain read-only; only unresolved mappings expose controls.
+
+The stepper uses explicit number elements inside equal-width step items rather than native ordered-list markers. Desktop layouts retain three columns. Narrow layouts stack without marker overlap and preserve logical keyboard and reading order.
+
+### Team setup candidate list
+
+Candidate entries use compact rows with three aligned areas: Team label, status, and action. Native bullets are removed. Narrow layouts stack the status and action beneath the label.
+
+When multiple candidates have the same normalized display label, the overview groups them under one label and reports the count. Each underlying candidate keeps its own setup action and opaque candidate reference, but visible action labels include a safe ordinal such as `Continue setup for Legacy Team 1 of 2`. No coordinator or group identifier is rendered.
+
+### Review summary
+
+The Review step leads with the effective result rather than the raw mutation count:
+
+- Team policy and membership totals;
+- number of Projects included;
+- number of included devices;
+- number of resulting device-access changes.
+
+Repeated labels are grouped with counts, for example `greenroom — 34 Project identities`. Project mapping, recipient, and device-access sections show grouped summaries by default. Native `details` and `summary` disclosures expose the exact server-provided rows for users who need the full audit trail.
+
+The confirmation checkbox continues to bind to the attempt, finish, access-delta, and viewer-access-delta digests. Expanding or collapsing details does not alter evidence or the finish request.
+
+## Accessibility
+
+- Step labels retain ordered semantics and expose the current step.
+- Candidate actions remain real buttons with unique accessible names.
+- Summary disclosures use native keyboard-accessible elements.
+- Counts and grouping do not rely on color.
+- Focus movement and live-region behavior remain unchanged.
+
+## Validation
+
+- Add failing component tests for automatic Project progression, duplicate candidate labels, stepper hooks, and responsive candidate-row structure.
+- Add review tests modeling 63 Projects, six devices, repeated labels, 509 exact changes, grouped summaries, and expandable exact details.
+- Assert that confirmation evidence and the finish request remain unchanged.
+- Run targeted Vitest files, TypeScript, lint, the full workspace test suite, UI build, and legacy Team migration E2E.
+
+## Delivery
+
+1. `codemem-r4lc.1`: wizard progression, candidate layout, and stepper fixes.
+2. `codemem-r4lc.2`: grouped review summary and exact-detail disclosures.
+3. `codemem-r4lc.3`: focused `0.43.1` release preparation after both fixes merge.
+
+Tagging and public publication remain separately approval-gated.
