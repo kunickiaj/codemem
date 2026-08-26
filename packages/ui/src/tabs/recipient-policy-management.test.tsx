@@ -447,8 +447,9 @@ describe("recipient policy management dialog", () => {
 		expect(document.body.textContent).toContain("Archived Team — Removing access · Team");
 		expect(document.body.textContent).toContain("Merged recipient — Removing access · Identity");
 		expect(document.body.textContent).toContain(
-			"identity-deactivated — Removing access · Identity",
+			"Unavailable Identity — Removing access · Identity",
 		);
+		expect(document.body.outerHTML).not.toContain("identity-deactivated");
 
 		expect(api.previewRecipientPolicyEdges).toHaveBeenCalledWith({
 			version: 1,
@@ -539,22 +540,75 @@ describe("recipient policy management dialog", () => {
 		expect(document.body.textContent).toContain("Adam — Mixed changes · Identity");
 	});
 
-	it("recipient-manage exposes stale active Projects only so they can be removed", async () => {
+	it("keeps unavailable private Projects generic while allowing their access to be removed", async () => {
+		const privatePath = "/Users/private-user/work/secret-client";
+		const privateRemote = "ssh://git@private.example.test/secret/client.git";
+		vi.mocked(api.previewRecipientPolicyEdges).mockImplementationOnce(async (request) => ({
+			...preview(request.changes),
+			projects: [privatePath, privateRemote].map((canonicalProjectIdentity) => ({
+				canonicalProjectIdentity,
+				displayName: canonicalProjectIdentity,
+				existingMemoryCount: 0,
+				futureMemoriesShared: true as const,
+			})),
+			selectedRecipients: [
+				{
+					recipientKind: "identity" as const,
+					identityId: "identity-adam",
+					displayName: "Adam",
+					verification: "local" as const,
+				},
+			],
+		}));
+		vi.mocked(api.commitRecipientPolicyEdges).mockImplementationOnce(async (request) => ({
+			version: 1,
+			status: "applied",
+			reviewedPolicyDigest: request.reviewedPolicyDigest,
+			errorCode: null,
+			outcomes: request.changes.map((change) => ({ change, outcome: "removed" as const })),
+			writeCount: request.changes.length,
+			idempotent: false,
+		}));
+		const onCommitted = vi.fn(async () => {
+			mount(intent(), { onCommitted }, [
+				...projects,
+				{
+					canonicalProjectIdentity: privatePath,
+					displayName: "Recovered Project A",
+					existingMemoryCount: 0,
+				},
+				{
+					canonicalProjectIdentity: privateRemote,
+					displayName: "Recovered Project B",
+					existingMemoryCount: 0,
+				},
+			]);
+		});
 		mount(
 			intent({
 				projectRecipients: [
 					...intent().projectRecipients,
 					{
 						version: 1,
-						canonicalProjectIdentity: "git:removed",
+						canonicalProjectIdentity: privatePath,
 						recipientKind: "identity",
 						identityId: "identity-adam",
 						intentSource: "user",
-						policyRevision: "revision-stale-project",
+						policyRevision: "revision-stale-path",
+						status: "active",
+					},
+					{
+						version: 1,
+						canonicalProjectIdentity: privateRemote,
+						recipientKind: "identity",
+						identityId: "identity-adam",
+						intentSource: "user",
+						policyRevision: "revision-stale-remote",
 						status: "active",
 					},
 				],
 			}),
+			{ onCommitted },
 		);
 		act(() => {
 			openRecipientPolicyManagement({
@@ -563,22 +617,50 @@ describe("recipient policy management dialog", () => {
 			});
 		});
 
-		expect(checkbox("git:removed").checked).toBe(true);
-		expect(document.body.textContent).toContain(
-			"Unavailable Project · existing access can only be removed",
+		const unavailableProjects = [...document.querySelectorAll<HTMLLabelElement>("label")].filter(
+			(label) => label.querySelector("strong")?.textContent?.startsWith("Unavailable Project"),
 		);
-		act(() => checkbox("git:removed").click());
+		expect(unavailableProjects).toHaveLength(2);
+		expect(unavailableProjects.map((label) => label.querySelector("strong")?.textContent)).toEqual([
+			"Unavailable Project 1 of 2",
+			"Unavailable Project 2 of 2",
+		]);
+		expect(document.body.textContent).toContain(
+			"Unavailable Project 1 of 2 · existing access can only be removed",
+		);
+		expect(document.body.outerHTML).not.toContain(privatePath);
+		expect(document.body.outerHTML).not.toContain(privateRemote);
+		act(() => {
+			for (const label of unavailableProjects) {
+				label.querySelector<HTMLInputElement>('input[type="checkbox"]')?.click();
+			}
+		});
 		await reviewSelection();
+		expect(document.body.textContent).toContain("Unavailable Project 1 of 2");
+		expect(document.body.textContent).toContain("Unavailable Project 2 of 2");
+		expect(document.body.outerHTML).not.toContain(privatePath);
+		expect(document.body.outerHTML).not.toContain(privateRemote);
 		expect(api.previewRecipientPolicyEdges).toHaveBeenCalledWith({
 			version: 1,
 			changes: [
 				{
-					canonicalProjectIdentity: "git:removed",
+					canonicalProjectIdentity: privatePath,
+					recipient: { recipientKind: "identity", identityId: "identity-adam" },
+					action: "remove",
+				},
+				{
+					canonicalProjectIdentity: privateRemote,
 					recipient: { recipientKind: "identity", identityId: "identity-adam" },
 					action: "remove",
 				},
 			],
 		});
+		await confirmChanges();
+		expect(onCommitted).toHaveBeenCalledOnce();
+		expect(document.body.textContent).toContain("Unavailable Project 1 of 2");
+		expect(document.body.textContent).toContain("Unavailable Project 2 of 2");
+		expect(document.body.outerHTML).not.toContain(privatePath);
+		expect(document.body.outerHTML).not.toContain(privateRemote);
 
 		act(() => {
 			openRecipientPolicyManagement({
@@ -586,7 +668,86 @@ describe("recipient policy management dialog", () => {
 				recipient: { recipientKind: "identity", identityId: "identity-adam" },
 			});
 		});
-		expect(document.body.textContent).not.toContain("git:removed");
+		expect(document.body.outerHTML).not.toContain(privatePath);
+		expect(document.body.outerHTML).not.toContain(privateRemote);
+	});
+
+	it("keeps reviewed aliases after committed recipients disappear from refreshed intent", async () => {
+		const opaqueTeamIds = ["team_opaque_private_7ca891", "team_opaque_private_8db902"];
+		const opaqueIdentityIds = ["identity_opaque_private_52de04", "identity_opaque_private_63ef15"];
+		const base = intent();
+		const graph = intent({
+			projectRecipients: [
+				...base.projectRecipients,
+				...opaqueTeamIds.map((teamId, index) => ({
+					version: 1 as const,
+					canonicalProjectIdentity: "git:codemem",
+					recipientKind: "team" as const,
+					teamId,
+					intentSource: "user" as const,
+					policyRevision: `revision-opaque-team-${index}`,
+					status: "active" as const,
+				})),
+				...opaqueIdentityIds.map((identityId, index) => ({
+					version: 1 as const,
+					canonicalProjectIdentity: "git:codemem",
+					recipientKind: "identity" as const,
+					identityId,
+					intentSource: "user" as const,
+					policyRevision: `revision-opaque-identity-${index}`,
+					status: "active" as const,
+				})),
+			],
+		});
+		vi.mocked(api.commitRecipientPolicyEdges).mockImplementationOnce(async (request) => ({
+			version: 1,
+			status: "applied",
+			reviewedPolicyDigest: request.reviewedPolicyDigest,
+			errorCode: null,
+			outcomes: request.changes.map((change) => ({ change, outcome: "removed" as const })),
+			writeCount: request.changes.length,
+			idempotent: false,
+		}));
+		const onCommitted = vi.fn(async () => {
+			mount(base, { onCommitted });
+		});
+		mount(graph, { onCommitted });
+		act(() => {
+			openRecipientPolicyManagement({ mode: "project-manage", projectId: "git:codemem" });
+		});
+		act(() => {
+			checkbox("Unavailable Team 1 of 2").click();
+			checkbox("Unavailable Team 2 of 2").click();
+			checkbox("Unavailable Identity 1 of 2").click();
+			checkbox("Unavailable Identity 2 of 2").click();
+		});
+		await reviewSelection();
+
+		for (const label of [
+			"Unavailable Team 1 of 2",
+			"Unavailable Team 2 of 2",
+			"Unavailable Identity 1 of 2",
+			"Unavailable Identity 2 of 2",
+		]) {
+			expect(document.body.textContent).toContain(`${label} — Removing access`);
+		}
+		for (const opaqueId of [...opaqueTeamIds, ...opaqueIdentityIds]) {
+			expect(document.body.outerHTML).not.toContain(opaqueId);
+		}
+
+		await confirmChanges();
+		expect(onCommitted).toHaveBeenCalledOnce();
+		for (const label of [
+			"Unavailable Team 1 of 2",
+			"Unavailable Team 2 of 2",
+			"Unavailable Identity 1 of 2",
+			"Unavailable Identity 2 of 2",
+		]) {
+			expect(document.body.textContent).toContain(`Remove ${label} from Codemem: removed`);
+		}
+		for (const opaqueId of [...opaqueTeamIds, ...opaqueIdentityIds]) {
+			expect(document.body.outerHTML).not.toContain(opaqueId);
+		}
 	});
 
 	it("recipient-add offers only additional Projects and cannot emit removals", async () => {

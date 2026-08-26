@@ -68,6 +68,38 @@ function normalizeProjectShareAcceptance(result: ImportInviteResult): ProjectSha
 
 function errorMessage(cause: unknown, fallback: string): string {
 	if (!(cause instanceof Error)) return fallback;
+	if (cause instanceof api.ProjectInviteAcceptanceError) {
+		const guidance: Record<string, string> = {
+			device_display_name_invalid:
+				"Enter a human-readable device name instead of an internal identifier.",
+			device_display_name_required: "Enter a device display name.",
+			device_display_name_too_long: "Use a device display name with 120 characters or fewer.",
+			invite_already_bound:
+				"This invitation was accepted by another device. Ask the owner to create a new invitation.",
+			invite_expired: "This invitation expired. Ask the owner to create a new invitation.",
+			invite_identity_conflict:
+				"This invitation does not match this Identity. Ask the owner to create a new invitation for this recipient.",
+			invite_invalid:
+				"This invitation is no longer valid. Ask the owner to create a new invitation.",
+			inviter_identity_invalid:
+				"The owner's device identity could not be verified. Ask the owner to review the share and create a new invitation.",
+			project_invite_acceptance_failed:
+				"The invitation could not be accepted safely. Retry once, then ask the owner to review the share.",
+			project_invite_bootstrap_incomplete:
+				"The owner's device is not ready to establish trust yet. Retry once, then ask the owner to review the share.",
+			project_invite_self_acceptance_forbidden:
+				"The owner cannot accept this recipient invitation on the owner's device.",
+			project_invite_trust_state_invalid:
+				"The owner's trust setup could not be verified. Ask the owner to review the share.",
+			project_sync_enablement_failed:
+				"The invitation was accepted, but Project setup could not be enabled because the codemem config is not writable. Make the config writable, then check Sync to finish setup.",
+			recipient_display_name_invalid:
+				"Enter a human-readable Identity name instead of an internal identifier.",
+			recipient_display_name_required: "Enter an Identity display name.",
+			recipient_display_name_too_long: "Use an Identity display name with 120 characters or fewer.",
+		};
+		return guidance[cause.errorCode] ?? fallback;
+	}
 	if (cause.message === "reviewed_onboarding_stale") {
 		return "Invitation details changed. Review them again before creating it.";
 	}
@@ -577,15 +609,25 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 		try {
 			const result =
 				inspected.kind === "project_share_invite"
-					? await api.importCoordinatorInvite(invite.trim(), {
-							recipient_name: projectRecipientName.trim(),
-							device_name: projectDeviceName.trim(),
-						})
-					: await api.importCoordinatorInvite(invite.trim(), {
-							...(inspected.kind === "team_member" ? { recipient_name: recipientName.trim() } : {}),
-							device_name: inspected.device_name,
-							reviewed_onboarding_digest: inspected.onboarding.reviewedOnboardingDigest,
-						});
+					? await api.importCoordinatorInvite(
+							invite.trim(),
+							{
+								recipient_name: projectRecipientName.trim(),
+								device_name: projectDeviceName.trim(),
+							},
+							inspected.kind,
+						)
+					: await api.importCoordinatorInvite(
+							invite.trim(),
+							{
+								...(inspected.kind === "team_member"
+									? { recipient_name: recipientName.trim() }
+									: {}),
+								device_name: inspected.device_name,
+								reviewed_onboarding_digest: inspected.onboarding.reviewedOnboardingDigest,
+							},
+							inspected.kind,
+						);
 			if (inspected.kind === "project_share_invite") {
 				setProjectAcceptance(normalizeProjectShareAcceptance(result));
 				setStatus("");
@@ -593,11 +635,13 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 				const acceptedKind = inspected.kind;
 				const restartRequired =
 					result.restart_required === true || result.setup_state === "restart_required";
-				const detail = typeof result.detail === "string" ? result.detail.trim() : "";
 				setRecipientAcceptance({
 					kind: acceptedKind,
 					restartRequired,
-					detail: detail || "Restart codemem before continuing.",
+					detail:
+						acceptedKind === "team_member"
+							? "Restart codemem to finish joining this Team."
+							: "Restart codemem to finish adding this device.",
 					deliveryPending:
 						acceptedKind === "add_device" && (inspected.onboarding?.projects?.length ?? 0) > 0,
 				});
@@ -605,10 +649,9 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 			}
 		} catch (cause) {
 			accepting.current = false;
-			const detail = cause instanceof Error ? cause.message.trim() : "";
 			const fallback =
-				inspected.kind === "project_share_invite" && detail
-					? detail
+				inspected.kind === "project_share_invite"
+					? "Unable to accept this Project invitation. Ask the owner to create a new invitation, then try again."
 					: "Unable to accept this invitation.";
 			setError(errorMessage(cause, fallback));
 			setStatus("");

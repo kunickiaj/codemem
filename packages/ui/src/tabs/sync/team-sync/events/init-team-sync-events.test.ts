@@ -214,7 +214,11 @@ describe("project invite review events", () => {
 
 		button.click();
 		await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledOnce());
-		expect(api.importCoordinatorInvite).toHaveBeenCalledWith("legacy-invite", undefined);
+		expect(api.importCoordinatorInvite).toHaveBeenCalledWith(
+			"legacy-invite",
+			undefined,
+			"legacy_team_invite",
+		);
 		expect(invite.value).toBe("");
 		await vi.waitFor(() => expect(button.textContent).toBe("Review invite"));
 	});
@@ -233,10 +237,14 @@ describe("project invite review events", () => {
 
 		button.click();
 		await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledOnce());
-		expect(api.importCoordinatorInvite).toHaveBeenCalledWith("project-invite", {
-			device_name: "Brian's Mac",
-			recipient_name: "Brian Updated",
-		});
+		expect(api.importCoordinatorInvite).toHaveBeenCalledWith(
+			"project-invite",
+			{
+				device_name: "Brian's Mac",
+				recipient_name: "Brian Updated",
+			},
+			"project_share_invite",
+		);
 		await vi.waitFor(() => expect(button.textContent).toBe("Review invite"));
 	});
 

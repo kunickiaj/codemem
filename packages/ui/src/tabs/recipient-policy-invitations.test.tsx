@@ -4,6 +4,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dialogSpy = vi.hoisted(() => vi.fn());
 const openProjectShare = vi.hoisted(() => vi.fn());
+const MockProjectInviteAcceptanceError = vi.hoisted(
+	() =>
+		class ProjectInviteAcceptanceError extends Error {
+			constructor(
+				message: string,
+				readonly errorCode: string,
+			) {
+				super(message);
+			}
+		},
+);
 
 vi.mock("../components/primitives/radix-dialog", () => ({
 	RadixDialog: (props: {
@@ -30,10 +41,12 @@ vi.mock("../components/primitives/radix-dialog", () => ({
 	},
 }));
 
-vi.mock("../lib/api", () => ({
+vi.mock("../lib/api", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../lib/api")>()),
 	createRecipientInvite: vi.fn(),
 	importCoordinatorInvite: vi.fn(),
 	inspectCoordinatorInvite: vi.fn(),
+	ProjectInviteAcceptanceError: MockProjectInviteAcceptanceError,
 	previewRecipientInvite: vi.fn(),
 }));
 
@@ -231,10 +244,14 @@ describe("recipient-policy invitations", () => {
 
 		act(() => button("Accept invitation", dialog).click());
 		await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledOnce());
-		expect(api.importCoordinatorInvite).toHaveBeenCalledWith("recipient-invite", {
-			device_name: "Travel Laptop",
-			reviewed_onboarding_digest: addDevicePreview.reviewedOnboardingDigest,
-		});
+		expect(api.importCoordinatorInvite).toHaveBeenCalledWith(
+			"recipient-invite",
+			{
+				device_name: "Travel Laptop",
+				reviewed_onboarding_digest: addDevicePreview.reviewedOnboardingDigest,
+			},
+			"add_device",
+		);
 		await vi.waitFor(() => expect(dialog.textContent).toContain("Device added"));
 		expect(dialog.textContent).toContain(
 			"Existing shared Projects do not sync to this device until",
@@ -311,11 +328,15 @@ describe("recipient-policy invitations", () => {
 		});
 
 		await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledOnce());
-		expect(api.importCoordinatorInvite).toHaveBeenCalledWith("team-member-invite", {
-			recipient_name: "Local Identity",
-			device_name: "Work Laptop",
-			reviewed_onboarding_digest: teamPreview.reviewedOnboardingDigest,
-		});
+		expect(api.importCoordinatorInvite).toHaveBeenCalledWith(
+			"team-member-invite",
+			{
+				recipient_name: "Local Identity",
+				device_name: "Work Laptop",
+				reviewed_onboarding_digest: teamPreview.reviewedOnboardingDigest,
+			},
+			"team_member",
+		);
 		await vi.waitFor(() => expect(dialog.textContent).toContain("Team invitation accepted"));
 		expect(dialog.textContent).not.toContain("Project setup is pending");
 		const result = dialog.querySelector("#recipient-invitation-result");
@@ -372,11 +393,15 @@ describe("recipient-policy invitations", () => {
 		expect(button("Accept invitation", dialog).disabled).toBe(false);
 		act(() => button("Accept invitation", dialog).click());
 		await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledOnce());
-		expect(api.importCoordinatorInvite).toHaveBeenCalledWith("team-member-invite", {
-			recipient_name: "Fresh Recipient",
-			device_name: "Work Laptop",
-			reviewed_onboarding_digest: teamPreview.reviewedOnboardingDigest,
-		});
+		expect(api.importCoordinatorInvite).toHaveBeenCalledWith(
+			"team-member-invite",
+			{
+				recipient_name: "Fresh Recipient",
+				device_name: "Work Laptop",
+				reviewed_onboarding_digest: teamPreview.reviewedOnboardingDigest,
+			},
+			"team_member",
+		);
 	});
 
 	it("surfaces restart guidance when Team acceptance enables sync", async () => {
@@ -391,7 +416,7 @@ describe("recipient-policy invitations", () => {
 			setup_state: "restart_required",
 			restart_required: true,
 			sync_enabled: true,
-			detail: "Restart codemem to start receiving the reviewed Projects.",
+			detail: "Restart after checking /Users/private-user/secret-project.",
 		});
 		mount();
 		act(() => button("Review invitation").click());
@@ -407,10 +432,9 @@ describe("recipient-policy invitations", () => {
 		act(() => button("Accept invitation", dialog).click());
 
 		await vi.waitFor(() =>
-			expect(dialog.textContent).toContain(
-				"Restart codemem to start receiving the reviewed Projects.",
-			),
+			expect(dialog.textContent).toContain("Restart codemem to finish joining this Team."),
 		);
+		expect(dialog.outerHTML).not.toContain("/Users/private-user/secret-project");
 		const result = dialog.querySelector<HTMLElement>("#recipient-invitation-result");
 		if (!result) throw new Error("Team restart completion missing");
 		expect(result.classList.contains("recipient-policy-invitation-result")).toBe(true);
@@ -548,10 +572,14 @@ describe("recipient-policy invitations", () => {
 		accept.focus();
 		act(() => accept.click());
 		await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledOnce());
-		expect(api.importCoordinatorInvite).toHaveBeenCalledWith("project-invite-payload", {
-			recipient_name: "Reviewed Brian",
-			device_name: "Reviewed Mac",
-		});
+		expect(api.importCoordinatorInvite).toHaveBeenCalledWith(
+			"project-invite-payload",
+			{
+				recipient_name: "Reviewed Brian",
+				device_name: "Reviewed Mac",
+			},
+			"project_share_invite",
+		);
 		await vi.waitFor(() =>
 			expect(document.activeElement).toBe(
 				document.getElementById("project-share-invitation-result"),
@@ -817,7 +845,7 @@ describe("recipient-policy invitations", () => {
 			type: "recipient_onboarding",
 			setup_state: "restart_required",
 			restart_required: true,
-			detail: "Restart codemem before continuing with the adopted Identity.",
+			detail: "Restart after contacting private.example.test.",
 		});
 		mount();
 		act(() => button("Review invitation").click());
@@ -833,10 +861,9 @@ describe("recipient-policy invitations", () => {
 		act(() => button("Accept invitation", dialog).click());
 
 		await vi.waitFor(() =>
-			expect(dialog.textContent).toContain(
-				"Restart codemem before continuing with the adopted Identity.",
-			),
+			expect(dialog.textContent).toContain("Restart codemem to finish adding this device."),
 		);
+		expect(dialog.outerHTML).not.toContain("private.example.test");
 		expect(dialog.textContent).not.toContain("Device added.");
 		expect(dialog.querySelector("#recipient-invitation-result")).toBe(document.activeElement);
 		expect(() => button("Accept invitation", dialog)).toThrow("button missing");
@@ -878,10 +905,14 @@ describe("recipient-policy invitations", () => {
 		act(() => button("Accept Project access", dialog).click());
 
 		await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledOnce());
-		expect(api.importCoordinatorInvite).toHaveBeenCalledWith("project-without-names", {
-			recipient_name: "Reviewed recipient",
-			device_name: "Reviewed device",
-		});
+		expect(api.importCoordinatorInvite).toHaveBeenCalledWith(
+			"project-without-names",
+			{
+				recipient_name: "Reviewed recipient",
+				device_name: "Reviewed device",
+			},
+			"project_share_invite",
+		);
 		await vi.waitFor(() =>
 			expect(dialog.textContent).toContain("Project setup status could not be confirmed"),
 		);
@@ -889,9 +920,11 @@ describe("recipient-policy invitations", () => {
 	});
 
 	it("keeps the reviewed Project payload available for retry after an acceptance error", async () => {
+		const hostileError =
+			'Backend failure at /Users/private-user/work/secret-client for ssh://git@private.example.test/secret/client.git (identity_opaque_private_52de04) <img src=x onerror="alert(1)">';
 		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue(projectShareInspection);
 		vi.mocked(api.importCoordinatorInvite)
-			.mockRejectedValueOnce(new Error("Ask the owner for a new invitation, then try again."))
+			.mockRejectedValueOnce(new Error(hostileError))
 			.mockResolvedValueOnce({
 				status: "pending_setup",
 				setup_state: "pending_inviter",
@@ -912,17 +945,66 @@ describe("recipient-policy invitations", () => {
 		act(() => button("Accept Project access", dialog).click());
 		await vi.waitFor(() =>
 			expect(dialog.querySelector('[role="alert"]')?.textContent).toContain(
-				"Ask the owner for a new invitation, then try again.",
+				"Unable to accept this Project invitation. Ask the owner to create a new invitation, then try again.",
 			),
 		);
+		expect(dialog.textContent).not.toContain(hostileError);
+		expect(dialog.outerHTML).not.toContain("/Users/private-user/work/secret-client");
+		expect(dialog.outerHTML).not.toContain("private.example.test");
+		expect(dialog.outerHTML).not.toContain("identity_opaque_private_52de04");
+		expect(dialog.querySelector("img")).toBeNull();
 		expect(dialog.textContent).toContain("Codemem — 41 existing memories");
 		expect(button("Accept Project access", dialog).disabled).toBe(false);
 		act(() => button("Accept Project access", dialog).click());
 		await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledTimes(2));
-		expect(api.importCoordinatorInvite).toHaveBeenNthCalledWith(2, "retry-project-invite", {
-			recipient_name: "Brian",
-			device_name: "Brian’s Mac",
+		expect(api.importCoordinatorInvite).toHaveBeenNthCalledWith(
+			2,
+			"retry-project-invite",
+			{
+				recipient_name: "Brian",
+				device_name: "Brian’s Mac",
+			},
+			"project_share_invite",
+		);
+	});
+
+	it.each([
+		["invite_expired", "This invitation expired. Ask the owner to create a new invitation."],
+		[
+			"project_invite_self_acceptance_forbidden",
+			"The owner cannot accept this recipient invitation on the owner's device.",
+		],
+		[
+			"device_display_name_invalid",
+			"Enter a human-readable device name instead of an internal identifier.",
+		],
+		[
+			"project_sync_enablement_failed",
+			"The invitation was accepted, but Project setup could not be enabled because the codemem config is not writable. Make the config writable, then check Sync to finish setup.",
+		],
+	] as const)("shows safe Project invitation guidance for %s", async (code, guidance) => {
+		const hostileError = `private backend detail for ${code}`;
+		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue(projectShareInspection);
+		vi.mocked(api.importCoordinatorInvite).mockRejectedValue(
+			new api.ProjectInviteAcceptanceError(hostileError, code),
+		);
+		mount();
+		act(() => button("Review invitation").click());
+		const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+		const dialog = document.querySelector('[role="dialog"]');
+		if (!textarea || !dialog) throw new Error("acceptance dialog missing");
+		act(() => {
+			textarea.value = "project-invite";
+			textarea.dispatchEvent(new Event("input", { bubbles: true }));
 		});
+		act(() => button("Review invitation", dialog).click());
+		await vi.waitFor(() => expect(dialog.textContent).toContain("Exact Projects shared directly"));
+		act(() => button("Accept Project access", dialog).click());
+
+		await vi.waitFor(() =>
+			expect(dialog.querySelector('[role="alert"]')?.textContent).toContain(guidance),
+		);
+		expect(dialog.textContent).not.toContain(hostileError);
 	});
 
 	it("shows loading, error, and empty states without exposing internal language", async () => {

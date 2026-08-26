@@ -82,6 +82,55 @@ function sameRecipient(
 	return edgeRecipientKey(edge) === recipientKey(recipient);
 }
 
+function ordinalLabels(keys: readonly string[], label: string): ReadonlyMap<string, string> {
+	const sorted = [...new Set(keys)].sort((left, right) =>
+		left < right ? -1 : left > right ? 1 : 0,
+	);
+	return new Map(
+		sorted.map((key, index) => [
+			key,
+			sorted.length === 1 ? label : `${label} ${index + 1} of ${sorted.length}`,
+		]),
+	);
+}
+
+function unavailableRecipientLabels(
+	intent: RecipientPolicyIntentGraphV1,
+	request: RecipientPolicyManagementRequest | null,
+): ReadonlyMap<string, string> {
+	if (request?.mode !== "project-manage") return new Map();
+	const knownTeamIds = new Set(intent.teams.map((team) => team.teamId));
+	const knownIdentityIds = new Set(intent.identities.map((identity) => identity.identityId));
+	const activeEdges = intent.projectRecipients.filter(
+		(edge) => edge.status === "active" && edge.canonicalProjectIdentity === request.projectId,
+	);
+	const missingTeams = activeEdges.flatMap((edge) =>
+		edge.recipientKind === "team" && !knownTeamIds.has(edge.teamId) ? [edgeRecipientKey(edge)] : [],
+	);
+	const missingIdentities = activeEdges.flatMap((edge) =>
+		edge.recipientKind === "identity" && !knownIdentityIds.has(edge.identityId)
+			? [edgeRecipientKey(edge)]
+			: [],
+	);
+	return new Map([
+		...ordinalLabels(missingTeams, "Unavailable Team"),
+		...ordinalLabels(missingIdentities, "Unavailable Identity"),
+	]);
+}
+
+function unavailableProjectLabels(
+	projects: readonly RecipientPolicyManagementProject[],
+	request: RecipientPolicyManagementRequest | null,
+	initial: readonly string[],
+): ReadonlyMap<string, string> {
+	if (request?.mode !== "recipient-manage") return new Map();
+	const visibleProjectIds = new Set(projects.map((project) => project.canonicalProjectIdentity));
+	return ordinalLabels(
+		initial.filter((canonicalProjectIdentity) => !visibleProjectIds.has(canonicalProjectIdentity)),
+		"Unavailable Project",
+	);
+}
+
 function safeError(cause: unknown, fallback: string): string {
 	if (cause instanceof api.RecipientPolicyEdgesStaleError) {
 		return "Recipient access changed after this review. Review the refreshed changes before trying again.";
@@ -120,6 +169,7 @@ function Choice({
 function recipientChoices(
 	intent: RecipientPolicyIntentGraphV1,
 	request: RecipientPolicyManagementRequest | null,
+	unavailableLabels: ReadonlyMap<string, string>,
 ) {
 	const activeMemberships = intent.teamMemberships.filter((item) => item.status === "active");
 	const identitiesById = new Map(
@@ -155,17 +205,19 @@ function recipientChoices(
 		if (choiceKeys.has(key)) continue;
 		if (edge.recipientKind === "team") {
 			const team = intent.teams.find((candidate) => candidate.teamId === edge.teamId);
+			const unavailableLabel = unavailableLabels.get(key) ?? "Unavailable Team";
 			choices.push({
 				key,
-				label: team?.displayName ?? "Unavailable Team",
-				description: `${team?.status === "archived" ? "Archived Team" : "Unavailable Team"} · existing access can only be removed`,
+				label: team?.displayName ?? unavailableLabel,
+				description: `${team?.status === "archived" ? "Archived Team" : unavailableLabel} · existing access can only be removed`,
 			});
 		} else {
 			const identity = identitiesById.get(edge.identityId);
+			const unavailableLabel = unavailableLabels.get(key) ?? "Unavailable Identity";
 			choices.push({
 				key,
-				label: identity?.displayName ?? "Unavailable Identity",
-				description: `${identity?.status === "merged" ? "Merged Identity" : "Unavailable Identity"} · existing access can only be removed`,
+				label: identity?.displayName ?? unavailableLabel,
+				description: `${identity?.status === "merged" ? "Merged Identity" : unavailableLabel} · existing access can only be removed`,
 			});
 		}
 		choiceKeys.add(key);
@@ -199,6 +251,7 @@ function projectChoices(
 	projects: RecipientPolicyManagementProject[],
 	request: RecipientPolicyManagementRequest,
 	initial: string[],
+	unavailableLabels: ReadonlyMap<string, string>,
 ): Array<RecipientPolicyManagementProject & { description: string }> {
 	const visibleProjects =
 		request.mode === "recipient-add"
@@ -212,13 +265,16 @@ function projectChoices(
 	const visibleProjectIds = new Set(
 		visibleProjects.map((project) => project.canonicalProjectIdentity),
 	);
-	for (const canonicalProjectIdentity of initial) {
-		if (visibleProjectIds.has(canonicalProjectIdentity)) continue;
+	const unavailableProjectIds = initial.filter(
+		(canonicalProjectIdentity) => !visibleProjectIds.has(canonicalProjectIdentity),
+	);
+	for (const canonicalProjectIdentity of unavailableProjectIds) {
+		const label = unavailableLabels.get(canonicalProjectIdentity) ?? "Unavailable Project";
 		choices.push({
 			canonicalProjectIdentity,
-			displayName: canonicalProjectIdentity,
+			displayName: label,
 			existingMemoryCount: 0,
-			description: "Unavailable Project · existing access can only be removed",
+			description: `${label} · existing access can only be removed`,
 		});
 	}
 	return choices;
@@ -358,11 +414,24 @@ function deduplicateEffectiveDevices(
 	});
 }
 
+function previewProjectLabel(
+	project: RecipientPolicyEdgePreviewResponseV1["projects"][number],
+	projectLabels: ReadonlyMap<string, string>,
+): string {
+	const localLabel = projectLabels.get(project.canonicalProjectIdentity);
+	if (localLabel) return localLabel;
+	return project.displayName !== project.canonicalProjectIdentity
+		? project.displayName
+		: "Unavailable Project";
+}
+
 function Review({
 	preview,
+	projectLabels,
 	recipientLabels,
 }: {
 	preview: RecipientPolicyEdgePreviewResponseV1;
+	projectLabels: ReadonlyMap<string, string>;
 	recipientLabels: ReadonlyMap<string, string>;
 }) {
 	const effectiveDevices = deduplicateEffectiveDevices(preview.effectiveDevices);
@@ -374,7 +443,9 @@ function Review({
 				<ul>
 					{preview.projects.map((project) => (
 						<li key={project.canonicalProjectIdentity}>
-							<strong className="recipient-policy-management-name">{project.displayName}</strong>
+							<strong className="recipient-policy-management-name">
+								{previewProjectLabel(project, projectLabels)}
+							</strong>
 							<span>
 								{" "}
 								— Access changes affect {project.existingMemoryCount.toLocaleString()} existing
@@ -418,7 +489,9 @@ function Review({
 						<li key={recipientKey(recipient)}>
 							<strong className="recipient-policy-management-name">
 								{recipientLabels.get(recipientKey(recipient)) ??
-									(recipient.recipientKind === "team" ? recipient.teamId : recipient.identityId)}
+									(recipient.recipientKind === "team"
+										? "Unavailable Team"
+										: "Unavailable Identity")}
 							</strong>{" "}
 							<span>
 								— {recipientActionLabel(preview.outcomes, recipient)} ·{" "}
@@ -472,7 +545,7 @@ function Review({
 									className="recipient-policy-management-name"
 									key={project.canonicalProjectIdentity}
 								>
-									{project.displayName}
+									{previewProjectLabel(project, projectLabels)}
 								</li>
 							))}
 						</ul>
@@ -485,9 +558,13 @@ function Review({
 
 function CommitResult({
 	preview,
+	projectLabels,
+	recipientLabels,
 	result,
 }: {
 	preview: RecipientPolicyEdgePreviewResponseV1;
+	projectLabels: ReadonlyMap<string, string>;
+	recipientLabels: ReadonlyMap<string, string>;
 	result: RecipientPolicyEdgeCommitResultV1;
 }) {
 	const technicalStatus =
@@ -507,15 +584,19 @@ function CommitResult({
 				{result.outcomes.length ? (
 					<ul>
 						{result.outcomes.map((item) => {
-							const projectName =
-								preview.projects.find(
-									(project) =>
-										project.canonicalProjectIdentity === item.change.canonicalProjectIdentity,
-								)?.displayName ?? "Selected Project";
+							const previewProject = preview.projects.find(
+								(project) =>
+									project.canonicalProjectIdentity === item.change.canonicalProjectIdentity,
+							);
+							const projectName = previewProject
+								? previewProjectLabel(previewProject, projectLabels)
+								: (projectLabels.get(item.change.canonicalProjectIdentity) ??
+									"Unavailable Project");
 							const recipientName =
 								preview.selectedRecipients.find(
 									(recipient) => recipientKey(recipient) === recipientKey(item.change.recipient),
 								)?.displayName ??
+								recipientLabels.get(recipientKey(item.change.recipient)) ??
 								(item.change.recipient.recipientKind === "team" ? "Team" : "Identity");
 							return (
 								<li
@@ -544,7 +625,16 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 	const [status, setStatus] = useState("");
 	const [busy, setBusy] = useState(false);
 	const submitting = useRef(false);
-	const choices = useMemo(() => recipientChoices(intent, request), [intent, request]);
+	const reviewedRecipientLabels = useRef<ReadonlyMap<string, string>>(new Map());
+	const reviewedProjectLabels = useRef<ReadonlyMap<string, string>>(new Map());
+	const unavailableRecipients = useMemo(
+		() => unavailableRecipientLabels(intent, request),
+		[intent, request],
+	);
+	const choices = useMemo(
+		() => recipientChoices(intent, request, unavailableRecipients),
+		[intent, request, unavailableRecipients],
+	);
 	const recipientLabels = useMemo(
 		() =>
 			new Map([
@@ -552,9 +642,15 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 				...intent.identities.map(
 					(identity) => [`identity:${identity.identityId}`, identity.displayName] as const,
 				),
+				...unavailableRecipients,
 			]),
-		[intent],
+		[intent, unavailableRecipients],
 	);
+	const unavailableProjects = useMemo(
+		() => unavailableProjectLabels(projects, request, initial),
+		[initial, projects, request],
+	);
+	const projectLabels = useMemo(() => new Map(unavailableProjects), [unavailableProjects]);
 	const projectIds = useMemo(
 		() => new Set(projects.map((project) => project.canonicalProjectIdentity)),
 		[projects],
@@ -569,6 +665,8 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 			setSelected(nextRequest.mode === "recipient-add" ? [] : nextInitial);
 			setPreview(null);
 			setResult(null);
+			reviewedRecipientLabels.current = new Map();
+			reviewedProjectLabels.current = new Map();
 			setError(null);
 			setStatus("");
 			setBusy(false);
@@ -608,7 +706,7 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 		(request.mode === "project-add" || request.mode === "recipient-add") && selected.length === 0;
 	const noChanges =
 		request.mode !== "project-add" && request.mode !== "recipient-add" && changes.length === 0;
-	const availableProjects = projectChoices(projects, request, initial);
+	const availableProjects = projectChoices(projects, request, initial, unavailableProjects);
 	const resultApplied = result?.status === "applied";
 	const title = result
 		? resultApplied
@@ -630,6 +728,8 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 		setRequest(null);
 		setPreview(null);
 		setResult(null);
+		reviewedRecipientLabels.current = new Map();
+		reviewedProjectLabels.current = new Map();
 		setError(null);
 		setStatus("");
 	};
@@ -655,7 +755,10 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 		setError(null);
 		setStatus("Reviewing exact recipient access changes.");
 		try {
-			setPreview(await api.previewRecipientPolicyEdges({ version: 1, changes }));
+			const reviewed = await api.previewRecipientPolicyEdges({ version: 1, changes });
+			reviewedRecipientLabels.current = new Map(recipientLabels);
+			reviewedProjectLabels.current = new Map(projectLabels);
+			setPreview(reviewed);
 			setStatus("Review ready. Confirm the exact changes.");
 		} catch (cause) {
 			setError(safeError(cause, "Unable to review recipient access changes."));
@@ -687,6 +790,8 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 		} catch (cause) {
 			if (cause instanceof api.RecipientPolicyEdgesStaleError) {
 				setPreview(null);
+				reviewedRecipientLabels.current = new Map();
+				reviewedProjectLabels.current = new Map();
 				setStatus("");
 			}
 			setError(safeError(cause, "Unable to save recipient access changes."));
@@ -759,9 +864,18 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 							{unavailableMessage}
 						</p>
 					) : result && preview ? (
-						<CommitResult preview={preview} result={result} />
+						<CommitResult
+							preview={preview}
+							projectLabels={reviewedProjectLabels.current}
+							recipientLabels={reviewedRecipientLabels.current}
+							result={result}
+						/>
 					) : preview ? (
-						<Review preview={preview} recipientLabels={recipientLabels} />
+						<Review
+							preview={preview}
+							projectLabels={reviewedProjectLabels.current}
+							recipientLabels={reviewedRecipientLabels.current}
+						/>
 					) : request.mode === "recipient-add" || request.mode === "recipient-manage" ? (
 						<fieldset className="sync-dialog-radio-list" disabled={busy}>
 							<legend>{copy.legend}</legend>
@@ -835,6 +949,8 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 							preview && !result
 								? () => {
 										setPreview(null);
+										reviewedRecipientLabels.current = new Map();
+										reviewedProjectLabels.current = new Map();
 										setStatus("");
 									}
 								: close

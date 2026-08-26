@@ -18,6 +18,7 @@ import {
 	loadRecipientPolicyReview,
 	loadShareOperation,
 	loadShareOperations,
+	ProjectInviteAcceptanceError,
 	previewDeviceIdentityBindings,
 	previewRecipientInvite,
 	previewRecipientPolicyEdges,
@@ -97,6 +98,67 @@ afterEach(() => {
 });
 
 describe("recipient invitation API", () => {
+	it("preserves allowlisted Project invitation error codes without changing safe detail", async () => {
+		globalThis.fetch = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						detail: "This invitation expired. Ask the owner to create a new invitation.",
+						error: "invite_expired",
+					}),
+					{ status: 400 },
+				),
+		) as typeof fetch;
+
+		const failure = await importCoordinatorInvite(
+			"expired-project-invite",
+			undefined,
+			"project_share_invite",
+		).catch((cause: unknown) => cause);
+
+		expect(failure).toBeInstanceOf(ProjectInviteAcceptanceError);
+		expect(failure).toMatchObject({
+			errorCode: "invite_expired",
+			message: "This invitation expired. Ask the owner to create a new invitation.",
+		});
+	});
+
+	it.each([
+		"team_member",
+		"add_device",
+	] as const)("does not classify %s failures as Project invitation failures", async (inviteKind) => {
+		globalThis.fetch = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ error: "invite_identity_conflict" }), {
+					status: 409,
+				}),
+		) as typeof fetch;
+
+		const failure = await importCoordinatorInvite("recipient-invite", undefined, inviteKind).catch(
+			(cause: unknown) => cause,
+		);
+
+		expect(failure).toBeInstanceOf(Error);
+		expect(failure).not.toBeInstanceOf(ProjectInviteAcceptanceError);
+		expect(failure).toMatchObject({ message: "invite_identity_conflict" });
+	});
+
+	it("keeps unknown Project invitation errors untyped", async () => {
+		globalThis.fetch = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ detail: "private backend detail", error: "private_code" }), {
+					status: 400,
+				}),
+		) as typeof fetch;
+
+		const failure = await importCoordinatorInvite("unknown-project-invite").catch(
+			(cause: unknown) => cause,
+		);
+
+		expect(failure).toBeInstanceOf(Error);
+		expect(failure).not.toBeInstanceOf(ProjectInviteAcceptanceError);
+	});
+
 	it("prefers actionable invite-import detail over an opaque error code", async () => {
 		globalThis.fetch = vi.fn(
 			async () =>

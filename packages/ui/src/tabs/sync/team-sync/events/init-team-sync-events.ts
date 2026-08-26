@@ -53,6 +53,7 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 		"syncRecipientDeviceName",
 	) as HTMLInputElement | null;
 	let inspectedInviteValue = "";
+	let inspectedInviteKind: api.InspectInviteResult["kind"] | undefined;
 	let inviteInputRevision = 0;
 
 	syncShareProjectsButton?.addEventListener("click", () => {
@@ -73,6 +74,7 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 		if (inputRevision !== inviteInputRevision || syncJoinInvite?.value.trim() !== inviteValue) {
 			return "stale";
 		}
+		inspectedInviteKind = inspected.kind;
 		if (inspected.kind !== "project_share_invite") return "other";
 		const projectNames = (inspected.projects ?? [])
 			.map(
@@ -96,6 +98,7 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 		inviteInputRevision += 1;
 		if (syncJoinInvite.value.trim() === inspectedInviteValue) return;
 		inspectedInviteValue = "";
+		inspectedInviteKind = undefined;
 		if (projectInviteReview) projectInviteReview.hidden = true;
 		if (syncJoinButton) syncJoinButton.textContent = "Review invite";
 	});
@@ -219,7 +222,7 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 		syncJoinButton.disabled = true;
 		syncJoinButton.textContent = "Accepting\u2026";
 		try {
-			const result = await api.importCoordinatorInvite(inviteValue, identity);
+			const result = await api.importCoordinatorInvite(inviteValue, identity, inspectedInviteKind);
 			state.lastTeamJoin = result;
 			const resultFields = result as {
 				detail?: unknown;

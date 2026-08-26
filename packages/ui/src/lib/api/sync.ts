@@ -89,6 +89,35 @@ type CoordinatorInviteIdentity =
 			reviewed_onboarding_digest: string;
 	  };
 
+const PROJECT_INVITE_ACCEPTANCE_ERROR_CODES = new Set([
+	"device_display_name_invalid",
+	"device_display_name_required",
+	"device_display_name_too_long",
+	"invite_already_bound",
+	"invite_expired",
+	"invite_identity_conflict",
+	"invite_invalid",
+	"inviter_identity_invalid",
+	"project_invite_acceptance_failed",
+	"project_invite_bootstrap_incomplete",
+	"project_invite_self_acceptance_forbidden",
+	"project_invite_trust_state_invalid",
+	"project_sync_enablement_failed",
+	"recipient_display_name_invalid",
+	"recipient_display_name_required",
+	"recipient_display_name_too_long",
+]);
+
+export class ProjectInviteAcceptanceError extends Error {
+	constructor(
+		message: string,
+		readonly errorCode: string,
+	) {
+		super(message);
+		this.name = "ProjectInviteAcceptanceError";
+	}
+}
+
 type TriggerSyncTarget = {
 	address?: string;
 	peerDeviceId?: string;
@@ -110,6 +139,7 @@ export async function loadSyncStatus(
 export async function importCoordinatorInvite(
 	invite: string,
 	identity?: CoordinatorInviteIdentity,
+	inviteKind?: InspectInviteResult["kind"],
 ): Promise<ImportInviteResult> {
 	const resp = await fetch("/api/sync/invites/import", {
 		method: "POST",
@@ -119,7 +149,16 @@ export async function importCoordinatorInvite(
 	const { text, payload: data } = await readJsonPayload<ImportInviteResult>(resp);
 	if (!resp.ok) {
 		const detail = typeof data?.detail === "string" ? data.detail.trim() : "";
-		throw new Error(detail || payloadError(data) || text || "request failed");
+		const errorCode = payloadError(data);
+		const message = detail || errorCode || text || "request failed";
+		if (
+			inviteKind === "project_share_invite" &&
+			errorCode &&
+			PROJECT_INVITE_ACCEPTANCE_ERROR_CODES.has(errorCode)
+		) {
+			throw new ProjectInviteAcceptanceError(message, errorCode);
+		}
+		throw new Error(message);
 	}
 	return data;
 }

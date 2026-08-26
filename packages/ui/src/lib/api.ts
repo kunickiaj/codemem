@@ -139,6 +139,7 @@ export {
 	loadSyncStatus,
 	mergeActor,
 	ProjectForgetConfirmationError,
+	ProjectInviteAcceptanceError,
 	previewDeviceIdentityBindings,
 	previewProjectInvite,
 	previewRecipientInvite,
