@@ -109,6 +109,7 @@ function seedCoordinatorScopedDrafts(): void {
 		membersByScope: new Map(),
 		memberAvailabilityByScope: new Map(),
 		devices: [],
+		createPanelOpen: false,
 		createScopeId: "scope-a",
 		createLabel: "Space A",
 		createKind: "team",
@@ -149,6 +150,58 @@ describe("coordinator administration recovery lifecycle", () => {
 		coordinatorAdminState.groupScopeManagementOpen.clear();
 		coordinatorAdminState.groupScopeManagementDrafts.clear();
 		coordinatorAdminState.teamSetupGuide = null;
+		coordinatorAdminState.unnamedDeviceAliases.aliases.clear();
+		coordinatorAdminState.unnamedDeviceAliases.duplicateDisplayNames.clear();
+		coordinatorAdminState.unnamedDeviceAliases.reservedDisplayNames.clear();
+	});
+
+	it("reserves explicit names across device surfaces before allocating aliases", async () => {
+		mocks.loadCoordinatorAdminJoinRequests.mockResolvedValue({
+			items: [{ request_id: "request-unnamed", device_id: "join-unnamed", display_name: "" }],
+		});
+		mocks.loadCoordinatorAdminDevices.mockResolvedValue({
+			items: [
+				{
+					device_id: "device-named",
+					group_id: "group-a",
+					display_name: "Unnamed device 1",
+				},
+			],
+		});
+
+		await loadCoordinatorAdminData();
+
+		expect(coordinatorAdminState.unnamedDeviceAliases.aliases.get("join-unnamed")).toBe(
+			"Unnamed device 2",
+		);
+		expect(coordinatorAdminState.unnamedDeviceAliases.aliases.has("device-named")).toBe(false);
+	});
+
+	it("reallocates an existing alias after a later refresh reveals a colliding name", async () => {
+		mocks.loadCoordinatorAdminJoinRequests.mockResolvedValue({
+			items: [{ request_id: "request-unnamed", device_id: "join-unnamed", display_name: "" }],
+		});
+		mocks.loadCoordinatorAdminDevices.mockRejectedValueOnce(new Error("devices failed"));
+
+		await loadCoordinatorAdminData();
+		expect(coordinatorAdminState.unnamedDeviceAliases.aliases.get("join-unnamed")).toBe(
+			"Unnamed device 1",
+		);
+
+		mocks.loadCoordinatorAdminDevices.mockResolvedValue({
+			items: [
+				{
+					device_id: "device-named",
+					group_id: "group-a",
+					display_name: "Unnamed device 1",
+				},
+			],
+		});
+		await loadCoordinatorAdminData();
+
+		expect(coordinatorAdminState.unnamedDeviceAliases.aliases.get("join-unnamed")).toBe(
+			"Unnamed device 2",
+		);
 	});
 
 	it("marks first-load failures unavailable instead of treating them as empty snapshots", async () => {

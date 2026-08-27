@@ -13,6 +13,7 @@ import { waitFor } from "../lib/wait.js";
 
 const GROUP_ALPHA = "legacy-team-alpha";
 const GROUP_BETA = "legacy-team-beta";
+const GROUP_GAMMA = "legacy-team-gamma";
 const ALPHA_PROJECT = "https://example.invalid/e2e/alpha.git";
 const BETA_PROJECT = "https://example.invalid/e2e/beta.git";
 const WEB_PROJECT = "https://example.invalid/e2e/web.git";
@@ -23,7 +24,7 @@ const API = "/api/sync/team-setup/v1";
 
 interface FixtureSummary {
 	roster: Record<
-		"shared" | "optional" | "beta",
+		"shared" | "optional" | "beta" | "betaTwo" | "betaThree" | "betaFour",
 		{ deviceId: string; displayName: string; publicKey: string; fingerprint: string }
 	>;
 	offRosterDeviceId: string;
@@ -189,9 +190,20 @@ function coordinatorCommand(
 function createCoordinatorRoster(ctx: ScenarioContext, roster: FixtureSummary["roster"]): void {
 	coordinatorCommand(ctx, ["group-create", GROUP_ALPHA, "--name", "Legacy Alpha"], "04-create-alpha");
 	coordinatorCommand(ctx, ["group-create", GROUP_BETA, "--name", "Legacy Beta"], "05-create-beta");
+	coordinatorCommand(ctx, ["group-create", GROUP_GAMMA, "--name", "Legacy Gamma"], "06-create-gamma");
 	for (const [groupId, devices] of [
 		[GROUP_ALPHA, [roster.shared, roster.optional]],
-		[GROUP_BETA, [roster.shared, roster.optional, roster.beta]],
+		[
+			GROUP_BETA,
+			[
+				roster.shared,
+				roster.optional,
+				roster.beta,
+				roster.betaTwo,
+				roster.betaThree,
+				roster.betaFour,
+			],
+		],
 	] as const) {
 		for (const device of devices) {
 			coordinatorCommand(
@@ -211,6 +223,21 @@ function createCoordinatorRoster(ctx: ScenarioContext, roster: FixtureSummary["r
 			);
 		}
 	}
+	coordinatorCommand(
+		ctx,
+		[
+			"enroll-device",
+			GROUP_GAMMA,
+			roster.shared.deviceId,
+			"--fingerprint",
+			roster.shared.fingerprint,
+			"--public-key",
+			roster.shared.publicKey,
+			"--name",
+			roster.shared.displayName,
+		],
+		"06-enroll-unscoped-gamma",
+	);
 }
 
 function startServer(ctx: ScenarioContext): void {
@@ -382,6 +409,7 @@ async function loadDetail(
 function assertNoPolicyWrites(summary: FixtureSummary, message: string): void {
 	assert(summary.policies.teams.length === 0, `${message}: Team was written`);
 	assert(summary.policies.memberships.length === 0, `${message}: membership was written`);
+	assert(summary.policies.devices.length === 0, `${message}: device assignment was written`);
 	assert(summary.policies.decisions.length === 0, `${message}: device decision was written`);
 	assert(summary.policies.recipients.length === 0, `${message}: Project recipient was written`);
 	assert(summary.policies.reviewedMappings.length === 0, `${message}: Project repair was written`);
@@ -422,7 +450,7 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		{
 			sync_coordinator_url: "http://coordinator:7347",
 			sync_coordinator_admin_secret: ADMIN_SECRET,
-			sync_coordinator_groups: [GROUP_ALPHA, GROUP_BETA],
+			sync_coordinator_groups: [GROUP_ALPHA],
 			sync_coordinator_timeout_s: 10,
 		},
 		"07-write-config",
@@ -441,7 +469,7 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		{ description: "legacy Team viewer readiness", timeoutMs: 120_000, intervalMs: 2_000 },
 	);
 
-	// Arrange: discovery persists two drafts, but setup has not changed access policy.
+	// Arrange: Alpha is configured while active coordinator-backed scope evidence discovers Beta.
 	const summaryResponse = await request<{ version: 1; candidates: CandidateSummary[] }>(
 		ctx,
 		"GET",
@@ -456,7 +484,17 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 	const betaCandidate = summaryResponse.body.candidates.find(
 		(item) => item.displayName === "Legacy Beta",
 	);
-	assert(alphaCandidate && betaCandidate, "expected Legacy Alpha and Legacy Beta candidates");
+	const gammaCandidate = summaryResponse.body.candidates.find(
+		(item) => item.displayName === "Legacy Gamma",
+	);
+	assert(
+		alphaCandidate && betaCandidate && !gammaCandidate,
+		"expected configured Alpha and scope-backed Beta, but not unrelated Gamma",
+	);
+	assert(
+		alphaCandidate.deviceCount === 2 && betaCandidate.deviceCount === 6,
+		"configured Alpha and scope-backed Beta did not expose the exact current rosters",
+	);
 	let alpha = await loadDetail(ctx, alphaCandidate.candidateRef, "11-alpha-unresolved-detail");
 	const betaInitial = await loadDetail(ctx, betaCandidate.candidateRef, "12-beta-initial-detail");
 	assert(
@@ -464,8 +502,16 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		"explicit Project mapping did not block finish",
 	);
 	assert(
-		alpha.devices.length === 2 && betaInitial.devices.length === 3,
+		alpha.devices.length === 2 && betaInitial.devices.length === 6,
 		"overlapping rosters were not bounded as expected",
+	);
+	assert(
+		alpha.unresolvedDeviceCount === 2 &&
+			betaInitial.unresolvedDeviceCount === 6 &&
+			[...alpha.devices, ...betaInitial.devices].every(
+				(device) => device.decision === "unresolved" && device.targetIdentityRef === null,
+			),
+		"scope evidence bypassed explicit reviewed device decisions",
 	);
 	const before = fixture(ctx, "summary", "13-before-review-summary");
 	assertNoPolicyWrites(before, "candidate discovery");
@@ -566,25 +612,49 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		"Shared Device assignment was not reused across Team drafts",
 	);
 	await assignDevice(ctx, beta, "Shared Device", "Shared Person", "included", "28-beta-shared");
-	await assignDevice(ctx, beta, "Optional Device", "Optional Person", "included", "29-beta-optional");
+	await assignDevice(
+		ctx,
+		beta,
+		"Optional Device",
+		"Optional Person",
+		"included",
+		"29-beta-optional",
+	);
 	await assignDevice(ctx, beta, "Beta Device", "Beta Person", "included", "30-beta-only");
-	beta = await loadDetail(ctx, betaCandidate.candidateRef, "31-beta-ready-detail");
+	await assignDevice(ctx, beta, "Beta Two Device", "Beta Two Person", "included", "31-beta-two");
+	await assignDevice(
+		ctx,
+		beta,
+		"Beta Three Device",
+		"Beta Three Person",
+		"included",
+		"32-beta-three",
+	);
+	await assignDevice(
+		ctx,
+		beta,
+		"Beta Four Device",
+		"Beta Four Person",
+		"included",
+		"33-beta-four",
+	);
+	beta = await loadDetail(ctx, betaCandidate.candidateRef, "34-beta-ready-detail");
 	assert(beta.canFinish, "Beta did not become finishable");
 
 	// Negative: an external assignment appearing after review rejects the whole Beta transaction.
-	fixture(ctx, "conflict-beta-assignment", "32-conflict-beta-assignment");
+	fixture(ctx, "conflict-beta-assignment", "35-conflict-beta-assignment");
 	const conflictFinish = await request<{ error: string }>(
 		ctx,
 		"POST",
 		`${candidatePath(betaCandidate.candidateRef)}/finish`,
-		"33-reject-beta-assignment-conflict",
+		"36-reject-beta-assignment-conflict",
 		finishBody(beta),
 	);
 	assert(
 		conflictFinish.status === 409 && conflictFinish.body.error === "team_setup_assignment_changed",
 		"reassignment conflict did not fail closed",
 	);
-	const afterConflict = fixture(ctx, "summary", "34-after-conflict-summary");
+	const afterConflict = fixture(ctx, "summary", "37-after-conflict-summary");
 	assertExactRows(
 		afterConflict.policies.teams,
 		afterAlpha.policies.teams,
@@ -644,28 +714,66 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		ctx,
 		"POST",
 		`${candidatePath(betaCandidate.candidateRef)}/refresh`,
-		"35-refresh-beta-after-conflict",
+		"38-refresh-beta-after-conflict",
 		{},
 	);
 	assert(refreshedAfterConflict.status === 200, "Beta conflict refresh failed");
-	beta = await loadDetail(ctx, betaCandidate.candidateRef, "36-beta-conflict-detail");
-	await assignDevice(ctx, beta, "Shared Device", "Shared Person", "included", "37-beta-shared-current");
-	await assignDevice(ctx, beta, "Optional Device", "Optional Person", "included", "38-beta-optional-current");
-	await assignDevice(ctx, beta, "Beta Device", "Beta Person", "included", "39-beta-reassign");
-	beta = await loadDetail(ctx, betaCandidate.candidateRef, "40-beta-final-detail");
+	beta = await loadDetail(ctx, betaCandidate.candidateRef, "39-beta-conflict-detail");
+	await assignDevice(
+		ctx,
+		beta,
+		"Shared Device",
+		"Shared Person",
+		"included",
+		"40-beta-shared-current",
+	);
+	await assignDevice(
+		ctx,
+		beta,
+		"Optional Device",
+		"Optional Person",
+		"included",
+		"41-beta-optional-current",
+	);
+	await assignDevice(ctx, beta, "Beta Device", "Beta Person", "included", "42-beta-reassign");
+	await assignDevice(
+		ctx,
+		beta,
+		"Beta Two Device",
+		"Beta Two Person",
+		"included",
+		"43-beta-two-current",
+	);
+	await assignDevice(
+		ctx,
+		beta,
+		"Beta Three Device",
+		"Beta Three Person",
+		"included",
+		"44-beta-three-current",
+	);
+	await assignDevice(
+		ctx,
+		beta,
+		"Beta Four Device",
+		"Beta Four Person",
+		"included",
+		"45-beta-four-current",
+	);
+	beta = await loadDetail(ctx, betaCandidate.candidateRef, "46-beta-final-detail");
 	const betaFinishBody = finishBody(beta);
 	const lostStatus = await requestAndDropResponse(
 		ctx,
 		`${candidatePath(betaCandidate.candidateRef)}/finish`,
 		betaFinishBody,
-		"41-finish-beta-drop-response",
+		"47-finish-beta-drop-response",
 	);
 	assert(lostStatus === 200, "Beta finish did not complete before the response was dropped");
 	const recoveredSummary = await request<{ version: 1; candidates: CandidateSummary[] }>(
 		ctx,
 		"GET",
 		API,
-		"42-summary-after-lost-beta-finish",
+		"48-summary-after-lost-beta-finish",
 	);
 	const recoveredBetaSummary = recoveredSummary.body.candidates.find(
 		(candidate) => candidate.candidateRef === betaCandidate.candidateRef,
@@ -677,7 +785,7 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 	const recoveredBetaDetail = await loadDetail(
 		ctx,
 		betaCandidate.candidateRef,
-		"43-detail-after-lost-beta-finish",
+		"49-detail-after-lost-beta-finish",
 	);
 	assert(
 		recoveredBetaDetail.candidate.status === "ready" &&
@@ -685,7 +793,7 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 			!recoveredBetaDetail.canFinish,
 		"detail did not recover Beta as completed after the dropped finish response",
 	);
-	const afterLostResponse = fixture(ctx, "summary", "44-after-lost-beta-finish");
+	const afterLostResponse = fixture(ctx, "summary", "50-after-lost-beta-finish");
 	const storedBetaCompletion = afterLostResponse.completions.find(
 		(completion) => completion.candidate_ref === betaCandidate.candidateRef,
 	);
@@ -693,6 +801,7 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 	const storedBetaResponse = JSON.parse(
 		storedBetaCompletion.response_json,
 	) as StoredCompletionResponse;
+	assert(storedBetaResponse.status === "completed", "stored Beta completion was not completed");
 	const expectedBetaResponse: FinishResponse = {
 		version: 1,
 		status: storedBetaResponse.status,
@@ -708,14 +817,14 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		ctx,
 		"POST",
 		`${candidatePath(betaCandidate.candidateRef)}/finish`,
-		"45-retry-beta-finish-one",
+		"51-retry-beta-finish-one",
 		betaFinishBody,
 	);
 	const retryTwo = await request<FinishResponse>(
 		ctx,
 		"POST",
 		`${candidatePath(betaCandidate.candidateRef)}/finish`,
-		"46-retry-beta-finish-two",
+		"52-retry-beta-finish-two",
 		betaFinishBody,
 	);
 	assert(retryOne.status === 200 && retryTwo.status === 200, "completed Beta retry failed");
@@ -730,21 +839,57 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 	);
 
 	// Arrange: a later active device assigned to a reviewed person was never part of either roster.
-	fixture(ctx, "add-off-roster-device", "47-add-off-roster-device");
+	fixture(ctx, "add-off-roster-device", "53-add-off-roster-device");
 
 	// Assert: both Teams are exact reviewed allowlists; Optional differs by Team; off-roster stays out.
-	const final = fixture(ctx, "summary", "48-final-summary");
+	const final = fixture(ctx, "summary", "54-final-summary");
 	assertExactRows(
-		final.policies.devices.filter((device) => device.device_id === final.offRosterDeviceId),
+		final.policies.devices,
 		[
+			{
+				device_id: seeded.roster.beta.deviceId,
+				identity_id: "identity-beta",
+				status: "active",
+				assignment_version: 2,
+			},
+			{
+				device_id: seeded.roster.betaFour.deviceId,
+				identity_id: "identity-beta-four",
+				status: "active",
+				assignment_version: 0,
+			},
+			{
+				device_id: seeded.roster.betaThree.deviceId,
+				identity_id: "identity-beta-three",
+				status: "active",
+				assignment_version: 0,
+			},
+			{
+				device_id: seeded.roster.betaTwo.deviceId,
+				identity_id: "identity-beta-two",
+				status: "active",
+				assignment_version: 0,
+			},
 			{
 				device_id: final.offRosterDeviceId,
 				identity_id: "identity-shared",
 				status: "active",
 				assignment_version: 1,
 			},
+			{
+				device_id: seeded.roster.optional.deviceId,
+				identity_id: "identity-optional",
+				status: "active",
+				assignment_version: 0,
+			},
+			{
+				device_id: seeded.roster.shared.deviceId,
+				identity_id: "identity-shared",
+				status: "active",
+				assignment_version: 0,
+			},
 		],
-		"off-roster device fixture was not inserted exactly",
+		"canonical device assignments were not exact",
 	);
 	const alphaTeam = final.policies.teams.find((team) => team.display_name === "Legacy Alpha");
 	const betaTeam = final.policies.teams.find((team) => team.display_name === "Legacy Beta");
@@ -772,6 +917,21 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		[
 			{ team_id: alphaTeam.team_id, identity_id: "identity-shared", status: "reviewed_active" },
 			{ team_id: betaTeam.team_id, identity_id: "identity-beta", status: "reviewed_active" },
+			{
+				team_id: betaTeam.team_id,
+				identity_id: "identity-beta-four",
+				status: "reviewed_active",
+			},
+			{
+				team_id: betaTeam.team_id,
+				identity_id: "identity-beta-three",
+				status: "reviewed_active",
+			},
+			{
+				team_id: betaTeam.team_id,
+				identity_id: "identity-beta-two",
+				status: "reviewed_active",
+			},
 			{ team_id: betaTeam.team_id, identity_id: "identity-optional", status: "reviewed_active" },
 			{ team_id: betaTeam.team_id, identity_id: "identity-shared", status: "reviewed_active" },
 		],
@@ -801,6 +961,24 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 			{
 				team_id: betaTeam.team_id,
 				device_id: seeded.roster.optional.deviceId,
+				decision: "included",
+				assignment_version: 0,
+			},
+			{
+				team_id: betaTeam.team_id,
+				device_id: seeded.roster.betaFour.deviceId,
+				decision: "included",
+				assignment_version: 0,
+			},
+			{
+				team_id: betaTeam.team_id,
+				device_id: seeded.roster.betaThree.deviceId,
+				decision: "included",
+				assignment_version: 0,
+			},
+			{
+				team_id: betaTeam.team_id,
+				device_id: seeded.roster.betaTwo.deviceId,
 				decision: "included",
 				assignment_version: 0,
 			},
@@ -859,6 +1037,9 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 			BETA_PROJECT,
 			[
 				{ deviceId: seeded.roster.beta.deviceId, identityId: "identity-beta" },
+				{ deviceId: seeded.roster.betaFour.deviceId, identityId: "identity-beta-four" },
+				{ deviceId: seeded.roster.betaThree.deviceId, identityId: "identity-beta-three" },
+				{ deviceId: seeded.roster.betaTwo.deviceId, identityId: "identity-beta-two" },
 				{ deviceId: seeded.roster.optional.deviceId, identityId: "identity-optional" },
 				{ deviceId: seeded.roster.shared.deviceId, identityId: "identity-shared" },
 			],
@@ -889,12 +1070,12 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 	ctx.compose.copyFromContainer(
 		"peer-a:/data/mem.sqlite",
 		`${ctx.artifactsDir}/db/peer-a-legacy-team-migration.sqlite`,
-		"49-copy-peer-db",
+		"55-copy-peer-db",
 	);
 	ctx.compose.copyFromContainer(
 		"coordinator:/data/coordinator.sqlite",
 		`${ctx.artifactsDir}/db/coordinator-legacy-team-migration.sqlite`,
-		"50-copy-coordinator-db",
+		"56-copy-coordinator-db",
 	);
-	if (!ctx.keepStackOnFailure) ctx.compose.down("51-compose-down-post");
+	if (!ctx.keepStackOnFailure) ctx.compose.down("57-compose-down-post");
 }

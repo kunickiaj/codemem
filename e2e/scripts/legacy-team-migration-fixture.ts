@@ -31,6 +31,21 @@ const ROSTER = {
 		displayName: "Beta Device",
 		publicKey: "legacy-team-e2e-beta-public-key",
 	},
+	betaTwo: {
+		deviceId: "legacy-beta-two-device",
+		displayName: "Beta Two Device",
+		publicKey: "legacy-team-e2e-beta-two-public-key",
+	},
+	betaThree: {
+		deviceId: "legacy-beta-three-device",
+		displayName: "Beta Three Device",
+		publicKey: "legacy-team-e2e-beta-three-public-key",
+	},
+	betaFour: {
+		deviceId: "legacy-beta-four-device",
+		displayName: "Beta Four Device",
+		publicKey: "legacy-team-e2e-beta-four-public-key",
+	},
 } as const;
 
 type Action = "seed" | "summary" | "conflict-beta-assignment" | "add-off-roster-device";
@@ -122,6 +137,9 @@ function seed(store: MemoryStore): void {
 		["identity-shared", "Shared Person"],
 		["identity-optional", "Optional Person"],
 		["identity-beta", "Beta Person"],
+		["identity-beta-two", "Beta Two Person"],
+		["identity-beta-three", "Beta Three Person"],
+		["identity-beta-four", "Beta Four Person"],
 		["identity-conflict", "Conflict Person"],
 	] as const) {
 		insertActor(store, actorId, displayName);
@@ -141,6 +159,8 @@ function seed(store: MemoryStore): void {
 		["scope-legacy-beta", ROSTER.shared.deviceId],
 		["scope-legacy-beta", ROSTER.optional.deviceId],
 		["scope-legacy-beta", ROSTER.beta.deviceId],
+		["scope-legacy-beta", ROSTER.betaTwo.deviceId],
+		["scope-legacy-beta", ROSTER.betaThree.deviceId],
 	] as const) {
 		store.db
 			.prepare(

@@ -1,4 +1,9 @@
 import type { CachedCoordinatorAdminDevice } from "../../../lib/state";
+import {
+	createUnnamedDeviceAliasRegistry,
+	stableDeviceDisplayNames,
+	type UnnamedDeviceAliasRegistry,
+} from "./device-card";
 import type { CoordinatorAdminSummary } from "./summary";
 
 export interface CoordinatorAdminScopeView {
@@ -61,7 +66,7 @@ export function spaceCardCopy(scope: CoordinatorAdminScopeView): SpaceCardCopy {
 	return {
 		title,
 		summary: `${status} Space · ${kind}`,
-		advancedDetail: `Advanced: Space ID ${scopeId} · Membership epoch ${epoch}`,
+		advancedDetail: `Space ID ${scopeId} · Membership epoch ${epoch}`,
 	};
 }
 
@@ -78,23 +83,25 @@ export function spaceAccessDeviceCopy(row: ScopeMembershipDeviceRow): SpaceAcces
 	return {
 		statusLabel: statusLabel[row.status],
 		detail,
-		advancedDetail: `Advanced: membership epoch ${epoch}`,
+		advancedDetail: `Device ID ${row.deviceId} · Membership epoch ${epoch}`,
 	};
 }
 
 export function spaceRevokeMemberTitle(
 	scope: CoordinatorAdminScopeView,
 	displayName: string,
-	deviceId: string,
+	_deviceId: string,
 ): string {
-	const deviceLabel = displayName || deviceId || "this device";
+	const deviceLabel = displayName || "this device";
 	return `Revoke ${deviceLabel} from ${spaceCardCopy(scope).title}?`;
 }
 
 export function deriveScopeMembershipDeviceRows(
 	devices: CachedCoordinatorAdminDevice[],
 	members: CoordinatorAdminScopeMemberView[],
+	aliases: UnnamedDeviceAliasRegistry = createUnnamedDeviceAliasRegistry(),
 ): ScopeMembershipDeviceRow[] {
+	const deviceDisplayNames = stableDeviceDisplayNames(devices, aliases);
 	const memberByDevice = new Map(
 		members
 			.map((member) => [String(member.device_id || "").trim(), member] as const)
@@ -117,7 +124,7 @@ export function deriveScopeMembershipDeviceRows(
 					: null;
 			return {
 				deviceId,
-				displayName: String(device.display_name || deviceId || "Unnamed device"),
+				displayName: deviceDisplayNames.get(deviceId) || "Unnamed device",
 				enabled: device.enabled !== false && device.enabled !== 0,
 				status,
 				role: String(member?.role || "member"),
@@ -133,7 +140,8 @@ export function deriveScopeMembershipDeviceRows(
 				not_member: 2,
 			};
 			return (
-				statusRank[a.status] - statusRank[b.status] || a.displayName.localeCompare(b.displayName)
+				statusRank[a.status] - statusRank[b.status] ||
+				a.displayName.localeCompare(b.displayName, undefined, { numeric: true })
 			);
 		});
 }

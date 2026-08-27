@@ -615,6 +615,19 @@ describe("coordinator admin actions", () => {
 		);
 	});
 
+	it("does not fall back to a raw device id in confirmation copy", async () => {
+		const actions = createCoordinatorAdminActions({
+			renderShell: vi.fn(),
+			reloadData: vi.fn().mockResolvedValue(undefined),
+		});
+
+		await actions.runDeviceAction("private-device-id", "group-alpha", "", "remove");
+
+		expect(mocks.openSyncConfirmDialog).toHaveBeenCalledWith(
+			expect.objectContaining({ title: "Remove this device?" }),
+		);
+	});
+
 	it("confirms that renaming a coordinator group does not rename a Sharing Team", async () => {
 		const actions = createCoordinatorAdminActions({
 			renderShell: vi.fn(),

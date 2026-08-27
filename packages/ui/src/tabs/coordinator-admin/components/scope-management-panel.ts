@@ -1,3 +1,4 @@
+import * as Collapsible from "@radix-ui/react-collapsible";
 import { Fragment, h } from "preact";
 import { RadixSwitch } from "../../../components/primitives/radix-switch";
 import { TextInput } from "../../../components/primitives/text-input";
@@ -47,6 +48,7 @@ function emptyScopeDraft(): GroupScopeManagementDraft {
 		createScopeId: "",
 		createLabel: "",
 		createKind: "team",
+		createPanelOpen: false,
 		actionPendingKey: "",
 		actionPendingKind: "",
 		loadGeneration: 0,
@@ -387,7 +389,7 @@ async function createScope(groupId: string, renderShell: () => void): Promise<vo
 	const label = draft.createLabel.trim();
 	const kind = draft.createKind.trim() || "team";
 	if (!scopeId || !label) {
-		showGlobalNotice("Enter a Space id and label before creating a Space.", "warning");
+		showGlobalNotice("Enter a Space ID and label before creating a Space.", "warning");
 		return;
 	}
 	setDraft(groupId, {
@@ -409,11 +411,15 @@ async function createScope(groupId: string, renderShell: () => void): Promise<vo
 			createScopeId: "",
 			createLabel: "",
 			createKind: "team",
+			createPanelOpen: false,
 			actionPendingKey: "",
 			actionPendingKind: "",
 		});
 		showGlobalNotice("Space created. Grant devices explicitly before data can sync.");
 		await loadGroupScopeManagement(groupId, renderShell, latest.includeInactive);
+		queueMicrotask(() =>
+			document.getElementById(`coordinatorAdminCreateSpaceTrigger-${groupId}`)?.focus(),
+		);
 	} catch (cause) {
 		setDraft(groupId, {
 			...draftFor(groupId),
@@ -558,11 +564,15 @@ function renderMembershipRows(
 		groupId,
 		draft.devicesLoaded,
 	);
-	const rows = deriveScopeMembershipDeviceRows(devices, draft.membersByScope.get(scopeId) ?? []);
+	const rows = deriveScopeMembershipDeviceRows(
+		devices,
+		draft.membersByScope.get(scopeId) ?? [],
+		coordinatorAdminState.unnamedDeviceAliases,
+	);
 	if (!rows.length) {
 		return h(
 			"div",
-			{ class: "peer-submeta coordinator-admin-empty-state" },
+			{ class: "peer-submeta coordinator-admin-empty-state", role: "status" },
 			"No devices are enrolled in this coordinator group yet. Enroll a device before granting this Space.",
 		);
 	}
@@ -583,7 +593,12 @@ function renderMembershipRows(
 					{ class: "coordinator-admin-scope-member-copy" },
 					h("strong", null, row.displayName),
 					h("span", null, copy.detail),
-					h("span", { class: "peer-meta" }, copy.advancedDetail),
+					h(
+						"details",
+						{ class: "coordinator-admin-diagnostics" },
+						h("summary", null, "Diagnostics"),
+						h("span", { class: "peer-meta" }, copy.advancedDetail),
+					),
 					row.enabled ? null : h("span", null, "Device is disabled in this coordinator group."),
 				),
 				h(
@@ -641,9 +656,19 @@ function renderScopeCard(
 			class: "peer-card peer-card--padded coordinator-admin-scope-card",
 			key: scopeId || copy.title,
 		},
-		h("div", { class: "peer-title" }, h("strong", null, copy.title)),
+		h(
+			"div",
+			{ class: "peer-title" },
+			h("h5", { class: "coordinator-admin-card-title" }, copy.title),
+			h("span", { class: "badge actor-badge" }, "Legacy Space"),
+		),
 		h("div", { class: "peer-submeta" }, copy.summary),
-		h("div", { class: "peer-meta" }, copy.advancedDetail),
+		h(
+			"details",
+			{ class: "coordinator-admin-diagnostics" },
+			h("summary", null, "Diagnostics"),
+			h("div", { class: "peer-meta" }, copy.advancedDetail),
+		),
 		h(
 			"div",
 			{ class: "peer-submeta" },
@@ -798,12 +823,15 @@ export function renderGroupScopeManagementPanel(deps: ScopeManagementPanelDeps) 
 				"Coordinator groups discover and enroll devices. Spaces are technical transport boundaries here. These controls do not manage policy Team membership or Project access in Sharing.",
 			),
 			renderScopeRecoveryStatus(groupId, draft, renderShell),
-			h("div", { class: "peer-submeta" }, "Loading Spaces…"),
+			h("div", { "aria-live": "polite", class: "peer-submeta", role: "status" }, "Loading Spaces…"),
 		);
 	}
 	const mutationDisabled =
 		!ready || draft.availability !== "fresh" || Boolean(draft.actionPendingKey) || draft.loading;
 	const refreshDisabled = draft.loading || Boolean(draft.actionPendingKey);
+	const createPanelId = `coordinatorAdminCreateSpacePanel-${groupId}`;
+	const createTriggerId = `coordinatorAdminCreateSpaceTrigger-${groupId}`;
+	const createScopeId = `coordinatorAdminCreateSpaceId-${groupId}`;
 	return h(
 		Fragment,
 		null,
@@ -815,124 +843,186 @@ export function renderGroupScopeManagementPanel(deps: ScopeManagementPanelDeps) 
 		),
 		renderScopeRecoveryStatus(groupId, draft, renderShell),
 		h(
-			"label",
-			{ class: "coordinator-admin-inline-filter" },
-			h(
-				"span",
-				{ class: "section-meta", id: `coord-admin-domain-inactive-${groupId}` },
-				"Show inactive Spaces",
-			),
-			h(RadixSwitch, {
-				"aria-labelledby": `coord-admin-domain-inactive-${groupId}`,
-				checked: draft.includeInactive,
-				className: "coordinator-admin-switch",
-				disabled: refreshDisabled,
-				onCheckedChange: (checked: boolean) => {
-					if (draftFor(groupId).actionPendingKey) return;
-					void loadGroupScopeManagement(groupId, renderShell, checked);
-				},
-				thumbClassName: "coordinator-admin-switch-thumb",
-			}),
-		),
-		h(
-			"form",
+			Collapsible.Root,
 			{
-				class: "coordinator-admin-form",
-				onSubmit: (event: Event) => {
-					event.preventDefault();
-					if (mutationDisabled) return;
-					void createScope(groupId, renderShell);
+				onOpenChange: (open: boolean) => {
+					setDraft(groupId, { ...draftFor(groupId), createPanelOpen: open });
+					renderShell();
+					if (open) {
+						queueMicrotask(() => document.getElementById(createScopeId)?.focus());
+					}
 				},
+				open: draft.createPanelOpen,
 			},
 			h(
-				"div",
-				{ class: "coordinator-admin-form-grid" },
+				Fragment,
+				null,
 				h(
-					"label",
-					{ class: "coordinator-admin-field" },
-					h("span", null, "New Space id"),
-					h(TextInput, {
-						class: "peer-scope-input",
-						disabled: mutationDisabled,
-						onInput: (event) => {
-							const current = draftFor(groupId);
-							setDraft(groupId, {
-								...current,
-								createScopeId: String((event.currentTarget as HTMLInputElement).value || ""),
-							});
-						},
-						placeholder: "acme-work",
-						type: "text",
-						value: draft.createScopeId,
-					}),
+					"div",
+					{ class: "section-actions coordinator-admin-space-toolbar" },
+					h(
+						"label",
+						{ class: "coordinator-admin-inline-filter" },
+						h(
+							"span",
+							{ class: "section-meta", id: `coord-admin-domain-inactive-${groupId}` },
+							"Show inactive Spaces",
+						),
+						h(RadixSwitch, {
+							"aria-labelledby": `coord-admin-domain-inactive-${groupId}`,
+							checked: draft.includeInactive,
+							className: "coordinator-admin-switch",
+							disabled: refreshDisabled,
+							onCheckedChange: (checked: boolean) => {
+								if (draftFor(groupId).actionPendingKey) return;
+								void loadGroupScopeManagement(groupId, renderShell, checked);
+							},
+							thumbClassName: "coordinator-admin-switch-thumb",
+						}),
+					),
+					h(
+						"div",
+						{ class: "peer-actions" },
+						h(
+							"button",
+							{
+								class: "settings-button",
+								disabled: refreshDisabled,
+								onClick: () => {
+									if (draftFor(groupId).actionPendingKey) return;
+									void loadGroupScopeManagement(groupId, renderShell, draft.includeInactive);
+								},
+								type: "button",
+							},
+							draft.loading ? "Refreshing…" : "Refresh",
+						),
+						h(
+							Collapsible.Trigger,
+							{
+								"aria-controls": createPanelId,
+								"aria-expanded": draft.createPanelOpen,
+								class: "settings-button coordinator-admin-scope-trigger",
+								id: createTriggerId,
+								type: "button",
+							},
+							"Create legacy Space",
+						),
+					),
 				),
 				h(
-					"label",
-					{ class: "coordinator-admin-field" },
-					h("span", null, "Label"),
-					h(TextInput, {
-						class: "peer-scope-input",
-						disabled: mutationDisabled,
-						onInput: (event) => {
-							const current = draftFor(groupId);
-							setDraft(groupId, {
-								...current,
-								createLabel: String((event.currentTarget as HTMLInputElement).value || ""),
-							});
-						},
-						placeholder: "Acme Work",
-						type: "text",
-						value: draft.createLabel,
-					}),
-				),
-				h(
-					"label",
-					{ class: "coordinator-admin-field" },
-					h("span", null, "Kind"),
-					h(TextInput, {
-						class: "peer-scope-input",
-						disabled: mutationDisabled,
-						onInput: (event) => {
-							const current = draftFor(groupId);
-							setDraft(groupId, {
-								...current,
-								createKind: String((event.currentTarget as HTMLInputElement).value || ""),
-							});
-						},
-						placeholder: "team",
-						type: "text",
-						value: draft.createKind,
-					}),
-				),
-			),
-			h(
-				"div",
-				{ class: "peer-actions" },
-				h(
-					"button",
+					Collapsible.Content,
 					{
-						class: "settings-button",
-						disabled: mutationDisabled,
-						type: "submit",
+						"aria-busy": draft.actionPendingKind === "create" ? "true" : "false",
+						"aria-labelledby": createTriggerId,
+						class: "coordinator-admin-create-space-panel",
+						forceMount: true,
+						id: createPanelId,
 					},
-					draft.actionPendingKind === "create" ? "Creating…" : "Create Space",
-				),
-				h(
-					"button",
-					{
-						class: "settings-button",
-						disabled: refreshDisabled,
-						onClick: () => {
-							if (draftFor(groupId).actionPendingKey) return;
-							void loadGroupScopeManagement(groupId, renderShell, draft.includeInactive);
+					h(
+						"form",
+						{
+							class: "coordinator-admin-form",
+							onSubmit: (event: Event) => {
+								event.preventDefault();
+								if (mutationDisabled) return;
+								void createScope(groupId, renderShell);
+							},
 						},
-						type: "button",
-					},
-					draft.loading ? "Refreshing…" : "Refresh",
+						h(
+							"p",
+							{ class: "peer-submeta" },
+							"Create a Space only for legacy transport or recovery. Team membership and Project access stay in Sharing.",
+						),
+						h(
+							"div",
+							{ class: "coordinator-admin-form-grid" },
+							h(
+								"label",
+								{ class: "coordinator-admin-field" },
+								h("span", null, "Space ID"),
+								h(TextInput, {
+									class: "peer-scope-input",
+									disabled: mutationDisabled,
+									id: createScopeId,
+									onInput: (event) => {
+										const current = draftFor(groupId);
+										setDraft(groupId, {
+											...current,
+											createScopeId: String((event.currentTarget as HTMLInputElement).value || ""),
+										});
+									},
+									placeholder: "acme-work",
+									type: "text",
+									value: draft.createScopeId,
+								}),
+							),
+							h(
+								"label",
+								{ class: "coordinator-admin-field" },
+								h("span", null, "Label"),
+								h(TextInput, {
+									class: "peer-scope-input",
+									disabled: mutationDisabled,
+									onInput: (event) => {
+										const current = draftFor(groupId);
+										setDraft(groupId, {
+											...current,
+											createLabel: String((event.currentTarget as HTMLInputElement).value || ""),
+										});
+									},
+									placeholder: "Acme Work",
+									type: "text",
+									value: draft.createLabel,
+								}),
+							),
+							h(
+								"label",
+								{ class: "coordinator-admin-field" },
+								h("span", null, "Kind"),
+								h(TextInput, {
+									class: "peer-scope-input",
+									disabled: mutationDisabled,
+									onInput: (event) => {
+										const current = draftFor(groupId);
+										setDraft(groupId, {
+											...current,
+											createKind: String((event.currentTarget as HTMLInputElement).value || ""),
+										});
+									},
+									placeholder: "team",
+									type: "text",
+									value: draft.createKind,
+								}),
+							),
+						),
+						h(
+							"div",
+							{ class: "peer-actions" },
+							h(
+								"button",
+								{
+									class: "settings-button",
+									disabled: mutationDisabled,
+									type: "submit",
+								},
+								draft.actionPendingKind === "create" ? "Creating…" : "Create Space",
+							),
+						),
+					),
 				),
 			),
 		),
-		draft.error ? h("div", { class: "peer-submeta coordinator-admin-error" }, draft.error) : null,
+		draft.error
+			? h(
+					"div",
+					{
+						"aria-live": "assertive",
+						class: "peer-submeta coordinator-admin-error",
+						role: "alert",
+					},
+					draft.error,
+				)
+			: null,
 		draft.scopes.length
 			? h(
 					"div",
@@ -949,7 +1039,7 @@ export function renderGroupScopeManagementPanel(deps: ScopeManagementPanelDeps) 
 				)
 			: h(
 					"div",
-					{ class: "peer-meta coordinator-admin-empty-state" },
+					{ class: "peer-meta coordinator-admin-empty-state", role: "status" },
 					"No Spaces are defined for this coordinator group yet. Create a Space only for legacy transport or recovery, then grant specific devices. Sharing policy remains separate.",
 				),
 	);

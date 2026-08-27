@@ -181,11 +181,9 @@ function StepContent({
 			<p>
 				{detail.canFinish
 					? "The server has confirmed that this Team is ready for final review."
-					: "Final review is waiting for current server confirmation evidence."}
+					: "Final review is waiting for the latest setup details."}
 			</p>
-			<p className="small">
-				Next setup action: confirm the server-provided access review before finishing.
-			</p>
+			<p className="small">Next setup action: review the access summary before finishing.</p>
 		</section>
 	);
 }
@@ -668,8 +666,7 @@ function LegacyTeamSetupDialogHost({
 				</div>
 				<div className="modal-body legacy-team-setup-body">
 					<p className="small" id="legacy-team-setup-description">
-						Review the server-provided device and Project work before this Team can be used for
-						sharing.
+						Review device ownership and Project access before this Team can be used for sharing.
 					</p>
 					{loading && !detail ? <p role="status">Loading the latest Team setup details…</p> : null}
 					{error ? (

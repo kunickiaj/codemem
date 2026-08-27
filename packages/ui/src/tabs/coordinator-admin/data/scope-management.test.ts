@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-
+import { createUnnamedDeviceAliasRegistry } from "./device-card";
 import {
 	coordinatorAdminDevicesForGroup,
 	deriveScopeMembershipDeviceRows,
@@ -72,14 +72,14 @@ describe("coordinator admin scope management view helpers", () => {
 		expect(copy.title).toBe("Untitled Space");
 		expect(copy.title).not.toContain("team-alpha-default");
 		expect(copy.summary).not.toContain("team-alpha-default");
-		expect(copy.advancedDetail).toBe("Advanced: Space ID team-alpha-default · Membership epoch 7");
+		expect(copy.advancedDetail).toBe("Space ID team-alpha-default · Membership epoch 7");
 	});
 
 	it("formats missing Space membership epochs as unknown in advanced copy", () => {
 		const copy = spaceCardCopy({ label: "Household", scope_id: "household", status: "active" });
 
 		expect(copy.title).toBe("Household");
-		expect(copy.advancedDetail).toBe("Advanced: Space ID household · Membership epoch —");
+		expect(copy.advancedDetail).toBe("Space ID household · Membership epoch —");
 	});
 
 	it("labels device Space access without making membership epochs primary copy", () => {
@@ -95,7 +95,7 @@ describe("coordinator admin scope management view helpers", () => {
 
 		expect(copy.detail).toBe("Space access active · admin member");
 		expect(copy.detail).not.toContain("epoch");
-		expect(copy.advancedDetail).toBe("Advanced: membership epoch 4");
+		expect(copy.advancedDetail).toBe("Device ID dev-a · Membership epoch 4");
 	});
 
 	it("uses Space card copy in revoke prompts instead of raw ids", () => {
@@ -106,6 +106,60 @@ describe("coordinator admin scope management view helpers", () => {
 				"dev-a",
 			),
 		).toBe("Revoke Alice laptop from Untitled Space?");
+		expect(
+			spaceRevokeMemberTitle(
+				{ membership_epoch: 7, scope_id: "private-space-id", status: "active" },
+				"",
+				"private-device-id",
+			),
+		).toBe("Revoke this device from Untitled Space?");
+		const unnamedRows = deriveScopeMembershipDeviceRows(
+			[
+				{ device_id: "private-device-z", display_name: "", enabled: true },
+				{ device_id: "private-device-a", display_name: "", enabled: true },
+			],
+			[],
+		);
+		expect(unnamedRows.map((row) => row.displayName)).toEqual([
+			"Unnamed device 1",
+			"Unnamed device 2",
+		]);
+		expect(unnamedRows.map((row) => row.displayName).join(" ")).not.toContain("private-device");
+	});
+
+	it("sorts double-digit unnamed aliases numerically", () => {
+		const aliases = createUnnamedDeviceAliasRegistry();
+		for (let index = 0; index < 10; index += 1) {
+			aliases.aliases.set(`private-device-${index + 1}`, `Unnamed device ${index + 1}`);
+		}
+		const rows = deriveScopeMembershipDeviceRows(
+			Array.from({ length: 10 }, (_, index) => ({
+				device_id: `private-device-${index + 1}`,
+				display_name: "",
+			})),
+			[],
+			aliases,
+		);
+
+		expect(rows.map((row) => row.displayName)).toEqual(
+			Array.from({ length: 10 }, (_, index) => `Unnamed device ${index + 1}`),
+		);
+	});
+
+	it("disambiguates duplicate named devices in Space rows and revoke prompts", () => {
+		const rows = deriveScopeMembershipDeviceRows(
+			[
+				{ device_id: "private-device-z", display_name: "NAS", enabled: true },
+				{ device_id: "private-device-a", display_name: "NAS", enabled: true },
+			],
+			[],
+		);
+
+		expect(rows.map((row) => row.displayName)).toEqual(["NAS · Device 1", "NAS · Device 2"]);
+		expect(rows.map((row) => row.displayName).join(" ")).not.toContain("private-device");
+		expect(
+			spaceRevokeMemberTitle({ label: "Archive" }, rows[0]?.displayName ?? "", "ignored"),
+		).toBe("Revoke NAS · Device 1 from Archive?");
 	});
 
 	it("falls back to cached enrolled devices for the selected group", () => {

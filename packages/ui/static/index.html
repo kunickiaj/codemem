@@ -647,6 +647,37 @@
         gap: var(--sp-4);
       }
 
+      .coordinator-admin-space-toolbar {
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+      }
+
+      .coordinator-admin-create-space-panel {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-1);
+        padding: var(--sp-3);
+      }
+
+      .coordinator-admin-create-space-panel[data-state="closed"] { display: none; }
+
+      .coordinator-admin-diagnostics {
+        color: var(--text-tertiary);
+        font-size: var(--font-size-sm);
+        min-width: 0;
+      }
+
+      .coordinator-admin-diagnostics summary {
+        cursor: pointer;
+        font-weight: var(--font-weight-semibold);
+        width: fit-content;
+      }
+
+      .coordinator-admin-diagnostics[open] > :not(summary) { margin-top: var(--sp-1); }
+
+      .coordinator-admin-card-title { margin: 0; overflow-wrap: anywhere; }
+
       .coordinator-admin-scope-card-list {
         display: grid;
         gap: var(--sp-3);
@@ -1399,6 +1430,7 @@
       .recipient-policy-sharing-tabs {
         position: static;
         display: flex;
+		flex-wrap: wrap;
         gap: var(--sp-1);
         margin-bottom: var(--sp-4);
         padding: 0;
@@ -1409,6 +1441,11 @@
       .recipient-policy-sharing-tabs .tab-btn { color: var(--text-secondary); }
       .recipient-policy-sharing-tabs .tab-btn.active { color: var(--text-primary); }
       .recipient-policy-sharing-grid { display: grid; gap: var(--sp-3); }
+      .recipient-policy-sharing-responsive-grid {
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+      }
+      .recipient-policy-sharing-responsive-surface { min-width: 0; }
+      .recipient-policy-sharing-target { max-width: 100%; }
       .recipient-policy-sharing-card { border: 1px solid var(--border); border-radius: var(--radius-md); }
       .recipient-policy-sharing-card-title {
         display: flex;
@@ -1417,6 +1454,31 @@
         gap: var(--sp-3);
       }
       .recipient-policy-sharing-card-title h3 { margin: 0; }
+      .recipient-policy-sharing-card,
+      .recipient-policy-sharing-card-title,
+      .recipient-policy-sharing-details dd { min-width: 0; overflow-wrap: anywhere; }
+      .recipient-policy-sharing-state,
+      .recipient-policy-sharing-empty {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-1);
+        color: var(--text-secondary);
+        padding: var(--sp-3);
+      }
+      .recipient-policy-sharing-error {
+        border-color: color-mix(in srgb, var(--status-attention) 45%, var(--border));
+        color: var(--text-primary);
+      }
+      .recipient-policy-sharing-name-details,
+      .recipient-policy-sharing-project-details { margin-top: var(--sp-2); }
+      .recipient-policy-sharing-name-details summary,
+      .recipient-policy-sharing-project-details summary {
+        color: var(--text-secondary);
+        cursor: pointer;
+        font-weight: var(--font-weight-semibold);
+      }
+      .recipient-policy-sharing-name-details ul,
+      .recipient-policy-sharing-project-details ul { margin: var(--sp-2) 0 0; padding-left: var(--sp-5); }
       .recipient-policy-sharing-details { display: grid; gap: var(--sp-3); margin: var(--sp-4) 0; }
       .recipient-policy-sharing-details div {
         display: grid;
@@ -1587,7 +1649,12 @@
         .recipient-policy-sharing-responsive-actions { display: grid; grid-template-columns: 1fr; }
         .recipient-policy-management-actions button,
         .recipient-policy-sharing-responsive-actions button { min-height: 44px; width: 100%; }
-        .recipient-policy-sharing-responsive-tabs { overflow-x: auto; }
+        .recipient-policy-sharing-responsive-tabs { flex-wrap: wrap; min-width: 0; overflow-x: visible; }
+        .recipient-policy-sharing-responsive-tabs .tab-btn { flex: 1 1 auto; min-width: 0; }
+        .coordinator-admin-space-toolbar,
+        .coordinator-admin-space-toolbar > .peer-actions { align-items: stretch; width: 100%; }
+        .coordinator-admin-space-toolbar > .peer-actions { display: grid; grid-template-columns: 1fr; }
+        .coordinator-admin-space-toolbar .settings-button { width: 100%; }
         .recipient-policy-sharing-details div { grid-template-columns: 1fr; gap: var(--sp-1); }
         .recipient-policy-invitation-result { padding: var(--sp-3); }
         #devicesMount .recipient-policy-sharing-card > .settings-button,
@@ -2860,7 +2927,8 @@
       .sync-attention-target {
         animation: sync-attention-target var(--duration-attention) var(--ease-out);
       }
-      .settings-button:disabled {
+      .settings-button:disabled,
+      .settings-button[aria-disabled="true"] {
         opacity: 0.55;
         cursor: not-allowed;
       }

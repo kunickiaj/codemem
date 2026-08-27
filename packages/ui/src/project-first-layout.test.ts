@@ -177,6 +177,12 @@ describe("project-first navigation layout", () => {
 		}
 	});
 
+	it("wraps narrow Sharing tabs and legacy actions instead of adding horizontal scrolling", () => {
+		expect(html).toContain(".recipient-policy-sharing-responsive-tabs { flex-wrap: wrap;");
+		expect(html).toContain(".coordinator-admin-space-toolbar > .peer-actions { display: grid;");
+		expect(html).not.toContain(".recipient-policy-sharing-responsive-tabs { overflow-x: auto; }");
+	});
+
 	it("keeps normal Projects controls recipient-focused and moves invitations to Advanced", () => {
 		const projects = html.indexOf('id="tab-projects"');
 		const advanced = html.indexOf("Advanced Project invitations", projects);

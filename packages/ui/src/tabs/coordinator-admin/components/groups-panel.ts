@@ -784,7 +784,12 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 										{ class: "peer-submeta" },
 										archived ? "Archived coordinator group" : "Active coordinator group",
 									),
-									h("div", { class: "peer-meta" }, `Advanced: Group ID ${group.group_id}`),
+									h(
+										"details",
+										{ class: "coordinator-admin-diagnostics" },
+										h("summary", null, "Diagnostics"),
+										h("div", { class: "peer-meta" }, `Group ID ${group.group_id}`),
+									),
 									h(
 										"div",
 										{ class: "coordinator-admin-summary-grid" },

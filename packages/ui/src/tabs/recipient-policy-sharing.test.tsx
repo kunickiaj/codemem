@@ -327,7 +327,7 @@ describe("recipient-focused Sharing", () => {
 		act(() =>
 			(
 				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Review Devices",
+					(button) => button.textContent === "Review devices",
 				) as HTMLButtonElement
 			).click(),
 		);
@@ -412,6 +412,40 @@ describe("recipient-focused Sharing", () => {
 		expect(text).toContain("1 active shared Project identity — Codemem");
 		expect(text).toContain("Yes — future Team members inherit the Team’s shared Projects");
 		expect(text).not.toContain("Old Team");
+	});
+
+	it("bounds long member lists behind an accessible disclosure", () => {
+		const extraIdentities = ["Casey", "Devon"].map((displayName) => ({
+			version: 1 as const,
+			identityId: `identity-${displayName.toLowerCase()}`,
+			displayName,
+			kind: "personal" as const,
+			verification: "local" as const,
+			status: "active" as const,
+			mergedIntoIdentityId: null,
+		}));
+		const graph = intent();
+		mount({
+			...graph,
+			identities: [...graph.identities, ...extraIdentities],
+			teamMemberships: [
+				...graph.teamMemberships,
+				...extraIdentities.map((identity) => ({
+					version: 1 as const,
+					teamId: "team-example",
+					identityId: identity.identityId,
+					role: "member" as const,
+					status: "active" as const,
+				})),
+			],
+		});
+
+		const disclosure = visiblePanel().querySelector<HTMLDetailsElement>(
+			".recipient-policy-sharing-name-details",
+		);
+		expect(disclosure?.open).toBe(false);
+		expect(disclosure?.querySelector("summary")?.textContent).toBe("View all 4 members");
+		expect(disclosure?.querySelector("ul")?.getAttribute("role")).toBe("list");
 	});
 
 	it("does not infer per-Identity Team access from membership intent", () => {
@@ -720,8 +754,20 @@ describe("recipient-focused Sharing", () => {
 		);
 		expect(mutationButtons).toHaveLength(3);
 		for (const button of mutationButtons) {
-			expect(button.disabled).toBe(true);
+			expect(button.disabled).toBe(false);
+			expect(button.getAttribute("aria-disabled")).toBe("true");
+			button.click();
 		}
+		expect(openManagement).not.toHaveBeenCalled();
+		expect(document.getElementById("recipientPolicyTeamSettingsDialog")).toBeNull();
+		const manage = [...mutationButtons].find((button) => button.textContent === "Manage projects");
+		expect(manage?.getAttribute("aria-describedby")).toBe(
+			"recipient-policy-sharing-team-add-description-0",
+		);
+		expect(mutationButtons[2]?.getAttribute("aria-describedby")).toBe(
+			"recipient-policy-sharing-team-add-description-0",
+		);
+		expect(visiblePanel().getAttribute("tabindex")).toBe("0");
 	});
 
 	it("surfaces device setup attention without implying access and links to Devices", () => {
@@ -778,7 +824,7 @@ describe("recipient-focused Sharing", () => {
 		expect(onReviewDevices).toHaveBeenCalledOnce();
 	});
 
-	it("renders only server-provided Team setup statuses and opens the selected opaque candidate", () => {
+	it("renders migration-specific statuses and opens the selected opaque candidate", () => {
 		const onOpenTeamSetup = vi.fn();
 		mount(intent(), {
 			onOpenTeamSetup,
@@ -820,16 +866,20 @@ describe("recipient-focused Sharing", () => {
 		const overview = document.querySelector<HTMLElement>(
 			'[aria-labelledby="sharing-team-setup-heading"]',
 		);
-		expect(overview?.textContent).toContain("2 Teams need setup");
+		expect(overview?.querySelector("h3")?.textContent).toBe("Legacy groups to migrate");
 		expect(overview?.textContent).toContain(
-			"Tell Codemem who uses each device before using these Teams for sharing.",
+			"Current devices are proposed for review. No Team membership or Project access changes happen until you finish the migration.",
 		);
 		expect(document.body.textContent).toContain(
 			"Team setup status is temporarily unavailable. The previous Team setup status is being shown.",
 		);
-		expect(overview?.textContent).toContain("Needs Team — Needs setup");
-		expect(overview?.textContent).toContain("Progress Team — In progress");
-		expect(overview?.textContent).toContain("Ready Team — Ready");
+		expect(overview?.textContent).toContain(
+			"Needs Team · 8 devices, 2 Projects — Migration review needs update",
+		);
+		expect(overview?.textContent).toContain(
+			"Progress Team · 0 devices, 0 Projects — Migration in progress",
+		);
+		expect(overview?.textContent).not.toContain("Ready Team");
 		expect(overview?.textContent).not.toContain("5 unresolved");
 		expect(
 			[...document.querySelectorAll<HTMLElement>(".project-status-badge")].map((badge) => [
@@ -837,15 +887,18 @@ describe("recipient-focused Sharing", () => {
 				badge.className,
 			]),
 		).toEqual([
-			["Needs setup", "project-status-badge needs_attention"],
-			["In progress", "project-status-badge suggested"],
-			["Ready", "project-status-badge"],
+			["Migration review needs update", "project-status-badge needs_attention"],
+			["Migration in progress", "project-status-badge suggested"],
 		]);
 		const buttons = overview?.querySelectorAll<HTMLButtonElement>("button") ?? [];
 		expect(buttons).toHaveLength(2);
 		expect([...buttons].map((button) => button.getAttribute("aria-label"))).toEqual([
-			"Continue setup for Needs Team",
-			"Continue setup for Progress Team",
+			"Review and migrate Needs Team: 8 devices, 2 Projects",
+			"Review and migrate Progress Team: 0 devices, 0 Projects",
+		]);
+		expect([...buttons].map((button) => button.textContent)).toEqual([
+			"Review and migrate",
+			"Review and migrate",
 		]);
 		act(() => buttons[1]?.click());
 		expect(onOpenTeamSetup).toHaveBeenCalledWith("candidate-progress");
@@ -909,8 +962,8 @@ describe("recipient-focused Sharing", () => {
 			expect(row.querySelector(".recipient-policy-sharing-team-setup-action")).not.toBeNull();
 		}
 		expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
-			"Continue setup for Legacy Team 1 of 2: 2 devices, 3 Projects",
-			"Continue setup for Legacy Team 2 of 2: 4 devices, 5 Projects",
+			"Review and migrate Legacy Team 1 of 2: 2 devices, 3 Projects",
+			"Review and migrate Legacy Team 2 of 2: 4 devices, 5 Projects",
 		]);
 		expect(new Set(buttons.map((button) => button.getAttribute("aria-label"))).size).toBe(2);
 		expect(duplicateGroup?.textContent).not.toMatch(/opaque-candidate|coordinator|group[_ -]?id/i);
@@ -954,7 +1007,7 @@ describe("recipient-focused Sharing", () => {
 		expect(document.body.textContent).not.toContain("previous Team setup status");
 	});
 
-	it("fails an unknown runtime Team setup status closed to Needs setup", () => {
+	it("fails an unknown runtime Team setup status closed to migration review", () => {
 		const teamSetupSummary = {
 			version: 1,
 			candidates: [
@@ -973,11 +1026,74 @@ describe("recipient-focused Sharing", () => {
 		mount(intent(), { teamSetupSummary });
 
 		const badge = document.querySelector<HTMLElement>(".project-status-badge");
-		expect(badge?.textContent).toBe("Needs setup");
+		expect(badge?.textContent).toBe("Ready to review");
 		expect(badge?.className).toBe("project-status-badge needs_attention");
 		expect(document.getElementById("sharing-team-setup-heading")?.textContent).toBe(
-			"1 Team needs setup",
+			"Legacy groups to migrate",
 		);
+	});
+
+	it("offers six current SRE devices for review without implying canonical Team access", () => {
+		const onOpenTeamSetup = vi.fn();
+		mount(intent({ teams: [], teamMemberships: [] }), {
+			onOpenTeamSetup,
+			teamSetupSummary: {
+				version: 1,
+				candidates: [
+					{
+						candidateRef: "opaque-scope-backed-candidate",
+						displayName: "SRE",
+						status: "needs_setup",
+						deviceCount: 6,
+						projectCount: 1,
+						unresolvedDeviceCount: 6,
+						unresolvedProjectCount: 0,
+					},
+				],
+			},
+		});
+
+		const overview = document.querySelector<HTMLElement>(
+			'[aria-labelledby="sharing-team-setup-heading"]',
+		);
+		const action = overview?.querySelector<HTMLButtonElement>("button");
+		expect(overview?.textContent).toContain("Legacy groups to migrate");
+		expect(overview?.textContent).toContain("SRE");
+		expect(overview?.textContent).toContain("6 devices, 1 Project");
+		expect(overview?.textContent).toContain("Ready to review");
+		expect(action?.textContent).toBe("Review and migrate");
+		expect(action?.getAttribute("aria-label")).toBe("Review and migrate SRE: 6 devices, 1 Project");
+		expect(document.body.textContent).toContain(
+			"No active Teams are available for Project sharing",
+		);
+		expect(document.body.outerHTML).not.toMatch(
+			/opaque-scope-backed-candidate|coordinator[_ -]?id/i,
+		);
+
+		act(() => action?.click());
+		expect(onOpenTeamSetup).toHaveBeenCalledWith("opaque-scope-backed-candidate");
+	});
+
+	it("hides migration work after every legacy candidate is migrated", () => {
+		mount(intent(), {
+			teamSetupSummary: {
+				version: 1,
+				candidates: [
+					{
+						candidateRef: "completed-candidate",
+						displayName: "Migrated Team",
+						status: "ready",
+						deviceCount: 2,
+						projectCount: 1,
+						unresolvedDeviceCount: 0,
+						unresolvedProjectCount: 0,
+					},
+				],
+			},
+		});
+
+		expect(document.getElementById("sharing-team-setup-heading")).toBeNull();
+		expect(document.body.textContent).not.toContain("Current devices are proposed for review");
 	});
 
 	it("uses visible labels, responsive and target hooks, and no prohibited internal copy", () => {

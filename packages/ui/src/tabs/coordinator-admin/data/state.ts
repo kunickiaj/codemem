@@ -4,6 +4,7 @@
  * and write it without hitting ES-module `export let` limitations. */
 
 import type { CachedCoordinatorAdminDevice } from "../../../lib/state";
+import { createUnnamedDeviceAliasRegistry, type UnnamedDeviceAliasRegistry } from "./device-card";
 import { type CoordinatorAdminRecoveryState, initialCoordinatorAdminRecovery } from "./recovery";
 import type {
 	CoordinatorAdminScopeMemberView,
@@ -49,6 +50,7 @@ export interface GroupScopeManagementDraft {
 	createScopeId: string;
 	createLabel: string;
 	createKind: string;
+	createPanelOpen: boolean;
 	actionPendingKey: string;
 	actionPendingKind: ScopeManagementActionKind;
 	loadGeneration: number;
@@ -97,6 +99,7 @@ export interface CoordinatorAdminState {
 	groupPresentationAliases: Map<string, string>;
 	deviceRenameDrafts: Map<string, string>;
 	deviceRenameServerNames: Map<string, string>;
+	unnamedDeviceAliases: UnnamedDeviceAliasRegistry;
 	groupPreferencesOpen: Set<string>;
 	groupPreferencesDrafts: Map<string, GroupPreferencesDraft>;
 	groupScopeManagementOpen: Set<string>;
@@ -138,6 +141,7 @@ export const coordinatorAdminState: CoordinatorAdminState = {
 	groupPresentationAliases: new Map<string, string>(),
 	deviceRenameDrafts: new Map<string, string>(),
 	deviceRenameServerNames: new Map<string, string>(),
+	unnamedDeviceAliases: createUnnamedDeviceAliasRegistry(),
 	groupPreferencesOpen: new Set<string>(),
 	groupPreferencesDrafts: new Map<string, GroupPreferencesDraft>(),
 	groupScopeManagementOpen: new Set<string>(),

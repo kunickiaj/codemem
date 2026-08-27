@@ -13,6 +13,7 @@ import { renderGroupsPanel } from "./components/groups-panel";
 import { renderInvitesPanel } from "./components/invites-panel";
 import { renderJoinRequestsPanel } from "./components/join-requests-panel";
 import { createCoordinatorAdminActions } from "./data/actions";
+import { stableDeviceDisplayNames, stableUnnamedDeviceAliases } from "./data/device-card";
 import {
 	beginSurfaceRefresh,
 	completeSurfaceRefresh,
@@ -418,6 +419,22 @@ export async function loadCoordinatorAdminData() {
 		);
 	}
 	if (!isCurrent()) return;
+	stableUnnamedDeviceAliases(
+		[
+			...state.lastCoordinatorAdminDevices,
+			...state.lastCoordinatorAdminJoinRequests.map((item) => ({
+				device_id:
+					String(item.device_id || "").trim() ||
+					`join-request:${String(item.request_id || "").trim()}`,
+				display_name: item.display_name,
+			})),
+		],
+		coordinatorAdminState.unnamedDeviceAliases,
+	);
+	stableDeviceDisplayNames(
+		state.lastCoordinatorAdminDevices,
+		coordinatorAdminState.unnamedDeviceAliases,
+	);
 	if (coordinatorAdminState.recoveryRetryRequested) {
 		coordinatorAdminState.recoveryAnnouncement = coordinatorAdminRecoveryNotice(
 			coordinatorAdminState.recovery,

@@ -8,7 +8,7 @@ import { h } from "preact";
 import { RadixTabsContent } from "../../../components/primitives/radix-tabs";
 import { TextInput } from "../../../components/primitives/text-input";
 import { state } from "../../../lib/state";
-import { coordinatorAdminDeviceCardCopy } from "../data/device-card";
+import { coordinatorAdminDeviceCardCopy, stableDeviceDisplayNames } from "../data/device-card";
 import { surfaceHasSnapshot, surfaceIsNotApplicable } from "../data/recovery";
 import { coordinatorAdminState } from "../data/state";
 import type { CoordinatorAdminSummary } from "../data/summary";
@@ -34,6 +34,10 @@ export function renderDevicesPanel(deps: DevicesPanelDeps) {
 		known && Array.isArray(state.lastCoordinatorAdminDevices)
 			? state.lastCoordinatorAdminDevices
 			: [];
+	const deviceDisplayNames = stableDeviceDisplayNames(
+		items,
+		coordinatorAdminState.unnamedDeviceAliases,
+	);
 	return h(
 		RadixTabsContent,
 		{ className: "coordinator-admin-panel", value: "devices" },
@@ -72,6 +76,7 @@ export function renderDevicesPanel(deps: DevicesPanelDeps) {
 								const copy = coordinatorAdminDeviceCardCopy(
 									item,
 									String(state.lastCoordinatorAdminStatus?.active_group || ""),
+									deviceDisplayNames.get(String(item.device_id || "").trim()),
 								);
 								const { deviceId, displayName, teamId } = copy;
 								const pending = coordinatorAdminState.deviceActionPendingId === deviceId;
@@ -88,7 +93,12 @@ export function renderDevicesPanel(deps: DevicesPanelDeps) {
 									},
 									h("div", { class: "peer-title" }, h("strong", null, displayName)),
 									h("div", { class: "peer-submeta" }, copy.statusLabel),
-									h("div", { class: "peer-meta" }, copy.advancedDetail),
+									h(
+										"details",
+										{ class: "coordinator-admin-diagnostics" },
+										h("summary", null, "Diagnostics"),
+										h("div", { class: "peer-meta" }, copy.advancedDetail),
+									),
 									h(
 										"form",
 										{

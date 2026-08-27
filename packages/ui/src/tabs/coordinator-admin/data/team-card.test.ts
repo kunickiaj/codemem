@@ -121,6 +121,7 @@ describe("coordinator admin legacy group card helpers", () => {
 					createScopeId: "",
 					createLabel: "",
 					createKind: "",
+					createPanelOpen: false,
 					actionPendingKey: "",
 					actionPendingKind: "",
 					loadGeneration: 0,

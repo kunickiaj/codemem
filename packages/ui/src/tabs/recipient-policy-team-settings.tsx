@@ -42,12 +42,14 @@ function safeError(cause: unknown): string {
 }
 
 export function RecipientPolicyTeamSettings({
+	descriptionId,
 	disabled,
 	displayName,
 	onRenamed,
 	renameTeam = api.renameRecipientPolicyTeam,
 	teamId,
 }: {
+	descriptionId?: string;
 	disabled: boolean;
 	displayName: string;
 	onRenamed?: () => Promise<unknown> | unknown;
@@ -109,10 +111,12 @@ export function RecipientPolicyTeamSettings({
 	return (
 		<>
 			<button
+				aria-describedby={descriptionId}
+				aria-disabled={disabled ? "true" : undefined}
 				aria-label={`Team settings for ${displayName}`}
 				className="settings-button recipient-policy-sharing-target recipient-policy-sharing-target-24"
-				disabled={disabled}
 				onClick={() => {
+					if (disabled) return;
 					setDraft(displayName);
 					setError("");
 					setSuccess("");

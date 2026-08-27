@@ -365,6 +365,10 @@ describe("legacy Team setup dialog", () => {
 		act(() => button("Continue to Review").click());
 		expect(document.querySelector('button[aria-current="step"]')?.textContent).toBe("Review");
 		expect(document.body.textContent).toContain("Review and finish");
+		expect(document.body.textContent).toContain(
+			"Review device ownership and Project access before this Team can be used for sharing",
+		);
+		expect(document.body.textContent).not.toMatch(/confirmation evidence|server-provided work/i);
 	});
 
 	it("returns a ready draft to Projects when the dialog is reopened", async () => {

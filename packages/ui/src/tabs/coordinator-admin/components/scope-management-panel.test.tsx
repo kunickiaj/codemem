@@ -9,6 +9,7 @@ import {
 import { coordinatorAdminState } from "../data/state";
 
 const mocks = vi.hoisted(() => ({
+	createCoordinatorAdminScope: vi.fn(),
 	grantCoordinatorAdminScopeMember: vi.fn(),
 	loadCoordinatorAdminDevices: vi.fn(),
 	loadCoordinatorAdminScopeMembers: vi.fn(),
@@ -64,8 +65,12 @@ describe("legacy Space recovery", () => {
 		completeSurfaceRefresh(coordinatorAdminState.recovery, "groups");
 		coordinatorAdminState.groupScopeManagementOpen.clear();
 		coordinatorAdminState.groupScopeManagementDrafts.clear();
+		coordinatorAdminState.unnamedDeviceAliases.aliases.clear();
+		coordinatorAdminState.unnamedDeviceAliases.duplicateDisplayNames.clear();
+		coordinatorAdminState.unnamedDeviceAliases.reservedDisplayNames.clear();
 		coordinatorAdminState.loadGeneration = 0;
 		mocks.openSyncConfirmDialog.mockResolvedValue(true);
+		mocks.createCoordinatorAdminScope.mockResolvedValue({});
 		mocks.loadCoordinatorAdminScopes.mockResolvedValue({
 			items: [{ scope_id: "space-a", label: "Space A", status: "active" }],
 		});
@@ -388,6 +393,8 @@ describe("legacy Space recovery", () => {
 			);
 		};
 		openGroupScopeManagement("group-a", renderShell);
+		await vi.waitFor(() => expect(mount.textContent).toContain("Create legacy Space"));
+		document.getElementById("coordinatorAdminCreateSpaceTrigger-group-a")?.click();
 		await vi.waitFor(() => expect(mount.textContent).toContain("Create Space"));
 		const create = Array.from(mount.querySelectorAll("button")).find(
 			(button) => button.textContent === "Create Space",
@@ -487,6 +494,104 @@ describe("legacy Space recovery", () => {
 			(button) => button.textContent === "Refresh",
 		);
 		expect(refresh?.disabled).toBe(false);
+	});
+
+	it("keeps Space creation collapsed by default, focuses the form, and restores focus after create", async () => {
+		document.body.innerHTML = '<div id="spacesMount"></div>';
+		const mount = document.getElementById("spacesMount");
+		if (!mount) throw new Error("Missing test mount");
+		const renderShell = () => {
+			render(
+				h(renderGroupScopeManagementPanel, {
+					groupId: "group-a",
+					ready: true,
+					renderShell,
+					summary: { readiness: "ready", title: "Ready", detail: "Ready" },
+				}),
+				mount,
+			);
+		};
+		openGroupScopeManagement("group-a", renderShell);
+		await vi.waitFor(() => expect(mount.textContent).toContain("Create legacy Space"));
+		const trigger = document.getElementById(
+			"coordinatorAdminCreateSpaceTrigger-group-a",
+		) as HTMLButtonElement;
+
+		expect(trigger.getAttribute("aria-expanded")).toBe("false");
+		expect(trigger.getAttribute("aria-controls")).toBe("coordinatorAdminCreateSpacePanel-group-a");
+		expect(document.getElementById("coordinatorAdminCreateSpacePanel-group-a")).not.toBeNull();
+		expect(
+			document
+				.getElementById("coordinatorAdminCreateSpacePanel-group-a")
+				?.getAttribute("data-state"),
+		).toBe("closed");
+		trigger.click();
+		await vi.waitFor(() =>
+			expect(document.activeElement?.id).toBe("coordinatorAdminCreateSpaceId-group-a"),
+		);
+		expect(trigger.getAttribute("aria-expanded")).toBe("true");
+
+		const inputs = mount.querySelectorAll<HTMLInputElement>(
+			"#coordinatorAdminCreateSpacePanel-group-a input",
+		);
+		const scopeIdInput = inputs[0];
+		const labelInput = inputs[1];
+		if (!scopeIdInput || !labelInput) throw new Error("Missing Create Space inputs");
+		scopeIdInput.value = "space-new";
+		scopeIdInput.dispatchEvent(new Event("input", { bubbles: true }));
+		labelInput.value = "New Space";
+		labelInput.dispatchEvent(new Event("input", { bubbles: true }));
+		const submit = Array.from(mount.querySelectorAll<HTMLButtonElement>("button")).find(
+			(button) => button.textContent === "Create Space",
+		);
+		submit?.click();
+
+		await vi.waitFor(() =>
+			expect(mocks.createCoordinatorAdminScope).toHaveBeenCalledWith("group-a", {
+				kind: "team",
+				label: "New Space",
+				scope_id: "space-new",
+			}),
+		);
+		await vi.waitFor(() => expect(trigger.getAttribute("aria-expanded")).toBe("false"));
+		await vi.waitFor(() => expect(document.activeElement).toBe(trigger));
+	});
+
+	it("keeps Space IDs and membership epochs inside closed diagnostics disclosures", async () => {
+		document.body.innerHTML = '<div id="spacesMount"></div>';
+		const mount = document.getElementById("spacesMount");
+		if (!mount) throw new Error("Missing test mount");
+		mocks.loadCoordinatorAdminScopes.mockResolvedValue({
+			items: [{ scope_id: "private-space-id", label: "Friendly Space", membership_epoch: 9 }],
+		});
+		mocks.loadCoordinatorAdminScopeMembers.mockResolvedValue({
+			items: [{ device_id: "device-a", role: "member", status: "active", membership_epoch: 4 }],
+		});
+		const renderShell = () => {
+			render(
+				h(renderGroupScopeManagementPanel, {
+					groupId: "group-a",
+					ready: true,
+					renderShell,
+					summary: { readiness: "ready", title: "Ready", detail: "Ready" },
+				}),
+				mount,
+			);
+		};
+
+		openGroupScopeManagement("group-a", renderShell);
+		await vi.waitFor(() => expect(mount.textContent).toContain("Friendly Space"));
+		const disclosures = mount.querySelectorAll<HTMLDetailsElement>(
+			".coordinator-admin-diagnostics",
+		);
+
+		expect(disclosures).toHaveLength(2);
+		for (const disclosure of disclosures) {
+			expect(disclosure.open).toBe(false);
+			expect(disclosure.querySelector("summary")?.textContent).toBe("Diagnostics");
+		}
+		expect(disclosures[0]?.textContent).toContain("Space ID private-space-id");
+		expect(disclosures[1]?.textContent).toContain("Membership epoch 4");
 	});
 
 	it("updates the persistent Space status after a repeated retry failure", async () => {

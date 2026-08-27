@@ -448,7 +448,7 @@ export function createCoordinatorAdminActions(
 		if (kind === "disable" || kind === "remove") {
 			const confirmationTarget = currentAdminSnapshotTarget();
 			const confirmed = await openSyncConfirmDialog({
-				title: `${kind === "disable" ? "Disable" : "Remove"} ${displayName || deviceId}?`,
+				title: `${kind === "disable" ? "Disable" : "Remove"} ${displayName || "this device"}?`,
 				description:
 					kind === "disable"
 						? "This device will stay enrolled but can no longer participate until you re-enable it."
