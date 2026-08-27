@@ -16,7 +16,7 @@ beforeEach(() => {
 	];
 	state.lastDeviceIdentityInventory = null;
 	state.deviceIdentityInventoryLoadError = false;
-	state.lastCoordinatorAdminStatus = null;
+	state.lastSyncCoordinatorAdminStatus = null;
 	state.pendingDeviceIdentityFocus = undefined;
 	window.location.hash = "advanced/sync";
 });
@@ -159,7 +159,7 @@ describe("Advanced device Identity ownership", () => {
 
 	it("routes legacy coordinator administration through the canonical Advanced hash", () => {
 		document.body.innerHTML = '<div id="mount"></div>';
-		state.lastCoordinatorAdminStatus = { has_admin_secret: true, readiness: "ready" };
+		state.lastSyncCoordinatorAdminStatus = { has_admin_secret: true, readiness: "ready" };
 		const mount = document.getElementById("mount");
 		if (!mount) throw new Error("mount missing");
 		act(() =>

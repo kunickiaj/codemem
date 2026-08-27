@@ -344,6 +344,14 @@
         margin-bottom: var(--sp-4);
       }
 
+      .coordinator-admin-recovery-notice {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: var(--sp-4);
+        border-width: 2px;
+      }
+
       .coordinator-admin-legacy-notice-copy {
         display: grid;
         gap: var(--sp-2);
@@ -370,6 +378,15 @@
         }
 
         .coordinator-admin-legacy-notice .settings-button {
+          width: 100%;
+        }
+
+        .coordinator-admin-recovery-notice {
+          align-items: stretch;
+          flex-direction: column;
+        }
+
+        .coordinator-admin-recovery-notice .settings-button {
           width: 100%;
         }
       }

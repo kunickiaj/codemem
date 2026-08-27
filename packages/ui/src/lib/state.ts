@@ -287,6 +287,7 @@ export const state = {
 	lastSyncSharingReview: [] as SyncSharingReviewRow[],
 	lastSyncLegacySharedReview: null as CachedLegacySharedReview | null,
 	lastSyncCoordinator: null as CachedSyncCoordinator | null,
+	lastSyncCoordinatorAdminStatus: null as CachedCoordinatorAdminStatus | null,
 	lastCoordinatorAdminStatus: null as CachedCoordinatorAdminStatus | null,
 	coordinatorAdminTargetGroup: "",
 	/**
@@ -295,6 +296,7 @@ export const state = {
 	 * clickable project chips without re-fetching per render.
 	 */
 	knownProjects: [] as string[],
+	lastProjectCoordinatorAdminGroups: [] as CachedCoordinatorAdminGroup[],
 	lastCoordinatorAdminGroups: [] as CachedCoordinatorAdminGroup[],
 	lastCoordinatorAdminJoinRequests: [] as CachedSyncJoinRequest[],
 	lastCoordinatorAdminDevices: [] as CachedCoordinatorAdminDevice[],

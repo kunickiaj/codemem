@@ -3,10 +3,20 @@
  * the global `state` snapshot and the coordinatorAdminState module. */
 
 import { state } from "../../../lib/state";
-import { ADMIN_TARGET_GROUP_KEY, coordinatorAdminState } from "./state";
+import {
+	ADMIN_TARGET_GROUP_KEY,
+	type CoordinatorAdminSnapshotTarget,
+	coordinatorAdminState,
+} from "./state";
+
+export function coordinatorUrlForMatching(value: unknown): string {
+	return String(value || "")
+		.trim()
+		.replace(/\/+$/u, "");
+}
 
 export function adminTargetStorageKey(coordinatorUrl: string | null | undefined): string {
-	return `${ADMIN_TARGET_GROUP_KEY}:${String(coordinatorUrl || "").trim()}`;
+	return `${ADMIN_TARGET_GROUP_KEY}:${coordinatorUrlForMatching(coordinatorUrl)}`;
 }
 
 export function readStoredAdminTargetGroup(coordinatorUrl: string | null | undefined): string {
@@ -30,6 +40,29 @@ export function writeStoredAdminTargetGroup(
 
 export function currentAdminTargetGroup(): string {
 	return String(state.coordinatorAdminTargetGroup || "").trim();
+}
+
+export function currentAdminSnapshotTarget(): CoordinatorAdminSnapshotTarget | null {
+	const coordinatorUrl = String(state.lastCoordinatorAdminStatus?.coordinator_url || "").trim();
+	const groupId =
+		currentAdminTargetGroup() ||
+		String(state.lastCoordinatorAdminStatus?.active_group || "").trim() ||
+		availableCoordinatorGroups()[0]?.group_id ||
+		"";
+	return coordinatorUrl && groupId ? { coordinatorUrl, groupId } : null;
+}
+
+export function adminSnapshotTargetMatchesCurrent(
+	target: CoordinatorAdminSnapshotTarget | null,
+): boolean {
+	const current = currentAdminSnapshotTarget();
+	return Boolean(
+		target &&
+			current &&
+			coordinatorUrlForMatching(target.coordinatorUrl) ===
+				coordinatorUrlForMatching(current.coordinatorUrl) &&
+			target.groupId === current.groupId,
+	);
 }
 
 export function setAdminTargetGroup(groupId: string) {

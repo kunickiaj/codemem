@@ -3,6 +3,11 @@ import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { state } from "../../../lib/state";
+import {
+	completeSurfaceRefresh,
+	failSurfaceRefresh,
+	markSurfaceNotApplicable,
+} from "../data/recovery";
 import { coordinatorAdminState } from "../data/state";
 import { renderDevicesPanel } from "./devices-panel";
 
@@ -25,6 +30,8 @@ function renderPanel() {
 		render(
 			renderDevicesPanel({
 				runDevice: vi.fn(),
+				fresh: true,
+				snapshotMatchesTarget: true,
 				summary: {
 					detail: "Ready",
 					readiness: "ready",
@@ -45,6 +52,7 @@ describe("DevicesPanel", () => {
 		];
 		coordinatorAdminState.deviceRenameDrafts.clear();
 		coordinatorAdminState.deviceRenameServerNames.clear();
+		completeSurfaceRefresh(coordinatorAdminState.recovery, "devices");
 	});
 
 	afterEach(() => {
@@ -77,6 +85,8 @@ describe("DevicesPanel", () => {
 			render(
 				renderDevicesPanel({
 					runDevice: vi.fn(),
+					fresh: true,
+					snapshotMatchesTarget: true,
 					summary: {
 						detail: "Ready",
 						readiness: "ready",
@@ -89,5 +99,41 @@ describe("DevicesPanel", () => {
 
 		expect(root.querySelector("input")?.value).toBe("NAS storage box");
 		expect(root.querySelector(".peer-title strong")?.textContent).toBe("NAS");
+	});
+
+	it("retains technical details but disables coordinator mutations while device data is stale", () => {
+		completeSurfaceRefresh(coordinatorAdminState.recovery, "status");
+		failSurfaceRefresh(coordinatorAdminState.recovery, "devices");
+		mount = document.createElement("div");
+		document.body.appendChild(mount);
+
+		act(() => {
+			render(
+				renderDevicesPanel({
+					fresh: false,
+					snapshotMatchesTarget: true,
+					runDevice: vi.fn(),
+					summary: { detail: "Ready", readiness: "ready", title: "Ready" },
+				}),
+				mount as HTMLDivElement,
+			);
+		});
+
+		expect(mount.textContent).toContain("Advanced: Device ID dev-1");
+		expect(Array.from(mount.querySelectorAll("button"))).not.toHaveLength(0);
+		expect(Array.from(mount.querySelectorAll("button")).every((button) => button.disabled)).toBe(
+			true,
+		);
+		expect(mount.textContent).not.toContain("deleted");
+	});
+
+	it("shows setup guidance when devices are not applicable yet", () => {
+		markSurfaceNotApplicable(coordinatorAdminState.recovery, "devices");
+		state.lastCoordinatorAdminDevices = [];
+
+		const root = renderPanel();
+
+		expect(root.textContent).toContain("Complete legacy coordinator setup");
+		expect(root.textContent).not.toContain("devices are unavailable");
 	});
 });

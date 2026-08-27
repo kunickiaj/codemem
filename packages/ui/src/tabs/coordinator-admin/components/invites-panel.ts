@@ -17,12 +17,13 @@ import { currentAdminTargetGroup } from "../data/target-group";
 
 export interface InvitesPanelDeps {
 	summary: CoordinatorAdminSummary;
+	fresh: boolean;
 	createInvite: () => void;
 	renderShell: () => void;
 }
 
 export function renderInvitesPanel(deps: InvitesPanelDeps) {
-	const { summary, createInvite, renderShell } = deps;
+	const { summary, fresh, createInvite, renderShell } = deps;
 	const status = state.lastCoordinatorAdminStatus;
 	const activeGroup = currentAdminTargetGroup() || String(status?.active_group || "").trim();
 	const effectiveGroup = coordinatorAdminState.inviteGroup.trim() || activeGroup;
@@ -30,7 +31,7 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 	const warnings = Array.isArray(state.lastTeamInvite?.warnings)
 		? state.lastTeamInvite?.warnings
 		: [];
-	const inviteDisabled = summary.readiness !== "ready" || coordinatorAdminState.invitePending;
+	const inviteDisabled = !fresh || coordinatorAdminState.invitePending;
 	return h(
 		RadixTabsContent,
 		{ className: "coordinator-admin-panel", value: "invites" },
@@ -38,9 +39,11 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 		h(
 			"p",
 			{ class: "peer-submeta" },
-			summary.readiness === "ready"
+			fresh
 				? "Legacy coordinator invites enroll a device in the selected group for discovery. They do not add policy Team membership or grant Project access; use Sharing for both."
-				: "Finish coordinator setup first. Legacy invite creation stays disabled until the local configuration is ready.",
+				: summary.readiness === "ready"
+					? "Legacy invite creation is disabled until current coordinator status and group data are available. Previously generated invites remain available to copy."
+					: "Finish coordinator setup first. Legacy invite creation stays disabled until the local configuration is ready.",
 		),
 		h(
 			"form",
@@ -61,7 +64,7 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 					h("span", null, "Coordinator group"),
 					h(TextInput, {
 						class: "peer-scope-input",
-						disabled: summary.readiness !== "ready",
+						disabled: !fresh,
 						onInput: (event) => {
 							coordinatorAdminState.inviteGroup = String(
 								(event.currentTarget as HTMLInputElement).value || "",
@@ -80,7 +83,7 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 					h(RadixSelect, {
 						ariaLabel: "Invite join policy",
 						contentClassName: "sync-radix-select-content sync-actor-select-content",
-						disabled: summary.readiness !== "ready",
+						disabled: !fresh,
 						id: "coordinatorAdminInvitePolicy",
 						itemClassName: "sync-radix-select-item",
 						onValueChange: (value) => {
@@ -103,7 +106,7 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 					h("span", null, "Expires in (hours)"),
 					h(TextInput, {
 						class: "peer-scope-input",
-						disabled: summary.readiness !== "ready",
+						disabled: !fresh,
 						min: "1",
 						onInput: (event) => {
 							coordinatorAdminState.inviteTtlHours = String(

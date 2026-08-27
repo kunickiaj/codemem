@@ -69,6 +69,8 @@ describe("loadSyncData", () => {
 		state.lastShareOperations = [];
 		state.shareOperationsLoadError = false;
 		state.lastSyncCoordinator = null;
+		state.lastSyncCoordinatorAdminStatus = null;
+		state.lastCoordinatorAdminStatus = null;
 		state.pendingCoordinatorApprovalsByDeviceId.clear();
 		state.lastSyncViewModel = null;
 		state.lastDeviceIdentityInventory = null;
@@ -108,6 +110,27 @@ describe("loadSyncData", () => {
 			coordinatorUrl: "https://coord.example.test",
 			incomingRequestId: "request-a",
 		});
+	});
+
+	it("keeps Advanced recovery status untouched when the Sync status copy fails", async () => {
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadSyncData } = await import("./index");
+		state.lastCoordinatorAdminStatus = {
+			active_group: "retained-group",
+			readiness: "ready",
+		};
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({ peers: [] } as never);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadCoordinatorAdminStatus).mockRejectedValueOnce(
+			new Error("sync status refresh failed"),
+		);
+
+		await loadSyncData();
+
+		expect(state.lastCoordinatorAdminStatus?.active_group).toBe("retained-group");
+		expect(state.lastSyncCoordinatorAdminStatus).toBeNull();
 	});
 
 	it("clears pending approval when the matching device no longer needs local approval", async () => {

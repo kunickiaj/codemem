@@ -3,6 +3,7 @@
  * `state.lastCoordinatorAdminStatus` and returns a display-ready shape. */
 
 import { state } from "../../../lib/state";
+import { coordinatorAdminState } from "./state";
 
 export type CoordinatorAdminReadiness = "ready" | "partial" | "not_configured";
 
@@ -15,6 +16,14 @@ export interface CoordinatorAdminSummary {
 export function coordinatorAdminSummary(): CoordinatorAdminSummary {
 	const status = state.lastCoordinatorAdminStatus;
 	if (!status) {
+		if (coordinatorAdminState.recovery.status.availability === "unavailable") {
+			return {
+				readiness: "partial",
+				title: "Legacy coordinator status is unavailable",
+				detail:
+					"Current coordinator readiness could not be loaded. Retry before using legacy administration actions.",
+			};
+		}
 		return {
 			readiness: "partial",
 			title: "Checking legacy coordinator readiness…",

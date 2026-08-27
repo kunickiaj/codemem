@@ -233,7 +233,7 @@ function openLegacyCoordinatorAdministration(): void {
 }
 
 export function canManageLegacyCoordinatorSpaces(
-	status = state.lastCoordinatorAdminStatus,
+	status = state.lastSyncCoordinatorAdminStatus,
 ): boolean {
 	return status?.readiness === "ready" && status.has_admin_secret === true;
 }

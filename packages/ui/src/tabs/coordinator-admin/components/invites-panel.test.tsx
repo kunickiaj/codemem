@@ -5,11 +5,31 @@ import { coordinatorAdminState } from "../data/state";
 import { renderInvitesPanel } from "./invites-panel";
 
 describe("legacy coordinator invite panel", () => {
+	type TestNode = VNode<{
+		children?: ComponentChildren;
+		class?: string;
+		disabled?: boolean;
+	}>;
+
 	function textContent(value: ComponentChildren): string {
 		if (value == null || typeof value === "boolean") return "";
 		if (typeof value === "string" || typeof value === "number") return String(value);
 		if (Array.isArray(value)) return value.map(textContent).join("");
 		return textContent((value as VNode).props.children);
+	}
+
+	function nodes(value: ComponentChildren): TestNode[] {
+		if (
+			value == null ||
+			typeof value === "boolean" ||
+			typeof value === "string" ||
+			typeof value === "number"
+		) {
+			return [];
+		}
+		if (Array.isArray(value)) return value.flatMap(nodes);
+		const node = value as TestNode;
+		return [node, ...nodes(node.props.children)];
 	}
 
 	beforeEach(() => {
@@ -44,12 +64,14 @@ describe("legacy coordinator invite panel", () => {
 
 	afterEach(() => {
 		state.lastShareOperations = [];
+		state.lastTeamInvite = null;
 	});
 
 	it("labels coordinator invites as legacy and reflects project sharing read-only", () => {
 		const text = textContent(
 			renderInvitesPanel({
 				createInvite: vi.fn(),
+				fresh: true,
 				renderShell: vi.fn(),
 				summary: { detail: "", readiness: "ready", title: "Ready" },
 			}),
@@ -61,5 +83,36 @@ describe("legacy coordinator invite panel", () => {
 		expect(text).toContain("codemem");
 		expect(text).toContain("Up to date");
 		expect(text).not.toContain("Share project");
+	});
+
+	it("keeps a previously generated invite copyable while fresh-state mutations are disabled", () => {
+		state.lastTeamInvite = { encoded: "retained-invite", warnings: [] };
+		const panel = renderInvitesPanel({
+			createInvite: vi.fn(),
+			fresh: false,
+			renderShell: vi.fn(),
+			summary: { detail: "Ready", readiness: "ready", title: "Ready" },
+		});
+		const panelNodes = nodes(panel);
+		const copy = panelNodes.find((node) => node.props.class === "settings-button sync-action-copy");
+		const create = panelNodes.find(
+			(node) => textContent(node.props.children) === "Create legacy coordinator invite",
+		);
+
+		expect(textContent(panel)).toContain("Previously generated invites remain available to copy");
+		expect(copy?.props.disabled).not.toBe(true);
+		expect(create?.props.disabled).toBe(true);
+	});
+
+	it("uses setup guidance when coordinator administration is not configured", () => {
+		const panel = renderInvitesPanel({
+			createInvite: vi.fn(),
+			fresh: false,
+			renderShell: vi.fn(),
+			summary: { detail: "Setup", readiness: "not_configured", title: "Setup required" },
+		});
+
+		expect(textContent(panel)).toContain("Finish coordinator setup first");
+		expect(textContent(panel)).not.toContain("data are unavailable");
 	});
 });

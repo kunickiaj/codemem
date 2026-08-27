@@ -238,7 +238,7 @@ async function flushAsyncWork() {
 describe("Projects tab", () => {
 	beforeEach(() => {
 		mountProjectsDom();
-		state.lastCoordinatorAdminGroups = [
+		state.lastProjectCoordinatorAdminGroups = [
 			{ archived_at: null, display_name: "ExampleCo Team", group_id: "exampleco" },
 		];
 		vi.mocked(api.loadCoordinatorAdminStatus).mockResolvedValue({
@@ -312,6 +312,8 @@ describe("Projects tab", () => {
 
 	afterEach(() => {
 		vi.clearAllMocks();
+		state.lastProjectCoordinatorAdminGroups = [];
+		state.lastCoordinatorAdminStatus = null;
 		state.lastCoordinatorAdminGroups = [];
 		document.body.innerHTML = "";
 	});
@@ -336,6 +338,36 @@ describe("Projects tab", () => {
 			expect.objectContaining({ limit: 250 }),
 		);
 		expect(document.getElementById("projectsInventorySkeleton")).toBeNull();
+	});
+
+	it("keeps Advanced recovery snapshots untouched when Project Team-name refresh fails", async () => {
+		state.lastCoordinatorAdminStatus = {
+			active_group: "retained-group",
+			readiness: "ready",
+		};
+		state.lastCoordinatorAdminGroups = [
+			{ archived_at: null, display_name: "Retained Team", group_id: "retained-group" },
+		];
+		vi.mocked(api.loadCoordinatorAdminStatus).mockRejectedValue(
+			new Error("project refresh failed"),
+		);
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 25,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+
+		initProjectsTab(() => {});
+		await loadProjectsData();
+		await flushAsyncWork();
+
+		expect(state.lastCoordinatorAdminStatus?.active_group).toBe("retained-group");
+		expect(state.lastCoordinatorAdminGroups).toEqual([
+			{ archived_at: null, display_name: "Retained Team", group_id: "retained-group" },
+		]);
+		expect(state.lastProjectCoordinatorAdminGroups).toEqual([]);
 	});
 
 	it("renders mixed continuity and repair state without contradictory copy", async () => {
@@ -1209,7 +1241,7 @@ describe("Projects tab", () => {
 	});
 
 	it("refreshes active Team names and ignores archived Teams for Space labels", async () => {
-		state.lastCoordinatorAdminGroups = [
+		state.lastProjectCoordinatorAdminGroups = [
 			{ archived_at: "2026-05-01T00:00:00Z", display_name: "Old Team", group_id: "old" },
 		];
 		vi.mocked(api.loadCoordinatorAdminGroupsFiltered).mockResolvedValue({

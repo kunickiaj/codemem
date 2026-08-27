@@ -33,6 +33,10 @@ import { getTheme, initThemeToggle, setTheme } from "./lib/theme";
 
 import { initCoordinatorAdminTab, loadCoordinatorAdminData } from "./tabs/coordinator-admin";
 import {
+	beginStandaloneCoordinatorAdminStatusRefresh,
+	refreshCoordinatorAdminStatusForGeneration,
+} from "./tabs/coordinator-admin/data/status-refresh";
+import {
 	type DeviceAvailabilityInput,
 	type DevicePeerRuntimeMetadataInput,
 	type DevicesNavigationTarget,
@@ -717,19 +721,8 @@ async function doRefresh() {
 		const promises: Promise<unknown>[] = [loadHealthData(), loadConfigData()];
 		let devicesRefreshSucceeded = true;
 		if (refreshTab === "feed") {
-			promises.push(
-				api
-					.loadCoordinatorAdminStatus()
-					.then((status) => {
-						state.lastCoordinatorAdminStatus =
-							status && typeof status === "object"
-								? (status as typeof state.lastCoordinatorAdminStatus)
-								: null;
-					})
-					.catch(() => {
-						state.lastCoordinatorAdminStatus = null;
-					}),
-			);
+			const coordinatorGeneration = beginStandaloneCoordinatorAdminStatusRefresh();
+			promises.push(refreshCoordinatorAdminStatusForGeneration(coordinatorGeneration));
 		}
 
 		// Load tab-specific data

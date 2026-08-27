@@ -10,9 +10,13 @@ import * as api from "../../../lib/api";
 import { showGlobalNotice } from "../../../lib/notice";
 import { state } from "../../../lib/state";
 import { openSyncConfirmDialog } from "../../sync/sync-dialogs";
+import { type CoordinatorAdminSurface, surfacesAreFresh } from "./recovery";
 import { coordinatorAdminState } from "./state";
 import {
+	adminSnapshotTargetMatchesCurrent,
 	coordinatorGroupPresentationName,
+	coordinatorUrlForMatching,
+	currentAdminSnapshotTarget,
 	currentAdminTargetGroup,
 	setAdminTargetGroup,
 } from "./target-group";
@@ -79,9 +83,21 @@ export function createCoordinatorAdminActions(
 	deps: CoordinatorAdminActionDeps,
 ): CoordinatorAdminActions {
 	const { renderShell, reloadData } = deps;
+	const requireFresh = (...surfaces: CoordinatorAdminSurface[]): boolean => {
+		if (surfacesAreFresh(coordinatorAdminState.recovery, ...surfaces)) return true;
+		showGlobalNotice(
+			"Coordinator data changed or is refreshing. Wait for recovery to finish, then try again.",
+			"warning",
+		);
+		return false;
+	};
 
 	async function createGroupFromAdminPanel() {
+		if (!requireFresh("status", "groups")) return;
 		if (coordinatorAdminState.groupActionPendingKind) return;
+		const operationCoordinatorUrl = coordinatorUrlForMatching(
+			state.lastCoordinatorAdminStatus?.coordinator_url,
+		);
 		const groupId = coordinatorAdminState.createGroupId.trim();
 		if (!groupId) {
 			showGlobalNotice("Enter a coordinator group ID before creating a legacy group.", "warning");
@@ -105,6 +121,12 @@ export function createCoordinatorAdminActions(
 				group?: { group_id?: string; display_name?: string | null } | null;
 				setup_warning?: { step?: string; error?: string } | null;
 			};
+			if (
+				coordinatorUrlForMatching(state.lastCoordinatorAdminStatus?.coordinator_url) !==
+				operationCoordinatorUrl
+			) {
+				return;
+			}
 			const defaultSpaceContainer = result.default_space as
 				| { scope?: { scope_id?: string; label?: string | null } | null }
 				| { scope_id?: string; label?: string | null }
@@ -132,9 +154,17 @@ export function createCoordinatorAdminActions(
 						: null,
 				setupWarning: result.setup_warning || null,
 			};
-			await reloadData();
-			setAdminTargetGroup(groupId);
-			await reloadData();
+			try {
+				await reloadData();
+				setAdminTargetGroup(groupId);
+				await reloadData();
+			} catch {
+				showGlobalNotice(
+					"Legacy coordinator group created, but coordinator data could not refresh. Check coordinator recovery status before retrying.",
+					"warning",
+				);
+				return;
+			}
 			if (result.setup_warning) {
 				showGlobalNotice(
 					"Legacy coordinator group created, but default Space setup needs repair. Sharing policy is unchanged.",
@@ -167,21 +197,23 @@ export function createCoordinatorAdminActions(
 		displayName: string,
 		kind: "rename" | "archive" | "unarchive",
 	) {
+		if (!requireFresh("status", "groups")) return;
 		if (!groupId || coordinatorAdminState.groupActionPendingId) return;
 		const requestedDisplayName = displayName.trim();
 		if (kind === "rename" && !requestedDisplayName) {
 			showGlobalNotice("Enter a legacy group display name before renaming it.", "warning");
 			return;
 		}
-		const currentGroup = state.lastCoordinatorAdminGroups.find(
+		const confirmationGroup = state.lastCoordinatorAdminGroups.find(
 			(group) => group.group_id === groupId,
 		);
-		const target = coordinatorGroupPresentationName(groupId, currentGroup?.display_name);
+		const target = coordinatorGroupPresentationName(groupId, confirmationGroup?.display_name);
+		const confirmationTarget = currentAdminSnapshotTarget();
 		const confirmed = await openSyncConfirmDialog({
 			title:
 				kind === "rename"
-					? "Rename legacy coordinator group?"
-					: `${kind === "archive" ? "Archive" : "Unarchive"} legacy coordinator group?`,
+					? `Rename ${target}?`
+					: `${kind === "archive" ? "Archive" : "Unarchive"} ${target}?`,
 			description:
 				kind === "rename"
 					? `Target: ${target}. New name: ${requestedDisplayName}. This renames the technical coordinator group only. It does not rename a policy Team or change membership or Project access in Sharing.`
@@ -205,32 +237,65 @@ export function createCoordinatorAdminActions(
 		if (!confirmed) {
 			return;
 		}
+		if (!adminSnapshotTargetMatchesCurrent(confirmationTarget)) {
+			showGlobalNotice(
+				"Coordinator group data changed while confirmation was open. Review the current group and try again.",
+				"warning",
+			);
+			return;
+		}
+		if (!surfacesAreFresh(coordinatorAdminState.recovery, "status", "groups")) {
+			showGlobalNotice(
+				"Coordinator group data changed while confirmation was open. Review the current group and try again.",
+				"warning",
+			);
+			return;
+		}
+		const currentGroup = state.lastCoordinatorAdminGroups.find(
+			(group) => String(group.group_id || "") === groupId,
+		);
+		if (!currentGroup || coordinatorAdminState.groupActionPendingId) {
+			showGlobalNotice(
+				"Coordinator group data changed while confirmation was open. Review the current group and try again.",
+				"warning",
+			);
+			return;
+		}
+		const currentDisplayName =
+			coordinatorAdminState.groupRenameDrafts.get(groupId) ??
+			String(currentGroup.display_name || "");
 		coordinatorAdminState.groupActionPendingId = groupId;
 		coordinatorAdminState.groupActionPendingKind = kind;
 		renderShell();
 		try {
+			const completedAction =
+				kind === "rename" ? "renamed" : kind === "archive" ? "archived" : "unarchived";
 			if (kind === "rename") {
-				await api.renameCoordinatorAdminGroup(groupId, requestedDisplayName);
-				showGlobalNotice(
-					"Legacy coordinator group renamed. Sharing Team names are unchanged.",
-					"success",
-				);
+				await api.renameCoordinatorAdminGroup(groupId, currentDisplayName);
 			}
 			if (kind === "archive") {
 				await api.archiveCoordinatorAdminGroup(groupId);
-				showGlobalNotice(
-					"Legacy coordinator group archived. Sharing policy is unchanged.",
-					"success",
-				);
 			}
 			if (kind === "unarchive") {
 				await api.unarchiveCoordinatorAdminGroup(groupId);
-				showGlobalNotice(
-					"Legacy coordinator group unarchived. This device's local coordinator configuration and Sharing policy are unchanged.",
-					"success",
-				);
 			}
-			await reloadData();
+			try {
+				await reloadData();
+			} catch {
+				showGlobalNotice(
+					`Legacy coordinator group ${completedAction}, but coordinator data could not refresh. Check coordinator recovery status before retrying.`,
+					"warning",
+				);
+				return;
+			}
+			showGlobalNotice(
+				kind === "rename"
+					? "Legacy coordinator group renamed. Sharing Team names are unchanged."
+					: kind === "archive"
+						? "Legacy coordinator group archived. Sharing policy is unchanged."
+						: "Legacy coordinator group unarchived. This device's local coordinator configuration and Sharing policy are unchanged.",
+				"success",
+			);
 		} catch (cause) {
 			if (isStaleGroupMutationError(cause)) {
 				try {
@@ -259,8 +324,10 @@ export function createCoordinatorAdminActions(
 	}
 
 	async function createInviteFromAdminPanel() {
+		if (!requireFresh("status", "groups")) return;
 		if (coordinatorAdminState.invitePending) return;
 		const status = state.lastCoordinatorAdminStatus;
+		const operationCoordinatorUrl = coordinatorUrlForMatching(status?.coordinator_url);
 		const defaultGroup = currentAdminTargetGroup() || String(status?.active_group || "").trim();
 		const groupId = coordinatorAdminState.inviteGroup.trim() || defaultGroup;
 		const ttlHours = Number(coordinatorAdminState.inviteTtlHours);
@@ -280,6 +347,16 @@ export function createCoordinatorAdminActions(
 				policy: coordinatorAdminState.invitePolicy,
 				ttl_hours: ttlHours,
 			});
+			const currentStatus = state.lastCoordinatorAdminStatus;
+			const currentDefaultGroup =
+				currentAdminTargetGroup() || String(currentStatus?.active_group || "").trim();
+			const currentGroup = coordinatorAdminState.inviteGroup.trim() || currentDefaultGroup;
+			if (
+				coordinatorUrlForMatching(currentStatus?.coordinator_url) !== operationCoordinatorUrl ||
+				currentGroup !== groupId
+			) {
+				return;
+			}
 			state.lastTeamInvite = result;
 			coordinatorAdminState.inviteGroup = groupId;
 			const warnings = Array.isArray(result.warnings) ? result.warnings : [];
@@ -298,7 +375,11 @@ export function createCoordinatorAdminActions(
 	}
 
 	async function reviewJoinRequestFromAdminPanel(requestId: string, action: "approve" | "deny") {
+		if (!adminSnapshotTargetMatchesCurrent(coordinatorAdminState.joinRequestsSnapshotTarget))
+			return;
+		if (!requireFresh("status", "joinRequests")) return;
 		if (coordinatorAdminState.joinReviewPendingId) return;
+		const operationTarget = coordinatorAdminState.joinRequestsSnapshotTarget;
 		coordinatorAdminState.joinReviewPendingId = requestId;
 		coordinatorAdminState.joinReviewPendingAction = action;
 		renderShell();
@@ -306,6 +387,16 @@ export function createCoordinatorAdminActions(
 			const result = (await api.reviewCoordinatorAdminJoinRequest(requestId, action)) as {
 				setup_warning?: { step?: string; error?: string } | null;
 			};
+			if (!adminSnapshotTargetMatchesCurrent(operationTarget)) return;
+			try {
+				await reloadData();
+			} catch {
+				showGlobalNotice(
+					`Join request ${action === "approve" ? "approved" : "denied"}, but pending requests could not refresh. Check coordinator recovery status before reviewing another request.`,
+					"warning",
+				);
+				return;
+			}
 			if (action === "approve" && result.setup_warning) {
 				showGlobalNotice(
 					"Join request approved, but default Space access needs repair.",
@@ -317,14 +408,21 @@ export function createCoordinatorAdminActions(
 					"success",
 				);
 			}
-			await reloadData();
 		} catch (cause) {
+			if (!adminSnapshotTargetMatchesCurrent(operationTarget)) return;
 			if (isMissingJoinRequestError(cause)) {
-				await reloadData();
-				showGlobalNotice(
-					"This legacy coordinator join request no longer exists. Pending requests were refreshed.",
-					"warning",
-				);
+				try {
+					await reloadData();
+					showGlobalNotice(
+						"This legacy coordinator join request no longer exists. Pending requests were refreshed.",
+						"warning",
+					);
+				} catch {
+					showGlobalNotice(
+						"This legacy coordinator join request no longer exists. Refresh pending requests before reviewing another request.",
+						"warning",
+					);
+				}
 			} else {
 				showGlobalNotice(
 					"Could not review the legacy coordinator join request. Sharing policy is unchanged; check coordinator recovery status and retry.",
@@ -344,10 +442,12 @@ export function createCoordinatorAdminActions(
 		displayName: string,
 		kind: "rename" | "disable" | "enable" | "remove",
 	) {
+		if (!adminSnapshotTargetMatchesCurrent(coordinatorAdminState.devicesSnapshotTarget)) return;
+		if (!requireFresh("status", "devices")) return;
 		if (!deviceId || coordinatorAdminState.deviceActionPendingId) return;
-		if (
-			(kind === "disable" || kind === "remove") &&
-			!(await openSyncConfirmDialog({
+		if (kind === "disable" || kind === "remove") {
+			const confirmationTarget = currentAdminSnapshotTarget();
+			const confirmed = await openSyncConfirmDialog({
 				title: `${kind === "disable" ? "Disable" : "Remove"} ${displayName || deviceId}?`,
 				description:
 					kind === "disable"
@@ -356,14 +456,46 @@ export function createCoordinatorAdminActions(
 				confirmLabel: kind === "disable" ? "Disable device" : "Remove device",
 				cancelLabel: kind === "disable" ? "Keep device enabled" : "Keep device enrolled",
 				tone: "danger",
-			}))
-		) {
-			return;
+			});
+			if (!confirmed) return;
+			if (!adminSnapshotTargetMatchesCurrent(confirmationTarget)) {
+				showGlobalNotice(
+					"Coordinator device data changed while confirmation was open. Review the current device and try again.",
+					"warning",
+				);
+				return;
+			}
+			if (!surfacesAreFresh(coordinatorAdminState.recovery, "status", "devices")) {
+				showGlobalNotice(
+					"Coordinator device data changed while confirmation was open. Review the current device and try again.",
+					"warning",
+				);
+				return;
+			}
+			const currentDevice = state.lastCoordinatorAdminDevices.find(
+				(device) =>
+					String(device.device_id || "") === deviceId && String(device.group_id || "") === groupId,
+			);
+			if (!currentDevice || coordinatorAdminState.deviceActionPendingId) {
+				showGlobalNotice(
+					"Coordinator device data changed while confirmation was open. Review the current device and try again.",
+					"warning",
+				);
+				return;
+			}
 		}
 		coordinatorAdminState.deviceActionPendingId = deviceId;
 		coordinatorAdminState.deviceActionPendingKind = kind;
 		renderShell();
 		try {
+			const completedAction =
+				kind === "rename"
+					? "renamed"
+					: kind === "disable"
+						? "disabled"
+						: kind === "enable"
+							? "enabled"
+							: "removed";
 			if (kind === "rename") {
 				const nextName = String(
 					coordinatorAdminState.deviceRenameDrafts.get(deviceId) || "",
@@ -373,21 +505,26 @@ export function createCoordinatorAdminActions(
 					return;
 				}
 				await api.renameCoordinatorAdminDevice(deviceId, groupId, nextName);
-				showGlobalNotice("Device renamed.", "success");
 			}
 			if (kind === "disable") {
 				await api.disableCoordinatorAdminDevice(deviceId, groupId);
-				showGlobalNotice("Device disabled.", "success");
 			}
 			if (kind === "enable") {
 				await api.enableCoordinatorAdminDevice(deviceId, groupId);
-				showGlobalNotice("Device enabled.", "success");
 			}
 			if (kind === "remove") {
 				await api.removeCoordinatorAdminDevice(deviceId, groupId);
-				showGlobalNotice("Device removed.", "success");
 			}
-			await reloadData();
+			try {
+				await reloadData();
+			} catch {
+				showGlobalNotice(
+					`Device ${completedAction}, but coordinator data could not refresh. Check coordinator recovery status before retrying.`,
+					"warning",
+				);
+				return;
+			}
+			showGlobalNotice(`Device ${completedAction}.`, "success");
 		} catch (error) {
 			const knownRenameError =
 				kind === "rename" && error instanceof Error

@@ -282,7 +282,7 @@ export async function loadSyncData() {
 				? payload.legacy_shared_review
 				: null;
 		state.lastSyncCoordinator = payload.coordinator || null;
-		state.lastCoordinatorAdminStatus =
+		state.lastSyncCoordinatorAdminStatus =
 			coordinatorAdminStatus && typeof coordinatorAdminStatus === "object"
 				? coordinatorAdminStatus
 				: null;
@@ -314,7 +314,7 @@ export async function loadSyncData() {
 			renderSyncActorsUnavailable();
 		}
 		if (coordinatorAdminLoadError) {
-			state.lastCoordinatorAdminStatus = null;
+			state.lastSyncCoordinatorAdminStatus = null;
 			renderTeamSync();
 		}
 	} catch {

@@ -345,7 +345,7 @@ function projectClusterLabel(project: ProjectScopeInventoryProject): string {
 function teamName(groupId: string | null | undefined): string | null {
 	const normalized = String(groupId || "").trim();
 	if (!normalized) return null;
-	const group = state.lastCoordinatorAdminGroups.find(
+	const group = state.lastProjectCoordinatorAdminGroups.find(
 		(item) => String(item.group_id || "").trim() === normalized && !item.archived_at,
 	);
 	return group?.display_name || "Team details unavailable";
@@ -353,7 +353,7 @@ function teamName(groupId: string | null | undefined): string | null {
 
 function knownActiveCoordinatorGroupIds(): Set<string> {
 	return new Set(
-		state.lastCoordinatorAdminGroups
+		state.lastProjectCoordinatorAdminGroups
 			.filter((item) => !item.archived_at)
 			.map((item) => String(item.group_id || "").trim())
 			.filter(Boolean),
@@ -379,34 +379,31 @@ function refreshSkippedProjectDataAfterSelectBlur() {
 }
 
 async function refreshProjectCoordinatorGroupNames(): Promise<void> {
+	let status: typeof state.lastCoordinatorAdminStatus;
 	try {
-		const status = await api.loadCoordinatorAdminStatus();
-		state.lastCoordinatorAdminStatus =
-			status && typeof status === "object"
-				? (status as typeof state.lastCoordinatorAdminStatus)
+		const payload = await api.loadCoordinatorAdminStatus();
+		status =
+			payload && typeof payload === "object"
+				? (payload as typeof state.lastCoordinatorAdminStatus)
 				: null;
 	} catch {
-		state.lastCoordinatorAdminStatus = null;
-		state.lastCoordinatorAdminGroups = [];
+		state.lastProjectCoordinatorAdminGroups = [];
 		coordinatorGroupNamesCurrent = false;
 		return;
 	}
-	if (
-		state.lastCoordinatorAdminStatus?.readiness !== "ready" ||
-		!state.lastCoordinatorAdminStatus.has_admin_secret
-	) {
-		state.lastCoordinatorAdminGroups = [];
+	if (status?.readiness !== "ready" || !status.has_admin_secret) {
+		state.lastProjectCoordinatorAdminGroups = [];
 		coordinatorGroupNamesCurrent = false;
 		return;
 	}
 	try {
 		const payload = (await api.loadCoordinatorAdminGroupsFiltered(false)) as {
-			items?: typeof state.lastCoordinatorAdminGroups;
+			items?: typeof state.lastProjectCoordinatorAdminGroups;
 		};
-		state.lastCoordinatorAdminGroups = Array.isArray(payload?.items) ? payload.items : [];
+		state.lastProjectCoordinatorAdminGroups = Array.isArray(payload?.items) ? payload.items : [];
 		coordinatorGroupNamesCurrent = true;
 	} catch {
-		state.lastCoordinatorAdminGroups = [];
+		state.lastProjectCoordinatorAdminGroups = [];
 		coordinatorGroupNamesCurrent = false;
 	}
 }

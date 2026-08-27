@@ -3,6 +3,7 @@ import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { state } from "../../../lib/state";
+import { completeSurfaceRefresh, markSurfaceNotApplicable } from "../data/recovery";
 import { coordinatorAdminState } from "../data/state";
 import { renderJoinRequestsPanel } from "./join-requests-panel";
 
@@ -25,6 +26,8 @@ function renderPanel() {
 		render(
 			renderJoinRequestsPanel({
 				reviewJoinRequest: vi.fn(),
+				fresh: true,
+				snapshotMatchesTarget: true,
 				summary: {
 					detail: "Ready",
 					readiness: "ready",
@@ -49,6 +52,7 @@ describe("JoinRequestsPanel", () => {
 		];
 		coordinatorAdminState.joinReviewPendingId = null;
 		coordinatorAdminState.joinReviewPendingAction = null;
+		completeSurfaceRefresh(coordinatorAdminState.recovery, "joinRequests");
 	});
 
 	afterEach(() => {
@@ -73,5 +77,15 @@ describe("JoinRequestsPanel", () => {
 		expect(root.querySelector(".peer-meta")?.textContent).toBe(
 			"Advanced: Device ID dev-1 · Fingerprint fp-abc123",
 		);
+	});
+
+	it("shows setup guidance when join requests are not applicable yet", () => {
+		markSurfaceNotApplicable(coordinatorAdminState.recovery, "joinRequests");
+		state.lastCoordinatorAdminJoinRequests = [];
+
+		const root = renderPanel();
+
+		expect(root.textContent).toContain("Complete legacy coordinator setup");
+		expect(root.textContent).not.toContain("Join requests are unavailable");
 	});
 });

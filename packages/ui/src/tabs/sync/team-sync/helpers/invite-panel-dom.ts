@@ -26,7 +26,7 @@ export function applySyncInviteReadinessState() {
 	) as HTMLButtonElement | null;
 	const hint = document.getElementById("syncInviteAdminHint") as HTMLParagraphElement | null;
 	if (!syncCreateInviteButton || !hint) return;
-	const readiness = state.lastCoordinatorAdminStatus?.readiness;
+	const readiness = state.lastSyncCoordinatorAdminStatus?.readiness;
 	if (readiness === "ready") {
 		syncCreateInviteButton.disabled = false;
 		hint.hidden = false;

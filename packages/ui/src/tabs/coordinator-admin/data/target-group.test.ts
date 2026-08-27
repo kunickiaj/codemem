@@ -3,19 +3,75 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { state } from "../../../lib/state";
 import { coordinatorAdminState } from "./state";
 import {
+	adminSnapshotTargetMatchesCurrent,
 	coordinatorGroupPresentationName,
+	currentAdminSnapshotTarget,
+	readStoredAdminTargetGroup,
 	reconcileDeviceRenameDrafts,
 	reconcileGroupRenameDrafts,
+	writeStoredAdminTargetGroup,
 } from "./target-group";
 
 describe("coordinator admin target group helpers", () => {
 	beforeEach(() => {
+		state.lastCoordinatorAdminStatus = null;
 		state.lastCoordinatorAdminDevices = [];
 		state.lastCoordinatorAdminGroups = [];
+		state.coordinatorAdminTargetGroup = "";
 		coordinatorAdminState.groupRenameDrafts.clear();
 		coordinatorAdminState.groupPresentationAliases.clear();
 		coordinatorAdminState.deviceRenameDrafts.clear();
 		coordinatorAdminState.deviceRenameServerNames.clear();
+		localStorage.clear();
+	});
+
+	it("uses one stored target for trailing-slash-equivalent coordinator URLs", () => {
+		writeStoredAdminTargetGroup("https://coordinator.example", "group-a");
+
+		expect(readStoredAdminTargetGroup(" https://coordinator.example/// ")).toBe("group-a");
+	});
+
+	it("identifies the current coordinator and selected group as the snapshot target", () => {
+		state.lastCoordinatorAdminStatus = {
+			active_group: "group-a",
+			coordinator_url: " https://coordinator.example ",
+			readiness: "ready",
+		};
+		state.lastCoordinatorAdminGroups = [
+			{ group_id: "group-a", display_name: "Group A" },
+			{ group_id: "group-b", display_name: "Group B" },
+		];
+		state.coordinatorAdminTargetGroup = "group-b";
+
+		expect(currentAdminSnapshotTarget()).toEqual({
+			coordinatorUrl: "https://coordinator.example",
+			groupId: "group-b",
+		});
+		expect(
+			adminSnapshotTargetMatchesCurrent({
+				coordinatorUrl: "https://coordinator.example",
+				groupId: "group-b",
+			}),
+		).toBe(true);
+		expect(
+			adminSnapshotTargetMatchesCurrent({
+				coordinatorUrl: "https://coordinator.example/",
+				groupId: "group-b",
+			}),
+		).toBe(true);
+		expect(
+			adminSnapshotTargetMatchesCurrent({
+				coordinatorUrl: "https://other.example",
+				groupId: "group-b",
+			}),
+		).toBe(false);
+	});
+
+	it("does not treat an unidentified coordinator snapshot as current", () => {
+		state.lastCoordinatorAdminStatus = { active_group: "group-a", readiness: "ready" };
+
+		expect(currentAdminSnapshotTarget()).toBeNull();
+		expect(adminSnapshotTargetMatchesCurrent(null)).toBe(false);
 	});
 
 	it("preserves dirty device rename drafts across refreshes", () => {
