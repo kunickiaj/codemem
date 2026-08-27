@@ -1064,7 +1064,7 @@ describe("summarizeSyncRunResult", () => {
 		});
 	});
 
-	it("routes scope_rejected failures to the Teams Space-access message", () => {
+	it("routes scope_rejected failures to the legacy coordinator Space-access message", () => {
 		expect(
 			summarizeSyncRunResult({
 				items: [
@@ -1082,12 +1082,12 @@ describe("summarizeSyncRunResult", () => {
 		).toEqual({
 			ok: false,
 			message:
-				"Sync ran, but the peer is not authorized for one or more Spaces. Review Space access for this device in Teams, then sync again.",
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in coordinator administration (legacy), then sync again.",
 			warning: true,
 		});
 	});
 
-	it("routes scoped sync incomplete failures to the Teams Space-access message", () => {
+	it("routes scoped sync incomplete failures to the legacy coordinator Space-access message", () => {
 		expect(
 			summarizeSyncRunResult({
 				items: [
@@ -1104,7 +1104,7 @@ describe("summarizeSyncRunResult", () => {
 		).toEqual({
 			ok: false,
 			message:
-				"Sync ran, but the peer is not authorized for one or more Spaces. Review Space access for this device in Teams, then sync again.",
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in coordinator administration (legacy), then sync again.",
 			warning: true,
 		});
 	});
@@ -1127,7 +1127,7 @@ describe("summarizeSyncRunResult", () => {
 		).toEqual({
 			ok: false,
 			message:
-				"Sync ran, but the peer is not authorized for one or more Spaces. Review Space access for this device in Teams, then sync again.",
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in coordinator administration (legacy), then sync again.",
 			warning: true,
 		});
 	});
@@ -1150,7 +1150,7 @@ describe("summarizeSyncRunResult", () => {
 		).toEqual({
 			ok: false,
 			message:
-				"Sync ran, but the peer is not authorized for one or more Spaces. Review Space access for this device in Teams, then sync again.",
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in coordinator administration (legacy), then sync again.",
 			warning: true,
 		});
 	});

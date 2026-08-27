@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { teamCardOverview } from "./team-card";
 
-describe("coordinator admin Team card helpers", () => {
+describe("coordinator admin legacy group card helpers", () => {
 	it("summarizes a newly created default Space without exposing raw IDs", () => {
 		expect(
 			teamCardOverview({
@@ -22,7 +22,7 @@ describe("coordinator admin Team card helpers", () => {
 		});
 	});
 
-	it("ignores setup guide state for a different Team", () => {
+	it("ignores setup guide state for a different coordinator group", () => {
 		expect(
 			teamCardOverview({
 				groupId: "team-beta",
@@ -36,12 +36,12 @@ describe("coordinator admin Team card helpers", () => {
 				},
 			}),
 		).toMatchObject({
-			autoGrant: "Open Team defaults to inspect",
-			defaultSpace: "Open Team defaults to inspect",
+			autoGrant: "Open legacy group defaults to inspect",
+			defaultSpace: "Open legacy group defaults to inspect",
 		});
 	});
 
-	it("shows conservative migrated Team defaults when preferences are loaded", () => {
+	it("shows conservative migrated group defaults when preferences are loaded", () => {
 		expect(
 			teamCardOverview({
 				groupId: "team-beta",

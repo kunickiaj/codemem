@@ -65,7 +65,7 @@ function renderShell() {
 		summary.readiness !== "ready"
 			? summary.detail
 			: targetArchived
-				? "The selected Team is archived. Restore it or switch Teams before creating invites."
+				? "The selected coordinator group is archived. Restore it or switch groups before creating legacy invites."
 				: "";
 	if (
 		(coordinatorAdminState.activeSection === "invites" && !invitesEnabled) ||
@@ -83,26 +83,26 @@ function renderShell() {
 			h(
 				"div",
 				{ class: "card coordinator-admin-header" },
-				h("div", { class: "section-header" }, h("h2", null, "Teams")),
+				h("div", { class: "section-header" }, h("h2", null, "Legacy coordinator administration")),
 				h(
 					"div",
 					{ class: "coordinator-admin-summary-grid" },
 					h(
 						"div",
 						{ class: "coordinator-admin-summary-card" },
-						h("span", { class: "section-meta" }, "Team admin target"),
+						h("span", { class: "section-meta" }, "Coordinator group target"),
 						h("strong", null, targetGroup || "None selected"),
 					),
 					h(
 						"div",
 						{ class: "coordinator-admin-summary-card" },
-						h("span", { class: "section-meta" }, "Node discovery Team"),
+						h("span", { class: "section-meta" }, "Node discovery group"),
 						h("strong", null, activeGroup || "None"),
 					),
 					h(
 						"div",
 						{ class: "coordinator-admin-summary-card" },
-						h("span", { class: "section-meta" }, "Teams"),
+						h("span", { class: "section-meta" }, "Coordinator groups"),
 						h(
 							"strong",
 							null,
@@ -112,7 +112,7 @@ function renderShell() {
 					h(
 						"div",
 						{ class: "coordinator-admin-summary-card" },
-						h("span", { class: "section-meta" }, "Selected Team activity"),
+						h("span", { class: "section-meta" }, "Selected group activity"),
 						h("strong", null, `${joinRequestCount} join requests · ${deviceCount} devices`),
 					),
 				),
@@ -133,14 +133,14 @@ function renderShell() {
 				h(
 					RadixTabs,
 					{
-						ariaLabel: "Teams sections",
+						ariaLabel: "Legacy coordinator administration sections",
 						listClassName: "coordinator-admin-tabs-list",
 						onValueChange: (value) => {
 							coordinatorAdminState.activeSection = (value as AdminSection) || "groups";
 							renderShell();
 						},
 						tabs: [
-							{ value: "groups", label: "Teams", disabled: !groupsEnabled },
+							{ value: "groups", label: "Coordinator groups", disabled: !groupsEnabled },
 							{ value: "invites", label: "Invites", disabled: !invitesEnabled },
 							{ value: "join-requests", label: "Join requests", disabled: !joinRequestsEnabled },
 							{ value: "devices", label: "Devices", disabled: !devicesEnabled },
@@ -176,10 +176,10 @@ function renderShell() {
 					"div",
 					{ class: "section-meta coordinator-admin-context-line" },
 					targetArchived
-						? `Selected Team ${targetGroup || "—"} is archived. Switch or restore it to enable invite operations.`
+						? "The selected coordinator group is archived. Switch or restore it to enable legacy invite operations."
 						: targetGroup
-							? `Actions below apply to ${targetGroup}.`
-							: "Select a Team to start managing people, Spaces, and access.",
+							? "Actions below apply to the selected coordinator group."
+							: "Select a coordinator group to manage legacy enrollment and Spaces.",
 				),
 			),
 		),
@@ -211,7 +211,7 @@ export async function loadCoordinatorAdminData() {
 			const payload = await api.loadShareOperations();
 			state.lastShareOperations = Array.isArray(payload.items) ? payload.items : [];
 		} catch {
-			// Keep the previous read-only reflection; Teams administration remains usable.
+			// Keep the previous read-only reflection; legacy coordinator administration remains usable.
 		}
 		try {
 			const groupsPayload = (await api.loadCoordinatorAdminGroupsFiltered(

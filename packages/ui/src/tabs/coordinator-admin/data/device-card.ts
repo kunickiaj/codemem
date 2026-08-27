@@ -17,12 +17,14 @@ export function coordinatorAdminDeviceCardCopy(
 	const displayName = String(device.display_name || deviceId || "Unnamed device");
 	const enabled = device.enabled !== false && device.enabled !== 0;
 	const advancedParts = [`Device ID ${deviceId || "unknown"}`];
-	if (teamId) advancedParts.push(`Team ID ${teamId}`);
+	if (teamId) advancedParts.push(`Group ID ${teamId}`);
 	return {
 		advancedDetail: `Advanced: ${advancedParts.join(" · ")}`,
 		deviceId,
 		displayName,
-		statusLabel: enabled ? "Enabled in this Team" : "Disabled in this Team",
+		statusLabel: enabled
+			? "Enabled in this coordinator group"
+			: "Disabled in this coordinator group",
 		teamId,
 	};
 }

@@ -44,7 +44,7 @@ export interface SpaceAccessDeviceCopy {
 
 export function scopeManagementReadinessMessage(summary: CoordinatorAdminSummary): string | null {
 	if (summary.readiness === "ready") return null;
-	return "Space management needs the coordinator URL, target Team, and admin secret before it can list Spaces or change memberships.";
+	return "Legacy Space management needs the coordinator URL, target group, and admin secret before it can list Spaces or change transport memberships.";
 }
 
 export function scopeStatusLabel(status: string | null | undefined): string {

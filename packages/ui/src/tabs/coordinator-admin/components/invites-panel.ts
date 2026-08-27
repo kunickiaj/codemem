@@ -34,13 +34,13 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 	return h(
 		RadixTabsContent,
 		{ className: "coordinator-admin-panel", value: "invites" },
-		h("h3", null, "Legacy Team invites"),
+		h("h3", null, "Legacy coordinator invites"),
 		h(
 			"p",
 			{ class: "peer-submeta" },
 			summary.readiness === "ready"
-				? "Legacy Team invites enroll a device in the selected Team. They do not grant project access; share projects from Projects instead."
-				: "Finish setup first. Invite creation stays disabled until the local Teams configuration is ready.",
+				? "Legacy coordinator invites enroll a device in the selected group for discovery. They do not add policy Team membership or grant Project access; use Sharing for both."
+				: "Finish coordinator setup first. Legacy invite creation stays disabled until the local configuration is ready.",
 		),
 		h(
 			"form",
@@ -58,7 +58,7 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 				h(
 					"label",
 					{ class: "coordinator-admin-field" },
-					h("span", null, "Team"),
+					h("span", null, "Coordinator group"),
 					h(TextInput, {
 						class: "peer-scope-input",
 						disabled: summary.readiness !== "ready",
@@ -68,7 +68,7 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 							);
 							renderShell();
 						},
-						placeholder: activeGroup || "team-alpha",
+						placeholder: activeGroup || "group-alpha",
 						type: "text",
 						value: coordinatorAdminState.inviteGroup,
 					}),
@@ -89,8 +89,8 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 							renderShell();
 						},
 						options: [
-							{ value: "auto_admit", label: "Auto-admit to Team" },
-							{ value: "approval_required", label: "Require approval to join Team" },
+							{ value: "auto_admit", label: "Auto-admit to coordinator group" },
+							{ value: "approval_required", label: "Require approval to join group" },
 						],
 						triggerClassName: "sync-radix-select-trigger sync-actor-select",
 						value: coordinatorAdminState.invitePolicy,
@@ -125,10 +125,10 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 						disabled: inviteDisabled,
 						type: "submit",
 					},
-					coordinatorAdminState.invitePending ? "Creating…" : "Create legacy Team invite",
+					coordinatorAdminState.invitePending ? "Creating…" : "Create legacy coordinator invite",
 				),
 				effectiveGroup
-					? h("span", { class: "peer-submeta" }, `Using Team ${effectiveGroup}`)
+					? h("span", { class: "peer-submeta" }, "Using the selected coordinator group")
 					: null,
 			),
 		),

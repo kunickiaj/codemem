@@ -11,7 +11,47 @@ import { showGlobalNotice } from "../../../lib/notice";
 import { state } from "../../../lib/state";
 import { openSyncConfirmDialog } from "../../sync/sync-dialogs";
 import { coordinatorAdminState } from "./state";
-import { currentAdminTargetGroup, setAdminTargetGroup } from "./target-group";
+import {
+	coordinatorGroupPresentationName,
+	currentAdminTargetGroup,
+	setAdminTargetGroup,
+} from "./target-group";
+
+const DEVICE_RENAME_ERROR_MESSAGES = new Map([
+	["display_name_required", "Enter a device name before renaming it."],
+	["display_name_invalid", "Enter a valid device name and retry."],
+	["display_name_too_long", "The device name is too long. Use a shorter name and retry."],
+]);
+
+function safeInviteCreationError(cause: unknown): string {
+	const message = cause instanceof Error ? cause.message : "";
+	if (message.includes("group_archived") || message.includes("Group is archived")) {
+		return "This legacy coordinator group is archived. Choose an active group or refresh coordinator groups.";
+	}
+	if (message.includes("group_not_found") || message.includes("Group not found")) {
+		return "This legacy coordinator group no longer exists. Choose an active group or refresh coordinator groups.";
+	}
+	return "Could not create the legacy coordinator invite. Sharing policy is unchanged; check coordinator recovery status and retry.";
+}
+
+function isMissingJoinRequestError(cause: unknown): boolean {
+	if (!(cause instanceof Error)) return false;
+	return (
+		cause.message.includes("request_not_found") || cause.message.includes("join request not found")
+	);
+}
+
+function isStaleGroupMutationError(cause: unknown): boolean {
+	if (!(cause instanceof Error)) return false;
+	const message = cause.message.toLowerCase();
+	return message.includes("group_not_found") || message.includes("group not found");
+}
+
+function isMissingDeviceError(cause: unknown): boolean {
+	if (!(cause instanceof Error)) return false;
+	const message = cause.message.toLowerCase();
+	return message.includes("device_not_found") || message.includes("device not found");
+}
 
 export interface CoordinatorAdminActionDeps {
 	renderShell: () => void;
@@ -44,7 +84,7 @@ export function createCoordinatorAdminActions(
 		if (coordinatorAdminState.groupActionPendingKind) return;
 		const groupId = coordinatorAdminState.createGroupId.trim();
 		if (!groupId) {
-			showGlobalNotice("Enter a Team id before creating a Team.", "warning");
+			showGlobalNotice("Enter a coordinator group ID before creating a legacy group.", "warning");
 			return;
 		}
 		const requestedDisplayName = coordinatorAdminState.createGroupDisplayName.trim();
@@ -83,7 +123,7 @@ export function createCoordinatorAdminActions(
 			coordinatorAdminState.createGroupDisplayName = "";
 			coordinatorAdminState.teamSetupGuide = {
 				groupId,
-				displayName: String(result.group?.display_name || requestedDisplayName || groupId),
+				displayName: String(result.group?.display_name || requestedDisplayName || ""),
 				defaultSpaceScopeId,
 				defaultSpaceLabel: String(defaultSpace?.label || ""),
 				autoGrantDefaultSpaceOnJoin:
@@ -96,15 +136,24 @@ export function createCoordinatorAdminActions(
 			setAdminTargetGroup(groupId);
 			await reloadData();
 			if (result.setup_warning) {
-				showGlobalNotice("Team created, but default Space setup needs repair.", "warning");
+				showGlobalNotice(
+					"Legacy coordinator group created, but default Space setup needs repair. Sharing policy is unchanged.",
+					"warning",
+				);
 			} else if (defaultSpaceScopeId) {
-				showGlobalNotice("Team created with a default Space.", "success");
+				showGlobalNotice(
+					"Legacy coordinator group created with a default Space. Sharing policy is unchanged.",
+					"success",
+				);
 			} else {
-				showGlobalNotice("Team created, but default Space status is unknown.", "warning");
+				showGlobalNotice(
+					"Legacy coordinator group created, but default Space status is unknown. Sharing policy is unchanged.",
+					"warning",
+				);
 			}
-		} catch (error) {
+		} catch {
 			showGlobalNotice(
-				error instanceof Error ? error.message : "Failed to create Team.",
+				"Could not create the legacy coordinator group. No Sharing policy or Project access changed; check coordinator recovery status and retry.",
 				"warning",
 			);
 		} finally {
@@ -119,19 +168,41 @@ export function createCoordinatorAdminActions(
 		kind: "rename" | "archive" | "unarchive",
 	) {
 		if (!groupId || coordinatorAdminState.groupActionPendingId) return;
-		if (
-			(kind === "archive" || kind === "unarchive") &&
-			!(await openSyncConfirmDialog({
-				title: `${kind === "archive" ? "Archive" : "Unarchive"} ${displayName || groupId}?`,
-				description:
-					kind === "archive"
-						? "Archived Teams stay visible and restorable, but they stop being operational for new invites and joins."
-						: "This Team will become operational again for invites and coordinator-backed joins.",
-				confirmLabel: kind === "archive" ? "Archive Team" : "Unarchive Team",
-				cancelLabel: kind === "archive" ? "Keep Team active" : "Keep Team archived",
-				tone: "danger",
-			}))
-		) {
+		const requestedDisplayName = displayName.trim();
+		if (kind === "rename" && !requestedDisplayName) {
+			showGlobalNotice("Enter a legacy group display name before renaming it.", "warning");
+			return;
+		}
+		const currentGroup = state.lastCoordinatorAdminGroups.find(
+			(group) => group.group_id === groupId,
+		);
+		const target = coordinatorGroupPresentationName(groupId, currentGroup?.display_name);
+		const confirmed = await openSyncConfirmDialog({
+			title:
+				kind === "rename"
+					? "Rename legacy coordinator group?"
+					: `${kind === "archive" ? "Archive" : "Unarchive"} legacy coordinator group?`,
+			description:
+				kind === "rename"
+					? `Target: ${target}. New name: ${requestedDisplayName}. This renames the technical coordinator group only. It does not rename a policy Team or change membership or Project access in Sharing.`
+					: kind === "archive"
+						? `Target: ${target}. The group stays visible and restorable, but coordinator presence, peer discovery, Space grants, legacy invites, and joins stop. Archiving also removes this group from this device's local coordinator configuration. Policy Team membership and Project access in Sharing are separate and unchanged.`
+						: `Target: ${target}. This reactivates the remote coordinator group for devices still configured for it. It does not re-add this group to this device's local coordinator configuration; restore that separately before expecting coordinator presence or peer discovery here. It does not restore or change policy Team membership or Project access in Sharing.`,
+			confirmLabel:
+				kind === "rename"
+					? "Rename coordinator group"
+					: kind === "archive"
+						? "Archive coordinator group"
+						: "Unarchive coordinator group",
+			cancelLabel:
+				kind === "rename"
+					? "Keep current group name"
+					: kind === "archive"
+						? "Keep group active"
+						: "Keep group archived",
+			tone: kind === "archive" ? "danger" : "default",
+		});
+		if (!confirmed) {
 			return;
 		}
 		coordinatorAdminState.groupActionPendingId = groupId;
@@ -139,23 +210,47 @@ export function createCoordinatorAdminActions(
 		renderShell();
 		try {
 			if (kind === "rename") {
-				await api.renameCoordinatorAdminGroup(groupId, displayName);
-				showGlobalNotice("Team renamed.", "success");
+				await api.renameCoordinatorAdminGroup(groupId, requestedDisplayName);
+				showGlobalNotice(
+					"Legacy coordinator group renamed. Sharing Team names are unchanged.",
+					"success",
+				);
 			}
 			if (kind === "archive") {
 				await api.archiveCoordinatorAdminGroup(groupId);
-				showGlobalNotice("Team archived.", "success");
+				showGlobalNotice(
+					"Legacy coordinator group archived. Sharing policy is unchanged.",
+					"success",
+				);
 			}
 			if (kind === "unarchive") {
 				await api.unarchiveCoordinatorAdminGroup(groupId);
-				showGlobalNotice("Team unarchived.", "success");
+				showGlobalNotice(
+					"Legacy coordinator group unarchived. This device's local coordinator configuration and Sharing policy are unchanged.",
+					"success",
+				);
 			}
 			await reloadData();
-		} catch (error) {
-			showGlobalNotice(
-				error instanceof Error ? error.message : `Failed to ${kind} Team.`,
-				"warning",
-			);
+		} catch (cause) {
+			if (isStaleGroupMutationError(cause)) {
+				try {
+					await reloadData();
+					showGlobalNotice(
+						"This legacy coordinator group changed or no longer exists. Coordinator groups were refreshed.",
+						"warning",
+					);
+				} catch {
+					showGlobalNotice(
+						"This legacy coordinator group changed or no longer exists. Refresh coordinator groups before trying another action.",
+						"warning",
+					);
+				}
+			} else {
+				showGlobalNotice(
+					`Could not ${kind} the legacy coordinator group. Sharing policy is unchanged; check coordinator recovery status and retry.`,
+					"warning",
+				);
+			}
 		} finally {
 			coordinatorAdminState.groupActionPendingId = "";
 			coordinatorAdminState.groupActionPendingKind = "";
@@ -170,7 +265,7 @@ export function createCoordinatorAdminActions(
 		const groupId = coordinatorAdminState.inviteGroup.trim() || defaultGroup;
 		const ttlHours = Number(coordinatorAdminState.inviteTtlHours);
 		if (!groupId) {
-			showGlobalNotice("Choose a Team before creating an invite.", "warning");
+			showGlobalNotice("Choose a coordinator group before creating a legacy invite.", "warning");
 			return;
 		}
 		if (!Number.isFinite(ttlHours) || ttlHours < 1) {
@@ -191,12 +286,11 @@ export function createCoordinatorAdminActions(
 			showGlobalNotice(
 				warnings.length
 					? `Invite created. Review ${warnings.length === 1 ? "the warning" : `${warnings.length} warnings`} before sharing it.`
-					: "Invite created. Copy it from Teams and share it with your teammate.",
+					: "Legacy coordinator invite created. It does not grant Sharing Project access.",
 				warnings.length ? "warning" : "success",
 			);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Failed to create invite.";
-			showGlobalNotice(message, "warning");
+		} catch (cause) {
+			showGlobalNotice(safeInviteCreationError(cause), "warning");
 		} finally {
 			coordinatorAdminState.invitePending = false;
 			renderShell();
@@ -224,9 +318,19 @@ export function createCoordinatorAdminActions(
 				);
 			}
 			await reloadData();
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Failed to review join request.";
-			showGlobalNotice(message, "warning");
+		} catch (cause) {
+			if (isMissingJoinRequestError(cause)) {
+				await reloadData();
+				showGlobalNotice(
+					"This legacy coordinator join request no longer exists. Pending requests were refreshed.",
+					"warning",
+				);
+			} else {
+				showGlobalNotice(
+					"Could not review the legacy coordinator join request. Sharing policy is unchanged; check coordinator recovery status and retry.",
+					"warning",
+				);
+			}
 		} finally {
 			coordinatorAdminState.joinReviewPendingId = "";
 			coordinatorAdminState.joinReviewPendingAction = "";
@@ -285,8 +389,30 @@ export function createCoordinatorAdminActions(
 			}
 			await reloadData();
 		} catch (error) {
-			const message = error instanceof Error ? error.message : `Failed to ${kind} device.`;
-			showGlobalNotice(message, "warning");
+			const knownRenameError =
+				kind === "rename" && error instanceof Error
+					? DEVICE_RENAME_ERROR_MESSAGES.get(error.message.trim())
+					: undefined;
+			if (isMissingDeviceError(error)) {
+				try {
+					await reloadData();
+					showGlobalNotice(
+						"This legacy coordinator device no longer exists. Enrolled devices were refreshed.",
+						"warning",
+					);
+				} catch {
+					showGlobalNotice(
+						"This legacy coordinator device no longer exists. Refresh enrolled devices before trying another action.",
+						"warning",
+					);
+				}
+			} else {
+				showGlobalNotice(
+					knownRenameError ||
+						`Could not ${kind} the legacy coordinator device. Sharing policy is unchanged; check coordinator recovery status and retry.`,
+					"warning",
+				);
+			}
 		} finally {
 			coordinatorAdminState.deviceActionPendingId = "";
 			coordinatorAdminState.deviceActionPendingKind = "";

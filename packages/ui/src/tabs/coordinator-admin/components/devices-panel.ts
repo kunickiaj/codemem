@@ -35,8 +35,8 @@ export function renderDevicesPanel(deps: DevicesPanelDeps) {
 			"p",
 			{ class: "peer-submeta" },
 			summary.readiness === "ready"
-				? "Rename, disable, re-enable, or remove Team devices here. Space access is granted from Spaces below; Team membership alone does not share memories."
-				: "Finish setup first. Device administration stays disabled until Teams is ready.",
+				? "Rename, disable, re-enable, or remove devices from the selected coordinator group. Space transport access is managed below; policy Team membership and Project access stay in Sharing."
+				: "Finish coordinator setup first. Device administration stays disabled until legacy administration is ready.",
 		),
 		!items.length
 			? h(

@@ -380,11 +380,11 @@ export function renderTeamSync() {
 			mode = "setup-blocked";
 		} else if (hasAmbiguousCoordinatorGroup) {
 			actionMessage =
-				"This device appears in multiple coordinator groups. Review the Team setup before approving it here.";
+				"This device appears in multiple coordinator groups. Review legacy coordinator setup before approving it here.";
 			mode = "ambiguous";
 		} else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
 			actionMessage =
-				"Review this device's Space access and advanced rules in Teams before you sync it.";
+				"Review this device's Space access and advanced rules in coordinator administration (legacy) before you sync it.";
 			mode = "scope-pending";
 		} else if (pairedPeer?.last_error) {
 			noteParts.push(`error: ${String(pairedPeer.last_error)}`);

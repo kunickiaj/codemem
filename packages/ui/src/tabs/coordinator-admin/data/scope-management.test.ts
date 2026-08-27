@@ -15,7 +15,7 @@ describe("coordinator admin scope management view helpers", () => {
 		expect(
 			scopeManagementReadinessMessage({
 				readiness: "partial",
-				title: "Teams setup is incomplete",
+				title: "Legacy coordinator setup is incomplete",
 				detail: "Set a coordinator admin secret.",
 			}),
 		).toContain("admin secret");

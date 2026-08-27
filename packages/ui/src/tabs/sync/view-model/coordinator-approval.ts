@@ -112,7 +112,7 @@ export function summarizeSyncRunResult(payload: UiSyncRunResponse): {
 		return {
 			ok: false,
 			message:
-				"Sync ran, but the peer is not authorized for one or more Spaces. Review Space access for this device in Teams, then sync again.",
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in coordinator administration (legacy), then sync again.",
 			warning: true,
 		};
 	}

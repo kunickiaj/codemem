@@ -6,15 +6,30 @@ import { coordinatorAdminState } from "./state";
 
 const mocks = vi.hoisted(() => ({
 	createCoordinatorAdminGroup: vi.fn(),
+	archiveCoordinatorAdminGroup: vi.fn(),
 	createCoordinatorInvite: vi.fn(),
+	disableCoordinatorAdminDevice: vi.fn(),
+	enableCoordinatorAdminDevice: vi.fn(),
+	openSyncConfirmDialog: vi.fn(),
+	renameCoordinatorAdminGroup: vi.fn(),
+	renameCoordinatorAdminDevice: vi.fn(),
+	removeCoordinatorAdminDevice: vi.fn(),
 	reviewCoordinatorAdminJoinRequest: vi.fn(),
 	showGlobalNotice: vi.fn(),
+	unarchiveCoordinatorAdminGroup: vi.fn(),
 }));
 
 vi.mock("../../../lib/api", () => ({
+	archiveCoordinatorAdminGroup: mocks.archiveCoordinatorAdminGroup,
 	createCoordinatorAdminGroup: mocks.createCoordinatorAdminGroup,
 	createCoordinatorInvite: mocks.createCoordinatorInvite,
+	disableCoordinatorAdminDevice: mocks.disableCoordinatorAdminDevice,
+	enableCoordinatorAdminDevice: mocks.enableCoordinatorAdminDevice,
+	renameCoordinatorAdminGroup: mocks.renameCoordinatorAdminGroup,
+	renameCoordinatorAdminDevice: mocks.renameCoordinatorAdminDevice,
+	removeCoordinatorAdminDevice: mocks.removeCoordinatorAdminDevice,
 	reviewCoordinatorAdminJoinRequest: mocks.reviewCoordinatorAdminJoinRequest,
+	unarchiveCoordinatorAdminGroup: mocks.unarchiveCoordinatorAdminGroup,
 }));
 
 vi.mock("../../../lib/notice", () => ({
@@ -22,27 +37,44 @@ vi.mock("../../../lib/notice", () => ({
 }));
 
 vi.mock("../../sync/sync-dialogs", () => ({
-	openSyncConfirmDialog: vi.fn(),
+	openSyncConfirmDialog: mocks.openSyncConfirmDialog,
 }));
 
 describe("coordinator admin actions", () => {
 	beforeEach(() => {
+		mocks.archiveCoordinatorAdminGroup.mockReset();
 		mocks.createCoordinatorAdminGroup.mockReset();
 		mocks.createCoordinatorInvite.mockReset();
+		mocks.disableCoordinatorAdminDevice.mockReset();
+		mocks.enableCoordinatorAdminDevice.mockReset();
+		mocks.openSyncConfirmDialog.mockReset();
+		mocks.openSyncConfirmDialog.mockResolvedValue(true);
+		mocks.renameCoordinatorAdminGroup.mockReset();
+		mocks.renameCoordinatorAdminDevice.mockReset();
+		mocks.removeCoordinatorAdminDevice.mockReset();
 		mocks.reviewCoordinatorAdminJoinRequest.mockReset();
 		mocks.showGlobalNotice.mockReset();
+		mocks.unarchiveCoordinatorAdminGroup.mockReset();
 		state.coordinatorAdminTargetGroup = "";
 		state.lastCoordinatorAdminStatus = {
 			coordinator_url: "https://coordinator.example",
 			readiness: "ready",
 		};
+		state.lastCoordinatorAdminGroups = [
+			{ group_id: "group-alpha", display_name: "Current Alpha", archived_at: null },
+		];
 		coordinatorAdminState.createGroupId = "";
 		coordinatorAdminState.createGroupDisplayName = "";
 		coordinatorAdminState.groupActionPendingKind = "";
+		coordinatorAdminState.groupActionPendingId = "";
+		coordinatorAdminState.groupPresentationAliases.clear();
 		coordinatorAdminState.inviteGroup = "";
 		coordinatorAdminState.invitePending = false;
 		coordinatorAdminState.invitePolicy = "auto_admit";
 		coordinatorAdminState.inviteTtlHours = "24";
+		coordinatorAdminState.deviceActionPendingId = "";
+		coordinatorAdminState.deviceActionPendingKind = "";
+		coordinatorAdminState.deviceRenameDrafts.clear();
 		coordinatorAdminState.teamSetupGuide = null;
 		localStorage.clear();
 	});
@@ -73,7 +105,7 @@ describe("coordinator admin actions", () => {
 			setupWarning: null,
 		});
 		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
-			"Team created with a default Space.",
+			"Legacy coordinator group created with a default Space. Sharing policy is unchanged.",
 			"success",
 		);
 		expect(reloadData).toHaveBeenCalledTimes(2);
@@ -98,7 +130,7 @@ describe("coordinator admin actions", () => {
 			error: "coordinator unavailable",
 		});
 		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
-			"Team created, but default Space setup needs repair.",
+			"Legacy coordinator group created, but default Space setup needs repair. Sharing policy is unchanged.",
 			"warning",
 		);
 	});
@@ -127,7 +159,26 @@ describe("coordinator admin actions", () => {
 		expect(state.coordinatorAdminTargetGroup).toBe("team-new");
 	});
 
-	it("points successful invite sharing copy at Teams", async () => {
+	it("keeps a new unnamed group ID out of presentation state", async () => {
+		mocks.createCoordinatorAdminGroup.mockResolvedValue({
+			group: { group_id: "group-private", display_name: null },
+			default_space: null,
+		});
+		coordinatorAdminState.createGroupId = "group-private";
+		const actions = createCoordinatorAdminActions({
+			renderShell: vi.fn(),
+			reloadData: vi.fn().mockResolvedValue(undefined),
+		});
+
+		await actions.createGroupFromAdminPanel();
+
+		expect(coordinatorAdminState.teamSetupGuide).toMatchObject({
+			groupId: "group-private",
+			displayName: "",
+		});
+	});
+
+	it("states that a legacy coordinator invite does not grant Sharing access", async () => {
 		mocks.createCoordinatorInvite.mockResolvedValue({ token: "invite-token", warnings: [] });
 		coordinatorAdminState.inviteGroup = "team-alpha";
 		const actions = createCoordinatorAdminActions({
@@ -143,8 +194,255 @@ describe("coordinator admin actions", () => {
 			ttl_hours: 24,
 		});
 		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
-			"Invite created. Copy it from Teams and share it with your teammate.",
+			"Legacy coordinator invite created. It does not grant Sharing Project access.",
 			"success",
+		);
+	});
+
+	it.each([
+		[
+			"Group not found: private-group-id",
+			"This legacy coordinator group no longer exists. Choose an active group or refresh coordinator groups.",
+		],
+		[
+			"Remote coordinator request failed (404): group_not_found",
+			"This legacy coordinator group no longer exists. Choose an active group or refresh coordinator groups.",
+		],
+		[
+			"group_archived: private-group-id",
+			"This legacy coordinator group is archived. Choose an active group or refresh coordinator groups.",
+		],
+		[
+			"Group is archived: private-group-id",
+			"This legacy coordinator group is archived. Choose an active group or refresh coordinator groups.",
+		],
+		[
+			"Remote coordinator request failed (409): group_archived",
+			"This legacy coordinator group is archived. Choose an active group or refresh coordinator groups.",
+		],
+	] as const)("preserves actionable invite guidance for %s", async (message, expected) => {
+		mocks.createCoordinatorInvite.mockRejectedValue(new Error(message));
+		coordinatorAdminState.inviteGroup = "private-group-id";
+		const actions = createCoordinatorAdminActions({
+			renderShell: vi.fn(),
+			reloadData: vi.fn().mockResolvedValue(undefined),
+		});
+
+		await actions.createInviteFromAdminPanel();
+
+		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(expected, "warning");
+		expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain("private-group-id");
+	});
+
+	it.each([
+		new Error("private coordinator detail"),
+		"group_archived",
+	])("keeps generic recovery guidance for an unknown invite failure (%o)", async (cause) => {
+		mocks.createCoordinatorInvite.mockRejectedValue(cause);
+		coordinatorAdminState.inviteGroup = "team-alpha";
+		const actions = createCoordinatorAdminActions({
+			renderShell: vi.fn(),
+			reloadData: vi.fn().mockResolvedValue(undefined),
+		});
+
+		await actions.createInviteFromAdminPanel();
+
+		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
+			"Could not create the legacy coordinator invite. Sharing policy is unchanged; check coordinator recovery status and retry.",
+			"warning",
+		);
+		expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain(
+			"private coordinator detail",
+		);
+	});
+
+	it.each([
+		["approve", "join request not found: private-request-id"],
+		["approve", "Remote coordinator request failed (404): request_not_found"],
+		["deny", "join request not found: private-request-id"],
+		["deny", "Remote coordinator request failed (404): request_not_found"],
+	] as const)("refreshes pending requests when %s reports a missing request (%s)", async (action, message) => {
+		mocks.reviewCoordinatorAdminJoinRequest.mockRejectedValue(new Error(message));
+		const reloadData = vi.fn().mockResolvedValue(undefined);
+		const actions = createCoordinatorAdminActions({ renderShell: vi.fn(), reloadData });
+
+		await actions.reviewJoinRequestFromAdminPanel("private-request-id", action);
+
+		expect(reloadData).toHaveBeenCalledTimes(1);
+		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
+			"This legacy coordinator join request no longer exists. Pending requests were refreshed.",
+			"warning",
+		);
+		expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain("private-request-id");
+	});
+
+	it.each([
+		new Error("private coordinator detail"),
+		"request_not_found",
+	])("keeps recovery guidance for an unknown join-review failure (%o)", async (cause) => {
+		mocks.reviewCoordinatorAdminJoinRequest.mockRejectedValue(cause);
+		const reloadData = vi.fn().mockResolvedValue(undefined);
+		const actions = createCoordinatorAdminActions({ renderShell: vi.fn(), reloadData });
+
+		await actions.reviewJoinRequestFromAdminPanel("join-1", "approve");
+
+		expect(reloadData).not.toHaveBeenCalled();
+		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
+			"Could not review the legacy coordinator join request. Sharing policy is unchanged; check coordinator recovery status and retry.",
+			"warning",
+		);
+		expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain(
+			"private coordinator detail",
+		);
+	});
+
+	it("confirms that renaming a coordinator group does not rename a Sharing Team", async () => {
+		const actions = createCoordinatorAdminActions({
+			renderShell: vi.fn(),
+			reloadData: vi.fn().mockResolvedValue(undefined),
+		});
+
+		await actions.runGroupAction("group-alpha", "Legacy Alpha", "rename");
+
+		expect(mocks.openSyncConfirmDialog).toHaveBeenCalledWith(
+			expect.objectContaining({
+				description: expect.stringMatching(/Target: Current Alpha.*does not rename a policy Team/),
+				confirmLabel: "Rename coordinator group",
+				tone: "default",
+			}),
+		);
+		expect(mocks.renameCoordinatorAdminGroup).toHaveBeenCalledWith("group-alpha", "Legacy Alpha");
+	});
+
+	it("rejects an empty legacy group name before confirmation", async () => {
+		const actions = createCoordinatorAdminActions({
+			renderShell: vi.fn(),
+			reloadData: vi.fn().mockResolvedValue(undefined),
+		});
+
+		await actions.runGroupAction("group-alpha", "   ", "rename");
+
+		expect(mocks.openSyncConfirmDialog).not.toHaveBeenCalled();
+		expect(mocks.renameCoordinatorAdminGroup).not.toHaveBeenCalled();
+		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
+			"Enter a legacy group display name before renaming it.",
+			"warning",
+		);
+	});
+
+	it("uses a privacy-safe alias when an unnamed group is renamed", async () => {
+		state.lastCoordinatorAdminGroups = [
+			{ group_id: "group-alpha", display_name: null, archived_at: null },
+			{ group_id: "group-beta", display_name: null, archived_at: null },
+		];
+		const actions = createCoordinatorAdminActions({
+			renderShell: vi.fn(),
+			reloadData: vi.fn().mockResolvedValue(undefined),
+		});
+
+		await actions.runGroupAction("group-alpha", "Legacy Alpha", "rename");
+
+		expect(mocks.openSyncConfirmDialog).toHaveBeenCalledWith(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"Target: Unnamed coordinator group 1. New name: Legacy Alpha.",
+				),
+			}),
+		);
+	});
+
+	it("warns that archiving a coordinator group leaves Sharing policy unchanged", async () => {
+		const actions = createCoordinatorAdminActions({
+			renderShell: vi.fn(),
+			reloadData: vi.fn().mockResolvedValue(undefined),
+		});
+
+		await actions.runGroupAction("group-alpha", "Legacy Alpha", "archive");
+
+		expect(mocks.openSyncConfirmDialog).toHaveBeenCalledWith(
+			expect.objectContaining({
+				description: expect.stringMatching(
+					/Target: Current Alpha.*coordinator presence, peer discovery, Space grants, legacy invites, and joins stop.*removes this group from this device's local coordinator configuration.*Policy Team membership and Project access in Sharing are separate and unchanged/,
+				),
+				confirmLabel: "Archive coordinator group",
+				tone: "danger",
+			}),
+		);
+		expect(mocks.archiveCoordinatorAdminGroup).toHaveBeenCalledWith("group-alpha");
+	});
+
+	it("identifies the target when unarchiving a coordinator group", async () => {
+		state.lastCoordinatorAdminGroups = [
+			{
+				group_id: "group-alpha",
+				display_name: "Archived Alpha",
+				archived_at: "2026-08-27T00:00:00.000Z",
+			},
+		];
+		const actions = createCoordinatorAdminActions({
+			renderShell: vi.fn(),
+			reloadData: vi.fn().mockResolvedValue(undefined),
+		});
+
+		await actions.runGroupAction("group-alpha", "Archived Alpha", "unarchive");
+
+		expect(mocks.openSyncConfirmDialog).toHaveBeenCalledWith(
+			expect.objectContaining({
+				description: expect.stringMatching(
+					/Target: Archived Alpha.*reactivates the remote coordinator group for devices still configured for it.*does not re-add this group to this device's local coordinator configuration.*restore that separately before expecting coordinator presence or peer discovery here/,
+				),
+				confirmLabel: "Unarchive coordinator group",
+				tone: "default",
+			}),
+		);
+		expect(mocks.unarchiveCoordinatorAdminGroup).toHaveBeenCalledWith("group-alpha");
+		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
+			"Legacy coordinator group unarchived. This device's local coordinator configuration and Sharing policy are unchanged.",
+			"success",
+		);
+	});
+
+	it.each([
+		["rename", "group_not_found: private-group-id"],
+		["archive", "group_not_found_or_already_archived: private-group-id"],
+		["unarchive", "group_not_found_or_not_archived: private-group-id"],
+	] as const)("refreshes groups when %s finds stale coordinator state", async (kind, message) => {
+		const mutation =
+			kind === "rename"
+				? mocks.renameCoordinatorAdminGroup
+				: kind === "archive"
+					? mocks.archiveCoordinatorAdminGroup
+					: mocks.unarchiveCoordinatorAdminGroup;
+		mutation.mockRejectedValue(new Error(message));
+		const reloadData = vi.fn().mockResolvedValue(undefined);
+		const actions = createCoordinatorAdminActions({ renderShell: vi.fn(), reloadData });
+
+		await actions.runGroupAction("private-group-id", "Legacy Alpha", kind);
+
+		expect(reloadData).toHaveBeenCalledTimes(1);
+		expect(mocks.showGlobalNotice).toHaveBeenLastCalledWith(
+			"This legacy coordinator group changed or no longer exists. Coordinator groups were refreshed.",
+			"warning",
+		);
+		expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain("private-group-id");
+	});
+
+	it("keeps stale-group guidance when refreshing groups fails", async () => {
+		mocks.archiveCoordinatorAdminGroup.mockRejectedValue(
+			new Error("group_not_found_or_already_archived"),
+		);
+		const actions = createCoordinatorAdminActions({
+			renderShell: vi.fn(),
+			reloadData: vi.fn().mockRejectedValue(new Error("refresh failed")),
+		});
+
+		await expect(
+			actions.runGroupAction("group-alpha", "Legacy Alpha", "archive"),
+		).resolves.toBeUndefined();
+
+		expect(mocks.showGlobalNotice).toHaveBeenLastCalledWith(
+			"This legacy coordinator group changed or no longer exists. Refresh coordinator groups before trying another action.",
+			"warning",
 		);
 	});
 
@@ -162,5 +460,87 @@ describe("coordinator admin actions", () => {
 			"warning",
 		);
 		expect(reloadData).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([
+		["display_name_required", "Enter a device name before renaming it."],
+		["display_name_invalid", "Enter a valid device name and retry."],
+		["display_name_too_long", "The device name is too long. Use a shorter name and retry."],
+	])("shows a useful notice for the known device rename error %s", async (error, notice) => {
+		mocks.renameCoordinatorAdminDevice.mockRejectedValue(new Error(error));
+		coordinatorAdminState.deviceRenameDrafts.set("device-one", "New device name");
+		const reloadData = vi.fn().mockResolvedValue(undefined);
+		const actions = createCoordinatorAdminActions({ renderShell: vi.fn(), reloadData });
+
+		await actions.runDeviceAction("device-one", "group-alpha", "Old device", "rename");
+
+		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(notice, "warning");
+		expect(reloadData).not.toHaveBeenCalled();
+	});
+
+	it("does not expose unknown coordinator details after a device rename failure", async () => {
+		mocks.renameCoordinatorAdminDevice.mockRejectedValue(new Error("private coordinator detail"));
+		coordinatorAdminState.deviceRenameDrafts.set("device-one", "New device name");
+		const actions = createCoordinatorAdminActions({
+			renderShell: vi.fn(),
+			reloadData: vi.fn().mockResolvedValue(undefined),
+		});
+
+		await actions.runDeviceAction("device-one", "group-alpha", "Old device", "rename");
+
+		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
+			"Could not rename the legacy coordinator device. Sharing policy is unchanged; check coordinator recovery status and retry.",
+			"warning",
+		);
+		expect(mocks.showGlobalNotice).not.toHaveBeenCalledWith(
+			expect.stringContaining("private coordinator detail"),
+			expect.anything(),
+		);
+	});
+
+	it.each([
+		"rename",
+		"disable",
+		"enable",
+		"remove",
+	] as const)("refreshes devices when %s finds a missing enrollment", async (kind) => {
+		const mutation =
+			kind === "rename"
+				? mocks.renameCoordinatorAdminDevice
+				: kind === "disable"
+					? mocks.disableCoordinatorAdminDevice
+					: kind === "enable"
+						? mocks.enableCoordinatorAdminDevice
+						: mocks.removeCoordinatorAdminDevice;
+		mutation.mockRejectedValue(new Error("device_not_found: private-device-id"));
+		coordinatorAdminState.deviceRenameDrafts.set("private-device-id", "New device name");
+		const reloadData = vi.fn().mockResolvedValue(undefined);
+		const actions = createCoordinatorAdminActions({ renderShell: vi.fn(), reloadData });
+
+		await actions.runDeviceAction("private-device-id", "group-alpha", "Laptop", kind);
+
+		expect(reloadData).toHaveBeenCalledTimes(1);
+		expect(mocks.showGlobalNotice).toHaveBeenLastCalledWith(
+			"This legacy coordinator device no longer exists. Enrolled devices were refreshed.",
+			"warning",
+		);
+		expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain("private-device-id");
+	});
+
+	it("keeps missing-device guidance when refreshing devices fails", async () => {
+		mocks.removeCoordinatorAdminDevice.mockRejectedValue(new Error("device_not_found"));
+		const actions = createCoordinatorAdminActions({
+			renderShell: vi.fn(),
+			reloadData: vi.fn().mockRejectedValue(new Error("refresh failed")),
+		});
+
+		await expect(
+			actions.runDeviceAction("device-one", "group-alpha", "Laptop", "remove"),
+		).resolves.toBeUndefined();
+
+		expect(mocks.showGlobalNotice).toHaveBeenLastCalledWith(
+			"This legacy coordinator device no longer exists. Refresh enrolled devices before trying another action.",
+			"warning",
+		);
 	});
 });

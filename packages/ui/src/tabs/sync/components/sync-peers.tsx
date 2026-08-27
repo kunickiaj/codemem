@@ -228,11 +228,13 @@ function claimedLocalActorScopeMessage(
 	return "Private same-person sync is blocked until this device is granted an allowed personal Space.";
 }
 
-function openTeamsAccessManagement(): void {
-	window.location.hash = "coordinator-admin";
+function openLegacyCoordinatorAdministration(): void {
+	window.location.hash = "advanced/teams";
 }
 
-export function canManageSpacesInTeams(status = state.lastCoordinatorAdminStatus): boolean {
+export function canManageLegacyCoordinatorSpaces(
+	status = state.lastCoordinatorAdminStatus,
+): boolean {
 	return status?.readiness === "ready" && status.has_admin_secret === true;
 }
 
@@ -279,7 +281,7 @@ function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
 	const lastSyncAt = String(peerStatus.last_sync_at || peerStatus.last_sync_at_utc || "");
 	const lastPingAt = String(peerStatus.last_ping_at || peerStatus.last_ping_at_utc || "");
 	const discoverySummary = peer.discovered_via_group_id
-		? `Discovery: seen through Team ${peer.discovered_via_group_id}. Discovery helps find devices; Space access above decides data access.`
+		? `Discovery: seen through coordinator group ${peer.discovered_via_group_id}. Discovery helps find devices; Space access above decides data access.`
 		: peer.discovered_via_coordinator_id
 			? `Discovery: seen through coordinator ${peer.discovered_via_coordinator_id}. Discovery helps find devices; Space access above decides data access.`
 			: null;
@@ -352,14 +354,14 @@ function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
 
 	async function sync() {
 		if (pendingScopeReview) {
-			const canReviewInTeams = canManageSpacesInTeams();
+			const canReviewLegacySpaces = canManageLegacyCoordinatorSpaces();
 			const proceed = await openSyncConfirmDialog({
 				title: `Sync ${displayName} before advanced rule review?`,
-				description: canReviewInTeams
-					? "This manual sync will use the current Space access and advanced filters until you review them in Teams."
-					: "This manual sync will use the current Space access and advanced filters until a coordinator or manager reviews them in Teams.",
+				description: canReviewLegacySpaces
+					? "This manual sync will use the current Space access and advanced filters until you review them in coordinator administration (legacy)."
+					: "This manual sync will use the current Space access and advanced filters until a coordinator operator reviews them in coordinator administration (legacy).",
 				confirmLabel: "Sync anyway",
-				cancelLabel: canReviewInTeams ? "Review in Teams first" : "Cancel",
+				cancelLabel: canReviewLegacySpaces ? "Review legacy coordinator setup first" : "Cancel",
 			});
 			if (!proceed) return;
 		}
@@ -408,7 +410,7 @@ function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
 	// in SyncPeerStatusLike.
 	const presenceState: PresenceState = presenceForPeer(peer);
 	const syncMetaText = lastSyncAt ? `Sync: ${formatTimestamp(lastSyncAt)}` : "Sync: never";
-	const canManageSpaces = canManageSpacesInTeams();
+	const canManageSpaces = canManageLegacyCoordinatorSpaces();
 
 	const toggleLabel = `${isExpanded ? "Collapse" : "Expand"} device ${displayName}`;
 	// Read module-level state directly (not the stale closure value of
@@ -556,8 +558,8 @@ function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
 						{scopeReviewRequested ? (
 							<div className="peer-meta">
 								{canManageSpaces
-									? "Review this device's Space access and advanced rules in Teams if the defaults are too broad."
-									: "A coordinator or manager can review this device's Space access and advanced rules in Teams if the defaults are too broad."}
+									? "Review this device's Space access and advanced rules in coordinator administration (legacy) if the defaults are too broad."
+									: "A coordinator operator can review this device's Space access and advanced rules in coordinator administration (legacy) if the defaults are too broad."}
 							</div>
 						) : pendingScopeReview ? (
 							<div className="peer-meta">
@@ -675,14 +677,15 @@ function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
 								<button
 									type="button"
 									className="settings-button"
-									onClick={openTeamsAccessManagement}
+									onClick={openLegacyCoordinatorAdministration}
 								>
-									Manage Spaces in Teams
+									Open coordinator administration (legacy)
 								</button>
 							</div>
 						) : (
 							<div className="peer-meta">
-								Space access is managed in Teams by a coordinator or manager.
+								Legacy Space access is managed in coordinator administration (legacy) by a
+								coordinator operator.
 							</div>
 						)}
 						<SyncInlineFeedback feedback={feedback} />

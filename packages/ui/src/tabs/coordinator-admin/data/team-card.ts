@@ -26,7 +26,7 @@ function defaultSpaceSummary(
 	if (preferences?.loaded) return "Not configured";
 	if (setupGuide?.defaultSpaceLabel) return setupGuide.defaultSpaceLabel;
 	if (setupGuide?.defaultSpaceScopeId) return "Configured";
-	return "Open Team defaults to inspect";
+	return "Open legacy group defaults to inspect";
 }
 
 function autoGrantSummary(
@@ -40,7 +40,7 @@ function autoGrantSummary(
 	}
 	if (setupGuide?.autoGrantDefaultSpaceOnJoin === true) return "On for the default Space";
 	if (setupGuide?.autoGrantDefaultSpaceOnJoin === false) return "Off — Space access stays explicit";
-	return "Open Team defaults to inspect";
+	return "Open legacy group defaults to inspect";
 }
 
 function activeSpaceCount(scopeManagement: GroupScopeManagementDraft | undefined): number | null {

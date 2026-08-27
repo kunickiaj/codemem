@@ -336,6 +336,44 @@
         padding: var(--sp-3);
       }
 
+      .coordinator-admin-legacy-notice {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: var(--sp-4);
+        margin-bottom: var(--sp-4);
+      }
+
+      .coordinator-admin-legacy-notice-copy {
+        display: grid;
+        gap: var(--sp-2);
+        min-width: 0;
+      }
+
+      .coordinator-admin-legacy-notice-copy h3 {
+        margin: 0;
+      }
+
+      @media (max-width: 720px) {
+        .advanced-legacy-header {
+          align-items: stretch;
+          flex-direction: column;
+        }
+
+        .advanced-legacy-header .section-actions {
+          flex-wrap: wrap;
+        }
+
+        .coordinator-admin-legacy-notice {
+          align-items: stretch;
+          flex-direction: column;
+        }
+
+        .coordinator-admin-legacy-notice .settings-button {
+          width: 100%;
+        }
+      }
+
       .coordinator-admin-inline-meta {
         margin-top: -4px;
       }
@@ -3868,7 +3906,7 @@
       <button class="tab-btn" id="tabBtn-sharing">Sharing</button>
       <button class="tab-btn" id="tabBtn-devices">Devices</button>
       <button class="tab-btn" id="tabBtn-health">Health</button>
-      <button class="tab-btn" id="tabBtn-advanced">Advanced</button>
+      <button class="tab-btn" id="tabBtn-advanced">Advanced (legacy)</button>
     </nav>
     <div id="toastRoot"></div>
     <div id="recipientPolicyManagementMount"></div>
@@ -4222,14 +4260,14 @@
     <!-- ── Tab: Advanced ───────────────────────────────────── -->
     <div class="tab-panel" id="tab-advanced" hidden>
       <div class="card">
-        <div class="section-header">
+        <div class="section-header advanced-legacy-header">
           <div>
-            <h2>Advanced</h2>
-            <div class="section-meta">Compatibility tools for device sync and Team administration.</div>
+            <h2>Advanced (legacy)</h2>
+            <div class="section-meta">Compatibility and recovery tools for device sync and coordinator administration.</div>
           </div>
-          <div class="section-actions" aria-label="Advanced sections">
+          <div class="section-actions" aria-label="Advanced sections" role="group">
             <button class="settings-button" id="advancedSyncButton" type="button" aria-pressed="true">Sync</button>
-            <button class="settings-button" id="advancedTeamsButton" type="button" aria-pressed="false">Teams</button>
+            <button class="settings-button" id="advancedTeamsButton" type="button" aria-pressed="false">Coordinator administration (legacy)</button>
           </div>
         </div>
       </div>
@@ -4384,9 +4422,25 @@
 
       <div id="advancedTeamsContent" hidden>
         <div class="card">
+          <aside
+            aria-labelledby="coordinatorAdminLegacyNoticeTitle"
+            class="coordinator-admin-inline-warning coordinator-admin-legacy-notice"
+            role="note"
+          >
+            <div class="coordinator-admin-legacy-notice-copy">
+              <h3 id="coordinatorAdminLegacyNoticeTitle" tabindex="-1">Sharing is the supported Team experience</h3>
+              <div class="peer-submeta">
+                Coordinator groups and Spaces here are legacy technical discovery and transport boundaries, not policy Teams. Changes here do not safely manage Team membership, Project access, Identity, or Team names in Sharing.
+              </div>
+              <div class="peer-submeta">
+                Keep using these controls for compatibility and recovery. Use Sharing for ordinary Team and access administration.
+              </div>
+            </div>
+            <button class="settings-button" id="coordinatorAdminOpenSharing" type="button">Open Sharing</button>
+          </aside>
           <details class="advanced-administration-disclosure" open>
-            <summary>Advanced Team administration</summary>
-            <div class="section-meta">Manage legacy enrollment, Spaces, device administration, and coordinator settings.</div>
+            <summary>Advanced coordinator administration (legacy)</summary>
+            <div class="section-meta">Technical coordinator groups, Spaces, enrollment, and recovery controls.</div>
             <div id="coordinatorAdminMount"></div>
           </details>
         </div>

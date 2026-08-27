@@ -63,6 +63,35 @@ function setDraft(groupId: string, draft: GroupScopeManagementDraft): void {
 	coordinatorAdminState.groupScopeManagementDrafts.set(groupId, draft);
 }
 
+export function safeSpaceOperationError(cause: unknown, fallback: string): string {
+	const message = cause instanceof Error ? cause.message : "";
+	if (message.includes("group_archived") || message.includes("Group is archived")) {
+		return "Restore this legacy coordinator group before changing Space access.";
+	}
+	if (message.includes("group_not_found") || message.includes("Group not found")) {
+		return "This legacy coordinator group no longer exists. Refresh Advanced administration.";
+	}
+	if (message.includes("scope_not_found") || message.includes("Scope not found")) {
+		return "This Space no longer exists. Refresh legacy Spaces before retrying.";
+	}
+	if (message.includes("scope_not_active") || message.includes("Scope is not active")) {
+		return "Restore this legacy Space before changing its access.";
+	}
+	if (message.includes("scopeId already exists")) {
+		return "A Space already uses that ID. Choose a different Space ID or refresh legacy Spaces. Sharing policy is unchanged.";
+	}
+	if (
+		message.includes("device_not_enrolled_for_scope_group") ||
+		message.includes("device must be enrolled")
+	) {
+		return "This device is no longer enrolled in the legacy coordinator group. Refresh devices before retrying.";
+	}
+	if (message.includes("membership_not_found")) {
+		return "This device no longer has access to the Space. Refresh legacy Spaces.";
+	}
+	return fallback;
+}
+
 async function loadGroupScopeManagement(
 	groupId: string,
 	renderShell: () => void,
@@ -99,12 +128,12 @@ async function loadGroupScopeManagement(
 			actionPendingKey: "",
 			actionPendingKind: "",
 		});
-	} catch (error) {
+	} catch {
 		setDraft(groupId, {
 			...draftFor(groupId),
 			loaded: true,
 			loading: false,
-			error: error instanceof Error ? error.message : "Failed to load Spaces.",
+			error: "Legacy Spaces are unavailable. Check coordinator recovery status and retry.",
 		});
 	}
 	renderShell();
@@ -157,12 +186,15 @@ async function createScope(groupId: string, renderShell: () => void): Promise<vo
 		});
 		showGlobalNotice("Space created. Grant devices explicitly before data can sync.");
 		await loadGroupScopeManagement(groupId, renderShell, latest.includeInactive);
-	} catch (error) {
+	} catch (cause) {
 		setDraft(groupId, {
 			...draftFor(groupId),
 			actionPendingKey: "",
 			actionPendingKind: "",
-			error: error instanceof Error ? error.message : "Failed to create Space.",
+			error: safeSpaceOperationError(
+				cause,
+				"Could not create the legacy Space. Sharing policy is unchanged; retry after coordinator recovery.",
+			),
 		});
 		renderShell();
 	}
@@ -186,12 +218,15 @@ async function grantMember(
 		});
 		showGlobalNotice("Device granted access to the Space.");
 		await loadGroupScopeManagement(groupId, renderShell, draft.includeInactive);
-	} catch (error) {
+	} catch (cause) {
 		setDraft(groupId, {
 			...draftFor(groupId),
 			actionPendingKey: "",
 			actionPendingKind: "",
-			error: error instanceof Error ? error.message : "Failed to grant Space access.",
+			error: safeSpaceOperationError(
+				cause,
+				"Could not grant legacy Space transport access. Sharing policy is unchanged; retry after coordinator recovery.",
+			),
 		});
 		renderShell();
 	}
@@ -224,12 +259,15 @@ async function revokeMember(
 		await api.revokeCoordinatorAdminScopeMember(groupId, scopeId, deviceId);
 		showGlobalNotice("Space access revoked. Future sync is blocked for that device.");
 		await loadGroupScopeManagement(groupId, renderShell, draft.includeInactive);
-	} catch (error) {
+	} catch (cause) {
 		setDraft(groupId, {
 			...draftFor(groupId),
 			actionPendingKey: "",
 			actionPendingKind: "",
-			error: error instanceof Error ? error.message : "Failed to revoke Space access.",
+			error: safeSpaceOperationError(
+				cause,
+				"Could not revoke legacy Space transport access. Sharing policy is unchanged; retry after coordinator recovery.",
+			),
 		});
 		renderShell();
 	}
@@ -254,7 +292,7 @@ function renderMembershipRows(
 		return h(
 			"div",
 			{ class: "peer-submeta coordinator-admin-empty-state" },
-			"No enrolled devices in this Team yet. Enroll a device before granting this Space.",
+			"No devices are enrolled in this coordinator group yet. Enroll a device before granting this Space.",
 		);
 	}
 	return h(
@@ -275,7 +313,7 @@ function renderMembershipRows(
 					h("strong", null, row.displayName),
 					h("span", null, copy.detail),
 					h("span", { class: "peer-meta" }, copy.advancedDetail),
-					row.enabled ? null : h("span", null, "Device is disabled in this Team."),
+					row.enabled ? null : h("span", null, "Device is disabled in this coordinator group."),
 				),
 				h(
 					"div",
@@ -332,7 +370,7 @@ function renderScopeCard(
 		h(
 			"div",
 			{ class: "peer-submeta" },
-			"Devices below are enrolled in the Team; only active Space members can sync this data boundary.",
+			"Devices below are enrolled in the coordinator group; only active Space members can sync this transport boundary.",
 		),
 		renderMembershipRows(groupId, scope, draft, ready, renderShell),
 	);
@@ -357,7 +395,7 @@ export function renderGroupScopeManagementPanel(deps: ScopeManagementPanelDeps) 
 		h(
 			"div",
 			{ class: "peer-submeta" },
-			"Teams discover and enroll devices. Spaces grant data access. Granting a device here is explicit; Team membership alone does not share memories.",
+			"Coordinator groups discover and enroll devices. Spaces are technical transport boundaries here. These controls do not manage policy Team membership or Project access in Sharing.",
 		),
 		h(
 			"label",
@@ -484,7 +522,7 @@ export function renderGroupScopeManagementPanel(deps: ScopeManagementPanelDeps) 
 			: h(
 					"div",
 					{ class: "peer-meta coordinator-admin-empty-state" },
-					"No Spaces are defined for this Team yet. Create a Space, then grant specific devices. Projects stay local-only until assigned to a Space.",
+					"No Spaces are defined for this coordinator group yet. Create a Space only for legacy transport or recovery, then grant specific devices. Sharing policy remains separate.",
 				),
 	);
 }

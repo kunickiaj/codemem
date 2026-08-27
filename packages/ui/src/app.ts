@@ -440,7 +440,15 @@ function initTabs() {
 		);
 	});
 	$("advancedSyncButton")?.addEventListener("click", () => setAdvancedSection("sync", true));
-	$("advancedTeamsButton")?.addEventListener("click", () => setAdvancedSection("teams", true));
+	$("advancedTeamsButton")?.addEventListener("click", () => {
+		setAdvancedSection("teams", true);
+		renderAdvancedSection();
+		queueMicrotask(() => document.getElementById("coordinatorAdminLegacyNoticeTitle")?.focus());
+	});
+	$("coordinatorAdminOpenSharing")?.addEventListener("click", () => {
+		switchTab("sharing", { canonicalHash: true });
+		queueMicrotask(() => document.getElementById("tabBtn-sharing")?.focus());
+	});
 
 	// Listen for hash changes (back/forward navigation). Hashes may include a
 	// sub-view segment (e.g. `#sync/diagnostics`) — parse with the shared
@@ -450,6 +458,9 @@ function initTabs() {
 		if (top) {
 			const advancedSection = parseAdvancedSectionFromHash();
 			switchTab(top, advancedSection ? { advancedSection } : {});
+			if (top === "advanced" && advancedSection === "teams") {
+				queueMicrotask(() => document.getElementById("coordinatorAdminLegacyNoticeTitle")?.focus());
+			}
 		}
 	});
 

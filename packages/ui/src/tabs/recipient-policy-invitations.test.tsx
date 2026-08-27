@@ -552,7 +552,7 @@ describe("recipient-policy invitations", () => {
 		expect(dialog.textContent).toContain("Viewer — 1 existing memory and future activity");
 		expect(dialog.textContent).toContain("does not join a Team");
 		expect(dialog.textContent).toContain("No other Projects are included");
-		expect(dialog.textContent).not.toContain("Use Advanced Team administration");
+		expect(dialog.textContent).not.toContain("Use Advanced coordinator administration (legacy)");
 		expect(document.querySelector("textarea")).toBeNull();
 
 		const recipientName = dialog.querySelector<HTMLInputElement>("#project-share-recipient-name");
@@ -1119,8 +1119,11 @@ describe("recipient-policy invitations", () => {
 		if (!dialog) throw new Error("dialog missing");
 		act(() => button("Review invitation", dialog).click());
 		await vi.waitFor(() =>
-			expect(dialog.textContent).toContain("Use Advanced Team administration to review and import"),
+			expect(dialog.textContent).toContain(
+				"Open Advanced (legacy), then Sync, to review and import",
+			),
 		);
+		expect(dialog.textContent).not.toContain("coordinator administration");
 		expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
 	});
 });

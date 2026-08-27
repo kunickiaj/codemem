@@ -219,7 +219,7 @@ To rename an active Team, open **Sharing → Teams**, choose **Team settings**, 
 
 If a Team needs device setup, **Sharing** shows a notice and **Continue setup**. The Teams list shows **Needs setup**, **In progress**, or **Ready**.
 
-1. In **Review devices**, confirm a suggested person or choose an existing person. To add a missing person, open **Advanced → Manual device and identity controls**, choose **Create person**, then return to setup. Each confirmed assignment saves immediately and resumes if you leave or reload the page. A suggestion is never selected for you.
+1. In **Review devices**, confirm a suggested person or choose an existing person. To add a missing person, open **Advanced (legacy) → Manual device and identity controls**, choose **Create person**, then return to setup. Each confirmed assignment saves immediately and resumes if you leave or reload the page. A suggestion is never selected for you.
 2. Still in **Review devices**, include each device with its confirmed person, choose **Exclude**, or clear an earlier choice to review it again. An exclusion applies only to this Team; a confirmed person assignment can be reused by another Team.
 3. In **Review Projects**, check every Project. Codemem can recognize some Projects automatically; choose an explicit Project mapping for any it cannot. Unresolved Projects prevent finishing.
 4. In the final review, check the server-provided list of people, included and excluded devices, Project mappings, and every access change. Nothing changes while you are reviewing or saving choices.
@@ -290,13 +290,17 @@ The **Sharing** tab shows an attention notice while device setup, pairing, repai
 
 An offline device is a passive waiting state, not a failure or revocation. It keeps its current access and catches up after reconnecting. Retry only when codemem shows **Needs attention**; retry preserves completed setup work and resumes from the failed step.
 
-Disabling a device enrollment for one coordinator group revokes future delivery only for Projects in that group. The global identity device remains active, stays in **Devices**, and can retain access granted through other groups. Use **Advanced → Team administration** to review or re-enable the affected group enrollment. Re-enabling clears the disabled state; the next owner reconciliation pass then restores only the Projects currently authorized through the Identity's direct shares and Team policies for that group. Delivery resumes without a broader re-invite, and unrelated Projects remain absent. A separate global identity-device revocation removes the device from the active list; it is not restored through the group enrollment action. Neither revocation nor disabling can delete memories already copied to a recipient device.
+Disabling a device enrollment for one coordinator group revokes future delivery only for Projects in that group. The global identity device remains active, stays in **Devices**, and can retain access granted through other groups. Use **Advanced (legacy) → Coordinator administration (legacy)** only to review or re-enable that technical group enrollment. Re-enabling clears the disabled state; the next owner reconciliation pass then restores only the Projects currently authorized through the Identity's direct shares and Team policies for that group. Delivery resumes without a broader re-invite, and unrelated Projects remain absent. A separate global identity-device revocation removes the device from the active list; it is not restored through the group enrollment action. Neither revocation nor disabling can delete memories already copied to a recipient device.
 
 ## Advanced operator and compatibility guidance
 
-Use this section for same-person devices, existing integrations, diagnostics, or self-hosted coordination. These controls preserve internal compatibility; they are not required for the normal Projects → Sharing → Devices → Health workflow.
+**Sharing is the primary supported Team experience.** Use **Sharing → Teams** for Team membership, Team names, Identity relationships, and inherited Project access. Use **Projects** to choose exact Project recipients.
 
-Legacy `#sync` and `#sync/diagnostics` viewer links remain valid Advanced routes. Saved Sync views and coordinator administration remain available through **Advanced**.
+**Advanced (legacy)** is technical administration for compatibility, recovery, diagnostics, and self-hosted coordination. Its coordinator groups and Spaces are discovery and transport boundaries, not policy Teams. Creating, renaming, archiving, or restoring a coordinator group does not safely create, rename, archive, or change access for a Team in Sharing. Archiving a coordinator group stops its coordinator presence, peer discovery, Space grants, legacy invites, and joins, and removes that group from this device's local coordinator configuration. Restoring the remote group does not re-add that local configuration; configure this device separately before expecting presence or discovery here. Policy Team membership and Project access in Sharing remain separate and unchanged.
+
+Use this section for same-person devices, existing integrations, diagnostics, or self-hosted coordination. These controls preserve internal compatibility and recovery capability; they are not required for the normal Projects → Sharing → Devices → Health workflow.
+
+Legacy `#sync` and `#sync/diagnostics` viewer links remain valid Advanced routes. Saved Sync views and coordinator administration remain available through **Advanced (legacy)**.
 
 ### Sync runtime
 
@@ -308,7 +312,7 @@ Legacy `#sync` and `#sync/diagnostics` viewer links remain valid Advanced routes
 
 Use manual pairing for same-person devices, existing integrations, or compatibility—not normal teammate sharing.
 
-1. In **Advanced**, open the Sync panel and scan/copy the QR payload (recommended).
+1. In **Advanced (legacy)**, open the Sync panel and scan/copy the QR payload (recommended).
 2. Or run `codemem sync pair` and copy the payload.
 3. On the other device, run `codemem sync pair --accept '<payload>'`.
 
@@ -383,7 +387,7 @@ codemem maintenance status
 
 ### Same-person device recovery
 
-- In **Advanced → Sync**, ownership summaries come from active `identity_devices` bindings. Use the device card's **Set up Identity in Devices** or **Review or rebind in Devices** action to confirm or change ownership.
+- In **Advanced (legacy) → Sync**, ownership summaries come from active `identity_devices` bindings. Use the device card's **Set up Identity in Devices** or **Review or rebind in Devices** action to confirm or change ownership.
 - A legacy `sync_peers.actor_id` value may appear as a suggested Identity, but it is only a hint. It does not become ownership until you explicitly review and confirm the binding in Devices.
 - Identity setup preserves the distinction between ownership, provenance, pairing, and access. Private sync still requires membership in a personal Sharing domain; an Identity binding is not an access grant.
 - If a machine is replaced or re-paired, use `Claim old device as mine` to reconnect older synced history to your local actor.

@@ -18,6 +18,7 @@ import { coordinatorAdminState, type GroupPreferencesDraft } from "../data/state
 import type { CoordinatorAdminSummary } from "../data/summary";
 import {
 	availableCoordinatorGroups,
+	coordinatorGroupPresentationName,
 	currentAdminTargetGroup,
 	setAdminTargetGroup,
 } from "../data/target-group";
@@ -80,11 +81,11 @@ async function openGroupPreferences(groupId: string, renderShell: () => void): P
 			saving: false,
 			error: "",
 		});
-	} catch (error) {
+	} catch {
 		coordinatorAdminState.groupPreferencesDrafts.set(groupId, {
 			...draft,
 			loaded: true,
-			error: error instanceof Error ? error.message : "Failed to load preferences.",
+			error: "Legacy group defaults are unavailable. Check coordinator recovery status and retry.",
 		});
 	}
 	renderShell();
@@ -121,9 +122,11 @@ async function saveGroupPreferences(groupId: string, renderShell: () => void): P
 	renderShell();
 	try {
 		await api.saveCoordinatorGroupPreferences(groupId, payload);
-		showGlobalNotice("Team defaults saved. New devices use these filters and Space settings.");
+		showGlobalNotice(
+			"Legacy coordinator group defaults saved. Sharing policy and Project access are unchanged.",
+		);
 		closeGroupPreferences(groupId, renderShell);
-	} catch (error) {
+	} catch {
 		// Re-read the latest draft so any keystrokes landed during the save are
 		// preserved; only clobber saving + error fields.
 		const latest = coordinatorAdminState.groupPreferencesDrafts.get(groupId);
@@ -131,7 +134,8 @@ async function saveGroupPreferences(groupId: string, renderShell: () => void): P
 		coordinatorAdminState.groupPreferencesDrafts.set(groupId, {
 			...latest,
 			saving: false,
-			error: error instanceof Error ? error.message : "Failed to save preferences.",
+			error:
+				"Could not save legacy group defaults. Sharing policy is unchanged; retry after coordinator recovery.",
 		});
 		renderShell();
 	}
@@ -155,7 +159,7 @@ function renderGroupPreferencesEditor(
 	return h(
 		Fragment,
 		null,
-		h("h4", { class: "coordinator-admin-drawer-title" }, "Team defaults"),
+		h("h4", { class: "coordinator-admin-drawer-title" }, "Legacy group defaults"),
 		h(
 			"div",
 			{ class: "peer-submeta" },
@@ -194,7 +198,7 @@ function renderGroupPreferencesEditor(
 			h(
 				"span",
 				{ class: "section-meta", id: autoGrantLabelId },
-				"Auto-grant default Space on join",
+				"Auto-grant default Space on coordinator join",
 			),
 			h(RadixSwitch, {
 				"aria-labelledby": autoGrantLabelId,
@@ -293,7 +297,7 @@ function renderGroupPreferencesEditor(
 function renderTeamSetupGuide(renderShell: () => void): ReturnType<typeof h> {
 	const guide = coordinatorAdminState.teamSetupGuide;
 	if (!guide) return null;
-	const title = guide.displayName || guide.groupId;
+	const title = coordinatorGroupPresentationName(guide.groupId, guide.displayName);
 	const warningStepById: Record<string, string> = {
 		default_space: "default Space setup",
 		default_space_grant: "default Space access grant",
@@ -302,17 +306,17 @@ function renderTeamSetupGuide(renderShell: () => void): ReturnType<typeof h> {
 	return h(
 		"div",
 		{ class: "peer-meta coordinator-admin-empty-state" },
-		h("h4", { class: "coordinator-admin-drawer-title" }, `Set up ${title}`),
+		h("h4", { class: "coordinator-admin-drawer-title" }, `Set up legacy group ${title}`),
 		h(
 			"div",
 			{ class: "peer-submeta" },
-			"A Team organizes people and devices. The default Space is the memory boundary; Team membership only grants data access when default Space auto-grant is enabled.",
+			"This coordinator group organizes technical discovery and enrollment. It is not a policy Team; use Sharing to manage Team membership and Project access.",
 		),
 		guide.setupWarning
 			? h(
 					"div",
 					{ class: "peer-meta coordinator-admin-inline-warning" },
-					`Team created, but ${warningStep} failed. Automatic repair is not available yet; use Spaces to inspect or create access manually before inviting teammates.`,
+					`Legacy coordinator group created, but ${warningStep} failed. Automatic repair is not available yet; use Spaces to inspect or create transport access manually. Sharing policy is unchanged.`,
 				)
 			: h(
 					"div",
@@ -326,9 +330,9 @@ function renderTeamSetupGuide(renderShell: () => void): ReturnType<typeof h> {
 		h(
 			"ol",
 			{ class: "peer-submeta" },
-			h("li", null, "Review Team defaults and the auto-grant default Space setting."),
-			h("li", null, "Invite teammates or other devices."),
-			h("li", null, "Assign projects to Spaces from the Projects tab."),
+			h("li", null, "Review legacy group defaults and the auto-grant default Space setting."),
+			h("li", null, "Use legacy enrollment only when compatibility or recovery requires it."),
+			h("li", null, "Open Sharing for Team membership and Project access."),
 		),
 		h(
 			"div",
@@ -343,7 +347,7 @@ function renderTeamSetupGuide(renderShell: () => void): ReturnType<typeof h> {
 					},
 					type: "button",
 				},
-				"Review Team defaults",
+				"Review legacy defaults",
 			),
 			h(
 				"button",
@@ -367,7 +371,7 @@ function renderTeamSetupGuide(renderShell: () => void): ReturnType<typeof h> {
 					},
 					type: "button",
 				},
-				"Invite devices",
+				"Create legacy device invite",
 			),
 			h(
 				"button",
@@ -378,7 +382,7 @@ function renderTeamSetupGuide(renderShell: () => void): ReturnType<typeof h> {
 					},
 					type: "button",
 				},
-				"Assign projects",
+				"Open Projects",
 			),
 			h(
 				"button",
@@ -397,7 +401,7 @@ function renderTeamSetupGuide(renderShell: () => void): ReturnType<typeof h> {
 }
 
 function archiveButtonLabel(archived: boolean, pending: boolean): string {
-	if (pending) return archived ? "Restoring…" : "Archiving…";
+	if (pending) return archived ? "Unarchiving…" : "Archiving…";
 	return archived ? "Unarchive" : "Archive";
 }
 
@@ -429,22 +433,22 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 	return h(
 		RadixTabsContent,
 		{ className: "coordinator-admin-panel", value: "groups" },
-		h("h3", null, "Teams"),
+		h("h3", null, "Coordinator groups"),
 		h(
 			"p",
 			{ class: "peer-submeta" },
 			selectedGroup
-				? `Managing ${selectedGroup}${configuredGroup && configuredGroup !== selectedGroup ? ` · this node uses ${configuredGroup} for discovery` : ""}`
+				? `Managing the selected coordinator group${configuredGroup && configuredGroup !== selectedGroup ? " · this node uses a different group for discovery" : ""}`
 				: configuredGroup
-					? `This node uses ${configuredGroup} for discovery. Select a Team below to manage it.`
-					: "No Team selected yet. Create one or select an existing Team to manage.",
+					? `This node uses ${configuredGroup} for discovery. Select a coordinator group below to manage it.`
+					: "No coordinator group selected yet. Create one or select an existing group to manage.",
 		),
 		groups.length ? h("p", { class: "peer-submeta" }, countParts.join(" · ")) : null,
 		!targetExists && selectedGroup
 			? h(
 					"div",
 					{ class: "peer-meta coordinator-admin-inline-warning" },
-					`The selected Team (${selectedGroup}) is configured locally but does not exist in the coordinator yet. Create it below or switch to another Team once one exists.`,
+					"The selected legacy group is configured locally but does not exist in the coordinator yet. Create it below or switch to another coordinator group once one exists.",
 				)
 			: null,
 		renderTeamSetupGuide(renderShell),
@@ -463,11 +467,16 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 				},
 				h(
 					"div",
+					{ class: "peer-meta coordinator-admin-inline-warning", role: "note" },
+					"Creating a coordinator group changes legacy discovery and transport setup only. It does not create a policy Team or grant Project access in Sharing.",
+				),
+				h(
+					"div",
 					{ class: "coordinator-admin-form-grid" },
 					h(
 						"label",
 						{ class: "coordinator-admin-field" },
-						h("span", null, "New Team id"),
+						h("span", null, "New coordinator group ID"),
 						h(TextInput, {
 							class: "peer-scope-input",
 							disabled: createGroupDisabled,
@@ -476,7 +485,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 									(event.currentTarget as HTMLInputElement).value || "",
 								);
 							},
-							placeholder: "team-alpha",
+							placeholder: "group-alpha",
 							type: "text",
 							value: coordinatorAdminState.createGroupId,
 						}),
@@ -484,7 +493,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 					h(
 						"label",
 						{ class: "coordinator-admin-field" },
-						h("span", null, "Display name"),
+						h("span", null, "Legacy group display name"),
 						h(TextInput, {
 							class: "peer-scope-input",
 							disabled: createGroupDisabled,
@@ -493,7 +502,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 									(event.currentTarget as HTMLInputElement).value || "",
 								);
 							},
-							placeholder: "Team Alpha",
+							placeholder: "Legacy group Alpha",
 							type: "text",
 							value: coordinatorAdminState.createGroupDisplayName,
 						}),
@@ -514,7 +523,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 							},
 							coordinatorAdminState.groupActionPendingKind === "create"
 								? "Creating…"
-								: "Create Team",
+								: "Create coordinator group",
 						),
 					),
 					h(
@@ -550,9 +559,9 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 					{ class: "peer-meta coordinator-admin-empty-state" },
 					summary.readiness === "ready"
 						? coordinatorAdminState.showArchivedGroups
-							? "No Teams are available yet."
-							: "No active Teams yet. Create one to get started."
-						: "Team browsing will appear here once setup is complete.",
+							? "No coordinator groups are available yet."
+							: "No active coordinator groups yet. Create one only for legacy discovery or recovery."
+						: "Coordinator group browsing will appear here once setup is complete.",
 				)
 			: h(
 					"div",
@@ -564,7 +573,10 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 						const draftName =
 							coordinatorAdminState.groupRenameDrafts.get(group.group_id) ??
 							group.display_name ??
-							group.group_id;
+							"";
+						const presentationName =
+							draftName.trim() ||
+							coordinatorGroupPresentationName(group.group_id, group.display_name);
 						const scopeOpen = coordinatorAdminState.groupPreferencesOpen.has(group.group_id);
 						const domainsOpen = coordinatorAdminState.groupScopeManagementOpen.has(group.group_id);
 						const archiveActionKind = archived ? "unarchive" : "archive";
@@ -580,9 +592,13 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 						return h(
 							"div",
 							{ class: "peer-card peer-card--padded", key: group.group_id },
-							h("div", { class: "peer-title" }, h("strong", null, draftName)),
-							h("div", { class: "peer-submeta" }, archived ? "Archived Team" : "Active Team"),
-							h("div", { class: "peer-meta" }, `Advanced: Team ID ${group.group_id}`),
+							h("div", { class: "peer-title" }, h("strong", null, presentationName)),
+							h(
+								"div",
+								{ class: "peer-submeta" },
+								archived ? "Archived coordinator group" : "Active coordinator group",
+							),
+							h("div", { class: "peer-meta" }, `Advanced: Group ID ${group.group_id}`),
 							h(
 								"div",
 								{ class: "coordinator-admin-summary-grid" },
@@ -609,13 +625,13 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 								? h(
 										"div",
 										{ class: "peer-submeta" },
-										"This node uses this Team for coordinator-backed discovery.",
+										"This node uses this coordinator group for discovery.",
 									)
 								: null,
 							h(
 								"label",
 								{ class: "coordinator-admin-field" },
-								h("span", null, "Display name"),
+								h("span", null, "Legacy group display name"),
 								h(TextInput, {
 									class: "peer-scope-input",
 									disabled: summary.readiness !== "ready" || pending,
@@ -643,7 +659,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 										},
 										type: "button",
 									},
-									selected ? "Managing" : "Manage Team",
+									selected ? "Managing" : "Manage group",
 								),
 								h(
 									"button",
@@ -655,7 +671,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 									},
 									pending && coordinatorAdminState.groupActionPendingKind === "rename"
 										? "Renaming…"
-										: "Rename",
+										: "Rename group",
 								),
 								h(
 									"button",
@@ -674,7 +690,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 										},
 										type: "button",
 									},
-									h("span", null, "Team defaults"),
+									h("span", null, "Legacy group defaults"),
 									h(
 										"span",
 										{ "aria-hidden": "true", class: "device-row-chevron" },
@@ -733,7 +749,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 								h(
 									Collapsible.Content,
 									{
-										"aria-label": `Project defaults for ${draftName}`,
+										"aria-label": `Project defaults for ${presentationName}`,
 										class: "coordinator-admin-group-preferences",
 										id: `coord-admin-project-defaults-drawer-${group.group_id}`,
 									},
@@ -758,7 +774,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 								h(
 									Collapsible.Content,
 									{
-										"aria-label": `Spaces for ${draftName}`,
+										"aria-label": `Spaces for ${presentationName}`,
 										class:
 											"coordinator-admin-group-preferences coordinator-admin-domain-management",
 										id: `coord-admin-spaces-drawer-${group.group_id}`,

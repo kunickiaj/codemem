@@ -54,10 +54,41 @@ export function availableCoordinatorGroups(): Array<{
 		.filter((group) => group.group_id);
 }
 
+export function coordinatorGroupPresentationName(
+	groupId: string,
+	displayName: string | null | undefined,
+): string {
+	const explicitName = String(displayName || "").trim();
+	const groups = availableCoordinatorGroups();
+	const reservedNames = new Set(
+		groups.map((group) => String(group.display_name || "").trim()).filter(Boolean),
+	);
+	if (explicitName) reservedNames.add(explicitName);
+	for (const [aliasedGroupId, alias] of coordinatorAdminState.groupPresentationAliases) {
+		if (reservedNames.has(alias)) {
+			coordinatorAdminState.groupPresentationAliases.delete(aliasedGroupId);
+		}
+	}
+	if (explicitName) return explicitName;
+	const existingAlias = coordinatorAdminState.groupPresentationAliases.get(groupId);
+	if (existingAlias) return existingAlias;
+	for (const alias of coordinatorAdminState.groupPresentationAliases.values()) {
+		reservedNames.add(alias);
+	}
+	let suffix = 1;
+	let alias = `Unnamed coordinator group ${suffix}`;
+	while (reservedNames.has(alias)) {
+		suffix += 1;
+		alias = `Unnamed coordinator group ${suffix}`;
+	}
+	coordinatorAdminState.groupPresentationAliases.set(groupId, alias);
+	return alias;
+}
+
 export function reconcileGroupRenameDrafts() {
 	const next = new Map<string, string>();
 	for (const group of availableCoordinatorGroups()) {
-		next.set(group.group_id, group.display_name || group.group_id);
+		next.set(group.group_id, group.display_name || "");
 	}
 	coordinatorAdminState.groupRenameDrafts.clear();
 	for (const [groupId, name] of next.entries()) {

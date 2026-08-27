@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { state } from "../../../lib/state";
 import {
 	advancedDeviceIdentityView,
-	canManageSpacesInTeams,
+	canManageLegacyCoordinatorSpaces,
 	openDeviceIdentitySetup,
 	renderSyncPeersList,
 } from "./sync-peers";
@@ -16,6 +16,7 @@ beforeEach(() => {
 	];
 	state.lastDeviceIdentityInventory = null;
 	state.deviceIdentityInventoryLoadError = false;
+	state.lastCoordinatorAdminStatus = null;
 	state.pendingDeviceIdentityFocus = undefined;
 	window.location.hash = "advanced/sync";
 });
@@ -26,15 +27,21 @@ afterEach(() => {
 	document.body.innerHTML = "";
 });
 
-describe("canManageSpacesInTeams", () => {
-	it("allows the Teams management action only for ready coordinator admin devices", () => {
-		expect(canManageSpacesInTeams({ has_admin_secret: true, readiness: "ready" })).toBe(true);
+describe("canManageLegacyCoordinatorSpaces", () => {
+	it("allows legacy coordinator administration only for ready admin devices", () => {
+		expect(canManageLegacyCoordinatorSpaces({ has_admin_secret: true, readiness: "ready" })).toBe(
+			true,
+		);
 	});
 
-	it("blocks the Teams management action when admin capability is absent", () => {
-		expect(canManageSpacesInTeams({ has_admin_secret: false, readiness: "ready" })).toBe(false);
-		expect(canManageSpacesInTeams({ has_admin_secret: true, readiness: "partial" })).toBe(false);
-		expect(canManageSpacesInTeams(null)).toBe(false);
+	it("blocks legacy coordinator administration when admin capability is absent", () => {
+		expect(canManageLegacyCoordinatorSpaces({ has_admin_secret: false, readiness: "ready" })).toBe(
+			false,
+		);
+		expect(canManageLegacyCoordinatorSpaces({ has_admin_secret: true, readiness: "partial" })).toBe(
+			false,
+		);
+		expect(canManageLegacyCoordinatorSpaces(null)).toBe(false);
 	});
 });
 
@@ -138,9 +145,9 @@ describe("Advanced device Identity ownership", () => {
 				onSync: vi.fn(),
 			}),
 		);
-		const disclosure = mount.querySelector<HTMLButtonElement>('[aria-expanded="false"]');
+		const disclosure = mount.querySelector<HTMLButtonElement>("[aria-expanded]");
 		if (!disclosure) throw new Error("peer disclosure missing");
-		act(() => disclosure.click());
+		if (disclosure.getAttribute("aria-expanded") === "false") act(() => disclosure.click());
 
 		expect(mount.textContent).toContain("Authoritative Identity ownership");
 		expect(mount.textContent).toContain("Set up Identity in Devices");
@@ -148,5 +155,32 @@ describe("Advanced device Identity ownership", () => {
 		expect(mount.textContent).toContain("Advanced sharing rules");
 		expect(mount.textContent).not.toContain("Save assignment");
 		expect(mount.querySelector('[aria-label^="Assigned person"]')).toBeNull();
+	});
+
+	it("routes legacy coordinator administration through the canonical Advanced hash", () => {
+		document.body.innerHTML = '<div id="mount"></div>';
+		state.lastCoordinatorAdminStatus = { has_admin_secret: true, readiness: "ready" };
+		const mount = document.getElementById("mount");
+		if (!mount) throw new Error("mount missing");
+		act(() =>
+			renderSyncPeersList(mount, {
+				peers: [{ peer_device_id: "peer-a", name: "Peer A", actor_id: "identity-hint" }],
+				onRemove: vi.fn(),
+				onRename: vi.fn(),
+				onSync: vi.fn(),
+			}),
+		);
+		const disclosure = mount.querySelector<HTMLButtonElement>("[aria-expanded]");
+		if (!disclosure) throw new Error("peer disclosure missing");
+		if (disclosure.getAttribute("aria-expanded") === "false") act(() => disclosure.click());
+		const adminButton = [...mount.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+			button.textContent?.includes("coordinator administration (legacy)"),
+		);
+		if (!adminButton) throw new Error("legacy coordinator administration action missing");
+
+		act(() => adminButton.click());
+
+		expect(window.location.hash).toBe("#advanced/teams");
+		expect(mount.textContent).not.toContain("Manage Spaces in Teams");
 	});
 });

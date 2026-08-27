@@ -27,8 +27,8 @@ export function renderJoinRequestsPanel(deps: JoinRequestsPanelDeps) {
 			"p",
 			{ class: "peer-submeta" },
 			summary.readiness === "ready"
-				? "Approve or deny devices that want to join this Team. Default Space access is handled by Team defaults and can be reviewed in Spaces."
-				: "Finish setup first. Join request review stays disabled until Teams is ready.",
+				? "Approve or deny devices that want to join this legacy coordinator group. Space transport access is handled by legacy group defaults and can be reviewed in Spaces; Sharing policy is separate."
+				: "Finish coordinator setup first. Join request review stays disabled until legacy administration is ready.",
 		),
 		!items.length
 			? h(

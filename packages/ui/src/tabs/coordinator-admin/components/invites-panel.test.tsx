@@ -4,7 +4,7 @@ import { state } from "../../../lib/state";
 import { coordinatorAdminState } from "../data/state";
 import { renderInvitesPanel } from "./invites-panel";
 
-describe("Teams invite panel", () => {
+describe("legacy coordinator invite panel", () => {
 	function textContent(value: ComponentChildren): string {
 		if (value == null || typeof value === "boolean") return "";
 		if (typeof value === "string" || typeof value === "number") return String(value);
@@ -55,8 +55,8 @@ describe("Teams invite panel", () => {
 			}),
 		);
 
-		expect(text).toContain("Legacy Team invites");
-		expect(text).toContain("do not grant project access");
+		expect(text).toContain("Legacy coordinator invites");
+		expect(text).toContain("do not add policy Team membership or grant Project access");
 		expect(text).toContain("Brian");
 		expect(text).toContain("codemem");
 		expect(text).toContain("Up to date");

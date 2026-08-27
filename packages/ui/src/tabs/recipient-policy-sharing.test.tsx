@@ -240,7 +240,7 @@ describe("recipient-focused Sharing", () => {
 		expect(visiblePanel().textContent).toContain("Add a device");
 		expect(visiblePanel().textContent).toContain("Share exact Projects");
 		expect(visiblePanel().textContent).toContain(
-			"Legacy invitation import remains under Advanced Team administration",
+			"Legacy invitation import remains under Advanced (legacy), in Sync",
 		);
 	});
 
