@@ -205,19 +205,43 @@ function activeAssignmentIdentityLookup(db: Database): (deviceId: string) => str
 }
 
 function projectInventory(
+	db: Database,
 	candidateId: string,
 	evidence: ReturnType<typeof listLegacyTeamProjectEvidence>,
 ): LegacyTeamSetupProjectInput[] {
+	const activeCandidateScopeIds = (
+		db
+			.prepare(
+				`SELECT scope_id, coordinator_id, group_id FROM replication_scopes
+				 WHERE authority_type = 'coordinator' AND coordinator_id IS NOT NULL
+				   AND group_id IS NOT NULL AND status = 'active'`,
+			)
+			.all() as Array<{ scope_id: string; coordinator_id: string; group_id: string }>
+	)
+		.filter((scope) => legacyTeamCandidateId(scope.coordinator_id, scope.group_id) === candidateId)
+		.map((scope) => scope.scope_id);
 	return evidence
-		.filter((project) => project.teamCandidateIds.includes(candidateId))
+		.filter(
+			(project) =>
+				project.project.canonicalIdentity !== "shared:default" &&
+				project.teamCandidateIds.includes(candidateId),
+		)
 		.map((project) => {
 			const sourceProjectIdentity = project.project.canonicalIdentity;
+			const evidencedTargetScopeId = project.teamCandidateScopes.find(
+				(candidate) => candidate.teamCandidateId === candidateId,
+			)?.targetScopeId;
+			const targetScopeId =
+				evidencedTargetScopeId === undefined && activeCandidateScopeIds.length === 1
+					? activeCandidateScopeIds[0]
+					: evidencedTargetScopeId;
 			return {
 				projectRef: legacyTeamProjectRef(candidateId, sourceProjectIdentity),
 				sourceProjectIdentity,
 				displayName: project.project.displayName,
 				sourceFingerprint: project.sourceFingerprint,
 				deterministicProjectIdentity: project.deterministicProjectIdentity,
+				targetScopeId,
 			};
 		})
 		.toSorted((left, right) => compareCodepoints(left.projectRef, right.projectRef));
@@ -299,26 +323,27 @@ function isCompatibleReadyTeam(
 	const { attempt_id: attemptId, completed_team_id: completedTeamId } = draftRow;
 	const expectedTeamId = deterministicPolicyTeamId(candidateId);
 	if (completedTeamId !== expectedTeamId) return false;
-	// Confirmed mappings are bound to the setup's coordinator group. A group
-	// may expose multiple active scopes (for example per-Project boundaries),
-	// so a mapping targeting any of them is valid; a mapping with the same
-	// identities but a scope outside the group is drifted state. Scopes are
+	// Confirmed mappings are bound to their completion-reviewed target scopes.
+	// A group may expose multiple active scopes (for example per-Project
+	// boundaries), but moving a mapping between them is still drift. Scopes are
 	// only required when the completed draft has Project rows to validate: a
 	// configured group with no displayed Projects has no mapping whose scope
 	// could drift, so its completion stays Ready without a local scope row.
 	const completionProjectRows = db
 		.prepare(
-			`SELECT source_project_identity, resolved_project_identity
+			`SELECT source_project_identity, resolved_project_identity, target_scope_id
 			 FROM legacy_team_setup_draft_projects WHERE attempt_id = ?`,
 		)
 		.all(attemptId) as Array<{
 		source_project_identity: string;
 		resolved_project_identity: string | null;
+		target_scope_id: string | null;
 	}>;
 	const setupScopeIds = db
 		.prepare(
 			`SELECT scope_id FROM replication_scopes
-			 WHERE coordinator_id = ? AND group_id = ? AND status = 'active'`,
+			 WHERE coordinator_id = ? AND group_id = ? AND authority_type = 'coordinator'
+			   AND status = 'active'`,
 		)
 		.pluck()
 		.all(draftRow.coordinator_id, draftRow.group_id) as string[];
@@ -484,15 +509,17 @@ function isCompatibleReadyTeam(
 		expectedEffectiveDevices.set(device.device_id, device.target_identity_id);
 	}
 	// Merged resolutions map several confirmed source patterns onto one
-	// canonical identity; selection can pick only one of those mappings, so
-	// the authoritative pattern is valid when it matches ANY confirmed source
-	// for that identity.
-	const confirmedSourcesByResolved = new Map<string, Set<string>>();
+	// canonical identity; selection can pick only one of those mappings. Keep
+	// each source's completion-bound target so the selected pattern is checked
+	// against its own reviewed scope rather than another merged source's scope.
+	const confirmedProjectsByResolved = new Map<string, Map<string, string | null>>();
 	for (const project of completionProjectRows) {
 		if (!project.resolved_project_identity) return false;
-		const sources = confirmedSourcesByResolved.get(project.resolved_project_identity) ?? new Set();
-		sources.add(project.source_project_identity);
-		confirmedSourcesByResolved.set(project.resolved_project_identity, sources);
+		const sources =
+			confirmedProjectsByResolved.get(project.resolved_project_identity) ??
+			new Map<string, string | null>();
+		sources.set(project.source_project_identity, project.target_scope_id);
+		confirmedProjectsByResolved.set(project.resolved_project_identity, sources);
 	}
 	// Several confirmed sources may resolve to the same canonical Project. Keep
 	// the expensive live-policy derivation scoped to this compatibility check so
@@ -507,7 +534,9 @@ function isCompatibleReadyTeam(
 		 WHERE canonical_project_identity = ? AND recipient_kind = 'team'
 		   AND recipient_id = ? AND status = 'active' LIMIT 1`,
 	);
-	const selectedMappings = selectedProjectScopeMappings(db, [...confirmedSourcesByResolved.keys()]);
+	const selectedMappings = selectedProjectScopeMappings(db, [
+		...confirmedProjectsByResolved.keys(),
+	]);
 	for (const project of completionProjectRows) {
 		const resolvedIdentity = project.resolved_project_identity as string;
 		const recipientActive = activeTeamRecipient.get(resolvedIdentity, completedTeamId);
@@ -533,11 +562,18 @@ function isCompatibleReadyTeam(
 		// enforcement to another boundary; mere existence of the shadowed row
 		// is not evidence that the completion still governs the Project.
 		const selected = selectedMappings.get(resolvedIdentity);
+		const confirmedSources = confirmedProjectsByResolved.get(resolvedIdentity);
+		const confirmedTargetScopeId =
+			selected && confirmedSources?.has(selected.projectPattern)
+				? (confirmedSources.get(selected.projectPattern) ?? selected.scopeId)
+				: undefined;
 		if (
 			!selected ||
 			selected.workspaceIdentity == null ||
-			!confirmedSourcesByResolved.get(resolvedIdentity)?.has(selected.projectPattern) ||
-			!setupScopeIds.includes(selected.scopeId)
+			!confirmedSources?.has(selected.projectPattern) ||
+			!confirmedTargetScopeId ||
+			selected.scopeId !== confirmedTargetScopeId ||
+			!setupScopeIds.includes(confirmedTargetScopeId)
 		) {
 			return false;
 		}
@@ -756,7 +792,7 @@ export function legacyTeamCandidateProjectInventory(
 	candidateRef: string,
 ): LegacyTeamSetupProjectInput[] {
 	const evidence = listLegacyTeamProjectEvidence(db, projection);
-	return projectInventory(candidateRef, evidence);
+	return projectInventory(db, candidateRef, evidence);
 }
 
 export function refreshLegacyTeamCandidate(

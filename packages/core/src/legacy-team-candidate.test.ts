@@ -117,6 +117,36 @@ describe("legacy Team candidate discovery", () => {
 		);
 	});
 
+	it("keeps the synthetic shared fallback outside Team setup inventory", () => {
+		const sessionId = Number(
+			db
+				.prepare(
+					`INSERT INTO sessions(started_at, project, git_remote, git_branch)
+					 VALUES (?, 'legacy shared', NULL, NULL)`,
+				)
+				.run(NOW).lastInsertRowid,
+		);
+		db.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, active, created_at, updated_at,
+				visibility, workspace_id, project, scope_id
+			 ) VALUES (?, 'discovery', 'legacy shared', 'body', 1, ?, ?,
+				'shared', 'shared:default', 'legacy shared', 'scope-api')`,
+		).run(sessionId, NOW, NOW);
+
+		const [candidate] = discoverLegacyTeamCandidates(db, options());
+
+		expect(candidate?.projectCount).toBe(1);
+		expect(
+			db
+				.prepare(
+					"SELECT COUNT(*) FROM legacy_team_setup_draft_projects WHERE source_project_identity = 'shared:default'",
+				)
+				.pluck()
+				.get(),
+		).toBe(0);
+	});
+
 	it("rejects malformed discovery identities without hiding independent valid groups", () => {
 		const input = options();
 		const validGroup = input.groups[0];
@@ -712,6 +742,23 @@ describe("legacy Team candidate discovery", () => {
 		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("needs_setup");
 	});
 
+	it("drops Ready when the selected mapping moves to another active scope in the group", () => {
+		completeCandidate();
+		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
+		db.prepare(
+			`INSERT INTO replication_scopes(
+				scope_id, label, kind, authority_type, coordinator_id, group_id,
+				membership_epoch, status, created_at, updated_at
+			 ) VALUES ('scope-api-second', 'Engineering Second', 'managed_project', 'coordinator',
+			 'coordinator-private', 'group-private', 1, 'active', ?, ?)`,
+		).run(NOW, NOW);
+
+		// Group membership alone is insufficient: completion reviewed scope-api.
+		db.prepare("UPDATE project_scope_mappings SET scope_id = 'scope-api-second'").run();
+
+		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("needs_setup");
+	});
+
 	it("drops Ready for malformed inactive membership identities", () => {
 		const { teamId } = completeCandidate();
 		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
@@ -759,22 +806,24 @@ describe("legacy Team candidate discovery", () => {
 	it("keeps Ready when merged resolutions share one selected mapping", () => {
 		const { attemptId, candidateId } = completeCandidate();
 		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
+		db.prepare(
+			`INSERT INTO replication_scopes(
+				scope_id, label, kind, authority_type, coordinator_id, group_id,
+				membership_epoch, status, created_at, updated_at
+			 ) VALUES ('scope-api-second', 'Engineering Second', 'managed_project', 'coordinator',
+			 'coordinator-private', 'group-private', 1, 'active', ?, ?)`,
+		).run(NOW, NOW);
 
 		// A second confirmed source resolved to the same canonical identity:
 		// selection can pick only one mapping, so Ready must accept the
-		// authoritative pattern matching ANY confirmed source.
+		// authoritative pattern with that source's own confirmed target scope.
 		db.prepare(
 			`INSERT INTO legacy_team_setup_draft_projects(
 				attempt_id, project_ref, source_project_identity, display_name,
-				source_fingerprint, resolution_kind, resolved_project_identity, updated_at
-			 ) VALUES (?, 'project-ref-mirror', 'unmapped:mirror', 'Mirror', 'source-mirror',
-				'explicit', ?, ?)`,
+				source_fingerprint, resolution_kind, resolved_project_identity, target_scope_id, updated_at
+				 ) VALUES (?, 'project-ref-mirror', 'unmapped:mirror', 'Mirror', 'source-mirror',
+			 'explicit', ?, 'scope-api', ?)`,
 		).run(attemptId, PROJECT_ID, NOW);
-		db.prepare(
-			`INSERT INTO project_scope_mappings(
-				workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
-			 ) VALUES (?, 'unmapped:mirror', 'scope-api', 1000, 'reviewed_team_setup', ?, ?)`,
-		).run(PROJECT_ID, NOW, NOW);
 		const prepareSpy = vi.spyOn(db, "prepare");
 		try {
 			expect(isLegacyTeamCandidateSelectable(db, candidateId)).toBe(true);
@@ -794,6 +843,45 @@ describe("legacy Team candidate discovery", () => {
 		} finally {
 			prepareSpy.mockRestore();
 		}
+
+		// The other merged source targets scope-api-second, but that cannot
+		// authorize moving the selected primary source away from scope-api.
+		db.prepare("UPDATE project_scope_mappings SET scope_id = 'scope-api-second'").run();
+		expect(isLegacyTeamCandidateSelectable(db, candidateId)).toBe(false);
+	});
+
+	it("rejects a legacy null-scope completion redirected to local authority", () => {
+		const { teamId, attemptId, candidateId } = completeCandidate();
+		// Exercise the compatibility gate for completions created before terminal
+		// provenance markers, rather than the canonical completion fast path.
+		db.prepare(
+			"UPDATE policy_teams SET provenance = 'legacy_team_candidate' WHERE team_id = ?",
+		).run(teamId);
+		db.prepare(
+			"UPDATE legacy_team_setup_draft_projects SET target_scope_id = NULL WHERE attempt_id = ?",
+		).run(attemptId);
+		db.prepare(
+			`INSERT INTO replication_scopes(
+				scope_id, label, kind, authority_type, coordinator_id, group_id,
+				membership_epoch, status, created_at, updated_at
+			 ) VALUES ('scope-local-rogue', 'Local Rogue', 'team', 'local',
+			 'coordinator-private', 'group-private', 1, 'active', ?, ?)`,
+		).run(NOW, NOW);
+		db.prepare("UPDATE project_scope_mappings SET scope_id = 'scope-local-rogue'").run();
+
+		expect(isLegacyTeamCandidateSelectable(db, candidateId)).toBe(false);
+	});
+
+	it("recovers a legacy null-scope completion from its reviewed coordinator mapping", () => {
+		const { teamId, attemptId, candidateId } = completeCandidate();
+		db.prepare(
+			"UPDATE policy_teams SET provenance = 'legacy_team_candidate' WHERE team_id = ?",
+		).run(teamId);
+		db.prepare(
+			"UPDATE legacy_team_setup_draft_projects SET target_scope_id = NULL WHERE attempt_id = ?",
+		).run(attemptId);
+
+		expect(isLegacyTeamCandidateSelectable(db, candidateId)).toBe(true);
 	});
 
 	it("loads the current selectable draft in one authoritative query", () => {
@@ -1236,39 +1324,44 @@ describe("legacy Team candidate discovery", () => {
 				existing_memory_count, ordinal
 			 ) VALUES ('op-invite', ?, 'Invite Only', 'git_remote', 1, 0)`,
 		).run(inviteProject);
-
-		const [candidate] = discoverLegacyTeamCandidates(db, options());
-
-		// The invite-only Project has no relevant replication scope, but its
-		// group resolves to the configured coordinator, so it belongs to the
-		// candidate's inventory instead of being dropped by a fallback ID.
-		expect(candidate?.projectCount).toBe(2);
-		expect(
-			db
-				.prepare(
-					`SELECT COUNT(*) FROM legacy_team_setup_draft_projects
-					 WHERE source_project_identity = ?`,
-				)
-				.pluck()
-				.get(inviteProject),
-		).toBe(1);
-
-		// A local-authority scope that carries the group ID and a bogus
-		// coordinator is not coordinator evidence: it must neither hijack the
-		// association nor suppress the legitimate global coordinator match.
+		// A local-authority scope carrying the same coordinator and group IDs is
+		// not coordinator evidence: it must neither hijack the association nor
+		// suppress the legitimate coordinator fallback.
 		db.prepare(
 			`INSERT INTO replication_scopes(
 				scope_id, label, kind, authority_type, coordinator_id, group_id,
 				membership_epoch, status, created_at, updated_at
 			 ) VALUES ('scope-local-rogue', 'Local Rogue', 'team', 'local',
-				'coordinator-rogue', 'group-private', 1, 'active', ?, ?)`,
+			 'coordinator-private', 'group-private', 1, 'active', ?, ?)`,
 		).run(NOW, NOW);
+		const [candidate] = discoverLegacyTeamCandidates(db, options());
+
+		// The invite-only Project has no relevant replication scope, but its
+		// group resolves to the configured coordinator, so it belongs to the
+		// candidate's inventory and inherits the sole active group scope.
+		expect(candidate).toMatchObject({ projectCount: 2, unresolvedProjectCount: 0 });
+		expect(
+			db
+				.prepare(
+					`SELECT resolution_kind, resolved_project_identity, target_scope_id
+					 FROM legacy_team_setup_draft_projects
+					 WHERE source_project_identity = ?`,
+				)
+				.get(inviteProject),
+		).toEqual({
+			resolution_kind: "deterministic",
+			resolved_project_identity: inviteProject,
+			target_scope_id: "scope-api",
+		});
+		expect(discoverLegacyTeamCandidates(db, options())[0]).toMatchObject({
+			status: "needs_setup",
+			projectCount: 2,
+			unresolvedProjectCount: 0,
+		});
 		db.prepare(
-			`INSERT INTO project_scope_mappings(
-				workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
-			 ) VALUES (?, ?, 'scope-local-rogue', 500, 'test', ?, ?)`,
-		).run(inviteProject, inviteProject, NOW, NOW);
-		expect(discoverLegacyTeamCandidates(db, options())[0]?.projectCount).toBe(2);
+			"UPDATE legacy_team_setup_draft_devices SET decision = 'excluded' WHERE attempt_id = ?",
+		).run(latestLegacyTeamSetupAttempt(db, candidate?.candidateRef as string)?.attemptId);
+		expect(getLegacyTeamSetupDraft(db, candidate?.candidateRef as string)?.canFinish).toBe(true);
 
 		// A second coordinator sharing the group ID makes the association
 		// ambiguous, so the invite-only Project must drop out again.
@@ -1476,7 +1569,7 @@ describe("legacy Team candidate discovery", () => {
 		}
 	});
 
-	it("keeps Ready when a group exposes multiple scopes and mappings use their own", () => {
+	it("requires setup when Project evidence spans multiple group scopes", () => {
 		db.prepare(
 			`INSERT INTO replication_scopes(
 				scope_id, label, kind, authority_type, coordinator_id, group_id,
@@ -1486,7 +1579,7 @@ describe("legacy Team candidate discovery", () => {
 		).run(NOW, NOW);
 		// The confirmed mapping targets the second scope of the same group.
 		db.prepare("UPDATE project_scope_mappings SET scope_id = 'scope-api-second'").run();
-		runExcludedCompletionScenario(() => undefined, "ready");
+		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("needs_setup");
 	});
 
 	it("keeps Ready when an invite-owned decision is preserved outside the draft", () => {

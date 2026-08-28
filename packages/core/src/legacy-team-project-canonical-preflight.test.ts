@@ -12,7 +12,13 @@ const BASELINE: LegacyTeamProjectCanonicalPreflightInput = {
 	teamId: TEAM,
 	scopeIds: ["scope-active"],
 	groupScopeIds: ["scope-active", "scope-historical"],
-	projects: [{ sourceProjectIdentity: SOURCE, resolvedProjectIdentity: PROJECT }],
+	projects: [
+		{
+			sourceProjectIdentity: SOURCE,
+			resolvedProjectIdentity: PROJECT,
+			targetScopeId: "scope-active",
+		},
+	],
 	mappings: [],
 	recipients: [],
 };
@@ -25,22 +31,43 @@ describe("legacy Team Project canonical preflight", () => {
 			expected: true,
 		},
 		{
-			name: "leaves zero active scope readiness to the caller",
+			name: "rejects a reviewed target that is no longer active",
 			overrides: { scopeIds: [] },
-			expected: true,
+			expected: false,
 		},
 		{
 			name: "rejects an unresolved Project identity defensively",
 			overrides: {
-				projects: [{ sourceProjectIdentity: SOURCE, resolvedProjectIdentity: null }],
+				projects: [
+					{
+						sourceProjectIdentity: SOURCE,
+						resolvedProjectIdentity: null,
+						targetScopeId: "scope-active",
+					},
+				],
 			},
 			expected: false,
 		},
 		{
-			name: "rejects ambiguous active scopes for a new mapping",
+			name: "accepts multiple active scopes when Project evidence selects one",
 			overrides: {
 				scopeIds: ["scope-active", "scope-active-2"],
 				groupScopeIds: ["scope-active", "scope-active-2", "scope-historical"],
+			},
+			expected: true,
+		},
+		{
+			name: "rejects missing per-Project scope evidence",
+			overrides: {
+				scopeIds: ["scope-active", "scope-active-2"],
+				groupScopeIds: ["scope-active", "scope-active-2", "scope-historical"],
+				projects: [
+					{
+						sourceProjectIdentity: SOURCE,
+						resolvedProjectIdentity: PROJECT,
+						targetScopeId: null,
+					},
+				],
 			},
 			expected: false,
 		},
@@ -49,6 +76,13 @@ describe("legacy Team Project canonical preflight", () => {
 			overrides: {
 				scopeIds: ["scope-active", "scope-active-2"],
 				groupScopeIds: ["scope-active", "scope-active-2", "scope-historical"],
+				projects: [
+					{
+						sourceProjectIdentity: SOURCE,
+						resolvedProjectIdentity: PROJECT,
+						targetScopeId: "scope-active-2",
+					},
+				],
 				mappings: [
 					{
 						workspaceIdentity: PROJECT,

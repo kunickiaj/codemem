@@ -48,6 +48,7 @@ function snapshot() {
 				displayName: "API",
 				sourceFingerprint: "source-a",
 				deterministicProjectIdentity: PROJECT_A,
+				targetScopeId: "scope-engineering",
 			},
 			{
 				projectRef: "project-ref-b",
@@ -55,6 +56,7 @@ function snapshot() {
 				displayName: "Web",
 				sourceFingerprint: "source-b",
 				deterministicProjectIdentity: null,
+				targetScopeId: "scope-engineering",
 			},
 		],
 		now: NOW,
@@ -89,8 +91,8 @@ describe("legacy Team setup activation", () => {
 
 	afterEach(() => db.close());
 
-	function readyDraft(): ReadyDraft {
-		let draft = refreshLegacyTeamSetupDraft(db, snapshot());
+	function readyDraft(input = snapshot()): ReadyDraft {
+		let draft = refreshLegacyTeamSetupDraft(db, input);
 		for (const device of draft.devices) {
 			const identityId =
 				device.displayName === "Laptop"
@@ -136,7 +138,7 @@ describe("legacy Team setup activation", () => {
 			db
 				.prepare(
 					`SELECT project_ref, source_project_identity, display_name, source_fingerprint,
-					        resolution_kind, resolved_project_identity
+					        resolution_kind, resolved_project_identity, target_scope_id
 					 FROM legacy_team_setup_draft_projects WHERE attempt_id = ?`,
 				)
 				.all(attemptId) as Array<{
@@ -146,6 +148,7 @@ describe("legacy Team setup activation", () => {
 				source_fingerprint: string;
 				resolution_kind: string;
 				resolved_project_identity: string | null;
+				target_scope_id: string | null;
 			}>
 		).map((row) => ({
 			projectRef: row.project_ref,
@@ -154,6 +157,7 @@ describe("legacy Team setup activation", () => {
 			sourceFingerprint: row.source_fingerprint,
 			deterministicProjectIdentity:
 				row.resolution_kind === "deterministic" ? row.resolved_project_identity : null,
+			targetScopeId: row.target_scope_id,
 		}));
 	}
 
@@ -1357,7 +1361,15 @@ describe("legacy Team setup activation", () => {
 			 workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
 			 ) VALUES (?, 'unmapped:web', 'scope-engineering-2', 1000, 'user', ?, ?)`,
 		).run(PROJECT_B, NOW, NOW);
-		const draft = readyDraft();
+		const current = snapshot();
+		const draft = readyDraft({
+			...current,
+			projects: current.projects.map((project) => ({
+				...project,
+				targetScopeId:
+					project.projectRef === "project-ref-b" ? "scope-engineering-2" : project.targetScopeId,
+			})),
+		});
 
 		// Act
 		const result = await finish(draft);
@@ -2034,7 +2046,7 @@ describe("legacy Team setup activation", () => {
 		).toEqual({ status: "reviewed_active", provenance: "coordinator_invite" });
 	});
 
-	it("invalidates the confirmation when the group's active scope set changes", async () => {
+	it("blocks activation when the reviewed target scope is no longer active", async () => {
 		// Arrange
 		const draft = readyDraft();
 		const review = preview(draft);
@@ -2053,7 +2065,7 @@ describe("legacy Team setup activation", () => {
 		const operation = finish(draft, review);
 
 		// Assert
-		await expect(operation).rejects.toThrow("team_setup_confirmation_stale");
+		await expect(operation).rejects.toThrow("team_setup_conflict");
 		expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
 	});
 
