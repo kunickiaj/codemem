@@ -190,7 +190,8 @@ describe("deriveTeamSyncPrimaryStatus", () => {
 		expect(view).toMatchObject({
 			state: "needs-attention",
 			badgeLabel: "Needs attention",
-			nextAction: "Open Project sharing below and retry setup for Roadmap.",
+			meta: "Team: Acme. A Project access update stopped and needs a retry.",
+			nextAction: "Retry the stopped Project access update below.",
 		});
 	});
 
@@ -207,8 +208,8 @@ describe("deriveTeamSyncPrimaryStatus", () => {
 		expect(view).toMatchObject({
 			state: "needs-attention",
 			badgeLabel: "Needs attention",
-			nextAction:
-				"Open Sharing and use Manage projects for the affected recipient, then run Sync now again.",
+			meta: "Team: Acme. Team access needs review before it can continue.",
+			nextAction: "Open Sharing, review Project access, then sync again.",
 		});
 		expect(view.nextAction).not.toContain("Project sharing below");
 		expect(view.nextAction).not.toContain("git:roadmap");
@@ -220,14 +221,16 @@ describe("deriveTeamSyncPrimaryStatus", () => {
 			coordinator: postedCoordinator,
 			peers: [healthyPeer, { peer_device_id: "peer-pending", status: { peer_state: "waiting" } }],
 			reconciliation: {
-				items: [{ canonicalProjectIdentity: "Roadmap", state: "pending" }],
+				items: [{ canonicalProjectIdentity: "git:roadmap", state: "pending" }],
 			},
 		});
 
 		expect(view).toMatchObject({
 			state: "pending-setup",
 			badgeLabel: "Setup pending",
+			nextAction: expect.stringContaining("the shared Project"),
 		});
+		expect(view.nextAction).not.toContain("git:roadmap");
 	});
 
 	it("keeps a revoking Project operation above healthy sync", () => {
@@ -563,7 +566,7 @@ describe("deriveTeamSyncPrimaryStatus", () => {
 			"unreachable",
 			"Setup needed",
 			"Configure or join a Team before expecting Project data to sync.",
-			"Paste a Team invite below, or configure a coordinator in Advanced settings.",
+			"Paste a Team invite below, or set a coordinator URL in Settings → Device Sync.",
 		],
 	];
 
@@ -1082,7 +1085,7 @@ describe("summarizeSyncRunResult", () => {
 		).toEqual({
 			ok: false,
 			message:
-				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in coordinator administration (legacy), then sync again.",
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in Coordinator Administration, then sync again.",
 			warning: true,
 		});
 	});
@@ -1104,7 +1107,7 @@ describe("summarizeSyncRunResult", () => {
 		).toEqual({
 			ok: false,
 			message:
-				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in coordinator administration (legacy), then sync again.",
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in Coordinator Administration, then sync again.",
 			warning: true,
 		});
 	});
@@ -1127,7 +1130,7 @@ describe("summarizeSyncRunResult", () => {
 		).toEqual({
 			ok: false,
 			message:
-				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in coordinator administration (legacy), then sync again.",
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in Coordinator Administration, then sync again.",
 			warning: true,
 		});
 	});
@@ -1150,7 +1153,7 @@ describe("summarizeSyncRunResult", () => {
 		).toEqual({
 			ok: false,
 			message:
-				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in coordinator administration (legacy), then sync again.",
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in Coordinator Administration, then sync again.",
 			warning: true,
 		});
 	});

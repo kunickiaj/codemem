@@ -358,10 +358,10 @@ function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
 			const proceed = await openSyncConfirmDialog({
 				title: `Sync ${displayName} before advanced rule review?`,
 				description: canReviewLegacySpaces
-					? "This manual sync will use the current Space access and advanced filters until you review them in coordinator administration (legacy)."
-					: "This manual sync will use the current Space access and advanced filters until a coordinator operator reviews them in coordinator administration (legacy).",
+					? "This manual sync will use the current legacy Space access and advanced filters until you review them in Coordinator Administration."
+					: "This manual sync will use the current legacy Space access and advanced filters until a coordinator operator reviews them in Coordinator Administration.",
 				confirmLabel: "Sync anyway",
-				cancelLabel: canReviewLegacySpaces ? "Review legacy coordinator setup first" : "Cancel",
+				cancelLabel: canReviewLegacySpaces ? "Review legacy Team/Space setup first" : "Cancel",
 			});
 			if (!proceed) return;
 		}
@@ -558,8 +558,8 @@ function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
 						{scopeReviewRequested ? (
 							<div className="peer-meta">
 								{canManageSpaces
-									? "Review this device's Space access and advanced rules in coordinator administration (legacy) if the defaults are too broad."
-									: "A coordinator operator can review this device's Space access and advanced rules in coordinator administration (legacy) if the defaults are too broad."}
+									? "Review this device's legacy Space access and advanced rules in Coordinator Administration if the defaults are too broad."
+									: "A coordinator operator can review this device's legacy Space access and advanced rules in Coordinator Administration if the defaults are too broad."}
 							</div>
 						) : pendingScopeReview ? (
 							<div className="peer-meta">
@@ -679,13 +679,13 @@ function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
 									className="settings-button"
 									onClick={openLegacyCoordinatorAdministration}
 								>
-									Open coordinator administration (legacy)
+									Open Coordinator Administration
 								</button>
 							</div>
 						) : (
 							<div className="peer-meta">
-								Legacy Space access is managed in coordinator administration (legacy) by a
-								coordinator operator.
+								Legacy Space access is managed in Coordinator Administration by a coordinator
+								operator.
 							</div>
 						)}
 						<SyncInlineFeedback feedback={feedback} />

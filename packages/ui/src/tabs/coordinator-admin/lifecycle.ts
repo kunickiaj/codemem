@@ -331,7 +331,7 @@ export async function loadCoordinatorAdminData() {
 			state.lastShareOperations = Array.isArray(payload.items) ? payload.items : [];
 		} catch {
 			if (!isCurrent()) return;
-			// Keep the previous read-only reflection; legacy coordinator administration remains usable.
+			// Keep the previous read-only reflection; Coordinator Administration remains usable.
 		}
 		try {
 			const groupsPayload = (await api.loadCoordinatorAdminGroupsFiltered(

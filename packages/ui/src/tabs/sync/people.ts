@@ -165,8 +165,8 @@ export function renderSyncPeers() {
 				} else if (peerId && isPeerScopeReviewPending(peerId)) {
 					const displayName = peer?.name || (peerId ? peerId.slice(0, 8) : "unknown");
 					const reviewGuidance = canManageLegacyCoordinatorSpaces()
-						? "Review Space access and advanced rules in coordinator administration (legacy) if this device needs tighter sharing."
-						: "A coordinator operator can review Space access and advanced rules in coordinator administration (legacy) if this device needs tighter sharing.";
+						? "Review legacy Space access and advanced rules in Coordinator Administration if this device needs tighter sharing."
+						: "A coordinator operator can review legacy Space access and advanced rules in Coordinator Administration if this device needs tighter sharing.";
 					feedback = {
 						message: `Triggered sync for ${displayName}. ${reviewGuidance}`,
 						tone: "warning",

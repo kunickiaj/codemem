@@ -51,11 +51,6 @@ function projectLabel(operation?: ProjectShareOperationLike): string {
 	return cleanText(operation?.projects?.[0]?.display_name) || "the shared Project";
 }
 
-function reconciliationProjectLabel(reconciliation?: RecipientPolicyReconciliationLike): string {
-	const blocked = reconciliation?.items?.find((item) => item.state !== "active");
-	return cleanText(blocked?.canonicalProjectIdentity) || "the shared Project";
-}
-
 function hasTrustBlocker(peers: PeerLike[], coordinator?: CoordinatorLike | null): boolean {
 	if (
 		coordinator?.discovered_devices?.some(
@@ -166,21 +161,19 @@ export function deriveTeamSyncPrimaryStatus(input: {
 		(item) => item.state === "needs_attention",
 	);
 	if (operationAttention) {
-		const project = projectLabel(operationAttention);
 		return {
 			state: "needs-attention",
 			badgeLabel: "Needs attention",
-			meta: `Team: ${label}. Exact-Project setup has not converged, so coordinator presence is not a healthy sync signal.`,
-			nextAction: `Open Project sharing below and retry setup for ${project}.`,
+			meta: `Team: ${label}. A Project access update stopped and needs a retry.`,
+			nextAction: "Retry the stopped Project access update below.",
 		};
 	}
 	if (reconciliationAttention) {
 		return {
 			state: "needs-attention",
 			badgeLabel: "Needs attention",
-			meta: `Team: ${label}. Recipient access has not converged, so coordinator presence is not a healthy sync signal.`,
-			nextAction:
-				"Open Sharing and use Manage projects for the affected recipient, then run Sync now again.",
+			meta: `Team: ${label}. Team access needs review before it can continue.`,
+			nextAction: "Open Sharing, review Project access, then sync again.",
 		};
 	}
 
@@ -193,9 +186,7 @@ export function deriveTeamSyncPrimaryStatus(input: {
 		return state !== undefined && PENDING_RECONCILIATION_STATES.has(state);
 	});
 	if (pendingOperation || pendingReconciliation) {
-		const project = pendingOperation
-			? projectLabel(pendingOperation)
-			: reconciliationProjectLabel(input.reconciliation ?? undefined);
+		const project = pendingOperation ? projectLabel(pendingOperation) : "the shared Project";
 		const primaryAction = pendingOperation?.lifecycle?.primary_action?.kind;
 		const revoking = pendingOperation?.lifecycle?.state === "revoking";
 		return {
@@ -251,7 +242,7 @@ export function deriveTeamSyncPrimaryStatus(input: {
 				: "Configure or join a Team before expecting Project data to sync.",
 			nextAction: coordinator?.configured
 				? "Check the coordinator connection, then refresh Team sync."
-				: "Paste a Team invite below, or configure a coordinator in Advanced settings.",
+				: "Paste a Team invite below, or set a coordinator URL in Settings → Device Sync.",
 		};
 	}
 

@@ -1165,6 +1165,38 @@ describe("legacy Team setup dialog", () => {
 		expect(document.querySelectorAll(".legacy-team-project-select")).toHaveLength(1);
 	});
 
+	it("stacks all Project rows with legends outside their inner grid content", async () => {
+		const projects = Array.from({ length: 12 }, (_, index) =>
+			project({
+				projectRef: `project-ref-${index + 1}`,
+				displayName: `Project ${index + 1} with a very long display name that must wrap inside the dialog`,
+			}),
+		);
+		setup({
+			loadDetail: vi.fn().mockResolvedValue(
+				detail({
+					projects,
+					unresolvedProjectCount: projects.length,
+				}),
+			),
+		});
+
+		const rows = await vi.waitFor(() => {
+			const matches = [
+				...document.querySelectorAll<HTMLFieldSetElement>(".legacy-team-project-row"),
+			];
+			if (matches.length !== projects.length) throw new Error("Project rows missing");
+			return matches;
+		});
+
+		expect(rows).toHaveLength(12);
+		for (const [index, row] of rows.entries()) {
+			expect(row.children[0]?.tagName).toBe("LEGEND");
+			expect(row.children[0]?.textContent).toContain(`Project ${index + 1}`);
+			expect(row.children[1]?.classList.contains("legacy-team-project-row-content")).toBe(true);
+		}
+	});
+
 	it("states that every automatically mapped Project will be included", async () => {
 		// Arrange
 		const deterministic = project({
@@ -1195,11 +1227,9 @@ describe("legacy Team setup dialog", () => {
 		});
 
 		// Assert
+		expect(projectsStep.textContent).toContain("1 of 2 Team Projects need attention.");
 		expect(projectsStep.textContent).toContain(
-			"Automatically mapped Projects are part of this draft and appear in the final access review before activation.",
-		);
-		expect(projectsStep.textContent).toContain(
-			"1 automatic mapping was resolved from server evidence and is listed below for review.",
+			"Review the automatic mappings below before continuing.",
 		);
 		expect(projectsStep.textContent).not.toMatch(/confirm the automatic/i);
 		expect(projectsStep.textContent).not.toContain("1 of 0 Team Projects");

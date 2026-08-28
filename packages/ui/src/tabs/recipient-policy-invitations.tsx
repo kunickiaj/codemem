@@ -575,7 +575,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 						? "Review ready. Confirm before accepting."
 						: result.kind === "project_share_invite"
 							? "Review ready. Confirm the exact Projects before accepting."
-							: "Open Advanced (legacy), then Sync, to review and import this invitation.",
+							: "Open Advanced, then Sync, to review and import this legacy invitation.",
 			);
 		} catch (cause) {
 			if (!isCurrentInspection()) return;
@@ -740,7 +740,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 				>
 					Review invitation
 				</button>
-				<p className="small">Legacy invitation import remains under Advanced (legacy), in Sync.</p>
+				<p className="small">Legacy invitation import remains under Advanced, in Sync.</p>
 			</article>
 			{mode ? (
 				<RadixDialog
@@ -865,7 +865,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 								</div>
 							) : null}
 							{inspected?.kind === "legacy_team_invite" ? (
-								<p>Open Advanced (legacy), then Sync, to review and import this invitation.</p>
+								<p>Open Advanced, then Sync, to review and import this legacy invitation.</p>
 							) : null}
 							<p aria-live="polite" className="small" role="status">
 								{status}

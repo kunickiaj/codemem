@@ -154,7 +154,7 @@ describe("TeamSyncPanel primary status", () => {
 					],
 				},
 				"Needs attention",
-				"retry setup",
+				"Retry the stopped Project access update",
 			],
 			[
 				"trust pending",
@@ -197,7 +197,7 @@ describe("TeamSyncPanel primary status", () => {
 					coordinator: { configured: false, sync_enabled: true, groups: [] },
 				},
 				"Setup needed",
-				"configure a coordinator",
+				"set a coordinator URL",
 			],
 		];
 

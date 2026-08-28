@@ -138,7 +138,7 @@ describe("renderTeamSyncPrimaryStatus", () => {
 				state: "unreachable",
 				badgeLabel: "Setup needed",
 				meta: "Configure or join a Team before expecting Project data to sync.",
-				nextAction: "Configure a coordinator in Advanced settings.",
+				nextAction: "Set a coordinator URL in Settings → Device Sync.",
 			},
 			"sync-online-badge sync-online-error",
 		],

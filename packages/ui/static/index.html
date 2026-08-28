@@ -1352,11 +1352,18 @@
       .legacy-team-device-select { width: 100%; margin: 0; }
       .legacy-team-device-select:disabled { opacity: 0.55; cursor: not-allowed; }
       .legacy-team-device-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
-      .legacy-team-project-list { display: grid; gap: var(--sp-3); margin-top: var(--sp-3); }
-      .legacy-team-project-row {
+      .legacy-team-project-list {
         display: grid;
-        gap: var(--sp-2);
+        grid-template-columns: minmax(0, 1fr);
+        gap: var(--sp-3);
         min-width: 0;
+        margin-top: var(--sp-3);
+      }
+      .legacy-team-project-row {
+        box-sizing: border-box;
+        width: 100%;
+        min-width: 0;
+        max-width: 100%;
         margin: 0;
         padding: var(--sp-3);
         border: 1px solid var(--border);
@@ -1367,9 +1374,18 @@
         padding: 0 var(--sp-1);
         color: var(--text-primary);
         font-weight: var(--font-weight-semibold);
+        overflow-wrap: anywhere;
       }
+      .legacy-team-project-row-content {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: var(--sp-2);
+        min-width: 0;
+        max-width: 100%;
+      }
+      .legacy-team-project-row-content > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
       .legacy-team-project-row label { font-size: var(--font-size-sm); font-weight: var(--font-weight-semibold); }
-      .legacy-team-project-select { width: 100%; margin: 0; }
+      .legacy-team-project-select { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; margin: 0; }
       .legacy-team-project-select:disabled { opacity: 0.55; cursor: not-allowed; }
       .legacy-team-setup-delta { display: grid; gap: var(--sp-3); }
       .legacy-team-setup-review-summary {
@@ -3991,7 +4007,7 @@
       <button class="tab-btn" id="tabBtn-sharing">Sharing</button>
       <button class="tab-btn" id="tabBtn-devices">Devices</button>
       <button class="tab-btn" id="tabBtn-health">Health</button>
-      <button class="tab-btn" id="tabBtn-advanced">Advanced (legacy)</button>
+      <button class="tab-btn" id="tabBtn-advanced">Advanced</button>
     </nav>
     <div id="toastRoot"></div>
     <div id="recipientPolicyManagementMount"></div>
@@ -4347,12 +4363,12 @@
       <div class="card">
         <div class="section-header advanced-legacy-header">
           <div>
-            <h2>Advanced (legacy)</h2>
-            <div class="section-meta">Compatibility and recovery tools for device sync and coordinator administration.</div>
+            <h2>Advanced</h2>
+            <div class="section-meta">Device sync, legacy Team and Space setup, and coordinator administration.</div>
           </div>
           <div class="section-actions" aria-label="Advanced sections" role="group">
             <button class="settings-button" id="advancedSyncButton" type="button" aria-pressed="true">Sync</button>
-            <button class="settings-button" id="advancedTeamsButton" type="button" aria-pressed="false">Coordinator administration (legacy)</button>
+            <button class="settings-button" id="advancedTeamsButton" type="button" aria-pressed="false">Coordinator Administration</button>
           </div>
         </div>
       </div>
@@ -4513,18 +4529,15 @@
             role="note"
           >
             <div class="coordinator-admin-legacy-notice-copy">
-              <h3 id="coordinatorAdminLegacyNoticeTitle" tabindex="-1">Sharing is the supported Team experience</h3>
+              <h3 id="coordinatorAdminLegacyNoticeTitle" tabindex="-1">Looking for Team settings?</h3>
               <div class="peer-submeta">
-                Coordinator groups and Spaces here are legacy technical discovery and transport boundaries, not policy Teams. Changes here do not safely manage Team membership, Project access, Identity, or Team names in Sharing.
-              </div>
-              <div class="peer-submeta">
-                Keep using these controls for compatibility and recovery. Use Sharing for ordinary Team and access administration.
+                Manage Team members, names, and Project access in Sharing. Use this page only for older coordinator groups and Spaces.
               </div>
             </div>
             <button class="settings-button" id="coordinatorAdminOpenSharing" type="button">Open Sharing</button>
           </aside>
           <details class="advanced-administration-disclosure" open>
-            <summary>Advanced coordinator administration (legacy)</summary>
+            <summary>Coordinator Administration</summary>
             <div class="section-meta">Technical coordinator groups, Spaces, enrollment, and recovery controls.</div>
             <div id="coordinatorAdminMount"></div>
           </details>

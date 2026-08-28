@@ -22,12 +22,12 @@ describe("project-first navigation layout", () => {
 		expect(appSource.match(/onOpenTeamSetup: openLegacyTeamSetup/g)).toHaveLength(2);
 	});
 
-	it("orders the visible navigation with Sharing before Advanced (legacy)", () => {
+	it("orders the visible navigation with Sharing before Advanced", () => {
 		const navigation = html.slice(
 			html.indexOf('<nav class="tab-bar"'),
 			html.indexOf("</nav>", html.indexOf('<nav class="tab-bar"')),
 		);
-		const labels = ["Feed", "Projects", "Sharing", "Devices", "Health", "Advanced (legacy)"];
+		const labels = ["Feed", "Projects", "Sharing", "Devices", "Health", "Advanced"];
 		let previous = -1;
 		for (const label of labels) {
 			const index = navigation.indexOf(`>${label}</button>`);
@@ -42,7 +42,7 @@ describe("project-first navigation layout", () => {
 		const advancedTab = html.indexOf('id="tabBtn-advanced"');
 		const sharingMount = html.indexOf('id="recipientPolicySharingMount"');
 		const devicesMount = html.indexOf('id="devicesMount"');
-		const advancedDisclosure = html.indexOf("Advanced coordinator administration (legacy)");
+		const advancedDisclosure = html.indexOf("Coordinator Administration");
 		const coordinatorMount = html.indexOf('id="coordinatorAdminMount"');
 
 		expect(sharingTab).toBeGreaterThan(-1);
@@ -54,7 +54,7 @@ describe("project-first navigation layout", () => {
 		expect(coordinatorMount).toBeGreaterThan(advancedDisclosure);
 	});
 
-	it("reuses Sync and coordinator administration DOM inside the legacy Advanced panel", () => {
+	it("reuses Sync and coordinator administration DOM inside the Advanced panel", () => {
 		const advancedStart = html.indexOf('id="tab-advanced"');
 		const advancedEnd = html.indexOf('<script src="/assets/app.js">', advancedStart);
 		const advanced = html.slice(advancedStart, advancedEnd);
@@ -66,19 +66,21 @@ describe("project-first navigation layout", () => {
 		expect(advanced).toContain('id="coordinatorAdminMount"');
 		expect(advanced).toContain('href="#advanced/sync/diagnostics"');
 		expect(advanced).toContain('href="#advanced/sync"');
+		expect(advanced).toContain("<h2>Advanced</h2>");
+		expect(advanced).toContain(">Coordinator Administration</button>");
+		expect(advanced).toContain("<summary>Coordinator Administration</summary>");
+		expect(advanced).not.toMatch(/(?:Advanced|Coordinator Administration) \(legacy\)/i);
 	});
 
-	it("bounds legacy coordinator administration and directs ordinary Team work to Sharing", () => {
+	it("bounds legacy Team and Space controls and directs ordinary Team work to Sharing", () => {
 		const advancedStart = html.indexOf('id="advancedTeamsContent"');
 		const advancedEnd = html.indexOf("</details>", advancedStart);
 		const advanced = html.slice(advancedStart, advancedEnd);
 
 		expect(advanced).toContain('role="note"');
 		expect(advanced).toContain('aria-labelledby="coordinatorAdminLegacyNoticeTitle"');
-		expect(advanced).toContain("not policy Teams");
-		expect(advanced).toContain(
-			"do not safely manage Team membership, Project access, Identity, or Team names",
-		);
+		expect(advanced).toContain("Looking for Team settings?");
+		expect(advanced).toContain("Manage Team members, names, and Project access in Sharing.");
 		expect(advanced).toContain('id="coordinatorAdminOpenSharing"');
 		expect(advanced).toContain(">Open Sharing</button>");
 		expect(html).toContain('aria-label="Advanced sections" role="group"');
@@ -102,8 +104,24 @@ describe("project-first navigation layout", () => {
 		expect(html).toMatch(
 			/@media \(max-width: 720px\)[\s\S]*\.coordinator-admin-legacy-notice[\s\S]*flex-direction: column/,
 		);
-		expect(html).toContain("Keep using these controls for compatibility and recovery.");
+		expect(html).toContain("Looking for Team settings?");
+		expect(html).toContain(
+			"Manage Team members, names, and Project access in Sharing. Use this page only for older coordinator groups and Spaces.",
+		);
 		expect(html).toContain('id="coordinatorAdminMount"');
+	});
+
+	it("keeps Project fieldset semantics separate from the overflow-safe row grid", () => {
+		const stylesStart = html.indexOf(".legacy-team-project-list {");
+		const stylesEnd = html.indexOf(".legacy-team-setup-delta {", stylesStart);
+		const styles = html.slice(stylesStart, stylesEnd);
+		const fieldsetRule = styles.match(/\.legacy-team-project-row \{([^}]*)\}/)?.[1] ?? "";
+
+		expect(styles).toContain("grid-template-columns: minmax(0, 1fr)");
+		expect(fieldsetRule).not.toContain("display: grid");
+		expect(fieldsetRule).toContain("min-width: 0");
+		expect(styles).toContain(".legacy-team-project-row-content {");
+		expect(styles).toContain("overflow-wrap: anywhere");
 	});
 
 	it("does not present the legacy coordinator surface as ordinary Team administration", () => {
@@ -115,7 +133,7 @@ describe("project-first navigation layout", () => {
 		expect(advanced).not.toContain("Manage Team membership");
 	});
 
-	it("labels legacy coordinator destinations consistently across Advanced Sync", () => {
+	it("keeps Coordinator Administration current while labeling legacy Team and Space work", () => {
 		const advancedSyncSources = [
 			syncPeersSource,
 			syncPeopleSource,
@@ -124,7 +142,8 @@ describe("project-first navigation layout", () => {
 			coordinatorApprovalSource,
 		].join("\n");
 
-		expect(advancedSyncSources).toContain("coordinator administration (legacy)");
+		expect(advancedSyncSources).toContain("Coordinator Administration");
+		expect(advancedSyncSources).not.toMatch(/(?:Advanced|Coordinator Administration) \(legacy\)/i);
 		for (const forbidden of [
 			"Manage Spaces in Teams",
 			"Review Space access for this device in Teams",
@@ -164,6 +183,7 @@ describe("project-first navigation layout", () => {
 
 		expect(navigation).not.toContain('id="tabBtn-sync"');
 		expect(navigation).not.toContain('id="tabBtn-coordinator-admin"');
+		expect(navigation).not.toContain("(legacy)");
 		for (const forbidden of [
 			"scope",
 			"grant",

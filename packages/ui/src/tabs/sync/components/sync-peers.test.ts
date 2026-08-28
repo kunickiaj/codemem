@@ -28,13 +28,13 @@ afterEach(() => {
 });
 
 describe("canManageLegacyCoordinatorSpaces", () => {
-	it("allows legacy coordinator administration only for ready admin devices", () => {
+	it("allows Coordinator Administration only for ready admin devices", () => {
 		expect(canManageLegacyCoordinatorSpaces({ has_admin_secret: true, readiness: "ready" })).toBe(
 			true,
 		);
 	});
 
-	it("blocks legacy coordinator administration when admin capability is absent", () => {
+	it("blocks Coordinator Administration when admin capability is absent", () => {
 		expect(canManageLegacyCoordinatorSpaces({ has_admin_secret: false, readiness: "ready" })).toBe(
 			false,
 		);
@@ -157,7 +157,7 @@ describe("Advanced device Identity ownership", () => {
 		expect(mount.querySelector('[aria-label^="Assigned person"]')).toBeNull();
 	});
 
-	it("routes legacy coordinator administration through the canonical Advanced hash", () => {
+	it("routes Coordinator Administration through the canonical Advanced hash", () => {
 		document.body.innerHTML = '<div id="mount"></div>';
 		state.lastSyncCoordinatorAdminStatus = { has_admin_secret: true, readiness: "ready" };
 		const mount = document.getElementById("mount");
@@ -174,9 +174,9 @@ describe("Advanced device Identity ownership", () => {
 		if (!disclosure) throw new Error("peer disclosure missing");
 		if (disclosure.getAttribute("aria-expanded") === "false") act(() => disclosure.click());
 		const adminButton = [...mount.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
-			button.textContent?.includes("coordinator administration (legacy)"),
+			button.textContent?.includes("Coordinator Administration"),
 		);
-		if (!adminButton) throw new Error("legacy coordinator administration action missing");
+		if (!adminButton) throw new Error("Coordinator Administration action missing");
 
 		act(() => adminButton.click());
 
