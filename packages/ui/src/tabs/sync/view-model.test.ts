@@ -190,7 +190,7 @@ describe("deriveTeamSyncPrimaryStatus", () => {
 		expect(view).toMatchObject({
 			state: "needs-attention",
 			badgeLabel: "Needs attention",
-			nextAction: "Open Project sharing below and retry setup for Roadmap.",
+			nextAction: "Retry setup for Roadmap.",
 		});
 	});
 
@@ -207,8 +207,7 @@ describe("deriveTeamSyncPrimaryStatus", () => {
 		expect(view).toMatchObject({
 			state: "needs-attention",
 			badgeLabel: "Needs attention",
-			nextAction:
-				"Open Sharing and use Manage projects for the affected recipient, then run Sync now again.",
+			nextAction: "Open Sharing, review Project access, then sync again.",
 		});
 		expect(view.nextAction).not.toContain("Project sharing below");
 		expect(view.nextAction).not.toContain("git:roadmap");
@@ -1082,7 +1081,7 @@ describe("summarizeSyncRunResult", () => {
 		).toEqual({
 			ok: false,
 			message:
-				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in coordinator administration (legacy), then sync again.",
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in Coordinator Administration, then sync again.",
 			warning: true,
 		});
 	});
@@ -1104,7 +1103,7 @@ describe("summarizeSyncRunResult", () => {
 		).toEqual({
 			ok: false,
 			message:
-				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in coordinator administration (legacy), then sync again.",
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in Coordinator Administration, then sync again.",
 			warning: true,
 		});
 	});
@@ -1127,7 +1126,7 @@ describe("summarizeSyncRunResult", () => {
 		).toEqual({
 			ok: false,
 			message:
-				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in coordinator administration (legacy), then sync again.",
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in Coordinator Administration, then sync again.",
 			warning: true,
 		});
 	});
@@ -1150,7 +1149,7 @@ describe("summarizeSyncRunResult", () => {
 		).toEqual({
 			ok: false,
 			message:
-				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in coordinator administration (legacy), then sync again.",
+				"Sync ran, but the peer is not authorized for one or more Spaces. Review legacy Space access for this device in Coordinator Administration, then sync again.",
 			warning: true,
 		});
 	});

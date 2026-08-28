@@ -31,13 +31,13 @@ export function applySyncInviteReadinessState() {
 		syncCreateInviteButton.disabled = false;
 		hint.hidden = false;
 		hint.textContent =
-			"Legacy coordinator setup is ready. Technical controls are in coordinator administration (legacy).";
+			"Legacy Team/Space setup is ready. Technical controls are in Coordinator Administration.";
 		return;
 	}
 	const message =
 		readiness === "partial"
-			? "Finish legacy coordinator setup before creating remote invites. Use coordinator administration (legacy) to check what is missing."
-			: "Configure a coordinator URL, group, and admin secret before creating remote invites. Use coordinator administration (legacy) to finish setup.";
+			? "Finish legacy Team/Space setup before creating remote invites. Use Coordinator Administration to check what is missing."
+			: "Configure a coordinator URL, group, and admin secret before creating remote invites. Use Coordinator Administration to finish legacy Team/Space setup.";
 	syncCreateInviteButton.disabled = true;
 	hint.hidden = false;
 	hint.textContent = message;

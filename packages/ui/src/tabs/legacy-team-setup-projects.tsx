@@ -94,47 +94,49 @@ function ProjectRow({
 			tabIndex={project.resolution === "unresolved" ? -1 : undefined}
 		>
 			<legend>{project.displayName}</legend>
-			{project.resolution === "deterministic" ? (
-				<p className="small">Mapped automatically from matching Project evidence.</p>
-			) : (
-				<>
-					<p className="small">
-						{savedName ? `Saved mapping: ${savedName}` : "This Project still needs a mapping."}
-					</p>
-					<label htmlFor={controlId}>Canonical Project</label>
-					<select
-						aria-describedby={controlDescription || undefined}
-						className="feed-search legacy-team-project-select"
-						disabled={controlsBlocked}
-						id={controlId}
-						onChange={(event) => setDraftMapping(event.currentTarget.value)}
-						value={draftMapping}
-					>
-						<option value="">Choose a Project</option>
-						{choices.map((choice) => (
-							<option key={choice.resolvedProjectRef} value={choice.token}>
-								{choice.label}
-							</option>
-						))}
-					</select>
-					{!draftMapping ? (
-						<p className="small" id={helpId}>
-							Choose and save one of the server-provided Project mappings.
+			<div className="legacy-team-project-row-content">
+				{project.resolution === "deterministic" ? (
+					<p className="small">Mapped automatically from matching Project evidence.</p>
+				) : (
+					<>
+						<p className="small">
+							{savedName ? `Saved mapping: ${savedName}` : "This Project still needs a mapping."}
 						</p>
-					) : null}
-					<button
-						aria-describedby={controlDescription || undefined}
-						aria-disabled={saveBlocked ? "true" : undefined}
-						className="settings-button legacy-team-setup-target"
-						onClick={() => {
-							if (!saveBlocked && selectedMapping) onMap(project, selectedMapping);
-						}}
-						type="button"
-					>
-						Save mapping
-					</button>
-				</>
-			)}
+						<label htmlFor={controlId}>Canonical Project</label>
+						<select
+							aria-describedby={controlDescription || undefined}
+							className="feed-search legacy-team-project-select"
+							disabled={controlsBlocked}
+							id={controlId}
+							onChange={(event) => setDraftMapping(event.currentTarget.value)}
+							value={draftMapping}
+						>
+							<option value="">Choose a Project</option>
+							{choices.map((choice) => (
+								<option key={choice.resolvedProjectRef} value={choice.token}>
+									{choice.label}
+								</option>
+							))}
+						</select>
+						{!draftMapping ? (
+							<p className="small" id={helpId}>
+								Choose and save one of the server-provided Project mappings.
+							</p>
+						) : null}
+						<button
+							aria-describedby={controlDescription || undefined}
+							aria-disabled={saveBlocked ? "true" : undefined}
+							className="settings-button legacy-team-setup-target"
+							onClick={() => {
+								if (!saveBlocked && selectedMapping) onMap(project, selectedMapping);
+							}}
+							type="button"
+						>
+							Save mapping
+						</button>
+					</>
+				)}
+			</div>
 		</fieldset>
 	);
 }
@@ -154,16 +156,12 @@ export function LegacyTeamSetupProjects(props: LegacyTeamSetupProjectsProps) {
 				Review Projects
 			</h3>
 			<p>
-				{props.detail.unresolvedProjectCount.toLocaleString()} of {projectCount.toLocaleString()}{" "}
-				Team Projects still need a mapping.
+				{props.detail.unresolvedProjectCount === 0
+					? `All ${projectCount.toLocaleString()} Team Projects are mapped.`
+					: `${props.detail.unresolvedProjectCount.toLocaleString()} of ${projectCount.toLocaleString()} Team Projects need attention.`}
 			</p>
 			{automaticallyMappedCount > 0 ? (
-				<p className="small">
-					Automatically mapped Projects are part of this draft and appear in the final access review
-					before activation. The {automaticallyMappedCount.toLocaleString()} automatic{" "}
-					{automaticallyMappedCount === 1 ? "mapping was" : "mappings were"} resolved from server
-					evidence and {automaticallyMappedCount === 1 ? "is" : "are"} listed below for review.
-				</p>
+				<p className="small">Review the automatic mappings below before continuing.</p>
 			) : null}
 			<div className="legacy-team-project-list">
 				{props.detail.projects.map((project, index) => (

@@ -170,17 +170,16 @@ export function deriveTeamSyncPrimaryStatus(input: {
 		return {
 			state: "needs-attention",
 			badgeLabel: "Needs attention",
-			meta: `Team: ${label}. Exact-Project setup has not converged, so coordinator presence is not a healthy sync signal.`,
-			nextAction: `Open Project sharing below and retry setup for ${project}.`,
+			meta: `Team: ${label}. Project setup is still updating.`,
+			nextAction: `Retry setup for ${project}.`,
 		};
 	}
 	if (reconciliationAttention) {
 		return {
 			state: "needs-attention",
 			badgeLabel: "Needs attention",
-			meta: `Team: ${label}. Recipient access has not converged, so coordinator presence is not a healthy sync signal.`,
-			nextAction:
-				"Open Sharing and use Manage projects for the affected recipient, then run Sync now again.",
+			meta: `Team: ${label}. Team access is still updating.`,
+			nextAction: "Open Sharing, review Project access, then sync again.",
 		};
 	}
 
