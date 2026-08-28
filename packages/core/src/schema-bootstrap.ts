@@ -367,6 +367,7 @@ CREATE TABLE IF NOT EXISTS legacy_team_setup_draft_projects (
 	source_fingerprint TEXT NOT NULL,
 	resolution_kind TEXT NOT NULL DEFAULT 'unresolved',
 	resolved_project_identity TEXT,
+	target_scope_id TEXT,
 	updated_at TEXT NOT NULL,
 	PRIMARY KEY (attempt_id, project_ref)
 );
@@ -395,6 +396,7 @@ export function ensureLegacyTeamSetupDraftSchema(db: Database): void {
 		["legacy_team_setup_drafts", "safe_error_code", "TEXT"],
 		["legacy_team_setup_drafts", "completed_team_id", "TEXT"],
 		["legacy_team_setup_draft_devices", "verified_evidence_kind", "TEXT"],
+		["legacy_team_setup_draft_projects", "target_scope_id", "TEXT"],
 	] as const) {
 		if (!columnExists(db, table, column)) {
 			db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);

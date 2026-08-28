@@ -117,6 +117,36 @@ describe("legacy Team candidate discovery", () => {
 		);
 	});
 
+	it("keeps the synthetic shared fallback outside Team setup inventory", () => {
+		const sessionId = Number(
+			db
+				.prepare(
+					`INSERT INTO sessions(started_at, project, git_remote, git_branch)
+					 VALUES (?, 'legacy shared', NULL, NULL)`,
+				)
+				.run(NOW).lastInsertRowid,
+		);
+		db.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, active, created_at, updated_at,
+				visibility, workspace_id, project, scope_id
+			 ) VALUES (?, 'discovery', 'legacy shared', 'body', 1, ?, ?,
+				'shared', 'shared:default', 'legacy shared', 'scope-api')`,
+		).run(sessionId, NOW, NOW);
+
+		const [candidate] = discoverLegacyTeamCandidates(db, options());
+
+		expect(candidate?.projectCount).toBe(1);
+		expect(
+			db
+				.prepare(
+					"SELECT COUNT(*) FROM legacy_team_setup_draft_projects WHERE source_project_identity = 'shared:default'",
+				)
+				.pluck()
+				.get(),
+		).toBe(0);
+	});
+
 	it("rejects malformed discovery identities without hiding independent valid groups", () => {
 		const input = options();
 		const validGroup = input.groups[0];
@@ -1476,7 +1506,7 @@ describe("legacy Team candidate discovery", () => {
 		}
 	});
 
-	it("keeps Ready when a group exposes multiple scopes and mappings use their own", () => {
+	it("requires setup when Project evidence spans multiple group scopes", () => {
 		db.prepare(
 			`INSERT INTO replication_scopes(
 				scope_id, label, kind, authority_type, coordinator_id, group_id,
@@ -1486,7 +1516,7 @@ describe("legacy Team candidate discovery", () => {
 		).run(NOW, NOW);
 		// The confirmed mapping targets the second scope of the same group.
 		db.prepare("UPDATE project_scope_mappings SET scope_id = 'scope-api-second'").run();
-		runExcludedCompletionScenario(() => undefined, "ready");
+		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("needs_setup");
 	});
 
 	it("keeps Ready when an invite-owned decision is preserved outside the draft", () => {

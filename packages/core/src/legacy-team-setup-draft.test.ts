@@ -36,6 +36,7 @@ function snapshot(overrides: { fingerprint?: string; deviceName?: string } = {})
 				displayName: "Repo A",
 				sourceFingerprint: "source-a",
 				deterministicProjectIdentity: "https://example.invalid/repo-a.git",
+				targetScopeId: "scope-draft",
 			},
 			{
 				projectRef: "project-ref-b",
@@ -43,6 +44,7 @@ function snapshot(overrides: { fingerprint?: string; deviceName?: string } = {})
 				displayName: "Repo B",
 				sourceFingerprint: "source-b",
 				deterministicProjectIdentity: null,
+				targetScopeId: "scope-draft",
 			},
 		],
 		now: NOW,
@@ -68,11 +70,12 @@ function projects(count: number) {
 		displayName: `Project ${index}`,
 		sourceFingerprint: `source-${index}`,
 		deterministicProjectIdentity: `https://example.invalid/repo-${index}.git`,
+		targetScopeId: "scope-draft",
 	}));
 }
 
-function readyDraft(db: InstanceType<typeof Database>) {
-	let draft = refreshLegacyTeamSetupDraft(db, snapshot());
+function readyDraft(db: InstanceType<typeof Database>, input = snapshot()) {
+	let draft = refreshLegacyTeamSetupDraft(db, input);
 	const device = draft.devices[0];
 	if (!device) throw new Error("invalid test fixture");
 	draft = setLegacyTeamSetupDeviceAssignment(db, {
@@ -1779,18 +1782,6 @@ describe("legacy Team setup drafts", () => {
 			},
 		],
 		[
-			"a new mapping is ambiguous across active scopes",
-			() => {
-				db.prepare(
-					`INSERT INTO replication_scopes(
-					 scope_id, label, kind, authority_type, coordinator_id, group_id,
-					 membership_epoch, status, created_at, updated_at
-					 ) VALUES ('scope-draft-2', 'Engineering 2', 'managed_project', 'coordinator',
-					 'coordinator-private', 'group-private', 1, 'active', ?, ?)`,
-				).run(NOW, NOW);
-			},
-		],
-		[
 			"a foreign mapping conflicts with the source pattern",
 			() => {
 				db.prepare(
@@ -1828,9 +1819,39 @@ describe("legacy Team setup drafts", () => {
 	] as const)("reports canFinish false when %s", (_label, createConflict) => {
 		createConflict();
 
-		const draft = readyDraft(db);
+		const current = snapshot();
+		const draft = readyDraft(db, {
+			...current,
+			projects: current.projects.map((project) => ({
+				...project,
+				targetScopeId:
+					project.projectRef === "project-ref-b" ? "scope-draft-2" : project.targetScopeId,
+			})),
+		});
 
 		expect(draft.canFinish).toBe(false);
+	});
+
+	it("permits Review with multiple active scopes when every Project has unique target evidence", () => {
+		db.prepare(
+			`INSERT INTO replication_scopes(
+			 scope_id, label, kind, authority_type, coordinator_id, group_id,
+			 membership_epoch, status, created_at, updated_at
+			 ) VALUES ('scope-draft-2', 'Engineering 2', 'managed_project', 'coordinator',
+			 'coordinator-private', 'group-private', 1, 'active', ?, ?)`,
+		).run(NOW, NOW);
+
+		expect(readyDraft(db).canFinish).toBe(true);
+	});
+
+	it("blocks Review when a Project has no unique target scope evidence", () => {
+		const current = snapshot();
+		const input = {
+			...current,
+			projects: current.projects.map((project) => ({ ...project, targetScopeId: null })),
+		};
+
+		expect(readyDraft(db, input).canFinish).toBe(false);
 	});
 
 	it("keeps canFinish true for selected mappings across scopes and a direct Identity recipient", () => {
@@ -1868,7 +1889,15 @@ describe("legacy Team setup drafts", () => {
 			 'active', 'user', 'r1', 'completed', 'direct-identity-recipient', ?, ?)`,
 		).run(NOW, NOW);
 
-		const draft = readyDraft(db);
+		const current = snapshot();
+		const draft = readyDraft(db, {
+			...current,
+			projects: current.projects.map((project) => ({
+				...project,
+				targetScopeId:
+					project.projectRef === "project-ref-b" ? "scope-draft-2" : project.targetScopeId,
+			})),
+		});
 
 		expect(draft.canFinish).toBe(true);
 	});

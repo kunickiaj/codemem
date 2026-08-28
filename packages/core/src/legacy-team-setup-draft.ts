@@ -50,6 +50,8 @@ export interface LegacyTeamSetupProjectInput {
 	displayName: string;
 	sourceFingerprint: string;
 	deterministicProjectIdentity: string | null;
+	/** Unique active coordinator scope evidenced for this Project and candidate. */
+	targetScopeId?: string | null;
 }
 
 export interface LegacyTeamSetupDraftSnapshotInput {
@@ -142,6 +144,7 @@ interface ProjectRow {
 	source_fingerprint: string;
 	resolution_kind: LegacyTeamProjectResolution;
 	resolved_project_identity: string | null;
+	target_scope_id: string | null;
 }
 
 function projectCanonicalStateValid(
@@ -188,6 +191,24 @@ function projectCanonicalStateValid(
 		scope_id: string;
 		source: string | null;
 	}>;
+	const targetScopeIdFor = (project: ProjectRow): string | null => {
+		if (project.target_scope_id) {
+			return scopeIds.includes(project.target_scope_id) ? project.target_scope_id : null;
+		}
+		const matchingScopeIds = [
+			...new Set(
+				mappings
+					.filter(
+						(mapping) =>
+							mapping.project_pattern === project.source_project_identity &&
+							mapping.workspace_identity === project.resolved_project_identity &&
+							scopeIds.includes(mapping.scope_id),
+					)
+					.map((mapping) => mapping.scope_id),
+			),
+		];
+		return matchingScopeIds.length === 1 ? (matchingScopeIds[0] ?? null) : null;
+	};
 	const recipients =
 		resolvedProjectIdentities.length === 0
 			? []
@@ -212,6 +233,7 @@ function projectCanonicalStateValid(
 		projects: projects.map((project) => ({
 			sourceProjectIdentity: project.source_project_identity,
 			resolvedProjectIdentity: project.resolved_project_identity,
+			targetScopeId: targetScopeIdFor(project),
 		})),
 		mappings: mappings.map((mapping) => ({
 			workspaceIdentity: mapping.workspace_identity,
@@ -319,6 +341,7 @@ function setupLabelForbiddenIds(
 		sourceProjectIdentity: string;
 		sourceFingerprint: string;
 		resolvedProjectIdentity: string | null;
+		targetScopeId: string | null;
 	}>,
 ): ReadonlySet<string> {
 	return new Set(
@@ -341,12 +364,14 @@ function setupLabelForbiddenIds(
 				project.sourceProjectIdentity,
 				project.sourceFingerprint,
 				project.deterministicProjectIdentity ?? "",
+				project.targetScopeId ?? "",
 			]),
 			...persistedProjects.flatMap((project) => [
 				project.projectRef,
 				project.sourceProjectIdentity,
 				project.sourceFingerprint,
 				project.resolvedProjectIdentity ?? "",
+				project.targetScopeId ?? "",
 			]),
 		]
 			.map(labelComparisonForm)
@@ -458,12 +483,13 @@ function storedAssignmentRowMatchesLive(
  */
 export function legacyTeamProjectionFingerprint(projects: LegacyTeamSetupProjectInput[]): string {
 	return recipientPolicyDigest(
-		"legacy-team-project-inventory-v1",
+		"legacy-team-project-inventory-v2",
 		projects
 			.map((project) => ({
 				projectRef: project.projectRef,
 				sourceFingerprint: project.sourceFingerprint,
 				deterministicProjectIdentity: project.deterministicProjectIdentity,
+				targetScopeId: project.targetScopeId ?? null,
 			}))
 			.toSorted((left, right) => compareCodepoints(left.projectRef, right.projectRef)),
 	);
@@ -514,7 +540,7 @@ function createAttempt(
 		? (db
 				.prepare(
 					`SELECT project_ref, source_project_identity, display_name, source_fingerprint,
-					        resolution_kind, resolved_project_identity
+					        resolution_kind, resolved_project_identity, target_scope_id
 					 FROM legacy_team_setup_draft_projects WHERE attempt_id = ?`,
 				)
 				.all(previousAttemptId) as ProjectRow[])
@@ -565,6 +591,7 @@ function createAttempt(
 			sourceProjectIdentity: project.source_project_identity,
 			sourceFingerprint: project.source_fingerprint,
 			resolvedProjectIdentity: project.resolved_project_identity,
+			targetScopeId: project.target_scope_id,
 		})),
 	);
 	db.prepare(
@@ -646,20 +673,29 @@ function createAttempt(
 	const previousByProject = new Map(
 		previousProjects.map((project) => [project.project_ref, project]),
 	);
+	const activeGroupScopeIds = db
+		.prepare(
+			`SELECT scope_id FROM replication_scopes
+			 WHERE coordinator_id = ? AND group_id = ? AND status = 'active'
+			 ORDER BY scope_id`,
+		)
+		.pluck()
+		.all(input.coordinatorId, input.groupId) as string[];
 	const insertProject = db.prepare(
 		`INSERT INTO legacy_team_setup_draft_projects(
 			attempt_id, project_ref, source_project_identity, display_name, source_fingerprint,
-			resolution_kind, resolved_project_identity, updated_at
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			resolution_kind, resolved_project_identity, target_scope_id, updated_at
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	);
 	for (const project of input.projects) {
 		const previous = previousByProject.get(project.projectRef);
-		const resolution = project.deterministicProjectIdentity
-			? "deterministic"
-			: previous?.source_fingerprint === project.sourceFingerprint &&
-					previous.resolution_kind === "explicit"
-				? "explicit"
-				: "unresolved";
+		const resolution =
+			project.deterministicProjectIdentity && project.targetScopeId
+				? "deterministic"
+				: previous?.source_fingerprint === project.sourceFingerprint &&
+						previous.resolution_kind === "explicit"
+					? "explicit"
+					: "unresolved";
 		insertProject.run(
 			attemptId,
 			project.projectRef,
@@ -667,8 +703,14 @@ function createAttempt(
 			safeLabel(project.displayName, "Project", forbiddenIds),
 			project.sourceFingerprint,
 			resolution,
-			project.deterministicProjectIdentity ??
-				(resolution === "explicit" ? previous?.resolved_project_identity : null),
+			resolution === "deterministic"
+				? project.deterministicProjectIdentity
+				: resolution === "explicit"
+					? previous?.resolved_project_identity
+					: null,
+			project.targetScopeId === undefined && activeGroupScopeIds.length === 1
+				? (activeGroupScopeIds[0] ?? null)
+				: (project.targetScopeId ?? null),
 			now,
 		);
 	}
@@ -708,7 +750,7 @@ function loadDraftView(db: Database, attemptId: string): LegacyTeamSetupDraftVie
 	const projectRows = db
 		.prepare(
 			`SELECT project_ref, source_project_identity, display_name, source_fingerprint, resolution_kind,
-			        resolved_project_identity
+			        resolved_project_identity, target_scope_id
 			 FROM legacy_team_setup_draft_projects WHERE attempt_id = ? ORDER BY project_ref`,
 		)
 		.all(attemptId) as ProjectRow[];
@@ -763,6 +805,7 @@ function loadDraftView(db: Database, attemptId: string): LegacyTeamSetupDraftVie
 			projectRef: row.project_ref,
 			resolution: row.resolution_kind,
 			resolvedProjectIdentity: row.resolved_project_identity,
+			targetScopeId: row.target_scope_id,
 		})),
 	});
 	const reviewComplete =
@@ -899,6 +942,24 @@ export function refreshLegacyTeamSetupDraft(
 	requireLegacyTeamSetupSnapshotWithinLimits(input);
 	const now = validatedNow(input.now);
 	const refresh = db.transaction(() => {
+		const activeGroupScopeIds = db
+			.prepare(
+				`SELECT scope_id FROM replication_scopes
+				 WHERE coordinator_id = ? AND group_id = ? AND status = 'active'
+				 ORDER BY scope_id`,
+			)
+			.pluck()
+			.all(input.coordinatorId, input.groupId) as string[];
+		const normalizedInput: LegacyTeamSetupDraftSnapshotInput = {
+			...input,
+			projects: input.projects.map((project) => ({
+				...project,
+				targetScopeId:
+					project.targetScopeId === undefined && activeGroupScopeIds.length === 1
+						? (activeGroupScopeIds[0] ?? null)
+						: (project.targetScopeId ?? null),
+			})),
+		};
 		const existing = currentDraft(db, input.candidateId);
 		requireLegacyTeamSetupEffectiveDevicesWithinLimit(
 			db,
@@ -919,7 +980,7 @@ export function refreshLegacyTeamSetupDraft(
 			identityId: assignment?.active ? assignment.identityId : null,
 		}));
 		const rosterFingerprint = legacyTeamRosterFingerprint(assignments);
-		const projectFingerprint = legacyTeamProjectionFingerprint(input.projects);
+		const projectFingerprint = legacyTeamProjectionFingerprint(normalizedInput.projects);
 		if (
 			existing &&
 			(existing.state === "needs_setup" || existing.state === "in_progress") &&
@@ -927,7 +988,7 @@ export function refreshLegacyTeamSetupDraft(
 			existing.projection_fingerprint === projectFingerprint &&
 			storedAssignmentEvidenceMatches(db, existing.attempt_id, assignmentSnapshots)
 		) {
-			return refreshLegacyTeamSetupDraftLabels(db, existing.attempt_id, input);
+			return refreshLegacyTeamSetupDraftLabels(db, existing.attempt_id, normalizedInput);
 		}
 		if (existing && (existing.state === "needs_setup" || existing.state === "in_progress")) {
 			db.prepare(
@@ -945,7 +1006,7 @@ export function refreshLegacyTeamSetupDraft(
 		}
 		const attemptId = createAttempt(
 			db,
-			input,
+			normalizedInput,
 			rosterFingerprint,
 			projectFingerprint,
 			existing?.attempt_id ?? null,
@@ -1007,7 +1068,7 @@ export function refreshLegacyTeamSetupDraftLabels(
 		const persistedProjects = db
 			.prepare(
 				`SELECT project_ref, source_project_identity, display_name, source_fingerprint,
-				        resolved_project_identity
+				        resolved_project_identity, target_scope_id
 				 FROM legacy_team_setup_draft_projects WHERE attempt_id = ?`,
 			)
 			.all(attemptId) as Array<{
@@ -1016,6 +1077,7 @@ export function refreshLegacyTeamSetupDraftLabels(
 			display_name: string;
 			source_fingerprint: string;
 			resolved_project_identity: string | null;
+			target_scope_id: string | null;
 		}>;
 		const forbiddenIds = setupLabelForbiddenIds(
 			[...contextIds, ...liveAssignmentIds],
@@ -1034,6 +1096,7 @@ export function refreshLegacyTeamSetupDraftLabels(
 				sourceProjectIdentity: project.source_project_identity,
 				sourceFingerprint: project.source_fingerprint,
 				resolvedProjectIdentity: project.resolved_project_identity,
+				targetScopeId: project.target_scope_id,
 			})),
 		);
 		const result = db
@@ -1334,11 +1397,19 @@ export function setLegacyTeamSetupProjectMapping(
 		requireMutableAttempt(db, input.attemptId);
 		const project = db
 			.prepare(
-				`SELECT resolution_kind FROM legacy_team_setup_draft_projects
-				 WHERE attempt_id = ? AND project_ref = ?`,
+				`SELECT project.resolution_kind, project.target_scope_id,
+				        draft.coordinator_id, draft.group_id
+				 FROM legacy_team_setup_draft_projects project
+				 JOIN legacy_team_setup_drafts draft ON draft.attempt_id = project.attempt_id
+				 WHERE project.attempt_id = ? AND project.project_ref = ?`,
 			)
 			.get(input.attemptId, input.projectRef) as
-			| { resolution_kind: LegacyTeamProjectResolution }
+			| {
+					resolution_kind: LegacyTeamProjectResolution;
+					target_scope_id: string | null;
+					coordinator_id: string;
+					group_id: string;
+			  }
 			| undefined;
 		if (!project) throw new Error("legacy_team_setup_project_not_found");
 		// Explicit repair is only for ambiguous Projects; a deterministic source
@@ -1346,13 +1417,27 @@ export function setLegacyTeamSetupProjectMapping(
 		if (project.resolution_kind === "deterministic") {
 			throw new Error("legacy_team_setup_project_not_ambiguous");
 		}
+		const mappedScopeIds = db
+			.prepare(
+				`SELECT DISTINCT mapping.scope_id
+				 FROM project_scope_mappings mapping
+				 JOIN replication_scopes scope ON scope.scope_id = mapping.scope_id
+				 WHERE mapping.workspace_identity = ?
+				   AND scope.coordinator_id = ? AND scope.group_id = ? AND scope.status = 'active'
+				 ORDER BY mapping.scope_id`,
+			)
+			.pluck()
+			.all(identity, project.coordinator_id, project.group_id) as string[];
+		const targetScopeId =
+			project.target_scope_id ?? (mappedScopeIds.length === 1 ? (mappedScopeIds[0] ?? null) : null);
 		const result = db
 			.prepare(
 				`UPDATE legacy_team_setup_draft_projects
-				 SET resolution_kind = 'explicit', resolved_project_identity = ?, updated_at = ?
+				 SET resolution_kind = 'explicit', resolved_project_identity = ?, target_scope_id = ?,
+				     updated_at = ?
 				 WHERE attempt_id = ? AND project_ref = ?`,
 			)
-			.run(identity, now, input.attemptId, input.projectRef);
+			.run(identity, targetScopeId, now, input.attemptId, input.projectRef);
 		if (result.changes !== 1) throw new Error("legacy_team_setup_project_not_found");
 		db.prepare(
 			`UPDATE legacy_team_setup_drafts SET state = 'in_progress', updated_at = ? WHERE attempt_id = ?`,

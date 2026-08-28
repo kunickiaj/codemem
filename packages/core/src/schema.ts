@@ -1264,6 +1264,7 @@ export const legacyTeamSetupDraftProjects = sqliteTable(
 		source_fingerprint: text("source_fingerprint").notNull(),
 		resolution_kind: text("resolution_kind").notNull().default("unresolved"),
 		resolved_project_identity: text("resolved_project_identity"),
+		target_scope_id: text("target_scope_id"),
 		updated_at: text("updated_at").notNull(),
 	},
 	(table) => [

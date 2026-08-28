@@ -177,6 +177,10 @@ export interface ListLegacyRecipientPolicyProjectionsOptions {
 export interface LegacyTeamProjectEvidence {
 	project: RecipientPolicyProjectV1;
 	teamCandidateIds: string[];
+	teamCandidateScopes: Array<{
+		teamCandidateId: string;
+		targetScopeId: string | null;
+	}>;
 	sourceFingerprint: string;
 	deterministicProjectIdentity: string | null;
 }
@@ -1179,15 +1183,35 @@ export function listLegacyTeamProjectEvidence(
 		const projectShareOperations = snapshot.shareOperations.filter(
 			(operation) => operation.canonicalProjectIdentity === project.canonicalIdentity,
 		);
+		const candidates = teamCandidates(relevantScopes, projectShareOperations, snapshot.scopes);
+		const teamCandidateScopes = candidates.map((candidate) => {
+			const matchingScopeIds = uniqueSorted(
+				relevantScopes
+					.filter(
+						(scope) =>
+							scope.authorityType === "coordinator" &&
+							scope.coordinatorId != null &&
+							scope.groupId != null &&
+							legacyTeamCandidateId(scope.coordinatorId, scope.groupId) ===
+								candidate.teamCandidateId,
+					)
+					.map((scope) => scope.scopeId),
+			);
+			return {
+				teamCandidateId: candidate.teamCandidateId,
+				// A Project can authorize one reviewed boundary only. Missing or
+				// contradictory scope evidence stays explicit and fails closed later.
+				targetScopeId: matchingScopeIds.length === 1 ? (matchingScopeIds[0] ?? null) : null,
+			};
+		});
 		return {
 			project: projection.project,
-			teamCandidateIds: teamCandidates(relevantScopes, projectShareOperations, snapshot.scopes).map(
-				(candidate) => candidate.teamCandidateId,
-			),
+			teamCandidateIds: candidates.map((candidate) => candidate.teamCandidateId),
+			teamCandidateScopes,
 			// Hash only stable identifiers and enforcement facts. Display labels
 			// and row timestamps refresh independently and are not security
 			// evidence, so they must not invalidate open setup drafts.
-			sourceFingerprint: recipientPolicyDigest("legacy-team-project-source-v1", {
+			sourceFingerprint: recipientPolicyDigest("legacy-team-project-source-v2", {
 				project: {
 					canonicalIdentity: project.canonicalIdentity,
 					identitySource: project.identitySource,
@@ -1207,6 +1231,7 @@ export function listLegacyTeamProjectEvidence(
 					coordinatorGroupId: operation.coordinatorGroupId,
 					state: operation.state,
 				})),
+				teamCandidateScopes,
 				enforcement: projection.enforcement,
 			}),
 			deterministicProjectIdentity:

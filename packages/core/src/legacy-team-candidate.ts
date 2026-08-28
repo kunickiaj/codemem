@@ -209,15 +209,23 @@ function projectInventory(
 	evidence: ReturnType<typeof listLegacyTeamProjectEvidence>,
 ): LegacyTeamSetupProjectInput[] {
 	return evidence
-		.filter((project) => project.teamCandidateIds.includes(candidateId))
+		.filter(
+			(project) =>
+				project.project.canonicalIdentity !== "shared:default" &&
+				project.teamCandidateIds.includes(candidateId),
+		)
 		.map((project) => {
 			const sourceProjectIdentity = project.project.canonicalIdentity;
+			const targetScopeId =
+				project.teamCandidateScopes.find((candidate) => candidate.teamCandidateId === candidateId)
+					?.targetScopeId ?? null;
 			return {
 				projectRef: legacyTeamProjectRef(candidateId, sourceProjectIdentity),
 				sourceProjectIdentity,
 				displayName: project.project.displayName,
 				sourceFingerprint: project.sourceFingerprint,
 				deterministicProjectIdentity: project.deterministicProjectIdentity,
+				targetScopeId,
 			};
 		})
 		.toSorted((left, right) => compareCodepoints(left.projectRef, right.projectRef));
