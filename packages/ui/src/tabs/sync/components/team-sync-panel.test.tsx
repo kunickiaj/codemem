@@ -154,7 +154,7 @@ describe("TeamSyncPanel primary status", () => {
 					],
 				},
 				"Needs attention",
-				"retry setup",
+				"Retry setup",
 			],
 			[
 				"trust pending",
