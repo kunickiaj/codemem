@@ -22,11 +22,13 @@ import {
 	previewDeviceIdentityBindings,
 	previewRecipientInvite,
 	previewRecipientPolicyEdges,
+	pruneStaleRecipientPolicySources,
 	RecipientPolicyEdgesStaleError,
 	type RecipientPolicyReviewListV1,
 	RecipientPolicyReviewStaleError,
 	refreshLegacyTeamSetupCandidate,
 	renameRecipientPolicyTeam,
+	repairRecipientPolicyProjectIdentity,
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
 	saveLegacyTeamSetupAssignment,
@@ -849,6 +851,98 @@ describe("recipient policy review API", () => {
 		expect(fetchMock).toHaveBeenCalledWith(
 			"/api/sync/recipient-policy/v1/review/resolve-bulk",
 			expect.objectContaining({ body: JSON.stringify({ requests }), method: "POST" }),
+		);
+	});
+
+	it("submits the opaque Project identity repair contract unchanged", async () => {
+		const request = {
+			blockedItemId: "blocked-1",
+			sourceIdentityRef: "source-ref-1",
+			sourceFingerprint: "source-fingerprint-1",
+			projectRef: "project-ref-1",
+		};
+		const result = {
+			blockedItemId: request.blockedItemId,
+			sourceFingerprint: request.sourceFingerprint,
+			status: "applied",
+			errorCode: null,
+			idempotent: false,
+		} as const;
+		const fetchMock = vi.fn(async () => new Response(JSON.stringify(result), { status: 200 }));
+		globalThis.fetch = fetchMock as typeof fetch;
+
+		expect(await repairRecipientPolicyProjectIdentity(request)).toEqual(result);
+		expect(fetchMock).toHaveBeenCalledWith(
+			"/api/sync/recipient-policy/v1/review/repair-project-identity",
+			expect.objectContaining({ method: "POST", body: JSON.stringify(request) }),
+		);
+	});
+
+	it("reports a stale Project identity repair without exposing transport payloads", async () => {
+		globalThis.fetch = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						blockedItemId: "blocked-1",
+						sourceFingerprint: "stale",
+						status: "stale",
+						errorCode: "source_fingerprint_stale",
+						idempotent: false,
+					}),
+					{ status: 409 },
+				),
+		) as typeof fetch;
+
+		await expect(
+			repairRecipientPolicyProjectIdentity({
+				blockedItemId: "blocked-1",
+				sourceIdentityRef: "source-ref-1",
+				sourceFingerprint: "stale",
+				projectRef: "project-ref-1",
+			}),
+		).rejects.toThrow("Project source state changed");
+	});
+
+	it("submits only the stale-group fingerprint and returns the structured prune result", async () => {
+		const request = { sourceFingerprint: "stale-group-fingerprint" };
+		const result = {
+			status: "applied",
+			sourceFingerprint: request.sourceFingerprint,
+			errorCode: null,
+			removedCount: 1,
+			skippedCount: 1,
+			removed: [{ label: "codemem" }],
+			skipped: [{ label: "Local folder (path hidden)", reason: "project_mapping" }],
+		} as const;
+		const fetchMock = vi.fn(async () => new Response(JSON.stringify(result), { status: 200 }));
+		globalThis.fetch = fetchMock as typeof fetch;
+
+		await expect(pruneStaleRecipientPolicySources(request)).resolves.toEqual(result);
+		expect(fetchMock).toHaveBeenCalledWith(
+			"/api/sync/recipient-policy/v1/review/prune-stale-sources",
+			expect.objectContaining({ method: "POST", body: JSON.stringify(request) }),
+		);
+	});
+
+	it("maps a stale prune conflict to privacy-safe refresh guidance", async () => {
+		globalThis.fetch = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						status: "stale",
+						sourceFingerprint: "old",
+						errorCode: "source_fingerprint_stale",
+						removedCount: 0,
+						skippedCount: 0,
+						removed: [],
+						skipped: [],
+					}),
+					{ status: 409 },
+				),
+		) as typeof fetch;
+
+		await expect(pruneStaleRecipientPolicySources({ sourceFingerprint: "old" })).rejects.toThrow(
+			"Old sharing records changed",
 		);
 	});
 });

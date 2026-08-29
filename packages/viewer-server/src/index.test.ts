@@ -12611,6 +12611,328 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("persists a fail-closed recipient-policy Project identity repair", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sourceSessionId = insertTestSession(store.db);
+				store.db
+					.prepare(
+						"UPDATE sessions SET cwd = NULL, git_remote = NULL, git_branch = NULL, project = ? WHERE id = ?",
+					)
+					.run("Legacy source", sourceSessionId);
+				const sourceMemoryId = insertTestMemory(store, {
+					sessionId: sourceSessionId,
+					kind: "discovery",
+					title: "legacy source repair",
+					metadata: {},
+				});
+				// insertTestMemory deliberately seeds shared:default for most integration
+				// fixtures. Clear it here so this fixture follows the existing unmapped
+				// Project pattern and exercises noncanonical_project_identity.
+				store.db
+					.prepare("UPDATE memory_items SET workspace_id = NULL WHERE id = ?")
+					.run(sourceMemoryId);
+				const targetIdentity = "https://git.example.invalid/acme/repair-target.git";
+				const targetSessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
+					.run(targetIdentity, "Safe target", targetSessionId);
+				insertTestMemory(store, {
+					sessionId: targetSessionId,
+					kind: "discovery",
+					title: "repair target",
+					metadata: {},
+				});
+
+				const reviewResponse = await app.request("/api/sync/recipient-policy/v1/review");
+				const reviewText = await reviewResponse.text();
+				const review = JSON.parse(reviewText) as {
+					blockedItems: Array<{
+						blockedItemId: string;
+						repair?: {
+							sourceIdentityRef: string;
+							sourceFingerprint: string;
+							reason?: string;
+							choices: Array<{ projectRef: string; displayName: string }>;
+							spaces?: Array<{ spaceRef: string; displayName: string }>;
+						};
+					}>;
+				};
+				const blocked = review.blockedItems.find((item) =>
+					item.repair?.choices.some((candidate) => candidate.displayName === "Safe target"),
+				);
+				const repair = blocked?.repair;
+				const choice = repair?.choices.find((candidate) => candidate.displayName === "Safe target");
+				const space = repair?.spaces?.[0];
+				if (!blocked || !repair || !choice || !space)
+					throw new Error(`repair response incomplete: ${JSON.stringify(review.blockedItems)}`);
+				expect(repair.reason).toBe("ready");
+				const blockedText = JSON.stringify(blocked);
+				expect(blockedText).not.toContain(targetIdentity);
+				expect(blockedText).not.toContain("/workspace/");
+
+				const stale = await app.request(
+					"/api/sync/recipient-policy/v1/review/repair-project-identity",
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							blockedItemId: blocked.blockedItemId,
+							sourceIdentityRef: repair.sourceIdentityRef,
+							sourceFingerprint: "stale",
+							projectRef: choice.projectRef,
+						}),
+					},
+				);
+				expect(stale.status).toBe(409);
+				expect(store.db.prepare("SELECT COUNT(*) FROM project_scope_mappings").pluck().get()).toBe(
+					0,
+				);
+
+				const applied = await app.request(
+					"/api/sync/recipient-policy/v1/review/repair-project-identity",
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							blockedItemId: blocked.blockedItemId,
+							sourceIdentityRef: repair.sourceIdentityRef,
+							sourceFingerprint: repair.sourceFingerprint,
+							projectRef: choice.projectRef,
+							spaceRef: space.spaceRef,
+						}),
+					},
+				);
+				expect(applied.status).toBe(200);
+				expect(await applied.json()).toMatchObject({ status: "applied", idempotent: false });
+				expect(
+					store.db
+						.prepare(
+							"SELECT workspace_identity FROM project_scope_mappings WHERE source = 'recipient_policy_repair'",
+						)
+						.pluck()
+						.get(),
+				).toBe(targetIdentity);
+				const laterTargetIdentity = "https://git.example.invalid/acme/later-repair-target.git";
+				const laterTargetSessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
+					.run(laterTargetIdentity, "Later target", laterTargetSessionId);
+				insertTestMemory(store, {
+					sessionId: laterTargetSessionId,
+					kind: "discovery",
+					title: "later repair target",
+					metadata: {},
+				});
+				const staleReplay = await app.request(
+					"/api/sync/recipient-policy/v1/review/repair-project-identity",
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							blockedItemId: blocked.blockedItemId,
+							sourceIdentityRef: repair.sourceIdentityRef,
+							sourceFingerprint: repair.sourceFingerprint,
+							projectRef: choice.projectRef,
+						}),
+					},
+				);
+				expect(staleReplay.status).toBe(409);
+				expect(await staleReplay.json()).toMatchObject({
+					status: "stale",
+					errorCode: "source_fingerprint_stale",
+					idempotent: false,
+				});
+				const refreshed = (await (
+					await app.request("/api/sync/recipient-policy/v1/review")
+				).json()) as typeof review;
+				expect(
+					refreshed.blockedItems.some((item) => item.blockedItemId === blocked.blockedItemId),
+				).toBe(false);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("groups stale recipient-policy sources with no live content", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sourceSessionId = insertTestSession(store.db);
+				store.db
+					.prepare(
+						"UPDATE sessions SET cwd = ?, git_remote = NULL, git_branch = NULL, project = ? WHERE id = ?",
+					)
+					.run(null, "/Users/private/.local/share/chezmoi", sourceSessionId);
+				const memoryId = insertTestMemory(store, {
+					sessionId: sourceSessionId,
+					kind: "discovery",
+					title: "stale source",
+					metadata: {},
+				});
+				store.db
+					.prepare("UPDATE memory_items SET active = 0, workspace_id = NULL WHERE id = ?")
+					.run(memoryId);
+				const sourceIdentity = core.canonicalWorkspaceIdentity({
+					project: "/Users/private/.local/share/chezmoi",
+				}).value;
+				store.db
+					.prepare(
+						`INSERT INTO project_recipients(
+						 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+						 policy_revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at
+						 ) VALUES (?, 'identity', ?, 'active', 'legacy_migration', 'legacy', 'projected',
+						 'legacy-source', 'legacy-stale-route', ?, ?)`,
+					)
+					.run(
+						sourceIdentity,
+						store.actorId,
+						"2026-08-28T12:00:00.000Z",
+						"2026-08-28T12:00:00.000Z",
+					);
+				const rowCount = store.db.prepare("SELECT COUNT(*) FROM memory_items").pluck().get();
+
+				const response = await app.request("/api/sync/recipient-policy/v1/review");
+				const text = await response.text();
+				const review = JSON.parse(text) as {
+					blockedItems: unknown[];
+					staleNoContent?: {
+						reason: string;
+						count: number;
+						labels: string[];
+						sourceFingerprint: string;
+					};
+				};
+
+				expect(response.status).toBe(200);
+				expect(review.blockedItems).toEqual([]);
+				expect(review.staleNoContent).toMatchObject({ reason: "stale_no_content", count: 1 });
+				expect(review.staleNoContent?.labels).toEqual(["Local folder (path hidden)"]);
+				expect(text).not.toContain("/Users/private");
+				expect(store.db.prepare("SELECT COUNT(*) FROM memory_items").pluck().get()).toBe(rowCount);
+				const invalid = await app.request(
+					"/api/sync/recipient-policy/v1/review/prune-stale-sources",
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							sourceFingerprint: review.staleNoContent?.sourceFingerprint,
+							unexpected: true,
+						}),
+					},
+				);
+				expect(invalid.status).toBe(400);
+				const stale = await app.request(
+					"/api/sync/recipient-policy/v1/review/prune-stale-sources",
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ sourceFingerprint: "stale" }),
+					},
+				);
+				expect(stale.status).toBe(409);
+				expect(store.db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(1);
+				const applied = await app.request(
+					"/api/sync/recipient-policy/v1/review/prune-stale-sources",
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							sourceFingerprint: review.staleNoContent?.sourceFingerprint,
+						}),
+					},
+				);
+				const appliedText = await applied.text();
+				expect(applied.status).toBe(200);
+				expect(JSON.parse(appliedText)).toMatchObject({
+					status: "applied",
+					removedCount: 1,
+					skippedCount: 0,
+					removed: [{ label: "Local folder (path hidden)" }],
+				});
+				expect(appliedText).not.toContain("/Users/private");
+				expect(appliedText).not.toContain(sourceIdentity);
+				expect(store.db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
+				expect(store.db.prepare("SELECT COUNT(*) FROM memory_items").pluck().get()).toBe(rowCount);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("serves an Advanced administration action for multiple Project boundaries", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = "2026-08-28T12:00:00.000Z";
+				for (const [scopeId, label] of [
+					["scope-work", "Work"],
+					["scope-oss", "Open source"],
+				] as const) {
+					store.db
+						.prepare(
+							`INSERT INTO replication_scopes(
+							 scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+							 ) VALUES (?, ?, 'managed_project', 'local', 1, 'active', ?, ?)`,
+						)
+						.run(scopeId, label, now, now);
+				}
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET cwd = NULL, project = 'Shared default' WHERE id = ?")
+					.run(sessionId);
+				for (const [scopeId, title] of [
+					["scope-work", "Work boundary"],
+					["scope-oss", "OSS boundary"],
+				] as const) {
+					const memoryId = insertTestMemory(store, {
+						sessionId,
+						kind: "discovery",
+						title,
+						scopeId,
+						metadata: {},
+					});
+					store.db
+						.prepare("UPDATE memory_items SET workspace_id = 'shared:default' WHERE id = ?")
+						.run(memoryId);
+					store.db
+						.prepare(
+							`INSERT INTO project_scope_mappings(
+							 workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+							 ) VALUES ('shared:default', 'shared:default', ?, 1000, 'test', ?, ?)`,
+						)
+						.run(scopeId, now, now);
+				}
+
+				const response = await app.request("/api/sync/recipient-policy/v1/review");
+				const text = await response.text();
+				const review = JSON.parse(text) as {
+					blockedItems: Array<{
+						reason: string;
+						repair?: { kind: string; projectIdentity?: string };
+					}>;
+				};
+				const blocked = review.blockedItems.find(
+					(item) => item.repair?.kind === "review_project_scope_mappings",
+				);
+
+				expect(blocked).toMatchObject({
+					repair: { kind: "review_project_scope_mappings", projectIdentity: "shared:default" },
+				});
+				expect(blocked?.reason).toContain("Open source, Work");
+				expect(text).not.toContain("scope-work");
+				expect(text).not.toContain("scope-oss");
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("serves safe recipient intent and strictly validates per-Project migration", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {

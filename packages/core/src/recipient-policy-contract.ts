@@ -184,7 +184,47 @@ export interface RecipientPolicyBlockedItemV1 {
 	reason: string;
 	ownerLabel: string;
 	repairAction: string;
+	repair?: RecipientPolicyBlockedRepairV1 | null;
 }
+
+export interface RecipientPolicyProjectIdentityRepairChoiceV1 {
+	projectRef: string;
+	displayName: string;
+	/** Opaque Space references in which this target is eligible. */
+	spaceRefs?: string[];
+}
+
+export interface RecipientPolicyProjectIdentityRepairSpaceV1 {
+	spaceRef: string;
+	displayName: string;
+}
+
+export type RecipientPolicyProjectIdentityRepairReasonV1 =
+	| "ready"
+	| "ambiguous_scope_evidence"
+	| "no_eligible_projects"
+	| "stale_no_content";
+
+export interface RecipientPolicyProjectIdentityRepairV1 {
+	kind: "map_legacy_project_identity";
+	sourceIdentityRef: string;
+	sourceFingerprint: string;
+	reason?: RecipientPolicyProjectIdentityRepairReasonV1;
+	choices: RecipientPolicyProjectIdentityRepairChoiceV1[];
+	spaces?: RecipientPolicyProjectIdentityRepairSpaceV1[];
+}
+
+export interface RecipientPolicyProjectScopeAdministrationRepairV1 {
+	kind: "review_project_scope_mappings";
+	reason: "multiple_enforcement_boundaries";
+	projectIdentity: string;
+	projectDisplayName: string;
+	conflictingSpaces: Array<{ displayName: string }>;
+}
+
+export type RecipientPolicyBlockedRepairV1 =
+	| RecipientPolicyProjectIdentityRepairV1
+	| RecipientPolicyProjectScopeAdministrationRepairV1;
 
 export interface RecipientPolicyProjectionV1 {
 	version: RecipientPolicyContractVersion;

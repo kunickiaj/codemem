@@ -314,6 +314,49 @@ export function selectedProjectScopeMappings(
 	);
 }
 
+function explicitProjectResolutionMapping(
+	mappings: LegacyMappingSnapshot[],
+	identityValue: string,
+): LegacyMappingSnapshot | null {
+	const normalizedSource = normalizedIdentity(identityValue);
+	const exactForSource = mappings.some(
+		(mapping) =>
+			mapping.workspaceIdentity != null &&
+			normalizedIdentity(mapping.workspaceIdentity) === normalizedSource,
+	);
+	if (exactForSource) return null;
+	const authoritative = bestMapping(
+		mappings.filter(
+			(mapping) =>
+				normalizedIdentity(mapping.projectPattern) === normalizedSource ||
+				wildcardMatches(normalizedSource, mapping.projectPattern),
+		),
+		(mapping) => mapping.projectPattern.replace(/[*?]/gu, "").length,
+	);
+	if (!authoritative?.workspaceIdentity) return null;
+	const resolved = normalizedIdentity(authoritative.workspaceIdentity);
+	if (resolved === normalizedSource || resolved.startsWith("unmapped:")) return null;
+	return authoritative;
+}
+
+/** The authoritative explicit identity repair, using projection's collapse precedence. */
+export function selectedExplicitProjectResolution(
+	db: Database,
+	sourceProjectIdentity: string,
+): { scopeId: string; projectPattern: string; workspaceIdentity: string } | null {
+	const selected = explicitProjectResolutionMapping(
+		loadProjectScopeMappings(db),
+		sourceProjectIdentity,
+	);
+	return selected?.workspaceIdentity
+		? {
+				scopeId: selected.scopeId,
+				projectPattern: selected.projectPattern,
+				workspaceIdentity: normalizedIdentity(selected.workspaceIdentity),
+			}
+		: null;
+}
+
 function selectedMapping(
 	mappings: LegacyMappingSnapshot[],
 	project: LegacyProjectSnapshot,
@@ -874,28 +917,10 @@ function loadSnapshot(
 	// mapping selecting another boundary must not be bypassed by a
 	// lower-priority resolution.
 	const explicitResolutionFor = (identityValue: string): string | undefined => {
-		// Mirrors `selectedMapping` precedence exactly: an exact workspace
-		// mapping routing the source identity ITSELF takes unconditional
-		// precedence over every pattern-based row, so its presence means the
-		// source is authoritatively its own boundary and no collapse applies.
-		const exactForSource = mappings.some(
-			(mapping) =>
-				mapping.workspaceIdentity != null &&
-				normalizedIdentity(mapping.workspaceIdentity) === identityValue,
-		);
-		if (exactForSource) return undefined;
-		const authoritative = bestMapping(
-			mappings.filter(
-				(mapping) =>
-					normalizedIdentity(mapping.projectPattern) === identityValue ||
-					wildcardMatches(identityValue, mapping.projectPattern),
-			),
-			(mapping) => mapping.projectPattern.replace(/[*?]/gu, "").length,
-		);
-		if (!authoritative?.workspaceIdentity) return undefined;
-		const resolved = normalizedIdentity(authoritative.workspaceIdentity);
-		if (resolved === identityValue || resolved.startsWith("unmapped:")) return undefined;
-		return resolved;
+		const authoritative = explicitProjectResolutionMapping(mappings, identityValue);
+		return authoritative?.workspaceIdentity
+			? normalizedIdentity(authoritative.workspaceIdentity)
+			: undefined;
 	};
 	const projects = new Map<string, LegacyProjectSnapshot>();
 	for (const row of projectRows) {

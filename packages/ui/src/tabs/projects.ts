@@ -53,6 +53,9 @@ const pendingForgetConfirmations = new Map<
 	{ confirmationToken: string; localOwnedMemoryCount: number; peerOwnedMemoryCount: number }
 >();
 let skippedProjectRefreshForActiveSelect = false;
+let lastProjectInventorySignature: string | null = null;
+let pendingProjectInventoryResult: ProjectInventoryResult | null = null;
+let projectOpenInteractionCount = 0;
 let coordinatorGroupNamesCurrent = false;
 let projectShareInventoryReady = false;
 let projectsLoadGeneration = 0;
@@ -372,6 +375,44 @@ function isProjectSpaceSelectActive(): boolean {
 	return active instanceof HTMLSelectElement && active.classList.contains("project-domain-select");
 }
 
+type ProjectInventoryResult = {
+	projects: ProjectScopeInventoryProject[];
+	total: number;
+	offset: number;
+	has_more: boolean;
+};
+
+function projectInventorySignature(result: ProjectInventoryResult): string {
+	return JSON.stringify({
+		result,
+		scopes,
+		recipientPolicyIntent,
+		projectShareInventoryReady,
+		recipientPolicyIntentReady,
+		coordinatorGroups: state.lastProjectCoordinatorAdminGroups,
+		draftDomainSelections: [...draftDomainSelections.entries()],
+		draftClusterDomainSelections: [...draftClusterDomainSelections.entries()],
+		pendingConfirmations: [...pendingConfirmations.entries()],
+		pendingForgetConfirmations: [...pendingForgetConfirmations.entries()],
+	});
+}
+
+function isProjectInventoryInteractionActive(list: HTMLElement): boolean {
+	return (
+		projectOpenInteractionCount > 0 ||
+		(document.activeElement instanceof HTMLElement && list.contains(document.activeElement))
+	);
+}
+
+function flushPendingProjectInventoryRender() {
+	const pending = pendingProjectInventoryResult;
+	if (!pending) return;
+	const list = el<HTMLDivElement>("projectsInventoryList");
+	if (!list || isProjectInventoryInteractionActive(list)) return;
+	pendingProjectInventoryResult = null;
+	renderProjectInventory(pending);
+}
+
 function refreshSkippedProjectDataAfterSelectBlur() {
 	if (!skippedProjectRefreshForActiveSelect) return;
 	skippedProjectRefreshForActiveSelect = false;
@@ -643,21 +684,28 @@ async function reassignProject(project: ProjectScopeInventoryProject) {
 	} catch {
 		// Non-fatal — free-text correction still works.
 	}
-	const nextProject = await openSyncInputDialog({
-		cancelLabel: "Cancel",
-		confirmLabel: "Change project",
-		description: `This will update ${project.session_count} session${project.session_count === 1 ? "" : "s"} and ${project.memory_count ?? 0} memor${project.memory_count === 1 ? "y" : "ies"} by changing the stored project. Space assignment stays unchanged.`,
-		initialValue: currentProject,
-		placeholder: "Project name",
-		suggestions,
-		title: "Change project",
-		validate: (value) => {
-			const trimmed = value.trim();
-			if (!trimmed) return "Enter a project name.";
-			if (trimmed === currentProject) return "Already assigned to this project.";
-			return null;
-		},
-	});
+	projectOpenInteractionCount += 1;
+	let nextProject: string | null;
+	try {
+		nextProject = await openSyncInputDialog({
+			cancelLabel: "Cancel",
+			confirmLabel: "Change project",
+			description: `This will update ${project.session_count} session${project.session_count === 1 ? "" : "s"} and ${project.memory_count ?? 0} memor${project.memory_count === 1 ? "y" : "ies"} by changing the stored project. Space assignment stays unchanged.`,
+			initialValue: currentProject,
+			placeholder: "Project name",
+			suggestions,
+			title: "Change project",
+			validate: (value) => {
+				const trimmed = value.trim();
+				if (!trimmed) return "Enter a project name.";
+				if (trimmed === currentProject) return "Already assigned to this project.";
+				return null;
+			},
+		});
+	} finally {
+		projectOpenInteractionCount -= 1;
+		queueMicrotask(flushPendingProjectInventoryRender);
+	}
 	if (nextProject == null) return;
 	try {
 		const result = await api.reassignProjectInventoryProject({
@@ -674,6 +722,23 @@ async function reassignProject(project: ProjectScopeInventoryProject) {
 			"warning",
 		);
 	}
+}
+
+function renderProjectReassignmentAction(
+	project: ProjectScopeInventoryProject,
+	label: "Assign to Project…" | "Change project…",
+): HTMLButtonElement {
+	const button = document.createElement("button");
+	button.className = "settings-button";
+	button.type = "button";
+	button.textContent = label;
+	button.disabled = project.session_count === 0;
+	button.dataset.projectFocusKey = `reassign:${project.workspace_identity}`;
+	if (button.disabled) {
+		button.title = "No sessions are available to reassign for this saved mapping.";
+	}
+	button.addEventListener("click", () => void reassignProject(project));
+	return button;
 }
 
 function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElement {
@@ -767,15 +832,7 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 	remove.disabled = project.mapping_id == null || project.resolution_reason !== "exact_mapping";
 	remove.addEventListener("click", () => void removeProjectMapping(project));
 
-	const changeProject = document.createElement("button");
-	changeProject.className = "settings-button";
-	changeProject.type = "button";
-	changeProject.textContent = "Change project…";
-	changeProject.disabled = project.session_count === 0;
-	if (changeProject.disabled) {
-		changeProject.title = "No sessions are available to reassign for this saved mapping.";
-	}
-	changeProject.addEventListener("click", () => void reassignProject(project));
+	const changeProject = renderProjectReassignmentAction(project, "Change project…");
 	const forget = document.createElement("button");
 	forget.className = "settings-button danger";
 	forget.type = "button";
@@ -863,6 +920,7 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 	const row = document.createElement("article");
 	row.className = "project-inventory-row";
+	row.dataset.projectAnchorKey = `project:${project.workspace_identity}`;
 	const titleId = `project-title-${project.workspace_identity.replace(/[^a-z0-9_-]/gi, "-")}`;
 	row.setAttribute("aria-labelledby", titleId);
 	const header = document.createElement("div");
@@ -890,6 +948,12 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 	meta.textContent = `${(project.memory_count ?? 0).toLocaleString()} memories · ${project.session_count.toLocaleString()} sessions · ${formatLatest(project.latest_session_at)}`;
 	row.appendChild(meta);
 	row.appendChild(renderRecipientSummary([project.workspace_identity]));
+	if (project.identity_source === "cwd" && !isPeerReceivedProject(project)) {
+		const primaryActions = document.createElement("div");
+		primaryActions.className = "project-inventory-actions project-primary-actions";
+		primaryActions.appendChild(renderProjectReassignmentAction(project, "Assign to Project…"));
+		row.appendChild(primaryActions);
+	}
 
 	const advanced = document.createElement("div");
 	advanced.className = "project-advanced-administration";
@@ -971,7 +1035,10 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 	detail.open = openProjectDetails.has(project.workspace_identity);
 	detail.addEventListener("toggle", () => {
 		if (detail.open) openProjectDetails.add(project.workspace_identity);
-		else openProjectDetails.delete(project.workspace_identity);
+		else {
+			openProjectDetails.delete(project.workspace_identity);
+			queueMicrotask(flushPendingProjectInventoryRender);
+		}
 	});
 	const summary = document.createElement("summary");
 	summary.textContent =
@@ -1024,6 +1091,7 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 	const projectIds = uniqueProjectIds(manageableProjects);
 	const row = document.createElement("article");
 	row.className = "project-inventory-row project-inventory-cluster";
+	row.dataset.projectAnchorKey = `cluster:${clusterKey}`;
 	const clusterLabel = projectClusterLabel(projects[0]);
 	const titleId = `project-cluster-title-${clusterKey.replace(/[^a-z0-9_-]/gi, "-")}`;
 	row.setAttribute("aria-labelledby", titleId);
@@ -1145,7 +1213,10 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 	details.open = openProjectClusters.has(clusterKey);
 	details.addEventListener("toggle", () => {
 		if (details.open) openProjectClusters.add(clusterKey);
-		else openProjectClusters.delete(clusterKey);
+		else {
+			openProjectClusters.delete(clusterKey);
+			queueMicrotask(flushPendingProjectInventoryRender);
+		}
 	});
 	const summary = document.createElement("summary");
 	const warningCount = projects.reduce(
@@ -1190,19 +1261,25 @@ function hideProjectInventorySkeleton() {
 	document.getElementById("projectsInventorySkeleton")?.remove();
 }
 
-function renderProjectInventory(result: {
-	projects: ProjectScopeInventoryProject[];
-	total: number;
-	offset: number;
-	has_more: boolean;
-}) {
+function renderProjectInventory(result: ProjectInventoryResult, options: { force?: boolean } = {}) {
 	const meta = el<HTMLDivElement>("projectsInventoryMeta");
 	const list = el<HTMLDivElement>("projectsInventoryList");
 	if (!meta || !list) return;
+	const signature = projectInventorySignature(result);
+	if (signature === lastProjectInventorySignature && list.childElementCount > 0) return;
+	if (!options.force && list.childElementCount > 0 && isProjectInventoryInteractionActive(list)) {
+		pendingProjectInventoryResult = result;
+		return;
+	}
 	const focusedKey =
 		document.activeElement instanceof HTMLElement
 			? document.activeElement.dataset.projectFocusKey
 			: undefined;
+	const anchor = [...list.querySelectorAll<HTMLElement>("[data-project-anchor-key]")].find(
+		(element) => element.getBoundingClientRect().bottom > 0,
+	);
+	const anchorKey = anchor?.dataset.projectAnchorKey;
+	const anchorTop = anchor?.getBoundingClientRect().top;
 	hideProjectInventorySkeleton();
 	list.textContent = "";
 	if (result.projects.length === 0) {
@@ -1220,6 +1297,15 @@ function renderProjectInventory(result: {
 	if (prev) prev.disabled = result.offset === 0;
 	if (next) next.disabled = !result.has_more;
 	updateSelectionControls();
+	lastProjectInventorySignature = signature;
+	pendingProjectInventoryResult = null;
+	if (anchorKey && anchorTop != null) {
+		const nextAnchor = [...list.querySelectorAll<HTMLElement>("[data-project-anchor-key]")].find(
+			(element) => element.dataset.projectAnchorKey === anchorKey,
+		);
+		const delta = nextAnchor ? nextAnchor.getBoundingClientRect().top - anchorTop : 0;
+		if (delta !== 0) window.scrollBy({ top: delta, left: 0, behavior: "auto" });
+	}
 	if (focusedKey) {
 		const nextFocused = [...list.querySelectorAll<HTMLElement>("[data-project-focus-key]")].find(
 			(element) => element.dataset.projectFocusKey === focusedKey,
@@ -1324,7 +1410,7 @@ function renderProjectTeamSetupEntry(
 			button.setAttribute("aria-label", `Finish setting up ${candidate.displayName}`);
 			button.className = "settings-button";
 			button.type = "button";
-			button.textContent = "Finish setting up this Team";
+			button.textContent = `Finish setting up ${candidate.displayName}`;
 			button.dataset.teamSetupCandidateRef = candidate.candidateRef;
 			button.addEventListener("click", () => openTeamSetup?.(candidate.candidateRef));
 			row.appendChild(button);
@@ -1371,8 +1457,49 @@ function recipientPolicyReviewContentMount(mount: HTMLElement): HTMLElement {
 	return content;
 }
 
+async function openAdvancedProjectAdministration(
+	projectIdentity: string,
+	projectDisplayName: string,
+): Promise<void> {
+	const locate = () =>
+		[...document.querySelectorAll<HTMLElement>("[data-project-anchor-key]")].find(
+			(candidate) => candidate.dataset.projectAnchorKey === `project:${projectIdentity}`,
+		);
+	let row = locate();
+	if (!row) {
+		const search = el<HTMLInputElement>("projectsSearch");
+		if (search) {
+			search.value = projectDisplayName;
+			currentOffset = 0;
+			await loadProjectsData();
+			row = locate();
+		}
+	}
+	if (!row) return;
+	for (let parent = row.parentElement; parent; parent = parent.parentElement) {
+		if (parent instanceof HTMLDetailsElement) parent.open = true;
+	}
+	const details = row.querySelector<HTMLDetailsElement>(
+		":scope > details.project-inventory-details",
+	);
+	if (!details) return;
+	details.open = true;
+	openProjectDetails.add(projectIdentity);
+	row.scrollIntoView?.({ block: "center" });
+	const mappingControl = details.querySelector<HTMLElement>(".project-domain-select");
+	(mappingControl ?? details.querySelector<HTMLElement>("summary"))?.focus();
+}
+
 export interface ProjectsDataLoadOptions {
 	requireTeamSetupSummary?: boolean;
+	/**
+	 * Set for user-initiated filter/search/pagination changes. The anti-jump
+	 * guard defers background re-renders while a Project control is focused or
+	 * an Advanced details panel is open, but a load the user explicitly asked
+	 * for must always paint: otherwise typing in the search box silently does
+	 * nothing whenever any details panel happens to be open.
+	 */
+	userRequested?: boolean;
 }
 
 export async function loadProjectsData(options: ProjectsDataLoadOptions = {}) {
@@ -1382,7 +1509,11 @@ export async function loadProjectsData(options: ProjectsDataLoadOptions = {}) {
 		if (!options.requireTeamSetupSummary) return true;
 		return (await loadTeamSetupSummaryOnce(true)).ok;
 	}
-	if (isProjectSpaceSelectActive()) {
+	// A focused Space select means the user is mid-edit, so background refreshes
+	// must not yank the control out from under them. A load the user explicitly
+	// asked for (search, status filter, pagination) is not background work and
+	// must still run, or the filter silently does nothing.
+	if (options.userRequested !== true && isProjectSpaceSelectActive()) {
 		skippedProjectRefreshForActiveSelect = true;
 		if (!options.requireTeamSetupSummary) return true;
 		return false;
@@ -1392,7 +1523,7 @@ export async function loadProjectsData(options: ProjectsDataLoadOptions = {}) {
 	projectShareInventoryReady = false;
 	recipientPolicyIntentReady = false;
 	updateSelectionControls();
-	meta.textContent = "Loading project inventory…";
+	if (list.childElementCount === 0) meta.textContent = "Loading project inventory…";
 	try {
 		const teamSetupSummaryPromise = loadTeamSetupSummaryOnce(
 			options.requireTeamSetupSummary === true,
@@ -1447,7 +1578,12 @@ export async function loadProjectsData(options: ProjectsDataLoadOptions = {}) {
 		if (reviewMount) {
 			const reviewContent = recipientPolicyReviewContentMount(reviewMount);
 			if ("review" in recipientPolicyReview) {
-				renderRecipientPolicyReview(reviewContent, recipientPolicyReview.review);
+				renderRecipientPolicyReview(reviewContent, recipientPolicyReview.review, {
+					onOpenProjectAdministration: openAdvancedProjectAdministration,
+					onRepairApplied: async () => {
+						await loadProjectsData();
+					},
+				});
 			} else {
 				renderRecipientPolicyReviewLoadError(reviewContent, recipientPolicyReview.error);
 			}
@@ -1459,7 +1595,7 @@ export async function loadProjectsData(options: ProjectsDataLoadOptions = {}) {
 			recipientPolicyIntent,
 			!shareInventory.ok || !intentResult.ok,
 		);
-		renderProjectInventory(result);
+		renderProjectInventory(result, { force: options.userRequested === true });
 		refreshProjectCoordinatorGroupNamesInBackground(result, loadGeneration);
 		void teamSetupSummaryPromise.then((teamSetupSummary) => {
 			if (loadGeneration !== projectsLoadGeneration) return;
@@ -1500,6 +1636,15 @@ export function initProjectsTab(
 	refreshProjects = refresh;
 	openTeamSetup = options.onOpenTeamSetup;
 	selectedProjectIds.clear();
+	lastProjectInventorySignature = null;
+	pendingProjectInventoryResult = null;
+	const inventoryList = el<HTMLDivElement>("projectsInventoryList");
+	if (inventoryList && inventoryList.dataset.refreshInteractionBound !== "true") {
+		inventoryList.dataset.refreshInteractionBound = "true";
+		inventoryList.addEventListener("focusout", () => {
+			queueMicrotask(flushPendingProjectInventoryRender);
+		});
+	}
 	const status = el<HTMLSelectElement>("projectsStatusFilter");
 	if (status && status.options.length === 0) {
 		for (const [value, label] of STATUS_OPTIONS) {
@@ -1511,17 +1656,17 @@ export function initProjectsTab(
 	}
 	const requestRefresh = () => {
 		currentOffset = 0;
-		refreshProjects?.();
+		void loadProjectsData({ userRequested: true });
 	};
 	el<HTMLInputElement>("projectsSearch")?.addEventListener("input", requestRefresh);
 	status?.addEventListener("change", requestRefresh);
 	el<HTMLButtonElement>("projectsPrevPage")?.addEventListener("click", () => {
 		currentOffset = Math.max(0, currentOffset - lastLimit);
-		refreshProjects?.();
+		void loadProjectsData({ userRequested: true });
 	});
 	el<HTMLButtonElement>("projectsNextPage")?.addEventListener("click", () => {
 		currentOffset += lastLimit;
-		refreshProjects?.();
+		void loadProjectsData({ userRequested: true });
 	});
 	const shareSelected = el<HTMLButtonElement>("projectsShareSelected");
 	if (shareSelected && shareSelected.dataset.recipientPolicyBound !== "true") {

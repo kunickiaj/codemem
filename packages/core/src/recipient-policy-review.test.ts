@@ -7,16 +7,20 @@ import {
 	type LegacyRecipientPolicyProjectionV1,
 	listLegacyRecipientPolicyProjections,
 } from "./legacy-recipient-policy-projection.js";
+import type { RecipientPolicyBlockedItemV1 } from "./recipient-policy-contract.js";
 import { deterministicPolicyTeamId } from "./recipient-policy-identifiers.js";
 import {
 	deriveRecipientPolicyReviewState,
 	deriveSelectableRecipientIds,
 	listRecipientPolicyReview,
+	pruneStaleRecipientPolicySources,
 	type RecipientPolicyReviewResolveRequestV1,
 	recipientPolicyReviewSourceFingerprint,
+	repairRecipientPolicyProjectIdentity,
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
 } from "./recipient-policy-review.js";
+import { LOCAL_DEFAULT_SCOPE_ID } from "./scope-resolution.js";
 import { initTestSchema } from "./test-utils.js";
 
 const NOW = "2026-07-21T12:00:00.000Z";
@@ -28,6 +32,10 @@ const context = {
 	localDeviceId: LOCAL_DEVICE_ID,
 	now: () => NOW,
 };
+
+function identityRepair(item: RecipientPolicyBlockedItemV1 | undefined) {
+	return item?.repair?.kind === "map_legacy_project_identity" ? item.repair : null;
+}
 
 function projection(): LegacyRecipientPolicyProjectionV1 {
 	return {
@@ -117,6 +125,29 @@ function insertLegacyScope(
 	).run(scopeId, scopeId, kind, NOW, NOW);
 }
 
+function insertCanonicalProject(
+	db: InstanceType<typeof Database>,
+	projectId = "https://git.example.invalid/acme/canonical-target.git",
+	scopeId = "local-default",
+): string {
+	const sessionId = Number(
+		db
+			.prepare(
+				`INSERT INTO sessions(started_at, cwd, project, git_remote, git_branch)
+				 VALUES (?, '/workspace/canonical-target', 'Canonical target', ?, 'main')`,
+			)
+			.run(NOW, projectId).lastInsertRowid,
+	);
+	db.prepare(
+		`INSERT INTO memory_items(
+		 session_id, kind, title, body_text, active, created_at, updated_at,
+		 visibility, project, scope_id
+		 ) VALUES (?, 'discovery', 'Canonical target', 'body', 1, ?, ?, 'private',
+		 'Canonical target', ?)`,
+	).run(sessionId, NOW, NOW, scopeId);
+	return projectId;
+}
+
 function mapProject(
 	db: InstanceType<typeof Database>,
 	projectId: string | null,
@@ -128,6 +159,26 @@ function mapProject(
 			workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
 		 ) VALUES (?, ?, ?, 1000, 'test', ?, ?)`,
 	).run(projectId, projectPattern, scopeId, NOW, NOW);
+}
+
+function insertLegacyRecipient(
+	db: InstanceType<typeof Database>,
+	canonicalProjectIdentity: string,
+	recipientId = LOCAL_ACTOR_ID,
+): void {
+	db.prepare(
+		`INSERT INTO project_recipients(
+		 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+		 policy_revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at
+		 ) VALUES (?, 'identity', ?, 'active', 'legacy_migration', 'legacy', 'projected',
+		 'legacy-source', ?, ?, ?)`,
+	).run(
+		canonicalProjectIdentity,
+		recipientId,
+		`legacy-recipient:${canonicalProjectIdentity}:${recipientId}`,
+		NOW,
+		NOW,
+	);
 }
 
 function configureUmbrellaScope(db: InstanceType<typeof Database>, kind = "team"): void {
@@ -334,6 +385,568 @@ describe("recipient policy review persistence", () => {
 			repairAction: expect.any(String),
 		});
 		expect(result.blockedItems[0]).not.toHaveProperty("options");
+	});
+
+	it("persists an explicit noncanonical source mapping and removes the blocked item", () => {
+		db.prepare("UPDATE sessions SET git_remote = NULL, cwd = NULL, project = 'display-only'").run();
+		const targetIdentity = insertCanonicalProject(db);
+		const localPath = "/Users/private/should-never-leak";
+		const localSessionId = Number(
+			db
+				.prepare(
+					`INSERT INTO sessions(started_at, cwd, project, git_remote, git_branch)
+					 VALUES (?, ?, 'private-path', NULL, 'main')`,
+				)
+				.run(NOW, localPath).lastInsertRowid,
+		);
+		db.prepare(
+			`INSERT INTO memory_items(
+			 session_id, kind, title, body_text, active, created_at, updated_at,
+			 visibility, project, scope_id
+			 ) VALUES (?, 'discovery', 'Private path', 'body', 1, ?, ?, 'private',
+			 'private-path', 'local-default')`,
+		).run(localSessionId, NOW, NOW);
+		const blocked = listRecipientPolicyReview(db, context).blockedItems.find(
+			(item) => item.repair?.kind === "map_legacy_project_identity",
+		);
+		const repair = identityRepair(blocked);
+		const choice = repair?.choices[0];
+		if (!blocked || !repair || !choice) throw new Error("repair fixture incomplete");
+
+		expect(JSON.stringify(blocked)).not.toContain(localPath);
+		expect(repair.choices).toHaveLength(1);
+		expect(repair.reason).toBe("ready");
+		const request = {
+			blockedItemId: blocked.blockedItemId,
+			sourceIdentityRef: repair.sourceIdentityRef,
+			sourceFingerprint: repair.sourceFingerprint,
+			projectRef: choice.projectRef,
+		};
+		expect(repairRecipientPolicyProjectIdentity(db, context, request)).toMatchObject({
+			status: "applied",
+			idempotent: false,
+		});
+		expect(repairRecipientPolicyProjectIdentity(db, context, request)).toMatchObject({
+			status: "applied",
+			idempotent: true,
+		});
+		expect(
+			db
+				.prepare(
+					`SELECT workspace_identity FROM project_scope_mappings
+					 WHERE source = 'recipient_policy_repair'`,
+				)
+				.pluck()
+				.get(),
+		).toBe(targetIdentity);
+		expect(
+			listRecipientPolicyReview(db, context).blockedItems.some(
+				(item) => item.blockedItemId === blocked.blockedItemId,
+			),
+		).toBe(false);
+	});
+
+	it("offers and persists a same-Space canonical target from live scope evidence", () => {
+		const scopeId = "airbnb-sre";
+		insertLegacyScope(db, scopeId, "managed_project");
+		db.prepare("UPDATE sessions SET git_remote = NULL, cwd = NULL, project = 'greenroom'").run();
+		db.prepare("UPDATE memory_items SET scope_id = ?").run(scopeId);
+		const targetIdentity = insertCanonicalProject(
+			db,
+			"org-4@git.musta.ch:airbnb/greenroom.git",
+			scopeId,
+		);
+		db.prepare("UPDATE sessions SET tool_version = 'sync_replication' WHERE git_remote = ?").run(
+			targetIdentity,
+		);
+
+		const blocked = listRecipientPolicyReview(db, context).blockedItems.find(
+			(item) => item.repair?.reason === "ready",
+		);
+		const repair = identityRepair(blocked);
+		const choice = repair?.choices[0];
+		if (!blocked || !repair || !choice) throw new Error("same-Space repair fixture incomplete");
+
+		expect(repair.choices).toHaveLength(1);
+		expect(repair.spaces).toHaveLength(1);
+		expect(
+			repairRecipientPolicyProjectIdentity(db, context, {
+				blockedItemId: blocked.blockedItemId,
+				sourceIdentityRef: repair.sourceIdentityRef,
+				sourceFingerprint: repair.sourceFingerprint,
+				projectRef: choice.projectRef,
+			}),
+		).toMatchObject({ status: "applied" });
+		expect(
+			db
+				.prepare(
+					"SELECT workspace_identity, scope_id FROM project_scope_mappings WHERE source = 'recipient_policy_repair'",
+				)
+				.get(),
+		).toEqual({ workspace_identity: targetIdentity, scope_id: scopeId });
+	});
+
+	it("requires an explicit Space for multi-Space source evidence and persists the chosen Space", () => {
+		insertLegacyScope(db, "legacy-shared-review", "managed_project");
+		insertLegacyScope(db, "oss", "managed_project");
+		db.prepare("UPDATE sessions SET git_remote = NULL, cwd = NULL, project = 'codemem'").run();
+		db.prepare("UPDATE memory_items SET scope_id = 'legacy-shared-review'").run();
+		db.prepare(
+			`INSERT INTO memory_items(
+			 session_id, kind, title, body_text, active, created_at, updated_at,
+			 visibility, project, scope_id
+			 ) SELECT session_id, 'discovery', 'OSS source', 'body', 1, ?, ?, 'shared', project, 'oss'
+			 FROM memory_items ORDER BY id LIMIT 1`,
+		).run(NOW, NOW);
+		insertCanonicalProject(
+			db,
+			"https://git.example.invalid/acme/codemem-work.git",
+			"legacy-shared-review",
+		);
+		insertCanonicalProject(db, "https://git.example.invalid/acme/codemem-oss.git", "oss");
+
+		const blocked = listRecipientPolicyReview(db, context).blockedItems.find(
+			(item) => item.repair?.reason === "ambiguous_scope_evidence",
+		);
+		const repair = identityRepair(blocked);
+		const ossSpace = repair?.spaces?.find((space) => space.displayName === "oss");
+		const ossChoice = repair?.choices.find((choice) =>
+			choice.spaceRefs?.includes(ossSpace?.spaceRef ?? ""),
+		);
+		if (!blocked || !repair || !ossSpace || !ossChoice) {
+			throw new Error("multi-Space repair fixture incomplete");
+		}
+		const request = {
+			blockedItemId: blocked.blockedItemId,
+			sourceIdentityRef: repair.sourceIdentityRef,
+			sourceFingerprint: repair.sourceFingerprint,
+			projectRef: ossChoice.projectRef,
+		};
+
+		expect(repair.spaces).toHaveLength(2);
+		expect(repairRecipientPolicyProjectIdentity(db, context, request)).toMatchObject({
+			status: "conflict",
+			errorCode: "repair_scope_ambiguous",
+		});
+		expect(
+			repairRecipientPolicyProjectIdentity(db, context, {
+				...request,
+				spaceRef: ossSpace.spaceRef,
+			}),
+		).toMatchObject({ status: "applied" });
+		expect(
+			db
+				.prepare(
+					"SELECT scope_id FROM project_scope_mappings WHERE source = 'recipient_policy_repair'",
+				)
+				.pluck()
+				.get(),
+		).toBe("oss");
+	});
+
+	it("makes repair fingerprints stale when the available target set changes", () => {
+		db.prepare("UPDATE sessions SET git_remote = NULL, cwd = NULL, project = 'display-only'").run();
+		insertCanonicalProject(db);
+		const blocked = listRecipientPolicyReview(db, context).blockedItems[0];
+		const repair = identityRepair(blocked);
+		const choice = repair?.choices[0];
+		if (!blocked || !repair || !choice) throw new Error("repair fixture incomplete");
+		const request = {
+			blockedItemId: blocked.blockedItemId,
+			sourceIdentityRef: repair.sourceIdentityRef,
+			sourceFingerprint: repair.sourceFingerprint,
+			projectRef: choice.projectRef,
+		};
+
+		insertCanonicalProject(db, "https://git.example.invalid/acme/second-target.git");
+		const refreshed = listRecipientPolicyReview(db, context).blockedItems[0]?.repair;
+		expect(refreshed?.sourceFingerprint).not.toBe(repair.sourceFingerprint);
+		expect(repairRecipientPolicyProjectIdentity(db, context, request)).toMatchObject({
+			status: "stale",
+			errorCode: "source_fingerprint_stale",
+		});
+	});
+
+	it("validates idempotent replay against the current repair fingerprint", () => {
+		db.prepare("UPDATE sessions SET git_remote = NULL, cwd = NULL, project = 'display-only'").run();
+		insertCanonicalProject(db);
+		const blocked = listRecipientPolicyReview(db, context).blockedItems[0];
+		const repair = identityRepair(blocked);
+		const choice = repair?.choices[0];
+		if (!blocked || !repair || !choice) throw new Error("repair fixture incomplete");
+		const request = {
+			blockedItemId: blocked.blockedItemId,
+			sourceIdentityRef: repair.sourceIdentityRef,
+			sourceFingerprint: repair.sourceFingerprint,
+			projectRef: choice.projectRef,
+		};
+		expect(repairRecipientPolicyProjectIdentity(db, context, request)).toMatchObject({
+			status: "applied",
+			idempotent: false,
+		});
+
+		insertCanonicalProject(db, "https://git.example.invalid/acme/later-target.git");
+		expect(repairRecipientPolicyProjectIdentity(db, context, request)).toMatchObject({
+			status: "stale",
+			errorCode: "source_fingerprint_stale",
+			idempotent: false,
+		});
+	});
+
+	it("filters and deduplicates the complete candidate domain before applying the repair cap", () => {
+		const sourceScopeId = "repair-source";
+		insertLegacyScope(db, sourceScopeId, "managed_project");
+		db.prepare("UPDATE sessions SET git_remote = NULL, cwd = NULL, project = 'display-only'").run();
+		db.prepare("UPDATE memory_items SET scope_id = ?").run(sourceScopeId);
+		const validTarget = insertCanonicalProject(
+			db,
+			"https://git.example.invalid/acme/valid-repair-target.git",
+			sourceScopeId,
+		);
+		mapProject(db, validTarget, validTarget, sourceScopeId);
+		for (let index = 0; index <= 500; index += 1) {
+			insertCanonicalProject(db, "https://git.example.invalid/noise/repeated.git");
+		}
+
+		const repair = identityRepair(
+			listRecipientPolicyReview(db, context).blockedItems.find(
+				(item) =>
+					item.repair?.kind === "map_legacy_project_identity" && item.repair.choices.length === 1,
+			),
+		);
+		expect(repair?.choices).toHaveLength(1);
+	});
+
+	it("groups stale sources with no live content instead of presenting repairs", () => {
+		db.prepare("UPDATE sessions SET git_remote = NULL, cwd = NULL, project = 'chezmoi'").run();
+		db.prepare("UPDATE memory_items SET active = 0").run();
+		db.prepare(
+			`INSERT INTO sessions(started_at, cwd, project, git_remote, git_branch)
+			 VALUES (?, NULL, '/Users/private/.local/share/chezmoi', NULL, NULL)`,
+		).run(NOW);
+		const staleIdentities = deriveRecipientPolicyReviewState(db, context).staleNoContentItems.map(
+			(item) => item.canonicalProjectIdentity,
+		);
+		for (const identity of staleIdentities) insertLegacyRecipient(db, identity);
+		const rowCount = db.prepare("SELECT COUNT(*) FROM memory_items").pluck().get();
+
+		const result = listRecipientPolicyReview(db, context);
+
+		expect(result.blockedItems).toEqual([]);
+		expect(result.staleNoContent).toMatchObject({ reason: "stale_no_content", count: 2 });
+		expect(result.staleNoContent?.sourceFingerprint).toMatch(
+			/^recipient-policy-stale-source-group-v1:/u,
+		);
+		expect(result.staleNoContent?.labels).toEqual(["Local folder (path hidden)", "chezmoi"]);
+		expect(JSON.stringify(result.staleNoContent)).not.toContain("Project ");
+		expect(JSON.stringify(result.staleNoContent)).not.toContain("/Users/private");
+		expect(db.prepare("SELECT COUNT(*) FROM memory_items").pluck().get()).toBe(rowCount);
+	});
+
+	it("prunes stale legacy sharing rows without touching memories, sessions, or scopes", () => {
+		db.prepare("UPDATE sessions SET git_remote = NULL, cwd = NULL, project = 'chezmoi'").run();
+		db.prepare("UPDATE memory_items SET active = 0").run();
+		const stale = deriveRecipientPolicyReviewState(db, context).staleNoContentItems[0];
+		if (!stale) throw new Error("stale source fixture incomplete");
+		insertLegacyRecipient(db, stale.canonicalProjectIdentity);
+		db.prepare(
+			`INSERT INTO recipient_policy_authority_states(
+			 canonical_project_identity, authority_state, state_changed_at, created_at, updated_at
+			 ) VALUES (?, 'legacy', ?, ?, ?)`,
+		).run(stale.canonicalProjectIdentity, NOW, NOW, NOW);
+		db.prepare(
+			`INSERT INTO recipient_policy_reconciliation_steps(
+			 canonical_project_identity, generation, step_key, effect_id, payload_digest,
+			 status, created_at, updated_at
+			 ) VALUES (?, 0, 'legacy-step', ?, 'payload', 'pending', ?, ?)`,
+		).run(stale.canonicalProjectIdentity, `effect:${stale.canonicalProjectIdentity}`, NOW, NOW);
+		const before = protectedSnapshot(db);
+		const review = listRecipientPolicyReview(db, context);
+		if (!review.staleNoContent) throw new Error("stale group missing");
+
+		const result = pruneStaleRecipientPolicySources(db, context, {
+			sourceFingerprint: review.staleNoContent.sourceFingerprint,
+		});
+
+		expect(result).toMatchObject({ status: "applied", removedCount: 1, skippedCount: 0 });
+		expect(result.removed).toEqual([{ label: "chezmoi" }]);
+		expect(JSON.stringify(result)).not.toContain(stale.canonicalProjectIdentity);
+		expect(db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
+		expect(db.prepare("SELECT COUNT(*) FROM recipient_policy_authority_states").pluck().get()).toBe(
+			0,
+		);
+		expect(
+			db.prepare("SELECT COUNT(*) FROM recipient_policy_reconciliation_steps").pluck().get(),
+		).toBe(0);
+		expect(protectedSnapshot(db)).toBe(before);
+		// The finding itself survives: the identity still has no canonical form.
+		// Only its removable sharing rows are gone, so a second attempt is a no-op
+		// rather than the group disappearing and hiding the unresolved source.
+		const after = listRecipientPolicyReview(db, context);
+		expect(after.staleNoContent).toMatchObject({ count: 1, labels: ["chezmoi"] });
+		expect(
+			pruneStaleRecipientPolicySources(db, context, {
+				sourceFingerprint: after.staleNoContent?.sourceFingerprint ?? "",
+			}),
+		).toMatchObject({ removedCount: 0 });
+	});
+
+	it("skips stale sources with mappings or live scope evidence", () => {
+		db.prepare("UPDATE sessions SET git_remote = NULL, cwd = NULL, project = 'chezmoi'").run();
+		db.prepare("UPDATE memory_items SET active = 0").run();
+		const stale = deriveRecipientPolicyReviewState(db, context).staleNoContentItems[0];
+		if (!stale) throw new Error("stale source fixture incomplete");
+		insertLegacyRecipient(db, stale.canonicalProjectIdentity);
+		mapProject(db, null, stale.canonicalProjectIdentity, LOCAL_DEFAULT_SCOPE_ID);
+		let review = listRecipientPolicyReview(db, context);
+		if (!review.staleNoContent) throw new Error("mapped stale group missing");
+
+		expect(
+			pruneStaleRecipientPolicySources(db, context, {
+				sourceFingerprint: review.staleNoContent.sourceFingerprint,
+			}),
+		).toMatchObject({
+			status: "applied",
+			removedCount: 0,
+			skipped: [{ label: "chezmoi", reason: "project_mapping" }],
+		});
+		db.prepare("DELETE FROM project_scope_mappings").run();
+		db.prepare(
+			`INSERT INTO recipient_policy_deny_overlays(
+			 canonical_project_identity, scope_id, device_id, generation, reason_code, created_at, updated_at
+			 ) VALUES (?, 'local-default', 'device', 1, 'legacy', ?, ?)`,
+		).run(stale.canonicalProjectIdentity, NOW, NOW);
+		review = listRecipientPolicyReview(db, context);
+		if (!review.staleNoContent) throw new Error("scope-evidenced stale group missing");
+
+		expect(
+			pruneStaleRecipientPolicySources(db, context, {
+				sourceFingerprint: review.staleNoContent.sourceFingerprint,
+			}),
+		).toMatchObject({
+			status: "applied",
+			removedCount: 0,
+			skipped: [{ label: "chezmoi", reason: "live_scope_evidence" }],
+		});
+		expect(db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(1);
+	});
+
+	it("never prunes the shared compatibility bucket", () => {
+		insertLegacyRecipient(db, "shared:default");
+		mapProject(db, "shared:default", "shared:default", LOCAL_DEFAULT_SCOPE_ID);
+		const review = listRecipientPolicyReview(db, context);
+
+		// The synthetic bucket must never even be offered for cleanup: staleness
+		// is decided by the noncanonical-identity repair path, and shared:default
+		// is not a Project. A prune attempt therefore finds no group to act on and
+		// must leave its recipient row untouched.
+		expect(JSON.stringify(review.staleNoContent ?? {}).includes("Shared (default)")).toBe(false);
+		expect(
+			pruneStaleRecipientPolicySources(db, context, {
+				sourceFingerprint: review.staleNoContent?.sourceFingerprint ?? "absent-group",
+			}),
+		).toMatchObject({ removedCount: 0 });
+		expect(
+			db
+				.prepare(
+					"SELECT COUNT(*) FROM project_recipients WHERE canonical_project_identity = 'shared:default'",
+				)
+				.pluck()
+				.get(),
+		).toBe(1);
+	});
+
+	it("rejects a stale group fingerprint after live content appears", () => {
+		db.prepare("UPDATE sessions SET git_remote = NULL, cwd = NULL, project = 'chezmoi'").run();
+		db.prepare("UPDATE memory_items SET active = 0").run();
+		const stale = deriveRecipientPolicyReviewState(db, context).staleNoContentItems[0];
+		if (!stale) throw new Error("stale source fixture incomplete");
+		insertLegacyRecipient(db, stale.canonicalProjectIdentity);
+		const review = listRecipientPolicyReview(db, context);
+		if (!review.staleNoContent) throw new Error("stale group missing");
+		db.prepare("UPDATE memory_items SET active = 1").run();
+
+		expect(
+			pruneStaleRecipientPolicySources(db, context, {
+				sourceFingerprint: review.staleNoContent.sourceFingerprint,
+			}),
+		).toMatchObject({ status: "stale", removedCount: 0, skippedCount: 0 });
+		expect(db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(1);
+	});
+
+	it("rolls back every stale-source deletion when a dependent delete fails", () => {
+		db.prepare("UPDATE sessions SET git_remote = NULL, cwd = NULL, project = 'chezmoi'").run();
+		db.prepare("UPDATE memory_items SET active = 0").run();
+		const stale = deriveRecipientPolicyReviewState(db, context).staleNoContentItems[0];
+		if (!stale) throw new Error("stale source fixture incomplete");
+		insertLegacyRecipient(db, stale.canonicalProjectIdentity);
+		db.exec(
+			`CREATE TRIGGER fail_stale_prune BEFORE DELETE ON project_recipients
+			 BEGIN SELECT RAISE(ABORT, 'blocked'); END`,
+		);
+		const review = listRecipientPolicyReview(db, context);
+		if (!review.staleNoContent) throw new Error("stale group missing");
+
+		expect(
+			pruneStaleRecipientPolicySources(db, context, {
+				sourceFingerprint: review.staleNoContent.sourceFingerprint,
+			}),
+		).toMatchObject({ status: "conflict", removedCount: 0, skippedCount: 0 });
+		expect(db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(1);
+	});
+
+	it("routes multiple enforcement boundaries to Advanced Project administration", () => {
+		insertLegacyScope(db, "scope-work", "managed_project");
+		insertLegacyScope(db, "scope-oss", "managed_project");
+		db.prepare("UPDATE replication_scopes SET label = 'Work' WHERE scope_id = 'scope-work'").run();
+		db.prepare(
+			"UPDATE replication_scopes SET label = 'Open source' WHERE scope_id = 'scope-oss'",
+		).run();
+		db.prepare(
+			"UPDATE sessions SET cwd = NULL, git_remote = NULL, project = 'Shared default'",
+		).run();
+		db.prepare(
+			"UPDATE memory_items SET workspace_id = 'shared:default', scope_id = 'scope-work'",
+		).run();
+		db.prepare(
+			`INSERT INTO memory_items(
+			 session_id, kind, title, body_text, active, created_at, updated_at,
+			 visibility, project, workspace_id, scope_id
+			 ) SELECT session_id, 'discovery', 'OSS boundary', 'body', 1, ?, ?, 'shared',
+			 project, 'shared:default', 'scope-oss' FROM memory_items ORDER BY id LIMIT 1`,
+		).run(NOW, NOW);
+		mapProject(db, "shared:default", "shared:default", "scope-work");
+		mapProject(db, "shared:default", "shared:default", "scope-oss");
+
+		const blocked = listRecipientPolicyReview(db, context).blockedItems.find(
+			(item) => item.repair?.kind === "review_project_scope_mappings",
+		);
+
+		expect(blocked).toMatchObject({
+			ownerLabel: "Local administrator",
+			repair: {
+				kind: "review_project_scope_mappings",
+				reason: "multiple_enforcement_boundaries",
+				projectIdentity: "shared:default",
+				projectDisplayName: "Shared default",
+				conflictingSpaces: [{ displayName: "Open source" }, { displayName: "Work" }],
+			},
+		});
+		expect(blocked?.reason).toContain("Open source, Work");
+		expect(JSON.stringify(blocked)).not.toContain("scope-work");
+		expect(JSON.stringify(blocked)).not.toContain("scope-oss");
+	});
+
+	it("fails closed for stale, invalid-target, and ambiguous-scope repair requests", () => {
+		db.prepare("UPDATE sessions SET git_remote = NULL, cwd = NULL, project = 'display-only'").run();
+		insertCanonicalProject(db);
+		const blocked = listRecipientPolicyReview(db, context).blockedItems[0];
+		const repair = identityRepair(blocked);
+		const choice = repair?.choices[0];
+		if (!blocked || !repair || !choice) throw new Error("repair fixture incomplete");
+		const request = {
+			blockedItemId: blocked.blockedItemId,
+			sourceIdentityRef: repair.sourceIdentityRef,
+			sourceFingerprint: repair.sourceFingerprint,
+			projectRef: choice.projectRef,
+		};
+
+		expect(
+			repairRecipientPolicyProjectIdentity(db, context, {
+				...request,
+				sourceFingerprint: "stale",
+			}),
+		).toMatchObject({ status: "stale", errorCode: "source_fingerprint_stale" });
+		expect(
+			repairRecipientPolicyProjectIdentity(db, context, {
+				...request,
+				projectRef: "foreign-project",
+			}),
+		).toMatchObject({ status: "invalid", errorCode: "repair_target_invalid" });
+		db.prepare(
+			`INSERT INTO replication_scopes(
+			 scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+			 ) VALUES ('second-scope', 'Second', 'personal', 'local', 1, 'active', ?, ?)`,
+		).run(NOW, NOW);
+		db.prepare(
+			`INSERT INTO memory_items(
+			 session_id, kind, title, body_text, active, created_at, updated_at,
+			 visibility, project, scope_id
+			 ) SELECT session_id, 'discovery', 'Second scope', 'body', 1, ?, ?, 'private',
+			 project, 'second-scope' FROM memory_items ORDER BY id LIMIT 1`,
+		).run(NOW, NOW);
+		const ambiguous = identityRepair(listRecipientPolicyReview(db, context).blockedItems[0]);
+		if (!ambiguous) throw new Error("ambiguous repair fixture incomplete");
+		expect(
+			repairRecipientPolicyProjectIdentity(db, context, {
+				blockedItemId: blocked.blockedItemId,
+				sourceIdentityRef: ambiguous.sourceIdentityRef,
+				sourceFingerprint: ambiguous.sourceFingerprint,
+				projectRef: "untrusted-project",
+			}),
+		).toMatchObject({ status: "conflict", errorCode: "repair_scope_ambiguous" });
+		expect(db.prepare("SELECT COUNT(*) FROM project_scope_mappings").pluck().get()).toBe(0);
+	});
+
+	it("rejects a foreign mapping that wins the race after review", () => {
+		db.prepare("UPDATE sessions SET git_remote = NULL, cwd = NULL, project = 'display-only'").run();
+		insertCanonicalProject(db);
+		const blocked = listRecipientPolicyReview(db, context).blockedItems[0];
+		const repair = identityRepair(blocked);
+		const choice = repair?.choices[0];
+		const sourceIdentity = listLegacyRecipientPolicyProjections(db, context).find((item) =>
+			item.conditions.some((condition) => condition.code === "noncanonical_project_identity"),
+		)?.project.canonicalIdentity;
+		if (!blocked || !repair || !choice || !sourceIdentity) {
+			throw new Error("foreign mapping fixture incomplete");
+		}
+		db.prepare(
+			`INSERT INTO project_scope_mappings(
+			 workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+			 ) VALUES ('https://git.example.invalid/foreign.git', ?, 'local-default', 1000,
+			 'foreign', ?, ?)`,
+		).run(sourceIdentity, NOW, NOW);
+
+		expect(
+			repairRecipientPolicyProjectIdentity(db, context, {
+				blockedItemId: blocked.blockedItemId,
+				sourceIdentityRef: repair.sourceIdentityRef,
+				sourceFingerprint: repair.sourceFingerprint,
+				projectRef: choice.projectRef,
+			}),
+		).toMatchObject({ status: "conflict", errorCode: "repair_mapping_conflict" });
+		expect(db.prepare("SELECT COUNT(*) FROM project_scope_mappings").pluck().get()).toBe(1);
+	});
+
+	it("rejects repair when a higher-priority wildcard remains authoritative", () => {
+		db.prepare("UPDATE sessions SET git_remote = NULL, cwd = NULL, project = 'display-only'").run();
+		insertCanonicalProject(db);
+		const blocked = listRecipientPolicyReview(db, context).blockedItems[0];
+		const repair = identityRepair(blocked);
+		const choice = repair?.choices[0];
+		if (!blocked || !repair || !choice) throw new Error("repair fixture incomplete");
+		db.prepare(
+			`INSERT INTO project_scope_mappings(
+			 workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+			 ) VALUES (NULL, 'unmapped:*', 'local-default', 9000, 'foreign', ?, ?)`,
+		).run(NOW, NOW);
+
+		expect(
+			repairRecipientPolicyProjectIdentity(db, context, {
+				blockedItemId: blocked.blockedItemId,
+				sourceIdentityRef: repair.sourceIdentityRef,
+				sourceFingerprint: repair.sourceFingerprint,
+				projectRef: choice.projectRef,
+			}),
+		).toMatchObject({ status: "conflict", errorCode: "repair_mapping_conflict" });
+		expect(
+			db
+				.prepare(
+					"SELECT COUNT(*) FROM project_scope_mappings WHERE source = 'recipient_policy_repair'",
+				)
+				.pluck()
+				.get(),
+		).toBe(0);
 	});
 
 	it("keeps an ambiguous umbrella scope as continuity without repair cards", () => {

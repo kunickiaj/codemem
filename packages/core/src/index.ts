@@ -715,6 +715,8 @@ export type {
 	RecipientPolicyIdentityV1,
 	RecipientPolicyIntentSourceV1,
 	RecipientPolicyParityV1,
+	RecipientPolicyProjectIdentityRepairChoiceV1,
+	RecipientPolicyProjectIdentityRepairV1,
 	RecipientPolicyProjectionV1,
 	RecipientPolicyProjectRecipientV1,
 	RecipientPolicyProjectV1,
@@ -846,6 +848,9 @@ export {
 export type {
 	RecipientPolicyActionableReviewItemV1,
 	RecipientPolicyDerivedReviewState,
+	RecipientPolicyProjectIdentityRepairRequestV1,
+	RecipientPolicyProjectIdentityRepairResultV1,
+	RecipientPolicyProjectIdentityRepairStatusV1,
 	RecipientPolicyReviewActionOptionV1,
 	RecipientPolicyReviewBulkResultV1,
 	RecipientPolicyReviewContext,
@@ -853,11 +858,17 @@ export type {
 	RecipientPolicyReviewResolveRequestV1,
 	RecipientPolicyReviewResolveResultV1,
 	RecipientPolicyReviewResolveStatusV1,
+	RecipientPolicyStaleSourcePruneRequestV1,
+	RecipientPolicyStaleSourcePruneResultV1,
+	RecipientPolicyStaleSourcePruneSkipReasonV1,
+	RecipientPolicyStaleSourcePruneStatusV1,
 } from "./recipient-policy-review.js";
 export {
 	deriveRecipientPolicyReviewState,
 	listRecipientPolicyReview,
+	pruneStaleRecipientPolicySources,
 	recipientPolicyReviewSourceFingerprint,
+	repairRecipientPolicyProjectIdentity,
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
 } from "./recipient-policy-review.js";

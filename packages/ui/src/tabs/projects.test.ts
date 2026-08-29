@@ -11,7 +11,9 @@ vi.mock("../lib/api", () => ({
 	loadRecipientPolicyIntent: vi.fn(),
 	loadRecipientPolicyReview: vi.fn(),
 	loadSharingDomainSettings: vi.fn(),
+	pruneStaleRecipientPolicySources: vi.fn(),
 	reassignProjectInventoryProject: vi.fn(),
+	repairRecipientPolicyProjectIdentity: vi.fn(),
 	saveSharingDomainProjectMapping: vi.fn(),
 	ProjectForgetConfirmationError: class ProjectForgetConfirmationError extends Error {
 		preview: {
@@ -76,6 +78,7 @@ import type {
 	RecipientPolicyReviewItemV1,
 	RecipientPolicyReviewListV1,
 } from "../lib/api/sync";
+import { showGlobalNotice } from "../lib/notice";
 import { state } from "../lib/state";
 import * as projectSharing from "./project-sharing";
 import { initProjectsTab, loadProjectsData } from "./projects";
@@ -292,6 +295,13 @@ describe("Projects tab", () => {
 			sourceFingerprint: "fingerprint-1",
 			status: "applied",
 		});
+		vi.mocked(api.repairRecipientPolicyProjectIdentity).mockResolvedValue({
+			blockedItemId: "blocked-1",
+			sourceFingerprint: "source-fingerprint-1",
+			status: "applied",
+			errorCode: null,
+			idempotent: false,
+		});
 		vi.mocked(api.loadProjects).mockResolvedValue(["api", "codemem"]);
 		vi.mocked(api.reassignProjectInventoryProject).mockResolvedValue({
 			moved_memory_count: 1,
@@ -387,6 +397,12 @@ describe("Projects tab", () => {
 					ownerLabel: "Project owner",
 					reason: "Codemem requires source-state repair.",
 					repairAction: "Assign a stable canonical Project identity.",
+					repair: {
+						kind: "map_legacy_project_identity",
+						sourceIdentityRef: "source-ref-1",
+						sourceFingerprint: "source-fingerprint-1",
+						choices: [{ projectRef: "project-ref-1", displayName: "Codemem" }],
+					},
 					version: 1,
 				},
 			],
@@ -403,8 +419,8 @@ describe("Projects tab", () => {
 		expect(surface?.textContent).toContain("current availability cannot be confirmed");
 		expect(surface?.textContent).not.toContain("Current access remains in place");
 		expect(surface?.textContent).not.toContain("will continue using");
-		expect(surface?.textContent).toContain("Assign a stable canonical Project identity");
-		expect(surface?.querySelector("button, select")).toBeNull();
+		expect(surface?.textContent).toContain("Choose Project");
+		expect(surface?.querySelector("button")?.textContent).toBe("Choose Project");
 		expect(document.querySelectorAll(".recipient-policy-review-item")).toHaveLength(0);
 	});
 
@@ -438,6 +454,7 @@ describe("Projects tab", () => {
 		const entry = document.querySelector<HTMLElement>(".project-team-setup-entry");
 		expect(entry?.textContent).toContain("Finish setting up this Team");
 		expect(entry?.textContent).toContain("Example Team");
+		expect(entry?.querySelector("button")?.textContent).toBe("Finish setting up Example Team");
 		expect(entry?.querySelector("button")?.getAttribute("aria-label")).toBe(
 			"Finish setting up Example Team",
 		);
@@ -706,7 +723,84 @@ describe("Projects tab", () => {
 		expect(document.body.textContent).toContain("2 older sharing findings were not changed");
 	});
 
-	it("renders blocked repair ownership without decision controls", async () => {
+	it("saves a blocked Project mapping and refreshes the review", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview)
+			.mockResolvedValueOnce(
+				recipientReview({
+					blockedItems: [
+						{
+							blockedItemId: "blocked-1",
+							finding: "Project identity is unstable.",
+							ownerLabel: "Project owner",
+							reason: "Codemem requires source-state repair.",
+							repairAction: "Assign a stable canonical Project identity.",
+							repair: {
+								kind: "map_legacy_project_identity",
+								sourceIdentityRef: "source-ref-1",
+								sourceFingerprint: "source-fingerprint-1",
+								choices: [
+									{ projectRef: "project-ref-1", displayName: "Codemem" },
+									{ projectRef: "project-ref-2", displayName: "Codemem 2" },
+								],
+							},
+							version: 1,
+						},
+					],
+					continuity: null,
+					reviewItems: [],
+				}),
+			)
+			.mockResolvedValueOnce(
+				recipientReview({ blockedItems: [], continuity: null, reviewItems: [] }),
+			);
+
+		await loadProjectsData();
+
+		const blocked = document.querySelector(".recipient-policy-blocked-item");
+		expect(blocked?.textContent).toContain("Blocked");
+		expect(blocked?.textContent).toContain("Owner: Project owner");
+		expect(blocked?.textContent).toContain("Choose Project");
+		expect(blocked?.textContent).not.toContain("git remote");
+		expect(blocked?.textContent).not.toContain("Refresh Projects");
+		expect(blocked?.textContent).not.toContain("Repair:");
+		const choose = blocked?.querySelector<HTMLButtonElement>("button");
+		expect(choose?.textContent).toBe("Choose Project");
+		choose?.click();
+		const select = blocked?.querySelector<HTMLSelectElement>("select");
+		const save = [...(blocked?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+			(button) => button.textContent === "Save mapping",
+		);
+		expect([...(select?.options ?? [])].map((option) => option.textContent)).toEqual([
+			"Choose a Project",
+			"Codemem",
+			"Codemem 2",
+		]);
+		expect(save?.disabled).toBe(true);
+		if (!select || !save) throw new Error("repair controls missing");
+		select.value = "project-choice-2";
+		select.dispatchEvent(new Event("change"));
+		expect(save.disabled).toBe(false);
+		save.click();
+		await flushAsyncWork();
+
+		expect(api.repairRecipientPolicyProjectIdentity).toHaveBeenCalledWith({
+			blockedItemId: "blocked-1",
+			sourceIdentityRef: "source-ref-1",
+			sourceFingerprint: "source-fingerprint-1",
+			projectRef: "project-ref-2",
+		});
+		expect(api.loadRecipientPolicyReview).toHaveBeenCalledTimes(2);
+		expect(document.querySelector(".recipient-policy-blocked-item")).toBeNull();
+	});
+
+	it("requires both Space and Project for a multi-Space repair", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
 			limit: 250,
@@ -718,11 +812,29 @@ describe("Projects tab", () => {
 			recipientReview({
 				blockedItems: [
 					{
-						blockedItemId: "blocked-1",
+						blockedItemId: "blocked-multi",
 						finding: "Project identity is unstable.",
 						ownerLabel: "Project owner",
 						reason: "Codemem requires source-state repair.",
 						repairAction: "Assign a stable canonical Project identity.",
+						repair: {
+							kind: "map_legacy_project_identity",
+							reason: "ambiguous_scope_evidence",
+							sourceIdentityRef: "source-ref-multi",
+							sourceFingerprint: "source-fingerprint-multi",
+							spaces: [
+								{ spaceRef: "space-work", displayName: "Work" },
+								{ spaceRef: "space-oss", displayName: "Open source" },
+							],
+							choices: [
+								{
+									projectRef: "project-work",
+									displayName: "Codemem work",
+									spaceRefs: ["space-work"],
+								},
+								{ projectRef: "project-oss", displayName: "Codemem", spaceRefs: ["space-oss"] },
+							],
+						},
 						version: 1,
 					},
 				],
@@ -732,12 +844,161 @@ describe("Projects tab", () => {
 		);
 
 		await loadProjectsData();
+		const blocked = document.querySelector<HTMLElement>(".recipient-policy-blocked-item");
+		blocked?.querySelector<HTMLButtonElement>("button")?.click();
+		const space = blocked?.querySelector<HTMLSelectElement>(".recipient-policy-space-select");
+		const project = blocked?.querySelector<HTMLSelectElement>(
+			"select:not(.recipient-policy-space-select)",
+		);
+		const save = [...(blocked?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+			(button) => button.textContent === "Save mapping",
+		);
+		if (!space || !project || !save) throw new Error("multi-Space controls missing");
+		expect(project.parentElement?.hidden).toBe(true);
+		space.value = "space-choice-2";
+		space.dispatchEvent(new Event("change"));
+		expect(project.parentElement?.hidden).toBe(false);
+		expect([...(project.options ?? [])].map((option) => option.textContent)).toEqual([
+			"Choose a Project",
+			"Codemem",
+		]);
+		project.value = project.options[1]?.value ?? "";
+		project.dispatchEvent(new Event("change"));
+		save.click();
+		await flushAsyncWork();
 
-		const blocked = document.querySelector(".recipient-policy-blocked-item");
-		expect(blocked?.textContent).toContain("Blocked");
-		expect(blocked?.textContent).toContain("Owner: Project owner");
-		expect(blocked?.textContent).toContain("Repair: Assign a stable canonical Project identity.");
-		expect(blocked?.querySelector("button, select")).toBeNull();
+		expect(api.repairRecipientPolicyProjectIdentity).toHaveBeenCalledWith({
+			blockedItemId: "blocked-multi",
+			sourceIdentityRef: "source-ref-multi",
+			sourceFingerprint: "source-fingerprint-multi",
+			projectRef: "project-oss",
+			spaceRef: "space-oss",
+		});
+	});
+
+	it("confirms and removes stale sources, reports the result, and refreshes the review", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview)
+			.mockResolvedValueOnce(
+				recipientReview({
+					blockedItems: [],
+					continuity: null,
+					staleNoContent: {
+						reason: "stale_no_content",
+						count: 2,
+						removableCount: 2,
+						labels: ["codemem", "chezmoi"],
+						sourceFingerprint: "stale-group-fingerprint",
+					},
+				}),
+			)
+			.mockResolvedValueOnce(recipientReview({ continuity: null, staleNoContent: null }));
+		vi.mocked(api.pruneStaleRecipientPolicySources).mockResolvedValue({
+			status: "applied",
+			sourceFingerprint: "stale-group-fingerprint",
+			errorCode: null,
+			removedCount: 1,
+			skippedCount: 1,
+			removed: [{ label: "codemem" }],
+			skipped: [{ label: "chezmoi", reason: "project_mapping" }],
+		});
+
+		await loadProjectsData();
+		const stale = document.querySelector<HTMLDetailsElement>(".recipient-policy-stale-no-content");
+		expect(stale?.open).toBe(false);
+		expect(stale?.querySelector("summary")?.textContent).toContain(
+			"2 old Project sources have no current memories",
+		);
+		expect(stale?.textContent).toContain("codemem");
+		expect(stale?.textContent).toContain("chezmoi");
+		expect(stale?.textContent).toContain(
+			"These legacy sharing records point at identities that own no memories, so they grant no access.",
+		);
+		expect(document.querySelector(".recipient-policy-blocked-item")).toBeNull();
+		const remove = stale?.querySelector<HTMLButtonElement>("button");
+		expect(remove?.textContent).toBe("Remove 2 records");
+		remove?.click();
+		const confirmation = stale?.querySelector<HTMLElement>(".recipient-policy-repair");
+		expect(confirmation?.hidden).toBe(false);
+		expect(confirmation?.textContent).toContain(
+			"It does not delete memories, sessions, or Spaces. This cannot be undone.",
+		);
+		const confirm = [...(confirmation?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+			(button) => button.textContent === "Remove 2 records",
+		);
+		confirm?.click();
+		await flushAsyncWork();
+
+		expect(api.pruneStaleRecipientPolicySources).toHaveBeenCalledWith({
+			sourceFingerprint: "stale-group-fingerprint",
+		});
+		expect(api.loadRecipientPolicyReview).toHaveBeenCalledTimes(2);
+		expect(showGlobalNotice).toHaveBeenCalledWith("1 record removed; 1 skipped.", "warning");
+		expect(document.querySelector(".recipient-policy-stale-no-content")).toBeNull();
+	});
+
+	it("opens Advanced Project administration for conflicting Space mappings", async () => {
+		const sharedProject = project({
+			display_project: "Shared default",
+			project: "Shared default",
+			workspace_identity: "shared:default",
+		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [sharedProject],
+			total: 1,
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({
+				blockedItems: [
+					{
+						blockedItemId: "blocked-boundaries",
+						finding: "This Project has multiple enforcement boundaries.",
+						ownerLabel: "Local administrator",
+						reason: "Project Shared default has conflicting Space mappings: Open source, Work.",
+						repairAction:
+							"Repair the ambiguous legacy Project-to-scope mapping in Advanced settings.",
+						repair: {
+							kind: "review_project_scope_mappings",
+							reason: "multiple_enforcement_boundaries",
+							projectIdentity: "shared:default",
+							projectDisplayName: "Shared default",
+							conflictingSpaces: [{ displayName: "Open source" }, { displayName: "Work" }],
+						},
+						version: 1,
+					},
+				],
+				continuity: null,
+				reviewItems: [],
+			}),
+		);
+
+		await loadProjectsData();
+		const blocked = document.querySelector<HTMLElement>(".recipient-policy-blocked-item");
+		expect(blocked?.textContent).toContain("Conflicting Spaces: Open source, Work");
+		expect(blocked?.textContent).not.toContain("scope-work");
+		const open = [...(blocked?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+			(button) => button.textContent === "Review Space mappings",
+		);
+		open?.click();
+
+		const row = [...document.querySelectorAll<HTMLElement>("[data-project-anchor-key]")].find(
+			(candidate) => candidate.dataset.projectAnchorKey === "project:shared:default",
+		);
+		const details = row?.querySelector<HTMLDetailsElement>(
+			":scope > details.project-inventory-details",
+		);
+		const mapping = details?.querySelector<HTMLSelectElement>(".project-domain-select");
+		expect(details?.open).toBe(true);
+		expect(document.activeElement).toBe(mapping);
 	});
 
 	it("opens row sharing with exactly the selected canonical project", async () => {
@@ -1146,6 +1407,115 @@ describe("Projects tab", () => {
 
 		select.blur();
 		expect(refresh).toHaveBeenCalledTimes(1);
+	});
+
+	it("preserves the project list DOM when refreshed payloads are unchanged", async () => {
+		initProjectsTab(() => {});
+		const result = {
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		};
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(result);
+
+		await loadProjectsData();
+		const originalRow = document.querySelector(".project-inventory-row");
+		await loadProjectsData();
+
+		expect(document.querySelector(".project-inventory-row")).toBe(originalRow);
+		expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain(
+			"1 project identity found",
+		);
+	});
+
+	it("defers changed project list replacement until the active control loses focus", async () => {
+		initProjectsTab(() => {});
+		vi.mocked(api.loadProjectScopeInventory)
+			.mockResolvedValueOnce({
+				has_more: false,
+				limit: 250,
+				offset: 0,
+				projects: [project({ identity_source: "cwd", workspace_identity: "/workspace/api" })],
+				total: 1,
+			})
+			.mockResolvedValue({
+				has_more: false,
+				limit: 250,
+				offset: 0,
+				projects: [
+					project({
+						identity_source: "cwd",
+						memory_count: 9,
+						workspace_identity: "/workspace/api",
+					}),
+				],
+				total: 1,
+			});
+
+		await loadProjectsData();
+		const originalRow = document.querySelector(".project-inventory-row");
+		const assign = Array.from(originalRow?.querySelectorAll("button") ?? []).find(
+			(button) => button.textContent === "Assign to Project…",
+		) as HTMLButtonElement | undefined;
+		assign?.focus();
+
+		await loadProjectsData();
+		expect(document.querySelector(".project-inventory-row")).toBe(originalRow);
+		expect(originalRow?.textContent).toContain("1 memories");
+
+		assign?.blur();
+		await Promise.resolve();
+		expect(document.querySelector(".project-inventory-row")).not.toBe(originalRow);
+		expect(document.querySelector(".project-inventory-row")?.textContent).toContain("9 memories");
+	});
+
+	it("keeps the visible project anchored when a changed payload replaces the list", async () => {
+		initProjectsTab(() => {});
+		vi.mocked(api.loadProjectScopeInventory)
+			.mockResolvedValueOnce({
+				has_more: false,
+				limit: 250,
+				offset: 0,
+				projects: [project()],
+				total: 1,
+			})
+			.mockResolvedValue({
+				has_more: false,
+				limit: 250,
+				offset: 0,
+				projects: [project({ memory_count: 2 })],
+				total: 1,
+			});
+
+		await loadProjectsData();
+		const originalRow = document.querySelector<HTMLElement>(".project-inventory-row");
+		if (!originalRow) throw new Error("project row missing");
+		const rect = vi
+			.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+			.mockImplementation(function (this: HTMLElement) {
+				const isAnchor = this.dataset.projectAnchorKey === originalRow.dataset.projectAnchorKey;
+				const top = isAnchor ? (this === originalRow ? 100 : 136) : 0;
+				return {
+					bottom: top + (isAnchor ? 50 : 0),
+					height: isAnchor ? 50 : 0,
+					left: 0,
+					right: 0,
+					top,
+					width: 0,
+					x: 0,
+					y: top,
+					toJSON: () => ({}),
+				};
+			});
+		const scrollBy = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+
+		await loadProjectsData();
+
+		expect(scrollBy).toHaveBeenCalledWith({ top: 36, left: 0, behavior: "auto" });
+		rect.mockRestore();
+		scrollBy.mockRestore();
 	});
 
 	it("replays skipped refresh when a focused cluster Space select blurs", async () => {
@@ -1989,6 +2359,34 @@ describe("Projects tab", () => {
 			workspace_identity: "https://git.example.invalid/exampleco/api.git",
 		});
 		expect(refresh).toHaveBeenCalled();
+	});
+
+	it("exposes path-based Project assignment without opening Advanced", async () => {
+		initProjectsTab(() => {});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 25,
+			offset: 0,
+			projects: [
+				project({
+					cwd: "/workspace/unmapped-worktree",
+					git_remote: null,
+					identity_source: "cwd",
+					project: null,
+					workspace_identity: "/workspace/unmapped-worktree",
+				}),
+			],
+			total: 1,
+		});
+
+		await loadProjectsData();
+
+		const card = document.querySelector<HTMLElement>(".project-inventory-row");
+		const directAction = Array.from(card?.children ?? [])
+			.flatMap((child) => Array.from(child.querySelectorAll("button")))
+			.find((button) => button.textContent === "Assign to Project…");
+		expect(directAction).not.toBeUndefined();
+		expect(directAction?.closest("details")).toBeNull();
 	});
 
 	it("disables project reassignment for saved mappings with no sessions", async () => {

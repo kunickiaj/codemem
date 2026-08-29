@@ -1116,6 +1116,15 @@
         gap: var(--sp-3);
         align-items: center;
         margin: var(--sp-4) 0 var(--sp-3);
+        position: sticky;
+        top: 118px; /* sticky header + tab bar */
+        z-index: 4;
+        padding: var(--sp-2);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: color-mix(in srgb, var(--surface-1) 94%, transparent);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
       }
       .projects-toolbar .feed-search { flex: 1 1 320px; }
       .projects-toolbar select {
@@ -1159,6 +1168,9 @@
         border: 1px solid var(--border);
         border-radius: var(--radius-md);
         background: var(--surface-1);
+      }
+      .project-recipient-policy-review-content + .project-team-setup-entry {
+        margin-top: var(--sp-5);
       }
       .project-inventory-row-header {
         display: flex;
@@ -1241,6 +1253,25 @@
         padding-left: var(--sp-5);
       }
       .recipient-policy-blocked-heading { margin-top: var(--sp-5) !important; }
+      .recipient-policy-blocked-item { display: grid; gap: var(--sp-3); }
+      .recipient-policy-blocked-item > * { margin-top: 0; }
+      .recipient-policy-repair { display: grid; gap: var(--sp-3); align-items: start; }
+      .recipient-policy-repair-field { display: grid; gap: var(--sp-1); max-width: 420px; }
+      .recipient-policy-repair-field label {
+        color: var(--text-secondary);
+        font-size: var(--font-size-sm);
+        font-weight: var(--font-weight-semibold);
+      }
+      .recipient-policy-repair-actions { display: flex; align-items: center; gap: var(--sp-2); }
+      .recipient-policy-repair-status { margin: 0; }
+      .recipient-policy-stale-no-content {
+        margin-top: var(--sp-4);
+        padding: var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+      }
+      .recipient-policy-stale-no-content summary { cursor: pointer; font-weight: var(--font-weight-semibold); }
+      .recipient-policy-stale-no-content ul { margin: var(--sp-2) 0 0; padding-left: var(--sp-5); }
       .project-selection-actions,
       .recipient-policy-management-actions,
       .recipient-policy-sharing-actions {

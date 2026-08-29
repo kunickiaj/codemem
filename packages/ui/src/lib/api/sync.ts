@@ -715,12 +715,36 @@ export interface RecipientPolicyBlockedItemV1 {
 	reason: string;
 	ownerLabel: string;
 	repairAction: string;
+	repair?:
+		| {
+				kind: "map_legacy_project_identity";
+				sourceIdentityRef: string;
+				sourceFingerprint: string;
+				reason?: "ready" | "ambiguous_scope_evidence" | "no_eligible_projects" | "stale_no_content";
+				choices: Array<{ projectRef: string; displayName: string; spaceRefs?: string[] }>;
+				spaces?: Array<{ spaceRef: string; displayName: string }>;
+		  }
+		| {
+				kind: "review_project_scope_mappings";
+				reason: "multiple_enforcement_boundaries";
+				projectIdentity: string;
+				projectDisplayName: string;
+				conflictingSpaces: Array<{ displayName: string }>;
+		  }
+		| null;
 }
 
 export interface RecipientPolicyReviewListV1 {
 	version: 1;
 	reviewItems: RecipientPolicyReviewItemV1[];
 	blockedItems: RecipientPolicyBlockedItemV1[];
+	staleNoContent?: {
+		reason: "stale_no_content";
+		count: number;
+		removableCount: number;
+		labels: string[];
+		sourceFingerprint: string;
+	} | null;
 	continuity: {
 		state: "legacy_access_preserved";
 		findingCount: number;
@@ -752,6 +776,45 @@ export interface RecipientPolicyReviewResolveResultV1 {
 export interface RecipientPolicyReviewBulkResultV1 {
 	version: 1;
 	results: RecipientPolicyReviewResolveResultV1[];
+}
+
+export interface RecipientPolicyProjectIdentityRepairRequestV1 {
+	blockedItemId: string;
+	sourceIdentityRef: string;
+	sourceFingerprint: string;
+	projectRef: string;
+	spaceRef?: string;
+}
+
+export interface RecipientPolicyProjectIdentityRepairResultV1 {
+	blockedItemId: string;
+	sourceFingerprint: string;
+	status: "applied" | "stale" | "not_found" | "invalid" | "conflict";
+	errorCode: string | null;
+	idempotent: boolean;
+}
+
+export interface RecipientPolicyStaleSourcePruneRequestV1 {
+	sourceFingerprint: string;
+}
+
+export interface RecipientPolicyStaleSourcePruneResultV1 {
+	status: "applied" | "stale" | "invalid" | "conflict";
+	sourceFingerprint: string;
+	errorCode: string | null;
+	removedCount: number;
+	skippedCount: number;
+	removed: Array<{ label: string }>;
+	skipped: Array<{
+		label: string;
+		reason:
+			| "live_memories"
+			| "live_scope_evidence"
+			| "project_mapping"
+			| "protected_identity"
+			| "no_longer_stale_no_content"
+			| "legacy_rows_missing";
+	}>;
 }
 
 export class RecipientPolicyReviewStaleError extends Error {
@@ -1722,6 +1785,43 @@ export async function resolveRecipientPolicyReviewBulk(
 		throw new Error(payloadError(payload) || text || "request failed");
 	}
 	return payload as RecipientPolicyReviewBulkResultV1;
+}
+
+export async function repairRecipientPolicyProjectIdentity(
+	input: RecipientPolicyProjectIdentityRepairRequestV1,
+): Promise<RecipientPolicyProjectIdentityRepairResultV1> {
+	const resp = await fetch("/api/sync/recipient-policy/v1/review/repair-project-identity", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(input),
+	});
+	const { text, payload } =
+		await readJsonPayload<RecipientPolicyProjectIdentityRepairResultV1>(resp);
+	if (!resp.ok) {
+		if (payload?.status === "stale") {
+			throw new Error("Project source state changed. Review the available Projects again.");
+		}
+		throw new Error(payloadError(payload) || text || "request failed");
+	}
+	return payload as RecipientPolicyProjectIdentityRepairResultV1;
+}
+
+export async function pruneStaleRecipientPolicySources(
+	input: RecipientPolicyStaleSourcePruneRequestV1,
+): Promise<RecipientPolicyStaleSourcePruneResultV1> {
+	const resp = await fetch("/api/sync/recipient-policy/v1/review/prune-stale-sources", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(input),
+	});
+	const { text, payload } = await readJsonPayload<RecipientPolicyStaleSourcePruneResultV1>(resp);
+	if (!resp.ok) {
+		if (resp.status === 409 && payload?.status === "stale") {
+			throw new Error("Old sharing records changed. Refresh the review and try again.");
+		}
+		throw new Error(payloadError(payload) || text || "request failed");
+	}
+	return payload as RecipientPolicyStaleSourcePruneResultV1;
 }
 
 export async function loadSharingDomainSettings(): Promise<SharingDomainSettings> {

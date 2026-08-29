@@ -23,10 +23,12 @@ import type {
 	RecipientPolicyCoordinatorEffectReceipt,
 	RecipientPolicyOnboardingPreviewV1,
 	RecipientPolicyPeerCapability,
+	RecipientPolicyProjectIdentityRepairRequestV1,
 	RecipientPolicyReconcileResult,
 	RecipientPolicyReconcilerEffects,
 	RecipientPolicyReviewDecisionV1,
 	RecipientPolicyReviewResolveRequestV1,
+	RecipientPolicyStaleSourcePruneRequestV1,
 	RecipientReviewedIntentV1,
 	ReplicationOp,
 	SemanticIndexDiagnostics,
@@ -139,6 +141,7 @@ import {
 	previewRecipientPolicyOnboarding,
 	previewRecipientPolicyOnboardingFromReviewedIntent,
 	projectShareLifecycle,
+	pruneStaleRecipientPolicySources,
 	RecipientPolicyEdgeRequestError,
 	RecipientPolicyTeamRenameError,
 	readCodememConfigFile,
@@ -155,6 +158,7 @@ import {
 	refreshConfiguredScopeMembershipCache,
 	rejectInboundScopeFailures,
 	renameRecipientPolicyTeam,
+	repairRecipientPolicyProjectIdentity,
 	requestJson,
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
@@ -5801,12 +5805,62 @@ export function syncRoutes(
 	app.get("/api/sync/recipient-policy/v1/review", (c) => {
 		const store = getStore();
 		ensureLocalActorRecord(store);
-		return c.json(
-			listRecipientPolicyReview(store.db, {
-				localActorId: store.actorId,
-				localDeviceId: store.deviceId,
-			}),
+		const review = listRecipientPolicyReview(store.db, {
+			localActorId: store.actorId,
+			localDeviceId: store.deviceId,
+		});
+		return c.json({ ...review, staleNoContent: review.staleNoContent });
+	});
+
+	app.post("/api/sync/recipient-policy/v1/review/repair-project-identity", async (c) => {
+		const value = await parseViewerJsonBody(c);
+		if (!value || typeof value !== "object" || Array.isArray(value)) {
+			return c.json({ error: "request_invalid" }, 400);
+		}
+		const body = value as Record<string, unknown>;
+		const requiredKeys = ["blockedItemId", "sourceIdentityRef", "sourceFingerprint", "projectRef"];
+		const allowedKeys = new Set([...requiredKeys, "spaceRef"]);
+		if (
+			Object.keys(body).some((key) => !allowedKeys.has(key)) ||
+			requiredKeys.some((key) => typeof body[key] !== "string") ||
+			(body.spaceRef !== undefined && typeof body.spaceRef !== "string")
+		) {
+			return c.json({ error: "request_invalid" }, 400);
+		}
+		const store = getStore();
+		const result = repairRecipientPolicyProjectIdentity(
+			store.db,
+			{ localActorId: store.actorId, localDeviceId: store.deviceId },
+			body as unknown as RecipientPolicyProjectIdentityRepairRequestV1,
 		);
+		if (result.status === "stale" || result.status === "conflict") return c.json(result, 409);
+		if (result.status === "not_found") return c.json(result, 404);
+		if (result.status === "invalid") return c.json(result, 400);
+		return c.json(result);
+	});
+
+	app.post("/api/sync/recipient-policy/v1/review/prune-stale-sources", async (c) => {
+		const value = await parseViewerJsonBody(c);
+		if (!value || typeof value !== "object" || Array.isArray(value)) {
+			return c.json({ error: "request_invalid" }, 400);
+		}
+		const body = value as Record<string, unknown>;
+		if (
+			Object.keys(body).length !== 1 ||
+			typeof body.sourceFingerprint !== "string" ||
+			!body.sourceFingerprint.trim()
+		) {
+			return c.json({ error: "request_invalid" }, 400);
+		}
+		const store = getStore();
+		const result = pruneStaleRecipientPolicySources(
+			store.db,
+			{ localActorId: store.actorId, localDeviceId: store.deviceId },
+			body as unknown as RecipientPolicyStaleSourcePruneRequestV1,
+		);
+		if (result.status === "stale" || result.status === "conflict") return c.json(result, 409);
+		if (result.status === "invalid") return c.json(result, 400);
+		return c.json(result);
 	});
 
 	app.get("/api/sync/recipient-policy/v1/intent", (c) => {
