@@ -1137,8 +1137,10 @@ describe("viewer-server", () => {
 			expect(safe.projectChanges[0]).toEqual({
 				projectRef,
 				projectDisplayName: "Project outside this setup (1)",
+				fromCanonicalProjectRef: core.legacyTeamCanonicalProjectRef(candidateRef, fromIdentity),
 				fromResolvedProjectRef: fromRef,
 				fromResolvedProjectDisplayName: "Project outside this setup (2)",
+				toCanonicalProjectRef: core.legacyTeamCanonicalProjectRef(candidateRef, toIdentity),
 				toResolvedProjectRef: toRef,
 				toResolvedProjectDisplayName: "Project outside this setup (3)",
 				change: "update",
@@ -1205,6 +1207,39 @@ describe("viewer-server", () => {
 			]);
 			expect(JSON.stringify(safe)).not.toContain("external-device");
 			expect(JSON.stringify(safe)).not.toContain("file:///private");
+		});
+
+		it("labels synthetic default-sharing cleanup without pretending it is a Project", () => {
+			const safe = __teamSetupTestHooks.viewerSafeAccessDelta(candidateRef, {
+				teamChanges: [],
+				membershipChanges: [],
+				projectChanges: [],
+				recipientChanges: [
+					{
+						canonicalProjectIdentity: "shared:default",
+						recipientKind: "team",
+						recipientId: "team-id",
+						change: "remove",
+					},
+				],
+				deviceAccessChanges: [
+					{
+						canonicalProjectIdentity: "shared:default",
+						deviceId: "device-id",
+						change: "remove",
+					},
+				],
+			});
+
+			expect(safe.recipientChanges[0]).toMatchObject({
+				canonicalProjectDisplayName: "Legacy default sharing",
+				canonicalProjectKind: "legacy_default_sharing",
+			});
+			expect(safe.deviceAccessChanges[0]).toMatchObject({
+				canonicalProjectDisplayName: "Legacy default sharing",
+				canonicalProjectKind: "legacy_default_sharing",
+			});
+			expect(JSON.stringify(safe)).not.toContain("shared:default");
 		});
 
 		it("fails closed when active identity choices exceed their response cap", async () => {

@@ -98,8 +98,10 @@ export interface LegacyTeamSetupViewerAccessDeltaV1 {
 	projectChanges: Array<{
 		projectRef: string;
 		projectDisplayName: string;
+		fromCanonicalProjectRef: string | null;
 		fromResolvedProjectRef: string | null;
 		fromResolvedProjectDisplayName: string | null;
+		toCanonicalProjectRef: string | null;
 		toResolvedProjectRef: string | null;
 		toResolvedProjectDisplayName: string | null;
 		change: "add" | "update" | "remove";
@@ -107,6 +109,7 @@ export interface LegacyTeamSetupViewerAccessDeltaV1 {
 	recipientChanges: Array<{
 		canonicalProjectRef: string;
 		canonicalProjectDisplayName: string;
+		canonicalProjectKind: "project" | "legacy_default_sharing";
 		recipientKind: "team";
 		recipientRef: string;
 		recipientDisplayName: string;
@@ -115,6 +118,7 @@ export interface LegacyTeamSetupViewerAccessDeltaV1 {
 	deviceAccessChanges: Array<{
 		canonicalProjectRef: string;
 		canonicalProjectDisplayName: string;
+		canonicalProjectKind: "project" | "legacy_default_sharing";
 		deviceRef: string;
 		deviceDisplayName: string;
 		change: "add" | "remove";

@@ -15,7 +15,7 @@ function compareCanonicalId(
 	return left.canonicalId < right.canonicalId ? -1 : left.canonicalId > right.canonicalId ? 1 : 0;
 }
 
-function displayNameKey(displayName: string): string {
+export function projectDisplayNameKey(displayName: string): string {
 	return displayName
 		.normalize("NFKC")
 		.replace(/\u200B/gu, "")
@@ -41,7 +41,7 @@ export function stableProjectPresentationLabels(
 ): ReadonlyMap<string, string> {
 	const groups = new Map<string, ProjectIdentityPresentationItem[]>();
 	for (const item of distinctSortedItems(items)) {
-		const key = displayNameKey(item.displayName);
+		const key = projectDisplayNameKey(item.displayName);
 		const group = groups.get(key);
 		if (group) group.push(item);
 		else groups.set(key, [item]);
@@ -69,7 +69,7 @@ export function projectIdentitySummaryGroups(
 		{ displayName: string; canonicalIds: string[]; firstCanonicalId: string }
 	>();
 	for (const item of distinctSortedItems(items)) {
-		const key = displayNameKey(item.displayName);
+		const key = projectDisplayNameKey(item.displayName);
 		const group = groups.get(key);
 		if (group) group.canonicalIds.push(item.canonicalId);
 		else {
@@ -82,8 +82,8 @@ export function projectIdentitySummaryGroups(
 	}
 	return [...groups.values()]
 		.sort((left, right) => {
-			const nameOrder = displayNameKey(left.displayName).localeCompare(
-				displayNameKey(right.displayName),
+			const nameOrder = projectDisplayNameKey(left.displayName).localeCompare(
+				projectDisplayNameKey(right.displayName),
 			);
 			if (nameOrder !== 0) return nameOrder;
 			return left.firstCanonicalId < right.firstCanonicalId

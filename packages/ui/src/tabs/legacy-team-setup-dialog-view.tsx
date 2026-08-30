@@ -47,6 +47,7 @@ export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps)
 	const error = globalError(session);
 	const loading = session.commands.some((command) => command.kind === "load");
 	const globalBusy = hasGlobalOperation(session) || hasBlockingOperation(session);
+	const finishing = session.commands.some((command) => command.kind === "finish");
 	const recoveryRequired = view?.state === "unavailable" || error?.retry === "refresh";
 	const mutationsBlocked = !isEditable(view) || globalBusy || Boolean(error);
 	const mutationBlockDescriptionId =
@@ -62,6 +63,7 @@ export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps)
 		(item) => item.scope.kind === "device" || item.scope.kind === "project",
 	);
 	const itemRecoveryRequired = itemErrors.length > 0;
+	const itemRefreshRecovery = itemErrors.some((item) => item.retry === "refresh");
 	const blockedDeviceRefs = new Set(
 		itemErrors.flatMap((item) => (item.scope.kind === "device" ? [item.scope.itemRef] : [])),
 	);
@@ -122,7 +124,13 @@ export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps)
 									}}
 									type="button"
 								>
-									{loading ? "Retrying…" : "Retry"}
+									{loading
+										? error.retry === "refresh"
+											? "Refreshing…"
+											: "Retrying…"
+										: error.retry === "refresh"
+											? "Refresh Team setup"
+											: "Retry"}
 								</button>
 							) : null}
 						</div>
@@ -157,7 +165,13 @@ export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps)
 								}}
 								type="button"
 							>
-								{loading ? "Retrying…" : "Retry"}
+								{loading
+									? itemRefreshRecovery
+										? "Refreshing…"
+										: "Retrying…"
+									: itemRefreshRecovery
+										? "Refresh Team setup"
+										: "Retry"}
 							</button>
 						</div>
 					) : null}
@@ -233,6 +247,7 @@ export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps)
 											: mutationBlockDescriptionId
 									}
 									detail={view}
+									finishing={finishing}
 									onFinish={props.onFinish}
 								/>
 							) : (

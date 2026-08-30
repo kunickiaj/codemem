@@ -80,6 +80,8 @@ const CHANGED_STATE_ERROR =
 	"Team setup changed since it was last reviewed. Reload the latest details to continue.";
 const ROSTER_UNAVAILABLE_ERROR =
 	"Team device details are temporarily unavailable. Check the coordinator connection and settings, then refresh.";
+const ROSTER_UNAVAILABLE_AFTER_FINISH_ERROR =
+	"Team device details were unavailable, so setup was not finished and no changes were applied. Check the coordinator connection and settings, then refresh.";
 
 export function createSetupSessionState(): SetupSessionState {
 	return { status: "closed", generation: 0 };
@@ -577,17 +579,17 @@ function errorFor(command: SetupEffect, cause: unknown): SetupSessionError {
 	const message = changed
 		? CHANGED_STATE_ERROR
 		: rosterUnavailable
-			? ROSTER_UNAVAILABLE_ERROR
+			? command.kind === "finish"
+				? ROSTER_UNAVAILABLE_AFTER_FINISH_ERROR
+				: ROSTER_UNAVAILABLE_ERROR
 			: safeError(command.kind);
-	const retry = changed
-		? ("refresh" as const)
-		: command.kind === "refresh"
+	const retry =
+		changed ||
+		rosterUnavailable ||
+		command.kind === "refresh" ||
+		(command.kind === "load" && command.refresh)
 			? ("refresh" as const)
-			: command.kind === "load"
-				? command.refresh
-					? ("refresh" as const)
-					: ("load" as const)
-				: ("load" as const);
+			: ("load" as const);
 	if (
 		command.kind === "assign_device" ||
 		command.kind === "decide_device" ||

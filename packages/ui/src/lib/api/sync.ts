@@ -999,8 +999,10 @@ export interface LegacyTeamSetupAccessDeltaV1 {
 	projectChanges: Array<{
 		projectRef: string;
 		projectDisplayName: string;
+		fromCanonicalProjectRef: string | null;
 		fromResolvedProjectRef: string | null;
 		fromResolvedProjectDisplayName: string | null;
+		toCanonicalProjectRef: string | null;
 		toResolvedProjectRef: string | null;
 		toResolvedProjectDisplayName: string | null;
 		change: "add" | "update" | "remove";
@@ -1008,6 +1010,7 @@ export interface LegacyTeamSetupAccessDeltaV1 {
 	recipientChanges: Array<{
 		canonicalProjectRef: string;
 		canonicalProjectDisplayName: string;
+		canonicalProjectKind: "project" | "legacy_default_sharing";
 		recipientKind: "team";
 		recipientRef: string;
 		recipientDisplayName: string;
@@ -1016,6 +1019,7 @@ export interface LegacyTeamSetupAccessDeltaV1 {
 	deviceAccessChanges: Array<{
 		canonicalProjectRef: string;
 		canonicalProjectDisplayName: string;
+		canonicalProjectKind: "project" | "legacy_default_sharing";
 		deviceRef: string;
 		deviceDisplayName: string;
 		change: "add" | "remove";
@@ -1291,8 +1295,10 @@ function isLegacyTeamSetupAccessDelta(value: unknown): value is LegacyTeamSetupA
 				isJsonRecord(item) &&
 				typeof item.projectRef === "string" &&
 				typeof item.projectDisplayName === "string" &&
+				isStringOrNull(item.fromCanonicalProjectRef) &&
 				isStringOrNull(item.fromResolvedProjectRef) &&
 				isStringOrNull(item.fromResolvedProjectDisplayName) &&
+				isStringOrNull(item.toCanonicalProjectRef) &&
 				isStringOrNull(item.toResolvedProjectRef) &&
 				isStringOrNull(item.toResolvedProjectDisplayName) &&
 				validChange(item.change),
@@ -1303,6 +1309,8 @@ function isLegacyTeamSetupAccessDelta(value: unknown): value is LegacyTeamSetupA
 				isJsonRecord(item) &&
 				typeof item.canonicalProjectRef === "string" &&
 				typeof item.canonicalProjectDisplayName === "string" &&
+				(item.canonicalProjectKind === "project" ||
+					item.canonicalProjectKind === "legacy_default_sharing") &&
 				item.recipientKind === "team" &&
 				typeof item.recipientRef === "string" &&
 				typeof item.recipientDisplayName === "string" &&
@@ -1314,6 +1322,8 @@ function isLegacyTeamSetupAccessDelta(value: unknown): value is LegacyTeamSetupA
 				isJsonRecord(item) &&
 				typeof item.canonicalProjectRef === "string" &&
 				typeof item.canonicalProjectDisplayName === "string" &&
+				(item.canonicalProjectKind === "project" ||
+					item.canonicalProjectKind === "legacy_default_sharing") &&
 				typeof item.deviceRef === "string" &&
 				typeof item.deviceDisplayName === "string" &&
 				typeof item.change === "string" &&

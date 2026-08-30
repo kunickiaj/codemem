@@ -745,6 +745,9 @@ describe("legacy Team setup dialog", () => {
 				"Check the coordinator connection and settings, then refresh.",
 			);
 		});
+		expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+			"temporarily unavailable",
+		);
 		expect(document.body.textContent).not.toContain("team_setup_roster_unavailable");
 	});
 
@@ -1723,8 +1726,10 @@ describe("legacy Team setup dialog", () => {
 						{
 							projectRef: "project-ref-one",
 							projectDisplayName: "Legacy Project",
+							fromCanonicalProjectRef: "canonical-project-old",
 							fromResolvedProjectRef: "resolved-project-old",
 							fromResolvedProjectDisplayName: "Previous Project",
+							toCanonicalProjectRef: "canonical-project-ref",
 							toResolvedProjectRef: "resolved-project-beta",
 							toResolvedProjectDisplayName: "Project Beta",
 							change: "update",
@@ -1734,6 +1739,7 @@ describe("legacy Team setup dialog", () => {
 						{
 							canonicalProjectRef: "canonical-project-ref",
 							canonicalProjectDisplayName: "Legacy Project",
+							canonicalProjectKind: "project",
 							recipientKind: "team",
 							recipientRef: "opaque-team-ref",
 							recipientDisplayName: "Example Team",
@@ -1744,6 +1750,7 @@ describe("legacy Team setup dialog", () => {
 						{
 							canonicalProjectRef: "canonical-project-ref",
 							canonicalProjectDisplayName: "Legacy Project",
+							canonicalProjectKind: "project",
 							deviceRef: "device-ref-one",
 							deviceDisplayName: "Work laptop",
 							change: "add",
@@ -1751,6 +1758,7 @@ describe("legacy Team setup dialog", () => {
 						{
 							canonicalProjectRef: "external-canonical-project-ref",
 							canonicalProjectDisplayName: "External Project",
+							canonicalProjectKind: "project",
 							deviceRef: "external-device-ref",
 							deviceDisplayName: "External laptop",
 							change: "remove",
@@ -1778,6 +1786,197 @@ describe("legacy Team setup dialog", () => {
 		expect(text).not.toContain("resolved-project-old");
 		expect(document.querySelectorAll(".legacy-team-setup-exact-list li")).toHaveLength(6);
 		expect(document.querySelectorAll(".legacy-team-setup-delta details")).toHaveLength(0);
+	});
+
+	it("disambiguates changed Projects against the full reviewed Project set", async () => {
+		const projects = [
+			project({
+				projectRef: "project-ref-a",
+				displayName: "Shared name",
+				resolution: "deterministic",
+				mappingChoices: [],
+			}),
+			project({
+				projectRef: "project-ref-b",
+				displayName: "Shared name",
+				resolution: "deterministic",
+				mappingChoices: [],
+			}),
+		];
+		setup({
+			loadDetail: vi.fn().mockResolvedValue(
+				detail({
+					canFinish: true,
+					projects,
+					accessDelta: {
+						teamChanges: [],
+						membershipChanges: [],
+						projectChanges: [
+							{
+								projectRef: "project-ref-b",
+								projectDisplayName: "Shared name",
+								fromCanonicalProjectRef: null,
+								fromResolvedProjectRef: null,
+								fromResolvedProjectDisplayName: null,
+								toCanonicalProjectRef: "canonical-project-b",
+								toResolvedProjectRef: "resolved-project-b",
+								toResolvedProjectDisplayName: "Project B",
+								change: "add",
+							},
+						],
+						recipientChanges: [],
+						deviceAccessChanges: [],
+					},
+				}),
+			),
+		});
+
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Review Projects"));
+		act(() => button("Review").click());
+		const changedProjectText = [
+			...document.querySelectorAll<HTMLLIElement>(".legacy-team-setup-exact-list li"),
+		].find((item) => item.textContent?.startsWith("Add Shared name —"))?.textContent;
+		expect(changedProjectText).toContain("2 of 2: no Project to Project B.");
+	});
+
+	it("presents one canonical destination once when multiple sources map to it", async () => {
+		const projects = [
+			project({
+				projectRef: "project-ref-a",
+				displayName: "Source A",
+				resolution: "deterministic",
+				canonicalProjectRef: "canonical-project-shared",
+				resolvedProjectRef: "resolved-project-a",
+				mappingChoices: [],
+			}),
+			project({
+				projectRef: "project-ref-b",
+				displayName: "Source B",
+				resolution: "deterministic",
+				canonicalProjectRef: "canonical-project-shared",
+				resolvedProjectRef: "resolved-project-b",
+				mappingChoices: [],
+			}),
+		];
+		setup({
+			loadDetail: vi.fn().mockResolvedValue(
+				detail({
+					canFinish: true,
+					projects,
+					accessDelta: {
+						teamChanges: [],
+						membershipChanges: [],
+						projectChanges: projects.map((entry) => ({
+							projectRef: entry.projectRef,
+							projectDisplayName: entry.displayName,
+							fromCanonicalProjectRef: null,
+							fromResolvedProjectRef: null,
+							fromResolvedProjectDisplayName: null,
+							toCanonicalProjectRef: entry.canonicalProjectRef,
+							toResolvedProjectRef: entry.resolvedProjectRef,
+							toResolvedProjectDisplayName: "Shared destination",
+							change: "add" as const,
+						})),
+						recipientChanges: [],
+						deviceAccessChanges: [],
+					},
+				}),
+			),
+		});
+
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Review Projects"));
+		act(() => button("Review").click());
+		expect(document.body.textContent).toContain("Add Source A: no Project to Shared destination.");
+		expect(document.body.textContent).toContain("Add Source B: no Project to Shared destination.");
+		expect(document.body.textContent).not.toContain("Shared destination — duplicate name");
+	});
+
+	it("presents one prior canonical destination once when multiple sources leave it", async () => {
+		const projects = [
+			project({ projectRef: "project-ref-a", displayName: "Source A" }),
+			project({ projectRef: "project-ref-b", displayName: "Source B" }),
+		];
+		setup({
+			loadDetail: vi.fn().mockResolvedValue(
+				detail({
+					canFinish: true,
+					projects,
+					accessDelta: {
+						teamChanges: [],
+						membershipChanges: [],
+						projectChanges: projects.map((entry, index) => ({
+							projectRef: entry.projectRef,
+							projectDisplayName: entry.displayName,
+							fromCanonicalProjectRef: "canonical-project-shared",
+							fromResolvedProjectRef: `resolved-project-old-${index}`,
+							fromResolvedProjectDisplayName: "Shared destination",
+							toCanonicalProjectRef: `canonical-project-new-${index}`,
+							toResolvedProjectRef: `resolved-project-new-${index}`,
+							toResolvedProjectDisplayName: `New destination ${index + 1}`,
+							change: "update" as const,
+						})),
+						recipientChanges: [],
+						deviceAccessChanges: [],
+					},
+				}),
+			),
+		});
+
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Review Projects"));
+		act(() => button("Review").click());
+		expect(document.body.textContent).toContain(
+			"Update Source A: Shared destination to New destination 1.",
+		);
+		expect(document.body.textContent).toContain(
+			"Update Source B: Shared destination to New destination 2.",
+		);
+		expect(document.body.textContent).not.toContain("Shared destination — Project");
+	});
+
+	it("disambiguates changed canonical Projects against unchanged reviewed Projects", async () => {
+		const projects = [
+			project({
+				projectRef: "project-ref-a",
+				displayName: "Shared name",
+				canonicalProjectRef: "canonical-project-a",
+			}),
+			project({
+				projectRef: "project-ref-b",
+				displayName: "Shared name",
+				canonicalProjectRef: "canonical-project-b",
+			}),
+		];
+		setup({
+			loadDetail: vi.fn().mockResolvedValue(
+				detail({
+					canFinish: true,
+					projects,
+					accessDelta: {
+						teamChanges: [],
+						membershipChanges: [],
+						projectChanges: [],
+						recipientChanges: [
+							{
+								canonicalProjectRef: "canonical-project-a",
+								canonicalProjectDisplayName: "Shared name",
+								canonicalProjectKind: "project",
+								recipientKind: "team",
+								recipientRef: "team-ref",
+								recipientDisplayName: "Example Team",
+								change: "add",
+							},
+						],
+						deviceAccessChanges: [],
+					},
+				}),
+			),
+		});
+
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Review Projects"));
+		act(() => button("Review").click());
+		expect(document.body.textContent).toContain(
+			"Add Example Team as a recipient for Shared name — Project 1 of 2.",
+		);
 	});
 
 	it("summarizes a 63 Project by 6 device migration while preserving all 509 exact rows", async () => {
@@ -1822,8 +2021,10 @@ describe("legacy Team setup dialog", () => {
 			projectChanges: projects.map((entry) => ({
 				projectRef: entry.projectRef,
 				projectDisplayName: entry.displayName,
+				fromCanonicalProjectRef: null,
 				fromResolvedProjectRef: null,
 				fromResolvedProjectDisplayName: null,
+				toCanonicalProjectRef: entry.canonicalProjectRef,
 				toResolvedProjectRef: entry.resolvedProjectRef,
 				toResolvedProjectDisplayName: entry.displayName,
 				change: "add" as const,
@@ -1831,6 +2032,7 @@ describe("legacy Team setup dialog", () => {
 			recipientChanges: projects.map((entry) => ({
 				canonicalProjectRef: entry.canonicalProjectRef ?? "",
 				canonicalProjectDisplayName: entry.displayName,
+				canonicalProjectKind: "project" as const,
 				recipientKind: "team" as const,
 				recipientRef: "internal-team-ref",
 				recipientDisplayName: "Example Team",
@@ -1840,6 +2042,7 @@ describe("legacy Team setup dialog", () => {
 				devices.map((entryDevice) => ({
 					canonicalProjectRef: entry.canonicalProjectRef ?? "",
 					canonicalProjectDisplayName: entry.displayName,
+					canonicalProjectKind: "project" as const,
 					deviceRef: entryDevice.deviceRef,
 					deviceDisplayName: entryDevice.displayName,
 					change: "add" as const,
@@ -1858,6 +2061,8 @@ describe("legacy Team setup dialog", () => {
 		});
 
 		await vi.waitFor(() => expect(document.body.textContent).toContain("Review Projects"));
+		expect(document.body.textContent).toContain("greenroom — Project 1 of 34");
+		expect(document.body.textContent).toContain("greenroom — Project 34 of 34");
 		act(() => button("Review").click());
 		const review = document.querySelector<HTMLElement>(
 			'[aria-labelledby="legacy-team-setup-step-review"]',
@@ -1882,13 +2087,13 @@ describe("legacy Team setup dialog", () => {
 		expect(review.textContent).toContain("6 included devices");
 		expect(review.textContent).toContain("378 device-access changes");
 		expect(section("Projects").textContent).toContain(
-			"greenroom — 34 Projects with this name, 34 Project changes",
+			"greenroom — 34 reviewed Projects, 34 Project changes",
 		);
 		expect(section("Recipients").textContent).toContain(
-			"greenroom — 34 Projects with this name, 34 recipient changes",
+			"greenroom — 34 canonical Projects, 34 recipient changes",
 		);
 		expect(section("Device access").textContent).toContain(
-			"greenroom — 34 Projects with this name, 204 device-access changes",
+			"greenroom — 34 canonical Projects, 204 device-access changes",
 		);
 		expect(review.textContent).not.toContain("internal-");
 
@@ -1916,14 +2121,127 @@ describe("legacy Team setup dialog", () => {
 		expect([...review.querySelectorAll("details")].every((details) => !details.open)).toBe(true);
 		expect(
 			[...section("Projects").querySelectorAll(".legacy-team-setup-exact-list > li")].filter(
-				(row) => row.textContent === "Add greenroom: no Project to greenroom.",
+				(row) => row.textContent?.startsWith("Add greenroom — Project "),
 			),
 		).toHaveLength(34);
 		expect(
 			[...section("Device access").querySelectorAll(".legacy-team-setup-exact-list > li")].filter(
-				(row) => row.textContent === "Add Work laptop access to greenroom.",
+				(row) => row.textContent?.startsWith("Add Work laptop access to greenroom — Project "),
 			),
 		).toHaveLength(68);
+	});
+
+	it("explains legacy default-sharing cleanup as a net effect rather than an unknown Project", async () => {
+		const devices = ["Dustin Airbnb", "Sarvar"].map((displayName, index) =>
+			device({
+				deviceRef: `cleanup-device-${index + 1}`,
+				displayName,
+				decision: "included",
+				targetIdentityRef: `cleanup-identity-${index + 1}`,
+			}),
+		);
+		const projects = [
+			project(),
+			project({ projectRef: "project-ref-two", displayName: "greenroom" }),
+		];
+		setup({
+			loadDetail: vi.fn().mockResolvedValue(
+				detail({
+					canFinish: true,
+					devices,
+					projects,
+					accessDelta: {
+						teamChanges: [],
+						membershipChanges: [],
+						projectChanges: [],
+						recipientChanges: [
+							{
+								canonicalProjectRef: "legacy-default-ref",
+								canonicalProjectDisplayName: "Legacy default sharing",
+								canonicalProjectKind: "legacy_default_sharing",
+								recipientKind: "team",
+								recipientRef: "team-ref",
+								recipientDisplayName: "SRE",
+								change: "remove",
+							},
+						],
+						deviceAccessChanges: devices.map((entry) => ({
+							canonicalProjectRef: "legacy-default-ref",
+							canonicalProjectDisplayName: "Legacy default sharing",
+							canonicalProjectKind: "legacy_default_sharing" as const,
+							deviceRef: entry.deviceRef,
+							deviceDisplayName: entry.displayName,
+							change: "remove" as const,
+						})),
+					},
+				}),
+			),
+		});
+
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Review Projects"));
+		act(() => button("Review").click());
+		const text = document.body.textContent ?? "";
+
+		expect(text).toContain("No new access will be added");
+		expect(text).toContain("removes legacy default sharing for Example Team");
+		expect(text).toContain(
+			"2 devices will stop receiving memories shared only through that default",
+		);
+		expect(text).toContain("Project-scoped access is unchanged across 2 reviewed Projects");
+		expect(text).toContain("Stop using legacy default sharing for SRE");
+		expect(text).toContain("Dustin Airbnb stops inheriting legacy default sharing");
+		expect(text).not.toContain("Project with this name");
+		expect(text).not.toContain("Project outside this setup");
+	});
+
+	it("distinguishes the legacy default scope from a Project with the same name", async () => {
+		const changes = Array.from({ length: 11 }, (_, index) => ({
+			deviceRef: `device-ref-${index}`,
+			deviceDisplayName: `Device ${index + 1}`,
+			change: "remove" as const,
+		}));
+		setup({
+			loadDetail: vi.fn().mockResolvedValue(
+				detail({
+					canFinish: true,
+					projects: [
+						project({
+							canonicalProjectRef: "canonical-project-ref",
+							displayName: "Legacy default sharing",
+						}),
+					],
+					accessDelta: {
+						teamChanges: [],
+						membershipChanges: [],
+						projectChanges: [],
+						recipientChanges: [],
+						deviceAccessChanges: [
+							...changes.map((change) => ({
+								...change,
+								canonicalProjectRef: "canonical-project-ref",
+								canonicalProjectDisplayName: "Legacy default sharing",
+								canonicalProjectKind: "project" as const,
+							})),
+							...changes.map((change) => ({
+								...change,
+								canonicalProjectRef: "legacy-default-ref",
+								canonicalProjectDisplayName: "Legacy default sharing",
+								canonicalProjectKind: "legacy_default_sharing" as const,
+							})),
+						],
+					},
+				}),
+			),
+		});
+
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Review Projects"));
+		act(() => button("Review").click());
+
+		const summaries = [...document.querySelectorAll(".legacy-team-setup-delta-summary li")].map(
+			(item) => item.textContent,
+		);
+		expect(summaries).toContain("Legacy default sharing, 11 device-access changes");
+		expect(summaries).toContain("Legacy default sharing — default scope, 11 device-access changes");
 	});
 
 	it("keeps a large exact section visible when its labels cannot be usefully grouped", async () => {
@@ -1933,8 +2251,10 @@ describe("legacy Team setup dialog", () => {
 			projectChanges: Array.from({ length: 11 }, (_, index) => ({
 				projectRef: `opaque-project-${index}`,
 				projectDisplayName: `Project ${index + 1}`,
+				fromCanonicalProjectRef: null,
 				fromResolvedProjectRef: null,
 				fromResolvedProjectDisplayName: null,
+				toCanonicalProjectRef: `canonical-project-${index}`,
 				toResolvedProjectRef: `opaque-resolved-project-${index}`,
 				toResolvedProjectDisplayName: `Project ${index + 1}`,
 				change: "add" as const,
@@ -1974,8 +2294,10 @@ describe("legacy Team setup dialog", () => {
 			projectChanges: Array.from({ length: 11 }, (_, index) => ({
 				projectRef: "opaque-project-ref",
 				projectDisplayName: "Legacy Project",
+				fromCanonicalProjectRef: null,
 				fromResolvedProjectRef: null,
 				fromResolvedProjectDisplayName: null,
+				toCanonicalProjectRef: "canonical-project-ref",
 				toResolvedProjectRef: "opaque-resolved-project-ref",
 				toResolvedProjectDisplayName: "Canonical Project",
 				change: index % 2 === 0 ? ("add" as const) : ("remove" as const),
@@ -1996,9 +2318,7 @@ describe("legacy Team setup dialog", () => {
 		expect(finish).not.toHaveBeenCalled();
 		const summaries = [...document.querySelectorAll<HTMLElement>("details > summary")];
 		expect(summaries).toHaveLength(1);
-		expect(document.body.textContent).toContain(
-			"Legacy Project — 1 Project with this name, 11 Project changes",
-		);
+		expect(document.body.textContent).toContain("Legacy Project, 11 Project changes");
 		for (const summary of summaries) act(() => summary.click());
 		expect(finishButton.getAttribute("aria-disabled")).toBe("true");
 		const confirmation = document.querySelector<HTMLInputElement>(
@@ -2019,6 +2339,16 @@ describe("legacy Team setup dialog", () => {
 			finishButton.click();
 			finishButton.click();
 		});
+		expect(finishButton.textContent).toBe("Finishing Team setup…");
+		expect(document.body.textContent).toContain(
+			"Checking the latest Team roster and applying all reviewed changes atomically",
+		);
+		expect(document.body.textContent).toContain(
+			"No partial changes will be kept if this cannot finish",
+		);
+		expect(document.querySelector(".legacy-team-setup-card")?.getAttribute("aria-busy")).toBe(
+			"true",
+		);
 		expect(finish).toHaveBeenCalledTimes(1);
 		expect(finish).toHaveBeenCalledWith("opaque-candidate", {
 			attemptId: "opaque-attempt",
@@ -2478,6 +2808,33 @@ describe("legacy Team setup dialog", () => {
 		});
 		expect(document.body.textContent).not.toContain("private refresh response");
 		expect(document.body.textContent).not.toContain("device change could not be saved");
+	});
+
+	it("states that a roster failure during Finish applied no changes", async () => {
+		setup({
+			finish: vi
+				.fn()
+				.mockRejectedValue(new LegacyTeamSetupApiError(503, "team_setup_roster_unavailable")),
+			loadDetail: vi.fn().mockResolvedValue(detail({ canFinish: true })),
+		});
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
+		const confirmation = document.querySelector<HTMLInputElement>(
+			".legacy-team-setup-confirmation input",
+		);
+		if (!confirmation) throw new Error("finish confirmation missing");
+		confirmation.checked = true;
+		act(() => {
+			confirmation.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		act(() => button("Finish Team setup").click());
+
+		await vi.waitFor(() =>
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+				"setup was not finished and no changes were applied",
+			),
+		);
+		expect(document.body.textContent).toContain("Refresh");
+		expect(document.body.textContent).not.toContain("team_setup_roster_unavailable");
 	});
 
 	it("fails closed and resets confirmation when finish evidence becomes stale", async () => {

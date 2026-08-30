@@ -1424,6 +1424,13 @@
       }
       .legacy-team-setup-review-summary p,
       .legacy-team-setup-review-summary ul { margin: 0; }
+      .legacy-team-setup-net-effect {
+        padding: var(--sp-3);
+        border-inline-start: 4px solid var(--accent);
+        border-radius: var(--radius-sm);
+        background: var(--accent-subtle);
+        line-height: 1.5;
+      }
       .legacy-team-setup-delta section { padding-block: var(--sp-2); border-bottom: 1px solid var(--border); }
       .legacy-team-setup-delta h4 { margin: 0 0 var(--sp-2); }
       .legacy-team-setup-delta ul { display: grid; gap: var(--sp-1); margin: 0; padding-inline-start: var(--sp-5); }
@@ -1437,6 +1444,30 @@
       }
       .legacy-team-setup-confirmation { display: flex; gap: var(--sp-2); align-items: flex-start; margin-block: var(--sp-4); }
       .legacy-team-setup-confirmation input { flex: 0 0 auto; margin-top: 0.2em; min-width: 24px; min-height: 24px; }
+      .legacy-team-setup-finish-progress {
+        display: flex;
+        gap: var(--sp-2);
+        align-items: flex-start;
+        margin-block: var(--sp-3);
+        padding: var(--sp-3);
+        border: 1px solid var(--accent);
+        border-radius: var(--radius-sm);
+        background: var(--accent-subtle);
+      }
+      .legacy-team-setup-spinner {
+        width: 1rem;
+        height: 1rem;
+        flex: 0 0 auto;
+        margin-top: 0.15em;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: legacy-team-setup-spin 0.8s linear infinite;
+      }
+      @keyframes legacy-team-setup-spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) {
+        .legacy-team-setup-spinner { animation: none; }
+      }
       .recipient-policy-management-selection fieldset { border: 0; padding: 0; margin: var(--sp-4) 0 0; }
       .recipient-policy-management-selection legend { font-weight: var(--font-weight-semibold); }
       .recipient-policy-management-review section + section { margin-top: var(--sp-4); }

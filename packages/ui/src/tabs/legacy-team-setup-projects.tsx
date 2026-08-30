@@ -29,6 +29,7 @@ function ProjectRow({
 	busy,
 	index,
 	onMap,
+	presentationName,
 	project,
 }: Pick<
 	LegacyTeamSetupProjectsProps,
@@ -36,6 +37,7 @@ function ProjectRow({
 > & {
 	busy: boolean;
 	index: number;
+	presentationName: string;
 	project: LegacyTeamSetupProjectV1;
 }) {
 	const generatedId = useId();
@@ -108,7 +110,7 @@ function ProjectRow({
 			id={`legacy-team-project-row-${index}`}
 			tabIndex={needsAttention ? -1 : undefined}
 		>
-			<legend>{project.displayName}</legend>
+			<legend>{presentationName}</legend>
 			<div className="legacy-team-project-row-content">
 				{needsAttention ? <span className="legacy-team-setup-status">Needs attention</span> : null}
 				{project.resolution === "deterministic" ? (
@@ -163,6 +165,12 @@ function ProjectRow({
 
 export function LegacyTeamSetupProjects(props: LegacyTeamSetupProjectsProps) {
 	const projects = orderedSetupProjects(props.detail.projects);
+	const presentationNames = stableProjectPresentationLabels(
+		projects.map((project) => ({
+			canonicalId: project.projectRef,
+			displayName: project.displayName,
+		})),
+	);
 	const automaticallyMappedCount = props.detail.projects.filter(
 		(project) => project.resolution === "deterministic",
 	).length;
@@ -194,6 +202,7 @@ export function LegacyTeamSetupProjects(props: LegacyTeamSetupProjectsProps) {
 						index={index}
 						key={project.projectRef}
 						onMap={props.onMap}
+						presentationName={presentationNames.get(project.projectRef) ?? project.displayName}
 						project={project}
 					/>
 				))}

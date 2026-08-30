@@ -1,5 +1,9 @@
 import { useState } from "preact/hooks";
 import type { LegacyTeamSetupDetailResponseV1 } from "../lib/api";
+import {
+	projectDisplayNameKey,
+	stableProjectPresentationLabels,
+} from "../lib/project-identity-presentation";
 
 type FinishableDetail = Extract<LegacyTeamSetupDetailResponseV1, { state: "ready_to_finish" }>;
 
@@ -7,6 +11,7 @@ export interface LegacyTeamSetupReviewProps {
 	blocked: boolean;
 	blockedDescriptionId?: string;
 	detail: FinishableDetail;
+	finishing: boolean;
 	onFinish: (detail: FinishableDetail) => void;
 }
 
@@ -19,6 +24,7 @@ function countLabel(count: number, singular: string, plural = `${singular}s`): s
 
 interface ProjectIdentityGroup {
 	displayName: string;
+	kind: "project" | "legacy_default_sharing";
 	projectRefs: Set<string>;
 	changeCount: number;
 }
@@ -27,14 +33,17 @@ function groupProjectIdentities<T>(
 	items: T[],
 	displayName: (item: T) => string,
 	projectRef: (item: T) => string,
+	kind: (item: T) => ProjectIdentityGroup["kind"],
 ): ProjectIdentityGroup[] {
 	const groups = new Map<string, ProjectIdentityGroup>();
 	for (const item of items) {
 		const name = displayName(item);
-		const key = name.trim().toLowerCase();
+		const itemKind = kind(item);
+		const key = `${itemKind}:${projectDisplayNameKey(name)}`;
 		const ref = projectRef(item);
 		const group = groups.get(key) ?? {
 			displayName: name,
+			kind: itemKind,
 			projectRefs: new Set<string>(),
 			changeCount: 0,
 		};
@@ -45,12 +54,11 @@ function groupProjectIdentities<T>(
 	return [...groups.values()];
 }
 
-function projectGroupSummary(group: ProjectIdentityGroup): string {
-	return `${group.displayName} — ${countLabel(
-		group.projectRefs.size,
-		"Project with this name",
-		"Projects with this name",
-	)}`;
+function projectGroupSummary(group: ProjectIdentityGroup, noun: string): string {
+	if (group.kind === "legacy_default_sharing") return `${group.displayName} — default scope`;
+	return group.projectRefs.size > 1
+		? `${group.displayName} — ${countLabel(group.projectRefs.size, noun)}`
+		: group.displayName;
 }
 
 function DeltaSection({
@@ -110,6 +118,7 @@ export function LegacyTeamSetupReview({
 	blocked,
 	blockedDescriptionId,
 	detail,
+	finishing,
 	onFinish,
 }: LegacyTeamSetupReviewProps) {
 	const delta = detail.accessDelta;
@@ -143,23 +152,101 @@ export function LegacyTeamSetupReview({
 				change.change === "remove" ? "from" : "to"
 			} ${change.teamDisplayName}.`,
 	);
+	const projectLabels = stableProjectPresentationLabels([
+		...detail.projects.map((project) => ({
+			canonicalId: project.projectRef,
+			displayName: project.displayName,
+		})),
+		...delta.projectChanges.map((change) => ({
+			canonicalId: change.projectRef,
+			displayName: change.projectDisplayName,
+		})),
+	]);
+	const resolvedProjectItems = delta.projectChanges.flatMap((change) => [
+		...(change.fromResolvedProjectRef && change.fromResolvedProjectDisplayName
+			? [
+					{
+						canonicalProjectRef: change.fromCanonicalProjectRef,
+						resolvedProjectRef: change.fromResolvedProjectRef,
+						displayName: change.fromResolvedProjectDisplayName,
+					},
+				]
+			: []),
+		...(change.toResolvedProjectRef && change.toResolvedProjectDisplayName
+			? [
+					{
+						canonicalProjectRef: change.toCanonicalProjectRef,
+						resolvedProjectRef: change.toResolvedProjectRef,
+						displayName: change.toResolvedProjectDisplayName,
+					},
+				]
+			: []),
+	]);
+	const canonicalResolvedProjectLabels = stableProjectPresentationLabels(
+		resolvedProjectItems.map((item) => ({
+			canonicalId: item.canonicalProjectRef ?? item.resolvedProjectRef,
+			displayName: item.displayName,
+		})),
+	);
+	const resolvedProjectLabels = new Map(
+		resolvedProjectItems.map((item) => [
+			item.resolvedProjectRef,
+			canonicalResolvedProjectLabels.get(item.canonicalProjectRef ?? item.resolvedProjectRef) ??
+				item.displayName,
+		]),
+	);
+	const canonicalProjectLabels = stableProjectPresentationLabels([
+		...detail.projects.flatMap((project) =>
+			project.canonicalProjectRef
+				? [{ canonicalId: project.canonicalProjectRef, displayName: project.displayName }]
+				: [],
+		),
+		...[...delta.recipientChanges, ...delta.deviceAccessChanges]
+			.filter((change) => change.canonicalProjectKind === "project")
+			.map((change) => ({
+				canonicalId: change.canonicalProjectRef,
+				displayName: change.canonicalProjectDisplayName,
+			})),
+	]);
 	const projectItems = delta.projectChanges.map(
 		(change) =>
-			`${CHANGE_VERBS[change.change]} ${change.projectDisplayName}: ${
-				change.fromResolvedProjectDisplayName ?? "no Project"
-			} to ${change.toResolvedProjectDisplayName ?? "no Project"}.`,
+			`${CHANGE_VERBS[change.change]} ${
+				projectLabels.get(change.projectRef) ?? change.projectDisplayName
+			}: ${
+				change.fromResolvedProjectRef
+					? (resolvedProjectLabels.get(change.fromResolvedProjectRef) ??
+						change.fromResolvedProjectDisplayName ??
+						"no Project")
+					: "no Project"
+			} to ${
+				change.toResolvedProjectRef
+					? (resolvedProjectLabels.get(change.toResolvedProjectRef) ??
+						change.toResolvedProjectDisplayName ??
+						"no Project")
+					: "no Project"
+			}.`,
 	);
-	const recipientItems = delta.recipientChanges.map(
-		(change) =>
-			`${CHANGE_VERBS[change.change]} ${change.recipientDisplayName} ${
-				change.change === "remove" ? "from" : "as"
-			} a recipient for ${change.canonicalProjectDisplayName}.`,
+	const recipientItems = delta.recipientChanges.map((change) =>
+		change.canonicalProjectKind === "legacy_default_sharing"
+			? `${change.change === "remove" ? "Stop" : "Start"} using legacy default sharing for ${change.recipientDisplayName}.`
+			: `${CHANGE_VERBS[change.change]} ${change.recipientDisplayName} ${
+					change.change === "remove" ? "from" : "as"
+				} a recipient for ${
+					canonicalProjectLabels.get(change.canonicalProjectRef) ??
+					change.canonicalProjectDisplayName
+				}.`,
 	);
-	const deviceItems = delta.deviceAccessChanges.map(
-		(change) =>
-			`${CHANGE_VERBS[change.change]} ${change.deviceDisplayName} access ${
-				change.change === "remove" ? "from" : "to"
-			} ${change.canonicalProjectDisplayName}.`,
+	const deviceItems = delta.deviceAccessChanges.map((change) =>
+		change.canonicalProjectKind === "legacy_default_sharing"
+			? `${change.deviceDisplayName} ${
+					change.change === "remove" ? "stops" : "starts"
+				} inheriting legacy default sharing.`
+			: `${CHANGE_VERBS[change.change]} ${change.deviceDisplayName} access ${
+					change.change === "remove" ? "from" : "to"
+				} ${
+					canonicalProjectLabels.get(change.canonicalProjectRef) ??
+					change.canonicalProjectDisplayName
+				}.`,
 	);
 	const accessChangeCount =
 		delta.teamChanges.length +
@@ -171,16 +258,19 @@ export function LegacyTeamSetupReview({
 		delta.projectChanges,
 		(change) => change.projectDisplayName,
 		(change) => change.projectRef,
+		() => "project",
 	);
 	const recipientGroups = groupProjectIdentities(
 		delta.recipientChanges,
 		(change) => change.canonicalProjectDisplayName,
 		(change) => change.canonicalProjectRef,
+		(change) => change.canonicalProjectKind,
 	);
 	const deviceAccessGroups = groupProjectIdentities(
 		delta.deviceAccessChanges,
 		(change) => change.canonicalProjectDisplayName,
 		(change) => change.canonicalProjectRef,
+		(change) => change.canonicalProjectKind,
 	);
 	const includedDeviceCount = detail.devices.filter(
 		(device) => device.decision === "included",
@@ -196,6 +286,40 @@ export function LegacyTeamSetupReview({
 		includedDeviceCount,
 		"included device",
 	)}.`;
+	const reviewedProjectCount = Math.max(detail.candidate.projectCount, detail.projects.length);
+	const legacyCleanupDeviceCount = new Set(
+		delta.deviceAccessChanges.map((change) => change.deviceRef),
+	).size;
+	const removalCount = [
+		...delta.teamChanges,
+		...delta.membershipChanges,
+		...delta.projectChanges,
+		...delta.recipientChanges,
+		...delta.deviceAccessChanges,
+	].filter((change) => change.change === "remove").length;
+	const onlyLegacyDefaultCleanup =
+		delta.teamChanges.length === 0 &&
+		delta.membershipChanges.length === 0 &&
+		delta.projectChanges.length === 0 &&
+		delta.recipientChanges.length > 0 &&
+		delta.recipientChanges.every(
+			(change) =>
+				change.change === "remove" && change.canonicalProjectKind === "legacy_default_sharing",
+		) &&
+		delta.deviceAccessChanges.every(
+			(change) =>
+				change.change === "remove" && change.canonicalProjectKind === "legacy_default_sharing",
+		);
+	const netEffect = onlyLegacyDefaultCleanup
+		? `No new access will be added. This removes legacy default sharing for ${detail.candidate.displayName}.${
+				legacyCleanupDeviceCount > 0
+					? ` ${countLabel(legacyCleanupDeviceCount, "device")} will stop receiving memories shared only through that default.`
+					: ""
+			} Project-scoped access is unchanged across ${countLabel(reviewedProjectCount, "reviewed Project")}.`
+		: `${countLabel(accessChangeCount, "server-confirmed access change")} will be applied atomically; ${countLabel(
+				removalCount,
+				"removal",
+			)} ${removalCount === 1 ? "is" : "are"} included.`;
 
 	return (
 		<section aria-labelledby="legacy-team-setup-step-review">
@@ -204,6 +328,9 @@ export function LegacyTeamSetupReview({
 			</h3>
 			<p>Review every server-confirmed access change before activating this Team.</p>
 			<section aria-label="Access review summary" className="legacy-team-setup-review-summary">
+				<p className="legacy-team-setup-net-effect">
+					<strong>Net effect:</strong> {netEffect}
+				</p>
 				<p>
 					<strong>{countLabel(accessChangeCount, "exact access change")}</strong> to review.
 				</p>
@@ -233,7 +360,7 @@ export function LegacyTeamSetupReview({
 					exactItems={projectItems}
 					summaryItems={projectGroups.map(
 						(group) =>
-							`${projectGroupSummary(group)}, ${countLabel(group.changeCount, "Project change")}`,
+							`${projectGroupSummary(group, "reviewed Project")}, ${countLabel(group.changeCount, "Project change")}`,
 					)}
 					title="Projects"
 				/>
@@ -243,7 +370,7 @@ export function LegacyTeamSetupReview({
 					exactItems={recipientItems}
 					summaryItems={recipientGroups.map(
 						(group) =>
-							`${projectGroupSummary(group)}, ${countLabel(group.changeCount, "recipient change")}`,
+							`${projectGroupSummary(group, "canonical Project")}, ${countLabel(group.changeCount, "recipient change")}`,
 					)}
 					title="Recipients"
 				/>
@@ -253,7 +380,7 @@ export function LegacyTeamSetupReview({
 					exactItems={deviceItems}
 					summaryItems={deviceAccessGroups.map(
 						(group) =>
-							`${projectGroupSummary(group)}, ${countLabel(group.changeCount, "device-access change")}`,
+							`${projectGroupSummary(group, "canonical Project")}, ${countLabel(group.changeCount, "device-access change")}`,
 					)}
 					title="Device access"
 				/>
@@ -277,6 +404,13 @@ export function LegacyTeamSetupReview({
 				/>
 				<span>I reviewed every access change above and approve activating this Team.</span>
 			</label>
+			{finishing ? (
+				<p aria-live="polite" className="legacy-team-setup-finish-progress" role="status">
+					<span aria-hidden="true" className="legacy-team-setup-spinner" />
+					Checking the latest Team roster and applying all reviewed changes atomically. No partial
+					changes will be kept if this cannot finish.
+				</p>
+			) : null}
 			<button
 				aria-describedby={finishBlockedDescription || undefined}
 				aria-disabled={finishBlocked ? "true" : undefined}
@@ -286,7 +420,7 @@ export function LegacyTeamSetupReview({
 				}}
 				type="button"
 			>
-				Finish Team setup
+				{finishing ? "Finishing Team setup…" : "Finish Team setup"}
 			</button>
 		</section>
 	);

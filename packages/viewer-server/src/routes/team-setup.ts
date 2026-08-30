@@ -511,6 +511,15 @@ function viewerSafeAccessDelta(
 		labels?.identityChoices.map((identity) => [identity.identityRef, identity]),
 	);
 	const devicesByRef = new Map(labels?.devices.map((device) => [device.deviceRef, device]));
+	const canonicalProjectPresentation = (identity: string, ref: string) => {
+		if (identity === "shared:default") {
+			return { displayName: "Legacy default sharing", kind: "legacy_default_sharing" as const };
+		}
+		return {
+			displayName: projectsByCanonicalRef.get(ref)?.displayName ?? fallbackLabel("Project", ref),
+			kind: "project" as const,
+		};
+	};
 	const resolvedDisplayName = (projectRef: string, ref: string | null): string | null => {
 		if (!ref) return null;
 		const project = projectsByRef.get(projectRef);
@@ -550,8 +559,14 @@ function viewerSafeAccessDelta(
 				projectDisplayName:
 					projectsByRef.get(change.projectRef)?.displayName ??
 					fallbackLabel("Project", change.projectRef),
+				fromCanonicalProjectRef: change.fromProjectIdentity
+					? legacyTeamCanonicalProjectRef(candidateRef, change.fromProjectIdentity)
+					: null,
 				fromResolvedProjectRef: fromRef,
 				fromResolvedProjectDisplayName: resolvedDisplayName(change.projectRef, fromRef),
+				toCanonicalProjectRef: change.toProjectIdentity
+					? legacyTeamCanonicalProjectRef(candidateRef, change.toProjectIdentity)
+					: null,
 				toResolvedProjectRef: toRef,
 				toResolvedProjectDisplayName: resolvedDisplayName(change.projectRef, toRef),
 				change: change.change,
@@ -563,11 +578,14 @@ function viewerSafeAccessDelta(
 				change.canonicalProjectIdentity,
 			);
 			const recipientRef = teamRef(candidateRef, change.recipientId);
+			const projectPresentation = canonicalProjectPresentation(
+				change.canonicalProjectIdentity,
+				canonicalProjectRef,
+			);
 			return {
 				canonicalProjectRef,
-				canonicalProjectDisplayName:
-					projectsByCanonicalRef.get(canonicalProjectRef)?.displayName ??
-					fallbackLabel("Project", canonicalProjectRef),
+				canonicalProjectDisplayName: projectPresentation.displayName,
+				canonicalProjectKind: projectPresentation.kind,
 				recipientKind: change.recipientKind,
 				recipientRef,
 				recipientDisplayName: labels?.teamDisplayName ?? fallbackLabel("Team", recipientRef),
@@ -580,11 +598,14 @@ function viewerSafeAccessDelta(
 				change.canonicalProjectIdentity,
 			);
 			const deviceRef = legacyTeamDeviceRef(candidateRef, change.deviceId);
+			const projectPresentation = canonicalProjectPresentation(
+				change.canonicalProjectIdentity,
+				canonicalProjectRef,
+			);
 			return {
 				canonicalProjectRef,
-				canonicalProjectDisplayName:
-					projectsByCanonicalRef.get(canonicalProjectRef)?.displayName ??
-					fallbackLabel("Project", canonicalProjectRef),
+				canonicalProjectDisplayName: projectPresentation.displayName,
+				canonicalProjectKind: projectPresentation.kind,
 				deviceRef,
 				deviceDisplayName:
 					devicesByRef.get(deviceRef)?.displayName ?? fallbackLabel("Device", deviceRef),
