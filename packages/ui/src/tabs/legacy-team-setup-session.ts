@@ -1,4 +1,8 @@
-import { LegacyTeamSetupApiError, type LegacyTeamSetupViewV1 } from "../lib/api";
+import {
+	LegacyTeamSetupApiError,
+	type LegacyTeamSetupErrorCode,
+	type LegacyTeamSetupViewV1,
+} from "../lib/api";
 import type {
 	SetupEffect,
 	SetupEffectInput,
@@ -11,6 +15,7 @@ import {
 	planStepFocus,
 	type SetupFocusPlan,
 } from "./legacy-team-setup-focus";
+import { orderedSetupDevices, orderedSetupProjects } from "./legacy-team-setup-order";
 
 export type TeamSetupStep = "devices" | "projects" | "review" | "completed";
 export type InteractiveTeamSetupStep = Exclude<TeamSetupStep, "completed">;
@@ -74,7 +79,7 @@ export type SetupSessionEvent =
 const CHANGED_STATE_ERROR =
 	"Team setup changed since it was last reviewed. Reload the latest details to continue.";
 const ROSTER_UNAVAILABLE_ERROR =
-	"Team device details are temporarily unavailable. Check the coordinator connection and settings, then retry.";
+	"Team device details are temporarily unavailable. Check the coordinator connection and settings, then refresh.";
 
 export function createSetupSessionState(): SetupSessionState {
 	return { status: "closed", generation: 0 };
@@ -192,8 +197,12 @@ function blockedNavigation(
 	if (state.status !== "open" || state.step === "completed" || !state.view) return state;
 	const unresolvedIndex =
 		step === "devices"
-			? state.view.devices.findIndex((device) => device.decision === "unresolved")
-			: state.view.projects.findIndex((project) => project.resolution === "unresolved");
+			? orderedSetupDevices(state.view.devices).findIndex(
+					(device) => device.decision === "unresolved",
+				)
+			: orderedSetupProjects(state.view.projects).findIndex(
+					(project) => project.resolution === "unresolved",
+				);
 	return {
 		...state,
 		step,
@@ -487,14 +496,11 @@ function applyView(
 	const projectsVisitedAttemptId =
 		step === "projects" ? view.attemptId : state.projectsVisitedAttemptId;
 	const unavailableError: SetupSessionError[] =
-		view.state === "unavailable" && needsRecovery(view)
+		view.state === "unavailable"
 			? [
 					{
 						scope: { kind: "global" } as const,
-						message:
-							view.unavailableReason === "team_setup_roster_unavailable"
-								? ROSTER_UNAVAILABLE_ERROR
-								: CHANGED_STATE_ERROR,
+						message: unavailableMessage(view.unavailableReason),
 						retry: "refresh" as const,
 					},
 				]
@@ -693,12 +699,13 @@ export function globalError(state: OpenSetupSessionState): SetupSessionError | n
 	);
 }
 
-function needsRecovery(view: LegacyTeamSetupViewV1): boolean {
-	return (
-		view.state === "unavailable" &&
-		(isChangedStateCode(view.unavailableReason) ||
-			view.unavailableReason === "team_setup_roster_unavailable")
-	);
+function unavailableMessage(reason: LegacyTeamSetupErrorCode): string {
+	if (isChangedStateCode(reason)) return CHANGED_STATE_ERROR;
+	if (reason === "team_setup_roster_unavailable") return ROSTER_UNAVAILABLE_ERROR;
+	if (reason === "team_setup_incomplete") {
+		return "Team setup needs refreshed server details before review can continue.";
+	}
+	return "Team setup details are temporarily unavailable. Refresh to load the latest server state.";
 }
 
 function clearScope(state: OpenSetupSessionState, scope: SetupErrorScope): OpenSetupSessionState {

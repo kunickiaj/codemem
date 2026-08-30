@@ -489,6 +489,12 @@ describe("legacy Team setup dialog", () => {
 		});
 		expect(document.body.textContent).toContain("Review Projects");
 		expect(document.body.textContent).not.toContain("Review and finish");
+		expect(button("Continue to Review").getAttribute("aria-describedby")).toContain(
+			"legacy-team-project-continue-help",
+		);
+		expect(document.getElementById("legacy-team-project-continue-help")?.textContent).toContain(
+			"exact people, devices, and Projects",
+		);
 		act(() => button("Continue to Review").click());
 		expect(document.querySelector('button[aria-current="step"]')?.textContent).toBe("Review");
 		expect(document.body.textContent).toContain("Review and finish");
@@ -496,6 +502,115 @@ describe("legacy Team setup dialog", () => {
 			"Review device ownership and Project access before this Team can be used for sharing",
 		);
 		expect(document.body.textContent).not.toMatch(/confirmation evidence|server-provided work/i);
+	});
+
+	it("puts the one unresolved SRE device first and marks it as actionable", async () => {
+		const includedDevices = ["Air", "Mini", "NAS", "Pi", "Workstation"].map((displayName, index) =>
+			device({
+				deviceRef: `included-device-${index}`,
+				displayName,
+				decision: "included",
+				suggestedIdentityRef: null,
+				targetIdentityRef: "identity-ref-alex",
+			}),
+		);
+		const sarvar = device({
+			deviceRef: "sarvar-device",
+			displayName: "Sarvar",
+			suggestedIdentityRef: "identity-ref-sam",
+		});
+		setup(
+			vi.fn().mockResolvedValue(
+				detail({
+					devices: [...includedDevices, sarvar],
+					identityChoices: identities,
+					unresolvedDeviceCount: 1,
+				}),
+			),
+		);
+
+		const rows = await vi.waitFor(() => {
+			const matches = [...document.querySelectorAll<HTMLElement>(".legacy-team-device-row")];
+			if (matches.length !== 6) throw new Error("SRE device rows not ready");
+			return matches;
+		});
+		const highlighted = rows.filter((row) =>
+			row.classList.contains("legacy-team-setup-row-needs-attention"),
+		);
+
+		expect(rows[0]?.querySelector("legend")?.textContent).toBe("Sarvar");
+		expect(highlighted).toHaveLength(1);
+		expect(highlighted[0]?.textContent).toContain("Needs attention");
+		const exclude = [...(highlighted[0]?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+			(candidate) => candidate.textContent === "Exclude",
+		);
+		expect(exclude?.getAttribute("aria-disabled")).toBeNull();
+	});
+
+	it("explains unavailable setup states visibly and programmatically", async () => {
+		setup(
+			vi.fn().mockResolvedValue(
+				detail({
+					conflictState: "team_setup_roster_unavailable",
+					devices: [device()],
+					identityChoices: identities,
+					unresolvedDeviceCount: 1,
+				}),
+			),
+		);
+
+		const alert = await vi.waitFor(() => {
+			const match = document.getElementById("legacy-team-setup-error");
+			if (!match) throw new Error("unavailable explanation missing");
+			return match;
+		});
+		const select = document.querySelector<HTMLSelectElement>(".legacy-team-device-select");
+
+		expect(alert.textContent).toContain("temporarily unavailable");
+		expect(select?.getAttribute("aria-describedby")).toContain("legacy-team-setup-error");
+		expect(document.getElementById("legacy-team-setup-refresh")).not.toBeNull();
+	});
+
+	it("explains when an unresolved Project has no safe mapping action", async () => {
+		const unavailableProject: LegacyTeamSetupProjectV1 = {
+			...project(),
+			actions: { map: { enabled: false, blockedReason: "mapping_unavailable" } },
+		};
+		setup(
+			vi
+				.fn()
+				.mockResolvedValue(detail({ projects: [unavailableProject], unresolvedProjectCount: 1 })),
+		);
+
+		const select = await vi.waitFor(() => {
+			const match = document.querySelector<HTMLSelectElement>(".legacy-team-project-select");
+			if (!match) throw new Error("Project mapping control missing");
+			return match;
+		});
+		const descriptionIds = select.getAttribute("aria-describedby")?.split(" ") ?? [];
+
+		expect(select.disabled).toBe(true);
+		expect(descriptionIds).toHaveLength(1);
+		expect(document.getElementById(descriptionIds[0] ?? "")?.textContent).toContain(
+			"No safe Project mapping is available",
+		);
+	});
+
+	it("does not describe an unavailable setup as missing Project mappings", async () => {
+		setup(
+			vi.fn().mockResolvedValue(
+				detail({
+					conflictState: "team_setup_roster_unavailable",
+					projects: [project()],
+					unresolvedProjectCount: 1,
+				}),
+			),
+		);
+
+		await vi.waitFor(() =>
+			expect(document.getElementById("legacy-team-setup-error")).not.toBeNull(),
+		);
+		expect(document.body.textContent).not.toContain("No safe Project mapping is available");
 	});
 
 	it("returns a ready draft to Projects when the dialog is reopened", async () => {
@@ -624,7 +739,7 @@ describe("legacy Team setup dialog", () => {
 
 		await vi.waitFor(() => {
 			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
-				"Check the coordinator connection and settings, then retry.",
+				"Check the coordinator connection and settings, then refresh.",
 			);
 		});
 		expect(document.body.textContent).not.toContain("team_setup_roster_unavailable");
@@ -902,9 +1017,13 @@ describe("legacy Team setup dialog", () => {
 		expect(rows[1].textContent).toContain("This person is no longer available");
 		expect(save?.getAttribute("aria-disabled")).toBe("true");
 		expect(include?.getAttribute("aria-disabled")).toBe("true");
-		expect(rows[0].querySelector("select")?.getAttribute("aria-describedby")).toContain(
-			"legacy-team-device-assignment-help-0",
-		);
+		const descriptionIds =
+			rows[0].querySelector("select")?.getAttribute("aria-describedby")?.split(" ") ?? [];
+		expect(
+			descriptionIds.some((id) =>
+				document.getElementById(id)?.textContent?.includes("This person is no longer available"),
+			),
+		).toBe(true);
 		act(() => {
 			save?.click();
 			include?.click();

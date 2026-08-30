@@ -45,13 +45,14 @@ export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps)
 	const globalBusy = hasGlobalOperation(session) || hasBlockingOperation(session);
 	const recoveryRequired = view?.state === "unavailable" || error?.retry === "refresh";
 	const mutationsBlocked = !isEditable(view) || globalBusy || Boolean(error);
-	const mutationBlockDescriptionId = error
-		? "legacy-team-setup-error"
-		: globalBusy
-			? "legacy-team-setup-operation-status"
-			: view?.state === "unavailable"
-				? "legacy-team-setup-refresh"
-				: undefined;
+	const mutationBlockDescriptionId =
+		[
+			error ? "legacy-team-setup-error" : null,
+			globalBusy ? "legacy-team-setup-operation-status" : null,
+			view?.state === "unavailable" ? "legacy-team-setup-refresh" : null,
+		]
+			.filter(Boolean)
+			.join(" ") || undefined;
 	const title = view ? `Set up ${view.candidate.displayName}` : "Set up Team";
 	const itemErrors = session.errors.filter(
 		(item) => item.scope.kind === "device" || item.scope.kind === "project",

@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from "preact/hooks";
 import type { LegacyTeamSetupDetailResponseV1, LegacyTeamSetupProjectV1 } from "../lib/api";
 import { stableProjectPresentationLabels } from "../lib/project-identity-presentation";
 import { setupItemErrorId } from "./legacy-team-setup-dom";
+import { orderedSetupProjects } from "./legacy-team-setup-order";
 
 export interface LegacyTeamSetupProjectsProps {
 	blocked: boolean;
@@ -83,11 +84,13 @@ function ProjectRow({
 		(choice) => choice.token === draftMapping,
 	)?.resolvedProjectRef;
 	const itemBlocked = blockedProjectRefs?.has(project.projectRef) ?? false;
+	const mappingUnavailable = project.actions.map.blockedReason === "mapping_unavailable";
+	const needsMappingSelection = project.actions.map.enabled && !draftMapping;
 	const controlsBlocked = blocked || itemBlocked || busy || !project.actions.map.enabled;
 	const saveBlocked = controlsBlocked || !selectedMapping || selectedMapping === savedMapping;
 	const savedName = mappingName(project, labels);
 	const controlDescription = [
-		!draftMapping ? helpId : undefined,
+		mappingUnavailable || needsMappingSelection ? helpId : undefined,
 		blocked
 			? blockedDescriptionId
 			: itemBlocked
@@ -96,16 +99,18 @@ function ProjectRow({
 	]
 		.filter(Boolean)
 		.join(" ");
+	const needsAttention = project.resolution === "unresolved";
 
 	return (
 		<fieldset
 			aria-busy={busy ? "true" : "false"}
-			className="legacy-team-project-row"
+			className={`legacy-team-project-row${needsAttention ? " legacy-team-setup-row-needs-attention" : ""}`}
 			id={`legacy-team-project-row-${index}`}
-			tabIndex={project.resolution === "unresolved" ? -1 : undefined}
+			tabIndex={needsAttention ? -1 : undefined}
 		>
 			<legend>{project.displayName}</legend>
 			<div className="legacy-team-project-row-content">
+				{needsAttention ? <span className="legacy-team-setup-status">Needs attention</span> : null}
 				{project.resolution === "deterministic" ? (
 					<p className="small">Mapped automatically from matching Project evidence.</p>
 				) : (
@@ -129,7 +134,11 @@ function ProjectRow({
 								</option>
 							))}
 						</select>
-						{!draftMapping ? (
+						{mappingUnavailable ? (
+							<p className="small" id={helpId}>
+								No safe Project mapping is available. Refresh after Project evidence changes.
+							</p>
+						) : needsMappingSelection ? (
 							<p className="small" id={helpId}>
 								Choose and save one of the server-provided Project mappings.
 							</p>
@@ -153,6 +162,7 @@ function ProjectRow({
 }
 
 export function LegacyTeamSetupProjects(props: LegacyTeamSetupProjectsProps) {
+	const projects = orderedSetupProjects(props.detail.projects);
 	const automaticallyMappedCount = props.detail.projects.filter(
 		(project) => project.resolution === "deterministic",
 	).length;
@@ -175,7 +185,7 @@ export function LegacyTeamSetupProjects(props: LegacyTeamSetupProjectsProps) {
 				<p className="small">Review the automatic mappings below before continuing.</p>
 			) : null}
 			<div className="legacy-team-project-list">
-				{props.detail.projects.map((project, index) => (
+				{projects.map((project, index) => (
 					<ProjectRow
 						blocked={props.blocked}
 						blockedDescriptionId={props.blockedDescriptionId}
@@ -189,17 +199,27 @@ export function LegacyTeamSetupProjects(props: LegacyTeamSetupProjectsProps) {
 				))}
 			</div>
 			{props.detail.unresolvedProjectCount === 0 ? (
-				<button
-					aria-describedby={props.blocked ? props.blockedDescriptionId : undefined}
-					aria-disabled={props.blocked ? "true" : undefined}
-					className="settings-button legacy-team-setup-target"
-					onClick={() => {
-						if (!props.blocked) props.onContinue();
-					}}
-					type="button"
-				>
-					Continue to Review
-				</button>
+				<div className="legacy-team-setup-next-action">
+					<p className="small" id="legacy-team-project-continue-help">
+						Continue to review the exact people, devices, and Projects that will receive access.
+					</p>
+					<button
+						aria-describedby={[
+							"legacy-team-project-continue-help",
+							props.blocked ? props.blockedDescriptionId : null,
+						]
+							.filter(Boolean)
+							.join(" ")}
+						aria-disabled={props.blocked ? "true" : undefined}
+						className="settings-button legacy-team-setup-target"
+						onClick={() => {
+							if (!props.blocked) props.onContinue();
+						}}
+						type="button"
+					>
+						Continue to Review
+					</button>
+				</div>
 			) : null}
 		</section>
 	);

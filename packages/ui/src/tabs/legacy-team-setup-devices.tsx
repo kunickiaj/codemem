@@ -1,6 +1,7 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useId, useState } from "preact/hooks";
 import type { LegacyTeamSetupDetailResponseV1, LegacyTeamSetupDeviceV1 } from "../lib/api";
 import { setupItemErrorId } from "./legacy-team-setup-dom";
+import { orderedSetupDevices } from "./legacy-team-setup-order";
 
 type DeviceDecision = "included" | "excluded" | "removed";
 
@@ -54,9 +55,10 @@ function DeviceRow({
 	device: LegacyTeamSetupDeviceV1;
 	index: number;
 }) {
-	const controlId = `legacy-team-device-identity-${index}`;
-	const evidenceId = `legacy-team-device-evidence-${index}`;
-	const assignmentHelpId = `legacy-team-device-assignment-help-${index}`;
+	const generatedId = useId();
+	const controlId = `${generatedId}-identity`;
+	const evidenceId = `${generatedId}-evidence`;
+	const assignmentHelpId = `${generatedId}-assignment-help`;
 	const initialIdentity = initialIdentityRef(device);
 	const savedIdentity = device.targetIdentityRef ?? "";
 	const [draftIdentityRef, setDraftIdentityRef] = useState(initialIdentity);
@@ -74,6 +76,7 @@ function DeviceRow({
 	const assignmentIdentityUnavailable = Boolean(draftIdentityRef) && !selectedChoiceExists;
 	const includeNeedsHelp =
 		!device.actions.include.enabled ||
+		assignmentEvidenceInactive ||
 		assignmentIdentityUnavailable ||
 		!savedIdentity ||
 		draftIdentityRef !== savedIdentity;
@@ -98,15 +101,17 @@ function DeviceRow({
 		.filter(Boolean)
 		.join(" ");
 	const actionDescription = [evidenceId, globalBlockedDescription].filter(Boolean).join(" ");
+	const needsAttention = device.decision === "unresolved";
 
 	return (
 		<fieldset
 			aria-busy={busy ? "true" : "false"}
-			className="legacy-team-device-row"
+			className={`legacy-team-device-row${needsAttention ? " legacy-team-setup-row-needs-attention" : ""}`}
 			id={`legacy-team-device-row-${index}`}
-			tabIndex={device.decision === "unresolved" ? -1 : undefined}
+			tabIndex={needsAttention ? -1 : undefined}
 		>
 			<legend>{device.displayName}</legend>
+			{needsAttention ? <span className="legacy-team-setup-status">Needs attention</span> : null}
 			<div className="small legacy-team-device-evidence" id={evidenceId}>
 				<span>
 					{device.enabled ? "Current Team device" : "Device no longer active on this Team"}
@@ -237,6 +242,7 @@ function DeviceRow({
 }
 
 export function LegacyTeamSetupDevices(props: LegacyTeamSetupDevicesProps) {
+	const devices = orderedSetupDevices(props.detail.devices);
 	return (
 		<section aria-labelledby="legacy-team-setup-step-devices">
 			<h3 id="legacy-team-setup-step-devices" tabIndex={-1}>
@@ -247,7 +253,7 @@ export function LegacyTeamSetupDevices(props: LegacyTeamSetupDevicesProps) {
 				{props.detail.candidate.deviceCount.toLocaleString()} Team devices still need a decision.
 			</p>
 			<div className="legacy-team-device-list">
-				{props.detail.devices.map((device, index) => (
+				{devices.map((device, index) => (
 					<DeviceRow
 						{...props}
 						busy={props.busyDeviceRefs.has(device.deviceRef)}
