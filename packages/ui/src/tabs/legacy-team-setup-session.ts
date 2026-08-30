@@ -13,7 +13,7 @@ import {
 } from "./legacy-team-setup-focus";
 
 export type TeamSetupStep = "devices" | "projects" | "review" | "completed";
-type InteractiveTeamSetupStep = Exclude<TeamSetupStep, "completed">;
+export type InteractiveTeamSetupStep = Exclude<TeamSetupStep, "completed">;
 export type SetupErrorScope =
 	| { kind: "load" }
 	| { kind: "global" }
@@ -152,6 +152,27 @@ function open(generation: number, candidateRef: string): OpenSetupSessionState {
 
 function navigate(state: SetupSessionState, step: TeamSetupStep): SetupSessionState {
 	if (state.status !== "open" || state.step === "completed" || step === "completed") return state;
+	if (step === "projects" && state.view?.unresolvedDeviceCount) {
+		return blockedNavigation(
+			state,
+			"devices",
+			"Finish the device decisions before mapping Projects.",
+		);
+	}
+	if (step === "review" && state.view?.unresolvedDeviceCount) {
+		return blockedNavigation(
+			state,
+			"devices",
+			"Finish the device decisions before reviewing access.",
+		);
+	}
+	if (step === "review" && state.view?.unresolvedProjectCount) {
+		return blockedNavigation(
+			state,
+			"projects",
+			"Finish the Project mappings before reviewing access.",
+		);
+	}
 	const projectsVisitedAttemptId =
 		step === "projects" && state.view ? state.view.attemptId : state.projectsVisitedAttemptId;
 	return {
@@ -470,7 +491,10 @@ function applyView(
 			? [
 					{
 						scope: { kind: "global" } as const,
-						message: CHANGED_STATE_ERROR,
+						message:
+							view.unavailableReason === "team_setup_roster_unavailable"
+								? ROSTER_UNAVAILABLE_ERROR
+								: CHANGED_STATE_ERROR,
 						retry: "refresh" as const,
 					},
 				]
@@ -498,11 +522,14 @@ function applyView(
 				? "Team setup complete. Sharing and Projects are refreshing."
 				: state.message,
 	};
+	const hasGlobalRetryTarget = unavailableError.some(
+		(error) => error.scope.kind === "global" || error.scope.kind === "load",
+	);
 	if (focusOnOutcome || step !== state.step) {
 		next = {
 			...next,
 			focus: planLoadFocus(next.nextFocusId, {
-				hasError: unavailableError.length > 0,
+				hasError: hasGlobalRetryTarget,
 				recovery: view.state === "unavailable",
 				step,
 			}),
@@ -613,7 +640,9 @@ function initialStep(view: LegacyTeamSetupViewV1, projectsVisited: boolean): Tea
 	return "review";
 }
 
-export function isEditable(view: LegacyTeamSetupViewV1 | null): boolean {
+export function isEditable(
+	view: LegacyTeamSetupViewV1 | null,
+): view is Extract<LegacyTeamSetupViewV1, { state: "reviewing" | "ready_to_finish" }> {
 	return view?.state === "reviewing" || view?.state === "ready_to_finish";
 }
 
@@ -665,7 +694,11 @@ export function globalError(state: OpenSetupSessionState): SetupSessionError | n
 }
 
 function needsRecovery(view: LegacyTeamSetupViewV1): boolean {
-	return view.state === "unavailable" && isChangedStateCode(view.unavailableReason);
+	return (
+		view.state === "unavailable" &&
+		(isChangedStateCode(view.unavailableReason) ||
+			view.unavailableReason === "team_setup_roster_unavailable")
+	);
 }
 
 function clearScope(state: OpenSetupSessionState, scope: SetupErrorScope): OpenSetupSessionState {

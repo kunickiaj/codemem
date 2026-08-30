@@ -1,12 +1,14 @@
 import { useEffect, useState } from "preact/hooks";
 import type { LegacyTeamSetupDetailResponseV1, LegacyTeamSetupDeviceV1 } from "../lib/api";
+import { setupItemErrorId } from "./legacy-team-setup-dom";
 
 type DeviceDecision = "included" | "excluded" | "removed";
 
 export interface LegacyTeamSetupDevicesProps {
 	blocked: boolean;
+	blockedDeviceRefs?: ReadonlySet<string>;
 	blockedDescriptionId?: string;
-	busyDeviceRef: string | null;
+	busyDeviceRefs: ReadonlySet<string>;
 	detail: LegacyTeamSetupDetailResponseV1;
 	onAssign: (device: LegacyTeamSetupDeviceV1, identityRef: string) => void;
 	onClear: (device: LegacyTeamSetupDeviceV1) => void;
@@ -39,6 +41,7 @@ function initialIdentityRef(device: LegacyTeamSetupDeviceV1): string {
 function DeviceRow({
 	blocked,
 	blockedDescriptionId,
+	blockedDeviceRefs,
 	busy,
 	detail,
 	device,
@@ -63,7 +66,8 @@ function DeviceRow({
 	);
 	const existingName = identityName(detail, device.existingIdentityRef);
 	const suggestedName = identityName(detail, device.suggestedIdentityRef);
-	const controlsBlocked = blocked || busy;
+	const itemBlocked = blockedDeviceRefs?.has(device.deviceRef) ?? false;
+	const controlsBlocked = blocked || itemBlocked || busy;
 	const assignmentControlsBlocked = controlsBlocked || !device.actions.assignIdentity.enabled;
 	const assignmentEvidenceInactive =
 		device.actions.assignIdentity.blockedReason === "assignment_evidence_inactive";
@@ -81,7 +85,11 @@ function DeviceRow({
 		assignmentIdentityUnavailable ||
 		draftIdentityRef === savedIdentity;
 	const assignmentNeedsHelp = !device.enabled || includeNeedsHelp;
-	const globalBlockedDescription = blocked ? blockedDescriptionId : undefined;
+	const globalBlockedDescription = blocked
+		? blockedDescriptionId
+		: itemBlocked
+			? setupItemErrorId("device", device.deviceRef)
+			: undefined;
 	const assignmentDescription = [
 		evidenceId,
 		assignmentNeedsHelp ? assignmentHelpId : undefined,
@@ -242,7 +250,7 @@ export function LegacyTeamSetupDevices(props: LegacyTeamSetupDevicesProps) {
 				{props.detail.devices.map((device, index) => (
 					<DeviceRow
 						{...props}
-						busy={props.busyDeviceRef === device.deviceRef}
+						busy={props.busyDeviceRefs.has(device.deviceRef)}
 						device={device}
 						index={index}
 						key={device.deviceRef}

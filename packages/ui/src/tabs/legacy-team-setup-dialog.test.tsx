@@ -43,6 +43,12 @@ import {
 	mountLegacyTeamSetupDialog,
 	openLegacyTeamSetup,
 } from "./legacy-team-setup-dialog";
+import { LegacyTeamSetupDialogView } from "./legacy-team-setup-dialog-view";
+import {
+	createSetupSessionState,
+	type OpenSetupSessionState,
+	reduceSetupSession,
+} from "./legacy-team-setup-session";
 
 const identities: LegacyTeamSetupIdentityChoiceV1[] = [
 	{ identityRef: "identity-ref-alex", displayName: "Alex" },
@@ -273,6 +279,30 @@ function setup(
 	return { mount, trigger };
 }
 
+function busyViewSession(errors: OpenSetupSessionState["errors"]): OpenSetupSessionState {
+	let session = reduceSetupSession(createSetupSessionState(), {
+		type: "open",
+		candidateRef: "opaque-candidate",
+	});
+	if (session.status !== "open") throw new Error("expected open session");
+	const load = session.commands[0];
+	if (!load) throw new Error("expected load command");
+	session = reduceSetupSession(session, {
+		type: "effect_outcome",
+		outcome: {
+			status: "success",
+			generation: load.generation,
+			id: load.id,
+			kind: load.kind,
+			view: detail(),
+		},
+	});
+	if (session.status !== "open") throw new Error("expected loaded session");
+	session = reduceSetupSession(session, { type: "refresh" });
+	if (session.status !== "open") throw new Error("expected refreshing session");
+	return { ...session, errors };
+}
+
 function button(label: string): HTMLButtonElement {
 	const match = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
 		(candidate) => candidate.textContent === label,
@@ -292,6 +322,20 @@ afterEach(() => {
 });
 
 describe("legacy Team setup dialog", () => {
+	it("registers the opener before mount returns", () => {
+		document.body.innerHTML = '<div id="legacyTeamSetupMount"></div>';
+		const mount = document.getElementById("legacyTeamSetupMount");
+		if (!(mount instanceof HTMLElement)) throw new Error("Team setup mount missing");
+
+		let handled = false;
+		act(() => {
+			mountLegacyTeamSetupDialog(mount, { loadDetail: vi.fn().mockResolvedValue(detail()) });
+			handled = openLegacyTeamSetup("opaque-candidate");
+		});
+
+		expect(handled).toBe(true);
+	});
+
 	it("opens with loading state and selects Devices from authoritative detail", async () => {
 		const pending = deferred<LegacyTeamSetupDetailResponseV1>();
 		const loadDetail = vi.fn().mockReturnValue(pending.promise);
@@ -1009,6 +1053,12 @@ describe("legacy Team setup dialog", () => {
 		await vi.waitFor(() => {
 			expect(document.querySelector('[role="alert"]')?.textContent).toContain("could not be saved");
 		});
+		expect(
+			document.getElementById("legacy-team-setup-item-error-device-device-ref-one"),
+		).not.toBeNull();
+		expect(button("Include").getAttribute("aria-describedby")).toContain(
+			"legacy-team-setup-item-error-device-device-ref-one",
+		);
 		expect(document.body.textContent).not.toContain("private decision failure");
 		expect(saveAssignment).toHaveBeenCalledWith("opaque-candidate", "device-ref-one", {
 			attemptId: "attempt-before-assignment",
@@ -1028,7 +1078,7 @@ describe("legacy Team setup dialog", () => {
 			"identity-ref-sam",
 		);
 
-		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		act(() => document.getElementById("legacy-team-setup-item-retry")?.click());
 		await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).toBeNull());
 		act(() => button("Include").click());
 		await vi.waitFor(() => expect(document.body.textContent).toContain("Review Projects"));
@@ -1870,6 +1920,184 @@ describe("legacy Team setup dialog", () => {
 		await vi.waitFor(() => expect(document.body.textContent).toContain("Team setup complete"));
 		expect(document.activeElement?.id).toBe("legacy-team-setup-step-completed");
 		expect(onCompleted).toHaveBeenCalledTimes(1);
+	});
+
+	it("disables review controls after a finish failure until recovery", async () => {
+		const finish = vi.fn().mockRejectedValue(new Error("temporary failure"));
+		setup({
+			finish,
+			loadDetail: vi.fn().mockResolvedValue(detail({ canFinish: true })),
+		});
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
+		const confirmation = document.querySelector<HTMLInputElement>(
+			".legacy-team-setup-confirmation input",
+		);
+		if (!confirmation) throw new Error("finish confirmation missing");
+		confirmation.checked = true;
+		act(() => {
+			confirmation.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+
+		const finishButton = button("Finish Team setup");
+		act(() => finishButton.click());
+		await vi.waitFor(() =>
+			expect(document.body.textContent).toContain("Team setup could not be finished"),
+		);
+
+		expect(confirmation.getAttribute("aria-disabled")).toBe("true");
+		expect(finishButton.getAttribute("aria-disabled")).toBe("true");
+		act(() => finishButton.click());
+		expect(finish).toHaveBeenCalledTimes(1);
+	});
+
+	it("blocks final confirmation for an item error without blocking unrelated item edits", async () => {
+		const firstDevice = device({
+			deviceRef: "device-ref-one",
+			displayName: "First laptop",
+			decision: "excluded",
+		});
+		const secondDevice = device({
+			deviceRef: "device-ref-two",
+			displayName: "Second laptop",
+			decision: "excluded",
+		});
+		const saveDecision = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("temporary failure"))
+			.mockResolvedValueOnce(detail({ canFinish: true, devices: [firstDevice, secondDevice] }));
+		setup({
+			loadDetail: vi
+				.fn()
+				.mockResolvedValue(detail({ canFinish: true, devices: [firstDevice, secondDevice] })),
+			saveDecision,
+		});
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Review and finish"));
+
+		act(() => button("Devices").click());
+		const excludeButtons = [...document.querySelectorAll<HTMLButtonElement>("button")].filter(
+			(candidate) => candidate.textContent === "Exclude",
+		);
+		act(() => excludeButtons[0]?.click());
+		await vi.waitFor(() => expect(document.body.textContent).toContain("could not be saved"));
+
+		expect(excludeButtons[1]?.getAttribute("aria-disabled")).toBeNull();
+		act(() => excludeButtons[1]?.click());
+		await vi.waitFor(() => expect(saveDecision).toHaveBeenCalledTimes(2));
+		act(() => button("Review").click());
+		const confirmation = document.querySelector<HTMLInputElement>(
+			".legacy-team-setup-confirmation input",
+		);
+		if (!confirmation) throw new Error("finish confirmation missing");
+		expect(confirmation.getAttribute("aria-disabled")).toBe("true");
+		expect(confirmation.getAttribute("aria-describedby")).toContain(
+			"legacy-team-setup-item-errors",
+		);
+	});
+
+	it("marks fallback refresh busy and ignores duplicate requests", async () => {
+		const pendingRefresh = deferred<LegacyTeamSetupDetailResponseV1>();
+		const refreshCandidate = vi.fn().mockReturnValue(pendingRefresh.promise);
+		setup({
+			loadDetail: vi.fn().mockResolvedValue(detail()),
+			refreshCandidate,
+		});
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Refresh Team setup"));
+
+		const refresh = button("Refresh Team setup");
+		act(() => {
+			refresh.click();
+			refresh.click();
+		});
+
+		expect(refreshCandidate).toHaveBeenCalledTimes(1);
+		expect(refresh.getAttribute("aria-busy")).toBe("true");
+		expect(refresh.getAttribute("aria-disabled")).toBe("true");
+	});
+
+	it("marks recovery refresh busy and ignores duplicate requests", async () => {
+		const pendingRefresh = deferred<LegacyTeamSetupDetailResponseV1>();
+		const refreshCandidate = vi.fn().mockReturnValue(pendingRefresh.promise);
+		setup({
+			loadDetail: vi.fn().mockResolvedValue(detail({ draftState: "stale" })),
+			refreshCandidate,
+		});
+		await vi.waitFor(() =>
+			expect(document.getElementById("legacy-team-setup-refresh")).not.toBeNull(),
+		);
+
+		const refresh = document.getElementById("legacy-team-setup-refresh") as HTMLButtonElement;
+		act(() => {
+			refresh.click();
+			refresh.click();
+		});
+
+		expect(refreshCandidate).toHaveBeenCalledTimes(1);
+		expect(refresh.getAttribute("aria-busy")).toBe("true");
+		expect(refresh.getAttribute("aria-disabled")).toBe("true");
+	});
+
+	it("guards busy refresh and retry controls before dispatch", () => {
+		document.body.innerHTML = '<div id="legacyTeamSetupMount"></div>';
+		const mount = document.getElementById("legacyTeamSetupMount");
+		if (!(mount instanceof HTMLElement)) throw new Error("dialog mount missing");
+		const onRefresh = vi.fn();
+		const onRetry = vi.fn();
+		const session = busyViewSession([
+			{ scope: { kind: "global" }, message: "Reload required", retry: "load" },
+			{
+				scope: { kind: "device", itemRef: "device-ref-one" },
+				message: "Retry this device change",
+				retry: "load",
+			},
+		]);
+		act(() =>
+			render(
+				<LegacyTeamSetupDialogView
+					onAssign={vi.fn()}
+					onClear={vi.fn()}
+					onClose={vi.fn()}
+					onCloseAutoFocus={vi.fn()}
+					onDecide={vi.fn()}
+					onFinish={vi.fn()}
+					onMap={vi.fn()}
+					onNavigate={vi.fn()}
+					onOpenAutoFocus={vi.fn()}
+					onRefresh={onRefresh}
+					onRetry={onRetry}
+					session={session}
+				/>,
+				mount,
+			),
+		);
+
+		act(() => {
+			document.getElementById("legacy-team-setup-retry")?.click();
+			document.getElementById("legacy-team-setup-item-retry")?.click();
+			button("Refresh Team setup").click();
+		});
+
+		expect(onRetry).not.toHaveBeenCalled();
+		expect(onRefresh).not.toHaveBeenCalled();
+	});
+
+	it("describes unavailable item controls with the recovery action", async () => {
+		setup({
+			loadDetail: vi.fn().mockResolvedValue(
+				detail({
+					conflictState: "team_setup_failed",
+					devices: [device()],
+					unresolvedDeviceCount: 1,
+				}),
+			),
+		});
+		await vi.waitFor(() =>
+			expect(document.getElementById("legacy-team-setup-refresh")).not.toBeNull(),
+		);
+
+		expect(button("Exclude").getAttribute("aria-disabled")).toBe("true");
+		expect(button("Exclude").getAttribute("aria-describedby")).toContain(
+			"legacy-team-setup-refresh",
+		);
 	});
 
 	it("ignores a completion refresh after closing and opening another Team", async () => {

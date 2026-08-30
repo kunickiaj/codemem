@@ -170,6 +170,30 @@ describe("legacy Team setup session reducer", () => {
 		});
 	});
 
+	it("keeps navigation on Devices while device decisions remain unresolved", () => {
+		const state = loaded();
+
+		expect(reduceSetupSession(state, { type: "navigate", step: "projects" })).toMatchObject({
+			step: "devices",
+			message: "Finish the device decisions before mapping Projects.",
+			focus: { targetId: "legacy-team-device-row-0" },
+		});
+	});
+
+	it("keeps navigation on Projects while Project mappings remain unresolved", () => {
+		const current = view({
+			unresolvedDeviceCount: 0,
+			devices: view().devices.map((device) => ({ ...device, decision: "excluded" as const })),
+		});
+		const state = loaded(open(), current);
+
+		expect(reduceSetupSession(state, { type: "navigate", step: "review" })).toMatchObject({
+			step: "projects",
+			message: "Finish the Project mappings before reviewing access.",
+			focus: { targetId: "legacy-team-project-row-0" },
+		});
+	});
+
 	it("does not expose completed as an interactive navigation destination", () => {
 		const state = loaded();
 		const fabricated = { type: "navigate", step: "completed" } as unknown as SetupSessionEvent;
@@ -239,6 +263,48 @@ describe("legacy Team setup session reducer", () => {
 				decision: "excluded",
 			}),
 		).toMatchObject({ commands: [expect.objectContaining({ deviceRef: "device-b" })] });
+	});
+
+	it("focuses the next step when an unrelated item error remains", () => {
+		let state: SetupSessionState = {
+			...loaded(),
+			errors: [
+				{
+					scope: { kind: "device", itemRef: "device-a" },
+					message: "Retry this device change",
+					retry: "load",
+				},
+			],
+		};
+		state = reduceSetupSession(state, {
+			type: "decide_device",
+			deviceRef: "device-b",
+			decision: "excluded",
+		});
+		if (state.status !== "open") throw new Error("expected open mutation session");
+		const command = state.commands[0];
+		if (!command) throw new Error("expected mutation command");
+		const nextView = view({
+			unresolvedDeviceCount: 0,
+			devices: view().devices.map((device) => ({ ...device, decision: "excluded" as const })),
+		});
+
+		state = reduceSetupSession(state, {
+			type: "effect_outcome",
+			outcome: {
+				status: "success",
+				generation: command.generation,
+				id: command.id,
+				kind: command.kind,
+				view: nextView,
+			},
+		});
+
+		expect(state).toMatchObject({
+			step: "projects",
+			focus: { targetId: "legacy-team-setup-step-projects" },
+			errors: [expect.objectContaining({ scope: { kind: "device", itemRef: "device-a" } })],
+		});
 	});
 
 	it("ignores device mutations while an authoritative refresh is running", () => {
@@ -632,6 +698,65 @@ describe("legacy Team setup session reducer", () => {
 		} as LegacyTeamSetupViewV1;
 
 		expect(isEditable(unavailable)).toBe(false);
+	});
+
+	it("enforces server action gates before enqueuing mutations", () => {
+		const state = loaded();
+
+		expect(
+			reduceSetupSession(state, {
+				type: "decide_device",
+				deviceRef: "device-a",
+				decision: "included",
+				targetIdentityRef: "identity-a",
+			}),
+		).toBe(state);
+		expect(
+			reduceSetupSession(state, {
+				type: "map_project",
+				projectRef: "project-a",
+				resolvedProjectRef: "resolved-a",
+			}),
+		).toBe(state);
+	});
+
+	it("prefers authoritative refresh when any accumulated error requires it", () => {
+		const state: OpenSetupSessionState = {
+			...loaded(),
+			errors: [
+				{
+					scope: { kind: "device", itemRef: "device-a" },
+					message: "Device failed",
+					retry: "load",
+				},
+				{ scope: { kind: "global" }, message: "State changed", retry: "refresh" },
+			],
+		};
+		const retried = reduceSetupSession(state, { type: "retry" });
+
+		expect(retried).toMatchObject({
+			commands: [expect.objectContaining({ kind: "load", refresh: true })],
+		});
+	});
+
+	it("does not queue retry while an item mutation is running", () => {
+		const state = reduceSetupSession(
+			{
+				...loaded(),
+				errors: [
+					{
+						scope: { kind: "project", itemRef: "project-a" },
+						message: "Project failed",
+						retry: "load",
+					},
+				],
+			},
+			{ type: "decide_device", deviceRef: "device-a", decision: "excluded" },
+		);
+		if (state.status !== "open") throw new Error("expected open session");
+
+		expect(state.commands).toEqual([expect.objectContaining({ kind: "decide_device" })]);
+		expect(reduceSetupSession(state, { type: "retry" })).toBe(state);
 	});
 
 	it("queues completion refresh exactly once after finish", () => {

@@ -1,11 +1,13 @@
 import { useEffect, useId, useState } from "preact/hooks";
 import type { LegacyTeamSetupDetailResponseV1, LegacyTeamSetupProjectV1 } from "../lib/api";
 import { stableProjectPresentationLabels } from "../lib/project-identity-presentation";
+import { setupItemErrorId } from "./legacy-team-setup-dom";
 
 export interface LegacyTeamSetupProjectsProps {
 	blocked: boolean;
+	blockedProjectRefs?: ReadonlySet<string>;
 	blockedDescriptionId?: string;
-	busyProjectRef: string | null;
+	busyProjectRefs: ReadonlySet<string>;
 	detail: LegacyTeamSetupDetailResponseV1;
 	onContinue: () => void;
 	onMap: (project: LegacyTeamSetupProjectV1, resolvedProjectRef: string) => void;
@@ -22,11 +24,15 @@ function mappingName(
 function ProjectRow({
 	blocked,
 	blockedDescriptionId,
+	blockedProjectRefs,
 	busy,
 	index,
 	onMap,
 	project,
-}: Pick<LegacyTeamSetupProjectsProps, "blocked" | "blockedDescriptionId" | "onMap"> & {
+}: Pick<
+	LegacyTeamSetupProjectsProps,
+	"blocked" | "blockedDescriptionId" | "blockedProjectRefs" | "onMap"
+> & {
 	busy: boolean;
 	index: number;
 	project: LegacyTeamSetupProjectV1;
@@ -76,12 +82,17 @@ function ProjectRow({
 	const selectedMapping = choices.find(
 		(choice) => choice.token === draftMapping,
 	)?.resolvedProjectRef;
-	const controlsBlocked = blocked || busy || !project.actions.map.enabled;
+	const itemBlocked = blockedProjectRefs?.has(project.projectRef) ?? false;
+	const controlsBlocked = blocked || itemBlocked || busy || !project.actions.map.enabled;
 	const saveBlocked = controlsBlocked || !selectedMapping || selectedMapping === savedMapping;
 	const savedName = mappingName(project, labels);
 	const controlDescription = [
 		!draftMapping ? helpId : undefined,
-		blocked ? blockedDescriptionId : undefined,
+		blocked
+			? blockedDescriptionId
+			: itemBlocked
+				? setupItemErrorId("project", project.projectRef)
+				: undefined,
 	]
 		.filter(Boolean)
 		.join(" ");
@@ -168,7 +179,8 @@ export function LegacyTeamSetupProjects(props: LegacyTeamSetupProjectsProps) {
 					<ProjectRow
 						blocked={props.blocked}
 						blockedDescriptionId={props.blockedDescriptionId}
-						busy={props.busyProjectRef === project.projectRef}
+						blockedProjectRefs={props.blockedProjectRefs}
+						busy={props.busyProjectRefs.has(project.projectRef)}
 						index={index}
 						key={project.projectRef}
 						onMap={props.onMap}
