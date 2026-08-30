@@ -389,24 +389,18 @@ describe("legacy Team setup API", () => {
 				unresolvedProjectCount: 0,
 			},
 			attemptId: "attempt-one",
-			draftState: "in_progress",
+			state: "reviewing",
 			unresolvedDeviceCount: 1,
 			unresolvedProjectCount: 0,
 			devices: [],
 			projects: [],
 			identityChoices: [],
-			canFinish: false,
-			conflictState: null,
+			actions: {
+				refresh: { enabled: true, blockedReason: null },
+				finish: { enabled: false, blockedReason: "setup_incomplete" },
+			},
 		} as const;
-		const mutation = {
-			version: 1,
-			candidateRef: "candidate/ref",
-			attemptId: "attempt-one",
-			draftState: "in_progress",
-			canFinish: false,
-			unresolvedDeviceCount: 1,
-			unresolvedProjectCount: 0,
-		} as const;
+		const mutation = detail;
 		const finished = {
 			version: 1,
 			status: "completed",
@@ -584,14 +578,16 @@ describe("legacy Team setup API", () => {
 						unresolvedProjectCount: 0,
 					},
 					attemptId: "attempt-one",
-					draftState: "in_progress",
+					state: "ready_to_finish",
 					unresolvedDeviceCount: 0,
 					unresolvedProjectCount: 0,
 					devices: [],
 					projects: [],
 					identityChoices: [],
-					canFinish: true,
-					conflictState: null,
+					actions: {
+						refresh: { enabled: true, blockedReason: null },
+						finish: { enabled: true, blockedReason: null },
+					},
 					finishDigest: "finish-digest",
 					accessDeltaDigest: "access-digest",
 					accessDelta: {
@@ -610,6 +606,191 @@ describe("legacy Team setup API", () => {
 			statusCode: 200,
 			errorCode: "team_setup_failed",
 		});
+	});
+
+	it("accepts each exclusive Team setup view variant with server-computed gates", async () => {
+		const enabled = { enabled: true, blockedReason: null } as const;
+		const blocked = (blockedReason: "setup_unavailable" | "setup_completed") => ({
+			enabled: false as const,
+			blockedReason,
+		});
+		const base = {
+			version: 1 as const,
+			candidate: {
+				candidateRef: "candidate/ref",
+				displayName: "Example Team",
+				status: "in_progress" as const,
+				deviceCount: 1,
+				projectCount: 1,
+				unresolvedDeviceCount: 0,
+				unresolvedProjectCount: 0,
+			},
+			attemptId: "attempt-one",
+			unresolvedDeviceCount: 0,
+			unresolvedProjectCount: 0,
+			identityChoices: [],
+		};
+		const items = (reason?: "setup_unavailable" | "setup_completed") => ({
+			devices: [
+				{
+					deviceRef: "device-ref",
+					displayName: "Laptop",
+					enabled: true,
+					existingIdentityRef: null,
+					suggestedIdentityRef: null,
+					verifiedEvidenceKind: null,
+					decision: "unresolved",
+					targetIdentityRef: null,
+					expectation: { kind: "absent" },
+					actions: {
+						assignIdentity: reason ? blocked(reason) : enabled,
+						include: reason
+							? blocked(reason)
+							: { enabled: false, blockedReason: "assignment_required" },
+						exclude: reason ? blocked(reason) : enabled,
+						remove: reason ? blocked(reason) : { enabled: false, blockedReason: "device_active" },
+						clearDecision: reason
+							? blocked(reason)
+							: { enabled: false, blockedReason: "decision_unresolved" },
+					},
+				},
+			],
+			projects: [
+				{
+					projectRef: "project-ref",
+					displayName: "Project",
+					resolution: "unresolved",
+					canonicalProjectRef: null,
+					resolvedProjectRef: null,
+					mappingChoices: [],
+					actions: { map: reason ? blocked(reason) : enabled },
+				},
+			],
+		});
+		const accessDelta = {
+			teamChanges: [],
+			membershipChanges: [],
+			projectChanges: [],
+			recipientChanges: [],
+			deviceAccessChanges: [],
+		};
+		const views = [
+			{
+				...base,
+				...items(),
+				state: "reviewing",
+				actions: {
+					refresh: enabled,
+					finish: { enabled: false, blockedReason: "setup_incomplete" },
+				},
+			},
+			{
+				...base,
+				...items(),
+				state: "ready_to_finish",
+				actions: { refresh: enabled, finish: enabled },
+				finishDigest: "finish",
+				accessDeltaDigest: "access",
+				viewerAccessDeltaDigest: "viewer",
+				accessDelta,
+			},
+			{
+				...base,
+				...items("setup_unavailable"),
+				state: "unavailable",
+				unavailableReason: "team_setup_conflict",
+				actions: {
+					refresh: enabled,
+					finish: blocked("setup_unavailable"),
+				},
+			},
+			{
+				...base,
+				...items("setup_completed"),
+				state: "completed",
+				actions: {
+					refresh: blocked("setup_completed"),
+					finish: blocked("setup_completed"),
+				},
+			},
+		];
+		globalThis.fetch = vi.fn(async () => {
+			const view = views.shift();
+			return new Response(JSON.stringify(view), { status: 200 });
+		}) as typeof fetch;
+
+		for (const state of ["reviewing", "ready_to_finish", "unavailable", "completed"]) {
+			await expect(loadLegacyTeamSetupDetail("candidate/ref")).resolves.toMatchObject({ state });
+		}
+	});
+
+	it("rejects mixed variants and unavailable views with editable item gates", async () => {
+		const unavailable = {
+			version: 1,
+			candidate: {
+				candidateRef: "candidate/ref",
+				displayName: "Example Team",
+				status: "stale",
+				deviceCount: 1,
+				projectCount: 0,
+				unresolvedDeviceCount: 1,
+				unresolvedProjectCount: 0,
+			},
+			attemptId: "attempt-one",
+			state: "unavailable",
+			unavailableReason: "team_setup_conflict",
+			unresolvedDeviceCount: 1,
+			unresolvedProjectCount: 0,
+			identityChoices: [],
+			projects: [],
+			devices: [
+				{
+					deviceRef: "device-ref",
+					displayName: "Laptop",
+					enabled: true,
+					existingIdentityRef: null,
+					suggestedIdentityRef: null,
+					verifiedEvidenceKind: null,
+					decision: "unresolved",
+					targetIdentityRef: null,
+					expectation: { kind: "absent" },
+					actions: {
+						assignIdentity: { enabled: true, blockedReason: null },
+						include: { enabled: false, blockedReason: "setup_unavailable" },
+						exclude: { enabled: false, blockedReason: "setup_unavailable" },
+						remove: { enabled: false, blockedReason: "setup_unavailable" },
+						clearDecision: { enabled: false, blockedReason: "setup_unavailable" },
+					},
+				},
+			],
+			actions: {
+				refresh: { enabled: true, blockedReason: null },
+				finish: { enabled: false, blockedReason: "setup_unavailable" },
+			},
+		};
+		const mixed = {
+			...unavailable,
+			devices: unavailable.devices.map((device) => ({
+				...device,
+				actions: {
+					...device.actions,
+					assignIdentity: { enabled: false, blockedReason: "setup_unavailable" },
+				},
+			})),
+			finishDigest: "must-not-appear",
+		};
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValueOnce(new Response(JSON.stringify(mixed), { status: 200 }))
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify(unavailable), { status: 200 }),
+			) as typeof fetch;
+
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			await expect(loadLegacyTeamSetupDetail("candidate/ref")).rejects.toMatchObject({
+				errorCode: "team_setup_failed",
+			});
+		}
 	});
 
 	it.each([
@@ -653,12 +834,26 @@ describe("legacy Team setup API", () => {
 			new Response(
 				JSON.stringify({
 					version: 1,
-					candidateRef: "candidate/ref",
+					candidate: {
+						candidateRef: "candidate/ref",
+						displayName: "Example Team",
+						status: "in_progress",
+						deviceCount: 0,
+						projectCount: 0,
+						unresolvedDeviceCount: 1,
+						unresolvedProjectCount: 0,
+					},
 					attemptId: "attempt-one",
-					draftState: ["in_progress"],
-					canFinish: false,
+					state: ["reviewing"],
 					unresolvedDeviceCount: 1,
 					unresolvedProjectCount: 0,
+					devices: [],
+					projects: [],
+					identityChoices: [],
+					actions: {
+						refresh: { enabled: true, blockedReason: null },
+						finish: { enabled: false, blockedReason: "setup_incomplete" },
+					},
 				}),
 				{ status: 200 },
 			),

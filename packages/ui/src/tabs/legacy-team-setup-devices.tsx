@@ -64,12 +64,12 @@ function DeviceRow({
 	const existingName = identityName(detail, device.existingIdentityRef);
 	const suggestedName = identityName(detail, device.suggestedIdentityRef);
 	const controlsBlocked = blocked || busy;
-	const assignmentControlsBlocked = controlsBlocked || !device.enabled;
+	const assignmentControlsBlocked = controlsBlocked || !device.actions.assignIdentity.enabled;
 	const assignmentEvidenceInactive =
-		device.expectation.kind === "existing" && device.verifiedEvidenceKind !== "active_assignment";
+		device.actions.assignIdentity.blockedReason === "assignment_evidence_inactive";
 	const assignmentIdentityUnavailable = Boolean(draftIdentityRef) && !selectedChoiceExists;
 	const includeNeedsHelp =
-		assignmentEvidenceInactive ||
+		!device.actions.include.enabled ||
 		assignmentIdentityUnavailable ||
 		!savedIdentity ||
 		draftIdentityRef !== savedIdentity;
@@ -181,10 +181,14 @@ function DeviceRow({
 						</button>
 						<button
 							aria-describedby={actionDescription}
-							aria-disabled={controlsBlocked ? "true" : undefined}
+							aria-disabled={
+								controlsBlocked || !device.actions.exclude.enabled ? "true" : undefined
+							}
 							className="settings-button legacy-team-setup-target"
 							onClick={() => {
-								if (!controlsBlocked) onDecision(device, "excluded");
+								if (!controlsBlocked && device.actions.exclude.enabled) {
+									onDecision(device, "excluded");
+								}
 							}}
 							type="button"
 						>
@@ -194,10 +198,10 @@ function DeviceRow({
 				) : (
 					<button
 						aria-describedby={actionDescription}
-						aria-disabled={controlsBlocked ? "true" : undefined}
+						aria-disabled={controlsBlocked || !device.actions.remove.enabled ? "true" : undefined}
 						className="settings-button legacy-team-setup-target"
 						onClick={() => {
-							if (!controlsBlocked) onDecision(device, "removed");
+							if (!controlsBlocked && device.actions.remove.enabled) onDecision(device, "removed");
 						}}
 						type="button"
 					>
@@ -207,10 +211,12 @@ function DeviceRow({
 				{device.decision !== "unresolved" ? (
 					<button
 						aria-describedby={actionDescription}
-						aria-disabled={controlsBlocked ? "true" : undefined}
+						aria-disabled={
+							controlsBlocked || !device.actions.clearDecision.enabled ? "true" : undefined
+						}
 						className="settings-button legacy-team-setup-target"
 						onClick={() => {
-							if (!controlsBlocked) onClear(device);
+							if (!controlsBlocked && device.actions.clearDecision.enabled) onClear(device);
 						}}
 						type="button"
 					>

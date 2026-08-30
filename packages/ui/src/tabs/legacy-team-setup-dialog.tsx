@@ -14,8 +14,6 @@ const EXPLICIT_LIST_ROLE = { role: "list" } as const;
 const EXPLICIT_LIST_ITEM_ROLE = { role: "listitem" } as const;
 const CHANGED_STATE_ERROR =
 	"Team setup changed since it was last reviewed. Reload the latest details to continue.";
-const SAVED_RELOAD_ERROR =
-	"The change was saved, but the latest Team setup details could not be loaded. Reload before continuing.";
 const RELOAD_ERROR_CODES = new Set<api.LegacyTeamSetupErrorCode>([
 	"team_setup_roster_changed",
 	"team_setup_assignment_changed",
@@ -83,7 +81,7 @@ function initialStep(
 	detail: api.LegacyTeamSetupDetailResponseV1,
 	projectsVisited = false,
 ): TeamSetupStep {
-	if (detail.draftState === "completed") return "completed";
+	if (detail.state === "completed") return "completed";
 	if (detail.unresolvedDeviceCount > 0) return "devices";
 	if (!projectsVisited && detail.projects.length > 0) return "projects";
 	if (detail.unresolvedProjectCount > 0) return "projects";
@@ -91,17 +89,29 @@ function initialStep(
 }
 
 function detailNeedsRecovery(detail: api.LegacyTeamSetupDetailResponseV1): boolean {
-	if (detail.draftState === "completed") return false;
 	return (
-		detail.draftState === "stale" ||
-		(!detail.canFinish &&
-			detail.conflictState !== null &&
-			RELOAD_ERROR_CODES.has(detail.conflictState))
+		detail.state === "unavailable" &&
+		(RELOAD_ERROR_CODES.has(detail.unavailableReason) ||
+			detail.unavailableReason === "team_setup_roster_unavailable")
 	);
+}
+
+function isReadyToFinish(
+	detail: api.LegacyTeamSetupDetailResponseV1,
+): detail is Extract<api.LegacyTeamSetupDetailResponseV1, { state: "ready_to_finish" }> {
+	return detail.state === "ready_to_finish";
 }
 
 const ROSTER_UNAVAILABLE_ERROR =
 	"Team device details are temporarily unavailable. Check the coordinator connection and settings, then retry.";
+
+function detailRecoveryError(detail: api.LegacyTeamSetupDetailResponseV1): string | null {
+	if (!detailNeedsRecovery(detail)) return null;
+	return detail.state === "unavailable" &&
+		detail.unavailableReason === "team_setup_roster_unavailable"
+		? ROSTER_UNAVAILABLE_ERROR
+		: CHANGED_STATE_ERROR;
+}
 
 function isRosterUnavailableError(cause: unknown): boolean {
 	return (
@@ -179,7 +189,7 @@ function StepContent({
 				Review and finish
 			</h3>
 			<p>
-				{detail.canFinish
+				{isReadyToFinish(detail)
 					? "The server has confirmed that this Team is ready for final review."
 					: "Final review is waiting for the latest setup details."}
 			</p>
@@ -285,9 +295,7 @@ function LegacyTeamSetupDialogHost({
 		refreshBeforeLoad.current = false;
 		setLoading(true);
 		const nextDetail = shouldRefresh
-			? dependencies
-					.refreshCandidate(candidateRef)
-					.then(() => dependencies.loadDetail(candidateRef))
+			? dependencies.refreshCandidate(candidateRef)
 			: dependencies.loadDetail(candidateRef);
 		void nextDetail.then(
 			(nextDetail) => {
@@ -300,9 +308,9 @@ function LegacyTeamSetupDialogHost({
 				);
 				if (nextStep === "projects") projectsVisitedAttemptId.current = nextDetail.attemptId;
 				setStep(nextStep);
-				setError(detailNeedsRecovery(nextDetail) ? CHANGED_STATE_ERROR : null);
+				setError(detailRecoveryError(nextDetail));
 				setLoading(false);
-				if (nextDetail.draftState === "completed") {
+				if (nextDetail.state === "completed") {
 					reportCompletedRefresh(nextDetail.attemptId, dialogGeneration.current);
 				}
 			},
@@ -418,7 +426,7 @@ function LegacyTeamSetupDialogHost({
 			const nextStep =
 				preserveDevicesStep &&
 				current === "devices" &&
-				nextDetail.draftState !== "completed" &&
+				nextDetail.state !== "completed" &&
 				nextDetail.unresolvedDeviceCount > 0
 					? "devices"
 					: initialStep(nextDetail, projectsVisitedAttemptId.current === nextDetail.attemptId);
@@ -426,12 +434,7 @@ function LegacyTeamSetupDialogHost({
 			if (nextStep !== current) focusStepAfterRender.current = true;
 			return nextStep;
 		});
-		setError(detailNeedsRecovery(nextDetail) ? CHANGED_STATE_ERROR : null);
-	};
-	const reloadAfterMutation = async () => {
-		const nextDetail = await dependencies.loadDetail(candidateRef);
-		applyAuthoritativeDetail(nextDetail, true);
-		return nextDetail;
+		setError(detailRecoveryError(nextDetail));
 	};
 	const recoverMutation = async (cause: unknown, getMessage = safeMutationError) => {
 		const message = getMessage(cause);
@@ -446,7 +449,7 @@ function LegacyTeamSetupDialogHost({
 		try {
 			const nextDetail = await dependencies.loadDetail(candidateRef);
 			applyAuthoritativeDetail(nextDetail, true);
-			if (nextDetail.draftState === "completed") {
+			if (nextDetail.state === "completed") {
 				setError(null);
 				reportCompletedRefresh(nextDetail.attemptId, dialogGeneration.current);
 				return;
@@ -464,7 +467,7 @@ function LegacyTeamSetupDialogHost({
 		savedStatus: string,
 		setBusyRef: (value: string | null) => void,
 		getError: (cause: unknown) => string,
-		operation: () => Promise<unknown>,
+		operation: () => Promise<api.LegacyTeamSetupDetailResponseV1>,
 	) => {
 		if (mutationsBlocked || submitting.current) return;
 		submitting.current = true;
@@ -473,19 +476,15 @@ function LegacyTeamSetupDialogHost({
 		setOperationStatus(status);
 		setError(null);
 		try {
+			let nextDetail: api.LegacyTeamSetupDetailResponseV1;
 			try {
-				await operation();
+				nextDetail = await operation();
 			} catch (cause) {
 				await recoverMutation(cause, getError);
 				return;
 			}
-			try {
-				await reloadAfterMutation();
-				setOperationStatus(savedStatus);
-			} catch {
-				setOperationStatus("");
-				setError(SAVED_RELOAD_ERROR);
-			}
+			applyAuthoritativeDetail(nextDetail, true);
+			setOperationStatus(savedStatus);
 		} finally {
 			submitting.current = false;
 			setIsSubmitting(false);
@@ -528,17 +527,19 @@ function LegacyTeamSetupDialogHost({
 			safeMutationError,
 			async () => {
 				if (decision === "included" && targetIdentityRef) {
-					await dependencies.saveDecision(candidateRef, device.deviceRef, {
+					return dependencies.saveDecision(candidateRef, device.deviceRef, {
 						attemptId: currentDetail.attemptId,
 						decision: "included",
 						expectedTargetIdentityRef: targetIdentityRef,
 					});
-				} else if (decision !== "included") {
-					await dependencies.saveDecision(candidateRef, device.deviceRef, {
+				}
+				if (decision !== "included") {
+					return dependencies.saveDecision(candidateRef, device.deviceRef, {
 						attemptId: currentDetail.attemptId,
 						decision,
 					});
 				}
+				throw new Error("legacy_team_setup_identity_required");
 			},
 		);
 	};
@@ -582,9 +583,9 @@ function LegacyTeamSetupDialogHost({
 		setError(null);
 		void dependencies
 			.refreshCandidate(candidateRef)
-			.then(reloadAfterMutation)
 			.then((nextDetail) => {
-				if (nextDetail.draftState === "completed") {
+				applyAuthoritativeDetail(nextDetail, true);
+				if (nextDetail.state === "completed") {
 					reportCompletedRefresh(nextDetail.attemptId, completionGeneration);
 					return;
 				}
@@ -596,7 +597,9 @@ function LegacyTeamSetupDialogHost({
 				setIsSubmitting(false);
 			});
 	};
-	const finishSetup = (finishDetail: api.LegacyTeamSetupDetailResponseV1 & { canFinish: true }) => {
+	const finishSetup = (
+		finishDetail: Extract<api.LegacyTeamSetupDetailResponseV1, { state: "ready_to_finish" }>,
+	) => {
 		if (mutationsBlocked || submitting.current) return;
 		const completionGeneration = dialogGeneration.current;
 		submitting.current = true;
@@ -837,7 +840,7 @@ function LegacyTeamSetupDialogHost({
 									onContinue={() => navigate("review")}
 									onMap={mapProject}
 								/>
-							) : step === "review" && detail.canFinish ? (
+							) : step === "review" && isReadyToFinish(detail) ? (
 								<LegacyTeamSetupReview
 									blocked={mutationsBlocked}
 									blockedDescriptionId={mutationBlockDescriptionId}
@@ -847,7 +850,7 @@ function LegacyTeamSetupDialogHost({
 							) : (
 								<>
 									<StepContent detail={detail} step={step} />
-									{step === "review" && !detail.canFinish && !recoveryRequired ? (
+									{step === "review" && !isReadyToFinish(detail) && !recoveryRequired ? (
 										<button
 											aria-disabled={loading || isSubmitting ? "true" : undefined}
 											className="settings-button legacy-team-setup-target"

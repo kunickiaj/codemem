@@ -40,7 +40,7 @@ Every successful mutation is followed by a detail reload. Mutation responses pro
    - unresolved device work opens the Devices step;
    - otherwise unresolved Project work opens the Projects step;
    - otherwise the dialog opens Review.
-4. A successful mutation reloads detail and keeps the user on the current step unless that step is complete.
+4. A successful mutation applies its full authoritative `TeamSetupView` and keeps the user on the current step unless that step is complete.
 5. Closing restores focus to the connected trigger when possible, then falls back to the stable active-tab control.
 6. Reopening starts from freshly loaded server state rather than stale module state.
 
@@ -52,9 +52,9 @@ Each device exposes its server-provided display name, assignment evidence, decis
 - Changing an assignment submits the current `attemptId`, target identity reference, and exact assignment expectation.
 - Including a device submits the expected target identity reference after assignment succeeds.
 - Excluding or removing a device submits only the selected decision.
-- Clearing a decision uses the current attempt and reloads the detail.
+- Clearing a decision uses the current attempt and applies the full authoritative view returned by the mutation.
 - Controls are disabled while their mutation is active. Duplicate submissions are rejected locally.
-- Assignment and decision remain separate persisted operations. If the second operation fails, the first remains resumable and visible after reload.
+- Assignment and decision remain separate persisted operations. If the second operation fails, the first remains resumable in the authoritative assignment response.
 
 The user cannot advance while `unresolvedDeviceCount` is nonzero.
 
@@ -64,14 +64,14 @@ Each Project displays its server-provided name and current resolution.
 
 - Deterministic mappings are read-only.
 - Ambiguous Projects offer only the server-provided opaque mapping choices.
-- Selecting a mapping submits `attemptId` and `resolvedProjectRef`, then reloads detail.
+- Selecting a mapping submits `attemptId` and `resolvedProjectRef`, then applies the full authoritative view returned by the mutation.
 - The UI does not infer candidate Projects from local inventory or decode mapping references.
 
 The user cannot advance while `unresolvedProjectCount` is nonzero.
 
 ## Step 3: Review and finish
 
-Review is available only when `canFinish` is true and the detail includes `accessDelta`, `finishDigest`, `accessDeltaDigest`, and `viewerAccessDeltaDigest`. The viewer digest binds the complete viewer-safe delta, including the display labels presented for confirmation.
+The detail and mutation endpoints return one closed `TeamSetupView` variant: `reviewing`, `ready_to_finish`, `unavailable`, or `completed`. Only `ready_to_finish` includes `accessDelta`, `finishDigest`, `accessDeltaDigest`, and `viewerAccessDeltaDigest`; `unavailable` and `completed` expose disabled server-computed item action gates. The viewer digest binds the complete viewer-safe delta, including the display labels presented for confirmation.
 
 The UI renders every entry from the server-provided delta:
 

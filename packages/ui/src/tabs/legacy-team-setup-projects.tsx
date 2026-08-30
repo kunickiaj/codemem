@@ -76,7 +76,7 @@ function ProjectRow({
 	const selectedMapping = choices.find(
 		(choice) => choice.token === draftMapping,
 	)?.resolvedProjectRef;
-	const controlsBlocked = blocked || busy;
+	const controlsBlocked = blocked || busy || !project.actions.map.enabled;
 	const saveBlocked = controlsBlocked || !selectedMapping || selectedMapping === savedMapping;
 	const savedName = mappingName(project, labels);
 	const controlDescription = [

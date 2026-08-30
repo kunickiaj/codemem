@@ -1,7 +1,7 @@
 import { useState } from "preact/hooks";
 import type { LegacyTeamSetupDetailResponseV1 } from "../lib/api";
 
-type FinishableDetail = LegacyTeamSetupDetailResponseV1 & { canFinish: true };
+type FinishableDetail = Extract<LegacyTeamSetupDetailResponseV1, { state: "ready_to_finish" }>;
 
 export interface LegacyTeamSetupReviewProps {
 	blocked: boolean;

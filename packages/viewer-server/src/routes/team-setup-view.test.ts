@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { isLegacyTeamSetupView } from "../../../ui/src/lib/api/sync.js";
 import { projectLegacyTeamSetupView } from "./team-setup-view.js";
 
 const accessDelta = {
@@ -66,15 +67,38 @@ function input() {
 }
 
 describe("legacy Team setup view projection", () => {
+	it.each([
+		{ name: "reviewing", overrides: {} },
+		{
+			name: "ready_to_finish",
+			overrides: {
+				preview: {
+					finishDigest: "finish-digest",
+					accessDeltaDigest: "access-digest",
+					viewerAccessDeltaDigest: "viewer-digest",
+					accessDelta,
+				},
+			},
+		},
+		{
+			name: "unavailable",
+			overrides: { unavailableReason: "team_setup_conflict" as const },
+		},
+		{ name: "completed", overrides: { draftState: "completed" as const } },
+	])("keeps the $name server projection compatible with the UI wire validator", ({ overrides }) => {
+		const view = projectLegacyTeamSetupView({ ...input(), ...overrides });
+		expect(isLegacyTeamSetupView(JSON.parse(JSON.stringify(view)) as unknown)).toBe(true);
+	});
+
 	it("projects reviewing without confirmation evidence and typed action gates", () => {
 		const view = projectLegacyTeamSetupView(input());
 
 		expect(view).toMatchObject({
 			state: "reviewing",
-			draftState: "in_progress",
-			canFinish: false,
-			conflictState: null,
 		});
+		expect(view).not.toHaveProperty("draftState");
+		expect(view).not.toHaveProperty("canFinish");
+		expect(view).not.toHaveProperty("conflictState");
 		expect(view).not.toHaveProperty("finishDigest");
 		expect(view).not.toHaveProperty("accessDelta");
 		expect(view.devices[0]?.actions).toEqual({
@@ -103,9 +127,6 @@ describe("legacy Team setup view projection", () => {
 
 		expect(view).toMatchObject({
 			state: "ready_to_finish",
-			draftState: "in_progress",
-			canFinish: true,
-			conflictState: null,
 			finishDigest: "finish-digest",
 			accessDeltaDigest: "access-digest",
 			viewerAccessDeltaDigest: "viewer-digest",
@@ -124,9 +145,6 @@ describe("legacy Team setup view projection", () => {
 
 		expect(view).toMatchObject({
 			state: "unavailable",
-			draftState: "stale",
-			canFinish: false,
-			conflictState: "team_setup_roster_changed",
 		});
 		expect(
 			view.devices.every((device) =>
@@ -144,7 +162,7 @@ describe("legacy Team setup view projection", () => {
 		expect(view).not.toHaveProperty("finishDigest");
 	});
 
-	it("preserves a null conflict alias for stale drafts without a reason", () => {
+	it("normalizes stale drafts without a reason", () => {
 		const view = projectLegacyTeamSetupView({
 			...input(),
 			draftState: "stale",
@@ -152,9 +170,7 @@ describe("legacy Team setup view projection", () => {
 
 		expect(view).toMatchObject({
 			state: "unavailable",
-			draftState: "stale",
 			unavailableReason: "team_setup_confirmation_stale",
-			conflictState: null,
 		});
 	});
 
@@ -166,9 +182,6 @@ describe("legacy Team setup view projection", () => {
 
 		expect(view).toMatchObject({
 			state: "completed",
-			draftState: "completed",
-			canFinish: false,
-			conflictState: null,
 		});
 		expect(view.actions).toEqual({
 			refresh: { enabled: false, blockedReason: "setup_completed" },

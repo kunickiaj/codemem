@@ -186,14 +186,16 @@ describe("Devices app integration", () => {
 				unresolvedProjectCount: 0,
 			},
 			attemptId: "opaque-attempt",
-			draftState: "in_progress",
+			state: "reviewing",
 			unresolvedDeviceCount: 0,
 			unresolvedProjectCount: 0,
 			devices: [],
 			projects: [],
 			identityChoices: [],
-			canFinish: false,
-			conflictState: null,
+			actions: {
+				refresh: { enabled: true, blockedReason: null },
+				finish: { enabled: false, blockedReason: "setup_incomplete" },
+			},
 		});
 		if (expect.getState().currentTestName?.includes("first Devices load")) {
 			mocks.loadDeviceIdentityInventory.mockRejectedValue(new Error("inventory unavailable"));
