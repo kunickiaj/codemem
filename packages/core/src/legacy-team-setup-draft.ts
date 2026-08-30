@@ -5,11 +5,21 @@ import {
 	isValidLegacyTeamAssignmentVersion,
 	type StoredLegacyTeamAssignmentExpectation,
 } from "./legacy-team-assignment-expectation.js";
+import {
+	type LegacyTeamAttemptState,
+	planLegacyTeamAttempt,
+} from "./legacy-team-attempt-lifecycle.js";
 import { isLegacyTeamProjectCanonicalStateValid } from "./legacy-team-project-canonical-preflight.js";
+import { isMigratableLegacyTeamProjectIdentity } from "./legacy-team-project-policy.js";
 import {
 	latestLegacyTeamSetupAttempt,
 	legacyTeamSetupAttemptCurrentness,
 } from "./legacy-team-setup-attempt.js";
+import {
+	humanGroupLabelAlias,
+	safeLabel,
+	setupLabelForbiddenIds,
+} from "./legacy-team-setup-label-policy.js";
 import {
 	requireLegacyTeamSetupEffectiveDevicesWithinLimit,
 	requireLegacyTeamSetupSnapshotWithinLimits,
@@ -29,7 +39,7 @@ import {
 } from "./recipient-policy-identifiers.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 
-export type LegacyTeamSetupDraftState = "needs_setup" | "in_progress" | "stale" | "completed";
+export type LegacyTeamSetupDraftState = LegacyTeamAttemptState;
 export type LegacyTeamDeviceDecision = "unresolved" | "included" | "excluded" | "removed";
 export type LegacyTeamProjectResolution = "unresolved" | "deterministic" | "explicit";
 export type LegacyTeamAssignmentExpectation =
@@ -249,135 +259,6 @@ function projectCanonicalStateValid(
 			status: recipient.status,
 		})),
 	});
-}
-
-/**
- * Characters a display label may contain: letters, numbers, spaces, and a
- * small set of name punctuation. Everything else — separators (`/ \ : @ ~ $
- * %`), brackets, quotes — is what paths, URLs, endpoints, and hostnames are
- * made of, so their absence removes the entire leak surface at once.
- */
-const SAFE_LABEL_PATTERN = /^[\p{L}\p{N} '&,.()_-]*$/u;
-
-function normalizeLabelText(value: string): string {
-	return (
-		value
-			.normalize("NFKC")
-			// Format characters (zero-width joiners, bidi controls) are removed
-			// entirely so they cannot split an address or identifier into innocent
-			// halves; control characters become word separators.
-			.replace(/\p{Cf}/gu, "")
-			.replace(/\p{Cc}/gu, " ")
-			.replace(/\s+/gu, " ")
-			.trim()
-	);
-}
-
-function labelComparisonForm(value: string): string {
-	return normalizeLabelText(value).toLowerCase();
-}
-
-// A coordinator display name is affirmative evidence that a compact alphabetic
-// group slug is a human label alias. Separators, digits, long values, or a
-// mismatched display name remain opaque and stay in the redaction set.
-function humanGroupLabelAlias(groupId: string, displayName: string): string | null {
-	const comparableGroupId = labelComparisonForm(groupId);
-	if (!/^[a-z]{2,24}$/u.test(comparableGroupId)) return null;
-	return labelComparisonForm(displayName) === comparableGroupId ? comparableGroupId : null;
-}
-
-/**
- * Coordinator-supplied display labels are sanitized with an allowlist, not a
- * denylist: multiple review rounds each found one more denylisted shape (bare
- * IPs, `host:port`, dot-relative paths, rooted backslash paths), and forms
- * like `home/alice/projects` vs `50/50` or a dotless internal hostname vs a
- * product name are not separable by any pattern. Labels are display-only and
- * the fallbacks are meaningful, so the cheap failure mode is showing the
- * generic name — never exporting private topology. Anything that does not
- * match a conservative name grammar falls back:
- *
- * - NFKC-normalize first so full-width or compatibility lookalikes cannot
- *   smuggle separators past the grammar; strip every control and format
- *   character (zero-width joiners, bidi overrides) rather than only C0.
- * - Reject any character outside letters/numbers/space and `' & , . ( ) _ -`.
- * - Reject `.` squeezed between letters/numbers on both sides: that single
- *   rule removes hostnames, IPs, and dotted file names while keeping ordinary
- *   sentence punctuation like `v2 release.` intact.
- * - Reject labels embedding opaque lookup identifiers (coordinator, device,
- *   project, and non-display group references).
- */
-function safeLabel(value: string, fallback: string, forbiddenIds: ReadonlySet<string>): string {
-	const boundedValue = value.slice(0, 512);
-	const normalized = normalizeLabelText(boundedValue);
-	const sanitized = normalized.slice(0, 120).trim();
-	if (!sanitized) return fallback;
-	if (!SAFE_LABEL_PATTERN.test(sanitized)) return fallback;
-	if (/[\p{L}\p{N}]\.[\p{L}\p{N}]/u.test(sanitized)) return fallback;
-	// Key-material markers are pure letters/hyphens, so the grammar alone
-	// would keep surrounding text; fail closed on the markers themselves.
-	if (/-----|\b(?:ssh|ecdsa|sk)-[\p{L}\p{N}-]+ /iu.test(sanitized)) return fallback;
-	// Compare the complete bounded input before display truncation so an
-	// identifier cannot be hidden just past the visible label boundary.
-	const comparable = normalized.toLowerCase();
-	for (const forbiddenId of forbiddenIds) {
-		if (comparable.includes(forbiddenId)) return fallback;
-	}
-	return sanitized;
-}
-
-function setupLabelForbiddenIds(
-	contextIds: ReadonlyArray<string>,
-	groupId: string,
-	humanGroupAlias: string | null,
-	devices: ReadonlyArray<LegacyTeamSetupRosterDeviceInput>,
-	projects: ReadonlyArray<LegacyTeamSetupProjectInput>,
-	persistedDevices: ReadonlyArray<{
-		deviceId: string;
-		fingerprint: string;
-		existingIdentityId: string | null;
-		targetIdentityId: string | null;
-	}>,
-	persistedProjects: ReadonlyArray<{
-		projectRef: string;
-		sourceProjectIdentity: string;
-		sourceFingerprint: string;
-		resolvedProjectIdentity: string | null;
-		targetScopeId: string | null;
-	}>,
-): ReadonlySet<string> {
-	return new Set(
-		[
-			...contextIds,
-			...(humanGroupAlias ? [] : [groupId]),
-			...devices.flatMap((device) => [
-				device.deviceId,
-				device.fingerprint,
-				...(device.labelRedactionIds ?? []),
-			]),
-			...persistedDevices.flatMap((device) => [
-				device.deviceId,
-				device.fingerprint,
-				device.existingIdentityId ?? "",
-				device.targetIdentityId ?? "",
-			]),
-			...projects.flatMap((project) => [
-				project.projectRef,
-				project.sourceProjectIdentity,
-				project.sourceFingerprint,
-				project.deterministicProjectIdentity ?? "",
-				project.targetScopeId ?? "",
-			]),
-			...persistedProjects.flatMap((project) => [
-				project.projectRef,
-				project.sourceProjectIdentity,
-				project.sourceFingerprint,
-				project.resolvedProjectIdentity ?? "",
-				project.targetScopeId ?? "",
-			]),
-		]
-			.map(labelComparisonForm)
-			.filter(Boolean),
-	);
 }
 
 interface DeviceAssignmentSnapshot {
@@ -983,16 +864,20 @@ export function refreshLegacyTeamSetupDraft(
 		}));
 		const rosterFingerprint = legacyTeamRosterFingerprint(assignments);
 		const projectFingerprint = legacyTeamProjectionFingerprint(normalizedInput.projects);
-		if (
-			existing &&
-			(existing.state === "needs_setup" || existing.state === "in_progress") &&
+		const evidenceMatches =
+			existing != null &&
 			existing.roster_fingerprint === rosterFingerprint &&
 			existing.projection_fingerprint === projectFingerprint &&
-			storedAssignmentEvidenceMatches(db, existing.attempt_id, assignmentSnapshots)
-		) {
+			storedAssignmentEvidenceMatches(db, existing.attempt_id, assignmentSnapshots);
+		const plan = planLegacyTeamAttempt({
+			state: existing?.state ?? null,
+			evidenceMatches,
+			completionReady: false,
+		});
+		if (plan.kind === "reuse" && existing) {
 			return refreshLegacyTeamSetupDraftLabels(db, existing.attempt_id, normalizedInput);
 		}
-		if (existing && (existing.state === "needs_setup" || existing.state === "in_progress")) {
+		if (existing && existing.state !== "completed") {
 			db.prepare(
 				`UPDATE legacy_team_setup_drafts
 				 SET state = 'stale', superseded_at = ?, updated_at = ?
@@ -1374,6 +1259,7 @@ export function isLegacyTeamSetupProjectMappingIdentity(value: string): boolean 
 	return !(
 		!isStrictRecipientPolicyProjectIdentity(identity) ||
 		identity.startsWith("unmapped:") ||
+		!isMigratableLegacyTeamProjectIdentity(identity) ||
 		/\s/u.test(identity) ||
 		(/[/\\]/u.test(identity) && !isRemoteForm) ||
 		/^(?:[~.$%]|[A-Za-z]:[\\/])/.test(identity) ||

@@ -1,3 +1,5 @@
+import { isMigratableLegacyTeamProjectIdentity } from "./legacy-team-project-policy.js";
+
 export interface LegacyTeamProjectCanonicalPreflightInput {
 	teamId: string;
 	scopeIds: readonly string[];
@@ -40,6 +42,7 @@ export function isLegacyTeamProjectCanonicalStateValid(
 	for (const project of input.projects) {
 		const resolvedIdentity = project.resolvedProjectIdentity;
 		if (!resolvedIdentity || resolvedIdentity.startsWith("unmapped:")) return false;
+		if (!isMigratableLegacyTeamProjectIdentity(resolvedIdentity)) return false;
 		if (!project.targetScopeId || !input.scopeIds.includes(project.targetScopeId)) return false;
 
 		const relatedMappings = input.mappings.filter(

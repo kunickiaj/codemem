@@ -470,19 +470,17 @@ describe("legacy Team candidate discovery", () => {
 		);
 	});
 
-	it("marks changed roster evidence stale until explicit refresh", () => {
+	it("replaces changed roster evidence during discovery", () => {
 		const [first] = discoverLegacyTeamCandidates(db, options());
 		const firstAttempt = latestLegacyTeamSetupAttempt(db, first?.candidateRef as string);
 		expect(firstAttempt).not.toBeNull();
 		if (!firstAttempt) throw new Error("initial refresh attempt missing");
-		const [stale] = discoverLegacyTeamCandidates(db, options("key-b"));
+		const [refreshedCandidate] = discoverLegacyTeamCandidates(db, options("key-b"));
 
-		expect(stale?.status).toBe("stale");
-		const refreshed = refreshLegacyTeamCandidate(
-			db,
-			options("key-b"),
-			first?.candidateRef as string,
-		);
+		expect(refreshedCandidate?.status).toBe("needs_setup");
+		const refreshed = getLegacyTeamSetupDraft(db, first?.candidateRef as string);
+		expect(refreshed).not.toBeNull();
+		if (!refreshed) throw new Error("replacement attempt missing");
 		expect(refreshed.state).toBe("needs_setup");
 		expect(latestLegacyTeamSetupAttempt(db, first?.candidateRef as string)?.attemptId).toBe(
 			refreshed.attemptId,
@@ -496,10 +494,29 @@ describe("legacy Team candidate discovery", () => {
 		).toBe(firstAttempt.attemptId);
 	});
 
+	it("replaces an activation-staled attempt during discovery", () => {
+		const [candidate] = discoverLegacyTeamCandidates(db, options());
+		const firstAttempt = latestLegacyTeamSetupAttempt(db, candidate?.candidateRef as string);
+		if (!firstAttempt) throw new Error("initial attempt missing");
+		db.prepare("UPDATE legacy_team_setup_drafts SET state = 'stale' WHERE attempt_id = ?").run(
+			firstAttempt.attemptId,
+		);
+
+		const [rediscovered] = discoverLegacyTeamCandidates(db, options());
+		const replacement = latestLegacyTeamSetupAttempt(db, candidate?.candidateRef as string);
+		const historical = db
+			.prepare("SELECT state, superseded_at FROM legacy_team_setup_drafts WHERE attempt_id = ?")
+			.get(firstAttempt.attemptId);
+
+		expect(rediscovered?.status).toBe("needs_setup");
+		expect(replacement?.attemptId).not.toBe(firstAttempt.attemptId);
+		expect(historical).toEqual({ state: "stale", superseded_at: NOW });
+	});
+
 	it.each([
-		["newly stale", false],
-		["already stale", true],
-	] as const)("re-sanitizes persisted labels for a %s attempt", (_label, staleFirst) => {
+		["first replacement", false],
+		["subsequent replacement", true],
+	] as const)("sanitizes labels for a %s", (_label, replaceFirst) => {
 		const initialOptions = options("key-a", "api");
 		const initialGroup = initialOptions.groups[0];
 		if (!initialGroup) throw new Error("invalid test fixture");
@@ -513,15 +530,15 @@ describe("legacy Team candidate discovery", () => {
 			projects: [{ displayName: "api" }],
 		});
 
-		if (staleFirst) {
-			const staleOptions = options("key-b", "api");
-			const staleGroup = staleOptions.groups[0];
-			if (!staleGroup) throw new Error("invalid test fixture");
-			staleGroup.displayName = "api";
-			expect(discoverLegacyTeamCandidates(db, staleOptions)[0]?.status).toBe("stale");
+		if (replaceFirst) {
+			const replacementOptions = options("key-b", "api");
+			const replacementGroup = replacementOptions.groups[0];
+			if (!replacementGroup) throw new Error("invalid test fixture");
+			replacementGroup.displayName = "api";
+			expect(discoverLegacyTeamCandidates(db, replacementOptions)[0]?.status).toBe("needs_setup");
 		}
 
-		const changedOptions = options(staleFirst ? "key-b" : "key-a", "api");
+		const changedOptions = options(replaceFirst ? "key-b" : "key-a", "api");
 		const changedGroup = changedOptions.groups[0];
 		if (!changedGroup) throw new Error("invalid test fixture");
 		changedGroup.displayName = "api";
@@ -532,35 +549,36 @@ describe("legacy Team candidate discovery", () => {
 		db.prepare("DELETE FROM sessions").run();
 		db.prepare("DELETE FROM project_scope_mappings").run();
 
-		const [stale] = discoverLegacyTeamCandidates(db, changedOptions);
-		const staleDraft = getLegacyTeamSetupDraft(db, initial?.candidateRef as string);
+		const [replacement] = discoverLegacyTeamCandidates(db, changedOptions);
+		const replacementDraft = getLegacyTeamSetupDraft(db, initial?.candidateRef as string);
 
-		expect(stale).toMatchObject({ displayName: "Legacy Team", status: "stale" });
-		expect(staleDraft).toMatchObject({
-			attemptId,
-			state: "stale",
+		expect(replacement).toMatchObject({ displayName: "Legacy Team", status: "needs_setup" });
+		expect(replacementDraft).toMatchObject({
+			state: "needs_setup",
 			displayName: "Legacy Team",
-			devices: [{ displayName: "Device" }],
-			projects: [{ displayName: "Project" }],
+			projects: [],
 		});
-		expect(latestLegacyTeamSetupAttempt(db, stale?.candidateRef as string)?.attemptId).toBe(
-			attemptId,
-		);
+		expect(replacementDraft?.devices.map((device) => device.displayName)).toEqual([
+			"New Device",
+			"Removed device",
+		]);
+		expect(replacementDraft?.attemptId).not.toBe(attemptId);
 	});
 
-	it("keeps a stale attempt blocked if roster evidence reverts", () => {
+	it("creates a fresh attempt if roster evidence reverts", () => {
 		const [first] = discoverLegacyTeamCandidates(db, options());
 		const firstAttempt = latestLegacyTeamSetupAttempt(db, first?.candidateRef as string);
 		expect(firstAttempt).not.toBeNull();
 		if (!firstAttempt) throw new Error("initial stale-reversion attempt missing");
 		discoverLegacyTeamCandidates(db, options("key-b"));
+		const changedAttempt = latestLegacyTeamSetupAttempt(db, first?.candidateRef as string);
 
 		const [reverted] = discoverLegacyTeamCandidates(db, options("key-a"));
 
-		expect(reverted?.status).toBe("stale");
-		expect(latestLegacyTeamSetupAttempt(db, reverted?.candidateRef as string)?.attemptId).toBe(
-			firstAttempt.attemptId,
-		);
+		expect(reverted?.status).toBe("needs_setup");
+		const revertedAttempt = latestLegacyTeamSetupAttempt(db, reverted?.candidateRef as string);
+		expect(revertedAttempt?.attemptId).not.toBe(firstAttempt.attemptId);
+		expect(revertedAttempt?.attemptId).not.toBe(changedAttempt?.attemptId);
 	});
 
 	it("derives ready only from a current completed draft and compatible canonical Team", () => {

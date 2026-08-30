@@ -4,7 +4,10 @@ import {
 	listLegacyTeamProjectEvidence,
 	selectedProjectScopeMappings,
 } from "./legacy-recipient-policy-projection.js";
+import { planLegacyTeamAttempt } from "./legacy-team-attempt-lifecycle.js";
+import { isMigratableLegacyTeamProjectIdentity } from "./legacy-team-project-policy.js";
 import {
+	type LegacyTeamSetupDraftState,
 	type LegacyTeamSetupDraftView,
 	type LegacyTeamSetupProjectInput,
 	legacyTeamProjectionFingerprint,
@@ -67,7 +70,7 @@ interface DraftFreshnessRow {
 	attempt_id: string;
 	coordinator_id: string;
 	group_id: string;
-	state: "needs_setup" | "in_progress" | "stale" | "completed";
+	state: LegacyTeamSetupDraftState;
 	roster_fingerprint: string;
 	projection_fingerprint: string;
 	completed_team_id: string | null;
@@ -223,7 +226,7 @@ function projectInventory(
 	return evidence
 		.filter(
 			(project) =>
-				project.project.canonicalIdentity !== "shared:default" &&
+				isMigratableLegacyTeamProjectIdentity(project.project.canonicalIdentity) &&
 				project.teamCandidateIds.includes(candidateId),
 		)
 		.map((project) => {
@@ -679,59 +682,31 @@ function resolveDiscoveredCandidate(
 			projects,
 		);
 		const displayName = candidateDisplayName(db, candidateId, group.displayName);
-		let draft: LegacyTeamSetupDraftView;
 		const expectedProjectionFingerprint = legacyTeamProjectionFingerprint(projects);
-		if (!row || (row.state === "completed" && !ready)) {
-			draft = refreshLegacyTeamSetupDraft(db, {
-				candidateId,
-				coordinatorId,
-				groupId,
-				displayName,
-				devices: rosterDevices,
-				projects,
-				now,
-			});
-		} else if (row.state === "completed") {
-			draft = refreshLegacyTeamSetupDraftLabels(db, row.attempt_id, {
-				displayName,
-				devices: rosterDevices,
-				projects,
-				now,
-			});
-		} else if (row.state === "stale") {
-			draft = refreshLegacyTeamSetupDraftLabels(db, row.attempt_id, {
-				displayName,
-				devices: rosterDevices,
-				projects,
-				now,
-			});
-		} else if (
-			row.roster_fingerprint !== rosterFingerprint ||
-			row.projection_fingerprint !== expectedProjectionFingerprint
-		) {
-			if (row.state === "needs_setup" || row.state === "in_progress") {
-				db.prepare(
-					`UPDATE legacy_team_setup_drafts SET state = 'stale', updated_at = ?
-					 WHERE attempt_id = ?`,
-				).run(now, row.attempt_id);
-			}
-			draft = refreshLegacyTeamSetupDraftLabels(db, row.attempt_id, {
-				displayName,
-				devices: rosterDevices,
-				projects,
-				now,
-			});
-		} else {
-			draft = refreshLegacyTeamSetupDraft(db, {
-				candidateId,
-				coordinatorId,
-				groupId,
-				displayName,
-				devices: rosterDevices,
-				projects,
-				now,
-			});
-		}
+		const plan = planLegacyTeamAttempt({
+			state: row?.state ?? null,
+			evidenceMatches:
+				row?.roster_fingerprint === rosterFingerprint &&
+				row.projection_fingerprint === expectedProjectionFingerprint,
+			completionReady: ready,
+		});
+		const draft =
+			plan.kind === "preserve_completion" && row
+				? refreshLegacyTeamSetupDraftLabels(db, row.attempt_id, {
+						displayName,
+						devices: rosterDevices,
+						projects,
+						now,
+					})
+				: refreshLegacyTeamSetupDraft(db, {
+						candidateId,
+						coordinatorId,
+						groupId,
+						displayName,
+						devices: rosterDevices,
+						projects,
+						now,
+					});
 		return { draft, ready, projectCount: projects.length };
 	});
 	return discover.immediate();

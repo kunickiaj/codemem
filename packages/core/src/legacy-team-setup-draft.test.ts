@@ -823,6 +823,10 @@ describe("legacy Team setup drafts", () => {
 		const projectRef = draft.projects.find((p) => p.resolution === "unresolved")?.projectRef;
 		if (!projectRef) throw new Error("invalid test fixture");
 		for (const target of [
+			"shared",
+			"shared:default",
+			"shared:legacy",
+			"personal:actor-local",
 			"C:\\repos\\acme",
 			"https://git.example.invalid/acme/web.git/",
 			"https://git.example.invalid/acme/web\u200b.git",
@@ -855,6 +859,34 @@ describe("legacy Team setup drafts", () => {
 				}),
 			).toThrow("legacy_team_setup_project_mapping_invalid");
 		}
+	});
+
+	it.each([
+		"shared:team",
+		"shared:workspace-only",
+	])("accepts named shared Project resolution target %s", (target) => {
+		const draft = refreshLegacyTeamSetupDraft(db, snapshot());
+		const projectRef = draft.projects.find(
+			(project) => project.resolution === "unresolved",
+		)?.projectRef;
+		if (!projectRef) throw new Error("invalid test fixture");
+
+		setLegacyTeamSetupProjectMapping(db, {
+			attemptId: draft.attemptId,
+			projectRef,
+			resolvedProjectIdentity: target,
+			now: NOW,
+		});
+
+		expect(
+			db
+				.prepare(
+					`SELECT resolved_project_identity FROM legacy_team_setup_draft_projects
+						 WHERE attempt_id = ? AND project_ref = ?`,
+				)
+				.pluck()
+				.get(draft.attemptId, projectRef),
+		).toBe(target);
 	});
 
 	it("rejects decisions outside the activation contract at runtime", () => {

@@ -49,6 +49,19 @@ describe("legacy Team Project canonical preflight", () => {
 			expected: false,
 		},
 		{
+			name: "rejects a synthetic workspace identity defensively",
+			overrides: {
+				projects: [
+					{
+						sourceProjectIdentity: SOURCE,
+						resolvedProjectIdentity: "personal:actor-a",
+						targetScopeId: "scope-active",
+					},
+				],
+			},
+			expected: false,
+		},
+		{
 			name: "accepts multiple active scopes when Project evidence selects one",
 			overrides: {
 				scopeIds: ["scope-active", "scope-active-2"],
