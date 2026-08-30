@@ -15,6 +15,7 @@
  * and never returns a compaction object for pi to apply.
  */
 
+import { createHash } from "node:crypto";
 import { normalizeProjectLabel, resolveHookProject } from "./claude-hooks.js";
 
 // ---------------------------------------------------------------------------
@@ -102,13 +103,12 @@ function coerceBool(value: unknown): boolean {
 }
 
 /**
- * Deterministic event id: `pi:<sessionId>:<entryId|toolCallId|stable-suffix>`.
+ * Deterministic event id: `pi_evt_` + sha256(identity).hex.slice(0, 24).
  * Same logical event must yield the same id across HTTP/CLI retries.
  */
-function buildPiEventId(sessionId: string, stablePart: string): string {
-	const part = stablePart.trim();
-	if (!part) throw new Error("pi event id stable part is required");
-	return `pi:${sessionId}:${part}`;
+function buildPiEventId(...parts: string[]): string {
+	const digest = createHash("sha256").update(parts.join("|"), "utf-8").digest("hex").slice(0, 24);
+	return `pi_evt_${digest}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ export function mapPiEventPayload(payload: Record<string, unknown>): PiHookAdapt
 		const reason = field(payload, "reason");
 		eventType = "session_end";
 		eventPayload = { reason: reason ?? null };
-		idPart = entryId || "session_end";
+		idPart = entryId && entryId !== "session_end" ? entryId : `session_end:${coerceString(reason)}`;
 		consumed.add("reason");
 	} else if (piEvent === "message_end") {
 		const role = coerceString(field(payload, "role")).toLowerCase();
@@ -297,7 +297,7 @@ export function mapPiEventPayload(payload: Record<string, unknown>): PiHookAdapt
 		schema_version: "1.0",
 		source: "pi",
 		session_id: sessionId,
-		event_id: buildPiEventId(sessionId, idPart),
+		event_id: buildPiEventId(sessionId, piEvent, idPart),
 		event_type: eventType,
 		ts,
 		ordering_confidence: "low",

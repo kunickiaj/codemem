@@ -33,6 +33,8 @@ function requireEnvelope(envelope: ReturnType<typeof buildRawEventEnvelopeFromPi
 	return envelope;
 }
 
+const PI_EVENT_ID = /^pi_evt_[0-9a-f]{24}$/;
+
 // ---------------------------------------------------------------------------
 // mapPiEventPayload — event type mapping
 // ---------------------------------------------------------------------------
@@ -52,7 +54,7 @@ describe("mapPiEventPayload", () => {
 			expect(event?.source).toBe("pi");
 			expect(event?.event_type).toBe("session_start");
 			expect(event?.session_id).toBe("pi-sess-1");
-			expect(event?.event_id).toBe("pi:pi-sess-1:session_start");
+			expect(event?.event_id).toMatch(PI_EVENT_ID);
 			expect(event?.cwd).toBe("/tmp/repo");
 			expect(event?.ts).toBe("2026-06-01T12:00:00Z");
 		});
@@ -64,7 +66,7 @@ describe("mapPiEventPayload", () => {
 				entryId: "entry-start-1",
 				ts: "2026-06-01T12:00:00Z",
 			});
-			expect(event?.event_id).toBe("pi:pi-sess-1:entry-start-1");
+			expect(event?.event_id).toMatch(PI_EVENT_ID);
 		});
 	});
 
@@ -80,7 +82,7 @@ describe("mapPiEventPayload", () => {
 			expect(event).not.toBeNull();
 			expect(event?.event_type).toBe("session_end");
 			expect(event?.payload.reason).toBe("user_exit");
-			expect(event?.event_id).toBe("pi:pi-sess-end:session_end");
+			expect(event?.event_id).toMatch(PI_EVENT_ID);
 			expect(event?.source).toBe("pi");
 		});
 	});
@@ -102,7 +104,7 @@ describe("mapPiEventPayload", () => {
 			expect(event?.source).toBe("pi");
 			expect(event?.event_type).toBe("prompt");
 			expect(event?.payload.text).toBe("Run tests");
-			expect(event?.event_id).toBe("pi:pi-sess-msg:entry-u1");
+			expect(event?.event_id).toMatch(PI_EVENT_ID);
 			expect(event?.meta.pi_event).toBe("message_end");
 			expect(event?.meta.entry_id).toBe("entry-u1");
 			expect((event?.meta.pi_fields as Record<string, unknown>).custom_field).toBe("keep-me");
@@ -146,7 +148,7 @@ describe("mapPiEventPayload", () => {
 			expect(event).not.toBeNull();
 			expect(event?.event_type).toBe("assistant");
 			expect(event?.payload.text).toBe("All done");
-			expect(event?.event_id).toBe("pi:pi-sess-msg:entry-a1");
+			expect(event?.event_id).toMatch(PI_EVENT_ID);
 		});
 	});
 
@@ -161,7 +163,7 @@ describe("mapPiEventPayload", () => {
 			});
 			expect(event?.event_type).toBe("assistant");
 			expect(event?.payload.text).toBe("Turn complete");
-			expect(event?.event_id).toBe("pi:pi-sess-turn:entry-t1");
+			expect(event?.event_id).toMatch(PI_EVENT_ID);
 		});
 
 		it("does not map agent_end (D2: extension emits message_end only)", () => {
@@ -193,7 +195,7 @@ describe("mapPiEventPayload", () => {
 			expect(event?.event_type).toBe("tool_call");
 			expect(event?.payload.tool_name).toBe("bash");
 			expect(event?.payload.tool_input).toEqual({ command: "pnpm test" });
-			expect(event?.event_id).toBe("pi:pi-sess-tool:tc-1");
+			expect(event?.event_id).toMatch(PI_EVENT_ID);
 			expect(event?.meta.tool_call_id).toBe("tc-1");
 		});
 
@@ -246,7 +248,7 @@ describe("mapPiEventPayload", () => {
 			expect(event?.payload.status).toBe("ok");
 			expect(event?.payload.tool_output).toEqual({ exit_code: 0 });
 			expect(event?.payload.tool_error).toBeNull();
-			expect(event?.event_id).toBe("pi:pi-sess-tool:tc-1:result");
+			expect(event?.event_id).toMatch(PI_EVENT_ID);
 		});
 
 		it("maps isError result", () => {
@@ -266,7 +268,7 @@ describe("mapPiEventPayload", () => {
 			expect(event?.payload.tool_output).toBeNull();
 			expect(event?.payload.error).toEqual({ message: "1 failed" });
 			expect(event?.payload.tool_error).toEqual({ message: "1 failed" });
-			expect(event?.event_id).toBe("pi:pi-sess-tool:tc-err:result");
+			expect(event?.event_id).toMatch(PI_EVENT_ID);
 		});
 	});
 
@@ -333,7 +335,7 @@ describe("mapPiEventPayload", () => {
 			const first = mapPiEventPayload(payload);
 			const second = mapPiEventPayload(payload);
 			expect(first?.event_id).toBe(second?.event_id);
-			expect(first?.event_id).toBe("pi:pi-sess-stable:entry-stable-1");
+			expect(first?.event_id).toMatch(PI_EVENT_ID);
 		});
 
 		it("event_id is invariant to ts (different or absent)", () => {
@@ -349,14 +351,14 @@ describe("mapPiEventPayload", () => {
 			const withTsA = mapPiEventPayload({ ...base, ts: "2026-01-01T00:00:00Z" });
 			const withTsB = mapPiEventPayload({ ...base, ts: "2026-12-31T23:59:59Z" });
 			const withoutTs = mapPiEventPayload({ ...base });
-			expect(withTsA?.event_id).toBe("pi:pi-sess-ts-invariant:entry-ts-1");
+			expect(withTsA?.event_id).toMatch(PI_EVENT_ID);
 			expect(withTsB?.event_id).toBe(withTsA?.event_id);
 			expect(withoutTs?.event_id).toBe(withTsA?.event_id);
 			// ts itself may differ; only event_id must be stable.
 			expect(withTsA?.ts).not.toBe(withTsB?.ts);
 		});
 
-		it("uses the pi:<sessionId>:<id> format", () => {
+		it("uses the pi_evt_ hashed format", () => {
 			const event = mapPiEventPayload({
 				piEvent: "tool_call",
 				sessionId: "S",
@@ -364,8 +366,7 @@ describe("mapPiEventPayload", () => {
 				toolName: "read",
 				ts: "2026-06-01T12:00:00Z",
 			});
-			expect(event?.event_id).toMatch(/^pi:[^:]+:.+$/);
-			expect(event?.event_id).toBe("pi:S:T");
+			expect(event?.event_id).toMatch(PI_EVENT_ID);
 		});
 	});
 
@@ -383,8 +384,8 @@ describe("mapPiEventPayload", () => {
 
 			expect(parent?.session_id).toBe("sess-parent");
 			expect(fork?.session_id).toBe("sess-fork");
-			expect(parent?.event_id).toBe("pi:sess-parent:entry-same");
-			expect(fork?.event_id).toBe("pi:sess-fork:entry-same");
+			expect(parent?.event_id).toMatch(PI_EVENT_ID);
+			expect(fork?.event_id).toMatch(PI_EVENT_ID);
 			expect(parent?.event_id).not.toBe(fork?.event_id);
 		});
 
@@ -419,7 +420,7 @@ describe("mapPiEventPayload", () => {
 				ts: "2026-06-01T12:00:00Z",
 			});
 			expect(event?.session_id).toBe("pi-snake");
-			expect(event?.event_id).toBe("pi:pi-snake:e-snake");
+			expect(event?.event_id).toMatch(PI_EVENT_ID);
 			expect(event?.source).toBe("pi");
 		});
 	});
@@ -509,7 +510,7 @@ describe("buildRawEventEnvelopeFromPiEvent", () => {
 		expect(envelope?.session_id).toBe("pi-sess-env");
 		expect(envelope?.opencode_session_id).toBe("pi-sess-env");
 		expect(envelope?.started_at).toBe("2026-06-01T12:00:00Z");
-		expect(envelope?.event_id).toBe("pi:pi-sess-env:session_start");
+		expect(envelope?.event_id).toMatch(PI_EVENT_ID);
 		expect(envelope?.payload.type).toBe("pi.hook");
 		expect((envelope?.payload._adapter as Record<string, unknown>).source).toBe("pi");
 		expect((envelope?.payload._adapter as Record<string, unknown>).schema_version).toBe("1.0");
@@ -641,7 +642,7 @@ describe("pi source attribution via recordRawEvent", () => {
 		expect(piRows).toHaveLength(1);
 		expect(piRows[0]?.source).toBe("pi");
 		expect(piRows[0]?.stream_id).toBe("pi-attr-sess");
-		expect(piRows[0]?.event_id).toBe("pi:pi-attr-sess:entry-attr-1");
+		expect(piRows[0]?.event_id).toMatch(PI_EVENT_ID);
 		expect(piRows[0]?.event_type).toBe("pi.hook");
 
 		const opencodeRows = store.db
@@ -772,5 +773,52 @@ describe("ingestRawEvents accepts pi envelopes", () => {
 			.prepare(`SELECT COUNT(*) AS n FROM raw_events WHERE source = ?`)
 			.get("opencode") as { n: number };
 		expect(Number(opencodeCount.n)).toBe(0);
+	});
+
+	it.each([
+		{ sessionId: "session/with/slash", entryId: "entry+1" },
+		{ sessionId: "s".repeat(80), entryId: "e+".repeat(40) },
+	])("hashes unconstrained identity into an ingest-safe event_id", ({ sessionId, entryId }) => {
+		const envelope = requireEnvelope(
+			buildRawEventEnvelopeFromPiEvent({
+				piEvent: "message_end",
+				sessionId,
+				entryId,
+				role: "user",
+				text: "hello",
+				ts: "2026-06-01T16:00:00Z",
+			}),
+		);
+		expect(envelope.event_id).toMatch(/^[A-Za-z0-9._:-]+$/);
+		expect(envelope.event_id.length).toBeLessThanOrEqual(128);
+		const result = ingestRawEvents(store, envelope);
+		expect(result.inserted).toBe(1);
+		expect(result.skipped).toBe(0);
+	});
+
+	it("persists reload then exit as distinct session_end events", () => {
+		const sessionId = "pi-reload-exit";
+		const reload = requireEnvelope(
+			buildRawEventEnvelopeFromPiEvent({
+				piEvent: "session_shutdown",
+				sessionId,
+				entryId: "session_end",
+				reason: "reload",
+				ts: "2026-06-01T16:00:00Z",
+			}),
+		);
+		const exit = requireEnvelope(
+			buildRawEventEnvelopeFromPiEvent({
+				piEvent: "session_shutdown",
+				sessionId,
+				entryId: "session_end",
+				reason: "quit",
+				ts: "2026-06-01T16:01:00Z",
+			}),
+		);
+		expect(reload.event_id).not.toBe(exit.event_id);
+		expect(ingestRawEvents(store, reload)).toMatchObject({ inserted: 1, skipped: 0 });
+		expect(ingestRawEvents(store, exit)).toMatchObject({ inserted: 1, skipped: 0 });
+		expect(ingestRawEvents(store, exit)).toMatchObject({ inserted: 0, skipped: 1 });
 	});
 });
