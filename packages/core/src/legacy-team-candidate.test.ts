@@ -581,7 +581,7 @@ describe("legacy Team candidate discovery", () => {
 		expect(revertedAttempt?.attemptId).not.toBe(changedAttempt?.attemptId);
 	});
 
-	it("derives ready only from a current completed draft and compatible canonical Team", () => {
+	it("reconciles a missing setup-owned Project edge for a compatible completion", () => {
 		const [initial] = discoverLegacyTeamCandidates(db, options());
 		const draft = db
 			.prepare(
@@ -593,13 +593,14 @@ describe("legacy Team candidate discovery", () => {
 			candidate_id: string;
 			roster_fingerprint: string;
 		};
+		const completedTeamId = deterministicPolicyTeamId(draft.candidate_id);
 		db.prepare(
 			`INSERT INTO policy_teams(
 				team_id, display_name, status, device_eligibility_mode, provenance,
 				revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at
 			 ) VALUES (?, 'Engineering', 'active', 'reviewed_allowlist', 'reviewed_team_candidate',
 				'revision-1', 'completed', ?, 'team-setup-test', ?, ?)`,
-		).run(deterministicPolicyTeamId(draft.candidate_id), draft.roster_fingerprint, NOW, NOW);
+		).run(completedTeamId, draft.roster_fingerprint, NOW, NOW);
 
 		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("needs_setup");
 
@@ -609,19 +610,89 @@ describe("legacy Team candidate discovery", () => {
 				policy_revision, migration_state, idempotency_key, created_at, updated_at
 			 ) VALUES (?, 'team', ?, 'active', 'reviewed_team_setup', 'revision-1', 'completed',
 				'ready-edge', ?, ?)`,
-		).run(PROJECT_ID, deterministicPolicyTeamId(draft.candidate_id), NOW, NOW);
+		).run(PROJECT_ID, completedTeamId, NOW, NOW);
 		db.prepare(
 			`UPDATE legacy_team_setup_drafts
 			 SET state = 'completed', completed_team_id = ?, completed_at = ?, updated_at = ?
 			 WHERE attempt_id = ?`,
-		).run(deterministicPolicyTeamId(draft.candidate_id), NOW, NOW, draft.attempt_id);
+		).run(completedTeamId, NOW, NOW, draft.attempt_id);
 
 		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
+		db.prepare(
+			`INSERT INTO policy_teams(
+			 team_id, display_name, status, device_eligibility_mode, provenance,
+			 revision, migration_state, idempotency_key, created_at, updated_at
+			 ) VALUES ('team-independent', 'Independent', 'active', 'reviewed_allowlist', 'user',
+			 'independent-r1', 'user_managed', 'independent-team', ?, ?)`,
+		).run(NOW, NOW);
+		db.prepare(
+			`INSERT INTO project_recipients(
+			 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			 policy_revision, migration_state, idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'team', 'team-independent', 'active', 'review_resolution',
+			 'independent-r1', 'user_managed', 'independent-edge', ?, ?)`,
+		).run(PROJECT_ID, NOW, NOW);
+		const independentEdge = db
+			.prepare("SELECT * FROM project_recipients WHERE recipient_id = 'team-independent'")
+			.get();
 
-		// Removing a completion-bound canonical row must drop Ready even though
-		// the Team header and legacy inventory are unchanged.
-		db.prepare("UPDATE project_recipients SET status = 'revoked'").run();
-		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("needs_setup");
+		// Older completions may predate Project edge materialization. A setup-owned
+		// missing edge is restored once, without reopening an otherwise compatible Team.
+		db.prepare("DELETE FROM project_recipients WHERE recipient_id = ?").run(completedTeamId);
+		const firstReconciliation = options();
+		firstReconciliation.now = "2026-08-21T12:01:00.000Z";
+		expect(discoverLegacyTeamCandidates(db, firstReconciliation)[0]?.status).toBe("ready");
+		expect(
+			db
+				.prepare(
+					`SELECT status, provenance, updated_at FROM project_recipients
+					 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
+				)
+				.get(PROJECT_ID, completedTeamId),
+		).toEqual({
+			status: "active",
+			provenance: "reviewed_team_setup",
+			updated_at: firstReconciliation.now,
+		});
+		expect(
+			db.prepare("SELECT * FROM project_recipients WHERE recipient_id = 'team-independent'").get(),
+		).toEqual(independentEdge);
+
+		const replay = options();
+		replay.now = "2026-08-21T12:02:00.000Z";
+		expect(discoverLegacyTeamCandidates(db, replay)[0]?.status).toBe("ready");
+		expect(
+			db
+				.prepare(
+					`SELECT updated_at FROM project_recipients
+					 WHERE canonical_project_identity = ? AND recipient_id = ?`,
+				)
+				.pluck()
+				.get(PROJECT_ID, completedTeamId),
+		).toBe(firstReconciliation.now);
+
+		db.prepare(
+			`UPDATE project_recipients
+			 SET status = 'revoked', provenance = 'review_resolution', policy_revision = 'user-r1',
+			     migration_state = 'user_managed', source_fingerprint = 'user-source',
+			     idempotency_key = 'user-edge', updated_at = '2026-08-21T12:03:00.000Z'
+			 WHERE canonical_project_identity = ? AND recipient_id = ?`,
+		).run(PROJECT_ID, completedTeamId);
+		const userOwnedEdge = db
+			.prepare(
+				"SELECT * FROM project_recipients WHERE canonical_project_identity = ? AND recipient_id = ?",
+			)
+			.get(PROJECT_ID, completedTeamId);
+		const unsafeReconciliation = options();
+		unsafeReconciliation.now = "2026-08-21T12:04:00.000Z";
+		expect(discoverLegacyTeamCandidates(db, unsafeReconciliation)[0]?.status).toBe("needs_setup");
+		expect(
+			db
+				.prepare(
+					"SELECT * FROM project_recipients WHERE canonical_project_identity = ? AND recipient_id = ?",
+				)
+				.get(PROJECT_ID, completedTeamId),
+		).toEqual(userOwnedEdge);
 	});
 
 	it("stays Ready after an explicit Project resolution is materialized", () => {
@@ -1656,7 +1727,7 @@ describe("legacy Team candidate discovery", () => {
 
 	function runExcludedCompletionScenario(
 		mutate: (db2: InstanceType<typeof Database>, teamId: string) => unknown,
-		expectedStatus: "ready" | "needs_setup",
+		expectedStatus: "ready" | "needs_setup" | "missing",
 	) {
 		db.prepare(
 			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
@@ -1706,8 +1777,108 @@ describe("legacy Team candidate discovery", () => {
 		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
 
 		mutate(db, teamId);
-		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe(expectedStatus);
+		const discovered = discoverLegacyTeamCandidates(db, options());
+		if (expectedStatus === "missing") expect(discovered).toEqual([]);
+		else expect(discovered[0]?.status).toBe(expectedStatus);
 	}
+
+	it("does not restore a Project edge when another recipient blocks canonical derivation", () => {
+		let completedTeamId = "";
+		runExcludedCompletionScenario((db2, teamId) => {
+			completedTeamId = teamId;
+			db2
+				.prepare(
+					`DELETE FROM project_recipients
+					 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
+				)
+				.run(PROJECT_ID, teamId);
+			db2
+				.prepare(
+					`INSERT INTO project_recipients(
+					 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+					 policy_revision, migration_state, idempotency_key, created_at, updated_at
+					 ) VALUES (?, 'team', 'missing-team', 'active', 'test', 'r1', 'completed',
+					 'blocking-recipient', ?, ?)`,
+				)
+				.run(PROJECT_ID, NOW, NOW);
+		}, "needs_setup");
+
+		expect(
+			db
+				.prepare(
+					`SELECT COUNT(*) FROM project_recipients
+					 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
+				)
+				.pluck()
+				.get(PROJECT_ID, completedTeamId),
+		).toBe(0);
+	});
+
+	it("rolls back reconciliation if the strict post-write invariant changes", () => {
+		let completedTeamId = "";
+		runExcludedCompletionScenario((db2, teamId) => {
+			completedTeamId = teamId;
+			db2
+				.prepare(
+					`DELETE FROM project_recipients
+					 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
+				)
+				.run(PROJECT_ID, teamId);
+			db2.exec(
+				`CREATE TRIGGER block_reconciled_team_edge
+				 AFTER INSERT ON project_recipients
+				 WHEN NEW.provenance = 'reviewed_team_setup'
+				 BEGIN
+				   INSERT INTO project_recipients(
+				     canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+				     policy_revision, migration_state, idempotency_key, created_at, updated_at
+				   ) VALUES (NEW.canonical_project_identity, 'team', 'missing-after-write', 'active',
+				     'test', 'r1', 'completed', 'post-write-blocker', NEW.created_at, NEW.updated_at);
+				 END`,
+			);
+		}, "missing");
+
+		expect(
+			db
+				.prepare(
+					`SELECT COUNT(*) FROM project_recipients
+					 WHERE canonical_project_identity = ? AND recipient_kind = 'team'
+					   AND recipient_id IN (?, 'missing-after-write')`,
+				)
+				.pluck()
+				.get(PROJECT_ID, completedTeamId),
+		).toBe(0);
+		expect(db.prepare("SELECT state FROM legacy_team_setup_drafts").pluck().get()).toBe(
+			"completed",
+		);
+	});
+
+	it("reactivates a revoked setup-owned Project edge", () => {
+		let completedTeamId = "";
+		runExcludedCompletionScenario((db2, teamId) => {
+			completedTeamId = teamId;
+			db2
+				.prepare(
+					`UPDATE project_recipients SET status = 'revoked', policy_revision = 'old-r1',
+					 source_fingerprint = 'old-source'
+					 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
+				)
+				.run(PROJECT_ID, teamId);
+		}, "ready");
+
+		expect(
+			db
+				.prepare(
+					`SELECT status, provenance, policy_revision FROM project_recipients
+					 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
+				)
+				.get(PROJECT_ID, completedTeamId),
+		).toEqual({
+			status: "active",
+			provenance: "reviewed_team_setup",
+			policy_revision: "revision-1",
+		});
+	});
 
 	it.each([
 		[
