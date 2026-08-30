@@ -118,6 +118,10 @@ interface LegacyTeamSetupViewBaseV1 {
 	version: 1;
 	candidate: LegacyTeamSetupCandidateSummaryV1;
 	attemptId: string;
+	/** Transitional aliases retained until the viewer consumes state/actions. */
+	draftState: LegacyTeamSetupDraftView["state"];
+	canFinish: boolean;
+	conflictState: LegacyTeamSetupUnavailableReasonV1 | null;
 	unresolvedDeviceCount: number;
 	unresolvedProjectCount: number;
 	devices: LegacyTeamSetupDeviceV1[];
@@ -283,6 +287,9 @@ export function projectLegacyTeamSetupView(input: ProjectViewInput): LegacyTeamS
 		version: input.version,
 		candidate: input.candidate,
 		attemptId: input.attemptId,
+		draftState: input.draftState,
+		canFinish: state === "ready_to_finish",
+		conflictState: input.unavailableReason,
 		unresolvedDeviceCount: input.unresolvedDeviceCount,
 		unresolvedProjectCount: input.unresolvedProjectCount,
 		devices: input.devices.map((device) => ({

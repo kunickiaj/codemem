@@ -57,6 +57,8 @@ export {
 	reconcileRecipientPolicyProjects,
 } from "./routes/sync.js";
 export type {
+	LegacyTeamSetupActionBlockedReasonV1,
+	LegacyTeamSetupActionGateV1,
 	LegacyTeamSetupCandidateSummaryV1,
 	LegacyTeamSetupDetailResponseV1,
 	LegacyTeamSetupDeviceV1,
@@ -67,6 +69,7 @@ export type {
 	LegacyTeamSetupProjectV1,
 	LegacyTeamSetupSummaryResponseV1,
 	LegacyTeamSetupViewerAccessDeltaV1,
+	LegacyTeamSetupViewV1,
 } from "./routes/team-setup.js";
 
 export { VERSION };

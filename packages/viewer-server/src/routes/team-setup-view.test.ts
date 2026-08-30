@@ -69,7 +69,12 @@ describe("legacy Team setup view projection", () => {
 	it("projects reviewing without confirmation evidence and typed action gates", () => {
 		const view = projectLegacyTeamSetupView(input());
 
-		expect(view.state).toBe("reviewing");
+		expect(view).toMatchObject({
+			state: "reviewing",
+			draftState: "in_progress",
+			canFinish: false,
+			conflictState: null,
+		});
 		expect(view).not.toHaveProperty("finishDigest");
 		expect(view).not.toHaveProperty("accessDelta");
 		expect(view.devices[0]?.actions).toEqual({
@@ -98,6 +103,9 @@ describe("legacy Team setup view projection", () => {
 
 		expect(view).toMatchObject({
 			state: "ready_to_finish",
+			draftState: "in_progress",
+			canFinish: true,
+			conflictState: null,
 			finishDigest: "finish-digest",
 			accessDeltaDigest: "access-digest",
 			viewerAccessDeltaDigest: "viewer-digest",
@@ -114,7 +122,12 @@ describe("legacy Team setup view projection", () => {
 			unavailableReason: "team_setup_roster_changed",
 		});
 
-		expect(view.state).toBe("unavailable");
+		expect(view).toMatchObject({
+			state: "unavailable",
+			draftState: "stale",
+			canFinish: false,
+			conflictState: "team_setup_roster_changed",
+		});
 		expect(
 			view.devices.every((device) =>
 				Object.values(device.actions).every(
@@ -131,13 +144,32 @@ describe("legacy Team setup view projection", () => {
 		expect(view).not.toHaveProperty("finishDigest");
 	});
 
+	it("preserves a null conflict alias for stale drafts without a reason", () => {
+		const view = projectLegacyTeamSetupView({
+			...input(),
+			draftState: "stale",
+		});
+
+		expect(view).toMatchObject({
+			state: "unavailable",
+			draftState: "stale",
+			unavailableReason: "team_setup_confirmation_stale",
+			conflictState: null,
+		});
+	});
+
 	it("projects completed with every mutation and refresh gate disabled", () => {
 		const view = projectLegacyTeamSetupView({
 			...input(),
 			draftState: "completed",
 		});
 
-		expect(view.state).toBe("completed");
+		expect(view).toMatchObject({
+			state: "completed",
+			draftState: "completed",
+			canFinish: false,
+			conflictState: null,
+		});
 		expect(view.actions).toEqual({
 			refresh: { enabled: false, blockedReason: "setup_completed" },
 			finish: { enabled: false, blockedReason: "setup_completed" },

@@ -650,13 +650,15 @@ describe("viewer-server", () => {
 				expect(incomplete).toMatchObject({
 					version: 1,
 					candidate: { candidateRef },
-					draftState: "needs_setup",
-					conflictState: "team_setup_incomplete",
-					canFinish: false,
+					state: "reviewing",
+					actions: { finish: { enabled: false, blockedReason: "setup_incomplete" } },
 				});
 				expect(incomplete).not.toHaveProperty("finishDigest");
 				expect(incomplete).not.toHaveProperty("accessDeltaDigest");
 				expect(incomplete).not.toHaveProperty("accessDelta");
+				expect(incomplete).not.toHaveProperty("unavailableReason");
+				expect(incomplete).toHaveProperty("devices.0.actions");
+				expect(incomplete).toHaveProperty("projects.0.actions");
 				expect((await app.request(`/api/sync/team-setup/v1/${candidateRef}`)).status).toBe(200);
 				expect({
 					drafts: store.db.prepare("SELECT * FROM legacy_team_setup_drafts ORDER BY rowid").all(),
@@ -669,7 +671,6 @@ describe("viewer-server", () => {
 						)
 						.all(),
 				}).toEqual(beforeDetail);
-
 				const draft = core.getLegacyTeamSetupDraft(store.db, candidateRef);
 				expect(draft).not.toBeNull();
 				store.db
@@ -694,6 +695,15 @@ describe("viewer-server", () => {
 					"legacy-team-viewer-identity-ref-v1",
 					[candidateRef, replacementIdentityId],
 				);
+				const expectFullView = async (response: Response) => {
+					const payload = (await response.clone().json()) as Record<string, unknown>;
+					expect(payload).toMatchObject({ version: 1, candidate: { candidateRef } });
+					expect(payload).toHaveProperty("state");
+					expect(payload).toHaveProperty("actions");
+					expect(payload).toHaveProperty("devices");
+					expect(payload).toHaveProperty("projects");
+					expect(payload).toHaveProperty("identityChoices");
+				};
 				const assignmentResponse = await app.request(
 					`/api/sync/team-setup/v1/${candidateRef}/devices/${deviceRef}/assignment`,
 					{
@@ -707,6 +717,7 @@ describe("viewer-server", () => {
 					},
 				);
 				expect(assignmentResponse.status).toBe(200);
+				await expectFullView(assignmentResponse);
 				const replacementAssignmentResponse = await app.request(
 					`/api/sync/team-setup/v1/${candidateRef}/devices/${deviceRef}/assignment`,
 					{
@@ -720,6 +731,7 @@ describe("viewer-server", () => {
 					},
 				);
 				expect(replacementAssignmentResponse.status).toBe(200);
+				await expectFullView(replacementAssignmentResponse);
 				const staleDecisionResponse = await app.request(
 					`/api/sync/team-setup/v1/${candidateRef}/devices/${deviceRef}/decision`,
 					{
@@ -749,6 +761,7 @@ describe("viewer-server", () => {
 					},
 				);
 				expect(restoredAssignmentResponse.status).toBe(200);
+				await expectFullView(restoredAssignmentResponse);
 				const decisionResponse = await app.request(
 					`/api/sync/team-setup/v1/${candidateRef}/devices/${deviceRef}/decision`,
 					{
@@ -762,6 +775,7 @@ describe("viewer-server", () => {
 					},
 				);
 				expect(decisionResponse.status).toBe(200);
+				await expectFullView(decisionResponse);
 				const clearResponse = await app.request(
 					`/api/sync/team-setup/v1/${candidateRef}/devices/${deviceRef}/decision`,
 					{
@@ -771,8 +785,10 @@ describe("viewer-server", () => {
 					},
 				);
 				expect(clearResponse.status).toBe(200);
+				await expectFullView(clearResponse);
 				expect(await clearResponse.json()).toMatchObject({
-					canFinish: false,
+					state: "reviewing",
+					candidate: { candidateRef },
 					unresolvedDeviceCount: 1,
 				});
 				const restoredDecisionResponse = await app.request(
@@ -788,6 +804,7 @@ describe("viewer-server", () => {
 					},
 				);
 				expect(restoredDecisionResponse.status).toBe(200);
+				await expectFullView(restoredDecisionResponse);
 				const rawPreview = core.previewLegacyTeamSetupActivation(store.db, {
 					candidateRef,
 					attemptId: draft?.attemptId ?? "",
@@ -800,8 +817,8 @@ describe("viewer-server", () => {
 					version: 1,
 					attemptId: draft?.attemptId,
 					finishDigest: rawPreview.finishDigest,
-					canFinish: true,
-					conflictState: null,
+					state: "ready_to_finish",
+					actions: { finish: { enabled: true, blockedReason: null } },
 					accessDeltaDigest: rawPreview.accessDeltaDigest,
 				});
 				expect(JSON.stringify(detail)).not.toContain(coordinatorId);
@@ -1013,15 +1030,41 @@ describe("viewer-server", () => {
 				const ready = (await readyResponse.json()) as Record<string, unknown>;
 				expect(ready).toMatchObject({
 					candidate: { candidateRef, status: "ready" },
-					draftState: "completed",
-					canFinish: false,
-					conflictState: null,
+					state: "completed",
+					actions: {
+						refresh: { enabled: false, blockedReason: "setup_completed" },
+						finish: { enabled: false, blockedReason: "setup_completed" },
+					},
 				});
 				expect(ready).not.toHaveProperty("finishDigest");
 				expect(ready).not.toHaveProperty("accessDeltaDigest");
 				expect(ready).not.toHaveProperty("accessDelta");
 				expect(ready.identityChoices).toHaveLength(501);
 				expect(loadSnapshots).not.toHaveBeenCalled();
+				const completedMutation = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/devices/${deviceRef}/decision`,
+					{
+						method: "PUT",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ attemptId: draft?.attemptId, decision: "excluded" }),
+					},
+				);
+				expect(completedMutation.status).toBe(409);
+				expect(await completedMutation.json()).toEqual({
+					error: "team_setup_confirmation_stale",
+				});
+				const completedRefresh = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/refresh`,
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: "{}",
+					},
+				);
+				expect(completedRefresh.status).toBe(409);
+				expect(await completedRefresh.json()).toEqual({
+					error: "team_setup_confirmation_stale",
+				});
 
 				store.db.prepare("DELETE FROM actors WHERE actor_id LIKE 'unrelated-%'").run();
 				store.db
@@ -1036,7 +1079,7 @@ describe("viewer-server", () => {
 				const reopened = (await reopenedResponse.json()) as Record<string, unknown>;
 				expect(reopened).toMatchObject({ candidate: { candidateRef } });
 				expect((reopened.candidate as { status: string }).status).not.toBe("ready");
-				expect(reopened.draftState).not.toBe("completed");
+				expect(reopened.state).not.toBe("completed");
 				expect(loadSnapshots).toHaveBeenCalledWith({ candidateRef });
 			} finally {
 				cleanup();
@@ -1441,8 +1484,9 @@ describe("viewer-server", () => {
 				expect(response.status).toBe(200);
 				const payload = await response.json();
 				expect(payload).toMatchObject({
-					candidateRef,
+					candidate: { candidateRef },
 					attemptId: draft.attemptId,
+					state: "reviewing",
 					unresolvedProjectCount: 0,
 				});
 				const saved = core.getLegacyTeamSetupDraft(store.db, candidateRef);
@@ -1803,6 +1847,11 @@ describe("viewer-server", () => {
 				resolveRefresh();
 				const refresh = await refreshPromise;
 				expect(refresh.status).toBe(200);
+				expect(await refresh.clone().json()).toMatchObject({
+					version: 1,
+					candidate: { candidateRef },
+					state: "reviewing",
+				});
 				const refreshedAttemptId = core.getLegacyTeamSetupDraft(
 					ensureStore().db,
 					candidateRef,

@@ -17,6 +17,29 @@ function createRouteStore(): { store: MemoryStore; close: () => void } {
 }
 
 describe("Team setup roster loading", () => {
+	it("rolls back a mutation when response projection fails", () => {
+		const { store, close } = createRouteStore();
+		try {
+			store.db.exec("CREATE TABLE projection_rollback_test(value TEXT NOT NULL)");
+
+			expect(() =>
+				__teamSetupTestHooks.projectMutationAtomically(
+					store,
+					() =>
+						store.db.prepare("INSERT INTO projection_rollback_test(value) VALUES (?)").run("saved"),
+					() => {
+						throw new Error("projection failed");
+					},
+				),
+			).toThrow("projection failed");
+			expect(store.db.prepare("SELECT COUNT(*) FROM projection_rollback_test").pluck().get()).toBe(
+				0,
+			);
+		} finally {
+			close();
+		}
+	});
+
 	it("reuses successful summary snapshots until the cache expires", async () => {
 		let now = 1_000;
 		const snapshots = [{ groupId: "group-alpha" }] as never;

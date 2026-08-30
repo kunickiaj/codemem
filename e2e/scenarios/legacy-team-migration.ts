@@ -89,11 +89,13 @@ interface TeamDetail {
 	version: 1;
 	candidate: CandidateSummary;
 	attemptId: string;
-	draftState: string;
+	state: "reviewing" | "ready_to_finish" | "unavailable" | "completed";
+	actions: {
+		refresh: { enabled: boolean; blockedReason: string | null };
+		finish: { enabled: boolean; blockedReason: string | null };
+	};
 	unresolvedDeviceCount: number;
 	unresolvedProjectCount: number;
-	canFinish: boolean;
-	conflictState: string | null;
 	finishDigest?: string;
 	accessDeltaDigest?: string;
 	viewerAccessDeltaDigest?: string;
@@ -322,7 +324,10 @@ function candidatePath(candidateRef: string): string {
 }
 
 function finishBody(detail: TeamDetail): Record<string, unknown> {
-	assert(detail.canFinish, `${detail.candidate.displayName} is not ready to finish`);
+	assert(
+		detail.state === "ready_to_finish" && detail.actions.finish.enabled,
+		`${detail.candidate.displayName} is not ready to finish`,
+	);
 	assert(detail.finishDigest, "finish digest missing");
 	assert(detail.accessDeltaDigest, "access delta digest missing");
 	assert(detail.viewerAccessDeltaDigest, "viewer access delta digest missing");
@@ -498,7 +503,9 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 	let alpha = await loadDetail(ctx, alphaCandidate.candidateRef, "11-alpha-unresolved-detail");
 	const betaInitial = await loadDetail(ctx, betaCandidate.candidateRef, "12-beta-initial-detail");
 	assert(
-		alpha.unresolvedProjectCount === 1 && !alpha.canFinish,
+		alpha.state === "reviewing" &&
+			alpha.unresolvedProjectCount === 1 &&
+			!alpha.actions.finish.enabled,
 		"explicit Project mapping did not block finish",
 	);
 	assert(
@@ -525,7 +532,12 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 	await assignDevice(ctx, alpha, "Optional Device", "Optional Person", "excluded", "15-alpha-optional");
 	await mapUnresolvedProjects(ctx, alpha, "16-alpha-map");
 	alpha = await loadDetail(ctx, alphaCandidate.candidateRef, "17-alpha-ready-detail");
-	assert(alpha.canFinish && alpha.unresolvedProjectCount === 0, "Alpha did not become finishable");
+	assert(
+		alpha.state === "ready_to_finish" &&
+			alpha.actions.finish.enabled &&
+			alpha.unresolvedProjectCount === 0,
+		"Alpha did not become finishable",
+	);
 	assert((alpha.accessDelta?.teamChanges.length ?? 0) === 1, "Alpha preview omitted the Team change");
 	assert((alpha.accessDelta?.recipientChanges.length ?? 0) === 2, "Alpha preview omitted Project recipients");
 
@@ -639,7 +651,10 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		"33-beta-four",
 	);
 	beta = await loadDetail(ctx, betaCandidate.candidateRef, "34-beta-ready-detail");
-	assert(beta.canFinish, "Beta did not become finishable");
+	assert(
+		beta.state === "ready_to_finish" && beta.actions.finish.enabled,
+		"Beta did not become finishable",
+	);
 
 	// Negative: an external assignment appearing after review rejects the whole Beta transaction.
 	fixture(ctx, "conflict-beta-assignment", "35-conflict-beta-assignment");
@@ -789,8 +804,9 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 	);
 	assert(
 		recoveredBetaDetail.candidate.status === "ready" &&
-			recoveredBetaDetail.draftState === "completed" &&
-			!recoveredBetaDetail.canFinish,
+			recoveredBetaDetail.state === "completed" &&
+			!recoveredBetaDetail.actions.finish.enabled &&
+			!recoveredBetaDetail.actions.refresh.enabled,
 		"detail did not recover Beta as completed after the dropped finish response",
 	);
 	const afterLostResponse = fixture(ctx, "summary", "50-after-lost-beta-finish");
