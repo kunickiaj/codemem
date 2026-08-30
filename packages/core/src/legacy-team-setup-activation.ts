@@ -1237,12 +1237,23 @@ function buildPreview(model: ActivationModel): LegacyTeamSetupActivationPreviewV
 	};
 }
 
-export function previewLegacyTeamSetupActivation(
+export function inspectLegacyTeamSetupActivation(
 	db: Database,
 	input: PreviewLegacyTeamSetupActivationInput,
 ): LegacyTeamSetupActivationPreviewV1 {
 	try {
 		return buildPreview(loadModel(db, input));
+	} catch (error) {
+		throw normalizedActivationError(error);
+	}
+}
+
+export function previewLegacyTeamSetupActivation(
+	db: Database,
+	input: PreviewLegacyTeamSetupActivationInput,
+): LegacyTeamSetupActivationPreviewV1 {
+	try {
+		return inspectLegacyTeamSetupActivation(db, input);
 	} catch (error) {
 		const normalized = normalizedActivationError(error);
 		persistSafeError(db, input, normalized);

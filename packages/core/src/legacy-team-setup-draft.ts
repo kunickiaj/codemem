@@ -986,30 +986,25 @@ export function refreshLegacyTeamSetupDraftLabels(
 				targetScopeId: project.target_scope_id,
 			})),
 		);
-		const result = db
-			.prepare(
-				"UPDATE legacy_team_setup_drafts SET display_name = ?, updated_at = ? WHERE attempt_id = ?",
-			)
-			.run(safeLabel(input.displayName, "Legacy Team", forbiddenIds), now, attemptId);
-		if (result.changes !== 1) throw new Error("legacy_team_setup_draft_not_found");
+		const teamDisplayName = safeLabel(input.displayName, "Legacy Team", forbiddenIds);
+		db.prepare(
+			`UPDATE legacy_team_setup_drafts SET display_name = ?, updated_at = ?
+				 WHERE attempt_id = ? AND display_name <> ?`,
+		).run(teamDisplayName, now, attemptId, teamDisplayName);
 		const updateDevice = db.prepare(
 			`UPDATE legacy_team_setup_draft_devices SET display_name = ?, updated_at = ?
-			 WHERE attempt_id = ? AND device_id = ?`,
+			 WHERE attempt_id = ? AND device_id = ? AND display_name <> ?`,
 		);
 		const inputDeviceById = new Map(input.devices.map((device) => [device.deviceId, device]));
 		for (const persistedDevice of persistedDevices) {
 			const displayName =
 				inputDeviceById.get(persistedDevice.device_id)?.displayName ?? persistedDevice.display_name;
-			updateDevice.run(
-				safeLabel(displayName, "Device", forbiddenIds),
-				now,
-				attemptId,
-				persistedDevice.device_id,
-			);
+			const safeDisplayName = safeLabel(displayName, "Device", forbiddenIds);
+			updateDevice.run(safeDisplayName, now, attemptId, persistedDevice.device_id, safeDisplayName);
 		}
 		const updateProject = db.prepare(
 			`UPDATE legacy_team_setup_draft_projects SET display_name = ?, updated_at = ?
-			 WHERE attempt_id = ? AND project_ref = ?`,
+			 WHERE attempt_id = ? AND project_ref = ? AND display_name <> ?`,
 		);
 		const inputProjectByRef = new Map(
 			input.projects.map((project) => [project.projectRef, project]),
@@ -1018,11 +1013,13 @@ export function refreshLegacyTeamSetupDraftLabels(
 			const displayName =
 				inputProjectByRef.get(persistedProject.project_ref)?.displayName ??
 				persistedProject.display_name;
+			const safeDisplayName = safeLabel(displayName, "Project", forbiddenIds);
 			updateProject.run(
-				safeLabel(displayName, "Project", forbiddenIds),
+				safeDisplayName,
 				now,
 				attemptId,
 				persistedProject.project_ref,
+				safeDisplayName,
 			);
 		}
 		return loadDraftView(db, attemptId);

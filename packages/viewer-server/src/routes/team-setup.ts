@@ -16,6 +16,7 @@ import {
 	fingerprintPublicKey,
 	finishLegacyTeamSetupActivation,
 	getLegacyTeamSetupDraft,
+	inspectLegacyTeamSetupActivation,
 	isLegacyTeamCandidateSelectable,
 	isLegacyTeamSetupProjectMappingIdentity,
 	legacyTeamCandidateId,
@@ -1215,10 +1216,10 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			if (!draft) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
 
 			let conflictState: LegacyTeamSetupActivationErrorCode | null = null;
-			let preview: ReturnType<typeof previewLegacyTeamSetupActivation> | null = null;
+			let preview: ReturnType<typeof inspectLegacyTeamSetupActivation> | null = null;
 			if (draft.state !== "completed") {
 				try {
-					preview = previewLegacyTeamSetupActivation(store.db, {
+					preview = inspectLegacyTeamSetupActivation(store.db, {
 						candidateRef,
 						attemptId: draft.attemptId,
 					});
@@ -1231,9 +1232,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			}
 			if (preview) requireBoundedAccessDelta(preview.accessDelta);
 
-			const viewDraft = conflictState
-				? (getLegacyTeamSetupDraft(store.db, candidateRef) ?? draft)
-				: draft;
+			const viewDraft = draft;
 			const safeDraft = viewerSafeDraft(store, viewDraft);
 			const responseBase = {
 				version: TEAM_SETUP_VERSION,

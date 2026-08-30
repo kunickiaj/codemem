@@ -632,6 +632,17 @@ describe("viewer-server", () => {
 					unresolvedDeviceCount: 1,
 					unresolvedProjectCount: 0,
 				});
+				const beforeDetail = {
+					drafts: store.db.prepare("SELECT * FROM legacy_team_setup_drafts ORDER BY rowid").all(),
+					devices: store.db
+						.prepare("SELECT * FROM legacy_team_setup_draft_devices ORDER BY attempt_id, device_id")
+						.all(),
+					projects: store.db
+						.prepare(
+							"SELECT * FROM legacy_team_setup_draft_projects ORDER BY attempt_id, project_ref",
+						)
+						.all(),
+				};
 
 				const incompleteResponse = await app.request(`/api/sync/team-setup/v1/${candidateRef}`);
 				expect(incompleteResponse.status).toBe(200);
@@ -646,6 +657,18 @@ describe("viewer-server", () => {
 				expect(incomplete).not.toHaveProperty("finishDigest");
 				expect(incomplete).not.toHaveProperty("accessDeltaDigest");
 				expect(incomplete).not.toHaveProperty("accessDelta");
+				expect((await app.request(`/api/sync/team-setup/v1/${candidateRef}`)).status).toBe(200);
+				expect({
+					drafts: store.db.prepare("SELECT * FROM legacy_team_setup_drafts ORDER BY rowid").all(),
+					devices: store.db
+						.prepare("SELECT * FROM legacy_team_setup_draft_devices ORDER BY attempt_id, device_id")
+						.all(),
+					projects: store.db
+						.prepare(
+							"SELECT * FROM legacy_team_setup_draft_projects ORDER BY attempt_id, project_ref",
+						)
+						.all(),
+				}).toEqual(beforeDetail);
 
 				const draft = core.getLegacyTeamSetupDraft(store.db, candidateRef);
 				expect(draft).not.toBeNull();

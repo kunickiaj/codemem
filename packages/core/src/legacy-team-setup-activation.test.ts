@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { discoverLegacyTeamCandidates } from "./legacy-team-candidate.js";
 import {
 	finishLegacyTeamSetupActivation,
+	inspectLegacyTeamSetupActivation,
 	previewLegacyTeamSetupActivation,
 } from "./legacy-team-setup-activation.js";
 import { latestLegacyTeamSetupAttempt } from "./legacy-team-setup-attempt.js";
@@ -537,6 +538,25 @@ describe("legacy Team setup activation", () => {
 		expect(operation).toThrow("team_setup_incomplete");
 		expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
 		expect(db.prepare("SELECT COUNT(*) FROM identity_devices").pluck().get()).toBe(0);
+	});
+
+	it("keeps read-only inspection from persisting activation errors", () => {
+		const draft = refreshLegacyTeamSetupDraft(db, snapshot());
+		const input = { candidateRef: draft.candidateRef, attemptId: draft.attemptId };
+
+		expect(() => inspectLegacyTeamSetupActivation(db, input)).toThrow("team_setup_incomplete");
+		expect(
+			db
+				.prepare("SELECT state, safe_error_code FROM legacy_team_setup_drafts WHERE attempt_id = ?")
+				.get(draft.attemptId),
+		).toEqual({ state: "needs_setup", safe_error_code: null });
+
+		expect(() => previewLegacyTeamSetupActivation(db, input)).toThrow("team_setup_incomplete");
+		expect(
+			db
+				.prepare("SELECT state, safe_error_code FROM legacy_team_setup_drafts WHERE attempt_id = ?")
+				.get(draft.attemptId),
+		).toEqual({ state: "needs_setup", safe_error_code: "team_setup_incomplete" });
 	});
 
 	it.each([
