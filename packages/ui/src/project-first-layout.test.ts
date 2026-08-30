@@ -124,6 +124,18 @@ describe("project-first navigation layout", () => {
 		expect(styles).toContain("overflow-wrap: anywhere");
 	});
 
+	it("bounds Team setup device selectors at narrow and 200% zoom widths", () => {
+		const rule = html.match(/\.legacy-team-device-select \{([^}]*)\}/)?.[1] ?? "";
+		const cascadeOverride =
+			html.match(/\.feed-search\.legacy-team-device-select,[^{]*\{([^}]*)\}/)?.[1] ?? "";
+
+		expect(rule).toContain("width: 100%");
+		expect(rule).toContain("min-width: 0");
+		expect(rule).toContain("max-width: 100%");
+		expect(cascadeOverride).toContain("min-width: 0");
+		expect(cascadeOverride).toContain("max-width: 100%");
+	});
+
 	it("does not present the legacy coordinator surface as ordinary Team administration", () => {
 		const advancedStart = html.indexOf('id="advancedTeamsContent"');
 		const advanced = html.slice(advancedStart);

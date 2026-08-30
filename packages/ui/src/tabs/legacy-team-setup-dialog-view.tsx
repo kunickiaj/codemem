@@ -1,5 +1,9 @@
 import { DialogCloseButton } from "../components/primitives/dialog-close-button";
-import { RadixDialog, type RadixDialogProps } from "../components/primitives/radix-dialog";
+import {
+	RadixDialog,
+	type RadixDialogProps,
+	RadixDialogTitle,
+} from "../components/primitives/radix-dialog";
 import type { LegacyTeamSetupDeviceV1, LegacyTeamSetupProjectV1 } from "../lib/api";
 import { LegacyTeamSetupDevices } from "./legacy-team-setup-devices";
 import { setupItemErrorId } from "./legacy-team-setup-dom";
@@ -88,9 +92,9 @@ export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps)
 		>
 			<div aria-busy={globalBusy ? "true" : "false"} className="modal-card legacy-team-setup-card">
 				<div className="modal-header">
-					<h2 id="legacy-team-setup-title" tabIndex={-1}>
-						{title}
-					</h2>
+					<div id="legacy-team-setup-title" tabIndex={-1}>
+						<RadixDialogTitle>{title}</RadixDialogTitle>
+					</div>
 					<DialogCloseButton
 						ariaDisabled={globalBusy}
 						ariaLabel={`Close ${title}`}

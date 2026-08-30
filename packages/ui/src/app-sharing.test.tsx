@@ -106,7 +106,7 @@ describe("Sharing app data refresh", () => {
 				{
 					candidateRef: "candidate-one",
 					displayName: "Old Team",
-					status: "ready",
+					status: "in_progress",
 					deviceCount: 1,
 					projectCount: 1,
 					unresolvedDeviceCount: 0,

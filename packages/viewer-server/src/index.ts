@@ -66,6 +66,7 @@ export type {
 	LegacyTeamSetupFinishResponseV1,
 	LegacyTeamSetupIdentityChoiceV1,
 	LegacyTeamSetupMutationResponseV1,
+	LegacyTeamSetupPendingCandidateSummaryV1,
 	LegacyTeamSetupProjectV1,
 	LegacyTeamSetupSummaryResponseV1,
 	LegacyTeamSetupViewerAccessDeltaV1,

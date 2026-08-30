@@ -109,7 +109,7 @@ vi.mock("@radix-ui/react-switch", () => ({
 }));
 
 import { DialogCloseButton } from "./dialog-close-button";
-import { RadixDialog } from "./radix-dialog";
+import { RadixDialog, RadixDialogTitle } from "./radix-dialog";
 import { RadixRadioGroup } from "./radix-radio-group";
 import { RadixSelect } from "./radix-select";
 import { RadixSwitch } from "./radix-switch";
@@ -199,7 +199,9 @@ describe("RadixDialog", () => {
 						open={open}
 						overlayId="radix-dialog-overlay"
 					>
-						<h2 id="radix-dialog-title">Primitive dialog</h2>
+						<div id="radix-dialog-title">
+							<RadixDialogTitle>Primitive dialog</RadixDialogTitle>
+						</div>
 						<button type="button">Inside</button>
 					</RadixDialog>
 				</>

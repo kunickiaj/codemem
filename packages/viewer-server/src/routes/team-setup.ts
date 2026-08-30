@@ -41,6 +41,7 @@ import {
 	type LegacyTeamSetupDeviceV1,
 	type LegacyTeamSetupFinishResponseV1,
 	type LegacyTeamSetupIdentityChoiceV1,
+	type LegacyTeamSetupPendingCandidateSummaryV1,
 	type LegacyTeamSetupProjectV1,
 	type LegacyTeamSetupSummaryResponseV1,
 	type LegacyTeamSetupUnavailableReasonV1,
@@ -58,6 +59,7 @@ export type {
 	LegacyTeamSetupFinishResponseV1,
 	LegacyTeamSetupIdentityChoiceV1,
 	LegacyTeamSetupMutationResponseV1,
+	LegacyTeamSetupPendingCandidateSummaryV1,
 	LegacyTeamSetupProjectV1,
 	LegacyTeamSetupSummaryResponseV1,
 	LegacyTeamSetupUnavailableReasonV1,
@@ -1123,7 +1125,12 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		try {
 			const response = {
 				version: TEAM_SETUP_VERSION,
-				candidates: discoverCandidates(options.getStore(), groups).map(candidateSummary),
+				candidates: discoverCandidates(options.getStore(), groups)
+					.map(candidateSummary)
+					.filter(
+						(candidate): candidate is LegacyTeamSetupPendingCandidateSummaryV1 =>
+							candidate.status !== "ready",
+					),
 			} satisfies LegacyTeamSetupSummaryResponseV1;
 			return c.json(response);
 		} catch (error) {

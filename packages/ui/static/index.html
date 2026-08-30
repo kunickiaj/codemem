@@ -1349,7 +1349,7 @@
       }
       .legacy-team-device-row label { font-size: var(--font-size-sm); font-weight: var(--font-weight-semibold); }
       .legacy-team-device-evidence { display: grid; gap: var(--sp-1); }
-      .legacy-team-device-select { width: 100%; margin: 0; }
+      .legacy-team-device-select { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; margin: 0; }
       .legacy-team-device-select:disabled { opacity: 0.55; cursor: not-allowed; }
       .legacy-team-device-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
       .legacy-team-project-list {
@@ -1799,6 +1799,13 @@
       }
       .feed-search::placeholder { color: var(--text-tertiary); }
       .feed-search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
+      .feed-search.legacy-team-device-select,
+      .feed-search.legacy-team-project-select {
+        box-sizing: border-box;
+        width: 100%;
+        min-width: 0;
+        max-width: 100%;
+      }
 
       .feed-inspector-files {
         width: 100%;

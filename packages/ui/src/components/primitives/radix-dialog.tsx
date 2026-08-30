@@ -3,6 +3,7 @@ import type { ComponentChildren, ComponentProps } from "preact";
 import { render } from "preact";
 
 type DialogContentProps = ComponentProps<typeof Dialog.Content>;
+type DialogTitleProps = ComponentProps<typeof Dialog.Title>;
 
 export type RadixDialogProps = {
 	ariaDescribedby?: string;
@@ -84,6 +85,10 @@ export function RadixDialog({
 			) : null}
 		</Dialog.Root>
 	);
+}
+
+export function RadixDialogTitle(props: DialogTitleProps) {
+	return <Dialog.Title {...props} />;
 }
 
 export function renderRadixDialog(mount: HTMLElement, props: RadixDialogProps) {

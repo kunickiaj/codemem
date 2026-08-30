@@ -10,9 +10,16 @@ export interface LegacyTeamSetupCandidateSummaryV1 {
 	unresolvedProjectCount: number;
 }
 
+export type LegacyTeamSetupPendingCandidateSummaryV1 = Omit<
+	LegacyTeamSetupCandidateSummaryV1,
+	"status"
+> & {
+	status: Exclude<LegacyTeamSetupCandidateSummaryV1["status"], "ready">;
+};
+
 export interface LegacyTeamSetupSummaryResponseV1 {
 	version: 1;
-	candidates: LegacyTeamSetupCandidateSummaryV1[];
+	candidates: LegacyTeamSetupPendingCandidateSummaryV1[];
 }
 
 export type LegacyTeamSetupActionBlockedReasonV1 =

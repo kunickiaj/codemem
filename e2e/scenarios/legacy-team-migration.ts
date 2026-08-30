@@ -794,8 +794,8 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		(candidate) => candidate.candidateRef === betaCandidate.candidateRef,
 	);
 	assert(
-		recoveredSummary.status === 200 && recoveredBetaSummary?.status === "ready",
-		"summary did not recover Beta as ready after the dropped finish response",
+		recoveredSummary.status === 200 && !recoveredBetaSummary,
+		"summary resurfaced Beta after the dropped finish response",
 	);
 	const recoveredBetaDetail = await loadDetail(
 		ctx,

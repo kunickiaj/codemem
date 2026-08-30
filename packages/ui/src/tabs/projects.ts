@@ -56,6 +56,7 @@ let skippedProjectRefreshForActiveSelect = false;
 let coordinatorGroupNamesCurrent = false;
 let projectShareInventoryReady = false;
 let projectsLoadGeneration = 0;
+let teamSetupEntryLoadGeneration = 0;
 type TeamSetupSummaryResult =
 	| { ok: true; summary: LegacyTeamSetupSummaryResponseV1 }
 	| { ok: false };
@@ -1277,7 +1278,7 @@ function renderProjectTeamSetupEntry(
 	mount: HTMLElement,
 	summary: LegacyTeamSetupSummaryResponseV1 | undefined,
 ) {
-	const candidates = summary?.candidates.filter((candidate) => candidate.status !== "ready") ?? [];
+	const candidates = summary?.candidates ?? [];
 	const existingEntry = mount.querySelector<HTMLElement>(":scope > .project-team-setup-entry");
 	existingEntry?.querySelector(".project-team-setup-status")?.remove();
 	const focusedCandidateRef = existingEntry?.contains(document.activeElement)
@@ -1385,7 +1386,18 @@ export async function loadProjectsData(options: ProjectsDataLoadOptions = {}) {
 	if (isProjectSpaceSelectActive()) {
 		skippedProjectRefreshForActiveSelect = true;
 		if (!options.requireTeamSetupSummary) return true;
-		return false;
+		const entryLoadGeneration = ++teamSetupEntryLoadGeneration;
+		// Completion refresh must remove the setup card without replacing the
+		// focused Space select or moving the user's cursor in Project inventory.
+		const teamSetupSummary = await loadTeamSetupSummaryOnce(true);
+		if (entryLoadGeneration !== teamSetupEntryLoadGeneration) return false;
+		const reviewMount = el<HTMLDivElement>("recipientPolicyReviewMount");
+		if (!teamSetupSummary.ok) {
+			if (reviewMount) markProjectTeamSetupEntryUnavailable(reviewMount);
+			return false;
+		}
+		if (reviewMount) renderProjectTeamSetupEntry(reviewMount, teamSetupSummary.summary);
+		return true;
 	}
 	skippedProjectRefreshForActiveSelect = false;
 	const loadGeneration = ++projectsLoadGeneration;
@@ -1394,6 +1406,7 @@ export async function loadProjectsData(options: ProjectsDataLoadOptions = {}) {
 	updateSelectionControls();
 	meta.textContent = "Loading project inventory…";
 	try {
+		const entryLoadGeneration = ++teamSetupEntryLoadGeneration;
 		const teamSetupSummaryPromise = loadTeamSetupSummaryOnce(
 			options.requireTeamSetupSummary === true,
 		);
@@ -1461,8 +1474,14 @@ export async function loadProjectsData(options: ProjectsDataLoadOptions = {}) {
 		);
 		renderProjectInventory(result);
 		refreshProjectCoordinatorGroupNamesInBackground(result, loadGeneration);
+		// Register the DOM update before the strict await below: callers use the
+		// resolved promise as proof that a completed setup card has disappeared.
 		void teamSetupSummaryPromise.then((teamSetupSummary) => {
-			if (loadGeneration !== projectsLoadGeneration) return;
+			if (
+				loadGeneration !== projectsLoadGeneration ||
+				entryLoadGeneration !== teamSetupEntryLoadGeneration
+			)
+				return;
 			const currentReviewMount = el<HTMLDivElement>("recipientPolicyReviewMount");
 			if (!currentReviewMount) return;
 			if (!teamSetupSummary.ok) {
@@ -1475,7 +1494,11 @@ export async function loadProjectsData(options: ProjectsDataLoadOptions = {}) {
 			shareInventory.ok && "review" in recipientPolicyReview && intentResult.ok;
 		if (!options.requireTeamSetupSummary) return requiredLoadSucceeded;
 		const teamSetupSummary = await teamSetupSummaryPromise;
-		if (loadGeneration !== projectsLoadGeneration) return false;
+		if (
+			loadGeneration !== projectsLoadGeneration ||
+			entryLoadGeneration !== teamSetupEntryLoadGeneration
+		)
+			return false;
 		return requiredLoadSucceeded && teamSetupSummary.ok;
 	} catch (error) {
 		if (loadGeneration !== projectsLoadGeneration) return false;

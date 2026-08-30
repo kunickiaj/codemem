@@ -850,15 +850,6 @@ describe("recipient-focused Sharing", () => {
 						unresolvedDeviceCount: 0,
 						unresolvedProjectCount: 0,
 					},
-					{
-						candidateRef: "candidate-ready",
-						displayName: "Ready Team",
-						status: "ready",
-						deviceCount: 0,
-						projectCount: 0,
-						unresolvedDeviceCount: 5,
-						unresolvedProjectCount: 5,
-					},
 				],
 			},
 		});
@@ -1074,21 +1065,11 @@ describe("recipient-focused Sharing", () => {
 		expect(onOpenTeamSetup).toHaveBeenCalledWith("opaque-scope-backed-candidate");
 	});
 
-	it("hides migration work after every legacy candidate is migrated", () => {
+	it("hides migration work when the pending summary is empty", () => {
 		mount(intent(), {
 			teamSetupSummary: {
 				version: 1,
-				candidates: [
-					{
-						candidateRef: "completed-candidate",
-						displayName: "Migrated Team",
-						status: "ready",
-						deviceCount: 2,
-						projectCount: 1,
-						unresolvedDeviceCount: 0,
-						unresolvedProjectCount: 0,
-					},
-				],
+				candidates: [],
 			},
 		});
 

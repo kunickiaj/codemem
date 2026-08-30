@@ -498,6 +498,33 @@ describe("legacy Team setup API", () => {
 		]);
 	});
 
+	it("rejects completed candidates in the pending-only summary contract", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					version: 1,
+					candidates: [
+						{
+							candidateRef: "completed-candidate",
+							displayName: "Completed Team",
+							status: "ready",
+							deviceCount: 1,
+							projectCount: 1,
+							unresolvedDeviceCount: 0,
+							unresolvedProjectCount: 0,
+						},
+					],
+				}),
+				{ status: 200 },
+			),
+		) as typeof fetch;
+
+		await expect(loadLegacyTeamSetupSummary()).rejects.toMatchObject({
+			statusCode: 200,
+			errorCode: "team_setup_failed",
+		});
+	});
+
 	it("preserves only stable bounded error codes and never exposes raw response text", async () => {
 		globalThis.fetch = vi
 			.fn()

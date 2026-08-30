@@ -940,6 +940,31 @@ describe("viewer-server", () => {
 				expect(JSON.stringify(finished)).not.toContain(
 					rawPreview.accessDelta.teamChanges[0]?.teamId,
 				);
+				const pendingAfterFinish = await app.request("/api/sync/team-setup/v1");
+				expect(pendingAfterFinish.status).toBe(200);
+				expect(await pendingAfterFinish.json()).toEqual({ version: 1, candidates: [] });
+				const canonicalSnapshot = () => ({
+					teams: store.db.prepare("SELECT * FROM policy_teams ORDER BY team_id").all(),
+					memberships: store.db
+						.prepare("SELECT * FROM policy_team_memberships ORDER BY team_id, identity_id")
+						.all(),
+					decisions: store.db
+						.prepare("SELECT * FROM policy_team_device_decisions ORDER BY team_id, device_id")
+						.all(),
+					assignments: store.db.prepare("SELECT * FROM identity_devices ORDER BY device_id").all(),
+					mappings: store.db.prepare("SELECT * FROM project_scope_mappings ORDER BY id").all(),
+					recipients: store.db
+						.prepare(
+							`SELECT * FROM project_recipients
+							 ORDER BY canonical_project_identity, recipient_kind, recipient_id`,
+						)
+						.all(),
+					drafts: store.db.prepare("SELECT * FROM legacy_team_setup_drafts ORDER BY rowid").all(),
+					completions: store.db
+						.prepare("SELECT * FROM legacy_team_setup_completions ORDER BY rowid")
+						.all(),
+				});
+				const beforeReplay = canonicalSnapshot();
 				const replayResponse = await app.request(`/api/sync/team-setup/v1/${candidateRef}/finish`, {
 					method: "POST",
 					headers: { "content-type": "application/json" },
@@ -947,6 +972,7 @@ describe("viewer-server", () => {
 				});
 				expect(replayResponse.status).toBe(200);
 				expect(await replayResponse.json()).toEqual(finished);
+				expect(canonicalSnapshot()).toEqual(beforeReplay);
 				const missingConfirmation = await app.request(
 					`/api/sync/team-setup/v1/${candidateRef}/finish`,
 					{

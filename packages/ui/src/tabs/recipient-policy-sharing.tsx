@@ -4,8 +4,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { LoadingCardList } from "../components/LoadingCardList";
 import type {
 	DeviceIdentityInventoryV1,
-	LegacyTeamSetupCandidateSummaryV1,
-	LegacyTeamSetupStatusV1,
+	LegacyTeamSetupPendingCandidateSummaryV1,
 	LegacyTeamSetupSummaryResponseV1,
 	RecipientPolicyIntentGraphV1,
 } from "../lib/api/sync";
@@ -39,18 +38,18 @@ export interface RecipientPolicySharingOptions {
 	teamSetupUnavailable?: boolean;
 }
 
-const TEAM_SETUP_STATUS_LABELS: Record<LegacyTeamSetupStatusV1, string> = {
+type PendingTeamSetupStatus = LegacyTeamSetupPendingCandidateSummaryV1["status"];
+
+const TEAM_SETUP_STATUS_LABELS: Record<PendingTeamSetupStatus, string> = {
 	needs_setup: "Ready to review",
 	in_progress: "Migration in progress",
 	stale: "Migration review needs update",
-	ready: "Migrated",
 };
 
-const TEAM_SETUP_STATUS_CLASSES: Record<LegacyTeamSetupStatusV1, string> = {
+const TEAM_SETUP_STATUS_CLASSES: Record<PendingTeamSetupStatus, string> = {
 	needs_setup: "needs_attention",
 	in_progress: "suggested",
 	stale: "needs_attention",
-	ready: "",
 };
 
 // Safari/VoiceOver can drop list semantics when CSS removes native markers.
@@ -59,23 +58,23 @@ const EXPLICIT_LIST_ITEM_ROLE = { role: "listitem" } as const;
 
 function teamSetupStatusLabel(status: unknown): string {
 	return typeof status === "string" && Object.hasOwn(TEAM_SETUP_STATUS_LABELS, status)
-		? TEAM_SETUP_STATUS_LABELS[status as LegacyTeamSetupStatusV1]
+		? TEAM_SETUP_STATUS_LABELS[status as PendingTeamSetupStatus]
 		: "Ready to review";
 }
 
 function teamSetupStatusClass(status: unknown): string {
 	return typeof status === "string" && Object.hasOwn(TEAM_SETUP_STATUS_CLASSES, status)
-		? TEAM_SETUP_STATUS_CLASSES[status as LegacyTeamSetupStatusV1]
+		? TEAM_SETUP_STATUS_CLASSES[status as PendingTeamSetupStatus]
 		: "needs_attention";
 }
 
 interface TeamSetupCandidateGroup {
 	displayName: string;
-	candidates: LegacyTeamSetupCandidateSummaryV1[];
+	candidates: LegacyTeamSetupPendingCandidateSummaryV1[];
 }
 
 function teamSetupCandidateGroups(
-	candidates: LegacyTeamSetupCandidateSummaryV1[],
+	candidates: LegacyTeamSetupPendingCandidateSummaryV1[],
 ): TeamSetupCandidateGroup[] {
 	const groups = new Map<string, TeamSetupCandidateGroup>();
 	for (const candidate of candidates) {
@@ -96,13 +95,11 @@ function TeamSetupOverview({
 	candidates,
 	onOpenTeamSetup,
 }: {
-	candidates: LegacyTeamSetupCandidateSummaryV1[];
+	candidates: LegacyTeamSetupPendingCandidateSummaryV1[];
 	onOpenTeamSetup?: (candidateRef: string) => void;
 }) {
 	if (candidates.length === 0) return null;
-	const pending = candidates.filter((candidate) => candidate.status !== "ready");
-	if (pending.length === 0) return null;
-	const groups = teamSetupCandidateGroups(pending);
+	const groups = teamSetupCandidateGroups(candidates);
 	return (
 		<aside
 			aria-labelledby="sharing-team-setup-heading"
@@ -170,7 +167,7 @@ function TeamSetupOverview({
 											</span>
 										</span>
 										<span className="recipient-policy-sharing-team-setup-action">
-											{candidate.status !== "ready" && onOpenTeamSetup ? (
+											{onOpenTeamSetup ? (
 												<button
 													aria-label={actionLabel}
 													className="settings-button recipient-policy-sharing-target-24"

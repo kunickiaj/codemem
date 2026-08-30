@@ -36,6 +36,9 @@ vi.mock("../components/primitives/radix-dialog", () => ({
 			</div>
 		) : null;
 	},
+	RadixDialogTitle: (props: { children?: ComponentChildren; id?: string; tabIndex?: number }) => (
+		<h2 {...props}>{props.children}</h2>
+	),
 }));
 
 import {

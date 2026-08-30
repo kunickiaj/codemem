@@ -612,14 +612,100 @@ describe("Projects tab", () => {
 		resolveFirst({ version: 1, candidates: [] });
 	});
 
-	it("fails a strict refresh while a Project domain selection is active", async () => {
+	it("removes completed setup cards without disturbing an active Project domain selection", async () => {
+		const select = document.createElement("select");
+		select.className = "project-domain-select";
+		document.body.appendChild(select);
+		select.focus();
+		const mount = document.getElementById("recipientPolicyReviewMount");
+		if (!mount) throw new Error("review mount missing");
+		const card = document.createElement("section");
+		card.className = "project-team-setup-entry";
+		mount.appendChild(card);
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockResolvedValueOnce({
+			version: 1,
+			candidates: [],
+		});
+
+		await expect(loadProjectsData({ requireTeamSetupSummary: true })).resolves.toBe(true);
+		expect(api.loadLegacyTeamSetupSummary).toHaveBeenCalledOnce();
+		expect(document.querySelector(".project-team-setup-entry")).toBeNull();
+		expect(document.activeElement).toBe(select);
+	});
+
+	it("ignores an older focused-select Team setup summary", async () => {
+		let resolveOlder!: (value: LegacyTeamSetupSummaryResponseV1) => void;
+		let resolveNewer!: (value: LegacyTeamSetupSummaryResponseV1) => void;
+		vi.mocked(api.loadLegacyTeamSetupSummary)
+			.mockImplementationOnce(() => new Promise((resolve) => (resolveOlder = resolve)))
+			.mockImplementationOnce(() => new Promise((resolve) => (resolveNewer = resolve)));
 		const select = document.createElement("select");
 		select.className = "project-domain-select";
 		document.body.appendChild(select);
 		select.focus();
 
-		await expect(loadProjectsData({ requireTeamSetupSummary: true })).resolves.toBe(false);
-		expect(api.loadLegacyTeamSetupSummary).not.toHaveBeenCalled();
+		const olderRefresh = loadProjectsData({ requireTeamSetupSummary: true });
+		await vi.waitFor(() => expect(api.loadLegacyTeamSetupSummary).toHaveBeenCalledOnce());
+		select.remove();
+		const newerRefresh = loadProjectsData({ requireTeamSetupSummary: true });
+		await vi.waitFor(() => expect(api.loadLegacyTeamSetupSummary).toHaveBeenCalledTimes(2));
+
+		resolveNewer({ version: 1, candidates: [] });
+		await expect(newerRefresh).resolves.toBe(true);
+		resolveOlder({
+			version: 1,
+			candidates: [
+				{
+					candidateRef: "opaque-candidate-ref",
+					deviceCount: 1,
+					displayName: "Stale Team",
+					projectCount: 1,
+					status: "needs_setup",
+					unresolvedDeviceCount: 1,
+					unresolvedProjectCount: 0,
+				},
+			],
+		});
+		await expect(olderRefresh).resolves.toBe(false);
+		expect(document.querySelector(".project-team-setup-entry")).toBeNull();
+	});
+
+	it("does not cancel an inventory load when a focused-select summary starts", async () => {
+		let resolveInventory!: (
+			value: Awaited<ReturnType<typeof api.loadProjectScopeInventory>>,
+		) => void;
+		let resolveBackgroundSummary!: (value: LegacyTeamSetupSummaryResponseV1) => void;
+		vi.mocked(api.loadProjectScopeInventory).mockImplementationOnce(
+			() => new Promise((resolve) => (resolveInventory = resolve)),
+		);
+		vi.mocked(api.loadLegacyTeamSetupSummary)
+			.mockImplementationOnce(() => new Promise((resolve) => (resolveBackgroundSummary = resolve)))
+			.mockResolvedValueOnce({ version: 1, candidates: [] });
+
+		const inventoryLoad = loadProjectsData();
+		await vi.waitFor(() =>
+			expect(document.getElementById("projectsInventoryMeta")?.textContent).toBe(
+				"Loading project inventory…",
+			),
+		);
+		const select = document.createElement("select");
+		select.className = "project-domain-select";
+		document.body.appendChild(select);
+		select.focus();
+
+		await expect(loadProjectsData({ requireTeamSetupSummary: true })).resolves.toBe(true);
+		resolveInventory({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		});
+		await expect(inventoryLoad).resolves.toBe(true);
+		expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain(
+			"1 project identity found",
+		);
+		resolveBackgroundSummary({ version: 1, candidates: [] });
 	});
 
 	it("reuses slow Team setup discovery across polling generations", async () => {

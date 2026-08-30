@@ -914,9 +914,16 @@ export interface LegacyTeamSetupCandidateSummaryV1 {
 	unresolvedProjectCount: number;
 }
 
+export type LegacyTeamSetupPendingCandidateSummaryV1 = Omit<
+	LegacyTeamSetupCandidateSummaryV1,
+	"status"
+> & {
+	status: Exclude<LegacyTeamSetupStatusV1, "ready">;
+};
+
 export interface LegacyTeamSetupSummaryResponseV1 {
 	version: 1;
-	candidates: LegacyTeamSetupCandidateSummaryV1[];
+	candidates: LegacyTeamSetupPendingCandidateSummaryV1[];
 }
 
 export type LegacyTeamSetupAssignmentExpectationV1 =
@@ -1162,7 +1169,11 @@ function isLegacyTeamSetupSummary(value: unknown): value is LegacyTeamSetupSumma
 	return (
 		isJsonRecord(value) &&
 		value.version === LEGACY_TEAM_SETUP_VERSION &&
-		isArrayOf(value.candidates, isLegacyTeamSetupCandidateSummary)
+		isArrayOf(
+			value.candidates,
+			(candidate): candidate is LegacyTeamSetupPendingCandidateSummaryV1 =>
+				isLegacyTeamSetupCandidateSummary(candidate) && candidate.status !== "ready",
+		)
 	);
 }
 
