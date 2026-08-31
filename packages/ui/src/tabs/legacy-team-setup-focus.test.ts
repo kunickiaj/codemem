@@ -26,7 +26,7 @@ describe("legacy Team setup focus planning", () => {
 	it("targets the visible recovery control", () => {
 		expect(planLoadFocus(3, { hasError: true, recovery: true, step: "devices" })).toEqual({
 			id: 3,
-			targetId: "legacy-team-setup-refresh",
+			targetId: "legacy-team-setup-retry",
 		});
 		expect(planLoadFocus(4, { hasError: true, step: "devices" })).toEqual({
 			id: 4,

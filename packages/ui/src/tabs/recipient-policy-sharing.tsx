@@ -698,11 +698,9 @@ function RecipientPolicySharing({
 				candidates={options.teamSetupSummary?.candidates ?? []}
 				onOpenTeamSetup={options.onOpenTeamSetup}
 			/>
-			{options.teamSetupLoading ? (
+			{options.teamSetupLoading && !options.teamSetupSummary ? (
 				<p aria-live="polite" className="small recipient-policy-sharing-empty" role="status">
-					{options.teamSetupSummary
-						? "Team setup status is being refreshed. The previous Team setup status is being shown."
-						: "Team setup status is loading."}
+					Team setup status is loading.
 				</p>
 			) : null}
 			{options.teamSetupUnavailable ? (

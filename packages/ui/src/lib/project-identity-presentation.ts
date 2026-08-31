@@ -53,7 +53,7 @@ export function stableProjectPresentationLabels(
 			labels.set(
 				item.canonicalId,
 				group.length > 1
-					? `${item.displayName} — Project ${index + 1} of ${group.length}`
+					? `${item.displayName} — duplicate name ${index + 1} of ${group.length}`
 					: item.displayName,
 			);
 		}

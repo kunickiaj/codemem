@@ -540,11 +540,11 @@ describe("recipient policy management dialog", () => {
 		const labels = [...document.querySelectorAll(".recipient-policy-management-name")].map(
 			(label) => label.textContent,
 		);
-		expect(labels).toEqual(["codemem — Project 2 of 2", "codemem — Project 1 of 2"]);
+		expect(labels).toEqual(["codemem — duplicate name 2 of 2", "codemem — duplicate name 1 of 2"]);
 		expect(document.body.outerHTML).not.toContain(privatePath);
 		expect(document.body.outerHTML).not.toContain(privateRemote);
 
-		act(() => checkbox("codemem — Project 1 of 2").click());
+		act(() => checkbox("codemem — duplicate name 1 of 2").click());
 		await reviewSelection();
 
 		expect(api.previewRecipientPolicyEdges).toHaveBeenCalledWith({
@@ -558,7 +558,7 @@ describe("recipient policy management dialog", () => {
 			],
 		});
 		expect(document.body.textContent).toContain(
-			"codemem — Project 1 of 2 — Access changes affect 1 existing memories",
+			"codemem — duplicate name 1 of 2 — Access changes affect 1 existing memories",
 		);
 		expect(document.body.outerHTML).not.toContain(privatePath);
 		expect(document.body.outerHTML).not.toContain(privateRemote);
@@ -1034,7 +1034,7 @@ describe("recipient policy management dialog", () => {
 
 	it("marks long Project, Team, Identity, member, and device names as wrappable", async () => {
 		const longProject = "Project-with-a-very-long-unbroken-name-that-must-wrap";
-		const longProjectLabel = `${longProject} — Project 1 of 2`;
+		const longProjectLabel = `${longProject} — duplicate name 1 of 2`;
 		const longTeam = "Team-with-a-very-long-unbroken-name-that-must-wrap";
 		const longIdentity = "Identity-with-a-very-long-unbroken-name-that-must-wrap";
 		const longMember = "Member-with-a-very-long-unbroken-name-that-must-wrap";

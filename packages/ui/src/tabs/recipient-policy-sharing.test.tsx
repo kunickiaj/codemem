@@ -974,18 +974,14 @@ describe("recipient-focused Sharing", () => {
 		expect(document.querySelector(".project-status-badge")).toBeNull();
 	});
 
-	it("labels cached Team setup status as previous while refreshing", () => {
+	it("keeps cached Team setup visible without a transient refresh banner", () => {
 		mount(intent(), {
 			teamSetupLoading: true,
 			teamSetupSummary: { version: 1, candidates: [] },
 		});
 
-		const status = [...document.querySelectorAll<HTMLElement>('[role="status"]')].find(
-			(item) =>
-				item.textContent ===
-				"Team setup status is being refreshed. The previous Team setup status is being shown.",
-		);
-		expect(status?.getAttribute("aria-live")).toBe("polite");
+		expect(document.body.textContent).not.toContain("Team setup status is being refreshed");
+		expect(document.body.textContent).not.toContain("previous Team setup status");
 	});
 
 	it("labels first-load Team setup discovery as loading without claiming stale status", () => {

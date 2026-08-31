@@ -26,7 +26,7 @@ export function planLoadFocus(
 	return planTargetFocus(
 		id,
 		input.recovery
-			? "legacy-team-setup-refresh"
+			? "legacy-team-setup-retry"
 			: input.hasError
 				? "legacy-team-setup-retry"
 				: `legacy-team-setup-step-${input.step}`,

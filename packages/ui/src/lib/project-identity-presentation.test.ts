@@ -17,8 +17,8 @@ describe("Project identity presentation", () => {
 		const reversed = stableProjectPresentationLabels([...items].reverse());
 
 		expect([...forward]).toEqual([...reversed]);
-		expect(forward.get(privatePath)).toBe("codemem — Project 1 of 2");
-		expect(forward.get(privateRemote)).toBe("codemem — Project 2 of 2");
+		expect(forward.get(privatePath)).toBe("codemem — duplicate name 1 of 2");
+		expect(forward.get(privateRemote)).toBe("codemem — duplicate name 2 of 2");
 		expect(JSON.stringify([...forward.values()])).not.toContain(privatePath);
 		expect(JSON.stringify([...forward.values()])).not.toContain(privateRemote);
 	});
@@ -33,9 +33,9 @@ describe("Project identity presentation", () => {
 		const labels = stableProjectPresentationLabels(items);
 
 		expect(labels.size).toBe(itemCount);
-		expect(labels.get("project-00000")).toBe(`codemem — Project 1 of ${itemCount}`);
-		expect(labels.get("project-05000")).toBe(`codemem — Project 5001 of ${itemCount}`);
-		expect(labels.get("project-09999")).toBe(`codemem — Project 10000 of ${itemCount}`);
+		expect(labels.get("project-00000")).toBe(`codemem — duplicate name 1 of ${itemCount}`);
+		expect(labels.get("project-05000")).toBe(`codemem — duplicate name 5001 of ${itemCount}`);
+		expect(labels.get("project-09999")).toBe(`codemem — duplicate name 10000 of ${itemCount}`);
 	});
 
 	it("groups distinct canonical identities without merging their exact count", () => {
@@ -57,8 +57,8 @@ describe("Project identity presentation", () => {
 			{ canonicalId: "project-b", displayName: "code\u200Bmem" },
 		]);
 
-		expect(labels.get("project-a")).toBe("codemem — Project 1 of 2");
-		expect(labels.get("project-b")).toBe("code\u200Bmem — Project 2 of 2");
+		expect(labels.get("project-a")).toBe("codemem — duplicate name 1 of 2");
+		expect(labels.get("project-b")).toBe("code\u200Bmem — duplicate name 2 of 2");
 	});
 
 	it("keeps emoji ZWJ sequences distinct from adjacent emoji", () => {

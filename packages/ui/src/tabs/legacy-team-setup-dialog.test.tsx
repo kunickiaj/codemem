@@ -570,8 +570,10 @@ describe("legacy Team setup dialog", () => {
 		const select = document.querySelector<HTMLSelectElement>(".legacy-team-device-select");
 
 		expect(alert.textContent).toContain("temporarily unavailable");
-		expect(select?.getAttribute("aria-describedby")).toContain("legacy-team-setup-error");
-		expect(document.getElementById("legacy-team-setup-refresh")).not.toBeNull();
+		expect(select).toBeNull();
+		expect(document.getElementById("legacy-team-setup-retry")?.textContent).toContain(
+			"Retry loading current setup",
+		);
 	});
 
 	it("explains when an unresolved Project has no safe mapping action", async () => {
@@ -728,9 +730,7 @@ describe("legacy Team setup dialog", () => {
 			"temporarily unavailable",
 		);
 		retry.resolve(detail({ unresolvedProjectCount: 1 }));
-		await vi.waitFor(() => {
-			expect(document.body.textContent).toContain("Review Projects");
-		});
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Review Projects"));
 		expect(document.activeElement?.id).toBe("legacy-team-setup-step-projects");
 		expect(loadDetail).toHaveBeenCalledTimes(2);
 	});
@@ -768,22 +768,23 @@ describe("legacy Team setup dialog", () => {
 		act(() => {
 			document.getElementById("legacy-team-setup-retry")?.click();
 		});
-		await vi.waitFor(() => {
-			expect(document.body.textContent).toContain("Review Projects");
-		});
+		await vi.waitFor(() =>
+			expect(document.body.textContent).toContain("Current setup details are unavailable"),
+		);
 		expect(refreshCandidate).toHaveBeenCalledTimes(1);
 		expect(document.querySelector('[role="alert"]')?.textContent).toContain(
 			"changed since it was last reviewed",
 		);
-		expect(document.getElementById("legacy-team-setup-retry")).toBeNull();
-		expect(document.activeElement?.id).toBe("legacy-team-setup-refresh");
+		expect(document.getElementById("legacy-team-setup-retry")).not.toBeNull();
+		await vi.waitFor(() =>
+			expect(
+				document.getElementById("legacy-team-setup-retry")?.getAttribute("aria-disabled"),
+			).toBeNull(),
+		);
 		act(() => {
-			button("Refresh Team setup").click();
+			document.getElementById("legacy-team-setup-retry")?.click();
 		});
-		await vi.waitFor(() => {
-			expect(document.querySelector('[role="alert"]')).toBeNull();
-		});
-		expect(refreshCandidate).toHaveBeenCalledTimes(2);
+		await vi.waitFor(() => expect(refreshCandidate).toHaveBeenCalledTimes(2));
 		expect(loadDetail).toHaveBeenCalledTimes(1);
 	});
 
@@ -1334,19 +1335,14 @@ describe("legacy Team setup dialog", () => {
 		await vi.waitFor(() => expect(document.body.textContent).toContain("Work laptop"));
 
 		act(() => button("Exclude").click());
-		await vi.waitFor(() => {
-			expect(document.body.textContent).toContain("changed since it was last reviewed");
-			expect(document.body.textContent).toContain("Current assignment: Sam");
-		});
+		await vi.waitFor(() =>
+			expect(document.body.textContent).toContain("changed since it was last reviewed"),
+		);
 		expect(document.querySelector('[role="alert"]')?.textContent).toContain(
 			"changed since it was last reviewed",
 		);
 		expect(loadDetail).toHaveBeenCalledTimes(2);
-		const exclude = button("Exclude");
-		expect(exclude.disabled).toBe(false);
-		expect(exclude.getAttribute("aria-disabled")).toBe("true");
-		exclude.focus();
-		expect(document.activeElement).toBe(exclude);
+		expect(document.body.textContent).not.toContain("Current assignment: Sam");
 
 		act(() => document.getElementById("legacy-team-setup-retry")?.click());
 		await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).toBeNull());
@@ -1386,7 +1382,7 @@ describe("legacy Team setup dialog", () => {
 				"changed since it was last reviewed",
 			),
 		);
-		act(() => document.getElementById("legacy-team-setup-refresh")?.click());
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
 
 		await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).toBeNull());
 		expect(refreshCandidate).toHaveBeenCalledWith("opaque-candidate");
@@ -1557,8 +1553,8 @@ describe("legacy Team setup dialog", () => {
 		});
 		expect([...select.options].map((option) => option.textContent)).toEqual([
 			"Choose a Project",
-			"codemem — Project 2 of 2",
-			"codemem — Project 1 of 2",
+			"codemem — duplicate name 2 of 2",
+			"codemem — duplicate name 1 of 2",
 		]);
 		expect([...select.options].map((option) => option.value)).toEqual([
 			"",
@@ -1634,17 +1630,11 @@ describe("legacy Team setup dialog", () => {
 			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
 				"changed since it was last reviewed",
 			);
-			expect(document.body.textContent).toContain("Project Gamma");
-			expect(document.querySelector<HTMLSelectElement>(".legacy-team-project-select")?.value).toBe(
-				"",
-			);
+			expect(document.body.textContent).toContain("Current setup details are unavailable");
 		});
 		expect(document.body.textContent).not.toContain("team_setup_confirmation_stale");
 		expect(loadDetail).toHaveBeenCalledTimes(2);
-		expect(document.querySelector<HTMLSelectElement>(".legacy-team-project-select")?.disabled).toBe(
-			true,
-		);
-		expect(button("Save mapping").getAttribute("aria-disabled")).toBe("true");
+		expect(document.querySelector<HTMLSelectElement>(".legacy-team-project-select")).toBeNull();
 
 		act(() => document.getElementById("legacy-team-setup-retry")?.click());
 		await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).toBeNull());
@@ -1975,7 +1965,7 @@ describe("legacy Team setup dialog", () => {
 		await vi.waitFor(() => expect(document.body.textContent).toContain("Review Projects"));
 		act(() => button("Review").click());
 		expect(document.body.textContent).toContain(
-			"Add Example Team as a recipient for Shared name — Project 1 of 2.",
+			"Add Example Team as a recipient for Shared name — duplicate name 1 of 2.",
 		);
 	});
 
@@ -2061,8 +2051,8 @@ describe("legacy Team setup dialog", () => {
 		});
 
 		await vi.waitFor(() => expect(document.body.textContent).toContain("Review Projects"));
-		expect(document.body.textContent).toContain("greenroom — Project 1 of 34");
-		expect(document.body.textContent).toContain("greenroom — Project 34 of 34");
+		expect(document.body.textContent).toContain("greenroom — duplicate name 1 of 34");
+		expect(document.body.textContent).toContain("greenroom — duplicate name 34 of 34");
 		act(() => button("Review").click());
 		const review = document.querySelector<HTMLElement>(
 			'[aria-labelledby="legacy-team-setup-step-review"]',
@@ -2121,12 +2111,13 @@ describe("legacy Team setup dialog", () => {
 		expect([...review.querySelectorAll("details")].every((details) => !details.open)).toBe(true);
 		expect(
 			[...section("Projects").querySelectorAll(".legacy-team-setup-exact-list > li")].filter(
-				(row) => row.textContent?.startsWith("Add greenroom — Project "),
+				(row) => row.textContent?.startsWith("Add greenroom — duplicate name "),
 			),
 		).toHaveLength(34);
 		expect(
 			[...section("Device access").querySelectorAll(".legacy-team-setup-exact-list > li")].filter(
-				(row) => row.textContent?.startsWith("Add Work laptop access to greenroom — Project "),
+				(row) =>
+					row.textContent?.startsWith("Add Work laptop access to greenroom — duplicate name "),
 			),
 		).toHaveLength(68);
 	});
@@ -2466,7 +2457,7 @@ describe("legacy Team setup dialog", () => {
 		expect(refresh.getAttribute("aria-disabled")).toBe("true");
 	});
 
-	it("marks recovery refresh busy and ignores duplicate requests", async () => {
+	it("marks recovery retry busy and ignores duplicate requests", async () => {
 		const pendingRefresh = deferred<LegacyTeamSetupDetailResponseV1>();
 		const refreshCandidate = vi.fn().mockReturnValue(pendingRefresh.promise);
 		setup({
@@ -2474,10 +2465,10 @@ describe("legacy Team setup dialog", () => {
 			refreshCandidate,
 		});
 		await vi.waitFor(() =>
-			expect(document.getElementById("legacy-team-setup-refresh")).not.toBeNull(),
+			expect(document.getElementById("legacy-team-setup-retry")).not.toBeNull(),
 		);
 
-		const refresh = document.getElementById("legacy-team-setup-refresh") as HTMLButtonElement;
+		const refresh = document.getElementById("legacy-team-setup-retry") as HTMLButtonElement;
 		act(() => {
 			refresh.click();
 			refresh.click();
@@ -2532,7 +2523,7 @@ describe("legacy Team setup dialog", () => {
 		expect(onRefresh).not.toHaveBeenCalled();
 	});
 
-	it("describes unavailable item controls with the recovery action", async () => {
+	it("hides unavailable item controls behind the recovery action", async () => {
 		setup({
 			loadDetail: vi.fn().mockResolvedValue(
 				detail({
@@ -2543,13 +2534,10 @@ describe("legacy Team setup dialog", () => {
 			),
 		});
 		await vi.waitFor(() =>
-			expect(document.getElementById("legacy-team-setup-refresh")).not.toBeNull(),
+			expect(document.getElementById("legacy-team-setup-retry")).not.toBeNull(),
 		);
 
-		expect(button("Exclude").getAttribute("aria-disabled")).toBe("true");
-		expect(button("Exclude").getAttribute("aria-describedby")).toContain(
-			"legacy-team-setup-refresh",
-		);
+		expect(document.querySelector(".legacy-team-device-row")).toBeNull();
 	});
 
 	it("ignores a completion refresh after closing and opening another Team", async () => {
@@ -2719,16 +2707,18 @@ describe("legacy Team setup dialog", () => {
 			);
 		setup({ loadDetail, refreshCandidate });
 
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Refresh Team setup"));
+		await vi.waitFor(() =>
+			expect(document.body.textContent).toContain("Retry loading current setup"),
+		);
 		expect(document.querySelector('[role="alert"]')?.textContent).toContain(
 			"changed since it was last reviewed",
 		);
-		expect(document.getElementById("legacy-team-setup-retry")).toBeNull();
-		expect(document.querySelector('button[aria-current="step"]')?.textContent).toBe("Devices");
+		expect(document.getElementById("legacy-team-setup-retry")).not.toBeNull();
+		expect(document.querySelector('button[aria-current="step"]')).toBeNull();
 
-		act(() => button("Refresh Team setup").click());
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
 
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Team setup refreshed."));
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Review devices"));
 		expect(refreshCandidate).toHaveBeenCalledWith("opaque-candidate");
 		expect(loadDetail).toHaveBeenCalledTimes(1);
 		expect(document.querySelector('[role="alert"]')).toBeNull();
@@ -2749,13 +2739,15 @@ describe("legacy Team setup dialog", () => {
 		);
 		setup({ loadDetail: vi.fn().mockResolvedValue(unavailable), refreshCandidate });
 
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Refresh Team setup"));
-		expect(document.querySelector('button[aria-current="step"]')?.textContent).toBe("Devices");
+		await vi.waitFor(() =>
+			expect(document.body.textContent).toContain("Retry loading current setup"),
+		);
+		expect(document.querySelector('button[aria-current="step"]')).toBeNull();
 		expect(document.querySelector('[role="alert"]')?.textContent).toContain(
 			"Team device details are temporarily unavailable",
 		);
 
-		act(() => button("Refresh Team setup").click());
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
 
 		await vi.waitFor(() => expect(refreshCandidate).toHaveBeenCalledWith("opaque-candidate"));
 	});
@@ -2786,8 +2778,8 @@ describe("legacy Team setup dialog", () => {
 		);
 		setup({ loadDetail, refreshCandidate });
 
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Old automatic Project"));
-		act(() => button("Refresh Team setup").click());
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Current setup details"));
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
 
 		await vi.waitFor(() => expect(document.body.textContent).toContain("New automatic Project"));
 		expect(document.querySelector('button[aria-current="step"]')?.textContent).toBe("Projects");
@@ -2833,7 +2825,7 @@ describe("legacy Team setup dialog", () => {
 				"setup was not finished and no changes were applied",
 			),
 		);
-		expect(document.body.textContent).toContain("Refresh");
+		expect(document.body.textContent).toContain("Retry loading current setup");
 		expect(document.body.textContent).not.toContain("team_setup_roster_unavailable");
 	});
 
@@ -2889,10 +2881,10 @@ describe("legacy Team setup dialog", () => {
 			confirmedViewerAccessDeltaDigest: "opaque-viewer-access-digest",
 		});
 		expect(
-			document.querySelector<HTMLInputElement>(".legacy-team-setup-confirmation input")?.checked,
-		).toBe(false);
-		expect(document.body.textContent).toContain("Add Sam to Example Team.");
-		expect(button("Finish Team setup").getAttribute("aria-disabled")).toBe("true");
+			document.querySelector<HTMLInputElement>(".legacy-team-setup-confirmation input"),
+		).toBeNull();
+		expect(document.body.textContent).not.toContain("Add Sam to Example Team.");
+		expect(document.body.textContent).toContain("Retry loading current setup");
 	});
 
 	it("treats a stale finish recovery that is already completed as success", async () => {

@@ -49,6 +49,7 @@ export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps)
 	const globalBusy = hasGlobalOperation(session) || hasBlockingOperation(session);
 	const finishing = session.commands.some((command) => command.kind === "finish");
 	const recoveryRequired = view?.state === "unavailable" || error?.retry === "refresh";
+	const recoveryMode = error != null && (!view || recoveryRequired);
 	const mutationsBlocked = !isEditable(view) || globalBusy || Boolean(error);
 	const mutationBlockDescriptionId =
 		[
@@ -109,30 +110,32 @@ export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps)
 					</p>
 					{loading && !view ? <p role="status">Loading the latest Team setup details…</p> : null}
 					{error ? (
-						<div className="legacy-team-setup-error" id="legacy-team-setup-global-error">
+						<div
+							className="legacy-team-setup-error legacy-team-setup-recovery"
+							id="legacy-team-setup-global-error"
+						>
+							{recoveryMode ? <strong>Current setup details are unavailable</strong> : null}
 							<p aria-live="assertive" id="legacy-team-setup-error" role="alert">
 								{error.message}
 							</p>
-							{view?.state !== "unavailable" ? (
-								<button
-									aria-busy={globalBusy ? "true" : undefined}
-									aria-disabled={globalBusy ? "true" : undefined}
-									className="settings-button legacy-team-setup-target"
-									id="legacy-team-setup-retry"
-									onClick={() => {
-										if (!globalBusy) props.onRetry();
-									}}
-									type="button"
-								>
-									{loading
-										? error.retry === "refresh"
-											? "Refreshing…"
-											: "Retrying…"
-										: error.retry === "refresh"
-											? "Refresh Team setup"
-											: "Retry"}
-								</button>
-							) : null}
+							<button
+								aria-busy={globalBusy ? "true" : undefined}
+								aria-disabled={globalBusy ? "true" : undefined}
+								className="settings-button legacy-team-setup-target"
+								id="legacy-team-setup-retry"
+								onClick={() => {
+									if (!globalBusy) props.onRetry();
+								}}
+								type="button"
+							>
+								{loading
+									? error.retry === "refresh"
+										? "Refreshing…"
+										: "Retrying…"
+									: error.retry === "refresh"
+										? "Retry loading current setup"
+										: "Retry"}
+							</button>
 						</div>
 					) : null}
 					{itemRecoveryRequired ? (
@@ -177,7 +180,7 @@ export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps)
 					) : null}
 					{view ? (
 						<>
-							{session.step !== "completed" ? (
+							{session.step !== "completed" && !recoveryMode ? (
 								<StepNavigation
 									onNavigate={props.onNavigate}
 									step={session.step}
@@ -203,21 +206,7 @@ export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps)
 							>
 								{session.message}
 							</p>
-							{view.state === "unavailable" ? (
-								<button
-									aria-busy={globalBusy ? "true" : undefined}
-									aria-disabled={globalBusy ? "true" : undefined}
-									className="settings-button legacy-team-setup-target"
-									id="legacy-team-setup-refresh"
-									onClick={() => {
-										if (!globalBusy) props.onRefresh();
-									}}
-									type="button"
-								>
-									Refresh Team setup
-								</button>
-							) : null}
-							{session.step === "devices" ? (
+							{recoveryMode ? null : session.step === "devices" ? (
 								<LegacyTeamSetupDevices
 									blocked={mutationsBlocked}
 									blockedDescriptionId={mutationBlockDescriptionId}

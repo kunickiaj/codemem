@@ -9,7 +9,15 @@ function paragraph(text: string, className = ""): HTMLParagraphElement {
 	return node;
 }
 
-function renderBlockedItem(item: RecipientPolicyBlockedItemV1): HTMLElement {
+export interface RecipientPolicyReviewRenderOptions {
+	isRepairAvailable?: (repair: RecipientPolicyBlockedItemV1["repair"]) => boolean;
+	onRepair?: (repair: RecipientPolicyBlockedItemV1["repair"]) => Promise<void> | void;
+}
+
+function renderBlockedItem(
+	item: RecipientPolicyBlockedItemV1,
+	options: RecipientPolicyReviewRenderOptions,
+): HTMLElement {
 	const card = document.createElement("article");
 	card.className = "project-inventory-row recipient-policy-blocked-item";
 	const heading = document.createElement("div");
@@ -21,20 +29,44 @@ function renderBlockedItem(item: RecipientPolicyBlockedItemV1): HTMLElement {
 	badge.className = "project-status-badge needs_attention";
 	badge.textContent = "Blocked";
 	heading.append(finding, badge);
+	const repairHelp = paragraph(item.repairAction, "settings-note");
+	repairHelp.id = `recipient-policy-repair-help-${item.blockedItemId}`;
 	card.append(
 		heading,
 		paragraph(item.reason, "project-inventory-meta"),
+		repairHelp,
 		paragraph(`Owner: ${item.ownerLabel}`, "settings-note"),
-		paragraph(`Repair: ${item.repairAction}`, "settings-note"),
 	);
+	if (options.onRepair && (options.isRepairAvailable?.(item.repair) ?? true)) {
+		const repair = document.createElement("button");
+		repair.className = "settings-button";
+		repair.type = "button";
+		repair.textContent = item.repair.label;
+		repair.setAttribute("aria-describedby", repairHelp.id);
+		repair.addEventListener("click", async () => {
+			repair.disabled = true;
+			try {
+				await options.onRepair?.(item.repair);
+			} finally {
+				repair.disabled = false;
+			}
+		});
+		card.appendChild(repair);
+	} else {
+		card.appendChild(paragraph("Open Projects to repair this item.", "settings-note"));
+	}
 	return card;
 }
 
 export function renderRecipientPolicyReview(
 	mount: HTMLElement,
 	review: RecipientPolicyReviewListV1,
+	options: RecipientPolicyReviewRenderOptions = {},
 ): void {
-	const signature = `review:${JSON.stringify(review)}`;
+	const repairAvailability = review.blockedItems.map((item) =>
+		options.onRepair && (options.isRepairAvailable?.(item.repair) ?? true) ? "1" : "0",
+	);
+	const signature = `review:${repairAvailability.join("")}:${JSON.stringify(review)}`;
 	if (renderedReviewSignatures.get(mount) === signature) return;
 	if (!review.continuity && review.blockedItems.length === 0) {
 		mount.replaceChildren();
@@ -82,7 +114,7 @@ export function renderRecipientPolicyReview(
 		heading.textContent = "Needs repair";
 		const list = document.createElement("div");
 		list.className = "project-inventory-list recipient-policy-review-list";
-		for (const item of review.blockedItems) list.appendChild(renderBlockedItem(item));
+		for (const item of review.blockedItems) list.appendChild(renderBlockedItem(item, options));
 		surface.append(intro, heading, list);
 	}
 

@@ -7,6 +7,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
@@ -27,6 +28,17 @@ for (const entry of readdirSync(sourceStaticDir, { withFileTypes: true })) {
 	if (entry.name === "app.js") continue;
 	if (extname(entry.name) === ".map") continue;
 	cpSync(join(sourceStaticDir, entry.name), join(viewerStaticDir, entry.name));
+}
+
+const stagedAppPath = join(viewerStaticDir, "app.js");
+const stagedIndexPath = join(viewerStaticDir, "index.html");
+if (existsSync(stagedAppPath) && existsSync(stagedIndexPath)) {
+	const appVersion = createHash("sha256").update(readFileSync(stagedAppPath)).digest("hex").slice(0, 12);
+	const indexHtml = readFileSync(stagedIndexPath, "utf8").replace(
+		/\/assets\/app\.js(?:\?v=[^"']*)?/u,
+		`/assets/app.js?v=${appVersion}`,
+	);
+	writeFileSync(stagedIndexPath, indexHtml);
 }
 
 // Precompress text assets so the viewer server (serveStatic precompressed:true)

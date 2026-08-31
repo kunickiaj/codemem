@@ -85,4 +85,9 @@ describe("native control styles", () => {
 			expect(stagingScript).toContain(`"${filename}"`);
 		}
 	});
+
+	it("cache-busts the staged viewer bundle from its content hash", () => {
+		expect(stagingScript).toContain('createHash("sha256")');
+		expect(stagingScript).toContain(`/assets/app.js?v=\${appVersion}`);
+	});
 });

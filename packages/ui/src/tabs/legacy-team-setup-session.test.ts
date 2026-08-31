@@ -489,7 +489,7 @@ describe("legacy Team setup session reducer", () => {
 		expect(globalError(state)?.retry).toBe("refresh");
 	});
 
-	it("restores failed unavailable recovery focus to the refresh control", () => {
+	it("restores failed unavailable recovery focus to the recovery retry", () => {
 		const unavailable = {
 			...view(),
 			state: "unavailable",
@@ -517,7 +517,7 @@ describe("legacy Team setup session reducer", () => {
 		});
 
 		expect(state).toMatchObject({
-			focus: { targetId: "legacy-team-setup-refresh" },
+			focus: { targetId: "legacy-team-setup-retry" },
 		});
 	});
 

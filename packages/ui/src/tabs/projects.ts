@@ -3,6 +3,7 @@ import type {
 	LegacyTeamSetupSummaryResponseV1,
 	ProjectScopeGuardrailWarning,
 	ProjectScopeInventoryProject,
+	RecipientPolicyBlockedItemV1,
 	RecipientPolicyIntentGraphV1,
 	SharingDomainScope,
 } from "../lib/api/sync";
@@ -39,6 +40,7 @@ const STATUS_OPTIONS = [
 let refreshProjects: RefreshFn | null = null;
 let currentOffset = 0;
 const lastLimit = 250;
+const maxRepairLookupPages = 100;
 let scopes: SharingDomainScope[] = [];
 const openProjectDetails = new Set<string>();
 const openProjectClusters = new Set<string>();
@@ -53,10 +55,13 @@ const pendingForgetConfirmations = new Map<
 	{ confirmationToken: string; localOwnedMemoryCount: number; peerOwnedMemoryCount: number }
 >();
 let skippedProjectRefreshForActiveSelect = false;
+const projectInventoryByIdentity = new Map<string, ProjectScopeInventoryProject>();
 let coordinatorGroupNamesCurrent = false;
 let projectShareInventoryReady = false;
 let projectsLoadGeneration = 0;
+let projectsUserNavigationGeneration = 0;
 let teamSetupEntryLoadGeneration = 0;
+let recipientPolicyRepairInFlight: Promise<void> | null = null;
 type TeamSetupSummaryResult =
 	| { ok: true; summary: LegacyTeamSetupSummaryResponseV1 }
 	| { ok: false };
@@ -115,6 +120,13 @@ function isPeerReceivedProject(project: ProjectScopeInventoryProject): boolean {
 
 function isLocallyAssignableProject(project: ProjectScopeInventoryProject): boolean {
 	return project.identity_source !== "unmapped" && !isPeerReceivedProject(project);
+}
+
+function cacheProjectInventoryProject(project: ProjectScopeInventoryProject): void {
+	const existing = projectInventoryByIdentity.get(project.workspace_identity);
+	if (!existing || (isPeerReceivedProject(existing) && !isPeerReceivedProject(project))) {
+		projectInventoryByIdentity.set(project.workspace_identity, project);
+	}
 }
 
 function projectDomainLabel(project: ProjectScopeInventoryProject): string {
@@ -677,6 +689,166 @@ async function reassignProject(project: ProjectScopeInventoryProject) {
 	}
 }
 
+async function projectForRepair(
+	projectIdentity: string,
+): Promise<{ offset: number; project: ProjectScopeInventoryProject } | null> {
+	const cached = projectInventoryByIdentity.get(projectIdentity);
+	if (cached && !isPeerReceivedProject(cached)) return { offset: currentOffset, project: cached };
+	try {
+		let offset = 0;
+		let pagesScanned = 0;
+		while (true) {
+			const result = await api.loadProjectScopeInventory({
+				limit: lastLimit,
+				offset,
+				q: projectIdentity,
+			});
+			pagesScanned += 1;
+			const project = result.projects.find(
+				(candidate) =>
+					candidate.workspace_identity === projectIdentity && !isPeerReceivedProject(candidate),
+			);
+			if (project) return { offset: result.offset, project };
+			if (!result.has_more || result.limit <= 0) return null;
+			const nextOffset = result.offset + result.limit;
+			if (nextOffset <= offset || pagesScanned >= maxRepairLookupPages) return null;
+			offset = nextOffset;
+		}
+	} catch {
+		return null;
+	}
+}
+
+function focusProjectAdministration(projectIdentity: string): boolean {
+	const row = [...document.querySelectorAll<HTMLElement>("[data-project-workspace-identity]")].find(
+		(candidate) =>
+			candidate.dataset.projectWorkspaceIdentity === projectIdentity &&
+			candidate.dataset.projectRepairable === "true",
+	);
+	if (!row) return false;
+	const details = row.querySelector<HTMLDetailsElement>(".project-inventory-details");
+	if (!details) return false;
+	const cluster = row.closest<HTMLElement>(".project-inventory-cluster");
+	const clusterDetails = cluster?.querySelector<HTMLDetailsElement>(
+		":scope > .project-inventory-details",
+	);
+	if (clusterDetails) {
+		clusterDetails.open = true;
+		const clusterKey = cluster?.dataset.projectClusterKey;
+		if (clusterKey) openProjectClusters.add(clusterKey);
+	}
+	details.open = true;
+	openProjectDetails.add(`${row.dataset.projectRepairable}:${projectIdentity}`);
+	details.scrollIntoView?.({ block: "center", behavior: "smooth" });
+	details.querySelector<HTMLElement>("summary")?.focus();
+	return true;
+}
+
+async function performRecipientPolicyRepair(
+	repair: RecipientPolicyBlockedItemV1["repair"],
+): Promise<void> {
+	if (isProjectSpaceSelectActive()) {
+		showGlobalNotice("Finish the open Space assignment, then try Repair again.", "warning");
+		return;
+	}
+	const lookupUserNavigationGeneration = projectsUserNavigationGeneration;
+	const lookupSearch = el<HTMLInputElement>("projectsSearch")?.value ?? "";
+	const lookupStatus = el<HTMLSelectElement>("projectsStatusFilter")?.value ?? "";
+	const lookupOffset = currentOffset;
+	const target = await projectForRepair(repair.projectIdentity);
+	if (
+		projectsUserNavigationGeneration !== lookupUserNavigationGeneration ||
+		(el<HTMLInputElement>("projectsSearch")?.value ?? "") !== lookupSearch ||
+		(el<HTMLSelectElement>("projectsStatusFilter")?.value ?? "") !== lookupStatus ||
+		currentOffset !== lookupOffset
+	) {
+		return;
+	}
+	if (isProjectSpaceSelectActive()) {
+		showGlobalNotice("Finish the open Space assignment, then try Repair again.", "warning");
+		return;
+	}
+	if (!target) {
+		showGlobalNotice(
+			"This Project is not visible in the current inventory. Refresh Projects, then try Repair again.",
+			"warning",
+		);
+		return;
+	}
+	const { project } = target;
+	if (repair.kind === "reassign_project") {
+		if (project.identity_source === "unmapped" || project.session_count === 0) {
+			showGlobalNotice(
+				"This Project cannot be reassigned yet because it has no local sessions with stable source evidence.",
+				"warning",
+			);
+			return;
+		}
+		await reassignProject(project);
+		return;
+	}
+	if (!focusProjectAdministration(project.workspace_identity)) {
+		const search = el<HTMLInputElement>("projectsSearch");
+		const previousSearch = search?.value ?? "";
+		const repairSearch = project.workspace_identity;
+		if (search) search.value = repairSearch;
+		const status = el<HTMLSelectElement>("projectsStatusFilter");
+		const previousStatus = status?.value ?? "";
+		const repairStatus = "";
+		if (status) status.value = repairStatus;
+		const previousOffset = currentOffset;
+		currentOffset = target.offset;
+		const repairUserNavigationGeneration = projectsUserNavigationGeneration;
+		const repairLoad = loadProjectsData();
+		await repairLoad;
+		if (!focusProjectAdministration(project.workspace_identity)) {
+			if (
+				projectsUserNavigationGeneration !== repairUserNavigationGeneration ||
+				(search && search.value !== repairSearch) ||
+				(status && status.value !== repairStatus) ||
+				currentOffset !== target.offset
+			) {
+				return;
+			}
+			if (search) search.value = previousSearch;
+			if (status) status.value = previousStatus;
+			currentOffset = previousOffset;
+			await loadProjectsData();
+			showGlobalNotice(
+				"Project administration could not be opened. Refresh Projects and try again.",
+				"warning",
+			);
+		}
+	}
+}
+
+function repairRecipientPolicyItem(repair: RecipientPolicyBlockedItemV1["repair"]): Promise<void> {
+	const requestedNavigationGeneration = projectsUserNavigationGeneration;
+	const operation = (
+		recipientPolicyRepairInFlight?.catch(() => undefined) ?? Promise.resolve()
+	).then(async () => {
+		if (projectsUserNavigationGeneration !== requestedNavigationGeneration) return;
+		try {
+			await performRecipientPolicyRepair(repair);
+		} catch (error) {
+			showGlobalNotice(
+				error instanceof Error ? error.message : "Unable to repair this Project.",
+				"warning",
+			);
+		}
+	});
+	recipientPolicyRepairInFlight = operation;
+	operation.then(
+		() => {
+			if (recipientPolicyRepairInFlight === operation) recipientPolicyRepairInFlight = null;
+		},
+		() => {
+			if (recipientPolicyRepairInFlight === operation) recipientPolicyRepairInFlight = null;
+		},
+	);
+	return operation;
+}
+
 function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElement {
 	const actions = document.createElement("div");
 	actions.className = "project-inventory-actions";
@@ -864,6 +1036,8 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 	const row = document.createElement("article");
 	row.className = "project-inventory-row";
+	row.dataset.projectWorkspaceIdentity = project.workspace_identity;
+	row.dataset.projectRepairable = String(isLocallyAssignableProject(project));
 	const titleId = `project-title-${project.workspace_identity.replace(/[^a-z0-9_-]/gi, "-")}`;
 	row.setAttribute("aria-labelledby", titleId);
 	const header = document.createElement("div");
@@ -969,12 +1143,14 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 
 	const detail = document.createElement("details");
 	detail.className = "project-inventory-details";
-	detail.open = openProjectDetails.has(project.workspace_identity);
+	const detailKey = `${row.dataset.projectRepairable}:${project.workspace_identity}`;
+	detail.open = openProjectDetails.has(detailKey);
 	detail.addEventListener("toggle", () => {
-		if (detail.open) openProjectDetails.add(project.workspace_identity);
-		else openProjectDetails.delete(project.workspace_identity);
+		if (detail.open) openProjectDetails.add(detailKey);
+		else openProjectDetails.delete(detailKey);
 	});
 	const summary = document.createElement("summary");
+	summary.dataset.projectFocusKey = `admin:${row.dataset.projectRepairable}:${project.workspace_identity}`;
 	summary.textContent =
 		warnings.length > 0
 			? `Advanced Project administration — ${warnings.length.toLocaleString()} item${warnings.length === 1 ? "" : "s"} need attention`
@@ -1025,6 +1201,7 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 	const projectIds = uniqueProjectIds(manageableProjects);
 	const row = document.createElement("article");
 	row.className = "project-inventory-row project-inventory-cluster";
+	row.dataset.projectClusterKey = clusterKey;
 	const clusterLabel = projectClusterLabel(projects[0]);
 	const titleId = `project-cluster-title-${clusterKey.replace(/[^a-z0-9_-]/gi, "-")}`;
 	row.setAttribute("aria-labelledby", titleId);
@@ -1205,6 +1382,10 @@ function renderProjectInventory(result: {
 			? document.activeElement.dataset.projectFocusKey
 			: undefined;
 	hideProjectInventorySkeleton();
+	projectInventoryByIdentity.clear();
+	for (const project of result.projects) {
+		cacheProjectInventoryProject(project);
+	}
 	list.textContent = "";
 	if (result.projects.length === 0) {
 		renderEmpty("No projects match those filters.");
@@ -1460,7 +1641,10 @@ export async function loadProjectsData(options: ProjectsDataLoadOptions = {}) {
 		if (reviewMount) {
 			const reviewContent = recipientPolicyReviewContentMount(reviewMount);
 			if ("review" in recipientPolicyReview) {
-				renderRecipientPolicyReview(reviewContent, recipientPolicyReview.review);
+				renderRecipientPolicyReview(reviewContent, recipientPolicyReview.review, {
+					isRepairAvailable: (repair) => !repair.projectIdentity.startsWith("unmapped:"),
+					onRepair: repairRecipientPolicyItem,
+				});
 			} else {
 				renderRecipientPolicyReviewLoadError(reviewContent, recipientPolicyReview.error);
 			}
@@ -1502,6 +1686,7 @@ export async function loadProjectsData(options: ProjectsDataLoadOptions = {}) {
 		return requiredLoadSucceeded && teamSetupSummary.ok;
 	} catch (error) {
 		if (loadGeneration !== projectsLoadGeneration) return false;
+		projectInventoryByIdentity.clear();
 		projectShareInventoryReady = false;
 		recipientPolicyIntentReady = false;
 		recipientPolicyIntent = emptyRecipientPolicyIntent;
@@ -1533,16 +1718,19 @@ export function initProjectsTab(
 		}
 	}
 	const requestRefresh = () => {
+		projectsUserNavigationGeneration += 1;
 		currentOffset = 0;
 		refreshProjects?.();
 	};
 	el<HTMLInputElement>("projectsSearch")?.addEventListener("input", requestRefresh);
 	status?.addEventListener("change", requestRefresh);
 	el<HTMLButtonElement>("projectsPrevPage")?.addEventListener("click", () => {
+		projectsUserNavigationGeneration += 1;
 		currentOffset = Math.max(0, currentOffset - lastLimit);
 		refreshProjects?.();
 	});
 	el<HTMLButtonElement>("projectsNextPage")?.addEventListener("click", () => {
+		projectsUserNavigationGeneration += 1;
 		currentOffset += lastLimit;
 		refreshProjects?.();
 	});

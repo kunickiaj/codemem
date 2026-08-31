@@ -76,6 +76,7 @@ import type {
 	RecipientPolicyReviewItemV1,
 	RecipientPolicyReviewListV1,
 } from "../lib/api/sync";
+import { showGlobalNotice } from "../lib/notice";
 import { state } from "../lib/state";
 import * as projectSharing from "./project-sharing";
 import { initProjectsTab, loadProjectsData } from "./projects";
@@ -389,8 +390,8 @@ describe("Projects tab", () => {
 					repairAction: "Assign a stable canonical Project identity.",
 					repair: {
 						kind: "reassign_project",
-						projectIdentity: "unstable-project",
-						label: "Assign Project",
+						projectIdentity: "/workspace/unstable",
+						label: "Repair Project identity…",
 					},
 					version: 1,
 				},
@@ -409,7 +410,8 @@ describe("Projects tab", () => {
 		expect(surface?.textContent).not.toContain("Current access remains in place");
 		expect(surface?.textContent).not.toContain("will continue using");
 		expect(surface?.textContent).toContain("Assign a stable canonical Project identity");
-		expect(surface?.querySelector("button, select")).toBeNull();
+		expect(surface?.textContent).toContain("Owner: Project owner");
+		expect(surface?.querySelector("button")?.textContent).toBe("Repair Project identity…");
 		expect(document.querySelectorAll(".recipient-policy-review-item")).toHaveLength(0);
 	});
 
@@ -797,13 +799,17 @@ describe("Projects tab", () => {
 		expect(document.body.textContent).toContain("2 older sharing findings were not changed");
 	});
 
-	it("renders blocked repair ownership without decision controls", async () => {
+	it("does not offer an unusable repair action for an unmapped Project", async () => {
+		const repairProject = project({
+			identity_source: "unmapped",
+			workspace_identity: "unmapped:unstable",
+		});
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
 			limit: 250,
 			offset: 0,
-			projects: [],
-			total: 0,
+			projects: [repairProject],
+			total: 1,
 		});
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
@@ -815,9 +821,9 @@ describe("Projects tab", () => {
 						reason: "Codemem requires source-state repair.",
 						repairAction: "Assign a stable canonical Project identity.",
 						repair: {
-							kind: "reassign_project",
-							projectIdentity: "unstable-project",
-							label: "Assign Project",
+							kind: "open_project_administration",
+							projectIdentity: "unmapped:unstable",
+							label: "Open Project administration",
 						},
 						version: 1,
 					},
@@ -831,9 +837,768 @@ describe("Projects tab", () => {
 
 		const blocked = document.querySelector(".recipient-policy-blocked-item");
 		expect(blocked?.textContent).toContain("Blocked");
+		expect(blocked?.textContent).toContain("Assign a stable canonical Project identity.");
 		expect(blocked?.textContent).toContain("Owner: Project owner");
-		expect(blocked?.textContent).toContain("Repair: Assign a stable canonical Project identity.");
-		expect(blocked?.querySelector("button, select")).toBeNull();
+		expect(blocked?.querySelector("button")).toBeNull();
+	});
+
+	it("clears an active status filter before opening a filtered repair target", async () => {
+		const repairProject = project({
+			cwd: "/workspace/filtered-project",
+			display_project: "filtered-project",
+			identity_source: "cwd",
+			project: "filtered-project",
+			workspace_identity: "cwd:/workspace/filtered-project",
+		});
+		const status = document.getElementById("projectsStatusFilter") as HTMLSelectElement;
+		status.append(new Option("Needs attention", "needs_attention"));
+		status.value = "needs_attention";
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input = {}) => ({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: input.status || input.q !== repairProject.workspace_identity ? [] : [repairProject],
+			total: input.status || input.q !== repairProject.workspace_identity ? 0 : 1,
+		}));
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({
+				blockedItems: [
+					{
+						blockedItemId: "blocked-filtered",
+						finding: "Project identity is unstable.",
+						ownerLabel: "Project owner",
+						reason: "Codemem requires source-state repair.",
+						repairAction: "Assign a stable canonical Project identity.",
+						repair: {
+							kind: "open_project_administration",
+							projectIdentity: repairProject.workspace_identity,
+							label: "Open Project administration",
+						},
+						version: 1,
+					},
+				],
+				continuity: null,
+				reviewItems: [],
+			}),
+		);
+
+		await loadProjectsData();
+		document.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button")?.click();
+
+		await vi.waitFor(() => expect(status.value).toBe(""));
+		expect(document.getElementById("projectsSearch")).toHaveProperty(
+			"value",
+			repairProject.workspace_identity,
+		);
+		expect(
+			document
+				.querySelector<HTMLElement>(
+					`[data-project-workspace-identity="${repairProject.workspace_identity}"]`,
+				)
+				?.querySelector<HTMLDetailsElement>(".project-inventory-details")?.open,
+		).toBe(true);
+	});
+
+	it("queues a second blocked-item repair while navigation is active", async () => {
+		let resolveFirstLookup!: (value: ProjectScopeInventoryResult) => void;
+		const firstLookup = new Promise<ProjectScopeInventoryResult>((resolve) => {
+			resolveFirstLookup = resolve;
+		});
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation((input = {}) => {
+			if (!input.q) {
+				return Promise.resolve({
+					has_more: false,
+					limit: 250,
+					offset: 0,
+					projects: [],
+					total: 0,
+				});
+			}
+			if (input.q === "/workspace/first") return firstLookup;
+			return Promise.resolve({
+				has_more: false,
+				limit: 250,
+				offset: 0,
+				projects: [],
+				total: 0,
+			});
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({
+				blockedItems: ["first", "second"].map((name) => ({
+					blockedItemId: `blocked-${name}`,
+					finding: `Project ${name} identity is unstable.`,
+					ownerLabel: "Project owner",
+					reason: "Codemem requires source-state repair.",
+					repairAction: "Open Project administration.",
+					repair: {
+						kind: "open_project_administration" as const,
+						projectIdentity: `/workspace/${name}`,
+						label: "Open Project administration",
+					},
+					version: 1 as const,
+				})),
+				continuity: null,
+				reviewItems: [],
+			}),
+		);
+
+		await loadProjectsData();
+		const repairs = [
+			...document.querySelectorAll<HTMLButtonElement>(".recipient-policy-blocked-item button"),
+		];
+		repairs[0]?.click();
+		repairs[1]?.click();
+		await Promise.resolve();
+
+		expect(
+			vi
+				.mocked(api.loadProjectScopeInventory)
+				.mock.calls.flatMap(([input]) => (input?.q ? [input.q] : [])),
+		).toEqual(["/workspace/first"]);
+
+		resolveFirstLookup({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		await vi.waitFor(() =>
+			expect(
+				vi
+					.mocked(api.loadProjectScopeInventory)
+					.mock.calls.flatMap(([input]) => (input?.q ? [input.q] : [])),
+			).toEqual(["/workspace/first", "/workspace/second"]),
+		);
+		await flushAsyncWork();
+	});
+
+	it("drops queued repairs superseded by later user navigation", async () => {
+		let resolveFirstLookup!: (value: ProjectScopeInventoryResult) => void;
+		const firstLookup = new Promise<ProjectScopeInventoryResult>((resolve) => {
+			resolveFirstLookup = resolve;
+		});
+		const repairQueries: string[] = [];
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation((input = {}) => {
+			if (input.q?.startsWith("/workspace/")) repairQueries.push(input.q);
+			if (input.q === "/workspace/first") return firstLookup;
+			return Promise.resolve({
+				has_more: false,
+				limit: 250,
+				offset: 0,
+				projects: [],
+				total: 0,
+			});
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({
+				blockedItems: ["first", "second"].map((name) => ({
+					blockedItemId: `blocked-${name}`,
+					finding: `Project ${name} identity is unstable.`,
+					ownerLabel: "Project owner",
+					reason: "Codemem requires source-state repair.",
+					repairAction: "Open Project administration.",
+					repair: {
+						kind: "open_project_administration" as const,
+						projectIdentity: `/workspace/${name}`,
+						label: "Open Project administration",
+					},
+					version: 1 as const,
+				})),
+				continuity: null,
+				reviewItems: [],
+			}),
+		);
+
+		await loadProjectsData();
+		initProjectsTab(() => {
+			void loadProjectsData();
+		});
+		const repairs = [
+			...document.querySelectorAll<HTMLButtonElement>(".recipient-policy-blocked-item button"),
+		];
+		repairs[0]?.click();
+		repairs[1]?.click();
+		await vi.waitFor(() => expect(repairQueries).toEqual(["/workspace/first"]));
+
+		const search = document.getElementById("projectsSearch") as HTMLInputElement;
+		search.value = "user-query";
+		search.dispatchEvent(new Event("input"));
+		resolveFirstLookup({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		await flushAsyncWork();
+
+		expect(repairQueries).toEqual(["/workspace/first"]);
+		expect(search.value).toBe("user-query");
+	});
+
+	it("defers repair while a Space assignment control is active", async () => {
+		const repairProject = project({ workspace_identity: "/workspace/repair-target" });
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [repairProject],
+			total: 1,
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({
+				blockedItems: [
+					{
+						blockedItemId: "blocked-active-space",
+						finding: "Project identity is unstable.",
+						ownerLabel: "Project owner",
+						reason: "Codemem requires source-state repair.",
+						repairAction: "Open Project administration.",
+						repair: {
+							kind: "open_project_administration",
+							projectIdentity: repairProject.workspace_identity,
+							label: "Open Project administration",
+						},
+						version: 1,
+					},
+				],
+				continuity: null,
+				reviewItems: [],
+			}),
+		);
+
+		await loadProjectsData();
+		const activeSelect = document.createElement("select");
+		activeSelect.className = "project-domain-select";
+		document.body.appendChild(activeSelect);
+		activeSelect.focus();
+		document.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button")?.click();
+
+		await vi.waitFor(() =>
+			expect(showGlobalNotice).toHaveBeenCalledWith(
+				"Finish the open Space assignment, then try Repair again.",
+				"warning",
+			),
+		);
+	});
+
+	it("preserves newer filter edits when repair navigation is superseded", async () => {
+		const projectIdentity = "/workspace/repair-target";
+		const repairProject = project({ workspace_identity: projectIdentity });
+		let resolveRepairLoad!: (value: ProjectScopeInventoryResult) => void;
+		const repairLoad = new Promise<ProjectScopeInventoryResult>((resolve) => {
+			resolveRepairLoad = resolve;
+		});
+		let repairQueryCount = 0;
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation((input = {}) => {
+			if (input.q === projectIdentity) {
+				repairQueryCount += 1;
+				if (repairQueryCount === 1) {
+					return Promise.resolve({
+						has_more: false,
+						limit: 250,
+						offset: 0,
+						projects: [repairProject],
+						total: 1,
+					});
+				}
+				return repairLoad;
+			}
+			return Promise.resolve({
+				has_more: false,
+				limit: 250,
+				offset: 0,
+				projects: [],
+				total: 0,
+			});
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({
+				blockedItems: [
+					{
+						blockedItemId: "blocked-superseded-navigation",
+						finding: "Project identity is unstable.",
+						ownerLabel: "Project owner",
+						reason: "Codemem requires source-state repair.",
+						repairAction: "Open Project administration.",
+						repair: {
+							kind: "open_project_administration",
+							projectIdentity,
+							label: "Open Project administration",
+						},
+						version: 1,
+					},
+				],
+				continuity: null,
+				reviewItems: [],
+			}),
+		);
+
+		await loadProjectsData();
+		document.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button")?.click();
+		await vi.waitFor(() => expect(repairQueryCount).toBe(2));
+
+		const search = document.getElementById("projectsSearch") as HTMLInputElement;
+		search.value = "user-query";
+		await loadProjectsData();
+		resolveRepairLoad({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [repairProject],
+			total: 1,
+		});
+		await flushAsyncWork();
+
+		expect(search.value).toBe("user-query");
+	});
+
+	it("preserves newer filter edits made during repair target lookup", async () => {
+		const projectIdentity = "/workspace/slow-repair-target";
+		const repairProject = project({ workspace_identity: projectIdentity });
+		let resolveLookup!: (value: ProjectScopeInventoryResult) => void;
+		const lookup = new Promise<ProjectScopeInventoryResult>((resolve) => {
+			resolveLookup = resolve;
+		});
+		let repairQueryCount = 0;
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation((input = {}) => {
+			if (input.q === projectIdentity) {
+				repairQueryCount += 1;
+				if (repairQueryCount === 1) return lookup;
+			}
+			return Promise.resolve({
+				has_more: false,
+				limit: 250,
+				offset: 0,
+				projects: input.q === projectIdentity ? [repairProject] : [],
+				total: input.q === projectIdentity ? 1 : 0,
+			});
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({
+				blockedItems: [
+					{
+						blockedItemId: "blocked-slow-lookup",
+						finding: "Project identity is unstable.",
+						ownerLabel: "Project owner",
+						reason: "Codemem requires source-state repair.",
+						repairAction: "Open Project administration.",
+						repair: {
+							kind: "open_project_administration",
+							projectIdentity,
+							label: "Open Project administration",
+						},
+						version: 1,
+					},
+				],
+				continuity: null,
+				reviewItems: [],
+			}),
+		);
+
+		await loadProjectsData();
+		document.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button")?.click();
+		await vi.waitFor(() => expect(repairQueryCount).toBe(1));
+
+		const search = document.getElementById("projectsSearch") as HTMLInputElement;
+		search.value = "user-query";
+		await loadProjectsData();
+		resolveLookup({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [repairProject],
+			total: 1,
+		});
+		await flushAsyncWork();
+
+		expect(search.value).toBe("user-query");
+		expect(repairQueryCount).toBe(1);
+	});
+
+	it("continues repair target lookup across a background inventory refresh", async () => {
+		const projectIdentity = "/workspace/background-refresh-target";
+		const repairProject = project({ workspace_identity: projectIdentity });
+		let resolveLookup!: (value: ProjectScopeInventoryResult) => void;
+		const lookup = new Promise<ProjectScopeInventoryResult>((resolve) => {
+			resolveLookup = resolve;
+		});
+		let repairQueryCount = 0;
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation((input = {}) => {
+			if (input.q === projectIdentity) {
+				repairQueryCount += 1;
+				if (repairQueryCount === 1) return lookup;
+				return Promise.resolve({
+					has_more: false,
+					limit: 250,
+					offset: 0,
+					projects: [repairProject],
+					total: 1,
+				});
+			}
+			return Promise.resolve({
+				has_more: false,
+				limit: 250,
+				offset: 0,
+				projects: [],
+				total: 0,
+			});
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({
+				blockedItems: [
+					{
+						blockedItemId: "blocked-background-refresh",
+						finding: "Project identity is unstable.",
+						ownerLabel: "Project owner",
+						reason: "Codemem requires source-state repair.",
+						repairAction: "Open Project administration.",
+						repair: {
+							kind: "open_project_administration",
+							projectIdentity,
+							label: "Open Project administration",
+						},
+						version: 1,
+					},
+				],
+				continuity: null,
+				reviewItems: [],
+			}),
+		);
+
+		await loadProjectsData();
+		document.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button")?.click();
+		await vi.waitFor(() => expect(repairQueryCount).toBe(1));
+		await loadProjectsData();
+		resolveLookup({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [repairProject],
+			total: 1,
+		});
+
+		await vi.waitFor(() => expect(repairQueryCount).toBe(2));
+		await vi.waitFor(() =>
+			expect(
+				document
+					.querySelector<HTMLElement>(`[data-project-workspace-identity="${projectIdentity}"]`)
+					?.querySelector<HTMLDetailsElement>(".project-inventory-details")?.open,
+			).toBe(true),
+		);
+	});
+
+	it("pages identity search until it renders the exact repair target", async () => {
+		const repairProject = project({
+			display_project: "app",
+			project: "app",
+			workspace_identity: "/workspace/app",
+		});
+		const prefixMatch = project({
+			display_project: "nested-app",
+			project: "nested-app",
+			workspace_identity: "/workspace/app/nested",
+		});
+		const peerExactMatch = project({
+			read_only: true,
+			read_only_reason: "peer_received",
+			session_count: 0,
+			workspace_identity: repairProject.workspace_identity,
+		});
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input = {}) => {
+			if (!input.q) {
+				return {
+					has_more: false,
+					limit: 250,
+					offset: 0,
+					projects: [peerExactMatch],
+					total: 1,
+				};
+			}
+			if ((input.offset ?? 0) === 0) {
+				return {
+					has_more: true,
+					limit: 250,
+					offset: 0,
+					projects: [prefixMatch, peerExactMatch],
+					total: 250,
+				};
+			}
+			return {
+				has_more: false,
+				limit: 250,
+				offset: 250,
+				projects: [repairProject],
+				total: 250,
+			};
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({
+				blockedItems: [
+					{
+						blockedItemId: "blocked-paginated",
+						finding: "Project identity is unstable.",
+						ownerLabel: "Project owner",
+						reason: "Codemem requires source-state repair.",
+						repairAction: "Assign a stable canonical Project identity.",
+						repair: {
+							kind: "open_project_administration",
+							projectIdentity: repairProject.workspace_identity,
+							label: "Open Project administration",
+						},
+						version: 1,
+					},
+				],
+				continuity: null,
+				reviewItems: [],
+			}),
+		);
+
+		await loadProjectsData();
+		document.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button")?.click();
+
+		await vi.waitFor(() =>
+			expect(
+				document
+					.querySelector<HTMLElement>(
+						`[data-project-workspace-identity="${repairProject.workspace_identity}"]`,
+					)
+					?.querySelector<HTMLDetailsElement>(".project-inventory-details")?.open,
+			).toBe(true),
+		);
+		expect(api.loadProjectScopeInventory).toHaveBeenCalledWith({
+			limit: 250,
+			offset: 0,
+			q: repairProject.workspace_identity,
+		});
+		expect(api.loadProjectScopeInventory).toHaveBeenCalledWith(
+			expect.objectContaining({ offset: 250, q: repairProject.workspace_identity }),
+		);
+	});
+
+	it("stops repair lookup when paginated search does not advance", async () => {
+		const projectIdentity = "/workspace/app";
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input = {}) => {
+			if (!input.q) {
+				return { has_more: false, limit: 250, offset: 0, projects: [], total: 0 };
+			}
+			return {
+				has_more: true,
+				limit: 250,
+				offset: 0,
+				projects:
+					(input.offset ?? 0) === 0
+						? [project({ workspace_identity: `${projectIdentity}/nested` })]
+						: [],
+				total: 500,
+			};
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({
+				blockedItems: [
+					{
+						blockedItemId: "blocked-stalled-pagination",
+						finding: "Project identity is unstable.",
+						ownerLabel: "Project owner",
+						reason: "Codemem requires source-state repair.",
+						repairAction: "Assign a stable canonical Project identity.",
+						repair: {
+							kind: "open_project_administration",
+							projectIdentity,
+							label: "Open Project administration",
+						},
+						version: 1,
+					},
+				],
+				continuity: null,
+				reviewItems: [],
+			}),
+		);
+
+		await loadProjectsData();
+		document.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button")?.click();
+
+		await vi.waitFor(() =>
+			expect(showGlobalNotice).toHaveBeenCalledWith(
+				"This Project is not visible in the current inventory. Refresh Projects, then try Repair again.",
+				"warning",
+			),
+		);
+		expect(
+			vi
+				.mocked(api.loadProjectScopeInventory)
+				.mock.calls.map(([input]) => input)
+				.filter((input) => input?.q === projectIdentity),
+		).toEqual([
+			{ limit: 250, offset: 0, q: projectIdentity },
+			{ limit: 250, offset: 250, q: projectIdentity },
+		]);
+	});
+
+	it("opens the local repairable row when a peer row shares its reserved identity", async () => {
+		const workspaceIdentity = "peer-received:collision";
+		const localProject = project({ workspace_identity: workspaceIdentity });
+		const peerProject = project({
+			read_only: true,
+			read_only_reason: "peer_received",
+			session_count: 0,
+			workspace_identity: workspaceIdentity,
+		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [localProject, peerProject],
+			total: 2,
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({
+				blockedItems: [
+					{
+						blockedItemId: "blocked-collision",
+						finding: "Project administration needs attention.",
+						ownerLabel: "Project owner",
+						reason: "Codemem requires source-state repair.",
+						repairAction: "Open the local Project administration controls.",
+						repair: {
+							kind: "open_project_administration",
+							projectIdentity: workspaceIdentity,
+							label: "Open Project administration",
+						},
+						version: 1,
+					},
+				],
+				continuity: null,
+				reviewItems: [],
+			}),
+		);
+
+		await loadProjectsData();
+		document.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button")?.click();
+
+		const currentRows = () => [
+			...document.querySelectorAll<HTMLElement>(
+				`[data-project-workspace-identity="${workspaceIdentity}"]`,
+			),
+		];
+		expect(currentRows()).toHaveLength(2);
+		await vi.waitFor(() => {
+			const rows = currentRows();
+			expect(
+				rows.find((row) => row.dataset.projectRepairable === "true")?.querySelector("details")
+					?.open,
+			).toBe(true);
+			expect(
+				rows
+					.find((row) => row.dataset.projectRepairable === "true")
+					?.contains(document.activeElement),
+			).toBe(true);
+		});
+		expect(
+			currentRows()
+				.find((row) => row.dataset.projectRepairable === "false")
+				?.querySelector("details")?.open,
+		).toBe(false);
+
+		await loadProjectsData();
+
+		expect(
+			currentRows()
+				.find((row) => row.dataset.projectRepairable === "true")
+				?.contains(document.activeElement),
+		).toBe(true);
+	});
+
+	it("opens the containing cluster before focusing a duplicate-name repair target", async () => {
+		const repairProject = project({
+			cwd: "/workspace/repair-target",
+			display_project: "duplicate-repair",
+			git_remote: "https://git.example.invalid/exampleco/duplicate-repair.git",
+			project: "duplicate-repair",
+			workspace_identity: "cwd:/workspace/repair-target",
+		});
+		const duplicateNameProject = project({
+			cwd: "/workspace/duplicate-name",
+			display_project: "duplicate-repair",
+			git_remote: "https://git.example.invalid/exampleco/duplicate-repair.git",
+			project: "duplicate-repair",
+			workspace_identity: "git:https://git.example.invalid/exampleco/duplicate-name.git",
+		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [repairProject, duplicateNameProject],
+			total: 2,
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({
+				blockedItems: [
+					{
+						blockedItemId: "blocked-clustered",
+						finding: "Project identity is unstable.",
+						ownerLabel: "Project owner",
+						reason: "Codemem requires source-state repair.",
+						repairAction: "Assign a stable canonical Project identity.",
+						repair: {
+							kind: "open_project_administration",
+							projectIdentity: repairProject.workspace_identity,
+							label: "Open Project administration",
+						},
+						version: 1,
+					},
+				],
+				continuity: null,
+				reviewItems: [],
+			}),
+		);
+
+		await loadProjectsData();
+		const clusterDetails = document.querySelector<HTMLDetailsElement>(
+			".project-inventory-cluster > .project-inventory-details",
+		);
+		expect(clusterDetails?.open).toBe(false);
+
+		document.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button")?.click();
+
+		await vi.waitFor(() =>
+			expect(
+				document.querySelector<HTMLDetailsElement>(
+					".project-inventory-cluster > .project-inventory-details",
+				)?.open,
+			).toBe(true),
+		);
+		const repairRow = document.querySelector<HTMLElement>(
+			`[data-project-workspace-identity="${repairProject.workspace_identity}"]`,
+		);
+		expect(repairRow?.querySelector<HTMLDetailsElement>(".project-inventory-details")?.open).toBe(
+			true,
+		);
+		expect(repairRow?.contains(document.activeElement)).toBe(true);
+		expect(
+			document
+				.querySelector<HTMLElement>(
+					`[data-project-workspace-identity="${duplicateNameProject.workspace_identity}"]`,
+				)
+				?.querySelector<HTMLDetailsElement>(".project-inventory-details")?.open,
+		).toBe(false);
+
+		await loadProjectsData();
+
+		const rerenderedRepairRow = document.querySelector<HTMLElement>(
+			`[data-project-workspace-identity="${repairProject.workspace_identity}"]`,
+		);
+		expect(
+			document.querySelector<HTMLDetailsElement>(
+				".project-inventory-cluster > .project-inventory-details",
+			)?.open,
+		).toBe(true);
+		expect(
+			rerenderedRepairRow?.querySelector<HTMLDetailsElement>(".project-inventory-details")?.open,
+		).toBe(true);
+		expect(rerenderedRepairRow?.contains(document.activeElement)).toBe(true);
 	});
 
 	it("opens row sharing with exactly the selected canonical project", async () => {
@@ -1073,6 +1838,61 @@ describe("Projects tab", () => {
 			document.getElementById("projectShareFlowMount"),
 			[],
 			{ inventoryError: true },
+		);
+	});
+
+	it("does not reuse cached repair targets after an inventory load fails", async () => {
+		const repairProject = project({ workspace_identity: "/workspace/stale-repair-target" });
+		let failNextPrimaryLoad = false;
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input = {}) => {
+			if (failNextPrimaryLoad && !input.q) {
+				failNextPrimaryLoad = false;
+				throw new Error("inventory unavailable");
+			}
+			return {
+				has_more: false,
+				limit: 250,
+				offset: 0,
+				projects: input.q ? [] : [repairProject],
+				total: input.q ? 0 : 1,
+			};
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({
+				blockedItems: [
+					{
+						blockedItemId: "blocked-stale-cache",
+						finding: "Project identity is unstable.",
+						ownerLabel: "Project owner",
+						reason: "Codemem requires source-state repair.",
+						repairAction: "Open Project administration.",
+						repair: {
+							kind: "open_project_administration",
+							projectIdentity: repairProject.workspace_identity,
+							label: "Open Project administration",
+						},
+						version: 1,
+					},
+				],
+				continuity: null,
+				reviewItems: [],
+			}),
+		);
+
+		await loadProjectsData();
+		failNextPrimaryLoad = true;
+		await loadProjectsData();
+		document.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button")?.click();
+
+		await vi.waitFor(() =>
+			expect(showGlobalNotice).toHaveBeenCalledWith(
+				"This Project is not visible in the current inventory. Refresh Projects, then try Repair again.",
+				"warning",
+			),
+		);
+		expect(showGlobalNotice).not.toHaveBeenCalledWith(
+			"Project administration could not be opened. Refresh Projects and try again.",
+			"warning",
 		);
 	});
 
