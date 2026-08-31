@@ -235,8 +235,8 @@ importers:
   packages/opencode-plugin:
     dependencies:
       '@opencode-ai/plugin':
-        specifier: 1.18.23
-        version: 1.18.23
+        specifier: 1.18.25
+        version: 1.18.25
 
   packages/ui:
     dependencies:
@@ -1539,8 +1539,8 @@ packages:
       '@emnapi/core': ^1.7.1
       '@emnapi/runtime': ^1.7.1
 
-  '@opencode-ai/plugin@1.18.23':
-    resolution: {integrity: sha512-a+LbJe+wyyiwOQ7DeYOY4MkI/6VL45wkgYunVNZGC93UQgaj6sMGemS45CsLXrjyF4bvJMtqGd66GJvgjzbXAg==}
+  '@opencode-ai/plugin@1.18.25':
+    resolution: {integrity: sha512-Kb34zFqYosFNiMd1IuYiZGjX17z+18Srm7tHZMCz+uMVRTYNkEw1FTrfAK2FLbggwYdgzifGwKMNF1slLT8eLw==}
     peerDependencies:
       '@opentui/core': '>=0.4.5'
       '@opentui/keymap': '>=0.4.5'
@@ -1553,8 +1553,8 @@ packages:
       '@opentui/solid':
         optional: true
 
-  '@opencode-ai/sdk@1.18.23':
-    resolution: {integrity: sha512-VouYbL8O2ynLq0atr5fjzCv8YLtFi/zKLQ/uYkCvTJ4CmUdA01XwPn8om+u3TvxnGEfQsBfmThGU141vt3sg5w==}
+  '@opencode-ai/sdk@1.18.25':
+    resolution: {integrity: sha512-GwgwhW+vE8FWSDw730SjzqNhsWXB0uJjbFOiqFkmM+USFuG13HuTlGe6SR2ixt+WXxoD6FV1hILWqsXyqej9hQ==}
 
   '@oxc-project/types@0.133.0':
     resolution: {integrity: sha512-KzkdCd6Uxqnf6l3HOw1xfatAlUURA0g14cvBYFyJ5SaNOQbOUvBr9PKArcPcrNIeRsBdgcUzOGrhKveVpvOIGA==}
@@ -3178,8 +3178,8 @@ packages:
     resolution: {integrity: sha512-4kmO/MdyUIkLIvTPr8VHLil4AtoKIoniWPIEk5+CDy0xnWC84azhSFmuJ7PxZdsYtiP5kEeQsORAVIeMgxT+Hw==}
     hasBin: true
 
-  msgpackr@2.0.6:
-    resolution: {integrity: sha512-plGul/tqjt9vqWFR9zyqyLZls6gb5KTLvnsRO2B9+TZ8tNiXiVI/CR8LiDWlAX4IUeVkQ9gsmzKA6voC2QOciw==}
+  msgpackr@2.1.0:
+    resolution: {integrity: sha512-p/pBCVO63CsvvpkomUnNNag6+n38rULuDA6HHe70o2gtC8ODI52foF/4ko2qQcp6OiErJXTmrZeXmsGGHsIQNQ==}
 
   multicast-dns@7.2.5:
     resolution: {integrity: sha512-2eznPJP8z2BFLX50tf0LuODrpINqP1RVIm/CObbTcBRITQgmC/TjcREF1NeTBzIcR5XO/ukWo+YHOjBbFwIupg==}
@@ -4792,14 +4792,14 @@ snapshots:
       '@tybys/wasm-util': 0.10.2
     optional: true
 
-  '@opencode-ai/plugin@1.18.23':
+  '@opencode-ai/plugin@1.18.25':
     dependencies:
       '@ai-sdk/provider': 3.0.8
-      '@opencode-ai/sdk': 1.18.23
+      '@opencode-ai/sdk': 1.18.25
       effect: 4.0.0-beta.83
       zod: 4.1.8
 
-  '@opencode-ai/sdk@1.18.23':
+  '@opencode-ai/sdk@1.18.25':
     dependencies:
       cross-spawn: 7.0.6
 
@@ -5768,7 +5768,7 @@ snapshots:
       find-my-way-ts: 0.1.6
       ini: 7.0.0
       kubernetes-types: 1.30.0
-      msgpackr: 2.0.6
+      msgpackr: 2.1.0
       multipasta: 0.2.8
       toml: 4.3.0
       uuid: 14.0.2
@@ -6339,7 +6339,7 @@ snapshots:
       '@msgpackr-extract/msgpackr-extract-win32-x64': 3.0.4
     optional: true
 
-  msgpackr@2.0.6:
+  msgpackr@2.1.0:
     optionalDependencies:
       msgpackr-extract: 3.0.4
 
