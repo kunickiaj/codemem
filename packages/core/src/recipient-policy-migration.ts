@@ -386,7 +386,6 @@ function addReviewDecision(
 	projection: LegacyRecipientPolicyProjectionV1,
 	currentItem: RecipientPolicyActionableReviewItemV1,
 	resolution: StoredResolution,
-	context: RecipientPolicyReviewContext,
 	now: string,
 ): string | null {
 	plan.hadApplicableEvidence = true;
@@ -433,12 +432,7 @@ function addReviewDecision(
 		) {
 			return "review_decision_input_invalid";
 		}
-		const selectableRecipients = deriveSelectableRecipientIds(db, projection, {
-			localIdentity: {
-				localActorId: context.localActorId,
-				localDeviceId: context.localDeviceId,
-			},
-		});
+		const selectableRecipients = deriveSelectableRecipientIds(db, projection);
 		for (const recipientId of recipientIds as string[]) {
 			if (selectableRecipients.identities.has(recipientId)) {
 				plan.rows.push(
@@ -588,15 +582,7 @@ function collectCompatibleDeviceEvidence(input: {
 				if (
 					!resolution ||
 					!currentItem?.options.some((option) => option.decision === resolution.decision) ||
-					addReviewDecision(
-						input.db,
-						plan,
-						projection,
-						currentItem,
-						resolution,
-						input.context,
-						input.now,
-					) !== null
+					addReviewDecision(input.db, plan, projection, currentItem, resolution, input.now) !== null
 				) {
 					reviewEvidenceValid = false;
 					break;
@@ -1058,15 +1044,7 @@ function migrateProjectInTransaction(input: {
 		if (!currentItem.options.some((option) => option.decision === resolution.decision)) {
 			throw new Error("review_decision_unsupported");
 		}
-		const reviewError = addReviewDecision(
-			db,
-			plan,
-			projection,
-			currentItem,
-			resolution,
-			context,
-			now,
-		);
+		const reviewError = addReviewDecision(db, plan, projection, currentItem, resolution, now);
 		if (reviewError !== "review_preserves_legacy_access") {
 			throw new Error(reviewError ?? "review_decision_unsupported");
 		}
@@ -1094,15 +1072,7 @@ function migrateProjectInTransaction(input: {
 		if (!currentItem?.options.some((option) => option.decision === resolution.decision)) {
 			throw new Error("review_decision_unsupported");
 		}
-		const reviewError = addReviewDecision(
-			db,
-			plan,
-			projection,
-			currentItem,
-			resolution,
-			context,
-			now,
-		);
+		const reviewError = addReviewDecision(db, plan, projection, currentItem, resolution, now);
 		if (reviewError) throw new Error(reviewError);
 	}
 	plan = deduplicatePlan(plan);

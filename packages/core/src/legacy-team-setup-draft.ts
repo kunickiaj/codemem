@@ -237,28 +237,31 @@ function projectCanonicalStateValid(
 					status: string;
 				}>);
 
-	return isLegacyTeamProjectCanonicalStateValid({
-		teamId: deterministicPolicyTeamId(draft.candidate_id),
-		scopeIds,
-		groupScopeIds,
-		projects: projects.map((project) => ({
-			sourceProjectIdentity: project.source_project_identity,
-			resolvedProjectIdentity: project.resolved_project_identity,
-			targetScopeId: targetScopeIdFor(project),
-		})),
-		mappings: mappings.map((mapping) => ({
-			workspaceIdentity: mapping.workspace_identity,
-			projectPattern: mapping.project_pattern,
-			scopeId: mapping.scope_id,
-			source: mapping.source,
-		})),
-		recipients: recipients.map((recipient) => ({
-			canonicalProjectIdentity: recipient.canonical_project_identity,
-			recipientKind: recipient.recipient_kind,
-			recipientId: recipient.recipient_id,
-			status: recipient.status,
-		})),
-	});
+	return isLegacyTeamProjectCanonicalStateValid(
+		{
+			teamId: deterministicPolicyTeamId(draft.candidate_id),
+			scopeIds,
+			groupScopeIds,
+			projects: projects.map((project) => ({
+				sourceProjectIdentity: project.source_project_identity,
+				resolvedProjectIdentity: project.resolved_project_identity,
+				targetScopeId: targetScopeIdFor(project),
+			})),
+			mappings: mappings.map((mapping) => ({
+				workspaceIdentity: mapping.workspace_identity,
+				projectPattern: mapping.project_pattern,
+				scopeId: mapping.scope_id,
+				source: mapping.source,
+			})),
+			recipients: recipients.map((recipient) => ({
+				canonicalProjectIdentity: recipient.canonical_project_identity,
+				recipientKind: recipient.recipient_kind,
+				recipientId: recipient.recipient_id,
+				status: recipient.status,
+			})),
+		},
+		db,
+	);
 }
 
 interface DeviceAssignmentSnapshot {
@@ -1230,7 +1233,7 @@ export function clearLegacyTeamSetupDeviceDecision(
 	return clearDecision.immediate();
 }
 
-export function isLegacyTeamSetupProjectMappingIdentity(value: string): boolean {
+export function isLegacyTeamSetupProjectMappingIdentity(value: string, db?: Database): boolean {
 	const identity = value.trim();
 	// The repair target becomes a mapping workspace identity and an active
 	// recipient edge at activation; anything that is not itself a shareable
@@ -1256,7 +1259,7 @@ export function isLegacyTeamSetupProjectMappingIdentity(value: string): boolean 
 	return !(
 		!isStrictRecipientPolicyProjectIdentity(identity) ||
 		identity.startsWith("unmapped:") ||
-		!isMigratableLegacyTeamProjectIdentity(identity) ||
+		!isMigratableLegacyTeamProjectIdentity(identity, db) ||
 		/\s/u.test(identity) ||
 		(/[/\\]/u.test(identity) && !isRemoteForm) ||
 		/^(?:[~.$%]|[A-Za-z]:[\\/])/.test(identity) ||
@@ -1274,7 +1277,7 @@ export function setLegacyTeamSetupProjectMapping(
 	},
 ): LegacyTeamSetupDraftView {
 	const identity = input.resolvedProjectIdentity.trim();
-	if (!isLegacyTeamSetupProjectMappingIdentity(identity)) {
+	if (!isLegacyTeamSetupProjectMappingIdentity(identity, db)) {
 		throw new Error("legacy_team_setup_project_mapping_invalid");
 	}
 	const now = validatedNow(input.now);

@@ -1104,9 +1104,9 @@ describe("viewer-server", () => {
 				expect(reopenedResponse.status).toBe(200);
 				const reopened = (await reopenedResponse.json()) as Record<string, unknown>;
 				expect(reopened).toMatchObject({ candidate: { candidateRef } });
-				expect((reopened.candidate as { status: string }).status).not.toBe("ready");
-				expect(reopened.state).not.toBe("completed");
-				expect(loadSnapshots).toHaveBeenCalledWith({ candidateRef });
+				expect((reopened.candidate as { status: string }).status).toBe("ready");
+				expect(reopened.state).toBe("completed");
+				expect(loadSnapshots).not.toHaveBeenCalled();
 			} finally {
 				cleanup();
 			}

@@ -1,3 +1,4 @@
+import type { Database } from "./db.js";
 import { isMigratableLegacyTeamProjectIdentity } from "./legacy-team-project-policy.js";
 
 export interface LegacyTeamProjectCanonicalPreflightInput {
@@ -38,11 +39,12 @@ export interface LegacyTeamProjectCanonicalPreflightInput {
  */
 export function isLegacyTeamProjectCanonicalStateValid(
 	input: LegacyTeamProjectCanonicalPreflightInput,
+	db?: Database,
 ): boolean {
 	for (const project of input.projects) {
 		const resolvedIdentity = project.resolvedProjectIdentity;
 		if (!resolvedIdentity || resolvedIdentity.startsWith("unmapped:")) return false;
-		if (!isMigratableLegacyTeamProjectIdentity(resolvedIdentity)) return false;
+		if (!isMigratableLegacyTeamProjectIdentity(resolvedIdentity, db)) return false;
 		if (!project.targetScopeId || !input.scopeIds.includes(project.targetScopeId)) return false;
 
 		const relatedMappings = input.mappings.filter(

@@ -806,6 +806,7 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		recoveredBetaDetail.candidate.status === "ready" &&
 			recoveredBetaDetail.state === "completed" &&
 			!recoveredBetaDetail.actions.finish.enabled &&
+			recoveredBetaDetail.actions.finish.blockedReason === "setup_completed" &&
 			!recoveredBetaDetail.actions.refresh.enabled,
 		"detail did not recover Beta as completed after the dropped finish response",
 	);

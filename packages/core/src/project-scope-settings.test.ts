@@ -48,6 +48,7 @@ function insertMemory(
 	db: InstanceType<typeof Database>,
 	sessionId: number,
 	input: {
+		active?: boolean;
 		importKey?: string | null;
 		originDeviceId?: string | null;
 		project?: string | null;
@@ -1466,7 +1467,7 @@ describe("project scope settings", () => {
 		).toThrow(/peer-received projects cannot be assigned/);
 	});
 
-	it("allows assignment of reserved-prefix identities when a real local row owns them", () => {
+	it("keeps reserved-prefix identities editable after local memories become inactive", () => {
 		insertScope(db, { scopeId: "exampleco-work", label: "ExampleCo Work" });
 		const localSession = insertSession(db, {
 			cwd: null,
@@ -1474,6 +1475,7 @@ describe("project scope settings", () => {
 			project: "codemem",
 		});
 		insertMemory(db, localSession, {
+			active: false,
 			project: "codemem",
 			workspaceId: "peer-received:peer-a:project:codemem",
 		});

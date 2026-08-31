@@ -1,4 +1,5 @@
 import type { Database } from "./db.js";
+import { isFilesystemRootProjectIdentity } from "./legacy-team-project-policy.js";
 import { preferredActiveUnmergedLocalActorId } from "./recipient-policy-actor-eligibility.js";
 import {
 	RECIPIENT_POLICY_CONTRACT_VERSION,
@@ -208,6 +209,10 @@ function hasWildcard(value: string): boolean {
 
 function normalizedIdentity(value: string): string {
 	return value.trim().replaceAll("\\", "/").replace(/\/+$/u, "");
+}
+
+export function normalizeLegacyProjectMappingIdentity(value: string): string {
+	return normalizedIdentity(value);
 }
 
 function wildcardMatches(identity: string, pattern: string): boolean {
@@ -670,8 +675,13 @@ export function projectLegacyRecipientPolicyProjections(
 	options: ListLegacyRecipientPolicyProjectionsOptions,
 ): LegacyRecipientPolicyProjectionV1[] {
 	const scopes = new Map(snapshot.scopes.map((scope) => [scope.scopeId, scope]));
-	const projectsByScope = scopeProjectIndex(snapshot);
-	return snapshot.projects
+	const projects = snapshot.projects.filter(
+		(project) =>
+			project.canonicalIdentity !== "" &&
+			!isFilesystemRootProjectIdentity(project.canonicalIdentity),
+	);
+	const projectsByScope = scopeProjectIndex({ ...snapshot, projects });
+	return projects
 		.map((project): LegacyRecipientPolicyProjectionV1 => {
 			const projectShareOperations = snapshot.shareOperations.filter(
 				(operation) => operation.canonicalProjectIdentity === project.canonicalIdentity,
@@ -850,6 +860,7 @@ function loadSnapshot(
 				AND mi.active = 1 AND mi.deleted_at IS NULL
 			 WHERE (COALESCE(TRIM(s.git_remote), TRIM(s.cwd), TRIM(s.project), TRIM(mi.workspace_id), '') <> '')
 			   AND (s.cwd IS NULL OR substr(s.cwd, 1, length(?)) <> ?)
+			   AND COALESCE(s.tool_version, '') <> 'sync_replication'
 			 ORDER BY s.id, mi.id`,
 		)
 		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as Array<{

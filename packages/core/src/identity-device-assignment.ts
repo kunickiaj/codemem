@@ -209,8 +209,8 @@ export function assignIdentityDeviceInTransaction(
 		.run(now, input.deviceId);
 
 	for (const team of affectedTeams) {
-		// Candidate readiness requires a matching source fingerprint. Clearing it
-		// makes the completed draft non-ready so refresh creates a new setup attempt.
+		// Clear the stale completion fingerprint so compatibility diagnostics and
+		// older non-terminal migration records fail closed after reassignment.
 		db.prepare(
 			`UPDATE policy_teams
 			 SET source_fingerprint = NULL, updated_at = ?

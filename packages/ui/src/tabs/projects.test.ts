@@ -387,6 +387,11 @@ describe("Projects tab", () => {
 					ownerLabel: "Project owner",
 					reason: "Codemem requires source-state repair.",
 					repairAction: "Assign a stable canonical Project identity.",
+					repair: {
+						kind: "reassign_project",
+						projectIdentity: "unstable-project",
+						label: "Assign Project",
+					},
 					version: 1,
 				},
 			],
@@ -809,6 +814,11 @@ describe("Projects tab", () => {
 						ownerLabel: "Project owner",
 						reason: "Codemem requires source-state repair.",
 						repairAction: "Assign a stable canonical Project identity.",
+						repair: {
+							kind: "reassign_project",
+							projectIdentity: "unstable-project",
+							label: "Assign Project",
+						},
 						version: 1,
 					},
 				],

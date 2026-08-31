@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { type Database, fromJson, toJson } from "./db.js";
+import { hasLocalInventoryIdentity } from "./local-project-inventory.js";
 import { ensureScopeBackfillScopes, LEGACY_SHARED_REVIEW_SCOPE_ID } from "./scope-backfill.js";
 import {
 	canonicalWorkspaceIdentity,
@@ -170,24 +171,6 @@ function inventoryMergeKey(
 	candidate: ProjectScopeCandidate,
 ): string {
 	return `${row.inventory_source === "peer_received" ? "peer_received" : "local"}:${candidate.workspace_identity}`;
-}
-
-function hasLocalInventoryIdentity(db: Database, workspaceIdentity: string): boolean {
-	const row = db
-		.prepare(
-			`SELECT 1 AS one
-			 FROM sessions s
-			 JOIN memory_items mi ON mi.session_id = s.id
-			 WHERE (s.cwd IS NULL OR substr(s.cwd, 1, length(?)) <> ?)
-			   AND COALESCE(TRIM(s.git_remote), TRIM(s.cwd), '') = ''
-			   AND mi.workspace_id IS NOT NULL
-			   AND TRIM(mi.workspace_id) = ?
-			 LIMIT 1`,
-		)
-		.get(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX, workspaceIdentity) as
-		| { one: number }
-		| undefined;
-	return Boolean(row);
 }
 
 function normalizeWorkspaceIdentity(value: string | null | undefined): string | null {

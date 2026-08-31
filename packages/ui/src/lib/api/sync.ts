@@ -715,6 +715,11 @@ export interface RecipientPolicyBlockedItemV1 {
 	reason: string;
 	ownerLabel: string;
 	repairAction: string;
+	repair: {
+		kind: "reassign_project" | "open_project_administration";
+		projectIdentity: string;
+		label: string;
+	};
 }
 
 export interface RecipientPolicyReviewListV1 {

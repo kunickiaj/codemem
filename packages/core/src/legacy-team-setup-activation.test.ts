@@ -1939,6 +1939,26 @@ describe("legacy Team setup activation", () => {
 		).toBe(0);
 	});
 
+	it("accepts a normalized exact mapping already targeting the reviewed scope", async () => {
+		db.prepare(
+			`INSERT INTO project_scope_mappings(
+			 workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+			 ) VALUES (?, ?, 'scope-engineering', 5000, 'test', ?, ?)`,
+		).run(`${PROJECT_B}/`, "older-exact-pattern", NOW, NOW);
+		const draft = readyDraft();
+
+		await expect(finish(draft)).resolves.toMatchObject({ status: "completed" });
+		expect(
+			db
+				.prepare(
+					`SELECT COUNT(*) FROM project_recipients
+					 WHERE canonical_project_identity = ? AND status = 'active'`,
+				)
+				.pluck()
+				.get(PROJECT_B),
+		).toBe(1);
+	});
+
 	it("reads as Ready in candidate discovery after activation completes", async () => {
 		// Arrange: the full seam — activation writes assignments, mappings
 		// (including an explicit unmapped resolution), recipients, and the

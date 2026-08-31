@@ -7,10 +7,8 @@ import {
 	listLegacyRecipientPolicyProjections,
 	resolveLegacyRecipientPolicyLocalIdentity,
 } from "./legacy-recipient-policy-projection.js";
-import {
-	isLegacyTeamCandidateSelectable,
-	legacyTeamCandidateProjectInventory,
-} from "./legacy-team-candidate.js";
+import { isLegacyTeamCandidateSelectable } from "./legacy-team-candidate.js";
+import { isMigratableLegacyTeamProjectIdentity } from "./legacy-team-project-policy.js";
 import { isActiveUnmergedLocalActor } from "./recipient-policy-actor-eligibility.js";
 import {
 	isRecipientPolicyNoOpDecision,
@@ -345,28 +343,38 @@ function reviewOptions(
 function blockedOwner(code: LegacyRecipientPolicyConditionCodeV1): {
 	ownerLabel: string;
 	repairAction: string;
+	repairKind: RecipientPolicyBlockedItemV1["repair"]["kind"];
+	repairLabel: string;
 } {
 	switch (code) {
 		case "noncanonical_project_identity":
 			return {
 				ownerLabel: "Project owner",
 				repairAction: "Assign a stable canonical Project identity.",
+				repairKind: "open_project_administration",
+				repairLabel: "Open Project administration",
 			};
 		case "inactive_scope_boundary":
 			return {
 				ownerLabel: "Scope owner",
 				repairAction: "Restore or replace the inactive enforcement boundary.",
+				repairKind: "open_project_administration",
+				repairLabel: "Open Project administration",
 			};
 		case "ambiguous_multi_project_scope":
 			return {
 				ownerLabel: "Local administrator",
 				repairAction:
 					"Assign each Project to its own managed scope and move its memories out of the shared boundary.",
+				repairKind: "open_project_administration",
+				repairLabel: "Open Project administration",
 			};
 		case "ambiguous_scope_mapping":
 			return {
 				ownerLabel: "Local administrator",
 				repairAction: "Repair the ambiguous legacy Project-to-scope mapping in Advanced settings.",
+				repairKind: "open_project_administration",
+				repairLabel: "Open Project administration",
 			};
 		case "suggest_local_identity":
 		case "suggest_team_candidate":
@@ -401,6 +409,14 @@ export function deriveRecipientPolicyReviewState(
 				continue;
 			}
 			if (presentation === "repairable_blocked") {
+				if (!isMigratableLegacyTeamProjectIdentity(projection.project.canonicalIdentity, db)) {
+					preservedDiagnosticFindings.push({
+						canonicalProjectIdentity: projection.project.canonicalIdentity,
+						conditionCode: condition.code,
+					});
+					continue;
+				}
+				const owner = blockedOwner(condition.code);
 				blockedItems.push({
 					version: RECIPIENT_POLICY_CONTRACT_VERSION,
 					blockedItemId: digest("recipient-policy-blocked-v1", [
@@ -409,7 +425,13 @@ export function deriveRecipientPolicyReviewState(
 					]),
 					finding: condition.message,
 					reason: `Project ${projection.project.displayName} requires source-state repair.`,
-					...blockedOwner(condition.code),
+					ownerLabel: owner.ownerLabel,
+					repairAction: owner.repairAction,
+					repair: {
+						kind: owner.repairKind,
+						projectIdentity: projection.project.canonicalIdentity,
+						label: owner.repairLabel,
+					},
 				});
 				continue;
 			}
@@ -551,11 +573,8 @@ function normalizeDecisionInput(
 	projection: LegacyRecipientPolicyProjectionV1,
 	request: RecipientPolicyReviewResolveRequestV1,
 	decisionDeviceIds: ReadonlySet<string>,
-	context: RecipientPolicyReviewContext,
 ): { ok: true; json: string } | { ok: false; errorCode: string } {
-	const candidates = deriveSelectableRecipientIds(db, projection, {
-		localIdentity: { localActorId: context.localActorId, localDeviceId: context.localDeviceId },
-	});
+	const candidates = deriveSelectableRecipientIds(db, projection);
 	const unassignedDeviceIds = new Set(
 		projection.effectiveDevices
 			.filter(
@@ -634,16 +653,6 @@ function normalizeDecisionInput(
 export function deriveSelectableRecipientIds(
 	db: Database,
 	projection: LegacyRecipientPolicyProjectionV1,
-	freshness?: {
-		/**
-		 * Local identity used to recompute each candidate's current Project
-		 * inventory; inventory drift the next discovery would reopen setup
-		 * for must also block selection.
-		 */
-		localIdentity?: { localActorId: string; localDeviceId: string };
-		/** Current coordinator roster fingerprints by candidate ID, when the caller holds a snapshot. */
-		rosterFingerprints?: ReadonlyMap<string, string>;
-	},
 ): {
 	all: Set<string>;
 	identities: Set<string>;
@@ -670,20 +679,9 @@ export function deriveSelectableRecipientIds(
 	for (const candidate of projection.teamCandidates) {
 		const expectedTeamId = deterministicPolicyTeamId(candidate.teamCandidateId);
 		teams.delete(expectedTeamId);
-		// The full completion-bound compatibility check guards against stale
-		// completed Teams whose canonical decisions, memberships, mappings, or
-		// recipient edges drifted without clearing the header fingerprint.
-		const current = {
-			rosterFingerprint: freshness?.rosterFingerprints?.get(candidate.teamCandidateId),
-			projects: freshness?.localIdentity
-				? legacyTeamCandidateProjectInventory(
-						db,
-						freshness.localIdentity,
-						candidate.teamCandidateId,
-					)
-				: undefined,
-		};
-		if (isLegacyTeamCandidateSelectable(db, candidate.teamCandidateId, current)) {
+		// Terminal migrations remain normal active Teams after later policy,
+		// roster, or Project drift; older completions retain strict compatibility.
+		if (isLegacyTeamCandidateSelectable(db, candidate.teamCandidateId)) {
 			teams.add(expectedTeamId);
 		}
 	}
@@ -751,7 +749,6 @@ function resolveInTransaction(
 		projection,
 		request,
 		new Set(selectedOption.preview.effectiveDevices.map((device) => device.deviceId)),
-		context,
 	);
 	if (!normalizedInput.ok) return invalid(request, normalizedInput.errorCode);
 	const key = resolutionKey(item.reviewItemId, item.sourceFingerprint);

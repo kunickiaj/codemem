@@ -869,7 +869,7 @@ function projectMappingChoices(store: MemoryStore): ProjectMappingChoiceInternal
 		}).filter(
 			(candidate) =>
 				!candidate.read_only &&
-				isLegacyTeamSetupProjectMappingIdentity(candidate.workspace_identity),
+				isLegacyTeamSetupProjectMappingIdentity(candidate.workspace_identity, store.db),
 		);
 	} catch (error) {
 		if (

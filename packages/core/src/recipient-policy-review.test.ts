@@ -332,8 +332,34 @@ describe("recipient policy review persistence", () => {
 		expect(result.blockedItems[0]).toMatchObject({
 			ownerLabel: "Project owner",
 			repairAction: expect.any(String),
+			repair: {
+				kind: "open_project_administration",
+				label: "Open Project administration",
+			},
 		});
 		expect(result.blockedItems[0]).not.toHaveProperty("options");
+	});
+
+	it("does not offer local recipient-policy repair for peer-received Projects", () => {
+		const sessionId = Number(
+			db
+				.prepare(
+					`INSERT INTO sessions(started_at, project, tool_version)
+					 VALUES (?, 'peer-only', 'sync_replication')`,
+				)
+				.run(NOW).lastInsertRowid,
+		);
+		db.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, active, created_at, updated_at,
+				visibility, project, scope_id
+			 ) VALUES (?, 'discovery', 'Peer fixture', 'body', 1, ?, ?, 'shared', 'peer-only', 'local-default')`,
+		).run(sessionId, NOW, NOW);
+
+		const projections = listLegacyRecipientPolicyProjections(db, context);
+
+		expect(projections).toHaveLength(1);
+		expect(projections[0]?.project.canonicalIdentity).toBe(PROJECT_ID);
 	});
 
 	it("keeps an ambiguous umbrella scope as continuity without repair cards", () => {
@@ -439,6 +465,29 @@ describe("recipient policy review persistence", () => {
 		expect(mixedState.blockedItems[0]?.blockedItemId).toBe(
 			repairableState.blockedItems[0]?.blockedItemId,
 		);
+	});
+
+	it("keeps synthetic shared compatibility identities out of repair targets", () => {
+		const shared = projection();
+		shared.project = { version: 1, canonicalIdentity: "shared:default", displayName: "Shared" };
+		shared.conditions = [
+			{
+				version: 1,
+				code: "ambiguous_scope_mapping",
+				kind: "diagnostic",
+				message: "Legacy shared scope remains in compatibility mode.",
+			},
+		];
+
+		const state = deriveRecipientPolicyReviewState(db, context, [shared]);
+
+		expect(state.blockedItems).toEqual([]);
+		expect(state.preservedDiagnosticFindings).toEqual([
+			{
+				canonicalProjectIdentity: "shared:default",
+				conditionCode: "ambiguous_scope_mapping",
+			},
+		]);
 	});
 
 	it("records only the immutable resolution with server-derived attribution", () => {

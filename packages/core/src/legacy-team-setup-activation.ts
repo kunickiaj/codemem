@@ -3,7 +3,10 @@ import {
 	assignIdentityDeviceInTransaction,
 	IdentityDeviceAssignmentError,
 } from "./identity-device-assignment.js";
-import { selectedProjectScopeMapping } from "./legacy-recipient-policy-projection.js";
+import {
+	normalizeLegacyProjectMappingIdentity,
+	selectedProjectScopeMapping,
+} from "./legacy-recipient-policy-projection.js";
 import { isStoredLegacyTeamAssignmentExpectationWellFormed } from "./legacy-team-assignment-expectation.js";
 import { isLegacyTeamProjectCanonicalStateValid } from "./legacy-team-project-canonical-preflight.js";
 import {
@@ -554,11 +557,11 @@ function loadModel(db: Database, input: PreviewLegacyTeamSetupActivationInput): 
 			.toSorted(compareText),
 	};
 	validateAssignmentExpectations(model);
-	validateCanonicalState(model);
+	validateCanonicalState(db, model);
 	return model;
 }
 
-function validateCanonicalState(model: ActivationModel): void {
+function validateCanonicalState(db: Database, model: ActivationModel): void {
 	const { groupScopeIds, memberships, projects, recipients, scopeIds, team, teamId } = model;
 	if (team) {
 		const baseCompatible =
@@ -609,28 +612,31 @@ function validateCanonicalState(model: ActivationModel): void {
 	}
 
 	if (
-		!isLegacyTeamProjectCanonicalStateValid({
-			teamId,
-			scopeIds,
-			groupScopeIds,
-			projects: projects.map((project) => ({
-				sourceProjectIdentity: project.source_project_identity,
-				resolvedProjectIdentity: project.resolved_project_identity,
-				targetScopeId: targetScopeId(model, project),
-			})),
-			mappings: model.mappings.map((mapping) => ({
-				workspaceIdentity: mapping.workspace_identity,
-				projectPattern: mapping.project_pattern,
-				scopeId: mapping.scope_id,
-				source: mapping.source,
-			})),
-			recipients: recipients.map((recipient) => ({
-				canonicalProjectIdentity: recipient.canonical_project_identity,
-				recipientKind: recipient.recipient_kind,
-				recipientId: recipient.recipient_id,
-				status: recipient.status,
-			})),
-		})
+		!isLegacyTeamProjectCanonicalStateValid(
+			{
+				teamId,
+				scopeIds,
+				groupScopeIds,
+				projects: projects.map((project) => ({
+					sourceProjectIdentity: project.source_project_identity,
+					resolvedProjectIdentity: project.resolved_project_identity,
+					targetScopeId: targetScopeId(model, project),
+				})),
+				mappings: model.mappings.map((mapping) => ({
+					workspaceIdentity: mapping.workspace_identity,
+					projectPattern: mapping.project_pattern,
+					scopeId: mapping.scope_id,
+					source: mapping.source,
+				})),
+				recipients: recipients.map((recipient) => ({
+					canonicalProjectIdentity: recipient.canonical_project_identity,
+					recipientKind: recipient.recipient_kind,
+					recipientId: recipient.recipient_id,
+					status: recipient.status,
+				})),
+			},
+			db,
+		)
 	) {
 		activationError("team_setup_conflict");
 	}
@@ -1658,7 +1664,9 @@ function applyActivation(
 			evidence.targetScopeIds.size !== 1 ||
 			!selected ||
 			selected.workspaceIdentity == null ||
-			!evidence.sources.has(selected.projectPattern) ||
+			(normalizeLegacyProjectMappingIdentity(selected.workspaceIdentity) !==
+				normalizeLegacyProjectMappingIdentity(resolvedIdentity) &&
+				!evidence.sources.has(selected.projectPattern)) ||
 			selected.scopeId !== reviewedTargetScopeId
 		) {
 			activationError("team_setup_conflict");
