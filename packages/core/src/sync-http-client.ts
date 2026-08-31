@@ -88,7 +88,7 @@ export async function requestJson(
 		method,
 		headers: requestHeaders,
 		body: requestBody,
-		signal: AbortSignal.timeout(timeoutS * 1000),
+		signal: AbortSignal.timeout(Math.round(timeoutS * 1_000)),
 	});
 
 	let raw: string;

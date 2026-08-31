@@ -12,6 +12,7 @@ import {
 	clearLegacyTeamSetupDeviceDecision,
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
+	deterministicPolicyTeamId,
 	discoverLegacyTeamCandidates,
 	fingerprintPublicKey,
 	finishLegacyTeamSetupActivation,
@@ -81,6 +82,7 @@ const MAX_PROJECT_MAPPING_SCAN_ROWS = 10_000;
 const MAX_PROJECT_MAPPING_METADATA_ROWS = 10_000;
 const MAX_MUTATION_BODY_BYTES = 8_192;
 const SUMMARY_SNAPSHOT_CACHE_TTL_MS = 30_000;
+const COORDINATOR_ROSTER_READ_BUDGET_MS = 60_000;
 export const TEAM_SETUP_ROUTE_PREFIX = "/api/sync/team-setup/v1";
 const CANDIDATE_REF_PATTERN = /^legacy-team-candidate:[0-9a-f]{32}$/u;
 const DEVICE_REF_PATTERN = /^legacy-team-device-ref-v1:[0-9a-f]{64}$/u;
@@ -130,6 +132,39 @@ function safeCoordinatorError(): Error {
 
 function isCoordinatorRosterTooLargeError(error: unknown): boolean {
 	return error instanceof Error && error.message === "coordinator_response_too_large";
+}
+
+function isTransientCoordinatorReadError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	const remoteStatus = /Remote coordinator request failed \((\d{3})\):/u.exec(error.message)?.[1];
+	if (remoteStatus) return ["408", "429", "500", "502", "503", "504"].includes(remoteStatus);
+	return (
+		error.name === "TimeoutError" ||
+		error.name === "AbortError" ||
+		/request_timeout|fetch failed|timed out|timeout/iu.test(error.message)
+	);
+}
+
+async function retryTransientCoordinatorRead<T>(
+	read: (timeoutS: number) => Promise<T>,
+	configuredTimeoutS: number,
+	deadlineMs: number,
+): Promise<T> {
+	let lastError: unknown;
+	for (let attempt = 0; attempt < 8; attempt += 1) {
+		const remainingMs = deadlineMs - Date.now();
+		if (remainingMs <= 0) throw lastError ?? safeCoordinatorError();
+		try {
+			return await read(Math.max(0.1, Math.min(configuredTimeoutS, remainingMs / 1_000)));
+		} catch (error) {
+			lastError = error;
+			if (!isTransientCoordinatorReadError(error) || attempt === 7) throw error;
+			const delayMs = Math.min(100 * 2 ** attempt, 2_000, deadlineMs - Date.now());
+			if (delayMs <= 0) throw error;
+			await new Promise((resolve) => setTimeout(resolve, delayMs));
+		}
+	}
+	throw lastError;
 }
 
 function configuredGroupIds(groups: string[]): string[] {
@@ -295,18 +330,24 @@ async function loadConfiguredLegacyTeamGroupSnapshotsWith(
 		);
 		if (groupDescriptors.length === 0) throw safeCoordinatorError();
 		const timeoutS = Math.max(1, config.syncCoordinatorTimeoutS);
+		const deadlineMs = Date.now() + COORDINATOR_ROSTER_READ_BUDGET_MS;
 		const requestedGroupDescriptors = options.candidateRef
 			? groupDescriptors.filter(
 					({ coordinatorId, groupId }) =>
 						legacyTeamCandidateId(coordinatorId, groupId) === options.candidateRef,
 				)
 			: groupDescriptors;
-		const groups = await dependencies.listGroups({
-			remoteUrl,
-			adminSecret: config.syncCoordinatorAdminSecret,
-			includeArchived: false,
+		const groups = await retryTransientCoordinatorRead(
+			(attemptTimeoutS) =>
+				dependencies.listGroups({
+					remoteUrl,
+					adminSecret: config.syncCoordinatorAdminSecret,
+					includeArchived: false,
+					timeoutS: attemptTimeoutS,
+				}),
 			timeoutS,
-		});
+			deadlineMs,
+		);
 		const groupById = new Map(groups.map((group) => [group.group_id, group]));
 		const outcomes = await Promise.all(
 			requestedGroupDescriptors.map(async ({ coordinatorId, groupId }) => {
@@ -326,13 +367,18 @@ async function loadConfiguredLegacyTeamGroupSnapshotsWith(
 				}
 				let devices: Awaited<ReturnType<typeof coordinatorListDevicesAction>>;
 				try {
-					devices = await dependencies.listDevices({
-						groupId,
-						includeDisabled: true,
-						remoteUrl,
-						adminSecret: config.syncCoordinatorAdminSecret,
+					devices = await retryTransientCoordinatorRead(
+						(attemptTimeoutS) =>
+							dependencies.listDevices({
+								groupId,
+								includeDisabled: true,
+								remoteUrl,
+								adminSecret: config.syncCoordinatorAdminSecret,
+								timeoutS: attemptTimeoutS,
+							}),
 						timeoutS,
-					});
+						deadlineMs,
+					);
 				} catch (error) {
 					if (!options.candidateRef) return { kind: "unavailable" as const };
 					if (isCoordinatorRosterTooLargeError(error)) {
@@ -441,6 +487,48 @@ function candidateFromDraft(draft: LegacyTeamSetupDraftView): LegacyTeamCandidat
 		unresolvedDeviceCount: draft.unresolvedDeviceCount,
 		unresolvedProjectCount: draft.unresolvedProjectCount,
 	};
+}
+
+function readPureCandidateViews(
+	store: MemoryStore,
+	groups: LegacyTeamConfiguredGroupSnapshot[],
+): LegacyTeamCandidateView[] {
+	const existing: LegacyTeamCandidateView[] = [];
+	const discoverable: LegacyTeamConfiguredGroupSnapshot[] = [];
+	for (const group of groups) {
+		const candidateRef = legacyTeamCandidateId(group.coordinatorId, group.groupId);
+		const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+		if (hasCompletedLegacyTeamSetup(store, candidateRef)) {
+			// Only canonical terminal completions pass through discovery: they can
+			// reconcile missing setup recipient edges while preserving newer drafts.
+			if (isLegacyTeamCandidateSelectable(store.db, candidateRef)) discoverable.push(group);
+			continue;
+		}
+		if (!draft || draft.state === "completed") {
+			discoverable.push(group);
+			continue;
+		}
+		existing.push(candidateFromDraft(draft));
+	}
+	return [...existing, ...discoverCandidates(store, discoverable)]
+		.filter((candidate) => !hasCompletedLegacyTeamSetup(store, candidate.candidateRef))
+		.toSorted((left, right) =>
+			left.candidateRef < right.candidateRef ? -1 : left.candidateRef > right.candidateRef ? 1 : 0,
+		);
+}
+
+function hasCompletedLegacyTeamSetup(store: MemoryStore, candidateRef: string): boolean {
+	return Boolean(
+		store.db
+			.prepare(
+				`SELECT 1 FROM policy_teams
+				 WHERE team_id = ? AND status = 'active'
+				   AND provenance = 'reviewed_team_candidate'
+				   AND migration_state = 'completed' LIMIT 1`,
+			)
+			.pluck()
+			.get(deterministicPolicyTeamId(candidateRef)),
+	);
 }
 
 function identityRef(candidateRef: string, identityId: string | null): string | null {
@@ -728,7 +816,10 @@ function createCachedSnapshotLoader(
 	load: () => Promise<LegacyTeamConfiguredGroupSnapshot[]>,
 	ttlMs: number,
 	now: () => number = Date.now,
-): (() => Promise<LegacyTeamConfiguredGroupSnapshot[]>) & { invalidate: () => void } {
+): (() => Promise<LegacyTeamConfiguredGroupSnapshot[]>) & {
+	invalidate: () => void;
+	peek: () => LegacyTeamConfiguredGroupSnapshot[] | null;
+} {
 	let cached: { expiresAt: number; snapshots: LegacyTeamConfiguredGroupSnapshot[] } | null = null;
 	let inFlight: Promise<LegacyTeamConfiguredGroupSnapshot[]> | null = null;
 	let generation = 0;
@@ -754,6 +845,7 @@ function createCachedSnapshotLoader(
 		cached = null;
 		inFlight = null;
 	};
+	cachedLoad.peek = () => (cached && now() < cached.expiresAt ? cached.snapshots : null);
 	return cachedLoad;
 }
 
@@ -1126,12 +1218,27 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 	options.registerSummaryInvalidator?.(() => loadedSummarySnapshots.invalidate());
 	async function loadedCandidateSnapshots(
 		candidateRef: string,
+		loadOptions: {
+			allowCachedSummaryFallback?: boolean;
+			invalidateSummaryCache?: boolean;
+		} = {},
 	): Promise<LegacyTeamConfiguredGroupSnapshot[]> {
-		loadedSummarySnapshots.invalidate();
+		const allowCachedSummaryFallback = loadOptions.allowCachedSummaryFallback ?? false;
+		const invalidateSummaryCache = loadOptions.invalidateSummaryCache ?? true;
+		if (invalidateSummaryCache) loadedSummarySnapshots.invalidate();
 		try {
 			return await loadedSnapshots(candidateRef);
+		} catch (error) {
+			if (!allowCachedSummaryFallback) throw error;
+			const cachedGroups = loadedSummarySnapshots.peek();
+			if (!cachedGroups) throw error;
+			const matching = cachedGroups.filter(
+				(group) => legacyTeamCandidateId(group.coordinatorId, group.groupId) === candidateRef,
+			);
+			if (matching.length !== 1) throw error;
+			return matching;
 		} finally {
-			loadedSummarySnapshots.invalidate();
+			if (invalidateSummaryCache) loadedSummarySnapshots.invalidate();
 		}
 	}
 
@@ -1144,9 +1251,10 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			return c.json({ error: code }, errorStatus(code));
 		}
 		try {
+			const store = options.getStore();
 			const response = {
 				version: TEAM_SETUP_VERSION,
-				candidates: discoverCandidates(options.getStore(), groups)
+				candidates: readPureCandidateViews(store, groups)
 					.map(candidateSummary)
 					.filter(
 						(candidate): candidate is LegacyTeamSetupPendingCandidateSummaryV1 =>
@@ -1169,31 +1277,41 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		try {
 			const store = options.getStore();
 			let draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+			const terminal = hasCompletedLegacyTeamSetup(store, candidateRef);
+			if (terminal && draft?.state !== "completed") {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			}
 			let candidate: LegacyTeamCandidateView;
-			if (
-				draft?.state === "completed" &&
-				isLegacyTeamCandidateSelectable(store.db, candidateRef, {
-					projects: legacyTeamCandidateProjectInventory(
-						store.db,
-						projectionOptions(store),
-						candidateRef,
-					),
-				})
-			) {
+			if (draft && (draft.state !== "completed" || terminal)) {
 				candidate = candidateFromDraft(draft);
 			} else {
-				const groups = await loadedCandidateSnapshots(candidateRef);
+				// Revalidation may replace a completed draft, so it must never decide
+				// against a stale summary-cache roster. Cache fallback remains safe for
+				// candidates that have no persisted attempt yet.
+				const groups = await loadedCandidateSnapshots(candidateRef, {
+					allowCachedSummaryFallback: draft == null,
+					invalidateSummaryCache: false,
+				});
 				const candidateGroups = groups.filter(
 					(group) => legacyTeamCandidateId(group.coordinatorId, group.groupId) === candidateRef,
 				);
-				const discoveredCandidate = discoverCandidates(store, candidateGroups).find(
-					(item) => item.candidateRef === candidateRef,
-				);
-				if (!discoveredCandidate) {
-					return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+				const postLoadDraft = getLegacyTeamSetupDraft(store.db, candidateRef);
+				if (hasCompletedLegacyTeamSetup(store, candidateRef)) {
+					if (postLoadDraft?.state !== "completed") {
+						return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+					}
+					draft = postLoadDraft;
+					candidate = candidateFromDraft(postLoadDraft);
+				} else {
+					const discoveredCandidate = discoverCandidates(store, candidateGroups).find(
+						(item) => item.candidateRef === candidateRef,
+					);
+					if (!discoveredCandidate) {
+						return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+					}
+					candidate = discoveredCandidate;
+					draft = getLegacyTeamSetupDraft(store.db, candidateRef);
 				}
-				candidate = discoveredCandidate;
-				draft = getLegacyTeamSetupDraft(store.db, candidateRef);
 			}
 			if (!draft) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
 
@@ -1233,6 +1351,9 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			const store = options.getStore();
 			const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
 			if (!draft) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			if (draft.state !== "completed" && hasCompletedLegacyTeamSetup(store, candidateRef)) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
 			if (draft.attemptId !== attemptId) {
 				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
 			}
@@ -1303,6 +1424,9 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			const store = options.getStore();
 			const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
 			if (!draft) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			if (draft.state !== "completed" && hasCompletedLegacyTeamSetup(store, candidateRef)) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
 			if (draft.attemptId !== attemptId) {
 				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
 			}
@@ -1356,6 +1480,9 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			const store = options.getStore();
 			const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
 			if (!draft) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			if (draft.state !== "completed" && hasCompletedLegacyTeamSetup(store, candidateRef)) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
 			if (draft.attemptId !== attemptId) {
 				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
 			}
@@ -1401,6 +1528,9 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			const store = options.getStore();
 			const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
 			if (!draft) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			if (draft.state !== "completed" && hasCompletedLegacyTeamSetup(store, candidateRef)) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
 			if (draft.attemptId !== attemptId) {
 				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
 			}
@@ -1449,6 +1579,10 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		let store: MemoryStore;
 		try {
 			store = options.getStore();
+			const currentDraft = getLegacyTeamSetupDraft(store.db, candidateRef);
+			if (currentDraft?.state === "completed" || hasCompletedLegacyTeamSetup(store, candidateRef)) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
 		} catch (error) {
 			const code = apiErrorCode(error);
 			return c.json({ error: code }, errorStatus(code));
@@ -1474,7 +1608,11 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 				projectMutationAtomically(
 					store,
 					() => {
-						if (getLegacyTeamSetupDraft(store.db, candidateRef)?.state === "completed") {
+						const currentDraft = getLegacyTeamSetupDraft(store.db, candidateRef);
+						if (
+							currentDraft?.state === "completed" ||
+							hasCompletedLegacyTeamSetup(store, candidateRef)
+						) {
 							throw new Error("team_setup_confirmation_stale");
 						}
 						return refreshLegacyTeamCandidate(
@@ -1536,6 +1674,9 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			const store = options.getStore();
 			const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
 			if (!draft) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			if (draft.state !== "completed" && hasCompletedLegacyTeamSetup(store, candidateRef)) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
 			if (draft.attemptId !== attemptId) {
 				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
 			}

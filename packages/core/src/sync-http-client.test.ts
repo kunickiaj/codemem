@@ -123,6 +123,18 @@ describe("requestJson", () => {
 		expect(call[1].headers.Authorization).toBe("Bearer tok");
 	});
 
+	it("rounds fractional timeout seconds to integer milliseconds", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			status: 200,
+			text: () => Promise.resolve("{}"),
+		});
+		const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(new AbortController().signal);
+
+		await requestJson("GET", "http://localhost:8080/info", { timeoutS: 1.001 });
+
+		expect(timeout).toHaveBeenCalledWith(1_001);
+	});
+
 	it("rejects a declared response larger than the configured limit", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(
 			new Response("{}", {

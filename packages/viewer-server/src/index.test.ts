@@ -943,6 +943,27 @@ describe("viewer-server", () => {
 				const pendingAfterFinish = await app.request("/api/sync/team-setup/v1");
 				expect(pendingAfterFinish.status).toBe(200);
 				expect(await pendingAfterFinish.json()).toEqual({ version: 1, candidates: [] });
+				store.db
+					.prepare(
+						`DELETE FROM project_recipients
+						 WHERE recipient_kind = 'team' AND recipient_id = ?
+						   AND provenance = 'reviewed_team_setup'`,
+					)
+					.run(core.deterministicPolicyTeamId(candidateRef));
+				expect(store.db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
+				const reconciledSummary = await app.request("/api/sync/team-setup/v1");
+				expect(reconciledSummary.status).toBe(200);
+				expect(await reconciledSummary.json()).toEqual({ version: 1, candidates: [] });
+				expect(store.db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(1);
+				expect(
+					store.db
+						.prepare(
+							`SELECT attempt_id FROM legacy_team_setup_drafts
+							 WHERE candidate_id = ? ORDER BY rowid DESC LIMIT 1`,
+						)
+						.pluck()
+						.get(candidateRef),
+				).toBe(draft?.attemptId);
 				const canonicalSnapshot = () => ({
 					teams: store.db.prepare("SELECT * FROM policy_teams ORDER BY team_id").all(),
 					memberships: store.db
@@ -1106,6 +1127,56 @@ describe("viewer-server", () => {
 				expect(reopened).toMatchObject({ candidate: { candidateRef } });
 				expect((reopened.candidate as { status: string }).status).toBe("ready");
 				expect(reopened.state).toBe("completed");
+				expect(loadSnapshots).not.toHaveBeenCalled();
+
+				const supersedingAttemptId = "legacy-team-attempt:00000000-0000-4000-8000-000000000099";
+				store.db
+					.prepare(
+						`INSERT INTO legacy_team_setup_drafts(
+						 attempt_id, candidate_id, coordinator_id, group_id, state, display_name,
+						 roster_fingerprint, projection_fingerprint, created_at, updated_at
+						 ) VALUES (?, ?, ?, ?, 'needs_setup', 'Migration Team', 'new-roster',
+						 'new-projection', ?, ?)`,
+					)
+					.run(supersedingAttemptId, candidateRef, coordinatorId, groupId, now, now);
+				loadSnapshots.mockClear();
+				const terminalSummaryResponse = await app.request("/api/sync/team-setup/v1");
+				expect(terminalSummaryResponse.status).toBe(200);
+				const terminalSummary = (await terminalSummaryResponse.json()) as {
+					candidates: Array<{ candidateRef: string }>;
+				};
+				expect(terminalSummary.candidates).not.toContainEqual(
+					expect.objectContaining({ candidateRef }),
+				);
+				const staleSupersedingDetail = await app.request(`/api/sync/team-setup/v1/${candidateRef}`);
+				expect(staleSupersedingDetail.status).toBe(404);
+				expect(await staleSupersedingDetail.json()).toEqual({
+					error: "team_setup_confirmation_stale",
+				});
+				const staleSupersedingDecision = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/devices/${deviceRef}/decision`,
+					{
+						method: "PUT",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ attemptId: supersedingAttemptId, decision: "excluded" }),
+					},
+				);
+				expect(staleSupersedingDecision.status).toBe(409);
+				expect(await staleSupersedingDecision.json()).toEqual({
+					error: "team_setup_confirmation_stale",
+				});
+				const staleSupersedingRefresh = await app.request(
+					`/api/sync/team-setup/v1/${candidateRef}/refresh`,
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: "{}",
+					},
+				);
+				expect(staleSupersedingRefresh.status).toBe(409);
+				expect(await staleSupersedingRefresh.json()).toEqual({
+					error: "team_setup_confirmation_stale",
+				});
 				expect(loadSnapshots).not.toHaveBeenCalled();
 			} finally {
 				cleanup();
@@ -1923,7 +1994,118 @@ describe("viewer-server", () => {
 				expect(core.getLegacyTeamSetupDraft(ensureStore().db, candidateRef)?.attemptId).toBe(
 					refreshedAttemptId,
 				);
+				// Explicit refresh invalidates the summary before and after its fresh
+				// roster load; read-only detail loads retain the display cache instead.
 				expect(loadSnapshots).toHaveBeenCalledTimes(4);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects a refresh when migration completes during the roster load", async () => {
+			let resolveRefresh!: () => void;
+			const loadSnapshots = vi.fn((options?: { candidateRef?: string }) =>
+				options?.candidateRef
+					? new Promise<core.LegacyTeamConfiguredGroupSnapshot[]>((resolve) => {
+							resolveRefresh = () =>
+								resolve([
+									{
+										...snapshots[0],
+										devices: snapshots[0].devices.map((device) => ({
+											...device,
+											fingerprint: "refreshed-fingerprint",
+										})),
+									},
+								]);
+						})
+					: Promise.resolve(snapshots),
+			);
+			const { app, ensureStore, cleanup } = createTestApp({
+				loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
+			});
+			try {
+				expect((await app.request("/api/sync/team-setup/v1")).status).toBe(200);
+				const store = ensureStore();
+				const initialAttemptId = core.getLegacyTeamSetupDraft(store.db, candidateRef)?.attemptId;
+				const refreshPromise = app.request(`/api/sync/team-setup/v1/${candidateRef}/refresh`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: "{}",
+				});
+				await vi.waitFor(() => expect(loadSnapshots).toHaveBeenCalledTimes(2));
+				store.db
+					.prepare(
+						`INSERT INTO policy_teams(
+						 team_id, display_name, status, device_eligibility_mode, provenance,
+						 revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at
+						 ) VALUES (?, 'Migration Team', 'active', 'reviewed_allowlist',
+						 'reviewed_team_candidate', 'revision-1', 'completed', 'roster', 'team-key', ?, ?)`,
+					)
+					.run(
+						core.deterministicPolicyTeamId(candidateRef),
+						"2026-08-26T00:00:00.000Z",
+						"2026-08-26T00:00:00.000Z",
+					);
+				resolveRefresh();
+
+				const refresh = await refreshPromise;
+				expect(refresh.status).toBe(409);
+				expect(await refresh.json()).toEqual({ error: "team_setup_confirmation_stale" });
+				expect(
+					store.db
+						.prepare(
+							`SELECT attempt_id FROM legacy_team_setup_drafts
+							 WHERE candidate_id = ? ORDER BY rowid DESC LIMIT 1`,
+						)
+						.pluck()
+						.get(candidateRef),
+				).toBe(initialAttemptId);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("keeps an active review attempt stable across read-only summary and detail loads", async () => {
+			let currentSnapshots = snapshots;
+			const loadSnapshots = vi.fn(async () => currentSnapshots);
+			const { app, ensureStore, cleanup } = createTestApp({
+				loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
+			});
+			try {
+				expect((await app.request("/api/sync/team-setup/v1")).status).toBe(200);
+				const initialAttemptId = core.getLegacyTeamSetupDraft(
+					ensureStore().db,
+					candidateRef,
+				)?.attemptId;
+				expect(initialAttemptId).toBeTruthy();
+				currentSnapshots = [
+					{
+						...snapshots[0],
+						devices: snapshots[0].devices.map((device) => ({
+							...device,
+							fingerprint: "new-fingerprint",
+						})),
+					},
+				];
+				loadSnapshots.mockClear();
+
+				expect((await app.request(`/api/sync/team-setup/v1/${candidateRef}`)).status).toBe(200);
+				expect((await app.request("/api/sync/team-setup/v1")).status).toBe(200);
+				expect(core.getLegacyTeamSetupDraft(ensureStore().db, candidateRef)?.attemptId).toBe(
+					initialAttemptId,
+				);
+				expect(loadSnapshots).not.toHaveBeenCalledWith({ candidateRef });
+
+				const refreshed = await app.request(`/api/sync/team-setup/v1/${candidateRef}/refresh`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: "{}",
+				});
+				expect(refreshed.status).toBe(200);
+				expect(core.getLegacyTeamSetupDraft(ensureStore().db, candidateRef)?.attemptId).not.toBe(
+					initialAttemptId,
+				);
+				expect(loadSnapshots).toHaveBeenCalledWith({ candidateRef });
 			} finally {
 				cleanup();
 			}
