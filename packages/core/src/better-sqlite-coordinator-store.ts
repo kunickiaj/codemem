@@ -643,6 +643,9 @@ function initializeSchema(db: DatabaseType): void {
 			PRIMARY KEY (device_id, nonce)
 		);
 
+		CREATE INDEX IF NOT EXISTS idx_request_nonces_created_at
+			ON request_nonces(created_at);
+
 		CREATE TABLE IF NOT EXISTS coordinator_invites (
 			invite_id TEXT PRIMARY KEY,
 			group_id TEXT NOT NULL,
@@ -856,6 +859,8 @@ function initializeSchema(db: DatabaseType): void {
 			ON coordinator_invites(operation_id) WHERE operation_id IS NOT NULL;
 		 CREATE UNIQUE INDEX IF NOT EXISTS idx_coordinator_invites_token_digest
 			ON coordinator_invites(token_digest) WHERE token_digest IS NOT NULL;
+		 CREATE INDEX IF NOT EXISTS idx_coordinator_invites_group_created
+			ON coordinator_invites(group_id, created_at DESC);
 		 UPDATE coordinator_invites
 			SET invite_kind = CASE WHEN operation_id IS NOT NULL THEN 'project_share' ELSE 'legacy_enrollment' END
 			WHERE invite_kind IS NULL;`,
