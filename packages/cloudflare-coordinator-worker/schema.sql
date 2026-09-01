@@ -34,6 +34,11 @@ CREATE TABLE IF NOT EXISTS request_nonces (
   PRIMARY KEY (device_id, nonce)
 );
 
+-- Keeps the per-request expiry sweep off a full table scan; see migration
+-- 0014_add_request_nonces_created_at_index.sql.
+CREATE INDEX IF NOT EXISTS idx_request_nonces_created_at
+ON request_nonces(created_at);
+
 CREATE TABLE IF NOT EXISTS coordinator_invites (
   invite_id TEXT PRIMARY KEY,
   group_id TEXT NOT NULL,
