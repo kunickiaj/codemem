@@ -10,23 +10,21 @@ what each package requires per platform, what users need installed, and what bre
 
 | Platform | better-sqlite3 | sqlite-vec | onnxruntime-node |
 |---|---|---|---|
-| macOS arm64 | ⚠️ Compile from source¹ | ✅ Prebuild (.dylib) | ✅ Prebuild |
+| macOS arm64 | ✅ Bundled prebuild | ✅ Prebuild (.dylib) | ✅ Prebuild |
 | macOS x64 | ✅ Prebuild available | ✅ Prebuild (.dylib) | ✅ Prebuild |
 | Linux x64 | ✅ Prebuild available | ✅ Prebuild (.so) | ✅ Prebuild |
-| Linux arm64 | ⚠️ Compile from source¹ | ✅ Prebuild (.so) | ✅ Prebuild |
+| Linux arm64 | ✅ Bundled prebuild | ✅ Prebuild (.so) | ✅ Prebuild |
 | Windows x64 | ✅ Prebuild available | ✅ Prebuild (.dll) | ✅ Prebuild |
 
-¹ No prebuild for Node 24 + arm64 confirmed in spike. better-sqlite3 publishes
-prebuilds via `prebuild-install` (143 release assets for v12.8.0 covering many
-Node × platform combos), but coverage for newer Node versions on arm64 lags.
-Prebuilds for Node 20/22 on arm64 are typically available. **This is the primary
-install friction point.**
+better-sqlite3 13 bundles Node-API binaries for x64 and arm64 on macOS, Windows,
+glibc Linux, and musl Linux. Node 24 therefore uses a bundled binary on every
+platform in the supported matrix.
 
 ### How each package ships native code
 
 | Package | Native strategy | Build system | Fallback |
 |---|---|---|---|
-| better-sqlite3 | `prebuild-install`, falls back to `node-gyp rebuild` | node-gyp (C++ addon, compiles SQLite amalgamation) | Source compilation |
+| better-sqlite3 | Bundled platform binaries | node-gyp validates the bundled binary during install | Source compilation on unsupported targets |
 | sqlite-vec | `optionalDependencies` per-platform packages | None — prebuilt binaries only | Fatal error if platform unsupported |
 | onnxruntime-node | Single package, postinstall downloads platform binary | N-API addon, prebuilt | Fatal error if platform unsupported |
 
@@ -46,7 +44,7 @@ matching one. No compilation step.
 
 ## SQLite Version Compatibility
 
-**better-sqlite3 bundles its own SQLite** (currently v3.51.3) compiled from the
+**better-sqlite3 bundles its own SQLite** (currently v3.53.3) compiled from the
 amalgamation source. It does NOT use a system SQLite.
 
 **sqlite-vec does not conflict.** The sqlite-vec .dylib/.so is loaded via
@@ -58,32 +56,34 @@ collision.
 The only requirement is that the host SQLite version supports the extension's
 required APIs. sqlite-vec uses virtual tables and standard extension entry
 points, which have been stable since SQLite 3.9.0 (2015). better-sqlite3's
-bundled 3.51.3 is well above this.
+bundled 3.53.3 is well above this.
 
 ## Install Size Budget
 
 | Package | Unpacked size | Notes |
 |---|---|---|
-| better-sqlite3 | ~10 MB | Includes SQLite amalgamation source + prebuilt .node |
+| better-sqlite3 | ~27 MB | Includes SQLite amalgamation source + eight platform prebuilds |
 | sqlite-vec (per-platform) | ~160 KB | Only the matching platform package is installed |
 | onnxruntime-node | **~220 MB** | Ships all platform binaries in one package |
-| **Total (with onnxruntime)** | **~230 MB** | Dominated by onnxruntime |
-| **Total (without onnxruntime)** | **~10 MB** | Core functionality only |
+| **Total (with onnxruntime)** | **~247 MB** | Dominated by onnxruntime |
+| **Total (without onnxruntime)** | **~27 MB** | Core functionality only |
 
-onnxruntime-node is 95% of the install weight. This is the strongest argument
+onnxruntime-node still dominates the install weight. This is the strongest argument
 for making it optional (see §Optional Dependencies below).
 
 ## Build Tool Requirements
 
-### When prebuilds are available (most users)
+### Supported platforms
 
-No build tools required. `npm install` downloads prebuilt binaries for all three
-packages.
+better-sqlite3 13 ships its supported binaries inside the npm package. Its
+install step still invokes node-gyp to select the bundled binary, so Python and
+the platform build runner must be available even though no C++ compilation is
+expected on supported targets.
 
 ### When better-sqlite3 must compile from source
 
-This applies to: Node 24 on arm64 (macOS and Linux), and any future
-Node version before prebuilds are published.
+This applies to unsupported operating systems or CPU architectures, or when a
+bundled binary cannot load.
 
 | Platform | Required tools |
 |---|---|
@@ -91,19 +91,10 @@ Node version before prebuilds are published.
 | Linux arm64 | `build-essential` (gcc/g++, make), `python3` |
 | Linux x64 | `build-essential`, `python3` (only if prebuild missing) |
 
-node-gyp requires: Python 3, a C++ compiler supporting C++20, and make.
+Source compilation requires Python 3, a C++ compiler supporting C++20, and make.
 These are standard on developer machines but **not** on minimal CI images or
-Docker containers. The install script (`prebuild-install || node-gyp rebuild`)
-handles the fallback automatically.
-
-### Mitigation: ship our own prebuilds
-
-If Node 24 arm64 becomes a common target before upstream publishes prebuilds:
-1. Fork/rebuild with `prebuild` targeting Node 24 arm64
-2. Host prebuilds on GitHub Releases
-3. Configure `prebuild-install --download` to check our mirror first
-
-This is a contingency, not a first step.
+Docker containers. better-sqlite3's node-gyp configuration selects a bundled
+binary when the current platform and architecture are supported.
 
 ## CI Matrix
 
@@ -112,7 +103,7 @@ This is a contingency, not a first step.
 | Runner | Node | Arch | Purpose |
 |---|---|---|---|
 | `macos-14` (M1) | 22 | arm64 | Primary dev platform, prebuild test |
-| `macos-14` (M1) | 24 | arm64 | Source compilation test |
+| `macos-14` (M1) | 24 | arm64 | Bundled prebuild test |
 | `ubuntu-24.04` | 22 | x64 | Standard Linux, prebuild test |
 | `ubuntu-24.04` | 24 | x64 | Latest Node on Linux |
 | `ubuntu-24.04-arm` | 22 | arm64 | Linux arm64 prebuild test |
@@ -123,7 +114,7 @@ This is a contingency, not a first step.
 |---|---|---|---|
 | `macos-13` | 22 | x64 | Intel Mac support |
 | `windows-latest` | 22 | x64 | Windows baseline (if we support it) |
-| `ubuntu-24.04-arm` | 24 | arm64 | Linux arm64 source compilation |
+| `ubuntu-24.04-arm` | 24 | arm64 | Linux arm64 bundled prebuild test |
 
 ### What each CI job validates
 
@@ -141,13 +132,13 @@ This is a contingency, not a first step.
 installs optional dependencies unless the user explicitly passes
 `--omit=optional`. Instead, split into two packages:
 
-- **`codemem`** — core package, no onnxruntime (~10 MB). FTS search works, semantic search is unavailable.
+- **`codemem`** — core package, no onnxruntime (~27 MB). FTS search works, semantic search is unavailable.
 - **`codemem-embeddings`** (or `@codemem/embeddings`) — adds `onnxruntime-node` + `@huggingface/transformers` (~220 MB). Enables semantic search.
 
 Users install what they need:
 ```bash
-npm install codemem                    # Core only (~10 MB)
-npm install codemem codemem-embeddings # Full with semantic search (~230 MB)
+npm install codemem                    # Core only (~27 MB)
+npm install codemem codemem-embeddings # Full with semantic search (~247 MB)
 ```
 
 The core package detects `codemem-embeddings` at runtime via dynamic import:
@@ -191,10 +182,10 @@ Embeddings require onnxruntime-node. Install it with:
 #### Install instructions in README
 
 ```bash
-# Core install (~10 MB)
+# Core install (~27 MB)
 npm install codemem
 
-# With embedding support (~230 MB)
+# With embedding support (~247 MB)
 npm install codemem onnxruntime-node
 ```
 
@@ -233,5 +224,5 @@ covers the vast majority of Node.js deployments.
 **Risk:** onnxruntime-node is 220 MB. Embedding models (e.g., all-MiniLM-L6-v2
 ONNX) add another 20-80 MB. Total install weight for a user wanting embeddings
 could hit 300+ MB.
-**Mitigation:** Optional dependency strategy keeps the default install at ~10 MB.
+**Mitigation:** Optional dependency strategy keeps the default install at ~27 MB.
 Model files should be downloaded on first use, not at install time.

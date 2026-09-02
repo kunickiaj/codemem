@@ -10,7 +10,7 @@ allowBuilds:
   workerd: true
 
 overrides:
-  better-sqlite3: 12.8.0
+  better-sqlite3: 13.0.0
   fast-uri: 3.1.5
   '@modelcontextprotocol/sdk>@hono/node-server': 1.19.17
   '@modelcontextprotocol/sdk>hono': 4.13.5
@@ -26,7 +26,7 @@ overrides:
 catalog:
   "@biomejs/biome": ^2.5.11
   "@hono/node-server": ^2.1.1
-  "@types/better-sqlite3": ^7.6.13
+  "@types/better-sqlite3": ^9.6.0
   drizzle-orm: ^0.45.2
   hono: ^4.13.5
   limiter: ^3.0.0

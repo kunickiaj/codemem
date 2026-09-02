@@ -32,7 +32,7 @@
 	},
 	"dependencies": {
 		"@xenova/transformers": "^2.17.2",
-		"better-sqlite3": "12.8.0",
+		"better-sqlite3": "13.0.0",
 		"bonjour-service": "^1.4.4",
 		"drizzle-orm": "catalog:",
 		"hono": "catalog:",
