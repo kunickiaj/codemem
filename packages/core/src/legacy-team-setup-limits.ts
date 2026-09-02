@@ -2,6 +2,7 @@ import type { Database } from "./db.js";
 
 export const LEGACY_TEAM_SETUP_MAX_DEVICES = 500;
 export const LEGACY_TEAM_SETUP_MAX_PROJECTS = 500;
+export const LEGACY_TEAM_SETUP_MAX_PROJECT_DEVICE_PAIRS = 10_000;
 
 export function requireLegacyTeamSetupSnapshotWithinLimits(input: {
 	devices: readonly unknown[];
@@ -9,7 +10,8 @@ export function requireLegacyTeamSetupSnapshotWithinLimits(input: {
 }): void {
 	if (
 		input.devices.length > LEGACY_TEAM_SETUP_MAX_DEVICES ||
-		input.projects.length > LEGACY_TEAM_SETUP_MAX_PROJECTS
+		input.projects.length > LEGACY_TEAM_SETUP_MAX_PROJECTS ||
+		input.devices.length * input.projects.length > LEGACY_TEAM_SETUP_MAX_PROJECT_DEVICE_PAIRS
 	) {
 		throw new Error("legacy_team_setup_roster_too_large");
 	}
@@ -18,6 +20,7 @@ export function requireLegacyTeamSetupSnapshotWithinLimits(input: {
 export function requireLegacyTeamSetupEffectiveDevicesWithinLimit(
 	db: Database,
 	devices: readonly { deviceId: string }[],
+	projects: readonly unknown[],
 	previousAttemptId: string | null,
 ): void {
 	if (!previousAttemptId) return;
@@ -33,7 +36,11 @@ export function requireLegacyTeamSetupEffectiveDevicesWithinLimit(
 			.pluck()
 			.get(previousAttemptId, ...currentDeviceIds) ?? 0,
 	);
-	if (devices.length + carriedDeviceCount > LEGACY_TEAM_SETUP_MAX_DEVICES) {
+	const effectiveDeviceCount = devices.length + carriedDeviceCount;
+	if (
+		effectiveDeviceCount > LEGACY_TEAM_SETUP_MAX_DEVICES ||
+		effectiveDeviceCount * projects.length > LEGACY_TEAM_SETUP_MAX_PROJECT_DEVICE_PAIRS
+	) {
 		throw new Error("legacy_team_setup_roster_too_large");
 	}
 }

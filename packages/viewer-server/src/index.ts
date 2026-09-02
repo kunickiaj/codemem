@@ -33,6 +33,7 @@ import { rawEventsRoutes } from "./routes/raw-events.js";
 import { statsRoutes } from "./routes/stats.js";
 import { type SyncRoutesOptions, syncProtocolRoutes, syncRoutes } from "./routes/sync.js";
 import {
+	type LegacyTeamCompletionDependencies,
 	type LegacyTeamConfiguredGroupSnapshotLoader,
 	TEAM_SETUP_ROUTE_PREFIX,
 	teamSetupRoutes,
@@ -103,6 +104,7 @@ export interface AppOptions {
 	getUpdateStatus?: (options: GetUpdateStatusOptions) => Promise<UpdateStatus>;
 	loadDeviceIdentityCoordinatorEvidence?: () => Promise<DeviceIdentityCoordinatorEvidence>;
 	loadLegacyTeamConfiguredGroupSnapshots?: LegacyTeamConfiguredGroupSnapshotLoader;
+	teamSetupCompletionDependencies?: LegacyTeamCompletionDependencies | null;
 	readCoordinatorConfig?: SyncRoutesOptions["readCoordinatorConfig"];
 	renameCoordinatorGroup?: SyncRoutesOptions["renameCoordinatorGroup"];
 	syncRequestRateLimit?: {
@@ -167,6 +169,8 @@ export function createApp(opts?: AppOptions) {
 		teamSetupRoutes({
 			getStore: storeFactory,
 			loadLegacyTeamConfiguredGroupSnapshots: opts?.loadLegacyTeamConfiguredGroupSnapshots,
+			completionDependencies: opts?.teamSetupCompletionDependencies,
+			readCoordinatorConfig: opts?.readCoordinatorConfig,
 			registerSummaryInvalidator: (invalidate) => {
 				invalidateTeamSetupSummary = invalidate;
 			},

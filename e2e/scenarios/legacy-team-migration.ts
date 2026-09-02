@@ -193,6 +193,26 @@ function createCoordinatorRoster(ctx: ScenarioContext, roster: FixtureSummary["r
 	coordinatorCommand(ctx, ["group-create", GROUP_ALPHA, "--name", "Legacy Alpha"], "04-create-alpha");
 	coordinatorCommand(ctx, ["group-create", GROUP_BETA, "--name", "Legacy Beta"], "05-create-beta");
 	coordinatorCommand(ctx, ["group-create", GROUP_GAMMA, "--name", "Legacy Gamma"], "06-create-gamma");
+	for (const [groupId, scopeId, label] of [
+		[GROUP_ALPHA, "scope-legacy-alpha", "Legacy Alpha"],
+		[GROUP_BETA, "scope-legacy-beta", "Legacy Beta"],
+	] as const) {
+		coordinatorCommand(
+			ctx,
+			[
+				"create-scope",
+				groupId,
+				scopeId,
+				"--label",
+				label,
+				"--kind",
+				"team",
+				"--coordinator-id",
+				"http://coordinator:7347",
+			],
+			`06-create-scope-${groupId}`,
+		);
+	}
 	for (const [groupId, devices] of [
 		[GROUP_ALPHA, [roster.shared, roster.optional]],
 		[

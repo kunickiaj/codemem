@@ -488,6 +488,7 @@ export {
 } from "./legacy-recipient-policy-projection.js";
 export * from "./legacy-team-candidate.js";
 export * from "./legacy-team-setup-activation.js";
+export * from "./legacy-team-setup-completion-manifest.js";
 export * from "./legacy-team-setup-draft.js";
 export type {
 	LegacyTeamSetupCoreErrorCode,
@@ -894,8 +895,14 @@ export type {
 	RecipientPolicyTeamRenameResultV1,
 } from "./recipient-policy-team-metadata.js";
 export {
+	claimRecipientPolicyActorMutations,
+	claimRecipientPolicyPublicationMutation,
 	RecipientPolicyTeamRenameError,
 	renameRecipientPolicyTeam,
+	serializeRecipientPolicyActorMutations,
+	serializeRecipientPolicyCoordinatorGroupMutation,
+	serializeRecipientPolicyPublicationMutation,
+	serializeRecipientPolicyTeamMutation,
 } from "./recipient-policy-team-metadata.js";
 export type {
 	RecipientReviewedIntentExcludedProjectV1,

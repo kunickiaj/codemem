@@ -859,6 +859,7 @@ function candidateAuthority(
 	requireLegacyTeamSetupEffectiveDevicesWithinLimit(
 		db,
 		rosterDevices,
+		projects,
 		authorityRow?.attempt_id ?? null,
 	);
 	const activeAssignmentIdentity = activeAssignmentIdentityLookup(db);
