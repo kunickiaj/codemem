@@ -316,9 +316,15 @@ export {
 	judgeDistillReport,
 	parseJudgeVerdict,
 } from "./distill-judge.js";
-export type { EmbeddingClient } from "./embeddings.js";
+export type {
+	EmbeddingClient,
+	EmbeddingRuntimeFactory,
+	EmbeddingRuntimeRequest,
+} from "./embeddings.js";
 export {
 	_resetEmbeddingClient,
+	_resetEmbeddingRuntimeFactory,
+	_setEmbeddingRuntimeFactory,
 	chunkText,
 	embedTexts,
 	getEmbeddingClient,

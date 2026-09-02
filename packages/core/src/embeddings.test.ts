@@ -6,15 +6,133 @@
  * in a separate test file gated on CODEMEM_EMBEDDING_DISABLED.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	_resetEmbeddingRuntimeFactory,
+	_setEmbeddingRuntimeFactory,
 	chunkText,
 	embeddingDataToFloat32,
 	embeddingTensorToFloat32Rows,
 	embedTextBatches,
+	getEmbeddingClient,
 	hashText,
+	resolveEmbeddingModel,
 	serializeFloat32,
 } from "./embeddings.js";
+
+function fakeClient(model = "test/model") {
+	return { model, dimensions: 384, embed: vi.fn(async () => []) };
+}
+
+describe("embedding runtime factory", () => {
+	const originalEmbeddingDisabled = process.env.CODEMEM_EMBEDDING_DISABLED;
+
+	beforeEach(() => {
+		delete process.env.CODEMEM_EMBEDDING_DISABLED;
+	});
+
+	afterEach(() => {
+		_resetEmbeddingRuntimeFactory();
+		if (originalEmbeddingDisabled === undefined) delete process.env.CODEMEM_EMBEDDING_DISABLED;
+		else process.env.CODEMEM_EMBEDDING_DISABLED = originalEmbeddingDisabled;
+	});
+
+	it("receives the resolved model request", async () => {
+		const client = fakeClient(resolveEmbeddingModel());
+		const factory = vi.fn(async () => client);
+		_setEmbeddingRuntimeFactory(factory);
+
+		await expect(getEmbeddingClient()).resolves.toBe(client);
+		expect(factory).toHaveBeenCalledWith({ model: resolveEmbeddingModel() });
+	});
+
+	it("reuses the singleton client", async () => {
+		const client = fakeClient();
+		const factory = vi.fn(async () => client);
+		_setEmbeddingRuntimeFactory(factory);
+
+		expect(await getEmbeddingClient()).toBe(client);
+		expect(await getEmbeddingClient()).toBe(client);
+		expect(factory).toHaveBeenCalledTimes(1);
+	});
+
+	it("resolves in-flight waiters through the current client after a factory swap", async () => {
+		let resolveFirst: ((client: ReturnType<typeof fakeClient>) => void) | undefined;
+		const firstFactory = vi.fn(
+			() =>
+				new Promise<ReturnType<typeof fakeClient>>((resolve) => {
+					resolveFirst = resolve;
+				}),
+		);
+		_setEmbeddingRuntimeFactory(firstFactory);
+		const first = getEmbeddingClient();
+		const shared = getEmbeddingClient();
+		expect(firstFactory).toHaveBeenCalledTimes(1);
+
+		// Use the resolved default identity so the upstack v4 runtime-identity
+		// assertion accepts the replacement client after this branch merges.
+		const replacementClient = fakeClient(resolveEmbeddingModel());
+		_setEmbeddingRuntimeFactory(vi.fn(async () => replacementClient));
+		expect(await getEmbeddingClient()).toBe(replacementClient);
+		// The stale creation completing must not hand its now-superseded client
+		// to earlier waiters; they resolve through the current generation.
+		resolveFirst?.(fakeClient("stale"));
+		await expect(first).resolves.toBe(replacementClient);
+		await expect(shared).resolves.toBe(replacementClient);
+		await expect(getEmbeddingClient()).resolves.toBe(replacementClient);
+	});
+
+	it("resolves stale waiters through the current client when a swapped-out creation fails", async () => {
+		let rejectFirst: ((error: Error) => void) | undefined;
+		_setEmbeddingRuntimeFactory(
+			vi.fn(
+				() =>
+					new Promise<ReturnType<typeof fakeClient>>((_resolve, reject) => {
+						rejectFirst = reject;
+					}),
+			),
+		);
+		const first = getEmbeddingClient();
+
+		// Use the resolved default identity so the upstack v4 runtime-identity
+		// assertion accepts the replacement client after this branch merges.
+		const replacementClient = fakeClient(resolveEmbeddingModel());
+		_setEmbeddingRuntimeFactory(vi.fn(async () => replacementClient));
+		expect(await getEmbeddingClient()).toBe(replacementClient);
+		rejectFirst?.(new Error("stale runtime unavailable"));
+		await expect(first).resolves.toBe(replacementClient);
+	});
+
+	it("returns null when the factory fails", async () => {
+		const factory = vi.fn(async () => {
+			throw new Error("runtime unavailable");
+		});
+		_setEmbeddingRuntimeFactory(factory);
+
+		await expect(getEmbeddingClient()).resolves.toBeNull();
+	});
+
+	it("does not call the factory when embeddings are disabled", async () => {
+		process.env.CODEMEM_EMBEDDING_DISABLED = "1";
+		const factory = vi.fn(async () => fakeClient());
+		_setEmbeddingRuntimeFactory(factory);
+
+		await expect(getEmbeddingClient()).resolves.toBeNull();
+		expect(factory).not.toHaveBeenCalled();
+	});
+
+	it("clears the cached client when the runtime factory resets", async () => {
+		_setEmbeddingRuntimeFactory(vi.fn(async () => fakeClient("first")));
+		expect((await getEmbeddingClient())?.model).toBe("first");
+
+		_resetEmbeddingRuntimeFactory();
+		const replacement = vi.fn(async () => fakeClient("second"));
+		_setEmbeddingRuntimeFactory(replacement);
+
+		expect((await getEmbeddingClient())?.model).toBe("second");
+		expect(replacement).toHaveBeenCalledTimes(1);
+	});
+});
 
 describe("hashText", () => {
 	it("returns a 64-char hex SHA-256 digest", () => {

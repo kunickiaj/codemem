@@ -24,6 +24,14 @@ export interface EmbeddingClient {
 	embed(texts: string[]): Promise<Float32Array[]>;
 }
 
+export interface EmbeddingRuntimeRequest {
+	model: string;
+}
+
+export type EmbeddingRuntimeFactory = (
+	request: EmbeddingRuntimeRequest,
+) => Promise<EmbeddingClient | null>;
+
 interface EmbeddingTensor {
 	data: ArrayLike<number | bigint>;
 	dims?: number[];
@@ -200,10 +208,30 @@ export function chunkText(text: string, maxChars = 1200): string[] {
 // ---------------------------------------------------------------------------
 
 let _client: EmbeddingClient | null | undefined;
+let _clientPromise: Promise<EmbeddingClient | null> | undefined;
+let _clientGeneration = 0;
+
+const defaultEmbeddingRuntimeFactory: EmbeddingRuntimeFactory = ({ model }) =>
+	createTransformersClient(model);
+let embeddingRuntimeFactory = defaultEmbeddingRuntimeFactory;
 
 /** Reset the singleton (for tests). */
 export function _resetEmbeddingClient(): void {
 	_client = undefined;
+	_clientPromise = undefined;
+	_clientGeneration++;
+}
+
+/** Override the embedding runtime factory (for tests). */
+export function _setEmbeddingRuntimeFactory(factory: EmbeddingRuntimeFactory): void {
+	embeddingRuntimeFactory = factory;
+	_resetEmbeddingClient();
+}
+
+/** Restore the default embedding runtime factory (for tests). */
+export function _resetEmbeddingRuntimeFactory(): void {
+	embeddingRuntimeFactory = defaultEmbeddingRuntimeFactory;
+	_resetEmbeddingClient();
 }
 
 /** Return the configured embedding model label without loading the client. */
@@ -217,17 +245,39 @@ export function resolveEmbeddingModel(): string {
  */
 export async function getEmbeddingClient(): Promise<EmbeddingClient | null> {
 	if (_client !== undefined) return _client;
+	if (_clientPromise) return _clientPromise;
 	if (isEmbeddingDisabled()) {
 		_client = null;
 		return null;
 	}
 	const model = resolveEmbeddingModel();
-	try {
-		_client = await createTransformersClient(model);
-	} catch {
-		_client = null;
-	}
-	return _client;
+	const generation = _clientGeneration;
+	_clientPromise = (async () => {
+		try {
+			const client = await embeddingRuntimeFactory({ model });
+			if (generation === _clientGeneration) {
+				_client = client;
+				return client;
+			}
+			// The factory was swapped/reset while this creation was in flight.
+			// Returning this now-stale client would let waiters capture its
+			// model/dimensions while embedTexts() embeds through the replacement
+			// singleton — storing vectors under a stale label or failing the
+			// dimension guard. Resolve waiters through the current generation.
+			return getEmbeddingClient();
+		} catch {
+			if (generation === _clientGeneration) {
+				_client = null;
+				return null;
+			}
+			// A stale creation failed after a swap; defer to the live generation
+			// rather than forcing current waiters to a null result.
+			return getEmbeddingClient();
+		} finally {
+			if (generation === _clientGeneration) _clientPromise = undefined;
+		}
+	})();
+	return _clientPromise;
 }
 
 /**
