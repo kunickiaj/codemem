@@ -1,7 +1,6 @@
 {
 	"name": "@codemem/embeddings",
 	"version": "0.43.2",
-	"private": true,
 	"type": "module",
 	"types": "./dist/index.d.ts",
 	"exports": {
@@ -27,5 +26,17 @@
 		"typescript": "catalog:",
 		"vite": "catalog:",
 		"vitest": "catalog:"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kunickiaj/codemem.git",
+		"directory": "packages/embeddings"
+	},
+	"engines": {
+		"node": ">=24.15.0"
+	},
+	"license": "MIT",
+	"publishConfig": {
+		"access": "public"
 	}
 }

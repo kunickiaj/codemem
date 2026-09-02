@@ -12,6 +12,7 @@ const CORE_TEST_VERSION_RE = /^(\s*expect\(VERSION\)\.toBe\(")([^"]+)("\);\s*)$/
 const PLUGIN_PIN_RE = /^(const\s+PINNED_BACKEND_VERSION\s*=\s*")([^"]+)(";\s*)$/m;
 const REQUIRED_REPO_MARKERS = [
 	"packages/core/package.json",
+	"packages/embeddings/package.json",
 	"packages/cli/package.json",
 	"packages/opencode-plugin/package.json",
 	"packages/mcp-server/package.json",
@@ -166,6 +167,7 @@ export function readVersions(root) {
 
 	return {
 		core_package: extractPackageVersion(repoRoot, "packages/core/package.json"),
+		embeddings_package: extractPackageVersion(repoRoot, "packages/embeddings/package.json"),
 		cli_package: extractPackageVersion(repoRoot, "packages/cli/package.json"),
 		opencode_plugin_package: extractPackageVersion(repoRoot, "packages/opencode-plugin/package.json"),
 		mcp_server_package: extractPackageVersion(repoRoot, "packages/mcp-server/package.json"),
@@ -229,6 +231,7 @@ export function setVersion(root, version, { dryRun = false } = {}) {
 	const writes = new Map();
 
 	setPackageVersion(repoRoot, "packages/core/package.json", version, writes, changed);
+	setPackageVersion(repoRoot, "packages/embeddings/package.json", version, writes, changed);
 	setPackageVersion(repoRoot, "packages/cli/package.json", version, writes, changed);
 	setPackageVersion(repoRoot, "packages/opencode-plugin/package.json", version, writes, changed);
 	setPackageVersion(repoRoot, "packages/mcp-server/package.json", version, writes, changed);

@@ -18,6 +18,7 @@ CodeMem uses one shared semantic version stream across its npm packages.
 Version bumps are prepared on a release branch and touch these files:
 
 - `packages/core/package.json` (`version`)
+- `packages/embeddings/package.json` (`version`)
 - `packages/cli/package.json` (`version`)
 - `packages/opencode-plugin/package.json` (`version`)
 - `packages/mcp-server/package.json` (`version`)
