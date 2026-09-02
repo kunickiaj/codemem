@@ -18,7 +18,9 @@ Persistent memory for [OpenCode](https://opencode.ai) and [Claude Code](https://
 
 ## Quick start
 
-**Prerequisites:** Node.js 24.15+ and npm (or pnpm)
+**Prerequisites:** Node.js 24.15+ and npm (or pnpm). Native database support
+covers macOS x64/arm64, Linux x64/arm64 (glibc 2.34+ or musl), and Windows x64.
+32-bit targets, including Linux armv7, are not supported.
 
 codemem keeps one minimum Node.js version across published packages and workspace tooling.
 

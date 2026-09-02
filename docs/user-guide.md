@@ -502,7 +502,10 @@ Fixes, in order of preference:
            (npm root -g)/codemem/node_modules/sqlite-vec-linux-arm64
    # then restart the viewer
    ```
-   Substitute the right platform: `sqlite-vec-linux-arm` for 32-bit Pi OS (`uname -m` reports `armv7l`), `sqlite-vec-linux-x64` for x86_64 Linux.
+   Substitute `sqlite-vec-linux-x64` for x86_64 Linux. A 32-bit Pi OS
+   installation (`uname -m` reports `armv7l`) is not supported because
+   better-sqlite3 13 does not ship a Linux armv7 binary; use a 64-bit OS on
+   arm64 hardware instead.
 
 3. **Run with embeddings disabled.** Codemem degrades gracefully: keyword search via FTS5 keeps working, the viewer keeps loading, and the only feature you lose is semantic recall via vector similarity:
    ```fish

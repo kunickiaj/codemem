@@ -7,6 +7,10 @@ This is the published npm package for the `codemem` CLI.
 
 ## Install
 
+**Prerequisites:** Node.js 24.15+ and npm (or pnpm). Native database support
+covers macOS x64/arm64, Linux x64/arm64 (glibc 2.34+ or musl), and Windows x64.
+32-bit targets, including Linux armv7, are not supported.
+
 ```bash
 npm install -g codemem
 ```
