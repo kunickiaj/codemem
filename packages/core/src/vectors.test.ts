@@ -95,6 +95,22 @@ describe("vectors", () => {
 		`);
 	}
 
+	function insertBackfillMemory(
+		sessionId: number,
+		title: string,
+		createdAt: string,
+		bodyText = "Backfill body",
+	): number {
+		const info = db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+				 VALUES (?, 'feature', ?, ?, 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+			)
+			.run(sessionId, title, bodyText, createdAt, createdAt);
+		return Number(info.lastInsertRowid);
+	}
+
 	it("stores vectors with integer metadata columns via sqlite-vec workaround", async () => {
 		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
 
@@ -154,6 +170,321 @@ describe("vectors", () => {
 			model: "test-model",
 		});
 	});
+
+	it("pages stably and queries existing hashes once per page", async () => {
+		const sessionId = insertTestSession(db);
+		const createdAt = "2026-09-02T00:00:00.000Z";
+		let firstExistingId = 0;
+		let lastExistingId = 0;
+		for (let index = 1; index <= 51; index++) {
+			lastExistingId = insertBackfillMemory(sessionId, `Backfill ${index}`, createdAt);
+			if (index === 1) firstExistingId = lastExistingId;
+		}
+		insertTestVector(firstExistingId, 0, embeddings.hashText("Backfill 1\nBackfill body"));
+		let insertedBehindCursorId: number | null = null;
+		let insertedAheadOfHighWaterId: number | null = null;
+		let pagingPlan: Array<{ detail: string }> = [];
+		const embedSpy = vi.mocked(embeddings.embedTexts).mockImplementation(async () => {
+			if (insertedBehindCursorId == null) {
+				const pageSql = prepareSpy.mock.calls.find(([sql]) =>
+					String(sql).includes("candidates.seq AS snapshot_seq"),
+				)?.[0];
+				if (!pageSql) throw new Error("Backfill page query was not prepared");
+				pagingPlan = db.prepare(`EXPLAIN QUERY PLAN ${String(pageSql)}`).all(0, 50) as Array<{
+					detail: string;
+				}>;
+				insertedBehindCursorId = insertBackfillMemory(
+					sessionId,
+					"Inserted during run",
+					"2026-09-01T00:00:00.000Z",
+				);
+				insertedAheadOfHighWaterId = insertBackfillMemory(
+					sessionId,
+					"Inserted after run started",
+					"2026-09-03T00:00:00.000Z",
+				);
+			}
+			return [new Float32Array(384)];
+		});
+		const prepareSpy = vi.spyOn(db, "prepare");
+
+		try {
+			const result = await backfillVectors(db);
+
+			expect(result).toEqual({ checked: 51, embedded: 50, inserted: 50, skipped: 1 });
+			expect(embedSpy).toHaveBeenCalledTimes(50);
+			expect(embedSpy.mock.calls.every(([texts]) => texts.length === 1)).toBe(true);
+			expect(
+				pagingPlan.some(({ detail }) =>
+					detail.startsWith("SEARCH candidates USING INTEGER PRIMARY KEY"),
+				),
+			).toBe(true);
+			expect(pagingPlan.some(({ detail }) => detail.includes("USE TEMP B-TREE"))).toBe(false);
+			expect(
+				prepareSpy.mock.calls.filter(([sql]) =>
+					String(sql).includes("SELECT memory_id, content_hash FROM memory_vectors"),
+				),
+			).toHaveLength(2);
+			expect(db.prepare("SELECT COUNT(*) AS c FROM memory_vectors").get()).toMatchObject({ c: 51 });
+			expect(
+				db
+					.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?")
+					.get(lastExistingId),
+			).toMatchObject({ c: 1 });
+			expect(
+				db
+					.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?")
+					.get(insertedBehindCursorId),
+			).toMatchObject({ c: 0 });
+			expect(
+				db
+					.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?")
+					.get(insertedAheadOfHighWaterId),
+			).toMatchObject({ c: 0 });
+		} finally {
+			prepareSpy.mockRestore();
+		}
+	});
+
+	it("excludes backdated rows inserted after the backfill snapshot", async () => {
+		const sessionId = insertTestSession(db);
+		for (let index = 1; index <= 50; index++) {
+			insertBackfillMemory(sessionId, `Initial ${index}`, "2026-09-01T00:00:00.000Z");
+		}
+		insertBackfillMemory(sessionId, "Initial high-water", "2026-09-03T00:00:00.000Z");
+		let backdatedId: number | null = null;
+		vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) => {
+			if (backdatedId == null) {
+				backdatedId = insertBackfillMemory(
+					sessionId,
+					"Backdated during run",
+					"2026-09-02T00:00:00.000Z",
+				);
+			}
+			return texts.map(() => new Float32Array(384));
+		});
+
+		const result = await backfillVectors(db);
+
+		expect(result).toEqual({ checked: 51, embedded: 51, inserted: 51, skipped: 0 });
+		expect(
+			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?").get(backdatedId),
+		).toMatchObject({ c: 0 });
+	});
+
+	it("excludes memories that become eligible after the backfill snapshot", async () => {
+		const sessionId = insertTestSession(db);
+		for (let index = 1; index <= 50; index++) {
+			insertBackfillMemory(sessionId, `Initial ${index}`, "2026-09-01T00:00:00.000Z");
+		}
+		const initiallyInactiveId = insertBackfillMemory(
+			sessionId,
+			"Initially inactive",
+			"2026-09-02T00:00:00.000Z",
+		);
+		db.prepare("UPDATE memory_items SET active = 0 WHERE id = ?").run(initiallyInactiveId);
+		const finalInitialId = insertBackfillMemory(
+			sessionId,
+			"Final initial",
+			"2026-09-03T00:00:00.000Z",
+		);
+		vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) => {
+			db.prepare("UPDATE memory_items SET active = 1 WHERE id = ?").run(initiallyInactiveId);
+			return texts.map(() => new Float32Array(384));
+		});
+
+		const result = await backfillVectors(db, { limit: 51 });
+
+		expect(result).toEqual({ checked: 51, embedded: 51, inserted: 51, skipped: 0 });
+		expect(
+			db
+				.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?")
+				.get(finalInitialId),
+		).toMatchObject({ c: 1 });
+		expect(
+			db
+				.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?")
+				.get(initiallyInactiveId),
+		).toMatchObject({ c: 0 });
+	});
+
+	it("does not duplicate a chunk a concurrent writer inserted mid-run", async () => {
+		const sessionId = insertTestSession(db);
+		const memoryId = insertBackfillMemory(sessionId, "Concurrent", "2026-09-01T00:00:00.000Z");
+		const contentHash = embeddings.hashText("Concurrent\nBackfill body");
+		vi.mocked(embeddings.embedTexts).mockImplementationOnce(async (texts) => {
+			// Simulate a concurrent writer (e.g. the migration worker) inserting
+			// this exact (memory_id, model, content_hash) after the page-wide
+			// existing-hash snapshot was taken but before this insert transaction.
+			insertTestVector(memoryId, 0, contentHash);
+			return texts.map(() => new Float32Array(384));
+		});
+
+		const result = await backfillVectors(db, { memoryIds: [memoryId] });
+
+		expect(result).toMatchObject({ checked: 1, embedded: 1, inserted: 0 });
+		expect(
+			db
+				.prepare(
+					"SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ? AND content_hash = ?",
+				)
+				.get(memoryId, contentHash),
+		).toMatchObject({ c: 1 });
+	});
+
+	it("indexes candidate snapshots without a temporary sort", () => {
+		const indexColumns = db
+			.prepare("PRAGMA index_xinfo(idx_memory_items_created_id)")
+			.all() as Array<{ name: string | null; key: number }>;
+		expect(indexColumns.filter(({ key }) => key === 1).map(({ name }) => name)).toEqual([
+			"created_at",
+			"id",
+		]);
+
+		for (const [sql, params, expectedIndex] of [
+			[
+				`EXPLAIN QUERY PLAN SELECT id, created_at FROM memory_items
+				 WHERE 1=1
+				 ORDER BY created_at ASC, id ASC LIMIT ?`,
+				[50],
+				"idx_memory_items_created_id",
+			],
+			[
+				`EXPLAIN QUERY PLAN SELECT id, created_at FROM memory_items
+				 WHERE active = 1
+				 ORDER BY created_at ASC, id ASC LIMIT ?`,
+				[50],
+				"idx_memory_items_active_created",
+			],
+		] as const) {
+			const plan = db.prepare(sql).all(...params) as Array<{ detail: string }>;
+			expect(plan.some(({ detail }) => detail.includes(expectedIndex))).toBe(true);
+			expect(plan.some(({ detail }) => detail.includes("USE TEMP B-TREE"))).toBe(false);
+		}
+	});
+
+	it("honors a limit smaller than one page", async () => {
+		const sessionId = insertTestSession(db);
+		const createdAt = new Date().toISOString();
+		for (let index = 1; index <= 20; index++) {
+			insertBackfillMemory(sessionId, `Limited ${index}`, createdAt);
+		}
+		let snapshottedRows: number | null = null;
+		const embedSpy = vi.mocked(embeddings.embedTexts).mockImplementation(async () => {
+			if (snapshottedRows == null) {
+				const snapshot = db
+					.prepare(
+						`SELECT name FROM sqlite_temp_master
+						 WHERE type = 'table' AND name LIKE 'codemem_backfill_vector_candidates_%'`,
+					)
+					.get() as { name: string } | undefined;
+				if (!snapshot) throw new Error("Backfill candidate snapshot table was not created");
+				expect(snapshot.name).toMatch(/^codemem_backfill_vector_candidates_[a-f0-9]+$/);
+				const count = db.prepare(`SELECT COUNT(*) AS c FROM "${snapshot.name}"`).get() as {
+					c: number;
+				};
+				snapshottedRows = count.c;
+			}
+			return [new Float32Array(384)];
+		});
+
+		const result = await backfillVectors(db, { limit: 7 });
+
+		expect(result).toEqual({ checked: 7, embedded: 7, inserted: 7, skipped: 0 });
+		expect(snapshottedRows).toBe(7);
+		expect(embedSpy).toHaveBeenCalledTimes(7);
+		expect(
+			db
+				.prepare(
+					`SELECT COUNT(*) AS c FROM sqlite_temp_master
+					 WHERE type = 'table' AND name LIKE 'codemem_backfill_vector_candidates_%'`,
+				)
+				.get(),
+		).toMatchObject({ c: 0 });
+	});
+
+	it("preserves dry-run counts without storing vectors", async () => {
+		const sessionId = insertTestSession(db);
+		const createdAt = new Date().toISOString();
+		for (let index = 1; index <= 3; index++) {
+			insertBackfillMemory(sessionId, `Dry run ${index}`, createdAt);
+		}
+		vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) =>
+			texts.map(() => new Float32Array(384)),
+		);
+
+		const result = await backfillVectors(db, { dryRun: true });
+
+		expect(result).toEqual({ checked: 3, embedded: 3, inserted: 3, skipped: 0 });
+		expect(db.prepare("SELECT COUNT(*) AS c FROM memory_vectors").get()).toMatchObject({ c: 0 });
+	});
+
+	it("isolates overlapping backfill snapshots on one connection", async () => {
+		const sessionId = insertTestSession(db);
+		const firstId = insertBackfillMemory(sessionId, "First run", "2026-09-01T00:00:00.000Z");
+		const secondId = insertBackfillMemory(sessionId, "Second run", "2026-09-02T00:00:00.000Z");
+		let nestedResult: Awaited<ReturnType<typeof backfillVectors>> | null = null;
+		let nested = false;
+		let maximumSnapshotCount = 0;
+		vi.mocked(embeddings.embedTexts).mockImplementation(async () => {
+			const snapshotCount = db
+				.prepare(
+					`SELECT COUNT(*) AS c FROM sqlite_temp_master
+					 WHERE type = 'table' AND name LIKE 'codemem_backfill_vector_candidates_%'`,
+				)
+				.get() as { c: number };
+			maximumSnapshotCount = Math.max(maximumSnapshotCount, snapshotCount.c);
+			if (!nested) {
+				nested = true;
+				nestedResult = await backfillVectors(db, { memoryIds: [secondId] });
+			}
+			return [new Float32Array(384)];
+		});
+
+		const outerResult = await backfillVectors(db, { memoryIds: [firstId] });
+
+		expect(outerResult).toMatchObject({ checked: 1, inserted: 1 });
+		expect(nestedResult).toMatchObject({ checked: 1, inserted: 1 });
+		expect(maximumSnapshotCount).toBe(2);
+		expect(
+			db
+				.prepare(
+					`SELECT COUNT(*) AS c FROM sqlite_temp_master
+					 WHERE type = 'table' AND name LIKE 'codemem_backfill_vector_candidates_%'`,
+				)
+				.get(),
+		).toMatchObject({ c: 0 });
+	});
+
+	it.each(["zero", "dimension", "non-finite"] as const)(
+		"rejects %s output before writing the current memory",
+		async (failure) => {
+			const sessionId = insertTestSession(db);
+			const body = "A deterministic sentence. ".repeat(150);
+			insertBackfillMemory(sessionId, "Malformed vectors", new Date().toISOString(), body);
+			vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) => {
+				if (failure === "zero") return [];
+				expect(texts.length).toBeGreaterThan(1);
+				const vectors = texts.map(() => new Float32Array(384));
+				const last = vectors.at(-1);
+				if (!last) throw new Error("expected multiple chunks");
+				if (failure === "dimension") vectors[vectors.length - 1] = new Float32Array(383);
+				else last[0] = Number.NaN;
+				return vectors;
+			});
+
+			await expect(backfillVectors(db)).rejects.toThrow();
+			expect(db.prepare("SELECT COUNT(*) AS c FROM memory_vectors").get()).toMatchObject({ c: 0 });
+			expect(
+				db
+					.prepare(
+						`SELECT COUNT(*) AS c FROM sqlite_temp_master
+						 WHERE type = 'table' AND name LIKE 'codemem_backfill_vector_candidates_%'`,
+					)
+					.get(),
+			).toMatchObject({ c: 0 });
+		},
+	);
 
 	it("runs best-effort sync fallback vector maintenance without throwing on embedding failures", async () => {
 		const sessionId = insertTestSession(db);

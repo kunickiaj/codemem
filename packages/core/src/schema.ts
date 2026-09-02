@@ -172,6 +172,7 @@ export const memoryItems = sqliteTable(
 	},
 	(table) => [
 		index("idx_memory_items_active_created").on(table.active, table.created_at),
+		index("idx_memory_items_created_id").on(table.created_at, table.id),
 		index("idx_memory_items_origin_device_active").on(table.origin_device_id, table.active),
 		index("idx_memory_items_session").on(table.session_id),
 		index("idx_memory_items_project").on(table.project),

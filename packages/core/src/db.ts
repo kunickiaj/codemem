@@ -661,6 +661,23 @@ function ensureDeviceIdentityBindingAuditSchema(db: DatabaseType): void {
 	`);
 }
 
+/**
+ * Create the (created_at, id) keyset index that vector backfill paging relies on.
+ * Runs unconditionally rather than inside the SCHEMA_VERSION-gated compat block:
+ * databases already marked at the current SCHEMA_VERSION would otherwise skip it
+ * forever and keep paying the temporary-sort cost during inactive backfills.
+ */
+function ensureMemoryItemsPagingIndex(db: DatabaseType): void {
+	if (!tableExists(db, "memory_items")) return;
+	try {
+		db.exec(
+			"CREATE INDEX IF NOT EXISTS idx_memory_items_created_id ON memory_items(created_at, id)",
+		);
+	} catch {
+		// Keep additive compatibility best-effort for index creation.
+	}
+}
+
 function assertRecipientPolicyDeviceEligibilityCompatibility(db: DatabaseType): void {
 	const recipientPolicySchemaPresent = [
 		"policy_teams",
@@ -908,6 +925,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	ensureSyncPeerSignatureStateSchema(db);
 	ensureDeviceIdentityBindingAuditSchema(db);
 	ensureLegacyTeamSetupDraftSchema(db);
+	ensureMemoryItemsPagingIndex(db);
 	const compatAlreadyApplied = schemaCompatAlreadyApplied(db);
 	if (!compatAlreadyApplied) {
 		// IMPORTANT: any NEW DDL added to this gated block REQUIRES bumping
@@ -1404,6 +1422,8 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		}
 
 		if (tableExists(db, "memory_items")) {
+			// idx_memory_items_created_id is created unconditionally by
+			// ensureMemoryItemsPagingIndex so already-current databases also get it.
 			try {
 				db.exec(
 					"CREATE INDEX IF NOT EXISTS idx_memory_items_origin_device_active ON memory_items(origin_device_id, active)",
