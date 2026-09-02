@@ -17,10 +17,11 @@
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
 		"build": "pnpm exec vite build && pnpm exec tsc --build --force",
 		"typecheck": "pnpm exec tsc --noEmit",
-		"test": "pnpm exec vitest run"
+		"test": "pnpm exec vitest run",
+		"test:packed-runtime": "node ./scripts/packed-runtime-smoke.mjs"
 	},
 	"dependencies": {
-		"@xenova/transformers": "^2.17.2"
+		"@huggingface/transformers": "4.2.0"
 	},
 	"devDependencies": {
 		"typescript": "catalog:",

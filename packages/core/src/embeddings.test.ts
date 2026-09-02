@@ -20,25 +20,57 @@ import {
 	_resetEmbeddingRuntimeFactory,
 	_setEmbeddingRuntimeFactory,
 	chunkText,
+	DEFAULT_EMBEDDING_REVISION,
+	DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL,
 	embeddingDataToFloat32,
 	embeddingTensorToFloat32Rows,
 	embedTextBatches,
 	getEmbeddingClient,
 	getEmbeddingRuntimeStatus,
 	hashText,
+	resolveEmbeddingClientVectorIdentityLabel,
 	resolveEmbeddingModel,
+	resolveEmbeddingRevision,
+	resolveEmbeddingVectorIdentityLabel,
 	serializeFloat32,
+	tryResolveEmbeddingRevision,
+	tryResolveEmbeddingVectorIdentityLabel,
 } from "./embeddings.js";
 
-function fakeClient(model = "test/model") {
+function fakeClient(model = "Xenova/bge-small-en-v1.5") {
 	return { model, dimensions: 384, embed: vi.fn(async () => []) };
+}
+
+function runtimeClient(
+	model = resolveEmbeddingModel(),
+	revision = resolveEmbeddingRevision(model),
+	version = "4.2.0",
+	requestedRevision = revision,
+) {
+	return {
+		...fakeClient(model),
+		identity: {
+			package: "@huggingface/transformers" as const,
+			version,
+			model,
+			revision,
+			requestedRevision,
+			dtype: "fp32" as const,
+			device: "cpu" as const,
+			dimensions: 384,
+		},
+	};
 }
 
 describe("embedding runtime factory", () => {
 	const originalEmbeddingDisabled = process.env.CODEMEM_EMBEDDING_DISABLED;
+	const originalEmbeddingModel = process.env.CODEMEM_EMBEDDING_MODEL;
+	const originalEmbeddingRevision = process.env.CODEMEM_EMBEDDING_REVISION;
 
 	beforeEach(() => {
 		delete process.env.CODEMEM_EMBEDDING_DISABLED;
+		delete process.env.CODEMEM_EMBEDDING_MODEL;
+		delete process.env.CODEMEM_EMBEDDING_REVISION;
 		createEmbeddingRuntimeMock.mockReset();
 	});
 
@@ -47,30 +79,181 @@ describe("embedding runtime factory", () => {
 		_resetEmbeddingRuntimeFactory();
 		if (originalEmbeddingDisabled === undefined) delete process.env.CODEMEM_EMBEDDING_DISABLED;
 		else process.env.CODEMEM_EMBEDDING_DISABLED = originalEmbeddingDisabled;
+		if (originalEmbeddingModel === undefined) delete process.env.CODEMEM_EMBEDDING_MODEL;
+		else process.env.CODEMEM_EMBEDDING_MODEL = originalEmbeddingModel;
+		if (originalEmbeddingRevision === undefined) delete process.env.CODEMEM_EMBEDDING_REVISION;
+		else process.env.CODEMEM_EMBEDDING_REVISION = originalEmbeddingRevision;
 	});
 
 	it("delegates the resolved model request to the optional runtime without loading a model", async () => {
-		const client = fakeClient(resolveEmbeddingModel());
+		const client = runtimeClient();
 		createEmbeddingRuntimeMock.mockResolvedValue(client);
 
 		await expect(getEmbeddingClient()).resolves.toBe(client);
 		expect(createEmbeddingRuntimeMock).toHaveBeenCalledWith({
 			model: resolveEmbeddingModel(),
+			revision: DEFAULT_EMBEDDING_REVISION,
 		});
 		expect(client.embed).not.toHaveBeenCalled();
 	});
 
+	it("accepts a 40-hex ref only when the runtime resolves it to a canonical commit", async () => {
+		process.env.CODEMEM_EMBEDDING_MODEL = "custom/model";
+		const requestedRevision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		process.env.CODEMEM_EMBEDDING_REVISION = requestedRevision;
+		const canonicalRevision = "0123456789abcdef0123456789abcdef01234567";
+		const client = runtimeClient("custom/model", canonicalRevision, "4.2.0", requestedRevision);
+		createEmbeddingRuntimeMock.mockResolvedValue(client);
+
+		await expect(getEmbeddingClient()).resolves.toBe(client);
+		expect(createEmbeddingRuntimeMock).toHaveBeenCalledWith({
+			model: "custom/model",
+			revision: requestedRevision,
+		});
+		expect(resolveEmbeddingClientVectorIdentityLabel(client)).toContain(
+			`revision=${canonicalRevision}`,
+		);
+		expect(tryResolveEmbeddingVectorIdentityLabel()).toBe(
+			resolveEmbeddingClientVectorIdentityLabel(client),
+		);
+	});
+
+	it("requires identity from the installed optional runtime", async () => {
+		createEmbeddingRuntimeMock.mockResolvedValue(fakeClient(resolveEmbeddingModel()));
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		await expect(getEmbeddingClient()).resolves.toBeNull();
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"Upgrade codemem and @codemem/embeddings together, then restart Codemem",
+			),
+		);
+	});
+
 	it("receives the resolved model request", async () => {
-		const client = fakeClient(resolveEmbeddingModel());
+		const client = runtimeClient(resolveEmbeddingModel());
 		const factory = vi.fn(async () => client);
 		_setEmbeddingRuntimeFactory(factory);
 
 		await expect(getEmbeddingClient()).resolves.toBe(client);
-		expect(factory).toHaveBeenCalledWith({ model: resolveEmbeddingModel() });
+		expect(factory).toHaveBeenCalledWith({
+			model: resolveEmbeddingModel(),
+			revision: DEFAULT_EMBEDDING_REVISION,
+		});
+	});
+
+	it("rejects an injected runtime without identity before caching it", async () => {
+		const factory = vi.fn(async () => fakeClient(resolveEmbeddingModel()));
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		_setEmbeddingRuntimeFactory(factory);
+
+		await expect(getEmbeddingClient()).resolves.toBeNull();
+		await expect(getEmbeddingClient()).resolves.toBeNull();
+		expect(factory).toHaveBeenCalledOnce();
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("Embedding runtime identity is required"),
+		);
+	});
+
+	it("rejects a runtime identity mismatch before caching the client", async () => {
+		const client = {
+			...fakeClient(resolveEmbeddingModel()),
+			identity: {
+				package: "@huggingface/transformers" as const,
+				version: "4.2.0" as const,
+				model: resolveEmbeddingModel(),
+				revision: "wrong-revision",
+				dtype: "fp32" as const,
+				device: "cpu" as const,
+				dimensions: 384,
+			},
+		};
+		const factory = vi.fn(async () => client);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		_setEmbeddingRuntimeFactory(factory);
+
+		await expect(getEmbeddingClient()).resolves.toBeNull();
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("revision is not a canonical commit SHA"),
+		);
+		await expect(getEmbeddingClient()).resolves.toBeNull();
+		expect(factory).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects a runtime resolved for a different requested revision", async () => {
+		process.env.CODEMEM_EMBEDDING_MODEL = "custom/model";
+		process.env.CODEMEM_EMBEDDING_REVISION = "release";
+		const client = runtimeClient(
+			"custom/model",
+			"0123456789abcdef0123456789abcdef01234567",
+			"4.2.0",
+			"main",
+		);
+		const factory = vi.fn(async () => client);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		_setEmbeddingRuntimeFactory(factory);
+
+		await expect(getEmbeddingClient()).resolves.toBeNull();
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("requestedRevision mismatch"));
+	});
+
+	it("recreates the shared client when the configured request changes", async () => {
+		process.env.CODEMEM_EMBEDDING_MODEL = "custom/model";
+		process.env.CODEMEM_EMBEDDING_REVISION = "release-one";
+		const first = runtimeClient(
+			"custom/model",
+			"0123456789abcdef0123456789abcdef01234567",
+			"4.2.0",
+			"release-one",
+		);
+		const second = runtimeClient(
+			"custom/model",
+			"89abcdef0123456789abcdef0123456789abcdef",
+			"4.2.0",
+			"release-two",
+		);
+		const factory = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+		_setEmbeddingRuntimeFactory(factory);
+
+		await expect(getEmbeddingClient()).resolves.toBe(first);
+		process.env.CODEMEM_EMBEDDING_REVISION = "release-two";
+		await expect(getEmbeddingClient()).resolves.toBe(second);
+		expect(factory).toHaveBeenCalledTimes(2);
+	});
+
+	it("accepts an informational runtime version from an injected factory", async () => {
+		const client = runtimeClient(resolveEmbeddingModel(), DEFAULT_EMBEDDING_REVISION, "4.3.0");
+		_setEmbeddingRuntimeFactory(vi.fn(async () => client));
+
+		await expect(getEmbeddingClient()).resolves.toBe(client);
+	});
+
+	it("reports client dimension mismatches with expected and received values", async () => {
+		const client = { ...runtimeClient(), dimensions: 768 };
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		_setEmbeddingRuntimeFactory(vi.fn(async () => client));
+
+		await expect(getEmbeddingClient()).resolves.toBeNull();
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("Embedding client dimensions mismatch: expected 384, received 768"),
+		);
+	});
+
+	it("reports client model mismatches separately", async () => {
+		const client = { ...runtimeClient(), model: "wrong/model" };
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		_setEmbeddingRuntimeFactory(vi.fn(async () => client));
+
+		await expect(getEmbeddingClient()).resolves.toBeNull();
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"Embedding client model mismatch: expected Xenova/bge-small-en-v1.5, received wrong/model",
+			),
+		);
 	});
 
 	it("reuses the singleton client", async () => {
-		const client = fakeClient();
+		const client = runtimeClient();
 		const factory = vi.fn(async () => client);
 		_setEmbeddingRuntimeFactory(factory);
 
@@ -80,10 +263,10 @@ describe("embedding runtime factory", () => {
 	});
 
 	it("resolves in-flight waiters through the current client after a factory swap", async () => {
-		let resolveFirst: ((client: ReturnType<typeof fakeClient>) => void) | undefined;
+		let resolveFirst: ((client: ReturnType<typeof runtimeClient>) => void) | undefined;
 		const firstFactory = vi.fn(
 			() =>
-				new Promise<ReturnType<typeof fakeClient>>((resolve) => {
+				new Promise<ReturnType<typeof runtimeClient>>((resolve) => {
 					resolveFirst = resolve;
 				}),
 		);
@@ -92,14 +275,14 @@ describe("embedding runtime factory", () => {
 		const shared = getEmbeddingClient();
 		expect(firstFactory).toHaveBeenCalledTimes(1);
 
-		// Use the resolved default identity so the upstack v4 runtime-identity
-		// assertion accepts the replacement client after this branch merges.
-		const replacementClient = fakeClient(resolveEmbeddingModel());
+		// Use the resolved default identity so the v4 runtime-identity assertion
+		// accepts the replacement client.
+		const replacementClient = runtimeClient(resolveEmbeddingModel());
 		_setEmbeddingRuntimeFactory(vi.fn(async () => replacementClient));
 		expect(await getEmbeddingClient()).toBe(replacementClient);
 		// The stale creation completing must not hand its now-superseded client
 		// to earlier waiters; they resolve through the current generation.
-		resolveFirst?.(fakeClient("stale"));
+		resolveFirst?.(runtimeClient());
 		await expect(first).resolves.toBe(replacementClient);
 		await expect(shared).resolves.toBe(replacementClient);
 		await expect(getEmbeddingClient()).resolves.toBe(replacementClient);
@@ -110,7 +293,7 @@ describe("embedding runtime factory", () => {
 		_setEmbeddingRuntimeFactory(
 			vi.fn(
 				() =>
-					new Promise<ReturnType<typeof fakeClient>>((_resolve, reject) => {
+					new Promise<ReturnType<typeof runtimeClient>>((_resolve, reject) => {
 						rejectFirst = reject;
 					}),
 			),
@@ -119,7 +302,7 @@ describe("embedding runtime factory", () => {
 
 		// Use the resolved default identity so the upstack v4 runtime-identity
 		// assertion accepts the replacement client after this branch merges.
-		const replacementClient = fakeClient(resolveEmbeddingModel());
+		const replacementClient = runtimeClient(resolveEmbeddingModel());
 		_setEmbeddingRuntimeFactory(vi.fn(async () => replacementClient));
 		expect(await getEmbeddingClient()).toBe(replacementClient);
 		rejectFirst?.(new Error("stale runtime unavailable"));
@@ -146,6 +329,22 @@ describe("embedding runtime factory", () => {
 		);
 	});
 
+	it("returns cached null and warns once when a custom model has no revision", async () => {
+		process.env.CODEMEM_EMBEDDING_MODEL = "custom/model";
+		delete process.env.CODEMEM_EMBEDDING_REVISION;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const factory = vi.fn(async () => fakeClient("custom/model"));
+		_setEmbeddingRuntimeFactory(factory);
+
+		await expect(getEmbeddingClient()).resolves.toBeNull();
+		await expect(getEmbeddingClient()).resolves.toBeNull();
+		expect(factory).not.toHaveBeenCalled();
+		expect(warn).toHaveBeenCalledOnce();
+		expect(warn).toHaveBeenCalledWith(
+			"Semantic search is unavailable because the embedding runtime failed: CODEMEM_EMBEDDING_REVISION is required when CODEMEM_EMBEDDING_MODEL selects a custom model",
+		);
+	});
+
 	it("does not call the factory when embeddings are disabled", async () => {
 		process.env.CODEMEM_EMBEDDING_DISABLED = "1";
 		const factory = vi.fn(async () => fakeClient());
@@ -165,16 +364,123 @@ describe("embedding runtime factory", () => {
 	});
 
 	it("clears the cached client when the runtime factory resets", async () => {
-		_setEmbeddingRuntimeFactory(vi.fn(async () => fakeClient("first")));
-		expect((await getEmbeddingClient())?.model).toBe("first");
+		const first = runtimeClient();
+		_setEmbeddingRuntimeFactory(vi.fn(async () => first));
+		expect(await getEmbeddingClient()).toBe(first);
 
 		_resetEmbeddingRuntimeFactory();
 		expect(getEmbeddingRuntimeStatus()).toEqual({ state: "uninitialized" });
-		const replacement = vi.fn(async () => fakeClient("second"));
+		const second = runtimeClient();
+		const replacement = vi.fn(async () => second);
 		_setEmbeddingRuntimeFactory(replacement);
 
-		expect((await getEmbeddingClient())?.model).toBe("second");
+		expect(await getEmbeddingClient()).toBe(second);
 		expect(replacement).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("embedding vector identity", () => {
+	const originalEmbeddingModel = process.env.CODEMEM_EMBEDDING_MODEL;
+	const originalEmbeddingRevision = process.env.CODEMEM_EMBEDDING_REVISION;
+
+	afterEach(() => {
+		if (originalEmbeddingModel === undefined) delete process.env.CODEMEM_EMBEDDING_MODEL;
+		else process.env.CODEMEM_EMBEDDING_MODEL = originalEmbeddingModel;
+		if (originalEmbeddingRevision === undefined) delete process.env.CODEMEM_EMBEDDING_REVISION;
+		else process.env.CODEMEM_EMBEDDING_REVISION = originalEmbeddingRevision;
+	});
+
+	it("uses the pinned revision for the default model", () => {
+		delete process.env.CODEMEM_EMBEDDING_MODEL;
+		delete process.env.CODEMEM_EMBEDDING_REVISION;
+
+		expect(resolveEmbeddingRevision()).toBe(DEFAULT_EMBEDDING_REVISION);
+		expect(tryResolveEmbeddingRevision()).toBe(DEFAULT_EMBEDDING_REVISION);
+		expect(resolveEmbeddingVectorIdentityLabel()).toBe(
+			`transformers-v4:model=Xenova%2Fbge-small-en-v1.5:revision=${DEFAULT_EMBEDDING_REVISION}:dtype=fp32:pooling=mean:normalization=l2:dimensions=384`,
+		);
+		expect(tryResolveEmbeddingVectorIdentityLabel()).toBe(DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL);
+	});
+
+	it("requires an explicit revision for a custom model", () => {
+		process.env.CODEMEM_EMBEDDING_MODEL = "custom/model";
+		delete process.env.CODEMEM_EMBEDDING_REVISION;
+
+		expect(() => resolveEmbeddingRevision()).toThrow(
+			"CODEMEM_EMBEDDING_REVISION is required when CODEMEM_EMBEDDING_MODEL selects a custom model",
+		);
+		expect(() => resolveEmbeddingVectorIdentityLabel()).toThrow(
+			"CODEMEM_EMBEDDING_REVISION is required",
+		);
+		expect(tryResolveEmbeddingRevision()).toBeNull();
+	});
+
+	it("passes an explicit revision to the runtime without treating its spelling as identity", () => {
+		process.env.CODEMEM_EMBEDDING_MODEL = "custom/model";
+		process.env.CODEMEM_EMBEDDING_REVISION = "abc1234";
+
+		expect(resolveEmbeddingRevision()).toBe("abc1234");
+		expect(tryResolveEmbeddingRevision()).toBe("abc1234");
+		expect(() => resolveEmbeddingVectorIdentityLabel("custom/model", "abc1234")).toThrow(
+			"canonical commit SHA",
+		);
+	});
+
+	it("does not treat a configured 40-hex ref as a resolved identity", () => {
+		process.env.CODEMEM_EMBEDDING_REVISION = "0123456789abcdef0123456789abcdef01234567";
+
+		expect(resolveEmbeddingRevision()).toBe("0123456789abcdef0123456789abcdef01234567");
+		expect(() => resolveEmbeddingVectorIdentityLabel()).toThrow(
+			"canonical commit SHA returned by the runtime",
+		);
+		expect(tryResolveEmbeddingVectorIdentityLabel()).toBeNull();
+	});
+
+	it("passes a mutable branch revision to the runtime for canonical resolution", () => {
+		process.env.CODEMEM_EMBEDDING_MODEL = "custom/model";
+		process.env.CODEMEM_EMBEDDING_REVISION = "main";
+
+		expect(tryResolveEmbeddingRevision()).toBe("main");
+		expect(resolveEmbeddingRevision()).toBe("main");
+		expect(() => resolveEmbeddingVectorIdentityLabel("custom/model", "main")).toThrow(
+			"canonical commit SHA",
+		);
+	});
+
+	it("passes a mutable revision override for the default model to the runtime", () => {
+		delete process.env.CODEMEM_EMBEDDING_MODEL;
+		process.env.CODEMEM_EMBEDDING_REVISION = "release/2026-09";
+
+		expect(tryResolveEmbeddingRevision()).toBe("release/2026-09");
+		expect(resolveEmbeddingRevision()).toBe("release/2026-09");
+	});
+
+	it("uses a persisted canonical target only for the matching configured request", () => {
+		process.env.CODEMEM_EMBEDDING_MODEL = "custom/model";
+		process.env.CODEMEM_EMBEDDING_REVISION = "release";
+		const targetModel =
+			"transformers-v4:model=custom%2Fmodel:revision=0123456789abcdef0123456789abcdef01234567:dtype=fp32:pooling=mean:normalization=l2:dimensions=384";
+
+		expect(
+			tryResolveEmbeddingVectorIdentityLabel({
+				targetModel,
+				requestedModel: "custom/model",
+				requestedRevision: "release",
+			}),
+		).toBe(targetModel);
+		expect(
+			tryResolveEmbeddingVectorIdentityLabel({
+				targetModel,
+				requestedModel: "custom/model",
+				requestedRevision: "main",
+			}),
+		).toBeNull();
+	});
+
+	it("waits for runtime resolution when the default revision is explicitly configured", () => {
+		process.env.CODEMEM_EMBEDDING_REVISION = DEFAULT_EMBEDDING_REVISION;
+
+		expect(tryResolveEmbeddingVectorIdentityLabel()).toBeNull();
 	});
 });
 

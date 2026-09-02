@@ -2,7 +2,7 @@ import { chunkText, embedTexts, hashText } from "./embeddings.js";
 import { projectBasename } from "./project.js";
 import type { MemoryStore } from "./store.js";
 import type { MemoryFilters, MemoryItemResponse } from "./types.js";
-import { resolveSemanticSearchModel } from "./vectors.js";
+import { resolveSemanticSearchModels } from "./vectors.js";
 
 export type DistillScope = "project" | "user";
 
@@ -511,8 +511,15 @@ export function loadDistillVectorFeatures(
 	});
 
 	const vectorsByMemory = new Map<number, Float32Array[]>();
-	const model = resolveSemanticSearchModel(store.db);
-	if (!model) return baseFeatures;
+	const models = resolveSemanticSearchModels(store.db);
+	if (models.length === 0) return baseFeatures;
+	// resolveSemanticSearchModels lists the revision-aware target last during a
+	// compatible rebuild. Prefer a single memory's target vectors when present so
+	// features are not averaged across two identities; fall back to the legacy
+	// label only for memories not yet re-indexed under the target.
+	const preferredModel = models[models.length - 1];
+	const modelPlaceholders = models.map(() => "?").join(", ");
+	const selectedModelByMemory = new Map<number, string>();
 
 	try {
 		for (let start = 0; start < baseFeatures.length; start += VECTOR_LOOKUP_BATCH_SIZE) {
@@ -520,19 +527,35 @@ export function loadDistillVectorFeatures(
 			const placeholders = batch.map(() => "?").join(", ");
 			const rows = store.db
 				.prepare(
-					`SELECT memory_id, embedding FROM memory_vectors
-					 WHERE model = ? AND memory_id IN (${placeholders})
+					`SELECT memory_id, model, embedding FROM memory_vectors
+					 WHERE model IN (${modelPlaceholders}) AND memory_id IN (${placeholders})
 					 ORDER BY memory_id ASC, chunk_index ASC`,
 				)
-				.all(model, ...batch.map((feature) => feature.memory_id)) as Array<Record<string, unknown>>;
+				.all(...models, ...batch.map((feature) => feature.memory_id)) as Array<
+				Record<string, unknown>
+			>;
 
 			for (const row of rows) {
 				const memoryId = Number(row.memory_id);
+				const rowModel = String(row.model ?? "");
 				const vector = deserializeFloat32(row.embedding);
 				if (!Number.isFinite(memoryId) || !vector) continue;
-				const existing = vectorsByMemory.get(memoryId);
-				if (existing) existing.push(vector);
-				else vectorsByMemory.set(memoryId, [vector]);
+				const chosen = selectedModelByMemory.get(memoryId);
+				if (chosen == null) {
+					selectedModelByMemory.set(memoryId, rowModel);
+					vectorsByMemory.set(memoryId, [vector]);
+					continue;
+				}
+				if (chosen === rowModel) {
+					vectorsByMemory.get(memoryId)?.push(vector);
+					continue;
+				}
+				// Two identities present for this memory: keep only the preferred
+				// (target) corpus's chunks.
+				if (rowModel === preferredModel && chosen !== preferredModel) {
+					selectedModelByMemory.set(memoryId, rowModel);
+					vectorsByMemory.set(memoryId, [vector]);
+				}
 			}
 		}
 	} catch (error) {

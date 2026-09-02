@@ -1,6 +1,9 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { tryResolveEmbeddingRevision } from "./embeddings.js";
 import { expandUserPath } from "./observer-config.js";
+
+const DEFAULT_EMBEDDING_MODEL = "Xenova/bge-small-en-v1.5";
 
 export const VIEWER_IDENTITY_TARGET_KEYS = [
 	"device_id",
@@ -13,6 +16,7 @@ export const VIEWER_IDENTITY_TARGET_KEYS = [
 	"pack_compression",
 	"embedding_disabled",
 	"embedding_model",
+	"embedding_revision",
 ] as const;
 
 export type ViewerIdentityTargetKey = (typeof VIEWER_IDENTITY_TARGET_KEYS)[number];
@@ -28,6 +32,7 @@ export interface ViewerIdentityTarget {
 	pack_compression: string | null;
 	embedding_disabled: boolean;
 	embedding_model: string;
+	embedding_revision: string | null;
 }
 
 function normalizeIdentityPath(value: string | undefined): string | null {
@@ -39,6 +44,7 @@ export function buildViewerIdentityTarget(
 	env: NodeJS.ProcessEnv = process.env,
 	fallbackHomeDir: string = homedir(),
 ): ViewerIdentityTarget {
+	const embeddingModel = env.CODEMEM_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL;
 	return {
 		device_id: env.CODEMEM_DEVICE_ID?.trim() || null,
 		actor_id_present: Object.hasOwn(env, "CODEMEM_ACTOR_ID"),
@@ -51,6 +57,7 @@ export function buildViewerIdentityTarget(
 		embedding_disabled: ["1", "true", "yes"].includes(
 			String(env.CODEMEM_EMBEDDING_DISABLED || "").toLowerCase(),
 		),
-		embedding_model: env.CODEMEM_EMBEDDING_MODEL || "Xenova/bge-small-en-v1.5",
+		embedding_model: embeddingModel,
+		embedding_revision: tryResolveEmbeddingRevision(embeddingModel, env),
 	};
 }

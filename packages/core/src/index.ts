@@ -319,6 +319,7 @@ export {
 export type {
 	EmbeddingClient,
 	EmbeddingRuntimeFactory,
+	EmbeddingRuntimeIdentity,
 	EmbeddingRuntimeRequest,
 } from "./embeddings.js";
 export {
@@ -326,10 +327,15 @@ export {
 	_resetEmbeddingRuntimeFactory,
 	_setEmbeddingRuntimeFactory,
 	chunkText,
+	DEFAULT_EMBEDDING_REVISION,
+	DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL,
 	embedTexts,
 	getEmbeddingClient,
 	hashText,
+	resolveEmbeddingRevision,
+	resolveEmbeddingVectorIdentityLabel,
 	serializeFloat32,
+	tryResolveEmbeddingRevision,
 } from "./embeddings.js";
 export type { InjectionEvalScenario, InjectionEvalScenarioPack } from "./eval-scenarios.js";
 export {

@@ -17,14 +17,27 @@ import { isEmbeddingDisabled } from "./db.js";
 // ---------------------------------------------------------------------------
 
 /** Minimal interface a concrete embedding backend must satisfy. */
+export interface EmbeddingRuntimeIdentity {
+	readonly package: "@huggingface/transformers";
+	readonly version: string;
+	readonly model: string;
+	readonly revision: string;
+	readonly requestedRevision?: string;
+	readonly dtype: "fp32";
+	readonly device: "cpu";
+	readonly dimensions: number;
+}
+
 export interface EmbeddingClient {
 	readonly model: string;
 	readonly dimensions: number;
+	readonly identity?: EmbeddingRuntimeIdentity;
 	embed(texts: string[]): Promise<Float32Array[]>;
 }
 
 export interface EmbeddingRuntimeRequest {
 	model: string;
+	revision?: string;
 }
 
 export type EmbeddingRuntimeFactory = (
@@ -46,6 +59,9 @@ type FeatureExtractor = (
 ) => Promise<EmbeddingTensor>;
 
 const EMBEDDING_BATCH_SIZE = 32;
+const DEFAULT_EMBEDDING_MODEL = "Xenova/bge-small-en-v1.5";
+const EMBEDDING_DIMENSIONS = 384;
+export const DEFAULT_EMBEDDING_REVISION = "ea104dacec62c0de699686887e3f920caeb4f3e3";
 
 /** Copy validated embedding model data into owned Float32 storage. */
 export function embeddingDataToFloat32(data: ArrayLike<number | bigint>): Float32Array {
@@ -212,13 +228,20 @@ export function chunkText(text: string, maxChars = 1200): string[] {
 
 let _client: EmbeddingClient | null | undefined;
 let _clientPromise: Promise<EmbeddingClient | null> | undefined;
+let _clientRequest: Required<EmbeddingRuntimeRequest> | undefined;
 let _clientGeneration = 0;
 let _runtimeWarningEmitted = false;
 let _runtimeStatus: EmbeddingRuntimeStatus = { state: "uninitialized" };
 
 const defaultEmbeddingRuntimeFactory: EmbeddingRuntimeFactory = async (request) => {
 	const { createEmbeddingRuntime } = await import("@codemem/embeddings");
-	return createEmbeddingRuntime(request);
+	const client = await createEmbeddingRuntime(request);
+	if (client && !client.identity) {
+		throw new TypeError(
+			"Installed @codemem/embeddings is outdated and does not expose runtime identity. Upgrade codemem and @codemem/embeddings together, then restart Codemem.",
+		);
+	}
+	return client;
 };
 let embeddingRuntimeFactory = defaultEmbeddingRuntimeFactory;
 
@@ -226,6 +249,7 @@ let embeddingRuntimeFactory = defaultEmbeddingRuntimeFactory;
 export function _resetEmbeddingClient(): void {
 	_client = undefined;
 	_clientPromise = undefined;
+	_clientRequest = undefined;
 	_clientGeneration++;
 	_runtimeStatus = { state: "uninitialized" };
 }
@@ -291,10 +315,12 @@ function recordEmbeddingRuntimeClient(client: EmbeddingClient | null): void {
 
 async function createEmbeddingClient(
 	model: string,
+	revision: string,
 	generation: number,
 ): Promise<EmbeddingClient | null> {
 	try {
-		const client = await embeddingRuntimeFactory({ model });
+		const client = await embeddingRuntimeFactory({ model, revision });
+		if (client) assertEmbeddingRuntimeIdentity(client, model, revision);
 		// A reset while creation was in flight makes this client stale. Resolve
 		// waiters through the live generation so model labels and dimensions agree.
 		if (generation !== _clientGeneration) return getEmbeddingClient();
@@ -315,9 +341,158 @@ async function createEmbeddingClient(
 	}
 }
 
-/** Return the configured embedding model label without loading the client. */
+/** Return the configured bare embedding model repository without loading the client. */
 export function resolveEmbeddingModel(): string {
-	return process.env.CODEMEM_EMBEDDING_MODEL || "Xenova/bge-small-en-v1.5";
+	return process.env.CODEMEM_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL;
+}
+
+/** Resolve a configured revision without making non-semantic callers throw. */
+export function tryResolveEmbeddingRevision(
+	model = resolveEmbeddingModel(),
+	env: NodeJS.ProcessEnv = process.env,
+): string | null {
+	const configuredRevision = env.CODEMEM_EMBEDDING_REVISION?.trim();
+	if (configuredRevision) return configuredRevision;
+	if (model === DEFAULT_EMBEDDING_MODEL) return DEFAULT_EMBEDDING_REVISION;
+	return null;
+}
+
+/** Resolve the concrete model revision required by vector-producing callers. */
+export function resolveEmbeddingRevision(
+	model = resolveEmbeddingModel(),
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	const revision = tryResolveEmbeddingRevision(model, env);
+	if (revision) return revision;
+	throw new TypeError(
+		"CODEMEM_EMBEDDING_REVISION is required when CODEMEM_EMBEDDING_MODEL selects a custom model",
+	);
+}
+
+/** Return the canonical persisted identity for the v4 embedding contract. */
+export function resolveEmbeddingVectorIdentityLabel(
+	model = resolveEmbeddingModel(),
+	revision?: string,
+): string {
+	if (revision === undefined) {
+		const configuredRevision = process.env.CODEMEM_EMBEDDING_REVISION?.trim();
+		if (model !== DEFAULT_EMBEDDING_MODEL && !configuredRevision) {
+			resolveEmbeddingRevision(model);
+		}
+		if (model !== DEFAULT_EMBEDDING_MODEL || configuredRevision) {
+			throw new TypeError(
+				"Embedding vector identity requires a canonical commit SHA returned by the runtime",
+			);
+		}
+		revision = DEFAULT_EMBEDDING_REVISION;
+	}
+	if (!/^[0-9a-f]{40}$/.test(revision)) {
+		throw new TypeError(
+			"Embedding vector identity requires a canonical commit SHA returned by the runtime",
+		);
+	}
+	return [
+		"transformers-v4",
+		`model=${encodeURIComponent(model)}`,
+		`revision=${encodeURIComponent(revision)}`,
+		"dtype=fp32",
+		"pooling=mean",
+		"normalization=l2",
+		`dimensions=${EMBEDDING_DIMENSIONS}`,
+	].join(":");
+}
+
+/** Construct a persisted vector identity only from runtime-resolved metadata. */
+export function resolveEmbeddingClientVectorIdentityLabel(client: EmbeddingClient): string {
+	if (!client.identity) {
+		throw new TypeError("Embedding runtime identity is required to label persisted vectors");
+	}
+	return resolveEmbeddingVectorIdentityLabel(client.identity.model, client.identity.revision);
+}
+
+export interface PersistedEmbeddingTarget {
+	targetModel?: unknown;
+	requestedModel?: unknown;
+	requestedRevision?: unknown;
+}
+
+/** Match a persisted canonical target to the active request, or use the built-in pin. */
+export function tryResolveEmbeddingVectorIdentityLabel(
+	persisted: PersistedEmbeddingTarget = {},
+	env: NodeJS.ProcessEnv = process.env,
+): string | null {
+	const model = env.CODEMEM_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL;
+	const requestedRevision = tryResolveEmbeddingRevision(model, env);
+	if (
+		typeof persisted.targetModel === "string" &&
+		persisted.requestedModel === model &&
+		persisted.requestedRevision === requestedRevision
+	) {
+		return persisted.targetModel;
+	}
+	if (
+		_client?.identity?.model === model &&
+		_client.identity.requestedRevision === requestedRevision
+	) {
+		return resolveEmbeddingClientVectorIdentityLabel(_client);
+	}
+	if (
+		model === DEFAULT_EMBEDDING_MODEL &&
+		requestedRevision === DEFAULT_EMBEDDING_REVISION &&
+		!env.CODEMEM_EMBEDDING_REVISION?.trim()
+	) {
+		return DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL;
+	}
+	return null;
+}
+
+export const DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL = resolveEmbeddingVectorIdentityLabel(
+	DEFAULT_EMBEDDING_MODEL,
+	DEFAULT_EMBEDDING_REVISION,
+);
+
+function assertEmbeddingRuntimeIdentity(
+	client: EmbeddingClient,
+	model: string,
+	requestedRevision: string,
+): void {
+	if (!client.identity) {
+		throw new TypeError("Embedding runtime identity is required");
+	}
+	const expected = {
+		package: "@huggingface/transformers",
+		model,
+		dtype: "fp32",
+		device: "cpu",
+		dimensions: EMBEDDING_DIMENSIONS,
+	} as const;
+	for (const key of Object.keys(expected) as Array<keyof typeof expected>) {
+		if (client.identity[key] !== expected[key]) {
+			throw new TypeError(
+				`Embedding runtime identity mismatch for ${key}: expected ${String(expected[key])}, received ${String(client.identity[key])}`,
+			);
+		}
+	}
+	if (!/^[0-9a-f]{40}$/.test(client.identity.revision)) {
+		throw new TypeError(
+			`Embedding runtime identity revision is not a canonical commit SHA: ${client.identity.revision}`,
+		);
+	}
+	if (client.identity.requestedRevision !== requestedRevision) {
+		throw new TypeError(
+			`Embedding runtime identity requestedRevision mismatch: expected ${requestedRevision}, got ${client.identity.requestedRevision ?? "missing"}`,
+		);
+	}
+	if (client.model !== model) {
+		throw new TypeError(
+			`Embedding client model mismatch: expected ${model}, received ${client.model}`,
+		);
+	}
+	if (client.dimensions !== EMBEDDING_DIMENSIONS) {
+		throw new TypeError(
+			`Embedding client dimensions mismatch: expected ${EMBEDDING_DIMENSIONS}, received ${client.dimensions}`,
+		);
+	}
 }
 
 /**
@@ -325,16 +500,33 @@ export function resolveEmbeddingModel(): string {
  * Returns null when embeddings are disabled or the runtime is unavailable.
  */
 export async function getEmbeddingClient(): Promise<EmbeddingClient | null> {
-	if (_client !== undefined) return _client;
-	if (_clientPromise) return _clientPromise;
 	if (isEmbeddingDisabled()) {
 		_client = null;
 		_runtimeStatus = { state: "disabled" };
 		return null;
 	}
-	const model = resolveEmbeddingModel();
+	let model: string;
+	let revision: string;
+	try {
+		model = resolveEmbeddingModel();
+		revision = resolveEmbeddingRevision(model);
+	} catch (error) {
+		warnEmbeddingRuntimeUnavailable(error);
+		return null;
+	}
+	const request = { model, revision };
+	const requestMatches =
+		_clientRequest?.model === request.model && _clientRequest.revision === request.revision;
+	if (_client !== undefined && requestMatches) return _client;
+	if (_clientPromise && requestMatches) return _clientPromise;
+	if (_client !== undefined || _clientPromise) {
+		_clientGeneration += 1;
+		_client = undefined;
+		_clientPromise = undefined;
+	}
+	_clientRequest = request;
 	const generation = _clientGeneration;
-	_clientPromise = createEmbeddingClient(model, generation);
+	_clientPromise = createEmbeddingClient(model, revision, generation);
 	return _clientPromise;
 }
 
@@ -342,8 +534,11 @@ export async function getEmbeddingClient(): Promise<EmbeddingClient | null> {
  * Embed texts using the shared client.
  * Returns an empty array when embeddings are unavailable.
  */
-export async function embedTexts(texts: string[]): Promise<Float32Array[]> {
-	const client = await getEmbeddingClient();
+export async function embedTexts(
+	texts: string[],
+	resolvedClient?: EmbeddingClient,
+): Promise<Float32Array[]> {
+	const client = resolvedClient ?? (await getEmbeddingClient());
 	if (!client) return [];
 	return client.embed(texts);
 }

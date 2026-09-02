@@ -56,6 +56,7 @@ describe("dependency-free Codex user prompt hook", () => {
 			pack_compression: null,
 			embedding_disabled: false,
 			embedding_model: "Xenova/bge-small-en-v1.5",
+			embedding_revision: "ea104dacec62c0de699686887e3f920caeb4f3e3",
 		};
 		payload = {
 			hook_event_name: "UserPromptSubmit",
@@ -81,10 +82,37 @@ describe("dependency-free Codex user prompt hook", () => {
 			CODEMEM_PACK_COMPRESSION: "ids",
 			CODEMEM_EMBEDDING_DISABLED: "true",
 			CODEMEM_EMBEDDING_MODEL: "model-1",
+			CODEMEM_EMBEDDING_REVISION: "abcdef1234567890abcdef1234567890abcdef12",
 		};
 		expect(hook.identityTarget(root, controlledEnv)).toEqual(
 			buildViewerIdentityTarget(controlledEnv),
 		);
+	});
+
+	it("keeps a missing custom-model revision non-throwing and explicit", () => {
+		expect(
+			hook.identityTarget(root, {
+				HOME: root,
+				CODEMEM_EMBEDDING_MODEL: "custom/model",
+				CODEMEM_EMBEDDING_REVISION: "   ",
+			}),
+		).toMatchObject({
+			embedding_model: "custom/model",
+			embedding_revision: null,
+		});
+	});
+
+	it("retains a mutable revision to match the core identity target", () => {
+		const env = {
+			HOME: root,
+			CODEMEM_EMBEDDING_MODEL: "custom/model",
+			CODEMEM_EMBEDDING_REVISION: "main",
+		};
+		expect(hook.identityTarget(root, env)).toMatchObject({
+			embedding_model: "custom/model",
+			embedding_revision: "main",
+		});
+		expect(hook.identityTarget(root, env)).toEqual(buildViewerIdentityTarget(env));
 	});
 
 	it("accepts only canonical loopback Viewer hosts for prompt and event HTTP", async () => {

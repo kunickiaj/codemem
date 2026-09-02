@@ -5,14 +5,16 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as dbModule from "./db.js";
 import * as embeddings from "./embeddings.js";
-import { startMaintenanceJob } from "./maintenance-jobs.js";
+import { failMaintenanceJob, startMaintenanceJob } from "./maintenance-jobs.js";
 import { ensureSchemaBootstrapped } from "./schema-bootstrap.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import {
 	backfillVectors,
 	bestEffortMaintainVectorsForSyncFallback,
+	countIncompleteActiveMemoryVectorCoverage,
 	getSemanticIndexDiagnostics,
+	pruneObsoleteTargetModelVectors,
 	resolveSemanticSearchModel,
 	semanticSearch,
 	storeVectors,
@@ -27,6 +29,10 @@ vi.mock("./embeddings.js", async () => {
 		chunkText: vi.fn(actual.chunkText),
 		getEmbeddingRuntimeStatus: vi.fn(() => ({ state: "ready" })),
 		resolveEmbeddingModel: vi.fn(() => "test-model"),
+		resolveEmbeddingClientVectorIdentityLabel: vi.fn(() => "test-model"),
+		resolveEmbeddingVectorIdentityLabel: vi.fn(() => "test-model"),
+		tryResolveEmbeddingRevision: vi.fn(() => "test-revision"),
+		tryResolveEmbeddingVectorIdentityLabel: vi.fn(() => "test-model"),
 	};
 });
 
@@ -35,6 +41,11 @@ describe("vectors", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		vi.mocked(embeddings.resolveEmbeddingModel).mockReturnValue("test-model");
+		vi.mocked(embeddings.resolveEmbeddingClientVectorIdentityLabel).mockReturnValue("test-model");
+		vi.mocked(embeddings.resolveEmbeddingVectorIdentityLabel).mockReturnValue("test-model");
+		vi.mocked(embeddings.tryResolveEmbeddingRevision).mockReturnValue("test-revision");
+		vi.mocked(embeddings.tryResolveEmbeddingVectorIdentityLabel).mockReturnValue("test-model");
 		db = new Database(":memory:");
 		// initTestSchema -> bootstrapSchema loads sqlite-vec and creates the
 		// memory_vectors virtual table as part of normal bootstrap.
@@ -42,6 +53,16 @@ describe("vectors", () => {
 		vi.mocked(embeddings.getEmbeddingClient).mockResolvedValue({
 			model: "test-model",
 			dimensions: 384,
+			identity: {
+				package: "@huggingface/transformers",
+				version: "4.2.0",
+				model: "test-model",
+				revision: "0123456789abcdef0123456789abcdef01234567",
+				requestedRevision: "test-revision",
+				dtype: "fp32",
+				device: "cpu",
+				dimensions: 384,
+			},
 			embed: vi.fn(),
 		});
 		vi.mocked(embeddings.getEmbeddingRuntimeStatus).mockReturnValue({ state: "ready" });
@@ -84,7 +105,12 @@ describe("vectors", () => {
 		return Number(info.lastInsertRowid);
 	}
 
-	function insertTestVector(memoryId: number, value: number, contentHash: string): void {
+	function insertTestVector(
+		memoryId: number,
+		value: number,
+		contentHash: string,
+		model = "test-model",
+	): void {
 		const vector = new Float32Array(384).fill(value);
 		db.exec(`
 			INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model)
@@ -93,7 +119,7 @@ describe("vectors", () => {
 				${memoryId},
 				0,
 				'${contentHash}',
-				'test-model'
+				'${model}'
 			)
 		`);
 	}
@@ -172,6 +198,53 @@ describe("vectors", () => {
 			chunk_index: 0,
 			model: "test-model",
 		});
+	});
+
+	it("rejects an injected client without runtime identity", async () => {
+		await expect(
+			backfillVectors(db, {
+				client: {
+					model: "test-model",
+					dimensions: 384,
+					embed: vi.fn(),
+				},
+			}),
+		).rejects.toThrow("Embedding runtime identity is required to backfill persisted vectors");
+		expect(embeddings.resolveEmbeddingClientVectorIdentityLabel).not.toHaveBeenCalled();
+	});
+
+	it("stops obsolete target pruning when aborted between batches", () => {
+		const sessionId = insertTestSession(db);
+		const memoryId = insertBackfillMemory(sessionId, "Current", "2026-09-01T00:00:00.000Z", "body");
+		insertTestVector(memoryId, 0, embeddings.hashText("Current\nbody"));
+		for (let index = 0; index <= 250; index++) {
+			insertTestVector(memoryId, 0, `obsolete-${index}`);
+		}
+		const controller = new AbortController();
+		const prepareSpy = vi.spyOn(db, "prepare");
+		prepareSpy.mockImplementation((sql: string) => {
+			const statement = Database.prototype.prepare.call(db, sql);
+			if (sql.includes("SELECT mv.rowid AS rowid")) {
+				const all = statement.all.bind(statement);
+				statement.all = ((...params: unknown[]) => {
+					const result = all(...params);
+					controller.abort();
+					return result;
+				}) as typeof statement.all;
+			}
+			return statement;
+		});
+
+		try {
+			expect(pruneObsoleteTargetModelVectors(db, "test-model", { signal: controller.signal })).toBe(
+				249,
+			);
+		} finally {
+			prepareSpy.mockRestore();
+		}
+		expect(
+			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE model = ?").get("test-model"),
+		).toMatchObject({ c: 3 });
 	});
 
 	it("pages stably and queries existing hashes once per page", async () => {
@@ -332,6 +405,88 @@ describe("vectors", () => {
 				)
 				.get(memoryId, contentHash),
 		).toMatchObject({ c: 1 });
+	});
+
+	it("treats a whitespace-only memory as fully covered", () => {
+		const sessionId = insertTestSession(db);
+		// Tabs/newlines survive SQLite's one-argument TRIM, so the row is active in
+		// the coverage query, but chunkText yields no chunks — it must not be
+		// counted as incomplete or migration could never reach cutover.
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+			 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+			 VALUES (?, 'feature', '\t', '\n\n', 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+		).run(sessionId, "2026-09-01T00:00:00.000Z", "2026-09-01T00:00:00.000Z");
+
+		expect(countIncompleteActiveMemoryVectorCoverage(db, "test-model")).toBe(0);
+	});
+
+	it("fetches target hashes per bounded validation page", () => {
+		const sessionId = insertTestSession(db);
+		const insert = db.prepare(
+			`INSERT INTO memory_items(id, session_id, kind, title, body_text, confidence,
+			 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+			 VALUES (?, ?, 'feature', ?, ?, 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+		);
+		const now = "2026-09-01T00:00:00.000Z";
+		db.transaction(() => {
+			for (let id = 1; id <= 250; id++) insert.run(id, sessionId, "\t", "\n", now, now);
+			insert.run(251, sessionId, "Uncovered", "memory", now, now);
+		})();
+		const prepareSpy = vi.spyOn(db, "prepare");
+
+		try {
+			expect(countIncompleteActiveMemoryVectorCoverage(db, "test-model")).toBe(1);
+			const hashQueries = prepareSpy.mock.calls
+				.map(([sql]) => String(sql))
+				.filter((sql) => sql.includes("vector-coverage-validation"));
+			expect(hashQueries).toHaveLength(2);
+			expect(hashQueries.every((sql) => sql.includes("memory_id IN"))).toBe(true);
+			expect(hashQueries.map((sql) => (sql.match(/\?/g) ?? []).length)).toEqual([251, 2]);
+		} finally {
+			prepareSpy.mockRestore();
+		}
+	});
+
+	it("prunes obsolete target rows beyond the bounded cleanup batch", () => {
+		const sessionId = insertTestSession(db);
+		const memoryId = insertBackfillMemory(sessionId, "Current", "2026-09-01T00:00:00.000Z", "body");
+		insertTestVector(memoryId, 0, embeddings.hashText("Current\nbody"));
+		for (let index = 0; index <= 250; index++) {
+			insertTestVector(memoryId, 0, `obsolete-${index}`);
+		}
+
+		expect(pruneObsoleteTargetModelVectors(db, "test-model")).toBe(251);
+		expect(
+			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE model = ?").get("test-model"),
+		).toMatchObject({ c: 1 });
+	});
+
+	it("retains obsolete target rows while current target coverage is incomplete", () => {
+		const sessionId = insertTestSession(db);
+		const bodyText = "Long semantic content. ".repeat(200);
+		const memoryId = insertBackfillMemory(
+			sessionId,
+			"Partially covered",
+			"2026-09-01T00:00:00.000Z",
+			bodyText,
+		);
+		const chunks = embeddings.chunkText(`Partially covered\n${bodyText}`);
+		expect(chunks.length).toBeGreaterThan(1);
+		const firstChunk = chunks[0];
+		if (!firstChunk) throw new Error("expected at least one chunk");
+		insertTestVector(memoryId, 0, embeddings.hashText(firstChunk));
+		insertTestVector(memoryId, 0, "obsolete-target-hash");
+
+		expect(pruneObsoleteTargetModelVectors(db, "test-model")).toBe(0);
+		expect(
+			db.prepare("SELECT content_hash FROM memory_vectors WHERE memory_id = ?").all(memoryId),
+		).toEqual(
+			expect.arrayContaining([
+				{ content_hash: embeddings.hashText(firstChunk) },
+				{ content_hash: "obsolete-target-hash" },
+			]),
+		);
 	});
 
 	it("indexes candidate snapshots without a temporary sort", () => {
@@ -657,6 +812,113 @@ describe("vectors", () => {
 		});
 	});
 
+	it("reports a missing custom-model revision without resolving or querying a vector identity", () => {
+		const sessionId = insertTestSession(db);
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+			 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+			 VALUES (?, 'feature', 'Needs revision', 'Keyword fallback stays available', 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+		).run(sessionId, now, now);
+		vi.mocked(embeddings.resolveEmbeddingModel).mockReturnValue("custom/model");
+		vi.mocked(embeddings.tryResolveEmbeddingRevision).mockReturnValue(null);
+		vi.mocked(embeddings.tryResolveEmbeddingVectorIdentityLabel).mockReturnValue(null);
+
+		expect(resolveSemanticSearchModel(db)).toBeNull();
+		expect(() => getSemanticIndexDiagnostics(db)).not.toThrow();
+		expect(getSemanticIndexDiagnostics(db)).toMatchObject({
+			state: "degraded",
+			mode: "keyword_only",
+			current_model: "custom/model (missing CODEMEM_EMBEDDING_REVISION)",
+			semantic_search_model: null,
+			indexed_memory_count: 0,
+			summary:
+				"Semantic search is unavailable because custom/model has no CODEMEM_EMBEDDING_REVISION; keyword search remains available",
+		});
+		expect(embeddings.resolveEmbeddingClientVectorIdentityLabel).not.toHaveBeenCalled();
+	});
+
+	it("keeps serving compatible legacy vectors until a verified target cutover", () => {
+		const currentModel = embeddings.DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL;
+		const legacyModel = "Xenova/bge-small-en-v1.5";
+		insertTestVector(1, 0, "legacy-hash", legacyModel);
+		insertTestVector(2, 0, "target-hash", currentModel);
+
+		expect(resolveSemanticSearchModel(db, currentModel)).toBe(legacyModel);
+
+		startMaintenanceJob(db, {
+			kind: "vector_model_migration",
+			title: "Different target completed",
+			status: "completed",
+			metadata: {
+				source_model: legacyModel,
+				target_model: "different-target",
+			},
+		});
+		expect(resolveSemanticSearchModel(db, currentModel)).toBe(legacyModel);
+	});
+
+	it("serves covered target vectors when a compatible rebuild has exhausted legacy rows", () => {
+		const currentModel = embeddings.DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL;
+		const legacyModel = "Xenova/bge-small-en-v1.5";
+		insertTestVector(1, 0, "target-hash", currentModel);
+		startMaintenanceJob(db, {
+			kind: "vector_model_migration",
+			title: "Compatible rebuild",
+			status: "running",
+			metadata: { source_model: legacyModel, target_model: currentModel },
+		});
+
+		expect(resolveSemanticSearchModel(db, currentModel)).toBe(currentModel);
+		db.prepare("UPDATE maintenance_jobs SET status = 'failed' WHERE kind = ?").run(
+			"vector_model_migration",
+		);
+		expect(resolveSemanticSearchModel(db, currentModel)).toBe(currentModel);
+	});
+
+	it("keeps serving complete target coverage during legacy-write reconciliation", () => {
+		insertTestVector(1, 0, "target-hash", "test-model");
+		insertTestVector(2, 0, "stray-hash", "unverified-legacy-model");
+		startMaintenanceJob(db, {
+			kind: "vector_model_migration",
+			title: "Legacy-write reconciliation",
+			status: "running",
+			metadata: {
+				source_model: "unverified-legacy-model",
+				target_model: "test-model",
+				reconciliation_target_coverage_complete: true,
+			},
+		});
+
+		expect(resolveSemanticSearchModel(db, "test-model")).toBe("test-model");
+		failMaintenanceJob(db, "vector_model_migration", "coverage became incomplete", {
+			metadata: {
+				source_model: "unverified-legacy-model",
+				target_model: "test-model",
+				reconciliation_target_coverage_complete: undefined,
+				uncovered_target_memories: 1,
+			},
+		});
+		expect(resolveSemanticSearchModel(db, "test-model")).toBeNull();
+		startMaintenanceJob(db, {
+			kind: "vector_model_migration",
+			title: "Retry legacy-write reconciliation",
+			metadata: {
+				source_model: "unverified-legacy-model",
+				target_model: "test-model",
+				uncovered_target_memories: 1,
+			},
+		});
+		expect(resolveSemanticSearchModel(db, "test-model")).toBeNull();
+	});
+
+	it("does not select a partial target corpus when the legacy model is incompatible", () => {
+		insertTestVector(1, 0, "legacy-hash", "unverified-legacy-model");
+		insertTestVector(2, 0, "target-hash", "test-model");
+
+		expect(resolveSemanticSearchModel(db, "test-model")).toBeNull();
+	});
+
 	it("does not mark partially covered memories as healthy under deep diagnostics", () => {
 		const sessionId = insertTestSession(db);
 		const now = new Date().toISOString();
@@ -753,6 +1015,20 @@ describe("vectors", () => {
 			state: "degraded",
 			pending_memory_count: 1,
 			mode: "keyword_only",
+		});
+	});
+
+	it("reports a configured but not yet resolved identity as pending", () => {
+		vi.mocked(embeddings.tryResolveEmbeddingVectorIdentityLabel).mockReturnValue(null);
+
+		const diagnostics = getSemanticIndexDiagnostics(db);
+
+		expect(diagnostics).toMatchObject({
+			state: "pending",
+			mode: "keyword_only",
+			current_model: "test-model@test-revision (revision unresolved)",
+			summary:
+				"Semantic indexing is pending until test-model@test-revision resolves to a canonical commit",
 		});
 	});
 
@@ -926,6 +1202,41 @@ describe("vectors", () => {
 		expect(resultIds).not.toContain(hiddenId);
 	});
 
+	it("searches compatible legacy and target vectors together until cutover", async () => {
+		const currentModel = embeddings.DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL;
+		const legacyModel = "Xenova/bge-small-en-v1.5";
+		vi.mocked(embeddings.resolveEmbeddingModel).mockReturnValue(legacyModel);
+		vi.mocked(embeddings.resolveEmbeddingClientVectorIdentityLabel).mockReturnValue(currentModel);
+		const legacyId = insertScopedMemory(
+			"local-default",
+			"Legacy semantic note",
+			"semantic legacy detail",
+		);
+		const targetId = insertScopedMemory(
+			"local-default",
+			"Target semantic note",
+			"semantic target detail",
+		);
+		insertTestVector(legacyId, 0.2, "legacy-hash", legacyModel);
+		insertTestVector(targetId, 0.1, "target-hash", currentModel);
+		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
+		const context = { actorId: "local:device", deviceId: "device" };
+
+		expect(
+			(await semanticSearch(db, "semantic note", 10, null, context)).map(({ id }) => id),
+		).toEqual(expect.arrayContaining([legacyId, targetId]));
+
+		startMaintenanceJob(db, {
+			kind: "vector_model_migration",
+			title: "Completed cutover",
+			status: "completed",
+			metadata: { source_model: legacyModel, target_model: currentModel },
+		});
+		expect(
+			(await semanticSearch(db, "semantic note", 10, null, context)).map(({ id }) => id),
+		).toEqual([targetId]);
+	});
+
 	it("intersects semantic search scope filters with local authorization", async () => {
 		const deviceId = "device-authorized";
 		grantScopeToDevice("authorized-team", deviceId);
@@ -1030,10 +1341,26 @@ describe("vectors", () => {
 			});
 
 			expect(results).toEqual([]);
+			expect(embeddings.getEmbeddingClient).not.toHaveBeenCalled();
 			expect(embeddings.embedTexts).not.toHaveBeenCalled();
 		} finally {
 			freshDb.close();
 		}
+	});
+
+	it("returns empty results when a custom model has no pinned revision", async () => {
+		insertTestVector(1, 0, "custom-hash", "custom/model");
+		vi.mocked(embeddings.resolveEmbeddingModel).mockReturnValue("custom/model");
+		vi.mocked(embeddings.tryResolveEmbeddingRevision).mockReturnValue(null);
+
+		const results = await semanticSearch(db, "query text", 10, null, {
+			actorId: "local:custom-device",
+			deviceId: "custom-device",
+		});
+
+		expect(results).toEqual([]);
+		expect(embeddings.embedTexts).not.toHaveBeenCalled();
+		expect(embeddings.resolveEmbeddingVectorIdentityLabel).not.toHaveBeenCalled();
 	});
 
 	it("getSemanticIndexDiagnostics survives a missing vec0 module without throwing", () => {

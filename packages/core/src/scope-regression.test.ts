@@ -18,6 +18,9 @@ vi.mock("./embeddings.js", async () => {
 		embedTexts: vi.fn(),
 		getEmbeddingClient: vi.fn(),
 		resolveEmbeddingModel: vi.fn(() => "test-model"),
+		resolveEmbeddingClientVectorIdentityLabel: vi.fn(() => "test-model"),
+		resolveEmbeddingVectorIdentityLabel: vi.fn(() => "test-model"),
+		tryResolveEmbeddingRevision: vi.fn(() => "test-revision"),
 	};
 });
 
@@ -79,6 +82,11 @@ describe("mixed-domain scope regression", () => {
 		insertTestVector(store.db, fixture.unauthorizedId, 0, "hidden-vector");
 		insertTestVector(store.db, fixture.authorizedId, 0.2, "authorized-vector");
 		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
+		vi.mocked(embeddings.getEmbeddingClient).mockResolvedValue({
+			model: "test-model",
+			dimensions: 384,
+			embed: vi.fn(),
+		});
 
 		const results = await semanticSearch(store.db, fixture.query, 10, null, {
 			actorId: `local:${store.deviceId}`,

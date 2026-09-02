@@ -503,6 +503,30 @@ running `codemem serve` process. Each MCP process checks runtime availability
 once per lifetime, so a running Claude or Codex MCP host stays lexical-only until
 it restarts; restarting `codemem serve` alone does not restart that MCP child.
 
+The default `Xenova/bge-small-en-v1.5` model is pinned to a tested revision. If
+you set `CODEMEM_EMBEDDING_MODEL` to another repository, it must be a
+feature-extraction model that emits 384-dimensional embeddings — the
+`memory_vectors` table is a fixed `float[384]` column, and the runtime rejects a
+client whose dimensions differ. Also set `CODEMEM_EMBEDDING_REVISION` to a
+branch, tag, or full 40-character commit SHA. The runtime resolves mutable refs
+to their canonical Hugging Face commit before labeling vectors, preventing old
+and new embedding spaces from sharing an identity. A custom model without a
+revision is rejected; offline or local-model use requires the full commit-style
+identity because Codemem cannot resolve a mutable ref without the Hub.
+`CODEMEM_EMBEDDING_REVISION` can also override the default model revision when
+an intentional rebuild is required.
+
+The first v4 start rebuilds legacy default-model vectors once in the background.
+Measured-compatible legacy vectors continue serving semantic search until the
+new corpus is complete; other model or revision changes use FTS5 during the
+rebuild. Cutover and stale-vector cleanup happen only after full coverage.
+A CPU-only migration of 31,779 memories on an Apple M4 Max took about 30 minutes
+and peaked at 3.24 GiB RSS. Runtime varies with text length, corpus size, and
+hardware; the rebuild runs outside the viewer process in bounded batches.
+
+ONNX Runtime 1.24.3 has no macOS x64 artifact, so Intel Macs continue using
+FTS5 keyword retrieval instead of semantic inference.
+
 ### sqlite-vec / `no such module: vec0`
 
 **Symptom:** API errors with `SqliteError: no such module: vec0`, or the viewer logs `sqlite-vec failed to load; retrying viewer startup with embeddings disabled` at startup.

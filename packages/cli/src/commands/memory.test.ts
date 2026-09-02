@@ -23,6 +23,8 @@ vi.mock("../../../core/src/embeddings.js", async () => {
 		embedTexts: vi.fn(),
 		getEmbeddingClient: vi.fn(),
 		resolveEmbeddingModel: vi.fn(() => "test-model"),
+		resolveEmbeddingClientVectorIdentityLabel: vi.fn(() => "test-model"),
+		resolveEmbeddingVectorIdentityLabel: vi.fn(() => "test-model"),
 	};
 });
 

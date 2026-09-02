@@ -5625,6 +5625,7 @@ describe("viewer-server", () => {
 			vi.stubEnv("CODEMEM_CONFIG", "/tmp/viewer-config.json");
 			vi.stubEnv("CODEMEM_RUNTIME_ROOT", "/tmp/viewer-runtime");
 			vi.stubEnv("CODEMEM_WORKSPACE_ID", "viewer-workspace");
+			vi.stubEnv("CODEMEM_EMBEDDING_REVISION", "ea104dacec62c0de699686887e3f920caeb4f3e3");
 			const { app, ensureStore, cleanup } = createTestApp();
 			try {
 				const store = ensureStore();
@@ -5641,6 +5642,7 @@ describe("viewer-server", () => {
 					pack_compression: null,
 					embedding_disabled: false,
 					embedding_model: "Xenova/bge-small-en-v1.5",
+					embedding_revision: "ea104dacec62c0de699686887e3f920caeb4f3e3",
 				};
 				const profile = await app.request("/api/prompt-pack-profile");
 				expect(profile.status).toBe(200);
@@ -5681,6 +5683,13 @@ describe("viewer-server", () => {
 				});
 				expect(embeddingMismatch.status).toBe(409);
 
+				const embeddingRevisionMismatch = await postViewerJson(app, "/api/pack", {
+					context: "viewer identity",
+					db_path: ensureStore().dbPath,
+					identity_target: { ...viewerIdentityTarget, embedding_revision: null },
+				});
+				expect(embeddingRevisionMismatch.status).toBe(409);
+
 				const unsupported = await postViewerJson(app, "/api/pack", {
 					context: "viewer identity",
 					db_path: ensureStore().dbPath,
@@ -5710,6 +5719,7 @@ describe("viewer-server", () => {
 				"CODEMEM_PACK_COMPRESSION",
 				"CODEMEM_EMBEDDING_DISABLED",
 				"CODEMEM_EMBEDDING_MODEL",
+				"CODEMEM_EMBEDDING_REVISION",
 			] as const;
 			const previousEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
 			for (const key of envKeys) delete process.env[key];
@@ -5734,6 +5744,7 @@ describe("viewer-server", () => {
 						pack_compression: null,
 						embedding_disabled: false,
 						embedding_model: "Xenova/bge-small-en-v1.5",
+						embedding_revision: "ea104dacec62c0de699686887e3f920caeb4f3e3",
 					},
 				});
 				expect(res.status).toBe(409);

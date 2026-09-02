@@ -166,6 +166,35 @@ jobs:
           pnpm --filter @codemem/opencode-plugin test:packed-artifact
           pnpm --filter codemem test:packed-artifact
 
+  windows-embedding-runtime-smoke:
+    name: Windows Embedding Runtime Smoke Test
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build embedding runtime
+        run: pnpm --filter @codemem/embeddings build
+
+      - name: Run packed Windows x64 inference probe
+        run: pnpm --filter @codemem/embeddings test:packed-runtime
+        env:
+          CODEMEM_EXPECT_WINDOWS_X64: "1"
+
   e2e:
     name: E2E ${{ matrix.name }}
     runs-on: ubuntu-latest

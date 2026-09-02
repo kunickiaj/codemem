@@ -192,6 +192,7 @@ async function smokeClaudePromptWrapper(isolatedRoot) {
 		pack_compression: null,
 		embedding_disabled: false,
 		embedding_model: "Xenova/bge-small-en-v1.5",
+		embedding_revision: "ea104dacec62c0de699686887e3f920caeb4f3e3",
 	};
 	const requestPaths = [];
 	const server = createServer((request, response) => {
@@ -306,6 +307,7 @@ async function smokeCodexPromptWrapper(isolatedRoot) {
 		pack_compression: null,
 		embedding_disabled: false,
 		embedding_model: "Xenova/bge-small-en-v1.5",
+		embedding_revision: "ea104dacec62c0de699686887e3f920caeb4f3e3",
 	};
 	const requestPaths = [];
 	const server = createServer((request, response) => {
