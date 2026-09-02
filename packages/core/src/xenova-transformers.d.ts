@@ -12,7 +12,7 @@ declare module "@xenova/transformers" {
 	}
 
 	type FeatureExtractionPipeline = (
-		text: string,
+		text: string | string[],
 		options?: { pooling?: string; normalize?: boolean },
 	) => Promise<PipelineOutput>;
 

@@ -24,6 +24,18 @@ export interface EmbeddingClient {
 	embed(texts: string[]): Promise<Float32Array[]>;
 }
 
+interface EmbeddingTensor {
+	data: ArrayLike<number | bigint>;
+	dims?: number[];
+}
+
+type FeatureExtractor = (
+	texts: string[],
+	options: { pooling: "mean"; normalize: true },
+) => Promise<EmbeddingTensor>;
+
+const EMBEDDING_BATCH_SIZE = 32;
+
 /** Copy validated embedding model data into owned Float32 storage. */
 export function embeddingDataToFloat32(data: ArrayLike<number | bigint>): Float32Array {
 	const vector = new Float32Array(data.length);
@@ -38,6 +50,72 @@ export function embeddingDataToFloat32(data: ArrayLike<number | bigint>): Float3
 		vector[index] = float32Value;
 	}
 	return vector;
+}
+
+/** Split one validated row-major tensor into independently owned vectors. */
+export function embeddingTensorToFloat32Rows(
+	output: EmbeddingTensor,
+	expectedRows: number,
+	dimensions: number,
+): Float32Array[] {
+	if (
+		!Number.isInteger(expectedRows) ||
+		expectedRows <= 0 ||
+		!Number.isInteger(dimensions) ||
+		dimensions <= 0
+	) {
+		throw new TypeError("Embedding tensor shape expectations must be positive integers");
+	}
+	if (
+		output.dims?.length !== 2 ||
+		output.dims[0] !== expectedRows ||
+		output.dims[1] !== dimensions
+	) {
+		throw new TypeError(
+			`Embedding model returned shape [${output.dims?.join(", ") ?? "unknown"}], expected [${expectedRows}, ${dimensions}]`,
+		);
+	}
+	if (output.data.length !== expectedRows * dimensions) {
+		throw new TypeError(
+			`Embedding model returned ${output.data.length} values, expected ${expectedRows * dimensions}`,
+		);
+	}
+
+	const rows = Array.from({ length: expectedRows }, () => new Float32Array(dimensions));
+	for (let flatIndex = 0; flatIndex < output.data.length; flatIndex++) {
+		const value = output.data[flatIndex];
+		const float32Value = typeof value === "number" ? Math.fround(value) : Number.NaN;
+		if (!Number.isFinite(float32Value)) {
+			throw new TypeError(
+				`Embedding model returned non-finite, non-numeric, or unrepresentable tensor data at index ${flatIndex}`,
+			);
+		}
+		const row = rows[Math.floor(flatIndex / dimensions)];
+		if (!row) throw new TypeError("Embedding tensor row calculation failed");
+		row[flatIndex % dimensions] = float32Value;
+	}
+	return rows;
+}
+
+/** Run array inference in bounded batches while preserving input order. */
+export async function embedTextBatches(
+	extractor: FeatureExtractor,
+	texts: string[],
+	dimensions: number,
+	batchSize = EMBEDDING_BATCH_SIZE,
+): Promise<Float32Array[]> {
+	if (texts.length === 0) return [];
+	if (!Number.isInteger(batchSize) || batchSize <= 0) {
+		throw new TypeError("Embedding batch size must be a positive integer");
+	}
+
+	const vectors: Float32Array[] = [];
+	for (let offset = 0; offset < texts.length; offset += batchSize) {
+		const batch = texts.slice(offset, offset + batchSize);
+		const output = await extractor(batch, { pooling: "mean", normalize: true });
+		vectors.push(...embeddingTensorToFloat32Rows(output, batch.length, dimensions));
+	}
+	return vectors;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,20 +252,15 @@ async function createTransformersClient(model: string): Promise<EmbeddingClient>
 	});
 
 	// Infer dimensions from a probe embedding
-	const probe = await extractor("probe", { pooling: "mean", normalize: true });
+	const probe = await extractor(["probe"], { pooling: "mean", normalize: true });
 	const dims = probe.dims?.at(-1) ?? 384;
+	embeddingTensorToFloat32Rows(probe, 1, dims);
 
 	return {
 		model,
 		dimensions: dims,
 		async embed(texts: string[]): Promise<Float32Array[]> {
-			const results: Float32Array[] = [];
-			for (const text of texts) {
-				const output = await extractor(text, { pooling: "mean", normalize: true });
-				// output.data is a Float32Array of shape [1, dims]
-				results.push(embeddingDataToFloat32(output.data));
-			}
-			return results;
+			return embedTextBatches(extractor, texts, dims);
 		},
 	};
 }

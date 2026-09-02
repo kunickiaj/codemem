@@ -6,8 +6,15 @@
  * in a separate test file gated on CODEMEM_EMBEDDING_DISABLED.
  */
 
-import { describe, expect, it } from "vitest";
-import { chunkText, embeddingDataToFloat32, hashText, serializeFloat32 } from "./embeddings.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+	chunkText,
+	embeddingDataToFloat32,
+	embeddingTensorToFloat32Rows,
+	embedTextBatches,
+	hashText,
+	serializeFloat32,
+} from "./embeddings.js";
 
 describe("hashText", () => {
 	it("returns a 64-char hex SHA-256 digest", () => {
@@ -87,6 +94,47 @@ describe("embeddingDataToFloat32", () => {
 			expect(() => embeddingDataToFloat32([value])).toThrow(TypeError);
 		},
 	);
+});
+
+describe("bounded embedding batches", () => {
+	it("runs stable array inference batches and returns owned rows", async () => {
+		const outputs: Float32Array[] = [];
+		const extractor = vi.fn(async (texts: string[]) => {
+			const data = new Float32Array(texts.flatMap((text) => [Number(text), Number(text) + 0.5]));
+			outputs.push(data);
+			return { data, dims: [texts.length, 2] };
+		});
+
+		const vectors = await embedTextBatches(extractor, ["1", "2", "3", "4", "5"], 2, 2);
+
+		expect(extractor.mock.calls.map(([texts]) => texts)).toEqual([["1", "2"], ["3", "4"], ["5"]]);
+		expect(vectors).toEqual([
+			new Float32Array([1, 1.5]),
+			new Float32Array([2, 2.5]),
+			new Float32Array([3, 3.5]),
+			new Float32Array([4, 4.5]),
+			new Float32Array([5, 5.5]),
+		]);
+		expect(
+			vectors.every((vector) => outputs.every((output) => vector.buffer !== output.buffer)),
+		).toBe(true);
+		expect(new Set(vectors.map((vector) => vector.buffer)).size).toBe(vectors.length);
+	});
+
+	it("does not invoke the extractor for empty input", async () => {
+		const extractor = vi.fn();
+
+		await expect(embedTextBatches(extractor, [], 384)).resolves.toEqual([]);
+		expect(extractor).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		[{ data: new Float32Array(4), dims: [1, 2] }, "shape"],
+		[{ data: new Float32Array(3), dims: [2, 2] }, "values"],
+		[{ data: new Float32Array([1, 2, Number.NaN, 4]), dims: [2, 2] }, "non-finite"],
+	])("rejects invalid batched tensor %s", (output, expectedMessage) => {
+		expect(() => embeddingTensorToFloat32Rows(output, 2, 2)).toThrow(expectedMessage);
+	});
 });
 
 describe("serializeFloat32", () => {
