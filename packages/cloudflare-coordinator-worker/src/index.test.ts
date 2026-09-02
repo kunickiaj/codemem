@@ -3,11 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	buildAuthHeaders,
+	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
 	connect,
 	connectCoordinator,
+	deterministicPolicyTeamId,
 	ensureDeviceIdentity,
 	initTestSchema,
+	legacyTeamCandidateId,
 	loadPublicKey,
+	recipientPolicyDigest,
 } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -89,6 +93,7 @@ describe("createCloudflareCoordinatorWorker", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "cloudflare-coord-worker-test-"));
 		db = connectCoordinator(join(tmpDir, "coordinator.sqlite"));
 		db.exec(`
+			DROP TABLE IF EXISTS coordinator_legacy_team_completions;
 			DROP TABLE IF EXISTS coordinator_scope_membership_effect_receipts;
 			DROP TABLE IF EXISTS coordinator_scope_membership_audit_log;
 			DROP TABLE IF EXISTS coordinator_scope_memberships;
@@ -152,6 +157,25 @@ describe("createCloudflareCoordinatorWorker", () => {
 				.pluck()
 				.get(),
 		).toBe("coordinator_scope_membership_effect_receipts");
+	});
+
+	it("migration 0014 adds immutable legacy Team completion storage", () => {
+		db.exec("DROP TABLE coordinator_legacy_team_completions");
+		const migration = readFileSync(
+			join(import.meta.dirname, "../migrations/0014_add_legacy_team_completions.sql"),
+			"utf8",
+		);
+
+		db.exec(migration);
+
+		expect(
+			db
+				.prepare(
+					"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_legacy_team_completions'",
+				)
+				.pluck()
+				.get(),
+		).toBe("coordinator_legacy_team_completions");
 	});
 
 	afterEach(() => {
@@ -448,6 +472,251 @@ describe("createCloudflareCoordinatorWorker", () => {
 				},
 			],
 		});
+	});
+
+	it("persists and replays immutable legacy Team completions through Worker and D1", async () => {
+		const worker = createCloudflareCoordinatorWorker();
+		const env = {
+			COORDINATOR_DB: d1db,
+			CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret",
+		};
+		const adminHeaders = {
+			"Content-Type": "application/json",
+			"X-Codemem-Coordinator-Admin": "test-secret",
+		};
+		const createGroup = await worker.fetch(
+			new Request("https://coord.example.test/v1/admin/groups", {
+				method: "POST",
+				headers: adminHeaders,
+				body: JSON.stringify({ group_id: "g1", display_name: "Team Alpha" }),
+			}),
+			env,
+		);
+		expect(createGroup.status).toBe(200);
+		expect(await createGroup.json()).toEqual({
+			ok: true,
+			group: expect.objectContaining({ group_id: "g1" }),
+		});
+		const candidateRef = legacyTeamCandidateId("coord-a", "g1");
+		const manifest = {
+			version: 1,
+			coordinator_id: "coord-a",
+			candidate_ref: candidateRef,
+			candidate_digest: "a".repeat(64),
+			team_id: deterministicPolicyTeamId(candidateRef),
+			team_digest: "b".repeat(64),
+			source_digest: "c".repeat(64),
+			finish_digest: "d".repeat(64),
+			access_delta_digest: "e".repeat(64),
+			team: {
+				display_name: "Core Team",
+				policy_revision: "f".repeat(64),
+				device_eligibility_mode: "reviewed_allowlist",
+			},
+			memberships: [{ identity_id: "identity-a", role: "member" }],
+			device_decisions: [
+				{
+					device_id: "device-a",
+					key_fingerprint: "1".repeat(64),
+					enabled: true,
+					identity_id: "identity-a",
+					decision: "included",
+				},
+			],
+			project_mappings: [],
+			project_recipients: [],
+			completed_at: "2026-09-01T00:00:00.000Z",
+		};
+		const store = new D1CoordinatorStore(d1db);
+		await store.enrollDevice("g1", {
+			deviceId: "device-a",
+			fingerprint: "1".repeat(64),
+			publicKey: "device-a-public-key",
+		});
+		await store.close();
+		const request = () =>
+			new Request("https://coord.example.test/v1/admin/legacy-team-completions", {
+				method: "POST",
+				headers: adminHeaders,
+				body: JSON.stringify({ group_id: "g1", manifest }),
+			});
+
+		const created = await worker.fetch(request(), env);
+		const replay = await worker.fetch(request(), env);
+
+		expect(created.status).toBe(201);
+		expect(await created.json()).toEqual({ ok: true, status: "created", manifest });
+		expect(replay.status).toBe(200);
+		expect(await replay.json()).toEqual({ ok: true, status: "existing", manifest });
+	});
+
+	it("round-trips a maximum-size legacy Team completion through Worker D1", async () => {
+		const worker = createCloudflareCoordinatorWorker();
+		const env = {
+			COORDINATOR_DB: d1db,
+			CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret",
+		};
+		const headers = {
+			"Content-Type": "application/json",
+			"X-Codemem-Coordinator-Admin": "test-secret",
+		};
+		await worker.fetch(
+			new Request("https://coord.example.test/v1/admin/groups", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({ group_id: "large-group" }),
+			}),
+			env,
+		);
+		const boundedId = (prefix: string, index: number) =>
+			`${prefix}-${String(index).padStart(3, "0")}`.padEnd(256, "x");
+		const coordinatorId = "coord-large";
+		const candidateRef = legacyTeamCandidateId(coordinatorId, "large-group");
+		const teamId = deterministicPolicyTeamId(candidateRef);
+		const memberships = Array.from({ length: 500 }, (_, index) => ({
+			identity_id: boundedId("identity", index),
+			role: "member",
+		}));
+		const projectMappings = Array.from({ length: 500 }, (_, index) => {
+			const projectRef = recipientPolicyDigest("legacy-team-project-ref-v1", [
+				candidateRef,
+				boundedId("project", index),
+			]);
+			return {
+				project_ref: projectRef,
+				resolved_project_ref: recipientPolicyDigest("legacy-team-resolved-project-ref-v1", [
+					projectRef,
+					boundedId("resolved", index),
+				]),
+				scope_id: boundedId("scope", index),
+			};
+		});
+		const insertScope = db.prepare(`INSERT INTO coordinator_scopes(
+			scope_id, label, kind, authority_type, coordinator_id, group_id,
+			manifest_issuer_device_id, membership_epoch, manifest_hash, status, created_at, updated_at
+		) VALUES (?, ?, 'managed_project', 'coordinator', ?, 'large-group', NULL, 0, NULL, 'active', ?, ?)`);
+		for (const mapping of projectMappings) {
+			insertScope.run(
+				mapping.scope_id,
+				mapping.scope_id,
+				coordinatorId,
+				"2026-09-01T00:00:00.000Z",
+				"2026-09-01T00:00:00.000Z",
+			);
+		}
+		const manifest = {
+			version: 1,
+			coordinator_id: coordinatorId,
+			candidate_ref: candidateRef,
+			candidate_digest: "a".repeat(64),
+			team_id: teamId,
+			team_digest: "b".repeat(64),
+			source_digest: "c".repeat(64),
+			finish_digest: "d".repeat(64),
+			access_delta_digest: "e".repeat(64),
+			team: {
+				display_name: "Large Team",
+				policy_revision: "f".repeat(64),
+				device_eligibility_mode: "reviewed_allowlist",
+			},
+			memberships,
+			device_decisions: memberships.map((membership, index) => ({
+				device_id: boundedId("device", index),
+				key_fingerprint: index.toString(16).padStart(64, "0"),
+				enabled: true,
+				identity_id: membership.identity_id,
+				decision: "included",
+			})),
+			project_mappings: projectMappings,
+			project_recipients: projectMappings.map((mapping) => ({
+				resolved_project_ref: mapping.resolved_project_ref,
+				team_id: teamId,
+			})),
+			completed_at: "2026-09-01T00:00:00.000Z",
+		};
+		const enrollDevice = db.prepare(`INSERT INTO enrolled_devices(
+			group_id, device_id, public_key, fingerprint, enabled, created_at
+		) VALUES ('large-group', ?, ?, ?, 1, ?)`);
+		for (const decision of manifest.device_decisions) {
+			enrollDevice.run(
+				decision.device_id,
+				`${decision.device_id}-public-key`,
+				decision.key_fingerprint,
+				manifest.completed_at,
+			);
+		}
+
+		const created = await worker.fetch(
+			new Request("https://coord.example.test/v1/admin/legacy-team-completions", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({ group_id: "large-group", manifest }),
+			}),
+			env,
+		);
+		expect(created.status).toBe(201);
+
+		const fetched = await worker.fetch(
+			new Request(
+				`https://coord.example.test/v1/admin/legacy-team-completions?group_id=large-group&candidate_ref=${manifest.candidate_ref}`,
+				{ headers },
+			),
+			env,
+		);
+		expect(fetched.status).toBe(200);
+		const body = (await fetched.json()) as { manifest: typeof manifest };
+		expect(body.manifest.device_decisions).toHaveLength(500);
+		expect(body.manifest.project_mappings).toHaveLength(500);
+
+		const listed = await worker.fetch(
+			new Request("https://coord.example.test/v1/admin/legacy-team-completions/query", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({ group_ids: ["large-group"] }),
+			}),
+			env,
+		);
+		expect(listed.status).toBe(200);
+		const listedBody = (await listed.json()) as {
+			items: Array<{ manifest: typeof manifest }>;
+		};
+		expect(listedBody.items).toHaveLength(1);
+		expect(listedBody.items[0]?.manifest.device_decisions).toHaveLength(500);
+		expect(listedBody.items[0]?.manifest.project_mappings).toHaveLength(500);
+	});
+
+	it("fails closed on an oversized stored completion in the Worker D1 list path", async () => {
+		db.prepare("INSERT INTO groups(group_id, display_name, created_at) VALUES (?, NULL, ?)").run(
+			"oversized-group",
+			"2026-09-01T00:00:00.000Z",
+		);
+		db.prepare(`INSERT INTO coordinator_legacy_team_completions(
+			group_id, candidate_ref, manifest_version, manifest_json, completed_at, created_at
+		) VALUES (?, ?, 1, ?, ?, ?)`).run(
+			"oversized-group",
+			"legacy-team-candidate:cccccccccccccccccccccccccccccccc",
+			"x".repeat(COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES + 1),
+			"2026-09-01T00:00:00.000Z",
+			"2026-09-01T00:00:00.000Z",
+		);
+		const worker = createCloudflareCoordinatorWorker();
+		const response = await worker.fetch(
+			new Request("https://coord.example.test/v1/admin/legacy-team-completions/query", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Codemem-Coordinator-Admin": "test-secret",
+				},
+				body: JSON.stringify({ group_ids: ["oversized-group"] }),
+			}),
+			{
+				COORDINATOR_DB: d1db,
+				CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret",
+			},
+		);
+
+		expect(response.status).toBe(413);
+		expect(await response.json()).toEqual({ error: "completion_results_too_large" });
 	});
 
 	it("rejects oversized presence bodies before auth processing", async () => {

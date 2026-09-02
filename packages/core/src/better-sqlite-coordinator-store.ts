@@ -16,6 +16,24 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
 import Database from "better-sqlite3";
+import type {
+	CoordinatorLegacyTeamCompletionManifestV1,
+	CoordinatorLegacyTeamCompletionRecord,
+	CoordinatorLegacyTeamCompletionScopeBinding,
+	CoordinatorLegacyTeamCompletionWriteResult,
+} from "./coordinator-legacy-team-completion.js";
+import {
+	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BATCH_BYTES,
+	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
+	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_RECORDS,
+	CoordinatorLegacyTeamCompletionConflictError,
+	canonicalCoordinatorLegacyTeamCompletionManifestJson,
+	normalizeCoordinatorLegacyTeamCompletionCandidateRef,
+	normalizeCoordinatorLegacyTeamCompletionGroupIds,
+	normalizeCoordinatorLegacyTeamCompletionManifest,
+	requireCoordinatorLegacyTeamCompletionScopeBindings,
+	requireCoordinatorLegacyTeamCompletionTeamBinding,
+} from "./coordinator-legacy-team-completion.js";
 import {
 	assertMatchingMembershipEffectReceipt,
 	type CoordinatorMembershipEffectReceipt,
@@ -802,6 +820,19 @@ function initializeSchema(db: DatabaseType): void {
 			updated_at TEXT,
 			created_at TEXT NOT NULL
 		);
+
+		CREATE TABLE IF NOT EXISTS coordinator_legacy_team_completions (
+			group_id TEXT NOT NULL,
+			candidate_ref TEXT NOT NULL,
+			manifest_version INTEGER NOT NULL CHECK (manifest_version = 1),
+			manifest_json TEXT NOT NULL,
+			completed_at TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (group_id, candidate_ref)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_coordinator_legacy_team_completions_group
+			ON coordinator_legacy_team_completions(group_id, completed_at, candidate_ref);
 	`);
 	try {
 		db.prepare(
@@ -2195,6 +2226,232 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				 ORDER BY created_at ASC, request_id ASC`)
 			.all(opts.groupId, opts.deviceId, status)
 			.map((row) => rowToRecord<CoordinatorReciprocalApproval>(row));
+	}
+
+	async createLegacyTeamCompletion(
+		groupId: string,
+		manifest: CoordinatorLegacyTeamCompletionManifestV1,
+	): Promise<CoordinatorLegacyTeamCompletionWriteResult> {
+		const [normalizedGroupId] = normalizeCoordinatorLegacyTeamCompletionGroupIds([groupId]);
+		if (!normalizedGroupId) throw new Error("completion_manifest_invalid");
+		const group = await this.getGroup(normalizedGroupId);
+		if (!group) throw new Error("group_not_found");
+		if (group.archived_at) throw new Error("group_archived");
+		const manifestJson = canonicalCoordinatorLegacyTeamCompletionManifestJson(manifest);
+		const normalized = JSON.parse(manifestJson) as CoordinatorLegacyTeamCompletionManifestV1;
+		requireCoordinatorLegacyTeamCompletionTeamBinding(normalized);
+		const existing = this.db
+			.prepare(`SELECT manifest_json FROM coordinator_legacy_team_completions
+				WHERE group_id = ? AND candidate_ref = ?`)
+			.get(normalizedGroupId, normalized.candidate_ref) as { manifest_json: string } | undefined;
+		if (existing) {
+			if (existing.manifest_json !== manifestJson) {
+				throw new CoordinatorLegacyTeamCompletionConflictError();
+			}
+			return {
+				status: "existing",
+				manifest: normalizeCoordinatorLegacyTeamCompletionManifest(
+					JSON.parse(existing.manifest_json),
+				),
+			};
+		}
+		const scopeBindings = this.db
+			.prepare(`SELECT DISTINCT
+				requested.scope_id,
+				scope.authority_type,
+				scope.coordinator_id,
+				scope.group_id,
+				scope.status
+			 FROM (
+				SELECT json_extract(value, '$.scope_id') AS scope_id
+				FROM json_each(?, '$.project_mappings')
+			 ) AS requested
+			 LEFT JOIN coordinator_scopes AS scope ON scope.scope_id = requested.scope_id`)
+			.all(manifestJson) as CoordinatorLegacyTeamCompletionScopeBinding[];
+		const coordinatorId = requireCoordinatorLegacyTeamCompletionScopeBindings(
+			normalized,
+			normalizedGroupId,
+			scopeBindings,
+		);
+		const result = this.db
+			.prepare(`INSERT OR IGNORE INTO coordinator_legacy_team_completions(
+				group_id, candidate_ref, manifest_version, manifest_json, completed_at, created_at
+			) SELECT ?, ?, ?, ?, ?, ?
+			  FROM groups
+			  WHERE group_id = ? AND archived_at IS NULL
+			    AND NOT EXISTS (
+			      SELECT 1
+			      FROM json_each(?, '$.project_mappings') AS requested
+			      LEFT JOIN coordinator_scopes AS scope
+			        ON scope.scope_id = json_extract(requested.value, '$.scope_id')
+			       AND scope.authority_type = 'coordinator'
+			       AND scope.coordinator_id = ?
+			       AND scope.group_id = ?
+				       AND scope.status = 'active'
+			      WHERE scope.scope_id IS NULL
+			    )
+			    AND NOT EXISTS (
+			      SELECT 1 FROM enrolled_devices AS enrolled
+			      WHERE enrolled.group_id = ?
+			        AND NOT EXISTS (
+			          SELECT 1 FROM json_each(?, '$.device_decisions') AS requested
+			          WHERE json_extract(requested.value, '$.device_id') = enrolled.device_id
+			            AND json_extract(requested.value, '$.key_fingerprint') = enrolled.fingerprint
+			            AND json_extract(requested.value, '$.enabled') = enrolled.enabled
+			        )
+			    )
+			    AND NOT EXISTS (
+			      SELECT 1 FROM json_each(?, '$.device_decisions') AS requested
+			      WHERE json_extract(requested.value, '$.decision') = 'included'
+			        AND NOT EXISTS (
+			          SELECT 1 FROM enrolled_devices AS enrolled
+			          WHERE enrolled.group_id = ?
+			            AND enrolled.device_id = json_extract(requested.value, '$.device_id')
+			            AND enrolled.fingerprint = json_extract(requested.value, '$.key_fingerprint')
+			            AND enrolled.enabled = 1
+			        )
+			    )`)
+			.run(
+				normalizedGroupId,
+				normalized.candidate_ref,
+				normalized.version,
+				manifestJson,
+				normalized.completed_at,
+				nowISO(),
+				normalizedGroupId,
+				manifestJson,
+				coordinatorId,
+				normalizedGroupId,
+				normalizedGroupId,
+				manifestJson,
+				manifestJson,
+				normalizedGroupId,
+			);
+		const stored = this.db
+			.prepare(`SELECT manifest_json FROM coordinator_legacy_team_completions
+				WHERE group_id = ? AND candidate_ref = ?`)
+			.get(normalizedGroupId, normalized.candidate_ref) as { manifest_json: string } | undefined;
+		if (!stored) {
+			const currentGroup = await this.getGroup(normalizedGroupId);
+			if (!currentGroup) throw new Error("group_not_found");
+			if (currentGroup.archived_at) throw new Error("group_archived");
+			const currentScopeBindings = this.db
+				.prepare(`SELECT DISTINCT
+					requested.scope_id,
+					scope.authority_type,
+					scope.coordinator_id,
+					scope.group_id,
+					scope.status
+				 FROM (
+					SELECT json_extract(value, '$.scope_id') AS scope_id
+					FROM json_each(?, '$.project_mappings')
+				 ) AS requested
+				 LEFT JOIN coordinator_scopes AS scope ON scope.scope_id = requested.scope_id`)
+				.all(manifestJson) as CoordinatorLegacyTeamCompletionScopeBinding[];
+			requireCoordinatorLegacyTeamCompletionScopeBindings(
+				normalized,
+				normalizedGroupId,
+				currentScopeBindings,
+			);
+			throw new Error("completion_manifest_unavailable");
+		}
+		if (stored.manifest_json !== manifestJson) {
+			throw new CoordinatorLegacyTeamCompletionConflictError();
+		}
+		return {
+			status: result.changes === 1 ? "created" : "existing",
+			manifest: normalizeCoordinatorLegacyTeamCompletionManifest(JSON.parse(stored.manifest_json)),
+		};
+	}
+
+	async getLegacyTeamCompletion(
+		groupId: string,
+		candidateRef: string,
+	): Promise<CoordinatorLegacyTeamCompletionManifestV1 | null> {
+		const [normalizedGroupId] = normalizeCoordinatorLegacyTeamCompletionGroupIds([groupId]);
+		const normalizedCandidateRef =
+			normalizeCoordinatorLegacyTeamCompletionCandidateRef(candidateRef);
+		if (!normalizedGroupId) throw new Error("completion_manifest_invalid");
+		const row = this.db
+			.prepare(`SELECT manifest_json FROM coordinator_legacy_team_completions
+				WHERE group_id = ? AND candidate_ref = ?`)
+			.get(normalizedGroupId, normalizedCandidateRef) as { manifest_json: string } | undefined;
+		return row
+			? normalizeCoordinatorLegacyTeamCompletionManifest(JSON.parse(row.manifest_json))
+			: null;
+	}
+
+	async listLegacyTeamCompletions(
+		groupIds: string[],
+	): Promise<CoordinatorLegacyTeamCompletionRecord[]> {
+		const normalizedGroupIds = normalizeCoordinatorLegacyTeamCompletionGroupIds(groupIds);
+		if (normalizedGroupIds.length === 0) return [];
+		const placeholders = normalizedGroupIds.map(() => "?").join(", ");
+		const stats = this.db
+			.prepare(`SELECT
+				COUNT(*) AS record_count,
+				COALESCE(SUM(
+					LENGTH(CAST(group_id AS BLOB)) + LENGTH(CAST(manifest_json AS BLOB))
+				), 0) AS batch_bytes,
+				COALESCE(MAX(LENGTH(CAST(manifest_json AS BLOB))), 0) AS max_manifest_bytes
+			FROM coordinator_legacy_team_completions
+			WHERE group_id IN (${placeholders})`)
+			.get(...normalizedGroupIds) as {
+			record_count: number;
+			batch_bytes: number;
+			max_manifest_bytes: number;
+		};
+		if (
+			stats.record_count > COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_RECORDS ||
+			stats.batch_bytes > COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BATCH_BYTES ||
+			stats.max_manifest_bytes > COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES
+		) {
+			throw new Error("completion_results_too_large");
+		}
+		const rows = this.db
+			.prepare(`WITH completion_stats AS (
+				SELECT
+					COUNT(*) AS record_count,
+					COALESCE(SUM(
+						LENGTH(CAST(group_id AS BLOB)) + LENGTH(CAST(manifest_json AS BLOB))
+					), 0) AS batch_bytes,
+					COALESCE(MAX(LENGTH(CAST(manifest_json AS BLOB))), 0) AS max_manifest_bytes
+				FROM coordinator_legacy_team_completions
+				WHERE group_id IN (${placeholders})
+			)
+			SELECT completions.group_id, completions.manifest_json
+			FROM coordinator_legacy_team_completions AS completions
+			CROSS JOIN completion_stats
+			WHERE completions.group_id IN (${placeholders})
+				  AND completion_stats.record_count <= ${COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_RECORDS}
+				  AND completion_stats.batch_bytes <= ${COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BATCH_BYTES}
+				  AND completion_stats.max_manifest_bytes <= ${COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES}
+				  AND LENGTH(completions.manifest_json) <= ${COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES}
+				  AND LENGTH(CAST(completions.manifest_json AS BLOB)) <= ${COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES}
+				ORDER BY completions.group_id, completions.completed_at, completions.candidate_ref
+				LIMIT ${COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_RECORDS + 1}`)
+			.all(...normalizedGroupIds, ...normalizedGroupIds) as Array<{
+			group_id: string;
+			manifest_json: string;
+		}>;
+		if (rows.length === 0 && stats.record_count > 0) {
+			throw new Error("completion_results_too_large");
+		}
+		if (rows.length > COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_RECORDS) {
+			throw new Error("completion_results_too_large");
+		}
+		const batchBytes = rows.reduce(
+			(total, row) =>
+				total + Buffer.byteLength(row.group_id) + Buffer.byteLength(row.manifest_json),
+			0,
+		);
+		if (batchBytes > COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BATCH_BYTES) {
+			throw new Error("completion_results_too_large");
+		}
+		return rows.map((row) => ({
+			group_id: row.group_id,
+			manifest: normalizeCoordinatorLegacyTeamCompletionManifest(JSON.parse(row.manifest_json)),
+		}));
 	}
 
 	async upsertPresence(opts: CoordinatorUpsertPresenceInput): Promise<CoordinatorPresenceRecord> {

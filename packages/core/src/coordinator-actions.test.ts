@@ -7,15 +7,18 @@ import {
 	coordinatorCreateAddDeviceInviteAction,
 	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
+	coordinatorCreateLegacyTeamCompletionAction,
 	coordinatorCreateScopeAction,
 	coordinatorDisableDeviceAction,
 	coordinatorEnableDeviceAction,
 	coordinatorEnrollDeviceAction,
+	coordinatorGetLegacyTeamCompletionAction,
 	coordinatorGrantScopeMembershipAction,
 	coordinatorImportInviteAction,
 	coordinatorListConsumedTeamInvitesAction,
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
+	coordinatorListLegacyTeamCompletionsAction,
 	coordinatorListReviewedRecipientInviteEvidenceAction,
 	coordinatorListScopeMembershipsAction,
 	coordinatorListScopesAction,
@@ -26,6 +29,7 @@ import {
 	isPeerTrustBindingCompatible,
 } from "./coordinator-actions.js";
 import { encodeInvitePayload } from "./coordinator-invites.js";
+import type { CoordinatorLegacyTeamCompletionManifestV1 } from "./coordinator-legacy-team-completion.js";
 import { connect } from "./db.js";
 import { initDatabase } from "./maintenance.js";
 import { readCodememConfigFileAtPath, writeCodememConfigFile } from "./observer-config.js";
@@ -36,6 +40,10 @@ import {
 	PROJECT_SYNC_ENABLEMENT_FAILURE_DETAIL,
 	ProjectSyncEnablementError,
 } from "./project-invite-acceptance.js";
+import {
+	deterministicPolicyTeamId,
+	legacyTeamCandidateId,
+} from "./recipient-policy-identifiers.js";
 import { previewRecipientPolicyOnboardingFromReviewedIntent } from "./recipient-policy-onboarding.js";
 import {
 	canonicalRecipientReviewedIntentJson,
@@ -66,6 +74,39 @@ function addDeviceReviewedIntent(identityId: string): AddDeviceReviewedIntent {
 		targetIdentity: { identityId, displayName: "Existing Person" },
 		projects: [],
 		excludedProjects: [],
+	};
+}
+
+function legacyCompletionManifest(): CoordinatorLegacyTeamCompletionManifestV1 {
+	const candidateRef = legacyTeamCandidateId("coord-a", "group-a");
+	return {
+		version: 1,
+		coordinator_id: "coord-a",
+		candidate_ref: candidateRef,
+		candidate_digest: "a".repeat(64),
+		team_id: deterministicPolicyTeamId(candidateRef),
+		team_digest: "b".repeat(64),
+		source_digest: "c".repeat(64),
+		finish_digest: "d".repeat(64),
+		access_delta_digest: "e".repeat(64),
+		team: {
+			display_name: "Core Team",
+			policy_revision: "f".repeat(64),
+			device_eligibility_mode: "reviewed_allowlist",
+		},
+		memberships: [{ identity_id: "identity-a", role: "member" }],
+		device_decisions: [
+			{
+				device_id: "device-a",
+				key_fingerprint: "1".repeat(64),
+				enabled: true,
+				identity_id: "identity-a",
+				decision: "included",
+			},
+		],
+		project_mappings: [],
+		project_recipients: [],
+		completed_at: "2026-09-01T00:00:00.000Z",
 	};
 }
 
@@ -140,6 +181,242 @@ describe("coordinator local admin actions", () => {
 		expect(await coordinatorListGroupsAction({ dbPath })).toEqual([
 			expect.objectContaining({ group_id: "team-a", display_name: "Team A" }),
 		]);
+	});
+
+	it("creates, gets, and lists immutable legacy Team completions locally", async () => {
+		await coordinatorCreateGroupAction({ groupId: "group-a", dbPath });
+		const manifest = legacyCompletionManifest();
+		const [decision] = manifest.device_decisions;
+		if (!decision) throw new Error("missing completion fixture decision");
+		await coordinatorEnrollDeviceAction({
+			groupId: "group-a",
+			deviceId: decision.device_id,
+			fingerprint: decision.key_fingerprint,
+			publicKey: "device-a-public-key",
+			dbPath,
+		});
+
+		expect(
+			await coordinatorCreateLegacyTeamCompletionAction({ groupId: "group-a", manifest, dbPath }),
+		).toEqual({ status: "created", manifest });
+		expect(
+			await coordinatorCreateLegacyTeamCompletionAction({ groupId: "group-a", manifest, dbPath }),
+		).toEqual({ status: "existing", manifest });
+		expect(
+			await coordinatorGetLegacyTeamCompletionAction({
+				groupId: "group-a",
+				candidateRef: manifest.candidate_ref,
+				dbPath,
+			}),
+		).toEqual(manifest);
+		expect(
+			await coordinatorListLegacyTeamCompletionsAction({ groupIds: ["group-a"], dbPath }),
+		).toEqual([{ group_id: "group-a", manifest }]);
+	});
+
+	it("requires remote admin authentication for legacy Team completion writes", async () => {
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(
+			coordinatorCreateLegacyTeamCompletionAction({
+				groupId: "group-a",
+				manifest: legacyCompletionManifest(),
+				remoteUrl: "https://coordinator.example.test",
+				adminSecret: null,
+			}),
+		).rejects.toThrow("Admin secret required.");
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("validates and returns an existing remote legacy Team completion", async () => {
+		const manifest = legacyCompletionManifest();
+		const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+			expect(init?.method).toBe("POST");
+			expect(init?.headers).toEqual(
+				expect.objectContaining({ "X-Codemem-Coordinator-Admin": "test-secret" }),
+			);
+			return new Response(JSON.stringify({ ok: true, status: "existing", manifest }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		expect(
+			await coordinatorCreateLegacyTeamCompletionAction({
+				groupId: "group-a",
+				manifest,
+				remoteUrl: "https://coordinator.example.test",
+				adminSecret: "test-secret",
+			}),
+		).toEqual({ status: "existing", manifest });
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects a successful remote completion response that differs from the request", async () => {
+		const manifest = legacyCompletionManifest();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							ok: true,
+							status: "existing",
+							manifest: { ...manifest, completed_at: "2026-08-30T00:00:01.000Z" },
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					),
+			),
+		);
+
+		await expect(
+			coordinatorCreateLegacyTeamCompletionAction({
+				groupId: "group-a",
+				manifest,
+				remoteUrl: "https://coordinator.example.test",
+				adminSecret: "test-secret",
+			}),
+		).rejects.toThrow("coordinator_completion_response_malformed");
+	});
+
+	it("classifies an invalid remote create manifest as a malformed response", async () => {
+		const manifest = legacyCompletionManifest();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () =>
+				Response.json({ status: "created", manifest: { ...manifest, finish_digest: "invalid" } }),
+			),
+		);
+
+		await expect(
+			coordinatorCreateLegacyTeamCompletionAction({
+				groupId: "group-a",
+				manifest,
+				remoteUrl: "https://coordinator.example.test",
+				adminSecret: "test-secret",
+			}),
+		).rejects.toThrow("coordinator_completion_response_malformed");
+	});
+
+	it("maps only an authoritative remote completion absence to null", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi
+				.fn()
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ error: "completion_not_found" }), { status: 404 }),
+				)
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ error: "upstream_completion_not_found" }), {
+						status: 500,
+					}),
+				),
+		);
+		const options = {
+			groupId: "group-a",
+			candidateRef: legacyCompletionManifest().candidate_ref,
+			remoteUrl: "https://coordinator.example.test",
+			adminSecret: "test-secret",
+		};
+
+		expect(await coordinatorGetLegacyTeamCompletionAction(options)).toBeNull();
+		await expect(coordinatorGetLegacyTeamCompletionAction(options)).rejects.toThrow(
+			"Remote coordinator request failed (500): upstream_completion_not_found",
+		);
+	});
+
+	it("rejects a remote get response for a different completion candidate", async () => {
+		const requested = legacyCompletionManifest();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							manifest: {
+								...requested,
+								candidate_ref: "legacy-team-candidate:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+							},
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					),
+			),
+		);
+
+		await expect(
+			coordinatorGetLegacyTeamCompletionAction({
+				groupId: "group-a",
+				candidateRef: requested.candidate_ref,
+				remoteUrl: "https://coordinator.example.test",
+				adminSecret: "test-secret",
+			}),
+		).rejects.toThrow("coordinator_completion_response_malformed");
+	});
+
+	it("classifies an invalid remote get manifest as a malformed response", async () => {
+		const requested = legacyCompletionManifest();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () =>
+				Response.json({ manifest: { ...requested, access_delta_digest: "invalid" } }),
+			),
+		);
+
+		await expect(
+			coordinatorGetLegacyTeamCompletionAction({
+				groupId: "group-a",
+				candidateRef: requested.candidate_ref,
+				remoteUrl: "https://coordinator.example.test",
+				adminSecret: "test-secret",
+			}),
+		).rejects.toThrow("coordinator_completion_response_malformed");
+	});
+
+	it("rejects a remote get response whose Team is not derived from its candidate", async () => {
+		const requested = legacyCompletionManifest();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(JSON.stringify({ manifest: { ...requested, team_id: "team-other" } }), {
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					}),
+			),
+		);
+
+		await expect(
+			coordinatorGetLegacyTeamCompletionAction({
+				groupId: "group-a",
+				candidateRef: requested.candidate_ref,
+				remoteUrl: "https://coordinator.example.test",
+				adminSecret: "test-secret",
+			}),
+		).rejects.toThrow("coordinator_completion_response_malformed");
+	});
+
+	it("rejects a remote get response whose coordinator does not own the candidate", async () => {
+		const requested = legacyCompletionManifest();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({ manifest: { ...requested, coordinator_id: "coord-other" } }),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					),
+			),
+		);
+
+		await expect(
+			coordinatorGetLegacyTeamCompletionAction({
+				groupId: "group-a",
+				candidateRef: requested.candidate_ref,
+				remoteUrl: "https://coordinator.example.test",
+				adminSecret: "test-secret",
+			}),
+		).rejects.toThrow("coordinator_completion_response_malformed");
 	});
 
 	it("enrolls and lists devices for an existing group", async () => {

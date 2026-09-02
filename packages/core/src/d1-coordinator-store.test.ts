@@ -4,12 +4,20 @@ import { join } from "node:path";
 import type { Database as DatabaseType, Statement } from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
 import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
+import {
+	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
+	type CoordinatorLegacyTeamCompletionManifestV1,
+} from "./coordinator-legacy-team-completion.js";
 import { runCoordinatorStoreContract } from "./coordinator-store-test-harness.js";
 import {
 	D1CoordinatorStore,
 	type D1DatabaseLike,
 	type D1PreparedStatementLike,
 } from "./d1-coordinator-store.js";
+import {
+	deterministicPolicyTeamId,
+	legacyTeamCandidateId,
+} from "./recipient-policy-identifiers.js";
 
 class SqliteD1Statement implements D1PreparedStatementLike {
 	private bound: unknown[] = [];
@@ -62,6 +70,17 @@ class SqliteD1Database implements D1DatabaseLike {
 			}
 			return results;
 		})();
+	}
+}
+
+class TrackingCompletionD1Database extends SqliteD1Database {
+	completionRowsMaterialized = false;
+
+	override prepare(query: string): D1PreparedStatementLike {
+		if (query.includes("SELECT group_id, manifest_json FROM coordinator_legacy_team_completions")) {
+			this.completionRowsMaterialized = true;
+		}
+		return super.prepare(query);
 	}
 }
 
@@ -173,11 +192,92 @@ class RacingRevokeBatchD1Database extends SqliteD1Database {
 	}
 }
 
+class RacingCompletionInsertStatement implements D1PreparedStatementLike {
+	private injected = false;
+
+	constructor(
+		private readonly db: DatabaseType,
+		private readonly statement: D1PreparedStatementLike,
+	) {}
+
+	bind(...values: unknown[]): D1PreparedStatementLike {
+		this.statement.bind(...values);
+		return this;
+	}
+
+	async first<T = unknown>(): Promise<T | null> {
+		return await this.statement.first<T>();
+	}
+
+	async run(): Promise<unknown> {
+		if (!this.injected) {
+			this.injected = true;
+			this.db
+				.prepare(`INSERT INTO enrolled_devices(
+					group_id, device_id, public_key, fingerprint, enabled, created_at
+				) VALUES (?, ?, ?, ?, 1, ?)`)
+				.run("g1", "device-b", "device-b-public-key", "2".repeat(64), "2026-09-01T00:00:00.000Z");
+		}
+		return await this.statement.run();
+	}
+
+	async all<T = unknown>(): Promise<{ results?: T[] }> {
+		return await this.statement.all<T>();
+	}
+
+	async raw<T = unknown>(): Promise<T[]> {
+		return await this.statement.raw<T>();
+	}
+}
+
+class RacingCompletionD1Database extends SqliteD1Database {
+	override prepare(query: string): D1PreparedStatementLike {
+		const statement = super.prepare(query);
+		return query.includes("INSERT OR IGNORE INTO coordinator_legacy_team_completions(")
+			? new RacingCompletionInsertStatement(this.db, statement)
+			: statement;
+	}
+}
+
+function legacyTeamCompletion(): CoordinatorLegacyTeamCompletionManifestV1 {
+	const candidateRef = legacyTeamCandidateId("coord-a", "g1");
+	return {
+		version: 1,
+		coordinator_id: "coord-a",
+		candidate_ref: candidateRef,
+		candidate_digest: "a".repeat(64),
+		team_id: deterministicPolicyTeamId(candidateRef),
+		team_digest: "b".repeat(64),
+		source_digest: "c".repeat(64),
+		finish_digest: "d".repeat(64),
+		access_delta_digest: "e".repeat(64),
+		team: {
+			display_name: "Core Team",
+			policy_revision: "f".repeat(64),
+			device_eligibility_mode: "reviewed_allowlist",
+		},
+		memberships: [{ identity_id: "identity-a", role: "member" }],
+		device_decisions: [
+			{
+				device_id: "device-a",
+				key_fingerprint: "1".repeat(64),
+				enabled: true,
+				identity_id: "identity-a",
+				decision: "included",
+			},
+		],
+		project_mappings: [],
+		project_recipients: [],
+		completed_at: "2026-09-01T00:00:00.000Z",
+	};
+}
+
 describe("D1CoordinatorStore", () => {
 	function setupStore() {
 		const tmpDir = mkdtempSync(join(tmpdir(), "d1-coord-test-"));
 		const db = connectCoordinator(join(tmpDir, "coordinator.sqlite"));
 		db.exec(`
+			DROP TABLE IF EXISTS coordinator_legacy_team_completions;
 			DROP TABLE IF EXISTS coordinator_scope_membership_effect_receipts;
 			DROP TABLE IF EXISTS coordinator_scope_membership_audit_log;
 			DROP TABLE IF EXISTS coordinator_scope_memberships;
@@ -237,6 +337,35 @@ describe("D1CoordinatorStore", () => {
 		};
 	});
 
+	it("rejects an oversized completion before materializing D1 result rows", async () => {
+		const { db, cleanup } = setupStore();
+		const trackedDb = new TrackingCompletionD1Database(db);
+		const trackedStore = new D1CoordinatorStore(trackedDb);
+		try {
+			db.prepare("INSERT INTO groups(group_id, display_name, created_at) VALUES (?, NULL, ?)").run(
+				"g1",
+				"2026-09-01T00:00:00.000Z",
+			);
+			db.prepare(`INSERT INTO coordinator_legacy_team_completions(
+				group_id, candidate_ref, manifest_version, manifest_json, completed_at, created_at
+			) VALUES (?, ?, 1, ?, ?, ?)`).run(
+				"g1",
+				"legacy-team-candidate:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"x".repeat(COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES + 1),
+				"2026-09-01T00:00:00.000Z",
+				"2026-09-01T00:00:00.000Z",
+			);
+
+			await expect(trackedStore.listLegacyTeamCompletions(["g1"])).rejects.toThrow(
+				"completion_results_too_large",
+			);
+			expect(trackedDb.completionRowsMaterialized).toBe(false);
+		} finally {
+			await trackedStore.close();
+			await cleanup();
+		}
+	});
+
 	it("converges to completed when a reverse pending row appears during insert", async () => {
 		const { db, cleanup } = setupStore();
 		const racingStore = new D1CoordinatorStore(new RacingSqliteD1Database(db));
@@ -257,6 +386,28 @@ describe("D1CoordinatorStore", () => {
 			);
 			await racingStore.close();
 		} finally {
+			await cleanup();
+		}
+	});
+
+	it("does not publish a completion when the D1 enrollment roster changes during insert", async () => {
+		const { db, cleanup } = setupStore();
+		const racingStore = new D1CoordinatorStore(new RacingCompletionD1Database(db));
+		try {
+			await racingStore.createGroup("g1");
+			await racingStore.enrollDevice("g1", {
+				deviceId: "device-a",
+				fingerprint: "1".repeat(64),
+				publicKey: "device-a-public-key",
+			});
+			const manifest = legacyTeamCompletion();
+
+			await expect(racingStore.createLegacyTeamCompletion("g1", manifest)).rejects.toThrow(
+				"completion_manifest_unavailable",
+			);
+			expect(await racingStore.getLegacyTeamCompletion("g1", manifest.candidate_ref)).toBeNull();
+		} finally {
+			await racingStore.close();
 			await cleanup();
 		}
 	});

@@ -4,6 +4,29 @@ export {
 	DEFAULT_COORDINATOR_DB_PATH,
 } from "./better-sqlite-coordinator-store.js";
 export type {
+	CoordinatorLegacyTeamCompletionDeviceDecisionV1,
+	CoordinatorLegacyTeamCompletionManifestV1,
+	CoordinatorLegacyTeamCompletionMembershipV1,
+	CoordinatorLegacyTeamCompletionProjectMappingV1,
+	CoordinatorLegacyTeamCompletionRecipientV1,
+	CoordinatorLegacyTeamCompletionRecord,
+	CoordinatorLegacyTeamCompletionWriteResult,
+} from "./coordinator-legacy-team-completion.js";
+export {
+	COORDINATOR_LEGACY_TEAM_COMPLETION_CONFLICT,
+	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BATCH_BYTES,
+	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BATCH_RESPONSE_BYTES,
+	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
+	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_GROUPS,
+	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_RECORDS,
+	COORDINATOR_LEGACY_TEAM_COMPLETION_VERSION,
+	CoordinatorLegacyTeamCompletionConflictError,
+	canonicalCoordinatorLegacyTeamCompletionManifestJson,
+	normalizeCoordinatorLegacyTeamCompletionCandidateRef,
+	normalizeCoordinatorLegacyTeamCompletionGroupIds,
+	normalizeCoordinatorLegacyTeamCompletionManifest,
+} from "./coordinator-legacy-team-completion.js";
+export type {
 	CoordinatorBootstrapGrantVerification,
 	CoordinatorConsumeProjectInviteInput,
 	CoordinatorCreateInviteInput,

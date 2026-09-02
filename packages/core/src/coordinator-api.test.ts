@@ -17,6 +17,8 @@ import {
 	type CoordinatorInvite,
 	type CoordinatorJoinRequest,
 	type CoordinatorJoinRequestReviewResult,
+	CoordinatorLegacyTeamCompletionConflictError,
+	type CoordinatorLegacyTeamCompletionManifestV1,
 	type CoordinatorListReciprocalApprovalsInput,
 	type CoordinatorListScopeMembershipAuditInput,
 	type CoordinatorListScopesInput,
@@ -34,7 +36,9 @@ import {
 	type CoordinatorUpdateScopeInput,
 	type CoordinatorUpsertPresenceInput,
 	createCoordinatorApp,
+	deterministicPolicyTeamId,
 	fingerprintPublicKey,
+	legacyTeamCandidateId,
 	type RecipientReviewedIntentV1,
 	recipientReviewedIntentDigest,
 	shareProjectSetDigest,
@@ -56,6 +60,39 @@ function acceptedProjectDigest(): string {
 			existingMemoryCount: ACCEPTED_PROJECT.existing_memory_count,
 		},
 	]);
+}
+
+function legacyCompletionManifest(): CoordinatorLegacyTeamCompletionManifestV1 {
+	const candidateRef = legacyTeamCandidateId("coord-a", "g1");
+	return {
+		version: 1,
+		coordinator_id: "coord-a",
+		candidate_ref: candidateRef,
+		candidate_digest: "a".repeat(64),
+		team_id: deterministicPolicyTeamId(candidateRef),
+		team_digest: "b".repeat(64),
+		source_digest: "c".repeat(64),
+		finish_digest: "d".repeat(64),
+		access_delta_digest: "e".repeat(64),
+		team: {
+			display_name: "Core Team",
+			policy_revision: "f".repeat(64),
+			device_eligibility_mode: "reviewed_allowlist",
+		},
+		memberships: [{ identity_id: "identity-a", role: "member" }],
+		device_decisions: [
+			{
+				device_id: "device-a",
+				key_fingerprint: "1".repeat(64),
+				enabled: true,
+				identity_id: "identity-a",
+				decision: "included",
+			},
+		],
+		project_mappings: [],
+		project_recipients: [],
+		completed_at: "2026-09-01T00:00:00.000Z",
+	};
 }
 
 function createMockStore(
@@ -121,6 +158,11 @@ function createMockStore(
 				_: CoordinatorListReciprocalApprovalsInput,
 			): Promise<CoordinatorReciprocalApproval[]> => [],
 		),
+		createLegacyTeamCompletion: vi.fn(async () => {
+			throw new Error("not implemented");
+		}),
+		getLegacyTeamCompletion: vi.fn(async () => null),
+		listLegacyTeamCompletions: vi.fn(async () => []),
 		upsertPresence: vi.fn(
 			async (_: CoordinatorUpsertPresenceInput): Promise<CoordinatorPresenceRecord> => {
 				throw new Error("not implemented");
@@ -274,6 +316,136 @@ describe("createCoordinatorApp dependency injection", () => {
 		expect(storeFactory).toHaveBeenCalledTimes(1);
 		expect(store.listEnrolledDevices).toHaveBeenCalledWith("g1", false);
 		expect(store.close).toHaveBeenCalledTimes(1);
+	});
+
+	it("authenticates and persists a bounded legacy Team completion manifest", async () => {
+		const manifest = legacyCompletionManifest();
+		const createLegacyTeamCompletion = vi.fn(async () => ({
+			status: "created" as const,
+			manifest,
+		}));
+		const store = createMockStore({ createLegacyTeamCompletion });
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-09-01T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+		const request = {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Codemem-Coordinator-Admin": "test-secret",
+			},
+			body: JSON.stringify({ group_id: "group-a", manifest }),
+		};
+
+		const unauthorized = await app.request("/v1/admin/legacy-team-completions", {
+			...request,
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(unauthorized.status).toBe(401);
+		const response = await app.request("/v1/admin/legacy-team-completions", request);
+		expect(response.status).toBe(201);
+		expect(await response.json()).toEqual({ ok: true, status: "created", manifest });
+		expect(createLegacyTeamCompletion).toHaveBeenCalledWith("group-a", manifest);
+	});
+
+	it("rejects a completion whose Team ID is not derived from its candidate", async () => {
+		const createLegacyTeamCompletion = vi.fn();
+		const app = createCoordinatorApp({
+			storeFactory: () => createMockStore({ createLegacyTeamCompletion }),
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-09-01T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+		const response = await app.request("/v1/admin/legacy-team-completions", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Codemem-Coordinator-Admin": "test-secret",
+			},
+			body: JSON.stringify({
+				group_id: "group-a",
+				manifest: { ...legacyCompletionManifest(), team_id: "team-other" },
+			}),
+		});
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ error: "completion_manifest_invalid" });
+		expect(createLegacyTeamCompletion).not.toHaveBeenCalled();
+	});
+
+	it("returns a stable conflict when an immutable completion differs", async () => {
+		const store = createMockStore({
+			createLegacyTeamCompletion: vi.fn(async () => {
+				throw new CoordinatorLegacyTeamCompletionConflictError();
+			}),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-09-01T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+
+		const response = await app.request("/v1/admin/legacy-team-completions", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Codemem-Coordinator-Admin": "test-secret",
+			},
+			body: JSON.stringify({ group_id: "group-a", manifest: legacyCompletionManifest() }),
+		});
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({ error: "completion_conflict" });
+	});
+
+	it("returns a conflict when the completion manifest becomes unavailable", async () => {
+		const store = createMockStore({
+			createLegacyTeamCompletion: vi.fn(async () => {
+				throw new Error("completion_manifest_unavailable");
+			}),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-09-01T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+
+		const response = await app.request("/v1/admin/legacy-team-completions", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Codemem-Coordinator-Admin": "test-secret",
+			},
+			body: JSON.stringify({ group_id: "group-a", manifest: legacyCompletionManifest() }),
+		});
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({ error: "completion_manifest_unavailable" });
+	});
+
+	it("returns only requested-group completion records", async () => {
+		const manifest = legacyCompletionManifest();
+		const listLegacyTeamCompletions = vi.fn(async () => [{ group_id: "group-a", manifest }]);
+		const store = createMockStore({ listLegacyTeamCompletions });
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-09-01T00:00:00Z" },
+			requestVerifier: allowRequest,
+		});
+
+		const response = await app.request("/v1/admin/legacy-team-completions/query", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Codemem-Coordinator-Admin": "test-secret",
+			},
+			body: JSON.stringify({ group_ids: ["group-a"] }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ items: [{ group_id: "group-a", manifest }] });
+		expect(listLegacyTeamCompletions).toHaveBeenCalledWith(["group-a"]);
 	});
 
 	it("validates human device names at the coordinator rename boundary", async () => {

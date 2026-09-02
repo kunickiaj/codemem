@@ -4,7 +4,49 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
+import {
+	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
+	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_RECORDS,
+	type CoordinatorLegacyTeamCompletionManifestV1,
+} from "./coordinator-legacy-team-completion.js";
 import { runCoordinatorStoreContract } from "./coordinator-store-test-harness.js";
+import {
+	deterministicPolicyTeamId,
+	legacyTeamCandidateId,
+} from "./recipient-policy-identifiers.js";
+
+function legacyTeamCompletion(): CoordinatorLegacyTeamCompletionManifestV1 {
+	const candidateRef = legacyTeamCandidateId("coord-a", "g1");
+	return {
+		version: 1,
+		coordinator_id: "coord-a",
+		candidate_ref: candidateRef,
+		candidate_digest: "a".repeat(64),
+		team_id: deterministicPolicyTeamId(candidateRef),
+		team_digest: "b".repeat(64),
+		source_digest: "c".repeat(64),
+		finish_digest: "d".repeat(64),
+		access_delta_digest: "e".repeat(64),
+		team: {
+			display_name: "Core Team",
+			policy_revision: "f".repeat(64),
+			device_eligibility_mode: "reviewed_allowlist",
+		},
+		memberships: [{ identity_id: "identity-a", role: "member" }],
+		device_decisions: [
+			{
+				device_id: "device-a",
+				key_fingerprint: "1".repeat(64),
+				enabled: true,
+				identity_id: "identity-a",
+				decision: "included",
+			},
+		],
+		project_mappings: [],
+		project_recipients: [],
+		completed_at: "2026-09-01T00:00:00.000Z",
+	};
+}
 
 describe("CoordinatorStore", () => {
 	function setupStore() {
@@ -40,6 +82,65 @@ describe("CoordinatorStore", () => {
 			},
 		};
 	}
+
+	it("does not publish a completion after its group is archived concurrently", async () => {
+		const { store, cleanup } = setupStore();
+		try {
+			await store.createGroup("g1");
+			const getGroup = store.getGroup.bind(store);
+			let archived = false;
+			store.getGroup = async (groupId) => {
+				const group = await getGroup(groupId);
+				if (!archived) {
+					archived = true;
+					await store.archiveGroup(groupId);
+				}
+				return group;
+			};
+			const manifest = legacyTeamCompletion();
+
+			await expect(store.createLegacyTeamCompletion("g1", manifest)).rejects.toThrow(
+				"group_archived",
+			);
+			expect(await store.getLegacyTeamCompletion("g1", manifest.candidate_ref)).toBeNull();
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("does not publish a completion when the SQLite enrollment roster changes before insert", async () => {
+		const { store, cleanup } = setupStore();
+		try {
+			await store.createGroup("g1");
+			await store.enrollDevice("g1", {
+				deviceId: "device-a",
+				fingerprint: "1".repeat(64),
+				publicKey: "device-a-public-key",
+			});
+			const getGroup = store.getGroup.bind(store);
+			let enrollmentAdded = false;
+			store.getGroup = async (groupId) => {
+				const group = await getGroup(groupId);
+				if (!enrollmentAdded) {
+					enrollmentAdded = true;
+					await store.enrollDevice(groupId, {
+						deviceId: "device-b",
+						fingerprint: "2".repeat(64),
+						publicKey: "device-b-public-key",
+					});
+				}
+				return group;
+			};
+			const manifest = legacyTeamCompletion();
+
+			await expect(store.createLegacyTeamCompletion("g1", manifest)).rejects.toThrow(
+				"completion_manifest_unavailable",
+			);
+			expect(await store.getLegacyTeamCompletion("g1", manifest.candidate_ref)).toBeNull();
+		} finally {
+			await cleanup();
+		}
+	});
 
 	describe("schema", () => {
 		it("adds nullable enrollment identity binding while preserving pre-column rows", async () => {
@@ -148,6 +249,7 @@ describe("CoordinatorStore", () => {
 					"coordinator_bootstrap_grants",
 					"coordinator_invites",
 					"coordinator_join_requests",
+					"coordinator_legacy_team_completions",
 					"coordinator_reciprocal_approvals",
 					"coordinator_scope_membership_audit_log",
 					"coordinator_scope_membership_effect_receipts",
@@ -203,6 +305,58 @@ describe("CoordinatorStore", () => {
 			} finally {
 				await store.close();
 				rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+	});
+
+	describe("legacy Team completion list bounds", () => {
+		it("rejects oversized manifests before returning completion rows", async () => {
+			const { store, cleanup } = setupStore();
+			try {
+				await store.createGroup("g1");
+				store.db
+					.prepare(`INSERT INTO coordinator_legacy_team_completions(
+						group_id, candidate_ref, manifest_version, manifest_json, completed_at, created_at
+					) VALUES (?, ?, 1, ?, ?, ?)`)
+					.run(
+						"g1",
+						"legacy-team-candidate:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+						"x".repeat(COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES + 1),
+						"2026-09-01T00:00:00.000Z",
+						"2026-09-01T00:00:00.000Z",
+					);
+
+				await expect(store.listLegacyTeamCompletions(["g1"])).rejects.toThrow(
+					"completion_results_too_large",
+				);
+			} finally {
+				await cleanup();
+			}
+		});
+
+		it("preserves detection of more than 500 completion records", async () => {
+			const { store, cleanup } = setupStore();
+			try {
+				await store.createGroup("g1");
+				const insert = store.db.prepare(`INSERT INTO coordinator_legacy_team_completions(
+					group_id, candidate_ref, manifest_version, manifest_json, completed_at, created_at
+				) VALUES (?, ?, 1, '{}', ?, ?)`);
+				store.db.transaction(() => {
+					for (let index = 0; index <= COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_RECORDS; index += 1) {
+						insert.run(
+							"g1",
+							`legacy-team-candidate:${index.toString(16).padStart(32, "0")}`,
+							"2026-09-01T00:00:00.000Z",
+							"2026-09-01T00:00:00.000Z",
+						);
+					}
+				})();
+
+				await expect(store.listLegacyTeamCompletions(["g1"])).rejects.toThrow(
+					"completion_results_too_large",
+				);
+			} finally {
+				await cleanup();
 			}
 		});
 	});

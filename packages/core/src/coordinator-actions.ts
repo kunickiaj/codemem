@@ -10,6 +10,21 @@ import {
 	type InvitePayload,
 	inviteLink,
 } from "./coordinator-invites.js";
+import type {
+	CoordinatorLegacyTeamCompletionManifestV1,
+	CoordinatorLegacyTeamCompletionRecord,
+	CoordinatorLegacyTeamCompletionWriteResult,
+} from "./coordinator-legacy-team-completion.js";
+import {
+	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BATCH_RESPONSE_BYTES,
+	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_RECORDS,
+	canonicalCoordinatorLegacyTeamCompletionManifestJson,
+	normalizeCoordinatorLegacyTeamCompletionCandidateRef,
+	normalizeCoordinatorLegacyTeamCompletionGroupIds,
+	normalizeCoordinatorLegacyTeamCompletionManifest,
+	requireCoordinatorLegacyTeamCompletionCandidateBinding,
+	requireCoordinatorLegacyTeamCompletionTeamBinding,
+} from "./coordinator-legacy-team-completion.js";
 import {
 	CoordinatorMembershipError,
 	normalizeMembershipEffectId,
@@ -117,6 +132,16 @@ function coordinatorRemoteTarget(config = readCodememConfigFile()): {
 	return { remoteUrl, adminSecret };
 }
 
+class RemoteCoordinatorRequestError extends Error {
+	constructor(
+		readonly status: number,
+		readonly code: string,
+	) {
+		super(`Remote coordinator request failed (${status}): ${code}`);
+		this.name = "RemoteCoordinatorRequestError";
+	}
+}
+
 async function remoteRequest(
 	method: string,
 	url: string,
@@ -124,6 +149,7 @@ async function remoteRequest(
 	body?: Record<string, unknown>,
 	actorId?: string | null,
 	timeoutS = 3,
+	maxResponseBytes = 2_000_000,
 ): Promise<Record<string, unknown> | null> {
 	const headers: Record<string, string> = { "X-Codemem-Coordinator-Admin": adminSecret };
 	const normalizedActorId = String(actorId ?? "").trim();
@@ -132,11 +158,11 @@ async function remoteRequest(
 		headers,
 		body,
 		timeoutS,
-		maxResponseBytes: 2_000_000,
+		maxResponseBytes,
 	});
 	if (status < 200 || status >= 300) {
 		const detail = typeof payload?.error === "string" ? payload.error : "unknown";
-		throw new Error(`Remote coordinator request failed (${status}): ${detail}`);
+		throw new RemoteCoordinatorRequestError(status, detail);
 	}
 	if (payload?.error === "response_too_large") throw new Error("coordinator_response_too_large");
 	return payload;
@@ -440,6 +466,179 @@ export async function coordinatorListGroupsAction(opts?: {
 	const store = new BetterSqliteCoordinatorStore(opts?.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
 		return await store.listGroups(includeArchived);
+	} finally {
+		await store.close();
+	}
+}
+
+export async function coordinatorCreateLegacyTeamCompletionAction(opts: {
+	groupId: string;
+	manifest: CoordinatorLegacyTeamCompletionManifestV1;
+	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
+	timeoutS?: number;
+}): Promise<CoordinatorLegacyTeamCompletionWriteResult> {
+	const [groupId] = normalizeCoordinatorLegacyTeamCompletionGroupIds([opts.groupId]);
+	if (!groupId) throw new Error("completion_manifest_invalid");
+	const manifest = normalizeCoordinatorLegacyTeamCompletionManifest(opts.manifest);
+	const target = coordinatorRemoteTarget();
+	const remote = opts.remoteUrl ?? (opts.dbPath ? null : target.remoteUrl);
+	const adminSecret = opts.adminSecret === undefined ? target.adminSecret : opts.adminSecret;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		const payload = await remoteRequest(
+			"POST",
+			`${stripTrailingSlashes(remote)}/v1/admin/legacy-team-completions`,
+			adminSecret,
+			{ group_id: groupId, manifest },
+			undefined,
+			opts.timeoutS,
+		);
+		if ((payload?.status !== "created" && payload?.status !== "existing") || !payload.manifest) {
+			throw new Error("coordinator_completion_response_malformed");
+		}
+		let responseManifest: CoordinatorLegacyTeamCompletionManifestV1;
+		try {
+			responseManifest = normalizeCoordinatorLegacyTeamCompletionManifest(payload.manifest);
+		} catch {
+			throw new Error("coordinator_completion_response_malformed");
+		}
+		if (
+			canonicalCoordinatorLegacyTeamCompletionManifestJson(responseManifest) !==
+			canonicalCoordinatorLegacyTeamCompletionManifestJson(manifest)
+		) {
+			throw new Error("coordinator_completion_response_malformed");
+		}
+		return {
+			status: payload.status,
+			manifest: responseManifest,
+		};
+	}
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		return await store.createLegacyTeamCompletion(groupId, manifest);
+	} finally {
+		await store.close();
+	}
+}
+
+export async function coordinatorGetLegacyTeamCompletionAction(opts: {
+	groupId: string;
+	candidateRef: string;
+	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
+	timeoutS?: number;
+}): Promise<CoordinatorLegacyTeamCompletionManifestV1 | null> {
+	const [groupId] = normalizeCoordinatorLegacyTeamCompletionGroupIds([opts.groupId]);
+	const candidateRef = normalizeCoordinatorLegacyTeamCompletionCandidateRef(opts.candidateRef);
+	if (!groupId) throw new Error("completion_manifest_invalid");
+	const target = coordinatorRemoteTarget();
+	const remote = opts.remoteUrl ?? (opts.dbPath ? null : target.remoteUrl);
+	const adminSecret = opts.adminSecret === undefined ? target.adminSecret : opts.adminSecret;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		try {
+			const payload = await remoteRequest(
+				"GET",
+				`${stripTrailingSlashes(remote)}/v1/admin/legacy-team-completions?group_id=${encodeURIComponent(groupId)}&candidate_ref=${encodeURIComponent(candidateRef)}`,
+				adminSecret,
+				undefined,
+				undefined,
+				opts.timeoutS,
+			);
+			let manifest: CoordinatorLegacyTeamCompletionManifestV1;
+			try {
+				manifest = normalizeCoordinatorLegacyTeamCompletionManifest(payload?.manifest);
+				requireCoordinatorLegacyTeamCompletionTeamBinding(manifest);
+				requireCoordinatorLegacyTeamCompletionCandidateBinding(manifest, groupId);
+			} catch {
+				throw new Error("coordinator_completion_response_malformed");
+			}
+			if (manifest.candidate_ref !== candidateRef) {
+				throw new Error("coordinator_completion_response_malformed");
+			}
+			return manifest;
+		} catch (error) {
+			if (
+				error instanceof RemoteCoordinatorRequestError &&
+				error.status === 404 &&
+				error.code === "completion_not_found"
+			) {
+				return null;
+			}
+			throw error;
+		}
+	}
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		return await store.getLegacyTeamCompletion(groupId, candidateRef);
+	} finally {
+		await store.close();
+	}
+}
+
+export async function coordinatorListLegacyTeamCompletionsAction(opts: {
+	groupIds: string[];
+	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
+	timeoutS?: number;
+}): Promise<CoordinatorLegacyTeamCompletionRecord[]> {
+	const groupIds = normalizeCoordinatorLegacyTeamCompletionGroupIds(opts.groupIds);
+	if (groupIds.length === 0) return [];
+	const target = coordinatorRemoteTarget();
+	const remote = opts.remoteUrl ?? (opts.dbPath ? null : target.remoteUrl);
+	const adminSecret = opts.adminSecret === undefined ? target.adminSecret : opts.adminSecret;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		const payload = await remoteRequest(
+			"POST",
+			`${stripTrailingSlashes(remote)}/v1/admin/legacy-team-completions/query`,
+			adminSecret,
+			{ group_ids: groupIds },
+			undefined,
+			opts.timeoutS,
+			COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BATCH_RESPONSE_BYTES,
+		);
+		if (
+			!Array.isArray(payload?.items) ||
+			payload.items.length > COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_RECORDS
+		) {
+			throw new Error("coordinator_completion_response_malformed");
+		}
+		const allowedGroups = new Set(groupIds);
+		const seenWinners = new Set<string>();
+		return payload.items.map((value) => {
+			if (!value || typeof value !== "object" || Array.isArray(value)) {
+				throw new Error("coordinator_completion_response_malformed");
+			}
+			const item = value as Record<string, unknown>;
+			const groupId = String(item.group_id ?? "");
+			if (!allowedGroups.has(groupId)) throw new Error("coordinator_completion_group_mismatch");
+			let manifest: CoordinatorLegacyTeamCompletionManifestV1;
+			try {
+				manifest = normalizeCoordinatorLegacyTeamCompletionManifest(item.manifest);
+				requireCoordinatorLegacyTeamCompletionTeamBinding(manifest);
+				requireCoordinatorLegacyTeamCompletionCandidateBinding(manifest, groupId);
+			} catch {
+				throw new Error("coordinator_completion_response_malformed");
+			}
+			const winnerKey = `${groupId}\0${manifest.candidate_ref}`;
+			if (seenWinners.has(winnerKey)) {
+				throw new Error("coordinator_completion_response_malformed");
+			}
+			seenWinners.add(winnerKey);
+			return {
+				group_id: groupId,
+				manifest,
+			};
+		});
+	}
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		return await store.listLegacyTeamCompletions(groupIds);
 	} finally {
 		await store.close();
 	}

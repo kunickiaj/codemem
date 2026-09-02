@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import type { CoordinatorLegacyTeamCompletionManifestV1 } from "./coordinator-legacy-team-completion.js";
+import { COORDINATOR_LEGACY_TEAM_COMPLETION_CONFLICT } from "./coordinator-legacy-team-completion.js";
 import type {
 	CoordinatorCreateInviteInput,
 	CoordinatorStore,
@@ -8,6 +10,12 @@ import {
 	CoordinatorReciprocalApprovalRequestChangedError,
 	RECIPROCAL_APPROVAL_REQUEST_CHANGED,
 } from "./coordinator-store-contract.js";
+import { legacyTeamResolvedProjectRef } from "./legacy-team-setup-draft.js";
+import {
+	deterministicPolicyTeamId,
+	legacyTeamCandidateId,
+	legacyTeamProjectRef,
+} from "./recipient-policy-identifiers.js";
 import {
 	canonicalRecipientReviewedIntentJson,
 	recipientReviewedIntentDigest,
@@ -32,6 +40,54 @@ function addDeviceReviewedIntent(identityId: string) {
 		projects: [],
 		excludedProjects: [],
 	};
+}
+
+function legacyTeamCompletion(
+	coordinatorId = "coord-a",
+	groupId = "g1",
+): CoordinatorLegacyTeamCompletionManifestV1 {
+	const candidateRef = legacyTeamCandidateId(coordinatorId, groupId);
+	return {
+		version: 1,
+		coordinator_id: coordinatorId,
+		candidate_ref: candidateRef,
+		candidate_digest: "a".repeat(64),
+		team_id: deterministicPolicyTeamId(candidateRef),
+		team_digest: "b".repeat(64),
+		source_digest: "c".repeat(64),
+		finish_digest: "d".repeat(64),
+		access_delta_digest: "e".repeat(64),
+		team: {
+			display_name: "Core Team",
+			policy_revision: "f".repeat(64),
+			device_eligibility_mode: "reviewed_allowlist",
+		},
+		memberships: [{ identity_id: "identity-a", role: "member" }],
+		device_decisions: [
+			{
+				device_id: "device-a",
+				key_fingerprint: "1".repeat(64),
+				enabled: true,
+				identity_id: "identity-a",
+				decision: "included",
+			},
+		],
+		project_mappings: [],
+		project_recipients: [],
+		completed_at: "2026-09-01T00:00:00.000Z",
+	};
+}
+
+async function enrollLegacyTeamDevice(
+	store: CoordinatorStore,
+	groupId: string,
+	fingerprint = "1".repeat(64),
+): Promise<void> {
+	await store.enrollDevice(groupId, {
+		deviceId: "device-a",
+		fingerprint,
+		publicKey: "device-a-public-key",
+	});
 }
 
 export interface CoordinatorStoreHarnessContext<
@@ -2640,6 +2696,295 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 							direction: "outgoing",
 						}),
 					).toEqual([]);
+				});
+			});
+		});
+
+		describe("legacy Team completion manifests", () => {
+			it("rejects a Team ID that is not bound to the candidate", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1");
+					await expect(
+						store.createLegacyTeamCompletion("g1", {
+							...legacyTeamCompletion(),
+							team_id: "team-other",
+						}),
+					).rejects.toThrow("completion_manifest_invalid");
+				});
+			});
+
+			it("persists the first valid manifest and treats semantic replay as idempotent", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1");
+					await enrollLegacyTeamDevice(store, "g1");
+					const manifest = legacyTeamCompletion();
+					expect(await store.createLegacyTeamCompletion("g1", manifest)).toEqual({
+						status: "created",
+						manifest,
+					});
+					const replay = {
+						...manifest,
+						memberships: [...manifest.memberships],
+						device_decisions: [...manifest.device_decisions],
+					};
+					expect(await store.createLegacyTeamCompletion("g1", replay)).toEqual({
+						status: "existing",
+						manifest,
+					});
+					expect(await store.getLegacyTeamCompletion("g1", manifest.candidate_ref)).toEqual(
+						manifest,
+					);
+				});
+			});
+
+			it("returns an immutable replay after the live roster drifts", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1");
+					await enrollLegacyTeamDevice(store, "g1");
+					const manifest = legacyTeamCompletion();
+					await store.createLegacyTeamCompletion("g1", manifest);
+					await store.enrollDevice("g1", {
+						deviceId: "device-b",
+						fingerprint: "2".repeat(64),
+						publicKey: "device-b-public-key",
+					});
+
+					expect(await store.createLegacyTeamCompletion("g1", manifest)).toEqual({
+						status: "existing",
+						manifest,
+					});
+					expect(await store.getLegacyTeamCompletion("g1", manifest.candidate_ref)).toEqual(
+						manifest,
+					);
+				});
+			});
+
+			it("requires every mapped scope to be active and bound to the completion group", async () => {
+				await withContext(async ({ store }) => {
+					const coordinatorId = "coord-a";
+					const candidateRef = legacyTeamCandidateId(coordinatorId, "g1");
+					await store.createGroup("g1");
+					await store.createGroup("g2");
+					await enrollLegacyTeamDevice(store, "g1");
+					await store.createScope({
+						scopeId: "scope-valid",
+						label: "Valid",
+						coordinatorId,
+						groupId: "g1",
+					});
+					await store.createScope({
+						scopeId: "scope-wrong-group",
+						label: "Wrong group",
+						coordinatorId,
+						groupId: "g2",
+					});
+					await store.createScope({
+						scopeId: "scope-wrong-coordinator",
+						label: "Wrong coordinator",
+						coordinatorId: "coord-b",
+						groupId: "g1",
+					});
+					await store.createScope({
+						scopeId: "scope-local",
+						label: "Local",
+						authorityType: "local",
+						coordinatorId,
+						groupId: "g1",
+					});
+					await store.createScope({
+						scopeId: "scope-inactive",
+						label: "Inactive",
+						coordinatorId,
+						groupId: "g1",
+						status: "inactive",
+					});
+					const base = legacyTeamCompletion(coordinatorId, "g1");
+					const projectRef = legacyTeamProjectRef(candidateRef, "project-a");
+					const resolvedProjectRef = legacyTeamResolvedProjectRef(projectRef, "project-a");
+					const mapped = (scopeId: string): CoordinatorLegacyTeamCompletionManifestV1 => ({
+						...base,
+						project_mappings: [
+							{
+								project_ref: projectRef,
+								resolved_project_ref: resolvedProjectRef,
+								scope_id: scopeId,
+							},
+						],
+						project_recipients: [
+							{ resolved_project_ref: resolvedProjectRef, team_id: base.team_id },
+						],
+					});
+
+					for (const scopeId of [
+						"scope-missing",
+						"scope-wrong-group",
+						"scope-wrong-coordinator",
+						"scope-local",
+						"scope-inactive",
+					]) {
+						await expect(store.createLegacyTeamCompletion("g1", mapped(scopeId))).rejects.toThrow(
+							"completion_manifest_invalid",
+						);
+						expect(await store.getLegacyTeamCompletion("g1", candidateRef)).toBeNull();
+					}
+					const valid = mapped("scope-valid");
+					expect(await store.createLegacyTeamCompletion("g1", valid)).toMatchObject({
+						status: "created",
+					});
+					await store.updateScope({ scopeId: "scope-valid", status: "inactive" });
+					expect(await store.createLegacyTeamCompletion("g1", valid)).toMatchObject({
+						status: "existing",
+					});
+				});
+			});
+
+			it("rejects a different manifest for the same group and candidate", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1");
+					await enrollLegacyTeamDevice(store, "g1");
+					const manifest = legacyTeamCompletion();
+					await store.createLegacyTeamCompletion("g1", manifest);
+					await expect(
+						store.createLegacyTeamCompletion("g1", {
+							...manifest,
+							team: { ...manifest.team, display_name: "Changed Team" },
+						}),
+					).rejects.toMatchObject({ code: COORDINATOR_LEGACY_TEAM_COMPLETION_CONFLICT });
+					expect(await store.getLegacyTeamCompletion("g1", manifest.candidate_ref)).toEqual(
+						manifest,
+					);
+				});
+			});
+
+			it("isolates matching candidate references by group", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1");
+					await store.createGroup("g2");
+					await enrollLegacyTeamDevice(store, "g1");
+					await enrollLegacyTeamDevice(store, "g2");
+					const first = legacyTeamCompletion("coord-a", "g1");
+					const second = {
+						...legacyTeamCompletion("coord-a", "g2"),
+						team: { ...first.team, display_name: "Other Team" },
+					};
+					await store.createLegacyTeamCompletion("g1", first);
+					await store.createLegacyTeamCompletion("g2", second);
+					expect(await store.listLegacyTeamCompletions(["g2"])).toEqual([
+						{ group_id: "g2", manifest: second },
+					]);
+					expect(await store.getLegacyTeamCompletion("g1", first.candidate_ref)).toEqual(first);
+				});
+			});
+
+			it("requires completion decisions to exactly match the current enrollment roster", async () => {
+				await withContext(async ({ store }) => {
+					for (const [groupId, mutate] of [
+						[
+							"added",
+							async () => {
+								await store.enrollDevice("added", {
+									deviceId: "device-b",
+									fingerprint: "2".repeat(64),
+									publicKey: "device-b-public-key",
+								});
+							},
+						],
+						[
+							"removed",
+							async () => {
+								await store.removeDevice("removed", "device-a");
+							},
+						],
+						[
+							"disabled",
+							async () => {
+								await store.setDeviceEnabled("disabled", "device-a", false);
+							},
+						],
+						[
+							"re-keyed",
+							async () => {
+								await enrollLegacyTeamDevice(store, "re-keyed", "3".repeat(64));
+							},
+						],
+					] as const) {
+						await store.createGroup(groupId);
+						await enrollLegacyTeamDevice(store, groupId);
+						const manifest = legacyTeamCompletion("coord-a", groupId);
+						await mutate();
+
+						await expect(store.createLegacyTeamCompletion(groupId, manifest)).rejects.toThrow(
+							"completion_manifest_unavailable",
+						);
+						expect(await store.getLegacyTeamCompletion(groupId, manifest.candidate_ref)).toBeNull();
+					}
+				});
+			});
+
+			it("allows an explicitly excluded decision for a removed enrollment", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1");
+					await enrollLegacyTeamDevice(store, "g1");
+					await store.removeDevice("g1", "device-a");
+					const base = legacyTeamCompletion();
+					const [baseDecision] = base.device_decisions;
+					if (!baseDecision) throw new Error("missing completion fixture decision");
+					const manifest: CoordinatorLegacyTeamCompletionManifestV1 = {
+						...base,
+						memberships: [],
+						device_decisions: [
+							{
+								...baseDecision,
+								identity_id: null,
+								decision: "excluded",
+							},
+						],
+					};
+
+					expect(await store.createLegacyTeamCompletion("g1", manifest)).toMatchObject({
+						status: "created",
+					});
+				});
+			});
+
+			it("accepts matching disabled evidence only as an excluded decision", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1");
+					await enrollLegacyTeamDevice(store, "g1");
+					await store.setDeviceEnabled("g1", "device-a", false);
+					const base = legacyTeamCompletion();
+					const [baseDecision] = base.device_decisions;
+					if (!baseDecision) throw new Error("missing completion fixture decision");
+					const manifest: CoordinatorLegacyTeamCompletionManifestV1 = {
+						...base,
+						memberships: [],
+						device_decisions: [
+							{
+								...baseDecision,
+								enabled: false,
+								identity_id: null,
+								decision: "excluded",
+							},
+						],
+					};
+
+					expect(await store.createLegacyTeamCompletion("g1", manifest)).toMatchObject({
+						status: "created",
+					});
+				});
+			});
+
+			it("rejects writes for missing and archived groups", async () => {
+				await withContext(async ({ store }) => {
+					const manifest = legacyTeamCompletion();
+					await expect(store.createLegacyTeamCompletion("missing", manifest)).rejects.toThrow(
+						"group_not_found",
+					);
+					await store.createGroup("g1");
+					await store.archiveGroup("g1");
+					await expect(store.createLegacyTeamCompletion("g1", manifest)).rejects.toThrow(
+						"group_archived",
+					);
 				});
 			});
 		});

@@ -219,3 +219,16 @@ CREATE TABLE IF NOT EXISTS coordinator_scope_membership_effect_receipts (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_coordinator_reciprocal_pending_pair
 ON coordinator_reciprocal_approvals(group_id, pending_pair_low_device_id, pending_pair_high_device_id)
 WHERE status = 'pending';
+
+CREATE TABLE IF NOT EXISTS coordinator_legacy_team_completions (
+  group_id TEXT NOT NULL,
+  candidate_ref TEXT NOT NULL,
+  manifest_version INTEGER NOT NULL CHECK (manifest_version = 1),
+  manifest_json TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (group_id, candidate_ref)
+);
+
+CREATE INDEX IF NOT EXISTS idx_coordinator_legacy_team_completions_group
+ON coordinator_legacy_team_completions(group_id, completed_at, candidate_ref);

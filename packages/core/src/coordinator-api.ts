@@ -9,6 +9,15 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import type { InvitePayload } from "./coordinator-invites.js";
 import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
+import type { CoordinatorLegacyTeamCompletionManifestV1 } from "./coordinator-legacy-team-completion.js";
+import {
+	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
+	CoordinatorLegacyTeamCompletionConflictError,
+	normalizeCoordinatorLegacyTeamCompletionCandidateRef,
+	normalizeCoordinatorLegacyTeamCompletionGroupIds,
+	normalizeCoordinatorLegacyTeamCompletionManifest,
+	requireCoordinatorLegacyTeamCompletionTeamBinding,
+} from "./coordinator-legacy-team-completion.js";
 import {
 	CoordinatorMembershipError,
 	SCOPE_MEMBERSHIP_EFFECT_CONFLICT,
@@ -46,6 +55,7 @@ import { fingerprintPublicKey } from "./sync-fingerprint.js";
 // ---------------------------------------------------------------------------
 
 const MAX_BODY_BYTES = 64 * 1024;
+const MAX_LEGACY_TEAM_COMPLETION_BODY_BYTES = COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES + 1024;
 const ADMIN_HEADER = "X-Codemem-Coordinator-Admin";
 const ADMIN_ACTOR_HEADER = "X-Codemem-Coordinator-Admin-Actor";
 const DEFAULT_COORDINATOR_READ_LIMIT = 120;
@@ -261,9 +271,12 @@ export function createCoordinatorApp(
 		return c.json({ error: "rate_limited", retry_after_s: result.retryAfterS }, 429);
 	}
 
-	async function readRequestBytes(c: Context): Promise<Uint8Array | null> {
+	async function readRequestBytes(
+		c: Context,
+		maxBytes = MAX_BODY_BYTES,
+	): Promise<Uint8Array | null> {
 		const contentLength = Number.parseInt(c.req.header("content-length") ?? "", 10);
-		if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+		if (Number.isFinite(contentLength) && contentLength > maxBytes) {
 			return null;
 		}
 		const stream = c.req.raw.body;
@@ -277,7 +290,7 @@ export function createCoordinatorApp(
 				if (done) break;
 				if (!value) continue;
 				total += value.byteLength;
-				if (total > MAX_BODY_BYTES) {
+				if (total > maxBytes) {
 					await reader.cancel();
 					return null;
 				}
@@ -1466,6 +1479,111 @@ export function createCoordinatorApp(
 			const ok = await store.removeDevice(groupId, deviceId);
 			if (!ok) return c.json({ error: "device_not_found" }, 404);
 			return c.json({ ok: true });
+		} finally {
+			await store.close();
+		}
+	});
+
+	app.post("/v1/admin/legacy-team-completions", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+		const raw = await readRequestBytes(c, MAX_LEGACY_TEAM_COMPLETION_BODY_BYTES);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
+		const data = parseJsonObject(raw);
+		if (!data) return c.json({ error: "invalid_json" }, 400);
+		if (Object.keys(data).some((key) => key !== "group_id" && key !== "manifest")) {
+			return c.json({ error: "completion_manifest_invalid" }, 400);
+		}
+		let groupId: string;
+		let manifest: CoordinatorLegacyTeamCompletionManifestV1;
+		try {
+			const groupIds = normalizeCoordinatorLegacyTeamCompletionGroupIds([data.group_id]);
+			const normalizedGroupId = groupIds[0];
+			if (!normalizedGroupId) throw new Error("completion_manifest_invalid");
+			groupId = normalizedGroupId;
+			manifest = normalizeCoordinatorLegacyTeamCompletionManifest(data.manifest);
+			requireCoordinatorLegacyTeamCompletionTeamBinding(manifest);
+		} catch {
+			return c.json({ error: "completion_manifest_invalid" }, 400);
+		}
+		const store = createStore();
+		try {
+			const result = await store.createLegacyTeamCompletion(groupId, manifest);
+			return c.json({ ok: true, ...result }, result.status === "created" ? 201 : 200);
+		} catch (error) {
+			if (error instanceof CoordinatorLegacyTeamCompletionConflictError) {
+				return c.json({ error: error.code }, 409);
+			}
+			const code = error instanceof Error ? error.message : "completion_manifest_invalid";
+			if (code === "group_not_found") return c.json({ error: code }, 404);
+			if (code === "group_archived") return c.json({ error: code }, 409);
+			if (code === "completion_manifest_unavailable") {
+				return c.json({ error: code }, 409);
+			}
+			if (code === "completion_manifest_invalid") return c.json({ error: code }, 400);
+			throw error;
+		} finally {
+			await store.close();
+		}
+	});
+
+	app.get("/v1/admin/legacy-team-completions", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+		const groupId = String(c.req.query("group_id") ?? "").trim();
+		let candidateRef: string;
+		try {
+			if (normalizeCoordinatorLegacyTeamCompletionGroupIds([groupId]).length !== 1) {
+				throw new Error("completion_manifest_invalid");
+			}
+			candidateRef = normalizeCoordinatorLegacyTeamCompletionCandidateRef(
+				c.req.query("candidate_ref"),
+			);
+		} catch {
+			return c.json({ error: "group_id_and_candidate_ref_required" }, 400);
+		}
+		const store = createStore();
+		try {
+			const manifest = await store.getLegacyTeamCompletion(groupId, candidateRef);
+			return manifest ? c.json({ manifest }) : c.json({ error: "completion_not_found" }, 404);
+		} finally {
+			await store.close();
+		}
+	});
+
+	app.post("/v1/admin/legacy-team-completions/query", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+		const raw = await readRequestBytes(c);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
+		const data = parseJsonObject(raw);
+		if (!data || Object.keys(data).some((key) => key !== "group_ids")) {
+			return c.json({ error: "completion_query_invalid" }, 400);
+		}
+		let groupIds: string[];
+		try {
+			groupIds = normalizeCoordinatorLegacyTeamCompletionGroupIds(data.group_ids);
+			if (groupIds.length === 0) throw new Error("completion_query_invalid");
+		} catch {
+			return c.json({ error: "completion_query_invalid" }, 400);
+		}
+		const store = createStore();
+		try {
+			return c.json({ items: await store.listLegacyTeamCompletions(groupIds) });
+		} catch (error) {
+			if (error instanceof Error && error.message === "completion_results_too_large") {
+				return c.json({ error: error.message }, 413);
+			}
+			throw error;
 		} finally {
 			await store.close();
 		}

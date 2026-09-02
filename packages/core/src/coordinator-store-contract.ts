@@ -1,3 +1,8 @@
+import type {
+	CoordinatorLegacyTeamCompletionManifestV1,
+	CoordinatorLegacyTeamCompletionRecord,
+	CoordinatorLegacyTeamCompletionWriteResult,
+} from "./coordinator-legacy-team-completion.js";
 import type { RecipientReviewedIntentV1 } from "./recipient-reviewed-intent.js";
 
 /**
@@ -533,6 +538,15 @@ export interface CoordinatorStore {
 	listReciprocalApprovals(
 		opts: CoordinatorListReciprocalApprovalsInput,
 	): Promise<CoordinatorReciprocalApproval[]>;
+	createLegacyTeamCompletion(
+		groupId: string,
+		manifest: CoordinatorLegacyTeamCompletionManifestV1,
+	): Promise<CoordinatorLegacyTeamCompletionWriteResult>;
+	getLegacyTeamCompletion(
+		groupId: string,
+		candidateRef: string,
+	): Promise<CoordinatorLegacyTeamCompletionManifestV1 | null>;
+	listLegacyTeamCompletions(groupIds: string[]): Promise<CoordinatorLegacyTeamCompletionRecord[]>;
 	upsertPresence(opts: CoordinatorUpsertPresenceInput): Promise<CoordinatorPresenceRecord>;
 	listGroupPeers(groupId: string, requestingDeviceId: string): Promise<CoordinatorPeerRecord[]>;
 }
