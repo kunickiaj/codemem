@@ -26,7 +26,7 @@
 		"@codemem/mcp": "workspace:^",
 		"@codemem/server": "workspace:^",
 		"@hono/node-server": "catalog:",
-		"commander": "^14.0.3",
+		"commander": "^15.0.0",
 		"drizzle-orm": "catalog:",
 		"omelette": "^0.4.17"
 	},
