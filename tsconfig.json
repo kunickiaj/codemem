@@ -2,6 +2,7 @@
 	"files": [],
 	"references": [
 		{ "path": "packages/core" },
+		{ "path": "packages/embeddings" },
 		{ "path": "packages/cloudflare-coordinator-worker" },
 		{ "path": "packages/mcp-server" },
 		{ "path": "packages/opencode-plugin" },

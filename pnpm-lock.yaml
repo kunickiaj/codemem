@@ -306,6 +306,22 @@ importers:
         specifier: 'catalog:'
         version: 4.1.11(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0))
 
+  packages/embeddings:
+    dependencies:
+      '@xenova/transformers':
+        specifier: ^2.17.2
+        version: 2.17.2
+    devDependencies:
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vite:
+        specifier: 'catalog:'
+        version: 8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0)
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.11(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0))
+
   packages/mcp-server:
     dependencies:
       '@codemem/core':
