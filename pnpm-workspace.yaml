@@ -31,6 +31,6 @@ catalog:
   hono: ^4.13.5
   limiter: ^3.0.0
   tsx: ^4.23.13
-  typescript: ^6.0.3
+  typescript: ^7.0.2
   vite: ^8.2.2
   vitest: ^4.1.11
