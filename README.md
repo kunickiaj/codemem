@@ -46,16 +46,49 @@ npx -y codemem db raw-events-status
 
 That's it. The plugin captures activity, builds memories, and injects context from here on.
 
-If you want `codemem` available directly on your `PATH` for manual commands and semantic retrieval, install the CLI and embedding runtime globally:
+If you want `codemem` available directly on your `PATH` for manual commands and semantic retrieval, install the CLI and embedding runtime globally. The command differs by platform:
+
+On Linux, skip the unused ONNX Runtime GPU provider download:
+
+```text
+env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem @codemem/embeddings
+```
+
+On macOS and Windows:
 
 ```text
 npm install -g codemem @codemem/embeddings
 ```
 
+Installing only `codemem` keeps the CLI functional with FTS5 keyword retrieval
+and does not download the embedding runtime.
+
+Setup-managed `npx` launchers cannot set a platform-specific install variable.
+On Linux, either use the guarded global installation above or set
+`ONNXRUNTIME_NODE_INSTALL=skip` in the environment that launches OpenCode,
+Claude Code, or Codex before its first `npx` package resolution. This prevents
+the unused ONNX Runtime GPU-provider download while retaining CPU inference.
+
+After upgrading an existing installation, rerun `codemem setup` (or the
+app-specific `--opencode-only`, `--claude-only`, or `--codex-only` form).
+Setup replaces the old managed `npx -y codemem mcp` launcher and codemem MCP
+entries detected as UV/UVX-based so both packages share one runtime. Other
+custom MCP commands remain unchanged.
+
+Generated MCP configurations use the durable global `codemem` binary when it is
+available. Without a global install, setup-managed `npx` launchers request both
+packages in the same temporary environment. After changing the installation,
+restart the host whose config you updated — OpenCode, Claude Code, or Codex —
+plus any running `codemem serve` process. Each MCP process caches runtime
+availability for its lifetime, so a still-running Claude or Codex MCP host keeps
+lexical-only recall until it restarts; restarting `codemem serve` alone does not
+restart that MCP child.
+
 OpenCode plugin and CLI are now split intentionally:
 
 - `@codemem/opencode-plugin` — OpenCode plugin package
 - `codemem` — CLI and MCP commands
+- `@codemem/embeddings` — optional semantic embedding runtime
 
 ### Claude Code (marketplace install)
 

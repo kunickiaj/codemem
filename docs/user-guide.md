@@ -472,6 +472,37 @@ When selected history may already have replicated, all participating owner devic
 - Check `~/.codemem/plugin.log` for plugin errors.
 - Sync errors: `codemem sync status` shows the last error per peer.
 
+### Semantic runtime unavailable
+
+Codemem defaults to FTS5 keyword retrieval when the optional embedding runtime
+is absent. Install both packages globally to enable semantic recall. On Linux,
+set the CPU-only policy so the installer skips the unused GPU provider:
+
+```fish
+env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem @codemem/embeddings
+```
+
+On macOS and Windows, install both packages normally:
+
+```text
+npm install -g codemem @codemem/embeddings
+```
+
+Rerun `codemem setup` after upgrading an existing installation. The scoped
+`--opencode-only`, `--claude-only`, and `--codex-only` forms work too. Setup
+replaces the old managed `npx -y codemem mcp` launcher and codemem MCP entries
+detected as UV/UVX-based so both packages resolve in one runtime. Other custom
+MCP commands remain unchanged.
+
+Generated MCP configurations use the durable global `codemem` binary when it is
+available, allowing it to resolve the globally installed sibling package.
+Setup-managed `npx` launchers instead request `codemem` and
+`@codemem/embeddings` together in one temporary environment. After installation,
+restart the host you configured — OpenCode, Claude Code, or Codex — plus any
+running `codemem serve` process. Each MCP process checks runtime availability
+once per lifetime, so a running Claude or Codex MCP host stays lexical-only until
+it restarts; restarting `codemem serve` alone does not restart that MCP child.
+
 ### sqlite-vec / `no such module: vec0`
 
 **Symptom:** API errors with `SqliteError: no such module: vec0`, or the viewer logs `sqlite-vec failed to load; retrying viewer startup with embeddings disabled` at startup.

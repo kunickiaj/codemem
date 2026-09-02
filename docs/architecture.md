@@ -116,7 +116,7 @@ It does not currently gate sync or retrieval. See `docs/plans/2026-03-08-shared-
 
 ### Semantic search (sqlite-vec)
 
-When embeddings are available, `memory_vectors` (a `vec0` virtual table from sqlite-vec) stores 384-dimensional float vectors keyed by `memory_id`. Vectors are written automatically when memories are created, or backfilled with `codemem embed`.
+When the optional `@codemem/embeddings` runtime is installed, `memory_vectors` (a `vec0` virtual table from sqlite-vec) stores 384-dimensional float vectors keyed by `memory_id`. Vectors are written automatically when memories are created, or backfilled with `codemem embed`. Lexical-only installs omit Transformers and ONNX Runtime.
 
 Semantic search embeds the query text, then runs a nearest-neighbor lookup against `memory_vectors`. Distance is converted to a similarity score: `1.0 / (1.0 + distance)`.
 

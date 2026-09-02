@@ -185,7 +185,7 @@ codex plugin marketplace upgrade
 codex plugin remove codemem@codemem
 ```
 
-The plugin bundles `.mcp.json` (a paired `npx` launcher for `codemem` and `@codemem/embeddings`), `hooks/hooks.json`, and a dependency-free generated normalizer. Ingest wrappers use Viewer HTTP without child processes when healthy; `codemem` and pinned `npx` are fallback-only. Generated files come from the TypeScript normalizers in `packages/core/src/` via `node scripts/build-adapter-normalizers.mjs` and are protected by a byte-drift test. Validated targets: Codex CLI 0.135+ and current Desktop builds.
+The plugin bundles `.mcp.json`, `hooks/hooks.json`, and a dependency-free generated normalizer. Its MCP `npx` launcher requests both `codemem` and `@codemem/embeddings` in the same temporary environment so the optional runtime is resolvable. Ingest wrappers use Viewer HTTP without child processes when healthy; `codemem` and pinned `npx` are fallback-only. Generated files come from the TypeScript normalizers in `packages/core/src/` via `node scripts/build-adapter-normalizers.mjs` and are protected by a byte-drift test. Validated targets: Codex CLI 0.135+ and current Desktop builds.
 
 ### Plugin-free install (`codemem setup --codex-only`)
 
@@ -197,7 +197,7 @@ npx -y codemem setup --codex-only   # or, with a global install: codemem setup -
 
 What it does (idempotent; honors `CODEX_HOME`; backs up existing files; `--force` to refresh):
 
-- **MCP:** appends `[mcp_servers.codemem]` with an `npx` command that requests both `codemem` and `@codemem/embeddings` before launching `codemem mcp`. The file is never reparsed or reformatted — only appended — so comments and unrelated servers (including secrets) are preserved.
+- **MCP:** appends `[mcp_servers.codemem]` to `<CODEX_HOME>/config.toml` if not already present. It uses a durable global `codemem mcp` command when available; otherwise its `npx` command requests both `codemem` and `@codemem/embeddings` before launching `codemem mcp`. Setup upgrades the exact older managed `npx -y codemem mcp` table but leaves custom launchers untouched. The file is never reparsed or reformatted: setup either appends the table or replaces only the managed `command` and `args` lines, preserving comments and unrelated servers (including secrets).
 - **Hooks:** merges `SessionStart`, `UserPromptSubmit` (ingest + inject), `PostToolUse`, and `Stop` into `<CODEX_HOME>/hooks.json`, preserving any unrelated user hooks. Hook commands resolve to a direct `codemem codex-hook-*` call when `codemem` is on `PATH`; otherwise their `npx` fallback requests both packages before invoking the hook command. Prompt injection validates the loopback Viewer profile and retrieves with `POST /api/pack` first, using the local database only for classified compatibility fallback.
 
 Hooks loaded from the user config layer require a one-time trust approval in Codex (you'll be prompted on first run; MCP recall needs no trust). Codex setup also runs automatically in a plain `codemem setup` when a Codex home (`~/.codex` or `$CODEX_HOME`) is detected.
@@ -466,8 +466,8 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 
 When the plugin detects CLI/runtime version mismatch, it shows guidance based on runner mode:
 
-- `CODEMEM_RUNNER=codemem`: install matching `codemem` and `@codemem/embeddings` versions, then restart OpenCode
-- `CODEMEM_RUNNER=npx`: set `CODEMEM_RUNNER_FROM` to the desired `codemem@<version>` spec; the plugin pairs the matching `@codemem/embeddings` version automatically. Then restart OpenCode (or reinstall the plugin instead).
+- `CODEMEM_RUNNER=codemem`: run `npm install -g codemem @codemem/embeddings` (the optional runtime enables semantic recall), then restart OpenCode. On Linux, prefix with `ONNXRUNTIME_NODE_INSTALL=skip` to avoid downloading the unused GPU provider (see the semantic-runtime install notes).
+- `CODEMEM_RUNNER=npx`: the compatibility warning recommends moving to a global install. Install `codemem` and `@codemem/embeddings` globally, clear explicit `CODEMEM_RUNNER` and `CODEMEM_RUNNER_FROM` overrides so the plugin detects that install, then restart OpenCode. To keep using npx instead, update `CODEMEM_RUNNER_FROM` to the desired `codemem@<version>` spec; the plugin pairs the matching `@codemem/embeddings` version automatically. On Linux, see the CPU-only semantic-runtime install notes in the README.
 - `CODEMEM_RUNNER=node`: pull latest repo changes and run `pnpm build`, then restart OpenCode
 - custom/unknown runner: update the underlying `codemem` binary or package source, then restart OpenCode
 
