@@ -30,7 +30,6 @@
 	},
 	"devDependencies": {
 		"@preact/preset-vite": "^2.10.6",
-		"jsdom": "^27.4.0",
 		"typescript": "catalog:",
 		"vite": "catalog:"
 	}

@@ -41,7 +41,7 @@
 		"directory": "packages/viewer-server"
 	},
 	"engines": {
-		"node": ">=24"
+		"node": ">=24.15.0"
 	},
 	"license": "MIT",
 	"publishConfig": {

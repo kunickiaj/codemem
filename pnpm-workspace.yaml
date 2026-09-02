@@ -17,7 +17,6 @@ overrides:
   'express-rate-limit>ip-address': 10.7.0
   'express>body-parser': 2.3.0
   'router>path-to-regexp': 8.4.2
-  'jsdom>ws': 8.20.1
   'miniflare>ws': 8.20.1
   '@rollup/pluginutils@5>picomatch': 4.0.4
   'onnx-proto>protobufjs': 7.6.6

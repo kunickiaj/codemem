@@ -18,7 +18,9 @@ Persistent memory for [OpenCode](https://opencode.ai) and [Claude Code](https://
 
 ## Quick start
 
-**Prerequisites:** Node.js 24+ and npm (or pnpm)
+**Prerequisites:** Node.js 24.15+ and npm (or pnpm)
+
+codemem keeps one minimum Node.js version across published packages and workspace tooling.
 
 ### OpenCode
 
