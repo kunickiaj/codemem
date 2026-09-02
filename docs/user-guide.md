@@ -225,11 +225,15 @@ If a Team needs device setup, **Sharing** shows a notice and **Continue setup**.
 2. Still in **Review devices**, include each device with its confirmed person, choose **Exclude**, or clear an earlier choice to review it again. An exclusion applies only to this Team; a confirmed person assignment can be reused by another Team.
 3. In **Review Projects**, check every Project. Codemem can recognize some Projects automatically; choose an explicit Project mapping for any it cannot. Unresolved Projects prevent finishing.
 4. In the final review, check the server-provided list of people, included and excluded devices, Project mappings, and every access change. Nothing changes while you are reviewing or saving choices.
-5. Choose **Finish Team setup** only when the review is correct. Codemem applies the confirmed Team, device decisions, Project mappings, and access changes together. If it cannot complete every change, it applies none.
+5. Choose **Finish Team setup** only when the review is correct. The first valid finish becomes the shared result for that Team. Codemem applies the confirmed Team, device decisions, Project mappings, and access changes together. If it cannot complete every change, it applies none.
 
 Setup can become stale when devices, Project mappings, or access change while you are reviewing. Refresh the Team, review the updates, and finish again; new or changed devices need a fresh decision. Your unchanged saved choices remain available for review.
 
-If the page closes or the finish response is lost, refresh **Sharing** and open the Team again. A completed Team appears **Ready**; retrying the same finish request returns the completed result instead of applying access changes again.
+When another upgraded device opens **Sharing**, it automatically applies a completed Team's reviewed policy locally before removing the setup task. The Team then appears normally under **Sharing → Teams**, so you do not need to repeat setup on each device.
+
+If the page closes or the finish response is lost, refresh **Sharing** and open the Team again. Retrying the same finish safely returns the completed result instead of applying access changes again. If setup cannot reach the shared completion service or cannot apply the completed result locally, the task stays visible and offers retry; it never hides an incomplete setup.
+
+Every device that finishes or recovers setup must use a coordinator that supports cross-device Team completion. With an older coordinator, Codemem keeps the setup unfinished rather than creating a local-only result; update the coordinator, then retry. A device upgraded after a prior local completion makes that result available when it reconnects, after which other upgraded devices recover it automatically.
 
 ### Share exact Projects
 

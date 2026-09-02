@@ -751,6 +751,36 @@ describe("legacy Team setup dialog", () => {
 		expect(document.body.textContent).not.toContain("team_setup_roster_unavailable");
 	});
 
+	it.each([
+		[
+			"team_setup_completion_unavailable",
+			"Team setup completion could not be checked",
+			"Check the coordinator connection and settings, then refresh",
+		],
+		[
+			"team_setup_completion_conflict",
+			"Another device completed this Team with different reviewed details",
+			"Refresh to apply the completed setup",
+		],
+		[
+			"team_setup_completion_invalid",
+			"The completed Team setup could not be verified",
+			"check the coordinator connection and settings if the problem continues",
+		],
+	] as const)("shows recovery copy without exposing %s", async (errorCode, summary, recovery) => {
+		// Arrange
+		setup(vi.fn().mockResolvedValue(detail({ conflictState: errorCode })));
+
+		// Act
+		await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
+
+		// Assert
+		const text = document.querySelector('[role="alert"]')?.textContent ?? "";
+		expect(text).toContain(summary);
+		expect(text).toContain(recovery);
+		expect(document.body.textContent).not.toContain(errorCode);
+	});
+
 	it("uses changed-state copy for stale API errors and stale detail", async () => {
 		const loadDetail = vi
 			.fn()
@@ -1579,7 +1609,7 @@ describe("legacy Team setup dialog", () => {
 		expect(document.body.outerHTML).not.toContain(privateRemote);
 	});
 
-	it("reloads stale Project mapping evidence and keeps safe recovery copy", async () => {
+	it("reloads stale Project mapping evidence and retries with a plain detail load", async () => {
 		const initialProject = project();
 		const refreshedProject = project({
 			mappingChoices: [
@@ -1630,11 +1660,13 @@ describe("legacy Team setup dialog", () => {
 			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
 				"changed since it was last reviewed",
 			);
-			expect(document.body.textContent).toContain("Current setup details are unavailable");
+			expect(document.body.textContent).toContain("Project Gamma");
 		});
 		expect(document.body.textContent).not.toContain("team_setup_confirmation_stale");
 		expect(loadDetail).toHaveBeenCalledTimes(2);
-		expect(document.querySelector<HTMLSelectElement>(".legacy-team-project-select")).toBeNull();
+		expect(document.querySelector<HTMLSelectElement>(".legacy-team-project-select")?.value).toBe(
+			"",
+		);
 
 		act(() => document.getElementById("legacy-team-setup-retry")?.click());
 		await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).toBeNull());
@@ -1642,8 +1674,8 @@ describe("legacy Team setup dialog", () => {
 			"",
 		);
 		expect(button("Save mapping").getAttribute("aria-disabled")).toBe("true");
-		expect(loadDetail).toHaveBeenCalledTimes(2);
-		expect(refreshCandidate).toHaveBeenCalledWith("opaque-candidate");
+		expect(loadDetail).toHaveBeenCalledTimes(3);
+		expect(refreshCandidate).not.toHaveBeenCalled();
 	});
 
 	it("does not reload after an authoritative Project mapping response", async () => {
@@ -2880,11 +2912,13 @@ describe("legacy Team setup dialog", () => {
 			confirmedAccessDeltaDigest: "opaque-access-digest",
 			confirmedViewerAccessDeltaDigest: "opaque-viewer-access-digest",
 		});
-		expect(
-			document.querySelector<HTMLInputElement>(".legacy-team-setup-confirmation input"),
-		).toBeNull();
-		expect(document.body.textContent).not.toContain("Add Sam to Example Team.");
-		expect(document.body.textContent).toContain("Retry loading current setup");
+		const refreshedConfirmation = document.querySelector<HTMLInputElement>(
+			".legacy-team-setup-confirmation input",
+		);
+		expect(refreshedConfirmation?.checked).toBe(false);
+		expect(refreshedConfirmation?.getAttribute("aria-disabled")).toBe("true");
+		expect(document.body.textContent).toContain("Add Sam to Example Team.");
+		expect(button("Retry")).toBeTruthy();
 	});
 
 	it("treats a stale finish recovery that is already completed as success", async () => {

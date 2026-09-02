@@ -63,6 +63,55 @@ describe("legacy Team setup effect runner", () => {
 		expect(outcome).toMatchObject({ status: "failure", cause, recoveredView: view });
 	});
 
+	it("reloads once when detail reconciliation makes the prior confirmation stale", async () => {
+		const cause = new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale");
+		const completedView = { state: "completed" } as LegacyTeamSetupViewV1;
+		const loadDetail = vi.fn().mockRejectedValueOnce(cause).mockResolvedValueOnce(completedView);
+		const outcome = await createSetupEffectRunner(dependencies({ loadDetail }))(
+			effect({ kind: "load", refresh: false, focusOnOutcome: true }),
+		);
+
+		expect(loadDetail).toHaveBeenCalledTimes(2);
+		expect(outcome).toMatchObject({ status: "failure", cause, recoveredView: completedView });
+	});
+
+	it("preserves a failure from the one-shot detail recovery", async () => {
+		const stale = new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale");
+		const unavailable = new LegacyTeamSetupApiError(503, "team_setup_completion_unavailable");
+		const loadDetail = vi.fn().mockRejectedValueOnce(stale).mockRejectedValueOnce(unavailable);
+		const outcome = await createSetupEffectRunner(dependencies({ loadDetail }))(
+			effect({ kind: "load", refresh: false, focusOnOutcome: true }),
+		);
+
+		expect(loadDetail).toHaveBeenCalledTimes(2);
+		expect(outcome).toMatchObject({ status: "failure", cause: stale, recoveryCause: unavailable });
+		expect(outcome).not.toHaveProperty("recoveredView");
+	});
+
+	it("does not reload a confirmation-stale refresh request", async () => {
+		const cause = new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale");
+		const loadDetail = vi.fn();
+		const refreshCandidate = vi.fn().mockRejectedValue(cause);
+		const outcome = await createSetupEffectRunner(dependencies({ loadDetail, refreshCandidate }))(
+			effect({ kind: "load", refresh: true, focusOnOutcome: true }),
+		);
+
+		expect(refreshCandidate).toHaveBeenCalledOnce();
+		expect(loadDetail).not.toHaveBeenCalled();
+		expect(outcome).not.toHaveProperty("recoveredView");
+	});
+
+	it("does not reload detail for unrelated changed-state errors", async () => {
+		const cause = new LegacyTeamSetupApiError(409, "team_setup_roster_changed");
+		const loadDetail = vi.fn().mockRejectedValue(cause);
+		const outcome = await createSetupEffectRunner(dependencies({ loadDetail }))(
+			effect({ kind: "load", refresh: false, focusOnOutcome: true }),
+		);
+
+		expect(loadDetail).toHaveBeenCalledOnce();
+		expect(outcome).not.toHaveProperty("recoveredView");
+	});
+
 	it("does not recover ordinary item failures by reloading", async () => {
 		const cause = new Error("safe test failure");
 		const deps = dependencies({ saveDecision: vi.fn().mockRejectedValue(cause) });

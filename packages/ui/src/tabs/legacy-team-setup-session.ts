@@ -82,6 +82,14 @@ const ROSTER_UNAVAILABLE_ERROR =
 	"Team device details are temporarily unavailable. Check the coordinator connection and settings, then refresh.";
 const ROSTER_UNAVAILABLE_AFTER_FINISH_ERROR =
 	"Team device details were unavailable, so setup was not finished and no changes were applied. Check the coordinator connection and settings, then refresh.";
+const COMPLETION_UNAVAILABLE_ERROR =
+	"Team setup completion could not be checked. Check the coordinator connection and settings, then refresh.";
+const COMPLETION_UNAVAILABLE_AFTER_FINISH_ERROR =
+	"Team setup could not be confirmed, and no local changes were applied. Refresh to check whether setup completed, then retry if needed.";
+const COMPLETION_CONFLICT_ERROR =
+	"Another device completed this Team with different reviewed details. Refresh to apply the completed setup.";
+const COMPLETION_INVALID_ERROR =
+	"The completed Team setup could not be verified. Refresh to try again, then check the coordinator connection and settings if the problem continues.";
 
 export function createSetupSessionState(): SetupSessionState {
 	return { status: "closed", generation: 0 };
@@ -471,7 +479,7 @@ function failed(
 	}
 	const recovered = result.recoveredView ? applyView(state, result.recoveredView, false) : state;
 	if (result.recoveredView?.state === "completed") return recovered;
-	const error = errorFor(command, result.cause);
+	const error = errorFor(command, result.cause, result.recoveryCause);
 	const next = {
 		...recovered,
 		errors: [...clearScope(recovered, error.scope).errors, error],
@@ -572,24 +580,56 @@ function completed(state: OpenSetupSessionState, attemptId: string): OpenSetupSe
 	return next;
 }
 
-function errorFor(command: SetupEffect, cause: unknown): SetupSessionError {
+function errorFor(
+	command: SetupEffect,
+	cause: unknown,
+	recoveryCause?: unknown,
+): SetupSessionError {
 	const changed = cause instanceof LegacyTeamSetupApiError && isChangedStateCode(cause.errorCode);
 	const rosterUnavailable =
 		cause instanceof LegacyTeamSetupApiError && cause.errorCode === "team_setup_roster_unavailable";
-	const message = changed
-		? CHANGED_STATE_ERROR
-		: rosterUnavailable
-			? command.kind === "finish"
-				? ROSTER_UNAVAILABLE_AFTER_FINISH_ERROR
-				: ROSTER_UNAVAILABLE_ERROR
-			: safeError(command.kind);
-	const retry =
-		changed ||
-		rosterUnavailable ||
-		command.kind === "refresh" ||
-		(command.kind === "load" && command.refresh)
-			? ("refresh" as const)
-			: ("load" as const);
+	const causeCompletionCode =
+		cause instanceof LegacyTeamSetupApiError ? completionErrorCode(cause.errorCode) : null;
+	const recoveryCompletionCode =
+		recoveryCause instanceof LegacyTeamSetupApiError
+			? completionErrorCode(recoveryCause.errorCode)
+			: null;
+	const terminalRecoveryCode =
+		recoveryCompletionCode === "team_setup_completion_conflict" ||
+		recoveryCompletionCode === "team_setup_completion_invalid"
+			? recoveryCompletionCode
+			: null;
+	const completionCode = terminalRecoveryCode ?? causeCompletionCode;
+	const completionError =
+		completionCode === "team_setup_completion_unavailable" && command.kind === "finish"
+			? COMPLETION_UNAVAILABLE_AFTER_FINISH_ERROR
+			: completionMessage(completionCode);
+	let message = completionError ?? safeError(command.kind);
+	if (!terminalRecoveryCode) {
+		if (changed) message = CHANGED_STATE_ERROR;
+		else if (rosterUnavailable) {
+			message =
+				command.kind === "finish"
+					? ROSTER_UNAVAILABLE_AFTER_FINISH_ERROR
+					: ROSTER_UNAVAILABLE_ERROR;
+		}
+	}
+	const confirmationStale =
+		(cause instanceof LegacyTeamSetupApiError &&
+			cause.errorCode === "team_setup_confirmation_stale") ||
+		(recoveryCause instanceof LegacyTeamSetupApiError &&
+			recoveryCause.errorCode === "team_setup_confirmation_stale");
+	let retry: SetupSessionError["retry"] = "load";
+	if (
+		!confirmationStale &&
+		!terminalRecoveryCode &&
+		(changed ||
+			rosterUnavailable ||
+			command.kind === "refresh" ||
+			(command.kind === "load" && command.refresh))
+	) {
+		retry = "refresh";
+	}
 	if (
 		command.kind === "assign_device" ||
 		command.kind === "decide_device" ||
@@ -597,7 +637,7 @@ function errorFor(command: SetupEffect, cause: unknown): SetupSessionError {
 	) {
 		return {
 			scope:
-				changed || rosterUnavailable
+				changed || rosterUnavailable || completionCode !== null
 					? { kind: "global" }
 					: { kind: "device", itemRef: command.deviceRef },
 			message,
@@ -607,7 +647,7 @@ function errorFor(command: SetupEffect, cause: unknown): SetupSessionError {
 	if (command.kind === "map_project") {
 		return {
 			scope:
-				changed || rosterUnavailable
+				changed || rosterUnavailable || completionCode !== null
 					? { kind: "global" }
 					: { kind: "project", itemRef: command.projectRef },
 			message,
@@ -704,10 +744,36 @@ export function globalError(state: OpenSetupSessionState): SetupSessionError | n
 function unavailableMessage(reason: LegacyTeamSetupErrorCode): string {
 	if (isChangedStateCode(reason)) return CHANGED_STATE_ERROR;
 	if (reason === "team_setup_roster_unavailable") return ROSTER_UNAVAILABLE_ERROR;
+	const completion = completionMessage(completionErrorCode(reason));
+	if (completion) return completion;
 	if (reason === "team_setup_incomplete") {
 		return "Team setup needs refreshed server details before review can continue.";
 	}
 	return "Team setup details are temporarily unavailable. Refresh to load the latest server state.";
+}
+
+function completionErrorCode(
+	reason: LegacyTeamSetupErrorCode,
+):
+	| "team_setup_completion_unavailable"
+	| "team_setup_completion_conflict"
+	| "team_setup_completion_invalid"
+	| null {
+	if (
+		reason === "team_setup_completion_unavailable" ||
+		reason === "team_setup_completion_conflict" ||
+		reason === "team_setup_completion_invalid"
+	) {
+		return reason;
+	}
+	return null;
+}
+
+function completionMessage(reason: ReturnType<typeof completionErrorCode>): string | null {
+	if (reason === "team_setup_completion_unavailable") return COMPLETION_UNAVAILABLE_ERROR;
+	if (reason === "team_setup_completion_conflict") return COMPLETION_CONFLICT_ERROR;
+	if (reason === "team_setup_completion_invalid") return COMPLETION_INVALID_ERROR;
+	return null;
 }
 
 function clearScope(state: OpenSetupSessionState, scope: SetupErrorScope): OpenSetupSessionState {
