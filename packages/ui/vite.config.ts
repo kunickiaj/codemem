@@ -17,7 +17,7 @@ function isOutputChunk(value: unknown): value is OutputChunk {
 function resolveGitCommit(): string {
 	try {
 		return execSync("git rev-parse --short=7 HEAD", {
-			cwd: __dirname,
+			cwd: import.meta.dirname,
 			encoding: "utf-8",
 		})
 			.trim()
@@ -66,10 +66,10 @@ export default defineConfig(({ command, mode }) => {
 		build: isDevServer
 			? undefined
 			: {
-					outDir: resolve(__dirname, "../viewer-server/static"),
+					outDir: resolve(import.meta.dirname, "../viewer-server/static"),
 					emptyOutDir: false,
 					lib: {
-						entry: resolve(__dirname, "src/app.ts"),
+						entry: resolve(import.meta.dirname, "src/app.ts"),
 						name: "CodememViewer",
 						formats: ["iife"],
 						fileName: () => "app.js",

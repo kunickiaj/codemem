@@ -3,8 +3,8 @@ import { closeSync, constants, existsSync, fstatSync, openSync, readSync, realpa
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 //#region packages/core/src/hook-transcript.ts
-var MAX_HOOK_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
-var HOOK_TRANSCRIPT_CHUNK_BYTES = 64 * 1024;
+var MAX_HOOK_TRANSCRIPT_BYTES = 16777216;
+var HOOK_TRANSCRIPT_CHUNK_BYTES = 65536;
 var TRUSTED_HOOK_TRANSCRIPT_POLICY = { trust: "trusted" };
 function expandUser$1(path) {
 	return path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : path;
@@ -261,7 +261,8 @@ function inferProjectFromCwd(cwd) {
 	}
 	let current = text;
 	while (true) {
-		if (existsSync(resolve(current, ".git"))) return basename(current) || null;
+		const gitPath = resolve(current, ".git");
+		if (existsSync(gitPath)) return basename(current) || null;
 		const parent = dirname(current);
 		if (parent === current) break;
 		current = parent;
@@ -312,7 +313,7 @@ var TRUSTED_HOOK_MAPPER_OPTIONS = { transcriptPolicy: TRUSTED_HOOK_TRANSCRIPT_PO
 * Normalizes Codex plugin hook payloads into AdapterEvent v1 envelopes for
 * the shared raw-event sweeper pipeline.
 */
-var MAPPABLE_CODEX_HOOK_EVENTS = new Set([
+var MAPPABLE_CODEX_HOOK_EVENTS = /* @__PURE__ */ new Set([
 	"SessionStart",
 	"UserPromptSubmit",
 	"PreToolUse",
@@ -364,7 +365,7 @@ function mapCodexHookPayload(payload, options) {
 	const generatedEventNonce = coerceString(payload.codemem_generated_event_nonce);
 	const toolUseId = coerceString(payload.tool_use_id);
 	const turnId = coerceString(payload.turn_id);
-	const consumed = new Set([
+	const consumed = /* @__PURE__ */ new Set([
 		"hook_event_name",
 		"session_id",
 		"cwd",

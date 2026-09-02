@@ -3,8 +3,8 @@ import { closeSync, constants, existsSync, fstatSync, openSync, readSync, realpa
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 //#region packages/core/src/hook-transcript.ts
-var MAX_HOOK_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
-var HOOK_TRANSCRIPT_CHUNK_BYTES = 64 * 1024;
+var MAX_HOOK_TRANSCRIPT_BYTES = 16777216;
+var HOOK_TRANSCRIPT_CHUNK_BYTES = 65536;
 var TRUSTED_HOOK_TRANSCRIPT_POLICY = { trust: "trusted" };
 function expandUser$1(path) {
 	return path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : path;
@@ -235,7 +235,7 @@ function extractHookTranscriptWithOutcome(transcriptPath, options) {
 function expandUser(value) {
 	return value.startsWith("~/") ? resolve(homedir(), value.slice(2)) : value;
 }
-var MAPPABLE_CLAUDE_HOOK_EVENTS = new Set([
+var MAPPABLE_CLAUDE_HOOK_EVENTS = /* @__PURE__ */ new Set([
 	"SessionStart",
 	"UserPromptSubmit",
 	"PreToolUse",
@@ -319,7 +319,8 @@ function inferProjectFromCwd(cwd) {
 	}
 	let current = text;
 	while (true) {
-		if (existsSync(resolve(current, ".git"))) return basename(current) || null;
+		const gitPath = resolve(current, ".git");
+		if (existsSync(gitPath)) return basename(current) || null;
 		const parent = dirname(current);
 		if (parent === current) break;
 		current = parent;
@@ -453,7 +454,7 @@ function mapClaudeHookPayload(payload, options) {
 	const normalizedRawTs = normalizeIsoTs(payload.ts ?? payload.timestamp);
 	const ts = normalizedRawTs ?? nowIso();
 	const toolUseId = String(payload.tool_use_id ?? "").trim();
-	const consumed = new Set([
+	const consumed = /* @__PURE__ */ new Set([
 		"hook_event_name",
 		"session_id",
 		"cwd",
