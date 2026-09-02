@@ -28,6 +28,7 @@ import type { MemoryFilters } from "./types.js";
 
 const VECTOR_MODEL_MIGRATION_JOB = "vector_model_migration";
 const BACKFILL_MEMORY_PAGE_SIZE = 50;
+const BACKFILL_INFERENCE_BATCH_SIZE = 32;
 const BACKFILL_CANDIDATE_TABLE_PREFIX = "codemem_backfill_vector_candidates";
 
 type VectorModelCount = { model: string; rows: number };
@@ -37,6 +38,12 @@ type MemoryTextRow = {
 	title: string | null;
 	body_text: string | null;
 	created_at?: string;
+};
+type PendingChunk = { text: string; chunkIndex: number; contentHash: string };
+type PendingMemory = {
+	memoryId: number;
+	chunks: PendingChunk[];
+	vectors: Float32Array[];
 };
 
 type BackfillMemoryRow = MemoryTextRow & { snapshot_seq: number };
@@ -222,9 +229,9 @@ export interface BackfillVectorsOptions {
 	dryRun?: boolean;
 	memoryIds?: number[] | null;
 	/**
-	 * When provided, the per-memory loop bails after the current memory
-	 * finishes if the signal has fired. Used by the viewer serve shutdown
-	 * sequence so SIGTERM does not block on an entire 50-memory batch.
+	 * When provided, backfill stops between inference batches. The in-flight
+	 * batch finishes, and any memory with only partial output remains unwritten.
+	 * Used by the viewer serve shutdown sequence to bound SIGTERM latency.
 	 */
 	signal?: AbortSignal;
 }
@@ -675,33 +682,18 @@ export async function backfillVectors(
 				existingHashesByMemory.set(existing.memory_id, hashes);
 			}
 
-			for (const row of rows) {
-				if (signal?.aborted) break;
-				checked++;
-				const chunks = chunkText(memoryText(row.title, row.body_text));
-				const existingHashes = existingHashesByMemory.get(row.id) ?? new Set<string>();
-				const pendingChunks: string[] = [];
-				const pendingHashes: string[] = [];
-				const pendingChunkIndexes: number[] = [];
-				for (const [chunkIndex, text] of chunks.entries()) {
-					const contentHash = hashText(text);
-					if (existingHashes.has(contentHash)) {
-						skipped++;
-						continue;
-					}
-					pendingChunks.push(text);
-					pendingHashes.push(contentHash);
-					pendingChunkIndexes.push(chunkIndex);
-				}
-				if (pendingChunks.length === 0) continue;
-
-				const embeddings = await embedTexts(pendingChunks);
-				if (embeddings.length !== pendingChunks.length) {
+			let batch: Array<{ memory: PendingMemory; chunk: PendingChunk }> = [];
+			const flushBatch = async (): Promise<void> => {
+				if (batch.length === 0) return;
+				const currentBatch = batch;
+				batch = [];
+				const embeddings = await embedTexts(currentBatch.map(({ chunk }) => chunk.text));
+				if (embeddings.length !== currentBatch.length) {
 					throw new TypeError(
-						`Embedding client returned ${embeddings.length} vectors for ${pendingChunks.length} texts`,
+						`Embedding client returned ${embeddings.length} vectors for ${currentBatch.length} texts`,
 					);
 				}
-				const entries = embeddings.map((vector, index) => {
+				for (const vector of embeddings) {
 					if (vector.length !== client.dimensions) {
 						throw new TypeError(
 							`Embedding client returned vector dimension ${vector.length}, expected ${client.dimensions}`,
@@ -712,55 +704,96 @@ export async function backfillVectors(
 							throw new TypeError("Embedding client returned a non-finite vector value");
 						}
 					}
-					return {
-						vector,
-						chunkIndex: pendingChunkIndexes[index] as number,
-						contentHash: pendingHashes[index] as string,
-					};
-				});
-				embedded += entries.length;
-				if (dryRun) {
-					inserted += entries.length;
-					continue;
 				}
-				// The page-wide existing-hash snapshot can go stale between that query
-				// and this insert when a concurrent writer (e.g. a vector migration
-				// worker running alongside `codemem embed`) vectors the same memory.
-				// memory_vectors is a vec0 table with no uniqueness constraint, so
-				// re-read this memory's current hashes inside an immediate transaction
-				// and skip any that now exist, preventing permanent duplicate rows.
-				const insertVectors = db.transaction(
-					(items: Array<{ vector: Float32Array; chunkIndex: number; contentHash: string }>) => {
-						const currentHashes = new Set(
-							(
-								db
-									.prepare(
-										"SELECT content_hash FROM memory_vectors WHERE memory_id = ? AND model = ?",
-									)
-									.all(row.id, model) as Array<{ content_hash: string | null }>
-							)
-								.map((existing) => existing.content_hash)
-								.filter((hash): hash is string => hash != null),
-						);
-						let insertedInTx = 0;
-						for (const entry of items) {
-							if (currentHashes.has(entry.contentHash)) continue;
-							insertMemoryVector(
-								db,
-								entry.vector,
-								row.id,
-								entry.chunkIndex,
-								entry.contentHash,
-								model,
+				embedded += embeddings.length;
+				const completed = new Set<PendingMemory>();
+				for (const [index, { memory }] of currentBatch.entries()) {
+					const vector = embeddings[index];
+					if (!vector) throw new TypeError("Embedding client omitted a validated vector");
+					memory.vectors.push(vector);
+					if (memory.vectors.length === memory.chunks.length) completed.add(memory);
+				}
+				for (const memory of completed) {
+					const entries = memory.chunks.map((chunk, index) => ({
+						...chunk,
+						vector: memory.vectors[index] as Float32Array,
+					}));
+					if (!dryRun) {
+						// The page-wide existing-hash snapshot can go stale between that
+						// query and this insert when a concurrent writer (e.g. a vector
+						// migration worker running alongside `codemem embed`) vectors the
+						// same memory. memory_vectors is a vec0 table with no uniqueness
+						// constraint, so re-read this memory's current hashes inside an
+						// immediate transaction and skip any that now exist, preventing
+						// permanent duplicate rows.
+						const insertVectors = db.transaction(() => {
+							// Only skip hashes a concurrent writer already persisted for this
+							// memory (observed since the page-wide snapshot). Do not dedup
+							// within this batch: distinct chunk_index rows may legitimately
+							// share content, matching the pre-existing insert semantics.
+							const persistedHashes = new Set(
+								(
+									db
+										.prepare(
+											"SELECT content_hash FROM memory_vectors WHERE memory_id = ? AND model = ?",
+										)
+										.all(memory.memoryId, model) as Array<{ content_hash: string | null }>
+								)
+									.map((existing) => existing.content_hash)
+									.filter((hash): hash is string => hash != null),
 							);
-							currentHashes.add(entry.contentHash);
-							insertedInTx++;
-						}
-						return insertedInTx;
-					},
-				);
-				inserted += insertVectors.immediate(entries);
+							let insertedInTx = 0;
+							for (const entry of entries) {
+								if (persistedHashes.has(entry.contentHash)) continue;
+								insertMemoryVector(
+									db,
+									entry.vector,
+									memory.memoryId,
+									entry.chunkIndex,
+									entry.contentHash,
+									model,
+								);
+								insertedInTx++;
+							}
+							return insertedInTx;
+						});
+						inserted += insertVectors.immediate();
+					} else {
+						inserted += entries.length;
+					}
+					memory.vectors.length = 0;
+					memory.chunks.length = 0;
+				}
+			};
+
+			for (const row of rows) {
+				if (signal?.aborted) return { checked, embedded, inserted, skipped };
+				checked++;
+				const chunks = chunkText(memoryText(row.title, row.body_text));
+				const existingHashes = existingHashesByMemory.get(row.id) ?? new Set<string>();
+				const pendingChunks: PendingChunk[] = [];
+				for (const [chunkIndex, text] of chunks.entries()) {
+					const contentHash = hashText(text);
+					if (existingHashes.has(contentHash)) {
+						skipped++;
+						continue;
+					}
+					pendingChunks.push({ text, chunkIndex, contentHash });
+				}
+				if (pendingChunks.length === 0) continue;
+				const memory: PendingMemory = { memoryId: row.id, chunks: pendingChunks, vectors: [] };
+				for (const chunk of pendingChunks) {
+					batch.push({ memory, chunk });
+					if (batch.length < BACKFILL_INFERENCE_BATCH_SIZE) continue;
+					await flushBatch();
+					if (!signal?.aborted) continue;
+					// `embedded` includes valid inference discarded for an incomplete memory;
+					// `inserted` counts only memories completed by this batch (also for dry-run).
+					return { checked, embedded, inserted, skipped };
+				}
 			}
+			await flushBatch();
+			if (signal?.aborted) return { checked, embedded, inserted, skipped };
 		}
 	} finally {
 		deleteBackfillCandidateSnapshot(db, candidateTable);

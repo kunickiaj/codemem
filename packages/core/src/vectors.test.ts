@@ -24,6 +24,7 @@ vi.mock("./embeddings.js", async () => {
 		...actual,
 		getEmbeddingClient: vi.fn(),
 		embedTexts: vi.fn(),
+		chunkText: vi.fn(actual.chunkText),
 		resolveEmbeddingModel: vi.fn(() => "test-model"),
 	};
 });
@@ -184,7 +185,7 @@ describe("vectors", () => {
 		let insertedBehindCursorId: number | null = null;
 		let insertedAheadOfHighWaterId: number | null = null;
 		let pagingPlan: Array<{ detail: string }> = [];
-		const embedSpy = vi.mocked(embeddings.embedTexts).mockImplementation(async () => {
+		const embedSpy = vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) => {
 			if (insertedBehindCursorId == null) {
 				const pageSql = prepareSpy.mock.calls.find(([sql]) =>
 					String(sql).includes("candidates.seq AS snapshot_seq"),
@@ -204,7 +205,7 @@ describe("vectors", () => {
 					"2026-09-03T00:00:00.000Z",
 				);
 			}
-			return [new Float32Array(384)];
+			return texts.map(() => new Float32Array(384));
 		});
 		const prepareSpy = vi.spyOn(db, "prepare");
 
@@ -212,8 +213,7 @@ describe("vectors", () => {
 			const result = await backfillVectors(db);
 
 			expect(result).toEqual({ checked: 51, embedded: 50, inserted: 50, skipped: 1 });
-			expect(embedSpy).toHaveBeenCalledTimes(50);
-			expect(embedSpy.mock.calls.every(([texts]) => texts.length === 1)).toBe(true);
+			expect(embedSpy.mock.calls.map(([texts]) => texts.length)).toEqual([32, 17, 1]);
 			expect(
 				pagingPlan.some(({ detail }) =>
 					detail.startsWith("SEARCH candidates USING INTEGER PRIMARY KEY"),
@@ -370,7 +370,7 @@ describe("vectors", () => {
 			insertBackfillMemory(sessionId, `Limited ${index}`, createdAt);
 		}
 		let snapshottedRows: number | null = null;
-		const embedSpy = vi.mocked(embeddings.embedTexts).mockImplementation(async () => {
+		const embedSpy = vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) => {
 			if (snapshottedRows == null) {
 				const snapshot = db
 					.prepare(
@@ -385,14 +385,14 @@ describe("vectors", () => {
 				};
 				snapshottedRows = count.c;
 			}
-			return [new Float32Array(384)];
+			return texts.map(() => new Float32Array(384));
 		});
 
 		const result = await backfillVectors(db, { limit: 7 });
 
 		expect(result).toEqual({ checked: 7, embedded: 7, inserted: 7, skipped: 0 });
 		expect(snapshottedRows).toBe(7);
-		expect(embedSpy).toHaveBeenCalledTimes(7);
+		expect(embedSpy.mock.calls.map(([texts]) => texts.length)).toEqual([7]);
 		expect(
 			db
 				.prepare(
@@ -403,19 +403,39 @@ describe("vectors", () => {
 		).toMatchObject({ c: 0 });
 	});
 
+	it("prepares page chunks incrementally instead of retaining the full page", async () => {
+		const sessionId = insertTestSession(db);
+		const createdAt = new Date().toISOString();
+		for (let index = 1; index <= 50; index++) {
+			insertBackfillMemory(sessionId, `Incremental ${index}`, createdAt);
+		}
+		let chunkCallsAtFirstInference: number | null = null;
+		const embedSpy = vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) => {
+			chunkCallsAtFirstInference ??= vi.mocked(embeddings.chunkText).mock.calls.length;
+			return texts.map(() => new Float32Array(384));
+		});
+
+		const result = await backfillVectors(db);
+
+		expect(result).toEqual({ checked: 50, embedded: 50, inserted: 50, skipped: 0 });
+		expect(embedSpy.mock.calls.map(([texts]) => texts.length)).toEqual([32, 18]);
+		expect(chunkCallsAtFirstInference).toBe(32);
+	});
+
 	it("preserves dry-run counts without storing vectors", async () => {
 		const sessionId = insertTestSession(db);
 		const createdAt = new Date().toISOString();
 		for (let index = 1; index <= 3; index++) {
 			insertBackfillMemory(sessionId, `Dry run ${index}`, createdAt);
 		}
-		vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) =>
-			texts.map(() => new Float32Array(384)),
-		);
+		const embedSpy = vi
+			.mocked(embeddings.embedTexts)
+			.mockImplementation(async (texts) => texts.map(() => new Float32Array(384)));
 
 		const result = await backfillVectors(db, { dryRun: true });
 
 		expect(result).toEqual({ checked: 3, embedded: 3, inserted: 3, skipped: 0 });
+		expect(embedSpy.mock.calls.map(([texts]) => texts.length)).toEqual([3]);
 		expect(db.prepare("SELECT COUNT(*) AS c FROM memory_vectors").get()).toMatchObject({ c: 0 });
 	});
 
@@ -426,7 +446,7 @@ describe("vectors", () => {
 		let nestedResult: Awaited<ReturnType<typeof backfillVectors>> | null = null;
 		let nested = false;
 		let maximumSnapshotCount = 0;
-		vi.mocked(embeddings.embedTexts).mockImplementation(async () => {
+		vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) => {
 			const snapshotCount = db
 				.prepare(
 					`SELECT COUNT(*) AS c FROM sqlite_temp_master
@@ -438,7 +458,7 @@ describe("vectors", () => {
 				nested = true;
 				nestedResult = await backfillVectors(db, { memoryIds: [secondId] });
 			}
-			return [new Float32Array(384)];
+			return texts.map(() => new Float32Array(384));
 		});
 
 		const outerResult = await backfillVectors(db, { memoryIds: [firstId] });
@@ -454,6 +474,48 @@ describe("vectors", () => {
 				)
 				.get(),
 		).toMatchObject({ c: 0 });
+	});
+
+	it("keeps a memory atomic when aborting across the 32-chunk boundary", async () => {
+		const sessionId = insertTestSession(db);
+		const createdAt = new Date().toISOString();
+		const shortId = insertBackfillMemory(sessionId, "Short memory", createdAt);
+		const longBody = "x".repeat(1200 * 40);
+		const longId = insertBackfillMemory(sessionId, "Long memory", createdAt, longBody);
+		const longChunkCount = embeddings.chunkText(`Long memory\n${longBody}`).length;
+		expect(longChunkCount).toBeGreaterThan(32);
+		const controller = new AbortController();
+		const firstPassEmbed = vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) => {
+			controller.abort();
+			return texts.map(() => new Float32Array(384));
+		});
+
+		const aborted = await backfillVectors(db, { signal: controller.signal });
+
+		expect(firstPassEmbed.mock.calls.map(([texts]) => texts.length)).toEqual([32]);
+		expect(aborted).toEqual({ checked: 2, embedded: 32, inserted: 1, skipped: 0 });
+		expect(
+			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?").get(shortId),
+		).toMatchObject({ c: 1 });
+		expect(
+			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?").get(longId),
+		).toMatchObject({ c: 0 });
+
+		const retryEmbed = vi.mocked(embeddings.embedTexts);
+		retryEmbed.mockClear();
+		retryEmbed.mockImplementation(async (texts) => texts.map(() => new Float32Array(384)));
+		const retried = await backfillVectors(db);
+
+		expect(retryEmbed.mock.calls.map(([texts]) => texts.length)).toEqual([32, longChunkCount - 32]);
+		expect(retried).toEqual({
+			checked: 2,
+			embedded: longChunkCount,
+			inserted: longChunkCount,
+			skipped: 1,
+		});
+		expect(
+			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?").get(longId),
+		).toMatchObject({ c: longChunkCount });
 	});
 
 	it.each(["zero", "dimension", "non-finite"] as const)(

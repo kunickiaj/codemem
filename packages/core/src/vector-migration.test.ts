@@ -68,7 +68,9 @@ describe("vector migration", () => {
 			dimensions: 384,
 			embed: vi.fn(),
 		});
-		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
+		vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) =>
+			texts.map(() => new Float32Array(384)),
+		);
 	});
 
 	afterEach(() => {
@@ -199,7 +201,9 @@ describe("vector migration", () => {
 		}
 
 		// Restore normal behavior and resume — should pick up from cursor
-		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
+		vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) =>
+			texts.map(() => new Float32Array(384)),
+		);
 		await runVectorMigrationPass(db, { batchSize: 10 });
 
 		const afterResume = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
@@ -212,40 +216,45 @@ describe("vector migration", () => {
 		expect(models).toEqual([{ model: "test-model", c: 3 }]);
 	});
 
-	it("bails out of a large batch when the AbortSignal fires", async () => {
+	it("preserves the migration cursor when an inference batch is aborted", async () => {
 		// Cooperative shutdown (codemem-u5yn): with an aborted signal, the
-		// per-memory loop inside backfillVectors should break early rather
-		// than embed all queued rows. Critically, the cursor must NOT
-		// advance — the next post-restart tick needs to re-process this
-		// batch to cover the rows the abort skipped.
+		// in-flight inference batch finishes, but the migration cursor must NOT
+		// advance. The next tick rechecks the batch before completing cutover.
 		const sessionId = insertTestSession(db);
 		for (let i = 1; i <= 10; i++) {
 			seedMemory(db, i, sessionId, `Title ${i}`, `Body for memory ${i}`);
 			seedVector(db, i, "old-model");
 		}
 		const controller = new AbortController();
-		// Abort on the first embed call. backfillVectors processes memory 1
-		// and then breaks on the abort check before memory 2.
-		const embedSpy = vi.mocked(embeddings.embedTexts).mockImplementation(async () => {
+		const embedSpy = vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) => {
 			controller.abort();
-			return [new Float32Array(384)];
+			return texts.map(() => new Float32Array(384));
 		});
 
 		await runVectorMigrationPass(db, { batchSize: 10, signal: controller.signal });
 
 		expect(embedSpy.mock.calls.length).toBe(1);
-		// Behavioral: only memory 1 got a target-model row; the other 9
-		// stayed on old-model.
 		const coverage = db
 			.prepare("SELECT model, COUNT(*) AS c FROM memory_vectors GROUP BY model ORDER BY model")
 			.all() as Array<{ model: string; c: number }>;
 		expect(coverage).toEqual([
 			{ model: "old-model", c: 10 },
-			{ model: "test-model", c: 1 },
+			{ model: "test-model", c: 10 },
 		]);
 		// Cursor must not advance — retry on next tick.
 		const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
 		expect(job?.status).not.toBe("completed");
+
+		await runVectorMigrationPass(db, { batchSize: 10 });
+		expect(getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB)?.status).toBe("running");
+
+		// An exact-size batch needs one empty cursor pass to prove the migration is drained.
+		await runVectorMigrationPass(db, { batchSize: 10 });
+
+		expect(getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB)?.status).toBe("completed");
+		expect(
+			db.prepare("SELECT model, COUNT(*) AS c FROM memory_vectors GROUP BY model").all(),
+		).toEqual([{ model: "test-model", c: 10 }]);
 	});
 
 	it("completes an in-flight running job without re-embedding when corpus is already covered", async () => {
