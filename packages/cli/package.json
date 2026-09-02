@@ -31,6 +31,7 @@
 		"omelette": "^0.4.17"
 	},
 	"devDependencies": {
+		"@types/better-sqlite3": "catalog:",
 		"@types/node": "^24.12.4",
 		"@types/omelette": "^0.4.5",
 		"tsx": "catalog:",
