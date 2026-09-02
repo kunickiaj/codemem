@@ -151,6 +151,9 @@ function createMockStore(
 		listScopeMemberships: vi.fn(
 			async (_: string, __?: boolean): Promise<CoordinatorScopeMembership[]> => [],
 		),
+		listDeviceScopeMemberships: vi.fn(
+			async (_: string, __?: boolean): Promise<CoordinatorScopeMembership[]> => [],
+		),
 		listScopeMembershipAuditEvents: vi.fn(
 			async (
 				_: CoordinatorListScopeMembershipAuditInput,
@@ -2802,6 +2805,11 @@ describe("createCoordinatorApp dependency injection", () => {
 			})),
 			listScopes: vi.fn(async () => scopes),
 			listScopeMemberships: vi.fn(async (scopeId: string) => memberships[scopeId] ?? []),
+			listDeviceScopeMemberships: vi.fn(async (deviceId: string) =>
+				Object.values(memberships)
+					.flat()
+					.filter((membership) => membership.device_id === deviceId),
+			),
 		});
 		const app = createCoordinatorApp({
 			storeFactory: () => store,

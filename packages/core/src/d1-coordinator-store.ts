@@ -2192,6 +2192,27 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		).map((row) => rowToRecord<CoordinatorScopeMembership>(row));
 	}
 
+	async listDeviceScopeMemberships(
+		deviceId: string,
+		includeRevoked = false,
+	): Promise<CoordinatorScopeMembership[]> {
+		const normalizedDeviceId = clean(deviceId);
+		if (!normalizedDeviceId) throw new Error("deviceId is required.");
+		// Served by idx_coordinator_scope_memberships_device_status.
+		const statusWhere = includeRevoked ? "" : "AND status = 'active'";
+		return (
+			await allRows<CoordinatorScopeMembership>(
+				this.db
+					.prepare(`SELECT scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
+							manifest_issuer_device_id, manifest_hash, signed_manifest_json, updated_at
+						 FROM coordinator_scope_memberships
+						 WHERE device_id = ? ${statusWhere}
+						 ORDER BY scope_id ASC`)
+					.bind(normalizedDeviceId),
+			)
+		).map((row) => rowToRecord<CoordinatorScopeMembership>(row));
+	}
+
 	async listScopeMembershipAuditEvents(
 		opts: CoordinatorListScopeMembershipAuditInput,
 	): Promise<CoordinatorScopeMembershipAuditEvent[]> {

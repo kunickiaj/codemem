@@ -229,6 +229,70 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 				});
 			});
 
+			it("lists one device's memberships across scopes without reading other members", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("group-a");
+					for (const deviceId of ["device-a", "device-b"]) {
+						await store.enrollDevice("group-a", {
+							deviceId,
+							fingerprint: `fp-${deviceId}`,
+							publicKey: `pk-${deviceId}`,
+						});
+					}
+					for (const scopeId of ["scope-acme", "scope-beta", "scope-gamma"]) {
+						await store.createScope({
+							scopeId,
+							label: scopeId,
+							coordinatorId: "coord-a",
+							groupId: "group-a",
+						});
+					}
+					// device-a is in acme and gamma; device-b only in beta.
+					await store.grantScopeMembership({
+						effectId: nextEffect("grant"),
+						scopeId: "scope-acme",
+						deviceId: "device-a",
+					});
+					await store.grantScopeMembership({
+						effectId: nextEffect("grant"),
+						scopeId: "scope-gamma",
+						deviceId: "device-a",
+					});
+					await store.grantScopeMembership({
+						effectId: nextEffect("grant"),
+						scopeId: "scope-beta",
+						deviceId: "device-b",
+					});
+
+					expect(await store.listDeviceScopeMemberships("device-a")).toEqual([
+						expect.objectContaining({ scope_id: "scope-acme", device_id: "device-a" }),
+						expect.objectContaining({ scope_id: "scope-gamma", device_id: "device-a" }),
+					]);
+					expect(await store.listDeviceScopeMemberships("device-b")).toEqual([
+						expect.objectContaining({ scope_id: "scope-beta", device_id: "device-b" }),
+					]);
+					expect(await store.listDeviceScopeMemberships("device-unknown")).toEqual([]);
+
+					// Revoked memberships drop out by default and return with includeRevoked.
+					await store.revokeScopeMembership({
+						effectId: nextEffect("revoke"),
+						scopeId: "scope-acme",
+						deviceId: "device-a",
+					});
+					expect(await store.listDeviceScopeMemberships("device-a")).toEqual([
+						expect.objectContaining({ scope_id: "scope-gamma", status: "active" }),
+					]);
+					expect(await store.listDeviceScopeMemberships("device-a", true)).toEqual([
+						expect.objectContaining({ scope_id: "scope-acme", status: "revoked" }),
+						expect.objectContaining({ scope_id: "scope-gamma", status: "active" }),
+					]);
+
+					await expect(store.listDeviceScopeMemberships("  ")).rejects.toThrow(
+						"deviceId is required.",
+					);
+				});
+			});
+
 			it("rejects scope grants with mismatched authority fields", async () => {
 				await withContext(async ({ store }) => {
 					await store.createScope({

@@ -7,6 +7,7 @@ import { columnExists, connect } from "./db.js";
 import {
 	createSerializedDaemonTickRunner,
 	getSyncDaemonPhase,
+	refreshCoordinatorForDaemon,
 	refreshCoordinatorPresenceForDaemon,
 	resolveSyncDaemonKeysDir,
 	runSyncDaemon,
@@ -343,6 +344,34 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 		expect(await refreshCoordinatorPresenceForDaemon(db, ":memory:")).toBe(false);
 		expect(registerCoordinatorPresence).not.toHaveBeenCalled();
 		expect(refreshConfiguredScopeMembershipCache).not.toHaveBeenCalled();
+	});
+
+	it("returns the peer snapshot so the tick does not look peers up twice", async () => {
+		const { coordinatorEnabled, readCoordinatorSyncConfig, refreshAuthorizedCoordinatorPeerTrust } =
+			await import("./coordinator-runtime.js");
+		const peers = [{ device_id: "peer-1", fingerprint: "fp-1", stale: false }];
+		vi.mocked(coordinatorEnabled).mockReturnValue(true);
+		vi.mocked(readCoordinatorSyncConfig).mockReturnValue({
+			syncCoordinatorUrl: "http://coord",
+			syncCoordinatorGroups: ["team"],
+		} as never);
+		vi.mocked(refreshAuthorizedCoordinatorPeerTrust).mockResolvedValue({ peers, trusted: 1 });
+
+		expect(await refreshCoordinatorForDaemon(db, ":memory:", "/tmp/keys")).toEqual({
+			refreshed: true,
+			peers,
+		});
+		expect(refreshAuthorizedCoordinatorPeerTrust).toHaveBeenCalledTimes(1);
+	});
+
+	it("reports no peer snapshot when the coordinator is not configured", async () => {
+		const { coordinatorEnabled } = await import("./coordinator-runtime.js");
+		vi.mocked(coordinatorEnabled).mockReturnValue(false);
+
+		expect(await refreshCoordinatorForDaemon(db, ":memory:")).toEqual({
+			refreshed: false,
+			peers: null,
+		});
 	});
 
 	it("posts coordinator presence and refreshes scope membership cache when enabled", async () => {

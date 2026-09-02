@@ -1253,6 +1253,35 @@ describe("coordinatorStatusSnapshot", () => {
 });
 
 describe("fetchCoordinatorStalePeers", () => {
+	it("derives the stale set from a supplied peer snapshot without a second lookup", async () => {
+		const db = new Database(":memory:");
+		const prevFetch = globalThis.fetch;
+		try {
+			initTestSchema(db);
+			// Any coordinator call would go through fetch; this asserts none happens.
+			globalThis.fetch = (async () => {
+				throw new Error("fetchCoordinatorStalePeers must not re-fetch a supplied snapshot");
+			}) as typeof fetch;
+
+			const stalePeers = await fetchCoordinatorStalePeers(db, ":memory:", undefined, {
+				peers: [
+					{ device_id: "peer-1", fingerprint: "old-fp", stale: true },
+					{ device_id: "peer-1", fingerprint: "new-fp", stale: false },
+					{ device_id: "peer-2", fingerprint: "fp-2", stale: true },
+				],
+			});
+
+			// Same semantics as the fetching path: device-wide staleness only when
+			// every entry is stale, plus the pinned key for a superseded fingerprint.
+			expect(stalePeers.has("peer-1")).toBe(false);
+			expect(stalePeers.has("peer-1:old-fp")).toBe(true);
+			expect(stalePeers.has("peer-2")).toBe(true);
+		} finally {
+			globalThis.fetch = prevFetch;
+			db.close();
+		}
+	});
+
 	it("returns a stale pinned peer key when the same device has a fresh replacement fingerprint", async () => {
 		const db = new Database(":memory:");
 		const keysDir = mkdtempSync(join(tmpdir(), "codemem-coordinator-runtime-keys-"));

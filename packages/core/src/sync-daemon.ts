@@ -160,17 +160,42 @@ export function setSyncDaemonPhase(db: Database, phase: SyncDaemonPhase): void {
 		.run();
 }
 
+export interface CoordinatorDaemonRefresh {
+	/** True when the coordinator is configured and the refresh ran. */
+	refreshed: boolean;
+	/**
+	 * The peer snapshot this refresh already fetched, or null when the
+	 * coordinator is not configured. Pass it to fetchCoordinatorStalePeers so
+	 * one tick performs one /v1/peers lookup instead of two.
+	 */
+	peers: Record<string, unknown>[] | null;
+}
+
+export async function refreshCoordinatorForDaemon(
+	db: Database,
+	dbPath: string,
+	keysDir?: string,
+): Promise<CoordinatorDaemonRefresh> {
+	const config = readCoordinatorSyncConfig();
+	if (!coordinatorEnabled(config)) return { refreshed: false, peers: null };
+	await registerCoordinatorPresence({ db, dbPath }, config, { keysDir });
+	await refreshConfiguredScopeMembershipCache(db, config, { keysDir, dbPath });
+	const { peers } = await refreshAuthorizedCoordinatorPeerTrust({ db, dbPath }, config, {
+		keysDir,
+	});
+	return { refreshed: true, peers };
+}
+
+/**
+ * Boolean-only form of refreshCoordinatorForDaemon, kept for callers that do
+ * not need the peer snapshot.
+ */
 export async function refreshCoordinatorPresenceForDaemon(
 	db: Database,
 	dbPath: string,
 	keysDir?: string,
 ): Promise<boolean> {
-	const config = readCoordinatorSyncConfig();
-	if (!coordinatorEnabled(config)) return false;
-	await registerCoordinatorPresence({ db, dbPath }, config, { keysDir });
-	await refreshConfiguredScopeMembershipCache(db, config, { keysDir, dbPath });
-	await refreshAuthorizedCoordinatorPeerTrust({ db, dbPath }, config, { keysDir });
-	return true;
+	return (await refreshCoordinatorForDaemon(db, dbPath, keysDir)).refreshed;
 }
 
 // ---------------------------------------------------------------------------
@@ -361,11 +386,13 @@ export async function runTickOnce(
 	try {
 		ensureAdditiveSchemaCompatibility(db);
 		ensureDeviceIdentity(db, { keysDir: resolvedKeysDir });
+		let coordinatorPeers: Record<string, unknown>[] | null = null;
 		try {
-			await refreshCoordinatorPresenceForDaemon(db, dbPath, resolvedKeysDir);
+			coordinatorPeers = (await refreshCoordinatorForDaemon(db, dbPath, resolvedKeysDir)).peers;
 		} catch {
 			// Coordinator discovery is a supplemental surface. Keep direct peer sync running
-			// even when heartbeat posting fails for this tick.
+			// even when heartbeat posting fails for this tick. Leaving coordinatorPeers null
+			// lets the stale-peer preflight below fall back to its own lookup.
 		}
 		let callbackFailed = false;
 		try {
@@ -378,7 +405,9 @@ export async function runTickOnce(
 		}
 		// Best-effort: skip peers the coordinator reports as offline.
 		// Returns empty set when coordinator is disabled or lookup fails.
-		const stalePeers = await fetchCoordinatorStalePeers(db, dbPath, resolvedKeysDir);
+		const stalePeers = await fetchCoordinatorStalePeers(db, dbPath, resolvedKeysDir, {
+			peers: coordinatorPeers ?? undefined,
+		});
 		const results = await syncDaemonTick(db, resolvedKeysDir, stalePeers, scanner, dbPath);
 		const needsAttention = results.some((r) => !r.ok && r.error?.includes("needs_attention"));
 		if (needsAttention) {

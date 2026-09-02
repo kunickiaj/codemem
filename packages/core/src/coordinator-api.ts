@@ -435,18 +435,6 @@ export function createCoordinatorApp(
 		return membership.status === "active" && membership.membership_epoch >= scope.membership_epoch;
 	}
 
-	async function requesterAuthorizedForScope(
-		store: CoordinatorStore,
-		scope: CoordinatorScope,
-		deviceId: string,
-	): Promise<boolean> {
-		const memberships = await store.listScopeMemberships(scope.scope_id, false);
-		return memberships.some(
-			(membership) =>
-				membership.device_id === deviceId && activeCurrentMembership(membership, scope),
-		);
-	}
-
 	// -----------------------------------------------------------------------
 	// POST /v1/presence — upsert device presence (authenticated)
 	// -----------------------------------------------------------------------
@@ -575,13 +563,21 @@ export function createCoordinatorApp(
 			if (response) return response;
 			if (!auth.enrollment) return c.json({ error: "unknown_device" }, 401);
 			const scopes = await store.listScopes({ groupId, includeInactive: false });
-			const items: CoordinatorScope[] = [];
-			for (const scope of scopes) {
-				if (scope.status !== "active") continue;
-				if (await requesterAuthorizedForScope(store, scope, String(auth.enrollment.device_id))) {
-					items.push(scope);
-				}
-			}
+			// One indexed lookup of the requester's own memberships, rather than
+			// reading every member of every scope to answer a question about one
+			// device. (scope_id, device_id) is unique, so the map is 1:1.
+			const memberships = await store.listDeviceScopeMemberships(
+				String(auth.enrollment.device_id),
+				false,
+			);
+			const membershipByScope = new Map(
+				memberships.map((membership) => [membership.scope_id, membership]),
+			);
+			const items: CoordinatorScope[] = scopes.filter((scope) => {
+				if (scope.status !== "active") return false;
+				const membership = membershipByScope.get(scope.scope_id);
+				return Boolean(membership && activeCurrentMembership(membership, scope));
+			});
 			return c.json({ items });
 		} finally {
 			await store.close();

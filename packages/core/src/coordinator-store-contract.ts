@@ -514,6 +514,16 @@ export interface CoordinatorStore {
 		scopeId: string,
 		includeRevoked?: boolean,
 	): Promise<CoordinatorScopeMembership[]>;
+	/**
+	 * List one device's memberships across every scope, ordered by scope_id.
+	 *
+	 * Answers "which scopes is this device in" with a single indexed lookup,
+	 * rather than reading every member of every scope one scope at a time.
+	 */
+	listDeviceScopeMemberships(
+		deviceId: string,
+		includeRevoked?: boolean,
+	): Promise<CoordinatorScopeMembership[]>;
 	listScopeMembershipAuditEvents(
 		opts: CoordinatorListScopeMembershipAuditInput,
 	): Promise<CoordinatorScopeMembershipAuditEvent[]>;

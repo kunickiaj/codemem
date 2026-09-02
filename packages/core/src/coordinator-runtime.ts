@@ -782,45 +782,64 @@ export async function fetchCoordinatorStalePeers(
 	db: Database,
 	dbPath: string,
 	keysDir?: string,
+	options?: { peers?: Record<string, unknown>[] },
 ): Promise<Set<string>> {
+	// A caller that already looked peers up this tick passes that snapshot in.
+	// Its addresses have been stored by refreshAuthorizedCoordinatorPeerTrust
+	// already, so reusing it skips a second identical /v1/peers round trip and
+	// a duplicate refreshStoredCoordinatorPeerAddresses write. The snapshot is
+	// seconds old, which is well inside the tolerance of a best-effort offline
+	// preflight.
+	if (options?.peers) return coordinatorStalePeerKeys(options.peers);
 	const config = readCoordinatorSyncConfig();
 	if (!coordinatorEnabled(config)) return new Set();
 	try {
 		const peers = await lookupCoordinatorPeers({ db, dbPath }, config, { keysDir });
 		refreshStoredCoordinatorPeerAddresses(db, peers);
-		// A device may appear under multiple fingerprints (key rotation, multi-group).
-		// Skip device-wide only when all entries are stale, but also return pinned
-		// peer keys so an old trusted fingerprint stays fail-closed even when the
-		// same device id has a fresh replacement fingerprint.
-		const freshDevices = new Set<string>();
-		const staleDevices = new Set<string>();
-		const freshPinnedPeers = new Set<string>();
-		const stalePinnedPeers = new Set<string>();
-		for (const peer of peers) {
-			const deviceId = clean(peer.device_id);
-			if (!deviceId) continue;
-			const fingerprint = clean(peer.fingerprint);
-			const pinnedPeerKey = fingerprint ? `${deviceId}:${fingerprint}` : "";
-			if (peer.stale) {
-				staleDevices.add(deviceId);
-				if (pinnedPeerKey) stalePinnedPeers.add(pinnedPeerKey);
-			} else {
-				freshDevices.add(deviceId);
-				if (pinnedPeerKey) freshPinnedPeers.add(pinnedPeerKey);
-			}
-		}
-		// Remove any device that has at least one fresh entry
-		for (const deviceId of freshDevices) {
-			staleDevices.delete(deviceId);
-		}
-		for (const pinnedPeerKey of freshPinnedPeers) {
-			stalePinnedPeers.delete(pinnedPeerKey);
-		}
-		return new Set([...staleDevices, ...stalePinnedPeers]);
+		return coordinatorStalePeerKeys(peers);
 	} catch {
 		// Best-effort: if coordinator lookup fails, skip the optimization.
 		return new Set();
 	}
+}
+
+/**
+ * Reduce a coordinator peer listing to the device IDs and pinned peer keys
+ * whose presence has expired.
+ *
+ * Split out of fetchCoordinatorStalePeers so a caller holding a peer snapshot
+ * can derive the same set without repeating the lookup.
+ */
+export function coordinatorStalePeerKeys(peers: Record<string, unknown>[]): Set<string> {
+	// A device may appear under multiple fingerprints (key rotation, multi-group).
+	// Skip device-wide only when all entries are stale, but also return pinned
+	// peer keys so an old trusted fingerprint stays fail-closed even when the
+	// same device id has a fresh replacement fingerprint.
+	const freshDevices = new Set<string>();
+	const staleDevices = new Set<string>();
+	const freshPinnedPeers = new Set<string>();
+	const stalePinnedPeers = new Set<string>();
+	for (const peer of peers) {
+		const deviceId = clean(peer.device_id);
+		if (!deviceId) continue;
+		const fingerprint = clean(peer.fingerprint);
+		const pinnedPeerKey = fingerprint ? `${deviceId}:${fingerprint}` : "";
+		if (peer.stale) {
+			staleDevices.add(deviceId);
+			if (pinnedPeerKey) stalePinnedPeers.add(pinnedPeerKey);
+		} else {
+			freshDevices.add(deviceId);
+			if (pinnedPeerKey) freshPinnedPeers.add(pinnedPeerKey);
+		}
+	}
+	// Remove any device that has at least one fresh entry
+	for (const deviceId of freshDevices) {
+		staleDevices.delete(deviceId);
+	}
+	for (const pinnedPeerKey of freshPinnedPeers) {
+		stalePinnedPeers.delete(pinnedPeerKey);
+	}
+	return new Set([...staleDevices, ...stalePinnedPeers]);
 }
 
 export async function listCoordinatorReciprocalApprovals(
