@@ -13,12 +13,12 @@ Use npm trusted publishing for this GitHub repo:
 
 Trusted publishing must be configured for every package the workflow publishes:
 
+- `@codemem/embeddings`
 - `@codemem/core`
 - `@codemem/mcp`
 - `@codemem/server`
 - `codemem`
 - `@codemem/opencode-plugin`
-- `@codemem/embeddings`
 
 Before the first tagged release that includes a new npm package, publish a
 distinct bootstrap prerelease such as `0.0.0-alpha.0` with authenticated
