@@ -528,35 +528,35 @@ describe("coordinator administration recovery lifecycle", () => {
 		expect(coordinatorAdminState.groupScopeManagementOpen.has("group-a")).toBe(true);
 	});
 
-	it.each([
-		"partial",
-		"not_configured",
-	])("treats %s readiness as known setup state rather than downstream failure", async (readiness) => {
-		document.body.innerHTML = '<div id="coordinatorAdminMount"></div>';
-		initCoordinatorAdminTab();
-		mocks.loadCoordinatorAdminStatus.mockResolvedValue({
-			active_group: "",
-			coordinator_url: "https://coordinator.example",
-			readiness,
-		});
+	it.each(["partial", "not_configured"])(
+		"treats %s readiness as known setup state rather than downstream failure",
+		async (readiness) => {
+			document.body.innerHTML = '<div id="coordinatorAdminMount"></div>';
+			initCoordinatorAdminTab();
+			mocks.loadCoordinatorAdminStatus.mockResolvedValue({
+				active_group: "",
+				coordinator_url: "https://coordinator.example",
+				readiness,
+			});
 
-		await loadCoordinatorAdminData();
+			await loadCoordinatorAdminData();
 
-		expect(coordinatorAdminState.recovery.status.availability).toBe("fresh");
-		expect(coordinatorAdminState.recovery.groups.availability).toBe("not_applicable");
-		expect(coordinatorAdminState.recovery.joinRequests.availability).toBe("not_applicable");
-		expect(coordinatorAdminState.recovery.devices.availability).toBe("not_applicable");
-		expect(mocks.loadCoordinatorAdminGroupsFiltered).not.toHaveBeenCalled();
-		expect(document.body.textContent).toContain(
-			"Complete legacy coordinator setup before loading coordinator groups",
-		);
-		expect(document.body.textContent).toContain(
-			"Complete legacy coordinator setup to load join requests",
-		);
-		expect(document.body.textContent).toContain(
-			"Complete legacy coordinator setup to load enrolled devices",
-		);
-	});
+			expect(coordinatorAdminState.recovery.status.availability).toBe("fresh");
+			expect(coordinatorAdminState.recovery.groups.availability).toBe("not_applicable");
+			expect(coordinatorAdminState.recovery.joinRequests.availability).toBe("not_applicable");
+			expect(coordinatorAdminState.recovery.devices.availability).toBe("not_applicable");
+			expect(mocks.loadCoordinatorAdminGroupsFiltered).not.toHaveBeenCalled();
+			expect(document.body.textContent).toContain(
+				"Complete legacy coordinator setup before loading coordinator groups",
+			);
+			expect(document.body.textContent).toContain(
+				"Complete legacy coordinator setup to load join requests",
+			);
+			expect(document.body.textContent).toContain(
+				"Complete legacy coordinator setup to load enrolled devices",
+			);
+		},
+	);
 
 	it("keeps the recovery status node stable and focuses it after retry succeeds", async () => {
 		document.body.innerHTML = '<div id="coordinatorAdminMount"></div>';

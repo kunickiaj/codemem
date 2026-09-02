@@ -57,9 +57,12 @@ describe("projectShareLifecycle", () => {
 			"Invitation cancelled",
 			{ kind: "create_new_invite", label: "Create new invite" },
 		],
-	] as const)("projects %s with its required recovery action", (state, lifecycle, label, action) => {
-		expect(project(state)).toMatchObject({ lifecycle, label, primaryAction: action });
-	});
+	] as const)(
+		"projects %s with its required recovery action",
+		(state, lifecycle, label, action) => {
+			expect(project(state)).toMatchObject({ lifecycle, label, primaryAction: action });
+		},
+	);
 
 	it("offers Copy invite only when the safe link is available", () => {
 		expect(project("waiting_for_acceptance", [], "codemem://invite/encoded").primaryAction).toEqual(

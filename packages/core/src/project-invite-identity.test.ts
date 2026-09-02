@@ -74,13 +74,14 @@ describe("project invite identity", () => {
 		);
 	});
 
-	it.each(
-		MACHINE_PRESENTATION_LABEL_FIXTURES,
-	)("keeps core and browser presentation classifiers aligned for %s", (value) => {
-		expect(isHumanPresentationName(value)).toBe(false);
-		expect(isMachinePresentationLabel(value)).toBe(true);
-		expect(humanPresentationLabel(value)).toBe("");
-	});
+	it.each(MACHINE_PRESENTATION_LABEL_FIXTURES)(
+		"keeps core and browser presentation classifiers aligned for %s",
+		(value) => {
+			expect(isHumanPresentationName(value)).toBe(false);
+			expect(isMachinePresentationLabel(value)).toBe(true);
+			expect(humanPresentationLabel(value)).toBe("");
+		},
+	);
 
 	it("normalizes human actor and device presentation names", () => {
 		expect(normalizeHumanPresentationName("  Brian   Example  ", "recipient_display_name")).toBe(

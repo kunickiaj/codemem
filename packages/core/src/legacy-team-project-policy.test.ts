@@ -15,13 +15,12 @@ describe("isMigratableLegacyTeamProjectIdentity", () => {
 		expect(isMigratableLegacyTeamProjectIdentity(identity)).toBe(false);
 	});
 
-	it.each([
-		"shared:team",
-		"shared:workspace-only",
-		"https://example.invalid/project.git",
-	])("accepts canonical Project identity %s", (identity) => {
-		expect(isMigratableLegacyTeamProjectIdentity(identity)).toBe(true);
-	});
+	it.each(["shared:team", "shared:workspace-only", "https://example.invalid/project.git"])(
+		"accepts canonical Project identity %s",
+		(identity) => {
+			expect(isMigratableLegacyTeamProjectIdentity(identity)).toBe(true);
+		},
+	);
 
 	it("accepts peer-prefixed identities only when local inventory proves ownership", () => {
 		const db = new Database(":memory:");

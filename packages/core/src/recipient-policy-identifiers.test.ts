@@ -111,14 +111,12 @@ describe("recipient policy identifiers", () => {
 		expect(act).toThrow(TypeError);
 	});
 
-	it.each([
-		"\uD800",
-		"\uDC00",
-		"recipient\uD800policy",
-		"\uDC00\uD800",
-	])("rejects ill-formed UTF-16 in digest domain prefix %j", (prefix) => {
-		expect(() => recipientPolicyDigest(prefix, { value: true })).toThrow(TypeError);
-	});
+	it.each(["\uD800", "\uDC00", "recipient\uD800policy", "\uDC00\uD800"])(
+		"rejects ill-formed UTF-16 in digest domain prefix %j",
+		(prefix) => {
+			expect(() => recipientPolicyDigest(prefix, { value: true })).toThrow(TypeError);
+		},
+	);
 
 	it("keeps well-formed astral-plane digest prefixes stable", () => {
 		const prefix = "recipient-\u{1F600}-v1";

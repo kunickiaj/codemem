@@ -1222,43 +1222,43 @@ describe("recipient-policy reconciler executor", () => {
 		expect(effects.grant).not.toHaveBeenCalled();
 	});
 
-	it.each([
-		"unsupported",
-		"undetermined",
-	] as const)("bounds failed capability steps across repeated %s preflights", async (capability) => {
-		const { effects } = harness(["device-keep"]);
-		vi.mocked(effects.probeCapability).mockResolvedValue(capability);
-		const at = new Date(BASE_TIME).toISOString();
-		const insert = db.prepare(
-			`INSERT INTO recipient_policy_reconciliation_steps(
+	it.each(["unsupported", "undetermined"] as const)(
+		"bounds failed capability steps across repeated %s preflights",
+		async (capability) => {
+			const { effects } = harness(["device-keep"]);
+			vi.mocked(effects.probeCapability).mockResolvedValue(capability);
+			const at = new Date(BASE_TIME).toISOString();
+			const insert = db.prepare(
+				`INSERT INTO recipient_policy_reconciliation_steps(
 			 canonical_project_identity, generation, step_key, effect_id, payload_digest,
 			 status, created_at, updated_at
 			 ) VALUES (?, 1, ?, ?, 'payload', ?, ?, ?)`,
-		);
-		insert.run(PROJECT, "capability:stale:device-a", "stale-pending", "pending", at, at);
-		insert.run(PROJECT, "capability:stale:device-b", "stale-running", "running", at, at);
-
-		for (let pass = 1; pass <= 3; pass += 1) {
-			const outcome = await reconcileRecipientPolicyProject(
-				db,
-				{ canonicalProjectIdentity: PROJECT, leaseOwner: `worker-${pass}` },
-				effects,
 			);
+			insert.run(PROJECT, "capability:stale:device-a", "stale-pending", "pending", at, at);
+			insert.run(PROJECT, "capability:stale:device-b", "stale-running", "running", at, at);
 
-			expect(outcome.safeErrorCode).toBe(`recipient_policy_capability_${capability}`);
-			expect(
-				db
-					.prepare(
-						`SELECT COUNT(*) FROM recipient_policy_reconciliation_steps
+			for (let pass = 1; pass <= 3; pass += 1) {
+				const outcome = await reconcileRecipientPolicyProject(
+					db,
+					{ canonicalProjectIdentity: PROJECT, leaseOwner: `worker-${pass}` },
+					effects,
+				);
+
+				expect(outcome.safeErrorCode).toBe(`recipient_policy_capability_${capability}`);
+				expect(
+					db
+						.prepare(
+							`SELECT COUNT(*) FROM recipient_policy_reconciliation_steps
 							 WHERE canonical_project_identity = ?
 							 AND status IN ('pending', 'running', 'failed')
 							 AND step_key GLOB 'capability:*'`,
-					)
-					.pluck()
-					.get(PROJECT),
-			).toBe(2);
-		}
-	});
+						)
+						.pluck()
+						.get(PROJECT),
+				).toBe(2);
+			}
+		},
+	);
 
 	it("preserves active authority while capability evidence is undetermined", async () => {
 		const { effects } = harness(["device-keep"]);

@@ -348,43 +348,47 @@ describe("device Identity binding", () => {
 	it.each([
 		{ status: "deactivated", mergedIntoIdentityId: null },
 		{ status: "merged", mergedIntoIdentityId: "identity-local" },
-	])("rejects an exact retry after its target identity becomes $status", ({
-		status,
-		mergedIntoIdentityId,
-	}) => {
-		const request = {
-			bindings: [
-				{
-					deviceId: "device-peer",
-					targetIdentityId: "identity-other",
-					confirmed: true,
-				},
-			],
-		};
-		const preview = previewDeviceIdentityBindings(db, inventoryInput, request);
-		const commit = { ...request, reviewedInventoryDigest: preview.reviewedInventoryDigest };
-		expect(commitDeviceIdentityBindings(db, context, inventoryInput, commit)).toMatchObject({
-			status: "applied",
-			writeCount: 1,
-			idempotent: false,
-		});
-		db.prepare(
-			"UPDATE actors SET status = ?, merged_into_actor_id = ? WHERE actor_id = 'identity-other'",
-		).run(status, mergedIntoIdentityId);
+	])(
+		"rejects an exact retry after its target identity becomes $status",
+		({ status, mergedIntoIdentityId }) => {
+			const request = {
+				bindings: [
+					{
+						deviceId: "device-peer",
+						targetIdentityId: "identity-other",
+						confirmed: true,
+					},
+				],
+			};
+			const preview = previewDeviceIdentityBindings(db, inventoryInput, request);
+			const commit = { ...request, reviewedInventoryDigest: preview.reviewedInventoryDigest };
+			expect(commitDeviceIdentityBindings(db, context, inventoryInput, commit)).toMatchObject({
+				status: "applied",
+				writeCount: 1,
+				idempotent: false,
+			});
+			db.prepare(
+				"UPDATE actors SET status = ?, merged_into_actor_id = ? WHERE actor_id = 'identity-other'",
+			).run(status, mergedIntoIdentityId);
 
-		expect(commitDeviceIdentityBindings(db, context, inventoryInput, commit)).toMatchObject({
-			status: "stale",
-			errorCode: "binding_retry_stale",
-			writeCount: 0,
-			idempotent: false,
-		});
-		expect(
-			db
-				.prepare("SELECT identity_id, status FROM identity_devices WHERE device_id = 'device-peer'")
-				.get(),
-		).toEqual({ identity_id: "identity-other", status: "active" });
-		expect(db.prepare("SELECT COUNT(*) FROM device_identity_binding_audit").pluck().get()).toBe(1);
-	});
+			expect(commitDeviceIdentityBindings(db, context, inventoryInput, commit)).toMatchObject({
+				status: "stale",
+				errorCode: "binding_retry_stale",
+				writeCount: 0,
+				idempotent: false,
+			});
+			expect(
+				db
+					.prepare(
+						"SELECT identity_id, status FROM identity_devices WHERE device_id = 'device-peer'",
+					)
+					.get(),
+			).toEqual({ identity_id: "identity-other", status: "active" });
+			expect(db.prepare("SELECT COUNT(*) FROM device_identity_binding_audit").pluck().get()).toBe(
+				1,
+			);
+		},
+	);
 
 	it("rejects an exact retry after device evidence becomes conflicted", () => {
 		const request = {

@@ -77,25 +77,25 @@ describe("extractHookTranscript", () => {
 		}
 	});
 
-	it.each([
-		"../outside.jsonl",
-		"../../outside.jsonl",
-	])("rejects relative traversal %s", (transcriptPath) => {
-		const parent = mkdtempSync(join(tmpdir(), "codemem-transcript-traversal-"));
-		const cwd = join(parent, "cwd");
-		mkdirSync(cwd);
-		writeFileSync(join(parent, "outside.jsonl"), '{"role":"assistant","content":"outside"}\n');
-		try {
-			expect(
-				extractHookTranscript(transcriptPath, {
-					policy: restrictedTranscriptPolicy(parent),
-					cwd,
-				}),
-			).toEqual([null, null]);
-		} finally {
-			rmSync(parent, { recursive: true, force: true });
-		}
-	});
+	it.each(["../outside.jsonl", "../../outside.jsonl"])(
+		"rejects relative traversal %s",
+		(transcriptPath) => {
+			const parent = mkdtempSync(join(tmpdir(), "codemem-transcript-traversal-"));
+			const cwd = join(parent, "cwd");
+			mkdirSync(cwd);
+			writeFileSync(join(parent, "outside.jsonl"), '{"role":"assistant","content":"outside"}\n');
+			try {
+				expect(
+					extractHookTranscript(transcriptPath, {
+						policy: restrictedTranscriptPolicy(parent),
+						cwd,
+					}),
+				).toEqual([null, null]);
+			} finally {
+				rmSync(parent, { recursive: true, force: true });
+			}
+		},
+	);
 
 	it("rejects an absolute path beneath a sibling with the same prefix", () => {
 		const parent = mkdtempSync(join(tmpdir(), "codemem-transcript-prefix-"));
@@ -352,7 +352,7 @@ describe("mapClaudeHookPayload", () => {
 			expect(event?.event_type).toBe("prompt");
 			expect(event?.payload.text).toBe("Run tests");
 			expect(event?.meta.hook_event_name).toBe("UserPromptSubmit");
-			expect((event?.meta.hook_fields as Record<string, unknown>).custom_field).toBe("keep-me");
+			expect(event?.meta.hook_fields).toMatchObject({ custom_field: "keep-me" });
 		});
 
 		it("returns null for empty prompt", () => {
@@ -499,7 +499,7 @@ describe("mapClaudeHookPayload", () => {
 			expect(event).not.toBeNull();
 			expect(event?.event_type).toBe("assistant");
 			expect(event?.payload.text).toBe("All done!");
-			expect((event?.payload.usage as Record<string, number>).input_tokens).toBe(100);
+			expect(event?.payload.usage).toMatchObject({ input_tokens: 100 });
 		});
 
 		it("returns null when no text and no transcript", () => {
@@ -815,9 +815,7 @@ describe("buildRawEventEnvelopeFromHook", () => {
 		expect(envelope?.event_type).toBe("claude.hook");
 		expect(envelope?.started_at).toBe("2026-03-04T01:00:00Z");
 		expect(envelope?.payload._adapter).toBeDefined();
-		expect((envelope?.payload._adapter as Record<string, unknown>).event_type).toBe(
-			"session_start",
-		);
+		expect(envelope?.payload._adapter).toMatchObject({ event_type: "session_start" });
 		// 2026-03-04T01:00:00Z in ms
 		expect(envelope?.ts_wall_ms).toBe(new Date("2026-03-04T01:00:00Z").getTime());
 	});
@@ -1043,7 +1041,7 @@ describe("buildIngestPayloadFromHook", () => {
 
 		const events = ingest?.events as Array<Record<string, unknown>>;
 		expect(events).toHaveLength(1);
-		expect((events[0]?._adapter as Record<string, unknown>).event_type).toBe("session_start");
+		expect(events[0]?._adapter).toMatchObject({ event_type: "session_start" });
 	});
 
 	it("sets cwd from hook payload", () => {

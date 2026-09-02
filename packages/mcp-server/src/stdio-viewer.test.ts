@@ -103,22 +103,22 @@ describe("MCP viewer ensure", () => {
 		expect(spawnMock).not.toHaveBeenCalled();
 	});
 
-	it.each([
-		"CODEMEM_VIEWER",
-		"CODEMEM_VIEWER_AUTO",
-	] as const)("respects the %s opt-out", async (variable) => {
-		const fetchMock = createFetchMock();
-		const { spawnMock } = createSpawnMock();
+	it.each(["CODEMEM_VIEWER", "CODEMEM_VIEWER_AUTO"] as const)(
+		"respects the %s opt-out",
+		async (variable) => {
+			const fetchMock = createFetchMock();
+			const { spawnMock } = createSpawnMock();
 
-		await ensureViewer({
-			env: { [variable]: "0" },
-			fetchImpl: fetchMock,
-			spawnImpl: spawnMock,
-		});
+			await ensureViewer({
+				env: { [variable]: "0" },
+				fetchImpl: fetchMock,
+				spawnImpl: spawnMock,
+			});
 
-		expect(fetchMock).not.toHaveBeenCalled();
-		expect(spawnMock).not.toHaveBeenCalled();
-	});
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(spawnMock).not.toHaveBeenCalled();
+		},
+	);
 
 	it("spawns detached with preserved arguments and polls five times", async () => {
 		const fetchMock = createFetchMock(...Array.from({ length: 6 }, () => new Error("offline")));

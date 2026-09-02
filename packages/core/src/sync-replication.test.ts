@@ -2830,33 +2830,33 @@ describe("applyReplicationOps", () => {
 	it.each([
 		{ name: "null scope", scopeId: null, reason: "missing_scope" },
 		{ name: "local-default scope", scopeId: DEFAULT_SYNC_SCOPE_ID, reason: "scope_mismatch" },
-	] as const)("rejects regular inbound ops with $name when legacy scope validation is disabled", ({
-		scopeId,
-		reason,
-	}) => {
-		const op = makeReplicationOp({
-			op_id: `legacy-disabled-${reason}`,
-			scope_id: scopeId,
-			payload_json: toJson({
-				kind: "discovery",
-				title: "Blocked local-only memory",
-				body_text: "Remote body",
+	] as const)(
+		"rejects regular inbound ops with $name when legacy scope validation is disabled",
+		({ scopeId, reason }) => {
+			const op = makeReplicationOp({
+				op_id: `legacy-disabled-${reason}`,
 				scope_id: scopeId,
-			}),
-		});
+				payload_json: toJson({
+					kind: "discovery",
+					title: "Blocked local-only memory",
+					body_text: "Remote body",
+					scope_id: scopeId,
+				}),
+			});
 
-		const result = applyReplicationOps(db, [op], "dev-local", undefined, {
-			inboundScopeValidation: { peerDeviceId: "dev-remote", enabled: false },
-		});
+			const result = applyReplicationOps(db, [op], "dev-local", undefined, {
+				inboundScopeValidation: { peerDeviceId: "dev-remote", enabled: false },
+			});
 
-		expect(result.applied).toBe(0);
-		expect(result.rejected).toBe(1);
-		expect(result.rejections[0]).toMatchObject({ op_id: op.op_id, reason });
-		expect(memoryExists(op.entity_id)).toBe(false);
-		expect(
-			db.prepare("SELECT 1 FROM replication_ops WHERE op_id = ?").get(op.op_id),
-		).toBeUndefined();
-	});
+			expect(result.applied).toBe(0);
+			expect(result.rejected).toBe(1);
+			expect(result.rejections[0]).toMatchObject({ op_id: op.op_id, reason });
+			expect(memoryExists(op.entity_id)).toBe(false);
+			expect(
+				db.prepare("SELECT 1 FROM replication_ops WHERE op_id = ?").get(op.op_id),
+			).toBeUndefined();
+		},
+	);
 
 	function makeUnsupportedOldSideReassignment(importKey: string): ReplicationOp {
 		return makeReplicationOp({
@@ -2914,29 +2914,29 @@ describe("applyReplicationOps", () => {
 		{ name: "foreign", originDeviceId: "dev-other" },
 		{ name: "local", originDeviceId: "dev-local" },
 		{ name: "ambiguous", originDeviceId: null },
-	] as const)("rejects $name-origin old-side reassignment when strict validation is disabled", ({
-		name,
-		originDeviceId,
-	}) => {
-		const importKey = `key:unsupported-${name}-origin`;
-		insertReplicatedMemory({
-			importKey,
-			originDeviceId,
-			scopeId: DEFAULT_SYNC_SCOPE_ID,
-		});
-		const op = makeUnsupportedOldSideReassignment(importKey);
+	] as const)(
+		"rejects $name-origin old-side reassignment when strict validation is disabled",
+		({ name, originDeviceId }) => {
+			const importKey = `key:unsupported-${name}-origin`;
+			insertReplicatedMemory({
+				importKey,
+				originDeviceId,
+				scopeId: DEFAULT_SYNC_SCOPE_ID,
+			});
+			const op = makeUnsupportedOldSideReassignment(importKey);
 
-		const result = applyReplicationOps(db, [op], "dev-local", undefined, {
-			inboundScopeValidation: { peerDeviceId: "dev-remote", enabled: false },
-		});
+			const result = applyReplicationOps(db, [op], "dev-local", undefined, {
+				inboundScopeValidation: { peerDeviceId: "dev-remote", enabled: false },
+			});
 
-		expect(result.applied).toBe(0);
-		expect(result.rejected).toBe(1);
-		expect(result.rejections[0]).toMatchObject({ reason: "sender_not_member" });
-		expect(
-			db.prepare("SELECT active FROM memory_items WHERE import_key = ?").pluck().get(importKey),
-		).toBe(1);
-	});
+			expect(result.applied).toBe(0);
+			expect(result.rejected).toBe(1);
+			expect(result.rejections[0]).toMatchObject({ reason: "sender_not_member" });
+			expect(
+				db.prepare("SELECT active FROM memory_items WHERE import_key = ?").pluck().get(importKey),
+			).toBe(1);
+		},
+	);
 
 	it("allows sender-owned local-default cleanup for a prior recipient outside the destination", () => {
 		const importKey = "key:default-reassign";

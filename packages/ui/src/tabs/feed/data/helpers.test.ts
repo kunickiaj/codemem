@@ -46,16 +46,17 @@ describe("Feed identity labels", () => {
 		expect(deviceLabel(item)).toBe("Shared device");
 	});
 
-	it.each(
-		MACHINE_PRESENTATION_LABEL_FIXTURES,
-	)("never promotes machine-shaped label %s", (value) => {
-		expect(authorLabel({ actor_id: "remote-actor", resolved_actor_display_name: value })).toBe(
-			"Teammate",
-		);
-		expect(
-			deviceLabel({ origin_device_id: "remote-device", resolved_device_display_name: value }),
-		).toBe("Shared device");
-	});
+	it.each(MACHINE_PRESENTATION_LABEL_FIXTURES)(
+		"never promotes machine-shaped label %s",
+		(value) => {
+			expect(authorLabel({ actor_id: "remote-actor", resolved_actor_display_name: value })).toBe(
+				"Teammate",
+			);
+			expect(
+				deviceLabel({ origin_device_id: "remote-device", resolved_device_display_name: value }),
+			).toBe("Shared device");
+		},
+	);
 
 	it("uses unknown author when no actor provenance exists", () => {
 		expect(authorLabel({})).toBe("Unknown author");

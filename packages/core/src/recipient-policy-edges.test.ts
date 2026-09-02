@@ -648,99 +648,96 @@ describe("recipient-policy edge changes", () => {
 		["pending", "pending", null, "team_member_identity_not_active"],
 		["deactivated", "deactivated", null, "team_member_identity_not_active"],
 		["merged", "active", "identity-a", "team_member_identity_merged"],
-	] as const)("blocks $label Team members identically in preview and authoritative derivation", (_label, status, mergedIntoIdentityId, code) => {
-		const db = seedGraph();
-		insertProjectRecipient(db, PROJECT_A, "team-a", "team");
-		db.prepare(
-			`UPDATE actors SET status = ?, merged_into_actor_id = ?
+	] as const)(
+		"blocks $label Team members identically in preview and authoritative derivation",
+		(_label, status, mergedIntoIdentityId, code) => {
+			const db = seedGraph();
+			insertProjectRecipient(db, PROJECT_A, "team-a", "team");
+			db.prepare(
+				`UPDATE actors SET status = ?, merged_into_actor_id = ?
 				 WHERE actor_id = 'identity-b'`,
-		).run(status, mergedIntoIdentityId);
+			).run(status, mergedIntoIdentityId);
 
-		const authoritative = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A);
-		let previewError: unknown;
-		try {
-			previewRecipientPolicyEdges(db, {
-				version: 1,
-				changes: [teamChange(PROJECT_A, "team-a")],
+			const authoritative = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A);
+			let previewError: unknown;
+			try {
+				previewRecipientPolicyEdges(db, {
+					version: 1,
+					changes: [teamChange(PROJECT_A, "team-a")],
+				});
+			} catch (error) {
+				previewError = error;
+			}
+
+			expect(authoritative.status).toBe("blocked");
+			expect(authoritative.blocked[0]).toEqual({ code, referenceId: "identity-b" });
+			expect(previewError).toMatchObject({ status: "invalid", errorCode: code });
+		},
+	);
+
+	it.each(["", " device-a", "device-a ", "device-a\n"])(
+		"blocks malformed Team device ID %j identically in preview and authoritative derivation",
+		(deviceId) => {
+			const db = seedGraph();
+			insertProjectRecipient(db, PROJECT_A, "team-a", "team");
+			db.prepare("UPDATE identity_devices SET device_id = ? WHERE device_id = 'device-a'").run(
+				deviceId,
+			);
+
+			const authoritative = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A);
+			let previewError: unknown;
+			try {
+				previewRecipientPolicyEdges(db, {
+					version: 1,
+					changes: [teamChange(PROJECT_A, "team-a")],
+				});
+			} catch (error) {
+				previewError = error;
+			}
+
+			expect(authoritative.status).toBe("blocked");
+			expect(authoritative.blocked).toContainEqual({
+				code: "identity_device_invalid",
+				referenceId: deviceId,
 			});
-		} catch (error) {
-			previewError = error;
-		}
-
-		expect(authoritative.status).toBe("blocked");
-		expect(authoritative.blocked[0]).toEqual({ code, referenceId: "identity-b" });
-		expect(previewError).toMatchObject({ status: "invalid", errorCode: code });
-	});
-
-	it.each([
-		"",
-		" device-a",
-		"device-a ",
-		"device-a\n",
-	])("blocks malformed Team device ID %j identically in preview and authoritative derivation", (deviceId) => {
-		const db = seedGraph();
-		insertProjectRecipient(db, PROJECT_A, "team-a", "team");
-		db.prepare("UPDATE identity_devices SET device_id = ? WHERE device_id = 'device-a'").run(
-			deviceId,
-		);
-
-		const authoritative = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A);
-		let previewError: unknown;
-		try {
-			previewRecipientPolicyEdges(db, {
-				version: 1,
-				changes: [teamChange(PROJECT_A, "team-a")],
+			expect(previewError).toMatchObject({
+				status: "invalid",
+				errorCode: "identity_device_invalid",
 			});
-		} catch (error) {
-			previewError = error;
-		}
+		},
+	);
 
-		expect(authoritative.status).toBe("blocked");
-		expect(authoritative.blocked).toContainEqual({
-			code: "identity_device_invalid",
-			referenceId: deviceId,
-		});
-		expect(previewError).toMatchObject({
-			status: "invalid",
-			errorCode: "identity_device_invalid",
-		});
-	});
+	it.each(["", " device-a", "device-a ", "device-a\n", "device-\u200B-a", "a".repeat(257)])(
+		"blocks malformed direct-identity device ID %j identically in preview and authoritative derivation",
+		(deviceId) => {
+			const db = seedGraph();
+			insertProjectRecipient(db, PROJECT_A, "identity-a");
+			db.prepare("UPDATE identity_devices SET device_id = ? WHERE device_id = 'device-a'").run(
+				deviceId,
+			);
 
-	it.each([
-		"",
-		" device-a",
-		"device-a ",
-		"device-a\n",
-		"device-\u200B-a",
-		"a".repeat(257),
-	])("blocks malformed direct-identity device ID %j identically in preview and authoritative derivation", (deviceId) => {
-		const db = seedGraph();
-		insertProjectRecipient(db, PROJECT_A, "identity-a");
-		db.prepare("UPDATE identity_devices SET device_id = ? WHERE device_id = 'device-a'").run(
-			deviceId,
-		);
+			const authoritative = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A);
+			let previewError: unknown;
+			try {
+				previewRecipientPolicyEdges(db, {
+					version: 1,
+					changes: [identityChange(PROJECT_A, "identity-a")],
+				});
+			} catch (error) {
+				previewError = error;
+			}
 
-		const authoritative = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A);
-		let previewError: unknown;
-		try {
-			previewRecipientPolicyEdges(db, {
-				version: 1,
-				changes: [identityChange(PROJECT_A, "identity-a")],
+			expect(authoritative.status).toBe("blocked");
+			expect(authoritative.blocked).toContainEqual({
+				code: "identity_device_invalid",
+				referenceId: deviceId,
 			});
-		} catch (error) {
-			previewError = error;
-		}
-
-		expect(authoritative.status).toBe("blocked");
-		expect(authoritative.blocked).toContainEqual({
-			code: "identity_device_invalid",
-			referenceId: deviceId,
-		});
-		expect(previewError).toMatchObject({
-			status: "invalid",
-			errorCode: "identity_device_invalid",
-		});
-	});
+			expect(previewError).toMatchObject({
+				status: "invalid",
+				errorCode: "identity_device_invalid",
+			});
+		},
+	);
 
 	it("keeps indexed Team eligibility facts isolated across a large roster", () => {
 		const db = seedGraph();

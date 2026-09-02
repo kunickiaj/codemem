@@ -175,23 +175,20 @@ describe("legacy recipient-policy projection", () => {
 
 	afterEach(() => db.close());
 
-	it.each([
-		"/",
-		"C:\\",
-		"//server/share",
-		"file://server/share",
-		"file:////server/share",
-	])("excludes filesystem-root Project %s from recipient review", (identity) => {
-		mapProject(db, identity, "local-default", "root-project");
+	it.each(["/", "C:\\", "//server/share", "file://server/share", "file:////server/share"])(
+		"excludes filesystem-root Project %s from recipient review",
+		(identity) => {
+			mapProject(db, identity, "local-default", "root-project");
 
-		expect(projections(db)).toEqual([]);
-		expect(
-			listLegacyTeamProjectEvidence(db, {
-				localActorId: LOCAL_ACTOR_ID,
-				localDeviceId: LOCAL_DEVICE_ID,
-			}),
-		).toEqual([]);
-	});
+			expect(projections(db)).toEqual([]);
+			expect(
+				listLegacyTeamProjectEvidence(db, {
+					localActorId: LOCAL_ACTOR_ID,
+					localDeviceId: LOCAL_DEVICE_ID,
+				}),
+			).toEqual([]);
+		},
+	);
 
 	it("projects one exact canonical Project from one active managed scope", () => {
 		const scopeId = "managed-project-one";

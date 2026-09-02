@@ -1307,136 +1307,136 @@ describe("recipient policy intent migration", () => {
 		).toBe(1);
 	});
 
-	it.each([
-		"v1",
-		"v2",
-	] as const)("accepts a stored %s recipient edge authorized by a non-preferred current review", (metadataVersion) => {
-		// Arrange
-		const projectId = `https://git.example.invalid/acme/replay-${metadataVersion}.git`;
-		const scopeId = `scope-replay-${metadataVersion}`;
-		const recipientId = `identity-replay-${metadataVersion}`;
-		insertActor(db, recipientId, "Replay recipient");
-		insertProject(db, { projectId, displayName: `replay-${metadataVersion}`, scopeId });
-		insertScope(db, { scopeId, projectId });
-		assignDevice(db, {
-			scopeId,
-			deviceId: `device-replay-assigned-${metadataVersion}`,
-			actorId: recipientId,
-		});
-		for (const deviceId of [
-			`device-replay-${metadataVersion}-a`,
-			`device-replay-${metadataVersion}-b`,
-		]) {
-			db.prepare(
-				`INSERT INTO sync_peers(peer_device_id, name, actor_id, created_at)
-					 VALUES (?, ?, NULL, ?)`,
-			).run(deviceId, deviceId, NOW);
-			db.prepare(
-				`INSERT INTO scope_memberships(scope_id, device_id, status, membership_epoch, updated_at)
-					 VALUES (?, ?, 'active', 1, ?)`,
-			).run(scopeId, deviceId, NOW);
-		}
-		const items = listRecipientPolicyReview(db, context).reviewItems.filter((candidate) =>
-			candidate.options.some((option) => option.decision === "choose_recipients"),
-		);
-		expect(items).toHaveLength(2);
-		expect(new Set(items.map((item) => item.sourceFingerprint)).size).toBe(2);
-		for (const item of items) {
-			resolveRecipientPolicyReview(db, context, {
-				reviewItemId: item.reviewItemId,
-				sourceFingerprint: item.sourceFingerprint,
-				decision: "choose_recipients",
-				decisionInput: { recipientIds: [recipientId] },
+	it.each(["v1", "v2"] as const)(
+		"accepts a stored %s recipient edge authorized by a non-preferred current review",
+		(metadataVersion) => {
+			// Arrange
+			const projectId = `https://git.example.invalid/acme/replay-${metadataVersion}.git`;
+			const scopeId = `scope-replay-${metadataVersion}`;
+			const recipientId = `identity-replay-${metadataVersion}`;
+			insertActor(db, recipientId, "Replay recipient");
+			insertProject(db, { projectId, displayName: `replay-${metadataVersion}`, scopeId });
+			insertScope(db, { scopeId, projectId });
+			assignDevice(db, {
+				scopeId,
+				deviceId: `device-replay-assigned-${metadataVersion}`,
+				actorId: recipientId,
 			});
-		}
-		const [, storedFingerprint] = items
-			.map((item) => item.sourceFingerprint)
-			.toSorted(compareCodepoints);
-		if (!storedFingerprint) throw new Error("stored review fingerprint missing");
-		const identity = [projectId, "identity", recipientId];
-		const evidenceIdentity = {
-			identity,
-			provenance: "review_resolution",
-			sourceFingerprint: storedFingerprint,
-		};
-		const metadataIdentity = metadataVersion === "v1" ? identity : evidenceIdentity;
-		db.prepare(
-			`INSERT INTO project_recipients(
+			for (const deviceId of [
+				`device-replay-${metadataVersion}-a`,
+				`device-replay-${metadataVersion}-b`,
+			]) {
+				db.prepare(
+					`INSERT INTO sync_peers(peer_device_id, name, actor_id, created_at)
+					 VALUES (?, ?, NULL, ?)`,
+				).run(deviceId, deviceId, NOW);
+				db.prepare(
+					`INSERT INTO scope_memberships(scope_id, device_id, status, membership_epoch, updated_at)
+					 VALUES (?, ?, 'active', 1, ?)`,
+				).run(scopeId, deviceId, NOW);
+			}
+			const items = listRecipientPolicyReview(db, context).reviewItems.filter((candidate) =>
+				candidate.options.some((option) => option.decision === "choose_recipients"),
+			);
+			expect(items).toHaveLength(2);
+			expect(new Set(items.map((item) => item.sourceFingerprint)).size).toBe(2);
+			for (const item of items) {
+				resolveRecipientPolicyReview(db, context, {
+					reviewItemId: item.reviewItemId,
+					sourceFingerprint: item.sourceFingerprint,
+					decision: "choose_recipients",
+					decisionInput: { recipientIds: [recipientId] },
+				});
+			}
+			const [, storedFingerprint] = items
+				.map((item) => item.sourceFingerprint)
+				.toSorted(compareCodepoints);
+			if (!storedFingerprint) throw new Error("stored review fingerprint missing");
+			const identity = [projectId, "identity", recipientId];
+			const evidenceIdentity = {
+				identity,
+				provenance: "review_resolution",
+				sourceFingerprint: storedFingerprint,
+			};
+			const metadataIdentity = metadataVersion === "v1" ? identity : evidenceIdentity;
+			db.prepare(
+				`INSERT INTO project_recipients(
 				 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
 				 policy_revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at
 				 ) VALUES (?, 'identity', ?, 'active', 'review_resolution', ?, 'projected', ?, ?, ?, ?)`,
-		).run(
-			projectId,
-			recipientId,
-			legacyRecipientPolicyDigest(
-				`recipient-policy-project-recipient-revision-${metadataVersion}`,
-				metadataIdentity,
-			),
-			storedFingerprint,
-			legacyRecipientPolicyDigest(
-				`recipient-policy-project-recipient-idempotency-${metadataVersion}`,
-				metadataIdentity,
-			),
-			NOW,
-			NOW,
-		);
+			).run(
+				projectId,
+				recipientId,
+				legacyRecipientPolicyDigest(
+					`recipient-policy-project-recipient-revision-${metadataVersion}`,
+					metadataIdentity,
+				),
+				storedFingerprint,
+				legacyRecipientPolicyDigest(
+					`recipient-policy-project-recipient-idempotency-${metadataVersion}`,
+					metadataIdentity,
+				),
+				NOW,
+				NOW,
+			);
 
-		// Act
-		const result = migrateRecipientPolicyIntent(db, context);
-		const replay = migrateRecipientPolicyIntent(db, context);
+			// Act
+			const result = migrateRecipientPolicyIntent(db, context);
+			const replay = migrateRecipientPolicyIntent(db, context);
 
-		// Assert
-		expect(result.results).toContainEqual(
-			expect.objectContaining({
-				canonicalProjectIdentity: projectId,
-				status: "migrated",
-				errorCode: null,
-			}),
-		);
-		expect(replay.results).toContainEqual(
-			expect.objectContaining({
-				canonicalProjectIdentity: projectId,
-				status: "unchanged",
-				idempotent: true,
-			}),
-		);
-		expect(
-			db
-				.prepare(
-					`SELECT source_fingerprint FROM project_recipients
+			// Assert
+			expect(result.results).toContainEqual(
+				expect.objectContaining({
+					canonicalProjectIdentity: projectId,
+					status: "migrated",
+					errorCode: null,
+				}),
+			);
+			expect(replay.results).toContainEqual(
+				expect.objectContaining({
+					canonicalProjectIdentity: projectId,
+					status: "unchanged",
+					idempotent: true,
+				}),
+			);
+			expect(
+				db
+					.prepare(
+						`SELECT source_fingerprint FROM project_recipients
 						 WHERE canonical_project_identity = ? AND recipient_kind = 'identity'
 						   AND recipient_id = ?`,
-				)
-				.pluck()
-				.get(projectId, recipientId),
-		).toBe(storedFingerprint);
+					)
+					.pluck()
+					.get(projectId, recipientId),
+			).toBe(storedFingerprint);
 
-		db.prepare(
-			`UPDATE project_recipients SET source_fingerprint = 'not-a-current-review'
+			db.prepare(
+				`UPDATE project_recipients SET source_fingerprint = 'not-a-current-review'
 				 WHERE canonical_project_identity = ? AND recipient_kind = 'identity' AND recipient_id = ?`,
-		).run(projectId, recipientId);
-		const rejected = migrateRecipientPolicyIntent(db, context);
-		expect(rejected.results).toContainEqual(
-			expect.objectContaining({
-				canonicalProjectIdentity: projectId,
-				status: "blocked",
-				errorCode: "intent_conflict",
-			}),
-		);
+			).run(projectId, recipientId);
+			const rejected = migrateRecipientPolicyIntent(db, context);
+			expect(rejected.results).toContainEqual(
+				expect.objectContaining({
+					canonicalProjectIdentity: projectId,
+					status: "blocked",
+					errorCode: "intent_conflict",
+				}),
+			);
 
-		db.prepare(
-			`UPDATE project_recipients SET source_fingerprint = ?, policy_revision = 'tampered-revision'
+			db.prepare(
+				`UPDATE project_recipients SET source_fingerprint = ?, policy_revision = 'tampered-revision'
 			 WHERE canonical_project_identity = ? AND recipient_kind = 'identity' AND recipient_id = ?`,
-		).run(storedFingerprint, projectId, recipientId);
-		const metadataRejected = migrateRecipientPolicyIntent(db, context);
-		expect(metadataRejected.results).toContainEqual(
-			expect.objectContaining({
-				canonicalProjectIdentity: projectId,
-				status: "blocked",
-				errorCode: "intent_conflict",
-			}),
-		);
-	});
+			).run(storedFingerprint, projectId, recipientId);
+			const metadataRejected = migrateRecipientPolicyIntent(db, context);
+			expect(metadataRejected.results).toContainEqual(
+				expect.objectContaining({
+					canonicalProjectIdentity: projectId,
+					status: "blocked",
+					errorCode: "intent_conflict",
+				}),
+			);
+		},
+	);
 
 	it("keeps reviewed preserve-current Projects on legacy enforcement", () => {
 		const projectId = "https://git.example.invalid/acme/preserve-current.git";

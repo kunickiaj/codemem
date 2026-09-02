@@ -146,29 +146,32 @@ describe("extraction tier routing", () => {
 	it.each([
 		["simple", 12, 1, "gpt-5.4-mini"],
 		["rich", 153, 12, "gpt-5.4"],
-	] as const)("prefers configured legacy OpenAI models and reasoning over %s-tier defaults", (tier, eventSpan, toolCount, expectedModel) => {
-		const decision = decideExtractionReplayTier({
-			batchId: 19001,
-			sessionId: 200001,
-			eventSpan,
-			promptCount: tier === "rich" ? 4 : 1,
-			toolCount,
-			transcriptLength: tier === "rich" ? 2800 : 320,
-		});
-		const config = buildTieredObserverConfig(
-			baseConfig({
-				observerSimpleModel: "gpt-5.4-mini",
-				observerRichModel: "gpt-5.4",
-				observerReasoningEffort: "low",
-				observerReasoningSummary: "auto",
-			}),
-			decision,
-		);
+	] as const)(
+		"prefers configured legacy OpenAI models and reasoning over %s-tier defaults",
+		(tier, eventSpan, toolCount, expectedModel) => {
+			const decision = decideExtractionReplayTier({
+				batchId: 19001,
+				sessionId: 200001,
+				eventSpan,
+				promptCount: tier === "rich" ? 4 : 1,
+				toolCount,
+				transcriptLength: tier === "rich" ? 2800 : 320,
+			});
+			const config = buildTieredObserverConfig(
+				baseConfig({
+					observerSimpleModel: "gpt-5.4-mini",
+					observerRichModel: "gpt-5.4",
+					observerReasoningEffort: "low",
+					observerReasoningSummary: "auto",
+				}),
+				decision,
+			);
 
-		expect(config.observerModel).toBe(expectedModel);
-		expect(config.observerReasoningEffort).toBe("low");
-		expect(config.observerReasoningSummary).toBe("auto");
-	});
+			expect(config.observerModel).toBe(expectedModel);
+			expect(config.observerReasoningEffort).toBe("low");
+			expect(config.observerReasoningSummary).toBe("auto");
+		},
+	);
 
 	it("prefers the rich-tier reasoning override over the legacy base setting", () => {
 		const decision = decideExtractionReplayTier({
@@ -508,32 +511,35 @@ describe("extraction tier routing", () => {
 	it.each([
 		["simple", 12, 1],
 		["rich", 153, 12],
-	] as const)("uses chat completions without reasoning metadata for a custom OpenAI-compatible %s tier", (tier, eventSpan, toolCount) => {
-		const decision = decideExtractionReplayTier({
-			batchId: 19001,
-			sessionId: 200001,
-			eventSpan,
-			promptCount: tier === "rich" ? 4 : 1,
-			toolCount,
-			transcriptLength: tier === "rich" ? 2800 : 320,
-		});
-		const selection = buildTieredObserverSelection(
-			baseConfig({
-				observerBaseUrl: "https://gateway.example.test/v1",
-				observerOpenAIUseResponses: false,
-				observerReasoningEffort: "high",
-				observerReasoningSummary: "detailed",
-				observerRichReasoningEffort: "high",
-				observerRichReasoningSummary: "detailed",
-				observerExplicitConfigKeys: ["observerOpenAIUseResponses"],
-			}),
-			decision,
-		);
+	] as const)(
+		"uses chat completions without reasoning metadata for a custom OpenAI-compatible %s tier",
+		(tier, eventSpan, toolCount) => {
+			const decision = decideExtractionReplayTier({
+				batchId: 19001,
+				sessionId: 200001,
+				eventSpan,
+				promptCount: tier === "rich" ? 4 : 1,
+				toolCount,
+				transcriptLength: tier === "rich" ? 2800 : 320,
+			});
+			const selection = buildTieredObserverSelection(
+				baseConfig({
+					observerBaseUrl: "https://gateway.example.test/v1",
+					observerOpenAIUseResponses: false,
+					observerReasoningEffort: "high",
+					observerReasoningSummary: "detailed",
+					observerRichReasoningEffort: "high",
+					observerRichReasoningSummary: "detailed",
+					observerExplicitConfigKeys: ["observerOpenAIUseResponses"],
+				}),
+				decision,
+			);
 
-		expect(selection.observer.observerOpenAIUseResponses).toBe(false);
-		expect(selection.observer.observerReasoningEffort).toBeNull();
-		expect(selection.observer.observerReasoningSummary).toBeNull();
-	});
+			expect(selection.observer.observerOpenAIUseResponses).toBe(false);
+			expect(selection.observer.observerReasoningEffort).toBeNull();
+			expect(selection.observer.observerReasoningSummary).toBeNull();
+		},
+	);
 
 	it("does not record fallback on claude_sidecar when provider was not explicitly requested", () => {
 		const decision = decideExtractionReplayTier({

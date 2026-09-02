@@ -1651,115 +1651,118 @@ describe("read-only Devices", () => {
 			false,
 			"Identity reassignment completed, but refreshing Devices and Sharing failed. Refresh to see current state.",
 		],
-	])("uses the dedicated rebind flow and reports refresh result %s", async (refreshResult, expectedStatus) => {
-		const graph = intent({
-			identities: [
-				...intent().identities,
-				{ ...intent().identities[0], identityId: "identity-target", displayName: "Brian" },
-			],
-		});
-		const previewBindings = vi.fn().mockResolvedValue({
-			version: 1,
-			status: "ready",
-			reviewedInventoryDigest: "rebind-digest",
-			errorCode: null,
-			outcomes: [
-				{
-					deviceId: "device-address-fingerprint-secret",
-					displayName: "Work Laptop",
-					targetIdentityId: "identity-target",
-					previousIdentityId: "identity-scope-secret",
-					action: "rebind",
-					isLocal: false,
-				},
-			],
-			writeCount: 1,
-		});
-		const commitBindings = vi.fn().mockResolvedValue({ version: 1, status: "applied" });
-		const configuredItems = [
-			inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured"),
-			inventoryItem("fallback", "Fallback", "configured"),
-		];
-		const onCommitted = vi.fn(() => {
+	])(
+		"uses the dedicated rebind flow and reports refresh result %s",
+		async (refreshResult, expectedStatus) => {
+			const graph = intent({
+				identities: [
+					...intent().identities,
+					{ ...intent().identities[0], identityId: "identity-target", displayName: "Brian" },
+				],
+			});
+			const previewBindings = vi.fn().mockResolvedValue({
+				version: 1,
+				status: "ready",
+				reviewedInventoryDigest: "rebind-digest",
+				errorCode: null,
+				outcomes: [
+					{
+						deviceId: "device-address-fingerprint-secret",
+						displayName: "Work Laptop",
+						targetIdentityId: "identity-target",
+						previousIdentityId: "identity-scope-secret",
+						action: "rebind",
+						isLocal: false,
+					},
+				],
+				writeCount: 1,
+			});
+			const commitBindings = vi.fn().mockResolvedValue({ version: 1, status: "applied" });
+			const configuredItems = [
+				inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured"),
+				inventoryItem("fallback", "Fallback", "configured"),
+			];
+			const onCommitted = vi.fn(() => {
+				mount(graph, reconciliation(), {
+					inventory: inventory(configuredItems),
+					previewBindings,
+					commitBindings,
+					onCommitted,
+				});
+				return refreshResult;
+			});
 			mount(graph, reconciliation(), {
 				inventory: inventory(configuredItems),
 				previewBindings,
 				commitBindings,
 				onCommitted,
 			});
-			return refreshResult;
-		});
-		mount(graph, reconciliation(), {
-			inventory: inventory(configuredItems),
-			previewBindings,
-			commitBindings,
-			onCommitted,
-		});
-		const triggers = [...document.querySelectorAll<HTMLButtonElement>("button")].filter(
-			(button) => button.textContent === "Change Identity…",
-		);
-		expect(triggers).toHaveLength(2);
-		act(() => {
-			triggers[1]?.click();
-		});
-		const select = document.querySelector<HTMLSelectElement>(".device-identity-rebind select");
-		if (!select) throw new Error("rebind select missing");
-		select.value = "identity-target";
-		act(() => {
-			select.dispatchEvent(new Event("input", { bubbles: true }));
-		});
-		const confirmation = document.querySelector<HTMLInputElement>(
-			'.device-identity-rebind input[type="checkbox"]',
-		);
-		if (!confirmation) throw new Error("rebind confirmation missing");
-		confirmation.checked = true;
-		act(() => {
-			confirmation.dispatchEvent(new Event("input", { bubbles: true }));
-		});
-		await act(async () => {
-			(
-				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Review reassignment",
-				) as HTMLButtonElement
-			).click();
-		});
-		const finalConfirmation = [
-			...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
-		].find((input) => input.parentElement?.textContent?.includes("I reviewed the previous"));
-		if (!finalConfirmation) throw new Error("final confirmation missing");
-		finalConfirmation.checked = true;
-		act(() => {
-			finalConfirmation.dispatchEvent(new Event("input", { bubbles: true }));
-		});
-		await act(async () => {
-			(
-				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Reassign Identity",
-				) as HTMLButtonElement
-			).click();
-			await Promise.resolve();
-			await Promise.resolve();
-		});
-		expect(commitBindings).toHaveBeenCalledWith({
-			bindings: [
-				{
-					deviceId: "device-address-fingerprint-secret",
-					targetIdentityId: "identity-target",
-					confirmed: true,
-					allowRebind: true,
-				},
-			],
-			reviewedInventoryDigest: "rebind-digest",
-		});
-		expect(onCommitted).toHaveBeenCalledOnce();
-		expect(
-			[...document.querySelectorAll('[role="status"]')].some(
-				(status) => status.textContent === expectedStatus,
-			),
-		).toBe(true);
-		expect(document.activeElement?.id).toBe(triggers[1]?.id);
-		expect(document.querySelector(".device-identity-rebind fieldset")).toBeNull();
-	});
+			const triggers = [...document.querySelectorAll<HTMLButtonElement>("button")].filter(
+				(button) => button.textContent === "Change Identity…",
+			);
+			expect(triggers).toHaveLength(2);
+			act(() => {
+				triggers[1]?.click();
+			});
+			const select = document.querySelector<HTMLSelectElement>(".device-identity-rebind select");
+			if (!select) throw new Error("rebind select missing");
+			select.value = "identity-target";
+			act(() => {
+				select.dispatchEvent(new Event("input", { bubbles: true }));
+			});
+			const confirmation = document.querySelector<HTMLInputElement>(
+				'.device-identity-rebind input[type="checkbox"]',
+			);
+			if (!confirmation) throw new Error("rebind confirmation missing");
+			confirmation.checked = true;
+			act(() => {
+				confirmation.dispatchEvent(new Event("input", { bubbles: true }));
+			});
+			await act(async () => {
+				(
+					[...document.querySelectorAll<HTMLButtonElement>("button")].find(
+						(button) => button.textContent === "Review reassignment",
+					) as HTMLButtonElement
+				).click();
+			});
+			const finalConfirmation = [
+				...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+			].find((input) => input.parentElement?.textContent?.includes("I reviewed the previous"));
+			if (!finalConfirmation) throw new Error("final confirmation missing");
+			finalConfirmation.checked = true;
+			act(() => {
+				finalConfirmation.dispatchEvent(new Event("input", { bubbles: true }));
+			});
+			await act(async () => {
+				(
+					[...document.querySelectorAll<HTMLButtonElement>("button")].find(
+						(button) => button.textContent === "Reassign Identity",
+					) as HTMLButtonElement
+				).click();
+				await Promise.resolve();
+				await Promise.resolve();
+			});
+			expect(commitBindings).toHaveBeenCalledWith({
+				bindings: [
+					{
+						deviceId: "device-address-fingerprint-secret",
+						targetIdentityId: "identity-target",
+						confirmed: true,
+						allowRebind: true,
+					},
+				],
+				reviewedInventoryDigest: "rebind-digest",
+			});
+			expect(onCommitted).toHaveBeenCalledOnce();
+			expect(
+				[...document.querySelectorAll('[role="status"]')].some(
+					(status) => status.textContent === expectedStatus,
+				),
+			).toBe(true);
+			expect(document.activeElement?.id).toBe(triggers[1]?.id);
+			expect(document.querySelector(".device-identity-rebind fieldset")).toBeNull();
+		},
+	);
 
 	it.each([
 		[true, "Identity setup completed. Devices and Sharing were refreshed."],
@@ -1767,94 +1770,97 @@ describe("read-only Devices", () => {
 			false,
 			"Identity setup completed, but refreshing Devices and Sharing failed. Refresh to see current state.",
 		],
-	])("commits setup after review and reports refresh result %s", async (refreshResult, expectedStatus) => {
-		const previewBindings = vi.fn().mockResolvedValue({
-			version: 1,
-			status: "ready",
-			reviewedInventoryDigest: "digest",
-			errorCode: null,
-			outcomes: [
-				{
-					deviceId: "one",
-					displayName: "One",
-					targetIdentityId: "identity-scope-secret",
-					previousIdentityId: null,
-					action: "bind",
-					isLocal: true,
-				},
-			],
-			writeCount: 1,
-		});
-		const commitBindings = vi.fn().mockResolvedValue({ version: 1, status: "applied" });
-		const onCommitted = vi.fn(() => {
+	])(
+		"commits setup after review and reports refresh result %s",
+		async (refreshResult, expectedStatus) => {
+			const previewBindings = vi.fn().mockResolvedValue({
+				version: 1,
+				status: "ready",
+				reviewedInventoryDigest: "digest",
+				errorCode: null,
+				outcomes: [
+					{
+						deviceId: "one",
+						displayName: "One",
+						targetIdentityId: "identity-scope-secret",
+						previousIdentityId: null,
+						action: "bind",
+						isLocal: true,
+					},
+				],
+				writeCount: 1,
+			});
+			const commitBindings = vi.fn().mockResolvedValue({ version: 1, status: "applied" });
+			const onCommitted = vi.fn(() => {
+				mount(intent(), reconciliation(), {
+					inventory: inventory([inventoryItem("one", "One", "configured")]),
+					previewBindings,
+					commitBindings,
+					onCommitted,
+				});
+				return refreshResult;
+			});
 			mount(intent(), reconciliation(), {
-				inventory: inventory([inventoryItem("one", "One", "configured")]),
+				inventory: inventory([inventoryItem("one", "One", "setup_required", { isLocal: true })]),
 				previewBindings,
 				commitBindings,
 				onCommitted,
 			});
-			return refreshResult;
-		});
-		mount(intent(), reconciliation(), {
-			inventory: inventory([inventoryItem("one", "One", "setup_required", { isLocal: true })]),
-			previewBindings,
-			commitBindings,
-			onCommitted,
-		});
-		const identitySelect = document.querySelector<HTMLSelectElement>(
-			".device-identity-setup-card select",
-		);
-		if (!identitySelect) throw new Error("Identity select missing");
-		identitySelect.value = "identity-scope-secret";
-		act(() => {
-			identitySelect.dispatchEvent(new Event("input", { bubbles: true }));
-		});
-		await act(async () =>
-			(
-				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Review this device",
-				) as HTMLButtonElement
-			).click(),
-		);
-		expect(
-			[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-				(button) => button.textContent === "Apply setup to 1 device",
-			),
-		).toBeTruthy();
-		const finalConfirmation = [
-			...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
-		].find((input) => input.parentElement?.textContent?.includes("I reviewed every device"));
-		if (!finalConfirmation) throw new Error("final confirmation missing");
-		finalConfirmation.checked = true;
-		act(() => {
-			finalConfirmation.dispatchEvent(new Event("input", { bubbles: true }));
-		});
-		await act(async () => {
-			(
+			const identitySelect = document.querySelector<HTMLSelectElement>(
+				".device-identity-setup-card select",
+			);
+			if (!identitySelect) throw new Error("Identity select missing");
+			identitySelect.value = "identity-scope-secret";
+			act(() => {
+				identitySelect.dispatchEvent(new Event("input", { bubbles: true }));
+			});
+			await act(async () =>
+				(
+					[...document.querySelectorAll<HTMLButtonElement>("button")].find(
+						(button) => button.textContent === "Review this device",
+					) as HTMLButtonElement
+				).click(),
+			);
+			expect(
 				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
 					(button) => button.textContent === "Apply setup to 1 device",
-				) as HTMLButtonElement
-			).click();
-			await Promise.resolve();
-			await Promise.resolve();
-		});
-		expect(commitBindings).toHaveBeenCalledWith({
-			bindings: [
-				{
-					deviceId: "one",
-					targetIdentityId: "identity-scope-secret",
-					confirmed: true,
-				},
-			],
-			reviewedInventoryDigest: "digest",
-		});
-		expect(onCommitted).toHaveBeenCalledOnce();
-		expect(
-			[...document.querySelectorAll('[role="status"]')].some(
-				(status) => status.textContent === expectedStatus,
-			),
-		).toBe(true);
-	});
+				),
+			).toBeTruthy();
+			const finalConfirmation = [
+				...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+			].find((input) => input.parentElement?.textContent?.includes("I reviewed every device"));
+			if (!finalConfirmation) throw new Error("final confirmation missing");
+			finalConfirmation.checked = true;
+			act(() => {
+				finalConfirmation.dispatchEvent(new Event("input", { bubbles: true }));
+			});
+			await act(async () => {
+				(
+					[...document.querySelectorAll<HTMLButtonElement>("button")].find(
+						(button) => button.textContent === "Apply setup to 1 device",
+					) as HTMLButtonElement
+				).click();
+				await Promise.resolve();
+				await Promise.resolve();
+			});
+			expect(commitBindings).toHaveBeenCalledWith({
+				bindings: [
+					{
+						deviceId: "one",
+						targetIdentityId: "identity-scope-secret",
+						confirmed: true,
+					},
+				],
+				reviewedInventoryDigest: "digest",
+			});
+			expect(onCommitted).toHaveBeenCalledOnce();
+			expect(
+				[...document.querySelectorAll('[role="status"]')].some(
+					(status) => status.textContent === expectedStatus,
+				),
+			).toBe(true);
+		},
+	);
 
 	it.each([
 		[503, "binding_preview_busy", "busy. Wait a moment"],

@@ -348,41 +348,41 @@ describe("codex-hook-inject command", () => {
 		expect(localCalls).toBe(fallsBack ? 1 : 0);
 	});
 
-	it.each([
-		"db_path",
-		"identity_target",
-	] as const)("uses local fallback when the Viewer profile has a mismatched %s", async (field) => {
-		delete process.env.CODEMEM_CODEX_LOCAL_PACK_ONLY;
-		process.env.CODEMEM_DB = join(tempDir, "mem.sqlite");
-		const identity = buildViewerIdentityTarget();
-		let localCalls = 0;
+	it.each(["db_path", "identity_target"] as const)(
+		"uses local fallback when the Viewer profile has a mismatched %s",
+		async (field) => {
+			delete process.env.CODEMEM_CODEX_LOCAL_PACK_ONLY;
+			process.env.CODEMEM_DB = join(tempDir, "mem.sqlite");
+			const identity = buildViewerIdentityTarget();
+			let localCalls = 0;
 
-		await buildCodexHookInjection(
-			{ hook_event_name: "UserPromptSubmit", prompt: "profile mismatch" },
-			{},
-			{
-				fetchImpl: async () =>
-					new Response(
-						JSON.stringify({
-							service: "codemem-viewer",
-							protocol_version: 1,
-							min_supported_protocol_version: 1,
-							db_path: field === "db_path" ? "/other.sqlite" : process.env.CODEMEM_DB,
-							identity_target:
-								field === "identity_target" ? { ...identity, workspace_id: "other" } : identity,
-						}),
-						{ status: 200 },
-					),
-				buildLocalPack: async () => {
-					localCalls += 1;
-					return pack("LOCAL_PACK");
+			await buildCodexHookInjection(
+				{ hook_event_name: "UserPromptSubmit", prompt: "profile mismatch" },
+				{},
+				{
+					fetchImpl: async () =>
+						new Response(
+							JSON.stringify({
+								service: "codemem-viewer",
+								protocol_version: 1,
+								min_supported_protocol_version: 1,
+								db_path: field === "db_path" ? "/other.sqlite" : process.env.CODEMEM_DB,
+								identity_target:
+									field === "identity_target" ? { ...identity, workspace_id: "other" } : identity,
+							}),
+							{ status: 200 },
+						),
+					buildLocalPack: async () => {
+						localCalls += 1;
+						return pack("LOCAL_PACK");
+					},
+					resolveDb: () => process.env.CODEMEM_DB as string,
 				},
-				resolveDb: () => process.env.CODEMEM_DB as string,
-			},
-		);
+			);
 
-		expect(localCalls).toBe(1);
-	});
+			expect(localCalls).toBe(1);
+		},
+	);
 
 	it("rejects non-loopback Viewer hosts without touching the network or local database", async () => {
 		delete process.env.CODEMEM_CODEX_LOCAL_PACK_ONLY;

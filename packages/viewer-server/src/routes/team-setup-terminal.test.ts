@@ -155,62 +155,65 @@ describe("Team setup terminal migration routing", () => {
 	it.each([
 		["serves the completed draft", true, 200],
 		["rejects the superseded draft", false, 404],
-	] as const)("rechecks a migration marker after detail roster loading and %s", async (_label, remainsCompleted, expectedStatus) => {
-		const store = new MemoryStore(":memory:");
-		let resolveCandidateLoad!: () => void;
-		const loadSnapshots = vi.fn((options?: { candidateRef?: string }) =>
-			options?.candidateRef
-				? new Promise<LegacyTeamConfiguredGroupSnapshot[]>((resolve) => {
-						resolveCandidateLoad = () => resolve(SNAPSHOTS);
-					})
-				: Promise.resolve(SNAPSHOTS),
-		);
-		const app = teamSetupRoutes({
-			getStore: () => store,
-			loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
-		});
-		try {
-			expect((await app.request("/api/sync/team-setup/v1")).status).toBe(200);
-			const draft = getLegacyTeamSetupDraft(store.db, CANDIDATE_REF);
-			if (!draft) throw new Error("initial Team setup draft missing");
-			completeDraft(store, draft, null);
-			const detailPromise = app.request(`/api/sync/team-setup/v1/${CANDIDATE_REF}`);
-			await vi.waitFor(() => expect(loadSnapshots).toHaveBeenCalledTimes(2));
-			const teamId = insertTeam(store, draft, {
-				status: "active",
-				provenance: "reviewed_team_candidate",
+	] as const)(
+		"rechecks a migration marker after detail roster loading and %s",
+		async (_label, remainsCompleted, expectedStatus) => {
+			const store = new MemoryStore(":memory:");
+			let resolveCandidateLoad!: () => void;
+			const loadSnapshots = vi.fn((options?: { candidateRef?: string }) =>
+				options?.candidateRef
+					? new Promise<LegacyTeamConfiguredGroupSnapshot[]>((resolve) => {
+							resolveCandidateLoad = () => resolve(SNAPSHOTS);
+						})
+					: Promise.resolve(SNAPSHOTS),
+			);
+			const app = teamSetupRoutes({
+				getStore: () => store,
+				loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
 			});
-			if (remainsCompleted) {
-				store.db
-					.prepare(
-						`UPDATE legacy_team_setup_drafts SET completed_team_id = ?
-							 WHERE attempt_id = ?`,
-					)
-					.run(teamId, draft.attemptId);
-			} else {
-				store.db
-					.prepare(
-						`UPDATE legacy_team_setup_drafts
-							 SET state = 'needs_setup', completed_at = NULL WHERE attempt_id = ?`,
-					)
-					.run(draft.attemptId);
-			}
-			resolveCandidateLoad();
-
-			const detail = await detailPromise;
-			expect(detail.status).toBe(expectedStatus);
-			if (remainsCompleted) {
-				expect(await detail.json()).toMatchObject({
-					candidate: { candidateRef: CANDIDATE_REF, status: "ready" },
-					state: "completed",
+			try {
+				expect((await app.request("/api/sync/team-setup/v1")).status).toBe(200);
+				const draft = getLegacyTeamSetupDraft(store.db, CANDIDATE_REF);
+				if (!draft) throw new Error("initial Team setup draft missing");
+				completeDraft(store, draft, null);
+				const detailPromise = app.request(`/api/sync/team-setup/v1/${CANDIDATE_REF}`);
+				await vi.waitFor(() => expect(loadSnapshots).toHaveBeenCalledTimes(2));
+				const teamId = insertTeam(store, draft, {
+					status: "active",
+					provenance: "reviewed_team_candidate",
 				});
-			} else {
-				expect(await detail.json()).toEqual({ error: "team_setup_confirmation_stale" });
+				if (remainsCompleted) {
+					store.db
+						.prepare(
+							`UPDATE legacy_team_setup_drafts SET completed_team_id = ?
+							 WHERE attempt_id = ?`,
+						)
+						.run(teamId, draft.attemptId);
+				} else {
+					store.db
+						.prepare(
+							`UPDATE legacy_team_setup_drafts
+							 SET state = 'needs_setup', completed_at = NULL WHERE attempt_id = ?`,
+						)
+						.run(draft.attemptId);
+				}
+				resolveCandidateLoad();
+
+				const detail = await detailPromise;
+				expect(detail.status).toBe(expectedStatus);
+				if (remainsCompleted) {
+					expect(await detail.json()).toMatchObject({
+						candidate: { candidateRef: CANDIDATE_REF, status: "ready" },
+						state: "completed",
+					});
+				} else {
+					expect(await detail.json()).toEqual({ error: "team_setup_confirmation_stale" });
+				}
+			} finally {
+				store.close();
 			}
-		} finally {
-			store.close();
-		}
-	});
+		},
+	);
 
 	it("does not treat an inactive migration marker as terminal", async () => {
 		const store = new MemoryStore(":memory:");

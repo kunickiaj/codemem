@@ -216,28 +216,31 @@ describe("strict recipient-policy effective-device derivation", () => {
 		["future_mode", "active", "included", "team_device_eligibility_mode_invalid"],
 		["person_all_devices", "reviewed_active", "included", "team_membership_mode_invalid"],
 		["reviewed_allowlist", "reviewed_active", "future_decision", "team_device_decision_invalid"],
-	] as const)("blocks invalid Team eligibility state (%s)", (mode, membershipStatus, decision, code) => {
-		const input = graph();
-		input.teams[0] = {
-			teamId: "team-a",
-			status: "active",
-			deviceEligibilityMode: mode,
-		};
-		input.teamMemberships[0] = {
-			teamId: "team-a",
-			identityId: "identity-b",
-			status: membershipStatus,
-		};
-		input.teamDeviceDecisions = [
-			{ teamId: "team-a", deviceId: "device-b", decision, assignmentVersion: 0 },
-		];
+	] as const)(
+		"blocks invalid Team eligibility state (%s)",
+		(mode, membershipStatus, decision, code) => {
+			const input = graph();
+			input.teams[0] = {
+				teamId: "team-a",
+				status: "active",
+				deviceEligibilityMode: mode,
+			};
+			input.teamMemberships[0] = {
+				teamId: "team-a",
+				identityId: "identity-b",
+				status: membershipStatus,
+			};
+			input.teamDeviceDecisions = [
+				{ teamId: "team-a", deviceId: "device-b", decision, assignmentVersion: 0 },
+			];
 
-		const result = deriveRecipientPolicyEffectiveDevices(input);
+			const result = deriveRecipientPolicyEffectiveDevices(input);
 
-		expect(result.status).toBe("blocked");
-		expect(result.devices).toEqual([]);
-		expect(result.blocked).toContainEqual(expect.objectContaining({ code }));
-	});
+			expect(result.status).toBe("blocked");
+			expect(result.devices).toEqual([]);
+			expect(result.blocked).toContainEqual(expect.objectContaining({ code }));
+		},
+	);
 
 	it("does not authorize a reviewed Team device with a stale assignment decision", () => {
 		const input = graph();

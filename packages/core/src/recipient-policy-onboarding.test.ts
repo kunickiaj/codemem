@@ -648,38 +648,45 @@ describe("recipient-policy onboarding", () => {
 	it.each([
 		["an actor assignment", "local:device-new", 0],
 		["a claimed-local assignment", null, 1],
-	] as const)("rejects add-device adoption when a sync peer has %s", (_name, peerActorId, claimed) => {
-		const fresh = new Database(":memory:");
-		initTestSchema(fresh);
-		insertActor(fresh, "local:device-new", "Ada", true);
-		fresh
-			.prepare(
-				`INSERT INTO sync_peers(peer_device_id, actor_id, claimed_local_actor, created_at)
+	] as const)(
+		"rejects add-device adoption when a sync peer has %s",
+		(_name, peerActorId, claimed) => {
+			const fresh = new Database(":memory:");
+			initTestSchema(fresh);
+			insertActor(fresh, "local:device-new", "Ada", true);
+			fresh
+				.prepare(
+					`INSERT INTO sync_peers(peer_device_id, actor_id, claimed_local_actor, created_at)
 				 VALUES (?, ?, ?, ?)`,
-			)
-			.run("peer-device", peerActorId, claimed, NOW);
-		try {
-			const request = reviewedIntentRequest({ identityId: "identity-existing" });
-			const intent = addDeviceReviewedIntent();
-			const preview = previewRecipientPolicyOnboardingFromReviewedIntent(intent, request);
+				)
+				.run("peer-device", peerActorId, claimed, NOW);
+			try {
+				const request = reviewedIntentRequest({ identityId: "identity-existing" });
+				const intent = addDeviceReviewedIntent();
+				const preview = previewRecipientPolicyOnboardingFromReviewedIntent(intent, request);
 
-			expect(
-				commitRecipientPolicyOnboardingFromReviewedIntent(fresh, {
-					...request,
-					identityDisplayName: "Ada",
-					reviewedIntent: intent,
-					reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
-				}),
-			).toMatchObject({ status: "conflict", errorCode: "invite_identity_conflict", writeCount: 0 });
-			expect(
-				fresh
-					.prepare("SELECT is_local, status, merged_into_actor_id FROM actors WHERE actor_id = ?")
-					.get("local:device-new"),
-			).toEqual({ is_local: 1, status: "active", merged_into_actor_id: null });
-		} finally {
-			fresh.close();
-		}
-	});
+				expect(
+					commitRecipientPolicyOnboardingFromReviewedIntent(fresh, {
+						...request,
+						identityDisplayName: "Ada",
+						reviewedIntent: intent,
+						reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
+					}),
+				).toMatchObject({
+					status: "conflict",
+					errorCode: "invite_identity_conflict",
+					writeCount: 0,
+				});
+				expect(
+					fresh
+						.prepare("SELECT is_local, status, merged_into_actor_id FROM actors WHERE actor_id = ?")
+						.get("local:device-new"),
+				).toEqual({ is_local: 1, status: "active", merged_into_actor_id: null });
+			} finally {
+				fresh.close();
+			}
+		},
+	);
 
 	it("rejects established-profile adoption without writes", () => {
 		const fresh = new Database(":memory:");
@@ -2244,40 +2251,40 @@ describe("recipient-policy onboarding", () => {
 		).toBe("reviewed-fingerprint");
 	});
 
-	it.each([
-		null,
-		"different-public-key",
-	])("rejects an exact-Project device transition without matching local key %s", (localPublicKey) => {
-		if (localPublicKey) {
-			db.prepare(
-				`INSERT INTO sync_device(device_id, public_key, fingerprint, created_at)
+	it.each([null, "different-public-key"])(
+		"rejects an exact-Project device transition without matching local key %s",
+		(localPublicKey) => {
+			if (localPublicKey) {
+				db.prepare(
+					`INSERT INTO sync_device(device_id, public_key, fingerprint, created_at)
 					 VALUES ('device-new', ?, ?, ?)`,
-			).run(localPublicKey, fingerprintPublicKey(localPublicKey), NOW);
-		}
-		db.prepare(
-			`INSERT INTO identity_devices(
+				).run(localPublicKey, fingerprintPublicKey(localPublicKey), NOW);
+			}
+			db.prepare(
+				`INSERT INTO identity_devices(
 				 identity_id, device_id, display_name, status, provenance, revision, migration_state,
 				 source_fingerprint, idempotency_key, created_at, updated_at
 				 ) VALUES ('identity-a', 'device-new', 'Original device', 'active',
 				 'exact_project_invite', 'exact-project-revision', 'user_managed',
 				 'exact-project-source', 'exact-project-idempotency', ?, ?)`,
-		).run(NOW, NOW);
-		const originalBinding = db
-			.prepare("SELECT * FROM identity_devices WHERE device_id = 'device-new'")
-			.get();
-		const request = baseRequest({ invitationId: "invite-rejected-key-transition" });
-		const preview = previewRecipientPolicyOnboarding(db, request);
+			).run(NOW, NOW);
+			const originalBinding = db
+				.prepare("SELECT * FROM identity_devices WHERE device_id = 'device-new'")
+				.get();
+			const request = baseRequest({ invitationId: "invite-rejected-key-transition" });
+			const preview = previewRecipientPolicyOnboarding(db, request);
 
-		expect(
-			commitRecipientPolicyOnboarding(db, {
-				...request,
-				reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
-			}),
-		).toMatchObject({ status: "conflict", errorCode: "device_binding_conflict", writeCount: 0 });
-		expect(
-			db.prepare("SELECT * FROM identity_devices WHERE device_id = 'device-new'").get(),
-		).toEqual(originalBinding);
-	});
+			expect(
+				commitRecipientPolicyOnboarding(db, {
+					...request,
+					reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
+				}),
+			).toMatchObject({ status: "conflict", errorCode: "device_binding_conflict", writeCount: 0 });
+			expect(
+				db.prepare("SELECT * FROM identity_devices WHERE device_id = 'device-new'").get(),
+			).toEqual(originalBinding);
+		},
+	);
 
 	it("commits add-device as the only intent write", () => {
 		const request = baseRequest();

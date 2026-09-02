@@ -97,58 +97,58 @@ describe("Team setup roster loading", () => {
 	it.each([
 		{ configuredTimeoutS: 17, expectedTimeoutS: 17 },
 		{ configuredTimeoutS: 0, expectedTimeoutS: 1 },
-	])("uses normalized coordinator settings with timeout $expectedTimeoutS", async ({
-		configuredTimeoutS,
-		expectedTimeoutS,
-	}) => {
-		const publicKey = "public-key-a";
-		const listGroups = vi.fn(async () => [
-			{
-				group_id: "group-alpha",
-				display_name: "Migration Team",
-				archived_at: null,
-				created_at: "2026-08-24T00:00:00.000Z",
-			},
-		]);
-		const listDevices = vi.fn(async () => [
-			{
-				group_id: "group-alpha",
-				device_id: "device-a",
-				public_key: publicKey,
-				fingerprint: fingerprintPublicKey(publicKey),
-				identity_id: null,
-				display_name: "Laptop",
-				enabled: 1,
-				created_at: "2026-08-24T00:00:00.000Z",
-			},
-		]);
+	])(
+		"uses normalized coordinator settings with timeout $expectedTimeoutS",
+		async ({ configuredTimeoutS, expectedTimeoutS }) => {
+			const publicKey = "public-key-a";
+			const listGroups = vi.fn(async () => [
+				{
+					group_id: "group-alpha",
+					display_name: "Migration Team",
+					archived_at: null,
+					created_at: "2026-08-24T00:00:00.000Z",
+				},
+			]);
+			const listDevices = vi.fn(async () => [
+				{
+					group_id: "group-alpha",
+					device_id: "device-a",
+					public_key: publicKey,
+					fingerprint: fingerprintPublicKey(publicKey),
+					identity_id: null,
+					display_name: "Laptop",
+					enabled: 1,
+					created_at: "2026-08-24T00:00:00.000Z",
+				},
+			]);
 
-		const snapshots = await __teamSetupTestHooks.loadConfiguredLegacyTeamGroupSnapshotsWith({
-			readConfig: () => ({
-				...readCoordinatorSyncConfig({}),
-				syncCoordinatorUrl: "localhost:8787/",
-				syncCoordinatorGroups: ["group-alpha"],
-				syncCoordinatorAdminSecret: "private-admin-secret",
-				syncCoordinatorTimeoutS: configuredTimeoutS,
-			}),
-			listGroups,
-			listDevices,
-		});
+			const snapshots = await __teamSetupTestHooks.loadConfiguredLegacyTeamGroupSnapshotsWith({
+				readConfig: () => ({
+					...readCoordinatorSyncConfig({}),
+					syncCoordinatorUrl: "localhost:8787/",
+					syncCoordinatorGroups: ["group-alpha"],
+					syncCoordinatorAdminSecret: "private-admin-secret",
+					syncCoordinatorTimeoutS: configuredTimeoutS,
+				}),
+				listGroups,
+				listDevices,
+			});
 
-		expect(snapshots[0]?.coordinatorId).toBe("http://localhost:8787");
-		expect(listGroups).toHaveBeenCalledWith(
-			expect.objectContaining({
-				remoteUrl: "http://localhost:8787",
-				timeoutS: expectedTimeoutS,
-			}),
-		);
-		expect(listDevices).toHaveBeenCalledWith(
-			expect.objectContaining({
-				remoteUrl: "http://localhost:8787",
-				timeoutS: expectedTimeoutS,
-			}),
-		);
-	});
+			expect(snapshots[0]?.coordinatorId).toBe("http://localhost:8787");
+			expect(listGroups).toHaveBeenCalledWith(
+				expect.objectContaining({
+					remoteUrl: "http://localhost:8787",
+					timeoutS: expectedTimeoutS,
+				}),
+			);
+			expect(listDevices).toHaveBeenCalledWith(
+				expect.objectContaining({
+					remoteUrl: "http://localhost:8787",
+					timeoutS: expectedTimeoutS,
+				}),
+			);
+		},
+	);
 
 	it("retries transient coordinator timeouts while loading a candidate roster", async () => {
 		const publicKey = "public-key-a";
@@ -974,51 +974,51 @@ describe("Team setup roster loading", () => {
 		expect(listDevices).toHaveBeenCalledTimes(2);
 	});
 
-	it.each([
-		"archived",
-		"deleted",
-	])("treats a sole %s configured group as authoritative absence", async (state) => {
-		const { store, close } = createRouteStore();
-		const coordinatorId = "http://localhost:8787";
-		const groupId = "group-absent";
-		const listDevices = vi.fn(async () => []);
-		try {
-			const app = teamSetupRoutes({
-				getStore: () => store,
-				snapshotLoaderDependencies: {
-					readConfig: () => ({
-						...readCoordinatorSyncConfig({}),
-						syncCoordinatorUrl: coordinatorId,
-						syncCoordinatorGroups: [groupId],
-						syncCoordinatorAdminSecret: "private-admin-secret",
-					}),
-					listGroups: async () =>
-						state === "archived"
-							? [
-									{
-										group_id: groupId,
-										display_name: "Archived Team",
-										archived_at: "2026-08-26T00:00:00.000Z",
-										created_at: "2026-08-24T00:00:00.000Z",
-									},
-								]
-							: [],
-					listDevices,
-				},
-			});
-			const summary = await app.request("/api/sync/team-setup/v1");
-			expect(summary.status).toBe(200);
-			expect(await summary.json()).toEqual({ version: 1, candidates: [] });
-			const detail = await app.request(
-				`/api/sync/team-setup/v1/${legacyTeamCandidateId(coordinatorId, groupId)}`,
-			);
-			expect(detail.status).toBe(404);
-			expect(await detail.json()).toEqual({ error: "team_setup_confirmation_stale" });
-			expect(listDevices).not.toHaveBeenCalled();
-		} finally {
-			close();
-		}
-	});
+	it.each(["archived", "deleted"])(
+		"treats a sole %s configured group as authoritative absence",
+		async (state) => {
+			const { store, close } = createRouteStore();
+			const coordinatorId = "http://localhost:8787";
+			const groupId = "group-absent";
+			const listDevices = vi.fn(async () => []);
+			try {
+				const app = teamSetupRoutes({
+					getStore: () => store,
+					snapshotLoaderDependencies: {
+						readConfig: () => ({
+							...readCoordinatorSyncConfig({}),
+							syncCoordinatorUrl: coordinatorId,
+							syncCoordinatorGroups: [groupId],
+							syncCoordinatorAdminSecret: "private-admin-secret",
+						}),
+						listGroups: async () =>
+							state === "archived"
+								? [
+										{
+											group_id: groupId,
+											display_name: "Archived Team",
+											archived_at: "2026-08-26T00:00:00.000Z",
+											created_at: "2026-08-24T00:00:00.000Z",
+										},
+									]
+								: [],
+						listDevices,
+					},
+				});
+				const summary = await app.request("/api/sync/team-setup/v1");
+				expect(summary.status).toBe(200);
+				expect(await summary.json()).toEqual({ version: 1, candidates: [] });
+				const detail = await app.request(
+					`/api/sync/team-setup/v1/${legacyTeamCandidateId(coordinatorId, groupId)}`,
+				);
+				expect(detail.status).toBe(404);
+				expect(await detail.json()).toEqual({ error: "team_setup_confirmation_stale" });
+				expect(listDevices).not.toHaveBeenCalled();
+			} finally {
+				close();
+			}
+		},
+	);
 
 	it("fails safely when the sole current group metadata is malformed", async () => {
 		await expect(
@@ -1502,21 +1502,24 @@ describe("Team metadata route", () => {
 		["missing", "Old Team", "New Team", 404, "team_not_found"],
 		["team-local", "Stale Team", "New Team", 409, "team_rename_stale"],
 		["team-local", "Old Team", "actor:machine", 400, "team_name_invalid"],
-	])("returns safe errors for invalid or stale Team changes", async (teamId, expectedDisplayName, displayName, status, error) => {
-		const { store } = fixture();
-		try {
-			const app = syncRoutes(() => store, undefined, {
-				readCoordinatorConfig: () => readCoordinatorSyncConfig({}),
-			});
-			const response = await app.request(`/api/sync/recipient-policy/v1/teams/${teamId}`, {
-				method: "PATCH",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ displayName, expectedDisplayName }),
-			});
-			expect(response.status).toBe(status);
-			expect(await response.json()).toEqual({ error });
-		} finally {
-			store.close();
-		}
-	});
+	])(
+		"returns safe errors for invalid or stale Team changes",
+		async (teamId, expectedDisplayName, displayName, status, error) => {
+			const { store } = fixture();
+			try {
+				const app = syncRoutes(() => store, undefined, {
+					readCoordinatorConfig: () => readCoordinatorSyncConfig({}),
+				});
+				const response = await app.request(`/api/sync/recipient-policy/v1/teams/${teamId}`, {
+					method: "PATCH",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ displayName, expectedDisplayName }),
+				});
+				expect(response.status).toBe(status);
+				expect(await response.json()).toEqual({ error });
+			} finally {
+				store.close();
+			}
+		},
+	);
 });

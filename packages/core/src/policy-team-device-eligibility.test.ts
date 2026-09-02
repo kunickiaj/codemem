@@ -142,28 +142,24 @@ describe("Team device eligibility", () => {
 		});
 	});
 
-	it.each([
-		"",
-		" device-a",
-		"device-a ",
-		"device-a\n",
-		"device-\u200B-a",
-		"d".repeat(257),
-	])("blocks malformed reviewed decision device ID %j", (deviceId) => {
-		const result = derivePolicyTeamDeviceEligibility({
-			teamId: "team-a",
-			mode: "reviewed_allowlist",
-			identities,
-			memberships: [{ identityId: "identity-a", status: "reviewed_active" }],
-			devices,
-			decisions: [{ deviceId, decision: "included", assignmentVersion: 0 }],
-		});
+	it.each(["", " device-a", "device-a ", "device-a\n", "device-\u200B-a", "d".repeat(257)])(
+		"blocks malformed reviewed decision device ID %j",
+		(deviceId) => {
+			const result = derivePolicyTeamDeviceEligibility({
+				teamId: "team-a",
+				mode: "reviewed_allowlist",
+				identities,
+				memberships: [{ identityId: "identity-a", status: "reviewed_active" }],
+				devices,
+				decisions: [{ deviceId, decision: "included", assignmentVersion: 0 }],
+			});
 
-		expect(result).toEqual({
-			status: "blocked",
-			blocked: [{ code: "team_device_decision_invalid", referenceId: `team-a:${deviceId}` }],
-		});
-	});
+			expect(result).toEqual({
+				status: "blocked",
+				blocked: [{ code: "team_device_decision_invalid", referenceId: `team-a:${deviceId}` }],
+			});
+		},
+	);
 
 	it("accepts a canonical device ID at the 256 UTF-16-unit boundary", () => {
 		const deviceId = "d".repeat(256);
@@ -360,47 +356,43 @@ describe("Team device eligibility", () => {
 		expect(result.blocked).toEqual([{ code: "identity_device_invalid", referenceId: "device-a" }]);
 	});
 
-	it.each([
-		"",
-		" device-a",
-		"device-a ",
-		"device-a\n",
-	])("blocks malformed active device ID %j", (deviceId) => {
-		const result = derivePolicyTeamDeviceEligibility({
-			teamId: "team-a",
-			mode: "person_all_devices",
-			identities,
-			memberships: [{ identityId: "identity-a", status: "active" }],
-			devices: [{ identityId: "identity-a", deviceId, status: "active", assignmentVersion: 0 }],
-			decisions: [],
-		});
+	it.each(["", " device-a", "device-a ", "device-a\n"])(
+		"blocks malformed active device ID %j",
+		(deviceId) => {
+			const result = derivePolicyTeamDeviceEligibility({
+				teamId: "team-a",
+				mode: "person_all_devices",
+				identities,
+				memberships: [{ identityId: "identity-a", status: "active" }],
+				devices: [{ identityId: "identity-a", deviceId, status: "active", assignmentVersion: 0 }],
+				decisions: [],
+			});
 
-		expect(result.status).toBe("blocked");
-		expect(result).not.toHaveProperty("eligibleDeviceIds");
-		expect(result.blocked).toEqual([{ code: "identity_device_invalid", referenceId: deviceId }]);
-	});
+			expect(result.status).toBe("blocked");
+			expect(result).not.toHaveProperty("eligibleDeviceIds");
+			expect(result.blocked).toEqual([{ code: "identity_device_invalid", referenceId: deviceId }]);
+		},
+	);
 
-	it.each([
-		"",
-		" identity-a",
-		"identity-a ",
-		"identity-a\n",
-	])("blocks malformed inactive reviewed membership ID %j", (identityId) => {
-		const result = derivePolicyTeamDeviceEligibility({
-			teamId: "team-a",
-			mode: "reviewed_allowlist",
-			identities,
-			memberships: [{ identityId, status: "pending" }],
-			devices: [],
-			decisions: [],
-		});
+	it.each(["", " identity-a", "identity-a ", "identity-a\n"])(
+		"blocks malformed inactive reviewed membership ID %j",
+		(identityId) => {
+			const result = derivePolicyTeamDeviceEligibility({
+				teamId: "team-a",
+				mode: "reviewed_allowlist",
+				identities,
+				memberships: [{ identityId, status: "pending" }],
+				devices: [],
+				decisions: [],
+			});
 
-		expect(result.status).toBe("blocked");
-		expect(result).not.toHaveProperty("eligibleDeviceIds");
-		expect(result.blocked).toEqual([
-			{ code: "team_membership_invalid", referenceId: `team-a:${identityId}` },
-		]);
-	});
+			expect(result.status).toBe("blocked");
+			expect(result).not.toHaveProperty("eligibleDeviceIds");
+			expect(result.blocked).toEqual([
+				{ code: "team_membership_invalid", referenceId: `team-a:${identityId}` },
+			]);
+		},
+	);
 
 	it.each([
 		["missing", [], "team_member_identity_missing"],

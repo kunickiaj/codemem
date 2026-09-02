@@ -45,56 +45,57 @@ describe("session extraction eval", () => {
 		);
 	});
 
-	it.each([
-		0, 1, 5,
-	])("does not fail rich-batch output solely because it has %i observations", (observationCount) => {
-		// Arrange
-		const scenario = getSessionExtractionEvalScenario("rich-batch-shape");
-		if (!scenario) throw new Error("scenario missing");
-		const observations = Array.from({ length: observationCount }, (_, index) => ({
-			id: index + 2,
-			kind: "decision",
-			title: `Durable decision ${index + 1}`,
-			bodyText: "A reusable decision that cleared the worthiness bar.",
-			active: true,
-			createdAt: "2026-04-07T06:13:46.000Z",
-			metadata: {},
-		}));
+	it.each([0, 1, 5])(
+		"does not fail rich-batch output solely because it has %i observations",
+		(observationCount) => {
+			// Arrange
+			const scenario = getSessionExtractionEvalScenario("rich-batch-shape");
+			if (!scenario) throw new Error("scenario missing");
+			const observations = Array.from({ length: observationCount }, (_, index) => ({
+				id: index + 2,
+				kind: "decision",
+				title: `Durable decision ${index + 1}`,
+				bodyText: "A reusable decision that cleared the worthiness bar.",
+				active: true,
+				createdAt: "2026-04-07T06:13:46.000Z",
+				metadata: {},
+			}));
 
-		// Act
-		const result = evaluateSessionExtractionItems(
-			{ type: "batch", sessionId: 166405, batchId: 18503 },
-			{
-				id: 166405,
-				project: "codemem",
-				cwd: "/tmp/repo",
-				startedAt: "2026-04-06T21:23:59.631Z",
-				endedAt: "2026-04-07T06:13:45.667Z",
-				sessionClass: "durable",
-				summaryDisposition: "stored",
-			},
-			[
+			// Act
+			const result = evaluateSessionExtractionItems(
+				{ type: "batch", sessionId: 166405, batchId: 18503 },
 				{
-					id: 1,
-					kind: "session_summary",
-					title: "Rich batch summary",
-					bodyText: "A broad, usable summary of the completed work.",
-					active: true,
-					createdAt: "2026-04-07T06:13:45.667Z",
-					metadata: {},
+					id: 166405,
+					project: "codemem",
+					cwd: "/tmp/repo",
+					startedAt: "2026-04-06T21:23:59.631Z",
+					endedAt: "2026-04-07T06:13:45.667Z",
+					sessionClass: "durable",
+					summaryDisposition: "stored",
 				},
-				...observations,
-			],
-			scenario,
-		);
+				[
+					{
+						id: 1,
+						kind: "session_summary",
+						title: "Rich batch summary",
+						bodyText: "A broad, usable summary of the completed work.",
+						active: true,
+						createdAt: "2026-04-07T06:13:45.667Z",
+						metadata: {},
+					},
+					...observations,
+				],
+				scenario,
+			);
 
-		// Assert
-		expect(result.pass).toBe(true);
-		expect(result.counts.observations).toBe(observationCount);
-		expect(result.failureReasons).not.toEqual(
-			expect.arrayContaining([expect.stringContaining("observation count")]),
-		);
-	});
+			// Assert
+			expect(result.pass).toBe(true);
+			expect(result.counts.observations).toBe(observationCount);
+			expect(result.failureReasons).not.toEqual(
+				expect.arrayContaining([expect.stringContaining("observation count")]),
+			);
+		},
+	);
 
 	it("still fails routine-batch output that emits an observation", () => {
 		// Arrange

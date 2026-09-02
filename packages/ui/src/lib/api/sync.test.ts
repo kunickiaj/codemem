@@ -169,25 +169,27 @@ describe("recipient invitation API", () => {
 		});
 	});
 
-	it.each([
-		"team_member",
-		"add_device",
-	] as const)("does not classify %s failures as Project invitation failures", async (inviteKind) => {
-		globalThis.fetch = vi.fn(
-			async () =>
-				new Response(JSON.stringify({ error: "invite_identity_conflict" }), {
-					status: 409,
-				}),
-		) as typeof fetch;
+	it.each(["team_member", "add_device"] as const)(
+		"does not classify %s failures as Project invitation failures",
+		async (inviteKind) => {
+			globalThis.fetch = vi.fn(
+				async () =>
+					new Response(JSON.stringify({ error: "invite_identity_conflict" }), {
+						status: 409,
+					}),
+			) as typeof fetch;
 
-		const failure = await importCoordinatorInvite("recipient-invite", undefined, inviteKind).catch(
-			(cause: unknown) => cause,
-		);
+			const failure = await importCoordinatorInvite(
+				"recipient-invite",
+				undefined,
+				inviteKind,
+			).catch((cause: unknown) => cause);
 
-		expect(failure).toBeInstanceOf(Error);
-		expect(failure).not.toBeInstanceOf(ProjectInviteAcceptanceError);
-		expect(failure).toMatchObject({ message: "invite_identity_conflict" });
-	});
+			expect(failure).toBeInstanceOf(Error);
+			expect(failure).not.toBeInstanceOf(ProjectInviteAcceptanceError);
+			expect(failure).toMatchObject({ message: "invite_identity_conflict" });
+		},
+	);
 
 	it("keeps unknown Project invitation errors untyped", async () => {
 		globalThis.fetch = vi.fn(
@@ -573,22 +575,20 @@ describe("legacy Team setup API", () => {
 		});
 	});
 
-	it.each([
-		"",
-		"not json",
-		"{}",
-		"[]",
-	])("rejects malformed successful Team setup payload %j", async (body) => {
-		globalThis.fetch = vi
-			.fn()
-			.mockResolvedValue(new Response(body, { status: 200 })) as typeof fetch;
+	it.each(["", "not json", "{}", "[]"])(
+		"rejects malformed successful Team setup payload %j",
+		async (body) => {
+			globalThis.fetch = vi
+				.fn()
+				.mockResolvedValue(new Response(body, { status: 200 })) as typeof fetch;
 
-		await expect(loadLegacyTeamSetupSummary()).rejects.toMatchObject({
-			statusCode: 200,
-			errorCode: "team_setup_failed",
-			message: "team_setup_failed",
-		});
-	});
+			await expect(loadLegacyTeamSetupSummary()).rejects.toMatchObject({
+				statusCode: 200,
+				errorCode: "team_setup_failed",
+				message: "team_setup_failed",
+			});
+		},
+	);
 
 	it("rejects finishable detail without viewer-bound confirmation evidence", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(

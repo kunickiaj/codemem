@@ -91,22 +91,23 @@ describe("ProjectShareOperations", () => {
 		mount.remove();
 	});
 
-	it.each(
-		Object.keys(labels) as ShareOperationLifecycleState[],
-	)("renders %s with one lifecycle and at most one action", (state) => {
-		render(
-			<ProjectShareOperations
-				operations={[operation(state)]}
-				onAdvance={vi.fn()}
-				onReload={vi.fn()}
-			/>,
-			mount,
-		);
-		const card = mount.querySelector("article");
-		expect(card?.textContent).toContain(labels[state]);
-		expect(card?.querySelectorAll("button").length).toBeLessThanOrEqual(1);
-		expect(card?.querySelector('[role="alert"]') != null).toBe(state === "needs_attention");
-	});
+	it.each(Object.keys(labels) as ShareOperationLifecycleState[])(
+		"renders %s with one lifecycle and at most one action",
+		(state) => {
+			render(
+				<ProjectShareOperations
+					operations={[operation(state)]}
+					onAdvance={vi.fn()}
+					onReload={vi.fn()}
+				/>,
+				mount,
+			);
+			const card = mount.querySelector("article");
+			expect(card?.textContent).toContain(labels[state]);
+			expect(card?.querySelectorAll("button").length).toBeLessThanOrEqual(1);
+			expect(card?.querySelector('[role="alert"]') != null).toBe(state === "needs_attention");
+		},
+	);
 
 	it("groups strictly by actor identity and nests friendly devices and projects", () => {
 		render(
@@ -148,20 +149,23 @@ describe("ProjectShareOperations", () => {
 	it.each([
 		["revoked", "Previously shared"],
 		["cancelled", "Invitation cancelled"],
-	] as const)("describes %s operations as historical rather than current sharing", (state, label) => {
-		render(
-			<ProjectShareOperations
-				operations={[operation(state)]}
-				onAdvance={vi.fn()}
-				onReload={vi.fn()}
-			/>,
-			mount,
-		);
+	] as const)(
+		"describes %s operations as historical rather than current sharing",
+		(state, label) => {
+			render(
+				<ProjectShareOperations
+					operations={[operation(state)]}
+					onAdvance={vi.fn()}
+					onReload={vi.fn()}
+				/>,
+				mount,
+			);
 
-		const operationCard = mount.querySelector(".project-share-operation-card");
-		expect(operationCard?.textContent).toContain(label);
-		expect(operationCard?.querySelector(".peer-scope-summary")?.textContent).not.toBe("Sharing");
-	});
+			const operationCard = mount.querySelector(".project-share-operation-card");
+			expect(operationCard?.textContent).toContain(label);
+			expect(operationCard?.querySelector(".peer-scope-summary")?.textContent).not.toBe("Sharing");
+		},
+	);
 
 	it.each([
 		["revoked", "Share again"],

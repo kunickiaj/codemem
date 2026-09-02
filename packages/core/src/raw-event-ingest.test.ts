@@ -282,26 +282,25 @@ describe("ingestRawEvents", () => {
 		}
 	});
 
-	it.each([
-		"tool.execute.after",
-		"message.part.updated",
-		"session.idle",
-	])("accepts OpenCode wire event type %s", (eventType) => {
-		const store = createStore();
-		try {
-			expect(
-				ingestRawEvents(store, {
-					source: "opencode",
-					session_id: "session-opencode-wire-types",
-					event_id: `event-${eventType}`,
-					event_type: eventType,
-					payload: {},
-				}),
-			).toMatchObject({ inserted: 1, skipped: 0 });
-		} finally {
-			store.close();
-		}
-	});
+	it.each(["tool.execute.after", "message.part.updated", "session.idle"])(
+		"accepts OpenCode wire event type %s",
+		(eventType) => {
+			const store = createStore();
+			try {
+				expect(
+					ingestRawEvents(store, {
+						source: "opencode",
+						session_id: "session-opencode-wire-types",
+						event_id: `event-${eventType}`,
+						event_type: eventType,
+						payload: {},
+					}),
+				).toMatchObject({ inserted: 1, skipped: 0 });
+			} finally {
+				store.close();
+			}
+		},
+	);
 
 	it("accepts legacy signed and zero-padded integer sequences without trusting them", () => {
 		const store = createStore();

@@ -731,13 +731,12 @@ describe("retrieval attribution ledger", () => {
 		).toEqual(["experiment_id", "experiment_cell_id"]);
 	});
 
-	it.each([
-		"import_key",
-		"origin_device_id",
-	])("skips additive ledger DDL when a legacy memory schema lacks %s", (missingColumn) => {
-		const legacy = new Database(":memory:");
-		try {
-			legacy.exec(`
+	it.each(["import_key", "origin_device_id"])(
+		"skips additive ledger DDL when a legacy memory schema lacks %s",
+		(missingColumn) => {
+			const legacy = new Database(":memory:");
+			try {
+				legacy.exec(`
 					CREATE TABLE sessions (id INTEGER PRIMARY KEY);
 					CREATE TABLE memory_items (
 						id INTEGER PRIMARY KEY,
@@ -747,17 +746,18 @@ describe("retrieval attribution ledger", () => {
 					);
 				`);
 
-			expect(() => ensureRetrievalLedgerSchema(legacy)).not.toThrow();
-			expect(
-				legacy
-					.prepare("SELECT count(*) FROM sqlite_master WHERE name = 'retrieval_attempts'")
-					.pluck()
-					.get(),
-			).toBe(0);
-		} finally {
-			legacy.close();
-		}
-	});
+				expect(() => ensureRetrievalLedgerSchema(legacy)).not.toThrow();
+				expect(
+					legacy
+						.prepare("SELECT count(*) FROM sqlite_master WHERE name = 'retrieval_attempts'")
+						.pluck()
+						.get(),
+				).toBe(0);
+			} finally {
+				legacy.close();
+			}
+		},
+	);
 
 	it("adds nullable ledger columns to an existing ledger without rewriting rows", () => {
 		recordRetrievalAttempt(db, input());

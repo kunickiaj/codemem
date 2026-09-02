@@ -920,127 +920,133 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 			it.each([
 				{ kind: "team_member" as const, targetId: "policy-team-revoked" },
 				{ kind: "add_device" as const, targetId: "identity-revoked" },
-			])("rejects a revoked $kind invite before first inspection or acceptance", async (testCase) => {
-				await withContext(async ({ store, revokeInvite }) => {
-					// Arrange
-					await store.createGroup("g1", "Coordinator Alpha");
-					const reviewedIntent =
-						testCase.kind === "team_member"
-							? teamReviewedIntent(testCase.targetId)
-							: addDeviceReviewedIntent(testCase.targetId);
-					const invite = await store.createInvite({
-						groupId: "g1",
-						policy: "auto_admit",
-						expiresAt: "2099-01-01T00:00:00Z",
-						inviteKind: testCase.kind,
-						...(testCase.kind === "team_member"
-							? { policyTeamId: testCase.targetId }
-							: { targetIdentityId: testCase.targetId }),
-						reviewedPreviewDigest: await recipientReviewedIntentDigest(reviewedIntent),
-						reviewedIntent,
-					});
-					const acceptance = {
-						token: invite.token,
-						inviteKind: testCase.kind,
-						identityId:
+			])(
+				"rejects a revoked $kind invite before first inspection or acceptance",
+				async (testCase) => {
+					await withContext(async ({ store, revokeInvite }) => {
+						// Arrange
+						await store.createGroup("g1", "Coordinator Alpha");
+						const reviewedIntent =
 							testCase.kind === "team_member"
-								? String(invite.assigned_identity_id)
-								: testCase.targetId,
-						deviceId: "device-recipient",
-						publicKey: "recipient-public-key",
-						fingerprint: fingerprintPublicKey("recipient-public-key"),
-						now: "2026-07-23T00:00:00.000Z",
-					};
-					await revokeInvite(invite.invite_id, "2026-07-22T00:00:00.000Z");
+								? teamReviewedIntent(testCase.targetId)
+								: addDeviceReviewedIntent(testCase.targetId);
+						const invite = await store.createInvite({
+							groupId: "g1",
+							policy: "auto_admit",
+							expiresAt: "2099-01-01T00:00:00Z",
+							inviteKind: testCase.kind,
+							...(testCase.kind === "team_member"
+								? { policyTeamId: testCase.targetId }
+								: { targetIdentityId: testCase.targetId }),
+							reviewedPreviewDigest: await recipientReviewedIntentDigest(reviewedIntent),
+							reviewedIntent,
+						});
+						const acceptance = {
+							token: invite.token,
+							inviteKind: testCase.kind,
+							identityId:
+								testCase.kind === "team_member"
+									? String(invite.assigned_identity_id)
+									: testCase.targetId,
+							deviceId: "device-recipient",
+							publicKey: "recipient-public-key",
+							fingerprint: fingerprintPublicKey("recipient-public-key"),
+							now: "2026-07-23T00:00:00.000Z",
+						};
+						await revokeInvite(invite.invite_id, "2026-07-22T00:00:00.000Z");
 
-					// Act
-					const inspection = store.inspectRecipientInvite({
-						token: invite.token,
-						now: acceptance.now,
-					});
-					const consumption = store.consumeRecipientInvite(acceptance);
+						// Act
+						const inspection = store.inspectRecipientInvite({
+							token: invite.token,
+							now: acceptance.now,
+						});
+						const consumption = store.consumeRecipientInvite(acceptance);
 
-					// Assert
-					await Promise.all([
-						expect(inspection).rejects.toThrow("invite_invalid"),
-						expect(consumption).rejects.toThrow("invite_invalid"),
-					]);
-					expect(await store.getInviteByTokenForInspection(invite.token)).toMatchObject({
-						revoked_at: "2026-07-22T00:00:00.000Z",
-						consumed_at: null,
-						bound_device_id: null,
-						bound_public_key: null,
-						bound_fingerprint: null,
-						recipient_actor_id: null,
+						// Assert
+						await Promise.all([
+							expect(inspection).rejects.toThrow("invite_invalid"),
+							expect(consumption).rejects.toThrow("invite_invalid"),
+						]);
+						expect(await store.getInviteByTokenForInspection(invite.token)).toMatchObject({
+							revoked_at: "2026-07-22T00:00:00.000Z",
+							consumed_at: null,
+							bound_device_id: null,
+							bound_public_key: null,
+							bound_fingerprint: null,
+							recipient_actor_id: null,
+						});
 					});
-				});
-			});
+				},
+			);
 
 			it.each([
 				{ kind: "team_member" as const, targetId: "policy-team-replay" },
 				{ kind: "add_device" as const, targetId: "identity-replay" },
-			])("rejects a revoked $kind invite after an accepted replay without changing its binding", async (testCase) => {
-				await withContext(async ({ store, revokeInvite }) => {
-					// Arrange
-					await store.createGroup("g1", "Coordinator Alpha");
-					const reviewedIntent =
-						testCase.kind === "team_member"
-							? teamReviewedIntent(testCase.targetId)
-							: addDeviceReviewedIntent(testCase.targetId);
-					const invite = await store.createInvite({
-						groupId: "g1",
-						policy: "auto_admit",
-						expiresAt: "2099-01-01T00:00:00Z",
-						inviteKind: testCase.kind,
-						...(testCase.kind === "team_member"
-							? { policyTeamId: testCase.targetId }
-							: { targetIdentityId: testCase.targetId }),
-						reviewedPreviewDigest: await recipientReviewedIntentDigest(reviewedIntent),
-						reviewedIntent,
-					});
-					const acceptance = {
-						token: invite.token,
-						inviteKind: testCase.kind,
-						identityId:
+			])(
+				"rejects a revoked $kind invite after an accepted replay without changing its binding",
+				async (testCase) => {
+					await withContext(async ({ store, revokeInvite }) => {
+						// Arrange
+						await store.createGroup("g1", "Coordinator Alpha");
+						const reviewedIntent =
 							testCase.kind === "team_member"
-								? String(invite.assigned_identity_id)
-								: testCase.targetId,
-						deviceId: "device-recipient",
-						publicKey: "recipient-public-key",
-						fingerprint: fingerprintPublicKey("recipient-public-key"),
-						now: "2026-07-23T00:00:00.000Z",
-					};
-					expect((await store.consumeRecipientInvite(acceptance)).status).toBe("accepted");
-					expect((await store.consumeRecipientInvite(acceptance)).status).toBe("existing");
-					const boundBeforeRevocation = await store.getInviteByTokenForInspection(invite.token);
-					await revokeInvite(invite.invite_id, "2026-07-23T00:00:01.000Z");
+								? teamReviewedIntent(testCase.targetId)
+								: addDeviceReviewedIntent(testCase.targetId);
+						const invite = await store.createInvite({
+							groupId: "g1",
+							policy: "auto_admit",
+							expiresAt: "2099-01-01T00:00:00Z",
+							inviteKind: testCase.kind,
+							...(testCase.kind === "team_member"
+								? { policyTeamId: testCase.targetId }
+								: { targetIdentityId: testCase.targetId }),
+							reviewedPreviewDigest: await recipientReviewedIntentDigest(reviewedIntent),
+							reviewedIntent,
+						});
+						const acceptance = {
+							token: invite.token,
+							inviteKind: testCase.kind,
+							identityId:
+								testCase.kind === "team_member"
+									? String(invite.assigned_identity_id)
+									: testCase.targetId,
+							deviceId: "device-recipient",
+							publicKey: "recipient-public-key",
+							fingerprint: fingerprintPublicKey("recipient-public-key"),
+							now: "2026-07-23T00:00:00.000Z",
+						};
+						expect((await store.consumeRecipientInvite(acceptance)).status).toBe("accepted");
+						expect((await store.consumeRecipientInvite(acceptance)).status).toBe("existing");
+						const boundBeforeRevocation = await store.getInviteByTokenForInspection(invite.token);
+						await revokeInvite(invite.invite_id, "2026-07-23T00:00:01.000Z");
 
-					// Act
-					const inspection = store.inspectRecipientInvite({
-						token: invite.token,
-						now: "2026-07-23T00:00:02.000Z",
-					});
-					const replay = store.consumeRecipientInvite({
-						...acceptance,
-						now: "2026-07-23T00:00:02.000Z",
-					});
+						// Act
+						const inspection = store.inspectRecipientInvite({
+							token: invite.token,
+							now: "2026-07-23T00:00:02.000Z",
+						});
+						const replay = store.consumeRecipientInvite({
+							...acceptance,
+							now: "2026-07-23T00:00:02.000Z",
+						});
 
-					// Assert
-					await Promise.all([
-						expect(inspection).rejects.toThrow("invite_invalid"),
-						expect(replay).rejects.toThrow("invite_invalid"),
-					]);
-					const boundAfterRevocation = await store.getInviteByTokenForInspection(invite.token);
-					expect(boundAfterRevocation).toMatchObject({
-						revoked_at: "2026-07-23T00:00:01.000Z",
-						consumed_at: boundBeforeRevocation?.consumed_at,
-						bound_device_id: boundBeforeRevocation?.bound_device_id,
-						bound_public_key: boundBeforeRevocation?.bound_public_key,
-						bound_fingerprint: boundBeforeRevocation?.bound_fingerprint,
-						recipient_actor_id: boundBeforeRevocation?.recipient_actor_id,
+						// Assert
+						await Promise.all([
+							expect(inspection).rejects.toThrow("invite_invalid"),
+							expect(replay).rejects.toThrow("invite_invalid"),
+						]);
+						const boundAfterRevocation = await store.getInviteByTokenForInspection(invite.token);
+						expect(boundAfterRevocation).toMatchObject({
+							revoked_at: "2026-07-23T00:00:01.000Z",
+							consumed_at: boundBeforeRevocation?.consumed_at,
+							bound_device_id: boundBeforeRevocation?.bound_device_id,
+							bound_public_key: boundBeforeRevocation?.bound_public_key,
+							bound_fingerprint: boundBeforeRevocation?.bound_fingerprint,
+							recipient_actor_id: boundBeforeRevocation?.recipient_actor_id,
+						});
 					});
-				});
-			});
+				},
+			);
 
 			it("persists, enrolls, and single-use binds explicit Team and add-device invitations without scope membership", async () => {
 				await withContext(async ({ store }) => {

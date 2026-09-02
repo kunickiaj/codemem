@@ -681,34 +681,35 @@ describe("recipient-policy invitations", () => {
 	it.each([
 		["missing", undefined],
 		["empty", []],
-	] as Array<
-		[string, typeof projectShareInspection.projects | undefined]
-	>)("blocks Project acceptance when the inspected Project list is $0", async (_label, projects) => {
-		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
-			...projectShareInspection,
-			projects,
-		});
-		mount();
-		act(() => button("Review invitation").click());
-		const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
-		const dialog = document.querySelector('[role="dialog"]');
-		if (!textarea || !dialog) throw new Error("acceptance dialog missing");
-		act(() => {
-			textarea.value = "project-without-details";
-			textarea.dispatchEvent(new Event("input", { bubbles: true }));
-		});
-		act(() => button("Review invitation", dialog).click());
+	] as Array<[string, typeof projectShareInspection.projects | undefined]>)(
+		"blocks Project acceptance when the inspected Project list is $0",
+		async (_label, projects) => {
+			vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
+				...projectShareInspection,
+				projects,
+			});
+			mount();
+			act(() => button("Review invitation").click());
+			const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+			const dialog = document.querySelector('[role="dialog"]');
+			if (!textarea || !dialog) throw new Error("acceptance dialog missing");
+			act(() => {
+				textarea.value = "project-without-details";
+				textarea.dispatchEvent(new Event("input", { bubbles: true }));
+			});
+			act(() => button("Review invitation", dialog).click());
 
-		await vi.waitFor(() =>
-			expect(dialog.querySelector('[role="alert"]')?.textContent).toContain(
-				"Project details are unavailable",
-			),
-		);
-		const accept = button("Accept Project access", dialog);
-		expect(accept.disabled).toBe(true);
-		act(() => accept.click());
-		expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
-	});
+			await vi.waitFor(() =>
+				expect(dialog.querySelector('[role="alert"]')?.textContent).toContain(
+					"Project details are unavailable",
+				),
+			);
+			const accept = button("Accept Project access", dialog);
+			expect(accept.disabled).toBe(true);
+			act(() => accept.click());
+			expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
+		},
+	);
 
 	it("retries failed Project inspection with the preserved invite text", async () => {
 		vi.mocked(api.inspectCoordinatorInvite)

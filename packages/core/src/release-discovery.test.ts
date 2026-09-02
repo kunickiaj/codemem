@@ -890,19 +890,20 @@ describe("installation guidance", () => {
 		["repo-dev", "git pull"],
 		["pinned", "pinned"],
 		["unknown", "installation method"],
-	] satisfies Array<
-		[InstallKind, string]
-	>)("returns %s-specific upgrade guidance", async (installKind, expectedGuidance) => {
-		// Arrange
-		const deps = dependencies();
+	] satisfies Array<[InstallKind, string]>)(
+		"returns %s-specific upgrade guidance",
+		async (installKind, expectedGuidance) => {
+			// Arrange
+			const deps = dependencies();
 
-		// Act
-		const status = await check(deps, { installKind });
+			// Act
+			const status = await check(deps, { installKind });
 
-		// Assert
-		expect(status).toMatchObject({ install_kind: installKind });
-		expect(status.recommended_action).toContain(expectedGuidance);
-	});
+			// Assert
+			expect(status).toMatchObject({ install_kind: installKind });
+			expect(status.recommended_action).toContain(expectedGuidance);
+		},
+	);
 
 	it("returns no-upgrade guidance when the installation is current", async () => {
 		// Arrange

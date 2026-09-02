@@ -56,36 +56,39 @@ describe("prompt transport failure classification", () => {
 		expect(classifyPromptTransportFailure({ kind })).toBe("fallback");
 	});
 
-	it.each([
-		"database_mismatch",
-		"runtime_identity_mismatch",
-	] as const)("classifies %s as one-shot local fallback", (kind) => {
-		expect(classifyPromptTransportFailure({ kind })).toBe("local_fallback");
-	});
+	it.each(["database_mismatch", "runtime_identity_mismatch"] as const)(
+		"classifies %s as one-shot local fallback",
+		(kind) => {
+			expect(classifyPromptTransportFailure({ kind })).toBe("local_fallback");
+		},
+	);
 
-	it.each([
-		"policy_failure",
-		"authorization_failure",
-	] as const)("classifies %s as terminal", (kind) => {
-		expect(classifyPromptTransportFailure({ kind })).toBe("terminal");
-	});
+	it.each(["policy_failure", "authorization_failure"] as const)(
+		"classifies %s as terminal",
+		(kind) => {
+			expect(classifyPromptTransportFailure({ kind })).toBe("terminal");
+		},
+	);
 
 	it.each([
 		[false, "fallback"],
 		[true, "terminal"],
-	] as const)("classifies invalid_request with compatibleProfile=%s as %s", (compatibleProfile, expected) => {
-		// Arrange
-		const failure = {
-			kind: "invalid_request",
-			compatibleProfile,
-		} as const;
+	] as const)(
+		"classifies invalid_request with compatibleProfile=%s as %s",
+		(compatibleProfile, expected) => {
+			// Arrange
+			const failure = {
+				kind: "invalid_request",
+				compatibleProfile,
+			} as const;
 
-		// Act
-		const disposition = classifyPromptTransportFailure(failure);
+			// Act
+			const disposition = classifyPromptTransportFailure(failure);
 
-		// Assert
-		expect(disposition).toBe(expected);
-	});
+			// Assert
+			expect(disposition).toBe(expected);
+		},
+	);
 
 	it("distinguishes contract skew before and after a compatible profile", () => {
 		expect(

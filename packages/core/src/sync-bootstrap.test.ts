@@ -281,37 +281,37 @@ describe("applyBootstrapSnapshot", () => {
 				{ scopeCase: "non-string scope", payloadScopeId: 123 },
 			].map((scope) => ({ name, bootstrap, ...scope })),
 		),
-	)("$name rejects $scopeCase rows on default bootstrap before mutating local state", ({
-		bootstrap,
-		payloadScopeId,
-	}) => {
-		const now = "2026-01-01T00:00:00Z";
-		db.prepare(
-			`INSERT INTO memory_items(
+	)(
+		"$name rejects $scopeCase rows on default bootstrap before mutating local state",
+		({ bootstrap, payloadScopeId }) => {
+			const now = "2026-01-01T00:00:00Z";
+			db.prepare(
+				`INSERT INTO memory_items(
 				session_id, kind, title, body_text, created_at, updated_at, import_key, rev,
 				visibility, scope_id, metadata_json
 			 ) VALUES (?, 'discovery', 'existing', 'body', ?, ?, 'existing-key', 1, 'shared', NULL, ?)`,
-		).run(sessionId, now, now, toJson({ clock_device_id: "local" }));
-		const items = [
-			makeSnapshotItem("unauthorized-scoped-row", { payload: { scope_id: payloadScopeId } }),
-		];
+			).run(sessionId, now, now, toJson({ clock_device_id: "local" }));
+			const items = [
+				makeSnapshotItem("unauthorized-scoped-row", { payload: { scope_id: payloadScopeId } }),
+			];
 
-		expect(() => bootstrap(db, "peer-1", items, makeResetInfo({ scope_id: null }))).toThrow(
-			"scope_mismatch",
-		);
+			expect(() => bootstrap(db, "peer-1", items, makeResetInfo({ scope_id: null }))).toThrow(
+				"scope_mismatch",
+			);
 
-		expect(
-			db.prepare("SELECT title FROM memory_items WHERE import_key = ?").get("existing-key"),
-		).toEqual({ title: "existing" });
-		expect(
-			db
-				.prepare("SELECT COUNT(*) FROM memory_items WHERE import_key = ?")
-				.pluck()
-				.get("unauthorized-scoped-row"),
-		).toBe(0);
-		expect(getSyncResetState(db).snapshot_id).toBe("snap-1");
-		expect(getReplicationCursor(db, "peer-1")).toEqual([null, null]);
-	});
+			expect(
+				db.prepare("SELECT title FROM memory_items WHERE import_key = ?").get("existing-key"),
+			).toEqual({ title: "existing" });
+			expect(
+				db
+					.prepare("SELECT COUNT(*) FROM memory_items WHERE import_key = ?")
+					.pluck()
+					.get("unauthorized-scoped-row"),
+			).toBe(0);
+			expect(getSyncResetState(db).snapshot_id).toBe("snap-1");
+			expect(getReplicationCursor(db, "peer-1")).toEqual([null, null]);
+		},
+	);
 
 	it("uses the requested managed scope when payload scope_id is non-string", () => {
 		const items = [makeSnapshotItem("malformed-scope-key", { payload: { scope_id: 123 } })];

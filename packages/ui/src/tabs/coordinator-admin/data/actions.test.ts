@@ -280,27 +280,27 @@ describe("coordinator admin actions", () => {
 		expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain("private-group-id");
 	});
 
-	it.each([
-		new Error("private coordinator detail"),
-		"group_archived",
-	])("keeps generic recovery guidance for an unknown invite failure (%o)", async (cause) => {
-		mocks.createCoordinatorInvite.mockRejectedValue(cause);
-		coordinatorAdminState.inviteGroup = "team-alpha";
-		const actions = createCoordinatorAdminActions({
-			renderShell: vi.fn(),
-			reloadData: vi.fn().mockResolvedValue(undefined),
-		});
+	it.each([new Error("private coordinator detail"), "group_archived"])(
+		"keeps generic recovery guidance for an unknown invite failure (%o)",
+		async (cause) => {
+			mocks.createCoordinatorInvite.mockRejectedValue(cause);
+			coordinatorAdminState.inviteGroup = "team-alpha";
+			const actions = createCoordinatorAdminActions({
+				renderShell: vi.fn(),
+				reloadData: vi.fn().mockResolvedValue(undefined),
+			});
 
-		await actions.createInviteFromAdminPanel();
+			await actions.createInviteFromAdminPanel();
 
-		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
-			"Could not create the legacy coordinator invite. Sharing policy is unchanged; check coordinator recovery status and retry.",
-			"warning",
-		);
-		expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain(
-			"private coordinator detail",
-		);
-	});
+			expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
+				"Could not create the legacy coordinator invite. Sharing policy is unchanged; check coordinator recovery status and retry.",
+				"warning",
+			);
+			expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain(
+				"private coordinator detail",
+			);
+		},
+	);
 
 	it("does not restore an invite returned after coordinator data is superseded", async () => {
 		const invite = deferred<{ token: string; warnings: string[] }>();
@@ -404,40 +404,45 @@ describe("coordinator admin actions", () => {
 		["approve", "Remote coordinator request failed (404): request_not_found"],
 		["deny", "join request not found: private-request-id"],
 		["deny", "Remote coordinator request failed (404): request_not_found"],
-	] as const)("refreshes pending requests when %s reports a missing request (%s)", async (action, message) => {
-		mocks.reviewCoordinatorAdminJoinRequest.mockRejectedValue(new Error(message));
-		const reloadData = vi.fn().mockResolvedValue(undefined);
-		const actions = createCoordinatorAdminActions({ renderShell: vi.fn(), reloadData });
+	] as const)(
+		"refreshes pending requests when %s reports a missing request (%s)",
+		async (action, message) => {
+			mocks.reviewCoordinatorAdminJoinRequest.mockRejectedValue(new Error(message));
+			const reloadData = vi.fn().mockResolvedValue(undefined);
+			const actions = createCoordinatorAdminActions({ renderShell: vi.fn(), reloadData });
 
-		await actions.reviewJoinRequestFromAdminPanel("private-request-id", action);
+			await actions.reviewJoinRequestFromAdminPanel("private-request-id", action);
 
-		expect(reloadData).toHaveBeenCalledTimes(1);
-		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
-			"This legacy coordinator join request no longer exists. Pending requests were refreshed.",
-			"warning",
-		);
-		expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain("private-request-id");
-	});
+			expect(reloadData).toHaveBeenCalledTimes(1);
+			expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
+				"This legacy coordinator join request no longer exists. Pending requests were refreshed.",
+				"warning",
+			);
+			expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain(
+				"private-request-id",
+			);
+		},
+	);
 
-	it.each([
-		new Error("private coordinator detail"),
-		"request_not_found",
-	])("keeps recovery guidance for an unknown join-review failure (%o)", async (cause) => {
-		mocks.reviewCoordinatorAdminJoinRequest.mockRejectedValue(cause);
-		const reloadData = vi.fn().mockResolvedValue(undefined);
-		const actions = createCoordinatorAdminActions({ renderShell: vi.fn(), reloadData });
+	it.each([new Error("private coordinator detail"), "request_not_found"])(
+		"keeps recovery guidance for an unknown join-review failure (%o)",
+		async (cause) => {
+			mocks.reviewCoordinatorAdminJoinRequest.mockRejectedValue(cause);
+			const reloadData = vi.fn().mockResolvedValue(undefined);
+			const actions = createCoordinatorAdminActions({ renderShell: vi.fn(), reloadData });
 
-		await actions.reviewJoinRequestFromAdminPanel("join-1", "approve");
+			await actions.reviewJoinRequestFromAdminPanel("join-1", "approve");
 
-		expect(reloadData).not.toHaveBeenCalled();
-		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
-			"Could not review the legacy coordinator join request. Sharing policy is unchanged; check coordinator recovery status and retry.",
-			"warning",
-		);
-		expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain(
-			"private coordinator detail",
-		);
-	});
+			expect(reloadData).not.toHaveBeenCalled();
+			expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
+				"Could not review the legacy coordinator join request. Sharing policy is unchanged; check coordinator recovery status and retry.",
+				"warning",
+			);
+			expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain(
+				"private coordinator detail",
+			);
+		},
+	);
 
 	it("keeps missing-request guidance when refreshing the pending list fails", async () => {
 		mocks.reviewCoordinatorAdminJoinRequest.mockRejectedValue(new Error("join request not found"));
@@ -831,34 +836,32 @@ describe("coordinator admin actions", () => {
 		);
 	});
 
-	it.each([
-		"rename",
-		"disable",
-		"enable",
-		"remove",
-	] as const)("refreshes devices when %s finds a missing enrollment", async (kind) => {
-		const mutation =
-			kind === "rename"
-				? mocks.renameCoordinatorAdminDevice
-				: kind === "disable"
-					? mocks.disableCoordinatorAdminDevice
-					: kind === "enable"
-						? mocks.enableCoordinatorAdminDevice
-						: mocks.removeCoordinatorAdminDevice;
-		mutation.mockRejectedValue(new Error("device_not_found: private-device-id"));
-		coordinatorAdminState.deviceRenameDrafts.set("device-a", "New device name");
-		const reloadData = vi.fn().mockResolvedValue(undefined);
-		const actions = createCoordinatorAdminActions({ renderShell: vi.fn(), reloadData });
+	it.each(["rename", "disable", "enable", "remove"] as const)(
+		"refreshes devices when %s finds a missing enrollment",
+		async (kind) => {
+			const mutation =
+				kind === "rename"
+					? mocks.renameCoordinatorAdminDevice
+					: kind === "disable"
+						? mocks.disableCoordinatorAdminDevice
+						: kind === "enable"
+							? mocks.enableCoordinatorAdminDevice
+							: mocks.removeCoordinatorAdminDevice;
+			mutation.mockRejectedValue(new Error("device_not_found: private-device-id"));
+			coordinatorAdminState.deviceRenameDrafts.set("device-a", "New device name");
+			const reloadData = vi.fn().mockResolvedValue(undefined);
+			const actions = createCoordinatorAdminActions({ renderShell: vi.fn(), reloadData });
 
-		await actions.runDeviceAction("device-a", "group-alpha", "Laptop", kind);
+			await actions.runDeviceAction("device-a", "group-alpha", "Laptop", kind);
 
-		expect(reloadData).toHaveBeenCalledTimes(1);
-		expect(mocks.showGlobalNotice).toHaveBeenLastCalledWith(
-			"This legacy coordinator device no longer exists. Enrolled devices were refreshed.",
-			"warning",
-		);
-		expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain("private-device-id");
-	});
+			expect(reloadData).toHaveBeenCalledTimes(1);
+			expect(mocks.showGlobalNotice).toHaveBeenLastCalledWith(
+				"This legacy coordinator device no longer exists. Enrolled devices were refreshed.",
+				"warning",
+			);
+			expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain("private-device-id");
+		},
+	);
 
 	it("keeps missing-device guidance when refreshing devices fails", async () => {
 		mocks.removeCoordinatorAdminDevice.mockRejectedValue(new Error("device_not_found"));

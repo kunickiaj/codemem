@@ -24,7 +24,7 @@ overrides:
   undici: '>=7.28.0 <8'
 
 catalog:
-  "@biomejs/biome": ^2.4.16
+  "@biomejs/biome": ^2.5.11
   "@hono/node-server": ^2.1.1
   "@types/better-sqlite3": ^7.6.13
   drizzle-orm: ^0.45.2

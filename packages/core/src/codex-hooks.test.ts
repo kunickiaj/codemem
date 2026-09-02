@@ -95,7 +95,7 @@ describe("mapCodexHookPayload", () => {
 		expect(event?.payload.text).toBe("Run the tests");
 		expect(event?.meta.turn_id).toBe("turn-1");
 		expect(event?.meta.event_id_algo).toBe("codex/1");
-		expect((event?.meta.hook_fields as Record<string, unknown>).custom_field).toBe("preserve");
+		expect(event?.meta.hook_fields).toMatchObject({ custom_field: "preserve" });
 	});
 
 	it("skips empty prompts", () => {
@@ -295,7 +295,7 @@ describe("buildRawEventEnvelopeFromCodexHook", () => {
 		expect(envelope?.session_stream_id).toBe("codex-session");
 		expect(envelope?.started_at).toBe("2026-05-29T01:00:00Z");
 		expect(envelope?.payload.type).toBe("codex.hook");
-		expect((envelope?.payload._adapter as Record<string, unknown>).source).toBe("codex");
+		expect(envelope?.payload._adapter).toMatchObject({ source: "codex" });
 	});
 });
 
@@ -315,6 +315,6 @@ describe("buildIngestPayloadFromCodexHook", () => {
 			session_id: "codex-session",
 			opencode_session_id: "codex-session",
 		});
-		expect((payload?.events as Record<string, unknown>[])[0]?.type).toBe("codex.hook");
+		expect(payload?.events[0]).toMatchObject({ type: "codex.hook" });
 	});
 });

@@ -24,16 +24,12 @@ describe("Viewer tab routing", () => {
 		expect(ALL_TAB_IDS).toEqual(["feed", "projects", "sharing", "devices", "health", "advanced"]);
 	});
 
-	it.each([
-		"feed",
-		"projects",
-		"sharing",
-		"devices",
-		"health",
-		"advanced",
-	])("recognizes #%s as a canonical route", (tab) => {
-		expect(parseTabFromHash(`#${tab}`)).toBe(tab);
-	});
+	it.each(["feed", "projects", "sharing", "devices", "health", "advanced"])(
+		"recognizes #%s as a canonical route",
+		(tab) => {
+			expect(parseTabFromHash(`#${tab}`)).toBe(tab);
+		},
+	);
 
 	it.each([
 		["#sync", "sync"],

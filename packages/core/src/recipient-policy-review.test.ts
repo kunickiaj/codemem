@@ -383,31 +383,31 @@ describe("recipient policy review persistence", () => {
 		});
 	});
 
-	it.each([
-		"managed_project",
-		"future_project_boundary",
-	])("keeps a %s multi-project scope repairable", (kind) => {
-		configureUmbrellaScope(db, kind);
+	it.each(["managed_project", "future_project_boundary"])(
+		"keeps a %s multi-project scope repairable",
+		(kind) => {
+			configureUmbrellaScope(db, kind);
 
-		const result = listRecipientPolicyReview(db, context);
+			const result = listRecipientPolicyReview(db, context);
 
-		expect(result).toMatchObject({
-			blockedItems: [
-				{
-					ownerLabel: "Local administrator",
-					repairAction:
-						"Assign each Project to its own managed scope and move its memories out of the shared boundary.",
-				},
-				{
-					ownerLabel: "Local administrator",
-					repairAction:
-						"Assign each Project to its own managed scope and move its memories out of the shared boundary.",
-				},
-			],
-			continuity: null,
-			reviewItems: [],
-		});
-	});
+			expect(result).toMatchObject({
+				blockedItems: [
+					{
+						ownerLabel: "Local administrator",
+						repairAction:
+							"Assign each Project to its own managed scope and move its memories out of the shared boundary.",
+					},
+					{
+						ownerLabel: "Local administrator",
+						repairAction:
+							"Assign each Project to its own managed scope and move its memories out of the shared boundary.",
+					},
+				],
+				continuity: null,
+				reviewItems: [],
+			});
+		},
+	);
 
 	it("keeps a wildcard scope mapping as continuity without repair cards", () => {
 		const scopeId = "legacy-wildcard";
@@ -1133,28 +1133,31 @@ describe("recipient policy review persistence", () => {
 			'{"recipientIds":["actor-candidate"]}',
 		],
 		["remove_stale_device", { deviceId: "device-unassigned" }, '{"deviceId":"device-unassigned"}'],
-	] as const)("normalizes and stores %s decision input", (decision, decisionInput, expectedJson) => {
-		configureUnassignedDeviceReview(db);
-		const item = listRecipientPolicyReview(db, context).reviewItems.find((candidate) =>
-			candidate.options.some((option) => option.decision === decision),
-		);
-		if (!item) throw new Error("unassigned review item missing");
+	] as const)(
+		"normalizes and stores %s decision input",
+		(decision, decisionInput, expectedJson) => {
+			configureUnassignedDeviceReview(db);
+			const item = listRecipientPolicyReview(db, context).reviewItems.find((candidate) =>
+				candidate.options.some((option) => option.decision === decision),
+			);
+			if (!item) throw new Error("unassigned review item missing");
 
-		const result = resolveRecipientPolicyReview(db, context, {
-			reviewItemId: item.reviewItemId,
-			sourceFingerprint: item.sourceFingerprint,
-			decision,
-			decisionInput,
-		});
+			const result = resolveRecipientPolicyReview(db, context, {
+				reviewItemId: item.reviewItemId,
+				sourceFingerprint: item.sourceFingerprint,
+				decision,
+				decisionInput,
+			});
 
-		expect(result.status).toBe("applied");
-		expect(
-			db
-				.prepare("SELECT decision_input_json FROM recipient_policy_review_resolutions")
-				.pluck()
-				.get(),
-		).toBe(expectedJson);
-	});
+			expect(result.status).toBe("applied");
+			expect(
+				db
+					.prepare("SELECT decision_input_json FROM recipient_policy_review_resolutions")
+					.pluck()
+					.get(),
+			).toBe(expectedJson);
+		},
+	);
 
 	it("keeps unassigned-device resolutions durable and scoped to one device", () => {
 		configureUnassignedDeviceReview(db, ["device-unassigned-a", "device-unassigned-b"]);

@@ -1727,15 +1727,15 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 			error:
 				"recipient_policy_device_eligibility_schema_incompatible:policy_team_device_decisions.assignment_version",
 		},
-	] as const)("surfaces a bounded compatibility error when $label repair is unavailable", ({
-		mutate,
-		error,
-	}) => {
-		ensureAdditiveSchemaCompatibility(db);
-		mutate(db);
+	] as const)(
+		"surfaces a bounded compatibility error when $label repair is unavailable",
+		({ mutate, error }) => {
+			ensureAdditiveSchemaCompatibility(db);
+			mutate(db);
 
-		expect(() => ensureAdditiveSchemaCompatibility(db)).toThrow(error);
-	});
+			expect(() => ensureAdditiveSchemaCompatibility(db)).toThrow(error);
+		},
+	);
 
 	it("replaces a raw additive-DDL failure with the bounded compatibility error", () => {
 		ensureAdditiveSchemaCompatibility(db);

@@ -498,47 +498,47 @@ describe("legacy Team setup activation", () => {
 		);
 	});
 
-	it.each([
-		"unresolved device",
-		"unresolved Project",
-	] as const)("rejects an incomplete draft with no canonical writes: %s", (label) => {
-		// Arrange
-		let draft = refreshLegacyTeamSetupDraft(db, snapshot());
-		if (label === "unresolved device") {
-			draft = setLegacyTeamSetupProjectMapping(db, {
-				attemptId: draft.attemptId,
-				projectRef: "project-ref-b",
-				resolvedProjectIdentity: PROJECT_B,
-				now: NOW,
-			});
-		} else {
-			for (const [index, identityId] of ["identity-a", "identity-b"].entries()) {
-				const device = draft.devices[index];
-				if (!device) throw new Error("invalid activation fixture");
-				draft = setLegacyTeamSetupDeviceAssignment(db, {
+	it.each(["unresolved device", "unresolved Project"] as const)(
+		"rejects an incomplete draft with no canonical writes: %s",
+		(label) => {
+			// Arrange
+			let draft = refreshLegacyTeamSetupDraft(db, snapshot());
+			if (label === "unresolved device") {
+				draft = setLegacyTeamSetupProjectMapping(db, {
 					attemptId: draft.attemptId,
-					deviceRef: device.deviceRef,
-					targetIdentityId: identityId,
-					expectation: device.expectation,
+					projectRef: "project-ref-b",
+					resolvedProjectIdentity: PROJECT_B,
 					now: NOW,
 				});
-				draft = setLegacyTeamSetupDeviceDecision(db, {
-					attemptId: draft.attemptId,
-					deviceRef: device.deviceRef,
-					decision: "included",
-					now: NOW,
-				});
+			} else {
+				for (const [index, identityId] of ["identity-a", "identity-b"].entries()) {
+					const device = draft.devices[index];
+					if (!device) throw new Error("invalid activation fixture");
+					draft = setLegacyTeamSetupDeviceAssignment(db, {
+						attemptId: draft.attemptId,
+						deviceRef: device.deviceRef,
+						targetIdentityId: identityId,
+						expectation: device.expectation,
+						now: NOW,
+					});
+					draft = setLegacyTeamSetupDeviceDecision(db, {
+						attemptId: draft.attemptId,
+						deviceRef: device.deviceRef,
+						decision: "included",
+						now: NOW,
+					});
+				}
 			}
-		}
 
-		// Act
-		const operation = () => preview(draft);
+			// Act
+			const operation = () => preview(draft);
 
-		// Assert
-		expect(operation).toThrow("team_setup_incomplete");
-		expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
-		expect(db.prepare("SELECT COUNT(*) FROM identity_devices").pluck().get()).toBe(0);
-	});
+			// Assert
+			expect(operation).toThrow("team_setup_incomplete");
+			expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+			expect(db.prepare("SELECT COUNT(*) FROM identity_devices").pluck().get()).toBe(0);
+		},
+	);
 
 	it("keeps read-only inspection from persisting activation errors", () => {
 		const draft = refreshLegacyTeamSetupDraft(db, snapshot());
@@ -1406,85 +1406,85 @@ describe("legacy Team setup activation", () => {
 		).toBe("scope-engineering-2");
 	});
 
-	it.each([
-		"unresolved",
-		"included",
-	] as const)("settles a %s invite decision to excluded when its device is removed", async (initialDecision) => {
-		// Arrange: a completed setup with an invite-owned decision for a roster
-		// device that later gets removed. The reviewed removal retires the
-		// device's access: `unresolved` would reopen setup forever and
-		// `included` would keep granting Project access to a removed device.
-		await finish(readyDraft());
-		const teamId = deterministicPolicyTeamId(CANDIDATE);
-		db.prepare(
-			`INSERT INTO policy_team_device_decisions(
+	it.each(["unresolved", "included"] as const)(
+		"settles a %s invite decision to excluded when its device is removed",
+		async (initialDecision) => {
+			// Arrange: a completed setup with an invite-owned decision for a roster
+			// device that later gets removed. The reviewed removal retires the
+			// device's access: `unresolved` would reopen setup forever and
+			// `included` would keep granting Project access to a removed device.
+			await finish(readyDraft());
+			const teamId = deterministicPolicyTeamId(CANDIDATE);
+			db.prepare(
+				`INSERT INTO policy_team_device_decisions(
 			 team_id, device_id, decision, assignment_version, provenance, revision,
 			 created_at, updated_at
 			 ) VALUES (?, 'device-b', ?, 0, 'coordinator_invite', 'invite-r1', ?, ?)
 			 ON CONFLICT(team_id, device_id) DO UPDATE SET
 			 decision = excluded.decision, provenance = 'coordinator_invite', revision = 'invite-r1'`,
-		).run(teamId, initialDecision, NOW, NOW);
-		let draft = refreshLegacyTeamSetupDraft(db, {
-			...snapshot(),
-			devices: [
-				{ deviceId: "device-a", fingerprint: "key-a", displayName: "Laptop", enabled: true },
-				{ deviceId: "device-b", fingerprint: "key-b", displayName: "Desktop", enabled: false },
-			],
-		});
-		for (const device of draft.devices) {
-			if (device.displayName === "Laptop") {
-				draft = setLegacyTeamSetupDeviceAssignment(db, {
-					attemptId: draft.attemptId,
-					deviceRef: device.deviceRef,
-					targetIdentityId: "identity-a",
-					expectation: device.expectation,
-					now: NOW,
-				});
-				draft = setLegacyTeamSetupDeviceDecision(db, {
-					attemptId: draft.attemptId,
-					deviceRef: device.deviceRef,
-					decision: "included",
-					now: NOW,
-				});
-			} else {
-				draft = setLegacyTeamSetupDeviceDecision(db, {
-					attemptId: draft.attemptId,
-					deviceRef: device.deviceRef,
-					decision: "removed",
-					now: NOW,
-				});
+			).run(teamId, initialDecision, NOW, NOW);
+			let draft = refreshLegacyTeamSetupDraft(db, {
+				...snapshot(),
+				devices: [
+					{ deviceId: "device-a", fingerprint: "key-a", displayName: "Laptop", enabled: true },
+					{ deviceId: "device-b", fingerprint: "key-b", displayName: "Desktop", enabled: false },
+				],
+			});
+			for (const device of draft.devices) {
+				if (device.displayName === "Laptop") {
+					draft = setLegacyTeamSetupDeviceAssignment(db, {
+						attemptId: draft.attemptId,
+						deviceRef: device.deviceRef,
+						targetIdentityId: "identity-a",
+						expectation: device.expectation,
+						now: NOW,
+					});
+					draft = setLegacyTeamSetupDeviceDecision(db, {
+						attemptId: draft.attemptId,
+						deviceRef: device.deviceRef,
+						decision: "included",
+						now: NOW,
+					});
+				} else {
+					draft = setLegacyTeamSetupDeviceDecision(db, {
+						attemptId: draft.attemptId,
+						deviceRef: device.deviceRef,
+						decision: "removed",
+						now: NOW,
+					});
+				}
 			}
-		}
-		draft = setLegacyTeamSetupProjectMapping(db, {
-			attemptId: draft.attemptId,
-			projectRef: "project-ref-b",
-			resolvedProjectIdentity: PROJECT_B,
-			now: NOW,
-		});
-		expect(draft.canFinish).toBe(true);
+			draft = setLegacyTeamSetupProjectMapping(db, {
+				attemptId: draft.attemptId,
+				projectRef: "project-ref-b",
+				resolvedProjectIdentity: PROJECT_B,
+				now: NOW,
+			});
+			expect(draft.canFinish).toBe(true);
 
-		// Act
-		const result = await finish(
-			draft,
-			preview(draft),
-			vi.fn(async () => [
-				{ deviceId: "device-a", fingerprint: "key-a", displayName: "Laptop", enabled: true },
-				{ deviceId: "device-b", fingerprint: "key-b", displayName: "Desktop", enabled: false },
-			]),
-		);
+			// Act
+			const result = await finish(
+				draft,
+				preview(draft),
+				vi.fn(async () => [
+					{ deviceId: "device-a", fingerprint: "key-a", displayName: "Laptop", enabled: true },
+					{ deviceId: "device-b", fingerprint: "key-b", displayName: "Desktop", enabled: false },
+				]),
+			);
 
-		// Assert: the invite decision settles to the non-granting resolved
-		// state instead of blocking Ready forever or being revoked outright.
-		expect(result).toMatchObject({ status: "completed" });
-		expect(
-			db
-				.prepare(
-					`SELECT decision, provenance FROM policy_team_device_decisions
+			// Assert: the invite decision settles to the non-granting resolved
+			// state instead of blocking Ready forever or being revoked outright.
+			expect(result).toMatchObject({ status: "completed" });
+			expect(
+				db
+					.prepare(
+						`SELECT decision, provenance FROM policy_team_device_decisions
 					 WHERE team_id = ? AND device_id = 'device-b'`,
-				)
-				.get(teamId),
-		).toEqual({ decision: "excluded", provenance: "coordinator_invite" });
-	});
+					)
+					.get(teamId),
+			).toEqual({ decision: "excluded", provenance: "coordinator_invite" });
+		},
+	);
 
 	it("settles an unresolved invite decision when its device drops out of the roster", async () => {
 		// Arrange: an invite-owned unresolved decision for a device the

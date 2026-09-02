@@ -1336,46 +1336,46 @@ describe("legacy Team candidate discovery", () => {
 		);
 	});
 
-	it.each([
-		"/",
-		null,
-	])("reconciles non-root edges without restoring a retired root resolved as %s", (rootResolution) => {
-		const completion = completeCandidate();
-		db.prepare(
-			"UPDATE policy_teams SET provenance = 'legacy_team_candidate' WHERE team_id = ?",
-		).run(completion.teamId);
-		db.prepare(
-			`INSERT INTO legacy_team_setup_draft_projects(
+	it.each(["/", null])(
+		"reconciles non-root edges without restoring a retired root resolved as %s",
+		(rootResolution) => {
+			const completion = completeCandidate();
+			db.prepare(
+				"UPDATE policy_teams SET provenance = 'legacy_team_candidate' WHERE team_id = ?",
+			).run(completion.teamId);
+			db.prepare(
+				`INSERT INTO legacy_team_setup_draft_projects(
 				 attempt_id, project_ref, source_project_identity, display_name,
 				 source_fingerprint, resolution_kind, resolved_project_identity,
 				 target_scope_id, updated_at
 				 ) VALUES (?, '000-root', '/', 'Filesystem root', 'root-source',
 				 'explicit', ?, 'scope-api', ?)`,
-		).run(completion.attemptId, rootResolution, NOW);
-		db.prepare(
-			"DELETE FROM project_recipients WHERE canonical_project_identity = ? AND recipient_id = ?",
-		).run(PROJECT_ID, completion.teamId);
+			).run(completion.attemptId, rootResolution, NOW);
+			db.prepare(
+				"DELETE FROM project_recipients WHERE canonical_project_identity = ? AND recipient_id = ?",
+			).run(PROJECT_ID, completion.teamId);
 
-		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
-		expect(
-			db
-				.prepare(
-					`SELECT COUNT(*) FROM project_recipients
+			expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
+			expect(
+				db
+					.prepare(
+						`SELECT COUNT(*) FROM project_recipients
 						 WHERE canonical_project_identity = ? AND recipient_id = ? AND status = 'active'`,
-				)
-				.pluck()
-				.get(PROJECT_ID, completion.teamId),
-		).toBe(1);
-		expect(
-			db
-				.prepare(
-					`SELECT COUNT(*) FROM project_recipients
+					)
+					.pluck()
+					.get(PROJECT_ID, completion.teamId),
+			).toBe(1);
+			expect(
+				db
+					.prepare(
+						`SELECT COUNT(*) FROM project_recipients
 						 WHERE canonical_project_identity = '/' AND recipient_id = ?`,
-				)
-				.pluck()
-				.get(completion.teamId),
-		).toBe(0);
-	});
+					)
+					.pluck()
+					.get(completion.teamId),
+			).toBe(0);
+		},
+	);
 
 	it("keeps validating a retired root source resolved to a non-root Project", () => {
 		const completion = completeCandidate();

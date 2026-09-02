@@ -802,7 +802,9 @@ describe("recipient-focused Sharing", () => {
 		expect(attention?.textContent).toContain(
 			"does not grant Projects, Team membership, or sync access",
 		);
-		act(() => (attention?.querySelector("button") as HTMLButtonElement).click());
+		const reviewButton = attention?.querySelector<HTMLButtonElement>("button");
+		expect(reviewButton).toBeDefined();
+		act(() => reviewButton?.click());
 		expect(onReviewDevices).toHaveBeenCalledWith("device-setup");
 	});
 
@@ -820,7 +822,9 @@ describe("recipient-focused Sharing", () => {
 			"Coordinator groups are discovery boundaries, not policy Teams",
 		);
 		expect(attention?.textContent).not.toMatch(/fingerprint|group[_ -]?id|coordinator[_ -]?id/i);
-		act(() => (attention?.querySelector("button") as HTMLButtonElement).click());
+		const reviewButton = attention?.querySelector<HTMLButtonElement>("button");
+		expect(reviewButton).toBeDefined();
+		act(() => reviewButton?.click());
 		expect(onReviewDevices).toHaveBeenCalledOnce();
 	});
 

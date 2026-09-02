@@ -81,14 +81,12 @@ describe("embeddingDataToFloat32", () => {
 		expect(() => embeddingDataToFloat32(new BigInt64Array([1n]))).toThrow(TypeError);
 	});
 
-	it.each([
-		Number.NaN,
-		Number.POSITIVE_INFINITY,
-		Number.NEGATIVE_INFINITY,
-		Number.MAX_VALUE,
-	])("rejects non-finite or unrepresentable data: %s", (value) => {
-		expect(() => embeddingDataToFloat32([value])).toThrow(TypeError);
-	});
+	it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.MAX_VALUE])(
+		"rejects non-finite or unrepresentable data: %s",
+		(value) => {
+			expect(() => embeddingDataToFloat32([value])).toThrow(TypeError);
+		},
+	);
 });
 
 describe("serializeFloat32", () => {
