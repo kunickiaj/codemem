@@ -40,7 +40,7 @@ The viewer process and `codemem mcp http` process must run on different ports. O
 
 ## Prerequisites
 
-- Node.js 24.15+ and pnpm or `codemem` installed globally (`npm install -g codemem`).
+- Node.js 24.15+ and pnpm or both runtime packages installed globally (`npm install -g codemem @codemem/embeddings`). Omitting `@codemem/embeddings` intentionally limits retrieval to keyword search.
 - The host already runs codemem as a peer with the user's memories synced locally.
 - An HTTPS-terminating public ingress such as Tailscale Funnel, Cloudflare Tunnel, or a reverse proxy that preserves the configured Host header.
 - An upstream OIDC provider the operator already uses (Google, GitHub via OIDC bridge, Anthropic SSO if available). The OIDC client must allow the `<MCP base URL>/oauth/callback` redirect URI.

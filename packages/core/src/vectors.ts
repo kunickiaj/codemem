@@ -16,6 +16,7 @@ import {
 	chunkText,
 	embedTexts,
 	getEmbeddingClient,
+	getEmbeddingRuntimeStatus,
 	hashText,
 	resolveEmbeddingModel,
 	serializeFloat32,
@@ -376,6 +377,7 @@ function summarizeSemanticIndexState(
 	state: SemanticIndexState,
 	counts: { embeddable: number; indexed: number; pending: number },
 	job: ReturnType<typeof getMaintenanceJob>,
+	runtimeUnavailable: boolean,
 ): string {
 	if (state === "failed") {
 		return job?.error ?? job?.message ?? "Semantic-index catch-up failed";
@@ -383,6 +385,9 @@ function summarizeSemanticIndexState(
 	if (state === "degraded") {
 		if (isEmbeddingDisabled()) {
 			return "Embeddings are disabled; sync data is available in keyword-only mode";
+		}
+		if (runtimeUnavailable) {
+			return "The embedding runtime is unavailable; sync data is available in keyword-only mode";
 		}
 		return "Semantic-index coverage is unavailable; sync data is effectively running in keyword-only mode";
 	}
@@ -395,16 +400,39 @@ function summarizeSemanticIndexState(
 	return `Semantic index is current for ${counts.indexed} embeddable mem${counts.indexed === 1 ? "ory" : "ories"}`;
 }
 
-export function getSemanticIndexDiagnostics(
+function resolveSemanticIndexState(options: {
+	jobStatus: string | undefined;
+	degraded: boolean;
+	pendingMemoryCount: number;
+}): SemanticIndexState {
+	if (options.jobStatus === "failed") return "failed";
+	if (options.jobStatus === "pending" || options.jobStatus === "running") return "pending";
+	if (options.degraded) return "degraded";
+	if (options.pendingMemoryCount > 0) return "pending";
+	return "healthy";
+}
+
+function resolveSemanticRuntime(
 	db: Database,
-	options: SemanticIndexDiagnosticsOptions = {},
-): SemanticIndexDiagnostics {
-	const fastCounts = options.fastCounts !== false;
-	const currentModel = traceSemanticDiag("resolveEmbeddingModel", () => resolveEmbeddingModel());
+	currentModel: string,
+): {
+	semanticSearchModel: string | null;
+	embeddingsDisabled: boolean;
+	runtimeUnavailable: boolean;
+} {
 	const semanticSearchModel = traceSemanticDiag("resolveSemanticSearchModel", () =>
 		resolveSemanticSearchModel(db, currentModel),
 	);
 	const embeddingsDisabled = traceSemanticDiag("isEmbeddingDisabled", () => isEmbeddingDisabled());
+	const runtimeUnavailable = getEmbeddingRuntimeStatus().state === "unavailable";
+	return { semanticSearchModel, embeddingsDisabled, runtimeUnavailable };
+}
+
+function collectSemanticIndexCounts(
+	db: Database,
+	currentModel: string,
+	fastCounts: boolean,
+): { embeddableMemoryCount: number; indexedMemoryCount: number } {
 	const embeddableMemoryCount = traceSemanticDiag("countEmbeddableActiveMemories", () =>
 		countEmbeddableActiveMemories(db),
 	);
@@ -415,23 +443,37 @@ export function getSemanticIndexDiagnostics(
 				? countIndexedActiveMemoriesFast(db, currentModel)
 				: countIndexedActiveMemories(db, currentModel),
 	);
+	return { embeddableMemoryCount, indexedMemoryCount };
+}
+
+export function getSemanticIndexDiagnostics(
+	db: Database,
+	options: SemanticIndexDiagnosticsOptions = {},
+): SemanticIndexDiagnostics {
+	const fastCounts = options.fastCounts !== false;
+	const currentModel = traceSemanticDiag("resolveEmbeddingModel", () => resolveEmbeddingModel());
+	const { semanticSearchModel, embeddingsDisabled, runtimeUnavailable } = resolveSemanticRuntime(
+		db,
+		currentModel,
+	);
+	const { embeddableMemoryCount, indexedMemoryCount } = collectSemanticIndexCounts(
+		db,
+		currentModel,
+		fastCounts,
+	);
 	const fallbackPendingCount = Math.max(embeddableMemoryCount - indexedMemoryCount, 0);
 	const job = traceSemanticDiag("getMaintenanceJob", () =>
 		getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB),
 	);
 	const pendingMemoryCount = resolvePendingMemoryCount(fallbackPendingCount, job);
-	const degraded = embeddableMemoryCount > 0 && (embeddingsDisabled || semanticSearchModel == null);
-	const activeCatchUp = job?.status === "pending" || job?.status === "running";
-	const state: SemanticIndexState =
-		job?.status === "failed"
-			? "failed"
-			: activeCatchUp
-				? "pending"
-				: degraded
-					? "degraded"
-					: pendingMemoryCount > 0
-						? "pending"
-						: "healthy";
+	const degraded =
+		embeddableMemoryCount > 0 &&
+		(embeddingsDisabled || runtimeUnavailable || semanticSearchModel == null);
+	const state = resolveSemanticIndexState({
+		jobStatus: job?.status,
+		degraded,
+		pendingMemoryCount,
+	});
 
 	return {
 		state,
@@ -443,8 +485,12 @@ export function getSemanticIndexDiagnostics(
 				pending: pendingMemoryCount,
 			},
 			job,
+			runtimeUnavailable,
 		),
-		mode: embeddingsDisabled || !semanticSearchModel ? "keyword_only" : "semantic",
+		mode:
+			embeddingsDisabled || runtimeUnavailable || !semanticSearchModel
+				? "keyword_only"
+				: "semantic",
 		current_model: currentModel,
 		semantic_search_model: semanticSearchModel,
 		embeddable_memory_count: embeddableMemoryCount,

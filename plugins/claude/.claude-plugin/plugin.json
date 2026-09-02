@@ -12,6 +12,10 @@
       "command": "npx",
       "args": [
         "-y",
+        "--package",
+        "codemem",
+        "--package",
+        "@codemem/embeddings",
         "codemem",
         "mcp"
       ]

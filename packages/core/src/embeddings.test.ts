@@ -7,6 +7,15 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { createEmbeddingRuntimeMock } = vi.hoisted(() => ({
+	createEmbeddingRuntimeMock: vi.fn(),
+}));
+
+vi.mock("@codemem/embeddings", () => ({
+	createEmbeddingRuntime: createEmbeddingRuntimeMock,
+}));
+
 import {
 	_resetEmbeddingRuntimeFactory,
 	_setEmbeddingRuntimeFactory,
@@ -15,6 +24,7 @@ import {
 	embeddingTensorToFloat32Rows,
 	embedTextBatches,
 	getEmbeddingClient,
+	getEmbeddingRuntimeStatus,
 	hashText,
 	resolveEmbeddingModel,
 	serializeFloat32,
@@ -29,12 +39,25 @@ describe("embedding runtime factory", () => {
 
 	beforeEach(() => {
 		delete process.env.CODEMEM_EMBEDDING_DISABLED;
+		createEmbeddingRuntimeMock.mockReset();
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		_resetEmbeddingRuntimeFactory();
 		if (originalEmbeddingDisabled === undefined) delete process.env.CODEMEM_EMBEDDING_DISABLED;
 		else process.env.CODEMEM_EMBEDDING_DISABLED = originalEmbeddingDisabled;
+	});
+
+	it("delegates the resolved model request to the optional runtime without loading a model", async () => {
+		const client = fakeClient(resolveEmbeddingModel());
+		createEmbeddingRuntimeMock.mockResolvedValue(client);
+
+		await expect(getEmbeddingClient()).resolves.toBe(client);
+		expect(createEmbeddingRuntimeMock).toHaveBeenCalledWith({
+			model: resolveEmbeddingModel(),
+		});
+		expect(client.embed).not.toHaveBeenCalled();
 	});
 
 	it("receives the resolved model request", async () => {
@@ -104,12 +127,23 @@ describe("embedding runtime factory", () => {
 	});
 
 	it("returns null when the factory fails", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const factory = vi.fn(async () => {
 			throw new Error("runtime unavailable");
 		});
 		_setEmbeddingRuntimeFactory(factory);
 
 		await expect(getEmbeddingClient()).resolves.toBeNull();
+		await expect(getEmbeddingClient()).resolves.toBeNull();
+		expect(getEmbeddingRuntimeStatus()).toEqual({
+			state: "unavailable",
+			reason: "initialization_failed",
+		});
+		expect(factory).toHaveBeenCalledOnce();
+		expect(warn).toHaveBeenCalledOnce();
+		expect(warn).toHaveBeenCalledWith(
+			"Semantic search is unavailable because the embedding runtime failed: runtime unavailable",
+		);
 	});
 
 	it("does not call the factory when embeddings are disabled", async () => {
@@ -118,7 +152,16 @@ describe("embedding runtime factory", () => {
 		_setEmbeddingRuntimeFactory(factory);
 
 		await expect(getEmbeddingClient()).resolves.toBeNull();
+		expect(getEmbeddingRuntimeStatus()).toEqual({ state: "disabled" });
 		expect(factory).not.toHaveBeenCalled();
+	});
+
+	it("records an empty factory result as unavailable", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		_setEmbeddingRuntimeFactory(vi.fn(async () => null));
+
+		await expect(getEmbeddingClient()).resolves.toBeNull();
+		expect(getEmbeddingRuntimeStatus()).toEqual({ state: "unavailable", reason: "no_client" });
 	});
 
 	it("clears the cached client when the runtime factory resets", async () => {
@@ -126,6 +169,7 @@ describe("embedding runtime factory", () => {
 		expect((await getEmbeddingClient())?.model).toBe("first");
 
 		_resetEmbeddingRuntimeFactory();
+		expect(getEmbeddingRuntimeStatus()).toEqual({ state: "uninitialized" });
 		const replacement = vi.fn(async () => fakeClient("second"));
 		_setEmbeddingRuntimeFactory(replacement);
 

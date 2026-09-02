@@ -3180,7 +3180,7 @@ describe("viewer-server", () => {
 			stale: false,
 			install_kind: "npm-global",
 			auto_update_eligible: false,
-			recommended_action: "npm install -g codemem@0.41.0",
+			recommended_action: "npm install -g codemem@0.41.0 @codemem/embeddings@0.41.0",
 			error: null,
 		};
 

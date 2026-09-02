@@ -5,9 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	buildCodememCodexHookGroups,
 	codememCodexHookBase,
+	codememMcpLauncher,
 	codexConfigDir,
 	installCodex,
 	isTransientNpxBinPath,
+	migrateLegacyClaudeMcp,
+	migrateLegacyOpencodeMcp,
 	setupCommand,
 } from "./setup.js";
 
@@ -71,9 +74,12 @@ describe("installCodex — fresh CODEX_HOME", () => {
 		expect(installCodex(false)).toBe(true);
 
 		const toml = readConfigToml();
+		const launcher = codememMcpLauncher();
 		expect(toml).toContain("[mcp_servers.codemem]");
-		expect(toml).toContain('command = "npx"');
-		expect(toml).toContain('args = ["-y", "codemem", "mcp"]');
+		expect(toml).toContain(`command = ${JSON.stringify(launcher.command)}`);
+		expect(toml).toContain(
+			`args = [${launcher.args.map((arg) => JSON.stringify(arg)).join(", ")}]`,
+		);
 		expect(toml).toContain("startup_timeout_sec = 30");
 		expect(toml).toContain("tool_timeout_sec = 60");
 
@@ -132,6 +138,149 @@ describe("installCodex — fresh CODEX_HOME", () => {
 	});
 });
 
+describe("codememMcpLauncher", () => {
+	it("uses the durable global binary so optional sibling packages resolve", () => {
+		expect(codememMcpLauncher(true)).toEqual({ command: "codemem", args: ["mcp"] });
+	});
+
+	it("requests both runtime packages when falling back to npx", () => {
+		expect(codememMcpLauncher(false)).toEqual({
+			command: "npx",
+			args: ["-y", "--package", "codemem", "--package", "@codemem/embeddings", "codemem", "mcp"],
+		});
+	});
+});
+
+describe("managed single-package MCP launcher migration", () => {
+	it("upgrades exact OpenCode and Claude npx launchers while preserving fields", () => {
+		const opencode = {
+			mcp: {
+				codemem: {
+					type: "local",
+					command: ["npx", "-y", "codemem", "mcp"],
+					enabled: false,
+				},
+			},
+		};
+		const claude = {
+			mcpServers: {
+				codemem: {
+					command: "npx",
+					args: ["-y", "codemem", "mcp"],
+					env: { CODEMEM_DB_PATH: "/tmp/example.sqlite" },
+				},
+			},
+		};
+
+		expect(migrateLegacyOpencodeMcp(opencode)).toBe(true);
+		expect(migrateLegacyClaudeMcp(claude)).toBe(true);
+		const launcher = codememMcpLauncher();
+		expect(opencode.mcp.codemem).toEqual({
+			type: "local",
+			command: [launcher.command, ...launcher.args],
+			enabled: false,
+		});
+		expect(claude.mcpServers.codemem).toEqual({
+			command: launcher.command,
+			args: launcher.args,
+			env: { CODEMEM_DB_PATH: "/tmp/example.sqlite" },
+		});
+	});
+
+	it("upgrades the older OpenCode launcher emitted without -y", () => {
+		const opencode = {
+			mcp: { codemem: { type: "local", command: ["npx", "codemem", "mcp"], enabled: true } },
+		};
+
+		expect(migrateLegacyOpencodeMcp(opencode)).toBe(true);
+		const launcher = codememMcpLauncher();
+		expect(opencode.mcp.codemem).toEqual({
+			type: "local",
+			command: [launcher.command, ...launcher.args],
+			enabled: true,
+		});
+	});
+
+	it("leaves custom npx launchers unchanged", () => {
+		const opencode = {
+			mcp: { codemem: { command: ["npx", "-y", "codemem@next", "mcp"] } },
+		};
+		const claude = {
+			mcpServers: { codemem: { command: "npx", args: ["-y", "codemem", "custom"] } },
+		};
+
+		expect(migrateLegacyOpencodeMcp(opencode)).toBe(false);
+		expect(migrateLegacyClaudeMcp(claude)).toBe(false);
+		expect(opencode.mcp.codemem.command).toEqual(["npx", "-y", "codemem@next", "mcp"]);
+		expect(claude.mcpServers.codemem.args).toEqual(["-y", "codemem", "custom"]);
+	});
+});
+
+describe("installCodex — hook migration", () => {
+	it("preserves an unrelated user hook sharing a group during migration", () => {
+		// Old single-package codemem command AND an unrelated user command in the
+		// same SessionStart group. A non-force rerun should migrate the codemem
+		// command but keep the user's hook.
+		const legacy = {
+			hooks: {
+				SessionStart: [
+					{
+						hooks: [
+							{
+								type: "command",
+								command: "npx -y codemem codex-hook-ingest",
+								timeout: 30,
+								statusMessage: "codemem",
+							},
+							{ type: "command", command: "echo user-shared", timeout: 5, statusMessage: "user" },
+						],
+					},
+				],
+			},
+		};
+		writeFileSync(join(codexHome, "hooks.json"), `${JSON.stringify(legacy, null, 2)}\n`, "utf-8");
+
+		expect(installCodex(false)).toBe(true);
+
+		const commands = groupsFor(readHooks(), "SessionStart").flatMap((g) =>
+			g.hooks.map((h) => h.command),
+		);
+		expect(commands).toContain("echo user-shared");
+		expect(commands).not.toContain("npx -y codemem codex-hook-ingest");
+		expect(commands).toContain(INGEST_CMD);
+	});
+
+	it("upgrades a previously generated single-package npx hook on a non-force rerun", () => {
+		// Simulate hooks written by an earlier release: managed codemem commands
+		// using the old single-package `npx -y codemem` base.
+		const legacy = {
+			hooks: {
+				SessionStart: [
+					{
+						hooks: [
+							{
+								type: "command",
+								command: "npx -y codemem codex-hook-ingest",
+								timeout: 30,
+								statusMessage: "codemem",
+							},
+						],
+					},
+				],
+			},
+		};
+		writeFileSync(join(codexHome, "hooks.json"), `${JSON.stringify(legacy, null, 2)}\n`, "utf-8");
+
+		expect(installCodex(false)).toBe(true);
+
+		const hooks = readHooks();
+		const commands = groupsFor(hooks, "SessionStart").flatMap((g) => g.hooks.map((h) => h.command));
+		// The stale single-package command is gone; the current base is installed.
+		expect(commands).not.toContain("npx -y codemem codex-hook-ingest");
+		expect(commands).toContain(INGEST_CMD);
+	});
+});
+
 describe("installCodex — idempotency", () => {
 	it("does not duplicate the MCP block or hook entries on re-run", () => {
 		expect(installCodex(false)).toBe(true);
@@ -163,6 +312,46 @@ describe("installCodex — idempotency", () => {
 });
 
 describe("installCodex — non-destructive merge", () => {
+	it("upgrades the exact managed npx launcher and preserves unrelated TOML", () => {
+		const original = [
+			"# my codex config",
+			"[mcp_servers.codemem]",
+			'command = "npx"',
+			'args = ["-y", "codemem", "mcp"]',
+			"startup_timeout_sec = 30",
+			"",
+			"[mcp_servers.other]",
+			'command = "other-cmd"',
+			"",
+		].join("\n");
+		writeFileSync(join(codexHome, "config.toml"), original, "utf-8");
+
+		expect(installCodex(false)).toBe(true);
+
+		const launcher = codememMcpLauncher();
+		const toml = readConfigToml();
+		expect(toml).toContain(`command = ${JSON.stringify(launcher.command)}`);
+		expect(toml).toContain(
+			`args = [${launcher.args.map((arg) => JSON.stringify(arg)).join(", ")}]`,
+		);
+		expect(toml).toContain("# my codex config");
+		expect(toml).toContain('[mcp_servers.other]\ncommand = "other-cmd"');
+		expect(readFileSync(join(codexHome, "config.toml.codemem.bak"), "utf-8")).toBe(original);
+	});
+
+	it("does not rewrite a custom Codex npx launcher", () => {
+		const original = [
+			"[mcp_servers.codemem]",
+			'command = "npx"',
+			'args = ["-y", "codemem@next", "mcp"]',
+			"",
+		].join("\n");
+		writeFileSync(join(codexHome, "config.toml"), original, "utf-8");
+
+		expect(installCodex(false)).toBe(true);
+		expect(readConfigToml()).toBe(original);
+	});
+
 	it("preserves unrelated config.toml content (comments + other MCP servers)", () => {
 		const original = [
 			"# my codex config",
@@ -240,9 +429,13 @@ describe("installCodex — non-destructive merge", () => {
 });
 
 describe("isTransientNpxBinPath", () => {
-	it("flags npx/dlx cache bins so they are not baked into hooks", () => {
+	it("flags npx/dlx cache and project-local bins so they are not baked into hooks", () => {
 		expect(isTransientNpxBinPath("/Users/x/.npm/_npx/abc123/node_modules/.bin/codemem")).toBe(true);
 		expect(isTransientNpxBinPath("/tmp/.pnpm/dlx/abc/node_modules/.bin/codemem")).toBe(true);
+		// A project-local install (npm exec / pnpm exec / package script) that the
+		// global MCP hosts will not inherit on PATH.
+		expect(isTransientNpxBinPath("/home/dev/my-project/node_modules/.bin/codemem")).toBe(true);
+		expect(isTransientNpxBinPath("C:\\dev\\proj\\node_modules\\.bin\\codemem.cmd")).toBe(true);
 	});
 
 	it("treats durable global/managed bins as on-PATH", () => {
@@ -297,6 +490,18 @@ describe("buildCodememCodexHookGroups — command base", () => {
 			statusMessage: "codemem recall",
 		});
 		expect(groups.Stop?.[0]?.hooks?.[0]?.command).toBe("npx -y codemem codex-hook-ingest");
+	});
+
+	it("pairs the embedding runtime in the npx hook fallback base", () => {
+		// When codemem is not on PATH, the fallback base must request both
+		// packages so the local-store inject path can embed instead of degrading
+		// to FTS. codememCodexHookBase resolves to this string in that case.
+		const base = "npx -y --package codemem --package @codemem/embeddings codemem";
+		const groups = buildCodememCodexHookGroups(base);
+		expect(groups.SessionStart?.[0]?.hooks?.[0]?.command).toBe(`${base} codex-hook-ingest`);
+		expect(groups.UserPromptSubmit?.[0]?.hooks?.[1]?.command).toBe(`${base} codex-hook-inject`);
+		// Still treated as the npx (cold-resolve) path with generous timeouts.
+		expect(groups.SessionStart?.[0]?.hooks?.[0]?.timeout).toBe(30);
 	});
 });
 

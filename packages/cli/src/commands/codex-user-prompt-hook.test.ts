@@ -336,7 +336,15 @@ describe("dependency-free Codex user prompt hook", () => {
 			},
 			{
 				command: "npx",
-				args: ["-y", expect.stringMatching(/^codemem@\d+\.\d+\.\d+$/), "codex-hook-inject"],
+				args: [
+					"-y",
+					"--package",
+					expect.stringMatching(/^codemem@\d+\.\d+\.\d+$/),
+					"--package",
+					expect.stringMatching(/^@codemem\/embeddings@\d+\.\d+\.\d+$/),
+					"codemem",
+					"codex-hook-inject",
+				],
 				localPackOnly: "1",
 				timeout: 800,
 			},

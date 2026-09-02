@@ -64,33 +64,44 @@ function migrateLegacyOpencodePlugin(): void {
 	}
 }
 
-/** Detect and upgrade legacy uvx/uv-based MCP entries in OpenCode config. */
-function migrateLegacyOpencodeMcp(config: Record<string, unknown>): boolean {
+function isExactStringArray(value: unknown, expected: string[]): boolean {
+	return (
+		Array.isArray(value) &&
+		value.length === expected.length &&
+		value.every((entry, index) => entry === expected[index])
+	);
+}
+
+/** Detect and upgrade legacy uvx/uv or managed single-package MCP entries in OpenCode config. */
+export function migrateLegacyOpencodeMcp(config: Record<string, unknown>): boolean {
 	const mcpConfig = config.mcp as Record<string, unknown> | undefined;
 	if (!mcpConfig || typeof mcpConfig !== "object") return false;
 	const entry = mcpConfig.codemem as Record<string, unknown> | undefined;
 	if (!entry || typeof entry !== "object") return false;
 
 	const command = entry.command;
-	const isLegacy =
+	const isLegacyUv =
 		(Array.isArray(command) &&
 			command.some((arg) => typeof arg === "string" && (arg === "uvx" || arg === "uv"))) ||
 		(typeof command === "string" && (command === "uvx" || command === "uv"));
+	const isManagedSinglePackageNpx =
+		isExactStringArray(command, ["npx", "-y", "codemem", "mcp"]) ||
+		isExactStringArray(command, ["npx", "codemem", "mcp"]);
 
-	if (isLegacy) {
-		p.log.step("Upgrading legacy uvx MCP entry to npx");
+	if (isLegacyUv || isManagedSinglePackageNpx) {
+		p.log.step("Upgrading managed MCP entry to the current npm launcher");
+		const launcher = codememMcpLauncher();
 		mcpConfig.codemem = {
-			type: "local",
-			command: ["npx", "codemem", "mcp"],
-			enabled: true,
+			...entry,
+			command: [launcher.command, ...launcher.args],
 		};
 		return true;
 	}
 	return false;
 }
 
-/** Detect and upgrade legacy uvx-based MCP entries in Claude settings. */
-function migrateLegacyClaudeMcp(settings: Record<string, unknown>): boolean {
+/** Detect and upgrade legacy uvx or managed single-package MCP entries in Claude settings. */
+export function migrateLegacyClaudeMcp(settings: Record<string, unknown>): boolean {
 	const mcpServers = settings.mcpServers as Record<string, unknown> | undefined;
 	if (!mcpServers || typeof mcpServers !== "object") return false;
 	const entry = mcpServers.codemem as Record<string, unknown> | undefined;
@@ -98,18 +109,22 @@ function migrateLegacyClaudeMcp(settings: Record<string, unknown>): boolean {
 
 	const command = entry.command;
 	const args = entry.args;
-	const isLegacy =
+	const isLegacyUv =
 		(typeof command === "string" && (command === "uvx" || command === "uv")) ||
 		(Array.isArray(args) &&
 			args.some(
 				(arg) => typeof arg === "string" && (arg.startsWith("codemem==") || arg === "uvx"),
 			));
+	const isManagedSinglePackageNpx =
+		command === "npx" && isExactStringArray(args, ["-y", "codemem", "mcp"]);
 
-	if (isLegacy) {
-		p.log.step("Upgrading legacy uvx Claude MCP entry to npx");
+	if (isLegacyUv || isManagedSinglePackageNpx) {
+		p.log.step("Upgrading managed Claude MCP entry to the current npm launcher");
+		const launcher = codememMcpLauncher();
 		mcpServers.codemem = {
-			command: "npx",
-			args: ["-y", "codemem", "mcp"],
+			...entry,
+			command: launcher.command,
+			args: launcher.args,
 		};
 		return true;
 	}
@@ -209,9 +224,10 @@ function installMcp(force: boolean): boolean {
 	}
 
 	if (!migrated) {
+		const launcher = codememMcpLauncher();
 		mcpConfig.codemem = {
 			type: "local",
-			command: ["npx", "codemem", "mcp"],
+			command: [launcher.command, ...launcher.args],
 			enabled: true,
 		};
 		config.mcp = mcpConfig;
@@ -262,9 +278,10 @@ function installClaudeMcp(force: boolean): boolean {
 		p.log.info(`Claude MCP entry already exists in ${settingsPath}`);
 	} else {
 		if (!migrated) {
+			const launcher = codememMcpLauncher();
 			mcpServers.codemem = {
-				command: "npx",
-				args: ["-y", "codemem", "mcp"],
+				command: launcher.command,
+				args: launcher.args,
 			};
 			settings.mcpServers = mcpServers;
 		}
@@ -300,19 +317,45 @@ function installClaudeMcp(force: boolean): boolean {
 // ---------------------------------------------------------------------------
 
 /** The MCP server table appended to Codex config.toml. */
-const CODEX_MCP_BLOCK = [
-	"[mcp_servers.codemem]",
-	'command = "npx"',
-	'args = ["-y", "codemem", "mcp"]',
-	"startup_timeout_sec = 30",
-	"tool_timeout_sec = 60",
-].join("\n");
+function codexMcpBlock(): string {
+	const launcher = codememMcpLauncher();
+	const args = launcher.args.map((arg) => JSON.stringify(arg)).join(", ");
+	return [
+		"[mcp_servers.codemem]",
+		`command = ${JSON.stringify(launcher.command)}`,
+		`args = [${args}]`,
+		"startup_timeout_sec = 30",
+		"tool_timeout_sec = 60",
+	].join("\n");
+}
 
 // Detect an existing codemem MCP table in config.toml text. Tolerates TOML
 // whitespace around brackets/dots and a quoted key, and avoids false-matching
 // sibling tables like `[mcp_servers.codemem-foo]` (the optional quote is matched
 // symmetrically via the backreference, so `codemem` must be followed by `]`).
 const CODEX_MCP_TABLE_RE = /^[ \t]*\[[ \t]*mcp_servers[ \t]*\.[ \t]*("?)codemem\1[ \t]*\]/m;
+
+function migrateManagedCodexMcp(existing: string): string | null {
+	const tableMatch = CODEX_MCP_TABLE_RE.exec(existing);
+	if (!tableMatch || tableMatch.index == null) return null;
+	const blockStart = tableMatch.index;
+	const nextTable = /^[ \t]*\[/gm;
+	nextTable.lastIndex = blockStart + tableMatch[0].length;
+	const nextMatch = nextTable.exec(existing);
+	const blockEnd = nextMatch?.index ?? existing.length;
+	const block = existing.slice(blockStart, blockEnd);
+	const commandPattern = /^([ \t]*command[ \t]*=[ \t]*)"npx"([ \t]*(?:#.*)?)$/m;
+	const argsPattern =
+		/^([ \t]*args[ \t]*=[ \t]*)\[[ \t]*"-y"[ \t]*,[ \t]*"codemem"[ \t]*,[ \t]*"mcp"[ \t]*\]([ \t]*(?:#.*)?)$/m;
+	if (!commandPattern.test(block) || !argsPattern.test(block)) return null;
+
+	const launcher = codememMcpLauncher();
+	const args = launcher.args.map((arg) => JSON.stringify(arg)).join(", ");
+	const migrated = block
+		.replace(commandPattern, `$1${JSON.stringify(launcher.command)}$2`)
+		.replace(argsPattern, `$1[${args}]$2`);
+	return `${existing.slice(0, blockStart)}${migrated}${existing.slice(blockEnd)}`;
+}
 
 /** A single Codex command-hook entry. */
 interface CodexHookCommand {
@@ -332,13 +375,15 @@ const CODEMEM_HOOK_MARKER = "codemem codex-hook-";
 
 /**
  * Resolve how Codex hooks should invoke codemem. Prefer a direct `codemem` call
- * when it's on PATH (fast — no per-hook resolution); fall back to `npx -y codemem`
- * only when codemem isn't installed (e.g. setup was run via `npx codemem setup`),
- * so capture/recall still work without a global install. Mirrors the plugin
- * wrapper's `codemem`-first / `npx` fallback model.
+ * when it's on PATH (fast — no per-hook resolution); fall back to an `npx`
+ * invocation that requests both `codemem` and `@codemem/embeddings` when codemem
+ * isn't installed (e.g. setup was run via `npx codemem setup`). The paired
+ * runtime keeps the local-store inject path (codex-hook-inject) able to embed
+ * instead of degrading to FTS. Mirrors the MCP launcher's two-package model.
  */
 export function codememCodexHookBase(): string {
-	return codememOnPath() ? "codemem" : "npx -y codemem";
+	if (codememOnPath(true)) return "codemem";
+	return "npx -y --package codemem --package @codemem/embeddings codemem";
 }
 
 /**
@@ -396,33 +441,127 @@ function isCodememHookGroup(group: unknown): boolean {
 }
 
 /**
- * True if a resolved bin path is a transient npx/dlx cache bin. When setup runs
- * via `npx -y codemem setup --codex-only`, npx exposes this package's bin on PATH for
- * the duration of the run, then removes it — so Codex would later fail to find a
- * bare `codemem`. Such paths must NOT count as "on PATH" for hook command baking.
+ * True if a resolved bin path is a transient/project-local bin that will not be
+ * on PATH for the globally-configured MCP hosts (OpenCode/Claude/Codex).
+ *
+ * - `_npx` / `.pnpm/dlx`: npx/dlx caches exposed only for the duration of a
+ *   `npx -y codemem setup` run, then removed.
+ * - `node_modules/.bin`: a project-local install exposed only while setup runs
+ *   through `npm exec` / `pnpm exec` / a package script. The global hosts do not
+ *   inherit that project-local PATH, so baking a bare `codemem` command would
+ *   later fail to resolve.
+ *
+ * Such paths must NOT count as "on PATH" for launcher/hook command baking.
  */
 export function isTransientNpxBinPath(resolved: string): boolean {
-	return /[/\\]_npx[/\\]/.test(resolved) || /[/\\]\.pnpm[/\\]dlx[/\\]/.test(resolved);
+	return (
+		/[/\\]_npx[/\\]/.test(resolved) ||
+		/[/\\]\.pnpm[/\\]dlx[/\\]/.test(resolved) ||
+		/[/\\]node_modules[/\\]\.bin[/\\]/.test(resolved)
+	);
+}
+
+/** Parse a semver core (major.minor.patch) plus optional prerelease tail. */
+function parseSetupSemver(
+	version: string,
+): { core: [number, number, number]; prerelease: boolean } | null {
+	const match = /^(\d+)\.(\d+)\.(\d+)(?:-.+)?$/.exec(version.trim());
+	if (!match) return null;
+	return {
+		core: [Number(match[1]), Number(match[2]), Number(match[3])],
+		prerelease: version.includes("-"),
+	};
+}
+
+/**
+ * True when a durable `codemem --version` output should be trusted to launch
+ * `codemem mcp` directly. Mirrors the OpenCode plugin's runner check: accept the
+ * exact build version, or a clean (non-prerelease) release at least as new as
+ * this build. This prevents baking a bare launcher that later resolves to an
+ * older global install sitting alongside the transient npx bin.
+ */
+function isDurableCodememVersionTrusted(versionOutput: string): boolean {
+	if (versionOutput === VERSION) return true;
+	const candidate = parseSetupSemver(versionOutput);
+	const current = parseSetupSemver(VERSION);
+	if (!candidate || !current || candidate.prerelease) return false;
+	for (let i = 0; i < 3; i++) {
+		const c = candidate.core[i] ?? 0;
+		const v = current.core[i] ?? 0;
+		if (c > v) return true;
+		if (c < v) return false;
+	}
+	return true;
 }
 
 /**
  * Detect whether a durable `codemem` resolves on PATH (excluding a transient
- * npx/dlx bin that vanishes after this process exits).
+ * npx/dlx bin that vanishes after this process exits). When `requireTrustedVersion`
+ * is set, the durable binary must also report a version compatible with this
+ * build before it is trusted, so setup never bakes a bare launcher that resolves
+ * to a stale global install.
  */
-function codememOnPath(): boolean {
+function codememOnPath(requireTrustedVersion = false): boolean {
 	try {
-		const out = execFileSync(process.platform === "win32" ? "where" : "which", ["codemem"], {
-			encoding: "utf-8",
-		});
-		const resolved = out
+		const command = process.platform === "win32" ? "where" : "which";
+		const args = process.platform === "win32" ? ["codemem"] : ["-a", "codemem"];
+		const out = execFileSync(command, args, { encoding: "utf-8" });
+		const durable = out
 			.split(/\r?\n/)
 			.map((line) => line.trim())
-			.find(Boolean);
-		if (!resolved) return false;
-		return !isTransientNpxBinPath(resolved);
+			.filter(Boolean)
+			.filter((candidate) => !isTransientNpxBinPath(candidate));
+		if (durable.length === 0) return false;
+		if (!requireTrustedVersion) return true;
+		// Validate only the FIRST durable candidate: once the transient npx bin
+		// disappears, shell resolution runs that binary, so a later trusted
+		// install must not authorize baking a bare launcher that would instead
+		// execute an earlier, stale durable install.
+		const [firstDurable] = durable;
+		if (firstDurable == null) return false;
+		const version = probeDurableCodememVersion(firstDurable);
+		return version != null && isDurableCodememVersionTrusted(version);
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * Run `<binary> --version`, returning trimmed stdout or null on failure. On
+ * Windows a global npm install resolves to a `.cmd`/`.bat` shim that Node's
+ * shell-less execFileSync cannot execute directly, so invoke it through
+ * `cmd.exe /c` there; POSIX binaries run directly.
+ */
+function probeDurableCodememVersion(binaryPath: string): string | null {
+	try {
+		const output =
+			process.platform === "win32"
+				? execFileSync("cmd.exe", ["/c", binaryPath, "--version"], {
+						encoding: "utf-8",
+						timeout: 3000,
+						stdio: ["ignore", "pipe", "ignore"],
+					})
+				: execFileSync(binaryPath, ["--version"], {
+						encoding: "utf-8",
+						timeout: 3000,
+						stdio: ["ignore", "pipe", "ignore"],
+					});
+		return output.trim();
+	} catch {
+		return null;
+	}
+}
+
+export function codememMcpLauncher(onPath = codememOnPath(true)): {
+	command: string;
+	args: string[];
+} {
+	return onPath
+		? { command: "codemem", args: ["mcp"] }
+		: {
+				command: "npx",
+				args: ["-y", "--package", "codemem", "--package", "@codemem/embeddings", "codemem", "mcp"],
+			};
 }
 
 /**
@@ -434,6 +573,24 @@ function installCodexMcp(codexHome: string, force: boolean): boolean {
 	const existing = existsSync(configPath) ? readFileSync(configPath, "utf-8") : "";
 
 	if (CODEX_MCP_TABLE_RE.test(existing)) {
+		const migrated = migrateManagedCodexMcp(existing);
+		if (migrated != null) {
+			try {
+				copyFileSync(configPath, `${configPath}.codemem.bak`);
+			} catch {
+				// Non-fatal: continue without a backup rather than blocking migration.
+			}
+			try {
+				writeFileSync(configPath, migrated, "utf-8");
+				p.log.success(`Codex MCP entry upgraded: ${configPath}`);
+				return true;
+			} catch (err) {
+				p.log.error(
+					`Failed to write ${configPath}: ${err instanceof Error ? err.message : String(err)}`,
+				);
+				return false;
+			}
+		}
 		if (force) {
 			p.log.info(
 				`Codex MCP entry already exists in ${configPath} — left as-is (TOML is not rewritten in place)`,
@@ -457,7 +614,7 @@ function installCodexMcp(codexHome: string, force: boolean): boolean {
 	if (next.length > 0 && !next.endsWith("\n\n")) {
 		next += next.endsWith("\n") ? "\n" : "\n\n";
 	}
-	next += `${CODEX_MCP_BLOCK}\n`;
+	next += `${codexMcpBlock()}\n`;
 
 	try {
 		writeFileSync(configPath, next, "utf-8");
@@ -498,21 +655,67 @@ function installCodexHooks(codexHome: string, force: boolean): boolean {
 		hooks = {};
 	}
 
-	const ours = buildCodememCodexHookGroups(codememCodexHookBase());
+	const hookBase = codememCodexHookBase();
+	const ours = buildCodememCodexHookGroups(hookBase);
+	// The exact command strings the current base produces. A previously generated
+	// hook whose commands differ (e.g. an old single-package `npx -y codemem
+	// codex-hook-*` before the embedding-runtime split) must be migrated even on a
+	// non-force rerun, so compatibility fallback keeps semantic retrieval.
+	const currentCommands = new Set(
+		Object.values(ours).flatMap((groups) =>
+			groups.flatMap((group) => group.hooks.map((hook) => hook.command)),
+		),
+	);
+	const groupNeedsMigration = (group: unknown): boolean => {
+		if (!isCodememHookGroup(group)) return false;
+		const hooksList = (group as { hooks?: unknown }).hooks;
+		if (!Array.isArray(hooksList)) return false;
+		// Only inspect codemem-OWNED commands (marker-bearing). An unrelated user
+		// command sharing the group must not, by being absent from currentCommands,
+		// mark the whole group stale — that would drop the user's hook on a plain
+		// rerun. A codemem command that no longer matches the current base is stale.
+		return hooksList.some((hook) => {
+			if (hook == null || typeof hook !== "object") return false;
+			const command = (hook as { command?: unknown }).command;
+			if (typeof command !== "string") return false;
+			return command.includes(CODEMEM_HOOK_MARKER) && !currentCommands.has(command);
+		});
+	};
 	let changed = false;
+
+	const isCodememOwnedHook = (hook: unknown): boolean =>
+		hook != null &&
+		typeof hook === "object" &&
+		typeof (hook as { command?: unknown }).command === "string" &&
+		(hook as { command: string }).command.includes(CODEMEM_HOOK_MARKER);
+
+	// Remove codemem-owned commands from a group while preserving any unrelated
+	// user hooks. Returns null when the group has no non-codemem hooks left.
+	const stripCodememHooks = (group: unknown): unknown => {
+		if (!isCodememHookGroup(group)) return group;
+		const hooksList = (group as { hooks?: unknown }).hooks;
+		if (!Array.isArray(hooksList)) return null;
+		const preservedHooks = hooksList.filter((hook) => !isCodememOwnedHook(hook));
+		if (preservedHooks.length === 0) return null;
+		return { ...(group as Record<string, unknown>), hooks: preservedHooks };
+	};
 
 	for (const [event, ourGroups] of Object.entries(ours)) {
 		const current = hooks[event];
 		const existingGroups: unknown[] = Array.isArray(current) ? [...current] : [];
 		const hasCodemem = existingGroups.some(isCodememHookGroup);
+		const needsMigration = existingGroups.some(groupNeedsMigration);
 
-		if (hasCodemem && !force) {
-			// Already present — leave as-is (idempotent).
+		if (hasCodemem && !force && !needsMigration) {
+			// Already present with the current command base — leave as-is.
 			continue;
 		}
 
-		// Drop only codemem-owned groups; preserve unrelated user hooks.
-		const preserved = existingGroups.filter((g) => !isCodememHookGroup(g));
+		// Preserve unrelated user hooks, including any that share a group with a
+		// codemem command, then append our current codemem groups.
+		const preserved = existingGroups
+			.map((group) => stripCodememHooks(group))
+			.filter((group) => group != null);
 		hooks[event] = [...preserved, ...ourGroups];
 		changed = true;
 	}
@@ -563,11 +766,11 @@ export function installCodex(force: boolean): boolean {
 		return false;
 	}
 
-	if (codememOnPath()) {
+	if (codememOnPath(true)) {
 		p.log.info("Codex hooks will call `codemem` directly (found on PATH).");
 	} else {
 		p.log.info(
-			"`codemem` is not on PATH, so Codex hooks will run via `npx -y codemem` (works without a global install). For lower hook latency: npm i -g codemem",
+			"`codemem` is not on PATH, so Codex hooks will run through a paired `npx` launcher (works without a global install). For lower hook latency: npm install -g codemem @codemem/embeddings",
 		);
 	}
 

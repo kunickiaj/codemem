@@ -46,10 +46,10 @@ npx -y codemem db raw-events-status
 
 That's it. The plugin captures activity, builds memories, and injects context from here on.
 
-If you want `codemem` available directly on your `PATH` for manual commands, install the CLI globally:
+If you want `codemem` available directly on your `PATH` for manual commands and semantic retrieval, install the CLI and embedding runtime globally:
 
 ```text
-npm install -g codemem
+npm install -g codemem @codemem/embeddings
 ```
 
 OpenCode plugin and CLI are now split intentionally:
@@ -107,7 +107,7 @@ The Codex plugin bundles its MCP config (`codemem mcp`), hooks, and generated no
 npx -y codemem setup --codex-only
 ```
 
-This merges `[mcp_servers.codemem]` into `~/.codex/config.toml` and writes `~/.codex/hooks.json` (SessionStart, UserPromptSubmit, PostToolUse, Stop) — backing up existing files and preserving unrelated entries. Restart Codex and approve the one-time prompt to trust the codemem hooks. MCP recall works immediately. If `codemem` is on your `PATH` the hooks call it directly; otherwise they fall back to `npx -y codemem`. Honors `CODEX_HOME`; re-runnable (use `--force` to refresh).
+This merges `[mcp_servers.codemem]` into `~/.codex/config.toml` and writes `~/.codex/hooks.json` (SessionStart, UserPromptSubmit, PostToolUse, Stop) — backing up existing files and preserving unrelated entries. Restart Codex and approve the one-time prompt to trust the codemem hooks. MCP recall works immediately. If `codemem` is on your `PATH` the hooks call it directly; otherwise they use an `npx` launcher that requests both `codemem` and `@codemem/embeddings`. Honors `CODEX_HOME`; re-runnable (use `--force` to refresh).
 
 Codex hook ingestion shares the same raw-event pipeline as Claude and OpenCode through normalized `POST /api/raw-events`. After a retryable HTTP failure it writes the exact envelope to `~/.codemem/codex-raw-event-spool`, attempts the `codemem enqueue-raw-event` command fallbacks, and removes the spooled envelope only after success. That spool is separate from the legacy native-hook spool. `UserPromptSubmit` runs capture ingest in the background and injects memory context via `additionalContext`; disable injection with `CODEMEM_INJECT_CONTEXT=0`. See [docs/plugin-reference.md](docs/plugin-reference.md) for details and troubleshooting.
 
@@ -178,7 +178,8 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | | `codemem sync once` | Run one immediate sync pass |
 | | `codemem sync doctor` | Diagnose sync configuration issues |
 | | `codemem sync bootstrap` | Bootstrap sync from a peer snapshot |
-| **Updates** | `codemem update check` | Check the npm registry for a newer stable release (`--json` and `--refresh` supported) |
+| **Updates** | `codemem update install` | Install an eligible stable release from npm |
+| | `codemem update check` | Check the npm registry for a newer stable release (`--json` and `--refresh` supported) |
 | **Coordinator** | `codemem coordinator` | Self-hosted coordinator admin (groups, devices, invites) |
 | **Database** | `codemem db prune-memories` | Deactivate low-signal memories (`--dry-run` to preview) |
 | | `codemem db prune-observations` | Deactivate low-signal observations |
@@ -204,10 +205,14 @@ installation-specific guidance. Results are cached for six hours;
 pass `--refresh` to force a registry request or `--json` for one stable status object.
 The Viewer Health page reads the same status from `/api/update-status`. The OpenCode plugin
 checks it after startup and shows at most one best-effort notification for each newly discovered
-release. `notify` is the default. Explicit `auto` policy may run `codemem update install` only for
-a fresh, validated npm release observed for at least 24 hours and an installation whose npm origin
-can be proven. Pinned, prerelease, downgrade, repository-development, stale, Docker, and unknown
-installs refuse execution. Set `CODEMEM_BACKEND_UPDATE_POLICY=off` to disable release checks.
+release. `notify` is the default. `codemem update install` performs the explicit, fail-closed
+installation; bare `codemem update` remains non-mutating. Explicit plugin
+`auto` policy may run a paired, version-pinned public-registry install of `codemem` and
+`@codemem/embeddings` only
+after the CLI reports a fresh, validated npm release observed for at least 24 hours and an
+installation whose npm origin can be proven. Pinned, prerelease, downgrade,
+repository-development, stale, Docker, and unknown installs refuse execution. Set
+`CODEMEM_BACKEND_UPDATE_POLICY=off` to disable release checks.
 Docker guidance is always rebuild-and-restart guidance, never an in-container update.
 
 Pack rendering defaults to self-contained context. For token-constrained experiments, `codemem pack <context> --compact` renders an index plus top details. Near-related compression is controlled by `--compression-mode off|compact|ids` (or `CODEMEM_PACK_COMPRESSION`); MCP `memory_pack` exposes the same setting as `compression_mode`. Use `ids` only when the agent can follow up with `memory_get_observations`.

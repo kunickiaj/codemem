@@ -271,9 +271,6 @@ importers:
 
   packages/core:
     dependencies:
-      '@xenova/transformers':
-        specifier: ^2.17.2
-        version: 2.17.2
       better-sqlite3:
         specifier: 13.0.3
         version: 13.0.3
@@ -293,6 +290,9 @@ importers:
         specifier: 0.1.9
         version: 0.1.9
     devDependencies:
+      '@codemem/embeddings':
+        specifier: workspace:^
+        version: link:../embeddings
       '@types/better-sqlite3':
         specifier: 'catalog:'
         version: 9.6.0

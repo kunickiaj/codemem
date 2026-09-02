@@ -185,7 +185,7 @@ codex plugin marketplace upgrade
 codex plugin remove codemem@codemem
 ```
 
-The plugin bundles `.mcp.json` (`npx -y codemem mcp`), `hooks/hooks.json`, and a dependency-free generated normalizer. Ingest wrappers use Viewer HTTP without child processes when healthy; `codemem` and pinned `npx` are fallback-only. Generated files come from the TypeScript normalizers in `packages/core/src/` via `node scripts/build-adapter-normalizers.mjs` and are protected by a byte-drift test. Validated targets: Codex CLI 0.135+ and current Desktop builds.
+The plugin bundles `.mcp.json` (a paired `npx` launcher for `codemem` and `@codemem/embeddings`), `hooks/hooks.json`, and a dependency-free generated normalizer. Ingest wrappers use Viewer HTTP without child processes when healthy; `codemem` and pinned `npx` are fallback-only. Generated files come from the TypeScript normalizers in `packages/core/src/` via `node scripts/build-adapter-normalizers.mjs` and are protected by a byte-drift test. Validated targets: Codex CLI 0.135+ and current Desktop builds.
 
 ### Plugin-free install (`codemem setup --codex-only`)
 
@@ -197,8 +197,8 @@ npx -y codemem setup --codex-only   # or, with a global install: codemem setup -
 
 What it does (idempotent; honors `CODEX_HOME`; backs up existing files; `--force` to refresh):
 
-- **MCP:** appends `[mcp_servers.codemem]` (`command = "npx"`, `args = ["-y", "codemem", "mcp"]`) to `<CODEX_HOME>/config.toml` if not already present. The file is never reparsed or reformatted — only appended — so comments and unrelated servers (including secrets) are preserved.
-- **Hooks:** merges `SessionStart`, `UserPromptSubmit` (ingest + inject), `PostToolUse`, and `Stop` into `<CODEX_HOME>/hooks.json`, preserving any unrelated user hooks. Hook commands resolve to a direct `codemem codex-hook-*` call when `codemem` is on `PATH`, otherwise `npx -y codemem codex-hook-*`. Prompt injection validates the loopback Viewer profile and retrieves with `POST /api/pack` first, using the local database only for classified compatibility fallback.
+- **MCP:** appends `[mcp_servers.codemem]` with an `npx` command that requests both `codemem` and `@codemem/embeddings` before launching `codemem mcp`. The file is never reparsed or reformatted — only appended — so comments and unrelated servers (including secrets) are preserved.
+- **Hooks:** merges `SessionStart`, `UserPromptSubmit` (ingest + inject), `PostToolUse`, and `Stop` into `<CODEX_HOME>/hooks.json`, preserving any unrelated user hooks. Hook commands resolve to a direct `codemem codex-hook-*` call when `codemem` is on `PATH`; otherwise their `npx` fallback requests both packages before invoking the hook command. Prompt injection validates the loopback Viewer profile and retrieves with `POST /api/pack` first, using the local database only for classified compatibility fallback.
 
 Hooks loaded from the user config layer require a one-time trust approval in Codex (you'll be prompted on first run; MCP recall needs no trust). Codex setup also runs automatically in a plain `codemem setup` when a Codex home (`~/.codex` or `$CODEX_HOME`) is detected.
 
@@ -466,8 +466,8 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 
 When the plugin detects CLI/runtime version mismatch, it shows guidance based on runner mode:
 
-- `CODEMEM_RUNNER=codemem`: run `npm install -g codemem`, then restart OpenCode
-- `CODEMEM_RUNNER=npx`: update `CODEMEM_RUNNER_FROM` to a newer package/version (or reinstall plugin), then restart OpenCode
+- `CODEMEM_RUNNER=codemem`: install matching `codemem` and `@codemem/embeddings` versions, then restart OpenCode
+- `CODEMEM_RUNNER=npx`: set `CODEMEM_RUNNER_FROM` to the desired `codemem@<version>` spec; the plugin pairs the matching `@codemem/embeddings` version automatically. Then restart OpenCode (or reinstall the plugin instead).
 - `CODEMEM_RUNNER=node`: pull latest repo changes and run `pnpm build`, then restart OpenCode
 - custom/unknown runner: update the underlying `codemem` binary or package source, then restart OpenCode
 
@@ -483,12 +483,13 @@ Update policy:
 After its startup delay, the plugin also runs `codemem update check --json` through the same
 argv-based CLI runner. `notify` and `auto` show a best-effort toast at most once per latest stable
 release in the current OpenCode process; `off` skips this release check. Under explicit `auto`, an
-eligible result invokes the fail-closed `codemem update install` command and verifies the active CLI
-version before a plugin-owned Viewer is restarted. Current, unavailable, malformed, ineligible, and
-timed-out results are ignored or shown as guidance without delaying plugin startup.
-The installer uses a process-owned lock under `~/.codemem` so simultaneous OpenCode sessions cannot
-run competing global npm installations. A live lock causes later attempts to fail closed; a lock whose
-recorded process no longer exists is reclaimed.
+eligible result executes a paired, version-pinned public-registry install for `codemem` and
+`@codemem/embeddings`, then verifies the active CLI version before a plugin-owned Viewer is
+restarted. Current, unavailable, malformed, ineligible, and timed-out results are ignored or shown
+as guidance without delaying plugin startup. The plugin-owned installer is best effort: it does not
+use the CLI install lock or Windows npm-shim handling, and plugin-owned auto-update is disabled on
+Windows. Avoid starting simultaneous automatic updates from multiple OpenCode sessions; use
+`codemem update install` when serialized installation is required.
 
 Docker images set `CODEMEM_INSTALL_KIND=docker` so release guidance cannot mistake the bundled
 global npm package for a host npm installation. Docker deployments never self-update; rebuild and

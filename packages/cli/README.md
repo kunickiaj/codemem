@@ -12,8 +12,11 @@ covers macOS x64/arm64, Linux x64/arm64 (glibc 2.34+ or musl), and Windows x64.
 32-bit targets, including Linux armv7, are not supported.
 
 ```bash
-npm install -g codemem
+npm install -g codemem @codemem/embeddings
 ```
+
+The embedding package enables semantic retrieval. Installing only `codemem` keeps
+the CLI functional with FTS5 keyword retrieval.
 
 Or run without installing:
 

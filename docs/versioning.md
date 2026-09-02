@@ -68,9 +68,11 @@ cache and `--json` for the stable automation contract. If a refresh fails, a pre
 cache may be returned as stale guidance. A running process backs off failed registry checks for 15
 minutes, while `--refresh` bypasses that backoff. `codemem update check` remains informational.
 `codemem update install` separately requires fresh validated status, a 24-hour first-seen delay,
-and a proven eligible npm installation before it executes an argv-only npm command and verifies
-the active CLI version. It refuses pinned, prerelease, downgrade, development, stale, Docker, and
-unknown states.
+and a proven eligible npm installation before it installs exact matching `codemem` and
+`@codemem/embeddings` versions with an argv-only npm command and verifies the active CLI version.
+Bare `codemem update` remains non-mutating. Installation refuses pinned, prerelease, downgrade,
+development, stale, Docker, and unknown states. The npm operation runs the packages' installation
+scripts for native CPU dependencies, just as a manual global install does.
 
 Release discovery compares the running product version with the latest published stable release.
 It is separate from the compatibility-floor check below: discovering a newer release does not

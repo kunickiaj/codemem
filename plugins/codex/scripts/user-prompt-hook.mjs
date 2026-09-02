@@ -549,9 +549,21 @@ export function runCompatibilityFallback(raw, env, deadline, overrides = {}) {
 
 	const npxTimeoutMs = Math.min(1_500, remainingPromptBudgetMs(deadline, monotonicNow));
 	if (npxTimeoutMs <= 0) return null;
+	// Request both codemem and the optional @codemem/embeddings peer in the same
+	// npx environment so the local-store inject path can embed rather than
+	// degrade to FTS-only. Repeated --package options add both packages.
+	const pin = pinnedVersion(env);
 	return runInjectImpl(
 		"npx",
-		["-y", `codemem@${pinnedVersion(env)}`, "codex-hook-inject"],
+		[
+			"-y",
+			"--package",
+			`codemem@${pin}`,
+			"--package",
+			`@codemem/embeddings@${pin}`,
+			"codemem",
+			"codex-hook-inject",
+		],
 		raw,
 		fallbackEnv,
 		npxTimeoutMs,

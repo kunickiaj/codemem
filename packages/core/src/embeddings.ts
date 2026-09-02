@@ -2,10 +2,9 @@
  * Embedding primitives for semantic search.
  *
  * Ports codemem/semantic.py — text chunking, hashing, and embedding via a
- * pluggable client interface.  The default client uses `@xenova/transformers`
- * (same BAAI/bge-small-en-v1.5 model as Python's fastembed).  When the
- * embedding runtime is unavailable the helpers return empty arrays and callers
- * fall back to FTS-only retrieval.
+ * pluggable client interface. The default factory lazily loads the optional
+ * `@codemem/embeddings` runtime. When it is unavailable the helpers return
+ * empty arrays and callers fall back to FTS-only retrieval.
  *
  * Embeddings are always disabled when CODEMEM_EMBEDDING_DISABLED=1.
  */
@@ -31,6 +30,10 @@ export interface EmbeddingRuntimeRequest {
 export type EmbeddingRuntimeFactory = (
 	request: EmbeddingRuntimeRequest,
 ) => Promise<EmbeddingClient | null>;
+
+export type EmbeddingRuntimeStatus =
+	| { state: "uninitialized" | "ready" | "disabled" }
+	| { state: "unavailable"; reason: "missing_package" | "initialization_failed" | "no_client" };
 
 interface EmbeddingTensor {
 	data: ArrayLike<number | bigint>;
@@ -210,9 +213,13 @@ export function chunkText(text: string, maxChars = 1200): string[] {
 let _client: EmbeddingClient | null | undefined;
 let _clientPromise: Promise<EmbeddingClient | null> | undefined;
 let _clientGeneration = 0;
+let _runtimeWarningEmitted = false;
+let _runtimeStatus: EmbeddingRuntimeStatus = { state: "uninitialized" };
 
-const defaultEmbeddingRuntimeFactory: EmbeddingRuntimeFactory = ({ model }) =>
-	createTransformersClient(model);
+const defaultEmbeddingRuntimeFactory: EmbeddingRuntimeFactory = async (request) => {
+	const { createEmbeddingRuntime } = await import("@codemem/embeddings");
+	return createEmbeddingRuntime(request);
+};
 let embeddingRuntimeFactory = defaultEmbeddingRuntimeFactory;
 
 /** Reset the singleton (for tests). */
@@ -220,6 +227,7 @@ export function _resetEmbeddingClient(): void {
 	_client = undefined;
 	_clientPromise = undefined;
 	_clientGeneration++;
+	_runtimeStatus = { state: "uninitialized" };
 }
 
 /** Override the embedding runtime factory (for tests). */
@@ -231,7 +239,80 @@ export function _setEmbeddingRuntimeFactory(factory: EmbeddingRuntimeFactory): v
 /** Restore the default embedding runtime factory (for tests). */
 export function _resetEmbeddingRuntimeFactory(): void {
 	embeddingRuntimeFactory = defaultEmbeddingRuntimeFactory;
+	_runtimeWarningEmitted = false;
 	_resetEmbeddingClient();
+}
+
+function warnEmbeddingRuntimeUnavailable(error: unknown): void {
+	if (_runtimeWarningEmitted) return;
+	_runtimeWarningEmitted = true;
+	if (isMissingEmbeddingRuntimePackage(error)) {
+		console.warn(
+			"Semantic search is unavailable. Install @codemem/embeddings and restart Codemem to enable it.",
+		);
+		return;
+	}
+	const cause = error instanceof Error ? error.message : String(error);
+	console.warn(`Semantic search is unavailable because the embedding runtime failed: ${cause}`);
+}
+
+function isMissingEmbeddingRuntimePackage(error: unknown): boolean {
+	let current: unknown = error;
+	const seen = new Set<unknown>();
+	while (typeof current === "object" && current !== null && !seen.has(current)) {
+		seen.add(current);
+		if (
+			"code" in current &&
+			current.code === "ERR_MODULE_NOT_FOUND" &&
+			current instanceof Error &&
+			current.message.includes("@codemem/embeddings")
+		) {
+			return true;
+		}
+		current = "cause" in current ? current.cause : undefined;
+	}
+	return false;
+}
+
+/** Return process-local runtime state without loading the embedding model. */
+export function getEmbeddingRuntimeStatus(): EmbeddingRuntimeStatus {
+	return _runtimeStatus;
+}
+
+function recordEmbeddingRuntimeClient(client: EmbeddingClient | null): void {
+	_client = client;
+	if (client) {
+		_runtimeStatus = { state: "ready" };
+		return;
+	}
+	_runtimeStatus = { state: "unavailable", reason: "no_client" };
+	warnEmbeddingRuntimeUnavailable("embedding runtime returned no client");
+}
+
+async function createEmbeddingClient(
+	model: string,
+	generation: number,
+): Promise<EmbeddingClient | null> {
+	try {
+		const client = await embeddingRuntimeFactory({ model });
+		// A reset while creation was in flight makes this client stale. Resolve
+		// waiters through the live generation so model labels and dimensions agree.
+		if (generation !== _clientGeneration) return getEmbeddingClient();
+		recordEmbeddingRuntimeClient(client);
+		return client;
+	} catch (error) {
+		// A stale creation failure must not force current-generation waiters to null.
+		if (generation !== _clientGeneration) return getEmbeddingClient();
+		_client = null;
+		_runtimeStatus = {
+			state: "unavailable",
+			reason: isMissingEmbeddingRuntimePackage(error) ? "missing_package" : "initialization_failed",
+		};
+		warnEmbeddingRuntimeUnavailable(error);
+		return null;
+	} finally {
+		if (generation === _clientGeneration) _clientPromise = undefined;
+	}
 }
 
 /** Return the configured embedding model label without loading the client. */
@@ -248,35 +329,12 @@ export async function getEmbeddingClient(): Promise<EmbeddingClient | null> {
 	if (_clientPromise) return _clientPromise;
 	if (isEmbeddingDisabled()) {
 		_client = null;
+		_runtimeStatus = { state: "disabled" };
 		return null;
 	}
 	const model = resolveEmbeddingModel();
 	const generation = _clientGeneration;
-	_clientPromise = (async () => {
-		try {
-			const client = await embeddingRuntimeFactory({ model });
-			if (generation === _clientGeneration) {
-				_client = client;
-				return client;
-			}
-			// The factory was swapped/reset while this creation was in flight.
-			// Returning this now-stale client would let waiters capture its
-			// model/dimensions while embedTexts() embeds through the replacement
-			// singleton — storing vectors under a stale label or failing the
-			// dimension guard. Resolve waiters through the current generation.
-			return getEmbeddingClient();
-		} catch {
-			if (generation === _clientGeneration) {
-				_client = null;
-				return null;
-			}
-			// A stale creation failed after a swap; defer to the live generation
-			// rather than forcing current waiters to a null result.
-			return getEmbeddingClient();
-		} finally {
-			if (generation === _clientGeneration) _clientPromise = undefined;
-		}
-	})();
+	_clientPromise = createEmbeddingClient(model, generation);
 	return _clientPromise;
 }
 
@@ -288,31 +346,6 @@ export async function embedTexts(texts: string[]): Promise<Float32Array[]> {
 	const client = await getEmbeddingClient();
 	if (!client) return [];
 	return client.embed(texts);
-}
-
-// ---------------------------------------------------------------------------
-// @xenova/transformers backend (runtime-detected)
-// ---------------------------------------------------------------------------
-
-async function createTransformersClient(model: string): Promise<EmbeddingClient> {
-	// Dynamic import so the package is optional at install time
-	const { pipeline } = await import("@xenova/transformers");
-	const extractor = await pipeline("feature-extraction", model, {
-		quantized: false,
-	});
-
-	// Infer dimensions from a probe embedding
-	const probe = await extractor(["probe"], { pooling: "mean", normalize: true });
-	const dims = probe.dims?.at(-1) ?? 384;
-	embeddingTensorToFloat32Rows(probe, 1, dims);
-
-	return {
-		model,
-		dimensions: dims,
-		async embed(texts: string[]): Promise<Float32Array[]> {
-			return embedTextBatches(extractor, texts, dims);
-		},
-	};
 }
 
 // ---------------------------------------------------------------------------

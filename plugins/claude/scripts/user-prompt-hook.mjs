@@ -664,9 +664,27 @@ function runInject(command, args, raw, env) {
 }
 
 function runCompatibilityFallback(raw, env) {
+	// The npx fallback must request both codemem and @codemem/embeddings in the
+	// same temporary environment; the embedding runtime is now an optional peer,
+	// so a single-package invocation would leave this local-store inject path
+	// FTS-only. Repeated --package options add both to the npx environment.
+	const pin = pinnedVersion(env);
 	return (
 		runInject("codemem", ["claude-hook-inject"], raw, env) ??
-		runInject("npx", ["-y", `codemem@${pinnedVersion(env)}`, "claude-hook-inject"], raw, env)
+		runInject(
+			"npx",
+			[
+				"-y",
+				"--package",
+				`codemem@${pin}`,
+				"--package",
+				`@codemem/embeddings@${pin}`,
+				"codemem",
+				"claude-hook-inject",
+			],
+			raw,
+			env,
+		)
 	);
 }
 

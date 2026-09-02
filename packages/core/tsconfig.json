@@ -6,6 +6,7 @@
 		"declaration": true,
 		"emitDeclarationOnly": true
 	},
+	"references": [{ "path": "../embeddings" }],
 	"include": ["src"],
 	"exclude": ["src/**/*.test.ts"]
 }

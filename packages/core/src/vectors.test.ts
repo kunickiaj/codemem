@@ -25,6 +25,7 @@ vi.mock("./embeddings.js", async () => {
 		getEmbeddingClient: vi.fn(),
 		embedTexts: vi.fn(),
 		chunkText: vi.fn(actual.chunkText),
+		getEmbeddingRuntimeStatus: vi.fn(() => ({ state: "ready" })),
 		resolveEmbeddingModel: vi.fn(() => "test-model"),
 	};
 });
@@ -43,6 +44,7 @@ describe("vectors", () => {
 			dimensions: 384,
 			embed: vi.fn(),
 		});
+		vi.mocked(embeddings.getEmbeddingRuntimeStatus).mockReturnValue({ state: "ready" });
 	});
 
 	afterEach(() => {
@@ -619,6 +621,42 @@ describe("vectors", () => {
 		});
 	});
 
+	it("reports degraded keyword-only mode when the embedding runtime is unavailable", () => {
+		const sessionId = insertTestSession(db);
+		const now = new Date().toISOString();
+		const info = db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+				 VALUES (?, 'feature', 'Indexed', 'Runtime unavailable', 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+			)
+			.run(sessionId, now, now);
+		const memoryId = Number(info.lastInsertRowid);
+		db.exec(`
+			INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model)
+			VALUES (
+				vec_f32('${JSON.stringify(Array.from(new Float32Array(384)))}'),
+				${memoryId},
+				0,
+				'${embeddings.hashText("Indexed\nRuntime unavailable")}',
+				'test-model'
+			)
+		`);
+		vi.mocked(embeddings.getEmbeddingRuntimeStatus).mockReturnValue({
+			state: "unavailable",
+			reason: "initialization_failed",
+		});
+
+		expect(getSemanticIndexDiagnostics(db)).toMatchObject({
+			state: "degraded",
+			mode: "keyword_only",
+			semantic_search_model: "test-model",
+			indexed_memory_count: 1,
+			pending_memory_count: 0,
+			summary: "The embedding runtime is unavailable; sync data is available in keyword-only mode",
+		});
+	});
+
 	it("does not mark partially covered memories as healthy under deep diagnostics", () => {
 		const sessionId = insertTestSession(db);
 		const now = new Date().toISOString();
@@ -659,6 +697,10 @@ describe("vectors", () => {
 	});
 
 	it("reports failed semantic-index catch-up from maintenance job state", () => {
+		vi.mocked(embeddings.getEmbeddingRuntimeStatus).mockReturnValue({
+			state: "unavailable",
+			reason: "initialization_failed",
+		});
 		startMaintenanceJob(db, {
 			kind: "vector_model_migration",
 			title: "Re-indexing memories",
