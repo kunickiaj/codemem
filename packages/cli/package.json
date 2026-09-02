@@ -21,7 +21,7 @@
 		"typecheck": "pnpm exec tsc --noEmit"
 	},
 	"dependencies": {
-		"@clack/prompts": "^1.5.0",
+		"@clack/prompts": "^1.7.0",
 		"@codemem/core": "workspace:^",
 		"@codemem/mcp": "workspace:^",
 		"@codemem/server": "workspace:^",
