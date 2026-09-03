@@ -85,6 +85,8 @@ lexical-only recall until it restarts; restarting `codemem serve` alone does not
 restart that MCP child.
 
 The semantic runtime is pinned to CPU inference on every platform.
+ONNX Runtime 1.24.3 does not ship a macOS x64 binary, so Intel Macs continue
+with FTS5 keyword retrieval when semantic runtime initialization fails.
 
 OpenCode plugin and CLI are now split intentionally:
 

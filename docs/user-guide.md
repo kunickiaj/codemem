@@ -508,8 +508,9 @@ Codemem runs semantic inference on the CPU. `ONNXRUNTIME_NODE_INSTALL=skip`
 prevents ONNX Runtime's Linux installer from downloading unused GPU provider
 libraries; the CPU binaries remain available. Apple silicon macOS and Windows
 users can omit the environment variable. Intel (x64) Macs have no ONNX Runtime
-1.24.3 artifact and stay on FTS5 keyword retrieval, so installing the runtime
-there does not enable semantic search.
+1.24.3 artifact, so Codemem reports the unavailable semantic runtime and stays on
+FTS5 keyword retrieval; installing the runtime there does not enable semantic
+search.
 
 The default `Xenova/bge-small-en-v1.5` model is pinned to a tested revision. If
 you set `CODEMEM_EMBEDDING_MODEL` to another repository, it must be a
