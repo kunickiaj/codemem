@@ -769,8 +769,12 @@ export function installCodex(force: boolean): boolean {
 	if (codememOnPath(true)) {
 		p.log.info("Codex hooks will call `codemem` directly (found on PATH).");
 	} else {
+		const globalInstallCommand =
+			process.platform === "linux"
+				? "env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem @codemem/embeddings"
+				: "npm install -g codemem @codemem/embeddings";
 		p.log.info(
-			"`codemem` is not on PATH, so Codex hooks will run through a paired `npx` launcher (works without a global install). For lower hook latency: npm install -g codemem @codemem/embeddings",
+			`\`codemem\` is not on PATH, so Codex hooks will run via \`npx -y --package codemem --package @codemem/embeddings codemem\` (works without a global install). For lower hook latency: ${globalInstallCommand}`,
 		);
 	}
 

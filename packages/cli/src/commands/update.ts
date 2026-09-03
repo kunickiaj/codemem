@@ -82,12 +82,13 @@ function runCommand(
 	command: string,
 	args: string[],
 	timeoutMs: number,
-	options: { cwd?: string; windowsVerbatimArguments?: boolean } = {},
+	options: { cwd?: string; env?: NodeJS.ProcessEnv; windowsVerbatimArguments?: boolean } = {},
 ): Promise<CommandResult> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(command, args, {
 			cwd: options.cwd,
 			detached: process.platform !== "win32",
+			env: options.env,
 			shell: false,
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsVerbatimArguments: options.windowsVerbatimArguments,
@@ -313,7 +314,14 @@ async function installUpdate(options: UpdateInstallOptions): Promise<void> {
 						`@codemem/embeddings@${targetVersion}`,
 					],
 			INSTALL_TIMEOUT_MS,
-			{ cwd: npm.cwd, windowsVerbatimArguments: process.platform === "win32" },
+			{
+				cwd: npm.cwd,
+				env:
+					process.platform === "linux"
+						? { ...process.env, ONNXRUNTIME_NODE_INSTALL: "skip" }
+						: undefined,
+				windowsVerbatimArguments: process.platform === "win32",
+			},
 		);
 		if (installation.exitCode !== 0) {
 			failInstall(

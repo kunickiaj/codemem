@@ -905,6 +905,28 @@ describe("installation guidance", () => {
 		},
 	);
 
+	it("includes the CPU-only ONNX policy in Linux npm-global guidance", async () => {
+		const platform = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+		const status = await check(dependencies(), { installKind: "npm-global" }).finally(() =>
+			platform.mockRestore(),
+		);
+
+		expect(status.recommended_action).toBe(
+			"env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem@0.41.0 @codemem/embeddings@0.41.0",
+		);
+	});
+
+	it("keeps npm-global guidance unprefixed off Linux", async () => {
+		const platform = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+		const status = await check(dependencies(), { installKind: "npm-global" }).finally(() =>
+			platform.mockRestore(),
+		);
+
+		expect(status.recommended_action).toBe(
+			"npm install -g codemem@0.41.0 @codemem/embeddings@0.41.0",
+		);
+	});
+
 	it("returns no-upgrade guidance when the installation is current", async () => {
 		// Arrange
 		const deps = dependencies({ payload: { version: "0.40.2" } });

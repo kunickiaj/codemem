@@ -30,11 +30,11 @@ function fail(message, result) {
 	throw new Error(message);
 }
 
-function run(command, args, cwd = packageRoot) {
+function run(command, args, cwd = packageRoot, env = process.env) {
 	const result = spawnSync(command, args, {
 		cwd,
 		encoding: "utf8",
-		env: process.env,
+		env,
 	});
 	if (result.status !== 0) {
 		fail(`Command failed: ${command} ${args.join(" ")}`, result);
@@ -46,6 +46,19 @@ function assert(condition, message) {
 	if (!condition) {
 		throw new Error(message);
 	}
+}
+
+function readInstallScriptPolicyEntries(result) {
+	let policy;
+	try {
+		policy = JSON.parse(result.stdout);
+	} catch {
+		fail("npm install-scripts returned invalid JSON", result);
+	}
+	if (!Array.isArray(policy?.allowScripts)) {
+		fail("npm install-scripts output schema changed", result);
+	}
+	return policy.allowScripts;
 }
 
 function runAsync(command, args, options, input) {
@@ -632,7 +645,16 @@ try {
 	}
 
 	const semanticInstallDir = join(tempDir, "semantic-install");
-	run("npm", ["install", "--prefix", semanticInstallDir, coreTarball, embeddingsTarball]);
+	mkdirSync(semanticInstallDir, { recursive: true });
+	writeFileSync(
+		join(semanticInstallDir, "package.json"),
+		JSON.stringify({ private: true }),
+		"utf8",
+	);
+	run("npm", ["install", "--prefix", semanticInstallDir, coreTarball, embeddingsTarball], packageRoot, {
+		...process.env,
+		ONNXRUNTIME_NODE_INSTALL: "skip",
+	});
 	const semanticCoreBundle = readFileSync(
 		join(semanticInstallDir, "node_modules", "@codemem", "core", "dist", "index.js"),
 		"utf8",
@@ -640,6 +662,74 @@ try {
 	assert(
 		/import\(["']@codemem\/embeddings["']\)/u.test(semanticCoreBundle),
 		"Packed core bundle does not preserve its external @codemem/embeddings import",
+	);
+	const installScriptsListing = spawnSync("npm", ["install-scripts", "ls", "--json"], {
+		cwd: semanticInstallDir,
+		encoding: "utf8",
+	});
+	const supportsInstallScripts = installScriptsListing.status === 0;
+	if (supportsInstallScripts) {
+		const blockedInstallScripts = readInstallScriptPolicyEntries(installScriptsListing);
+		const onnxInstallIsBlocked = blockedInstallScripts.some(
+			(entry) => entry?.name === "onnxruntime-node",
+		);
+		if (onnxInstallIsBlocked) {
+			run("npm", ["install-scripts", "approve", "onnxruntime-node"], semanticInstallDir);
+		} else {
+			process.stdout.write("ONNX Runtime install script was already permitted by npm\n");
+		}
+	} else {
+		const unsupportedCommandOutput = `${installScriptsListing.stdout ?? ""}\n${
+			installScriptsListing.stderr ?? ""
+		}`;
+		if (!/EUNKNOWNCOMMAND|Unknown command/i.test(unsupportedCommandOutput)) {
+			fail("Unable to inspect npm install-script policy", installScriptsListing);
+		}
+		process.stdout.write("npm does not support install-scripts; using rebuild compatibility path\n");
+	}
+	run("npm", ["rebuild", "onnxruntime-node"], semanticInstallDir, {
+		...process.env,
+		ONNXRUNTIME_NODE_INSTALL: "skip",
+	});
+	if (supportsInstallScripts) {
+		const remainingInstallScripts = readInstallScriptPolicyEntries(
+			run("npm", ["install-scripts", "ls", "--json"], semanticInstallDir),
+		);
+		assert(
+			!remainingInstallScripts.some((entry) => entry?.name === "onnxruntime-node"),
+			"Semantic install left ONNX Runtime's postinstall blocked after approval and rebuild",
+		);
+	}
+	const ortBinaryDir = join(
+		semanticInstallDir,
+		"node_modules",
+		"onnxruntime-node",
+		"bin",
+		"napi-v6",
+		process.platform,
+		process.arch,
+	);
+	const supportsOrtCpuBinary = !(process.platform === "darwin" && process.arch === "x64");
+	if (supportsOrtCpuBinary) {
+		assert(
+			existsSync(join(ortBinaryDir, "onnxruntime_binding.node")),
+			`Semantic install is missing ONNX Runtime CPU binaries for ${process.platform}/${process.arch}`,
+		);
+	}
+	assert(
+		!existsSync(
+			join(
+				semanticInstallDir,
+				"node_modules",
+				"onnxruntime-node",
+				"bin",
+				"napi-v6",
+				"linux",
+				"x64",
+				"libonnxruntime_providers_cuda.so",
+			),
+		),
+		"CPU-only semantic install unexpectedly contains the ONNX Runtime CUDA provider",
 	);
 	run(
 		process.execPath,

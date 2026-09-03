@@ -482,7 +482,8 @@ set the CPU-only policy so the installer skips the unused GPU provider:
 env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem @codemem/embeddings
 ```
 
-On macOS and Windows, install both packages normally:
+On Apple silicon macOS and Windows, install both packages normally (no
+environment variable, which `env`/`cmd.exe`/PowerShell do not share):
 
 ```text
 npm install -g codemem @codemem/embeddings
@@ -502,6 +503,13 @@ restart the host you configured — OpenCode, Claude Code, or Codex — plus any
 running `codemem serve` process. Each MCP process checks runtime availability
 once per lifetime, so a running Claude or Codex MCP host stays lexical-only until
 it restarts; restarting `codemem serve` alone does not restart that MCP child.
+
+Codemem runs semantic inference on the CPU. `ONNXRUNTIME_NODE_INSTALL=skip`
+prevents ONNX Runtime's Linux installer from downloading unused GPU provider
+libraries; the CPU binaries remain available. Apple silicon macOS and Windows
+users can omit the environment variable. Intel (x64) Macs have no ONNX Runtime
+1.24.3 artifact and stay on FTS5 keyword retrieval, so installing the runtime
+there does not enable semantic search.
 
 The default `Xenova/bge-small-en-v1.5` model is pinned to a tested revision. If
 you set `CODEMEM_EMBEDDING_MODEL` to another repository, it must be a

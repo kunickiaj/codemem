@@ -274,6 +274,7 @@ describe("update install command", () => {
 	});
 
 	it("installs the exact validated release without a shell and verifies it", async () => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
 		getUpdateStatus.mockResolvedValue({ ...availableStatus, auto_update_eligible: true });
 		spawn
 			.mockImplementationOnce(() => commandProcess())
@@ -293,7 +294,7 @@ describe("update install command", () => {
 				"codemem@0.41.0",
 				"@codemem/embeddings@0.41.0",
 			],
-			expect.objectContaining({ shell: false }),
+			expect.objectContaining({ env: undefined, shell: false }),
 		);
 		expect(spawn).toHaveBeenNthCalledWith(
 			2,
@@ -317,6 +318,30 @@ describe("update install command", () => {
 
 		expect(getUpdateStatus).not.toHaveBeenCalled();
 		expect(spawn).not.toHaveBeenCalled();
+		expect(process.exitCode).toBeUndefined();
+	});
+
+	it("preserves the CPU-only ONNX install policy on Linux", async () => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+		getUpdateStatus.mockResolvedValue({ ...availableStatus, auto_update_eligible: true });
+		spawn
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(spawn).toHaveBeenNthCalledWith(
+			1,
+			"npm",
+			expect.arrayContaining(["codemem@0.41.0", "@codemem/embeddings@0.41.0"]),
+			expect.objectContaining({
+				env: expect.objectContaining({
+					ONNXRUNTIME_NODE_INSTALL: "skip",
+					PATH: process.env.PATH,
+				}),
+			}),
+		);
 		expect(process.exitCode).toBeUndefined();
 	});
 
