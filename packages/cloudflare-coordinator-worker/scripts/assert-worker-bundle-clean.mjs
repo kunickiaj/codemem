@@ -12,9 +12,14 @@ const FORBIDDEN_IMPORTS = [
 	// Bundled npm packages are listed as intent and are also caught by the
 	// default-deny node:* rule when they pull unsupported builtins into the Worker.
 	"@codemem/embeddings",
+	"@huggingface/transformers",
 	"@xenova/transformers",
 	"better-sqlite3",
 	"bonjour-service",
+	"onnxruntime-common",
+	"onnxruntime-node",
+	"onnxruntime-web",
+	"sharp",
 	"sqlite-vec",
 ];
 // Add every forbidden package that is linked from this workspace rather than node_modules.
@@ -94,22 +99,39 @@ export async function assertWorkerBundleClean(bundlePath) {
 	}
 }
 
-async function listJavaScriptFiles(path) {
+// Binary asset extensions that indicate a native/WASM runtime was bundled. When
+// a package like onnxruntime-web is inlined, its `import "...onnxruntime-web..."`
+// specifier disappears from the emitted JS, but it emits these assets — which the
+// JS-only import scan cannot see. Reject them so the bundle stays lexical/pure JS.
+const FORBIDDEN_ASSET_EXTENSIONS = [".wasm", ".node"];
+
+async function listBundleFiles(path) {
 	const entry = await stat(path);
-	if (entry.isFile()) return path.endsWith(".js") ? [path] : [];
+	if (entry.isFile()) return [path];
 	const files = [];
 	for (const child of await readdir(path, { withFileTypes: true })) {
 		const childPath = join(path, child.name);
-		if (child.isDirectory()) files.push(...(await listJavaScriptFiles(childPath)));
-		else if (child.isFile() && child.name.endsWith(".js")) files.push(childPath);
+		if (child.isDirectory()) files.push(...(await listBundleFiles(childPath)));
+		else if (child.isFile()) files.push(childPath);
 	}
 	return files.toSorted();
 }
 
 export async function assertWorkerBundleOutputClean(bundlePath) {
-	const files = await listJavaScriptFiles(bundlePath);
-	if (files.length === 0) throw new Error(`Worker bundle contains no JavaScript files: ${bundlePath}`);
-	for (const file of files) await assertWorkerBundleClean(file);
+	const files = await listBundleFiles(bundlePath);
+	const javaScriptFiles = files.filter((file) => file.endsWith(".js"));
+	if (javaScriptFiles.length === 0) {
+		throw new Error(`Worker bundle contains no JavaScript files: ${bundlePath}`);
+	}
+	const forbiddenAssets = files.filter((file) =>
+		FORBIDDEN_ASSET_EXTENSIONS.some((extension) => file.endsWith(extension)),
+	);
+	if (forbiddenAssets.length > 0) {
+		throw new Error(
+			`Worker bundle contains forbidden native/WASM assets: ${forbiddenAssets.join(", ")}`,
+		);
+	}
+	for (const file of javaScriptFiles) await assertWorkerBundleClean(file);
 }
 
 export async function assertWorkerBundleMetafileClean(metafilePath) {

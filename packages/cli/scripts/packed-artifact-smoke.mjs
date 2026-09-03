@@ -61,6 +61,17 @@ function readInstallScriptPolicyEntries(result) {
 	return policy.allowScripts;
 }
 
+function resolveInstalledPackageDir(installDir, packageName) {
+	const result = run("npm", ["ls", packageName, "--parseable", "--all"], installDir);
+	const expectedSuffix = join("node_modules", ...packageName.split("/"));
+	const packageDir = result.stdout
+		.split(/\r?\n/u)
+		.map((line) => line.trim())
+		.find((line) => line.endsWith(expectedSuffix));
+	assert(packageDir, `Semantic install is missing ${packageName}`);
+	return packageDir;
+}
+
 function runAsync(command, args, options, input) {
 	return new Promise((resolvePromise, reject) => {
 		const child = spawn(command, args, options);
@@ -631,12 +642,25 @@ try {
 	);
 
 	const installDir = join(tempDir, "install");
-	run("npm", ["install", "--prefix", installDir, coreTarball, mcpTarball, serverTarball, packedTarball]);
+	run(
+		"npm",
+		["install", "--prefix", installDir, coreTarball, mcpTarball, serverTarball, packedTarball],
+		packageRoot,
+		{ ...process.env, npm_config_install_strategy: "hoisted" },
+	);
 	const lexicalLockPath = join(installDir, "package-lock.json");
 	assert(existsSync(lexicalLockPath), "Lexical install did not produce a package-lock.json");
 	const lexicalLock = JSON.parse(readFileSync(lexicalLockPath, "utf8"));
 	const lexicalPackages = Object.keys(lexicalLock.packages ?? {});
-	for (const packageName of ["@codemem/embeddings", "@xenova/transformers", "onnxruntime-node"]) {
+	for (const packageName of [
+		"@codemem/embeddings",
+		"@huggingface/transformers",
+		"@xenova/transformers",
+		"onnxruntime-common",
+		"onnxruntime-node",
+		"onnxruntime-web",
+		"sharp",
+	]) {
 		assert(
 			// npm lockfile package keys use `/` and may be relative to a parent directory.
 			!lexicalPackages.some((path) => path.endsWith(`node_modules/${packageName}`)),
@@ -654,6 +678,7 @@ try {
 	run("npm", ["install", "--prefix", semanticInstallDir, coreTarball, embeddingsTarball], packageRoot, {
 		...process.env,
 		ONNXRUNTIME_NODE_INSTALL: "skip",
+		npm_config_install_strategy: "hoisted",
 	});
 	const semanticCoreBundle = readFileSync(
 		join(semanticInstallDir, "node_modules", "@codemem", "core", "dist", "index.js"),
@@ -690,6 +715,7 @@ try {
 	run("npm", ["rebuild", "onnxruntime-node"], semanticInstallDir, {
 		...process.env,
 		ONNXRUNTIME_NODE_INSTALL: "skip",
+		npm_config_install_strategy: "hoisted",
 	});
 	if (supportsInstallScripts) {
 		const remainingInstallScripts = readInstallScriptPolicyEntries(
@@ -700,15 +726,16 @@ try {
 			"Semantic install left ONNX Runtime's postinstall blocked after approval and rebuild",
 		);
 	}
-	const ortBinaryDir = join(
-		semanticInstallDir,
-		"node_modules",
-		"onnxruntime-node",
-		"bin",
-		"napi-v6",
-		process.platform,
-		process.arch,
+	const semanticLockPath = join(semanticInstallDir, "package-lock.json");
+	assert(existsSync(semanticLockPath), "Semantic install did not produce a package-lock.json");
+	const semanticLock = JSON.parse(readFileSync(semanticLockPath, "utf8"));
+	const semanticPackages = Object.keys(semanticLock.packages ?? {});
+	assert(
+		semanticPackages.some((path) => path.endsWith("node_modules/@huggingface/transformers")),
+		"Semantic install is missing the @huggingface/transformers runtime",
 	);
+	const ortPackageDir = resolveInstalledPackageDir(semanticInstallDir, "onnxruntime-node");
+	const ortBinaryDir = join(ortPackageDir, "bin", "napi-v6", process.platform, process.arch);
 	const supportsOrtCpuBinary = !(process.platform === "darwin" && process.arch === "x64");
 	if (supportsOrtCpuBinary) {
 		assert(
@@ -719,9 +746,7 @@ try {
 	assert(
 		!existsSync(
 			join(
-				semanticInstallDir,
-				"node_modules",
-				"onnxruntime-node",
+				ortPackageDir,
 				"bin",
 				"napi-v6",
 				"linux",
@@ -731,6 +756,10 @@ try {
 		),
 		"CPU-only semantic install unexpectedly contains the ONNX Runtime CUDA provider",
 	);
+	// Importing the @codemem/embeddings wrapper is always safe: it loads
+	// Transformers.js (and thus onnxruntime-node) lazily inside
+	// createEmbeddingRuntime, so this verifies the packed export exists even on
+	// Intel macOS where the ORT CPU binary is unavailable.
 	run(
 		process.execPath,
 		[
@@ -740,6 +769,23 @@ try {
 		],
 		semanticInstallDir,
 	);
+	// Only evaluate the direct Transformers.js runtime where ORT has a CPU binary;
+	// on darwin/x64 that import cannot load onnxruntime-node.
+	if (supportsOrtCpuBinary) {
+		const transformersPackageDir = resolveInstalledPackageDir(
+			semanticInstallDir,
+			"@huggingface/transformers",
+		);
+		run(
+			process.execPath,
+			[
+				"--input-type=module",
+				"--eval",
+				"const transformers = await import('@huggingface/transformers'); if (typeof transformers.pipeline !== 'function') process.exit(1);",
+			],
+			transformersPackageDir,
+		);
+	}
 
 	const installedPackageRoot = join(installDir, "node_modules", "codemem");
 	const cliBin = join(installDir, "node_modules", ".bin", process.platform === "win32" ? "codemem.cmd" : "codemem");

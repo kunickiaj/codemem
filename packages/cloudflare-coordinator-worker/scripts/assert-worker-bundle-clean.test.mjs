@@ -19,9 +19,15 @@ test("rejects static, dynamic, and generated require imports of forbidden module
 	const source = [
 		'import { createRequire } from "node:module";',
 		'import "@codemem/embeddings";',
+		'import "@huggingface/transformers";',
+		'import "@huggingface/transformers/env";',
 		'import "@xenova/transformers";',
 		'await import("bonjour-service");',
 		'const Database = require("better-sqlite3");',
+		'const ortCommon = require("onnxruntime-common");',
+		'const ort = require("onnxruntime-node");',
+		'import "onnxruntime-web/webgpu";',
+		'import "sharp";',
 		'const fs = __require("node:fs");',
 		'const os = __require2("node:os");',
 		'const bareFs = require("fs");',
@@ -29,6 +35,8 @@ test("rejects static, dynamic, and generated require imports of forbidden module
 	].join("\n");
 	assert.deepEqual(findForbiddenWorkerImports(source), [
 		"@codemem/embeddings",
+		"@huggingface/transformers",
+		"@huggingface/transformers/env",
 		"@xenova/transformers",
 		"better-sqlite3",
 		"bonjour-service",
@@ -36,7 +44,11 @@ test("rejects static, dynamic, and generated require imports of forbidden module
 		"node:fs",
 		"node:module",
 		"node:os",
+		"onnxruntime-common",
+		"onnxruntime-node",
+		"onnxruntime-web/webgpu",
 		"os",
+		"sharp",
 	]);
 });
 
@@ -132,6 +144,22 @@ test("rejects a bundle output with no JavaScript", async () => {
 		await assert.rejects(
 			assertWorkerBundleOutputClean(directory),
 			/Worker bundle contains no JavaScript files:/u,
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("rejects bundled native/WASM assets even when the JS imports look clean", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "codemem-worker-bundle-wasm-"));
+	try {
+		// An inlined package like onnxruntime-web drops its import specifier from
+		// the emitted JS but still emits a .wasm asset the JS-only scan misses.
+		await writeFile(join(directory, "index.js"), 'import { createHash } from "node:crypto";');
+		await writeFile(join(directory, "ort-wasm-simd.wasm"), "\0asm");
+		await assert.rejects(
+			assertWorkerBundleOutputClean(directory),
+			/Worker bundle contains forbidden native\/WASM assets: .*ort-wasm-simd\.wasm/u,
 		);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
