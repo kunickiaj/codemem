@@ -35,6 +35,8 @@ export const MAPPABLE_PI_EVENTS = new Set([
 /** Events that only signal a boundary flush (never stored as transcript). */
 export const PI_FLUSH_ONLY_EVENTS = new Set(["session_before_compact"]);
 
+/** Frozen discriminator for Pi's derived event identity contract. */
+export const PI_EVENT_ID_ALGO = "pi/1";
 // ---------------------------------------------------------------------------
 // Timestamp helpers
 // ---------------------------------------------------------------------------
@@ -181,7 +183,10 @@ export function mapPiEventPayload(payload: Record<string, unknown>): PiHookAdapt
 		const reason = field(payload, "reason");
 		eventType = "session_end";
 		eventPayload = { reason: reason ?? null };
-		idPart = entryId && entryId !== "session_end" ? entryId : `session_end:${coerceString(reason)}`;
+		idPart =
+			entryId && entryId !== "session_end"
+				? entryId
+				: `session_end:${coerceString(reason)}:${normalizedRawTs ?? ""}`;
 		consumed.add("reason");
 	} else if (piEvent === "message_end") {
 		const role = coerceString(field(payload, "role")).toLowerCase();
@@ -280,6 +285,7 @@ export function mapPiEventPayload(payload: Record<string, unknown>): PiHookAdapt
 	if (!idPart) return null;
 
 	const meta: Record<string, unknown> = {
+		event_id_algo: PI_EVENT_ID_ALGO,
 		pi_event: piEvent,
 		ordering_confidence: "low",
 	};

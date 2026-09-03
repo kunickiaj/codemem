@@ -21,6 +21,7 @@ import {
 	buildRawEventEnvelopeFromPiEvent,
 	MAPPABLE_PI_EVENTS,
 	mapPiEventPayload,
+	PI_EVENT_ID_ALGO,
 } from "./pi-hooks.js";
 import { ingestRawEvents } from "./raw-event-ingest.js";
 import { MemoryStore } from "./store.js";
@@ -84,6 +85,8 @@ describe("mapPiEventPayload", () => {
 			expect(event?.payload.reason).toBe("user_exit");
 			expect(event?.event_id).toMatch(PI_EVENT_ID);
 			expect(event?.source).toBe("pi");
+			expect(event?.meta.event_id_algo).toBe(PI_EVENT_ID_ALGO);
+			expect(PI_EVENT_ID_ALGO).toBe("pi/1");
 		});
 	});
 
@@ -820,5 +823,32 @@ describe("ingestRawEvents accepts pi envelopes", () => {
 		expect(ingestRawEvents(store, reload)).toMatchObject({ inserted: 1, skipped: 0 });
 		expect(ingestRawEvents(store, exit)).toMatchObject({ inserted: 1, skipped: 0 });
 		expect(ingestRawEvents(store, exit)).toMatchObject({ inserted: 0, skipped: 1 });
+	});
+
+	it("persists reload then reload as distinct session_end events", () => {
+		const sessionId = "pi-reload-reload";
+		const first = requireEnvelope(
+			buildRawEventEnvelopeFromPiEvent({
+				piEvent: "session_shutdown",
+				sessionId,
+				entryId: "session_end",
+				reason: "reload",
+				ts: "2026-06-01T16:00:00Z",
+			}),
+		);
+		const second = requireEnvelope(
+			buildRawEventEnvelopeFromPiEvent({
+				piEvent: "session_shutdown",
+				sessionId,
+				entryId: "session_end",
+				reason: "reload",
+				ts: "2026-06-01T16:01:00Z",
+			}),
+		);
+		expect(first.event_id).not.toBe(second.event_id);
+		expect(ingestRawEvents(store, first)).toMatchObject({ inserted: 1, skipped: 0 });
+		expect(ingestRawEvents(store, second)).toMatchObject({ inserted: 1, skipped: 0 });
+		expect(ingestRawEvents(store, first)).toMatchObject({ inserted: 0, skipped: 1 });
+		expect(ingestRawEvents(store, second)).toMatchObject({ inserted: 0, skipped: 1 });
 	});
 });
