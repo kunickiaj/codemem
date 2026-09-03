@@ -110,7 +110,9 @@ describe("mapPiEventPayload", () => {
 			expect(event?.event_id).toMatch(PI_EVENT_ID);
 			expect(event?.meta.pi_event).toBe("message_end");
 			expect(event?.meta.entry_id).toBe("entry-u1");
-			expect((event?.meta.pi_fields as Record<string, unknown>).custom_field).toBe("keep-me");
+			expect((event?.meta.pi_fields as Record<string, unknown> | undefined)?.custom_field).toBe(
+				"keep-me",
+			);
 		});
 
 		it("returns null for empty text", () => {
@@ -515,11 +517,10 @@ describe("buildRawEventEnvelopeFromPiEvent", () => {
 		expect(envelope?.started_at).toBe("2026-06-01T12:00:00Z");
 		expect(envelope?.event_id).toMatch(PI_EVENT_ID);
 		expect(envelope?.payload.type).toBe("pi.hook");
-		expect((envelope?.payload._adapter as Record<string, unknown>).source).toBe("pi");
-		expect((envelope?.payload._adapter as Record<string, unknown>).schema_version).toBe("1.0");
-		expect((envelope?.payload._adapter as Record<string, unknown>).event_type).toBe(
-			"session_start",
-		);
+		const adapter = envelope?.payload._adapter as Record<string, unknown> | undefined;
+		expect(adapter?.source).toBe("pi");
+		expect(adapter?.schema_version).toBe("1.0");
+		expect(adapter?.event_type).toBe("session_start");
 	});
 
 	it("sets started_at only for session_start", () => {
@@ -568,8 +569,9 @@ describe("buildIngestPayloadFromPiEvent", () => {
 		const events = ingest?.events as Array<Record<string, unknown>>;
 		expect(events).toHaveLength(1);
 		expect(events[0]?.type).toBe("pi.hook");
-		expect((events[0]?._adapter as Record<string, unknown>).source).toBe("pi");
-		expect((events[0]?._adapter as Record<string, unknown>).event_type).toBe("session_start");
+		const adapter = events[0]?._adapter as Record<string, unknown> | undefined;
+		expect(adapter?.source).toBe("pi");
+		expect(adapter?.event_type).toBe("session_start");
 	});
 
 	it("sets cwd from pi payload", () => {
