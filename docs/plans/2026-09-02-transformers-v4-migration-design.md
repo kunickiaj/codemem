@@ -75,6 +75,30 @@ Setting `ONNXRUNTIME_NODE_INSTALL=skip` skips the CUDA download while retaining 
 
 The package boundary therefore needs an explicit install contract. Lexical-only users must not receive ONNX Runtime, while embedding users must get CPU-safe installation guidance and validation.
 
+### Release decision
+
+Ship the v4 CPU baseline with the remaining downstream advisories documented.
+Compared with v2, the clean consumer audit removes one critical finding while
+retaining four high findings. That is an improvement in severity, not an
+audit-clean result.
+
+Repository overrides protect contributors and CI, but npm consumers do not
+inherit them. The text embedding path does not use Sharp, while `adm-zip` is in
+ONNX Runtime's installer; Linux users are instructed to skip the unused GPU
+provider download. We accept that residual exposure for this baseline and will
+revisit it when Transformers.js permits patched Sharp and ONNX Runtime versions.
+
+Setup-managed `npx` launchers and the OpenCode plugin's `npx` viewer runner do
+not set `ONNXRUNTIME_NODE_INSTALL=skip`. On Linux with a package manager that
+executes dependency scripts, the first resolution through those launchers can
+still download the roughly 205 MB GPU provider. We accept that exposure for the
+no-global-install path rather than injecting environment policy across three MCP
+config formats; the README directs Linux users to install both packages globally
+with the CPU-only policy or set the variable persistently.
+
+ONNX Runtime 1.24.3 also omits a macOS x64 binary. Intel Macs retain non-fatal
+FTS fallback rather than semantic inference.
+
 ## Stack Design
 
 ### PR 1: Bounded batching on v2
