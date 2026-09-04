@@ -345,6 +345,10 @@ importers:
       '@opencode-ai/plugin':
         specifier: 1.18.25
         version: 1.18.25
+    devDependencies:
+      '@types/node':
+        specifier: ^24.12.4
+        version: 24.13.3
 
   packages/ui:
     dependencies:

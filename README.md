@@ -389,6 +389,8 @@ npx -y codemem stats
 
 Start OpenCode inside the codemem repo directory — the plugin auto-loads from `.opencode/plugin/`.
 
+The repository's root `opencode.jsonc` also enables a contributor-only lint-feedback pilot from `packages/opencode-plugin/src/lint-feedback.ts`. That repository-owned entrypoint pins the local Biome command, runs it before and after JavaScript or TypeScript edits covered by `biome.json`, appends only new or worsened diagnostics, and preserves edits with one warning if linting fails or times out. The root config and pilot source are excluded from `@codemem/opencode-plugin`; installing codemem does not enable this feedback hook.
+
 </details>
 
 ## Documentation

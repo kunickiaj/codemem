@@ -16,6 +16,19 @@
 		"rules": {
 			"preset": "recommended",
 			"complexity": {
+				"noExcessiveCognitiveComplexity": {
+					"level": "warn",
+					"options": {
+						"maxAllowedComplexity": 15
+					}
+				},
+				"noExcessiveLinesPerFunction": {
+					"level": "warn",
+					"options": {
+						"maxLines": 50,
+						"skipBlankLines": true
+					}
+				},
 				"noUselessTernary": "error",
 				"noUselessTypeConstraint": "error",
 				"useOptionalChain": "error"
@@ -25,6 +38,7 @@
 				"noUnusedVariables": "error"
 			},
 			"style": {
+				"noNestedTernary": "warn",
 				"noNonNullAssertion": "error",
 				"useConst": "error",
 				"useImportType": "error"
@@ -68,6 +82,22 @@
 		]
 	},
 	"overrides": [
+		{
+			"includes": ["**/*.test.ts", "**/*.test.tsx"],
+			"linter": {
+				"rules": {
+					"complexity": {
+						"noExcessiveLinesPerFunction": {
+							"level": "warn",
+							"options": {
+								"maxLines": 100,
+								"skipBlankLines": true
+							}
+						}
+					}
+				}
+			}
+		},
 		{
 			"includes": ["packages/ui/**"],
 			"linter": {

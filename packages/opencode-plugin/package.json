@@ -23,6 +23,9 @@
 	"dependencies": {
 		"@opencode-ai/plugin": "1.18.25"
 	},
+	"devDependencies": {
+		"@types/node": "^24.12.4"
+	},
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/kunickiaj/codemem.git",

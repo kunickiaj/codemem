@@ -40,6 +40,16 @@
 - If you change plugin behavior, update `README.md` and any affected docs under `docs/`.
 - If you change memory kinds or their presentation, update all three surfaces together: `packages/core/src/store.ts`, `packages/mcp-server/src/index.ts`, and `packages/ui/src/tabs/feed.ts`.
 
+## Code shape
+
+- Replace nested ternaries with branches or a lookup.
+- Use guard clauses instead of nesting preconditions.
+- Pass named options instead of opaque boolean literals; predicate return values are fine.
+- Extract named stages when a function needs comments to label its sections.
+- Use JSX ternaries only for single-expression leaves; move branching outside nested markup.
+- Treat `[lint-feedback]` new or worsened diagnostics returned after an edit as blocking for that edit and fix them locally. Legacy warnings outside the edit should not trigger broad cleanup.
+- Use `packages/viewer-server/src/request-rate-limit.ts`, `packages/cli/src/shared-options.ts`, and `packages/cli/src/help-style.ts` as reference exemplars only.
+
 ## Release traps
 
 - Release tags trigger publishing. Tag only the merged `main` commit, not a `release/*` branch tip.
