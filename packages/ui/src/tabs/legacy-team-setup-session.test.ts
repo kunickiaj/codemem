@@ -443,6 +443,91 @@ describe("legacy Team setup session reducer", () => {
 		).toBe(state);
 	});
 
+	it.each([
+		["team_setup_completion_unavailable", "Team setup completion could not be checked"],
+		[
+			"team_setup_completion_conflict",
+			"Another device completed this Team with different reviewed details",
+		],
+		["team_setup_completion_invalid", "The completed Team setup could not be verified"],
+	] as const)("treats %s as a global reload recovery error", (errorCode, expectedMessage) => {
+		// Arrange
+		let state: SetupSessionState = reduceSetupSession(loaded(), {
+			type: "decide_device",
+			deviceRef: "device-a",
+			decision: "excluded",
+		});
+		if (state.status !== "open") throw new Error("expected open mutation session");
+		const command = state.commands[0];
+		if (!command) throw new Error("expected mutation command");
+
+		// Act
+		state = reduceSetupSession(state, {
+			type: "effect_outcome",
+			outcome: {
+				status: "failure",
+				generation: command.generation,
+				id: command.id,
+				kind: command.kind,
+				cause: new LegacyTeamSetupApiError(409, errorCode),
+			},
+		});
+
+		// Assert
+		if (state.status !== "open") throw new Error("expected open failed session");
+		expect(globalError(state)).toMatchObject({
+			scope: { kind: "global" },
+			message: expect.stringContaining(expectedMessage),
+			retry: "load",
+		});
+		expect(globalError(state)?.message).not.toContain(errorCode);
+		expect(errorForItem(state, "device", "device-a")).toBeNull();
+	});
+
+	function failPendingLoad(state: SetupSessionState, cause: Error): SetupSessionState {
+		if (state.status !== "open") throw new Error("expected open session");
+		const command = state.commands.find((entry) => entry.status === "pending");
+		if (!command) throw new Error("expected pending load command");
+		return reduceSetupSession(state, {
+			type: "effect_outcome",
+			outcome: {
+				status: "failure",
+				generation: command.generation,
+				id: command.id,
+				kind: command.kind,
+				cause,
+			},
+		});
+	}
+
+	function retryAndFailLoad(state: SetupSessionState, cause: Error): OpenSetupSessionState {
+		const next = failPendingLoad(reduceSetupSession(state, { type: "retry" }), cause);
+		if (next.status !== "open") throw new Error("expected open failed session");
+		return next;
+	}
+
+	it("replaces a stale load error when a retried load reports a completion outcome", () => {
+		const initialFailure = failPendingLoad(open(), new Error("network down"));
+		if (initialFailure.status !== "open") throw new Error("expected open failed session");
+		expect(globalError(initialFailure)).toMatchObject({ scope: { kind: "load" } });
+
+		const completionFailure = retryAndFailLoad(
+			initialFailure,
+			new LegacyTeamSetupApiError(409, "team_setup_completion_conflict"),
+		);
+		expect(completionFailure.errors).toHaveLength(1);
+		expect(globalError(completionFailure)).toMatchObject({
+			scope: { kind: "global" },
+			message: expect.stringContaining("Another device completed this Team"),
+		});
+
+		const genericFailureAgain = retryAndFailLoad(completionFailure, new Error("network down"));
+		expect(genericFailureAgain.errors).toHaveLength(1);
+		expect(globalError(genericFailureAgain)?.message).not.toContain(
+			"Another device completed this Team",
+		);
+	});
+
 	it("prioritizes global refresh recovery and preserves it after a transient failure", () => {
 		let state: OpenSetupSessionState = {
 			...loaded(),
@@ -614,6 +699,153 @@ describe("legacy Team setup session reducer", () => {
 
 		expect(globalError(state)).not.toBeNull();
 		expect(reduceSetupSession(state, { type: "finish" })).toBe(state);
+	});
+
+	it("reloads completion state after finish publication is unavailable", () => {
+		let state = reduceSetupSession(loaded(open(), readyView()), { type: "finish" });
+		if (state.status !== "open") throw new Error("expected finish session");
+		const command = state.commands[0];
+		if (command?.kind !== "finish") throw new Error("expected finish command");
+		state = reduceSetupSession(state, {
+			type: "effect_outcome",
+			outcome: {
+				status: "failure",
+				generation: command.generation,
+				id: command.id,
+				kind: command.kind,
+				cause: new LegacyTeamSetupApiError(503, "team_setup_completion_unavailable"),
+			},
+		});
+		if (state.status !== "open") throw new Error("expected failed finish session");
+
+		expect(globalError(state)).toMatchObject({
+			message: expect.stringContaining("no local changes were applied"),
+			retry: "load",
+		});
+		expect(globalError(state)?.message).not.toContain("setup was not finished");
+		state = reduceSetupSession(state, { type: "retry" });
+		expect(state).toMatchObject({
+			commands: [expect.objectContaining({ kind: "load", refresh: false })],
+		});
+	});
+
+	it("uses a plain detail retry when confirmation-stale recovery also fails", () => {
+		let state = reduceSetupSession(loaded(open(), readyView()), { type: "finish" });
+		if (state.status !== "open") throw new Error("expected finish session");
+		const command = state.commands[0];
+		if (command?.kind !== "finish") throw new Error("expected finish command");
+		state = reduceSetupSession(state, {
+			type: "effect_outcome",
+			outcome: {
+				status: "failure",
+				generation: command.generation,
+				id: command.id,
+				kind: command.kind,
+				cause: new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"),
+				recoveryCause: new LegacyTeamSetupApiError(503, "team_setup_completion_unavailable"),
+			},
+		});
+		if (state.status !== "open") throw new Error("expected failed finish session");
+
+		expect(globalError(state)).toMatchObject({
+			message: expect.stringContaining("changed since it was last reviewed"),
+			retry: "load",
+		});
+		expect(globalError(state)?.message).not.toContain("no local changes were applied");
+		state = reduceSetupSession(state, { type: "retry" });
+		expect(state).toMatchObject({
+			commands: [expect.objectContaining({ kind: "load", refresh: false })],
+		});
+	});
+
+	it("preserves refresh retry when roster-change recovery also fails", () => {
+		let state = reduceSetupSession(loaded(open(), readyView()), { type: "finish" });
+		if (state.status !== "open") throw new Error("expected finish session");
+		const command = state.commands[0];
+		if (command?.kind !== "finish") throw new Error("expected finish command");
+		state = reduceSetupSession(state, {
+			type: "effect_outcome",
+			outcome: {
+				status: "failure",
+				generation: command.generation,
+				id: command.id,
+				kind: command.kind,
+				cause: new LegacyTeamSetupApiError(409, "team_setup_roster_changed"),
+				recoveryCause: new LegacyTeamSetupApiError(503, "team_setup_completion_unavailable"),
+			},
+		});
+		if (state.status !== "open") throw new Error("expected failed finish session");
+
+		expect(globalError(state)).toMatchObject({
+			message: expect.stringContaining("changed since it was last reviewed"),
+			retry: "refresh",
+		});
+		state = reduceSetupSession(state, { type: "retry" });
+		expect(state).toMatchObject({
+			commands: [expect.objectContaining({ kind: "load", refresh: true })],
+		});
+	});
+
+	it.each([
+		["team_setup_completion_conflict", "different reviewed details"],
+		["team_setup_completion_invalid", "could not be verified"],
+	] as const)(
+		"surfaces terminal recovery error %s with a detail retry",
+		(errorCode, expectedMessage) => {
+			let state = reduceSetupSession(loaded(open(), readyView()), { type: "finish" });
+			if (state.status !== "open") throw new Error("expected finish session");
+			const command = state.commands[0];
+			if (command?.kind !== "finish") throw new Error("expected finish command");
+			state = reduceSetupSession(state, {
+				type: "effect_outcome",
+				outcome: {
+					status: "failure",
+					generation: command.generation,
+					id: command.id,
+					kind: command.kind,
+					cause: new LegacyTeamSetupApiError(409, "team_setup_roster_changed"),
+					recoveryCause: new LegacyTeamSetupApiError(409, errorCode),
+				},
+			});
+			if (state.status !== "open") throw new Error("expected failed finish session");
+
+			expect(globalError(state)).toMatchObject({
+				message: expect.stringContaining(expectedMessage),
+				retry: "load",
+			});
+			state = reduceSetupSession(state, { type: "retry" });
+			expect(state).toMatchObject({
+				commands: [expect.objectContaining({ kind: "load", refresh: false })],
+			});
+		},
+	);
+
+	it("uses a plain detail retry when roster-change recovery finds a completed draft", () => {
+		let state = reduceSetupSession(loaded(open(), readyView()), { type: "finish" });
+		if (state.status !== "open") throw new Error("expected finish session");
+		const command = state.commands[0];
+		if (command?.kind !== "finish") throw new Error("expected finish command");
+		state = reduceSetupSession(state, {
+			type: "effect_outcome",
+			outcome: {
+				status: "failure",
+				generation: command.generation,
+				id: command.id,
+				kind: command.kind,
+				cause: new LegacyTeamSetupApiError(409, "team_setup_roster_changed"),
+				recoveryCause: new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"),
+			},
+		});
+		if (state.status !== "open") throw new Error("expected failed finish session");
+
+		expect(globalError(state)).toMatchObject({
+			message: expect.stringContaining("changed since it was last reviewed"),
+			retry: "load",
+		});
+		state = reduceSetupSession(state, { type: "retry" });
+		expect(state).toMatchObject({
+			commands: [expect.objectContaining({ kind: "load", refresh: false })],
+		});
 	});
 
 	it.each([

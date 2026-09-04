@@ -359,6 +359,8 @@ For ongoing collaboration:
 
 Team onboarding links Identities and devices. The invitation does not assign Projects to the Team, but a new member inherits every current and future Project assigned to it. Review the Team's Projects before sending or accepting the invitation. Use **Share exact Projects** to send a separate direct Project invitation to one Identity. Team sharing must already be configured, but accepting the direct invitation does not add the recipient to the Team.
 
+For a legacy Team that needs setup, finish the reviewed setup on any upgraded device. The first valid finish becomes the Team's shared result; other upgraded devices apply it locally and stop showing that setup task. See [Set up an existing Team](docs/user-guide.md#set-up-an-existing-team) for recovery and compatibility details.
+
 For a direct share, choose **Create an invitation → Share exact Projects**:
 
 1. Choose or enter the teammate's **Identity display name**.

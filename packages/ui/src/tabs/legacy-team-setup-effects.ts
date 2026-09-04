@@ -86,6 +86,7 @@ export type SetupEffectOutcome =
 			id: string;
 			kind: SetupEffect["kind"];
 			cause: unknown;
+			recoveryCause?: unknown;
 			recoveredView?: LegacyTeamSetupViewV1;
 	  };
 
@@ -116,13 +117,20 @@ export function createSetupEffectRunner(dependencies: SetupEffectDependencies): 
 				view,
 			};
 		} catch (cause) {
-			const recoveredView = await recover(effect, dependencies, cause);
+			let recoveredView: LegacyTeamSetupViewV1 | undefined;
+			let recoveryCause: unknown;
+			try {
+				recoveredView = await recover(effect, dependencies, cause);
+			} catch (recoveryError) {
+				recoveryCause = recoveryError;
+			}
 			return {
 				status: "failure",
 				generation: effect.generation,
 				id: effect.id,
 				kind: effect.kind,
 				cause,
+				...(recoveryCause ? { recoveryCause } : {}),
 				...(recoveredView ? { recoveredView } : {}),
 			};
 		}
@@ -190,11 +198,17 @@ async function recover(
 	dependencies: SetupEffectDependencies,
 	cause: unknown,
 ): Promise<LegacyTeamSetupViewV1 | undefined> {
-	if (effect.kind === "load" || effect.kind === "completion_refresh") return undefined;
+	if (effect.kind === "completion_refresh") return undefined;
 	if (!(cause instanceof LegacyTeamSetupApiError) || !isChangedStateCode(cause.errorCode)) {
 		return undefined;
 	}
-	return dependencies.loadDetail(effect.candidateRef).catch(() => undefined);
+	if (
+		effect.kind === "load" &&
+		(effect.refresh || cause.errorCode !== "team_setup_confirmation_stale")
+	) {
+		return undefined;
+	}
+	return dependencies.loadDetail(effect.candidateRef);
 }
 
 export function isChangedStateCode(code: LegacyTeamSetupErrorCode): boolean {
