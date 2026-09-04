@@ -900,8 +900,14 @@ export type {
 	RecipientPolicyTeamRenameResultV1,
 } from "./recipient-policy-team-metadata.js";
 export {
+	claimRecipientPolicyActorMutations,
+	claimRecipientPolicyPublicationMutation,
 	RecipientPolicyTeamRenameError,
 	renameRecipientPolicyTeam,
+	serializeRecipientPolicyActorMutations,
+	serializeRecipientPolicyCoordinatorGroupMutation,
+	serializeRecipientPolicyPublicationMutation,
+	serializeRecipientPolicyTeamMutation,
 } from "./recipient-policy-team-metadata.js";
 export type {
 	RecipientReviewedIntentExcludedProjectV1,

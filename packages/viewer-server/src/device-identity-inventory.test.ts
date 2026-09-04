@@ -6,6 +6,7 @@ import {
 	fingerprintPublicKey,
 	initTestSchema,
 	MemoryStore,
+	serializeRecipientPolicyPublicationMutation,
 } from "@codemem/core";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
@@ -404,10 +405,37 @@ describe("device Identity binding routes", () => {
 				bindings,
 				reviewedInventoryDigest: preview.reviewedInventoryDigest,
 			};
-			const commitResponse = await app.request(
-				"/api/sync/recipient-policy/v1/device-bindings/commit",
-				{ method: "POST", body: JSON.stringify(commitBody) },
+			let releasePublication: () => void = () => undefined;
+			const publicationGate = new Promise<void>((resolve) => {
+				releasePublication = resolve;
+			});
+			let markPublicationStarted: () => void = () => undefined;
+			const publicationStarted = new Promise<void>((resolve) => {
+				markPublicationStarted = resolve;
+			});
+			const heldPublication = serializeRecipientPolicyPublicationMutation(
+				fixture.store.db,
+				async () => {
+					markPublicationStarted();
+					await publicationGate;
+				},
 			);
+			await publicationStarted;
+			let commitSettled = false;
+			const commitRequest = app
+				.request("/api/sync/recipient-policy/v1/device-bindings/commit", {
+					method: "POST",
+					body: JSON.stringify(commitBody),
+				})
+				.then((response) => {
+					commitSettled = true;
+					return response;
+				});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(commitSettled).toBe(false);
+			releasePublication();
+			const commitResponse = await commitRequest;
+			await heldPublication;
 			const retryResponse = await app.request(
 				"/api/sync/recipient-policy/v1/device-bindings/commit",
 				{ method: "POST", body: JSON.stringify(commitBody) },

@@ -21,6 +21,7 @@ import {
 } from "./recipient-policy-identifiers.js";
 import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-policy-reconciliation.js";
 import {
+	serializeRecipientPolicyActorMutations,
 	serializeRecipientPolicyCoordinatorGroupMutation,
 	serializeRecipientPolicyTeamMutation,
 } from "./recipient-policy-team-metadata.js";
@@ -617,6 +618,31 @@ describe("legacy Team setup activation", () => {
 		releaseMutation();
 		await mutation;
 		await expect(activation).resolves.toMatchObject({ status: "completed", teamId });
+	});
+
+	it("serializes finish against actor mutations for the draft's identities", async () => {
+		const draft = readyDraft();
+		const review = preview(draft);
+		let releaseMutation = () => undefined;
+		const mutationPending = new Promise<void>((resolve) => {
+			releaseMutation = resolve;
+		});
+		let mutationStarted = false;
+		const mutation = serializeRecipientPolicyActorMutations(db, ["identity-a"], async () => {
+			mutationStarted = true;
+			await mutationPending;
+		});
+		await vi.waitFor(() => expect(mutationStarted).toBe(true));
+
+		// Finish must wait behind the in-flight actor mutation (a merge or
+		// deactivation) rather than commit assignments for an identity mid-change.
+		const activation = finish(draft, review);
+		await Promise.resolve();
+		expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+
+		releaseMutation();
+		await mutation;
+		await expect(activation).resolves.toMatchObject({ status: "completed" });
 	});
 
 	it("waits for an in-flight coordinator group mutation before activating the Team", async () => {
