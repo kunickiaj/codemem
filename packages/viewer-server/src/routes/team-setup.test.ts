@@ -532,6 +532,10 @@ describe("Team setup roster loading", () => {
 			});
 			const app = teamSetupRoutes({
 				getStore: () => store,
+				completionDependencies: {
+					create: async ({ manifest }) => ({ status: "created", manifest }),
+					list: async () => [],
+				},
 				snapshotLoaderDependencies: {
 					readConfig: () => ({
 						...readCoordinatorSyncConfig({}),
@@ -984,6 +988,10 @@ describe("Team setup roster loading", () => {
 			try {
 				const app = teamSetupRoutes({
 					getStore: () => store,
+					completionDependencies: {
+						create: async ({ manifest }) => ({ status: "created", manifest }),
+						list: async () => [],
+					},
 					snapshotLoaderDependencies: {
 						readConfig: () => ({
 							...readCoordinatorSyncConfig({}),
@@ -1100,7 +1108,7 @@ describe("Team setup roster loading", () => {
 				...delta,
 				deviceAccessChanges: [...deviceAccessChanges, deviceAccessChanges[0]],
 			}),
-		).toThrow("legacy_team_setup_roster_too_large");
+		).toThrow("team_setup_completion_invalid");
 	});
 
 	it("rejects mapping-choice responses that cannot include every opaque choice", () => {

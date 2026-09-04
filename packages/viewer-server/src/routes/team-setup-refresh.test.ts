@@ -23,6 +23,7 @@ describe("Team setup refresh snapshots", () => {
 		const app = teamSetupRoutes({
 			getStore: () => store,
 			loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
+			completionDependencies: null,
 		});
 		try {
 			store.db

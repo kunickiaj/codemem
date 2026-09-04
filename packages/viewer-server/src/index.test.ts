@@ -186,6 +186,7 @@ function createTestApp(opts?: {
 	sweeper?: unknown;
 	getUpdateStatus?: (options: core.GetUpdateStatusOptions) => Promise<core.UpdateStatus>;
 	loadLegacyTeamConfiguredGroupSnapshots?: LegacyTeamConfiguredGroupSnapshotLoader;
+	teamSetupCompletionDependencies?: AppOptions["teamSetupCompletionDependencies"];
 	readCoordinatorConfig?: AppOptions["readCoordinatorConfig"];
 	renameCoordinatorGroup?: AppOptions["renameCoordinatorGroup"];
 	syncRequestRateLimit?: {
@@ -217,6 +218,7 @@ function createTestApp(opts?: {
 		getUpdateStatus: opts?.getUpdateStatus,
 		getSyncRuntimeStatus: opts?.getSyncRuntimeStatus,
 		loadLegacyTeamConfiguredGroupSnapshots: opts?.loadLegacyTeamConfiguredGroupSnapshots,
+		teamSetupCompletionDependencies: opts?.teamSetupCompletionDependencies ?? null,
 		readCoordinatorConfig: opts?.readCoordinatorConfig,
 		renameCoordinatorGroup: opts?.renameCoordinatorGroup,
 	};
@@ -504,6 +506,7 @@ describe("viewer-server", () => {
 		const rawDeviceId = "device-secret-id";
 		const rawIdentityId = "identity-secret-id";
 		const rawProjectIdentity = "https://private.example.invalid/secret/repo.git";
+		const rawFingerprint = "a".repeat(64);
 		const candidateRef = core.legacyTeamCandidateId(coordinatorId, groupId);
 		const snapshots: core.LegacyTeamConfiguredGroupSnapshot[] = [
 			{
@@ -513,7 +516,7 @@ describe("viewer-server", () => {
 				devices: [
 					{
 						deviceId: rawDeviceId,
-						fingerprint: "fingerprint-secret",
+						fingerprint: rawFingerprint,
 						displayName: "Review Laptop",
 						enabled: true,
 					},
@@ -568,6 +571,15 @@ describe("viewer-server", () => {
 			const loadSnapshots = vi.fn(async () => snapshots);
 			const { app, ensureStore, cleanup } = createTestApp({
 				loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
+				readCoordinatorConfig: () =>
+					core.readCoordinatorSyncConfig({
+						sync_coordinator_url: coordinatorId,
+						sync_coordinator_admin_secret: "test-secret",
+					}),
+				teamSetupCompletionDependencies: {
+					create: async ({ manifest }) => ({ status: "created", manifest }),
+					list: async () => [],
+				},
 			});
 			try {
 				const store = ensureStore();
@@ -825,7 +837,7 @@ describe("viewer-server", () => {
 				expect(JSON.stringify(detail)).not.toContain(groupId);
 				expect(JSON.stringify(detail)).not.toContain(rawDeviceId);
 				expect(JSON.stringify(detail)).not.toContain(rawIdentityId);
-				expect(JSON.stringify(detail)).not.toContain("fingerprint-secret");
+				expect(JSON.stringify(detail)).not.toContain(rawFingerprint);
 				expect(JSON.stringify(detail)).not.toContain(rawProjectIdentity);
 				expect(JSON.stringify(detail)).not.toContain(rawPreview.accessDelta.teamChanges[0]?.teamId);
 				expect(detail).toHaveProperty("accessDelta.teamChanges.0.teamRef");
@@ -927,8 +939,12 @@ describe("viewer-server", () => {
 					body: JSON.stringify(finishRequest),
 				});
 				expect(finishResponse.status).toBe(200);
-				expect(loadSnapshots).toHaveBeenCalledTimes(1);
-				expect(loadSnapshots).toHaveBeenCalledWith({ candidateRef });
+				expect(loadSnapshots).toHaveBeenCalledTimes(2);
+				expect(loadSnapshots).toHaveBeenNthCalledWith(1, { candidateRef });
+				expect(loadSnapshots).toHaveBeenNthCalledWith(
+					2,
+					expect.objectContaining({ candidateRef, deadlineMs: expect.any(Number) }),
+				);
 				const finished = await finishResponse.json();
 				expect(finished).toMatchObject({
 					version: 1,
