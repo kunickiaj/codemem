@@ -25,8 +25,11 @@ describe("project invite identity", () => {
 			}),
 		).toBe("Codemem laptop");
 		expect(friendlyDeviceName({ osName: "host-name.local", coordinatorName: "Remote" })).toBe(
-			"host name",
+			"host-name",
 		);
+		expect(
+			friendlyDeviceName({ osName: "emm-five.home.morgowicz.com", coordinatorName: "Remote" }),
+		).toBe("emm-five.home.morgowicz.com");
 		expect(friendlyDeviceName({ coordinatorName: "Remote" })).toBe("Remote");
 		expect(friendlyDeviceName({ fallbackSeed: "abcd-1234" })).toBe("Codemem device abcd12");
 		expect(friendlyDeviceName({ osName: "e67fda8c4b44", fallbackSeed: "e67fda8c4b44" })).toBe(
