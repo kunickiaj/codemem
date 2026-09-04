@@ -190,6 +190,13 @@ async function renameLinkedCoordinatorGroup(
 	if (!renamed) fail("team_coordinator_rename_failed");
 }
 
+export const RECIPIENT_POLICY_TEAM_RENAME_REVISION_DOMAIN = "policy-team-metadata-rename-v1";
+
+/** A Team revision minted by `renameRecipientPolicyTeam` rather than by an activation. */
+export function isRecipientPolicyTeamRenameRevision(revision: string): boolean {
+	return revision.startsWith(`${RECIPIENT_POLICY_TEAM_RENAME_REVISION_DOMAIN}:`);
+}
+
 async function serializeMutation<T>(
 	queues: WeakMap<Database, Map<string, Promise<void>>>,
 	db: Database,
@@ -363,7 +370,7 @@ async function renameRecipientPolicyTeamOnce(
 	}
 
 	const now = input.now ?? new Date().toISOString();
-	const revision = recipientPolicyDigest("policy-team-metadata-rename-v1", [
+	const revision = recipientPolicyDigest(RECIPIENT_POLICY_TEAM_RENAME_REVISION_DOMAIN, [
 		team.team_id,
 		team.revision,
 		displayName,

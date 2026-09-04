@@ -375,6 +375,17 @@ function requireAccessDeltaTraversalWithinLimit(
 	}
 }
 
+function requireCanonicalSnapshotWithinLimits(
+	devices: readonly unknown[],
+	projects: readonly unknown[],
+): void {
+	try {
+		requireLegacyTeamSetupSnapshotWithinLimits({ devices, projects });
+	} catch {
+		activationError("team_setup_completion_invalid");
+	}
+}
+
 function normalizedActivationError(error: unknown): LegacyTeamSetupActivationError {
 	if (error instanceof LegacyTeamSetupActivationError) return error;
 	if (
@@ -901,7 +912,7 @@ export function requireLegacyTeamSetupAccessDeltaWithinLimit(
 		delta.deviceAccessChanges.length,
 	];
 	if (counts.some((count) => count > LEGACY_TEAM_SETUP_MAX_ACCESS_DELTA_ENTRIES)) {
-		throw new Error("legacy_team_setup_roster_too_large");
+		activationError("team_setup_completion_invalid");
 	}
 }
 
@@ -1499,13 +1510,16 @@ function applyActivation(
 	preview: LegacyTeamSetupActivationPreviewV1,
 	freshRoster: Awaited<ReturnType<FinishLegacyTeamSetupActivationInput["loadFreshRoster"]>>,
 	now: string,
-	options: { revisionOverride?: string; completionKey?: string } = {},
+	options: {
+		revisionOverride?: string;
+		completionKey?: string;
+		allowExistingCompletion?: boolean;
+	} = {},
 ): LegacyTeamSetupActivationResultV1 {
 	const revision =
 		options.revisionOverride ??
 		recipientPolicyDigest("legacy-team-activation-revision-v1", preview.finishDigest);
 	const completionKey = options.completionKey ?? preview.finishDigest;
-	const allowExistingCompletion = options.completionKey !== undefined;
 	if (!model.team) {
 		db.prepare(
 			`INSERT INTO policy_teams(
@@ -1855,35 +1869,30 @@ function applyActivation(
 	] as const;
 	const insertedCompletion = db
 		.prepare(
-			`INSERT ${allowExistingCompletion ? "OR IGNORE " : ""}INTO legacy_team_setup_completions(
+			`INSERT ${options.allowExistingCompletion ? "OR IGNORE " : ""}INTO legacy_team_setup_completions(
 		 attempt_id, finish_digest, candidate_ref, confirmed_access_delta_digest,
 		 completed_team_id, response_json, completed_at, created_at
 		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		)
 		.run(...completionValues);
-	if (allowExistingCompletion && insertedCompletion.changes === 0) {
+	if (options.allowExistingCompletion && insertedCompletion.changes === 0) {
 		const existing = db
 			.prepare(
-				`SELECT candidate_ref, confirmed_access_delta_digest, completed_team_id,
-				        response_json, completed_at
+				`SELECT candidate_ref, completed_team_id, completed_at
 				 FROM legacy_team_setup_completions
 				 WHERE attempt_id = ? AND finish_digest = ?`,
 			)
 			.get(model.draft.attempt_id, completionKey) as
 			| {
 					candidate_ref: string;
-					confirmed_access_delta_digest: string;
 					completed_team_id: string;
-					response_json: string;
 					completed_at: string;
 			  }
 			| undefined;
 		if (
 			!existing ||
 			existing.candidate_ref !== model.draft.candidate_id ||
-			existing.confirmed_access_delta_digest !== preview.accessDeltaDigest ||
 			existing.completed_team_id !== model.teamId ||
-			existing.response_json !== JSON.stringify(result) ||
 			existing.completed_at !== now
 		) {
 			activationError("team_setup_completion_invalid");
@@ -1922,23 +1931,34 @@ function canonicalCompletionReplay(
  * Applies coordinator-owned completion facts after the caller has rewritten the
  * current draft to match a validated manifest. The caller owns serialization
  * and the surrounding immediate transaction.
+ *
+ * By default the completion is keyed by the derived preview digest so the
+ * originating device's confirmed replay token stays valid. Callers retrying an
+ * exact application against an already-completed draft pass `completionKey`
+ * to reuse the stored key; deriving a fresh preview from materialized policy
+ * would otherwise rotate the key on every retry.
  */
 export function applyCanonicalLegacyTeamSetupActivationInTransaction(
 	db: Database,
 	input: PreviewLegacyTeamSetupActivationInput & {
 		policyRevision: string;
 		completedAt: string;
-		completionKey: string;
+		completionKey?: string;
 		allowCompletedDraft?: boolean;
 		allowStaleDraft?: boolean;
 	},
 ): LegacyTeamSetupActivationResultV1 {
+	if (!db.inTransaction) activationError("team_setup_failed");
 	try {
 		// A retry after a lost response or a reconciliation re-run must replay the
 		// committed application. Loading the completed draft first would validate
 		// pre-activation assignment expectations against post-activation state.
-		if (input.allowCompletedDraft) {
-			const replay = canonicalCompletionReplay(db, input);
+		if (input.allowCompletedDraft && input.completionKey) {
+			const replay = canonicalCompletionReplay(db, {
+				candidateRef: input.candidateRef,
+				attemptId: input.attemptId,
+				completionKey: input.completionKey,
+			});
 			if (replay) return replay;
 		}
 		const model = loadModel(db, { ...input, allowInactiveCanonicalTeam: true });
@@ -1955,6 +1975,7 @@ export function applyCanonicalLegacyTeamSetupActivationInTransaction(
 		return applyActivation(db, model, inspected, roster, input.completedAt, {
 			revisionOverride: input.policyRevision,
 			completionKey: input.completionKey,
+			allowExistingCompletion: input.allowCompletedDraft,
 		});
 	} catch (error) {
 		throw normalizedActivationError(error);
@@ -1975,6 +1996,7 @@ export function applyAdditiveCanonicalLegacyTeamSetupProjectsInTransaction(
 		completedAt: string;
 	},
 ): void {
+	if (!db.inTransaction) activationError("team_setup_failed");
 	try {
 		const projectRefs = [...new Set(input.projectRefs)].toSorted(compareText);
 		if (
@@ -2016,6 +2038,14 @@ export function applyAdditiveCanonicalLegacyTeamSetupProjectsInTransaction(
 				 ORDER BY project_ref`,
 			)
 			.all(input.attemptId) as AdditiveProjectRow[];
+		const deviceIds = db
+			.prepare(
+				`SELECT device_id FROM legacy_team_setup_draft_devices
+				 WHERE attempt_id = ? ORDER BY device_id LIMIT ?`,
+			)
+			.pluck()
+			.all(input.attemptId, LEGACY_TEAM_SETUP_MAX_DEVICES + 1) as string[];
+		requireCanonicalSnapshotWithinLimits(deviceIds, allProjects);
 		const requestedProjectRefs = new Set(projectRefs);
 		const projects = allProjects.filter((project) => requestedProjectRefs.has(project.project_ref));
 		if (projects.length !== projectRefs.length) {

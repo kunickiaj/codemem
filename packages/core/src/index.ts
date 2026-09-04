@@ -500,6 +500,7 @@ export {
 } from "./legacy-recipient-policy-projection.js";
 export * from "./legacy-team-candidate.js";
 export * from "./legacy-team-setup-activation.js";
+export * from "./legacy-team-setup-completion-manifest.js";
 export * from "./legacy-team-setup-draft.js";
 export type {
 	LegacyTeamSetupCoreErrorCode,
