@@ -16,7 +16,8 @@ import {
 import type { LegacyTeamSetupActivationErrorCode } from "./legacy-team-setup-errors.js";
 import {
 	LEGACY_TEAM_SETUP_MAX_DEVICES,
-	LEGACY_TEAM_SETUP_MAX_PROJECTS,
+	requireLegacyTeamSetupAccessDeltaTraversalWithinLimit,
+	requireLegacyTeamSetupSnapshotWithinLimits,
 } from "./legacy-team-setup-limits.js";
 import {
 	activeUnmergedActorIds,
@@ -37,6 +38,7 @@ import { deriveRecipientPolicyEffectiveDevices } from "./recipient-policy-reconc
 import {
 	serializeRecipientPolicyActorMutations,
 	serializeRecipientPolicyCoordinatorGroupMutation,
+	serializeRecipientPolicyPublicationMutation,
 	serializeRecipientPolicyTeamMutation,
 } from "./recipient-policy-team-metadata.js";
 import {
@@ -318,6 +320,47 @@ function activationError(code: LegacyTeamSetupActivationErrorCode): never {
 	throw new LegacyTeamSetupActivationError(code);
 }
 
+function requireActivationModelWithinLimits(
+	devices: readonly DraftDeviceRow[],
+	projects: readonly DraftProjectRow[],
+): void {
+	try {
+		requireLegacyTeamSetupSnapshotWithinLimits({ devices, projects });
+	} catch {
+		activationError("team_setup_roster_unavailable");
+	}
+}
+
+function requireAccessDeltaTraversalWithinLimit(
+	model: Pick<ActivationModel, "projects" | "recipients" | "assignments" | "devices">,
+): void {
+	const projectIdentities = new Set([
+		...model.projects.flatMap((project) =>
+			project.resolved_project_identity ? [project.resolved_project_identity] : [],
+		),
+		...model.recipients
+			.filter((row) => row.status === "active")
+			.map((row) => row.canonical_project_identity),
+	]);
+	// Every persisted assignment row is fed into each Project derivation
+	// regardless of status, so all of them count. Of the draft devices, only
+	// included ones can add a row; excluded or removed devices never do.
+	const deviceIds = new Set([
+		...model.assignments.map((row) => row.device_id),
+		...model.devices
+			.filter((device) => device.decision === "included" && device.target_identity_id)
+			.map((device) => device.device_id),
+	]);
+	try {
+		requireLegacyTeamSetupAccessDeltaTraversalWithinLimit({
+			projectIdentities,
+			deviceCount: deviceIds.size,
+		});
+	} catch {
+		activationError("team_setup_roster_unavailable");
+	}
+}
+
 function normalizedActivationError(error: unknown): LegacyTeamSetupActivationError {
 	if (error instanceof LegacyTeamSetupActivationError) return error;
 	if (
@@ -406,12 +449,11 @@ function loadModel(db: Database, input: PreviewLegacyTeamSetupActivationInput): 
 			 FROM legacy_team_setup_draft_projects WHERE attempt_id = ? ORDER BY project_ref`,
 		)
 		.all(input.attemptId) as DraftProjectRow[];
+	requireActivationModelWithinLimits(devices, projects);
 	if (
 		devices.length === 0 ||
-		devices.length > LEGACY_TEAM_SETUP_MAX_DEVICES ||
 		// A configured group without displayed Projects is a valid setup: the
 		// reviewed Team becomes ready for future sharing with no mappings yet.
-		projects.length > LEGACY_TEAM_SETUP_MAX_PROJECTS ||
 		devices.some(
 			(device) =>
 				device.decision === "unresolved" ||
@@ -557,6 +599,7 @@ function loadModel(db: Database, input: PreviewLegacyTeamSetupActivationInput): 
 			.map((device) => device.device_id)
 			.toSorted(compareText),
 	};
+	requireAccessDeltaTraversalWithinLimit(model);
 	validateAssignmentExpectations(model);
 	validateCanonicalState(db, model);
 	return model;
@@ -1712,7 +1755,7 @@ function applyActivation(
 	return result;
 }
 
-export async function finishLegacyTeamSetupActivation(
+async function finishLegacyTeamSetupActivationWithPublicationLock(
 	db: Database,
 	input: FinishLegacyTeamSetupActivationInput,
 ): Promise<LegacyTeamSetupActivationResultV1> {
@@ -1815,4 +1858,18 @@ function draftActorIds(model: ActivationModel): string[] {
 		...(device.target_identity_id ? [device.target_identity_id] : []),
 		...(device.existing_identity_id ? [device.existing_identity_id] : []),
 	]);
+}
+
+export async function finishLegacyTeamSetupActivation(
+	db: Database,
+	input: FinishLegacyTeamSetupActivationInput,
+): Promise<LegacyTeamSetupActivationResultV1> {
+	// An exact retry of a committed activation must not queue behind unrelated
+	// publications; its immutable response is already persisted. The locked
+	// path repeats the lookup for finishes that overlap the commit.
+	const replay = exactReplay(db, input);
+	if (replay) return replay;
+	return serializeRecipientPolicyPublicationMutation(db, () =>
+		finishLegacyTeamSetupActivationWithPublicationLock(db, input),
+	);
 }

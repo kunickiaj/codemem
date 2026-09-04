@@ -707,20 +707,16 @@ function viewerAccessDeltaDigest(delta: LegacyTeamSetupViewerAccessDeltaV1): str
 	return recipientPolicyDigest("legacy-team-viewer-access-delta-v1", delta);
 }
 
+// Each category is capped independently, matching core's activation limit:
+// a maximal 500-device/20-Project activation fills the device category exactly,
+// and the mandatory Team and membership entries must still fit alongside it.
 function requireBoundedAccessDelta(delta: LegacyTeamSetupAccessDeltaV1): void {
-	const total =
-		delta.teamChanges.length +
-		delta.membershipChanges.length +
-		delta.projectChanges.length +
-		delta.recipientChanges.length +
-		delta.deviceAccessChanges.length;
 	if (
 		delta.teamChanges.length > MAX_ACCESS_DELTA_ENTRIES ||
 		delta.membershipChanges.length > MAX_ACCESS_DELTA_ENTRIES ||
 		delta.projectChanges.length > MAX_ACCESS_DELTA_ENTRIES ||
 		delta.recipientChanges.length > MAX_ACCESS_DELTA_ENTRIES ||
-		delta.deviceAccessChanges.length > MAX_ACCESS_DELTA_ENTRIES ||
-		total > MAX_ACCESS_DELTA_ENTRIES
+		delta.deviceAccessChanges.length > MAX_ACCESS_DELTA_ENTRIES
 	) {
 		throw new Error("legacy_team_setup_roster_too_large");
 	}
@@ -873,6 +869,7 @@ export const __teamSetupTestHooks = {
 	loadConfiguredLegacyTeamGroupSnapshotsWith,
 	normalizedCoordinatorId,
 	projectMutationAtomically,
+	requireBoundedAccessDelta,
 	requireCompleteMappingChoices,
 	disambiguateChoiceLabels,
 	safeChoiceLabel,

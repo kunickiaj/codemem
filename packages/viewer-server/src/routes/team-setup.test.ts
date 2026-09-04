@@ -1072,6 +1072,37 @@ describe("Team setup roster loading", () => {
 		).rejects.toThrow("team_setup_roster_unavailable");
 	});
 
+	it("accepts a maximal device access delta alongside the mandatory Team entry", () => {
+		// 500 devices x 20 Projects fills the device category exactly; the Team
+		// addition must not tip the preview into a roster-too-large failure.
+		const deviceAccessChanges = Array.from({ length: 10_000 }, (_, index) => ({
+			canonicalProjectIdentity: `https://git.example.invalid/acme/project-${index % 20}.git`,
+			deviceId: `device-${Math.floor(index / 20)}`,
+			change: "add" as const,
+		}));
+		const delta = {
+			teamChanges: [
+				{
+					teamId: "policy-team-v1:team",
+					change: "add" as const,
+					fromDeviceEligibilityMode: null,
+					toDeviceEligibilityMode: "reviewed_allowlist" as const,
+				},
+			],
+			membershipChanges: [],
+			projectChanges: [],
+			recipientChanges: [],
+			deviceAccessChanges,
+		};
+		expect(() => __teamSetupTestHooks.requireBoundedAccessDelta(delta)).not.toThrow();
+		expect(() =>
+			__teamSetupTestHooks.requireBoundedAccessDelta({
+				...delta,
+				deviceAccessChanges: [...deviceAccessChanges, deviceAccessChanges[0]],
+			}),
+		).toThrow("legacy_team_setup_roster_too_large");
+	});
+
 	it("rejects mapping-choice responses that cannot include every opaque choice", () => {
 		expect(() => __teamSetupTestHooks.requireCompleteMappingChoices(21, 500)).toThrow(
 			"legacy_team_setup_roster_too_large",

@@ -20,6 +20,7 @@ import {
 } from "./legacy-team-setup-draft.js";
 import {
 	requireLegacyTeamSetupEffectiveDevicesWithinLimit,
+	requireLegacyTeamSetupReachableDevicesWithinLimit,
 	requireLegacyTeamSetupSnapshotWithinLimits,
 } from "./legacy-team-setup-limits.js";
 import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
@@ -859,6 +860,7 @@ function candidateAuthority(
 	requireLegacyTeamSetupEffectiveDevicesWithinLimit(
 		db,
 		rosterDevices,
+		projects,
 		authorityRow?.attempt_id ?? null,
 	);
 	const activeAssignmentIdentity = activeAssignmentIdentityLookup(db);
@@ -875,6 +877,11 @@ function candidateAuthority(
 		completedRow !== null &&
 		completedRow.roster_fingerprint === rosterFingerprint &&
 		completedInventoryCompatible(db, completedRow.attempt_id, projects);
+	// Only the completed-candidate compatibility derivation fans out across
+	// every assignment row; a fresh or in-progress candidate never runs it.
+	if (completionEvidenceMatches) {
+		requireLegacyTeamSetupReachableDevicesWithinLimit(db, rosterDevices, projects);
+	}
 	let ready =
 		completionEvidenceMatches &&
 		isCompatibleReadyTeam(db, candidateId, completedRow, rosterFingerprint);

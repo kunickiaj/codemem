@@ -850,6 +850,7 @@ export function refreshLegacyTeamSetupDraft(
 		requireLegacyTeamSetupEffectiveDevicesWithinLimit(
 			db,
 			input.devices,
+			input.projects,
 			existing?.attempt_id ?? null,
 		);
 		const loadAssignment = assignmentLookup(db);

@@ -23,6 +23,7 @@ import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-p
 import {
 	serializeRecipientPolicyActorMutations,
 	serializeRecipientPolicyCoordinatorGroupMutation,
+	serializeRecipientPolicyPublicationMutation,
 	serializeRecipientPolicyTeamMutation,
 } from "./recipient-policy-team-metadata.js";
 import { initTestSchema } from "./test-utils.js";
@@ -230,6 +231,131 @@ describe("legacy Team setup activation", () => {
 		expect(review.accessDeltaDigest).toMatch(/^legacy-team-access-delta:/u);
 		expect(db.prepare("SELECT total_changes()").pluck().get()).toBe(before);
 		expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+	});
+
+	it("rejects persisted drafts above the Project-device pair limit before preview", () => {
+		// Arrange
+		const draft = readyDraft();
+		const insertDevice = db.prepare(
+			`INSERT INTO legacy_team_setup_draft_devices(
+			 attempt_id, device_id, device_ref, key_fingerprint, display_name, enabled,
+			 existing_identity_id, existing_assignment_version, verified_evidence_kind,
+			 decision, target_identity_id, expected_assignment_kind,
+			 expected_assignment_version, updated_at
+			 ) VALUES (?, ?, ?, ?, ?, 1, 'identity-a', 0, 'active_assignment',
+			 'included', 'identity-a', 'existing', 0, ?)`,
+		);
+		const insertProject = db.prepare(
+			`INSERT INTO legacy_team_setup_draft_projects(
+			 attempt_id, project_ref, source_project_identity, display_name, source_fingerprint,
+			 resolution_kind, resolved_project_identity, target_scope_id, updated_at
+			 ) VALUES (?, ?, ?, ?, ?, 'deterministic', ?, 'scope-engineering', ?)`,
+		);
+		for (let index = 2; index < 500; index += 1) {
+			insertDevice.run(
+				draft.attemptId,
+				`device-${index}`,
+				`device-ref-${index}`,
+				`key-${index}`,
+				`Device ${index}`,
+				NOW,
+			);
+		}
+		for (let index = 2; index < 21; index += 1) {
+			const project = `https://git.example.invalid/acme/project-${index}.git`;
+			insertProject.run(
+				draft.attemptId,
+				`project-ref-${index}`,
+				project,
+				`Project ${index}`,
+				`source-${index}`,
+				project,
+				NOW,
+			);
+		}
+
+		// Act / Assert
+		expect(() => preview(draft)).toThrow("team_setup_roster_unavailable");
+	});
+
+	it("rejects a small draft whose access-delta traversal exceeds the pair limit", () => {
+		// Arrange: a 1-device/1-Project draft in an installation that already
+		// holds many active recipient Projects and assigned devices. The delta
+		// derivation walks every one of them, so the bound must cover that
+		// traversal rather than only the two persisted draft arrays.
+		const draft = readyDraft();
+		const insertRecipient = db.prepare(
+			`INSERT INTO project_recipients(
+			 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			 policy_revision, migration_state, idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'identity', 'identity-b', 'active', 'user', 'r1', 'completed', ?, ?, ?)`,
+		);
+		const insertAssignment = db.prepare(
+			`INSERT INTO identity_devices(
+			 identity_id, device_id, display_name, status, provenance, revision, migration_state,
+			 assignment_version, idempotency_key, created_at, updated_at
+			 ) VALUES ('identity-b', ?, ?, 'active', 'invitation', 'r1', 'completed', 0, ?, ?, ?)`,
+		);
+		for (let index = 0; index < 120; index += 1) {
+			insertRecipient.run(
+				`https://git.example.invalid/acme/existing-${index}.git`,
+				`recipient-${index}`,
+				NOW,
+				NOW,
+			);
+			insertAssignment.run(
+				`device-existing-${index}`,
+				`Device ${index}`,
+				`assign-${index}`,
+				NOW,
+				NOW,
+			);
+		}
+
+		// Act / Assert
+		expect(() => preview(draft)).toThrow("team_setup_roster_unavailable");
+	});
+
+	it("ignores removed draft devices when bounding the access-delta traversal", () => {
+		// Arrange: 500 carried removed devices and 21 active recipient Projects.
+		// Removed devices never reach a derivation row, so the empty assignment
+		// graph must not be counted as 500 x 21 traversed pairs.
+		const draft = readyDraft();
+		const insertDevice = db.prepare(
+			`INSERT INTO legacy_team_setup_draft_devices(
+			 attempt_id, device_id, device_ref, key_fingerprint, display_name, enabled,
+			 existing_identity_id, existing_assignment_version, verified_evidence_kind,
+			 decision, target_identity_id, expected_assignment_kind,
+			 expected_assignment_version, updated_at
+			 ) VALUES (?, ?, ?, ?, ?, 1, NULL, NULL, NULL, 'removed', NULL, 'absent', NULL, ?)`,
+		);
+		const insertRecipient = db.prepare(
+			`INSERT INTO project_recipients(
+			 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			 policy_revision, migration_state, idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'identity', 'identity-b', 'active', 'user', 'r1', 'completed', ?, ?, ?)`,
+		);
+		for (let index = 0; index < 498; index += 1) {
+			insertDevice.run(
+				draft.attemptId,
+				`device-removed-${index}`,
+				`device-ref-removed-${index}`,
+				`key-removed-${index}`,
+				`Removed ${index}`,
+				NOW,
+			);
+		}
+		for (let index = 0; index < 21; index += 1) {
+			insertRecipient.run(
+				`https://git.example.invalid/acme/existing-${index}.git`,
+				`recipient-${index}`,
+				NOW,
+				NOW,
+			);
+		}
+
+		// Act / Assert
+		expect(preview(draft)).toMatchObject({ attemptId: draft.attemptId });
 	});
 
 	it("lists a shared canonical recipient addition once for merged Project resolutions", async () => {
@@ -643,6 +769,64 @@ describe("legacy Team setup activation", () => {
 		releaseMutation();
 		await mutation;
 		await expect(activation).resolves.toMatchObject({ status: "completed" });
+	});
+
+	it("waits for an in-flight publication mutation before activating the Team", async () => {
+		const draft = readyDraft();
+		const review = preview(draft);
+		let releaseMutation = () => undefined;
+		const mutationPending = new Promise<void>((resolve) => {
+			releaseMutation = resolve;
+		});
+		let mutationStarted = false;
+		const mutation = serializeRecipientPolicyPublicationMutation(db, async () => {
+			mutationStarted = true;
+			await mutationPending;
+		});
+		await vi.waitFor(() => expect(mutationStarted).toBe(true));
+
+		const loadFreshRoster = vi.fn(async () => roster);
+		const activation = finish(draft, review, loadFreshRoster);
+		const activationState = await Promise.race([
+			activation.then(() => "completed" as const),
+			new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 25)),
+		]);
+		expect(activationState).toBe("blocked");
+		expect(loadFreshRoster).not.toHaveBeenCalled();
+		expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+
+		releaseMutation();
+		await mutation;
+		await expect(activation).resolves.toMatchObject({ status: "completed" });
+	});
+
+	it("replays a committed activation without waiting for the publication barrier", async () => {
+		const draft = readyDraft();
+		const review = preview(draft);
+		const committed = await finish(draft, review);
+		let releaseMutation = () => undefined;
+		const mutationPending = new Promise<void>((resolve) => {
+			releaseMutation = resolve;
+		});
+		let mutationStarted = false;
+		const mutation = serializeRecipientPolicyPublicationMutation(db, async () => {
+			mutationStarted = true;
+			await mutationPending;
+		});
+		await vi.waitFor(() => expect(mutationStarted).toBe(true));
+
+		// The immutable response is already persisted; an exact retry must not
+		// queue behind an unrelated publication holding the barrier.
+		const replayState = await Promise.race([
+			finish(draft, review).then((result) => ({ kind: "replayed" as const, result })),
+			new Promise<{ kind: "blocked" }>((resolve) =>
+				setTimeout(() => resolve({ kind: "blocked" }), 25),
+			),
+		]);
+		expect(replayState).toEqual({ kind: "replayed", result: committed });
+
+		releaseMutation();
+		await mutation;
 	});
 
 	it("waits for an in-flight coordinator group mutation before activating the Team", async () => {

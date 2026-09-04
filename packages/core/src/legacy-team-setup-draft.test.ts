@@ -767,6 +767,48 @@ describe("legacy Team setup drafts", () => {
 		);
 	});
 
+	it("accepts exactly 10,000 Project-device pairs", () => {
+		const draft = refreshLegacyTeamSetupDraft(db, {
+			...snapshot(),
+			devices: devices(500),
+			projects: projects(20),
+		});
+
+		expect(draft.devices).toHaveLength(500);
+		expect(draft.projects).toHaveLength(20);
+	});
+
+	it("rejects more than 10,000 Project-device pairs without persisting", () => {
+		expect(() =>
+			refreshLegacyTeamSetupDraft(db, {
+				...snapshot(),
+				devices: devices(500),
+				projects: projects(21),
+			}),
+		).toThrow("legacy_team_setup_roster_too_large");
+		expect(db.prepare("SELECT COUNT(*) FROM legacy_team_setup_drafts").pluck().get()).toBe(0);
+	});
+
+	it("counts carried Devices toward the Project-device pair limit", () => {
+		const current = refreshLegacyTeamSetupDraft(db, {
+			...snapshot(),
+			devices: devices(500),
+		});
+		db.prepare(
+			"UPDATE legacy_team_setup_drafts SET state = 'in_progress' WHERE attempt_id = ?",
+		).run(current.attemptId);
+		const before = getLegacyTeamSetupDraft(db, CANDIDATE);
+
+		expect(() =>
+			refreshLegacyTeamSetupDraft(db, {
+				...snapshot(),
+				devices: devices(476, 24),
+				projects: projects(21),
+			}),
+		).toThrow("legacy_team_setup_roster_too_large");
+		expect(getLegacyTeamSetupDraft(db, CANDIDATE)).toEqual(before);
+	});
+
 	it("rejects carried-device overflow and preserves the reviewed attempt", () => {
 		const current = refreshLegacyTeamSetupDraft(db, { ...snapshot(), devices: devices(500) });
 		db.prepare(
