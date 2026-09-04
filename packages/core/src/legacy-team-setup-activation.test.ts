@@ -2,7 +2,9 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { discoverLegacyTeamCandidates } from "./legacy-team-candidate.js";
 import {
+	applyCanonicalLegacyTeamSetupActivationInTransaction,
 	finishLegacyTeamSetupActivation,
+	inspectFreshLegacyTeamSetupActivation,
 	inspectLegacyTeamSetupActivation,
 	previewLegacyTeamSetupActivation,
 } from "./legacy-team-setup-activation.js";
@@ -356,6 +358,88 @@ describe("legacy Team setup activation", () => {
 
 		// Act / Assert
 		expect(preview(draft)).toMatchObject({ attemptId: draft.attemptId });
+	});
+
+	it("uses the canonical completion key instead of rotating the preview digest", () => {
+		// Arrange
+		const draft = readyDraft();
+		const completionKey = "legacy-team-activation-finish-v1:canonical";
+
+		// Act
+		const result = db
+			.transaction(() =>
+				applyCanonicalLegacyTeamSetupActivationInTransaction(db, {
+					candidateRef: draft.candidateRef,
+					attemptId: draft.attemptId,
+					policyRevision: "canonical-revision",
+					completedAt: NOW,
+					completionKey,
+				}),
+			)
+			.immediate();
+
+		// Assert
+		expect(result).toMatchObject({ status: "completed", completedAt: NOW });
+		expect(
+			db
+				.prepare("SELECT finish_digest FROM legacy_team_setup_drafts WHERE attempt_id = ?")
+				.pluck()
+				.get(draft.attemptId),
+		).toBe(completionKey);
+		expect(
+			db
+				.prepare("SELECT finish_digest FROM legacy_team_setup_completions WHERE attempt_id = ?")
+				.pluck()
+				.get(draft.attemptId),
+		).toBe(completionKey);
+	});
+
+	it("replays a completed canonical application before revalidating the draft", () => {
+		// Arrange: the first application assigns a previously unassigned device,
+		// so the draft's stored `absent` expectation no longer matches live state.
+		const draft = readyDraft();
+		const completionKey = "legacy-team-activation-finish-v1:canonical";
+		const apply = () =>
+			db
+				.transaction(() =>
+					applyCanonicalLegacyTeamSetupActivationInTransaction(db, {
+						candidateRef: draft.candidateRef,
+						attemptId: draft.attemptId,
+						policyRevision: "canonical-revision",
+						completedAt: NOW,
+						completionKey,
+						allowCompletedDraft: true,
+					}),
+				)
+				.immediate();
+		const first = apply();
+		const changesAfterFirst = db.prepare("SELECT total_changes()").pluck().get();
+
+		// Act: a retry after a lost response or reconciliation re-run.
+		const retry = apply();
+
+		// Assert: the committed result replays without touching policy state.
+		expect(retry).toEqual(first);
+		expect(db.prepare("SELECT total_changes()").pluck().get()).toBe(changesAfterFirst);
+		expect(
+			db
+				.prepare("SELECT COUNT(*) FROM legacy_team_setup_completions WHERE attempt_id = ?")
+				.pluck()
+				.get(draft.attemptId),
+		).toBe(1);
+
+		// A newer draft for the same candidate supersedes the completed attempt;
+		// a delayed retry for the old attempt must not report success.
+		db.prepare(
+			`INSERT INTO legacy_team_setup_drafts(
+			 attempt_id, candidate_id, coordinator_id, group_id, state, display_name,
+			 roster_fingerprint, projection_fingerprint, created_at, updated_at
+			 ) SELECT 'legacy-team-attempt:newer', candidate_id, coordinator_id, group_id,
+			          'needs_setup', display_name, roster_fingerprint, projection_fingerprint,
+			          ?, ?
+			   FROM legacy_team_setup_drafts WHERE attempt_id = ?`,
+		).run(NOW, NOW, draft.attemptId);
+		expect(apply).toThrow();
 	});
 
 	it("lists a shared canonical recipient addition once for merged Project resolutions", async () => {
@@ -910,6 +994,24 @@ describe("legacy Team setup activation", () => {
 				.pluck()
 				.get(draft.attemptId),
 		).toBe("stale");
+	});
+
+	it("persists stale state when fresh inspection detects changed evidence", () => {
+		const draft = readyDraft();
+
+		expect(() =>
+			inspectFreshLegacyTeamSetupActivation(db, {
+				candidateRef: draft.candidateRef,
+				attemptId: draft.attemptId,
+				freshRoster: [{ ...roster[0], fingerprint: "changed-key" }, roster[1]],
+				projectInventory: draftProjectInventory(draft.attemptId),
+			}),
+		).toThrow("team_setup_roster_changed");
+		expect(
+			db
+				.prepare("SELECT state, safe_error_code FROM legacy_team_setup_drafts WHERE attempt_id = ?")
+				.get(draft.attemptId),
+		).toEqual({ state: "stale", safe_error_code: "team_setup_roster_changed" });
 	});
 
 	it("returns roster unavailable after a failed pre-lock fetch without canonical writes", async () => {
@@ -1888,6 +1990,36 @@ describe("legacy Team setup activation", () => {
 		expect(review.accessDelta.recipientChanges).not.toContainEqual(
 			expect.objectContaining({ canonicalProjectIdentity: PROJECT_A, change: "remove" }),
 		);
+	});
+
+	it("preserves a user-revoked recipient in both preview and activation", async () => {
+		const teamId = deterministicPolicyTeamId(CANDIDATE);
+		db.prepare(
+			`INSERT INTO project_recipients(
+			 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			 policy_revision, migration_state, idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'team', ?, 'revoked', 'user', 'user-r1', 'user_managed',
+			 'user-revoked-edge', ?, ?)`,
+		).run(PROJECT_A, teamId, NOW, NOW);
+		const draft = readyDraft();
+
+		const review = preview(draft);
+		expect(review.accessDelta.recipientChanges).not.toContainEqual(
+			expect.objectContaining({ canonicalProjectIdentity: PROJECT_A, change: "add" }),
+		);
+		expect(review.accessDelta.deviceAccessChanges).not.toContainEqual(
+			expect.objectContaining({ canonicalProjectIdentity: PROJECT_A, change: "add" }),
+		);
+		await finish(draft, review);
+
+		expect(
+			db
+				.prepare(
+					`SELECT status, provenance FROM project_recipients
+					 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
+				)
+				.get(PROJECT_A, teamId),
+		).toEqual({ status: "revoked", provenance: "user" });
 	});
 
 	it("confirms and applies setup-owned mapping removal when repeat setup drops a Project", async () => {
