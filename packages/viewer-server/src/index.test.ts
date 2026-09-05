@@ -940,11 +940,21 @@ describe("viewer-server", () => {
 					body: JSON.stringify(finishRequest),
 				});
 				expect(finishResponse.status).toBe(200);
-				expect(loadSnapshots).toHaveBeenCalledTimes(2);
+				expect(loadSnapshots).toHaveBeenCalledTimes(3);
 				expect(loadSnapshots).toHaveBeenNthCalledWith(1, { candidateRef });
 				expect(loadSnapshots).toHaveBeenNthCalledWith(
 					2,
-					expect.objectContaining({ candidateRef, deadlineMs: expect.any(Number) }),
+					expect.objectContaining({
+						candidateRef: expect.any(String),
+						deadlineMs: expect.any(Number),
+					}),
+				);
+				expect(loadSnapshots).toHaveBeenNthCalledWith(
+					3,
+					expect.objectContaining({
+						candidateRef: expect.any(String),
+						deadlineMs: expect.any(Number),
+					}),
 				);
 				const finished = await finishResponse.json();
 				expect(finished).toMatchObject({
