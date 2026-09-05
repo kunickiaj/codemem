@@ -1892,7 +1892,7 @@ export async function reconcileConfiguredCoordinatorEnrollment(
 		}) => Promise<CoordinatorConsumedTeamInvite[]>;
 		reconcileSnapshot?: (
 			input: Parameters<typeof reconcileCoordinatorEnrollmentSnapshot>[1],
-		) => CoordinatorEnrollmentReconcileResult;
+		) => CoordinatorEnrollmentReconcileResult | Promise<CoordinatorEnrollmentReconcileResult>;
 	} = {},
 ): Promise<ReconcileConfiguredCoordinatorEnrollmentResult> {
 	const config = options.config ?? readCoordinatorSyncConfig();
@@ -1955,7 +1955,7 @@ export async function reconcileConfiguredCoordinatorEnrollment(
 			continue;
 		}
 		try {
-			const result = reconcileSnapshot({
+			const result = await reconcileSnapshot({
 				coordinatorId: buildBaseUrl(remoteUrl),
 				groupId,
 				enrollments: enrollmentsResult.value,
