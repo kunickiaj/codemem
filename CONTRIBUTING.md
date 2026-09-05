@@ -30,6 +30,28 @@ pnpm exec vitest run packages/viewer-server/src/index.test.ts
 pnpm exec vitest run packages/core/src/index.test.ts
 ```
 
+## Stacked-PR CI
+
+CI keeps Graphite stacks fast without weakening the required aggregate gate.
+
+- Full CI runs for non-docs PRs targeting `main`, pushes to `main`, and PRs labeled `ci:full`.
+- PRs targeting another PR branch and docs-only PRs may skip expensive jobs. Docs-only PRs targeting `main` can pass the aggregate gate without those jobs.
+- A PR targeting another PR branch remains blocked by **CI Gate** until it targets `main` and completes full CI. The `ci:full` label runs every job but does not remove this merge-target block. This prevents a result for the same commit from authorizing a merge after retargeting.
+- If GitHub cannot determine the PR topology from GitHub-native metadata, the classifier fails open and runs full CI. **CI Gate** checks the event's base branch independently, so classifier failures cannot bypass the merge-target block. GitHub does not expose Graphite stack metadata, so topology is inferred rather than trusted.
+- The classifier and aggregate gate execute scripts from the repository's default branch, not PR-controlled copies. Keep their implementations in the unconditional gate foundation when changing this workflow.
+
+Repository branch protection must require **CI Gate**, not the conditional job checks, and must enable **Require branches to be up to date before merging**. A stacked PR's reduced gate fails intentionally, so an earlier result cannot authorize the same commit after it is retargeted to `main`. The retargeted PR must receive a new successful gate from a full CI run, and strict branch protection also requires it to be current with `main`.
+
+Deployment order matters. Before merging this workflow, repository administrators must replace the existing required job contexts with **CI Gate**, confirm **Require branches to be up to date before merging** is enabled in the GitHub branch-protection settings, and create the `ci:full` label. The pull-request workflow reports **CI Gate** before this migration, so it is available as a required context. This repository change does not alter live settings.
+
+The workflow also supports full CI for GitHub `merge_group` events if the repository later moves to an organization account that supports merge queues.
+
+Add `ci:full` in the pull request's **Labels** menu when the change needs full CI despite its position or files. For example, apply it to a docs-only PR that changes release instructions:
+
+```text
+Labels → ci:full
+```
+
 ## Context injection validation
 
 When changing pack retrieval, context injection, or the adapter surfaces
