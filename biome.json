@@ -66,6 +66,9 @@
 	},
 	"files": {
 		"includes": [
+			".github/scripts/ci-classify.mjs",
+			".github/scripts/ci-gate.mjs",
+			".github/scripts/ci-gate.test.mjs",
 			"packages/**/src/**/*.ts",
 			"packages/**/src/**/*.tsx",
 			"packages/**/src/**/*.js",
@@ -75,6 +78,7 @@
 			"plugins/claude/scripts/user-prompt-hook.mjs",
 			"plugins/codex/scripts/ingest-hook.mjs",
 			"plugins/codex/scripts/user-prompt-hook.mjs",
+			"scripts/ci-stack-topology.mjs",
 			"vitest.config.ts",
 			"tsconfig.base.json",
 			"tsconfig.json",

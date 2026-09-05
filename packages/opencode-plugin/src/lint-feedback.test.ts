@@ -221,6 +221,9 @@ describe("lint feedback scope and measurements", () => {
 		);
 
 		expect(sourceIncludes).toEqual([
+			".github/scripts/ci-classify.mjs",
+			".github/scripts/ci-gate.mjs",
+			".github/scripts/ci-gate.test.mjs",
 			"packages/**/src/**/*.ts",
 			"packages/**/src/**/*.tsx",
 			"packages/**/src/**/*.js",
@@ -229,8 +232,12 @@ describe("lint feedback scope and measurements", () => {
 			"plugins/claude/scripts/user-prompt-hook.mjs",
 			"plugins/codex/scripts/ingest-hook.mjs",
 			"plugins/codex/scripts/user-prompt-hook.mjs",
+			"scripts/ci-stack-topology.mjs",
 			"vitest.config.ts",
 		]);
+		for (const include of sourceIncludes.filter((candidate: string) => !candidate.includes("*"))) {
+			expect(resolveWorktreePath(repositoryRoot, include)).toBe(include);
+		}
 		expect(resolveWorktreePath(repositoryRoot, "packages/core/src/example.ts")).toBe(
 			"packages/core/src/example.ts",
 		);
