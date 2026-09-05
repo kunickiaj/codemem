@@ -79,9 +79,6 @@ jobs:
     name: CI
     needs: preflight-tag
     if: github.event_name == 'push'
-    permissions:
-      contents: read
-      pull-requests: read
     uses: ./.github/workflows/ci.yml
 
   publish-npm:

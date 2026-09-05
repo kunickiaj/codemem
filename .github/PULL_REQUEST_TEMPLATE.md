@@ -12,7 +12,6 @@
 
 ## Testing
 <!-- Describe how you tested these changes -->
-<!-- Add the `ci:full` label to force all CI jobs on a docs-only or stacked PR. -->
 
 - [ ] Relevant checks pass locally (`pnpm run tsc`, `pnpm run lint`, `pnpm run test`)
 - [ ] Added/updated tests for changes
