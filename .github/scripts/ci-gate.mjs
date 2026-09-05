@@ -15,22 +15,35 @@ function isSuccessfulFullJob(job, result, eventName) {
 	);
 }
 
-export function findCiGateFailures(needs, { eventName } = {}) {
+function findAuthorizationFailures({ eventName, baseRef, defaultBranch }) {
+	if (eventName !== "pull_request") return [];
+	if (!baseRef || !defaultBranch) return ["authorization=target-unknown"];
+	return baseRef === defaultBranch ? [] : ["authorization=stacked-pr"];
+}
+
+export function findCiGateFailures(needs, { eventName, baseRef, defaultBranch } = {}) {
 	const classify = needs?.classify;
 	const jobResults = resultEntries(needs).filter(([job]) => job !== "classify");
 	if (jobResults.length === 0) return ["required-jobs=missing"];
+	const authorizationFailures = findAuthorizationFailures({
+		eventName,
+		baseRef,
+		defaultBranch,
+	});
 	if (classify?.result !== "success") {
-		return jobResults
+		const jobFailures = jobResults
 			.filter(([job, result]) => !isSuccessfulFullJob(job, result, eventName))
 			.map(([job, result]) => `${job}=${result}`);
+		return [...authorizationFailures, ...jobFailures];
 	}
 
 	const runFull = classify.outputs?.run_full;
 	const reason = classify.outputs?.reason;
 	if (runFull === "true") {
-		return jobResults
+		const jobFailures = jobResults
 			.filter(([job, result]) => !isSuccessfulFullJob(job, result, eventName))
 			.map(([job, result]) => `${job}=${result}`);
+		return [...authorizationFailures, ...jobFailures];
 	}
 
 	if (runFull !== "false" || !REDUCED_REASONS.has(reason)) {
@@ -40,14 +53,17 @@ export function findCiGateFailures(needs, { eventName } = {}) {
 	const unexpectedJobs = jobResults
 		.filter(([, result]) => result !== "skipped")
 		.map(([job, result]) => `${job}=${result}`);
-	if (reason === "stacked-pr") return ["authorization=stacked-pr", ...unexpectedJobs];
-	return unexpectedJobs;
+	return [...authorizationFailures, ...unexpectedJobs];
 }
 
 function main() {
 	try {
 		const needs = JSON.parse(process.env.CI_NEEDS);
-		const failures = findCiGateFailures(needs, { eventName: process.env.CI_EVENT_NAME });
+		const failures = findCiGateFailures(needs, {
+			eventName: process.env.CI_EVENT_NAME,
+			baseRef: process.env.CI_BASE_REF,
+			defaultBranch: process.env.CI_DEFAULT_BRANCH,
+		});
 		if (failures.length === 0) return;
 
 		console.error(`Required CI jobs did not complete as expected: ${failures.join(", ")}`);

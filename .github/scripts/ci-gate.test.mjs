@@ -8,6 +8,13 @@ const successfulNeeds = {
 	"ts-test": { result: "success", outputs: {} },
 };
 
+const mainPullRequest = { eventName: "pull_request", baseRef: "main", defaultBranch: "main" };
+const stackedPullRequest = {
+	eventName: "pull_request",
+	baseRef: "stack-parent",
+	defaultBranch: "main",
+};
+
 test("accepts successful required jobs", () => {
 	assert.deepEqual(findCiGateFailures(successfulNeeds), []);
 });
@@ -17,7 +24,7 @@ test("accepts the Windows smoke skip only on pull requests", () => {
 		...successfulNeeds,
 		"windows-embedding-runtime-smoke": { result: "skipped", outputs: {} },
 	};
-	assert.deepEqual(findCiGateFailures(needs, { eventName: "pull_request" }), []);
+	assert.deepEqual(findCiGateFailures(needs, mainPullRequest), []);
 	assert.deepEqual(findCiGateFailures(needs, { eventName: "push" }), [
 		"windows-embedding-runtime-smoke=skipped",
 	]);
@@ -32,7 +39,7 @@ test("rejects failed, cancelled, skipped, and missing jobs", () => {
 
 test("rejects non-Windows skipped jobs on pull requests", () => {
 	const needs = { ...successfulNeeds, "ts-test": { result: "skipped", outputs: {} } };
-	assert.deepEqual(findCiGateFailures(needs, { eventName: "pull_request" }), ["ts-test=skipped"]);
+	assert.deepEqual(findCiGateFailures(needs, mainPullRequest), ["ts-test=skipped"]);
 });
 
 test("rejects malformed or empty needs metadata", () => {
@@ -40,12 +47,24 @@ test("rejects malformed or empty needs metadata", () => {
 	assert.deepEqual(findCiGateFailures({}), ["required-jobs=missing"]);
 });
 
+test("blocks stacked pull requests before conditional CI is enabled", () => {
+	assert.deepEqual(findCiGateFailures(successfulNeeds, stackedPullRequest), [
+		"authorization=stacked-pr",
+	]);
+	assert.deepEqual(findCiGateFailures(successfulNeeds, { eventName: "pull_request" }), [
+		"authorization=target-unknown",
+	]);
+});
+
 test("supports successful full classifications before conditional CI is enabled", () => {
 	const needs = {
-		classify: { result: "success", outputs: { run_full: "true", reason: "bottom" } },
+		classify: {
+			result: "success",
+			outputs: { run_full: "true", reason: "bottom" },
+		},
 		...successfulNeeds,
 	};
-	assert.deepEqual(findCiGateFailures(needs), []);
+	assert.deepEqual(findCiGateFailures(needs, mainPullRequest), []);
 });
 
 test("accepts docs-only skips but blocks stacked merge authorization", () => {
@@ -54,23 +73,56 @@ test("accepts docs-only skips but blocks stacked merge authorization", () => {
 		"ts-test": { result: "skipped", outputs: {} },
 	};
 	assert.deepEqual(
-		findCiGateFailures({
-			classify: { result: "success", outputs: { run_full: "false", reason: "docs-only" } },
-			...reducedJobs,
-		}),
+		findCiGateFailures(
+			{
+				classify: {
+					result: "success",
+					outputs: { run_full: "false", reason: "docs-only" },
+				},
+				...reducedJobs,
+			},
+			mainPullRequest,
+		),
 		[],
 	);
 	assert.deepEqual(
-		findCiGateFailures({
-			classify: { result: "success", outputs: { run_full: "false", reason: "stacked-pr" } },
-			...reducedJobs,
-		}),
+		findCiGateFailures(
+			{
+				classify: {
+					result: "success",
+					outputs: { run_full: "false", reason: "stacked-pr" },
+				},
+				...reducedJobs,
+			},
+			stackedPullRequest,
+		),
 		["authorization=stacked-pr"],
 	);
 });
 
+test("blocks a full run while the pull request still targets a stack branch", () => {
+	const needs = {
+		classify: {
+			result: "success",
+			outputs: { run_full: "true", reason: "ci:full" },
+		},
+		...successfulNeeds,
+	};
+	assert.deepEqual(findCiGateFailures(needs, stackedPullRequest), ["authorization=stacked-pr"]);
+});
+
+test("blocks a stacked pull request when classification fails", () => {
+	const needs = {
+		classify: { result: "failure", outputs: {} },
+		...successfulNeeds,
+	};
+	assert.deepEqual(findCiGateFailures(needs, stackedPullRequest), ["authorization=stacked-pr"]);
+	assert.deepEqual(findCiGateFailures(needs, mainPullRequest), []);
+});
+
 test("depends on every other workflow job", async () => {
 	const workflow = await readFile(new URL("../workflows/ci.yml", import.meta.url), "utf8");
+	assert.match(workflow, /^ {4}types: \[[^\]\n]*\bedited\b[^\]\n]*]$/m);
 	const jobs = workflow.slice(workflow.indexOf("\njobs:\n") + "\njobs:\n".length);
 	const jobIds = [...jobs.matchAll(/^ {2}([a-z0-9-]+):\s*$/gm)].map((match) => match[1]);
 	const gateBlock = jobs.slice(jobs.indexOf("  ci-gate:\n"));
@@ -81,4 +133,11 @@ test("depends on every other workflow job", async () => {
 		gateNeeds,
 		jobIds.filter((job) => job !== "ci-gate"),
 	);
+	const baseRefEnv = ["CI_BASE_REF: $", "{{ github.event.pull_request.base.ref }}"].join("");
+	const defaultBranchEnv = [
+		"CI_DEFAULT_BRANCH: $",
+		"{{ github.event.repository.default_branch }}",
+	].join("");
+	assert.equal(gateBlock.includes(baseRefEnv), true);
+	assert.equal(gateBlock.includes(defaultBranchEnv), true);
 });
