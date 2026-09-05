@@ -2072,7 +2072,14 @@ export class MemoryStore {
 		startEventSeq: number,
 		endEventSeq: number,
 		extractorVersion: string,
-	): { batchId: number; status: string; attemptCount: number } {
+	): {
+		batchId: number;
+		status: string;
+		attemptCount: number;
+		errorType: string | null;
+		observerErrorCode: string | null;
+		observerErrorMessage: string | null;
+	} {
 		const [s, sid] = this.normalizeStreamIdentity(source, opencodeSessionId);
 		const now = new Date().toISOString();
 
@@ -2103,7 +2110,14 @@ export class MemoryStore {
 					END`,
 				},
 			})
-			.returning({ id: t.id, status: t.status, attempt_count: t.attempt_count })
+			.returning({
+				id: t.id,
+				status: t.status,
+				attempt_count: t.attempt_count,
+				error_type: t.error_type,
+				observer_error_code: t.observer_error_code,
+				observer_error_message: t.observer_error_message,
+			})
 			.get();
 
 		if (!row) throw new Error("Failed to create flush batch");
@@ -2121,6 +2135,9 @@ export class MemoryStore {
 			batchId: Number(row.id),
 			status: canonicalStatus,
 			attemptCount: Number(row.attempt_count ?? 0),
+			errorType: row.error_type,
+			observerErrorCode: row.observer_error_code,
+			observerErrorMessage: row.observer_error_message,
 		};
 	}
 
