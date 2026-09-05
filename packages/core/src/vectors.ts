@@ -165,23 +165,28 @@ function tryResolveConfiguredVectorIdentityLabel(db: Database): string | null {
 	return null;
 }
 
-function persistBackfillVectorIdentity(
-	db: Database,
-	client: EmbeddingClient,
-	targetModel: string,
-): void {
+function persistVectorIdentity(db: Database, client: EmbeddingClient, targetModel: string): void {
 	if (!client.identity) {
-		throw new TypeError("Embedding runtime identity is required to persist backfill metadata");
+		throw new TypeError("Embedding runtime identity is required to persist vector metadata");
 	}
 	const metadata = {
 		target_model: targetModel,
 		requested_model: client.model,
 		requested_revision: client.identity.requestedRevision ?? client.identity.revision,
 	};
+	const existing = getMaintenanceJob(db, VECTOR_MODEL_IDENTITY_JOB);
+	if (
+		existing?.status === "completed" &&
+		existing.metadata?.target_model === metadata.target_model &&
+		existing.metadata.requested_model === metadata.requested_model &&
+		existing.metadata.requested_revision === metadata.requested_revision
+	) {
+		return;
+	}
 	startMaintenanceJob(db, {
 		kind: VECTOR_MODEL_IDENTITY_JOB,
 		title: "Embedding vector identity",
-		message: "Recorded the canonical embedding identity used by vector backfill",
+		message: "Recorded the canonical embedding identity used by vector writes",
 		progressTotal: 1,
 		metadata,
 	});
@@ -279,6 +284,30 @@ export function memoryHasCompleteVectorCoverage(
 		.prepare("SELECT content_hash FROM memory_vectors WHERE memory_id = ? AND model = ?")
 		.all(memory.id, model) as Array<{ content_hash: string | null }>;
 	return expectedHashesExist(expectedHashes, existingRows);
+}
+
+export function findMemoryIdsWithCompleteActiveVectorCoverage(
+	db: Database,
+	memoryIds: number[],
+	model: string,
+): number[] {
+	const ids = uniqueMemoryIds(memoryIds);
+	if (ids.length === 0) return [];
+	const placeholders = ids.map(() => "?").join(", ");
+	const memories = db
+		.prepare(
+			`SELECT id, title, body_text FROM memory_items
+			 WHERE active = 1 AND id IN (${placeholders})`,
+		)
+		.all(...ids) as MemoryTextRow[];
+	const incompleteIds = new Set(
+		memories
+			.filter((memory) => !memoryHasCompleteVectorCoverage(db, memory, model))
+			.map((memory) => memory.id),
+	);
+	// Missing or inactive memories have no active coverage work and must not
+	// remain queued forever. Their deletion work is tracked separately.
+	return ids.filter((memoryId) => !incompleteIds.has(memoryId));
 }
 
 function expectedHashesExist(
@@ -961,6 +990,7 @@ export async function storeVectors(
 ): Promise<void> {
 	const client = await getEmbeddingClient();
 	if (!client) return;
+	assertEmbeddingClientIdentity(client);
 
 	const text = `${title}\n${bodyText}`.trim();
 	const chunks = chunkText(text);
@@ -970,11 +1000,12 @@ export async function storeVectors(
 	if (embeddings.length === 0) return;
 
 	const model = resolveEmbeddingClientVectorIdentityLabel(client);
-	const insertVectors = db.transaction(
+	const persistVectors = db.transaction(
 		(entries: Array<{ vector: Float32Array; chunkIndex: number; contentHash: string }>) => {
 			for (const entry of entries) {
 				insertMemoryVector(db, entry.vector, memoryId, entry.chunkIndex, entry.contentHash, model);
 			}
+			persistVectorIdentity(db, client, model);
 		},
 	);
 	const entries: Array<{ vector: Float32Array; chunkIndex: number; contentHash: string }> = [];
@@ -986,7 +1017,8 @@ export async function storeVectors(
 		if (!chunk) continue;
 		entries.push({ vector, chunkIndex: i, contentHash: hashText(chunk) });
 	}
-	if (entries.length > 0) insertVectors(entries);
+	if (entries.length === 0) return;
+	persistVectors.immediate(entries);
 }
 
 // ---------------------------------------------------------------------------
@@ -1196,7 +1228,7 @@ export async function backfillVectors(
 	}
 
 	if (!dryRun && (inserted > 0 || skipped > 0)) {
-		persistBackfillVectorIdentity(db, client, model);
+		persistVectorIdentity(db, client, model);
 	}
 	return { checked, embedded, inserted, skipped };
 }

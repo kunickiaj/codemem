@@ -1584,11 +1584,7 @@ describe("memory_vectors bootstrap on fresh databases", () => {
 		prevCodememConfig = process.env.CODEMEM_CONFIG;
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-vec-bootstrap-test-"));
 		process.env.CODEMEM_CONFIG = join(tmpDir, "config.json");
-		vi.mocked(embeddings.getEmbeddingClient).mockResolvedValue({
-			model: "test-model",
-			dimensions: 384,
-			embed: vi.fn(async () => [new Float32Array(384)]),
-		});
+		vi.mocked(embeddings.getEmbeddingClient).mockResolvedValue(injectedBackfillClient());
 		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
 	});
 
