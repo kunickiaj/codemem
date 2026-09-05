@@ -1247,26 +1247,74 @@ describe("vector migration", () => {
 		expect(completedAfterDisable).toMatchObject({ status: "completed" });
 	});
 
-	it("bounds stale-model cleanup to one resumable batch and honors abort before resuming", async () => {
+	it("drains bounded stale-model batches without repeating full-corpus validation", async () => {
+		const sessionId = insertTestSession(db);
+		for (let id = 1; id <= 501; id++) {
+			seedMemory(db, id, sessionId, `Memory ${id}`, `Body ${id}`);
+			seedVector(db, id, "old-model");
+		}
+		let staleBatchSelections = 0;
+		let coverageScanPreparations = 0;
+		const prepareSpy = vi.spyOn(db, "prepare");
+		prepareSpy.mockImplementation((sql: string) => {
+			if (sql.startsWith("SELECT rowid FROM memory_vectors WHERE model != ?")) {
+				staleBatchSelections++;
+			}
+			if (
+				sql.includes("SELECT id, title, body_text FROM memory_items") &&
+				sql.includes("AND TRIM(COALESCE(title, '') || COALESCE(body_text, '')) != ''") &&
+				sql.includes("AND id > ?")
+			) {
+				coverageScanPreparations++;
+			}
+			return Database.prototype.prepare.call(db, sql);
+		});
+
+		try {
+			await runVectorMigrationPass(db, { batchSize: 1000 });
+		} finally {
+			prepareSpy.mockRestore();
+		}
+
+		expect(
+			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE model = 'old-model'").get(),
+		).toMatchObject({ c: 0 });
+		expect(getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB)).toMatchObject({
+			status: "completed",
+			metadata: { cleanup_pending: false, removed_stale_rows: 501 },
+		});
+		expect(staleBatchSelections).toBe(3);
+		expect(coverageScanPreparations).toBe(1);
+	});
+
+	it("pauses bounded stale-model cleanup on abort and resumes safely", async () => {
 		const sessionId = insertTestSession(db);
 		for (let id = 1; id <= 251; id++) {
 			seedMemory(db, id, sessionId, `Memory ${id}`, `Body ${id}`);
 			seedVector(db, id, "old-model");
 		}
 
-		await runVectorMigrationPass(db, { batchSize: 500 });
-
-		expect(
-			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE model = 'old-model'").get(),
-		).toMatchObject({ c: 1 });
-		expect(getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB)).toMatchObject({
-			status: "completed",
-			metadata: { cleanup_pending: true, removed_stale_rows: 250 },
-		});
-
 		const controller = new AbortController();
-		controller.abort();
-		await runVectorMigrationPass(db, { batchSize: 500, signal: controller.signal });
+		let staleBatchSelections = 0;
+		const prepareSpy = vi.spyOn(db, "prepare");
+		prepareSpy.mockImplementation((sql: string) => {
+			const statement = Database.prototype.prepare.call(db, sql);
+			if (sql.startsWith("SELECT rowid FROM memory_vectors WHERE model != ?")) {
+				const all = statement.all.bind(statement);
+				statement.all = ((...params: unknown[]) => {
+					const rows = all(...params);
+					staleBatchSelections++;
+					if (staleBatchSelections === 2) controller.abort();
+					return rows;
+				}) as typeof statement.all;
+			}
+			return statement;
+		});
+		try {
+			await runVectorMigrationPass(db, { batchSize: 500, signal: controller.signal });
+		} finally {
+			prepareSpy.mockRestore();
+		}
 		expect(
 			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE model = 'old-model'").get(),
 		).toMatchObject({ c: 1 });
@@ -1281,6 +1329,87 @@ describe("vector migration", () => {
 		expect(getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB)).toMatchObject({
 			status: "completed",
 			metadata: { cleanup_pending: false, removed_stale_rows: 251 },
+		});
+	});
+
+	it("pauses bounded cleanup when its runner stops without an abort signal", async () => {
+		const sessionId = insertTestSession(db);
+		for (let id = 1; id <= 251; id++) {
+			seedMemory(db, id, sessionId, `Memory ${id}`, `Body ${id}`);
+			seedVector(db, id, "old-model");
+		}
+		let stopRequested = false;
+		let staleBatchSelections = 0;
+		const prepareSpy = vi.spyOn(db, "prepare");
+		prepareSpy.mockImplementation((sql: string) => {
+			const statement = Database.prototype.prepare.call(db, sql);
+			if (sql.startsWith("SELECT rowid FROM memory_vectors WHERE model != ?")) {
+				staleBatchSelections++;
+				if (staleBatchSelections === 1) {
+					setImmediate(() => {
+						stopRequested = true;
+					});
+				}
+			}
+			return statement;
+		});
+
+		try {
+			await runVectorMigrationPass(db, { batchSize: 500, shouldStop: () => stopRequested });
+		} finally {
+			prepareSpy.mockRestore();
+		}
+
+		expect(
+			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE model = 'old-model'").get(),
+		).toMatchObject({ c: 1 });
+		expect(getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB)).toMatchObject({
+			status: "completed",
+			metadata: { cleanup_pending: true, removed_stale_rows: 250 },
+		});
+	});
+
+	it("stops cleanup when the same connection mutates memory between batches", async () => {
+		const sessionId = insertTestSession(db);
+		for (let id = 1; id <= 251; id++) {
+			seedMemory(db, id, sessionId, `Memory ${id}`, `Body ${id}`);
+			seedVector(db, id, "old-model");
+		}
+		let scheduledMutation = false;
+		const prepareSpy = vi.spyOn(db, "prepare");
+		prepareSpy.mockImplementation((sql: string) => {
+			const statement = Database.prototype.prepare.call(db, sql);
+			if (
+				!scheduledMutation &&
+				sql.startsWith("SELECT rowid FROM memory_vectors WHERE model != ?")
+			) {
+				const all = statement.all.bind(statement);
+				statement.all = ((...params: unknown[]) => {
+					const rows = all(...params);
+					scheduledMutation = true;
+					setImmediate(() => {
+						db.prepare("UPDATE memory_items SET body_text = ? WHERE id = 1").run("Changed body");
+					});
+					return rows;
+				}) as typeof statement.all;
+			}
+			return statement;
+		});
+
+		try {
+			await runVectorMigrationPass(db, { batchSize: 500 });
+		} finally {
+			prepareSpy.mockRestore();
+		}
+
+		expect(scheduledMutation).toBe(true);
+		expect(
+			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE model = 'old-model'").get(),
+		).toMatchObject({ c: 1 });
+		expect(getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB)).toMatchObject({
+			status: "completed",
+			message: "Memory changes arrived during cleanup; retrying",
+			metadata: { cleanup_pending: true, removed_stale_rows: 250 },
 		});
 	});
 
