@@ -273,7 +273,7 @@ describe("update install command", () => {
 		expect(process.exitCode).toBe(1);
 	});
 
-	it("installs the exact validated release without a shell and verifies it", async () => {
+	it("pins the public default and scoped registries in the POSIX install command", async () => {
 		vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
 		getUpdateStatus.mockResolvedValue({ ...availableStatus, auto_update_eligible: true });
 		spawn
@@ -291,6 +291,7 @@ describe("update install command", () => {
 				"-g",
 				"--registry",
 				"https://registry.npmjs.org/",
+				"--@codemem:registry=https://registry.npmjs.org/",
 				"codemem@0.41.0",
 				"@codemem/embeddings@0.41.0",
 			],
@@ -308,7 +309,44 @@ describe("update install command", () => {
 		});
 		expect(process.exitCode).toBeUndefined();
 	});
+});
 
+describe("update install command on Windows", () => {
+	it("pins the public default and scoped registries in the Windows install command", async () => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		const originalSystemRoot = process.env.SystemRoot;
+		process.env.SystemRoot = "/Windows";
+		getUpdateStatus.mockResolvedValue({ ...availableStatus, auto_update_eligible: true });
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: "/Windows/System32/npm.cmd\n" }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: "/Windows/System32/codemem.cmd\n" }))
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			await parseUpdateCommand(["install", "--json"]);
+		} finally {
+			if (originalSystemRoot === undefined) delete process.env.SystemRoot;
+			else process.env.SystemRoot = originalSystemRoot;
+		}
+
+		expect(spawn).toHaveBeenNthCalledWith(
+			2,
+			"/Windows/System32/cmd.exe",
+			[
+				"/d",
+				"/s",
+				"/c",
+				'""/Windows/System32/npm.cmd" install -g --registry https://registry.npmjs.org/ --@codemem:registry=https://registry.npmjs.org/ codemem@0.41.0 @codemem/embeddings@0.41.0"',
+			],
+			expect.objectContaining({ shell: false, windowsVerbatimArguments: true }),
+		);
+		expect(process.exitCode).toBeUndefined();
+	});
+});
+
+describe("update install command behavior", () => {
 	it("keeps the bare update command non-mutating", async () => {
 		getUpdateStatus.mockResolvedValue({ ...availableStatus, auto_update_eligible: true });
 
