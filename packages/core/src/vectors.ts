@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import type { Database } from "./db.js";
 import { isEmbeddingDisabled, tableExists } from "./db.js";
 import {
+	assertEmbeddingClientIdentity,
 	chunkText,
 	DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL,
 	type EmbeddingClient,
@@ -1003,6 +1004,7 @@ export async function backfillVectors(
 	if (opts.client && !opts.client.identity) {
 		throw new TypeError("Embedding runtime identity is required to backfill persisted vectors");
 	}
+	if (opts.client) assertEmbeddingClientIdentity(opts.client);
 	const client = opts.client ?? (await getEmbeddingClient());
 	if (!client) return { checked: 0, embedded: 0, inserted: 0, skipped: 0 };
 
