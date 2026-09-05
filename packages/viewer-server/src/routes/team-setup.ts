@@ -1351,7 +1351,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 	 * authorizes. Returns null when completion I/O is not configured or current
 	 * authorization cannot be proven.
 	 */
-	function currentCompletionAuthorization(store: MemoryStore): CompletionAuthorization | null {
+	function currentCompletionAuthorization(): CompletionAuthorization | null {
 		const config = (
 			options.readCoordinatorConfig ??
 			options.snapshotLoaderDependencies?.readConfig ??
@@ -1363,11 +1363,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		if (!configuredCoordinatorId) return null;
 		let currentGroupIds: Set<string>;
 		try {
-			currentGroupIds = new Set(
-				legacyTeamCandidateGroupDescriptors(store, remoteUrl, config.syncCoordinatorGroups).map(
-					(group) => group.groupId,
-				),
-			);
+			currentGroupIds = new Set(configuredGroupIds(config.syncCoordinatorGroups));
 		} catch {
 			return null;
 		}
@@ -1392,13 +1388,12 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 	 * before applying canonical policy, as the finish publication path does.
 	 */
 	function stillAuthorizesGroup(
-		store: MemoryStore,
 		initial: CompletionAuthorization,
 		group: LegacyTeamCandidateGroupDescriptor,
 	): boolean {
 		let current: CompletionAuthorization | null;
 		try {
-			current = currentCompletionAuthorization(store);
+			current = currentCompletionAuthorization();
 		} catch {
 			return false;
 		}
@@ -1492,7 +1487,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 				serializeRecipientPolicyPublicationMutation(store.db, () =>
 					serializeRecipientPolicyTeamMutation(store.db, manifest.team_id, () =>
 						serializeRecipientPolicyCoordinatorGroupMutation(store.db, group.groupId, async () => {
-							if (!stillAuthorizesGroup(store, authorization, group)) return;
+							if (!stillAuthorizesGroup(authorization, group)) return;
 							await applyLegacyTeamSetupCompletionManifest(store.db, {
 								coordinatorId: group.coordinatorId,
 								groupId: group.groupId,
@@ -1516,7 +1511,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		if (!completionDependencies || groups.length === 0) return;
 		let authorization: CompletionAuthorization | null;
 		try {
-			authorization = currentCompletionAuthorization(store);
+			authorization = currentCompletionAuthorization();
 		} catch (error) {
 			throw new Error(completionApiError(error));
 		}
@@ -1766,7 +1761,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 									}
 									// Publication sends identity and policy data to the coordinator;
 									// re-prove the destination is still the configured one.
-									if (!stillAuthorizesGroup(store, authorization, group)) {
+									if (!stillAuthorizesGroup(authorization, group)) {
 										reconstructionFailed = true;
 										return;
 									}
@@ -2540,40 +2535,19 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 							attemptId,
 							completedAt,
 						});
-						let config: ReturnType<typeof readCoordinatorSyncConfig>;
+						let authorization: CompletionAuthorization | null;
 						try {
-							config = (
-								options.readCoordinatorConfig ??
-								options.snapshotLoaderDependencies?.readConfig ??
-								readCoordinatorSyncConfig
-							)();
+							authorization = currentCompletionAuthorization();
 						} catch (error) {
 							throw new Error(completionApiError(error));
 						}
-						const remoteUrl = buildBaseUrl(config.syncCoordinatorUrl);
-						if (!completionDependencies || !remoteUrl || !config.syncCoordinatorAdminSecret) {
+						if (!completionDependencies || !authorization) {
 							throw new Error("team_setup_completion_unavailable");
 						}
-						const configuredCoordinatorId = normalizedCoordinatorId(remoteUrl);
-						let currentGroupIds: Set<string>;
-						try {
-							currentGroupIds = new Set(
-								legacyTeamCandidateGroupDescriptors(
-									store,
-									remoteUrl,
-									config.syncCoordinatorGroups,
-								).map((currentGroup) => currentGroup.groupId),
-							);
-						} catch {
+						if (!authorizesGroup(authorization, group)) {
 							throw new Error("team_setup_completion_invalid");
 						}
-						if (
-							!configuredCoordinatorId ||
-							!currentGroupIds.has(group.groupId) ||
-							normalizedCoordinatorId(group.coordinatorId) !== configuredCoordinatorId
-						) {
-							throw new Error("team_setup_completion_invalid");
-						}
+						const { config, remoteUrl } = authorization;
 						const timeoutS = Math.max(1, config.syncCoordinatorTimeoutS);
 						const publicationTimeoutS = remainingCoordinatorTimeoutS(
 							timeoutS,

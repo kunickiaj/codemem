@@ -642,7 +642,7 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		{
 			sync_coordinator_url: "http://coordinator:7347",
 			sync_coordinator_admin_secret: ADMIN_SECRET,
-			sync_coordinator_groups: [GROUP_ALPHA],
+			sync_coordinator_groups: [GROUP_ALPHA, GROUP_BETA],
 			sync_coordinator_timeout_s: 10,
 		},
 		"07-write-config",
@@ -653,7 +653,7 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		{
 			sync_coordinator_url: "http://coordinator:7347",
 			sync_coordinator_admin_secret: ADMIN_SECRET,
-			sync_coordinator_groups: [GROUP_ALPHA],
+			sync_coordinator_groups: [GROUP_ALPHA, GROUP_BETA],
 			sync_coordinator_timeout_s: 10,
 		},
 		"07-peer-b-write-config",
@@ -692,7 +692,7 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		{ description: "peer-b legacy Team viewer readiness", timeoutMs: 120_000, intervalMs: 2_000 },
 	);
 
-	// Arrange: Alpha is configured while active coordinator-backed scope evidence discovers Beta.
+	// Arrange: Alpha and Beta are configured; Gamma remains unrelated.
 	const summaryResponse = await request<{ version: 1; candidates: CandidateSummary[] }>(
 		ctx,
 		"GET",
@@ -712,11 +712,11 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 	);
 	assert(
 		alphaCandidate && betaCandidate && !gammaCandidate,
-		"expected configured Alpha and scope-backed Beta, but not unrelated Gamma",
+		"expected configured Alpha and Beta, but not unrelated Gamma",
 	);
 	assert(
 		alphaCandidate.deviceCount === 2 && betaCandidate.deviceCount === 6,
-		"configured Alpha and scope-backed Beta did not expose the exact current rosters",
+		"configured Alpha and Beta did not expose the exact current rosters",
 	);
 	const peerBBeforeCompletion = await request<{
 		version: 1;
@@ -730,7 +730,7 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 			peerBBeforeCompletion.body.candidates.some(
 				(candidate) => candidate.candidateRef === betaCandidate.candidateRef,
 			),
-		"peer-b did not expose Alpha and unrelated Beta before coordinator completion",
+		"peer-b did not expose configured Alpha and Beta before coordinator completion",
 	);
 	assertNoPolicyWrites(
 		fixture(ctx, "summary", "10-peer-b-before-completion-policy", "peer-b"),

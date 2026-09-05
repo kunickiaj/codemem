@@ -102,6 +102,7 @@ describe("Team setup terminal migration routing", () => {
 	async function readyDraftThroughSummary(
 		store: MemoryStore,
 		app: ReturnType<typeof teamSetupRoutes>,
+		candidateRef = CANDIDATE_REF,
 	) {
 		expect((await app.request("/api/sync/team-setup/v1")).status).toBe(200);
 		store.db
@@ -110,7 +111,7 @@ describe("Team setup terminal migration routing", () => {
 				 VALUES ('identity-a', 'Person A', 0, 'active', ?, ?)`,
 			)
 			.run(NOW, NOW);
-		let draft = getLegacyTeamSetupDraft(store.db, CANDIDATE_REF);
+		let draft = getLegacyTeamSetupDraft(store.db, candidateRef);
 		if (!draft) throw new Error("Team setup draft missing");
 		const device = draft.devices[0];
 		if (!device) throw new Error("Team setup device missing");
@@ -1794,6 +1795,119 @@ describe("Team setup terminal migration routing", () => {
 			await app.request(`/api/sync/team-setup/v1/${CANDIDATE_REF}`);
 			expect(getLegacyTeamSetupDraft(store.db, CANDIDATE_REF)?.state).not.toBe("completed");
 			expect(store.db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("discovers scope-backed groups without authorizing completion reconciliation", async () => {
+		const store = new MemoryStore(":memory:");
+		const scopeBackedGroupId = "group-beta";
+		const scopeBackedCandidateRef = legacyTeamCandidateId(COORDINATOR_ID, scopeBackedGroupId);
+		const scopeBackedSnapshot: LegacyTeamConfiguredGroupSnapshot = {
+			...SNAPSHOTS[0],
+			groupId: scopeBackedGroupId,
+			displayName: "Scope-backed Team",
+			devices: [
+				{
+					deviceId: "device-beta",
+					fingerprint: FINGERPRINT_B,
+					displayName: "Beta laptop",
+					enabled: true,
+				},
+			],
+		};
+		store.db
+			.prepare(
+				`INSERT INTO replication_scopes(
+				 scope_id, label, kind, authority_type, coordinator_id, group_id,
+				 membership_epoch, status, created_at, updated_at
+				 ) VALUES ('scope-beta', 'Beta', 'team', 'coordinator', ?, ?, 1, 'active', ?, ?)`,
+			)
+			.run(COORDINATOR_ID, scopeBackedGroupId, NOW, NOW);
+		const list = vi.fn(async () => []);
+		const create = vi.fn();
+		const app = teamSetupRoutes({
+			getStore: () => store,
+			loadLegacyTeamConfiguredGroupSnapshots: async () => [...SNAPSHOTS, scopeBackedSnapshot],
+			snapshotLoaderDependencies: completionConfig(),
+			completionDependencies: { create, list },
+		});
+		try {
+			const response = await app.request("/api/sync/team-setup/v1");
+
+			expect(response.status).toBe(200);
+			expect(await response.json()).toMatchObject({
+				candidates: expect.arrayContaining([
+					expect.objectContaining({ candidateRef: CANDIDATE_REF }),
+					expect.objectContaining({ candidateRef: scopeBackedCandidateRef }),
+				]),
+			});
+			expect(list).toHaveBeenCalledWith(expect.objectContaining({ groupIds: [GROUP_ID] }));
+			expect(create).not.toHaveBeenCalled();
+			expect(
+				store.db
+					.prepare("SELECT COUNT(*) FROM policy_teams WHERE team_id = ?")
+					.pluck()
+					.get(deterministicPolicyTeamId(scopeBackedCandidateRef)),
+			).toBe(0);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("rejects finish publication for a scope-backed group absent from configuration", async () => {
+		const store = new MemoryStore(":memory:");
+		const scopeBackedGroupId = "group-beta";
+		const scopeBackedCandidateRef = legacyTeamCandidateId(COORDINATOR_ID, scopeBackedGroupId);
+		const snapshot = SNAPSHOTS[0];
+		if (!snapshot) throw new Error("missing test snapshot");
+		const scopeBackedSnapshot = {
+			...snapshot,
+			groupId: scopeBackedGroupId,
+			displayName: "Scope-backed Team",
+		};
+		store.db
+			.prepare(
+				`INSERT INTO replication_scopes(
+				 scope_id, label, kind, authority_type, coordinator_id, group_id,
+				 membership_epoch, status, created_at, updated_at
+				 ) VALUES ('scope-beta', 'Beta', 'team', 'coordinator', ?, ?, 1, 'active', ?, ?)`,
+			)
+			.run(COORDINATOR_ID, scopeBackedGroupId, NOW, NOW);
+		const create = vi.fn();
+		const app = teamSetupRoutes({
+			getStore: () => store,
+			loadLegacyTeamConfiguredGroupSnapshots: async () => [scopeBackedSnapshot],
+			snapshotLoaderDependencies: completionConfig(),
+			completionDependencies: { create, list: async () => [] },
+		});
+		try {
+			const draft = await readyDraftThroughSummary(store, app, scopeBackedCandidateRef);
+			const detail = (await (
+				await app.request(`/api/sync/team-setup/v1/${scopeBackedCandidateRef}`)
+			).json()) as {
+				finishDigest: string;
+				accessDeltaDigest: string;
+				viewerAccessDeltaDigest: string;
+			};
+			const response = await app.request(
+				`/api/sync/team-setup/v1/${scopeBackedCandidateRef}/finish`,
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						attemptId: draft.attemptId,
+						finishDigest: detail.finishDigest,
+						confirmedAccessDeltaDigest: detail.accessDeltaDigest,
+						confirmedViewerAccessDeltaDigest: detail.viewerAccessDeltaDigest,
+					}),
+				},
+			);
+
+			expect(response.status).toBe(409);
+			expect(await response.json()).toEqual({ error: "team_setup_completion_invalid" });
+			expect(create).not.toHaveBeenCalled();
 		} finally {
 			store.close();
 		}

@@ -574,6 +574,7 @@ describe("viewer-server", () => {
 				readCoordinatorConfig: () =>
 					core.readCoordinatorSyncConfig({
 						sync_coordinator_url: coordinatorId,
+						sync_coordinator_groups: [groupId],
 						sync_coordinator_admin_secret: "test-secret",
 					}),
 				teamSetupCompletionDependencies: {
