@@ -10,8 +10,17 @@
 
 import { extractApplyPatchPaths, MUTATING_TOOL_NAMES } from "./apply-patch.js";
 import { extractAdapterEvent, projectAdapterToolEvent } from "./ingest-events.js";
-import { type IngestOptions, ingest } from "./ingest-pipeline.js";
-import { normalizeAdapterEvents, normalizeEventsForSessionContext } from "./ingest-transcript.js";
+import {
+	type IngestOptions,
+	ingest,
+	RawEventObserverOutputError,
+	rawEventObserverStatusFromError,
+} from "./ingest-pipeline.js";
+import {
+	extractAssistantMessages,
+	normalizeAdapterEvents,
+	normalizeEventsForSessionContext,
+} from "./ingest-transcript.js";
 import type { IngestPayload, SessionContext } from "./ingest-types.js";
 import { ObserverAuthError } from "./observer-client.js";
 import type { MemoryStore } from "./store.js";
@@ -21,6 +30,9 @@ const EXTRACTOR_VERSION = "raw_events_v1";
 /** Max flush attempts before a batch is permanently abandoned.
  *  Override via CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS. */
 const DEFAULT_MAX_FLUSH_ATTEMPTS = 5;
+const TERMINAL_NO_OUTPUT_MICROBATCH_MAX_EVENTS = 2;
+const LEGACY_REDIAGNOSIS_FAILED_ERROR_TYPE = "RawEventLegacyFailure:rediagnosis_failed";
+const OBSERVER_CALL_ERROR_TYPE = "RawEventObserverCallError";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -65,6 +77,37 @@ function summarizeFlushFailure(exc: Error, provider: string | null | undefined):
 		return `${providerTitle} response could not be processed.`;
 	}
 	return `${providerTitle} processing failed during raw-event ingestion.`;
+}
+
+function flushFailureErrorType(error: Error): string {
+	if (error instanceof ObserverAuthError) return "ObserverAuthError";
+	if (error instanceof RawEventObserverOutputError) return `${error.name}:${error.reason}`;
+	return error.name;
+}
+
+function isTerminalNoOutputMicrobatch(
+	events: Record<string, unknown>[],
+	failure: {
+		errorType: string | null;
+		observerErrorCode: string | null;
+		observerErrorMessage: string | null;
+	},
+): boolean {
+	if (events.length > TERMINAL_NO_OUTPUT_MICROBATCH_MAX_EVENTS) return false;
+	if (failure.observerErrorCode || failure.observerErrorMessage) return false;
+	if (failure.errorType !== "RawEventObserverOutputError:no_processable_input") {
+		return false;
+	}
+	return extractAssistantMessages(normalizeAdapterEvents(events)).length === 0;
+}
+
+function shouldRediagnoseLegacyNoOutputMicrobatch(
+	events: Record<string, unknown>[],
+	errorType: string | null,
+): boolean {
+	if (events.length > TERMINAL_NO_OUTPUT_MICROBATCH_MAX_EVENTS) return false;
+	if (errorType !== "Error") return false;
+	return extractAssistantMessages(normalizeAdapterEvents(events)).length === 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -288,13 +331,14 @@ export async function flushRawEvents(
 	}
 
 	// Get or create flush batch (idempotency guard)
-	const { batchId, status, attemptCount } = store.getOrCreateRawEventFlushBatch(
-		opencodeSessionId,
-		source,
-		startEventSeq,
-		lastEventSeq,
-		EXTRACTOR_VERSION,
-	);
+	const { batchId, status, attemptCount, errorType, observerErrorCode, observerErrorMessage } =
+		store.getOrCreateRawEventFlushBatch(
+			opencodeSessionId,
+			source,
+			startEventSeq,
+			lastEventSeq,
+			EXTRACTOR_VERSION,
+		);
 
 	// If already completed, just advance flush state
 	if (status === "completed") {
@@ -309,10 +353,25 @@ export async function flushRawEvents(
 	const maxAttempts = Number.parseInt(process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS ?? "", 10);
 	const effectiveMax =
 		Number.isFinite(maxAttempts) && maxAttempts > 0 ? maxAttempts : DEFAULT_MAX_FLUSH_ATTEMPTS;
+	let isLegacyRediagnosis = false;
 	if (attemptCount >= effectiveMax && (status === "failed" || status === "error")) {
-		store.updateRawEventFlushBatchStatus(batchId, "gave_up");
-		store.updateRawEventFlushState(opencodeSessionId, lastEventSeq, source);
-		return { flushed: 0, updatedState: 1 };
+		const shouldRediagnoseLegacyFailure = shouldRediagnoseLegacyNoOutputMicrobatch(
+			events,
+			errorType,
+		);
+		if (!shouldRediagnoseLegacyFailure) {
+			const completedNoOp = isTerminalNoOutputMicrobatch(events, {
+				errorType,
+				observerErrorCode,
+				observerErrorMessage,
+			});
+			store.updateRawEventFlushBatchStatus(batchId, completedNoOp ? "completed" : "gave_up");
+			store.updateRawEventFlushState(opencodeSessionId, lastEventSeq, source);
+			return { flushed: completedNoOp ? events.length : 0, updatedState: 1 };
+		}
+		// Legacy builds stored this pre-observer outcome as a generic Error. Fall
+		// through exactly once to replace it with the stable reason used below.
+		isLegacyRediagnosis = true;
 	}
 
 	// Claim the batch (atomic lock)
@@ -356,13 +415,24 @@ export async function flushRawEvents(
 		await ingest(payload, store, ingestOpts);
 	} catch (exc) {
 		// Record failure details on the batch
+		const observerFailureStatus = rawEventObserverStatusFromError(exc);
+		const isNonErrorRejection = !(exc instanceof Error);
 		const err = exc instanceof Error ? exc : new Error(String(exc));
-		const status = ingestOpts.observer?.getStatus?.();
+		const status = observerFailureStatus ?? ingestOpts.observer?.getStatus?.();
 		const provider = status?.provider as string | undefined;
 		const message = truncateErrorMessage(summarizeFlushFailure(err, provider));
+		const reportedErrorType = flushFailureErrorType(err);
+		const currentErrorType =
+			reportedErrorType === "Error" && (observerFailureStatus || isNonErrorRejection)
+				? OBSERVER_CALL_ERROR_TYPE
+				: reportedErrorType;
+		const errorType =
+			isLegacyRediagnosis && currentErrorType === "Error"
+				? LEGACY_REDIAGNOSIS_FAILED_ERROR_TYPE
+				: currentErrorType;
 		store.recordRawEventFlushBatchFailure(batchId, {
 			message,
-			errorType: err instanceof ObserverAuthError ? "ObserverAuthError" : err.name,
+			errorType,
 			observerProvider: provider ?? null,
 			observerModel: status?.model ?? null,
 			observerRuntime: status?.runtime ?? null,

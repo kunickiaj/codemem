@@ -85,10 +85,16 @@ describe("flushRawEvents max retry", () => {
 		}),
 	};
 
-	it("gives up after max attempts and advances flush cursor", async () => {
+	it("completes an exhausted assistant-free microbatch as a no-op", async () => {
 		process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS = "3";
 		const sessionId = "ses_max_retry_test";
-		seedEvents(sessionId);
+		store.recordRawEvent({
+			opencodeSessionId: sessionId,
+			eventId: "evt-1",
+			eventType: "user_prompt",
+			payload: { type: "user_prompt", prompt_text: "ok" },
+			tsWallMs: 100,
+		});
 
 		const ingestOpts = { observer: nullObserver } as unknown as IngestOptions;
 		const flushOpts = {
@@ -103,27 +109,387 @@ describe("flushRawEvents max retry", () => {
 		// Fail 3 times — each attempt claims the batch and increments attempt_count
 		for (let i = 0; i < 3; i++) {
 			await expect(flushRawEvents(store, ingestOpts, flushOpts)).rejects.toThrow(
-				"observer failed during raw-event flush",
+				"observer produced no storable output for raw-event flush",
 			);
 		}
 
-		// 4th attempt should give up instead of retrying
+		// 4th attempt should complete the terminal fragment instead of reporting an outage
 		const result = await flushRawEvents(store, ingestOpts, flushOpts);
 		expect(result.updatedState).toBe(1);
-		expect(result.flushed).toBe(0);
+		expect(result.flushed).toBe(1);
 
-		// Batch should be marked gave_up
+		// Batch should be marked completed
 		const batch = store.db
 			.prepare(
 				"SELECT status, attempt_count FROM raw_event_flush_batches WHERE opencode_session_id = ?",
 			)
 			.get(sessionId) as { status: string; attempt_count: number };
-		expect(batch.status).toBe("gave_up");
+		expect(batch.status).toBe("completed");
 		expect(batch.attempt_count).toBe(3);
 
 		// Flush state should be advanced so the session isn't retried
 		const flushState = store.rawEventFlushState(sessionId, "opencode");
 		expect(flushState).toBeGreaterThanOrEqual(0);
+	});
+
+	it("ignores stale observer diagnostics for an assistant-free no-op", async () => {
+		process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS = "1";
+		const sessionId = "ses_stale_observer_diagnostics";
+		store.recordRawEvent({
+			opencodeSessionId: sessionId,
+			eventId: "evt-1",
+			eventType: "user_prompt",
+			payload: { type: "user_prompt", prompt_text: "ok" },
+			tsWallMs: 100,
+		});
+		const observerWithStaleError = {
+			...nullObserver,
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+				lastError: { code: "rate_limited", message: "Stale failure" },
+			}),
+		};
+		const ingestOpts = { observer: observerWithStaleError } as unknown as IngestOptions;
+		const flushOpts = {
+			opencodeSessionId: sessionId,
+			source: "opencode",
+			cwd: null,
+			project: null,
+			startedAt: null,
+			maxEvents: null,
+		};
+
+		await expect(flushRawEvents(store, ingestOpts, flushOpts)).rejects.toThrow(
+			"observer produced no storable output for raw-event flush",
+		);
+		await flushRawEvents(store, ingestOpts, flushOpts);
+
+		const batch = store.db
+			.prepare(
+				"SELECT status, observer_error_code, observer_error_message FROM raw_event_flush_batches WHERE opencode_session_id = ?",
+			)
+			.get(sessionId) as {
+			status: string;
+			observer_error_code: string | null;
+			observer_error_message: string | null;
+		};
+		expect(batch).toEqual({
+			status: "completed",
+			observer_error_code: null,
+			observer_error_message: null,
+		});
+	});
+
+	it("re-diagnoses a legacy exhausted assistant-free microbatch once", async () => {
+		process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS = "1";
+		const sessionId = "ses_legacy_no_input_failure";
+		store.recordRawEvent({
+			opencodeSessionId: sessionId,
+			eventId: "evt-1",
+			eventType: "user_prompt",
+			payload: { type: "user_prompt", prompt_text: "ok" },
+			tsWallMs: 100,
+		});
+		const event = store.db
+			.prepare("SELECT event_seq FROM raw_events WHERE opencode_session_id = ?")
+			.get(sessionId) as { event_seq: number };
+		const batch = store.getOrCreateRawEventFlushBatch(
+			sessionId,
+			"opencode",
+			event.event_seq,
+			event.event_seq,
+			"raw_events_v1",
+		);
+		store.db
+			.prepare(
+				"UPDATE raw_event_flush_batches SET status = 'failed', attempt_count = 3, error_type = 'Error', observer_error_code = 'rate_limited', observer_error_message = 'Stale failure' WHERE id = ?",
+			)
+			.run(batch.batchId);
+		const ingestOpts = { observer: nullObserver } as unknown as IngestOptions;
+		const flushOpts = {
+			opencodeSessionId: sessionId,
+			source: "opencode",
+			cwd: null,
+			project: null,
+			startedAt: null,
+			maxEvents: null,
+		};
+
+		await expect(flushRawEvents(store, ingestOpts, flushOpts)).rejects.toThrow(
+			"observer produced no storable output for raw-event flush",
+		);
+		const rediagnosed = store.db
+			.prepare("SELECT status, attempt_count, error_type FROM raw_event_flush_batches WHERE id = ?")
+			.get(batch.batchId) as { status: string; attempt_count: number; error_type: string };
+		expect(rediagnosed).toEqual({
+			status: "failed",
+			attempt_count: 4,
+			error_type: "RawEventObserverOutputError:no_processable_input",
+		});
+
+		await flushRawEvents(store, ingestOpts, flushOpts);
+		const completed = store.db
+			.prepare("SELECT status, attempt_count FROM raw_event_flush_batches WHERE id = ?")
+			.get(batch.batchId) as { status: string; attempt_count: number };
+		expect(completed).toEqual({ status: "completed", attempt_count: 4 });
+	});
+
+	it("does not repeatedly re-diagnose a legacy generic failure", async () => {
+		process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS = "1";
+		const sessionId = "ses_legacy_generic_failure";
+		seedEvents(sessionId);
+		const range = store.db
+			.prepare(
+				"SELECT MIN(event_seq) AS start_seq, MAX(event_seq) AS end_seq FROM raw_events WHERE opencode_session_id = ?",
+			)
+			.get(sessionId) as { start_seq: number; end_seq: number };
+		const batch = store.getOrCreateRawEventFlushBatch(
+			sessionId,
+			"opencode",
+			range.start_seq,
+			range.end_seq,
+			"raw_events_v1",
+		);
+		store.db
+			.prepare(
+				"UPDATE raw_event_flush_batches SET status = 'failed', attempt_count = 3, error_type = 'Error', observer_error_code = 'rate_limited' WHERE id = ?",
+			)
+			.run(batch.batchId);
+		let observeCalls = 0;
+		const failingObserver = {
+			...nullObserver,
+			observe: async () => {
+				observeCalls++;
+				throw "provider unavailable";
+			},
+		};
+		const ingestOpts = { observer: failingObserver } as unknown as IngestOptions;
+		const flushOpts = {
+			opencodeSessionId: sessionId,
+			source: "opencode",
+			cwd: null,
+			project: null,
+			startedAt: null,
+			maxEvents: null,
+		};
+
+		await expect(flushRawEvents(store, ingestOpts, flushOpts)).rejects.toBe("provider unavailable");
+		await flushRawEvents(store, ingestOpts, flushOpts);
+
+		const terminal = store.db
+			.prepare("SELECT status, attempt_count, error_type FROM raw_event_flush_batches WHERE id = ?")
+			.get(batch.batchId) as { status: string; attempt_count: number; error_type: string };
+		expect(terminal).toEqual({
+			status: "gave_up",
+			attempt_count: 4,
+			error_type: "RawEventObserverCallError",
+		});
+		expect(observeCalls).toBe(1);
+	});
+
+	it("marks a generic legacy re-diagnosis failure with a stable terminal type", async () => {
+		process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS = "1";
+		const sessionId = "ses_legacy_rediagnosis_failure";
+		seedEvents(sessionId);
+		const range = store.db
+			.prepare(
+				"SELECT MIN(event_seq) AS start_seq, MAX(event_seq) AS end_seq FROM raw_events WHERE opencode_session_id = ?",
+			)
+			.get(sessionId) as { start_seq: number; end_seq: number };
+		const batch = store.getOrCreateRawEventFlushBatch(
+			sessionId,
+			"opencode",
+			range.start_seq,
+			range.end_seq,
+			"raw_events_v1",
+		);
+		store.db
+			.prepare(
+				"UPDATE raw_event_flush_batches SET status = 'failed', attempt_count = 3, error_type = 'Error' WHERE id = ?",
+			)
+			.run(batch.batchId);
+		store.getOrCreateSessionForOpencodeSession = () => {
+			throw new Error("session insert failed");
+		};
+
+		await expect(
+			flushRawEvents(store, { observer: nullObserver } as unknown as IngestOptions, {
+				opencodeSessionId: sessionId,
+				source: "opencode",
+				cwd: null,
+				project: null,
+				startedAt: null,
+				maxEvents: null,
+			}),
+		).rejects.toThrow("session insert failed");
+
+		const rediagnosed = store.db
+			.prepare("SELECT status, error_type FROM raw_event_flush_batches WHERE id = ?")
+			.get(batch.batchId) as { status: string; error_type: string };
+		expect(rediagnosed).toEqual({
+			status: "failed",
+			error_type: "RawEventLegacyFailure:rediagnosis_failed",
+		});
+	});
+
+	it("preserves selected observer status for a plain-object rejection", async () => {
+		process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS = "1";
+		const sessionId = "ses_plain_object_observer_failure";
+		seedEvents(sessionId);
+		let observeCalls = 0;
+		const rejection = { message: "provider unavailable" };
+		const selectedObserver = {
+			...nullObserver,
+			observe: async () => {
+				observeCalls++;
+				throw rejection;
+			},
+			getStatus: () => ({
+				provider: "test",
+				model: "selected-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+				lastError: { code: "rate_limited", message: "Try again later" },
+			}),
+		};
+		const routingObserver = {
+			...nullObserver,
+			tierRoutingEnabled: true,
+			toConfig: () => ({}),
+		};
+		const ingestOpts = {
+			observer: routingObserver,
+			createTierObserver: () => selectedObserver,
+		} as unknown as IngestOptions;
+		const flushOpts = {
+			opencodeSessionId: sessionId,
+			source: "opencode",
+			cwd: null,
+			project: null,
+			startedAt: null,
+			maxEvents: null,
+		};
+
+		await expect(flushRawEvents(store, ingestOpts, flushOpts)).rejects.toBe(rejection);
+		await flushRawEvents(store, ingestOpts, flushOpts);
+
+		const batch = store.db
+			.prepare(
+				"SELECT status, error_type, observer_model, observer_error_code FROM raw_event_flush_batches WHERE opencode_session_id = ?",
+			)
+			.get(sessionId) as {
+			status: string;
+			error_type: string;
+			observer_model: string | null;
+			observer_error_code: string | null;
+		};
+		expect(batch).toEqual({
+			status: "gave_up",
+			error_type: "RawEventObserverCallError",
+			observer_model: "selected-model",
+			observer_error_code: "rate_limited",
+		});
+		expect(observeCalls).toBe(1);
+	});
+
+	it("keeps a diagnosed tier-observer failure as gave_up", async () => {
+		process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS = "1";
+		const sessionId = "ses_diagnosed_tier_failure";
+		seedEvents(sessionId);
+		const selectedObserver = {
+			...nullObserver,
+			observe: async () => {
+				throw new Error("provider unavailable");
+			},
+			getStatus: () => ({
+				provider: "test",
+				model: "selected-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+				lastError: { code: "rate_limited", message: "Try again later" },
+			}),
+		};
+		const routingObserver = {
+			...nullObserver,
+			tierRoutingEnabled: true,
+			toConfig: () => ({}),
+		};
+		const ingestOpts = {
+			observer: routingObserver,
+			createTierObserver: () => selectedObserver,
+		} as unknown as IngestOptions;
+		const flushOpts = {
+			opencodeSessionId: sessionId,
+			source: "opencode",
+			cwd: null,
+			project: null,
+			startedAt: null,
+			maxEvents: null,
+		};
+
+		await expect(flushRawEvents(store, ingestOpts, flushOpts)).rejects.toThrow(
+			"provider unavailable",
+		);
+		await flushRawEvents(store, ingestOpts, flushOpts);
+
+		const batch = store.db
+			.prepare(
+				"SELECT status, error_type, observer_model, observer_error_code FROM raw_event_flush_batches WHERE opencode_session_id = ?",
+			)
+			.get(sessionId) as {
+			status: string;
+			error_type: string;
+			observer_model: string | null;
+			observer_error_code: string | null;
+		};
+		expect(batch).toEqual({
+			status: "gave_up",
+			error_type: "RawEventObserverCallError",
+			observer_model: "selected-model",
+			observer_error_code: "rate_limited",
+		});
+	});
+
+	it("keeps repeated unparseable microbatch output as gave_up", async () => {
+		process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS = "1";
+		const sessionId = "ses_unparseable_microbatch";
+		seedEvents(sessionId);
+		const observer = {
+			...nullObserver,
+			observe: async () => ({
+				raw: "I can summarize this session in plain English.",
+				parsed: null,
+				provider: "test",
+				model: "test-model",
+			}),
+		};
+		const ingestOpts = { observer } as unknown as IngestOptions;
+		const flushOpts = {
+			opencodeSessionId: sessionId,
+			source: "opencode",
+			cwd: null,
+			project: null,
+			startedAt: null,
+			maxEvents: null,
+		};
+
+		await expect(flushRawEvents(store, ingestOpts, flushOpts)).rejects.toThrow(
+			"observer produced no storable output for raw-event flush",
+		);
+		await flushRawEvents(store, ingestOpts, flushOpts);
+
+		const batch = store.db
+			.prepare(
+				"SELECT status, error_type FROM raw_event_flush_batches WHERE opencode_session_id = ?",
+			)
+			.get(sessionId) as { status: string; error_type: string };
+		expect(batch).toEqual({
+			status: "gave_up",
+			error_type: "RawEventObserverOutputError:unstorable_observer_output",
+		});
 	});
 
 	it("does not give up when under the max attempts", async () => {
@@ -263,6 +629,13 @@ describe("flushRawEvents max retry", () => {
 		delete process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS;
 		const sessionId = "ses_default_max";
 		seedEvents(sessionId);
+		store.recordRawEvent({
+			opencodeSessionId: sessionId,
+			eventId: "evt-3",
+			eventType: "assistant_message",
+			payload: { type: "assistant_message", assistant_text: "Unable to finish." },
+			tsWallMs: 300,
+		});
 
 		const ingestOpts = { observer: nullObserver } as unknown as IngestOptions;
 		const flushOpts = {
@@ -295,6 +668,13 @@ describe("flushRawEvents max retry", () => {
 		process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS = "1";
 		const sessionId = "ses_no_resurrect";
 		seedEvents(sessionId);
+		store.recordRawEvent({
+			opencodeSessionId: sessionId,
+			eventId: "evt-3",
+			eventType: "assistant_message",
+			payload: { type: "assistant_message", assistant_text: "Unable to finish." },
+			tsWallMs: 300,
+		});
 
 		const ingestOpts = { observer: nullObserver } as unknown as IngestOptions;
 		const flushOpts = {
