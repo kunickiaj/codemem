@@ -239,6 +239,136 @@ describe("Team setup terminal migration routing", () => {
 		}
 	});
 
+	it("rejects a roster change that occurs while finish waits for publication locks", async () => {
+		const store = new MemoryStore(":memory:");
+		let currentSnapshots = SNAPSHOTS;
+		const loadSnapshots = vi.fn(async () => currentSnapshots);
+		const create = vi.fn(async ({ manifest }) => ({ status: "created" as const, manifest }));
+		const app = teamSetupRoutes({
+			getStore: () => store,
+			loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
+			snapshotLoaderDependencies: completionConfig(),
+			completionDependencies: { create, list: async () => [] },
+		});
+		try {
+			const draft = await readyDraftThroughSummary(store, app);
+			const detail = (await (
+				await app.request(`/api/sync/team-setup/v1/${CANDIDATE_REF}`)
+			).json()) as {
+				finishDigest: string;
+				accessDeltaDigest: string;
+				viewerAccessDeltaDigest: string;
+			};
+			let releasePublicationLock = () => undefined;
+			const publicationLockPending = new Promise<void>((resolve) => {
+				releasePublicationLock = resolve;
+			});
+			let publicationLockHeld = false;
+			const publicationMutation = serializeRecipientPolicyPublicationMutation(
+				store.db,
+				async () => {
+					publicationLockHeld = true;
+					await publicationLockPending;
+				},
+			);
+			await vi.waitFor(() => expect(publicationLockHeld).toBe(true));
+			const loadCountBeforeFinish = loadSnapshots.mock.calls.length;
+			const finish = app.request(`/api/sync/team-setup/v1/${CANDIDATE_REF}/finish`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					attemptId: draft.attemptId,
+					finishDigest: detail.finishDigest,
+					confirmedAccessDeltaDigest: detail.accessDeltaDigest,
+					confirmedViewerAccessDeltaDigest: detail.viewerAccessDeltaDigest,
+				}),
+			});
+			await vi.waitFor(() =>
+				expect(loadSnapshots.mock.calls.length).toBeGreaterThan(loadCountBeforeFinish),
+			);
+			const snapshot = SNAPSHOTS[0];
+			if (!snapshot) throw new Error("missing test snapshot");
+			currentSnapshots = [
+				{
+					...snapshot,
+					devices: snapshot.devices.map((device) => ({ ...device, enabled: false })),
+				},
+			];
+			releasePublicationLock();
+			await publicationMutation;
+
+			const response = await finish;
+			expect(response.status).toBe(409);
+			expect(await response.json()).toEqual({ error: "team_setup_roster_changed" });
+			expect(create).not.toHaveBeenCalled();
+		} finally {
+			store.close();
+		}
+	});
+
+	it("rejects finish when authorization is revoked during the locked roster reload", async () => {
+		const store = new MemoryStore(":memory:");
+		let configuredGroups = [GROUP_ID];
+		let trackFinishLoads = false;
+		let finishLoadCount = 0;
+		let releaseLockedRosterReload = () => undefined;
+		const lockedRosterReloadPending = new Promise<void>((resolve) => {
+			releaseLockedRosterReload = resolve;
+		});
+		let lockedRosterReloadStarted = false;
+		const loadSnapshots = vi.fn(async () => {
+			if (!trackFinishLoads) return SNAPSHOTS;
+			finishLoadCount += 1;
+			if (finishLoadCount === 2) {
+				lockedRosterReloadStarted = true;
+				await lockedRosterReloadPending;
+			}
+			return SNAPSHOTS;
+		});
+		const config = completionConfig();
+		const create = vi.fn(async ({ manifest }) => ({ status: "created" as const, manifest }));
+		const app = teamSetupRoutes({
+			getStore: () => store,
+			loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
+			snapshotLoaderDependencies: {
+				...config,
+				readConfig: () => ({ ...config.readConfig(), syncCoordinatorGroups: configuredGroups }),
+			},
+			completionDependencies: { create, list: async () => [] },
+		});
+		try {
+			const draft = await readyDraftThroughSummary(store, app);
+			const detail = (await (
+				await app.request(`/api/sync/team-setup/v1/${CANDIDATE_REF}`)
+			).json()) as {
+				finishDigest: string;
+				accessDeltaDigest: string;
+				viewerAccessDeltaDigest: string;
+			};
+			trackFinishLoads = true;
+			const finish = app.request(`/api/sync/team-setup/v1/${CANDIDATE_REF}/finish`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					attemptId: draft.attemptId,
+					finishDigest: detail.finishDigest,
+					confirmedAccessDeltaDigest: detail.accessDeltaDigest,
+					confirmedViewerAccessDeltaDigest: detail.viewerAccessDeltaDigest,
+				}),
+			});
+			await vi.waitFor(() => expect(lockedRosterReloadStarted).toBe(true));
+			configuredGroups = [];
+			releaseLockedRosterReload();
+
+			const response = await finish;
+			expect(response.status).toBe(409);
+			expect(await response.json()).toEqual({ error: "team_setup_completion_invalid" });
+			expect(create).not.toHaveBeenCalled();
+		} finally {
+			store.close();
+		}
+	});
+
 	it("keeps local policy uncommitted when completion publication fails", async () => {
 		const store = new MemoryStore(":memory:");
 		const app = teamSetupRoutes({
