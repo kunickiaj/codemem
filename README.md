@@ -250,6 +250,8 @@ after the CLI reports a fresh, validated npm release observed for at least 24 ho
 installation whose npm origin can be proven. Pinned, prerelease, downgrade,
 repository-development, stale, Docker, and unknown installs refuse execution. Set
 `CODEMEM_BACKEND_UPDATE_POLICY=off` to disable release checks.
+On Linux, plugin-owned auto-updates preserve the OpenCode environment and set
+`ONNXRUNTIME_NODE_INSTALL=skip` for the install to avoid the unused GPU-provider download.
 Docker guidance is always rebuild-and-restart guidance, never an in-container update.
 
 Pack rendering defaults to self-contained context. For token-constrained experiments, `codemem pack <context> --compact` renders an index plus top details. Near-related compression is controlled by `--compression-mode off|compact|ids` (or `CODEMEM_PACK_COMPRESSION`); MCP `memory_pack` exposes the same setting as `compression_mode`. Use `ids` only when the agent can follow up with `memory_get_observations`.

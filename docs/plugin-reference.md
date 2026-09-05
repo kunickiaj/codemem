@@ -485,8 +485,11 @@ argv-based CLI runner. `notify` and `auto` show a best-effort toast at most once
 release in the current OpenCode process; `off` skips this release check. Under explicit `auto`, an
 eligible result executes a paired, version-pinned public-registry install for `codemem` and
 `@codemem/embeddings`, then verifies the active CLI version before a plugin-owned Viewer is
-restarted. Current, unavailable, malformed, ineligible, and timed-out results are ignored or shown
-as guidance without delaying plugin startup. The plugin-owned installer is best effort: it does not
+restarted. On Linux, both plugin-owned auto-update paths preserve the existing child environment
+and set `ONNXRUNTIME_NODE_INSTALL=skip` for the install; other platforms keep the existing
+environment behavior. Current, unavailable, malformed, ineligible, and timed-out results are
+ignored or shown as guidance without delaying plugin startup. The plugin-owned installer is best
+effort: it does not
 use the CLI install lock or Windows npm-shim handling, and plugin-owned auto-update is disabled on
 Windows. Avoid starting simultaneous automatic updates from multiple OpenCode sessions; use
 `codemem update install` when serialized installation is required.
