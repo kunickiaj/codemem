@@ -665,6 +665,9 @@ const buildViewerIdentityTarget = (env = process.env, cwd = process.cwd()) => {
     embedding_disabled: ["1", "true", "yes"].includes(
       String(env.CODEMEM_EMBEDDING_DISABLED || "").toLowerCase(),
     ),
+    embedding_offline: ["1", "true", "yes"].includes(
+      String(env.CODEMEM_EMBEDDING_OFFLINE || "").toLowerCase(),
+    ),
     embedding_model: embeddingModel,
     embedding_revision: embeddingRevision,
   };

@@ -40,6 +40,23 @@ type Extractor = (
 const DEFAULT_MODEL = "Xenova/bge-small-en-v1.5";
 const DEFAULT_REVISION = "ea104dacec62c0de699686887e3f920caeb4f3e3";
 const CANONICAL_REVISION_PATTERN = /^[0-9a-f]{40}$/;
+let allowRemoteModelsBeforeOffline: boolean | undefined;
+
+function isEmbeddingOffline(): boolean {
+	const value = process.env.CODEMEM_EMBEDDING_OFFLINE?.toLowerCase();
+	return value === "1" || value === "true" || value === "yes";
+}
+
+function configureRemoteModelAccess(env: HubEnvironment): void {
+	if (isEmbeddingOffline()) {
+		allowRemoteModelsBeforeOffline ??= env.allowRemoteModels;
+		env.allowRemoteModels = false;
+		return;
+	}
+	if (allowRemoteModelsBeforeOffline === undefined) return;
+	env.allowRemoteModels = allowRemoteModelsBeforeOffline;
+	allowRemoteModelsBeforeOffline = undefined;
+}
 
 interface HubEnvironment {
 	remoteHost: string;
@@ -62,8 +79,16 @@ function isLocalModelPath(model: string): boolean {
 function configuredRevisionToResolve(
 	model: string,
 	configuredRevision: string | undefined,
+	allowRemoteModels: boolean,
 ): string | undefined {
 	if (model === DEFAULT_MODEL && configuredRevision === DEFAULT_REVISION) return undefined;
+	if (
+		configuredRevision &&
+		CANONICAL_REVISION_PATTERN.test(configuredRevision) &&
+		(isLocalModelPath(model) || !allowRemoteModels)
+	) {
+		return undefined;
+	}
 	return configuredRevision;
 }
 
@@ -133,22 +158,21 @@ export async function createEmbeddingRuntime({
 		throw new TypeError("A revision is required when creating a runtime for a custom model");
 	}
 	const { env, pipeline } = await import("@huggingface/transformers");
+	configureRemoteModelAccess(env);
 	const requestedRevision = configuredRevision || DEFAULT_REVISION;
 	let revision = requestedRevision;
-	const revisionToResolve = configuredRevisionToResolve(model, configuredRevision);
+	const revisionToResolve = configuredRevisionToResolve(
+		model,
+		configuredRevision,
+		env.allowRemoteModels,
+	);
 	if (revisionToResolve) {
 		if (isLocalModelPath(model)) {
-			if (!CANONICAL_REVISION_PATTERN.test(revisionToResolve)) {
-				throw new TypeError("Local embedding models require a 40-character revision identity");
-			}
+			throw new TypeError("Local embedding models require a 40-character revision identity");
 		} else if (!env.allowRemoteModels) {
-			if (CANONICAL_REVISION_PATTERN.test(revisionToResolve)) {
-				revision = revisionToResolve;
-			} else {
-				throw new TypeError(
-					`Cannot resolve mutable embedding revision ${revisionToResolve} while remote models are disabled`,
-				);
-			}
+			throw new TypeError(
+				`Cannot resolve mutable embedding revision ${revisionToResolve} while remote models are disabled`,
+			);
 		} else {
 			revision = await resolveCanonicalRevision(model, revisionToResolve, env);
 		}

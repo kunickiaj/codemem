@@ -5668,6 +5668,7 @@ describe("viewer-server", () => {
 					home_dir: resolve(process.env.HOME || homedir()),
 					pack_compression: null,
 					embedding_disabled: false,
+					embedding_offline: false,
 					embedding_model: "Xenova/bge-small-en-v1.5",
 					embedding_revision: "ea104dacec62c0de699686887e3f920caeb4f3e3",
 				};
@@ -5710,6 +5711,13 @@ describe("viewer-server", () => {
 				});
 				expect(embeddingMismatch.status).toBe(409);
 
+				const embeddingOfflineMismatch = await postViewerJson(app, "/api/pack", {
+					context: "viewer identity",
+					db_path: ensureStore().dbPath,
+					identity_target: { ...viewerIdentityTarget, embedding_offline: true },
+				});
+				expect(embeddingOfflineMismatch.status).toBe(409);
+
 				const embeddingRevisionMismatch = await postViewerJson(app, "/api/pack", {
 					context: "viewer identity",
 					db_path: ensureStore().dbPath,
@@ -5745,6 +5753,7 @@ describe("viewer-server", () => {
 				"CODEMEM_WORKSPACE_ID",
 				"CODEMEM_PACK_COMPRESSION",
 				"CODEMEM_EMBEDDING_DISABLED",
+				"CODEMEM_EMBEDDING_OFFLINE",
 				"CODEMEM_EMBEDDING_MODEL",
 				"CODEMEM_EMBEDDING_REVISION",
 			] as const;
@@ -5770,6 +5779,7 @@ describe("viewer-server", () => {
 						home_dir: resolve(process.env.HOME || homedir()),
 						pack_compression: null,
 						embedding_disabled: false,
+						embedding_offline: false,
 						embedding_model: "Xenova/bge-small-en-v1.5",
 						embedding_revision: "ea104dacec62c0de699686887e3f920caeb4f3e3",
 					},

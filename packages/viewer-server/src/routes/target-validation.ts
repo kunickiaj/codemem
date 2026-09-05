@@ -7,7 +7,11 @@ import {
 } from "@codemem/core";
 
 const IDENTITY_TARGET_KEYS = new Set<string>(VIEWER_IDENTITY_TARGET_KEYS);
-const BOOLEAN_IDENTITY_TARGET_KEYS = new Set(["actor_id_present", "embedding_disabled"]);
+const BOOLEAN_IDENTITY_TARGET_KEYS = new Set([
+	"actor_id_present",
+	"embedding_disabled",
+	"embedding_offline",
+]);
 
 export type ViewerTargetValidation =
 	| { ok: true }

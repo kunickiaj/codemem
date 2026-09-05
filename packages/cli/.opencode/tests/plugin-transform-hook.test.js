@@ -61,11 +61,15 @@ test("OpenCode identity targeting matches the core contract for absolute paths",
 		CODEMEM_WORKSPACE_ID: "workspace-1",
 		CODEMEM_PACK_COMPRESSION: "ids",
 		CODEMEM_EMBEDDING_DISABLED: "yes",
+		CODEMEM_EMBEDDING_OFFLINE: "YES",
 		CODEMEM_EMBEDDING_MODEL: "model-1",
 		CODEMEM_EMBEDDING_REVISION: "revision-1",
 	};
 	const { __testUtils } = await import("../plugins/codemem.js");
 	expect(__testUtils.buildViewerIdentityTarget(env, root)).toEqual(buildViewerIdentityTarget(env));
+	expect(__testUtils.buildViewerIdentityTarget(env, root)).toMatchObject({
+		embedding_offline: true,
+	});
 });
 
 test("OpenCode identity targeting preserves a missing custom-model revision as null", async () => {
@@ -141,6 +145,9 @@ const viewerProfileResponse = (overrides = {}) => {
 			pack_compression: process.env.CODEMEM_PACK_COMPRESSION?.trim() || null,
 			embedding_disabled: ["1", "true", "yes"].includes(
 				String(process.env.CODEMEM_EMBEDDING_DISABLED || "").toLowerCase(),
+			),
+			embedding_offline: ["1", "true", "yes"].includes(
+				String(process.env.CODEMEM_EMBEDDING_OFFLINE || "").toLowerCase(),
 			),
 			embedding_model: embeddingModel,
 			embedding_revision: embeddingRevision,
@@ -299,6 +306,7 @@ describe("OpenCode transform-time injection", () => {
 			"CODEMEM_WORKSPACE_ID",
 			"CODEMEM_PACK_COMPRESSION",
 			"CODEMEM_EMBEDDING_DISABLED",
+			"CODEMEM_EMBEDDING_OFFLINE",
 			"CODEMEM_EMBEDDING_MODEL",
 			"CODEMEM_EMBEDDING_REVISION",
 		]) {
@@ -1840,6 +1848,7 @@ describe("OpenCode transform-time injection", () => {
 				home_dir: resolve(process.env.HOME?.trim() || homedir()),
 				pack_compression: null,
 				embedding_disabled: false,
+				embedding_offline: false,
 				embedding_model: "Xenova/bge-small-en-v1.5",
 				embedding_revision: "ea104dacec62c0de699686887e3f920caeb4f3e3",
 			},

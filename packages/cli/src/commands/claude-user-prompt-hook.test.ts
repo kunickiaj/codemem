@@ -50,6 +50,7 @@ describe("dependency-free Claude user prompt hook", () => {
 			home_dir: root,
 			pack_compression: null,
 			embedding_disabled: false,
+			embedding_offline: false,
 			embedding_model: "Xenova/bge-small-en-v1.5",
 			embedding_revision: "ea104dacec62c0de699686887e3f920caeb4f3e3",
 		};
@@ -91,6 +92,7 @@ describe("dependency-free Claude user prompt hook", () => {
 			CODEMEM_WORKSPACE_ID: "workspace-1",
 			CODEMEM_PACK_COMPRESSION: "ids",
 			CODEMEM_EMBEDDING_DISABLED: "true",
+			CODEMEM_EMBEDDING_OFFLINE: "YeS",
 			CODEMEM_EMBEDDING_MODEL: "model-1",
 			CODEMEM_EMBEDDING_REVISION: "abcdef1234567890abcdef1234567890abcdef12",
 		};
