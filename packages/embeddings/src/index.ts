@@ -60,8 +60,16 @@ function isLocalModelPath(model: string): boolean {
 function configuredRevisionToResolve(
 	model: string,
 	configuredRevision: string | undefined,
+	allowRemoteModels: boolean,
 ): string | undefined {
 	if (model === DEFAULT_MODEL && configuredRevision === DEFAULT_REVISION) return undefined;
+	if (
+		configuredRevision &&
+		CANONICAL_REVISION_PATTERN.test(configuredRevision) &&
+		(isLocalModelPath(model) || !allowRemoteModels)
+	) {
+		return undefined;
+	}
 	return configuredRevision;
 }
 
@@ -133,20 +141,18 @@ export async function createEmbeddingRuntime({
 	const { env, pipeline } = await import("@huggingface/transformers");
 	const requestedRevision = configuredRevision || DEFAULT_REVISION;
 	let revision = requestedRevision;
-	const revisionToResolve = configuredRevisionToResolve(model, configuredRevision);
+	const revisionToResolve = configuredRevisionToResolve(
+		model,
+		configuredRevision,
+		env.allowRemoteModels,
+	);
 	if (revisionToResolve) {
 		if (isLocalModelPath(model)) {
-			if (!CANONICAL_REVISION_PATTERN.test(revisionToResolve)) {
-				throw new TypeError("Local embedding models require a 40-character revision identity");
-			}
+			throw new TypeError("Local embedding models require a 40-character revision identity");
 		} else if (!env.allowRemoteModels) {
-			if (CANONICAL_REVISION_PATTERN.test(revisionToResolve)) {
-				revision = revisionToResolve;
-			} else {
-				throw new TypeError(
-					`Cannot resolve mutable embedding revision ${revisionToResolve} while remote models are disabled`,
-				);
-			}
+			throw new TypeError(
+				`Cannot resolve mutable embedding revision ${revisionToResolve} while remote models are disabled`,
+			);
 		} else {
 			revision = await resolveCanonicalRevision(model, revisionToResolve, env);
 		}
