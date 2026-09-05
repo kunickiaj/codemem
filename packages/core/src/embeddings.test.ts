@@ -57,6 +57,8 @@ function runtimeClient(
 			requestedRevision,
 			dtype: "fp32" as const,
 			device: "cpu" as const,
+			pooling: "mean" as const,
+			normalization: "l2" as const,
 			dimensions: 384,
 		},
 	};
@@ -165,6 +167,8 @@ describe("embedding runtime factory", () => {
 				revision: "wrong-revision",
 				dtype: "fp32" as const,
 				device: "cpu" as const,
+				pooling: "mean" as const,
+				normalization: "l2" as const,
 				dimensions: 384,
 			},
 		};
@@ -376,6 +380,44 @@ describe("embedding runtime factory", () => {
 
 		expect(await getEmbeddingClient()).toBe(second);
 		expect(replacement).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("embedding runtime requested identity validation", () => {
+	const originalEmbeddingDisabled = process.env.CODEMEM_EMBEDDING_DISABLED;
+	const originalEmbeddingModel = process.env.CODEMEM_EMBEDDING_MODEL;
+	const originalEmbeddingRevision = process.env.CODEMEM_EMBEDDING_REVISION;
+
+	beforeEach(() => {
+		_resetEmbeddingRuntimeFactory();
+		delete process.env.CODEMEM_EMBEDDING_DISABLED;
+		delete process.env.CODEMEM_EMBEDDING_MODEL;
+		delete process.env.CODEMEM_EMBEDDING_REVISION;
+		createEmbeddingRuntimeMock.mockReset();
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		_resetEmbeddingRuntimeFactory();
+		if (originalEmbeddingDisabled === undefined) delete process.env.CODEMEM_EMBEDDING_DISABLED;
+		else process.env.CODEMEM_EMBEDDING_DISABLED = originalEmbeddingDisabled;
+		if (originalEmbeddingModel === undefined) delete process.env.CODEMEM_EMBEDDING_MODEL;
+		else process.env.CODEMEM_EMBEDDING_MODEL = originalEmbeddingModel;
+		if (originalEmbeddingRevision === undefined) delete process.env.CODEMEM_EMBEDDING_REVISION;
+		else process.env.CODEMEM_EMBEDDING_REVISION = originalEmbeddingRevision;
+	});
+
+	it("rejects a runtime identity for a different requested model", async () => {
+		const client = runtimeClient("other/model", DEFAULT_EMBEDDING_REVISION);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		_setEmbeddingRuntimeFactory(vi.fn(async () => client));
+
+		await expect(getEmbeddingClient()).resolves.toBeNull();
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"Embedding runtime identity mismatch for model: expected Xenova/bge-small-en-v1.5, received other/model",
+			),
+		);
 	});
 });
 

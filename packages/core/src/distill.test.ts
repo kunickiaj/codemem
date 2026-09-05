@@ -485,6 +485,8 @@ describe("distill", () => {
 					requestedRevision,
 					dtype: "fp32",
 					device: "cpu",
+					pooling: "mean",
+					normalization: "l2",
 					dimensions: 384,
 				},
 				embed: async (texts) => texts.map(() => expectedVector.slice()),
