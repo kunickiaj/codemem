@@ -281,6 +281,38 @@ export interface IngestOptions {
 	storeTyped?: boolean;
 }
 
+export type RawEventObserverOutputFailureReason =
+	| "no_processable_input"
+	| "empty_observer_output"
+	| "lossy_repair"
+	| "unstorable_observer_output";
+
+const observerFailureStatuses = new WeakMap<object, ReturnType<ObserverClient["getStatus"]>>();
+
+export class RawEventObserverOutputError extends Error {
+	readonly observerStatus: ReturnType<ObserverClient["getStatus"]>;
+	readonly reason: RawEventObserverOutputFailureReason;
+
+	constructor(
+		message: string,
+		reason: RawEventObserverOutputFailureReason,
+		observer: ObserverClient,
+	) {
+		super(message);
+		this.name = "RawEventObserverOutputError";
+		this.reason = reason;
+		this.observerStatus = observer.getStatus();
+	}
+}
+
+export function rawEventObserverStatusFromError(
+	error: unknown,
+): ReturnType<ObserverClient["getStatus"]> | null {
+	if (error instanceof RawEventObserverOutputError) return error.observerStatus;
+	if ((typeof error !== "object" && typeof error !== "function") || error === null) return null;
+	return observerFailureStatuses.get(error) ?? null;
+}
+
 async function observeStructuredOutput(
 	observer: ObserverClient,
 	system: string,
@@ -333,6 +365,21 @@ async function observeStructuredOutput(
 		provider: repaired.provider,
 		model: repaired.model,
 	};
+}
+
+async function observeRawEventOutput(
+	observer: ObserverClient,
+	system: string,
+	user: string,
+): Promise<Awaited<ReturnType<typeof observeStructuredOutput>>> {
+	try {
+		return await observeStructuredOutput(observer, system, user);
+	} catch (error) {
+		if ((typeof error === "object" || typeof error === "function") && error !== null) {
+			observerFailureStatuses.set(error, observer.getStatus());
+		}
+		throw error;
+	}
 }
 
 /**
@@ -443,7 +490,11 @@ export async function ingest(
 
 		if (!shouldProcess) {
 			if (sessionContext?.flusher === "raw_events") {
-				throw new Error("observer produced no storable output for raw-event flush");
+				throw new RawEventObserverOutputError(
+					"observer produced no storable output for raw-event flush",
+					"no_processable_input",
+					options.observer,
+				);
 			}
 			endSession(store, sessionId, events.length, sessionContext);
 			return;
@@ -540,13 +591,17 @@ export async function ingest(
 		// ------------------------------------------------------------------
 		// Call observer LLM
 		// ------------------------------------------------------------------
-		const response = await observeStructuredOutput(selectedObserver, system, user);
+		const response = await observeRawEventOutput(selectedObserver, system, user);
 
 		if (!response.raw) {
 			// Raw-event flushes must be lossless: if the observer returns no output,
 			// fail the flush so we do NOT advance last_flushed_event_seq.
 			if (sessionContext?.flusher === "raw_events") {
-				throw new Error("observer failed during raw-event flush");
+				throw new RawEventObserverOutputError(
+					"observer failed during raw-event flush",
+					"empty_observer_output",
+					selectedObserver,
+				);
 			}
 
 			// Surface the failure for normal ingest paths.
@@ -571,7 +626,11 @@ export async function ingest(
 				parsed.skipSummaryReason !== null) &&
 			shouldRepairObserverResponse(rawText, parsed)
 		) {
-			throw new Error("observer repair remained lossy during raw-event flush");
+			throw new RawEventObserverOutputError(
+				"observer repair remained lossy during raw-event flush",
+				"lossy_repair",
+				selectedObserver,
+			);
 		}
 		const observerStatus = selectedObserver.getStatus();
 
@@ -718,7 +777,11 @@ export async function ingest(
 					});
 					return;
 				}
-				throw new Error("observer produced no storable output for raw-event flush");
+				throw new RawEventObserverOutputError(
+					"observer produced no storable output for raw-event flush",
+					"unstorable_observer_output",
+					selectedObserver,
+				);
 			}
 		}
 
