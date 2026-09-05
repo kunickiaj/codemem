@@ -397,6 +397,16 @@ describe("memory command scope safety", () => {
 		vi.mocked(embeddings.getEmbeddingClient).mockResolvedValue({
 			model: "test-model",
 			dimensions: 384,
+			identity: {
+				package: "@huggingface/transformers",
+				version: "4.2.0",
+				model: "test-model",
+				revision: "0123456789abcdef0123456789abcdef01234567",
+				requestedRevision: "test-revision",
+				dtype: "fp32",
+				device: "cpu",
+				dimensions: 384,
+			},
 			embed: vi.fn(),
 		});
 		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
