@@ -451,17 +451,15 @@ export const DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL = resolveEmbeddingVectorIde
 	DEFAULT_EMBEDDING_REVISION,
 );
 
-function assertEmbeddingRuntimeIdentity(
+/** Validate the runtime contract and agreement between a client and its identity. */
+export function assertEmbeddingClientIdentity(
 	client: EmbeddingClient,
-	model: string,
-	requestedRevision: string,
-): void {
+): asserts client is EmbeddingClient & { readonly identity: EmbeddingRuntimeIdentity } {
 	if (!client.identity) {
 		throw new TypeError("Embedding runtime identity is required");
 	}
 	const expected = {
 		package: "@huggingface/transformers",
-		model,
 		dtype: "fp32",
 		device: "cpu",
 		dimensions: EMBEDDING_DIMENSIONS,
@@ -478,19 +476,32 @@ function assertEmbeddingRuntimeIdentity(
 			`Embedding runtime identity revision is not a canonical commit SHA: ${client.identity.revision}`,
 		);
 	}
+	if (client.model !== client.identity.model) {
+		throw new TypeError(
+			`Embedding client model mismatch: expected ${client.identity.model}, received ${client.model}`,
+		);
+	}
+	if (client.dimensions !== client.identity.dimensions) {
+		throw new TypeError(
+			`Embedding client dimensions mismatch: expected ${client.identity.dimensions}, received ${client.dimensions}`,
+		);
+	}
+}
+
+function assertEmbeddingRuntimeIdentity(
+	client: EmbeddingClient,
+	model: string,
+	requestedRevision: string,
+): void {
+	assertEmbeddingClientIdentity(client);
+	if (client.identity.model !== model) {
+		throw new TypeError(
+			`Embedding runtime identity mismatch for model: expected ${model}, received ${client.identity.model}`,
+		);
+	}
 	if (client.identity.requestedRevision !== requestedRevision) {
 		throw new TypeError(
 			`Embedding runtime identity requestedRevision mismatch: expected ${requestedRevision}, got ${client.identity.requestedRevision ?? "missing"}`,
-		);
-	}
-	if (client.model !== model) {
-		throw new TypeError(
-			`Embedding client model mismatch: expected ${model}, received ${client.model}`,
-		);
-	}
-	if (client.dimensions !== EMBEDDING_DIMENSIONS) {
-		throw new TypeError(
-			`Embedding client dimensions mismatch: expected ${EMBEDDING_DIMENSIONS}, received ${client.dimensions}`,
 		);
 	}
 }

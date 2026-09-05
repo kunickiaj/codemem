@@ -4,6 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as dbModule from "./db.js";
+import type { EmbeddingClient, EmbeddingRuntimeIdentity } from "./embeddings.js";
 import * as embeddings from "./embeddings.js";
 import { failMaintenanceJob, startMaintenanceJob } from "./maintenance-jobs.js";
 import { ensureSchemaBootstrapped } from "./schema-bootstrap.js";
@@ -35,6 +36,86 @@ vi.mock("./embeddings.js", async () => {
 		tryResolveEmbeddingVectorIdentityLabel: vi.fn(() => "test-model"),
 	};
 });
+
+function injectedBackfillClient(
+	overrides: {
+		model?: string;
+		dimensions?: number;
+		identity?: Partial<Record<keyof EmbeddingRuntimeIdentity, unknown>>;
+	} = {},
+): EmbeddingClient {
+	const identity: EmbeddingRuntimeIdentity = {
+		package: "@huggingface/transformers",
+		version: "4.2.0",
+		model: "test-model",
+		revision: "0123456789abcdef0123456789abcdef01234567",
+		requestedRevision: "test-revision",
+		dtype: "fp32",
+		device: "cpu",
+		dimensions: 384,
+	};
+	return {
+		model: overrides.model ?? "test-model",
+		dimensions: overrides.dimensions ?? 384,
+		identity: { ...identity, ...overrides.identity } as EmbeddingRuntimeIdentity,
+		embed: vi.fn(async (texts: string[]) => texts.map(() => new Float32Array(384))),
+	};
+}
+
+function insertInjectedBackfillMemory(db: InstanceType<typeof Database>): number {
+	const sessionId = insertTestSession(db);
+	const createdAt = "2026-09-05T00:00:00.000Z";
+	const info = db
+		.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+			 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+			 VALUES (?, 'feature', 'Injected client', 'Backfill body', 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+		)
+		.run(sessionId, createdAt, createdAt);
+	return Number(info.lastInsertRowid);
+}
+
+const invalidInjectedBackfillClients: Array<{
+	caseName: string;
+	createClient: () => EmbeddingClient;
+	error: string;
+}> = [
+	{
+		caseName: "client model",
+		createClient: () => injectedBackfillClient({ model: "other-model" }),
+		error: "client model mismatch",
+	},
+	{
+		caseName: "client dimensions",
+		createClient: () => injectedBackfillClient({ dimensions: 768 }),
+		error: "client dimensions mismatch",
+	},
+	{
+		caseName: "revision",
+		createClient: () => injectedBackfillClient({ identity: { revision: "main" } }),
+		error: "revision is not a canonical commit SHA",
+	},
+	{
+		caseName: "package",
+		createClient: () => injectedBackfillClient({ identity: { package: "other-package" } }),
+		error: "identity mismatch for package",
+	},
+	{
+		caseName: "dtype",
+		createClient: () => injectedBackfillClient({ identity: { dtype: "fp16" } }),
+		error: "identity mismatch for dtype",
+	},
+	{
+		caseName: "device",
+		createClient: () => injectedBackfillClient({ identity: { device: "gpu" } }),
+		error: "identity mismatch for device",
+	},
+	{
+		caseName: "identity dimensions",
+		createClient: () => injectedBackfillClient({ identity: { dimensions: 768 } }),
+		error: "identity mismatch for dimensions",
+	},
+];
 
 describe("vectors", () => {
 	let db: InstanceType<typeof Database>;
@@ -1411,6 +1492,48 @@ describe("vectors", () => {
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("injected backfill client identity", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		db = new Database(":memory:");
+		initTestSchema(db);
+		vi.mocked(embeddings.resolveEmbeddingClientVectorIdentityLabel).mockReturnValue("test-model");
+	});
+
+	afterEach(() => db.close());
+
+	it.each(invalidInjectedBackfillClients)(
+		"rejects unsupported injected $caseName before inference or writes",
+		async ({ createClient, error }) => {
+			await expect(backfillVectors(db, { client: createClient() })).rejects.toThrow(error);
+			expect(embeddings.embedTexts).not.toHaveBeenCalled();
+			expect(embeddings.resolveEmbeddingClientVectorIdentityLabel).not.toHaveBeenCalled();
+			expect(db.prepare("SELECT COUNT(*) AS c FROM memory_vectors").get()).toMatchObject({
+				c: 0,
+			});
+		},
+	);
+
+	it("accepts a self-consistent injected client", async () => {
+		const memoryId = insertInjectedBackfillMemory(db);
+		const client = injectedBackfillClient();
+		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
+
+		await expect(backfillVectors(db, { client, memoryIds: [memoryId] })).resolves.toMatchObject({
+			checked: 1,
+			embedded: 1,
+			inserted: 1,
+		});
+		expect(embeddings.embedTexts).toHaveBeenCalledWith(["Injected client\nBackfill body"], client);
+		expect(embeddings.resolveEmbeddingClientVectorIdentityLabel).toHaveBeenCalledWith(client);
+		expect(db.prepare("SELECT COUNT(*) AS c FROM memory_vectors").get()).toMatchObject({
+			c: 1,
+		});
 	});
 });
 
