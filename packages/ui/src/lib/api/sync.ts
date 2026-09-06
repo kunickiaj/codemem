@@ -722,10 +722,17 @@ export interface RecipientPolicyBlockedItemV1 {
 	};
 }
 
+export interface RecipientPolicyReviewCategoryCountsV1 {
+	actionableReview: number;
+	preservedContinuity: number;
+	blockedRepair: number;
+}
+
 export interface RecipientPolicyReviewListV1 {
 	version: 1;
 	reviewItems: RecipientPolicyReviewItemV1[];
 	blockedItems: RecipientPolicyBlockedItemV1[];
+	categoryCounts: RecipientPolicyReviewCategoryCountsV1;
 	continuity: {
 		state: "legacy_access_preserved";
 		findingCount: number;
@@ -1854,17 +1861,35 @@ export function createRecipientInvite(
 
 export async function loadRecipientPolicyReview(): Promise<RecipientPolicyReviewListV1> {
 	const review = await fetchJson<
-		Omit<RecipientPolicyReviewListV1, "continuity"> & {
+		Omit<RecipientPolicyReviewListV1, "categoryCounts" | "continuity"> & {
+			categoryCounts?: RecipientPolicyReviewListV1["categoryCounts"];
 			continuity?: RecipientPolicyReviewListV1["continuity"];
 		}
 	>("/api/sync/recipient-policy/v1/review");
-	if (review.continuity !== undefined) return { ...review, continuity: review.continuity };
+	const continuity = review.continuity ?? null;
+	if (review.categoryCounts) {
+		return {
+			...review,
+			continuity,
+			categoryCounts: {
+				actionableReview: review.reviewItems.length,
+				preservedContinuity: Math.max(0, review.categoryCounts.preservedContinuity),
+				blockedRepair: review.blockedItems.length,
+			},
+		};
+	}
+	const preservedContinuity = Math.max(
+		0,
+		(continuity?.findingCount ?? 0) - review.reviewItems.length,
+	);
 	return {
 		...review,
-		continuity:
-			review.reviewItems.length > 0
-				? { state: "legacy_access_preserved", findingCount: review.reviewItems.length }
-				: null,
+		continuity,
+		categoryCounts: {
+			actionableReview: review.reviewItems.length,
+			preservedContinuity,
+			blockedRepair: review.blockedItems.length,
+		},
 	};
 }
 

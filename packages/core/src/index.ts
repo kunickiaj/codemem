@@ -889,6 +889,7 @@ export type {
 	RecipientPolicyDerivedReviewState,
 	RecipientPolicyReviewActionOptionV1,
 	RecipientPolicyReviewBulkResultV1,
+	RecipientPolicyReviewCategoryCountsV1,
 	RecipientPolicyReviewContext,
 	RecipientPolicyReviewListV1,
 	RecipientPolicyReviewResolveRequestV1,

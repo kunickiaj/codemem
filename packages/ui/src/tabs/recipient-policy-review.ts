@@ -1,4 +1,8 @@
-import type { RecipientPolicyBlockedItemV1, RecipientPolicyReviewListV1 } from "../lib/api/sync";
+import type {
+	RecipientPolicyBlockedItemV1,
+	RecipientPolicyReviewItemV1,
+	RecipientPolicyReviewListV1,
+} from "../lib/api/sync";
 
 const renderedReviewSignatures = new WeakMap<HTMLElement, string>();
 
@@ -12,6 +16,74 @@ function paragraph(text: string, className = ""): HTMLParagraphElement {
 export interface RecipientPolicyReviewRenderOptions {
 	isRepairAvailable?: (repair: RecipientPolicyBlockedItemV1["repair"]) => boolean;
 	onRepair?: (repair: RecipientPolicyBlockedItemV1["repair"]) => Promise<void> | void;
+}
+
+function sectionHeading(label: string, count: number): HTMLHeadingElement {
+	const heading = document.createElement("h3");
+	heading.className = "recipient-policy-review-heading";
+	heading.textContent = `${label} (${count.toLocaleString()})`;
+	return heading;
+}
+
+function renderReviewItem(item: RecipientPolicyReviewItemV1): HTMLElement {
+	const card = document.createElement("article");
+	card.className = "project-inventory-row recipient-policy-review-item";
+	const finding = document.createElement("h4");
+	finding.className = "project-inventory-title";
+	finding.textContent = item.finding;
+	card.append(finding, paragraph(item.reason, "project-inventory-meta"));
+	return card;
+}
+
+function renderReviewDecisionSection(review: RecipientPolicyReviewListV1): HTMLElement {
+	const section = document.createElement("section");
+	section.className = "recipient-policy-review-section recipient-policy-review-decisions";
+	section.append(
+		sectionHeading("Review decisions", review.reviewItems.length),
+		paragraph(
+			"Access has not changed. Action is required. Next step: review these findings, then use the existing sharing controls below if you choose to change access.",
+			"section-meta",
+		),
+	);
+	const list = document.createElement("div");
+	list.className = "project-inventory-list recipient-policy-review-list";
+	for (const item of review.reviewItems) list.appendChild(renderReviewItem(item));
+	section.appendChild(list);
+	return section;
+}
+
+function renderContinuitySection(review: RecipientPolicyReviewListV1): HTMLElement {
+	const count = review.categoryCounts.preservedContinuity;
+	const section = document.createElement("section");
+	section.className = "recipient-policy-review-section recipient-policy-review-continuity";
+	const detail = paragraph(
+		`${count.toLocaleString()} preserved legacy finding${count === 1 ? "" : "s"}. Access has not changed. These preserved findings require no action. Next step: none for this category; Codemem will keep this legacy sharing state as-is.`,
+		"settings-note",
+	);
+	detail.setAttribute("role", "status");
+	detail.setAttribute("aria-live", "polite");
+	section.append(sectionHeading("Preserved legacy continuity", count), detail);
+	return section;
+}
+
+function renderBlockedSection(
+	review: RecipientPolicyReviewListV1,
+	options: RecipientPolicyReviewRenderOptions,
+): HTMLElement {
+	const section = document.createElement("section");
+	section.className = "recipient-policy-review-section recipient-policy-review-blocked";
+	section.append(
+		sectionHeading("Blocked source repairs", review.blockedItems.length),
+		paragraph(
+			"Access has not changed. Action is required before Codemem can safely interpret these records. Next step: repair each source record below.",
+			"section-meta project-attention-note",
+		),
+	);
+	const list = document.createElement("div");
+	list.className = "project-inventory-list recipient-policy-review-list";
+	for (const item of review.blockedItems) list.appendChild(renderBlockedItem(item, options));
+	section.appendChild(list);
+	return section;
 }
 
 function renderBlockedItem(
@@ -68,7 +140,12 @@ export function renderRecipientPolicyReview(
 	);
 	const signature = `review:${repairAvailability.join("")}:${JSON.stringify(review)}`;
 	if (renderedReviewSignatures.get(mount) === signature) return;
-	if (!review.continuity && review.blockedItems.length === 0) {
+	const { preservedContinuity } = review.categoryCounts;
+	if (
+		review.reviewItems.length === 0 &&
+		preservedContinuity === 0 &&
+		review.blockedItems.length === 0
+	) {
 		mount.replaceChildren();
 		mount.hidden = true;
 		renderedReviewSignatures.set(mount, signature);
@@ -81,42 +158,12 @@ export function renderRecipientPolicyReview(
 	surface.setAttribute("aria-labelledby", "recipientPolicyReviewTitle");
 	const title = document.createElement("h2");
 	title.id = "recipientPolicyReviewTitle";
-	title.textContent =
-		review.blockedItems.length > 0 ? "Sharing needs repair" : "Existing sharing kept as-is";
+	title.textContent = "Sharing review";
 	surface.appendChild(title);
 
-	if (review.continuity) {
-		const findingCount = review.continuity.findingCount;
-		const detail = paragraph(
-			`${findingCount.toLocaleString()} older sharing finding${findingCount === 1 ? " was" : "s were"} not changed because Codemem could not safely translate ${findingCount === 1 ? "it" : "them"} automatically.`,
-			"settings-note",
-		);
-		detail.setAttribute("role", "status");
-		detail.setAttribute("aria-live", "polite");
-		if (review.blockedItems.length === 0) {
-			surface.appendChild(
-				paragraph(
-					"No action is required for this update. Codemem did not change your existing Team or local sharing configuration.",
-					"section-meta",
-				),
-			);
-		}
-		surface.appendChild(detail);
-	}
-
-	if (review.blockedItems.length > 0) {
-		const intro = paragraph(
-			"Codemem did not change access for these items, but their current availability cannot be confirmed until these source-state problems are repaired.",
-			"section-meta project-attention-note",
-		);
-		const heading = document.createElement("h3");
-		heading.className = "recipient-policy-blocked-heading";
-		heading.textContent = "Needs repair";
-		const list = document.createElement("div");
-		list.className = "project-inventory-list recipient-policy-review-list";
-		for (const item of review.blockedItems) list.appendChild(renderBlockedItem(item, options));
-		surface.append(intro, heading, list);
-	}
+	if (review.reviewItems.length > 0) surface.appendChild(renderReviewDecisionSection(review));
+	if (preservedContinuity > 0) surface.appendChild(renderContinuitySection(review));
+	if (review.blockedItems.length > 0) surface.appendChild(renderBlockedSection(review, options));
 
 	mount.replaceChildren(surface);
 	renderedReviewSignatures.set(mount, signature);

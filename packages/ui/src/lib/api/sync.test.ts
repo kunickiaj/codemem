@@ -972,6 +972,11 @@ describe("recipient policy review API", () => {
 			version: 1,
 			reviewItems: [],
 			blockedItems: [],
+			categoryCounts: {
+				actionableReview: 0,
+				preservedContinuity: 0,
+				blockedRepair: 0,
+			},
 			continuity: null,
 		};
 		const applied = {
@@ -1008,7 +1013,32 @@ describe("recipient policy review API", () => {
 		);
 	});
 
-	it("keeps legacy review items visible when continuity is absent", async () => {
+	it("uses review arrays when explicit category counts disagree", async () => {
+		const review = {
+			version: 1,
+			reviewItems: [{ reviewItemId: "review-visible" }],
+			blockedItems: [{ blockedItemId: "repair-visible" }],
+			categoryCounts: {
+				actionableReview: 0,
+				preservedContinuity: 2,
+				blockedRepair: 0,
+			},
+			continuity: { findingCount: 3, state: "legacy_access_preserved" },
+		};
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(new Response(JSON.stringify(review), { status: 200 })) as typeof fetch;
+
+		await expect(loadRecipientPolicyReview()).resolves.toMatchObject({
+			categoryCounts: {
+				actionableReview: 1,
+				preservedContinuity: 2,
+				blockedRepair: 1,
+			},
+		});
+	});
+
+	it("keeps legacy review items actionable when continuity is absent", async () => {
 		const legacyReview = {
 			version: 1,
 			reviewItems: [{ reviewItemId: "legacy-review" }],
@@ -1022,7 +1052,57 @@ describe("recipient policy review API", () => {
 
 		await expect(loadRecipientPolicyReview()).resolves.toEqual({
 			...legacyReview,
-			continuity: { findingCount: 1, state: "legacy_access_preserved" },
+			categoryCounts: {
+				actionableReview: 1,
+				preservedContinuity: 0,
+				blockedRepair: 0,
+			},
+			continuity: null,
+		});
+	});
+
+	it("separates review, continuity, and repair counts in an old aggregate payload", async () => {
+		const aggregateReview = {
+			version: 1,
+			reviewItems: [{ reviewItemId: "legacy-review" }],
+			blockedItems: [{ blockedItemId: "legacy-blocked" }],
+			continuity: { findingCount: 3, state: "legacy_access_preserved" },
+		};
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify(aggregateReview), { status: 200 }),
+			) as typeof fetch;
+
+		await expect(loadRecipientPolicyReview()).resolves.toEqual({
+			...aggregateReview,
+			categoryCounts: {
+				actionableReview: 1,
+				preservedContinuity: 2,
+				blockedRepair: 1,
+			},
+		});
+	});
+
+	it("clamps old preserved continuity counts at zero", async () => {
+		const aggregateReview = {
+			version: 1,
+			reviewItems: [{ reviewItemId: "legacy-review" }],
+			blockedItems: [],
+			continuity: { findingCount: 0, state: "legacy_access_preserved" },
+		};
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify(aggregateReview), { status: 200 }),
+			) as typeof fetch;
+
+		await expect(loadRecipientPolicyReview()).resolves.toMatchObject({
+			categoryCounts: {
+				actionableReview: 1,
+				preservedContinuity: 0,
+				blockedRepair: 0,
+			},
 		});
 	});
 

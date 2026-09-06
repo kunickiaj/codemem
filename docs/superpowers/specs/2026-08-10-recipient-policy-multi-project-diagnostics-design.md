@@ -3,6 +3,7 @@
 **Date:** 2026-08-10
 **Target:** 0.40.2
 **Status:** Approved
+**Amended:** 2026-09-06 to separate review, continuity, and repair presentation
 
 ## Problem
 
@@ -18,19 +19,21 @@ Treat `wildcard_scope_mapping` the same way: a deliberate catch-all mapping can 
 
 This changes presentation only. It does not create recipient intent, change current access, promote recipient-policy authority, resolve migration findings, or weaken scope enforcement.
 
+The amended Projects surface presents actionable review decisions, preserved legacy continuity, and blocked source repairs as separate categories under the neutral title `Sharing review`. Each category scopes its access and action guidance to its own findings, so preserved continuity cannot make a mixed response look repaired or blocked. The V1 response adds `categoryCounts`; `continuity.findingCount` remains the compatible aggregate for older clients.
+
 ## Implementation
 
 - Add an exhaustive, typed presentation classification for every `LegacyRecipientPolicyConditionCodeV1`: actionable, repairable blocked, or preserved continuity. Adding a future condition code must fail compilation until its presentation is selected explicitly.
 - Classify `ambiguous_multi_project_scope` as preserved continuity only for legacy umbrella scope kinds, and keep a `managed_project` collision repairable. Classify `wildcard_scope_mapping` as preserved continuity; classify noncanonical identities, conflicting mappings, and inactive boundaries as repairable blocked conditions.
-- Count suppressed diagnostics in the existing `continuity.findingCount` alongside unresolved deferred review items.
+- Count suppressed diagnostics in `categoryCounts.preservedContinuity`; retain the existing aggregate `continuity.findingCount` for older clients.
 - Preserve the existing `hasDiagnostic` gate so ambiguous Projects remain fail-closed and do not gain actionable review options.
-- When continuity and genuine blocked items coexist, title the surface `Sharing needs repair` and retain the deferred-finding count. Suppress the continuity-only `No action is required` introduction in this mixed state so the copy does not contradict the repair cards.
+- Render separate `Review decisions`, `Preserved legacy continuity`, and `Blocked source repairs` sections with independent counts, and preserve repair controls only in the blocked section.
 - Add regression coverage proving that a multi-Project umbrella scope remains ambiguous in projection, contributes to continuity, and does not become a blocked repair card.
 - Cover mixed intentional and repairable diagnostics, retained blocked-item ID stability, and migration remaining skipped without authoritative evidence.
-- Preserve blocked-card coverage for a genuinely noncanonical Project identity and UI coverage for continuity-only and mixed states. The mixed-state test must intentionally replace its previous `Existing sharing kept as-is` and `No action is required` expectations.
+- Preserve blocked-card coverage for a genuinely noncanonical Project identity and UI coverage for continuity-only and mixed states. Mixed-state tests must prove continuity findings do not appear as repair blockers.
 - Cover the exhaustive presentation classification so a newly added condition code cannot silently disappear from review.
 
-The review response shape and contract version remain unchanged. The legacy projection condition shape is additively extended with optional `scopeKinds` evidence. `continuity` is already an additive V1 field; this patch only corrects which legacy findings contribute to it versus `blockedItems`.
+The contract version remains unchanged. The response additively includes `categoryCounts`, and the legacy projection condition shape retains optional `scopeKinds` evidence. Older clients can continue reading `continuity` and `blockedItems`.
 
 ## Validation
 

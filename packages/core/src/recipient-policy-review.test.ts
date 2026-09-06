@@ -206,6 +206,12 @@ function protectedSnapshot(db: InstanceType<typeof Database>): string {
 		"replication_scopes",
 		"project_scope_mappings",
 		"scope_memberships",
+		"policy_teams",
+		"policy_team_memberships",
+		"policy_team_device_decisions",
+		"project_recipients",
+		"recipient_policy_authority_states",
+		"recipient_policy_deny_overlays",
 		"memory_items",
 		"replication_ops",
 		"replication_cursors",
@@ -292,6 +298,11 @@ describe("recipient policy review persistence", () => {
 			findingCount: 1,
 			state: "legacy_access_preserved",
 		});
+		expect(result.categoryCounts).toEqual({
+			actionableReview: 1,
+			preservedContinuity: 0,
+			blockedRepair: 0,
+		});
 		expect(result.reviewItems).toHaveLength(1);
 		const item = result.reviewItems[0];
 		expect(new Set(item?.options.map((option) => option.decision)).size).toBe(item?.options.length);
@@ -329,6 +340,11 @@ describe("recipient policy review persistence", () => {
 		const result = listRecipientPolicyReview(db, context);
 
 		expect(result.continuity).toBeNull();
+		expect(result.categoryCounts).toEqual({
+			actionableReview: 0,
+			preservedContinuity: 0,
+			blockedRepair: 1,
+		});
 		expect(result.blockedItems[0]).toMatchObject({
 			ownerLabel: "Project owner",
 			repairAction: expect.any(String),
@@ -378,6 +394,11 @@ describe("recipient policy review persistence", () => {
 		).toBe(true);
 		expect(result).toMatchObject({
 			blockedItems: [],
+			categoryCounts: {
+				actionableReview: 0,
+				preservedContinuity: 2,
+				blockedRepair: 0,
+			},
 			continuity: { findingCount: 2, state: "legacy_access_preserved" },
 			reviewItems: [],
 		});
@@ -427,6 +448,61 @@ describe("recipient policy review persistence", () => {
 			continuity: { findingCount: 1, state: "legacy_access_preserved" },
 			reviewItems: [],
 		});
+	});
+
+	it("reports separate counts for mixed decisions, continuity, and blocked repairs", () => {
+		insertLegacyScope(db, "personal-review", "personal");
+		db.prepare("UPDATE memory_items SET scope_id = 'personal-review'").run();
+		mapProject(db, PROJECT_ID, PROJECT_ID, "personal-review");
+		insertLegacyScope(db, "legacy-wildcard");
+		mapProject(db, null, "*", "legacy-wildcard");
+		const continuityProjectId = "https://git.example.invalid/acme/continuity.git";
+		const continuitySessionId = Number(
+			db
+				.prepare(
+					`INSERT INTO sessions(started_at, project, git_remote, git_branch)
+					 VALUES (?, 'continuity', ?, 'main')`,
+				)
+				.run(NOW, continuityProjectId).lastInsertRowid,
+		);
+		db.prepare(
+			`INSERT INTO memory_items(
+			 session_id, kind, title, body_text, active, created_at, updated_at,
+			 visibility, project, scope_id
+			 ) VALUES (?, 'discovery', 'Continuity fixture', 'body', 1, ?, ?, 'shared',
+			 'continuity', 'legacy-wildcard')`,
+		).run(continuitySessionId, NOW, NOW);
+		const blockedSessionId = Number(
+			db.prepare("INSERT INTO sessions(started_at, project) VALUES (?, 'display-only')").run(NOW)
+				.lastInsertRowid,
+		);
+		insertLegacyScope(db, "blocked-managed", "managed_project");
+		db.prepare(
+			`INSERT INTO memory_items(
+			 session_id, kind, title, body_text, active, created_at, updated_at,
+			 visibility, project, scope_id
+			 ) VALUES (?, 'discovery', 'Blocked fixture', 'body', 1, ?, ?, 'private',
+			 'display-only', 'blocked-managed')`,
+		).run(blockedSessionId, NOW, NOW);
+		const blockedProjectId = listLegacyRecipientPolicyProjections(db, context).find(
+			(item) => item.project.displayName === "display-only",
+		)?.project.canonicalIdentity;
+		if (!blockedProjectId) throw new Error("blocked Project fixture missing");
+		mapProject(db, blockedProjectId, blockedProjectId, "blocked-managed");
+
+		const result = listRecipientPolicyReview(db, context);
+
+		expect(result.categoryCounts).toEqual({
+			actionableReview: 1,
+			preservedContinuity: 1,
+			blockedRepair: 1,
+		});
+		expect(result.continuity).toEqual({
+			findingCount: 2,
+			state: "legacy_access_preserved",
+		});
+		expect(result.reviewItems).toHaveLength(1);
+		expect(result.blockedItems).toHaveLength(1);
 	});
 
 	it("emits only repairable cards for mixed diagnostics and keeps blocked IDs stable", () => {
@@ -490,6 +566,35 @@ describe("recipient policy review persistence", () => {
 		]);
 	});
 
+	it("keeps actionable options suppressed when the same Project has a continuity diagnostic", () => {
+		const mixed = projection();
+		mixed.conditions = [
+			{
+				version: 1,
+				code: "wildcard_scope_mapping",
+				kind: "diagnostic",
+				message: "Legacy wildcard access remains preserved.",
+			},
+			{
+				version: 1,
+				code: "suggest_local_identity",
+				kind: "actionable",
+				message: "A local Identity candidate exists.",
+			},
+		];
+
+		const state = deriveRecipientPolicyReviewState(db, context, [mixed]);
+
+		expect(state.allReviewItems).toEqual([]);
+		expect(state.blockedItems).toEqual([]);
+		expect(state.preservedDiagnosticFindings).toEqual([
+			{
+				canonicalProjectIdentity: PROJECT_ID,
+				conditionCode: "wildcard_scope_mapping",
+			},
+		]);
+	});
+
 	it("records only the immutable resolution with server-derived attribution", () => {
 		const item = listRecipientPolicyReview(db, context).reviewItems[0];
 		if (!item) throw new Error("review item missing");
@@ -522,6 +627,11 @@ describe("recipient policy review persistence", () => {
 		const resolvedReview = listRecipientPolicyReview(db, context);
 		expect(resolvedReview.reviewItems).toEqual([]);
 		expect(resolvedReview.continuity).toBeNull();
+		expect(resolvedReview.categoryCounts).toEqual({
+			actionableReview: 0,
+			preservedContinuity: 0,
+			blockedRepair: 0,
+		});
 	});
 
 	it("rejects stale fingerprints without writing", () => {
