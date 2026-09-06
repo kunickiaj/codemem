@@ -1,5 +1,7 @@
 # Stacked CI Rollback
 
+Status: Superseded by [Native Required Checks Design](./2026-09-05-native-required-checks-design.md).
+
 The stacked CI optimization will be removed because it saves runner time during review but does not shorten Graphite's sequential merge cycle and prevents upstack pull requests from becoming merge-ready.
 
 ## Decision
