@@ -42,6 +42,32 @@ describe("canonicalWorkspaceIdentity", () => {
 			}).value,
 		).toBe("https://github.com/kunickiaj/codemem.git:feature/scope");
 	});
+
+	it("falls through malformed higher-priority identity to a valid cwd", () => {
+		expect(
+			canonicalWorkspaceIdentity({
+				cwd: "/work/acme/service",
+				gitRemote: "fatal: not a git repository (or any of the parent directories): .git",
+				project: "service",
+			}),
+		).toEqual({
+			displayProject: "service",
+			source: "cwd",
+			value: "/work/acme/service",
+		});
+	});
+
+	it("quarantines malformed legacy identity fields as unmapped", () => {
+		const identity = canonicalWorkspaceIdentity({
+			cwd: "Command failed: git rev-parse --show-toplevel",
+			gitRemote: "fatal: not a git repository (or any of the parent directories): .git",
+			project: "error: failed to discover project",
+			workspaceId: "git: 'workspace-id' is not a git command",
+		});
+
+		expect(identity).toMatchObject({ displayProject: null, source: "unmapped" });
+		expect(identity.value).toMatch(/^unmapped:[a-f0-9]{64}$/);
+	});
 });
 
 describe("resolveProjectScope", () => {

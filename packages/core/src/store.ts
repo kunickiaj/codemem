@@ -42,6 +42,7 @@ import {
 	buildMemoryPackWithTrace,
 	buildMemoryPackWithTraceAsync,
 } from "./pack.js";
+import { cleanProjectIdentity } from "./project-identity.js";
 import { populateMemoryRefs } from "./ref-populate.js";
 import type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
 import { findByConcept as findByConceptFn, findByFile as findByFileFn } from "./ref-queries.js";
@@ -598,14 +599,15 @@ export class MemoryStore {
 		metadata?: Record<string, unknown>;
 	}): number {
 		const now = nowIso();
+		const cwd = opts.cwd == null ? process.cwd() : cleanProjectIdentity(opts.cwd);
 		const rows = this.d
 			.insert(schema.sessions)
 			.values({
 				started_at: now,
-				cwd: opts.cwd ?? process.cwd(),
-				project: opts.project ?? null,
-				git_remote: opts.gitRemote ?? null,
-				git_branch: opts.gitBranch ?? null,
+				cwd,
+				project: cleanProjectIdentity(opts.project),
+				git_remote: cleanProjectIdentity(opts.gitRemote),
+				git_branch: cleanProjectIdentity(opts.gitBranch),
 				user: opts.user ?? process.env.USER ?? "unknown",
 				tool_version: opts.toolVersion ?? "manual",
 				metadata_json: toJson(opts.metadata ?? {}),
@@ -646,12 +648,14 @@ export class MemoryStore {
 		}
 
 		const startedAt = opts.startedAt ?? nowIso();
+		const cwd = opts.cwd == null ? process.cwd() : cleanProjectIdentity(opts.cwd);
+		const project = cleanProjectIdentity(opts.project);
 		const sessionRows = this.d
 			.insert(schema.sessions)
 			.values({
 				started_at: startedAt,
-				cwd: opts.cwd ?? process.cwd(),
-				project: opts.project ?? null,
+				cwd,
+				project,
 				git_remote: null,
 				git_branch: null,
 				user: opts.user ?? process.env.USER ?? "unknown",
@@ -2616,6 +2620,8 @@ export class MemoryStore {
 			opts.opencodeSessionId,
 		);
 		const now = nowIso();
+		const cwd = cleanProjectIdentity(opts.cwd);
+		const project = cleanProjectIdentity(opts.project);
 		const t = schema.rawEventSessions;
 		this.d
 			.insert(t)
@@ -2623,8 +2629,8 @@ export class MemoryStore {
 				opencode_session_id: streamId,
 				source,
 				stream_id: streamId,
-				cwd: opts.cwd ?? null,
-				project: opts.project ?? null,
+				cwd,
+				project,
 				started_at: opts.startedAt ?? null,
 				last_seen_ts_wall_ms: opts.lastSeenTsWallMs ?? null,
 				updated_at: now,

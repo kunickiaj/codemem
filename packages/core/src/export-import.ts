@@ -12,6 +12,7 @@ import {
 import { buildFilterClausesWithContext } from "./filters.js";
 import { expandUserPath } from "./observer-config.js";
 import { projectColumnClause, resolveProject as resolveProjectName } from "./project.js";
+import { cleanProjectIdentity } from "./project-identity.js";
 import * as schema from "./schema.js";
 import { LOCAL_DEFAULT_SCOPE_ID } from "./scope-resolution.js";
 import { resolveSessionScopeId } from "./scope-stamping.js";
@@ -411,10 +412,10 @@ function insertSession(d: DrizzleDb, row: JsonObject): number {
 		.values({
 			started_at: typeof row.started_at === "string" ? row.started_at : nowIso(),
 			ended_at: typeof row.ended_at === "string" ? row.ended_at : null,
-			cwd: String(row.cwd ?? process.cwd()),
-			project: row.project == null ? null : String(row.project),
-			git_remote: row.git_remote == null ? null : String(row.git_remote),
-			git_branch: row.git_branch == null ? null : String(row.git_branch),
+			cwd: row.cwd == null ? process.cwd() : cleanProjectIdentity(String(row.cwd)),
+			project: row.project == null ? null : cleanProjectIdentity(String(row.project)),
+			git_remote: row.git_remote == null ? null : cleanProjectIdentity(String(row.git_remote)),
+			git_branch: row.git_branch == null ? null : cleanProjectIdentity(String(row.git_branch)),
 			user: String(row.user ?? nextUserName()),
 			tool_version: String(row.tool_version ?? "import"),
 			metadata_json: toJson(row.metadata_json ?? null),

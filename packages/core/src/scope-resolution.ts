@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import type { Database } from "better-sqlite3";
+import { cleanProjectIdentity } from "./project-identity.js";
 
 export const LOCAL_DEFAULT_SCOPE_ID = "local-default";
 
@@ -101,23 +102,25 @@ function normalizeMappingIdentity(value: string | null | undefined): string | nu
 }
 
 function unmappedIdentity(input: WorkspaceIdentityInput): string {
-	const seed = [input.cwd, input.project, input.workspaceId]
-		.map((value) => clean(value))
+	const validSeed = [input.cwd, input.project, input.workspaceId]
+		.map((value) => cleanProjectIdentity(value))
 		.find((value): value is string => value != null);
-	const digest = createHash("sha256")
-		.update(seed ?? "unknown", "utf8")
-		.digest("hex");
+	const rawSeed = [input.gitRemote, input.gitBranch, input.cwd, input.project, input.workspaceId]
+		.map((value) => (typeof value === "string" ? value.trim() : ""))
+		.find(Boolean);
+	const seed = validSeed ?? rawSeed ?? "unknown";
+	const digest = createHash("sha256").update(seed, "utf8").digest("hex");
 	return `unmapped:${digest}`;
 }
 
 export function canonicalWorkspaceIdentity(
 	input: WorkspaceIdentityInput,
 ): CanonicalWorkspaceIdentity {
-	const gitRemote = clean(input.gitRemote);
-	const gitBranch = clean(input.gitBranch);
-	const cwd = clean(input.cwd);
-	const workspaceId = clean(input.workspaceId);
-	const project = clean(input.project);
+	const gitRemote = cleanProjectIdentity(input.gitRemote);
+	const gitBranch = cleanProjectIdentity(input.gitBranch);
+	const cwd = cleanProjectIdentity(input.cwd);
+	const workspaceId = cleanProjectIdentity(input.workspaceId);
+	const project = cleanProjectIdentity(input.project);
 
 	if (gitRemote) {
 		const normalizedRemote = normalizeSlash(gitRemote);
