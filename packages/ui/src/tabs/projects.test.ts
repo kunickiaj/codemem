@@ -180,12 +180,23 @@ function reviewItem(
 function recipientReview(
 	overrides: Partial<RecipientPolicyReviewListV1> = {},
 ): RecipientPolicyReviewListV1 {
+	const reviewItems = overrides.reviewItems ?? [reviewItem()];
+	const blockedItems = overrides.blockedItems ?? [];
+	const continuity =
+		overrides.continuity === undefined
+			? { findingCount: 1 as const, state: "legacy_access_preserved" as const }
+			: overrides.continuity;
+	const categoryCounts = overrides.categoryCounts ?? {
+		actionableReview: reviewItems.length,
+		preservedContinuity: Math.max(0, (continuity?.findingCount ?? 0) - reviewItems.length),
+		blockedRepair: blockedItems.length,
+	};
 	return {
-		blockedItems: [],
-		continuity: { findingCount: 1, state: "legacy_access_preserved" },
-		reviewItems: [reviewItem()],
-		version: 1,
-		...overrides,
+		blockedItems,
+		categoryCounts,
+		continuity,
+		reviewItems,
+		version: overrides.version ?? 1,
 	};
 }
 
@@ -280,6 +291,11 @@ describe("Projects tab", () => {
 		});
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue({
 			blockedItems: [],
+			categoryCounts: {
+				actionableReview: 0,
+				preservedContinuity: 0,
+				blockedRepair: 0,
+			},
 			continuity: null,
 			reviewItems: [],
 			version: 1,
@@ -396,23 +412,31 @@ describe("Projects tab", () => {
 					version: 1,
 				},
 			],
+			categoryCounts: {
+				actionableReview: 1,
+				preservedContinuity: 36,
+				blockedRepair: 1,
+			},
 			continuity: { findingCount: 37, state: "legacy_access_preserved" },
 		});
 
 		await loadProjectsData();
 
 		const surface = document.querySelector(".recipient-policy-review");
-		expect(surface?.textContent).toContain("Sharing needs repair");
-		expect(surface?.textContent).not.toContain("Existing sharing kept as-is");
-		expect(surface?.textContent).not.toContain("No action is required for this update");
-		expect(surface?.textContent).toContain("37 older sharing findings were not changed");
-		expect(surface?.textContent).toContain("current availability cannot be confirmed");
-		expect(surface?.textContent).not.toContain("Current access remains in place");
-		expect(surface?.textContent).not.toContain("will continue using");
+		expect(surface?.textContent).toContain("Sharing review");
+		expect(surface?.textContent).toContain("Review decisions (1)");
+		expect(surface?.textContent).toContain("Preserved legacy continuity (36)");
+		expect(surface?.textContent).toContain("Blocked source repairs (1)");
+		expect(surface?.textContent).toContain("36 preserved legacy findings");
+		expect(surface?.textContent).toContain("These preserved findings require no action");
+		expect(surface?.textContent).toContain("Action is required");
 		expect(surface?.textContent).toContain("Assign a stable canonical Project identity");
 		expect(surface?.textContent).toContain("Owner: Project owner");
+		expect(surface?.querySelectorAll("button")).toHaveLength(1);
 		expect(surface?.querySelector("button")?.textContent).toBe("Repair Project identity…");
-		expect(document.querySelectorAll(".recipient-policy-review-item")).toHaveLength(0);
+		expect(document.querySelectorAll(".recipient-policy-review-item")).toHaveLength(1);
+		expect(document.querySelector(".recipient-policy-review-decisions button")).toBeNull();
+		expect(document.querySelector(".recipient-policy-review-continuity button")).toBeNull();
 	});
 
 	it("routes an unfinished server Team candidate into guided setup without resolving recipient review", async () => {
@@ -754,7 +778,7 @@ describe("Projects tab", () => {
 		);
 	});
 
-	it("preserves the continuity surface across an unchanged refresh", async () => {
+	it("preserves the review surface across an unchanged refresh", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
 			limit: 250,
@@ -766,15 +790,15 @@ describe("Projects tab", () => {
 
 		await loadProjectsData();
 		const firstSurface = document.querySelector(".recipient-policy-review");
-		expect(firstSurface?.textContent).toContain("Existing sharing kept as-is");
-		expect(firstSurface?.textContent).toContain("No action is required for this update");
+		expect(firstSurface?.textContent).toContain("Review decisions (1)");
+		expect(firstSurface?.textContent).toContain("Action is required");
 
 		await loadProjectsData();
 
 		expect(document.querySelector(".recipient-policy-review")).toBe(firstSurface);
 	});
 
-	it("rerenders the continuity surface when the deferred finding count changes", async () => {
+	it("rerenders the continuity surface when the preserved finding count changes", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
 			limit: 250,
@@ -783,10 +807,25 @@ describe("Projects tab", () => {
 			total: 0,
 		});
 		vi.mocked(api.loadRecipientPolicyReview)
-			.mockResolvedValueOnce(recipientReview())
 			.mockResolvedValueOnce(
 				recipientReview({
+					categoryCounts: {
+						actionableReview: 0,
+						preservedContinuity: 1,
+						blockedRepair: 0,
+					},
+					reviewItems: [],
+				}),
+			)
+			.mockResolvedValueOnce(
+				recipientReview({
+					categoryCounts: {
+						actionableReview: 0,
+						preservedContinuity: 2,
+						blockedRepair: 0,
+					},
 					continuity: { findingCount: 2, state: "legacy_access_preserved" },
+					reviewItems: [],
 				}),
 			);
 
@@ -796,7 +835,8 @@ describe("Projects tab", () => {
 		await loadProjectsData();
 
 		expect(document.querySelector(".recipient-policy-review")).not.toBe(firstSurface);
-		expect(document.body.textContent).toContain("2 older sharing findings were not changed");
+		expect(document.body.textContent).toContain("Preserved legacy continuity (2)");
+		expect(document.body.textContent).toContain("2 preserved legacy findings");
 	});
 
 	it("does not offer an unusable repair action for an unmapped Project", async () => {
