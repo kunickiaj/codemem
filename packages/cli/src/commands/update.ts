@@ -263,6 +263,20 @@ const checkCommand = addJsonOption(
 		}
 	});
 
+function updateInstallArgs(npmArgs: string[], targetVersion: string): string[] {
+	const installArgs = [
+		"install",
+		"-g",
+		"--registry",
+		PUBLIC_NPM_REGISTRY,
+		`--@codemem:registry=${PUBLIC_NPM_REGISTRY}`,
+		`codemem@${targetVersion}`,
+		`@codemem/embeddings@${targetVersion}`,
+	];
+	if (process.platform !== "win32") return installArgs;
+	return [...npmArgs.slice(0, 3), windowsCommandLine(npmArgs[3] ?? "", installArgs)];
+}
+
 async function installUpdate(options: UpdateInstallOptions): Promise<void> {
 	let releaseInstallLock: (() => Promise<void>) | null = null;
 	try {
@@ -293,26 +307,7 @@ async function installUpdate(options: UpdateInstallOptions): Promise<void> {
 		const npm = await resolveInstallCommand();
 		const installation = await runCommand(
 			npm.command,
-			process.platform === "win32"
-				? [
-						...npm.args.slice(0, 3),
-						windowsCommandLine(npm.args[3] ?? "", [
-							"install",
-							"-g",
-							"--registry",
-							PUBLIC_NPM_REGISTRY,
-							`codemem@${targetVersion}`,
-							`@codemem/embeddings@${targetVersion}`,
-						]),
-					]
-				: [
-						"install",
-						"-g",
-						"--registry",
-						PUBLIC_NPM_REGISTRY,
-						`codemem@${targetVersion}`,
-						`@codemem/embeddings@${targetVersion}`,
-					],
+			updateInstallArgs(npm.args, targetVersion),
 			INSTALL_TIMEOUT_MS,
 			{
 				cwd: npm.cwd,
