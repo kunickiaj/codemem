@@ -221,8 +221,6 @@ describe("lint feedback scope and measurements", () => {
 		);
 
 		expect(sourceIncludes).toEqual([
-			".github/scripts/ci-gate.mjs",
-			".github/scripts/ci-gate.test.mjs",
 			"packages/**/src/**/*.ts",
 			"packages/**/src/**/*.tsx",
 			"packages/**/src/**/*.js",
@@ -241,5 +239,20 @@ describe("lint feedback scope and measurements", () => {
 		);
 		expect(resolveWorktreePath(repositoryRoot, "scripts/example.ts")).toBeUndefined();
 		expect(resolveWorktreePath(repositoryRoot, "e2e/bin/run-local.ts")).toBeUndefined();
+	});
+
+	it("rejects removed CI helper paths", () => {
+		const removedPaths = [
+			".github/scripts/ci-classify.mjs",
+			".github/scripts/ci-classify.test.mjs",
+			".github/scripts/ci-gate.mjs",
+			".github/scripts/ci-gate.test.mjs",
+			"scripts/ci-stack-topology.mjs",
+			"scripts/ci-stack-topology.test.mjs",
+		];
+
+		expect(removedPaths.map((candidate) => resolveWorktreePath(repositoryRoot, candidate))).toEqual(
+			removedPaths.map(() => undefined),
+		);
 	});
 });
