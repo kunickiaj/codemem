@@ -75,6 +75,7 @@
 			"plugins/claude/scripts/user-prompt-hook.mjs",
 			"plugins/codex/scripts/ingest-hook.mjs",
 			"plugins/codex/scripts/user-prompt-hook.mjs",
+			"scripts/ci-workflow.test.mjs",
 			"vitest.config.ts",
 			"tsconfig.base.json",
 			"tsconfig.json",

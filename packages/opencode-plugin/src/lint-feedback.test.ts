@@ -229,6 +229,7 @@ describe("lint feedback scope and measurements", () => {
 			"plugins/claude/scripts/user-prompt-hook.mjs",
 			"plugins/codex/scripts/ingest-hook.mjs",
 			"plugins/codex/scripts/user-prompt-hook.mjs",
+			"scripts/ci-workflow.test.mjs",
 			"vitest.config.ts",
 		]);
 		for (const include of sourceIncludes.filter((candidate: string) => !candidate.includes("*"))) {
@@ -238,6 +239,9 @@ describe("lint feedback scope and measurements", () => {
 			"packages/core/src/example.ts",
 		);
 		expect(resolveWorktreePath(repositoryRoot, "scripts/example.ts")).toBeUndefined();
+		expect(resolveWorktreePath(repositoryRoot, "scripts/ci-workflow.test.mjs")).toBe(
+			"scripts/ci-workflow.test.mjs",
+		);
 		expect(resolveWorktreePath(repositoryRoot, "e2e/bin/run-local.ts")).toBeUndefined();
 	});
 

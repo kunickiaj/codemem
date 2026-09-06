@@ -7,6 +7,10 @@ on:
 
   workflow_call:
 
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.event_name, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -61,7 +65,7 @@ jobs:
         run: pnpm run build
 
       - name: Test
-        run: pnpm run test:release && pnpm run test:adapter-normalizers && pnpm run test
+        run: pnpm run test:release && pnpm run test:adapter-normalizers && pnpm run test:ci-workflow && pnpm run test
 
   worker-test:
     name: Cloudflare Worker Test
@@ -195,17 +199,49 @@ jobs:
         env:
           CODEMEM_EXPECT_WINDOWS_X64: "1"
 
-  e2e:
+  e2e-smoke:
+    name: E2E Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run E2E Smoke scenario
+        env:
+          CODEMEM_E2E_BUILD: "1"
+          CODEMEM_E2E_ARTIFACTS_DIR: .tmp/e2e-artifacts
+          CODEMEM_E2E_JSON: "1"
+        run: pnpm run e2e:smoke -- --json
+
+      - name: Upload E2E artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-smoke-artifacts
+          path: .tmp/e2e-artifacts
+          if-no-files-found: ignore
+
+  e2e-specialized:
     name: E2E ${{ matrix.name }}
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: Smoke
-            script: e2e:smoke
-            artifact: smoke
           - name: Legacy Team Migration
             script: e2e:legacy-team-migration
             artifact: legacy-team-migration
