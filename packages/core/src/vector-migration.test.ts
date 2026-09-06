@@ -1262,7 +1262,7 @@ describe("vector migration", () => {
 		let coverageScanPreparations = 0;
 		const prepareSpy = vi.spyOn(db, "prepare");
 		prepareSpy.mockImplementation((sql: string) => {
-			if (sql.startsWith("SELECT rowid FROM memory_vectors WHERE model != ?")) {
+			if (sql.includes("vector-stale-scan-rowids")) {
 				staleBatchSelections++;
 			}
 			if (
@@ -1304,7 +1304,7 @@ describe("vector migration", () => {
 		const prepareSpy = vi.spyOn(db, "prepare");
 		prepareSpy.mockImplementation((sql: string) => {
 			const statement = Database.prototype.prepare.call(db, sql);
-			if (sql.startsWith("SELECT rowid FROM memory_vectors WHERE model != ?")) {
+			if (sql.includes("vector-stale-scan-rowids")) {
 				const all = statement.all.bind(statement);
 				statement.all = ((...params: unknown[]) => {
 					const rows = all(...params);
@@ -1348,7 +1348,7 @@ describe("vector migration", () => {
 		const prepareSpy = vi.spyOn(db, "prepare");
 		prepareSpy.mockImplementation((sql: string) => {
 			const statement = Database.prototype.prepare.call(db, sql);
-			if (sql.startsWith("SELECT rowid FROM memory_vectors WHERE model != ?")) {
+			if (sql.includes("vector-stale-scan-rowids")) {
 				staleBatchSelections++;
 				if (staleBatchSelections === 1) {
 					setImmediate(() => {
@@ -1384,10 +1384,7 @@ describe("vector migration", () => {
 		const prepareSpy = vi.spyOn(db, "prepare");
 		prepareSpy.mockImplementation((sql: string) => {
 			const statement = Database.prototype.prepare.call(db, sql);
-			if (
-				!scheduledMutation &&
-				sql.startsWith("SELECT rowid FROM memory_vectors WHERE model != ?")
-			) {
+			if (!scheduledMutation && sql.includes("vector-stale-scan-rowids")) {
 				const all = statement.all.bind(statement);
 				statement.all = ((...params: unknown[]) => {
 					const rows = all(...params);
@@ -1436,7 +1433,7 @@ describe("vector migration", () => {
 			const prepareSpy = vi.spyOn(firstDb, "prepare");
 			prepareSpy.mockImplementation((sql: string) => {
 				const statement = Database.prototype.prepare.call(firstDb, sql);
-				if (sql.startsWith("SELECT rowid FROM memory_vectors WHERE model != ?")) {
+				if (sql.includes("vector-stale-scan-rowids")) {
 					staleBatchSelections++;
 					if (staleBatchSelections === 1) {
 						setImmediate(() => {
@@ -1528,7 +1525,7 @@ describe("vector migration", () => {
 			const prepareSpy = vi.spyOn(fileDb, "prepare");
 			prepareSpy.mockImplementation((sql: string) => {
 				const statement = Database.prototype.prepare.call(fileDb, sql);
-				if (sql.startsWith("SELECT rowid FROM memory_vectors WHERE model != ?")) {
+				if (sql.includes("vector-stale-scan-rowids")) {
 					const all = statement.all.bind(statement);
 					statement.all = ((...params: unknown[]) => {
 						const rows = all(...params);
@@ -1607,7 +1604,7 @@ describe("vector migration", () => {
 			const prepareSpy = vi.spyOn(fileDb, "prepare");
 			prepareSpy.mockImplementation((sql: string) => {
 				const statement = Database.prototype.prepare.call(fileDb, sql);
-				if (sql.startsWith("SELECT rowid FROM memory_vectors WHERE model != ?")) {
+				if (sql.includes("vector-stale-scan-rowids")) {
 					const all = statement.all.bind(statement);
 					statement.all = ((...params: unknown[]) => {
 						const rows = all(...params);
@@ -1681,7 +1678,7 @@ describe("vector migration", () => {
 		const prepareSpy = vi.spyOn(db, "prepare");
 		prepareSpy.mockImplementation((sql: string) => {
 			const statement = Database.prototype.prepare.call(db, sql);
-			if (sql.includes("SELECT mv.rowid AS rowid")) {
+			if (sql.includes("vector-target-prune-rowids")) {
 				const all = statement.all.bind(statement);
 				statement.all = ((...params: unknown[]) => {
 					const rows = all(...params);
@@ -1793,6 +1790,33 @@ describe("vector migration", () => {
 		});
 	});
 
+	it("short-circuits exhausted completed cleanup without reading memory_vectors", async () => {
+		startMaintenanceJob(db, {
+			kind: VECTOR_MODEL_MIGRATION_JOB,
+			title: "Re-indexing memories",
+			metadata: {
+				target_model: "test-model",
+				cleanup_pending: false,
+				stale_scan_exhausted: true,
+				stale_scan_exhausted_max_rowid: 0,
+			},
+		});
+		completeMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		const vectorStatements: string[] = [];
+		const prepareSpy = vi.spyOn(db, "prepare");
+		prepareSpy.mockImplementation((sql: string) => {
+			if (sql.includes("FROM memory_vectors WHERE")) vectorStatements.push(sql);
+			return Database.prototype.prepare.call(db, sql);
+		});
+
+		try {
+			await runVectorMigrationPass(db, { batchSize: 10 });
+		} finally {
+			prepareSpy.mockRestore();
+		}
+		expect(vectorStatements).toEqual([]);
+	});
+
 	it("removes stale old-model rows when queued work has zero embeddable memories", async () => {
 		const sessionId = insertTestSession(db);
 		seedMemory(db, 1, sessionId, "", "");
@@ -1814,6 +1838,57 @@ describe("vector migration", () => {
 			.prepare("SELECT model, COUNT(*) AS c FROM memory_vectors GROUP BY model ORDER BY model")
 			.all() as Array<{ model: string; c: number }>;
 		expect(models).toEqual([]);
+	});
+
+	it("watermarks the zero-embeddable cleanup at the last scanned rowid, not MAX(rowid)", async () => {
+		// A legacy row written by a concurrent process AFTER the stale scan ends
+		// but BEFORE metadata is persisted must land above the watermark so the
+		// next pass re-examines it. Reading MAX(rowid) post-hoc would hide it.
+		const sessionId = insertTestSession(db);
+		seedMemory(db, 1, sessionId, "", "");
+		seedVector(db, 1, "old-model");
+		const originalPrepare = db.prepare.bind(db);
+		let injected = false;
+		const prepareSpy = vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+			const stmt = originalPrepare(sql);
+			// The delete transaction is the last thing deleteStaleModelVectors does
+			// before returning; inject a fresh legacy row right after it fires.
+			if (!injected && sql === "DELETE FROM memory_vectors WHERE rowid = ?") {
+				const run = stmt.run.bind(stmt);
+				stmt.run = ((...args: unknown[]) => {
+					const result = run(...args);
+					if (!injected) {
+						injected = true;
+						seedVector(db, 2, "old-model");
+					}
+					return result;
+				}) as typeof stmt.run;
+			}
+			return stmt;
+		});
+
+		try {
+			await runVectorMigrationPass(db, { batchSize: 10 });
+		} finally {
+			prepareSpy.mockRestore();
+		}
+		expect(injected).toBe(true);
+
+		const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		const watermark = Number(job?.metadata?.stale_scan_exhausted_max_rowid ?? Number.NaN);
+		const survivingLegacyRowId = db
+			.prepare("SELECT rowid FROM memory_vectors WHERE model = 'old-model'")
+			.pluck()
+			.get() as number | undefined;
+		expect(survivingLegacyRowId).toBeDefined();
+		// The injected row must sit strictly above the persisted watermark.
+		expect(watermark).toBeLessThan(survivingLegacyRowId as number);
+
+		// And the next pass must actually find and remove it.
+		await runVectorMigrationPass(db, { batchSize: 10 });
+		expect(
+			db.prepare("SELECT COUNT(*) FROM memory_vectors WHERE model = 'old-model'").pluck().get(),
+		).toBe(0);
 	});
 
 	it("backfills memories that have no vectors at all (no source model)", async () => {

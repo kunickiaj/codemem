@@ -336,7 +336,7 @@ describe("vectors", () => {
 		const prepareSpy = vi.spyOn(db, "prepare");
 		prepareSpy.mockImplementation((sql: string) => {
 			const statement = Database.prototype.prepare.call(db, sql);
-			if (sql.includes("SELECT mv.rowid AS rowid")) {
+			if (sql.includes("vector-target-prune-rowids")) {
 				const all = statement.all.bind(statement);
 				statement.all = ((...params: unknown[]) => {
 					const result = all(...params);
@@ -349,14 +349,14 @@ describe("vectors", () => {
 
 		try {
 			expect(pruneObsoleteTargetModelVectors(db, "test-model", { signal: controller.signal })).toBe(
-				249,
+				0,
 			);
 		} finally {
 			prepareSpy.mockRestore();
 		}
 		expect(
 			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE model = ?").get("test-model"),
-		).toMatchObject({ c: 3 });
+		).toMatchObject({ c: 252 });
 	});
 
 	it("pages stably and queries existing hashes once per page", async () => {
@@ -572,6 +572,49 @@ describe("vectors", () => {
 		expect(
 			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE model = ?").get("test-model"),
 		).toMatchObject({ c: 1 });
+	});
+
+	it("keeps vec0 metadata scans outside delete transactions", () => {
+		const sessionId = insertTestSession(db);
+		const memoryId = insertBackfillMemory(sessionId, "Current", "2026-09-01T00:00:00.000Z", "body");
+		insertTestVector(memoryId, 0, embeddings.hashText("Current\nbody"));
+		for (let index = 0; index < 999; index++) {
+			insertTestVector(memoryId, 0, `obsolete-plan-${index}`);
+		}
+		const pointLookupPlans = (
+			db
+				.prepare(
+					"EXPLAIN QUERY PLAN SELECT memory_id, content_hash, model FROM memory_vectors WHERE rowid = ?",
+				)
+				.all(1) as Array<{ detail: string }>
+		).map(({ detail }) => detail);
+		let metadataReadsInTransaction = 0;
+		const prepareSpy = vi.spyOn(db, "prepare");
+		prepareSpy.mockImplementation((sql: string) => {
+			const statement = Database.prototype.prepare.call(db, sql);
+			if (sql === "SELECT memory_id, content_hash, model FROM memory_vectors WHERE rowid = ?") {
+				const get = statement.get.bind(statement);
+				statement.get = ((...params: unknown[]) => {
+					if (db.inTransaction) metadataReadsInTransaction++;
+					return get(...params);
+				}) as typeof statement.get;
+			}
+			return statement;
+		});
+
+		try {
+			expect(pruneObsoleteTargetModelVectors(db, "test-model")).toBe(999);
+		} finally {
+			prepareSpy.mockRestore();
+		}
+		expect(metadataReadsInTransaction).toBe(0);
+		expect(pointLookupPlans.length).toBeGreaterThan(0);
+		expect(pointLookupPlans.some((detail) => detail.includes("VIRTUAL TABLE"))).toBe(true);
+		expect(
+			pointLookupPlans.every(
+				(detail) => !detail.includes("INDEX 0") && !detail.toLowerCase().includes("fullscan"),
+			),
+		).toBe(true);
 	});
 
 	it("retains obsolete target rows while current target coverage is incomplete", () => {

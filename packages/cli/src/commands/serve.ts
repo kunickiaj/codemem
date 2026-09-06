@@ -692,6 +692,12 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	if (invocation.dbPath) process.env.CODEMEM_DB = invocation.dbPath;
 	if (invocation.configPath) process.env.CODEMEM_CONFIG = invocation.configPath;
 	warnIfViewerExposed(invocation.host, invocation.port);
+	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
+	if (!(await terminateTrustedMaintenanceWorker(dbPath, { gracefulMs: 1000, forceMs: 5000 }))) {
+		p.log.warn(
+			"Existing maintenance worker is not trusted or did not stop; starting viewer anyway",
+		);
+	}
 	const preparedDb = prepareViewerDatabase(invocation.dbPath);
 
 	const observer = new ObserverClient();
@@ -725,12 +731,6 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		: readCodememConfigFile();
 	const syncConfig = readCoordinatorSyncConfig(config);
 	const syncEnabled = syncConfig.syncEnabled;
-	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
-	if (!(await terminateTrustedMaintenanceWorker(dbPath, { gracefulMs: 1000, forceMs: 5000 }))) {
-		p.log.warn(
-			"Existing maintenance worker is not trusted or did not stop; starting viewer anyway",
-		);
-	}
 	const syncRuntimeStatus: {
 		phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
 		detail: string | null;
