@@ -403,6 +403,7 @@ function isConfiguredLintPath(relativePath: string): boolean {
 		/^plugins\/(?:claude|codex)\/scripts\/(?:ingest-hook|user-prompt-hook)\.mjs$/.test(relativePath)
 	)
 		return true;
+	if (relativePath === "scripts/ci-workflow.test.mjs") return true;
 	return relativePath === "vitest.config.ts";
 }
 
