@@ -145,9 +145,13 @@ pnpm run e2e:sharing-domains -- --json
 
 This scenario verifies hard sharing-domain boundaries, Project filters that only narrow access, coordinator group membership that grants no data access, legacy-peer default deny, revocation, and hostile-row rejection.
 
-## CI promotion gates
+## CI execution
 
-CI runs `smoke`, `legacy-team-migration`, `project-sharing`, and `sharing-domains` as separate matrix entries. Each entry uploads its `.tmp/e2e-artifacts/` directory on failure, so a failing promotion gate remains independently identifiable and diagnosable. The Cloudflare Worker integration job remains a separate gate.
+Normal CI runs `smoke` on pull requests, pushes to `main`, and release `workflow_call` runs. It also runs the specialized `legacy-team-migration`, `project-sharing`, and `sharing-domains` matrix on `main` and release runs, preserving all four scenarios outside pull requests.
+
+The dedicated `Full E2E` workflow runs all four scenarios on its daily `03:17 UTC` schedule and on manual dispatch. On pull requests it skips its duplicate smoke job and runs the three specialized scenarios only while the existing `ci:full` label is present. Opening, reopening, updating, labeling, or unlabeling a pull request reevaluates that policy; the newest run cancels older `Full E2E` runs for the same pull request so label removal cannot leave stale work running.
+
+`Full E2E Legacy Team Migration`, `Full E2E Project Sharing`, and `Full E2E Sharing Domains` are advisory pull request checks and must not be configured as required checks. Normal CI keeps its regular `E2E Smoke` check and does not rerun required jobs when contributors request specialized coverage. Each E2E lane uploads its `.tmp/e2e-artifacts/` directory on failure, and the Cloudflare Worker integration job remains separate.
 
 ## Run the fleet smoke scenario
 

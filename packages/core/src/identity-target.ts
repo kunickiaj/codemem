@@ -15,6 +15,7 @@ export const VIEWER_IDENTITY_TARGET_KEYS = [
 	"home_dir",
 	"pack_compression",
 	"embedding_disabled",
+	"embedding_offline",
 	"embedding_model",
 	"embedding_revision",
 ] as const;
@@ -31,6 +32,7 @@ export interface ViewerIdentityTarget {
 	home_dir: string | null;
 	pack_compression: string | null;
 	embedding_disabled: boolean;
+	embedding_offline: boolean;
 	embedding_model: string;
 	embedding_revision: string | null;
 }
@@ -56,6 +58,9 @@ export function buildViewerIdentityTarget(
 		pack_compression: env.CODEMEM_PACK_COMPRESSION?.trim() || null,
 		embedding_disabled: ["1", "true", "yes"].includes(
 			String(env.CODEMEM_EMBEDDING_DISABLED || "").toLowerCase(),
+		),
+		embedding_offline: ["1", "true", "yes"].includes(
+			String(env.CODEMEM_EMBEDDING_OFFLINE || "").toLowerCase(),
 		),
 		embedding_model: embeddingModel,
 		embedding_revision: tryResolveEmbeddingRevision(embeddingModel, env),
