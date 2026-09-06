@@ -588,6 +588,7 @@ export {
 	isDerivedFactRow,
 	readArtifactClass,
 } from "./memory-quality.js";
+export { probeRequiredNativeRuntime } from "./native-runtime.js";
 export type { ObserverAuthMaterial } from "./observer-auth.js";
 export {
 	buildCodexHeaders,

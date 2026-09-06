@@ -8,12 +8,14 @@ import {
 	isEmbeddingDisabled,
 	type MemoryStore,
 	ObserverClient,
+	probeRequiredNativeRuntime,
 	RawEventSweeper,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
 	resolveDbPath,
 	runSyncDaemon,
+	VERSION,
 } from "@codemem/core";
 import type { ReconcileConfiguredCoordinatorEnrollmentResult } from "@codemem/server";
 import { Command, Option } from "commander";
@@ -494,6 +496,82 @@ export function sqliteVecFailureDiagnostics(error: unknown, dbPath: string): str
 	];
 }
 
+export interface RequiredNativeRuntimeDiagnosticContext {
+	version: string;
+	nodeVersion: string;
+	platform: NodeJS.Platform;
+	arch: string;
+}
+
+export function requiredNativeRuntimeFailureDiagnostics(
+	error: unknown,
+	context: RequiredNativeRuntimeDiagnosticContext = {
+		version: VERSION,
+		nodeVersion: process.version,
+		platform: process.platform,
+		arch: process.arch,
+	},
+): string[] {
+	const detail = error instanceof Error ? error.message : String(error);
+	return [
+		"Required SQLite native binding is unavailable.",
+		`Runtime: Node ${context.nodeVersion} on ${context.platform}/${context.arch}.`,
+		`Details: ${detail}`,
+		`Reinstall this exact codemem version: npm install -g codemem@${context.version}`,
+		"Use Node 24.15+ on a supported 64-bit macOS, Linux, or Windows target; see the native install matrix for current platform coverage.",
+		"This required better-sqlite3 failure is separate from optional sqlite-vec loading, which can fall back to lexical search.",
+	];
+}
+
+export type ServeNativeRuntimePreflightResult =
+	| { state: "ready" }
+	| { state: "already_running" }
+	| { state: "unavailable"; diagnostics: string[] };
+
+export async function preflightServeNativeRuntime(
+	invocation: ResolvedServeInvocation,
+	dependencies: {
+		isPortOpen: (host: string, port: number) => Promise<boolean>;
+		probe: () => void;
+	} = {
+		isPortOpen,
+		probe: probeRequiredNativeRuntime,
+	},
+): Promise<ServeNativeRuntimePreflightResult> {
+	if (
+		invocation.mode === "start" &&
+		(await dependencies.isPortOpen(invocation.host, invocation.port))
+	) {
+		return { state: "already_running" };
+	}
+
+	try {
+		dependencies.probe();
+		return { state: "ready" };
+	} catch (error) {
+		return { state: "unavailable", diagnostics: requiredNativeRuntimeFailureDiagnostics(error) };
+	}
+}
+
+async function nativeRuntimeAllowsServeStart(
+	invocation: ResolvedServeInvocation,
+): Promise<boolean> {
+	if (invocation.mode !== "start" && invocation.mode !== "restart") return true;
+
+	const preflight = await preflightServeNativeRuntime(invocation);
+	if (preflight.state === "already_running") {
+		p.log.warn(`Viewer already running at http://${invocation.host}:${invocation.port}`);
+		if (!invocation.background) process.exitCode = 1;
+		return false;
+	}
+	if (preflight.state === "ready") return true;
+
+	p.intro("codemem viewer");
+	for (const line of preflight.diagnostics) p.log.error(line);
+	process.exitCode = 1;
+	return false;
+}
+
 export interface ServeCoordinatorMaintenanceResult {
 	projectShares: { processed: number; failed: number };
 	coordinatorEnrollment: {
@@ -614,11 +692,6 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	if (invocation.dbPath) process.env.CODEMEM_DB = invocation.dbPath;
 	if (invocation.configPath) process.env.CODEMEM_CONFIG = invocation.configPath;
 	warnIfViewerExposed(invocation.host, invocation.port);
-	if (await isPortOpen(invocation.host, invocation.port)) {
-		p.log.warn(`Viewer already running at http://${invocation.host}:${invocation.port}`);
-		process.exitCode = 1;
-		return;
-	}
 	const preparedDb = prepareViewerDatabase(invocation.dbPath);
 
 	const observer = new ObserverClient();
@@ -839,7 +912,16 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	});
 }
 
-async function runServeInvocation(invocation: ResolvedServeInvocation): Promise<void> {
+export async function runServeInvocation(
+	invocation: ResolvedServeInvocation,
+	dependencies: {
+		nativeRuntimeAllowsServeStart: (invocation: ResolvedServeInvocation) => Promise<boolean>;
+		stopExistingViewer: typeof stopExistingViewer;
+	} = {
+		nativeRuntimeAllowsServeStart,
+		stopExistingViewer,
+	},
+): Promise<void> {
 	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
 	const runtimeConflict = await findRuntimeViewerConflict(dbPath, {
 		host: invocation.host,
@@ -856,8 +938,9 @@ async function runServeInvocation(invocation: ResolvedServeInvocation): Promise<
 		process.exitCode = 1;
 		return;
 	}
+	if (!(await dependencies.nativeRuntimeAllowsServeStart(invocation))) return;
 	if (invocation.mode === "stop" || invocation.mode === "restart") {
-		const result = await stopExistingViewer(dbPath, {
+		const result = await dependencies.stopExistingViewer(dbPath, {
 			host: invocation.host,
 			port: invocation.port,
 		});
