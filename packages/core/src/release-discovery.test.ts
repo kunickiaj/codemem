@@ -8,14 +8,16 @@ import {
 	detectInstallKind,
 	type InstallDetectionInput,
 	type InstallKind,
+	type ReleaseChannel,
 	type ReleaseDiscoveryDependencies,
 } from "./release-discovery.js";
 
 const NOW = new Date("2026-08-10T12:00:00.000Z");
-const REGISTRY_URL = "https://registry.npmjs.org/codemem/latest";
+const registryUrl = (channel: ReleaseChannel) => `https://registry.npmjs.org/codemem/${channel}`;
 
 type CacheRecord = {
 	schema_version: number;
+	channel?: ReleaseChannel;
 	latest_version: string;
 	checked_at: string;
 	first_seen_at: string;
@@ -137,6 +139,7 @@ describe("release discovery registry contract", () => {
 		// Assert
 		expect(status).toMatchObject({
 			current_version: "0.40.2",
+			channel: "latest",
 			latest_version: "0.40.2",
 			update_available: false,
 			stale: false,
@@ -160,6 +163,50 @@ describe("release discovery registry contract", () => {
 			stale: false,
 		});
 	});
+
+	it.each([
+		{ channel: "alpha", currentVersion: "0.44.0-alpha.1", latestVersion: "0.44.0-alpha.2" },
+		{ channel: "beta", currentVersion: "0.44.0-beta.1", latestVersion: "0.44.0-beta.2" },
+		{ channel: "rc", currentVersion: "0.44.0-rc.1", latestVersion: "0.44.0-rc.2" },
+		{ channel: "latest", currentVersion: "0.43.0", latestVersion: "0.44.0" },
+	] satisfies Array<{
+		channel: ReleaseChannel;
+		currentVersion: string;
+		latestVersion: string;
+	}>)(
+		"queries npm's $channel tag for an installed $channel release",
+		async ({ channel, currentVersion, latestVersion }) => {
+			const deps = dependencies({ payload: { version: latestVersion } });
+
+			const status = await check(deps, { currentVersion });
+
+			expect(status).toMatchObject({
+				channel,
+				latest_version: latestVersion,
+				update_available: true,
+			});
+			expect(deps.fetch).toHaveBeenCalledWith(
+				registryUrl(channel),
+				expect.objectContaining({ redirect: "error" }),
+			);
+		},
+	);
+
+	it.each([
+		{ currentVersion: "0.44.0-alpha.1", registryVersion: "0.44.0-beta.1" },
+		{ currentVersion: "0.44.0-beta.1", registryVersion: "0.44.0-alpha.2" },
+		{ currentVersion: "0.43.0", registryVersion: "0.44.0-alpha.2" },
+	])(
+		"rejects registry version $registryVersion outside the installed channel",
+		async ({ currentVersion, registryVersion }) => {
+			const status = await check(dependencies({ payload: { version: registryVersion } }), {
+				currentVersion,
+			});
+
+			expect(status).toMatchObject({ latest_version: null, update_available: false });
+			expect(status.error).toMatch(/invalid registry version/i);
+		},
+	);
 
 	it("accepts stable semantic versions with build metadata", async () => {
 		// Arrange
@@ -204,6 +251,27 @@ describe("release discovery registry contract", () => {
 		const status = await check(deps, { installKind: "npm-global" });
 
 		expect(status.auto_update_eligible).toBe(true);
+	});
+
+	it("allows an opted-in alpha installation to auto-update within alpha", async () => {
+		const deps = dependencies({
+			cache: JSON.stringify(
+				cacheRecord({
+					schema_version: 2,
+					channel: "alpha",
+					latest_version: "0.44.0-alpha.2",
+					first_seen_at: "2026-08-09T12:00:00.000Z",
+					checked_at: NOW.toISOString(),
+				}),
+			),
+		});
+
+		const status = await check(deps, {
+			currentVersion: "0.44.0-alpha.1",
+			installKind: "npm-global",
+		});
+
+		expect(status).toMatchObject({ channel: "alpha", auto_update_eligible: true });
 	});
 
 	it("refuses a release observed for less than 24 hours", async () => {
@@ -284,7 +352,7 @@ describe("release discovery registry contract", () => {
 		// Assert
 		expect(deps.timeoutSignal).toHaveBeenCalledWith(2_000);
 		expect(deps.fetch).toHaveBeenCalledWith(
-			REGISTRY_URL,
+			registryUrl("latest"),
 			expect.objectContaining({ redirect: "error", signal: expect.any(AbortSignal) }),
 		);
 	});
@@ -358,7 +426,7 @@ describe("release discovery registry contract", () => {
 		// Arrange
 		const deps = dependencies();
 		const chunks = Array.from({ length: 20 }, () => "x".repeat(4_096));
-		const streamed = streamingResponse({ chunks, contentLength, url: REGISTRY_URL });
+		const streamed = streamingResponse({ chunks, contentLength, url: registryUrl("latest") });
 		deps.fetch.mockResolvedValue(streamed.response);
 
 		// Act
@@ -375,7 +443,7 @@ describe("release discovery registry contract", () => {
 		const deps = dependencies();
 		const streamed = streamingResponse({
 			chunks: ["é".repeat(9_000)],
-			url: REGISTRY_URL,
+			url: registryUrl("latest"),
 		});
 		deps.fetch.mockResolvedValue(streamed.response);
 
@@ -396,6 +464,24 @@ describe("release discovery registry contract", () => {
 		// Assert
 		expect(status.update_available).toBe(false);
 		expect(status.recommended_action).not.toMatch(/up to date|no action required/i);
+		expect(deps.fetch).not.toHaveBeenCalled();
+	});
+
+	it("routes an rc installation through the rc channel", async () => {
+		const deps = dependencies({ payload: { version: "0.44.0-rc.2" } });
+
+		const status = await check(deps, { currentVersion: "0.44.0-rc.1" });
+
+		expect(status).toMatchObject({
+			channel: "rc",
+			latest_version: "0.44.0-rc.2",
+			update_available: true,
+		});
+		expect(status.recommended_action).toContain("codemem@0.44.0-rc.2");
+		expect(deps.fetch).toHaveBeenCalledWith(
+			registryUrl("rc"),
+			expect.objectContaining({ redirect: "error", signal: expect.any(AbortSignal) }),
+		);
 	});
 });
 
@@ -439,8 +525,51 @@ describe("release discovery cache contract", () => {
 
 		// Assert
 		const contents = String(deps.writeCacheAtomic.mock.calls[0]?.[0]);
-		expect(JSON.parse(contents)).toMatchObject({ schema_version: 1 });
+		expect(JSON.parse(contents)).toMatchObject({ schema_version: 2, channel: "latest" });
 	});
+
+	it("preserves a valid legacy stable cache without registry access", async () => {
+		const cached = cacheRecord({ checked_at: "2026-08-10T11:00:00.000Z" });
+		const deps = dependencies({ cache: JSON.stringify(cached) });
+
+		const status = await check(deps);
+
+		expect(status).toMatchObject({ channel: "latest", latest_version: "0.41.0" });
+		expect(deps.fetch).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{
+			label: "alpha installation with stable legacy cache",
+			currentVersion: "0.44.0-alpha.1",
+			cache: cacheRecord({ checked_at: "2026-08-10T11:00:00.000Z" }),
+			registryVersion: "0.44.0-alpha.2",
+		},
+		{
+			label: "stable installation with alpha cache",
+			currentVersion: "0.43.0",
+			cache: cacheRecord({
+				schema_version: 2,
+				channel: "alpha",
+				latest_version: "0.44.0-alpha.2",
+				checked_at: "2026-08-10T11:00:00.000Z",
+			}),
+			registryVersion: "0.44.0",
+		},
+	])(
+		"never reuses a cache across channels: $label",
+		async ({ currentVersion, cache, registryVersion }) => {
+			const deps = dependencies({
+				cache: JSON.stringify(cache),
+				payload: { version: registryVersion },
+			});
+
+			const status = await check(deps, { currentVersion });
+
+			expect(status.latest_version).toBe(registryVersion);
+			expect(deps.fetch).toHaveBeenCalledTimes(1);
+		},
+	);
 
 	it("preserves first-seen time while the same latest release remains current", async () => {
 		// Arrange
@@ -541,7 +670,7 @@ describe("release discovery cache contract", () => {
 		{
 			label: "unsupported schema version",
 			cache: cacheRecord({
-				schema_version: 2,
+				schema_version: 3,
 				checked_at: "2026-08-10T11:00:00.000Z",
 				first_seen_at: "2026-08-10T10:00:00.000Z",
 			}),
@@ -625,6 +754,24 @@ describe("release discovery cache contract", () => {
 		// Assert
 		expect(deps.fetch).toHaveBeenCalledTimes(1);
 		expect(second).toEqual(first);
+	});
+
+	it("does not reuse an in-memory result across channels", async () => {
+		const deps = dependencies();
+		deps.fetch.mockImplementation(async (url: string) =>
+			response({ version: url.endsWith("/alpha") ? "0.44.0-alpha.2" : "0.44.0" }),
+		);
+		const discovery = createReleaseDiscovery(deps);
+
+		const alpha = await discovery.check({
+			currentVersion: "0.44.0-alpha.1",
+			installKind: "npm-global",
+		});
+		const stable = await discovery.check({ currentVersion: "0.43.0", installKind: "npm-global" });
+
+		expect(alpha.latest_version).toBe("0.44.0-alpha.2");
+		expect(stable.latest_version).toBe("0.44.0");
+		expect(deps.fetch).toHaveBeenCalledTimes(2);
 	});
 
 	it("backs off sequential registry failures when no cache exists", async () => {
@@ -883,6 +1030,20 @@ describe("installation-kind detection", () => {
 });
 
 describe("installation guidance", () => {
+	it.each([
+		{ channel: "alpha", currentVersion: "0.44.0-alpha.1", latestVersion: "0.44.0-alpha.2" },
+		{ channel: "beta", currentVersion: "0.44.0-beta.1", latestVersion: "0.44.0-beta.2" },
+	] as const)(
+		"keeps $channel guidance on the installed channel",
+		async ({ currentVersion, latestVersion }) => {
+			const status = await check(dependencies({ payload: { version: latestVersion } }), {
+				currentVersion,
+			});
+
+			expect(status.recommended_action).toContain(`codemem@${latestVersion}`);
+		},
+	);
+
 	it.each([
 		["npm-global", "npm install -g codemem@0.41.0"],
 		["npx", "codemem@0.41.0 and @codemem/embeddings@0.41.0"],

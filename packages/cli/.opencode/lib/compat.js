@@ -117,6 +117,8 @@ const isPinnedGitSource = (runnerFrom) => {
 };
 
 const PUBLIC_NPM_REGISTRY = "https://registry.npmjs.org/";
+const UPDATE_TARGET_VERSION =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:alpha|beta|rc)(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 const createNpmUpdatePlan = (targetVersion) => {
 	const command = [
@@ -136,7 +138,7 @@ export const resolveAutoUpdatePlan = ({
 	runner,
 	runnerFrom,
 	runnerFromExplicit = false,
-	targetVersion = "latest",
+	targetVersion,
 	platform = process.platform,
 }) => {
 	const normalizedRunner = String(runner || "").trim();
@@ -144,9 +146,6 @@ export const resolveAutoUpdatePlan = ({
 	const normalizedTargetVersion = String(targetVersion || "").trim();
 	if (platform === "win32") {
 		return { allowed: false, reason: "unsupported-platform", command: null, commandText: null };
-	}
-	if (normalizedTargetVersion !== "latest" && !/^\d+\.\d+\.\d+$/.test(normalizedTargetVersion)) {
-		return { allowed: false, reason: "invalid-version", command: null, commandText: null };
 	}
 	if (isPinnedGitSource(source) || /^codemem@(?!latest$|next$|\*$)[^\s]+$/i.test(source)) {
 		return {
@@ -175,6 +174,9 @@ export const resolveAutoUpdatePlan = ({
 				commandText: null,
 			};
 		}
+		if (!UPDATE_TARGET_VERSION.test(normalizedTargetVersion)) {
+			return { allowed: false, reason: "invalid-version", command: null, commandText: null };
+		}
 		return createNpmUpdatePlan(normalizedTargetVersion);
   }
 
@@ -197,6 +199,9 @@ export const resolveAutoUpdatePlan = ({
   }
 
 	if (normalizedRunner === "codemem") {
+		if (!UPDATE_TARGET_VERSION.test(normalizedTargetVersion)) {
+			return { allowed: false, reason: "invalid-version", command: null, commandText: null };
+		}
 		return createNpmUpdatePlan(normalizedTargetVersion);
 	}
 
