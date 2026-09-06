@@ -642,18 +642,32 @@ try {
 		embeddingsTarListing.includes("package/dist/index.js"),
 		"Packed embeddings artifact is missing dist/index.js",
 	);
+	const packedPackageJson = JSON.parse(
+		run("tar", ["-xOf", packedTarball, "package/package.json"]).stdout,
+	);
+	assert(
+		packedPackageJson.optionalDependencies?.["@codemem/embeddings"] === packageVersion,
+		"Packed CLI must declare the matching @codemem/embeddings runtime as optional",
+	);
 
 	const installDir = join(tempDir, "install");
 	run(
 		"npm",
-		["install", "--prefix", installDir, coreTarball, mcpTarball, serverTarball, packedTarball],
+		[
+			"install",
+			"--omit=optional",
+			"--prefix",
+			installDir,
+			coreTarball,
+			mcpTarball,
+			serverTarball,
+			packedTarball,
+		],
 		packageRoot,
 		{ ...process.env, npm_config_install_strategy: "hoisted" },
 	);
 	const lexicalLockPath = join(installDir, "package-lock.json");
 	assert(existsSync(lexicalLockPath), "Lexical install did not produce a package-lock.json");
-	const lexicalLock = JSON.parse(readFileSync(lexicalLockPath, "utf8"));
-	const lexicalPackages = Object.keys(lexicalLock.packages ?? {});
 	for (const packageName of [
 		"@codemem/embeddings",
 		"@huggingface/transformers",
@@ -664,8 +678,7 @@ try {
 		"sharp",
 	]) {
 		assert(
-			// npm lockfile package keys use `/` and may be relative to a parent directory.
-			!lexicalPackages.some((path) => path.endsWith(`node_modules/${packageName}`)),
+			!existsSync(join(installDir, "node_modules", ...packageName.split("/"))),
 			`Lexical-only install unexpectedly contains ${packageName}`,
 		);
 	}
@@ -677,11 +690,25 @@ try {
 		JSON.stringify({ private: true }),
 		"utf8",
 	);
-	run("npm", ["install", "--prefix", semanticInstallDir, coreTarball, embeddingsTarball], packageRoot, {
-		...process.env,
-		ONNXRUNTIME_NODE_INSTALL: "skip",
-		npm_config_install_strategy: "hoisted",
-	});
+	run(
+		"npm",
+		[
+			"install",
+			"--prefix",
+			semanticInstallDir,
+			coreTarball,
+			embeddingsTarball,
+			mcpTarball,
+			serverTarball,
+			packedTarball,
+		],
+		packageRoot,
+		{
+			...process.env,
+			ONNXRUNTIME_NODE_INSTALL: "skip",
+			npm_config_install_strategy: "hoisted",
+		},
+	);
 	const semanticCoreBundle = readFileSync(
 		join(semanticInstallDir, "node_modules", "@codemem", "core", "dist", "index.js"),
 		"utf8",
@@ -734,7 +761,21 @@ try {
 	const semanticPackages = Object.keys(semanticLock.packages ?? {});
 	assert(
 		semanticPackages.some((path) => path.endsWith("node_modules/@huggingface/transformers")),
-		"Semantic install is missing the @huggingface/transformers runtime",
+		"Semantic CLI fixture is missing the @huggingface/transformers runtime",
+	);
+	const embeddingsPackageDir = join(
+		semanticInstallDir,
+		"node_modules",
+		"@codemem",
+		"embeddings",
+	);
+	assert(existsSync(embeddingsPackageDir), "Semantic CLI fixture is missing @codemem/embeddings");
+	const installedEmbeddingsPackage = JSON.parse(
+		readFileSync(join(embeddingsPackageDir, "package.json"), "utf8"),
+	);
+	assert(
+		installedEmbeddingsPackage.version === packageVersion,
+		`Semantic CLI fixture installed @codemem/embeddings ${installedEmbeddingsPackage.version}, expected ${packageVersion}`,
 	);
 	const ortPackageDir = resolveInstalledPackageDir(semanticInstallDir, "onnxruntime-node");
 	const ortBinaryDir = join(ortPackageDir, "bin", "napi-v6", process.platform, process.arch);
@@ -804,6 +845,13 @@ try {
 
 	const versionOutput = run(cliBin, ["version"]).stdout.trim();
 	assert(versionOutput === packageVersion, `Installed CLI reported ${versionOutput}, expected ${packageVersion}`);
+	const optionalFreeDbPath = join(tempDir, "optional-free.sqlite");
+	run(cliBin, ["stats"], installDir, {
+		...process.env,
+		CODEMEM_DB: optionalFreeDbPath,
+		CODEMEM_EMBEDDING_DISABLED: "1",
+	});
+	assert(existsSync(optionalFreeDbPath), "Optional-free CLI smoke did not create its isolated database");
 
 	const isolatedAdapters = join(tempDir, "isolated-adapters");
 	await buildAdapterNormalizers(isolatedAdapters);

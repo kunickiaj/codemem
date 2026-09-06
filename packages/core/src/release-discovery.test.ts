@@ -884,7 +884,7 @@ describe("installation-kind detection", () => {
 
 describe("installation guidance", () => {
 	it.each([
-		["npm-global", "npm install -g codemem@0.41.0 @codemem/embeddings@0.41.0"],
+		["npm-global", "npm install -g codemem@0.41.0"],
 		["npx", "codemem@0.41.0 and @codemem/embeddings@0.41.0"],
 		["docker", "CODEMEM_VERSION=0.41.0 docker compose build --pull"],
 		["repo-dev", "git pull"],
@@ -912,7 +912,7 @@ describe("installation guidance", () => {
 		);
 
 		expect(status.recommended_action).toBe(
-			"env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem@0.41.0 @codemem/embeddings@0.41.0",
+			"env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem@0.41.0",
 		);
 	});
 
@@ -922,9 +922,7 @@ describe("installation guidance", () => {
 			platform.mockRestore(),
 		);
 
-		expect(status.recommended_action).toBe(
-			"npm install -g codemem@0.41.0 @codemem/embeddings@0.41.0",
-		);
+		expect(status.recommended_action).toBe("npm install -g codemem@0.41.0");
 	});
 
 	it("returns no-upgrade guidance when the installation is current", async () => {

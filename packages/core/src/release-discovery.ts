@@ -235,7 +235,7 @@ function recommendedAction(
 	if (!updateAvailable) return "No action required; codemem is up to date.";
 	switch (installKind) {
 		case "npm-global":
-			return `${process.platform === "linux" ? "env ONNXRUNTIME_NODE_INSTALL=skip " : ""}npm install -g codemem@${latestVersion} @codemem/embeddings@${latestVersion}`;
+			return `${process.platform === "linux" ? "env ONNXRUNTIME_NODE_INSTALL=skip " : ""}npm install -g codemem@${latestVersion}`;
 		case "npx":
 			return `Update your launcher to request codemem@${latestVersion} and @codemem/embeddings@${latestVersion} together.`;
 		case "docker":

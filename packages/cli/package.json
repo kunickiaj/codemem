@@ -30,6 +30,9 @@
 		"drizzle-orm": "catalog:",
 		"omelette": "^0.4.17"
 	},
+	"optionalDependencies": {
+		"@codemem/embeddings": "workspace:*"
+	},
 	"devDependencies": {
 		"@types/better-sqlite3": "catalog:",
 		"@types/node": "^24.12.4",

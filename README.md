@@ -46,22 +46,24 @@ npx -y codemem db raw-events-status
 
 That's it. The plugin captures activity, builds memories, and injects context from here on.
 
-If you want `codemem` available directly on your `PATH` for manual commands and semantic retrieval, install the CLI and embedding runtime globally. The command differs by platform:
+If you want `codemem` available directly on your `PATH` for manual commands and semantic retrieval, install the CLI globally. The CLI installs its matching embedding runtime by default. The command differs by platform:
 
 On Linux, skip the unused ONNX Runtime GPU provider download:
 
 ```text
-env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem @codemem/embeddings
+env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem
 ```
 
-On Apple silicon macOS and Windows, install both packages normally:
+On Apple silicon macOS and Windows, install normally:
 
 ```text
-npm install -g codemem @codemem/embeddings
+npm install -g codemem
 ```
 
-Installing only `codemem` keeps the CLI functional with FTS5 keyword retrieval
-and does not download the embedding runtime.
+For a smaller keyword-only install, use `npm install -g codemem --omit=optional`
+and set `CODEMEM_EMBEDDING_DISABLED=1` in every Codemem process. The flag is
+required because npm also omits sqlite-vec's optional platform package; the CLI
+then remains functional with FTS5.
 
 Setup-managed `npx` launchers cannot set a platform-specific install variable.
 On Linux, either use the guarded global installation above or set
@@ -92,7 +94,7 @@ OpenCode plugin and CLI are now split intentionally:
 
 - `@codemem/opencode-plugin` — OpenCode plugin package
 - `codemem` — CLI and MCP commands
-- `@codemem/embeddings` — optional semantic embedding runtime
+- `@codemem/embeddings` — optional semantic embedding runtime installed by the CLI
 
 ### Claude Code (marketplace install)
 
