@@ -589,7 +589,7 @@ function sameDatabaseMutationSnapshot(
 	);
 }
 
-function finalizeMigrationCutover(
+async function finalizeMigrationCutover(
 	db: SqliteDatabase,
 	targetModel: string,
 	metadata: MigrationMetadata,
@@ -597,7 +597,8 @@ function finalizeMigrationCutover(
 	processedEmbeddable: number,
 	embeddableTotal: number,
 	signal?: AbortSignal,
-): void {
+	shouldStop?: () => boolean,
+): Promise<void> {
 	const previouslyRemoved = Number(metadata.removed_stale_rows ?? 0);
 	const pruneSnapshot = readDatabaseMutationSnapshot(db, "prune-start");
 	const prunedTargetRows = pruneObsoleteTargetModelVectors(db, targetModel, { signal });
@@ -682,12 +683,12 @@ function finalizeMigrationCutover(
 	}).immediate();
 
 	if (!readyForLegacyCleanup) return;
-	const cleanup = deleteStaleModelVectors(db, targetModel, signal);
-	recordResumedCleanupResult(db, {
-		cleanup,
+	await drainStaleModelVectors(db, targetModel, {
 		validationSnapshot,
 		previouslyRemoved: removedBeforeCleanup,
 		prunedTargetRows: 0,
+		signal,
+		shouldStop,
 	});
 }
 
@@ -797,18 +798,92 @@ function recordResumedCleanupResult(
 	return cleanupCompleted;
 }
 
+async function yieldToCleanupInterrupts(): Promise<void> {
+	await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+function cleanupShouldPause(options: {
+	signal?: AbortSignal;
+	shouldStop?: () => boolean;
+}): boolean {
+	if (options.signal?.aborted) return true;
+	return options.shouldStop?.() === true;
+}
+
+async function drainStaleModelVectors(
+	db: SqliteDatabase,
+	targetModel: string,
+	options: {
+		validationSnapshot: DatabaseMutationSnapshot;
+		previouslyRemoved: number;
+		prunedTargetRows: number;
+		signal?: AbortSignal;
+		shouldStop?: () => boolean;
+	},
+): Promise<boolean> {
+	let prunedTargetRows = options.prunedTargetRows;
+	let cleanupFence = readDatabaseMutationSnapshot(db, "validation");
+	if (!sameDatabaseDataVersion(options.validationSnapshot, cleanupFence)) {
+		deferCompletedCleanup(
+			db,
+			options.previouslyRemoved,
+			prunedTargetRows,
+			"Memory changes arrived during cleanup; retrying",
+		);
+		return false;
+	}
+	while (true) {
+		if (cleanupShouldPause(options)) {
+			deferCompletedCleanup(
+				db,
+				options.previouslyRemoved,
+				prunedTargetRows,
+				"Cleanup paused during shutdown; retrying",
+			);
+			return false;
+		}
+		if (!sameDatabaseMutationSnapshot(db, cleanupFence)) {
+			deferCompletedCleanup(
+				db,
+				options.previouslyRemoved,
+				prunedTargetRows,
+				"Memory changes arrived during cleanup; retrying",
+			);
+			return false;
+		}
+
+		const cleanup = deleteStaleModelVectors(db, targetModel, options.signal);
+		const cleanupCompleted = recordResumedCleanupResult(db, {
+			cleanup,
+			validationSnapshot: options.validationSnapshot,
+			previouslyRemoved: options.previouslyRemoved,
+			prunedTargetRows,
+		});
+		if (cleanupCompleted) return true;
+		if (cleanupShouldPause(options)) return false;
+		if (cleanup.deleted === 0) return false;
+		const cleanupSnapshot = readDatabaseMutationSnapshot(db, "validation");
+		if (!sameDatabaseDataVersion(options.validationSnapshot, cleanupSnapshot)) return false;
+
+		prunedTargetRows = 0;
+		cleanupFence = cleanupSnapshot;
+		await yieldToCleanupInterrupts();
+	}
+}
+
 type CompletedCleanupPassResult = {
 	continueMigration: boolean;
 	restartFromBeginning: boolean;
 	reconciliationTargetPruningComplete: boolean;
 };
 
-function finishCompletedCleanupPass(
+async function finishCompletedCleanupPass(
 	db: SqliteDatabase,
 	targetModel: string,
 	metadata: MigrationMetadata,
 	signal?: AbortSignal,
-): CompletedCleanupPassResult {
+	shouldStop?: () => boolean,
+): Promise<CompletedCleanupPassResult> {
 	const stop: CompletedCleanupPassResult = {
 		continueMigration: false,
 		restartFromBeginning: false,
@@ -850,12 +925,12 @@ function finishCompletedCleanupPass(
 		};
 	}
 
-	const cleanup = deleteStaleModelVectors(db, targetModel, signal);
-	const cleanupCompleted = recordResumedCleanupResult(db, {
-		cleanup,
+	const cleanupCompleted = await drainStaleModelVectors(db, targetModel, {
 		validationSnapshot,
 		previouslyRemoved,
 		prunedTargetRows,
+		signal,
+		shouldStop,
 	});
 	if (!cleanupCompleted) return stop;
 	return {
@@ -884,7 +959,7 @@ function resolveMigrationStartMessage(
 
 export async function runVectorMigrationPass(
 	db: SqliteDatabase,
-	options: { batchSize?: number; signal?: AbortSignal } = {},
+	options: { batchSize?: number; signal?: AbortSignal; shouldStop?: () => boolean } = {},
 ): Promise<void> {
 	let existingJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
 	const isInFlightJob = existingJob?.status === "running" || existingJob?.status === "pending";
@@ -939,11 +1014,12 @@ export async function runVectorMigrationPass(
 		queuedSyncWorkCount === 0
 	) {
 		if (!existingMetadata.cleanup_pending && !hasSourceModelVectors(db, targetModel)) return;
-		const cleanupResult = finishCompletedCleanupPass(
+		const cleanupResult = await finishCompletedCleanupPass(
 			db,
 			targetModel,
 			existingMetadata,
 			options.signal,
+			options.shouldStop,
 		);
 		if (
 			!cleanupResult.continueMigration ||
@@ -1129,7 +1205,7 @@ export async function runVectorMigrationPass(
 			removed_stale_rows: Number(metadata.removed_stale_rows ?? 0) + prunedCoveredRows,
 		};
 		if (batchRows.length < effectiveBatchSize) {
-			finalizeMigrationCutover(
+			await finalizeMigrationCutover(
 				db,
 				targetModel,
 				metadataAfterPrune,
@@ -1137,6 +1213,7 @@ export async function runVectorMigrationPass(
 				processedEmbeddable,
 				embeddableTotal,
 				options.signal,
+				options.shouldStop,
 			);
 			return;
 		}
@@ -1163,7 +1240,7 @@ export async function runVectorMigrationPass(
 	}
 
 	if (metadata.last_cursor_id && metadata.last_cursor_id > 0) {
-		finalizeMigrationCutover(
+		await finalizeMigrationCutover(
 			db,
 			targetModel,
 			metadata,
@@ -1171,6 +1248,7 @@ export async function runVectorMigrationPass(
 			embeddableTotal,
 			embeddableTotal,
 			options.signal,
+			options.shouldStop,
 		);
 	}
 }
@@ -1254,6 +1332,7 @@ export class VectorModelMigrationRunner {
 			await runVectorMigrationPass(db, {
 				batchSize: this.batchSize,
 				signal: this.signal,
+				shouldStop: () => !this.active,
 			});
 			this.lastTickWasIdle = this.computeIdle(db);
 		} catch (error) {
