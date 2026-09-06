@@ -49,6 +49,14 @@ export function normalizeHumanPresentationName(value: string, field: string): st
 	return normalized;
 }
 
+export function normalizeDeviceDisplayName(value: string, field: string): string {
+	const normalized = normalizeIdentityDisplayName(value, field);
+	if (!HOSTNAME_NAME.test(normalized) && !isHumanPresentationName(normalized)) {
+		throw new Error(`${field}_invalid`);
+	}
+	return normalized;
+}
+
 export function normalizeDeviceNameHint(value: string | null | undefined): string | null {
 	const candidate = String(value ?? "").trim();
 	const raw = candidate.replace(/\.local$/iu, "");

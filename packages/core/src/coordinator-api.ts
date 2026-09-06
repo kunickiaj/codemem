@@ -33,6 +33,7 @@ import type {
 import { CoordinatorReciprocalApprovalRequestChangedError } from "./coordinator-store-contract.js";
 import { PROJECT_INVITE_PENDING_STATUS } from "./project-invite-acceptance.js";
 import {
+	normalizeDeviceDisplayName,
 	normalizeHumanPresentationName,
 	normalizeProjectInviteSummaries,
 } from "./project-invite-identity.js";
@@ -2228,7 +2229,7 @@ export function createCoordinatorApp(
 						if (typeof data.device_display_name !== "string") {
 							throw new Error("device_display_name_invalid");
 						}
-						normalizedDeviceDisplayName = normalizeHumanPresentationName(
+						normalizedDeviceDisplayName = normalizeDeviceDisplayName(
 							data.device_display_name,
 							"device_display_name",
 						);
@@ -2315,7 +2316,7 @@ export function createCoordinatorApp(
 						recipientDisplayName,
 						"recipient_display_name",
 					);
-					normalizedDeviceName = normalizeHumanPresentationName(
+					normalizedDeviceName = normalizeDeviceDisplayName(
 						deviceDisplayName,
 						"device_display_name",
 					);

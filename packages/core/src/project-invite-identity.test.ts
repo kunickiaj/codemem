@@ -9,6 +9,7 @@ import {
 import {
 	friendlyDeviceName,
 	isHumanPresentationName,
+	normalizeDeviceDisplayName,
 	normalizeHumanPresentationName,
 	normalizeIdentityDisplayName,
 	normalizeProjectInviteSummaries,
@@ -92,6 +93,15 @@ describe("project invite identity", () => {
 		);
 		expect(normalizeHumanPresentationName("Brian's MacBook", "device_display_name")).toBe(
 			"Brian's MacBook",
+		);
+	});
+
+	it("accepts DNS hostnames as device presentation names", () => {
+		expect(normalizeDeviceDisplayName("emm-five.home.morgowicz.com", "device_display_name")).toBe(
+			"emm-five.home.morgowicz.com",
+		);
+		expect(() => normalizeDeviceDisplayName("device_abc123def", "device_display_name")).toThrow(
+			"device_display_name_invalid",
 		);
 	});
 
