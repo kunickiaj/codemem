@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { codememHomeDir } from "./home.js";
@@ -234,9 +235,9 @@ function recommendedAction(
 	if (!updateAvailable) return "No action required; codemem is up to date.";
 	switch (installKind) {
 		case "npm-global":
-			return `npm install -g codemem@${latestVersion}`;
+			return `${process.platform === "linux" ? "env ONNXRUNTIME_NODE_INSTALL=skip " : ""}npm install -g codemem@${latestVersion} @codemem/embeddings@${latestVersion}`;
 		case "npx":
-			return `Run npx codemem@${latestVersion} or update the version used by your launcher.`;
+			return `Update your launcher to request codemem@${latestVersion} and @codemem/embeddings@${latestVersion} together.`;
 		case "docker":
 			return `Set CODEMEM_VERSION=${latestVersion}, then run CODEMEM_VERSION=${latestVersion} docker compose build --pull and docker compose up -d.`;
 		case "repo-dev":
@@ -427,7 +428,16 @@ export function detectInstallKind(input: InstallDetectionInput): InstallKind {
 	const source = env.CODEMEM_RUNNER_FROM?.trim() ?? "";
 	if (isPinnedSource(source)) return "pinned";
 
-	const entryPath = input.entryPath.replaceAll("\\", "/");
+	let entryPath = input.entryPath;
+	if (entryPath) {
+		try {
+			entryPath = realpathSync(entryPath);
+		} catch {
+			// Preserve synthetic, removed, and otherwise unresolved paths for the
+			// existing pattern checks below.
+		}
+	}
+	entryPath = entryPath.replaceAll("\\", "/");
 	if (/\/packages\/cli\/src\/index\.ts$/.test(entryPath)) return "repo-dev";
 
 	const explicit = env.CODEMEM_INSTALL_KIND?.trim().toLowerCase();

@@ -955,6 +955,75 @@ describe("legacy Team candidate discovery", () => {
 		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("needs_setup");
 	});
 
+	it("bounds the assignment fan-out re-derived for a completed candidate", () => {
+		// A one-device roster with one completed Project still re-derives
+		// effective devices across every persisted assignment row, so a large
+		// assignment table must trip the pair bound before that derivation runs.
+		const { candidateId } = completeCandidate();
+		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
+		const insertAssignment = db.prepare(
+			`INSERT INTO identity_devices(
+				device_id, identity_id, display_name, status, provenance, revision,
+				migration_state, assignment_version, idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'identity-member', ?, 'revoked', 'test', 'r1', 'user_managed', 1, ?, ?, ?)`,
+		);
+		db.transaction(() => {
+			for (let index = 0; index < 10_000; index += 1) {
+				insertAssignment.run(
+					`device-historical-${index}`,
+					`Old ${index}`,
+					`hist-${index}`,
+					NOW,
+					NOW,
+				);
+			}
+		})();
+		const derive = vi.spyOn(db, "prepare");
+		try {
+			expect(discoverLegacyTeamCandidates(db, options())).toEqual([]);
+			expect(
+				derive.mock.calls.some(([sql]) => String(sql).includes("FROM policy_team_memberships")),
+			).toBe(false);
+		} finally {
+			derive.mockRestore();
+		}
+		expect(
+			db
+				.prepare("SELECT state FROM legacy_team_setup_drafts WHERE candidate_id = ?")
+				.pluck()
+				.get(candidateId),
+		).toBe("completed");
+	});
+
+	it("still discovers a small new candidate alongside many unrelated assignments", () => {
+		// The readiness fan-out bound only applies once a completed candidate's
+		// compatibility derivation will run; a fresh candidate must not be
+		// hidden by historical assignment rows it never traverses.
+		db.prepare(
+			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+			 VALUES ('identity-historical', 'Historical', 0, 'active', ?, ?)`,
+		).run(NOW, NOW);
+		const insertAssignment = db.prepare(
+			`INSERT INTO identity_devices(
+				device_id, identity_id, display_name, status, provenance, revision,
+				migration_state, assignment_version, idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'identity-historical', ?, 'revoked', 'test', 'r1', 'user_managed', 1, ?, ?, ?)`,
+		);
+		db.transaction(() => {
+			for (let index = 0; index < 10_000; index += 1) {
+				insertAssignment.run(
+					`device-historical-${index}`,
+					`Old ${index}`,
+					`hist-${index}`,
+					NOW,
+					NOW,
+				);
+			}
+		})();
+
+		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("needs_setup");
+	});
+
 	it("keeps a completed Team selectable when merged resolutions share one mapping", () => {
 		const { teamId, attemptId, candidateId } = completeCandidate();
 		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");

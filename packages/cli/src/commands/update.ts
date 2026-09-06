@@ -19,7 +19,7 @@ interface CommandResult {
 	stderr: string;
 }
 
-const INSTALL_TIMEOUT_MS = 5 * 60 * 1_000;
+const INSTALL_TIMEOUT_MS = 7 * 60 * 1_000;
 const VERIFY_TIMEOUT_MS = 30_000;
 const PUBLIC_NPM_REGISTRY = "https://registry.npmjs.org/";
 const UPDATE_LOCK_FILE = "update-install.lock";
@@ -82,12 +82,13 @@ function runCommand(
 	command: string,
 	args: string[],
 	timeoutMs: number,
-	options: { cwd?: string; windowsVerbatimArguments?: boolean } = {},
+	options: { cwd?: string; env?: NodeJS.ProcessEnv; windowsVerbatimArguments?: boolean } = {},
 ): Promise<CommandResult> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(command, args, {
 			cwd: options.cwd,
 			detached: process.platform !== "win32",
+			env: options.env,
 			shell: false,
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsVerbatimArguments: options.windowsVerbatimArguments,
@@ -262,96 +263,112 @@ const checkCommand = addJsonOption(
 		}
 	});
 
+async function installUpdate(options: UpdateInstallOptions): Promise<void> {
+	let releaseInstallLock: (() => Promise<void>) | null = null;
+	try {
+		const installKind = detectInstallKind({
+			entryPath: process.argv[1] ?? "",
+			env: process.env,
+		});
+		const status = await getUpdateStatus({
+			currentVersion: VERSION,
+			installKind,
+			refresh: true,
+		});
+		if (!status.auto_update_eligible || !status.latest_version) {
+			failInstall(options, "update_install_refused", status.recommended_action);
+			return;
+		}
+
+		const targetVersion = status.latest_version;
+		if (!isStableReleaseVersion(targetVersion)) {
+			failInstall(
+				options,
+				"update_install_refused",
+				"release version is not a stable semantic version",
+			);
+			return;
+		}
+		releaseInstallLock = await acquireInstallLock();
+		const npm = await resolveInstallCommand();
+		const installation = await runCommand(
+			npm.command,
+			process.platform === "win32"
+				? [
+						...npm.args.slice(0, 3),
+						windowsCommandLine(npm.args[3] ?? "", [
+							"install",
+							"-g",
+							"--registry",
+							PUBLIC_NPM_REGISTRY,
+							`codemem@${targetVersion}`,
+							`@codemem/embeddings@${targetVersion}`,
+						]),
+					]
+				: [
+						"install",
+						"-g",
+						"--registry",
+						PUBLIC_NPM_REGISTRY,
+						`codemem@${targetVersion}`,
+						`@codemem/embeddings@${targetVersion}`,
+					],
+			INSTALL_TIMEOUT_MS,
+			{
+				cwd: npm.cwd,
+				env:
+					process.platform === "linux"
+						? { ...process.env, ONNXRUNTIME_NODE_INSTALL: "skip" }
+						: undefined,
+				windowsVerbatimArguments: process.platform === "win32",
+			},
+		);
+		if (installation.exitCode !== 0) {
+			failInstall(
+				options,
+				"update_install_failed",
+				installation.stderr.trim() || "npm installation failed",
+			);
+			return;
+		}
+
+		const codemem = await resolveVerificationCommand();
+		const verification = await runCommand(
+			codemem.command,
+			process.platform === "win32"
+				? [...codemem.args.slice(0, 3), windowsCommandLine(codemem.args[3] ?? "", ["version"])]
+				: ["version"],
+			VERIFY_TIMEOUT_MS,
+			{ cwd: codemem.cwd, windowsVerbatimArguments: process.platform === "win32" },
+		);
+		if (verification.exitCode !== 0 || verification.stdout.trim() !== targetVersion) {
+			failInstall(options, "update_verification_failed", "installed version verification failed");
+			return;
+		}
+
+		const result = { previous_version: VERSION, installed_version: targetVersion };
+		if (options.json) console.log(JSON.stringify(result));
+		else console.log(`Updated codemem from ${VERSION} to ${targetVersion}.`);
+	} catch (error) {
+		failInstall(
+			options,
+			error instanceof UpdateInstallLockedError ? "update_install_locked" : "update_install_failed",
+			error instanceof Error ? error.message : "update installation failed",
+		);
+	} finally {
+		await releaseInstallLock?.();
+	}
+}
+
 const installCommand = addJsonOption(
 	new Command("install").description("Install an eligible stable codemem update"),
 )
 	.configureHelp(helpStyle)
-	.action(async (options: UpdateInstallOptions) => {
-		let releaseInstallLock: (() => Promise<void>) | null = null;
-		try {
-			const installKind = detectInstallKind({
-				entryPath: process.argv[1] ?? "",
-				env: process.env,
-			});
-			const status = await getUpdateStatus({
-				currentVersion: VERSION,
-				installKind,
-				refresh: true,
-			});
-			if (!status.auto_update_eligible || !status.latest_version) {
-				failInstall(options, "update_install_refused", status.recommended_action);
-				return;
-			}
-
-			const targetVersion = status.latest_version;
-			if (!isStableReleaseVersion(targetVersion)) {
-				failInstall(
-					options,
-					"update_install_refused",
-					"release version is not a stable semantic version",
-				);
-				return;
-			}
-			releaseInstallLock = await acquireInstallLock();
-			const npm = await resolveInstallCommand();
-			const installation = await runCommand(
-				npm.command,
-				process.platform === "win32"
-					? [
-							...npm.args.slice(0, 3),
-							windowsCommandLine(npm.args[3] ?? "", [
-								"install",
-								"-g",
-								"--registry",
-								PUBLIC_NPM_REGISTRY,
-								`codemem@${targetVersion}`,
-							]),
-						]
-					: ["install", "-g", "--registry", PUBLIC_NPM_REGISTRY, `codemem@${targetVersion}`],
-				INSTALL_TIMEOUT_MS,
-				{ cwd: npm.cwd, windowsVerbatimArguments: process.platform === "win32" },
-			);
-			if (installation.exitCode !== 0) {
-				failInstall(
-					options,
-					"update_install_failed",
-					installation.stderr.trim() || "npm installation failed",
-				);
-				return;
-			}
-
-			const codemem = await resolveVerificationCommand();
-			const verification = await runCommand(
-				codemem.command,
-				process.platform === "win32"
-					? [...codemem.args.slice(0, 3), windowsCommandLine(codemem.args[3] ?? "", ["version"])]
-					: ["version"],
-				VERIFY_TIMEOUT_MS,
-				{ cwd: codemem.cwd, windowsVerbatimArguments: process.platform === "win32" },
-			);
-			if (verification.exitCode !== 0 || verification.stdout.trim() !== targetVersion) {
-				failInstall(options, "update_verification_failed", "installed version verification failed");
-				return;
-			}
-
-			const result = { previous_version: VERSION, installed_version: targetVersion };
-			if (options.json) console.log(JSON.stringify(result));
-			else console.log(`Updated codemem from ${VERSION} to ${targetVersion}.`);
-		} catch (error) {
-			failInstall(
-				options,
-				error instanceof UpdateInstallLockedError
-					? "update_install_locked"
-					: "update_install_failed",
-				error instanceof Error ? error.message : "update installation failed",
-			);
-		} finally {
-			await releaseInstallLock?.();
-		}
-	});
+	.action(installUpdate);
 
 export const updateCommand = new Command("update")
 	.description("Inspect and manage codemem updates")
+	.enablePositionalOptions()
 	.configureHelp(helpStyle)
 	.addCommand(checkCommand)
 	.addCommand(installCommand);

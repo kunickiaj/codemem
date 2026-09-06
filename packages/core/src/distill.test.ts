@@ -14,9 +14,18 @@ import {
 	scoreDistillClusters,
 	selectDistillCorpus,
 } from "./distill.js";
-import { resolveEmbeddingModel, serializeFloat32 } from "./embeddings.js";
+import {
+	_resetEmbeddingClient,
+	_resetEmbeddingRuntimeFactory,
+	_setEmbeddingRuntimeFactory,
+	resolveEmbeddingVectorIdentityLabel,
+	serializeFloat32,
+} from "./embeddings.js";
+import { startMaintenanceJob } from "./maintenance-jobs.js";
+import { ensureVectorSchema } from "./schema-bootstrap.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema } from "./test-utils.js";
+import { backfillVectors } from "./vectors.js";
 
 describe("distill", () => {
 	let tmpDir: string;
@@ -24,10 +33,14 @@ describe("distill", () => {
 	let store: MemoryStore;
 	let prevCodememConfig: string | undefined;
 	let prevEmbeddingDisabled: string | undefined;
+	let prevEmbeddingModel: string | undefined;
+	let prevEmbeddingRevision: string | undefined;
 
 	beforeEach(() => {
 		prevCodememConfig = process.env.CODEMEM_CONFIG;
 		prevEmbeddingDisabled = process.env.CODEMEM_EMBEDDING_DISABLED;
+		prevEmbeddingModel = process.env.CODEMEM_EMBEDDING_MODEL;
+		prevEmbeddingRevision = process.env.CODEMEM_EMBEDDING_REVISION;
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-distill-test-"));
 		process.env.CODEMEM_CONFIG = join(tmpDir, "config.json");
 		process.env.CODEMEM_EMBEDDING_DISABLED = "1";
@@ -41,10 +54,15 @@ describe("distill", () => {
 
 	afterEach(() => {
 		store?.close();
+		_resetEmbeddingRuntimeFactory();
 		if (prevCodememConfig === undefined) delete process.env.CODEMEM_CONFIG;
 		else process.env.CODEMEM_CONFIG = prevCodememConfig;
 		if (prevEmbeddingDisabled === undefined) delete process.env.CODEMEM_EMBEDDING_DISABLED;
 		else process.env.CODEMEM_EMBEDDING_DISABLED = prevEmbeddingDisabled;
+		if (prevEmbeddingModel === undefined) delete process.env.CODEMEM_EMBEDDING_MODEL;
+		else process.env.CODEMEM_EMBEDDING_MODEL = prevEmbeddingModel;
+		if (prevEmbeddingRevision === undefined) delete process.env.CODEMEM_EMBEDDING_REVISION;
+		else process.env.CODEMEM_EMBEDDING_REVISION = prevEmbeddingRevision;
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
@@ -442,6 +460,58 @@ describe("distill", () => {
 				confidence: 0.8,
 			},
 		]);
+	});
+
+	it("loads direct-backfill vectors after the embedding runtime cache is cleared", async () => {
+		const requestedModel = "example/custom-embedding-model";
+		const requestedRevision = "mutable-release";
+		const canonicalRevision = "0123456789abcdef0123456789abcdef01234567";
+		const expectedVector = new Float32Array(384);
+		expectedVector[0] = 1;
+		let runtimeLoads = 0;
+		process.env.CODEMEM_EMBEDDING_MODEL = requestedModel;
+		process.env.CODEMEM_EMBEDDING_REVISION = requestedRevision;
+		_setEmbeddingRuntimeFactory(async (request) => {
+			runtimeLoads++;
+			expect(request).toEqual({ model: requestedModel, revision: requestedRevision });
+			return {
+				model: requestedModel,
+				dimensions: 384,
+				identity: {
+					package: "@huggingface/transformers",
+					version: "4.2.0",
+					model: requestedModel,
+					revision: canonicalRevision,
+					requestedRevision,
+					dtype: "fp32",
+					device: "cpu",
+					dimensions: 384,
+				},
+				embed: async (texts) => texts.map(() => expectedVector.slice()),
+			};
+		});
+		const sessionId = insertSession("codemem");
+		const id = rememberAt({
+			sessionId,
+			kind: "decision",
+			title: "Canonical direct backfill identity",
+			createdAt: "2026-06-01T00:00:01.000Z",
+		});
+		const item = store.get(id);
+		if (!item) throw new Error("expected seeded memory");
+		delete process.env.CODEMEM_EMBEDDING_DISABLED;
+		ensureVectorSchema(store.db);
+
+		await expect(backfillVectors(store.db, { memoryIds: [id] })).resolves.toMatchObject({
+			checked: 1,
+			embedded: 1,
+		});
+		_resetEmbeddingClient();
+
+		const [feature] = loadDistillVectorFeatures(store, [item]);
+
+		expect(feature?.vector).toEqual(expectedVector);
+		expect(runtimeLoads).toBe(1);
 	});
 
 	it("derives feature project from the session after a project move", () => {
@@ -1781,17 +1851,75 @@ describe("distill", () => {
 				model TEXT
 			)`,
 		);
-		const currentModel = resolveEmbeddingModel();
+		const currentModel = resolveEmbeddingVectorIdentityLabel();
 		const insertVector = store.db.prepare(
 			"INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model) VALUES (?, ?, ?, ?, ?)",
 		);
 		insertVector.run(serializeFloat32(new Float32Array([100, 100])), id, 0, "old", "old-model");
 		insertVector.run(serializeFloat32(new Float32Array([1, 0])), id, 0, "current-a", currentModel);
 		insertVector.run(serializeFloat32(new Float32Array([0, 1])), id, 1, "current-b", currentModel);
+		startMaintenanceJob(store.db, {
+			kind: "vector_model_migration",
+			title: "Current model cutover",
+			status: "completed",
+			metadata: { source_model: "old-model", target_model: currentModel },
+		});
 
 		const [feature] = loadDistillVectorFeatures(store, [item]);
 
 		expect(feature?.vector).toEqual(new Float32Array([0.5, 0.5]));
+	});
+
+	it("prefers target vectors per memory during a compatible legacy rebuild", () => {
+		const sessionId = insertSession("codemem");
+		const now = "2026-06-01T00:00:01.000Z";
+		const insertMemory = store.db.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, project
+			) VALUES (?, 'decision', ?, ?, 1, ?, ?, '{}', 'codemem')`,
+		);
+		const legacyOnly = Number(
+			insertMemory.run(sessionId, "Legacy only", "b", now, now).lastInsertRowid,
+		);
+		const targetOnly = Number(
+			insertMemory.run(sessionId, "Target only", "b", now, now).lastInsertRowid,
+		);
+		const both = Number(insertMemory.run(sessionId, "Both", "b", now, now).lastInsertRowid);
+
+		store.db.exec("DROP TABLE IF EXISTS memory_vectors");
+		store.db.exec(
+			`CREATE TABLE memory_vectors(
+				embedding BLOB,
+				memory_id INTEGER,
+				chunk_index INTEGER,
+				content_hash TEXT,
+				model TEXT
+			)`,
+		);
+		const legacyModel = "Xenova/bge-small-en-v1.5";
+		const targetModel = resolveEmbeddingVectorIdentityLabel();
+		const insertVector = store.db.prepare(
+			"INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model) VALUES (?, ?, ?, ?, ?)",
+		);
+		// No completed cutover job: search serves the compatible legacy corpus,
+		// but new memories exist only under the revision-aware target identity.
+		insertVector.run(serializeFloat32(new Float32Array([1, 0])), legacyOnly, 0, "l", legacyModel);
+		insertVector.run(serializeFloat32(new Float32Array([0, 1])), targetOnly, 0, "t", targetModel);
+		insertVector.run(serializeFloat32(new Float32Array([9, 9])), both, 0, "b-legacy", legacyModel);
+		insertVector.run(serializeFloat32(new Float32Array([0, 1])), both, 0, "b-target", targetModel);
+
+		const items = [store.get(legacyOnly), store.get(targetOnly), store.get(both)].filter(
+			(item): item is NonNullable<typeof item> => item != null,
+		);
+		const byId = new Map(
+			loadDistillVectorFeatures(store, items).map((feature) => [feature.memory_id, feature.vector]),
+		);
+
+		expect(byId.get(legacyOnly)).toEqual(new Float32Array([1, 0]));
+		expect(byId.get(targetOnly)).toEqual(new Float32Array([0, 1]));
+		// The memory present in both corpora must use only its target vectors,
+		// not an average that pulls in the stale legacy chunk.
+		expect(byId.get(both)).toEqual(new Float32Array([0, 1]));
 	});
 
 	it("chunks vector lookup for large distill corpora", () => {
@@ -1818,7 +1946,7 @@ describe("distill", () => {
 				model TEXT
 			)`,
 		);
-		const currentModel = resolveEmbeddingModel();
+		const currentModel = resolveEmbeddingVectorIdentityLabel();
 		const insertVector = store.db.prepare(
 			"INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model) VALUES (?, ?, ?, ?, ?)",
 		);

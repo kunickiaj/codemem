@@ -5,14 +5,16 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as dbModule from "./db.js";
 import * as embeddings from "./embeddings.js";
-import { startMaintenanceJob } from "./maintenance-jobs.js";
+import { failMaintenanceJob, startMaintenanceJob } from "./maintenance-jobs.js";
 import { ensureSchemaBootstrapped } from "./schema-bootstrap.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import {
 	backfillVectors,
 	bestEffortMaintainVectorsForSyncFallback,
+	countIncompleteActiveMemoryVectorCoverage,
 	getSemanticIndexDiagnostics,
+	pruneObsoleteTargetModelVectors,
 	resolveSemanticSearchModel,
 	semanticSearch,
 	storeVectors,
@@ -24,7 +26,13 @@ vi.mock("./embeddings.js", async () => {
 		...actual,
 		getEmbeddingClient: vi.fn(),
 		embedTexts: vi.fn(),
+		chunkText: vi.fn(actual.chunkText),
+		getEmbeddingRuntimeStatus: vi.fn(() => ({ state: "ready" })),
 		resolveEmbeddingModel: vi.fn(() => "test-model"),
+		resolveEmbeddingClientVectorIdentityLabel: vi.fn(() => "test-model"),
+		resolveEmbeddingVectorIdentityLabel: vi.fn(() => "test-model"),
+		tryResolveEmbeddingRevision: vi.fn(() => "test-revision"),
+		tryResolveEmbeddingVectorIdentityLabel: vi.fn(() => "test-model"),
 	};
 });
 
@@ -33,6 +41,11 @@ describe("vectors", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		vi.mocked(embeddings.resolveEmbeddingModel).mockReturnValue("test-model");
+		vi.mocked(embeddings.resolveEmbeddingClientVectorIdentityLabel).mockReturnValue("test-model");
+		vi.mocked(embeddings.resolveEmbeddingVectorIdentityLabel).mockReturnValue("test-model");
+		vi.mocked(embeddings.tryResolveEmbeddingRevision).mockReturnValue("test-revision");
+		vi.mocked(embeddings.tryResolveEmbeddingVectorIdentityLabel).mockReturnValue("test-model");
 		db = new Database(":memory:");
 		// initTestSchema -> bootstrapSchema loads sqlite-vec and creates the
 		// memory_vectors virtual table as part of normal bootstrap.
@@ -40,8 +53,19 @@ describe("vectors", () => {
 		vi.mocked(embeddings.getEmbeddingClient).mockResolvedValue({
 			model: "test-model",
 			dimensions: 384,
+			identity: {
+				package: "@huggingface/transformers",
+				version: "4.2.0",
+				model: "test-model",
+				revision: "0123456789abcdef0123456789abcdef01234567",
+				requestedRevision: "test-revision",
+				dtype: "fp32",
+				device: "cpu",
+				dimensions: 384,
+			},
 			embed: vi.fn(),
 		});
+		vi.mocked(embeddings.getEmbeddingRuntimeStatus).mockReturnValue({ state: "ready" });
 	});
 
 	afterEach(() => {
@@ -81,7 +105,12 @@ describe("vectors", () => {
 		return Number(info.lastInsertRowid);
 	}
 
-	function insertTestVector(memoryId: number, value: number, contentHash: string): void {
+	function insertTestVector(
+		memoryId: number,
+		value: number,
+		contentHash: string,
+		model = "test-model",
+	): void {
 		const vector = new Float32Array(384).fill(value);
 		db.exec(`
 			INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model)
@@ -90,9 +119,25 @@ describe("vectors", () => {
 				${memoryId},
 				0,
 				'${contentHash}',
-				'test-model'
+				'${model}'
 			)
 		`);
+	}
+
+	function insertBackfillMemory(
+		sessionId: number,
+		title: string,
+		createdAt: string,
+		bodyText = "Backfill body",
+	): number {
+		const info = db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+				 VALUES (?, 'feature', ?, ?, 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+			)
+			.run(sessionId, title, bodyText, createdAt, createdAt);
+		return Number(info.lastInsertRowid);
 	}
 
 	it("stores vectors with integer metadata columns via sqlite-vec workaround", async () => {
@@ -154,6 +199,511 @@ describe("vectors", () => {
 			model: "test-model",
 		});
 	});
+
+	it("rejects an injected client without runtime identity", async () => {
+		await expect(
+			backfillVectors(db, {
+				client: {
+					model: "test-model",
+					dimensions: 384,
+					embed: vi.fn(),
+				},
+			}),
+		).rejects.toThrow("Embedding runtime identity is required to backfill persisted vectors");
+		expect(embeddings.resolveEmbeddingClientVectorIdentityLabel).not.toHaveBeenCalled();
+	});
+
+	it("stops obsolete target pruning when aborted between batches", () => {
+		const sessionId = insertTestSession(db);
+		const memoryId = insertBackfillMemory(sessionId, "Current", "2026-09-01T00:00:00.000Z", "body");
+		insertTestVector(memoryId, 0, embeddings.hashText("Current\nbody"));
+		for (let index = 0; index <= 250; index++) {
+			insertTestVector(memoryId, 0, `obsolete-${index}`);
+		}
+		const controller = new AbortController();
+		const prepareSpy = vi.spyOn(db, "prepare");
+		prepareSpy.mockImplementation((sql: string) => {
+			const statement = Database.prototype.prepare.call(db, sql);
+			if (sql.includes("SELECT mv.rowid AS rowid")) {
+				const all = statement.all.bind(statement);
+				statement.all = ((...params: unknown[]) => {
+					const result = all(...params);
+					controller.abort();
+					return result;
+				}) as typeof statement.all;
+			}
+			return statement;
+		});
+
+		try {
+			expect(pruneObsoleteTargetModelVectors(db, "test-model", { signal: controller.signal })).toBe(
+				249,
+			);
+		} finally {
+			prepareSpy.mockRestore();
+		}
+		expect(
+			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE model = ?").get("test-model"),
+		).toMatchObject({ c: 3 });
+	});
+
+	it("pages stably and queries existing hashes once per page", async () => {
+		const sessionId = insertTestSession(db);
+		const createdAt = "2026-09-02T00:00:00.000Z";
+		let firstExistingId = 0;
+		let lastExistingId = 0;
+		for (let index = 1; index <= 51; index++) {
+			lastExistingId = insertBackfillMemory(sessionId, `Backfill ${index}`, createdAt);
+			if (index === 1) firstExistingId = lastExistingId;
+		}
+		insertTestVector(firstExistingId, 0, embeddings.hashText("Backfill 1\nBackfill body"));
+		let insertedBehindCursorId: number | null = null;
+		let insertedAheadOfHighWaterId: number | null = null;
+		let pagingPlan: Array<{ detail: string }> = [];
+		const embedSpy = vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) => {
+			if (insertedBehindCursorId == null) {
+				const pageSql = prepareSpy.mock.calls.find(([sql]) =>
+					String(sql).includes("candidates.seq AS snapshot_seq"),
+				)?.[0];
+				if (!pageSql) throw new Error("Backfill page query was not prepared");
+				pagingPlan = db.prepare(`EXPLAIN QUERY PLAN ${String(pageSql)}`).all(0, 50) as Array<{
+					detail: string;
+				}>;
+				insertedBehindCursorId = insertBackfillMemory(
+					sessionId,
+					"Inserted during run",
+					"2026-09-01T00:00:00.000Z",
+				);
+				insertedAheadOfHighWaterId = insertBackfillMemory(
+					sessionId,
+					"Inserted after run started",
+					"2026-09-03T00:00:00.000Z",
+				);
+			}
+			return texts.map(() => new Float32Array(384));
+		});
+		const prepareSpy = vi.spyOn(db, "prepare");
+
+		try {
+			const result = await backfillVectors(db);
+
+			expect(result).toEqual({ checked: 51, embedded: 50, inserted: 50, skipped: 1 });
+			expect(embedSpy.mock.calls.map(([texts]) => texts.length)).toEqual([32, 17, 1]);
+			expect(
+				pagingPlan.some(({ detail }) =>
+					detail.startsWith("SEARCH candidates USING INTEGER PRIMARY KEY"),
+				),
+			).toBe(true);
+			expect(pagingPlan.some(({ detail }) => detail.includes("USE TEMP B-TREE"))).toBe(false);
+			expect(
+				prepareSpy.mock.calls.filter(([sql]) =>
+					String(sql).includes("SELECT memory_id, content_hash FROM memory_vectors"),
+				),
+			).toHaveLength(2);
+			expect(db.prepare("SELECT COUNT(*) AS c FROM memory_vectors").get()).toMatchObject({ c: 51 });
+			expect(
+				db
+					.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?")
+					.get(lastExistingId),
+			).toMatchObject({ c: 1 });
+			expect(
+				db
+					.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?")
+					.get(insertedBehindCursorId),
+			).toMatchObject({ c: 0 });
+			expect(
+				db
+					.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?")
+					.get(insertedAheadOfHighWaterId),
+			).toMatchObject({ c: 0 });
+		} finally {
+			prepareSpy.mockRestore();
+		}
+	});
+
+	it("excludes backdated rows inserted after the backfill snapshot", async () => {
+		const sessionId = insertTestSession(db);
+		for (let index = 1; index <= 50; index++) {
+			insertBackfillMemory(sessionId, `Initial ${index}`, "2026-09-01T00:00:00.000Z");
+		}
+		insertBackfillMemory(sessionId, "Initial high-water", "2026-09-03T00:00:00.000Z");
+		let backdatedId: number | null = null;
+		vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) => {
+			if (backdatedId == null) {
+				backdatedId = insertBackfillMemory(
+					sessionId,
+					"Backdated during run",
+					"2026-09-02T00:00:00.000Z",
+				);
+			}
+			return texts.map(() => new Float32Array(384));
+		});
+
+		const result = await backfillVectors(db);
+
+		expect(result).toEqual({ checked: 51, embedded: 51, inserted: 51, skipped: 0 });
+		expect(
+			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?").get(backdatedId),
+		).toMatchObject({ c: 0 });
+	});
+
+	it("excludes memories that become eligible after the backfill snapshot", async () => {
+		const sessionId = insertTestSession(db);
+		for (let index = 1; index <= 50; index++) {
+			insertBackfillMemory(sessionId, `Initial ${index}`, "2026-09-01T00:00:00.000Z");
+		}
+		const initiallyInactiveId = insertBackfillMemory(
+			sessionId,
+			"Initially inactive",
+			"2026-09-02T00:00:00.000Z",
+		);
+		db.prepare("UPDATE memory_items SET active = 0 WHERE id = ?").run(initiallyInactiveId);
+		const finalInitialId = insertBackfillMemory(
+			sessionId,
+			"Final initial",
+			"2026-09-03T00:00:00.000Z",
+		);
+		vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) => {
+			db.prepare("UPDATE memory_items SET active = 1 WHERE id = ?").run(initiallyInactiveId);
+			return texts.map(() => new Float32Array(384));
+		});
+
+		const result = await backfillVectors(db, { limit: 51 });
+
+		expect(result).toEqual({ checked: 51, embedded: 51, inserted: 51, skipped: 0 });
+		expect(
+			db
+				.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?")
+				.get(finalInitialId),
+		).toMatchObject({ c: 1 });
+		expect(
+			db
+				.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?")
+				.get(initiallyInactiveId),
+		).toMatchObject({ c: 0 });
+	});
+
+	it("does not duplicate a chunk a concurrent writer inserted mid-run", async () => {
+		const sessionId = insertTestSession(db);
+		const memoryId = insertBackfillMemory(sessionId, "Concurrent", "2026-09-01T00:00:00.000Z");
+		const contentHash = embeddings.hashText("Concurrent\nBackfill body");
+		vi.mocked(embeddings.embedTexts).mockImplementationOnce(async (texts) => {
+			// Simulate a concurrent writer (e.g. the migration worker) inserting
+			// this exact (memory_id, model, content_hash) after the page-wide
+			// existing-hash snapshot was taken but before this insert transaction.
+			insertTestVector(memoryId, 0, contentHash);
+			return texts.map(() => new Float32Array(384));
+		});
+
+		const result = await backfillVectors(db, { memoryIds: [memoryId] });
+
+		expect(result).toMatchObject({ checked: 1, embedded: 1, inserted: 0 });
+		expect(
+			db
+				.prepare(
+					"SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ? AND content_hash = ?",
+				)
+				.get(memoryId, contentHash),
+		).toMatchObject({ c: 1 });
+	});
+
+	it("treats a whitespace-only memory as fully covered", () => {
+		const sessionId = insertTestSession(db);
+		// Tabs/newlines survive SQLite's one-argument TRIM, so the row is active in
+		// the coverage query, but chunkText yields no chunks — it must not be
+		// counted as incomplete or migration could never reach cutover.
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+			 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+			 VALUES (?, 'feature', '\t', '\n\n', 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+		).run(sessionId, "2026-09-01T00:00:00.000Z", "2026-09-01T00:00:00.000Z");
+
+		expect(countIncompleteActiveMemoryVectorCoverage(db, "test-model")).toBe(0);
+	});
+
+	it("fetches target hashes per bounded validation page", () => {
+		const sessionId = insertTestSession(db);
+		const insert = db.prepare(
+			`INSERT INTO memory_items(id, session_id, kind, title, body_text, confidence,
+			 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+			 VALUES (?, ?, 'feature', ?, ?, 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+		);
+		const now = "2026-09-01T00:00:00.000Z";
+		db.transaction(() => {
+			for (let id = 1; id <= 250; id++) insert.run(id, sessionId, "\t", "\n", now, now);
+			insert.run(251, sessionId, "Uncovered", "memory", now, now);
+		})();
+		const prepareSpy = vi.spyOn(db, "prepare");
+
+		try {
+			expect(countIncompleteActiveMemoryVectorCoverage(db, "test-model")).toBe(1);
+			const hashQueries = prepareSpy.mock.calls
+				.map(([sql]) => String(sql))
+				.filter((sql) => sql.includes("vector-coverage-validation"));
+			expect(hashQueries).toHaveLength(2);
+			expect(hashQueries.every((sql) => sql.includes("memory_id IN"))).toBe(true);
+			expect(hashQueries.map((sql) => (sql.match(/\?/g) ?? []).length)).toEqual([251, 2]);
+		} finally {
+			prepareSpy.mockRestore();
+		}
+	});
+
+	it("prunes obsolete target rows beyond the bounded cleanup batch", () => {
+		const sessionId = insertTestSession(db);
+		const memoryId = insertBackfillMemory(sessionId, "Current", "2026-09-01T00:00:00.000Z", "body");
+		insertTestVector(memoryId, 0, embeddings.hashText("Current\nbody"));
+		for (let index = 0; index <= 250; index++) {
+			insertTestVector(memoryId, 0, `obsolete-${index}`);
+		}
+
+		expect(pruneObsoleteTargetModelVectors(db, "test-model")).toBe(251);
+		expect(
+			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE model = ?").get("test-model"),
+		).toMatchObject({ c: 1 });
+	});
+
+	it("retains obsolete target rows while current target coverage is incomplete", () => {
+		const sessionId = insertTestSession(db);
+		const bodyText = "Long semantic content. ".repeat(200);
+		const memoryId = insertBackfillMemory(
+			sessionId,
+			"Partially covered",
+			"2026-09-01T00:00:00.000Z",
+			bodyText,
+		);
+		const chunks = embeddings.chunkText(`Partially covered\n${bodyText}`);
+		expect(chunks.length).toBeGreaterThan(1);
+		const firstChunk = chunks[0];
+		if (!firstChunk) throw new Error("expected at least one chunk");
+		insertTestVector(memoryId, 0, embeddings.hashText(firstChunk));
+		insertTestVector(memoryId, 0, "obsolete-target-hash");
+
+		expect(pruneObsoleteTargetModelVectors(db, "test-model")).toBe(0);
+		expect(
+			db.prepare("SELECT content_hash FROM memory_vectors WHERE memory_id = ?").all(memoryId),
+		).toEqual(
+			expect.arrayContaining([
+				{ content_hash: embeddings.hashText(firstChunk) },
+				{ content_hash: "obsolete-target-hash" },
+			]),
+		);
+	});
+
+	it("indexes candidate snapshots without a temporary sort", () => {
+		const indexColumns = db
+			.prepare("PRAGMA index_xinfo(idx_memory_items_created_id)")
+			.all() as Array<{ name: string | null; key: number }>;
+		expect(indexColumns.filter(({ key }) => key === 1).map(({ name }) => name)).toEqual([
+			"created_at",
+			"id",
+		]);
+
+		for (const [sql, params, expectedIndex] of [
+			[
+				`EXPLAIN QUERY PLAN SELECT id, created_at FROM memory_items
+				 WHERE 1=1
+				 ORDER BY created_at ASC, id ASC LIMIT ?`,
+				[50],
+				"idx_memory_items_created_id",
+			],
+			[
+				`EXPLAIN QUERY PLAN SELECT id, created_at FROM memory_items
+				 WHERE active = 1
+				 ORDER BY created_at ASC, id ASC LIMIT ?`,
+				[50],
+				"idx_memory_items_active_created",
+			],
+		] as const) {
+			const plan = db.prepare(sql).all(...params) as Array<{ detail: string }>;
+			expect(plan.some(({ detail }) => detail.includes(expectedIndex))).toBe(true);
+			expect(plan.some(({ detail }) => detail.includes("USE TEMP B-TREE"))).toBe(false);
+		}
+	});
+
+	it("honors a limit smaller than one page", async () => {
+		const sessionId = insertTestSession(db);
+		const createdAt = new Date().toISOString();
+		for (let index = 1; index <= 20; index++) {
+			insertBackfillMemory(sessionId, `Limited ${index}`, createdAt);
+		}
+		let snapshottedRows: number | null = null;
+		const embedSpy = vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) => {
+			if (snapshottedRows == null) {
+				const snapshot = db
+					.prepare(
+						`SELECT name FROM sqlite_temp_master
+						 WHERE type = 'table' AND name LIKE 'codemem_backfill_vector_candidates_%'`,
+					)
+					.get() as { name: string } | undefined;
+				if (!snapshot) throw new Error("Backfill candidate snapshot table was not created");
+				expect(snapshot.name).toMatch(/^codemem_backfill_vector_candidates_[a-f0-9]+$/);
+				const count = db.prepare(`SELECT COUNT(*) AS c FROM "${snapshot.name}"`).get() as {
+					c: number;
+				};
+				snapshottedRows = count.c;
+			}
+			return texts.map(() => new Float32Array(384));
+		});
+
+		const result = await backfillVectors(db, { limit: 7 });
+
+		expect(result).toEqual({ checked: 7, embedded: 7, inserted: 7, skipped: 0 });
+		expect(snapshottedRows).toBe(7);
+		expect(embedSpy.mock.calls.map(([texts]) => texts.length)).toEqual([7]);
+		expect(
+			db
+				.prepare(
+					`SELECT COUNT(*) AS c FROM sqlite_temp_master
+					 WHERE type = 'table' AND name LIKE 'codemem_backfill_vector_candidates_%'`,
+				)
+				.get(),
+		).toMatchObject({ c: 0 });
+	});
+
+	it("prepares page chunks incrementally instead of retaining the full page", async () => {
+		const sessionId = insertTestSession(db);
+		const createdAt = new Date().toISOString();
+		for (let index = 1; index <= 50; index++) {
+			insertBackfillMemory(sessionId, `Incremental ${index}`, createdAt);
+		}
+		let chunkCallsAtFirstInference: number | null = null;
+		const embedSpy = vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) => {
+			chunkCallsAtFirstInference ??= vi.mocked(embeddings.chunkText).mock.calls.length;
+			return texts.map(() => new Float32Array(384));
+		});
+
+		const result = await backfillVectors(db);
+
+		expect(result).toEqual({ checked: 50, embedded: 50, inserted: 50, skipped: 0 });
+		expect(embedSpy.mock.calls.map(([texts]) => texts.length)).toEqual([32, 18]);
+		expect(chunkCallsAtFirstInference).toBe(32);
+	});
+
+	it("preserves dry-run counts without storing vectors", async () => {
+		const sessionId = insertTestSession(db);
+		const createdAt = new Date().toISOString();
+		for (let index = 1; index <= 3; index++) {
+			insertBackfillMemory(sessionId, `Dry run ${index}`, createdAt);
+		}
+		const embedSpy = vi
+			.mocked(embeddings.embedTexts)
+			.mockImplementation(async (texts) => texts.map(() => new Float32Array(384)));
+
+		const result = await backfillVectors(db, { dryRun: true });
+
+		expect(result).toEqual({ checked: 3, embedded: 3, inserted: 3, skipped: 0 });
+		expect(embedSpy.mock.calls.map(([texts]) => texts.length)).toEqual([3]);
+		expect(db.prepare("SELECT COUNT(*) AS c FROM memory_vectors").get()).toMatchObject({ c: 0 });
+	});
+
+	it("isolates overlapping backfill snapshots on one connection", async () => {
+		const sessionId = insertTestSession(db);
+		const firstId = insertBackfillMemory(sessionId, "First run", "2026-09-01T00:00:00.000Z");
+		const secondId = insertBackfillMemory(sessionId, "Second run", "2026-09-02T00:00:00.000Z");
+		let nestedResult: Awaited<ReturnType<typeof backfillVectors>> | null = null;
+		let nested = false;
+		let maximumSnapshotCount = 0;
+		vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) => {
+			const snapshotCount = db
+				.prepare(
+					`SELECT COUNT(*) AS c FROM sqlite_temp_master
+					 WHERE type = 'table' AND name LIKE 'codemem_backfill_vector_candidates_%'`,
+				)
+				.get() as { c: number };
+			maximumSnapshotCount = Math.max(maximumSnapshotCount, snapshotCount.c);
+			if (!nested) {
+				nested = true;
+				nestedResult = await backfillVectors(db, { memoryIds: [secondId] });
+			}
+			return texts.map(() => new Float32Array(384));
+		});
+
+		const outerResult = await backfillVectors(db, { memoryIds: [firstId] });
+
+		expect(outerResult).toMatchObject({ checked: 1, inserted: 1 });
+		expect(nestedResult).toMatchObject({ checked: 1, inserted: 1 });
+		expect(maximumSnapshotCount).toBe(2);
+		expect(
+			db
+				.prepare(
+					`SELECT COUNT(*) AS c FROM sqlite_temp_master
+					 WHERE type = 'table' AND name LIKE 'codemem_backfill_vector_candidates_%'`,
+				)
+				.get(),
+		).toMatchObject({ c: 0 });
+	});
+
+	it("keeps a memory atomic when aborting across the 32-chunk boundary", async () => {
+		const sessionId = insertTestSession(db);
+		const createdAt = new Date().toISOString();
+		const shortId = insertBackfillMemory(sessionId, "Short memory", createdAt);
+		const longBody = "x".repeat(1200 * 40);
+		const longId = insertBackfillMemory(sessionId, "Long memory", createdAt, longBody);
+		const longChunkCount = embeddings.chunkText(`Long memory\n${longBody}`).length;
+		expect(longChunkCount).toBeGreaterThan(32);
+		const controller = new AbortController();
+		const firstPassEmbed = vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) => {
+			controller.abort();
+			return texts.map(() => new Float32Array(384));
+		});
+
+		const aborted = await backfillVectors(db, { signal: controller.signal });
+
+		expect(firstPassEmbed.mock.calls.map(([texts]) => texts.length)).toEqual([32]);
+		expect(aborted).toEqual({ checked: 2, embedded: 32, inserted: 1, skipped: 0 });
+		expect(
+			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?").get(shortId),
+		).toMatchObject({ c: 1 });
+		expect(
+			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?").get(longId),
+		).toMatchObject({ c: 0 });
+
+		const retryEmbed = vi.mocked(embeddings.embedTexts);
+		retryEmbed.mockClear();
+		retryEmbed.mockImplementation(async (texts) => texts.map(() => new Float32Array(384)));
+		const retried = await backfillVectors(db);
+
+		expect(retryEmbed.mock.calls.map(([texts]) => texts.length)).toEqual([32, longChunkCount - 32]);
+		expect(retried).toEqual({
+			checked: 2,
+			embedded: longChunkCount,
+			inserted: longChunkCount,
+			skipped: 1,
+		});
+		expect(
+			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE memory_id = ?").get(longId),
+		).toMatchObject({ c: longChunkCount });
+	});
+
+	it.each(["zero", "dimension", "non-finite"] as const)(
+		"rejects %s output before writing the current memory",
+		async (failure) => {
+			const sessionId = insertTestSession(db);
+			const body = "A deterministic sentence. ".repeat(150);
+			insertBackfillMemory(sessionId, "Malformed vectors", new Date().toISOString(), body);
+			vi.mocked(embeddings.embedTexts).mockImplementation(async (texts) => {
+				if (failure === "zero") return [];
+				expect(texts.length).toBeGreaterThan(1);
+				const vectors = texts.map(() => new Float32Array(384));
+				const last = vectors.at(-1);
+				if (!last) throw new Error("expected multiple chunks");
+				if (failure === "dimension") vectors[vectors.length - 1] = new Float32Array(383);
+				else last[0] = Number.NaN;
+				return vectors;
+			});
+
+			await expect(backfillVectors(db)).rejects.toThrow();
+			expect(db.prepare("SELECT COUNT(*) AS c FROM memory_vectors").get()).toMatchObject({ c: 0 });
+			expect(
+				db
+					.prepare(
+						`SELECT COUNT(*) AS c FROM sqlite_temp_master
+						 WHERE type = 'table' AND name LIKE 'codemem_backfill_vector_candidates_%'`,
+					)
+					.get(),
+			).toMatchObject({ c: 0 });
+		},
+	);
 
 	it("runs best-effort sync fallback vector maintenance without throwing on embedding failures", async () => {
 		const sessionId = insertTestSession(db);
@@ -226,6 +776,149 @@ describe("vectors", () => {
 		});
 	});
 
+	it("reports degraded keyword-only mode when the embedding runtime is unavailable", () => {
+		const sessionId = insertTestSession(db);
+		const now = new Date().toISOString();
+		const info = db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+				 VALUES (?, 'feature', 'Indexed', 'Runtime unavailable', 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+			)
+			.run(sessionId, now, now);
+		const memoryId = Number(info.lastInsertRowid);
+		db.exec(`
+			INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model)
+			VALUES (
+				vec_f32('${JSON.stringify(Array.from(new Float32Array(384)))}'),
+				${memoryId},
+				0,
+				'${embeddings.hashText("Indexed\nRuntime unavailable")}',
+				'test-model'
+			)
+		`);
+		vi.mocked(embeddings.getEmbeddingRuntimeStatus).mockReturnValue({
+			state: "unavailable",
+			reason: "initialization_failed",
+		});
+
+		expect(getSemanticIndexDiagnostics(db)).toMatchObject({
+			state: "degraded",
+			mode: "keyword_only",
+			semantic_search_model: "test-model",
+			indexed_memory_count: 1,
+			pending_memory_count: 0,
+			summary: "The embedding runtime is unavailable; sync data is available in keyword-only mode",
+		});
+	});
+
+	it("reports a missing custom-model revision without resolving or querying a vector identity", () => {
+		const sessionId = insertTestSession(db);
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+			 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+			 VALUES (?, 'feature', 'Needs revision', 'Keyword fallback stays available', 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+		).run(sessionId, now, now);
+		vi.mocked(embeddings.resolveEmbeddingModel).mockReturnValue("custom/model");
+		vi.mocked(embeddings.tryResolveEmbeddingRevision).mockReturnValue(null);
+		vi.mocked(embeddings.tryResolveEmbeddingVectorIdentityLabel).mockReturnValue(null);
+
+		expect(resolveSemanticSearchModel(db)).toBeNull();
+		expect(() => getSemanticIndexDiagnostics(db)).not.toThrow();
+		expect(getSemanticIndexDiagnostics(db)).toMatchObject({
+			state: "degraded",
+			mode: "keyword_only",
+			current_model: "custom/model (missing CODEMEM_EMBEDDING_REVISION)",
+			semantic_search_model: null,
+			indexed_memory_count: 0,
+			summary:
+				"Semantic search is unavailable because custom/model has no CODEMEM_EMBEDDING_REVISION; keyword search remains available",
+		});
+		expect(embeddings.resolveEmbeddingClientVectorIdentityLabel).not.toHaveBeenCalled();
+	});
+
+	it("keeps serving compatible legacy vectors until a verified target cutover", () => {
+		const currentModel = embeddings.DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL;
+		const legacyModel = "Xenova/bge-small-en-v1.5";
+		insertTestVector(1, 0, "legacy-hash", legacyModel);
+		insertTestVector(2, 0, "target-hash", currentModel);
+
+		expect(resolveSemanticSearchModel(db, currentModel)).toBe(legacyModel);
+
+		startMaintenanceJob(db, {
+			kind: "vector_model_migration",
+			title: "Different target completed",
+			status: "completed",
+			metadata: {
+				source_model: legacyModel,
+				target_model: "different-target",
+			},
+		});
+		expect(resolveSemanticSearchModel(db, currentModel)).toBe(legacyModel);
+	});
+
+	it("serves covered target vectors when a compatible rebuild has exhausted legacy rows", () => {
+		const currentModel = embeddings.DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL;
+		const legacyModel = "Xenova/bge-small-en-v1.5";
+		insertTestVector(1, 0, "target-hash", currentModel);
+		startMaintenanceJob(db, {
+			kind: "vector_model_migration",
+			title: "Compatible rebuild",
+			status: "running",
+			metadata: { source_model: legacyModel, target_model: currentModel },
+		});
+
+		expect(resolveSemanticSearchModel(db, currentModel)).toBe(currentModel);
+		db.prepare("UPDATE maintenance_jobs SET status = 'failed' WHERE kind = ?").run(
+			"vector_model_migration",
+		);
+		expect(resolveSemanticSearchModel(db, currentModel)).toBe(currentModel);
+	});
+
+	it("keeps serving complete target coverage during legacy-write reconciliation", () => {
+		insertTestVector(1, 0, "target-hash", "test-model");
+		insertTestVector(2, 0, "stray-hash", "unverified-legacy-model");
+		startMaintenanceJob(db, {
+			kind: "vector_model_migration",
+			title: "Legacy-write reconciliation",
+			status: "running",
+			metadata: {
+				source_model: "unverified-legacy-model",
+				target_model: "test-model",
+				reconciliation_target_coverage_complete: true,
+			},
+		});
+
+		expect(resolveSemanticSearchModel(db, "test-model")).toBe("test-model");
+		failMaintenanceJob(db, "vector_model_migration", "coverage became incomplete", {
+			metadata: {
+				source_model: "unverified-legacy-model",
+				target_model: "test-model",
+				reconciliation_target_coverage_complete: undefined,
+				uncovered_target_memories: 1,
+			},
+		});
+		expect(resolveSemanticSearchModel(db, "test-model")).toBeNull();
+		startMaintenanceJob(db, {
+			kind: "vector_model_migration",
+			title: "Retry legacy-write reconciliation",
+			metadata: {
+				source_model: "unverified-legacy-model",
+				target_model: "test-model",
+				uncovered_target_memories: 1,
+			},
+		});
+		expect(resolveSemanticSearchModel(db, "test-model")).toBeNull();
+	});
+
+	it("does not select a partial target corpus when the legacy model is incompatible", () => {
+		insertTestVector(1, 0, "legacy-hash", "unverified-legacy-model");
+		insertTestVector(2, 0, "target-hash", "test-model");
+
+		expect(resolveSemanticSearchModel(db, "test-model")).toBeNull();
+	});
+
 	it("does not mark partially covered memories as healthy under deep diagnostics", () => {
 		const sessionId = insertTestSession(db);
 		const now = new Date().toISOString();
@@ -266,6 +959,10 @@ describe("vectors", () => {
 	});
 
 	it("reports failed semantic-index catch-up from maintenance job state", () => {
+		vi.mocked(embeddings.getEmbeddingRuntimeStatus).mockReturnValue({
+			state: "unavailable",
+			reason: "initialization_failed",
+		});
 		startMaintenanceJob(db, {
 			kind: "vector_model_migration",
 			title: "Re-indexing memories",
@@ -318,6 +1015,20 @@ describe("vectors", () => {
 			state: "degraded",
 			pending_memory_count: 1,
 			mode: "keyword_only",
+		});
+	});
+
+	it("reports a configured but not yet resolved identity as pending", () => {
+		vi.mocked(embeddings.tryResolveEmbeddingVectorIdentityLabel).mockReturnValue(null);
+
+		const diagnostics = getSemanticIndexDiagnostics(db);
+
+		expect(diagnostics).toMatchObject({
+			state: "pending",
+			mode: "keyword_only",
+			current_model: "test-model@test-revision (revision unresolved)",
+			summary:
+				"Semantic indexing is pending until test-model@test-revision resolves to a canonical commit",
 		});
 	});
 
@@ -491,6 +1202,41 @@ describe("vectors", () => {
 		expect(resultIds).not.toContain(hiddenId);
 	});
 
+	it("searches compatible legacy and target vectors together until cutover", async () => {
+		const currentModel = embeddings.DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL;
+		const legacyModel = "Xenova/bge-small-en-v1.5";
+		vi.mocked(embeddings.resolveEmbeddingModel).mockReturnValue(legacyModel);
+		vi.mocked(embeddings.resolveEmbeddingClientVectorIdentityLabel).mockReturnValue(currentModel);
+		const legacyId = insertScopedMemory(
+			"local-default",
+			"Legacy semantic note",
+			"semantic legacy detail",
+		);
+		const targetId = insertScopedMemory(
+			"local-default",
+			"Target semantic note",
+			"semantic target detail",
+		);
+		insertTestVector(legacyId, 0.2, "legacy-hash", legacyModel);
+		insertTestVector(targetId, 0.1, "target-hash", currentModel);
+		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
+		const context = { actorId: "local:device", deviceId: "device" };
+
+		expect(
+			(await semanticSearch(db, "semantic note", 10, null, context)).map(({ id }) => id),
+		).toEqual(expect.arrayContaining([legacyId, targetId]));
+
+		startMaintenanceJob(db, {
+			kind: "vector_model_migration",
+			title: "Completed cutover",
+			status: "completed",
+			metadata: { source_model: legacyModel, target_model: currentModel },
+		});
+		expect(
+			(await semanticSearch(db, "semantic note", 10, null, context)).map(({ id }) => id),
+		).toEqual([targetId]);
+	});
+
 	it("intersects semantic search scope filters with local authorization", async () => {
 		const deviceId = "device-authorized";
 		grantScopeToDevice("authorized-team", deviceId);
@@ -595,10 +1341,26 @@ describe("vectors", () => {
 			});
 
 			expect(results).toEqual([]);
+			expect(embeddings.getEmbeddingClient).not.toHaveBeenCalled();
 			expect(embeddings.embedTexts).not.toHaveBeenCalled();
 		} finally {
 			freshDb.close();
 		}
+	});
+
+	it("returns empty results when a custom model has no pinned revision", async () => {
+		insertTestVector(1, 0, "custom-hash", "custom/model");
+		vi.mocked(embeddings.resolveEmbeddingModel).mockReturnValue("custom/model");
+		vi.mocked(embeddings.tryResolveEmbeddingRevision).mockReturnValue(null);
+
+		const results = await semanticSearch(db, "query text", 10, null, {
+			actorId: "local:custom-device",
+			deviceId: "custom-device",
+		});
+
+		expect(results).toEqual([]);
+		expect(embeddings.embedTexts).not.toHaveBeenCalled();
+		expect(embeddings.resolveEmbeddingVectorIdentityLabel).not.toHaveBeenCalled();
 	});
 
 	it("getSemanticIndexDiagnostics survives a missing vec0 module without throwing", () => {

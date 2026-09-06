@@ -11,9 +11,22 @@ This is the published npm package for the `codemem` CLI.
 covers macOS x64/arm64, Linux x64/arm64 (glibc 2.34+ or musl), and Windows x64.
 32-bit targets, including Linux armv7, are not supported.
 
+On Linux, skip the unused ONNX Runtime GPU provider download:
+
 ```bash
-npm install -g codemem
+env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem @codemem/embeddings
 ```
+
+On Apple silicon macOS and Windows:
+
+```bash
+npm install -g codemem @codemem/embeddings
+```
+
+The embedding package enables semantic retrieval. Installing only `codemem` keeps
+the CLI functional with FTS5 keyword retrieval.
+
+Intel x64 Macs have no ONNX Runtime 1.24.3 artifact and remain on FTS5 retrieval.
 
 Or run without installing:
 

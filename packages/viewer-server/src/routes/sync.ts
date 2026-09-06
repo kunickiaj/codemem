@@ -45,6 +45,8 @@ import {
 	buildDirectPeerAuthHeaders,
 	CoordinatorReciprocalApprovalRequestChangedError,
 	canonicalWorkspaceIdentity,
+	claimRecipientPolicyActorMutations,
+	claimRecipientPolicyPublicationMutation,
 	cleanupNonces,
 	commitDeviceIdentityBindings,
 	commitRecipientPolicyEdges,
@@ -130,6 +132,7 @@ import {
 	normalizeTeammateName,
 	parseAcceptedProjectIntent,
 	parseReassignScopePayload,
+	parseRecipientPolicyEdgeCommitRequest,
 	parseSyncScopeRequest,
 	persistShareOperation,
 	personalScopeGrantStatusForPeer,
@@ -165,6 +168,7 @@ import {
 	SYNC_FEATURES_HEADER,
 	SYNC_SCOPE_QUERY_PARAM,
 	schema,
+	serializeRecipientPolicyTeamMutation,
 	summarizeInboundScopeRejections,
 	supportsSyncFeature,
 	syncScopeResetRequiredPayload,
@@ -1888,7 +1892,7 @@ export async function reconcileConfiguredCoordinatorEnrollment(
 		}) => Promise<CoordinatorConsumedTeamInvite[]>;
 		reconcileSnapshot?: (
 			input: Parameters<typeof reconcileCoordinatorEnrollmentSnapshot>[1],
-		) => CoordinatorEnrollmentReconcileResult;
+		) => CoordinatorEnrollmentReconcileResult | Promise<CoordinatorEnrollmentReconcileResult>;
 	} = {},
 ): Promise<ReconcileConfiguredCoordinatorEnrollmentResult> {
 	const config = options.config ?? readCoordinatorSyncConfig();
@@ -1951,7 +1955,7 @@ export async function reconcileConfiguredCoordinatorEnrollment(
 			continue;
 		}
 		try {
-			const result = reconcileSnapshot({
+			const result = await reconcileSnapshot({
 				coordinatorId: buildBaseUrl(remoteUrl),
 				groupId,
 				enrollments: enrollmentsResult.value,
@@ -5099,7 +5103,9 @@ export function syncRoutes(
 			return c.json({ error: "binding_request_invalid" }, 400);
 		}
 		const store = getStore();
+		let releasePublicationMutation: (() => void) | undefined;
 		try {
+			releasePublicationMutation = await claimRecipientPolicyPublicationMutation(store.db);
 			ensureStableStoreIdentity(store);
 			const result = commitDeviceIdentityBindings(
 				store.db,
@@ -5119,6 +5125,8 @@ export function syncRoutes(
 				return c.json({ error: "binding_commit_busy" }, 503);
 			}
 			return c.json({ error: "binding_commit_failed" }, 500);
+		} finally {
+			releasePublicationMutation?.();
 		}
 	});
 
@@ -5842,7 +5850,27 @@ export function syncRoutes(
 		const store = getStore();
 		const body = await parseViewerJsonBody(c);
 		try {
-			const result = commitRecipientPolicyEdges(store.db, body);
+			const request = parseRecipientPolicyEdgeCommitRequest(body);
+			// Acquire every affected Team queue in one stable order. Finish publication
+			// uses the same Team boundary, so its reviewed snapshot cannot race a
+			// successful user recipient commit.
+			const teamIds = request
+				? [
+						...new Set(
+							request.changes.flatMap((change) =>
+								change.recipient.recipientKind === "team" ? [change.recipient.teamId] : [],
+							),
+						),
+					].toSorted()
+				: [];
+			const commit = async (
+				index: number,
+			): Promise<ReturnType<typeof commitRecipientPolicyEdges>> => {
+				const teamId = teamIds[index];
+				if (!teamId) return commitRecipientPolicyEdges(store.db, request ?? body);
+				return serializeRecipientPolicyTeamMutation(store.db, teamId, () => commit(index + 1));
+			};
+			const result = await commit(0);
 			if (result.status === "invalid") return c.json(result, 400);
 			if (result.status === "not_found") return c.json(result, 404);
 			if (result.status === "stale" || result.status === "conflict") {
@@ -6432,9 +6460,11 @@ export function syncRoutes(
 		const store = getStore();
 		const body = await parseViewerJsonBody(c);
 		if (!body) return c.json({ error: "invalid json" }, 400);
+		let releasePublicationMutation: (() => void) | undefined;
 		try {
 			const confirmedGuardrailTokens = optionalViewerStringList(body, "confirmed_guardrail_tokens");
 			const mappingInput = parseViewerProjectMappingInput(body);
+			releasePublicationMutation = await claimRecipientPolicyPublicationMutation(store.db);
 			const analysis = analyzeProjectScopeMappingChangeGuardrails(store.db, mappingInput);
 			if (analysis.requested_workspace_identity?.startsWith("unmapped:")) {
 				return c.json(
@@ -6474,6 +6504,8 @@ export function syncRoutes(
 			return c.json({ ok: true, mapping, guardrail_warnings: analysis.warnings });
 		} catch (error) {
 			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+		} finally {
+			releasePublicationMutation?.();
 		}
 	});
 
@@ -6481,6 +6513,7 @@ export function syncRoutes(
 		const store = getStore();
 		const body = await parseViewerJsonBody(c);
 		if (!body) return c.json({ error: "invalid json" }, 400);
+		let releasePublicationMutation: (() => void) | undefined;
 		try {
 			const rawMappings = body.mappings;
 			if (!Array.isArray(rawMappings) || rawMappings.length === 0) {
@@ -6492,6 +6525,7 @@ export function syncRoutes(
 				}
 				return parseViewerProjectMappingInput(raw as Record<string, unknown>);
 			});
+			releasePublicationMutation = await claimRecipientPolicyPublicationMutation(store.db);
 			const analyses = mappingInputs.map((mappingInput) =>
 				analyzeProjectScopeMappingChangeGuardrails(store.db, mappingInput),
 			);
@@ -6540,17 +6574,23 @@ export function syncRoutes(
 			});
 		} catch (error) {
 			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+		} finally {
+			releasePublicationMutation?.();
 		}
 	});
 
-	app.delete("/api/sync/sharing-domains/project-mappings/:id", (c) => {
+	app.delete("/api/sync/sharing-domains/project-mappings/:id", async (c) => {
 		const store = getStore();
 		const id = Number(c.req.param("id"));
+		let releasePublicationMutation: (() => void) | undefined;
 		try {
+			releasePublicationMutation = await claimRecipientPolicyPublicationMutation(store.db);
 			const deleted = deleteProjectScopeSettingsMapping(store.db, id);
 			return c.json({ ok: true, deleted });
 		} catch (error) {
 			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+		} finally {
+			releasePublicationMutation?.();
 		}
 	});
 
@@ -6701,6 +6741,13 @@ export function syncRoutes(
 		if (!secondaryActorId) return c.json({ error: "secondary_actor_id required" }, 400);
 		if (primaryActorId === secondaryActorId) return c.json({ error: "actor ids must differ" }, 400);
 		const d = drizzle(store.db, { schema });
+		const releaseActorMutations = await claimRecipientPolicyActorMutations(store.db, [
+			primaryActorId,
+			secondaryActorId,
+		]);
+		// This transaction is synchronous. Deferring release prevents a thrown transaction
+		// from leaking the lock while keeping it held through every mutation below.
+		queueMicrotask(releaseActorMutations);
 		const now = new Date().toISOString();
 		const result = store.db
 			.transaction(() => {
@@ -7027,6 +7074,9 @@ export function syncRoutes(
 		if (actorId === store.actorId) {
 			return c.json({ error: "cannot deactivate this device's own local actor" }, 409);
 		}
+		const releaseActorMutations = await claimRecipientPolicyActorMutations(store.db, [actorId]);
+		// All following reads and writes are synchronous, so release after this turn.
+		queueMicrotask(releaseActorMutations);
 		const d = drizzle(store.db, { schema });
 		const actor = d.select().from(schema.actors).where(eq(schema.actors.actor_id, actorId)).get();
 		if (!actor) return c.json({ error: "actor not found" }, 404);

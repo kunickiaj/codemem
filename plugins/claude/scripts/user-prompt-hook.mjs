@@ -70,11 +70,27 @@ function normalizeIdentityPath(value, cwd, env) {
 	return resolve(cwd, expandHome(trimmed, env));
 }
 
+const DEFAULT_EMBEDDING_MODEL = "Xenova/bge-small-en-v1.5";
+const DEFAULT_EMBEDDING_REVISION = "ea104dacec62c0de699686887e3f920caeb4f3e3";
+
 export function resolveDbPath(cwd, env) {
 	return resolve(cwd, expandHome(env.CODEMEM_DB?.trim() || "~/.codemem/mem.sqlite", env));
 }
 
 export function identityTarget(cwd, env) {
+	const embeddingModel = env.CODEMEM_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL;
+	const configuredEmbeddingRevision = env.CODEMEM_EMBEDDING_REVISION?.trim();
+	// Mirror core's tryResolveEmbeddingRevision exactly: a configured revision is
+	// used only when commit-addressed (7–40 hex); a mutable ref (branch/tag) is
+	// REJECTED and yields null even for the default model. The pinned default
+	// revision applies only when no revision was configured.
+	let embeddingRevision;
+	if (configuredEmbeddingRevision) {
+		embeddingRevision = configuredEmbeddingRevision;
+	} else {
+		embeddingRevision =
+			embeddingModel === DEFAULT_EMBEDDING_MODEL ? DEFAULT_EMBEDDING_REVISION : null;
+	}
 	return {
 		device_id: env.CODEMEM_DEVICE_ID?.trim() || null,
 		actor_id_present: Object.hasOwn(env, "CODEMEM_ACTOR_ID"),
@@ -87,7 +103,8 @@ export function identityTarget(cwd, env) {
 		embedding_disabled: ["1", "true", "yes"].includes(
 			String(env.CODEMEM_EMBEDDING_DISABLED ?? "").toLowerCase(),
 		),
-		embedding_model: env.CODEMEM_EMBEDDING_MODEL || "Xenova/bge-small-en-v1.5",
+		embedding_model: embeddingModel,
+		embedding_revision: embeddingRevision,
 	};
 }
 
@@ -664,9 +681,27 @@ function runInject(command, args, raw, env) {
 }
 
 function runCompatibilityFallback(raw, env) {
+	// The npx fallback must request both codemem and @codemem/embeddings in the
+	// same temporary environment; the embedding runtime is now an optional peer,
+	// so a single-package invocation would leave this local-store inject path
+	// FTS-only. Repeated --package options add both to the npx environment.
+	const pin = pinnedVersion(env);
 	return (
 		runInject("codemem", ["claude-hook-inject"], raw, env) ??
-		runInject("npx", ["-y", `codemem@${pinnedVersion(env)}`, "claude-hook-inject"], raw, env)
+		runInject(
+			"npx",
+			[
+				"-y",
+				"--package",
+				`codemem@${pin}`,
+				"--package",
+				`@codemem/embeddings@${pin}`,
+				"codemem",
+				"claude-hook-inject",
+			],
+			raw,
+			env,
+		)
 	);
 }
 

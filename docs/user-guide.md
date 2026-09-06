@@ -18,9 +18,11 @@ codemem update check --json
 - This command never installs or executes an update. Release installation remains outside this
   read-only check. `codemem update install` is the separate, fail-closed installer: it refreshes
   release status, requires a proven global npm installation and a stable release observed for at
-  least 24 hours, installs the exact validated version from the public npm registry, and verifies
-  the active `codemem` command. It refuses npx, Docker, pinned, development, stale, prerelease,
-  downgrade, and unknown installations.
+  least 24 hours, installs exact matching `codemem` and `@codemem/embeddings` versions from the
+  public npm registry, and verifies the active `codemem` command. It refuses npx, Docker, pinned,
+  development, stale, prerelease, downgrade, and unknown installations. Bare `codemem update`
+  remains non-mutating. As with a
+  manual npm install, npm runs the packages' installation scripts for native CPU dependencies.
 
 ## Start or restart the viewer
 - `codemem serve` runs the viewer in the foreground.
@@ -225,11 +227,15 @@ If a Team needs device setup, **Sharing** shows a notice and **Continue setup**.
 2. Still in **Review devices**, include each device with its confirmed person, choose **Exclude**, or clear an earlier choice to review it again. An exclusion applies only to this Team; a confirmed person assignment can be reused by another Team.
 3. In **Review Projects**, check every Project. Codemem can recognize some Projects automatically; choose an explicit Project mapping for any it cannot. Unresolved Projects prevent finishing.
 4. In the final review, check the server-provided list of people, included and excluded devices, Project mappings, and every access change. Nothing changes while you are reviewing or saving choices.
-5. Choose **Finish Team setup** only when the review is correct. Codemem applies the confirmed Team, device decisions, Project mappings, and access changes together. If it cannot complete every change, it applies none.
+5. Choose **Finish Team setup** only when the review is correct. The first valid finish becomes the shared result for that Team. Codemem applies the confirmed Team, device decisions, Project mappings, and access changes together. If it cannot complete every change, it applies none.
 
 Setup can become stale when devices, Project mappings, or access change while you are reviewing. Refresh the Team, review the updates, and finish again; new or changed devices need a fresh decision. Your unchanged saved choices remain available for review.
 
-If the page closes or the finish response is lost, refresh **Sharing** and open the Team again. A completed Team appears **Ready**; retrying the same finish request returns the completed result instead of applying access changes again.
+When another upgraded device opens **Sharing**, it automatically applies a completed Team's reviewed policy locally before removing the setup task. The Team then appears normally under **Sharing → Teams**, so you do not need to repeat setup on each device.
+
+If the page closes or the finish response is lost, refresh **Sharing** and open the Team again. Retrying the same finish safely returns the completed result instead of applying access changes again. If setup cannot reach the shared completion service or cannot apply the completed result locally, the task stays visible and offers retry; it never hides an incomplete setup.
+
+Every device that finishes or recovers setup must use a coordinator that supports cross-device Team completion. The device must also list the Team's coordinator group in `sync_coordinator_groups`; scope-backed discovery can show a Team for review but cannot complete its setup. With an older coordinator, Codemem keeps the setup unfinished rather than creating a local-only result; update the coordinator, then retry. A device upgraded after a prior local completion makes that result available when it reconnects, after which other upgraded devices recover it automatically.
 
 ### Share exact Projects
 
@@ -469,6 +475,70 @@ When selected history may already have replicated, all participating owner devic
 - If sessions are missing, confirm the viewer and plugin share the same DB path.
 - Check `~/.codemem/plugin.log` for plugin errors.
 - Sync errors: `codemem sync status` shows the last error per peer.
+
+### Semantic runtime unavailable
+
+Codemem defaults to FTS5 keyword retrieval when the optional embedding runtime
+is absent. Install both packages globally to enable semantic recall. On Linux,
+set the CPU-only policy so the installer skips the unused GPU provider:
+
+```fish
+env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem @codemem/embeddings
+```
+
+On Apple silicon macOS and Windows, install both packages normally (no
+environment variable, which `env`/`cmd.exe`/PowerShell do not share):
+
+```text
+npm install -g codemem @codemem/embeddings
+```
+
+Rerun `codemem setup` after upgrading an existing installation. The scoped
+`--opencode-only`, `--claude-only`, and `--codex-only` forms work too. Setup
+replaces the old managed `npx -y codemem mcp` launcher and codemem MCP entries
+detected as UV/UVX-based so both packages resolve in one runtime. Other custom
+MCP commands remain unchanged.
+
+Generated MCP configurations use the durable global `codemem` binary when it is
+available, allowing it to resolve the globally installed sibling package.
+Setup-managed `npx` launchers instead request `codemem` and
+`@codemem/embeddings` together in one temporary environment. After installation,
+restart the host you configured — OpenCode, Claude Code, or Codex — plus any
+running `codemem serve` process. Each MCP process checks runtime availability
+once per lifetime, so a running Claude or Codex MCP host stays lexical-only until
+it restarts; restarting `codemem serve` alone does not restart that MCP child.
+
+Codemem runs semantic inference on the CPU. `ONNXRUNTIME_NODE_INSTALL=skip`
+prevents ONNX Runtime's Linux installer from downloading unused GPU provider
+libraries; the CPU binaries remain available. Apple silicon macOS and Windows
+users can omit the environment variable. Intel (x64) Macs have no ONNX Runtime
+1.24.3 artifact, so Codemem reports the unavailable semantic runtime and stays on
+FTS5 keyword retrieval; installing the runtime there does not enable semantic
+search.
+
+The default `Xenova/bge-small-en-v1.5` model is pinned to a tested revision. If
+you set `CODEMEM_EMBEDDING_MODEL` to another repository, it must be a
+feature-extraction model that emits 384-dimensional embeddings — the
+`memory_vectors` table is a fixed `float[384]` column, and the runtime rejects a
+client whose dimensions differ. Also set `CODEMEM_EMBEDDING_REVISION` to a
+branch, tag, or full 40-character commit SHA. The runtime resolves mutable refs
+to their canonical Hugging Face commit before labeling vectors, preventing old
+and new embedding spaces from sharing an identity. A custom model without a
+revision is rejected; offline or local-model use requires the full commit-style
+identity because Codemem cannot resolve a mutable ref without the Hub.
+`CODEMEM_EMBEDDING_REVISION` can also override the default model revision when
+an intentional rebuild is required.
+
+The first v4 start rebuilds legacy default-model vectors once in the background.
+Measured-compatible legacy vectors continue serving semantic search until the
+new corpus is complete; other model or revision changes use FTS5 during the
+rebuild. Cutover and stale-vector cleanup happen only after full coverage.
+A CPU-only migration of 31,779 memories on an Apple M4 Max took about 30 minutes
+and peaked at 3.24 GiB RSS. Runtime varies with text length, corpus size, and
+hardware; the rebuild runs outside the viewer process in bounded batches.
+
+ONNX Runtime 1.24.3 has no macOS x64 artifact, so Intel Macs continue using
+FTS5 keyword retrieval instead of semantic inference.
 
 ### sqlite-vec / `no such module: vec0`
 

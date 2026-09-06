@@ -356,7 +356,7 @@ describe("recipient invitation API", () => {
 });
 
 describe("legacy Team setup API", () => {
-	it("preserves exactly the seven stable design error codes", async () => {
+	it("preserves exactly the ten stable design error codes", async () => {
 		const errorCodes = [
 			"team_setup_incomplete",
 			"team_setup_roster_changed",
@@ -364,6 +364,9 @@ describe("legacy Team setup API", () => {
 			"team_setup_roster_unavailable",
 			"team_setup_conflict",
 			"team_setup_confirmation_stale",
+			"team_setup_completion_unavailable",
+			"team_setup_completion_conflict",
+			"team_setup_completion_invalid",
 			"team_setup_failed",
 		] as const;
 		const responses = [...errorCodes];

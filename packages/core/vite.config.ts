@@ -16,9 +16,9 @@ export default defineConfig({
 		},
 		rollupOptions: {
 			external: [
+				"@codemem/embeddings",
 				"better-sqlite3",
 				"sqlite-vec",
-				"@xenova/transformers",
 				"drizzle-orm",
 				/^drizzle-orm\//,
 				/^node:/,

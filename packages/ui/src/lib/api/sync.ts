@@ -1096,6 +1096,9 @@ export type LegacyTeamSetupErrorCode =
 	| "team_setup_roster_unavailable"
 	| "team_setup_conflict"
 	| "team_setup_confirmation_stale"
+	| "team_setup_completion_unavailable"
+	| "team_setup_completion_conflict"
+	| "team_setup_completion_invalid"
 	| "team_setup_failed";
 
 const LEGACY_TEAM_SETUP_VERSION = 1;
@@ -1106,6 +1109,9 @@ const LEGACY_TEAM_SETUP_ERROR_CODES = new Set<LegacyTeamSetupErrorCode>([
 	"team_setup_roster_unavailable",
 	"team_setup_conflict",
 	"team_setup_confirmation_stale",
+	"team_setup_completion_unavailable",
+	"team_setup_completion_conflict",
+	"team_setup_completion_invalid",
 	"team_setup_failed",
 ]);
 const LEGACY_TEAM_SETUP_STATUSES = new Set<LegacyTeamSetupStatusV1>([

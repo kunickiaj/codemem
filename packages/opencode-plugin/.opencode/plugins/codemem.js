@@ -34,6 +34,8 @@ const VIEWER_HEALTH_TIMEOUT_MS = 5_000;
 const VIEWER_HEALTH_RESTART_THRESHOLD = 3;
 const VIEWER_HEALTH_RESTART_COOLDOWN_MS = 5 * 60_000;
 const RAW_EVENTS_STATUS_TIMEOUT_MS = 5_000;
+const DEFAULT_EMBEDDING_MODEL = "Xenova/bge-small-en-v1.5";
+const DEFAULT_EMBEDDING_REVISION = "ea104dacec62c0de699686887e3f920caeb4f3e3";
 
 let compatCheckCache = null;
 const notifiedReleaseVersions = new Set();
@@ -632,6 +634,17 @@ const buildViewerIdentityTarget = (env = process.env, cwd = process.cwd()) => {
       : trimmed;
     return resolve(cwd, expanded);
   };
+  const embeddingModel = env.CODEMEM_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL;
+  const configuredEmbeddingRevision = env.CODEMEM_EMBEDDING_REVISION?.trim();
+  // Match core's configured request identity. The runtime resolves mutable refs
+  // to canonical commits before vectors are persisted.
+  let embeddingRevision;
+  if (configuredEmbeddingRevision) {
+    embeddingRevision = configuredEmbeddingRevision;
+  } else {
+    embeddingRevision =
+      embeddingModel === DEFAULT_EMBEDDING_MODEL ? DEFAULT_EMBEDDING_REVISION : null;
+  }
   return {
     device_id: env.CODEMEM_DEVICE_ID?.trim() || null,
     actor_id_present: Object.hasOwn(env, "CODEMEM_ACTOR_ID"),
@@ -644,7 +657,8 @@ const buildViewerIdentityTarget = (env = process.env, cwd = process.cwd()) => {
     embedding_disabled: ["1", "true", "yes"].includes(
       String(env.CODEMEM_EMBEDDING_DISABLED || "").toLowerCase(),
     ),
-    embedding_model: env.CODEMEM_EMBEDDING_MODEL || "Xenova/bge-small-en-v1.5",
+    embedding_model: embeddingModel,
+    embedding_revision: embeddingRevision,
   };
 };
 
@@ -1704,13 +1718,47 @@ const tsCliAvailable = (cliPath) => {
   }
 };
 
+// When an explicit npx override targets the codemem package, pair it with the
+// matching @codemem/embeddings spec so the detached Viewer can resolve the
+// optional runtime instead of silently falling back to lexical search. Returns
+// null for any spec that is not a bare `codemem`/`codemem@<version>`, so custom
+// package overrides pass through unchanged.
+const pairedEmbeddingsForCodememSpec = (spec) => {
+  if (typeof spec !== "string") return null;
+  const trimmed = spec.trim();
+  if (trimmed === "codemem") return "@codemem/embeddings";
+  const match = /^codemem@([^\s]+)$/.exec(trimmed);
+  if (!match || !/^[A-Za-z0-9~^<>=*][A-Za-z0-9._~^<>=*|-]*$/.test(match[1])) return null;
+  return `@codemem/embeddings@${match[1]}`;
+};
+
 const buildRunnerArgs = ({ runner, runnerFrom, runnerFromExplicit }) => {
   if (runner === "codemem") {
     return [];
   }
   if (runner === "npx") {
-    const pkg = runnerFromExplicit ? runnerFrom : `codemem@${PINNED_BACKEND_VERSION}`;
-    return ["-y", pkg];
+    if (runnerFromExplicit) {
+      const pairedEmbeddings = pairedEmbeddingsForCodememSpec(runnerFrom);
+      if (pairedEmbeddings) {
+        return [
+          "-y",
+          "--package",
+          runnerFrom,
+          "--package",
+          pairedEmbeddings,
+          "codemem",
+        ];
+      }
+      return ["-y", runnerFrom];
+    }
+    return [
+      "-y",
+      "--package",
+      `codemem@${PINNED_BACKEND_VERSION}`,
+      "--package",
+      `@codemem/embeddings@${PINNED_BACKEND_VERSION}`,
+      "codemem",
+    ];
   }
   if (runner === "node") {
     const cliPath = runnerFromExplicit
@@ -2847,11 +2895,33 @@ export const CodememPlugin = async ({
 
     if (backendUpdatePolicy === "auto") {
       compatibilityAutoUpdateAttempted = true;
-      await logLine("compat.auto_update_start cmd=codemem update install --json");
-      const updateResult = await runCli(
-        ["update", "install", "--json"],
-        { timeoutMs: 420_000 }
+      const notification = parseReleaseNotification(
+        await runCli(["update", "check", "--json"])
       );
+      if (!notification?.autoUpdateEligible) {
+        await logLine("compat.auto_update_skipped reason=release_not_eligible");
+        await showToast(
+          `${message}. Auto-update skipped (not eligible). Suggested action: ${guidance.action}`,
+          "warning"
+        );
+        return;
+      }
+      const autoPlan = resolveAutoUpdatePlan({
+        runner,
+        runnerFrom,
+        runnerFromExplicit,
+        targetVersion: notification.latestVersion,
+      });
+      if (!autoPlan.allowed) {
+        await logLine(`compat.auto_update_skipped reason=${autoPlan.reason || "not_eligible"}`);
+        await showToast(
+          `${message}. Auto-update skipped (not eligible). Suggested action: ${guidance.action}`,
+          "warning"
+        );
+        return;
+      }
+      await logLine(`compat.auto_update_start cmd=${autoPlan.commandText}`);
+      const updateResult = await runCommand(autoPlan.command, { timeoutMs: 480_000 });
       if (updateResult?.exitCode === 0) {
         await logLine(
           `compat.auto_update_result exit=${updateResult?.exitCode ?? "unknown"} stderr=${redactLog(
@@ -2863,6 +2933,7 @@ export const CodememPlugin = async ({
         const refreshedVersion = (refreshedResult?.stdout || "").trim();
         if (
           refreshedResult?.exitCode === 0
+          && refreshedVersion === notification.latestVersion
           && isVersionAtLeast(refreshedVersion, minVersion)
         ) {
           writeCompatCheckCache(cacheKey, refreshedVersion);
@@ -2891,22 +2962,11 @@ export const CodememPlugin = async ({
         );
         return;
       }
-      let installError = null;
-      try {
-        installError = JSON.parse((updateResult?.stdout || "").trim())?.error || null;
-      } catch {
-        // Non-JSON output is treated as an installation failure.
-      }
-      const failureReason = installError === "update_install_locked"
-        ? "another update is already running"
-        : installError === "update_install_refused"
-          ? "not eligible"
-          : "installation failed";
       await logLine(
-        `compat.auto_update_skipped reason=${installError || "update_install_failed"} exit=${updateResult?.exitCode ?? "unknown"} stderr=${redactLog((updateResult?.stderr || "").trim())}`
+        `compat.auto_update_skipped reason=update_install_failed exit=${updateResult?.exitCode ?? "unknown"} stderr=${redactLog((updateResult?.stderr || "").trim())}`
       );
       await showToast(
-        `${message}. Auto-update skipped (${failureReason}). Suggested action: ${guidance.action}`,
+        `${message}. Auto-update skipped (installation failed). Suggested action: ${guidance.action}`,
         "warning"
       );
       return;
@@ -2916,7 +2976,7 @@ export const CodememPlugin = async ({
   };
 
   const checkForReleaseUpdate = async () => {
-    if (backendUpdatePolicy === "off") return;
+    if (backendUpdatePolicy === "off" || compatibilityAutoUpdateAttempted) return;
     const notification = parseReleaseNotification(
       await runCli(["update", "check", "--json"])
     );
@@ -2932,13 +2992,28 @@ export const CodememPlugin = async ({
       && notification.autoUpdateEligible
       && !compatibilityAutoUpdateAttempted
     ) {
-      const autoPlan = resolveAutoUpdatePlan({ runner, runnerFrom, runnerFromExplicit });
+      const autoPlan = resolveAutoUpdatePlan({
+        runner,
+        runnerFrom,
+        runnerFromExplicit,
+        targetVersion: notification.latestVersion,
+      });
       if (autoPlan.allowed) {
-        const installation = await runCli(
-          ["update", "install", "--json"],
-          { timeoutMs: 420_000 }
-        );
+        await logLine(`release.auto_update_start cmd=${autoPlan.commandText}`);
+        const installation = await runCommand(autoPlan.command, { timeoutMs: 480_000 });
         if (installation?.exitCode === 0) {
+          const verification = await runCli(["version"]);
+          const installedVersion = (verification?.stdout || "").trim();
+          if (verification?.exitCode !== 0 || installedVersion !== notification.latestVersion) {
+            await logLine(
+              `release.auto_update_verification_failed current=${redactLog(installedVersion || "unknown")} expected=${notification.latestVersion}`
+            );
+            await showToast(
+              `codemem ${notification.latestVersion} was installed, but the active CLI failed verification.`,
+              "warning"
+            );
+            return;
+          }
           const viewerRestart = await restartViewerAfterAutoUpdate();
           await showToast(`Updated codemem to ${notification.latestVersion}.`, "success");
           if (viewerRestart.attempted && !viewerRestart.ok) {

@@ -774,6 +774,34 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(hasIndex(db, "idx_memory_items_same_session_dedup_unique")).toBe(true);
 	});
 
+	it("creates the paging index on a database already marked at the current schema version", () => {
+		db.exec(`
+			CREATE TABLE memory_items (
+				id INTEGER PRIMARY KEY,
+				session_id INTEGER NOT NULL,
+				kind TEXT NOT NULL,
+				title TEXT NOT NULL,
+				body_text TEXT NOT NULL,
+				active INTEGER DEFAULT 1,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);
+			CREATE TABLE schema_compat_state (
+				id INTEGER PRIMARY KEY,
+				applied_schema_version INTEGER NOT NULL,
+				applied_at TEXT NOT NULL
+			);
+			INSERT INTO schema_compat_state VALUES (1, ${SCHEMA_VERSION}, '2026-09-01T00:00:00Z');
+		`);
+		expect(hasIndex(db, "idx_memory_items_created_id")).toBe(false);
+
+		ensureAdditiveSchemaCompatibility(db);
+
+		// The compat marker is already current, so the gated block is skipped; the
+		// always-run path must still install the keyset paging index.
+		expect(hasIndex(db, "idx_memory_items_created_id")).toBe(true);
+	});
+
 	it("treats duplicate-column races as benign when column now exists", () => {
 		let racedColumnVisible = false;
 		let alterAttempts = 0;

@@ -5,6 +5,8 @@ allowBuilds:
   better-sqlite3: false
   esbuild: true
   msgpackr-extract: true
+  # The embedding runtime is CPU-pinned; skip ONNX Runtime's Linux CUDA download.
+  onnxruntime-node: false
   protobufjs: false
   sharp: true
   workerd: true
@@ -19,7 +21,8 @@ overrides:
   'router>path-to-regexp': 8.4.2
   'miniflare>ws': 8.20.1
   '@rollup/pluginutils@5>picomatch': 4.0.4
-  'onnx-proto>protobufjs': 7.6.6
+  'onnxruntime-node>adm-zip': 0.6.0
+  '@huggingface/transformers>sharp': 0.35.4
   undici: '>=7.28.0 <8'
 
 catalog:

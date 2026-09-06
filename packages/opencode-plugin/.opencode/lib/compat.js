@@ -27,10 +27,20 @@ export const resolveUpgradeGuidance = ({ runner, runnerFrom }) => {
     };
   }
 
+  if (normalizedRunner === "codemem") {
+    return {
+      mode: "global",
+      action:
+        "Run `npm install -g codemem @codemem/embeddings` to update both the CLI and the optional semantic runtime, then restart OpenCode. On Linux, prefix with `ONNXRUNTIME_NODE_INSTALL=skip` to avoid the unused GPU provider download.",
+      note: "detected global codemem runner mode",
+    };
+  }
+
   if (normalizedRunner === "npx") {
     return {
       mode: "npx",
-      action: "Run `npm install -g codemem` to update, then restart OpenCode.",
+      action:
+        "Run `npm install -g codemem @codemem/embeddings` to update the CLI and optional semantic runtime, then restart OpenCode. On Linux, prefix with `ONNXRUNTIME_NODE_INSTALL=skip` to avoid the unused GPU provider download.",
       note: "detected npx runner mode",
     };
   }
@@ -106,9 +116,38 @@ const isPinnedGitSource = (runnerFrom) => {
   }
 };
 
-export const resolveAutoUpdatePlan = ({ runner, runnerFrom, runnerFromExplicit = false }) => {
+const PUBLIC_NPM_REGISTRY = "https://registry.npmjs.org/";
+
+const createNpmUpdatePlan = (targetVersion) => {
+	const command = [
+		"npm",
+		"install",
+		"-g",
+		"--registry",
+		PUBLIC_NPM_REGISTRY,
+		`--@codemem:registry=${PUBLIC_NPM_REGISTRY}`,
+		`codemem@${targetVersion}`,
+		`@codemem/embeddings@${targetVersion}`,
+	];
+	return { allowed: true, reason: null, command, commandText: command.join(" ") };
+};
+
+export const resolveAutoUpdatePlan = ({
+	runner,
+	runnerFrom,
+	runnerFromExplicit = false,
+	targetVersion = "latest",
+	platform = process.platform,
+}) => {
 	const normalizedRunner = String(runner || "").trim();
 	const source = String(runnerFrom || "").trim();
+	const normalizedTargetVersion = String(targetVersion || "").trim();
+	if (platform === "win32") {
+		return { allowed: false, reason: "unsupported-platform", command: null, commandText: null };
+	}
+	if (normalizedTargetVersion !== "latest" && !/^\d+\.\d+\.\d+$/.test(normalizedTargetVersion)) {
+		return { allowed: false, reason: "invalid-version", command: null, commandText: null };
+	}
 	if (isPinnedGitSource(source) || /^codemem@(?!latest$|next$|\*$)[^\s]+$/i.test(source)) {
 		return {
 			allowed: false,
@@ -136,12 +175,7 @@ export const resolveAutoUpdatePlan = ({ runner, runnerFrom, runnerFromExplicit =
 				commandText: null,
 			};
 		}
-		return {
-      allowed: true,
-      reason: null,
-      command: ["npm", "install", "-g", "codemem@latest"],
-      commandText: "npm install -g codemem@latest",
-    };
+		return createNpmUpdatePlan(normalizedTargetVersion);
   }
 
   if (normalizedRunner === "uv") {
@@ -163,12 +197,7 @@ export const resolveAutoUpdatePlan = ({ runner, runnerFrom, runnerFromExplicit =
   }
 
 	if (normalizedRunner === "codemem") {
-		return {
-			allowed: true,
-			reason: null,
-			command: ["npm", "install", "-g", "codemem@latest"],
-			commandText: "npm install -g codemem@latest",
-		};
+		return createNpmUpdatePlan(normalizedTargetVersion);
 	}
 
 	return { allowed: false, reason: "unknown-runner", command: null, commandText: null };

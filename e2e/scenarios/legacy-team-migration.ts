@@ -35,6 +35,7 @@ interface FixtureSummary {
 			display_name: string;
 			status: string;
 			device_eligibility_mode: string;
+			revision: string;
 		}>;
 		memberships: Array<{ team_id: string; identity_id: string; status: string }>;
 		devices: Array<{
@@ -72,6 +73,14 @@ interface FixtureSummary {
 		finish_digest: string;
 		confirmed_access_delta_digest: string;
 		response_json: string;
+	}>;
+	drafts: Array<{
+		candidate_id: string;
+		attempt_id: string;
+		state: string;
+		finish_digest: string | null;
+		completed_team_id: string | null;
+		completed_at: string | null;
 	}>;
 }
 
@@ -145,9 +154,14 @@ interface StoredCompletionResponse {
 	completedAt: string;
 }
 
-function fixture(ctx: ScenarioContext, action: string, artifact: string): FixtureSummary {
+function fixture(
+	ctx: ScenarioContext,
+	action: string,
+	artifact: string,
+	service = "peer-a",
+): FixtureSummary {
 	const result = ctx.compose.exec(
-		"peer-a",
+		service,
 		[
 			"env",
 			"CODEMEM_EMBEDDING_DISABLED=1",
@@ -193,6 +207,26 @@ function createCoordinatorRoster(ctx: ScenarioContext, roster: FixtureSummary["r
 	coordinatorCommand(ctx, ["group-create", GROUP_ALPHA, "--name", "Legacy Alpha"], "04-create-alpha");
 	coordinatorCommand(ctx, ["group-create", GROUP_BETA, "--name", "Legacy Beta"], "05-create-beta");
 	coordinatorCommand(ctx, ["group-create", GROUP_GAMMA, "--name", "Legacy Gamma"], "06-create-gamma");
+	for (const [groupId, scopeId, label] of [
+		[GROUP_ALPHA, "scope-legacy-alpha", "Legacy Alpha"],
+		[GROUP_BETA, "scope-legacy-beta", "Legacy Beta"],
+	] as const) {
+		coordinatorCommand(
+			ctx,
+			[
+				"create-scope",
+				groupId,
+				scopeId,
+				"--label",
+				label,
+				"--kind",
+				"team",
+				"--coordinator-id",
+				"http://coordinator:7347",
+			],
+			`06-create-scope-${groupId}`,
+		);
+	}
 	for (const [groupId, devices] of [
 		[GROUP_ALPHA, [roster.shared, roster.optional]],
 		[
@@ -242,21 +276,26 @@ function createCoordinatorRoster(ctx: ScenarioContext, roster: FixtureSummary["r
 	);
 }
 
-function startServer(ctx: ScenarioContext): void {
+function startServer(
+	ctx: ScenarioContext,
+	service = "peer-a",
+	staticArtifact = "07-viewer-static",
+	serverArtifact = "08-start-viewer",
+): void {
 	const staticResult = ctx.compose.exec(
-		"peer-a",
+		service,
 		[
 			"node",
 			"--input-type=module",
 			"-e",
 			"import { mkdirSync, writeFileSync } from 'node:fs'; mkdirSync('/tmp/viewer-static', { recursive: true }); writeFileSync('/tmp/viewer-static/index.html', '<!doctype html><title>e2e</title>');",
 		],
-		"07-viewer-static",
+		staticArtifact,
 		30_000,
 	);
 	assertStatus(staticResult.status, 0, "viewer static preparation failed");
 	const result = ctx.compose.execDetached(
-		"peer-a",
+		service,
 		[
 			"env",
 			"CODEMEM_VIEWER_STATIC_DIR=/tmp/viewer-static",
@@ -271,7 +310,7 @@ function startServer(ctx: ScenarioContext): void {
 			"--port",
 			"38888",
 		],
-		"08-start-viewer",
+		serverArtifact,
 	);
 	assertStatus(result.status, 0, "viewer server failed to start");
 }
@@ -282,6 +321,7 @@ async function request<T>(
 	path: string,
 	artifact: string,
 	body?: Record<string, unknown>,
+	service = "peer-a",
 ): Promise<{ status: number; body: T }> {
 	const init =
 		method === "GET"
@@ -293,7 +333,7 @@ async function request<T>(
 				};
 	const script = `const response = await fetch(${JSON.stringify(`http://127.0.0.1:38888${path}`)}, ${JSON.stringify(init)}); const text = await response.text(); console.log(JSON.stringify({ status: response.status, body: text ? JSON.parse(text) : null }));`;
 	const result = ctx.compose.exec(
-		"peer-a",
+		service,
 		["node", "--input-type=module", "-e", script],
 		artifact,
 		60_000,
@@ -439,15 +479,162 @@ function assertExactRows<T>(actual: T[], expected: T[], message: string): void {
 	);
 }
 
+interface CompletionResponse {
+	status: string;
+	teamId: string;
+	attemptId: string;
+	accessDeltaDigest: string;
+	completedAt: string;
+}
+
+/**
+ * Coordinator-owned completion identity that every peer must share. Attempt
+ * and finish identifiers are device-local by design (each peer completes its
+ * own draft and keeps its own exact-replay token), so they are proven through
+ * `assertCompletionBoundToCurrentDraft` instead of compared across peers.
+ */
+function canonicalCompletionMetadata(
+	completions: FixtureSummary["completions"],
+	candidateRef: string,
+) {
+	return completions
+		.filter((completion) => completion.candidate_ref === candidateRef)
+		.map((completion) => {
+			const response = JSON.parse(completion.response_json) as CompletionResponse;
+			return {
+				candidateRef: completion.candidate_ref,
+				confirmedAccessDeltaDigest: completion.confirmed_access_delta_digest,
+				status: response.status,
+				teamId: response.teamId,
+				accessDeltaDigest: response.accessDeltaDigest,
+				completedAt: response.completedAt,
+			};
+		});
+}
+
+/**
+ * The completion row, its stored response, and the peer's current completed
+ * draft must all name the same attempt and finish key; recovery that wrote a
+ * stray or rotated identifier would break exact replay on that peer.
+ */
+function assertCompletionBoundToCurrentDraft(
+	summary: FixtureSummary,
+	candidateRef: string,
+	expectedCompletedAt: string,
+	message: string,
+): void {
+	const drafts = summary.drafts.filter((draft) => draft.candidate_id === candidateRef);
+	const currentDraft = drafts.at(-1);
+	assert(currentDraft?.state === "completed", `${message}: current draft is not completed`);
+	const completions = summary.completions.filter(
+		(completion) => completion.candidate_ref === candidateRef,
+	);
+	assert(completions.length === 1, `${message}: expected one completion, got ${completions.length}`);
+	const completion = completions[0];
+	assert(completion !== undefined, `${message}: completion missing`);
+	const response = JSON.parse(completion.response_json) as CompletionResponse;
+	assert(
+		completion.attempt_id === currentDraft.attempt_id &&
+			response.attemptId === currentDraft.attempt_id,
+		`${message}: completion attempt ${completion.attempt_id}/${response.attemptId} is not the current draft ${currentDraft.attempt_id}`,
+	);
+	assert(
+		completion.finish_digest === currentDraft.finish_digest,
+		`${message}: completion key ${completion.finish_digest} is not linked to the draft key ${currentDraft.finish_digest}`,
+	);
+	assert(
+		currentDraft.completed_team_id === response.teamId &&
+			currentDraft.completed_at === response.completedAt &&
+			response.completedAt === expectedCompletedAt,
+		`${message}: draft completion metadata differs from the canonical winner`,
+	);
+}
+
+function assertExactPolicies(
+	actual: FixtureSummary["policies"],
+	expected: FixtureSummary["policies"],
+	message: string,
+): void {
+	assertExactRows(actual.teams, expected.teams, `${message}: Teams differ`);
+	assertExactRows(actual.memberships, expected.memberships, `${message}: memberships differ`);
+	assertExactRows(actual.devices, expected.devices, `${message}: device assignments differ`);
+	assertExactRows(actual.decisions, expected.decisions, `${message}: device decisions differ`);
+	assertExactRows(actual.recipients, expected.recipients, `${message}: Project recipients differ`);
+	assertExactRows(
+		actual.reviewedMappings,
+		expected.reviewedMappings,
+		`${message}: reviewed Project mappings differ`,
+	);
+}
+
+/**
+ * A second viewer must apply Alpha's coordinator-owned completion before
+ * hiding it: its policy, canonical completion metadata, and completion-to-draft
+ * binding all converge on the winner while unrelated Beta stays reviewable.
+ */
+async function verifyCrossDeviceCanonicalCompletion(
+	ctx: ScenarioContext,
+	input: { afterAlpha: FixtureSummary; alphaCandidateRef: string; betaCandidateRef: string },
+): Promise<void> {
+	const peerBSummary = await request<{ version: 1; candidates: CandidateSummary[] }>(
+		ctx,
+		"GET",
+		API,
+		"25-peer-b-summary-after-alpha",
+		undefined,
+		"peer-b",
+	);
+	assert(peerBSummary.status === 200, "peer-b legacy Team summary failed");
+	assert(
+		!peerBSummary.body.candidates.some(
+			(candidate) => candidate.candidateRef === input.alphaCandidateRef,
+		) &&
+			peerBSummary.body.candidates.some(
+				(candidate) => candidate.candidateRef === input.betaCandidateRef,
+			),
+		"peer-b resurfaced Alpha or lost unrelated Beta after applying the canonical completion",
+	);
+	const peerBAfterAlpha = fixture(ctx, "summary", "25-peer-b-policy-after-alpha", "peer-b");
+	assertExactPolicies(
+		peerBAfterAlpha.policies,
+		input.afterAlpha.policies,
+		"peer-b canonical policy differs from peer-a",
+	);
+	assertExactRows(
+		canonicalCompletionMetadata(peerBAfterAlpha.completions, input.alphaCandidateRef),
+		canonicalCompletionMetadata(input.afterAlpha.completions, input.alphaCandidateRef),
+		"peer-b completion metadata differs from the canonical winner",
+	);
+	const canonicalCompletedAt = canonicalCompletionMetadata(
+		input.afterAlpha.completions,
+		input.alphaCandidateRef,
+	)[0]?.completedAt;
+	assert(typeof canonicalCompletedAt === "string", "peer-a canonical completion missing");
+	assertCompletionBoundToCurrentDraft(
+		input.afterAlpha,
+		input.alphaCandidateRef,
+		canonicalCompletedAt,
+		"peer-a completion identity",
+	);
+	assertCompletionBoundToCurrentDraft(
+		peerBAfterAlpha,
+		input.alphaCandidateRef,
+		canonicalCompletedAt,
+		"peer-b completion identity",
+	);
+}
+
 export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Promise<void> {
 	ctx.recordNote(
 		"scenario.txt",
-		"Legacy Team migration: review two overlapping coordinator groups through the real viewer API; prove explicit mapping, stale and conflicting evidence rejection, atomic activation, reviewed device eligibility, and immutable retry.",
+		"Legacy Team migration: review two overlapping coordinator groups through real viewer APIs; prove cross-device canonical completion, explicit mapping, stale and conflicting evidence rejection, atomic activation, reviewed device eligibility, and immutable retry.",
 	);
 	ctx.compose.down("00-compose-down-pre", true);
-	ctx.compose.up(["coordinator", "peer-a"], "01-compose-up");
+	ctx.compose.up(["coordinator", "peer-a", "peer-b"], "01-compose-up");
 	seedPeer(ctx.compose, ctx.artifactsDir, "peer-a", "empty", "02-seed-empty");
+	seedPeer(ctx.compose, ctx.artifactsDir, "peer-b", "empty", "02-peer-b-seed-empty");
 	const seeded = fixture(ctx, "seed", "03-seed-legacy-team-fixture");
+	fixture(ctx, "seed", "03-peer-b-seed-legacy-team-fixture", "peer-b");
 	createCoordinatorRoster(ctx, seeded.roster);
 	writePeerConfig(
 		ctx,
@@ -455,12 +642,29 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		{
 			sync_coordinator_url: "http://coordinator:7347",
 			sync_coordinator_admin_secret: ADMIN_SECRET,
-			sync_coordinator_groups: [GROUP_ALPHA],
+			sync_coordinator_groups: [GROUP_ALPHA, GROUP_BETA],
 			sync_coordinator_timeout_s: 10,
 		},
 		"07-write-config",
 	);
+	writePeerConfig(
+		ctx,
+		"peer-b",
+		{
+			sync_coordinator_url: "http://coordinator:7347",
+			sync_coordinator_admin_secret: ADMIN_SECRET,
+			sync_coordinator_groups: [GROUP_ALPHA, GROUP_BETA],
+			sync_coordinator_timeout_s: 10,
+		},
+		"07-peer-b-write-config",
+	);
 	startServer(ctx);
+	startServer(
+		ctx,
+		"peer-b",
+		"07-peer-b-viewer-static",
+		"08-peer-b-start-viewer",
+	);
 	await waitFor(
 		async () => {
 			const response = await request<Record<string, unknown>>(
@@ -473,8 +677,22 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		},
 		{ description: "legacy Team viewer readiness", timeoutMs: 120_000, intervalMs: 2_000 },
 	);
+	await waitFor(
+		async () => {
+			const response = await request<Record<string, unknown>>(
+				ctx,
+				"GET",
+				"/api/stats",
+				"09-peer-b-wait-viewer",
+				undefined,
+				"peer-b",
+			);
+			assert(response.status === 200, "peer-b viewer is not ready");
+		},
+		{ description: "peer-b legacy Team viewer readiness", timeoutMs: 120_000, intervalMs: 2_000 },
+	);
 
-	// Arrange: Alpha is configured while active coordinator-backed scope evidence discovers Beta.
+	// Arrange: Alpha and Beta are configured; Gamma remains unrelated.
 	const summaryResponse = await request<{ version: 1; candidates: CandidateSummary[] }>(
 		ctx,
 		"GET",
@@ -494,11 +712,29 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 	);
 	assert(
 		alphaCandidate && betaCandidate && !gammaCandidate,
-		"expected configured Alpha and scope-backed Beta, but not unrelated Gamma",
+		"expected configured Alpha and Beta, but not unrelated Gamma",
 	);
 	assert(
 		alphaCandidate.deviceCount === 2 && betaCandidate.deviceCount === 6,
-		"configured Alpha and scope-backed Beta did not expose the exact current rosters",
+		"configured Alpha and Beta did not expose the exact current rosters",
+	);
+	const peerBBeforeCompletion = await request<{
+		version: 1;
+		candidates: CandidateSummary[];
+	}>(ctx, "GET", API, "10-peer-b-candidate-summary", undefined, "peer-b");
+	assert(peerBBeforeCompletion.status === 200, "peer-b initial Team setup load failed");
+	assert(
+		peerBBeforeCompletion.body.candidates.some(
+			(candidate) => candidate.candidateRef === alphaCandidate.candidateRef,
+		) &&
+			peerBBeforeCompletion.body.candidates.some(
+				(candidate) => candidate.candidateRef === betaCandidate.candidateRef,
+			),
+		"peer-b did not expose configured Alpha and Beta before coordinator completion",
+	);
+	assertNoPolicyWrites(
+		fixture(ctx, "summary", "10-peer-b-before-completion-policy", "peer-b"),
+		"peer-b candidate discovery",
 	);
 	let alpha = await loadDetail(ctx, alphaCandidate.candidateRef, "11-alpha-unresolved-detail");
 	const betaInitial = await loadDetail(ctx, betaCandidate.candidateRef, "12-beta-initial-detail");
@@ -600,6 +836,12 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		afterAlpha.policies.reviewedMappings.length === 1,
 		"explicit Project repair was not committed with Alpha",
 	);
+
+	await verifyCrossDeviceCanonicalCompletion(ctx, {
+		afterAlpha,
+		alphaCandidateRef: alphaCandidate.candidateRef,
+		betaCandidateRef: betaCandidate.candidateRef,
+	});
 
 	// Arrange: refresh Beta after Alpha so the included shared assignment is verified and reusable.
 	const refreshed = await request<Record<string, unknown>>(
@@ -912,7 +1154,7 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 	const betaTeam = final.policies.teams.find((team) => team.display_name === "Legacy Beta");
 	assert(alphaTeam && betaTeam, "both canonical Teams were not activated");
 	assertExactRows(
-		final.policies.teams,
+		final.policies.teams.map(({ revision: _revision, ...team }) => team),
 		[
 			{
 				team_id: alphaTeam.team_id,
@@ -1088,6 +1330,11 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 		"peer-a:/data/mem.sqlite",
 		`${ctx.artifactsDir}/db/peer-a-legacy-team-migration.sqlite`,
 		"55-copy-peer-db",
+	);
+	ctx.compose.copyFromContainer(
+		"peer-b:/data/mem.sqlite",
+		`${ctx.artifactsDir}/db/peer-b-legacy-team-migration.sqlite`,
+		"55-copy-peer-b-db",
 	);
 	ctx.compose.copyFromContainer(
 		"coordinator:/data/coordinator.sqlite",

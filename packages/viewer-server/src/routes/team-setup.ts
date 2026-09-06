@@ -1,4 +1,6 @@
 import type {
+	CoordinatorLegacyTeamCompletionManifestV1,
+	CoordinatorLegacyTeamCompletionRecord,
 	LegacyTeamCandidateView,
 	LegacyTeamConfiguredGroupSnapshot,
 	LegacyTeamSetupAccessDeltaV1,
@@ -8,18 +10,30 @@ import type {
 	MemoryStore,
 } from "@codemem/core";
 import {
+	applyLegacyTeamSetupCompletionManifest,
+	applyLegacyTeamSetupCompletionManifestAndReturnActivation,
+	areLegacyTeamSetupCompletionPolicyFactsAdditivelyCompatible,
 	buildBaseUrl,
+	canonicalCoordinatorLegacyTeamCompletionManifestJson,
+	claimRecipientPolicyActorMutations,
+	claimRecipientPolicyPublicationMutation,
 	clearLegacyTeamSetupDeviceDecision,
+	containLegacyTeamSetupCompletionConflict,
+	coordinatorCreateLegacyTeamCompletionAction,
+	coordinatorGetLegacyTeamCompletionAction,
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
+	coordinatorListLegacyTeamCompletionsAction,
+	deriveLegacyTeamSetupCompletionManifest,
 	deterministicPolicyTeamId,
 	discoverLegacyTeamCandidates,
 	fingerprintPublicKey,
-	finishLegacyTeamSetupActivation,
 	getLegacyTeamSetupDraft,
+	inspectFreshLegacyTeamSetupActivation,
 	inspectLegacyTeamSetupActivation,
 	isLegacyTeamCandidateSelectable,
 	isLegacyTeamSetupProjectMappingIdentity,
+	LegacyTeamSetupAdditiveConvergenceError,
 	legacyTeamCandidateId,
 	legacyTeamCandidateProjectInventory,
 	legacyTeamCanonicalProjectRef,
@@ -30,10 +44,18 @@ import {
 	previewLegacyTeamSetupActivation,
 	readCoordinatorSyncConfig,
 	recipientPolicyDigest,
+	reconstructLegacyTeamSetupCompletionManifest,
 	refreshLegacyTeamCandidate,
+	replayLegacyTeamSetupActivation,
+	requireLegacyTeamSetupAccessDeltaWithinLimit,
+	serializeRecipientPolicyCoordinatorGroupMutation,
+	serializeRecipientPolicyPublicationMutation,
+	serializeRecipientPolicyTeamMutation,
 	setLegacyTeamSetupDeviceAssignment,
 	setLegacyTeamSetupDeviceDecision,
 	setLegacyTeamSetupProjectMapping,
+	validateLegacyTeamSetupCompletionManifest,
+	validateLegacyTeamSetupCompletionManifestBinding,
 } from "@codemem/core";
 import { type Context, Hono } from "hono";
 import {
@@ -73,7 +95,6 @@ const MAX_CONFIGURED_GROUPS = 25;
 const MAX_SCOPE_EVIDENCE_COORDINATORS = 100;
 const MAX_DEVICES = 500;
 const MAX_PROJECTS = 500;
-const MAX_ACCESS_DELTA_ENTRIES = 10_000;
 const MAX_IDENTITY_CHOICES = 500;
 const MAX_COMPLETED_IDENTITY_CHOICES = MAX_DEVICES * 4;
 const MAX_PROJECT_MAPPING_CHOICES = 500;
@@ -93,9 +114,52 @@ const ATTEMPT_ID_PATTERN = /^legacy-team-attempt:[0-9a-f-]{36}$/u;
 const FINISH_DIGEST_PATTERN = /^legacy-team-activation-finish-v1:[0-9a-f]{64}$/u;
 const ACCESS_DELTA_DIGEST_PATTERN = /^legacy-team-access-delta:[0-9a-f]{64}$/u;
 const VIEWER_ACCESS_DELTA_DIGEST_PATTERN = /^legacy-team-viewer-access-delta-v1:[0-9a-f]{64}$/u;
+const activeCandidateMutations = new WeakMap<MemoryStore["db"], Map<string, Promise<void>>>();
+
+function claimCandidateMutation(db: MemoryStore["db"], candidateRef: string): (() => void) | null {
+	let active = activeCandidateMutations.get(db);
+	if (!active) {
+		active = new Map();
+		activeCandidateMutations.set(db, active);
+	}
+	if (active.has(candidateRef)) return null;
+	let settle: () => void = () => undefined;
+	const settled = new Promise<void>((resolve) => {
+		settle = resolve;
+	});
+	active.set(candidateRef, settled);
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
+		active?.delete(candidateRef);
+		settle();
+	};
+}
+
+/** Resolves once the current holder of the candidate claim (if any) releases it. */
+function candidateMutationSettled(db: MemoryStore["db"], candidateRef: string): Promise<void> {
+	return activeCandidateMutations.get(db)?.get(candidateRef) ?? Promise.resolve();
+}
+
+async function runCandidateMutation<T>(
+	db: MemoryStore["db"],
+	candidateRef: string,
+	operation: () => Promise<T>,
+): Promise<boolean> {
+	const release = claimCandidateMutation(db, candidateRef);
+	if (!release) return false;
+	try {
+		await operation();
+		return true;
+	} finally {
+		release();
+	}
+}
 
 interface LegacyTeamConfiguredGroupSnapshotLoadOptions {
 	candidateRef?: string;
+	deadlineMs?: number;
 }
 
 export interface LegacyTeamCandidateGroupDescriptor {
@@ -111,8 +175,22 @@ export interface TeamSetupRoutesOptions {
 	getStore: () => MemoryStore;
 	loadLegacyTeamConfiguredGroupSnapshots?: LegacyTeamConfiguredGroupSnapshotLoader;
 	snapshotLoaderDependencies?: LegacyTeamSnapshotLoaderDependencies;
+	completionDependencies?: LegacyTeamCompletionDependencies | null;
+	readCoordinatorConfig?: typeof readCoordinatorSyncConfig;
 	registerSummaryInvalidator?: (invalidate: () => void) => void;
 }
+
+export interface LegacyTeamCompletionDependencies {
+	create: typeof coordinatorCreateLegacyTeamCompletionAction;
+	get?: typeof coordinatorGetLegacyTeamCompletionAction;
+	list: typeof coordinatorListLegacyTeamCompletionsAction;
+}
+
+const defaultCompletionDependencies: LegacyTeamCompletionDependencies = {
+	create: coordinatorCreateLegacyTeamCompletionAction,
+	get: coordinatorGetLegacyTeamCompletionAction,
+	list: coordinatorListLegacyTeamCompletionsAction,
+};
 
 interface LegacyTeamSnapshotLoaderDependencies {
 	readConfig: typeof readCoordinatorSyncConfig;
@@ -134,15 +212,55 @@ function isCoordinatorRosterTooLargeError(error: unknown): boolean {
 	return error instanceof Error && error.message === "coordinator_response_too_large";
 }
 
+function remoteCoordinatorHttpStatus(error: unknown): number | null {
+	if (!(error instanceof Error)) return null;
+	const status = /Remote coordinator request failed \((\d{3})\):/u.exec(error.message)?.[1];
+	return status ? Number(status) : null;
+}
+
 function isTransientCoordinatorReadError(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
-	const remoteStatus = /Remote coordinator request failed \((\d{3})\):/u.exec(error.message)?.[1];
-	if (remoteStatus) return ["408", "429", "500", "502", "503", "504"].includes(remoteStatus);
+	const remoteStatus = remoteCoordinatorHttpStatus(error);
+	if (remoteStatus) return [408, 429, 500, 502, 503, 504].includes(remoteStatus);
 	return (
 		error.name === "TimeoutError" ||
 		error.name === "AbortError" ||
 		/request_timeout|fetch failed|timed out|timeout/iu.test(error.message)
 	);
+}
+
+function isUnsupportedCompletionQuery(error: unknown): boolean {
+	const status = remoteCoordinatorHttpStatus(error);
+	return status === 404 || status === 405;
+}
+
+/**
+ * Batch completion decoding rejects the whole payload when any one record is
+ * malformed or misattributed, so the failure cannot be pinned to a group.
+ */
+function isUnattributableCompletionBatchError(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		(error.message === "coordinator_completion_response_malformed" ||
+			error.message === "coordinator_completion_group_mismatch")
+	);
+}
+
+async function listCompletionRecordsPerGroup(
+	groupIds: readonly string[],
+	list: (groupIds: string[]) => Promise<CoordinatorLegacyTeamCompletionRecord[]>,
+): Promise<CoordinatorLegacyTeamCompletionRecord[]> {
+	// A single group re-query would repeat the same undecodable payload.
+	if (groupIds.length < 2) return [];
+	const records: CoordinatorLegacyTeamCompletionRecord[] = [];
+	for (const groupId of groupIds) {
+		try {
+			records.push(...(await list([groupId])));
+		} catch (error) {
+			if (!isUnattributableCompletionBatchError(error)) throw error;
+		}
+	}
+	return records;
 }
 
 async function retryTransientCoordinatorRead<T>(
@@ -165,6 +283,15 @@ async function retryTransientCoordinatorRead<T>(
 		}
 	}
 	throw lastError;
+}
+
+export function remainingCoordinatorTimeoutS(
+	configuredTimeoutS: number,
+	deadlineMs: number,
+	nowMs = Date.now(),
+): number | null {
+	const remainingMs = deadlineMs - nowMs;
+	return remainingMs <= 0 ? null : Math.max(0.1, Math.min(configuredTimeoutS, remainingMs / 1_000));
 }
 
 function configuredGroupIds(groups: string[]): string[] {
@@ -330,7 +457,7 @@ async function loadConfiguredLegacyTeamGroupSnapshotsWith(
 		);
 		if (groupDescriptors.length === 0) throw safeCoordinatorError();
 		const timeoutS = Math.max(1, config.syncCoordinatorTimeoutS);
-		const deadlineMs = Date.now() + COORDINATOR_ROSTER_READ_BUDGET_MS;
+		const deadlineMs = options.deadlineMs ?? Date.now() + COORDINATOR_ROSTER_READ_BUDGET_MS;
 		const requestedGroupDescriptors = options.candidateRef
 			? groupDescriptors.filter(
 					({ coordinatorId, groupId }) =>
@@ -707,25 +834,6 @@ function viewerAccessDeltaDigest(delta: LegacyTeamSetupViewerAccessDeltaV1): str
 	return recipientPolicyDigest("legacy-team-viewer-access-delta-v1", delta);
 }
 
-function requireBoundedAccessDelta(delta: LegacyTeamSetupAccessDeltaV1): void {
-	const total =
-		delta.teamChanges.length +
-		delta.membershipChanges.length +
-		delta.projectChanges.length +
-		delta.recipientChanges.length +
-		delta.deviceAccessChanges.length;
-	if (
-		delta.teamChanges.length > MAX_ACCESS_DELTA_ENTRIES ||
-		delta.membershipChanges.length > MAX_ACCESS_DELTA_ENTRIES ||
-		delta.projectChanges.length > MAX_ACCESS_DELTA_ENTRIES ||
-		delta.recipientChanges.length > MAX_ACCESS_DELTA_ENTRIES ||
-		delta.deviceAccessChanges.length > MAX_ACCESS_DELTA_ENTRIES ||
-		total > MAX_ACCESS_DELTA_ENTRIES
-	) {
-		throw new Error("legacy_team_setup_roster_too_large");
-	}
-}
-
 const SAFE_CHOICE_LABEL_PATTERN = /^[\p{L}\p{N} '&,.()_-]*$/u;
 
 // Keep this byte-for-byte equivalent in behavior to the core setup-label
@@ -873,6 +981,7 @@ export const __teamSetupTestHooks = {
 	loadConfiguredLegacyTeamGroupSnapshotsWith,
 	normalizedCoordinatorId,
 	projectMutationAtomically,
+	requireBoundedAccessDelta: requireLegacyTeamSetupAccessDeltaWithinLimit,
 	requireCompleteMappingChoices,
 	disambiguateChoiceLabels,
 	safeChoiceLabel,
@@ -1074,7 +1183,8 @@ function viewerSafePreview(
 }
 
 function errorStatus(code: LegacyTeamSetupActivationErrorCode): 400 | 409 | 503 {
-	if (code === "team_setup_roster_unavailable") return 503;
+	if (code === "team_setup_roster_unavailable" || code === "team_setup_completion_unavailable")
+		return 503;
 	if (code === "team_setup_failed") return 503;
 	if (code === "team_setup_incomplete") return 400;
 	return 409;
@@ -1083,6 +1193,11 @@ function errorStatus(code: LegacyTeamSetupActivationErrorCode): 400 | 409 | 503 
 function apiErrorCode(error: unknown): LegacyTeamSetupActivationErrorCode {
 	const code = legacyTeamSetupApiErrorCode(error);
 	return code === "team_setup_projection_changed" ? "team_setup_conflict" : code;
+}
+
+function completionApiError(error: unknown): LegacyTeamSetupActivationErrorCode {
+	const code = legacyTeamSetupApiErrorCode(error);
+	return code === "team_setup_failed" ? "team_setup_completion_unavailable" : code;
 }
 
 type BoundedJsonResult = { ok: true; value: Record<string, unknown> } | { ok: false };
@@ -1158,7 +1273,7 @@ function detailResponse(
 			else if (code !== "team_setup_incomplete") unavailableReason = code;
 		}
 	}
-	if (preview) requireBoundedAccessDelta(preview.accessDelta);
+	if (preview) requireLegacyTeamSetupAccessDeltaWithinLimit(preview.accessDelta);
 	const safeDraft = viewerSafeDraft(store, draft);
 	const safePreview = preview ? viewerSafePreview(draft, safeDraft, preview) : null;
 	return projectLegacyTeamSetupView({
@@ -1201,9 +1316,12 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 
 	async function loadedSnapshots(
 		candidateRef?: string,
+		deadlineMs?: number,
 	): Promise<LegacyTeamConfiguredGroupSnapshot[]> {
 		try {
-			return await loadSnapshots(candidateRef ? { candidateRef } : undefined);
+			return await loadSnapshots(
+				candidateRef || deadlineMs != null ? { candidateRef, deadlineMs } : undefined,
+			);
 		} catch (error) {
 			if (error instanceof Error && error.message === "legacy_team_setup_roster_too_large") {
 				throw error;
@@ -1216,10 +1334,547 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		SUMMARY_SNAPSHOT_CACHE_TTL_MS,
 	);
 	options.registerSummaryInvalidator?.(() => loadedSummarySnapshots.invalidate());
+	const completionDependencies =
+		options.completionDependencies === undefined
+			? defaultCompletionDependencies
+			: options.completionDependencies;
+
+	interface CompletionAuthorization {
+		config: ReturnType<typeof readCoordinatorSyncConfig>;
+		remoteUrl: string;
+		configuredCoordinatorId: string;
+		currentGroupIds: Set<string>;
+	}
+
+	/**
+	 * Reads the live coordinator configuration and the groups it currently
+	 * authorizes. Returns null when completion I/O is not configured or current
+	 * authorization cannot be proven.
+	 */
+	function currentCompletionAuthorization(): CompletionAuthorization | null {
+		const config = (
+			options.readCoordinatorConfig ??
+			options.snapshotLoaderDependencies?.readConfig ??
+			readCoordinatorSyncConfig
+		)();
+		const remoteUrl = buildBaseUrl(config.syncCoordinatorUrl);
+		if (!remoteUrl || !config.syncCoordinatorAdminSecret) return null;
+		const configuredCoordinatorId = normalizedCoordinatorId(remoteUrl);
+		if (!configuredCoordinatorId) return null;
+		let currentGroupIds: Set<string>;
+		try {
+			currentGroupIds = new Set(configuredGroupIds(config.syncCoordinatorGroups));
+		} catch {
+			return null;
+		}
+		return { config, remoteUrl, configuredCoordinatorId, currentGroupIds };
+	}
+
+	// Endpoint equivalence only: candidate identity stays bound to the persisted
+	// coordinator string and is never rewritten from configuration.
+	function authorizesGroup(
+		authorization: CompletionAuthorization,
+		group: LegacyTeamCandidateGroupDescriptor,
+	): boolean {
+		return (
+			authorization.currentGroupIds.has(group.groupId) &&
+			normalizedCoordinatorId(group.coordinatorId) === authorization.configuredCoordinatorId
+		);
+	}
+
+	/**
+	 * Configuration may change while completion-list or roster requests are in
+	 * flight. Re-prove authorization for the exact coordinator and group right
+	 * before applying canonical policy, as the finish publication path does.
+	 */
+	function stillAuthorizesGroup(
+		initial: CompletionAuthorization,
+		group: LegacyTeamCandidateGroupDescriptor,
+	): boolean {
+		let current: CompletionAuthorization | null;
+		try {
+			current = currentCompletionAuthorization();
+		} catch {
+			return false;
+		}
+		return (
+			current !== null &&
+			current.configuredCoordinatorId === initial.configuredCoordinatorId &&
+			current.remoteUrl === initial.remoteUrl &&
+			current.config.syncCoordinatorAdminSecret === initial.config.syncCoordinatorAdminSecret &&
+			authorizesGroup(current, group)
+		);
+	}
+
+	function matchesGroupSnapshot(
+		snapshot: LegacyTeamConfiguredGroupSnapshot,
+		group: LegacyTeamCandidateGroupDescriptor,
+	): boolean {
+		return (
+			snapshot.groupId === group.groupId &&
+			normalizedCoordinatorId(snapshot.coordinatorId) ===
+				normalizedCoordinatorId(group.coordinatorId)
+		);
+	}
+
+	function freshGroupKey(group: { coordinatorId: string; groupId: string }): string {
+		return `${normalizedCoordinatorId(group.coordinatorId) ?? group.coordinatorId}\0${group.groupId}`;
+	}
+
+	/**
+	 * The snapshot loader keys candidates by the configured coordinator spelling,
+	 * while a persisted group may carry an equivalent but different spelling.
+	 * Ask for the roster under each spelling and match on normalized identity,
+	 * preserving the persisted candidate identity for everything else.
+	 */
+	async function loadFreshGroupSnapshot(
+		group: LegacyTeamCandidateGroupDescriptor,
+		remoteUrl: string,
+		deadlineMs: number,
+	): Promise<LegacyTeamConfiguredGroupSnapshot | undefined> {
+		const candidateRefs = [
+			...new Set([
+				legacyTeamCandidateId(remoteUrl, group.groupId),
+				legacyTeamCandidateId(group.coordinatorId, group.groupId),
+			]),
+		];
+		for (const candidateRef of candidateRefs) {
+			const snapshots = await loadedSnapshots(candidateRef, deadlineMs);
+			const matches = snapshots.filter((snapshot) => matchesGroupSnapshot(snapshot, group));
+			if (matches.length > 1) throw new Error("team_setup_completion_invalid");
+			if (matches[0]) return matches[0];
+		}
+		return undefined;
+	}
+
+	function completionRecordCandidateRef(record: { manifest: unknown }): string | null {
+		const manifest = record.manifest;
+		if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return null;
+		const candidateRef = (manifest as { candidate_ref?: unknown }).candidate_ref;
+		return typeof candidateRef === "string" ? candidateRef : null;
+	}
+
+	// The coordinator lists every candidate a group has ever completed. A record
+	// for a different candidate identity (an earlier coordinator address) is
+	// historical context, not evidence about this candidate.
+	function belongsToGroupCandidate(
+		record: { manifest: unknown },
+		group: LegacyTeamCandidateGroupDescriptor,
+	): boolean {
+		const candidateRef = completionRecordCandidateRef(record);
+		return (
+			candidateRef === null ||
+			candidateRef === legacyTeamCandidateId(group.coordinatorId, group.groupId)
+		);
+	}
+
+	/**
+	 * Applies a canonical manifest with authorization re-proven inside the same
+	 * serialized section that guards the apply. Checking before the locks would
+	 * let a group removed while reconciliation waited on another policy
+	 * mutation still be applied once the queues open.
+	 */
+	async function applyCanonicalManifestIfStillAuthorized(
+		store: MemoryStore,
+		authorization: CompletionAuthorization,
+		group: LegacyTeamCandidateGroupDescriptor,
+		manifest: CoordinatorLegacyTeamCompletionManifestV1,
+		freshRoster: LegacyTeamConfiguredGroupSnapshot["devices"],
+	): Promise<"applied" | "unauthorized" | "claimed"> {
+		let outcome: "applied" | "unauthorized" = "unauthorized";
+		const ran = await runCandidateMutation(
+			store.db,
+			legacyTeamCandidateId(group.coordinatorId, group.groupId),
+			() =>
+				serializeRecipientPolicyPublicationMutation(store.db, () =>
+					serializeRecipientPolicyTeamMutation(store.db, manifest.team_id, () =>
+						serializeRecipientPolicyCoordinatorGroupMutation(store.db, group.groupId, async () => {
+							if (!stillAuthorizesGroup(authorization, group)) return;
+							await applyLegacyTeamSetupCompletionManifest(store.db, {
+								coordinatorId: group.coordinatorId,
+								groupId: group.groupId,
+								manifest,
+								freshRoster,
+								recipientPolicyLocksHeld: { publication: true, team: true, coordinatorGroup: true },
+							});
+							outcome = "applied";
+						}),
+					),
+				),
+		);
+		return ran ? outcome : "claimed";
+	}
+
+	async function reconcileCompletions(
+		store: MemoryStore,
+		groups: LegacyTeamCandidateGroupDescriptor[],
+		reconciliationOptions: { isolateApplyFailures?: boolean } = {},
+	): Promise<void> {
+		if (!completionDependencies || groups.length === 0) return;
+		let authorization: CompletionAuthorization | null;
+		try {
+			authorization = currentCompletionAuthorization();
+		} catch (error) {
+			throw new Error(completionApiError(error));
+		}
+		// If current authorization cannot be proven, skip completion I/O without
+		// failing an otherwise serviceable persisted detail read.
+		if (!authorization) return;
+		const { config, remoteUrl } = authorization;
+		const scopedGroups = groups.filter((group) => authorizesGroup(authorization, group));
+		if (scopedGroups.length === 0) return;
+		const timeoutS = Math.max(1, config.syncCoordinatorTimeoutS);
+		try {
+			const reconciliationDeadlineMs = Date.now() + COORDINATOR_ROSTER_READ_BUDGET_MS;
+			const groupById = new Map(scopedGroups.map((group) => [group.groupId, group]));
+			const listCompletionRecords = (groupIds: string[]) =>
+				retryTransientCoordinatorRead(
+					(attemptTimeoutS) =>
+						completionDependencies.list({
+							groupIds,
+							remoteUrl,
+							adminSecret: config.syncCoordinatorAdminSecret,
+							timeoutS: attemptTimeoutS,
+						}),
+					timeoutS,
+					reconciliationDeadlineMs,
+				);
+			const scopedGroupIds = [...new Set(scopedGroups.map((group) => group.groupId))];
+			let records: Awaited<ReturnType<LegacyTeamCompletionDependencies["list"]>>;
+			try {
+				records = await listCompletionRecords(scopedGroupIds);
+			} catch (error) {
+				// Older coordinators do not expose completion reconciliation. Read routes
+				// remain usable, and best-effort publication below still lets upgraded
+				// peers observe a locally completed migration.
+				if (isUnsupportedCompletionQuery(error)) {
+					records = [];
+				} else if (
+					reconciliationOptions.isolateApplyFailures &&
+					isUnattributableCompletionBatchError(error)
+				) {
+					// One corrupt or mixed-version record must not hide every healthy
+					// group's setup state. Re-query per group so the decode failure
+					// stays attributable; a group whose own record cannot be decoded is
+					// skipped, matching the unprovable-binding path below.
+					records = await listCompletionRecordsPerGroup(scopedGroupIds, listCompletionRecords);
+				} else {
+					throw error;
+				}
+			}
+			const freshGroupByKey = new Map<string, LegacyTeamConfiguredGroupSnapshot>();
+			if (records.length > 0) {
+				try {
+					const onlyGroup = scopedGroups.length === 1 ? scopedGroups[0] : undefined;
+					const freshGroups = onlyGroup
+						? [await loadFreshGroupSnapshot(onlyGroup, remoteUrl, reconciliationDeadlineMs)]
+						: await loadedSnapshots(undefined, reconciliationDeadlineMs);
+					for (const freshGroup of freshGroups) {
+						if (!freshGroup) continue;
+						const key = freshGroupKey(freshGroup);
+						if (freshGroupByKey.has(key)) throw new Error("team_setup_completion_invalid");
+						freshGroupByKey.set(key, freshGroup);
+					}
+				} catch (error) {
+					for (const record of records) {
+						const group = groupById.get(record.group_id);
+						if (!group || !belongsToGroupCandidate(record, group)) continue;
+						try {
+							validateLegacyTeamSetupCompletionManifestBinding(record.manifest, {
+								coordinatorId: group.coordinatorId,
+								groupId: group.groupId,
+							});
+						} catch (bindingError) {
+							if (!reconciliationOptions.isolateApplyFailures) throw bindingError;
+							continue;
+						}
+						let canonicalManifest: ReturnType<typeof validateLegacyTeamSetupCompletionManifest>;
+						try {
+							canonicalManifest = validateLegacyTeamSetupCompletionManifest(record.manifest, {
+								coordinatorId: group.coordinatorId,
+								groupId: group.groupId,
+							});
+						} catch (validationError) {
+							try {
+								const contained = await runCandidateMutation(
+									store.db,
+									legacyTeamCandidateId(group.coordinatorId, group.groupId),
+									() =>
+										containLegacyTeamSetupCompletionConflict(store.db, {
+											coordinatorId: group.coordinatorId,
+											groupId: group.groupId,
+										}),
+								);
+								if (!contained) {
+									if (!reconciliationOptions.isolateApplyFailures) throw validationError;
+									continue;
+								}
+							} catch (containmentError) {
+								if (!reconciliationOptions.isolateApplyFailures) throw containmentError;
+							}
+							if (!reconciliationOptions.isolateApplyFailures) throw validationError;
+							continue;
+						}
+						try {
+							const localManifest = reconstructLegacyTeamSetupCompletionManifest(store.db, {
+								candidateRef: canonicalManifest.candidate_ref,
+							});
+							if (
+								canonicalCoordinatorLegacyTeamCompletionManifestJson(localManifest) ===
+								canonicalCoordinatorLegacyTeamCompletionManifestJson(canonicalManifest)
+							) {
+								continue;
+							}
+							if (
+								areLegacyTeamSetupCompletionPolicyFactsAdditivelyCompatible(
+									localManifest,
+									canonicalManifest,
+								)
+							) {
+								continue;
+							}
+						} catch {
+							// Missing or invalid local completion state must not remain active when
+							// a valid coordinator winner cannot be applied safely.
+						}
+						try {
+							await runCandidateMutation(store.db, canonicalManifest.candidate_ref, () =>
+								containLegacyTeamSetupCompletionConflict(store.db, {
+									coordinatorId: group.coordinatorId,
+									groupId: group.groupId,
+								}),
+							);
+						} catch (containmentError) {
+							if (!reconciliationOptions.isolateApplyFailures) throw containmentError;
+						}
+					}
+					if (!reconciliationOptions.isolateApplyFailures) throw error;
+					return;
+				}
+			}
+			const coordinatorCompletionGroupIds = new Set<string>();
+			for (const record of records) {
+				const group = groupById.get(record.group_id);
+				if (!group) throw new Error("team_setup_completion_invalid");
+				if (!belongsToGroupCandidate(record, group)) continue;
+				try {
+					validateLegacyTeamSetupCompletionManifestBinding(record.manifest, {
+						coordinatorId: group.coordinatorId,
+						groupId: group.groupId,
+					});
+				} catch (bindingError) {
+					if (!reconciliationOptions.isolateApplyFailures) throw bindingError;
+					continue;
+				}
+				let canonicalManifest: ReturnType<typeof validateLegacyTeamSetupCompletionManifest>;
+				try {
+					canonicalManifest = validateLegacyTeamSetupCompletionManifest(record.manifest, {
+						coordinatorId: group.coordinatorId,
+						groupId: group.groupId,
+					});
+				} catch (validationError) {
+					try {
+						await runCandidateMutation(
+							store.db,
+							legacyTeamCandidateId(group.coordinatorId, group.groupId),
+							() =>
+								containLegacyTeamSetupCompletionConflict(store.db, {
+									coordinatorId: group.coordinatorId,
+									groupId: group.groupId,
+								}),
+						);
+					} catch (containmentError) {
+						if (!reconciliationOptions.isolateApplyFailures) throw containmentError;
+					}
+					if (!reconciliationOptions.isolateApplyFailures) throw validationError;
+					continue;
+				}
+				coordinatorCompletionGroupIds.add(record.group_id);
+				try {
+					let freshGroup = freshGroupByKey.get(freshGroupKey(group));
+					if (!freshGroup && scopedGroups.length > 1) {
+						if (remainingCoordinatorTimeoutS(timeoutS, reconciliationDeadlineMs) == null) {
+							throw new Error("team_setup_roster_unavailable");
+						}
+						freshGroup = await loadFreshGroupSnapshot(group, remoteUrl, reconciliationDeadlineMs);
+					}
+					if (!freshGroup) {
+						const contained = await runCandidateMutation(
+							store.db,
+							legacyTeamCandidateId(group.coordinatorId, group.groupId),
+							() =>
+								containLegacyTeamSetupCompletionConflict(store.db, {
+									coordinatorId: group.coordinatorId,
+									groupId: group.groupId,
+								}),
+						);
+						if (!contained) {
+							if (!reconciliationOptions.isolateApplyFailures) {
+								throw new Error("team_setup_completion_invalid");
+							}
+							continue;
+						}
+						throw new Error("team_setup_completion_invalid");
+					}
+					const applied = await applyCanonicalManifestIfStillAuthorized(
+						store,
+						authorization,
+						group,
+						canonicalManifest,
+						freshGroup.devices,
+					);
+					if (applied !== "applied") continue;
+				} catch (error) {
+					if (!reconciliationOptions.isolateApplyFailures) throw error;
+				}
+			}
+			for (const group of scopedGroups) {
+				if (coordinatorCompletionGroupIds.has(group.groupId)) continue;
+				const publicationTimeoutS = remainingCoordinatorTimeoutS(
+					timeoutS,
+					reconciliationDeadlineMs,
+				);
+				if (publicationTimeoutS == null) break;
+				if (
+					!hasCompletedLegacyTeamSetup(
+						store,
+						legacyTeamCandidateId(group.coordinatorId, group.groupId),
+					)
+				) {
+					continue;
+				}
+				const candidateRef = legacyTeamCandidateId(group.coordinatorId, group.groupId);
+				let reconstructionFailed = false;
+				try {
+					const published = await runCandidateMutation(store.db, candidateRef, () =>
+						serializeRecipientPolicyPublicationMutation(store.db, () =>
+							serializeRecipientPolicyTeamMutation(
+								store.db,
+								deterministicPolicyTeamId(candidateRef),
+								async () => {
+									let manifest: ReturnType<typeof reconstructLegacyTeamSetupCompletionManifest>;
+									try {
+										manifest = reconstructLegacyTeamSetupCompletionManifest(store.db, {
+											candidateRef,
+										});
+									} catch {
+										reconstructionFailed = true;
+										return;
+									}
+									// Publication sends identity and policy data to the coordinator;
+									// re-prove the destination is still the configured one.
+									if (!stillAuthorizesGroup(authorization, group)) {
+										reconstructionFailed = true;
+										return;
+									}
+									await completionDependencies.create({
+										groupId: group.groupId,
+										manifest,
+										remoteUrl,
+										adminSecret: config.syncCoordinatorAdminSecret,
+										timeoutS: publicationTimeoutS,
+									});
+								},
+							),
+						),
+					);
+					if (!published || reconstructionFailed) continue;
+				} catch (error) {
+					// Publishing an existing local completion is best-effort. The bounded
+					// list/apply pass above remains authoritative and fail-closed.
+					if (completionApiError(error) !== "team_setup_completion_conflict") continue;
+					const getCompletion = completionDependencies.get;
+					let canonicalManifest: Awaited<ReturnType<NonNullable<typeof getCompletion>>> = null;
+					try {
+						if (!getCompletion) throw new Error("team_setup_completion_conflict");
+						canonicalManifest = await retryTransientCoordinatorRead(
+							(attemptTimeoutS) =>
+								getCompletion({
+									groupId: group.groupId,
+									candidateRef,
+									remoteUrl,
+									adminSecret: config.syncCoordinatorAdminSecret,
+									timeoutS: attemptTimeoutS,
+								}),
+							timeoutS,
+							reconciliationDeadlineMs,
+						);
+						if (!canonicalManifest) throw new Error("team_setup_completion_conflict");
+					} catch {
+						try {
+							const contained = await runCandidateMutation(store.db, candidateRef, () =>
+								containLegacyTeamSetupCompletionConflict(store.db, {
+									coordinatorId: group.coordinatorId,
+									groupId: group.groupId,
+								}),
+							);
+							if (!contained) {
+								if (!reconciliationOptions.isolateApplyFailures) {
+									throw new Error("team_setup_completion_conflict");
+								}
+								continue;
+							}
+						} catch (containmentError) {
+							if (!reconciliationOptions.isolateApplyFailures) throw containmentError;
+							continue;
+						}
+						if (!reconciliationOptions.isolateApplyFailures) {
+							throw new Error("team_setup_completion_conflict");
+						}
+						continue;
+					}
+					try {
+						const freshGroup = await loadFreshGroupSnapshot(
+							group,
+							remoteUrl,
+							reconciliationDeadlineMs,
+						);
+						if (!freshGroup) throw new Error("team_setup_roster_unavailable");
+						const applied = await applyCanonicalManifestIfStillAuthorized(
+							store,
+							authorization,
+							group,
+							canonicalManifest,
+							freshGroup.devices,
+						);
+						if (applied !== "applied") continue;
+					} catch (applyError) {
+						if (applyError instanceof LegacyTeamSetupAdditiveConvergenceError) {
+							if (!reconciliationOptions.isolateApplyFailures) throw applyError;
+							continue;
+						}
+						try {
+							const contained = await runCandidateMutation(store.db, candidateRef, () =>
+								containLegacyTeamSetupCompletionConflict(store.db, {
+									coordinatorId: group.coordinatorId,
+									groupId: group.groupId,
+								}),
+							);
+							if (!contained) {
+								if (!reconciliationOptions.isolateApplyFailures) {
+									throw new Error("team_setup_completion_conflict", { cause: applyError });
+								}
+								continue;
+							}
+						} catch (containmentError) {
+							if (!reconciliationOptions.isolateApplyFailures) throw containmentError;
+							continue;
+						}
+						if (!reconciliationOptions.isolateApplyFailures) {
+							throw new Error("team_setup_completion_conflict", { cause: applyError });
+						}
+					}
+				}
+			}
+		} catch (error) {
+			throw new Error(completionApiError(error));
+		}
+	}
 	async function loadedCandidateSnapshots(
 		candidateRef: string,
 		loadOptions: {
 			allowCachedSummaryFallback?: boolean;
+			deadlineMs?: number;
 			invalidateSummaryCache?: boolean;
 		} = {},
 	): Promise<LegacyTeamConfiguredGroupSnapshot[]> {
@@ -1227,7 +1882,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		const invalidateSummaryCache = loadOptions.invalidateSummaryCache ?? true;
 		if (invalidateSummaryCache) loadedSummarySnapshots.invalidate();
 		try {
-			return await loadedSnapshots(candidateRef);
+			return await loadedSnapshots(candidateRef, loadOptions.deadlineMs);
 		} catch (error) {
 			if (!allowCachedSummaryFallback) throw error;
 			const cachedGroups = loadedSummarySnapshots.peek();
@@ -1242,6 +1897,21 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		}
 	}
 
+	function persistedCompletionGroup(
+		store: MemoryStore,
+		candidateRef: string,
+	): LegacyTeamCandidateGroupDescriptor | null {
+		const row = store.db
+			.prepare(
+				`SELECT coordinator_id, group_id FROM legacy_team_setup_drafts
+				 WHERE candidate_id = ? ORDER BY rowid DESC LIMIT 1`,
+			)
+			.get(candidateRef) as { coordinator_id: string; group_id: string } | undefined;
+		if (!row || legacyTeamCandidateId(row.coordinator_id, row.group_id) !== candidateRef)
+			return null;
+		return { coordinatorId: row.coordinator_id, groupId: row.group_id };
+	}
+
 	app.get("/api/sync/team-setup/v1", async (c) => {
 		let groups: LegacyTeamConfiguredGroupSnapshot[];
 		try {
@@ -1252,6 +1922,8 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		}
 		try {
 			const store = options.getStore();
+			readPureCandidateViews(store, groups);
+			await reconcileCompletions(store, groups, { isolateApplyFailures: true });
 			const response = {
 				version: TEAM_SETUP_VERSION,
 				candidates: readPureCandidateViews(store, groups)
@@ -1278,6 +1950,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			const store = options.getStore();
 			let draft = getLegacyTeamSetupDraft(store.db, candidateRef);
 			const terminal = hasCompletedLegacyTeamSetup(store, candidateRef);
+			let candidateGroupsForCompletion: LegacyTeamConfiguredGroupSnapshot[] | null = null;
 			if (terminal && draft?.state !== "completed") {
 				return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
 			}
@@ -1295,6 +1968,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 				const candidateGroups = groups.filter(
 					(group) => legacyTeamCandidateId(group.coordinatorId, group.groupId) === candidateRef,
 				);
+				candidateGroupsForCompletion = candidateGroups;
 				const postLoadDraft = getLegacyTeamSetupDraft(store.db, candidateRef);
 				if (hasCompletedLegacyTeamSetup(store, candidateRef)) {
 					if (postLoadDraft?.state !== "completed") {
@@ -1314,6 +1988,28 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 				}
 			}
 			if (!draft) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			const cachedCandidateGroups = loadedSummarySnapshots
+				.peek()
+				?.filter(
+					(group) => legacyTeamCandidateId(group.coordinatorId, group.groupId) === candidateRef,
+				);
+			let completionGroups: LegacyTeamCandidateGroupDescriptor[] | null =
+				candidateGroupsForCompletion ??
+				(cachedCandidateGroups?.length ? cachedCandidateGroups : null);
+			if (!completionGroups) {
+				const persistedGroup = persistedCompletionGroup(store, candidateRef);
+				completionGroups = persistedGroup ? [persistedGroup] : null;
+			}
+			const terminalBeforeReconciliation = hasCompletedLegacyTeamSetup(store, candidateRef);
+			if (completionGroups) await reconcileCompletions(store, completionGroups);
+			draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+			if (
+				!draft ||
+				(!terminalBeforeReconciliation && hasCompletedLegacyTeamSetup(store, candidateRef))
+			) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
+			}
+			if (completionGroups) candidate = candidateFromDraft(draft);
 
 			return c.json(detailResponse(store, draft, candidate));
 		} catch (error) {
@@ -1378,19 +2074,27 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 				(choice) => choice.identityRef === targetIdentityRef,
 			);
 			if (!target) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
-			return c.json(
-				projectMutationAtomically(
-					store,
-					() =>
-						setLegacyTeamSetupDeviceAssignment(store.db, {
-							attemptId,
-							deviceRef,
-							targetIdentityId: target.identityId,
-							expectation: device.expectation,
-						}),
-					(draft) => detailResponse(store, draft),
-				),
-			);
+			const releaseMutation = claimCandidateMutation(store.db, candidateRef);
+			if (!releaseMutation) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
+			try {
+				return c.json(
+					projectMutationAtomically(
+						store,
+						() =>
+							setLegacyTeamSetupDeviceAssignment(store.db, {
+								attemptId,
+								deviceRef,
+								targetIdentityId: target.identityId,
+								expectation: device.expectation,
+							}),
+						(draft) => detailResponse(store, draft),
+					),
+				);
+			} finally {
+				releaseMutation();
+			}
 		} catch (error) {
 			const code = apiErrorCode(error);
 			return c.json({ error: code }, errorStatus(code));
@@ -1444,18 +2148,26 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			) {
 				return c.json({ error: "team_setup_assignment_changed" as const }, 409);
 			}
-			return c.json(
-				projectMutationAtomically(
-					store,
-					() =>
-						setLegacyTeamSetupDeviceDecision(store.db, {
-							attemptId,
-							deviceRef,
-							decision: decision as "included" | "excluded" | "removed",
-						}),
-					(draft) => detailResponse(store, draft),
-				),
-			);
+			const releaseMutation = claimCandidateMutation(store.db, candidateRef);
+			if (!releaseMutation) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
+			try {
+				return c.json(
+					projectMutationAtomically(
+						store,
+						() =>
+							setLegacyTeamSetupDeviceDecision(store.db, {
+								attemptId,
+								deviceRef,
+								decision: decision as "included" | "excluded" | "removed",
+							}),
+						(draft) => detailResponse(store, draft),
+					),
+				);
+			} finally {
+				releaseMutation();
+			}
 		} catch (error) {
 			const code = apiErrorCode(error);
 			return c.json({ error: code }, errorStatus(code));
@@ -1492,13 +2204,21 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			if (!draft.devices.some((item) => item.deviceRef === deviceRef)) {
 				return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
 			}
-			return c.json(
-				projectMutationAtomically(
-					store,
-					() => clearLegacyTeamSetupDeviceDecision(store.db, { attemptId, deviceRef }),
-					(draft) => detailResponse(store, draft),
-				),
-			);
+			const releaseMutation = claimCandidateMutation(store.db, candidateRef);
+			if (!releaseMutation) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
+			try {
+				return c.json(
+					projectMutationAtomically(
+						store,
+						() => clearLegacyTeamSetupDeviceDecision(store.db, { attemptId, deviceRef }),
+						(draft) => detailResponse(store, draft),
+					),
+				);
+			} finally {
+				releaseMutation();
+			}
 		} catch (error) {
 			const code = apiErrorCode(error);
 			return c.json({ error: code }, errorStatus(code));
@@ -1549,18 +2269,26 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 					legacyTeamResolvedProjectRef(projectRef, choice.projectIdentity) === resolvedProjectRef,
 			);
 			if (!target) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
-			return c.json(
-				projectMutationAtomically(
-					store,
-					() =>
-						setLegacyTeamSetupProjectMapping(store.db, {
-							attemptId,
-							projectRef,
-							resolvedProjectIdentity: target.projectIdentity,
-						}),
-					(draft) => detailResponse(store, draft),
-				),
-			);
+			const releaseMutation = claimCandidateMutation(store.db, candidateRef);
+			if (!releaseMutation) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
+			try {
+				return c.json(
+					projectMutationAtomically(
+						store,
+						() =>
+							setLegacyTeamSetupProjectMapping(store.db, {
+								attemptId,
+								projectRef,
+								resolvedProjectIdentity: target.projectIdentity,
+							}),
+						(draft) => detailResponse(store, draft),
+					),
+				);
+			} finally {
+				releaseMutation();
+			}
 		} catch (error) {
 			const code = apiErrorCode(error);
 			return c.json({ error: code }, errorStatus(code));
@@ -1604,26 +2332,34 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
 		}
 		try {
-			return c.json(
-				projectMutationAtomically(
-					store,
-					() => {
-						const currentDraft = getLegacyTeamSetupDraft(store.db, candidateRef);
-						if (
-							currentDraft?.state === "completed" ||
-							hasCompletedLegacyTeamSetup(store, candidateRef)
-						) {
-							throw new Error("team_setup_confirmation_stale");
-						}
-						return refreshLegacyTeamCandidate(
-							store.db,
-							{ projection: projectionOptions(store), groups },
-							candidateRef,
-						);
-					},
-					(draft) => detailResponse(store, draft),
-				),
-			);
+			const releaseMutation = claimCandidateMutation(store.db, candidateRef);
+			if (!releaseMutation) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
+			try {
+				return c.json(
+					projectMutationAtomically(
+						store,
+						() => {
+							const currentDraft = getLegacyTeamSetupDraft(store.db, candidateRef);
+							if (
+								currentDraft?.state === "completed" ||
+								hasCompletedLegacyTeamSetup(store, candidateRef)
+							) {
+								throw new Error("team_setup_confirmation_stale");
+							}
+							return refreshLegacyTeamCandidate(
+								store.db,
+								{ projection: projectionOptions(store), groups },
+								candidateRef,
+							);
+						},
+						(draft) => detailResponse(store, draft),
+					),
+				);
+			} finally {
+				releaseMutation();
+			}
 		} catch (error) {
 			const code = apiErrorCode(error);
 			return c.json({ error: code }, errorStatus(code));
@@ -1670,6 +2406,9 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		) {
 			return c.json({ error: "team_setup_incomplete" as const }, 400);
 		}
+		let releaseMutation: (() => void) | undefined;
+		let releasePublicationMutation: (() => void) | undefined;
+		let releaseActorMutations: (() => void) | undefined;
 		try {
 			const store = options.getStore();
 			const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
@@ -1680,57 +2419,250 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			if (draft.attemptId !== attemptId) {
 				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
 			}
-			if (draft.state !== "completed") {
-				const preview = previewLegacyTeamSetupActivation(store.db, {
-					candidateRef,
-					attemptId: draft.attemptId,
-				});
-				requireBoundedAccessDelta(preview.accessDelta);
-				const safeDraft = viewerSafeDraft(store, draft);
-				const currentViewerDigest = viewerAccessDeltaDigest(
-					viewerSafeAccessDelta(candidateRef, preview.accessDelta, {
-						teamDisplayName: draft.displayName,
-						...safeDraft,
-					}),
-				);
-				if (currentViewerDigest !== confirmedViewerAccessDeltaDigest) {
-					return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
-				}
-			}
-			const result = await finishLegacyTeamSetupActivation(store.db, {
+			const replay = replayLegacyTeamSetupActivation(store.db, {
 				candidateRef,
 				attemptId,
 				finishDigest,
 				confirmedAccessDeltaDigest,
-				loadFreshRoster: async () => {
-					const groups = await loadedCandidateSnapshots(candidateRef);
-					const matching = groups.filter(
-						(group) => legacyTeamCandidateId(group.coordinatorId, group.groupId) === candidateRef,
-					);
-					if (matching.length !== 1) throw safeCoordinatorError();
-					return matching[0]?.devices ?? [];
-				},
-				loadProjectInventory: () =>
-					legacyTeamCandidateProjectInventory(store.db, projectionOptions(store), candidateRef),
-				validateLockedPreview: (lockedPreview) => {
-					requireBoundedAccessDelta(lockedPreview.accessDelta);
-					const lockedDraft = getLegacyTeamSetupDraft(store.db, candidateRef);
-					if (!lockedDraft || lockedDraft.attemptId !== attemptId) return false;
-					const safeDraft = viewerSafeDraft(store, lockedDraft);
-					return (
-						viewerAccessDeltaDigest(
-							viewerSafeAccessDelta(candidateRef, lockedPreview.accessDelta, {
-								teamDisplayName: lockedDraft.displayName,
-								...safeDraft,
-							}),
-						) === confirmedViewerAccessDeltaDigest
-					);
-				},
 			});
-			return c.json(finishResponse(candidateRef, result));
+			if (replay) return c.json(finishResponse(candidateRef, replay));
+			if (draft.state === "completed") {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
+			const preview = previewLegacyTeamSetupActivation(store.db, {
+				candidateRef,
+				attemptId: draft.attemptId,
+			});
+			requireLegacyTeamSetupAccessDeltaWithinLimit(preview.accessDelta);
+			const safeDraft = viewerSafeDraft(store, draft);
+			const currentViewerDigest = viewerAccessDeltaDigest(
+				viewerSafeAccessDelta(candidateRef, preview.accessDelta, {
+					teamDisplayName: draft.displayName,
+					...safeDraft,
+				}),
+			);
+			if (currentViewerDigest !== confirmedViewerAccessDeltaDigest) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
+			const freshGroups = await loadedCandidateSnapshots(candidateRef);
+			const matchingGroups = freshGroups.filter(
+				(group) => legacyTeamCandidateId(group.coordinatorId, group.groupId) === candidateRef,
+			);
+			if (matchingGroups.length !== 1) throw safeCoordinatorError();
+			const group = matchingGroups[0];
+			if (!group) throw safeCoordinatorError();
+			releaseMutation = claimCandidateMutation(store.db, candidateRef) ?? undefined;
+			if (!releaseMutation) {
+				// An identical request may be committing right now. Wait for it and
+				// return its immutable result instead of a stale-confirmation error.
+				await candidateMutationSettled(store.db, candidateRef);
+				const overlappingReplay = replayLegacyTeamSetupActivation(store.db, {
+					candidateRef,
+					attemptId,
+					finishDigest,
+					confirmedAccessDeltaDigest,
+				});
+				if (overlappingReplay) return c.json(finishResponse(candidateRef, overlappingReplay));
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
+			// The pre-claim replay lookup raced an in-flight commit; recheck under the claim.
+			const claimedReplay = replayLegacyTeamSetupActivation(store.db, {
+				candidateRef,
+				attemptId,
+				finishDigest,
+				confirmedAccessDeltaDigest,
+			});
+			if (claimedReplay) return c.json(finishResponse(candidateRef, claimedReplay));
+			const claimedDraft = getLegacyTeamSetupDraft(store.db, candidateRef);
+			if (!claimedDraft || claimedDraft.attemptId !== attemptId) {
+				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+			}
+			const publicationDeadlineMs = Date.now() + COORDINATOR_ROSTER_READ_BUDGET_MS;
+			releasePublicationMutation = await claimRecipientPolicyPublicationMutation(store.db);
+			// Every identity the activation reads or writes is part of the immutable
+			// publication winner: the target of each included device and the existing
+			// assignment of every reviewed device (including excluded or removed ones,
+			// whose current assignment the access delta depends on). These locks cover
+			// coordinator creation, conflict recovery, and local application.
+			releaseActorMutations = await claimRecipientPolicyActorMutations(
+				store.db,
+				claimedDraft.devices.flatMap((device) => [
+					...(device.decision === "included" && device.targetIdentityId
+						? [device.targetIdentityId]
+						: []),
+					...(device.existingIdentityId ? [device.existingIdentityId] : []),
+				]),
+			);
+			const response = await serializeRecipientPolicyTeamMutation(
+				store.db,
+				deterministicPolicyTeamId(candidateRef),
+				() =>
+					serializeRecipientPolicyCoordinatorGroupMutation(store.db, group.groupId, async () => {
+						let authorization: CompletionAuthorization | null;
+						try {
+							authorization = currentCompletionAuthorization();
+						} catch (error) {
+							throw new Error(completionApiError(error));
+						}
+						if (!completionDependencies || !authorization) {
+							throw new Error("team_setup_completion_unavailable");
+						}
+						if (!authorizesGroup(authorization, group)) {
+							throw new Error("team_setup_completion_invalid");
+						}
+						const { config, remoteUrl } = authorization;
+						const freshGroup = await loadFreshGroupSnapshot(
+							group,
+							remoteUrl,
+							publicationDeadlineMs,
+						);
+						if (!freshGroup) throw new Error("team_setup_roster_unavailable");
+						if (!stillAuthorizesGroup(authorization, group)) {
+							throw new Error("team_setup_completion_invalid");
+						}
+						const projectInventory = legacyTeamCandidateProjectInventory(
+							store.db,
+							projectionOptions(store),
+							candidateRef,
+						);
+						const freshPreview = inspectFreshLegacyTeamSetupActivation(store.db, {
+							candidateRef,
+							attemptId,
+							freshRoster: freshGroup.devices,
+							projectInventory,
+						});
+						if (
+							freshPreview.finishDigest !== finishDigest ||
+							freshPreview.accessDeltaDigest !== confirmedAccessDeltaDigest
+						) {
+							return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+						}
+						const freshDraft = getLegacyTeamSetupDraft(store.db, candidateRef);
+						if (!freshDraft || freshDraft.attemptId !== attemptId) {
+							return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+						}
+						const safeFreshDraft = viewerSafeDraft(store, freshDraft);
+						if (
+							viewerAccessDeltaDigest(
+								viewerSafeAccessDelta(candidateRef, freshPreview.accessDelta, {
+									teamDisplayName: freshDraft.displayName,
+									...safeFreshDraft,
+								}),
+							) !== confirmedViewerAccessDeltaDigest
+						) {
+							return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
+						}
+						const completedAt = new Date().toISOString();
+						const proposedManifest = deriveLegacyTeamSetupCompletionManifest(store.db, {
+							candidateRef,
+							attemptId,
+							completedAt,
+						});
+						const timeoutS = Math.max(1, config.syncCoordinatorTimeoutS);
+						const publicationTimeoutS = remainingCoordinatorTimeoutS(
+							timeoutS,
+							publicationDeadlineMs,
+						);
+						if (publicationTimeoutS == null) {
+							throw new Error("team_setup_completion_unavailable");
+						}
+						let canonicalManifest: typeof proposedManifest;
+						try {
+							canonicalManifest = validateLegacyTeamSetupCompletionManifest(
+								(
+									await completionDependencies.create({
+										groupId: group.groupId,
+										manifest: proposedManifest,
+										remoteUrl,
+										adminSecret: config.syncCoordinatorAdminSecret,
+										timeoutS: publicationTimeoutS,
+									})
+								).manifest,
+								{ coordinatorId: group.coordinatorId, groupId: group.groupId },
+							);
+							if (
+								canonicalCoordinatorLegacyTeamCompletionManifestJson(canonicalManifest) !==
+								canonicalCoordinatorLegacyTeamCompletionManifestJson(proposedManifest)
+							) {
+								throw new Error("team_setup_completion_conflict");
+							}
+						} catch (error) {
+							const code = completionApiError(error);
+							const getCompletion = completionDependencies.get;
+							if (code !== "team_setup_completion_conflict" || !getCompletion) {
+								throw new Error(code);
+							}
+							try {
+								const existing = await retryTransientCoordinatorRead(
+									(attemptTimeoutS) =>
+										getCompletion({
+											groupId: group.groupId,
+											candidateRef,
+											remoteUrl,
+											adminSecret: config.syncCoordinatorAdminSecret,
+											timeoutS: attemptTimeoutS,
+										}),
+									timeoutS,
+									publicationDeadlineMs,
+								);
+								if (!existing) throw new Error("team_setup_completion_conflict");
+								canonicalManifest = validateLegacyTeamSetupCompletionManifest(existing, {
+									coordinatorId: group.coordinatorId,
+									groupId: group.groupId,
+								});
+								// A conflict can mean an earlier request committed before its response was lost.
+								// The matching policy digest identifies that winner; its publication timestamp
+								// is coordinator-owned metadata and must be applied unchanged.
+								if (canonicalManifest.finish_digest !== proposedManifest.finish_digest) {
+									throw new Error("team_setup_completion_conflict");
+								}
+							} catch (recoveryError) {
+								throw new Error(completionApiError(recoveryError));
+							}
+						}
+						// Publication is the commit point. Apply its immutable winner after binding
+						// each included device to the current coordinator roster evidence.
+						// If this reload fails, reconciliation can apply the published winner later.
+						let postPublicationGroup: LegacyTeamConfiguredGroupSnapshot | undefined;
+						try {
+							postPublicationGroup = await loadFreshGroupSnapshot(
+								group,
+								remoteUrl,
+								publicationDeadlineMs,
+							);
+						} catch (error) {
+							if (legacyTeamSetupApiErrorCode(error) === "team_setup_completion_invalid") {
+								throw new Error("team_setup_roster_unavailable");
+							}
+							throw error;
+						}
+						if (!postPublicationGroup) throw new Error("team_setup_roster_unavailable");
+						const result = await applyLegacyTeamSetupCompletionManifestAndReturnActivation(
+							store.db,
+							{
+								coordinatorId: group.coordinatorId,
+								groupId: group.groupId,
+								freshRoster: postPublicationGroup.devices,
+								manifest: canonicalManifest,
+								expectedDraftManifest: proposedManifest,
+								recipientPolicyLocksHeld: {
+									publication: true,
+									team: true,
+									coordinatorGroup: true,
+								},
+							},
+						);
+						return c.json(finishResponse(candidateRef, result));
+					}),
+			);
+			return response;
 		} catch (error) {
 			const code = apiErrorCode(error);
 			return c.json({ error: code }, errorStatus(code));
+		} finally {
+			releaseActorMutations?.();
+			releasePublicationMutation?.();
+			releaseMutation?.();
 		}
 	});
 

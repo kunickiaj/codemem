@@ -30,6 +30,8 @@ pnpm exec vitest run packages/viewer-server/src/index.test.ts
 pnpm exec vitest run packages/core/src/index.test.ts
 ```
 
+The repository requires **CI Gate** in branch protection. This aggregate check runs after every CI job and prevents merges when a required job fails, is cancelled, or is unexpectedly skipped.
+
 ## Context injection validation
 
 When changing pack retrieval, context injection, or the adapter surfaces

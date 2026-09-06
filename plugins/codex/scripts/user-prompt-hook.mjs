@@ -80,11 +80,27 @@ function normalizeIdentityPath(value, cwd, env) {
 	return trimmed ? resolve(cwd, expandHome(trimmed, env)) : null;
 }
 
+const DEFAULT_EMBEDDING_MODEL = "Xenova/bge-small-en-v1.5";
+const DEFAULT_EMBEDDING_REVISION = "ea104dacec62c0de699686887e3f920caeb4f3e3";
+
 export function resolveDbPath(cwd, env) {
 	return resolve(cwd, expandHome(env.CODEMEM_DB?.trim() || "~/.codemem/mem.sqlite", env));
 }
 
 export function identityTarget(cwd, env) {
+	const embeddingModel = env.CODEMEM_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL;
+	const configuredEmbeddingRevision = env.CODEMEM_EMBEDDING_REVISION?.trim();
+	// Mirror core's tryResolveEmbeddingRevision exactly: a configured revision is
+	// used only when commit-addressed (7–40 hex); a mutable ref (branch/tag) is
+	// REJECTED and yields null even for the default model. The pinned default
+	// revision applies only when no revision was configured.
+	let embeddingRevision;
+	if (configuredEmbeddingRevision) {
+		embeddingRevision = configuredEmbeddingRevision;
+	} else {
+		embeddingRevision =
+			embeddingModel === DEFAULT_EMBEDDING_MODEL ? DEFAULT_EMBEDDING_REVISION : null;
+	}
 	return {
 		device_id: env.CODEMEM_DEVICE_ID?.trim() || null,
 		actor_id_present: Object.hasOwn(env, "CODEMEM_ACTOR_ID"),
@@ -97,7 +113,8 @@ export function identityTarget(cwd, env) {
 		embedding_disabled: ["1", "true", "yes"].includes(
 			String(env.CODEMEM_EMBEDDING_DISABLED ?? "").toLowerCase(),
 		),
-		embedding_model: env.CODEMEM_EMBEDDING_MODEL || "Xenova/bge-small-en-v1.5",
+		embedding_model: embeddingModel,
+		embedding_revision: embeddingRevision,
 	};
 }
 
@@ -549,9 +566,21 @@ export function runCompatibilityFallback(raw, env, deadline, overrides = {}) {
 
 	const npxTimeoutMs = Math.min(1_500, remainingPromptBudgetMs(deadline, monotonicNow));
 	if (npxTimeoutMs <= 0) return null;
+	// Request both codemem and the optional @codemem/embeddings peer in the same
+	// npx environment so the local-store inject path can embed rather than
+	// degrade to FTS-only. Repeated --package options add both packages.
+	const pin = pinnedVersion(env);
 	return runInjectImpl(
 		"npx",
-		["-y", `codemem@${pinnedVersion(env)}`, "codex-hook-inject"],
+		[
+			"-y",
+			"--package",
+			`codemem@${pin}`,
+			"--package",
+			`@codemem/embeddings@${pin}`,
+			"codemem",
+			"codex-hook-inject",
+		],
 		raw,
 		fallbackEnv,
 		npxTimeoutMs,

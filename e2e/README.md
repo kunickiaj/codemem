@@ -131,8 +131,9 @@ This scenario proves that reviewed Team setup:
 - persists device choices, supports shared assignments across Teams, and keeps a Team-specific exclusion scoped to that Team;
 - blocks incomplete, stale, conflicting, or unmapped Project reviews without changing access;
 - applies confirmed device decisions, Project mappings, and access changes together at finish;
-- keeps a later unreviewed device ineligible; and
-- returns the same completed result when a finish response is lost and retried.
+- keeps a later unreviewed device ineligible;
+- returns the same completed result when a finish response is lost and retried; and
+- makes the first valid completion authoritative across upgraded devices: another device applies the same policy locally and no longer shows the setup task.
 
 ## Run the sharing-domain scenario
 

@@ -56,11 +56,20 @@ function makeProcess(
 }
 
 function installSpawnResult(status = availableStatus) {
-	spawnMock.mockImplementation((_command, args) => {
+	let installed = false;
+	spawnMock.mockImplementation((command, args) => {
+		if (command === "npm" && args?.includes("install")) {
+			installed = true;
+			return makeProcess();
+		}
 		if (args?.includes("update") && args?.includes("check")) {
 			return makeProcess({ stdout: JSON.stringify(status) });
 		}
-		if (args?.includes("version")) return makeProcess({ stdout: "0.40.2\n" });
+		if (args?.includes("version")) {
+			return makeProcess({
+				stdout: `${installed ? status.latest_version : status.current_version}\n`,
+			});
+		}
 		return makeProcess();
 	});
 }
@@ -78,11 +87,21 @@ function installCompatibilityAutoUpdateSpawnResult({ startViewer = false } = {})
 			});
 		}
 		if (args?.includes("update") && args?.includes("check")) {
-			return makeProcess({ stdout: JSON.stringify(compatibleStatus) });
+			return makeProcess({
+				stdout: JSON.stringify({ ...availableStatus, auto_update_eligible: true }),
+			});
 		}
 		return makeProcess();
 	});
 	return () => versionCallCount;
+}
+
+function isPairedInstallCall(call) {
+	return (
+		call[0] === "npm" &&
+		call[1]?.join(" ") ===
+			"install -g --registry https://registry.npmjs.org/ --@codemem:registry=https://registry.npmjs.org/ codemem@0.41.0 @codemem/embeddings@0.41.0"
+	);
 }
 
 async function startPlugin(showToast = vi.fn().mockResolvedValue(undefined)) {
@@ -244,7 +263,7 @@ describe("OpenCode startup release notifications", () => {
 		expect(showToast).not.toHaveBeenCalled();
 	});
 
-	test("auto installs an eligible release through the guarded CLI command", async () => {
+	test("auto installs an eligible release through the paired package plan", async () => {
 		// Arrange
 		process.env.CODEMEM_BACKEND_UPDATE_POLICY = "auto";
 		installSpawnResult({ ...availableStatus, auto_update_eligible: true });
@@ -257,11 +276,38 @@ describe("OpenCode startup release notifications", () => {
 		// Assert
 		const args = spawnMock.mock.calls.map((call) => call[1]);
 		expect(args.some((value) => value?.includes("update") && value?.includes("check"))).toBe(true);
-		expect(args.some((value) => value?.includes("update") && value?.includes("install"))).toBe(true);
+		expect(spawnMock.mock.calls.some(isPairedInstallCall)).toBe(true);
+		expect(args.some((value) => value?.join(" ") === "update install --json")).toBe(false);
 		expect(showToast).toHaveBeenCalledTimes(1);
 		expect(showToast.mock.calls[0]?.[0]?.body).toMatchObject({
 			message: "Updated codemem to 0.41.0.",
 			variant: "success",
+		});
+	});
+
+	test("auto reports a verification failure instead of claiming update success", async () => {
+		process.env.CODEMEM_BACKEND_UPDATE_POLICY = "auto";
+		spawnMock.mockImplementation((_command, args) => {
+			if (args?.includes("update") && args?.includes("check")) {
+				return makeProcess({
+					stdout: JSON.stringify({ ...availableStatus, auto_update_eligible: true }),
+				});
+			}
+			if (args?.includes("version")) return makeProcess({ stdout: "0.40.2\n" });
+			return makeProcess();
+		});
+		const showToast = vi.fn().mockResolvedValue(undefined);
+
+		await startPlugin(showToast);
+		await runStartupChecks();
+
+		expect(spawnMock.mock.calls.some(isPairedInstallCall)).toBe(true);
+		expect(showToast).toHaveBeenCalledTimes(1);
+		expect(showToast).toHaveBeenCalledWith({
+			body: {
+				message: expect.stringContaining("active CLI failed verification"),
+				variant: "warning",
+			},
 		});
 	});
 
@@ -278,7 +324,12 @@ describe("OpenCode startup release notifications", () => {
 			"http://127.0.0.9:48765/api/health",
 			503,
 		);
-		spawnMock.mockImplementation((_command, args) => {
+		let installed = false;
+		spawnMock.mockImplementation((command, args) => {
+			if (command === "npm" && args?.includes("install")) {
+				installed = true;
+				return makeProcess();
+			}
 			if (args?.includes("serve") && args?.includes("start")) {
 				return makeProcess({ emitSpawn: true });
 			}
@@ -287,7 +338,9 @@ describe("OpenCode startup release notifications", () => {
 					stdout: JSON.stringify({ ...availableStatus, auto_update_eligible: true }),
 				});
 			}
-			if (args?.includes("version")) return makeProcess({ stdout: "0.40.2\n" });
+			if (args?.includes("version")) {
+				return makeProcess({ stdout: `${installed ? "0.41.0" : "0.40.2"}\n` });
+			}
 			return makeProcess();
 		});
 
@@ -319,7 +372,7 @@ describe("OpenCode startup release notifications", () => {
 			expect.objectContaining({ cwd: "/tmp/codemem", detached: true }),
 		);
 		const installIndex = spawnMock.mock.calls.findIndex(
-			(call) => call[1]?.includes("update") && call[1]?.includes("install"),
+			isPairedInstallCall,
 		);
 		const restartIndex = spawnMock.mock.calls.findIndex(
 			(call) => call[1]?.includes("serve") && call[1]?.includes("restart"),
@@ -374,9 +427,7 @@ describe("OpenCode startup release notifications", () => {
 		);
 		expect(unexpectedUrls).toEqual([]);
 		expect(
-			spawnMock.mock.calls.some(
-				(call) => call[1]?.includes("update") && call[1]?.includes("install"),
-			),
+			spawnMock.mock.calls.some(isPairedInstallCall),
 		).toBe(true);
 		expect(
 			spawnMock.mock.calls.some(
@@ -421,13 +472,27 @@ describe("OpenCode startup release notifications", () => {
 		);
 		expect(unexpectedUrls).toEqual([]);
 		expect(getVersionCallCount()).toBe(2);
-		const installIndex = spawnMock.mock.calls.findIndex(
-			(call) => call[1]?.join(" ") === "update install --json",
-		);
+		const installIndex = spawnMock.mock.calls.findIndex(isPairedInstallCall);
 		const restartIndex = spawnMock.mock.calls.findIndex(
 			(call) => call[1]?.includes("serve") && call[1]?.includes("restart"),
 		);
 		expect(installIndex).toBeGreaterThanOrEqual(0);
+		expect(spawnMock).toHaveBeenCalledWith(
+			"npm",
+			[
+				"install",
+				"-g",
+				"--registry",
+				"https://registry.npmjs.org/",
+				"--@codemem:registry=https://registry.npmjs.org/",
+				"codemem@0.41.0",
+				"@codemem/embeddings@0.41.0",
+			],
+			expect.objectContaining({ cwd: "/tmp/codemem" }),
+		);
+		expect(
+			spawnMock.mock.calls.some((call) => call[1]?.join(" ") === "update install --json"),
+		).toBe(false);
 		expect(restartIndex).toBeGreaterThan(installIndex);
 		expect(spawnMock).toHaveBeenCalledWith(
 			"codemem",
@@ -484,8 +549,16 @@ describe("OpenCode startup release notifications", () => {
 		expect(unexpectedUrls).toEqual([]);
 		expect(getVersionCallCount()).toBe(2);
 		expect(
-			spawnMock.mock.calls.some((call) => call[1]?.join(" ") === "update install --json"),
+			spawnMock.mock.calls.some(
+				(call) =>
+					call[0] === "npm" &&
+					call[1]?.join(" ") ===
+						"install -g --registry https://registry.npmjs.org/ --@codemem:registry=https://registry.npmjs.org/ codemem@0.41.0 @codemem/embeddings@0.41.0",
+			),
 		).toBe(true);
+		expect(
+			spawnMock.mock.calls.some((call) => call[1]?.join(" ") === "update install --json"),
+		).toBe(false);
 		expect(
 			spawnMock.mock.calls.some(
 				(call) =>
@@ -497,6 +570,30 @@ describe("OpenCode startup release notifications", () => {
 			body: {
 				message: "Updated codemem backend from 0.40.2 to 0.41.0.",
 				variant: "success",
+			},
+		});
+	});
+
+	test("compatibility auto-update skips a release that is not eligible", async () => {
+		process.env.CODEMEM_BACKEND_UPDATE_POLICY = "auto";
+		process.env.CODEMEM_MIN_VERSION = "0.41.0";
+		installSpawnResult({ ...availableStatus, auto_update_eligible: false });
+		const showToast = vi.fn().mockResolvedValue(undefined);
+
+		await startPlugin(showToast);
+		await runStartupChecks();
+		await vi.waitFor(() => {
+			expect(
+				spawnMock.mock.calls.some((call) => call[1]?.join(" ") === "update check --json"),
+			).toBe(true);
+		});
+
+		expect(spawnMock.mock.calls.some(isPairedInstallCall)).toBe(false);
+		expect(showToast).toHaveBeenCalledTimes(1);
+		expect(showToast).toHaveBeenCalledWith({
+			body: {
+				message: expect.stringContaining("Auto-update skipped (not eligible)"),
+				variant: "warning",
 			},
 		});
 	});

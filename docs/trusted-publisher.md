@@ -13,11 +13,19 @@ Use npm trusted publishing for this GitHub repo:
 
 Trusted publishing must be configured for every package the workflow publishes:
 
+- `@codemem/embeddings`
 - `@codemem/core`
 - `@codemem/mcp`
 - `@codemem/server`
 - `codemem`
 - `@codemem/opencode-plugin`
+
+Before the first tagged release that includes a new npm package, publish a
+distinct bootstrap prerelease such as `0.0.0-alpha.0` with authenticated
+maintainer credentials and a non-latest dist-tag such as `bootstrap`. Do not use
+the intended release version for this bootstrap. Then configure the trusted
+publisher above; npm requires the package to exist first. Do not use a release
+tag until this setup is complete.
 
 ## GitHub workflow behavior
 
@@ -31,11 +39,12 @@ In both cases the publish job checks out the workspace at the resolved tag,
 builds, and then runs `Publish packages`. Each package is published in
 dependency order:
 
-1. `@codemem/core`
-2. `@codemem/mcp`
-3. `@codemem/server`
-4. `codemem`
-5. `@codemem/opencode-plugin`
+1. `@codemem/embeddings`
+2. `@codemem/core`
+3. `@codemem/mcp`
+4. `@codemem/server`
+5. `codemem`
+6. `@codemem/opencode-plugin`
 
 Publish command shape:
 
@@ -72,7 +81,7 @@ on one package), use the `workflow_dispatch` path instead of retagging:
 ## Verification checklist
 
 - Tag push `vX.Y.Z` runs `Release` and `publish-npm` succeeds
-- All five package versions on npm match the release tag
+- All six package versions on npm match the release tag
 - npm provenance attestation is present for published artifacts
 - For recovery: `workflow_dispatch` rerun completes with `skip:` lines for
   packages already at the tag's version and `publish:` lines for any that

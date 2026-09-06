@@ -213,7 +213,7 @@ function summary(store: MemoryStore): Record<string, unknown> {
 	const policies = {
 		teams: store.db
 			.prepare(
-				"SELECT team_id, display_name, status, device_eligibility_mode FROM policy_teams ORDER BY display_name LIMIT 1000",
+				"SELECT team_id, display_name, status, device_eligibility_mode, revision FROM policy_teams ORDER BY display_name LIMIT 1000",
 			)
 			.all(),
 		memberships: store.db
@@ -263,6 +263,12 @@ function summary(store: MemoryStore): Record<string, unknown> {
 			.prepare(
 				`SELECT candidate_ref, attempt_id, finish_digest, confirmed_access_delta_digest, response_json
 				 FROM legacy_team_setup_completions ORDER BY candidate_ref LIMIT 1000`,
+			)
+			.all(),
+		drafts: store.db
+			.prepare(
+				`SELECT candidate_id, attempt_id, state, finish_digest, completed_team_id, completed_at
+				 FROM legacy_team_setup_drafts ORDER BY candidate_id, rowid LIMIT 1000`,
 			)
 			.all(),
 	};

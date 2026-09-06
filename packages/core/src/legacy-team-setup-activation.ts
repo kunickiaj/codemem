@@ -17,6 +17,8 @@ import type { LegacyTeamSetupActivationErrorCode } from "./legacy-team-setup-err
 import {
 	LEGACY_TEAM_SETUP_MAX_DEVICES,
 	LEGACY_TEAM_SETUP_MAX_PROJECTS,
+	requireLegacyTeamSetupAccessDeltaTraversalWithinLimit,
+	requireLegacyTeamSetupSnapshotWithinLimits,
 } from "./legacy-team-setup-limits.js";
 import {
 	activeUnmergedActorIds,
@@ -35,7 +37,9 @@ import {
 } from "./recipient-policy-identifiers.js";
 import { deriveRecipientPolicyEffectiveDevices } from "./recipient-policy-reconciliation.js";
 import {
+	serializeRecipientPolicyActorMutations,
 	serializeRecipientPolicyCoordinatorGroupMutation,
+	serializeRecipientPolicyPublicationMutation,
 	serializeRecipientPolicyTeamMutation,
 } from "./recipient-policy-team-metadata.js";
 import {
@@ -90,6 +94,10 @@ export interface FinishLegacyTeamSetupActivationInput
 	 * Implementations must be synchronous and read from the same database.
 	 */
 	validateLockedPreview: (preview: LegacyTeamSetupActivationPreviewV1) => boolean;
+	canonicalCompletion?: {
+		policyRevision: string;
+		completedAt: string;
+	};
 	now?: string;
 }
 
@@ -136,6 +144,7 @@ interface TeamRow {
 	display_name: string;
 	status: string;
 	device_eligibility_mode: string;
+	migration_state: string;
 	provenance: string;
 	source_fingerprint: string | null;
 }
@@ -240,6 +249,14 @@ interface CompletionRow {
 	response_json: string;
 }
 
+interface AdditiveProjectRow {
+	project_ref: string;
+	source_project_identity: string;
+	source_fingerprint: string;
+	resolved_project_identity: string | null;
+	target_scope_id: string | null;
+}
+
 const SETUP_MEMBERSHIP_PROVENANCE = "reviewed_active";
 /** Provenance written by the historical `choose_recipients` migration path. */
 const HISTORICAL_TEAM_PROVENANCE = "reviewed_team_candidate";
@@ -317,6 +334,58 @@ function activationError(code: LegacyTeamSetupActivationErrorCode): never {
 	throw new LegacyTeamSetupActivationError(code);
 }
 
+function requireActivationModelWithinLimits(
+	devices: readonly DraftDeviceRow[],
+	projects: readonly DraftProjectRow[],
+): void {
+	try {
+		requireLegacyTeamSetupSnapshotWithinLimits({ devices, projects });
+	} catch {
+		activationError("team_setup_roster_unavailable");
+	}
+}
+
+function requireAccessDeltaTraversalWithinLimit(
+	model: Pick<ActivationModel, "projects" | "recipients" | "assignments" | "devices">,
+): void {
+	const projectIdentities = new Set([
+		...model.projects.flatMap((project) =>
+			project.resolved_project_identity ? [project.resolved_project_identity] : [],
+		),
+		...model.recipients
+			.filter((row) => row.status === "active")
+			.map((row) => row.canonical_project_identity),
+	]);
+	// Every persisted assignment row is fed into each Project derivation
+	// regardless of status, so all of them count. Of the draft devices, only
+	// included ones can add a row; excluded or removed devices never do.
+	const deviceIds = new Set([
+		...model.assignments.map((row) => row.device_id),
+		...model.devices
+			.filter((device) => device.decision === "included" && device.target_identity_id)
+			.map((device) => device.device_id),
+	]);
+	try {
+		requireLegacyTeamSetupAccessDeltaTraversalWithinLimit({
+			projectIdentities,
+			deviceCount: deviceIds.size,
+		});
+	} catch {
+		activationError("team_setup_roster_unavailable");
+	}
+}
+
+function requireCanonicalSnapshotWithinLimits(
+	devices: readonly unknown[],
+	projects: readonly unknown[],
+): void {
+	try {
+		requireLegacyTeamSetupSnapshotWithinLimits({ devices, projects });
+	} catch {
+		activationError("team_setup_completion_invalid");
+	}
+}
+
 function normalizedActivationError(error: unknown): LegacyTeamSetupActivationError {
 	if (error instanceof LegacyTeamSetupActivationError) return error;
 	if (
@@ -369,7 +438,14 @@ function droppedSetupMappings(model: ActivationModel): MappingRow[] {
 	);
 }
 
-function loadModel(db: Database, input: PreviewLegacyTeamSetupActivationInput): ActivationModel {
+function loadModel(
+	db: Database,
+	input: PreviewLegacyTeamSetupActivationInput & {
+		allowCompletedDraft?: boolean;
+		allowInactiveCanonicalTeam?: boolean;
+		allowStaleDraft?: boolean;
+	},
+): ActivationModel {
 	const draft = db
 		.prepare(
 			`SELECT draft.attempt_id, draft.candidate_id, draft.coordinator_id, draft.group_id,
@@ -385,7 +461,13 @@ function loadModel(db: Database, input: PreviewLegacyTeamSetupActivationInput): 
 	if (!draft || draft.candidate_id !== input.candidateRef) {
 		activationError("team_setup_confirmation_stale");
 	}
-	if (draft.is_current === 0 || (draft.state !== "needs_setup" && draft.state !== "in_progress")) {
+	if (
+		draft.is_current === 0 ||
+		(draft.state !== "needs_setup" &&
+			draft.state !== "in_progress" &&
+			!(input.allowCompletedDraft && draft.state === "completed") &&
+			!(input.allowStaleDraft && draft.state === "stale"))
+	) {
 		activationError("team_setup_confirmation_stale");
 	}
 
@@ -405,12 +487,11 @@ function loadModel(db: Database, input: PreviewLegacyTeamSetupActivationInput): 
 			 FROM legacy_team_setup_draft_projects WHERE attempt_id = ? ORDER BY project_ref`,
 		)
 		.all(input.attemptId) as DraftProjectRow[];
+	requireActivationModelWithinLimits(devices, projects);
 	if (
 		devices.length === 0 ||
-		devices.length > LEGACY_TEAM_SETUP_MAX_DEVICES ||
 		// A configured group without displayed Projects is a valid setup: the
 		// reviewed Team becomes ready for future sharing with no mappings yet.
-		projects.length > LEGACY_TEAM_SETUP_MAX_PROJECTS ||
 		devices.some(
 			(device) =>
 				device.decision === "unresolved" ||
@@ -474,7 +555,7 @@ function loadModel(db: Database, input: PreviewLegacyTeamSetupActivationInput): 
 		(db
 			.prepare(
 				`SELECT team_id, display_name, status, device_eligibility_mode,
-				        provenance, source_fingerprint
+				        migration_state, provenance, source_fingerprint
 				 FROM policy_teams WHERE team_id = ?`,
 			)
 			.get(teamId) as TeamRow | undefined) ?? null;
@@ -556,16 +637,25 @@ function loadModel(db: Database, input: PreviewLegacyTeamSetupActivationInput): 
 			.map((device) => device.device_id)
 			.toSorted(compareText),
 	};
+	requireAccessDeltaTraversalWithinLimit(model);
 	validateAssignmentExpectations(model);
-	validateCanonicalState(db, model);
+	validateCanonicalState(db, model, input.allowInactiveCanonicalTeam === true);
 	return model;
 }
 
-function validateCanonicalState(db: Database, model: ActivationModel): void {
+function validateCanonicalState(
+	db: Database,
+	model: ActivationModel,
+	allowInactiveCanonicalTeam: boolean,
+): void {
 	const { groupScopeIds, memberships, projects, recipients, scopeIds, team, teamId } = model;
 	if (team) {
 		const baseCompatible =
-			team.status === "active" && team.provenance === HISTORICAL_TEAM_PROVENANCE;
+			(team.status === "active" ||
+				(allowInactiveCanonicalTeam &&
+					team.status === "inactive" &&
+					team.migration_state === "needs_setup")) &&
+			team.provenance === HISTORICAL_TEAM_PROVENANCE;
 		const reviewedCompatible = team.device_eligibility_mode === "reviewed_allowlist";
 		const historicalCompatible = team.device_eligibility_mode === "person_all_devices";
 		if (!baseCompatible || (!reviewedCompatible && !historicalCompatible)) {
@@ -659,6 +749,40 @@ function targetScopeId(model: ActivationModel, project: DraftProjectRow): string
 		),
 	];
 	return matchingScopeIds.length === 1 ? (matchingScopeIds[0] ?? null) : null;
+}
+
+function requireSelectedProjectScopeMappings(
+	db: Database,
+	projects: readonly {
+		sourceProjectIdentity: string;
+		resolvedProjectIdentity: string;
+		targetScopeId: string;
+	}[],
+): void {
+	const sourcesByResolved = new Map<string, { sources: Set<string>; scopeIds: Set<string> }>();
+	for (const project of projects) {
+		const evidence = sourcesByResolved.get(project.resolvedProjectIdentity) ?? {
+			sources: new Set<string>(),
+			scopeIds: new Set<string>(),
+		};
+		evidence.sources.add(project.sourceProjectIdentity);
+		evidence.scopeIds.add(project.targetScopeId);
+		sourcesByResolved.set(project.resolvedProjectIdentity, evidence);
+	}
+	for (const [resolvedIdentity, evidence] of sourcesByResolved) {
+		const selected = selectedProjectScopeMapping(db, resolvedIdentity);
+		if (
+			evidence.scopeIds.size !== 1 ||
+			!selected ||
+			selected.workspaceIdentity == null ||
+			(normalizeLegacyProjectMappingIdentity(selected.workspaceIdentity) !==
+				normalizeLegacyProjectMappingIdentity(resolvedIdentity) &&
+				!evidence.sources.has(selected.projectPattern)) ||
+			selected.scopeId !== [...evidence.scopeIds][0]
+		) {
+			activationError("team_setup_conflict");
+		}
+	}
 }
 
 /**
@@ -773,6 +897,23 @@ interface DerivationRows {
 		status: string;
 		provenance: string;
 	}>;
+}
+
+const LEGACY_TEAM_SETUP_MAX_ACCESS_DELTA_ENTRIES = 10_000;
+
+export function requireLegacyTeamSetupAccessDeltaWithinLimit(
+	delta: LegacyTeamSetupAccessDeltaV1,
+): void {
+	const counts = [
+		delta.teamChanges.length,
+		delta.membershipChanges.length,
+		delta.projectChanges.length,
+		delta.recipientChanges.length,
+		delta.deviceAccessChanges.length,
+	];
+	if (counts.some((count) => count > LEGACY_TEAM_SETUP_MAX_ACCESS_DELTA_ENTRIES)) {
+		activationError("team_setup_completion_invalid");
+	}
 }
 
 function currentDerivationRows(model: ActivationModel): DerivationRows {
@@ -956,8 +1097,9 @@ function simulatedDerivationRows(model: ActivationModel): DerivationRows {
 				row.recipientKind === "team" &&
 				row.recipientId === model.teamId,
 		);
-		if (existing) existing.status = "active";
-		else {
+		if (existing) {
+			if (existing.provenance === "reviewed_team_setup") existing.status = "active";
+		} else {
 			projectRecipients.push({
 				canonicalProjectIdentity: resolvedIdentity,
 				recipientKind: "team",
@@ -1103,7 +1245,7 @@ function buildAccessDelta(model: ActivationModel): LegacyTeamSetupAccessDeltaV1 
 				row.canonical_project_identity === resolvedIdentity &&
 				row.recipient_kind === "team" &&
 				row.recipient_id === model.teamId &&
-				row.status === "active",
+				(row.status === "active" || row.provenance !== "reviewed_team_setup"),
 		);
 		if (!recipient && !plannedRecipientIdentities.has(resolvedIdentity)) {
 			plannedRecipientIdentities.add(resolvedIdentity);
@@ -1276,9 +1418,19 @@ function exactReplay(
 ): LegacyTeamSetupActivationResultV1 | null {
 	const row = db
 		.prepare(
-			`SELECT response_json FROM legacy_team_setup_completions
-			 WHERE candidate_ref = ? AND attempt_id = ? AND finish_digest = ?
-			   AND confirmed_access_delta_digest = ?`,
+			`SELECT completion.response_json
+			 FROM legacy_team_setup_completions AS completion
+			 JOIN legacy_team_setup_drafts AS draft
+			   ON draft.attempt_id = completion.attempt_id
+			  AND draft.candidate_id = completion.candidate_ref
+			  AND draft.finish_digest = completion.finish_digest
+			 WHERE completion.candidate_ref = ? AND completion.attempt_id = ?
+			   AND completion.finish_digest = ?
+			   AND completion.confirmed_access_delta_digest = ?
+			   AND NOT EXISTS (
+			     SELECT 1 FROM legacy_team_setup_drafts AS newer
+			     WHERE newer.candidate_id = draft.candidate_id AND newer.rowid > draft.rowid
+			   )`,
 		)
 		.get(
 			input.candidateRef,
@@ -1287,6 +1439,16 @@ function exactReplay(
 			input.confirmedAccessDeltaDigest,
 		) as CompletionRow | undefined;
 	return row ? (JSON.parse(row.response_json) as LegacyTeamSetupActivationResultV1) : null;
+}
+
+export function replayLegacyTeamSetupActivation(
+	db: Database,
+	input: Pick<
+		FinishLegacyTeamSetupActivationInput,
+		"candidateRef" | "attemptId" | "finishDigest" | "confirmedAccessDeltaDigest"
+	>,
+): LegacyTeamSetupActivationResultV1 | null {
+	return exactReplay(db, input);
 }
 
 function validateFreshRoster(
@@ -1319,17 +1481,45 @@ function validateFreshRoster(
 	}
 }
 
+export function inspectFreshLegacyTeamSetupActivation(
+	db: Database,
+	input: PreviewLegacyTeamSetupActivationInput & {
+		freshRoster: Awaited<ReturnType<FinishLegacyTeamSetupActivationInput["loadFreshRoster"]>>;
+		projectInventory: LegacyTeamSetupProjectInput[];
+	},
+): LegacyTeamSetupActivationPreviewV1 {
+	try {
+		const model = loadModel(db, input);
+		validateFreshRoster(model, input.freshRoster);
+		if (
+			legacyTeamProjectionFingerprint(input.projectInventory) !== model.draft.projection_fingerprint
+		) {
+			activationError("team_setup_projection_changed");
+		}
+		return buildPreview(model);
+	} catch (error) {
+		const normalized = normalizedActivationError(error);
+		persistSafeError(db, input, normalized);
+		throw normalized;
+	}
+}
+
 function applyActivation(
 	db: Database,
 	model: ActivationModel,
 	preview: LegacyTeamSetupActivationPreviewV1,
 	freshRoster: Awaited<ReturnType<FinishLegacyTeamSetupActivationInput["loadFreshRoster"]>>,
 	now: string,
+	options: {
+		revisionOverride?: string;
+		completionKey?: string;
+		allowExistingCompletion?: boolean;
+	} = {},
 ): LegacyTeamSetupActivationResultV1 {
-	const revision = recipientPolicyDigest(
-		"legacy-team-activation-revision-v1",
-		preview.finishDigest,
-	);
+	const revision =
+		options.revisionOverride ??
+		recipientPolicyDigest("legacy-team-activation-revision-v1", preview.finishDigest);
+	const completionKey = options.completionKey ?? preview.finishDigest;
 	if (!model.team) {
 		db.prepare(
 			`INSERT INTO policy_teams(
@@ -1570,7 +1760,10 @@ function applyActivation(
 			 created_at, updated_at
 			 ) VALUES (?, 'team', ?, 'active', 'reviewed_team_setup', ?, 'completed', ?, ?, ?, ?)
 			 ON CONFLICT(canonical_project_identity, recipient_kind, recipient_id) DO UPDATE SET
-			 status = 'active',
+			 status = CASE
+			   WHEN project_recipients.provenance = 'reviewed_team_setup' THEN 'active'
+			   ELSE project_recipients.status
+			 END,
 			 provenance = CASE
 			   WHEN project_recipients.provenance = 'reviewed_team_setup' THEN excluded.provenance
 			   ELSE project_recipients.provenance
@@ -1642,36 +1835,14 @@ function applyActivation(
 	// mapping writes because merged resolutions map several confirmed source
 	// patterns onto one identity and selection can pick only one of them: the
 	// authoritative pattern is valid when it matches ANY confirmed source.
-	const confirmedSourcesByResolved = new Map<
-		string,
-		{ sources: Set<string>; targetScopeIds: Set<string> }
-	>();
-	for (const project of model.projects) {
-		const resolvedIdentity = project.resolved_project_identity as string;
-		const evidence = confirmedSourcesByResolved.get(resolvedIdentity) ?? {
-			sources: new Set<string>(),
-			targetScopeIds: new Set<string>(),
-		};
-		evidence.sources.add(project.source_project_identity);
-		const projectTargetScopeId = targetScopeId(model, project);
-		if (projectTargetScopeId) evidence.targetScopeIds.add(projectTargetScopeId);
-		confirmedSourcesByResolved.set(resolvedIdentity, evidence);
-	}
-	for (const [resolvedIdentity, evidence] of confirmedSourcesByResolved) {
-		const reviewedTargetScopeId = [...evidence.targetScopeIds][0];
-		const selected = selectedProjectScopeMapping(db, resolvedIdentity);
-		if (
-			evidence.targetScopeIds.size !== 1 ||
-			!selected ||
-			selected.workspaceIdentity == null ||
-			(normalizeLegacyProjectMappingIdentity(selected.workspaceIdentity) !==
-				normalizeLegacyProjectMappingIdentity(resolvedIdentity) &&
-				!evidence.sources.has(selected.projectPattern)) ||
-			selected.scopeId !== reviewedTargetScopeId
-		) {
-			activationError("team_setup_conflict");
-		}
-	}
+	requireSelectedProjectScopeMappings(
+		db,
+		model.projects.map((project) => ({
+			sourceProjectIdentity: project.source_project_identity,
+			resolvedProjectIdentity: project.resolved_project_identity as string,
+			targetScopeId: targetScopeId(model, project) as string,
+		})),
+	);
 
 	const result: LegacyTeamSetupActivationResultV1 = {
 		status: "completed",
@@ -1685,33 +1856,346 @@ function applyActivation(
 		 SET state = 'completed', finish_digest = ?, safe_error_code = NULL,
 		     roster_fingerprint = ?, completed_team_id = ?, completed_at = ?, updated_at = ?
 		 WHERE attempt_id = ?`,
-	).run(
-		preview.finishDigest,
-		postRosterFingerprint,
-		model.teamId,
-		now,
-		now,
+	).run(completionKey, postRosterFingerprint, model.teamId, now, now, model.draft.attempt_id);
+	const completionValues = [
 		model.draft.attempt_id,
-	);
-	db.prepare(
-		`INSERT INTO legacy_team_setup_completions(
-		 attempt_id, finish_digest, candidate_ref, confirmed_access_delta_digest,
-		 completed_team_id, response_json, completed_at, created_at
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-	).run(
-		model.draft.attempt_id,
-		preview.finishDigest,
+		completionKey,
 		model.draft.candidate_id,
 		preview.accessDeltaDigest,
 		model.teamId,
 		JSON.stringify(result),
 		now,
 		now,
-	);
+	] as const;
+	const insertedCompletion = db
+		.prepare(
+			`INSERT ${options.allowExistingCompletion ? "OR IGNORE " : ""}INTO legacy_team_setup_completions(
+		 attempt_id, finish_digest, candidate_ref, confirmed_access_delta_digest,
+		 completed_team_id, response_json, completed_at, created_at
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		)
+		.run(...completionValues);
+	if (options.allowExistingCompletion && insertedCompletion.changes === 0) {
+		const existing = db
+			.prepare(
+				`SELECT candidate_ref, completed_team_id, completed_at
+				 FROM legacy_team_setup_completions
+				 WHERE attempt_id = ? AND finish_digest = ?`,
+			)
+			.get(model.draft.attempt_id, completionKey) as
+			| {
+					candidate_ref: string;
+					completed_team_id: string;
+					completed_at: string;
+			  }
+			| undefined;
+		if (
+			!existing ||
+			existing.candidate_ref !== model.draft.candidate_id ||
+			existing.completed_team_id !== model.teamId ||
+			existing.completed_at !== now
+		) {
+			activationError("team_setup_completion_invalid");
+		}
+	}
 	return result;
 }
 
-export async function finishLegacyTeamSetupActivation(
+function canonicalCompletionReplay(
+	db: Database,
+	input: { candidateRef: string; attemptId: string; completionKey: string },
+): LegacyTeamSetupActivationResultV1 | null {
+	const row = db
+		.prepare(
+			`SELECT completion.response_json
+			 FROM legacy_team_setup_completions AS completion
+			 JOIN legacy_team_setup_drafts AS draft
+			   ON draft.attempt_id = completion.attempt_id
+			  AND draft.candidate_id = completion.candidate_ref
+			  AND draft.finish_digest = completion.finish_digest
+			  AND draft.completed_team_id = completion.completed_team_id
+			 JOIN policy_teams AS team
+			   ON team.team_id = completion.completed_team_id AND team.status = 'active'
+			 WHERE completion.candidate_ref = ? AND completion.attempt_id = ?
+			   AND completion.finish_digest = ? AND draft.state = 'completed'
+			   AND NOT EXISTS (
+			     SELECT 1 FROM legacy_team_setup_drafts AS newer
+			     WHERE newer.candidate_id = draft.candidate_id AND newer.rowid > draft.rowid
+			   )`,
+		)
+		.get(input.candidateRef, input.attemptId, input.completionKey) as CompletionRow | undefined;
+	return row ? (JSON.parse(row.response_json) as LegacyTeamSetupActivationResultV1) : null;
+}
+
+/**
+ * Applies coordinator-owned completion facts after the caller has rewritten the
+ * current draft to match a validated manifest. The caller owns serialization
+ * and the surrounding immediate transaction.
+ *
+ * By default the completion is keyed by the derived preview digest so the
+ * originating device's confirmed replay token stays valid. Callers retrying an
+ * exact application against an already-completed draft pass `completionKey`
+ * to reuse the stored key; deriving a fresh preview from materialized policy
+ * would otherwise rotate the key on every retry.
+ */
+export function applyCanonicalLegacyTeamSetupActivationInTransaction(
+	db: Database,
+	input: PreviewLegacyTeamSetupActivationInput & {
+		policyRevision: string;
+		completedAt: string;
+		completionKey?: string;
+		allowCompletedDraft?: boolean;
+		allowStaleDraft?: boolean;
+	},
+): LegacyTeamSetupActivationResultV1 {
+	if (!db.inTransaction) activationError("team_setup_failed");
+	try {
+		// A retry after a lost response or a reconciliation re-run must replay the
+		// committed application. Loading the completed draft first would validate
+		// pre-activation assignment expectations against post-activation state.
+		if (input.allowCompletedDraft && input.completionKey) {
+			const replay = canonicalCompletionReplay(db, {
+				candidateRef: input.candidateRef,
+				attemptId: input.attemptId,
+				completionKey: input.completionKey,
+			});
+			if (replay) return replay;
+		}
+		const model = loadModel(db, { ...input, allowInactiveCanonicalTeam: true });
+		const inspected = buildPreview(model);
+		requireLegacyTeamSetupAccessDeltaWithinLimit(inspected.accessDelta);
+		const roster = model.devices
+			.filter((device) => device.decision !== "removed")
+			.map((device) => ({
+				deviceId: device.device_id,
+				fingerprint: device.key_fingerprint,
+				displayName: device.display_name,
+				enabled: device.enabled !== 0,
+			}));
+		return applyActivation(db, model, inspected, roster, input.completedAt, {
+			revisionOverride: input.policyRevision,
+			completionKey: input.completionKey,
+			allowExistingCompletion: input.allowCompletedDraft,
+		});
+	} catch (error) {
+		throw normalizedActivationError(error);
+	}
+}
+
+/**
+ * Materializes only newly resolvable Projects for an already-completed Team.
+ * The caller owns serialization and the surrounding immediate transaction.
+ */
+export function applyAdditiveCanonicalLegacyTeamSetupProjectsInTransaction(
+	db: Database,
+	input: {
+		candidateRef: string;
+		attemptId: string;
+		teamId: string;
+		projectRefs: readonly string[];
+		completedAt: string;
+	},
+): void {
+	if (!db.inTransaction) activationError("team_setup_failed");
+	try {
+		const projectRefs = [...new Set(input.projectRefs)].toSorted(compareText);
+		if (
+			projectRefs.length === 0 ||
+			projectRefs.length !== input.projectRefs.length ||
+			projectRefs.length > LEGACY_TEAM_SETUP_MAX_PROJECTS
+		) {
+			activationError("team_setup_completion_invalid");
+		}
+		const draft = db
+			.prepare(
+				`SELECT coordinator_id, group_id FROM legacy_team_setup_drafts AS draft
+				 WHERE attempt_id = ? AND candidate_id = ? AND state = 'completed'
+				   AND completed_team_id = ?
+				   AND NOT EXISTS (
+				     SELECT 1 FROM legacy_team_setup_drafts AS newer
+				     WHERE newer.candidate_id = draft.candidate_id AND newer.rowid > draft.rowid
+				   )`,
+			)
+			.get(input.attemptId, input.candidateRef, input.teamId) as
+			| { coordinator_id: string; group_id: string }
+			| undefined;
+		const team = db
+			.prepare(
+				`SELECT revision FROM policy_teams
+				 WHERE team_id = ? AND status = 'active' AND migration_state = 'completed'
+				   AND provenance = 'reviewed_team_candidate'
+				   AND device_eligibility_mode = 'reviewed_allowlist'`,
+			)
+			.get(input.teamId) as { revision: string } | undefined;
+		if (!draft || !team) activationError("team_setup_conflict");
+
+		const allProjects = db
+			.prepare(
+				`SELECT project_ref, source_project_identity, source_fingerprint,
+				        resolved_project_identity, target_scope_id
+				 FROM legacy_team_setup_draft_projects
+				 WHERE attempt_id = ?
+				 ORDER BY project_ref`,
+			)
+			.all(input.attemptId) as AdditiveProjectRow[];
+		const deviceIds = db
+			.prepare(
+				`SELECT device_id FROM legacy_team_setup_draft_devices
+				 WHERE attempt_id = ? ORDER BY device_id LIMIT ?`,
+			)
+			.pluck()
+			.all(input.attemptId, LEGACY_TEAM_SETUP_MAX_DEVICES + 1) as string[];
+		requireCanonicalSnapshotWithinLimits(deviceIds, allProjects);
+		const requestedProjectRefs = new Set(projectRefs);
+		const projects = allProjects.filter((project) => requestedProjectRefs.has(project.project_ref));
+		if (projects.length !== projectRefs.length) {
+			activationError("team_setup_completion_invalid");
+		}
+		const scopeIdsByResolved = new Map<string, Set<string>>();
+		for (const project of allProjects) {
+			if (!project.resolved_project_identity || !project.target_scope_id) continue;
+			const resolvedScopeIds =
+				scopeIdsByResolved.get(project.resolved_project_identity) ?? new Set();
+			resolvedScopeIds.add(project.target_scope_id);
+			scopeIdsByResolved.set(project.resolved_project_identity, resolvedScopeIds);
+		}
+		if ([...scopeIdsByResolved.values()].some((resolvedScopeIds) => resolvedScopeIds.size !== 1)) {
+			activationError("team_setup_conflict");
+		}
+		const scopeIds = db
+			.prepare(
+				`SELECT scope_id FROM replication_scopes
+				 WHERE coordinator_id = ? AND group_id = ? AND authority_type = 'coordinator'
+				   AND status = 'active' ORDER BY scope_id`,
+			)
+			.pluck()
+			.all(draft.coordinator_id, draft.group_id) as string[];
+		const groupScopeIds = db
+			.prepare(
+				`SELECT scope_id FROM replication_scopes
+				 WHERE coordinator_id = ? AND group_id = ? ORDER BY scope_id`,
+			)
+			.pluck()
+			.all(draft.coordinator_id, draft.group_id) as string[];
+		const mappings = db
+			.prepare(
+				`SELECT id, workspace_identity, project_pattern, scope_id, source
+				 FROM project_scope_mappings ORDER BY id`,
+			)
+			.all() as MappingRow[];
+		const recipients = db
+			.prepare(
+				`SELECT canonical_project_identity, recipient_kind, recipient_id, status, provenance
+				 FROM project_recipients ORDER BY canonical_project_identity, recipient_kind, recipient_id`,
+			)
+			.all() as RecipientRow[];
+		if (
+			!isLegacyTeamProjectCanonicalStateValid(
+				{
+					teamId: input.teamId,
+					scopeIds,
+					groupScopeIds,
+					projects: projects.map((project) => ({
+						sourceProjectIdentity: project.source_project_identity,
+						resolvedProjectIdentity: project.resolved_project_identity,
+						targetScopeId: project.target_scope_id,
+					})),
+					mappings: mappings.map((mapping) => ({
+						workspaceIdentity: mapping.workspace_identity,
+						projectPattern: mapping.project_pattern,
+						scopeId: mapping.scope_id,
+						source: mapping.source,
+					})),
+					recipients: recipients.map((recipient) => ({
+						canonicalProjectIdentity: recipient.canonical_project_identity,
+						recipientKind: recipient.recipient_kind,
+						recipientId: recipient.recipient_id,
+						status: recipient.status,
+					})),
+				},
+				db,
+			)
+		) {
+			activationError("team_setup_conflict");
+		}
+
+		for (const project of projects) {
+			const resolvedIdentity = project.resolved_project_identity as string;
+			const targetScopeId = project.target_scope_id as string;
+			const relatedMappings = mappings.filter(
+				(mapping) => mapping.project_pattern === project.source_project_identity,
+			);
+			const exactMapping = relatedMappings.some(
+				(mapping) =>
+					mapping.workspace_identity === resolvedIdentity && mapping.scope_id === targetScopeId,
+			);
+			if (
+				relatedMappings.some(
+					(mapping) =>
+						mapping.workspace_identity !== resolvedIdentity || mapping.scope_id !== targetScopeId,
+				)
+			) {
+				activationError("team_setup_conflict");
+			}
+			if (!exactMapping) {
+				db.prepare(
+					`INSERT INTO project_scope_mappings(
+					 workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+					 ) VALUES (?, ?, ?, 1000, 'reviewed_team_setup', ?, ?)`,
+				).run(
+					resolvedIdentity,
+					project.source_project_identity,
+					targetScopeId,
+					input.completedAt,
+					input.completedAt,
+				);
+			}
+			// User revocation changes provenance to `user`; only a still setup-owned
+			// revoked edge can be safely reactivated for this newly converged Project.
+			db.prepare(
+				`INSERT INTO project_recipients(
+				 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+					 policy_revision, migration_state, source_fingerprint, idempotency_key,
+					 created_at, updated_at
+					 ) VALUES (?, 'team', ?, 'active', 'reviewed_team_setup', ?, 'completed', ?, ?, ?, ?)
+					 ON CONFLICT(canonical_project_identity, recipient_kind, recipient_id) DO UPDATE SET
+					   status = 'active', policy_revision = excluded.policy_revision,
+					   migration_state = 'completed', source_fingerprint = excluded.source_fingerprint,
+					   idempotency_key = excluded.idempotency_key, updated_at = excluded.updated_at
+					 WHERE project_recipients.provenance = 'reviewed_team_setup'`,
+			).run(
+				resolvedIdentity,
+				input.teamId,
+				team.revision,
+				project.source_fingerprint,
+				recipientPolicyDigest("legacy-team-project-recipient-v1", [resolvedIdentity, input.teamId]),
+				input.completedAt,
+				input.completedAt,
+			);
+			const recipientStatus = db
+				.prepare(
+					`SELECT status FROM project_recipients
+					 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
+				)
+				.pluck()
+				.get(resolvedIdentity, input.teamId);
+			if (recipientStatus !== "active") activationError("team_setup_conflict");
+		}
+
+		requireSelectedProjectScopeMappings(
+			db,
+			projects.map((project) => ({
+				sourceProjectIdentity: project.source_project_identity,
+				resolvedProjectIdentity: project.resolved_project_identity as string,
+				targetScopeId: project.target_scope_id as string,
+			})),
+		);
+	} catch (error) {
+		throw normalizedActivationError(error);
+	}
+}
+
+async function finishLegacyTeamSetupActivationWithPublicationLock(
 	db: Database,
 	input: FinishLegacyTeamSetupActivationInput,
 ): Promise<LegacyTeamSetupActivationResultV1> {
@@ -1755,47 +2239,84 @@ export async function finishLegacyTeamSetupActivation(
 		throw error;
 	}
 
-	return serializeRecipientPolicyTeamMutation(db, initialModel.teamId, () =>
-		serializeRecipientPolicyCoordinatorGroupMutation(db, initialModel.draft.group_id, async () => {
-			const now = input.now ?? new Date().toISOString();
-			try {
-				return db
-					.transaction(() => {
-						const lockedReplay = exactReplay(db, input);
-						if (lockedReplay) return lockedReplay;
-						const model = loadModel(db, input);
-						validateFreshRoster(model, freshRoster);
-						// Displayed Project evidence that changed after preview would
-						// produce a confirmed digest for an inventory the user never
-						// saw. The inventory is derived inside this lock so ingestion
-						// between an earlier read and the transaction cannot slip a
-						// Project past the check; the roster, by contrast, is external
-						// coordinator evidence and is re-validated against the locked
-						// model above.
-						const liveProjectionFingerprint = legacyTeamProjectionFingerprint(
-							input.loadProjectInventory(),
-						);
-						if (liveProjectionFingerprint !== model.draft.projection_fingerprint) {
-							activationError("team_setup_projection_changed");
-						}
-						const lockedPreview = buildPreview(model);
-						if (
-							lockedPreview.finishDigest !== input.finishDigest ||
-							lockedPreview.accessDeltaDigest !== input.confirmedAccessDeltaDigest
-						) {
-							activationError("team_setup_confirmation_stale");
-						}
-						if (!input.validateLockedPreview(lockedPreview)) {
-							activationError("team_setup_confirmation_stale");
-						}
-						return applyActivation(db, model, lockedPreview, freshRoster, now);
-					})
-					.immediate();
-			} catch (error) {
-				const normalized = normalizedActivationError(error);
-				persistSafeError(db, input, normalized);
-				throw normalized;
-			}
-		}),
+	// Lock order: actor -> Team -> coordinator group. Actor queues cover every
+	// identity this activation reads or writes, so a merge or deactivation
+	// cannot interleave with the locked model load and commit below.
+	return serializeRecipientPolicyActorMutations(db, draftActorIds(initialModel), () =>
+		serializeRecipientPolicyTeamMutation(db, initialModel.teamId, () =>
+			serializeRecipientPolicyCoordinatorGroupMutation(
+				db,
+				initialModel.draft.group_id,
+				async () => {
+					const now = input.now ?? new Date().toISOString();
+					try {
+						return db
+							.transaction(() => {
+								const lockedReplay = exactReplay(db, input);
+								if (lockedReplay) return lockedReplay;
+								const model = loadModel(db, input);
+								validateFreshRoster(model, freshRoster);
+								// Displayed Project evidence that changed after preview would
+								// produce a confirmed digest for an inventory the user never
+								// saw. The inventory is derived inside this lock so ingestion
+								// between an earlier read and the transaction cannot slip a
+								// Project past the check; the roster, by contrast, is external
+								// coordinator evidence and is re-validated against the locked
+								// model above.
+								const liveProjectionFingerprint = legacyTeamProjectionFingerprint(
+									input.loadProjectInventory(),
+								);
+								if (liveProjectionFingerprint !== model.draft.projection_fingerprint) {
+									activationError("team_setup_projection_changed");
+								}
+								const lockedPreview = buildPreview(model);
+								if (
+									lockedPreview.finishDigest !== input.finishDigest ||
+									lockedPreview.accessDeltaDigest !== input.confirmedAccessDeltaDigest
+								) {
+									activationError("team_setup_confirmation_stale");
+								}
+								if (!input.validateLockedPreview(lockedPreview)) {
+									activationError("team_setup_confirmation_stale");
+								}
+								return applyActivation(
+									db,
+									model,
+									lockedPreview,
+									freshRoster,
+									input.canonicalCompletion?.completedAt ?? now,
+									{ revisionOverride: input.canonicalCompletion?.policyRevision },
+								);
+							})
+							.immediate();
+					} catch (error) {
+						const normalized = normalizedActivationError(error);
+						persistSafeError(db, input, normalized);
+						throw normalized;
+					}
+				},
+			),
+		),
+	);
+}
+
+function draftActorIds(model: ActivationModel): string[] {
+	return model.devices.flatMap((device) => [
+		...(device.target_identity_id ? [device.target_identity_id] : []),
+		...(device.existing_identity_id ? [device.existing_identity_id] : []),
+	]);
+}
+
+export async function finishLegacyTeamSetupActivation(
+	db: Database,
+	input: FinishLegacyTeamSetupActivationInput,
+): Promise<LegacyTeamSetupActivationResultV1> {
+	// An exact retry of a committed activation must not queue behind unrelated
+	// publications; its immutable response is already persisted. The locked
+	// path repeats the lookup for finishes that overlap the commit.
+	const replay = exactReplay(db, input);
+	if (replay) return replay;
+	return serializeRecipientPolicyPublicationMutation(db, () =>
+		finishLegacyTeamSetupActivationWithPublicationLock(db, input),
 	);
 }

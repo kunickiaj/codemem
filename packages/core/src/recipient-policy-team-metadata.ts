@@ -67,6 +67,9 @@ interface ProvenCoordinatorLink {
 // equivalence is limited to historical-link evidence and never changes queue keys.
 const teamRenameQueues = new WeakMap<Database, Map<string, Promise<void>>>();
 const coordinatorGroupMutationQueues = new WeakMap<Database, Map<string, Promise<void>>>();
+const actorMutationQueues = new WeakMap<Database, Map<string, Promise<void>>>();
+const publicationMutationQueues = new WeakMap<Database, Map<string, Promise<void>>>();
+const PUBLICATION_MUTATION_KEY = "recipient-policy-publication";
 
 function fail(code: RecipientPolicyTeamRenameErrorCode): never {
 	throw new RecipientPolicyTeamRenameError(code);
@@ -187,12 +190,32 @@ async function renameLinkedCoordinatorGroup(
 	if (!renamed) fail("team_coordinator_rename_failed");
 }
 
+export const RECIPIENT_POLICY_TEAM_RENAME_REVISION_DOMAIN = "policy-team-metadata-rename-v1";
+
+/** A Team revision minted by `renameRecipientPolicyTeam` rather than by an activation. */
+export function isRecipientPolicyTeamRenameRevision(revision: string): boolean {
+	return revision.startsWith(`${RECIPIENT_POLICY_TEAM_RENAME_REVISION_DOMAIN}:`);
+}
+
 async function serializeMutation<T>(
 	queues: WeakMap<Database, Map<string, Promise<void>>>,
 	db: Database,
 	key: string,
 	operation: () => Promise<T>,
 ): Promise<T> {
+	const release = await claimMutation(queues, db, key);
+	try {
+		return await operation();
+	} finally {
+		release();
+	}
+}
+
+async function claimMutation(
+	queues: WeakMap<Database, Map<string, Promise<void>>>,
+	db: Database,
+	key: string,
+): Promise<() => void> {
 	let queue = queues.get(db);
 	if (!queue) {
 		queue = new Map();
@@ -206,12 +229,13 @@ async function serializeMutation<T>(
 	const queued = preceding.catch(() => undefined).then(() => turn);
 	queue.set(key, queued);
 	await preceding.catch(() => undefined);
-	try {
-		return await operation();
-	} finally {
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
 		release();
 		if (queue.get(key) === queued) queue.delete(key);
-	}
+	};
 }
 
 export function serializeRecipientPolicyTeamMutation<T>(
@@ -220,6 +244,46 @@ export function serializeRecipientPolicyTeamMutation<T>(
 	operation: () => Promise<T>,
 ): Promise<T> {
 	return serializeMutation(teamRenameQueues, db, teamId, operation);
+}
+
+export function serializeRecipientPolicyActorMutations<T>(
+	db: Database,
+	actorIds: readonly string[],
+	operation: () => Promise<T>,
+): Promise<T> {
+	const orderedActorIds = [...new Set(actorIds)].toSorted();
+	const serializeNext = (index: number): Promise<T> => {
+		const actorId = orderedActorIds[index];
+		if (!actorId) return operation();
+		return serializeMutation(actorMutationQueues, db, actorId, () => serializeNext(index + 1));
+	};
+	return serializeNext(0);
+}
+
+export async function claimRecipientPolicyActorMutations(
+	db: Database,
+	actorIds: readonly string[],
+): Promise<() => void> {
+	const releases: Array<() => void> = [];
+	for (const actorId of [...new Set(actorIds)].toSorted()) {
+		releases.push(await claimMutation(actorMutationQueues, db, actorId));
+	}
+	return () => {
+		for (const release of releases.toReversed()) release();
+	};
+}
+
+// Lock order is candidate claim -> publication -> actor -> Team -> coordinator group.
+// Callers that need lower-level locks must acquire this barrier first.
+export function serializeRecipientPolicyPublicationMutation<T>(
+	db: Database,
+	operation: () => Promise<T>,
+): Promise<T> {
+	return serializeMutation(publicationMutationQueues, db, PUBLICATION_MUTATION_KEY, operation);
+}
+
+export function claimRecipientPolicyPublicationMutation(db: Database): Promise<() => void> {
+	return claimMutation(publicationMutationQueues, db, PUBLICATION_MUTATION_KEY);
 }
 
 // This deliberately uses the exact group ID as a coarse serialization key.
@@ -306,7 +370,7 @@ async function renameRecipientPolicyTeamOnce(
 	}
 
 	const now = input.now ?? new Date().toISOString();
-	const revision = recipientPolicyDigest("policy-team-metadata-rename-v1", [
+	const revision = recipientPolicyDigest(RECIPIENT_POLICY_TEAM_RENAME_REVISION_DOMAIN, [
 		team.team_id,
 		team.revision,
 		displayName,

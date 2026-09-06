@@ -30,11 +30,11 @@ function fail(message, result) {
 	throw new Error(message);
 }
 
-function run(command, args, cwd = packageRoot) {
+function run(command, args, cwd = packageRoot, env = process.env) {
 	const result = spawnSync(command, args, {
 		cwd,
 		encoding: "utf8",
-		env: process.env,
+		env,
 	});
 	if (result.status !== 0) {
 		fail(`Command failed: ${command} ${args.join(" ")}`, result);
@@ -46,6 +46,30 @@ function assert(condition, message) {
 	if (!condition) {
 		throw new Error(message);
 	}
+}
+
+function readInstallScriptPolicyEntries(result) {
+	let policy;
+	try {
+		policy = JSON.parse(result.stdout);
+	} catch {
+		fail("npm install-scripts returned invalid JSON", result);
+	}
+	if (!Array.isArray(policy?.allowScripts)) {
+		fail("npm install-scripts output schema changed", result);
+	}
+	return policy.allowScripts;
+}
+
+function resolveInstalledPackageDir(installDir, packageName) {
+	const result = run("npm", ["ls", packageName, "--parseable", "--all"], installDir);
+	const expectedSuffix = join("node_modules", ...packageName.split("/"));
+	const packageDir = result.stdout
+		.split(/\r?\n/u)
+		.map((line) => line.trim())
+		.find((line) => line.endsWith(expectedSuffix));
+	assert(packageDir, `Semantic install is missing ${packageName}`);
+	return packageDir;
 }
 
 function runAsync(command, args, options, input) {
@@ -192,6 +216,7 @@ async function smokeClaudePromptWrapper(isolatedRoot) {
 		pack_compression: null,
 		embedding_disabled: false,
 		embedding_model: "Xenova/bge-small-en-v1.5",
+		embedding_revision: "ea104dacec62c0de699686887e3f920caeb4f3e3",
 	};
 	const requestPaths = [];
 	const server = createServer((request, response) => {
@@ -306,6 +331,7 @@ async function smokeCodexPromptWrapper(isolatedRoot) {
 		pack_compression: null,
 		embedding_disabled: false,
 		embedding_model: "Xenova/bge-small-en-v1.5",
+		embedding_revision: "ea104dacec62c0de699686887e3f920caeb4f3e3",
 	};
 	const requestPaths = [];
 	const server = createServer((request, response) => {
@@ -569,6 +595,15 @@ try {
 		.map((line) => line.trim())
 		.filter(Boolean)
 		.at(-1);
+	const embeddingsTarball = run(
+		"pnpm",
+		["pack", "--pack-destination", tempDir],
+		resolve(workspaceRoot, "packages/embeddings"),
+	)
+		.stdout.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean)
+		.at(-1);
 	const mcpTarball = run("pnpm", ["pack", "--pack-destination", tempDir], resolve(workspaceRoot, "packages/mcp-server"))
 		.stdout.split(/\r?\n/)
 		.map((line) => line.trim())
@@ -587,10 +622,12 @@ try {
 		.at(-1);
 
 	assert(Boolean(coreTarball), "pnpm pack did not report a core tarball path");
+	assert(Boolean(embeddingsTarball), "pnpm pack did not report an embeddings tarball path");
 	assert(Boolean(mcpTarball), "pnpm pack did not report an mcp tarball path");
 	assert(Boolean(serverTarball), "pnpm pack did not report a server tarball path");
 	assert(Boolean(packedTarball), "pnpm pack did not report a tarball path");
 	assert(existsSync(coreTarball), `Packed core tarball not found: ${coreTarball}`);
+	assert(existsSync(embeddingsTarball), `Packed embeddings tarball not found: ${embeddingsTarball}`);
 	assert(existsSync(mcpTarball), `Packed mcp tarball not found: ${mcpTarball}`);
 	assert(existsSync(serverTarball), `Packed server tarball not found: ${serverTarball}`);
 	assert(existsSync(packedTarball), `Packed tarball not found: ${packedTarball}`);
@@ -598,9 +635,157 @@ try {
 	const tarListing = run("tar", ["-tf", packedTarball]).stdout;
 	assert(tarListing.includes("package/dist/index.js"), "Packed artifact is missing dist/index.js");
 	assert(tarListing.includes("package/README.md"), "Packed artifact is missing README.md");
+	const embeddingsTarListing = run("tar", ["-tf", embeddingsTarball]).stdout;
+	assert(
+		embeddingsTarListing.includes("package/dist/index.js"),
+		"Packed embeddings artifact is missing dist/index.js",
+	);
 
 	const installDir = join(tempDir, "install");
-	run("npm", ["install", "--prefix", installDir, coreTarball, mcpTarball, serverTarball, packedTarball]);
+	run(
+		"npm",
+		["install", "--prefix", installDir, coreTarball, mcpTarball, serverTarball, packedTarball],
+		packageRoot,
+		{ ...process.env, npm_config_install_strategy: "hoisted" },
+	);
+	const lexicalLockPath = join(installDir, "package-lock.json");
+	assert(existsSync(lexicalLockPath), "Lexical install did not produce a package-lock.json");
+	const lexicalLock = JSON.parse(readFileSync(lexicalLockPath, "utf8"));
+	const lexicalPackages = Object.keys(lexicalLock.packages ?? {});
+	for (const packageName of [
+		"@codemem/embeddings",
+		"@huggingface/transformers",
+		"@xenova/transformers",
+		"onnxruntime-common",
+		"onnxruntime-node",
+		"onnxruntime-web",
+		"sharp",
+	]) {
+		assert(
+			// npm lockfile package keys use `/` and may be relative to a parent directory.
+			!lexicalPackages.some((path) => path.endsWith(`node_modules/${packageName}`)),
+			`Lexical-only install unexpectedly contains ${packageName}`,
+		);
+	}
+
+	const semanticInstallDir = join(tempDir, "semantic-install");
+	mkdirSync(semanticInstallDir, { recursive: true });
+	writeFileSync(
+		join(semanticInstallDir, "package.json"),
+		JSON.stringify({ private: true }),
+		"utf8",
+	);
+	run("npm", ["install", "--prefix", semanticInstallDir, coreTarball, embeddingsTarball], packageRoot, {
+		...process.env,
+		ONNXRUNTIME_NODE_INSTALL: "skip",
+		npm_config_install_strategy: "hoisted",
+	});
+	const semanticCoreBundle = readFileSync(
+		join(semanticInstallDir, "node_modules", "@codemem", "core", "dist", "index.js"),
+		"utf8",
+	);
+	assert(
+		/import\(["']@codemem\/embeddings["']\)/u.test(semanticCoreBundle),
+		"Packed core bundle does not preserve its external @codemem/embeddings import",
+	);
+	const installScriptsListing = spawnSync("npm", ["install-scripts", "ls", "--json"], {
+		cwd: semanticInstallDir,
+		encoding: "utf8",
+	});
+	const supportsInstallScripts = installScriptsListing.status === 0;
+	if (supportsInstallScripts) {
+		const blockedInstallScripts = readInstallScriptPolicyEntries(installScriptsListing);
+		const onnxInstallIsBlocked = blockedInstallScripts.some(
+			(entry) => entry?.name === "onnxruntime-node",
+		);
+		if (onnxInstallIsBlocked) {
+			run("npm", ["install-scripts", "approve", "onnxruntime-node"], semanticInstallDir);
+		} else {
+			process.stdout.write("ONNX Runtime install script was already permitted by npm\n");
+		}
+	} else {
+		const unsupportedCommandOutput = `${installScriptsListing.stdout ?? ""}\n${
+			installScriptsListing.stderr ?? ""
+		}`;
+		if (!/EUNKNOWNCOMMAND|Unknown command/i.test(unsupportedCommandOutput)) {
+			fail("Unable to inspect npm install-script policy", installScriptsListing);
+		}
+		process.stdout.write("npm does not support install-scripts; using rebuild compatibility path\n");
+	}
+	run("npm", ["rebuild", "onnxruntime-node"], semanticInstallDir, {
+		...process.env,
+		ONNXRUNTIME_NODE_INSTALL: "skip",
+		npm_config_install_strategy: "hoisted",
+	});
+	if (supportsInstallScripts) {
+		const remainingInstallScripts = readInstallScriptPolicyEntries(
+			run("npm", ["install-scripts", "ls", "--json"], semanticInstallDir),
+		);
+		assert(
+			!remainingInstallScripts.some((entry) => entry?.name === "onnxruntime-node"),
+			"Semantic install left ONNX Runtime's postinstall blocked after approval and rebuild",
+		);
+	}
+	const semanticLockPath = join(semanticInstallDir, "package-lock.json");
+	assert(existsSync(semanticLockPath), "Semantic install did not produce a package-lock.json");
+	const semanticLock = JSON.parse(readFileSync(semanticLockPath, "utf8"));
+	const semanticPackages = Object.keys(semanticLock.packages ?? {});
+	assert(
+		semanticPackages.some((path) => path.endsWith("node_modules/@huggingface/transformers")),
+		"Semantic install is missing the @huggingface/transformers runtime",
+	);
+	const ortPackageDir = resolveInstalledPackageDir(semanticInstallDir, "onnxruntime-node");
+	const ortBinaryDir = join(ortPackageDir, "bin", "napi-v6", process.platform, process.arch);
+	const supportsOrtCpuBinary = !(process.platform === "darwin" && process.arch === "x64");
+	if (supportsOrtCpuBinary) {
+		assert(
+			existsSync(join(ortBinaryDir, "onnxruntime_binding.node")),
+			`Semantic install is missing ONNX Runtime CPU binaries for ${process.platform}/${process.arch}`,
+		);
+	}
+	assert(
+		!existsSync(
+			join(
+				ortPackageDir,
+				"bin",
+				"napi-v6",
+				"linux",
+				"x64",
+				"libonnxruntime_providers_cuda.so",
+			),
+		),
+		"CPU-only semantic install unexpectedly contains the ONNX Runtime CUDA provider",
+	);
+	// Importing the @codemem/embeddings wrapper is always safe: it loads
+	// Transformers.js (and thus onnxruntime-node) lazily inside
+	// createEmbeddingRuntime, so this verifies the packed export exists even on
+	// Intel macOS where the ORT CPU binary is unavailable.
+	run(
+		process.execPath,
+		[
+			"--input-type=module",
+			"--eval",
+			"const runtime = await import('@codemem/embeddings'); if (typeof runtime.createEmbeddingRuntime !== 'function') process.exit(1);",
+		],
+		semanticInstallDir,
+	);
+	// Only evaluate the direct Transformers.js runtime where ORT has a CPU binary;
+	// on darwin/x64 that import cannot load onnxruntime-node.
+	if (supportsOrtCpuBinary) {
+		const transformersPackageDir = resolveInstalledPackageDir(
+			semanticInstallDir,
+			"@huggingface/transformers",
+		);
+		run(
+			process.execPath,
+			[
+				"--input-type=module",
+				"--eval",
+				"const transformers = await import('@huggingface/transformers'); if (typeof transformers.pipeline !== 'function') process.exit(1);",
+			],
+			transformersPackageDir,
+		);
+	}
 
 	const installedPackageRoot = join(installDir, "node_modules", "codemem");
 	const cliBin = join(installDir, "node_modules", ".bin", process.platform === "win32" ? "codemem.cmd" : "codemem");

@@ -10,6 +10,7 @@ import {
 	compareCodepoints,
 	isStrictRecipientPolicyId,
 } from "./recipient-policy-identifiers.js";
+import { serializeRecipientPolicyPublicationMutation } from "./recipient-policy-team-metadata.js";
 import {
 	planInviteDeviceDecisionTransition,
 	planInviteMembershipTransition,
@@ -76,7 +77,7 @@ function displayNameOrFallback(
 	return normalizedDisplayNameOrNull(value, field) ?? fallback;
 }
 
-export function reconcileCoordinatorEnrollmentSnapshot(
+export async function reconcileCoordinatorEnrollmentSnapshot(
 	db: Database,
 	input: {
 		coordinatorId: string;
@@ -86,7 +87,7 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 		localDeviceId?: string;
 		now?: string;
 	},
-): CoordinatorEnrollmentReconcileResult {
+): Promise<CoordinatorEnrollmentReconcileResult> {
 	if (!isStrictRecipientPolicyId(input.coordinatorId)) throw new Error("coordinator_id_invalid");
 	if (!isStrictRecipientPolicyId(input.groupId)) throw new Error("coordinator_group_id_invalid");
 	const now = input.now ?? new Date().toISOString();
@@ -539,6 +540,6 @@ export function reconcileCoordinatorEnrollmentSnapshot(
 			now,
 		});
 	});
-	apply();
+	await serializeRecipientPolicyPublicationMutation(db, async () => apply());
 	return result;
 }

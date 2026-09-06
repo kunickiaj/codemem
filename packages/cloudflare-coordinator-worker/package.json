@@ -6,7 +6,7 @@
 	"scripts": {
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
 		"build": "pnpm exec vite build && pnpm run check:bundle && pnpm exec tsc --build",
-		"check:bundle": "pnpm --filter @codemem/core build && node --test scripts/assert-worker-bundle-clean.test.mjs && rm -rf ../../.tmp/cloudflare-coordinator-worker-bundle && pnpm exec wrangler deploy --dry-run --config wrangler.jsonc --outdir ../../.tmp/cloudflare-coordinator-worker-bundle && node scripts/assert-worker-bundle-clean.mjs ../../.tmp/cloudflare-coordinator-worker-bundle",
+		"check:bundle": "pnpm --filter @codemem/core build && node --test scripts/assert-worker-bundle-clean.test.mjs && rm -rf ../../.tmp/cloudflare-coordinator-worker-bundle && pnpm exec wrangler deploy --dry-run --config wrangler.jsonc --outdir ../../.tmp/cloudflare-coordinator-worker-bundle --metafile ../../.tmp/cloudflare-coordinator-worker-bundle/meta.json && node scripts/assert-worker-bundle-clean.mjs ../../.tmp/cloudflare-coordinator-worker-bundle ../../.tmp/cloudflare-coordinator-worker-bundle/meta.json",
 		"typecheck": "pnpm exec tsc --build",
 		"test:node": "pnpm exec vitest run --config vitest.node.config.ts src/index.test.ts",
 		"test:worker": "pnpm run check:bundle && pnpm run test:node && pnpm exec vitest run --config vitest.config.ts test/worker.integration.test.ts"

@@ -4,6 +4,9 @@ export type LegacyTeamSetupActivationErrorCode =
 	| "team_setup_projection_changed"
 	| "team_setup_assignment_changed"
 	| "team_setup_roster_unavailable"
+	| "team_setup_completion_unavailable"
+	| "team_setup_completion_conflict"
+	| "team_setup_completion_invalid"
 	| "team_setup_conflict"
 	| "team_setup_confirmation_stale"
 	| "team_setup_failed";
@@ -27,7 +30,11 @@ export type LegacyTeamSetupDraftErrorCode =
 
 export type LegacyTeamSetupCoreErrorCode =
 	| LegacyTeamSetupDraftErrorCode
-	| LegacyTeamSetupActivationErrorCode;
+	| LegacyTeamSetupActivationErrorCode
+	| "completion_conflict"
+	| "completion_manifest_invalid"
+	| "coordinator_completion_response_malformed"
+	| "coordinator_completion_group_mismatch";
 
 /**
  * Stable API compatibility boundary. Core keeps throwing its released strings;
@@ -54,9 +61,16 @@ export const LEGACY_TEAM_SETUP_API_ERROR_BY_CORE_ERROR = {
 	team_setup_projection_changed: "team_setup_projection_changed",
 	team_setup_assignment_changed: "team_setup_assignment_changed",
 	team_setup_roster_unavailable: "team_setup_roster_unavailable",
+	team_setup_completion_unavailable: "team_setup_completion_unavailable",
+	team_setup_completion_conflict: "team_setup_completion_conflict",
+	team_setup_completion_invalid: "team_setup_completion_invalid",
 	team_setup_conflict: "team_setup_conflict",
 	team_setup_confirmation_stale: "team_setup_confirmation_stale",
 	team_setup_failed: "team_setup_failed",
+	completion_conflict: "team_setup_completion_conflict",
+	completion_manifest_invalid: "team_setup_completion_invalid",
+	coordinator_completion_response_malformed: "team_setup_completion_invalid",
+	coordinator_completion_group_mismatch: "team_setup_completion_invalid",
 } as const satisfies Record<LegacyTeamSetupCoreErrorCode, LegacyTeamSetupActivationErrorCode>;
 
 export function legacyTeamSetupApiErrorCode(error: unknown): LegacyTeamSetupActivationErrorCode {

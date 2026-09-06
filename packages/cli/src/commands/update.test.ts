@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
@@ -35,7 +35,7 @@ const availableStatus = {
 	stale: false,
 	install_kind: "npm-global",
 	auto_update_eligible: false,
-	recommended_action: "npm install -g codemem@0.41.0",
+	recommended_action: "npm install -g codemem@0.41.0 @codemem/embeddings@0.41.0",
 	error: null,
 } as const;
 
@@ -274,6 +274,7 @@ describe("update install command", () => {
 	});
 
 	it("installs the exact validated release without a shell and verifies it", async () => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
 		getUpdateStatus.mockResolvedValue({ ...availableStatus, auto_update_eligible: true });
 		spawn
 			.mockImplementationOnce(() => commandProcess())
@@ -285,8 +286,15 @@ describe("update install command", () => {
 		expect(spawn).toHaveBeenNthCalledWith(
 			1,
 			"npm",
-			["install", "-g", "--registry", "https://registry.npmjs.org/", "codemem@0.41.0"],
-			expect.objectContaining({ shell: false }),
+			[
+				"install",
+				"-g",
+				"--registry",
+				"https://registry.npmjs.org/",
+				"codemem@0.41.0",
+				"@codemem/embeddings@0.41.0",
+			],
+			expect.objectContaining({ env: undefined, shell: false }),
 		);
 		expect(spawn).toHaveBeenNthCalledWith(
 			2,
@@ -300,6 +308,78 @@ describe("update install command", () => {
 		});
 		expect(process.exitCode).toBeUndefined();
 	});
+
+	it("keeps the bare update command non-mutating", async () => {
+		getUpdateStatus.mockResolvedValue({ ...availableStatus, auto_update_eligible: true });
+
+		await expect(parseUpdateCommand([])).rejects.toThrow(
+			'process.exit unexpectedly called with "1"',
+		);
+
+		expect(getUpdateStatus).not.toHaveBeenCalled();
+		expect(spawn).not.toHaveBeenCalled();
+		expect(process.exitCode).toBeUndefined();
+	});
+
+	it("preserves the CPU-only ONNX install policy on Linux", async () => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+		getUpdateStatus.mockResolvedValue({ ...availableStatus, auto_update_eligible: true });
+		spawn
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(spawn).toHaveBeenNthCalledWith(
+			1,
+			"npm",
+			expect.arrayContaining(["codemem@0.41.0", "@codemem/embeddings@0.41.0"]),
+			expect.objectContaining({
+				env: expect.objectContaining({
+					ONNXRUNTIME_NODE_INSTALL: "skip",
+					PATH: process.env.PATH,
+				}),
+			}),
+		);
+		expect(process.exitCode).toBeUndefined();
+	});
+
+	it.runIf(process.platform !== "win32")(
+		"recognizes an npm-global executable invoked through its bin symlink",
+		async () => {
+			const packageEntry = join(
+				testHome,
+				"prefix",
+				"lib",
+				"node_modules",
+				"codemem",
+				"dist",
+				"index.js",
+			);
+			const binEntry = join(testHome, "prefix", "bin", "codemem");
+			await mkdir(join(testHome, "prefix", "lib", "node_modules", "codemem", "dist"), {
+				recursive: true,
+			});
+			await mkdir(join(testHome, "prefix", "bin"), { recursive: true });
+			await writeFile(packageEntry, "#!/usr/bin/env node\n", "utf8");
+			await symlink(packageEntry, binEntry);
+			const previousArgv = [...process.argv];
+			process.argv[1] = binEntry;
+			getUpdateStatus.mockResolvedValue(availableStatus);
+			vi.spyOn(console, "log").mockImplementation(() => {});
+
+			try {
+				await parseUpdateCommand(["check", "--json"]);
+			} finally {
+				process.argv.splice(0, process.argv.length, ...previousArgv);
+			}
+
+			expect(getUpdateStatus).toHaveBeenCalledWith(
+				expect.objectContaining({ installKind: "npm-global" }),
+			);
+		},
+	);
 
 	it("fails when the active CLI does not report the installed version", async () => {
 		getUpdateStatus.mockResolvedValue({ ...availableStatus, auto_update_eligible: true });

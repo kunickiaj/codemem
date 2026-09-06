@@ -1,0 +1,43 @@
+{
+	"name": "@codemem/embeddings",
+	"version": "0.43.2",
+	"type": "module",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"source": "./src/index.ts",
+			"import": "./dist/index.js",
+			"types": "./dist/index.d.ts"
+		}
+	},
+	"files": [
+		"dist/"
+	],
+	"scripts": {
+		"clean": "rm -rf dist tsconfig.tsbuildinfo",
+		"build": "pnpm exec vite build && pnpm exec tsc --build --force",
+		"typecheck": "pnpm exec tsc --noEmit",
+		"test": "pnpm exec vitest run",
+		"test:packed-runtime": "node ./scripts/packed-runtime-smoke.mjs"
+	},
+	"dependencies": {
+		"@huggingface/transformers": "4.2.0"
+	},
+	"devDependencies": {
+		"typescript": "catalog:",
+		"vite": "catalog:",
+		"vitest": "catalog:"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kunickiaj/codemem.git",
+		"directory": "packages/embeddings"
+	},
+	"engines": {
+		"node": ">=24.15.0"
+	},
+	"license": "MIT",
+	"publishConfig": {
+		"access": "public"
+	}
+}

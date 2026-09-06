@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+	assertWorkerBundleMetafileClean,
 	assertWorkerBundleOutputClean,
 	findForbiddenWorkerImports,
+	findForbiddenWorkerMetafileModules,
 } from "./assert-worker-bundle-clean.mjs";
 
 test("allows Worker-compatible imports", () => {
@@ -16,21 +18,37 @@ test("allows Worker-compatible imports", () => {
 test("rejects static, dynamic, and generated require imports of forbidden modules", () => {
 	const source = [
 		'import { createRequire } from "node:module";',
+		'import "@codemem/embeddings";',
+		'import "@huggingface/transformers";',
+		'import "@huggingface/transformers/env";',
+		'import "@xenova/transformers";',
 		'await import("bonjour-service");',
 		'const Database = require("better-sqlite3");',
+		'const ortCommon = require("onnxruntime-common");',
+		'const ort = require("onnxruntime-node");',
+		'import "onnxruntime-web/webgpu";',
+		'import "sharp";',
 		'const fs = __require("node:fs");',
 		'const os = __require2("node:os");',
 		'const bareFs = require("fs");',
 		'import "os";',
 	].join("\n");
 	assert.deepEqual(findForbiddenWorkerImports(source), [
+		"@codemem/embeddings",
+		"@huggingface/transformers",
+		"@huggingface/transformers/env",
+		"@xenova/transformers",
 		"better-sqlite3",
 		"bonjour-service",
 		"fs",
 		"node:fs",
 		"node:module",
 		"node:os",
+		"onnxruntime-common",
+		"onnxruntime-node",
+		"onnxruntime-web/webgpu",
 		"os",
+		"sharp",
 	]);
 });
 
@@ -42,6 +60,67 @@ test("allows only the Node imports used by the Worker bundle", () => {
 		'import "path";',
 	].join("\n");
 	assert.deepEqual(findForbiddenWorkerImports(source), []);
+});
+
+test("rejects forbidden packages after the bundler resolves their import specifiers", () => {
+	const metafile = {
+		inputs: {
+			"../embeddings/src/index.ts": {
+				bytes: 100,
+				imports: [],
+			},
+			"../core/src/embeddings.ts": {
+				bytes: 100,
+				imports: [
+					{
+						path: "../../node_modules/.pnpm/@xenova+transformers@2.17.2/node_modules/@xenova/transformers/src/transformers.js",
+						original: "@xenova/transformers",
+					},
+				],
+			},
+			"node_modules/@xenova/transformers/src/env.js": {
+				bytes: 100,
+				imports: [],
+			},
+		},
+	};
+	assert.deepEqual(findForbiddenWorkerMetafileModules(metafile), [
+		"@codemem/embeddings",
+		"@xenova/transformers",
+	]);
+});
+
+test("allows a clean metafile", () => {
+	const metafile = {
+		inputs: {
+			"../core/src/index.ts": { bytes: 100, imports: [] },
+		},
+	};
+	assert.deepEqual(findForbiddenWorkerMetafileModules(metafile), []);
+});
+
+test("rejects an empty bundle metafile", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "codemem-worker-metafile-empty-"));
+	try {
+		const metafilePath = join(directory, "meta.json");
+		await writeFile(metafilePath, "{}");
+		await assert.rejects(
+			assertWorkerBundleMetafileClean(metafilePath),
+			/Worker bundle metafile has no inputs:/u,
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("rejects malformed bundle metafile imports", () => {
+	assert.throws(
+		() =>
+			findForbiddenWorkerMetafileModules({
+				inputs: { "../core/src/index.ts": { imports: {} } },
+			}),
+		/Worker bundle metafile has invalid imports for: \.\.\/core\/src\/index\.ts/u,
+	);
 });
 
 test("checks every JavaScript chunk in the bundle output", async () => {
@@ -65,6 +144,22 @@ test("rejects a bundle output with no JavaScript", async () => {
 		await assert.rejects(
 			assertWorkerBundleOutputClean(directory),
 			/Worker bundle contains no JavaScript files:/u,
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("rejects bundled native/WASM assets even when the JS imports look clean", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "codemem-worker-bundle-wasm-"));
+	try {
+		// An inlined package like onnxruntime-web drops its import specifier from
+		// the emitted JS but still emits a .wasm asset the JS-only scan misses.
+		await writeFile(join(directory, "index.js"), 'import { createHash } from "node:crypto";');
+		await writeFile(join(directory, "ort-wasm-simd.wasm"), "\0asm");
+		await assert.rejects(
+			assertWorkerBundleOutputClean(directory),
+			/Worker bundle contains forbidden native\/WASM assets: .*ort-wasm-simd\.wasm/u,
 		);
 	} finally {
 		await rm(directory, { recursive: true, force: true });

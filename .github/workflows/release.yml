@@ -163,7 +163,8 @@ jobs:
             pnpm --filter "${filter}" publish --tag "${DIST_TAG}" --provenance --access public --no-git-checks
           }
           # pnpm publish resolves workspace:^ to actual version ranges.
-          # Publish in dependency order: core → mcp, server → cli → opencode-plugin.
+          # Publish embeddings before packages that consume or launch its pinned version.
+          publish_if_missing "@codemem/embeddings" "packages/embeddings"
           publish_if_missing "@codemem/core" "packages/core"
           publish_if_missing "@codemem/mcp" "packages/mcp-server"
           publish_if_missing "@codemem/server" "packages/viewer-server"

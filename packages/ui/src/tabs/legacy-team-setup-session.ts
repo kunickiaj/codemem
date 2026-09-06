@@ -82,6 +82,14 @@ const ROSTER_UNAVAILABLE_ERROR =
 	"Team device details are temporarily unavailable. Check the coordinator connection and settings, then refresh.";
 const ROSTER_UNAVAILABLE_AFTER_FINISH_ERROR =
 	"Team device details were unavailable, so setup was not finished and no changes were applied. Check the coordinator connection and settings, then refresh.";
+const COMPLETION_UNAVAILABLE_ERROR =
+	"Team setup completion could not be checked. Check the coordinator connection and settings, then retry.";
+const COMPLETION_UNAVAILABLE_AFTER_FINISH_ERROR =
+	"Team setup could not be confirmed, and no local changes were applied. Retry to check whether setup completed.";
+const COMPLETION_CONFLICT_ERROR =
+	"Another device completed this Team with different reviewed details. Retry to load the completed setup.";
+const COMPLETION_INVALID_ERROR =
+	"The completed Team setup could not be verified. Retry, then check the coordinator connection and settings if the problem continues.";
 
 export function createSetupSessionState(): SetupSessionState {
 	return { status: "closed", generation: 0 };
@@ -471,7 +479,7 @@ function failed(
 	}
 	const recovered = result.recoveredView ? applyView(state, result.recoveredView, false) : state;
 	if (result.recoveredView?.state === "completed") return recovered;
-	const error = errorFor(command, result.cause);
+	const error = errorFor(command, result.cause, result.recoveryCause);
 	const next = {
 		...recovered,
 		errors: [...clearScope(recovered, error.scope).errors, error],
@@ -572,49 +580,110 @@ function completed(state: OpenSetupSessionState, attemptId: string): OpenSetupSe
 	return next;
 }
 
-function errorFor(command: SetupEffect, cause: unknown): SetupSessionError {
+function errorFor(
+	command: SetupEffect,
+	cause: unknown,
+	recoveryCause?: unknown,
+): SetupSessionError {
 	const changed = cause instanceof LegacyTeamSetupApiError && isChangedStateCode(cause.errorCode);
 	const rosterUnavailable =
 		cause instanceof LegacyTeamSetupApiError && cause.errorCode === "team_setup_roster_unavailable";
-	const message = changed
-		? CHANGED_STATE_ERROR
-		: rosterUnavailable
-			? command.kind === "finish"
-				? ROSTER_UNAVAILABLE_AFTER_FINISH_ERROR
-				: ROSTER_UNAVAILABLE_ERROR
-			: safeError(command.kind);
-	const retry =
-		changed ||
-		rosterUnavailable ||
-		command.kind === "refresh" ||
-		(command.kind === "load" && command.refresh)
-			? ("refresh" as const)
-			: ("load" as const);
+	const { completionCode, message, terminalRecoveryCode } = completionOrChangedMessage({
+		command,
+		cause,
+		recoveryCause,
+		changed,
+		rosterUnavailable,
+	});
+	const globalError = changed || rosterUnavailable || completionCode !== null;
+	return {
+		scope: errorScopeFor(command, { globalError }),
+		message,
+		retry: retryFor(command, cause, recoveryCause, {
+			changed,
+			rosterUnavailable,
+			terminalRecovery: terminalRecoveryCode !== null,
+		}),
+	};
+}
+
+function errorScopeFor(command: SetupEffect, options: { globalError: boolean }): SetupErrorScope {
+	if (options.globalError) return { kind: "global" };
 	if (
 		command.kind === "assign_device" ||
 		command.kind === "decide_device" ||
 		command.kind === "clear_device"
 	) {
+		return { kind: "device", itemRef: command.deviceRef };
+	}
+	if (command.kind === "map_project") return { kind: "project", itemRef: command.projectRef };
+	return command.kind === "load" ? { kind: "load" } : { kind: "global" };
+}
+
+function retryFor(
+	command: SetupEffect,
+	cause: unknown,
+	recoveryCause: unknown,
+	options: { changed: boolean; rosterUnavailable: boolean; terminalRecovery: boolean },
+): SetupSessionError["retry"] {
+	const confirmationStale =
+		(cause instanceof LegacyTeamSetupApiError &&
+			cause.errorCode === "team_setup_confirmation_stale") ||
+		(recoveryCause instanceof LegacyTeamSetupApiError &&
+			recoveryCause.errorCode === "team_setup_confirmation_stale");
+	if (confirmationStale || options.terminalRecovery) return "load";
+	if (options.changed || options.rosterUnavailable) return "refresh";
+	if (command.kind === "refresh") return "refresh";
+	if (command.kind === "load" && command.refresh) return "refresh";
+	return "load";
+}
+
+function completionOrChangedMessage(options: {
+	command: SetupEffect;
+	cause: unknown;
+	recoveryCause?: unknown;
+	changed: boolean;
+	rosterUnavailable: boolean;
+}) {
+	const { command, cause, recoveryCause, changed, rosterUnavailable } = options;
+	const causeCompletionCode =
+		cause instanceof LegacyTeamSetupApiError ? completionErrorCode(cause.errorCode) : null;
+	const recoveryCompletionCode =
+		recoveryCause instanceof LegacyTeamSetupApiError
+			? completionErrorCode(recoveryCause.errorCode)
+			: null;
+	const terminalRecoveryCode = terminalCompletionCode(recoveryCompletionCode);
+	const completionCode = terminalRecoveryCode ?? causeCompletionCode;
+	const completionError =
+		completionCode === "team_setup_completion_unavailable" && command.kind === "finish"
+			? COMPLETION_UNAVAILABLE_AFTER_FINISH_ERROR
+			: completionMessage(completionCode);
+	if (terminalRecoveryCode) {
 		return {
-			scope:
-				changed || rosterUnavailable
-					? { kind: "global" }
-					: { kind: "device", itemRef: command.deviceRef },
-			message,
-			retry,
+			completionCode,
+			message: completionError ?? safeError(command.kind),
+			terminalRecoveryCode,
 		};
 	}
-	if (command.kind === "map_project") {
-		return {
-			scope:
-				changed || rosterUnavailable
-					? { kind: "global" }
-					: { kind: "project", itemRef: command.projectRef },
-			message,
-			retry,
-		};
+	if (changed) return { completionCode, message: CHANGED_STATE_ERROR, terminalRecoveryCode };
+	if (rosterUnavailable) {
+		const message =
+			command.kind === "finish" ? ROSTER_UNAVAILABLE_AFTER_FINISH_ERROR : ROSTER_UNAVAILABLE_ERROR;
+		return { completionCode, message, terminalRecoveryCode };
 	}
-	return { scope: command.kind === "load" ? { kind: "load" } : { kind: "global" }, message, retry };
+	return {
+		completionCode,
+		message: completionError ?? safeError(command.kind),
+		terminalRecoveryCode,
+	};
+}
+
+function terminalCompletionCode(
+	code: ReturnType<typeof completionErrorCode>,
+): "team_setup_completion_conflict" | "team_setup_completion_invalid" | null {
+	if (code === "team_setup_completion_conflict" || code === "team_setup_completion_invalid")
+		return code;
+	return null;
 }
 
 function safeError(kind: SetupEffect["kind"]): string {
@@ -704,16 +773,50 @@ export function globalError(state: OpenSetupSessionState): SetupSessionError | n
 function unavailableMessage(reason: LegacyTeamSetupErrorCode): string {
 	if (isChangedStateCode(reason)) return CHANGED_STATE_ERROR;
 	if (reason === "team_setup_roster_unavailable") return ROSTER_UNAVAILABLE_ERROR;
+	const completion = completionMessage(completionErrorCode(reason));
+	if (completion) return completion;
 	if (reason === "team_setup_incomplete") {
 		return "Team setup needs refreshed server details before review can continue.";
 	}
 	return "Team setup details are temporarily unavailable. Refresh to load the latest server state.";
 }
 
+function completionErrorCode(
+	reason: LegacyTeamSetupErrorCode,
+):
+	| "team_setup_completion_unavailable"
+	| "team_setup_completion_conflict"
+	| "team_setup_completion_invalid"
+	| null {
+	if (
+		reason === "team_setup_completion_unavailable" ||
+		reason === "team_setup_completion_conflict" ||
+		reason === "team_setup_completion_invalid"
+	) {
+		return reason;
+	}
+	return null;
+}
+
+function completionMessage(reason: ReturnType<typeof completionErrorCode>): string | null {
+	if (reason === "team_setup_completion_unavailable") return COMPLETION_UNAVAILABLE_ERROR;
+	if (reason === "team_setup_completion_conflict") return COMPLETION_CONFLICT_ERROR;
+	if (reason === "team_setup_completion_invalid") return COMPLETION_INVALID_ERROR;
+	return null;
+}
+
+function isGlobalRecoveryScope(scope: SetupErrorScope): boolean {
+	return scope.kind === "global" || scope.kind === "load";
+}
+
 function clearScope(state: OpenSetupSessionState, scope: SetupErrorScope): OpenSetupSessionState {
+	// `globalError()` presents load and global errors through one slot, so
+	// replacing either must clear both or the older entry keeps winning.
+	const replacesGlobalRecovery = isGlobalRecoveryScope(scope);
 	return {
 		...state,
 		errors: state.errors.filter((error) => {
+			if (replacesGlobalRecovery) return !isGlobalRecoveryScope(error.scope);
 			if (error.scope.kind !== scope.kind) return true;
 			if (!("itemRef" in scope) || !("itemRef" in error.scope)) return false;
 			return error.scope.itemRef !== scope.itemRef;

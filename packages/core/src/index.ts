@@ -316,14 +316,26 @@ export {
 	judgeDistillReport,
 	parseJudgeVerdict,
 } from "./distill-judge.js";
-export type { EmbeddingClient } from "./embeddings.js";
+export type {
+	EmbeddingClient,
+	EmbeddingRuntimeFactory,
+	EmbeddingRuntimeIdentity,
+	EmbeddingRuntimeRequest,
+} from "./embeddings.js";
 export {
 	_resetEmbeddingClient,
+	_resetEmbeddingRuntimeFactory,
+	_setEmbeddingRuntimeFactory,
 	chunkText,
+	DEFAULT_EMBEDDING_REVISION,
+	DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL,
 	embedTexts,
 	getEmbeddingClient,
 	hashText,
+	resolveEmbeddingRevision,
+	resolveEmbeddingVectorIdentityLabel,
 	serializeFloat32,
+	tryResolveEmbeddingRevision,
 } from "./embeddings.js";
 export type { InjectionEvalScenario, InjectionEvalScenarioPack } from "./eval-scenarios.js";
 export {
@@ -488,6 +500,7 @@ export {
 } from "./legacy-recipient-policy-projection.js";
 export * from "./legacy-team-candidate.js";
 export * from "./legacy-team-setup-activation.js";
+export * from "./legacy-team-setup-completion-manifest.js";
 export * from "./legacy-team-setup-draft.js";
 export type {
 	LegacyTeamSetupCoreErrorCode,
@@ -894,8 +907,14 @@ export type {
 	RecipientPolicyTeamRenameResultV1,
 } from "./recipient-policy-team-metadata.js";
 export {
+	claimRecipientPolicyActorMutations,
+	claimRecipientPolicyPublicationMutation,
 	RecipientPolicyTeamRenameError,
 	renameRecipientPolicyTeam,
+	serializeRecipientPolicyActorMutations,
+	serializeRecipientPolicyCoordinatorGroupMutation,
+	serializeRecipientPolicyPublicationMutation,
+	serializeRecipientPolicyTeamMutation,
 } from "./recipient-policy-team-metadata.js";
 export type {
 	RecipientReviewedIntentExcludedProjectV1,

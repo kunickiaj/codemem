@@ -2,7 +2,12 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLegacyTeamSetupDraft } from "./legacy-team-setup-draft.js";
 import { deterministicPolicyTeamId } from "./recipient-policy-identifiers.js";
-import { renameRecipientPolicyTeam } from "./recipient-policy-team-metadata.js";
+import {
+	claimRecipientPolicyActorMutations,
+	renameRecipientPolicyTeam,
+	serializeRecipientPolicyActorMutations,
+	serializeRecipientPolicyPublicationMutation,
+} from "./recipient-policy-team-metadata.js";
 import { initTestSchema } from "./test-utils.js";
 
 const NOW = "2026-08-26T12:00:00.000Z";
@@ -17,6 +22,65 @@ describe("recipient policy Team metadata", () => {
 	});
 
 	afterEach(() => db.close());
+
+	it("claims deduplicated actor locks in sorted order and releases them once", async () => {
+		let releaseActorB: () => void = () => undefined;
+		const actorBGate = new Promise<void>((resolve) => {
+			releaseActorB = resolve;
+		});
+		const heldActorB = serializeRecipientPolicyActorMutations(db, ["actor-b"], () => actorBGate);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		const releaseActorsPromise = claimRecipientPolicyActorMutations(db, [
+			"actor-b",
+			"actor-a",
+			"actor-a",
+		]);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		let actorAStarted = false;
+		let releaseActorA: () => void = () => undefined;
+		const actorAGate = new Promise<void>((resolve) => {
+			releaseActorA = resolve;
+		});
+		const heldActorA = serializeRecipientPolicyActorMutations(db, ["actor-a"], async () => {
+			actorAStarted = true;
+			await actorAGate;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(actorAStarted).toBe(false);
+
+		releaseActorB();
+		const releaseActors = await releaseActorsPromise;
+		releaseActors();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(actorAStarted).toBe(true);
+
+		let trailingActorAStarted = false;
+		const trailingActorA = serializeRecipientPolicyActorMutations(db, ["actor-a"], async () => {
+			trailingActorAStarted = true;
+		});
+		releaseActors();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(trailingActorAStarted).toBe(false);
+
+		releaseActorA();
+		await Promise.all([heldActorA, heldActorB, trailingActorA]);
+		expect(trailingActorAStarted).toBe(true);
+	});
+
+	it("releases the publication barrier when an operation fails", async () => {
+		await expect(
+			serializeRecipientPolicyPublicationMutation(db, async () => {
+				throw new Error("publication failed");
+			}),
+		).rejects.toThrow("publication failed");
+
+		let nextOperationStarted = false;
+		await serializeRecipientPolicyPublicationMutation(db, async () => {
+			nextOperationStarted = true;
+		});
+		expect(nextOperationStarted).toBe(true);
+	});
 
 	function insertTeam(teamId = "team-local", displayName = "Old Team") {
 		db.prepare(

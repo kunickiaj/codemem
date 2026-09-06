@@ -46,16 +46,53 @@ npx -y codemem db raw-events-status
 
 That's it. The plugin captures activity, builds memories, and injects context from here on.
 
-If you want `codemem` available directly on your `PATH` for manual commands, install the CLI globally:
+If you want `codemem` available directly on your `PATH` for manual commands and semantic retrieval, install the CLI and embedding runtime globally. The command differs by platform:
+
+On Linux, skip the unused ONNX Runtime GPU provider download:
 
 ```text
-npm install -g codemem
+env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem @codemem/embeddings
 ```
+
+On Apple silicon macOS and Windows, install both packages normally:
+
+```text
+npm install -g codemem @codemem/embeddings
+```
+
+Installing only `codemem` keeps the CLI functional with FTS5 keyword retrieval
+and does not download the embedding runtime.
+
+Setup-managed `npx` launchers cannot set a platform-specific install variable.
+On Linux, either use the guarded global installation above or set
+`ONNXRUNTIME_NODE_INSTALL=skip` in the environment that launches OpenCode,
+Claude Code, or Codex before its first `npx` package resolution. This prevents
+the unused ONNX Runtime GPU-provider download while retaining CPU inference.
+
+After upgrading an existing installation, rerun `codemem setup` (or the
+app-specific `--opencode-only`, `--claude-only`, or `--codex-only` form).
+Setup replaces the old managed `npx -y codemem mcp` launcher and codemem MCP
+entries detected as UV/UVX-based so both packages share one runtime. Other
+custom MCP commands remain unchanged.
+
+Generated MCP configurations use the durable global `codemem` binary when it is
+available. Without a global install, setup-managed `npx` launchers request both
+packages in the same temporary environment. After changing the installation,
+restart the host whose config you updated — OpenCode, Claude Code, or Codex —
+plus any running `codemem serve` process. Each MCP process caches runtime
+availability for its lifetime, so a still-running Claude or Codex MCP host keeps
+lexical-only recall until it restarts; restarting `codemem serve` alone does not
+restart that MCP child.
+
+The semantic runtime is pinned to CPU inference on every platform.
+ONNX Runtime 1.24.3 does not ship a macOS x64 binary, so Intel Macs continue
+with FTS5 keyword retrieval when semantic runtime initialization fails.
 
 OpenCode plugin and CLI are now split intentionally:
 
 - `@codemem/opencode-plugin` — OpenCode plugin package
 - `codemem` — CLI and MCP commands
+- `@codemem/embeddings` — optional semantic embedding runtime
 
 ### Claude Code (marketplace install)
 
@@ -107,7 +144,7 @@ The Codex plugin bundles its MCP config (`codemem mcp`), hooks, and generated no
 npx -y codemem setup --codex-only
 ```
 
-This merges `[mcp_servers.codemem]` into `~/.codex/config.toml` and writes `~/.codex/hooks.json` (SessionStart, UserPromptSubmit, PostToolUse, Stop) — backing up existing files and preserving unrelated entries. Restart Codex and approve the one-time prompt to trust the codemem hooks. MCP recall works immediately. If `codemem` is on your `PATH` the hooks call it directly; otherwise they fall back to `npx -y codemem`. Honors `CODEX_HOME`; re-runnable (use `--force` to refresh).
+This merges `[mcp_servers.codemem]` into `~/.codex/config.toml` and writes `~/.codex/hooks.json` (SessionStart, UserPromptSubmit, PostToolUse, Stop) — backing up existing files and preserving unrelated entries. Restart Codex and approve the one-time prompt to trust the codemem hooks. MCP recall works immediately. If `codemem` is on your `PATH` the hooks call it directly; otherwise they use an `npx` launcher that requests both `codemem` and `@codemem/embeddings`. Honors `CODEX_HOME`; re-runnable (use `--force` to refresh).
 
 Codex hook ingestion shares the same raw-event pipeline as Claude and OpenCode through normalized `POST /api/raw-events`. After a retryable HTTP failure it writes the exact envelope to `~/.codemem/codex-raw-event-spool`, attempts the `codemem enqueue-raw-event` command fallbacks, and removes the spooled envelope only after success. That spool is separate from the legacy native-hook spool. `UserPromptSubmit` runs capture ingest in the background and injects memory context via `additionalContext`; disable injection with `CODEMEM_INJECT_CONTEXT=0`. See [docs/plugin-reference.md](docs/plugin-reference.md) for details and troubleshooting.
 
@@ -178,7 +215,8 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | | `codemem sync once` | Run one immediate sync pass |
 | | `codemem sync doctor` | Diagnose sync configuration issues |
 | | `codemem sync bootstrap` | Bootstrap sync from a peer snapshot |
-| **Updates** | `codemem update check` | Check the npm registry for a newer stable release (`--json` and `--refresh` supported) |
+| **Updates** | `codemem update install` | Install an eligible stable release from npm |
+| | `codemem update check` | Check the npm registry for a newer stable release (`--json` and `--refresh` supported) |
 | **Coordinator** | `codemem coordinator` | Self-hosted coordinator admin (groups, devices, invites) |
 | **Database** | `codemem db prune-memories` | Deactivate low-signal memories (`--dry-run` to preview) |
 | | `codemem db prune-observations` | Deactivate low-signal observations |
@@ -204,10 +242,14 @@ installation-specific guidance. Results are cached for six hours;
 pass `--refresh` to force a registry request or `--json` for one stable status object.
 The Viewer Health page reads the same status from `/api/update-status`. The OpenCode plugin
 checks it after startup and shows at most one best-effort notification for each newly discovered
-release. `notify` is the default. Explicit `auto` policy may run `codemem update install` only for
-a fresh, validated npm release observed for at least 24 hours and an installation whose npm origin
-can be proven. Pinned, prerelease, downgrade, repository-development, stale, Docker, and unknown
-installs refuse execution. Set `CODEMEM_BACKEND_UPDATE_POLICY=off` to disable release checks.
+release. `notify` is the default. `codemem update install` performs the explicit, fail-closed
+installation; bare `codemem update` remains non-mutating. Explicit plugin
+`auto` policy may run a paired, version-pinned public-registry install of `codemem` and
+`@codemem/embeddings` only
+after the CLI reports a fresh, validated npm release observed for at least 24 hours and an
+installation whose npm origin can be proven. Pinned, prerelease, downgrade,
+repository-development, stale, Docker, and unknown installs refuse execution. Set
+`CODEMEM_BACKEND_UPDATE_POLICY=off` to disable release checks.
 Docker guidance is always rebuild-and-restart guidance, never an in-container update.
 
 Pack rendering defaults to self-contained context. For token-constrained experiments, `codemem pack <context> --compact` renders an index plus top details. Near-related compression is controlled by `--compression-mode off|compact|ids` (or `CODEMEM_PACK_COMPRESSION`); MCP `memory_pack` exposes the same setting as `compression_mode`. Use `ids` only when the agent can follow up with `memory_get_observations`.
@@ -317,6 +359,8 @@ For ongoing collaboration:
 
 Team onboarding links Identities and devices. The invitation does not assign Projects to the Team, but a new member inherits every current and future Project assigned to it. Review the Team's Projects before sending or accepting the invitation. Use **Share exact Projects** to send a separate direct Project invitation to one Identity. Team sharing must already be configured, but accepting the direct invitation does not add the recipient to the Team.
 
+For a legacy Team that needs setup, finish the reviewed setup on any upgraded device. The first valid finish becomes the Team's shared result; other upgraded devices apply it locally and stop showing that setup task. To finish setup, the device must list the Team's coordinator group in `sync_coordinator_groups`; scope-backed discovery can show a Team for review but cannot complete its setup. See [Set up an existing Team](docs/user-guide.md#set-up-an-existing-team) for recovery and compatibility details.
+
 For a direct share, choose **Create an invitation → Share exact Projects**:
 
 1. Choose or enter the teammate's **Identity display name**.
@@ -364,7 +408,7 @@ For cross-network setups where peer addresses change frequently or mDNS does not
 
 ## Semantic recall
 
-Embeddings are stored in sqlite-vec and written automatically when memories are created. Use `codemem embed` to backfill existing memories. If sqlite-vec cannot load, keyword search still works.
+Embeddings are stored in sqlite-vec and written automatically when memories are created. Use `codemem embed` to backfill existing memories. A custom `CODEMEM_EMBEDDING_MODEL` requires `CODEMEM_EMBEDDING_REVISION`; mutable branches and tags resolve to their canonical commit before vectors are labeled, while an explicit 40-character commit works offline. Changing either value triggers a background rebuild and uses keyword search until incompatible migrations finish. If sqlite-vec cannot load, keyword search still works.
 
 ## Alternative install methods
 
@@ -388,6 +432,8 @@ npx -y codemem stats
 ### Plugin for development
 
 Start OpenCode inside the codemem repo directory — the plugin auto-loads from `.opencode/plugin/`.
+
+The repository's root `opencode.jsonc` also enables a contributor-only lint-feedback pilot from `packages/opencode-plugin/src/lint-feedback.ts`. That repository-owned entrypoint pins the local Biome command, runs it before and after JavaScript or TypeScript edits covered by `biome.json`, appends only new or worsened diagnostics, and preserves edits with one warning if linting fails or times out. The root config and pilot source are excluded from `@codemem/opencode-plugin`; installing codemem does not enable this feedback hook.
 
 </details>
 

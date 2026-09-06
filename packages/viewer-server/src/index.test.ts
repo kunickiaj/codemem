@@ -186,6 +186,7 @@ function createTestApp(opts?: {
 	sweeper?: unknown;
 	getUpdateStatus?: (options: core.GetUpdateStatusOptions) => Promise<core.UpdateStatus>;
 	loadLegacyTeamConfiguredGroupSnapshots?: LegacyTeamConfiguredGroupSnapshotLoader;
+	teamSetupCompletionDependencies?: AppOptions["teamSetupCompletionDependencies"];
 	readCoordinatorConfig?: AppOptions["readCoordinatorConfig"];
 	renameCoordinatorGroup?: AppOptions["renameCoordinatorGroup"];
 	syncRequestRateLimit?: {
@@ -217,6 +218,7 @@ function createTestApp(opts?: {
 		getUpdateStatus: opts?.getUpdateStatus,
 		getSyncRuntimeStatus: opts?.getSyncRuntimeStatus,
 		loadLegacyTeamConfiguredGroupSnapshots: opts?.loadLegacyTeamConfiguredGroupSnapshots,
+		teamSetupCompletionDependencies: opts?.teamSetupCompletionDependencies ?? null,
 		readCoordinatorConfig: opts?.readCoordinatorConfig,
 		renameCoordinatorGroup: opts?.renameCoordinatorGroup,
 	};
@@ -504,6 +506,7 @@ describe("viewer-server", () => {
 		const rawDeviceId = "device-secret-id";
 		const rawIdentityId = "identity-secret-id";
 		const rawProjectIdentity = "https://private.example.invalid/secret/repo.git";
+		const rawFingerprint = "a".repeat(64);
 		const candidateRef = core.legacyTeamCandidateId(coordinatorId, groupId);
 		const snapshots: core.LegacyTeamConfiguredGroupSnapshot[] = [
 			{
@@ -513,7 +516,7 @@ describe("viewer-server", () => {
 				devices: [
 					{
 						deviceId: rawDeviceId,
-						fingerprint: "fingerprint-secret",
+						fingerprint: rawFingerprint,
 						displayName: "Review Laptop",
 						enabled: true,
 					},
@@ -568,6 +571,16 @@ describe("viewer-server", () => {
 			const loadSnapshots = vi.fn(async () => snapshots);
 			const { app, ensureStore, cleanup } = createTestApp({
 				loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
+				readCoordinatorConfig: () =>
+					core.readCoordinatorSyncConfig({
+						sync_coordinator_url: coordinatorId,
+						sync_coordinator_groups: [groupId],
+						sync_coordinator_admin_secret: "test-secret",
+					}),
+				teamSetupCompletionDependencies: {
+					create: async ({ manifest }) => ({ status: "created", manifest }),
+					list: async () => [],
+				},
 			});
 			try {
 				const store = ensureStore();
@@ -825,7 +838,7 @@ describe("viewer-server", () => {
 				expect(JSON.stringify(detail)).not.toContain(groupId);
 				expect(JSON.stringify(detail)).not.toContain(rawDeviceId);
 				expect(JSON.stringify(detail)).not.toContain(rawIdentityId);
-				expect(JSON.stringify(detail)).not.toContain("fingerprint-secret");
+				expect(JSON.stringify(detail)).not.toContain(rawFingerprint);
 				expect(JSON.stringify(detail)).not.toContain(rawProjectIdentity);
 				expect(JSON.stringify(detail)).not.toContain(rawPreview.accessDelta.teamChanges[0]?.teamId);
 				expect(detail).toHaveProperty("accessDelta.teamChanges.0.teamRef");
@@ -927,8 +940,22 @@ describe("viewer-server", () => {
 					body: JSON.stringify(finishRequest),
 				});
 				expect(finishResponse.status).toBe(200);
-				expect(loadSnapshots).toHaveBeenCalledTimes(1);
-				expect(loadSnapshots).toHaveBeenCalledWith({ candidateRef });
+				expect(loadSnapshots).toHaveBeenCalledTimes(3);
+				expect(loadSnapshots).toHaveBeenNthCalledWith(1, { candidateRef });
+				expect(loadSnapshots).toHaveBeenNthCalledWith(
+					2,
+					expect.objectContaining({
+						candidateRef: expect.any(String),
+						deadlineMs: expect.any(Number),
+					}),
+				);
+				expect(loadSnapshots).toHaveBeenNthCalledWith(
+					3,
+					expect.objectContaining({
+						candidateRef: expect.any(String),
+						deadlineMs: expect.any(Number),
+					}),
+				);
 				const finished = await finishResponse.json();
 				expect(finished).toMatchObject({
 					version: 1,
@@ -3180,7 +3207,7 @@ describe("viewer-server", () => {
 			stale: false,
 			install_kind: "npm-global",
 			auto_update_eligible: false,
-			recommended_action: "npm install -g codemem@0.41.0",
+			recommended_action: "npm install -g codemem@0.41.0 @codemem/embeddings@0.41.0",
 			error: null,
 		};
 
@@ -5625,6 +5652,7 @@ describe("viewer-server", () => {
 			vi.stubEnv("CODEMEM_CONFIG", "/tmp/viewer-config.json");
 			vi.stubEnv("CODEMEM_RUNTIME_ROOT", "/tmp/viewer-runtime");
 			vi.stubEnv("CODEMEM_WORKSPACE_ID", "viewer-workspace");
+			vi.stubEnv("CODEMEM_EMBEDDING_REVISION", "ea104dacec62c0de699686887e3f920caeb4f3e3");
 			const { app, ensureStore, cleanup } = createTestApp();
 			try {
 				const store = ensureStore();
@@ -5641,6 +5669,7 @@ describe("viewer-server", () => {
 					pack_compression: null,
 					embedding_disabled: false,
 					embedding_model: "Xenova/bge-small-en-v1.5",
+					embedding_revision: "ea104dacec62c0de699686887e3f920caeb4f3e3",
 				};
 				const profile = await app.request("/api/prompt-pack-profile");
 				expect(profile.status).toBe(200);
@@ -5681,6 +5710,13 @@ describe("viewer-server", () => {
 				});
 				expect(embeddingMismatch.status).toBe(409);
 
+				const embeddingRevisionMismatch = await postViewerJson(app, "/api/pack", {
+					context: "viewer identity",
+					db_path: ensureStore().dbPath,
+					identity_target: { ...viewerIdentityTarget, embedding_revision: null },
+				});
+				expect(embeddingRevisionMismatch.status).toBe(409);
+
 				const unsupported = await postViewerJson(app, "/api/pack", {
 					context: "viewer identity",
 					db_path: ensureStore().dbPath,
@@ -5710,6 +5746,7 @@ describe("viewer-server", () => {
 				"CODEMEM_PACK_COMPRESSION",
 				"CODEMEM_EMBEDDING_DISABLED",
 				"CODEMEM_EMBEDDING_MODEL",
+				"CODEMEM_EMBEDDING_REVISION",
 			] as const;
 			const previousEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
 			for (const key of envKeys) delete process.env[key];
@@ -5734,6 +5771,7 @@ describe("viewer-server", () => {
 						pack_compression: null,
 						embedding_disabled: false,
 						embedding_model: "Xenova/bge-small-en-v1.5",
+						embedding_revision: "ea104dacec62c0de699686887e3f920caeb4f3e3",
 					},
 				});
 				expect(res.status).toBe(409);
@@ -12256,6 +12294,35 @@ describe("viewer-server", () => {
 				await app.request("/api/stats");
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
+				const requestBehindPublication = async (request: () => Promise<Response>) => {
+					let releasePublication: () => void = () => undefined;
+					const publicationGate = new Promise<void>((resolve) => {
+						releasePublication = resolve;
+					});
+					let markPublicationStarted: () => void = () => undefined;
+					const publicationStarted = new Promise<void>((resolve) => {
+						markPublicationStarted = resolve;
+					});
+					const heldPublication = core.serializeRecipientPolicyPublicationMutation(
+						store.db,
+						async () => {
+							markPublicationStarted();
+							await publicationGate;
+						},
+					);
+					await publicationStarted;
+					let requestSettled = false;
+					const pendingRequest = request().then((response) => {
+						requestSettled = true;
+						return response;
+					});
+					await new Promise((resolve) => setTimeout(resolve, 0));
+					expect(requestSettled).toBe(false);
+					releasePublication();
+					const response = await pendingRequest;
+					await heldPublication;
+					return response;
+				};
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
 					sessionId,
@@ -12363,15 +12430,18 @@ describe("viewer-server", () => {
 				});
 				expect(fractionalIdRes.status).toBe(400);
 
-				const saveRes = await app.request("/api/sync/sharing-domains/project-mappings", {
-					method: "PUT",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({
-						workspace_identity: project?.workspace_identity,
-						project_pattern: project?.display_project,
-						scope_id: "acme-work",
+				const mappingRequest = {
+					workspace_identity: project?.workspace_identity,
+					project_pattern: project?.display_project,
+					scope_id: "acme-work",
+				};
+				const saveRes = await requestBehindPublication(() =>
+					app.request("/api/sync/sharing-domains/project-mappings", {
+						method: "PUT",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify(mappingRequest),
 					}),
-				});
+				);
 				expect(saveRes.status).toBe(200);
 				const saveBody = (await saveRes.json()) as { mapping: { id: number; scope_id: string } };
 				expect(saveBody.mapping.scope_id).toBe("acme-work");
@@ -12396,10 +12466,19 @@ describe("viewer-server", () => {
 					n: number;
 				};
 				expect(memberships.n).toBe(0);
+				const bulkRes = await requestBehindPublication(() =>
+					app.request("/api/sync/sharing-domains/project-mappings/bulk", {
+						method: "PUT",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ mappings: [mappingRequest] }),
+					}),
+				);
+				expect(bulkRes.status).toBe(200);
 
-				const deleteRes = await app.request(
-					`/api/sync/sharing-domains/project-mappings/${saveBody.mapping.id}`,
-					{ method: "DELETE" },
+				const deleteRes = await requestBehindPublication(() =>
+					app.request(`/api/sync/sharing-domains/project-mappings/${saveBody.mapping.id}`, {
+						method: "DELETE",
+					}),
 				);
 				expect(deleteRes.status).toBe(200);
 			} finally {
@@ -13346,6 +13425,183 @@ describe("viewer-server", () => {
 				});
 				expect(missing.status).toBe(404);
 			} finally {
+				cleanup();
+			}
+		});
+
+		it("serializes Team recipient-edge commits behind Team publication", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			let releaseTeamMutation: () => void = () => undefined;
+			const teamMutationGate = new Promise<void>((resolve) => {
+				releaseTeamMutation = resolve;
+			});
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const teamId = "edge-serialization-team";
+				let markTeamMutationStarted: () => void = () => undefined;
+				const teamMutationStarted = new Promise<void>((resolve) => {
+					markTeamMutationStarted = resolve;
+				});
+				const teamMutation = core.serializeRecipientPolicyTeamMutation(
+					store.db,
+					teamId,
+					async () => {
+						markTeamMutationStarted();
+						await teamMutationGate;
+					},
+				);
+				await teamMutationStarted;
+
+				let commitSettled = false;
+				const commit = app
+					.request("/api/sync/recipient-policy/v1/edges/commit", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							version: 1,
+							changes: [
+								{
+									canonicalProjectIdentity: "https://git.example.invalid/acme/queued.git",
+									recipient: { recipientKind: "team", teamId },
+									action: "remove",
+								},
+							],
+							reviewedPolicyDigest: `edge-preview-v1:${"0".repeat(64)}`,
+						}),
+					})
+					.then((response) => {
+						commitSettled = true;
+						return response;
+					});
+				await new Promise((resolve) => setTimeout(resolve, 0));
+				expect(commitSettled).toBe(false);
+
+				releaseTeamMutation();
+				expect((await commit).status).toBe(404);
+				await teamMutation;
+			} finally {
+				releaseTeamMutation();
+				cleanup();
+			}
+		});
+
+		it("does not queue identity-only recipient-edge commits behind Team publication", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			let releaseTeamMutation: () => void = () => undefined;
+			const teamMutationGate = new Promise<void>((resolve) => {
+				releaseTeamMutation = resolve;
+			});
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const identityId = "identity-only";
+				let markTeamMutationStarted: () => void = () => undefined;
+				const teamMutationStarted = new Promise<void>((resolve) => {
+					markTeamMutationStarted = resolve;
+				});
+				const teamMutation = core.serializeRecipientPolicyTeamMutation(
+					store.db,
+					identityId,
+					async () => {
+						markTeamMutationStarted();
+						await teamMutationGate;
+					},
+				);
+				await teamMutationStarted;
+
+				let commitSettled = false;
+				const commit = app
+					.request("/api/sync/recipient-policy/v1/edges/commit", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							version: 1,
+							changes: [
+								{
+									canonicalProjectIdentity: "https://git.example.invalid/acme/identity-only.git",
+									recipient: { recipientKind: "identity", identityId },
+									action: "remove",
+								},
+							],
+							reviewedPolicyDigest: `edge-preview-v1:${"0".repeat(64)}`,
+						}),
+					})
+					.then((response) => {
+						commitSettled = true;
+						return response;
+					});
+				await new Promise((resolve) => setTimeout(resolve, 0));
+
+				expect(commitSettled).toBe(true);
+				expect((await commit).status).toBe(404);
+				releaseTeamMutation();
+				await teamMutation;
+			} finally {
+				releaseTeamMutation();
+				cleanup();
+			}
+		});
+
+		it("acquires recipient-edge Team serializers in stable identity order", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			let releaseLastTeam: () => void = () => undefined;
+			const lastTeamGate = new Promise<void>((resolve) => {
+				releaseLastTeam = resolve;
+			});
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const firstTeamId = "edge-team-a";
+				const lastTeamId = "edge-team-z";
+				let markLastTeamStarted: () => void = () => undefined;
+				const lastTeamStarted = new Promise<void>((resolve) => {
+					markLastTeamStarted = resolve;
+				});
+				const lastTeamMutation = core.serializeRecipientPolicyTeamMutation(
+					store.db,
+					lastTeamId,
+					async () => {
+						markLastTeamStarted();
+						await lastTeamGate;
+					},
+				);
+				await lastTeamStarted;
+
+				const commit = app.request("/api/sync/recipient-policy/v1/edges/commit", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						version: 1,
+						changes: [lastTeamId, firstTeamId].map((teamId, index) => ({
+							canonicalProjectIdentity: `https://git.example.invalid/acme/queued-${index}.git`,
+							recipient: { recipientKind: "team", teamId },
+							action: "remove",
+						})),
+						reviewedPolicyDigest: `edge-preview-v1:${"0".repeat(64)}`,
+					}),
+				});
+				await new Promise((resolve) => setTimeout(resolve, 0));
+				let firstTeamMutationStarted = false;
+				const firstTeamMutation = core.serializeRecipientPolicyTeamMutation(
+					store.db,
+					firstTeamId,
+					async () => {
+						firstTeamMutationStarted = true;
+					},
+				);
+				await new Promise((resolve) => setTimeout(resolve, 0));
+				expect(firstTeamMutationStarted).toBe(false);
+
+				releaseLastTeam();
+				expect((await commit).status).toBe(404);
+				await Promise.all([lastTeamMutation, firstTeamMutation]);
+				expect(firstTeamMutationStarted).toBe(true);
+			} finally {
+				releaseLastTeam();
 				cleanup();
 			}
 		});
@@ -14684,6 +14940,85 @@ describe("viewer-server", () => {
 				});
 				expect(res.status).toBe(409);
 				expect(await res.json()).toEqual({ error: "cannot merge this device's own local actor" });
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("serializes actor merge and deactivation by affected actor identity", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				await app.request("/api/sync/actors");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const createActor = async (displayName: string): Promise<string> => {
+					const response = await app.request("/api/sync/actors", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ display_name: displayName }),
+					});
+					return ((await response.json()) as { actor_id: string }).actor_id;
+				};
+				const primaryActorId = await createActor("Primary actor");
+				const secondaryActorId = await createActor("Secondary actor");
+				let releaseMergeLock: () => void = () => undefined;
+				const mergeGate = new Promise<void>((resolve) => {
+					releaseMergeLock = resolve;
+				});
+				const heldMergeLock = core.serializeRecipientPolicyActorMutations(
+					store.db,
+					[secondaryActorId],
+					() => mergeGate,
+				);
+				await new Promise((resolve) => setTimeout(resolve, 0));
+				let mergeSettled = false;
+				const merge = app
+					.request("/api/sync/actors/merge", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							primary_actor_id: primaryActorId,
+							secondary_actor_id: secondaryActorId,
+						}),
+					})
+					.then((response) => {
+						mergeSettled = true;
+						return response;
+					});
+				await new Promise((resolve) => setTimeout(resolve, 0));
+				expect(mergeSettled).toBe(false);
+				releaseMergeLock();
+				expect((await merge).status).toBe(200);
+				await heldMergeLock;
+
+				const deactivatedActorId = await createActor("Deactivated actor");
+				let releaseDeactivateLock: () => void = () => undefined;
+				const deactivateGate = new Promise<void>((resolve) => {
+					releaseDeactivateLock = resolve;
+				});
+				const heldDeactivateLock = core.serializeRecipientPolicyActorMutations(
+					store.db,
+					[deactivatedActorId],
+					() => deactivateGate,
+				);
+				await new Promise((resolve) => setTimeout(resolve, 0));
+				let deactivateSettled = false;
+				const deactivate = app
+					.request("/api/sync/actors/deactivate", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ actor_id: deactivatedActorId }),
+					})
+					.then((response) => {
+						deactivateSettled = true;
+						return response;
+					});
+				await new Promise((resolve) => setTimeout(resolve, 0));
+				expect(deactivateSettled).toBe(false);
+				releaseDeactivateLock();
+				expect((await deactivate).status).toBe(200);
+				await heldDeactivateLock;
 			} finally {
 				cleanup();
 			}
