@@ -68,6 +68,27 @@ describe("canonicalWorkspaceIdentity", () => {
 		expect(identity).toMatchObject({ displayProject: null, source: "unmapped" });
 		expect(identity.value).toMatch(/^unmapped:[a-f0-9]{64}$/);
 	});
+
+	it("keeps distinct malformed identity tuples in separate quarantines", () => {
+		const sharedFields = {
+			gitRemote: "fatal: not a git repository (or any of the parent directories): .git",
+			project: "error: failed to discover project",
+		};
+		const first = canonicalWorkspaceIdentity({
+			...sharedFields,
+			cwd: "Command failed: git rev-parse --show-toplevel",
+			workspaceId: "git: 'first-workspace' is not a git command",
+		});
+		const second = canonicalWorkspaceIdentity({
+			...sharedFields,
+			cwd: "Command failed: git rev-parse --show-prefix",
+			workspaceId: "git: 'second-workspace' is not a git command",
+		});
+
+		expect(first).toMatchObject({ source: "unmapped" });
+		expect(second).toMatchObject({ source: "unmapped" });
+		expect(first.value).not.toBe(second.value);
+	});
 });
 
 describe("resolveProjectScope", () => {

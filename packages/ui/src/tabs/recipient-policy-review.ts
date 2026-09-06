@@ -39,9 +39,9 @@ function renderReviewDecisionSection(review: RecipientPolicyReviewListV1): HTMLE
 	const section = document.createElement("section");
 	section.className = "recipient-policy-review-section recipient-policy-review-decisions";
 	section.append(
-		sectionHeading("Review decisions", review.reviewItems.length),
+		sectionHeading("Review findings", review.reviewItems.length),
 		paragraph(
-			"Access has not changed. Action is required. Next step: review these findings, then use the existing sharing controls below if you choose to change access.",
+			"Access has not changed. These findings are informational because this view has no decision controls. You may use the existing sharing controls below to change access, but those changes do not record a review decision.",
 			"section-meta",
 		),
 	);

@@ -96,6 +96,11 @@ OpenCode plugin and CLI are now split intentionally:
 - `codemem` — CLI and MCP commands
 - `@codemem/embeddings` — optional semantic embedding runtime installed by the CLI
 
+OpenCode treats configured npm plugins and checkout-local `.opencode/plugins/` files as separate
+sources. If both load Codemem for one Project, the first registration wins and later copies skip
+their hooks with a warning. Remove the configured npm entry when testing a source checkout so the
+checkout-local plugin loads first; otherwise your edits may appear to do nothing.
+
 ### Claude Code (marketplace install)
 
 1. Install codemem's Claude MCP config:
@@ -217,8 +222,8 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | | `codemem sync once` | Run one immediate sync pass |
 | | `codemem sync doctor` | Diagnose sync configuration issues |
 | | `codemem sync bootstrap` | Bootstrap sync from a peer snapshot |
-| **Updates** | `codemem update install` | Install an eligible stable release from npm |
-| | `codemem update check` | Check the npm registry for a newer stable release (`--json` and `--refresh` supported) |
+| **Updates** | `codemem update install` | Install an eligible release from the installed channel |
+| | `codemem update check` | Check npm for a newer release on the installed channel (`--json` and `--refresh` supported) |
 | **Coordinator** | `codemem coordinator` | Self-hosted coordinator admin (groups, devices, invites) |
 | **Database** | `codemem db prune-memories` | Deactivate low-signal memories (`--dry-run` to preview) |
 | | `codemem db prune-observations` | Deactivate low-signal observations |
@@ -239,18 +244,19 @@ for the stable machine-readable report. `codemem stats` remains the inventory an
 usage command; use `sync status`/`sync doctor`, `maintenance status`, and
 `db raw-events-status` for subsystem detail.
 
-`codemem update check` is read-only: it reports the latest validated stable release and
+`codemem update check` is read-only: it derives `alpha`, `beta`, `rc`, or `latest` from the
+installed version and reports the latest validated release on that same channel with
 installation-specific guidance. Results are cached for six hours;
-pass `--refresh` to force a registry request or `--json` for one stable status object.
+pass `--refresh` to force a registry request or `--json` for one channel-aware status object.
 The Viewer Health page reads the same status from `/api/update-status`. The OpenCode plugin
 checks it after startup and shows at most one best-effort notification for each newly discovered
-release. `notify` is the default. `codemem update install` performs the explicit, fail-closed
+same-channel release. `notify` is the default. `codemem update install` performs the explicit, fail-closed
 installation; bare `codemem update` remains non-mutating. Explicit plugin
 `auto` policy may run a paired, version-pinned public-registry install of `codemem` and
 `@codemem/embeddings` only
-after the CLI reports a fresh, validated npm release observed for at least 24 hours and an
-installation whose npm origin can be proven. Pinned, prerelease, downgrade,
-repository-development, stale, Docker, and unknown installs refuse execution. Set
+after the CLI reports a fresh, validated same-channel npm release observed for at least 24 hours
+and an installation whose npm origin can be proven. Pinned, cross-channel, unsupported-channel,
+downgrade, repository-development, stale, Docker, and unknown installs refuse execution. Set
 `CODEMEM_BACKEND_UPDATE_POLICY=off` to disable release checks.
 On Linux, plugin-owned auto-updates preserve the OpenCode environment and set
 `ONNXRUNTIME_NODE_INSTALL=skip` for the install to avoid the unused GPU-provider download.

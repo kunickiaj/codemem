@@ -2193,6 +2193,9 @@ export const CodememPlugin = async ({
   };
 
   const drainRawEventSpool = () => {
+    if (!rawEventsEnabled) {
+      return Promise.resolve();
+    }
     const existingDrain = rawEventSpoolDrainsInFlight.get(rawEventSpoolDirectory);
     if (existingDrain) {
       return existingDrain;

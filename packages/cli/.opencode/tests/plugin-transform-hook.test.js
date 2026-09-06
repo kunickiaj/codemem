@@ -2580,6 +2580,47 @@ describe("OpenCode transform-time injection", () => {
 		expect(new Set(enqueueBytes).size).toBe(1);
 	});
 
+	test("preserves the retry spool across every drain trigger when raw events are disabled", async () => {
+		const home = mkdtempSync(join(tmpdir(), "codemem-opencode-disabled-spool-"));
+		tmpDirs.push(home);
+		process.env.HOME = home;
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		await writeRawEventSpoolEntry({
+			envelope: { event_id: "event-retained-disabled", event_type: "tool" },
+			homeDir: home,
+		});
+		const enqueueBytes = [];
+		spawnMock.mockImplementation((_command, args) => {
+			const proc = makeProcess({ exitCode: 0 });
+			if (Array.isArray(args) && args.includes("enqueue-raw-event")) {
+				proc.stdin.write = vi.fn((value) => enqueueBytes.push(String(value)));
+			}
+			return proc;
+		});
+
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		await hooks["tool.execute.after"](
+			{ tool: "read", args: {}, sessionID: "sess-disabled-spool" },
+			{},
+		);
+		await hooks.event({
+			event: { type: "session.idle", properties: { sessionID: "sess-disabled-spool" } },
+		});
+
+		const spoolDirectory = join(home, ".codemem", "opencode-raw-event-spool");
+		expect(enqueueBytes).toEqual([]);
+		expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toHaveLength(1);
+		expect(readFileSync(join(spoolDirectory, readdirSync(spoolDirectory)[0]), "utf8")).toContain(
+			"event-retained-disabled",
+		);
+	});
+
 	test("continues draining after a poisoned oldest spool entry", async () => {
 		const home = mkdtempSync(join(tmpdir(), "codemem-opencode-poisoned-spool-"));
 		tmpDirs.push(home);

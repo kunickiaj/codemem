@@ -102,13 +102,11 @@ function normalizeMappingIdentity(value: string | null | undefined): string | nu
 }
 
 function unmappedIdentity(input: WorkspaceIdentityInput): string {
-	const validSeed = [input.cwd, input.project, input.workspaceId]
-		.map((value) => cleanProjectIdentity(value))
-		.find((value): value is string => value != null);
-	const rawSeed = [input.gitRemote, input.gitBranch, input.cwd, input.project, input.workspaceId]
-		.map((value) => (typeof value === "string" ? value.trim() : ""))
-		.find(Boolean);
-	const seed = validSeed ?? rawSeed ?? "unknown";
+	const seed = JSON.stringify(
+		[input.gitRemote, input.gitBranch, input.cwd, input.project, input.workspaceId].map((value) =>
+			typeof value === "string" ? value.trim() : null,
+		),
+	);
 	const digest = createHash("sha256").update(seed, "utf8").digest("hex");
 	return `unmapped:${digest}`;
 }

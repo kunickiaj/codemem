@@ -424,12 +424,17 @@ describe("Projects tab", () => {
 
 		const surface = document.querySelector(".recipient-policy-review");
 		expect(surface?.textContent).toContain("Sharing review");
-		expect(surface?.textContent).toContain("Review decisions (1)");
+		expect(surface?.textContent).toContain("Review findings (1)");
 		expect(surface?.textContent).toContain("Preserved legacy continuity (36)");
 		expect(surface?.textContent).toContain("Blocked source repairs (1)");
 		expect(surface?.textContent).toContain("36 preserved legacy findings");
 		expect(surface?.textContent).toContain("These preserved findings require no action");
 		expect(surface?.textContent).toContain("Action is required");
+		const reviewCopy = surface?.querySelector(".recipient-policy-review-decisions")?.textContent;
+		expect(reviewCopy).toContain("These findings are informational");
+		expect(reviewCopy).toContain("this view has no decision controls");
+		expect(reviewCopy).toContain("those changes do not record a review decision");
+		expect(reviewCopy).not.toContain("Action is required");
 		expect(surface?.textContent).toContain("Assign a stable canonical Project identity");
 		expect(surface?.textContent).toContain("Owner: Project owner");
 		expect(surface?.querySelectorAll("button")).toHaveLength(1);
@@ -790,8 +795,9 @@ describe("Projects tab", () => {
 
 		await loadProjectsData();
 		const firstSurface = document.querySelector(".recipient-policy-review");
-		expect(firstSurface?.textContent).toContain("Review decisions (1)");
-		expect(firstSurface?.textContent).toContain("Action is required");
+		expect(firstSurface?.textContent).toContain("Review findings (1)");
+		expect(firstSurface?.textContent).toContain("These findings are informational");
+		expect(firstSurface?.textContent).not.toContain("Action is required");
 
 		await loadProjectsData();
 

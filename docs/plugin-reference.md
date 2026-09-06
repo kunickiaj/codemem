@@ -338,7 +338,8 @@ Stream contract:
 - Raw-event batches accepted by the viewer are retried by the sweeper flush workers.
 - After Viewer delivery fails, OpenCode writes the exact normalized envelope to `~/.codemem/opencode-raw-event-spool` before invoking the direct CLI fallback. A successful fallback removes the entry; missing runtimes, locks, timeouts, version skew, and validation failures remain on disk and retry at bounded startup or session boundaries with the same event ID.
 - Viewer mismatch notices expose only a fixed category and next action: restart Viewer from the same workspace/config for `database`, restart Codemem and OpenCode with the same environment for `identity`, update Codemem on the installed channel and restart OpenCode for `contract`, or check/restart Viewer for `connection`. Payloads, target values, subprocess output, paths, and addresses are omitted.
-- Corrupt spool entries are retained for recovery. The spool accepts at most `CODEMEM_RAW_EVENT_SPOOL_MAX_ENTRIES` `.json` entries and rejects a new event when full without evicting existing entries; an existing event ID remains idempotent. If a private spool write fails or the spool is full, OpenCode warns that the event remains only in the bounded in-memory queue rather than claiming durable preservation. For a full spool, repair the CLI or Viewer mismatch and restart OpenCode so retained entries drain. If specific entries remain rejected, stop OpenCode and move `~/.codemem/opencode-raw-event-spool` to a backup location for manual recovery; do not delete it until the events are delivered or intentionally discarded.
+- Corrupt spool entries are retained for recovery. The spool accepts at most `CODEMEM_RAW_EVENT_SPOOL_MAX_ENTRIES` `.json` entries and rejects a new event when full without evicting existing entries; an existing event ID remains idempotent. If a private spool write fails or the spool is full, OpenCode warns that the event remains only in the bounded in-memory queue rather than claiming durable preservation. OpenCode drains retained entries through the installed CLI, so repair or update that CLI and restart OpenCode; restarting Viewer alone does not recover this spool. If specific entries remain rejected, stop OpenCode and move `~/.codemem/opencode-raw-event-spool` to a backup location for manual recovery; do not delete it until the events are delivered or intentionally discarded.
+- `CODEMEM_RAW_EVENTS=0` pauses capture and every OpenCode spool drain. Existing spool files remain untouched until raw events are enabled again.
 
 `GET /api/raw-events/status` also includes `transcript_diagnostics`, a per-Viewer-process, per-router-instance counter block scoped explicitly to `legacy_compatibility_routes`. It counts Claude and Codex compatibility-route transcript reads by the fixed outcomes `ok`, `not_provided`, `path_rejected`, `unreadable`, `no_complete_record`, and `no_assistant_record`. These counters are not persisted, do not include paths or transcript content, and do not describe the normal generated-adapter path through `POST /api/raw-events`. A skipped legacy `Stop` response keeps `skip_reason: "transcript_unavailable"` and may include one of the non-`ok` outcomes as `skip_detail`; other mapping skips remain `skip_reason: "unsupported_hook"`.
 
@@ -479,15 +480,16 @@ When the plugin detects CLI/runtime version mismatch, it shows guidance based on
 Update policy:
 
 - `CODEMEM_BACKEND_UPDATE_POLICY=notify` (default): show warning toast with suggested action
-- `CODEMEM_BACKEND_UPDATE_POLICY=auto`: try a best-effort auto-update for eligible compatibility-floor mismatches and fresh stable releases observed for at least 24 hours, then warn if still outdated
+- `CODEMEM_BACKEND_UPDATE_POLICY=auto`: try a best-effort auto-update for eligible compatibility-floor mismatches and fresh same-channel releases observed for at least 24 hours, then warn if still outdated
 	- skipped for `node` dev-mode runners
 	- skipped when `CODEMEM_RUNNER_FROM` is pinned to a fixed package/version
-	- skipped for Docker, unknown, stale, prerelease, or downgrade states
+	- skipped for Docker, unknown, stale, unsupported-channel, cross-channel, or downgrade states
 - `CODEMEM_BACKEND_UPDATE_POLICY=off`: no compatibility toast (logging still records mismatch)
 
 After its startup delay, the plugin also runs `codemem update check --json` through the same
-argv-based CLI runner. `notify` and `auto` show a best-effort toast at most once per latest stable
-release in the current OpenCode process; `off` skips this release check. Under explicit `auto`, an
+argv-based CLI runner. The CLI derives `alpha`, `beta`, `rc`, or `latest` from the installed version.
+`notify` and `auto` show a best-effort toast at most once per newly discovered release on that
+channel in the current OpenCode process; `off` skips this release check. Under explicit `auto`, an
 eligible result executes a paired, version-pinned public-registry install for `codemem` and
 `@codemem/embeddings`, then verifies the active CLI version before a plugin-owned Viewer is
 restarted. On Linux, both plugin-owned auto-update paths preserve the existing child environment
