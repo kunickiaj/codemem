@@ -478,19 +478,19 @@ When selected history may already have replicated, all participating owner devic
 
 ### Semantic runtime unavailable
 
-Codemem defaults to FTS5 keyword retrieval when the optional embedding runtime
-is absent. Install both packages globally to enable semantic recall. On Linux,
-set the CPU-only policy so the installer skips the unused GPU provider:
+Codemem installs its matching optional embedding runtime by default and falls
+back to FTS5 keyword retrieval when that runtime is absent. On Linux, set the
+CPU-only policy so the installer skips the unused GPU provider:
 
 ```fish
-env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem @codemem/embeddings
+env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem
 ```
 
-On Apple silicon macOS and Windows, install both packages normally (no
+On Apple silicon macOS and Windows, install normally (no
 environment variable, which `env`/`cmd.exe`/PowerShell do not share):
 
 ```text
-npm install -g codemem @codemem/embeddings
+npm install -g codemem
 ```
 
 Rerun `codemem setup` after upgrading an existing installation. The scoped
@@ -498,6 +498,10 @@ Rerun `codemem setup` after upgrading an existing installation. The scoped
 replaces the old managed `npx -y codemem mcp` launcher and codemem MCP entries
 detected as UV/UVX-based so both packages resolve in one runtime. Other custom
 MCP commands remain unchanged.
+
+For a smaller keyword-only install, use `npm install -g codemem --omit=optional`
+and set `CODEMEM_EMBEDDING_DISABLED=1` in every Codemem process. The flag is
+required because npm also omits sqlite-vec's optional platform package.
 
 Generated MCP configurations use the durable global `codemem` binary when it is
 available, allowing it to resolve the globally installed sibling package.

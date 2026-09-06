@@ -116,7 +116,7 @@ It does not currently gate sync or retrieval. See `docs/plans/2026-03-08-shared-
 
 ### Semantic search (sqlite-vec)
 
-When the optional `@codemem/embeddings` runtime is installed, `memory_vectors` (a `vec0` virtual table from sqlite-vec) stores 384-dimensional float vectors keyed by `memory_id`. Vectors are written automatically when memories are created, or backfilled with `codemem embed`. Lexical-only installs omit Transformers and ONNX Runtime.
+The `codemem` package installs its matching optional `@codemem/embeddings` runtime by default. When available, `memory_vectors` (a `vec0` virtual table from sqlite-vec) stores 384-dimensional float vectors keyed by `memory_id`. Vectors are written automatically when memories are created, or backfilled with `codemem embed`. Processes started with `CODEMEM_EMBEDDING_DISABLED=1` use lexical retrieval without loading Transformers or ONNX Runtime. An install made with `--omit=optional` also omits sqlite-vec's platform package and therefore requires this flag.
 
 Each vector row carries a canonical identity for model repository, revision,
 runtime generation, fp32 dtype, mean pooling, L2 normalization, and dimensions.

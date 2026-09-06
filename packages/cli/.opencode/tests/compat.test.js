@@ -69,17 +69,19 @@ describe("resolveUpgradeGuidance", () => {
     expect(guidance.action).toContain("normal install method");
   });
 
-  test("tells the global codemem runner to install the embedding runtime too", () => {
+  test("tells the global codemem runner that the CLI installs its embedding runtime", () => {
     const guidance = resolveUpgradeGuidance({ runner: "codemem", runnerFrom: "" });
     expect(guidance.mode).toBe("global");
-    expect(guidance.action).toContain("npm install -g codemem @codemem/embeddings");
+    expect(guidance.action).toContain("npm install -g codemem");
+    expect(guidance.action).not.toContain("npm install -g codemem @codemem/embeddings");
     expect(guidance.action).toContain("ONNXRUNTIME_NODE_INSTALL=skip");
   });
 
-  test("tells the npx runner to install both packages", () => {
+  test("tells the npx runner to install the CLI and its embedding runtime", () => {
     const guidance = resolveUpgradeGuidance({ runner: "npx", runnerFrom: "codemem@latest" });
     expect(guidance.mode).toBe("npx");
-    expect(guidance.action).toContain("npm install -g codemem @codemem/embeddings");
+    expect(guidance.action).toContain("npm install -g codemem");
+    expect(guidance.action).not.toContain("npm install -g codemem @codemem/embeddings");
   });
 });
 

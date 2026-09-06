@@ -466,8 +466,8 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 
 When the plugin detects CLI/runtime version mismatch, it shows guidance based on runner mode:
 
-- `CODEMEM_RUNNER=codemem`: run `npm install -g codemem @codemem/embeddings` (the optional runtime enables semantic recall), then restart OpenCode. On Linux, prefix with `ONNXRUNTIME_NODE_INSTALL=skip` to avoid downloading the unused GPU provider (see the semantic-runtime install notes).
-- `CODEMEM_RUNNER=npx`: the compatibility warning recommends moving to a global install. Install `codemem` and `@codemem/embeddings` globally, clear explicit `CODEMEM_RUNNER` and `CODEMEM_RUNNER_FROM` overrides so the plugin detects that install, then restart OpenCode. To keep using npx instead, update `CODEMEM_RUNNER_FROM` to the desired `codemem@<version>` spec; the plugin pairs the matching `@codemem/embeddings` version automatically. On Linux, see the CPU-only semantic-runtime install notes in the README.
+- `CODEMEM_RUNNER=codemem`: run `npm install -g codemem` (the CLI installs its optional semantic runtime), then restart OpenCode. On Linux, prefix with `ONNXRUNTIME_NODE_INSTALL=skip` to avoid downloading the unused GPU provider (see the semantic-runtime install notes).
+- `CODEMEM_RUNNER=npx`: the compatibility warning recommends moving to a global `codemem` install, which includes its optional semantic runtime. Clear explicit `CODEMEM_RUNNER` and `CODEMEM_RUNNER_FROM` overrides so the plugin detects that install, then restart OpenCode. To keep using npx instead, update `CODEMEM_RUNNER_FROM` to the desired `codemem@<version>` spec; the plugin pairs the matching `@codemem/embeddings` version automatically. On Linux, see the CPU-only semantic-runtime install notes in the README.
 - `CODEMEM_RUNNER=node`: pull latest repo changes and run `pnpm build`, then restart OpenCode
 - custom/unknown runner: update the underlying `codemem` binary or package source, then restart OpenCode
 

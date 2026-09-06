@@ -31,7 +31,7 @@ export const resolveUpgradeGuidance = ({ runner, runnerFrom }) => {
     return {
       mode: "global",
       action:
-        "Run `npm install -g codemem @codemem/embeddings` to update both the CLI and the optional semantic runtime, then restart OpenCode. On Linux, prefix with `ONNXRUNTIME_NODE_INSTALL=skip` to avoid the unused GPU provider download.",
+        "Run `npm install -g codemem` to update the CLI and its optional semantic runtime, then restart OpenCode. On Linux, prefix with `ONNXRUNTIME_NODE_INSTALL=skip` to avoid the unused GPU provider download.",
       note: "detected global codemem runner mode",
     };
   }
@@ -40,7 +40,7 @@ export const resolveUpgradeGuidance = ({ runner, runnerFrom }) => {
     return {
       mode: "npx",
       action:
-        "Run `npm install -g codemem @codemem/embeddings` to update the CLI and optional semantic runtime, then restart OpenCode. On Linux, prefix with `ONNXRUNTIME_NODE_INSTALL=skip` to avoid the unused GPU provider download.",
+        "Run `npm install -g codemem` to update the CLI and its optional semantic runtime, then restart OpenCode. On Linux, prefix with `ONNXRUNTIME_NODE_INSTALL=skip` to avoid the unused GPU provider download.",
       note: "detected npx runner mode",
     };
   }
