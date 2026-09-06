@@ -388,6 +388,14 @@ const parseReleaseNotification = (result) => {
   }
 };
 
+const resolveAutoUpdateEnvironment = ({
+  platform = process.platform,
+  env = process.env,
+} = {}) => {
+  if (platform !== "linux") return env;
+  return { ...env, ONNXRUNTIME_NODE_INSTALL: "skip" };
+};
+
 const createLogLine = (logPath) => async (line) => {
   if (!logPath) {
     return;
@@ -2469,12 +2477,16 @@ export const CodememPlugin = async ({
   };
 
   const runCommand = async (cmd, options = {}) => {
-    const { stdinText = null, timeoutMs = commandTimeout } = options;
+    const {
+      env = process.env,
+      stdinText = null,
+      timeoutMs = commandTimeout,
+    } = options;
     const [command, ...args] = cmd;
     return new Promise((resolve) => {
       const proc = nodeSpawn(command, args, {
         cwd,
-        env: process.env,
+        env,
         stdio: ["pipe", "pipe", "pipe"],
       });
       let stdout = "";
@@ -2921,7 +2933,10 @@ export const CodememPlugin = async ({
         return;
       }
       await logLine(`compat.auto_update_start cmd=${autoPlan.commandText}`);
-      const updateResult = await runCommand(autoPlan.command, { timeoutMs: 480_000 });
+      const updateResult = await runCommand(autoPlan.command, {
+        env: resolveAutoUpdateEnvironment(),
+        timeoutMs: 480_000,
+      });
       if (updateResult?.exitCode === 0) {
         await logLine(
           `compat.auto_update_result exit=${updateResult?.exitCode ?? "unknown"} stderr=${redactLog(
@@ -3000,7 +3015,10 @@ export const CodememPlugin = async ({
       });
       if (autoPlan.allowed) {
         await logLine(`release.auto_update_start cmd=${autoPlan.commandText}`);
-        const installation = await runCommand(autoPlan.command, { timeoutMs: 480_000 });
+        const installation = await runCommand(autoPlan.command, {
+          env: resolveAutoUpdateEnvironment(),
+          timeoutMs: 480_000,
+        });
         if (installation?.exitCode === 0) {
           const verification = await runCli(["version"]);
           const installedVersion = (verification?.stdout || "").trim();
