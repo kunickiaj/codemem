@@ -22,7 +22,7 @@ const tensor = (
 ) => ({ data: new Float64Array(rows.flat()), dims });
 
 const CANONICAL_REVISION = "0123456789abcdef0123456789abcdef01234567";
-const HEX_NAMED_MUTABLE_REF = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const HEX_NAMED_MUTABLE_REF = "89abcdef0123456789abcdef0123456789abcdef";
 
 describe("cached default embedding runtime", () => {
 	it("loads an explicit built-in pin without a network lookup", async () => {
@@ -83,6 +83,8 @@ describe("createEmbeddingRuntime", () => {
 			requestedRevision: revision,
 			dtype: "fp32",
 			device: "cpu",
+			pooling: "mean",
+			normalization: "l2",
 			dimensions: 3,
 		});
 		expect(extractor).toHaveBeenCalledWith(["probe"], {
@@ -191,7 +193,7 @@ describe("createEmbeddingRuntime", () => {
 		);
 	});
 
-	it("resolves a 40-hex named ref before publishing runtime identity", async () => {
+	it("resolves a lowercase 40-character hex ref before publishing runtime identity", async () => {
 		pipelineMock.mockResolvedValue(vi.fn().mockResolvedValue(tensor([[1, 2]])));
 
 		const runtime = await createEmbeddingRuntime({
@@ -214,6 +216,29 @@ describe("createEmbeddingRuntime", () => {
 		});
 	});
 
+	it("canonicalizes an explicit custom-model commit when remote access is enabled", async () => {
+		pipelineMock.mockResolvedValue(vi.fn().mockResolvedValue(tensor([[1, 2]])));
+
+		const runtime = await createEmbeddingRuntime({
+			model: "test/model",
+			revision: CANONICAL_REVISION,
+		});
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			`https://huggingface.co/test/model/resolve/${CANONICAL_REVISION}/config.json`,
+			expect.objectContaining({ method: "HEAD", redirect: "follow" }),
+		);
+		expect(runtime.identity).toMatchObject({
+			revision: CANONICAL_REVISION,
+			requestedRevision: CANONICAL_REVISION,
+		});
+		expect(pipelineMock).toHaveBeenCalledWith(
+			"feature-extraction",
+			"test/model",
+			expect.objectContaining({ revision: CANONICAL_REVISION }),
+		);
+	});
+
 	it("rejects mutable revisions when remote models are disabled", async () => {
 		transformersEnv.allowRemoteModels = false;
 
@@ -230,15 +255,56 @@ describe("createEmbeddingRuntime", () => {
 
 		const runtime = await createEmbeddingRuntime({
 			model: "test/model",
-			revision: HEX_NAMED_MUTABLE_REF,
+			revision: CANONICAL_REVISION,
 		});
 
 		expect(fetchMock).not.toHaveBeenCalled();
-		expect(runtime.identity.revision).toBe(HEX_NAMED_MUTABLE_REF);
+		expect(runtime.identity.revision).toBe(CANONICAL_REVISION);
 		expect(pipelineMock).toHaveBeenCalledWith(
 			"feature-extraction",
 			"test/model",
-			expect.objectContaining({ revision: HEX_NAMED_MUTABLE_REF }),
+			expect.objectContaining({ revision: CANONICAL_REVISION }),
+		);
+	});
+
+	it("uses Codemem offline mode to load a cached commit without a network lookup", async () => {
+		vi.stubEnv("CODEMEM_EMBEDDING_OFFLINE", "1");
+		pipelineMock.mockResolvedValue(vi.fn().mockResolvedValue(tensor([[1, 2]])));
+
+		const runtime = await createEmbeddingRuntime({
+			model: "test/model",
+			revision: CANONICAL_REVISION,
+		});
+
+		expect(transformersEnv.allowRemoteModels).toBe(false);
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(runtime.identity.revision).toBe(CANONICAL_REVISION);
+		expect(pipelineMock).toHaveBeenCalledWith(
+			"feature-extraction",
+			"test/model",
+			expect.objectContaining({ revision: CANONICAL_REVISION }),
+		);
+	});
+
+	it("restores remote revision resolution after Codemem offline mode is disabled", async () => {
+		vi.stubEnv("CODEMEM_EMBEDDING_OFFLINE", "1");
+		pipelineMock.mockResolvedValue(vi.fn().mockResolvedValue(tensor([[1, 2]])));
+		await createEmbeddingRuntime({
+			model: "test/model",
+			revision: CANONICAL_REVISION,
+		});
+
+		fetchMock.mockClear();
+		vi.stubEnv("CODEMEM_EMBEDDING_OFFLINE", "");
+		await createEmbeddingRuntime({
+			model: "test/model",
+			revision: HEX_NAMED_MUTABLE_REF,
+		});
+
+		expect(transformersEnv.allowRemoteModels).toBe(true);
+		expect(fetchMock).toHaveBeenCalledWith(
+			`https://huggingface.co/test/model/resolve/${HEX_NAMED_MUTABLE_REF}/config.json`,
+			expect.objectContaining({ method: "HEAD", redirect: "follow" }),
 		);
 	});
 

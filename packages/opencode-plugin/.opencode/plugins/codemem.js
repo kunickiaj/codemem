@@ -16,7 +16,7 @@ import {
 
 const TRUTHY_VALUES = ["1", "true", "yes"];
 const DISABLED_VALUES = ["0", "false", "off"];
-const PINNED_BACKEND_VERSION = "0.43.2";
+const PINNED_BACKEND_VERSION = "0.44.0-alpha.1";
 const COMPAT_CHECK_DELAY_MS = 1500;
 const COMPAT_CHECK_CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_UPDATE_STATUS_BYTES = 16 * 1024;
@@ -388,6 +388,14 @@ const parseReleaseNotification = (result) => {
   }
 };
 
+const resolveAutoUpdateEnvironment = ({
+  platform = process.platform,
+  env = process.env,
+} = {}) => {
+  if (platform !== "linux") return env;
+  return { ...env, ONNXRUNTIME_NODE_INSTALL: "skip" };
+};
+
 const createLogLine = (logPath) => async (line) => {
   if (!logPath) {
     return;
@@ -656,6 +664,9 @@ const buildViewerIdentityTarget = (env = process.env, cwd = process.cwd()) => {
     pack_compression: env.CODEMEM_PACK_COMPRESSION?.trim() || null,
     embedding_disabled: ["1", "true", "yes"].includes(
       String(env.CODEMEM_EMBEDDING_DISABLED || "").toLowerCase(),
+    ),
+    embedding_offline: ["1", "true", "yes"].includes(
+      String(env.CODEMEM_EMBEDDING_OFFLINE || "").toLowerCase(),
     ),
     embedding_model: embeddingModel,
     embedding_revision: embeddingRevision,
@@ -2469,12 +2480,16 @@ export const CodememPlugin = async ({
   };
 
   const runCommand = async (cmd, options = {}) => {
-    const { stdinText = null, timeoutMs = commandTimeout } = options;
+    const {
+      env = process.env,
+      stdinText = null,
+      timeoutMs = commandTimeout,
+    } = options;
     const [command, ...args] = cmd;
     return new Promise((resolve) => {
       const proc = nodeSpawn(command, args, {
         cwd,
-        env: process.env,
+        env,
         stdio: ["pipe", "pipe", "pipe"],
       });
       let stdout = "";
@@ -2921,7 +2936,10 @@ export const CodememPlugin = async ({
         return;
       }
       await logLine(`compat.auto_update_start cmd=${autoPlan.commandText}`);
-      const updateResult = await runCommand(autoPlan.command, { timeoutMs: 480_000 });
+      const updateResult = await runCommand(autoPlan.command, {
+        env: resolveAutoUpdateEnvironment(),
+        timeoutMs: 480_000,
+      });
       if (updateResult?.exitCode === 0) {
         await logLine(
           `compat.auto_update_result exit=${updateResult?.exitCode ?? "unknown"} stderr=${redactLog(
@@ -3000,7 +3018,10 @@ export const CodememPlugin = async ({
       });
       if (autoPlan.allowed) {
         await logLine(`release.auto_update_start cmd=${autoPlan.commandText}`);
-        const installation = await runCommand(autoPlan.command, { timeoutMs: 480_000 });
+        const installation = await runCommand(autoPlan.command, {
+          env: resolveAutoUpdateEnvironment(),
+          timeoutMs: 480_000,
+        });
         if (installation?.exitCode === 0) {
           const verification = await runCli(["version"]);
           const installedVersion = (verification?.stdout || "").trim();

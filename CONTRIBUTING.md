@@ -30,6 +30,8 @@ pnpm exec vitest run packages/viewer-server/src/index.test.ts
 pnpm exec vitest run packages/core/src/index.test.ts
 ```
 
+Branch protection requires `TypeScript Test`, `TypeScript Lint`, and `Plugin Smoke Test`, with pull requests kept up to date with `main` before merging.
+
 ## Context injection validation
 
 When changing pack retrieval, context injection, or the adapter surfaces

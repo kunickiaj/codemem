@@ -265,7 +265,9 @@ describe("OpenCode startup release notifications", () => {
 
 	test("auto installs an eligible release through the paired package plan", async () => {
 		// Arrange
+		vi.spyOn(process, "platform", "get").mockReturnValue("linux");
 		process.env.CODEMEM_BACKEND_UPDATE_POLICY = "auto";
+		process.env.CODEMEM_UPDATE_ENV_SENTINEL = "preserved";
 		installSpawnResult({ ...availableStatus, auto_update_eligible: true });
 		const showToast = vi.fn().mockResolvedValue(undefined);
 
@@ -277,12 +279,31 @@ describe("OpenCode startup release notifications", () => {
 		const args = spawnMock.mock.calls.map((call) => call[1]);
 		expect(args.some((value) => value?.includes("update") && value?.includes("check"))).toBe(true);
 		expect(spawnMock.mock.calls.some(isPairedInstallCall)).toBe(true);
+		const installCall = spawnMock.mock.calls.find(isPairedInstallCall);
+		expect(installCall?.[2]?.env).toMatchObject({
+			CODEMEM_UPDATE_ENV_SENTINEL: "preserved",
+			ONNXRUNTIME_NODE_INSTALL: "skip",
+		});
 		expect(args.some((value) => value?.join(" ") === "update install --json")).toBe(false);
 		expect(showToast).toHaveBeenCalledTimes(1);
 		expect(showToast.mock.calls[0]?.[0]?.body).toMatchObject({
 			message: "Updated codemem to 0.41.0.",
 			variant: "success",
 		});
+	});
+
+	test("auto leaves the paired install environment unchanged off Linux", async () => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+		process.env.CODEMEM_BACKEND_UPDATE_POLICY = "auto";
+		delete process.env.ONNXRUNTIME_NODE_INSTALL;
+		installSpawnResult({ ...availableStatus, auto_update_eligible: true });
+
+		await startPlugin();
+		await runStartupChecks();
+
+		const installCall = spawnMock.mock.calls.find(isPairedInstallCall);
+		expect(installCall?.[2]?.env).toBe(process.env);
+		expect(installCall?.[2]?.env).not.toHaveProperty("ONNXRUNTIME_NODE_INSTALL");
 	});
 
 	test("auto reports a verification failure instead of claiming update success", async () => {
@@ -440,7 +461,9 @@ describe("OpenCode startup release notifications", () => {
 
 	test("compatibility auto-update restarts the plugin-owned viewer after the refreshed CLI is compatible", async () => {
 		// Arrange
+		vi.spyOn(process, "platform", "get").mockReturnValue("linux");
 		process.env.CODEMEM_BACKEND_UPDATE_POLICY = "auto";
+		process.env.CODEMEM_UPDATE_ENV_SENTINEL = "preserved";
 		process.env.CODEMEM_MIN_VERSION = "0.41.0";
 		process.env.CODEMEM_VIEWER = "1";
 		process.env.CODEMEM_VIEWER_AUTO = "1";
@@ -488,7 +511,13 @@ describe("OpenCode startup release notifications", () => {
 				"codemem@0.41.0",
 				"@codemem/embeddings@0.41.0",
 			],
-			expect.objectContaining({ cwd: "/tmp/codemem" }),
+			expect.objectContaining({
+				cwd: "/tmp/codemem",
+				env: expect.objectContaining({
+					CODEMEM_UPDATE_ENV_SENTINEL: "preserved",
+					ONNXRUNTIME_NODE_INSTALL: "skip",
+				}),
+			}),
 		);
 		expect(
 			spawnMock.mock.calls.some((call) => call[1]?.join(" ") === "update install --json"),

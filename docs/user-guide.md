@@ -525,7 +525,12 @@ branch, tag, or full 40-character commit SHA. The runtime resolves mutable refs
 to their canonical Hugging Face commit before labeling vectors, preventing old
 and new embedding spaces from sharing an identity. A custom model without a
 revision is rejected; offline or local-model use requires the full commit-style
-identity because Codemem cannot resolve a mutable ref without the Hub.
+identity because Codemem cannot resolve a mutable ref without the Hub. Set
+`CODEMEM_EMBEDDING_OFFLINE=1` to disable remote model requests and load that
+commit only from the Transformers.js cache. Clear the variable before using a
+mutable branch or tag so Codemem can resolve it to a canonical commit.
+Viewer and OpenCode profile checks include this setting, so clients do not send
+prompt content to an already-running viewer configured for online model access.
 `CODEMEM_EMBEDDING_REVISION` can also override the default model revision when
 an intentional rebuild is required.
 

@@ -133,6 +133,9 @@ cutover. Custom model repositories require an explicit
 `CODEMEM_EMBEDDING_REVISION`. The runtime resolves mutable Hub refs to a
 canonical 40-character commit before it embeds or labels vectors; offline and
 local-model configurations must provide that canonical identity directly.
+`CODEMEM_EMBEDDING_OFFLINE=1` maps Codemem's offline mode to Transformers.js'
+`allowRemoteModels=false`, preventing both canonicalization and model-download
+requests while allowing cached commit-pinned models to load.
 Synchronous FTS-only paths do not perform network resolution and remain pending
 until runtime-resolved identity metadata is available.
 

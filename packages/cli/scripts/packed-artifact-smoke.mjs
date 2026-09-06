@@ -215,6 +215,7 @@ async function smokeClaudePromptWrapper(isolatedRoot) {
 		home_dir: home,
 		pack_compression: null,
 		embedding_disabled: false,
+		embedding_offline: false,
 		embedding_model: "Xenova/bge-small-en-v1.5",
 		embedding_revision: "ea104dacec62c0de699686887e3f920caeb4f3e3",
 	};
@@ -330,6 +331,7 @@ async function smokeCodexPromptWrapper(isolatedRoot) {
 		home_dir: home,
 		pack_compression: null,
 		embedding_disabled: false,
+		embedding_offline: false,
 		embedding_model: "Xenova/bge-small-en-v1.5",
 		embedding_revision: "ea104dacec62c0de699686887e3f920caeb4f3e3",
 	};
