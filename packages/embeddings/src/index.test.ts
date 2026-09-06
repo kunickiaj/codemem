@@ -83,6 +83,8 @@ describe("createEmbeddingRuntime", () => {
 			requestedRevision: revision,
 			dtype: "fp32",
 			device: "cpu",
+			pooling: "mean",
+			normalization: "l2",
 			dimensions: 3,
 		});
 		expect(extractor).toHaveBeenCalledWith(["probe"], {

@@ -11,6 +11,8 @@ export interface EmbeddingRuntimeIdentity {
 	readonly requestedRevision?: string;
 	readonly dtype: "fp32";
 	readonly device: "cpu";
+	readonly pooling: "mean";
+	readonly normalization: "l2";
 	readonly dimensions: number;
 }
 
@@ -176,6 +178,8 @@ export async function createEmbeddingRuntime({
 			requestedRevision,
 			dtype: "fp32",
 			device: "cpu",
+			pooling: "mean",
+			normalization: "l2",
 			dimensions,
 		},
 		async embed(texts) {
