@@ -3200,6 +3200,7 @@ describe("viewer-server", () => {
 	describe("GET /api/update-status", () => {
 		const availableStatus: core.UpdateStatus = {
 			current_version: "0.40.2",
+			channel: "latest",
 			latest_version: "0.41.0",
 			update_available: true,
 			first_seen_at: "2026-08-10T12:00:00.000Z",

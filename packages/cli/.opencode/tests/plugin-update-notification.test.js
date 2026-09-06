@@ -10,29 +10,24 @@ vi.mock("node:child_process", () => ({
 }));
 
 const currentStatus = {
-	current_version: "0.40.2",
-	latest_version: "0.40.2",
+	current_version: "0.44.0-alpha.1",
+	channel: "alpha",
+	latest_version: "0.44.0-alpha.1",
 	update_available: false,
 	first_seen_at: "2026-08-10T12:00:00.000Z",
 	checked_at: "2026-08-10T12:00:00.000Z",
 	stale: false,
 	install_kind: "npm-global",
 	auto_update_eligible: false,
-	recommended_action: "No action required; codemem is up to date.",
+	recommended_action: "No action required; codemem is on the latest alpha release.",
 	error: null,
-};
-
-const compatibleStatus = {
-	...currentStatus,
-	current_version: "0.41.0",
-	latest_version: "0.41.0",
 };
 
 const availableStatus = {
 	...currentStatus,
-	latest_version: "0.41.0",
+	latest_version: "0.44.0-alpha.2",
 	update_available: true,
-	recommended_action: "npm install -g codemem@0.41.0",
+	recommended_action: "npm install -g codemem@0.44.0-alpha.2",
 };
 
 function makeProcess(
@@ -83,7 +78,7 @@ function installCompatibilityAutoUpdateSpawnResult({ startViewer = false } = {})
 		if (args?.includes("version")) {
 			versionCallCount += 1;
 			return makeProcess({
-				stdout: versionCallCount === 1 ? "0.40.2\n" : "0.41.0\n",
+				stdout: versionCallCount === 1 ? "0.40.2\n" : `${availableStatus.latest_version}\n`,
 			});
 		}
 		if (args?.includes("update") && args?.includes("check")) {
@@ -100,7 +95,7 @@ function isPairedInstallCall(call) {
 	return (
 		call[0] === "npm" &&
 		call[1]?.join(" ") ===
-			"install -g --registry https://registry.npmjs.org/ --@codemem:registry=https://registry.npmjs.org/ codemem@0.41.0 @codemem/embeddings@0.41.0"
+			`install -g --registry https://registry.npmjs.org/ --@codemem:registry=https://registry.npmjs.org/ codemem@${availableStatus.latest_version} @codemem/embeddings@${availableStatus.latest_version}`
 	);
 }
 
@@ -143,6 +138,23 @@ describe("@codemem/opencode-plugin exports", () => {
 		expect(plugin.default).toBe(plugin.CodememPlugin);
 		expect(plugin.OpencodeMemPlugin).toBe(plugin.CodememPlugin);
 	});
+
+	test("keeps a newer same-channel prerelease on the global runner", async () => {
+		execSyncMock.mockReturnValueOnce("0.44.0-alpha.2");
+		const { __testUtils } = await import("../plugins/codemem.js");
+
+		expect(__testUtils.detectRunner({ cwd: "/tmp/codemem", envRunner: "" })).toBe("codemem");
+	});
+
+	test.each(["0.44.0-alpha.0", "0.44.0-beta.2"])(
+		"rejects an older or cross-channel global runner at %s",
+		async (version) => {
+			execSyncMock.mockReturnValueOnce(version);
+			const { __testUtils } = await import("../plugins/codemem.js");
+
+			expect(__testUtils.detectRunner({ cwd: "/tmp/codemem", envRunner: "" })).toBe("npx");
+		},
+	);
 });
 
 describe("OpenCode startup release notifications", () => {
@@ -213,7 +225,7 @@ describe("OpenCode startup release notifications", () => {
 		expect(showToast).toHaveBeenCalledTimes(1);
 		expect(showToast).toHaveBeenCalledWith({
 			body: expect.objectContaining({
-				message: expect.stringMatching(/0\.41\.0.*npm install -g codemem@0\.41\.0/i),
+				message: expect.stringContaining(availableStatus.recommended_action),
 			}),
 		});
 	});
@@ -225,7 +237,7 @@ describe("OpenCode startup release notifications", () => {
 			if (args?.includes("update") && args?.includes("check")) {
 				return makeProcess({ stdout: JSON.stringify(status) });
 			}
-			if (args?.includes("version")) return makeProcess({ stdout: "0.40.2\n" });
+			if (args?.includes("version")) return makeProcess({ stdout: `${currentStatus.current_version}\n` });
 			return makeProcess();
 		});
 		const showToast = vi.fn().mockResolvedValue(undefined);
@@ -235,15 +247,47 @@ describe("OpenCode startup release notifications", () => {
 		await runStartupChecks();
 		status = {
 			...availableStatus,
-			latest_version: "0.42.0",
-			recommended_action: "npm install -g codemem@0.42.0",
+			latest_version: "0.44.0-alpha.3",
+			recommended_action: "npm install -g codemem@0.44.0-alpha.3",
 		};
 		await startPlugin(showToast);
 		await runStartupChecks();
 
 		// Assert
 		expect(showToast).toHaveBeenCalledTimes(2);
-		expect(showToast.mock.calls[1]?.[0]?.body?.message).toMatch(/0\.42\.0/);
+		expect(showToast.mock.calls[1]?.[0]?.body?.message).toMatch(/0\.44\.0-alpha\.3/);
+	});
+
+	test.each([
+		{
+			label: "missing channel identity",
+			status: { ...availableStatus, channel: undefined },
+		},
+		{
+			label: "stable status on an alpha plugin",
+			status: {
+				...availableStatus,
+				channel: "latest",
+				latest_version: "0.44.0",
+				recommended_action: "npm install -g codemem@0.44.0",
+			},
+		},
+		{
+			label: "guidance for another version",
+			status: {
+				...availableStatus,
+				recommended_action: "npm install -g codemem@0.44.0-alpha.3",
+			},
+		},
+	])("ignores $label", async ({ status }) => {
+		installSpawnResult(status);
+		const showToast = vi.fn().mockResolvedValue(undefined);
+
+		await startPlugin(showToast);
+		await runStartupChecks();
+
+		expect(showToast).not.toHaveBeenCalled();
+		expect(spawnMock.mock.calls.some((call) => call[1]?.includes("install"))).toBe(false);
 	});
 
 	test("off skips release discovery and notification without disabling compatibility checks", async () => {
@@ -287,7 +331,7 @@ describe("OpenCode startup release notifications", () => {
 		expect(args.some((value) => value?.join(" ") === "update install --json")).toBe(false);
 		expect(showToast).toHaveBeenCalledTimes(1);
 		expect(showToast.mock.calls[0]?.[0]?.body).toMatchObject({
-			message: "Updated codemem to 0.41.0.",
+			message: `Updated codemem to ${availableStatus.latest_version}.`,
 			variant: "success",
 		});
 	});
@@ -314,7 +358,7 @@ describe("OpenCode startup release notifications", () => {
 					stdout: JSON.stringify({ ...availableStatus, auto_update_eligible: true }),
 				});
 			}
-			if (args?.includes("version")) return makeProcess({ stdout: "0.40.2\n" });
+			if (args?.includes("version")) return makeProcess({ stdout: `${currentStatus.current_version}\n` });
 			return makeProcess();
 		});
 		const showToast = vi.fn().mockResolvedValue(undefined);
@@ -360,7 +404,9 @@ describe("OpenCode startup release notifications", () => {
 				});
 			}
 			if (args?.includes("version")) {
-				return makeProcess({ stdout: `${installed ? "0.41.0" : "0.40.2"}\n` });
+				return makeProcess({
+					stdout: `${installed ? availableStatus.latest_version : currentStatus.current_version}\n`,
+				});
 			}
 			return makeProcess();
 		});
@@ -508,8 +554,8 @@ describe("OpenCode startup release notifications", () => {
 				"--registry",
 				"https://registry.npmjs.org/",
 				"--@codemem:registry=https://registry.npmjs.org/",
-				"codemem@0.41.0",
-				"@codemem/embeddings@0.41.0",
+				`codemem@${availableStatus.latest_version}`,
+				`@codemem/embeddings@${availableStatus.latest_version}`,
 			],
 			expect.objectContaining({
 				cwd: "/tmp/codemem",
@@ -539,7 +585,7 @@ describe("OpenCode startup release notifications", () => {
 		).toHaveLength(1);
 		expect(showToast).toHaveBeenCalledWith({
 			body: {
-				message: "Updated codemem backend from 0.40.2 to 0.41.0.",
+				message: `Updated codemem backend from 0.40.2 to ${availableStatus.latest_version}.`,
 				variant: "success",
 			},
 		});
@@ -582,7 +628,7 @@ describe("OpenCode startup release notifications", () => {
 				(call) =>
 					call[0] === "npm" &&
 					call[1]?.join(" ") ===
-						"install -g --registry https://registry.npmjs.org/ --@codemem:registry=https://registry.npmjs.org/ codemem@0.41.0 @codemem/embeddings@0.41.0",
+						`install -g --registry https://registry.npmjs.org/ --@codemem:registry=https://registry.npmjs.org/ codemem@${availableStatus.latest_version} @codemem/embeddings@${availableStatus.latest_version}`,
 			),
 		).toBe(true);
 		expect(
@@ -597,7 +643,7 @@ describe("OpenCode startup release notifications", () => {
 		).toBe(false);
 		expect(showToast).toHaveBeenCalledWith({
 			body: {
-				message: "Updated codemem backend from 0.40.2 to 0.41.0.",
+				message: `Updated codemem backend from 0.40.2 to ${availableStatus.latest_version}.`,
 				variant: "success",
 			},
 		});
@@ -605,7 +651,7 @@ describe("OpenCode startup release notifications", () => {
 
 	test("compatibility auto-update skips a release that is not eligible", async () => {
 		process.env.CODEMEM_BACKEND_UPDATE_POLICY = "auto";
-		process.env.CODEMEM_MIN_VERSION = "0.41.0";
+		process.env.CODEMEM_MIN_VERSION = "0.45.0";
 		installSpawnResult({ ...availableStatus, auto_update_eligible: false });
 		const showToast = vi.fn().mockResolvedValue(undefined);
 
@@ -636,7 +682,9 @@ describe("OpenCode startup release notifications", () => {
 		await runStartupChecks();
 
 		expect(spawnMock.mock.calls.some((call) => call[1]?.includes("install"))).toBe(false);
-		expect(showToast.mock.calls[0]?.[0]?.body?.message).toMatch(/0\.41\.0.*npm install/i);
+		expect(showToast.mock.calls[0]?.[0]?.body?.message).toContain(
+			availableStatus.recommended_action,
+		);
 	});
 
 	test("auto does not invoke installation when runner provenance is pinned", async () => {
@@ -650,7 +698,9 @@ describe("OpenCode startup release notifications", () => {
 		await runStartupChecks();
 
 		expect(spawnMock.mock.calls.some((call) => call[1]?.includes("install"))).toBe(false);
-		expect(showToast.mock.calls.at(-1)?.[0]?.body?.message).toMatch(/0\.41\.0/);
+		expect(showToast.mock.calls.at(-1)?.[0]?.body?.message).toContain(
+			availableStatus.latest_version,
+		);
 	});
 
 	test.each([
@@ -666,7 +716,7 @@ describe("OpenCode startup release notifications", () => {
 					exitCode,
 				});
 			}
-			if (args?.includes("version")) return makeProcess({ stdout: "0.40.2\n" });
+			if (args?.includes("version")) return makeProcess({ stdout: `${currentStatus.current_version}\n` });
 			return makeProcess();
 		});
 		const showToast = vi.fn().mockResolvedValue(undefined);
@@ -688,7 +738,7 @@ describe("OpenCode startup release notifications", () => {
 		// Arrange
 		spawnMock.mockImplementation((_command, args) => {
 			if (args?.includes("update") && args?.includes("check")) return makeProcess({ settle: false });
-			if (args?.includes("version")) return makeProcess({ stdout: "0.40.2\n" });
+			if (args?.includes("version")) return makeProcess({ stdout: `${currentStatus.current_version}\n` });
 			return makeProcess();
 		});
 
@@ -711,8 +761,7 @@ describe("OpenCode startup release notifications", () => {
 		installSpawnResult({
 			...availableStatus,
 			install_kind: "docker",
-			recommended_action:
-				"Set CODEMEM_VERSION=0.41.0, then run CODEMEM_VERSION=0.41.0 docker compose build --pull and docker compose up -d.",
+			recommended_action: `Set CODEMEM_VERSION=${availableStatus.latest_version}, then run CODEMEM_VERSION=${availableStatus.latest_version} docker compose build --pull and docker compose up -d.`,
 		});
 		const showToast = vi.fn().mockResolvedValue(undefined);
 

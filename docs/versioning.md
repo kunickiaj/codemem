@@ -62,19 +62,28 @@ Tag only after the release PR has merged to `main` and you have verified that `H
 
 ## Release discovery
 
-`codemem update check` queries the fixed public npm registry endpoint for the latest stable
-`codemem` release. Results are cached locally for six hours; use `--refresh` to bypass a fresh
-cache and `--json` for the stable automation contract. If a refresh fails, a previously validated
-cache may be returned as stale guidance. A running process backs off failed registry checks for 15
-minutes, while `--refresh` bypasses that backoff. `codemem update check` remains informational.
+`codemem update check` derives the release channel from the installed version and queries the fixed
+public npm registry endpoint for the matching dist-tag: alpha uses `alpha`, beta uses `beta`, release
+candidates use `rc`, and a stable version uses `latest`. Registry responses, status output, guidance,
+and cache records must
+match that channel. Results are cached locally for six hours; use `--refresh` to bypass a fresh cache
+and `--json` for the additive automation contract. Existing stable-only cache records remain valid
+for stable installations, but no cache or in-process result is reused across channels. If a refresh
+fails, a previously validated same-channel cache may be returned as stale guidance. A running process
+backs off failed registry checks for 15 minutes, while `--refresh` bypasses that backoff.
+`codemem update check` remains informational.
 `codemem update install` separately requires fresh validated status, a 24-hour first-seen delay,
 and a proven eligible npm installation before it installs exact matching `codemem` and
 `@codemem/embeddings` versions with an argv-only npm command and verifies the active CLI version.
-Bare `codemem update` remains non-mutating. Installation refuses pinned, prerelease, downgrade,
-development, stale, Docker, and unknown states. The npm operation runs the packages' installation
-scripts for native CPU dependencies, just as a manual global install does.
+Bare `codemem update` remains non-mutating. Installing an alpha, beta, or release candidate is
+explicit opt-in, so the
+existing auto-update policy may install a delayed eligible update within that installed channel.
+Installation refuses pinned, cross-channel, unsupported-prerelease, downgrade, development, stale,
+Docker, and unknown states. Updater internals always install exact matching `codemem` and
+`@codemem/embeddings` versions. The npm operation runs the packages' installation scripts for native
+CPU dependencies, just as a manual global install does.
 
-Release discovery compares the running product version with the latest published stable release.
+Release discovery compares the running product version with the latest release on its channel.
 It is separate from the compatibility-floor check below: discovering a newer release does not
 change whether the current CLI satisfies the plugin's minimum supported version.
 
@@ -86,7 +95,7 @@ The OpenCode plugin performs a runtime CLI version check and warns if the local 
 The compatibility reaction is controlled by `CODEMEM_BACKEND_UPDATE_POLICY`:
 
 - `notify` (default): warn with an upgrade hint
-- `auto`: attempt a best-effort update for eligible npm runners and delayed stable releases, then re-check
+- `auto`: attempt a best-effort same-channel update for eligible npm runners and delayed releases, then re-check
 - `off`: suppress compatibility toasts
 
 This check enforces a minimum supported CLI version. It does not query the npm registry or report

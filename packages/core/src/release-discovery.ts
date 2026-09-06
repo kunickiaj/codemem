@@ -4,22 +4,24 @@ import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { codememHomeDir } from "./home.js";
 
-const REGISTRY_URL = "https://registry.npmjs.org/codemem/latest";
+const REGISTRY_URL_PREFIX = "https://registry.npmjs.org/codemem/";
 const REQUEST_TIMEOUT_MS = 2_000;
 const CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1_000;
 const FAILURE_RETRY_DELAY_MS = 15 * 60 * 1_000;
 const MAX_RESPONSE_BYTES = 16 * 1_024;
 const MAX_VERSION_LENGTH = 128;
 const MAX_RUNNER_SOURCE_LENGTH = 4_096;
-const RELEASE_CACHE_SCHEMA_VERSION = 1;
+const RELEASE_CACHE_SCHEMA_VERSION = 2;
 const AUTO_UPDATE_DELAY_MS = 24 * 60 * 60 * 1_000;
-const STABLE_SEMVER =
-	/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const SEMVER =
+	/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 export type InstallKind = "npm-global" | "npx" | "docker" | "repo-dev" | "pinned" | "unknown";
+export type ReleaseChannel = "alpha" | "beta" | "rc" | "latest";
 
 export interface UpdateStatus {
 	current_version: string;
+	channel: ReleaseChannel | null;
 	latest_version: string | null;
 	update_available: boolean;
 	first_seen_at: string | null;
@@ -33,6 +35,7 @@ export interface UpdateStatus {
 
 interface ReleaseCacheRecord {
 	schema_version: typeof RELEASE_CACHE_SCHEMA_VERSION;
+	channel: ReleaseChannel;
 	latest_version: string;
 	checked_at: string;
 	first_seen_at: string;
@@ -72,29 +75,82 @@ interface ReleaseResolution {
 	error: string | null;
 }
 
-function parseStableSemver(value: unknown): [number, number, number] | null {
+interface ParsedSemver {
+	core: [number, number, number];
+	prerelease: string[];
+}
+
+interface ReleaseDiscoveryState {
+	inFlight: Map<ReleaseChannel, Promise<ReleaseResolution>>;
+	memoryResolutions: Map<ReleaseChannel, { resolution: ReleaseResolution; resolvedAtMs: number }>;
+}
+
+function parseSemver(value: unknown): ParsedSemver | null {
 	if (typeof value !== "string" || value.length === 0 || value.length > MAX_VERSION_LENGTH) {
 		return null;
 	}
-	const match = STABLE_SEMVER.exec(value);
+	const match = SEMVER.exec(value);
 	if (!match) return null;
 	const parts = match.slice(1, 4).map(Number);
-	return parts.every(Number.isSafeInteger) ? (parts as [number, number, number]) : null;
+	if (!parts.every(Number.isSafeInteger)) return null;
+	const prerelease = match[4]?.split(".") ?? [];
+	if (prerelease.some((identifier) => /^\d+$/.test(identifier) && /^0\d/.test(identifier))) {
+		return null;
+	}
+	return { core: parts as [number, number, number], prerelease };
+}
+
+export function releaseChannelForVersion(value: unknown): ReleaseChannel | null {
+	const parsed = parseSemver(value);
+	if (!parsed) return null;
+	if (parsed.prerelease.length === 0) return "latest";
+	const channel = parsed.prerelease[0];
+	return channel === "alpha" || channel === "beta" || channel === "rc" ? channel : null;
+}
+
+export function isReleaseVersionForChannel(
+	value: unknown,
+	channel: ReleaseChannel,
+): value is string {
+	return releaseChannelForVersion(value) === channel;
 }
 
 export function isStableReleaseVersion(value: unknown): value is string {
-	return parseStableSemver(value) !== null;
+	return releaseChannelForVersion(value) === "latest";
 }
 
-function compareStableSemver(left: string, right: string): number | null {
-	const leftParts = parseStableSemver(left);
-	const rightParts = parseStableSemver(right);
-	if (!leftParts || !rightParts) return null;
-	for (const index of [0, 1, 2] as const) {
-		const difference = leftParts[index] - rightParts[index];
-		if (difference !== 0) return Math.sign(difference);
+function comparePrereleaseIdentifier(left: string | undefined, right: string | undefined): number {
+	if (left === undefined) return right === undefined ? 0 : -1;
+	if (right === undefined) return 1;
+	if (left === right) return 0;
+	const leftNumeric = /^\d+$/.test(left);
+	const rightNumeric = /^\d+$/.test(right);
+	if (leftNumeric && rightNumeric && left.length !== right.length) {
+		return Math.sign(left.length - right.length);
+	}
+	if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+	return left < right ? -1 : 1;
+}
+
+function comparePrerelease(left: string[], right: string[]): number {
+	if (left.length === 0) return right.length === 0 ? 0 : 1;
+	if (right.length === 0) return -1;
+	for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+		const comparison = comparePrereleaseIdentifier(left[index], right[index]);
+		if (comparison !== 0) return comparison;
 	}
 	return 0;
+}
+
+function compareSemver(left: string, right: string): number | null {
+	const leftVersion = parseSemver(left);
+	const rightVersion = parseSemver(right);
+	if (!leftVersion || !rightVersion) return null;
+	for (const index of [0, 1, 2] as const) {
+		const difference = leftVersion.core[index] - rightVersion.core[index];
+		if (difference !== 0) return Math.sign(difference);
+	}
+	return comparePrerelease(leftVersion.prerelease, rightVersion.prerelease);
 }
 
 function parseIsoTimestamp(value: unknown): string | null {
@@ -103,15 +159,24 @@ function parseIsoTimestamp(value: unknown): string | null {
 	return Number.isFinite(timestamp.getTime()) && timestamp.toISOString() === value ? value : null;
 }
 
-function parseCache(contents: string | null, now: Date): ReleaseCacheRecord | null {
+function parseCache(
+	contents: string | null,
+	now: Date,
+	channel: ReleaseChannel,
+): ReleaseCacheRecord | null {
 	if (contents === null) return null;
 	try {
 		const value: unknown = JSON.parse(contents);
 		if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 		const candidate = value as Record<string, unknown>;
-		if (candidate.schema_version !== RELEASE_CACHE_SCHEMA_VERSION) return null;
+		const isLegacyStableCache = candidate.schema_version === 1 && channel === "latest";
+		if (!isLegacyStableCache && candidate.schema_version !== RELEASE_CACHE_SCHEMA_VERSION)
+			return null;
+		const cachedChannel = isLegacyStableCache ? "latest" : candidate.channel;
+		if (cachedChannel !== channel) return null;
 		const latestVersion =
-			typeof candidate.latest_version === "string" && parseStableSemver(candidate.latest_version)
+			typeof candidate.latest_version === "string" &&
+			isReleaseVersionForChannel(candidate.latest_version, channel)
 				? candidate.latest_version
 				: null;
 		const checkedAt = parseIsoTimestamp(candidate.checked_at);
@@ -122,6 +187,7 @@ function parseCache(contents: string | null, now: Date): ReleaseCacheRecord | nu
 		if (checkedTime > now.getTime() || firstSeenTime > checkedTime) return null;
 		return {
 			schema_version: RELEASE_CACHE_SCHEMA_VERSION,
+			channel,
 			latest_version: latestVersion,
 			checked_at: checkedAt,
 			first_seen_at: firstSeenAt,
@@ -188,8 +254,12 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
 	}
 }
 
-async function fetchLatestVersion(deps: ReleaseDiscoveryDependencies): Promise<string> {
-	const response = await deps.fetch(REGISTRY_URL, {
+async function fetchLatestVersion(
+	deps: ReleaseDiscoveryDependencies,
+	channel: ReleaseChannel,
+): Promise<string> {
+	const registryUrl = `${REGISTRY_URL_PREFIX}${channel}`;
+	const response = await deps.fetch(registryUrl, {
 		headers: { accept: "application/json" },
 		redirect: "error",
 		signal: deps.timeoutSignal(REQUEST_TIMEOUT_MS),
@@ -200,7 +270,7 @@ async function fetchLatestVersion(deps: ReleaseDiscoveryDependencies): Promise<s
 	}
 	if (response.url) {
 		const finalUrl = new URL(response.url);
-		if (finalUrl.href !== REGISTRY_URL) {
+		if (finalUrl.href !== registryUrl) {
 			await response.body?.cancel();
 			throw new Error("invalid registry response URL");
 		}
@@ -216,7 +286,7 @@ async function fetchLatestVersion(deps: ReleaseDiscoveryDependencies): Promise<s
 		throw new Error("invalid registry response payload");
 	}
 	const version = (payload as Record<string, unknown>).version;
-	if (typeof version !== "string" || !parseStableSemver(version)) {
+	if (typeof version !== "string" || !isReleaseVersionForChannel(version, channel)) {
 		throw new Error("invalid registry version");
 	}
 	return version;
@@ -227,12 +297,16 @@ function recommendedAction(
 	currentVersion: string,
 	latestVersion: string | null,
 	updateAvailable: boolean,
+	channel: ReleaseChannel | null,
 ): string {
-	if (!latestVersion) return "Check network access and try again.";
-	if (!parseStableSemver(currentVersion)) {
+	if (!channel || !isReleaseVersionForChannel(currentVersion, channel)) {
 		return "Verify the current codemem version and try again.";
 	}
-	if (!updateAvailable) return "No action required; codemem is up to date.";
+	if (!latestVersion) return "Check network access and try again.";
+	if (!updateAvailable) {
+		const releaseLabel = channel === "latest" ? "stable" : channel;
+		return `No action required; codemem is on the latest ${releaseLabel} release.`;
+	}
 	switch (installKind) {
 		case "npm-global":
 			return `${process.platform === "linux" ? "env ONNXRUNTIME_NODE_INSTALL=skip " : ""}npm install -g codemem@${latestVersion}`;
@@ -249,14 +323,17 @@ function recommendedAction(
 	}
 }
 
-function toStatus(resolution: ReleaseResolution, options: ReleaseCheckOptions): UpdateStatus {
+function toStatus(
+	resolution: ReleaseResolution,
+	options: ReleaseCheckOptions,
+	channel: ReleaseChannel | null,
+): UpdateStatus {
 	const latestVersion = resolution.record?.latest_version ?? null;
-	const comparison = latestVersion
-		? compareStableSemver(latestVersion, options.currentVersion)
-		: null;
+	const comparison = latestVersion ? compareSemver(latestVersion, options.currentVersion) : null;
 	const updateAvailable = comparison !== null && comparison > 0;
 	return {
 		current_version: options.currentVersion,
+		channel,
 		latest_version: latestVersion,
 		update_available: updateAvailable,
 		first_seen_at: resolution.record?.first_seen_at ?? null,
@@ -276,83 +353,113 @@ function toStatus(resolution: ReleaseResolution, options: ReleaseCheckOptions): 
 			options.currentVersion,
 			latestVersion,
 			updateAvailable,
+			channel,
 		),
 		error: resolution.error,
 	};
 }
 
-export function createReleaseDiscovery(deps: ReleaseDiscoveryDependencies): ReleaseDiscovery {
-	let inFlight: Promise<ReleaseResolution> | null = null;
-	let memoryResolution: { resolution: ReleaseResolution; resolvedAtMs: number } | null = null;
+function canReuseMemoryResolution(
+	state: ReleaseDiscoveryState,
+	channel: ReleaseChannel,
+	now: Date,
+): boolean {
+	const memoryResolution = state.memoryResolutions.get(channel);
+	if (!memoryResolution) return false;
+	const ageMs = Math.max(0, now.getTime() - memoryResolution.resolvedAtMs);
+	const { resolution } = memoryResolution;
+	if (resolution.record && !resolution.stale && isFresh(resolution.record, now)) return true;
+	return resolution.error !== null && ageMs < FAILURE_RETRY_DELAY_MS;
+}
 
-	function canReuseMemoryResolution(now: Date): boolean {
-		if (!memoryResolution) return false;
-		const ageMs = Math.max(0, now.getTime() - memoryResolution.resolvedAtMs);
-		const { resolution } = memoryResolution;
-		if (resolution.record && !resolution.stale && isFresh(resolution.record, now)) return true;
-		return resolution.error !== null && ageMs < FAILURE_RETRY_DELAY_MS;
-	}
-
-	async function refresh(cached: ReleaseCacheRecord | null, now: Date): Promise<ReleaseResolution> {
+async function refreshRelease(
+	deps: ReleaseDiscoveryDependencies,
+	cached: ReleaseCacheRecord | null,
+	now: Date,
+	channel: ReleaseChannel,
+): Promise<ReleaseResolution> {
+	try {
+		const latestVersion = await fetchLatestVersion(deps, channel);
+		const timestamp = now.toISOString();
+		const record: ReleaseCacheRecord = {
+			schema_version: RELEASE_CACHE_SCHEMA_VERSION,
+			channel,
+			latest_version: latestVersion,
+			checked_at: timestamp,
+			first_seen_at: cached?.latest_version === latestVersion ? cached.first_seen_at : timestamp,
+		};
 		try {
-			const latestVersion = await fetchLatestVersion(deps);
-			const timestamp = now.toISOString();
-			const record: ReleaseCacheRecord = {
-				schema_version: RELEASE_CACHE_SCHEMA_VERSION,
-				latest_version: latestVersion,
-				checked_at: timestamp,
-				first_seen_at: cached?.latest_version === latestVersion ? cached.first_seen_at : timestamp,
-			};
-			try {
-				await deps.writeCacheAtomic(JSON.stringify(record));
-				return { record, stale: false, error: null };
-			} catch (error) {
-				return {
-					record,
-					stale: false,
-					error: `cache write failed: ${errorMessage(error)}`,
-				};
-			}
+			await deps.writeCacheAtomic(JSON.stringify(record));
+			return { record, stale: false, error: null };
 		} catch (error) {
-			return { record: cached, stale: cached !== null, error: errorMessage(error) };
+			return { record, stale: false, error: `cache write failed: ${errorMessage(error)}` };
 		}
+	} catch (error) {
+		return { record: cached, stale: cached !== null, error: errorMessage(error) };
 	}
+}
 
-	return {
-		async check(options): Promise<UpdateStatus> {
-			const now = deps.now();
-			let cached: ReleaseCacheRecord | null = null;
-			let cacheReadError: string | null = null;
-			try {
-				cached = parseCache(await deps.readCache(), now);
-			} catch (error) {
-				cacheReadError = `cache read failed: ${errorMessage(error)}`;
-			}
-			if (!options.refresh && cached && isFresh(cached, now)) {
-				return toStatus({ record: cached, stale: false, error: null }, options);
-			}
-			if (!options.refresh && canReuseMemoryResolution(now) && memoryResolution) {
-				const resolution = memoryResolution.resolution;
-				return toStatus(
-					cacheReadError && !resolution.error
-						? { ...resolution, error: cacheReadError }
-						: resolution,
-					options,
-				);
-			}
-			if (!inFlight) {
-				inFlight = refresh(cached, now).finally(() => {
-					inFlight = null;
-				});
-			}
-			const resolution = await inFlight;
-			memoryResolution = { resolution, resolvedAtMs: deps.now().getTime() };
-			return toStatus(
-				cacheReadError && !resolution.error ? { ...resolution, error: cacheReadError } : resolution,
-				options,
-			);
-		},
+function withCacheReadError(
+	resolution: ReleaseResolution,
+	cacheReadError: string | null,
+): ReleaseResolution {
+	return cacheReadError && !resolution.error
+		? { ...resolution, error: cacheReadError }
+		: resolution;
+}
+
+async function readReleaseCache(
+	deps: ReleaseDiscoveryDependencies,
+	now: Date,
+	channel: ReleaseChannel,
+): Promise<{ cached: ReleaseCacheRecord | null; error: string | null }> {
+	try {
+		return { cached: parseCache(await deps.readCache(), now, channel), error: null };
+	} catch (error) {
+		return { cached: null, error: `cache read failed: ${errorMessage(error)}` };
+	}
+}
+
+async function checkRelease(
+	deps: ReleaseDiscoveryDependencies,
+	state: ReleaseDiscoveryState,
+	options: ReleaseCheckOptions,
+): Promise<UpdateStatus> {
+	const now = deps.now();
+	const channel = releaseChannelForVersion(options.currentVersion);
+	if (!channel) {
+		return toStatus(
+			{ record: null, stale: false, error: "unsupported installed release channel" },
+			options,
+			null,
+		);
+	}
+	const cache = await readReleaseCache(deps, now, channel);
+	if (!options.refresh && cache.cached && isFresh(cache.cached, now)) {
+		return toStatus({ record: cache.cached, stale: false, error: null }, options, channel);
+	}
+	const memoryResolution = state.memoryResolutions.get(channel);
+	if (!options.refresh && memoryResolution && canReuseMemoryResolution(state, channel, now)) {
+		return toStatus(withCacheReadError(memoryResolution.resolution, cache.error), options, channel);
+	}
+	let request = state.inFlight.get(channel);
+	if (!request) {
+		request = refreshRelease(deps, cache.cached, now, channel).finally(() => {
+			state.inFlight.delete(channel);
+		});
+		state.inFlight.set(channel, request);
+	}
+	const resolution = await request;
+	state.memoryResolutions.set(channel, { resolution, resolvedAtMs: deps.now().getTime() });
+	return toStatus(withCacheReadError(resolution, cache.error), options, channel);
+}
+
+export function createReleaseDiscovery(deps: ReleaseDiscoveryDependencies): ReleaseDiscovery {
+	const state: ReleaseDiscoveryState = {
+		inFlight: new Map(),
+		memoryResolutions: new Map(),
 	};
+	return { check: (options) => checkRelease(deps, state, options) };
 }
 
 function defaultCachePath(): string {
