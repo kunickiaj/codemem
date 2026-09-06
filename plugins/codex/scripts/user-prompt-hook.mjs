@@ -113,6 +113,9 @@ export function identityTarget(cwd, env) {
 		embedding_disabled: ["1", "true", "yes"].includes(
 			String(env.CODEMEM_EMBEDDING_DISABLED ?? "").toLowerCase(),
 		),
+		embedding_offline: ["1", "true", "yes"].includes(
+			String(env.CODEMEM_EMBEDDING_OFFLINE ?? "").toLowerCase(),
+		),
 		embedding_model: embeddingModel,
 		embedding_revision: embeddingRevision,
 	};
