@@ -45,9 +45,27 @@ const VIEWER_HEALTH_RESTART_COOLDOWN_MS = 5 * 60_000;
 const RAW_EVENTS_STATUS_TIMEOUT_MS = 5_000;
 const DEFAULT_EMBEDDING_MODEL = "Xenova/bge-small-en-v1.5";
 const DEFAULT_EMBEDDING_REVISION = "ea104dacec62c0de699686887e3f920caeb4f3e3";
+const PLUGIN_REGISTRATIONS_KEY = Symbol.for("codemem.opencode-plugin.registrations");
 
 let compatCheckCache = null;
 const notifiedReleaseVersions = new Set();
+
+const claimPluginRegistration = (cwd) => {
+  let registrations = globalThis[PLUGIN_REGISTRATIONS_KEY];
+  if (!(registrations instanceof Map)) {
+    registrations = new Map();
+    globalThis[PLUGIN_REGISTRATIONS_KEY] = registrations;
+  }
+  const projectPath = resolve(cwd);
+  if (registrations.has(projectPath)) return null;
+  const registration = Symbol(projectPath);
+  registrations.set(projectPath, registration);
+  return () => {
+    if (registrations.get(projectPath) === registration) {
+      registrations.delete(projectPath);
+    }
+  };
+};
 const rawEventSpoolDrainsInFlight = new Map();
 
 // Release an unread response body without surfacing cancellation failures.
@@ -1906,6 +1924,13 @@ export const CodememPlugin = async ({
     TRUTHY_VALUES
   );
   if (pluginIgnored) {
+    return {};
+  }
+  const releasePluginRegistration = claimPluginRegistration(cwd);
+  if (!releasePluginRegistration) {
+    await log("warn", "codemem duplicate plugin registration skipped", {
+      next_action: "remove either the configured npm plugin or the project-local Codemem plugin",
+    });
     return {};
   }
 
@@ -3846,6 +3871,11 @@ export const CodememPlugin = async ({
   void drainRawEventSpool();
 
   return {
+    dispose: () => {
+      clearTimeout(updateCheckTimer);
+      stopHealthCheck();
+      releasePluginRegistration();
+    },
     "experimental.session.compacting": async (input) => {
       const sessionID = extractHookSessionID(input) || activeSessionID;
       markCompactionInjectionSkip(compactionInjectionSkips, sessionID);

@@ -174,7 +174,6 @@ describe("RawEventSweeper auto flush", () => {
 			}),
 		} as never,
 	};
-
 	it("suppresses auto flush during auth backoff after an auth failure", async () => {
 		process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = "1";
 		process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS = "0";

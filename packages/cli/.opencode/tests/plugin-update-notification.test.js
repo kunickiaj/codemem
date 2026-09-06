@@ -100,6 +100,7 @@ function isPairedInstallCall(call) {
 }
 
 async function startPlugin(showToast = vi.fn().mockResolvedValue(undefined)) {
+	Reflect.deleteProperty(globalThis, Symbol.for("codemem.opencode-plugin.registrations"));
 	const { CodememPlugin } = await import("../plugins/codemem.js");
 	const hooks = await CodememPlugin({
 		project: { name: "codemem" },

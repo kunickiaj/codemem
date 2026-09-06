@@ -14,6 +14,8 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 4. Use `codemem stats` and `codemem recent` to confirm ingestion.
 5. Browse the viewer at the printed URL.
 
+OpenCode loads configured npm plugins and project-local `.opencode/plugins/` files as separate sources. If both resolve to Codemem for the same project, the first registration remains active and later registrations skip all hooks with a warning. Remove the configured npm entry when testing checkout-local plugin changes so the local copy initializes first.
+
 ### Repository-only lint feedback
 
 When OpenCode runs from a codemem source checkout, the root `opencode.jsonc` loads `packages/opencode-plugin/src/lint-feedback.ts`; that repository-owned entrypoint runs the installed Biome launcher through Node without a shell. The hook checks JavaScript and TypeScript paths included by `biome.json` when handled by `edit`, `write`, or `apply_patch`, including move destinations; paths outside that configured Biome scope are ignored. It appends at most 10 new or worsened diagnostics and leaves the edit intact when Biome fails or exceeds its 10-second timeout. Existing diagnostics are a warning-level ratchet rather than a cleanup mandate.
@@ -343,12 +345,12 @@ Stream contract:
 Suggested settings:
 
 ```bash
-export CODEMEM_RAW_EVENTS_AUTO_FLUSH=1
-export CODEMEM_RAW_EVENTS_DEBOUNCE_MS=60000
 export CODEMEM_RAW_EVENTS_SWEEPER=1
-export CODEMEM_RAW_EVENTS_SWEEPER_IDLE_MS=120000
 export CODEMEM_RAW_EVENTS_SWEEPER_LIMIT=25
 export CODEMEM_RAW_EVENTS_STUCK_BATCH_MS=300000
+# optional quiet-period flush before the next periodic sweep
+# export CODEMEM_RAW_EVENTS_AUTO_FLUSH=1
+# export CODEMEM_RAW_EVENTS_DEBOUNCE_MS=10000
 # optional retention
 # export CODEMEM_RAW_EVENTS_RETENTION_MS=$((7*24*60*60*1000))
 ```
@@ -383,7 +385,7 @@ Force-flush thresholds (immediate flush):
 Failure semantics:
 - Stream POST failures are backoff-gated in plugin runtime (`CODEMEM_RAW_EVENTS_BACKOFF_MS`).
 - Availability checks are rate-limited (`CODEMEM_RAW_EVENTS_STATUS_CHECK_MS`).
-- Accepted raw-event batches are retried by viewer/store queue workers (`codemem db raw-events-retry`).
+- Each periodic viewer sweep drains a bounded batch from accepted sessions, including sessions that remain active; failed batches are retried by viewer/store queue workers (`codemem db raw-events-retry`).
 
 ## Project label normalization
 
@@ -454,12 +456,11 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_RAW_EVENT_SPOOL_DRAIN_LIMIT` | Max valid saved envelopes attempted per spool drain; corrupt entries do not consume this limit (default `20`). |
 | `CODEMEM_RAW_EVENT_SPOOL_MAX_ENTRIES` | Max `.json` entries in the OpenCode raw-event spool (default `2000`). A full spool rejects new event IDs without evicting existing entries; the failed write remains only in the bounded in-memory queue. |
 | `CODEMEM_RAW_EVENTS_AUTO_FLUSH` | Set to `1` to enable viewer-side debounced flush of streamed raw events (default off). |
-| `CODEMEM_RAW_EVENTS_DEBOUNCE_MS` | Debounce delay before auto-flush per session (default `60000`). |
-| `CODEMEM_RAW_EVENTS_SWEEPER` | Set to `1` to enable periodic sweeper flush for idle sessions (default on). |
+| `CODEMEM_RAW_EVENTS_DEBOUNCE_MS` | Debounce delay before auto-flush per session (default `60000`); the periodic sweeper may drain the session sooner. |
+| `CODEMEM_RAW_EVENTS_SWEEPER` | Set to `1` to enable periodic sweeper flush for sessions with unflushed events (default on). |
 | `CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_MS` | Sweeper tick interval (default `30000`). |
 | `CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_S` | Config/env interval in seconds used by Settings UI (default `30`; overridden by `CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_MS` when set). |
-| `CODEMEM_RAW_EVENTS_SWEEPER_IDLE_MS` | Consider session idle if no events since this many ms (default `120000`). |
-| `CODEMEM_RAW_EVENTS_SWEEPER_LIMIT` | Max idle sessions to flush per sweeper tick (default `25`). |
+| `CODEMEM_RAW_EVENTS_SWEEPER_LIMIT` | Max sessions with unflushed events to process per sweeper tick (default `25`). |
 | `CODEMEM_RAW_EVENTS_STUCK_BATCH_MS` | Mark flush batches older than this many ms as error (default `300000`). |
 | `CODEMEM_RAW_EVENTS_RETENTION_MS` | If >0, delete raw events older than this many ms (default `0`, keep forever). |
 | `CODEMEM_CLAUDE_HOOK_FLUSH` | Set to `0` to disable immediate `SessionEnd` boundary flush (default on for `SessionEnd`; `Stop` still requires `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1`). |

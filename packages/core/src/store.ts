@@ -1732,11 +1732,22 @@ export class MemoryStore {
 
 	/**
 	 * Find sessions that have unflushed events and have been idle long enough.
-	 * Port of raw_event_sessions_pending_idle_flush().
 	 */
 	rawEventSessionsPendingIdleFlush(
 		idleBeforeTsWallMs: number,
 		limit = 25,
+	): { source: string; streamId: string }[] {
+		return this.rawEventSessionsPendingFlushQuery(limit, idleBeforeTsWallMs);
+	}
+
+	/** Find sessions that have unflushed events, oldest activity first. */
+	rawEventSessionsPendingFlush(limit = 25): { source: string; streamId: string }[] {
+		return this.rawEventSessionsPendingFlushQuery(limit);
+	}
+
+	private rawEventSessionsPendingFlushQuery(
+		limit: number,
+		idleBeforeTsWallMs?: number,
 	): { source: string; streamId: string }[] {
 		const maxEvents = this.d
 			.select({
@@ -1764,7 +1775,9 @@ export class MemoryStore {
 			.where(
 				and(
 					isNotNull(schema.rawEventSessions.last_seen_ts_wall_ms),
-					lte(schema.rawEventSessions.last_seen_ts_wall_ms, idleBeforeTsWallMs),
+					idleBeforeTsWallMs == null
+						? undefined
+						: lte(schema.rawEventSessions.last_seen_ts_wall_ms, idleBeforeTsWallMs),
 					gt(maxEvents.max_seq, schema.rawEventSessions.last_flushed_event_seq),
 				),
 			)
