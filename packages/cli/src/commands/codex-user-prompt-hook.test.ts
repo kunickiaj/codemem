@@ -369,9 +369,9 @@ describe("dependency-free Codex user prompt hook", () => {
 				args: [
 					"-y",
 					"--package",
-					expect.stringMatching(/^codemem@\d+\.\d+\.\d+$/),
+					expect.stringMatching(/^codemem@\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?$/),
 					"--package",
-					expect.stringMatching(/^@codemem\/embeddings@\d+\.\d+\.\d+$/),
+					expect.stringMatching(/^@codemem\/embeddings@\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?$/),
 					"codemem",
 					"codex-hook-inject",
 				],
