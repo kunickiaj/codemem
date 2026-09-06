@@ -138,6 +138,48 @@ describe("project scope settings", () => {
 		]);
 	});
 
+	it("surfaces a legacy malformed identity as unmapped for repair", () => {
+		const sessionId = insertSession(db, {
+			cwd: "Command failed: git rev-parse --show-toplevel",
+			gitRemote: "fatal: not a git repository (or any of the parent directories): .git",
+			project: "error: failed to discover project",
+		});
+		insertMemory(db, sessionId, { workspaceId: null });
+
+		expect(listProjectScopeInventory(db).projects).toEqual([
+			expect.objectContaining({
+				cwd: null,
+				display_project: expect.stringMatching(/^unmapped:/),
+				git_remote: null,
+				identity_source: "unmapped",
+				project: null,
+				resolved_scope_id: LOCAL_DEFAULT_SCOPE_ID,
+				statuses: expect.arrayContaining(["local_only", "unmapped"]),
+				workspace_identity: expect.stringMatching(/^unmapped:/),
+			}),
+		]);
+	});
+
+	it("keeps distinct malformed legacy sessions as separate repair candidates", () => {
+		for (const [index, failure] of [
+			"fatal: not a git repository",
+			"Command failed: git remote get-url origin",
+		].entries()) {
+			const sessionId = insertSession(db, {
+				cwd: failure,
+				gitRemote: failure,
+				project: `error: failed project ${index}`,
+			});
+			insertMemory(db, sessionId, { workspaceId: null });
+		}
+
+		const projects = listProjectScopeInventory(db).projects;
+
+		expect(projects).toHaveLength(2);
+		expect(new Set(projects.map((project) => project.workspace_identity)).size).toBe(2);
+		expect(projects.every((project) => project.identity_source === "unmapped")).toBe(true);
+	});
+
 	it("fails closed when a bounded candidate scan exceeds its row budget", () => {
 		insertSession(db, { cwd: "/workspace/one", gitRemote: null, project: "one" });
 		insertSession(db, { cwd: "/workspace/two", gitRemote: null, project: "two" });

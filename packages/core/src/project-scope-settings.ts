@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { type Database, fromJson, toJson } from "./db.js";
 import { hasLocalInventoryIdentity } from "./local-project-inventory.js";
+import { cleanProjectIdentity } from "./project-identity.js";
 import { ensureScopeBackfillScopes, LEGACY_SHARED_REVIEW_SCOPE_ID } from "./scope-backfill.js";
 import {
 	canonicalWorkspaceIdentity,
@@ -458,6 +459,10 @@ function buildProjectScopeCandidate(
 	mappings: ProjectScopeSettingsMapping[],
 	scopes: SharingDomainSettingsScope[],
 ): ProjectScopeCandidate {
+	const project = cleanProjectIdentity(row.project);
+	const cwd = cleanProjectIdentity(row.cwd);
+	const gitRemote = cleanProjectIdentity(row.git_remote);
+	const gitBranch = cleanProjectIdentity(row.git_branch);
 	const identity = canonicalWorkspaceIdentity({
 		gitRemote: row.git_remote,
 		gitBranch: row.git_branch,
@@ -476,12 +481,11 @@ function buildProjectScopeCandidate(
 	const baseCandidate = {
 		workspace_identity: identity.value,
 		identity_source: identity.source,
-		display_project:
-			identity.displayProject ?? clean(row.project) ?? clean(row.cwd) ?? identity.value,
-		project: clean(row.project),
-		cwd: clean(row.cwd),
-		git_remote: clean(row.git_remote),
-		git_branch: clean(row.git_branch),
+		display_project: identity.displayProject ?? project ?? cwd ?? identity.value,
+		project,
+		cwd,
+		git_remote: gitRemote,
+		git_branch: gitBranch,
 		latest_session_at: row.started_at,
 		resolved_scope_id: resolution.scopeId,
 		resolution_reason: resolution.reason,

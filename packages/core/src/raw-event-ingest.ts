@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 import { stripPrivateObj } from "./ingest-sanitize.js";
+import { cleanProjectIdentity } from "./project-identity.js";
 
 const SESSION_ID_KEYS = [
 	"session_stream_id",
@@ -94,6 +95,14 @@ function optionalString(value: Record<string, unknown>, key: string): string | n
 	if (raw == null) return null;
 	if (typeof raw !== "string") validationError(`${key} must be string`);
 	return raw || null;
+}
+
+function optionalProjectIdentity(
+	value: Record<string, unknown>,
+	key: "cwd" | "project",
+): string | null {
+	const identity = optionalString(value, key);
+	return cleanProjectIdentity(identity);
 }
 
 function optionalNumber(value: Record<string, unknown>, key: string): number | null {
@@ -213,8 +222,8 @@ function normalizeEvent(
 		payload,
 		tsWallMs,
 		tsMonoMs,
-		cwd: optionalString(item, "cwd"),
-		project: optionalString(item, "project"),
+		cwd: optionalProjectIdentity(item, "cwd"),
+		project: optionalProjectIdentity(item, "project"),
 		startedAt: optionalString(item, "started_at"),
 	};
 }
@@ -237,8 +246,8 @@ function normalizeRequest(request: Record<string, unknown>): NormalizedRequest {
 		events,
 		received: rawEvents.length,
 		requestMeta: {
-			cwd: optionalString(request, "cwd"),
-			project: optionalString(request, "project"),
+			cwd: optionalProjectIdentity(request, "cwd"),
+			project: optionalProjectIdentity(request, "project"),
 			startedAt: optionalString(request, "started_at"),
 		},
 	};
