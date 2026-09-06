@@ -62,7 +62,7 @@ export function normalizeDeviceNameHint(value: string | null | undefined): strin
 	const raw = candidate.replace(/\.local$/iu, "");
 	if (!raw) return null;
 	const normalized = HOSTNAME_NAME.test(candidate) ? raw : raw.replace(/[-_]+/gu, " ");
-	return normalizeIdentityDisplayName(normalized, "device_display_name");
+	return normalizeDeviceDisplayName(normalized, "device_display_name");
 }
 
 export function friendlyDeviceName(input: {

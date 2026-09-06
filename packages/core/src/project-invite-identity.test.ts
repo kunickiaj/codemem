@@ -10,6 +10,7 @@ import {
 	friendlyDeviceName,
 	isHumanPresentationName,
 	normalizeDeviceDisplayName,
+	normalizeDeviceNameHint,
 	normalizeHumanPresentationName,
 	normalizeIdentityDisplayName,
 	normalizeProjectInviteSummaries,
@@ -102,6 +103,15 @@ describe("project invite identity", () => {
 		);
 		expect(() => normalizeDeviceDisplayName("device_abc123def", "device_display_name")).toThrow(
 			"device_display_name_invalid",
+		);
+	});
+
+	it("rejects machine IDs after stripping the .local suffix", () => {
+		expect(() => normalizeDeviceNameHint("a1b2c3d4e5f6.local")).toThrow(
+			"device_display_name_invalid",
+		);
+		expect(friendlyDeviceName({ osName: "a1b2c3d4e5f6.local", fallbackSeed: "abcd-1234" })).toBe(
+			"Codemem device abcd12",
 		);
 	});
 
