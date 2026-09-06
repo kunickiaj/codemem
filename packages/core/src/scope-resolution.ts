@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import type { Database } from "better-sqlite3";
-import { cleanProjectIdentity } from "./project-identity.js";
+import { cleanProjectIdentity, isMalformedProjectIdentity } from "./project-identity.js";
 
 export const LOCAL_DEFAULT_SCOPE_ID = "local-default";
 
@@ -104,11 +104,18 @@ function normalizeMappingIdentity(value: string | null | undefined): string | nu
 function unmappedIdentity(input: WorkspaceIdentityInput): string {
 	const validSeed = [input.cwd, input.project, input.workspaceId]
 		.map((value) => cleanProjectIdentity(value))
-		.find((value): value is string => value != null);
-	const rawSeed = [input.gitRemote, input.gitBranch, input.cwd, input.project, input.workspaceId]
-		.map((value) => (typeof value === "string" ? value.trim() : ""))
-		.find(Boolean);
-	const seed = validSeed ?? rawSeed ?? "unknown";
+		.find((value) => value !== null);
+	const identityTuple = [
+		input.gitRemote,
+		input.gitBranch,
+		input.cwd,
+		input.project,
+		input.workspaceId,
+	].map((value) => (typeof value === "string" ? value.trim() : null));
+	let seed = validSeed ?? "unknown";
+	if (!validSeed && identityTuple.some(isMalformedProjectIdentity)) {
+		seed = JSON.stringify(identityTuple);
+	}
 	const digest = createHash("sha256").update(seed, "utf8").digest("hex");
 	return `unmapped:${digest}`;
 }

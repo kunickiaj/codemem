@@ -2,7 +2,8 @@
 
 ## Check for updates
 
-Use the read-only release check to compare the running CLI with the latest stable npm release:
+Use the read-only release check to compare the running CLI with the latest npm release on its
+installed channel. Stable versions use `latest`; prereleases use `alpha`, `beta`, or `rc`:
 
 ```fish
 codemem update check
@@ -11,16 +12,16 @@ codemem update check --json
 ```
 
 - Results are cached locally for six hours; `--refresh` bypasses a fresh cache.
-- `--json` prints one stable status object and uses a non-zero exit code when no validated fresh
+- `--json` prints one channel-aware status object and uses a non-zero exit code when no validated fresh
   or stale status is available.
 - Stale validated cache data remains clearly labeled and may provide guidance when the registry is
   unavailable.
 - This command never installs or executes an update. Release installation remains outside this
   read-only check. `codemem update install` is the separate, fail-closed installer: it refreshes
-  release status, requires a proven global npm installation and a stable release observed for at
+  release status, requires a proven global npm installation and a same-channel release observed for at
   least 24 hours, installs exact matching `codemem` and `@codemem/embeddings` versions from the
   public npm registry, and verifies the active `codemem` command. It refuses npx, Docker, pinned,
-  development, stale, prerelease, downgrade, and unknown installations. Bare `codemem update`
+  development, stale, cross-channel, downgrade, unsupported-channel, and unknown installations. Bare `codemem update`
   remains non-mutating. As with a
   manual npm install, npm runs the packages' installation scripts for native CPU dependencies.
 

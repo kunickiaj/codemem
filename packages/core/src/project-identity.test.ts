@@ -7,16 +7,24 @@ describe("project identity metadata", () => {
 		"error: failed to discover project",
 		"fatal: not a git repository",
 		"git: 'workspace-id' is not a git command",
+		"GitError: fatal: not a git repository",
+		"GitError: fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree",
+		"Git command failed: no such remote 'upstream'",
 		"valid-project\nfatal: leaked stderr",
 	])("rejects command failure output: %s", (value) => {
 		expect(isMalformedProjectIdentity(value)).toBe(true);
 		expect(cleanProjectIdentity(value)).toBeNull();
 	});
 
-	it.each(["fatal-error-handler", "/tmp/error: logs", "git:alpha", "project name"])(
-		"preserves valid identity text: %s",
-		(value) => {
-			expect(cleanProjectIdentity(` ${value} `)).toBe(value);
-		},
-	);
+	it.each([
+		"fatal-error-handler",
+		"/tmp/error: logs",
+		"git:alpha",
+		"project name",
+		"/work/not a git repository/demo",
+		"/work/unknown revision or path/demo",
+		"no such remote",
+	])("preserves valid identity text: %s", (value) => {
+		expect(cleanProjectIdentity(` ${value} `)).toBe(value);
+	});
 });
