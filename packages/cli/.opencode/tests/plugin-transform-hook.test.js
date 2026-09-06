@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect } from "../../../core/src/db.js";
@@ -9,6 +17,7 @@ import { MemoryStore } from "../../../core/src/store.js";
 import { getRetrievalAttempt } from "../../../core/src/retrieval-ledger.js";
 import { initTestSchema } from "../../../core/src/test-utils.js";
 import { buildViewerIdentityTarget } from "../../../core/src/identity-target.js";
+import { writeRawEventSpoolEntry } from "../../../opencode-plugin/.opencode/lib/raw-event-spool.js";
 import {
 	handleInstrumentedPackLedger,
 	handlePromptPackLedger,
@@ -292,11 +301,13 @@ describe("OpenCode transform-time injection", () => {
 		execSyncMock.mockClear();
 		process.env = {
 			...originalEnv,
+			HOME: mkdtempSync(join(tmpdir(), "codemem-opencode-transform-home-")),
 			CODEMEM_VIEWER: "0",
 			CODEMEM_PLUGIN_DEBUG: "1",
 			CODEMEM_PLUGIN_LOG: "0",
 			CODEMEM_INJECT_CONTEXT: "1",
 		};
+		tmpDirs.push(process.env.HOME);
 		for (const key of [
 			"CODEMEM_DB",
 			"CODEMEM_DEVICE_ID",
@@ -2235,24 +2246,53 @@ describe("OpenCode transform-time injection", () => {
 	});
 
 	test.each([
-		"viewer_db_mismatch",
-		"viewer_identity_mismatch",
-		"viewer_contract_unsupported",
-	])("targets raw-event HTTP and invokes the CLI fallback once on %s", async (errorCode) => {
+		["database", 409, "viewer_db_mismatch", "restart the viewer from the same workspace/config"],
+		[
+			"identity",
+			409,
+			"viewer_identity_mismatch",
+			"restart Codemem and OpenCode with the same environment",
+		],
+		[
+			"contract",
+			409,
+			"viewer_contract_unsupported",
+			"update Codemem on the installed channel, then restart OpenCode",
+		],
+		["connection", 503, "other_failure", "check or restart the viewer"],
+	])("spools before fallback and reports bounded %s guidance", async (
+		category,
+		status,
+		errorCode,
+		nextAction,
+	) => {
+		const home = mkdtempSync(join(tmpdir(), "codemem-opencode-spool-"));
+		tmpDirs.push(home);
+		process.env.HOME = home;
 		process.env.CODEMEM_VIEWER = "1";
 		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_VIEWER_HOST = "sensitive-host.invalid";
+		process.env.CODEMEM_VIEWER_PORT = "49123";
+		process.env.CODEMEM_DB = "/sensitive/db.sqlite";
+		process.env.CODEMEM_DEVICE_ID = "sensitive-device";
 		process.env.CODEMEM_RAW_EVENTS = "1";
+		const spoolDirectory = join(home, ".codemem", "opencode-raw-event-spool");
 		const postedBodies = [];
-		const fallbackBodies = [];
+		const fallbackBytes = [];
+		const spooledBytesAtFallback = [];
 		const appLog = vi.fn().mockResolvedValue(undefined);
+		const showToast = vi.fn().mockResolvedValue(undefined);
 		vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
 			if (String(url).includes("/api/raw-events/status")) {
 				return jsonResponse(200, { ingest: { available: true } });
 			}
 			if (String(url).endsWith("/api/raw-events") && init?.method === "POST") {
 				postedBodies.push(JSON.parse(String(init.body)));
-				return jsonResponse(409, {
-					error: { code: errorCode, message: "viewer target does not match request" },
+				return jsonResponse(status, {
+					error: {
+						code: errorCode,
+						message: "sensitive-db sensitive-device sensitive payload",
+					},
 				});
 			}
 			return jsonResponse(200, {});
@@ -2260,9 +2300,94 @@ describe("OpenCode transform-time injection", () => {
 		spawnMock.mockImplementation((_command, args) => {
 			const proc = makeProcess({ exitCode: 0 });
 			if (Array.isArray(args) && args.includes("enqueue-raw-event")) {
-				proc.stdin.write = vi.fn((value) => fallbackBodies.push(JSON.parse(String(value))));
+				proc.stdin.write = vi.fn((value) => {
+					const spoolFiles = readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"));
+					expect(spoolFiles).toHaveLength(1);
+					spooledBytesAtFallback.push(readFileSync(join(spoolDirectory, spoolFiles[0]), "utf8"));
+					fallbackBytes.push(String(value));
+				});
 			}
 			return proc;
+		});
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: appLog }, tui: { showToast } },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+
+		await hooks["tool.execute.after"](
+			{ tool: "read", args: { filePath: "src/raw-event.ts" }, sessionID: `sess-${category}` },
+			{},
+		);
+		await vi.waitFor(() => expect(fallbackBytes).toHaveLength(1));
+		await vi.waitFor(() =>
+			expect(appLog).toHaveBeenCalledWith(expect.objectContaining({
+				message: `codemem raw event was queued via CLI; ${nextAction}`,
+				extra: { category, delivery: "cli" },
+			})),
+		);
+
+		const httpEnvelope = { ...postedBodies[0] };
+		delete httpEnvelope.db_path;
+		delete httpEnvelope.identity_target;
+		expect(JSON.stringify(httpEnvelope)).toBe(fallbackBytes[0]);
+		expect(spooledBytesAtFallback[0]).toBe(fallbackBytes[0]);
+		expect(JSON.parse(fallbackBytes[0])).not.toHaveProperty("db_path");
+		expect(JSON.parse(fallbackBytes[0])).not.toHaveProperty("identity_target");
+		expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toEqual([]);
+		const notices = JSON.stringify([...appLog.mock.calls, ...showToast.mock.calls]);
+		for (const sensitive of [
+			"sensitive-host.invalid",
+			"49123",
+			"/sensitive/db.sqlite",
+			"sensitive-device",
+			"sensitive payload",
+		]) {
+			expect(notices).not.toContain(sensitive);
+		}
+	});
+
+	test.each([
+		[
+			"validation",
+			{
+				exitCode: 1,
+				stdout: `${JSON.stringify({ error: "validation_error", message: "session id required" })}\n`,
+			},
+			1,
+		],
+		["unknown-command", { exitCode: 1, stderr: "error: unknown command 'enqueue-raw-event'" }, 1],
+		[
+			"locked",
+			{
+				exitCode: 1,
+				stdout: `${JSON.stringify({ error: "enqueue_error", message: "database is locked" })}\n`,
+			},
+			2,
+		],
+	])("keeps a formerly terminal %s fallback retryable after session idle", async (
+		label,
+		failureResult,
+		initialAttempts,
+	) => {
+		const home = mkdtempSync(join(tmpdir(), "codemem-opencode-terminal-spool-"));
+		tmpDirs.push(home);
+		process.env.HOME = home;
+		process.env.CODEMEM_RAW_EVENTS = "1";
+		process.env.CODEMEM_RAW_EVENTS_BACKOFF_MS = "1000";
+		const sessionID = `sess-terminal-${label}`;
+		const enqueueBytes = [];
+		const appLog = vi.fn().mockResolvedValue(undefined);
+		vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("viewer unavailable"));
+		spawnMock.mockImplementation((_command, args) => {
+			if (Array.isArray(args) && args.includes("enqueue-raw-event")) {
+				const proc = makeProcess(failureResult);
+				proc.stdin.write = vi.fn((value) => enqueueBytes.push(String(value)));
+				return proc;
+			}
+			return makeProcess({ stdout: "" });
 		});
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
@@ -2273,313 +2398,295 @@ describe("OpenCode transform-time injection", () => {
 		});
 
 		await hooks["tool.execute.after"](
-			{ tool: "read", args: { filePath: "src/raw-event.ts" }, sessionID: "sess-target" },
+			{ tool: "read", args: {}, sessionID },
 			{},
 		);
-		await vi.waitFor(() => expect(fallbackBodies).toHaveLength(1));
-		const expectedProfile = await viewerProfileResponse().json();
+		await vi.waitFor(() => expect(enqueueBytes).toHaveLength(initialAttempts));
+		await vi.waitFor(() =>
+			expect(appLog).toHaveBeenCalledWith(expect.objectContaining({
+				message: "codemem raw event was saved for retry; check or restart the viewer",
+				extra: { category: "connection", delivery: "spool" },
+			})),
+		);
+		await hooks.event({ event: { type: "session.idle", properties: { sessionID } } });
 
-		expect(postedBodies).toHaveLength(1);
-		expect(postedBodies[0]).toMatchObject({
-			db_path: expectedProfile.db_path,
-			identity_target: expectedProfile.identity_target,
-		});
-		expect(fallbackBodies[0]).not.toHaveProperty("db_path");
-		expect(fallbackBodies[0]).not.toHaveProperty("identity_target");
-		expect(appLog).toHaveBeenCalledWith(expect.objectContaining({
-			extra: expect.objectContaining({ viewerTargetMismatch: true }),
-		}));
+		expect(enqueueBytes.length).toBeGreaterThan(1);
+		expect(new Set(enqueueBytes).size).toBe(1);
+		const spoolDirectory = join(home, ".codemem", "opencode-raw-event-spool");
+		expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toHaveLength(1);
 	});
 
-	test("retries one SQLite-locked raw-event fallback with the identical envelope and marks it delivered", async () => {
-		// Arrange
+	test("recovers a failed fallback from disk after plugin module restart", async () => {
+		const home = mkdtempSync(join(tmpdir(), "codemem-opencode-restart-spool-"));
+		tmpDirs.push(home);
+		process.env.HOME = home;
 		process.env.CODEMEM_RAW_EVENTS = "1";
 		process.env.CODEMEM_RAW_EVENTS_BACKOFF_MS = "1000";
-		const enqueueBodies = [];
-		let enqueueAttempt = 0;
-		const appLog = vi.fn().mockResolvedValue(undefined);
+		const sessionID = "sess-spool-restart";
+		const enqueueBytes = [];
+		let fallbackSucceeds = false;
 		vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("viewer unavailable"));
 		spawnMock.mockImplementation((_command, args) => {
 			if (Array.isArray(args) && args.includes("enqueue-raw-event")) {
-				enqueueAttempt += 1;
 				const proc = makeProcess(
-					enqueueAttempt === 1
-						? {
+					fallbackSucceeds
+						? { exitCode: 0 }
+						: {
 								exitCode: 1,
 								stdout: `${JSON.stringify({
-									error: "enqueue_error",
-									message: "database is locked",
+									error: "validation_error",
+									message: "event type required",
 								})}\n`,
-							}
-						: { exitCode: 0 },
+							},
 				);
-				proc.stdin.write = vi.fn((value) =>
-					enqueueBodies.push(JSON.parse(String(value))),
-				);
+				proc.stdin.write = vi.fn((value) => enqueueBytes.push(String(value)));
 				return proc;
 			}
 			return makeProcess({ stdout: "" });
 		});
-		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		let { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
 			project: { name: "greenroom" },
-			client: {
-				app: { log: appLog },
-				tui: {},
-			},
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		await hooks["tool.execute.after"](
+			{ tool: "read", args: {}, sessionID },
+			{},
+		);
+		await vi.waitFor(() => expect(enqueueBytes).toHaveLength(1));
+		await hooks.event({ event: { type: "session.idle", properties: { sessionID } } });
+		const attemptsBeforeRestart = enqueueBytes.length;
+		const spoolDirectory = join(home, ".codemem", "opencode-raw-event-spool");
+		expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toHaveLength(1);
+
+		fallbackSucceeds = true;
+		vi.resetModules();
+		({ OpencodeMemPlugin } = await import("../plugins/codemem.js"));
+		await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
 			directory: "/tmp/greenroom",
 			worktree: "/tmp/greenroom",
 		});
 
-		// Act
-		await hooks["tool.execute.after"](
-			{ tool: "read", args: { filePath: "src/raw-event.ts" }, sessionID: "sess-locked" },
-			{},
-		);
-		const lockedBodies = () =>
-			enqueueBodies.filter((body) => body.session_stream_id === "sess-locked");
-		await vi.waitFor(() => expect(lockedBodies()).toHaveLength(2));
+		await vi.waitFor(() => expect(enqueueBytes.length).toBeGreaterThan(attemptsBeforeRestart));
 		await vi.waitFor(() =>
-			expect(appLog).toHaveBeenCalledWith(
-				expect.objectContaining({
-					message: "codemem stream unavailable; queued raw event via CLI fallback",
-				}),
-			),
+			expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toEqual([]),
 		);
-		await hooks.event({
-			event: { type: "session.idle", properties: { sessionID: "sess-locked" } },
-		});
-
-		// Assert
-		expect(lockedBodies()[0]).toEqual(lockedBodies()[1]);
-		expect(lockedBodies()[0].event_id).toBeTruthy();
-		expect(lockedBodies()).toHaveLength(2);
+		expect(new Set(enqueueBytes).size).toBe(1);
 	});
 
-	test("drops a SQLite-locked fallback after its one retry is exhausted", async () => {
-		// Arrange
+	test("continues draining after a poisoned oldest spool entry", async () => {
+		const home = mkdtempSync(join(tmpdir(), "codemem-opencode-poisoned-spool-"));
+		tmpDirs.push(home);
+		process.env.HOME = home;
 		process.env.CODEMEM_RAW_EVENTS = "1";
-		process.env.CODEMEM_RAW_EVENTS_BACKOFF_MS = "1000";
-		const sessionID = "sess-lock-exhausted";
-		const enqueueBodies = [];
-		const appLog = vi.fn().mockResolvedValue(undefined);
-		const lockedResult = {
-			exitCode: 1,
-			stdout: `${JSON.stringify({ error: "enqueue_error", message: "database is locked" })}\n`,
-		};
-		vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("viewer unavailable"));
+		const oldest = { event_id: "event-poisoned", event_type: "tool" };
+		const newer = { event_id: "event-valid", event_type: "tool" };
+		await writeRawEventSpoolEntry({ envelope: oldest, homeDir: home });
+		await writeRawEventSpoolEntry({ envelope: newer, homeDir: home });
+		const spoolDirectory = join(home, ".codemem", "opencode-raw-event-spool");
+		const spoolFiles = readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"));
+		for (const filename of spoolFiles) {
+			const serialized = readFileSync(join(spoolDirectory, filename), "utf8");
+			const time = serialized.includes("event-poisoned") ? 1_000 : 2_000;
+			utimesSync(join(spoolDirectory, filename), new Date(time), new Date(time));
+		}
+		const attemptedIds = [];
 		spawnMock.mockImplementation((_command, args) => {
-			if (Array.isArray(args) && args.includes("enqueue-raw-event")) {
-				const proc = makeProcess(lockedResult);
-				proc.stdin.write = vi.fn((value) =>
-					enqueueBodies.push(JSON.parse(String(value))),
-				);
-				return proc;
+			const isEnqueue = Array.isArray(args) && args.includes("enqueue-raw-event");
+			const proc = makeProcess({ exitCode: isEnqueue && attemptedIds.length === 0 ? 1 : 0 });
+			if (isEnqueue) {
+				proc.stdin.write = vi.fn((value) => {
+					const eventId = JSON.parse(String(value)).event_id;
+					attemptedIds.push(eventId);
+				});
 			}
-			return makeProcess({ stdout: "" });
+			return proc;
 		});
+
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
-		const hooks = await OpencodeMemPlugin({
+		await OpencodeMemPlugin({
 			project: { name: "greenroom" },
-			client: {
-				app: { log: appLog },
-				tui: {},
-			},
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
 			directory: "/tmp/greenroom",
 			worktree: "/tmp/greenroom",
 		});
 
-		// Act
-		await hooks["tool.execute.after"](
-			{ tool: "read", args: { filePath: "src/raw-event.ts" }, sessionID },
-			{},
-		);
-		const exhaustedBodies = () =>
-			enqueueBodies.filter((body) => body.session_stream_id === sessionID);
-		await vi.waitFor(() => expect(exhaustedBodies()).toHaveLength(2));
-		await vi.waitFor(() =>
-			expect(appLog).toHaveBeenCalledWith(
-				expect.objectContaining({
-					message: "codemem stream unavailable; fallback enqueue failed",
-				}),
-			),
-		);
-		await hooks.event({
-			event: { type: "session.idle", properties: { sessionID } },
-		});
-
-		// Assert
-		expect(exhaustedBodies()[0]).toEqual(exhaustedBodies()[1]);
-		expect(exhaustedBodies()).toHaveLength(2);
+		await vi.waitFor(() => expect(attemptedIds).toContain("event-valid"));
+		expect(attemptedIds.slice(0, 2)).toEqual(["event-poisoned", "event-valid"]);
+		const remaining = readdirSync(spoolDirectory)
+			.filter((name) => name.endsWith(".json"))
+			.map((name) => readFileSync(join(spoolDirectory, name), "utf8"));
+		expect(remaining).toHaveLength(1);
+		expect(remaining[0]).toContain("event-poisoned");
 	});
 
-	test("clears the fallback-failure notification latch after a successful backoff enqueue", async () => {
-		// Arrange
-		vi.setSystemTime(new Date("2026-08-09T12:00:00.000Z"));
+	test("stops a drain after a retryable oldest entry exhausts its inline retry", async () => {
+		const home = mkdtempSync(join(tmpdir(), "codemem-opencode-transient-spool-"));
+		tmpDirs.push(home);
+		process.env.HOME = home;
 		process.env.CODEMEM_RAW_EVENTS = "1";
-		process.env.CODEMEM_RAW_EVENTS_BACKOFF_MS = "120000";
-		const sessionID = "sess-latch-recovery";
-		const enqueueBodies = [];
+		const oldest = { event_id: "event-transient", event_type: "tool" };
+		const newer = { event_id: "event-deferred", event_type: "tool" };
+		await writeRawEventSpoolEntry({ envelope: oldest, homeDir: home });
+		await writeRawEventSpoolEntry({ envelope: newer, homeDir: home });
+		const spoolDirectory = join(home, ".codemem", "opencode-raw-event-spool");
+		for (const filename of readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))) {
+			const serialized = readFileSync(join(spoolDirectory, filename), "utf8");
+			const time = serialized.includes("event-transient") ? 1_000 : 2_000;
+			utimesSync(join(spoolDirectory, filename), new Date(time), new Date(time));
+		}
+		const attemptedIds = [];
+		spawnMock.mockImplementation((_command, args) => {
+			const proc = makeProcess({ exitCode: null, stderr: "command timed out" });
+			if (Array.isArray(args) && args.includes("enqueue-raw-event")) {
+				proc.stdin.write = vi.fn((value) => {
+					attemptedIds.push(JSON.parse(String(value)).event_id);
+				});
+			}
+			return proc;
+		});
+
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+
+		await vi.waitFor(() => expect(attemptedIds).toHaveLength(2));
+		expect(attemptedIds).toEqual(["event-transient", "event-transient"]);
+		expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toHaveLength(2);
+	});
+
+	test("resets the persistence warning latch after a successful spool write", async () => {
+		const home = mkdtempSync(join(tmpdir(), "codemem-opencode-spool-latch-"));
+		tmpDirs.push(home);
+		process.env.HOME = home;
+		process.env.CODEMEM_RAW_EVENTS = "1";
+		process.env.CODEMEM_RAW_EVENTS_BACKOFF_MS = "60000";
+		writeFileSync(join(home, ".codemem"), "blocked");
 		const appLog = vi.fn().mockResolvedValue(undefined);
 		const showToast = vi.fn().mockResolvedValue(undefined);
-		const fallbackResults = [
-			{
-				exitCode: 1,
-				stdout: `${JSON.stringify({
-					error: "validation_error",
-					message: "event_type required",
-				})}\n`,
-			},
-			{
-				exitCode: 1,
-				stdout: `${JSON.stringify({
-					error: "validation_error",
-					message: "event_type required",
-				})}\n`,
-			},
-			{ exitCode: 0 },
-			{
-				exitCode: 1,
-				stdout: `${JSON.stringify({
-					error: "validation_error",
-					message: "event_type required",
-				})}\n`,
-			},
-		];
 		vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("viewer unavailable"));
-		spawnMock.mockImplementation((_command, args) => {
-			if (Array.isArray(args) && args.includes("enqueue-raw-event")) {
-				const proc = new EventEmitter();
-				proc.stdout = new EventEmitter();
-				proc.stderr = new EventEmitter();
-				let result = { exitCode: 0 };
-				proc.stdin = {
-					write: vi.fn((value) => {
-						const body = JSON.parse(String(value));
-						if (body.session_stream_id !== sessionID) return;
-						enqueueBodies.push(body);
-						result = fallbackResults[enqueueBodies.length - 1] ?? fallbackResults.at(-1);
-					}),
-					end: vi.fn(() => {
-						queueMicrotask(() => {
-							if (result.stdout) proc.stdout.emit("data", result.stdout);
-							if (result.stderr) proc.stderr.emit("data", result.stderr);
-							proc.emit("exit", result.exitCode);
-						});
-					}),
-				};
-				return proc;
-			}
-			return makeProcess({ stdout: "" });
-		});
+		spawnMock.mockImplementation((_command, args) =>
+			Array.isArray(args) && args.includes("enqueue-raw-event")
+				? makeProcess({ exitCode: 1, stderr: "fallback unavailable" })
+				: makeProcess({ stdout: "" }),
+		);
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
 			project: { name: "greenroom" },
-			client: {
-				app: { log: appLog },
-				tui: { showToast },
-			},
+			client: { app: { log: appLog }, tui: { showToast } },
 			directory: "/tmp/greenroom",
 			worktree: "/tmp/greenroom",
 		});
-		const emitToolEvent = async (tool, expectedEnqueueCount) => {
-			await hooks["tool.execute.after"](
-				{ tool, args: {}, sessionID },
-				{},
-			);
-			await vi.waitFor(() => expect(enqueueBodies).toHaveLength(expectedEnqueueCount));
-		};
-		const failureNotifications = () =>
-			appLog.mock.calls.filter(([entry]) =>
-				[
-					"codemem stream unavailable; fallback enqueue failed",
-					"codemem fallback enqueue failed during stream backoff",
-				].includes(entry?.message),
-			);
-		const failureToasts = () =>
-			showToast.mock.calls.filter(([entry]) => entry?.body?.variant === "error");
 
-		// Act and assert: the first failure notifies, while another pre-recovery failure does not.
-		await emitToolEvent("read", 1);
-		await vi.waitFor(() => expect(failureNotifications()).toHaveLength(1));
-		await emitToolEvent("write", 2);
-		expect(failureNotifications()).toHaveLength(1);
-		expect(failureToasts()).toHaveLength(1);
+		await hooks["tool.execute.after"]({ tool: "read", args: {}, sessionID: "sess-latch-first" }, {});
+		await vi.waitFor(() =>
+			expect(appLog.mock.calls.filter(([entry]) =>
+				entry.message === "codemem could not save a raw event for retry; it remains queued in memory",
+			)).toHaveLength(1),
+		);
+		rmSync(join(home, ".codemem"), { force: true });
+		await hooks["tool.execute.after"]({ tool: "read", args: {}, sessionID: "sess-latch-success" }, {});
+		await vi.waitFor(() =>
+			expect(readdirSync(join(home, ".codemem", "opencode-raw-event-spool"))).not.toHaveLength(0),
+		);
+		rmSync(join(home, ".codemem"), { recursive: true, force: true });
+		writeFileSync(join(home, ".codemem"), "blocked-again");
+		await hooks["tool.execute.after"]({ tool: "read", args: {}, sessionID: "sess-latch-second" }, {});
 
-		// Act and assert: success clears the latch, allowing one later rate-limited notification.
-		await emitToolEvent("edit", 3);
-		expect(failureNotifications()).toHaveLength(1);
-		expect(failureToasts()).toHaveLength(1);
-		vi.setSystemTime(new Date("2026-08-09T12:01:00.001Z"));
-		await emitToolEvent("read", 4);
-		await vi.waitFor(() => expect(failureNotifications()).toHaveLength(2));
-		expect(failureToasts()).toHaveLength(2);
+		await vi.waitFor(() =>
+			expect(appLog.mock.calls.filter(([entry]) =>
+				entry.message === "codemem could not save a raw event for retry; it remains queued in memory",
+			)).toHaveLength(2),
+		);
+		expect(showToast.mock.calls.filter(([entry]) =>
+			entry.body?.message.includes("could not save a raw event for retry"),
+		)).toHaveLength(2);
 	});
 
-	test.each([
-		[
-			"validation",
-			{
-				exitCode: 1,
-				stdout: `${JSON.stringify({
-					error: "validation_error",
-					message: "session id required",
-				})}\n`,
-			},
-		],
-		[
-			"unknown-command",
-			{ exitCode: 1, stderr: "error: unknown command 'enqueue-raw-event'" },
-		],
-	])("does not retry a terminal %s raw-event fallback", async (_label, failureResult) => {
-		// Arrange
+	test("warns without claiming durability when the spool write fails", async () => {
+		const root = mkdtempSync(join(tmpdir(), "codemem-opencode-spool-failure-"));
+		tmpDirs.push(root);
+		const blockedHome = join(root, "not-a-directory");
+		writeFileSync(blockedHome, "blocked");
+		process.env.HOME = blockedHome;
 		process.env.CODEMEM_RAW_EVENTS = "1";
-		process.env.CODEMEM_RAW_EVENTS_BACKOFF_MS = "1000";
-		const enqueueBodies = [];
-		const sessionID = `sess-terminal-${_label}`;
 		const appLog = vi.fn().mockResolvedValue(undefined);
 		vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("viewer unavailable"));
 		spawnMock.mockImplementation((_command, args) => {
 			if (Array.isArray(args) && args.includes("enqueue-raw-event")) {
-				const proc = makeProcess(failureResult);
-				proc.stdin.write = vi.fn((value) =>
-					enqueueBodies.push(JSON.parse(String(value))),
-				);
-				return proc;
+				return makeProcess({
+					exitCode: 1,
+					stderr: "sensitive subprocess failure",
+				});
 			}
 			return makeProcess({ stdout: "" });
 		});
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
 			project: { name: "greenroom" },
-			client: {
-				app: { log: appLog },
-				tui: {},
-			},
+			client: { app: { log: appLog }, tui: {} },
 			directory: "/tmp/greenroom",
 			worktree: "/tmp/greenroom",
 		});
 
-		// Act
 		await hooks["tool.execute.after"](
-			{ tool: "read", args: { filePath: "src/raw-event.ts" }, sessionID },
+			{ tool: "read", args: {}, sessionID: "sess-spool-failure" },
 			{},
 		);
-		const terminalBodies = () =>
-			enqueueBodies.filter((body) => body.session_stream_id === sessionID);
-		await vi.waitFor(() => expect(terminalBodies()).toHaveLength(1));
 		await vi.waitFor(() =>
-			expect(appLog).toHaveBeenCalledWith(
-				expect.objectContaining({
-					message: "codemem stream unavailable; fallback enqueue failed",
-				}),
-			),
+			expect(appLog).toHaveBeenCalledWith(expect.objectContaining({
+				message: "codemem could not save a raw event for retry; it remains queued in memory",
+				extra: { category: "persistence", reason: "write_failed" },
+			})),
 		);
-		await hooks.event({
-			event: { type: "session.idle", properties: { sessionID } },
+		const notices = JSON.stringify(appLog.mock.calls);
+		expect(notices).not.toContain("sensitive subprocess failure");
+		expect(notices).not.toContain("codemem raw event was saved for retry");
+	});
+
+	test("reports a full retry spool distinctly without exposing retained payloads", async () => {
+		const home = mkdtempSync(join(tmpdir(), "codemem-opencode-spool-full-notice-"));
+		tmpDirs.push(home);
+		process.env.HOME = home;
+		process.env.CODEMEM_RAW_EVENTS = "1";
+		process.env.CODEMEM_RAW_EVENT_SPOOL_MAX_ENTRIES = "1";
+		await writeRawEventSpoolEntry({
+			envelope: { event_id: "retained-private-event", event_type: "tool" },
+			homeDir: home,
+			maxEntries: 1,
+		});
+		const appLog = vi.fn().mockResolvedValue(undefined);
+		const showToast = vi.fn().mockResolvedValue(undefined);
+		vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("viewer unavailable"));
+		spawnMock.mockImplementation(() => makeProcess({ exitCode: 1, stderr: "fallback unavailable" }));
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: appLog }, tui: { showToast } },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
 		});
 
-		// Assert
-		expect(terminalBodies()).toHaveLength(1);
+		await hooks["tool.execute.after"](
+			{ tool: "read", args: {}, sessionID: "sess-spool-full" },
+			{},
+		);
+
+		await vi.waitFor(() =>
+			expect(appLog.mock.calls.some(([entry]) => entry.extra?.reason === "spool_full")).toBe(true),
+		);
+		const notices = [...appLog.mock.calls, ...showToast.mock.calls]
+			.map(([entry]) => JSON.stringify(entry))
+			.join("\n");
+		expect(notices).toContain("retry spool is full");
+		expect(notices).not.toContain("retained-private-event");
 	});
 });
