@@ -1,4 +1,10 @@
-import { vi } from "vitest";
+import { beforeEach, vi } from "vitest";
+
+const pluginRegistrationsKey = Symbol.for("codemem.opencode-plugin.registrations");
+
+beforeEach(() => {
+	Reflect.deleteProperty(globalThis, pluginRegistrationsKey);
+});
 
 const schemaBuilder = () => ({
 	optional: () => schemaBuilder(),

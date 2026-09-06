@@ -373,7 +373,7 @@ behavior and `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` opt-in for `Stop` remain unch
 ### OpenCode stream reliability
 - Preflight check: `GET /api/raw-events/status` with periodic re-checks (`CODEMEM_RAW_EVENTS_STATUS_CHECK_MS`), bounded by a 5-second timeout
 - Backoff on failure: configurable via `CODEMEM_RAW_EVENTS_BACKOFF_MS`; on stream failure the plugin can fall back to CLI enqueue for durable persistence
-- Once events are accepted by the viewer/store queue, flush workers handle retries
+- Once events are accepted by the viewer/store queue, each periodic sweep drains bounded work from active or idle sessions and retries failed batches
 
 ### Claude hook flush boundaries
 - `SessionEnd` immediately flushes by default; `CODEMEM_CLAUDE_HOOK_FLUSH=0` disables the attempt

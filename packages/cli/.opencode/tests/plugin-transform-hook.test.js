@@ -26,6 +26,7 @@ import {
 
 const spawnMock = vi.fn();
 const execSyncMock = vi.fn(() => "test-version");
+const pluginRegistrationsKey = Symbol.for("codemem.opencode-plugin.registrations");
 
 vi.mock("node:child_process", () => ({
 	spawn: (...args) => spawnMock(...args),
@@ -297,6 +298,7 @@ describe("OpenCode transform-time injection", () => {
 		// cover transform-time injection, so keep that background timer inert.
 		vi.useFakeTimers();
 		vi.resetModules();
+		Reflect.deleteProperty(globalThis, pluginRegistrationsKey);
 		spawnMock.mockReset();
 		execSyncMock.mockClear();
 		process.env = {
@@ -333,6 +335,104 @@ describe("OpenCode transform-time injection", () => {
 			rmSync(tmpDir, { recursive: true, force: true });
 		}
 		process.env = originalEnv;
+		Reflect.deleteProperty(globalThis, pluginRegistrationsKey);
+	});
+
+	test("loads separate plugin copies once for the same project", async () => {
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "1";
+		process.env.CODEMEM_PLUGIN_LOG = join(process.env.HOME, "plugin.log");
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+			if (String(url).includes("/api/raw-events/status")) {
+				return jsonResponse(200, { ingest: { available: true } });
+			}
+			return jsonResponse(200, { ok: true });
+		});
+		const firstAppLog = vi.fn().mockResolvedValue(undefined);
+		const secondAppLog = vi.fn().mockResolvedValue(undefined);
+		const { OpencodeMemPlugin: firstPlugin } = await import("../plugins/codemem.js");
+		vi.resetModules();
+		const { OpencodeMemPlugin: secondPlugin } = await import("../plugins/codemem.js");
+		expect(secondPlugin).not.toBe(firstPlugin);
+
+		const pluginContext = {
+			project: { name: "greenroom" },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		};
+		const firstHooks = await firstPlugin({
+			...pluginContext,
+			client: { app: { log: firstAppLog }, tui: {} },
+		});
+		const secondHooks = await secondPlugin({
+			...pluginContext,
+			client: { app: { log: secondAppLog }, tui: {} },
+		});
+
+		for (const hooks of [firstHooks, secondHooks]) {
+			await hooks["tool.execute.after"]?.(
+				{ tool: "read", args: { filePath: "src/raw-event.ts" }, sessionID: "sess-duplicate" },
+				{},
+			);
+		}
+		await vi.waitFor(() =>
+			expect(fetchPostCalls(fetchMock).filter(([url]) => String(url).endsWith("/api/raw-events")))
+				.toHaveLength(1),
+		);
+
+		expect(secondHooks).toEqual({});
+		expect(secondAppLog).toHaveBeenCalledWith(expect.objectContaining({
+			level: "warn",
+			message: "codemem duplicate plugin registration skipped",
+		}));
+		const captureLines = readFileSync(process.env.CODEMEM_PLUGIN_LOG, "utf8")
+			.split("\n")
+			.filter((line) => line.includes("tool.execute.after read queued=1"));
+		expect(captureLines).toHaveLength(1);
+	});
+
+	test("keeps separate projects active in one process", async () => {
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		const { OpencodeMemPlugin: firstPlugin } = await import("../plugins/codemem.js");
+		vi.resetModules();
+		const { OpencodeMemPlugin: secondPlugin } = await import("../plugins/codemem.js");
+		const client = { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} };
+
+		const firstHooks = await firstPlugin({
+			project: { name: "first" },
+			client,
+			directory: "/tmp/first",
+			worktree: "/tmp/first",
+		});
+		const secondHooks = await secondPlugin({
+			project: { name: "second" },
+			client,
+			directory: "/tmp/second",
+			worktree: "/tmp/second",
+		});
+
+		expect(firstHooks["tool.execute.after"]).toBeTypeOf("function");
+		expect(secondHooks["tool.execute.after"]).toBeTypeOf("function");
+	});
+
+	test("releases a project registration when the plugin is disposed", async () => {
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		const { OpencodeMemPlugin: firstPlugin } = await import("../plugins/codemem.js");
+		vi.resetModules();
+		const { OpencodeMemPlugin: secondPlugin } = await import("../plugins/codemem.js");
+		const pluginContext = {
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		};
+		const firstHooks = await firstPlugin(pluginContext);
+
+		firstHooks.dispose();
+		const replacementHooks = await secondPlugin(pluginContext);
+
+		expect(replacementHooks["tool.execute.after"]).toBeTypeOf("function");
 	});
 
 	test("appends built memory pack to the latest user message by default", async () => {
@@ -982,6 +1082,7 @@ describe("OpenCode transform-time injection", () => {
 		});
 
 		const buildPlugin = async () => {
+			Reflect.deleteProperty(globalThis, pluginRegistrationsKey);
 			vi.resetModules();
 			const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 			return OpencodeMemPlugin({
@@ -2462,6 +2563,7 @@ describe("OpenCode transform-time injection", () => {
 		expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toHaveLength(1);
 
 		fallbackSucceeds = true;
+		Reflect.deleteProperty(globalThis, pluginRegistrationsKey);
 		vi.resetModules();
 		({ OpencodeMemPlugin } = await import("../plugins/codemem.js"));
 		await OpencodeMemPlugin({
