@@ -122,18 +122,16 @@ jobs:
 
       - name: Determine npm dist-tag
         id: dist-tag
+        env:
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
-          TAG="${{ env.RELEASE_TAG }}"
-          if [[ "$TAG" == *"-alpha"* ]]; then
-            echo "tag=alpha" >> "$GITHUB_OUTPUT"
-          elif [[ "$TAG" == *"-beta"* ]]; then
-            echo "tag=beta" >> "$GITHUB_OUTPUT"
-          elif [[ "$TAG" == *"-rc"* ]]; then
-            echo "tag=rc" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          TAG_OUTPUT="$(node scripts/release-dist-tag.mjs "$RELEASE_TAG")"
+          if [[ ! "$TAG_OUTPUT" =~ ^tag=(alpha|beta|rc|latest)$ ]]; then
+            echo "Invalid or empty npm dist-tag output: $TAG_OUTPUT" >&2
+            exit 1
           fi
+          printf '%s\n' "$TAG_OUTPUT" >> "$GITHUB_OUTPUT"
 
       - name: Publish packages
         env:

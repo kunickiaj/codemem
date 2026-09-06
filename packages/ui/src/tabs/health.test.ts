@@ -14,6 +14,7 @@ vi.mock("../components/primitives/tooltip", () => ({
 
 const availableStatus: UpdateStatus = {
 	current_version: "0.40.2",
+	channel: "latest",
 	latest_version: "0.41.0",
 	update_available: true,
 	first_seen_at: "2026-08-10T12:00:00.000Z",
@@ -107,22 +108,57 @@ describe("Health update banner", () => {
 		);
 	});
 
-	it("does not present an unparseable installed version as current", () => {
+	it("shows unavailable status for an unsupported installed version", () => {
 		// Arrange
 		setUpdateStatus({
 			...availableStatus,
 			current_version: "0.41.0-rc.1",
+			channel: null,
+			latest_version: null,
 			update_available: false,
 			recommended_action: "Verify the current codemem version and try again.",
+			error: "unsupported installed release channel",
 		});
 
 		// Act
 		renderOverview();
 
 		// Assert
-		expect(updateBannerText()).toMatch(/unable to compare/i);
+		expect(updateBannerText()).toMatch(/update check unavailable/i);
 		expect(updateBannerText()).toContain("Verify the current codemem version and try again.");
 		expect(updateBannerText()).not.toMatch(/up to date|latest stable release/i);
+	});
+
+	it("identifies an up-to-date rc installation as rc", () => {
+		setUpdateStatus({
+			...availableStatus,
+			current_version: "0.44.0-rc.2",
+			channel: "rc",
+			latest_version: "0.44.0-rc.2",
+			update_available: false,
+			recommended_action: "No action required; codemem is on the latest rc release.",
+		});
+
+		renderOverview();
+
+		expect(updateBannerText()).toMatch(/latest rc release/i);
+		expect(updateBannerText()).not.toMatch(/latest stable release/i);
+	});
+
+	it("identifies an up-to-date alpha installation as alpha", () => {
+		setUpdateStatus({
+			...availableStatus,
+			current_version: "0.44.0-alpha.2",
+			channel: "alpha",
+			latest_version: "0.44.0-alpha.2",
+			update_available: false,
+			recommended_action: "No action required; codemem is on the latest alpha release.",
+		});
+
+		renderOverview();
+
+		expect(updateBannerText()).toMatch(/latest alpha release/i);
+		expect(updateBannerText()).not.toMatch(/latest stable release/i);
 	});
 
 	it("shows an available release with npm-global installation guidance", () => {

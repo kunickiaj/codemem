@@ -21,7 +21,7 @@
     "test": "pnpm exec vitest run",
     "test:watch": "pnpm exec vitest",
     "test:ci-workflow": "node --test scripts/ci-workflow.test.mjs",
-    "test:release": "node --test scripts/release-version.test.mjs scripts/release-tag-preflight.test.mjs",
+    "test:release": "node --test scripts/release-version.test.mjs scripts/release-tag-preflight.test.mjs scripts/release-workflow.test.mjs",
     "test:adapter-normalizers": "node --test scripts/build-adapter-normalizers.test.mjs",
     "test:release-version": "node --test scripts/release-version.test.mjs",
     "test:release-tag-preflight": "node --test scripts/release-tag-preflight.test.mjs",

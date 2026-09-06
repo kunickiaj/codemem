@@ -28,6 +28,7 @@ let testHome = "";
 
 const availableStatus = {
 	current_version: "0.40.2",
+	channel: "latest",
 	latest_version: "0.41.0",
 	update_available: true,
 	first_seen_at: "2026-08-10T12:00:00.000Z",
@@ -178,7 +179,7 @@ describe("update check command", () => {
 		expect(process.exitCode).toBeUndefined();
 	});
 
-	it("emits exactly one stable status object in JSON mode", async () => {
+	it("emits exactly one channel-aware status object in JSON mode", async () => {
 		// Arrange
 		getUpdateStatus.mockResolvedValue(availableStatus);
 		const log = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -307,6 +308,31 @@ describe("update install command", () => {
 			previous_version: "0.40.2",
 			installed_version: "0.41.0",
 		});
+		expect(process.exitCode).toBeUndefined();
+	});
+
+	it("installs an eligible prerelease within the reported channel with exact package pairing", async () => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+		getUpdateStatus.mockResolvedValue({
+			...availableStatus,
+			current_version: "0.44.0-alpha.1",
+			channel: "alpha",
+			latest_version: "0.44.0-alpha.2",
+			auto_update_eligible: true,
+		});
+		spawn
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.44.0-alpha.2\n" }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(spawn).toHaveBeenNthCalledWith(
+			1,
+			"npm",
+			expect.arrayContaining(["codemem@0.44.0-alpha.2", "@codemem/embeddings@0.44.0-alpha.2"]),
+			expect.objectContaining({ shell: false }),
+		);
 		expect(process.exitCode).toBeUndefined();
 	});
 });

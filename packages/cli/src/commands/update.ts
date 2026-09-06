@@ -2,7 +2,12 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdir, open, readFile, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import { detectInstallKind, getUpdateStatus, isStableReleaseVersion, VERSION } from "@codemem/core";
+import {
+	detectInstallKind,
+	getUpdateStatus,
+	isReleaseVersionForChannel,
+	VERSION,
+} from "@codemem/core";
 import { Command, Option } from "commander";
 import { helpStyle } from "../help-style.js";
 import { addJsonOption, emitJsonError, type JsonOpts } from "../shared-options.js";
@@ -217,14 +222,14 @@ function renderHumanStatus(status: Awaited<ReturnType<typeof getUpdateStatus>>):
 	if (status.update_available) {
 		return `Update available${cacheQualifier(status.stale)}: ${status.current_version} → ${status.latest_version}. ${status.recommended_action}${warning}`;
 	}
-	if (!isStableReleaseVersion(status.current_version)) {
+	if (!status.channel || !isReleaseVersionForChannel(status.current_version, status.channel)) {
 		return `Unable to compare current version ${status.current_version} with ${status.latest_version}. ${status.recommended_action}${warning}`;
 	}
 	return `${status.current_version} is up to date${cacheQualifier(status.stale)}.${warning}`;
 }
 
 const checkCommand = addJsonOption(
-	new Command("check").description("Check for a newer stable codemem release"),
+	new Command("check").description("Check for a newer codemem release on the installed channel"),
 )
 	.addOption(new Option("-r, --refresh", "bypass the six-hour release cache"))
 	.configureHelp(helpStyle)
@@ -295,11 +300,11 @@ async function installUpdate(options: UpdateInstallOptions): Promise<void> {
 		}
 
 		const targetVersion = status.latest_version;
-		if (!isStableReleaseVersion(targetVersion)) {
+		if (!status.channel || !isReleaseVersionForChannel(targetVersion, status.channel)) {
 			failInstall(
 				options,
 				"update_install_refused",
-				"release version is not a stable semantic version",
+				"release version does not match the installed channel",
 			);
 			return;
 		}
@@ -356,7 +361,7 @@ async function installUpdate(options: UpdateInstallOptions): Promise<void> {
 }
 
 const installCommand = addJsonOption(
-	new Command("install").description("Install an eligible stable codemem update"),
+	new Command("install").description("Install an eligible codemem update on the installed channel"),
 )
 	.configureHelp(helpStyle)
 	.action(installUpdate);

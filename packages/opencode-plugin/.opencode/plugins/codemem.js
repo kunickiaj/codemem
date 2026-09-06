@@ -22,8 +22,8 @@ const COMPAT_CHECK_CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_UPDATE_STATUS_BYTES = 16 * 1024;
 const MAX_UPDATE_ACTION_CHARS = 1000;
 const MAX_UPDATE_VERSION_CHARS = 128;
-const STABLE_RELEASE_VERSION =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const RELEASE_VERSION =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const CODEMEM_CONTEXT_PART_ID_PREFIX = "codemem-context-";
 const MAX_MESSAGE_INJECTION_CACHE_SESSIONS = 20;
 const MAX_MESSAGE_INJECTION_CACHE_MESSAGES = 100;
@@ -354,10 +354,74 @@ const clearCompatCheckCache = () => {
   compatCheckCache = null;
 };
 
-const isStableReleaseVersion = (value) => {
-  if (typeof value !== "string" || value.length > MAX_UPDATE_VERSION_CHARS) return false;
-  const match = STABLE_RELEASE_VERSION.exec(value);
-  return Boolean(match && match.slice(1, 4).map(Number).every(Number.isSafeInteger));
+const parseReleaseVersion = (value) => {
+  if (typeof value !== "string" || value.length > MAX_UPDATE_VERSION_CHARS) return null;
+  const match = RELEASE_VERSION.exec(value);
+  if (!match || !match.slice(1, 4).map(Number).every(Number.isSafeInteger)) return null;
+  const prerelease = match[4]?.split(".") || [];
+  if (prerelease.some((identifier) => /^0\d+$/.test(identifier))) return null;
+  return { core: match.slice(1, 4).map(Number), prerelease };
+};
+
+const releaseChannelForVersion = (value) => {
+  const parsed = parseReleaseVersion(value);
+  if (!parsed) return null;
+  if (parsed.prerelease.length === 0) return "latest";
+  const channel = parsed.prerelease[0];
+  return channel === "alpha" || channel === "beta" || channel === "rc" ? channel : null;
+};
+
+const comparePrereleaseIdentifier = (left, right) => {
+  if (left === undefined) return right === undefined ? 0 : -1;
+  if (right === undefined) return 1;
+  if (left === right) return 0;
+  const leftNumeric = /^\d+$/.test(left);
+  const rightNumeric = /^\d+$/.test(right);
+  if (leftNumeric && rightNumeric && left.length !== right.length) {
+    return Math.sign(left.length - right.length);
+  }
+  if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+  return left < right ? -1 : 1;
+};
+
+const compareReleaseVersions = (left, right) => {
+  const leftVersion = parseReleaseVersion(left);
+  const rightVersion = parseReleaseVersion(right);
+  if (!leftVersion || !rightVersion) return null;
+  for (let index = 0; index < leftVersion.core.length; index += 1) {
+    const difference = leftVersion.core[index] - rightVersion.core[index];
+    if (difference !== 0) return Math.sign(difference);
+  }
+  if (leftVersion.prerelease.length === 0) {
+    return rightVersion.prerelease.length === 0 ? 0 : 1;
+  }
+  if (rightVersion.prerelease.length === 0) return -1;
+  const length = Math.max(leftVersion.prerelease.length, rightVersion.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const comparison = comparePrereleaseIdentifier(
+      leftVersion.prerelease[index],
+      rightVersion.prerelease[index],
+    );
+    if (comparison !== 0) return comparison;
+  }
+  return 0;
+};
+
+const isSameChannelVersionAtLeast = (currentVersion, minimumVersion) => {
+  const currentChannel = releaseChannelForVersion(currentVersion);
+  if (!currentChannel || currentChannel !== releaseChannelForVersion(minimumVersion)) return false;
+  const comparison = compareReleaseVersions(currentVersion, minimumVersion);
+  return comparison !== null && comparison >= 0;
+};
+
+const PINNED_RELEASE_CHANNEL = releaseChannelForVersion(PINNED_BACKEND_VERSION);
+
+const guidanceMatchesRelease = (guidance, latestVersion) => {
+  const versions =
+    String(guidance || "").match(
+      /\b\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?/g,
+    ) || [];
+  return versions.length === 0 || versions.every((version) => version === latestVersion);
 };
 
 const parseReleaseNotification = (result) => {
@@ -368,18 +432,24 @@ const parseReleaseNotification = (result) => {
     const status = JSON.parse(stdout);
     if (!status || typeof status !== "object" || Array.isArray(status)) return null;
     if (status.update_available !== true) return null;
-    if (!isStableReleaseVersion(status.latest_version)) {
+    if (
+      !PINNED_RELEASE_CHANNEL
+      || status.channel !== PINNED_RELEASE_CHANNEL
+      || releaseChannelForVersion(status.latest_version) !== PINNED_RELEASE_CHANNEL
+    ) {
       return null;
     }
     if (
       typeof status.recommended_action !== "string"
       || !status.recommended_action.trim()
       || status.recommended_action.length > MAX_UPDATE_ACTION_CHARS
+      || !guidanceMatchesRelease(status.recommended_action, status.latest_version)
     ) {
       return null;
     }
     return {
       latestVersion: status.latest_version,
+      channel: PINNED_RELEASE_CHANNEL,
       recommendedAction: status.recommended_action.trim(),
       autoUpdateEligible: status.auto_update_eligible === true,
     };
@@ -1693,22 +1763,10 @@ const detectRunner = ({ cwd, envRunner }) => {
       // terminal on every OpenCode startup for npx-only installs.
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-    // Accept any global codemem at or above the pinned backend version, so a
-    // newer global install is used instead of silently downgrading to
-    // `npx codemem@<pin>` (the old check only matched the exact pin or the
-    // long-obsolete 0.2x series).
-    // Accept a global codemem only when it is the EXACT pinned version, or a
-    // clean (non-prerelease) release at least as new as the pin. isVersionAtLeast
-    // ignores prerelease suffixes, so without this a prerelease like
-    // "0.36.1-alpha.0" would wrongly compare >= the "0.36.1" release even though
-    // SemVer orders it below. Requiring an exact match for prereleases also
-    // handles a prerelease PIN correctly (the release script can set one): only
-    // the identical prerelease is trusted, never an older/different one.
-    const isPrerelease = versionOutput.includes("-");
-    const matchesOrCleanNewer =
-      versionOutput === PINNED_BACKEND_VERSION ||
-      (!isPrerelease && isVersionAtLeast(versionOutput, PINNED_BACKEND_VERSION));
-    if (matchesOrCleanNewer) {
+    // Use a newer global CLI only when it remains on the plugin's release
+    // channel. This prevents both channel crossing and fallback to an older pin
+    // immediately after a successful prerelease auto-update.
+    if (isSameChannelVersionAtLeast(versionOutput, PINNED_BACKEND_VERSION)) {
       return "codemem";
     }
   } catch {
@@ -4130,6 +4188,7 @@ export const __testUtils = {
   redactPackCommand,
   rejectsInternalLedgerFlag,
   classifyFallbackCommandResult,
+  detectRunner,
   PROMPT_TRANSPORT_PROTOCOL_RANGE,
   normalizePromptTransportProtocolRange,
   arePromptTransportProtocolRangesCompatible,
