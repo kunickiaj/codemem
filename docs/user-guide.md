@@ -549,6 +549,24 @@ hardware; the rebuild runs outside the viewer process in bounded batches.
 ONNX Runtime 1.24.3 has no macOS x64 artifact, so Intel Macs continue using
 FTS5 keyword retrieval instead of semantic inference.
 
+### Required SQLite native binding
+
+`better-sqlite3` is required for every codemem storage mode. Viewer startup now
+checks its native binding before preparing a database or detaching a background
+process; restart checks before stopping a healthy viewer. If the check fails,
+copy the exact-version `npm install -g codemem@<version>` repair command from the
+diagnostic. Use Node 24.15+ on a supported 64-bit target listed in the [native
+install matrix](plans/2026-03-15-install-matrix.md).
+
+`better-sqlite3` 13.0.3 bundles its N-API prebuilds and has no package install
+script, so a failed binding check does not by itself mean npm blocked lifecycle
+scripts. Semantic installs still carry upstream runtime requirements including
+Sharp, ONNX Runtime, protobufjs, and global-agent; ONNX Runtime's postinstall and
+roughly 220 MB unpacked weight remain upstream requirements. `sqlite-vec` stays
+optional: viewer startup catches its load failure, disables semantic search, and
+preserves FTS5 lexical search. Other commands require
+`CODEMEM_EMBEDDING_DISABLED=1` when sqlite-vec is unavailable.
+
 ### sqlite-vec / `no such module: vec0`
 
 **Symptom:** API errors with `SqliteError: no such module: vec0`, or the viewer logs `sqlite-vec failed to load; retrying viewer startup with embeddings disabled` at startup.

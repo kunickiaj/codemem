@@ -7,6 +7,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	readdirSync,
+	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -68,8 +69,21 @@ function resolveInstalledPackageDir(installDir, packageName) {
 		.split(/\r?\n/u)
 		.map((line) => line.trim())
 		.find((line) => line.endsWith(expectedSuffix));
-	assert(packageDir, `Semantic install is missing ${packageName}`);
+	assert(packageDir, `Installed fixture is missing ${packageName}`);
 	return packageDir;
+}
+
+function collectFiles(directory, predicate) {
+	const matches = [];
+	for (const entry of readdirSync(directory, { withFileTypes: true })) {
+		const entryPath = join(directory, entry.name);
+		if (entry.isDirectory()) {
+			matches.push(...collectFiles(entryPath, predicate));
+		} else if (predicate(entryPath)) {
+			matches.push(entryPath);
+		}
+	}
+	return matches;
 }
 
 function runAsync(command, args, options, input) {
@@ -672,9 +686,11 @@ try {
 		"@codemem/embeddings",
 		"@huggingface/transformers",
 		"@xenova/transformers",
+		"global-agent",
 		"onnxruntime-common",
 		"onnxruntime-node",
 		"onnxruntime-web",
+		"protobufjs",
 		"sharp",
 	]) {
 		assert(
@@ -759,10 +775,19 @@ try {
 	assert(existsSync(semanticLockPath), "Semantic install did not produce a package-lock.json");
 	const semanticLock = JSON.parse(readFileSync(semanticLockPath, "utf8"));
 	const semanticPackages = Object.keys(semanticLock.packages ?? {});
-	assert(
-		semanticPackages.some((path) => path.endsWith("node_modules/@huggingface/transformers")),
-		"Semantic CLI fixture is missing the @huggingface/transformers runtime",
-	);
+	for (const packageName of [
+		"@huggingface/transformers",
+		"onnxruntime-node",
+		"sharp",
+		"protobufjs",
+		"global-agent",
+	]) {
+		const expectedSuffix = `node_modules/${packageName}`;
+		assert(
+			semanticPackages.some((path) => path.endsWith(expectedSuffix)),
+			`Semantic CLI fixture is missing required upstream dependency ${packageName}`,
+		);
+	}
 	const embeddingsPackageDir = join(
 		semanticInstallDir,
 		"node_modules",
@@ -852,6 +877,58 @@ try {
 		CODEMEM_EMBEDDING_DISABLED: "1",
 	});
 	assert(existsSync(optionalFreeDbPath), "Optional-free CLI smoke did not create its isolated database");
+
+	const betterSqlitePackageDir = resolveInstalledPackageDir(installDir, "better-sqlite3");
+	const nativeBindings = collectFiles(betterSqlitePackageDir, (path) => path.endsWith(".node"));
+	assert(nativeBindings.length > 0, "Packed install is missing better-sqlite3 native binaries");
+	const hiddenBindings = nativeBindings.map((path) => `${path}.codemem-smoke-hidden`);
+	try {
+		for (let index = 0; index < nativeBindings.length; index += 1) {
+			renameSync(nativeBindings[index], hiddenBindings[index]);
+		}
+		const failedStart = spawnSync(
+			process.execPath,
+			[
+				join(installedPackageRoot, "dist", "index.js"),
+				"serve",
+				"restart",
+				"--port",
+				"38889",
+				"--db-path",
+				join(tempDir, "missing-native.sqlite"),
+			],
+			{
+				cwd: installDir,
+				encoding: "utf8",
+				env: { ...process.env, CODEMEM_EMBEDDING_DISABLED: "1" },
+			},
+		);
+		const output = `${failedStart.stdout ?? ""}\n${failedStart.stderr ?? ""}`;
+		assert(
+			failedStart.status !== 0,
+			`Background serve succeeded without a SQLite native binding: ${output}`,
+		);
+		assert(
+			output.includes("Required SQLite native binding is unavailable"),
+			`Background serve omitted required SQLite diagnostic: ${output}`,
+		);
+		assert(
+			output.includes(`Node ${process.version} on ${process.platform}/${process.arch}`),
+			"Background serve omitted runtime platform details",
+		);
+		assert(
+			output.includes(`npm install -g codemem@${packageVersion}`),
+			"Background serve omitted exact-version repair command",
+		);
+		assert(
+			!output.includes("Viewer started in background"),
+			"Background serve falsely claimed it started",
+		);
+	} finally {
+		for (let index = 0; index < nativeBindings.length; index += 1) {
+			if (existsSync(hiddenBindings[index])) renameSync(hiddenBindings[index], nativeBindings[index]);
+		}
+	}
 
 	const isolatedAdapters = join(tempDir, "isolated-adapters");
 	await buildAdapterNormalizers(isolatedAdapters);

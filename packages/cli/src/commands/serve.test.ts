@@ -15,9 +15,12 @@ import {
 	isSqliteVecLoadFailure,
 	maintenanceWorkerPidFilePath,
 	pickViewerPidCandidate,
+	preflightServeNativeRuntime,
 	prepareViewerDatabase,
+	requiredNativeRuntimeFailureDiagnostics,
 	respondsLikeCodememViewer,
 	runServeCoordinatorMaintenance,
+	runServeInvocation,
 	sqliteVecFailureDiagnostics,
 	terminateTrustedMaintenanceWorker,
 	terminateTrustedViewerPid,
@@ -304,6 +307,111 @@ describe("serve command option resolution", () => {
 		expect(lines.some((line) => line.startsWith("node="))).toBe(true);
 		expect(lines.some((line) => line.startsWith("exec="))).toBe(true);
 		expect(lines.some((line) => line.startsWith("error=vec0 load failed"))).toBe(true);
+	});
+
+	it("formats required SQLite binding failures with exact-version repair guidance", () => {
+		const lines = requiredNativeRuntimeFailureDiagnostics(new Error("binding missing"), {
+			version: "1.2.3-alpha.4",
+			nodeVersion: "v24.15.0",
+			platform: "linux",
+			arch: "arm64",
+		});
+		expect(lines).toContain("Required SQLite native binding is unavailable.");
+		expect(lines).toContain("Runtime: Node v24.15.0 on linux/arm64.");
+		expect(lines).toContain("Details: binding missing");
+		expect(lines).toContain(
+			"Reinstall this exact codemem version: npm install -g codemem@1.2.3-alpha.4",
+		);
+		expect(lines.some((line) => line.includes("optional sqlite-vec"))).toBe(true);
+	});
+
+	it("checks an ordinary start port before probing the native runtime", async () => {
+		const calls: string[] = [];
+		const result = await preflightServeNativeRuntime(
+			resolveStartServeInvocation({ host: "127.0.0.1", port: "38888" }),
+			{
+				isPortOpen: vi.fn(async () => {
+					calls.push("port");
+					return true;
+				}),
+				probe: vi.fn(() => calls.push("probe")),
+			},
+		);
+
+		expect(result).toEqual({ state: "already_running" });
+		expect(calls).toEqual(["port"]);
+	});
+
+	it("probes exactly once after an ordinary start finds an available port", async () => {
+		const calls: string[] = [];
+		const probe = vi.fn(() => {
+			calls.push("probe");
+		});
+		const result = await preflightServeNativeRuntime(
+			resolveStartServeInvocation({ host: "127.0.0.1", port: "38888" }),
+			{
+				isPortOpen: vi.fn(async () => {
+					calls.push("port");
+					return false;
+				}),
+				probe,
+			},
+		);
+
+		expect(result).toEqual({ state: "ready" });
+		expect(calls).toEqual(["port", "probe"]);
+		expect(probe).toHaveBeenCalledOnce();
+	});
+
+	it("fails an ordinary start when the native runtime probe fails", async () => {
+		const result = await preflightServeNativeRuntime(
+			resolveStartServeInvocation({ host: "127.0.0.1", port: "38888" }),
+			{
+				isPortOpen: vi.fn(async () => false),
+				probe: vi.fn(() => {
+					throw new Error("binding missing");
+				}),
+			},
+		);
+
+		expect(result.state).toBe("unavailable");
+	});
+
+	it("probes a restart before lifecycle code can stop the existing viewer", async () => {
+		const calls: string[] = [];
+		const result = await preflightServeNativeRuntime(
+			resolveStopRestartInvocation("restart", { host: "127.0.0.1", port: "38888" }),
+			{
+				isPortOpen: vi.fn(async () => {
+					calls.push("port");
+					return true;
+				}),
+				probe: vi.fn(() => {
+					calls.push("probe");
+					throw new Error("binding missing");
+				}),
+			},
+		);
+
+		expect(result.state).toBe("unavailable");
+		expect(calls).toEqual(["probe"]);
+	});
+
+	it("does not stop an existing viewer when restart native-runtime preflight fails", async () => {
+		const stopExistingViewer = vi.fn(async () => ({ stopped: true, pid: 1234 }));
+		await runServeInvocation(
+			resolveStopRestartInvocation("restart", {
+				dbPath: join(tmpdir(), `codemem-restart-${process.pid}.sqlite`),
+				host: "127.0.0.1",
+				port: "38888",
+			}),
+			{
+				nativeRuntimeAllowsServeStart: vi.fn(async () => false),
+				stopExistingViewer,
+			},
+		);
+
+		expect(stopExistingViewer).not.toHaveBeenCalled();
 	});
 
 	it("extracts viewer_pid from stats payload", () => {
