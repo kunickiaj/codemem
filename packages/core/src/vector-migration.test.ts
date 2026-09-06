@@ -1790,6 +1790,46 @@ describe("vector migration", () => {
 		});
 	});
 
+	it("persists exhaustion for pre-flag completed jobs after one clean compatibility scan", async () => {
+		// Simulate a database upgraded from a build that predates
+		// stale_scan_exhausted: the job is completed with only target vectors and
+		// no watermark. The first tick must scan once and persist; the second
+		// must not touch memory_vectors at all.
+		const sessionId = insertTestSession(db);
+		seedMemory(db, 1, sessionId, "One", "Body one");
+		seedVector(db, 1, "test-model");
+		startMaintenanceJob(db, {
+			kind: VECTOR_MODEL_MIGRATION_JOB,
+			title: "Re-indexing memories",
+			metadata: { target_model: "test-model", cleanup_pending: false },
+		});
+		completeMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		expect(getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB)?.metadata).not.toHaveProperty(
+			"stale_scan_exhausted",
+		);
+
+		const countVectorStatements = async (): Promise<number> => {
+			let count = 0;
+			const spy = vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+				if (sql.includes("FROM memory_vectors WHERE")) count++;
+				return Database.prototype.prepare.call(db, sql);
+			});
+			try {
+				await runVectorMigrationPass(db, { batchSize: 10 });
+			} finally {
+				spy.mockRestore();
+			}
+			return count;
+		};
+
+		expect(await countVectorStatements()).toBeGreaterThan(0);
+		const persisted = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB)?.metadata;
+		expect(persisted).toMatchObject({ stale_scan_exhausted: true });
+		expect(typeof persisted?.stale_scan_exhausted_max_rowid).toBe("number");
+
+		expect(await countVectorStatements()).toBe(0);
+	});
+
 	it("short-circuits exhausted completed cleanup without reading memory_vectors", async () => {
 		startMaintenanceJob(db, {
 			kind: VECTOR_MODEL_MIGRATION_JOB,

@@ -417,15 +417,22 @@ function vectorModels(db: SqliteDatabase): Array<{ model: string; rows: number }
 		.all() as Array<{ model: string; rows: number }>;
 }
 
-function hasSourceModelVectorsAfter(
+type SourceModelScanResult = {
+	found: boolean;
+	/** Last rowid the scan examined, or null when the legacy full-scan path ran. */
+	scannedMaxRowId: number | null;
+};
+
+function scanForSourceModelVectorsAfter(
 	db: SqliteDatabase,
 	targetModel: string,
 	afterRowId: number,
-): boolean {
+): SourceModelScanResult {
 	if (!hasMemoryVectorRowidsShadowTable(db)) {
-		return Boolean(
+		const found = Boolean(
 			db.prepare("SELECT 1 FROM memory_vectors WHERE model != ? LIMIT 1").pluck().get(targetModel),
 		);
+		return { found, scannedMaxRowId: null };
 	}
 	const selectRowIds = db.prepare(
 		"SELECT rowid FROM memory_vectors_rowids WHERE rowid > ? ORDER BY rowid ASC LIMIT ? /* vector-source-scan-rowids */",
@@ -436,13 +443,23 @@ function hasSourceModelVectorsAfter(
 	let cursor = afterRowId;
 	while (true) {
 		const rows = selectRowIds.all(cursor, 250) as Array<{ rowid: number }>;
-		if (rows.length === 0) return false;
+		if (rows.length === 0) return { found: false, scannedMaxRowId: cursor };
 		for (const row of rows) {
 			const metadata = selectMetadata.get(row.rowid) as { model: string } | undefined;
-			if (metadata && metadata.model !== targetModel) return true;
+			if (metadata && metadata.model !== targetModel) {
+				return { found: true, scannedMaxRowId: null };
+			}
 		}
 		cursor = rows.at(-1)?.rowid ?? cursor;
 	}
+}
+
+function hasSourceModelVectorsAfter(
+	db: SqliteDatabase,
+	targetModel: string,
+	afterRowId: number,
+): boolean {
+	return scanForSourceModelVectorsAfter(db, targetModel, afterRowId).found;
 }
 
 function hasSourceModelVectors(db: SqliteDatabase, targetModel: string): boolean {
@@ -469,7 +486,19 @@ function checkCompletedStaleScan(
 ): { canReturn: boolean; metadata: MigrationMetadata } {
 	if (metadata.cleanup_pending) return { canReturn: false, metadata };
 	if (!metadata.stale_scan_exhausted) {
-		return { canReturn: !hasSourceModelVectors(db, targetModel), metadata };
+		// Jobs completed before the flag existed have no watermark. One clean
+		// compatibility scan is unavoidable, but persist its result so upgraded
+		// databases don't repeat it on every idle tick.
+		const scan = scanForSourceModelVectorsAfter(db, targetModel, 0);
+		if (scan.found) return { canReturn: false, metadata };
+		if (scan.scannedMaxRowId == null) return { canReturn: true, metadata };
+		const persisted = {
+			...metadata,
+			stale_scan_exhausted: true,
+			stale_scan_exhausted_max_rowid: scan.scannedMaxRowId,
+		};
+		updateMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, { metadata: persisted });
+		return { canReturn: true, metadata: persisted };
 	}
 	const exhaustedMaxRowId = metadata.stale_scan_exhausted_max_rowid;
 	const currentMaxRowId = readMaxMemoryVectorRowId(db);
