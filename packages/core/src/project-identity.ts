@@ -1,6 +1,6 @@
 const COMMAND_FAILURE_PREFIX = /^(?:command failed(?:\s|:)|error:\s|fatal:\s|git:\s)/iu;
 const WRAPPED_GIT_FAILURE =
-	/^(?:giterror|git error|git command failed):\s*(?:fatal:\s*)?(?:not a git repository|unknown revision or path|no such remote)\b/iu;
+	/^(?:giterror|git error|git command failed):[^\r\n]*(?:not a git repository|unknown revision or path|no such remote)\b/iu;
 
 /** Return true when a discovery failure was supplied where Project identity was expected. */
 export function isMalformedProjectIdentity(value: unknown): boolean {

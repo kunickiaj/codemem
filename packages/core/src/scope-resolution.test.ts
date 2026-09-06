@@ -69,6 +69,18 @@ describe("canonicalWorkspaceIdentity", () => {
 		expect(identity.value).toMatch(/^unmapped:[a-f0-9]{64}$/);
 	});
 
+	it("preserves the project-only unmapped hash", () => {
+		expect(canonicalWorkspaceIdentity({ project: "codemem" }).value).toBe(
+			"unmapped:34170381a2e99d876e3036c84ecdfcbbf0ef62cf9c89208236e7f8d528ed7720",
+		);
+	});
+
+	it("preserves the unknown hash for an empty identity", () => {
+		expect(canonicalWorkspaceIdentity({}).value).toBe(
+			"unmapped:b23a6a8439c0dde5515893e7c90c1e3233b8616e634470f20dc4928bcf3609bc",
+		);
+	});
+
 	it("keeps distinct malformed identity tuples in separate quarantines", () => {
 		const sharedFields = {
 			gitRemote: "fatal: not a git repository (or any of the parent directories): .git",
