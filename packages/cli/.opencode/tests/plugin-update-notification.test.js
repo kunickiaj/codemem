@@ -25,8 +25,8 @@ function onChannel(version, channel) {
 }
 
 function previousCoreVersion(version) {
-	const match = /^(\d+)\.(\d+)\.(\d+)-/u.exec(version);
-	if (!match) throw new Error(`not a prerelease: ${version}`);
+	const match = /^(\d+)\.(\d+)\.(\d+)/u.exec(version);
+	if (!match) throw new Error(`not a semantic version: ${version}`);
 	const major = Number(match[1]);
 	const minor = Number(match[2]);
 	const patch = Number(match[3]);
@@ -57,7 +57,7 @@ function updateFixtureVersions(version) {
 		channel: "latest",
 		newer: `${base}.${Number(stable[3]) + 1}`,
 		newest: `${base}.${Number(stable[3]) + 2}`,
-		older: `${version}-rc.0`,
+		older: previousCoreVersion(version),
 		crossChannel: `${base}.${Number(stable[3]) + 1}-alpha.1`,
 	};
 }
@@ -75,7 +75,7 @@ test("update fixtures support stable pins", () => {
 		channel: "latest",
 		newer: "0.44.1",
 		newest: "0.44.2",
-		older: "0.44.0-rc.0",
+		older: "0.43.0",
 		crossChannel: "0.44.1-alpha.1",
 	});
 });
