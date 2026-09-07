@@ -69,6 +69,7 @@ export {
 	coordinatorUnarchiveGroupAction,
 	coordinatorUpdateScopeAction,
 	isPeerTrustBindingCompatible,
+	RemoteCoordinatorRequestError,
 } from "./coordinator-actions.js";
 export type {
 	CoordinatorRequestVerifier,
@@ -505,9 +506,11 @@ export * from "./legacy-team-setup-draft.js";
 export type {
 	LegacyTeamSetupCoreErrorCode,
 	LegacyTeamSetupDraftErrorCode,
+	LegacyTeamSetupErrorReason,
 } from "./legacy-team-setup-errors.js";
 export {
 	LEGACY_TEAM_SETUP_API_ERROR_BY_CORE_ERROR,
+	LEGACY_TEAM_SETUP_ERROR_REASONS,
 	legacyTeamSetupApiErrorCode,
 } from "./legacy-team-setup-errors.js";
 export type {

@@ -3,9 +3,14 @@ import {
 	deterministicPolicyTeamId,
 	fingerprintPublicKey,
 	getLegacyTeamSetupDraft,
+	type LegacyTeamConfiguredGroupSnapshot,
+	LegacyTeamSetupRosterCapacityError,
 	legacyTeamCandidateId,
 	MemoryStore,
+	RemoteCoordinatorRequestError,
 	readCoordinatorSyncConfig,
+	setLegacyTeamSetupDeviceAssignment,
+	setLegacyTeamSetupDeviceDecision,
 } from "@codemem/core";
 import { describe, expect, it, vi } from "vitest";
 import { syncRoutes } from "./sync.js";
@@ -15,6 +20,241 @@ function createRouteStore(): { store: MemoryStore; close: () => void } {
 	const store = new MemoryStore(":memory:");
 	return { store, close: () => store.close() };
 }
+
+const FINISH_COORDINATOR_ID = "https://coordinator.example.test";
+const FINISH_GROUP_ID = "group-finish-diagnostics";
+const FINISH_CANDIDATE_REF = legacyTeamCandidateId(FINISH_COORDINATOR_ID, FINISH_GROUP_ID);
+const FINISH_ADMIN_SECRET = "finish-diagnostics-admin-secret";
+const FINISH_SNAPSHOTS: LegacyTeamConfiguredGroupSnapshot[] = [
+	{
+		coordinatorId: FINISH_COORDINATOR_ID,
+		groupId: FINISH_GROUP_ID,
+		displayName: "Migration Team",
+		devices: [
+			{
+				deviceId: "device-a",
+				fingerprint: "a".repeat(64),
+				displayName: "Laptop",
+				enabled: true,
+			},
+		],
+	},
+];
+
+async function failedFinishResponse(options: {
+	beforeFinish?: (store: MemoryStore) => void;
+	createError?: Error;
+	freshRosterUnavailable?: boolean;
+	getError?: Error;
+}): Promise<{ status: number; payload: unknown; warning: string }> {
+	const store = new MemoryStore(":memory:");
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+	const app = teamSetupRoutes({
+		getStore: () => store,
+		loadLegacyTeamConfiguredGroupSnapshots: async (loadOptions) =>
+			options.freshRosterUnavailable && loadOptions?.deadlineMs ? [] : FINISH_SNAPSHOTS,
+		snapshotLoaderDependencies: {
+			readConfig: () => ({
+				...readCoordinatorSyncConfig({}),
+				syncCoordinatorUrl: FINISH_COORDINATOR_ID,
+				syncCoordinatorGroups: [FINISH_GROUP_ID],
+				syncCoordinatorAdminSecret: FINISH_ADMIN_SECRET,
+			}),
+			listGroups: vi.fn(async () => []),
+			listDevices: vi.fn(async () => []),
+		},
+		completionDependencies: {
+			create: async ({ manifest }) => {
+				if (options.createError) throw options.createError;
+				return { status: "created", manifest };
+			},
+			...(options.getError
+				? {
+						get: async () => {
+							throw options.getError;
+						},
+					}
+				: {}),
+			list: async () => [],
+		},
+	});
+	try {
+		expect((await app.request("/api/sync/team-setup/v1")).status).toBe(200);
+		store.db
+			.prepare(
+				`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+				 VALUES ('identity-a', 'Person A', 0, 'active', ?, ?)`,
+			)
+			.run("2026-09-06T00:00:00.000Z", "2026-09-06T00:00:00.000Z");
+		let draft = getLegacyTeamSetupDraft(store.db, FINISH_CANDIDATE_REF);
+		if (!draft) throw new Error("Team setup draft missing");
+		const device = draft.devices[0];
+		if (!device) throw new Error("Team setup device missing");
+		draft = setLegacyTeamSetupDeviceAssignment(store.db, {
+			attemptId: draft.attemptId,
+			deviceRef: device.deviceRef,
+			targetIdentityId: "identity-a",
+			expectation: device.expectation,
+			now: "2026-09-06T00:00:00.000Z",
+		});
+		draft = setLegacyTeamSetupDeviceDecision(store.db, {
+			attemptId: draft.attemptId,
+			deviceRef: device.deviceRef,
+			decision: "included",
+			now: "2026-09-06T00:00:00.000Z",
+		});
+		const detail = (await (
+			await app.request(`/api/sync/team-setup/v1/${FINISH_CANDIDATE_REF}`)
+		).json()) as {
+			finishDigest: string;
+			accessDeltaDigest: string;
+			viewerAccessDeltaDigest: string;
+		};
+		warn.mockClear();
+		options.beforeFinish?.(store);
+		const response = await app.request(`/api/sync/team-setup/v1/${FINISH_CANDIDATE_REF}/finish`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				attemptId: draft.attemptId,
+				finishDigest: detail.finishDigest,
+				confirmedAccessDeltaDigest: detail.accessDeltaDigest,
+				confirmedViewerAccessDeltaDigest: detail.viewerAccessDeltaDigest,
+			}),
+		});
+		expect(warn).toHaveBeenCalledTimes(1);
+		return {
+			status: response.status,
+			payload: await response.json(),
+			warning: String(warn.mock.calls[0]?.[0]),
+		};
+	} finally {
+		warn.mockRestore();
+		store.close();
+	}
+}
+
+describe("Team setup finish diagnostics", () => {
+	it.each([
+		{
+			name: "missing coordinator route",
+			error: new RemoteCoordinatorRequestError(404, "non_json_response: Not Found"),
+			status: 503,
+			apiError: "team_setup_completion_unavailable",
+			reason: "coordinator_route_missing",
+			cause: "remote coordinator request failed",
+		},
+		{
+			name: "rejected completion manifest",
+			error: new RemoteCoordinatorRequestError(400, "completion_manifest_invalid"),
+			status: 409,
+			apiError: "team_setup_completion_invalid",
+			reason: "coordinator_rejected_manifest",
+			cause: "remote coordinator request failed",
+		},
+		{
+			name: "unreachable coordinator",
+			error: new TypeError(`fetch failed ${FINISH_ADMIN_SECRET}`),
+			status: 503,
+			apiError: "team_setup_completion_unavailable",
+			reason: "coordinator_unreachable",
+			cause: "fetch failed",
+		},
+		{
+			name: "local candidate scan budget",
+			error: new LegacyTeamSetupRosterCapacityError(),
+			status: 503,
+			apiError: "team_setup_roster_unavailable",
+			reason: "local_candidate_scan_budget_exceeded",
+			cause: "local project candidate scan exceeded budget",
+		},
+	])("returns a stable diagnostic reason for $name", async (testCase) => {
+		const result = await failedFinishResponse({ createError: testCase.error });
+
+		expect(result.status).toBe(testCase.status);
+		expect(result.payload).toEqual({ error: testCase.apiError, reason: testCase.reason });
+		expect(result.warning).toContain(FINISH_CANDIDATE_REF);
+		expect(result.warning).toContain("attemptId=legacy-team-attempt:");
+		expect(result.warning).toContain(testCase.cause);
+		expect(result.warning).toContain(`reason=${testCase.reason}`);
+		expect(result.warning).not.toMatch(/[\r\n]/u);
+		if (testCase.error instanceof RemoteCoordinatorRequestError) {
+			expect(result.warning).toContain(`status=${testCase.error.status}`);
+			expect(result.warning).toContain(`code=${testCase.error.code}`);
+		}
+		expect(result.warning).not.toContain(FINISH_ADMIN_SECRET);
+	});
+
+	it("does not classify a coordinator resource 404 as a missing route", async () => {
+		const result = await failedFinishResponse({
+			createError: new RemoteCoordinatorRequestError(404, "group_not_found"),
+		});
+
+		expect(result.status).toBe(503);
+		expect(result.payload).toEqual({ error: "team_setup_completion_unavailable" });
+		expect(result.warning).toContain("status=404");
+		expect(result.warning).toContain("code=group_not_found");
+		expect(result.warning).not.toContain("reason=coordinator_route_missing");
+	});
+
+	it("classifies an oversized local project-mapping choice list during finish", async () => {
+		const result = await failedFinishResponse({
+			beforeFinish: (store) => {
+				const insert = store.db.prepare(
+					"INSERT INTO sessions(started_at, project, git_remote) VALUES (?, ?, ?)",
+				);
+				store.db.transaction(() => {
+					for (let index = 0; index <= 500; index += 1) {
+						insert.run(
+							new Date(Date.UTC(2026, 8, 6) + index).toISOString(),
+							`project-${index}`,
+							`https://git.example.test/acme/project-${index}.git`,
+						);
+					}
+				})();
+			},
+		});
+
+		expect(result.status).toBe(503);
+		expect(result.payload).toEqual({
+			error: "team_setup_roster_unavailable",
+			reason: "local_candidate_scan_budget_exceeded",
+		});
+		expect(result.warning).toContain("cause=local project candidate scan exceeded budget");
+		expect(result.warning).not.toContain(FINISH_ADMIN_SECRET);
+	});
+
+	it("redacts the admin secret when completion conflict recovery fails", async () => {
+		const result = await failedFinishResponse({
+			createError: new Error("completion_conflict"),
+			getError: new Error(
+				`recovery failed ${FINISH_ADMIN_SECRET} at https://coordinator.example.test/completions?token=private-token`,
+			),
+		});
+
+		expect(result.status).toBe(503);
+		expect(result.payload).toEqual({ error: "team_setup_completion_unavailable" });
+		expect(result.warning).toContain(
+			"cause=recovery failed [redacted] at https://coordinator.example.test",
+		);
+		expect(result.warning).not.toContain(FINISH_ADMIN_SECRET);
+		expect(result.warning).not.toContain("private-token");
+		expect(result.warning).not.toContain("/completions");
+	});
+
+	it("classifies a missing fresh coordinator roster without changing the API error", async () => {
+		const result = await failedFinishResponse({ freshRosterUnavailable: true });
+
+		expect(result.status).toBe(503);
+		expect(result.payload).toEqual({
+			error: "team_setup_roster_unavailable",
+			reason: "coordinator_roster_unavailable",
+		});
+		expect(result.warning).toContain(FINISH_CANDIDATE_REF);
+		expect(result.warning).toContain("reason=coordinator_roster_unavailable");
+		expect(result.warning).not.toContain(FINISH_ADMIN_SECRET);
+	});
+});
 
 describe("Team setup roster loading", () => {
 	it("rolls back a mutation when response projection fails", () => {

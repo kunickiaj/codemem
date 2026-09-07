@@ -1108,6 +1108,13 @@ export type LegacyTeamSetupErrorCode =
 	| "team_setup_completion_invalid"
 	| "team_setup_failed";
 
+export type LegacyTeamSetupErrorReason =
+	| "coordinator_route_missing"
+	| "coordinator_rejected_manifest"
+	| "coordinator_unreachable"
+	| "local_candidate_scan_budget_exceeded"
+	| "coordinator_roster_unavailable";
+
 const LEGACY_TEAM_SETUP_VERSION = 1;
 const LEGACY_TEAM_SETUP_ERROR_CODES = new Set<LegacyTeamSetupErrorCode>([
 	"team_setup_incomplete",
@@ -1120,6 +1127,13 @@ const LEGACY_TEAM_SETUP_ERROR_CODES = new Set<LegacyTeamSetupErrorCode>([
 	"team_setup_completion_conflict",
 	"team_setup_completion_invalid",
 	"team_setup_failed",
+]);
+export const LEGACY_TEAM_SETUP_ERROR_REASONS = new Set<LegacyTeamSetupErrorReason>([
+	"coordinator_route_missing",
+	"coordinator_rejected_manifest",
+	"coordinator_unreachable",
+	"local_candidate_scan_budget_exceeded",
+	"coordinator_roster_unavailable",
 ]);
 const LEGACY_TEAM_SETUP_STATUSES = new Set<LegacyTeamSetupStatusV1>([
 	"needs_setup",
@@ -1473,6 +1487,7 @@ export class LegacyTeamSetupApiError extends Error {
 	constructor(
 		readonly statusCode: number,
 		readonly errorCode: LegacyTeamSetupErrorCode,
+		readonly reason?: LegacyTeamSetupErrorReason,
 	) {
 		super(errorCode);
 		this.name = "LegacyTeamSetupApiError";
@@ -1515,7 +1530,19 @@ async function legacyTeamSetupRequest<T>(
 		const errorCode = LEGACY_TEAM_SETUP_ERROR_CODES.has(submittedCode as LegacyTeamSetupErrorCode)
 			? (submittedCode as LegacyTeamSetupErrorCode)
 			: "team_setup_failed";
-		throw new LegacyTeamSetupApiError(response.status, errorCode);
+		const submittedReason =
+			payload &&
+			typeof payload === "object" &&
+			"reason" in payload &&
+			typeof payload.reason === "string"
+				? payload.reason
+				: "";
+		const reason = LEGACY_TEAM_SETUP_ERROR_REASONS.has(
+			submittedReason as LegacyTeamSetupErrorReason,
+		)
+			? (submittedReason as LegacyTeamSetupErrorReason)
+			: undefined;
+		throw new LegacyTeamSetupApiError(response.status, errorCode, reason);
 	}
 	if (!isPayload(payload)) {
 		throw new LegacyTeamSetupApiError(response.status, "team_setup_failed");

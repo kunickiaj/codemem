@@ -82,6 +82,8 @@ const ROSTER_UNAVAILABLE_ERROR =
 	"Team device details are temporarily unavailable. Check the coordinator connection and settings, then refresh.";
 const ROSTER_UNAVAILABLE_AFTER_FINISH_ERROR =
 	"Team device details were unavailable, so setup was not finished and no changes were applied. Check the coordinator connection and settings, then refresh.";
+const LOCAL_SCAN_BUDGET_AFTER_FINISH_ERROR =
+	"This device's Project history is too large to finish setup here, so no changes were applied. Retry from a device with less history, or contact support.";
 const COMPLETION_UNAVAILABLE_ERROR =
 	"Team setup completion could not be checked. Check the coordinator connection and settings, then retry.";
 const COMPLETION_UNAVAILABLE_AFTER_FINISH_ERROR =
@@ -656,7 +658,7 @@ function completionOrChangedMessage(options: {
 	const completionCode = terminalRecoveryCode ?? causeCompletionCode;
 	const completionError =
 		completionCode === "team_setup_completion_unavailable" && command.kind === "finish"
-			? COMPLETION_UNAVAILABLE_AFTER_FINISH_ERROR
+			? completionUnavailableAfterFinishMessage(cause)
 			: completionMessage(completionCode);
 	if (terminalRecoveryCode) {
 		return {
@@ -667,8 +669,14 @@ function completionOrChangedMessage(options: {
 	}
 	if (changed) return { completionCode, message: CHANGED_STATE_ERROR, terminalRecoveryCode };
 	if (rosterUnavailable) {
-		const message =
-			command.kind === "finish" ? ROSTER_UNAVAILABLE_AFTER_FINISH_ERROR : ROSTER_UNAVAILABLE_ERROR;
+		let message = ROSTER_UNAVAILABLE_ERROR;
+		if (command.kind === "finish") {
+			message =
+				cause instanceof LegacyTeamSetupApiError &&
+				cause.reason === "local_candidate_scan_budget_exceeded"
+					? LOCAL_SCAN_BUDGET_AFTER_FINISH_ERROR
+					: ROSTER_UNAVAILABLE_AFTER_FINISH_ERROR;
+		}
 		return { completionCode, message, terminalRecoveryCode };
 	}
 	return {
@@ -676,6 +684,13 @@ function completionOrChangedMessage(options: {
 		message: completionError ?? safeError(command.kind),
 		terminalRecoveryCode,
 	};
+}
+
+function completionUnavailableAfterFinishMessage(cause: unknown): string {
+	if (cause instanceof LegacyTeamSetupApiError && cause.reason === "coordinator_route_missing") {
+		return `${COMPLETION_UNAVAILABLE_AFTER_FINISH_ERROR} The coordinator may be running an older version.`;
+	}
+	return COMPLETION_UNAVAILABLE_AFTER_FINISH_ERROR;
 }
 
 function terminalCompletionCode(

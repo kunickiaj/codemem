@@ -77,7 +77,7 @@ class LegacyTeamSetupConfirmationStaleError extends Error {
 	}
 }
 
-class LegacyTeamSetupRosterCapacityError extends Error {
+export class LegacyTeamSetupRosterCapacityError extends Error {
 	readonly code = "team_setup_roster_unavailable" as const;
 
 	constructor() {

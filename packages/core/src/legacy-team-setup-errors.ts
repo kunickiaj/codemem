@@ -36,6 +36,16 @@ export type LegacyTeamSetupCoreErrorCode =
 	| "coordinator_completion_response_malformed"
 	| "coordinator_completion_group_mismatch";
 
+export const LEGACY_TEAM_SETUP_ERROR_REASONS = [
+	"coordinator_route_missing",
+	"coordinator_rejected_manifest",
+	"coordinator_unreachable",
+	"local_candidate_scan_budget_exceeded",
+	"coordinator_roster_unavailable",
+] as const;
+
+export type LegacyTeamSetupErrorReason = (typeof LEGACY_TEAM_SETUP_ERROR_REASONS)[number];
+
 /**
  * Stable API compatibility boundary. Core keeps throwing its released strings;
  * API callers translate them through this frozen, bounded vocabulary.

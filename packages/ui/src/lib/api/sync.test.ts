@@ -534,9 +534,14 @@ describe("legacy Team setup API", () => {
 		globalThis.fetch = vi
 			.fn()
 			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ error: "team_setup_roster_changed", detail: "secret" }), {
-					status: 409,
-				}),
+				new Response(
+					JSON.stringify({
+						error: "team_setup_roster_changed",
+						reason: "coordinator_roster_unavailable",
+						detail: "secret",
+					}),
+					{ status: 409 },
+				),
 			)
 			.mockResolvedValueOnce(new Response("private coordinator failure", { status: 500 }))
 			.mockResolvedValueOnce(
@@ -554,6 +559,7 @@ describe("legacy Team setup API", () => {
 		await expect(stable).rejects.toMatchObject({
 			statusCode: 409,
 			errorCode: "team_setup_roster_changed",
+			reason: "coordinator_roster_unavailable",
 			message: "team_setup_roster_changed",
 		});
 		await expect(stable).rejects.toBeInstanceOf(LegacyTeamSetupApiError);
