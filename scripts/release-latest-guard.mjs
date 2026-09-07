@@ -40,17 +40,22 @@ export function latestGuardAction(distTags) {
  * error so the guard can run before a new package's first publish.
  */
 export function readDistTags(packageName, { spawn = spawnSync } = {}) {
-	const result = spawn("npm", ["view", packageName, "dist-tags", "--json"], {
+	const result = spawn("npm", ["dist-tag", "ls", packageName], {
 		encoding: "utf8",
 	});
 	if (result.status !== 0) {
 		if (/E404|404 Not Found/u.test(result.stderr ?? "")) return {};
 		throw new Error(`npm view ${packageName} dist-tags failed: ${(result.stderr ?? "").trim()}`);
 	}
-	const parsed = JSON.parse(result.stdout);
-	// npm returns an array when the spec resolves to multiple versions; a
-	// bare package name resolves to one object.
-	return Array.isArray(parsed) ? (parsed[0] ?? {}) : parsed;
+	// Unlike npm view, this reads package tags without resolving through latest.
+	const tags = {};
+	for (const line of result.stdout.trim().split(/\r?\n/u)) {
+		if (!line) continue;
+		const match = /^([^\s:]+):\s+(\S+)$/u.exec(line);
+		if (!match) throw new Error(`Malformed dist-tag listing for ${packageName}`);
+		tags[match[1]] = match[2];
+	}
+	return tags;
 }
 
 export function removeLatest(packageName, { spawn = spawnSync } = {}) {

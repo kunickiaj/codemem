@@ -28,8 +28,8 @@ function fakeNpm(distTagsByPackage, { failView = new Set(), failRm = new Set() }
 	const spawn = (command, args) => {
 		calls.push([command, ...args]);
 		const [subcommand, ...rest] = args;
-		if (subcommand === "view") {
-			const packageName = rest[0];
+		if (subcommand === "dist-tag" && rest[0] === "ls") {
+			const packageName = rest[1];
 			if (failView.has(packageName)) {
 				return { status: 1, stdout: "", stderr: `npm error 500 for ${packageName}` };
 			}
@@ -37,7 +37,7 @@ function fakeNpm(distTagsByPackage, { failView = new Set(), failRm = new Set() }
 			if (distTags === undefined) {
 				return { status: 1, stdout: "", stderr: `npm error code E404\nnpm error 404 Not Found - GET ${packageName}` };
 			}
-			return { status: 0, stdout: JSON.stringify(distTags), stderr: "" };
+			return { status: 0, stdout: Object.entries(distTags).map(([tag, version]) => `${tag}: ${version}`).join("\n"), stderr: "" };
 		}
 		if (subcommand === "dist-tag") {
 			const packageName = rest[1];
@@ -85,15 +85,10 @@ describe("release latest-tag guard: classification", () => {
 });
 
 describe("release latest-tag guard: registry reads", () => {
-	it("unwraps the array shape npm returns for range specs", () => {
-		const { spawn } = fakeNpm({});
-		const arrayShaped = (command, args) => {
-			if (args[0] === "view") {
-				return { status: 0, stdout: JSON.stringify([{ latest: "0.43.2" }, { latest: "0.43.2" }]), stderr: "" };
-			}
-			return spawn(command, args);
-		};
-		assert.deepEqual(readDistTags("@codemem/core", { spawn: arrayShaped }), { latest: "0.43.2" });
+	it("reads package tags without needing latest to exist", () => {
+		const { spawn, calls } = fakeNpm({ "@codemem/core": { beta: "0.44.0-beta.1" } });
+		assert.deepEqual(readDistTags("@codemem/core", { spawn }), { beta: "0.44.0-beta.1" });
+		assert.deepEqual(calls, [["npm", "dist-tag", "ls", "@codemem/core"]]);
 	});
 
 	it("treats an unpublished package as having no dist-tags", () => {
@@ -120,7 +115,7 @@ describe("release latest-tag guard: guardPackages", () => {
 			spawn,
 		});
 		assert.equal(needing, 1);
-		assert.ok(calls.every(([, sub]) => sub === "view"), "dry run must not call dist-tag");
+		assert.ok(calls.every(([, sub, action]) => sub === "dist-tag" && action === "ls"), "dry run must only list tags");
 	});
 
 	it("removes latest only for the flagged package in apply mode", () => {
@@ -129,7 +124,7 @@ describe("release latest-tag guard: guardPackages", () => {
 			"@codemem/core": { alpha: "0.44.0-alpha.1", latest: "0.43.2" },
 		});
 		guardPackages(["@codemem/embeddings", "@codemem/core"], { apply: true, log: () => {}, spawn });
-		const removals = calls.filter(([, sub]) => sub === "dist-tag");
+		const removals = calls.filter(([, sub, action]) => sub === "dist-tag" && action === "rm");
 		assert.deepEqual(removals, [["npm", "dist-tag", "rm", "@codemem/embeddings", "latest"]]);
 	});
 
@@ -147,7 +142,7 @@ describe("release latest-tag guard: guardPackages", () => {
 			() => guardPackages(["@codemem/embeddings", "@codemem/core", "@codemem/mcp"], { log: () => {}, spawn }),
 			/latest-tag guard failures:\n@codemem\/core: /u,
 		);
-		const viewed = calls.filter(([, sub]) => sub === "view").map(([, , name]) => name);
+		const viewed = calls.filter(([, sub, action]) => sub === "dist-tag" && action === "ls").map(([, , , name]) => name);
 		assert.deepEqual(viewed, ["@codemem/embeddings", "@codemem/core", "@codemem/mcp"]);
 	});
 
@@ -155,7 +150,7 @@ describe("release latest-tag guard: guardPackages", () => {
 		const { spawn, calls } = fakeNpm({ "@codemem/embeddings": { alpha: "0.44.0-alpha.1" } });
 		const needing = guardPackages(["@codemem/embeddings"], { apply: true, log: () => {}, spawn });
 		assert.equal(needing, 0);
-		assert.ok(calls.every(([, sub]) => sub === "view"));
+		assert.ok(calls.every(([, sub, action]) => sub === "dist-tag" && action === "ls"));
 	});
 });
 
