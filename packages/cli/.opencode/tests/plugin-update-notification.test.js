@@ -33,7 +33,7 @@ function previousCoreVersion(version) {
 	if (patch > 0) return `${major}.${minor}.${patch - 1}`;
 	if (minor > 0) return `${major}.${minor - 1}.0`;
 	if (major > 0) return `${major - 1}.0.0`;
-	return "0.0.0-0";
+	throw new Error(`no earlier core version: ${version}`);
 }
 
 const CURRENT = PINNED;
@@ -41,7 +41,9 @@ function updateFixtureVersions(version) {
 	const channel = /-(alpha|beta|rc)\.(\d+)$/u.exec(version);
 	if (channel) {
 		let older = bumpPrerelease(version, -1);
-		if (Number(channel[2]) === 0) older = previousCoreVersion(version);
+		if (Number(channel[2]) === 0) {
+			older = `${previousCoreVersion(version)}-${channel[1]}.0`;
+		}
 		return {
 			channel: channel[1],
 			newer: bumpPrerelease(version, 1),
@@ -81,7 +83,7 @@ test("update fixtures support stable pins", () => {
 });
 
 test("update fixtures use an older core version for prerelease zero pins", () => {
-	expect(updateFixtureVersions("0.44.0-beta.0").older).toBe("0.43.0");
+	expect(updateFixtureVersions("0.44.0-beta.0").older).toBe("0.43.0-beta.0");
 });
 
 const currentStatus = {
