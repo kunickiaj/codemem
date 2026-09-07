@@ -1542,6 +1542,10 @@ export class VectorModelMigrationRunner {
 				metadataMemoryIds(meta.pending_upsert_memory_ids).length +
 				metadataMemoryIds(meta.pending_delete_memory_ids).length;
 			if (queued > 0) return false;
+			// A completed job with cleanup still owed (bounded stale batch not yet
+			// exhausted, or a deferred cleanup pass) is known work, not a quiet
+			// database. Keep it on the active cadence so it finishes promptly.
+			if (meta.cleanup_pending) return false;
 			return true;
 		}
 		// No job row yet. Peek coverage directly to tell whether the first

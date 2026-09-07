@@ -9,6 +9,7 @@ import {
 	completeMaintenanceJob,
 	getMaintenanceJob,
 	startMaintenanceJob,
+	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
 import { applyBootstrapSnapshot } from "./sync-bootstrap.js";
 import { setSyncResetState } from "./sync-replication.js";
@@ -17,6 +18,7 @@ import {
 	queueVectorBackfillForIncrementalSync,
 	runVectorMigrationPass,
 	VECTOR_MODEL_MIGRATION_JOB,
+	VectorModelMigrationRunner,
 } from "./vector-migration.js";
 import { resolveSemanticSearchModel } from "./vectors.js";
 
@@ -1828,6 +1830,30 @@ describe("vector migration", () => {
 		expect(typeof persisted?.stale_scan_exhausted_max_rowid).toBe("number");
 
 		expect(await countVectorStatements()).toBe(0);
+	});
+
+	it("keeps completed jobs with cleanup_pending on the active cadence", () => {
+		// computeIdle decides whether the runner backs off to idleIntervalMs.
+		// A completed job that still owes cleanup (bounded stale batch not
+		// exhausted, or a deferred pass) is known work and must not wait a full
+		// idle interval between attempts.
+		const runner = new VectorModelMigrationRunner({ dbPath: ":memory:" });
+		const computeIdle = (
+			runner as unknown as { computeIdle: (db: Database.Database) => boolean }
+		).computeIdle.bind(runner);
+
+		startMaintenanceJob(db, {
+			kind: VECTOR_MODEL_MIGRATION_JOB,
+			title: "Re-indexing memories",
+			metadata: { target_model: "test-model", cleanup_pending: true },
+		});
+		completeMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		expect(computeIdle(db)).toBe(false);
+
+		updateMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, {
+			metadata: { target_model: "test-model", cleanup_pending: false },
+		});
+		expect(computeIdle(db)).toBe(true);
 	});
 
 	it("short-circuits exhausted completed cleanup without reading memory_vectors", async () => {
