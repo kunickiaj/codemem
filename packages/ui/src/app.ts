@@ -29,6 +29,7 @@ import {
 	state,
 	type TabId,
 } from "./lib/state";
+import { createTabVisibilityTracker } from "./lib/tab-visibility";
 import { getTheme, initThemeToggle, setTheme } from "./lib/theme";
 
 import { initCoordinatorAdminTab, loadCoordinatorAdminData } from "./tabs/coordinator-admin";
@@ -313,6 +314,7 @@ function setRefreshStatus(rs: RefreshState, detail?: string) {
 	state.refreshState = rs;
 	const el = $("refreshStatus");
 	if (!el) return;
+	el.dataset.refreshState = rs;
 
 	const announce = (msg: string) => {
 		const announcer = $("refreshAnnouncer");
@@ -395,6 +397,8 @@ function renderAdvancedSection() {
 	});
 }
 
+const revealChangedTab = createTabVisibilityTracker();
+
 function renderTabs(activeTab: TabId) {
 	const visibleTabs = new Set(getVisibleTabs(state.lastCoordinatorAdminStatus));
 	ALL_TAB_IDS.forEach((id) => {
@@ -411,6 +415,8 @@ function renderTabs(activeTab: TabId) {
 		if (active) btn.setAttribute("aria-current", "page");
 		else btn.removeAttribute("aria-current");
 	});
+	const activeButton = $(`tabBtn-${activeTab}`);
+	if (activeButton) revealChangedTab(activeButton);
 	renderAdvancedSection();
 }
 

@@ -259,3 +259,31 @@ describe("project-first navigation layout", () => {
 		);
 	});
 });
+
+describe("split-pane shell layout", () => {
+	it("keeps controls bounded across responsive breakpoints", () => {
+		const normalized = html.replace(/\s+/g, " ");
+		const responsiveStart = normalized.indexOf("/* ── Responsive");
+		const desktopStart = normalized.indexOf("@media (max-width: 900px)", responsiveStart);
+		const narrowStart = normalized.indexOf("@media (max-width: 720px)", desktopStart);
+		const compactStart = normalized.indexOf("@media (max-width: 520px)", narrowStart);
+		const responsiveEnd = normalized.indexOf("/* ──", compactStart);
+		const desktopSplit = normalized.slice(desktopStart, narrowStart);
+		const narrowSplit = normalized.slice(narrowStart, compactStart);
+		const compact = normalized.slice(compactStart, responsiveEnd);
+
+		expect(desktopSplit).toContain(".header-row { flex-wrap: nowrap; }");
+		expect(desktopSplit).toContain(".header-tertiary { display: none; }");
+		expect(desktopSplit).toContain(
+			".header-right .project-filter { flex: 1 1 140px; min-width: 96px;",
+		);
+		expect(desktopSplit).toContain(".tab-bar { overflow-x: auto;");
+		expect(narrowSplit).toContain(".header-title { font-size: var(--font-size-xl); }");
+		expect(compact).toContain("header { padding: var(--sp-3) var(--sp-4);");
+		expect(compact).toContain("body { --header-sticky-offset: 117px; }");
+		expect(compact).toContain(".header-row { flex-wrap: wrap; }");
+		expect(compact).toContain(".header-left, .header-right { flex-basis: 100%; }");
+		expect(compact).toContain('.refresh-status[data-refresh-state="idle"] { display: none; }');
+		expect(compact).not.toContain(".refresh-status { display: none; }");
+	});
+});

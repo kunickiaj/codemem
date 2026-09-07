@@ -43,6 +43,7 @@
       *, *::before, *::after { box-sizing: border-box; margin: 0; }
 
       body {
+        --header-sticky-offset: 73px;
         font-family: var(--font-sans);
         font-size: var(--font-size-base);
         line-height: 1.55;
@@ -108,6 +109,8 @@
         display: flex;
         align-items: center;
         gap: var(--sp-3);
+        min-width: 0;
+        overflow: hidden;
       }
 
       .logo {
@@ -127,7 +130,10 @@
         font-size: var(--font-size-2xl);
         font-weight: var(--font-weight-semibold);
         letter-spacing: -0.01em;
+        min-width: 0;
         white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
       .health-dot {
@@ -144,6 +150,7 @@
         display: flex;
         align-items: center;
         gap: var(--sp-2);
+        min-width: 0;
       }
 
       /* Diagnostic metadata cluster: runtime version + database path. Grouped
@@ -194,7 +201,7 @@
         -webkit-backdrop-filter: blur(10px) saturate(1.2);
         border-bottom: 1px solid var(--border);
         position: sticky;
-        top: 73px; /* header height */
+        top: var(--header-sticky-offset);
         z-index: 9;
       }
 
@@ -229,7 +236,7 @@
       .tab-btn.active::after {
         content: "";
         position: absolute;
-        bottom: -1px;
+        bottom: 0;
         left: var(--sp-4);
         right: var(--sp-4);
         height: 2px;
@@ -3954,6 +3961,24 @@
       /* ── Responsive ────────────────────────────────────────── */
 
       @media (max-width: 900px) {
+        .header-row { flex-wrap: nowrap; }
+        .header-right { flex: 1 1 auto; justify-content: flex-end; }
+        /* Diagnostic metadata yields before project scope or controls clip. */
+        .header-tertiary { display: none; }
+        .header-right .project-filter {
+          flex: 1 1 140px;
+          min-width: 96px;
+          max-width: 240px;
+        }
+        /* Keep navigation to one compact row while preserving every destination. */
+        .tab-bar {
+          overflow-x: auto;
+          overscroll-behavior-inline: contain;
+          -webkit-overflow-scrolling: touch;
+          scrollbar-width: none;
+        }
+        .tab-bar::-webkit-scrollbar { display: none; }
+        .tab-btn { flex-shrink: 0; }
         .tab-panel { padding: var(--sp-4); }
         .summary-row { grid-template-columns: 1fr; }
         .feed-card-header { flex-wrap: wrap; }
@@ -3971,23 +3996,15 @@
       }
 
       @media (max-width: 720px) {
-        /* Hide diagnostic metadata (runtime version + database path) when the
-           header would otherwise wrap. Keeps brand + project filter + theme
-           + settings on a single row at common split-window widths. */
-        .header-tertiary { display: none; }
-        /* Allow the tab bar to scroll horizontally rather than wrap into two
-           rows. Scrollbar is hidden to keep the sticky chrome compact. */
-        .tab-bar {
-          overflow-x: auto;
-          -webkit-overflow-scrolling: touch;
-          scrollbar-width: none;
-        }
-        .tab-bar::-webkit-scrollbar { display: none; }
-        .tab-btn { flex-shrink: 0; }
+        .header-title { font-size: var(--font-size-xl); }
       }
 
       @media (max-width: 520px) {
+        body { --header-sticky-offset: 117px; }
         header { padding: var(--sp-3) var(--sp-4); }
+        .header-row { flex-wrap: wrap; }
+        .header-left, .header-right { flex-basis: 100%; }
+        .refresh-status[data-refresh-state="idle"] { display: none; }
         .tab-bar { padding: 0 var(--sp-4); }
         .modal { padding: var(--sp-3); }
         .modal-card { padding: var(--sp-4); border-radius: var(--radius-lg); }
@@ -4051,7 +4068,7 @@
             <span class="header-title">codemem</span>
             <span class="health-dot status-healthy" id="healthDot" title="Healthy"></span>
           </div>
-          <span class="refresh-status" id="refreshStatus">refreshing…</span>
+          <span class="refresh-status" id="refreshStatus" data-refresh-state="refreshing">refreshing…</span>
           <span class="sr-only" id="refreshAnnouncer" aria-live="polite"></span>
         </div>
         <div class="header-right">

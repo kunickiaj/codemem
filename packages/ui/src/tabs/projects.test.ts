@@ -445,7 +445,10 @@ describe("Projects tab", () => {
 
 	it("preserves a focused repair when only hidden continuity data changes", async () => {
 		const initialReviewItem = reviewItem();
-		const refreshedReviewItem = reviewItem({ sourceFingerprint: "fingerprint-2" });
+		const refreshedReviewItem = reviewItem({
+			reviewItemId: "review-2",
+			sourceFingerprint: "fingerprint-2",
+		});
 		const blockedItem = {
 			blockedItemId: "blocked-1",
 			finding: "Project identity is unstable.",

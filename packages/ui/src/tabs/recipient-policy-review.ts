@@ -136,7 +136,6 @@ export function renderRecipientPolicyReview(
 		reviewItems: review.reviewItems.map((item) => ({
 			finding: item.finding,
 			reason: item.reason,
-			reviewItemId: item.reviewItemId,
 		})),
 	};
 	const signature = `review:${repairAvailability.join("")}:${JSON.stringify(renderedReview)}`;

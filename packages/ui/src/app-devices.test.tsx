@@ -530,6 +530,7 @@ describe("Devices app integration", () => {
 			"Device ownership information is temporarily unavailable",
 		);
 		expect(document.getElementById("refreshStatus")?.textContent).toBe("refresh failed");
+		expect(document.getElementById("refreshStatus")?.dataset.refreshState).toBe("error");
 		expect(document.getElementById("refreshAnnouncer")?.textContent).toBe("Refresh failed.");
 		expect(document.getElementById("refreshStatus")?.textContent).not.toContain("updated");
 	});
