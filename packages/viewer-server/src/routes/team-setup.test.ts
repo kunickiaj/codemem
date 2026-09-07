@@ -143,6 +143,7 @@ describe("Team setup finish diagnostics", () => {
 			apiError: "team_setup_completion_unavailable",
 			reason: "coordinator_route_missing",
 			cause: "remote coordinator request failed",
+			loggedCode: "non_json_response",
 		},
 		{
 			name: "rejected completion manifest",
@@ -151,6 +152,7 @@ describe("Team setup finish diagnostics", () => {
 			apiError: "team_setup_completion_invalid",
 			reason: "coordinator_rejected_manifest",
 			cause: "remote coordinator request failed",
+			loggedCode: "completion_manifest_invalid",
 		},
 		{
 			name: "unreachable coordinator",
@@ -158,7 +160,7 @@ describe("Team setup finish diagnostics", () => {
 			status: 503,
 			apiError: "team_setup_completion_unavailable",
 			reason: "coordinator_unreachable",
-			cause: "fetch failed",
+			cause: "fetch_failed",
 		},
 		{
 			name: "local candidate scan budget",
@@ -180,7 +182,7 @@ describe("Team setup finish diagnostics", () => {
 		expect(result.warning).not.toMatch(/[\r\n]/u);
 		if (testCase.error instanceof RemoteCoordinatorRequestError) {
 			expect(result.warning).toContain(`status=${testCase.error.status}`);
-			expect(result.warning).toContain(`code=${testCase.error.code}`);
+			expect(result.warning).toContain(`code=${testCase.loggedCode}`);
 		}
 		expect(result.warning).not.toContain(FINISH_ADMIN_SECRET);
 	});
@@ -234,12 +236,53 @@ describe("Team setup finish diagnostics", () => {
 
 		expect(result.status).toBe(503);
 		expect(result.payload).toEqual({ error: "team_setup_completion_unavailable" });
-		expect(result.warning).toContain(
-			"cause=recovery failed [redacted] at https://coordinator.example.test",
-		);
+		// Free-form error text is never echoed; it is reduced to a classification.
+		expect(result.warning).toContain("cause=unclassified_error:Error");
+		expect(result.warning).not.toContain("recovery failed");
 		expect(result.warning).not.toContain(FINISH_ADMIN_SECRET);
 		expect(result.warning).not.toContain("private-token");
-		expect(result.warning).not.toContain("/completions");
+		expect(result.warning).not.toContain("coordinator.example.test");
+	});
+
+	it("never logs a raw non-JSON coordinator response body", async () => {
+		// The HTTP client folds the first bytes of a non-JSON body into
+		// RemoteCoordinatorRequestError.code. A proxy error page or stack trace
+		// must not reach the log; only a fixed classification may.
+		const hostileBody = `non_json_response: <html><body>Error at /srv/internal/app.js:42 token=${FINISH_ADMIN_SECRET}-leak host=db.internal.corp</body></html>`;
+		const result = await failedFinishResponse({
+			createError: new RemoteCoordinatorRequestError(502, hostileBody),
+		});
+
+		expect(result.status).toBe(503);
+		expect(result.payload).toEqual({ error: "team_setup_completion_unavailable" });
+		expect(result.warning).toContain("status=502");
+		expect(result.warning).toContain("code=non_json_response");
+		expect(result.warning).not.toContain("<html>");
+		expect(result.warning).not.toContain("/srv/internal");
+		expect(result.warning).not.toContain("db.internal.corp");
+		expect(result.warning).not.toContain(FINISH_ADMIN_SECRET);
+		expect(result.warning).not.toContain("-leak");
+	});
+
+	it("reduces a non-identifier remote error code to a fixed classification", async () => {
+		const result = await failedFinishResponse({
+			createError: new RemoteCoordinatorRequestError(
+				500,
+				"Internal Server Error: see /var/log/coordinator.log",
+			),
+		});
+
+		expect(result.warning).toContain("code=unclassified_remote_error");
+		expect(result.warning).not.toContain("/var/log");
+		expect(result.warning).not.toContain("Internal Server Error");
+	});
+
+	it("keeps identifier-shaped remote error codes verbatim", async () => {
+		const result = await failedFinishResponse({
+			createError: new RemoteCoordinatorRequestError(409, "group_archived"),
+		});
+
+		expect(result.warning).toContain("code=group_archived");
 	});
 
 	it("classifies a missing fresh coordinator roster without changing the API error", async () => {

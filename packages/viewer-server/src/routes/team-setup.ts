@@ -1228,6 +1228,35 @@ const LOCAL_CANDIDATE_SCAN_BUDGET_ERRORS = new Set([
 	"project_scope_candidate_metadata_too_large",
 ]);
 
+/**
+ * Only identifier-shaped remote error codes are safe to log verbatim. A
+ * coordinator that returns a non-JSON body (error page, proxy interstitial)
+ * has its first response bytes folded into `RemoteCoordinatorRequestError.code`
+ * by the HTTP client, and those bytes can carry anything: stack traces,
+ * internal hostnames, tokens. Anything that is not a bare snake_case token is
+ * reduced to a fixed classification.
+ */
+const SAFE_REMOTE_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/u;
+
+function loggableRemoteCode(code: string): string {
+	if (SAFE_REMOTE_ERROR_CODE.test(code)) return code;
+	if (code.startsWith("non_json_response")) return "non_json_response";
+	return "unclassified_remote_error";
+}
+
+/**
+ * Local error messages are code-controlled identifiers except for transport
+ * failures, whose messages come from undici/fetch and can embed the target
+ * URL or system detail. Keep identifiers; classify everything else.
+ */
+function loggableLocalCause(error: Error): string {
+	if (SAFE_REMOTE_ERROR_CODE.test(error.message)) return error.message;
+	if (error.name === "AbortError" || error.name === "TimeoutError") return error.name;
+	if (/fetch failed/iu.test(error.message)) return "fetch_failed";
+	if (/timed out|timeout/iu.test(error.message)) return "timed_out";
+	return `unclassified_error:${error.name || "Error"}`;
+}
+
 function errorChain(error: unknown): unknown[] {
 	const chain: unknown[] = [];
 	let current = error;
@@ -1236,6 +1265,22 @@ function errorChain(error: unknown): unknown[] {
 		current = current instanceof Error ? current.cause : undefined;
 	}
 	return chain;
+}
+
+function remoteFailureReason(
+	remote: RemoteCoordinatorRequestError,
+	fallback: LegacyTeamSetupErrorReason | undefined,
+): LegacyTeamSetupErrorReason | undefined {
+	if (
+		remote.status === 404 &&
+		(remote.code === "not_found" || remote.code.startsWith("non_json"))
+	) {
+		return "coordinator_route_missing";
+	}
+	if (remote.status === 400 && remote.code === "completion_manifest_invalid") {
+		return "coordinator_rejected_manifest";
+	}
+	return fallback;
 }
 
 function teamSetupFinishFailureDetails(error: unknown): TeamSetupFinishFailureDetails {
@@ -1247,21 +1292,12 @@ function teamSetupFinishFailureDetails(error: unknown): TeamSetupFinishFailureDe
 		(item): item is RemoteCoordinatorRequestError => item instanceof RemoteCoordinatorRequestError,
 	);
 	if (remote) {
-		let reason = wrapper?.reason;
-		if (
-			remote.status === 404 &&
-			(remote.code === "not_found" || remote.code.startsWith("non_json"))
-		) {
-			reason = "coordinator_route_missing";
-		}
-		if (remote.status === 400 && remote.code === "completion_manifest_invalid") {
-			reason = "coordinator_rejected_manifest";
-		}
+		const reason = remoteFailureReason(remote, wrapper?.reason);
 		return {
 			...(reason ? { reason } : {}),
 			cause: "remote coordinator request failed",
 			status: remote.status,
-			code: remote.code,
+			code: loggableRemoteCode(remote.code),
 		};
 	}
 	if (
@@ -1279,18 +1315,17 @@ function teamSetupFinishFailureDetails(error: unknown): TeamSetupFinishFailureDe
 	const errorCause = chain.find(
 		(item): item is Error => item instanceof Error && !(item instanceof TeamSetupFinishError),
 	);
-	if (wrapper?.reason) {
-		return { reason: wrapper.reason, cause: errorCause?.message ?? String(error) };
-	}
+	const cause = errorCause ? loggableLocalCause(errorCause) : "unclassified_non_error";
+	if (wrapper?.reason) return { reason: wrapper.reason, cause };
 	if (
 		errorCause &&
 		(errorCause.name === "AbortError" ||
 			errorCause.name === "TimeoutError" ||
 			/fetch failed|timed out|timeout/iu.test(errorCause.message))
 	) {
-		return { reason: "coordinator_unreachable", cause: errorCause.message };
+		return { reason: "coordinator_unreachable", cause };
 	}
-	return { cause: errorCause?.message ?? String(error) };
+	return { cause };
 }
 
 function warnTeamSetupFinishFailure(
