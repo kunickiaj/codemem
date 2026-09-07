@@ -25,14 +25,48 @@ function onChannel(version, channel) {
 }
 
 const CURRENT = PINNED;
-const NEWER = bumpPrerelease(PINNED, 1);
-const NEWEST = bumpPrerelease(PINNED, 2);
-const OLDER = bumpPrerelease(PINNED, -1);
-const CURRENT_CHANNEL = /-(alpha|beta|rc)\./u.exec(PINNED)[1];
-const CROSS_CHANNEL = onChannel(
-	bumpPrerelease(PINNED, 1),
-	CURRENT_CHANNEL === "alpha" ? "beta" : "alpha",
-);
+function updateFixtureVersions(version) {
+	const channel = /-(alpha|beta|rc)\.(\d+)$/u.exec(version);
+	if (channel) {
+		let older = bumpPrerelease(version, -1);
+		if (Number(channel[2]) === 0) older = version.replace(/\.0$/u, ".0-0");
+		return {
+			channel: channel[1],
+			newer: bumpPrerelease(version, 1),
+			newest: bumpPrerelease(version, 2),
+			older,
+			crossChannel: onChannel(bumpPrerelease(version, 1), channel[1] === "alpha" ? "beta" : "alpha"),
+		};
+	}
+	const stable = /^(\d+)\.(\d+)\.(\d+)$/u.exec(version);
+	if (!stable) throw new Error(`Unsupported fixture version: ${version}`);
+	const base = `${stable[1]}.${stable[2]}`;
+	return {
+		channel: "latest",
+		newer: `${base}.${Number(stable[3]) + 1}`,
+		newest: `${base}.${Number(stable[3]) + 2}`,
+		older: `${version}-rc.0`,
+		crossChannel: `${base}.${Number(stable[3]) + 1}-alpha.1`,
+	};
+}
+
+const {
+	newer: NEWER,
+	newest: NEWEST,
+	older: OLDER,
+	channel: CURRENT_CHANNEL,
+	crossChannel: CROSS_CHANNEL,
+} = updateFixtureVersions(PINNED);
+
+test("update fixtures support stable pins", () => {
+	expect(updateFixtureVersions("0.44.0")).toEqual({
+		channel: "latest",
+		newer: "0.44.1",
+		newest: "0.44.2",
+		older: "0.44.0-rc.0",
+		crossChannel: "0.44.1-alpha.1",
+	});
+});
 
 const currentStatus = {
 	current_version: CURRENT,
@@ -290,12 +324,12 @@ describe("OpenCode startup release notifications", () => {
 			status: { ...availableStatus, channel: undefined },
 		},
 		{
-			label: "stable status on an alpha plugin",
+			label: "status from another channel",
 			status: {
 				...availableStatus,
-				channel: "latest",
-				latest_version: "0.44.0",
-				recommended_action: "npm install -g codemem@0.44.0",
+				channel: CURRENT_CHANNEL === "alpha" ? "beta" : "alpha",
+				latest_version: CROSS_CHANNEL,
+				recommended_action: `npm install -g codemem@${CROSS_CHANNEL}`,
 			},
 		},
 		{
@@ -372,7 +406,7 @@ describe("OpenCode startup release notifications", () => {
 		await runStartupChecks();
 
 		const installCall = spawnMock.mock.calls.find(isPairedInstallCall);
-		expect(installCall?.[2]?.env).toBe(process.env);
+		expect(installCall?.[2]?.env === process.env).toBe(true);
 		expect(installCall?.[2]?.env).not.toHaveProperty("ONNXRUNTIME_NODE_INSTALL");
 	});
 
