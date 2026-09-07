@@ -875,15 +875,17 @@ export function analyzeProjectScopeMappingChangeGuardrails(
 
 /**
  * How many distinct candidates the scan must observe before it may stop.
- * Unbounded when neither a result limit nor a scan budget is set. Otherwise
- * the larger of the two: the overflow check needs to see `maxScannedRows + 1`
- * even when the caller only wants a few results back.
+ *
+ * When a scan budget exists it is the only ceiling: `maxScannedRows + 1`.
+ * Seeing that many distinct identities proves overflow, so walking further is
+ * pure waste; seeing fewer means the whole roster fits and the result limit is
+ * applied afterwards. Using the result limit here would either disable the
+ * guard (limit <= budget) or defeat its bounded failure path (limit > budget).
+ * Without a budget, the result limit bounds the walk; without either, unbounded.
  */
 function candidateWalkCeiling(limit: number | null, maxScannedRows: number | null): number | null {
-	if (limit == null && maxScannedRows == null) return null;
-	const resultCeiling = limit ?? 0;
-	const overflowCeiling = maxScannedRows == null ? 0 : maxScannedRows + 1;
-	return Math.max(resultCeiling, overflowCeiling);
+	if (maxScannedRows != null) return maxScannedRows + 1;
+	return limit;
 }
 
 export function listProjectScopeCandidates(

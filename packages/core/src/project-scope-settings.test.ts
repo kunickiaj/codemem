@@ -307,6 +307,52 @@ describe("project scope settings", () => {
 		);
 	});
 
+	it("stops walking as soon as the scan budget overflows, even with a larger result limit", () => {
+		// With limit > budget, a walk ceiling of max(limit, cap+1) would keep
+		// scanning until `limit` distinct candidates or table exhaustion — on a
+		// DB with a few distinct Projects followed by many duplicate sessions,
+		// that means reading every row before throwing. The cap+1'th distinct
+		// candidate already proves overflow; the walk must stop there.
+		const maxScannedRows = 5;
+		const insert = db.prepare(
+			`INSERT INTO sessions(started_at, cwd, project, git_remote, git_branch, user, tool_version)
+			 VALUES (?, ?, ?, NULL, 'main', 'u', 't')`,
+		);
+		db.transaction(() => {
+			// Six distinct Projects, newest first (these are page 1).
+			for (let index = 0; index < maxScannedRows + 1; index += 1) {
+				insert.run("2026-09-01T00:00:00Z", `/workspace/distinct-${index}`, `distinct-${index}`);
+			}
+			// Then 1500 older sessions on one Project — three more pages of 500.
+			for (let index = 0; index < 1500; index += 1) {
+				insert.run("2026-01-01T00:00:00Z", "/workspace/dup", "dup");
+			}
+		})();
+
+		const prepare = vi.spyOn(db, "prepare");
+		let pageFetches = 0;
+		try {
+			prepare.mockImplementation((sql: string) => {
+				const statement = Database.prototype.prepare.call(db, sql);
+				if (sql.includes("FROM sessions s")) {
+					const all = statement.all.bind(statement);
+					statement.all = ((...params: unknown[]) => {
+						pageFetches += 1;
+						return all(...params);
+					}) as typeof statement.all;
+				}
+				return statement;
+			});
+			expect(() => listProjectScopeCandidates(db, { limit: 250, maxScannedRows })).toThrow(
+				"project_scope_candidate_scan_too_large",
+			);
+		} finally {
+			prepare.mockRestore();
+		}
+		// The six distinct rows are all on page 1; the walk must not fetch page 2.
+		expect(pageFetches).toBe(1);
+	});
+
 	it("applies the result limit after the overflow check, not before", () => {
 		// Under budget: limit trims the sorted result without affecting the guard.
 		const maxScannedRows = 10;
